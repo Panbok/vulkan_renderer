@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-11
+updated: 2026-08-12
 authority: adr
 ---
 
@@ -19,8 +19,11 @@ accepted portable baseline therefore uses per-image present semaphores and a
 completed submit that consumes the reacquired image's acquire semaphore as its
 presentation-completion proof. Swapchain maintenance remains outside the
 profile floor but is now enabled when available to obtain explicit per-image
-present fences. The standalone V0
-evidence and the older layer 1.4.335 GPU-assisted limitation remain recorded in
+present fences. The post-V7 native Windows rerun passes focused offscreen and
+windowed synchronization validation plus descriptor-buffer GPU-assisted
+validation on the same target device. The standalone V0 source and build target
+were removed after V7, while its historical evidence and the older layer
+1.4.335 GPU-assisted limitation remain recorded in
 [the bindless Vulkan backend specification](../bindless-vulkan-backend-spec.md)
 §12.
 
@@ -48,13 +51,13 @@ shader tooling are mature" and otherwise proposed evaluating
 2. The §11 wording lists descriptor buffers' "backend-defined sizes" as a
    drawback. That understates how contained the variance is — see the Decision.
 
-The shipping Vulkan 1.2 backend enables almost nothing from this space. It
-requests `VK_API_VERSION_1_2` and turns on only tessellation shaders and
-sampler anisotropy, plus opportunistic multi-draw indirect, indirect first
-instance, depth-bias clamp, and shader draw parameters. It enables no descriptor
-indexing, no buffer device address, no timeline semaphores, and no dynamic
-rendering. There is nothing to extend; the bindless backend is a new device
-setup.
+At the time of this decision, the shipping Vulkan 1.2 backend enabled almost
+nothing from this space. It requested `VK_API_VERSION_1_2` and turned on only
+tessellation shaders and sampler anisotropy, plus opportunistic multi-draw
+indirect, indirect first instance, depth-bias clamp, and shader draw parameters.
+It enabled no descriptor indexing, buffer device address, timeline semaphores, or dynamic
+rendering. There was nothing to extend; the bindless backend required a new
+device setup. ADR-026 subsequently removed that Vulkan 1.2 implementation.
 
 One environment fact dominates the consequences. The original local Vulkan
 observation was MoltenVK `apiVersion 1.2.296` on an Apple M1 Pro without
@@ -267,7 +270,7 @@ driver allocation.
   decision in favour of the descriptor-buffer model; recorded because it is the
   natural fallback if descriptor-buffer driver maturity proves inadequate, and
   because it would not change any shader.
-- **Per-material descriptor sets, as the Vulkan 1.2 backend does today.**
+- **Per-material descriptor sets, as the retired Vulkan 1.2 backend did.**
   Rejected outright: it is the model the whole bindless direction exists to
   remove, and it would put per-material binding back in the draw loop.
 - **Mesh shaders, device-generated commands, and shader objects in the required

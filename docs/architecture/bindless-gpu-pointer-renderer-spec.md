@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-11
+updated: 2026-08-12
 authority: design
 ---
 
@@ -18,13 +18,19 @@ the old Metal generation is historical, and the owner accepted corrected
 replacement output on 2026-08-11. Stage 6 modern Vulkan is complete
 through V7 on the RX 6700 XT implementation line, including keyed dynamic-memory pools,
 authored-graph parity, owner-accepted corrected Bistro/text output, and the
-Windows default selection. Local bindless evidence artifacts were removed on
-request. V7 removed the Vulkan 1.2 path and its migration surface. The detailed
+Windows default selection. Local evidence artifacts, including the standalone
+V0/V3 executables and fixture-only walking/diagnostic plumbing, were removed on
+request after their observations were recorded. V7 removed the Vulkan 1.2 path
+and its migration surface. The detailed
 [bindless Vulkan backend specification](bindless-vulkan-backend-spec.md) and
 ADRs 023–026 own its current status. The descriptor-buffer backend still cannot
 run on the macOS development machine. Its post-extraction CPU, byte-identical
 snapshot, and focused Metal-validation witnesses pass there, while the paired
-Release profile still misses its predeclared submit bound. Current local tooling
+Release profile still misses its predeclared submit bound. A fresh post-V7
+native Windows rerun passes Debug/Release whole-graph execution plus focused
+synchronization and GPU-assisted validation on the RX 6700 XT; it is correctness
+evidence, not a performance result. Linux remains an unimplemented,
+evidence-gated target, so this umbrella specification remains partial. Current local tooling
 is Vulkan SDK 1.4.357.0, MoltenVK 1.4.1, and Slang
 `2026.13.1-1-g84792eb15`; dated earlier observations remain historical
 evidence. The completed evidence proves only the focused paths described in

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-11
+updated: 2026-08-12
 authority: adr
 ---
 
@@ -32,7 +32,13 @@ and picking identifiers
 The validation child reports only the expected API/GPU-validation enablement
 notices and no diagnostic. The shared-core extraction and its required
 cross-platform correctness witnesses are complete. Performance optimization is
-outside the owner-selected implementation scope.
+outside the owner-selected implementation scope. The post-V7 native Windows
+focused diagnostic re-exercised the shared memory, submit-ring, ABI, slot-table,
+and capture ownership paths under synchronization and GPU-assisted validation;
+Debug and Release whole-graph text runs also passed two repetitions each. After
+that evidence was recorded, the standalone diagnostic and its fixture-only
+plumbing were removed; the shared cores retain production Metal and Vulkan
+callers plus their CPU contracts.
 
 ## Context
 

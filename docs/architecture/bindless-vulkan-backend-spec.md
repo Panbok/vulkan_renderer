@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-11
+updated: 2026-08-12
 authority: design
 ---
 
@@ -31,9 +31,10 @@ offscreen/windowed validation pass on the RX 6700 XT. A later visual audit found
 and corrected canceled global-HDR baking, deferred logical unpublication that
 blocked generation reuse, and rejection of Bistro's normalized local-probe
 cubemap. The corrected Bistro and text output was visually accepted by the
-owner on 2026-08-11. Local snapshots, reports, and bindless baseline generations
-used during implementation were removed afterward at the owner's request; they
-are not retained repository assets. Packet-native retained editor/gizmo
+owner on 2026-08-11. Disposable implementation snapshots, reports, and corrected
+bindless baseline proposals/generations were removed afterward at the owner's
+request; the tracked pre-V7 legacy Vulkan generation remains the historical
+cross-backend reference. Packet-native retained editor/gizmo
 initialization satisfies the full-boot subsystem contract, and packet
 submission publishes the required no-overflow instance metric. Windows V6 and
 Gate B1 are complete. ADR-026 V7 is also complete: no-argument application and
@@ -42,10 +43,16 @@ selects the same implementation; and the temporary `vulkan-bindless` spelling,
 Vulkan 1.2 backend, descriptor-set shaders, legacy-only frontend systems,
 adaptor/interface, and graph migration residue are removed. The required
 post-extraction Metal snapshot and focused API/GPU-validation witnesses pass,
-closing the cross-platform V5 shared-core gate. Fresh native Windows runtime
-evidence after deletion is unavailable on the current macOS host.
-Section 12 records the exact target and macOS evidence plus the older 1.4.335
-tooling limitation.
+closing the cross-platform V5 shared-core gate. A final source/build/test audit
+removed residual descriptor-set shader-copy rules and the migration-only
+selector assertion. After its final evidence was recorded, the standalone V0
+spike, V3 diagnostic, dedicated wrappers/targets, unused walking pipeline, and
+fixture-only publication/IBL/WSI/validation plumbing were removed. The selected
+packet renderer and normal harness are now the only executable Vulkan evidence
+surface. Fresh native Windows post-retirement Debug and Release offscreen
+whole-graph runs, focused synchronization/GPU-assisted validation, and the CPU
+suite pass on the RX 6700 XT. Section 12 records the exact evidence plus the
+older 1.4.335 tooling limitation.
 
 **Scope:** A bindless Vulkan 1.4 renderer for Windows, built on the semantic
 model that the Metal 4 backend already implements, followed by the complete
@@ -265,7 +272,7 @@ There is no hidden fork.
 | `VK_KHR_unified_image_layouts` (present in 1.4.357 headers; target-driver gate unrun) | Deterministic readback parity with layout tracking disabled, plus a Release A/B on the same device. Layout lowering stays in the code either way |
 | `VK_EXT_mesh_shader` | Indexed vertex pulling stays authoritative per [ADR-013](adr/013-draw-submission-strategy.md). A mesh path must measure better on identical case, resolution, and scene in Release |
 | `VK_EXT_device_generated_commands` | Only after CPU draw-record time is measured as a bottleneck in a Release profile |
-| `VK_EXT_shader_object` | Only if cold pipeline creation or state-permutation count is measured as a problem. It conflicts with pipeline caches, so `validate_pipeline_cache.sh`'s cold/warm evidence needs a replacement first |
+| `VK_EXT_shader_object` | Only if cold pipeline creation or state-permutation count is measured as a problem. It conflicts with pipeline caches, so the explicit cold/warm production cache evidence needs a replacement first |
 | `VK_EXT_graphics_pipeline_library`, `VK_KHR_pipeline_binary` | Same trigger, measured against the same cold/warm numbers |
 | `hostImageCopy` (1.4 core feature, explicitly optional to support) | Removes the staging copy for texture upload. Gate on measured load time |
 | `descriptorBufferCaptureReplay` | **Not a performance feature.** Enable in Debug and diagnostic configurations when present so RenderDoc and PIX can capture; never in Release, because it constrains driver allocation |
@@ -1091,19 +1098,20 @@ policy. The wording is not permission to choose a threshold after seeing data.
 | **V4 — memory, materials, descriptor heaps** | Material row publication; texture, sampler, and storage-image publish, replace, and retire; sentinel slot; two-slot rule; capacity reporting; asset publisher wired to the shared loaders; extract the slot table with this second caller; finish the §5.2 dynamic memory pool and full bindless memory metric family | Multi-material capture exact; two materials share one texture/sampler, one retires while work is pending, and the survivor remains exact; texture replacement while frames are pending; non-coherent atom-range CPU cases and target execution when available; capacity-exhaustion metric fires; repeated create, submit, and destroy returns every logical total to its initial value; validation clean; Metal snapshot/API validation after extraction | Windows and macOS |
 | **V5 — graph, sync2, dynamic rendering, pass parity** | The bindless dependency lowerer; dynamic rendering for every authored pass; shadow cascades, skybox, opaque, transmission, blend, picking, tonemap, editor and UI, text, the full IBL bake, asynchronous capture overlay, per-pass timestamps; extract the capture ring with this second caller | The same declared five-channel capture batch as Metal returning exact final color, HDR scene color, depth, shadow layer, and picking identifiers; analytical IBL checks across irradiance and every prefilter mip; **synchronization validation clean across the whole authored graph**; deterministic repetitions; the CPU barrier-lowering table test; Metal snapshot/API validation after extraction | Windows, plus macOS for the CPU and Metal halves |
 | **V6 — feature parity and Windows selection** | Application and harness backend selection; pipeline cache cold and warm; asset load and unload; metrics parity; a Windows-capable implementation matrix | ADR-021's Gate-B functional checklist on Windows; native validation and lifecycle correctness; and owner-accepted Bistro/text output. Local snapshots, reports, and bindless baseline generations are disposable implementation evidence, not retained product assets | Windows |
-| **V7 — legacy retirement** | Per [ADR-026](adr/026-vulkan-1-2-retirement.md) | Six-step structural deletion, complete CPU suite, and surviving Metal gates; native Windows rerun remains a separate platform evidence boundary | Windows and macOS |
+| **V7 — legacy retirement** | Per [ADR-026](adr/026-vulkan-1-2-retirement.md) | Six-step structural deletion, complete CPU suite, surviving Metal gates, and fresh native Windows Debug/Release, synchronization-validation, and GPU-assisted witnesses | Windows and macOS |
 
-**V0 implementation status (2026-08-08):** the standalone executable, shader,
-build wrappers, recursive reflection check, descriptor-buffer publication,
-indexed offscreen draw, exact readback, and timeline wait are implemented.
-Release execution and synchronization validation pass on the Windows device
-recorded in §12. Validation layer 1.4.357 executes the descriptor-buffer
-GPU-assisted path and the V0 gate passes with zero actionable validation
-warnings or errors. Its three `WARNING-Setting-Limit-Adjusted` setup notices
-remain visible and are counted separately. Layer 1.4.335 still returns
-`GPU_ASSISTED_UNAVAILABLE`, which remains evidence of an unavailable gate rather
-than a pass. V0 is complete as a standalone spike; it does not implement or
-accept the production backend.
+**Historical V0 implementation record (2026-08-08):** the standalone
+executable, shader, build wrappers, recursive reflection check,
+descriptor-buffer publication, indexed offscreen draw, exact readback, and
+timeline wait were implemented. Release execution and synchronization
+validation passed on the Windows device recorded in §12. Validation layer
+1.4.357 executed the descriptor-buffer GPU-assisted path and the V0 gate passed
+with zero actionable validation warnings or errors. Its three
+`WARNING-Setting-Limit-Adjusted` setup notices remained visible and were counted
+separately. Layer 1.4.335 returned `GPU_ASSISTED_UNAVAILABLE`, evidence of an
+unavailable gate rather than a pass. V0 completed its purpose as a standalone
+spike; its source, shader, wrappers, target, and generated builds were removed
+after V7 because they were not part of the production backend.
 
 **V1 implementation status (2026-08-09):** characterization is complete on both
 required platforms without moving or renaming a production module. The
@@ -1352,6 +1360,43 @@ functional, lifecycle, cache, metrics, and validation behavior. ADR-026 then
 completed V7 under explicit owner authorization. The legacy comparison arm and
 temporary selector no longer exist.
 
+**V7 implementation status (complete, audited 2026-08-12):** the six deletion
+steps in ADR-026 are complete in the current tree:
+
+1. Public and harness selection have one Vulkan spelling, `vulkan`, which names
+   the bindless implementation. The temporary selector and its migration-only
+   test are absent; generic invalid-selector coverage remains.
+2. Descriptor-set shader sources, manifests, runtime assets, and their build
+   rules are absent. The final audit also removed eight wrapper blocks that
+   still attempted to copy the deleted `assets/shaders/*.spv` directory.
+3. The frontend shader/pipeline registry, descriptor-instance model, and generic
+   indirect-draw subsystem are absent. `VkrDrawBatcher` was audited separately:
+   it has no production caller, is API-neutral, and remains only as a proposed
+   future batching utility rather than Vulkan 1.2 residue.
+4. The Vulkan 1.2 backend, platform files, and selected-implementation adaptor
+   are absent. Vulkan implementation types live only under
+   `renderer/vulkan/bindless/`; the still-shared SPIR-V reflection wrapper was
+   retained and relocated rather than deleted.
+5. `VkrRendererBackendInterface` and its 87 operations, frontend wrappers, and
+   legacy-only capability boolean are absent. ADR-001 is archived as
+   superseded.
+6. Render-pass handles, render-target arrays/caches, framebuffer vocabulary,
+   the legacy layout-pair helper, and other graph migration residue are absent;
+   backend-neutral scheduling, dependencies, imported state, and final state
+   remain authoritative.
+
+The former focused diagnostic had one stale pre-V5 assumption: it expected an
+implicit walking draw from an empty packet even though the authored V7 graph
+correctly executes that packet with zero indexed draws. Its final post-V7 run
+changed that expectation, retained the separate six-draw publication fixture,
+and passed offscreen/windowed synchronization and GPU-assisted validation on the
+RX 6700 XT. Once recorded below, that evidence no longer justified a parallel
+executable, shader, pipeline, fixture API, or dedicated build surface, so all of
+them were deleted. Debug and Release offscreen harness reports each complete two
+repetitions of the production three-image, nine-pass text graph. These local
+dirty-tree reports are correctness witnesses, not baselines or performance
+evidence.
+
 Optional capabilities are deliberately outside this ladder. Each is its own
 measured change after V6, per §3.5.
 
@@ -1404,30 +1449,24 @@ grep -o '<extension name="VK_EXT_descriptor_buffer"[^>]*>' \
 # Enumerate the active runtime.
 vulkaninfo --summary
 
-# Build and run the standalone V0 spike on Windows.
-build_bindless_vulkan_v0.bat Release
-build_bindless_vulkan_v0_Release\tools\vkr_bindless_vulkan_v0.exe
-build_bindless_vulkan_v0.bat Debug
-build_bindless_vulkan_v0_Debug\tools\vkr_bindless_vulkan_v0.exe --validation
-build_bindless_vulkan_v0_Debug\tools\vkr_bindless_vulkan_v0.exe --gpu-assisted
-
-# V1/V2's completed legacy-runtime gate is historical evidence. Its script was
-# retired with the Vulkan 1.2 implementation in V7 and is not a current command.
-
-# Build and run the retained focused Vulkan diagnostic on Windows.
-build_bindless_vulkan_v3.bat Debug
-build_bindless_vulkan_v3_Debug\tools\vkr_bindless_vulkan_v3.exe --validation
-build_bindless_vulkan_v3_Debug\tools\vkr_bindless_vulkan_v3.exe --validation --windowed
-build_bindless_vulkan_v3_Debug\tools\vkr_bindless_vulkan_v3.exe --gpu-assisted
+# V0–V4 standalone commands are historical evidence. Their sources, CMake
+# targets, wrappers, and generated trees were removed after V7; they are not
+# reproducible commands in the current tree.
 
 # Build the selected production implementation and CPU contracts on Windows.
 build.bat Debug
 build_test.bat
 
-# V7 removed the generic backend interface and temporary production selectors.
-grep -Rn "VkrRendererBackendInterface\|VKR_RENDERER_IMPL_LEGACY_VULKAN" \
-  app/ lib/ tools/
-grep -Rn '"vulkan-bindless"\|"legacy-vulkan"' app/ lib/ tools/
+# V7 removed the generic backend interface, migration selectors, legacy backend,
+# and descriptor-set shader delivery. Empty output is the expected result.
+rg "VkrRendererBackendInterface|VKR_RENDERER_IMPL_LEGACY_VULKAN" \
+  app lib tools tests
+rg '"vulkan-bindless"|"legacy-vulkan"' app lib tools tests
+rg "\\bvulkan_backend_|\\bvulkan_shader_|\\bvulkan_renderpass_|\\bvulkan_render_target_" \
+  lib/src/renderer lib/CMakeLists.txt tests/CMakeLists.txt
+rg "assets[/\\\\]shaders|copy.*\\.spv|xcopy.*\\.spv|cp .*\\.spv" \
+  build.sh build.bat build_release.sh build_release.bat \
+  build_release_info.sh build_release_info.bat build_lib.sh build_lib.bat
 
 # Shared GPU cores carry no native Metal types.
 grep -n "MTL\|@interface\|id<" \
@@ -1609,6 +1648,49 @@ Current V4-integration macOS evidence on the same toolchain:
   repeating the candidate prepare/submit phase split. Its unstable warmup and
   dirty provenance prevent it from closing or replacing the clean-tree gate.
 
+Post-V7 native Windows completion evidence on 2026-08-12 with SDK and
+validation layer 1.4.357, AMD Radeon RX 6700 XT, driver Vulkan 1.4.315:
+
+- Before the standalone artifacts were removed, `build_test.bat`,
+  `build.bat Debug`, `build_release.bat`, and the focused diagnostic Debug build
+  passed after the V7 residual cleanup.
+- Focused offscreen and hidden-window synchronization-validation runs pass with
+  zero validation warnings/errors and zero command-slot waits. The window run
+  recreates 320×240 to 400×300, retires and collects one swapchain, and leaves
+  no live retired swapchain. The publication fixture completes six exact draws,
+  balances all eight retirements/collections, reports zero upload waits, and
+  returns its logical memory totals to baseline.
+- Focused GPU-assisted validation remains enabled, reports its three expected
+  setup notices, and completes with zero warnings/errors.
+- Debug whole-graph report `20260812T092053.066Z-0031b3`
+  (`sha256:ddb599eac2d7835bc7a62b65ff5ba8ffe003b3bf11b17e85fd96ad41410f6237`)
+  and Release report `20260812T092107.027Z-0016e2`
+  (`sha256:b51db533671c89930183c167e7a10844659e276f3d425ab3c5e0710faa1b816f`)
+  each pass two offscreen repetitions with three target images, all nine graph
+  pass rows, and complete required metrics. Both are non-authoritative local
+  dirty-tree observations; their short warmup is unstable and GPU timing is
+  disabled, so they support correctness only.
+- The Sponza harness case is unavailable because its source scene is absent in
+  this checkout. A Debug Bistro hidden-window child reached orderly renderer
+  shutdown without validation diagnostics but did not finish harness post-run
+  processing and was terminated after six minutes. Neither attempt is counted
+  as a passing gate.
+- After these observations were recorded, the V0/V3 executables, walking
+  pipeline/shader, fixture APIs, aggregate diagnostic counters, obsolete
+  pipeline-cache wrapper, and their five generated build trees were deleted.
+  The post-cleanup `build_test.bat`, `build.bat Debug`, and `build_release.bat`
+  gates pass. Production Debug harness report
+  `20260812T095120.703Z-00136a`
+  (`sha256:0ad14a632a442d1d59604808e4025dea505852c9a93f3abad52dc1a4616ee5fe`)
+  passes two repetitions of the three-image offscreen text-rendering case with
+  no VUID, validation-error, error, or fatal diagnostics. It is a local dirty
+  correctness witness, not baseline or performance evidence. An explicit cold
+  then warm production pipeline-cache pair initialized, saved, loaded, and
+  resaved the same 151,824-byte cache; the former wrapper was removed because
+  its final assertion depended on retired `pipeline.create` telemetry rather
+  than current cache behavior. The historical observations above remain
+  evidence, not live tooling.
+
 **Not verified:** the specification's per-version mandatory-support tables. See
 the verification boundary in §3.2 before writing any claim that depends on them.
 
@@ -1619,11 +1701,12 @@ the verification boundary in §3.2 before writing any claim that depends on them
 ### 13.1 Split development loop
 
 The macOS environment still cannot execute this backend, but a native Windows
-machine is now available for V0. The remaining process risk is keeping the
-offline/macOS and runtime/Windows halves reproducible. Mitigations in priority
-order: retain the standalone offscreen target and wrapper; maximize
-platform-neutral coverage (§11); and keep runtime reports self-contained so a
-failure does not depend on an interactive debugger session.
+machine is available for the selected renderer. The remaining process risk is
+keeping the offline/macOS and runtime/Windows halves reproducible. Mitigations
+in priority order: keep tracked harness cases/profiles as the executable
+evidence surface; maximize platform-neutral coverage (§11); and keep runtime
+reports self-contained so a failure does not depend on an interactive debugger
+session.
 
 Revisit trigger: MoltenVK enumerating `VK_EXT_descriptor_buffer`; Vulkan 1.4 is
 already reported locally and is insufficient by itself.
@@ -1682,8 +1765,9 @@ one slower one — performance is correctness.
 
 ADR-026 records the original Gate A2 and observation-period sequence and the
 owner's 2026-08-11 decision to waive that delay and complete V7 immediately.
-The deletion is implemented. Native Windows revalidation remains required
-before making a fresh post-retirement Windows runtime claim.
+The deletion is implemented. The 2026-08-12 native Windows rerun closes the
+post-retirement correctness boundary for the target RX 6700 XT; it does not
+broaden hardware support or establish a performance result.
 
 ### 13.6 Accepted costs of the chosen decisions
 

@@ -178,8 +178,8 @@ The IBL render-pass signature and all bake pipelines are now prebuilt for
 RGBA16F before frame recording. Per-target format branching remains unnecessary
 because every initial bake output uses the same format.
 
-**Phase-1 gate:** mapping/metadata tests, `./build_test.sh`,
-`./validate_pipeline_cache.sh`, and a validation-layer run that creates,
+**Phase-1 gate:** mapping/metadata tests, `./build_test.sh`, an explicit
+cold/warm production cache run, and a validation-layer run that creates,
 attaches, samples, and destroys the half-float resources.
 
 ## Phase 2 — Widen IBL storage and replace the 8-bit LUT
@@ -493,8 +493,10 @@ Run the focused tests and `./build_test.sh`.
 
 ### Shader/pipeline and Vulkan gates
 
-Run `./validate_pipeline_cache.sh` for every new shader/shadercfg or compatible
-render-pass signature. Run Vulkan validation layers through source upload,
+Run two normal application processes against one fresh explicit pipeline-cache
+path for every new shader or compatible pipeline signature: the first must
+initialize and save, and the second must load and save. Run Vulkan validation
+layers through source upload,
 full-mip conversion, both convolutions, BRDF bake, skybox/material sampling,
 failure cleanup, scene reload, and shutdown. A green CPU suite does not cover
 descriptor types, attachment formats, barriers, subresource ranges, or deferred

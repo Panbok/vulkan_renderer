@@ -81,7 +81,6 @@ task notes under `.scratch/`, which is local and untracked.
 build_release/tools/vkr_harness profile --case <case> --profile <profile>
 ./build_test.sh                # build + run the CPU suite
 ./build_test_batch.sh          # 50 runs; confirm or refute a flake
-./validate_pipeline_cache.sh   # cold/warm pipeline cache behaviour
 build_release/tools/vkr_harness profile \
   --case tools/cases/performance/sponza_orbit.case.json \
   --profile tools/profiles/performance-windowed.json # Release performance evidence
@@ -127,8 +126,8 @@ proven root cause, but it is sufficient reason to keep shader validation to a
 minimal issue reproduction.
 
 The core build/run/test and texture-packing wrappers have `.bat` equivalents.
-The pipeline-cache and backend-matrix utilities are currently POSIX shell only;
-the C harness is cross-platform. Use the repository scripts rather than
+The backend-matrix utility is currently POSIX shell only; the C harness is
+cross-platform. Use the repository scripts rather than
 invoking `cmake` directly — they own shader compilation and asset copying.
 
 A green CPU suite is not evidence that Vulkan usage is correct. When debugging

@@ -76,7 +76,8 @@ Run the cheapest step that completely covers the invariant you touched.
 3. `./build_test_batch.sh` when a failure looks intermittent (50 runs).
 4. Vulkan validation-layer run of the app across the swapchain image counts and
    queue-family layouts your change can reach.
-5. `./validate_pipeline_cache.sh` for shader, pipeline, or reflection changes.
+5. An explicit cold/warm production cache run for shader, pipeline, or
+   reflection changes, following `vkr-validation`.
 6. `tools/validate_multithreaded_backend_matrix.sh` for backend threading.
 7. Same-config Release measurement via `vkr_harness profile` and an
    authoritative performance profile for anything performance-relevant.

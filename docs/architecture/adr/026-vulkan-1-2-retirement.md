@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-11
+updated: 2026-08-12
 authority: adr
 ---
 
@@ -16,13 +16,14 @@ subsystems, Vulkan 1.2 backend/adaptor, 87-operation interface, wrappers, and
 render-pass/render-target graph residue are absent. Metal remains the macOS
 default and bindless Vulkan is the Windows Vulkan implementation.
 
-The authorization changed the risk decision; it did not manufacture missing
-evidence. The complete CPU suite and macOS Metal gates pass after deletion, but
-the resulting Windows executable cannot be run on the current macOS host and
-MoltenVK still lacks `VK_EXT_descriptor_buffer`. Fresh native Windows runtime
-and validation evidence therefore remains unavailable and is a named residual
-risk, not an acceptance claim. Historical B1/B2 rationale below is retained to
-explain the safer sequence that the owner consciously waived.
+The authorization changed the risk decision; it did not manufacture evidence.
+The complete CPU suite and macOS Metal gates pass after deletion. On 2026-08-12,
+fresh native Windows Debug/Release whole-graph runs and focused offscreen,
+windowed, synchronization, GPU-assisted, lifecycle, publication, and ABI gates
+also passed on the target RX 6700 XT. This closes the target post-retirement
+correctness boundary, not the wider hardware matrix or any performance question.
+Historical B1/B2 rationale below is retained to explain the safer sequence that
+the owner consciously waived.
 
 ## Context
 
@@ -31,8 +32,8 @@ Gate A makes Metal the default macOS renderer; Gate A2 removes the MoltenVK
 path; Gate B authorizes removing `VkrRendererBackendInterface`, the Vulkan 1.2
 implementation, and the descriptor-set-only shaders.
 
-Two things about that structure need refining now that the bindless Vulkan
-backend has a concrete design.
+At decision time, two things about that structure needed refinement once the
+bindless Vulkan backend had a concrete design.
 
 **First, Gate B is a single gate covering three different risks.** As written it
 authorizes, off one evidence bundle, flipping the Windows default *and* deleting
@@ -59,11 +60,10 @@ Two facts sharpen both points:
   window, including asynchronous five-channel capture and analytical IBL. The
   required post-extraction Metal witnesses remain unavailable on Windows. The
   split development loop makes an observation period more valuable, not less.
-- Gate A is currently **open**. The previously accepted Metal Bistro generation
-  was invalidated by a cross-backend audit that found retained IBL, sampler,
-  transparency, and presentation defects. Those are corrected, but replacement
-  pixels have not been owner-reviewed. Nothing downstream should be described as
-  imminent while the first gate is unresolved.
+- Gate A was then **open**. The previously accepted Metal Bistro generation had
+  been invalidated by a cross-backend audit that found retained IBL, sampler,
+  transparency, and presentation defects. Those defects were corrected and the
+  owner later accepted the replacement pixels before authorizing V7.
 - Gate B1 is **complete**. A Windows Bistro visual audit found that the
   bindless path canceled its queued global-HDR bake and rejected the authored
   normalized local-probe cubemap. The implementation defects are corrected and
@@ -209,6 +209,27 @@ The former observation contract would not have elapsed before 2026-08-25. The
 owner's explicit instruction to complete V7 immediately is the authority for
 proceeding before that date and replaces, rather than satisfies, that condition.
 
+A final 2026-08-12 audit closed residual migration residue that the first
+deletion pass missed: eight build wrappers no longer copy the deleted
+descriptor-set shader directory; the explicit temporary-selector rejection test
+is gone while generic invalid-selector coverage remains; stale code comments no
+longer describe a live Vulkan 1.2 path; and the then-retained focused diagnostic
+was brought forward to the authored empty-packet graph contract instead of
+expecting an implicit walking draw. After that final evidence was recorded, its
+standalone V0/V3 sources, dedicated targets/wrappers, walking shader/pipeline,
+fixture APIs, and diagnostic-only counters were deleted. `VkrDrawBatcher` was
+audited and retained because it is
+API-neutral proposed functionality with no production caller, not legacy-backend
+state.
+
+The post-audit Windows evidence passes the CPU suite, Debug and Release builds,
+two Debug plus two Release offscreen whole-graph repetitions, focused offscreen
+and hidden-window synchronization validation, descriptor-buffer GPU-assisted
+validation, exact six-draw publication, balanced completion retirement, and ABI
+reflection. The harness observations are local/dirty correctness witnesses with
+unstable short warmup and GPU timing disabled; they are not baseline or
+performance evidence.
+
 ## Consequences
 
 **Positive**
@@ -220,8 +241,8 @@ proceeding before that date and replaces, rather than satisfies, that condition.
   designed twice or gated on which model the platform uses.
 - The graph sheds its render-pass and framebuffer vocabulary, which exists solely
   for the Vulkan 1.2 lowerer.
-- Splitting the gate means the Windows default can be reverted by a flag during
-  the period when unknown defects are most likely.
+- Splitting the gate provided a reversible Windows-default phase before the
+  owner explicitly waived the remaining observation delay.
 - Ordering by blast radius means each step's failure is diagnosable on its own,
   rather than as one large deletion that either builds or does not.
 
@@ -232,8 +253,8 @@ proceeding before that date and replaces, rather than satisfies, that condition.
   Cross-backend comparison becomes cross-platform comparison, which confounds
   driver, API, and platform differences at once.
 - Devices without descriptor buffers lose support entirely and permanently.
-- The observation period between B1 and B2 is a real calendar cost, during which
-  three renderer paths still exist.
+- The planned observation period between B1 and B2 was waived by explicit owner
+  instruction; the accepted residual risk is recorded above.
 - Steps 3, 5, and 6 touch shared systems, the frontend, or the graph, so a defect
   there affects Metal, which is the shipping macOS renderer by then. Both
   surviving backends' snapshots are required evidence at those steps for exactly
@@ -275,16 +296,9 @@ proceeding before that date and replaces, rather than satisfies, that condition.
 
 ## Revisit When
 
-- Gate A remains open long enough that the whole sequence is stalled behind it; at
-  that point the gates are reordered or the Metal baseline problem is escalated on
-  its own terms.
-- The bindless Vulkan backend cannot pass B1 on the available Windows hardware,
-  which would mean the capability profile in
-  [ADR-023](023-vulkan-1-4-bindless-capability-profile.md) needs revisiting
-  before any retirement question does.
-- The observation period surfaces a bindless-only regression class that recurs,
-  which is evidence the period should lengthen rather than that the deletion
-  should proceed.
+- A regression is traced to the waived B1/B2 observation interval; that would
+  require reassessing the retirement risk rather than quietly restoring pieces
+  of the deleted model.
 - The loss of a portable diagnostic path proves materially painful in practice,
   at which point the "keep Vulkan 1.2 as a diagnostic path" alternative is
   reopened explicitly with that experience as its evidence.

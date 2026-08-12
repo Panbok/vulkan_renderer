@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-11
+updated: 2026-08-12
 authority: adr
 ---
 
@@ -48,6 +48,9 @@ temporary `vulkan-bindless` spelling, and the capability boolean that existed
 only to distinguish retained pipeline state. The normal frame path still has
 exactly the coarse prepare and submit dispatches and no per-pass or per-draw
 strategy call.
+The post-V7 native Windows focused synchronization/GPU-assisted diagnostics and
+Debug/Release whole-graph text runs pass, confirming that deletion did not
+reintroduce a backend-type ladder or widen the frame dispatch seam.
 
 ## Context
 
@@ -176,21 +179,19 @@ depth, picking identifiers, IBL prefilter samples, pipeline-archive warmth —
 stay in each backend's own rich result, returned through its own focused
 evidence entry point.
 
-### Where legacy Vulkan 1.2 sits
+### Where legacy Vulkan 1.2 sat during V2–V6
 
-Legacy Vulkan remains one of V2's **two production implementations**. Its entries
-forward into the existing `VkrRendererBackendInterface`, with
+Legacy Vulkan was one of V2's **two production implementations**. Its entries
+forwarded into the then-existing `VkrRendererBackendInterface`, with
 `uses_legacy_pipeline_state` set true. The bindless Vulkan entry became the third
-production implementation in V3. The
-legacy entry is a mechanical adaptor.
+production implementation in V3. The legacy entry was a mechanical adaptor.
 
-Critically, **the direct `rf->backend.*` call sites stay exactly where they
-are.** They live in functions that only the legacy implementation reaches,
-because their callers are already gated by the capability boolean. Routing them
-through the strategy table would be the speculative-vtable mistake ADR-020
-rejects. The adaptor's value is containment: at the final retirement gate,
-deleting the 87-entry table means deleting one implementation and its adaptor
-rather than unpicking a ladder across 14 files.
+Critically, the direct `rf->backend.*` call sites stayed in functions reached
+only by the legacy implementation and gated by the capability boolean. Routing
+them through the strategy table would have been the speculative-vtable mistake
+ADR-020 rejects. That containment paid off at V7: ADR-026 deleted the adaptor,
+the 87-entry table, the capability boolean, and their private call sites without
+unpicking a behavior ladder across the frontend.
 
 ### Hot-path guarantee
 
@@ -233,15 +234,15 @@ duplication is measurable, not in advance.**
 - This is a wide, behaviour-preserving refactor across the frontend, metrics,
   capture, and six systems files. Its review value depends almost entirely on the
   snapshot and validation witnesses, not on reading the diff.
-- It lands before the second bindless backend exists, but the operation set is
-  shaped by two real implementations: Metal and legacy Vulkan. If bindless
-  Vulkan needs an operation the table lacks, the table grows — and repeated
-  growth is evidence the partition was wrong.
-- Three implementations coexist during migration, which is the project's maximum
-  maintenance cost, as ADR-021 already noted.
-- A capability struct can accrete fields the way a vtable accretes entries.
-  `uses_legacy_pipeline_state` is defensible because it names a real subsystem
-  cluster; a second boolean per behavioural difference would not be.
+- It landed before the second bindless backend existed, but the operation set
+  was shaped by two real implementations: Metal and legacy Vulkan. Bindless
+  Vulkan fit that coarse boundary; repeated future growth would still be
+  evidence that the partition is wrong.
+- Three implementations coexisted during migration, the project's maximum
+  maintenance cost. ADR-026 ended that temporary state.
+- A capability struct can accrete fields the way a vtable accretes entries. V7
+  removed `uses_legacy_pipeline_state`; adding a new behavior-selecting boolean
+  would require renewed architectural scrutiny.
 - `AGENTS.md` names `VkrRendererImpl` as the selected coarse strategy. The
   legacy adaptor seam was removed by ADR-026.
 
@@ -279,8 +280,8 @@ duplication is measurable, not in advance.**
 
 - The bindless Vulkan implementation needs a coarse operation the table lacks. One
   addition is normal; a pattern of additions means the partition was wrong.
-- The capability struct grows a second behavioural boolean, which would suggest
-  the cluster `uses_legacy_pipeline_state` names is not actually one cluster.
+- The capability struct gains a behavior-selecting boolean, which would suggest
+  implementation behavior is leaking back above the selected strategy.
 - The two bindless implementations share enough operation-level contracts that
   ADR-020's low-level `VkrGpuInterface` question can be reopened with evidence
   rather than speculation.

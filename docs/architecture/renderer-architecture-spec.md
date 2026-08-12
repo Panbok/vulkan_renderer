@@ -1,11 +1,11 @@
 ---
 status: implemented
-updated: 2026-08-11
+updated: 2026-08-12
 authority: spec
 ---
 # VKR Renderer — Architecture and Status Specification
 
-**Document status:** Reviewed against the V7 working tree on 2026-08-11.
+**Document status:** Reviewed against the completed V7 working tree on 2026-08-12.
 Metal 4 Stages 0–5 and bindless Vulkan V0–V6 are implemented. ADR-026 V7 is
 complete under explicit owner authorization: Vulkan 1.2, its descriptor-set
 shaders and manifests, the legacy-only frontend resource model, the
@@ -13,9 +13,9 @@ shaders and manifests, the legacy-only frontend resource model, the
 migration state are removed. `VkrRendererImpl` now selects Metal or bindless
 Vulkan once; `vulkan` unambiguously names the bindless implementation. The
 complete CPU suite and surviving macOS Metal evidence pass after retirement.
-The descriptor-buffer runtime remains unavailable on MoltenVK, so fresh native
-Windows post-retirement runtime evidence is unavailable locally and is not
-claimed.
+Fresh native Windows Debug and Release whole-graph runs, focused offscreen and
+windowed synchronization validation, and GPU-assisted validation also pass on
+the target RX 6700 XT. MoltenVK still cannot execute the descriptor-buffer path.
 **Scope:** Renderer architecture, implemented features, CPU/GPU memory, data
 transfer, synchronization, known issues, and recommended direction.
 **Audience:** Contributors and reviewers.
@@ -45,11 +45,11 @@ object model. The graph compiler remains shared because scheduling, conditions,
 culling, subresource state, and dependency lowering are semantic contracts; it
 does not own backend render targets or execute generic commands.
 
-The main evidence boundary is platform availability. The complete CPU suite and
-Metal runtime/validation path are locally executable. Bindless Vulkan was
-validated natively on an RX 6700 XT through V6, but the post-V7 tree has not
-been rerun on Windows from this macOS workspace. No performance conclusion is
-made from the retirement deletion alone.
+The main evidence boundary remains platform and device coverage. The complete
+CPU suite and Metal runtime/validation path pass, and the post-V7 tree has been
+rerun natively on an RX 6700 XT in Debug and Release. That closes the target
+Windows correctness boundary, not the wider device/driver matrix. No performance
+conclusion is made from the retirement deletion or the local correctness runs.
 
 ---
 
@@ -75,7 +75,7 @@ lib/src/
     └── vulkan/bindless/       Vulkan 1.4 implementation and shaders
 app/src/main.c                 Sample/editor application
 assets/                        Materials, scenes, textures, and render graphs
-tools/                         Offline utilities and focused validation stages
+tools/                         Offline utilities and renderer harness
 tests/src/                     CPU-side unit and subsystem tests
 docs/                          Specifications, plans, investigations, ADRs
 ```
@@ -368,9 +368,9 @@ restricted to specular reflection rays.
 | Multi-draw indirect | Implementation-owned | The retired generic indirect-draw subsystem is absent; selected implementations choose their native submission strategy from packet draws |
 | Compute dispatch | Not exercised | “compute” JSON passes currently orchestrate graphics/CPU work |
 | Device-memory suballocation | Implemented | Bindless Vulkan uses keyed DEVICE, UPLOAD, and READBACK pools backed by `vkr_gpu_memory`; Metal uses the same range/submit cores through its placement adapter. Logical and physical totals, peaks, retirement, failure classes, and capacity lower into renderer metrics. |
-| Bindless resource model | Implemented | Metal 4 and Vulkan 1.4 use GPU-addressed buffers, backend-native texture/sampler rows, completion-gated publication/retirement, authored graph lowering, and shared memory/submit/slot/capture cores. Packet version 10 separates visible skybox and lighting IBL sources. Metal corrected-pixel acceptance remains open; bindless Vulkan is the sole Vulkan renderer after V7. |
+| Bindless resource model | Implemented | Metal 4 and Vulkan 1.4 use GPU-addressed buffers, backend-native texture/sampler rows, completion-gated publication/retirement, authored graph lowering, and shared memory/submit/slot/capture cores. Packet version 10 separates visible skybox and lighting IBL sources. Corrected Metal pixels are owner-accepted, though no replacement golden generation is accepted; bindless Vulkan is the sole Vulkan renderer after V7. |
 | Bindless Vulkan V1–V4 migration | Complete for RX 6700 XT | V1 characterization and V2's selected strategy are complete on macOS and Windows. V3 extracted the memory, submit-ring, and shared ABI cores alongside their production Vulkan callers and passes native window resize with reacquisition and retired-swapchain completion proof. V4 extracted the slot table, added completion-gated asset publication, and moved geometry, staging, images, startup buffers, and readback into keyed dynamic pools with complete logical/physical metrics. Prepared and writable initialization records before the next frame draw, staging retirement uses that submit value, publication dirty ranges flush once per backing buffer, and logical totals return to baseline. MoltenVK cannot execute the descriptor-buffer path. ADR-024's required cross-platform extraction witnesses now pass. |
-| Bindless Vulkan V5–V7 | Implemented; native post-V7 rerun unavailable locally | V5 lowers the authored graph to synchronization2/dynamic rendering and implements all packet pass/capture/timing categories. V6 completed selection, cache, lifecycle, metrics, and native RX 6700 XT validation. V7 removed the Vulkan 1.2 path, temporary selector, shaders/manifests, legacy frontend systems, interface/adaptor, and graph residue. CPU and Metal gates pass after deletion; fresh Windows runtime evidence requires a Windows descriptor-buffer device. |
+| Bindless Vulkan V5–V7 | Implemented; post-V7 target rerun passes | V5 lowers the authored graph to synchronization2/dynamic rendering and implements all packet pass/capture/timing categories. V6 completed selection, cache, lifecycle, metrics, and native RX 6700 XT validation. V7 removed the Vulkan 1.2 path, temporary selector, shaders/manifests, legacy frontend systems, interface/adaptor, and graph residue. CPU and Metal gates pass after deletion; fresh RX 6700 XT Debug/Release whole-graph, synchronization-validation, and GPU-assisted witnesses pass. |
 | HDR/tonemap/post chain | Implemented, initial | RGBA16F fullscreen/editor scene color, packet-carried manual exposure (default `0.30`), ACES-fitted tonemap, and exposure-equivalent canonical HDR capture; automatic exposure and additional post effects are absent |
 | Shader hot reload | Absent | Build-time shader compilation only |
 
@@ -484,13 +484,14 @@ and that wait is published as a metric.
 
 Current priorities after V7 are:
 
-1. Run the post-retirement Debug/Release, whole-graph, lifecycle, synchronization
-   validation, and GPU-assisted matrix on native Windows descriptor-buffer
-   hardware. macOS cannot substitute for this evidence.
-2. Complete owner review of corrected Metal Bistro pixels before treating a new
-   Metal golden generation as accepted.
-3. Establish matched Release evidence before making any performance claim about
+1. Decide whether to publish and accept a new Metal golden generation; corrected
+   Metal pixels are owner-accepted, but the historical generation remains the
+   retained reference.
+2. Establish matched Release evidence before making any performance claim about
    the two surviving implementations or the V7 deletion.
+3. Broaden native Vulkan validation beyond the target RX 6700 XT to the
+   two-/four-image, queue-family, resize/minimize/cancel, interactive-picking,
+   and injected-failure matrix named in §10.
 4. Treat Linux as unsupported until its platform integration and native evidence
    exist.
 
@@ -716,12 +717,13 @@ pin the 17-image/13-sampler contract, and exact Bistro validation replay
     **Resolved 2026-08-08; cross-platform evidence completed 2026-08-09.** The
     former 46-site, 14-file ladder is replaced by one immutable
     `VkrRendererImplCapabilities` record and a coarse selected strategy. Metal
-    and legacy Vulkan are real implementations, the bindless identity now owns
-    a production offscreen V3/V4 slice, and a normal frame makes exactly the
+    and legacy Vulkan were the two real V2 implementations; the bindless identity
+    then gained a production offscreen V3/V4 slice, and a normal frame makes exactly the
     prepare and submit indirect calls. `VkrRendererImplSubmitResult` replaces the untyped Metal
     pointer and carries the shared capture, memory, material, and pass-timing
     data. A renderer-source audit finds backend-type behavior only in factory
-    selection; the legacy Vulkan backend retains one invariant assertion.
+    selection. ADR-026 later removed the legacy implementation, adaptor, and its
+    migration-only invariant assertion.
     [ADR-025](adr/025-selected-renderer-implementation-strategy.md) is Accepted.
     The Windows CPU/runtime witnesses and the matched clean Release Metal
     profile pass their declared gates.
@@ -784,24 +786,15 @@ pin the 17-image/13-sampler contract, and exact Bistro validation replay
   the initial ACES tonemap;
 - real compute dispatch followed by GPU culling/compaction;
 - clustered/tiled light assignment and a storage-buffer light list;
-- shader hot reload with pipeline/descriptor invalidation rules;
-- the proposed native-Metal/modern-Vulkan
-  [GPU-address renderer](bindless-gpu-pointer-renderer-spec.md), whose focused
-  Metal Stages 0–5 now ship as the selected macOS strategy with
-  production asset publication, memory retirement, explicit-ID material rows,
-  graph lowering, authored packet-pass execution, pipeline archives, capture,
-  retained text, lighting/IBL, and metrics. The historical guarded generation
-  remains immutable, but corrected output intentionally differs; the owner
-  accepted its replacement pixels and Gate A completed. The modern-Vulkan
-  Windows target now executes its complete authored graph through the V5
-  bindless path, including dynamic rendering, IBL,
-  asynchronous capture, and timestamps. The owner visually accepted corrected
-  Bistro/text output; local evidence artifacts were removed afterward on
-  request. Windows V6 and Gate B1 are complete, so bindless is the Windows
-  default. The required macOS post-extraction shared-core witnesses now pass;
-  V7 completed under the owner-authorized ADR-026 retirement contract. A fresh
-  native Windows post-V7 runtime rerun remains unavailable on the current host
-  and is not inferred from the passing CPU and Metal gates.
+- shader hot reload with pipeline/descriptor invalidation rules.
+
+The former GPU-address renderer proposal is no longer P3 work. Metal Stages 0–5
+and bindless Vulkan V0–V7 ship as the two selected strategies; the owner accepted
+the corrected Bistro/text result, the shared-core witnesses pass, and ADR-026
+removed the legacy Vulkan migration surface. The 2026-08-12 post-V7 RX 6700 XT
+rerun closes the target correctness boundary. Corrected local bindless baseline
+proposals remain intentionally removed, and no performance conclusion follows
+from completion.
 
 ---
 
@@ -844,7 +837,7 @@ following checks were rerun:
 | Validation-layer run after P0 | Apple M1 Pro/MoltenVK, three-image swapchain: startup, IBL setup, swapchain recreation, and 10 seconds of steady frames completed with no validation messages after fixing the layer-0 array-view mismatch |
 | `./build_test.sh` after P1 review | Exit 0; picking lifecycle regressions, strict uniform-layout negatives, all 13 shipped shader manifests, and all 1,024 texture-selector combinations passed |
 | `./build.sh Debug` after P1 review | Exit 0; shaders, texture packer, renderer library, and application built successfully |
-| `./validate_pipeline_cache.sh` after P1 review | Exit 0; cold cache created/saved and warm cache loaded; 20 pipelines created in both runs |
+| Retired `./validate_pipeline_cache.sh` after P1 review | Historical exit 0; cold cache created/saved and warm cache loaded; 20 pipelines created in both runs. Current cache validation uses two production application processes with one fresh explicit cache path |
 | P1 Sponza validation-layer run | Apple M1 Pro/MoltenVK, three-image swapchain: Sponza ready in 33.1 Debug seconds, 50-second run clean, exact device-memory telemetry, and zero fence/queue/device upload waits |
 | `tools/validate_multithreaded_backend_matrix.sh` after P1 review | Exit 0; all five compile/runtime configurations passed |
 | `./build_test.sh` after P2 review | Exit 0; coordinate-convention, cascade-union, merge-context, orthographic-frustum, and single-target graph regressions passed with every registered suite |
@@ -861,7 +854,7 @@ following checks were rerun:
 | Renderer harness phase 4 | CPU suite and Debug build passed; a fixed asynchronous capture ring and request-specific exact-slice graph overlay produced canonical final color, swapchain/editor depth, shadow-layer, scene-color, and picking-ID artifacts. Two isolated non-editor Sponza snapshot processes had bit-identical data/preview digests; an editor replay resolved depth to `scene_depth`; Debug validation logs were clean and the five-case backend matrix passed. These diagnostic dirty-tree runs are not performance or baseline evidence; exact artifacts and limitations are recorded in [phase-4 verification](../tooling/renderer-harness-phase4-verification.md) |
 | Renderer harness phase 5 | CPU suite and Debug build passed; six logical Sponza debug channels replayed independently with distinct canonical digests and clean validation logs. Canonical color/depth/ID comparison, diff reporting, aggregate summary transport, primary-plus-snapshot autotest separation, no-mutation proposals, digest confirmation, immutable generations, and atomic current-pointer publication are implemented. The real baseline tree was not mutated; successful acceptance was verified under an isolated temporary repository root. Exact artifacts and limitations are recorded in [phase-5 verification](../tooling/renderer-harness-phase5-verification.md) |
 | Renderer harness phase 6 | CPU suite and Debug build passed; the five-case backend matrix passed. Surface-free two- and three-image offscreen targets completed explicit recreation and validation-clean Sponza runs. A three-image windowed counterpart exercised swapchain recreation; all 80 deterministic work metrics matched across targets, and canonical final-color/depth digests were byte-identical. Exact artifacts and local MoltenVK limitations are recorded in [phase-6 verification](../tooling/renderer-harness-phase6-verification.md) |
-| HDR environment/IBL deterministic and build gates | `./build_test.sh`, `./build.sh Debug`, `./build_release.sh`, `./validate_pipeline_cache.sh`, and all five multithreaded-backend matrix configurations passed; focused tests cover RGBA16F metadata/lowering, binary16 boundaries, HDR orientation/aspect/cache bypass/cleanup, scene source alternatives, cube derivation/direction mapping, and GGX source LOD |
+| HDR environment/IBL deterministic and build gates | `./build_test.sh`, `./build.sh Debug`, `./build_release.sh`, the now-retired pipeline-cache wrapper, and all five multithreaded-backend matrix configurations passed at the time; focused tests cover RGBA16F metadata/lowering, binary16 boundaries, HDR orientation/aspect/cache bypass/cleanup, scene source alternatives, cube derivation/direction mapping, and GGX source LOD |
 | HDR validation snapshot | Debug Apple M1 Pro/MoltenVK, offscreen 640×480 with two images and validation enabled: full HDR upload/conversion/convolution/BRDF/skybox/world/tonemap/capture/shutdown path passed with no VUID/error/fatal diagnostics; `scene_color` captured `R16G16B16A16_SFLOAT`; both local probes reached ready. Report `20260803T205636.755Z-01405b`, digest `sha256:09b1ab3b0cd8349eb1f2f05ea982f61cb7215cf053351eee063e6de21b2b191e` |
 | HDR cubemap seam correction | Debug Apple M1 Pro/MoltenVK, offscreen 960×720 with two images and validation enabled: the camera points exactly through the `+X/+Y/+Z` cube corner, and the final Citrus Orchard capture is continuous across all three faces with no VUID/error/fatal diagnostics. CPU tests cover all 12 shared edges and all 8 corners. Report `20260803T214124.246Z-0172b1`, digest `sha256:a5f0c7a3fff4d14d2287da68a9a4515dc02587afaa67fde22d0ab10a532b1afb` |
 | HDR Release boot observation | Five Release repetitions at 2560×1440, hidden immediate-present window, three images, isolated warm cache: all passed with exact GPU totals and zero upload fence/queue/device-idle waits. Non-authoritative because the local profile permits dirty provenance and warmup was unstable; GPU timing was disabled, so this is not a speed result. Report `20260803T205253.704Z-013cad`, digest `sha256:00db04dd1bec14efb4df09674315de961fb82e8c6ce88ebaff0c7c50fa39d455` |
@@ -874,21 +867,21 @@ following checks were rerun:
 | Bistro fragment-light/specular-IBL correction | Five further owner cameras invalidated the receiver-level 12-light completion claim: their diagnostic replay retained all 72 scene lights but measured 44,200 influencing receiver/light pairs and discarded 34,305, leaving valid fixtures dark. Final/unlit/analytic/shadow plus no-specular and no-IBL ablations initially appeared to isolate a separate moving wall boundary to specular IBL. ADR-019 now owns a camera-independent 384-cell world grid with full 128-bit masks; fragments apply exact range/cone rejection, while the PBR path adds normal-footprint roughness filtering, specular AO, and horizon rejection. The optimized five-camera replay `20260804T223449.580Z-000d77`, digest `sha256:2de757f5aa6d221fdf03b53d80f98ea2c0a691c695e28d5f6b50c1d55d5136e1`, has five passing children and 35 passing metric assertions: all 72 lights remain with zero drops, using 363 cells, 1,635 references, and at most 47 candidates per cell. Same-fingerprint local/dirty optimization reports `20260804T221657.247Z-01866a` → `20260804T222805.692Z-000857` reduce World Opaque p50 from 109.528 ms to 93.243 ms; the older receiver report's 93.272 ms has a different workload fingerprint and is context only. That historical snapshot was not validation-clean because the then-open 17-vs-16 sampler-limit VUID occurred at startup; §8 records its subsequent resolution. The prior proposal remains invalid and no replacement has been accepted |
 | Bistro face-orientation/indoor-probe correction | The final owner audit superseded the wall's specular-IBL attribution: direct-diffuse and normal captures showed a sharp view-vector `faceforward` flip on two-sided geometry, while shadow factor remained stable. PBR now uses `SV_IsFrontFace`, samples diffuse irradiance from the surface normal without box projection, and uses box projection only for specular reflection rays. Bistro's café volume now references an authored indoor diffuse cubemap with local specular intensity zero rather than reusing the outdoor environment. PBR reflects 17 sampled images and 13 sampler descriptors through explicit semantically identical aliases. Each IBL conversion/convolution owns immutable descriptor state released against the submit serial, preventing later probe bakes from invalidating recorded commands. The exact five-camera 1600×1200 replay `20260805T102236.609Z-01020d`, digest `sha256:ee1810dbaa479cf627458f24de79096a97ec12850f07b55658b1a46a2728d6de`, has five passing children with workload fingerprint `sha256:b99fd4de02f3e8c76938d83cc4ab17d4c4d3bc2bede84b5a6e76cbdff970ad97`; full-resolution review shows no sharp camera-translating wall boundary or outdoor environment wash in the café, and logs contain no VUID/error/fatal/sampler-limit/invalid-command diagnostics. This is local/dirty correctness evidence, not an authoritative baseline or performance result; no replacement baseline has been proposed or accepted |
 | Bistro curved-wall shadow audit | Three later 1600×1200 owner cameras isolate a separate curved-wall boundary to raw directional shadow factor and direct diffuse. Exact diagnostic `20260805T120354.711Z-0177c1`, digest `sha256:5d77c58149cf0e14b7aef5db3c4bcd85430398c05545f03b389156fc99f2afe0`, excludes unlit, normals, material parameters, direct specular, and IBL. Cascade replay `20260805T122914.160Z-006da8` places the edge inside cascade 1 with identical 234 opaque indirect commands, 20 alpha calls, and zero shadow-union culls at all positions. Scene-depth replay `20260805T130951.874Z-013a91`, digest `sha256:b50cdffd044c9aeaa48330050264f7718ce47def78e1a9776a1a342ddda22c98`, proves screen-row-600 edge pixels x=934 and x=393 unproject to the same wall point within 5.6 cm. The edge is a world-stationary sun shadow revealed by camera parallax, not a camera-locked renderer artifact; experimental scene-bounds wiring did not change it and was discarded. Runs are local/dirty correctness evidence with clean diagnostics, not an accepted baseline or performance result |
-| Bistro golden baselines | The legacy Vulkan generation `sha256:c3596ff14cdf206d0be4138840957925bd18353dd5d8eab339bfdec575df3564` remains the cross-backend visual reference. Metal generation `sha256:3db4f4d2294e5fdbc3618e64c4b2baf03bf66051dee0c4ff452e341d20cae51d` remains immutable but is historical. Corrected bindless Bistro/text output was visually accepted on 2026-08-11, but its local baseline generations were removed at the owner's request and are not retained authorities. |
+| Bistro golden baselines | The tracked legacy Vulkan generation `sha256:c3596ff14cdf206d0be4138840957925bd18353dd5d8eab339bfdec575df3564`, committed before V7, remains the historical cross-backend visual reference; it is not post-retirement implementation evidence. Metal generation `sha256:3db4f4d2294e5fdbc3618e64c4b2baf03bf66051dee0c4ff452e341d20cae51d` remains immutable but historical. Corrected bindless Bistro/text output was visually accepted on 2026-08-11, but its local proposals/generations were removed at the owner's request and are not retained authorities. |
 | Metal visual-parity correction | Corrected fourteen-view Metal snapshot `20260807T194321.543Z-0040dc` was compared directly with the accepted Vulkan generation: normalized per-view final-color MAE is `0.00662–0.03607` (mean `0.02060`), and the formerly divergent exterior-sky view drops from `0.1569` to `0.01153`. A matched channel audit found near-exact unlit (`0.00007`) and material-parameter (`0.00104`) output, isolating the remaining difference to normals/lighting rather than stretched texture coordinates. The production text fixture is byte-identical across backends and three isolated Metal runs are deterministic. Transmission routing emits both fixture draws. Hidden-window report `20260807T202738.082Z-01208a` completed two passing 34-frame Metal children with empty stderr; its aggregate is unavailable only because the generic profile requires immediate presentation while Metal reports FIFO and the short warmup was unstable. These are local/dirty correctness observations; no baseline was mutated or performance claim made. |
 | Bindless Vulkan V1–V4 migration | Complete on the RX 6700 XT. V4 uses keyed DEVICE/UPLOAD/READBACK buffer/image pools, maintenance4 pre-creation requirements, dedicated-hint handling, persistent host mapping, device-local staged geometry, and complete logical/physical metric projection. Native window/reacquisition synchronization, GPU-assisted validation, exact readback, submit-value staging retirement, balanced retirement/collection, and logical totals returning to baseline are implemented. macOS builds the shared code and passes the CPU contract but cannot execute the descriptor-buffer backend. ADR-024's cross-platform extraction witnesses are complete. |
-| Bindless Vulkan V5–V7 | V5/V6 native Windows evidence covers the authored synchronization2/dynamic-rendering graph, analytical IBL, shared capture, timestamps, cache, lifecycle, metrics, and validation. V7 removed the legacy renderer and migration surface. Post-V7 CPU and Metal gates pass; a fresh Windows runtime rerun is unavailable on the current host. |
+| Bindless Vulkan V5–V7 | V5/V6 native Windows evidence covers the authored synchronization2/dynamic-rendering graph, analytical IBL, shared capture, timestamps, cache, lifecycle, metrics, and validation. V7 removed the legacy renderer and migration surface. Post-V7 CPU and Metal gates pass. On 2026-08-12, Debug and Release offscreen text-graph reports each passed two repetitions with three images and nine pass rows; focused offscreen/windowed synchronization and GPU-assisted validation also passed on the RX 6700 XT. These are correctness witnesses, not performance evidence. |
 | `vkr_frustum` production references | Application world-payload construction creates camera and cascade frustums and classifies submeshes against them |
-| `VkrDrawBatcher` production references | None outside its module/tests/docs; P2 batching instead uses visibility and pass-local batch structures |
+| `VkrDrawBatcher` production references | None outside its module/tests/docs. V7 audited and retained it as an API-neutral proposed utility; P2 batching uses visibility and pass-local batch structures. |
 | Generic indirect-draw subsystem | Removed by V7; selected implementations own packet draw submission |
 | `vkAllocateMemory` call sites | Bindless Vulkan has pooled-block allocation plus required dedicated buffer/image paths, all accounted by its keyed memory adapter |
 | VMA | Not present |
 | Dynamic rendering | Implemented for the complete Vulkan 1.4 authored graph; compiled synchronization2 barriers, graphics scopes, transfer copies, and compute IBL execute through the selected bindless strategy |
 | Descriptor indexing/bindless | Descriptor-buffer sampled/storage/sampler arrays are implemented and validation-clean in the Vulkan 1.4 path; there is no descriptor-set fallback |
-| Bindless packet ABI reflection | Shared host ABI records are covered by the CPU suite. Recursive SPIR-V layout and descriptor checks run when native Vulkan pipelines are created; the required fresh post-V7 Windows rerun is unavailable on the current host. |
+| Bindless packet ABI reflection | Shared host ABI records are covered by the CPU suite. Recursive SPIR-V layout and descriptor checks run when native Vulkan pipelines are created; the fresh post-V7 focused Windows diagnostic passes this gate. |
 | Image-state lowering | Canonical graph barriers are covered by the CPU suite and lowered privately to synchronization2 by the bindless Vulkan implementation. Upload, IBL, capture, and presentation transitions remain explicit Vulkan-private barriers; the legacy layout-pair helper and `vulkan_image.c` were removed by V7. |
 
-The CPU suite and one MoltenVK smoke configuration do not replace
-validation-layer runs across two- and four-image swapchains, queue-family
-layouts, other GPUs, resize/minimize/cancel paths, interactive picking, and
-injected acquire, fence, submit, and present failures.
+The CPU suite, historical MoltenVK evidence, and the target RX 6700 XT rerun do
+not replace validation-layer runs across two- and four-image swapchains,
+queue-family layouts, other GPUs, resize/minimize/cancel paths, interactive
+picking, and injected acquire, fence, submit, and present failures.

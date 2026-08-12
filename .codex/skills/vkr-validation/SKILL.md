@@ -15,7 +15,7 @@ touched.
 | Math, containers, memory, ECS, JSON, string, filesystem | Focused test + `./build_test.sh` |
 | A renderer subsystem with CPU-observable behavior | `./build_test.sh` |
 | Anything that records Vulkan commands or touches resource state | `./build_test.sh` + Vulkan validation-layer run |
-| Shaders, `.shadercfg`, reflection, pipeline creation | `./validate_pipeline_cache.sh` + validation-layer run |
+| Shaders, reflection, pipeline creation | Explicit cold/warm production cache run + validation-layer run |
 | Backend threading, command pools, queue use | `tools/validate_multithreaded_backend_matrix.sh` |
 | A hot path, batching, culling, upload path | All of the above + a Release measurement (`vkr-performance`) |
 | A test that failed once and then passed | `./build_test_batch.sh` |
@@ -25,13 +25,20 @@ touched.
 ```sh
 ./build_test.sh          # build + run the CPU suite (build/tests/vulkan_renderer_tester)
 ./build_test_batch.sh    # 50 consecutive runs; use to confirm or refute a flake
-./validate_pipeline_cache.sh                       # cold/warm pipeline cache behaviour
 tools/validate_multithreaded_backend_matrix.sh     # backend threading matrix
 tools/validate_multithreaded_backend_matrix.sh --smoke
 ```
 
 `./build_test.sh` configures with `--fresh`, so it is a clean-configure gate,
 not an incremental one.
+
+For a pipeline-cache gate, run the normal application twice with the same fresh
+explicit `VKR_PIPELINE_CACHE_PATH` and a bounded auto-close. Require the first
+run to initialize empty and save a non-empty cache, the second to load that
+cache and save successfully, and both runs to complete without validation
+errors. Record the cache byte counts and target configuration. The retired
+`validate_pipeline_cache.sh` depended on legacy `pipeline.create` events and is
+not a current command.
 
 ## The CPU suite does not replace a validation-layer run
 
