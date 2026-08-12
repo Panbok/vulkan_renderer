@@ -10,8 +10,9 @@ authority: audit
 performed 2026-08-12 against `lib/src/renderer/` (both selected
 implementations), the four shared GPU cores, and
 `lib/src/renderer/vulkan/bindless/shaders/packet.slang`.
-**Recommendations 1–8 and 11 were implemented on 2026-08-12; see §7.**
-Recommendations 9 and 10 are deliberately outstanding.
+**Recommendations 1–11 are implemented in source as of 2026-08-12; see §7.**
+The document remains partial only because recommendation 10's changed Metal ABI
+still needs a native macOS build, API/GPU validation, and exact capture (§7.6).
 
 **Authority:** This is an *audit* document. Per `AGENTS.md`, code remains the
 implementation authority, `renderer-architecture-spec.md` the status authority,
@@ -34,14 +35,16 @@ measurement is named with it.
 
 ## 1. Verdict: are we fully bindless?
 
-**Short answer: resource *binding* is fully bindless on both backends;
-resource *data* is not, and draw *submission* is not.**
+**Short answer: resource binding and the indexed resource-data model are fully
+bindless on both backends; draw submission remains CPU-driven.**
 
 The design's own definition — textures reached by index or resource ID,
 everything else reached by GPU address, no per-draw descriptor rebind — is met.
-What is not met is the implication people usually attach to "bindless": that
-per-draw CPU work collapses to an index. It has not; it has collapsed to a
-512-byte record write per draw.
+Per-draw CPU work now writes a 32-byte record containing the frame-root address,
+vertex address, material index, and first instance. Frame/pass data is written
+once per non-empty pass, and immutable material parameters live in the published
+GPU material row. The remaining per-draw command call is a submission-strategy
+question covered by ADR-013, not a resource-binding gap.
 
 | Axis | Metal 4 | Bindless Vulkan 1.4 | Assessment |
 |---|---|---|---|
@@ -49,18 +52,16 @@ per-draw CPU work collapses to an index. It has not; it has collapsed to a
 | Sampler access | `MTLResourceID`, canonical and deduplicated | Index into the separate sampler heap, canonical, reference-counted | **Fully bindless** |
 | Buffers (vertex, instance, material, light, cascade, probe, text) | 64-bit GPU addresses | 64-bit device addresses via `PhysicalStorageBuffer` | **Fully bindless.** Zero storage-buffer descriptors exist |
 | Index buffers | `indexBuffer:` takes an address | `vkCmdBindIndexBuffer2` per draw (`vkr_bindless_vulkan_renderer.c:2346`) | **Not bindless on Vulkan, unavoidably.** Correctly recorded as the one divergence in the design spec §5.6 |
-| Material *identity* | 96-byte row, table-indexed | 64-byte row, table-indexed | **Bindless** |
-| Material *parameters* | Copied into the per-draw root | Copied into the per-draw root | **Not bindless.** See §1.1 |
-| Frame/pass constants | Copied into the per-draw root | Copied into the per-draw root | **Not bindless.** See §1.1 |
+| Material identity and parameters | 176-byte immutable row, table-indexed | 144-byte immutable row, table-indexed | **Bindless.** Populated at publication, not per draw |
+| Frame/pass constants | One 432-byte GPU-addressed frame root per non-empty indexed packet pass | One 432-byte device-addressed frame root per non-empty indexed packet pass | **Bindless data path.** Draw roots reference the frame root |
 | Draw submission | One `drawIndexedPrimitives` per `VkrDrawItem` | One `vkCmdDrawIndexed` per `VkrDrawItem` | **CPU-driven.** No indirect, no MDI, no GPU culling. ADR-013 already records this as measured-future work |
 | Pipelines | Fixed enum, bound per pass | Fixed enum, bound per pass (`:2293`) | Not a bindless concern; noted for completeness |
 
-### 1.1 The finding that qualifies the verdict
+### 1.1 Historical finding and implemented resolution
 
-`VkrBindlessVkPacketDrawRoot` (`vkr_bindless_vulkan_renderer.c:181-229`) is
-**exactly 512 bytes**, and `vkr_bindless_vk_fill_packet_root()` (`:2176-2279`)
-writes all 512 of them **for every draw**. Metal does the same thing at
-`vkr_metal_packet_frame.inc:100-215`.
+At the audited `e028164` tree, `VkrBindlessVkPacketDrawRoot` was **exactly 512
+bytes**, and `vkr_bindless_vk_fill_packet_root()` wrote all 512 of them **for
+every draw**. Metal did the same thing in `vkr_metal_packet_frame.inc`.
 
 Of those 512 bytes, by field:
 
@@ -81,30 +82,30 @@ So roughly **80% of per-draw upload bandwidth is a re-copy of data that did not
 change**. The material row exists and is correct, but the renderer routes most
 material state around it.
 
-This is not a defect in the sense of producing a wrong pixel. It is the reason
-the answer to "are we fully bindless" is "the binding model is; the data model
-isn't yet." The design spec §7.1 already names the successor — "one large root
-array indexed by draw index or first instance" — and correctly refuses to adopt
-it without measurement.
+This was not a wrong-pixel defect. It was the reason the original audit answered
+"the binding model is; the data model isn't yet."
 
-**Recommended shape**, if and only if a Release profile shows per-draw upload or
-`cpu.render_submit` is material:
+**Implemented shape:**
 
-1. Split `VkrBindlessVkPacketDrawRoot` into `VkrBindlessVkFrameRoot`
-   (frame/pass constants, one per pass) and `VkrBindlessVkDrawRoot`
-   (`frame_root` address + `vertices` + `material_index` + `first_instance`,
-   ~32 bytes). The push constant already carries 16 bytes and could carry the
-   draw root inline, removing the frame-upload allocation from the draw loop
-   entirely.
-2. Move the five per-material `Vec4`s into the material GPU row. The Vulkan row
-   has 8 spare bytes and would need to grow to 128; the Metal row is already 96
-   and would grow to 176. This is an ABI change: it requires a new manifest
-   record family, a reflection gate, and a re-run of the exact-capture witness on
-   both platforms.
+1. Indexed world, shadow, picking, editor, and UI passes allocate one 432-byte
+   frame root per non-empty pass and one 32-byte draw root per draw. Text, skybox, and
+   fullscreen entry points retain the legacy 512-byte utility record because
+   they do not traverse world material state.
+2. The five per-material `Vec4`s and alpha mode are immutable fields of the
+   published material row. The resulting rows are 144 bytes on Vulkan and 176
+   bytes on Metal.
+3. Host assertions plus recursive SPIR-V reflection pin the Vulkan draw, frame,
+   and material layouts. The Metal manifest pins the same three nested record
+   families and is checked through host tests plus runtime pipeline reflection.
 
-Required evidence before landing: matched Release pairs on both backends with a
-tolerance declared *before* the runs, plus byte-identical final-color and
-picking captures.
+This changes the world-draw root payload from 512 bytes per draw to 32 bytes per
+draw plus 432 bytes per non-empty pass. That is a static byte-count result, not a
+measured speedup. The local Release observation in §7.6 is non-authoritative and
+supports no faster/slower claim.
+
+The source implementation is present. Native Metal build/reflection,
+API/GPU-validation, and exact-capture evidence remain required before this
+audit's front matter can become `implemented`.
 
 ---
 
@@ -601,21 +602,22 @@ landable.
 | 10 | Frame-root / draw-root split and move material params into the GPU row (§1.1) | The actual "fully bindless" gap; ~80% of per-draw upload bytes | Predeclared-tolerance Release pairs on both backends **plus** exact captures |
 | 11 | Adopt `vkr_internal` in both backends (§4.1) | Cosmetic; do it opportunistically inside #9, not as its own change | Compile |
 
-**Status: 1–8 and 11 are implemented (§7). 9 and 10 are outstanding.**
+**Status: recommendations 1–11 are implemented in source (§7). Recommendation
+10 still has the native Metal evidence gate stated in §7.6.**
 
-Item 9 (splitting the 8,431-line file) is the largest remaining maintainability
-cost and should be sequenced across several changes, each with the Windows gate.
-Item 10 (the frame-root/draw-root split) should not start until a Release
-profile establishes that per-draw upload is actually on the critical path —
-otherwise it is an unmeasured optimization, which this project's own guiding
-principle rejects. Neither can be gated from macOS.
+The audit originally required a matched Release profile before starting item
+10. The user later explicitly authorized the source implementation despite the
+unavailable authoritative cross-platform pair. Section 7.6 records that
+deviation and makes no performance claim; matched evidence and exact captures
+from both selected backends remain the acceptance policy.
 
 ---
 
 ## 7. Implementation record (2026-08-12)
 
-Recommendations 1–8 and 11 are implemented. What follows is what changed and
-what proved it. Every gate below ran on macOS against Vulkan SDK 1.4.357.0
+The initial pass implemented recommendations 1–8 and 11. What follows is what
+changed and what proved it; §§7.5–7.6 record the later Windows completion work.
+Every gate in §7.1 ran on macOS against Vulkan SDK 1.4.357.0
 (the repository minimum; the machine's default `VULKAN_SDK` still points at
 1.4.313.0, which cannot compile the bindless backend — see §7.1).
 
@@ -730,16 +732,14 @@ corrected to say buffer-barrier emission is designed but not implemented.
 **8 — Shared draw constants extracted.** New
 `lib/src/renderer/vkr_packet_constants.{h,c}` owns the frame- and
 material-constant derivation both backends previously duplicated. Both now call
-it and copy into their own root layout. Frame constants are derived once per
-pass, outside the draw loop; material constants remain per draw. The shadow bias
-literal exists once. The material helper is force-inlined because it remains in
-the per-draw hot path and the Release build does not enable LTO; the larger
-frame helper stays out of line because it runs once per pass.
+it and copy into their own root layout. At this intermediate stage, frame
+constants were derived once per pass while material constants remained per draw.
+Recommendation 10 subsequently moved material derivation to publication and
+made the resulting row immutable (§7.6). The shadow bias literal exists once;
+the larger frame helper stays out of line because it runs once per pass.
 Deliberately not shared: resource references, device addresses, and the
-IBL-ready predicate — which, note, still differ between the backends
-(`flags`/`material_flags` come from `slot->ibl_ready` on Vulkan and
-`packet->lighting->ibl_enabled` on Metal). That is a second latent divergence,
-left alone because unifying it changes behaviour.
+backend-specific proof that IBL resources are ready. The resulting lighting,
+IBL, and transmission flag semantics are now shared (§7.6).
 
 *Proof it was neutral:* both Metal snapshots are byte-identical across this
 change. Focused CPU tests pin the complete frame/material mapping, the unlit
@@ -776,18 +776,124 @@ snapshot (`20260812T132544.611Z-00e8ad`) retained its pre-review final-color
 digest. Both reports passed but remain non-authoritative because the profile is
 local, the tree is dirty, and no accepted baseline is installed.
 
-### 7.4 Found while implementing, not fixed
+### 7.4 Found while implementing and closed by the completion work
 
-- **A second write-only BRDF path exists in the frontend.**
-  `VkrWorldResources::ibl_brdf_lut` is created (`vkr_world_resources.c:310`),
-  assigned into `VkrMaterialSystem::ibl_brdf_lut` (`vkr_material_system.c:708`),
-  and released — and **never read**. It allocates a 128×128 texture at startup
-  for nothing. It was dead before this change, is unrelated to the Metal LUT,
-  and removing it touches `VkrMaterialSystem`'s public struct, so it is left as
-  a separate follow-up.
-- **The `flags`/`material_flags` predicate differs between backends** (above).
-- **Frame-upload exhaustion is now counted and logged** per §2.7, but the count
-  is not yet a pre-registered ADR-015 metric row.
+- **A second write-only BRDF path existed in the frontend.** The original audit
+  found a 128×128 allocation. At the completion-pass base (`7ed07ec`), that
+  allocation was already absent, but `VkrWorldResources::ibl_brdf_lut`,
+  `VkrMaterialSystem::ibl_brdf_lut`, and the unused setter parameter remained.
+  The completion pass removed that residual state and API surface (§7.5).
+- **The `flags`/`material_flags` predicate differed between backends.** The
+  shared frame-flag contract in §7.6 closes it.
+- **Frame-upload exhaustion was counted and logged** per §2.7, but was not a
+  pre-registered ADR-015 metric row. The completion pass added the row (§7.5).
+
+### 7.5 Windows completion pass
+
+Recommendation 9 is implemented at base `7ed07ec`. The former 8,413-line
+`vkr_bindless_vulkan_renderer.c` is now a 1,509-line lifecycle coordinator plus
+dependency-closed capture, draw, graph, IBL, pipeline, publisher, resource, and
+target translation units. Shared private state and cross-unit declarations live
+in `vkr_bindless_vulkan_internal.h`; no textual `.inc` partition was introduced.
+The renderer/publisher ownership boundary is unchanged. The audit prescribed a
+full Windows gate after each independently landed split; this completion pass
+performed the dependency-closed extraction as one workspace change, so the
+recorded full gate covers the aggregate result rather than intermediate slices.
+
+The pass also closed two source-level follow-ups from §7.4:
+
+- the remaining write-only frontend `ibl_brdf_lut` state and setter parameter
+  were removed; and
+- upload exhaustion now publishes the pre-registered
+  `frame.upload_exhaustions` count metric through the renderer metrics registry.
+
+The Windows evidence was: a green CPU suite before and after the change;
+successful Debug and Release builds; byte-identical Debug and Release offscreen
+text captures (`final_color` and `picking_ids`); and two passing repetitions of
+a focused hidden-window validation case. The existing resize case reached the
+requested three-image BGRA8-sRGB/D32/FIFO window configuration but was
+unavailable because `resize.outbound_not_observed`. The local reports are
+non-authoritative because the profile is local, no accepted baseline is
+installed, and the working tree is dirty; they support correctness only and no
+faster/slower claim.
+
+At the end of that pass, two items still remained intentionally unchanged. Both
+were subsequently implemented at the user's direction in §7.6:
+
+- the cross-backend IBL predicate; and
+- recommendation 10's frame-root/draw-root and material-row ABI change.
+
+### 7.6 Recommendation 10 source implementation
+
+The user explicitly requested completion despite the unavailable authoritative
+cross-platform measurement prerequisite. The implementation preserves the
+evidence policy: it makes no performance claim, does not mutate an accepted
+baseline, and keeps this audit `partial` until native Metal evidence exists.
+
+The completed source change is:
+
+- one shared flag contract: bit 0 enables lighting, bit 1 enables IBL only when
+  the pass enables lighting, the packet requests IBL, and the backend has proved
+  its derived maps ready, and bit 2 enables transmission;
+- immutable material rows populated at publication, including the five PBR
+  vectors and alpha mode (144 bytes Vulkan, 176 bytes Metal);
+- one 432-byte frame root per non-empty indexed packet pass and one 32-byte draw
+  root per draw; and
+- nested host/shader ABI manifests covering the draw root, frame root, and
+  material row. Vulkan validates the hierarchy recursively from SPIR-V at
+  pipeline creation. Metal retains host-manifest tests and runtime reflection;
+  offline Slang-to-Metal generation checks the shader half on Windows.
+
+The material replacement and retirement paths did not change ownership: a
+logical replacement publishes a new immutable row, and physical reuse remains
+submit-completion gated. Source inspection finds no material derivation,
+allocation, lock, string construction, pipeline creation, or wait in the draw
+loop. The legacy 512-byte utility root remains intentionally scoped to text,
+skybox, and fullscreen draws.
+
+The implementation also exposed a build-system hole: shader custom commands
+could succeed without invoking `slangc`, leaving stale SPIR-V to mask ABI
+changes. `lib/CMakeLists.txt` now resolves `slangc` with a required
+`find_program`; a clean test-tree build therefore recompiles every entry point.
+The existing explicit-binding-overlap warnings remain expected for the shared
+descriptor-buffer binding model.
+
+Windows and offline evidence after the ABI change:
+
+- a clean `build_test.bat` tree compiled every packet shader and passed the full
+  CPU suite, including shared flag derivation, immutable Metal material-row,
+  host ABI, and metric-catalog tests;
+- fresh Debug and Release application/harness builds passed;
+- all 14 production packet SPIR-V modules passed `spirv-val` for Vulkan 1.4
+  with scalar-block layout, and Release runtime pipeline creation passed the
+  recursive draw/frame/material reflection check;
+- Release text snapshot `20260812T150910.384Z-00352d` passed and retained the
+  exact pre-change final-color and picking hashes;
+- local Release Bistro profile `20260812T151645.365Z-003d38` passed two
+  repetitions and 600 measured frames with exactly 206 world calls (191 opaque,
+  15 transparent) and zero `frame.upload_exhaustions` in every sample; and
+- focused post-ABI Debug synchronization-validation profile
+  `20260812T155805.852Z-000699` passed two repetitions with one indexed world
+  call per measured frame, zero upload exhaustion, deterministic work volume,
+  and empty child stderr; and
+- offline Slang-to-Metal generation of `library.slang` passed with only the
+  pre-existing ignored-entry-parameter-register warning.
+
+The Bistro profile is explicitly non-authoritative (`profile.local_only`, dirty
+provenance, unstable warmup). Its fingerprints match the pre-change observation,
+but that observation had different executed draw work, so timing deltas are not
+comparable and no performance result is reported. The focused Debug profile is
+a correctness witness only: validation was enabled, its local/dirty profile is
+non-authoritative, and unstable warmup prevents any timing interpretation. A
+broader Debug Bistro attempt completed one child but exceeded the bounded
+diagnostic window during unoptimized asset-manifest hashing; it remains
+unavailable and is not needed for the focused command-recording verdict.
+
+**Only remaining closure gate:** build this exact Metal source on a supported
+macOS host, pass native pipeline reflection plus focused API/GPU validation, and
+produce the exact final-color and picking witnesses. Until that external gate
+passes, the code implementation is complete but this cross-platform audit is
+not.
 
 ## 8. Limits and evidence boundaries
 
@@ -799,9 +905,10 @@ is evidence for platforms or configurations that were not run.
 
 - **No authoritative performance result was produced.** The byte counts in
   §1.1, the complexity claims in §3, and the memory estimates in §2.3 are static
-  analysis. Matched local profiles retained exact work volume but were marked
-  unavailable for performance evidence (`profile.local_only`, dirty provenance,
-  unstable warmup, and a present-mode mismatch); their timings support no
+  analysis. Local profiles were marked unavailable for performance evidence
+  (`profile.local_only`, dirty provenance, unstable warmup, and, for some
+  witnesses, a present-mode mismatch). The recommendation-10 before/after
+  observations also executed different draw work. Their timings support no
   faster/slower claim.
 - **The BRDF divergence was initially a source finding.** The implementation
   subsequently measured its capture effect as recorded in §7.2; those local
@@ -810,10 +917,10 @@ is evidence for platforms or configurations that were not run.
   compiled. The ~460-byte figure and the derived ~15 MiB are approximate; the
   conclusion (arrays sized by the wrong capacity) does not depend on the exact
   number.
-- **The 512-byte root size was initially computed by hand.** The implementation
-  now pins it with
-  `_Static_assert(sizeof(VkrBindlessVkPacketDrawRoot) == 512)`, making future
-  growth a compile failure.
+- **The original 512-byte root size was initially computed by hand.** The
+  implementation now pins the 432-byte frame root, 32-byte draw root, 144-byte
+  Vulkan material row, and retained 512-byte utility root with compile-time and
+  reflection checks.
 - **Linux, mesh shaders, device-generated commands, shader objects, and the
   other §3.5 optional capabilities were out of scope**, as were the harness,
   the ECS, and the asset loaders except where they call the publisher.
