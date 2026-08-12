@@ -67,31 +67,6 @@ typedef struct VkrBindlessVulkanResult {
   bool8_t readback_ready;
 } VkrBindlessVulkanResult;
 
-typedef struct VkrBindlessVulkanPublicationTestResult {
-  uint32_t exact_draw_count;
-  bool8_t shared_resource_survived;
-  bool8_t replacement_survived;
-  bool8_t shared_sampler_reused;
-  bool8_t dependent_materials_republished;
-  bool8_t upload_wait_free;
-  bool8_t staging_retired_at_submit;
-  bool8_t memory_returned_to_baseline;
-  VkrGpuSlotTableMetrics sampled_images;
-  VkrGpuSlotTableMetrics storage_images;
-  VkrGpuSlotTableMetrics samplers;
-  VkrGpuSlotTableMetrics materials;
-} VkrBindlessVulkanPublicationTestResult;
-
-typedef struct VkrBindlessVulkanIblTestResult {
-  uint16_t expected[4];
-  uint16_t irradiance[4];
-  uint16_t prefilter[VKR_IBL_PREFILTER_MIP_COUNT][4];
-  uint32_t prefilter_mip_count;
-  bool8_t irradiance_matches;
-  bool8_t all_prefilter_mips_match;
-  bool8_t memory_returned_to_baseline;
-} VkrBindlessVulkanIblTestResult;
-
 typedef struct VkrBindlessVulkanHeapMetrics {
   VkrGpuSlotTableMetrics sampled_images;
   VkrGpuSlotTableMetrics samplers;
@@ -108,13 +83,6 @@ typedef struct VkrBindlessVulkanMemoryMetrics {
   uint64_t block_capacity_failures;
   VkrGpuMemoryMetrics aggregate;
 } VkrBindlessVulkanMemoryMetrics;
-
-typedef struct VkrBindlessVulkanWsiStats {
-  uint64_t reacquire_proofs;
-  uint64_t retired_swapchains;
-  uint64_t retired_swapchains_collected;
-  uint32_t retired_swapchains_live;
-} VkrBindlessVulkanWsiStats;
 
 bool8_t vkr_bindless_vulkan_renderer_create(
     const VkrBindlessVulkanRendererConfig *config,
@@ -165,12 +133,7 @@ void vkr_bindless_vulkan_renderer_device_memory_stats(
 void vkr_bindless_vulkan_renderer_heap_metrics(
     const VkrBindlessVulkanRenderer *renderer,
     VkrBindlessVulkanHeapMetrics *out_metrics);
-void vkr_bindless_vulkan_renderer_wsi_stats(
-    const VkrBindlessVulkanRenderer *renderer,
-    VkrBindlessVulkanWsiStats *out_stats);
 uint32_t vkr_bindless_vulkan_renderer_frame_slot(
-    const VkrBindlessVulkanRenderer *renderer);
-bool8_t vkr_bindless_vulkan_renderer_shader_abi_validated(
     const VkrBindlessVulkanRenderer *renderer);
 bool8_t vkr_bindless_vulkan_renderer_hdr_ibl_limits(
     const VkrBindlessVulkanRenderer *renderer, uint32_t *out_max_cube_extent,
@@ -192,12 +155,3 @@ VkrAllocator *
 vkr_bindless_vulkan_renderer_allocator(VkrBindlessVulkanRenderer *renderer);
 void vkr_bindless_vulkan_renderer_get_asset_publisher(
     VkrBindlessVulkanRenderer *renderer, VkrAssetPublisher *out_publisher);
-void vkr_bindless_vulkan_renderer_validation_stats(
-    const VkrBindlessVulkanRenderer *renderer,
-    VkrBindlessVulkanValidationStats *out_stats);
-bool8_t vkr_bindless_vulkan_renderer_run_publication_test(
-    VkrBindlessVulkanRenderer *renderer,
-    VkrBindlessVulkanPublicationTestResult *out_result);
-bool8_t vkr_bindless_vulkan_renderer_run_ibl_test(
-    VkrBindlessVulkanRenderer *renderer,
-    VkrBindlessVulkanIblTestResult *out_result);

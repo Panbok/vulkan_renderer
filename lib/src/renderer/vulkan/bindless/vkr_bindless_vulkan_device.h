@@ -79,13 +79,6 @@ typedef struct VkrBindlessVulkanDescriptorLayout {
   VkDeviceSize sampler_offset;
 } VkrBindlessVulkanDescriptorLayout;
 
-typedef struct VkrBindlessVulkanValidationStats {
-  uint32_t setup_notice_count;
-  uint32_t warning_count;
-  uint32_t error_count;
-  bool8_t gpu_assisted_unavailable;
-} VkrBindlessVulkanValidationStats;
-
 typedef struct VkrBindlessVulkanDevice VkrBindlessVulkanDevice;
 
 /**
@@ -140,6 +133,3 @@ vkr_bindless_vulkan_device_cmd_bind_descriptor_buffers(
 PFN_vkCmdSetDescriptorBufferOffsetsEXT
 vkr_bindless_vulkan_device_cmd_set_descriptor_offsets(
     const VkrBindlessVulkanDevice *device);
-void vkr_bindless_vulkan_device_validation_stats(
-    const VkrBindlessVulkanDevice *device,
-    VkrBindlessVulkanValidationStats *out_stats);

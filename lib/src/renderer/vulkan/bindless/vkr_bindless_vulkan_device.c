@@ -70,10 +70,6 @@ struct VkrBindlessVulkanDevice {
   PFN_vkGetDescriptorEXT get_descriptor;
   PFN_vkCmdBindDescriptorBuffersEXT cmd_bind_descriptor_buffers;
   PFN_vkCmdSetDescriptorBufferOffsetsEXT cmd_set_descriptor_offsets;
-  uint32_t validation_setup_notice_count;
-  uint32_t validation_warning_count;
-  uint32_t validation_error_count;
-  bool8_t gpu_assisted_unavailable;
   bool8_t ready;
 };
 
@@ -172,25 +168,15 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL vkr_bindless_vk_debug_callback(
       callback_data->pMessageIdName &&
       strcmp(callback_data->pMessageIdName, "WARNING-Setting-Limit-Adjusted") ==
           0;
-  if (device->config.enable_gpu_assisted && callback_data &&
-      callback_data->pMessage &&
-      strstr(callback_data->pMessage,
-             "GPU-AV does not currently support validation of descriptor "
-             "buffers")) {
-    device->gpu_assisted_unavailable = true_v;
-  }
   if (validation_message &&
       (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)) {
-    device->validation_error_count++;
     log_error("Bindless Vulkan validation: %s", message);
   } else if (validation_message &&
              (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) &&
              gpuav_setup_notice) {
-    device->validation_setup_notice_count++;
     log_info("Bindless Vulkan GPU-AV setup: %s", message);
   } else if (validation_message &&
              (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)) {
-    device->validation_warning_count++;
     log_warn("Bindless Vulkan validation: %s", message);
   } else {
     log_debug("Bindless Vulkan loader: %s", message);
@@ -1181,21 +1167,4 @@ PFN_vkCmdSetDescriptorBufferOffsetsEXT
 vkr_bindless_vulkan_device_cmd_set_descriptor_offsets(
     const VkrBindlessVulkanDevice *device) {
   return device ? device->cmd_set_descriptor_offsets : NULL;
-}
-
-void vkr_bindless_vulkan_device_validation_stats(
-    const VkrBindlessVulkanDevice *device,
-    VkrBindlessVulkanValidationStats *out_stats) {
-  if (!out_stats) {
-    return;
-  }
-  *out_stats = device ? (VkrBindlessVulkanValidationStats){
-                            .setup_notice_count =
-                                device->validation_setup_notice_count,
-                            .warning_count = device->validation_warning_count,
-                            .error_count = device->validation_error_count,
-                            .gpu_assisted_unavailable =
-                                device->gpu_assisted_unavailable,
-                        }
-                      : (VkrBindlessVulkanValidationStats){0};
 }

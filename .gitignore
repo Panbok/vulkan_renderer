@@ -12,9 +12,6 @@ build_test
 build_lib
 build_vkt_packer
 build_novcpkg
-build_bindless_vulkan_v0
-build_bindless_vulkan_v0_*/
-build_bindless_vulkan_v3_*/
 # Runtime textures stay local except for explicitly committed source assets.
 assets/textures/*
 !assets/textures/citrus_orchard_puresky_4k.hdr

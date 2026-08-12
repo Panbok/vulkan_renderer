@@ -28,12 +28,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef VKR_BINDLESS_VK_VERTEX_SPV
-#define VKR_BINDLESS_VK_VERTEX_SPV "walking.vert.spv"
-#endif
-#ifndef VKR_BINDLESS_VK_FRAGMENT_SPV
-#define VKR_BINDLESS_VK_FRAGMENT_SPV "walking.frag.spv"
-#endif
 #ifndef VKR_BINDLESS_VK_PACKET_WORLD_VERT_SPV
 #define VKR_BINDLESS_VK_PACKET_WORLD_VERT_SPV "packet.world.vert.spv"
 #endif
@@ -82,19 +76,13 @@
 #endif
 
 enum {
-  VKR_BINDLESS_VK_ROOT_OFFSET = 0,
-  VKR_BINDLESS_VK_VERTEX_OFFSET = 112,
-  VKR_BINDLESS_VK_INDEX_OFFSET = 304,
-  VKR_BINDLESS_VK_TEXTURE_OFFSET = 312,
-  VKR_BINDLESS_VK_UPLOAD_SIZE = 320,
+  VKR_BINDLESS_VK_SENTINEL_UPLOAD_SIZE = 4,
   VKR_BINDLESS_VK_SWAPCHAIN_IMAGE_MAX = 8,
   VKR_BINDLESS_VK_RETIRED_SWAPCHAIN_MAX = 8,
   VKR_BINDLESS_VK_GRAPH_LAYER_MAX = 16,
   VKR_BINDLESS_VK_TEXTURE_MIP_MAX = 16,
   VKR_BINDLESS_VK_PENDING_IBL_BAKE_MAX = 32,
   VKR_BINDLESS_VK_FRAME_UPLOAD_SIZE = 16u * 1024u * 1024u,
-  VKR_BINDLESS_VK_IBL_CAPTURE_OFFSET = 8u,
-  VKR_BINDLESS_VK_IBL_TEXEL_BYTES = 8u,
 };
 
 typedef enum VkrBindlessVkPacketPipeline {
@@ -139,15 +127,6 @@ typedef enum VkrBindlessVkMaterialFlag {
   VKR_BINDLESS_VK_MATERIAL_TEXTURE_ORM = 1u << 1u,
   VKR_BINDLESS_VK_MATERIAL_TEXTURE_EMISSIVE = 1u << 2u,
 } VkrBindlessVkMaterialFlag;
-
-typedef struct VkrBindlessVkDrawRoot {
-  uint64_t vertices;
-  float32_t tint[4];
-  float32_t transform[16];
-  uint32_t texture_index;
-  uint32_t sampler_index;
-  uint64_t materials;
-} VkrBindlessVkDrawRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrBindlessVkMaterialGpuRow {
   float32_t tint[4];
@@ -250,19 +229,6 @@ typedef struct VKR_SIMD_ALIGN VkrBindlessVkPacketDrawRoot {
 } VkrBindlessVkPacketDrawRoot;
 
 _Static_assert(sizeof(VkrVertex3d) == 64u, "Shared vertex ABI drift");
-_Static_assert(sizeof(VkrBindlessVkDrawRoot) == 104u, "Draw-root ABI drift");
-_Static_assert(offsetof(VkrBindlessVkDrawRoot, vertices) == 0u,
-               "Draw-root vertices ABI drift");
-_Static_assert(offsetof(VkrBindlessVkDrawRoot, tint) == 8u,
-               "Draw-root tint ABI drift");
-_Static_assert(offsetof(VkrBindlessVkDrawRoot, transform) == 24u,
-               "Draw-root transform ABI drift");
-_Static_assert(offsetof(VkrBindlessVkDrawRoot, texture_index) == 88u,
-               "Draw-root texture ABI drift");
-_Static_assert(offsetof(VkrBindlessVkDrawRoot, sampler_index) == 92u,
-               "Draw-root sampler ABI drift");
-_Static_assert(offsetof(VkrBindlessVkDrawRoot, materials) == 96u,
-               "Draw-root materials ABI drift");
 _Static_assert(sizeof(VkrBindlessVkMaterialGpuRow) == 64u,
                "Vulkan material row ABI drift");
 _Static_assert(offsetof(VkrBindlessVkMaterialGpuRow, base_color_texture) == 16u,
@@ -387,8 +353,6 @@ typedef struct VkrBindlessVkFrameSlot {
   uint32_t picking_x;
   uint32_t picking_y;
   bool8_t picking_readback_pending;
-  uint32_t ibl_capture_mip_count;
-  bool8_t ibl_capture_pending;
   uint32_t indexed_draw_count;
   uint32_t shadow_draw_count;
   uint32_t shadow_opaque_draw_count[VKR_SHADOW_CASCADE_COUNT_MAX];
@@ -616,10 +580,7 @@ struct VkrBindlessVulkanRenderer {
   VkrBindlessVkBuffer materials;
   VkrBindlessVkImage sentinel_image;
   VkSampler sentinel_sampler;
-  VkShaderModule vertex_shader;
-  VkShaderModule fragment_shader;
   VkPipelineLayout pipeline_layout;
-  VkPipeline pipeline;
   VkPipelineCache pipeline_cache;
   char pipeline_cache_path[1024];
   VkShaderModule packet_shaders[VKR_BINDLESS_VK_PACKET_SHADER_COUNT];
@@ -634,17 +595,10 @@ struct VkrBindlessVulkanRenderer {
   uint64_t completed_value;
   uint64_t upload_wait_count;
   uint64_t command_slot_wait_count;
-  uint64_t wsi_reacquire_proofs;
-  uint64_t wsi_retired_swapchains;
-  uint64_t wsi_retired_swapchains_collected;
   uint32_t active_frame_slot;
   uint32_t next_image_index;
-  uint32_t active_material_index;
-  uint32_t active_geometry_record_index;
-  bool8_t active_geometry;
   bool8_t frame_active;
   bool8_t sentinel_uploaded;
-  bool8_t shader_abi_validated;
   bool8_t target_dirty;
   bool8_t terminal_failure;
 };
@@ -1443,11 +1397,8 @@ vkr_bindless_vk_create_upload_buffers(VkrBindlessVulkanRenderer *renderer) {
              &renderer->sampler_descriptors) &&
          vkr_bindless_vk_create_buffer(
              renderer, VKR_BINDLESS_VK_MEMORY_CLASS_UPLOAD,
-             VKR_BINDLESS_VK_UPLOAD_SIZE,
-             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                 VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-             &renderer->upload) &&
+             VKR_BINDLESS_VK_SENTINEL_UPLOAD_SIZE,
+             VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &renderer->upload) &&
          vkr_bindless_vk_create_buffer(
              renderer, VKR_BINDLESS_VK_MEMORY_CLASS_UPLOAD,
              (VkDeviceSize)renderer->config.material_slot_capacity *
@@ -3186,86 +3137,6 @@ static bool8_t vkr_bindless_vk_record_graph(VkrBindlessVulkanRenderer *renderer,
       renderer, command, &renderer->graph->terminal_image_barriers);
 }
 
-static bool8_t vkr_bindless_vk_record_ibl_validation_capture(
-    VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
-    VkrBindlessVkFrameSlot *slot) {
-  slot->ibl_capture_pending = false_v;
-  slot->ibl_capture_mip_count = 0u;
-  VkrBindlessVkPendingIblBake *captured = NULL;
-  for (uint32_t i = 0u; i < renderer->pending_ibl_bake_count; ++i) {
-    if (renderer->pending_ibl_bakes[i].recorded) {
-      captured = &renderer->pending_ibl_bakes[i];
-      break;
-    }
-  }
-  if (!captured)
-    return true_v;
-  VkrBindlessVkPublishedTexture *irradiance =
-      vkr_bindless_vk_texture_publication(renderer, captured->irradiance);
-  VkrBindlessVkPublishedTexture *prefilter =
-      vkr_bindless_vk_texture_publication(renderer, captured->prefilter);
-  if (!irradiance || !prefilter ||
-      prefilter->image.mip_levels > VKR_IBL_PREFILTER_MIP_COUNT)
-    return false_v;
-
-  vkr_bindless_vk_cmd_ibl_image_barrier(
-      command, irradiance->image.handle, 0u, irradiance->image.array_layers,
-      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-      VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
-      VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL,
-      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-  VkBufferImageCopy2 region = {
-      .sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
-      .bufferOffset = VKR_BINDLESS_VK_IBL_CAPTURE_OFFSET,
-      .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                           .mipLevel = 0u,
-                           .baseArrayLayer = 0u,
-                           .layerCount = 1u},
-      .imageExtent = {.width = 1u, .height = 1u, .depth = 1u},
-  };
-  VkCopyImageToBufferInfo2 copy = {
-      .sType = VK_STRUCTURE_TYPE_COPY_IMAGE_TO_BUFFER_INFO_2,
-      .srcImage = irradiance->image.handle,
-      .srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-      .dstBuffer = slot->readback.handle,
-      .regionCount = 1u,
-      .pRegions = &region,
-  };
-  vkCmdCopyImageToBuffer2(command, &copy);
-  vkr_bindless_vk_cmd_ibl_image_barrier(
-      command, irradiance->image.handle, 0u, irradiance->image.array_layers,
-      VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
-      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-          VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-      VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-      VK_IMAGE_LAYOUT_GENERAL);
-
-  for (uint32_t mip = 0u; mip < prefilter->image.mip_levels; ++mip) {
-    vkr_bindless_vk_cmd_ibl_image_barrier(
-        command, prefilter->image.handle, mip, prefilter->image.array_layers,
-        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
-        VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL,
-        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    region.bufferOffset =
-        VKR_BINDLESS_VK_IBL_CAPTURE_OFFSET +
-        (uint64_t)(mip + 1u) * VKR_BINDLESS_VK_IBL_TEXEL_BYTES;
-    region.imageSubresource.mipLevel = mip;
-    copy.srcImage = prefilter->image.handle;
-    vkCmdCopyImageToBuffer2(command, &copy);
-    vkr_bindless_vk_cmd_ibl_image_barrier(
-        command, prefilter->image.handle, mip, prefilter->image.array_layers,
-        VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
-        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
-  }
-  slot->ibl_capture_mip_count = prefilter->image.mip_levels;
-  slot->ibl_capture_pending = true_v;
-  return true_v;
-}
-
 static uint64_t vkr_bindless_vk_capture_align(uint64_t value) {
   return (value + VKR_CAPTURE_BUFFER_ALIGNMENT - 1u) &
          ~(uint64_t)(VKR_CAPTURE_BUFFER_ALIGNMENT - 1u);
@@ -3550,9 +3421,8 @@ static void vkr_bindless_vk_collect_retired_window_targets(
       vkr_bindless_vulkan_reacquire_complete(
           &renderer->window_target.reacquire_state, completed_submit_value);
   if (reacquire.image_present_complete)
-    renderer->wsi_reacquire_proofs++;
-  if (!renderer->window_target.reacquire_state.successor_present_complete)
-    return;
+    if (!renderer->window_target.reacquire_state.successor_present_complete)
+      return;
   for (uint32_t i = 0; i < ArrayCount(renderer->retired_window_targets); ++i) {
     VkrBindlessVkRetiredWindowTarget *retired =
         &renderer->retired_window_targets[i];
@@ -3560,7 +3430,6 @@ static void vkr_bindless_vk_collect_retired_window_targets(
                                  renderer, &retired->target, false_v)) {
       vkr_bindless_vk_destroy_window_target(renderer, &retired->target);
       retired->occupied = false_v;
-      renderer->wsi_retired_swapchains_collected++;
     }
   }
 }
@@ -3759,9 +3628,7 @@ vkr_bindless_vk_collect_retired_targets(VkrBindlessVulkanRenderer *renderer,
 static bool8_t
 vkr_bindless_vk_create_frame_slots(VkrBindlessVulkanRenderer *renderer) {
   VkDevice device = vkr_bindless_vk_renderer_device(renderer);
-  const VkDeviceSize readback_size =
-      VKR_BINDLESS_VK_IBL_CAPTURE_OFFSET +
-      (1u + VKR_IBL_PREFILTER_MIP_COUNT) * VKR_BINDLESS_VK_IBL_TEXEL_BYTES;
+  const VkDeviceSize readback_size = 4u;
   for (uint32_t i = 0; i < VKR_BINDLESS_VK_FRAME_SLOT_COUNT; ++i) {
     VkrBindlessVkFrameSlot *slot = &renderer->frame_slots[i];
     VkCommandPoolCreateInfo pool_info = {
@@ -3829,45 +3696,10 @@ vkr_bindless_vk_destroy_frame_slots(VkrBindlessVulkanRenderer *renderer) {
 static bool8_t
 vkr_bindless_vk_write_upload_data(VkrBindlessVulkanRenderer *renderer) {
   uint8_t *mapped = renderer->upload.allocation.mapped;
-  MemZero(mapped, renderer->upload.size);
-  const VkrVertex3d vertices[] = {
-      {.position = {-1.0f, -1.0f, 0.0f},
-       .normal = {0.0f, 0.0f, 1.0f},
-       .texcoord = {.x = 0.0f, .y = 0.0f},
-       .colour = {.x = 1.0f, .y = 1.0f, .z = 1.0f, .w = 1.0f},
-       .tangent = {.x = 1.0f, .w = 1.0f}},
-      {.position = {3.0f, -1.0f, 0.0f},
-       .normal = {0.0f, 0.0f, 1.0f},
-       .texcoord = {.x = 2.0f, .y = 0.0f},
-       .colour = {.x = 1.0f, .y = 1.0f, .z = 1.0f, .w = 1.0f},
-       .tangent = {.x = 1.0f, .w = 1.0f}},
-      {.position = {-1.0f, 3.0f, 0.0f},
-       .normal = {0.0f, 0.0f, 1.0f},
-       .texcoord = {.x = 0.0f, .y = 2.0f},
-       .colour = {.x = 1.0f, .y = 1.0f, .z = 1.0f, .w = 1.0f},
-       .tangent = {.x = 1.0f, .w = 1.0f}},
-  };
-  const uint16_t indices[] = {0u, 1u, 2u};
-  VkrBindlessVkDrawRoot root = {
-      .vertices = renderer->upload.address + VKR_BINDLESS_VK_VERTEX_OFFSET,
-      .tint = {1.0f, 1.0f, 1.0f, 1.0f},
-      .texture_index = 0u,
-      .sampler_index = 0u,
-      .materials = renderer->materials.address,
-  };
-  root.transform[0] = 1.0f;
-  root.transform[5] = 1.0f;
-  root.transform[10] = 1.0f;
-  root.transform[15] = 1.0f;
   const uint8_t sentinel_pixel[] = {37u, 91u, 173u, 255u};
-  MemCopy(mapped + VKR_BINDLESS_VK_ROOT_OFFSET, &root, sizeof(root));
-  MemCopy(mapped + VKR_BINDLESS_VK_VERTEX_OFFSET, vertices, sizeof(vertices));
-  MemCopy(mapped + VKR_BINDLESS_VK_INDEX_OFFSET, indices, sizeof(indices));
-  MemCopy(mapped + VKR_BINDLESS_VK_TEXTURE_OFFSET, sentinel_pixel,
-          sizeof(sentinel_pixel));
+  MemCopy(mapped, sentinel_pixel, sizeof(sentinel_pixel));
   return vkr_bindless_vk_flush(renderer, &renderer->upload.allocation, 0u,
-                               VKR_BINDLESS_VK_TEXTURE_OFFSET +
-                                   sizeof(sentinel_pixel));
+                               sizeof(sentinel_pixel));
 }
 
 static bool8_t
@@ -4241,197 +4073,6 @@ vkr_bindless_vk_reflected_struct_size(const SpvReflectBlockVariable *value) {
   return size;
 }
 
-static bool8_t vkr_bindless_vk_validate_vertex_pointer_abi(
-    SpvReflectBlockVariable *push_block) {
-  if (!push_block || push_block->size != sizeof(VkrBindlessVkPushConstants)) {
-    log_error("Bindless Vulkan vertex push block is %u bytes (expected %zu)",
-              push_block ? push_block->size : 0u,
-              sizeof(VkrBindlessVkPushConstants));
-    return false_v;
-  }
-  SpvReflectBlockVariable *root = NULL;
-  bool8_t valid = vkr_bindless_vk_reflect_member_offset(
-      push_block, "root", offsetof(VkrBindlessVkPushConstants, root), &root);
-  valid &= vkr_bindless_vk_reflect_member_offset(
-      push_block, "material_index",
-      offsetof(VkrBindlessVkPushConstants, material_index), NULL);
-  valid &= vkr_bindless_vk_reflect_member_offset(
-      push_block, "flags", offsetof(VkrBindlessVkPushConstants, flags), NULL);
-  if (!root || root->member_count == 0u) {
-    log_error("Bindless Vulkan reflection did not recurse through draw-root "
-              "PhysicalStorageBuffer");
-    return false_v;
-  }
-
-  SpvReflectBlockVariable *vertices = NULL;
-  SpvReflectBlockVariable *materials = NULL;
-  valid &= vkr_bindless_vk_reflect_member_offset(
-      root, "vertices", offsetof(VkrBindlessVkDrawRoot, vertices), &vertices);
-  valid &= vkr_bindless_vk_reflect_member_offset(
-      root, "tint", offsetof(VkrBindlessVkDrawRoot, tint), NULL);
-  valid &= vkr_bindless_vk_reflect_member_offset(
-      root, "transform", offsetof(VkrBindlessVkDrawRoot, transform), NULL);
-  valid &= vkr_bindless_vk_reflect_member_offset(
-      root, "texture_index", offsetof(VkrBindlessVkDrawRoot, texture_index),
-      NULL);
-  valid &= vkr_bindless_vk_reflect_member_offset(
-      root, "sampler_index", offsetof(VkrBindlessVkDrawRoot, sampler_index),
-      NULL);
-  valid &= vkr_bindless_vk_reflect_member_offset(
-      root, "materials", offsetof(VkrBindlessVkDrawRoot, materials),
-      &materials);
-  if (!vertices || vertices->member_count == 0u || !materials ||
-      materials->member_count == 0u) {
-    log_error("Bindless Vulkan reflection did not recurse through vertex and "
-              "material PhysicalStorageBuffer pointers");
-    return false_v;
-  }
-
-  const VkrGpuAbiRecord *vertex_abi = vkr_gpu_abi_record(VKR_GPU_ABI_VERTEX);
-  const uint32_t reflected_vertex_size =
-      vkr_bindless_vk_reflected_struct_size(vertices);
-  if (!vertex_abi || reflected_vertex_size != vertex_abi->expected_size) {
-    log_error("Bindless Vulkan reflected vertex size is %u (expected %u)",
-              reflected_vertex_size,
-              vertex_abi ? vertex_abi->expected_size : 0u);
-    valid = false_v;
-  }
-  valid &= vkr_bindless_vk_reflect_member_offset(
-      vertices, "position", offsetof(VkrVertex3d, position), NULL);
-  valid &= vkr_bindless_vk_reflect_member_offset(
-      vertices, "normal", offsetof(VkrVertex3d, normal), NULL);
-  valid &= vkr_bindless_vk_reflect_member_offset(
-      vertices, "texcoord", offsetof(VkrVertex3d, texcoord), NULL);
-  valid &= vkr_bindless_vk_reflect_member_offset(
-      vertices, "color", offsetof(VkrVertex3d, colour), NULL);
-  valid &= vkr_bindless_vk_reflect_member_offset(
-      vertices, "tangent", offsetof(VkrVertex3d, tangent), NULL);
-  const uint32_t reflected_material_size =
-      vkr_bindless_vk_reflected_struct_size(materials);
-  if (reflected_material_size != sizeof(VkrBindlessVkMaterialGpuRow)) {
-    log_error("Bindless Vulkan reflected material size is %u (expected "
-              "%zu)",
-              reflected_material_size, sizeof(VkrBindlessVkMaterialGpuRow));
-    valid = false_v;
-  }
-  valid &= vkr_bindless_vk_reflect_member_offset(
-      materials, "tint", offsetof(VkrBindlessVkMaterialGpuRow, tint), NULL);
-  valid &= vkr_bindless_vk_reflect_member_offset(
-      materials, "base_color_texture",
-      offsetof(VkrBindlessVkMaterialGpuRow, base_color_texture), NULL);
-  valid &= vkr_bindless_vk_reflect_member_offset(
-      materials, "base_color_sampler",
-      offsetof(VkrBindlessVkMaterialGpuRow, base_color_sampler), NULL);
-  valid &= vkr_bindless_vk_reflect_member_offset(
-      materials, "material_id",
-      offsetof(VkrBindlessVkMaterialGpuRow, material_id), NULL);
-  return valid;
-}
-
-static bool8_t vkr_bindless_vk_validate_shader_module_abi(
-    VkrBindlessVulkanRenderer *renderer, const char *path,
-    const char *entry_point, SpvReflectShaderStageFlagBits stage) {
-  FilePath shader_path =
-      file_path_create(path, renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
-  uint8_t *bytes = NULL;
-  uint64_t size = 0u;
-  if (file_load_spirv_shader(&shader_path, renderer->allocator, &bytes,
-                             &size) != FILE_ERROR_NONE ||
-      size == 0u) {
-    log_error("Bindless Vulkan could not load SPIR-V for ABI validation: %s",
-              path);
-    return false_v;
-  }
-  SpvReflectShaderModule module;
-  MemZero(&module, sizeof(module));
-  const SpvReflectResult create_result =
-      spvReflectCreateShaderModule((size_t)size, bytes, &module);
-  vkr_allocator_free(renderer->allocator, bytes, size,
-                     VKR_ALLOCATOR_MEMORY_TAG_FILE);
-  if (create_result != SPV_REFLECT_RESULT_SUCCESS) {
-    log_error("Bindless Vulkan SPIR-V reflection failed for %s (%d)", path,
-              create_result);
-    return false_v;
-  }
-
-  bool8_t valid = true_v;
-  const SpvReflectEntryPoint *entry =
-      spvReflectGetEntryPoint(&module, entry_point);
-  if (!entry || entry->shader_stage != stage) {
-    log_error("Bindless Vulkan entry point %s is missing or has wrong stage",
-              entry_point);
-    valid = false_v;
-  }
-  uint32_t push_count = 0u;
-  SpvReflectBlockVariable *push_blocks[1] = {0};
-  if (spvReflectEnumerateEntryPointPushConstantBlocks(&module, entry_point,
-                                                      &push_count, NULL) !=
-          SPV_REFLECT_RESULT_SUCCESS ||
-      push_count != 1u ||
-      spvReflectEnumerateEntryPointPushConstantBlocks(
-          &module, entry_point, &push_count, push_blocks) !=
-          SPV_REFLECT_RESULT_SUCCESS) {
-    log_error("Bindless Vulkan entry point %s has %u push blocks (expected 1)",
-              entry_point, push_count);
-    valid = false_v;
-  } else if (stage == SPV_REFLECT_SHADER_STAGE_VERTEX_BIT) {
-    valid &= vkr_bindless_vk_validate_vertex_pointer_abi(push_blocks[0]);
-  } else if (push_blocks[0]->size != sizeof(VkrBindlessVkPushConstants)) {
-    log_error("Bindless Vulkan fragment push block is %u bytes (expected %zu)",
-              push_blocks[0]->size, sizeof(VkrBindlessVkPushConstants));
-    valid = false_v;
-  }
-
-  if (stage == SPV_REFLECT_SHADER_STAGE_FRAGMENT_BIT) {
-    uint32_t binding_count = 0u;
-    SpvReflectDescriptorBinding *bindings[4] = {0};
-    if (spvReflectEnumerateEntryPointDescriptorBindings(&module, entry_point,
-                                                        &binding_count, NULL) !=
-            SPV_REFLECT_RESULT_SUCCESS ||
-        binding_count > ArrayCount(bindings) ||
-        spvReflectEnumerateEntryPointDescriptorBindings(
-            &module, entry_point, &binding_count, bindings) !=
-            SPV_REFLECT_RESULT_SUCCESS) {
-      log_error("Bindless Vulkan fragment descriptor reflection failed");
-      valid = false_v;
-    } else {
-      bool8_t sampled = false_v;
-      bool8_t sampler = false_v;
-      for (uint32_t i = 0; i < binding_count; ++i) {
-        const SpvReflectDescriptorBinding *binding = bindings[i];
-        const bool8_t runtime_array =
-            binding->array.dims_count == 1u && binding->array.dims[0] == 0u;
-        sampled |= binding->set == 0u && binding->binding == 0u &&
-                   binding->descriptor_type ==
-                       SPV_REFLECT_DESCRIPTOR_TYPE_SAMPLED_IMAGE &&
-                   runtime_array;
-        sampler |=
-            binding->set == 1u && binding->binding == 0u &&
-            binding->descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_SAMPLER &&
-            runtime_array;
-      }
-      if (!sampled || !sampler) {
-        log_error("Bindless Vulkan runtime descriptor arrays are incomplete "
-                  "(sampled=%u sampler=%u)",
-                  sampled, sampler);
-        valid = false_v;
-      }
-    }
-  }
-  spvReflectDestroyShaderModule(&module);
-  return valid;
-}
-
-static bool8_t
-vkr_bindless_vk_validate_shader_abi(VkrBindlessVulkanRenderer *renderer) {
-  return vkr_bindless_vk_validate_shader_module_abi(
-             renderer, VKR_BINDLESS_VK_VERTEX_SPV, "vert_main",
-             SPV_REFLECT_SHADER_STAGE_VERTEX_BIT) &&
-         vkr_bindless_vk_validate_shader_module_abi(
-             renderer, VKR_BINDLESS_VK_FRAGMENT_SPV, "frag_main",
-             SPV_REFLECT_SHADER_STAGE_FRAGMENT_BIT);
-}
-
 static bool8_t
 vkr_bindless_vk_validate_packet_root_abi(VkrBindlessVulkanRenderer *renderer) {
   FilePath shader_path =
@@ -4459,14 +4100,20 @@ vkr_bindless_vk_validate_packet_root_abi(VkrBindlessVulkanRenderer *renderer) {
       count == 1u &&
       spvReflectEnumerateEntryPointPushConstantBlocks(
           &module, "text_vertex", &count, blocks) == SPV_REFLECT_RESULT_SUCCESS;
+  valid &= blocks[0] && blocks[0]->size == sizeof(VkrBindlessVkPushConstants);
   SpvReflectBlockVariable *root =
       valid ? vkr_bindless_vk_reflect_member(blocks[0], "root") : NULL;
   if (!root || root->member_count == 0u) {
     valid = false_v;
   } else {
+    SpvReflectBlockVariable *vertices = NULL;
+    SpvReflectBlockVariable *materials = NULL;
     valid &= vkr_bindless_vk_reflect_member_offset(
         root, "vertices", offsetof(VkrBindlessVkPacketDrawRoot, vertices),
-        NULL);
+        &vertices);
+    valid &= vkr_bindless_vk_reflect_member_offset(
+        root, "materials", offsetof(VkrBindlessVkPacketDrawRoot, materials),
+        &materials);
     valid &= vkr_bindless_vk_reflect_member_offset(
         root, "view_projection",
         offsetof(VkrBindlessVkPacketDrawRoot, view_projection), NULL);
@@ -4491,6 +4138,31 @@ vkr_bindless_vk_validate_packet_root_abi(VkrBindlessVulkanRenderer *renderer) {
         NULL);
     valid &= vkr_bindless_vk_reflect_member_offset(
         root, "view", offsetof(VkrBindlessVkPacketDrawRoot, view), NULL);
+    const VkrGpuAbiRecord *vertex_abi = vkr_gpu_abi_record(VKR_GPU_ABI_VERTEX);
+    valid &= vertices && materials && vertex_abi &&
+             vkr_bindless_vk_reflected_struct_size(vertices) ==
+                 vertex_abi->expected_size &&
+             vkr_bindless_vk_reflected_struct_size(materials) ==
+                 sizeof(VkrBindlessVkMaterialGpuRow);
+    valid &= vkr_bindless_vk_reflect_member_offset(
+        vertices, "position", offsetof(VkrVertex3d, position), NULL);
+    valid &= vkr_bindless_vk_reflect_member_offset(
+        vertices, "normal", offsetof(VkrVertex3d, normal), NULL);
+    valid &= vkr_bindless_vk_reflect_member_offset(
+        vertices, "texcoord", offsetof(VkrVertex3d, texcoord), NULL);
+    valid &= vkr_bindless_vk_reflect_member_offset(
+        vertices, "color", offsetof(VkrVertex3d, colour), NULL);
+    valid &= vkr_bindless_vk_reflect_member_offset(
+        vertices, "tangent", offsetof(VkrVertex3d, tangent), NULL);
+    valid &= vkr_bindless_vk_reflect_member_offset(
+        materials, "base_color_texture",
+        offsetof(VkrBindlessVkMaterialGpuRow, base_color_texture), NULL);
+    valid &= vkr_bindless_vk_reflect_member_offset(
+        materials, "base_color_sampler",
+        offsetof(VkrBindlessVkMaterialGpuRow, base_color_sampler), NULL);
+    valid &= vkr_bindless_vk_reflect_member_offset(
+        materials, "material_id",
+        offsetof(VkrBindlessVkMaterialGpuRow, material_id), NULL);
   }
   spvReflectDestroyShaderModule(&module);
   return valid;
@@ -4523,15 +4195,8 @@ vkr_bindless_vk_create_shader_module(VkrBindlessVulkanRenderer *renderer,
 }
 
 static bool8_t
-vkr_bindless_vk_create_pipeline(VkrBindlessVulkanRenderer *renderer) {
-  renderer->shader_abi_validated =
-      vkr_bindless_vk_validate_shader_abi(renderer) &&
-      vkr_bindless_vk_validate_packet_root_abi(renderer);
-  if (!renderer->shader_abi_validated ||
-      !vkr_bindless_vk_create_shader_module(
-          renderer, VKR_BINDLESS_VK_VERTEX_SPV, &renderer->vertex_shader) ||
-      !vkr_bindless_vk_create_shader_module(
-          renderer, VKR_BINDLESS_VK_FRAGMENT_SPV, &renderer->fragment_shader)) {
+vkr_bindless_vk_create_pipelines(VkrBindlessVulkanRenderer *renderer) {
+  if (!vkr_bindless_vk_validate_packet_root_abi(renderer)) {
     return false_v;
   }
   const VkrBindlessVulkanDescriptorLayout *resource_layout =
@@ -4560,86 +4225,6 @@ vkr_bindless_vk_create_pipeline(VkrBindlessVulkanRenderer *renderer) {
                              &renderer->pipeline_layout) != VK_SUCCESS) {
     return false_v;
   }
-  VkPipelineShaderStageCreateInfo stages[] = {
-      {
-          .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-          .stage = VK_SHADER_STAGE_VERTEX_BIT,
-          .module = renderer->vertex_shader,
-          .pName = "vert_main",
-      },
-      {
-          .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-          .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-          .module = renderer->fragment_shader,
-          .pName = "frag_main",
-      },
-  };
-  VkPipelineVertexInputStateCreateInfo vertex_input = {
-      .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-  };
-  VkPipelineInputAssemblyStateCreateInfo input_assembly = {
-      .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-      .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-  };
-  VkPipelineViewportStateCreateInfo viewport = {
-      .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-      .viewportCount = 1u,
-      .scissorCount = 1u,
-  };
-  VkPipelineRasterizationStateCreateInfo raster = {
-      .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-      .polygonMode = VK_POLYGON_MODE_FILL,
-      .cullMode = VK_CULL_MODE_NONE,
-      .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
-      .lineWidth = 1.0f,
-  };
-  VkPipelineMultisampleStateCreateInfo multisample = {
-      .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-      .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
-  };
-  VkPipelineColorBlendAttachmentState color_attachment = {
-      .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
-  };
-  VkPipelineColorBlendStateCreateInfo blend = {
-      .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-      .attachmentCount = 1u,
-      .pAttachments = &color_attachment,
-  };
-  const VkDynamicState dynamic_states[] = {
-      VK_DYNAMIC_STATE_VIEWPORT,
-      VK_DYNAMIC_STATE_SCISSOR,
-  };
-  VkPipelineDynamicStateCreateInfo dynamic = {
-      .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-      .dynamicStateCount = ArrayCount(dynamic_states),
-      .pDynamicStates = dynamic_states,
-  };
-  VkFormat color_format = VK_FORMAT_R8G8B8A8_UNORM;
-  VkPipelineRenderingCreateInfo rendering = {
-      .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-      .colorAttachmentCount = 1u,
-      .pColorAttachmentFormats = &color_format,
-  };
-  VkGraphicsPipelineCreateInfo pipeline_info = {
-      .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-      .pNext = &rendering,
-      .flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT,
-      .stageCount = ArrayCount(stages),
-      .pStages = stages,
-      .pVertexInputState = &vertex_input,
-      .pInputAssemblyState = &input_assembly,
-      .pViewportState = &viewport,
-      .pRasterizationState = &raster,
-      .pMultisampleState = &multisample,
-      .pColorBlendState = &blend,
-      .pDynamicState = &dynamic,
-      .layout = renderer->pipeline_layout,
-  };
-  if (vkCreateGraphicsPipelines(device, renderer->pipeline_cache, 1u,
-                                &pipeline_info, NULL,
-                                &renderer->pipeline) != VK_SUCCESS)
-    return false_v;
   return vkr_bindless_vk_create_packet_pipelines(renderer) &&
          vkr_bindless_vk_create_ibl_pipelines(renderer);
 }
@@ -5191,7 +4776,7 @@ bool8_t vkr_bindless_vulkan_renderer_create(
     log_error("Bindless Vulkan failed to publish sentinel descriptors");
     return false_v;
   }
-  if (!vkr_bindless_vk_create_pipeline(renderer)) {
+  if (!vkr_bindless_vk_create_pipelines(renderer)) {
     log_error("Bindless Vulkan failed to create renderer pipeline");
     return false_v;
   }
@@ -6173,7 +5758,7 @@ static bool8_t vkr_bindless_vk_record_draw(VkrBindlessVulkanRenderer *renderer,
         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     VkBufferImageCopy2 copy_region = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
-        .bufferOffset = VKR_BINDLESS_VK_TEXTURE_OFFSET,
+        .bufferOffset = 0u,
         .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
                              .layerCount = 1u},
         .imageExtent = {.width = 1u, .height = 1u, .depth = 1u},
@@ -6218,8 +5803,7 @@ static bool8_t vkr_bindless_vk_record_draw(VkrBindlessVulkanRenderer *renderer,
       command, VK_PIPELINE_BIND_POINT_COMPUTE, renderer->pipeline_layout, 0u,
       ArrayCount(buffer_indices), buffer_indices, descriptor_offsets);
 
-  if (!vkr_bindless_vk_record_graph(renderer, command) ||
-      !vkr_bindless_vk_record_ibl_validation_capture(renderer, command, slot))
+  if (!vkr_bindless_vk_record_graph(renderer, command))
     return false_v;
 
   VkrBindlessVkImage *target = &renderer->targets.images[slot->image_index];
@@ -6524,9 +6108,6 @@ bool8_t vkr_bindless_vulkan_renderer_submit_packet(
   renderer->targets.images[slot->image_index].layout =
       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
   renderer->sentinel_image.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-  if (renderer->active_geometry)
-    renderer->published_geometries[renderer->active_geometry_record_index]
-        .last_use_submit_value = signal_value;
   if (renderer->config.target_kind != VKR_PRESENT_TARGET_OFFSCREEN) {
     VkrBindlessVkWindowTarget *window = &renderer->window_target;
     const uint32_t image_index = slot->image_index;
@@ -6701,7 +6282,6 @@ vkr_bindless_vk_recreate_window_target(VkrBindlessVulkanRenderer *renderer,
   }
   retired->target = renderer->window_target;
   retired->occupied = true_v;
-  renderer->wsi_retired_swapchains++;
   renderer->window_target = replacement_window;
   vkr_bindless_vk_destroy_target_set(renderer, &renderer->targets);
   renderer->targets = replacement_targets;
@@ -7008,32 +6588,9 @@ void vkr_bindless_vulkan_renderer_heap_metrics(
                                  &out_metrics->materials);
 }
 
-void vkr_bindless_vulkan_renderer_wsi_stats(
-    const VkrBindlessVulkanRenderer *renderer,
-    VkrBindlessVulkanWsiStats *out_stats) {
-  if (!out_stats)
-    return;
-  MemZero(out_stats, sizeof(*out_stats));
-  if (!renderer)
-    return;
-  out_stats->reacquire_proofs = renderer->wsi_reacquire_proofs;
-  out_stats->retired_swapchains = renderer->wsi_retired_swapchains;
-  out_stats->retired_swapchains_collected =
-      renderer->wsi_retired_swapchains_collected;
-  for (uint32_t i = 0; i < ArrayCount(renderer->retired_window_targets); ++i) {
-    if (renderer->retired_window_targets[i].occupied)
-      out_stats->retired_swapchains_live++;
-  }
-}
-
 uint32_t vkr_bindless_vulkan_renderer_frame_slot(
     const VkrBindlessVulkanRenderer *renderer) {
   return renderer ? renderer->active_frame_slot : 0u;
-}
-
-bool8_t vkr_bindless_vulkan_renderer_shader_abi_validated(
-    const VkrBindlessVulkanRenderer *renderer) {
-  return renderer && renderer->shader_abi_validated;
 }
 
 const VkrBindlessVkCapabilityProfile *vkr_bindless_vulkan_renderer_profile(
@@ -8253,36 +7810,6 @@ vkr_bindless_vk_asset_publish_loaded_mesh(void *state, VkrGeometryHandle handle,
       (uint32_t)mesh->submeshes.length);
 }
 
-static bool8_t
-vkr_bindless_vk_activate_geometry(VkrBindlessVulkanRenderer *renderer,
-                                  VkrGeometryHandle handle) {
-  if (!renderer || renderer->frame_active ||
-      !vkr_bindless_vulkan_renderer_wait_idle(renderer))
-    return false_v;
-  VkDeviceAddress vertices =
-      renderer->upload.address + VKR_BINDLESS_VK_VERTEX_OFFSET;
-  renderer->active_geometry = false_v;
-  renderer->active_geometry_record_index = 0u;
-  if (handle.id) {
-    if (handle.id > renderer->config.sampled_image_capacity)
-      return false_v;
-    const uint32_t index = handle.id - 1u;
-    VkrBindlessVkPublishedGeometry *geometry =
-        &renderer->published_geometries[index];
-    if (!geometry->live || geometry->handle.generation != handle.generation)
-      return false_v;
-    vertices = geometry->vertices.address;
-    renderer->active_geometry = true_v;
-    renderer->active_geometry_record_index = index;
-  }
-  VkrBindlessVkDrawRoot *root =
-      (VkrBindlessVkDrawRoot *)((uint8_t *)renderer->upload.allocation.mapped +
-                                VKR_BINDLESS_VK_ROOT_OFFSET);
-  root->vertices = vertices;
-  return vkr_bindless_vk_flush(renderer, &renderer->upload.allocation,
-                               VKR_BINDLESS_VK_ROOT_OFFSET, sizeof(*root));
-}
-
 static VkrBindlessVkPublishedGeometry *
 vkr_bindless_vk_reserve_retired_geometry(VkrBindlessVulkanRenderer *renderer) {
   for (uint32_t i = 0u; i < renderer->config.sampled_image_capacity; ++i) {
@@ -8710,726 +8237,6 @@ vkr_bindless_vk_drain_asset_publications(VkrBindlessVulkanRenderer *renderer) {
   vkr_bindless_vk_collect_asset_publications(renderer, completed);
 }
 
-static bool8_t vkr_bindless_vk_result_is_empty_graph_clear(
-    const VkrBindlessVulkanResult *result) {
-  return result->readback_ready && result->color[0] == 0u &&
-         result->color[1] == 0u && result->color[2] == 0u &&
-         result->color[3] == 255u && result->identifier == 0xff000000u;
-}
-
-static bool8_t vkr_bindless_vk_run_asset_publisher_fixture(
-    VkrBindlessVulkanRenderer *renderer,
-    VkrBindlessVulkanPublicationTestResult *out_result) {
-  const uint8_t pixel[4] = {37u, 91u, 173u, 255u};
-  VkrTextureUploadRegion region = {
-      .width = 1u,
-      .height = 1u,
-      .depth = 1u,
-      .byte_size = sizeof(pixel),
-  };
-  VkrTexturePreparedLoad prepared = {
-      .description = {.width = 1u,
-                      .height = 1u,
-                      .channels = 4u,
-                      .type = VKR_TEXTURE_TYPE_2D,
-                      .format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM,
-                      .sample_count = VKR_SAMPLE_COUNT_1,
-                      .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
-                      .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
-                      .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
-                      .min_filter = VKR_FILTER_NEAREST,
-                      .mag_filter = VKR_FILTER_NEAREST,
-                      .mip_filter = VKR_MIP_FILTER_NONE},
-      .upload_data = (uint8_t *)pixel,
-      .upload_data_size = sizeof(pixel),
-      .upload_regions = &region,
-      .upload_region_count = 1u,
-      .upload_mip_levels = 1u,
-      .upload_array_layers = 1u,
-  };
-  const VkrTextureHandle shared_texture = {
-      .id = renderer->config.sampled_image_capacity - 1u, .generation = 1u};
-  const VkrTextureHandle replacement_texture = {
-      .id = renderer->config.sampled_image_capacity, .generation = 1u};
-  const VkrTextureHandle writable_texture = {
-      .id = renderer->config.sampled_image_capacity - 2u, .generation = 1u};
-  const VkrGeometryHandle loaded_geometry = {
-      .id = renderer->config.sampled_image_capacity, .generation = 1u};
-  const VkrMaterialHandle material_a = {
-      .id = renderer->config.material_record_capacity - 1u, .generation = 1u};
-  const VkrMaterialHandle material_b = {
-      .id = renderer->config.material_record_capacity, .generation = 1u};
-  VkrMaterial material = {
-      .material_type = VKR_MATERIAL_TYPE_PBR,
-      .pbr.base_color = {.x = 1.0f, .y = 1.0f, .z = 1.0f, .w = 1.0f},
-  };
-  const VkrTextureSlot material_texture_slots[] = {
-      VKR_TEXTURE_SLOT_DIFFUSE,
-      VKR_TEXTURE_SLOT_NORMAL,
-      VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS,
-      VKR_TEXTURE_SLOT_EMISSION,
-  };
-  for (uint32_t i = 0; i < ArrayCount(material_texture_slots); ++i) {
-    const VkrTextureSlot slot = material_texture_slots[i];
-    material.textures[slot] = (VkrMaterialTexture){
-        .handle = shared_texture,
-        .slot = slot,
-        .enabled = true_v,
-    };
-  }
-  const VkrVertex3d vertices[] = {
-      {.position = {-1.0f, -1.0f, 0.0f},
-       .normal = {0.0f, 0.0f, 1.0f},
-       .texcoord = {.x = 0.0f, .y = 0.0f},
-       .colour = {.x = 1.0f, .y = 1.0f, .z = 1.0f, .w = 1.0f},
-       .tangent = {.x = 1.0f, .w = 1.0f}},
-      {.position = {3.0f, -1.0f, 0.0f},
-       .normal = {0.0f, 0.0f, 1.0f},
-       .texcoord = {.x = 2.0f, .y = 0.0f},
-       .colour = {.x = 1.0f, .y = 1.0f, .z = 1.0f, .w = 1.0f},
-       .tangent = {.x = 1.0f, .w = 1.0f}},
-      {.position = {-1.0f, 3.0f, 0.0f},
-       .normal = {0.0f, 0.0f, 1.0f},
-       .texcoord = {.x = 0.0f, .y = 2.0f},
-       .colour = {.x = 1.0f, .y = 1.0f, .z = 1.0f, .w = 1.0f},
-       .tangent = {.x = 1.0f, .w = 1.0f}},
-  };
-  const uint32_t indices[] = {0u, 1u, 2u};
-  VkrMeshLoaderSubmeshRange submesh = {.index_count = ArrayCount(indices)};
-  const VkrMeshLoaderResult mesh = {
-      .has_mesh_buffer = true_v,
-      .mesh_buffer = {.vertex_size = sizeof(vertices[0]),
-                      .vertex_count = ArrayCount(vertices),
-                      .vertices = (void *)vertices,
-                      .index_size = sizeof(indices[0]),
-                      .index_count = ArrayCount(indices),
-                      .indices = (void *)indices},
-      .submeshes = {.length = 1u, .data = &submesh},
-  };
-  VkrTextureDescription writable_description = prepared.description;
-  writable_description.id = writable_texture.id;
-  writable_description.generation = writable_texture.generation;
-  writable_description.width = 4u;
-  writable_description.height = 4u;
-  if (!vkr_bindless_vk_asset_publish_loaded_mesh(renderer, loaded_geometry,
-                                                 &mesh) ||
-      !vkr_bindless_vk_activate_geometry(renderer, loaded_geometry) ||
-      !vkr_bindless_vk_asset_publish_writable_texture(
-          renderer, writable_texture, &writable_description))
-    return false_v;
-  writable_description.u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT;
-  if (!vkr_bindless_vk_asset_update_texture_sampler(renderer, writable_texture,
-                                                    &writable_description))
-    return false_v;
-  VkrGpuSlotTableMetrics sampler_after_update = {0};
-  vkr_gpu_slot_table_get_metrics(renderer->sampler_slots,
-                                 &sampler_after_update);
-  if (!vkr_bindless_vk_asset_update_texture_sampler(renderer, writable_texture,
-                                                    &writable_description))
-    return false_v;
-  VkrGpuSlotTableMetrics sampler_after_duplicate = {0};
-  vkr_gpu_slot_table_get_metrics(renderer->sampler_slots,
-                                 &sampler_after_duplicate);
-  if (sampler_after_duplicate.slots_published !=
-          sampler_after_update.slots_published ||
-      !vkr_bindless_vk_asset_publish_texture(renderer, shared_texture,
-                                             &prepared))
-    return false_v;
-
-  VkrMaterial material_a_data = material;
-  material_a_data.id = material_a.id;
-  material_a_data.generation = material_a.generation;
-  VkrMaterial invalid_material = material_a_data;
-  invalid_material.textures[VKR_TEXTURE_SLOT_NORMAL].handle.generation++;
-  if (vkr_bindless_vk_asset_publish_material(renderer, material_a,
-                                             &invalid_material) ||
-      !vkr_bindless_vk_asset_publish_material(renderer, material_a,
-                                              &material_a_data))
-    return false_v;
-  VkrMaterial material_b_data = material;
-  material_b_data.id = material_b.id;
-  material_b_data.generation = material_b.generation;
-  if (!vkr_bindless_vk_asset_publish_material(renderer, material_b,
-                                              &material_b_data))
-    return false_v;
-  const uint32_t expected_material_flags =
-      VKR_BINDLESS_VK_MATERIAL_TEXTURE_NORMAL |
-      VKR_BINDLESS_VK_MATERIAL_TEXTURE_ORM |
-      VKR_BINDLESS_VK_MATERIAL_TEXTURE_EMISSIVE;
-  if (renderer->published_materials[material_a.id - 1u].row.flags !=
-          expected_material_flags ||
-      renderer->published_materials[material_b.id - 1u].row.flags !=
-          expected_material_flags)
-    return false_v;
-
-  const VkrGpuSlotHandle material_a_before_sampler_update =
-      renderer->published_materials[material_a.id - 1u].slot;
-  const VkrGpuSlotHandle material_b_before_sampler_update =
-      renderer->published_materials[material_b.id - 1u].slot;
-  VkrTextureDescription shared_sampler_description = prepared.description;
-  shared_sampler_description.id = shared_texture.id;
-  shared_sampler_description.generation = shared_texture.generation;
-  shared_sampler_description.u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT;
-  if (!vkr_bindless_vk_asset_update_texture_sampler(
-          renderer, shared_texture, &shared_sampler_description))
-    return false_v;
-  const VkrBindlessVkPublishedTexture *shared_texture_record =
-      &renderer->published_textures[shared_texture.id - 1u];
-  const uint32_t shared_sampler_slot =
-      renderer->published_samplers[shared_texture_record->sampler_record_index]
-          .slot.index;
-  out_result->shared_sampler_reused =
-      shared_texture_record->sampler_record_index ==
-      renderer->published_textures[writable_texture.id - 1u]
-          .sampler_record_index;
-  out_result->dependent_materials_republished =
-      (renderer->published_materials[material_a.id - 1u].slot.index !=
-           material_a_before_sampler_update.index ||
-       renderer->published_materials[material_a.id - 1u].slot.generation !=
-           material_a_before_sampler_update.generation) &&
-      (renderer->published_materials[material_b.id - 1u].slot.index !=
-           material_b_before_sampler_update.index ||
-       renderer->published_materials[material_b.id - 1u].slot.generation !=
-           material_b_before_sampler_update.generation) &&
-      renderer->published_materials[material_a.id - 1u]
-              .row.base_color_sampler == shared_sampler_slot &&
-      renderer->published_materials[material_b.id - 1u]
-              .row.base_color_sampler == shared_sampler_slot;
-  if (!out_result->shared_sampler_reused ||
-      !out_result->dependent_materials_republished)
-    return false_v;
-
-  VkrFrameSetup setup = {0};
-  VkrRenderPacket packet = {.packet_version = VKR_RENDER_PACKET_VERSION};
-  VkrBindlessVulkanResult submitted[3] = {0};
-  renderer->active_material_index =
-      renderer->published_materials[material_a.id - 1u].slot.index;
-  uint64_t expected_staging_retirements =
-      renderer->pending_buffer_initialization_count ? 1u : 0u;
-  VkrBindlessVulkanMemoryMetrics memory_before_submit = {0};
-  vkr_bindless_vulkan_renderer_memory_metrics(renderer, &memory_before_submit);
-  if (!vkr_bindless_vulkan_renderer_prepare_frame(renderer, 2001u, 2048u, 1u,
-                                                  &setup) ||
-      !vkr_bindless_vulkan_renderer_submit_packet(renderer, &packet,
-                                                  &submitted[0]))
-    return false_v;
-  VkrBindlessVulkanMemoryMetrics memory_after_submit = {0};
-  vkr_bindless_vulkan_renderer_memory_metrics(renderer, &memory_after_submit);
-  out_result->staging_retired_at_submit =
-      expected_staging_retirements > 0u &&
-      memory_after_submit.aggregate.retired_allocations ==
-          memory_before_submit.aggregate.retired_allocations +
-              expected_staging_retirements;
-  if (!out_result->staging_retired_at_submit ||
-      !vkr_bindless_vk_asset_unpublish_material(renderer, material_a) ||
-      !vkr_bindless_vk_asset_unpublish_texture(renderer, shared_texture))
-    return false_v;
-
-  renderer->active_material_index =
-      renderer->published_materials[material_b.id - 1u].slot.index;
-  if (!vkr_bindless_vulkan_renderer_prepare_frame(renderer, 2002u, 2048u, 1u,
-                                                  &setup) ||
-      !vkr_bindless_vulkan_renderer_submit_packet(renderer, &packet,
-                                                  &submitted[1]))
-    return false_v;
-  out_result->shared_resource_survived =
-      renderer->published_textures[shared_texture.id - 1u]
-              .material_reference_count > 0u &&
-      renderer->published_textures[shared_texture.id - 1u].pending_retire;
-
-  if (!vkr_bindless_vk_asset_publish_texture(renderer, replacement_texture,
-                                             &prepared))
-    return false_v;
-  for (uint32_t i = 0; i < ArrayCount(material_texture_slots); ++i)
-    material_b_data.textures[material_texture_slots[i]].handle =
-        replacement_texture;
-  if (!vkr_bindless_vk_asset_publish_material(renderer, material_b,
-                                              &material_b_data))
-    return false_v;
-  renderer->active_material_index =
-      renderer->published_materials[material_b.id - 1u].slot.index;
-  if (!vkr_bindless_vulkan_renderer_prepare_frame(renderer, 2003u, 2048u, 1u,
-                                                  &setup) ||
-      !vkr_bindless_vulkan_renderer_submit_packet(renderer, &packet,
-                                                  &submitted[2]) ||
-      !vkr_bindless_vulkan_renderer_wait_idle(renderer))
-    return false_v;
-
-  uint64_t after_submit = submitted[0].submit_value - 1u;
-  for (uint32_t i = 0; i < ArrayCount(submitted); ++i) {
-    VkrBindlessVulkanResult completed = {0};
-    if (!vkr_bindless_vulkan_renderer_poll_result(renderer, after_submit,
-                                                  &completed) ||
-        !vkr_bindless_vk_result_is_empty_graph_clear(&completed))
-      return false_v;
-    after_submit = completed.submit_value;
-    out_result->exact_draw_count++;
-  }
-  vkr_bindless_vk_collect_asset_publications(renderer,
-                                             renderer->completed_value);
-  out_result->replacement_survived =
-      !renderer->published_textures[shared_texture.id - 1u].pending_retire &&
-      renderer->published_textures[replacement_texture.id - 1u].live &&
-      renderer->published_materials[material_b.id - 1u].live;
-  if (!out_result->shared_resource_survived ||
-      !out_result->replacement_survived ||
-      !vkr_bindless_vk_asset_unpublish_material(renderer, material_b))
-    return false_v;
-  vkr_bindless_vk_collect_asset_publications(renderer,
-                                             renderer->completed_value);
-  if (!vkr_bindless_vk_asset_unpublish_texture(renderer, replacement_texture))
-    return false_v;
-  vkr_bindless_vk_collect_asset_publications(renderer,
-                                             renderer->completed_value);
-  renderer->active_material_index = 0u;
-  if (!vkr_bindless_vk_activate_geometry(renderer, (VkrGeometryHandle){0}) ||
-      !vkr_bindless_vk_asset_unpublish_geometry(renderer, loaded_geometry) ||
-      !vkr_bindless_vk_asset_unpublish_texture(renderer, writable_texture))
-    return false_v;
-  vkr_bindless_vk_collect_asset_publications(renderer,
-                                             renderer->completed_value);
-  uint64_t upload_wait_count = 0u;
-  if (!vkr_bindless_vulkan_renderer_get_and_reset_upload_wait_count(
-          renderer, &upload_wait_count))
-    return false_v;
-  out_result->upload_wait_free = upload_wait_count == 0u;
-  return true_v;
-}
-
-bool8_t vkr_bindless_vulkan_renderer_run_publication_test(
-    VkrBindlessVulkanRenderer *renderer,
-    VkrBindlessVulkanPublicationTestResult *out_result) {
-  if (!renderer || !out_result || renderer->frame_active ||
-      renderer->config.target_kind != VKR_PRESENT_TARGET_OFFSCREEN ||
-      !vkr_bindless_vulkan_renderer_wait_idle(renderer))
-    return false_v;
-  MemZero(out_result, sizeof(*out_result));
-  if (renderer->pending_buffer_initialization_count ||
-      renderer->pending_texture_initialization_count) {
-    VkrFrameSetup setup = {0};
-    const VkrRenderPacket packet = {
-        .packet_version = VKR_RENDER_PACKET_VERSION,
-    };
-    VkrBindlessVulkanResult submitted = {0};
-    if (!vkr_bindless_vulkan_renderer_prepare_frame(renderer, 999u, 2048u, 1u,
-                                                    &setup) ||
-        !vkr_bindless_vulkan_renderer_submit_packet(renderer, &packet,
-                                                    &submitted) ||
-        !vkr_bindless_vulkan_renderer_wait_idle(renderer))
-      return false_v;
-    VkrBindlessVulkanResult completed = {0};
-    if (!vkr_bindless_vulkan_renderer_poll_result(
-            renderer, submitted.submit_value - 1u, &completed) ||
-        !vkr_bindless_vk_result_is_empty_graph_clear(&completed))
-      return false_v;
-  }
-  VkrBindlessVulkanHeapMetrics baseline = {0};
-  VkrBindlessVulkanMemoryMetrics memory_baseline = {0};
-  vkr_bindless_vulkan_renderer_heap_metrics(renderer, &baseline);
-  vkr_bindless_vulkan_renderer_memory_metrics(renderer, &memory_baseline);
-  if (!vkr_bindless_vk_run_asset_publisher_fixture(renderer, out_result))
-    return false_v;
-  VkrGpuSlotHandle shared_texture = {0}, shared_storage = {0};
-  VkrGpuSlotHandle shared_sampler = {0};
-  VkrGpuSlotHandle replacement_texture = {0}, replacement_storage = {0};
-  VkrGpuSlotHandle replacement_sampler = {0};
-  VkrGpuSlotHandle material_a = {0}, material_b = {0}, replacement = {0};
-  if (!vkr_bindless_vk_publish_sampled_view(
-          renderer, renderer->sentinel_image.view,
-          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &shared_texture) ||
-      !vkr_bindless_vk_publish_storage_view(
-          renderer, renderer->sentinel_image.view, &shared_storage) ||
-      !vkr_bindless_vk_publish_sampler(renderer, renderer->sentinel_sampler,
-                                       &shared_sampler) ||
-      !vkr_bindless_vk_publish_material_row(renderer, shared_texture.index,
-                                            shared_sampler.index, 0x1001u,
-                                            &material_a) ||
-      !vkr_bindless_vk_publish_material_row(renderer, shared_texture.index,
-                                            shared_sampler.index, 0x1002u,
-                                            &material_b))
-    return false_v;
-
-  const uint64_t before_submit = renderer->submit_value;
-  VkrFrameSetup setup = {0};
-  VkrRenderPacket packet = {.packet_version = VKR_RENDER_PACKET_VERSION};
-  VkrBindlessVulkanResult submitted[3] = {0};
-  renderer->active_material_index = material_a.index;
-  if (!vkr_bindless_vulkan_renderer_prepare_frame(renderer, 1001u, 2048u, 1u,
-                                                  &setup) ||
-      !vkr_bindless_vulkan_renderer_submit_packet(renderer, &packet,
-                                                  &submitted[0]))
-    return false_v;
-  if (vkr_gpu_slot_table_retire(renderer->material_slots, material_a,
-                                submitted[0].submit_value) !=
-      VKR_GPU_SLOT_STATUS_OK)
-    return false_v;
-
-  uint32_t survivor_index = UINT32_MAX;
-  uint32_t shared_texture_index = UINT32_MAX;
-  uint32_t shared_storage_index = UINT32_MAX;
-  uint32_t shared_sampler_index = UINT32_MAX;
-  out_result->shared_resource_survived =
-      vkr_gpu_slot_table_resolve(renderer->material_slots, material_b,
-                                 &survivor_index) == VKR_GPU_SLOT_STATUS_OK &&
-      vkr_gpu_slot_table_resolve(renderer->sampled_image_slots, shared_texture,
-                                 &shared_texture_index) ==
-          VKR_GPU_SLOT_STATUS_OK &&
-      vkr_gpu_slot_table_resolve(renderer->storage_image_slots, shared_storage,
-                                 &shared_storage_index) ==
-          VKR_GPU_SLOT_STATUS_OK &&
-      vkr_gpu_slot_table_resolve(renderer->sampler_slots, shared_sampler,
-                                 &shared_sampler_index) ==
-          VKR_GPU_SLOT_STATUS_OK &&
-      shared_texture_index == shared_texture.index &&
-      shared_storage_index == shared_storage.index &&
-      shared_sampler_index == shared_sampler.index;
-  renderer->active_material_index = survivor_index;
-  if (!out_result->shared_resource_survived ||
-      !vkr_bindless_vulkan_renderer_prepare_frame(renderer, 1002u, 2048u, 1u,
-                                                  &setup) ||
-      !vkr_bindless_vulkan_renderer_submit_packet(renderer, &packet,
-                                                  &submitted[1]))
-    return false_v;
-
-  if (!vkr_bindless_vk_publish_sampled_view(
-          renderer, renderer->sentinel_image.view,
-          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &replacement_texture) ||
-      !vkr_bindless_vk_publish_storage_view(
-          renderer, renderer->sentinel_image.view, &replacement_storage) ||
-      !vkr_bindless_vk_publish_sampler(renderer, renderer->sentinel_sampler,
-                                       &replacement_sampler) ||
-      !vkr_bindless_vk_publish_material_row(renderer, replacement_texture.index,
-                                            replacement_sampler.index, 0x2002u,
-                                            &replacement) ||
-      vkr_gpu_slot_table_retire(renderer->material_slots, material_b,
-                                submitted[1].submit_value) !=
-          VKR_GPU_SLOT_STATUS_OK ||
-      vkr_gpu_slot_table_retire(renderer->sampled_image_slots, shared_texture,
-                                submitted[1].submit_value) !=
-          VKR_GPU_SLOT_STATUS_OK ||
-      vkr_gpu_slot_table_retire(renderer->storage_image_slots, shared_storage,
-                                submitted[1].submit_value) !=
-          VKR_GPU_SLOT_STATUS_OK ||
-      vkr_gpu_slot_table_retire(renderer->sampler_slots, shared_sampler,
-                                submitted[1].submit_value) !=
-          VKR_GPU_SLOT_STATUS_OK)
-    return false_v;
-  uint32_t replacement_index = UINT32_MAX;
-  out_result->replacement_survived =
-      vkr_gpu_slot_table_resolve(renderer->material_slots, replacement,
-                                 &replacement_index) == VKR_GPU_SLOT_STATUS_OK;
-  renderer->active_material_index = replacement_index;
-  if (!out_result->replacement_survived ||
-      !vkr_bindless_vulkan_renderer_prepare_frame(renderer, 1003u, 2048u, 1u,
-                                                  &setup) ||
-      !vkr_bindless_vulkan_renderer_submit_packet(renderer, &packet,
-                                                  &submitted[2]) ||
-      !vkr_bindless_vulkan_renderer_wait_idle(renderer))
-    return false_v;
-
-  uint64_t after_submit = before_submit;
-  for (uint32_t i = 0; i < ArrayCount(submitted); ++i) {
-    VkrBindlessVulkanResult completed = {0};
-    if (!vkr_bindless_vulkan_renderer_poll_result(renderer, after_submit,
-                                                  &completed) ||
-        !vkr_bindless_vk_result_is_empty_graph_clear(&completed))
-      return false_v;
-    after_submit = completed.submit_value;
-    out_result->exact_draw_count++;
-  }
-  const uint64_t completed = renderer->completed_value;
-  if (vkr_gpu_slot_table_collect(renderer->material_slots, completed, NULL) !=
-          VKR_GPU_SLOT_STATUS_OK ||
-      vkr_gpu_slot_table_collect(renderer->sampled_image_slots, completed,
-                                 NULL) != VKR_GPU_SLOT_STATUS_OK ||
-      vkr_gpu_slot_table_collect(renderer->storage_image_slots, completed,
-                                 NULL) != VKR_GPU_SLOT_STATUS_OK ||
-      vkr_gpu_slot_table_collect(renderer->sampler_slots, completed, NULL) !=
-          VKR_GPU_SLOT_STATUS_OK ||
-      vkr_gpu_slot_table_retire(renderer->material_slots, replacement,
-                                submitted[2].submit_value) !=
-          VKR_GPU_SLOT_STATUS_OK ||
-      vkr_gpu_slot_table_retire(
-          renderer->sampled_image_slots, replacement_texture,
-          submitted[2].submit_value) != VKR_GPU_SLOT_STATUS_OK ||
-      vkr_gpu_slot_table_retire(
-          renderer->storage_image_slots, replacement_storage,
-          submitted[2].submit_value) != VKR_GPU_SLOT_STATUS_OK ||
-      vkr_gpu_slot_table_retire(renderer->sampler_slots, replacement_sampler,
-                                submitted[2].submit_value) !=
-          VKR_GPU_SLOT_STATUS_OK ||
-      vkr_gpu_slot_table_collect(renderer->material_slots, completed, NULL) !=
-          VKR_GPU_SLOT_STATUS_OK ||
-      vkr_gpu_slot_table_collect(renderer->sampled_image_slots, completed,
-                                 NULL) != VKR_GPU_SLOT_STATUS_OK ||
-      vkr_gpu_slot_table_collect(renderer->storage_image_slots, completed,
-                                 NULL) != VKR_GPU_SLOT_STATUS_OK ||
-      vkr_gpu_slot_table_collect(renderer->sampler_slots, completed, NULL) !=
-          VKR_GPU_SLOT_STATUS_OK)
-    return false_v;
-  renderer->active_material_index = 0u;
-  vkr_gpu_slot_table_get_metrics(renderer->sampled_image_slots,
-                                 &out_result->sampled_images);
-  vkr_gpu_slot_table_get_metrics(renderer->storage_image_slots,
-                                 &out_result->storage_images);
-  vkr_gpu_slot_table_get_metrics(renderer->sampler_slots,
-                                 &out_result->samplers);
-  vkr_gpu_slot_table_get_metrics(renderer->material_slots,
-                                 &out_result->materials);
-  VkrBindlessVulkanMemoryMetrics memory_after = {0};
-  vkr_bindless_vulkan_renderer_memory_metrics(renderer, &memory_after);
-  out_result->memory_returned_to_baseline =
-      memory_after.aggregate.live_allocations ==
-          memory_baseline.aggregate.live_allocations &&
-      memory_after.aggregate.retired_allocations ==
-          memory_baseline.aggregate.retired_allocations &&
-      memory_after.aggregate.live_requested_bytes ==
-          memory_baseline.aggregate.live_requested_bytes &&
-      memory_after.aggregate.live_reserved_bytes ==
-          memory_baseline.aggregate.live_reserved_bytes &&
-      memory_after.aggregate.retired_requested_bytes ==
-          memory_baseline.aggregate.retired_requested_bytes &&
-      memory_after.aggregate.retired_reserved_bytes ==
-          memory_baseline.aggregate.retired_reserved_bytes;
-  if (!out_result->memory_returned_to_baseline)
-    log_debug(
-        "Bindless Vulkan V4 memory baseline drift: live %llu->%llu "
-        "requested %llu->%llu reserved %llu->%llu retired %llu->%llu",
-        (unsigned long long)memory_baseline.aggregate.live_allocations,
-        (unsigned long long)memory_after.aggregate.live_allocations,
-        (unsigned long long)memory_baseline.aggregate.live_requested_bytes,
-        (unsigned long long)memory_after.aggregate.live_requested_bytes,
-        (unsigned long long)memory_baseline.aggregate.live_reserved_bytes,
-        (unsigned long long)memory_after.aggregate.live_reserved_bytes,
-        (unsigned long long)memory_baseline.aggregate.retired_allocations,
-        (unsigned long long)memory_after.aggregate.retired_allocations);
-  return out_result->exact_draw_count == 6u &&
-         out_result->shared_sampler_reused &&
-         out_result->dependent_materials_republished &&
-         out_result->upload_wait_free &&
-         out_result->staging_retired_at_submit &&
-         out_result->memory_returned_to_baseline &&
-         out_result->sampled_images.slots_live ==
-             baseline.sampled_images.slots_live &&
-         out_result->sampled_images.slots_retired ==
-             baseline.sampled_images.slots_retired &&
-         out_result->storage_images.slots_live ==
-             baseline.storage_images.slots_live &&
-         out_result->storage_images.slots_retired ==
-             baseline.storage_images.slots_retired &&
-         out_result->samplers.slots_live == baseline.samplers.slots_live &&
-         out_result->samplers.slots_retired ==
-             baseline.samplers.slots_retired &&
-         out_result->materials.slots_live == baseline.materials.slots_live &&
-         out_result->materials.slots_retired ==
-             baseline.materials.slots_retired;
-}
-
-static bool8_t vkr_bindless_vk_half4_matches(const uint16_t value[4],
-                                             const uint16_t expected[4]) {
-  for (uint32_t channel = 0u; channel < 4u; ++channel) {
-    const uint16_t difference = value[channel] > expected[channel]
-                                    ? value[channel] - expected[channel]
-                                    : expected[channel] - value[channel];
-    if (difference > 2u)
-      return false_v;
-  }
-  return true_v;
-}
-
-bool8_t vkr_bindless_vulkan_renderer_run_ibl_test(
-    VkrBindlessVulkanRenderer *renderer,
-    VkrBindlessVulkanIblTestResult *out_result) {
-  if (!renderer || !out_result || renderer->frame_active ||
-      renderer->config.target_kind != VKR_PRESENT_TARGET_OFFSCREEN ||
-      renderer->config.sampled_image_capacity < 24u ||
-      !vkr_bindless_vulkan_renderer_wait_idle(renderer))
-    return false_v;
-  MemZero(out_result, sizeof(*out_result));
-  const uint16_t expected[4] = {0x3400u, 0x3800u, 0x3a00u, 0x3c00u};
-  MemCopy(out_result->expected, expected, sizeof(expected));
-  uint16_t pixels[8u * 4u * 4u] = {0};
-  for (uint32_t pixel = 0u; pixel < 8u * 4u; ++pixel)
-    MemCopy(&pixels[pixel * 4u], expected, sizeof(expected));
-  VkrTextureUploadRegion upload_region = {
-      .width = 8u,
-      .height = 4u,
-      .depth = 1u,
-      .byte_size = sizeof(pixels),
-  };
-  const uint32_t base_id = renderer->config.sampled_image_capacity - 20u;
-  const VkrTextureHandle equirect = {.id = base_id, .generation = 1u};
-  const VkrTextureHandle replacement_equirect = {
-      .id = base_id,
-      .generation = 2u,
-  };
-  const VkrTextureHandle source = {.id = base_id + 1u, .generation = 1u};
-  const VkrTextureHandle irradiance = {.id = base_id + 2u, .generation = 1u};
-  const VkrTextureHandle prefilter = {.id = base_id + 3u, .generation = 1u};
-  VkrTexturePreparedLoad prepared = {
-      .description = {.id = equirect.id,
-                      .generation = equirect.generation,
-                      .width = 8u,
-                      .height = 4u,
-                      .channels = 4u,
-                      .type = VKR_TEXTURE_TYPE_2D,
-                      .format = VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
-                      .sample_count = VKR_SAMPLE_COUNT_1,
-                      .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
-                      .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
-                      .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
-                      .min_filter = VKR_FILTER_LINEAR,
-                      .mag_filter = VKR_FILTER_LINEAR,
-                      .mip_filter = VKR_MIP_FILTER_NONE},
-      .upload_data = (uint8_t *)pixels,
-      .upload_data_size = sizeof(pixels),
-      .upload_regions = &upload_region,
-      .upload_region_count = 1u,
-      .upload_mip_levels = 1u,
-      .upload_array_layers = 1u,
-  };
-  VkrTextureDescription source_desc = prepared.description;
-  source_desc.id = source.id;
-  source_desc.generation = source.generation;
-  source_desc.width = source_desc.height = 4u;
-  source_desc.type = VKR_TEXTURE_TYPE_CUBE_MAP;
-  source_desc.mip_filter = VKR_MIP_FILTER_LINEAR;
-  VkrTextureDescription irradiance_desc = source_desc;
-  irradiance_desc.id = irradiance.id;
-  irradiance_desc.generation = irradiance.generation;
-  irradiance_desc.width = irradiance_desc.height = VKR_IBL_IRRADIANCE_SIZE;
-  irradiance_desc.mip_filter = VKR_MIP_FILTER_NONE;
-  VkrTextureDescription prefilter_desc = source_desc;
-  prefilter_desc.id = prefilter.id;
-  prefilter_desc.generation = prefilter.generation;
-  prefilter_desc.width = prefilter_desc.height = VKR_IBL_PREFILTER_SIZE;
-
-  VkrBindlessVulkanMemoryMetrics baseline = {0};
-  vkr_bindless_vulkan_renderer_memory_metrics(renderer, &baseline);
-  bool8_t passed =
-      vkr_bindless_vk_asset_publish_texture(renderer, equirect, &prepared);
-  if (!passed)
-    log_error("Bindless Vulkan V5 IBL test failed to publish equirect texture");
-  if (passed && !vkr_bindless_vk_asset_publish_writable_texture(
-                    renderer, source, &source_desc)) {
-    log_error("Bindless Vulkan V5 IBL test failed to publish source cube");
-    passed = false_v;
-  }
-  if (passed && !vkr_bindless_vk_asset_publish_writable_texture(
-                    renderer, irradiance, &irradiance_desc)) {
-    log_error("Bindless Vulkan V5 IBL test failed to publish irradiance cube");
-    passed = false_v;
-  }
-  if (passed && !vkr_bindless_vk_asset_publish_writable_texture(
-                    renderer, prefilter, &prefilter_desc)) {
-    log_error("Bindless Vulkan V5 IBL test failed to publish prefilter cube");
-    passed = false_v;
-  }
-  if (passed &&
-      !vkr_bindless_vk_queue_ibl_bake(renderer, equirect, source, irradiance,
-                                      prefilter, true_v)) {
-    log_error("Bindless Vulkan V5 IBL test failed to queue bake");
-    passed = false_v;
-  }
-  if (passed && !vkr_bindless_vk_asset_unpublish_texture(renderer, equirect)) {
-    log_error("Bindless Vulkan V5 IBL test failed to release delivery texture");
-    passed = false_v;
-  }
-  VkrTexturePreparedLoad replacement_prepared = prepared;
-  replacement_prepared.description.id = replacement_equirect.id;
-  replacement_prepared.description.generation = replacement_equirect.generation;
-  if (passed && !vkr_bindless_vk_asset_publish_texture(
-                    renderer, replacement_equirect, &replacement_prepared)) {
-    log_error(
-        "Bindless Vulkan V5 IBL test failed immediate texture-slot reuse");
-    passed = false_v;
-  }
-  VkrBindlessVulkanResult submitted = {0};
-  for (uint32_t frame = 0u;
-       passed && renderer->pending_ibl_bake_count && frame < 8u; ++frame) {
-    VkrFrameSetup setup = {0};
-    const VkrRenderPacket packet = {
-        .packet_version = VKR_RENDER_PACKET_VERSION,
-    };
-    passed = vkr_bindless_vulkan_renderer_prepare_frame(renderer, 3001u + frame,
-                                                        2048u, 1u, &setup) &&
-             vkr_bindless_vulkan_renderer_submit_packet(renderer, &packet,
-                                                        &submitted) &&
-             vkr_bindless_vulkan_renderer_wait_idle(renderer);
-    if (!passed)
-      log_error("Bindless Vulkan V5 IBL test frame %u failed", frame);
-  }
-  if (passed && renderer->pending_ibl_bake_count)
-    log_error("Bindless Vulkan V5 IBL test exhausted publication frames");
-  passed = passed && renderer->pending_ibl_bake_count == 0u;
-  VkrBindlessVkFrameSlot *capture = NULL;
-  for (uint32_t i = 0u; passed && i < VKR_BINDLESS_VK_FRAME_SLOT_COUNT; ++i) {
-    VkrBindlessVkFrameSlot *slot = &renderer->frame_slots[i];
-    if (slot->ibl_capture_pending &&
-        (!capture || slot->retire_value > capture->retire_value))
-      capture = slot;
-  }
-  if (passed && !capture)
-    log_error("Bindless Vulkan V5 IBL test produced no capture slot");
-  const uint64_t capture_bytes =
-      VKR_BINDLESS_VK_IBL_CAPTURE_OFFSET +
-      (1u + VKR_IBL_PREFILTER_MIP_COUNT) * VKR_BINDLESS_VK_IBL_TEXEL_BYTES;
-  passed = passed && capture &&
-           capture->ibl_capture_mip_count == VKR_IBL_PREFILTER_MIP_COUNT &&
-           vkr_bindless_vk_invalidate(renderer, &capture->readback.allocation,
-                                      0u, capture_bytes);
-  if (passed) {
-    const uint8_t *bytes = capture->readback.allocation.mapped;
-    MemCopy(out_result->irradiance, bytes + VKR_BINDLESS_VK_IBL_CAPTURE_OFFSET,
-            VKR_BINDLESS_VK_IBL_TEXEL_BYTES);
-    out_result->prefilter_mip_count = capture->ibl_capture_mip_count;
-    for (uint32_t mip = 0u; mip < out_result->prefilter_mip_count; ++mip) {
-      MemCopy(out_result->prefilter[mip],
-              bytes + VKR_BINDLESS_VK_IBL_CAPTURE_OFFSET +
-                  (uint64_t)(mip + 1u) * VKR_BINDLESS_VK_IBL_TEXEL_BYTES,
-              VKR_BINDLESS_VK_IBL_TEXEL_BYTES);
-    }
-    out_result->irradiance_matches =
-        vkr_bindless_vk_half4_matches(out_result->irradiance, expected);
-    out_result->all_prefilter_mips_match = true_v;
-    for (uint32_t mip = 0u; mip < out_result->prefilter_mip_count; ++mip)
-      out_result->all_prefilter_mips_match &=
-          vkr_bindless_vk_half4_matches(out_result->prefilter[mip], expected);
-    capture->ibl_capture_pending = false_v;
-  }
-
-  const VkrTextureHandle handles[] = {prefilter, irradiance, source,
-                                      replacement_equirect};
-  for (uint32_t i = 0u; i < ArrayCount(handles); ++i) {
-    VkrBindlessVkPublishedTexture *texture =
-        vkr_bindless_vk_published_texture(renderer, handles[i], NULL);
-    if (texture)
-      passed &= vkr_bindless_vk_asset_unpublish_texture(renderer, handles[i]);
-  }
-  vkr_bindless_vk_collect_asset_publications(
-      renderer, vkr_bindless_vk_refresh_completed(renderer));
-  VkrBindlessVulkanMemoryMetrics after = {0};
-  vkr_bindless_vulkan_renderer_memory_metrics(renderer, &after);
-  out_result->memory_returned_to_baseline =
-      after.aggregate.live_allocations == baseline.aggregate.live_allocations &&
-      after.aggregate.retired_allocations ==
-          baseline.aggregate.retired_allocations &&
-      after.aggregate.live_requested_bytes ==
-          baseline.aggregate.live_requested_bytes &&
-      after.aggregate.live_reserved_bytes ==
-          baseline.aggregate.live_reserved_bytes;
-  return passed && out_result->irradiance_matches &&
-         out_result->all_prefilter_mips_match &&
-         out_result->memory_returned_to_baseline;
-}
-
-void vkr_bindless_vulkan_renderer_validation_stats(
-    const VkrBindlessVulkanRenderer *renderer,
-    VkrBindlessVulkanValidationStats *out_stats) {
-  vkr_bindless_vulkan_device_validation_stats(
-      renderer ? renderer->device : NULL, out_stats);
-}
-
 void vkr_bindless_vulkan_renderer_destroy(VkrBindlessVulkanRenderer *renderer) {
   if (!renderer) {
     return;
@@ -9482,17 +8289,8 @@ void vkr_bindless_vulkan_renderer_destroy(VkrBindlessVulkanRenderer *renderer) {
       if (renderer->ibl_pipelines[i])
         vkDestroyPipeline(device, renderer->ibl_pipelines[i], NULL);
     }
-    if (renderer->pipeline) {
-      vkDestroyPipeline(device, renderer->pipeline, NULL);
-    }
     if (renderer->pipeline_layout) {
       vkDestroyPipelineLayout(device, renderer->pipeline_layout, NULL);
-    }
-    if (renderer->vertex_shader) {
-      vkDestroyShaderModule(device, renderer->vertex_shader, NULL);
-    }
-    if (renderer->fragment_shader) {
-      vkDestroyShaderModule(device, renderer->fragment_shader, NULL);
     }
     for (uint32_t i = 0u; i < VKR_BINDLESS_VK_PACKET_SHADER_COUNT; ++i) {
       if (renderer->packet_shaders[i])
