@@ -1,7 +1,7 @@
 ---
-status: partial
+status: implemented
 updated: 2026-08-12
-authority: audit
+authority: investigation
 ---
 
 # Bindless Renderer Audit — Metal 4 and Vulkan 1.4
@@ -11,8 +11,8 @@ performed 2026-08-12 against `lib/src/renderer/` (both selected
 implementations), the four shared GPU cores, and
 `lib/src/renderer/vulkan/bindless/shaders/packet.slang`.
 **Recommendations 1–11 are implemented in source as of 2026-08-12; see §7.**
-The document remains partial only because recommendation 10's changed Metal ABI
-still needs a native macOS build, API/GPU validation, and exact capture (§7.6).
+The recommendation-10 ABI now passes native Metal reflection, focused API/GPU
+validation, and exact final-color/picking capture on Apple M1 Pro (§7.7).
 
 **Authority:** This is an *audit* document. Per `AGENTS.md`, code remains the
 implementation authority, `renderer-architecture-spec.md` the status authority,
@@ -103,9 +103,8 @@ draw plus 432 bytes per non-empty pass. That is a static byte-count result, not 
 measured speedup. The local Release observation in §7.6 is non-authoritative and
 supports no faster/slower claim.
 
-The source implementation is present. Native Metal build/reflection,
-API/GPU-validation, and exact-capture evidence remain required before this
-audit's front matter can become `implemented`.
+The source implementation and both selected-backend reflection/capture gates
+now pass. Section 7.7 records the native Metal closure evidence.
 
 ---
 
@@ -602,21 +601,23 @@ landable.
 | 10 | Frame-root / draw-root split and move material params into the GPU row (§1.1) | The actual "fully bindless" gap; ~80% of per-draw upload bytes | Predeclared-tolerance Release pairs on both backends **plus** exact captures |
 | 11 | Adopt `vkr_internal` in both backends (§4.1) | Cosmetic; do it opportunistically inside #9, not as its own change | Compile |
 
-**Status: recommendations 1–11 are implemented in source (§7). Recommendation
-10 still has the native Metal evidence gate stated in §7.6.**
+**Status: recommendations 1–11 and their declared cross-backend correctness
+gates are complete (§7).**
 
 The audit originally required a matched Release profile before starting item
 10. The user later explicitly authorized the source implementation despite the
 unavailable authoritative cross-platform pair. Section 7.6 records that
 deviation and makes no performance claim; matched evidence and exact captures
-from both selected backends remain the acceptance policy.
+from both selected backends remain the acceptance policy. Section 7.7 records
+the completed Metal half of that policy.
 
 ---
 
 ## 7. Implementation record (2026-08-12)
 
 The initial pass implemented recommendations 1–8 and 11. What follows is what
-changed and what proved it; §§7.5–7.6 record the later Windows completion work.
+changed and what proved it; §§7.5–7.7 record the later Windows implementation
+and native Metal closure work.
 Every gate in §7.1 ran on macOS against Vulkan SDK 1.4.357.0
 (the repository minimum; the machine's default `VULKAN_SDK` still points at
 1.4.313.0, which cannot compile the bindless backend — see §7.1).
@@ -828,7 +829,7 @@ were subsequently implemented at the user's direction in §7.6:
 The user explicitly requested completion despite the unavailable authoritative
 cross-platform measurement prerequisite. The implementation preserves the
 evidence policy: it makes no performance claim, does not mutate an accepted
-baseline, and keeps this audit `partial` until native Metal evidence exists.
+baseline, and defers the native Metal closure evidence to §7.7.
 
 The completed source change is:
 
@@ -889,11 +890,47 @@ broader Debug Bistro attempt completed one child but exceeded the bounded
 diagnostic window during unoptimized asset-manifest hashing; it remains
 unavailable and is not needed for the focused command-recording verdict.
 
-**Only remaining closure gate:** build this exact Metal source on a supported
-macOS host, pass native pipeline reflection plus focused API/GPU validation, and
-produce the exact final-color and picking witnesses. Until that external gate
-passes, the code implementation is complete but this cross-platform audit is
-not.
+### 7.7 Native Metal closure
+
+The native gate initially did its job and rejected two latent ABI-contract
+defects before renderer creation:
+
+- runtime validation treated Metal's reflected pointer-element and buffer
+  alignments as exact host alignments. Xcode defines them as minimums; packed
+  Slang records can therefore report 4- or 8-byte minimum alignment while the
+  host safely places the same size/offset layout at 16-byte alignment. The
+  validator now requires the host authority to be an equal-or-stronger multiple
+  of the reflected minimum, with a focused CPU regression for compatible and
+  incompatible cases;
+- two Slang `uint3` padding members gave the generated Metal frame root 16-byte
+  vector alignment, shifting later fields and producing a 464-byte record.
+  Expressing those six padding words as scalars matches the host/native-MSL
+  arrays and restores the reflected 432-byte frame-root contract. Runtime ABI
+  diagnostics now report every mismatched field in one attempt.
+
+On Apple M1 Pro with Metal 4, the final source passed `./build_test.sh`,
+`./build_release.sh`, and `./build.sh Debug`. A normal Release, three-image,
+960×540 offscreen text snapshot passed as report
+`20260812T163826.676Z-01310f`, digest
+`sha256:e47e599b4eda4f4c89ffb6fddcc039e4b7b00fa741af38360e702943bbb80126`.
+Native pipeline creation/reflection accepted the draw, frame, material, vertex,
+instance, probe, and cascade hierarchy, and child stderr was empty. Its exact
+captures are:
+
+- `final_color`:
+  `sha256:019ba7752b653ea77dc8fce8e4125b042f67794d1978aa12044ed4c5b44ad3a6`;
+- `picking_ids`:
+  `sha256:ed47dbf1b5e6ade6820370e0313b257c3067d667dd277a1d0033c4d204a26388`.
+
+A separate focused Debug replay with `MTL_DEBUG_LAYER=1` and
+`MTL_SHADER_VALIDATION=1` passed as report
+`20260812T163901.620Z-0136ab`, digest
+`sha256:59d09423ed774a8c091638b08ab8b2dd86a2e687441e8ad54e7daadac9deab69`.
+Its stderr contains only the Metal API/GPU validation enablement notices, and
+both capture digests are identical to Release. These local dirty-tree snapshots
+are correctness witnesses, not accepted baselines or performance evidence; no
+baseline was proposed or mutated. They close the audit because the missing gate
+was native ABI/validation/exact-byte correctness, not performance authority.
 
 ## 8. Limits and evidence boundaries
 
