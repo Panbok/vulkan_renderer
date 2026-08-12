@@ -667,6 +667,15 @@ static void test_renderer_owner_metric_catalog(void) {
   assert(catalog[command_wait_index].kind == VKR_METRIC_KIND_GAUGE);
   assert(catalog[command_wait_index].unit == VKR_METRIC_UNIT_COUNT);
 
+  const uint32_t upload_exhaustion_index =
+      vkr_metric_id_index(renderer_metrics.ids.frame_upload_exhaustions);
+  assert(upload_exhaustion_index < catalog_count);
+  assert(strcmp(catalog[upload_exhaustion_index].name,
+                "frame.upload_exhaustions") == 0);
+  assert(catalog[upload_exhaustion_index].domain == VKR_METRIC_DOMAIN_FRAME);
+  assert(catalog[upload_exhaustion_index].kind == VKR_METRIC_KIND_GAUGE);
+  assert(catalog[upload_exhaustion_index].unit == VKR_METRIC_UNIT_COUNT);
+
   for (uint32_t owner = 0; owner < VKR_GPU_ALLOCATION_OWNER_COUNT; ++owner) {
     for (uint32_t row = 0; row < VKR_GPU_OWNER_METRIC_ROW_COUNT; ++row) {
       const VkrMetricId id = renderer_metrics.ids.gpu_owner[owner][row];

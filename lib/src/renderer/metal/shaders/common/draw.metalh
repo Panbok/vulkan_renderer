@@ -33,7 +33,13 @@ struct VkrMetalPacketMaterial {
   sampler emissive_sampler;
   uint material_id;
   uint flags;
-  ulong reserved;
+  uint alpha_mode;
+  uint reserved;
+  float4 material_emissive;
+  float4 material_dielectric_specular;
+  float4 material_surface;
+  float4 material_alpha;
+  float4 material_attenuation_color;
 };
 
 struct VkrMetalPacketIblProbe {
@@ -44,9 +50,9 @@ struct VkrMetalPacketIblProbe {
   float4 intensity_box;
 };
 
-struct VkrMetalPacketDrawRoot {
-  device VkrMetalPacketVertex *vertices;
+struct VkrMetalPacketFrameRoot {
   device VkrMetalPacketInstance *instances;
+  uint2 instance_address_padding;
   float4x4 view_projection;
   device VkrMetalPacketMaterial *materials;
   texturecube<float, access::sample> irradiance;
@@ -55,22 +61,18 @@ struct VkrMetalPacketDrawRoot {
   // explicit padding so every downstream offset is unchanged.
   ulong reserved_brdf_lut;
   float4 view_position;
-  uint material_index;
-  uint first_instance;
   uint prefilter_mip_count;
   uint flags;
-  float4 material_emissive;
-  float4 material_dielectric_specular;
-  float4 material_surface;
-  float4 material_alpha;
+  uint reserved_0;
+  uint reserved_1;
   float4 ibl_controls;
   float4 directional_direction_enabled;
   float4 directional_color_intensity;
   float4 ambient_color;
   uint render_mode;
-  uint alpha_mode;
-  uint material_flags;
-  uint reserved;
+  uint reserved_2;
+  uint reserved_3;
+  uint reserved_4;
   device float4 *point_light_data;
   device uint4 *point_light_masks;
   float4 point_light_grid_origin_cell_size;
@@ -88,10 +90,18 @@ struct VkrMetalPacketDrawRoot {
   uint shadow_reserved_0;
   uint shadow_reserved_1;
   texture2d<float, access::sample> transmission_source;
-  float4 material_attenuation_color;
   device VkrMetalPacketIblProbe *ibl_probes;
   uint ibl_probe_count;
   uint ibl_probe_reserved;
+};
+
+struct VkrMetalPacketDrawRoot {
+  device VkrMetalPacketVertex *vertices;
+  constant VkrMetalPacketFrameRoot *frame;
+  uint material_index;
+  uint first_instance;
+  uint reserved_0;
+  uint reserved_1;
 };
 
 struct VkrMetalPacketShadowCascade {
@@ -113,10 +123,12 @@ static_assert(sizeof(VkrMetalPacketVertex) == 64,
               "VkrVertex3d Metal ABI must remain 64 bytes");
 static_assert(sizeof(VkrMetalPacketInstance) == 80,
               "VkrInstanceDataGPU Metal ABI must remain 80 bytes");
-static_assert(sizeof(VkrMetalPacketMaterial) == 96,
-              "Metal material row ABI must remain 96 bytes");
-static_assert(sizeof(VkrMetalPacketDrawRoot) == 512,
-              "Metal packet draw root ABI must remain 512 bytes");
+static_assert(sizeof(VkrMetalPacketMaterial) == 176,
+              "Metal material row ABI must remain 176 bytes");
+static_assert(sizeof(VkrMetalPacketFrameRoot) == 432,
+              "Metal packet frame root ABI must remain 432 bytes");
+static_assert(sizeof(VkrMetalPacketDrawRoot) == 32,
+              "Metal packet draw root ABI must remain 32 bytes");
 static_assert(sizeof(VkrMetalPacketIblProbe) == 64,
               "Metal packet IBL probe ABI must remain 64 bytes");
 static_assert(sizeof(VkrMetalPacketShadowCascade) == 80,

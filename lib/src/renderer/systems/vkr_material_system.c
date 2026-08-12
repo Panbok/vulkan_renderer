@@ -697,7 +697,6 @@ void vkr_material_system_set_shadow_map(VkrMaterialSystem *system,
 void vkr_material_system_set_ibl_maps(VkrMaterialSystem *system,
                                       VkrTextureOpaqueHandle irradiance_map,
                                       VkrTextureOpaqueHandle prefilter_map,
-                                      VkrTextureOpaqueHandle brdf_lut,
                                       bool8_t enabled, float32_t intensity,
                                       float32_t diffuse_intensity,
                                       float32_t specular_intensity) {
@@ -705,7 +704,6 @@ void vkr_material_system_set_ibl_maps(VkrMaterialSystem *system,
 
   system->ibl_irradiance_map = irradiance_map;
   system->ibl_prefilter_map = prefilter_map;
-  system->ibl_brdf_lut = brdf_lut;
   system->ibl_enabled = enabled ? true_v : false_v;
   system->ibl_intensity = intensity;
   system->ibl_diffuse_intensity = diffuse_intensity;

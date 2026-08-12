@@ -2,14 +2,16 @@
 
 #include "renderer/vkr_gpu_slot_table.h"
 
-_Static_assert(sizeof(VkrMetalMaterialGpuRow) == 96,
-               "Metal material row ABI must remain 96 bytes");
+_Static_assert(sizeof(VkrMetalMaterialGpuRow) == 176,
+               "Metal material row ABI must remain 176 bytes");
 _Static_assert(offsetof(VkrMetalMaterialGpuRow, base_color_texture_id) == 16,
                "Metal material base texture offset changed");
 _Static_assert(offsetof(VkrMetalMaterialGpuRow, base_color_sampler_id) == 48,
                "Metal material sampler offset changed");
 _Static_assert(offsetof(VkrMetalMaterialGpuRow, material_id) == 80,
                "Metal material identifier offset changed");
+_Static_assert(offsetof(VkrMetalMaterialGpuRow, material_emissive) == 96,
+               "Metal material parameter offset changed");
 
 vkr_internal VkrMetalMaterialStatus
 vkr_metal_material_status(VkrGpuSlotStatus status) {

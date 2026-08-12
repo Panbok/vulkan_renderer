@@ -1,14 +1,17 @@
 /* Per-frame upload preparation, pass encoding, submission, and failure
  * rollback. */
 vkr_internal void *vkr_metal_packet_next_root(VkrMetalPacketFrameUpload *upload,
+                                              uint64_t size,
                                               uint64_t *out_gpu_address) {
-  if (!upload || upload->root_cursor >= upload->root_capacity)
+  if (!upload || !out_gpu_address || size == 0 ||
+      size > VKR_METAL_PACKET_DRAW_ROOT_STRIDE ||
+      upload->root_cursor >= upload->root_capacity)
     return NULL;
   const uint64_t offset =
       (uint64_t)upload->root_cursor++ * VKR_METAL_PACKET_DRAW_ROOT_STRIDE;
   *out_gpu_address = upload->root_gpu + offset;
   void *root = upload->root_cpu + offset;
-  MemZero(root, VKR_METAL_PACKET_DRAW_ROOT_STRIDE);
+  MemZero(root, size);
   return root;
 }
 
@@ -46,7 +49,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_draws(
     id<MTLRenderPipelineState> pipeline, id<MTLDepthStencilState> depth_state,
     const VkrDrawItem *draws, uint32_t draw_count, uint64_t instances_gpu,
     uint32_t instance_count, uint32_t target_width, uint32_t target_height,
-    Mat4 view_projection, const VkrRenderPacket *packet, bool8_t ibl_enabled,
+    Mat4 view_projection, const VkrRenderPacket *packet, bool8_t lighting_pass,
     bool8_t transmission_pass, VkrMetalPacketFrameUpload *upload,
     uint32_t *domain_draw_count, VkrMetalPacketResult *result)
     API_AVAILABLE(macos(26.0)) {
@@ -67,8 +70,56 @@ vkr_internal bool8_t vkr_metal_packet_encode_draws(
   [encoder setRenderPipelineState:pipeline];
   const Mat4 slang_view_projection =
       vkr_metal_packet_slang_draw_matrix(view_projection);
-  const VkrPacketFrameConstants frame =
+  const VkrPacketFrameConstants frame_constants =
       vkr_packet_derive_frame_constants(packet, target_width, target_height);
+  uint64_t frame_root_gpu = 0;
+  VkrMetalPacketFrameRoot *frame_root =
+      vkr_metal_packet_next_root(upload, sizeof(*frame_root), &frame_root_gpu);
+  if (!frame_root) {
+    log_error("Metal frame root upload exhausted: cursor=%u capacity=%u",
+              upload->root_cursor, upload->root_capacity);
+    return false_v;
+  }
+  const uint32_t frame_flags = vkr_packet_derive_frame_flags(
+      packet, lighting_pass, renderer->ibl_ready, transmission_pass);
+  *frame_root = (VkrMetalPacketFrameRoot){
+      .instances = instances_gpu,
+      .view_projection = slang_view_projection,
+      .materials =
+          vkr_metal_material_table_device_gpu_address(renderer->materials),
+      .irradiance_texture_id = renderer->ibl_irradiance.resource_id,
+      .prefilter_texture_id = renderer->ibl_prefilter.resource_id,
+      .view_position = frame_constants.view_position,
+      .prefilter_mip_count = frame_constants.prefilter_mip_count,
+      .flags = frame_flags,
+      .ibl_controls = frame_constants.ibl_controls,
+      .directional_direction_enabled =
+          frame_constants.directional_direction_enabled,
+      .directional_color_intensity =
+          frame_constants.directional_color_intensity,
+      .ambient_color = frame_constants.ambient_color,
+      .render_mode = frame_constants.render_mode,
+      .point_light_data = upload->point_light_data_gpu,
+      .point_light_masks = upload->point_light_masks_gpu,
+      .point_light_grid_origin_cell_size =
+          frame_constants.point_light_grid_origin_cell_size,
+      .point_light_grid_dimensions_count =
+          {frame_constants.point_light_grid_dimensions_count[0],
+           frame_constants.point_light_grid_dimensions_count[1],
+           frame_constants.point_light_grid_dimensions_count[2],
+           frame_constants.point_light_grid_dimensions_count[3]},
+      .point_light_global_mask = frame_constants.point_light_global_mask,
+      .point_light_count = frame_constants.point_light_count,
+      .shadow_texture_id = upload->shadow_texture_id,
+      .shadow_cascades = upload->shadow_cascades_gpu,
+      .view = frame_constants.view,
+      .shadow_cascade_count = frame_constants.shadow_cascade_count,
+      .shadow_bias = frame_constants.shadow_bias,
+      .transmission_texture_id = upload->transmission_texture_id,
+      .ibl_probes = upload->ibl_probes_gpu,
+      .ibl_probe_count =
+          packet->lighting ? packet->lighting->ibl_probe_count : 0,
+  };
   for (uint32_t i = 0; i < draw_count; ++i) {
     const VkrDrawItem *draw = &draws[i];
     if (draw->instance_count == 0 || draw->first_instance > instance_count ||
@@ -106,69 +157,17 @@ vkr_internal bool8_t vkr_metal_packet_encode_draws(
         (uint64_t)submesh->first_index * sizeof(uint32_t);
     uint64_t root_gpu = 0;
     VkrMetalPacketDrawRoot *root =
-        vkr_metal_packet_next_root(upload, &root_gpu);
+        vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
     if (!root) {
       log_error("Metal draw %u root upload exhausted: cursor=%u capacity=%u", i,
                 upload->root_cursor, upload->root_capacity);
       return false_v;
     }
-    /* Frame and material scalars come from the shared backend-neutral
-       derivation so this lowering cannot drift from the Vulkan one. Everything
-       else here is genuinely Metal-specific: GPU addresses, MTLResourceID
-       texture references, and the IBL-enabled predicate. */
-    const VkrPacketMaterialConstants material_constants =
-        vkr_packet_derive_material_constants(
-            &material->pbr, material->alpha_cutoff, material->alpha_mode,
-            transmission_pass);
     *root = (VkrMetalPacketDrawRoot){
         .vertices = mesh->vertices.gpu_address,
-        .instances = instances_gpu,
-        .view_projection = slang_view_projection,
-        .materials =
-            vkr_metal_material_table_device_gpu_address(renderer->materials),
-        .irradiance_texture_id = renderer->ibl_irradiance.resource_id,
-        .prefilter_texture_id = renderer->ibl_prefilter.resource_id,
+        .frame = frame_root_gpu,
         .material_index = material->row_index,
         .first_instance = draw->first_instance,
-        .flags = ibl_enabled ? 1u : 0u,
-        .material_flags =
-            packet->lighting && packet->lighting->ibl_enabled ? 1u : 0u,
-        .reserved = 0u,
-        .point_light_data = upload->point_light_data_gpu,
-        .point_light_masks = upload->point_light_masks_gpu,
-        .shadow_texture_id = upload->shadow_texture_id,
-        .shadow_cascades = upload->shadow_cascades_gpu,
-        .transmission_texture_id = upload->transmission_texture_id,
-        .ibl_probes = upload->ibl_probes_gpu,
-        .ibl_probe_count =
-            packet->lighting ? packet->lighting->ibl_probe_count : 0,
-
-        .view_position = frame.view_position,
-        .prefilter_mip_count = frame.prefilter_mip_count,
-        .ibl_controls = frame.ibl_controls,
-        .directional_direction_enabled = frame.directional_direction_enabled,
-        .directional_color_intensity = frame.directional_color_intensity,
-        .ambient_color = frame.ambient_color,
-        .render_mode = frame.render_mode,
-        .point_light_grid_origin_cell_size =
-            frame.point_light_grid_origin_cell_size,
-        .point_light_grid_dimensions_count =
-            {frame.point_light_grid_dimensions_count[0],
-             frame.point_light_grid_dimensions_count[1],
-             frame.point_light_grid_dimensions_count[2],
-             frame.point_light_grid_dimensions_count[3]},
-        .point_light_global_mask = frame.point_light_global_mask,
-        .point_light_count = frame.point_light_count,
-        .view = frame.view,
-        .shadow_cascade_count = frame.shadow_cascade_count,
-        .shadow_bias = frame.shadow_bias,
-
-        .material_emissive = material_constants.emissive,
-        .material_dielectric_specular = material_constants.dielectric_specular,
-        .material_surface = material_constants.surface,
-        .material_alpha = material_constants.alpha,
-        .material_attenuation_color = material_constants.attenuation_color,
-        .alpha_mode = material_constants.alpha_mode,
     };
     [renderer->argument_table setAddress:root_gpu atIndex:0];
     [renderer->argument_table setAddress:root_gpu atIndex:1];
@@ -185,7 +184,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_draws(
     const uint64_t pending_submit = renderer->submit_value + 1;
     mesh->last_use_submit_value = pending_submit;
     material->last_use_submit_value = pending_submit;
-    if (ibl_enabled)
+    if ((frame_flags & VKR_PACKET_FRAME_FLAG_IBL) != 0u)
       renderer->ibl_last_use_submit_value = pending_submit;
     (*domain_draw_count)++;
     result->indexed_draw_count++;
@@ -221,7 +220,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_text_draws(
       return false_v;
     uint64_t root_gpu = 0;
     VkrMetalPacketTextRoot *root =
-        vkr_metal_packet_next_root(upload, &root_gpu);
+        vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
     if (!root)
       return false_v;
     *root = (VkrMetalPacketTextRoot){
@@ -265,7 +264,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_tonemap(
     return false_v;
   uint64_t root_gpu = 0;
   VkrMetalPacketTonemapRoot *root =
-      vkr_metal_packet_next_root(upload, &root_gpu);
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
   if (!root)
     return false_v;
   *root = (VkrMetalPacketTonemapRoot){
@@ -297,7 +296,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_skybox(
     return false_v;
   uint64_t root_gpu = 0;
   VkrMetalPacketSkyboxRoot *root =
-      vkr_metal_packet_next_root(upload, &root_gpu);
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
   if (!root)
     return false_v;
   Mat4 view = packet->globals.view;
@@ -344,7 +343,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_ibl(
 
   uint64_t root_gpu = 0;
   VkrMetalPacketIrradianceRoot *irradiance_root =
-      vkr_metal_packet_next_root(upload, &root_gpu);
+      vkr_metal_packet_next_root(upload, sizeof(*irradiance_root), &root_gpu);
   if (!irradiance_root)
     return false_v;
   *irradiance_root = (VkrMetalPacketIrradianceRoot){
@@ -363,7 +362,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_ibl(
 
   for (uint32_t mip = 0; mip < VKR_IBL_PREFILTER_MIP_COUNT; ++mip) {
     VkrMetalPacketPrefilterRoot *prefilter_root =
-        vkr_metal_packet_next_root(upload, &root_gpu);
+        vkr_metal_packet_next_root(upload, sizeof(*prefilter_root), &root_gpu);
     if (!prefilter_root)
       return false_v;
     const uint32_t mip_size = Max(1u, VKR_IBL_PREFILTER_SIZE >> mip);

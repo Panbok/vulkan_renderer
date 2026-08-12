@@ -138,6 +138,9 @@ uint64_t vkr_bindless_vulkan_renderer_completed_value(
     const VkrBindlessVulkanRenderer *renderer);
 bool8_t vkr_bindless_vulkan_renderer_get_and_reset_upload_wait_count(
     VkrBindlessVulkanRenderer *renderer, uint64_t *out_wait_count);
+bool8_t
+vkr_bindless_vulkan_renderer_get_and_reset_frame_upload_exhaustion_count(
+    VkrBindlessVulkanRenderer *renderer, uint64_t *out_exhaustion_count);
 bool8_t vkr_bindless_vulkan_renderer_get_and_reset_command_slot_wait_count(
     VkrBindlessVulkanRenderer *renderer, uint64_t *out_wait_count);
 void vkr_bindless_vulkan_renderer_memory_metrics(

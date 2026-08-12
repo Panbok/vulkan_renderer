@@ -20,33 +20,67 @@ struct VkrMetalPacketInstance
     uint reserved_2;
 };
 
-struct VkrMetalPacketDrawRoot
+struct VkrMetalPacketShadowCascade
 {
-    StructuredBuffer<VkrMetalPacketVertex> vertices;
+    column_major float4x4 light_view_projection;
+    float4 split_depth;
+};
+
+struct VkrMetalPacketIblProbe
+{
+    TextureCube<float4> irradiance;
+    TextureCube<float4> prefilter;
+    float4 center_blend;
+    float4 extents_weight;
+    float4 intensity_box;
+};
+
+struct VkrMetalPacketFrameRoot
+{
     StructuredBuffer<VkrMetalPacketInstance> instances;
+    uint2 instance_address_padding;
     column_major float4x4 view_projection;
-    uint64_t materials_address;
+    uint64_t materials;
     TextureCube<float4> irradiance;
     TextureCube<float4> prefilter;
     // Retired; see draw.metalh. Explicit padding, not a resource.
     uint64_t reserved_brdf_lut;
     float4 view_position;
-    uint material_index;
-    uint first_instance;
     uint prefilter_mip_count;
     uint flags;
-    float4 material_emissive;
-    float4 material_dielectric_specular;
-    float4 material_surface;
-    float4 material_alpha;
+    uint2 reserved_0;
     float4 ibl_controls;
     float4 directional_direction_enabled;
     float4 directional_color_intensity;
     float4 ambient_color;
     uint render_mode;
-    uint alpha_mode;
-    uint material_flags;
-    uint reserved;
+    uint3 reserved_1;
+    StructuredBuffer<float4> point_light_data;
+    StructuredBuffer<uint4> point_light_masks;
+    float4 point_light_grid_origin_cell_size;
+    uint4 point_light_grid_dimensions_count;
+    uint4 point_light_global_mask;
+    uint point_light_count;
+    uint3 point_light_reserved;
+    Texture2DArray<float4> shadow_map;
+    StructuredBuffer<VkrMetalPacketShadowCascade> shadow_cascades;
+    column_major float4x4 view;
+    uint shadow_cascade_count;
+    float shadow_bias;
+    uint2 shadow_reserved;
+    Texture2D<float4> transmission_source;
+    StructuredBuffer<VkrMetalPacketIblProbe> ibl_probes;
+    uint ibl_probe_count;
+    uint ibl_probe_reserved;
+};
+
+struct VkrMetalPacketDrawRoot
+{
+    StructuredBuffer<VkrMetalPacketVertex> vertices;
+    ParameterBlock<VkrMetalPacketFrameRoot> frame;
+    uint material_index;
+    uint first_instance;
+    uint2 reserved;
 };
 
 struct VkrMetalPacketVertexOutput

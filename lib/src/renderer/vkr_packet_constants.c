@@ -69,3 +69,41 @@ vkr_packet_derive_frame_constants(const VkrRenderPacket *packet,
   constants.view = packet->globals.view;
   return constants;
 }
+
+uint32_t vkr_packet_derive_frame_flags(const VkrRenderPacket *packet,
+                                       bool8_t lighting_pass,
+                                       bool8_t ibl_resources_ready,
+                                       bool8_t transmission_pass) {
+  uint32_t flags = 0u;
+  if (lighting_pass)
+    flags |= VKR_PACKET_FRAME_FLAG_LIGHTING;
+  if (lighting_pass && ibl_resources_ready && packet && packet->lighting &&
+      packet->lighting->ibl_enabled)
+    flags |= VKR_PACKET_FRAME_FLAG_IBL;
+  if (transmission_pass)
+    flags |= VKR_PACKET_FRAME_FLAG_TRANSMISSION;
+  return flags;
+}
+
+VkrPacketMaterialConstants
+vkr_packet_derive_material_constants(const VkrPbrProperties *pbr,
+                                     float32_t alpha_cutoff,
+                                     VkrMaterialAlphaMode alpha_mode) {
+  if (!pbr)
+    return (VkrPacketMaterialConstants){0};
+  return (VkrPacketMaterialConstants){
+      .emissive = {pbr->emissive_factor.x, pbr->emissive_factor.y,
+                   pbr->emissive_factor.z, 0.0f},
+      .dielectric_specular = {pbr->dielectric_specular.x,
+                              pbr->dielectric_specular.y,
+                              pbr->dielectric_specular.z, 0.0f},
+      .surface = {pbr->metallic, pbr->roughness, pbr->normal_scale,
+                  pbr->occlusion_strength},
+      .alpha = {alpha_cutoff, pbr->transmission_factor, pbr->ior,
+                pbr->thickness_factor},
+      .attenuation_color = {pbr->attenuation_color.x, pbr->attenuation_color.y,
+                            pbr->attenuation_color.z,
+                            pbr->attenuation_distance},
+      .alpha_mode = (uint32_t)alpha_mode,
+  };
+}

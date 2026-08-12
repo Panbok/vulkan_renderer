@@ -1269,7 +1269,11 @@ static bool8_t renderer_impl_bindless_upload_wait_stats(
   RendererFrontend *renderer = state;
   MemZero(out_stats, sizeof(*out_stats));
   return vkr_bindless_vulkan_renderer_get_and_reset_upload_wait_count(
-      renderer->bindless_vulkan_renderer, &out_stats->fence_wait_count);
+             renderer->bindless_vulkan_renderer,
+             &out_stats->fence_wait_count) &&
+         vkr_bindless_vulkan_renderer_get_and_reset_frame_upload_exhaustion_count(
+             renderer->bindless_vulkan_renderer,
+             &out_stats->frame_upload_exhaustion_count);
 }
 
 static bool8_t
@@ -1663,6 +1667,7 @@ bool8_t vkr_renderer_get_and_reset_upload_wait_stats(
   out_stats->fence_wait_count = 0;
   out_stats->queue_wait_idle_count = 0;
   out_stats->device_wait_idle_count = 0;
+  out_stats->frame_upload_exhaustion_count = 0;
   return renderer->impl.ops->get_and_reset_upload_wait_stats(
       renderer->impl.state, out_stats);
 }

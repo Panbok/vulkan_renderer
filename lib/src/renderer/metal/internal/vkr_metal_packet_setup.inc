@@ -74,9 +74,9 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_type(
     const VkrMetalPacketAbiField *field = &record->fields[i];
     MTLStructMember *member = [shader_type
         memberByName:[NSString stringWithUTF8String:field->shader_name]];
-    if (!member && record_id == VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT) {
+    for (uint32_t suffix = 0; !member && suffix < 4; ++suffix) {
       NSString *slang_name =
-          [NSString stringWithFormat:@"%s_0", field->shader_name];
+          [NSString stringWithFormat:@"%s_%u", field->shader_name, suffix];
       member = [shader_type memberByName:slang_name];
     }
     if (!member || member.offset != field->expected_offset) {
@@ -97,6 +97,10 @@ vkr_internal bool8_t vkr_metal_packet_validate_nested_abi(
     VkrMetalPacketAbiRecordId record_id) API_AVAILABLE(macos(26.0)) {
   MTLStructMember *member =
       [root_type memberByName:[NSString stringWithUTF8String:member_name]];
+  if (!member) {
+    NSString *slang_name = [NSString stringWithFormat:@"%s_0", member_name];
+    member = [root_type memberByName:slang_name];
+  }
   MTLPointerType *pointer = member.pointerType;
   return member && pointer &&
                  vkr_metal_packet_validate_abi_type(
@@ -104,6 +108,19 @@ vkr_internal bool8_t vkr_metal_packet_validate_nested_abi(
                      pointer.dataSize, pointer.alignment, record_id)
              ? true_v
              : false_v;
+}
+
+vkr_internal MTLStructType *
+vkr_metal_packet_nested_struct(MTLStructType *root_type,
+                               const char *member_name)
+    API_AVAILABLE(macos(26.0)) {
+  MTLStructMember *member =
+      [root_type memberByName:[NSString stringWithUTF8String:member_name]];
+  if (!member) {
+    NSString *slang_name = [NSString stringWithFormat:@"%s_0", member_name];
+    member = [root_type memberByName:slang_name];
+  }
+  return member.pointerType.elementStructType;
 }
 
 vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
@@ -128,23 +145,33 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
                 pipeline_label.UTF8String);
     return false_v;
   }
-  if (record_id == VKR_METAL_PACKET_ABI_DRAW_ROOT &&
-      (!vkr_metal_packet_validate_nested_abi(pipeline_label,
-                                             root.bufferStructType, "vertices",
-                                             VKR_METAL_PACKET_ABI_VERTEX) ||
-       !vkr_metal_packet_validate_nested_abi(pipeline_label,
-                                             root.bufferStructType, "instances",
-                                             VKR_METAL_PACKET_ABI_INSTANCE) ||
-       !vkr_metal_packet_validate_nested_abi(pipeline_label,
-                                             root.bufferStructType, "materials",
-                                             VKR_METAL_PACKET_ABI_MATERIAL) ||
-       !vkr_metal_packet_validate_nested_abi(
-           pipeline_label, root.bufferStructType, "ibl_probes",
-           VKR_METAL_PACKET_ABI_IBL_PROBE) ||
-       !vkr_metal_packet_validate_nested_abi(
-           pipeline_label, root.bufferStructType, "shadow_cascades",
-           VKR_METAL_PACKET_ABI_SHADOW_CASCADE)))
-    return false_v;
+  if (record_id == VKR_METAL_PACKET_ABI_DRAW_ROOT ||
+      record_id == VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT) {
+    if (!vkr_metal_packet_validate_nested_abi(pipeline_label,
+                                              root.bufferStructType, "vertices",
+                                              VKR_METAL_PACKET_ABI_VERTEX) ||
+        !vkr_metal_packet_validate_nested_abi(pipeline_label,
+                                              root.bufferStructType, "frame",
+                                              VKR_METAL_PACKET_ABI_FRAME_ROOT))
+      return false_v;
+    MTLStructType *frame_type =
+        vkr_metal_packet_nested_struct(root.bufferStructType, "frame");
+    if (!frame_type ||
+        !vkr_metal_packet_validate_nested_abi(pipeline_label, frame_type,
+                                              "instances",
+                                              VKR_METAL_PACKET_ABI_INSTANCE) ||
+        !vkr_metal_packet_validate_nested_abi(pipeline_label, frame_type,
+                                              "ibl_probes",
+                                              VKR_METAL_PACKET_ABI_IBL_PROBE) ||
+        !vkr_metal_packet_validate_nested_abi(
+            pipeline_label, frame_type, "shadow_cascades",
+            VKR_METAL_PACKET_ABI_SHADOW_CASCADE) ||
+        (record_id == VKR_METAL_PACKET_ABI_DRAW_ROOT &&
+         !vkr_metal_packet_validate_nested_abi(pipeline_label, frame_type,
+                                               "materials",
+                                               VKR_METAL_PACKET_ABI_MATERIAL)))
+      return false_v;
+  }
   if (record_id == VKR_METAL_PACKET_ABI_TEXT_ROOT &&
       !vkr_metal_packet_validate_nested_abi(pipeline_label,
                                             root.bufferStructType, "vertices",

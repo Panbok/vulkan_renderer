@@ -1,5 +1,5 @@
-float vkr_metal_packet_directional_shadow(constant VkrMetalPacketDrawRoot *root,
-                                          float3 world_position) {
+float vkr_metal_packet_directional_shadow(
+    constant VkrMetalPacketFrameRoot *root, float3 world_position) {
   if (root->shadow_cascade_count == 0u || root->shadow_cascades == nullptr)
     return 1.0;
   float view_depth = abs((root->view * float4(world_position, 1.0)).z);

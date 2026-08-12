@@ -1046,6 +1046,8 @@ typedef struct VkrRendererUploadWaitStats {
   uint64_t fence_wait_count;
   uint64_t queue_wait_idle_count;
   uint64_t device_wait_idle_count;
+  /** Frame-upload allocation failures observed since the previous read. */
+  uint64_t frame_upload_exhaustion_count;
 } VkrRendererUploadWaitStats;
 
 /** Maximum device memory types/heaps reported; matches VK_MAX_MEMORY_TYPES. */

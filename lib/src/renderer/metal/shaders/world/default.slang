@@ -5,14 +5,15 @@ vkr_metal_packet_vertex(uint vertex_id : SV_VertexID,
                         ParameterBlock<VkrMetalPacketDrawRoot> root
                             : register(b0))
 {
+    VkrMetalPacketFrameRoot frame = root.frame;
     VkrMetalPacketVertex vertex = root.vertices[vertex_id];
     VkrMetalPacketInstance instance =
-        root.instances[root.first_instance + instance_id];
+        frame.instances[root.first_instance + instance_id];
     VkrMetalPacketVertexOutput output;
     float3 position =
         float3(vertex.position_x, vertex.position_y, vertex.position_z);
     float4 world_position = mul(instance.model, float4(position, 1.0));
-    output.position = mul(root.view_projection, world_position);
+    output.position = mul(frame.view_projection, world_position);
     output.texcoord = vertex.texcoord;
     output.color = vertex.color;
     output.object_id = instance.object_id;

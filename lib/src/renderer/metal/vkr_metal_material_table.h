@@ -1,6 +1,7 @@
 #pragma once
 
 #include "defines.h"
+#include "math/vec.h"
 #include "memory/vkr_allocator.h"
 
 typedef struct VkrMetalMaterialTableCore VkrMetalMaterialTableCore;
@@ -34,7 +35,13 @@ typedef struct VKR_SIMD_ALIGN VkrMetalMaterialGpuRow {
   uint64_t emissive_sampler_id;
   uint32_t material_id;
   uint32_t flags;
-  uint64_t reserved;
+  uint32_t alpha_mode;
+  uint32_t reserved;
+  Vec4 material_emissive;
+  Vec4 material_dielectric_specular;
+  Vec4 material_surface;
+  Vec4 material_alpha;
+  Vec4 material_attenuation_color;
 } VkrMetalMaterialGpuRow;
 
 typedef struct VkrMetalMaterialTableConfig {

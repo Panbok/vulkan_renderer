@@ -17,10 +17,10 @@ static INLINE Mat4 vkr_metal_packet_slang_draw_matrix(Mat4 matrix) {
   return mat4_transpose(matrix);
 }
 
-/** Host representations of every record read through a packet GPU address. */
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketDrawRoot {
-  uint64_t vertices;
+/** Values shared by every indexed draw encoded for one pass. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketFrameRoot {
   uint64_t instances;
+  uint32_t instance_address_padding[2];
   Mat4 view_projection;
   uint64_t materials;
   uint64_t irradiance_texture_id;
@@ -29,22 +29,15 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketDrawRoot {
      backends; this stays as named padding so no downstream offset moves. */
   uint64_t reserved_brdf_lut;
   Vec4 view_position;
-  uint32_t material_index;
-  uint32_t first_instance;
   uint32_t prefilter_mip_count;
   uint32_t flags;
-  Vec4 material_emissive;
-  Vec4 material_dielectric_specular;
-  Vec4 material_surface;
-  Vec4 material_alpha;
+  uint32_t reserved_0[2];
   Vec4 ibl_controls;
   Vec4 directional_direction_enabled;
   Vec4 directional_color_intensity;
   Vec4 ambient_color;
   uint32_t render_mode;
-  uint32_t alpha_mode;
-  uint32_t material_flags;
-  uint32_t reserved;
+  uint32_t reserved_1[3];
   uint64_t point_light_data;
   uint64_t point_light_masks;
   Vec4 point_light_grid_origin_cell_size;
@@ -59,41 +52,21 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketDrawRoot {
   float32_t shadow_bias;
   uint32_t shadow_reserved[2];
   uint64_t transmission_texture_id;
-  Vec4 material_attenuation_color;
   uint64_t ibl_probes;
   uint32_t ibl_probe_count;
   uint32_t ibl_probe_reserved;
-} VkrMetalPacketDrawRoot;
+} VkrMetalPacketFrameRoot;
 
-/** Slang vertex functions intentionally consume only this draw-root prefix. */
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketVertexDrawRoot {
+/** The only record written per indexed packet draw. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketDrawRoot {
   uint64_t vertices;
-  uint64_t instances;
-  Mat4 view_projection;
-  uint64_t materials;
-  uint64_t irradiance_texture_id;
-  uint64_t prefilter_texture_id;
-  /* Retired BRDF-LUT slot. The environment BRDF is analytic on both
-     backends; this stays as named padding so no downstream offset moves. */
-  uint64_t reserved_brdf_lut;
-  Vec4 view_position;
+  uint64_t frame;
   uint32_t material_index;
   uint32_t first_instance;
-  uint32_t prefilter_mip_count;
-  uint32_t flags;
-  Vec4 material_emissive;
-  Vec4 material_dielectric_specular;
-  Vec4 material_surface;
-  Vec4 material_alpha;
-  Vec4 ibl_controls;
-  Vec4 directional_direction_enabled;
-  Vec4 directional_color_intensity;
-  Vec4 ambient_color;
-  uint32_t render_mode;
-  uint32_t alpha_mode;
-  uint32_t material_flags;
-  uint32_t reserved;
-} VkrMetalPacketVertexDrawRoot;
+  uint32_t reserved[2];
+} VkrMetalPacketDrawRoot;
+
+typedef VkrMetalPacketDrawRoot VkrMetalPacketVertexDrawRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketIblProbe {
   uint64_t irradiance_texture_id;
@@ -164,6 +137,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_TEXT_VERTEX,
   VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
   VKR_METAL_PACKET_ABI_DRAW_ROOT,
+  VKR_METAL_PACKET_ABI_FRAME_ROOT,
   VKR_METAL_PACKET_ABI_IBL_PROBE,
   VKR_METAL_PACKET_ABI_SHADOW_CASCADE,
   VKR_METAL_PACKET_ABI_TONEMAP_ROOT,

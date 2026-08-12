@@ -437,6 +437,8 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
                    VKR_METRIC_DOMAIN_UPLOAD, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(upload_device_idle_waits, "upload.device_idle_waits",
                    VKR_METRIC_DOMAIN_UPLOAD, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(frame_upload_exhaustions, "frame.upload_exhaustions",
+                   VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(frame_command_slot_waits, "frame.command_slot_waits",
                    VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_UNIT_COUNT);
   // Durations are nanoseconds; the name deliberately carries no unit suffix.
@@ -1083,6 +1085,7 @@ void vkr_renderer_metrics_collect(
     VKR_SET_U64(upload_fence_waits, waits.fence_wait_count);
     VKR_SET_U64(upload_queue_idle_waits, waits.queue_wait_idle_count);
     VKR_SET_U64(upload_device_idle_waits, waits.device_wait_idle_count);
+    VKR_SET_U64(frame_upload_exhaustions, waits.frame_upload_exhaustion_count);
   }
 
   // This collector is the sole reset owner; consumers use the published frame.

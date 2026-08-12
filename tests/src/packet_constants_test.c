@@ -95,10 +95,10 @@ static void test_packet_material_constants(void) {
   };
   const VkrPacketMaterialConstants constants =
       vkr_packet_derive_material_constants(&pbr, 0.42f,
-                                           VKR_MATERIAL_ALPHA_CUTOUT, true_v);
+                                           VKR_MATERIAL_ALPHA_CUTOUT);
   assert(constants.emissive.x == 0.5f && constants.emissive.w == 0.0f);
   assert(constants.dielectric_specular.x == 0.8f &&
-         constants.dielectric_specular.w == 1.0f);
+         constants.dielectric_specular.w == 0.0f);
   assert(constants.surface.x == 0.1f && constants.surface.y == 0.2f &&
          constants.surface.z == 0.3f && constants.surface.w == 0.4f);
   assert(constants.alpha.x == 0.42f && constants.alpha.y == 0.25f &&
@@ -109,10 +109,30 @@ static void test_packet_material_constants(void) {
   printf("  test_packet_material_constants PASSED\n");
 }
 
+static void test_packet_frame_flags(void) {
+  printf("  Running test_packet_frame_flags...\n");
+  VkrFrameLighting lighting = {.ibl_enabled = true_v};
+  VkrRenderPacket packet = {.lighting = &lighting};
+
+  assert(vkr_packet_derive_frame_flags(&packet, true_v, true_v, false_v) ==
+         (VKR_PACKET_FRAME_FLAG_LIGHTING | VKR_PACKET_FRAME_FLAG_IBL));
+  assert(vkr_packet_derive_frame_flags(&packet, true_v, false_v, true_v) ==
+         (VKR_PACKET_FRAME_FLAG_LIGHTING | VKR_PACKET_FRAME_FLAG_TRANSMISSION));
+  assert(vkr_packet_derive_frame_flags(&packet, false_v, true_v, false_v) ==
+         0u);
+  lighting.ibl_enabled = false_v;
+  assert(vkr_packet_derive_frame_flags(&packet, true_v, true_v, false_v) ==
+         VKR_PACKET_FRAME_FLAG_LIGHTING);
+  assert(vkr_packet_derive_frame_flags(NULL, true_v, true_v, true_v) ==
+         (VKR_PACKET_FRAME_FLAG_LIGHTING | VKR_PACKET_FRAME_FLAG_TRANSMISSION));
+  printf("  test_packet_frame_flags PASSED\n");
+}
+
 bool32_t run_packet_constants_tests(void) {
   printf("Running packet constants tests...\n");
   test_packet_frame_constants();
   test_packet_material_constants();
+  test_packet_frame_flags();
   printf("Packet constants tests PASSED\n");
   return true_v;
 }

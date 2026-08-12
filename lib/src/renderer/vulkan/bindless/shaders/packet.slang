@@ -29,7 +29,13 @@ struct VkrBindlessMaterial
     uint emissive_sampler;
     uint material_id;
     uint flags;
-    uint2 reserved;
+    uint alpha_mode;
+    uint reserved;
+    float4 material_emissive;
+    float4 material_dielectric_specular;
+    float4 material_surface;
+    float4 material_alpha;
+    float4 material_attenuation_color;
 };
 
 struct VkrBindlessShadowCascade
@@ -49,7 +55,61 @@ struct VkrBindlessIblProbe
     float4 intensity_box;
 };
 
+struct VkrBindlessPacketFrameRoot
+{
+    VkrBindlessInstance* instances;
+    uint2 instance_address_padding;
+    float4x4 view_projection;
+    VkrBindlessMaterial* materials;
+    uint irradiance_texture;
+    uint irradiance_sampler;
+    uint prefilter_texture;
+    uint prefilter_sampler;
+    // Retired; the environment BRDF is analytic. Explicit padding.
+    uint reserved_brdf_texture;
+    uint reserved_brdf_sampler;
+    uint shadow_texture;
+    uint shadow_sampler;
+    uint transmission_texture;
+    uint transmission_sampler;
+    float4 view_position;
+    uint prefilter_mip_count;
+    uint flags;
+    uint2 reserved_0;
+    float4 ibl_controls;
+    float4 directional_direction_enabled;
+    float4 directional_color_intensity;
+    float4 ambient_color;
+    uint render_mode;
+    uint3 reserved_1;
+    float4* point_light_data;
+    uint4* point_light_masks;
+    float4 point_light_grid_origin_cell_size;
+    uint4 point_light_grid_dimensions_count;
+    uint4 point_light_global_mask;
+    uint point_light_count;
+    uint3 point_light_reserved;
+    VkrBindlessShadowCascade* shadow_cascades;
+    uint2 shadow_address_padding;
+    float4x4 view;
+    uint shadow_cascade_count;
+    float shadow_bias;
+    uint2 shadow_reserved;
+    VkrBindlessIblProbe* ibl_probes;
+    uint ibl_probe_count;
+    uint ibl_probe_reserved;
+};
+
 struct VkrBindlessPacketDrawRoot
+{
+    VkrBindlessVertex* vertices;
+    VkrBindlessPacketFrameRoot* frame;
+    uint material_index;
+    uint first_instance;
+    uint2 reserved;
+};
+
+struct VkrBindlessPacketUtilityRoot
 {
     VkrBindlessVertex* vertices;
     VkrBindlessInstance* instances;
@@ -59,7 +119,6 @@ struct VkrBindlessPacketDrawRoot
     uint irradiance_sampler;
     uint prefilter_texture;
     uint prefilter_sampler;
-    // Retired; the environment BRDF is analytic. Explicit padding.
     uint reserved_brdf_texture;
     uint reserved_brdf_sampler;
     uint shadow_texture;
@@ -314,12 +373,13 @@ void ibl_prefilter(uint3 position : SV_DispatchThreadID)
 }
 
 VkrBindlessVertexOutput packet_vertex_impl(uint vertex_id, uint instance_id,
-                                           float4x4 view_projection)
+                                            float4x4 view_projection)
 {
-    VkrBindlessPacketDrawRoot* root = g_push.root;
-    VkrBindlessVertex vertex = root.vertices[vertex_id];
+    VkrBindlessPacketDrawRoot* draw = g_push.root;
+    VkrBindlessPacketFrameRoot* frame = draw.frame;
+    VkrBindlessVertex vertex = draw.vertices[vertex_id];
     VkrBindlessInstance instance =
-        root.instances[root.first_instance + instance_id];
+        frame.instances[draw.first_instance + instance_id];
     float4 world = mul(instance.model, float4(vertex.position, 1.0f));
     VkrBindlessVertexOutput output;
     output.position = mul(view_projection, world);
@@ -340,7 +400,7 @@ VkrBindlessVertexOutput world_vertex(uint vertex_id : SV_VertexID,
                                      uint instance_id : SV_InstanceID)
 {
     return packet_vertex_impl(vertex_id, instance_id,
-                              g_push.root.view_projection);
+                              g_push.root.frame.view_projection);
 }
 
 [shader("vertex")]
@@ -348,13 +408,13 @@ VkrBindlessVertexOutput shadow_vertex(uint vertex_id : SV_VertexID,
                                       uint instance_id : SV_InstanceID)
 {
     return packet_vertex_impl(vertex_id, instance_id,
-                              g_push.root.view_projection);
+                              g_push.root.frame.view_projection);
 }
 
 float4 packet_base_color(VkrBindlessVertexOutput input)
 {
     VkrBindlessMaterial material =
-        g_push.root.materials[g_push.material_index];
+        g_push.root.frame.materials[g_push.root.material_index];
     uint texture_index = NonUniformResourceIndex(material.base_color_texture);
     uint sampler_index = NonUniformResourceIndex(material.base_color_sampler);
     return g_textures[texture_index].Sample(g_samplers[sampler_index], input.uv)
@@ -427,7 +487,7 @@ float2 packet_brdf_approximation(float no_v, float roughness)
     return float2(-1.04f, 1.04f) * a004 + r.zw;
 }
 
-uint4 packet_point_light_mask(VkrBindlessPacketDrawRoot* root,
+uint4 packet_point_light_mask(VkrBindlessPacketFrameRoot* root,
                               float3 world_position)
 {
     uint4 result = root.point_light_global_mask;
@@ -446,7 +506,7 @@ uint4 packet_point_light_mask(VkrBindlessPacketDrawRoot* root,
     return result | root.point_light_masks[index];
 }
 
-float packet_directional_shadow(VkrBindlessPacketDrawRoot* root,
+float packet_directional_shadow(VkrBindlessPacketFrameRoot* root,
                                 float3 world_position)
 {
     if (root.shadow_cascade_count == 0u)
@@ -514,12 +574,13 @@ float3 packet_box_project(float3 direction, float3 world_position,
 float4 world_fragment(VkrBindlessVertexOutput input,
                       bool front_facing : SV_IsFrontFace) : SV_Target0
 {
-    VkrBindlessPacketDrawRoot* root = g_push.root;
-    VkrBindlessMaterial material = root.materials[g_push.material_index];
+    VkrBindlessPacketDrawRoot* draw = g_push.root;
+    VkrBindlessPacketFrameRoot* frame = draw.frame;
+    VkrBindlessMaterial material = frame.materials[draw.material_index];
     float4 base = packet_base_color(input);
-    if (root.alpha_mode == 1u && base.a < root.material_alpha.x)
+    if (material.alpha_mode == 1u && base.a < material.material_alpha.x)
         discard;
-    if ((root.flags & 1u) == 0u)
+    if ((frame.flags & 1u) == 0u)
         return base;
 
     float face_sign = front_facing ? 1.0f : -1.0f;
@@ -531,7 +592,7 @@ float4 world_fragment(VkrBindlessVertexOutput input,
         uint sampler_index = NonUniformResourceIndex(material.normal_sampler);
         float3 sampled = g_textures[texture_index].Sample(
             g_samplers[sampler_index], input.uv).xyz * 2.0f - 1.0f;
-        sampled.xy *= root.material_surface.z;
+        sampled.xy *= material.material_surface.z;
         sampled.y = -sampled.y;
         float3 tangent = normalize(input.world_tangent.xyz);
         tangent = normalize(tangent - dot(tangent, normal) * normal);
@@ -539,15 +600,15 @@ float4 world_fragment(VkrBindlessVertexOutput input,
         float3x3 tangent_basis = float3x3(tangent, bitangent, normal);
         normal = normalize(mul(tangent_basis, sampled));
     }
-    if (root.render_mode == 2u)
+    if (frame.render_mode == 2u)
         return float4(normal * 0.5f + 0.5f, 1.0f);
 
-    float3 view = normalize(root.view_position.xyz - input.world_position);
+    float3 view = normalize(frame.view_position.xyz - input.world_position);
     float no_v = max(dot(normal, view), 0.0f);
-    float metallic = saturate(root.material_surface.x);
-    float roughness = clamp(root.material_surface.y, 0.04f, 1.0f);
-    float ao = saturate(root.material_surface.w);
-    float3 emissive = root.material_emissive.rgb;
+    float metallic = saturate(material.material_surface.x);
+    float roughness = clamp(material.material_surface.y, 0.04f, 1.0f);
+    float ao = saturate(material.material_surface.w);
+    float3 emissive = material.material_emissive.rgb;
     if ((material.flags & 2u) != 0u)
     {
         uint texture_index = NonUniformResourceIndex(material.orm_texture);
@@ -570,31 +631,31 @@ float4 world_fragment(VkrBindlessVertexOutput input,
         emissive *= g_textures[texture_index].Sample(
             g_samplers[sampler_index], input.uv).rgb;
     }
-    if (root.render_mode == 3u)
+    if (frame.render_mode == 3u)
         return float4(base.rgb + emissive,
-                      root.alpha_mode == 0u ? 1.0f : base.a);
+                      material.alpha_mode == 0u ? 1.0f : base.a);
 
-    float3 f0 = lerp(saturate(root.material_dielectric_specular.rgb),
+    float3 f0 = lerp(saturate(material.material_dielectric_specular.rgb),
                      base.rgb, metallic);
-    if (root.render_mode == 6u)
+    if (frame.render_mode == 6u)
         return float4(metallic, roughness,
                       max(f0.x, max(f0.y, f0.z)), 1.0f);
 
     float3 analytic_diffuse = 0.0f;
     float3 analytic_specular = 0.0f;
-    if (root.directional_direction_enabled.w > 0.5f)
+    if (frame.directional_direction_enabled.w > 0.5f)
     {
-        float shadow = packet_directional_shadow(root, input.world_position);
+        float shadow = packet_directional_shadow(frame, input.world_position);
         VkrBindlessDirectResult direct = packet_direct(
-            normal, view, normalize(-root.directional_direction_enabled.xyz),
-            root.directional_color_intensity.rgb *
-                root.directional_color_intensity.w * shadow,
+            normal, view, normalize(-frame.directional_direction_enabled.xyz),
+            frame.directional_color_intensity.rgb *
+                frame.directional_color_intensity.w * shadow,
             base.rgb, metallic, roughness, f0);
         analytic_diffuse = direct.diffuse;
         analytic_specular = direct.specular;
     }
-    uint4 point_mask = packet_point_light_mask(root, input.world_position);
-    uint point_count = min(root.point_light_count, 128u);
+    uint4 point_mask = packet_point_light_mask(frame, input.world_position);
+    uint point_count = min(frame.point_light_count, 128u);
     for (uint word = 0u; word < 4u; ++word)
     {
         uint remaining = point_mask[word];
@@ -604,10 +665,10 @@ float4 world_fragment(VkrBindlessVertexOutput input,
             remaining &= remaining - 1u;
             if (light_index >= point_count)
                 continue;
-            float4 p0 = root.point_light_data[light_index * 4u + 0u];
-            float4 p1 = root.point_light_data[light_index * 4u + 1u];
-            float4 p2 = root.point_light_data[light_index * 4u + 2u];
-            float4 p3 = root.point_light_data[light_index * 4u + 3u];
+            float4 p0 = frame.point_light_data[light_index * 4u + 0u];
+            float4 p1 = frame.point_light_data[light_index * 4u + 1u];
+            float4 p2 = frame.point_light_data[light_index * 4u + 2u];
+            float4 p3 = frame.point_light_data[light_index * 4u + 3u];
             uint kind = uint(p2.w + 0.5f);
             float3 to_light = p0.xyz - input.world_position;
             float distance_squared = dot(to_light, to_light);
@@ -656,24 +717,24 @@ float4 world_fragment(VkrBindlessVertexOutput input,
     }
     float3 color = analytic_diffuse + analytic_specular;
 
-    if ((root.material_flags & 1u) != 0u)
+    if ((frame.flags & 2u) != 0u)
     {
         float3 reflection = reflect(-view, normal);
         float3 fresnel = packet_fresnel_roughness(no_v, f0, roughness);
         float3 kd = (1.0f - fresnel) * (1.0f - metallic);
         uint irradiance_texture =
-            NonUniformResourceIndex(root.irradiance_texture);
+            NonUniformResourceIndex(frame.irradiance_texture);
         uint irradiance_sampler =
-            NonUniformResourceIndex(root.irradiance_sampler);
+            NonUniformResourceIndex(frame.irradiance_sampler);
         uint prefilter_texture =
-            NonUniformResourceIndex(root.prefilter_texture);
+            NonUniformResourceIndex(frame.prefilter_texture);
         uint prefilter_sampler =
-            NonUniformResourceIndex(root.prefilter_sampler);
+            NonUniformResourceIndex(frame.prefilter_sampler);
         float3 global_irradiance = g_cube_textures[irradiance_texture]
             .SampleLevel(g_samplers[irradiance_sampler], normal, 0.0f).rgb;
         float3 global_prefiltered = g_cube_textures[prefilter_texture]
             .SampleLevel(g_samplers[prefilter_sampler], reflection,
-                         roughness * float(max(root.prefilter_mip_count, 1u) -
+                         roughness * float(max(frame.prefilter_mip_count, 1u) -
                                            1u)).rgb;
         float2 brdf = packet_brdf_approximation(no_v, roughness);
         float f90 = saturate(max(f0.x, max(f0.y, f0.z)) * 25.0f);
@@ -683,16 +744,16 @@ float4 world_fragment(VkrBindlessVertexOutput input,
         float3 diffuse = 0.0f;
         float3 specular = 0.0f;
         float local_weight_sum = 0.0f;
-        uint probe_count = min(root.ibl_probe_count, 16u);
+        uint probe_count = min(frame.ibl_probe_count, 16u);
         for (uint i = 0u; i < probe_count; ++i)
-            local_weight_sum += packet_probe_influence(root.ibl_probes[i],
+            local_weight_sum += packet_probe_influence(frame.ibl_probes[i],
                                                         input.world_position);
         float weight_scale = local_weight_sum > 1.0f
                                  ? 1.0f / local_weight_sum
                                  : 1.0f;
         for (uint i = 0u; i < probe_count; ++i)
         {
-            VkrBindlessIblProbe probe = root.ibl_probes[i];
+            VkrBindlessIblProbe probe = frame.ibl_probes[i];
             float weight = packet_probe_influence(probe,
                                                   input.world_position) *
                            weight_scale;
@@ -717,7 +778,7 @@ float4 world_fragment(VkrBindlessVertexOutput input,
             float3 probe_prefiltered =
                 g_cube_textures[probe_prefilter_texture].SampleLevel(
                     g_samplers[probe_prefilter_sampler], probe_reflection,
-                    roughness * float(max(root.prefilter_mip_count, 1u) -
+                     roughness * float(max(frame.prefilter_mip_count, 1u) -
                                       1u)).rgb;
             diffuse += kd * probe_irradiance * base.rgb * ao *
                        probe.intensity_box.x * probe.intensity_box.y * weight;
@@ -731,61 +792,62 @@ float4 world_fragment(VkrBindlessVertexOutput input,
         specular += global_prefiltered *
                     (fresnel * brdf.x + f90 * brdf.y) *
                     specular_visibility * global_weight;
-        color += (diffuse * root.ibl_controls.y +
-                  specular * root.ibl_controls.z) * root.ibl_controls.x;
+        color += (diffuse * frame.ibl_controls.y +
+                  specular * frame.ibl_controls.z) * frame.ibl_controls.x;
     }
     else
     {
-        color += root.ambient_color.rgb * base.rgb * ao;
+        color += frame.ambient_color.rgb * base.rgb * ao;
     }
-    if (root.render_mode == 1u)
+    if (frame.render_mode == 1u)
         return float4(analytic_diffuse + analytic_specular, 1.0f);
-    if (root.render_mode == 4u)
+    if (frame.render_mode == 4u)
         return float4(analytic_diffuse, 1.0f);
-    if (root.render_mode == 5u)
+    if (frame.render_mode == 5u)
         return float4(analytic_specular, 1.0f);
     color += emissive;
 
-    if (root.material_dielectric_specular.w > 0.5f &&
-        root.material_alpha.y > 0.0f)
+    if ((frame.flags & 4u) != 0u && material.material_alpha.y > 0.0f)
     {
-        float transmission = saturate(root.material_alpha.y);
-        float thickness = max(root.material_alpha.w, 0.0f);
-        float3 view_normal = normalize(mul(root.view,
+        float transmission = saturate(material.material_alpha.y);
+        float thickness = max(material.material_alpha.w, 0.0f);
+        float3 view_normal = normalize(mul(frame.view,
                                            float4(normal, 0.0f)).xyz);
         float3 refracted = refract(float3(0.0f, 0.0f, -1.0f), view_normal,
-                                   1.0f / max(root.material_alpha.z, 1.0f));
+                                   1.0f / max(material.material_alpha.z, 1.0f));
         float2 screen_uv = input.position.xy *
-                           float2(root.ibl_controls.w, root.ambient_color.w);
+                           float2(frame.ibl_controls.w, frame.ambient_color.w);
         float2 offset = refracted.xy / max(abs(refracted.z), 0.25f) *
                         thickness * 0.02f;
         uint texture_index =
-            NonUniformResourceIndex(root.transmission_texture);
+            NonUniformResourceIndex(frame.transmission_texture);
         uint sampler_index =
-            NonUniformResourceIndex(root.transmission_sampler);
+            NonUniformResourceIndex(frame.transmission_sampler);
         float3 transmitted = g_textures[texture_index].SampleLevel(
             g_samplers[sampler_index],
             clamp(screen_uv + offset, 0.0f, 1.0f), 0.0f).rgb;
-        if (root.material_attenuation_color.w > 1e-4f && thickness > 0.0f)
+        if (material.material_attenuation_color.w > 1e-4f && thickness > 0.0f)
         {
-            transmitted *= pow(clamp(root.material_attenuation_color.rgb,
+            transmitted *= pow(clamp(material.material_attenuation_color.rgb,
                                      1e-4f, 1.0f),
                                thickness /
-                                   root.material_attenuation_color.w);
+                                   material.material_attenuation_color.w);
         }
         float3 fresnel = packet_fresnel(no_v, f0);
         float weight = transmission * (1.0f - metallic) *
                        (1.0f - max(fresnel.x, max(fresnel.y, fresnel.z)));
         color = lerp(color, transmitted, saturate(weight));
     }
-    return float4(color, root.alpha_mode == 0u ? 1.0f : base.a);
+    return float4(color, material.alpha_mode == 0u ? 1.0f : base.a);
 }
 
 [shader("fragment")]
 void shadow_fragment(VkrBindlessVertexOutput input)
 {
+    VkrBindlessMaterial material =
+        g_push.root.frame.materials[g_push.root.material_index];
     if ((g_push.flags & 1u) != 0u &&
-        packet_base_color(input).a < g_push.root.material_alpha.x)
+        packet_base_color(input).a < material.material_alpha.x)
         discard;
 }
 
@@ -817,16 +879,18 @@ VkrBindlessVertexOutput fullscreen_vertex(uint vertex_id : SV_VertexID)
 [shader("fragment")]
 float4 fullscreen_fragment(VkrBindlessVertexOutput input) : SV_Target0
 {
+    VkrBindlessPacketUtilityRoot* root =
+        (VkrBindlessPacketUtilityRoot*)g_push.root;
     uint texture_index =
-        NonUniformResourceIndex(g_push.root.transmission_texture);
+        NonUniformResourceIndex(root.transmission_texture);
     uint sampler_index =
-        NonUniformResourceIndex(g_push.root.transmission_sampler);
+        NonUniformResourceIndex(root.transmission_sampler);
     float4 source =
         g_textures[texture_index].Sample(g_samplers[sampler_index], input.uv);
     if ((g_push.flags & 2u) != 0u)
     {
         float3 mapped = vkr_aces_fitted(
-            max(source.rgb * g_push.root.ibl_controls.x, 0.0f));
+            max(source.rgb * root.ibl_controls.x, 0.0f));
         source.rgb = pow(mapped, 1.0f / 2.2f);
     }
     return source;
@@ -835,15 +899,17 @@ float4 fullscreen_fragment(VkrBindlessVertexOutput input) : SV_Target0
 [shader("fragment")]
 float4 skybox_fragment(VkrBindlessVertexOutput input) : SV_Target0
 {
+    VkrBindlessPacketUtilityRoot* root =
+        (VkrBindlessPacketUtilityRoot*)g_push.root;
     float2 ndc = input.uv * 2.0f - 1.0f;
-    float4 world = mul(g_push.root.view_projection,
+    float4 world = mul(root.view_projection,
                        float4(ndc, 1.0f, 1.0f));
     float3 direction = normalize(world.xyz / world.w -
-                                 g_push.root.view_position.xyz);
+                                  root.view_position.xyz);
     uint texture_index =
-        NonUniformResourceIndex(g_push.root.transmission_texture);
+        NonUniformResourceIndex(root.transmission_texture);
     uint sampler_index =
-        NonUniformResourceIndex(g_push.root.transmission_sampler);
+        NonUniformResourceIndex(root.transmission_sampler);
     return g_cube_textures[texture_index].Sample(g_samplers[sampler_index],
                                                   direction);
 }
@@ -851,7 +917,8 @@ float4 skybox_fragment(VkrBindlessVertexOutput input) : SV_Target0
 [shader("vertex")]
 VkrBindlessTextOutput text_vertex(uint vertex_id : SV_VertexID)
 {
-    VkrBindlessPacketDrawRoot* root = g_push.root;
+    VkrBindlessPacketUtilityRoot* root =
+        (VkrBindlessPacketUtilityRoot*)g_push.root;
     VkrBindlessTextVertex* vertices =
         (VkrBindlessTextVertex*)root.vertices;
     VkrBindlessTextVertex glyph = vertices[vertex_id];
@@ -877,7 +944,8 @@ VkrBindlessTextOutput text_vertex(uint vertex_id : SV_VertexID)
 
 float text_alpha(VkrBindlessTextOutput input)
 {
-    VkrBindlessPacketDrawRoot* root = g_push.root;
+    VkrBindlessPacketUtilityRoot* root =
+        (VkrBindlessPacketUtilityRoot*)g_push.root;
     uint texture_index = NonUniformResourceIndex(root.transmission_texture);
     uint sampler_index = NonUniformResourceIndex(root.transmission_sampler);
     float4 atlas =

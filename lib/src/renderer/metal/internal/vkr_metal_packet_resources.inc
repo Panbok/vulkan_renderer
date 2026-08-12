@@ -485,6 +485,10 @@ bool8_t vkr_metal_packet_renderer_create_material(
       *slot = (VkrMetalPacketMaterial){.generation = generation};
       return false_v;
     }
+    const VkrPacketMaterialConstants material_constants =
+        vkr_packet_derive_material_constants(&create_info->pbr,
+                                             create_info->alpha_cutoff,
+                                             create_info->alpha_mode);
     VkrMetalMaterialGpuRow row = {
         .base_color_texture_id = slot->textures[0].resource_id,
         .normal_texture_id = slot->textures[1].resource_id,
@@ -496,6 +500,12 @@ bool8_t vkr_metal_packet_renderer_create_material(
         .emissive_sampler_id = material_sampler_id,
         .material_id = create_info->material_id,
         .flags = create_info->texture_flags,
+        .alpha_mode = material_constants.alpha_mode,
+        .material_emissive = material_constants.emissive,
+        .material_dielectric_specular = material_constants.dielectric_specular,
+        .material_surface = material_constants.surface,
+        .material_alpha = material_constants.alpha,
+        .material_attenuation_color = material_constants.attenuation_color,
     };
     MemCopy(row.tint, create_info->tint, sizeof(row.tint));
     const VkrMetalMaterialStatus publish_status =
@@ -627,6 +637,14 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
   const Vec4 tint = material->material_type == VKR_MATERIAL_TYPE_PBR
                         ? material->pbr.base_color
                         : material->phong.diffuse_color;
+  VkrPbrProperties pbr = material->pbr;
+  if (material->material_type != VKR_MATERIAL_TYPE_PBR) {
+    pbr.base_color = material->phong.diffuse_color;
+    pbr.emissive_factor = material->phong.emission_color;
+  }
+  const VkrPacketMaterialConstants material_constants =
+      vkr_packet_derive_material_constants(&pbr, material->alpha_cutoff,
+                                           material->alpha_mode);
   VkrMetalMaterialGpuRow row = {
       .base_color_texture_id = textures[0]->resource.resource_id,
       .normal_texture_id = textures[1]->resource.resource_id,
@@ -638,6 +656,12 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
       .emissive_sampler_id = textures[3]->sampler_resource_id,
       .material_id = handle.id,
       .flags = flags,
+      .alpha_mode = material_constants.alpha_mode,
+      .material_emissive = material_constants.emissive,
+      .material_dielectric_specular = material_constants.dielectric_specular,
+      .material_surface = material_constants.surface,
+      .material_alpha = material_constants.alpha,
+      .material_attenuation_color = material_constants.attenuation_color,
   };
   const float32_t tint_values[4] = {tint.x, tint.y, tint.z, tint.w};
   MemCopy(row.tint, tint_values, sizeof(row.tint));
@@ -655,11 +679,7 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
   }
   slot->generation = handle.generation;
   slot->last_use_submit_value = renderer->submit_value;
-  slot->pbr = material->pbr;
-  if (material->material_type != VKR_MATERIAL_TYPE_PBR) {
-    slot->pbr.base_color = material->phong.diffuse_color;
-    slot->pbr.emissive_factor = material->phong.emission_color;
-  }
+  slot->pbr = pbr;
   slot->alpha_mode = material->alpha_mode;
   slot->alpha_cutoff = material->alpha_cutoff;
   slot->owns_textures = false_v;
@@ -1417,6 +1437,25 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     root_count += packet->ui->draw_count + ui_text_count;
   if (root_count > renderer->max_draws)
     return false_v;
+  uint64_t frame_root_count = 0;
+  if (packet->world) {
+    frame_root_count += packet->world->opaque_draw_count > 0;
+    frame_root_count += packet->world->transmission_draw_count > 0;
+    frame_root_count += packet->world->transparent_draw_count > 0;
+  }
+  if (packet->shadow) {
+    frame_root_count += (uint64_t)(packet->shadow->opaque_draw_count > 0) *
+                        packet->shadow->cascade_count;
+    frame_root_count += (uint64_t)(packet->shadow->alpha_draw_count > 0) *
+                        packet->shadow->cascade_count;
+  }
+  frame_root_count += packet->picking && packet->picking->pending &&
+                      packet->picking->draw_count > 0;
+  frame_root_count += packet->editor && packet->editor->draw_count > 0;
+  frame_root_count += packet->ui && packet->ui->draw_count > 0;
+  if (frame_root_count > UINT32_MAX - root_count)
+    return false_v;
+  root_count += frame_root_count;
 
   const uint64_t world_bytes =
       (uint64_t)world_count * sizeof(VkrInstanceDataGPU);

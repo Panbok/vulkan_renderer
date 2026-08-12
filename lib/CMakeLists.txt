@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.27)
 
 project(renderer_lib)
 
+find_program(VKR_SLANGC_EXECUTABLE NAMES slangc REQUIRED)
+
 if(APPLE)
 file(GLOB_RECURSE LIB_SOURCES src/*.c src/*.h src/*.m)
 enable_language(C OBJC)

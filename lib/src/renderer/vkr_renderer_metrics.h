@@ -123,6 +123,7 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId upload_fence_waits;
   VkrMetricId upload_queue_idle_waits;
   VkrMetricId upload_device_idle_waits;
+  VkrMetricId frame_upload_exhaustions;
   VkrMetricId frame_command_slot_waits;
   VkrMetricId backend_present;
 

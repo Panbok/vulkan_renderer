@@ -202,7 +202,6 @@ bool8_t vkr_world_resources_init(RendererFrontend *rf,
   resources->ibl_fallback_source_cubemap = VKR_TEXTURE_HANDLE_INVALID;
   resources->ibl_fallback_irradiance_cubemap = VKR_TEXTURE_HANDLE_INVALID;
   resources->ibl_fallback_prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID;
-  resources->ibl_brdf_lut = VKR_TEXTURE_HANDLE_INVALID;
   resources->ibl_active_irradiance_cubemap = VKR_TEXTURE_HANDLE_INVALID;
   resources->ibl_active_prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID;
   resources->ibl_active_intensity = 1.0f;
@@ -307,8 +306,6 @@ bool8_t vkr_world_resources_prepare_default_ibl(RendererFrontend *rf,
   resources->ibl_fallback_source_cubemap = source_cubemap;
   resources->ibl_fallback_irradiance_cubemap = irradiance;
   resources->ibl_fallback_prefilter_cubemap = prefilter;
-  resources->ibl_brdf_lut =
-      vkr_texture_system_get_default_specular_handle(&rf->texture_system);
   resources->ibl_default_delivery_equirect = delivery;
   (void)vkr_world_resources_release_texture(
       &rf->texture_system, &resources->ibl_default_delivery_equirect);
@@ -833,14 +830,6 @@ void vkr_world_resources_shutdown(RendererFrontend *rf,
                                       &resources->ibl_fallback_source_cubemap);
   vkr_world_resources_release_texture(
       &rf->texture_system, &resources->ibl_default_delivery_equirect);
-  VkrTextureHandle default_specular =
-      vkr_texture_system_get_default_specular_handle(&rf->texture_system);
-  if (resources->ibl_brdf_lut.id != 0 &&
-      (resources->ibl_brdf_lut.id != default_specular.id ||
-       resources->ibl_brdf_lut.generation != default_specular.generation)) {
-    vkr_world_resources_release_texture(&rf->texture_system,
-                                        &resources->ibl_brdf_lut);
-  }
   MemZero(resources, sizeof(*resources));
 }
 

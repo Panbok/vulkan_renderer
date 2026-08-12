@@ -5,28 +5,13 @@
 #include "renderer/systems/vkr_lighting_system.h"
 #include "renderer/vkr_render_packet.h"
 
-/**
- * @file vkr_packet_constants.h
- * @brief Backend-neutral derivation of the per-frame and per-material values a
- * packet draw root carries.
- *
- * Both selected implementations lower a render packet into a per-draw root
- * record. The record *layouts* differ — Metal carries 64-bit resource IDs,
- * Vulkan carries 32-bit descriptor-heap indices — but the arithmetic that
- * produces the scalar and vector fields is identical, and it used to be written
- * out twice. A separate environment-BRDF divergence exposed how easily the two
- * lowering paths could evolve independently; the BRDF implementation itself is
- * shader-owned and is not part of these constants.
- *
- * These functions are the single derivation. Each backend computes the frame
- * block once per pass, derives the material block for each draw, and copies the
- * results into its own root layout. A change to these shared lighting or
- * material values therefore lands on both backends or neither.
- *
- * Deliberately **not** shared here, because the two backends genuinely differ:
- * resource references (IDs versus heap indices), buffer device addresses, and
- * the IBL-ready predicate that drives `flags` / `material_flags`.
- */
+/** @file Shared frame-flag and immutable-material derivation. */
+
+typedef enum VkrPacketFrameFlag {
+  VKR_PACKET_FRAME_FLAG_LIGHTING = 1u << 0u,
+  VKR_PACKET_FRAME_FLAG_IBL = 1u << 1u,
+  VKR_PACKET_FRAME_FLAG_TRANSMISSION = 1u << 2u,
+} VkrPacketFrameFlag;
 
 /** Values constant across every draw in a pass. */
 typedef struct VkrPacketFrameConstants {
@@ -51,7 +36,7 @@ typedef struct VkrPacketFrameConstants {
 /** Values constant across every draw that uses one material. */
 typedef struct VkrPacketMaterialConstants {
   Vec4 emissive;
-  /** xyz dielectric specular; w flags the transmission pass. */
+  /** xyz dielectric specular; w is reserved. */
   Vec4 dielectric_specular;
   /** metallic, roughness, normal scale, occlusion strength. */
   Vec4 surface;
@@ -75,29 +60,14 @@ vkr_packet_derive_frame_constants(const VkrRenderPacket *packet,
                                   uint32_t target_width,
                                   uint32_t target_height);
 
-/** Hot-path material lowering; force-inlined because Release does not use LTO.
- */
-vkr_internal INLINE VkrPacketMaterialConstants
+/** Derives the shared lighting, IBL, and transmission pass flags. */
+uint32_t vkr_packet_derive_frame_flags(const VkrRenderPacket *packet,
+                                       bool8_t lighting_pass,
+                                       bool8_t ibl_resources_ready,
+                                       bool8_t transmission_pass);
+
+/** Publication-time lowering into an immutable backend GPU material row. */
+VkrPacketMaterialConstants
 vkr_packet_derive_material_constants(const VkrPbrProperties *pbr,
                                      float32_t alpha_cutoff,
-                                     VkrMaterialAlphaMode alpha_mode,
-                                     bool8_t transmission_pass) {
-  if (!pbr)
-    return (VkrPacketMaterialConstants){0};
-  return (VkrPacketMaterialConstants){
-      .emissive = {pbr->emissive_factor.x, pbr->emissive_factor.y,
-                   pbr->emissive_factor.z, 0.0f},
-      .dielectric_specular = {pbr->dielectric_specular.x,
-                              pbr->dielectric_specular.y,
-                              pbr->dielectric_specular.z,
-                              transmission_pass ? 1.0f : 0.0f},
-      .surface = {pbr->metallic, pbr->roughness, pbr->normal_scale,
-                  pbr->occlusion_strength},
-      .alpha = {alpha_cutoff, pbr->transmission_factor, pbr->ior,
-                pbr->thickness_factor},
-      .attenuation_color = {pbr->attenuation_color.x, pbr->attenuation_color.y,
-                            pbr->attenuation_color.z,
-                            pbr->attenuation_distance},
-      .alpha_mode = (uint32_t)alpha_mode,
-  };
-}
+                                     VkrMaterialAlphaMode alpha_mode);

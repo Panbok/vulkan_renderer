@@ -65,7 +65,6 @@ typedef struct VkrWorldResources {
   VkrTextureHandle ibl_default_delivery_equirect;
   VkrTextureHandle ibl_fallback_irradiance_cubemap;
   VkrTextureHandle ibl_fallback_prefilter_cubemap;
-  VkrTextureHandle ibl_brdf_lut;
 
   VkrTextureHandle ibl_active_irradiance_cubemap;
   VkrTextureHandle ibl_active_prefilter_cubemap;

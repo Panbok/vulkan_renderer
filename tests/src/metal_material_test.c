@@ -35,6 +35,11 @@ static VkrMetalMaterialGpuRow material_row(uint32_t id, uint64_t texture) {
       .orm_texture_id = texture + 2,
       .emissive_texture_id = texture + 3,
       .material_id = id,
+      .alpha_mode = id % 3u,
+      .material_emissive = {(float32_t)id, 2.0f, 3.0f, 0.0f},
+      .material_surface = {0.25f, 0.5f, 1.0f, 1.0f},
+      .material_alpha = {0.5f, 0.0f, 1.5f, 0.0f},
+      .material_attenuation_color = {1.0f, 0.5f, 0.25f, (float32_t)texture},
   };
   return row;
 }
@@ -57,6 +62,10 @@ static void test_material_publication_and_pending_replacement(void) {
   assert(replacement.index != a.index);
   assert(fixture.rows[a.index].material_id == red.material_id);
   assert(fixture.rows[replacement.index].material_id == green.material_id);
+  assert(fixture.rows[replacement.index].material_emissive.x == 30.0f);
+  assert(fixture.rows[replacement.index].material_surface.y == 0.5f);
+  assert(fixture.rows[replacement.index].material_attenuation_color.w ==
+         300.0f);
   uint32_t row_index = 0;
   assert(vkr_metal_material_table_resolve(fixture.table, a, &row_index) ==
          VKR_METAL_MATERIAL_STATUS_STALE_HANDLE);

@@ -107,7 +107,7 @@ float3 vkr_metal_packet_box_project(float3 direction, float3 world_position,
   return normalize(world_position + safe_direction * t_hit - center);
 }
 
-uint4 vkr_metal_packet_point_light_mask(constant VkrMetalPacketDrawRoot *root,
+uint4 vkr_metal_packet_point_light_mask(constant VkrMetalPacketFrameRoot *root,
                                         float3 world_position) {
   uint4 result = root->point_light_global_mask;
   uint4 dimensions = root->point_light_grid_dimensions_count;
