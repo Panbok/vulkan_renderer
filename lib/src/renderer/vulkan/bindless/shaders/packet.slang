@@ -59,8 +59,9 @@ struct VkrBindlessPacketDrawRoot
     uint irradiance_sampler;
     uint prefilter_texture;
     uint prefilter_sampler;
-    uint brdf_texture;
-    uint brdf_sampler;
+    // Retired; the environment BRDF is analytic. Explicit padding.
+    uint reserved_brdf_texture;
+    uint reserved_brdf_sampler;
     uint shadow_texture;
     uint shadow_sampler;
     uint transmission_texture;

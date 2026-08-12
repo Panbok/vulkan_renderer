@@ -73,9 +73,8 @@ struct VkrBindlessVulkanDevice {
   bool8_t ready;
 };
 
-static bool8_t
-vkr_bindless_vk_extension_present(const VkExtensionProperties *extensions,
-                                  uint32_t count, const char *name) {
+vkr_internal bool8_t vkr_bindless_vk_extension_present(
+    const VkExtensionProperties *extensions, uint32_t count, const char *name) {
   for (uint32_t i = 0; i < count; ++i) {
     if (strcmp(extensions[i].extensionName, name) == 0) {
       return true_v;
@@ -84,7 +83,7 @@ vkr_bindless_vk_extension_present(const VkExtensionProperties *extensions,
   return false_v;
 }
 
-static bool8_t vkr_bindless_vk_layer_present(const char *name) {
+vkr_internal bool8_t vkr_bindless_vk_layer_present(const char *name) {
   uint32_t count = 0;
   if (vkEnumerateInstanceLayerProperties(&count, NULL) != VK_SUCCESS ||
       count == 0 || count > VKR_BINDLESS_VK_MAX_EXTENSIONS) {
@@ -102,10 +101,9 @@ static bool8_t vkr_bindless_vk_layer_present(const char *name) {
   return false_v;
 }
 
-static void vkr_bindless_vk_report_add(VkrBindlessVkCandidateReport *report,
-                                       VkrBindlessVkReportKind kind,
-                                       const char *name, bool8_t required,
-                                       bool8_t present, const char *detail) {
+vkr_internal void vkr_bindless_vk_report_add(
+    VkrBindlessVkCandidateReport *report, VkrBindlessVkReportKind kind,
+    const char *name, bool8_t required, bool8_t present, const char *detail) {
   if (report->entry_count >= VKR_BINDLESS_VK_MAX_REPORT_ENTRIES) {
     report->overflowed = true_v;
     return;
@@ -119,9 +117,10 @@ static void vkr_bindless_vk_report_add(VkrBindlessVkCandidateReport *report,
   snprintf(entry->detail, sizeof(entry->detail), "%s", detail ? detail : "");
 }
 
-static void vkr_bindless_vk_report_limit(VkrBindlessVkCandidateReport *report,
-                                         const char *name, uint64_t actual,
-                                         uint64_t minimum) {
+vkr_internal void
+vkr_bindless_vk_report_limit(VkrBindlessVkCandidateReport *report,
+                             const char *name, uint64_t actual,
+                             uint64_t minimum) {
   char detail[VKR_BINDLESS_VK_REPORT_DETAIL_CAPACITY];
   snprintf(detail, sizeof(detail), "actual=%" PRIu64 " minimum=%" PRIu64,
            actual, minimum);
@@ -129,7 +128,7 @@ static void vkr_bindless_vk_report_limit(VkrBindlessVkCandidateReport *report,
                              actual >= minimum, detail);
 }
 
-static void
+vkr_internal void
 vkr_bindless_vk_report_record_limit(VkrBindlessVkCandidateReport *report,
                                     const char *name, uint64_t actual) {
   char detail[VKR_BINDLESS_VK_REPORT_DETAIL_CAPACITY];
@@ -138,7 +137,7 @@ vkr_bindless_vk_report_record_limit(VkrBindlessVkCandidateReport *report,
                              false_v, true_v, detail);
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_bindless_vk_report_passes(const VkrBindlessVkCandidateReport *report) {
   if (report->overflowed) {
     return false_v;
@@ -152,7 +151,7 @@ vkr_bindless_vk_report_passes(const VkrBindlessVkCandidateReport *report) {
   return true_v;
 }
 
-static VKAPI_ATTR VkBool32 VKAPI_CALL vkr_bindless_vk_debug_callback(
+vkr_internal VKAPI_ATTR VkBool32 VKAPI_CALL vkr_bindless_vk_debug_callback(
     VkDebugUtilsMessageSeverityFlagBitsEXT severity,
     VkDebugUtilsMessageTypeFlagsEXT types,
     const VkDebugUtilsMessengerCallbackDataEXT *callback_data,
@@ -184,7 +183,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL vkr_bindless_vk_debug_callback(
   return VK_FALSE;
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_bindless_vk_create_instance(VkrBindlessVulkanDevice *device) {
   uint32_t loader_version = VK_API_VERSION_1_0;
   if (vkEnumerateInstanceVersion(&loader_version) != VK_SUCCESS ||
@@ -325,13 +324,14 @@ vkr_bindless_vk_create_instance(VkrBindlessVulkanDevice *device) {
   return true_v;
 }
 
-static void vkr_bindless_vk_add_feature(VkrBindlessVkCandidateReport *report,
-                                        const char *name, bool8_t present) {
+vkr_internal void
+vkr_bindless_vk_add_feature(VkrBindlessVkCandidateReport *report,
+                            const char *name, bool8_t present) {
   vkr_bindless_vk_report_add(report, VKR_BINDLESS_VK_REPORT_FEATURE, name,
                              true_v, present, present ? "enabled" : "missing");
 }
 
-static void vkr_bindless_vk_query_candidate(
+vkr_internal void vkr_bindless_vk_query_candidate(
     VkrBindlessVulkanDevice *device, uint32_t candidate_index,
     const VkExtensionProperties *instance_extensions,
     uint32_t instance_extension_count) {
@@ -681,7 +681,7 @@ static void vkr_bindless_vk_query_candidate(
   }
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_bindless_vk_enumerate_candidates(VkrBindlessVulkanDevice *device) {
   uint32_t instance_extension_count = 0;
   VkExtensionProperties *instance_extensions = device->instance_extensions;
@@ -713,7 +713,7 @@ vkr_bindless_vk_enumerate_candidates(VkrBindlessVulkanDevice *device) {
   return true_v;
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_bindless_vk_load_descriptor_functions(VkrBindlessVulkanDevice *device) {
   device->get_layout_size =
       (PFN_vkGetDescriptorSetLayoutSizeEXT)vkGetDeviceProcAddr(
@@ -734,7 +734,7 @@ vkr_bindless_vk_load_descriptor_functions(VkrBindlessVulkanDevice *device) {
          device->cmd_set_descriptor_offsets;
 }
 
-static void
+vkr_internal void
 vkr_bindless_vk_destroy_logical_device(VkrBindlessVulkanDevice *device) {
   if (!device->device) {
     return;
@@ -759,10 +759,9 @@ vkr_bindless_vk_destroy_logical_device(VkrBindlessVulkanDevice *device) {
   MemZero(&device->sampler_layout, sizeof(device->sampler_layout));
 }
 
-static bool8_t
-vkr_bindless_vk_create_layouts(VkrBindlessVulkanDevice *device,
-                               VkrBindlessVkCandidate *candidate,
-                               VkrBindlessVkCandidateReport *report) {
+vkr_internal bool8_t vkr_bindless_vk_create_layouts(
+    VkrBindlessVulkanDevice *device, VkrBindlessVkCandidate *candidate,
+    VkrBindlessVkCandidateReport *report) {
   VkDescriptorSetLayoutBinding resource_bindings[] = {
       {
           .binding = 0u,
@@ -876,8 +875,8 @@ vkr_bindless_vk_create_layouts(VkrBindlessVulkanDevice *device,
   return vkr_bindless_vk_report_passes(report);
 }
 
-static bool8_t vkr_bindless_vk_try_candidate(VkrBindlessVulkanDevice *device,
-                                             uint32_t candidate_index) {
+vkr_internal bool8_t vkr_bindless_vk_try_candidate(
+    VkrBindlessVulkanDevice *device, uint32_t candidate_index) {
   VkrBindlessVkCandidate *candidate = &device->candidates[candidate_index];
   VkrBindlessVkCandidateReport *report =
       &device->profile.candidates[candidate_index];
@@ -982,7 +981,8 @@ static bool8_t vkr_bindless_vk_try_candidate(VkrBindlessVulkanDevice *device,
          vkr_bindless_vk_create_layouts(device, candidate, report);
 }
 
-static bool8_t vkr_bindless_vk_select_device(VkrBindlessVulkanDevice *device) {
+vkr_internal bool8_t
+vkr_bindless_vk_select_device(VkrBindlessVulkanDevice *device) {
   bool8_t attempted[VKR_BINDLESS_VK_MAX_CANDIDATES] = {0};
   for (uint32_t attempt = 0; attempt < device->candidate_count; ++attempt) {
     uint32_t best = UINT32_MAX;

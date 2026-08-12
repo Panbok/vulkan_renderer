@@ -610,6 +610,12 @@ static bool32_t renderer_impl_bindless_initialize(
       .sampled_image_capacity = 16384u,
       .storage_image_capacity = 1024u,
       .sampler_capacity = 2048u,
+      // Publication records are indexed directly by logical handle id, so these
+      // two must cover the geometry and texture systems' whole ID spaces. They
+      // are configured below at max_geometries and max_texture_count; keep the
+      // three in step. Neither is a descriptor-heap bound.
+      .geometry_capacity = 16384u,
+      .texture_capacity = 16384u,
       .material_record_capacity = 8192u,
       .material_slot_capacity = 16385u,
       .device_buffer_block_size = 8u * 1024u * 1024u,

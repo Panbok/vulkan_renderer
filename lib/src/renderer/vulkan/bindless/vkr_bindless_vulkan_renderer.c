@@ -11,6 +11,7 @@
 #include "renderer/vkr_gpu_slot_table.h"
 #include "renderer/vkr_gpu_submit_ring.h"
 #include "renderer/vkr_ibl_math.h"
+#include "renderer/vkr_packet_constants.h"
 #include "renderer/vkr_render_graph_internal.h"
 #include "renderer/vkr_rg_json.h"
 #include "renderer/vulkan/bindless/vkr_bindless_vulkan_dependency.h"
@@ -76,6 +77,14 @@
 #endif
 
 enum {
+  /**
+   * Slot zero of every descriptor heap holds a valid sentinel descriptor — a
+   * 1x1 opaque-white image, a flat normal, a default sampler — so a material
+   * that omits a texture still resolves to something legal instead of an
+   * undefined descriptor. Anything that means "no specific resource" must name
+   * this rather than writing a bare 0.
+   */
+  VKR_BINDLESS_VK_SENTINEL_SLOT_INDEX = 0,
   VKR_BINDLESS_VK_SENTINEL_UPLOAD_SIZE = 4,
   VKR_BINDLESS_VK_SWAPCHAIN_IMAGE_MAX = 8,
   VKR_BINDLESS_VK_RETIRED_SWAPCHAIN_MAX = 8,
@@ -187,8 +196,10 @@ typedef struct VKR_SIMD_ALIGN VkrBindlessVkPacketDrawRoot {
   uint32_t irradiance_sampler;
   uint32_t prefilter_texture;
   uint32_t prefilter_sampler;
-  uint32_t brdf_texture;
-  uint32_t brdf_sampler;
+  /* Retired BRDF-LUT slot pair. The environment BRDF is analytic in
+     packet.slang; these stay as named padding so no downstream offset moves. */
+  uint32_t reserved_brdf_texture;
+  uint32_t reserved_brdf_sampler;
   uint32_t shadow_texture;
   uint32_t shadow_sampler;
   uint32_t transmission_texture;
@@ -240,8 +251,8 @@ _Static_assert(offsetof(VkrBindlessVkMaterialGpuRow, material_id) == 48u,
 _Static_assert(sizeof(VkrBindlessVkPushConstants) == 16u,
                "Push-constant ABI drift");
 _Static_assert(sizeof(VkrBindlessVkIblRoot) == 32u, "IBL-root ABI drift");
-_Static_assert(sizeof(VkrBindlessVkPacketDrawRoot) % 16u == 0u,
-               "Packet draw-root ABI alignment drift");
+_Static_assert(sizeof(VkrBindlessVkPacketDrawRoot) == 512u,
+               "Packet draw-root ABI size drift");
 
 typedef struct VkrBindlessVkAllocation {
   VkDeviceMemory memory;
@@ -335,6 +346,9 @@ typedef struct VkrBindlessVkFrameSlot {
   bool8_t acquired_window_image;
   bool8_t reacquired_presented_image;
   uint64_t frame_upload_cursor;
+  /** Frame-upload allocation failures this frame. Non-zero means the frame was
+   *  rejected for want of upload bytes, not for a malformed packet. */
+  uint32_t frame_upload_exhaustions;
   uint64_t world_instances;
   uint64_t shadow_instances;
   uint64_t ui_instances;
@@ -515,8 +529,6 @@ struct VkrBindlessVulkanRenderer {
   uint64_t graph_images_size;
   VkImageMemoryBarrier2 *graph_image_barriers;
   uint64_t graph_image_barriers_size;
-  VkBufferMemoryBarrier2 *graph_buffer_barriers;
-  uint64_t graph_buffer_barriers_size;
   VkrBindlessVulkanDevice *device;
   VkrBindlessVkTargetSet targets;
   VkrBindlessVkRetiredTargetSet retired_targets[4];
@@ -603,27 +615,26 @@ struct VkrBindlessVulkanRenderer {
   bool8_t terminal_failure;
 };
 
-static bool8_t
+vkr_internal bool8_t
 vkr_bindless_vk_create_packet_pipelines(VkrBindlessVulkanRenderer *renderer);
-static bool8_t
+vkr_internal bool8_t
 vkr_bindless_vk_create_ibl_pipelines(VkrBindlessVulkanRenderer *renderer);
-static uint64_t
+vkr_internal uint64_t
 vkr_bindless_vk_refresh_completed(VkrBindlessVulkanRenderer *renderer);
-static bool8_t vkr_bindless_vk_publish_sampled_view(
+vkr_internal bool8_t vkr_bindless_vk_publish_sampled_view(
     VkrBindlessVulkanRenderer *renderer, VkImageView view,
     VkImageLayout image_layout, VkrGpuSlotHandle *out_handle);
-static bool8_t
-vkr_bindless_vk_publish_storage_view(VkrBindlessVulkanRenderer *renderer,
-                                     VkImageView view,
-                                     VkrGpuSlotHandle *out_handle);
-static VkrBindlessVkPublishedTexture *
+vkr_internal bool8_t vkr_bindless_vk_publish_storage_view(
+    VkrBindlessVulkanRenderer *renderer, VkImageView view,
+    VkrGpuSlotHandle *out_handle);
+vkr_internal VkrBindlessVkPublishedTexture *
 vkr_bindless_vk_published_texture(VkrBindlessVulkanRenderer *renderer,
                                   VkrTextureHandle handle, uint32_t *out_index);
-static VkrBindlessVkPublishedTexture *
+vkr_internal VkrBindlessVkPublishedTexture *
 vkr_bindless_vk_texture_publication(VkrBindlessVulkanRenderer *renderer,
                                     VkrTextureHandle handle);
 
-static bool8_t
+vkr_internal bool8_t
 vkr_bindless_vk_pipeline_cache_initialize(VkrBindlessVulkanRenderer *renderer) {
   const char *path = getenv("VKR_PIPELINE_CACHE_PATH");
   const size_t path_length = path ? strlen(path) : 0u;
@@ -691,7 +702,7 @@ vkr_bindless_vk_pipeline_cache_initialize(VkrBindlessVulkanRenderer *renderer) {
   return true_v;
 }
 
-static void
+vkr_internal void
 vkr_bindless_vk_pipeline_cache_shutdown(VkrBindlessVulkanRenderer *renderer) {
   if (!renderer->pipeline_cache)
     return;
@@ -745,7 +756,8 @@ vkr_bindless_vk_pipeline_cache_shutdown(VkrBindlessVulkanRenderer *renderer) {
   renderer->pipeline_cache = VK_NULL_HANDLE;
 }
 
-static void vkr_bindless_vk_graph_noop(VkrRgPassContext *ctx, void *user_data) {
+vkr_internal void vkr_bindless_vk_graph_noop(VkrRgPassContext *ctx,
+                                             void *user_data) {
   (void)ctx;
   (void)user_data;
 }
@@ -772,28 +784,28 @@ typedef struct VkrBindlessVkGraphExecutorSpec {
   VkrRgPassType type;
 } VkrBindlessVkGraphExecutorSpec;
 
-static const VkrBindlessVkGraphExecutorSpec s_bindless_vk_graph_executors[] = {
-    {"pass.shadow.cascade", VKR_RG_PASS_TYPE_GRAPHICS},
-    {"pass.picking", VKR_RG_PASS_TYPE_GRAPHICS},
-    {"pass.picking.readback", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.ibl_bake", VKR_RG_PASS_TYPE_COMPUTE},
-    {"pass.skybox", VKR_RG_PASS_TYPE_GRAPHICS},
-    {"pass.world.opaque", VKR_RG_PASS_TYPE_GRAPHICS},
-    {"pass.copy.pre_transmission.fullscreen", VKR_RG_PASS_TYPE_TRANSFER},
-    {"pass.copy.pre_transmission.editor", VKR_RG_PASS_TYPE_TRANSFER},
-    {"pass.world.transmission", VKR_RG_PASS_TYPE_GRAPHICS},
-    {"pass.world.blend", VKR_RG_PASS_TYPE_GRAPHICS},
-    {"pass.tonemap", VKR_RG_PASS_TYPE_GRAPHICS},
-    {"pass.editor", VKR_RG_PASS_TYPE_GRAPHICS},
-    {"pass.ui", VKR_RG_PASS_TYPE_GRAPHICS},
+vkr_global const VkrBindlessVkGraphExecutorSpec
+    s_bindless_vk_graph_executors[] = {
+        {"pass.shadow.cascade", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.picking", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.picking.readback", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.ibl_bake", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.skybox", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.world.opaque", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.copy.pre_transmission.fullscreen", VKR_RG_PASS_TYPE_TRANSFER},
+        {"pass.copy.pre_transmission.editor", VKR_RG_PASS_TYPE_TRANSFER},
+        {"pass.world.transmission", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.world.blend", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.tonemap", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.editor", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.ui", VKR_RG_PASS_TYPE_GRAPHICS},
 };
 _Static_assert(ArrayCount(s_bindless_vk_graph_executors) ==
                    VKR_BINDLESS_VK_GRAPH_EXECUTOR_COUNT,
                "Bindless Vulkan graph executor table is incomplete");
 
-static bool8_t
-vkr_bindless_vk_graph_executor_kind(const VkrRgPass *pass,
-                                    VkrBindlessVkGraphExecutorKind *out_kind) {
+vkr_internal bool8_t vkr_bindless_vk_graph_executor_kind(
+    const VkrRgPass *pass, VkrBindlessVkGraphExecutorKind *out_kind) {
   const uintptr_t encoded = (uintptr_t)pass->desc.user_data;
   if (!encoded || encoded > VKR_BINDLESS_VK_GRAPH_EXECUTOR_COUNT)
     return false_v;
@@ -801,7 +813,7 @@ vkr_bindless_vk_graph_executor_kind(const VkrRgPass *pass,
   return true_v;
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_bindless_vk_register_graph_executors(VkrBindlessVulkanRenderer *renderer) {
   for (uint32_t i = 0; i < ArrayCount(s_bindless_vk_graph_executors); ++i) {
     const VkrBindlessVkGraphExecutorSpec *spec =
@@ -818,7 +830,7 @@ vkr_bindless_vk_register_graph_executors(VkrBindlessVulkanRenderer *renderer) {
   return true_v;
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_bindless_vk_validate_graph(const VkrBindlessVulkanRenderer *renderer) {
   for (uint64_t order = 0; order < renderer->graph->execution_order.length;
        ++order) {
@@ -878,20 +890,19 @@ vkr_bindless_vk_validate_graph(const VkrBindlessVulkanRenderer *renderer) {
   return true_v;
 }
 
-static bool8_t
-vkr_bindless_vk_recreate_window_target(VkrBindlessVulkanRenderer *renderer,
-                                       uint32_t width, uint32_t height,
-                                       uint32_t image_count);
-static void
+vkr_internal bool8_t vkr_bindless_vk_recreate_window_target(
+    VkrBindlessVulkanRenderer *renderer, uint32_t width, uint32_t height,
+    uint32_t image_count);
+vkr_internal void
 vkr_bindless_vk_collect_asset_publications(VkrBindlessVulkanRenderer *renderer,
                                            uint64_t completed);
 
-static VkDevice
+vkr_internal VkDevice
 vkr_bindless_vk_renderer_device(const VkrBindlessVulkanRenderer *renderer) {
   return vkr_bindless_vulkan_device_handle(renderer->device);
 }
 
-static bool8_t vkr_bindless_vk_choose_memory_type(
+vkr_internal bool8_t vkr_bindless_vk_choose_memory_type(
     const VkrBindlessVulkanRenderer *renderer, uint32_t memory_type_bits,
     VkrBindlessVkMemoryClass memory_class, uint32_t *out_index,
     VkMemoryPropertyFlags *out_properties) {
@@ -921,7 +932,7 @@ static bool8_t vkr_bindless_vk_choose_memory_type(
   return true_v;
 }
 
-static VkFormat vkr_bindless_vk_texture_format(VkrTextureFormat format) {
+vkr_internal VkFormat vkr_bindless_vk_texture_format(VkrTextureFormat format) {
   switch (format) {
   case VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM:
     return VK_FORMAT_R8G8B8A8_UNORM;
@@ -976,10 +987,10 @@ static VkFormat vkr_bindless_vk_texture_format(VkrTextureFormat format) {
   }
 }
 
-static bool8_t vkr_bindless_vk_format_block_info(VkFormat format,
-                                                 uint32_t *out_width,
-                                                 uint32_t *out_height,
-                                                 uint32_t *out_bytes) {
+vkr_internal bool8_t vkr_bindless_vk_format_block_info(VkFormat format,
+                                                       uint32_t *out_width,
+                                                       uint32_t *out_height,
+                                                       uint32_t *out_bytes) {
   uint32_t width = 1u;
   uint32_t height = 1u;
   uint32_t bytes = 0u;
@@ -1026,7 +1037,8 @@ static bool8_t vkr_bindless_vk_format_block_info(VkFormat format,
   return true_v;
 }
 
-static VkImageAspectFlags vkr_bindless_vk_format_aspects(VkFormat format) {
+vkr_internal VkImageAspectFlags
+vkr_bindless_vk_format_aspects(VkFormat format) {
   switch (format) {
   case VK_FORMAT_D16_UNORM:
   case VK_FORMAT_D32_SFLOAT:
@@ -1038,7 +1050,8 @@ static VkImageAspectFlags vkr_bindless_vk_format_aspects(VkFormat format) {
   }
 }
 
-static VkImageLayout vkr_bindless_vk_texture_layout(VkrTextureLayout layout) {
+vkr_internal VkImageLayout
+vkr_bindless_vk_texture_layout(VkrTextureLayout layout) {
   switch (layout) {
   case VKR_TEXTURE_LAYOUT_UNDEFINED:
     return VK_IMAGE_LAYOUT_UNDEFINED;
@@ -1063,9 +1076,10 @@ static VkImageLayout vkr_bindless_vk_texture_layout(VkrTextureLayout layout) {
   }
 }
 
-static bool8_t vkr_bindless_vk_flush(const VkrBindlessVulkanRenderer *renderer,
-                                     const VkrBindlessVkAllocation *allocation,
-                                     VkDeviceSize offset, VkDeviceSize size) {
+vkr_internal bool8_t
+vkr_bindless_vk_flush(const VkrBindlessVulkanRenderer *renderer,
+                      const VkrBindlessVkAllocation *allocation,
+                      VkDeviceSize offset, VkDeviceSize size) {
   if (allocation->properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) {
     return true_v;
   }
@@ -1088,10 +1102,9 @@ static bool8_t vkr_bindless_vk_flush(const VkrBindlessVulkanRenderer *renderer,
                                    1u, &range) == VK_SUCCESS;
 }
 
-static bool8_t vkr_bindless_vk_mark_dirty(VkrBindlessVkDirtyRange *dirty,
-                                          const VkrBindlessVkBuffer *buffer,
-                                          VkDeviceSize offset,
-                                          VkDeviceSize size) {
+vkr_internal bool8_t vkr_bindless_vk_mark_dirty(
+    VkrBindlessVkDirtyRange *dirty, const VkrBindlessVkBuffer *buffer,
+    VkDeviceSize offset, VkDeviceSize size) {
   if (!dirty || !buffer || !size || offset > buffer->size ||
       size > buffer->size - offset)
     return false_v;
@@ -1109,7 +1122,7 @@ static bool8_t vkr_bindless_vk_mark_dirty(VkrBindlessVkDirtyRange *dirty,
   return true_v;
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_bindless_vk_flush_publication_ranges(VkrBindlessVulkanRenderer *renderer) {
   VkrBindlessVkDirtyRange *ranges[] = {
       &renderer->resource_descriptor_dirty,
@@ -1133,7 +1146,7 @@ vkr_bindless_vk_flush_publication_ranges(VkrBindlessVulkanRenderer *renderer) {
   return true_v;
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_bindless_vk_invalidate(const VkrBindlessVulkanRenderer *renderer,
                            const VkrBindlessVkAllocation *allocation,
                            VkDeviceSize offset, VkDeviceSize size) {
@@ -1160,9 +1173,8 @@ vkr_bindless_vk_invalidate(const VkrBindlessVulkanRenderer *renderer,
          VK_SUCCESS;
 }
 
-static bool8_t
-vkr_bindless_vk_release_allocation(VkrBindlessVulkanRenderer *renderer,
-                                   VkrBindlessVkAllocation *allocation) {
+vkr_internal bool8_t vkr_bindless_vk_release_allocation(
+    VkrBindlessVulkanRenderer *renderer, VkrBindlessVkAllocation *allocation) {
   if (allocation->pooled)
     return vkr_bindless_vulkan_memory_pool_release(
         renderer->memory_pool, &allocation->pooled_allocation,
@@ -1181,8 +1193,9 @@ vkr_bindless_vk_release_allocation(VkrBindlessVulkanRenderer *renderer,
   return true_v;
 }
 
-static void vkr_bindless_vk_destroy_buffer(VkrBindlessVulkanRenderer *renderer,
-                                           VkrBindlessVkBuffer *buffer) {
+vkr_internal void
+vkr_bindless_vk_destroy_buffer(VkrBindlessVulkanRenderer *renderer,
+                               VkrBindlessVkBuffer *buffer) {
   VkDevice device = vkr_bindless_vk_renderer_device(renderer);
   if (buffer->handle)
     vkDestroyBuffer(device, buffer->handle, NULL);
@@ -1191,10 +1204,9 @@ static void vkr_bindless_vk_destroy_buffer(VkrBindlessVulkanRenderer *renderer,
   MemZero(buffer, sizeof(*buffer));
 }
 
-static bool8_t
-vkr_bindless_vk_retire_allocation(VkrBindlessVulkanRenderer *renderer,
-                                  VkrBindlessVkAllocation *allocation,
-                                  uint64_t retire_value) {
+vkr_internal bool8_t vkr_bindless_vk_retire_allocation(
+    VkrBindlessVulkanRenderer *renderer, VkrBindlessVkAllocation *allocation,
+    uint64_t retire_value) {
   if (!allocation || allocation->retired)
     return false_v;
   if (allocation->pooled) {
@@ -1214,20 +1226,18 @@ vkr_bindless_vk_retire_allocation(VkrBindlessVulkanRenderer *renderer,
   return true_v;
 }
 
-static bool8_t
-vkr_bindless_vk_retire_buffer(VkrBindlessVulkanRenderer *renderer,
-                              VkrBindlessVkBuffer *buffer,
-                              uint64_t retire_value) {
+vkr_internal bool8_t vkr_bindless_vk_retire_buffer(
+    VkrBindlessVulkanRenderer *renderer, VkrBindlessVkBuffer *buffer,
+    uint64_t retire_value) {
   return buffer && buffer->handle &&
          vkr_bindless_vk_retire_allocation(renderer, &buffer->allocation,
                                            retire_value);
 }
 
-static bool8_t
-vkr_bindless_vk_create_buffer(VkrBindlessVulkanRenderer *renderer,
-                              VkrBindlessVkMemoryClass memory_class,
-                              VkDeviceSize size, VkBufferUsageFlags usage,
-                              VkrBindlessVkBuffer *out_buffer) {
+vkr_internal bool8_t vkr_bindless_vk_create_buffer(
+    VkrBindlessVulkanRenderer *renderer, VkrBindlessVkMemoryClass memory_class,
+    VkDeviceSize size, VkBufferUsageFlags usage,
+    VkrBindlessVkBuffer *out_buffer) {
   MemZero(out_buffer, sizeof(*out_buffer));
   out_buffer->size = size;
   VkDevice device = vkr_bindless_vk_renderer_device(renderer);
@@ -1373,7 +1383,7 @@ vkr_bindless_vk_create_buffer(VkrBindlessVulkanRenderer *renderer,
   return true_v;
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_bindless_vk_create_upload_buffers(VkrBindlessVulkanRenderer *renderer) {
   if (!vkr_gpu_abi_validate_host()) {
     log_error("Bindless Vulkan shared host ABI validation failed");
@@ -1406,8 +1416,9 @@ vkr_bindless_vk_create_upload_buffers(VkrBindlessVulkanRenderer *renderer) {
              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, &renderer->materials);
 }
 
-static void vkr_bindless_vk_destroy_image(VkrBindlessVulkanRenderer *renderer,
-                                          VkrBindlessVkImage *image) {
+vkr_internal void
+vkr_bindless_vk_destroy_image(VkrBindlessVulkanRenderer *renderer,
+                              VkrBindlessVkImage *image) {
   VkDevice device = vkr_bindless_vk_renderer_device(renderer);
   if (image->view)
     vkDestroyImageView(device, image->view, NULL);
@@ -1418,7 +1429,7 @@ static void vkr_bindless_vk_destroy_image(VkrBindlessVulkanRenderer *renderer,
   MemZero(image, sizeof(*image));
 }
 
-static bool8_t vkr_bindless_vk_create_image_ex(
+vkr_internal bool8_t vkr_bindless_vk_create_image_ex(
     VkrBindlessVulkanRenderer *renderer, uint32_t width, uint32_t height,
     uint32_t mip_levels, uint32_t array_layers, VkFormat format,
     VkImageCreateFlags flags, VkImageViewType view_type,
@@ -1570,16 +1581,15 @@ static bool8_t vkr_bindless_vk_create_image_ex(
   return true_v;
 }
 
-static bool8_t vkr_bindless_vk_create_image(VkrBindlessVulkanRenderer *renderer,
-                                            uint32_t width, uint32_t height,
-                                            VkImageUsageFlags usage,
-                                            VkrBindlessVkImage *out_image) {
+vkr_internal bool8_t vkr_bindless_vk_create_image(
+    VkrBindlessVulkanRenderer *renderer, uint32_t width, uint32_t height,
+    VkImageUsageFlags usage, VkrBindlessVkImage *out_image) {
   return vkr_bindless_vk_create_image_ex(
       renderer, width, height, 1u, 1u, VK_FORMAT_R8G8B8A8_UNORM, 0u,
       VK_IMAGE_VIEW_TYPE_2D, usage, out_image);
 }
 
-static VkImageUsageFlags
+vkr_internal VkImageUsageFlags
 vkr_bindless_vk_graph_image_usage(VkrTextureUsageFlags usage) {
   VkImageUsageFlags result = 0;
   if (usage.set & VKR_TEXTURE_USAGE_SAMPLED)
@@ -1597,8 +1607,8 @@ vkr_bindless_vk_graph_image_usage(VkrTextureUsageFlags usage) {
   return result;
 }
 
-static bool8_t vkr_bindless_vk_graph_image_desc_equal(const VkrRgImageDesc *a,
-                                                      const VkrRgImageDesc *b) {
+vkr_internal bool8_t vkr_bindless_vk_graph_image_desc_equal(
+    const VkrRgImageDesc *a, const VkrRgImageDesc *b) {
   return a->width == b->width && a->height == b->height &&
          a->format == b->format && a->usage.set == b->usage.set &&
          a->samples == b->samples && a->layers == b->layers &&
@@ -1606,7 +1616,7 @@ static bool8_t vkr_bindless_vk_graph_image_desc_equal(const VkrRgImageDesc *a,
          a->flags == b->flags;
 }
 
-static void vkr_bindless_vk_destroy_graph_image_instance(
+vkr_internal void vkr_bindless_vk_destroy_graph_image_instance(
     VkrBindlessVulkanRenderer *renderer,
     VkrBindlessVkGraphImageInstance *instance) {
   const VkDevice device = vkr_bindless_vk_renderer_device(renderer);
@@ -1631,7 +1641,7 @@ static void vkr_bindless_vk_destroy_graph_image_instance(
   MemZero(instance, sizeof(*instance));
 }
 
-static void
+vkr_internal void
 vkr_bindless_vk_destroy_graph_image(VkrBindlessVulkanRenderer *renderer,
                                     VkrBindlessVkGraphImage *slot) {
   if (!slot || slot->external_swapchain) {
@@ -1644,7 +1654,7 @@ vkr_bindless_vk_destroy_graph_image(VkrBindlessVulkanRenderer *renderer,
   MemZero(slot, sizeof(*slot));
 }
 
-static bool8_t vkr_bindless_vk_create_graph_image_instance(
+vkr_internal bool8_t vkr_bindless_vk_create_graph_image_instance(
     VkrBindlessVulkanRenderer *renderer, const VkrRgImageDesc *desc,
     VkrBindlessVkGraphImageInstance *out_instance) {
   const VkFormat format = vkr_bindless_vk_texture_format(desc->format);
@@ -1716,7 +1726,7 @@ publish_descriptors:
   return true_v;
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_bindless_vk_realize_graph_images(VkrBindlessVulkanRenderer *renderer) {
   if (renderer->graph->images.length > renderer->config.max_graph_images)
     return false_v;
@@ -1769,7 +1779,7 @@ vkr_bindless_vk_realize_graph_images(VkrBindlessVulkanRenderer *renderer) {
   return true_v;
 }
 
-static VkrBindlessVkGraphImageInstance *
+vkr_internal VkrBindlessVkGraphImageInstance *
 vkr_bindless_vk_graph_image(VkrBindlessVulkanRenderer *renderer,
                             VkrRgImageHandle handle, uint32_t image_index) {
   if (!vkr_rg_image_handle_valid(handle) ||
@@ -1790,11 +1800,19 @@ vkr_bindless_vk_graph_image(VkrBindlessVulkanRenderer *renderer,
   return instance < slot->instance_count ? &slot->instances[instance] : NULL;
 }
 
-static bool8_t vkr_bindless_vk_record_graph_image_barriers(
+vkr_internal bool8_t vkr_bindless_vk_record_graph_image_barriers(
     VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
     const Vector_VkrRgImageBarrier *barriers) {
-  if (barriers->length > renderer->config.max_graph_images)
+  /* The scratch array is sized by max_graph_images. A pass may barrier one
+     image more than once (distinct subresource ranges), so this bound is not
+     implied by the image count and must be checked, not assumed. */
+  if (barriers->length > renderer->config.max_graph_images) {
+    log_error("Bindless Vulkan pass needs %llu image barriers; the scratch "
+              "array holds max_graph_images=%u",
+              (unsigned long long)barriers->length,
+              renderer->config.max_graph_images);
     return false_v;
+  }
   for (uint64_t i = 0; i < barriers->length; ++i) {
     const VkrRgImageBarrier *barrier =
         vector_get_VkrRgImageBarrier(barriers, i);
@@ -1847,21 +1865,29 @@ static bool8_t vkr_bindless_vk_record_graph_image_barriers(
   return true_v;
 }
 
-static bool8_t
-vkr_bindless_vk_record_graph_pass_barriers(VkrBindlessVulkanRenderer *renderer,
-                                           VkCommandBuffer command,
-                                           const VkrRgPass *pass) {
+vkr_internal bool8_t vkr_bindless_vk_record_graph_pass_barriers(
+    VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
+    const VkrRgPass *pass) {
+  /*
+   * Buffer-barrier emission is designed but not implemented: no authored pass
+   * declares a graph buffer, so there is no caller to validate against. The
+   * graph is rejected rather than silently executed without the barrier the
+   * pass asked for. Implementing it means lowering each VkrRgBufferBarrier into
+   * a VkBufferMemoryBarrier2 and batching it into the same
+   * vkCmdPipelineBarrier2 as the image barriers below.
+   */
   if (pass->pre_buffer_barriers.length > 0u) {
-    log_error("Bindless Vulkan graph pass '%.*s' declared buffers before the "
-              "V5 graph-buffer resolver was configured",
-              (int)pass->desc.name.length, pass->desc.name.str);
+    log_error("Bindless Vulkan graph pass '%.*s' declares %llu buffer "
+              "barrier(s); buffer-barrier lowering is not implemented",
+              (int)pass->desc.name.length, pass->desc.name.str,
+              (unsigned long long)pass->pre_buffer_barriers.length);
     return false_v;
   }
   return vkr_bindless_vk_record_graph_image_barriers(renderer, command,
                                                      &pass->pre_image_barriers);
 }
 
-static VkAttachmentLoadOp
+vkr_internal VkAttachmentLoadOp
 vkr_bindless_vk_attachment_load_op(VkrAttachmentLoadOp op) {
   switch (op) {
   case VKR_ATTACHMENT_LOAD_OP_LOAD:
@@ -1873,13 +1899,13 @@ vkr_bindless_vk_attachment_load_op(VkrAttachmentLoadOp op) {
   }
 }
 
-static VkAttachmentStoreOp
+vkr_internal VkAttachmentStoreOp
 vkr_bindless_vk_attachment_store_op(VkrAttachmentStoreOp op) {
   return op == VKR_ATTACHMENT_STORE_OP_STORE ? VK_ATTACHMENT_STORE_OP_STORE
                                              : VK_ATTACHMENT_STORE_OP_DONT_CARE;
 }
 
-static bool8_t vkr_bindless_vk_graph_attachment(
+vkr_internal bool8_t vkr_bindless_vk_graph_attachment(
     VkrBindlessVulkanRenderer *renderer, const VkrRgAttachment *attachment,
     VkImageLayout layout, VkRenderingAttachmentInfo *out_info,
     uint32_t *out_width, uint32_t *out_height) {
@@ -1914,22 +1940,26 @@ static bool8_t vkr_bindless_vk_graph_attachment(
   return true_v;
 }
 
-static uint64_t vkr_bindless_vk_align_up(uint64_t value, uint64_t alignment) {
+vkr_internal uint64_t vkr_bindless_vk_align_up(uint64_t value,
+                                               uint64_t alignment) {
   return (value + alignment - 1u) & ~(alignment - 1u);
 }
 
-static void *vkr_bindless_vk_frame_upload_allocate(VkrBindlessVkFrameSlot *slot,
-                                                   uint64_t size,
-                                                   uint64_t alignment,
-                                                   uint64_t *out_address,
-                                                   uint64_t *out_offset) {
+vkr_internal void *vkr_bindless_vk_frame_upload_allocate(
+    VkrBindlessVkFrameSlot *slot, uint64_t size, uint64_t alignment,
+    uint64_t *out_address, uint64_t *out_offset) {
   if (!slot || !size || !alignment || (alignment & (alignment - 1u)) != 0u)
     return NULL;
   const uint64_t offset =
       vkr_bindless_vk_align_up(slot->frame_upload_cursor, alignment);
   if (offset > slot->frame_upload.size ||
-      size > slot->frame_upload.size - offset)
+      size > slot->frame_upload.size - offset) {
+    /* Exhaustion fails the whole frame at the call site. Count it so the
+       failure is distinguishable from a malformed draw; the caller has no
+       other way to tell the two apart. */
+    slot->frame_upload_exhaustions++;
     return NULL;
+  }
   slot->frame_upload_cursor = offset + size;
   if (out_address)
     *out_address = slot->frame_upload.address + offset;
@@ -1938,10 +1968,9 @@ static void *vkr_bindless_vk_frame_upload_allocate(VkrBindlessVkFrameSlot *slot,
   return (uint8_t *)slot->frame_upload.allocation.mapped + offset;
 }
 
-static bool8_t
-vkr_bindless_vk_upload_instances(VkrBindlessVkFrameSlot *slot,
-                                 const VkrInstanceDataGPU *instances,
-                                 uint32_t count, uint64_t *out_address) {
+vkr_internal bool8_t vkr_bindless_vk_upload_instances(
+    VkrBindlessVkFrameSlot *slot, const VkrInstanceDataGPU *instances,
+    uint32_t count, uint64_t *out_address) {
   *out_address = 0u;
   if (count == 0u)
     return true_v;
@@ -1956,7 +1985,7 @@ vkr_bindless_vk_upload_instances(VkrBindlessVkFrameSlot *slot,
   return true_v;
 }
 
-static bool8_t vkr_bindless_vk_resolve_sampled_pair(
+vkr_internal bool8_t vkr_bindless_vk_resolve_sampled_pair(
     VkrBindlessVulkanRenderer *renderer, VkrTextureHandle handle,
     uint32_t *out_texture, uint32_t *out_sampler) {
   VkrBindlessVkPublishedTexture *texture =
@@ -1974,10 +2003,9 @@ static bool8_t vkr_bindless_vk_resolve_sampled_pair(
   return true_v;
 }
 
-static bool8_t
-vkr_bindless_vk_upload_packet_tables(VkrBindlessVulkanRenderer *renderer,
-                                     VkrBindlessVkFrameSlot *slot,
-                                     const VkrRenderPacket *packet) {
+vkr_internal bool8_t vkr_bindless_vk_upload_packet_tables(
+    VkrBindlessVulkanRenderer *renderer, VkrBindlessVkFrameSlot *slot,
+    const VkrRenderPacket *packet) {
   slot->point_light_data = 0u;
   slot->point_light_masks = 0u;
   slot->shadow_cascades = 0u;
@@ -2093,11 +2121,11 @@ vkr_bindless_vk_upload_packet_tables(VkrBindlessVulkanRenderer *renderer,
   return true_v;
 }
 
-static bool8_t
-vkr_bindless_vk_prepare_packet_uploads(VkrBindlessVulkanRenderer *renderer,
-                                       VkrBindlessVkFrameSlot *slot,
-                                       const VkrRenderPacket *packet) {
+vkr_internal bool8_t vkr_bindless_vk_prepare_packet_uploads(
+    VkrBindlessVulkanRenderer *renderer, VkrBindlessVkFrameSlot *slot,
+    const VkrRenderPacket *packet) {
   slot->frame_upload_cursor = 0u;
+  slot->frame_upload_exhaustions = 0u;
   slot->world_instances = 0u;
   slot->shadow_instances = 0u;
   slot->ui_instances = 0u;
@@ -2134,11 +2162,11 @@ vkr_bindless_vk_prepare_packet_uploads(VkrBindlessVulkanRenderer *renderer,
                                            &slot->picking_instances));
 }
 
-static VkrBindlessVkPublishedGeometry *
+vkr_internal VkrBindlessVkPublishedGeometry *
 vkr_bindless_vk_resolve_geometry(VkrBindlessVulkanRenderer *renderer,
                                  VkrGeometryHandle handle) {
   if (!renderer || handle.id == 0u ||
-      handle.id > renderer->config.sampled_image_capacity)
+      handle.id > renderer->config.geometry_capacity)
     return NULL;
   VkrBindlessVkPublishedGeometry *geometry =
       &renderer->published_geometries[handle.id - 1u];
@@ -2148,7 +2176,7 @@ vkr_bindless_vk_resolve_geometry(VkrBindlessVulkanRenderer *renderer,
              : NULL;
 }
 
-static VkrBindlessVkPublishedMaterial *
+vkr_internal VkrBindlessVkPublishedMaterial *
 vkr_bindless_vk_resolve_material(VkrBindlessVulkanRenderer *renderer,
                                  VkrMaterialHandle handle) {
   if (!renderer || handle.id == 0u ||
@@ -2161,7 +2189,7 @@ vkr_bindless_vk_resolve_material(VkrBindlessVulkanRenderer *renderer,
              : NULL;
 }
 
-static VkrBindlessVkPacketDrawRoot *
+vkr_internal VkrBindlessVkPacketDrawRoot *
 vkr_bindless_vk_packet_root(VkrBindlessVulkanRenderer *renderer,
                             VkrBindlessVkFrameSlot *slot,
                             uint64_t *out_address) {
@@ -2173,13 +2201,22 @@ vkr_bindless_vk_packet_root(VkrBindlessVulkanRenderer *renderer,
   return root;
 }
 
-static void vkr_bindless_vk_fill_packet_root(
+vkr_internal void vkr_bindless_vk_fill_packet_root(
     VkrBindlessVulkanRenderer *renderer, VkrBindlessVkPacketDrawRoot *root,
-    const VkrBindlessVkFrameSlot *slot, const VkrRenderPacket *packet,
+    const VkrBindlessVkFrameSlot *slot, const VkrPacketFrameConstants *frame,
     const VkrBindlessVkPublishedGeometry *geometry,
     const VkrBindlessVkPublishedMaterial *material, uint64_t instances,
     uint32_t first_instance, Mat4 view_projection, uint32_t shadow_texture,
     uint32_t transmission_texture, bool8_t transmission_pass) {
+  /* Frame and material scalars are derived once, backend-neutrally, so this
+     lowering cannot drift from the Metal one. Everything assigned outside the
+     two blocks below is genuinely Vulkan-specific: device addresses, heap
+     indices, and the frame slot's IBL-ready state. */
+  const VkrPacketMaterialConstants material_constants =
+      vkr_packet_derive_material_constants(
+          &material->pbr, material->alpha_cutoff, material->alpha_mode,
+          transmission_pass);
+
   root->vertices = geometry->vertices.address;
   root->instances = instances;
   root->view_projection = view_projection;
@@ -2189,96 +2226,47 @@ static void vkr_bindless_vk_fill_packet_root(
   root->prefilter_texture = slot->prefilter_texture;
   root->prefilter_sampler = slot->prefilter_sampler;
   root->shadow_texture = shadow_texture;
-  root->shadow_sampler = 0u;
+  root->shadow_sampler = VKR_BINDLESS_VK_SENTINEL_SLOT_INDEX;
   root->transmission_texture = transmission_texture;
-  root->transmission_sampler = 0u;
-  root->view_position =
-      (Vec4){packet->globals.view_position.x, packet->globals.view_position.y,
-             packet->globals.view_position.z, 1.0f};
+  root->transmission_sampler = VKR_BINDLESS_VK_SENTINEL_SLOT_INDEX;
   root->material_index = material->slot.index;
   root->first_instance = first_instance;
-  root->prefilter_mip_count = VKR_IBL_PREFILTER_MIP_COUNT;
-  root->material_emissive =
-      (Vec4){material->pbr.emissive_factor.x, material->pbr.emissive_factor.y,
-             material->pbr.emissive_factor.z, 0.0f};
-  root->material_dielectric_specular = (Vec4){
-      material->pbr.dielectric_specular.x, material->pbr.dielectric_specular.y,
-      material->pbr.dielectric_specular.z, transmission_pass ? 1.0f : 0.0f};
-  root->material_surface =
-      (Vec4){material->pbr.metallic, material->pbr.roughness,
-             material->pbr.normal_scale, material->pbr.occlusion_strength};
-  root->material_alpha =
-      (Vec4){material->alpha_cutoff, material->pbr.transmission_factor,
-             material->pbr.ior, material->pbr.thickness_factor};
-  root->material_attenuation_color = (Vec4){
-      material->pbr.attenuation_color.x, material->pbr.attenuation_color.y,
-      material->pbr.attenuation_color.z, material->pbr.attenuation_distance};
-  root->ibl_controls =
-      packet->lighting
-          ? (Vec4){packet->lighting->ibl_intensity,
-                   packet->lighting->ibl_diffuse_intensity,
-                   packet->lighting->ibl_specular_intensity,
-                   1.0f / (float32_t)(packet->frame.viewport_width
-                                          ? packet->frame.viewport_width
-                                          : packet->frame.window_width)}
-          : (Vec4){1.0f, 1.0f, 1.0f,
-                   1.0f / (float32_t)(packet->frame.viewport_width
-                                          ? packet->frame.viewport_width
-                                          : packet->frame.window_width)};
-  root->directional_direction_enabled =
-      packet->lighting
-          ? (Vec4){packet->lighting->directional_direction.x,
-                   packet->lighting->directional_direction.y,
-                   packet->lighting->directional_direction.z,
-                   packet->lighting->directional_enabled ? 1.0f : 0.0f}
-          : vec4_zero();
-  root->directional_color_intensity =
-      packet->lighting ? (Vec4){packet->lighting->directional_color.x,
-                                packet->lighting->directional_color.y,
-                                packet->lighting->directional_color.z,
-                                packet->lighting->directional_intensity}
-                       : vec4_zero();
-  root->ambient_color =
-      (Vec4){packet->globals.ambient_color.x, packet->globals.ambient_color.y,
-             packet->globals.ambient_color.z,
-             1.0f / (float32_t)(packet->frame.viewport_height
-                                    ? packet->frame.viewport_height
-                                    : packet->frame.window_height)};
-  root->render_mode = packet->globals.render_mode;
-  root->alpha_mode = material->alpha_mode;
   root->flags = slot->ibl_ready ? 1u : 0u;
   root->material_flags = slot->ibl_ready ? 1u : 0u;
   root->point_light_data = slot->point_light_data;
   root->point_light_masks = slot->point_light_masks;
-  if (packet->lighting && packet->lighting->point_light_count) {
-    root->point_light_grid_origin_cell_size =
-        (Vec4){packet->lighting->point_light_grid->origin.x,
-               packet->lighting->point_light_grid->origin.y,
-               packet->lighting->point_light_grid->origin.z,
-               packet->lighting->point_light_grid->cell_size};
-    root->point_light_grid_dimensions_count[0] =
-        packet->lighting->point_light_grid->dimensions[0];
-    root->point_light_grid_dimensions_count[1] =
-        packet->lighting->point_light_grid->dimensions[1];
-    root->point_light_grid_dimensions_count[2] =
-        packet->lighting->point_light_grid->dimensions[2];
-    root->point_light_grid_dimensions_count[3] =
-        packet->lighting->point_light_grid->cell_count;
-    root->point_light_global_mask =
-        packet->lighting->point_light_grid->global_mask;
-  }
-  root->point_light_count =
-      packet->lighting ? packet->lighting->point_light_count : 0u;
-  root->view = packet->globals.view;
   root->shadow_cascades = slot->shadow_cascades;
-  root->shadow_cascade_count =
-      packet->shadow ? packet->shadow->cascade_count : 0u;
-  root->shadow_bias = 0.0001f;
   root->ibl_probes = slot->ibl_probes;
   root->ibl_probe_count = slot->ibl_probe_count;
+
+  root->view_position = frame->view_position;
+  root->prefilter_mip_count = frame->prefilter_mip_count;
+  root->ibl_controls = frame->ibl_controls;
+  root->directional_direction_enabled = frame->directional_direction_enabled;
+  root->directional_color_intensity = frame->directional_color_intensity;
+  root->ambient_color = frame->ambient_color;
+  root->render_mode = frame->render_mode;
+  root->point_light_grid_origin_cell_size =
+      frame->point_light_grid_origin_cell_size;
+  for (uint32_t i = 0; i < 4u; ++i) {
+    root->point_light_grid_dimensions_count[i] =
+        frame->point_light_grid_dimensions_count[i];
+  }
+  root->point_light_global_mask = frame->point_light_global_mask;
+  root->point_light_count = frame->point_light_count;
+  root->view = frame->view;
+  root->shadow_cascade_count = frame->shadow_cascade_count;
+  root->shadow_bias = frame->shadow_bias;
+
+  root->material_emissive = material_constants.emissive;
+  root->material_dielectric_specular = material_constants.dielectric_specular;
+  root->material_surface = material_constants.surface;
+  root->material_alpha = material_constants.alpha;
+  root->material_attenuation_color = material_constants.attenuation_color;
+  root->alpha_mode = material_constants.alpha_mode;
 }
 
-static bool8_t vkr_bindless_vk_record_packet_draws(
+vkr_internal bool8_t vkr_bindless_vk_record_packet_draws(
     VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
     VkrBindlessVkPacketPipeline pipeline, const VkrDrawItem *draws,
     uint32_t draw_count, uint64_t instances, uint32_t instance_count,
@@ -2290,6 +2278,13 @@ static bool8_t vkr_bindless_vk_record_packet_draws(
     return false_v;
   VkrBindlessVkFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
+  const VkrRenderPacket *packet = renderer->graph->packet;
+  const VkrPacketFrameConstants frame = vkr_packet_derive_frame_constants(
+      packet,
+      packet->frame.viewport_width ? packet->frame.viewport_width
+                                   : packet->frame.window_width,
+      packet->frame.viewport_height ? packet->frame.viewport_height
+                                    : packet->frame.window_height);
   vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     renderer->packet_pipelines[pipeline]);
   for (uint32_t i = 0; i < draw_count; ++i) {
@@ -2302,7 +2297,7 @@ static bool8_t vkr_bindless_vk_record_packet_draws(
     VkrBindlessVkPublishedMaterial *material =
         vkr_bindless_vk_resolve_material(renderer, draw->material);
     if (!geometry && draw->geometry.id > 0u &&
-        draw->geometry.id <= renderer->config.sampled_image_capacity) {
+        draw->geometry.id <= renderer->config.geometry_capacity) {
       const VkrBindlessVkPublishedGeometry *pending_geometry =
           &renderer->published_geometries[draw->geometry.id - 1u];
       if (pending_geometry->live &&
@@ -2334,10 +2329,10 @@ static bool8_t vkr_bindless_vk_record_packet_draws(
         vkr_bindless_vk_packet_root(renderer, slot, &root_address);
     if (!root)
       return false_v;
-    vkr_bindless_vk_fill_packet_root(
-        renderer, root, slot, renderer->graph->packet, geometry, material,
-        instances, draw->first_instance, view_projection, shadow_texture,
-        transmission_texture, transmission_pass);
+    vkr_bindless_vk_fill_packet_root(renderer, root, slot, &frame, geometry,
+                                     material, instances, draw->first_instance,
+                                     view_projection, shadow_texture,
+                                     transmission_texture, transmission_pass);
     const VkrBindlessVkPushConstants push = {
         .root = root_address,
         .material_index = material->slot.index,
@@ -2376,7 +2371,7 @@ static bool8_t vkr_bindless_vk_record_packet_draws(
   return true_v;
 }
 
-static bool8_t vkr_bindless_vk_record_text_draws(
+vkr_internal bool8_t vkr_bindless_vk_record_text_draws(
     VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
     VkrBindlessVkPacketPipeline pipeline, const VkrPreparedTextDraw *draws,
     uint32_t draw_count, Mat4 view_projection, uint32_t target_width,
@@ -2456,7 +2451,7 @@ static bool8_t vkr_bindless_vk_record_text_draws(
   return true_v;
 }
 
-static bool8_t vkr_bindless_vk_record_packet_fullscreen(
+vkr_internal bool8_t vkr_bindless_vk_record_packet_fullscreen(
     VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
     VkrBindlessVkPacketPipeline pipeline, uint32_t texture_index,
     uint32_t flags) {
@@ -2486,10 +2481,9 @@ static bool8_t vkr_bindless_vk_record_packet_fullscreen(
   return true_v;
 }
 
-static bool8_t
-vkr_bindless_vk_record_packet_skybox(VkrBindlessVulkanRenderer *renderer,
-                                     VkCommandBuffer command,
-                                     const VkrSkyboxPassPayload *skybox) {
+vkr_internal bool8_t vkr_bindless_vk_record_packet_skybox(
+    VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
+    const VkrSkyboxPassPayload *skybox) {
   if (!skybox)
     return true_v;
   VkrBindlessVkPublishedTexture *cubemap =
@@ -2533,10 +2527,9 @@ vkr_bindless_vk_record_packet_skybox(VkrBindlessVulkanRenderer *renderer,
   return true_v;
 }
 
-static bool8_t
-vkr_bindless_vk_graph_sampled_index(VkrBindlessVulkanRenderer *renderer,
-                                    const VkrRgPass *pass, uint32_t read_index,
-                                    uint32_t *out_index) {
+vkr_internal bool8_t vkr_bindless_vk_graph_sampled_index(
+    VkrBindlessVulkanRenderer *renderer, const VkrRgPass *pass,
+    uint32_t read_index, uint32_t *out_index) {
   if (!out_index || read_index >= pass->desc.image_reads.length)
     return false_v;
   const VkrRgImageUse *read =
@@ -2549,7 +2542,7 @@ vkr_bindless_vk_graph_sampled_index(VkrBindlessVulkanRenderer *renderer,
   return true_v;
 }
 
-static bool8_t vkr_bindless_vk_record_graphics_body(
+vkr_internal bool8_t vkr_bindless_vk_record_graphics_body(
     VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
     const VkrRgPass *pass, VkrBindlessVkGraphExecutorKind kind) {
   const VkrRenderPacket *packet = renderer->graph->packet;
@@ -2711,7 +2704,7 @@ static bool8_t vkr_bindless_vk_record_graphics_body(
   }
 }
 
-static bool8_t vkr_bindless_vk_record_graph_graphics_pass(
+vkr_internal bool8_t vkr_bindless_vk_record_graph_graphics_pass(
     VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
     const VkrRgPass *pass, VkrBindlessVkGraphExecutorKind kind) {
   enum { VKR_BINDLESS_VK_GRAPH_COLOR_ATTACHMENT_MAX = 8 };
@@ -2783,10 +2776,9 @@ static bool8_t vkr_bindless_vk_record_graph_graphics_pass(
   return true_v;
 }
 
-static bool8_t
-vkr_bindless_vk_record_graph_transfer_pass(VkrBindlessVulkanRenderer *renderer,
-                                           VkCommandBuffer command,
-                                           const VkrRgPass *pass) {
+vkr_internal bool8_t vkr_bindless_vk_record_graph_transfer_pass(
+    VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
+    const VkrRgPass *pass) {
   if (pass->desc.image_reads.length == 0u ||
       pass->desc.image_writes.length == 0u)
     return true_v;
@@ -2826,7 +2818,7 @@ vkr_bindless_vk_record_graph_transfer_pass(VkrBindlessVulkanRenderer *renderer,
   return true_v;
 }
 
-static void vkr_bindless_vk_cmd_ibl_image_barrier(
+vkr_internal void vkr_bindless_vk_cmd_ibl_image_barrier(
     VkCommandBuffer command, VkImage image, uint32_t mip_level,
     uint32_t layer_count, VkPipelineStageFlags2 src_stage,
     VkAccessFlags2 src_access, VkPipelineStageFlags2 dst_stage,
@@ -2860,7 +2852,7 @@ static void vkr_bindless_vk_cmd_ibl_image_barrier(
   vkCmdPipelineBarrier2(command, &dependency);
 }
 
-static bool8_t vkr_bindless_vk_record_ibl_dispatch(
+vkr_internal bool8_t vkr_bindless_vk_record_ibl_dispatch(
     VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
     VkrBindlessVkIblPipeline pipeline,
     const VkrBindlessVkPublishedTexture *source,
@@ -2902,7 +2894,7 @@ static bool8_t vkr_bindless_vk_record_ibl_dispatch(
   return true_v;
 }
 
-static void
+vkr_internal void
 vkr_bindless_vk_record_ibl_source_mips(VkCommandBuffer command,
                                        VkrBindlessVkPublishedTexture *source) {
   if (source->image.mip_levels == 1u) {
@@ -2982,9 +2974,8 @@ vkr_bindless_vk_record_ibl_source_mips(VkCommandBuffer command,
   }
 }
 
-static bool8_t
-vkr_bindless_vk_record_ibl_bakes(VkrBindlessVulkanRenderer *renderer,
-                                 VkCommandBuffer command) {
+vkr_internal bool8_t vkr_bindless_vk_record_ibl_bakes(
+    VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command) {
   for (uint32_t i = 0u; i < renderer->pending_ibl_bake_count; ++i) {
     VkrBindlessVkPendingIblBake *job = &renderer->pending_ibl_bakes[i];
     job->recorded = false_v;
@@ -3046,10 +3037,9 @@ vkr_bindless_vk_record_ibl_bakes(VkrBindlessVulkanRenderer *renderer,
   return true_v;
 }
 
-static bool8_t
-vkr_bindless_vk_record_graph_pass(VkrBindlessVulkanRenderer *renderer,
-                                  VkCommandBuffer command,
-                                  const VkrRgPass *pass) {
+vkr_internal bool8_t vkr_bindless_vk_record_graph_pass(
+    VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
+    const VkrRgPass *pass) {
   VkrBindlessVkGraphExecutorKind kind;
   if (!vkr_bindless_vk_graph_executor_kind(pass, &kind)) {
     log_error("Bindless Vulkan graph pass '%.*s' has no executor kind",
@@ -3082,8 +3072,8 @@ vkr_bindless_vk_record_graph_pass(VkrBindlessVulkanRenderer *renderer,
   }
 }
 
-static bool8_t vkr_bindless_vk_record_graph(VkrBindlessVulkanRenderer *renderer,
-                                            VkCommandBuffer command) {
+vkr_internal bool8_t vkr_bindless_vk_record_graph(
+    VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command) {
   VkrBindlessVkFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   slot->pass_timing_count = 0u;
@@ -3137,15 +3127,14 @@ static bool8_t vkr_bindless_vk_record_graph(VkrBindlessVulkanRenderer *renderer,
       renderer, command, &renderer->graph->terminal_image_barriers);
 }
 
-static uint64_t vkr_bindless_vk_capture_align(uint64_t value) {
+vkr_internal uint64_t vkr_bindless_vk_capture_align(uint64_t value) {
   return (value + VKR_CAPTURE_BUFFER_ALIGNMENT - 1u) &
          ~(uint64_t)(VKR_CAPTURE_BUFFER_ALIGNMENT - 1u);
 }
 
-static bool8_t
-vkr_bindless_vk_capture_source(const VkrCaptureChannelDescription *channel,
-                               const VkrRenderPacket *packet,
-                               const char **out_name, uint32_t *out_layer) {
+vkr_internal bool8_t vkr_bindless_vk_capture_source(
+    const VkrCaptureChannelDescription *channel, const VkrRenderPacket *packet,
+    const char **out_name, uint32_t *out_layer) {
   const char *name = channel->source_name;
   uint32_t layer = 0u;
   if (string_equals(channel->name, "scene_color")) {
@@ -3166,9 +3155,9 @@ vkr_bindless_vk_capture_source(const VkrCaptureChannelDescription *channel,
   return true_v;
 }
 
-static bool8_t vkr_bindless_vk_plan_capture(VkrBindlessVulkanRenderer *renderer,
-                                            const VkrRenderPacket *packet,
-                                            VkrBindlessVkFrameSlot *slot) {
+vkr_internal bool8_t vkr_bindless_vk_plan_capture(
+    VkrBindlessVulkanRenderer *renderer, const VkrRenderPacket *packet,
+    VkrBindlessVkFrameSlot *slot) {
   slot->capture_request_id = 0u;
   slot->capture_item_count = 0u;
   const VkrCaptureBatchRequest *request =
@@ -3255,10 +3244,9 @@ static bool8_t vkr_bindless_vk_plan_capture(VkrBindlessVulkanRenderer *renderer,
   return true_v;
 }
 
-static bool8_t
-vkr_bindless_vk_record_capture(VkrBindlessVulkanRenderer *renderer,
-                               VkCommandBuffer command,
-                               VkrBindlessVkFrameSlot *slot) {
+vkr_internal bool8_t vkr_bindless_vk_record_capture(
+    VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
+    VkrBindlessVkFrameSlot *slot) {
   if (slot->capture_request_id == 0u)
     return true_v;
   for (uint32_t i = 0; i < slot->capture_item_count; ++i) {
@@ -3344,7 +3332,7 @@ vkr_bindless_vk_record_capture(VkrBindlessVulkanRenderer *renderer,
   return true_v;
 }
 
-static void
+vkr_internal void
 vkr_bindless_vk_destroy_target_set(VkrBindlessVulkanRenderer *renderer,
                                    VkrBindlessVkTargetSet *targets) {
   for (uint32_t i = 0; i < targets->image_count; ++i) {
@@ -3353,7 +3341,7 @@ vkr_bindless_vk_destroy_target_set(VkrBindlessVulkanRenderer *renderer,
   MemZero(targets, sizeof(*targets));
 }
 
-static bool8_t vkr_bindless_vk_create_target_set(
+vkr_internal bool8_t vkr_bindless_vk_create_target_set(
     VkrBindlessVulkanRenderer *renderer, uint32_t width, uint32_t height,
     uint32_t image_count, VkrBindlessVkTargetSet *out_targets) {
   if (!width || !height || !image_count ||
@@ -3376,7 +3364,7 @@ static bool8_t vkr_bindless_vk_create_target_set(
   return true_v;
 }
 
-static void
+vkr_internal void
 vkr_bindless_vk_destroy_window_target(VkrBindlessVulkanRenderer *renderer,
                                       VkrBindlessVkWindowTarget *target) {
   VkDevice device = vkr_bindless_vk_renderer_device(renderer);
@@ -3391,10 +3379,9 @@ vkr_bindless_vk_destroy_window_target(VkrBindlessVulkanRenderer *renderer,
   MemZero(target, sizeof(*target));
 }
 
-static bool8_t
-vkr_bindless_vk_window_presents_complete(VkrBindlessVulkanRenderer *renderer,
-                                         VkrBindlessVkWindowTarget *target,
-                                         bool8_t wait) {
+vkr_internal bool8_t vkr_bindless_vk_window_presents_complete(
+    VkrBindlessVulkanRenderer *renderer, VkrBindlessVkWindowTarget *target,
+    bool8_t wait) {
   if (!vkr_bindless_vulkan_device_present_fences_enabled(renderer->device))
     return true_v;
   VkDevice device = vkr_bindless_vk_renderer_device(renderer);
@@ -3415,7 +3402,7 @@ vkr_bindless_vk_window_presents_complete(VkrBindlessVulkanRenderer *renderer,
   return true_v;
 }
 
-static void vkr_bindless_vk_collect_retired_window_targets(
+vkr_internal void vkr_bindless_vk_collect_retired_window_targets(
     VkrBindlessVulkanRenderer *renderer, uint64_t completed_submit_value) {
   const VkrBindlessVulkanReacquireResult reacquire =
       vkr_bindless_vulkan_reacquire_complete(
@@ -3434,9 +3421,8 @@ static void vkr_bindless_vk_collect_retired_window_targets(
   }
 }
 
-static VkSurfaceFormatKHR
-vkr_bindless_vk_choose_surface_format(const VkSurfaceFormatKHR *formats,
-                                      uint32_t count) {
+vkr_internal VkSurfaceFormatKHR vkr_bindless_vk_choose_surface_format(
+    const VkSurfaceFormatKHR *formats, uint32_t count) {
   if (count == 1u && formats[0].format == VK_FORMAT_UNDEFINED)
     return (VkSurfaceFormatKHR){VK_FORMAT_B8G8R8A8_SRGB,
                                 VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
@@ -3453,10 +3439,9 @@ vkr_bindless_vk_choose_surface_format(const VkSurfaceFormatKHR *formats,
   return formats[0];
 }
 
-static VkPresentModeKHR
-vkr_bindless_vk_choose_present_mode(const VkPresentModeKHR *modes,
-                                    uint32_t count,
-                                    VkrPresentMode requested_mode) {
+vkr_internal VkPresentModeKHR vkr_bindless_vk_choose_present_mode(
+    const VkPresentModeKHR *modes, uint32_t count,
+    VkrPresentMode requested_mode) {
   VkPresentModeKHR requested = VK_PRESENT_MODE_FIFO_KHR;
   if (requested_mode == VKR_PRESENT_MODE_IMMEDIATE)
     requested = VK_PRESENT_MODE_IMMEDIATE_KHR;
@@ -3470,7 +3455,7 @@ vkr_bindless_vk_choose_present_mode(const VkPresentModeKHR *modes,
   return VK_PRESENT_MODE_FIFO_KHR;
 }
 
-static bool8_t vkr_bindless_vk_create_window_target(
+vkr_internal bool8_t vkr_bindless_vk_create_window_target(
     VkrBindlessVulkanRenderer *renderer, uint32_t requested_width,
     uint32_t requested_height, uint32_t requested_image_count,
     VkSwapchainKHR old_swapchain, VkrBindlessVkWindowTarget *out_target) {
@@ -3601,7 +3586,7 @@ static bool8_t vkr_bindless_vk_create_window_target(
   return true_v;
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_bindless_vk_create_acquire_semaphores(VkrBindlessVulkanRenderer *renderer) {
   VkSemaphoreCreateInfo info = {.sType =
                                     VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
@@ -3613,7 +3598,7 @@ vkr_bindless_vk_create_acquire_semaphores(VkrBindlessVulkanRenderer *renderer) {
   return true_v;
 }
 
-static void
+vkr_internal void
 vkr_bindless_vk_collect_retired_targets(VkrBindlessVulkanRenderer *renderer,
                                         uint64_t completed_value) {
   for (uint32_t i = 0; i < ArrayCount(renderer->retired_targets); ++i) {
@@ -3625,7 +3610,7 @@ vkr_bindless_vk_collect_retired_targets(VkrBindlessVulkanRenderer *renderer,
   }
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_bindless_vk_create_frame_slots(VkrBindlessVulkanRenderer *renderer) {
   VkDevice device = vkr_bindless_vk_renderer_device(renderer);
   const VkDeviceSize readback_size = 4u;
@@ -3676,7 +3661,7 @@ vkr_bindless_vk_create_frame_slots(VkrBindlessVulkanRenderer *renderer) {
   return true_v;
 }
 
-static void
+vkr_internal void
 vkr_bindless_vk_destroy_frame_slots(VkrBindlessVulkanRenderer *renderer) {
   VkDevice device = vkr_bindless_vk_renderer_device(renderer);
   for (uint32_t i = 0; i < VKR_BINDLESS_VK_FRAME_SLOT_COUNT; ++i) {
@@ -3693,7 +3678,7 @@ vkr_bindless_vk_destroy_frame_slots(VkrBindlessVulkanRenderer *renderer) {
   }
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_bindless_vk_write_upload_data(VkrBindlessVulkanRenderer *renderer) {
   uint8_t *mapped = renderer->upload.allocation.mapped;
   const uint8_t sentinel_pixel[] = {37u, 91u, 173u, 255u};
@@ -3702,7 +3687,7 @@ vkr_bindless_vk_write_upload_data(VkrBindlessVulkanRenderer *renderer) {
                                sizeof(sentinel_pixel));
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_bindless_vk_create_resources(VkrBindlessVulkanRenderer *renderer) {
   if (!vkr_bindless_vk_create_upload_buffers(renderer)) {
     log_error("Bindless Vulkan failed to create upload buffers");
@@ -3753,7 +3738,7 @@ vkr_bindless_vk_create_resources(VkrBindlessVulkanRenderer *renderer) {
   return true_v;
 }
 
-static bool8_t vkr_bindless_vk_create_descriptor_slot_tables(
+vkr_internal bool8_t vkr_bindless_vk_create_descriptor_slot_tables(
     VkrBindlessVulkanRenderer *renderer) {
   const VkPhysicalDeviceDescriptorBufferPropertiesEXT *properties =
       vkr_bindless_vulkan_device_descriptor_properties(renderer->device);
@@ -3799,16 +3784,16 @@ static bool8_t vkr_bindless_vk_create_descriptor_slot_tables(
   renderer->material_slot_storage_size =
       vkr_gpu_slot_table_storage_requirement(&material_config);
   renderer->published_geometries_size =
-      (uint64_t)renderer->config.sampled_image_capacity *
+      (uint64_t)renderer->config.geometry_capacity *
       sizeof(*renderer->published_geometries);
   renderer->retired_geometries_size =
-      (uint64_t)renderer->config.sampled_image_capacity *
+      (uint64_t)renderer->config.geometry_capacity *
       sizeof(*renderer->retired_geometries);
   renderer->published_textures_size =
-      (uint64_t)renderer->config.sampled_image_capacity *
+      (uint64_t)renderer->config.texture_capacity *
       sizeof(*renderer->published_textures);
   renderer->retired_textures_size =
-      (uint64_t)renderer->config.sampled_image_capacity *
+      (uint64_t)renderer->config.texture_capacity *
       sizeof(*renderer->retired_textures);
   renderer->published_samplers_size =
       (uint64_t)renderer->config.sampler_capacity *
@@ -3820,7 +3805,7 @@ static bool8_t vkr_bindless_vk_create_descriptor_slot_tables(
       (uint64_t)renderer->config.material_record_capacity *
       sizeof(*renderer->retired_materials);
   renderer->pending_texture_initializations_size =
-      (uint64_t)renderer->config.sampled_image_capacity *
+      (uint64_t)renderer->config.texture_capacity *
       sizeof(*renderer->pending_texture_initializations);
   renderer->pending_buffer_initialization_capacity =
       renderer->config.publication_staging_capacity;
@@ -3931,7 +3916,7 @@ static bool8_t vkr_bindless_vk_create_descriptor_slot_tables(
              &renderer->material_slots) == VKR_GPU_SLOT_STATUS_OK;
 }
 
-static bool8_t vkr_bindless_vk_publish_sentinel_descriptors(
+vkr_internal bool8_t vkr_bindless_vk_publish_sentinel_descriptors(
     VkrBindlessVulkanRenderer *renderer) {
   const VkPhysicalDeviceDescriptorBufferPropertiesEXT *properties =
       vkr_bindless_vulkan_device_descriptor_properties(renderer->device);
@@ -4028,7 +4013,7 @@ static bool8_t vkr_bindless_vk_publish_sentinel_descriptors(
                                     &renderer->materials, 0u, sizeof(material));
 }
 
-static SpvReflectBlockVariable *
+vkr_internal SpvReflectBlockVariable *
 vkr_bindless_vk_reflect_member(SpvReflectBlockVariable *parent,
                                const char *name) {
   if (!parent || !name)
@@ -4041,10 +4026,9 @@ vkr_bindless_vk_reflect_member(SpvReflectBlockVariable *parent,
   return NULL;
 }
 
-static bool8_t
-vkr_bindless_vk_reflect_member_offset(SpvReflectBlockVariable *parent,
-                                      const char *name, uint32_t offset,
-                                      SpvReflectBlockVariable **out_member) {
+vkr_internal bool8_t vkr_bindless_vk_reflect_member_offset(
+    SpvReflectBlockVariable *parent, const char *name, uint32_t offset,
+    SpvReflectBlockVariable **out_member) {
   SpvReflectBlockVariable *member =
       vkr_bindless_vk_reflect_member(parent, name);
   if (out_member)
@@ -4059,7 +4043,7 @@ vkr_bindless_vk_reflect_member_offset(SpvReflectBlockVariable *parent,
   return true_v;
 }
 
-static uint32_t
+vkr_internal uint32_t
 vkr_bindless_vk_reflected_struct_size(const SpvReflectBlockVariable *value) {
   uint32_t size = 0u;
   if (!value)
@@ -4073,7 +4057,7 @@ vkr_bindless_vk_reflected_struct_size(const SpvReflectBlockVariable *value) {
   return size;
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_bindless_vk_validate_packet_root_abi(VkrBindlessVulkanRenderer *renderer) {
   FilePath shader_path =
       file_path_create(VKR_BINDLESS_VK_PACKET_TEXT_VERT_SPV,
@@ -4168,10 +4152,9 @@ vkr_bindless_vk_validate_packet_root_abi(VkrBindlessVulkanRenderer *renderer) {
   return valid;
 }
 
-static bool8_t
-vkr_bindless_vk_create_shader_module(VkrBindlessVulkanRenderer *renderer,
-                                     const char *path,
-                                     VkShaderModule *out_module) {
+vkr_internal bool8_t vkr_bindless_vk_create_shader_module(
+    VkrBindlessVulkanRenderer *renderer, const char *path,
+    VkShaderModule *out_module) {
   FilePath shader_path =
       file_path_create(path, renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
   uint8_t *bytes = NULL;
@@ -4194,7 +4177,7 @@ vkr_bindless_vk_create_shader_module(VkrBindlessVulkanRenderer *renderer,
   return result == VK_SUCCESS;
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_bindless_vk_create_pipelines(VkrBindlessVulkanRenderer *renderer) {
   if (!vkr_bindless_vk_validate_packet_root_abi(renderer)) {
     return false_v;
@@ -4229,7 +4212,7 @@ vkr_bindless_vk_create_pipelines(VkrBindlessVulkanRenderer *renderer) {
          vkr_bindless_vk_create_ibl_pipelines(renderer);
 }
 
-static bool8_t vkr_bindless_vk_create_packet_pipeline(
+vkr_internal bool8_t vkr_bindless_vk_create_packet_pipeline(
     VkrBindlessVulkanRenderer *renderer, VkrBindlessVkPacketPipeline pipeline,
     VkrBindlessVkPacketShader vertex_shader,
     VkrBindlessVkPacketShader fragment_shader, VkFormat color_format,
@@ -4358,21 +4341,22 @@ static bool8_t vkr_bindless_vk_create_packet_pipeline(
              &renderer->packet_pipelines[pipeline]) == VK_SUCCESS;
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_bindless_vk_create_packet_pipelines(VkrBindlessVulkanRenderer *renderer) {
-  static const char *const paths[VKR_BINDLESS_VK_PACKET_SHADER_COUNT] = {
-      VKR_BINDLESS_VK_PACKET_WORLD_VERT_SPV,
-      VKR_BINDLESS_VK_PACKET_WORLD_FRAG_SPV,
-      VKR_BINDLESS_VK_PACKET_SHADOW_VERT_SPV,
-      VKR_BINDLESS_VK_PACKET_SHADOW_FRAG_SPV,
-      VKR_BINDLESS_VK_PACKET_PICKING_FRAG_SPV,
-      VKR_BINDLESS_VK_PACKET_FULLSCREEN_VERT_SPV,
-      VKR_BINDLESS_VK_PACKET_FULLSCREEN_FRAG_SPV,
-      VKR_BINDLESS_VK_PACKET_SKYBOX_FRAG_SPV,
-      VKR_BINDLESS_VK_PACKET_TEXT_VERT_SPV,
-      VKR_BINDLESS_VK_PACKET_TEXT_FRAG_SPV,
-      VKR_BINDLESS_VK_PACKET_TEXT_PICKING_FRAG_SPV,
-  };
+  vkr_local_persist const char
+      *const paths[VKR_BINDLESS_VK_PACKET_SHADER_COUNT] = {
+          VKR_BINDLESS_VK_PACKET_WORLD_VERT_SPV,
+          VKR_BINDLESS_VK_PACKET_WORLD_FRAG_SPV,
+          VKR_BINDLESS_VK_PACKET_SHADOW_VERT_SPV,
+          VKR_BINDLESS_VK_PACKET_SHADOW_FRAG_SPV,
+          VKR_BINDLESS_VK_PACKET_PICKING_FRAG_SPV,
+          VKR_BINDLESS_VK_PACKET_FULLSCREEN_VERT_SPV,
+          VKR_BINDLESS_VK_PACKET_FULLSCREEN_FRAG_SPV,
+          VKR_BINDLESS_VK_PACKET_SKYBOX_FRAG_SPV,
+          VKR_BINDLESS_VK_PACKET_TEXT_VERT_SPV,
+          VKR_BINDLESS_VK_PACKET_TEXT_FRAG_SPV,
+          VKR_BINDLESS_VK_PACKET_TEXT_PICKING_FRAG_SPV,
+      };
   for (uint32_t i = 0u; i < VKR_BINDLESS_VK_PACKET_SHADER_COUNT; ++i) {
     if (!vkr_bindless_vk_create_shader_module(renderer, paths[i],
                                               &renderer->packet_shaders[i]))
@@ -4444,18 +4428,20 @@ vkr_bindless_vk_create_packet_pipelines(VkrBindlessVulkanRenderer *renderer) {
              true_v, false_v);
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_bindless_vk_create_ibl_pipelines(VkrBindlessVulkanRenderer *renderer) {
-  static const char *const paths[VKR_BINDLESS_VK_IBL_PIPELINE_COUNT] = {
-      VKR_BINDLESS_VK_PACKET_IBL_EQUIRECT_COMP_SPV,
-      VKR_BINDLESS_VK_PACKET_IBL_IRRADIANCE_COMP_SPV,
-      VKR_BINDLESS_VK_PACKET_IBL_PREFILTER_COMP_SPV,
-  };
-  static const char *const entries[VKR_BINDLESS_VK_IBL_PIPELINE_COUNT] = {
-      "ibl_equirect",
-      "ibl_irradiance",
-      "ibl_prefilter",
-  };
+  vkr_local_persist const char
+      *const paths[VKR_BINDLESS_VK_IBL_PIPELINE_COUNT] = {
+          VKR_BINDLESS_VK_PACKET_IBL_EQUIRECT_COMP_SPV,
+          VKR_BINDLESS_VK_PACKET_IBL_IRRADIANCE_COMP_SPV,
+          VKR_BINDLESS_VK_PACKET_IBL_PREFILTER_COMP_SPV,
+      };
+  vkr_local_persist const char
+      *const entries[VKR_BINDLESS_VK_IBL_PIPELINE_COUNT] = {
+          "ibl_equirect",
+          "ibl_irradiance",
+          "ibl_prefilter",
+      };
   for (uint32_t i = 0u; i < VKR_BINDLESS_VK_IBL_PIPELINE_COUNT; ++i) {
     if (!vkr_bindless_vk_create_shader_module(renderer, paths[i],
                                               &renderer->ibl_shaders[i]))
@@ -4480,7 +4466,7 @@ vkr_bindless_vk_create_ibl_pipelines(VkrBindlessVulkanRenderer *renderer) {
   return true_v;
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_bindless_vk_create_timeline(VkrBindlessVulkanRenderer *renderer) {
   VkSemaphoreTypeCreateInfo type_info = {
       .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
@@ -4496,7 +4482,7 @@ vkr_bindless_vk_create_timeline(VkrBindlessVulkanRenderer *renderer) {
                            &renderer->timeline) == VK_SUCCESS;
 }
 
-static uint64_t
+vkr_internal uint64_t
 vkr_bindless_vk_refresh_completed(VkrBindlessVulkanRenderer *renderer) {
   uint64_t completed = renderer->completed_value;
   if (renderer->timeline && vkGetSemaphoreCounterValue(
@@ -4507,9 +4493,8 @@ vkr_bindless_vk_refresh_completed(VkrBindlessVulkanRenderer *renderer) {
   return renderer->completed_value;
 }
 
-static bool8_t
-vkr_bindless_vk_collect_captures(VkrBindlessVulkanRenderer *renderer,
-                                 uint64_t completed_value) {
+vkr_internal bool8_t vkr_bindless_vk_collect_captures(
+    VkrBindlessVulkanRenderer *renderer, uint64_t completed_value) {
   if (!renderer->capture_ring.initialized)
     return true_v;
   for (uint32_t i = 0; i < VKR_BINDLESS_VK_FRAME_SLOT_COUNT; ++i) {
@@ -4534,9 +4519,8 @@ vkr_bindless_vk_collect_captures(VkrBindlessVulkanRenderer *renderer,
   return true_v;
 }
 
-static bool8_t
-vkr_bindless_vk_collect_slot_timings(VkrBindlessVulkanRenderer *renderer,
-                                     VkrBindlessVkFrameSlot *slot) {
+vkr_internal bool8_t vkr_bindless_vk_collect_slot_timings(
+    VkrBindlessVulkanRenderer *renderer, VkrBindlessVkFrameSlot *slot) {
   if (!slot->timing_requested || slot->timing_collected)
     return true_v;
   if (!slot->retire_value || slot->retire_value > renderer->completed_value ||
@@ -4576,9 +4560,13 @@ bool8_t vkr_bindless_vulkan_renderer_create(
        !config->image_count) ||
       config->image_count > VKR_BINDLESS_VK_TARGET_IMAGE_MAX ||
       !config->sampled_image_capacity || !config->storage_image_capacity ||
-      !config->sampler_capacity || !config->material_record_capacity ||
-      !config->device_buffer_block_size || !config->device_image_block_size ||
-      !config->upload_buffer_block_size ||
+      !config->sampler_capacity || !config->geometry_capacity ||
+      !config->texture_capacity ||
+      /* Every published texture also takes one sampled descriptor slot, so a
+         texture ID space wider than the heap could never be fully resident. */
+      config->texture_capacity > config->sampled_image_capacity ||
+      !config->material_record_capacity || !config->device_buffer_block_size ||
+      !config->device_image_block_size || !config->upload_buffer_block_size ||
       !config->readback_buffer_block_size || !config->memory_block_capacity ||
       !config->memory_blocks_per_pool ||
       config->memory_blocks_per_pool > config->memory_block_capacity ||
@@ -4663,23 +4651,17 @@ bool8_t vkr_bindless_vulkan_renderer_create(
   renderer->graph_image_barriers_size =
       (uint64_t)renderer->config.max_graph_images *
       sizeof(*renderer->graph_image_barriers);
-  renderer->graph_buffer_barriers_size =
-      (uint64_t)renderer->config.max_graph_images *
-      sizeof(*renderer->graph_buffer_barriers);
   renderer->graph_images =
       vkr_allocator_alloc(renderer->allocator, renderer->graph_images_size,
                           VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   renderer->graph_image_barriers = vkr_allocator_alloc(
       renderer->allocator, renderer->graph_image_barriers_size,
       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-  renderer->graph_buffer_barriers = vkr_allocator_alloc(
-      renderer->allocator, renderer->graph_buffer_barriers_size,
-      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   renderer->graph_frame_arena = arena_create(MB(8), KB(256));
   renderer->graph_frame_allocator =
       (VkrAllocator){.ctx = renderer->graph_frame_arena};
   if (!renderer->graph_images || !renderer->graph_image_barriers ||
-      !renderer->graph_buffer_barriers || !renderer->graph_frame_arena ||
+      !renderer->graph_frame_arena ||
       !vkr_allocator_arena(&renderer->graph_frame_allocator) ||
       !vkr_rg_executor_registry_init(&renderer->executors,
                                      renderer->allocator) ||
@@ -4694,8 +4676,6 @@ bool8_t vkr_bindless_vulkan_renderer_create(
   }
   MemZero(renderer->graph_images, renderer->graph_images_size);
   MemZero(renderer->graph_image_barriers, renderer->graph_image_barriers_size);
-  MemZero(renderer->graph_buffer_barriers,
-          renderer->graph_buffer_barriers_size);
   VkrBindlessVulkanDeviceConfig device_config = {
       .allocator = config->allocator,
       .window = config->window,
@@ -4783,7 +4763,7 @@ bool8_t vkr_bindless_vulkan_renderer_create(
   return true_v;
 }
 
-static void vkr_bindless_vk_cmd_image_barrier_range(
+vkr_internal void vkr_bindless_vk_cmd_image_barrier_range(
     VkCommandBuffer command_buffer, VkImage image,
     VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
     VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access,
@@ -4812,7 +4792,7 @@ static void vkr_bindless_vk_cmd_image_barrier_range(
   vkCmdPipelineBarrier2(command_buffer, &dependency);
 }
 
-static void vkr_bindless_vk_cmd_image_barrier(
+vkr_internal void vkr_bindless_vk_cmd_image_barrier(
     VkCommandBuffer command_buffer, VkImage image,
     VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
     VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access,
@@ -4822,7 +4802,7 @@ static void vkr_bindless_vk_cmd_image_barrier(
                                           old_layout, new_layout, 1u, 1u);
 }
 
-static void *
+vkr_internal void *
 vkr_bindless_vk_publication_source_alloc(VkrBindlessVulkanRenderer *renderer,
                                          uint64_t size) {
   VkrDMemory *memory = &renderer->publication_staging_memory;
@@ -4853,7 +4833,7 @@ vkr_bindless_vk_publication_source_alloc(VkrBindlessVulkanRenderer *renderer,
   return result;
 }
 
-static void vkr_bindless_vk_release_texture_initialization(
+vkr_internal void vkr_bindless_vk_release_texture_initialization(
     VkrBindlessVulkanRenderer *renderer,
     VkrBindlessVkPendingTextureInitialization *initialization) {
   vkr_bindless_vk_destroy_buffer(renderer, &initialization->staging);
@@ -4868,18 +4848,18 @@ static void vkr_bindless_vk_release_texture_initialization(
   MemZero(initialization, sizeof(*initialization));
 }
 
-static bool8_t vkr_bindless_vk_enqueue_texture_initialization(
+vkr_internal bool8_t vkr_bindless_vk_enqueue_texture_initialization(
     VkrBindlessVulkanRenderer *renderer,
     const VkrBindlessVkPendingTextureInitialization *initialization) {
   if (renderer->pending_texture_initialization_count >=
-      renderer->config.sampled_image_capacity)
+      renderer->config.texture_capacity)
     return false_v;
   renderer->pending_texture_initializations
       [renderer->pending_texture_initialization_count++] = *initialization;
   return true_v;
 }
 
-static bool8_t vkr_bindless_vk_upload_prepared_texture(
+vkr_internal bool8_t vkr_bindless_vk_upload_prepared_texture(
     VkrBindlessVulkanRenderer *renderer, const VkrTexturePreparedLoad *prepared,
     VkrTextureHandle texture, VkrBindlessVkImage *out_image,
     VkrBindlessVkPendingTextureInitialization *out_initialization) {
@@ -5077,7 +5057,7 @@ static bool8_t vkr_bindless_vk_upload_prepared_texture(
   return valid;
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_bindless_vk_stage_next_buffer_batch(VkrBindlessVulkanRenderer *renderer) {
   if (renderer->staging_buffer_count)
     return true_v;
@@ -5119,7 +5099,7 @@ vkr_bindless_vk_stage_next_buffer_batch(VkrBindlessVulkanRenderer *renderer) {
  * host-visible batch at a time. This keeps large texture publication below
  *
  * small discrete-GPU host-visible heap budgets without waiting the queue. */
-static bool8_t
+vkr_internal bool8_t
 vkr_bindless_vk_stage_next_texture_batch(VkrBindlessVulkanRenderer *renderer) {
   if (renderer->staging_buffer_count)
     return true_v;
@@ -5191,13 +5171,13 @@ vkr_bindless_vk_stage_next_texture_batch(VkrBindlessVulkanRenderer *renderer) {
   return true_v;
 }
 
-static bool8_t vkr_bindless_vk_stage_next_publication_batch(
+vkr_internal bool8_t vkr_bindless_vk_stage_next_publication_batch(
     VkrBindlessVulkanRenderer *renderer) {
   return vkr_bindless_vk_stage_next_buffer_batch(renderer) &&
          vkr_bindless_vk_stage_next_texture_batch(renderer);
 }
 
-static void vkr_bindless_vk_record_texture_initializations(
+vkr_internal void vkr_bindless_vk_record_texture_initializations(
     VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command) {
   for (uint32_t i = 0; i < renderer->pending_texture_initialization_count;
        ++i) {
@@ -5262,7 +5242,7 @@ static void vkr_bindless_vk_record_texture_initializations(
   }
 }
 
-static void vkr_bindless_vk_record_buffer_initializations(
+vkr_internal void vkr_bindless_vk_record_buffer_initializations(
     VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command) {
   for (uint32_t i = 0; i < renderer->pending_buffer_initialization_count; ++i) {
     const VkrBindlessVkPendingBufferInitialization *initialization =
@@ -5305,7 +5285,7 @@ static void vkr_bindless_vk_record_buffer_initializations(
   }
 }
 
-static VkrBindlessVkRetiredStagingBuffer *
+vkr_internal VkrBindlessVkRetiredStagingBuffer *
 vkr_bindless_vk_reserve_staging_retirement(
     VkrBindlessVulkanRenderer *renderer) {
   for (uint32_t slot = 0; slot < renderer->retired_staging_buffer_capacity;
@@ -5316,10 +5296,9 @@ vkr_bindless_vk_reserve_staging_retirement(
   return NULL;
 }
 
-static bool8_t
-vkr_bindless_vk_retire_submitted_staging(VkrBindlessVulkanRenderer *renderer,
-                                         VkrBindlessVkBuffer *staging,
-                                         uint64_t retire_value) {
+vkr_internal bool8_t vkr_bindless_vk_retire_submitted_staging(
+    VkrBindlessVulkanRenderer *renderer, VkrBindlessVkBuffer *staging,
+    uint64_t retire_value) {
   VkrBindlessVkRetiredStagingBuffer *retired =
       vkr_bindless_vk_reserve_staging_retirement(renderer);
   if (!retired) {
@@ -5338,7 +5317,7 @@ vkr_bindless_vk_retire_submitted_staging(VkrBindlessVulkanRenderer *renderer,
   return true_v;
 }
 
-static void vkr_bindless_vk_release_buffer_initialization(
+vkr_internal void vkr_bindless_vk_release_buffer_initialization(
     VkrBindlessVulkanRenderer *renderer,
     VkrBindlessVkPendingBufferInitialization *initialization) {
   vkr_bindless_vk_destroy_buffer(renderer, &initialization->staging);
@@ -5348,7 +5327,7 @@ static void vkr_bindless_vk_release_buffer_initialization(
   MemZero(initialization, sizeof(*initialization));
 }
 
-static bool8_t vkr_bindless_vk_commit_buffer_initializations(
+vkr_internal bool8_t vkr_bindless_vk_commit_buffer_initializations(
     VkrBindlessVulkanRenderer *renderer, uint64_t retire_value) {
   VkrBindlessVkPendingBufferInitialization *submitted = NULL;
   for (uint32_t i = 0u; i < renderer->pending_buffer_initialization_count;
@@ -5406,7 +5385,7 @@ static bool8_t vkr_bindless_vk_commit_buffer_initializations(
   return true_v;
 }
 
-static void vkr_bindless_vk_discard_buffer_initializations(
+vkr_internal void vkr_bindless_vk_discard_buffer_initializations(
     VkrBindlessVulkanRenderer *renderer) {
   for (uint32_t i = 0; i < renderer->pending_buffer_initialization_count; ++i) {
     VkrBindlessVkPendingBufferInitialization *initialization =
@@ -5422,7 +5401,7 @@ static void vkr_bindless_vk_discard_buffer_initializations(
   renderer->pending_buffer_initialization_count = 0u;
 }
 
-static void vkr_bindless_vk_discard_geometry_initializations(
+vkr_internal void vkr_bindless_vk_discard_geometry_initializations(
     VkrBindlessVulkanRenderer *renderer, uint32_t geometry_record_index) {
   uint32_t write_index = 0u;
   for (uint32_t read_index = 0;
@@ -5449,7 +5428,7 @@ static void vkr_bindless_vk_discard_geometry_initializations(
       .pending_initialization_count = 0u;
 }
 
-static bool8_t vkr_bindless_vk_commit_texture_initializations(
+vkr_internal bool8_t vkr_bindless_vk_commit_texture_initializations(
     VkrBindlessVulkanRenderer *renderer, uint64_t retire_value) {
   VkrBindlessVkPendingTextureInitialization *submitted = NULL;
   for (uint32_t i = 0u; i < renderer->pending_texture_initialization_count;
@@ -5518,7 +5497,7 @@ static bool8_t vkr_bindless_vk_commit_texture_initializations(
   return true_v;
 }
 
-static void vkr_bindless_vk_discard_texture_initializations(
+vkr_internal void vkr_bindless_vk_discard_texture_initializations(
     VkrBindlessVulkanRenderer *renderer) {
   for (uint32_t i = 0; i < renderer->pending_texture_initialization_count;
        ++i) {
@@ -5535,7 +5514,7 @@ static void vkr_bindless_vk_discard_texture_initializations(
   renderer->pending_texture_initialization_count = 0u;
 }
 
-static void vkr_bindless_vk_cancel_texture_initialization(
+vkr_internal void vkr_bindless_vk_cancel_texture_initialization(
     VkrBindlessVulkanRenderer *renderer, VkrTextureHandle texture_handle) {
   uint32_t write_index = 0u;
   const uint32_t pending_count = renderer->pending_texture_initialization_count;
@@ -5731,12 +5710,31 @@ bool8_t vkr_bindless_vulkan_renderer_prepare_frame(
   return true_v;
 }
 
-static bool8_t vkr_bindless_vk_record_draw(VkrBindlessVulkanRenderer *renderer,
-                                           VkrBindlessVkFrameSlot *slot) {
+/**
+ * Reports a frame rejected for want of frame-upload bytes rather than for a
+ * malformed packet. Both surface as a false return from recording, and without
+ * this the two are indistinguishable in a log.
+ */
+vkr_internal void
+vkr_bindless_vk_report_upload_exhaustion(const VkrBindlessVkFrameSlot *slot) {
+  if (slot->frame_upload_exhaustions) {
+    log_warn("Bindless Vulkan frame rejected: %u frame-upload allocation(s) "
+             "failed against a %llu-byte per-slot budget (%llu consumed). The "
+             "packet is not malformed; the upload buffer is too small for it",
+             slot->frame_upload_exhaustions,
+             (unsigned long long)slot->frame_upload.size,
+             (unsigned long long)slot->frame_upload_cursor);
+  }
+}
+
+vkr_internal bool8_t vkr_bindless_vk_record_draw(
+    VkrBindlessVulkanRenderer *renderer, VkrBindlessVkFrameSlot *slot) {
   VkCommandBuffer command = slot->command_buffer;
   if (!vkr_bindless_vk_prepare_packet_uploads(renderer, slot,
-                                              renderer->graph->packet))
+                                              renderer->graph->packet)) {
+    vkr_bindless_vk_report_upload_exhaustion(slot);
     return false_v;
+  }
   VkCommandBufferBeginInfo begin_info = {
       .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
       .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
@@ -5803,8 +5801,10 @@ static bool8_t vkr_bindless_vk_record_draw(VkrBindlessVulkanRenderer *renderer,
       command, VK_PIPELINE_BIND_POINT_COMPUTE, renderer->pipeline_layout, 0u,
       ArrayCount(buffer_indices), buffer_indices, descriptor_offsets);
 
-  if (!vkr_bindless_vk_record_graph(renderer, command))
+  if (!vkr_bindless_vk_record_graph(renderer, command)) {
+    vkr_bindless_vk_report_upload_exhaustion(slot);
     return false_v;
+  }
 
   VkrBindlessVkImage *target = &renderer->targets.images[slot->image_index];
   if (!vkr_bindless_vk_record_capture(renderer, command, slot))
@@ -5911,9 +5911,8 @@ static bool8_t vkr_bindless_vk_record_draw(VkrBindlessVulkanRenderer *renderer,
   return true_v;
 }
 
-static bool8_t
-vkr_bindless_vk_fail_after_submit(VkrBindlessVulkanRenderer *renderer,
-                                  const char *reason) {
+vkr_internal bool8_t vkr_bindless_vk_fail_after_submit(
+    VkrBindlessVulkanRenderer *renderer, const char *reason) {
   log_error("Bindless Vulkan failed after queue submit: %s", reason);
   renderer->frame_active = false_v;
   renderer->terminal_failure = true_v;
@@ -6244,10 +6243,9 @@ bool8_t vkr_bindless_vulkan_renderer_capture_release(
          vkr_capture_ring_release(&renderer->capture_ring, request_id);
 }
 
-static bool8_t
-vkr_bindless_vk_recreate_window_target(VkrBindlessVulkanRenderer *renderer,
-                                       uint32_t width, uint32_t height,
-                                       uint32_t image_count) {
+vkr_internal bool8_t vkr_bindless_vk_recreate_window_target(
+    VkrBindlessVulkanRenderer *renderer, uint32_t width, uint32_t height,
+    uint32_t image_count) {
   if (renderer->config.target_kind == VKR_PRESENT_TARGET_OFFSCREEN)
     return false_v;
   if (!vkr_bindless_vulkan_renderer_wait_idle(renderer))
@@ -6292,9 +6290,8 @@ vkr_bindless_vk_recreate_window_target(VkrBindlessVulkanRenderer *renderer,
   return true_v;
 }
 
-static bool8_t
-vkr_bindless_vk_present_cancelled_frame(VkrBindlessVulkanRenderer *renderer,
-                                        VkrBindlessVkFrameSlot *slot) {
+vkr_internal bool8_t vkr_bindless_vk_present_cancelled_frame(
+    VkrBindlessVulkanRenderer *renderer, VkrBindlessVkFrameSlot *slot) {
   VkDevice device = vkr_bindless_vk_renderer_device(renderer);
   VkrBindlessVkWindowTarget *window = &renderer->window_target;
   const uint32_t image_index = slot->image_index;
@@ -6603,7 +6600,7 @@ vkr_bindless_vulkan_renderer_allocator(VkrBindlessVulkanRenderer *renderer) {
   return renderer ? renderer->allocator : NULL;
 }
 
-static bool8_t vkr_bindless_vk_publish_sampled_view(
+vkr_internal bool8_t vkr_bindless_vk_publish_sampled_view(
     VkrBindlessVulkanRenderer *renderer, VkImageView view,
     VkImageLayout image_layout, VkrGpuSlotHandle *out_handle) {
   const VkPhysicalDeviceDescriptorBufferPropertiesEXT *properties =
@@ -6641,10 +6638,9 @@ static bool8_t vkr_bindless_vk_publish_sampled_view(
   return false_v;
 }
 
-static bool8_t
-vkr_bindless_vk_publish_storage_view(VkrBindlessVulkanRenderer *renderer,
-                                     VkImageView view,
-                                     VkrGpuSlotHandle *out_handle) {
+vkr_internal bool8_t vkr_bindless_vk_publish_storage_view(
+    VkrBindlessVulkanRenderer *renderer, VkImageView view,
+    VkrGpuSlotHandle *out_handle) {
   const VkPhysicalDeviceDescriptorBufferPropertiesEXT *properties =
       vkr_bindless_vulkan_device_descriptor_properties(renderer->device);
   const VkrBindlessVulkanDescriptorLayout *layout =
@@ -6680,10 +6676,9 @@ vkr_bindless_vk_publish_storage_view(VkrBindlessVulkanRenderer *renderer,
   return false_v;
 }
 
-static bool8_t
-vkr_bindless_vk_publish_sampler(VkrBindlessVulkanRenderer *renderer,
-                                VkSampler sampler,
-                                VkrGpuSlotHandle *out_handle) {
+vkr_internal bool8_t vkr_bindless_vk_publish_sampler(
+    VkrBindlessVulkanRenderer *renderer, VkSampler sampler,
+    VkrGpuSlotHandle *out_handle) {
   const VkPhysicalDeviceDescriptorBufferPropertiesEXT *properties =
       vkr_bindless_vulkan_device_descriptor_properties(renderer->device);
   const VkrBindlessVulkanDescriptorLayout *layout =
@@ -6707,10 +6702,9 @@ vkr_bindless_vk_publish_sampler(VkrBindlessVulkanRenderer *renderer,
       properties->samplerDescriptorSize);
 }
 
-static bool8_t
-vkr_bindless_vk_publish_material_gpu_row(VkrBindlessVulkanRenderer *renderer,
-                                         const VkrBindlessVkMaterialGpuRow *row,
-                                         VkrGpuSlotHandle *out_handle) {
+vkr_internal bool8_t vkr_bindless_vk_publish_material_gpu_row(
+    VkrBindlessVulkanRenderer *renderer, const VkrBindlessVkMaterialGpuRow *row,
+    VkrGpuSlotHandle *out_handle) {
   if (vkr_gpu_slot_table_publish(renderer->material_slots, row, out_handle) !=
       VKR_GPU_SLOT_STATUS_OK)
     return false_v;
@@ -6719,7 +6713,7 @@ vkr_bindless_vk_publish_material_gpu_row(VkrBindlessVulkanRenderer *renderer,
       (VkDeviceSize)out_handle->index * sizeof(*row), sizeof(*row));
 }
 
-static bool8_t vkr_bindless_vk_replace_material_gpu_row(
+vkr_internal bool8_t vkr_bindless_vk_replace_material_gpu_row(
     VkrBindlessVulkanRenderer *renderer, VkrGpuSlotHandle old_handle,
     const VkrBindlessVkMaterialGpuRow *row, uint64_t old_last_use_submit_value,
     VkrGpuSlotHandle *out_handle) {
@@ -6732,7 +6726,7 @@ static bool8_t vkr_bindless_vk_replace_material_gpu_row(
       (VkDeviceSize)out_handle->index * sizeof(*row), sizeof(*row));
 }
 
-static bool8_t vkr_bindless_vk_publish_material_row(
+vkr_internal bool8_t vkr_bindless_vk_publish_material_row(
     VkrBindlessVulkanRenderer *renderer, uint32_t texture_index,
     uint32_t sampler_index, uint32_t material_id,
     VkrGpuSlotHandle *out_handle) {
@@ -6751,7 +6745,7 @@ static bool8_t vkr_bindless_vk_publish_material_row(
   return vkr_bindless_vk_publish_material_gpu_row(renderer, &row, out_handle);
 }
 
-static VkSamplerAddressMode
+vkr_internal VkSamplerAddressMode
 vkr_bindless_vk_sampler_address_mode(VkrTextureRepeatMode mode) {
   switch (mode) {
   case VKR_TEXTURE_REPEAT_MODE_MIRRORED_REPEAT:
@@ -6765,7 +6759,7 @@ vkr_bindless_vk_sampler_address_mode(VkrTextureRepeatMode mode) {
   }
 }
 
-static bool8_t vkr_bindless_vk_create_published_sampler(
+vkr_internal bool8_t vkr_bindless_vk_create_published_sampler(
     VkrBindlessVulkanRenderer *renderer,
     const VkrTextureDescription *description, uint32_t mip_levels,
     VkSampler *out_sampler) {
@@ -6795,7 +6789,7 @@ static bool8_t vkr_bindless_vk_create_published_sampler(
                          out_sampler) == VK_SUCCESS;
 }
 
-static bool8_t vkr_bindless_vk_sampler_description_equal(
+vkr_internal bool8_t vkr_bindless_vk_sampler_description_equal(
     const VkrTextureDescription *a, uint32_t a_mip_levels,
     const VkrTextureDescription *b, uint32_t b_mip_levels) {
   if (!a || !b)
@@ -6812,18 +6806,18 @@ static bool8_t vkr_bindless_vk_sampler_description_equal(
          a_sampled_mip_levels == b_sampled_mip_levels;
 }
 
-static uint32_t vkr_bindless_vk_mip_count(uint32_t width, uint32_t height) {
+vkr_internal uint32_t vkr_bindless_vk_mip_count(uint32_t width,
+                                                uint32_t height) {
   uint32_t levels = 1u;
   for (uint32_t extent = Max(width, height); extent > 1u; extent >>= 1u)
     levels++;
   return levels;
 }
 
-static bool8_t
-vkr_bindless_vk_acquire_sampler(VkrBindlessVulkanRenderer *renderer,
-                                const VkrTextureDescription *description,
-                                uint32_t mip_levels,
-                                uint32_t *out_record_index) {
+vkr_internal bool8_t vkr_bindless_vk_acquire_sampler(
+    VkrBindlessVulkanRenderer *renderer,
+    const VkrTextureDescription *description, uint32_t mip_levels,
+    uint32_t *out_record_index) {
   for (uint32_t i = 0; i < renderer->config.sampler_capacity; ++i) {
     VkrBindlessVkPublishedSampler *record = &renderer->published_samplers[i];
     if (record->live && vkr_bindless_vk_sampler_description_equal(
@@ -6866,10 +6860,9 @@ vkr_bindless_vk_acquire_sampler(VkrBindlessVulkanRenderer *renderer,
   return true_v;
 }
 
-static bool8_t
-vkr_bindless_vk_release_sampler(VkrBindlessVulkanRenderer *renderer,
-                                uint32_t record_index,
-                                uint64_t last_use_submit_value) {
+vkr_internal bool8_t vkr_bindless_vk_release_sampler(
+    VkrBindlessVulkanRenderer *renderer, uint32_t record_index,
+    uint64_t last_use_submit_value) {
   if (record_index >= renderer->config.sampler_capacity)
     return false_v;
   VkrBindlessVkPublishedSampler *record =
@@ -6895,7 +6888,7 @@ vkr_bindless_vk_release_sampler(VkrBindlessVulkanRenderer *renderer,
   return true_v;
 }
 
-static void
+vkr_internal void
 vkr_bindless_vk_collect_samplers(VkrBindlessVulkanRenderer *renderer,
                                  uint64_t completed) {
   (void)vkr_gpu_slot_table_collect(renderer->sampler_slots, completed, NULL);
@@ -6909,7 +6902,7 @@ vkr_bindless_vk_collect_samplers(VkrBindlessVulkanRenderer *renderer,
   }
 }
 
-static void vkr_bindless_vk_prepare_writable_initialization(
+vkr_internal void vkr_bindless_vk_prepare_writable_initialization(
     VkrTextureHandle texture, VkrBindlessVkImage *image,
     VkrBindlessVkPendingTextureInitialization *out_initialization) {
   *out_initialization = (VkrBindlessVkPendingTextureInitialization){
@@ -6919,12 +6912,12 @@ static void vkr_bindless_vk_prepare_writable_initialization(
   image->layout = VK_IMAGE_LAYOUT_GENERAL;
 }
 
-static VkrBindlessVkPublishedTexture *
+vkr_internal VkrBindlessVkPublishedTexture *
 vkr_bindless_vk_published_texture(VkrBindlessVulkanRenderer *renderer,
                                   VkrTextureHandle handle,
                                   uint32_t *out_index) {
   if (!renderer || handle.id == 0u ||
-      handle.id > renderer->config.sampled_image_capacity)
+      handle.id > renderer->config.texture_capacity)
     return NULL;
   const uint32_t index = handle.id - 1u;
   VkrBindlessVkPublishedTexture *texture = &renderer->published_textures[index];
@@ -6935,11 +6928,11 @@ vkr_bindless_vk_published_texture(VkrBindlessVulkanRenderer *renderer,
   return texture;
 }
 
-static VkrBindlessVkPublishedTexture *
+vkr_internal VkrBindlessVkPublishedTexture *
 vkr_bindless_vk_texture_publication(VkrBindlessVulkanRenderer *renderer,
                                     VkrTextureHandle handle) {
   if (!renderer || handle.id == 0u ||
-      handle.id > renderer->config.sampled_image_capacity)
+      handle.id > renderer->config.texture_capacity)
     return NULL;
   VkrBindlessVkPublishedTexture *active =
       &renderer->published_textures[handle.id - 1u];
@@ -6947,7 +6940,7 @@ vkr_bindless_vk_texture_publication(VkrBindlessVulkanRenderer *renderer,
       active->handle.id == handle.id &&
       active->handle.generation == handle.generation)
     return active;
-  for (uint32_t i = 0u; i < renderer->config.sampled_image_capacity; ++i) {
+  for (uint32_t i = 0u; i < renderer->config.texture_capacity; ++i) {
     VkrBindlessVkPublishedTexture *retired = &renderer->retired_textures[i];
     if (retired->pending_retire && retired->handle.id == handle.id &&
         retired->handle.generation == handle.generation)
@@ -7125,7 +7118,7 @@ void vkr_bindless_vulkan_renderer_target_information(
   }
 }
 
-static void vkr_bindless_vk_destroy_texture_storage_views(
+vkr_internal void vkr_bindless_vk_destroy_texture_storage_views(
     VkrBindlessVulkanRenderer *renderer,
     VkrBindlessVkPublishedTexture *texture) {
   const VkDevice device = vkr_bindless_vk_renderer_device(renderer);
@@ -7137,7 +7130,7 @@ static void vkr_bindless_vk_destroy_texture_storage_views(
   texture->storage_slot_count = 0u;
 }
 
-static bool8_t vkr_bindless_vk_retire_unreferenced_texture(
+vkr_internal bool8_t vkr_bindless_vk_retire_unreferenced_texture(
     VkrBindlessVulkanRenderer *renderer, VkrBindlessVkPublishedTexture *texture,
     uint64_t completed) {
   if (!texture->pending_retire || texture->material_reference_count != 0u ||
@@ -7197,9 +7190,9 @@ static bool8_t vkr_bindless_vk_retire_unreferenced_texture(
   return true_v;
 }
 
-static VkrBindlessVkPublishedTexture *
+vkr_internal VkrBindlessVkPublishedTexture *
 vkr_bindless_vk_reserve_retired_texture(VkrBindlessVulkanRenderer *renderer) {
-  for (uint32_t i = 0u; i < renderer->config.sampled_image_capacity; ++i) {
+  for (uint32_t i = 0u; i < renderer->config.texture_capacity; ++i) {
     VkrBindlessVkPublishedTexture *retired = &renderer->retired_textures[i];
     if (!retired->pending_retire)
       return retired;
@@ -7207,7 +7200,7 @@ vkr_bindless_vk_reserve_retired_texture(VkrBindlessVulkanRenderer *renderer) {
   return NULL;
 }
 
-static void
+vkr_internal void
 vkr_bindless_vk_collect_asset_publications(VkrBindlessVulkanRenderer *renderer,
                                            uint64_t completed) {
   (void)vkr_gpu_slot_table_collect(renderer->material_slots, completed, NULL);
@@ -7236,7 +7229,7 @@ vkr_bindless_vk_collect_asset_publications(VkrBindlessVulkanRenderer *renderer,
     }
     MemZero(retired, sizeof(*retired));
   }
-  for (uint32_t i = 0; i < renderer->config.sampled_image_capacity; ++i) {
+  for (uint32_t i = 0; i < renderer->config.geometry_capacity; ++i) {
     VkrBindlessVkPublishedGeometry *geometry =
         &renderer->published_geometries[i];
     if (!geometry->pending_retire ||
@@ -7250,7 +7243,7 @@ vkr_bindless_vk_collect_asset_publications(VkrBindlessVulkanRenderer *renderer,
                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     MemZero(geometry, sizeof(*geometry));
   }
-  for (uint32_t i = 0; i < renderer->config.sampled_image_capacity; ++i) {
+  for (uint32_t i = 0; i < renderer->config.geometry_capacity; ++i) {
     VkrBindlessVkPublishedGeometry *geometry = &renderer->retired_geometries[i];
     if (!geometry->pending_retire ||
         geometry->last_use_submit_value > completed)
@@ -7263,16 +7256,16 @@ vkr_bindless_vk_collect_asset_publications(VkrBindlessVulkanRenderer *renderer,
                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     MemZero(geometry, sizeof(*geometry));
   }
-  for (uint32_t i = 0; i < renderer->config.sampled_image_capacity; ++i)
+  for (uint32_t i = 0; i < renderer->config.texture_capacity; ++i)
     vkr_bindless_vk_retire_unreferenced_texture(
         renderer, &renderer->published_textures[i], completed);
-  for (uint32_t i = 0; i < renderer->config.sampled_image_capacity; ++i)
+  for (uint32_t i = 0; i < renderer->config.texture_capacity; ++i)
     vkr_bindless_vk_retire_unreferenced_texture(
         renderer, &renderer->retired_textures[i], completed);
   vkr_bindless_vk_collect_samplers(renderer, completed);
 }
 
-static VkrBindlessVkRetiredMaterial *
+vkr_internal VkrBindlessVkRetiredMaterial *
 vkr_bindless_vk_reserve_material_retirement(
     VkrBindlessVulkanRenderer *renderer) {
   for (uint32_t i = 0; i < renderer->config.material_record_capacity; ++i) {
@@ -7282,7 +7275,7 @@ vkr_bindless_vk_reserve_material_retirement(
   return NULL;
 }
 
-static bool8_t vkr_bindless_vk_create_published_buffer(
+vkr_internal bool8_t vkr_bindless_vk_create_published_buffer(
     VkrBindlessVulkanRenderer *renderer, const void *data, uint64_t size,
     VkBufferUsageFlags usage, VkPipelineStageFlags2 destination_stage,
     VkAccessFlags2 destination_access, uint32_t geometry_record_index,
@@ -7319,14 +7312,14 @@ static bool8_t vkr_bindless_vk_create_published_buffer(
   return true_v;
 }
 
-static bool8_t vkr_bindless_vk_asset_publish_geometry_internal(
+vkr_internal bool8_t vkr_bindless_vk_asset_publish_geometry_internal(
     void *state, VkrGeometryHandle handle, const VkrGeometryConfig *geometry,
     const VkrMeshLoaderSubmeshRange *submeshes, uint32_t submesh_count) {
   VkrBindlessVulkanRenderer *renderer = state;
   if (!renderer || !geometry || handle.id == 0u ||
-      handle.id > renderer->config.sampled_image_capacity ||
-      !geometry->vertices || !geometry->indices || !geometry->vertex_count ||
-      !geometry->index_count || !submeshes || !submesh_count ||
+      handle.id > renderer->config.geometry_capacity || !geometry->vertices ||
+      !geometry->indices || !geometry->vertex_count || !geometry->index_count ||
+      !submeshes || !submesh_count ||
       renderer->pending_buffer_initialization_count >
           renderer->pending_buffer_initialization_capacity - 2u ||
       renderer->staging_buffer_count >
@@ -7489,9 +7482,8 @@ static bool8_t vkr_bindless_vk_asset_publish_geometry_internal(
   return true_v;
 }
 
-static bool8_t
-vkr_bindless_vk_asset_publish_geometry(void *state, VkrGeometryHandle handle,
-                                       const VkrGeometryConfig *geometry) {
+vkr_internal bool8_t vkr_bindless_vk_asset_publish_geometry(
+    void *state, VkrGeometryHandle handle, const VkrGeometryConfig *geometry) {
   if (!geometry)
     return false_v;
   const VkrMeshLoaderSubmeshRange submesh = {
@@ -7501,7 +7493,7 @@ vkr_bindless_vk_asset_publish_geometry(void *state, VkrGeometryHandle handle,
       state, handle, geometry, &submesh, 1u);
 }
 
-static bool8_t vkr_bindless_vk_publish_writable_storage_views(
+vkr_internal bool8_t vkr_bindless_vk_publish_writable_storage_views(
     VkrBindlessVulkanRenderer *renderer,
     VkrBindlessVkPublishedTexture *texture) {
   if (texture->image.mip_levels > VKR_BINDLESS_VK_TEXTURE_MIP_MAX)
@@ -7534,7 +7526,7 @@ static bool8_t vkr_bindless_vk_publish_writable_storage_views(
   return true_v;
 }
 
-static void vkr_bindless_vk_discard_writable_storage_views(
+vkr_internal void vkr_bindless_vk_discard_writable_storage_views(
     VkrBindlessVulkanRenderer *renderer,
     VkrBindlessVkPublishedTexture *texture) {
   for (uint32_t i = 0u; i < texture->storage_slot_count; ++i) {
@@ -7549,14 +7541,14 @@ static void vkr_bindless_vk_discard_writable_storage_views(
   vkr_bindless_vk_destroy_texture_storage_views(renderer, texture);
 }
 
-static bool8_t vkr_bindless_vk_asset_publish_writable_texture(
+vkr_internal bool8_t vkr_bindless_vk_asset_publish_writable_texture(
     void *state, VkrTextureHandle handle,
     const VkrTextureDescription *description) {
   VkrBindlessVulkanRenderer *renderer = state;
   if (!renderer || !description || handle.id == 0u ||
-      handle.id > renderer->config.sampled_image_capacity ||
+      handle.id > renderer->config.texture_capacity ||
       renderer->pending_texture_initialization_count >=
-          renderer->config.sampled_image_capacity ||
+          renderer->config.texture_capacity ||
       description->id != handle.id ||
       description->generation != handle.generation || !description->width ||
       !description->height ||
@@ -7667,7 +7659,7 @@ static bool8_t vkr_bindless_vk_asset_publish_writable_texture(
   return true_v;
 }
 
-static void
+vkr_internal void
 vkr_bindless_vk_material_row_set_sampler(VkrBindlessVkMaterialGpuRow *row,
                                          uint32_t texture_slot,
                                          uint32_t sampler_index) {
@@ -7687,7 +7679,7 @@ vkr_bindless_vk_material_row_set_sampler(VkrBindlessVkMaterialGpuRow *row,
   }
 }
 
-static bool8_t vkr_bindless_vk_asset_update_texture_sampler(
+vkr_internal bool8_t vkr_bindless_vk_asset_update_texture_sampler(
     void *state, VkrTextureHandle handle,
     const VkrTextureDescription *description) {
   VkrBindlessVulkanRenderer *renderer = state;
@@ -7781,9 +7773,8 @@ static bool8_t vkr_bindless_vk_asset_update_texture_sampler(
   return true_v;
 }
 
-static bool8_t
-vkr_bindless_vk_asset_publish_loaded_mesh(void *state, VkrGeometryHandle handle,
-                                          const VkrMeshLoaderResult *mesh) {
+vkr_internal bool8_t vkr_bindless_vk_asset_publish_loaded_mesh(
+    void *state, VkrGeometryHandle handle, const VkrMeshLoaderResult *mesh) {
   if (!mesh || !mesh->has_mesh_buffer || !mesh->submeshes.data ||
       !mesh->submeshes.length ||
       mesh->mesh_buffer.vertex_size != sizeof(VkrVertex3d) ||
@@ -7810,9 +7801,9 @@ vkr_bindless_vk_asset_publish_loaded_mesh(void *state, VkrGeometryHandle handle,
       (uint32_t)mesh->submeshes.length);
 }
 
-static VkrBindlessVkPublishedGeometry *
+vkr_internal VkrBindlessVkPublishedGeometry *
 vkr_bindless_vk_reserve_retired_geometry(VkrBindlessVulkanRenderer *renderer) {
-  for (uint32_t i = 0u; i < renderer->config.sampled_image_capacity; ++i) {
+  for (uint32_t i = 0u; i < renderer->config.geometry_capacity; ++i) {
     VkrBindlessVkPublishedGeometry *retired = &renderer->retired_geometries[i];
     if (!retired->pending_retire)
       return retired;
@@ -7820,12 +7811,11 @@ vkr_bindless_vk_reserve_retired_geometry(VkrBindlessVulkanRenderer *renderer) {
   return NULL;
 }
 
-static bool8_t
-vkr_bindless_vk_asset_unpublish_geometry(void *state,
-                                         VkrGeometryHandle handle) {
+vkr_internal bool8_t vkr_bindless_vk_asset_unpublish_geometry(
+    void *state, VkrGeometryHandle handle) {
   VkrBindlessVulkanRenderer *renderer = state;
   if (!renderer || handle.id == 0u ||
-      handle.id > renderer->config.sampled_image_capacity)
+      handle.id > renderer->config.geometry_capacity)
     return false_v;
   VkrBindlessVkPublishedGeometry *record =
       &renderer->published_geometries[handle.id - 1u];
@@ -7856,14 +7846,14 @@ vkr_bindless_vk_asset_unpublish_geometry(void *state,
   return true_v;
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_bindless_vk_asset_publish_texture(void *state, VkrTextureHandle handle,
                                       const VkrTexturePreparedLoad *prepared) {
   VkrBindlessVulkanRenderer *renderer = state;
   if (!renderer || !prepared || handle.id == 0u ||
-      handle.id > renderer->config.sampled_image_capacity ||
+      handle.id > renderer->config.texture_capacity ||
       renderer->pending_texture_initialization_count >=
-          renderer->config.sampled_image_capacity ||
+          renderer->config.texture_capacity ||
       renderer->staging_buffer_count >=
           renderer->retired_staging_buffer_capacity)
     return false_v;
@@ -7921,7 +7911,7 @@ vkr_bindless_vk_asset_publish_texture(void *state, VkrTextureHandle handle,
   return true_v;
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_bindless_vk_asset_unpublish_texture(void *state, VkrTextureHandle handle) {
   VkrBindlessVulkanRenderer *renderer = state;
   VkrBindlessVkPublishedTexture *texture =
@@ -7971,9 +7961,8 @@ vkr_bindless_vk_asset_unpublish_texture(void *state, VkrTextureHandle handle) {
   return true_v;
 }
 
-static bool8_t
-vkr_bindless_vk_asset_publish_material(void *state, VkrMaterialHandle handle,
-                                       const VkrMaterial *material) {
+vkr_internal bool8_t vkr_bindless_vk_asset_publish_material(
+    void *state, VkrMaterialHandle handle, const VkrMaterial *material) {
   VkrBindlessVulkanRenderer *renderer = state;
   if (!renderer || !material || handle.id == 0u ||
       handle.id > renderer->config.material_record_capacity ||
@@ -7989,7 +7978,7 @@ vkr_bindless_vk_asset_publish_material(void *state, VkrMaterialHandle handle,
   if (record->live && !retirement)
     return false_v;
 
-  static const VkrTextureSlot row_slots[4] = {
+  vkr_local_persist const VkrTextureSlot row_slots[4] = {
       VKR_TEXTURE_SLOT_DIFFUSE,
       VKR_TEXTURE_SLOT_NORMAL,
       VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS,
@@ -8072,9 +8061,8 @@ vkr_bindless_vk_asset_publish_material(void *state, VkrMaterialHandle handle,
   return true_v;
 }
 
-static bool8_t
-vkr_bindless_vk_asset_unpublish_material(void *state,
-                                         VkrMaterialHandle handle) {
+vkr_internal bool8_t vkr_bindless_vk_asset_unpublish_material(
+    void *state, VkrMaterialHandle handle) {
   VkrBindlessVulkanRenderer *renderer = state;
   if (!renderer || handle.id == 0u ||
       handle.id > renderer->config.material_record_capacity)
@@ -8099,7 +8087,7 @@ vkr_bindless_vk_asset_unpublish_material(void *state,
   return true_v;
 }
 
-static bool8_t vkr_bindless_vk_queue_ibl_bake(
+vkr_internal bool8_t vkr_bindless_vk_queue_ibl_bake(
     VkrBindlessVulkanRenderer *renderer, VkrTextureHandle equirect,
     VkrTextureHandle source, VkrTextureHandle irradiance,
     VkrTextureHandle prefilter, bool8_t convert_equirect) {
@@ -8154,22 +8142,21 @@ static bool8_t vkr_bindless_vk_queue_ibl_bake(
   return true_v;
 }
 
-static bool8_t
-vkr_bindless_vk_asset_bake_ibl_cubemap(void *state, VkrTextureHandle source,
-                                       VkrTextureHandle irradiance,
-                                       VkrTextureHandle prefilter) {
+vkr_internal bool8_t vkr_bindless_vk_asset_bake_ibl_cubemap(
+    void *state, VkrTextureHandle source, VkrTextureHandle irradiance,
+    VkrTextureHandle prefilter) {
   return vkr_bindless_vk_queue_ibl_bake(state, VKR_TEXTURE_HANDLE_INVALID,
                                         source, irradiance, prefilter, false_v);
 }
 
-static bool8_t vkr_bindless_vk_asset_bake_hdr_environment(
+vkr_internal bool8_t vkr_bindless_vk_asset_bake_hdr_environment(
     void *state, VkrTextureHandle equirect, VkrTextureHandle source,
     VkrTextureHandle irradiance, VkrTextureHandle prefilter) {
   return vkr_bindless_vk_queue_ibl_bake(state, equirect, source, irradiance,
                                         prefilter, true_v);
 }
 
-static bool8_t vkr_bindless_vk_asset_publications_idle(void *state) {
+vkr_internal bool8_t vkr_bindless_vk_asset_publications_idle(void *state) {
   const VkrBindlessVulkanRenderer *renderer = state;
   return renderer && !renderer->pending_texture_initialization_count &&
          !renderer->pending_buffer_initialization_count &&
@@ -8211,7 +8198,7 @@ void vkr_bindless_vulkan_renderer_get_asset_publisher(
                        : (VkrAssetPublisher){0};
 }
 
-static void
+vkr_internal void
 vkr_bindless_vk_drain_asset_publications(VkrBindlessVulkanRenderer *renderer) {
   const uint64_t completed = vkr_bindless_vk_refresh_completed(renderer);
   for (uint32_t i = 0; i < renderer->config.material_record_capacity; ++i) {
@@ -8222,12 +8209,12 @@ vkr_bindless_vk_drain_asset_publications(VkrBindlessVulkanRenderer *renderer) {
                                                      material->handle);
   }
   vkr_bindless_vk_collect_asset_publications(renderer, completed);
-  for (uint32_t i = 0; i < renderer->config.sampled_image_capacity; ++i) {
+  for (uint32_t i = 0; i < renderer->config.texture_capacity; ++i) {
     VkrBindlessVkPublishedTexture *texture = &renderer->published_textures[i];
     if (texture->live)
       (void)vkr_bindless_vk_asset_unpublish_texture(renderer, texture->handle);
   }
-  for (uint32_t i = 0; i < renderer->config.sampled_image_capacity; ++i) {
+  for (uint32_t i = 0; i < renderer->config.geometry_capacity; ++i) {
     VkrBindlessVkPublishedGeometry *geometry =
         &renderer->published_geometries[i];
     if (geometry->live)
@@ -8403,11 +8390,6 @@ void vkr_bindless_vulkan_renderer_destroy(VkrBindlessVulkanRenderer *renderer) {
   }
   if (renderer->capture_storage_memory.base_memory) {
     vkr_dmemory_destroy(&renderer->capture_storage_memory);
-  }
-  if (renderer->graph_buffer_barriers) {
-    vkr_allocator_free(allocator, renderer->graph_buffer_barriers,
-                       renderer->graph_buffer_barriers_size,
-                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   }
   if (renderer->graph_image_barriers) {
     vkr_allocator_free(allocator, renderer->graph_image_barriers,

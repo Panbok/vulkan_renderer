@@ -25,9 +25,24 @@ typedef struct VkrBindlessVulkanRendererConfig {
   uint32_t width;
   uint32_t height;
   uint32_t image_count;
+  /** Sampled-image descriptor heap slots. Bounds descriptors, not assets. */
   uint32_t sampled_image_capacity;
   uint32_t storage_image_capacity;
   uint32_t sampler_capacity;
+  /**
+   * Logical geometry IDs admitted by the asset publisher. Independent of every
+   * descriptor heap: geometry is reached by device address and occupies no
+   * descriptor slot. Must cover the geometry system's whole ID space, because
+   * publication records are indexed directly by `VkrGeometryHandle::id`.
+   */
+  uint32_t geometry_capacity;
+  /**
+   * Logical texture IDs admitted by the asset publisher. Must cover the texture
+   * system's whole ID space for the same reason, and must not exceed
+   * `sampled_image_capacity`, since every published texture also consumes one
+   * sampled-image descriptor slot.
+   */
+  uint32_t texture_capacity;
   /** Maximum logical material IDs admitted by the asset publisher. */
   uint32_t material_record_capacity;
   /** GPU rows: sentinel row zero plus two generations of every record. */

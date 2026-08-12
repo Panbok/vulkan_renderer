@@ -16,7 +16,7 @@
    FIELDS,                                                                     \
    ArrayCount(FIELDS)}
 
-static const VkrGpuAbiField vkr_gpu_vertex_fields[] = {
+vkr_global const VkrGpuAbiField vkr_gpu_vertex_fields[] = {
     VKR_GPU_ABI_FIELD(VkrVertex3d, position.x, "position_x", 0),
     VKR_GPU_ABI_FIELD(VkrVertex3d, position.y, "position_y", 4),
     VKR_GPU_ABI_FIELD(VkrVertex3d, position.z, "position_z", 8),
@@ -28,27 +28,28 @@ static const VkrGpuAbiField vkr_gpu_vertex_fields[] = {
     VKR_GPU_ABI_FIELD(VkrVertex3d, tangent, "tangent", 48),
 };
 
-static const VkrGpuAbiField vkr_gpu_instance_fields[] = {
+vkr_global const VkrGpuAbiField vkr_gpu_instance_fields[] = {
     VKR_GPU_ABI_FIELD(VkrInstanceDataGPU, model, "model", 0),
     VKR_GPU_ABI_FIELD(VkrInstanceDataGPU, object_id, "object_id", 64),
     VKR_GPU_ABI_FIELD(VkrInstanceDataGPU, reserved, "reserved_0", 68),
 };
 
-static const VkrGpuAbiField vkr_gpu_text_vertex_fields[] = {
+vkr_global const VkrGpuAbiField vkr_gpu_text_vertex_fields[] = {
     VKR_GPU_ABI_FIELD(VkrTextVertex, position, "position", 0),
     VKR_GPU_ABI_FIELD(VkrTextVertex, texcoord, "texcoord", 8),
     VKR_GPU_ABI_FIELD(VkrTextVertex, color, "color", 16),
 };
 
-static const VkrGpuAbiRecord vkr_gpu_abi_records[VKR_GPU_ABI_RECORD_COUNT] = {
-    [VKR_GPU_ABI_VERTEX] = VKR_GPU_ABI_RECORD(
-        VkrVertex3d, "VkrMetalPacketVertex", 64, 16, vkr_gpu_vertex_fields),
-    [VKR_GPU_ABI_INSTANCE] =
-        VKR_GPU_ABI_RECORD(VkrInstanceDataGPU, "VkrMetalPacketInstance", 80, 16,
-                           vkr_gpu_instance_fields),
-    [VKR_GPU_ABI_TEXT_VERTEX] =
-        VKR_GPU_ABI_RECORD(VkrTextVertex, "VkrMetalPacketTextVertex", 32, 16,
-                           vkr_gpu_text_vertex_fields),
+vkr_global const VkrGpuAbiRecord
+    vkr_gpu_abi_records[VKR_GPU_ABI_RECORD_COUNT] = {
+        [VKR_GPU_ABI_VERTEX] = VKR_GPU_ABI_RECORD(
+            VkrVertex3d, "VkrMetalPacketVertex", 64, 16, vkr_gpu_vertex_fields),
+        [VKR_GPU_ABI_INSTANCE] =
+            VKR_GPU_ABI_RECORD(VkrInstanceDataGPU, "VkrMetalPacketInstance", 80,
+                               16, vkr_gpu_instance_fields),
+        [VKR_GPU_ABI_TEXT_VERTEX] =
+            VKR_GPU_ABI_RECORD(VkrTextVertex, "VkrMetalPacketTextVertex", 32,
+                               16, vkr_gpu_text_vertex_fields),
 };
 
 const VkrGpuAbiRecord *vkr_gpu_abi_record(VkrGpuAbiRecordId id) {

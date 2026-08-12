@@ -1,13 +1,13 @@
 #include "renderer/vkr_capture_ring.h"
 
-static void vkr_capture_slot_reset(VkrCaptureSlot *slot) {
+vkr_internal void vkr_capture_slot_reset(VkrCaptureSlot *slot) {
   uint8_t *storage = slot->storage;
   MemZero(slot, sizeof(*slot));
   slot->storage = storage;
 }
 
-static VkrCaptureSlot *vkr_capture_slot_find(VkrCaptureRing *ring,
-                                             VkrCaptureRequestId request_id) {
+vkr_internal VkrCaptureSlot *
+vkr_capture_slot_find(VkrCaptureRing *ring, VkrCaptureRequestId request_id) {
   for (uint32_t i = 0; i < ring->capacity; ++i) {
     if (ring->slots[i].state != VKR_CAPTURE_SLOT_IDLE &&
         ring->slots[i].request_id == request_id) {

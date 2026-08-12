@@ -141,7 +141,7 @@ bool8_t vkr_bindless_vulkan_memory_pool_create(
   return true_v;
 }
 
-static void
+vkr_internal void
 vkr_bindless_vk_memory_destroy_block(VkrBindlessVkMemoryPoolManager *manager,
                                      VkrBindlessVkMemoryBlock *block) {
   if (block->mapped)
@@ -177,7 +177,7 @@ void vkr_bindless_vulkan_memory_pool_destroy(
                      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
 }
 
-static VkrBindlessVkMemoryBlock *vkr_bindless_vk_memory_create_block(
+vkr_internal VkrBindlessVkMemoryBlock *vkr_bindless_vk_memory_create_block(
     VkrBindlessVkMemoryPoolManager *manager, VkrBindlessVkMemoryPoolKey key,
     VkMemoryPropertyFlags properties, uint64_t resource_size,
     uint64_t alignment, uint32_t *out_block_index) {
@@ -371,7 +371,7 @@ bool8_t vkr_bindless_vulkan_memory_pool_retire(
   return true_v;
 }
 
-static VkrGpuMemoryClassMetrics *
+vkr_internal VkrGpuMemoryClassMetrics *
 vkr_bindless_vk_dedicated_class_metrics(VkrGpuMemoryMetrics *metrics,
                                         VkrBindlessVkMemoryPoolKey key) {
   const uint32_t gpu_kind = key.kind == VKR_BINDLESS_VK_MEMORY_KIND_BUFFER

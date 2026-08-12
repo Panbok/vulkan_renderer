@@ -922,13 +922,21 @@ Access lowering mirrors the legacy access mapping with `VkAccessFlags2` bits.
 - **Images:** one `VkImageMemoryBarrier2` per compiled image barrier, carrying
   stages, accesses, old and new layout, image, and subresource range. The
   canonical subresource range maps directly through the existing resolve helper.
-- **Buffers:** emit one `VkBufferMemoryBarrier2` per compiled buffer barrier,
-  preserving resource identity and the graph's current whole-buffer range.
-  Batch them into the pass's single barrier command. A future change may collapse
-  them into a global `VkMemoryBarrier2` only after a same-device Release A/B
-  shows no material regression and synchronization validation proves equivalent
-  behavior. Single-queue ownership makes a global barrier legal; it does not
-  make its cost free by construction.
+- **Buffers:** **designed, not implemented.** The intent is one
+  `VkBufferMemoryBarrier2` per compiled buffer barrier, preserving resource
+  identity and the graph's current whole-buffer range, batched into the pass's
+  single barrier command. No authored pass declares a graph buffer, so this has
+  no caller and was never written. `vkr_bindless_vk_record_graph_pass_barriers()`
+  **rejects** any pass that declares one, with a named error, rather than
+  silently executing without the barrier the pass asked for; the graph validator
+  rejects the same at load. A 2026-08-12 audit removed the scratch array that
+  had been allocated for it, which was sized by `max_graph_images` and never
+  written. Implementing this means lowering `VkrRgBufferBarrier` through the
+  existing dependency lowerer and appending to the same `vkCmdPipelineBarrier2`.
+  A future change may collapse them into a global `VkMemoryBarrier2` only after a
+  same-device Release A/B shows no material regression and synchronization
+  validation proves equivalent behavior. Single-queue ownership makes a global
+  barrier legal; it does not make its cost free by construction.
 - **One `vkCmdPipelineBarrier2` per pass boundary**, batching everything. The
   graph already batches into per-pass pre-image and pre-buffer barrier lists plus
   the terminal list. Barrier generation must not allocate in steady state; that
