@@ -218,11 +218,69 @@ static void test_metal_packet_wait_counter_reset(void) {
   printf("  test_metal_packet_wait_counter_reset PASSED\n");
 }
 
+/*
+ * The allocator reserves a handle slot before it searches for a byte range, so
+ * every range-search failure must return that slot. Without the return, each
+ * fragmentation or byte-exhaustion failure would permanently consume one
+ * handle and the core would report OUT_OF_HANDLES long before it was true.
+ */
+static void test_metal_memory_failed_allocation_returns_handle(void) {
+  printf("  Running test_metal_memory_failed_allocation_returns_handle...\n");
+  /* heap=1024, 3 handles. */
+  MetalMemoryFixture fixture =
+      metal_memory_fixture((VkrMetalMemoryConfig){1024, 3, 4, 5});
+  VkrMetalAllocationHandle handle = {0};
+  VkrMetalPlacement placement = {0};
+
+  /* Consume all but 24 bytes, leaving two free handles. */
+  VkrMetalAllocationHandle bulk = {0};
+  assert(vkr_metal_memory_allocate(fixture.memory, 1000, 1, 1, &bulk,
+                                   &placement) == VKR_METAL_MEMORY_STATUS_OK);
+
+  /* Sixteen byte-exhaustion failures. Each reserves and must release a slot;
+     without the release the third attempt would report OUT_OF_HANDLES. */
+  for (uint32_t i = 0; i < 16; ++i) {
+    assert(vkr_metal_memory_allocate(fixture.memory, 512, 1, 1, &handle,
+                                     &placement) ==
+           VKR_METAL_MEMORY_STATUS_OUT_OF_BYTES);
+  }
+
+  /* Both remaining handles must still be available. */
+  VkrMetalAllocationHandle a = {0}, b = {0};
+  assert(vkr_metal_memory_allocate(fixture.memory, 8, 1, 1, &a, &placement) ==
+         VKR_METAL_MEMORY_STATUS_OK);
+  assert(vkr_metal_memory_allocate(fixture.memory, 8, 1, 1, &b, &placement) ==
+         VKR_METAL_MEMORY_STATUS_OK);
+  assert(
+      vkr_metal_memory_allocate(fixture.memory, 8, 1, 1, &handle, &placement) ==
+      VKR_METAL_MEMORY_STATUS_OUT_OF_HANDLES);
+
+  /* Collection must return every slot to the free pool for reuse. */
+  assert(vkr_metal_memory_retire(fixture.memory, bulk, 1) ==
+         VKR_METAL_MEMORY_STATUS_OK);
+  assert(vkr_metal_memory_retire(fixture.memory, a, 1) ==
+         VKR_METAL_MEMORY_STATUS_OK);
+  assert(vkr_metal_memory_retire(fixture.memory, b, 1) ==
+         VKR_METAL_MEMORY_STATUS_OK);
+  uint32_t collected = 0;
+  assert(vkr_metal_memory_collect(fixture.memory, 1, NULL, NULL, &collected) ==
+         VKR_METAL_MEMORY_STATUS_OK);
+  assert(collected == 3);
+  for (uint32_t i = 0; i < 3; ++i) {
+    assert(vkr_metal_memory_allocate(fixture.memory, 8, 1, 1, &handle,
+                                     &placement) == VKR_METAL_MEMORY_STATUS_OK);
+  }
+
+  free(fixture.storage);
+  printf("  test_metal_memory_failed_allocation_returns_handle PASSED\n");
+}
+
 bool32_t run_metal_memory_tests(void) {
   printf("Running Metal memory tests...\n");
   test_metal_memory_alignment_and_balance();
   test_metal_memory_stale_handle_and_submit_order();
   test_metal_memory_failure_classification();
+  test_metal_memory_failed_allocation_returns_handle();
   test_metal_submit_ring_reuse();
   test_metal_packet_wait_counter_reset();
   printf("Metal memory tests PASSED\n");

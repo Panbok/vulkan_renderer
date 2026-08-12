@@ -164,11 +164,85 @@ static void test_shared_slot_table_row_size_and_sentinel_rule(void) {
   printf("  test_shared_slot_table_row_size_and_sentinel_rule PASSED\n");
 }
 
+/*
+ * Free slots are handed out from a stack rather than found by scanning, so the
+ * two invariants that used to fall out of the scan are pinned explicitly here:
+ * a virgin table must still hand out 0, 1, 2, ... (the sentinel contract), and
+ * collection must return every slot to the pool so a long publish/retire cycle
+ * cannot exhaust a table that is logically empty.
+ */
+static void test_shared_slot_table_recycles_every_collected_slot(void) {
+  printf("  Running test_shared_slot_table_recycles_every_collected_slot...\n");
+  enum { SLOT_COUNT = 8u };
+  const VkrGpuSlotTableConfig config = {
+      .max_slots = SLOT_COUNT,
+      .max_retirements = SLOT_COUNT,
+      .row_size = sizeof(uint32_t),
+  };
+  const uint64_t storage_size = vkr_gpu_slot_table_storage_requirement(&config);
+  void *storage = malloc(storage_size);
+  uint32_t rows[SLOT_COUNT] = {0};
+  VkrGpuSlotTable *table = NULL;
+  assert(storage &&
+         vkr_gpu_slot_table_create(&config, storage, storage_size, rows,
+                                   &table) == VKR_GPU_SLOT_STATUS_OK);
+
+  /* A virgin table allocates ascending from zero. */
+  VkrGpuSlotHandle handles[SLOT_COUNT] = {0};
+  for (uint32_t i = 0; i < SLOT_COUNT; ++i) {
+    const uint32_t row = 0xA0u + i;
+    assert(vkr_gpu_slot_table_publish(table, &row, &handles[i]) ==
+           VKR_GPU_SLOT_STATUS_OK);
+    assert(handles[i].index == i);
+  }
+  VkrGpuSlotHandle overflow = {0};
+  assert(vkr_gpu_slot_table_publish(table, &(uint32_t){0}, &overflow) ==
+         VKR_GPU_SLOT_STATUS_CAPACITY_EXHAUSTED);
+
+  /* Ten full drain/refill cycles must never exhaust the table. */
+  for (uint32_t cycle = 0; cycle < 10u; ++cycle) {
+    const uint64_t submit = cycle + 1u;
+    for (uint32_t i = 0; i < SLOT_COUNT; ++i) {
+      assert(vkr_gpu_slot_table_retire(table, handles[i], submit) ==
+             VKR_GPU_SLOT_STATUS_OK);
+    }
+    uint32_t collected = 0;
+    assert(vkr_gpu_slot_table_collect(table, submit, &collected) ==
+           VKR_GPU_SLOT_STATUS_OK);
+    assert(collected == SLOT_COUNT);
+    for (uint32_t i = 0; i < SLOT_COUNT; ++i) {
+      const uint32_t row = 0xB0u + i;
+      assert(vkr_gpu_slot_table_publish(table, &row, &handles[i]) ==
+             VKR_GPU_SLOT_STATUS_OK);
+      assert(handles[i].index < SLOT_COUNT);
+    }
+  }
+
+  VkrGpuSlotTableMetrics metrics = {0};
+  vkr_gpu_slot_table_get_metrics(table, &metrics);
+  assert(metrics.slots_live == SLOT_COUNT && metrics.slots_retired == 0u);
+  assert(metrics.slots_collected == (uint64_t)SLOT_COUNT * 10u);
+
+  /* Every live handle must still resolve to a distinct slot. */
+  bool8_t seen[SLOT_COUNT] = {0};
+  for (uint32_t i = 0; i < SLOT_COUNT; ++i) {
+    uint32_t index = VKR_INVALID_ID;
+    assert(vkr_gpu_slot_table_resolve(table, handles[i], &index) ==
+           VKR_GPU_SLOT_STATUS_OK);
+    assert(index < SLOT_COUNT && !seen[index]);
+    seen[index] = true_v;
+  }
+
+  free(storage);
+  printf("  test_shared_slot_table_recycles_every_collected_slot PASSED\n");
+}
+
 bool32_t run_metal_material_tests(void) {
   printf("Running Metal material tests...\n");
   test_material_publication_and_pending_replacement();
   test_material_replacement_capacity_is_transactional();
   test_shared_slot_table_row_size_and_sentinel_rule();
+  test_shared_slot_table_recycles_every_collected_slot();
   printf("Metal material tests PASSED\n");
   return true_v;
 }

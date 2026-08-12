@@ -1,7 +1,5 @@
 #include "renderer/vkr_gpu_slot_table.h"
 
-#include <stdatomic.h>
-
 typedef enum VkrGpuSlotState {
   VKR_GPU_SLOT_FREE = 0,
   VKR_GPU_SLOT_LIVE,
@@ -23,13 +21,21 @@ struct VkrGpuSlotTable {
   uint8_t *mapped_rows;
   VkrGpuSlot *slots;
   VkrGpuSlotRetirement *retirements;
+  /**
+   * Indices of every FREE slot. Popped from the top by publish, pushed back by
+   * collect. Seeded in descending order so a virgin table hands out 0, 1, 2,
+   * ... — the sentinel contract depends on the first publication landing in
+   * slot zero.
+   */
+  uint32_t *free_indices;
+  uint32_t free_count;
   uint32_t retirement_count;
   VkrGpuSlotTableMetrics metrics;
 };
 
-static bool8_t vkr_gpu_slot_add_storage(uint64_t *size, uint64_t count,
-                                        uint64_t element_size,
-                                        uint64_t alignment) {
+vkr_internal bool8_t vkr_gpu_slot_add_storage(uint64_t *size, uint64_t count,
+                                              uint64_t element_size,
+                                              uint64_t alignment) {
   if (*size > UINT64_MAX - (alignment - 1u))
     return false_v;
   *size = AlignPow2(*size, alignment);
@@ -51,14 +57,17 @@ vkr_gpu_slot_table_storage_requirement(const VkrGpuSlotTableConfig *config) {
                                 _Alignof(VkrGpuSlot)) ||
       !vkr_gpu_slot_add_storage(&size, config->max_retirements,
                                 sizeof(VkrGpuSlotRetirement),
-                                _Alignof(VkrGpuSlotRetirement)))
+                                _Alignof(VkrGpuSlotRetirement)) ||
+      !vkr_gpu_slot_add_storage(&size, config->max_slots, sizeof(uint32_t),
+                                _Alignof(uint32_t)))
     return 0;
   return size;
 }
 
-static void *vkr_gpu_slot_take_storage(uint8_t **cursor, uint8_t *end,
-                                       uint64_t count, uint64_t element_size,
-                                       uint64_t alignment) {
+vkr_internal void *vkr_gpu_slot_take_storage(uint8_t **cursor, uint8_t *end,
+                                             uint64_t count,
+                                             uint64_t element_size,
+                                             uint64_t alignment) {
   const uintptr_t aligned = AlignPow2((uintptr_t)*cursor, alignment);
   if (aligned > (uintptr_t)end ||
       count > (uint64_t)((uintptr_t)end - aligned) / element_size)
@@ -86,7 +95,10 @@ VkrGpuSlotStatus vkr_gpu_slot_table_create(const VkrGpuSlotTableConfig *config,
   VkrGpuSlotRetirement *retirements = vkr_gpu_slot_take_storage(
       &cursor, end, config->max_retirements, sizeof(*retirements),
       _Alignof(VkrGpuSlotRetirement));
-  if (!table || !slots || !retirements)
+  uint32_t *free_indices =
+      vkr_gpu_slot_take_storage(&cursor, end, config->max_slots,
+                                sizeof(*free_indices), _Alignof(uint32_t));
+  if (!table || !slots || !retirements || !free_indices)
     return VKR_GPU_SLOT_STATUS_INVALID_ARGUMENT;
 
   MemZero(table, sizeof(*table));
@@ -97,22 +109,23 @@ VkrGpuSlotStatus vkr_gpu_slot_table_create(const VkrGpuSlotTableConfig *config,
   table->mapped_rows = mapped_rows;
   table->slots = slots;
   table->retirements = retirements;
-  for (uint32_t i = 0; i < config->max_slots; ++i)
+  table->free_indices = free_indices;
+  table->free_count = config->max_slots;
+  for (uint32_t i = 0; i < config->max_slots; ++i) {
     slots[i].generation = 1u;
+    free_indices[i] = config->max_slots - 1u - i;
+  }
   *out_table = table;
   return VKR_GPU_SLOT_STATUS_OK;
 }
 
-static int32_t vkr_gpu_slot_find_free(VkrGpuSlotTable *table) {
-  for (uint32_t i = 0; i < table->config.max_slots; ++i) {
-    if (table->slots[i].state == VKR_GPU_SLOT_FREE)
-      return (int32_t)i;
-  }
-  return -1;
+vkr_internal int32_t vkr_gpu_slot_take_free(VkrGpuSlotTable *table) {
+  return table->free_count ? (int32_t)table->free_indices[--table->free_count]
+                           : -1;
 }
 
-static bool8_t vkr_gpu_slot_handle_is_live(const VkrGpuSlotTable *table,
-                                           VkrGpuSlotHandle handle) {
+vkr_internal bool8_t vkr_gpu_slot_handle_is_live(const VkrGpuSlotTable *table,
+                                                 VkrGpuSlotHandle handle) {
   return handle.index < table->config.max_slots &&
          table->slots[handle.index].state == VKR_GPU_SLOT_LIVE &&
          table->slots[handle.index].generation == handle.generation;
@@ -129,12 +142,11 @@ VkrGpuSlotStatus vkr_gpu_slot_table_can_retire(const VkrGpuSlotTable *table,
   return VKR_GPU_SLOT_STATUS_OK;
 }
 
-static void vkr_gpu_slot_publish_at(VkrGpuSlotTable *table, uint32_t slot_index,
-                                    const void *row,
-                                    VkrGpuSlotHandle *out_handle) {
+vkr_internal void vkr_gpu_slot_publish_at(VkrGpuSlotTable *table,
+                                          uint32_t slot_index, const void *row,
+                                          VkrGpuSlotHandle *out_handle) {
   MemCopy(table->mapped_rows + (uint64_t)slot_index * table->config.row_size,
           row, table->config.row_size);
-  atomic_thread_fence(memory_order_release);
   table->slots[slot_index].state = VKR_GPU_SLOT_LIVE;
   *out_handle =
       (VkrGpuSlotHandle){slot_index, table->slots[slot_index].generation};
@@ -150,7 +162,7 @@ VkrGpuSlotStatus vkr_gpu_slot_table_publish(VkrGpuSlotTable *table,
                                             VkrGpuSlotHandle *out_handle) {
   if (!table || !row || !out_handle)
     return VKR_GPU_SLOT_STATUS_INVALID_ARGUMENT;
-  const int32_t index = vkr_gpu_slot_find_free(table);
+  const int32_t index = vkr_gpu_slot_take_free(table);
   if (index < 0) {
     table->metrics.capacity_failures++;
     return VKR_GPU_SLOT_STATUS_CAPACITY_EXHAUSTED;
@@ -159,9 +171,9 @@ VkrGpuSlotStatus vkr_gpu_slot_table_publish(VkrGpuSlotTable *table,
   return VKR_GPU_SLOT_STATUS_OK;
 }
 
-static void vkr_gpu_slot_retire_live(VkrGpuSlotTable *table,
-                                     VkrGpuSlotHandle handle,
-                                     uint64_t submit_value) {
+vkr_internal void vkr_gpu_slot_retire_live(VkrGpuSlotTable *table,
+                                           VkrGpuSlotHandle handle,
+                                           uint64_t submit_value) {
   VkrGpuSlot *slot = &table->slots[handle.index];
   table->retirements[table->retirement_count++] =
       (VkrGpuSlotRetirement){submit_value, handle.index};
@@ -188,7 +200,7 @@ VkrGpuSlotStatus vkr_gpu_slot_table_replace(VkrGpuSlotTable *table,
     table->metrics.retirement_capacity_failures++;
     return VKR_GPU_SLOT_STATUS_RETIREMENT_CAPACITY_EXHAUSTED;
   }
-  const int32_t index = vkr_gpu_slot_find_free(table);
+  const int32_t index = vkr_gpu_slot_take_free(table);
   if (index < 0) {
     table->metrics.capacity_failures++;
     return VKR_GPU_SLOT_STATUS_CAPACITY_EXHAUSTED;
@@ -226,7 +238,6 @@ VkrGpuSlotStatus vkr_gpu_slot_table_resolve(VkrGpuSlotTable *table,
     table->metrics.stale_handle_failures++;
     return VKR_GPU_SLOT_STATUS_STALE_HANDLE;
   }
-  atomic_thread_fence(memory_order_acquire);
   *out_slot_index = handle.index;
   return VKR_GPU_SLOT_STATUS_OK;
 }
@@ -236,6 +247,9 @@ VkrGpuSlotStatus vkr_gpu_slot_table_collect(VkrGpuSlotTable *table,
                                             uint32_t *out_collected_count) {
   if (!table)
     return VKR_GPU_SLOT_STATUS_INVALID_ARGUMENT;
+  /* Retirement records are matched by submit value, never by position, so a
+     surviving record may be moved. Swapping the tail into the collected slot
+     keeps this O(n) instead of shifting the whole tail per collection. */
   uint32_t collected = 0;
   for (uint32_t i = 0; i < table->retirement_count;) {
     const VkrGpuSlotRetirement retirement = table->retirements[i];
@@ -247,11 +261,10 @@ VkrGpuSlotStatus vkr_gpu_slot_table_collect(VkrGpuSlotTable *table,
                 (uint64_t)retirement.slot_index * table->config.row_size,
             table->config.row_size);
     table->slots[retirement.slot_index].state = VKR_GPU_SLOT_FREE;
+    table->free_indices[table->free_count++] = retirement.slot_index;
     table->metrics.slots_retired--;
     table->metrics.slots_collected++;
-    for (uint32_t j = i + 1u; j < table->retirement_count; ++j)
-      table->retirements[j - 1u] = table->retirements[j];
-    table->retirement_count--;
+    table->retirements[i] = table->retirements[--table->retirement_count];
     collected++;
   }
   if (out_collected_count)

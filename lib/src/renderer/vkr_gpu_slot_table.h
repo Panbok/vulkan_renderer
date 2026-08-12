@@ -2,6 +2,24 @@
 
 #include "defines.h"
 
+/**
+ * Fixed-capacity generation-checked slot table over a caller-owned, GPU-visible
+ * row array. Backs both descriptor heaps and material tables on either backend.
+ *
+ * **Threading: single-threaded by contract.** Every entry point mutates plain
+ * table state and plain metric counters with no synchronization. The renderer
+ * satisfies this by publishing only from the render thread — asset publication
+ * is pumped from inside `prepare_frame` (see `renderer_frontend.c`), never from
+ * a loader or job-system worker. Calling any of these from a second thread is a
+ * data race. If that ever changes, convert the slot state, generation, and
+ * metric counters to `core/vkr_atomic.h` types; a bare fence is not sufficient
+ * and none is used here.
+ *
+ * Publication order: a virgin table hands out slot 0 first, then 1, 2, ... The
+ * sentinel contract in the bindless design depends on that. Slots freed by
+ * `collect` are reused in LIFO order, so index reuse after a retirement is not
+ * ascending — no caller may depend on which free index is returned.
+ */
 typedef struct VkrGpuSlotTable VkrGpuSlotTable;
 
 typedef enum VkrGpuSlotStatus {
