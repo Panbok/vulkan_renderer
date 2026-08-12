@@ -1,10 +1,11 @@
 /* Shader/pipeline creation, device resources, uploads, and renderer startup. */
-static void vkr_metal_packet_print_error(const char *step, NSError *error) {
+vkr_internal void vkr_metal_packet_print_error(const char *step,
+                                               NSError *error) {
   (void)error;
   fprintf(stderr, "metal.packet.%s: Metal compilation failed\n", step);
 }
 
-static id<MTLLibrary>
+vkr_internal id<MTLLibrary>
 vkr_metal_packet_create_library(VkrMetalPacketRenderer *renderer,
                                 const char *path, NSString *name)
     API_AVAILABLE(macos(26.0)) {
@@ -39,21 +40,20 @@ vkr_metal_packet_create_library(VkrMetalPacketRenderer *renderer,
   return library;
 }
 
-static uint32_t
+vkr_internal uint32_t
 vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
   switch (record_id) {
   case VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT:
   case VKR_METAL_PACKET_ABI_EQUIRECT_ROOT:
   case VKR_METAL_PACKET_ABI_IRRADIANCE_ROOT:
   case VKR_METAL_PACKET_ABI_PREFILTER_ROOT:
-  case VKR_METAL_PACKET_ABI_BRDF_ROOT:
     return 0;
   default:
     return 1;
   }
 }
 
-static bool8_t vkr_metal_packet_validate_abi_type(
+vkr_internal bool8_t vkr_metal_packet_validate_abi_type(
     NSString *pipeline_label, MTLStructType *shader_type,
     NSUInteger shader_size, NSUInteger shader_alignment,
     VkrMetalPacketAbiRecordId record_id) API_AVAILABLE(macos(26.0)) {
@@ -92,7 +92,7 @@ static bool8_t vkr_metal_packet_validate_abi_type(
   return true_v;
 }
 
-static bool8_t vkr_metal_packet_validate_nested_abi(
+vkr_internal bool8_t vkr_metal_packet_validate_nested_abi(
     NSString *pipeline_label, MTLStructType *root_type, const char *member_name,
     VkrMetalPacketAbiRecordId record_id) API_AVAILABLE(macos(26.0)) {
   MTLStructMember *member =
@@ -106,7 +106,7 @@ static bool8_t vkr_metal_packet_validate_nested_abi(
              : false_v;
 }
 
-static bool8_t vkr_metal_packet_validate_abi_binding(
+vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
     NSString *pipeline_label, NSArray<id<MTLBinding>> *bindings,
     VkrMetalPacketAbiRecordId record_id) API_AVAILABLE(macos(26.0)) {
   if (record_id == VKR_METAL_PACKET_ABI_RECORD_COUNT)
@@ -153,7 +153,7 @@ static bool8_t vkr_metal_packet_validate_abi_binding(
   return true_v;
 }
 
-static id<MTLRenderPipelineState> vkr_metal_packet_create_pipeline(
+vkr_internal id<MTLRenderPipelineState> vkr_metal_packet_create_pipeline(
     VkrMetalPacketRenderer *renderer, id<MTLLibrary> vertex_library,
     const char *vertex_name, id<MTLLibrary> fragment_library,
     const char *fragment_name, MTLPixelFormat color_format, bool8_t blend,
@@ -211,9 +211,12 @@ static id<MTLRenderPipelineState> vkr_metal_packet_create_pipeline(
   return pipeline;
 }
 
-static id<MTLComputePipelineState> vkr_metal_packet_create_compute_pipeline(
-    VkrMetalPacketRenderer *renderer, id<MTLLibrary> library,
-    const char *function_name, VkrMetalPacketAbiRecordId abi, NSString *label)
+vkr_internal id<MTLComputePipelineState>
+vkr_metal_packet_create_compute_pipeline(VkrMetalPacketRenderer *renderer,
+                                         id<MTLLibrary> library,
+                                         const char *function_name,
+                                         VkrMetalPacketAbiRecordId abi,
+                                         NSString *label)
     API_AVAILABLE(macos(26.0)) {
   MTL4LibraryFunctionDescriptor *function = [MTL4LibraryFunctionDescriptor new];
   function.library = library;
@@ -244,7 +247,7 @@ static id<MTLComputePipelineState> vkr_metal_packet_create_compute_pipeline(
   return pipeline;
 }
 
-static bool8_t vkr_metal_packet_create_pipelines(
+vkr_internal bool8_t vkr_metal_packet_create_pipelines(
     VkrMetalPacketRenderer *renderer, const char *slang_msl_path,
     const char *fragment_msl_path) API_AVAILABLE(macos(26.0)) {
   if (!vkr_metal_packet_abi_validate_host()) {
@@ -323,9 +326,6 @@ static bool8_t vkr_metal_packet_create_pipelines(
   renderer->ibl_prefilter_pipeline = vkr_metal_packet_create_compute_pipeline(
       renderer, fragment, "vkr_metal_packet_ibl_prefilter",
       VKR_METAL_PACKET_ABI_PREFILTER_ROOT, @"VKR Metal packet IBL prefilter");
-  renderer->ibl_brdf_pipeline = vkr_metal_packet_create_compute_pipeline(
-      renderer, fragment, "vkr_metal_packet_ibl_brdf",
-      VKR_METAL_PACKET_ABI_BRDF_ROOT, @"VKR Metal packet IBL BRDF LUT");
   [fragment release];
   [slang release];
   MTLDepthStencilDescriptor *depth = [MTLDepthStencilDescriptor new];
@@ -356,15 +356,14 @@ static bool8_t vkr_metal_packet_create_pipelines(
                  renderer->ibl_equirect_pipeline &&
                  renderer->ibl_irradiance_pipeline &&
                  renderer->ibl_prefilter_pipeline &&
-                 renderer->ibl_brdf_pipeline && renderer->depth_write_state &&
-                 renderer->depth_read_state && renderer->argument_table
+                 renderer->depth_write_state && renderer->depth_read_state &&
+                 renderer->argument_table
              ? true_v
              : false_v;
 }
 
-static bool8_t
-vkr_metal_packet_create_compiler(VkrMetalPacketRenderer *renderer,
-                                 const char *archive_path)
+vkr_internal bool8_t vkr_metal_packet_create_compiler(
+    VkrMetalPacketRenderer *renderer, const char *archive_path)
     API_AVAILABLE(macos(26.0)) {
   NSError *error = nil;
   NSURL *archive_url = nil;
@@ -417,9 +416,8 @@ vkr_metal_packet_create_compiler(VkrMetalPacketRenderer *renderer,
   return renderer->compiler ? true_v : false_v;
 }
 
-static bool8_t
-vkr_metal_packet_finalize_archive(VkrMetalPacketRenderer *renderer,
-                                  const char *archive_path)
+vkr_internal bool8_t vkr_metal_packet_finalize_archive(
+    VkrMetalPacketRenderer *renderer, const char *archive_path)
     API_AVAILABLE(macos(26.0)) {
   if (!archive_path || !renderer->pipeline_serializer)
     return true_v;
@@ -441,9 +439,8 @@ vkr_metal_packet_finalize_archive(VkrMetalPacketRenderer *renderer,
   return true_v;
 }
 
-static bool8_t
-vkr_metal_packet_create_ibl_targets(VkrMetalPacketRenderer *renderer)
-    API_AVAILABLE(macos(26.0)) {
+vkr_internal bool8_t vkr_metal_packet_create_ibl_targets(
+    VkrMetalPacketRenderer *renderer) API_AVAILABLE(macos(26.0)) {
   MTLTextureDescriptor *cube = [MTLTextureDescriptor new];
   cube.textureType = MTLTextureTypeCube;
   cube.pixelFormat = MTLPixelFormatRGBA16Float;
@@ -451,13 +448,6 @@ vkr_metal_packet_create_ibl_targets(VkrMetalPacketRenderer *renderer)
   cube.height = VKR_IBL_IRRADIANCE_SIZE;
   cube.mipmapLevelCount = 1;
   cube.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
-  MTLTextureDescriptor *brdf = [MTLTextureDescriptor new];
-  brdf.textureType = MTLTextureType2D;
-  brdf.pixelFormat = MTLPixelFormatRGBA16Float;
-  brdf.width = VKR_IBL_BRDF_SIZE;
-  brdf.height = VKR_IBL_BRDF_SIZE;
-  brdf.mipmapLevelCount = 1;
-  brdf.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
   const bool8_t passed =
       vkr_metal_memory_device_create_texture(renderer->memory, cube,
                                              &renderer->ibl_irradiance) ==
@@ -465,15 +455,10 @@ vkr_metal_packet_create_ibl_targets(VkrMetalPacketRenderer *renderer)
   cube.width = VKR_IBL_PREFILTER_SIZE;
   cube.height = VKR_IBL_PREFILTER_SIZE;
   cube.mipmapLevelCount = VKR_IBL_PREFILTER_MIP_COUNT;
-  const bool8_t prefilter_passed =
+  const bool8_t targets_passed =
       passed && vkr_metal_memory_device_create_texture(
                     renderer->memory, cube, &renderer->ibl_prefilter) ==
                     VKR_METAL_MEMORY_STATUS_OK;
-  const bool8_t targets_passed =
-      prefilter_passed && vkr_metal_memory_device_create_texture(
-                              renderer->memory, brdf, &renderer->ibl_brdf) ==
-                              VKR_METAL_MEMORY_STATUS_OK;
-  [brdf release];
   [cube release];
   if (!targets_passed) {
     if (renderer->ibl_irradiance.metal_texture)
@@ -482,20 +467,16 @@ vkr_metal_packet_create_ibl_targets(VkrMetalPacketRenderer *renderer)
     if (renderer->ibl_prefilter.metal_texture)
       (void)vkr_metal_memory_device_retire(renderer->memory,
                                            renderer->ibl_prefilter.handle, 0);
-    if (renderer->ibl_brdf.metal_texture)
-      (void)vkr_metal_memory_device_retire(renderer->memory,
-                                           renderer->ibl_brdf.handle, 0);
     (void)vkr_metal_memory_device_collect(renderer->memory, 0, NULL);
     renderer->ibl_irradiance = (VkrMetalTextureResource){0};
     renderer->ibl_prefilter = (VkrMetalTextureResource){0};
-    renderer->ibl_brdf = (VkrMetalTextureResource){0};
     return false_v;
   }
   renderer->ibl_live = true_v;
   return true_v;
 }
 
-static bool8_t vkr_metal_packet_upload_texture(
+vkr_internal bool8_t vkr_metal_packet_upload_texture(
     VkrMetalPacketRenderer *renderer,
     const VkrMetalPacketTextureUpload *payload, VkrTextureFormat format,
     id<MTLTexture> destination) API_AVAILABLE(macos(26.0)) {
@@ -551,7 +532,7 @@ static bool8_t vkr_metal_packet_upload_texture(
   return vkr_metal_packet_submit_upload(renderer, encoder, slice);
 }
 
-static bool8_t vkr_metal_packet_upload(
+vkr_internal bool8_t vkr_metal_packet_upload(
     VkrMetalPacketRenderer *renderer, const void *first, uint64_t first_size,
     id<MTLBuffer> first_destination, const void *second, uint64_t second_size,
     id<MTLBuffer> second_destination, id<MTLTexture> texture_destination,
@@ -602,7 +583,7 @@ static bool8_t vkr_metal_packet_upload(
   return vkr_metal_packet_submit_upload(renderer, encoder, slice);
 }
 
-static bool8_t vkr_metal_packet_upload_buffer_chunks(
+vkr_internal bool8_t vkr_metal_packet_upload_buffer_chunks(
     VkrMetalPacketRenderer *renderer, const void *source, uint64_t size,
     id<MTLBuffer> destination) API_AVAILABLE(macos(26.0)) {
   if (!renderer || !source || size == 0 || !destination ||
@@ -632,11 +613,9 @@ static bool8_t vkr_metal_packet_upload_buffer_chunks(
   return true_v;
 }
 
-static bool8_t vkr_metal_packet_upload_cubemap(VkrMetalPacketRenderer *renderer,
-                                               const uint8_t *rgba8_faces,
-                                               uint32_t extent,
-                                               id<MTLTexture> destination)
-    API_AVAILABLE(macos(26.0)) {
+vkr_internal bool8_t vkr_metal_packet_upload_cubemap(
+    VkrMetalPacketRenderer *renderer, const uint8_t *rgba8_faces,
+    uint32_t extent, id<MTLTexture> destination) API_AVAILABLE(macos(26.0)) {
   if (!renderer || !rgba8_faces || extent == 0 || !destination ||
       (uint64_t)extent > UINT64_MAX / ((uint64_t)extent * 24u))
     return false_v;
@@ -665,7 +644,7 @@ static bool8_t vkr_metal_packet_upload_cubemap(VkrMetalPacketRenderer *renderer,
   return vkr_metal_packet_submit_upload(renderer, encoder, slice);
 }
 
-static uint32_t vkr_metal_packet_mip_count(uint32_t extent) {
+vkr_internal uint32_t vkr_metal_packet_mip_count(uint32_t extent) {
   uint32_t count = 0;
   while (extent > 0) {
     count++;
@@ -674,7 +653,7 @@ static uint32_t vkr_metal_packet_mip_count(uint32_t extent) {
   return count;
 }
 
-static bool8_t vkr_metal_packet_convert_equirect(
+vkr_internal bool8_t vkr_metal_packet_convert_equirect(
     VkrMetalPacketRenderer *renderer, const uint16_t *rgba16, uint32_t width,
     uint32_t height, uint32_t cube_extent,
     const VkrMetalTextureResource *source,
@@ -771,7 +750,8 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
   *out_renderer = NULL;
 
   if (@available(macOS 26.0, *)) {
-    VkrMetalPacketRenderer *renderer = calloc(1, sizeof(*renderer));
+    VkrMetalPacketRenderer *renderer =
+        vkr_metal_packet_alloc_zeroed(config->allocator, sizeof(*renderer));
     if (!renderer)
       return false_v;
     renderer->allocator = config->allocator;
@@ -797,26 +777,87 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
         config->synchronous_validation_readback;
     const uint64_t capture_storage_size = vkr_capture_ring_storage_requirement(
         config->capture_ring_capacity, config->capture_max_batch_bytes);
-    renderer->capture_storage = calloc(1, capture_storage_size);
-    renderer->images = calloc(config->max_images, sizeof(*renderer->images));
-    renderer->meshes = calloc(config->max_meshes, sizeof(*renderer->meshes));
+    if (capture_storage_size) {
+      /* Own reservation; see capture_storage_memory in the renderer struct. */
+      if (capture_storage_size > UINT64_MAX - KB(64)) {
+        vkr_metal_packet_renderer_destroy(renderer);
+        return false_v;
+      }
+      const uint64_t capture_allocator_size = capture_storage_size + KB(64);
+      if (!vkr_dmemory_create(capture_allocator_size, capture_allocator_size,
+                              &renderer->capture_storage_memory)) {
+        vkr_metal_packet_renderer_destroy(renderer);
+        return false_v;
+      }
+      renderer->capture_storage_allocator =
+          (VkrAllocator){.ctx = &renderer->capture_storage_memory};
+      vkr_dmemory_allocator_create(&renderer->capture_storage_allocator);
+      renderer->capture_storage = vkr_allocator_alloc(
+          &renderer->capture_storage_allocator, capture_storage_size,
+          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+      if (!renderer->capture_storage) {
+        vkr_metal_packet_renderer_destroy(renderer);
+        return false_v;
+      }
+    }
+    /* One reservation for every record array. Each vkr_dmemory_alloc rounds up
+       internally, so the total carries slack per array plus a fixed margin. */
+    const uint64_t record_bytes[] = {
+        vkr_metal_packet_images_bytes(renderer),
+        vkr_metal_packet_meshes_bytes(renderer),
+        vkr_metal_packet_submeshes_bytes(renderer),
+        vkr_metal_packet_materials_bytes(renderer),
+        vkr_metal_packet_textures_bytes(renderer),
+        vkr_metal_packet_samplers_bytes(renderer),
+        vkr_metal_packet_text_uploads_bytes(renderer),
+        vkr_metal_packet_render_passes_bytes(renderer),
+        vkr_metal_packet_command_slots_bytes(renderer),
+        vkr_metal_packet_timing_results_bytes(renderer),
+    };
+    uint64_t record_total = KB(64);
+    bool8_t record_size_valid = true_v;
+    for (uint32_t i = 0; record_size_valid && i < ArrayCount(record_bytes); ++i)
+      record_size_valid =
+          vkr_metal_packet_record_size_add(&record_total, record_bytes[i]);
+    if (!record_size_valid || !vkr_dmemory_create(record_total, record_total,
+                                                  &renderer->record_memory)) {
+      vkr_metal_packet_renderer_destroy(renderer);
+      return false_v;
+    }
+    renderer->record_allocator =
+        (VkrAllocator){.ctx = &renderer->record_memory};
+    vkr_dmemory_allocator_create(&renderer->record_allocator);
+    VkrAllocator *records = &renderer->record_allocator;
+    renderer->images =
+        vkr_metal_packet_record_alloc(records, record_bytes[0], true_v);
+    renderer->meshes =
+        vkr_metal_packet_record_alloc(records, record_bytes[1], true_v);
+    /* Submesh entries are read only below a live mesh's initialized count, so
+       touching the entire 96 MiB worst-case array at startup is unnecessary. */
     renderer->submeshes =
-        calloc((uint64_t)config->max_meshes * config->max_submeshes_per_mesh,
-               sizeof(*renderer->submeshes));
+        vkr_metal_packet_record_alloc(records, record_bytes[2], false_v);
     renderer->packet_materials =
-        calloc(config->max_material_rows, sizeof(*renderer->packet_materials));
+        vkr_metal_packet_record_alloc(records, record_bytes[3], true_v);
     renderer->textures =
-        calloc(config->max_textures, sizeof(*renderer->textures));
+        vkr_metal_packet_record_alloc(records, record_bytes[4], true_v);
     renderer->samplers =
-        calloc(renderer->max_samplers, sizeof(*renderer->samplers));
+        vkr_metal_packet_record_alloc(records, record_bytes[5], false_v);
     renderer->text_uploads =
-        calloc(config->max_draws, sizeof(*renderer->text_uploads));
+        vkr_metal_packet_record_alloc(records, record_bytes[6], false_v);
     renderer->render_passes =
-        calloc(config->max_passes, sizeof(*renderer->render_passes));
+        vkr_metal_packet_record_alloc(records, record_bytes[7], true_v);
     renderer->command_slots =
-        calloc(config->frame_slot_count, sizeof(*renderer->command_slots));
-    renderer->completed_timing_results = calloc(
-        config->frame_slot_count, sizeof(*renderer->completed_timing_results));
+        vkr_metal_packet_record_alloc(records, record_bytes[8], true_v);
+    renderer->completed_timing_results =
+        vkr_metal_packet_record_alloc(records, record_bytes[9], true_v);
+    if (!renderer->images || !renderer->meshes || !renderer->submeshes ||
+        !renderer->packet_materials || !renderer->textures ||
+        !renderer->samplers || !renderer->text_uploads ||
+        !renderer->render_passes || !renderer->command_slots ||
+        !renderer->completed_timing_results) {
+      vkr_metal_packet_renderer_destroy(renderer);
+      return false_v;
+    }
     renderer->device = [MTLCreateSystemDefaultDevice() retain];
     renderer->queue = [renderer->device newMTL4CommandQueue];
     renderer->completion = [renderer->device newSharedEvent];
@@ -840,24 +881,19 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
     [timestamp_descriptor release];
     if (config->target_kind == VKR_METAL_PACKET_TARGET_WINDOW)
       renderer->layer = [(CAMetalLayer *)config->metal_layer retain];
-    bool8_t passed =
-        renderer->graph_frame_arena &&
-        vkr_allocator_arena(&renderer->graph_frame_allocator) &&
-        renderer->images && renderer->meshes && renderer->submeshes &&
-        renderer->packet_materials && renderer->textures &&
-        renderer->samplers && renderer->text_uploads &&
-        renderer->render_passes && renderer->capture_storage &&
-        renderer->completed_timing_results && command_slots_created &&
-        vkr_capture_ring_init(
-            &renderer->capture_ring, config->capture_ring_capacity,
-            config->capture_max_batch_bytes, renderer->capture_storage,
-            capture_storage_size) &&
-        renderer->device &&
-        [renderer->device supportsFamily:MTLGPUFamilyMetal4] &&
-        vkr_metal_packet_create_compiler(renderer,
-                                         config->pipeline_archive_path) &&
-        renderer->queue && renderer->completion &&
-        renderer->timestamp_frequency > 0;
+    bool8_t passed = renderer->graph_frame_arena &&
+                     vkr_allocator_arena(&renderer->graph_frame_allocator) &&
+                     renderer->capture_storage && command_slots_created &&
+                     vkr_capture_ring_init(
+                         &renderer->capture_ring, config->capture_ring_capacity,
+                         config->capture_max_batch_bytes,
+                         renderer->capture_storage, capture_storage_size) &&
+                     renderer->device &&
+                     [renderer->device supportsFamily:MTLGPUFamilyMetal4] &&
+                     vkr_metal_packet_create_compiler(
+                         renderer, config->pipeline_archive_path) &&
+                     renderer->queue && renderer->completion &&
+                     renderer->timestamp_frequency > 0;
     if (config->target_kind == VKR_METAL_PACKET_TARGET_WINDOW) {
       passed = passed && renderer->layer;
       renderer->layer.device = renderer->device;
@@ -874,6 +910,7 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
              vkr_metal_memory_device_create(
                  &(VkrMetalMemoryDeviceConfig){
                      .metal_device = renderer->device,
+                     .allocator = renderer->allocator,
                      .heap_size = config->heap_size,
                      .upload_ring_size = config->upload_ring_size,
                      .readback_ring_size = config->readback_ring_size,
@@ -888,7 +925,7 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
                      .max_rows = config->max_material_rows,
                      .max_retirements = config->max_material_rows,
                  },
-                 renderer->device,
+                 renderer->device, renderer->allocator,
                  &renderer->materials) == VKR_METAL_MATERIAL_STATUS_OK &&
              vkr_metal_packet_create_ibl_targets(renderer) &&
              vkr_metal_packet_create_pipelines(renderer, config->slang_msl_path,

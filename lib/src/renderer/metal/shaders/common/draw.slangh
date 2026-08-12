@@ -28,7 +28,8 @@ struct VkrMetalPacketDrawRoot
     uint64_t materials_address;
     TextureCube<float4> irradiance;
     TextureCube<float4> prefilter;
-    Texture2D<float4> brdf_lut;
+    // Retired; see draw.metalh. Explicit padding, not a resource.
+    uint64_t reserved_brdf_lut;
     float4 view_position;
     uint material_index;
     uint first_instance;

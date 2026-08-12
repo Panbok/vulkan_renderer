@@ -1,6 +1,7 @@
 #pragma once
 
 #include "defines.h"
+#include "memory/vkr_allocator.h"
 
 typedef struct VkrMetalMaterialTableCore VkrMetalMaterialTableCore;
 typedef struct VkrMetalMaterialTableDevice VkrMetalMaterialTableDevice;
@@ -94,7 +95,9 @@ void vkr_metal_material_table_get_metrics(
 VkrMetalMaterialStatus vkr_metal_material_table_device_create(
     const VkrMetalMaterialTableConfig *config,
     // Borrowed id<MTLDevice>; the adapter retains it for its own lifetime.
-    void *metal_device, VkrMetalMaterialTableDevice **out_table);
+    void *metal_device,
+    // Owns the adapter's host allocations. Required.
+    VkrAllocator *allocator, VkrMetalMaterialTableDevice **out_table);
 
 VkrMetalMaterialStatus
 vkr_metal_material_table_device_publish(VkrMetalMaterialTableDevice *table,

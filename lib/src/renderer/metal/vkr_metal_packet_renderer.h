@@ -161,11 +161,9 @@ typedef struct VkrMetalPacketResult {
   float32_t ibl_color[4];
   bool8_t has_ibl_color;
   float32_t ibl_prefilter[VKR_IBL_PREFILTER_MIP_COUNT][4];
-  float32_t ibl_brdf[4];
   uint32_t ibl_irradiance_size;
   uint32_t ibl_prefilter_size;
   uint32_t ibl_prefilter_mip_count;
-  uint32_t ibl_brdf_size;
   bool8_t has_ibl_convolution;
   uint32_t pipeline_count;
   uint32_t pass_timing_count;

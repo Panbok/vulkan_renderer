@@ -1,7 +1,6 @@
 /* Immutable mesh/material/texture publication, lookup, and retirement. */
-static bool8_t
-vkr_metal_packet_sampler_key_equal(const VkrMetalPacketSamplerKey *a,
-                                   const VkrMetalPacketSamplerKey *b) {
+vkr_internal bool8_t vkr_metal_packet_sampler_key_equal(
+    const VkrMetalPacketSamplerKey *a, const VkrMetalPacketSamplerKey *b) {
   return a->u_repeat_mode == b->u_repeat_mode &&
          a->v_repeat_mode == b->v_repeat_mode &&
          a->w_repeat_mode == b->w_repeat_mode &&
@@ -11,7 +10,7 @@ vkr_metal_packet_sampler_key_equal(const VkrMetalPacketSamplerKey *a,
          a->anisotropy_enable == b->anisotropy_enable;
 }
 
-static MTLSamplerAddressMode
+vkr_internal MTLSamplerAddressMode
 vkr_metal_packet_sampler_address(VkrTextureRepeatMode mode) {
   switch (mode) {
   case VKR_TEXTURE_REPEAT_MODE_REPEAT:
@@ -27,7 +26,7 @@ vkr_metal_packet_sampler_address(VkrTextureRepeatMode mode) {
   }
 }
 
-static id<MTLSamplerState>
+vkr_internal id<MTLSamplerState>
 vkr_metal_packet_sampler(VkrMetalPacketRenderer *renderer,
                          const VkrTextureDescription *description,
                          uint32_t mip_level_count) API_AVAILABLE(macos(26.0)) {
@@ -98,7 +97,7 @@ vkr_metal_packet_sampler(VkrMetalPacketRenderer *renderer,
   return state;
 }
 
-static id<MTLSamplerState>
+vkr_internal id<MTLSamplerState>
 vkr_metal_packet_default_material_sampler(VkrMetalPacketRenderer *renderer,
                                           uint32_t mip_level_count)
     API_AVAILABLE(macos(26.0)) {
@@ -114,7 +113,7 @@ vkr_metal_packet_default_material_sampler(VkrMetalPacketRenderer *renderer,
   return vkr_metal_packet_sampler(renderer, &description, mip_level_count);
 }
 
-static bool8_t vkr_metal_packet_renderer_create_mesh_internal(
+vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
     VkrMetalPacketRenderer *renderer,
     const VkrMetalPacketMeshCreateInfo *create_info,
     VkrMeshHandle requested_handle, VkrMeshHandle *out_handle) {
@@ -333,12 +332,20 @@ bool8_t vkr_metal_packet_renderer_publish_geometry(
       (geometry->index_size != sizeof(uint16_t) &&
        geometry->index_size != sizeof(uint32_t)))
     return false_v;
+  /* Scratch widening buffers for 2D vertices and 16-bit indices. Owned by the
+     renderer allocator rather than libc so a publication burst is visible in
+     the renderer memory tag; both are released on every exit path below. */
   VkrVertex3d *converted_vertices = NULL;
   uint32_t *converted_indices = NULL;
+  const uint64_t converted_vertices_bytes =
+      (uint64_t)geometry->vertex_count * sizeof(*converted_vertices);
+  const uint64_t converted_indices_bytes =
+      (uint64_t)geometry->index_count * sizeof(*converted_indices);
   const VkrVertex3d *vertices = geometry->vertices;
   const uint32_t *indices = geometry->indices;
   if (geometry->vertex_size == sizeof(VkrVertex2d)) {
-    converted_vertices = calloc(geometry->vertex_count, sizeof(*vertices));
+    converted_vertices = vkr_metal_packet_alloc_zeroed(
+        renderer->allocator, converted_vertices_bytes);
     if (!converted_vertices)
       return false_v;
     const VkrVertex2d *source = geometry->vertices;
@@ -354,9 +361,11 @@ bool8_t vkr_metal_packet_renderer_publish_geometry(
     vertices = converted_vertices;
   }
   if (geometry->index_size == sizeof(uint16_t)) {
-    converted_indices = calloc(geometry->index_count, sizeof(*indices));
+    converted_indices = vkr_metal_packet_alloc_zeroed(renderer->allocator,
+                                                      converted_indices_bytes);
     if (!converted_indices) {
-      free(converted_vertices);
+      vkr_metal_packet_free_sized(renderer->allocator, converted_vertices,
+                                  converted_vertices_bytes);
       return false_v;
     }
     const uint16_t *source = geometry->indices;
@@ -378,8 +387,10 @@ bool8_t vkr_metal_packet_renderer_publish_geometry(
                              requested, &published) &&
                          published.id == requested.id &&
                          published.generation == requested.generation;
-  free(converted_indices);
-  free(converted_vertices);
+  vkr_metal_packet_free_sized(renderer->allocator, converted_indices,
+                              converted_indices_bytes);
+  vkr_metal_packet_free_sized(renderer->allocator, converted_vertices,
+                              converted_vertices_bytes);
   return passed;
 }
 
@@ -935,11 +946,10 @@ bool8_t vkr_metal_packet_renderer_update_texture_sampler(
   return true_v;
 }
 
-static bool8_t
-vkr_metal_packet_validate_ibl_textures(const VkrMetalPacketTexture *source,
-                                       const VkrMetalPacketTexture *irradiance,
-                                       const VkrMetalPacketTexture *prefilter)
-    API_AVAILABLE(macos(26.0)) {
+vkr_internal bool8_t vkr_metal_packet_validate_ibl_textures(
+    const VkrMetalPacketTexture *source,
+    const VkrMetalPacketTexture *irradiance,
+    const VkrMetalPacketTexture *prefilter) API_AVAILABLE(macos(26.0)) {
   if (!source || !irradiance || !prefilter || source == irradiance ||
       source == prefilter || irradiance == prefilter) {
     return false_v;
@@ -1326,8 +1336,8 @@ vkr_metal_packet_renderer_destroy_texture(VkrMetalPacketRenderer *renderer,
   return true_v;
 }
 
-static bool8_t vkr_metal_packet_ibl_source(const VkrRenderPacket *packet,
-                                           VkrTextureHandle *out_source) {
+vkr_internal bool8_t vkr_metal_packet_ibl_source(const VkrRenderPacket *packet,
+                                                 VkrTextureHandle *out_source) {
   if (!packet || !out_source)
     return false_v;
   *out_source = VKR_TEXTURE_HANDLE_INVALID;
@@ -1339,9 +1349,8 @@ static bool8_t vkr_metal_packet_ibl_source(const VkrRenderPacket *packet,
   return out_source->id != 0;
 }
 
-static bool8_t
-vkr_metal_packet_ibl_needs_bake(const VkrMetalPacketRenderer *renderer,
-                                const VkrRenderPacket *packet) {
+vkr_internal bool8_t vkr_metal_packet_ibl_needs_bake(
+    const VkrMetalPacketRenderer *renderer, const VkrRenderPacket *packet) {
   VkrTextureHandle source = VKR_TEXTURE_HANDLE_INVALID;
   if (!renderer || !vkr_metal_packet_ibl_source(packet, &source))
     return false_v;
@@ -1351,14 +1360,13 @@ vkr_metal_packet_ibl_needs_bake(const VkrMetalPacketRenderer *renderer,
              : false_v;
 }
 
-static VkrMetalPacketTexture *
+vkr_internal VkrMetalPacketTexture *
 vkr_metal_packet_resolve_texture(VkrMetalPacketRenderer *renderer,
                                  VkrTextureHandle handle);
 
-static bool8_t
-vkr_metal_packet_prepare_upload(VkrMetalPacketRenderer *renderer,
-                                const VkrRenderPacket *packet,
-                                VkrMetalPacketFrameUpload *upload) {
+vkr_internal bool8_t vkr_metal_packet_prepare_upload(
+    VkrMetalPacketRenderer *renderer, const VkrRenderPacket *packet,
+    VkrMetalPacketFrameUpload *upload) {
   MemZero(upload, sizeof(*upload));
   const uint32_t world_count =
       packet->world ? packet->world->instance_count : 0;

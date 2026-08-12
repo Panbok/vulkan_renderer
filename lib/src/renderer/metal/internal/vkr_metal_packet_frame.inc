@@ -1,7 +1,7 @@
 /* Per-frame upload preparation, pass encoding, submission, and failure
  * rollback. */
-static void *vkr_metal_packet_next_root(VkrMetalPacketFrameUpload *upload,
-                                        uint64_t *out_gpu_address) {
+vkr_internal void *vkr_metal_packet_next_root(VkrMetalPacketFrameUpload *upload,
+                                              uint64_t *out_gpu_address) {
   if (!upload || upload->root_cursor >= upload->root_capacity)
     return NULL;
   const uint64_t offset =
@@ -12,7 +12,7 @@ static void *vkr_metal_packet_next_root(VkrMetalPacketFrameUpload *upload,
   return root;
 }
 
-static VkrMetalPacketMesh *
+vkr_internal VkrMetalPacketMesh *
 vkr_metal_packet_resolve_mesh(VkrMetalPacketRenderer *renderer,
                               VkrMeshHandle handle) {
   if (!renderer || handle.id == 0 || handle.id > renderer->max_meshes)
@@ -21,7 +21,7 @@ vkr_metal_packet_resolve_mesh(VkrMetalPacketRenderer *renderer,
   return mesh->live && mesh->generation == handle.generation ? mesh : NULL;
 }
 
-static VkrMetalPacketMaterial *
+vkr_internal VkrMetalPacketMaterial *
 vkr_metal_packet_resolve_material(VkrMetalPacketRenderer *renderer,
                                   VkrMaterialHandle handle) {
   if (!renderer || handle.id == 0 || handle.id > renderer->max_materials)
@@ -31,7 +31,7 @@ vkr_metal_packet_resolve_material(VkrMetalPacketRenderer *renderer,
                                                                      : NULL;
 }
 
-static VkrMetalPacketTexture *
+vkr_internal VkrMetalPacketTexture *
 vkr_metal_packet_resolve_texture(VkrMetalPacketRenderer *renderer,
                                  VkrTextureHandle handle) {
   if (!renderer || handle.id == 0 || handle.id > renderer->max_textures)
@@ -41,7 +41,7 @@ vkr_metal_packet_resolve_texture(VkrMetalPacketRenderer *renderer,
                                                                    : NULL;
 }
 
-static bool8_t vkr_metal_packet_encode_draws(
+vkr_internal bool8_t vkr_metal_packet_encode_draws(
     VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
     id<MTLRenderPipelineState> pipeline, id<MTLDepthStencilState> depth_state,
     const VkrDrawItem *draws, uint32_t draw_count, uint64_t instances_gpu,
@@ -67,6 +67,8 @@ static bool8_t vkr_metal_packet_encode_draws(
   [encoder setRenderPipelineState:pipeline];
   const Mat4 slang_view_projection =
       vkr_metal_packet_slang_draw_matrix(view_projection);
+  const VkrPacketFrameConstants frame =
+      vkr_packet_derive_frame_constants(packet, target_width, target_height);
   for (uint32_t i = 0; i < draw_count; ++i) {
     const VkrDrawItem *draw = &draws[i];
     if (draw->instance_count == 0 || draw->first_instance > instance_count ||
@@ -110,6 +112,14 @@ static bool8_t vkr_metal_packet_encode_draws(
                 upload->root_cursor, upload->root_capacity);
       return false_v;
     }
+    /* Frame and material scalars come from the shared backend-neutral
+       derivation so this lowering cannot drift from the Vulkan one. Everything
+       else here is genuinely Metal-specific: GPU addresses, MTLResourceID
+       texture references, and the IBL-enabled predicate. */
+    const VkrPacketMaterialConstants material_constants =
+        vkr_packet_derive_material_constants(
+            &material->pbr, material->alpha_cutoff, material->alpha_mode,
+            transmission_pass);
     *root = (VkrMetalPacketDrawRoot){
         .vertices = mesh->vertices.gpu_address,
         .instances = instances_gpu,
@@ -118,100 +128,47 @@ static bool8_t vkr_metal_packet_encode_draws(
             vkr_metal_material_table_device_gpu_address(renderer->materials),
         .irradiance_texture_id = renderer->ibl_irradiance.resource_id,
         .prefilter_texture_id = renderer->ibl_prefilter.resource_id,
-        .brdf_texture_id = renderer->ibl_brdf.resource_id,
-        .view_position = (Vec4){packet->globals.view_position.x,
-                                packet->globals.view_position.y,
-                                packet->globals.view_position.z, 1.0f},
         .material_index = material->row_index,
         .first_instance = draw->first_instance,
-        .prefilter_mip_count = VKR_IBL_PREFILTER_MIP_COUNT,
         .flags = ibl_enabled ? 1u : 0u,
-        .material_emissive = (Vec4){material->pbr.emissive_factor.x,
-                                    material->pbr.emissive_factor.y,
-                                    material->pbr.emissive_factor.z, 0.0f},
-        .material_dielectric_specular =
-            (Vec4){material->pbr.dielectric_specular.x,
-                   material->pbr.dielectric_specular.y,
-                   material->pbr.dielectric_specular.z,
-                   transmission_pass ? 1.0f : 0.0f},
-        .material_surface =
-            (Vec4){material->pbr.metallic, material->pbr.roughness,
-                   material->pbr.normal_scale,
-                   material->pbr.occlusion_strength},
-        .material_alpha =
-            (Vec4){material->alpha_cutoff, material->pbr.transmission_factor,
-                   material->pbr.ior, material->pbr.thickness_factor},
-        .ibl_controls =
-            packet->lighting
-                ? (Vec4){packet->lighting->ibl_intensity,
-                         packet->lighting->ibl_diffuse_intensity,
-                         packet->lighting->ibl_specular_intensity,
-                         1.0f / (float32_t)target_width}
-                : (Vec4){1.0f, 1.0f, 1.0f, 1.0f / (float32_t)target_width},
-        .directional_direction_enabled =
-            packet->lighting
-                ? (Vec4){packet->lighting->directional_direction.x,
-                         packet->lighting->directional_direction.y,
-                         packet->lighting->directional_direction.z,
-                         packet->lighting->directional_enabled ? 1.0f : 0.0f}
-                : vec4_zero(),
-        .directional_color_intensity =
-            packet->lighting ? (Vec4){packet->lighting->directional_color.x,
-                                      packet->lighting->directional_color.y,
-                                      packet->lighting->directional_color.z,
-                                      packet->lighting->directional_intensity}
-                             : vec4_zero(),
-        .ambient_color = {packet->globals.ambient_color.x,
-                          packet->globals.ambient_color.y,
-                          packet->globals.ambient_color.z,
-                          1.0f / (float32_t)target_height},
-        .render_mode = packet->globals.render_mode,
-        .alpha_mode = material->alpha_mode,
         .material_flags =
             packet->lighting && packet->lighting->ibl_enabled ? 1u : 0u,
         .reserved = 0u,
         .point_light_data = upload->point_light_data_gpu,
         .point_light_masks = upload->point_light_masks_gpu,
-        .point_light_grid_origin_cell_size =
-            packet->lighting && packet->lighting->point_light_count > 0
-                ? (Vec4){packet->lighting->point_light_grid->origin.x,
-                         packet->lighting->point_light_grid->origin.y,
-                         packet->lighting->point_light_grid->origin.z,
-                         packet->lighting->point_light_grid->cell_size}
-                : vec4_zero(),
-        .point_light_grid_dimensions_count =
-            {packet->lighting && packet->lighting->point_light_count > 0
-                 ? packet->lighting->point_light_grid->dimensions[0]
-                 : 0,
-             packet->lighting && packet->lighting->point_light_count > 0
-                 ? packet->lighting->point_light_grid->dimensions[1]
-                 : 0,
-             packet->lighting && packet->lighting->point_light_count > 0
-                 ? packet->lighting->point_light_grid->dimensions[2]
-                 : 0,
-             packet->lighting && packet->lighting->point_light_count > 0
-                 ? packet->lighting->point_light_grid->cell_count
-                 : 0},
-        .point_light_global_mask =
-            packet->lighting && packet->lighting->point_light_count > 0
-                ? packet->lighting->point_light_grid->global_mask
-                : (VkrPointLightMask){0},
-        .point_light_count =
-            packet->lighting ? packet->lighting->point_light_count : 0,
         .shadow_texture_id = upload->shadow_texture_id,
         .shadow_cascades = upload->shadow_cascades_gpu,
-        .view = packet->globals.view,
-        .shadow_cascade_count =
-            packet->shadow ? packet->shadow->cascade_count : 0,
-        .shadow_bias = 0.0001f,
         .transmission_texture_id = upload->transmission_texture_id,
-        .material_attenuation_color = {material->pbr.attenuation_color.x,
-                                       material->pbr.attenuation_color.y,
-                                       material->pbr.attenuation_color.z,
-                                       material->pbr.attenuation_distance},
         .ibl_probes = upload->ibl_probes_gpu,
         .ibl_probe_count =
             packet->lighting ? packet->lighting->ibl_probe_count : 0,
+
+        .view_position = frame.view_position,
+        .prefilter_mip_count = frame.prefilter_mip_count,
+        .ibl_controls = frame.ibl_controls,
+        .directional_direction_enabled = frame.directional_direction_enabled,
+        .directional_color_intensity = frame.directional_color_intensity,
+        .ambient_color = frame.ambient_color,
+        .render_mode = frame.render_mode,
+        .point_light_grid_origin_cell_size =
+            frame.point_light_grid_origin_cell_size,
+        .point_light_grid_dimensions_count =
+            {frame.point_light_grid_dimensions_count[0],
+             frame.point_light_grid_dimensions_count[1],
+             frame.point_light_grid_dimensions_count[2],
+             frame.point_light_grid_dimensions_count[3]},
+        .point_light_global_mask = frame.point_light_global_mask,
+        .point_light_count = frame.point_light_count,
+        .view = frame.view,
+        .shadow_cascade_count = frame.shadow_cascade_count,
+        .shadow_bias = frame.shadow_bias,
+
+        .material_emissive = material_constants.emissive,
+        .material_dielectric_specular = material_constants.dielectric_specular,
+        .material_surface = material_constants.surface,
+        .material_alpha = material_constants.alpha,
+        .material_attenuation_color = material_constants.attenuation_color,
+        .alpha_mode = material_constants.alpha_mode,
     };
     [renderer->argument_table setAddress:root_gpu atIndex:0];
     [renderer->argument_table setAddress:root_gpu atIndex:1];
@@ -236,7 +193,7 @@ static bool8_t vkr_metal_packet_encode_draws(
   return true_v;
 }
 
-static bool8_t vkr_metal_packet_encode_text_draws(
+vkr_internal bool8_t vkr_metal_packet_encode_text_draws(
     VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
     id<MTLRenderPipelineState> pipeline, id<MTLDepthStencilState> depth_state,
     const VkrPreparedTextDraw *draws, uint32_t draw_count,
@@ -295,7 +252,7 @@ static bool8_t vkr_metal_packet_encode_text_draws(
   return true_v;
 }
 
-static bool8_t vkr_metal_packet_encode_tonemap(
+vkr_internal bool8_t vkr_metal_packet_encode_tonemap(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrRenderPacket *packet, id<MTL4RenderCommandEncoder> encoder,
     VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
@@ -327,7 +284,7 @@ static bool8_t vkr_metal_packet_encode_tonemap(
   return true_v;
 }
 
-static bool8_t vkr_metal_packet_encode_skybox(
+vkr_internal bool8_t vkr_metal_packet_encode_skybox(
     VkrMetalPacketRenderer *renderer, const VkrRenderPacket *packet,
     id<MTL4RenderCommandEncoder> encoder, uint32_t target_width,
     uint32_t target_height, VkrMetalPacketFrameUpload *upload,
@@ -369,7 +326,7 @@ static bool8_t vkr_metal_packet_encode_skybox(
   return true_v;
 }
 
-static bool8_t vkr_metal_packet_encode_ibl(
+vkr_internal bool8_t vkr_metal_packet_encode_ibl(
     VkrMetalPacketRenderer *renderer, const VkrRenderPacket *packet,
     id<MTL4ComputeCommandEncoder> encoder, VkrMetalPacketFrameUpload *upload,
     VkrMetalPacketResult *result) API_AVAILABLE(macos(26.0)) {
@@ -427,29 +384,13 @@ static bool8_t vkr_metal_packet_encode_ibl(
     result->ibl_dispatch_count++;
   }
 
-  VkrMetalPacketBrdfRoot *brdf_root =
-      vkr_metal_packet_next_root(upload, &root_gpu);
-  if (!brdf_root)
-    return false_v;
-  *brdf_root = (VkrMetalPacketBrdfRoot){
-      .target_texture_id = renderer->ibl_brdf.resource_id,
-      .sample_count = 512,
-      .target_size = VKR_IBL_BRDF_SIZE,
-  };
-  [renderer->argument_table setAddress:root_gpu atIndex:0];
-  [encoder setComputePipelineState:renderer->ibl_brdf_pipeline];
-  [encoder setArgumentTable:renderer->argument_table];
-  [encoder dispatchThreads:MTLSizeMake(VKR_IBL_BRDF_SIZE, VKR_IBL_BRDF_SIZE, 1)
-      threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
-  result->ibl_dispatch_count++;
-
   const uint64_t pending_submit = renderer->submit_value + 1;
   source->last_use_submit_value = pending_submit;
   renderer->ibl_last_use_submit_value = pending_submit;
   return true_v;
 }
 
-static bool8_t vkr_metal_packet_encode_pass_body(
+vkr_internal bool8_t vkr_metal_packet_encode_pass_body(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrRenderPacket *packet, id<MTL4RenderCommandEncoder> encoder,
     VkrMetalPacketFrameUpload *upload, VkrMetalPacketResult *result)
@@ -721,10 +662,9 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   }
   const uint64_t ibl_capture_offset = picking ? 16 : 8;
   const uint64_t ibl_prefilter_capture_offset = ibl_capture_offset + 8;
-  const uint64_t ibl_brdf_capture_offset =
-      ibl_prefilter_capture_offset + VKR_IBL_PREFILTER_MIP_COUNT * 8u;
   const uint64_t probe_size =
-      ibl ? ibl_brdf_capture_offset + 8 : ibl_capture_offset;
+      ibl ? ibl_prefilter_capture_offset + VKR_IBL_PREFILTER_MIP_COUNT * 8u
+          : ibl_capture_offset;
   VkrMetalPacketCapturePlan capture_plans[VKR_CAPTURE_MAX_ITEMS] = {0};
   VkrCaptureBackendItemPlan capture_ring_plans[VKR_CAPTURE_MAX_ITEMS] = {0};
   uint32_t capture_count = 0;
@@ -1012,19 +952,6 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
             destinationBytesPerImage:8
                              options:MTLBlitOptionNone];
       }
-      [capture_encoder copyFromTexture:(id<MTLTexture>)
-                                           renderer->ibl_brdf.metal_texture
-                           sourceSlice:0
-                           sourceLevel:0
-                          sourceOrigin:MTLOriginMake(VKR_IBL_BRDF_SIZE / 2u,
-                                                     VKR_IBL_BRDF_SIZE / 2u, 0)
-                            sourceSize:MTLSizeMake(1, 1, 1)
-                              toBuffer:(id<MTLBuffer>)readback_object
-                     destinationOffset:readback_slice.offset +
-                                       ibl_brdf_capture_offset
-                destinationBytesPerRow:8
-              destinationBytesPerImage:8
-                               options:MTLBlitOptionNone];
     }
     for (uint32_t i = 0; passed && i < capture_count; ++i) {
       const VkrMetalPacketCapturePlan *plan = &capture_plans[i];
@@ -1148,13 +1075,9 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
                                           mip * 8u,
                                       out_result->ibl_prefilter[mip]);
       }
-      vkr_metal_packet_decode_half4((uint8_t *)readback.cpu_address +
-                                        ibl_brdf_capture_offset,
-                                    out_result->ibl_brdf);
       out_result->ibl_irradiance_size = VKR_IBL_IRRADIANCE_SIZE;
       out_result->ibl_prefilter_size = VKR_IBL_PREFILTER_SIZE;
       out_result->ibl_prefilter_mip_count = VKR_IBL_PREFILTER_MIP_COUNT;
-      out_result->ibl_brdf_size = VKR_IBL_BRDF_SIZE;
       out_result->has_ibl_color = true_v;
       out_result->has_ibl_convolution = true_v;
     }

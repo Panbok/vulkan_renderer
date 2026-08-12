@@ -10,6 +10,8 @@
 #include "core/logger.h"
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
+#include "memory/vkr_dmemory.h"
+#include "memory/vkr_dmemory_allocator.h"
 #include "renderer/metal/internal/vkr_metal_packet_waits.h"
 #include "renderer/metal/vkr_metal_dependency.h"
 #include "renderer/metal/vkr_metal_packet_abi.h"
@@ -17,6 +19,7 @@
 #include "renderer/systems/vkr_texture_system.h"
 #include "renderer/vkr_capture_ring.h"
 #include "renderer/vkr_ibl_math.h"
+#include "renderer/vkr_packet_constants.h"
 #include "renderer/vkr_render_graph_internal.h"
 #include "renderer/vkr_renderer_metrics.h"
 #include "renderer/vkr_rg_json.h"
@@ -43,10 +46,11 @@ _Static_assert(VKR_TEXTURE_MAX_DIMENSION ==
                    (1u << (VKR_METAL_PACKET_MAX_TEXTURE_MIPS - 1u)),
                "Metal sampler mip-domain bound must match texture limits");
 
-static uint64_t vkr_metal_packet_align_up(uint64_t value, uint64_t alignment);
+vkr_internal uint64_t vkr_metal_packet_align_up(uint64_t value,
+                                                uint64_t alignment);
 
 /** Converts the renderer's Vulkan-oriented clip-Y convention to Metal. */
-static Mat4 vkr_metal_packet_clip_matrix(bool8_t convert, Mat4 matrix) {
+vkr_internal Mat4 vkr_metal_packet_clip_matrix(bool8_t convert, Mat4 matrix) {
   if (!convert)
     return matrix;
   matrix.elements[1] = -matrix.elements[1];
@@ -114,7 +118,7 @@ typedef struct VkrMetalPacketTexture {
   bool8_t live;
 } VkrMetalPacketTexture;
 
-static VkrMetalPacketTexture *
+vkr_internal VkrMetalPacketTexture *
 vkr_metal_packet_resolve_texture(VkrMetalPacketRenderer *renderer,
                                  VkrTextureHandle handle);
 
@@ -178,6 +182,18 @@ struct VkrMetalPacketRenderer {
   VkrMetalMaterialTableDevice *materials;
   VkrCaptureRing capture_ring;
   void *capture_storage;
+  /**
+   * The capture ring is sized by capture_max_batch_bytes times the ring
+   * capacity and reaches ~96 MiB at the production defaults — far larger than
+   * the renderer arena, which is sized for per-frame graph work. It therefore
+   * gets its own reservation, exactly as the bindless Vulkan renderer does,
+   * instead of displacing every other renderer allocation.
+   */
+  VkrDMemory capture_storage_memory;
+  VkrAllocator capture_storage_allocator;
+  /** Backs every fixed-capacity record array; see the helpers below. */
+  VkrDMemory record_memory;
+  VkrAllocator record_allocator;
   VkrMetalPacketImage *images;
   VkrMetalPacketMesh *meshes;
   VkrMetalPacketSubmeshCreateInfo *submeshes;
@@ -218,7 +234,6 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> ibl_irradiance_pipeline;
   id<MTLComputePipelineState> ibl_equirect_pipeline;
   id<MTLComputePipelineState> ibl_prefilter_pipeline;
-  id<MTLComputePipelineState> ibl_brdf_pipeline;
   id<MTLDepthStencilState> depth_write_state;
   id<MTLDepthStencilState> depth_read_state;
   id<MTL4ArgumentTable> argument_table;
@@ -246,13 +261,102 @@ struct VkrMetalPacketRenderer {
   bool8_t pipeline_archive_written;
   VkrMetalTextureResource ibl_irradiance;
   VkrMetalTextureResource ibl_prefilter;
-  VkrMetalTextureResource ibl_brdf;
   VkrTextureHandle ibl_source;
   uint64_t ibl_last_use_submit_value;
   bool8_t ibl_live;
   bool8_t ibl_ready;
   bool8_t synchronous_validation_readback;
 };
+
+/*
+ * The fixed-capacity record arrays are owned by the engine rather than libc, so
+ * their bytes enter the tagging and leak accounting ADR-006 and ADR-015 rely
+ * on.
+ *
+ * They share one dedicated VkrDMemory reservation instead of the renderer
+ * arena. The reason is size: max_meshes * max_submeshes_per_mesh is 16384 *
+ * 512, so the submesh array alone is 96 MiB at the production defaults — larger
+ * than the whole renderer arena, which is sized for per-frame graph work.
+ * calloc hid this because the pages stayed untouched and therefore unbacked; a
+ * committing allocator cannot. One reservation keeps the previous memory
+ * behaviour, keeps these arrays from displacing every other renderer
+ * allocation, and collapses teardown to a single destroy.
+ *
+ * The worst-case submesh product is the real problem and is worth revisiting;
+ * that is a capacity decision, not a plumbing one, and is deliberately not made
+ * here.
+ */
+vkr_internal void *vkr_metal_packet_alloc_zeroed(VkrAllocator *allocator,
+                                                 uint64_t size) {
+  if (!size)
+    return NULL;
+  void *memory =
+      vkr_allocator_alloc(allocator, size, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  if (memory)
+    MemZero(memory, size);
+  return memory;
+}
+
+vkr_internal void vkr_metal_packet_free_sized(VkrAllocator *allocator,
+                                              void *memory, uint64_t size) {
+  if (memory && size)
+    vkr_allocator_free(allocator, memory, size,
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+}
+
+/** Tagged suballocation from the shared record reservation. */
+vkr_internal void *vkr_metal_packet_record_alloc(VkrAllocator *records,
+                                                 uint64_t size, bool8_t zero) {
+  if (!size)
+    return NULL;
+  void *memory =
+      vkr_allocator_alloc(records, size, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  if (memory && zero)
+    MemZero(memory, size);
+  return memory;
+}
+
+vkr_internal bool8_t vkr_metal_packet_record_size_add(uint64_t *total,
+                                                      uint64_t bytes) {
+  if (!total || bytes > UINT64_MAX - (KB(4) - 1u))
+    return false_v;
+  const uint64_t aligned = AlignPow2(bytes, KB(4));
+  if (aligned < bytes || aligned > UINT64_MAX - KB(4) ||
+      *total > UINT64_MAX - aligned - KB(4))
+    return false_v;
+  *total += aligned + KB(4);
+  return true_v;
+}
+
+#define VKR_METAL_PACKET_ARRAY_BYTES(NAME, MEMBER, COUNT_EXPR)                 \
+  vkr_internal uint64_t NAME(const VkrMetalPacketRenderer *renderer) {         \
+    return (uint64_t)(COUNT_EXPR) * sizeof(*renderer->MEMBER);                 \
+  }
+
+VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_images_bytes, images,
+                             renderer->max_images)
+VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_meshes_bytes, meshes,
+                             renderer->max_meshes)
+VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_submeshes_bytes, submeshes,
+                             (uint64_t)renderer->max_meshes *
+                                 renderer->max_submeshes_per_mesh)
+VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_materials_bytes, packet_materials,
+                             renderer->max_materials)
+VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_textures_bytes, textures,
+                             renderer->max_textures)
+VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_samplers_bytes, samplers,
+                             renderer->max_samplers)
+VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_text_uploads_bytes, text_uploads,
+                             renderer->max_draws)
+VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_render_passes_bytes,
+                             render_passes, renderer->max_passes)
+VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_command_slots_bytes,
+                             command_slots, renderer->command_slot_count)
+VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_timing_results_bytes,
+                             completed_timing_results,
+                             renderer->command_slot_count)
+
+#undef VKR_METAL_PACKET_ARRAY_BYTES
 
 /*
  * Private implementation units remain one Objective-C translation unit. This

@@ -192,7 +192,6 @@ if(APPLE)
         "${VKR_METAL_PACKET_SHADER_DIR}/ibl/equirect_to_cube.metal"
         "${VKR_METAL_PACKET_SHADER_DIR}/ibl/diffuse_convolution.metal"
         "${VKR_METAL_PACKET_SHADER_DIR}/ibl/specular_prefilter.metal"
-        "${VKR_METAL_PACKET_SHADER_DIR}/ibl/brdf_lut.metal"
         "${VKR_METAL_PACKET_SHADER_DIR}/text/default.metal"
         "${VKR_METAL_PACKET_SHADER_DIR}/skybox/default.metal"
         "${VKR_METAL_PACKET_SHADER_DIR}/post/tonemap.metal")

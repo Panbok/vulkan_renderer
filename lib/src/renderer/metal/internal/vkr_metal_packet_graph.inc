@@ -1,13 +1,14 @@
 /* Render-graph resources, dependency lowering, pass descriptors, and capture
  * plans. */
-static void vkr_metal_packet_noop(VkrRgPassContext *ctx, void *user_data) {
+vkr_internal void vkr_metal_packet_noop(VkrRgPassContext *ctx,
+                                        void *user_data) {
   (void)ctx;
   (void)user_data;
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_metal_packet_register_executors(VkrMetalPacketRenderer *renderer) {
-  static const char *names[] = {
+  vkr_local_persist const char *names[] = {
       "pass.shadow.cascade",
       "pass.picking",
       "pass.picking.readback",
@@ -34,7 +35,8 @@ vkr_metal_packet_register_executors(VkrMetalPacketRenderer *renderer) {
   return true_v;
 }
 
-static MTLPixelFormat vkr_metal_packet_pixel_format(VkrTextureFormat format) {
+vkr_internal MTLPixelFormat
+vkr_metal_packet_pixel_format(VkrTextureFormat format) {
   switch (format) {
   case VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM:
     return MTLPixelFormatRGBA8Unorm;
@@ -87,7 +89,7 @@ static MTLPixelFormat vkr_metal_packet_pixel_format(VkrTextureFormat format) {
   }
 }
 
-static MTLPixelFormat
+vkr_internal MTLPixelFormat
 vkr_metal_packet_target_pixel_format(const VkrMetalPacketRenderer *renderer) {
   if (renderer->target_kind == VKR_METAL_PACKET_TARGET_WINDOW)
     return renderer->srgb_output ? MTLPixelFormatBGRA8Unorm_sRGB
@@ -96,7 +98,7 @@ vkr_metal_packet_target_pixel_format(const VkrMetalPacketRenderer *renderer) {
                                : MTLPixelFormatRGBA8Unorm;
 }
 
-static MTLTextureUsage
+vkr_internal MTLTextureUsage
 vkr_metal_packet_texture_usage(VkrTextureUsageFlags usage) {
   MTLTextureUsage result = MTLTextureUsageUnknown;
   if (usage.set & VKR_TEXTURE_USAGE_SAMPLED)
@@ -109,18 +111,17 @@ vkr_metal_packet_texture_usage(VkrTextureUsageFlags usage) {
   return result;
 }
 
-static bool8_t vkr_metal_packet_image_desc_equal(const VkrRgImageDesc *a,
-                                                 const VkrRgImageDesc *b) {
+vkr_internal bool8_t vkr_metal_packet_image_desc_equal(
+    const VkrRgImageDesc *a, const VkrRgImageDesc *b) {
   return a->width == b->width && a->height == b->height &&
          a->format == b->format && a->usage.set == b->usage.set &&
          a->samples == b->samples && a->layers == b->layers &&
          a->mip_levels == b->mip_levels && a->type == b->type;
 }
 
-static bool8_t vkr_metal_packet_create_image(VkrMetalPacketRenderer *renderer,
-                                             const VkrRgImage *image,
-                                             VkrMetalPacketImage *slot)
-    API_AVAILABLE(macos(26.0)) {
+vkr_internal bool8_t vkr_metal_packet_create_image(
+    VkrMetalPacketRenderer *renderer, const VkrRgImage *image,
+    VkrMetalPacketImage *slot) API_AVAILABLE(macos(26.0)) {
   const MTLPixelFormat format =
       vkr_metal_packet_pixel_format(image->desc.format);
   if (format == MTLPixelFormatInvalid || image->desc.width == 0 ||
@@ -156,7 +157,7 @@ static bool8_t vkr_metal_packet_create_image(VkrMetalPacketRenderer *renderer,
   return true_v;
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_metal_packet_realize_images(VkrMetalPacketRenderer *renderer) {
   if (renderer->graph->images.length > renderer->max_images)
     return false_v;
@@ -201,8 +202,9 @@ vkr_metal_packet_realize_images(VkrMetalPacketRenderer *renderer) {
   return true_v;
 }
 
-static id<MTLTexture> vkr_metal_packet_texture(VkrMetalPacketRenderer *renderer,
-                                               VkrRgImageHandle handle) {
+vkr_internal id<MTLTexture>
+vkr_metal_packet_texture(VkrMetalPacketRenderer *renderer,
+                         VkrRgImageHandle handle) {
   if (!vkr_rg_image_handle_valid(handle) || handle.id > renderer->max_images)
     return nil;
   VkrMetalPacketImage *slot = &renderer->images[handle.id - 1];
@@ -211,7 +213,7 @@ static id<MTLTexture> vkr_metal_packet_texture(VkrMetalPacketRenderer *renderer,
              : nil;
 }
 
-static id<MTLTexture>
+vkr_internal id<MTLTexture>
 vkr_metal_packet_named_texture(VkrMetalPacketRenderer *renderer,
                                const char *name) {
   for (uint64_t i = 0; i < renderer->graph->images.length; ++i) {
@@ -226,7 +228,7 @@ vkr_metal_packet_named_texture(VkrMetalPacketRenderer *renderer,
   return nil;
 }
 
-static bool8_t vkr_metal_packet_named_texture_info(
+vkr_internal bool8_t vkr_metal_packet_named_texture_info(
     VkrMetalPacketRenderer *renderer, const char *name,
     id<MTLTexture> *out_texture, VkrTextureFormat *out_format) {
   if (!renderer || !name || !out_texture || !out_format)
@@ -249,11 +251,12 @@ static bool8_t vkr_metal_packet_named_texture_info(
   return false_v;
 }
 
-static uint64_t vkr_metal_packet_align_up(uint64_t value, uint64_t alignment) {
+vkr_internal uint64_t vkr_metal_packet_align_up(uint64_t value,
+                                                uint64_t alignment) {
   return (value + alignment - 1) & ~(alignment - 1);
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_metal_packet_lighting_valid(const VkrFrameLighting *lighting) {
   if (!lighting)
     return true_v;
@@ -341,9 +344,8 @@ vkr_metal_packet_lighting_valid(const VkrFrameLighting *lighting) {
   return true_v;
 }
 
-static bool8_t
-vkr_metal_packet_text_draws_valid(const VkrPreparedTextDraw *draws,
-                                  uint32_t draw_count) {
+vkr_internal bool8_t vkr_metal_packet_text_draws_valid(
+    const VkrPreparedTextDraw *draws, uint32_t draw_count) {
   if (draw_count > 0 && !draws)
     return false_v;
   for (uint32_t i = 0; i < draw_count; ++i) {
@@ -363,7 +365,7 @@ vkr_metal_packet_text_draws_valid(const VkrPreparedTextDraw *draws,
   return true_v;
 }
 
-static bool8_t vkr_metal_packet_material_info_valid(
+vkr_internal bool8_t vkr_metal_packet_material_info_valid(
     const VkrMetalPacketMaterialCreateInfo *create_info) {
   if (!create_info || create_info->alpha_mode > VKR_MATERIAL_ALPHA_BLEND ||
       !isfinite(create_info->alpha_cutoff) ||
@@ -412,20 +414,18 @@ static bool8_t vkr_metal_packet_material_info_valid(
   return true_v;
 }
 
-static void vkr_metal_packet_decode_half4(const void *source,
-                                          float32_t destination[4]) {
+vkr_internal void vkr_metal_packet_decode_half4(const void *source,
+                                                float32_t destination[4]) {
   uint16_t encoded[4] = {0};
   MemCopy(encoded, source, sizeof(encoded));
   for (uint32_t i = 0; i < ArrayCount(encoded); ++i)
     destination[i] = vkr_float16_to_float32(encoded[i]);
 }
 
-static bool8_t vkr_metal_packet_capture_plan(VkrMetalPacketRenderer *renderer,
-                                             const VkrRenderPacket *packet,
-                                             uint64_t first_offset,
-                                             VkrMetalPacketCapturePlan *plans,
-                                             uint32_t *out_count,
-                                             uint64_t *out_size) {
+vkr_internal bool8_t vkr_metal_packet_capture_plan(
+    VkrMetalPacketRenderer *renderer, const VkrRenderPacket *packet,
+    uint64_t first_offset, VkrMetalPacketCapturePlan *plans,
+    uint32_t *out_count, uint64_t *out_size) {
   const VkrCaptureBatchRequest *request =
       packet->debug ? packet->debug->capture : NULL;
   if (!request) {
@@ -516,7 +516,7 @@ static bool8_t vkr_metal_packet_capture_plan(VkrMetalPacketRenderer *renderer,
   return true_v;
 }
 
-static void vkr_metal_packet_collect_pass_timings(
+vkr_internal void vkr_metal_packet_collect_pass_timings(
     VkrMetalPacketRenderer *renderer, id<MTL4CounterHeap> timestamp_heap,
     uint32_t entry_count, VkrMetalPacketResult *result)
     API_AVAILABLE(macos(26.0)) {
@@ -543,7 +543,7 @@ static void vkr_metal_packet_collect_pass_timings(
   }
 }
 
-static void
+vkr_internal void
 vkr_metal_packet_capture_fail_reserved(VkrMetalPacketRenderer *renderer,
                                        const VkrCaptureBatchRequest *request,
                                        VkrRendererError error) {
@@ -553,7 +553,7 @@ vkr_metal_packet_capture_fail_reserved(VkrMetalPacketRenderer *renderer,
   }
 }
 
-static MTLLoadAction
+vkr_internal MTLLoadAction
 vkr_metal_packet_load_action(VkrAttachmentLoadOp operation) {
   switch (operation) {
   case VKR_ATTACHMENT_LOAD_OP_LOAD:
@@ -566,13 +566,13 @@ vkr_metal_packet_load_action(VkrAttachmentLoadOp operation) {
   }
 }
 
-static MTLStoreAction
+vkr_internal MTLStoreAction
 vkr_metal_packet_store_action(VkrAttachmentStoreOp operation) {
   return operation == VKR_ATTACHMENT_STORE_OP_STORE ? MTLStoreActionStore
                                                     : MTLStoreActionDontCare;
 }
 
-static bool8_t vkr_metal_packet_configure_render_pass(
+vkr_internal bool8_t vkr_metal_packet_configure_render_pass(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrRenderPacket *packet, MTL4RenderPassDescriptor *descriptor)
     API_AVAILABLE(macos(26.0)) {
@@ -640,7 +640,7 @@ static bool8_t vkr_metal_packet_configure_render_pass(
              : false_v;
 }
 
-static bool8_t vkr_metal_packet_encode_dependency(
+vkr_internal bool8_t vkr_metal_packet_encode_dependency(
     id<MTL4CommandEncoder> encoder, const VkrGpuDependency *dependency,
     bool8_t producer) API_AVAILABLE(macos(26.0)) {
   VkrMetalDependency lowered = {0};
@@ -650,10 +650,9 @@ static bool8_t vkr_metal_packet_encode_dependency(
                   : vkr_metal_dependency_encode_consumer(encoder, &lowered);
 }
 
-static bool8_t vkr_metal_packet_encode_consumers(id<MTL4CommandEncoder> encoder,
-                                                 const VkrRgPass *pass,
-                                                 uint32_t *dependency_count)
-    API_AVAILABLE(macos(26.0)) {
+vkr_internal bool8_t vkr_metal_packet_encode_consumers(
+    id<MTL4CommandEncoder> encoder, const VkrRgPass *pass,
+    uint32_t *dependency_count) API_AVAILABLE(macos(26.0)) {
   for (uint64_t i = 0; i < pass->pre_image_barriers.length; ++i) {
     const VkrRgImageBarrier *barrier =
         vector_get_VkrRgImageBarrier(&pass->pre_image_barriers, i);
@@ -677,8 +676,8 @@ static bool8_t vkr_metal_packet_encode_consumers(id<MTL4CommandEncoder> encoder,
   return true_v;
 }
 
-static bool8_t vkr_metal_packet_has_in_edge(const VkrRgPass *pass,
-                                            uint32_t producer_index) {
+vkr_internal bool8_t vkr_metal_packet_has_in_edge(const VkrRgPass *pass,
+                                                  uint32_t producer_index) {
   for (uint64_t i = 0; i < pass->in_edges.length; ++i) {
     const uint32_t *edge = vector_get_uint32_t(&pass->in_edges, i);
     if (edge && *edge == producer_index)
@@ -687,8 +686,8 @@ static bool8_t vkr_metal_packet_has_in_edge(const VkrRgPass *pass,
   return false_v;
 }
 
-static bool8_t vkr_metal_packet_pass_uses_image(const VkrRgPass *pass,
-                                                VkrRgImageHandle image) {
+vkr_internal bool8_t vkr_metal_packet_pass_uses_image(const VkrRgPass *pass,
+                                                      VkrRgImageHandle image) {
   for (uint64_t i = 0; i < pass->desc.color_attachments.length; ++i) {
     const VkrRgAttachment *attachment =
         vector_get_VkrRgAttachment(&pass->desc.color_attachments, i);
@@ -713,8 +712,8 @@ static bool8_t vkr_metal_packet_pass_uses_image(const VkrRgPass *pass,
   return false_v;
 }
 
-static bool8_t vkr_metal_packet_pass_uses_buffer(const VkrRgPass *pass,
-                                                 VkrRgBufferHandle buffer) {
+vkr_internal bool8_t vkr_metal_packet_pass_uses_buffer(
+    const VkrRgPass *pass, VkrRgBufferHandle buffer) {
   for (uint64_t i = 0; i < pass->desc.buffer_reads.length; ++i) {
     const VkrRgBufferUse *use =
         vector_get_VkrRgBufferUse(&pass->desc.buffer_reads, i);
@@ -730,7 +729,7 @@ static bool8_t vkr_metal_packet_pass_uses_buffer(const VkrRgPass *pass,
   return false_v;
 }
 
-static bool8_t vkr_metal_packet_encode_producers(
+vkr_internal bool8_t vkr_metal_packet_encode_producers(
     VkrMetalPacketRenderer *renderer, id<MTL4CommandEncoder> encoder,
     uint32_t producer_index, uint32_t *dependency_count)
     API_AVAILABLE(macos(26.0)) {
@@ -768,7 +767,7 @@ static bool8_t vkr_metal_packet_encode_producers(
   return true_v;
 }
 
-static bool8_t vkr_metal_packet_encode_transfer(
+vkr_internal bool8_t vkr_metal_packet_encode_transfer(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     id<MTL4ComputeCommandEncoder> encoder) API_AVAILABLE(macos(26.0)) {
   if (pass->desc.image_reads.length == 0 || pass->desc.image_writes.length == 0)
@@ -795,12 +794,13 @@ static bool8_t vkr_metal_packet_encode_transfer(
   return true_v;
 }
 
-static bool8_t vkr_metal_packet_is_picking_readback(const VkrRgPass *pass) {
+vkr_internal bool8_t
+vkr_metal_packet_is_picking_readback(const VkrRgPass *pass) {
   return vkr_string8_equals_cstr(&pass->desc.execute_name,
                                  "pass.picking.readback");
 }
 
-static bool8_t vkr_metal_packet_encode_picking_readback(
+vkr_internal bool8_t vkr_metal_packet_encode_picking_readback(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrRenderPacket *packet, id<MTL4ComputeCommandEncoder> encoder,
     id<MTLBuffer> readback_buffer, uint64_t readback_offset)
@@ -829,9 +829,8 @@ static bool8_t vkr_metal_packet_encode_picking_readback(
   return true_v;
 }
 
-static bool8_t
-vkr_metal_packet_pass_writes_present(const VkrMetalPacketRenderer *renderer,
-                                     const VkrRgPass *pass) {
+vkr_internal bool8_t vkr_metal_packet_pass_writes_present(
+    const VkrMetalPacketRenderer *renderer, const VkrRgPass *pass) {
   for (uint64_t i = 0; i < pass->desc.color_attachments.length; ++i) {
     const VkrRgAttachment *attachment =
         vector_get_VkrRgAttachment(&pass->desc.color_attachments, i);
@@ -841,9 +840,8 @@ vkr_metal_packet_pass_writes_present(const VkrMetalPacketRenderer *renderer,
   return false_v;
 }
 
-static bool8_t
-vkr_metal_packet_is_last_present_writer(const VkrMetalPacketRenderer *renderer,
-                                        uint64_t order_index) {
+vkr_internal bool8_t vkr_metal_packet_is_last_present_writer(
+    const VkrMetalPacketRenderer *renderer, uint64_t order_index) {
   const uint32_t *pass_index =
       vector_get_uint32_t(&renderer->graph->execution_order, order_index);
   const VkrRgPass *pass =

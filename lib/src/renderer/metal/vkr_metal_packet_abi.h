@@ -25,7 +25,9 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketDrawRoot {
   uint64_t materials;
   uint64_t irradiance_texture_id;
   uint64_t prefilter_texture_id;
-  uint64_t brdf_texture_id;
+  /* Retired BRDF-LUT slot. The environment BRDF is analytic on both
+     backends; this stays as named padding so no downstream offset moves. */
+  uint64_t reserved_brdf_lut;
   Vec4 view_position;
   uint32_t material_index;
   uint32_t first_instance;
@@ -71,7 +73,9 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketVertexDrawRoot {
   uint64_t materials;
   uint64_t irradiance_texture_id;
   uint64_t prefilter_texture_id;
-  uint64_t brdf_texture_id;
+  /* Retired BRDF-LUT slot. The environment BRDF is analytic on both
+     backends; this stays as named padding so no downstream offset moves. */
+  uint64_t reserved_brdf_lut;
   Vec4 view_position;
   uint32_t material_index;
   uint32_t first_instance;
@@ -142,13 +146,6 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketPrefilterRoot {
   uint32_t target_mip;
 } VkrMetalPacketPrefilterRoot;
 
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketBrdfRoot {
-  uint64_t target_texture_id;
-  uint32_t sample_count;
-  uint32_t target_size;
-  uint64_t reserved[2];
-} VkrMetalPacketBrdfRoot;
-
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketTextRoot {
   uint64_t vertices;
   uint64_t atlas_texture_id;
@@ -174,7 +171,6 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_EQUIRECT_ROOT,
   VKR_METAL_PACKET_ABI_IRRADIANCE_ROOT,
   VKR_METAL_PACKET_ABI_PREFILTER_ROOT,
-  VKR_METAL_PACKET_ABI_BRDF_ROOT,
   VKR_METAL_PACKET_ABI_TEXT_ROOT,
   VKR_METAL_PACKET_ABI_RECORD_COUNT,
 } VkrMetalPacketAbiRecordId;

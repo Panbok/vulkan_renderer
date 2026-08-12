@@ -57,6 +57,24 @@ float vkr_metal_packet_specular_ao(float ao, float no_v, float roughness) {
   return saturate(pow(no_v + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao);
 }
 
+/**
+ * Split-sum environment BRDF, analytic (Karis' mobile approximation).
+ *
+ * This must stay numerically identical to packet_brdf_approximation() in the
+ * bindless Vulkan packet.slang. The two backends previously disagreed here —
+ * Metal sampled a baked LUT while Vulkan approximated — which made their
+ * specular IBL differ for the same scene and quietly invalidated any
+ * cross-backend byte comparison. One shared formula is the whole point; if this
+ * is ever replaced by a LUT again, both backends must change together.
+ */
+float2 vkr_metal_packet_brdf_approximation(float no_v, float roughness) {
+  const float4 c0 = float4(-1.0, -0.0275, -0.572, 0.022);
+  const float4 c1 = float4(1.0, 0.0425, 1.04, -0.04);
+  float4 r = roughness * c0 + c1;
+  float a004 = min(r.x * r.x, exp2(-9.28 * no_v)) * r.x + r.y;
+  return float2(-1.04, 1.04) * a004 + r.zw;
+}
+
 float vkr_metal_packet_probe_influence(
     const device VkrMetalPacketIblProbe &probe, float3 world_position) {
   float weight = max(probe.extents_weight.w, 0.0);

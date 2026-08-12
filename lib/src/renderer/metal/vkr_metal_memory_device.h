@@ -1,5 +1,6 @@
 #pragma once
 
+#include "memory/vkr_allocator.h"
 #include "renderer/metal/vkr_metal_memory.h"
 
 typedef struct VkrMetalMemoryDevice VkrMetalMemoryDevice;
@@ -24,6 +25,9 @@ typedef enum VkrMetalRingKind {
 typedef struct VkrMetalMemoryDeviceConfig {
   // Borrowed id<MTLDevice>; the adapter retains it for its own lifetime.
   void *metal_device;
+  // Owns every host-side allocation the adapter makes. Required: host bytes go
+  // through the engine allocator so they enter tag and leak accounting.
+  VkrAllocator *allocator;
   uint64_t heap_size;
   uint64_t upload_ring_size;
   uint64_t readback_ring_size;

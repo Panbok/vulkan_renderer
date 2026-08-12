@@ -80,6 +80,8 @@ int main(int argc, char **argv) {
   printf("\n"); // Add spacing
   all_passed &= run_bindless_vulkan_tests();
   printf("\n"); // Add spacing
+  all_passed &= run_packet_constants_tests();
+  printf("\n"); // Add spacing
   all_passed &= run_picking_state_tests();
   printf("\n"); // Add spacing
   all_passed &= run_draw_merge_tests();

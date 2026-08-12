@@ -4,8 +4,6 @@
 
 #import <Metal/Metal.h>
 
-#include <stdlib.h>
-
 struct VkrMetalMemoryDevice {
   id<MTLDevice> device;
   id<MTLHeap> heap;
@@ -17,6 +15,12 @@ struct VkrMetalMemoryDevice {
   void *core_storage;
   void *upload_ring_storage;
   void *readback_ring_storage;
+  /** Owns every host allocation above; retained for the sized frees. */
+  VkrAllocator *allocator;
+  uint64_t core_storage_size;
+  uint64_t ring_storage_size;
+  uint64_t native_resources_size;
+  uint64_t logical_lengths_size;
   VkrMetalMemoryCore *core;
   VkrMetalSubmitRing upload_ring;
   VkrMetalSubmitRing readback_ring;
@@ -28,12 +32,30 @@ struct VkrMetalMemoryDevice {
   uint64_t native_heap_peak_allocated_size;
 };
 
-static void vkr_metal_memory_release(id object) {
+vkr_internal void *vkr_metal_memory_device_alloc(VkrAllocator *allocator,
+                                                 uint64_t size) {
+  if (!size)
+    return NULL;
+  void *memory =
+      vkr_allocator_alloc(allocator, size, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  if (memory)
+    MemZero(memory, size);
+  return memory;
+}
+
+vkr_internal void vkr_metal_memory_device_free(VkrAllocator *allocator,
+                                               void *memory, uint64_t size) {
+  if (memory && size)
+    vkr_allocator_free(allocator, memory, size,
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+}
+
+vkr_internal void vkr_metal_memory_release(id object) {
   if (object)
     [object release];
 }
 
-static void
+vkr_internal void
 vkr_metal_memory_release_retired(void *context, uint32_t slot_index,
                                  const VkrMetalPlacement *placement) {
   (void)placement;
@@ -48,9 +70,8 @@ vkr_metal_memory_release_retired(void *context, uint32_t slot_index,
   }
 }
 
-static VkrMetalMemoryStatus
-vkr_metal_memory_abandon(VkrMetalMemoryDevice *device,
-                         VkrMetalAllocationHandle handle) {
+vkr_internal VkrMetalMemoryStatus vkr_metal_memory_abandon(
+    VkrMetalMemoryDevice *device, VkrMetalAllocationHandle handle) {
   VkrMetalMemoryStatus status =
       vkr_metal_memory_retire(device->core, handle, 0);
   if (status != VKR_METAL_MEMORY_STATUS_OK)
@@ -62,7 +83,7 @@ vkr_metal_memory_abandon(VkrMetalMemoryDevice *device,
 VkrMetalMemoryStatus
 vkr_metal_memory_device_create(const VkrMetalMemoryDeviceConfig *config,
                                VkrMetalMemoryDevice **out_device) {
-  if (!config || !out_device || !config->metal_device ||
+  if (!config || !out_device || !config->metal_device || !config->allocator ||
       config->heap_size == 0 || config->upload_ring_size == 0 ||
       config->readback_ring_size == 0 || config->ring_slot_count == 0 ||
       config->max_allocations == 0 || config->max_retirements == 0 ||
@@ -71,9 +92,11 @@ vkr_metal_memory_device_create(const VkrMetalMemoryDeviceConfig *config,
   *out_device = NULL;
 
   if (@available(macOS 26.0, *)) {
-    VkrMetalMemoryDevice *memory = calloc(1, sizeof(*memory));
+    VkrMetalMemoryDevice *memory =
+        vkr_metal_memory_device_alloc(config->allocator, sizeof(*memory));
     if (!memory)
       return VKR_METAL_MEMORY_STATUS_NATIVE_ALLOCATION_FAILED;
+    memory->allocator = config->allocator;
     memory->max_allocations = config->max_allocations;
     memory->device = [(id<MTLDevice>)config->metal_device retain];
     if (!memory->device ||
@@ -92,13 +115,22 @@ vkr_metal_memory_device_create(const VkrMetalMemoryDeviceConfig *config,
         vkr_metal_memory_storage_requirement(&core_config);
     const uint64_t ring_storage_size =
         vkr_metal_submit_ring_storage_requirement(config->ring_slot_count);
-    memory->core_storage = malloc(core_storage_size);
-    memory->upload_ring_storage = malloc(ring_storage_size);
-    memory->readback_ring_storage = malloc(ring_storage_size);
-    memory->native_resources =
-        calloc(config->max_allocations, sizeof(*memory->native_resources));
-    memory->logical_lengths =
-        calloc(config->max_allocations, sizeof(*memory->logical_lengths));
+    memory->core_storage_size = core_storage_size;
+    memory->ring_storage_size = ring_storage_size;
+    memory->native_resources_size =
+        (uint64_t)config->max_allocations * sizeof(*memory->native_resources);
+    memory->logical_lengths_size =
+        (uint64_t)config->max_allocations * sizeof(*memory->logical_lengths);
+    memory->core_storage =
+        vkr_metal_memory_device_alloc(config->allocator, core_storage_size);
+    memory->upload_ring_storage =
+        vkr_metal_memory_device_alloc(config->allocator, ring_storage_size);
+    memory->readback_ring_storage =
+        vkr_metal_memory_device_alloc(config->allocator, ring_storage_size);
+    memory->native_resources = vkr_metal_memory_device_alloc(
+        config->allocator, memory->native_resources_size);
+    memory->logical_lengths = vkr_metal_memory_device_alloc(
+        config->allocator, memory->logical_lengths_size);
     if (!memory->core_storage || !memory->upload_ring_storage ||
         !memory->readback_ring_storage || !memory->native_resources ||
         !memory->logical_lengths ||
@@ -303,7 +335,7 @@ vkr_metal_memory_device_collect(VkrMetalMemoryDevice *device,
                                   out_collected_count);
 }
 
-static VkrMetalSubmitRing *vkr_metal_memory_select_ring(
+vkr_internal VkrMetalSubmitRing *vkr_metal_memory_select_ring(
     VkrMetalMemoryDevice *device, VkrMetalRingKind ring_kind,
     VkrMetalAddressPair **out_addresses, id<MTLBuffer> *out_buffer) {
   if (ring_kind == VKR_METAL_RING_KIND_UPLOAD) {
@@ -428,12 +460,18 @@ void vkr_metal_memory_device_destroy(VkrMetalMemoryDevice *device) {
     vkr_metal_memory_release(device->heap);
     vkr_metal_memory_release(device->device);
   }
-  free(device->logical_lengths);
-  free(device->native_resources);
-  free(device->readback_ring_storage);
-  free(device->upload_ring_storage);
-  free(device->core_storage);
-  free(device);
+  VkrAllocator *allocator = device->allocator;
+  vkr_metal_memory_device_free(allocator, device->logical_lengths,
+                               device->logical_lengths_size);
+  vkr_metal_memory_device_free(allocator, device->native_resources,
+                               device->native_resources_size);
+  vkr_metal_memory_device_free(allocator, device->readback_ring_storage,
+                               device->ring_storage_size);
+  vkr_metal_memory_device_free(allocator, device->upload_ring_storage,
+                               device->ring_storage_size);
+  vkr_metal_memory_device_free(allocator, device->core_storage,
+                               device->core_storage_size);
+  vkr_metal_memory_device_free(allocator, device, sizeof(*device));
 }
 
 #endif

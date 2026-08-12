@@ -51,7 +51,9 @@ struct VkrMetalPacketDrawRoot {
   device VkrMetalPacketMaterial *materials;
   texturecube<float, access::sample> irradiance;
   texturecube<float, access::sample> prefilter;
-  texture2d<float, access::sample> brdf_lut;
+  // Retired: the environment BRDF is analytic on both backends. Kept as
+  // explicit padding so every downstream offset is unchanged.
+  ulong reserved_brdf_lut;
   float4 view_position;
   uint material_index;
   uint first_instance;

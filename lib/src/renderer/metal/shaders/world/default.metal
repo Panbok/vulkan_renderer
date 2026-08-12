@@ -142,8 +142,7 @@ fragment float4 vkr_metal_packet_opaque_fragment(
                     level(roughness *
                           float(max(root->prefilter_mip_count, 1u) - 1u)))
             .rgb;
-    float2 brdf =
-        root->brdf_lut.sample(environment_sampler, float2(no_v, roughness)).rg;
+    float2 brdf = vkr_metal_packet_brdf_approximation(no_v, roughness);
     float f90 = saturate(max(f0.x, max(f0.y, f0.z)) * 25.0);
     float horizon = saturate(1.0 + dot(reflection, geometric_normal));
     float specular_visibility =

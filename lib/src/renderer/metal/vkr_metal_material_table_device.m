@@ -4,33 +4,49 @@
 
 #import <Metal/Metal.h>
 
-#include <stdlib.h>
-
 struct VkrMetalMaterialTableDevice {
   id<MTLDevice> device;
   id<MTLBuffer> buffer;
   id<MTLResidencySet> residency;
   void *core_storage;
+  /** Owns this struct and core_storage; retained for the sized frees. */
+  VkrAllocator *allocator;
+  uint64_t core_storage_size;
   VkrMetalMaterialTableCore *core;
 };
 
+vkr_internal void *vkr_metal_material_device_alloc(VkrAllocator *allocator,
+                                                   uint64_t size) {
+  if (!size)
+    return NULL;
+  void *memory =
+      vkr_allocator_alloc(allocator, size, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  if (memory)
+    MemZero(memory, size);
+  return memory;
+}
+
 VkrMetalMaterialStatus vkr_metal_material_table_device_create(
     const VkrMetalMaterialTableConfig *config, void *metal_device,
-    VkrMetalMaterialTableDevice **out_table) {
-  if (!config || !metal_device || !out_table || config->max_rows == 0 ||
-      config->max_retirements == 0)
+    VkrAllocator *allocator, VkrMetalMaterialTableDevice **out_table) {
+  if (!config || !metal_device || !allocator || !out_table ||
+      config->max_rows == 0 || config->max_retirements == 0)
     return VKR_METAL_MATERIAL_STATUS_INVALID_ARGUMENT;
   *out_table = NULL;
   if (@available(macOS 26.0, *)) {
-    VkrMetalMaterialTableDevice *table = calloc(1, sizeof(*table));
+    VkrMetalMaterialTableDevice *table =
+        vkr_metal_material_device_alloc(allocator, sizeof(*table));
     if (!table)
       return VKR_METAL_MATERIAL_STATUS_NATIVE_ALLOCATION_FAILED;
+    table->allocator = allocator;
     table->device = [(id<MTLDevice>)metal_device retain];
     const uint64_t buffer_size =
         (uint64_t)config->max_rows * sizeof(VkrMetalMaterialGpuRow);
     const uint64_t storage_size =
         vkr_metal_material_table_storage_requirement(config);
-    table->core_storage = malloc(storage_size);
+    table->core_storage_size = storage_size;
+    table->core_storage =
+        vkr_metal_material_device_alloc(allocator, storage_size);
     table->buffer = [table->device
         newBufferWithLength:buffer_size
                     options:MTLResourceStorageModeShared |
@@ -142,8 +158,15 @@ void vkr_metal_material_table_device_destroy(
     [table->buffer release];
     [table->device release];
   }
-  free(table->core_storage);
-  free(table);
+  VkrAllocator *allocator = table->allocator;
+  if (allocator) {
+    if (table->core_storage)
+      vkr_allocator_free(allocator, table->core_storage,
+                         table->core_storage_size,
+                         VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    vkr_allocator_free(allocator, table, sizeof(*table),
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  }
 }
 
 #endif

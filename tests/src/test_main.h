@@ -31,6 +31,7 @@
 #include "metal_memory_test.h"
 #include "metal_packet_abi_test.h"
 #include "metrics_test.h"
+#include "packet_constants_test.h"
 #include "picking_state_test.h"
 #include "pool_test.h"
 #include "quat_test.h"

@@ -154,18 +154,13 @@ bool8_t vkr_metal_packet_renderer_drain(
                                        renderer->ibl_irradiance.handle,
                                        renderer->ibl_last_use_submit_value) !=
             VKR_METAL_MEMORY_STATUS_OK ||
-        vkr_metal_memory_device_retire(renderer->memory,
-                                       renderer->ibl_prefilter.handle,
-                                       renderer->ibl_last_use_submit_value) !=
-            VKR_METAL_MEMORY_STATUS_OK ||
         vkr_metal_memory_device_retire(
-            renderer->memory, renderer->ibl_brdf.handle,
+            renderer->memory, renderer->ibl_prefilter.handle,
             renderer->ibl_last_use_submit_value) != VKR_METAL_MEMORY_STATUS_OK)
       return false_v;
     renderer->ibl_live = false_v;
     renderer->ibl_irradiance = (VkrMetalTextureResource){0};
     renderer->ibl_prefilter = (VkrMetalTextureResource){0};
-    renderer->ibl_brdf = (VkrMetalTextureResource){0};
   }
 
   for (uint32_t i = 0; i < renderer->max_materials; ++i) {
@@ -218,80 +213,75 @@ bool8_t vkr_metal_packet_renderer_drain(
   return true_v;
 }
 
-static bool8_t vkr_metal_packet_publish_geometry_adapter(
+vkr_internal bool8_t vkr_metal_packet_publish_geometry_adapter(
     void *state, VkrGeometryHandle handle,
     const struct VkrGeometryConfig *geometry) {
   return vkr_metal_packet_renderer_publish_geometry(state, handle, geometry);
 }
 
-static bool8_t vkr_metal_packet_publish_loaded_mesh_adapter(
+vkr_internal bool8_t vkr_metal_packet_publish_loaded_mesh_adapter(
     void *state, VkrGeometryHandle handle,
     const struct VkrMeshLoaderResult *mesh) {
   return vkr_metal_packet_renderer_publish_loaded_mesh(state, handle, mesh);
 }
 
-static bool8_t
-vkr_metal_packet_unpublish_geometry_adapter(void *state,
-                                            VkrGeometryHandle handle) {
+vkr_internal bool8_t vkr_metal_packet_unpublish_geometry_adapter(
+    void *state, VkrGeometryHandle handle) {
   return vkr_metal_packet_renderer_destroy_mesh(
       state, (VkrMeshHandle){.id = handle.id, .generation = handle.generation});
 }
 
-static bool8_t vkr_metal_packet_publish_texture_adapter(
+vkr_internal bool8_t vkr_metal_packet_publish_texture_adapter(
     void *state, VkrTextureHandle handle,
     const struct VkrTexturePreparedLoad *texture) {
   return vkr_metal_packet_renderer_publish_prepared_texture(state, handle,
                                                             texture);
 }
 
-static bool8_t vkr_metal_packet_publish_writable_texture_adapter(
+vkr_internal bool8_t vkr_metal_packet_publish_writable_texture_adapter(
     void *state, VkrTextureHandle handle,
     const VkrTextureDescription *description) {
   return vkr_metal_packet_renderer_publish_writable_texture(state, handle,
                                                             description);
 }
 
-static bool8_t vkr_metal_packet_update_texture_sampler_adapter(
+vkr_internal bool8_t vkr_metal_packet_update_texture_sampler_adapter(
     void *state, VkrTextureHandle handle,
     const VkrTextureDescription *description) {
   return vkr_metal_packet_renderer_update_texture_sampler(state, handle,
                                                           description);
 }
 
-static bool8_t
-vkr_metal_packet_bake_ibl_cubemap_adapter(void *state, VkrTextureHandle source,
-                                          VkrTextureHandle irradiance,
-                                          VkrTextureHandle prefilter) {
+vkr_internal bool8_t vkr_metal_packet_bake_ibl_cubemap_adapter(
+    void *state, VkrTextureHandle source, VkrTextureHandle irradiance,
+    VkrTextureHandle prefilter) {
   return vkr_metal_packet_renderer_bake_ibl_cubemap(state, source, irradiance,
                                                     prefilter);
 }
 
-static bool8_t vkr_metal_packet_bake_hdr_environment_adapter(
+vkr_internal bool8_t vkr_metal_packet_bake_hdr_environment_adapter(
     void *state, VkrTextureHandle equirect, VkrTextureHandle source,
     VkrTextureHandle irradiance, VkrTextureHandle prefilter) {
   return vkr_metal_packet_renderer_bake_hdr_environment(state, equirect, source,
                                                         irradiance, prefilter);
 }
 
-static bool8_t
-vkr_metal_packet_unpublish_texture_adapter(void *state,
-                                           VkrTextureHandle handle) {
+vkr_internal bool8_t vkr_metal_packet_unpublish_texture_adapter(
+    void *state, VkrTextureHandle handle) {
   return vkr_metal_packet_renderer_destroy_texture(state, handle);
 }
 
-static bool8_t
-vkr_metal_packet_publish_material_adapter(void *state, VkrMaterialHandle handle,
-                                          const struct VkrMaterial *material) {
+vkr_internal bool8_t vkr_metal_packet_publish_material_adapter(
+    void *state, VkrMaterialHandle handle, const struct VkrMaterial *material) {
   return vkr_metal_packet_renderer_publish_material(state, handle, material);
 }
 
-static bool8_t
-vkr_metal_packet_unpublish_material_adapter(void *state,
-                                            VkrMaterialHandle handle) {
+vkr_internal bool8_t vkr_metal_packet_unpublish_material_adapter(
+    void *state, VkrMaterialHandle handle) {
   return vkr_metal_packet_renderer_destroy_material(state, handle);
 }
 
-static bool8_t vkr_metal_packet_publications_idle_adapter(void *state) {
+vkr_internal bool8_t vkr_metal_packet_publications_idle_adapter(void *state) {
   return state != NULL;
 }
 
@@ -359,7 +349,6 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
     [renderer->world_text_pipeline release];
     [renderer->tonemap_pipeline release];
     [renderer->ibl_equirect_pipeline release];
-    [renderer->ibl_brdf_pipeline release];
     [renderer->ibl_prefilter_pipeline release];
     [renderer->ibl_irradiance_pipeline release];
     [renderer->picking_pipeline release];
@@ -384,16 +373,18 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
   vkr_rg_executor_registry_destroy(&renderer->executors);
   vkr_metal_material_table_device_destroy(renderer->materials);
   vkr_metal_memory_device_destroy(renderer->memory);
-  free(renderer->completed_timing_results);
-  free(renderer->command_slots);
-  free(renderer->render_passes);
-  free(renderer->packet_materials);
-  free(renderer->textures);
-  free(renderer->samplers);
-  free(renderer->text_uploads);
-  free(renderer->submeshes);
-  free(renderer->meshes);
-  free(renderer->images);
-  free(renderer->capture_storage);
-  free(renderer);
+  /* Every record array lives in one tagged reservation. Release its aggregate
+     accounting immediately before the backing store, matching bulk-lifetime
+     allocator ownership. */
+  VkrAllocator *allocator = renderer->allocator;
+  if (renderer->record_allocator.ctx) {
+    vkr_allocator_release_global_accounting(&renderer->record_allocator);
+    vkr_dmemory_allocator_destroy(&renderer->record_allocator);
+  }
+  if (renderer->capture_storage_allocator.ctx) {
+    vkr_allocator_release_global_accounting(
+        &renderer->capture_storage_allocator);
+    vkr_dmemory_allocator_destroy(&renderer->capture_storage_allocator);
+  }
+  vkr_metal_packet_free_sized(allocator, renderer, sizeof(*renderer));
 }
