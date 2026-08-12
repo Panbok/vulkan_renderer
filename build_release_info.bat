@@ -30,17 +30,5 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-REM Copy shaders to build_release_info/app/assets
-echo Copying shaders to build_release_info/app/assets
-if not exist build_release_info\app md build_release_info\app
-if not exist build_release_info\app\assets md build_release_info\app\assets
-
-dir assets\shaders\*.spv >nul 2>&1
-if %errorlevel% equ 0 (
-    copy /Y assets\shaders\*.spv build_release_info\app\assets\ >nul
-) else (
-    echo No .spv files to copy – skipping
-)
-
 echo RelWithDebInfo build completed successfully!
 endlocal

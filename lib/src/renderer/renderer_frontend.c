@@ -1975,9 +1975,9 @@ renderer_impl_bindless_prepare_frame(void *state, VkrFrameSetup *out_setup) {
   }
   rf->frame_active = true_v;
   // Async finalizers may publish GPU resources only after the selected
-  // implementation has activated a frame. Keep this at the same lifecycle
-  // point as the legacy and Metal strategies so dependency closures can reach
-  // READY and stamp the submit that carries their uploads.
+  // implementation has activated a frame. Both selected strategies pump at
+  // this lifecycle point so dependency closures can reach READY and stamp the
+  // submit that carries their uploads.
   vkr_resource_system_pump(NULL);
   vkr_mesh_manager_pump_async(&rf->mesh_manager);
   rf->frame_number++;

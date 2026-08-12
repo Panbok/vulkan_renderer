@@ -22,10 +22,12 @@ typedef struct VkrDrawKey {
 /**
  * @brief Single draw command captured during visibility collection.
  *
- * When is_instance is false, mesh_index refers to a legacy VkrMesh slot.
- * When is_instance is true, mesh_index refers to a VkrMeshInstance slot.
- * Model is stored by value so later phases can stream instance data without
- * re-reading scene state.
+ * When is_instance is false, mesh_index refers to a direct mesh slot. When
+ *
+ * is_instance is true, mesh_index refers to a VkrMeshInstance slot.
+ * Model is
+ * stored by value so later phases can stream instance data without re-reading
+ * scene state.
  */
 typedef struct VkrDrawCommand {
   VkrDrawKey key;

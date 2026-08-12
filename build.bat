@@ -61,16 +61,6 @@ echo Building vulkan_renderer (%BUILD_TYPE%)
 cmake --build ".\%BUILD_DIR%" --target vulkan_renderer vkr_harness --config %BUILD_TYPE%
 if errorlevel 1 goto :vkr_build_failed
 
-echo Copying shaders to %BUILD_DIR%/app directory
-if not exist "%BUILD_DIR%\app\assets" md "%BUILD_DIR%\app\assets"
-dir assets\shaders\*.spv >nul 2>&1
-if errorlevel 1 goto :vkr_no_spv_to_copy
-copy /Y assets\shaders\*.spv "%BUILD_DIR%\app\assets" >nul
-goto :vkr_after_spv_copy
-:vkr_no_spv_to_copy
-echo No .spv files to copy to %BUILD_DIR%/app - skipping
-:vkr_after_spv_copy
-
 echo Build completed successfully!
 endlocal
 exit /b 0

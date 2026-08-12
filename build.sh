@@ -35,12 +35,4 @@ esac
 
   BUILD_TARGETS="vulkan_renderer vkr_harness"
   cmake --build "./${BUILD_DIR}" --target $BUILD_TARGETS --config "${BUILD_TYPE}"
-
-  echo "Copying shaders to ${BUILD_DIR}/app/assets"
-  mkdir -p "${BUILD_DIR}/app/assets"
-  if ls assets/shaders/*.spv >/dev/null 2>&1; then
-    cp -R assets/shaders/*.spv "${BUILD_DIR}/app/assets"
-  else
-    echo "No .spv files to copy – skipping"
-  fi
 )

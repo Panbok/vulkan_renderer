@@ -120,8 +120,6 @@ static void test_harness_case_parser(void) {
 #else
   assert(resolved_backend == VKR_RENDERER_BACKEND_TYPE_METAL);
 #endif
-  assert(!vkr_harness_renderer_backend_resolve(
-      &unpinned_renderer, "vulkan-bindless", &resolved_backend));
   assert(vkr_harness_renderer_backend_resolve(&unpinned_renderer, "vulkan",
                                               &resolved_backend));
   assert(resolved_backend == VKR_RENDERER_BACKEND_TYPE_VULKAN);

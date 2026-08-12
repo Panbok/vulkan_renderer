@@ -16,12 +16,4 @@ set -e # Exit early if any commands fail
   cmake -B build_lib -S . -U CMAKE_TOOLCHAIN_FILE -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE ${GENERATOR} ${COMPILERS}
   cmake --build ./build_lib --target renderer_lib
   cmake --install ./build_lib || true
-
-  echo "Copying shaders to library build directory"
-  mkdir -p build_lib/lib/assets
-  if ls assets/shaders/*.spv >/dev/null 2>&1; then
-    cp -R assets/shaders/*.spv build_lib/lib/assets
-  else
-    echo "No .spv files to copy – skipping"
-  fi
 )

@@ -24,12 +24,4 @@ set -e # Exit early if any commands fail
   esac
   cmake --fresh -B build_release -S . -U CMAKE_TOOLCHAIN_FILE -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE -DVKR_METRICS_ENABLED="${VKR_METRICS_CMAKE_VALUE}" ${GENERATOR} ${COMPILERS}
   cmake --build ./build_release --target vulkan_renderer vkr_harness --config Release
-
-  echo "Copying shaders to release build directory"
-  mkdir -p build_release/app/assets
-  if ls assets/shaders/*.spv >/dev/null 2>&1; then
-    cp -R assets/shaders/*.spv build_release/app/assets
-  else
-    echo "No .spv files to copy – skipping"
-  fi
 )

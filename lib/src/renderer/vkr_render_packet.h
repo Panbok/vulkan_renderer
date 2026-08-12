@@ -34,7 +34,7 @@ typedef struct VkrFrameIblProbe {
   bool8_t box_projection_enabled;
 } VkrFrameIblProbe;
 
-/** Scene mesh-instance identity retained for legacy instance state. */
+/** Packet-facing alias for generation-safe scene mesh-instance identity. */
 typedef VkrMeshInstanceHandle VkrMeshHandle;
 
 #define VKR_MESH_HANDLE_INVALID VKR_MESH_INSTANCE_HANDLE_INVALID

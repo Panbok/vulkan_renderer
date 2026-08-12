@@ -205,9 +205,12 @@ typedef enum VkrImageAccessFlags {
  * @brief Backend-neutral execution stages carried by graph dependencies.
  *
  * ALL_GRAPHICS is intentionally a first-class bit rather than an expansion to
- * individual stages: legacy declarations use it to preserve the Vulkan 1.2
- * backend's conservative VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT lowering. New
- * declarations may select narrower shader/fixed-function scopes.
+
+ * * individual stages: default declarations use it as a conservative portable
+
+ * * scope, while explicit declarations may select narrower
+ * shader/fixed-function
+ * scopes.
  */
 typedef enum VkrGpuStageFlags {
   VKR_GPU_STAGE_NONE = 0,
@@ -240,7 +243,8 @@ typedef struct VkrGpuDependency {
   VkrGpuVisibilityFlags visibility;
 } VkrGpuDependency;
 
-/** Conservative compatibility scopes matching the legacy Vulkan 1.2 path. */
+/** Conservative portable scopes used by declarations without explicit stages.
+ */
 VkrGpuStageFlags vkr_gpu_stages_for_buffer_access(VkrBufferAccessFlags access,
                                                   bool8_t is_src);
 VkrGpuStageFlags vkr_gpu_stages_for_image_access(VkrImageAccessFlags access,

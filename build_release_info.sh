@@ -15,12 +15,4 @@ set -e # Exit early if any commands fail
   fi
   cmake --fresh -B build_release_info -S . -U CMAKE_TOOLCHAIN_FILE -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE ${GENERATOR} ${COMPILERS}
   cmake --build ./build_release_info --target vulkan_renderer vkr_harness --config RelWithDebInfo
-
-  echo "Copying shaders to release build directory"
-  mkdir -p build_release_info/app/assets
-  if ls assets/shaders/*.spv >/dev/null 2>&1; then
-    cp -R assets/shaders/*.spv build_release_info/app/assets
-  else
-    echo "No .spv files to copy – skipping"
-  fi
 )

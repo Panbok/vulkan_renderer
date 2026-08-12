@@ -30,17 +30,5 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-REM Copy shaders to build_lib/lib/assets
-echo Copying shaders to build_lib/lib/assets
-if not exist build_lib\lib md build_lib\lib
-if not exist build_lib\lib\assets md build_lib\lib\assets
-
-dir assets\shaders\*.spv >nul 2>&1
-if %errorlevel% equ 0 (
-    copy /Y assets\shaders\*.spv build_lib\lib\assets\ >nul
-) else (
-    echo No .spv files to copy – skipping
-)
-
 echo Library build completed successfully!
 endlocal
