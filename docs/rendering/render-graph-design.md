@@ -220,7 +220,12 @@ These symbols are available to the JSON loader:
 - `swapchain_format`
 - `shadow_map_size`
 - `shadow_cascade_count`
+- `hzb_reduce_pass_count`
 - `editor_enabled`
+
+Per-use subresource indices accept `${i}` and `${i+1}` so a repeated reduction
+can declare adjacent source and destination mips without hiding the dependency
+inside its executor.
 
 ### Condition Syntax
 

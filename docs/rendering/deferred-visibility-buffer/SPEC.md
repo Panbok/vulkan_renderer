@@ -7,13 +7,16 @@ authority: spec
 # GPU-Driven Deferred Visibility-Buffer Renderer
 
 The P0-P3 graph, lifetime, format, shared-ABI, and megabuffer foundations are
-implemented on both backends. Provisional Metal P4, P6, and P8 slices now ship
-behind the disabled-by-default `VKR_DEFERRED_ENABLED` selector: GPU frustum
-culling and four-bucket ICB submission, an opaque visibility buffer, and
-compute material resolve into direct-capture G-buffer targets. Vulkan
-P5/P7/P9 parity, P10 deferred lighting, transmission resolve, HZB, and
-visibility-based picking remain proposed. Until P10, the retained GPU-driven
-forward pass remains the final-color oracle beside the new diagnostic targets.
+implemented on both backends. Provisional Metal P4, P6, P8, P10, P12, and P14
+slices now ship behind the disabled-by-default `VKR_DEFERRED_ENABLED` selector:
+GPU frustum/HZB culling and four-bucket ICB submission, opaque and transmission
+visibility buffers, compute material resolve and deferred lighting, fused
+single-layer transmission shading, and a completion-gated HZB history ring.
+Vulkan P5/P7/P9/P11/P13/P15 parity and visibility-based picking remain
+proposed. The retained GPU-driven forward path remains available for
+selector-off comparison and bounded pre-P21 fallback, but does not run beside
+deferred final color. `VKR_HZB_DISABLED=1` is the focused P14 diagnostic
+rollback to frustum-only deferred culling.
 Rationale and the durable decisions this specification constrains are in
 [ADR-028](../../architecture/adr/028-gpu-driven-deferred-visibility-buffer.md).
 
@@ -699,15 +702,28 @@ Implementation status on 2026-08-13: P0, P1, and P2 are implemented and pass
 the cross-platform CPU/build gates. P3 is implemented on both backend code
 paths and passes Metal native growth/API-validation evidence; native Vulkan
 validation and an accepted retained-forward pixel reference are still open
-evidence gates. P4, P6, and P8 are provisionally implemented on Metal behind
+evidence gates. P4, P6, P8, P10, P12, and P14 are provisionally implemented on
+Metal behind
 `VKR_DEFERRED_ENABLED=1`. Focused Metal API and shader/GPU validation pass with
 34 candidates, 34 visible rows split 28/6/0/0 across the four state buckets,
-zero compaction overflow, and zero rejected material-resolve pixels. Direct
+zero compaction overflow, and zero rejected material-resolve pixels. The P10
+slice seeds the graph-owned pre-transmission HDR target with emissive during
+material resolve, then computes directional, punctual, shadow, IBL, ambient,
+and sky lighting into that same target before feedback copy. Direct
 visibility-ID, primitive-ID, diffuse, F0/roughness/occlusion, normal, emissive,
-and barycentric/LOD captures are available. P5, P7, and P9 Vulkan parity have
-not started, and P10 deferred lighting is absent, so the new G-buffer does not
-yet produce final scene color. The captures and local Release profiles are
-non-authoritative until the owner accepts a clean matched evidence set.
+and barycentric/LOD captures remain available. P12 adds an independent
+transmission candidate/compaction/ICB stream, opaque-depth seeding, a dedicated
+transmission vbuffer/depth pair, direct ID/primitive captures, immutable HDR
+feedback sampling, and fused material/lighting/transmission writes. P14 builds
+every mip of an `R32_SFLOAT` max-depth history image through explicit graph
+subresources and reads only the newest compatible completed slot. Exact
+view/projection, render extent, and an opaque-world content epoch invalidate
+history; a fixed normal-Z convention completes the record. The static Sponza
+witness rejects 7 of 34 candidates with zero overflow/invalid resolves and
+produces byte-identical final-color and depth captures to frustum-only deferred
+culling. P5, P7, P9, P11, P13, and P15 Vulkan parity have not started. The
+captures and local Release profiles are non-authoritative until the owner
+accepts a clean matched evidence set.
 
 ### 11.1 P21 complete-retirement contract
 
