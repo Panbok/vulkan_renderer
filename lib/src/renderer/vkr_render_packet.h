@@ -13,7 +13,7 @@
 #include "renderer/vkr_renderer.h"
 
 /** Version constant for VkrRenderPacket.packet_version validation. */
-#define VKR_RENDER_PACKET_VERSION 10u
+#define VKR_RENDER_PACKET_VERSION 11u
 
 /** Default manual camera exposure for HDR scene presentation. */
 #define VKR_DEFAULT_EXPOSURE 0.30f
@@ -109,6 +109,27 @@ typedef struct VkrDrawItem {
   uint64_t sort_key;
 } VkrDrawItem;
 
+/** The candidate has a conservative local-space bounding sphere. */
+#define VKR_WORLD_DRAW_CANDIDATE_BOUNDS_VALID 0x1u
+
+/**
+ * @brief Unculled opaque/cutout source row borrowed for one packet submission.
+ *
+ * This is deliberately separate from VkrDrawItem: the retained lists are
+ * camera-culled and may be instance-merged before a backend sees them, while
+ * GPU culling needs one source row per original instance x submesh pair.
+ */
+typedef struct VkrWorldDrawCandidate {
+  VkrMeshHandle mesh;
+  VkrGeometryHandle geometry;
+  uint32_t submesh_index;
+  VkrMaterialHandle material;
+  VkrInstanceDataGPU instance;
+  Vec4 local_bounding_sphere;
+  uint32_t state_bucket;
+  uint32_t flags;
+} VkrWorldDrawCandidate;
+
 /**
  * @brief Prepared retained-text geometry borrowed for one packet submission.
  *
@@ -135,6 +156,8 @@ typedef struct VkrPreparedTextDraw {
  * @brief Payload for explicit opaque, transmission, and blend world stages.
  */
 typedef struct VkrWorldPassPayload {
+  const VkrWorldDrawCandidate *gpu_candidates;
+  uint32_t gpu_candidate_count;
   const VkrDrawItem *opaque_draws;
   uint32_t opaque_draw_count;
   const VkrDrawItem *transmission_draws;
@@ -146,6 +169,15 @@ typedef struct VkrWorldPassPayload {
   const VkrPreparedTextDraw *text_draws;
   uint32_t text_draw_count;
 } VkrWorldPassPayload;
+
+/** Whether this packet can use the provisional fixed-capacity GPU draw path. */
+static INLINE bool8_t
+vkr_world_gpu_candidates_deferred_eligible(const VkrWorldPassPayload *world) {
+  return world && world->gpu_candidates && world->gpu_candidate_count > 0u &&
+                 world->gpu_candidate_count <= VKR_GPU_DRAW_CANDIDATE_CAPACITY
+             ? true_v
+             : false_v;
+}
 
 /**
  * @brief Optional overrides for shadow depth bias settings.

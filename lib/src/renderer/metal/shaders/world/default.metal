@@ -4,7 +4,7 @@ fragment float4 vkr_metal_packet_opaque_fragment(
     bool front_facing [[front_facing]]) {
   constant VkrMetalPacketFrameRoot *frame = root->frame;
   const device VkrGpuVisibleDrawRow &visible =
-      root->visible_rows[root->visible_row_index];
+      root->visible_rows[input.visible_row_index];
   const device VkrMetalPacketMaterial &material =
       frame->materials[visible.material_index];
   float4 base = material.base_color_texture.sample(material.base_color_sampler,

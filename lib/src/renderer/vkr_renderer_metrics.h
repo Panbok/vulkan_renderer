@@ -105,6 +105,13 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId visibility_candidate_count;
   VkrMetricId visibility_candidate_capacity;
   VkrMetricId visibility_candidate_overflow_fallbacks;
+  VkrMetricId visibility_gpu_visible_count;
+  VkrMetricId visibility_gpu_bucket_opaque_single;
+  VkrMetricId visibility_gpu_bucket_opaque_double;
+  VkrMetricId visibility_gpu_bucket_cutout_single;
+  VkrMetricId visibility_gpu_bucket_cutout_double;
+  VkrMetricId visibility_gpu_compaction_overflow;
+  VkrMetricId visibility_gpu_resolve_invalid;
   VkrMetricId geometry_megabuffer_vertex_capacity;
   VkrMetricId geometry_megabuffer_index_capacity;
   VkrMetricId geometry_megabuffer_live_bytes;

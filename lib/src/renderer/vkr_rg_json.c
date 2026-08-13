@@ -53,6 +53,21 @@ vkr_internal bool8_t vkr_rg_json_parse_condition(
     out_condition->kind = VKR_RG_JSON_CONDITION_DEFERRED_ENABLED;
   } else if (vkr_string8_equals_cstr_i(&trimmed, "!deferred_enabled")) {
     out_condition->kind = VKR_RG_JSON_CONDITION_DEFERRED_DISABLED;
+  } else if (vkr_string8_equals_cstr_i(&trimmed,
+                                       "editor_enabled && deferred_enabled")) {
+    out_condition->kind = VKR_RG_JSON_CONDITION_EDITOR_ENABLED_DEFERRED_ENABLED;
+  } else if (vkr_string8_equals_cstr_i(&trimmed,
+                                       "editor_enabled && !deferred_enabled")) {
+    out_condition->kind =
+        VKR_RG_JSON_CONDITION_EDITOR_ENABLED_DEFERRED_DISABLED;
+  } else if (vkr_string8_equals_cstr_i(&trimmed,
+                                       "!editor_enabled && deferred_enabled")) {
+    out_condition->kind =
+        VKR_RG_JSON_CONDITION_EDITOR_DISABLED_DEFERRED_ENABLED;
+  } else if (vkr_string8_equals_cstr_i(
+                 &trimmed, "!editor_enabled && !deferred_enabled")) {
+    out_condition->kind =
+        VKR_RG_JSON_CONDITION_EDITOR_DISABLED_DEFERRED_DISABLED;
   } else if (vkr_string8_equals_cstr_i(&trimmed, "hzb_history_valid")) {
     out_condition->kind = VKR_RG_JSON_CONDITION_HZB_HISTORY_VALID;
   } else if (vkr_string8_equals_cstr_i(&trimmed, "!hzb_history_valid")) {
@@ -440,6 +455,9 @@ vkr_internal bool8_t vkr_rg_json_parse_buffer_access(
     *out = VKR_RG_JSON_BUFFER_ACCESS_STORAGE_READ;
   } else if (vkr_string8_equals_cstr_i(&value, "STORAGE_WRITE")) {
     *out = VKR_RG_JSON_BUFFER_ACCESS_STORAGE_WRITE;
+  } else if (vkr_string8_equals_cstr_i(&value, "STORAGE_READ_WRITE")) {
+    *out = VKR_RG_JSON_BUFFER_ACCESS_STORAGE_READ |
+           VKR_RG_JSON_BUFFER_ACCESS_STORAGE_WRITE;
   } else if (vkr_string8_equals_cstr_i(&value, "TRANSFER_SRC")) {
     *out = VKR_RG_JSON_BUFFER_ACCESS_TRANSFER_SRC;
   } else if (vkr_string8_equals_cstr_i(&value, "TRANSFER_DST")) {
@@ -1619,6 +1637,14 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->deferred_enabled;
   case VKR_RG_JSON_CONDITION_DEFERRED_DISABLED:
     return !frame->deferred_enabled;
+  case VKR_RG_JSON_CONDITION_EDITOR_ENABLED_DEFERRED_ENABLED:
+    return frame->editor_enabled && frame->deferred_enabled;
+  case VKR_RG_JSON_CONDITION_EDITOR_ENABLED_DEFERRED_DISABLED:
+    return frame->editor_enabled && !frame->deferred_enabled;
+  case VKR_RG_JSON_CONDITION_EDITOR_DISABLED_DEFERRED_ENABLED:
+    return !frame->editor_enabled && frame->deferred_enabled;
+  case VKR_RG_JSON_CONDITION_EDITOR_DISABLED_DEFERRED_DISABLED:
+    return !frame->editor_enabled && !frame->deferred_enabled;
   case VKR_RG_JSON_CONDITION_HZB_HISTORY_VALID:
     return frame->hzb_history_valid;
   case VKR_RG_JSON_CONDITION_HZB_HISTORY_INVALID:

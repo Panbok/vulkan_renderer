@@ -25,6 +25,12 @@
 #if defined(PLATFORM_APPLE)
 #include "renderer/metal/vkr_metal_packet_renderer.h"
 
+static bool8_t vkr_renderer_env_enabled(const char *name) {
+  const char *value = name ? getenv(name) : NULL;
+  return value && value[0] != '\0' && strcmp(value, "0") != 0 ? true_v
+                                                              : false_v;
+}
+
 static void
 vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
                                      VkrRendererImplSubmitResult *destination) {
@@ -133,27 +139,11 @@ vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
 }
 #endif
 
-static uint32_t
-vkr_renderer_packet_gpu_candidate_count(const VkrRenderPacket *packet) {
-  if (!packet || !packet->world)
-    return 0u;
-  const VkrWorldPassPayload *world = packet->world;
-  uint64_t count = 0u;
-  const VkrDrawItem *domains[] = {world->opaque_draws,
-                                  world->transmission_draws};
-  const uint32_t domain_counts[] = {world->opaque_draw_count,
-                                    world->transmission_draw_count};
-  for (uint32_t domain = 0u; domain < ArrayCount(domains); ++domain) {
-    for (uint32_t i = 0u; domains[domain] && i < domain_counts[domain]; ++i)
-      count += domains[domain][i].instance_count;
-  }
-  return (uint32_t)Min(count, (uint64_t)UINT32_MAX);
-}
-
 static void
 vkr_renderer_record_gpu_candidate_metrics(RendererFrontend *renderer,
                                           const VkrRenderPacket *packet) {
-  const uint32_t count = vkr_renderer_packet_gpu_candidate_count(packet);
+  const uint32_t count =
+      packet && packet->world ? packet->world->gpu_candidate_count : 0u;
   renderer->frame_metrics.world.gpu_candidate_count = count;
   renderer->frame_metrics.world.gpu_candidate_capacity =
       VKR_GPU_DRAW_CANDIDATE_CAPACITY;
@@ -587,14 +577,16 @@ renderer_impl_metal_initialize(void *state, VkrWindow *window, uint32_t width,
               : VKR_METAL_PACKET_TARGET_WINDOW,
       .metal_layer = window ? vkr_window_get_metal_layer(window) : NULL,
       .heap_size = GB(6),
-      .upload_ring_size = MB(384),
+      .upload_ring_size = MB(768),
       .readback_ring_size = MB(96),
       .frame_slot_count = frame_slot_count,
       .capture_ring_capacity = capture_capacity,
       .capture_max_batch_bytes = capture_bytes,
-      .synchronous_validation_readback = false_v,
+      .synchronous_validation_readback =
+          vkr_renderer_env_enabled("VKR_METAL_SYNCHRONOUS_VALIDATION"),
       .srgb_output = true_v,
       .convert_vulkan_clip_y = true_v,
+      .deferred_enabled = vkr_renderer_env_enabled("VKR_DEFERRED_ENABLED"),
       .max_images = 128,
       .max_passes = 64,
       .max_material_rows = 8192,
@@ -2235,6 +2227,26 @@ vkr_internal VkrRendererError vkr_renderer_validate_packet(
 
   const VkrWorldPassPayload *world = packet->world;
   if (world) {
+    if (world->gpu_candidate_count > 0u && !world->gpu_candidates) {
+      return vkr_renderer_validation_fail(
+          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "world.gpu_candidates", "gpu_candidates pointer is NULL");
+    }
+    for (uint32_t i = 0u; i < world->gpu_candidate_count; ++i) {
+      const VkrWorldDrawCandidate *candidate = &world->gpu_candidates[i];
+      if (candidate->mesh.id == 0u ||
+          candidate->mesh.generation == VKR_INVALID_ID ||
+          candidate->geometry.id == 0u ||
+          candidate->geometry.generation == VKR_INVALID_ID ||
+          candidate->material.id == 0u ||
+          candidate->material.generation == VKR_INVALID_ID ||
+          candidate->state_bucket >= VKR_WORLD_DRAW_STATE_BUCKET_COUNT ||
+          candidate->local_bounding_sphere.w < 0.0f) {
+        return vkr_renderer_validation_fail(
+            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+            "world.gpu_candidates", "GPU candidate row is invalid");
+      }
+    }
     if (world->instance_count > 0 && !world->instances) {
       return vkr_renderer_validation_fail(
           out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
@@ -2513,6 +2525,16 @@ renderer_impl_metal_submit_packet(void *state, const VkrRenderPacket *packet,
   rf->frame_metrics.world.draws_issued = result.indexed_draw_count;
   rf->frame_metrics.world.draw_calls_issued = result.indexed_draw_count;
   vkr_renderer_record_gpu_candidate_metrics(rf, &prepared_packet);
+  if (result.has_gpu_draw_diagnostics) {
+    rf->frame_metrics.world.gpu_visible_count = result.gpu_visible_count;
+    MemCopy(rf->frame_metrics.world.gpu_bucket_counts, result.gpu_bucket_counts,
+            sizeof(rf->frame_metrics.world.gpu_bucket_counts));
+    rf->frame_metrics.world.gpu_compaction_overflow_count =
+        result.gpu_overflow_count;
+    rf->frame_metrics.world.gpu_resolve_invalid_count =
+        result.gpu_resolve_invalid_count;
+    rf->frame_metrics.world.gpu_diagnostics_valid = true_v;
+  }
   rf->frame_metrics.shadow.shadow_draw_calls_opaque[0] =
       result.shadow_draw_count;
   if (out_metrics) {

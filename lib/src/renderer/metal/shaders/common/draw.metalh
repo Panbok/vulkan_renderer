@@ -155,6 +155,7 @@ struct VkrMetalPacketVertexOutput {
   float3 world_position [[user(TEXCOORD_2)]];
   float3 world_normal [[user(TEXCOORD_3)]];
   float4 world_tangent [[user(TEXCOORD_4)]];
+  uint visible_row_index [[user(TEXCOORD_5), flat]];
 };
 
 static_assert(sizeof(VkrMetalPacketVertex) == 64,

@@ -70,6 +70,49 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketDrawRoot {
 
 typedef VkrMetalPacketDrawRoot VkrMetalPacketVertexDrawRoot;
 
+/** Shared root for the classify, prefix, and GPU ICB-encoding kernels. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketGpuDrawRoot {
+  uint64_t candidates;
+  uint64_t geometry_rows;
+  uint64_t instances;
+  uint64_t classifications;
+  uint64_t compaction_state;
+  uint64_t visible_rows;
+  uint64_t draw_root;
+  Vec4 frustum_planes[6];
+  uint32_t candidate_count;
+  uint32_t visible_capacity;
+  uint32_t reserved_0;
+  uint32_t reserved_1;
+} VkrMetalPacketGpuDrawRoot;
+
+_Static_assert(sizeof(VkrMetalPacketGpuDrawRoot) == 176,
+               "Metal GPU draw root ABI must remain 176 bytes");
+
+/** Per-dispatch material-resolve resource table and viewport contract. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketGBufferResolveRoot {
+  uint64_t visible_rows;
+  uint64_t geometry_rows;
+  uint64_t instances;
+  uint64_t materials;
+  uint64_t compaction_state;
+  uint64_t vbuffer_texture_id;
+  uint64_t albedo_texture_id;
+  uint64_t specular_texture_id;
+  uint64_t normal_texture_id;
+  uint64_t emissive_texture_id;
+  uint64_t debug_texture_id;
+  Mat4 view_projection;
+  uint32_t extent[2];
+  uint32_t visible_capacity;
+  uint32_t geometry_count;
+  uint32_t material_count;
+  uint32_t instance_count;
+} VkrMetalPacketGBufferResolveRoot;
+
+_Static_assert(sizeof(VkrMetalPacketGBufferResolveRoot) == 192,
+               "Metal G-buffer resolve root ABI must remain 192 bytes");
+
 /** One upload-ring cell used by the retained table-driven forward path. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketTableDrawUpload {
   VkrMetalPacketDrawRoot root;
@@ -159,6 +202,8 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_IRRADIANCE_ROOT,
   VKR_METAL_PACKET_ABI_PREFILTER_ROOT,
   VKR_METAL_PACKET_ABI_TEXT_ROOT,
+  VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT,
+  VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT,
   VKR_METAL_PACKET_ABI_RECORD_COUNT,
 } VkrMetalPacketAbiRecordId;
 

@@ -46,6 +46,19 @@ vkr_draw_alpha_routing(VkrMaterialAlphaMode alpha_mode) {
   };
 }
 
+/** Maps the two pipeline-affecting material properties to a stable bucket. */
+static INLINE VkrWorldDrawStateBucket vkr_world_draw_state_bucket(
+    VkrMaterialAlphaMode alpha_mode, bool8_t double_sided) {
+  const bool8_t cutout =
+      alpha_mode == VKR_MATERIAL_ALPHA_CUTOUT ? true_v : false_v;
+  if (cutout) {
+    return double_sided ? VKR_WORLD_DRAW_STATE_CUTOUT_DOUBLE_SIDED
+                        : VKR_WORLD_DRAW_STATE_CUTOUT_BACK;
+  }
+  return double_sided ? VKR_WORLD_DRAW_STATE_OPAQUE_DOUBLE_SIDED
+                      : VKR_WORLD_DRAW_STATE_OPAQUE_BACK;
+}
+
 /**
  * @brief Per-frame visibility and merge-opportunity counters.
  *

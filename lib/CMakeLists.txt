@@ -189,6 +189,7 @@ if(APPLE)
         "${VKR_METAL_PACKET_SHADER_DIR}/world/lighting.metalh"
         "${VKR_METAL_PACKET_SHADER_DIR}/shadow/sampling.metalh"
         "${VKR_METAL_PACKET_SHADER_DIR}/common/fullscreen.metalh"
+        "${VKR_METAL_PACKET_SHADER_DIR}/world/gpu_draws.metal"
         "${VKR_METAL_PACKET_SHADER_DIR}/world/default.metal"
         "${VKR_METAL_PACKET_SHADER_DIR}/ibl/common.metalh"
         "${VKR_METAL_PACKET_SHADER_DIR}/ibl/equirect_to_cube.metal"

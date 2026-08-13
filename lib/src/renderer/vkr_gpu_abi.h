@@ -8,6 +8,15 @@
 /** Fixed P3 candidate/visible capacity; growth publishes a later generation. */
 #define VKR_GPU_DRAW_CANDIDATE_CAPACITY 262144u
 
+/** Opaque/cutout pipeline state classes used by GPU draw compaction. */
+typedef enum VkrWorldDrawStateBucket {
+  VKR_WORLD_DRAW_STATE_OPAQUE_BACK = 0,
+  VKR_WORLD_DRAW_STATE_OPAQUE_DOUBLE_SIDED,
+  VKR_WORLD_DRAW_STATE_CUTOUT_BACK,
+  VKR_WORLD_DRAW_STATE_CUTOUT_DOUBLE_SIDED,
+  VKR_WORLD_DRAW_STATE_BUCKET_COUNT,
+} VkrWorldDrawStateBucket;
+
 typedef struct VkrGeometryMegabufferMetrics {
   uint64_t vertex_capacity_bytes;
   uint64_t index_capacity_bytes;
@@ -80,11 +89,24 @@ typedef struct VkrGpuVisibleDrawRow {
   uint32_t flags;
 } VkrGpuVisibleDrawRow;
 
+/** GPU-written compacted work volume and four-bucket prefix state. */
+typedef struct VkrGpuDrawCompactionState {
+  uint32_t execution_ranges[VKR_WORLD_DRAW_STATE_BUCKET_COUNT][2];
+  uint32_t bucket_counts[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
+  uint32_t bucket_cursors[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
+  uint32_t visible_count;
+  uint32_t overflow_count;
+  uint32_t resolve_invalid_count;
+  uint32_t reserved;
+} VkrGpuDrawCompactionState;
+
 _Static_assert(sizeof(VkrGpuGeometryRow) == 48u, "VkrGpuGeometryRow ABI drift");
 _Static_assert(sizeof(VkrGpuCandidateDrawRow) == 48u,
                "VkrGpuCandidateDrawRow ABI drift");
 _Static_assert(sizeof(VkrGpuVisibleDrawRow) == 32u,
                "VkrGpuVisibleDrawRow ABI drift");
+_Static_assert(sizeof(VkrGpuDrawCompactionState) == 80u,
+               "VkrGpuDrawCompactionState ABI drift");
 
 typedef enum VkrGpuAbiRecordId {
   VKR_GPU_ABI_VERTEX = 0,

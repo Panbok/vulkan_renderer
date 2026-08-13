@@ -404,6 +404,26 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
   VKR_REGISTER_COUNTER(visibility_candidate_overflow_fallbacks,
                        "visibility.gpu_candidates.overflow_fallbacks",
                        VKR_METRIC_DOMAIN_DRAW);
+  VKR_REGISTER_U64(visibility_gpu_visible_count, "visibility.gpu_visible.count",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(visibility_gpu_bucket_opaque_single,
+                   "visibility.gpu_visible.bucket.opaque_single",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(visibility_gpu_bucket_opaque_double,
+                   "visibility.gpu_visible.bucket.opaque_double",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(visibility_gpu_bucket_cutout_single,
+                   "visibility.gpu_visible.bucket.cutout_single",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(visibility_gpu_bucket_cutout_double,
+                   "visibility.gpu_visible.bucket.cutout_double",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(visibility_gpu_compaction_overflow,
+                   "visibility.gpu_visible.overflow", VKR_METRIC_DOMAIN_DRAW,
+                   VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(visibility_gpu_resolve_invalid,
+                   "visibility.gbuffer.resolve_invalid", VKR_METRIC_DOMAIN_DRAW,
+                   VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(geometry_megabuffer_vertex_capacity,
                    "geometry.megabuffer.vertex_capacity_bytes",
                    VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_BYTES);
@@ -1079,6 +1099,36 @@ void vkr_renderer_metrics_collect(
   VKR_SET_U64(visibility_candidate_capacity, world->gpu_candidate_capacity);
   vkr_metrics_counter_add(metrics, ids->visibility_candidate_overflow_fallbacks,
                           world->gpu_candidate_overflow_fallbacks);
+  if (world->gpu_diagnostics_valid) {
+    VKR_SET_U64(visibility_gpu_visible_count, world->gpu_visible_count);
+    VKR_SET_U64(visibility_gpu_bucket_opaque_single,
+                world->gpu_bucket_counts[0]);
+    VKR_SET_U64(visibility_gpu_bucket_opaque_double,
+                world->gpu_bucket_counts[1]);
+    VKR_SET_U64(visibility_gpu_bucket_cutout_single,
+                world->gpu_bucket_counts[2]);
+    VKR_SET_U64(visibility_gpu_bucket_cutout_double,
+                world->gpu_bucket_counts[3]);
+    VKR_SET_U64(visibility_gpu_compaction_overflow,
+                world->gpu_compaction_overflow_count);
+    VKR_SET_U64(visibility_gpu_resolve_invalid,
+                world->gpu_resolve_invalid_count);
+  } else {
+    const VkrMetricId diagnostic_ids[] = {
+        ids->visibility_gpu_visible_count,
+        ids->visibility_gpu_bucket_opaque_single,
+        ids->visibility_gpu_bucket_opaque_double,
+        ids->visibility_gpu_bucket_cutout_single,
+        ids->visibility_gpu_bucket_cutout_double,
+        ids->visibility_gpu_compaction_overflow,
+        ids->visibility_gpu_resolve_invalid,
+    };
+    for (uint32_t i = 0u; i < ArrayCount(diagnostic_ids); ++i) {
+      vkr_metrics_mark(metrics, diagnostic_ids[i],
+                       VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                       VKR_METRIC_REASON_NOT_SAMPLED);
+    }
+  }
   const VkrGeometryMegabufferMetrics *mega = &world->geometry_megabuffer;
   VKR_SET_U64(geometry_megabuffer_vertex_capacity, mega->vertex_capacity_bytes);
   VKR_SET_U64(geometry_megabuffer_index_capacity, mega->index_capacity_bytes);

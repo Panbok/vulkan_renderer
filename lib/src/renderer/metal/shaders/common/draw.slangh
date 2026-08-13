@@ -138,4 +138,5 @@ struct VkrMetalPacketVertexOutput
     float3 world_position : TEXCOORD2;
     float3 world_normal : TEXCOORD3;
     float4 world_tangent : TEXCOORD4;
+    nointerpolation uint visible_row_index : TEXCOORD5;
 };

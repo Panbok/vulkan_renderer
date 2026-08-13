@@ -378,17 +378,27 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
         [renderer->render_passes[i] release];
     }
     if (renderer->command_slots) {
+      id<MTLResidencySet> residency =
+          renderer->memory
+              ? (id<MTLResidencySet>)vkr_metal_memory_device_residency_set(
+                    renderer->memory)
+              : nil;
       for (uint32_t i = 0; i < renderer->command_slot_count; ++i) {
+        if (renderer->command_slots[i].gpu_draw_icb && residency)
+          [residency removeAllocation:renderer->command_slots[i].gpu_draw_icb];
+        [renderer->command_slots[i].gpu_draw_icb release];
         [renderer->command_slots[i].buffer release];
         [renderer->command_slots[i].allocator release];
         [renderer->command_slots[i].timestamp_heap release];
       }
+      [residency commit];
     }
     if (renderer->samplers) {
       for (uint32_t i = 0; i < renderer->sampler_count; ++i)
         [renderer->samplers[i].state release];
     }
     [renderer->argument_table release];
+    [renderer->gpu_draw_icb_argument_encoder release];
     [renderer->depth_read_state release];
     [renderer->depth_write_state release];
     [renderer->picking_text_pipeline release];
@@ -398,6 +408,11 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
     [renderer->ibl_equirect_pipeline release];
     [renderer->ibl_prefilter_pipeline release];
     [renderer->ibl_irradiance_pipeline release];
+    [renderer->gpu_draw_encode_pipeline release];
+    [renderer->gbuffer_resolve_pipeline release];
+    [renderer->gpu_draw_prefix_pipeline release];
+    [renderer->gpu_draw_classify_pipeline release];
+    [renderer->vbuffer_pipeline release];
     [renderer->picking_pipeline release];
     [renderer->opaque_pipeline release];
     [renderer->blend_pipeline release];

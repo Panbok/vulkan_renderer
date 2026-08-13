@@ -6,12 +6,14 @@ vkr_metal_packet_vertex(uint vertex_id : SV_VertexID,
                             : register(b0))
 {
     VkrMetalPacketFrameRoot frame = root.frame;
-    VkrGpuVisibleDrawRow visible = root.visible_rows[root.visible_row_index];
+    bool gpu_draw = (root.flags & 1u) != 0u;
+    uint visible_row_index = gpu_draw ? instance_id : root.visible_row_index;
+    VkrGpuVisibleDrawRow visible = root.visible_rows[visible_row_index];
     VkrGpuGeometryRow geometry = root.geometry_rows[visible.geometry_index];
     VkrMetalPacketVertex vertex =
         root.vertices[geometry.first_vertex + vertex_id];
     VkrMetalPacketInstance instance =
-        frame.instances[visible.instance_index + instance_id];
+        frame.instances[visible.instance_index + (gpu_draw ? 0u : instance_id)];
     VkrMetalPacketVertexOutput output;
     float3 position =
         float3(vertex.position_x, vertex.position_y, vertex.position_z);
@@ -29,5 +31,6 @@ vkr_metal_packet_vertex(uint vertex_id : SV_VertexID,
         float4(normalize(mul(instance.model,
                              float4(vertex.tangent.xyz, 0.0)).xyz),
                vertex.tangent.w);
+    output.visible_row_index = visible_row_index;
     return output;
 }

@@ -11,8 +11,15 @@ typedef enum VkrMetalPacketGraphExecutorKind {
   VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING_READBACK,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_IBL_BAKE,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_UPLOAD,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_CLASSIFY,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_PREFIX,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_ENCODE,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_VBUFFER_OPAQUE,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_GBUFFER_RESOLVE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_SKYBOX,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_WORLD_OPAQUE,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_WORLD_GPU_OPAQUE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_FULLSCREEN,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_EDITOR,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_WORLD_TRANSMISSION,
@@ -34,8 +41,15 @@ vkr_global const VkrMetalPacketGraphExecutorSpec
         {"pass.picking", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.picking.readback", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.ibl_bake", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.gpu_draw_upload", VKR_RG_PASS_TYPE_TRANSFER},
+        {"pass.gpu_draw_classify", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.gpu_draw_prefix", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.gpu_draw_encode", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.vbuffer.opaque", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.gbuffer.resolve", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.skybox", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.world.opaque", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.world.gpu_opaque", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.copy.pre_transmission.fullscreen", VKR_RG_PASS_TYPE_TRANSFER},
         {"pass.copy.pre_transmission.editor", VKR_RG_PASS_TYPE_TRANSFER},
         {"pass.world.transmission", VKR_RG_PASS_TYPE_GRAPHICS},
@@ -1119,7 +1133,38 @@ vkr_internal bool8_t vkr_metal_packet_encode_producers(
 
 vkr_internal bool8_t vkr_metal_packet_encode_transfer(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
-    id<MTL4ComputeCommandEncoder> encoder) API_AVAILABLE(macos(26.0)) {
+    id<MTL4ComputeCommandEncoder> encoder,
+    const VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
+  if (vkr_metal_packet_graph_pass_is(
+          pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_UPLOAD)) {
+    const VkrRgBufferUse *candidate_use =
+        vkr_rg_pass_find_buffer_use(&pass->desc, 0u, 0u);
+    const VkrRgBufferUse *state_use =
+        vkr_rg_pass_find_buffer_use(&pass->desc, 1u, 0u);
+    VkrMetalPacketGraphBufferInstance *candidates =
+        candidate_use
+            ? vkr_metal_packet_graph_buffer(renderer, candidate_use->buffer)
+            : NULL;
+    VkrMetalPacketGraphBufferInstance *state =
+        state_use ? vkr_metal_packet_graph_buffer(renderer, state_use->buffer)
+                  : NULL;
+    if (!upload || !candidates || !state ||
+        upload->gpu_draw_candidate_bytes == 0u ||
+        upload->gpu_draw_candidate_bytes > candidates->resource.length ||
+        sizeof(VkrGpuDrawCompactionState) > state->resource.length)
+      return false_v;
+    [encoder copyFromBuffer:upload->buffer
+               sourceOffset:upload->gpu_draw_candidate_source_offset
+                   toBuffer:(id<MTLBuffer>)candidates->resource.metal_buffer
+          destinationOffset:0u
+                       size:upload->gpu_draw_candidate_bytes];
+    [encoder copyFromBuffer:upload->buffer
+               sourceOffset:upload->gpu_draw_state_zero_source_offset
+                   toBuffer:(id<MTLBuffer>)state->resource.metal_buffer
+          destinationOffset:0u
+                       size:sizeof(VkrGpuDrawCompactionState)];
+    return true_v;
+  }
   const VkrRgImageUse *read = vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
   const VkrRgImageUse *write = vkr_rg_pass_find_image_use(&pass->desc, 1u, 0u);
   if (!read && !write)

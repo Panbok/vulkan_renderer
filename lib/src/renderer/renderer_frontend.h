@@ -60,6 +60,11 @@ typedef struct VkrWorldBatchMetrics {
   uint32_t gpu_candidate_count;
   uint32_t gpu_candidate_capacity;
   uint32_t gpu_candidate_overflow_fallbacks;
+  uint32_t gpu_visible_count;
+  uint32_t gpu_bucket_counts[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
+  uint32_t gpu_compaction_overflow_count;
+  uint32_t gpu_resolve_invalid_count;
+  bool8_t gpu_diagnostics_valid;
   VkrGeometryMegabufferMetrics geometry_megabuffer;
 } VkrWorldBatchMetrics;
 

@@ -8,6 +8,7 @@
 #import <simd/simd.h>
 
 #include "core/logger.h"
+#include "math/vkr_frustum.h"
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
 #include "memory/vkr_dmemory.h"
@@ -160,6 +161,12 @@ typedef struct VkrMetalPacketTexture {
 vkr_internal VkrMetalPacketTexture *
 vkr_metal_packet_resolve_texture(VkrMetalPacketRenderer *renderer,
                                  VkrTextureHandle handle);
+vkr_internal VkrMetalPacketMesh *
+vkr_metal_packet_resolve_mesh(VkrMetalPacketRenderer *renderer,
+                              VkrMeshHandle handle);
+vkr_internal VkrMetalPacketMaterial *
+vkr_metal_packet_resolve_material(VkrMetalPacketRenderer *renderer,
+                                  VkrMaterialHandle handle);
 
 typedef struct VkrMetalPacketTextUpload {
   uint64_t vertices_gpu;
@@ -178,6 +185,12 @@ typedef struct VkrMetalPacketFrameUpload {
   uint64_t picking_instances_gpu;
   uint64_t editor_instances_gpu;
   uint64_t ui_instances_gpu;
+  uint64_t gpu_draw_instances_gpu;
+  uint64_t gpu_draw_geometry_rows_gpu;
+  uint64_t gpu_draw_icb_argument_gpu;
+  uint64_t gpu_draw_candidate_source_offset;
+  uint64_t gpu_draw_state_zero_source_offset;
+  uint64_t gpu_draw_candidate_bytes;
   uint64_t point_light_data_gpu;
   uint64_t point_light_masks_gpu;
   uint64_t shadow_cascades_gpu;
@@ -203,6 +216,7 @@ typedef struct VkrMetalPacketCommandSlot {
   id<MTL4CommandAllocator> allocator;
   id<MTL4CommandBuffer> buffer;
   id<MTL4CounterHeap> timestamp_heap;
+  id<MTLIndirectCommandBuffer> gpu_draw_icb;
   VkrMetalPacketResult timing_result;
   uint64_t submit_value;
   uint32_t timestamp_entry_count;
@@ -266,6 +280,7 @@ struct VkrMetalPacketRenderer {
   id<MTLRenderPipelineState> shadow_pipeline;
   id<MTLRenderPipelineState> skybox_pipeline;
   id<MTLRenderPipelineState> opaque_pipeline;
+  id<MTLRenderPipelineState> vbuffer_pipeline;
   id<MTLRenderPipelineState> blend_pipeline;
   id<MTLRenderPipelineState> overlay_pipeline;
   id<MTLRenderPipelineState> picking_pipeline;
@@ -276,6 +291,11 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> ibl_irradiance_pipeline;
   id<MTLComputePipelineState> ibl_equirect_pipeline;
   id<MTLComputePipelineState> ibl_prefilter_pipeline;
+  id<MTLComputePipelineState> gpu_draw_classify_pipeline;
+  id<MTLComputePipelineState> gpu_draw_prefix_pipeline;
+  id<MTLComputePipelineState> gpu_draw_encode_pipeline;
+  id<MTLComputePipelineState> gbuffer_resolve_pipeline;
+  id<MTLArgumentEncoder> gpu_draw_icb_argument_encoder;
   id<MTLDepthStencilState> depth_write_state;
   id<MTLDepthStencilState> depth_read_state;
   id<MTL4ArgumentTable> argument_table;
@@ -298,6 +318,7 @@ struct VkrMetalPacketRenderer {
   VkrMetalPacketTargetKind target_kind;
   bool8_t srgb_output;
   bool8_t convert_vulkan_clip_y;
+  bool8_t deferred_enabled;
   bool8_t frame_prepared;
   bool8_t pipeline_archive_warm;
   bool8_t pipeline_archive_written;

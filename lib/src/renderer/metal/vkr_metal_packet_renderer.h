@@ -59,6 +59,8 @@ typedef struct VkrMetalPacketRendererConfig {
   bool8_t srgb_output;
   /** Converts the shared Vulkan-oriented clip-Y matrices for Metal raster. */
   bool8_t convert_vulkan_clip_y;
+  /** Enables the provisional Metal-only deferred visibility stack. */
+  bool8_t deferred_enabled;
   uint32_t max_images;
   uint32_t max_passes;
   uint32_t max_material_rows;
@@ -157,6 +159,12 @@ typedef struct VkrMetalPacketResult {
   uint32_t picking_draw_count;
   uint32_t skybox_draw_count;
   uint32_t ibl_dispatch_count;
+  uint32_t gpu_candidate_count;
+  uint32_t gpu_visible_count;
+  uint32_t gpu_bucket_counts[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
+  uint32_t gpu_overflow_count;
+  uint32_t gpu_resolve_invalid_count;
+  bool8_t has_gpu_draw_diagnostics;
   uint32_t resize_count;
   uint8_t color[4];
   float32_t shadow_depth;
