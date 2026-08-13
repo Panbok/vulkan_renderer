@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "id": "local.p14.metal.hzb.camera_invalidation",
+  "suite": "local",
+  "description": "Metal P14 witness that a changing camera retains frustum culling and invalidates previous-frame HZB reads.",
+  "scene": "assets/scenes/fixtures/layered_glass.scene.json",
+  "seed": 11,
+  "resolution": [640, 480],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": { "warmup": 2, "measure": 3 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "keyframes",
+    "speed": "slow",
+    "interpolation": "linear",
+    "vertical_fov_degrees": 60,
+    "near_plane": 0.1,
+    "far_plane": 100,
+    "keys": [
+      { "t": 0.0, "position": [-0.25, 1.4, 5.5], "yaw": -91, "pitch": 0 },
+      { "t": 2.0, "position": [0.25, 1.4, 5.5], "yaw": -89, "pitch": 0 }
+    ]
+  }
+}

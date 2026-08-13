@@ -969,6 +969,104 @@ static void test_main_graph_declares_transmission_stages(void) {
     }
   }
   assert(found == ArrayCount(ordered));
+
+  const char *deferred_ordered[] = {
+      "VBuffer.Opaque", "GBuffer.Resolve.Fullscreen",
+      "Lighting.Deferred.Fullscreen", "World.FeedbackCopy.Fullscreen"};
+  found = 0u;
+  for (uint64_t i = 0u;
+       i < graph.passes.length && found < ArrayCount(deferred_ordered); ++i) {
+    VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph.passes, i);
+    if (!pass || !vkr_string8_equals_cstr(&pass->name, deferred_ordered[found]))
+      continue;
+    if (found == 1u) {
+      assert(pass->writes.length == 7u);
+      VkrRgJsonResourceUse *hdr_seed =
+          vector_get_VkrRgJsonResourceUse(&pass->writes, 6u);
+      assert(hdr_seed && hdr_seed->binding.is_set &&
+             hdr_seed->binding.value == 8u &&
+             hdr_seed->image_access == VKR_RG_JSON_IMAGE_ACCESS_STORAGE_WRITE);
+    } else if (found == 2u) {
+      assert(pass->type == VKR_RG_JSON_PASS_COMPUTE);
+      assert(pass->reads.length == 7u && pass->writes.length == 1u);
+      VkrRgJsonResourceUse *hdr_read =
+          vector_get_VkrRgJsonResourceUse(&pass->reads, 6u);
+      VkrRgJsonResourceUse *hdr_write =
+          vector_get_VkrRgJsonResourceUse(&pass->writes, 0u);
+      assert(
+          hdr_read && hdr_write && hdr_read->binding.is_set &&
+          hdr_write->binding.is_set && hdr_read->binding.value == 6u &&
+          hdr_write->binding.value == 6u &&
+          vkr_string8_equals_cstr(&hdr_read->name, "hdr_pre_transmission") &&
+          vkr_string8_equals_cstr(&hdr_write->name, "hdr_pre_transmission") &&
+          hdr_read->image_access == VKR_RG_JSON_IMAGE_ACCESS_STORAGE_READ &&
+          hdr_write->image_access == VKR_RG_JSON_IMAGE_ACCESS_STORAGE_WRITE);
+    }
+    found++;
+  }
+  assert(found == ArrayCount(deferred_ordered));
+
+  bool8_t found_deferred_blend = false_v;
+  for (uint64_t i = 0u; i < graph.passes.length; ++i) {
+    VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph.passes, i);
+    if (!pass || !vkr_string8_equals_cstr(&pass->name,
+                                          "World.Blend.Deferred.Fullscreen"))
+      continue;
+    assert(pass->attachments.has_depth);
+    assert(vkr_string8_equals_cstr(&pass->attachments.depth.image,
+                                   "opaque_vbuffer_depth"));
+    found_deferred_blend = true_v;
+    break;
+  }
+  assert(found_deferred_blend);
+
+  const char *transmission_deferred_ordered[] = {
+      "Transmission.Cull.Upload",     "Transmission.Cull.Classify",
+      "Transmission.Cull.Prefix",     "Transmission.Cull.Encode",
+      "Transmission.DepthSeed",       "VBuffer.Transmission",
+      "Transmission.Shade.Fullscreen"};
+  found = 0u;
+  for (uint64_t i = 0u; i < graph.passes.length &&
+                        found < ArrayCount(transmission_deferred_ordered);
+       ++i) {
+    VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph.passes, i);
+    if (pass && vkr_string8_equals_cstr(&pass->name,
+                                        transmission_deferred_ordered[found]))
+      found++;
+  }
+  assert(found == ArrayCount(transmission_deferred_ordered));
+
+  bool8_t found_hzb_resource = false_v;
+  for (uint64_t i = 0u; i < graph.resources.length; ++i) {
+    VkrRgJsonResource *resource =
+        vector_get_VkrRgJsonResource(&graph.resources, i);
+    if (!resource || !vkr_string8_equals_cstr(&resource->name, "hzb_history"))
+      continue;
+    assert(resource->image.mip_levels_full);
+    assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_HISTORY) != 0u);
+    found_hzb_resource = true_v;
+  }
+  assert(found_hzb_resource);
+
+  bool8_t found_hzb_reduce = false_v;
+  for (uint64_t i = 0u; i < graph.passes.length; ++i) {
+    VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph.passes, i);
+    if (!pass || !vkr_string8_equals_cstr(&pass->name, "HZB.BuildMip.${i}"))
+      continue;
+    assert(pass->repeat.enabled &&
+           vkr_string8_equals_cstr(&pass->repeat.count_source,
+                                   "hzb_reduce_pass_count"));
+    assert(pass->reads.length == 1u && pass->writes.length == 1u);
+    VkrRgJsonResourceUse *read =
+        vector_get_VkrRgJsonResourceUse(&pass->reads, 0u);
+    VkrRgJsonResourceUse *write =
+        vector_get_VkrRgJsonResourceUse(&pass->writes, 0u);
+    assert(read && write && read->has_slice && write->has_slice);
+    assert(vkr_string8_equals_cstr(&read->slice_base_mip.token, "${i}"));
+    assert(vkr_string8_equals_cstr(&write->slice_base_mip.token, "${i+1}"));
+    found_hzb_reduce = true_v;
+  }
+  assert(found_hzb_reduce);
   vkr_rg_json_destroy(&graph);
   arena_destroy(arena);
   printf("  test_main_graph_declares_transmission_stages PASSED\n");

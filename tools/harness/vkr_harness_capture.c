@@ -613,7 +613,11 @@ bool8_t vkr_harness_capture_publish(
     const VkrHarnessCaptureChannelDescription *logical_channel =
         vkr_harness_capture_channel_description(logical_channels[i]);
     const uint32_t uint_component =
-        string_equals(logical_channels[i], "visibility_primitives") ? 1u : 0u;
+        string_equals(logical_channels[i], "visibility_primitives") ||
+                string_equals(logical_channels[i],
+                              "transmission_visibility_primitives")
+            ? 1u
+            : 0u;
     if (report->capture_count >= report->capture_capacity || !channel ||
         !logical_channel || !item->data) {
       vkr_harness_error_set(error, "capture.publish", "captures",

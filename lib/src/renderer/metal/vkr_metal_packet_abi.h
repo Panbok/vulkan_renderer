@@ -84,10 +84,31 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketGpuDrawRoot {
   uint32_t visible_capacity;
   uint32_t reserved_0;
   uint32_t reserved_1;
+  uint64_t hzb_texture_id;
+  uint64_t reserved_2;
+  Mat4 history_view_projection;
+  uint32_t hzb_extent[2];
+  uint32_t hzb_mip_count;
+  uint32_t hzb_enabled;
+  float32_t hzb_depth_epsilon;
+  uint32_t reserved_3[3];
 } VkrMetalPacketGpuDrawRoot;
 
-_Static_assert(sizeof(VkrMetalPacketGpuDrawRoot) == 176,
-               "Metal GPU draw root ABI must remain 176 bytes");
+_Static_assert(sizeof(VkrMetalPacketGpuDrawRoot) == 288,
+               "Metal GPU draw root ABI must remain 288 bytes");
+
+/** One HZB base/reduction dispatch over explicit source/destination views. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketHzbBuildRoot {
+  uint64_t source_texture_id;
+  uint64_t destination_texture_id;
+  uint32_t source_extent[2];
+  uint32_t destination_extent[2];
+  uint32_t source_is_depth;
+  uint32_t reserved[3];
+} VkrMetalPacketHzbBuildRoot;
+
+_Static_assert(sizeof(VkrMetalPacketHzbBuildRoot) == 48,
+               "Metal HZB build root ABI must remain 48 bytes");
 
 /** Per-dispatch material-resolve resource table and viewport contract. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketGBufferResolveRoot {
@@ -102,16 +123,63 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketGBufferResolveRoot {
   uint64_t normal_texture_id;
   uint64_t emissive_texture_id;
   uint64_t debug_texture_id;
+  uint64_t hdr_seed_texture_id;
   Mat4 view_projection;
   uint32_t extent[2];
   uint32_t visible_capacity;
   uint32_t geometry_count;
   uint32_t material_count;
   uint32_t instance_count;
+  uint32_t render_mode;
+  uint32_t reserved;
 } VkrMetalPacketGBufferResolveRoot;
 
 _Static_assert(sizeof(VkrMetalPacketGBufferResolveRoot) == 192,
                "Metal G-buffer resolve root ABI must remain 192 bytes");
+
+/** Per-dispatch deferred-lighting resources and reconstruction contract. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketDeferredLightingRoot {
+  uint64_t frame;
+  uint64_t vbuffer_texture_id;
+  uint64_t depth_texture_id;
+  uint64_t albedo_texture_id;
+  uint64_t specular_texture_id;
+  uint64_t normal_texture_id;
+  uint64_t hdr_texture_id;
+  uint64_t sky_texture_id;
+  Mat4 inverse_view_projection;
+  uint32_t extent[2];
+  uint32_t sky_enabled;
+  uint32_t reserved;
+} VkrMetalPacketDeferredLightingRoot;
+
+_Static_assert(sizeof(VkrMetalPacketDeferredLightingRoot) == 144,
+               "Metal deferred-lighting root ABI must remain 144 bytes");
+
+/** Per-dispatch frontmost transmission visibility resolve and shading. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketTransmissionShadeRoot {
+  uint64_t frame;
+  uint64_t visible_rows;
+  uint64_t geometry_rows;
+  uint64_t instances;
+  uint64_t materials;
+  uint64_t compaction_state;
+  uint64_t vbuffer_texture_id;
+  uint64_t depth_texture_id;
+  uint64_t source_texture_id;
+  uint64_t destination_texture_id;
+  Mat4 view_projection;
+  Mat4 inverse_view_projection;
+  uint32_t extent[2];
+  uint32_t visible_capacity;
+  uint32_t geometry_count;
+  uint32_t material_count;
+  uint32_t instance_count;
+  uint32_t reserved[2];
+} VkrMetalPacketTransmissionShadeRoot;
+
+_Static_assert(sizeof(VkrMetalPacketTransmissionShadeRoot) == 240,
+               "Metal transmission-shade root ABI must remain 240 bytes");
 
 /** One upload-ring cell used by the retained table-driven forward path. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketTableDrawUpload {
@@ -204,6 +272,9 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_TEXT_ROOT,
   VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT,
   VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT,
+  VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT,
+  VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT,
+  VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT,
   VKR_METAL_PACKET_ABI_RECORD_COUNT,
 } VkrMetalPacketAbiRecordId;
 

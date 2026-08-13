@@ -61,6 +61,8 @@ typedef struct VkrMetalPacketRendererConfig {
   bool8_t convert_vulkan_clip_y;
   /** Enables the provisional Metal-only deferred visibility stack. */
   bool8_t deferred_enabled;
+  /** Diagnostic rollback for P14 while retaining the deferred graph. */
+  bool8_t hzb_enabled;
   uint32_t max_images;
   uint32_t max_passes;
   uint32_t max_material_rows;
@@ -164,6 +166,13 @@ typedef struct VkrMetalPacketResult {
   uint32_t gpu_bucket_counts[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
   uint32_t gpu_overflow_count;
   uint32_t gpu_resolve_invalid_count;
+  uint32_t gpu_occlusion_culled_count;
+  uint32_t transmission_gpu_candidate_count;
+  uint32_t transmission_gpu_visible_count;
+  uint32_t transmission_gpu_bucket_counts[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
+  uint32_t transmission_gpu_overflow_count;
+  uint32_t transmission_gpu_occlusion_culled_count;
+  bool8_t hzb_history_valid;
   bool8_t has_gpu_draw_diagnostics;
   uint32_t resize_count;
   uint8_t color[4];

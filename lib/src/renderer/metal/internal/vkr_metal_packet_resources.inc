@@ -1518,6 +1518,51 @@ vkr_internal VkrMetalPacketTexture *
 vkr_metal_packet_resolve_texture(VkrMetalPacketRenderer *renderer,
                                  VkrTextureHandle handle);
 
+vkr_internal bool8_t vkr_metal_packet_pack_gpu_draw_stream(
+    VkrMetalPacketRenderer *renderer, const VkrWorldDrawCandidate *sources,
+    uint32_t count, VkrInstanceDataGPU *instances,
+    VkrGpuCandidateDrawRow *candidates, VkrGpuGeometryRow *geometry_rows) {
+  if (count == 0u)
+    return true_v;
+  if (!renderer || !sources || !instances || !candidates || !geometry_rows)
+    return false_v;
+  const uint64_t pending_submit = renderer->submit_value + 1u;
+  for (uint32_t i = 0u; i < count; ++i) {
+    const VkrWorldDrawCandidate *source = &sources[i];
+    const VkrMeshHandle geometry = {
+        .id = source->geometry.id,
+        .generation = source->geometry.generation,
+    };
+    VkrMetalPacketMesh *mesh =
+        vkr_metal_packet_resolve_mesh(renderer, geometry);
+    VkrMetalPacketMaterial *material =
+        vkr_metal_packet_resolve_material(renderer, source->material);
+    if (!mesh || !material || source->submesh_index >= mesh->submesh_count ||
+        source->state_bucket >= VKR_WORLD_DRAW_STATE_BUCKET_COUNT)
+      return false_v;
+    const VkrMetalPacketSubmeshCreateInfo *submesh =
+        &renderer->submeshes[(uint64_t)(geometry.id - 1u) *
+                                 renderer->max_submeshes_per_mesh +
+                             source->submesh_index];
+    instances[i] = source->instance;
+    geometry_rows[geometry.id - 1u] = mesh->gpu_row;
+    candidates[i] = (VkrGpuCandidateDrawRow){
+        .geometry_index = geometry.id - 1u,
+        .material_index = material->row_index,
+        .instance_index = i,
+        .first_index = mesh->gpu_row.first_index + submesh->first_index,
+        .index_count = submesh->index_count,
+        .vertex_offset = submesh->vertex_offset,
+        .state_bucket = source->state_bucket,
+        .flags = source->flags,
+        .local_bounding_sphere = source->local_bounding_sphere,
+    };
+    mesh->last_use_submit_value = pending_submit;
+    material->last_use_submit_value = pending_submit;
+  }
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     VkrMetalPacketRenderer *renderer, const VkrRenderPacket *packet,
     VkrMetalPacketFrameUpload *upload) {
@@ -1535,6 +1580,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
       renderer->prepared_frame.deferred_enabled && packet->world
           ? packet->world->gpu_candidate_count
           : 0u;
+  const uint32_t transmission_gpu_draw_count =
+      renderer->prepared_frame.deferred_enabled && packet->world
+          ? packet->world->transmission_gpu_candidate_count
+          : 0u;
   const uint32_t world_text_count =
       packet->world ? packet->world->text_draw_count : 0;
   const uint32_t ui_text_count = packet->ui ? packet->ui->text_draw_count : 0;
@@ -1544,7 +1593,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
       (editor_count > 0 && !packet->editor->instances) ||
       (ui_count > 0 && !packet->ui->instances) ||
       (gpu_draw_count > 0 && !packet->world->gpu_candidates) ||
+      (transmission_gpu_draw_count > 0 &&
+       !packet->world->transmission_gpu_candidates) ||
       gpu_draw_count > VKR_GPU_DRAW_CANDIDATE_CAPACITY ||
+      transmission_gpu_draw_count > VKR_GPU_DRAW_CANDIDATE_CAPACITY ||
       (packet->shadow &&
        packet->shadow->cascade_count > VKR_SHADOW_CASCADE_COUNT_MAX))
     return false_v;
@@ -1554,7 +1606,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
                                            shadow_count + picking_count +
                                            editor_count + ui_count;
   if (retained_instance_count > renderer->max_instances ||
-      gpu_draw_count > renderer->max_instances)
+      gpu_draw_count > renderer->max_instances ||
+      transmission_gpu_draw_count > renderer->max_instances)
     return false_v;
   uint64_t root_count = 1;
   if (packet->skybox)
@@ -1567,8 +1620,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
                        : (uint64_t)packet->world->opaque_draw_count) +
                   packet->world->transmission_draw_count +
                   packet->world->transparent_draw_count + world_text_count;
-  if (gpu_draw_count > 0u)
-    root_count += 6u;
+  if (renderer->prepared_frame.deferred_enabled)
+    root_count += 9u + renderer->prepared_frame.hzb_reduce_pass_count;
+  if (transmission_gpu_draw_count > 0u)
+    root_count += 7u;
   if (packet->shadow) {
     root_count += ((uint64_t)packet->shadow->opaque_draw_count +
                    (uint64_t)packet->shadow->alpha_draw_count) *
@@ -1619,8 +1674,14 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
       retained_instance_bytes, AlignOf(VkrInstanceDataGPU));
   const uint64_t gpu_draw_instances_bytes =
       (uint64_t)gpu_draw_count * sizeof(VkrInstanceDataGPU);
-  const uint64_t instance_bytes =
-      gpu_draw_instances_offset + gpu_draw_instances_bytes;
+  const uint64_t transmission_gpu_draw_instances_offset =
+      vkr_metal_packet_align_up(gpu_draw_instances_offset +
+                                    gpu_draw_instances_bytes,
+                                AlignOf(VkrInstanceDataGPU));
+  const uint64_t transmission_gpu_draw_instances_bytes =
+      (uint64_t)transmission_gpu_draw_count * sizeof(VkrInstanceDataGPU);
+  const uint64_t instance_bytes = transmission_gpu_draw_instances_offset +
+                                  transmission_gpu_draw_instances_bytes;
   const uint32_t point_light_count =
       packet->lighting ? packet->lighting->point_light_count : 0;
   const uint32_t point_light_cell_count =
@@ -1652,18 +1713,27 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
       ibl_probes_offset + ibl_probes_bytes, AlignOf(VkrGpuCandidateDrawRow));
   const uint64_t gpu_draw_candidate_bytes =
       (uint64_t)gpu_draw_count * sizeof(VkrGpuCandidateDrawRow);
-  const uint64_t gpu_draw_geometry_rows_offset = vkr_metal_packet_align_up(
-      gpu_draw_candidates_offset + gpu_draw_candidate_bytes,
-      AlignOf(VkrGpuGeometryRow));
+  const uint64_t transmission_gpu_draw_candidates_offset =
+      vkr_metal_packet_align_up(gpu_draw_candidates_offset +
+                                    gpu_draw_candidate_bytes,
+                                AlignOf(VkrGpuCandidateDrawRow));
+  const uint64_t transmission_gpu_draw_candidate_bytes =
+      (uint64_t)transmission_gpu_draw_count * sizeof(VkrGpuCandidateDrawRow);
+  const uint64_t gpu_draw_geometry_rows_offset =
+      vkr_metal_packet_align_up(transmission_gpu_draw_candidates_offset +
+                                    transmission_gpu_draw_candidate_bytes,
+                                AlignOf(VkrGpuGeometryRow));
   const uint64_t gpu_draw_geometry_rows_bytes =
-      gpu_draw_count > 0u
+      gpu_draw_count > 0u || transmission_gpu_draw_count > 0u
           ? (uint64_t)renderer->max_meshes * sizeof(VkrGpuGeometryRow)
           : 0u;
   const uint64_t gpu_draw_state_zero_offset = vkr_metal_packet_align_up(
       gpu_draw_geometry_rows_offset + gpu_draw_geometry_rows_bytes,
       AlignOf(VkrGpuDrawCompactionState));
   const uint64_t gpu_draw_state_zero_bytes =
-      gpu_draw_count > 0u ? sizeof(VkrGpuDrawCompactionState) : 0u;
+      renderer->prepared_frame.deferred_enabled
+          ? sizeof(VkrGpuDrawCompactionState)
+          : 0u;
   const uint64_t gpu_draw_icb_argument_alignment =
       gpu_draw_count > 0u ? renderer->gpu_draw_icb_argument_encoder.alignment
                           : 1u;
@@ -1674,8 +1744,26 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
       gpu_draw_count > 0u
           ? renderer->gpu_draw_icb_argument_encoder.encodedLength
           : 0u;
-  uint64_t text_geometry_end =
-      gpu_draw_icb_argument_offset + gpu_draw_icb_argument_bytes;
+  const uint64_t transmission_gpu_draw_state_zero_offset =
+      vkr_metal_packet_align_up(gpu_draw_icb_argument_offset +
+                                    gpu_draw_icb_argument_bytes,
+                                AlignOf(VkrGpuDrawCompactionState));
+  const uint64_t transmission_gpu_draw_state_zero_bytes =
+      transmission_gpu_draw_count > 0u ? sizeof(VkrGpuDrawCompactionState) : 0u;
+  const uint64_t transmission_gpu_draw_icb_argument_alignment =
+      transmission_gpu_draw_count > 0u
+          ? renderer->gpu_draw_icb_argument_encoder.alignment
+          : 1u;
+  const uint64_t transmission_gpu_draw_icb_argument_offset =
+      vkr_metal_packet_align_up(transmission_gpu_draw_state_zero_offset +
+                                    transmission_gpu_draw_state_zero_bytes,
+                                transmission_gpu_draw_icb_argument_alignment);
+  const uint64_t transmission_gpu_draw_icb_argument_bytes =
+      transmission_gpu_draw_count > 0u
+          ? renderer->gpu_draw_icb_argument_encoder.encodedLength
+          : 0u;
+  uint64_t text_geometry_end = transmission_gpu_draw_icb_argument_offset +
+                               transmission_gpu_draw_icb_argument_bytes;
   const VkrPreparedTextDraw *text_domains[] = {
       packet->world ? packet->world->text_draws : NULL,
       packet->ui ? packet->ui->text_draws : NULL,
@@ -1747,59 +1835,56 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     MemCopy(cpu + offset, packet->ui->instances, ui_bytes);
     upload->ui_instances_gpu = gpu + offset;
   }
-  if (gpu_draw_instances_bytes > 0u) {
+  if (gpu_draw_instances_bytes > 0u ||
+      transmission_gpu_draw_instances_bytes > 0u) {
     VkrInstanceDataGPU *gpu_instances =
         (VkrInstanceDataGPU *)(cpu + gpu_draw_instances_offset);
     VkrGpuCandidateDrawRow *gpu_candidates =
         (VkrGpuCandidateDrawRow *)(cpu + gpu_draw_candidates_offset);
+    VkrInstanceDataGPU *transmission_gpu_instances =
+        (VkrInstanceDataGPU *)(cpu + transmission_gpu_draw_instances_offset);
+    VkrGpuCandidateDrawRow *transmission_gpu_candidates =
+        (VkrGpuCandidateDrawRow *)(cpu +
+                                   transmission_gpu_draw_candidates_offset);
     VkrGpuGeometryRow *geometry_rows =
         (VkrGpuGeometryRow *)(cpu + gpu_draw_geometry_rows_offset);
     MemZero(geometry_rows, gpu_draw_geometry_rows_bytes);
-    const uint64_t pending_submit = renderer->submit_value + 1u;
-    for (uint32_t i = 0u; i < gpu_draw_count; ++i) {
-      const VkrWorldDrawCandidate *source = &packet->world->gpu_candidates[i];
-      const VkrMeshHandle geometry = {
-          .id = source->geometry.id,
-          .generation = source->geometry.generation,
-      };
-      VkrMetalPacketMesh *mesh =
-          vkr_metal_packet_resolve_mesh(renderer, geometry);
-      VkrMetalPacketMaterial *material =
-          vkr_metal_packet_resolve_material(renderer, source->material);
-      if (!mesh || !material || source->submesh_index >= mesh->submesh_count ||
-          source->state_bucket >= VKR_WORLD_DRAW_STATE_BUCKET_COUNT)
-        return false_v;
-      const VkrMetalPacketSubmeshCreateInfo *submesh =
-          &renderer->submeshes[(uint64_t)(geometry.id - 1u) *
-                                   renderer->max_submeshes_per_mesh +
-                               source->submesh_index];
-      gpu_instances[i] = source->instance;
-      geometry_rows[geometry.id - 1u] = mesh->gpu_row;
-      gpu_candidates[i] = (VkrGpuCandidateDrawRow){
-          .geometry_index = geometry.id - 1u,
-          .material_index = material->row_index,
-          .instance_index = i,
-          .first_index = mesh->gpu_row.first_index + submesh->first_index,
-          .index_count = submesh->index_count,
-          .vertex_offset = submesh->vertex_offset,
-          .state_bucket = source->state_bucket,
-          .flags = source->flags,
-          .local_bounding_sphere = source->local_bounding_sphere,
-      };
-      mesh->last_use_submit_value = pending_submit;
-      material->last_use_submit_value = pending_submit;
-    }
-    MemZero(cpu + gpu_draw_state_zero_offset, gpu_draw_state_zero_bytes);
-    VkrMetalPacketCommandSlot *slot = renderer->active_command_slot;
-    if (!slot || !slot->gpu_draw_icb)
+    if (!vkr_metal_packet_pack_gpu_draw_stream(
+            renderer, packet->world->gpu_candidates, gpu_draw_count,
+            gpu_instances, gpu_candidates, geometry_rows) ||
+        !vkr_metal_packet_pack_gpu_draw_stream(
+            renderer, packet->world->transmission_gpu_candidates,
+            transmission_gpu_draw_count, transmission_gpu_instances,
+            transmission_gpu_candidates, geometry_rows))
       return false_v;
-    [renderer->gpu_draw_icb_argument_encoder
-        setArgumentBuffer:upload->buffer
-                   offset:upload->slice.offset + gpu_draw_icb_argument_offset];
-    [renderer->gpu_draw_icb_argument_encoder
-        setIndirectCommandBuffer:slot->gpu_draw_icb
-                         atIndex:0u];
+    MemZero(cpu + gpu_draw_state_zero_offset, gpu_draw_state_zero_bytes);
+    MemZero(cpu + transmission_gpu_draw_state_zero_offset,
+            transmission_gpu_draw_state_zero_bytes);
+    VkrMetalPacketCommandSlot *slot = renderer->active_command_slot;
+    if (!slot || !slot->gpu_draw_icb ||
+        (transmission_gpu_draw_count > 0u && !slot->transmission_gpu_draw_icb))
+      return false_v;
+    if (gpu_draw_count > 0u) {
+      [renderer->gpu_draw_icb_argument_encoder
+          setArgumentBuffer:upload->buffer
+                     offset:upload->slice.offset +
+                            gpu_draw_icb_argument_offset];
+      [renderer->gpu_draw_icb_argument_encoder
+          setIndirectCommandBuffer:slot->gpu_draw_icb
+                           atIndex:0u];
+    }
+    if (transmission_gpu_draw_count > 0u) {
+      [renderer->gpu_draw_icb_argument_encoder
+          setArgumentBuffer:upload->buffer
+                     offset:upload->slice.offset +
+                            transmission_gpu_draw_icb_argument_offset];
+      [renderer->gpu_draw_icb_argument_encoder
+          setIndirectCommandBuffer:slot->transmission_gpu_draw_icb
+                           atIndex:0u];
+    }
     upload->gpu_draw_instances_gpu = gpu + gpu_draw_instances_offset;
+    upload->transmission_gpu_draw_instances_gpu =
+        gpu + transmission_gpu_draw_instances_offset;
     upload->gpu_draw_geometry_rows_gpu = gpu + gpu_draw_geometry_rows_offset;
     upload->gpu_draw_icb_argument_gpu = gpu + gpu_draw_icb_argument_offset;
     upload->gpu_draw_candidate_source_offset =
@@ -1807,6 +1892,14 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     upload->gpu_draw_state_zero_source_offset =
         upload->slice.offset + gpu_draw_state_zero_offset;
     upload->gpu_draw_candidate_bytes = gpu_draw_candidate_bytes;
+    upload->transmission_gpu_draw_icb_argument_gpu =
+        gpu + transmission_gpu_draw_icb_argument_offset;
+    upload->transmission_gpu_draw_candidate_source_offset =
+        upload->slice.offset + transmission_gpu_draw_candidates_offset;
+    upload->transmission_gpu_draw_state_zero_source_offset =
+        upload->slice.offset + transmission_gpu_draw_state_zero_offset;
+    upload->transmission_gpu_draw_candidate_bytes =
+        transmission_gpu_draw_candidate_bytes;
   }
   if (point_light_count > 0) {
     Vec4 *packed = (Vec4 *)(cpu + point_light_offset);
@@ -1879,7 +1972,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     }
     upload->ibl_probes_gpu = gpu + ibl_probes_offset;
   }
-  uint64_t text_offset = ibl_probes_offset + ibl_probes_bytes;
+  uint64_t text_offset = transmission_gpu_draw_icb_argument_offset +
+                         transmission_gpu_draw_icb_argument_bytes;
   uint32_t text_upload_index = 0;
   for (uint32_t domain = 0; domain < ArrayCount(text_domains); ++domain) {
     for (uint32_t i = 0; i < text_domain_counts[domain]; ++i) {
@@ -1926,19 +2020,29 @@ vkr_internal void vkr_metal_packet_rollback_gpu_draw_resource_preparation(
     return;
 
   const uint64_t pending_submit = renderer->submit_value + 1u;
-  for (uint32_t i = 0u; i < packet->world->gpu_candidate_count; ++i) {
-    const VkrWorldDrawCandidate *candidate = &packet->world->gpu_candidates[i];
-    const VkrMeshHandle geometry = {
-        .id = candidate->geometry.id,
-        .generation = candidate->geometry.generation,
-    };
-    VkrMetalPacketMesh *mesh =
-        vkr_metal_packet_resolve_mesh(renderer, geometry);
-    VkrMetalPacketMaterial *material =
-        vkr_metal_packet_resolve_material(renderer, candidate->material);
-    if (mesh && mesh->last_use_submit_value == pending_submit)
-      mesh->last_use_submit_value = renderer->submit_value;
-    if (material && material->last_use_submit_value == pending_submit)
-      material->last_use_submit_value = renderer->submit_value;
+  const VkrWorldDrawCandidate *streams[] = {
+      packet->world->gpu_candidates,
+      packet->world->transmission_gpu_candidates,
+  };
+  const uint32_t counts[] = {
+      packet->world->gpu_candidate_count,
+      packet->world->transmission_gpu_candidate_count,
+  };
+  for (uint32_t stream = 0u; stream < ArrayCount(streams); ++stream) {
+    for (uint32_t i = 0u; i < counts[stream]; ++i) {
+      const VkrWorldDrawCandidate *candidate = &streams[stream][i];
+      const VkrMeshHandle geometry = {
+          .id = candidate->geometry.id,
+          .generation = candidate->geometry.generation,
+      };
+      VkrMetalPacketMesh *mesh =
+          vkr_metal_packet_resolve_mesh(renderer, geometry);
+      VkrMetalPacketMaterial *material =
+          vkr_metal_packet_resolve_material(renderer, candidate->material);
+      if (mesh && mesh->last_use_submit_value == pending_submit)
+        mesh->last_use_submit_value = renderer->submit_value;
+      if (material && material->last_use_submit_value == pending_submit)
+        material->last_use_submit_value = renderer->submit_value;
+    }
   }
 }

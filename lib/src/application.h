@@ -593,6 +593,20 @@ vkr_internal bool8_t application_material_is_transmissive(
                         : false_v;
 }
 
+typedef enum VkrWorldGpuCandidateStream {
+  VKR_WORLD_GPU_CANDIDATE_STREAM_NONE = 0,
+  VKR_WORLD_GPU_CANDIDATE_STREAM_OPAQUE,
+  VKR_WORLD_GPU_CANDIDATE_STREAM_TRANSMISSION,
+} VkrWorldGpuCandidateStream;
+
+vkr_internal VkrWorldGpuCandidateStream application_world_gpu_candidate_stream(
+    VkrDrawAlphaRouting alpha, bool8_t transmissive) {
+  if (transmissive)
+    return VKR_WORLD_GPU_CANDIDATE_STREAM_TRANSMISSION;
+  return alpha.world_transparent ? VKR_WORLD_GPU_CANDIDATE_STREAM_NONE
+                                 : VKR_WORLD_GPU_CANDIDATE_STREAM_OPAQUE;
+}
+
 /**
  * Local reflection-probe descriptors are selected from world position and
  * applied once per draw. Until probe selection moves into per-instance data,
@@ -728,6 +742,7 @@ vkr_internal bool8_t application_build_world_payload(
   uint32_t shadow_alpha_count = 0;
   uint32_t instance_slot_count = 0;
   uint32_t gpu_candidate_count = 0;
+  uint32_t transmission_gpu_candidate_count = 0;
 
   // ---- Count pass: classify each object once, then size the lists. ----
   for (uint32_t i = 0; i < mesh_count; ++i) {
@@ -764,7 +779,11 @@ vkr_internal bool8_t application_build_world_payload(
           application_material_alpha_routing(rf, material);
       const bool8_t transmissive =
           application_material_is_transmissive(rf, material);
-      if (!transmissive && !alpha.world_transparent) {
+      const VkrWorldGpuCandidateStream gpu_stream =
+          application_world_gpu_candidate_stream(alpha, transmissive);
+      if (gpu_stream == VKR_WORLD_GPU_CANDIDATE_STREAM_TRANSMISSION) {
+        transmission_gpu_candidate_count++;
+      } else if (gpu_stream == VKR_WORLD_GPU_CANDIDATE_STREAM_OPAQUE) {
         gpu_candidate_count++;
       }
       if (flags == 0) {
@@ -830,7 +849,11 @@ vkr_internal bool8_t application_build_world_payload(
           application_material_alpha_routing(rf, material);
       const bool8_t transmissive =
           application_material_is_transmissive(rf, material);
-      if (!transmissive && !alpha.world_transparent) {
+      const VkrWorldGpuCandidateStream gpu_stream =
+          application_world_gpu_candidate_stream(alpha, transmissive);
+      if (gpu_stream == VKR_WORLD_GPU_CANDIDATE_STREAM_TRANSMISSION) {
+        transmission_gpu_candidate_count++;
+      } else if (gpu_stream == VKR_WORLD_GPU_CANDIDATE_STREAM_OPAQUE) {
         gpu_candidate_count++;
       }
       if (flags == 0) {
@@ -860,7 +883,8 @@ vkr_internal bool8_t application_build_world_payload(
     *out_stats = stats;
   }
 
-  if (instance_slot_count == 0 && gpu_candidate_count == 0) {
+  if (instance_slot_count == 0 && gpu_candidate_count == 0 &&
+      transmission_gpu_candidate_count == 0) {
     *out_payload = (VkrWorldPassPayload){0};
     return true_v;
   }
@@ -874,10 +898,18 @@ vkr_internal bool8_t application_build_world_payload(
   VkrDrawCandidate *shadow_opaque_cands = NULL;
   VkrDrawCandidate *shadow_alpha_cands = NULL;
   VkrWorldDrawCandidate *gpu_candidates = NULL;
+  VkrWorldDrawCandidate *transmission_gpu_candidates = NULL;
   if (gpu_candidate_count > 0) {
     gpu_candidates = vkr_allocator_alloc(
         scratch, sizeof(VkrWorldDrawCandidate) * (uint64_t)gpu_candidate_count,
         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if (transmission_gpu_candidate_count > 0) {
+    transmission_gpu_candidates =
+        vkr_allocator_alloc(scratch,
+                            sizeof(VkrWorldDrawCandidate) *
+                                (uint64_t)transmission_gpu_candidate_count,
+                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
   if (camera_opaque_count > 0) {
     camera_opaque_cands = vkr_allocator_alloc(
@@ -966,6 +998,7 @@ vkr_internal bool8_t application_build_world_payload(
       (out_shadow && shadow_alpha_count > 0 &&
        (!shadow_alpha_draws || !shadow_alpha_cands)) ||
       (gpu_candidate_count > 0 && !gpu_candidates) ||
+      (transmission_gpu_candidate_count > 0 && !transmission_gpu_candidates) ||
       (world_instance_count > 0 && !instances) ||
       (shadow_instance_count > 0 && !shadow_instances)) {
     *out_payload = (VkrWorldPassPayload){0};
@@ -981,6 +1014,7 @@ vkr_internal bool8_t application_build_world_payload(
   uint32_t shadow_opaque_index = 0;
   uint32_t shadow_alpha_index = 0;
   uint32_t gpu_candidate_index = 0;
+  uint32_t transmission_gpu_candidate_index = 0;
   vis_slot = 0;
 
   // ---- Populate pass: reuse the cached visibility, never re-test. ----
@@ -1014,10 +1048,12 @@ vkr_internal bool8_t application_build_world_payload(
           application_material_alpha_routing(rf, material);
       const bool8_t transmissive =
           application_material_is_transmissive(rf, material);
-      if (!transmissive && !alpha.world_transparent) {
+      const VkrWorldGpuCandidateStream gpu_stream =
+          application_world_gpu_candidate_stream(alpha, transmissive);
+      if (gpu_stream != VKR_WORLD_GPU_CANDIDATE_STREAM_NONE) {
         const Vec3 half_extents = vec3_scale(
             vec3_sub(submesh->max_extents, submesh->min_extents), 0.5f);
-        gpu_candidates[gpu_candidate_index++] = (VkrWorldDrawCandidate){
+        VkrWorldDrawCandidate gpu_candidate = (VkrWorldDrawCandidate){
             .mesh = {.id = mesh_slot + 1u, .generation = 0},
             .geometry = submesh->geometry,
             .submesh_index = s,
@@ -1033,6 +1069,12 @@ vkr_internal bool8_t application_build_world_payload(
             .flags =
                 mesh->bounds_valid ? VKR_WORLD_DRAW_CANDIDATE_BOUNDS_VALID : 0u,
         };
+        if (gpu_stream == VKR_WORLD_GPU_CANDIDATE_STREAM_TRANSMISSION) {
+          transmission_gpu_candidates[transmission_gpu_candidate_index++] =
+              gpu_candidate;
+        } else {
+          gpu_candidates[gpu_candidate_index++] = gpu_candidate;
+        }
       }
       if (flags == 0) {
         continue;
@@ -1126,10 +1168,12 @@ vkr_internal bool8_t application_build_world_payload(
           application_material_alpha_routing(rf, material);
       const bool8_t transmissive =
           application_material_is_transmissive(rf, material);
-      if (!transmissive && !alpha.world_transparent) {
+      const VkrWorldGpuCandidateStream gpu_stream =
+          application_world_gpu_candidate_stream(alpha, transmissive);
+      if (gpu_stream != VKR_WORLD_GPU_CANDIDATE_STREAM_NONE) {
         const Vec3 half_extents = vec3_scale(
             vec3_sub(submesh->max_extents, submesh->min_extents), 0.5f);
-        gpu_candidates[gpu_candidate_index++] = (VkrWorldDrawCandidate){
+        VkrWorldDrawCandidate gpu_candidate = (VkrWorldDrawCandidate){
             .mesh = {.id = instance_slot + 1u,
                      .generation = instance->generation},
             .geometry = submesh->geometry,
@@ -1147,6 +1191,12 @@ vkr_internal bool8_t application_build_world_payload(
                          ? VKR_WORLD_DRAW_CANDIDATE_BOUNDS_VALID
                          : 0u,
         };
+        if (gpu_stream == VKR_WORLD_GPU_CANDIDATE_STREAM_TRANSMISSION) {
+          transmission_gpu_candidates[transmission_gpu_candidate_index++] =
+              gpu_candidate;
+        } else {
+          gpu_candidates[gpu_candidate_index++] = gpu_candidate;
+        }
       }
       if (flags == 0) {
         continue;
@@ -1204,6 +1254,14 @@ vkr_internal bool8_t application_build_world_payload(
     }
   }
 
+  if (gpu_candidate_index != gpu_candidate_count ||
+      transmission_gpu_candidate_index != transmission_gpu_candidate_count) {
+    *out_payload = (VkrWorldPassPayload){0};
+    if (out_shadow)
+      *out_shadow = (VkrShadowDrawLists){0};
+    return false_v;
+  }
+
   // ---- Emission: opaque merges; transparent and alpha do not. ----
   // Transparent draws carry a back-to-front order and alpha-tested shadow draws
   // rebind per-draw material state, so collapsing either would change what is
@@ -1248,6 +1306,8 @@ vkr_internal bool8_t application_build_world_payload(
   *out_payload = (VkrWorldPassPayload){
       .gpu_candidates = gpu_candidates,
       .gpu_candidate_count = gpu_candidate_count,
+      .transmission_gpu_candidates = transmission_gpu_candidates,
+      .transmission_gpu_candidate_count = transmission_gpu_candidate_count,
       .opaque_draws = opaque_draws,
       .opaque_draw_count = merged_opaque_draws,
       .transmission_draws = transmission_draws,

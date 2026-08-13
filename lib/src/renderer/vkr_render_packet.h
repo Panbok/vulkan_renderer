@@ -158,6 +158,9 @@ typedef struct VkrPreparedTextDraw {
 typedef struct VkrWorldPassPayload {
   const VkrWorldDrawCandidate *gpu_candidates;
   uint32_t gpu_candidate_count;
+  /** Independent unculled transmissive stream consumed by Metal P12. */
+  const VkrWorldDrawCandidate *transmission_gpu_candidates;
+  uint32_t transmission_gpu_candidate_count;
   const VkrDrawItem *opaque_draws;
   uint32_t opaque_draw_count;
   const VkrDrawItem *transmission_draws;
@@ -173,8 +176,16 @@ typedef struct VkrWorldPassPayload {
 /** Whether this packet can use the provisional fixed-capacity GPU draw path. */
 static INLINE bool8_t
 vkr_world_gpu_candidates_deferred_eligible(const VkrWorldPassPayload *world) {
-  return world && world->gpu_candidates && world->gpu_candidate_count > 0u &&
-                 world->gpu_candidate_count <= VKR_GPU_DRAW_CANDIDATE_CAPACITY
+  return world &&
+                 (world->gpu_candidate_count > 0u ||
+                  world->transmission_gpu_candidate_count > 0u) &&
+                 world->gpu_candidate_count <=
+                     VKR_GPU_DRAW_CANDIDATE_CAPACITY &&
+                 world->transmission_gpu_candidate_count <=
+                     VKR_GPU_DRAW_CANDIDATE_CAPACITY &&
+                 (world->gpu_candidate_count == 0u || world->gpu_candidates) &&
+                 (world->transmission_gpu_candidate_count == 0u ||
+                  world->transmission_gpu_candidates)
              ? true_v
              : false_v;
 }

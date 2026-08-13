@@ -77,6 +77,14 @@ static void test_gpu_candidate_capacity_selects_fallback(void) {
   world.gpu_candidate_count = 1u;
   world.gpu_candidates = NULL;
   assert(!vkr_world_gpu_candidates_deferred_eligible(&world));
+  world.gpu_candidate_count = 0u;
+  world.transmission_gpu_candidates = &candidate;
+  world.transmission_gpu_candidate_count = 1u;
+  assert(vkr_world_gpu_candidates_deferred_eligible(&world));
+  world.transmission_gpu_candidate_count = VKR_GPU_DRAW_CANDIDATE_CAPACITY + 1u;
+  assert(!vkr_world_gpu_candidates_deferred_eligible(&world));
+  world.transmission_gpu_candidate_count = 0u;
+  assert(!vkr_world_gpu_candidates_deferred_eligible(&world));
   assert(!vkr_world_gpu_candidates_deferred_eligible(NULL));
 
   printf("  test_gpu_candidate_capacity_selects_fallback PASSED\n");

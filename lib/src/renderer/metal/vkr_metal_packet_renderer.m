@@ -66,6 +66,12 @@ typedef struct VkrMetalPacketImageInstance {
   VkrMetalTextureResource resource;
   void *mip_views[VKR_METAL_PACKET_MAX_TEXTURE_MIPS];
   uint64_t last_use_submit_value;
+  uint64_t history_producer_submit_value;
+  uint64_t history_world_epoch;
+  Mat4 history_view_projection;
+  uint32_t history_width;
+  uint32_t history_height;
+  bool8_t history_valid;
   bool8_t live;
   bool8_t owned;
 } VkrMetalPacketImageInstance;
@@ -191,6 +197,11 @@ typedef struct VkrMetalPacketFrameUpload {
   uint64_t gpu_draw_candidate_source_offset;
   uint64_t gpu_draw_state_zero_source_offset;
   uint64_t gpu_draw_candidate_bytes;
+  uint64_t transmission_gpu_draw_instances_gpu;
+  uint64_t transmission_gpu_draw_icb_argument_gpu;
+  uint64_t transmission_gpu_draw_candidate_source_offset;
+  uint64_t transmission_gpu_draw_state_zero_source_offset;
+  uint64_t transmission_gpu_draw_candidate_bytes;
   uint64_t point_light_data_gpu;
   uint64_t point_light_masks_gpu;
   uint64_t shadow_cascades_gpu;
@@ -217,8 +228,10 @@ typedef struct VkrMetalPacketCommandSlot {
   id<MTL4CommandBuffer> buffer;
   id<MTL4CounterHeap> timestamp_heap;
   id<MTLIndirectCommandBuffer> gpu_draw_icb;
+  id<MTLIndirectCommandBuffer> transmission_gpu_draw_icb;
   VkrMetalPacketResult timing_result;
   uint64_t submit_value;
+  uint64_t resource_reuse_submit_value;
   uint32_t timestamp_entry_count;
   bool8_t timing_requested;
   bool8_t timing_collected;
@@ -295,6 +308,9 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> gpu_draw_prefix_pipeline;
   id<MTLComputePipelineState> gpu_draw_encode_pipeline;
   id<MTLComputePipelineState> gbuffer_resolve_pipeline;
+  id<MTLComputePipelineState> deferred_lighting_pipeline;
+  id<MTLComputePipelineState> transmission_shade_pipeline;
+  id<MTLComputePipelineState> hzb_build_pipeline;
   id<MTLArgumentEncoder> gpu_draw_icb_argument_encoder;
   id<MTLDepthStencilState> depth_write_state;
   id<MTLDepthStencilState> depth_read_state;
@@ -303,6 +319,9 @@ struct VkrMetalPacketRenderer {
   id<CAMetalDrawable> drawable;
   VkrRenderGraphFrameInfo prepared_frame;
   uint64_t submit_value;
+  uint64_t current_hzb_world_epoch;
+  Mat4 current_hzb_view_projection;
+  uint32_t selected_hzb_history_instance;
   uint32_t max_images;
   uint32_t max_passes;
   uint32_t max_meshes;
@@ -319,6 +338,7 @@ struct VkrMetalPacketRenderer {
   bool8_t srgb_output;
   bool8_t convert_vulkan_clip_y;
   bool8_t deferred_enabled;
+  bool8_t hzb_enabled;
   bool8_t frame_prepared;
   bool8_t pipeline_archive_warm;
   bool8_t pipeline_archive_written;

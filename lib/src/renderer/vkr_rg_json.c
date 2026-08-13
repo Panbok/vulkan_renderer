@@ -68,6 +68,16 @@ vkr_internal bool8_t vkr_rg_json_parse_condition(
                  &trimmed, "!editor_enabled && !deferred_enabled")) {
     out_condition->kind =
         VKR_RG_JSON_CONDITION_EDITOR_DISABLED_DEFERRED_DISABLED;
+  } else if (vkr_string8_equals_cstr_i(&trimmed,
+                                       "editor_enabled && deferred_enabled && "
+                                       "transmission_pending")) {
+    out_condition->kind =
+        VKR_RG_JSON_CONDITION_EDITOR_ENABLED_DEFERRED_TRANSMISSION;
+  } else if (vkr_string8_equals_cstr_i(&trimmed,
+                                       "!editor_enabled && deferred_enabled && "
+                                       "transmission_pending")) {
+    out_condition->kind =
+        VKR_RG_JSON_CONDITION_EDITOR_DISABLED_DEFERRED_TRANSMISSION;
   } else if (vkr_string8_equals_cstr_i(&trimmed, "hzb_history_valid")) {
     out_condition->kind = VKR_RG_JSON_CONDITION_HZB_HISTORY_VALID;
   } else if (vkr_string8_equals_cstr_i(&trimmed, "!hzb_history_valid")) {
@@ -1645,6 +1655,12 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return !frame->editor_enabled && frame->deferred_enabled;
   case VKR_RG_JSON_CONDITION_EDITOR_DISABLED_DEFERRED_DISABLED:
     return !frame->editor_enabled && !frame->deferred_enabled;
+  case VKR_RG_JSON_CONDITION_EDITOR_ENABLED_DEFERRED_TRANSMISSION:
+    return frame->editor_enabled && frame->deferred_enabled &&
+           frame->transmission_pending;
+  case VKR_RG_JSON_CONDITION_EDITOR_DISABLED_DEFERRED_TRANSMISSION:
+    return !frame->editor_enabled && frame->deferred_enabled &&
+           frame->transmission_pending;
   case VKR_RG_JSON_CONDITION_HZB_HISTORY_VALID:
     return frame->hzb_history_valid;
   case VKR_RG_JSON_CONDITION_HZB_HISTORY_INVALID:
@@ -1680,6 +1696,11 @@ vkr_internal bool8_t vkr_rg_json_repeat_count(
   if (vkr_string8_equals_cstr_i(&repeat->count_source,
                                 "shadow_cascade_count")) {
     *out_count = frame->shadow_cascade_count;
+    return true_v;
+  }
+  if (vkr_string8_equals_cstr_i(&repeat->count_source,
+                                "hzb_reduce_pass_count")) {
+    *out_count = frame->hzb_reduce_pass_count;
     return true_v;
   }
 
@@ -1911,6 +1932,10 @@ vkr_internal uint32_t vkr_rg_resolve_index(const VkrRgJsonIndex *index,
   if (vkr_string8_equals_cstr_i(&index->token, "${i}") ||
       vkr_string8_equals_cstr_i(&index->token, "i")) {
     return fallback;
+  }
+  if (vkr_string8_equals_cstr_i(&index->token, "${i+1}") ||
+      vkr_string8_equals_cstr_i(&index->token, "i+1")) {
+    return fallback == UINT32_MAX ? UINT32_MAX : fallback + 1u;
   }
 
   log_error("RenderGraph JSON: unknown index token '%.*s'",

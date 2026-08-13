@@ -796,7 +796,7 @@ static void harness_test_write_f32_le(uint8_t bytes[4], float32_t value) {
 
 static void test_harness_capture_catalog_and_converters(void) {
   printf("  Running test_harness_capture_catalog_and_converters...\n");
-  assert(vkr_renderer_capture_channel_count() == 15u);
+  assert(vkr_renderer_capture_channel_count() == 17u);
   assert(vkr_renderer_capture_channel_from_name("missing") ==
          VKR_CAPTURE_CHANNEL_INVALID);
   const VkrCaptureChannelId final_color =
@@ -805,9 +805,12 @@ static void test_harness_capture_catalog_and_converters(void) {
       vkr_renderer_capture_channel_from_name("depth");
   const VkrCaptureChannelId picking =
       vkr_renderer_capture_channel_from_name("picking_ids");
+  const VkrCaptureChannelId transmission_visibility =
+      vkr_renderer_capture_channel_from_name("transmission_visibility_ids");
   assert(final_color != VKR_CAPTURE_CHANNEL_INVALID);
   assert(depth != VKR_CAPTURE_CHANNEL_INVALID);
   assert(picking != VKR_CAPTURE_CHANNEL_INVALID);
+  assert(transmission_visibility != VKR_CAPTURE_CHANNEL_INVALID);
 
 #if !defined(_WIN32)
   char first_dir[] = "/tmp/vkr-capture-first-XXXXXX";

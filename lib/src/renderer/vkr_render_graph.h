@@ -597,6 +597,8 @@ typedef struct VkrRenderGraphFrameInfo {
   bool8_t deferred_enabled;
   /** True only when a completion-protected HZB history generation is valid. */
   bool8_t hzb_history_valid;
+  /** Number of graph-authored reductions after the HZB base mip. */
+  uint32_t hzb_reduce_pass_count;
   /** True when the packet contains transmissive world work. */
   bool8_t transmission_pending;
   /**

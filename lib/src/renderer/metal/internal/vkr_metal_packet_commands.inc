@@ -49,12 +49,16 @@ vkr_metal_packet_find_completed_timing(const VkrMetalPacketRenderer *renderer,
 vkr_internal bool8_t vkr_metal_packet_complete_command_slot(
     VkrMetalPacketRenderer *renderer, VkrMetalPacketCommandSlot *slot,
     bool8_t upload_path) {
-  if (!slot || slot->submit_value == 0)
+  if (!slot)
+    return false_v;
+  const uint64_t wait_value =
+      MAX(slot->submit_value, slot->resource_reuse_submit_value);
+  if (wait_value == 0)
     return true_v;
-  if (renderer->completion.signaledValue < slot->submit_value) {
+  if (renderer->completion.signaledValue < wait_value) {
     vkr_metal_packet_wait_counters_record(&renderer->wait_counters,
                                           upload_path);
-    if (!vkr_metal_packet_wait(renderer, slot->submit_value))
+    if (!vkr_metal_packet_wait(renderer, wait_value))
       return false_v;
   }
   vkr_metal_packet_cache_slot_timing(renderer, slot);
@@ -62,6 +66,7 @@ vkr_internal bool8_t vkr_metal_packet_complete_command_slot(
                            renderer->completion.signaledValue);
   [slot->allocator reset];
   slot->submit_value = 0;
+  slot->resource_reuse_submit_value = 0;
   slot->timestamp_entry_count = 0;
   slot->timing_requested = false_v;
   slot->timing_collected = false_v;

@@ -97,7 +97,7 @@ typedef struct VkrGpuDrawCompactionState {
   uint32_t visible_count;
   uint32_t overflow_count;
   uint32_t resolve_invalid_count;
-  uint32_t reserved;
+  uint32_t occlusion_culled_count;
 } VkrGpuDrawCompactionState;
 
 _Static_assert(sizeof(VkrGpuGeometryRow) == 48u, "VkrGpuGeometryRow ABI drift");

@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "id": "local.p12.metal.transmission.deferred",
+  "suite": "local",
+  "description": "Metal P12 layered transmission with direct opaque/transmission visibility captures.",
+  "scene": "assets/scenes/fixtures/layered_glass.scene.json",
+  "seed": 7,
+  "resolution": [960, 720],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": { "warmup": 2, "measure": 1 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [0, 1.4, 5.5],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 60,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "captures": [
+    {
+      "at_frame": 0,
+      "channels": [
+        "final_color",
+        "scene_color",
+        "visibility_ids",
+        "visibility_primitives",
+        "transmission_visibility_ids",
+        "transmission_visibility_primitives"
+      ]
+    }
+  ]
+}
