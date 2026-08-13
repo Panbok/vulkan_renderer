@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: partial
 updated: 2026-08-13
 authority: spec
 ---
@@ -7,10 +7,14 @@ authority: spec
 # GPU-Driven Deferred Visibility-Buffer Renderer
 
 The P0-P3 graph, lifetime, format, shared-ABI, and megabuffer foundations are
-implemented. GPU culling, indirect GPU submission, visibility/G-buffer
-rendering, deferred lighting, transmission resolve, HZB, and visibility-based
-picking remain proposed P4+ work. Rationale and the durable decisions this
-specification constrains are in
+implemented on both backends. Provisional Metal P4, P6, and P8 slices now ship
+behind the disabled-by-default `VKR_DEFERRED_ENABLED` selector: GPU frustum
+culling and four-bucket ICB submission, an opaque visibility buffer, and
+compute material resolve into direct-capture G-buffer targets. Vulkan
+P5/P7/P9 parity, P10 deferred lighting, transmission resolve, HZB, and
+visibility-based picking remain proposed. Until P10, the retained GPU-driven
+forward pass remains the final-color oracle beside the new diagnostic targets.
+Rationale and the durable decisions this specification constrains are in
 [ADR-028](../../architecture/adr/028-gpu-driven-deferred-visibility-buffer.md).
 
 ## Executive summary
@@ -139,10 +143,13 @@ workspace.
 | B10 | Schema/parser condition parity is incomplete | Add `deferred_enabled`, HZB-history validity, and transmission/picking conditions to both schema and parser validation |
 
 As of 2026-08-13, B1-B6, B8, and B10 are implemented on both backend code
-paths. B7 and B9 belong to P4/P5 and remain unimplemented. The macOS evidence
-gate exercised Metal API validation and megabuffer growth; native Vulkan
-execution remains required on a supported Windows target because this
-repository intentionally marks Vulkan initialization unsupported on macOS.
+paths. The Metal halves of B7 and B9 are provisionally implemented by P4;
+Vulkan parity remains open in P5. The macOS evidence gate exercised focused
+Metal API/shader validation, GPU candidate compaction, ICB execution,
+visibility-buffer rasterization, material resolve, and megabuffer growth.
+Native Vulkan execution remains required on a supported Windows target because
+this repository intentionally marks Vulkan initialization unsupported on
+macOS.
 
 The graph schema already supports buffer resource declarations. The gap is
 realization and the missing access, dispatch, lifetime, binding, and subresource
@@ -692,7 +699,15 @@ Implementation status on 2026-08-13: P0, P1, and P2 are implemented and pass
 the cross-platform CPU/build gates. P3 is implemented on both backend code
 paths and passes Metal native growth/API-validation evidence; native Vulkan
 validation and an accepted retained-forward pixel reference are still open
-evidence gates. P4 and later phases have not started.
+evidence gates. P4, P6, and P8 are provisionally implemented on Metal behind
+`VKR_DEFERRED_ENABLED=1`. Focused Metal API and shader/GPU validation pass with
+34 candidates, 34 visible rows split 28/6/0/0 across the four state buckets,
+zero compaction overflow, and zero rejected material-resolve pixels. Direct
+visibility-ID, primitive-ID, diffuse, F0/roughness/occlusion, normal, emissive,
+and barycentric/LOD captures are available. P5, P7, and P9 Vulkan parity have
+not started, and P10 deferred lighting is absent, so the new G-buffer does not
+yet produce final scene color. The captures and local Release profiles are
+non-authoritative until the owner accepts a clean matched evidence set.
 
 ### 11.1 P21 complete-retirement contract
 

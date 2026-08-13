@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-07
+updated: 2026-08-13
 authority: spec
 ---
 # Renderer Metrics Module and Automation Harness
@@ -96,14 +96,17 @@ This work is mostly consolidation. Reuse these; do not rebuild them.
 | Offscreen editor color target | conditional graph resource `scene_color`, `RendererFrontend.offscreen_color_handles` |
 | Monotonic timer | `vkr_platform_get_absolute_time()` |
 
-### 2.1 The renderer is forward, not deferred
+### 2.1 Forward default and provisional Metal deferred targets
 
-**There is no G-buffer and no normals attachment.** Normals, unlit, and
+The default renderer remains forward. Its `normals`, `unlit`, and
 lighting-only channels are captured by re-rendering a settled frame with a
-different `render_mode` global, not by reading an extra attachment.
+different `render_mode` global.
 
-This is cheap and correct, and it is stated here explicitly so that no future
-capture channel is designed around a target that does not exist.
+The provisional Metal P6/P8 path is the scoped exception. When
+`VKR_DEFERRED_ENABLED=1`, the graph realizes an opaque visibility attachment
+and material-resolve G-buffer targets. Their direct channels are diagnostic
+evidence for the Metal migration slice; they are unavailable on Vulkan and do
+not imply deferred final lighting, which remains P10 work.
 
 Existing telemetry is not uniformly safe to pull. Per-allocator
 `vkr_allocator_get_statistics()` reads non-atomic fields and cannot be sampled
@@ -711,6 +714,9 @@ keep authoritative profiling on the ordinary usage flags.
 | `depth` | `swapchain_depth` / `scene_depth` | depth-aspect copy |
 | `shadow_cascade_N` | `shadow_map` layer N | array layer slice |
 | `picking_ids` | `picking_color`, R32_UINT | exact object IDs |
+| `visibility_ids`, `visibility_primitives` | Metal `opaque_vbuffer`, RG32_UINT | direct component capture; provisional deferred path only |
+| `gbuffer_diffuse`, `gbuffer_specular`, `gbuffer_normal` | Metal P8 G-buffer targets | direct capture; normal preview decodes signed RG16 |
+| `deferred_emissive`, `resolve_barycentric_lod` | Metal P8 resolve targets | direct diagnostic capture |
 | `normals` | `final_color` at `VKR_RENDER_MODE_NORMAL` | **re-render, not an attachment** |
 | `unlit`, `lighting` | `final_color` at `UNLIT` / `LIGHTING` | re-render |
 | `shadow_debug_cascades`, `_factor`, `_depth` | `shadow_debug_mode` 1–3 | re-render |

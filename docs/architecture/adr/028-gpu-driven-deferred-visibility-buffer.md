@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: partial
 updated: 2026-08-13
 authority: adr
 ---
@@ -8,9 +8,13 @@ authority: adr
 
 ## Status
 
-**Proposed architecture; P0-P3 foundations implemented.** GPU culling and all
-deferred rendering features remain proposed. The implementation contract,
-migration slices, phase status, and evidence gates are in
+**Accepted (partial).** P0-P3 foundations ship on both backends. Metal P4, P6,
+and P8 provisionally ship behind `VKR_DEFERRED_ENABLED`: GPU-frustum-classified
+four-bucket ICB submission, opaque visibility raster, and compute material
+resolve into captureable G-buffer targets. P5/P7/P9 Vulkan parity and P10+
+lighting, transmission, HZB, and picking integration remain proposed. The
+implementation contract, migration slices, phase status, and evidence gates
+are in
 [deferred-visibility-buffer/SPEC.md](../../rendering/deferred-visibility-buffer/SPEC.md).
 
 ## Context
@@ -27,7 +31,8 @@ derivative-free lighting helpers, and conditional render-graph passes. P0-P3
 added typed graph-driven compute descriptors, realized graph buffers,
 indirect-read synchronization, per-mip graph image uses/views, shared
 geometry/candidate/visible rows, and stable-generation vertex/index
-megabuffers. GPU-generated command execution remains a P4/P5 feature.
+megabuffers. Metal now executes GPU-generated opaque commands; Vulkan command
+generation remains the P5 parity slice.
 
 Earlier opaque-compaction and megabuffer/MDI proposals need the same
 foundations, but their existence is not evidence that any of them ship. The

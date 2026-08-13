@@ -118,13 +118,13 @@ owning document status in the same change.
 | [024](architecture/adr/024-shared-bindless-gpu-cores.md) | implemented | Memory, submit-ring, ABI, slot-table, and capture-ring cores have real Metal and Vulkan callers with cross-platform regression witnesses |
 | [025](architecture/adr/025-selected-renderer-implementation-strategy.md) | accepted | One coarse selected renderer strategy for Metal and bindless Vulkan, replacing the backend-type ladder and legacy adaptor |
 | [026](architecture/adr/026-vulkan-1-2-retirement.md) | implemented | Vulkan 1.2 backend, shaders, legacy frontend model, interface, and graph migration residue removed under explicit owner authorization |
-| [028](architecture/adr/028-gpu-driven-deferred-visibility-buffer.md) | proposed; P0-P3 foundations implemented | GPU-driven deferred visibility buffer and G-buffer for opaque, cutout, and transmissive geometry; graph/lifetime/megabuffer foundations ship, while GPU submission and deferred rendering remain proposed; ADR-019 lighting retained |
+| [028](architecture/adr/028-gpu-driven-deferred-visibility-buffer.md) | partial; Metal P4/P6/P8 implemented | GPU-driven deferred visibility buffer and G-buffer; Metal GPU submission, opaque visibility, and material resolve ship provisionally, while Vulkan parity and P10+ remain proposed; ADR-019 lighting retained |
 
 ## Rendering
 
 | Document | Status | Purpose |
 |---|---|---|
-| [deferred-visibility-buffer/SPEC.md](rendering/deferred-visibility-buffer/SPEC.md) | proposed; P0-P3 foundations implemented | GPU-driven deferred visibility-buffer and G-buffer design. Graph, lifetime, format, ABI, and megabuffer foundations ship; P4+ rendering features remain proposed. Rationale in [ADR-028](architecture/adr/028-gpu-driven-deferred-visibility-buffer.md) |
+| [deferred-visibility-buffer/SPEC.md](rendering/deferred-visibility-buffer/SPEC.md) | partial; Metal P4/P6/P8 implemented | GPU-driven deferred visibility-buffer design. Metal GPU submission, visibility raster, material resolve, and direct captures ship behind a selector; Vulkan parity and deferred lighting remain proposed. Rationale in [ADR-028](architecture/adr/028-gpu-driven-deferred-visibility-buffer.md) |
 | [render-graph-design.md](rendering/render-graph-design.md) | partial | Access/subresource synchronization implemented; IBL bake coverage remains incomplete |
 | [render-graph-schema.json](rendering/render-graph-schema.json) | — | JSON schema for `assets/render_graphs/*.rendergraph.json` |
 | [stateless_renderer/stateless_renderer_spec.md](rendering/stateless_renderer/stateless_renderer_spec.md) | partial | Packet API design; see ADR-004 for the real boundary |
