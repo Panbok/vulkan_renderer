@@ -106,10 +106,15 @@ static void test_json_bindings_and_condition_parity(void) {
       "{\"name\":\"transmission\",\"type\":\"compute\",\"condition\":"
       "\"transmission_pending\",\"execute\":\"test\"},"
       "{\"name\":\"picking\",\"type\":\"compute\",\"condition\":\"!picking_"
-      "pending\",\"execute\":\"test\"}]}";
+      "pending\",\"execute\":\"test\"},"
+      "{\"name\":\"legacy-full\",\"type\":\"compute\",\"condition\":"
+      "\"!editor_enabled && !deferred_enabled\",\"execute\":\"test\"},"
+      "{\"name\":\"deferred-editor\",\"type\":\"compute\","
+      "\"condition\":\"editor_enabled && deferred_enabled\","
+      "\"execute\":\"test\"}]}";
   VkrRgJsonGraph graph = {0};
   assert(rg_barrier_test_load_json(&allocator, valid, &graph));
-  assert(graph.passes.length == 4u);
+  assert(graph.passes.length == 6u);
   assert(vector_get_VkrRgJsonPass(&graph.passes, 0)->condition.kind ==
          VKR_RG_JSON_CONDITION_DEFERRED_ENABLED);
   assert(vector_get_VkrRgJsonPass(&graph.passes, 1)->condition.kind ==
@@ -118,6 +123,10 @@ static void test_json_bindings_and_condition_parity(void) {
          VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING);
   assert(vector_get_VkrRgJsonPass(&graph.passes, 3)->condition.kind ==
          VKR_RG_JSON_CONDITION_PICKING_IDLE);
+  assert(vector_get_VkrRgJsonPass(&graph.passes, 4)->condition.kind ==
+         VKR_RG_JSON_CONDITION_EDITOR_DISABLED_DEFERRED_DISABLED);
+  assert(vector_get_VkrRgJsonPass(&graph.passes, 5)->condition.kind ==
+         VKR_RG_JSON_CONDITION_EDITOR_ENABLED_DEFERRED_ENABLED);
   const VkrRgJsonResourceUse *use = vector_get_VkrRgJsonResourceUse(
       &vector_get_VkrRgJsonPass(&graph.passes, 0)->reads, 0u);
   assert(use && use->binding.is_set && use->binding.value == 2u);

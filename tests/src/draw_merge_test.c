@@ -3,6 +3,7 @@
 #include "math/vkr_math.h"
 #include "renderer/systems/vkr_camera_controller.h"
 #include "renderer/systems/vkr_shadow_system.h"
+#include "renderer/vkr_render_packet.h"
 #include "renderer/vkr_visibility.h"
 
 #include <assert.h>
@@ -45,6 +46,40 @@ static void test_alpha_mode_routes_world_and_shadow_independently(void) {
   assert(blend.shadow_alpha_tested == false_v);
 
   printf("  test_alpha_mode_routes_world_and_shadow_independently PASSED\n");
+}
+
+static void test_gpu_world_state_bucket_contract(void) {
+  printf("  Running test_gpu_world_state_bucket_contract...\n");
+  assert(vkr_world_draw_state_bucket(VKR_MATERIAL_ALPHA_OPAQUE, false_v) ==
+         VKR_WORLD_DRAW_STATE_OPAQUE_BACK);
+  assert(vkr_world_draw_state_bucket(VKR_MATERIAL_ALPHA_OPAQUE, true_v) ==
+         VKR_WORLD_DRAW_STATE_OPAQUE_DOUBLE_SIDED);
+  assert(vkr_world_draw_state_bucket(VKR_MATERIAL_ALPHA_CUTOUT, false_v) ==
+         VKR_WORLD_DRAW_STATE_CUTOUT_BACK);
+  assert(vkr_world_draw_state_bucket(VKR_MATERIAL_ALPHA_CUTOUT, true_v) ==
+         VKR_WORLD_DRAW_STATE_CUTOUT_DOUBLE_SIDED);
+  printf("  test_gpu_world_state_bucket_contract PASSED\n");
+}
+
+static void test_gpu_candidate_capacity_selects_fallback(void) {
+  printf("  Running test_gpu_candidate_capacity_selects_fallback...\n");
+  VkrWorldDrawCandidate candidate = {0};
+  VkrWorldPassPayload world = {
+      .gpu_candidates = &candidate,
+      .gpu_candidate_count = 1u,
+  };
+
+  assert(vkr_world_gpu_candidates_deferred_eligible(&world));
+  world.gpu_candidate_count = VKR_GPU_DRAW_CANDIDATE_CAPACITY;
+  assert(vkr_world_gpu_candidates_deferred_eligible(&world));
+  world.gpu_candidate_count = VKR_GPU_DRAW_CANDIDATE_CAPACITY + 1u;
+  assert(!vkr_world_gpu_candidates_deferred_eligible(&world));
+  world.gpu_candidate_count = 1u;
+  world.gpu_candidates = NULL;
+  assert(!vkr_world_gpu_candidates_deferred_eligible(&world));
+  assert(!vkr_world_gpu_candidates_deferred_eligible(NULL));
+
+  printf("  test_gpu_candidate_capacity_selects_fallback PASSED\n");
 }
 
 static void assert_shadow_origin_alignment(Vec3 light_direction, Vec3 eye,
@@ -547,6 +582,8 @@ bool32_t run_draw_merge_tests(void) {
   test_same_geometry_different_material_does_not_merge();
   test_empty_input_is_safe();
   test_alpha_mode_routes_world_and_shadow_independently();
+  test_gpu_world_state_bucket_contract();
+  test_gpu_candidate_capacity_selects_fallback();
   test_shadow_origin_matches_shader_basis();
   test_shadow_scene_bounds_fit_only_relevant_casters();
   test_merged_runs_have_contiguous_instances();

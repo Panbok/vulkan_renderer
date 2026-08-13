@@ -796,7 +796,7 @@ static void harness_test_write_f32_le(uint8_t bytes[4], float32_t value) {
 
 static void test_harness_capture_catalog_and_converters(void) {
   printf("  Running test_harness_capture_catalog_and_converters...\n");
-  assert(vkr_renderer_capture_channel_count() == 8u);
+  assert(vkr_renderer_capture_channel_count() == 15u);
   assert(vkr_renderer_capture_channel_from_name("missing") ==
          VKR_CAPTURE_CHANNEL_INVALID);
   const VkrCaptureChannelId final_color =
