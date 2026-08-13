@@ -113,6 +113,125 @@ vkr_metal_packet_default_material_sampler(VkrMetalPacketRenderer *renderer,
   return vkr_metal_packet_sampler(renderer, &description, mip_level_count);
 }
 
+vkr_internal bool8_t vkr_metal_packet_megabuffer_capacity(
+    uint64_t current, uint64_t required, uint64_t *out_capacity) {
+  if (!out_capacity || required == 0u)
+    return false_v;
+  uint64_t capacity = current ? current : MB(8);
+  while (capacity < required) {
+    if (capacity > UINT64_MAX / 2u)
+      return false_v;
+    capacity *= 2u;
+  }
+  *out_capacity = capacity;
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_metal_packet_ensure_geometry_megabuffer(
+    VkrMetalPacketRenderer *renderer, uint64_t vertex_end, uint64_t index_end)
+    API_AVAILABLE(macos(26.0)) {
+  VkrMetalPacketGeometryMegabuffer *mega = &renderer->geometry_megabuffer;
+  if (mega->live && vertex_end <= mega->vertices.length &&
+      index_end <= mega->indices.length)
+    return true_v;
+
+  uint64_t vertex_capacity = 0u;
+  uint64_t index_capacity = 0u;
+  if (!vkr_metal_packet_megabuffer_capacity(mega->live ? mega->vertices.length
+                                                       : 0u,
+                                            vertex_end, &vertex_capacity) ||
+      !vkr_metal_packet_megabuffer_capacity(
+          mega->live ? mega->indices.length : 0u, index_end, &index_capacity)) {
+    return false_v;
+  }
+
+  VkrMetalBufferResource vertices = {0};
+  VkrMetalBufferResource indices = {0};
+  if (vkr_metal_memory_device_create_buffer(renderer->memory, vertex_capacity,
+                                            &vertices) !=
+          VKR_METAL_MEMORY_STATUS_OK ||
+      vkr_metal_memory_device_create_buffer(renderer->memory, index_capacity,
+                                            &indices) !=
+          VKR_METAL_MEMORY_STATUS_OK) {
+    if (vertices.metal_buffer)
+      (void)vkr_metal_memory_device_retire(renderer->memory, vertices.handle,
+                                           renderer->submit_value);
+    if (indices.metal_buffer)
+      (void)vkr_metal_memory_device_retire(renderer->memory, indices.handle,
+                                           renderer->submit_value);
+    (void)vkr_metal_memory_device_collect(
+        renderer->memory, renderer->completion.signaledValue, NULL);
+    return false_v;
+  }
+
+  if (mega->live) {
+    VkrMetalRingSlice slice = {0};
+    VkrMetalAddressPair upload = {0};
+    id<MTLBuffer> upload_buffer = nil;
+    id<MTL4ComputeCommandEncoder> encoder = nil;
+    if (!vkr_metal_packet_begin_upload(renderer, 1u, &slice, &upload,
+                                       &upload_buffer, &encoder)) {
+      (void)vkr_metal_memory_device_retire(renderer->memory, vertices.handle,
+                                           renderer->submit_value);
+      (void)vkr_metal_memory_device_retire(renderer->memory, indices.handle,
+                                           renderer->submit_value);
+      return false_v;
+    }
+    if (mega->vertex_cursor)
+      [encoder copyFromBuffer:(id<MTLBuffer>)mega->vertices.metal_buffer
+                 sourceOffset:0u
+                     toBuffer:(id<MTLBuffer>)vertices.metal_buffer
+            destinationOffset:0u
+                         size:mega->vertex_cursor];
+    if (mega->index_cursor)
+      [encoder copyFromBuffer:(id<MTLBuffer>)mega->indices.metal_buffer
+                 sourceOffset:0u
+                     toBuffer:(id<MTLBuffer>)indices.metal_buffer
+            destinationOffset:0u
+                         size:mega->index_cursor];
+    if (!vkr_metal_packet_submit_upload(renderer, encoder, slice)) {
+      (void)vkr_metal_memory_device_retire(renderer->memory, vertices.handle,
+                                           renderer->submit_value);
+      (void)vkr_metal_memory_device_retire(renderer->memory, indices.handle,
+                                           renderer->submit_value);
+      return false_v;
+    }
+    const uint64_t retire_value = renderer->submit_value;
+    if (vkr_metal_memory_device_retire(renderer->memory, mega->vertices.handle,
+                                       retire_value) !=
+            VKR_METAL_MEMORY_STATUS_OK ||
+        vkr_metal_memory_device_retire(renderer->memory, mega->indices.handle,
+                                       retire_value) !=
+            VKR_METAL_MEMORY_STATUS_OK) {
+      (void)vkr_metal_memory_device_retire(renderer->memory, vertices.handle,
+                                           retire_value);
+      (void)vkr_metal_memory_device_retire(renderer->memory, indices.handle,
+                                           retire_value);
+      return false_v;
+    }
+    mega->generation_replacements++;
+  }
+
+  mega->vertices = vertices;
+  mega->indices = indices;
+  mega->generation =
+      mega->generation == UINT32_MAX ? 1u : mega->generation + 1u;
+  if (mega->generation == 0u)
+    mega->generation = 1u;
+  mega->live = true_v;
+  for (uint32_t i = 0u; i < renderer->max_meshes; ++i) {
+    VkrMetalPacketMesh *mesh = &renderer->meshes[i];
+    if (!mesh->live)
+      continue;
+    mesh->vertices = mega->vertices;
+    mesh->indices = mega->indices;
+    mesh->gpu_row.vertex_address = mega->vertices.gpu_address;
+    mesh->gpu_row.index_address = mega->indices.gpu_address;
+    mesh->gpu_row.publication_generation = mega->generation;
+  }
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
     VkrMetalPacketRenderer *renderer,
     const VkrMetalPacketMeshCreateInfo *create_info,
@@ -157,35 +276,34 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
     if (slot->live)
       continue;
     const uint32_t generation = slot->generation;
-    slot->vertices = (VkrMetalBufferResource){0};
-    slot->indices = (VkrMetalBufferResource){0};
     const uint64_t vertex_bytes =
         (uint64_t)create_info->vertex_count * sizeof(VkrVertex3d);
     const uint64_t index_bytes =
         (uint64_t)create_info->index_count * sizeof(uint32_t);
-    if (vkr_metal_memory_device_create_buffer(renderer->memory, vertex_bytes,
-                                              &slot->vertices) !=
-            VKR_METAL_MEMORY_STATUS_OK ||
-        vkr_metal_memory_device_create_buffer(renderer->memory, index_bytes,
-                                              &slot->indices) !=
-            VKR_METAL_MEMORY_STATUS_OK ||
-        !vkr_metal_packet_upload_buffer_chunks(
+    VkrMetalPacketGeometryMegabuffer *mega = &renderer->geometry_megabuffer;
+    const uint64_t vertex_offset =
+        vkr_metal_packet_align_up(mega->vertex_cursor, 16u);
+    const uint64_t index_offset =
+        vkr_metal_packet_align_up(mega->index_cursor, sizeof(uint32_t));
+    if (vertex_offset > UINT64_MAX - vertex_bytes ||
+        index_offset > UINT64_MAX - index_bytes ||
+        vertex_offset / sizeof(VkrVertex3d) > UINT32_MAX ||
+        index_offset / sizeof(uint32_t) > UINT32_MAX ||
+        !vkr_metal_packet_ensure_geometry_megabuffer(
+            renderer, vertex_offset + vertex_bytes,
+            index_offset + index_bytes) ||
+        !vkr_metal_packet_upload_buffer_chunks_at(
             renderer, create_info->vertices, vertex_bytes,
-            (id<MTLBuffer>)slot->vertices.metal_buffer) ||
-        !vkr_metal_packet_upload_buffer_chunks(
+            (id<MTLBuffer>)mega->vertices.metal_buffer, vertex_offset) ||
+        !vkr_metal_packet_upload_buffer_chunks_at(
             renderer, create_info->indices, index_bytes,
-            (id<MTLBuffer>)slot->indices.metal_buffer)) {
-      if (slot->vertices.metal_buffer)
-        (void)vkr_metal_memory_device_retire(
-            renderer->memory, slot->vertices.handle, renderer->submit_value);
-      if (slot->indices.metal_buffer)
-        (void)vkr_metal_memory_device_retire(
-            renderer->memory, slot->indices.handle, renderer->submit_value);
-      (void)vkr_metal_memory_device_collect(renderer->memory,
-                                            renderer->submit_value, NULL);
+            (id<MTLBuffer>)mega->indices.metal_buffer, index_offset)) {
+      mega->rejected_publications++;
       *slot = (VkrMetalPacketMesh){.generation = generation};
       return false_v;
     }
+    slot->vertices = mega->vertices;
+    slot->indices = mega->indices;
     if (requested_handle.id) {
       slot->generation = requested_handle.generation;
     } else {
@@ -196,6 +314,16 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
     }
     slot->vertex_count = create_info->vertex_count;
     slot->index_count = create_info->index_count;
+    slot->gpu_row = (VkrGpuGeometryRow){
+        .vertex_address = mega->vertices.gpu_address,
+        .index_address = mega->indices.gpu_address,
+        .first_vertex = (uint32_t)(vertex_offset / sizeof(VkrVertex3d)),
+        .first_index = (uint32_t)(index_offset / sizeof(uint32_t)),
+        .vertex_stride = sizeof(VkrVertex3d),
+        .vertex_layout = VKR_GPU_VERTEX_LAYOUT_3D,
+        .publication_generation = mega->generation,
+        .flags = 1u,
+    };
     VkrMetalPacketSubmeshCreateInfo *submeshes =
         renderer->submeshes + (uint64_t)i * renderer->max_submeshes_per_mesh;
     if (create_info->submesh_count > 0) {
@@ -210,6 +338,12 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
     }
     slot->last_use_submit_value = renderer->submit_value;
     slot->live = true_v;
+    mega->vertex_cursor = vertex_offset + vertex_bytes;
+    mega->index_cursor = index_offset + index_bytes;
+    mega->vertex_live_bytes += vertex_bytes;
+    mega->index_live_bytes += index_bytes;
+    mega->vertex_high_water = Max(mega->vertex_high_water, mega->vertex_cursor);
+    mega->index_high_water = Max(mega->index_high_water, mega->index_cursor);
     *out_handle = (VkrMeshHandle){.id = i + 1, .generation = slot->generation};
     return true_v;
   }
@@ -401,18 +535,18 @@ bool8_t vkr_metal_packet_renderer_destroy_mesh(VkrMetalPacketRenderer *renderer,
   VkrMetalPacketMesh *slot = &renderer->meshes[handle.id - 1];
   if (!slot->live || slot->generation != handle.generation)
     return false_v;
-  if (vkr_metal_memory_device_retire(renderer->memory, slot->vertices.handle,
-                                     slot->last_use_submit_value) !=
-          VKR_METAL_MEMORY_STATUS_OK ||
-      vkr_metal_memory_device_retire(renderer->memory, slot->indices.handle,
-                                     slot->last_use_submit_value) !=
-          VKR_METAL_MEMORY_STATUS_OK)
-    return false_v;
+  VkrMetalPacketGeometryMegabuffer *mega = &renderer->geometry_megabuffer;
+  const uint64_t vertex_bytes =
+      (uint64_t)slot->vertex_count * sizeof(VkrVertex3d);
+  const uint64_t index_bytes = (uint64_t)slot->index_count * sizeof(uint32_t);
+  mega->vertex_live_bytes -= Min(mega->vertex_live_bytes, vertex_bytes);
+  mega->index_live_bytes -= Min(mega->index_live_bytes, index_bytes);
   slot->live = false_v;
   slot->generation =
       slot->generation == UINT32_MAX ? 1u : slot->generation + 1u;
   slot->vertices = (VkrMetalBufferResource){0};
   slot->indices = (VkrMetalBufferResource){0};
+  slot->gpu_row = (VkrGpuGeometryRow){0};
   MemZero(renderer->submeshes +
               (uint64_t)(handle.id - 1) * renderer->max_submeshes_per_mesh,
           (uint64_t)renderer->max_submeshes_per_mesh *

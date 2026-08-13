@@ -40,6 +40,49 @@ vkr_global const VkrGpuAbiField vkr_gpu_text_vertex_fields[] = {
     VKR_GPU_ABI_FIELD(VkrTextVertex, color, "color", 16),
 };
 
+vkr_global const VkrGpuAbiField vkr_gpu_geometry_row_fields[] = {
+    VKR_GPU_ABI_FIELD(VkrGpuGeometryRow, vertex_address, "vertex_address", 0),
+    VKR_GPU_ABI_FIELD(VkrGpuGeometryRow, index_address, "index_address", 8),
+    VKR_GPU_ABI_FIELD(VkrGpuGeometryRow, first_vertex, "first_vertex", 16),
+    VKR_GPU_ABI_FIELD(VkrGpuGeometryRow, first_index, "first_index", 20),
+    VKR_GPU_ABI_FIELD(VkrGpuGeometryRow, vertex_stride, "vertex_stride", 24),
+    VKR_GPU_ABI_FIELD(VkrGpuGeometryRow, vertex_layout, "vertex_layout", 28),
+    VKR_GPU_ABI_FIELD(VkrGpuGeometryRow, publication_generation,
+                      "publication_generation", 32),
+    VKR_GPU_ABI_FIELD(VkrGpuGeometryRow, flags, "flags", 36),
+};
+
+vkr_global const VkrGpuAbiField vkr_gpu_candidate_draw_row_fields[] = {
+    VKR_GPU_ABI_FIELD(VkrGpuCandidateDrawRow, geometry_index, "geometry_index",
+                      0),
+    VKR_GPU_ABI_FIELD(VkrGpuCandidateDrawRow, material_index, "material_index",
+                      4),
+    VKR_GPU_ABI_FIELD(VkrGpuCandidateDrawRow, instance_index, "instance_index",
+                      8),
+    VKR_GPU_ABI_FIELD(VkrGpuCandidateDrawRow, first_index, "first_index", 12),
+    VKR_GPU_ABI_FIELD(VkrGpuCandidateDrawRow, index_count, "index_count", 16),
+    VKR_GPU_ABI_FIELD(VkrGpuCandidateDrawRow, vertex_offset, "vertex_offset",
+                      20),
+    VKR_GPU_ABI_FIELD(VkrGpuCandidateDrawRow, state_bucket, "state_bucket", 24),
+    VKR_GPU_ABI_FIELD(VkrGpuCandidateDrawRow, flags, "flags", 28),
+    VKR_GPU_ABI_FIELD(VkrGpuCandidateDrawRow, local_bounding_sphere,
+                      "local_bounding_sphere", 32),
+};
+
+vkr_global const VkrGpuAbiField vkr_gpu_visible_draw_row_fields[] = {
+    VKR_GPU_ABI_FIELD(VkrGpuVisibleDrawRow, geometry_index, "geometry_index",
+                      0),
+    VKR_GPU_ABI_FIELD(VkrGpuVisibleDrawRow, material_index, "material_index",
+                      4),
+    VKR_GPU_ABI_FIELD(VkrGpuVisibleDrawRow, instance_index, "instance_index",
+                      8),
+    VKR_GPU_ABI_FIELD(VkrGpuVisibleDrawRow, first_index, "first_index", 12),
+    VKR_GPU_ABI_FIELD(VkrGpuVisibleDrawRow, index_count, "index_count", 16),
+    VKR_GPU_ABI_FIELD(VkrGpuVisibleDrawRow, vertex_offset, "vertex_offset", 20),
+    VKR_GPU_ABI_FIELD(VkrGpuVisibleDrawRow, state_bucket, "state_bucket", 24),
+    VKR_GPU_ABI_FIELD(VkrGpuVisibleDrawRow, flags, "flags", 28),
+};
+
 vkr_global const VkrGpuAbiRecord
     vkr_gpu_abi_records[VKR_GPU_ABI_RECORD_COUNT] = {
         [VKR_GPU_ABI_VERTEX] = VKR_GPU_ABI_RECORD(
@@ -50,6 +93,15 @@ vkr_global const VkrGpuAbiRecord
         [VKR_GPU_ABI_TEXT_VERTEX] =
             VKR_GPU_ABI_RECORD(VkrTextVertex, "VkrMetalPacketTextVertex", 32,
                                16, vkr_gpu_text_vertex_fields),
+        [VKR_GPU_ABI_GEOMETRY_ROW] =
+            VKR_GPU_ABI_RECORD(VkrGpuGeometryRow, "VkrGpuGeometryRow", 48, 8,
+                               vkr_gpu_geometry_row_fields),
+        [VKR_GPU_ABI_CANDIDATE_DRAW_ROW] =
+            VKR_GPU_ABI_RECORD(VkrGpuCandidateDrawRow, "VkrGpuCandidateDrawRow",
+                               48, 16, vkr_gpu_candidate_draw_row_fields),
+        [VKR_GPU_ABI_VISIBLE_DRAW_ROW] =
+            VKR_GPU_ABI_RECORD(VkrGpuVisibleDrawRow, "VkrGpuVisibleDrawRow", 32,
+                               4, vkr_gpu_visible_draw_row_fields),
 };
 
 const VkrGpuAbiRecord *vkr_gpu_abi_record(VkrGpuAbiRecordId id) {

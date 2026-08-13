@@ -285,6 +285,13 @@ vkr_internal bool8_t vkr_rg_validate_attachment_slice(
         (int)image->name.length, image->name.str);
     return false_v;
   }
+  if (desc->slice.mip_count > 1u) {
+    log_error("RenderGraph pass '%.*s' %s attachment for '%.*s' spans %u "
+              "mips; attachments require exactly one mip",
+              (int)pass->desc.name.length, pass->desc.name.str, label,
+              (int)image->name.length, image->name.str, desc->slice.mip_count);
+    return false_v;
+  }
 
   if (image->desc.mip_levels > 0 &&
       desc->slice.mip_level >= image->desc.mip_levels) {
@@ -310,6 +317,28 @@ vkr_internal bool8_t vkr_rg_validate_attachment_slice(
     }
   }
 
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_rg_validate_image_use_slice(const VkrRgPass *pass,
+                                                     const VkrRgImage *image,
+                                                     const VkrRgImageUse *use) {
+  if (!use->has_slice)
+    return true_v;
+  const uint32_t mip_count = use->slice.mip_count ? use->slice.mip_count : 1u;
+  if (!use->slice.layer_count ||
+      use->slice.mip_level >= image->desc.mip_levels ||
+      mip_count > image->desc.mip_levels - use->slice.mip_level ||
+      use->slice.base_layer >= image->desc.layers ||
+      use->slice.layer_count > image->desc.layers - use->slice.base_layer) {
+    log_error("RenderGraph pass '%.*s' image use for '%.*s' has out-of-range "
+              "mips [%u..%u) or layers [%u..%u)",
+              (int)pass->desc.name.length, pass->desc.name.str,
+              (int)image->name.length, image->name.str, use->slice.mip_level,
+              use->slice.mip_level + mip_count, use->slice.base_layer,
+              use->slice.base_layer + use->slice.layer_count);
+    return false_v;
+  }
   return true_v;
 }
 
@@ -375,13 +404,136 @@ vkr_internal bool8_t vkr_rg_validate_buffer_access_usage(
                                            VKR_BUFFER_USAGE_TRANSFER_DST,
                                            "transfer dst", "TRANSFER_DST");
   }
+  if (access & VKR_BUFFER_ACCESS_INDIRECT_READ) {
+    ok &= vkr_rg_validate_buffer_usage_bit(
+        pass, buffer, VKR_BUFFER_USAGE_INDIRECT, "indirect read", "INDIRECT");
+  }
   return ok;
+}
+
+vkr_internal bool8_t vkr_rg_validate_pass_bindings(const VkrRgPass *pass) {
+  const Vector_VkrRgImageUse *image_vectors[] = {&pass->desc.image_reads,
+                                                 &pass->desc.image_writes};
+  const Vector_VkrRgBufferUse *buffer_vectors[] = {&pass->desc.buffer_reads,
+                                                   &pass->desc.buffer_writes};
+
+  for (uint32_t a = 0; a < ArrayCount(image_vectors); ++a) {
+    const Vector_VkrRgImageUse *images = image_vectors[a];
+    for (uint64_t i = 0; i < images->length; ++i) {
+      const VkrRgImageUse *use =
+          vector_get_VkrRgImageUse((Vector_VkrRgImageUse *)images, i);
+      for (uint32_t b = a; b < ArrayCount(image_vectors); ++b) {
+        const Vector_VkrRgImageUse *others = image_vectors[b];
+        const uint64_t begin = b == a ? i + 1u : 0u;
+        for (uint64_t j = begin; j < others->length; ++j) {
+          const VkrRgImageUse *other =
+              vector_get_VkrRgImageUse((Vector_VkrRgImageUse *)others, j);
+          if (use->binding == other->binding &&
+              use->array_index == other->array_index &&
+              (use->image.id != other->image.id ||
+               use->image.generation != other->image.generation)) {
+            log_error("RenderGraph pass '%.*s' maps different images to "
+                      "binding %u[%u]",
+                      (int)pass->desc.name.length, pass->desc.name.str,
+                      use->binding, use->array_index);
+            return false_v;
+          }
+        }
+      }
+      for (uint32_t b = 0; b < ArrayCount(buffer_vectors); ++b) {
+        const Vector_VkrRgBufferUse *buffers = buffer_vectors[b];
+        for (uint64_t j = 0; j < buffers->length; ++j) {
+          const VkrRgBufferUse *other =
+              vector_get_VkrRgBufferUse((Vector_VkrRgBufferUse *)buffers, j);
+          if (use->binding == other->binding &&
+              use->array_index == other->array_index) {
+            log_error("RenderGraph pass '%.*s' maps an image and buffer to "
+                      "binding %u[%u]",
+                      (int)pass->desc.name.length, pass->desc.name.str,
+                      use->binding, use->array_index);
+            return false_v;
+          }
+        }
+      }
+    }
+  }
+
+  for (uint32_t a = 0; a < ArrayCount(buffer_vectors); ++a) {
+    const Vector_VkrRgBufferUse *buffers = buffer_vectors[a];
+    for (uint64_t i = 0; i < buffers->length; ++i) {
+      const VkrRgBufferUse *use =
+          vector_get_VkrRgBufferUse((Vector_VkrRgBufferUse *)buffers, i);
+      for (uint32_t b = a; b < ArrayCount(buffer_vectors); ++b) {
+        const Vector_VkrRgBufferUse *others = buffer_vectors[b];
+        const uint64_t begin = b == a ? i + 1u : 0u;
+        for (uint64_t j = begin; j < others->length; ++j) {
+          const VkrRgBufferUse *other =
+              vector_get_VkrRgBufferUse((Vector_VkrRgBufferUse *)others, j);
+          if (use->binding == other->binding &&
+              use->array_index == other->array_index &&
+              (use->buffer.id != other->buffer.id ||
+               use->buffer.generation != other->buffer.generation)) {
+            log_error("RenderGraph pass '%.*s' maps different buffers to "
+                      "binding %u[%u]",
+                      (int)pass->desc.name.length, pass->desc.name.str,
+                      use->binding, use->array_index);
+            return false_v;
+          }
+        }
+      }
+    }
+  }
+  return true_v;
 }
 
 vkr_internal bool8_t vkr_rg_validate_pass(VkrRenderGraph *graph,
                                           VkrRgPass *pass) {
   if (pass->desc.flags & VKR_RG_PASS_FLAG_DISABLED) {
     return true_v;
+  }
+
+  if (!vkr_rg_validate_pass_bindings(pass)) {
+    return false_v;
+  }
+
+  if (pass->desc.dispatch.kind != VKR_RG_DISPATCH_NONE) {
+    if (pass->desc.type != VKR_RG_PASS_TYPE_COMPUTE) {
+      log_error("RenderGraph pass '%.*s': dispatch requires a compute pass",
+                (int)pass->desc.name.length, pass->desc.name.str);
+      return false_v;
+    }
+    if (pass->desc.dispatch.kind == VKR_RG_DISPATCH_DIRECT &&
+        (!pass->desc.dispatch.group_count_x ||
+         !pass->desc.dispatch.group_count_y ||
+         !pass->desc.dispatch.group_count_z)) {
+      log_error("RenderGraph pass '%.*s': direct dispatch counts must be > 0",
+                (int)pass->desc.name.length, pass->desc.name.str);
+      return false_v;
+    }
+    if (pass->desc.dispatch.kind == VKR_RG_DISPATCH_INDIRECT) {
+      const VkrRgBufferUse *use = vkr_rg_pass_find_buffer_use(
+          &pass->desc, pass->desc.dispatch.indirect_binding,
+          pass->desc.dispatch.indirect_array_index);
+      VkrRgBuffer *buffer =
+          use ? vkr_rg_buffer_from_handle(graph, use->buffer) : NULL;
+      if (!use || !buffer ||
+          !(use->access & VKR_RG_BUFFER_ACCESS_INDIRECT_READ) ||
+          pass->desc.dispatch.indirect_offset > buffer->desc.size ||
+          buffer->desc.size - pass->desc.dispatch.indirect_offset < 12u) {
+        log_error("RenderGraph pass '%.*s': invalid indirect dispatch source "
+                  "at binding %u[%u] offset %llu",
+                  (int)pass->desc.name.length, pass->desc.name.str,
+                  pass->desc.dispatch.indirect_binding,
+                  pass->desc.dispatch.indirect_array_index,
+                  (unsigned long long)pass->desc.dispatch.indirect_offset);
+        return false_v;
+      }
+    } else if (pass->desc.dispatch.kind != VKR_RG_DISPATCH_DIRECT) {
+      log_error("RenderGraph pass '%.*s': unknown dispatch kind %u",
+                (int)pass->desc.name.length, pass->desc.name.str,
+                (uint32_t)pass->desc.dispatch.kind);
+      return false_v;
+    }
   }
 
   if (pass->desc.type == VKR_RG_PASS_TYPE_GRAPHICS) {
@@ -435,7 +587,8 @@ vkr_internal bool8_t vkr_rg_validate_pass(VkrRenderGraph *graph,
                 (int)pass->desc.name.length, pass->desc.name.str);
       return false_v;
     }
-    if (!vkr_rg_validate_image_access_usage(pass, image, use->access)) {
+    if (!vkr_rg_validate_image_access_usage(pass, image, use->access) ||
+        !vkr_rg_validate_image_use_slice(pass, image, use)) {
       return false_v;
     }
   }
@@ -448,7 +601,8 @@ vkr_internal bool8_t vkr_rg_validate_pass(VkrRenderGraph *graph,
                 (int)pass->desc.name.length, pass->desc.name.str);
       return false_v;
     }
-    if (!vkr_rg_validate_image_access_usage(pass, image, use->access)) {
+    if (!vkr_rg_validate_image_access_usage(pass, image, use->access) ||
+        !vkr_rg_validate_image_use_slice(pass, image, use)) {
       return false_v;
     }
   }
@@ -1066,7 +1220,7 @@ vkr_internal bool8_t vkr_rg_declare_image_access(
   VkrImageSubresourceRange requested = {0};
   if (slice) {
     requested.base_mip = slice->mip_level;
-    requested.mip_count = 1;
+    requested.mip_count = slice->mip_count ? slice->mip_count : 1u;
     requested.base_layer = slice->base_layer;
     requested.layer_count = slice->layer_count;
   }

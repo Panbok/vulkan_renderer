@@ -15,8 +15,15 @@ typedef enum VkrRgJsonConditionKind {
   VKR_RG_JSON_CONDITION_NONE = 0,
   VKR_RG_JSON_CONDITION_EDITOR_ENABLED,
   VKR_RG_JSON_CONDITION_EDITOR_DISABLED,
+  VKR_RG_JSON_CONDITION_DEFERRED_ENABLED,
+  VKR_RG_JSON_CONDITION_DEFERRED_DISABLED,
+  VKR_RG_JSON_CONDITION_HZB_HISTORY_VALID,
+  VKR_RG_JSON_CONDITION_HZB_HISTORY_INVALID,
+  VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING,
+  VKR_RG_JSON_CONDITION_TRANSMISSION_IDLE,
   /** True only on frames whose packet actually requests a pick. */
   VKR_RG_JSON_CONDITION_PICKING_PENDING,
+  VKR_RG_JSON_CONDITION_PICKING_IDLE,
 } VkrRgJsonConditionKind;
 
 /**
@@ -54,6 +61,9 @@ typedef enum VkrRgJsonResourceFlags {
   VKR_RG_JSON_RESOURCE_FLAG_EXTERNAL = 1 << 2,   // The resource is external.
   VKR_RG_JSON_RESOURCE_FLAG_PER_IMAGE = 1 << 3,  // The resource is per image.
   VKR_RG_JSON_RESOURCE_FLAG_RESIZABLE = 1 << 4,  // The resource is resizable.
+  VKR_RG_JSON_RESOURCE_FLAG_PER_FRAME_SLOT =
+      1 << 5, // One resource per completion-gated frame slot.
+  VKR_RG_JSON_RESOURCE_FLAG_HISTORY = 1 << 6, // Completion-gated history ring.
 } VkrRgJsonResourceFlags;
 
 /**
@@ -103,6 +113,9 @@ typedef struct VkrRgJsonImageDesc {
   bool8_t layers_is_set;      // Whether the layers are set.
   uint32_t layers;            // The layers of the image.
   String8 layers_source;      // The source of the layers.
+  bool8_t mip_levels_is_set;  // Whether an explicit mip count was authored.
+  bool8_t mip_levels_full;    // Whether the full chain was requested.
+  uint32_t mip_levels;        // Explicit mip level count.
   VkrRgJsonExtent extent;     // The extent of the image.
 } VkrRgJsonImageDesc;
 
@@ -171,6 +184,7 @@ typedef enum VkrRgJsonBufferAccessFlags {
   VKR_RG_JSON_BUFFER_ACCESS_STORAGE_WRITE = 1 << 4,
   VKR_RG_JSON_BUFFER_ACCESS_TRANSFER_SRC = 1 << 5,
   VKR_RG_JSON_BUFFER_ACCESS_TRANSFER_DST = 1 << 6,
+  VKR_RG_JSON_BUFFER_ACCESS_INDIRECT_READ = 1 << 7,
 } VkrRgJsonBufferAccessFlags;
 
 /**
@@ -206,6 +220,11 @@ typedef struct VkrRgJsonResourceUse {
   VkrRgJsonImageAccessFlags image_access; // The image access of the resource.
   VkrRgJsonBufferAccessFlags
       buffer_access; // The buffer access of the resource.
+  bool8_t has_slice;
+  VkrRgJsonIndex slice_base_mip;
+  VkrRgJsonIndex slice_mip_count;
+  VkrRgJsonIndex slice_base_layer;
+  VkrRgJsonIndex slice_layer_count;
 } VkrRgJsonResourceUse;
 Vector(VkrRgJsonResourceUse);
 
@@ -262,7 +281,12 @@ typedef struct VkrRgJsonPass {
   Vector_VkrRgJsonResourceUse reads;  // The reads of the pass.
   Vector_VkrRgJsonResourceUse writes; // The writes of the pass.
   VkrRgJsonAttachments attachments;   // The attachments of the pass.
+  VkrRgComputeDispatchDesc dispatch;  // Optional typed compute dispatch.
   String8 execute;                    // The execute of the pass.
+  VkrRgPassExecuteFn execute_fn;      // Resolved once before frame building.
+  void *execute_user_data;            // Stable backend executor data.
+  uint32_t executor_id;               // Stable backend-local executor kind.
+  bool8_t executor_resolved;          // Whether the typed binding succeeded.
 } VkrRgJsonPass;
 Vector(VkrRgJsonPass);
 
@@ -309,16 +333,21 @@ bool8_t vkr_rg_json_load_file(VkrAllocator *allocator, const char *path,
 void vkr_rg_json_destroy(VkrRgJsonGraph *graph);
 
 /**
+ * Resolves every authored executor exactly once and validates pass-type
+ * compatibility. Must be called before vkr_rg_build_from_json().
+ */
+bool8_t vkr_rg_json_bind_executors(VkrRgJsonGraph *graph,
+                                   const VkrRgExecutorRegistry *executors);
+
+/**
  * Build a render graph from a JSON graph.
  * @note: The render graph is only used to describe a render graph.
  * @param rg: The render graph to build.
  * @param json_graph: The JSON graph to build.
  * @param frame: The frame info.
- * @param executors: The executors.
  * @return: true_v if the render graph was built successfully, false_v
  * otherwise.
  */
 bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
                                const VkrRgJsonGraph *json_graph,
-                               const VkrRenderGraphFrameInfo *frame,
-                               const VkrRgExecutorRegistry *executors);
+                               const VkrRenderGraphFrameInfo *frame);

@@ -110,6 +110,27 @@ bool8_t vkr_metal_packet_renderer_get_memory_metrics(
   return true_v;
 }
 
+void vkr_metal_packet_renderer_geometry_megabuffer_metrics(
+    const VkrMetalPacketRenderer *renderer,
+    VkrGeometryMegabufferMetrics *out_metrics) {
+  if (!out_metrics)
+    return;
+  *out_metrics = (VkrGeometryMegabufferMetrics){0};
+  if (!renderer)
+    return;
+  const VkrMetalPacketGeometryMegabuffer *mega = &renderer->geometry_megabuffer;
+  out_metrics->vertex_capacity_bytes = mega->vertices.length;
+  out_metrics->index_capacity_bytes = mega->indices.length;
+  out_metrics->live_bytes = mega->vertex_live_bytes + mega->index_live_bytes;
+  out_metrics->fragmentation_bytes =
+      mega->vertex_cursor + mega->index_cursor - out_metrics->live_bytes;
+  out_metrics->high_water_bytes =
+      mega->vertex_high_water + mega->index_high_water;
+  out_metrics->rejected_publications = mega->rejected_publications;
+  out_metrics->generation_replacements = mega->generation_replacements;
+  out_metrics->generation = mega->generation;
+}
+
 bool8_t vkr_metal_packet_renderer_get_and_reset_upload_wait_count(
     VkrMetalPacketRenderer *renderer, uint64_t *out_wait_count) {
   if (!renderer || !out_wait_count)
@@ -180,6 +201,16 @@ bool8_t vkr_metal_packet_renderer_drain(
                             .generation = renderer->meshes[i].generation}))
       return false_v;
   }
+  if (renderer->geometry_megabuffer.live) {
+    if (vkr_metal_memory_device_retire(
+            renderer->memory, renderer->geometry_megabuffer.vertices.handle,
+            renderer->submit_value) != VKR_METAL_MEMORY_STATUS_OK ||
+        vkr_metal_memory_device_retire(
+            renderer->memory, renderer->geometry_megabuffer.indices.handle,
+            renderer->submit_value) != VKR_METAL_MEMORY_STATUS_OK)
+      return false_v;
+    renderer->geometry_megabuffer = (VkrMetalPacketGeometryMegabuffer){0};
+  }
   for (uint32_t i = 0; i < renderer->max_textures; ++i) {
     if (renderer->textures[i].live &&
         !vkr_metal_packet_renderer_destroy_texture(
@@ -189,15 +220,31 @@ bool8_t vkr_metal_packet_renderer_drain(
       return false_v;
   }
   for (uint32_t i = 0; i < renderer->max_images; ++i) {
-    if (!renderer->images[i].live || !renderer->images[i].owned) {
-      renderer->images[i].live = false_v;
-      continue;
+    VkrMetalPacketImage *slot = &renderer->images[i];
+    for (uint32_t instance = 0u; slot->live && instance < slot->instance_count;
+         ++instance) {
+      if (!vkr_metal_packet_retire_image_instance(renderer,
+                                                  &slot->instances[instance]))
+        return false_v;
     }
-    if (vkr_metal_memory_device_retire(
-            renderer->memory, renderer->images[i].resource.handle,
-            renderer->submit_value) != VKR_METAL_MEMORY_STATUS_OK)
-      return false_v;
-    renderer->images[i].live = false_v;
+    *slot = (VkrMetalPacketImage){0};
+  }
+  for (uint32_t i = 0; i < renderer->max_images; ++i) {
+    VkrMetalPacketGraphBuffer *slot = &renderer->graph_buffers[i];
+    VkrMetalPacketGraphBufferInstance *instances =
+        &renderer->graph_buffer_instances[(uint64_t)i *
+                                          renderer->command_slot_count];
+    for (uint32_t instance = 0u; slot->live && instance < slot->instance_count;
+         ++instance) {
+      if (instances[instance].live &&
+          vkr_metal_memory_device_retire(
+              renderer->memory, instances[instance].resource.handle,
+              instances[instance].last_use_submit_value) !=
+              VKR_METAL_MEMORY_STATUS_OK)
+        return false_v;
+      instances[instance] = (VkrMetalPacketGraphBufferInstance){0};
+    }
+    *slot = (VkrMetalPacketGraphBuffer){0};
   }
   if (vkr_metal_material_table_device_collect(renderer->materials,
                                               renderer->submit_value, NULL) !=

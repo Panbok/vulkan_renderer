@@ -117,6 +117,44 @@ vkr_internal bool8_t vkr_metal_packet_validate_nested_abi(
              : false_v;
 }
 
+vkr_internal bool8_t vkr_metal_packet_validate_nested_gpu_abi(
+    NSString *pipeline_label, MTLStructType *root_type, const char *member_name,
+    VkrGpuAbiRecordId record_id) API_AVAILABLE(macos(26.0)) {
+  MTLStructMember *member =
+      [root_type memberByName:[NSString stringWithUTF8String:member_name]];
+  if (!member) {
+    NSString *slang_name = [NSString stringWithFormat:@"%s_0", member_name];
+    member = [root_type memberByName:slang_name];
+  }
+  MTLPointerType *pointer = member.pointerType;
+  const VkrGpuAbiRecord *record = vkr_gpu_abi_record(record_id);
+  if (!member || !pointer || !record || !pointer.elementStructType ||
+      pointer.dataSize != record->expected_size) {
+    log_error("Metal shared GPU ABI type missing for %s/%s",
+              pipeline_label.UTF8String,
+              record ? record->shader_name : "unknown");
+    return false_v;
+  }
+  bool8_t valid = true_v;
+  for (uint32_t i = 0u; i < record->field_count; ++i) {
+    const VkrGpuAbiField *field = &record->fields[i];
+    MTLStructMember *field_member = [pointer.elementStructType
+        memberByName:[NSString stringWithUTF8String:field->shader_name]];
+    for (uint32_t suffix = 0; !field_member && suffix < 4; ++suffix) {
+      NSString *slang_name =
+          [NSString stringWithFormat:@"%s_%u", field->shader_name, suffix];
+      field_member = [pointer.elementStructType memberByName:slang_name];
+    }
+    if (!field_member || field_member.offset != field->expected_offset) {
+      log_error("Metal shared GPU ABI mismatch for %s/%s.%s",
+                pipeline_label.UTF8String, record->shader_name,
+                field->shader_name);
+      valid = false_v;
+    }
+  }
+  return valid;
+}
+
 vkr_internal MTLStructType *
 vkr_metal_packet_nested_struct(MTLStructType *root_type,
                                const char *member_name)
@@ -154,7 +192,13 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
   }
   if (record_id == VKR_METAL_PACKET_ABI_DRAW_ROOT ||
       record_id == VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT) {
-    if (!vkr_metal_packet_validate_nested_abi(pipeline_label,
+    if (!vkr_metal_packet_validate_nested_gpu_abi(
+            pipeline_label, root.bufferStructType, "geometry_rows",
+            VKR_GPU_ABI_GEOMETRY_ROW) ||
+        !vkr_metal_packet_validate_nested_gpu_abi(
+            pipeline_label, root.bufferStructType, "visible_rows",
+            VKR_GPU_ABI_VISIBLE_DRAW_ROW) ||
+        !vkr_metal_packet_validate_nested_abi(pipeline_label,
                                               root.bufferStructType, "vertices",
                                               VKR_METAL_PACKET_ABI_VERTEX) ||
         !vkr_metal_packet_validate_nested_abi(pipeline_label,
@@ -617,9 +661,10 @@ vkr_internal bool8_t vkr_metal_packet_upload(
   return vkr_metal_packet_submit_upload(renderer, encoder, slice);
 }
 
-vkr_internal bool8_t vkr_metal_packet_upload_buffer_chunks(
+vkr_internal bool8_t vkr_metal_packet_upload_buffer_chunks_at(
     VkrMetalPacketRenderer *renderer, const void *source, uint64_t size,
-    id<MTLBuffer> destination) API_AVAILABLE(macos(26.0)) {
+    id<MTLBuffer> destination, uint64_t destination_offset)
+    API_AVAILABLE(macos(26.0)) {
   if (!renderer || !source || size == 0 || !destination ||
       renderer->upload_slot_size == 0)
     return false_v;
@@ -638,13 +683,20 @@ vkr_internal bool8_t vkr_metal_packet_upload_buffer_chunks(
     [encoder copyFromBuffer:upload_buffer
                sourceOffset:slice.offset
                    toBuffer:destination
-          destinationOffset:offset
+          destinationOffset:destination_offset + offset
                        size:chunk_size];
     if (!vkr_metal_packet_submit_upload(renderer, encoder, slice))
       return false_v;
     offset += chunk_size;
   }
   return true_v;
+}
+
+vkr_internal bool8_t vkr_metal_packet_upload_buffer_chunks(
+    VkrMetalPacketRenderer *renderer, const void *source, uint64_t size,
+    id<MTLBuffer> destination) API_AVAILABLE(macos(26.0)) {
+  return vkr_metal_packet_upload_buffer_chunks_at(renderer, source, size,
+                                                  destination, 0u);
 }
 
 vkr_internal bool8_t vkr_metal_packet_upload_cubemap(
@@ -757,6 +809,7 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
       config->capture_ring_capacity > VKR_CAPTURE_RING_CAPACITY_MAX ||
       config->capture_max_batch_bytes == 0 ||
       config->frame_slot_count > UINT32_MAX / 4u ||
+      config->frame_slot_count > VKR_METAL_PACKET_GRAPH_INSTANCE_MAX ||
       config->upload_ring_size % ((uint64_t)config->frame_slot_count * 4u) !=
           0 ||
       config->readback_ring_size % ((uint64_t)config->frame_slot_count * 4u) !=
@@ -777,7 +830,8 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
        !config->metal_layer))
     return false_v;
   const uint64_t memory_record_capacity =
-      (uint64_t)config->max_images * 2u + (uint64_t)config->max_meshes * 2u +
+      (uint64_t)config->max_images * (1u + 2u * config->frame_slot_count) +
+      (uint64_t)config->max_meshes * 2u +
       (uint64_t)config->max_material_rows * 4u + config->max_textures + 3u;
   if (memory_record_capacity >= UINT32_MAX)
     return false_v;
@@ -838,6 +892,8 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
        internally, so the total carries slack per array plus a fixed margin. */
     const uint64_t record_bytes[] = {
         vkr_metal_packet_images_bytes(renderer),
+        vkr_metal_packet_graph_buffers_bytes(renderer),
+        vkr_metal_packet_graph_buffer_instances_bytes(renderer),
         vkr_metal_packet_meshes_bytes(renderer),
         vkr_metal_packet_submeshes_bytes(renderer),
         vkr_metal_packet_materials_bytes(renderer),
@@ -864,29 +920,34 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
     VkrAllocator *records = &renderer->record_allocator;
     renderer->images =
         vkr_metal_packet_record_alloc(records, record_bytes[0], true_v);
-    renderer->meshes =
+    renderer->graph_buffers =
         vkr_metal_packet_record_alloc(records, record_bytes[1], true_v);
+    renderer->graph_buffer_instances =
+        vkr_metal_packet_record_alloc(records, record_bytes[2], true_v);
+    renderer->meshes =
+        vkr_metal_packet_record_alloc(records, record_bytes[3], true_v);
     /* Submesh entries are read only below a live mesh's initialized count, so
        touching the entire 96 MiB worst-case array at startup is unnecessary. */
     renderer->submeshes =
-        vkr_metal_packet_record_alloc(records, record_bytes[2], false_v);
+        vkr_metal_packet_record_alloc(records, record_bytes[4], false_v);
     renderer->packet_materials =
-        vkr_metal_packet_record_alloc(records, record_bytes[3], true_v);
+        vkr_metal_packet_record_alloc(records, record_bytes[5], true_v);
     renderer->textures =
-        vkr_metal_packet_record_alloc(records, record_bytes[4], true_v);
+        vkr_metal_packet_record_alloc(records, record_bytes[6], true_v);
     renderer->samplers =
-        vkr_metal_packet_record_alloc(records, record_bytes[5], false_v);
+        vkr_metal_packet_record_alloc(records, record_bytes[7], false_v);
     renderer->text_uploads =
-        vkr_metal_packet_record_alloc(records, record_bytes[6], false_v);
+        vkr_metal_packet_record_alloc(records, record_bytes[8], false_v);
     renderer->render_passes =
-        vkr_metal_packet_record_alloc(records, record_bytes[7], true_v);
-    renderer->command_slots =
-        vkr_metal_packet_record_alloc(records, record_bytes[8], true_v);
-    renderer->completed_timing_results =
         vkr_metal_packet_record_alloc(records, record_bytes[9], true_v);
-    if (!renderer->images || !renderer->meshes || !renderer->submeshes ||
-        !renderer->packet_materials || !renderer->textures ||
-        !renderer->samplers || !renderer->text_uploads ||
+    renderer->command_slots =
+        vkr_metal_packet_record_alloc(records, record_bytes[10], true_v);
+    renderer->completed_timing_results =
+        vkr_metal_packet_record_alloc(records, record_bytes[11], true_v);
+    if (!renderer->images || !renderer->graph_buffers ||
+        !renderer->graph_buffer_instances || !renderer->meshes ||
+        !renderer->submeshes || !renderer->packet_materials ||
+        !renderer->textures || !renderer->samplers || !renderer->text_uploads ||
         !renderer->render_passes || !renderer->command_slots ||
         !renderer->completed_timing_results) {
       vkr_metal_packet_renderer_destroy(renderer);
@@ -969,6 +1030,8 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
              vkr_metal_packet_register_executors(renderer) &&
              vkr_rg_json_load_file(renderer->allocator, config->graph_path,
                                    &renderer->json_graph) &&
+             vkr_rg_json_bind_executors(&renderer->json_graph,
+                                        &renderer->executors) &&
              (renderer->graph = vkr_rg_create(renderer->allocator)) != NULL &&
              vkr_rg_set_frame_allocator(renderer->graph,
                                         &renderer->graph_frame_allocator) &&

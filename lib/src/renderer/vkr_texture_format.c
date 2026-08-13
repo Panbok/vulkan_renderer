@@ -29,6 +29,8 @@ static const VkrTextureFormatInfo
         [VKR_TEXTURE_FORMAT_D16_UNORM] = {1, 1, 1, 2, false_v, true_v},
         [VKR_TEXTURE_FORMAT_D32_SFLOAT] = {1, 1, 1, 4, false_v, true_v},
         [VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT] = {2, 1, 1, 4, false_v, true_v},
+        [VKR_TEXTURE_FORMAT_R32G32_UINT] = {2, 1, 1, 8, false_v, false_v},
+        [VKR_TEXTURE_FORMAT_R16G16_SNORM] = {2, 1, 1, 4, false_v, false_v},
 };
 
 bool8_t vkr_texture_format_get_info(VkrTextureFormat format,

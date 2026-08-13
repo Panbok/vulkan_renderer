@@ -1,6 +1,7 @@
 #pragma once
 
 #include "renderer/vkr_asset_publisher.h"
+#include "renderer/vkr_gpu_abi.h"
 #include "renderer/vkr_gpu_memory.h"
 #include "renderer/vkr_gpu_slot_table.h"
 #include "renderer/vkr_ibl_math.h"
@@ -58,6 +59,7 @@ typedef struct VkrBindlessVulkanRendererConfig {
   uint32_t memory_block_allocation_capacity;
   uint32_t publication_staging_capacity;
   uint32_t max_graph_images;
+  uint32_t max_graph_buffers;
   uint32_t max_graph_passes;
   bool8_t enable_validation;
   bool8_t enable_synchronization_validation;
@@ -98,6 +100,10 @@ typedef struct VkrBindlessVulkanMemoryMetrics {
   uint64_t block_capacity_failures;
   VkrGpuMemoryMetrics aggregate;
 } VkrBindlessVulkanMemoryMetrics;
+
+void vkr_bindless_vulkan_renderer_geometry_megabuffer_metrics(
+    const VkrBindlessVulkanRenderer *renderer,
+    VkrGeometryMegabufferMetrics *out_metrics);
 
 bool8_t vkr_bindless_vulkan_renderer_create(
     const VkrBindlessVulkanRendererConfig *config,

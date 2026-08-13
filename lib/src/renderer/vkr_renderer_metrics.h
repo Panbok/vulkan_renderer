@@ -102,6 +102,17 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId visibility_opaque_before_merge;
   VkrMetricId visibility_distinct_geometries;
   VkrMetricId visibility_distinct_geometry_material_pairs;
+  VkrMetricId visibility_candidate_count;
+  VkrMetricId visibility_candidate_capacity;
+  VkrMetricId visibility_candidate_overflow_fallbacks;
+  VkrMetricId geometry_megabuffer_vertex_capacity;
+  VkrMetricId geometry_megabuffer_index_capacity;
+  VkrMetricId geometry_megabuffer_live_bytes;
+  VkrMetricId geometry_megabuffer_fragmentation_bytes;
+  VkrMetricId geometry_megabuffer_high_water_bytes;
+  VkrMetricId geometry_megabuffer_rejected_publications;
+  VkrMetricId geometry_megabuffer_generation_replacements;
+  VkrMetricId geometry_megabuffer_generation;
 
   VkrMetricId shadow_draw_calls_opaque[VKR_SHADOW_CASCADE_COUNT_MAX];
   VkrMetricId shadow_draw_calls_alpha[VKR_SHADOW_CASCADE_COUNT_MAX];

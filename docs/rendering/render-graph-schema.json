@@ -20,7 +20,18 @@
   "definitions": {
     "condition": {
       "type": "string",
-      "enum": ["editor_enabled", "!editor_enabled"]
+      "enum": [
+        "editor_enabled",
+        "!editor_enabled",
+        "deferred_enabled",
+        "!deferred_enabled",
+        "hzb_history_valid",
+        "!hzb_history_valid",
+        "transmission_pending",
+        "!transmission_pending",
+        "picking_pending",
+        "!picking_pending"
+      ]
     },
     "repeat": {
       "type": "object",
@@ -61,6 +72,8 @@
               "PERSISTENT",
               "EXTERNAL",
               "PER_IMAGE",
+              "PER_FRAME_SLOT",
+              "HISTORY",
               "RESIZABLE"
             ]
           }
@@ -74,22 +87,34 @@
             "type": "string",
             "enum": [
               "SAMPLED",
+              "STORAGE",
               "COLOR_ATTACHMENT",
               "DEPTH_STENCIL_ATTACHMENT",
               "TRANSFER_SRC",
-              "TRANSFER_DST"
+              "TRANSFER_DST",
+              "VERTEX_BUFFER",
+              "INDEX_BUFFER",
+              "GLOBAL_UNIFORM_BUFFER",
+              "UNIFORM",
+              "INDIRECT"
             ]
           }
         },
         "layers": { "type": "integer", "minimum": 1 },
         "layers_source": { "type": "string" },
+        "mip_levels": {
+          "oneOf": [
+            { "type": "integer", "minimum": 1 },
+            { "type": "string", "enum": ["full_chain"] }
+          ]
+        },
         "size": { "type": "integer", "minimum": 1 }
       },
       "additionalProperties": false
     },
     "resourceUse": {
       "type": "object",
-      "required": ["access"],
+      "required": ["access", "binding"],
       "properties": {
         "image": { "type": "string" },
         "buffer": { "type": "string" },
@@ -97,6 +122,16 @@
         "binding": { "type": "integer", "minimum": 0 },
         "array_index": {
           "oneOf": [{ "type": "integer" }, { "type": "string" }]
+        },
+        "subresource": {
+          "type": "object",
+          "properties": {
+            "base_mip": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "string" }] },
+            "mip_count": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "string" }] },
+            "base_layer": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "string" }] },
+            "layer_count": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "string" }] }
+          },
+          "additionalProperties": false
         },
         "repeat": { "$ref": "#/definitions/repeat" }
       },
@@ -148,6 +183,32 @@
       },
       "additionalProperties": false
     },
+    "dispatch": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type", "x", "y", "z"],
+          "properties": {
+            "type": { "type": "string", "enum": ["direct"] },
+            "x": { "type": "integer", "minimum": 1 },
+            "y": { "type": "integer", "minimum": 1 },
+            "z": { "type": "integer", "minimum": 1 }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "binding", "offset"],
+          "properties": {
+            "type": { "type": "string", "enum": ["indirect"] },
+            "binding": { "type": "integer", "minimum": 0 },
+            "array_index": { "type": "integer", "minimum": 0 },
+            "offset": { "type": "integer", "minimum": 0, "multipleOf": 4 }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
     "pass": {
       "type": "object",
       "required": ["name", "type", "execute"],
@@ -170,6 +231,7 @@
           "items": { "$ref": "#/definitions/resourceUse" }
         },
         "attachments": { "$ref": "#/definitions/attachments" },
+        "dispatch": { "$ref": "#/definitions/dispatch" },
         "execute": { "type": "string" }
       },
       "additionalProperties": false

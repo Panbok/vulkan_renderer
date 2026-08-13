@@ -32,6 +32,7 @@ enum {
   VKR_METAL_PACKET_MAX_COLOR_ATTACHMENTS = 8,
   VKR_METAL_PACKET_LOADER_SUBMESH_MAX = 4096,
   VKR_METAL_PACKET_MAX_TEXTURE_MIPS = 15,
+  VKR_METAL_PACKET_GRAPH_INSTANCE_MAX = 8,
   /* Four address modes on three axes, two min/mag filters, one canonical
      non-mipmapped key plus fifteen keys for each mip filter, and anisotropy
      on/off. Samplers remain alive with immutable material rows, so this cache
@@ -60,17 +61,40 @@ vkr_internal Mat4 vkr_metal_packet_clip_matrix(bool8_t convert, Mat4 matrix) {
   return matrix;
 }
 
-typedef struct VkrMetalPacketImage {
+typedef struct VkrMetalPacketImageInstance {
   VkrMetalTextureResource resource;
-  VkrRgImageDesc desc;
-  uint32_t graph_generation;
+  void *mip_views[VKR_METAL_PACKET_MAX_TEXTURE_MIPS];
+  uint64_t last_use_submit_value;
   bool8_t live;
   bool8_t owned;
+} VkrMetalPacketImageInstance;
+
+typedef struct VkrMetalPacketImage {
+  VkrMetalPacketImageInstance instances[VKR_METAL_PACKET_GRAPH_INSTANCE_MAX];
+  VkrRgImageDesc desc;
+  uint32_t graph_generation;
+  uint32_t instance_count;
+  bool8_t live;
+  bool8_t external;
 } VkrMetalPacketImage;
+
+typedef struct VkrMetalPacketGraphBufferInstance {
+  VkrMetalBufferResource resource;
+  uint64_t last_use_submit_value;
+  bool8_t live;
+} VkrMetalPacketGraphBufferInstance;
+
+typedef struct VkrMetalPacketGraphBuffer {
+  VkrRgBufferDesc desc;
+  uint32_t graph_generation;
+  uint32_t instance_count;
+  bool8_t live;
+} VkrMetalPacketGraphBuffer;
 
 typedef struct VkrMetalPacketMesh {
   VkrMetalBufferResource vertices;
   VkrMetalBufferResource indices;
+  VkrGpuGeometryRow gpu_row;
   uint32_t vertex_count;
   uint32_t index_count;
   uint32_t submesh_count;
@@ -78,6 +102,21 @@ typedef struct VkrMetalPacketMesh {
   uint64_t last_use_submit_value;
   bool8_t live;
 } VkrMetalPacketMesh;
+
+typedef struct VkrMetalPacketGeometryMegabuffer {
+  VkrMetalBufferResource vertices;
+  VkrMetalBufferResource indices;
+  uint64_t vertex_cursor;
+  uint64_t index_cursor;
+  uint64_t vertex_live_bytes;
+  uint64_t index_live_bytes;
+  uint64_t vertex_high_water;
+  uint64_t index_high_water;
+  uint64_t rejected_publications;
+  uint64_t generation_replacements;
+  uint32_t generation;
+  bool8_t live;
+} VkrMetalPacketGeometryMegabuffer;
 
 typedef struct VkrMetalPacketMaterial {
   VkrMetalTextureResource textures[4];
@@ -195,7 +234,10 @@ struct VkrMetalPacketRenderer {
   VkrDMemory record_memory;
   VkrAllocator record_allocator;
   VkrMetalPacketImage *images;
+  VkrMetalPacketGraphBuffer *graph_buffers;
+  VkrMetalPacketGraphBufferInstance *graph_buffer_instances;
   VkrMetalPacketMesh *meshes;
+  VkrMetalPacketGeometryMegabuffer geometry_megabuffer;
   VkrMetalPacketSubmeshCreateInfo *submeshes;
   VkrMetalPacketMaterial *packet_materials;
   VkrMetalPacketTexture *textures;
@@ -335,6 +377,12 @@ vkr_internal bool8_t vkr_metal_packet_record_size_add(uint64_t *total,
 
 VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_images_bytes, images,
                              renderer->max_images)
+VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_graph_buffers_bytes,
+                             graph_buffers, renderer->max_images)
+VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_graph_buffer_instances_bytes,
+                             graph_buffer_instances,
+                             (uint64_t)renderer->max_images *
+                                 renderer->command_slot_count)
 VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_meshes_bytes, meshes,
                              renderer->max_meshes)
 VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_submeshes_bytes, submeshes,

@@ -171,6 +171,21 @@ vkr_bindless_vk_reflected_struct_size(const SpvReflectBlockVariable *value) {
   return size;
 }
 
+vkr_internal bool8_t vkr_bindless_vk_validate_reflected_gpu_abi(
+    SpvReflectBlockVariable *value, VkrGpuAbiRecordId id) {
+  const VkrGpuAbiRecord *record = vkr_gpu_abi_record(id);
+  if (!value || !record ||
+      vkr_bindless_vk_reflected_struct_size(value) != record->expected_size)
+    return false_v;
+  bool8_t valid = true_v;
+  for (uint32_t i = 0u; i < record->field_count; ++i) {
+    const VkrGpuAbiField *field = &record->fields[i];
+    valid &= vkr_bindless_vk_reflect_member_offset(
+        value, field->shader_name, field->expected_offset, NULL);
+  }
+  return valid;
+}
+
 vkr_internal bool8_t
 vkr_bindless_vk_validate_packet_root_abi(VkrBindlessVulkanRenderer *renderer) {
   FilePath shader_path =
@@ -205,20 +220,30 @@ vkr_bindless_vk_validate_packet_root_abi(VkrBindlessVulkanRenderer *renderer) {
   if (!root || root->member_count == 0u) {
     valid = false_v;
   } else {
+    SpvReflectBlockVariable *geometry_rows = NULL;
+    SpvReflectBlockVariable *visible_rows = NULL;
     SpvReflectBlockVariable *vertices = NULL;
     SpvReflectBlockVariable *frame = NULL;
     SpvReflectBlockVariable *materials = NULL;
+    valid &= vkr_bindless_vk_reflect_member_offset(
+        root, "geometry_rows",
+        offsetof(VkrBindlessVkPacketDrawRoot, geometry_rows), &geometry_rows);
+    valid &= vkr_bindless_vk_reflect_member_offset(
+        root, "visible_rows",
+        offsetof(VkrBindlessVkPacketDrawRoot, visible_rows), &visible_rows);
     valid &= vkr_bindless_vk_reflect_member_offset(
         root, "vertices", offsetof(VkrBindlessVkPacketDrawRoot, vertices),
         &vertices);
     valid &= vkr_bindless_vk_reflect_member_offset(
         root, "frame", offsetof(VkrBindlessVkPacketDrawRoot, frame), &frame);
     valid &= vkr_bindless_vk_reflect_member_offset(
-        root, "material_index",
-        offsetof(VkrBindlessVkPacketDrawRoot, material_index), NULL);
+        root, "visible_row_index",
+        offsetof(VkrBindlessVkPacketDrawRoot, visible_row_index), NULL);
     valid &= vkr_bindless_vk_reflect_member_offset(
-        root, "first_instance",
-        offsetof(VkrBindlessVkPacketDrawRoot, first_instance), NULL);
+        root, "flags", offsetof(VkrBindlessVkPacketDrawRoot, flags), NULL);
+    valid &= vkr_bindless_vk_reflect_member_offset(
+        root, "reserved", offsetof(VkrBindlessVkPacketDrawRoot, reserved),
+        NULL);
     valid &= vkr_bindless_vk_reflected_struct_size(root) ==
              sizeof(VkrBindlessVkPacketDrawRoot);
 
@@ -255,6 +280,10 @@ vkr_bindless_vk_validate_packet_root_abi(VkrBindlessVulkanRenderer *renderer) {
                  vertex_abi->expected_size &&
              vkr_bindless_vk_reflected_struct_size(materials) ==
                  sizeof(VkrBindlessVkMaterialGpuRow);
+    valid &= vkr_bindless_vk_validate_reflected_gpu_abi(
+        geometry_rows, VKR_GPU_ABI_GEOMETRY_ROW);
+    valid &= vkr_bindless_vk_validate_reflected_gpu_abi(
+        visible_rows, VKR_GPU_ABI_VISIBLE_DRAW_ROW);
     valid &= vkr_bindless_vk_reflect_member_offset(
         vertices, "position", offsetof(VkrVertex3d, position), NULL);
     valid &= vkr_bindless_vk_reflect_member_offset(

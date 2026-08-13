@@ -148,6 +148,63 @@ VkrBufferHandle vkr_rg_pass_get_buffer_handle(const VkrRgPassContext *ctx,
   return vkr_rg_get_buffer_handle(ctx->graph, buffer, ctx->image_index);
 }
 
+const VkrRgImageUse *vkr_rg_pass_find_image_use(const VkrRgPassDesc *pass,
+                                                uint32_t binding,
+                                                uint32_t array_index) {
+  if (!pass) {
+    return NULL;
+  }
+  for (uint64_t i = 0; i < pass->image_reads.length; ++i) {
+    const VkrRgImageUse *use =
+        vector_get_VkrRgImageUse((Vector_VkrRgImageUse *)&pass->image_reads, i);
+    if (use && use->binding == binding && use->array_index == array_index) {
+      return use;
+    }
+  }
+  for (uint64_t i = 0; i < pass->image_writes.length; ++i) {
+    const VkrRgImageUse *use = vector_get_VkrRgImageUse(
+        (Vector_VkrRgImageUse *)&pass->image_writes, i);
+    if (use && use->binding == binding && use->array_index == array_index) {
+      return use;
+    }
+  }
+  return NULL;
+}
+
+const VkrRgBufferUse *vkr_rg_pass_find_buffer_use(const VkrRgPassDesc *pass,
+                                                  uint32_t binding,
+                                                  uint32_t array_index) {
+  if (!pass) {
+    return NULL;
+  }
+  for (uint64_t i = 0; i < pass->buffer_reads.length; ++i) {
+    const VkrRgBufferUse *use = vector_get_VkrRgBufferUse(
+        (Vector_VkrRgBufferUse *)&pass->buffer_reads, i);
+    if (use && use->binding == binding && use->array_index == array_index) {
+      return use;
+    }
+  }
+  for (uint64_t i = 0; i < pass->buffer_writes.length; ++i) {
+    const VkrRgBufferUse *use = vector_get_VkrRgBufferUse(
+        (Vector_VkrRgBufferUse *)&pass->buffer_writes, i);
+    if (use && use->binding == binding && use->array_index == array_index) {
+      return use;
+    }
+  }
+  return NULL;
+}
+
+VkrRgResourceInstanceDomain
+vkr_rg_resource_instance_domain(VkrRgResourceFlags flags) {
+  if (flags & VKR_RG_RESOURCE_FLAG_PER_IMAGE)
+    return VKR_RG_RESOURCE_INSTANCE_PER_IMAGE;
+  if (flags &
+      (VKR_RG_RESOURCE_FLAG_TRANSIENT | VKR_RG_RESOURCE_FLAG_PER_FRAME_SLOT |
+       VKR_RG_RESOURCE_FLAG_HISTORY))
+    return VKR_RG_RESOURCE_INSTANCE_PER_FRAME_SLOT;
+  return VKR_RG_RESOURCE_INSTANCE_SINGLE;
+}
+
 void vkr_rg_set_packet(VkrRenderGraph *graph, const VkrRenderPacket *packet) {
   if (!graph) {
     return;
@@ -287,11 +344,6 @@ void vkr_rg_reset_passes(VkrRenderGraph *graph) {
                          pass->desc.name.length + 1,
                          VKR_ALLOCATOR_MEMORY_TAG_STRING);
     }
-    if (pass->desc.execute_name.str) {
-      vkr_allocator_free(allocator, pass->desc.execute_name.str,
-                         pass->desc.execute_name.length + 1,
-                         VKR_ALLOCATOR_MEMORY_TAG_STRING);
-    }
   }
 
   vector_clear_VkrRgPass(&graph->passes);
@@ -370,6 +422,12 @@ bool8_t vkr_rg_executor_registry_register(VkrRgExecutorRegistry *reg,
     return false_v;
   }
 
+  if (entry->id == 0u) {
+    log_error("RenderGraph executor '%.*s' requires a non-zero id",
+              (int)entry->name.length, entry->name.str);
+    return false_v;
+  }
+
   if (entry->name.length == 0 || !entry->name.str) {
     log_error("RenderGraph executor registration requires non-empty name");
     return false_v;
@@ -381,6 +439,11 @@ bool8_t vkr_rg_executor_registry_register(VkrRgExecutorRegistry *reg,
     if (string8_equals(&existing->name, &entry->name)) {
       log_error("RenderGraph executor '%.*s' already registered",
                 (int)entry->name.length, entry->name.str);
+      return false_v;
+    }
+    if (existing->id == entry->id) {
+      log_error("RenderGraph executor id %u is already registered as '%.*s'",
+                entry->id, (int)existing->name.length, existing->name.str);
       return false_v;
     }
   }
@@ -397,13 +460,8 @@ bool8_t vkr_rg_executor_registry_register(VkrRgExecutorRegistry *reg,
   return true_v;
 }
 
-VkrRgPassExecuteFn
-vkr_rg_executor_registry_find(const VkrRgExecutorRegistry *reg, String8 name,
-                              void **out_user_data) {
-  if (out_user_data) {
-    *out_user_data = NULL;
-  }
-
+const VkrRgPassExecutor *
+vkr_rg_executor_registry_find(const VkrRgExecutorRegistry *reg, String8 name) {
   if (!reg || !reg->initialized || name.length == 0) {
     return NULL;
   }
@@ -411,10 +469,7 @@ vkr_rg_executor_registry_find(const VkrRgExecutorRegistry *reg, String8 name,
   for (uint64_t i = 0; i < reg->entries.length; ++i) {
     VkrRgPassExecutor *entry = vector_get_VkrRgPassExecutor(&reg->entries, i);
     if (string8_equals(&entry->name, &name)) {
-      if (out_user_data) {
-        *out_user_data = entry->user_data;
-      }
-      return entry->execute;
+      return entry;
     }
   }
 
@@ -1046,6 +1101,28 @@ void vkr_rg_pass_write_image_at_stages(VkrRgPassBuilder *pb,
                        .stages = stages,
                        .binding = binding,
                        .array_index = array_index};
+  vector_push_VkrRgImageUse(&pass->desc.image_writes, use);
+}
+
+void vkr_rg_pass_write_image_slice_at_stages(
+    VkrRgPassBuilder *pb, VkrRgImageHandle image, VkrRgImageAccessFlags access,
+    VkrGpuStageFlags stages, uint32_t binding, uint32_t array_index,
+    VkrRgImageSlice slice) {
+  VkrRgPass *pass = vkr_rg_builder_get_pass(pb);
+  if (!pass)
+    return;
+  if (!vkr_rg_image_from_handle(pb->graph, image)) {
+    log_error("RenderGraph pass '%.*s' write has invalid image handle",
+              (int)pass->desc.name.length, pass->desc.name.str);
+    return;
+  }
+  VkrRgImageUse use = {.image = image,
+                       .access = access,
+                       .stages = stages,
+                       .binding = binding,
+                       .array_index = array_index,
+                       .slice = slice,
+                       .has_slice = true_v};
   vector_push_VkrRgImageUse(&pass->desc.image_writes, use);
 }
 

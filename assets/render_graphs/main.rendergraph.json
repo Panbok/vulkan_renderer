@@ -85,6 +85,22 @@
       "format": "SWAPCHAIN_DEPTH",
       "usage": ["DEPTH_STENCIL_ATTACHMENT"],
       "flags": ["TRANSIENT", "RESIZABLE"]
+    },
+    {
+      "name": "gpu_draw_candidates",
+      "type": "buffer",
+      "condition": "deferred_enabled",
+      "size": 12582912,
+      "usage": ["STORAGE", "TRANSFER_DST"],
+      "flags": ["PER_FRAME_SLOT"]
+    },
+    {
+      "name": "gpu_visible_draws",
+      "type": "buffer",
+      "condition": "deferred_enabled",
+      "size": 8388608,
+      "usage": ["STORAGE"],
+      "flags": ["PER_FRAME_SLOT"]
     }
   ],
   "passes": [
@@ -136,7 +152,8 @@
       "reads": [
         {
           "image": "picking_color",
-          "access": "TRANSFER_SRC"
+          "access": "TRANSFER_SRC",
+          "binding": 0
         }
       ],
       "execute": "pass.picking.readback"
@@ -246,10 +263,10 @@
       "type": "transfer",
       "condition": "!editor_enabled",
       "reads": [
-        { "image": "hdr_pre_transmission", "access": "TRANSFER_SRC" }
+        { "image": "hdr_pre_transmission", "access": "TRANSFER_SRC", "binding": 0 }
       ],
       "writes": [
-        { "image": "hdr_scene_color", "access": "TRANSFER_DST" }
+        { "image": "hdr_scene_color", "access": "TRANSFER_DST", "binding": 1 }
       ],
       "execute": "pass.copy.pre_transmission.fullscreen"
     },
@@ -258,10 +275,10 @@
       "type": "transfer",
       "condition": "editor_enabled",
       "reads": [
-        { "image": "scene_pre_transmission", "access": "TRANSFER_SRC" }
+        { "image": "scene_pre_transmission", "access": "TRANSFER_SRC", "binding": 0 }
       ],
       "writes": [
-        { "image": "scene_color", "access": "TRANSFER_DST" }
+        { "image": "scene_color", "access": "TRANSFER_DST", "binding": 1 }
       ],
       "execute": "pass.copy.pre_transmission.editor"
     },

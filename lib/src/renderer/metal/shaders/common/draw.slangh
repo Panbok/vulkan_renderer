@@ -80,12 +80,52 @@ struct VkrMetalPacketFrameRoot
     uint ibl_probe_reserved;
 };
 
+struct VkrGpuGeometryRow
+{
+    uint64_t vertex_address;
+    uint64_t index_address;
+    uint first_vertex;
+    uint first_index;
+    uint vertex_stride;
+    uint vertex_layout;
+    uint publication_generation;
+    uint flags;
+    uint2 reserved;
+};
+
+struct VkrGpuCandidateDrawRow
+{
+    uint geometry_index;
+    uint material_index;
+    uint instance_index;
+    uint first_index;
+    uint index_count;
+    int vertex_offset;
+    uint state_bucket;
+    uint flags;
+    float4 local_bounding_sphere;
+};
+
+struct VkrGpuVisibleDrawRow
+{
+    uint geometry_index;
+    uint material_index;
+    uint instance_index;
+    uint first_index;
+    uint index_count;
+    int vertex_offset;
+    uint state_bucket;
+    uint flags;
+};
+
 struct VkrMetalPacketDrawRoot
 {
+    StructuredBuffer<VkrGpuGeometryRow> geometry_rows;
+    StructuredBuffer<VkrGpuVisibleDrawRow> visible_rows;
     StructuredBuffer<VkrMetalPacketVertex> vertices;
     ParameterBlock<VkrMetalPacketFrameRoot> frame;
-    uint material_index;
-    uint first_instance;
+    uint visible_row_index;
+    uint flags;
     uint2 reserved;
 };
 

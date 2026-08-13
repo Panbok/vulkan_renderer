@@ -185,6 +185,10 @@ static const char *vkr_harness_capture_format_name(VkrTextureFormat format) {
     return "D16_UNORM";
   case VKR_TEXTURE_FORMAT_R32_UINT:
     return "R32_UINT";
+  case VKR_TEXTURE_FORMAT_R32G32_UINT:
+    return "R32G32_UINT";
+  case VKR_TEXTURE_FORMAT_R16G16_SNORM:
+    return "R16G16_SNORM";
   default:
     return "UNSUPPORTED";
   }

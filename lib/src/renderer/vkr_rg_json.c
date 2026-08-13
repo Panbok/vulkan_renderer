@@ -49,8 +49,22 @@ vkr_internal bool8_t vkr_rg_json_parse_condition(
     out_condition->kind = VKR_RG_JSON_CONDITION_EDITOR_ENABLED;
   } else if (vkr_string8_equals_cstr_i(&trimmed, "!editor_enabled")) {
     out_condition->kind = VKR_RG_JSON_CONDITION_EDITOR_DISABLED;
+  } else if (vkr_string8_equals_cstr_i(&trimmed, "deferred_enabled")) {
+    out_condition->kind = VKR_RG_JSON_CONDITION_DEFERRED_ENABLED;
+  } else if (vkr_string8_equals_cstr_i(&trimmed, "!deferred_enabled")) {
+    out_condition->kind = VKR_RG_JSON_CONDITION_DEFERRED_DISABLED;
+  } else if (vkr_string8_equals_cstr_i(&trimmed, "hzb_history_valid")) {
+    out_condition->kind = VKR_RG_JSON_CONDITION_HZB_HISTORY_VALID;
+  } else if (vkr_string8_equals_cstr_i(&trimmed, "!hzb_history_valid")) {
+    out_condition->kind = VKR_RG_JSON_CONDITION_HZB_HISTORY_INVALID;
+  } else if (vkr_string8_equals_cstr_i(&trimmed, "transmission_pending")) {
+    out_condition->kind = VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING;
+  } else if (vkr_string8_equals_cstr_i(&trimmed, "!transmission_pending")) {
+    out_condition->kind = VKR_RG_JSON_CONDITION_TRANSMISSION_IDLE;
   } else if (vkr_string8_equals_cstr_i(&trimmed, "picking_pending")) {
     out_condition->kind = VKR_RG_JSON_CONDITION_PICKING_PENDING;
+  } else if (vkr_string8_equals_cstr_i(&trimmed, "!picking_pending")) {
+    out_condition->kind = VKR_RG_JSON_CONDITION_PICKING_IDLE;
   } else {
     return vkr_rg_json_error(ctx, field_path, "unknown condition expression");
   }
@@ -120,6 +134,10 @@ vkr_rg_json_parse_resource_flags(VkrRgJsonParseContext *ctx, VkrJsonReader *obj,
       *out_flags |= VKR_RG_JSON_RESOURCE_FLAG_PER_IMAGE;
     } else if (vkr_string8_equals_cstr_i(&value, "RESIZABLE")) {
       *out_flags |= VKR_RG_JSON_RESOURCE_FLAG_RESIZABLE;
+    } else if (vkr_string8_equals_cstr_i(&value, "PER_FRAME_SLOT")) {
+      *out_flags |= VKR_RG_JSON_RESOURCE_FLAG_PER_FRAME_SLOT;
+    } else if (vkr_string8_equals_cstr_i(&value, "HISTORY")) {
+      *out_flags |= VKR_RG_JSON_RESOURCE_FLAG_HISTORY;
     } else {
       return vkr_rg_json_error(ctx, field_path, "unknown resource flag");
     }
@@ -243,6 +261,8 @@ vkr_global const VkrRgJsonFormatMap k_rg_json_format_map[] = {
     {"R32_SFLOAT", VKR_TEXTURE_FORMAT_R32_SFLOAT},
     {"R32_UINT", VKR_TEXTURE_FORMAT_R32_UINT},
     {"R8G8_UNORM", VKR_TEXTURE_FORMAT_R8G8_UNORM},
+    {"R32G32_UINT", VKR_TEXTURE_FORMAT_R32G32_UINT},
+    {"R16G16_SNORM", VKR_TEXTURE_FORMAT_R16G16_SNORM},
     {"D16_UNORM", VKR_TEXTURE_FORMAT_D16_UNORM},
     {"D32_SFLOAT", VKR_TEXTURE_FORMAT_D32_SFLOAT},
     {"D24_UNORM_S8_UINT", VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT},
@@ -424,6 +444,8 @@ vkr_internal bool8_t vkr_rg_json_parse_buffer_access(
     *out = VKR_RG_JSON_BUFFER_ACCESS_TRANSFER_SRC;
   } else if (vkr_string8_equals_cstr_i(&value, "TRANSFER_DST")) {
     *out = VKR_RG_JSON_BUFFER_ACCESS_TRANSFER_DST;
+  } else if (vkr_string8_equals_cstr_i(&value, "INDIRECT_READ")) {
+    *out = VKR_RG_JSON_BUFFER_ACCESS_INDIRECT_READ;
   } else {
     return false_v;
   }
@@ -518,6 +540,27 @@ vkr_internal bool8_t vkr_rg_json_parse_image_desc(
   if (out_desc->layers_is_set && out_desc->layers_source.length > 0) {
     return vkr_rg_json_error(ctx, field_path,
                              "layers and layers_source are mutually exclusive");
+  }
+
+  VkrJsonReader mip_reader = *obj;
+  if (vkr_json_find_field(&mip_reader, "mip_levels")) {
+    vkr_json_skip_whitespace(&mip_reader);
+    if (mip_reader.pos < mip_reader.length &&
+        mip_reader.data[mip_reader.pos] == '"') {
+      String8 value = {0};
+      if (!vkr_json_parse_string(&mip_reader, &value) ||
+          !vkr_string8_equals_cstr_i(&value, "full_chain"))
+        return vkr_rg_json_error(
+            ctx, field_path,
+            "mip_levels must be a positive integer or full_chain");
+      out_desc->mip_levels_full = true_v;
+    } else {
+      int32_t mip_levels = 0;
+      if (!vkr_json_parse_int(&mip_reader, &mip_levels) || mip_levels <= 0)
+        return vkr_rg_json_error(ctx, field_path, "mip_levels must be >= 1");
+      out_desc->mip_levels_is_set = true_v;
+      out_desc->mip_levels = (uint32_t)mip_levels;
+    }
   }
 
   VkrJsonReader format_reader = *obj;
@@ -621,6 +664,20 @@ vkr_rg_json_parse_resource(VkrRgJsonParseContext *ctx, VkrJsonReader *obj,
     return false_v;
   }
 
+  if (out_resource->type == VKR_RG_JSON_RESOURCE_BUFFER) {
+    const uint32_t lifetime_flags =
+        out_resource->flags & (VKR_RG_JSON_RESOURCE_FLAG_PERSISTENT |
+                               VKR_RG_JSON_RESOURCE_FLAG_EXTERNAL |
+                               VKR_RG_JSON_RESOURCE_FLAG_PER_IMAGE |
+                               VKR_RG_JSON_RESOURCE_FLAG_PER_FRAME_SLOT |
+                               VKR_RG_JSON_RESOURCE_FLAG_HISTORY);
+    if (!lifetime_flags || (lifetime_flags & (lifetime_flags - 1u)) != 0u)
+      return vkr_rg_json_error(
+          ctx, field_path,
+          "buffer requires exactly one PERSISTENT, EXTERNAL, PER_IMAGE, "
+          "PER_FRAME_SLOT, or HISTORY lifetime flag");
+  }
+
   if (out_resource->type == VKR_RG_JSON_RESOURCE_IMAGE) {
     if (!vkr_rg_json_parse_image_desc(ctx, obj, field_path,
                                       &out_resource->image)) {
@@ -682,17 +739,39 @@ vkr_internal bool8_t vkr_rg_json_parse_use(VkrRgJsonParseContext *ctx,
 
   VkrJsonReader binding_reader = *obj;
   int32_t binding = 0;
-  if (vkr_json_get_int(&binding_reader, "binding", &binding)) {
-    if (binding < 0) {
-      return vkr_rg_json_error(ctx, field_path, "binding must be >= 0");
-    }
-    out_use->binding.is_set = true_v;
-    out_use->binding.value = (uint32_t)binding;
+  if (!vkr_json_get_int(&binding_reader, "binding", &binding)) {
+    return vkr_rg_json_error(ctx, field_path, "binding is required");
   }
+  if (binding < 0) {
+    return vkr_rg_json_error(ctx, field_path, "binding must be >= 0");
+  }
+  out_use->binding.is_set = true_v;
+  out_use->binding.value = (uint32_t)binding;
 
   if (!vkr_rg_json_parse_index(ctx, obj, field_path, "array_index",
                                &out_use->array_index)) {
     return false_v;
+  }
+
+  VkrJsonReader subresource_reader = *obj;
+  if (vkr_json_find_field(&subresource_reader, "subresource")) {
+    if (!out_use->is_image)
+      return vkr_rg_json_error(ctx, field_path,
+                               "subresource is only valid for image uses");
+    VkrJsonReader subresource = {0};
+    if (!vkr_json_enter_object(&subresource_reader, &subresource))
+      return vkr_rg_json_error(ctx, field_path,
+                               "subresource must be an object");
+    if (!vkr_rg_json_parse_index(ctx, &subresource, field_path, "base_mip",
+                                 &out_use->slice_base_mip) ||
+        !vkr_rg_json_parse_index(ctx, &subresource, field_path, "mip_count",
+                                 &out_use->slice_mip_count) ||
+        !vkr_rg_json_parse_index(ctx, &subresource, field_path, "base_layer",
+                                 &out_use->slice_base_layer) ||
+        !vkr_rg_json_parse_index(ctx, &subresource, field_path, "layer_count",
+                                 &out_use->slice_layer_count))
+      return false_v;
+    out_use->has_slice = true_v;
   }
 
   return true_v;
@@ -934,18 +1013,92 @@ vkr_internal bool8_t vkr_rg_json_parse_attachments(
   return true_v;
 }
 
-vkr_internal bool8_t vkr_rg_json_resource_exists(const VkrRgJsonGraph *graph,
-                                                 String8 name) {
+vkr_internal const VkrRgJsonResource *
+vkr_rg_json_find_resource(const VkrRgJsonGraph *graph, String8 name) {
   assert_log(graph != NULL, "graph is NULL");
 
   for (uint64_t i = 0; i < graph->resources.length; ++i) {
     VkrRgJsonResource *res = vector_get_VkrRgJsonResource(&graph->resources, i);
     if (string8_equals(&res->name, &name)) {
-      return true_v;
+      return res;
     }
   }
+  return NULL;
+}
 
-  return false_v;
+vkr_internal bool8_t
+vkr_rg_json_parse_dispatch(VkrRgJsonParseContext *ctx, VkrJsonReader *pass_obj,
+                           VkrRgJsonPassType pass_type, const char *field_path,
+                           VkrRgComputeDispatchDesc *out_dispatch) {
+  assert_log(ctx != NULL, "ctx is NULL");
+  assert_log(pass_obj != NULL, "pass_obj is NULL");
+  assert_log(field_path != NULL, "field_path is NULL");
+  assert_log(out_dispatch != NULL, "out_dispatch is NULL");
+
+  *out_dispatch = (VkrRgComputeDispatchDesc){0};
+  VkrJsonReader dispatch_reader = *pass_obj;
+  if (!vkr_json_find_field(&dispatch_reader, "dispatch"))
+    return true_v;
+  if (pass_type != VKR_RG_JSON_PASS_COMPUTE)
+    return vkr_rg_json_error(ctx, field_path,
+                             "dispatch is only valid on compute passes");
+
+  VkrJsonReader dispatch_obj = {0};
+  if (!vkr_json_enter_object(&dispatch_reader, &dispatch_obj))
+    return vkr_rg_json_error(ctx, field_path, "dispatch must be an object");
+
+  String8 kind = {0};
+  VkrJsonReader kind_reader = dispatch_obj;
+  if (!vkr_json_get_string(&kind_reader, "type", &kind))
+    return vkr_rg_json_error(ctx, field_path, "dispatch.type is required");
+  if (vkr_string8_equals_cstr_i(&kind, "direct")) {
+    int32_t x = 0, y = 0, z = 0;
+    VkrJsonReader x_reader = dispatch_obj;
+    VkrJsonReader y_reader = dispatch_obj;
+    VkrJsonReader z_reader = dispatch_obj;
+    if (!vkr_json_get_int(&x_reader, "x", &x) || x <= 0 ||
+        !vkr_json_get_int(&y_reader, "y", &y) || y <= 0 ||
+        !vkr_json_get_int(&z_reader, "z", &z) || z <= 0)
+      return vkr_rg_json_error(
+          ctx, field_path,
+          "direct dispatch requires positive integer x, y, and z counts");
+
+    *out_dispatch = (VkrRgComputeDispatchDesc){
+        .kind = VKR_RG_DISPATCH_DIRECT,
+        .group_count_x = (uint32_t)x,
+        .group_count_y = (uint32_t)y,
+        .group_count_z = (uint32_t)z,
+    };
+    return true_v;
+  }
+
+  if (vkr_string8_equals_cstr_i(&kind, "indirect")) {
+    int32_t binding = -1, array_index = 0, offset = -1;
+    VkrJsonReader binding_reader = dispatch_obj;
+    VkrJsonReader array_reader = dispatch_obj;
+    VkrJsonReader offset_reader = dispatch_obj;
+    if (!vkr_json_get_int(&binding_reader, "binding", &binding) ||
+        binding < 0 ||
+        (vkr_json_find_field(&array_reader, "array_index") &&
+         (!vkr_json_parse_int(&array_reader, &array_index) ||
+          array_index < 0)) ||
+        !vkr_json_get_int(&offset_reader, "offset", &offset) || offset < 0 ||
+        (offset & 3) != 0)
+      return vkr_rg_json_error(
+          ctx, field_path,
+          "indirect dispatch requires nonnegative binding/array_index and a "
+          "four-byte-aligned nonnegative offset");
+    *out_dispatch = (VkrRgComputeDispatchDesc){
+        .kind = VKR_RG_DISPATCH_INDIRECT,
+        .indirect_binding = (uint32_t)binding,
+        .indirect_array_index = (uint32_t)array_index,
+        .indirect_offset = (uint64_t)offset,
+    };
+    return true_v;
+  }
+
+  return vkr_rg_json_error(ctx, field_path,
+                           "dispatch.type must be direct or indirect");
 }
 
 vkr_internal bool8_t vkr_rg_json_parse_pass(VkrRgJsonParseContext *ctx,
@@ -1003,6 +1156,12 @@ vkr_internal bool8_t vkr_rg_json_parse_pass(VkrRgJsonParseContext *ctx,
     goto cleanup;
   }
 
+  if (!vkr_rg_json_parse_dispatch(ctx, obj, out_pass->type, field_path,
+                                  &out_pass->dispatch)) {
+    ok = false_v;
+    goto cleanup;
+  }
+
   if (out_pass->type == VKR_RG_JSON_PASS_GRAPHICS) {
     VkrJsonReader domain_reader = *obj;
     String8 domain = {0};
@@ -1053,8 +1212,16 @@ vkr_internal bool8_t vkr_rg_json_parse_pass(VkrRgJsonParseContext *ctx,
         goto cleanup;
       }
 
-      if (!vkr_rg_json_resource_exists(ctx->graph, use.name)) {
+      const VkrRgJsonResource *resource =
+          vkr_rg_json_find_resource(ctx->graph, use.name);
+      if (!resource) {
         ok = vkr_rg_json_error(ctx, use_path, "resource not declared");
+        goto cleanup;
+      }
+      if (use.is_image !=
+          (resource->type == VKR_RG_JSON_RESOURCE_IMAGE ? true_v : false_v)) {
+        ok = vkr_rg_json_error(ctx, use_path,
+                               "resource use type does not match declaration");
         goto cleanup;
       }
 
@@ -1082,8 +1249,16 @@ vkr_internal bool8_t vkr_rg_json_parse_pass(VkrRgJsonParseContext *ctx,
         goto cleanup;
       }
 
-      if (!vkr_rg_json_resource_exists(ctx->graph, use.name)) {
+      const VkrRgJsonResource *resource =
+          vkr_rg_json_find_resource(ctx->graph, use.name);
+      if (!resource) {
         ok = vkr_rg_json_error(ctx, use_path, "resource not declared");
+        goto cleanup;
+      }
+      if (use.is_image !=
+          (resource->type == VKR_RG_JSON_RESOURCE_IMAGE ? true_v : false_v)) {
+        ok = vkr_rg_json_error(ctx, use_path,
+                               "resource use type does not match declaration");
         goto cleanup;
       }
 
@@ -1269,25 +1444,32 @@ vkr_internal bool8_t vkr_rg_json_parse_graph(VkrRgJsonParseContext *ctx,
     return false_v;
   }
 
-  if (out_graph->outputs.present.length > 0 &&
-      !vkr_rg_json_resource_exists(out_graph, out_graph->outputs.present)) {
-    return vkr_rg_json_error(ctx, "outputs.present",
-                             "present resource not declared");
+  if (out_graph->outputs.present.length > 0) {
+    const VkrRgJsonResource *present =
+        vkr_rg_json_find_resource(out_graph, out_graph->outputs.present);
+    if (!present || present->type != VKR_RG_JSON_RESOURCE_IMAGE) {
+      return vkr_rg_json_error(ctx, "outputs.present",
+                               "present resource not declared as an image");
+    }
   }
 
   for (uint64_t i = 0; i < out_graph->outputs.export_images.length; ++i) {
     String8 *name = vector_get_String8(&out_graph->outputs.export_images, i);
-    if (!vkr_rg_json_resource_exists(out_graph, *name)) {
+    const VkrRgJsonResource *resource =
+        vkr_rg_json_find_resource(out_graph, *name);
+    if (!resource || resource->type != VKR_RG_JSON_RESOURCE_IMAGE) {
       return vkr_rg_json_error(ctx, "outputs.export_images",
-                               "export image not declared");
+                               "export image not declared as an image");
     }
   }
 
   for (uint64_t i = 0; i < out_graph->outputs.export_buffers.length; ++i) {
     String8 *name = vector_get_String8(&out_graph->outputs.export_buffers, i);
-    if (!vkr_rg_json_resource_exists(out_graph, *name)) {
+    const VkrRgJsonResource *resource =
+        vkr_rg_json_find_resource(out_graph, *name);
+    if (!resource || resource->type != VKR_RG_JSON_RESOURCE_BUFFER) {
       return vkr_rg_json_error(ctx, "outputs.export_buffers",
-                               "export buffer not declared");
+                               "export buffer not declared as a buffer");
     }
   }
 
@@ -1382,6 +1564,43 @@ void vkr_rg_json_destroy(VkrRgJsonGraph *graph) {
   *graph = (VkrRgJsonGraph){0};
 }
 
+bool8_t vkr_rg_json_bind_executors(VkrRgJsonGraph *graph,
+                                   const VkrRgExecutorRegistry *executors) {
+  if (!graph || !executors) {
+    log_error("RenderGraph JSON executor binding failed: invalid args");
+    return false_v;
+  }
+  for (uint64_t i = 0; i < graph->passes.length; ++i) {
+    const VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph->passes, i);
+    const VkrRgPassExecutor *executor =
+        vkr_rg_executor_registry_find(executors, pass->execute);
+    if (!executor) {
+      log_error("RenderGraph JSON: missing executor '%.*s'",
+                (int)pass->execute.length, pass->execute.str);
+      return false_v;
+    }
+    if (executor->type != (VkrRgPassType)pass->type) {
+      log_error("RenderGraph JSON pass '%.*s' has type %u; executor '%.*s' "
+                "requires type %u",
+                (int)pass->name.length, pass->name.str, (uint32_t)pass->type,
+                (int)executor->name.length, executor->name.str,
+                (uint32_t)executor->type);
+      return false_v;
+    }
+  }
+
+  for (uint64_t i = 0; i < graph->passes.length; ++i) {
+    VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph->passes, i);
+    const VkrRgPassExecutor *executor =
+        vkr_rg_executor_registry_find(executors, pass->execute);
+    pass->execute_fn = executor->execute;
+    pass->execute_user_data = executor->user_data;
+    pass->executor_id = executor->id;
+    pass->executor_resolved = true_v;
+  }
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_rg_json_condition_enabled(
     const VkrRgJsonCondition *condition, const VkrRenderGraphFrameInfo *frame) {
   if (!condition || condition->kind == VKR_RG_JSON_CONDITION_NONE) {
@@ -1396,8 +1615,22 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->editor_enabled;
   case VKR_RG_JSON_CONDITION_EDITOR_DISABLED:
     return !frame->editor_enabled;
+  case VKR_RG_JSON_CONDITION_DEFERRED_ENABLED:
+    return frame->deferred_enabled;
+  case VKR_RG_JSON_CONDITION_DEFERRED_DISABLED:
+    return !frame->deferred_enabled;
+  case VKR_RG_JSON_CONDITION_HZB_HISTORY_VALID:
+    return frame->hzb_history_valid;
+  case VKR_RG_JSON_CONDITION_HZB_HISTORY_INVALID:
+    return !frame->hzb_history_valid;
+  case VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING:
+    return frame->transmission_pending;
+  case VKR_RG_JSON_CONDITION_TRANSMISSION_IDLE:
+    return !frame->transmission_pending;
   case VKR_RG_JSON_CONDITION_PICKING_PENDING:
     return frame->picking_pending;
+  case VKR_RG_JSON_CONDITION_PICKING_IDLE:
+    return !frame->picking_pending;
   default:
     return false_v;
   }
@@ -1528,6 +1761,12 @@ vkr_internal VkrRgResourceFlags vkr_rg_json_resource_flags(uint32_t flags) {
   }
   if (flags & VKR_RG_JSON_RESOURCE_FLAG_RESIZABLE) {
     out |= VKR_RG_RESOURCE_FLAG_RESIZABLE;
+  }
+  if (flags & VKR_RG_JSON_RESOURCE_FLAG_PER_FRAME_SLOT) {
+    out |= VKR_RG_RESOURCE_FLAG_PER_FRAME_SLOT;
+  }
+  if (flags & VKR_RG_JSON_RESOURCE_FLAG_HISTORY) {
+    out |= VKR_RG_RESOURCE_FLAG_HISTORY;
   }
   return out;
 }
@@ -1679,11 +1918,45 @@ vkr_internal bool8_t vkr_rg_json_apply_slice(const VkrRgJsonAttachment *att,
   return true_v;
 }
 
+vkr_internal uint32_t vkr_rg_json_mip_levels(const VkrRgJsonImageDesc *image,
+                                             uint32_t width, uint32_t height) {
+  if (image->mip_levels_is_set)
+    return image->mip_levels;
+  if (!image->mip_levels_full)
+    return 1u;
+  uint32_t extent = Max(width, height);
+  uint32_t levels = 0u;
+  while (extent) {
+    levels++;
+    extent >>= 1u;
+  }
+  return Max(levels, 1u);
+}
+
+vkr_internal bool8_t
+vkr_rg_json_resolve_use_slice(const VkrRgJsonResourceUse *use,
+                              uint32_t fallback, VkrRgImageSlice *out_slice) {
+  *out_slice = VKR_RG_IMAGE_SLICE_DEFAULT;
+  if (!use->has_slice)
+    return true_v;
+  if (use->slice_base_mip.is_set)
+    out_slice->mip_level = vkr_rg_resolve_index(&use->slice_base_mip, fallback);
+  if (use->slice_mip_count.is_set)
+    out_slice->mip_count =
+        vkr_rg_resolve_index(&use->slice_mip_count, fallback);
+  if (use->slice_base_layer.is_set)
+    out_slice->base_layer =
+        vkr_rg_resolve_index(&use->slice_base_layer, fallback);
+  if (use->slice_layer_count.is_set)
+    out_slice->layer_count =
+        vkr_rg_resolve_index(&use->slice_layer_count, fallback);
+  return out_slice->mip_count > 0u && out_slice->layer_count > 0u;
+}
+
 bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
                                const VkrRgJsonGraph *json_graph,
-                               const VkrRenderGraphFrameInfo *frame,
-                               const VkrRgExecutorRegistry *executors) {
-  if (!rg || !json_graph || !frame || !executors) {
+                               const VkrRenderGraphFrameInfo *frame) {
+  if (!rg || !json_graph || !frame) {
     log_error("RenderGraph build failed: invalid args");
     return false_v;
   }
@@ -1725,6 +1998,8 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
           }
           desc.width = frame->target_width;
           desc.height = frame->target_height;
+          desc.mip_levels =
+              vkr_rg_json_mip_levels(&resource->image, desc.width, desc.height);
           desc.usage = resource->image.usage;
           uint32_t layers = 1;
           if (!vkr_rg_json_resolve_layers(&resource->image, frame, &layers)) {
@@ -1779,6 +2054,8 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
           VkrRgImageDesc desc = VKR_RG_IMAGE_DESC_DEFAULT;
           desc.width = width;
           desc.height = height;
+          desc.mip_levels =
+              vkr_rg_json_mip_levels(&resource->image, width, height);
           desc.usage = resource->image.usage;
           desc.flags = vkr_rg_json_resource_flags(resource->flags);
           if (resource->image.layers_is_set ||
@@ -1854,30 +2131,23 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
         vkr_rg_pass_set_domain(&pb, pass->domain);
       }
 
-      void *executor_user_data = NULL;
-      VkrRgPassExecuteFn execute = vkr_rg_executor_registry_find(
-          executors, pass->execute, &executor_user_data);
-      if (!execute) {
-        log_error("RenderGraph JSON: missing executor '%.*s'",
+      if (!pass->executor_resolved || !pass->execute_fn ||
+          pass->executor_id == 0u) {
+        log_error("RenderGraph JSON: executor '%.*s' was not bound",
                   (int)pass->execute.length, pass->execute.str);
         return false_v;
       }
 
       VkrRgPass *graph_pass = vector_get_VkrRgPass(&rg->passes, pb.pass_index);
-      if (graph_pass && pass->execute.length > 0) {
-        graph_pass->desc.execute_name =
-            string8_duplicate(frame_allocator, &pass->execute);
-        if (!graph_pass->desc.execute_name.str) {
-          log_error("RenderGraph JSON: execute name allocation failed");
-          return false_v;
-        }
-      }
+      graph_pass->desc.executor_id = pass->executor_id;
+      graph_pass->desc.dispatch = pass->dispatch;
 
+      void *executor_user_data = pass->execute_user_data;
       if (repeat_count > 1 && executor_user_data == NULL) {
         executor_user_data = (void *)(uintptr_t)r;
       }
 
-      vkr_rg_pass_set_execute(&pb, execute, executor_user_data);
+      vkr_rg_pass_set_execute(&pb, pass->execute_fn, executor_user_data);
 
       for (uint64_t c = 0; c < pass->attachments.colors.length; ++c) {
         VkrRgJsonAttachment *att =
@@ -1977,9 +2247,21 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
             uint32_t binding = use->binding.is_set ? use->binding.value : 0;
             uint32_t array_index = vkr_rg_resolve_index(
                 &use->array_index, use_repeat > 1 ? ur : r);
-            vkr_rg_pass_read_image(&pb, handle,
-                                   (VkrRgImageAccessFlags)use->image_access,
-                                   binding, array_index);
+            if (use->has_slice) {
+              VkrRgImageSlice slice = {0};
+              if (!vkr_rg_json_resolve_use_slice(use, use_repeat > 1 ? ur : r,
+                                                 &slice))
+                return false_v;
+              vkr_rg_pass_read_image_slice_at_stages(
+                  &pb, handle, (VkrRgImageAccessFlags)use->image_access,
+                  vkr_gpu_stages_for_image_access(
+                      (VkrRgImageAccessFlags)use->image_access, false_v),
+                  binding, array_index, slice);
+            } else {
+              vkr_rg_pass_read_image(&pb, handle,
+                                     (VkrRgImageAccessFlags)use->image_access,
+                                     binding, array_index);
+            }
           } else {
             VkrRgBufferHandle handle =
                 vkr_rg_build_find_buffer(rg, resolved_name);
@@ -2030,9 +2312,21 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
             uint32_t binding = use->binding.is_set ? use->binding.value : 0;
             uint32_t array_index = vkr_rg_resolve_index(
                 &use->array_index, use_repeat > 1 ? ur : r);
-            vkr_rg_pass_write_image(&pb, handle,
-                                    (VkrRgImageAccessFlags)use->image_access,
-                                    binding, array_index);
+            if (use->has_slice) {
+              VkrRgImageSlice slice = {0};
+              if (!vkr_rg_json_resolve_use_slice(use, use_repeat > 1 ? ur : r,
+                                                 &slice))
+                return false_v;
+              vkr_rg_pass_write_image_slice_at_stages(
+                  &pb, handle, (VkrRgImageAccessFlags)use->image_access,
+                  vkr_gpu_stages_for_image_access(
+                      (VkrRgImageAccessFlags)use->image_access, false_v),
+                  binding, array_index, slice);
+            } else {
+              vkr_rg_pass_write_image(&pb, handle,
+                                      (VkrRgImageAccessFlags)use->image_access,
+                                      binding, array_index);
+            }
           } else {
             VkrRgBufferHandle handle =
                 vkr_rg_build_find_buffer(rg, resolved_name);

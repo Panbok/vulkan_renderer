@@ -240,10 +240,12 @@ typedef struct VKR_SIMD_ALIGN VkrBindlessVkPacketFrameRoot {
 
 /** The only record written per indexed packet draw. */
 typedef struct VKR_SIMD_ALIGN VkrBindlessVkPacketDrawRoot {
+  uint64_t geometry_rows;
+  uint64_t visible_rows;
   uint64_t vertices;
   uint64_t frame;
-  uint32_t material_index;
-  uint32_t first_instance;
+  uint32_t visible_row_index;
+  uint32_t flags;
   uint32_t reserved[2];
 } VkrBindlessVkPacketDrawRoot;
 
@@ -315,7 +317,7 @@ _Static_assert(sizeof(VkrBindlessVkPushConstants) == 16u,
 _Static_assert(sizeof(VkrBindlessVkIblRoot) == 32u, "IBL-root ABI drift");
 _Static_assert(sizeof(VkrBindlessVkPacketFrameRoot) == 432u,
                "Packet frame-root ABI size drift");
-_Static_assert(sizeof(VkrBindlessVkPacketDrawRoot) == 32u,
+_Static_assert(sizeof(VkrBindlessVkPacketDrawRoot) == 48u,
                "Packet draw-root ABI size drift");
 _Static_assert(sizeof(VkrBindlessVkPacketUtilityRoot) == 512u,
                "Packet utility-root ABI size drift");
@@ -368,9 +370,16 @@ typedef struct VkrBindlessVkTargetSet {
 
 typedef struct VkrBindlessVkGraphImageInstance {
   VkrBindlessVkImage image;
-  VkImageView layer_views[VKR_BINDLESS_VK_GRAPH_LAYER_MAX];
+  VkImageView mip_views[VKR_BINDLESS_VK_TEXTURE_MIP_MAX];
+  VkImageView mip_layer_views[VKR_BINDLESS_VK_TEXTURE_MIP_MAX]
+                             [VKR_BINDLESS_VK_GRAPH_LAYER_MAX];
+  VkrGpuSlotHandle sampled_mip_slots[VKR_BINDLESS_VK_TEXTURE_MIP_MAX];
+  VkrGpuSlotHandle storage_mip_slots[VKR_BINDLESS_VK_TEXTURE_MIP_MAX];
   VkrGpuSlotHandle sampled_slot;
   VkrGpuSlotHandle storage_slot;
+  uint64_t last_use_submit_value;
+  bool8_t has_sampled_mip_slot[VKR_BINDLESS_VK_TEXTURE_MIP_MAX];
+  bool8_t has_storage_mip_slot[VKR_BINDLESS_VK_TEXTURE_MIP_MAX];
   bool8_t has_sampled_slot;
   bool8_t has_storage_slot;
 } VkrBindlessVkGraphImageInstance;
@@ -383,6 +392,19 @@ typedef struct VkrBindlessVkGraphImage {
   bool8_t live;
   bool8_t external_swapchain;
 } VkrBindlessVkGraphImage;
+
+typedef struct VkrBindlessVkGraphBufferInstance {
+  VkrBindlessVkBuffer buffer;
+  uint64_t last_use_submit_value;
+} VkrBindlessVkGraphBufferInstance;
+
+typedef struct VkrBindlessVkGraphBuffer {
+  VkrBindlessVkGraphBufferInstance instances[VKR_BINDLESS_VK_TARGET_IMAGE_MAX];
+  VkrRgBufferDesc desc;
+  uint32_t graph_generation;
+  uint32_t instance_count;
+  bool8_t live;
+} VkrBindlessVkGraphBuffer;
 
 typedef struct VkrBindlessVkRetiredTargetSet {
   VkrBindlessVkTargetSet targets;
@@ -529,10 +551,39 @@ typedef struct VkrBindlessVkPendingBufferInitialization {
   uint8_t *upload_data;
   VkDeviceSize size;
   VkDeviceSize next_offset;
+  VkDeviceSize destination_offset;
   VkPipelineStageFlags2 destination_stage;
   VkAccessFlags2 destination_access;
   uint32_t geometry_record_index;
 } VkrBindlessVkPendingBufferInitialization;
+
+typedef struct VkrBindlessVkRetiredGeometryMegabuffer {
+  VkrBindlessVkBuffer vertices;
+  VkrBindlessVkBuffer indices;
+  uint64_t retire_value;
+  bool8_t occupied;
+} VkrBindlessVkRetiredGeometryMegabuffer;
+
+typedef struct VkrBindlessVkGeometryMegabuffer {
+  VkrBindlessVkBuffer vertices;
+  VkrBindlessVkBuffer indices;
+  VkrBindlessVkBuffer copy_source_vertices;
+  VkrBindlessVkBuffer copy_source_indices;
+  uint64_t copy_vertex_size;
+  uint64_t copy_index_size;
+  VkrBindlessVkRetiredGeometryMegabuffer retired[4];
+  uint64_t vertex_cursor;
+  uint64_t index_cursor;
+  uint64_t vertex_live_bytes;
+  uint64_t index_live_bytes;
+  uint64_t vertex_high_water;
+  uint64_t index_high_water;
+  uint64_t rejected_publications;
+  uint64_t generation_replacements;
+  uint32_t generation;
+  bool8_t live;
+  bool8_t copy_pending;
+} VkrBindlessVkGeometryMegabuffer;
 
 typedef struct VkrBindlessVkRetiredStagingBuffer {
   VkrBindlessVkBuffer buffer;
@@ -550,6 +601,7 @@ typedef struct VkrBindlessVkPublishedGeometry {
   VkrGeometryHandle handle;
   VkrBindlessVkBuffer vertices;
   VkrBindlessVkBuffer indices;
+  VkrGpuGeometryRow gpu_row;
   uint32_t vertex_count;
   uint32_t index_count;
   VkIndexType index_type;
@@ -593,8 +645,12 @@ struct VkrBindlessVulkanRenderer {
   VkrRenderGraphFrameInfo prepared_frame;
   VkrBindlessVkGraphImage *graph_images;
   uint64_t graph_images_size;
+  VkrBindlessVkGraphBuffer *graph_buffers;
+  uint64_t graph_buffers_size;
   VkImageMemoryBarrier2 *graph_image_barriers;
   uint64_t graph_image_barriers_size;
+  VkBufferMemoryBarrier2 *graph_buffer_barriers;
+  uint64_t graph_buffer_barriers_size;
   VkrBindlessVulkanDevice *device;
   VkrBindlessVkTargetSet targets;
   VkrBindlessVkRetiredTargetSet retired_targets[4];
@@ -617,6 +673,7 @@ struct VkrBindlessVulkanRenderer {
   VkrGpuSlotTable *sampler_slots;
   VkrGpuSlotTable *material_slots;
   VkrBindlessVkPublishedGeometry *published_geometries;
+  VkrBindlessVkGeometryMegabuffer geometry_megabuffer;
   VkrBindlessVkPublishedGeometry *retired_geometries;
   VkrBindlessVkPublishedTexture *published_textures;
   VkrBindlessVkPublishedTexture *retired_textures;
@@ -690,6 +747,9 @@ VkImageLayout vkr_bindless_vk_texture_layout(VkrTextureLayout layout);
 VkrBindlessVkGraphImageInstance *
 vkr_bindless_vk_graph_image(VkrBindlessVulkanRenderer *renderer,
                             VkrRgImageHandle handle, uint32_t image_index);
+VkrBindlessVkGraphBufferInstance *
+vkr_bindless_vk_graph_buffer(VkrBindlessVulkanRenderer *renderer,
+                             VkrRgBufferHandle handle);
 VkrBindlessVkPublishedTexture *
 vkr_bindless_vk_published_texture(VkrBindlessVulkanRenderer *renderer,
                                   VkrTextureHandle handle, uint32_t *out_index);
@@ -714,6 +774,12 @@ bool8_t
 vkr_bindless_vk_pipeline_cache_initialize(VkrBindlessVulkanRenderer *renderer);
 bool8_t
 vkr_bindless_vk_realize_graph_images(VkrBindlessVulkanRenderer *renderer);
+bool8_t
+vkr_bindless_vk_realize_graph_buffers(VkrBindlessVulkanRenderer *renderer);
+void vkr_bindless_vk_mark_graph_images_submitted(
+    VkrBindlessVulkanRenderer *renderer, uint64_t submit_value);
+void vkr_bindless_vk_mark_graph_buffers_submitted(
+    VkrBindlessVulkanRenderer *renderer, uint64_t submit_value);
 bool8_t
 vkr_bindless_vk_register_graph_executors(VkrBindlessVulkanRenderer *renderer);
 bool8_t
@@ -827,6 +893,8 @@ void vkr_bindless_vk_destroy_buffer(VkrBindlessVulkanRenderer *renderer,
 void vkr_bindless_vk_destroy_frame_slots(VkrBindlessVulkanRenderer *renderer);
 void vkr_bindless_vk_destroy_graph_image(VkrBindlessVulkanRenderer *renderer,
                                          VkrBindlessVkGraphImage *slot);
+void vkr_bindless_vk_destroy_graph_buffer(VkrBindlessVulkanRenderer *renderer,
+                                          VkrBindlessVkGraphBuffer *slot);
 void vkr_bindless_vk_destroy_image(VkrBindlessVulkanRenderer *renderer,
                                    VkrBindlessVkImage *image);
 void vkr_bindless_vk_destroy_target_set(VkrBindlessVulkanRenderer *renderer,

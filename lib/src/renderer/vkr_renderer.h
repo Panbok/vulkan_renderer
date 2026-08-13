@@ -178,6 +178,7 @@ typedef enum VkrBufferAccessFlags {
   VKR_BUFFER_ACCESS_STORAGE_WRITE = 1 << 4,
   VKR_BUFFER_ACCESS_TRANSFER_SRC = 1 << 5,
   VKR_BUFFER_ACCESS_TRANSFER_DST = 1 << 6,
+  VKR_BUFFER_ACCESS_INDIRECT_READ = 1 << 7,
 } VkrBufferAccessFlags;
 
 /**
@@ -531,6 +532,10 @@ typedef enum VkrTextureFormat {
   VKR_TEXTURE_FORMAT_D16_UNORM,
   VKR_TEXTURE_FORMAT_D32_SFLOAT,
   VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT,
+  /** Two-channel visibility-buffer payload: visible row plus primitive ID. */
+  VKR_TEXTURE_FORMAT_R32G32_UINT,
+  /** Two-channel signed-normalized octahedral world normal. */
+  VKR_TEXTURE_FORMAT_R16G16_SNORM,
 
   VKR_TEXTURE_FORMAT_COUNT,
 } VkrTextureFormat;

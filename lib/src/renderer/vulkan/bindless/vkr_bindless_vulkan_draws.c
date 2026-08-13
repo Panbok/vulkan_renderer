@@ -272,17 +272,6 @@ vkr_bindless_vk_packet_frame_root(VkrBindlessVkFrameSlot *slot,
   return root;
 }
 
-vkr_internal VkrBindlessVkPacketDrawRoot *
-vkr_bindless_vk_packet_draw_root(VkrBindlessVkFrameSlot *slot,
-                                 uint64_t *out_address) {
-  VkrBindlessVkPacketDrawRoot *root = vkr_bindless_vk_frame_upload_allocate(
-      slot, sizeof(*root), _Alignof(VkrBindlessVkPacketDrawRoot), out_address,
-      NULL);
-  if (root)
-    MemZero(root, sizeof(*root));
-  return root;
-}
-
 vkr_internal void vkr_bindless_vk_fill_packet_frame_root(
     VkrBindlessVulkanRenderer *renderer, VkrBindlessVkPacketFrameRoot *root,
     const VkrBindlessVkFrameSlot *slot, const VkrPacketFrameConstants *frame,
@@ -398,24 +387,52 @@ bool8_t vkr_bindless_vk_record_packet_draws(
       continue;
     const VkrBindlessVkSubmeshRange *range =
         &geometry->submeshes[draw->submesh_index];
+    typedef struct VkrBindlessVkTableDrawUpload {
+      VkrBindlessVkPacketDrawRoot root;
+      VkrGpuGeometryRow geometry;
+      VkrGpuVisibleDrawRow visible;
+    } VkrBindlessVkTableDrawUpload;
     uint64_t draw_root_address = 0u;
-    VkrBindlessVkPacketDrawRoot *draw_root =
-        vkr_bindless_vk_packet_draw_root(slot, &draw_root_address);
-    if (!draw_root)
+    VkrBindlessVkTableDrawUpload *table_draw =
+        vkr_bindless_vk_frame_upload_allocate(
+            slot, sizeof(*table_draw), _Alignof(VkrBindlessVkTableDrawUpload),
+            &draw_root_address, NULL);
+    if (!table_draw)
       return false_v;
-    *draw_root = (VkrBindlessVkPacketDrawRoot){
-        .vertices = geometry->vertices.address,
-        .frame = frame_root_address,
-        .material_index = material->slot.index,
-        .first_instance = draw->first_instance,
+    *table_draw = (VkrBindlessVkTableDrawUpload){
+        .root =
+            {
+                .geometry_rows =
+                    draw_root_address +
+                    offsetof(VkrBindlessVkTableDrawUpload, geometry),
+                .visible_rows = draw_root_address +
+                                offsetof(VkrBindlessVkTableDrawUpload, visible),
+                .vertices = renderer->geometry_megabuffer.vertices.address,
+                .frame = frame_root_address,
+            },
+        .geometry = geometry->gpu_row,
+        .visible =
+            {
+                .geometry_index = 0u,
+                .material_index = material->slot.index,
+                .instance_index = draw->first_instance,
+                .first_index =
+                    geometry->gpu_row.first_index + range->first_index,
+                .index_count = range->index_count,
+                .vertex_offset = range->vertex_offset,
+                .flags = alpha_cutout ? 1u : 0u,
+            },
     };
     const VkrBindlessVkPushConstants push = {
         .root = draw_root_address,
         .material_index = material->slot.index,
         .flags = alpha_cutout ? 1u : 0u,
     };
-    vkCmdBindIndexBuffer2(command, geometry->indices.handle, 0u,
-                          geometry->indices.size, geometry->index_type);
+    const uint64_t geometry_index_offset =
+        (uint64_t)geometry->gpu_row.first_index * sizeof(uint32_t);
+    vkCmdBindIndexBuffer2(
+        command, geometry->indices.handle, geometry_index_offset,
+        geometry->indices.size - geometry_index_offset, geometry->index_type);
     vkCmdPushConstants(command, renderer->pipeline_layout,
                        VK_SHADER_STAGE_VERTEX_BIT |
                            VK_SHADER_STAGE_FRAGMENT_BIT |

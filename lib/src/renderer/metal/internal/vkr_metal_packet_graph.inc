@@ -6,27 +6,72 @@ vkr_internal void vkr_metal_packet_noop(VkrRgPassContext *ctx,
   (void)user_data;
 }
 
+typedef enum VkrMetalPacketGraphExecutorKind {
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_SHADOW = 0,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING_READBACK,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_IBL_BAKE,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_SKYBOX,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_WORLD_OPAQUE,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_FULLSCREEN,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_EDITOR,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_WORLD_TRANSMISSION,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_WORLD_BLEND,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_TONEMAP,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_UI,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_COUNT,
+} VkrMetalPacketGraphExecutorKind;
+
+typedef struct VkrMetalPacketGraphExecutorSpec {
+  const char *name;
+  VkrRgPassType type;
+} VkrMetalPacketGraphExecutorSpec;
+
+vkr_global const VkrMetalPacketGraphExecutorSpec
+    s_metal_packet_graph_executors[] = {
+        {"pass.shadow.cascade", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.picking", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.picking.readback", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.ibl_bake", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.skybox", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.world.opaque", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.copy.pre_transmission.fullscreen", VKR_RG_PASS_TYPE_TRANSFER},
+        {"pass.copy.pre_transmission.editor", VKR_RG_PASS_TYPE_TRANSFER},
+        {"pass.world.transmission", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.world.blend", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.tonemap", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.editor", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.ui", VKR_RG_PASS_TYPE_GRAPHICS},
+};
+_Static_assert(ArrayCount(s_metal_packet_graph_executors) ==
+                   VKR_METAL_PACKET_GRAPH_EXECUTOR_COUNT,
+               "Metal graph executor table is incomplete");
+
+vkr_internal bool8_t vkr_metal_packet_graph_executor_kind(
+    const VkrRgPass *pass, VkrMetalPacketGraphExecutorKind *out_kind) {
+  if (!pass || !out_kind || pass->desc.executor_id == 0u ||
+      pass->desc.executor_id > VKR_METAL_PACKET_GRAPH_EXECUTOR_COUNT)
+    return false_v;
+  *out_kind = (VkrMetalPacketGraphExecutorKind)(pass->desc.executor_id - 1u);
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_metal_packet_graph_pass_is(
+    const VkrRgPass *pass, VkrMetalPacketGraphExecutorKind kind) {
+  return pass && pass->desc.executor_id == (uint32_t)kind + 1u;
+}
+
 vkr_internal bool8_t
 vkr_metal_packet_register_executors(VkrMetalPacketRenderer *renderer) {
-  vkr_local_persist const char *names[] = {
-      "pass.shadow.cascade",
-      "pass.picking",
-      "pass.picking.readback",
-      "pass.ibl_bake",
-      "pass.skybox",
-      "pass.world.opaque",
-      "pass.copy.pre_transmission.fullscreen",
-      "pass.copy.pre_transmission.editor",
-      "pass.world.transmission",
-      "pass.world.blend",
-      "pass.tonemap",
-      "pass.editor",
-      "pass.ui",
-  };
-  for (uint32_t i = 0; i < ArrayCount(names); ++i) {
+  for (uint32_t i = 0; i < ArrayCount(s_metal_packet_graph_executors); ++i) {
+    const VkrMetalPacketGraphExecutorSpec *spec =
+        &s_metal_packet_graph_executors[i];
     VkrRgPassExecutor entry = {
-        .name = string8_create_from_cstr((const uint8_t *)names[i],
-                                         string_length(names[i])),
+        .name = string8_create_from_cstr((const uint8_t *)spec->name,
+                                         string_length(spec->name)),
+        .id = i + 1u,
+        .type = spec->type,
         .execute = vkr_metal_packet_noop,
     };
     if (!vkr_rg_executor_registry_register(&renderer->executors, &entry))
@@ -80,6 +125,10 @@ vkr_metal_packet_pixel_format(VkrTextureFormat format) {
     return MTLPixelFormatR32Uint;
   case VKR_TEXTURE_FORMAT_R8G8_UNORM:
     return MTLPixelFormatRG8Unorm;
+  case VKR_TEXTURE_FORMAT_R32G32_UINT:
+    return MTLPixelFormatRG32Uint;
+  case VKR_TEXTURE_FORMAT_R16G16_SNORM:
+    return MTLPixelFormatRG16Snorm;
   case VKR_TEXTURE_FORMAT_D16_UNORM:
     return MTLPixelFormatDepth16Unorm;
   case VKR_TEXTURE_FORMAT_D32_SFLOAT:
@@ -119,14 +168,62 @@ vkr_internal bool8_t vkr_metal_packet_image_desc_equal(
          a->mip_levels == b->mip_levels && a->type == b->type;
 }
 
-vkr_internal bool8_t vkr_metal_packet_create_image(
+vkr_internal void
+vkr_metal_packet_release_image_views(VkrMetalPacketImageInstance *instance) {
+  if (!instance)
+    return;
+  for (uint32_t mip = 0u; mip < VKR_METAL_PACKET_MAX_TEXTURE_MIPS; ++mip) {
+    if (instance->mip_views[mip]) {
+      [(id<MTLTexture>)instance->mip_views[mip] release];
+      instance->mip_views[mip] = NULL;
+    }
+  }
+}
+
+vkr_internal bool8_t vkr_metal_packet_retire_image_instance(
+    VkrMetalPacketRenderer *renderer, VkrMetalPacketImageInstance *instance) {
+  if (!instance || !instance->live)
+    return true_v;
+  vkr_metal_packet_release_image_views(instance);
+  if (instance->owned &&
+      vkr_metal_memory_device_retire(
+          renderer->memory, instance->resource.handle,
+          instance->last_use_submit_value) != VKR_METAL_MEMORY_STATUS_OK)
+    return false_v;
+  *instance = (VkrMetalPacketImageInstance){0};
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_metal_packet_graph_image_format_supported(
+    VkrMetalPacketRenderer *renderer, const VkrRgImageDesc *desc) {
+  VkrTextureFormatInfo info = {0};
+  if (!renderer || !desc ||
+      vkr_metal_packet_pixel_format(desc->format) == MTLPixelFormatInvalid ||
+      !vkr_texture_format_get_info(desc->format, &info) ||
+      ![renderer->device supportsTextureSampleCount:desc->samples])
+    return false_v;
+  if ((desc->usage.set & VKR_TEXTURE_USAGE_STORAGE) != 0u &&
+      (info.is_block_compressed || info.is_depth_stencil))
+    return false_v;
+  if ((desc->usage.set & VKR_TEXTURE_USAGE_COLOR_ATTACHMENT) != 0u &&
+      info.is_depth_stencil)
+    return false_v;
+  if ((desc->usage.set & VKR_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT) != 0u &&
+      !info.is_depth_stencil)
+    return false_v;
+  return desc->samples == VKR_SAMPLE_COUNT_1 || desc->mip_levels == 1u;
+}
+
+vkr_internal bool8_t vkr_metal_packet_create_image_instance(
     VkrMetalPacketRenderer *renderer, const VkrRgImage *image,
-    VkrMetalPacketImage *slot) API_AVAILABLE(macos(26.0)) {
+    VkrMetalPacketImageInstance *instance) API_AVAILABLE(macos(26.0)) {
   const MTLPixelFormat format =
       vkr_metal_packet_pixel_format(image->desc.format);
-  if (format == MTLPixelFormatInvalid || image->desc.width == 0 ||
+  if (!vkr_metal_packet_graph_image_format_supported(renderer, &image->desc) ||
+      format == MTLPixelFormatInvalid || image->desc.width == 0 ||
       image->desc.height == 0 || image->desc.layers == 0 ||
-      image->desc.mip_levels == 0)
+      image->desc.mip_levels == 0 ||
+      image->desc.mip_levels > VKR_METAL_PACKET_MAX_TEXTURE_MIPS)
     return false_v;
 
   MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
@@ -147,13 +244,31 @@ vkr_internal bool8_t vkr_metal_packet_create_image(
   if (status != VKR_METAL_MEMORY_STATUS_OK)
     return false_v;
 
-  *slot = (VkrMetalPacketImage){
+  *instance = (VkrMetalPacketImageInstance){
       .resource = resource,
-      .desc = image->desc,
-      .graph_generation = image->generation,
       .live = true_v,
       .owned = true_v,
   };
+  id<MTLTexture> texture = (id<MTLTexture>)resource.metal_texture;
+  const MTLTextureType view_type =
+      image->desc.layers > 1u ? MTLTextureType2DArray : MTLTextureType2D;
+  for (uint32_t mip = 0u; mip < image->desc.mip_levels; ++mip) {
+    id<MTLTexture> view = [texture
+        newTextureViewWithPixelFormat:format
+                          textureType:view_type
+                               levels:NSMakeRange(mip, 1u)
+                               slices:NSMakeRange(0u, image->desc.layers)];
+    if (!view) {
+      vkr_metal_packet_release_image_views(instance);
+      (void)vkr_metal_memory_device_retire(renderer->memory, resource.handle,
+                                           renderer->completion.signaledValue);
+      (void)vkr_metal_memory_device_collect(
+          renderer->memory, renderer->completion.signaledValue, NULL);
+      *instance = (VkrMetalPacketImageInstance){0};
+      return false_v;
+    }
+    instance->mip_views[mip] = view;
+  }
   return true_v;
 }
 
@@ -161,56 +276,269 @@ vkr_internal bool8_t
 vkr_metal_packet_realize_images(VkrMetalPacketRenderer *renderer) {
   if (renderer->graph->images.length > renderer->max_images)
     return false_v;
+  const uint64_t completed = renderer->completion.signaledValue;
   for (uint64_t i = 0; i < renderer->graph->images.length; ++i) {
     const VkrRgImage *image =
         vector_get_VkrRgImage(&renderer->graph->images, i);
     if (!image || !image->declared_this_frame)
       continue;
     VkrMetalPacketImage *slot = &renderer->images[i];
-    if (renderer->target_kind == VKR_METAL_PACKET_TARGET_WINDOW &&
-        image->imported && vkr_string8_equals_cstr(&image->name, "swapchain")) {
+    const bool8_t external_drawable =
+        renderer->target_kind == VKR_METAL_PACKET_TARGET_WINDOW &&
+        image->imported && vkr_string8_equals_cstr(&image->name, "swapchain");
+    const VkrRgResourceInstanceDomain domain =
+        vkr_rg_resource_instance_domain(image->desc.flags);
+    const uint32_t instance_count =
+        external_drawable || domain == VKR_RG_RESOURCE_INSTANCE_SINGLE
+            ? 1u
+            : renderer->command_slot_count;
+    if (instance_count == 0u ||
+        instance_count > VKR_METAL_PACKET_GRAPH_INSTANCE_MAX)
+      return false_v;
+    if (slot->live && slot->graph_generation == image->generation &&
+        slot->instance_count == instance_count &&
+        slot->external == external_drawable &&
+        vkr_metal_packet_image_desc_equal(&slot->desc, &image->desc)) {
+      if (external_drawable) {
+        if (!renderer->drawable || !renderer->drawable.texture)
+          return false_v;
+        slot->instances[0].resource = (VkrMetalTextureResource){
+            .metal_texture = renderer->drawable.texture,
+            .resource_id = renderer->drawable.texture.gpuResourceID._impl,
+        };
+      }
+      continue;
+    }
+    if (slot->live) {
+      for (uint32_t instance = 0u; instance < slot->instance_count;
+           ++instance) {
+        if (slot->instances[instance].live &&
+            slot->instances[instance].last_use_submit_value > completed) {
+          log_error(
+              "Metal graph image '%.*s' replacement is busy through submit "
+              "%llu (completed %llu)",
+              (int)image->name.length, image->name.str,
+              (unsigned long long)slot->instances[instance]
+                  .last_use_submit_value,
+              (unsigned long long)completed);
+          return false_v;
+        }
+      }
+      for (uint32_t instance = 0u; instance < slot->instance_count;
+           ++instance) {
+        if (!vkr_metal_packet_retire_image_instance(renderer,
+                                                    &slot->instances[instance]))
+          return false_v;
+      }
+      renderer->resize_count++;
+    }
+    *slot = (VkrMetalPacketImage){
+        .desc = image->desc,
+        .graph_generation = image->generation,
+        .instance_count = instance_count,
+        .live = true_v,
+        .external = external_drawable,
+    };
+    if (external_drawable) {
       if (!renderer->drawable || !renderer->drawable.texture)
         return false_v;
-      *slot = (VkrMetalPacketImage){
+      slot->instances[0] = (VkrMetalPacketImageInstance){
           .resource =
               {
                   .metal_texture = renderer->drawable.texture,
                   .resource_id = renderer->drawable.texture.gpuResourceID._impl,
               },
-          .desc = image->desc,
-          .graph_generation = image->generation,
           .live = true_v,
           .owned = false_v,
       };
       continue;
     }
-    if (slot->live && slot->graph_generation == image->generation &&
-        vkr_metal_packet_image_desc_equal(&slot->desc, &image->desc))
-      continue;
-    if (slot->live && slot->owned) {
-      if (vkr_metal_memory_device_retire(
-              renderer->memory, slot->resource.handle,
-              renderer->submit_value) != VKR_METAL_MEMORY_STATUS_OK)
+    for (uint32_t instance = 0u; instance < instance_count; ++instance) {
+      if (!vkr_metal_packet_create_image_instance(renderer, image,
+                                                  &slot->instances[instance])) {
+        for (uint32_t rollback = 0u; rollback < instance; ++rollback)
+          (void)vkr_metal_packet_retire_image_instance(
+              renderer, &slot->instances[rollback]);
+        *slot = (VkrMetalPacketImage){0};
         return false_v;
-      slot->live = false_v;
-      renderer->resize_count++;
+      }
     }
-    slot->live = false_v;
-    if (!vkr_metal_packet_create_image(renderer, image, slot))
-      return false_v;
   }
   return true_v;
+}
+
+vkr_internal VkrMetalPacketImageInstance *
+vkr_metal_packet_image_instance(VkrMetalPacketRenderer *renderer,
+                                VkrRgImageHandle handle) {
+  if (!vkr_rg_image_handle_valid(handle) || handle.id > renderer->max_images)
+    return NULL;
+  VkrMetalPacketImage *slot = &renderer->images[handle.id - 1u];
+  if (!slot->live || slot->graph_generation != handle.generation ||
+      slot->instance_count == 0u)
+    return NULL;
+  uint32_t instance = 0u;
+  const VkrRgResourceInstanceDomain domain =
+      vkr_rg_resource_instance_domain(slot->desc.flags);
+  if (!slot->external && domain == VKR_RG_RESOURCE_INSTANCE_PER_IMAGE)
+    instance = renderer->prepared_frame.image_index % slot->instance_count;
+  else if (!slot->external && domain == VKR_RG_RESOURCE_INSTANCE_PER_FRAME_SLOT)
+    instance =
+        (uint32_t)(renderer->active_command_slot - renderer->command_slots);
+  return instance < slot->instance_count && slot->instances[instance].live
+             ? &slot->instances[instance]
+             : NULL;
 }
 
 vkr_internal id<MTLTexture>
 vkr_metal_packet_texture(VkrMetalPacketRenderer *renderer,
                          VkrRgImageHandle handle) {
-  if (!vkr_rg_image_handle_valid(handle) || handle.id > renderer->max_images)
-    return nil;
-  VkrMetalPacketImage *slot = &renderer->images[handle.id - 1];
-  return slot->live && slot->graph_generation == handle.generation
-             ? (id<MTLTexture>)slot->resource.metal_texture
+  VkrMetalPacketImageInstance *instance =
+      vkr_metal_packet_image_instance(renderer, handle);
+  return instance ? (id<MTLTexture>)instance->resource.metal_texture : nil;
+}
+
+vkr_internal id<MTLTexture>
+vkr_metal_packet_mip_texture(VkrMetalPacketRenderer *renderer,
+                             VkrRgImageHandle handle, uint32_t mip) {
+  VkrMetalPacketImageInstance *instance =
+      vkr_metal_packet_image_instance(renderer, handle);
+  return instance && mip < VKR_METAL_PACKET_MAX_TEXTURE_MIPS &&
+                 instance->mip_views[mip]
+             ? (id<MTLTexture>)instance->mip_views[mip]
              : nil;
+}
+
+vkr_internal VkrMetalPacketGraphBufferInstance *
+vkr_metal_packet_graph_buffer(VkrMetalPacketRenderer *renderer,
+                              VkrRgBufferHandle handle) {
+  if (!vkr_rg_buffer_handle_valid(handle) || handle.id > renderer->max_images)
+    return NULL;
+  VkrMetalPacketGraphBuffer *slot = &renderer->graph_buffers[handle.id - 1u];
+  if (!slot->live || slot->graph_generation != handle.generation)
+    return NULL;
+  uint32_t instance = 0u;
+  const VkrRgResourceInstanceDomain domain =
+      vkr_rg_resource_instance_domain(slot->desc.flags);
+  if (domain == VKR_RG_RESOURCE_INSTANCE_PER_IMAGE)
+    instance = renderer->prepared_frame.image_index % slot->instance_count;
+  else if (domain == VKR_RG_RESOURCE_INSTANCE_PER_FRAME_SLOT)
+    instance =
+        (uint32_t)(renderer->active_command_slot - renderer->command_slots);
+  if (instance >= slot->instance_count)
+    return NULL;
+  VkrMetalPacketGraphBufferInstance *result =
+      &renderer->graph_buffer_instances[(uint64_t)(handle.id - 1u) *
+                                            renderer->command_slot_count +
+                                        instance];
+  return result->live ? result : NULL;
+}
+
+vkr_internal bool8_t
+vkr_metal_packet_realize_buffers(VkrMetalPacketRenderer *renderer) {
+  if (renderer->graph->buffers.length > renderer->max_images)
+    return false_v;
+  const uint64_t completed = renderer->completion.signaledValue;
+  for (uint64_t i = 0u; i < renderer->graph->buffers.length; ++i) {
+    const VkrRgBuffer *buffer =
+        vector_get_VkrRgBuffer(&renderer->graph->buffers, i);
+    if (!buffer || !buffer->declared_this_frame)
+      continue;
+    if (buffer->imported ||
+        (buffer->desc.flags & VKR_RG_RESOURCE_FLAG_EXTERNAL))
+      return false_v;
+    const VkrRgResourceInstanceDomain domain =
+        vkr_rg_resource_instance_domain(buffer->desc.flags);
+    const uint32_t instance_count = domain == VKR_RG_RESOURCE_INSTANCE_SINGLE
+                                        ? 1u
+                                        : renderer->command_slot_count;
+    VkrMetalPacketGraphBuffer *slot = &renderer->graph_buffers[i];
+    if (slot->live && slot->graph_generation == buffer->generation &&
+        slot->instance_count == instance_count &&
+        slot->desc.size == buffer->desc.size &&
+        slot->desc.usage.set == buffer->desc.usage.set &&
+        slot->desc.flags == buffer->desc.flags)
+      continue;
+    VkrMetalPacketGraphBufferInstance *instances =
+        &renderer->graph_buffer_instances[i * renderer->command_slot_count];
+    if (slot->live) {
+      for (uint32_t instance = 0u; instance < slot->instance_count;
+           ++instance) {
+        if (instances[instance].live &&
+            instances[instance].last_use_submit_value > completed) {
+          log_error(
+              "Metal graph buffer '%.*s' replacement is busy through "
+              "submit %llu (completed %llu)",
+              (int)buffer->name.length, buffer->name.str,
+              (unsigned long long)instances[instance].last_use_submit_value,
+              (unsigned long long)completed);
+          return false_v;
+        }
+      }
+      for (uint32_t instance = 0u; instance < slot->instance_count;
+           ++instance) {
+        if (instances[instance].live &&
+            vkr_metal_memory_device_retire(
+                renderer->memory, instances[instance].resource.handle,
+                instances[instance].last_use_submit_value) !=
+                VKR_METAL_MEMORY_STATUS_OK)
+          return false_v;
+        instances[instance] = (VkrMetalPacketGraphBufferInstance){0};
+      }
+    }
+    *slot = (VkrMetalPacketGraphBuffer){
+        .desc = buffer->desc,
+        .graph_generation = buffer->generation,
+        .instance_count = instance_count,
+        .live = true_v,
+    };
+    for (uint32_t instance = 0u; instance < instance_count; ++instance) {
+      if (vkr_metal_memory_device_create_buffer(
+              renderer->memory, buffer->desc.size,
+              &instances[instance].resource) != VKR_METAL_MEMORY_STATUS_OK) {
+        for (uint32_t rollback = 0u; rollback < instance; ++rollback) {
+          (void)vkr_metal_memory_device_retire(
+              renderer->memory, instances[rollback].resource.handle, completed);
+          instances[rollback] = (VkrMetalPacketGraphBufferInstance){0};
+        }
+        *slot = (VkrMetalPacketGraphBuffer){0};
+        return false_v;
+      }
+      instances[instance].live = true_v;
+    }
+  }
+  return true_v;
+}
+
+vkr_internal void
+vkr_metal_packet_mark_graph_images_submitted(VkrMetalPacketRenderer *renderer,
+                                             uint64_t submit_value) {
+  for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
+    const VkrRgImage *image =
+        vector_get_VkrRgImage(&renderer->graph->images, i);
+    if (!image || !image->declared_this_frame)
+      continue;
+    VkrMetalPacketImageInstance *instance = vkr_metal_packet_image_instance(
+        renderer, (VkrRgImageHandle){.id = (uint32_t)i + 1u,
+                                     .generation = image->generation});
+    if (instance && instance->owned)
+      instance->last_use_submit_value = submit_value;
+  }
+}
+
+vkr_internal void
+vkr_metal_packet_mark_graph_buffers_submitted(VkrMetalPacketRenderer *renderer,
+                                              uint64_t submit_value) {
+  for (uint64_t i = 0u; i < renderer->graph->buffers.length; ++i) {
+    const VkrRgBuffer *buffer =
+        vector_get_VkrRgBuffer(&renderer->graph->buffers, i);
+    if (!buffer || !buffer->declared_this_frame)
+      continue;
+    VkrMetalPacketGraphBufferInstance *instance = vkr_metal_packet_graph_buffer(
+        renderer, (VkrRgBufferHandle){.id = (uint32_t)i + 1u,
+                                      .generation = buffer->generation});
+    if (instance)
+      instance->last_use_submit_value = submit_value;
+  }
 }
 
 vkr_internal id<MTLTexture>
@@ -586,6 +914,7 @@ vkr_internal bool8_t vkr_metal_packet_configure_render_pass(
   descriptor.renderTargetArrayLength = 1;
   descriptor.renderTargetWidth = 0;
   descriptor.renderTargetHeight = 0;
+  uint32_t render_target_layers = 0u;
 
   if (pass->desc.color_attachments.length >
       VKR_METAL_PACKET_MAX_COLOR_ATTACHMENTS)
@@ -595,15 +924,25 @@ vkr_internal bool8_t vkr_metal_packet_configure_render_pass(
         vector_get_VkrRgAttachment(&pass->desc.color_attachments, i);
     id<MTLTexture> texture =
         vkr_metal_packet_texture(renderer, attachment->image);
-    if (!texture)
+    if (!texture ||
+        attachment->desc.slice.mip_level >= texture.mipmapLevelCount ||
+        attachment->desc.slice.layer_count == 0u ||
+        attachment->desc.slice.base_layer >= texture.arrayLength ||
+        attachment->desc.slice.layer_count >
+            texture.arrayLength - attachment->desc.slice.base_layer ||
+        (render_target_layers != 0u &&
+         render_target_layers != attachment->desc.slice.layer_count))
       return false_v;
     MTLRenderPassColorAttachmentDescriptor *color =
         descriptor.colorAttachments[i];
     color.texture = texture;
     if (descriptor.renderTargetWidth == 0) {
-      descriptor.renderTargetWidth = texture.width;
-      descriptor.renderTargetHeight = texture.height;
+      descriptor.renderTargetWidth =
+          Max(1u, texture.width >> attachment->desc.slice.mip_level);
+      descriptor.renderTargetHeight =
+          Max(1u, texture.height >> attachment->desc.slice.mip_level);
     }
+    render_target_layers = attachment->desc.slice.layer_count;
     color.level = attachment->desc.slice.mip_level;
     color.slice = attachment->desc.slice.base_layer;
     color.loadAction = vkr_metal_packet_load_action(attachment->desc.load_op);
@@ -618,13 +957,23 @@ vkr_internal bool8_t vkr_metal_packet_configure_render_pass(
     const VkrRgAttachment *attachment = &pass->desc.depth_attachment;
     id<MTLTexture> texture =
         vkr_metal_packet_texture(renderer, attachment->image);
-    if (!texture)
+    if (!texture ||
+        attachment->desc.slice.mip_level >= texture.mipmapLevelCount ||
+        attachment->desc.slice.layer_count == 0u ||
+        attachment->desc.slice.base_layer >= texture.arrayLength ||
+        attachment->desc.slice.layer_count >
+            texture.arrayLength - attachment->desc.slice.base_layer ||
+        (render_target_layers != 0u &&
+         render_target_layers != attachment->desc.slice.layer_count))
       return false_v;
     descriptor.depthAttachment.texture = texture;
     if (descriptor.renderTargetWidth == 0) {
-      descriptor.renderTargetWidth = texture.width;
-      descriptor.renderTargetHeight = texture.height;
+      descriptor.renderTargetWidth =
+          Max(1u, texture.width >> attachment->desc.slice.mip_level);
+      descriptor.renderTargetHeight =
+          Max(1u, texture.height >> attachment->desc.slice.mip_level);
     }
+    render_target_layers = attachment->desc.slice.layer_count;
     descriptor.depthAttachment.level = attachment->desc.slice.mip_level;
     descriptor.depthAttachment.slice = attachment->desc.slice.base_layer;
     descriptor.depthAttachment.loadAction =
@@ -634,6 +983,7 @@ vkr_internal bool8_t vkr_metal_packet_configure_render_pass(
     descriptor.depthAttachment.clearDepth =
         attachment->desc.clear_value.depth_stencil.depth;
   }
+  descriptor.renderTargetArrayLength = render_target_layers;
   return pass->desc.color_attachments.length > 0 ||
                  pass->desc.has_depth_attachment
              ? true_v
@@ -770,12 +1120,12 @@ vkr_internal bool8_t vkr_metal_packet_encode_producers(
 vkr_internal bool8_t vkr_metal_packet_encode_transfer(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     id<MTL4ComputeCommandEncoder> encoder) API_AVAILABLE(macos(26.0)) {
-  if (pass->desc.image_reads.length == 0 || pass->desc.image_writes.length == 0)
+  const VkrRgImageUse *read = vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+  const VkrRgImageUse *write = vkr_rg_pass_find_image_use(&pass->desc, 1u, 0u);
+  if (!read && !write)
     return true_v;
-  const VkrRgImageUse *read =
-      vector_get_VkrRgImageUse(&pass->desc.image_reads, 0);
-  const VkrRgImageUse *write =
-      vector_get_VkrRgImageUse(&pass->desc.image_writes, 0);
+  if (!read || !write)
+    return false_v;
   id<MTLTexture> source = vkr_metal_packet_texture(renderer, read->image);
   id<MTLTexture> destination = vkr_metal_packet_texture(renderer, write->image);
   if (!source || !destination)
@@ -796,8 +1146,8 @@ vkr_internal bool8_t vkr_metal_packet_encode_transfer(
 
 vkr_internal bool8_t
 vkr_metal_packet_is_picking_readback(const VkrRgPass *pass) {
-  return vkr_string8_equals_cstr(&pass->desc.execute_name,
-                                 "pass.picking.readback");
+  return vkr_metal_packet_graph_pass_is(
+      pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING_READBACK);
 }
 
 vkr_internal bool8_t vkr_metal_packet_encode_picking_readback(
@@ -807,10 +1157,11 @@ vkr_internal bool8_t vkr_metal_packet_encode_picking_readback(
     API_AVAILABLE(macos(26.0)) {
   if (!vkr_metal_packet_is_picking_readback(pass))
     return true_v;
-  if (pass->desc.image_reads.length == 0 || !packet || !packet->picking)
+  if (!packet || !packet->picking)
     return false_v;
-  const VkrRgImageUse *read =
-      vector_get_VkrRgImageUse(&pass->desc.image_reads, 0);
+  const VkrRgImageUse *read = vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+  if (!read)
+    return false_v;
   id<MTLTexture> source = vkr_metal_packet_texture(renderer, read->image);
   if (!source)
     return false_v;

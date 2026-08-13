@@ -133,6 +133,42 @@ vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
 }
 #endif
 
+static uint32_t
+vkr_renderer_packet_gpu_candidate_count(const VkrRenderPacket *packet) {
+  if (!packet || !packet->world)
+    return 0u;
+  const VkrWorldPassPayload *world = packet->world;
+  uint64_t count = 0u;
+  const VkrDrawItem *domains[] = {world->opaque_draws,
+                                  world->transmission_draws};
+  const uint32_t domain_counts[] = {world->opaque_draw_count,
+                                    world->transmission_draw_count};
+  for (uint32_t domain = 0u; domain < ArrayCount(domains); ++domain) {
+    for (uint32_t i = 0u; domains[domain] && i < domain_counts[domain]; ++i)
+      count += domains[domain][i].instance_count;
+  }
+  return (uint32_t)Min(count, (uint64_t)UINT32_MAX);
+}
+
+static void
+vkr_renderer_record_gpu_candidate_metrics(RendererFrontend *renderer,
+                                          const VkrRenderPacket *packet) {
+  const uint32_t count = vkr_renderer_packet_gpu_candidate_count(packet);
+  renderer->frame_metrics.world.gpu_candidate_count = count;
+  renderer->frame_metrics.world.gpu_candidate_capacity =
+      VKR_GPU_DRAW_CANDIDATE_CAPACITY;
+  renderer->frame_metrics.world.gpu_candidate_overflow_fallbacks =
+      count > VKR_GPU_DRAW_CANDIDATE_CAPACITY ? 1u : 0u;
+  VkrGeometryMegabufferMetrics *mega =
+      &renderer->frame_metrics.world.geometry_megabuffer;
+  if (renderer->metal_renderer)
+    vkr_metal_packet_renderer_geometry_megabuffer_metrics(
+        renderer->metal_renderer, mega);
+  else
+    vkr_bindless_vulkan_renderer_geometry_megabuffer_metrics(
+        renderer->bindless_vulkan_renderer, mega);
+}
+
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -1056,6 +1092,7 @@ renderer_impl_bindless_submit_packet(void *state, const VkrRenderPacket *packet,
   rf->frame_metrics.world.transparent_draws = result.blend_draw_count;
   rf->frame_metrics.world.draws_issued = world_draw_count;
   rf->frame_metrics.world.draw_calls_issued = world_draw_count;
+  vkr_renderer_record_gpu_candidate_metrics(rf, &prepared_packet);
   for (uint32_t cascade = 0u; cascade < VKR_SHADOW_CASCADE_COUNT_MAX;
        ++cascade) {
     rf->frame_metrics.shadow.shadow_draw_calls_opaque[cascade] =
@@ -2475,6 +2512,7 @@ renderer_impl_metal_submit_packet(void *state, const VkrRenderPacket *packet,
   rf->frame_metrics.world.transparent_draws = result.blend_draw_count;
   rf->frame_metrics.world.draws_issued = result.indexed_draw_count;
   rf->frame_metrics.world.draw_calls_issued = result.indexed_draw_count;
+  vkr_renderer_record_gpu_candidate_metrics(rf, &prepared_packet);
   rf->frame_metrics.shadow.shadow_draw_calls_opaque[0] =
       result.shadow_draw_count;
   if (out_metrics) {

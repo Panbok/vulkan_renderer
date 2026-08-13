@@ -59,14 +59,27 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketFrameRoot {
 
 /** The only record written per indexed packet draw. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketDrawRoot {
+  uint64_t geometry_rows;
+  uint64_t visible_rows;
   uint64_t vertices;
   uint64_t frame;
-  uint32_t material_index;
-  uint32_t first_instance;
+  uint32_t visible_row_index;
+  uint32_t flags;
   uint32_t reserved[2];
 } VkrMetalPacketDrawRoot;
 
 typedef VkrMetalPacketDrawRoot VkrMetalPacketVertexDrawRoot;
+
+/** One upload-ring cell used by the retained table-driven forward path. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketTableDrawUpload {
+  VkrMetalPacketDrawRoot root;
+  VkrGpuGeometryRow geometry;
+  VkrGpuVisibleDrawRow visible;
+} VkrMetalPacketTableDrawUpload;
+
+_Static_assert(sizeof(VkrMetalPacketTableDrawUpload) <=
+                   VKR_METAL_PACKET_DRAW_ROOT_STRIDE,
+               "Table draw upload must fit one root-ring cell");
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketIblProbe {
   uint64_t irradiance_texture_id;

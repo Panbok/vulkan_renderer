@@ -8,10 +8,11 @@ vkr_internal MTLStages vkr_metal_lower_stages(VkrGpuStageFlags stages) {
     result |= MTLStageVertex | MTLStageFragment | MTLStageTile |
               MTLStageObject | MTLStageMesh;
   }
-  if (stages & (VKR_GPU_STAGE_DRAW_INDIRECT | VKR_GPU_STAGE_VERTEX_INPUT |
-                VKR_GPU_STAGE_VERTEX_SHADER)) {
+  if (stages & (VKR_GPU_STAGE_VERTEX_INPUT | VKR_GPU_STAGE_VERTEX_SHADER)) {
     result |= MTLStageVertex;
   }
+  if (stages & VKR_GPU_STAGE_DRAW_INDIRECT)
+    result |= MTLStageVertex | MTLStageDispatch;
   if (stages & (VKR_GPU_STAGE_FRAGMENT_SHADER | VKR_GPU_STAGE_EARLY_DEPTH |
                 VKR_GPU_STAGE_LATE_DEPTH | VKR_GPU_STAGE_COLOR_OUTPUT)) {
     result |= MTLStageFragment;

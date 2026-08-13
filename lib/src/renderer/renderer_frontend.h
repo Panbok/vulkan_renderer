@@ -24,6 +24,7 @@
 #include "renderer/systems/vkr_texture_system.h"
 #include "renderer/systems/vkr_ui_system.h"
 #include "renderer/systems/vkr_world_resources.h"
+#include "renderer/vkr_gpu_abi.h"
 #include "renderer/vkr_render_graph.h"
 #include "renderer/vkr_renderer.h"
 #include "renderer/vkr_renderer_impl.h"
@@ -56,6 +57,10 @@ typedef struct VkrWorldBatchMetrics {
   uint32_t indirect_calls_issued;
   float32_t avg_batch_size;
   uint32_t max_batch_size;
+  uint32_t gpu_candidate_count;
+  uint32_t gpu_candidate_capacity;
+  uint32_t gpu_candidate_overflow_fallbacks;
+  VkrGeometryMegabufferMetrics geometry_megabuffer;
 } VkrWorldBatchMetrics;
 
 /**

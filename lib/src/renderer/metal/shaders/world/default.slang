@@ -6,9 +6,12 @@ vkr_metal_packet_vertex(uint vertex_id : SV_VertexID,
                             : register(b0))
 {
     VkrMetalPacketFrameRoot frame = root.frame;
-    VkrMetalPacketVertex vertex = root.vertices[vertex_id];
+    VkrGpuVisibleDrawRow visible = root.visible_rows[root.visible_row_index];
+    VkrGpuGeometryRow geometry = root.geometry_rows[visible.geometry_index];
+    VkrMetalPacketVertex vertex =
+        root.vertices[geometry.first_vertex + vertex_id];
     VkrMetalPacketInstance instance =
-        frame.instances[root.first_instance + instance_id];
+        frame.instances[visible.instance_index + instance_id];
     VkrMetalPacketVertexOutput output;
     float3 position =
         float3(vertex.position_x, vertex.position_y, vertex.position_z);

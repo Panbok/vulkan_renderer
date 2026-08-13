@@ -481,6 +481,59 @@ void vkr_bindless_vk_record_texture_initializations(
 
 void vkr_bindless_vk_record_buffer_initializations(
     VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command) {
+  VkrBindlessVkGeometryMegabuffer *mega = &renderer->geometry_megabuffer;
+  if (mega->copy_pending) {
+    VkBufferCopy2 regions[2] = {
+        {.sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+         .size = mega->copy_vertex_size},
+        {.sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+         .size = mega->copy_index_size},
+    };
+    VkCopyBufferInfo2 copies[2] = {
+        {.sType = VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2,
+         .srcBuffer = mega->copy_source_vertices.handle,
+         .dstBuffer = mega->vertices.handle,
+         .regionCount = 1u,
+         .pRegions = &regions[0]},
+        {.sType = VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2,
+         .srcBuffer = mega->copy_source_indices.handle,
+         .dstBuffer = mega->indices.handle,
+         .regionCount = 1u,
+         .pRegions = &regions[1]},
+    };
+    if (regions[0].size)
+      vkCmdCopyBuffer2(command, &copies[0]);
+    if (regions[1].size)
+      vkCmdCopyBuffer2(command, &copies[1]);
+    const VkBufferMemoryBarrier2 barriers[2] = {
+        {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+         .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+         .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+         .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+         .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+         .buffer = mega->vertices.handle,
+         .size = VK_WHOLE_SIZE},
+        {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+         .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+         .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+         .dstStageMask = VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT |
+                         VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+         .dstAccessMask =
+             VK_ACCESS_2_INDEX_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+         .buffer = mega->indices.handle,
+         .size = VK_WHOLE_SIZE},
+    };
+    const VkDependencyInfo dependency = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .bufferMemoryBarrierCount = ArrayCount(barriers),
+        .pBufferMemoryBarriers = barriers,
+    };
+    vkCmdPipelineBarrier2(command, &dependency);
+  }
   for (uint32_t i = 0; i < renderer->pending_buffer_initialization_count; ++i) {
     const VkrBindlessVkPendingBufferInitialization *initialization =
         &renderer->pending_buffer_initializations[i];
@@ -488,7 +541,8 @@ void vkr_bindless_vk_record_buffer_initializations(
       continue;
     const VkBufferCopy2 region = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
-        .dstOffset = initialization->next_offset,
+        .dstOffset =
+            initialization->destination_offset + initialization->next_offset,
         .size = initialization->staging.size,
     };
     const VkCopyBufferInfo2 copy = {
@@ -554,6 +608,19 @@ vkr_internal bool8_t vkr_bindless_vk_retire_submitted_staging(
   return true_v;
 }
 
+vkr_internal VkrBindlessVkRetiredGeometryMegabuffer *
+vkr_bindless_vk_reserve_retired_geometry_megabuffer(
+    VkrBindlessVulkanRenderer *renderer) {
+  for (uint32_t i = 0u; i < ArrayCount(renderer->geometry_megabuffer.retired);
+       ++i) {
+    VkrBindlessVkRetiredGeometryMegabuffer *retired =
+        &renderer->geometry_megabuffer.retired[i];
+    if (!retired->occupied)
+      return retired;
+  }
+  return NULL;
+}
+
 vkr_internal void vkr_bindless_vk_release_buffer_initialization(
     VkrBindlessVulkanRenderer *renderer,
     VkrBindlessVkPendingBufferInitialization *initialization) {
@@ -566,6 +633,31 @@ vkr_internal void vkr_bindless_vk_release_buffer_initialization(
 
 bool8_t vkr_bindless_vk_commit_buffer_initializations(
     VkrBindlessVulkanRenderer *renderer, uint64_t retire_value) {
+  VkrBindlessVkGeometryMegabuffer *mega = &renderer->geometry_megabuffer;
+  if (mega->copy_pending) {
+    VkrBindlessVkRetiredGeometryMegabuffer *retired =
+        vkr_bindless_vk_reserve_retired_geometry_megabuffer(renderer);
+    if (!retired ||
+        !vkr_bindless_vk_retire_buffer(renderer, &mega->copy_source_vertices,
+                                       retire_value) ||
+        !vkr_bindless_vk_retire_buffer(renderer, &mega->copy_source_indices,
+                                       retire_value)) {
+      log_error("Bindless Vulkan could not retire a submitted geometry "
+                "megabuffer generation");
+      return false_v;
+    }
+    *retired = (VkrBindlessVkRetiredGeometryMegabuffer){
+        .vertices = mega->copy_source_vertices,
+        .indices = mega->copy_source_indices,
+        .retire_value = retire_value,
+        .occupied = true_v,
+    };
+    mega->copy_source_vertices = (VkrBindlessVkBuffer){0};
+    mega->copy_source_indices = (VkrBindlessVkBuffer){0};
+    mega->copy_vertex_size = 0u;
+    mega->copy_index_size = 0u;
+    mega->copy_pending = false_v;
+  }
   VkrBindlessVkPendingBufferInitialization *submitted = NULL;
   for (uint32_t i = 0u; i < renderer->pending_buffer_initialization_count;
        ++i) {
@@ -1234,6 +1326,16 @@ void vkr_bindless_vk_collect_asset_publications(
     VkrBindlessVulkanRenderer *renderer, uint64_t completed) {
   (void)vkr_gpu_slot_table_collect(renderer->material_slots, completed, NULL);
   vkr_bindless_vk_collect_samplers(renderer, completed);
+  for (uint32_t i = 0u; i < ArrayCount(renderer->geometry_megabuffer.retired);
+       ++i) {
+    VkrBindlessVkRetiredGeometryMegabuffer *retired =
+        &renderer->geometry_megabuffer.retired[i];
+    if (!retired->occupied || retired->retire_value > completed)
+      continue;
+    vkr_bindless_vk_destroy_buffer(renderer, &retired->indices);
+    vkr_bindless_vk_destroy_buffer(renderer, &retired->vertices);
+    MemZero(retired, sizeof(*retired));
+  }
   for (uint32_t i = 0; i < renderer->retired_staging_buffer_capacity; ++i) {
     VkrBindlessVkRetiredStagingBuffer *retired =
         &renderer->retired_staging_buffers[i];
@@ -1264,8 +1366,6 @@ void vkr_bindless_vk_collect_asset_publications(
     if (!geometry->pending_retire ||
         geometry->last_use_submit_value > completed)
       continue;
-    vkr_bindless_vk_destroy_buffer(renderer, &geometry->indices);
-    vkr_bindless_vk_destroy_buffer(renderer, &geometry->vertices);
     if (geometry->submeshes)
       vkr_allocator_free(renderer->allocator, geometry->submeshes,
                          geometry->submeshes_size,
@@ -1277,8 +1377,6 @@ void vkr_bindless_vk_collect_asset_publications(
     if (!geometry->pending_retire ||
         geometry->last_use_submit_value > completed)
       continue;
-    vkr_bindless_vk_destroy_buffer(renderer, &geometry->indices);
-    vkr_bindless_vk_destroy_buffer(renderer, &geometry->vertices);
     if (geometry->submeshes)
       vkr_allocator_free(renderer->allocator, geometry->submeshes,
                          geometry->submeshes_size,
@@ -1304,16 +1402,104 @@ vkr_bindless_vk_reserve_material_retirement(
   return NULL;
 }
 
-vkr_internal bool8_t vkr_bindless_vk_create_published_buffer(
+vkr_internal bool8_t
+vkr_bindless_vk_megabuffer_capacity(uint64_t current, uint64_t initial,
+                                    uint64_t required, uint64_t *out_capacity) {
+  if (!out_capacity || !initial || !required)
+    return false_v;
+  uint64_t capacity = current ? current : initial;
+  while (capacity < required) {
+    if (capacity > UINT64_MAX / 2u)
+      return false_v;
+    capacity *= 2u;
+  }
+  *out_capacity = capacity;
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_bindless_vk_ensure_geometry_megabuffer(
+    VkrBindlessVulkanRenderer *renderer, uint64_t vertex_end,
+    uint64_t index_end) {
+  VkrBindlessVkGeometryMegabuffer *mega = &renderer->geometry_megabuffer;
+  if (mega->live && vertex_end <= mega->vertices.size &&
+      index_end <= mega->indices.size)
+    return true_v;
+  if (mega->copy_pending || renderer->pending_buffer_initialization_count) {
+    return false_v;
+  }
+  bool8_t retirement_available = mega->live ? false_v : true_v;
+  for (uint32_t i = 0u; mega->live && i < ArrayCount(mega->retired); ++i)
+    retirement_available |= !mega->retired[i].occupied;
+  if (!retirement_available) {
+    return false_v;
+  }
+  uint64_t vertex_capacity = 0u;
+  uint64_t index_capacity = 0u;
+  if (!vkr_bindless_vk_megabuffer_capacity(
+          mega->live ? mega->vertices.size : 0u, MB(128), vertex_end,
+          &vertex_capacity) ||
+      !vkr_bindless_vk_megabuffer_capacity(mega->live ? mega->indices.size : 0u,
+                                           MB(64), index_end,
+                                           &index_capacity)) {
+    return false_v;
+  }
+  const VkBufferUsageFlags vertex_usage =
+      VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+  const VkBufferUsageFlags index_usage =
+      VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+      VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+  VkrBindlessVkBuffer vertices = {0};
+  VkrBindlessVkBuffer indices = {0};
+  if (!vkr_bindless_vk_create_buffer(
+          renderer, VKR_BINDLESS_VK_MEMORY_CLASS_DEVICE, vertex_capacity,
+          vertex_usage, &vertices) ||
+      !vkr_bindless_vk_create_buffer(renderer,
+                                     VKR_BINDLESS_VK_MEMORY_CLASS_DEVICE,
+                                     index_capacity, index_usage, &indices)) {
+    vkr_bindless_vk_destroy_buffer(renderer, &indices);
+    vkr_bindless_vk_destroy_buffer(renderer, &vertices);
+    return false_v;
+  }
+  if (mega->live) {
+    mega->copy_source_vertices = mega->vertices;
+    mega->copy_source_indices = mega->indices;
+    mega->copy_vertex_size = mega->vertex_cursor;
+    mega->copy_index_size = mega->index_cursor;
+    mega->copy_pending = true_v;
+    mega->generation_replacements++;
+  }
+  mega->vertices = vertices;
+  mega->indices = indices;
+  mega->generation =
+      mega->generation == UINT32_MAX ? 1u : mega->generation + 1u;
+  if (mega->generation == 0u)
+    mega->generation = 1u;
+  mega->live = true_v;
+  for (uint32_t i = 0u; i < renderer->config.geometry_capacity; ++i) {
+    VkrBindlessVkPublishedGeometry *geometry =
+        &renderer->published_geometries[i];
+    if (!geometry->live)
+      continue;
+    geometry->vertices = mega->vertices;
+    geometry->indices = mega->indices;
+    geometry->gpu_row.vertex_address = mega->vertices.address;
+    geometry->gpu_row.index_address = mega->indices.address;
+    geometry->gpu_row.publication_generation = mega->generation;
+  }
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_bindless_vk_prepare_published_upload(
     VkrBindlessVulkanRenderer *renderer, const void *data, uint64_t size,
-    VkBufferUsageFlags usage, VkPipelineStageFlags2 destination_stage,
-    VkAccessFlags2 destination_access, uint32_t geometry_record_index,
-    VkrBindlessVkBuffer *out_buffer,
+    const VkrBindlessVkBuffer *destination, uint64_t destination_offset,
+    VkPipelineStageFlags2 destination_stage, VkAccessFlags2 destination_access,
+    uint32_t geometry_record_index,
     VkrBindlessVkPendingBufferInitialization *out_initialization) {
-  if (!data || !size || !out_buffer || !out_initialization ||
-      !vkr_bindless_vk_create_buffer(
-          renderer, VKR_BINDLESS_VK_MEMORY_CLASS_DEVICE, size,
-          usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, out_buffer))
+  if (!data || !size || !destination || !destination->handle ||
+      destination_offset > destination->size ||
+      size > destination->size - destination_offset || !out_initialization)
     return false_v;
   uint8_t *upload_data =
       vkr_bindless_vk_publication_source_alloc(renderer, size);
@@ -1326,14 +1512,14 @@ vkr_internal bool8_t vkr_bindless_vk_create_published_buffer(
             &renderer->publication_staging_memory),
         (unsigned long long)renderer->publication_staging_memory.total_size,
         (unsigned long long)renderer->publication_staging_memory.reserve_size);
-    vkr_bindless_vk_destroy_buffer(renderer, out_buffer);
     return false_v;
   }
   MemCopy(upload_data, data, size);
   *out_initialization = (VkrBindlessVkPendingBufferInitialization){
-      .destination = out_buffer->handle,
+      .destination = destination->handle,
       .upload_data = upload_data,
       .size = size,
+      .destination_offset = destination_offset,
       .destination_stage = destination_stage,
       .destination_access = destination_access,
       .geometry_record_index = geometry_record_index,
@@ -1367,9 +1553,7 @@ vkr_internal bool8_t vkr_bindless_vk_asset_publish_geometry_internal(
   }
   VkrBindlessVkPublishedGeometry *record =
       &renderer->published_geometries[handle.id - 1u];
-  const VkIndexType index_type = geometry->index_size == sizeof(uint16_t)
-                                     ? VK_INDEX_TYPE_UINT16
-                                     : VK_INDEX_TYPE_UINT32;
+  const VkIndexType index_type = VK_INDEX_TYPE_UINT32;
   const uint64_t submeshes_size =
       (uint64_t)submesh_count * sizeof(VkrBindlessVkSubmeshRange);
   if (record->live) {
@@ -1414,9 +1598,25 @@ vkr_internal bool8_t vkr_bindless_vk_asset_publish_geometry_internal(
   const uint64_t vertex_size =
       (uint64_t)sizeof(VkrVertex3d) * geometry->vertex_count;
   const uint64_t index_size =
-      (uint64_t)geometry->index_size * geometry->index_count;
+      (uint64_t)sizeof(uint32_t) * geometry->index_count;
+  VkrBindlessVkGeometryMegabuffer *mega = &renderer->geometry_megabuffer;
+  const uint64_t vertex_offset =
+      vkr_bindless_vk_align_up(mega->vertex_cursor, 16u);
+  const uint64_t index_offset =
+      vkr_bindless_vk_align_up(mega->index_cursor, sizeof(uint32_t));
+  if (vertex_offset > UINT64_MAX - vertex_size ||
+      index_offset > UINT64_MAX - index_size ||
+      vertex_offset / sizeof(VkrVertex3d) > UINT32_MAX ||
+      index_offset / sizeof(uint32_t) > UINT32_MAX ||
+      !vkr_bindless_vk_ensure_geometry_megabuffer(
+          renderer, vertex_offset + vertex_size, index_offset + index_size)) {
+    mega->rejected_publications++;
+    return false_v;
+  }
   VkrBindlessVkPublishedGeometry pending = {
       .handle = handle,
+      .vertices = mega->vertices,
+      .indices = mega->indices,
       .vertex_count = geometry->vertex_count,
       .index_count = geometry->index_count,
       .index_type = index_type,
@@ -1437,11 +1637,11 @@ vkr_internal bool8_t vkr_bindless_vk_asset_publish_geometry_internal(
   }
   VkrBindlessVkPendingBufferInitialization initializations[2] = {0};
   const VkrVertex3d *vertices = geometry->vertices;
-  VkrVertex3d *converted = NULL;
+  VkrVertex3d *converted_vertices = NULL;
   if (geometry->vertex_size == sizeof(VkrVertex2d)) {
-    converted = vkr_allocator_alloc(renderer->allocator, vertex_size,
-                                    VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-    if (!converted) {
+    converted_vertices = vkr_allocator_alloc(renderer->allocator, vertex_size,
+                                             VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    if (!converted_vertices) {
       vkr_allocator_free(renderer->allocator, pending.submeshes,
                          pending.submeshes_size,
                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
@@ -1449,7 +1649,7 @@ vkr_internal bool8_t vkr_bindless_vk_asset_publish_geometry_internal(
     }
     const VkrVertex2d *source = geometry->vertices;
     for (uint32_t i = 0; i < geometry->vertex_count; ++i) {
-      converted[i] = (VkrVertex3d){
+      converted_vertices[i] = (VkrVertex3d){
           .position = {source[i].position.x, source[i].position.y, 0.0f},
           .normal = {0.0f, 0.0f, 1.0f},
           .texcoord = source[i].texcoord,
@@ -1457,30 +1657,50 @@ vkr_internal bool8_t vkr_bindless_vk_asset_publish_geometry_internal(
           .tangent = {1.0f, 0.0f, 0.0f, 1.0f},
       };
     }
-    vertices = converted;
+    vertices = converted_vertices;
+  }
+  const uint32_t *indices = geometry->indices;
+  uint32_t *converted_indices = NULL;
+  if (geometry->index_size == sizeof(uint16_t)) {
+    converted_indices = vkr_allocator_alloc(renderer->allocator, index_size,
+                                            VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    if (!converted_indices) {
+      if (converted_vertices)
+        vkr_allocator_free(renderer->allocator, converted_vertices, vertex_size,
+                           VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+      vkr_allocator_free(renderer->allocator, pending.submeshes,
+                         pending.submeshes_size,
+                         VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+      return false_v;
+    }
+    const uint16_t *source = geometry->indices;
+    for (uint32_t i = 0u; i < geometry->index_count; ++i)
+      converted_indices[i] = source[i];
+    indices = converted_indices;
   }
   const bool8_t created =
-      vkr_bindless_vk_create_published_buffer(
-          renderer, vertices, vertex_size,
-          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+      vkr_bindless_vk_prepare_published_upload(
+          renderer, vertices, vertex_size, &mega->vertices, vertex_offset,
           VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
           VK_ACCESS_2_SHADER_STORAGE_READ_BIT, handle.id - 1u,
-          &pending.vertices, &initializations[0]) &&
-      vkr_bindless_vk_create_published_buffer(
-          renderer, geometry->indices, index_size,
-          VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT,
-          VK_ACCESS_2_INDEX_READ_BIT, handle.id - 1u, &pending.indices,
-          &initializations[1]);
-  if (converted)
-    vkr_allocator_free(renderer->allocator, converted, vertex_size,
+          &initializations[0]) &&
+      vkr_bindless_vk_prepare_published_upload(
+          renderer, indices, index_size, &mega->indices, index_offset,
+          VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT |
+              VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+          VK_ACCESS_2_INDEX_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+          handle.id - 1u, &initializations[1]);
+  if (converted_indices)
+    vkr_allocator_free(renderer->allocator, converted_indices, index_size,
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  if (converted_vertices)
+    vkr_allocator_free(renderer->allocator, converted_vertices, vertex_size,
                        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!created) {
     vkr_bindless_vk_release_buffer_initialization(renderer,
                                                   &initializations[1]);
     vkr_bindless_vk_release_buffer_initialization(renderer,
                                                   &initializations[0]);
-    vkr_bindless_vk_destroy_buffer(renderer, &pending.indices);
-    vkr_bindless_vk_destroy_buffer(renderer, &pending.vertices);
     vkr_allocator_free(renderer->allocator, pending.submeshes,
                        pending.submeshes_size,
                        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
@@ -1494,16 +1714,30 @@ vkr_internal bool8_t vkr_bindless_vk_asset_publish_geometry_internal(
                                                   &initializations[1]);
     vkr_bindless_vk_release_buffer_initialization(renderer,
                                                   &initializations[0]);
-    vkr_bindless_vk_destroy_buffer(renderer, &pending.indices);
-    vkr_bindless_vk_destroy_buffer(renderer, &pending.vertices);
     vkr_allocator_free(renderer->allocator, pending.submeshes,
                        pending.submeshes_size,
                        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     return false_v;
   }
   pending.pending_initialization_count = 2u;
+  pending.gpu_row = (VkrGpuGeometryRow){
+      .vertex_address = pending.vertices.address,
+      .index_address = pending.indices.address,
+      .first_vertex = (uint32_t)(vertex_offset / sizeof(VkrVertex3d)),
+      .first_index = (uint32_t)(index_offset / sizeof(uint32_t)),
+      .vertex_stride = sizeof(VkrVertex3d),
+      .vertex_layout = VKR_GPU_VERTEX_LAYOUT_3D,
+      .publication_generation = mega->generation,
+      .flags = 1u,
+  };
   pending.live = true_v;
   *record = pending;
+  mega->vertex_cursor = vertex_offset + vertex_size;
+  mega->index_cursor = index_offset + index_size;
+  mega->vertex_live_bytes += vertex_size;
+  mega->index_live_bytes += index_size;
+  mega->vertex_high_water = Max(mega->vertex_high_water, mega->vertex_cursor);
+  mega->index_high_water = Max(mega->index_high_water, mega->index_cursor);
   renderer->pending_buffer_initializations
       [renderer->pending_buffer_initialization_count++] = initializations[0];
   renderer->pending_buffer_initializations
@@ -1852,14 +2086,16 @@ bool8_t vkr_bindless_vk_asset_unpublish_geometry(void *state,
     return false_v;
   if (record->pending_initialization_count)
     vkr_bindless_vk_discard_geometry_initializations(renderer, handle.id - 1u);
-  if (!vkr_bindless_vk_retire_buffer(renderer, &record->vertices,
-                                     renderer->submit_value) ||
-      !vkr_bindless_vk_retire_buffer(renderer, &record->indices,
-                                     renderer->submit_value))
-    log_fatal("Bindless Vulkan failed to retire geometry memory");
+  VkrBindlessVkGeometryMegabuffer *mega = &renderer->geometry_megabuffer;
+  const uint64_t vertex_bytes =
+      (uint64_t)record->vertex_count * sizeof(VkrVertex3d);
+  const uint64_t index_bytes = (uint64_t)record->index_count * sizeof(uint32_t);
+  mega->vertex_live_bytes -= Min(mega->vertex_live_bytes, vertex_bytes);
+  mega->index_live_bytes -= Min(mega->index_live_bytes, index_bytes);
   record->live = false_v;
   record->pending_retire = true_v;
-  record->last_use_submit_value = renderer->submit_value;
+  record->last_use_submit_value =
+      Max(record->last_use_submit_value, renderer->submit_value);
   vkr_bindless_vk_collect_asset_publications(
       renderer, vkr_bindless_vk_refresh_completed(renderer));
   if (!record->pending_retire)
@@ -2203,7 +2439,8 @@ vkr_internal bool8_t vkr_bindless_vk_asset_publications_idle(void *state) {
   const VkrBindlessVulkanRenderer *renderer = state;
   return renderer && !renderer->pending_texture_initialization_count &&
          !renderer->pending_buffer_initialization_count &&
-         !renderer->pending_ibl_bake_count;
+         !renderer->pending_ibl_bake_count &&
+         !renderer->geometry_megabuffer.copy_pending;
 }
 
 void vkr_bindless_vulkan_renderer_get_asset_publisher(

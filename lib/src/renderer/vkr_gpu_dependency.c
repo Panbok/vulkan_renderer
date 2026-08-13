@@ -19,6 +19,9 @@ VkrGpuStageFlags vkr_gpu_stages_for_buffer_access(VkrBufferAccessFlags access,
       (VKR_BUFFER_ACCESS_TRANSFER_SRC | VKR_BUFFER_ACCESS_TRANSFER_DST)) {
     stages = (VkrGpuStageFlags)(stages | VKR_GPU_STAGE_TRANSFER);
   }
+  if (access & VKR_BUFFER_ACCESS_INDIRECT_READ) {
+    stages = (VkrGpuStageFlags)(stages | VKR_GPU_STAGE_DRAW_INDIRECT);
+  }
   return stages ? stages
                 : (VkrGpuStageFlags)(VKR_GPU_STAGE_ALL_GRAPHICS |
                                      VKR_GPU_STAGE_COMPUTE_SHADER |

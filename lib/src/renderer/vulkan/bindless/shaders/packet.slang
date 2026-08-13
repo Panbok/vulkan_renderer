@@ -100,12 +100,52 @@ struct VkrBindlessPacketFrameRoot
     uint ibl_probe_reserved;
 };
 
+struct VkrGpuGeometryRow
+{
+    uint64_t vertex_address;
+    uint64_t index_address;
+    uint first_vertex;
+    uint first_index;
+    uint vertex_stride;
+    uint vertex_layout;
+    uint publication_generation;
+    uint flags;
+    uint2 reserved;
+};
+
+struct VkrGpuCandidateDrawRow
+{
+    uint geometry_index;
+    uint material_index;
+    uint instance_index;
+    uint first_index;
+    uint index_count;
+    int vertex_offset;
+    uint state_bucket;
+    uint flags;
+    float4 local_bounding_sphere;
+};
+
+struct VkrGpuVisibleDrawRow
+{
+    uint geometry_index;
+    uint material_index;
+    uint instance_index;
+    uint first_index;
+    uint index_count;
+    int vertex_offset;
+    uint state_bucket;
+    uint flags;
+};
+
 struct VkrBindlessPacketDrawRoot
 {
+    VkrGpuGeometryRow* geometry_rows;
+    VkrGpuVisibleDrawRow* visible_rows;
     VkrBindlessVertex* vertices;
     VkrBindlessPacketFrameRoot* frame;
-    uint material_index;
-    uint first_instance;
+    uint visible_row_index;
+    uint flags;
     uint2 reserved;
 };
 
@@ -377,9 +417,11 @@ VkrBindlessVertexOutput packet_vertex_impl(uint vertex_id, uint instance_id,
 {
     VkrBindlessPacketDrawRoot* draw = g_push.root;
     VkrBindlessPacketFrameRoot* frame = draw.frame;
-    VkrBindlessVertex vertex = draw.vertices[vertex_id];
+    VkrGpuVisibleDrawRow visible = draw.visible_rows[draw.visible_row_index];
+    VkrGpuGeometryRow geometry = draw.geometry_rows[visible.geometry_index];
+    VkrBindlessVertex vertex = draw.vertices[geometry.first_vertex + vertex_id];
     VkrBindlessInstance instance =
-        frame.instances[draw.first_instance + instance_id];
+        frame.instances[visible.instance_index + instance_id];
     float4 world = mul(instance.model, float4(vertex.position, 1.0f));
     VkrBindlessVertexOutput output;
     output.position = mul(view_projection, world);
@@ -413,8 +455,10 @@ VkrBindlessVertexOutput shadow_vertex(uint vertex_id : SV_VertexID,
 
 float4 packet_base_color(VkrBindlessVertexOutput input)
 {
+    VkrGpuVisibleDrawRow visible =
+        g_push.root.visible_rows[g_push.root.visible_row_index];
     VkrBindlessMaterial material =
-        g_push.root.frame.materials[g_push.root.material_index];
+        g_push.root.frame.materials[visible.material_index];
     uint texture_index = NonUniformResourceIndex(material.base_color_texture);
     uint sampler_index = NonUniformResourceIndex(material.base_color_sampler);
     return g_textures[texture_index].Sample(g_samplers[sampler_index], input.uv)
@@ -576,7 +620,8 @@ float4 world_fragment(VkrBindlessVertexOutput input,
 {
     VkrBindlessPacketDrawRoot* draw = g_push.root;
     VkrBindlessPacketFrameRoot* frame = draw.frame;
-    VkrBindlessMaterial material = frame.materials[draw.material_index];
+    VkrGpuVisibleDrawRow visible = draw.visible_rows[draw.visible_row_index];
+    VkrBindlessMaterial material = frame.materials[visible.material_index];
     float4 base = packet_base_color(input);
     if (material.alpha_mode == 1u && base.a < material.material_alpha.x)
         discard;
@@ -844,8 +889,10 @@ float4 world_fragment(VkrBindlessVertexOutput input,
 [shader("fragment")]
 void shadow_fragment(VkrBindlessVertexOutput input)
 {
+    VkrGpuVisibleDrawRow visible =
+        g_push.root.visible_rows[g_push.root.visible_row_index];
     VkrBindlessMaterial material =
-        g_push.root.frame.materials[g_push.root.material_index];
+        g_push.root.frame.materials[visible.material_index];
     if ((g_push.flags & 1u) != 0u &&
         packet_base_color(input).a < material.material_alpha.x)
         discard;

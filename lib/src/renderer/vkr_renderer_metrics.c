@@ -395,6 +395,39 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
   VKR_REGISTER_U64(visibility_distinct_geometry_material_pairs,
                    "visibility.distinct_geometry_material_pairs",
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(visibility_candidate_count,
+                   "visibility.gpu_candidates.count", VKR_METRIC_DOMAIN_DRAW,
+                   VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(visibility_candidate_capacity,
+                   "visibility.gpu_candidates.capacity", VKR_METRIC_DOMAIN_DRAW,
+                   VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_COUNTER(visibility_candidate_overflow_fallbacks,
+                       "visibility.gpu_candidates.overflow_fallbacks",
+                       VKR_METRIC_DOMAIN_DRAW);
+  VKR_REGISTER_U64(geometry_megabuffer_vertex_capacity,
+                   "geometry.megabuffer.vertex_capacity_bytes",
+                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(geometry_megabuffer_index_capacity,
+                   "geometry.megabuffer.index_capacity_bytes",
+                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(geometry_megabuffer_live_bytes,
+                   "geometry.megabuffer.live_bytes",
+                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(geometry_megabuffer_fragmentation_bytes,
+                   "geometry.megabuffer.fragmentation_bytes",
+                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(geometry_megabuffer_high_water_bytes,
+                   "geometry.megabuffer.high_water_bytes",
+                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(geometry_megabuffer_rejected_publications,
+                   "geometry.megabuffer.rejected_publications_total",
+                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(geometry_megabuffer_generation_replacements,
+                   "geometry.megabuffer.generation_replacements_total",
+                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(geometry_megabuffer_generation,
+                   "geometry.megabuffer.generation",
+                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_COUNT);
 
   for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
     char name[64];
@@ -1042,6 +1075,22 @@ void vkr_renderer_metrics_collect(
   VKR_SET_U64(visibility_distinct_geometries, visibility->distinct_geometries);
   VKR_SET_U64(visibility_distinct_geometry_material_pairs,
               visibility->distinct_geometry_material_pairs);
+  VKR_SET_U64(visibility_candidate_count, world->gpu_candidate_count);
+  VKR_SET_U64(visibility_candidate_capacity, world->gpu_candidate_capacity);
+  vkr_metrics_counter_add(metrics, ids->visibility_candidate_overflow_fallbacks,
+                          world->gpu_candidate_overflow_fallbacks);
+  const VkrGeometryMegabufferMetrics *mega = &world->geometry_megabuffer;
+  VKR_SET_U64(geometry_megabuffer_vertex_capacity, mega->vertex_capacity_bytes);
+  VKR_SET_U64(geometry_megabuffer_index_capacity, mega->index_capacity_bytes);
+  VKR_SET_U64(geometry_megabuffer_live_bytes, mega->live_bytes);
+  VKR_SET_U64(geometry_megabuffer_fragmentation_bytes,
+              mega->fragmentation_bytes);
+  VKR_SET_U64(geometry_megabuffer_high_water_bytes, mega->high_water_bytes);
+  VKR_SET_U64(geometry_megabuffer_rejected_publications,
+              mega->rejected_publications);
+  VKR_SET_U64(geometry_megabuffer_generation_replacements,
+              mega->generation_replacements);
+  VKR_SET_U64(geometry_megabuffer_generation, mega->generation);
 
   for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
     vkr_metrics_gauge_set_u64(metrics, ids->shadow_draw_calls_opaque[i],

@@ -4,6 +4,7 @@
 #include "renderer/metal/vkr_metal_memory_device.h"
 #include "renderer/vkr_asset_publisher.h"
 #include "renderer/vkr_buffer.h"
+#include "renderer/vkr_gpu_abi.h"
 #include "renderer/vkr_ibl_math.h"
 #include "renderer/vkr_render_graph.h"
 #include "renderer/vkr_render_packet.h"
@@ -12,6 +13,10 @@ typedef struct VkrMetalPacketRenderer VkrMetalPacketRenderer;
 struct VkrMeshLoaderResult;
 struct VkrTexturePreparedLoad;
 struct VkrMaterial;
+
+void vkr_metal_packet_renderer_geometry_megabuffer_metrics(
+    const VkrMetalPacketRenderer *renderer,
+    VkrGeometryMegabufferMetrics *out_metrics);
 
 /** Private upload view used while publishing one decoded texture. */
 typedef struct VkrMetalPacketTextureUpload {

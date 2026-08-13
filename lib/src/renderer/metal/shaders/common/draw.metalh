@@ -95,11 +95,49 @@ struct VkrMetalPacketFrameRoot {
   uint ibl_probe_reserved;
 };
 
+struct VkrGpuGeometryRow {
+  ulong vertex_address;
+  ulong index_address;
+  uint first_vertex;
+  uint first_index;
+  uint vertex_stride;
+  uint vertex_layout;
+  uint publication_generation;
+  uint flags;
+  uint reserved_0;
+  uint reserved_1;
+};
+
+struct VkrGpuCandidateDrawRow {
+  uint geometry_index;
+  uint material_index;
+  uint instance_index;
+  uint first_index;
+  uint index_count;
+  int vertex_offset;
+  uint state_bucket;
+  uint flags;
+  float4 local_bounding_sphere;
+};
+
+struct VkrGpuVisibleDrawRow {
+  uint geometry_index;
+  uint material_index;
+  uint instance_index;
+  uint first_index;
+  uint index_count;
+  int vertex_offset;
+  uint state_bucket;
+  uint flags;
+};
+
 struct VkrMetalPacketDrawRoot {
+  device VkrGpuGeometryRow *geometry_rows;
+  device VkrGpuVisibleDrawRow *visible_rows;
   device VkrMetalPacketVertex *vertices;
   constant VkrMetalPacketFrameRoot *frame;
-  uint material_index;
-  uint first_instance;
+  uint visible_row_index;
+  uint flags;
   uint reserved_0;
   uint reserved_1;
 };
@@ -127,8 +165,8 @@ static_assert(sizeof(VkrMetalPacketMaterial) == 176,
               "Metal material row ABI must remain 176 bytes");
 static_assert(sizeof(VkrMetalPacketFrameRoot) == 432,
               "Metal packet frame root ABI must remain 432 bytes");
-static_assert(sizeof(VkrMetalPacketDrawRoot) == 32,
-              "Metal packet draw root ABI must remain 32 bytes");
+static_assert(sizeof(VkrMetalPacketDrawRoot) == 48,
+              "Metal packet draw root ABI must remain 48 bytes");
 static_assert(sizeof(VkrMetalPacketIblProbe) == 64,
               "Metal packet IBL probe ABI must remain 64 bytes");
 static_assert(sizeof(VkrMetalPacketShadowCascade) == 80,

@@ -50,7 +50,7 @@ _Static_assert(ArrayCount(s_bindless_vk_graph_executors) ==
 
 vkr_internal bool8_t vkr_bindless_vk_graph_executor_kind(
     const VkrRgPass *pass, VkrBindlessVkGraphExecutorKind *out_kind) {
-  const uintptr_t encoded = (uintptr_t)pass->desc.user_data;
+  const uint32_t encoded = pass->desc.executor_id;
   if (!encoded || encoded > VKR_BINDLESS_VK_GRAPH_EXECUTOR_COUNT)
     return false_v;
   *out_kind = (VkrBindlessVkGraphExecutorKind)(encoded - 1u);
@@ -65,8 +65,9 @@ vkr_bindless_vk_register_graph_executors(VkrBindlessVulkanRenderer *renderer) {
     const VkrRgPassExecutor executor = {
         .name = string8_create_from_cstr((const uint8_t *)spec->name,
                                          string_length(spec->name)),
+        .id = i + 1u,
+        .type = spec->type,
         .execute = vkr_bindless_vk_graph_noop,
-        .user_data = (void *)(uintptr_t)(i + 1u),
     };
     if (!vkr_rg_executor_registry_register(&renderer->executors, &executor))
       return false_v;
@@ -152,6 +153,35 @@ vkr_bindless_vk_graph_image_usage(VkrTextureUsageFlags usage) {
   return result;
 }
 
+vkr_internal bool8_t vkr_bindless_vk_graph_format_supports(
+    VkrBindlessVulkanRenderer *renderer, VkFormat format,
+    VkrTextureUsageFlags usage) {
+  VkFormatFeatureFlags2 required = 0u;
+  if (usage.set & VKR_TEXTURE_USAGE_SAMPLED)
+    required |= VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT;
+  if (usage.set & VKR_TEXTURE_USAGE_STORAGE)
+    required |= VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT;
+  if (usage.set & VKR_TEXTURE_USAGE_COLOR_ATTACHMENT)
+    required |= VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT;
+  if (usage.set & VKR_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT)
+    required |= VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT;
+  if (usage.set & VKR_TEXTURE_USAGE_TRANSFER_SRC)
+    required |= VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT;
+  if (usage.set & VKR_TEXTURE_USAGE_TRANSFER_DST)
+    required |= VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
+  VkFormatProperties3 properties3 = {
+      .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3,
+  };
+  VkFormatProperties2 properties2 = {
+      .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2,
+      .pNext = &properties3,
+  };
+  vkGetPhysicalDeviceFormatProperties2(
+      vkr_bindless_vulkan_device_physical(renderer->device), format,
+      &properties2);
+  return required && (properties3.optimalTilingFeatures & required) == required;
+}
+
 vkr_internal bool8_t vkr_bindless_vk_graph_image_desc_equal(
     const VkrRgImageDesc *a, const VkrRgImageDesc *b) {
   return a->width == b->width && a->height == b->height &&
@@ -178,10 +208,28 @@ vkr_internal void vkr_bindless_vk_destroy_graph_image_instance(
     (void)vkr_gpu_slot_table_collect(renderer->storage_image_slots, completed,
                                      NULL);
   }
-  for (uint32_t layer = 0; layer < VKR_BINDLESS_VK_GRAPH_LAYER_MAX; ++layer) {
-    if (instance->layer_views[layer])
-      vkDestroyImageView(device, instance->layer_views[layer], NULL);
+  for (uint32_t mip = 0u; mip < VKR_BINDLESS_VK_TEXTURE_MIP_MAX; ++mip) {
+    if (instance->mip_views[mip])
+      vkDestroyImageView(device, instance->mip_views[mip], NULL);
+    if (instance->has_sampled_mip_slot[mip]) {
+      (void)vkr_gpu_slot_table_retire(renderer->sampled_image_slots,
+                                      instance->sampled_mip_slots[mip],
+                                      completed);
+    }
+    if (instance->has_storage_mip_slot[mip]) {
+      (void)vkr_gpu_slot_table_retire(renderer->storage_image_slots,
+                                      instance->storage_mip_slots[mip],
+                                      completed);
+    }
+    for (uint32_t layer = 0; layer < VKR_BINDLESS_VK_GRAPH_LAYER_MAX; ++layer) {
+      if (instance->mip_layer_views[mip][layer])
+        vkDestroyImageView(device, instance->mip_layer_views[mip][layer], NULL);
+    }
   }
+  (void)vkr_gpu_slot_table_collect(renderer->sampled_image_slots, completed,
+                                   NULL);
+  (void)vkr_gpu_slot_table_collect(renderer->storage_image_slots, completed,
+                                   NULL);
   vkr_bindless_vk_destroy_image(renderer, &instance->image);
   MemZero(instance, sizeof(*instance));
 }
@@ -202,7 +250,7 @@ vkr_internal bool8_t vkr_bindless_vk_create_graph_image_instance(
     VkrBindlessVulkanRenderer *renderer, const VkrRgImageDesc *desc,
     VkrBindlessVkGraphImageInstance *out_instance) {
   const VkFormat format = vkr_bindless_vk_texture_format(desc->format);
-  VkImageUsageFlags usage = vkr_bindless_vk_graph_image_usage(desc->usage);
+  VkrTextureUsageFlags checked_usage = desc->usage;
   /* A capture request arrives with a packet, after graph images have already
 
    * been realized. Capture-enabled renderers therefore provision graph-owned
@@ -211,10 +259,15 @@ vkr_internal bool8_t vkr_bindless_vk_create_graph_image_instance(
 
    * allowed in the frame path. */
   if (renderer->config.capture_ring_capacity > 0u)
-    usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-  if (format == VK_FORMAT_UNDEFINED || usage == 0u || desc->samples != 1u ||
-      desc->layers == 0u || desc->layers > VKR_BINDLESS_VK_GRAPH_LAYER_MAX ||
-      desc->mip_levels == 0u)
+    checked_usage.set |= VKR_TEXTURE_USAGE_TRANSFER_SRC;
+  const VkImageUsageFlags usage =
+      vkr_bindless_vk_graph_image_usage(checked_usage);
+  if (format == VK_FORMAT_UNDEFINED || usage == 0u ||
+      !vkr_bindless_vk_graph_format_supports(renderer, format, checked_usage) ||
+      desc->samples != 1u || desc->layers == 0u ||
+      desc->layers > VKR_BINDLESS_VK_GRAPH_LAYER_MAX ||
+      desc->mip_levels == 0u ||
+      desc->mip_levels > VKR_BINDLESS_VK_TEXTURE_MIP_MAX)
     return false_v;
   const bool8_t array_view =
       desc->layers > 1u || (desc->flags & VKR_RG_RESOURCE_FLAG_FORCE_ARRAY);
@@ -224,31 +277,70 @@ vkr_internal bool8_t vkr_bindless_vk_create_graph_image_instance(
           array_view ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D,
           usage, &out_instance->image))
     return false_v;
-  if (desc->layers == 1u)
-    goto publish_descriptors;
   const VkImageAspectFlags aspects = vkr_bindless_vk_format_aspects(format);
-  for (uint32_t layer = 0; layer < desc->layers; ++layer) {
-    const VkImageViewCreateInfo view_info = {
+  for (uint32_t mip = 0u; mip < desc->mip_levels; ++mip) {
+    const VkImageViewCreateInfo mip_view_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .image = out_instance->image.handle,
-        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .viewType =
+            array_view ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D,
         .format = format,
         .subresourceRange =
             {
                 .aspectMask = aspects,
-                .levelCount = desc->mip_levels,
-                .baseArrayLayer = layer,
-                .layerCount = 1u,
+                .baseMipLevel = mip,
+                .levelCount = 1u,
+                .baseArrayLayer = 0u,
+                .layerCount = desc->layers,
             },
     };
-    if (vkCreateImageView(vkr_bindless_vk_renderer_device(renderer), &view_info,
-                          NULL,
-                          &out_instance->layer_views[layer]) != VK_SUCCESS) {
+    if (vkCreateImageView(vkr_bindless_vk_renderer_device(renderer),
+                          &mip_view_info, NULL,
+                          &out_instance->mip_views[mip]) != VK_SUCCESS) {
       vkr_bindless_vk_destroy_graph_image_instance(renderer, out_instance);
       return false_v;
     }
+    for (uint32_t layer = 0u; layer < desc->layers; ++layer) {
+      const VkImageViewCreateInfo view_info = {
+          .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+          .image = out_instance->image.handle,
+          .viewType = VK_IMAGE_VIEW_TYPE_2D,
+          .format = format,
+          .subresourceRange =
+              {
+                  .aspectMask = aspects,
+                  .baseMipLevel = mip,
+                  .levelCount = 1u,
+                  .baseArrayLayer = layer,
+                  .layerCount = 1u,
+              },
+      };
+      if (vkCreateImageView(
+              vkr_bindless_vk_renderer_device(renderer), &view_info, NULL,
+              &out_instance->mip_layer_views[mip][layer]) != VK_SUCCESS) {
+        vkr_bindless_vk_destroy_graph_image_instance(renderer, out_instance);
+        return false_v;
+      }
+    }
+    VkImageView mip_view = out_instance->mip_views[mip];
+    if ((desc->usage.set & VKR_TEXTURE_USAGE_SAMPLED) != 0u) {
+      if (!vkr_bindless_vk_publish_sampled_view(
+              renderer, mip_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+              &out_instance->sampled_mip_slots[mip])) {
+        vkr_bindless_vk_destroy_graph_image_instance(renderer, out_instance);
+        return false_v;
+      }
+      out_instance->has_sampled_mip_slot[mip] = true_v;
+    }
+    if ((desc->usage.set & VKR_TEXTURE_USAGE_STORAGE) != 0u) {
+      if (!vkr_bindless_vk_publish_storage_view(
+              renderer, mip_view, &out_instance->storage_mip_slots[mip])) {
+        vkr_bindless_vk_destroy_graph_image_instance(renderer, out_instance);
+        return false_v;
+      }
+      out_instance->has_storage_mip_slot[mip] = true_v;
+    }
   }
-publish_descriptors:
   if ((desc->usage.set & VKR_TEXTURE_USAGE_SAMPLED) != 0u) {
     if (!vkr_bindless_vk_publish_sampled_view(
             renderer, out_instance->image.view,
@@ -270,6 +362,17 @@ publish_descriptors:
   return true_v;
 }
 
+vkr_internal uint32_t vkr_bindless_vk_graph_image_instance_count(
+    const VkrBindlessVulkanRenderer *renderer, VkrRgResourceFlags flags) {
+  const VkrRgResourceInstanceDomain domain =
+      vkr_rg_resource_instance_domain(flags);
+  if (domain == VKR_RG_RESOURCE_INSTANCE_PER_IMAGE)
+    return renderer->targets.image_count;
+  if (domain == VKR_RG_RESOURCE_INSTANCE_PER_FRAME_SLOT)
+    return VKR_BINDLESS_VK_FRAME_SLOT_COUNT;
+  return 1u;
+}
+
 bool8_t
 vkr_bindless_vk_realize_graph_images(VkrBindlessVulkanRenderer *renderer) {
   if (renderer->graph->images.length > renderer->config.max_graph_images)
@@ -283,17 +386,28 @@ vkr_bindless_vk_realize_graph_images(VkrBindlessVulkanRenderer *renderer) {
     const bool8_t external_swapchain =
         image->imported && vkr_string8_equals_cstr(&image->name, "swapchain");
     const uint32_t instance_count =
-        (image->desc.flags & VKR_RG_RESOURCE_FLAG_PER_IMAGE)
-            ? renderer->targets.image_count
-            : 1u;
+        vkr_bindless_vk_graph_image_instance_count(renderer, image->desc.flags);
+    if (!instance_count || instance_count > VKR_BINDLESS_VK_TARGET_IMAGE_MAX)
+      return false_v;
     if (slot->live && slot->graph_generation == image->generation &&
         slot->external_swapchain == external_swapchain &&
         slot->instance_count == instance_count &&
         vkr_bindless_vk_graph_image_desc_equal(&slot->desc, &image->desc))
       continue;
     if (slot->live) {
-      if (!vkr_bindless_vulkan_renderer_wait_idle(renderer))
-        return false_v;
+      const uint64_t completed = vkr_bindless_vk_refresh_completed(renderer);
+      for (uint32_t instance = 0u; instance < slot->instance_count;
+           ++instance) {
+        if (slot->instances[instance].last_use_submit_value > completed) {
+          log_error("Bindless Vulkan graph image '%.*s' replacement is busy "
+                    "through submit %llu (completed %llu)",
+                    (int)image->name.length, image->name.str,
+                    (unsigned long long)slot->instances[instance]
+                        .last_use_submit_value,
+                    (unsigned long long)completed);
+          return false_v;
+        }
+      }
       vkr_bindless_vk_destroy_graph_image(renderer, slot);
     }
     *slot = (VkrBindlessVkGraphImage){
@@ -340,68 +454,226 @@ vkr_bindless_vk_graph_image(VkrBindlessVulkanRenderer *renderer,
     slot->instances[0].image = renderer->targets.images[image_index];
     return &slot->instances[0];
   }
-  const uint32_t instance = slot->instance_count > 1u ? image_index : 0u;
+  uint32_t instance = 0u;
+  const VkrRgResourceInstanceDomain domain =
+      vkr_rg_resource_instance_domain(slot->desc.flags);
+  if (domain == VKR_RG_RESOURCE_INSTANCE_PER_IMAGE)
+    instance = image_index;
+  else if (domain == VKR_RG_RESOURCE_INSTANCE_PER_FRAME_SLOT)
+    instance = renderer->active_frame_slot;
   return instance < slot->instance_count ? &slot->instances[instance] : NULL;
+}
+
+void vkr_bindless_vk_mark_graph_images_submitted(
+    VkrBindlessVulkanRenderer *renderer, uint64_t submit_value) {
+  for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
+    const VkrRgImage *image =
+        vector_get_VkrRgImage(&renderer->graph->images, i);
+    if (!image || !image->declared_this_frame)
+      continue;
+    VkrBindlessVkGraphImageInstance *instance = vkr_bindless_vk_graph_image(
+        renderer,
+        (VkrRgImageHandle){.id = (uint32_t)i + 1u,
+                           .generation = image->generation},
+        renderer->prepared_frame.image_index);
+    if (instance && !renderer->graph_images[i].external_swapchain)
+      instance->last_use_submit_value = submit_value;
+  }
+}
+
+vkr_internal VkBufferUsageFlags
+vkr_bindless_vk_graph_buffer_usage(VkrBufferUsageFlags usage) {
+  VkBufferUsageFlags result = 0u;
+  if (usage.set & VKR_BUFFER_USAGE_VERTEX_BUFFER)
+    result |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+  if (usage.set & VKR_BUFFER_USAGE_INDEX_BUFFER)
+    result |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+  if (usage.set &
+      (VKR_BUFFER_USAGE_GLOBAL_UNIFORM_BUFFER | VKR_BUFFER_USAGE_UNIFORM))
+    result |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+  if (usage.set & VKR_BUFFER_USAGE_STORAGE)
+    result |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+  if (usage.set & VKR_BUFFER_USAGE_TRANSFER_SRC)
+    result |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  if (usage.set & VKR_BUFFER_USAGE_TRANSFER_DST)
+    result |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+  if (usage.set & VKR_BUFFER_USAGE_INDIRECT)
+    result |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+  return result;
+}
+
+void vkr_bindless_vk_destroy_graph_buffer(VkrBindlessVulkanRenderer *renderer,
+                                          VkrBindlessVkGraphBuffer *slot) {
+  if (!slot)
+    return;
+  for (uint32_t i = 0u; i < slot->instance_count; ++i)
+    vkr_bindless_vk_destroy_buffer(renderer, &slot->instances[i].buffer);
+  MemZero(slot, sizeof(*slot));
+}
+
+vkr_internal uint32_t vkr_bindless_vk_graph_buffer_instance_count(
+    const VkrBindlessVulkanRenderer *renderer, VkrRgResourceFlags flags) {
+  const VkrRgResourceInstanceDomain domain =
+      vkr_rg_resource_instance_domain(flags);
+  if (domain == VKR_RG_RESOURCE_INSTANCE_PER_IMAGE)
+    return renderer->targets.image_count;
+  if (domain == VKR_RG_RESOURCE_INSTANCE_PER_FRAME_SLOT)
+    return VKR_BINDLESS_VK_FRAME_SLOT_COUNT;
+  return 1u;
+}
+
+bool8_t
+vkr_bindless_vk_realize_graph_buffers(VkrBindlessVulkanRenderer *renderer) {
+  if (renderer->graph->buffers.length > renderer->config.max_graph_buffers)
+    return false_v;
+  const uint64_t completed = vkr_bindless_vk_refresh_completed(renderer);
+  for (uint64_t i = 0u; i < renderer->graph->buffers.length; ++i) {
+    const VkrRgBuffer *buffer =
+        vector_get_VkrRgBuffer(&renderer->graph->buffers, i);
+    if (!buffer || !buffer->declared_this_frame)
+      continue;
+    if (buffer->imported ||
+        (buffer->desc.flags & VKR_RG_RESOURCE_FLAG_EXTERNAL)) {
+      log_error("Bindless Vulkan graph buffer '%.*s' has no imported native "
+                "buffer binding",
+                (int)buffer->name.length, buffer->name.str);
+      return false_v;
+    }
+    const uint32_t instance_count = vkr_bindless_vk_graph_buffer_instance_count(
+        renderer, buffer->desc.flags);
+    if (!instance_count || instance_count > VKR_BINDLESS_VK_TARGET_IMAGE_MAX)
+      return false_v;
+    VkrBindlessVkGraphBuffer *slot = &renderer->graph_buffers[i];
+    if (slot->live && slot->graph_generation == buffer->generation &&
+        slot->instance_count == instance_count &&
+        slot->desc.size == buffer->desc.size &&
+        slot->desc.usage.set == buffer->desc.usage.set &&
+        slot->desc.flags == buffer->desc.flags)
+      continue;
+    if (slot->live) {
+      for (uint32_t instance = 0u; instance < slot->instance_count;
+           ++instance) {
+        if (slot->instances[instance].last_use_submit_value > completed) {
+          log_error("Bindless Vulkan graph buffer '%.*s' replacement is busy "
+                    "through submit %llu (completed %llu)",
+                    (int)buffer->name.length, buffer->name.str,
+                    (unsigned long long)slot->instances[instance]
+                        .last_use_submit_value,
+                    (unsigned long long)completed);
+          return false_v;
+        }
+      }
+      vkr_bindless_vk_destroy_graph_buffer(renderer, slot);
+    }
+    const VkBufferUsageFlags usage =
+        vkr_bindless_vk_graph_buffer_usage(buffer->desc.usage);
+    if (!buffer->desc.size || !usage)
+      return false_v;
+    *slot = (VkrBindlessVkGraphBuffer){
+        .desc = buffer->desc,
+        .graph_generation = buffer->generation,
+        .instance_count = instance_count,
+        .live = true_v,
+    };
+    for (uint32_t instance = 0u; instance < instance_count; ++instance) {
+      if (!vkr_bindless_vk_create_buffer(
+              renderer, VKR_BINDLESS_VK_MEMORY_CLASS_DEVICE, buffer->desc.size,
+              usage, &slot->instances[instance].buffer)) {
+        vkr_bindless_vk_destroy_graph_buffer(renderer, slot);
+        return false_v;
+      }
+    }
+  }
+  return true_v;
+}
+
+VkrBindlessVkGraphBufferInstance *
+vkr_bindless_vk_graph_buffer(VkrBindlessVulkanRenderer *renderer,
+                             VkrRgBufferHandle handle) {
+  if (!vkr_rg_buffer_handle_valid(handle) ||
+      handle.id > renderer->graph->buffers.length)
+    return NULL;
+  VkrBindlessVkGraphBuffer *slot = &renderer->graph_buffers[handle.id - 1u];
+  if (!slot->live || slot->graph_generation != handle.generation)
+    return NULL;
+  uint32_t instance = 0u;
+  const VkrRgResourceInstanceDomain domain =
+      vkr_rg_resource_instance_domain(slot->desc.flags);
+  if (domain == VKR_RG_RESOURCE_INSTANCE_PER_IMAGE)
+    instance = renderer->prepared_frame.image_index;
+  else if (domain == VKR_RG_RESOURCE_INSTANCE_PER_FRAME_SLOT)
+    instance = renderer->active_frame_slot;
+  return instance < slot->instance_count ? &slot->instances[instance] : NULL;
+}
+
+void vkr_bindless_vk_mark_graph_buffers_submitted(
+    VkrBindlessVulkanRenderer *renderer, uint64_t submit_value) {
+  for (uint64_t i = 0u; i < renderer->graph->buffers.length; ++i) {
+    const VkrRgBuffer *buffer =
+        vector_get_VkrRgBuffer(&renderer->graph->buffers, i);
+    if (!buffer || !buffer->declared_this_frame)
+      continue;
+    VkrBindlessVkGraphBufferInstance *instance = vkr_bindless_vk_graph_buffer(
+        renderer, (VkrRgBufferHandle){.id = (uint32_t)i + 1u,
+                                      .generation = buffer->generation});
+    if (instance)
+      instance->last_use_submit_value = submit_value;
+  }
 }
 
 vkr_internal bool8_t vkr_bindless_vk_record_graph_image_barriers(
     VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
     const Vector_VkrRgImageBarrier *barriers) {
-  /* The scratch array is sized by max_graph_images. A pass may barrier one
-     image more than once (distinct subresource ranges), so this bound is not
-     implied by the image count and must be checked, not assumed. */
-  if (barriers->length > renderer->config.max_graph_images) {
-    log_error("Bindless Vulkan pass needs %llu image barriers; the scratch "
-              "array holds max_graph_images=%u",
-              (unsigned long long)barriers->length,
-              renderer->config.max_graph_images);
-    return false_v;
-  }
-  for (uint64_t i = 0; i < barriers->length; ++i) {
-    const VkrRgImageBarrier *barrier =
-        vector_get_VkrRgImageBarrier(barriers, i);
-    VkrBindlessVkGraphImageInstance *instance = vkr_bindless_vk_graph_image(
-        renderer, barrier->image, renderer->prepared_frame.image_index);
-    if (!instance)
-      return false_v;
-    VkrBindlessVkDependency lowered = {0};
-    const VkrBindlessVkDependencyResult result =
-        vkr_bindless_vk_lower_image_dependency(
-            barrier->src_access, barrier->dst_access, &barrier->dependency,
-            barrier->src_layout != barrier->dst_layout, &lowered);
-    if (result != VKR_BINDLESS_VK_DEPENDENCY_OK)
-      return false_v;
-    uint32_t base_mip = 0, mip_count = 0, base_layer = 0, layer_count = 0;
-    vkr_image_subresource_range_resolve(&barrier->range,
-                                        instance->image.mip_levels,
-                                        instance->image.array_layers, &base_mip,
-                                        &mip_count, &base_layer, &layer_count);
-    renderer->graph_image_barriers[i] = (VkImageMemoryBarrier2){
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .srcStageMask = lowered.src_stages,
-        .srcAccessMask = lowered.src_access,
-        .dstStageMask = lowered.dst_stages,
-        .dstAccessMask = lowered.dst_access,
-        .oldLayout = vkr_bindless_vk_texture_layout(barrier->src_layout),
-        .newLayout = vkr_bindless_vk_texture_layout(barrier->dst_layout),
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = instance->image.handle,
-        .subresourceRange =
-            {
-                .aspectMask =
-                    vkr_bindless_vk_format_aspects(instance->image.format),
-                .baseMipLevel = base_mip,
-                .levelCount = mip_count,
-                .baseArrayLayer = base_layer,
-                .layerCount = layer_count,
-            },
-    };
-  }
-  if (barriers->length > 0u) {
+  const uint32_t batch_capacity = renderer->config.max_graph_images;
+  if (!batch_capacity)
+    return barriers->length == 0u;
+  for (uint64_t begin = 0u; begin < barriers->length; begin += batch_capacity) {
+    const uint32_t batch_count =
+        (uint32_t)Min((uint64_t)batch_capacity, barriers->length - begin);
+    for (uint32_t i = 0u; i < batch_count; ++i) {
+      const VkrRgImageBarrier *barrier =
+          vector_get_VkrRgImageBarrier(barriers, begin + i);
+      VkrBindlessVkGraphImageInstance *instance = vkr_bindless_vk_graph_image(
+          renderer, barrier->image, renderer->prepared_frame.image_index);
+      if (!instance)
+        return false_v;
+      VkrBindlessVkDependency lowered = {0};
+      const VkrBindlessVkDependencyResult result =
+          vkr_bindless_vk_lower_image_dependency(
+              barrier->src_access, barrier->dst_access, &barrier->dependency,
+              barrier->src_layout != barrier->dst_layout, &lowered);
+      if (result != VKR_BINDLESS_VK_DEPENDENCY_OK)
+        return false_v;
+      uint32_t base_mip = 0, mip_count = 0, base_layer = 0, layer_count = 0;
+      vkr_image_subresource_range_resolve(
+          &barrier->range, instance->image.mip_levels,
+          instance->image.array_layers, &base_mip, &mip_count, &base_layer,
+          &layer_count);
+      renderer->graph_image_barriers[i] = (VkImageMemoryBarrier2){
+          .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+          .srcStageMask = lowered.src_stages,
+          .srcAccessMask = lowered.src_access,
+          .dstStageMask = lowered.dst_stages,
+          .dstAccessMask = lowered.dst_access,
+          .oldLayout = vkr_bindless_vk_texture_layout(barrier->src_layout),
+          .newLayout = vkr_bindless_vk_texture_layout(barrier->dst_layout),
+          .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+          .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+          .image = instance->image.handle,
+          .subresourceRange =
+              {
+                  .aspectMask =
+                      vkr_bindless_vk_format_aspects(instance->image.format),
+                  .baseMipLevel = base_mip,
+                  .levelCount = mip_count,
+                  .baseArrayLayer = base_layer,
+                  .layerCount = layer_count,
+              },
+      };
+    }
     const VkDependencyInfo dependency = {
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .imageMemoryBarrierCount = (uint32_t)barriers->length,
+        .imageMemoryBarrierCount = batch_count,
         .pImageMemoryBarriers = renderer->graph_image_barriers,
     };
     vkCmdPipelineBarrier2(command, &dependency);
@@ -412,20 +684,43 @@ vkr_internal bool8_t vkr_bindless_vk_record_graph_image_barriers(
 vkr_internal bool8_t vkr_bindless_vk_record_graph_pass_barriers(
     VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
     const VkrRgPass *pass) {
-  /*
-   * Buffer-barrier emission is designed but not implemented: no authored pass
-   * declares a graph buffer, so there is no caller to validate against. The
-   * graph is rejected rather than silently executed without the barrier the
-   * pass asked for. Implementing it means lowering each VkrRgBufferBarrier into
-   * a VkBufferMemoryBarrier2 and batching it into the same
-   * vkCmdPipelineBarrier2 as the image barriers below.
-   */
-  if (pass->pre_buffer_barriers.length > 0u) {
-    log_error("Bindless Vulkan graph pass '%.*s' declares %llu buffer "
-              "barrier(s); buffer-barrier lowering is not implemented",
-              (int)pass->desc.name.length, pass->desc.name.str,
-              (unsigned long long)pass->pre_buffer_barriers.length);
+  if (pass->pre_buffer_barriers.length > renderer->config.max_graph_buffers) {
+    log_error("Bindless Vulkan pass needs %llu buffer barriers; capacity=%u",
+              (unsigned long long)pass->pre_buffer_barriers.length,
+              renderer->config.max_graph_buffers);
     return false_v;
+  }
+  for (uint64_t i = 0u; i < pass->pre_buffer_barriers.length; ++i) {
+    const VkrRgBufferBarrier *barrier =
+        vector_get_VkrRgBufferBarrier(&pass->pre_buffer_barriers, i);
+    VkrBindlessVkGraphBufferInstance *instance =
+        vkr_bindless_vk_graph_buffer(renderer, barrier->buffer);
+    VkrBindlessVkDependency lowered = {0};
+    if (!instance ||
+        vkr_bindless_vk_lower_buffer_dependency(
+            barrier->src_access, barrier->dst_access, &barrier->dependency,
+            &lowered) != VKR_BINDLESS_VK_DEPENDENCY_OK)
+      return false_v;
+    renderer->graph_buffer_barriers[i] = (VkBufferMemoryBarrier2){
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+        .srcStageMask = lowered.src_stages,
+        .srcAccessMask = lowered.src_access,
+        .dstStageMask = lowered.dst_stages,
+        .dstAccessMask = lowered.dst_access,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = instance->buffer.handle,
+        .offset = 0u,
+        .size = VK_WHOLE_SIZE,
+    };
+  }
+  if (pass->pre_buffer_barriers.length > 0u) {
+    const VkDependencyInfo dependency = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .bufferMemoryBarrierCount = (uint32_t)pass->pre_buffer_barriers.length,
+        .pBufferMemoryBarriers = renderer->graph_buffer_barriers,
+    };
+    vkCmdPipelineBarrier2(command, &dependency);
   }
   return vkr_bindless_vk_record_graph_image_barriers(renderer, command,
                                                      &pass->pre_image_barriers);
@@ -452,7 +747,7 @@ vkr_bindless_vk_attachment_store_op(VkrAttachmentStoreOp op) {
 vkr_internal bool8_t vkr_bindless_vk_graph_attachment(
     VkrBindlessVulkanRenderer *renderer, const VkrRgAttachment *attachment,
     VkImageLayout layout, VkRenderingAttachmentInfo *out_info,
-    uint32_t *out_width, uint32_t *out_height) {
+    uint32_t *out_width, uint32_t *out_height, uint32_t *out_layers) {
   VkrBindlessVkGraphImageInstance *instance = vkr_bindless_vk_graph_image(
       renderer, attachment->image, renderer->prepared_frame.image_index);
   if (!instance ||
@@ -462,10 +757,11 @@ vkr_internal bool8_t vkr_bindless_vk_graph_attachment(
       attachment->desc.slice.layer_count >
           instance->image.array_layers - attachment->desc.slice.base_layer)
     return false_v;
-  VkImageView view = instance->image.view;
-  if (instance->image.array_layers > 1u &&
-      attachment->desc.slice.layer_count == 1u)
-    view = instance->layer_views[attachment->desc.slice.base_layer];
+  VkImageView view =
+      attachment->desc.slice.layer_count == 1u
+          ? instance->mip_layer_views[attachment->desc.slice.mip_level]
+                                     [attachment->desc.slice.base_layer]
+          : instance->mip_views[attachment->desc.slice.mip_level];
   if (!view)
     return false_v;
   *out_info = (VkRenderingAttachmentInfo){
@@ -481,21 +777,34 @@ vkr_internal bool8_t vkr_bindless_vk_graph_attachment(
       Max(1u, instance->image.width >> attachment->desc.slice.mip_level);
   *out_height =
       Max(1u, instance->image.height >> attachment->desc.slice.mip_level);
+  *out_layers = attachment->desc.slice.layer_count;
   return true_v;
 }
 
 vkr_internal bool8_t vkr_bindless_vk_graph_sampled_index(
     VkrBindlessVulkanRenderer *renderer, const VkrRgPass *pass,
-    uint32_t read_index, uint32_t *out_index) {
-  if (!out_index || read_index >= pass->desc.image_reads.length)
+    uint32_t binding, uint32_t *out_index) {
+  if (!out_index)
     return false_v;
   const VkrRgImageUse *read =
-      vector_get_VkrRgImageUse(&pass->desc.image_reads, read_index);
+      vkr_rg_pass_find_image_use(&pass->desc, binding, 0u);
+  if (!read)
+    return false_v;
   VkrBindlessVkGraphImageInstance *image = vkr_bindless_vk_graph_image(
       renderer, read->image, renderer->prepared_frame.image_index);
-  if (!image || !image->has_sampled_slot)
+  if (!image)
     return false_v;
-  *out_index = image->sampled_slot.index;
+  if (read->has_slice &&
+      (read->slice.mip_count == 0u || read->slice.mip_count == 1u)) {
+    const uint32_t mip = read->slice.mip_level;
+    if (mip >= image->image.mip_levels || !image->has_sampled_mip_slot[mip])
+      return false_v;
+    *out_index = image->sampled_mip_slots[mip].index;
+  } else {
+    if (!image->has_sampled_slot)
+      return false_v;
+    *out_index = image->sampled_slot.index;
+  }
   return true_v;
 }
 
@@ -671,36 +980,41 @@ vkr_internal bool8_t vkr_bindless_vk_record_graph_graphics_pass(
   VkRenderingAttachmentInfo colors[VKR_BINDLESS_VK_GRAPH_COLOR_ATTACHMENT_MAX] =
       {0};
   VkRenderingAttachmentInfo depth = {0};
-  uint32_t width = 0, height = 0;
+  uint32_t width = 0, height = 0, layers = 0;
   for (uint64_t i = 0; i < pass->desc.color_attachments.length; ++i) {
-    uint32_t attachment_width = 0, attachment_height = 0;
+    uint32_t attachment_width = 0, attachment_height = 0, attachment_layers = 0;
     if (!vkr_bindless_vk_graph_attachment(
             renderer,
             vector_get_VkrRgAttachment(&pass->desc.color_attachments, i),
             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, &colors[i],
-            &attachment_width, &attachment_height))
+            &attachment_width, &attachment_height, &attachment_layers) ||
+        (layers != 0u && layers != attachment_layers))
       return false_v;
     width = width ? Min(width, attachment_width) : attachment_width;
     height = height ? Min(height, attachment_height) : attachment_height;
+    layers = attachment_layers;
   }
   if (pass->desc.has_depth_attachment) {
-    uint32_t attachment_width = 0, attachment_height = 0;
+    uint32_t attachment_width = 0, attachment_height = 0, attachment_layers = 0;
     if (!vkr_bindless_vk_graph_attachment(
             renderer, &pass->desc.depth_attachment,
             pass->desc.depth_attachment.read_only
                 ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
                 : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-            &depth, &attachment_width, &attachment_height))
+            &depth, &attachment_width, &attachment_height,
+            &attachment_layers) ||
+        (layers != 0u && layers != attachment_layers))
       return false_v;
     width = width ? Min(width, attachment_width) : attachment_width;
     height = height ? Min(height, attachment_height) : attachment_height;
+    layers = attachment_layers;
   }
-  if (!width || !height)
+  if (!width || !height || !layers)
     return false_v;
   const VkRenderingInfo rendering = {
       .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
       .renderArea = {.extent = {.width = width, .height = height}},
-      .layerCount = 1u,
+      .layerCount = layers,
       .colorAttachmentCount = (uint32_t)pass->desc.color_attachments.length,
       .pColorAttachments = colors,
       .pDepthAttachment = pass->desc.has_depth_attachment ? &depth : NULL,
@@ -736,13 +1050,12 @@ vkr_internal bool8_t vkr_bindless_vk_record_graph_graphics_pass(
 vkr_internal bool8_t vkr_bindless_vk_record_graph_transfer_pass(
     VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
     const VkrRgPass *pass) {
-  if (pass->desc.image_reads.length == 0u ||
-      pass->desc.image_writes.length == 0u)
+  const VkrRgImageUse *read = vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+  const VkrRgImageUse *write = vkr_rg_pass_find_image_use(&pass->desc, 1u, 0u);
+  if (!read && !write)
     return true_v;
-  const VkrRgImageUse *read =
-      vector_get_VkrRgImageUse(&pass->desc.image_reads, 0u);
-  const VkrRgImageUse *write =
-      vector_get_VkrRgImageUse(&pass->desc.image_writes, 0u);
+  if (!read || !write)
+    return false_v;
   VkrBindlessVkGraphImageInstance *source = vkr_bindless_vk_graph_image(
       renderer, read->image, renderer->prepared_frame.image_index);
   VkrBindlessVkGraphImageInstance *destination = vkr_bindless_vk_graph_image(

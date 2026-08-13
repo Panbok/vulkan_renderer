@@ -134,6 +134,8 @@ bool8_t vkr_bindless_vulkan_renderer_create(
     renderer->config.graph_path = "assets/render_graphs/main.rendergraph.json";
   if (!renderer->config.max_graph_images)
     renderer->config.max_graph_images = 128u;
+  if (!renderer->config.max_graph_buffers)
+    renderer->config.max_graph_buffers = 128u;
   if (!renderer->config.max_graph_passes)
     renderer->config.max_graph_passes = 64u;
   if (vkr_gpu_submit_ring_create(
@@ -156,19 +158,31 @@ bool8_t vkr_bindless_vulkan_renderer_create(
   }
   renderer->graph_images_size = (uint64_t)renderer->config.max_graph_images *
                                 sizeof(*renderer->graph_images);
+  renderer->graph_buffers_size = (uint64_t)renderer->config.max_graph_buffers *
+                                 sizeof(*renderer->graph_buffers);
   renderer->graph_image_barriers_size =
       (uint64_t)renderer->config.max_graph_images *
       sizeof(*renderer->graph_image_barriers);
+  renderer->graph_buffer_barriers_size =
+      (uint64_t)renderer->config.max_graph_buffers *
+      sizeof(*renderer->graph_buffer_barriers);
   renderer->graph_images =
       vkr_allocator_alloc(renderer->allocator, renderer->graph_images_size,
+                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  renderer->graph_buffers =
+      vkr_allocator_alloc(renderer->allocator, renderer->graph_buffers_size,
                           VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   renderer->graph_image_barriers = vkr_allocator_alloc(
       renderer->allocator, renderer->graph_image_barriers_size,
       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  renderer->graph_buffer_barriers = vkr_allocator_alloc(
+      renderer->allocator, renderer->graph_buffer_barriers_size,
+      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   renderer->graph_frame_arena = arena_create(MB(8), KB(256));
   renderer->graph_frame_allocator =
       (VkrAllocator){.ctx = renderer->graph_frame_arena};
-  if (!renderer->graph_images || !renderer->graph_image_barriers ||
+  if (!renderer->graph_images || !renderer->graph_buffers ||
+      !renderer->graph_image_barriers || !renderer->graph_buffer_barriers ||
       !renderer->graph_frame_arena ||
       !vkr_allocator_arena(&renderer->graph_frame_allocator) ||
       !vkr_rg_executor_registry_init(&renderer->executors,
@@ -176,6 +190,8 @@ bool8_t vkr_bindless_vulkan_renderer_create(
       !vkr_bindless_vk_register_graph_executors(renderer) ||
       !vkr_rg_json_load_file(renderer->allocator, renderer->config.graph_path,
                              &renderer->json_graph) ||
+      !vkr_rg_json_bind_executors(&renderer->json_graph,
+                                  &renderer->executors) ||
       (renderer->graph = vkr_rg_create(renderer->allocator)) == NULL ||
       !vkr_rg_set_frame_allocator(renderer->graph,
                                   &renderer->graph_frame_allocator)) {
@@ -183,7 +199,10 @@ bool8_t vkr_bindless_vulkan_renderer_create(
     return false_v;
   }
   MemZero(renderer->graph_images, renderer->graph_images_size);
+  MemZero(renderer->graph_buffers, renderer->graph_buffers_size);
   MemZero(renderer->graph_image_barriers, renderer->graph_image_barriers_size);
+  MemZero(renderer->graph_buffer_barriers,
+          renderer->graph_buffer_barriers_size);
   VkrBindlessVulkanDeviceConfig device_config = {
       .allocator = config->allocator,
       .window = config->window,
@@ -657,6 +676,8 @@ bool8_t vkr_bindless_vulkan_renderer_submit_packet(
   }
   renderer->prepared_frame.picking_pending =
       packet->picking && packet->picking->pending;
+  renderer->prepared_frame.transmission_pending =
+      packet->world && packet->world->transmission_draw_count > 0u;
   if (packet->shadow) {
     renderer->prepared_frame.shadow_cascade_count =
         Min(packet->shadow->cascade_count, VKR_SHADOW_CASCADE_COUNT_MAX);
@@ -664,8 +685,7 @@ bool8_t vkr_bindless_vulkan_renderer_submit_packet(
   vkr_rg_begin_frame(renderer->graph, &renderer->prepared_frame);
   vkr_rg_set_packet(renderer->graph, packet);
   if (!vkr_rg_build_from_json(renderer->graph, &renderer->json_graph,
-                              &renderer->prepared_frame,
-                              &renderer->executors)) {
+                              &renderer->prepared_frame)) {
     log_error("Bindless Vulkan failed to build the authored render graph");
     vkr_bindless_vulkan_renderer_cancel_frame(renderer);
     return false_v;
@@ -676,11 +696,14 @@ bool8_t vkr_bindless_vulkan_renderer_submit_packet(
     return false_v;
   }
   if (renderer->graph->images.length > renderer->config.max_graph_images ||
+      renderer->graph->buffers.length > renderer->config.max_graph_buffers ||
       renderer->graph->passes.length > renderer->config.max_graph_passes) {
     log_error("Bindless Vulkan authored graph exceeds configured capacity "
-              "(%llu/%u images, %llu/%u passes)",
+              "(%llu/%u images, %llu/%u buffers, %llu/%u passes)",
               (unsigned long long)renderer->graph->images.length,
               renderer->config.max_graph_images,
+              (unsigned long long)renderer->graph->buffers.length,
+              renderer->config.max_graph_buffers,
               (unsigned long long)renderer->graph->passes.length,
               renderer->config.max_graph_passes);
     vkr_bindless_vulkan_renderer_cancel_frame(renderer);
@@ -693,6 +716,11 @@ bool8_t vkr_bindless_vulkan_renderer_submit_packet(
   }
   if (!vkr_bindless_vk_realize_graph_images(renderer)) {
     log_error("Bindless Vulkan failed to realize authored graph images");
+    vkr_bindless_vulkan_renderer_cancel_frame(renderer);
+    return false_v;
+  }
+  if (!vkr_bindless_vk_realize_graph_buffers(renderer)) {
+    log_error("Bindless Vulkan failed to realize authored graph buffers");
     vkr_bindless_vulkan_renderer_cancel_frame(renderer);
     return false_v;
   }
@@ -776,6 +804,8 @@ bool8_t vkr_bindless_vulkan_renderer_submit_packet(
     return false_v;
   }
   renderer->submit_value = signal_value;
+  vkr_bindless_vk_mark_graph_images_submitted(renderer, signal_value);
+  vkr_bindless_vk_mark_graph_buffers_submitted(renderer, signal_value);
   slot->retire_value = signal_value;
   if (renderer->config.target_kind != VKR_PRESENT_TARGET_OFFSCREEN)
     vkr_bindless_vulkan_reacquire_record(
@@ -1060,6 +1090,27 @@ void vkr_bindless_vulkan_renderer_memory_metrics(
       metrics.physical_allocated_bytes_peak;
   out_metrics->block_capacity_failures = metrics.block_capacity_failures;
   out_metrics->aggregate = metrics.aggregate;
+}
+
+void vkr_bindless_vulkan_renderer_geometry_megabuffer_metrics(
+    const VkrBindlessVulkanRenderer *renderer,
+    VkrGeometryMegabufferMetrics *out_metrics) {
+  if (!out_metrics)
+    return;
+  *out_metrics = (VkrGeometryMegabufferMetrics){0};
+  if (!renderer)
+    return;
+  const VkrBindlessVkGeometryMegabuffer *mega = &renderer->geometry_megabuffer;
+  out_metrics->vertex_capacity_bytes = mega->vertices.size;
+  out_metrics->index_capacity_bytes = mega->indices.size;
+  out_metrics->live_bytes = mega->vertex_live_bytes + mega->index_live_bytes;
+  out_metrics->fragmentation_bytes =
+      mega->vertex_cursor + mega->index_cursor - out_metrics->live_bytes;
+  out_metrics->high_water_bytes =
+      mega->vertex_high_water + mega->index_high_water;
+  out_metrics->rejected_publications = mega->rejected_publications;
+  out_metrics->generation_replacements = mega->generation_replacements;
+  out_metrics->generation = mega->generation;
 }
 
 void vkr_bindless_vulkan_renderer_device_memory_stats(
@@ -1362,6 +1413,11 @@ void vkr_bindless_vulkan_renderer_destroy(VkrBindlessVulkanRenderer *renderer) {
         vkr_bindless_vk_destroy_graph_image(renderer,
                                             &renderer->graph_images[i]);
     }
+    for (uint32_t i = 0; i < renderer->config.max_graph_buffers; ++i) {
+      if (renderer->graph_buffers && renderer->graph_buffers[i].live)
+        vkr_bindless_vk_destroy_graph_buffer(renderer,
+                                             &renderer->graph_buffers[i]);
+    }
     vkr_bindless_vk_destroy_target_set(renderer, &renderer->targets);
     vkr_bindless_vk_destroy_frame_slots(renderer);
     for (uint32_t i = 0u; i < VKR_BINDLESS_VK_PACKET_PIPELINE_COUNT; ++i) {
@@ -1397,6 +1453,18 @@ void vkr_bindless_vulkan_renderer_destroy(VkrBindlessVulkanRenderer *renderer) {
         vkr_bindless_vk_destroy_buffer(
             renderer, &renderer->retired_staging_buffers[i].buffer);
     }
+    VkrBindlessVkGeometryMegabuffer *mega = &renderer->geometry_megabuffer;
+    for (uint32_t i = 0u; i < ArrayCount(mega->retired); ++i) {
+      if (!mega->retired[i].occupied)
+        continue;
+      vkr_bindless_vk_destroy_buffer(renderer, &mega->retired[i].indices);
+      vkr_bindless_vk_destroy_buffer(renderer, &mega->retired[i].vertices);
+    }
+    vkr_bindless_vk_destroy_buffer(renderer, &mega->copy_source_indices);
+    vkr_bindless_vk_destroy_buffer(renderer, &mega->copy_source_vertices);
+    vkr_bindless_vk_destroy_buffer(renderer, &mega->indices);
+    vkr_bindless_vk_destroy_buffer(renderer, &mega->vertices);
+    *mega = (VkrBindlessVkGeometryMegabuffer){0};
     vkr_bindless_vk_destroy_image(renderer, &renderer->sentinel_image);
     vkr_bindless_vk_destroy_buffer(renderer, &renderer->materials);
     vkr_bindless_vk_destroy_buffer(renderer, &renderer->upload);
@@ -1492,9 +1560,19 @@ void vkr_bindless_vulkan_renderer_destroy(VkrBindlessVulkanRenderer *renderer) {
                        renderer->graph_image_barriers_size,
                        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   }
+  if (renderer->graph_buffer_barriers) {
+    vkr_allocator_free(allocator, renderer->graph_buffer_barriers,
+                       renderer->graph_buffer_barriers_size,
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  }
   if (renderer->graph_images) {
     vkr_allocator_free(allocator, renderer->graph_images,
                        renderer->graph_images_size,
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  }
+  if (renderer->graph_buffers) {
+    vkr_allocator_free(allocator, renderer->graph_buffers,
+                       renderer->graph_buffers_size,
                        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   }
   vkr_rg_destroy(renderer->graph);

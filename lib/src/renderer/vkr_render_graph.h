@@ -91,8 +91,9 @@ Vector(VkrRgBufferHandle);
  * @brief Lifetime and layout hints for render-graph resources.
  */
 typedef enum VkrRgResourceFlags {
-  VKR_RG_RESOURCE_FLAG_NONE = 0,            /**< No special flags */
-  VKR_RG_RESOURCE_FLAG_TRANSIENT = 1 << 0,  /**< Freed after each frame */
+  VKR_RG_RESOURCE_FLAG_NONE = 0, /**< No special flags */
+  VKR_RG_RESOURCE_FLAG_TRANSIENT =
+      1 << 0, /**< Frame-local contents with overlap-safe backend instances */
   VKR_RG_RESOURCE_FLAG_PERSISTENT = 1 << 1, /**< Kept across frames */
   VKR_RG_RESOURCE_FLAG_EXTERNAL = 1 << 2,   /**< Imported, not owned by graph */
   VKR_RG_RESOURCE_FLAG_PER_IMAGE =
@@ -100,7 +101,25 @@ typedef enum VkrRgResourceFlags {
   VKR_RG_RESOURCE_FLAG_RESIZABLE = 1 << 4, /**< May be recreated on resize */
   VKR_RG_RESOURCE_FLAG_FORCE_ARRAY =
       1 << 5, /**< Force array view in descriptors */
+  VKR_RG_RESOURCE_FLAG_PER_FRAME_SLOT =
+      1 << 6, /**< One resource per completion-gated frame slot */
+  VKR_RG_RESOURCE_FLAG_HISTORY =
+      1 << 7, /**< Completion-gated history ring owned by the backend */
 } VkrRgResourceFlags;
+
+/** Backend allocation/selection domain implied by resource lifetime flags. */
+typedef enum VkrRgResourceInstanceDomain {
+  VKR_RG_RESOURCE_INSTANCE_SINGLE = 0,
+  VKR_RG_RESOURCE_INSTANCE_PER_IMAGE,
+  VKR_RG_RESOURCE_INSTANCE_PER_FRAME_SLOT,
+} VkrRgResourceInstanceDomain;
+
+/**
+ * Resolves lifetime flags to one backend instance domain. PER_IMAGE takes
+ * precedence because TRANSIENT may annotate target-image-local contents.
+ */
+VkrRgResourceInstanceDomain
+vkr_rg_resource_instance_domain(VkrRgResourceFlags flags);
 
 /**
  * @brief Image resource specification for vkr_rg_create_image.
@@ -147,7 +166,8 @@ typedef struct VkrRgBufferDesc {
  * scope. layer_count must be at least 1.
  */
 typedef struct VkrRgImageSlice {
-  uint32_t mip_level;   /**< Mip level index */
+  uint32_t mip_level;   /**< First mip level */
+  uint32_t mip_count;   /**< Number of mip levels; zero preserves legacy 1 */
   uint32_t base_layer;  /**< First layer index */
   uint32_t layer_count; /**< Number of layers; must be >= 1 */
 } VkrRgImageSlice;
@@ -155,6 +175,7 @@ typedef struct VkrRgImageSlice {
 #define VKR_RG_IMAGE_SLICE_DEFAULT                                             \
   ((VkrRgImageSlice){                                                          \
       .mip_level = 0,                                                          \
+      .mip_count = 1,                                                          \
       .base_layer = 0,                                                         \
       .layer_count = 1,                                                        \
   })
@@ -181,6 +202,29 @@ typedef enum VkrRgPassFlags {
       1 << 0, /**< Do not skip pass when outputs are unused */
   VKR_RG_PASS_FLAG_DISABLED = 1 << 1, /**< Do not run the pass */
 } VkrRgPassFlags;
+
+/** @brief Compute dispatch source carried by an authored compute pass. */
+typedef enum VkrRgDispatchKind {
+  VKR_RG_DISPATCH_NONE = 0,     /**< Specialized executor owns dispatches */
+  VKR_RG_DISPATCH_DIRECT = 1,   /**< Authored workgroup counts */
+  VKR_RG_DISPATCH_INDIRECT = 2, /**< Workgroup counts read from a buffer */
+} VkrRgDispatchKind;
+
+/**
+ * @brief Backend-neutral compute dispatch descriptor.
+ *
+ * DIRECT requires all three group counts to be non-zero. INDIRECT names a
+ * declared buffer binding/array slot and a four-byte-aligned byte offset.
+ */
+typedef struct VkrRgComputeDispatchDesc {
+  VkrRgDispatchKind kind;
+  uint32_t group_count_x;
+  uint32_t group_count_y;
+  uint32_t group_count_z;
+  uint32_t indirect_binding;
+  uint32_t indirect_array_index;
+  uint64_t indirect_offset;
+} VkrRgComputeDispatchDesc;
 
 /**
  * @brief Image access in a pass; used to infer layout transitions and barriers.
@@ -228,6 +272,7 @@ typedef VkrBufferAccessFlags VkrRgBufferAccessFlags;
 #define VKR_RG_BUFFER_ACCESS_STORAGE_WRITE VKR_BUFFER_ACCESS_STORAGE_WRITE
 #define VKR_RG_BUFFER_ACCESS_TRANSFER_SRC VKR_BUFFER_ACCESS_TRANSFER_SRC
 #define VKR_RG_BUFFER_ACCESS_TRANSFER_DST VKR_BUFFER_ACCESS_TRANSFER_DST
+#define VKR_RG_BUFFER_ACCESS_INDIRECT_READ VKR_BUFFER_ACCESS_INDIRECT_READ
 
 /**
  * @brief Declares one buffer use in a pass.
@@ -266,9 +311,8 @@ Vector(VkrRgAttachment);
 
 /**
  * @brief Full pass specification.
- * Vectors are owned by the graph after add_pass; name and execute_name must be
- * stable for the graph lifetime. execute may be NULL if execute_name is set and
- * resolved later from the executor registry.
+ * Vectors and name are owned by the graph after add_pass. Authored passes carry
+ * a backend-local executor_id resolved once when their JSON graph is loaded.
  */
 typedef struct VkrRgPassDesc {
   String8 name;         /**< Pass name (stable pointer) */
@@ -286,9 +330,9 @@ typedef struct VkrRgPassDesc {
   Vector_VkrRgBufferUse buffer_reads;  /**< Buffer read uses */
   Vector_VkrRgBufferUse buffer_writes; /**< Buffer write uses */
 
-  String8 execute_name; /**< Name to resolve execute from registry (optional) */
-  VkrRgPassExecuteFn execute; /**< Execute callback (may be set directly or via
-                                 execute_name) */
+  VkrRgComputeDispatchDesc dispatch; /**< Optional compute dispatch */
+  uint32_t executor_id;       /**< Backend-local typed executor identity */
+  VkrRgPassExecuteFn execute; /**< Execute callback */
   void *user_data;            /**< User data passed to execute */
 } VkrRgPassDesc;
 
@@ -311,6 +355,21 @@ typedef struct VkrRgPassContext {
   float64_t delta_time; /**< Frame delta time */
 
 } VkrRgPassContext;
+
+/**
+ * @brief Finds an image use by its authored descriptor binding and array slot.
+ *
+ * Reads and writes of the same image may share a binding; conflicting
+ * resources at one binding are rejected during graph compilation.
+ */
+const VkrRgImageUse *vkr_rg_pass_find_image_use(const VkrRgPassDesc *pass,
+                                                uint32_t binding,
+                                                uint32_t array_index);
+
+/** @brief Buffer counterpart to vkr_rg_pass_find_image_use. */
+const VkrRgBufferUse *vkr_rg_pass_find_buffer_use(const VkrRgPassDesc *pass,
+                                                  uint32_t binding,
+                                                  uint32_t array_index);
 
 /**
  * @brief Attaches a render packet to the graph for the next implementation
@@ -447,11 +506,13 @@ VkrBufferHandle vkr_rg_pass_get_buffer_handle(const VkrRgPassContext *ctx,
                                               VkrRgBufferHandle buffer);
 
 /**
- * @brief Named pass executor; name is used to resolve execute_name in pass
- * descriptors. user_data is passed to execute; ownership stays with the caller.
+ * @brief Named typed pass executor resolved once when a JSON graph is loaded.
+ * user_data is passed to execute; ownership stays with the caller.
  */
 typedef struct VkrRgPassExecutor {
-  String8 name;               /**< Executor name (used for lookup) */
+  String8 name;       /**< Executor name (used for lookup) */
+  uint32_t id;        /**< Non-zero backend-local identity */
+  VkrRgPassType type; /**< Only this pass type may select the executor */
   VkrRgPassExecuteFn execute; /**< Execute callback */
   void *user_data;            /**< User data passed to execute */
 } VkrRgPassExecutor;
@@ -459,8 +520,8 @@ typedef struct VkrRgPassExecutor {
 Vector(VkrRgPassExecutor);
 
 /**
- * @brief Registry of named pass executors for resolving execute_name at compile
- * time. allocator is used for entries and must outlive the registry.
+ * @brief Registry of typed named pass executors resolved when JSON is loaded.
+ * allocator is used for entries and must outlive the registry.
  */
 typedef struct VkrRgExecutorRegistry {
   VkrAllocator *allocator; /**< Allocator for entries; must outlive registry */
@@ -486,7 +547,7 @@ void vkr_rg_executor_registry_destroy(VkrRgExecutorRegistry *reg);
 /**
  * @brief Registers a pass executor by name.
  * @param reg Registry
- * @param entry Executor to register; duplicate names overwrite
+ * @param entry Executor to register; ids and names must both be unique
  * @return true on success, false on allocation failure
  */
 bool8_t vkr_rg_executor_registry_register(VkrRgExecutorRegistry *reg,
@@ -497,11 +558,10 @@ bool8_t vkr_rg_executor_registry_register(VkrRgExecutorRegistry *reg,
  * @param reg Registry
  * @param name Executor name
  * @param out_user_data Optional; receives executor user_data pointer
- * @return Execute function, or NULL if not found
+ * @return Registered executor, or NULL if not found
  */
-VkrRgPassExecuteFn
-vkr_rg_executor_registry_find(const VkrRgExecutorRegistry *reg, String8 name,
-                              void **out_user_data);
+const VkrRgPassExecutor *
+vkr_rg_executor_registry_find(const VkrRgExecutorRegistry *reg, String8 name);
 
 // =============================================================================
 // Builder API
@@ -533,6 +593,12 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t viewport_width;  /**< Viewport width */
   uint32_t viewport_height; /**< Viewport height */
   bool8_t editor_enabled;   /**< Whether editor is enabled */
+  /** Temporary migration condition; false keeps the retained forward graph. */
+  bool8_t deferred_enabled;
+  /** True only when a completion-protected HZB history generation is valid. */
+  bool8_t hzb_history_valid;
+  /** True when the packet contains transmissive world work. */
+  bool8_t transmission_pending;
   /**
    * Whether this frame's packet requests a pick. Gates the picking resources
    * and passes so a non-picking frame pays nothing for them.
@@ -759,8 +825,7 @@ VkrRgPassBuilder vkr_rg_add_pass(VkrRenderGraph *graph, VkrRgPassType type,
                                  String8 name);
 
 /**
- * @brief Sets the execute callback and user_data for the pass. Overrides
- * execute_name resolution if both set.
+ * @brief Sets the execute callback and user_data for the pass.
  * @param pb Pass builder
  * @param execute Execute callback
  * @param user_data User data passed to execute
@@ -858,6 +923,12 @@ void vkr_rg_pass_write_image_at_stages(VkrRgPassBuilder *pb,
 void vkr_rg_pass_read_buffer(VkrRgPassBuilder *pb, VkrRgBufferHandle buffer,
                              VkrRgBufferAccessFlags access, uint32_t binding,
                              uint32_t array_index);
+
+/** @brief Writes an exact image mip/layer range. */
+void vkr_rg_pass_write_image_slice_at_stages(
+    VkrRgPassBuilder *pb, VkrRgImageHandle image, VkrRgImageAccessFlags access,
+    VkrGpuStageFlags stages, uint32_t binding, uint32_t array_index,
+    VkrRgImageSlice slice);
 void vkr_rg_pass_read_buffer_at_stages(VkrRgPassBuilder *pb,
                                        VkrRgBufferHandle buffer,
                                        VkrRgBufferAccessFlags access,

@@ -38,21 +38,27 @@ vkr_global const VkrMetalPacketAbiField vkr_material_fields[] = {
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_vertex_draw_root_fields[] = {
-    VKR_ABI_FIELD(VkrMetalPacketVertexDrawRoot, vertices, "vertices", 0),
-    VKR_ABI_FIELD(VkrMetalPacketVertexDrawRoot, frame, "frame", 8),
-    VKR_ABI_FIELD(VkrMetalPacketVertexDrawRoot, material_index,
-                  "material_index", 16),
-    VKR_ABI_FIELD(VkrMetalPacketVertexDrawRoot, first_instance,
-                  "first_instance", 20),
-    VKR_ABI_FIELD(VkrMetalPacketVertexDrawRoot, reserved, "reserved_0", 24),
+    VKR_ABI_FIELD(VkrMetalPacketVertexDrawRoot, geometry_rows, "geometry_rows",
+                  0),
+    VKR_ABI_FIELD(VkrMetalPacketVertexDrawRoot, visible_rows, "visible_rows",
+                  8),
+    VKR_ABI_FIELD(VkrMetalPacketVertexDrawRoot, vertices, "vertices", 16),
+    VKR_ABI_FIELD(VkrMetalPacketVertexDrawRoot, frame, "frame", 24),
+    VKR_ABI_FIELD(VkrMetalPacketVertexDrawRoot, visible_row_index,
+                  "visible_row_index", 32),
+    VKR_ABI_FIELD(VkrMetalPacketVertexDrawRoot, flags, "flags", 36),
+    VKR_ABI_FIELD(VkrMetalPacketVertexDrawRoot, reserved, "reserved", 40),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_draw_root_fields[] = {
-    VKR_ABI_FIELD(VkrMetalPacketDrawRoot, vertices, "vertices", 0),
-    VKR_ABI_FIELD(VkrMetalPacketDrawRoot, frame, "frame", 8),
-    VKR_ABI_FIELD(VkrMetalPacketDrawRoot, material_index, "material_index", 16),
-    VKR_ABI_FIELD(VkrMetalPacketDrawRoot, first_instance, "first_instance", 20),
-    VKR_ABI_FIELD(VkrMetalPacketDrawRoot, reserved, "reserved_0", 24),
+    VKR_ABI_FIELD(VkrMetalPacketDrawRoot, geometry_rows, "geometry_rows", 0),
+    VKR_ABI_FIELD(VkrMetalPacketDrawRoot, visible_rows, "visible_rows", 8),
+    VKR_ABI_FIELD(VkrMetalPacketDrawRoot, vertices, "vertices", 16),
+    VKR_ABI_FIELD(VkrMetalPacketDrawRoot, frame, "frame", 24),
+    VKR_ABI_FIELD(VkrMetalPacketDrawRoot, visible_row_index,
+                  "visible_row_index", 32),
+    VKR_ABI_FIELD(VkrMetalPacketDrawRoot, flags, "flags", 36),
+    VKR_ABI_FIELD(VkrMetalPacketDrawRoot, reserved, "reserved", 40),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_frame_root_fields[] = {
@@ -189,10 +195,10 @@ vkr_global const VkrMetalPacketAbiRecord
             VKR_ABI_RECORD(VkrMetalMaterialGpuRow, "VkrMetalPacketMaterial",
                            176, 16, vkr_material_fields),
         [VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT] = VKR_ABI_RECORD(
-            VkrMetalPacketVertexDrawRoot, "VkrMetalPacketDrawRoot", 32, 16,
+            VkrMetalPacketVertexDrawRoot, "VkrMetalPacketDrawRoot", 48, 16,
             vkr_vertex_draw_root_fields),
         [VKR_METAL_PACKET_ABI_DRAW_ROOT] =
-            VKR_ABI_RECORD(VkrMetalPacketDrawRoot, "VkrMetalPacketDrawRoot", 32,
+            VKR_ABI_RECORD(VkrMetalPacketDrawRoot, "VkrMetalPacketDrawRoot", 48,
                            16, vkr_draw_root_fields),
         [VKR_METAL_PACKET_ABI_FRAME_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketFrameRoot, "VkrMetalPacketFrameRoot",
