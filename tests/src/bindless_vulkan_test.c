@@ -73,8 +73,7 @@ static void test_reacquisition_completion_contract(void) {
   VkrBindlessVulkanReacquireResult result =
       vkr_bindless_vulkan_reacquire_complete(&state, 7u);
   assert(!result.image_present_complete && !result.collect_retired_swapchains &&
-         !state.pending_wait_submit_value &&
-         !state.successor_present_complete);
+         !state.pending_wait_submit_value && !state.successor_present_complete);
   vkr_bindless_vulkan_reacquire_record(&state, true_v, 7u);
   assert(state.pending_wait_submit_value == 7u);
   result = vkr_bindless_vulkan_reacquire_complete(&state, 6u);
@@ -84,8 +83,8 @@ static void test_reacquisition_completion_contract(void) {
   result = vkr_bindless_vulkan_reacquire_complete(&state, 7u);
   assert(result.image_present_complete && result.collect_retired_swapchains &&
          !state.pending_wait_submit_value && state.successor_present_complete);
-  assert(!vkr_bindless_vulkan_reacquire_complete(NULL, 7u)
-              .image_present_complete);
+  assert(
+      !vkr_bindless_vulkan_reacquire_complete(NULL, 7u).image_present_complete);
   printf("  test_reacquisition_completion_contract PASSED\n");
 }
 
@@ -216,6 +215,11 @@ static void test_shared_gpu_memory_and_abi_contracts(void) {
   assert(vkr_gpu_abi_record(VKR_GPU_ABI_VERTEX)->expected_size == 64u);
   assert(vkr_gpu_abi_record(VKR_GPU_ABI_INSTANCE)->expected_size == 80u);
   assert(vkr_gpu_abi_record(VKR_GPU_ABI_TEXT_VERTEX)->expected_size == 32u);
+  assert(vkr_gpu_abi_record(VKR_GPU_ABI_GEOMETRY_ROW)->expected_size == 48u);
+  assert(vkr_gpu_abi_record(VKR_GPU_ABI_CANDIDATE_DRAW_ROW)->expected_size ==
+         48u);
+  assert(vkr_gpu_abi_record(VKR_GPU_ABI_VISIBLE_DRAW_ROW)->expected_size ==
+         32u);
 
   const VkrGpuMemoryConfig config = {256u, 2u, 2u, 3u};
   uint8_t storage[2048] = {0};

@@ -19,6 +19,29 @@ static void rg_barrier_test_execute(VkrRgPassContext *ctx, void *user_data) {
   (void)user_data;
 }
 
+static bool8_t rg_barrier_test_write_json(const char *path,
+                                          const char *contents) {
+  FILE *file = fopen(path, "wb");
+  if (!file)
+    return false_v;
+  const size_t size = strlen(contents);
+  const bool8_t ok =
+      fwrite(contents, 1u, size, file) == size ? true_v : false_v;
+  fclose(file);
+  return ok;
+}
+
+static bool8_t rg_barrier_test_load_json(VkrAllocator *allocator,
+                                         const char *contents,
+                                         VkrRgJsonGraph *out_graph) {
+  const char *path = "build/test_render_graph_contract.rendergraph.json";
+  if (!rg_barrier_test_write_json(path, contents))
+    return false_v;
+  const bool8_t result = vkr_rg_json_load_file(allocator, path, out_graph);
+  remove(path);
+  return result;
+}
+
 /**
  * @brief Declares a pass; caller adds uses via the returned builder.
  *
@@ -43,6 +66,314 @@ static VkrRgPassBuilder rg_barrier_test_add_pass(VkrRenderGraph *graph,
 static const VkrRgPass *rg_barrier_test_pass(const VkrRenderGraph *graph,
                                              uint32_t index) {
   return vector_get_VkrRgPass((Vector_VkrRgPass *)&graph->passes, index);
+}
+
+static void test_resource_instance_domains(void) {
+  printf("  Running test_resource_instance_domains...\n");
+  assert(vkr_rg_resource_instance_domain(VKR_RG_RESOURCE_FLAG_NONE) ==
+         VKR_RG_RESOURCE_INSTANCE_SINGLE);
+  assert(vkr_rg_resource_instance_domain(VKR_RG_RESOURCE_FLAG_PERSISTENT) ==
+         VKR_RG_RESOURCE_INSTANCE_SINGLE);
+  assert(vkr_rg_resource_instance_domain(VKR_RG_RESOURCE_FLAG_TRANSIENT) ==
+         VKR_RG_RESOURCE_INSTANCE_PER_FRAME_SLOT);
+  assert(vkr_rg_resource_instance_domain(VKR_RG_RESOURCE_FLAG_PER_FRAME_SLOT) ==
+         VKR_RG_RESOURCE_INSTANCE_PER_FRAME_SLOT);
+  assert(vkr_rg_resource_instance_domain(VKR_RG_RESOURCE_FLAG_HISTORY) ==
+         VKR_RG_RESOURCE_INSTANCE_PER_FRAME_SLOT);
+  assert(vkr_rg_resource_instance_domain(VKR_RG_RESOURCE_FLAG_TRANSIENT |
+                                         VKR_RG_RESOURCE_FLAG_PER_IMAGE) ==
+         VKR_RG_RESOURCE_INSTANCE_PER_IMAGE);
+  printf("  test_resource_instance_domains PASSED\n");
+}
+
+static void test_json_bindings_and_condition_parity(void) {
+  printf("  Running test_json_bindings_and_condition_parity...\n");
+  Arena *arena = arena_create(MB(2), MB(2));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+
+  const char *valid =
+      "{\"version\":1,\"name\":\"conditions\",\"resources\":["
+      "{\"name\":\"image\",\"type\":\"image\",\"extent\":{\"mode\":\"fixed\","
+      "\"width\":1,\"height\":1},\"format\":\"R8G8B8A8_UNORM\",\"usage\":["
+      "\"SAMPLED\"]}],"
+      "\"passes\":["
+      "{\"name\":\"deferred\",\"type\":\"compute\",\"condition\":\"deferred_"
+      "enabled\",\"reads\":[{\"image\":\"image\",\"access\":\"SAMPLED\","
+      "\"binding\":2}],\"execute\":\"test\"},"
+      "{\"name\":\"history\",\"type\":\"compute\",\"condition\":\"!hzb_history_"
+      "valid\",\"execute\":\"test\"},"
+      "{\"name\":\"transmission\",\"type\":\"compute\",\"condition\":"
+      "\"transmission_pending\",\"execute\":\"test\"},"
+      "{\"name\":\"picking\",\"type\":\"compute\",\"condition\":\"!picking_"
+      "pending\",\"execute\":\"test\"}]}";
+  VkrRgJsonGraph graph = {0};
+  assert(rg_barrier_test_load_json(&allocator, valid, &graph));
+  assert(graph.passes.length == 4u);
+  assert(vector_get_VkrRgJsonPass(&graph.passes, 0)->condition.kind ==
+         VKR_RG_JSON_CONDITION_DEFERRED_ENABLED);
+  assert(vector_get_VkrRgJsonPass(&graph.passes, 1)->condition.kind ==
+         VKR_RG_JSON_CONDITION_HZB_HISTORY_INVALID);
+  assert(vector_get_VkrRgJsonPass(&graph.passes, 2)->condition.kind ==
+         VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING);
+  assert(vector_get_VkrRgJsonPass(&graph.passes, 3)->condition.kind ==
+         VKR_RG_JSON_CONDITION_PICKING_IDLE);
+  const VkrRgJsonResourceUse *use = vector_get_VkrRgJsonResourceUse(
+      &vector_get_VkrRgJsonPass(&graph.passes, 0)->reads, 0u);
+  assert(use && use->binding.is_set && use->binding.value == 2u);
+  vkr_rg_json_destroy(&graph);
+
+  const char *missing_binding =
+      "{\"version\":1,\"name\":\"missing\",\"resources\":["
+      "{\"name\":\"image\",\"type\":\"image\",\"extent\":{\"mode\":\"fixed\","
+      "\"width\":1,\"height\":1},\"format\":\"R8G8B8A8_UNORM\",\"usage\":["
+      "\"SAMPLED\"]}],"
+      "\"passes\":[{\"name\":\"pass\",\"type\":\"compute\",\"reads\":[{"
+      "\"image\":\"image\",\"access\":\"SAMPLED\"}],\"execute\":\"test\"}]}";
+  assert(!rg_barrier_test_load_json(&allocator, missing_binding, &graph));
+
+  const char *type_mismatch =
+      "{\"version\":1,\"name\":\"type\",\"resources\":["
+      "{\"name\":\"buffer\",\"type\":\"buffer\",\"size\":16,\"usage\":["
+      "\"STORAGE\"],\"flags\":[\"PER_FRAME_SLOT\"]}],"
+      "\"passes\":[{\"name\":\"pass\",\"type\":\"compute\",\"reads\":[{"
+      "\"image\":\"buffer\",\"access\":\"SAMPLED\",\"binding\":0}],\"execute\":"
+      "\"test\"}]}";
+  assert(!rg_barrier_test_load_json(&allocator, type_mismatch, &graph));
+
+  arena_destroy(arena);
+  printf("  test_json_bindings_and_condition_parity PASSED\n");
+}
+
+static void test_conflicting_runtime_bindings_are_rejected(void) {
+  printf("  Running test_conflicting_runtime_bindings_are_rejected...\n");
+  Arena *arena = arena_create(MB(1), MB(1));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+  VkrRenderGraph *graph = vkr_rg_create(&allocator);
+  assert(graph);
+
+  VkrRgImageDesc desc = VKR_RG_IMAGE_DESC_DEFAULT;
+  desc.width = 1u;
+  desc.height = 1u;
+  desc.usage = vkr_texture_usage_flags_from_bits(VKR_TEXTURE_USAGE_SAMPLED);
+  VkrRgImageHandle first =
+      vkr_rg_create_image(graph, string8_lit("first"), &desc);
+  VkrRgImageHandle second =
+      vkr_rg_create_image(graph, string8_lit("second"), &desc);
+  VkrRgPassBuilder pass =
+      rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "Bindings");
+  vkr_rg_pass_read_image(&pass, first, VKR_RG_IMAGE_ACCESS_SAMPLED, 3u, 0u);
+  vkr_rg_pass_read_image(&pass, second, VKR_RG_IMAGE_ACCESS_SAMPLED, 3u, 0u);
+  assert(!vkr_rg_compile_schedule(graph));
+  vkr_rg_destroy(graph);
+  arena_destroy(arena);
+  printf("  test_conflicting_runtime_bindings_are_rejected PASSED\n");
+}
+
+static void test_typed_executor_and_direct_dispatch_contract(void) {
+  printf("  Running test_typed_executor_and_direct_dispatch_contract...\n");
+  Arena *arena = arena_create(MB(2), MB(2));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+
+  const char *valid =
+      "{\"version\":1,\"name\":\"dispatch\",\"resources\":[],\"passes\":["
+      "{\"name\":\"compute\",\"type\":\"compute\",\"flags\":[\"NO_CULL\"],"
+      "\"dispatch\":{\"type\":\"direct\",\"x\":8,\"y\":4,\"z\":2},"
+      "\"execute\":\"test.compute\"}]}";
+  VkrRgJsonGraph json = {0};
+  assert(rg_barrier_test_load_json(&allocator, valid, &json));
+  assert(json.passes.length == 1u);
+  assert(json.passes.data[0].dispatch.kind == VKR_RG_DISPATCH_DIRECT);
+  assert(json.passes.data[0].dispatch.group_count_x == 8u);
+  assert(json.passes.data[0].dispatch.group_count_y == 4u);
+  assert(json.passes.data[0].dispatch.group_count_z == 2u);
+
+  VkrRgExecutorRegistry registry = {0};
+  assert(vkr_rg_executor_registry_init(&registry, &allocator));
+  VkrRgPassExecutor executor = {
+      .name = string8_lit("test.compute"),
+      .id = 7u,
+      .type = VKR_RG_PASS_TYPE_COMPUTE,
+      .execute = rg_barrier_test_execute,
+  };
+  assert(vkr_rg_executor_registry_register(&registry, &executor));
+  VkrRgPassExecutor duplicate_id = executor;
+  duplicate_id.name = string8_lit("test.other");
+  assert(!vkr_rg_executor_registry_register(&registry, &duplicate_id));
+  assert(vkr_rg_json_bind_executors(&json, &registry));
+
+  VkrRenderGraph *graph = vkr_rg_create(&allocator);
+  assert(graph);
+  VkrRenderGraphFrameInfo frame = {.target_width = 1u, .target_height = 1u};
+  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_build_from_json(graph, &json, &frame));
+  assert(graph->passes.length == 1u);
+  assert(graph->passes.data[0].desc.executor_id == 7u);
+  assert(graph->passes.data[0].desc.dispatch.kind == VKR_RG_DISPATCH_DIRECT);
+  assert(graph->passes.data[0].desc.dispatch.group_count_x == 8u);
+  assert(vkr_rg_compile_schedule(graph));
+
+  const char *invalid =
+      "{\"version\":1,\"name\":\"bad\",\"resources\":[],\"passes\":["
+      "{\"name\":\"compute\",\"type\":\"compute\",\"dispatch\":{"
+      "\"type\":\"direct\",\"x\":0,\"y\":1,\"z\":1},"
+      "\"execute\":\"test.compute\"}]}";
+  VkrRgJsonGraph rejected = {0};
+  assert(!rg_barrier_test_load_json(&allocator, invalid, &rejected));
+
+  vkr_rg_destroy(graph);
+  vkr_rg_executor_registry_destroy(&registry);
+  vkr_rg_json_destroy(&json);
+  arena_destroy(arena);
+  printf("  test_typed_executor_and_direct_dispatch_contract PASSED\n");
+}
+
+static void test_indirect_dispatch_dependency_contract(void) {
+  printf("  Running test_indirect_dispatch_dependency_contract...\n");
+  Arena *arena = arena_create(MB(2), MB(2));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+  const char *source =
+      "{\"version\":1,\"name\":\"indirect\",\"resources\":[{"
+      "\"name\":\"arguments\",\"type\":\"buffer\",\"size\":64,"
+      "\"usage\":[\"STORAGE\",\"INDIRECT\"],\"flags\":[\"PER_FRAME_SLOT\"]"
+      "}],\"passes\":[{\"name\":\"write\",\"type\":\"compute\","
+      "\"flags\":[\"NO_CULL\"],\"writes\":[{\"buffer\":\"arguments\","
+      "\"access\":\"STORAGE_WRITE\",\"binding\":0}],\"dispatch\":{"
+      "\"type\":\"direct\",\"x\":1,\"y\":1,\"z\":1},\"execute\":"
+      "\"test.compute\"},{\"name\":\"consume\",\"type\":\"compute\","
+      "\"flags\":[\"NO_CULL\"],\"reads\":[{\"buffer\":\"arguments\","
+      "\"access\":\"INDIRECT_READ\",\"binding\":2}],\"dispatch\":{"
+      "\"type\":\"indirect\",\"binding\":2,\"offset\":16},\"execute\":"
+      "\"test.compute\"}]}";
+  VkrRgJsonGraph json = {0};
+  assert(rg_barrier_test_load_json(&allocator, source, &json));
+  assert(json.passes.data[1].dispatch.kind == VKR_RG_DISPATCH_INDIRECT);
+  assert(json.passes.data[1].dispatch.indirect_binding == 2u);
+  assert(json.passes.data[1].dispatch.indirect_offset == 16u);
+
+  VkrRgExecutorRegistry registry = {0};
+  assert(vkr_rg_executor_registry_init(&registry, &allocator));
+  const VkrRgPassExecutor executor = {
+      .name = string8_lit("test.compute"),
+      .id = 1u,
+      .type = VKR_RG_PASS_TYPE_COMPUTE,
+      .execute = rg_barrier_test_execute,
+  };
+  assert(vkr_rg_executor_registry_register(&registry, &executor));
+  assert(vkr_rg_json_bind_executors(&json, &registry));
+
+  VkrRenderGraph *graph = vkr_rg_create(&allocator);
+  assert(graph);
+  const VkrRenderGraphFrameInfo frame = {.target_width = 1u,
+                                         .target_height = 1u};
+  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_build_from_json(graph, &json, &frame));
+  assert(vkr_rg_compile_schedule(graph));
+  const VkrRgPass *consumer = rg_barrier_test_pass(graph, 1u);
+  assert(consumer->pre_buffer_barriers.length == 1u);
+  const VkrRgBufferBarrier *barrier =
+      vector_get_VkrRgBufferBarrier(&consumer->pre_buffer_barriers, 0u);
+  assert(barrier->src_access == VKR_RG_BUFFER_ACCESS_STORAGE_WRITE);
+  assert(barrier->dst_access == VKR_RG_BUFFER_ACCESS_INDIRECT_READ);
+  assert(barrier->dependency.dst_stages == VKR_GPU_STAGE_DRAW_INDIRECT);
+
+  vkr_rg_destroy(graph);
+  vkr_rg_executor_registry_destroy(&registry);
+  vkr_rg_json_destroy(&json);
+  arena_destroy(arena);
+  printf("  test_indirect_dispatch_dependency_contract PASSED\n");
+}
+
+static void test_json_mip_chain_and_subresource_uses(void) {
+  printf("  Running test_json_mip_chain_and_subresource_uses...\n");
+  Arena *arena = arena_create(MB(2), MB(2));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+  const char *source =
+      "{\"version\":1,\"name\":\"mips\",\"resources\":[{\"name\":\"hzb\","
+      "\"type\":\"image\",\"extent\":{\"mode\":\"fixed\",\"width\":16,"
+      "\"height\":8},\"format\":\"R32_SFLOAT\",\"mip_levels\":\"full_chain\","
+      "\"usage\":[\"STORAGE\"],\"flags\":[\"PER_FRAME_SLOT\"]}],\"passes\":["
+      "{\"name\":\"write\",\"type\":\"compute\",\"flags\":[\"NO_CULL\"],"
+      "\"writes\":[{\"image\":\"hzb\",\"access\":\"STORAGE_WRITE\","
+      "\"binding\":0,\"subresource\":{\"base_mip\":1,\"mip_count\":2,"
+      "\"base_layer\":0,\"layer_count\":1}}],\"dispatch\":{\"type\":"
+      "\"direct\",\"x\":1,\"y\":1,\"z\":1},\"execute\":\"test.compute\"},"
+      "{\"name\":\"read\",\"type\":\"compute\",\"flags\":[\"NO_CULL\"],"
+      "\"reads\":[{\"image\":\"hzb\",\"access\":\"STORAGE_READ\","
+      "\"binding\":0,\"subresource\":{\"base_mip\":1,\"mip_count\":2,"
+      "\"base_layer\":0,\"layer_count\":1}}],\"dispatch\":{\"type\":"
+      "\"direct\",\"x\":1,\"y\":1,\"z\":1},\"execute\":\"test.compute\"}]}";
+  VkrRgJsonGraph json = {0};
+  assert(rg_barrier_test_load_json(&allocator, source, &json));
+  assert(json.resources.data[0].image.mip_levels_full);
+  assert(json.passes.data[0].writes.data[0].has_slice);
+
+  VkrRgExecutorRegistry registry = {0};
+  assert(vkr_rg_executor_registry_init(&registry, &allocator));
+  const VkrRgPassExecutor executor = {
+      .name = string8_lit("test.compute"),
+      .id = 1u,
+      .type = VKR_RG_PASS_TYPE_COMPUTE,
+      .execute = rg_barrier_test_execute,
+  };
+  assert(vkr_rg_executor_registry_register(&registry, &executor));
+  assert(vkr_rg_json_bind_executors(&json, &registry));
+  VkrRenderGraph *graph = vkr_rg_create(&allocator);
+  assert(graph);
+  const VkrRenderGraphFrameInfo frame = {.target_width = 16u,
+                                         .target_height = 8u};
+  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_build_from_json(graph, &json, &frame));
+  assert(graph->images.data[0].desc.mip_levels == 5u);
+  assert(graph->passes.data[0].desc.image_writes.data[0].slice.mip_level == 1u);
+  assert(graph->passes.data[0].desc.image_writes.data[0].slice.mip_count == 2u);
+  assert(vkr_rg_compile_schedule(graph));
+  assert(graph->passes.data[1].pre_image_barriers.length == 2u);
+  assert(graph->passes.data[1].pre_image_barriers.data[0].range.base_mip == 1u);
+  assert(graph->passes.data[1].pre_image_barriers.data[1].range.base_mip == 2u);
+
+  vkr_rg_destroy(graph);
+  vkr_rg_executor_registry_destroy(&registry);
+  vkr_rg_json_destroy(&json);
+  arena_destroy(arena);
+  printf("  test_json_mip_chain_and_subresource_uses PASSED\n");
+}
+
+static void test_deferred_image_formats(void) {
+  printf("  Running test_deferred_image_formats...\n");
+  Arena *arena = arena_create(MB(1), MB(1));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+  const char *source =
+      "{\"version\":1,\"name\":\"deferred_formats\",\"resources\":["
+      "{\"name\":\"visibility\",\"type\":\"image\",\"extent\":{"
+      "\"mode\":\"fixed\",\"width\":4,\"height\":4},\"format\":"
+      "\"R32G32_UINT\",\"usage\":[\"COLOR_ATTACHMENT\",\"STORAGE\"]},"
+      "{\"name\":\"normal\",\"type\":\"image\",\"extent\":{"
+      "\"mode\":\"fixed\",\"width\":4,\"height\":4},\"format\":"
+      "\"R16G16_SNORM\",\"usage\":[\"SAMPLED\",\"STORAGE\"]}],"
+      "\"passes\":[]}";
+  VkrRgJsonGraph graph = {0};
+  assert(rg_barrier_test_load_json(&allocator, source, &graph));
+  assert(graph.resources.length == 2u);
+  assert(graph.resources.data[0].image.format ==
+         VKR_TEXTURE_FORMAT_R32G32_UINT);
+  assert(graph.resources.data[1].image.format ==
+         VKR_TEXTURE_FORMAT_R16G16_SNORM);
+
+  VkrTextureFormatInfo info = {0};
+  assert(vkr_texture_format_get_info(VKR_TEXTURE_FORMAT_R32G32_UINT, &info));
+  assert(info.channel_count == 2u && info.bytes_per_block == 8u);
+  assert(vkr_texture_format_get_info(VKR_TEXTURE_FORMAT_R16G16_SNORM, &info));
+  assert(info.channel_count == 2u && info.bytes_per_block == 4u);
+
+  vkr_rg_json_destroy(&graph);
+  arena_destroy(arena);
+  printf("  test_deferred_image_formats PASSED\n");
 }
 
 static void test_same_layout_write_then_read_emits_barrier(void) {
@@ -691,7 +1022,14 @@ static void test_frame_allocator_reclaims_authored_passes(void) {
 bool32_t run_render_graph_barrier_tests() {
   printf("--- Running RenderGraph barrier tests... ---\n");
 
+  test_resource_instance_domains();
   test_image_access_is_write();
+  test_json_bindings_and_condition_parity();
+  test_conflicting_runtime_bindings_are_rejected();
+  test_typed_executor_and_direct_dispatch_contract();
+  test_indirect_dispatch_dependency_contract();
+  test_json_mip_chain_and_subresource_uses();
+  test_deferred_image_formats();
   test_frame_allocator_reclaims_authored_passes();
   test_main_graph_declares_transmission_stages();
   test_subresource_range_resolve();

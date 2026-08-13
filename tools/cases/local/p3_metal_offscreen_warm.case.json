@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "id": "local.p3.metal.offscreen_warm",
+  "suite": "local",
+  "description": "Focused warm-cache P3 Metal megabuffer and table-driven forward witness.",
+  "scene": "assets/scenes/sponza.scene.json",
+  "seed": 1,
+  "resolution": [640, 480],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 2,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": { "warmup": 20, "measure": 3 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "backend": "metal",
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [-1.5, 0, 17],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.1,
+    "far_plane": 500
+  },
+  "assertions": [
+    { "metric": "draw.world.calls_issued", "stat": "min", "min": 1 },
+    { "metric": "geometry.megabuffer.live_bytes", "stat": "min", "min": 1 },
+    { "metric": "geometry.megabuffer.rejected_publications_total", "stat": "max", "max": 0 }
+  ]
+}
