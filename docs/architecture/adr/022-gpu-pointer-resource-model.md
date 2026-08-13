@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-08
+updated: 2026-08-13
 authority: adr
 ---
 
@@ -33,6 +33,14 @@ native texture references once per frame. Focused Metal stage validators have
 been retired: CPU tests own deterministic resource/lifetime and lowering
 invariants, while backend-pinned harness snapshots own integrated production
 renderer and pixel evidence.
+
+Deferred visibility-buffer P3 extends the reflected shared ABI with pinned
+geometry, candidate-draw, and visible-draw rows. Both selected implementations
+publish triangle-list geometry into aligned u32-indexed vertex/index
+megabuffers, replace generations without a frame-path wait, and retire the
+predecessor only after its recorded submit completes. The retained forward
+shader consumes the table-shaped root while GPU culling remains future P4/P5
+work.
 
 ## Context
 

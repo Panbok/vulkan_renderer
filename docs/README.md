@@ -86,7 +86,7 @@ owning document status in the same change.
 | [event-payload-lifetime-and-resize-mailbox.md](architecture/event-payload-lifetime-and-resize-mailbox.md) | implemented | Stable event payload copies and lock-free resize mailbox |
 | [bindless-gpu-pointer-renderer-spec.md](architecture/bindless-gpu-pointer-renderer-spec.md) | partial | Metal 4 Stages 0–5 and modern Vulkan through V7 ship as the two selected strategies. Bindless Vulkan is the sole Vulkan renderer, the legacy migration surface is removed, cross-platform shared-core witnesses pass, and the post-V7 target Windows correctness rerun passes; Linux remains unsupported |
 | [bindless-vulkan-backend-spec.md](architecture/bindless-vulkan-backend-spec.md) | implemented | Windows V0–V7 end state: authored graph, full pass/IBL path, shared asynchronous capture, timestamps, lifecycle, metrics, cache, selection, and audited Vulkan 1.2 deletion. Historical V0/V3 executables and fixture-only walking/diagnostic plumbing are removed; production harness and native Debug/Release validation pass; no performance claim is inferred |
-| [bindless-renderer-audit-spec.md](architecture/bindless-renderer-audit-spec.md) | implemented | Static audit and implementation record for both selected backends and the shared GPU cores. Recommendations 1–11 are implemented, including the Vulkan unit split, shared lighting/IBL/transmission flags, immutable GPU material rows, 432-byte pass roots, and 32-byte draw roots. Windows CPU/SPIR-V/runtime-reflection evidence and exact captures pass; native Apple M1 Pro reflection, focused Metal API/GPU validation, and exact text/picking captures close the cross-platform correctness gate. No performance claim is inferred |
+| [bindless-renderer-audit-spec.md](architecture/bindless-renderer-audit-spec.md) | implemented | Static audit and implementation record for both selected backends and the shared GPU cores. Recommendations 1–11 are implemented, including the Vulkan unit split, shared lighting/IBL/transmission flags, immutable GPU material rows, 432-byte pass roots, and the reflected 48-byte table-driven draw roots introduced by deferred P3. Windows CPU/SPIR-V/runtime-reflection evidence and exact captures pass for the audited pre-P3 root; native Apple M1 Pro reflection and focused Metal API validation pass for P3, while its Vulkan-native/pixel evidence remains open. No performance claim is inferred |
 
 ### Architecture Decision Records
 
@@ -118,11 +118,13 @@ owning document status in the same change.
 | [024](architecture/adr/024-shared-bindless-gpu-cores.md) | implemented | Memory, submit-ring, ABI, slot-table, and capture-ring cores have real Metal and Vulkan callers with cross-platform regression witnesses |
 | [025](architecture/adr/025-selected-renderer-implementation-strategy.md) | accepted | One coarse selected renderer strategy for Metal and bindless Vulkan, replacing the backend-type ladder and legacy adaptor |
 | [026](architecture/adr/026-vulkan-1-2-retirement.md) | implemented | Vulkan 1.2 backend, shaders, legacy frontend model, interface, and graph migration residue removed under explicit owner authorization |
+| [028](architecture/adr/028-gpu-driven-deferred-visibility-buffer.md) | proposed; P0-P3 foundations implemented | GPU-driven deferred visibility buffer and G-buffer for opaque, cutout, and transmissive geometry; graph/lifetime/megabuffer foundations ship, while GPU submission and deferred rendering remain proposed; ADR-019 lighting retained |
 
 ## Rendering
 
 | Document | Status | Purpose |
 |---|---|---|
+| [deferred-visibility-buffer/SPEC.md](rendering/deferred-visibility-buffer/SPEC.md) | proposed; P0-P3 foundations implemented | GPU-driven deferred visibility-buffer and G-buffer design. Graph, lifetime, format, ABI, and megabuffer foundations ship; P4+ rendering features remain proposed. Rationale in [ADR-028](architecture/adr/028-gpu-driven-deferred-visibility-buffer.md) |
 | [render-graph-design.md](rendering/render-graph-design.md) | partial | Access/subresource synchronization implemented; IBL bake coverage remains incomplete |
 | [render-graph-schema.json](rendering/render-graph-schema.json) | — | JSON schema for `assets/render_graphs/*.rendergraph.json` |
 | [stateless_renderer/stateless_renderer_spec.md](rendering/stateless_renderer/stateless_renderer_spec.md) | partial | Packet API design; see ADR-004 for the real boundary |

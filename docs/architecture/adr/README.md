@@ -50,6 +50,7 @@ Considered → Revisit When**.
 | [ADR-024](024-shared-bindless-gpu-cores.md) | Backend-neutral memory, submit-ring, ABI, slot-table, and capture-ring cores extracted with real Metal and Vulkan callers | Accepted |
 | [ADR-025](025-selected-renderer-implementation-strategy.md) | One selected renderer implementation strategy replacing the backend-type ladder | Accepted |
 | [ADR-026](026-vulkan-1-2-retirement.md) | Vulkan 1.2 retirement and bindless-only end state | Accepted |
+| [ADR-028](028-gpu-driven-deferred-visibility-buffer.md) | GPU-driven deferred visibility-buffer rendering | Proposed; P0-P3 foundations implemented |
 
 ## Relationship to the Specification
 

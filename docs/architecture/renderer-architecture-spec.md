@@ -350,7 +350,7 @@ restricted to specular reflection rays.
 |---|---|---|
 | Selected renderer implementation | Implemented | One coarse `VkrRendererImpl` strategy selects Metal or bindless Vulkan once; no behavior ladder or legacy adaptor remains |
 | Packet submission | Implemented, partial | Versioned/validated with a real cancel path, but ordered and state-mutating |
-| JSON render graph | Implemented, partial | Scheduling/culling/timing; access- and subresource-aware barriers for declared resources; IBL bake work remains undeclared |
+| JSON render graph | Implemented, partial | Scheduling/culling/timing; declared binding resolution; typed direct/indirect compute descriptors; realized lifetime-aware buffers; access-, indirect-, and subresource-aware barriers; authored mip chains and per-mip views; IBL bake work remains undeclared |
 | SPIR-V reflection | Implemented in bindless Vulkan | Recursive physical-storage-buffer and packet ABI validation; no frontend shader manifests or reflection-driven pipeline system remains |
 | Pipeline cache | Implemented per backend | Disk-backed bindless Vulkan driver cache and Metal pipeline archive |
 | Metrics registry and snapshot export | Implemented | Bounded typed slots, MPSC cold-event ring, triple-buffered snapshots, renderer catalog/validity, explicit GPU allocation-owner aggregates, metrics-backed HUD, atomic `--metrics-json`, and harness aggregation |
@@ -366,9 +366,10 @@ restricted to specular reflection rays.
 | CPU frustum culling | Implemented | Per-submesh; camera and union-of-cascade light visibility classified independently; rejects ~37% on San Miguel, 0% on Sponza |
 | Draw batching | Implemented | Opaque draws merge by complete compatible state; local-probe descriptors prevent unsafe world instancing across positions |
 | Multi-draw indirect | Implementation-owned | The retired generic indirect-draw subsystem is absent; selected implementations choose their native submission strategy from packet draws |
-| Compute dispatch | Not exercised | “compute” JSON passes currently orchestrate graphics/CPU work |
+| Compute dispatch | Implemented foundation, not yet exercised by a production kernel | Typed executors carry validated direct or indirect launch descriptors without per-frame name lookup; Metal and Vulkan lower both forms, while the first production GPU cull kernel remains P4/P5 work |
 | Device-memory suballocation | Implemented | Bindless Vulkan uses keyed DEVICE, UPLOAD, and READBACK pools backed by `vkr_gpu_memory`; Metal uses the same range/submit cores through its placement adapter. Logical and physical totals, peaks, retirement, failure classes, and capacity lower into renderer metrics. |
-| Bindless resource model | Implemented | Metal 4 and Vulkan 1.4 use GPU-addressed buffers, backend-native texture/sampler rows, completion-gated publication/retirement, authored graph lowering, and shared memory/submit/slot/capture cores. Immutable GPU material rows carry PBR parameters; each non-empty indexed packet pass publishes one 432-byte frame root and each draw references it through a 32-byte draw root. Shared flags give lighting, IBL readiness, and transmission identical shader semantics. Packet version 10 separates visible skybox and lighting IBL sources. Corrected Metal pixels are owner-accepted, though no replacement golden generation is accepted; bindless Vulkan is the sole Vulkan renderer after V7. Native Apple M1 Pro reflection, focused Metal API/GPU validation, and exact text/picking captures now pass for the changed root ABI; the bindless-renderer audit records the evidence. |
+| Bindless resource model | Implemented | Metal 4 and Vulkan 1.4 use GPU-addressed buffers, backend-native texture/sampler rows, completion-gated publication/retirement, authored graph lowering, and shared memory/submit/slot/capture cores. Immutable GPU material rows carry PBR parameters; each non-empty indexed packet pass publishes one 432-byte frame root and each retained draw references geometry/visible tables through a reflected 48-byte draw root. Shared flags give lighting, IBL readiness, and transmission identical shader semantics. Packet version 10 separates visible skybox and lighting IBL sources. Corrected Metal pixels are owner-accepted, though no replacement golden generation is accepted; bindless Vulkan is the sole Vulkan renderer after V7. Native Apple M1 Pro reflection, focused Metal API/GPU validation, and exact text/picking captures now pass for the changed root ABI; the bindless-renderer audit records the evidence. |
+| Deferred visibility-buffer migration | P0-P3 foundations implemented; P4+ absent | Both backend code paths carry binding-addressed graph uses, compute/indirect contracts, overlap-safe graph resources, mip/subresource views, deferred formats, shared geometry/candidate/visible ABIs, fixed candidate/visible capacities, and completion-gated geometry megabuffer generations. Metal Sponza growth and API validation pass; native Vulkan validation and an accepted retained-forward pixel reference remain open evidence gates. No GPU culling, indirect draw stream, visibility buffer, G-buffer, deferred lighting, HZB, or visibility picking ships. |
 | Bindless Vulkan V1–V4 migration | Complete for RX 6700 XT | V1 characterization and V2's selected strategy are complete on macOS and Windows. V3 extracted the memory, submit-ring, and shared ABI cores alongside their production Vulkan callers and passes native window resize with reacquisition and retired-swapchain completion proof. V4 extracted the slot table, added completion-gated asset publication, and moved geometry, staging, images, startup buffers, and readback into keyed dynamic pools with complete logical/physical metrics. Prepared and writable initialization records before the next frame draw, staging retirement uses that submit value, publication dirty ranges flush once per backing buffer, and logical totals return to baseline. MoltenVK cannot execute the descriptor-buffer path. ADR-024's required cross-platform extraction witnesses now pass. |
 | Bindless Vulkan V5–V7 | Implemented; post-V7 target rerun passes | V5 lowers the authored graph to synchronization2/dynamic rendering and implements all packet pass/capture/timing categories. V6 completed selection, cache, lifecycle, metrics, and native RX 6700 XT validation. V7 removed the Vulkan 1.2 path, temporary selector, shaders/manifests, legacy frontend systems, interface/adaptor, and graph residue. CPU and Metal gates pass after deletion; fresh RX 6700 XT Debug/Release whole-graph, synchronization-validation, and GPU-assisted witnesses pass. |
 | HDR/tonemap/post chain | Implemented, initial | RGBA16F fullscreen/editor scene color, packet-carried manual exposure (default `0.30`), ACES-fitted tonemap, and exposure-equivalent canonical HDR capture; automatic exposure and additional post effects are absent |
@@ -484,15 +485,22 @@ and that wait is published as a metric.
 
 Current priorities after V7 are:
 
-1. Decide whether to publish and accept a new Metal golden generation; corrected
+1. Run the P1-P3 resource/command changes through focused native Vulkan
+   validation on a supported Windows target; Vulkan initialization is
+   intentionally unsupported on macOS.
+2. Establish and owner-accept a retained-forward pixel reference for the P3
+   table-driven roots. Local pre-change fixtures did not render their scene
+   geometry and therefore were not a valid parity oracle; no baseline was
+   changed implicitly.
+3. Decide whether to publish and accept a new Metal golden generation; corrected
    Metal pixels are owner-accepted, but the historical generation remains the
    retained reference.
-2. Establish matched Release evidence before making any performance claim about
+4. Establish matched Release evidence before making any performance claim about
    the two surviving implementations or the V7 deletion.
-3. Broaden native Vulkan validation beyond the target RX 6700 XT to the
+5. Broaden native Vulkan validation beyond the target RX 6700 XT to the
    two-/four-image, queue-family, resize/minimize/cancel, interactive-picking,
    and injected-failure matrix named in §10.
-4. Treat Linux as unsupported until its platform integration and native evidence
+6. Treat Linux as unsupported until its platform integration and native evidence
    exist.
 
 The dated items below are a historical closed-work log. Symbols belonging to

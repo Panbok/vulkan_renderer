@@ -1,11 +1,14 @@
 ---
 status: partial
-updated: 2026-07-31
+updated: 2026-08-13
 authority: adr
 ---
 # ADR-002: Compiled Render Graph with Declared Resource Access
 
-**Status:** Accepted (partial)
+**Status:** Accepted (partial). Binding-addressed uses, executable compute
+descriptors, graph buffers, indirect-read synchronization, explicit overlap-safe
+lifetimes, mip chains, and per-subresource image views shipped with deferred
+visibility-buffer phases P0-P2 on 2026-08-13.
 **Supersedes:** the removed `VkrViewSystem` / `VkrLayer` composition path.
 
 ## Context
@@ -48,6 +51,13 @@ Synchronization for declared resources is implemented, with these boundaries:
 
 - declared image accesses reach the backend with access masks and mip/layer
   ranges; same-layout write hazards are preserved;
+- declared buffers are realized per persistent, external, target-image,
+  frame-slot, or history lifetime and are replaced/reused only after the
+  recorded submit completes;
+- storage-write to indirect-read dependencies lower through the authored
+  `DRAW_INDIRECT` stage on Metal and Vulkan;
+- compute passes carry a typed executor plus validated direct or indirect
+  dispatch data; no production GPU kernel exercises the generic path yet;
 - barrier state is tracked per image subresource, and compatible declarations
   within one pass are combined before its pre-barriers are emitted;
 - incompatible same-pass image layouts fail graph compilation;
@@ -58,9 +68,10 @@ Synchronization for declared resources is implemented, with these boundaries:
   still records nested graphics work against resources not declared in the
   graph.
 
-`VKR_RG_RESOURCE_FLAG_TRANSIENT` resources are cached/reused across frames and
-recreated when their resolved descriptions change. They are not currently freed
-after each frame, despite the stale header comment, and they are not aliased.
+Image resources are cached/reused across frames and recreated when their
+resolved descriptions change. They are not currently aliased. Buffers require
+one explicit overlap-safe lifetime class; no default single transient buffer is
+accepted while frames overlap.
 
 ## Consequences
 

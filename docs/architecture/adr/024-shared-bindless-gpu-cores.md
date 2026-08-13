@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-12
+updated: 2026-08-13
 authority: adr
 ---
 
@@ -209,7 +209,7 @@ Metal evidence.
   a behavior-bearing Vulkan slice with Metal renames. The bounded per-module
   sequencing and dual-backend witnesses are what keep that diff reviewable.
 - Two ABI record tables plus one shared table is more structure than one table
-  per backend. It is justified only because the three shared records are
+  per backend. It is justified only because the six shared records are
   genuinely identical; if that stops being true, split them back.
 
 ## Alternatives Considered
@@ -253,7 +253,7 @@ Metal evidence.
   the allocator's data structure is revisited for both backends at once.
 - A third backend appears and needs a fifth shared module, or shows that one of
   these four was not as neutral as it looked.
-- The three shared ABI records stop being identical across backends.
+- The six shared ABI records stop being identical across backends.
 - ADR-020's low-level `VkrGpuInterface` question is reopened because the two
   bindless backends turn out to share more operation-level contracts than the
   coarse strategy in [ADR-025](025-selected-renderer-implementation-strategy.md)

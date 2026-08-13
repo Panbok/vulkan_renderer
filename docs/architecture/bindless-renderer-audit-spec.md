@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-12
+updated: 2026-08-13
 authority: investigation
 ---
 
@@ -88,7 +88,8 @@ This was not a wrong-pixel defect. It was the reason the original audit answered
 **Implemented shape:**
 
 1. Indexed world, shadow, picking, editor, and UI passes allocate one 432-byte
-   frame root per non-empty pass and one 32-byte draw root per draw. Text, skybox, and
+   frame root per non-empty pass and one 48-byte table-driven draw root per draw.
+   Text, skybox, and
    fullscreen entry points retain the legacy 512-byte utility record because
    they do not traverse world material state.
 2. The five per-material `Vec4`s and alpha mode are immutable fields of the
@@ -955,7 +956,7 @@ is evidence for platforms or configurations that were not run.
   conclusion (arrays sized by the wrong capacity) does not depend on the exact
   number.
 - **The original 512-byte root size was initially computed by hand.** The
-  implementation now pins the 432-byte frame root, 32-byte draw root, 144-byte
+  implementation now pins the 432-byte frame root, 48-byte draw root, 144-byte
   Vulkan material row, and retained 512-byte utility root with compile-time and
   reflection checks.
 - **Linux, mesh shaders, device-generated commands, shader objects, and the
