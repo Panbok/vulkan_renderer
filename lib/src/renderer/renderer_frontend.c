@@ -573,8 +573,18 @@ renderer_impl_metal_initialize(void *state, VkrWindow *window, uint32_t width,
   (void)device_requirements;
   RendererFrontend *renderer = state;
 #if defined(PLATFORM_APPLE)
+  const bool8_t deferred_enabled =
+      vkr_renderer_env_enabled("VKR_DEFERRED_ENABLED");
+  const bool8_t shader_validation =
+      vkr_renderer_env_enabled("MTL_SHADER_VALIDATION");
+  /* Full-resolution deferred intermediates scale with the completion-slot
+     count. Two slots keep the placement heap plus scene assets below Metal's
+     recommended working set on the supported M1 Pro without serializing the
+     GPU to a single slot. Shader validation retains the same bounded topology.
+   */
   const uint32_t frame_slot_count =
-      vkr_renderer_env_enabled("MTL_SHADER_VALIDATION") ? 2u : 3u;
+      deferred_enabled || shader_validation ? 2u : 3u;
+  const uint64_t placement_heap_size = deferred_enabled ? GB(7) : GB(6);
   const uint32_t capture_capacity = backend_config->capture_ring_capacity > 0
                                         ? backend_config->capture_ring_capacity
                                         : frame_slot_count;
@@ -592,7 +602,7 @@ renderer_impl_metal_initialize(void *state, VkrWindow *window, uint32_t width,
               ? VKR_METAL_PACKET_TARGET_OFFSCREEN
               : VKR_METAL_PACKET_TARGET_WINDOW,
       .metal_layer = window ? vkr_window_get_metal_layer(window) : NULL,
-      .heap_size = GB(6),
+      .heap_size = placement_heap_size,
       .upload_ring_size = MB(768),
       .readback_ring_size = MB(96),
       .frame_slot_count = frame_slot_count,
@@ -602,7 +612,7 @@ renderer_impl_metal_initialize(void *state, VkrWindow *window, uint32_t width,
           vkr_renderer_env_enabled("VKR_METAL_SYNCHRONOUS_VALIDATION"),
       .srgb_output = true_v,
       .convert_vulkan_clip_y = true_v,
-      .deferred_enabled = vkr_renderer_env_enabled("VKR_DEFERRED_ENABLED"),
+      .deferred_enabled = deferred_enabled,
       .hzb_enabled = !vkr_renderer_env_enabled("VKR_HZB_DISABLED"),
       .max_images = 128,
       .max_passes = 64,
