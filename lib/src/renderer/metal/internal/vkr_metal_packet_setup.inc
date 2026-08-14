@@ -413,14 +413,12 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
         "vkr_metal_packet_vbuffer_fragment", MTLPixelFormatRG32Uint, false_v,
         VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_DRAW_ROOT,
         true_v, @"VKR Metal packet opaque visibility buffer");
-    renderer->transmission_vbuffer_pipeline =
-        vkr_metal_packet_create_pipeline(
-            renderer, slang, "vkr_metal_packet_vertex", fragment,
-            "vkr_metal_packet_transmission_vbuffer_fragment",
-            MTLPixelFormatRG32Uint, false_v,
-            VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
-            VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
-            @"VKR Metal packet transmission peel visibility buffer");
+    renderer->transmission_vbuffer_pipeline = vkr_metal_packet_create_pipeline(
+        renderer, slang, "vkr_metal_packet_vertex", fragment,
+        "vkr_metal_packet_transmission_vbuffer_fragment",
+        MTLPixelFormatRG32Uint, false_v, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+        VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
+        @"VKR Metal packet transmission peel visibility buffer");
     if (renderer->transmission_vbuffer_pipeline &&
         !vkr_metal_packet_validate_abi_binding(
             @"VKR Metal packet transmission peel visibility buffer",
@@ -1075,9 +1073,16 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
       (config->target_kind == VKR_METAL_PACKET_TARGET_WINDOW &&
        !config->metal_layer))
     return false_v;
+  /* A replacement is created before the current generation retires. With
+     three command slots, one still-in-flight instance from the preceding
+     generation can also survive until that slot is reacquired. */
+  const uint64_t graph_instances_per_resource =
+      2u * config->frame_slot_count +
+      (config->frame_slot_count > 2u ? config->frame_slot_count - 2u : 0u);
+  const uint64_t graph_allocation_capacity =
+      (uint64_t)config->max_images * graph_instances_per_resource * 2u;
   const uint64_t memory_record_capacity =
-      (uint64_t)config->max_images * (1u + 2u * config->frame_slot_count) +
-      (uint64_t)config->max_meshes * 2u +
+      graph_allocation_capacity + (uint64_t)config->max_meshes * 2u +
       (uint64_t)config->max_material_rows * 4u + config->max_textures + 3u;
   if (memory_record_capacity >= UINT32_MAX)
     return false_v;
@@ -1151,6 +1156,7 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
         vkr_metal_packet_render_passes_bytes(renderer),
         vkr_metal_packet_command_slots_bytes(renderer),
         vkr_metal_packet_timing_results_bytes(renderer),
+        vkr_metal_packet_retired_image_views_bytes(renderer),
     };
     uint64_t record_total = KB(64);
     bool8_t record_size_valid = true_v;
@@ -1192,12 +1198,14 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
         vkr_metal_packet_record_alloc(records, record_bytes[10], true_v);
     renderer->completed_timing_results =
         vkr_metal_packet_record_alloc(records, record_bytes[11], true_v);
+    renderer->retired_image_views =
+        vkr_metal_packet_record_alloc(records, record_bytes[12], true_v);
     if (!renderer->images || !renderer->graph_buffers ||
         !renderer->graph_buffer_instances || !renderer->meshes ||
         !renderer->submeshes || !renderer->packet_materials ||
         !renderer->textures || !renderer->samplers || !renderer->text_uploads ||
         !renderer->render_passes || !renderer->command_slots ||
-        !renderer->completed_timing_results) {
+        !renderer->completed_timing_results || !renderer->retired_image_views) {
       vkr_metal_packet_renderer_destroy(renderer);
       return false_v;
     }
@@ -1291,6 +1299,12 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
       vkr_metal_packet_renderer_destroy(renderer);
       return false_v;
     }
+    log_info(
+        "Metal placement heap capacity: %llu MiB (driver recommended "
+        "working set: %llu MiB)",
+        (unsigned long long)(config->heap_size / MB(1)),
+        (unsigned long long)(renderer->device.recommendedMaxWorkingSetSize /
+                             MB(1)));
     *out_renderer = renderer;
     return true_v;
   }

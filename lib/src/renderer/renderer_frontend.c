@@ -2494,8 +2494,8 @@ renderer_impl_metal_submit_packet(void *state, const VkrRenderPacket *packet,
   VkrRendererError err =
       vkr_renderer_validate_packet(rf, packet, out_validation_error);
   if (err != VKR_RENDERER_ERROR_NONE) {
-    renderer_impl_metal_cancel_frame(rf);
-    return err;
+    const VkrRendererError cancel_err = renderer_impl_metal_cancel_frame(rf);
+    return cancel_err == VKR_RENDERER_ERROR_NONE ? err : cancel_err;
   }
 #if defined(PLATFORM_APPLE)
   const VkrTextUpdatesPayload *updates = packet->text_updates;
@@ -2663,8 +2663,15 @@ void vkr_renderer_resize(VkrRendererFrontendHandle renderer, uint32_t width,
 
 static VkrRendererError renderer_impl_metal_cancel_frame(void *state) {
   RendererFrontend *renderer = state;
+#if defined(PLATFORM_APPLE)
+  if (!vkr_metal_packet_renderer_cancel_frame(renderer->metal_renderer))
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
   renderer->frame_active = false_v;
   return VKR_RENDERER_ERROR_NONE;
+#else
+  (void)renderer;
+  return VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+#endif
 }
 
 static VkrRendererError renderer_impl_bindless_cancel_frame(void *state) {

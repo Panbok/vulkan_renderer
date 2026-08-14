@@ -65,10 +65,14 @@ vkr_internal Mat4 vkr_metal_packet_clip_matrix(bool8_t convert, Mat4 matrix) {
   return matrix;
 }
 
-typedef struct VkrMetalPacketImageInstance {
-  VkrMetalTextureResource resource;
+typedef struct VkrMetalPacketImageViews {
   void *mip_views[VKR_METAL_PACKET_MAX_TEXTURE_MIPS];
   void *layer_views[VKR_METAL_PACKET_MAX_TEXTURE_LAYERS];
+} VkrMetalPacketImageViews;
+
+typedef struct VkrMetalPacketImageInstance {
+  VkrMetalTextureResource resource;
+  VkrMetalPacketImageViews views;
   uint64_t last_use_submit_value;
   uint64_t history_producer_submit_value;
   uint64_t history_world_epoch;
@@ -88,6 +92,12 @@ typedef struct VkrMetalPacketImage {
   bool8_t live;
   bool8_t external;
 } VkrMetalPacketImage;
+
+typedef struct VkrMetalPacketRetiredImageViews {
+  VkrMetalPacketImageViews views;
+  uint64_t last_use_submit_value;
+  bool8_t live;
+} VkrMetalPacketRetiredImageViews;
 
 typedef struct VkrMetalPacketGraphBufferInstance {
   VkrMetalBufferResource resource;
@@ -275,6 +285,8 @@ struct VkrMetalPacketRenderer {
   VkrDMemory record_memory;
   VkrAllocator record_allocator;
   VkrMetalPacketImage *images;
+  VkrMetalPacketRetiredImageViews *retired_image_views;
+  uint64_t retired_image_view_count;
   VkrMetalPacketGraphBuffer *graph_buffers;
   VkrMetalPacketGraphBufferInstance *graph_buffer_instances;
   VkrMetalPacketMesh *meshes;
@@ -464,6 +476,10 @@ VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_command_slots_bytes,
 VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_timing_results_bytes,
                              completed_timing_results,
                              renderer->command_slot_count)
+VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_retired_image_views_bytes,
+                             retired_image_views,
+                             (uint64_t)renderer->max_images *
+                                 renderer->command_slot_count)
 
 #undef VKR_METAL_PACKET_ARRAY_BYTES
 

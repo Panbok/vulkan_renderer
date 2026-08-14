@@ -83,6 +83,9 @@ static void test_resource_instance_domains(void) {
   assert(vkr_rg_resource_instance_domain(VKR_RG_RESOURCE_FLAG_TRANSIENT |
                                          VKR_RG_RESOURCE_FLAG_PER_IMAGE) ==
          VKR_RG_RESOURCE_INSTANCE_PER_IMAGE);
+  assert(vkr_rg_resource_instance_domain(VKR_RG_RESOURCE_FLAG_PERSISTENT |
+                                         VKR_RG_RESOURCE_FLAG_PER_IMAGE) ==
+         VKR_RG_RESOURCE_INSTANCE_PER_IMAGE);
   printf("  test_resource_instance_domains PASSED\n");
 }
 
@@ -1215,6 +1218,9 @@ static void test_main_graph_declares_transmission_stages(void) {
     } else if (vkr_string8_equals_cstr(&resource->name, "shadow_map")) {
       assert(vkr_string8_equals_cstr(&resource->image.layers_source,
                                      "shadow_map_layer_count"));
+      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_TRANSIENT) != 0u);
+      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_PER_IMAGE) != 0u);
+      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_PERSISTENT) == 0u);
       found_stable_shadow_capacity = true_v;
     }
   }
@@ -1269,9 +1275,70 @@ static void test_main_graph_declares_transmission_stages(void) {
     found++;
   }
   assert(found == ArrayCount(picking_deferred_ordered));
+
   vkr_rg_json_destroy(&graph);
   arena_destroy(arena);
   printf("  test_main_graph_declares_transmission_stages PASSED\n");
+}
+
+static void test_main_graph_fits_runtime_pass_capacity(void) {
+  printf("  Running test_main_graph_fits_runtime_pass_capacity...\n");
+  Arena *arena = arena_create(MB(16), MB(2));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+
+  VkrRgJsonGraph graph = {0};
+  assert(vkr_rg_json_load_file(
+      &allocator, "assets/render_graphs/main.rendergraph.json", &graph));
+  VkrRgExecutorRegistry registry = {0};
+  assert(vkr_rg_executor_registry_init(&registry, &allocator));
+  uint32_t executor_id = 1u;
+  for (uint64_t i = 0u; i < graph.passes.length; ++i) {
+    VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph.passes, i);
+    if (!pass || vkr_rg_executor_registry_find(&registry, pass->execute))
+      continue;
+    const VkrRgPassExecutor executor = {
+        .name = pass->execute,
+        .id = executor_id++,
+        .type = (VkrRgPassType)pass->type,
+        .execute = rg_barrier_test_execute,
+    };
+    assert(vkr_rg_executor_registry_register(&registry, &executor));
+  }
+  assert(vkr_rg_json_bind_executors(&graph, &registry));
+
+  VkrRenderGraph *runtime = vkr_rg_create(&allocator);
+  assert(runtime);
+  const VkrRenderGraphFrameInfo frame = {
+      .target_width = 3840u,
+      .target_height = 2160u,
+      .window_width = 3840u,
+      .window_height = 2160u,
+      .viewport_width = 3840u,
+      .viewport_height = 2160u,
+      .target_color_format = VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB,
+      .target_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
+      .shadow_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
+      .shadow_map_size = 2048u,
+      .shadow_map_layer_count = 4u,
+      .shadow_cascade_count = 4u,
+      .hzb_reduce_pass_count = 11u,
+      .deferred_enabled = true_v,
+      .transmission_pending = true_v,
+      .timing_enabled = true_v,
+      .picking_pending = true_v,
+  };
+  vkr_rg_begin_frame(runtime, &frame);
+  assert(vkr_rg_build_from_json(runtime, &graph, &frame));
+  assert(runtime->passes.length <= 64u);
+  assert(vkr_rg_compile_schedule(runtime));
+  vkr_rg_end_frame(runtime);
+
+  vkr_rg_destroy(runtime);
+  vkr_rg_executor_registry_destroy(&registry);
+  vkr_rg_json_destroy(&graph);
+  arena_destroy(arena);
+  printf("  test_main_graph_fits_runtime_pass_capacity PASSED\n");
 }
 
 static void test_frame_allocator_reclaims_authored_passes(void) {
@@ -1343,6 +1410,7 @@ bool32_t run_render_graph_barrier_tests() {
   test_deferred_image_formats();
   test_frame_allocator_reclaims_authored_passes();
   test_main_graph_declares_transmission_stages();
+  test_main_graph_fits_runtime_pass_capacity();
   test_subresource_range_resolve();
   test_same_layout_write_then_read_emits_barrier();
   test_explicit_stage_and_subresource_dependency();

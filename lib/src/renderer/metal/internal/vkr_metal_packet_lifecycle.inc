@@ -77,12 +77,25 @@ bool8_t vkr_metal_packet_renderer_wait_idle(VkrMetalPacketRenderer *renderer) {
     }
     vkr_capture_ring_collect(&renderer->capture_ring,
                              renderer->completion.signaledValue);
+    vkr_metal_packet_collect_retired_image_views(
+        renderer, renderer->completion.signaledValue);
     return vkr_metal_memory_device_collect(
                renderer->memory, renderer->completion.signaledValue, NULL) ==
                VKR_METAL_MEMORY_STATUS_OK &&
            vkr_metal_material_table_device_collect(
                renderer->materials, renderer->completion.signaledValue, NULL) ==
                VKR_METAL_MATERIAL_STATUS_OK;
+  }
+  return false_v;
+}
+
+bool8_t
+vkr_metal_packet_renderer_cancel_frame(VkrMetalPacketRenderer *renderer) {
+  if (!renderer || !renderer->frame_prepared)
+    return false_v;
+  if (@available(macOS 26.0, *)) {
+    vkr_metal_packet_finish_frame(renderer, false_v, false_v);
+    return true_v;
   }
   return false_v;
 }
@@ -221,12 +234,9 @@ bool8_t vkr_metal_packet_renderer_drain(
   }
   for (uint32_t i = 0; i < renderer->max_images; ++i) {
     VkrMetalPacketImage *slot = &renderer->images[i];
-    for (uint32_t instance = 0u; slot->live && instance < slot->instance_count;
-         ++instance) {
-      if (!vkr_metal_packet_retire_image_instance(renderer,
-                                                  &slot->instances[instance]))
-        return false_v;
-    }
+    if (slot->live && !vkr_metal_packet_retire_image_instances(
+                          renderer, slot->instances, slot->instance_count))
+      return false_v;
     *slot = (VkrMetalPacketImage){0};
   }
   for (uint32_t i = 0; i < renderer->max_images; ++i) {
@@ -234,16 +244,9 @@ bool8_t vkr_metal_packet_renderer_drain(
     VkrMetalPacketGraphBufferInstance *instances =
         &renderer->graph_buffer_instances[(uint64_t)i *
                                           renderer->command_slot_count];
-    for (uint32_t instance = 0u; slot->live && instance < slot->instance_count;
-         ++instance) {
-      if (instances[instance].live &&
-          vkr_metal_memory_device_retire(
-              renderer->memory, instances[instance].resource.handle,
-              instances[instance].last_use_submit_value) !=
-              VKR_METAL_MEMORY_STATUS_OK)
-        return false_v;
-      instances[instance] = (VkrMetalPacketGraphBufferInstance){0};
-    }
+    if (slot->live && !vkr_metal_packet_retire_graph_buffer_instances(
+                          renderer, instances, slot->instance_count))
+      return false_v;
     *slot = (VkrMetalPacketGraphBuffer){0};
   }
   if (vkr_metal_material_table_device_collect(renderer->materials,

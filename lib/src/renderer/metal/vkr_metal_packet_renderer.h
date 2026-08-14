@@ -282,6 +282,10 @@ bool8_t vkr_metal_packet_renderer_prepare_frame(
     VkrMetalPacketRenderer *renderer,
     const VkrRenderGraphFrameInfo *frame_info);
 
+/** Releases a prepared drawable and command slot that were not submitted. */
+bool8_t
+vkr_metal_packet_renderer_cancel_frame(VkrMetalPacketRenderer *renderer);
+
 /**
  * Builds and schedules the authored graph, realizes its Metal resources, and
  * executes one packet. Registered meshes/materials are resolved from numeric

@@ -496,8 +496,8 @@ vkr_metal_packet_pass_texture(VkrMetalPacketRenderer *renderer,
   if (use->has_slice && use->slice.mip_level == 0u &&
       use->slice.mip_count == 1u && use->slice.layer_count == 1u &&
       use->slice.base_layer < VKR_METAL_PACKET_MAX_TEXTURE_LAYERS &&
-      instance->layer_views[use->slice.base_layer])
-    return (id<MTLTexture>)instance->layer_views[use->slice.base_layer];
+      instance->views.layer_views[use->slice.base_layer])
+    return (id<MTLTexture>)instance->views.layer_views[use->slice.base_layer];
   return (id<MTLTexture>)instance->resource.metal_texture;
 }
 
@@ -905,8 +905,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_transmission_coverage(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     id<MTL4ComputeCommandEncoder> encoder, VkrMetalPacketFrameUpload *upload)
     API_AVAILABLE(macos(26.0)) {
-  id<MTLTexture> visibility =
-      vkr_metal_packet_pass_texture(renderer, pass, 0u);
+  id<MTLTexture> visibility = vkr_metal_packet_pass_texture(renderer, pass, 0u);
   VkrMetalPacketGraphBufferInstance *state =
       vkr_metal_packet_pass_buffer(renderer, pass, 1u);
   const VkrRgImageUse *use = vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
@@ -1069,8 +1068,8 @@ vkr_internal bool8_t vkr_metal_packet_encode_gpu_draws(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrRenderPacket *packet, id<MTL4RenderCommandEncoder> encoder,
     id<MTLRenderPipelineState> pipeline, bool8_t count_as_world_draws,
-    VkrMetalPacketFrameUpload *upload,
-    VkrMetalPacketResult *result) API_AVAILABLE(macos(26.0)) {
+    VkrMetalPacketFrameUpload *upload, VkrMetalPacketResult *result)
+    API_AVAILABLE(macos(26.0)) {
   VkrMetalPacketGraphBufferInstance *state =
       vkr_metal_packet_pass_buffer(renderer, pass, 2u);
   const bool8_t transmission = vkr_metal_packet_graph_pass_is(
@@ -1084,9 +1083,8 @@ vkr_internal bool8_t vkr_metal_packet_encode_gpu_draws(
     const VkrRgImageUse *previous_depth_use =
         vkr_rg_pass_find_image_use(&pass->desc, 3u, 0u);
     id<MTLTexture> previous_depth =
-        previous_depth_use
-            ? vkr_metal_packet_pass_texture(renderer, pass, 3u)
-            : nil;
+        previous_depth_use ? vkr_metal_packet_pass_texture(renderer, pass, 3u)
+                           : nil;
     uint64_t peel_root_gpu = 0u;
     VkrMetalPacketTransmissionPeelRoot *peel =
         vkr_metal_packet_next_root(upload, sizeof(*peel), &peel_root_gpu);
@@ -1445,6 +1443,8 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
           : 0u;
   const uint64_t completed_submit_value = renderer->completion.signaledValue;
   vkr_capture_ring_collect(&renderer->capture_ring, completed_submit_value);
+  vkr_metal_packet_collect_retired_image_views(renderer,
+                                               completed_submit_value);
   uint32_t collected = 0;
   if (vkr_metal_memory_device_collect(renderer->memory, completed_submit_value,
                                       &collected) !=
@@ -1460,15 +1460,31 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   vkr_rg_begin_frame(renderer->graph, &renderer->prepared_frame);
   vkr_rg_set_packet(renderer->graph, packet);
   if (!vkr_rg_build_from_json(renderer->graph, &renderer->json_graph,
-                              &renderer->prepared_frame) ||
-      !vkr_rg_compile_schedule(renderer->graph) ||
-      renderer->graph->passes.length > renderer->max_passes ||
-      !vkr_metal_packet_realize_images(renderer) ||
-      !vkr_metal_packet_select_hzb_history(renderer) ||
-      !vkr_metal_packet_realize_buffers(renderer)) {
-    log_error("Metal packet stage failed: graph build/compile/realize");
-    vkr_metal_packet_finish_frame(renderer, true_v, false_v);
-    return false_v;
+                              &renderer->prepared_frame)) {
+    log_error("Metal packet stage failed: graph build");
+    goto graph_failure;
+  }
+  if (!vkr_rg_compile_schedule(renderer->graph)) {
+    log_error("Metal packet stage failed: graph compile");
+    goto graph_failure;
+  }
+  if (renderer->graph->passes.length > renderer->max_passes) {
+    log_error("Metal packet stage failed: %llu passes exceed capacity %u",
+              (unsigned long long)renderer->graph->passes.length,
+              renderer->max_passes);
+    goto graph_failure;
+  }
+  if (!vkr_metal_packet_realize_images(renderer)) {
+    log_error("Metal packet stage failed: image realization");
+    goto graph_failure;
+  }
+  if (!vkr_metal_packet_select_hzb_history(renderer)) {
+    log_error("Metal packet stage failed: HZB history selection");
+    goto graph_failure;
+  }
+  if (!vkr_metal_packet_realize_buffers(renderer)) {
+    log_error("Metal packet stage failed: buffer realization");
+    goto graph_failure;
   }
 
   const bool8_t picking = renderer->prepared_frame.picking_pending;
@@ -2147,4 +2163,8 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   vkr_metal_packet_detach_active_command_slot(renderer);
   vkr_metal_packet_finish_frame(renderer, true_v, true_v);
   return true_v;
+
+graph_failure:
+  vkr_metal_packet_finish_frame(renderer, true_v, false_v);
+  return false_v;
 }
