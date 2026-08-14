@@ -1,6 +1,6 @@
 ---
 name: vkr-validation
-description: Test and validation gates for the VKR renderer. Use when deciding whether to add a unit test, running the test suite, hunting an intermittent failure, running Vulkan validation layers, validating the pipeline cache or the multithreaded backend matrix, or determining what evidence a change needs before it is done.
+description: Test and validation gates for the VKR renderer. Use when deciding whether to add a unit test, running the test suite, hunting an intermittent failure, running Metal or Vulkan validation layers, validating the pipeline cache or the multithreaded backend matrix, or determining what evidence a change needs before it is done.
 ---
 
 # VKR Validation
@@ -15,6 +15,7 @@ touched.
 | Math, containers, memory, ECS, JSON, string, filesystem | Focused test + `./build_test.sh` |
 | A renderer subsystem with CPU-observable behavior | `./build_test.sh` |
 | Anything that records Vulkan commands or touches resource state | `./build_test.sh` + Vulkan validation-layer run |
+| Anything that records Metal commands, uses Metal resources, or changes Metal shaders | `./build_test.sh` + one focused, strictly single-process Metal validation run |
 | Shaders, reflection, pipeline creation | Explicit cold/warm production cache run + validation-layer run |
 | Backend threading, command pools, queue use | `tools/validate_multithreaded_backend_matrix.sh` |
 | A hot path, batching, culling, upload path | All of the above + a Release measurement (`vkr-performance`) |
@@ -56,6 +57,46 @@ exercise:
 For anything that records commands or transitions resources, run the app under
 the Vulkan validation layers and read the output. A green CPU suite is not
 evidence that the Vulkan usage is correct.
+
+## Metal validation is allowed, but strictly single-process
+
+Metal API and shader/GPU validation are valid Debug diagnostic gates. Set the
+variables before the process creates its first Metal device:
+
+```sh
+MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 \
+  ./build_run.sh Debug --renderer metal
+```
+
+- `MTL_DEBUG_LAYER=1` enables Metal API validation.
+- `MTL_SHADER_VALIDATION=1` enables shader/GPU validation.
+- Either variable may be used independently; enabling both is valid for a
+  focused correctness run.
+
+**Hard safety rule:** only one validation-enabled process may create or use a
+Metal device at a time. Never overlap validation-enabled app launches, harness
+renderer children, repetitions, backend matrices, or capture workers. Wait for
+the active renderer process to exit before starting the next one. Concurrent
+validation-enabled Metal renderer processes have been followed by a macOS
+kernel panic, so treat parallel Metal validation as prohibited rather than as a
+performance or reliability tradeoff.
+
+A non-rendering harness parent may supervise exactly one validation-enabled
+renderer child at a time; the safety count is the number of live processes that
+create or use a Metal device. Before a diagnostic launch, check that no prior
+renderer or harness child remains:
+
+```sh
+pgrep -fl 'vkr_harness|vulkan_renderer'
+```
+
+If the check reports a live renderer or an unresolved harness process, do not
+launch another validation run. Do not use Metal shader/GPU validation for broad
+multi-capture or baseline suites. Keep the case to the smallest reproduction.
+
+Validation-enabled timings are never performance evidence. Run baselines and
+performance profiles separately in the normal Release configuration with both
+Metal validation variables unset.
 
 ## When to add a unit test
 

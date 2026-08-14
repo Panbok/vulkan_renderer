@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "id": "local.p18.metal.dual_validation_serial",
+  "suite": "local",
+  "description": "Single-repetition P18 Metal API and shader validation witness.",
+  "scene": "assets/scenes/fixtures/layered_glass.scene.json",
+  "seed": 18,
+  "resolution": [320, 240],
+  "boot": "full",
+  "target": "windowed_hidden",
+  "present": "fifo",
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": { "warmup": 2, "measure": 4 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "backend": "metal",
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [0, 1.4, 5.5],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 60,
+    "near_plane": 0.1,
+    "far_plane": 100
+  }
+}

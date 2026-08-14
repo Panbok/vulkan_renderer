@@ -122,8 +122,9 @@ validation mode enabled. `build_run.sh` warns when it detects either nonzero
 variable. Never run Metal shader/GPU validation across a broad multi-capture or
 baseline suite: a validation-enabled 14-capture snapshot was immediately
 followed by a macOS watchdog kernel panic. This is correlation rather than a
-proven root cause, but it is sufficient reason to keep shader validation to a
-minimal issue reproduction.
+proven root cause. Run exactly one validation-enabled Metal renderer process at
+a time and keep shader validation to a minimal issue reproduction; never launch
+parallel Metal validation children.
 
 The core build/run/test and texture-packing wrappers have `.bat` equivalents.
 The backend-matrix utility is currently POSIX shell only; the C harness is

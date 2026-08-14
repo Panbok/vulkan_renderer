@@ -33,9 +33,13 @@ performance evidence; never compare or profile performance with either mode
 enabled. `build_run.sh` prints a warning whenever it detects a nonzero
 validation variable. Do not run shader/GPU validation across a broad
 multi-capture or baseline suite: a validation-enabled 14-capture snapshot was
-immediately followed by a macOS watchdog kernel panic. That timing does not
-prove causation, but it warrants limiting shader validation to minimal issue
-reproductions.
+immediately followed by a macOS watchdog kernel panic. A later bounded P18
+reproduction was also followed by a 91-second `watchdogd` timeout with
+`MTLCompilerService` active. This remains correlation rather than a proven
+driver root cause. A later minimal P18/P19 run passed with both validators when
+executed serially. Run exactly one validation-enabled Metal renderer process at
+a time, never launch parallel validation children, and keep shader validation
+to the smallest focused case.
 
 The Metal backend bypasses pipeline-archive lookup while shader validation is
 enabled because Apple's validator currently crashes in the Metal 4-to-3
