@@ -13,6 +13,11 @@ not a result.** Ownership, lifetime, and GPU-completion invariants are what make
 a measurement mean anything; a faster frame that reuses a resource before the
 GPU is done with it has measured nothing. Never trade an invariant for a number.
 
+**Branchless by construction.** Validate and normalize at cold boundaries, then
+trust internal data. Hot paths contain no validation, recovery, null-guard, or
+assertion branches. Shape or partition data, or compute cheap derived values, so
+optional cases disappear; never rely on the compiler to remove redundant guards.
+
 ## Project
 
 Renderer and engine framework in C11 with selected Metal 4 and Vulkan 1.4
