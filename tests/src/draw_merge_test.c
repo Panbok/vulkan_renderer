@@ -444,8 +444,8 @@ static void test_shadow_visibility_is_union_of_cascades(void) {
   Vec3 caster = vec3_new(-20.0f, 0.0f, -10.0f);
   assert(vkr_frustum_test_sphere(&cascades[0], caster, 1.0f));
   assert(!vkr_frustum_test_sphere(&cascades[1], caster, 1.0f));
-  uint8_t flags =
-      vkr_visibility_classify(NULL, cascades, 2u, true_v, caster, 1.0f, &stats);
+  uint8_t flags = vkr_visibility_classify(&cascades[0], cascades, 2u, true_v,
+                                          caster, 1.0f, &stats);
   assert((flags & VKR_VISIBLE_SHADOW) != 0);
   assert(stats.objects_culled_shadow == 0);
   printf("  test_shadow_visibility_is_union_of_cascades PASSED\n");
@@ -519,8 +519,8 @@ static void test_merged_runs_have_contiguous_instances(void) {
   VkrInstanceDataGPU instances[6] = {0};
   uint32_t draw_count = 0;
 
-  uint32_t written = vkr_draw_merge_candidates(cands, 6, 0u, draws, &draw_count,
-                                               instances, NULL);
+  uint32_t written =
+      vkr_draw_merge_candidates(cands, 6, 0u, draws, &draw_count, instances);
   assert(written == 6);
   // geom7 x3, geom1 x2, geom2 x1 -> three draws.
   assert(draw_count == 3);
@@ -602,8 +602,8 @@ static void test_binding_context_prevents_unsafe_instancing(void) {
   VkrInstanceDataGPU instances[2] = {0};
   VkrVisibilityStats stats = {0};
   uint32_t draw_count = 0;
-  vkr_draw_merge_candidates(cands, 2, 0u, draws, &draw_count, instances,
-                            &stats);
+  vkr_draw_merge_candidates_measured(cands, 2, 0u, draws, &draw_count,
+                                     instances, &stats);
   assert(draw_count == 2);
   assert(stats.mergeable_opaque_draws == 0);
   printf("  test_binding_context_prevents_unsafe_instancing PASSED\n");
@@ -619,7 +619,7 @@ static void test_merge_of_all_distinct_emits_one_draw_each(void) {
   VkrDrawItem draws[3] = {0};
   VkrInstanceDataGPU instances[3] = {0};
   uint32_t draw_count = 0;
-  vkr_draw_merge_candidates(cands, 3, 0u, draws, &draw_count, instances, NULL);
+  vkr_draw_merge_candidates(cands, 3, 0u, draws, &draw_count, instances);
   assert(draw_count == 3);
   for (uint32_t i = 0; i < 3; ++i) {
     assert(draws[i].instance_count == 1);

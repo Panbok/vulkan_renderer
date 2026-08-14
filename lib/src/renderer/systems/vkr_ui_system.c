@@ -331,8 +331,6 @@ uint32_t vkr_ui_system_prepare_text_draws(RendererFrontend *rf,
                                           VkrUiSystem *system,
                                           VkrPreparedTextDraw *out_draws,
                                           uint32_t capacity) {
-  if (!rf || !system || !out_draws || capacity == 0)
-    return 0;
   vkr_ui_system_refresh_layout(rf, system);
   uint32_t count = 0;
   for (uint64_t i = 0; i < system->text_slots.length; ++i) {

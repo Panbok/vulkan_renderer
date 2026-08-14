@@ -1976,8 +1976,6 @@ bool8_t vkr_texture_destroy(VkrTextureSystem *system, VkrTexture *texture) {
 
 VkrTexture *vkr_texture_system_get_by_handle(VkrTextureSystem *system,
                                              VkrTextureHandle handle) {
-  assert_log(system != NULL, "System is NULL");
-
   if (handle.id == VKR_INVALID_ID)
     return NULL;
 

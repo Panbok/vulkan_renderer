@@ -33,10 +33,7 @@ int vkr_draw_merge_key_compare(const void *lhs, const void *rhs) {
 
 void vkr_draw_measure_merge_opportunity(VkrDrawMergeKey *keys, uint32_t count,
                                         VkrVisibilityStats *stats) {
-  if (!stats) {
-    return;
-  }
-  if (!keys || count == 0) {
+  if (count == 0) {
     stats->distinct_opaque_keys = 0;
     stats->mergeable_opaque_draws = 0;
     stats->largest_mergeable_run = 0;
@@ -107,19 +104,9 @@ uint32_t vkr_draw_merge_candidates(VkrDrawCandidate *candidates, uint32_t count,
                                    uint32_t instance_base,
                                    VkrDrawItem *out_draws,
                                    uint32_t *out_draw_count,
-                                   VkrInstanceDataGPU *out_instances,
-                                   VkrVisibilityStats *stats) {
-  if (out_draw_count) {
-    *out_draw_count = 0;
-  }
-  if (!candidates || count == 0 || !out_draws || !out_instances) {
-    if (stats) {
-      stats->distinct_opaque_keys = 0;
-      stats->mergeable_opaque_draws = 0;
-      stats->largest_mergeable_run = 0;
-      stats->distinct_geometries = 0;
-      stats->distinct_geometry_material_pairs = 0;
-    }
+                                   VkrInstanceDataGPU *out_instances) {
+  *out_draw_count = 0;
+  if (count == 0) {
     return 0;
   }
 
@@ -129,7 +116,6 @@ uint32_t vkr_draw_merge_candidates(VkrDrawCandidate *candidates, uint32_t count,
   uint32_t draw_count = 0;
   uint32_t written = 0;
   uint32_t run_start = 0;
-  uint32_t largest_run = 0;
   for (uint32_t i = 1; i <= count; ++i) {
     const bool8_t same =
         (i < count) && vkr_draw_merge_key_compare(&candidates[i - 1].key,
@@ -139,7 +125,6 @@ uint32_t vkr_draw_merge_candidates(VkrDrawCandidate *candidates, uint32_t count,
     }
 
     const uint32_t run_length = i - run_start;
-    largest_run = run_length > largest_run ? run_length : largest_run;
     // Instance records are emitted in run order, so the whole run occupies
     // [instance_base + written, ... + run_length) and can be drawn at once.
     out_draws[draw_count] = (VkrDrawItem){
@@ -167,27 +152,82 @@ uint32_t vkr_draw_merge_candidates(VkrDrawCandidate *candidates, uint32_t count,
     run_start = i;
   }
 
-  if (out_draw_count) {
-    *out_draw_count = draw_count;
+  *out_draw_count = draw_count;
+  return written;
+}
+
+uint32_t vkr_draw_merge_candidates_measured(
+    VkrDrawCandidate *candidates, uint32_t count, uint32_t instance_base,
+    VkrDrawItem *out_draws, uint32_t *out_draw_count,
+    VkrInstanceDataGPU *out_instances, VkrVisibilityStats *stats) {
+  *out_draw_count = 0;
+  if (count == 0) {
+    stats->distinct_opaque_keys = 0;
+    stats->mergeable_opaque_draws = 0;
+    stats->largest_mergeable_run = 0;
+    stats->distinct_geometries = 0;
+    stats->distinct_geometry_material_pairs = 0;
+    return 0;
   }
-  if (stats) {
-    uint32_t geometries = 1;
-    uint32_t geometry_material_pairs = 1;
-    for (uint32_t i = 1; i < count; ++i) {
-      if (candidates[i].key.geometry != candidates[i - 1].key.geometry) {
-        geometries++;
-      }
-      if (candidates[i].key.geometry != candidates[i - 1].key.geometry ||
-          candidates[i].key.material != candidates[i - 1].key.material) {
-        geometry_material_pairs++;
-      }
+
+  qsort(candidates, count, sizeof(VkrDrawCandidate),
+        vkr_draw_candidate_key_compare);
+
+  uint32_t draw_count = 0;
+  uint32_t written = 0;
+  uint32_t run_start = 0;
+  uint32_t largest_run = 0;
+  uint32_t geometries = 1;
+  uint32_t geometry_material_pairs = 1;
+  for (uint32_t i = 1; i <= count; ++i) {
+    const bool8_t same =
+        (i < count) && vkr_draw_merge_key_compare(&candidates[i - 1].key,
+                                                  &candidates[i].key) == 0;
+    if (same) {
+      continue;
     }
-    stats->distinct_opaque_keys = draw_count;
-    stats->mergeable_opaque_draws = count - draw_count;
-    stats->largest_mergeable_run = largest_run;
-    stats->distinct_geometries = geometries;
-    stats->distinct_geometry_material_pairs = geometry_material_pairs;
+
+    const uint32_t run_length = i - run_start;
+    largest_run = Max(largest_run, run_length);
+    if (i < count) {
+      const bool8_t new_geometry =
+          candidates[i].key.geometry != candidates[i - 1].key.geometry;
+      geometries += new_geometry;
+      geometry_material_pairs +=
+          new_geometry ||
+          candidates[i].key.material != candidates[i - 1].key.material;
+    }
+    out_draws[draw_count] = (VkrDrawItem){
+        .mesh = candidates[run_start].mesh,
+        .geometry = candidates[run_start].geometry,
+        .submesh_index = candidates[run_start].submesh_index,
+        .material =
+            {
+                .id = (uint32_t)(candidates[run_start].key.material >> 32u),
+                .generation = (uint32_t)candidates[run_start].key.material,
+            },
+        .instance_count = run_length,
+        .first_instance = instance_base + written,
+        .sort_key = 0u,
+    };
+    draw_count++;
+
+    for (uint32_t r = run_start; r < i; ++r) {
+      out_instances[instance_base + written] = (VkrInstanceDataGPU){
+          .model = candidates[r].model,
+          .object_id = candidates[r].object_id,
+      };
+      written++;
+    }
+    run_start = i;
   }
+
+  *out_draw_count = draw_count;
+  stats->distinct_opaque_keys = draw_count;
+  stats->mergeable_opaque_draws = count - draw_count;
+  stats->largest_mergeable_run = largest_run;
+  stats->distinct_geometries = geometries;
+  stats->distinct_geometry_material_pairs = geometry_material_pairs;
   return written;
 }
 
@@ -195,7 +235,7 @@ uint32_t vkr_draw_emit_unmerged(const VkrDrawCandidate *candidates,
                                 uint32_t count, uint32_t instance_base,
                                 VkrDrawItem *out_draws,
                                 VkrInstanceDataGPU *out_instances) {
-  if (!candidates || count == 0 || !out_draws || !out_instances) {
+  if (count == 0) {
     return 0;
   }
 
@@ -244,18 +284,19 @@ uint8_t vkr_visibility_classify(const VkrFrustum *camera_frustum,
   stats->objects_tested++;
   if (!bounds_valid) {
     stats->objects_without_bounds++;
-    return (uint8_t)(VKR_VISIBLE_CAMERA | VKR_VISIBLE_SHADOW);
+    return shadow_frustum_count > 0
+               ? (uint8_t)(VKR_VISIBLE_CAMERA | VKR_VISIBLE_SHADOW)
+               : (uint8_t)VKR_VISIBLE_CAMERA;
   }
 
   uint8_t flags = 0;
-  if (!camera_frustum ||
-      vkr_frustum_test_sphere(camera_frustum, center, radius)) {
+  if (vkr_frustum_test_sphere(camera_frustum, center, radius)) {
     flags |= VKR_VISIBLE_CAMERA;
   } else {
     stats->objects_culled_camera++;
   }
 
-  bool8_t shadow_visible = !shadow_frustums || shadow_frustum_count == 0;
+  bool8_t shadow_visible = false_v;
   for (uint32_t i = 0; !shadow_visible && i < shadow_frustum_count; ++i) {
     shadow_visible =
         vkr_frustum_test_sphere(&shadow_frustums[i], center, radius);

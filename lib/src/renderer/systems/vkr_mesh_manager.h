@@ -260,9 +260,9 @@ VkrMesh *vkr_mesh_manager_get(VkrMeshManager *manager, uint32_t index);
  * Live index is a dense list of active mesh-slot entries (0..mesh_count-1).
  *
  * @param manager The mesh manager.
- * @param live_index Index into the active mesh list.
- * @param out_slot Optional pointer to receive the slot index.
- * @return Pointer to mesh, or NULL if invalid.
+ * @param live_index Valid index below vkr_mesh_manager_count().
+ * @param out_slot Required pointer to receive the stable mesh slot.
+ * @return Pointer to the live mesh.
  */
 VkrMesh *vkr_mesh_manager_get_mesh_by_live_index(VkrMeshManager *manager,
                                                  uint32_t live_index,
@@ -336,12 +336,12 @@ bool8_t vkr_mesh_manager_set_render_id(VkrMeshManager *manager, uint32_t index,
                                        uint32_t render_id);
 
 /**
- * @brief Returns number of submeshes for a mesh.
+ * @brief Returns number of submeshes for a live mesh.
  */
 uint32_t vkr_mesh_manager_submesh_count(const VkrMesh *mesh);
 
 /**
- * @brief Returns pointer to a specific submesh.
+ * @brief Returns a submesh using valid live-mesh and submesh indices.
  */
 VkrSubMesh *vkr_mesh_manager_get_submesh(VkrMeshManager *manager,
                                          uint32_t mesh_index,
@@ -403,6 +403,10 @@ void vkr_mesh_manager_release_asset(VkrMeshManager *manager,
  */
 VkrMeshAsset *vkr_mesh_manager_get_asset(VkrMeshManager *manager,
                                          VkrMeshAssetHandle handle);
+
+/** Resolve an asset handle owned by a live mesh instance. */
+VkrMeshAsset *vkr_mesh_manager_get_live_asset(VkrMeshManager *manager,
+                                              VkrMeshAssetHandle handle);
 
 /**
  * @brief Get count of loaded mesh assets.
@@ -515,33 +519,18 @@ VkrMeshInstance *vkr_mesh_manager_get_instance_by_index(VkrMeshManager *manager,
  * Live index is a dense list of active instances (0..instance_count-1).
  *
  * @param manager The mesh manager.
- * @param live_index Index into the active instance list.
- * @param out_slot Optional pointer to receive the slot index.
- * @return Pointer to instance, or NULL if invalid.
+ * @param live_index Valid index below vkr_mesh_manager_instance_count().
+ * @param out_slot Required pointer to receive the stable instance slot.
+ * @return Pointer to the live instance.
  */
 VkrMeshInstance *vkr_mesh_manager_get_instance_by_live_index(
     VkrMeshManager *manager, uint32_t live_index, uint32_t *out_slot);
 
-/**
- * @brief Set model matrix on instance and update world bounds.
- */
-bool8_t vkr_mesh_manager_instance_set_model(VkrMeshManager *manager,
-                                            VkrMeshInstanceHandle instance,
-                                            Mat4 model);
-
-/**
- * @brief Set visibility on instance.
- */
-bool8_t vkr_mesh_manager_instance_set_visible(VkrMeshManager *manager,
-                                              VkrMeshInstanceHandle instance,
-                                              bool8_t visible);
-
-/**
- * @brief Set render_id on instance.
- */
-bool8_t vkr_mesh_manager_instance_set_render_id(VkrMeshManager *manager,
-                                                VkrMeshInstanceHandle instance,
-                                                uint32_t render_id);
+/** Sync scene-owned render state for a live scene-owned instance. */
+void vkr_mesh_manager_instance_sync_render_state(VkrMeshManager *manager,
+                                                 VkrMeshInstanceHandle instance,
+                                                 Mat4 model, uint32_t render_id,
+                                                 bool8_t visible);
 
 /**
  * @brief Get count of live mesh instances.

@@ -7,9 +7,6 @@ vkr_internal Mat4 vkr_camera_calculate_view(const VkrCamera *camera) {
 }
 
 vkr_internal Mat4 vkr_camera_calculate_projection(const VkrCamera *camera) {
-  assert_log(camera != NULL, "Camera is NULL");
-  assert_log(camera->type != VKR_CAMERA_TYPE_NONE, "Camera type is NONE");
-
   if (camera->type == VKR_CAMERA_TYPE_PERSPECTIVE) {
     uint32_t width = camera->cached_window_width;
     uint32_t height = camera->cached_window_height;
@@ -19,8 +16,6 @@ vkr_internal Mat4 vkr_camera_calculate_projection(const VkrCamera *camera) {
       width = window_size.width;
       height = window_size.height;
     }
-    assert_log(width > 0 && height > 0, "Camera size invalid");
-
     if (width == 0 || height == 0) {
       return mat4_identity();
     }
@@ -35,7 +30,6 @@ vkr_internal Mat4 vkr_camera_calculate_projection(const VkrCamera *camera) {
                               camera->near_clip, camera->far_clip);
   }
 
-  assert_log(false, "Unhandled camera type");
   return mat4_identity();
 }
 
@@ -133,9 +127,6 @@ void vkr_camera_system_orthographic_create(VkrCamera *camera, VkrWindow *window,
 }
 
 void vkr_camera_system_update(VkrCamera *camera) {
-  assert_log(camera != NULL, "Camera is NULL");
-  assert_log(camera->type != VKR_CAMERA_TYPE_NONE, "Camera type is NONE");
-
   if (camera->view_dirty) {
     camera->view = vkr_camera_calculate_view(camera);
     camera->view_dirty = false_v;
@@ -148,15 +139,12 @@ void vkr_camera_system_update(VkrCamera *camera) {
 }
 
 void vkr_camera_translate(VkrCamera *camera, Vec3 delta) {
-  assert_log(camera != NULL, "Camera is NULL");
   camera->position = vec3_add(camera->position, delta);
   camera->view_dirty = true_v;
 }
 
 void vkr_camera_rotate(VkrCamera *camera, float32_t yaw_delta,
                        float32_t pitch_delta) {
-  assert_log(camera != NULL, "Camera is NULL");
-
   camera->yaw += yaw_delta;
   camera->pitch = vkr_clamp_f32(camera->pitch + pitch_delta,
                                 VKR_MIN_CAMERA_PITCH, VKR_MAX_CAMERA_PITCH);
@@ -166,7 +154,6 @@ void vkr_camera_rotate(VkrCamera *camera, float32_t yaw_delta,
 
 void vkr_camera_set_pose(VkrCamera *camera, Vec3 position,
                          float32_t yaw_degrees, float32_t pitch_degrees) {
-  assert_log(camera != NULL, "Camera is NULL");
   camera->position = position;
   camera->yaw = yaw_degrees;
   camera->pitch =
@@ -194,25 +181,15 @@ bool8_t vkr_camera_set_perspective_lens(VkrCamera *camera,
 }
 
 void vkr_camera_zoom(VkrCamera *camera, float32_t zoom_delta) {
-  assert_log(camera != NULL, "Camera is NULL");
   camera->zoom = vkr_camera_clamp_zoom(camera->zoom + zoom_delta);
   camera->projection_dirty = true_v;
 }
 
 Mat4 vkr_camera_system_get_view_matrix(const VkrCamera *camera) {
-  assert_log(camera != NULL, "Camera is NULL");
-  assert_log(camera->type != VKR_CAMERA_TYPE_NONE, "Camera type is NONE");
-
-  assert(camera->view_dirty == false_v && "View matrix requested while dirty");
   return camera->view;
 }
 
 Mat4 vkr_camera_system_get_projection_matrix(const VkrCamera *camera) {
-  assert_log(camera != NULL, "Camera is NULL");
-  assert_log(camera->type != VKR_CAMERA_TYPE_NONE, "Camera type is NONE");
-
-  assert(camera->projection_dirty == false_v &&
-         "Projection matrix requested while dirty");
   return camera->projection;
 }
 
@@ -575,7 +552,6 @@ void vkr_camera_registry_update(VkrCameraSystem *system, VkrCameraHandle h) {
 }
 
 void vkr_camera_registry_update_all(VkrCameraSystem *system) {
-  assert_log(system != NULL, "System is NULL");
   for (uint32_t i = 0; i < system->cameras.length; i++) {
     VkrCamera *camera = &system->cameras.data[i];
     if (camera->generation == VKR_INVALID_ID ||
@@ -587,7 +563,6 @@ void vkr_camera_registry_update_all(VkrCameraSystem *system) {
 }
 
 Mat4 vkr_camera_registry_get_view(VkrCameraSystem *system, VkrCameraHandle h) {
-  assert_log(system != NULL, "System is NULL");
   VkrCamera *camera = vkr_camera_registry_get_by_handle(system, h);
   if (!camera) {
     log_error("Camera handle invalid for view (id=%u, generation=%u)", h.id,
@@ -599,7 +574,6 @@ Mat4 vkr_camera_registry_get_view(VkrCameraSystem *system, VkrCameraHandle h) {
 
 Mat4 vkr_camera_registry_get_projection(VkrCameraSystem *system,
                                         VkrCameraHandle h) {
-  assert_log(system != NULL, "System is NULL");
   VkrCamera *camera = vkr_camera_registry_get_by_handle(system, h);
   if (!camera) {
     log_error("Camera handle invalid for projection (id=%u, generation=%u)",
@@ -621,7 +595,6 @@ void vkr_camera_registry_set_active(VkrCameraSystem *system,
 }
 
 VkrCameraHandle vkr_camera_registry_get_active(VkrCameraSystem *system) {
-  assert_log(system != NULL, "System is NULL");
   return system->active_camera;
 }
 
@@ -656,8 +629,6 @@ void vkr_camera_registry_resize_all(VkrCameraSystem *system, uint32_t width,
 
 VkrCamera *vkr_camera_registry_get_by_handle(VkrCameraSystem *system,
                                              VkrCameraHandle h) {
-  assert_log(system != NULL, "System is NULL");
-
   if (h.id == 0 || h.generation == VKR_INVALID_ID) {
     return NULL;
   }

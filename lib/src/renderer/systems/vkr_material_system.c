@@ -16,10 +16,6 @@ typedef struct VkrGizmoMaterialDef {
 VkrMaterialAlphaMode
 vkr_material_system_material_alpha_mode(const VkrMaterialSystem *system,
                                         const VkrMaterial *material) {
-  if (!system || !system->texture_system || !material) {
-    return VKR_MATERIAL_ALPHA_OPAQUE;
-  }
-
   if (material->alpha_mode_explicit) {
     if (material->alpha_mode == VKR_MATERIAL_ALPHA_CUTOUT &&
         material->alpha_cutoff <= 0.0f) {
@@ -85,7 +81,7 @@ vkr_material_system_material_uses_cutout(const VkrMaterialSystem *system,
 bool8_t
 vkr_material_system_material_is_transmissive(const VkrMaterialSystem *system,
                                              const VkrMaterial *material) {
-  if (!material || material->material_type != VKR_MATERIAL_TYPE_PBR) {
+  if (material->material_type != VKR_MATERIAL_TYPE_PBR) {
     return false_v;
   }
   if (material->pbr.transmission_factor > 0.0f) {
@@ -95,9 +91,6 @@ vkr_material_system_material_is_transmissive(const VkrMaterialSystem *system,
       &material->textures[VKR_TEXTURE_SLOT_TRANSMISSION];
   if (!texture->enabled || texture->handle.id == 0) {
     return false_v;
-  }
-  if (!system || !system->texture_system) {
-    return true_v;
   }
   VkrTexture *resolved =
       vkr_texture_system_get_by_handle(system->texture_system, texture->handle);
@@ -133,7 +126,7 @@ vkr_material_system_find_by_name(VkrMaterialSystem *system, const char *name,
   }
 
   VkrMaterial *material = &system->materials.data[entry->id];
-  if (!material || material->id == 0) {
+  if (material->id == 0) {
     return false_v;
   }
 
@@ -146,10 +139,6 @@ vkr_material_system_find_by_name(VkrMaterialSystem *system, const char *name,
 
 vkr_internal void
 vkr_material_system_reset_texture_slots(VkrMaterial *material) {
-  if (!material) {
-    return;
-  }
-
   for (uint32_t i = 0; i < VKR_TEXTURE_SLOT_COUNT; i++) {
     material->textures[i].slot = (VkrTextureSlot)i;
     material->textures[i].handle = VKR_TEXTURE_HANDLE_INVALID;
@@ -160,10 +149,6 @@ vkr_material_system_reset_texture_slots(VkrMaterial *material) {
 vkr_internal void
 vkr_material_system_apply_default_surface_textures(VkrMaterialSystem *system,
                                                    VkrMaterial *material) {
-  if (!system || !material) {
-    return;
-  }
-
   material->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle =
       vkr_texture_system_get_default_diffuse_handle(system->texture_system);
   material->textures[VKR_TEXTURE_SLOT_DIFFUSE].enabled = true;
@@ -178,10 +163,6 @@ vkr_material_system_apply_default_surface_textures(VkrMaterialSystem *system,
 vkr_internal void vkr_material_system_init_surface_material(
     VkrMaterialSystem *system, VkrMaterial *material, Vec4 diffuse_color,
     float32_t shininess) {
-  if (!material) {
-    return;
-  }
-
   MemZero(material, sizeof(*material));
   material->material_type = VKR_MATERIAL_TYPE_PHONG;
   material->alpha_mode = VKR_MATERIAL_ALPHA_OPAQUE;
@@ -753,11 +734,16 @@ void vkr_material_system_set_transmission_source(VkrMaterialSystem *system,
 
 VkrMaterial *vkr_material_system_get_by_handle(VkrMaterialSystem *system,
                                                VkrMaterialHandle handle) {
-  if (!system || handle.id == 0)
+  if (handle.id == 0)
     return NULL;
   uint32_t index = handle.id - 1;
   if (index >= system->materials.length)
     return NULL;
   VkrMaterial *material = &system->materials.data[index];
   return (material->generation == handle.generation) ? material : NULL;
+}
+
+VkrMaterial *vkr_material_system_get_live(VkrMaterialSystem *system,
+                                          VkrMaterialHandle handle) {
+  return &system->materials.data[handle.id - 1u];
 }

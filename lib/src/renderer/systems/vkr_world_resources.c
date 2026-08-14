@@ -930,8 +930,6 @@ uint32_t vkr_world_resources_prepare_text_draws(RendererFrontend *rf,
                                                 VkrWorldResources *resources,
                                                 VkrPreparedTextDraw *out_draws,
                                                 uint32_t capacity) {
-  if (!rf || !resources || !out_draws || capacity == 0)
-    return 0;
   uint32_t count = 0;
   for (uint64_t i = 0; i < resources->text_slots.length; ++i) {
     VkrWorldTextSlot *slot = &resources->text_slots.data[i];

@@ -1254,9 +1254,6 @@ void vkr_scene_shutdown(VkrScene *scene, struct s_RendererFrontend *rf) {
 void vkr_scene_update(VkrScene *scene, float64_t dt) {
   (void)dt; // Reserved for future animation
 
-  if (!scene || !scene->world)
-    return;
-
   // Compile queries if needed
   if (!scene->queries_valid) {
     if (!scene_compile_queries(scene)) {
@@ -2005,27 +2002,10 @@ vkr_internal void scene_sync_renderable(RenderSyncContext *ctx,
                                         VkrMeshInstanceHandle instance,
                                         Mat4 world, uint32_t render_id,
                                         bool8_t is_visible) {
-  if (!vkr_mesh_manager_instance_set_visible(&ctx->rf->mesh_manager, instance,
-                                             is_visible)) {
-    return;
-  }
-
-  if (!vkr_mesh_manager_instance_set_render_id(&ctx->rf->mesh_manager, instance,
-                                               render_id)) {
-    return;
-  }
-
-  if (!is_visible) {
-    scene_render_bridge_update_mapping(ctx->bridge, render_id, entity, false_v);
-    return;
-  }
-
-  if (!vkr_mesh_manager_instance_set_model(&ctx->rf->mesh_manager, instance,
-                                           world)) {
-    return;
-  }
-
-  scene_render_bridge_update_mapping(ctx->bridge, render_id, entity, true_v);
+  vkr_mesh_manager_instance_sync_render_state(&ctx->rf->mesh_manager, instance,
+                                              world, render_id, is_visible);
+  scene_render_bridge_update_mapping(ctx->bridge, render_id, entity,
+                                     is_visible);
 }
 
 /**
@@ -2050,7 +2030,7 @@ vkr_internal void render_sync_chunk_cb(const VkrArchetype *arch,
   for (uint32_t i = 0; i < count; i++) {
     VkrMeshInstanceHandle instance = mesh_renderers[i].instance;
     bool8_t is_visible = scene_entity_is_visible(scene, entities[i]);
-    uint32_t render_id = render_ids ? render_ids[i].id : 0;
+    uint32_t render_id = render_ids[i].id;
     scene_sync_renderable(ctx, entities[i], instance, transforms[i].world,
                           render_id, is_visible);
   }
@@ -2069,9 +2049,6 @@ vkr_internal void render_sync_point_light_cb(const VkrArchetype *arch,
   VkrEntityId *entities = vkr_entity_chunk_entities(chunk);
   ScenePointLight *lights = (ScenePointLight *)vkr_entity_chunk_column(
       chunk, scene->comp_point_light);
-
-  if (!lights)
-    return;
 
   for (uint32_t i = 0; i < count; i++) {
     if (!lights[i].enabled)
@@ -2106,9 +2083,6 @@ vkr_internal void render_sync_shape_cb(const VkrArchetype *arch,
   SceneRenderId *render_ids =
       (SceneRenderId *)vkr_entity_chunk_column(chunk, scene->comp_render_id);
 
-  if (!transforms || !shapes || !render_ids)
-    return;
-
   for (uint32_t i = 0; i < count; i++) {
     uint32_t mesh_index = shapes[i].mesh_index;
     if (mesh_index == VKR_INVALID_ID)
@@ -2132,9 +2106,6 @@ vkr_internal void render_sync_shape_cb(const VkrArchetype *arch,
 vkr_internal void scene_render_bridge_sync(VkrSceneRenderBridge *bridge,
                                            struct s_RendererFrontend *rf,
                                            VkrScene *scene) {
-  if (!bridge || !rf || !scene)
-    return;
-
   // If full sync needed or dirty overflow, do full sync
   if (scene->render_full_sync_needed) {
     scene_render_bridge_full_sync(bridge, rf, scene);
@@ -2203,9 +2174,6 @@ vkr_internal void scene_render_bridge_sync(VkrSceneRenderBridge *bridge,
 vkr_internal void scene_render_bridge_full_sync(VkrSceneRenderBridge *bridge,
                                                 struct s_RendererFrontend *rf,
                                                 VkrScene *scene) {
-  if (!bridge || !rf || !scene)
-    return;
-
   // Compile queries if needed
   if (!scene->queries_valid) {
     if (!scene_compile_queries(scene)) {
@@ -2389,8 +2357,6 @@ void vkr_scene_handle_full_sync(VkrSceneHandle handle,
 void vkr_scene_handle_update_and_sync(VkrSceneHandle handle,
                                       struct s_RendererFrontend *rf,
                                       float64_t dt) {
-  if (!handle || !rf)
-    return;
   struct VkrSceneRuntime *runtime = (struct VkrSceneRuntime *)handle;
   vkr_scene_update(&runtime->scene, dt);
   scene_render_bridge_sync(&runtime->bridge, rf, &runtime->scene);

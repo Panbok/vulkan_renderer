@@ -563,34 +563,19 @@ bool8_t application_create(Application *application,
 
 vkr_internal VkrMaterial *application_get_material(RendererFrontend *rf,
                                                    VkrMaterialHandle handle) {
-  if (!rf) {
-    return NULL;
-  }
-
-  VkrMaterial *material =
-      vkr_material_system_get_by_handle(&rf->material_system, handle);
-  if (!material && rf->material_system.default_material.id != 0) {
-    material = vkr_material_system_get_by_handle(
-        &rf->material_system, rf->material_system.default_material);
-  }
-
-  return material;
+  return vkr_material_system_get_live(&rf->material_system, handle);
 }
 
 vkr_internal VkrDrawAlphaRouting application_material_alpha_routing(
     RendererFrontend *rf, VkrMaterial *material) {
-  if (!rf || !material) {
-    return (VkrDrawAlphaRouting){0};
-  }
   return vkr_draw_alpha_routing(
       vkr_material_system_material_alpha_mode(&rf->material_system, material));
 }
 
 vkr_internal bool8_t application_material_is_transmissive(
     RendererFrontend *rf, VkrMaterial *material) {
-  return rf && material ? vkr_material_system_material_is_transmissive(
-                              &rf->material_system, material)
-                        : false_v;
+  return vkr_material_system_material_is_transmissive(&rf->material_system,
+                                                      material);
 }
 
 /**
@@ -600,7 +585,7 @@ vkr_internal bool8_t application_material_is_transmissive(
  */
 vkr_internal bool8_t
 application_world_may_have_position_dependent_ibl(const RendererFrontend *rf) {
-  if (!rf || !rf->world_resources.initialized || !rf->active_scene) {
+  if (!rf->world_resources.initialized || !rf->active_scene) {
     return false_v;
   }
 
@@ -648,19 +633,14 @@ vkr_internal uint64_t application_pack_transparent_sort_key(
  * re-testing risks a divergence that would desynchronize the arrays.
  *
  * @param shadow_frustums Cascade volumes to test casters against. Shadow
- *        visibility is their union; NULL/zero disables shadow-side culling.
- * @param out_shadow Optional shadow draw lists; may be NULL when shadows are
- *        disabled for this frame.
+ *        visibility is their union; zero count disables shadow emission.
+ * @param out_shadow Shadow draw-list storage, empty when shadows are disabled.
  */
 vkr_internal bool8_t application_build_world_payload(
     Application *application, VkrAllocator *scratch,
     const VkrFrustum *shadow_frustums, uint32_t shadow_frustum_count,
     VkrWorldPassPayload *out_payload, VkrShadowDrawLists *out_shadow,
     VkrVisibilityStats *out_stats) {
-  if (!application || !scratch || !out_payload) {
-    return false_v;
-  }
-
   RendererFrontend *rf = &application->renderer;
   Mat4 view = rf->globals.view;
   VkrFrustum camera_frustum =
@@ -669,9 +649,7 @@ vkr_internal bool8_t application_build_world_payload(
   VkrVisibilityStats stats = {0};
   const bool8_t position_dependent_ibl =
       application_world_may_have_position_dependent_ibl(rf);
-  if (out_shadow) {
-    *out_shadow = (VkrShadowDrawLists){0};
-  }
+  *out_shadow = (VkrShadowDrawLists){0};
 
   const uint32_t mesh_count = vkr_mesh_manager_count(&rf->mesh_manager);
   const uint32_t live_instance_count =
@@ -686,7 +664,7 @@ vkr_internal bool8_t application_build_world_payload(
     uint32_t mesh_slot = 0;
     VkrMesh *mesh = vkr_mesh_manager_get_mesh_by_live_index(&rf->mesh_manager,
                                                             i, &mesh_slot);
-    if (!mesh || !mesh->visible ||
+    if (!mesh->visible ||
         mesh->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
       continue;
     }
@@ -696,15 +674,13 @@ vkr_internal bool8_t application_build_world_payload(
     uint32_t instance_slot = 0;
     VkrMeshInstance *instance = vkr_mesh_manager_get_instance_by_live_index(
         &rf->mesh_manager, i, &instance_slot);
-    if (!instance || !instance->visible ||
+    if (!instance->visible ||
         instance->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
       continue;
     }
     VkrMeshAsset *asset =
-        vkr_mesh_manager_get_asset(&rf->mesh_manager, instance->asset);
-    if (asset) {
-      submesh_slot_capacity += (uint32_t)asset->submeshes.length;
-    }
+        vkr_mesh_manager_get_live_asset(&rf->mesh_manager, instance->asset);
+    submesh_slot_capacity += (uint32_t)asset->submeshes.length;
   }
 
   uint8_t *visibility = NULL;
@@ -737,7 +713,7 @@ vkr_internal bool8_t application_build_world_payload(
     uint32_t mesh_slot = 0;
     VkrMesh *mesh = vkr_mesh_manager_get_mesh_by_live_index(&rf->mesh_manager,
                                                             i, &mesh_slot);
-    if (!mesh || !mesh->visible ||
+    if (!mesh->visible ||
         mesh->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
       continue;
     }
@@ -746,10 +722,6 @@ vkr_internal bool8_t application_build_world_payload(
     for (uint32_t s = 0; s < submesh_count; ++s) {
       VkrSubMesh *submesh =
           vkr_mesh_manager_get_submesh(&rf->mesh_manager, mesh_slot, s);
-      if (!submesh) {
-        continue;
-      }
-
       Vec3 sphere_center = {0};
       float32_t sphere_radius = 0.0f;
       vkr_visibility_submesh_sphere(mesh->model, submesh->center,
@@ -758,9 +730,6 @@ vkr_internal bool8_t application_build_world_payload(
       uint8_t flags = vkr_visibility_classify(
           &camera_frustum, shadow_frustums, shadow_frustum_count,
           mesh->bounds_valid, sphere_center, sphere_radius, &stats);
-      if (!out_shadow) {
-        flags &= (uint8_t)~VKR_VISIBLE_SHADOW;
-      }
       visibility[vis_slot++] = flags;
       VkrMaterial *material = application_get_material(rf, submesh->material);
       const VkrDrawAlphaRouting alpha =
@@ -802,24 +771,17 @@ vkr_internal bool8_t application_build_world_payload(
     uint32_t instance_slot = 0;
     VkrMeshInstance *instance = vkr_mesh_manager_get_instance_by_live_index(
         &rf->mesh_manager, i, &instance_slot);
-    if (!instance || !instance->visible ||
+    if (!instance->visible ||
         instance->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
       continue;
     }
 
     VkrMeshAsset *asset =
-        vkr_mesh_manager_get_asset(&rf->mesh_manager, instance->asset);
-    if (!asset) {
-      continue;
-    }
+        vkr_mesh_manager_get_live_asset(&rf->mesh_manager, instance->asset);
 
     uint32_t submesh_count = (uint32_t)asset->submeshes.length;
     for (uint32_t s = 0; s < submesh_count; ++s) {
-      VkrMeshAssetSubmesh *submesh =
-          array_get_VkrMeshAssetSubmesh(&asset->submeshes, s);
-      if (!submesh) {
-        continue;
-      }
+      VkrMeshAssetSubmesh *submesh = &asset->submeshes.data[s];
 
       Vec3 sphere_center = {0};
       float32_t sphere_radius = 0.0f;
@@ -829,9 +791,6 @@ vkr_internal bool8_t application_build_world_payload(
       uint8_t flags = vkr_visibility_classify(
           &camera_frustum, shadow_frustums, shadow_frustum_count,
           instance->bounds_valid, sphere_center, sphere_radius, &stats);
-      if (!out_shadow) {
-        flags &= (uint8_t)~VKR_VISIBLE_SHADOW;
-      }
       visibility[vis_slot++] = flags;
       VkrMaterial *material = application_get_material(rf, submesh->material);
       const VkrDrawAlphaRouting alpha =
@@ -916,12 +875,12 @@ vkr_internal bool8_t application_build_world_payload(
         scratch, sizeof(VkrDrawCandidate) * (uint64_t)camera_transmission_count,
         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
-  if (out_shadow && shadow_opaque_count > 0) {
+  if (shadow_opaque_count > 0) {
     shadow_opaque_cands = vkr_allocator_alloc(
         scratch, sizeof(VkrDrawCandidate) * (uint64_t)shadow_opaque_count,
         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
-  if (out_shadow && shadow_alpha_count > 0) {
+  if (shadow_alpha_count > 0) {
     shadow_alpha_cands = vkr_allocator_alloc(
         scratch, sizeof(VkrDrawCandidate) * (uint64_t)shadow_alpha_count,
         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
@@ -946,13 +905,13 @@ vkr_internal bool8_t application_build_world_payload(
         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
   VkrDrawItem *shadow_opaque_draws = NULL;
-  if (out_shadow && shadow_opaque_count > 0) {
+  if (shadow_opaque_count > 0) {
     shadow_opaque_draws = vkr_allocator_alloc(
         scratch, sizeof(VkrDrawItem) * (uint64_t)shadow_opaque_count,
         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
   VkrDrawItem *shadow_alpha_draws = NULL;
-  if (out_shadow && shadow_alpha_count > 0) {
+  if (shadow_alpha_count > 0) {
     shadow_alpha_draws = vkr_allocator_alloc(
         scratch, sizeof(VkrDrawItem) * (uint64_t)shadow_alpha_count,
         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
@@ -964,7 +923,7 @@ vkr_internal bool8_t application_build_world_payload(
                                         camera_transmission_count +
                                         camera_transparent_count;
   const uint32_t shadow_instance_count =
-      out_shadow ? shadow_opaque_count + shadow_alpha_count : 0u;
+      shadow_opaque_count + shadow_alpha_count;
   VkrInstanceDataGPU *instances = NULL;
   if (world_instance_count > 0) {
     instances = vkr_allocator_alloc(
@@ -983,18 +942,16 @@ vkr_internal bool8_t application_build_world_payload(
        (!transmission_draws || !camera_transmission_cands)) ||
       (camera_transparent_count > 0 &&
        (!transparent_draws || !camera_transparent_cands)) ||
-      (out_shadow && shadow_opaque_count > 0 &&
+      (shadow_opaque_count > 0 &&
        (!shadow_opaque_draws || !shadow_opaque_cands)) ||
-      (out_shadow && shadow_alpha_count > 0 &&
+      (shadow_alpha_count > 0 &&
        (!shadow_alpha_draws || !shadow_alpha_cands)) ||
       (gpu_candidate_count > 0 && !gpu_candidates) ||
       (transmission_gpu_candidate_count > 0 && !transmission_gpu_candidates) ||
       (world_instance_count > 0 && !instances) ||
       (shadow_instance_count > 0 && !shadow_instances)) {
     *out_payload = (VkrWorldPassPayload){0};
-    if (out_shadow) {
-      *out_shadow = (VkrShadowDrawLists){0};
-    }
+    *out_shadow = (VkrShadowDrawLists){0};
     return false_v;
   }
 
@@ -1012,7 +969,7 @@ vkr_internal bool8_t application_build_world_payload(
     uint32_t mesh_slot = 0;
     VkrMesh *mesh = vkr_mesh_manager_get_mesh_by_live_index(&rf->mesh_manager,
                                                             i, &mesh_slot);
-    if (!mesh || !mesh->visible ||
+    if (!mesh->visible ||
         mesh->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
       continue;
     }
@@ -1025,9 +982,6 @@ vkr_internal bool8_t application_build_world_payload(
     for (uint32_t s = 0; s < submesh_count; ++s) {
       VkrSubMesh *submesh =
           vkr_mesh_manager_get_submesh(&rf->mesh_manager, mesh_slot, s);
-      if (!submesh) {
-        continue;
-      }
       const uint8_t flags = visibility[vis_slot++];
       VkrMaterial *material = application_get_material(rf, submesh->material);
       const VkrMaterialHandle draw_material =
@@ -1108,7 +1062,7 @@ vkr_internal bool8_t application_build_world_payload(
           camera_opaque_cands[opaque_index++] = candidate;
         }
       }
-      if ((flags & VKR_VISIBLE_SHADOW) && out_shadow) {
+      if (flags & VKR_VISIBLE_SHADOW) {
         VkrDrawCandidate shadow_candidate = candidate;
         shadow_candidate.key.binding_context = 0u;
         if (alpha.shadow_alpha_tested) {
@@ -1124,16 +1078,13 @@ vkr_internal bool8_t application_build_world_payload(
     uint32_t instance_slot = 0;
     VkrMeshInstance *instance = vkr_mesh_manager_get_instance_by_live_index(
         &rf->mesh_manager, i, &instance_slot);
-    if (!instance || !instance->visible ||
+    if (!instance->visible ||
         instance->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
       continue;
     }
 
     VkrMeshAsset *asset =
-        vkr_mesh_manager_get_asset(&rf->mesh_manager, instance->asset);
-    if (!asset) {
-      continue;
-    }
+        vkr_mesh_manager_get_live_asset(&rf->mesh_manager, instance->asset);
     uint32_t object_id = 0;
     if (instance->render_id != 0) {
       object_id =
@@ -1142,11 +1093,7 @@ vkr_internal bool8_t application_build_world_payload(
 
     uint32_t submesh_count = (uint32_t)asset->submeshes.length;
     for (uint32_t s = 0; s < submesh_count; ++s) {
-      VkrMeshAssetSubmesh *submesh =
-          array_get_VkrMeshAssetSubmesh(&asset->submeshes, s);
-      if (!submesh) {
-        continue;
-      }
+      VkrMeshAssetSubmesh *submesh = &asset->submeshes.data[s];
       const uint8_t flags = visibility[vis_slot++];
       VkrMaterial *material = application_get_material(rf, submesh->material);
       const VkrMaterialHandle draw_material =
@@ -1230,7 +1177,7 @@ vkr_internal bool8_t application_build_world_payload(
           camera_opaque_cands[opaque_index++] = candidate;
         }
       }
-      if ((flags & VKR_VISIBLE_SHADOW) && out_shadow) {
+      if (flags & VKR_VISIBLE_SHADOW) {
         VkrDrawCandidate shadow_candidate = candidate;
         shadow_candidate.key.binding_context = 0u;
         if (alpha.shadow_alpha_tested) {
@@ -1242,20 +1189,12 @@ vkr_internal bool8_t application_build_world_payload(
     }
   }
 
-  if (gpu_candidate_index != gpu_candidate_count ||
-      transmission_gpu_candidate_index != transmission_gpu_candidate_count) {
-    *out_payload = (VkrWorldPassPayload){0};
-    if (out_shadow)
-      *out_shadow = (VkrShadowDrawLists){0};
-    return false_v;
-  }
-
   // ---- Emission: opaque merges; transparent and alpha do not. ----
   // Transparent draws carry a back-to-front order and alpha-tested shadow draws
   // rebind per-draw material state, so collapsing either would change what is
   // drawn, not merely how many calls it takes.
   uint32_t merged_opaque_draws = 0;
-  const uint32_t opaque_instances_written = vkr_draw_merge_candidates(
+  const uint32_t opaque_instances_written = vkr_draw_merge_candidates_measured(
       camera_opaque_cands, camera_opaque_count, 0u, opaque_draws,
       &merged_opaque_draws, instances, &stats);
 
@@ -1276,20 +1215,15 @@ vkr_internal bool8_t application_build_world_payload(
                          transparent_draws, instances);
 
   uint32_t merged_shadow_draws = 0;
-  if (out_shadow) {
-    const uint32_t shadow_written = vkr_draw_merge_candidates(
-        shadow_opaque_cands, shadow_opaque_count, 0u, shadow_opaque_draws,
-        &merged_shadow_draws, shadow_instances, NULL);
-    vkr_draw_emit_unmerged(shadow_alpha_cands, shadow_alpha_count,
-                           shadow_written, shadow_alpha_draws,
-                           shadow_instances);
-  }
+  const uint32_t shadow_written = vkr_draw_merge_candidates(
+      shadow_opaque_cands, shadow_opaque_count, 0u, shadow_opaque_draws,
+      &merged_shadow_draws, shadow_instances);
+  vkr_draw_emit_unmerged(shadow_alpha_cands, shadow_alpha_count, shadow_written,
+                         shadow_alpha_draws, shadow_instances);
 
   stats.opaque_draws_before_merge = camera_opaque_count;
   stats.opaque_draws_emitted = merged_opaque_draws;
-  if (out_stats) {
-    *out_stats = stats;
-  }
+  *out_stats = stats;
 
   *out_payload = (VkrWorldPassPayload){
       .gpu_candidates = gpu_candidates,
@@ -1307,16 +1241,14 @@ vkr_internal bool8_t application_build_world_payload(
       .instances = instances,
       .instance_count = world_instance_count,
   };
-  if (out_shadow) {
-    *out_shadow = (VkrShadowDrawLists){
-        .opaque_draws = shadow_opaque_draws,
-        .opaque_draw_count = merged_shadow_draws,
-        .alpha_draws = shadow_alpha_draws,
-        .alpha_draw_count = shadow_alpha_count,
-        .instances = shadow_instances,
-        .instance_count = shadow_instance_count,
-    };
-  }
+  *out_shadow = (VkrShadowDrawLists){
+      .opaque_draws = shadow_opaque_draws,
+      .opaque_draw_count = merged_shadow_draws,
+      .alpha_draws = shadow_alpha_draws,
+      .alpha_draw_count = shadow_alpha_count,
+      .instances = shadow_instances,
+      .instance_count = shadow_instance_count,
+  };
   return true_v;
 }
 /**
@@ -1391,9 +1323,8 @@ void application_draw_frame(Application *application, float64_t delta) {
   VkrShadowDrawLists shadow_lists = {0};
   VkrVisibilityStats visibility_stats = {0};
   bool8_t has_world = application_build_world_payload(
-      application, scratch, shadow_cascade_count > 0 ? shadow_frustums : NULL,
-      shadow_cascade_count, &world_payload,
-      shadow_cascade_count > 0 ? &shadow_lists : NULL, &visibility_stats);
+      application, scratch, shadow_frustums, shadow_cascade_count,
+      &world_payload, &shadow_lists, &visibility_stats);
   application->visibility_stats = visibility_stats;
 
   VkrShadowPassPayload shadow_payload = {0};
@@ -1876,13 +1807,14 @@ void application_start(Application *application) {
           application->renderer.lighting_system.directional.direction);
     }
 
-    // Update world view/projection from camera each frame to reflect movement
-    application->renderer.globals.view =
-        vkr_camera_registry_get_view(camera_system, active_camera);
-    application->renderer.globals.projection =
-        vkr_camera_registry_get_projection(camera_system, active_camera);
     if (camera) {
+      // update_all() refreshed these cached matrices above.
+      application->renderer.globals.view = camera->view;
+      application->renderer.globals.projection = camera->projection;
       application->renderer.globals.view_position = camera->position;
+    } else {
+      application->renderer.globals.view = mat4_identity();
+      application->renderer.globals.projection = mat4_identity();
     }
 
     uint32_t mesh_capacity =

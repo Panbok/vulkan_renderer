@@ -159,15 +159,19 @@ int vkr_draw_candidate_depth_compare(const void *lhs, const void *rhs);
  * @param instance_base Index in @p out_instances where this list starts, so
  *        several lists can share one instance array.
  * @param out_draw_count Receives the number of draws emitted (<= @p count).
- * @param stats Optional merge measurements derived from the same sort/run scan.
  * @return Number of instance records written, always @p count.
  */
 uint32_t vkr_draw_merge_candidates(VkrDrawCandidate *candidates, uint32_t count,
                                    uint32_t instance_base,
                                    VkrDrawItem *out_draws,
                                    uint32_t *out_draw_count,
-                                   VkrInstanceDataGPU *out_instances,
-                                   VkrVisibilityStats *stats);
+                                   VkrInstanceDataGPU *out_instances);
+
+/** Merge candidates and collect merge diagnostics for the world list. */
+uint32_t vkr_draw_merge_candidates_measured(
+    VkrDrawCandidate *candidates, uint32_t count, uint32_t instance_base,
+    VkrDrawItem *out_draws, uint32_t *out_draw_count,
+    VkrInstanceDataGPU *out_instances, VkrVisibilityStats *stats);
 
 /**
  * @brief Emits candidates one draw each, preserving their current order.
@@ -206,10 +210,10 @@ void vkr_visibility_submesh_sphere(Mat4 model, Vec3 center, Vec3 min_extents,
  * @brief Classifies one bounding sphere against the camera and light volumes.
  *
  * Shadow visibility is the union of every cascade volume; cascades have
- * different centers and are not generally nested. A NULL camera, or a NULL/
- * empty shadow array, means "no culling for that view". An object whose bounds
- * are not yet valid is treated as visible to both — being conservative costs a
- * draw, being wrong drops geometry.
+ * different centers and are not generally nested. The camera is required; an
+ * empty shadow array disables shadow visibility. An object whose bounds are not
+ * yet valid is visible to every enabled view — being conservative costs a draw,
+ * being wrong drops geometry.
  *
  * @return Bitwise OR of VKR_VISIBLE_CAMERA and VKR_VISIBLE_SHADOW.
  */

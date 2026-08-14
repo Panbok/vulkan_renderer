@@ -240,6 +240,10 @@ void vkr_material_system_set_transmission_source(VkrMaterialSystem *system,
 VkrMaterial *vkr_material_system_get_by_handle(VkrMaterialSystem *system,
                                                VkrMaterialHandle handle);
 
+/** Resolve a material handle owned by a live mesh/submesh. */
+VkrMaterial *vkr_material_system_get_live(VkrMaterialSystem *system,
+                                          VkrMaterialHandle handle);
+
 /**
  * @brief Resolves the effective alpha mode used for draw-list routing.
  *

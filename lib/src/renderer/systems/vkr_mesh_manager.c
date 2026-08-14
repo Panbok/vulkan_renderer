@@ -1839,31 +1839,12 @@ VkrMesh *vkr_mesh_manager_get(VkrMeshManager *manager, uint32_t index) {
 VkrMesh *vkr_mesh_manager_get_mesh_by_live_index(VkrMeshManager *manager,
                                                  uint32_t live_index,
                                                  uint32_t *out_slot) {
-  assert_log(manager != NULL, "Manager is NULL");
-
-  if (live_index >= manager->mesh_count) {
-    return NULL;
-  }
-
-  uint32_t slot = *array_get_uint32_t(&manager->mesh_live_indices, live_index);
-  if (slot >= manager->meshes.length) {
-    return NULL;
-  }
-
-  VkrMesh *mesh = array_get_VkrMesh(&manager->meshes, slot);
-  if (!mesh || !mesh->submeshes.data || mesh->submeshes.length == 0) {
-    return NULL;
-  }
-
-  if (out_slot) {
-    *out_slot = slot;
-  }
-
-  return mesh;
+  const uint32_t slot = manager->mesh_live_indices.data[live_index];
+  *out_slot = slot;
+  return &manager->meshes.data[slot];
 }
 
 uint32_t vkr_mesh_manager_count(const VkrMeshManager *manager) {
-  assert_log(manager != NULL, "Manager is NULL");
   return manager->mesh_count;
 }
 
@@ -1993,27 +1974,13 @@ bool8_t vkr_mesh_manager_set_render_id(VkrMeshManager *manager, uint32_t index,
 }
 
 uint32_t vkr_mesh_manager_submesh_count(const VkrMesh *mesh) {
-  if (!mesh || !mesh->submeshes.data)
-    return 0;
   return (uint32_t)mesh->submeshes.length;
 }
 
 VkrSubMesh *vkr_mesh_manager_get_submesh(VkrMeshManager *manager,
                                          uint32_t mesh_index,
                                          uint32_t submesh_index) {
-  assert_log(manager != NULL, "Manager is NULL");
-
-  if (mesh_index >= manager->meshes.length)
-    return NULL;
-
-  VkrMesh *mesh = array_get_VkrMesh(&manager->meshes, mesh_index);
-  if (!mesh || !mesh->submeshes.data || mesh->submeshes.length == 0)
-    return NULL;
-
-  if (submesh_index >= mesh->submeshes.length)
-    return NULL;
-
-  return array_get_VkrSubMesh(&mesh->submeshes, submesh_index);
+  return &manager->meshes.data[mesh_index].submeshes.data[submesh_index];
 }
 
 uint32_t vkr_mesh_manager_load_batch(VkrMeshManager *manager,
@@ -2344,6 +2311,11 @@ VkrMeshAsset *vkr_mesh_manager_get_asset(VkrMeshManager *manager,
   }
 
   return asset;
+}
+
+VkrMeshAsset *vkr_mesh_manager_get_live_asset(VkrMeshManager *manager,
+                                              VkrMeshAssetHandle handle) {
+  return &manager->mesh_assets.data[handle.id - 1u];
 }
 
 uint32_t vkr_mesh_manager_asset_count(const VkrMeshManager *manager) {
@@ -3456,71 +3428,28 @@ VkrMeshInstance *vkr_mesh_manager_get_instance_by_index(VkrMeshManager *manager,
 
 VkrMeshInstance *vkr_mesh_manager_get_instance_by_live_index(
     VkrMeshManager *manager, uint32_t live_index, uint32_t *out_slot) {
-  assert_log(manager != NULL, "Manager is NULL");
-
-  if (live_index >= manager->instance_count) {
-    return NULL;
-  }
-
-  uint32_t slot =
-      *array_get_uint32_t(&manager->instance_live_indices, live_index);
-  if (slot >= manager->mesh_instances.length) {
-    return NULL;
-  }
-
-  VkrMeshInstance *inst =
-      array_get_VkrMeshInstance(&manager->mesh_instances, slot);
-  if (!inst || inst->asset.id == 0) {
-    return NULL;
-  }
-
-  if (out_slot) {
-    *out_slot = slot;
-  }
-
-  return inst;
+  const uint32_t slot = manager->instance_live_indices.data[live_index];
+  *out_slot = slot;
+  return &manager->mesh_instances.data[slot];
 }
 
-bool8_t vkr_mesh_manager_instance_set_model(VkrMeshManager *manager,
-                                            VkrMeshInstanceHandle instance,
-                                            Mat4 model) {
-  VkrMeshInstance *inst = vkr_mesh_manager_get_instance(manager, instance);
-  if (!inst) {
-    return false_v;
-  }
+void vkr_mesh_manager_instance_sync_render_state(VkrMeshManager *manager,
+                                                 VkrMeshInstanceHandle instance,
+                                                 Mat4 model, uint32_t render_id,
+                                                 bool8_t visible) {
+  VkrMeshInstance *inst = &manager->mesh_instances.data[instance.id - 1u];
 
-  inst->model = model;
-
-  VkrMeshAsset *asset = vkr_mesh_manager_get_asset(manager, inst->asset);
-  vkr_mesh_manager_update_instance_bounds(inst, asset, model);
-
-  return true_v;
-}
-
-bool8_t vkr_mesh_manager_instance_set_visible(VkrMeshManager *manager,
-                                              VkrMeshInstanceHandle instance,
-                                              bool8_t visible) {
-  VkrMeshInstance *inst = vkr_mesh_manager_get_instance(manager, instance);
-  if (!inst) {
-    return false_v;
-  }
   inst->visible = visible;
-  return true_v;
-}
-
-bool8_t vkr_mesh_manager_instance_set_render_id(VkrMeshManager *manager,
-                                                VkrMeshInstanceHandle instance,
-                                                uint32_t render_id) {
-  VkrMeshInstance *inst = vkr_mesh_manager_get_instance(manager, instance);
-  if (!inst) {
-    return false_v;
-  }
   inst->render_id = render_id;
-  return true_v;
+  if (!visible) {
+    return;
+  }
+  inst->model = model;
+  VkrMeshAsset *asset = vkr_mesh_manager_get_live_asset(manager, inst->asset);
+  vkr_mesh_manager_update_instance_bounds(inst, asset, model);
 }
 
 uint32_t vkr_mesh_manager_instance_count(const VkrMeshManager *manager) {
-  assert_log(manager != NULL, "Manager is NULL");
   return manager->instance_count;
 }
 
