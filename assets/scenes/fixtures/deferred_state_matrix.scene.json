@@ -1,0 +1,111 @@
+{
+  "version": 2,
+  "entities": [
+    {
+      "name": "Root",
+      "parent": null,
+      "transform": { "pos": [0, 0, 0], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] }
+    },
+    {
+      "name": "Sun",
+      "parent": 0,
+      "transform": { "pos": [0, 4, 3], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "directional_light": {
+        "enabled": true,
+        "color": [1.0, 0.96, 0.9],
+        "intensity": 2.2,
+        "direction_local": [-0.35, -0.75, -0.45]
+      }
+    },
+    {
+      "name": "Backdrop",
+      "parent": 0,
+      "transform": { "pos": [0, 1.4, -3.0], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "shape": {
+        "type": "cube",
+        "dimensions": [7.0, 3.8, 0.35],
+        "material": { "name": "p20_opaque_single", "path": "tests/fixtures/rendering/p20_opaque_single.mt" }
+      }
+    },
+    {
+      "name": "OpaqueSingle",
+      "parent": 0,
+      "transform": { "pos": [-2.4, 2.0, -0.8], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "shape": {
+        "type": "cube",
+        "dimensions": [0.9, 0.9, 0.22],
+        "material": { "name": "p20_opaque_single", "path": "tests/fixtures/rendering/p20_opaque_single.mt" }
+      }
+    },
+    {
+      "name": "OpaqueDouble",
+      "parent": 0,
+      "transform": { "pos": [-0.8, 2.0, -0.8], "rot": [0, 0.15, 0, 0.988686], "scale": [1, 1, 1] },
+      "shape": {
+        "type": "cube",
+        "dimensions": [0.9, 0.9, 0.22],
+        "material": { "name": "p20_opaque_double", "path": "tests/fixtures/rendering/p20_opaque_double.mt" }
+      }
+    },
+    {
+      "name": "CutoutSingle",
+      "parent": 0,
+      "transform": { "pos": [0.8, 2.0, -0.8], "rot": [0, -0.12, 0, 0.992774], "scale": [1, 1, 1] },
+      "shape": {
+        "type": "cube",
+        "dimensions": [0.9, 0.9, 0.22],
+        "material": { "name": "p20_cutout_single", "path": "tests/fixtures/rendering/p20_cutout_single.mt" }
+      }
+    },
+    {
+      "name": "CutoutDouble",
+      "parent": 0,
+      "transform": { "pos": [2.4, 2.0, -0.8], "rot": [0, 0.10, 0, 0.994987], "scale": [1, 1, 1] },
+      "shape": {
+        "type": "cube",
+        "dimensions": [0.9, 0.9, 0.22],
+        "material": { "name": "p20_cutout_double", "path": "tests/fixtures/rendering/p20_cutout_double.mt" }
+      }
+    },
+    {
+      "name": "TransmissionOpaqueSingle",
+      "parent": 0,
+      "transform": { "pos": [-2.4, 0.8, -0.5], "rot": [0, -0.10, 0, 0.994987], "scale": [1, 1, 1] },
+      "shape": {
+        "type": "cube",
+        "dimensions": [0.9, 0.9, 0.22],
+        "material": { "name": "p20_transmission_opaque_single", "path": "tests/fixtures/rendering/p20_transmission_opaque_single.mt" }
+      }
+    },
+    {
+      "name": "TransmissionOpaqueDouble",
+      "parent": 0,
+      "transform": { "pos": [-0.8, 0.8, -0.5], "rot": [0, 0.13, 0, 0.991514], "scale": [1, 1, 1] },
+      "shape": {
+        "type": "cube",
+        "dimensions": [0.9, 0.9, 0.22],
+        "material": { "name": "p20_transmission_opaque_double", "path": "tests/fixtures/rendering/p20_transmission_opaque_double.mt" }
+      }
+    },
+    {
+      "name": "TransmissionCutoutSingle",
+      "parent": 0,
+      "transform": { "pos": [0.8, 0.8, -0.5], "rot": [0, -0.08, 0, 0.996795], "scale": [1, 1, 1] },
+      "shape": {
+        "type": "cube",
+        "dimensions": [0.9, 0.9, 0.22],
+        "material": { "name": "p20_transmission_cutout_single", "path": "tests/fixtures/rendering/p20_transmission_cutout_single.mt" }
+      }
+    },
+    {
+      "name": "TransmissionCutoutDouble",
+      "parent": 0,
+      "transform": { "pos": [2.4, 0.8, -0.5], "rot": [0, 0.11, 0, 0.993932], "scale": [1, 1, 1] },
+      "shape": {
+        "type": "cube",
+        "dimensions": [0.9, 0.9, 0.22],
+        "material": { "name": "p20_transmission_cutout_double", "path": "tests/fixtures/rendering/p20_transmission_cutout_double.mt" }
+      }
+    }
+  ]
+}

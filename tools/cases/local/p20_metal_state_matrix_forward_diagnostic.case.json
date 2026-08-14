@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "id": "local.p20.metal.state_matrix.forward_diagnostic",
+  "suite": "local",
+  "description": "Explicit VKR_DEFERRED_ENABLED=0 witness that retains the P20 legacy-forward route for diagnosis without reporting a fallback.",
+  "scene": "assets/scenes/fixtures/deferred_state_matrix.scene.json",
+  "seed": 20,
+  "resolution": [640, 480],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 2,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": { "warmup": 8, "measure": 20 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "backend": "metal",
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [0, 1.4, 6.0],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 58,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "captures": [
+    { "at_frame": 0, "channels": ["final_color"] },
+    { "at_frame": 2, "channels": ["depth"] }
+  ],
+  "assertions": [
+    { "metric": "visibility.deferred.selected", "stat": "max", "max": 0 },
+    { "metric": "visibility.deferred.legacy_forward_fallbacks", "stat": "max", "max": 0 },
+    { "metric": "visibility.deferred.unsupported_input_fallbacks", "stat": "max", "max": 0 },
+    { "metric": "visibility.gpu_candidates.overflow_fallbacks", "stat": "max", "max": 0 },
+    { "metric": "draw.world.calls_issued", "stat": "min", "min": 1 }
+  ]
+}

@@ -44,12 +44,35 @@
         "gbuffer_specular",
         "gbuffer_normal",
         "deferred_emissive",
-        "resolve_barycentric_lod"
+        "resolve_barycentric_lod",
+        "scene_color",
+        "normals",
+        "unlit",
+        "lighting",
+        "direct_diffuse",
+        "direct_specular",
+        "material_params",
+        "shadow_debug_factor"
       ]
-    }
+    },
+    {
+      "at_frame": 2,
+      "channels": [
+        "shadow_debug_cascades",
+        "shadow_debug_depth"
+      ]
+    },
+    { "at_frame": 0, "channels": ["shadow_cascade_0"] },
+    { "at_frame": 1, "channels": ["shadow_cascade_1"] },
+    { "at_frame": 2, "channels": ["shadow_cascade_2"] },
+    { "at_frame": 2, "channels": ["shadow_cascade_3"] },
+    { "at_frame": 2, "channels": ["depth"] }
   ],
   "assertions": [
     { "metric": "visibility.gpu_candidates.count", "stat": "min", "min": 1 },
+    { "metric": "visibility.deferred.selected", "stat": "min", "min": 1 },
+    { "metric": "visibility.deferred.legacy_forward_fallbacks", "stat": "max", "max": 0 },
+    { "metric": "visibility.deferred.unsupported_input_fallbacks", "stat": "max", "max": 0 },
     { "metric": "visibility.gpu_candidates.overflow_fallbacks", "stat": "max", "max": 0 }
   ]
 }

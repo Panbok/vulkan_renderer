@@ -358,6 +358,8 @@ bool8_t vkr_harness_report_write(const char *path,
                                 report->provenance.gpu_device_id) &&
       vkr_harness_json_emit_string(writer, "driver",
                                    report->provenance.driver) &&
+      vkr_harness_json_emit_string(writer, "world_renderer",
+                                   report->provenance.world_renderer) &&
       vkr_harness_json_emit_string(writer, "power_mode",
                                    report->provenance.power_mode) &&
       vkr_harness_json_emit_string(writer, "thermal_state_start",
@@ -406,6 +408,8 @@ bool8_t vkr_harness_report_write(const char *path,
                                    report->provenance.depth_format) &&
       vkr_harness_json_emit_string(writer, "color_space",
                                    report->provenance.color_space) &&
+      vkr_harness_json_emit_string(writer, "world_renderer",
+                                   report->provenance.world_renderer) &&
       vkr_harness_json_emit_string(
           writer, "present_mode",
           vkr_harness_present_name(report->provenance.actual_present)) &&

@@ -22,6 +22,8 @@ typedef struct VkrHarnessChildContext {
   float64_t load_started;
   /** The scene closure is resident and installed on the renderer frontend. */
   bool8_t scene_active;
+  /** First renderer frame whose packet was built from the active scene. */
+  uint64_t scene_first_frame_index;
   /** Pass storage was sized from a frame rendered with the active scene. */
   bool8_t pass_catalog_ready;
   /** Set once bootstrap/allocation frames are discarded and sampling begins. */
@@ -131,6 +133,18 @@ vkr_harness_surface_format_name(VkrSurfaceColorFormat format) {
 static const char *vkr_harness_color_space_name(VkrSurfaceColorSpace space) {
   return space == VKR_SURFACE_COLOR_SPACE_SRGB_NONLINEAR ? "srgb_nonlinear"
                                                          : "unknown";
+}
+
+static const char *
+vkr_harness_world_renderer_name(VkrWorldRendererTopology topology) {
+  switch (topology) {
+  case VKR_WORLD_RENDERER_TOPOLOGY_LEGACY_FORWARD:
+    return "legacy_forward";
+  case VKR_WORLD_RENDERER_TOPOLOGY_DEFERRED:
+    return "deferred";
+  default:
+    return "unknown";
+  }
 }
 
 static const char *vkr_harness_depth_format_name(VkrSurfaceDepthFormat format) {
@@ -380,25 +394,31 @@ static bool8_t vkr_harness_child_activate_scene(Application *application) {
   }
   vkr_scene_handle_full_sync(child->scene_resource.as.scene,
                              &application->renderer);
+  child->scene_first_frame_index = application->renderer.frame_number + 1u;
   child->scene_active = true_v;
   return true_v;
 }
 
 /**
- * Freeze the pass catalog only after one frame has executed with the requested
- * scene. The activation update still exposes the preceding boot graph's pass
- * table; using it would make the strict name-at-index check reject every
- * sample when scene activation changes graph scheduling.
+ * Freeze the pass catalog only after timing completion reaches a packet built
+ * from the requested scene. GPU timings are asynchronous, so merely waiting
+ * one CPU frame can still expose the preceding boot graph and permanently
+ * invalidate a different steady-state pass table.
  */
 static bool8_t
 vkr_harness_child_prepare_pass_catalog(Application *application) {
   VkrHarnessChildContext *child = g_harness_child;
   const VkrRendererMetricsPassTable *passes =
       vkr_renderer_metrics_get_pass_table(&application->renderer_metrics);
-  if (!passes || passes->count == 0u || passes->truncated) {
+  if (!passes || passes->count == 0u)
+    return true_v;
+  if (passes->truncated) {
     vkr_harness_child_fail(application, "passes.unavailable");
     return false_v;
   }
+  if (passes->samples[0].gpu_source_frame_index <
+      child->scene_first_frame_index)
+    return true_v;
   child->pass_count = passes->count;
   const uint64_t pass_value_count =
       (uint64_t)child->total_frames * child->pass_count;
@@ -826,6 +846,9 @@ vkr_harness_child_device_provenance(Application *application,
                 vkr_harness_depth_format_name(device.actual_depth_format));
   string_format(provenance->color_space, sizeof(provenance->color_space), "%s",
                 vkr_harness_color_space_name(device.actual_color_space));
+  string_format(
+      provenance->world_renderer, sizeof(provenance->world_renderer), "%s",
+      vkr_harness_world_renderer_name(device.actual_world_renderer_topology));
   arena_destroy(device_arena);
 }
 
@@ -1012,6 +1035,8 @@ static VkrHarnessSampleFileHeader vkr_harness_child_sample_header(
                 provenance->depth_format);
   string_format(header.color_space, sizeof(header.color_space), "%s",
                 provenance->color_space);
+  string_format(header.world_renderer, sizeof(header.world_renderer), "%s",
+                provenance->world_renderer);
   return header;
 }
 

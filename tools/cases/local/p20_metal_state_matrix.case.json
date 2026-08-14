@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "id": "local.p20.metal.state_matrix",
+  "suite": "local",
+  "description": "Bounded default-selector Metal deferred stabilization witness covering every opaque/cutout/transmission state bucket and named fallback counter.",
+  "scene": "assets/scenes/fixtures/deferred_state_matrix.scene.json",
+  "seed": 20,
+  "resolution": [640, 480],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 2,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": { "warmup": 8, "measure": 30 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "backend": "metal",
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [0, 1.4, 6.0],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 58,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "captures": [
+    { "at_frame": 0, "channels": ["final_color", "visibility_ids", "visibility_primitives"] },
+    { "at_frame": 1, "channels": ["gbuffer_diffuse", "gbuffer_specular", "gbuffer_normal", "deferred_emissive", "resolve_barycentric_lod"] },
+    { "at_frame": 2, "channels": ["transmission_visibility_ids", "depth"] },
+    { "at_frame": 3, "channels": ["shadow_debug_cascades", "shadow_debug_factor", "shadow_debug_depth"] }
+  ],
+  "assertions": [
+    { "metric": "visibility.deferred.selected", "stat": "min", "min": 1 },
+    { "metric": "visibility.deferred.legacy_forward_fallbacks", "stat": "max", "max": 0 },
+    { "metric": "visibility.deferred.unsupported_input_fallbacks", "stat": "max", "max": 0 },
+    { "metric": "visibility.gpu_candidates.overflow_fallbacks", "stat": "max", "max": 0 },
+    { "metric": "visibility.gpu_visible.bucket.opaque_single", "stat": "min", "min": 1 },
+    { "metric": "visibility.gpu_visible.bucket.opaque_double", "stat": "min", "min": 1 },
+    { "metric": "visibility.gpu_visible.bucket.cutout_single", "stat": "min", "min": 1 },
+    { "metric": "visibility.gpu_visible.bucket.cutout_double", "stat": "min", "min": 1 },
+    { "metric": "visibility.transmission.gpu_visible.bucket.opaque_single", "stat": "min", "min": 1 },
+    { "metric": "visibility.transmission.gpu_visible.bucket.opaque_double", "stat": "min", "min": 1 },
+    { "metric": "visibility.transmission.gpu_visible.bucket.cutout_single", "stat": "min", "min": 1 },
+    { "metric": "visibility.transmission.gpu_visible.bucket.cutout_double", "stat": "min", "min": 1 },
+    { "metric": "visibility.gpu_visible.overflow", "stat": "max", "max": 0 },
+    { "metric": "visibility.transmission.gpu_visible.overflow", "stat": "max", "max": 0 },
+    { "metric": "visibility.gbuffer.resolve_invalid", "stat": "max", "max": 0 },
+    { "metric": "draw.shadow.cascade0.indirect_overflow", "stat": "max", "max": 0 },
+    { "metric": "draw.shadow.cascade1.indirect_overflow", "stat": "max", "max": 0 },
+    { "metric": "draw.shadow.cascade2.indirect_overflow", "stat": "max", "max": 0 },
+    { "metric": "draw.shadow.cascade3.indirect_overflow", "stat": "max", "max": 0 }
+  ]
+}

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-13
+updated: 2026-08-14
 authority: spec
 ---
 # Renderer Metrics Module and Automation Harness
@@ -89,24 +89,32 @@ This work is mostly consolidation. Reuse these; do not rebuild them.
 | Pipeline creation time (measured, then discarded into a log line) | `vulkan_graphics_graphics_pipeline_create()` in `vulkan/vulkan_pipeline.c` |
 | Pipeline bind and descriptor telemetry | `VkrPipelineRegistry.stats` |
 | Image→buffer copy with checked mip/layer/aspect regions and row layout | `vulkan_image_copy_to_buffer_region()` |
-| Fenced readback ring, three slots | `VulkanReadbackRing`, `renderer_vulkan_request_pixel_readback()` |
-| A **declared** graph readback pass — the pattern to copy | `Picking.Readback` in `assets/render_graphs/main.rendergraph.json`, `vkr_pass_picking_readback_execute()` |
-| Debug channels: normals, unlit, lighting | `VkrRenderMode`, consumed in `lib/src/renderer/vulkan/shaders/world/pbr.slang` and `world/default.slang` |
-| Shadow debug: cascades, factor, depth | `RendererFrontend.shadow_debug_mode` |
-| Offscreen editor color target | conditional graph resource `scene_color`, `RendererFrontend.offscreen_color_handles` |
+| Completion-gated readback ring | `vkr_capture_ring` shared by the Metal and bindless Vulkan implementations |
+| A **declared** graph readback pass — the pattern to copy | `Picking.Readback` in `assets/render_graphs/main.rendergraph.json`, lowered privately by each selected implementation |
+| Debug channels: normals, unlit, lighting | `VkrRenderMode`, consumed by the production Metal and bindless Vulkan packet shaders |
+| Shadow debug: cascades, factor, depth | `RendererFrontend.shadow_debug_mode` packetized through `VkrGpuDebugPayload` and frame constants |
+| Offscreen editor color target | conditional graph resource `scene_color`, realized by the selected implementation |
 | Monotonic timer | `vkr_platform_get_absolute_time()` |
 
-### 2.1 Forward default and provisional Metal deferred targets
+### 2.1 Backend topology and Metal deferred targets
 
-The default renderer remains forward. Its `normals`, `unlit`, and
-lighting-only channels are captured by re-rendering a settled frame with a
-different `render_mode` global.
+Vulkan remains forward while its deferred parity phases are absent. Metal now
+defaults to the deferred visibility-buffer topology; explicit
+`VKR_DEFERRED_ENABLED=0` retains forward only for P20 diagnosis. Harness
+provenance and effective configuration publish `world_renderer`, and that value
+enters the environment fingerprint so evidence from the two topologies cannot
+be compared under one identity.
 
-The provisional Metal P6/P8 path is the scoped exception. When
-`VKR_DEFERRED_ENABLED=1`, the graph realizes an opaque visibility attachment
-and material-resolve G-buffer targets. Their direct channels are diagnostic
-evidence for the Metal migration slice; they are unavailable on Vulkan and do
-not imply deferred final lighting, which remains P10 work.
+Metal realizes an opaque visibility attachment and material-resolve G-buffer
+targets. Their direct channels are diagnostic evidence for the migration and
+remain unavailable on Vulkan. `normals`, `unlit`, lighting-only, visibility,
+G-buffer, emissive, and resolve-debug channels are captured by replaying a
+settled frame with the corresponding render mode or direct graph resource.
+Shadow replay modes 1–3 are likewise packet data, not harness-only globals:
+Metal deferred opaque/transmission and diagnostic forward emit cascade
+selection, comparison factor, or sampled map depth from the lighting shadow
+sample. A requested shadow mode therefore changes the replayed image while
+mode zero retains ordinary final color.
 
 Existing telemetry is not uniformly safe to pull. Per-allocator
 `vkr_allocator_get_statistics()` reads non-atomic fields and cannot be sampled

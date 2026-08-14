@@ -40,6 +40,8 @@ void vkr_harness_provenance_system(VkrHarnessProvenance *provenance) {
                 "unknown");
   string_format(provenance->color_space, sizeof(provenance->color_space),
                 "unknown");
+  string_format(provenance->world_renderer, sizeof(provenance->world_renderer),
+                "unknown");
 }
 
 void vkr_harness_provenance_set_text(char *field, uint64_t capacity,
@@ -128,6 +130,7 @@ uint32_t vkr_harness_environment_fields(
   VKR_HARNESS_ENVIRONMENT_FIELD("color_format", provenance->color_format);
   VKR_HARNESS_ENVIRONMENT_FIELD("depth_format", provenance->depth_format);
   VKR_HARNESS_ENVIRONMENT_FIELD("color_space", provenance->color_space);
+  VKR_HARNESS_ENVIRONMENT_FIELD("world_renderer", provenance->world_renderer);
   VKR_HARNESS_ENVIRONMENT_FIELD("power_mode", provenance->power_mode);
   string_format(composite, sizeof(composite), "%d:%u",
                 provenance->process_priority, exclusive_gpu_lane);

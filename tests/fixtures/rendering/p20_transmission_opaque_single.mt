@@ -1,0 +1,14 @@
+name=p20_transmission_opaque_single
+type=pbr
+base_color=0.32,0.62,1.0,1.0
+metallic=0.0
+roughness=0.16
+transmission_factor=0.72
+ior=1.42
+thickness_factor=0.25
+attenuation_color=0.35,0.68,1.0
+attenuation_distance=1.5
+alpha_mode=opaque
+double_sided=false
+shader=shader.pbr.world
+pipeline=world

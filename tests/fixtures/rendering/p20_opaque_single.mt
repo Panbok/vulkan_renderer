@@ -1,0 +1,9 @@
+name=p20_opaque_single
+type=pbr
+base_color=0.85,0.20,0.16,1.0
+metallic=0.0
+roughness=0.55
+alpha_mode=opaque
+double_sided=false
+shader=shader.pbr.world
+pipeline=world

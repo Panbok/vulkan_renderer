@@ -1,0 +1,15 @@
+name=p20_transmission_cutout_single
+type=pbr
+base_color=0.96,0.30,0.72,0.75
+metallic=0.0
+roughness=0.18
+transmission_factor=0.68
+ior=1.46
+thickness_factor=0.25
+attenuation_color=1.0,0.38,0.76
+attenuation_distance=1.5
+alpha_mode=cutout
+alpha_cutoff=0.5
+double_sided=false
+shader=shader.pbr.world
+pipeline=world

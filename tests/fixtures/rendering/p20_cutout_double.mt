@@ -1,0 +1,10 @@
+name=p20_cutout_double
+type=pbr
+base_color=0.15,0.72,0.78,0.75
+metallic=0.0
+roughness=0.58
+alpha_mode=cutout
+alpha_cutoff=0.5
+double_sided=true
+shader=shader.pbr.world
+pipeline=world

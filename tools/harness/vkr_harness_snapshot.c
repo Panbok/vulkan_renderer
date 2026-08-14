@@ -353,6 +353,9 @@ int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
       string_format(report.provenance.color_space,
                     sizeof(report.provenance.color_space), "%s",
                     summary.provenance.color_space);
+      string_format(report.provenance.world_renderer,
+                    sizeof(report.provenance.world_renderer), "%s",
+                    summary.provenance.world_renderer);
       report.provenance.gpu_vendor_id = summary.provenance.gpu_vendor_id;
       report.provenance.gpu_device_id = summary.provenance.gpu_device_id;
       report.provenance.actual_present = summary.provenance.actual_present;

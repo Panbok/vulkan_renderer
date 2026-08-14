@@ -403,6 +403,7 @@ typedef struct VkrHarnessProvenance {
   char color_format[32];
   char depth_format[32];
   char color_space[32];
+  char world_renderer[32];
   VkrHarnessTarget actual_target;
   VkrHarnessPresentMode actual_present;
   uint32_t actual_target_image_count;

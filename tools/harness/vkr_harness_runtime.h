@@ -53,6 +53,7 @@ typedef struct VkrHarnessSampleFileHeader {
   char color_format[32];
   char depth_format[32];
   char color_space[32];
+  char world_renderer[32];
 } VkrHarnessSampleFileHeader;
 
 typedef struct VkrHarnessSampleMetric {
@@ -142,7 +143,7 @@ void vkr_harness_provenance_set_text(char *field, uint64_t capacity,
 void vkr_harness_provenance_collect(const char *executable,
                                     const char *repo_root,
                                     VkrHarnessProvenance *provenance);
-#define VKR_HARNESS_ENVIRONMENT_FIELD_COUNT 13u
+#define VKR_HARNESS_ENVIRONMENT_FIELD_COUNT 14u
 
 /**
  * Environment fingerprint inputs. Parent and child must project the same

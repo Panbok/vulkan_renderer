@@ -680,6 +680,8 @@ static void test_harness_report_shape(void) {
            "%s", report.environment_fingerprint);
   snprintf(report.policy_fingerprint, sizeof(report.policy_fingerprint), "%s",
            report.environment_fingerprint);
+  snprintf(report.provenance.world_renderer,
+           sizeof(report.provenance.world_renderer), "deferred");
   snprintf(report.authority_reasons[0], sizeof(report.authority_reasons[0]),
            "profile.local_only");
   report.authority_reason_count = 1u;
@@ -693,6 +695,7 @@ static void test_harness_report_shape(void) {
   assert(json && fread(json, 1u, (size_t)length, file) == (size_t)length);
   fclose(file);
   assert(strstr(json, "\"subsystem_mask\":\"0x0000000000001234\"") != NULL);
+  assert(strstr(json, "\"world_renderer\":\"deferred\"") != NULL);
   VkrHarnessJsonDocument document = {0};
   assert(vkr_harness_json_parse(&document, json, (uint64_t)length, &error));
   static const char *const fields[] = {"schema_version",

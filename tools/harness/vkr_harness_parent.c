@@ -226,6 +226,9 @@ vkr_harness_adopt_run_provenance(VkrHarnessProvenance *provenance,
   vkr_harness_provenance_set_text(provenance->color_space,
                                   sizeof(provenance->color_space),
                                   header->color_space);
+  vkr_harness_provenance_set_text(provenance->world_renderer,
+                                  sizeof(provenance->world_renderer),
+                                  header->world_renderer);
 }
 
 /**
@@ -256,6 +259,8 @@ vkr_harness_run_is_compatible(const VkrHarnessSampleSet *first,
                        first->header.depth_format) &&
          string_equals(candidate->header.color_space,
                        first->header.color_space) &&
+         string_equals(candidate->header.world_renderer,
+                       first->header.world_renderer) &&
          candidate->header.subsystem_mask == first->header.subsystem_mask;
 }
 

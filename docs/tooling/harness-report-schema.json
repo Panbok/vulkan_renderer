@@ -296,6 +296,7 @@
         "gpu_vendor_id",
         "gpu_device_id",
         "driver",
+        "world_renderer",
         "power_mode",
         "thermal_state_start",
         "thermal_state_end",
@@ -352,6 +353,9 @@
           "type": "string",
           "minLength": 1
         },
+        "world_renderer": {
+          "enum": ["legacy_forward", "deferred", "unknown"]
+        },
         "power_mode": {
           "type": "string",
           "minLength": 1
@@ -380,6 +384,7 @@
         "color_format",
         "depth_format",
         "color_space",
+        "world_renderer",
         "present_mode",
         "boot_profile",
         "subsystem_mask",
@@ -432,6 +437,9 @@
           "type": "string",
           "minLength": 1,
           "description": "Actual WSI color space; unknown for an ordinary-image offscreen target."
+        },
+        "world_renderer": {
+          "enum": ["legacy_forward", "deferred", "unknown"]
         },
         "present_mode": {
           "enum": [
