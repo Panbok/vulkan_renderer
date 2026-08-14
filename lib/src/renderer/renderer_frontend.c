@@ -25,10 +25,24 @@
 #if defined(PLATFORM_APPLE)
 #include "renderer/metal/vkr_metal_packet_renderer.h"
 
+_Static_assert(VKR_RENDERER_IMPL_DRAW_BUCKET_COUNT ==
+                   VKR_WORLD_DRAW_STATE_BUCKET_COUNT,
+               "backend-neutral and Metal draw bucket counts must match");
+_Static_assert(VKR_RENDERER_IMPL_SHADOW_CASCADE_COUNT ==
+                   VKR_SHADOW_CASCADE_COUNT_MAX,
+               "backend-neutral and frontend cascade counts must match");
+
 static bool8_t vkr_renderer_env_enabled(const char *name) {
   const char *value = name ? getenv(name) : NULL;
   return value && value[0] != '\0' && strcmp(value, "0") != 0 ? true_v
                                                               : false_v;
+}
+
+/** P20 default: only an explicit zero selects the diagnostic forward route. */
+static bool8_t vkr_renderer_env_default_enabled(const char *name) {
+  const char *value = name ? getenv(name) : NULL;
+  return !value || value[0] == '\0' || strcmp(value, "0") != 0 ? true_v
+                                                               : false_v;
 }
 
 static void
@@ -40,12 +54,27 @@ vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
   *destination = (VkrRendererImplSubmitResult){
       .submit_value = source->submit_value,
       .source_frame_index = source->source_frame_index,
+      .deferred_selected = source->deferred_selected,
+      .deferred_fallback_reasons = source->deferred_fallback_reasons,
       .executed_pass_count = source->executed_pass_count,
       .indexed_draw_count = source->indexed_draw_count,
       .shadow_draw_count = source->shadow_draw_count,
       .opaque_draw_count = source->opaque_draw_count,
       .transmission_draw_count = source->transmission_draw_count,
       .blend_draw_count = source->blend_draw_count,
+      .gpu_visible_count = source->gpu_visible_count,
+      .gpu_overflow_count = source->gpu_overflow_count,
+      .gpu_resolve_invalid_count = source->gpu_resolve_invalid_count,
+      .gpu_occlusion_culled_count = source->gpu_occlusion_culled_count,
+      .transmission_gpu_visible_count = source->transmission_gpu_visible_count,
+      .transmission_gpu_overflow_count =
+          source->transmission_gpu_overflow_count,
+      .transmission_gpu_occlusion_culled_count =
+          source->transmission_gpu_occlusion_culled_count,
+      .transmission_compact_overflow_count =
+          source->transmission_compact_overflow_count,
+      .hzb_history_valid = source->hzb_history_valid,
+      .has_gpu_draw_diagnostics = source->has_gpu_draw_diagnostics,
       .transmission_coverage_valid = source->has_transmission_coverage,
       .capture = source->capture,
       .materials =
@@ -70,6 +99,20 @@ vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
   MemCopy(destination->transmission_coverage_extent,
           source->transmission_coverage_extent,
           sizeof(destination->transmission_coverage_extent));
+  MemCopy(destination->gpu_bucket_counts, source->gpu_bucket_counts,
+          sizeof(destination->gpu_bucket_counts));
+  MemCopy(destination->transmission_gpu_bucket_counts,
+          source->transmission_gpu_bucket_counts,
+          sizeof(destination->transmission_gpu_bucket_counts));
+  MemCopy(destination->shadow_gpu_visible_count,
+          source->shadow_gpu_visible_count,
+          sizeof(destination->shadow_gpu_visible_count));
+  MemCopy(destination->shadow_gpu_bucket_counts,
+          source->shadow_gpu_bucket_counts,
+          sizeof(destination->shadow_gpu_bucket_counts));
+  MemCopy(destination->shadow_gpu_overflow_count,
+          source->shadow_gpu_overflow_count,
+          sizeof(destination->shadow_gpu_overflow_count));
   const VkrMetalMemoryMetrics *source_memory = &source->memory.suballocations;
   VkrRendererImplMemoryMetrics *memory = &destination->memory;
 #define VKR_LOWER_MEMORY_FIELD(FIELD) memory->FIELD = source_memory->FIELD
@@ -146,9 +189,9 @@ vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
 }
 #endif
 
-static void
-vkr_renderer_record_gpu_candidate_metrics(RendererFrontend *renderer,
-                                          const VkrRenderPacket *packet) {
+static void vkr_renderer_record_gpu_candidate_metrics(
+    RendererFrontend *renderer, const VkrRenderPacket *packet,
+    const VkrRendererImplSubmitResult *submit_result) {
   const uint32_t count =
       packet && packet->world ? packet->world->gpu_candidate_count : 0u;
   const uint32_t transmission_count =
@@ -159,11 +202,26 @@ vkr_renderer_record_gpu_candidate_metrics(RendererFrontend *renderer,
       transmission_count;
   renderer->frame_metrics.world.gpu_candidate_capacity =
       VKR_GPU_DRAW_CANDIDATE_CAPACITY;
+  const VkrDeferredEligibility eligibility =
+      vkr_render_packet_deferred_eligibility(packet);
+  const uint32_t capacity_reasons = VKR_DEFERRED_FALLBACK_OPAQUE_CAPACITY |
+                                    VKR_DEFERRED_FALLBACK_TRANSMISSION_CAPACITY;
+  const uint32_t unsupported_reasons = VKR_DEFERRED_FALLBACK_OPAQUE_INPUT |
+                                       VKR_DEFERRED_FALLBACK_TRANSMISSION_INPUT;
+  const uint32_t fallback_reasons =
+      submit_result ? submit_result->deferred_fallback_reasons
+                    : eligibility.fallback_reasons;
+  const bool8_t fallback = renderer->deferred_requested &&
+                           eligibility.has_deferred_work &&
+                           fallback_reasons != 0u;
+  renderer->frame_metrics.world.deferred_selected =
+      submit_result ? submit_result->deferred_selected : false_v;
+  renderer->frame_metrics.world.deferred_legacy_forward_fallbacks =
+      fallback ? 1u : 0u;
   renderer->frame_metrics.world.gpu_candidate_overflow_fallbacks =
-      count > VKR_GPU_DRAW_CANDIDATE_CAPACITY ||
-              transmission_count > VKR_GPU_DRAW_CANDIDATE_CAPACITY
-          ? 1u
-          : 0u;
+      fallback && (fallback_reasons & capacity_reasons) != 0u ? 1u : 0u;
+  renderer->frame_metrics.world.deferred_unsupported_input_fallbacks =
+      fallback && (fallback_reasons & unsupported_reasons) != 0u ? 1u : 0u;
   VkrGeometryMegabufferMetrics *mega =
       &renderer->frame_metrics.world.geometry_megabuffer;
   if (renderer->metal_renderer)
@@ -574,7 +632,8 @@ renderer_impl_metal_initialize(void *state, VkrWindow *window, uint32_t width,
   RendererFrontend *renderer = state;
 #if defined(PLATFORM_APPLE)
   const bool8_t deferred_enabled =
-      vkr_renderer_env_enabled("VKR_DEFERRED_ENABLED");
+      vkr_renderer_env_default_enabled("VKR_DEFERRED_ENABLED");
+  renderer->deferred_requested = deferred_enabled;
   const bool8_t shader_validation =
       vkr_renderer_env_enabled("MTL_SHADER_VALIDATION");
   /* Full-resolution deferred intermediates scale with the completion-slot
@@ -602,6 +661,7 @@ renderer_impl_metal_initialize(void *state, VkrWindow *window, uint32_t width,
               ? VKR_METAL_PACKET_TARGET_OFFSCREEN
               : VKR_METAL_PACKET_TARGET_WINDOW,
       .metal_layer = window ? vkr_window_get_metal_layer(window) : NULL,
+      .requested_present_mode = backend_config->requested_present_mode,
       .heap_size = placement_heap_size,
       .upload_ring_size = MB(768),
       .readback_ring_size = MB(96),
@@ -613,6 +673,8 @@ renderer_impl_metal_initialize(void *state, VkrWindow *window, uint32_t width,
       .srgb_output = true_v,
       .convert_vulkan_clip_y = true_v,
       .deferred_enabled = deferred_enabled,
+      .transmission_compact_enabled =
+          vkr_renderer_env_enabled("VKR_TRANSMISSION_COMPACT_ENABLED"),
       .hzb_enabled = !vkr_renderer_env_enabled("VKR_HZB_DISABLED"),
       .max_images = 128,
       .max_passes = 64,
@@ -1111,7 +1173,7 @@ renderer_impl_bindless_submit_packet(void *state, const VkrRenderPacket *packet,
   rf->frame_metrics.world.transparent_draws = result.blend_draw_count;
   rf->frame_metrics.world.draws_issued = world_draw_count;
   rf->frame_metrics.world.draw_calls_issued = world_draw_count;
-  vkr_renderer_record_gpu_candidate_metrics(rf, &prepared_packet);
+  vkr_renderer_record_gpu_candidate_metrics(rf, &prepared_packet, NULL);
   for (uint32_t cascade = 0u; cascade < VKR_SHADOW_CASCADE_COUNT_MAX;
        ++cascade) {
     rf->frame_metrics.shadow.shadow_draw_calls_opaque[cascade] =
@@ -1160,7 +1222,8 @@ static void renderer_impl_metal_get_device_information(
       .hdr_ibl_max_cube_extent = VKR_IBL_PREFILTER_SIZE,
       .hdr_ibl_max_mip_levels = VKR_IBL_PREFILTER_MIP_COUNT,
       .actual_target_kind = renderer->present_target.kind,
-      .actual_present_mode = VKR_PRESENT_MODE_FIFO,
+      .actual_present_mode =
+          vkr_metal_packet_renderer_present_mode(renderer->metal_renderer),
       .actual_target_image_count =
           renderer->impl.caps.present_target_image_count,
       .actual_target_width = renderer->last_window_width,
@@ -1171,6 +1234,10 @@ static void renderer_impl_metal_get_device_information(
               : VKR_SURFACE_COLOR_FORMAT_BGRA8_SRGB,
       .actual_depth_format = VKR_SURFACE_DEPTH_FORMAT_D32_SFLOAT,
       .actual_color_space = VKR_SURFACE_COLOR_SPACE_SRGB_NONLINEAR,
+      .actual_world_renderer_topology =
+          renderer->deferred_requested
+              ? VKR_WORLD_RENDERER_TOPOLOGY_DEFERRED
+              : VKR_WORLD_RENDERER_TOPOLOGY_LEGACY_FORWARD,
   };
 }
 
@@ -1251,6 +1318,8 @@ static void renderer_impl_bindless_get_device_information(
       .actual_color_format = color_format,
       .actual_depth_format = depth_format,
       .actual_color_space = color_space,
+      .actual_world_renderer_topology =
+          VKR_WORLD_RENDERER_TOPOLOGY_LEGACY_FORWARD,
   };
 }
 
@@ -2100,6 +2169,68 @@ vkr_internal VkrRendererError vkr_renderer_validate_text_draws(
   return VKR_RENDERER_ERROR_NONE;
 }
 
+typedef struct VkrGpuCandidateCoverage {
+  uint32_t camera_opaque_count;
+  uint32_t shadow_count;
+} VkrGpuCandidateCoverage;
+
+vkr_internal VkrRendererError vkr_renderer_validate_gpu_candidates(
+    const VkrWorldDrawCandidate *candidates, uint32_t candidate_count,
+    const VkrGpuCandidateCoverage *expected_coverage, const char *path,
+    VkrValidationError *out_validation_error) {
+  if (candidate_count > 0u && !candidates) {
+    return vkr_renderer_validation_fail(out_validation_error,
+                                        VKR_RENDERER_ERROR_INVALID_PARAMETER,
+                                        path, "GPU candidate pointer is NULL");
+  }
+
+  const uint32_t known_flags = VKR_WORLD_DRAW_CANDIDATE_BOUNDS_VALID |
+                               VKR_WORLD_DRAW_CANDIDATE_CAMERA_OPAQUE |
+                               VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER;
+  VkrGpuCandidateCoverage actual_coverage = {0};
+  for (uint32_t i = 0u; i < candidate_count; ++i) {
+    const VkrWorldDrawCandidate *candidate = &candidates[i];
+    bool8_t finite = true_v;
+    for (uint32_t element = 0u;
+         element < ArrayCount(candidate->instance.model.elements); ++element) {
+      if (!isfinite(candidate->instance.model.elements[element])) {
+        finite = false_v;
+        break;
+      }
+    }
+    finite = finite && isfinite(candidate->local_bounding_sphere.x) &&
+             isfinite(candidate->local_bounding_sphere.y) &&
+             isfinite(candidate->local_bounding_sphere.z) &&
+             isfinite(candidate->local_bounding_sphere.w);
+    if (!finite || candidate->mesh.id == 0u ||
+        candidate->mesh.generation == VKR_INVALID_ID ||
+        candidate->geometry.id == 0u ||
+        candidate->geometry.generation == VKR_INVALID_ID ||
+        candidate->material.id == 0u ||
+        candidate->material.generation == VKR_INVALID_ID ||
+        candidate->state_bucket >= VKR_WORLD_DRAW_STATE_BUCKET_COUNT ||
+        candidate->local_bounding_sphere.w < 0.0f ||
+        (candidate->flags & ~known_flags) != 0u) {
+      return vkr_renderer_validation_failf(
+          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "GPU candidate row is invalid", "%s[%u]", path, i);
+    }
+    actual_coverage.camera_opaque_count +=
+        (candidate->flags & VKR_WORLD_DRAW_CANDIDATE_CAMERA_OPAQUE) != 0u;
+    actual_coverage.shadow_count +=
+        (candidate->flags & VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER) != 0u;
+  }
+  if (expected_coverage &&
+      (actual_coverage.camera_opaque_count !=
+           expected_coverage->camera_opaque_count ||
+       actual_coverage.shadow_count != expected_coverage->shadow_count)) {
+    return vkr_renderer_validation_fail(
+        out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER, path,
+        "GPU candidate coverage summary does not match row flags");
+  }
+  return VKR_RENDERER_ERROR_NONE;
+}
+
 /**
  * @brief Validates a render packet without touching any renderer state.
  *
@@ -2135,6 +2266,12 @@ vkr_internal VkrRendererError vkr_renderer_validate_packet(
     return vkr_renderer_validation_fail(
         out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
         "globals.exposure", "exposure must be finite and non-negative");
+  }
+
+  if (packet->debug && packet->debug->shadow_debug_mode > 3u) {
+    return vkr_renderer_validation_fail(
+        out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+        "debug.shadow_debug_mode", "shadow debug mode is out of range");
   }
 
   const VkrFrameLighting *lighting = packet->lighting;
@@ -2257,56 +2394,27 @@ vkr_internal VkrRendererError vkr_renderer_validate_packet(
 
   const VkrWorldPassPayload *world = packet->world;
   if (world) {
-    if (world->gpu_candidate_count > 0u && !world->gpu_candidates) {
-      return vkr_renderer_validation_fail(
-          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
-          "world.gpu_candidates", "gpu_candidates pointer is NULL");
-    }
-    if (world->transmission_gpu_candidate_count > 0u &&
-        !world->transmission_gpu_candidates) {
-      return vkr_renderer_validation_fail(
-          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
-          "world.transmission_gpu_candidates",
-          "transmission_gpu_candidates pointer is NULL");
-    }
-    for (uint32_t i = 0u; i < world->gpu_candidate_count; ++i) {
-      const VkrWorldDrawCandidate *candidate = &world->gpu_candidates[i];
-      if (candidate->mesh.id == 0u ||
-          candidate->mesh.generation == VKR_INVALID_ID ||
-          candidate->geometry.id == 0u ||
-          candidate->geometry.generation == VKR_INVALID_ID ||
-          candidate->material.id == 0u ||
-          candidate->material.generation == VKR_INVALID_ID ||
-          candidate->state_bucket >= VKR_WORLD_DRAW_STATE_BUCKET_COUNT ||
-          candidate->local_bounding_sphere.w < 0.0f) {
-        return vkr_renderer_validation_fail(
-            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
-            "world.gpu_candidates", "GPU candidate row is invalid");
-      }
-    }
-    for (uint32_t i = 0u; i < world->transmission_gpu_candidate_count; ++i) {
-      const VkrWorldDrawCandidate *candidate =
-          &world->transmission_gpu_candidates[i];
-      if (candidate->mesh.id == 0u ||
-          candidate->mesh.generation == VKR_INVALID_ID ||
-          candidate->geometry.id == 0u ||
-          candidate->geometry.generation == VKR_INVALID_ID ||
-          candidate->material.id == 0u ||
-          candidate->material.generation == VKR_INVALID_ID ||
-          candidate->state_bucket >= VKR_WORLD_DRAW_STATE_BUCKET_COUNT ||
-          candidate->local_bounding_sphere.w < 0.0f) {
-        return vkr_renderer_validation_fail(
-            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
-            "world.transmission_gpu_candidates",
-            "transmission GPU candidate row is invalid");
-      }
-    }
+    const VkrGpuCandidateCoverage expected_coverage = {
+        .camera_opaque_count = world->gpu_camera_opaque_candidate_count,
+        .shadow_count = world->gpu_shadow_candidate_count,
+    };
+    VkrRendererError err = vkr_renderer_validate_gpu_candidates(
+        world->gpu_candidates, world->gpu_candidate_count, &expected_coverage,
+        "world.gpu_candidates", out_validation_error);
+    if (err != VKR_RENDERER_ERROR_NONE)
+      return err;
+    err = vkr_renderer_validate_gpu_candidates(
+        world->transmission_gpu_candidates,
+        world->transmission_gpu_candidate_count, NULL,
+        "world.transmission_gpu_candidates", out_validation_error);
+    if (err != VKR_RENDERER_ERROR_NONE)
+      return err;
     if (world->instance_count > 0 && !world->instances) {
       return vkr_renderer_validation_fail(
           out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
           "world.instances", "instances pointer is NULL");
     }
-    VkrRendererError err = vkr_renderer_validate_draws(
+    err = vkr_renderer_validate_draws(
         rf, world->opaque_draws, world->opaque_draw_count,
         world->instance_count, "world.opaque_draws", VKR_PIPELINE_DOMAIN_WORLD,
         out_validation_error);
@@ -2568,58 +2676,101 @@ renderer_impl_metal_submit_packet(void *state, const VkrRenderPacket *packet,
         out_validation_error, VKR_RENDERER_ERROR_SUBMISSION_FAILED, "metal",
         "Metal packet submission failed");
   }
+  VkrRendererImplSubmitResult current_result = {0};
+  vkr_renderer_impl_lower_metal_result(&result, &current_result);
+  current_result.source_frame_index = packet->frame.frame_index;
   if (!rf->timing_completed_ready) {
-    vkr_renderer_impl_lower_metal_result(&result, &rf->timing_result);
+    rf->timing_result = current_result;
     rf->timing_result.source_frame_index = packet->frame.frame_index;
   }
-  rf->frame_metrics.world.draws_collected = result.indexed_draw_count;
-  rf->frame_metrics.world.opaque_draws = result.opaque_draw_count;
-  rf->frame_metrics.world.transmission_draws = result.transmission_draw_count;
-  rf->frame_metrics.world.transparent_draws = result.blend_draw_count;
-  rf->frame_metrics.world.draws_issued = result.indexed_draw_count;
-  rf->frame_metrics.world.draw_calls_issued = result.indexed_draw_count;
-  vkr_renderer_record_gpu_candidate_metrics(rf, &prepared_packet);
-  rf->frame_metrics.world.hzb_history_valid = result.hzb_history_valid;
-  if (result.has_gpu_draw_diagnostics) {
-    rf->frame_metrics.world.gpu_visible_count = result.gpu_visible_count;
-    MemCopy(rf->frame_metrics.world.gpu_bucket_counts, result.gpu_bucket_counts,
+  const VkrRendererImplSubmitResult *observed = &rf->timing_result;
+  rf->frame_metrics.world.draws_collected = observed->indexed_draw_count;
+  rf->frame_metrics.world.opaque_draws = observed->opaque_draw_count;
+  rf->frame_metrics.world.transmission_draws =
+      observed->transmission_draw_count;
+  rf->frame_metrics.world.transparent_draws = observed->blend_draw_count;
+  rf->frame_metrics.world.draws_issued = observed->indexed_draw_count;
+  rf->frame_metrics.world.draw_calls_issued = observed->indexed_draw_count;
+  vkr_renderer_record_gpu_candidate_metrics(rf, &prepared_packet,
+                                            &current_result);
+  rf->frame_metrics.world.hzb_history_valid = observed->hzb_history_valid;
+  if (observed->has_gpu_draw_diagnostics) {
+    rf->frame_metrics.world.draws_collected =
+        rf->frame_metrics.world.gpu_candidate_count +
+        rf->frame_metrics.world.transmission_gpu_candidate_count +
+        observed->blend_draw_count;
+    rf->frame_metrics.world.gpu_visible_count = observed->gpu_visible_count;
+    MemCopy(rf->frame_metrics.world.gpu_bucket_counts,
+            observed->gpu_bucket_counts,
             sizeof(rf->frame_metrics.world.gpu_bucket_counts));
     rf->frame_metrics.world.gpu_compaction_overflow_count =
-        result.gpu_overflow_count;
+        observed->gpu_overflow_count;
     rf->frame_metrics.world.gpu_resolve_invalid_count =
-        result.gpu_resolve_invalid_count;
+        observed->gpu_resolve_invalid_count;
     rf->frame_metrics.world.gpu_occlusion_culled_count =
-        result.gpu_occlusion_culled_count;
+        observed->gpu_occlusion_culled_count;
     rf->frame_metrics.world.transmission_gpu_visible_count =
-        result.transmission_gpu_visible_count;
+        observed->transmission_gpu_visible_count;
     MemCopy(rf->frame_metrics.world.transmission_gpu_bucket_counts,
-            result.transmission_gpu_bucket_counts,
+            observed->transmission_gpu_bucket_counts,
             sizeof(rf->frame_metrics.world.transmission_gpu_bucket_counts));
     rf->frame_metrics.world.transmission_gpu_compaction_overflow_count =
-        result.transmission_gpu_overflow_count;
+        observed->transmission_gpu_overflow_count;
     rf->frame_metrics.world.transmission_gpu_occlusion_culled_count =
-        result.transmission_gpu_occlusion_culled_count;
+        observed->transmission_gpu_occlusion_culled_count;
+    rf->frame_metrics.world.transmission_pixel_compaction_overflow_count =
+        observed->transmission_compact_overflow_count;
     rf->frame_metrics.world.gpu_diagnostics_valid = true_v;
+    uint32_t opaque_indirect_calls = 0u;
+    uint32_t transmission_indirect_calls = 0u;
+    uint32_t max_batch_size = 0u;
+    const uint32_t transmission_layers =
+        ArrayCount(observed->transmission_covered_pixels);
+    for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
+         ++bucket) {
+      opaque_indirect_calls +=
+          observed->gpu_bucket_counts[bucket] > 0u ? 1u : 0u;
+      max_batch_size = MAX(max_batch_size, observed->gpu_bucket_counts[bucket]);
+      if (observed->transmission_gpu_bucket_counts[bucket] > 0u)
+        transmission_indirect_calls += transmission_layers;
+      max_batch_size =
+          MAX(max_batch_size, observed->transmission_gpu_bucket_counts[bucket]);
+    }
+    const uint32_t indirect_draws =
+        observed->gpu_visible_count +
+        observed->transmission_gpu_visible_count * transmission_layers;
+    const uint32_t indirect_calls =
+        opaque_indirect_calls + transmission_indirect_calls;
+    rf->frame_metrics.world.opaque_batches = opaque_indirect_calls;
+    rf->frame_metrics.world.indirect_draws_issued = indirect_draws;
+    rf->frame_metrics.world.indirect_calls_issued = indirect_calls;
+    rf->frame_metrics.world.draws_issued =
+        indirect_draws + observed->blend_draw_count;
+    rf->frame_metrics.world.draw_calls_issued =
+        indirect_calls + observed->blend_draw_count;
+    rf->frame_metrics.world.max_batch_size = max_batch_size;
+    rf->frame_metrics.world.avg_batch_size =
+        indirect_calls > 0u ? (float32_t)indirect_draws / indirect_calls : 0.0f;
   }
-  if (result.has_gpu_draw_diagnostics) {
+  if (observed->has_gpu_draw_diagnostics) {
     for (uint32_t cascade = 0u; cascade < VKR_SHADOW_CASCADE_COUNT_MAX;
          ++cascade) {
       rf->frame_metrics.shadow.shadow_indirect_draws_opaque[cascade] =
-          result.shadow_gpu_visible_count[cascade];
+          observed->shadow_gpu_visible_count[cascade];
       uint32_t indirect_calls = 0u;
       for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
            ++bucket) {
         indirect_calls +=
-            result.shadow_gpu_bucket_counts[cascade][bucket] > 0u ? 1u : 0u;
+            observed->shadow_gpu_bucket_counts[cascade][bucket] > 0u ? 1u : 0u;
       }
       rf->frame_metrics.shadow.shadow_indirect_calls_opaque[cascade] =
           indirect_calls;
       rf->frame_metrics.shadow.shadow_indirect_overflow[cascade] =
-          result.shadow_gpu_overflow_count[cascade];
+          observed->shadow_gpu_overflow_count[cascade];
     }
   } else {
     rf->frame_metrics.shadow.shadow_draw_calls_opaque[0] =
-        result.shadow_draw_count;
+        observed->shadow_draw_count;
   }
   if (out_metrics) {
     *out_metrics = rf->frame_metrics;

@@ -71,12 +71,15 @@ static void test_metal_packet_shader_minimum_alignment(void) {
 static void test_metal_packet_transmission_coverage_abi(void) {
   printf("  Running test_metal_packet_transmission_coverage_abi...\n");
   assert(sizeof(VkrGpuDrawCompactionState) == 80u);
-  assert(sizeof(VkrMetalPacketTransmissionDiagnostics) == 96u);
+  assert(sizeof(VkrMetalPacketTransmissionDiagnostics) == 112u);
   assert(offsetof(VkrMetalPacketTransmissionDiagnostics, covered_pixels) ==
          sizeof(VkrGpuDrawCompactionState));
   const VkrMetalPacketAbiRecord *record = vkr_metal_packet_abi_record(
       VKR_METAL_PACKET_ABI_TRANSMISSION_COVERAGE_ROOT);
   assert(record && record->expected_size == 32u && record->field_count == 5u);
+  record = vkr_metal_packet_abi_record(
+      VKR_METAL_PACKET_ABI_TRANSMISSION_COMPACT_ROOT);
+  assert(record && record->expected_size == 80u && record->field_count == 11u);
   printf("  test_metal_packet_transmission_coverage_abi PASSED\n");
 }
 

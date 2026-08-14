@@ -621,6 +621,21 @@ static void test_renderer_owner_metric_catalog(void) {
          VKR_METRIC_ID_INVALID);
   assert(renderer_metrics.ids.visibility_transmission_coverage_extent_height !=
          VKR_METRIC_ID_INVALID);
+  assert(
+      renderer_metrics.ids.visibility_transmission_pixel_compaction_overflow !=
+      VKR_METRIC_ID_INVALID);
+  assert(
+      renderer_metrics.ids.visibility_transmission_gpu_bucket_opaque_single !=
+      VKR_METRIC_ID_INVALID);
+  assert(
+      renderer_metrics.ids.visibility_transmission_gpu_bucket_opaque_double !=
+      VKR_METRIC_ID_INVALID);
+  assert(
+      renderer_metrics.ids.visibility_transmission_gpu_bucket_cutout_single !=
+      VKR_METRIC_ID_INVALID);
+  assert(
+      renderer_metrics.ids.visibility_transmission_gpu_bucket_cutout_double !=
+      VKR_METRIC_ID_INVALID);
   assert(renderer_metrics.previous.gpu_memory_interval_contiguous);
 
   uint32_t catalog_count = 0;

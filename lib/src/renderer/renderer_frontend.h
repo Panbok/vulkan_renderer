@@ -59,6 +59,9 @@ typedef struct VkrWorldBatchMetrics {
   uint32_t max_batch_size;
   uint32_t gpu_candidate_count;
   uint32_t gpu_candidate_capacity;
+  bool8_t deferred_selected;
+  uint32_t deferred_legacy_forward_fallbacks;
+  uint32_t deferred_unsupported_input_fallbacks;
   uint32_t gpu_candidate_overflow_fallbacks;
   uint32_t gpu_visible_count;
   uint32_t gpu_bucket_counts[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
@@ -70,6 +73,7 @@ typedef struct VkrWorldBatchMetrics {
   uint32_t transmission_gpu_bucket_counts[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
   uint32_t transmission_gpu_compaction_overflow_count;
   uint32_t transmission_gpu_occlusion_culled_count;
+  uint32_t transmission_pixel_compaction_overflow_count;
   bool8_t hzb_history_valid;
   bool8_t gpu_diagnostics_valid;
   VkrGeometryMegabufferMetrics geometry_megabuffer;
@@ -126,6 +130,8 @@ struct s_RendererFrontend {
   bool8_t timing_completed_ready;
   bool8_t supports_multi_draw_indirect;
   bool8_t supports_draw_indirect_first_instance;
+  /** Metal P20 default request; false only for diagnostic forward selection. */
+  bool8_t deferred_requested;
   VkrRendererBootMetrics boot_metrics;
   VkrSubsystemPlan subsystem_plan;
   VkrMetricEventProducer hdr_decode_metrics;

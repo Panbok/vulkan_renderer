@@ -27,6 +27,8 @@ typedef struct VkrRendererImplCapabilities {
 enum {
   VKR_RENDERER_IMPL_TIMING_NAME_CAPACITY = 64,
   VKR_RENDERER_IMPL_MAX_PASS_TIMINGS = 64,
+  VKR_RENDERER_IMPL_DRAW_BUCKET_COUNT = 4,
+  VKR_RENDERER_IMPL_SHADOW_CASCADE_COUNT = 8,
 };
 
 typedef enum VkrRendererImplMemoryClass {
@@ -141,12 +143,30 @@ typedef struct VkrRendererImplPassTiming {
 typedef struct VkrRendererImplSubmitResult {
   uint64_t submit_value;
   uint64_t source_frame_index;
+  bool8_t deferred_selected;
+  uint32_t deferred_fallback_reasons;
   uint32_t executed_pass_count;
   uint32_t indexed_draw_count;
   uint32_t shadow_draw_count;
   uint32_t opaque_draw_count;
   uint32_t transmission_draw_count;
   uint32_t blend_draw_count;
+  uint32_t gpu_visible_count;
+  uint32_t gpu_bucket_counts[VKR_RENDERER_IMPL_DRAW_BUCKET_COUNT];
+  uint32_t gpu_overflow_count;
+  uint32_t gpu_resolve_invalid_count;
+  uint32_t gpu_occlusion_culled_count;
+  uint32_t transmission_gpu_visible_count;
+  uint32_t transmission_gpu_bucket_counts[VKR_RENDERER_IMPL_DRAW_BUCKET_COUNT];
+  uint32_t transmission_gpu_overflow_count;
+  uint32_t transmission_gpu_occlusion_culled_count;
+  uint32_t transmission_compact_overflow_count;
+  uint32_t shadow_gpu_visible_count[VKR_RENDERER_IMPL_SHADOW_CASCADE_COUNT];
+  uint32_t shadow_gpu_bucket_counts[VKR_RENDERER_IMPL_SHADOW_CASCADE_COUNT]
+                                   [VKR_RENDERER_IMPL_DRAW_BUCKET_COUNT];
+  uint32_t shadow_gpu_overflow_count[VKR_RENDERER_IMPL_SHADOW_CASCADE_COUNT];
+  bool8_t hzb_history_valid;
+  bool8_t has_gpu_draw_diagnostics;
   uint32_t transmission_covered_pixels[4];
   uint32_t transmission_coverage_extent[2];
   bool8_t transmission_coverage_valid;

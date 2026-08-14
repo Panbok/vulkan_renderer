@@ -56,9 +56,9 @@ struct VkrMetalPacketFrameRoot
     uint render_mode;
     // Scalar padding matches the host/native-MSL arrays. Metal aligns uint3 to
     // 16 bytes and would move every following field.
+    uint shadow_debug_mode;
     uint reserved_1_0;
     uint reserved_1_1;
-    uint reserved_1_2;
     StructuredBuffer<float4> point_light_data;
     StructuredBuffer<uint4> point_light_masks;
     float4 point_light_grid_origin_cell_size;

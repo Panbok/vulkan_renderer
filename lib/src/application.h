@@ -728,6 +728,8 @@ vkr_internal bool8_t application_build_world_payload(
   uint32_t shadow_alpha_count = 0;
   uint32_t instance_slot_count = 0;
   uint32_t gpu_candidate_count = 0;
+  uint32_t gpu_camera_opaque_candidate_count = 0;
+  uint32_t gpu_shadow_candidate_count = 0;
   uint32_t transmission_gpu_candidate_count = 0;
 
   // ---- Count pass: classify each object once, then size the lists. ----
@@ -766,6 +768,10 @@ vkr_internal bool8_t application_build_world_payload(
       const bool8_t transmissive =
           application_material_is_transmissive(rf, material);
       gpu_candidate_count++;
+      if (!transmissive && !alpha.world_transparent) {
+        gpu_camera_opaque_candidate_count++;
+      }
+      gpu_shadow_candidate_count++;
       if (transmissive) {
         transmission_gpu_candidate_count++;
       }
@@ -833,6 +839,10 @@ vkr_internal bool8_t application_build_world_payload(
       const bool8_t transmissive =
           application_material_is_transmissive(rf, material);
       gpu_candidate_count++;
+      if (!transmissive && !alpha.world_transparent) {
+        gpu_camera_opaque_candidate_count++;
+      }
+      gpu_shadow_candidate_count++;
       if (transmissive) {
         transmission_gpu_candidate_count++;
       }
@@ -1284,6 +1294,8 @@ vkr_internal bool8_t application_build_world_payload(
   *out_payload = (VkrWorldPassPayload){
       .gpu_candidates = gpu_candidates,
       .gpu_candidate_count = gpu_candidate_count,
+      .gpu_camera_opaque_candidate_count = gpu_camera_opaque_candidate_count,
+      .gpu_shadow_candidate_count = gpu_shadow_candidate_count,
       .transmission_gpu_candidates = transmission_gpu_candidates,
       .transmission_gpu_candidate_count = transmission_gpu_candidate_count,
       .opaque_draws = opaque_draws,
@@ -1593,10 +1605,14 @@ void application_draw_frame(Application *application, float64_t delta) {
   VkrGpuDebugPayload debug_payload = {
       .enable_timing = gpu_timing,
       .capture_pass_timestamps = gpu_timing,
+      .shadow_debug_mode = application->renderer.shadow_debug_mode,
       .capture = application->capture_request,
   };
   const VkrGpuDebugPayload *debug_ptr =
-      (gpu_timing || application->capture_request) ? &debug_payload : NULL;
+      (gpu_timing || application->capture_request ||
+       application->renderer.shadow_debug_mode != 0u)
+          ? &debug_payload
+          : NULL;
   VkrFrameIblProbe frame_ibl_probes[VKR_FRAME_IBL_PROBE_MAX] = {0};
   uint32_t frame_ibl_probe_count = 0;
   if (active_scene) {

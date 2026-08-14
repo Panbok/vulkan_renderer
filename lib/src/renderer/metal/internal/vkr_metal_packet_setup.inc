@@ -54,6 +54,7 @@ vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
   case VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT:
   case VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT:
   case VKR_METAL_PACKET_ABI_TRANSMISSION_COVERAGE_ROOT:
+  case VKR_METAL_PACKET_ABI_TRANSMISSION_COMPACT_ROOT:
   case VKR_METAL_PACKET_ABI_PICKING_RESOLVE_ROOT:
   case VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT:
     return 0;
@@ -387,6 +388,7 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
     [slang release];
     return false_v;
   }
+  bool8_t deferred_pipelines_ready = true_v;
   renderer->shadow_pipeline = vkr_metal_packet_create_pipeline(
       renderer, slang, "vkr_metal_packet_vertex", slang,
       "vkr_metal_packet_shadow_fragment", MTLPixelFormatInvalid, false_v,
@@ -514,6 +516,17 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
             renderer, fragment, "vkr_metal_packet_transmission_coverage",
             VKR_METAL_PACKET_ABI_TRANSMISSION_COVERAGE_ROOT, false_v,
             @"VKR Metal packet transmission coverage");
+    renderer->transmission_compact_pipeline =
+        vkr_metal_packet_create_compute_pipeline(
+            renderer, fragment, "vkr_metal_packet_transmission_compact",
+            VKR_METAL_PACKET_ABI_TRANSMISSION_COMPACT_ROOT, false_v,
+            @"VKR Metal packet transmission compact");
+    renderer->transmission_compact_finalize_pipeline =
+        vkr_metal_packet_create_compute_pipeline(
+            renderer, fragment,
+            "vkr_metal_packet_transmission_compact_finalize",
+            VKR_METAL_PACKET_ABI_TRANSMISSION_COMPACT_ROOT, false_v,
+            @"VKR Metal packet transmission compact finalize");
     renderer->picking_resolve_pipeline =
         vkr_metal_packet_create_compute_pipeline(
             renderer, fragment, "vkr_metal_packet_picking_resolve",
@@ -535,12 +548,15 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
         !renderer->deferred_lighting_pipeline ||
         !renderer->transmission_shade_pipeline ||
         !renderer->transmission_coverage_pipeline ||
+        !renderer->transmission_compact_pipeline ||
+        !renderer->transmission_compact_finalize_pipeline ||
         !renderer->picking_resolve_pipeline || !renderer->hzb_build_pipeline ||
         !renderer->gpu_shadow_pipeline || !renderer->vbuffer_pipeline ||
         !renderer->transmission_vbuffer_pipeline ||
         !renderer->gpu_draw_icb_argument_encoder) {
-      log_warn("Metal GPU draw capability unavailable; retaining forward path");
-      renderer->deferred_enabled = false_v;
+      log_error("Metal deferred pipelines or indirect argument encoder are "
+                "unavailable");
+      deferred_pipelines_ready = false_v;
     }
   }
   [fragment release];
@@ -572,18 +588,19 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
                  renderer->picking_text_pipeline &&
                  renderer->ibl_equirect_pipeline &&
                  renderer->ibl_irradiance_pipeline &&
-                 renderer->ibl_prefilter_pipeline &&
+                 renderer->ibl_prefilter_pipeline && deferred_pipelines_ready &&
                  renderer->depth_write_state && renderer->depth_read_state &&
                  renderer->argument_table
              ? true_v
              : false_v;
 }
 
-vkr_internal void
-vkr_metal_packet_create_gpu_draw_icbs(VkrMetalPacketRenderer *renderer)
-    API_AVAILABLE(macos(26.0)) {
-  if (!renderer || !renderer->deferred_enabled)
-    return;
+vkr_internal bool8_t vkr_metal_packet_create_gpu_draw_icbs(
+    VkrMetalPacketRenderer *renderer) API_AVAILABLE(macos(26.0)) {
+  if (!renderer)
+    return false_v;
+  if (!renderer->deferred_enabled)
+    return true_v;
   const char *shader_validation = getenv("MTL_SHADER_VALIDATION");
   const bool8_t validation_enabled = shader_validation &&
                                              shader_validation[0] != '\0' &&
@@ -608,7 +625,8 @@ vkr_metal_packet_create_gpu_draw_icbs(VkrMetalPacketRenderer *renderer)
   MTLResidencySetDescriptor *residency_descriptor =
       [MTLResidencySetDescriptor new];
   residency_descriptor.label = @"VKR Metal GPU draw indirect commands";
-  for (uint32_t i = 0u; i < renderer->command_slot_count; ++i) {
+  bool8_t passed = true_v;
+  for (uint32_t i = 0u; passed && i < renderer->command_slot_count; ++i) {
     VkrMetalPacketCommandSlot *slot = &renderer->command_slots[i];
     for (uint32_t group = 0u; group < renderer->gpu_draw_icb_group_count;
          ++group) {
@@ -620,7 +638,7 @@ vkr_metal_packet_create_gpu_draw_icbs(VkrMetalPacketRenderer *renderer)
       slot->gpu_draw_icb_residencies[group] = residency;
       if (!residency) {
         (void)residency_error;
-        renderer->deferred_enabled = false_v;
+        passed = false_v;
         break;
       }
       const uint32_t first_view =
@@ -636,7 +654,7 @@ vkr_metal_packet_create_gpu_draw_icbs(VkrMetalPacketRenderer *renderer)
                                          options:MTLResourceStorageModePrivate];
       slot->gpu_draw_icbs[group] = icb;
       if (!icb) {
-        renderer->deferred_enabled = false_v;
+        passed = false_v;
         break;
       }
       [residency addAllocation:icb];
@@ -649,7 +667,7 @@ vkr_metal_packet_create_gpu_draw_icbs(VkrMetalPacketRenderer *renderer)
                                                MTLResourceStorageModePrivate];
         slot->transmission_gpu_draw_icb = transmission_icb;
         if (!transmission_icb) {
-          renderer->deferred_enabled = false_v;
+          passed = false_v;
           break;
         }
         [residency addAllocation:transmission_icb];
@@ -658,14 +676,12 @@ vkr_metal_packet_create_gpu_draw_icbs(VkrMetalPacketRenderer *renderer)
       [residency requestResidency];
       slot->gpu_draw_icb_residency_count++;
     }
-    if (!renderer->deferred_enabled)
-      break;
   }
   [descriptor release];
   [residency_descriptor release];
-  if (!renderer->deferred_enabled) {
-    log_warn("Metal indirect command buffer capacity unavailable; retaining "
-             "forward path");
+  if (!passed) {
+    log_error("Metal deferred indirect command buffer capacity is "
+              "unavailable");
     for (uint32_t i = 0u; i < renderer->command_slot_count; ++i) {
       VkrMetalPacketCommandSlot *slot = &renderer->command_slots[i];
       for (uint32_t group = 0u;
@@ -682,6 +698,7 @@ vkr_metal_packet_create_gpu_draw_icbs(VkrMetalPacketRenderer *renderer)
       slot->gpu_draw_icb_residency_count = 0u;
     }
   }
+  return passed;
 }
 
 vkr_internal bool8_t vkr_metal_packet_create_compiler(
@@ -1104,6 +1121,8 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
     renderer->max_materials = config->max_material_rows;
     renderer->max_textures = config->max_textures;
     renderer->deferred_enabled = config->deferred_enabled;
+    renderer->transmission_compact_enabled =
+        config->transmission_compact_enabled;
     renderer->hzb_enabled = config->hzb_enabled;
     renderer->max_samplers = VKR_METAL_PACKET_SAMPLER_CACHE_CAPACITY;
     renderer->max_draws = config->max_draws;
@@ -1247,11 +1266,19 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
                      renderer->timestamp_frequency > 0;
     if (config->target_kind == VKR_METAL_PACKET_TARGET_WINDOW) {
       passed = passed && renderer->layer;
+      renderer->actual_present_mode =
+          config->requested_present_mode == VKR_PRESENT_MODE_IMMEDIATE
+              ? VKR_PRESENT_MODE_IMMEDIATE
+              : VKR_PRESENT_MODE_FIFO;
       renderer->layer.device = renderer->device;
       renderer->layer.pixelFormat =
           vkr_metal_packet_target_pixel_format(renderer);
       renderer->layer.framebufferOnly = NO;
       renderer->layer.opaque = YES;
+      renderer->layer.displaySyncEnabled =
+          renderer->actual_present_mode != VKR_PRESENT_MODE_IMMEDIATE;
+    } else {
+      renderer->actual_present_mode = VKR_PRESENT_MODE_DEFAULT;
     }
     for (uint32_t i = 0; passed && i < config->max_passes; ++i) {
       renderer->render_passes[i] = [MTL4RenderPassDescriptor new];
@@ -1294,7 +1321,7 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
              vkr_metal_packet_finalize_archive(renderer,
                                                config->pipeline_archive_path);
     if (passed)
-      vkr_metal_packet_create_gpu_draw_icbs(renderer);
+      passed = vkr_metal_packet_create_gpu_draw_icbs(renderer);
     if (!passed) {
       vkr_metal_packet_renderer_destroy(renderer);
       return false_v;

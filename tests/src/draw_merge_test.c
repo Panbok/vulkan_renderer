@@ -67,29 +67,71 @@ static void test_gpu_world_state_bucket_contract(void) {
 
 static void test_gpu_candidate_capacity_selects_fallback(void) {
   printf("  Running test_gpu_candidate_capacity_selects_fallback...\n");
-  VkrWorldDrawCandidate candidate = {0};
+  VkrWorldDrawCandidate candidates[2] = {0};
   VkrWorldPassPayload world = {
-      .gpu_candidates = &candidate,
+      .gpu_candidates = candidates,
       .gpu_candidate_count = 1u,
   };
+  VkrRenderPacket packet = {.world = &world};
 
-  assert(vkr_world_gpu_candidates_deferred_eligible(&world));
+  assert(vkr_render_packet_deferred_eligible(&packet));
   world.gpu_candidate_count = VKR_GPU_DRAW_CANDIDATE_CAPACITY;
-  assert(vkr_world_gpu_candidates_deferred_eligible(&world));
+  assert(vkr_render_packet_deferred_eligible(&packet));
   world.gpu_candidate_count = VKR_GPU_DRAW_CANDIDATE_CAPACITY + 1u;
-  assert(!vkr_world_gpu_candidates_deferred_eligible(&world));
+  VkrDeferredEligibility eligibility =
+      vkr_render_packet_deferred_eligibility(&packet);
+  assert(eligibility.fallback_reasons == VKR_DEFERRED_FALLBACK_OPAQUE_CAPACITY);
   world.gpu_candidate_count = 1u;
   world.gpu_candidates = NULL;
-  assert(!vkr_world_gpu_candidates_deferred_eligible(&world));
+  eligibility = vkr_render_packet_deferred_eligibility(&packet);
+  assert(eligibility.fallback_reasons == VKR_DEFERRED_FALLBACK_OPAQUE_INPUT);
   world.gpu_candidate_count = 0u;
-  world.transmission_gpu_candidates = &candidate;
+  world.gpu_candidates = NULL;
+  world.transmission_gpu_candidates = candidates;
   world.transmission_gpu_candidate_count = 1u;
-  assert(vkr_world_gpu_candidates_deferred_eligible(&world));
+  assert(vkr_render_packet_deferred_eligible(&packet));
   world.transmission_gpu_candidate_count = VKR_GPU_DRAW_CANDIDATE_CAPACITY + 1u;
-  assert(!vkr_world_gpu_candidates_deferred_eligible(&world));
+  eligibility = vkr_render_packet_deferred_eligibility(&packet);
+  assert(eligibility.fallback_reasons ==
+         VKR_DEFERRED_FALLBACK_TRANSMISSION_CAPACITY);
   world.transmission_gpu_candidate_count = 0u;
-  assert(!vkr_world_gpu_candidates_deferred_eligible(&world));
-  assert(!vkr_world_gpu_candidates_deferred_eligible(NULL));
+  eligibility = vkr_render_packet_deferred_eligibility(&packet);
+  assert(!eligibility.has_deferred_work);
+  assert(!vkr_render_packet_deferred_eligible(&packet));
+  assert(!vkr_render_packet_deferred_eligible(NULL));
+
+  world.opaque_draw_count = 2u;
+  world.gpu_candidate_count = 2u;
+  world.gpu_camera_opaque_candidate_count = 1u;
+  world.gpu_candidates = candidates;
+  eligibility = vkr_render_packet_deferred_eligibility(&packet);
+  assert(eligibility.fallback_reasons == VKR_DEFERRED_FALLBACK_OPAQUE_INPUT);
+  world.opaque_draw_count = 0u;
+  world.transmission_draw_count = 2u;
+  world.transmission_gpu_candidate_count = 1u;
+  world.transmission_gpu_candidates = candidates;
+  eligibility = vkr_render_packet_deferred_eligibility(&packet);
+  assert(eligibility.fallback_reasons ==
+         VKR_DEFERRED_FALLBACK_TRANSMISSION_INPUT);
+
+  world = (VkrWorldPassPayload){0};
+  VkrDrawItem shadow_draw = {0};
+  VkrShadowPassPayload shadow = {
+      .opaque_draws = &shadow_draw,
+      .opaque_draw_count = 1u,
+  };
+  packet.shadow = &shadow;
+  eligibility = vkr_render_packet_deferred_eligibility(&packet);
+  assert(eligibility.has_deferred_work);
+  assert(eligibility.fallback_reasons == VKR_DEFERRED_FALLBACK_OPAQUE_INPUT);
+  world.gpu_candidate_count = 1u;
+  world.gpu_shadow_candidate_count = 1u;
+  world.gpu_candidates = candidates;
+  eligibility = vkr_render_packet_deferred_eligibility(&packet);
+  assert(vkr_render_packet_deferred_eligible(&packet));
+  shadow.opaque_draw_count = 2u;
+  eligibility = vkr_render_packet_deferred_eligibility(&packet);
+  assert(eligibility.fallback_reasons == VKR_DEFERRED_FALLBACK_OPAQUE_INPUT);
 
   printf("  test_gpu_candidate_capacity_selects_fallback PASSED\n");
 }

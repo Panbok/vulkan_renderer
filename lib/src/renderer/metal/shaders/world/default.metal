@@ -65,16 +65,23 @@ fragment float4 vkr_metal_packet_opaque_fragment(
                   metallic);
   if (frame->render_mode == 6u)
     return float4(metallic, roughness, max(f0.x, max(f0.y, f0.z)), 1.0);
+  if (frame->shadow_debug_mode != 0u) {
+    VkrMetalPacketShadowSample shadow_sample =
+        vkr_metal_packet_directional_shadow_sample(frame, input.world_position);
+    return float4(vkr_metal_packet_shadow_debug_color(frame->shadow_debug_mode,
+                                                      shadow_sample),
+                  1.0);
+  }
 
   float3 analytic_diffuse = 0.0;
   float3 analytic_specular = 0.0;
   if (frame->directional_direction_enabled.w > 0.5) {
-    float shadow =
-        vkr_metal_packet_directional_shadow(frame, input.world_position);
+    VkrMetalPacketShadowSample shadow_sample =
+        vkr_metal_packet_directional_shadow_sample(frame, input.world_position);
     VkrMetalPacketDirectResult direct = vkr_metal_packet_direct(
         normal, view, normalize(-frame->directional_direction_enabled.xyz),
         frame->directional_color_intensity.rgb *
-            frame->directional_color_intensity.w * shadow,
+            frame->directional_color_intensity.w * shadow_sample.factor,
         base.rgb, metallic, roughness, f0);
     analytic_diffuse = direct.diffuse;
     analytic_specular = direct.specular;

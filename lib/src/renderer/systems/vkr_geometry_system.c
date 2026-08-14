@@ -182,17 +182,17 @@ vkr_internal VkrGeometryHandle vkr_geometry_system_create_default_plane(
 
   VkrVertex3d verts[4] = {0};
   Vec3 normal = vec3_new(0.0f, 0.0f, 1.0f);
-  Vec4 zero_color = vec4_zero();
+  Vec4 neutral_color = vec4_one();
   Vec4 zero_tangent = vec4_zero();
 
   vkr_write_vertex(verts, 0, vec3_new(-hw, -hh, 0.0f), normal,
-                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
+                   vec2_new(0.0f, 0.0f), neutral_color, zero_tangent);
   vkr_write_vertex(verts, 1, vec3_new(hw, -hh, 0.0f), normal,
-                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
+                   vec2_new(1.0f, 0.0f), neutral_color, zero_tangent);
   vkr_write_vertex(verts, 2, vec3_new(hw, hh, 0.0f), normal,
-                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
+                   vec2_new(1.0f, 1.0f), neutral_color, zero_tangent);
   vkr_write_vertex(verts, 3, vec3_new(-hw, hh, 0.0f), normal,
-                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
+                   vec2_new(0.0f, 1.0f), neutral_color, zero_tangent);
 
   uint32_t indices[6] = {0, 1, 2, 0, 2, 3};
 
@@ -472,7 +472,7 @@ vkr_geometry_system_create_cube(VkrGeometrySystem *system, float32_t width,
 vkr_internal void vkr_geometry_write_box_vertices(VkrVertex3d *verts,
                                                   Vec3 center, float32_t hw,
                                                   float32_t hh, float32_t hd) {
-  Vec4 zero_color = vec4_zero();
+  Vec4 neutral_color = vec4_one();
   Vec4 zero_tangent = vec4_zero();
 
   float32_t cx = center.x;
@@ -488,69 +488,69 @@ vkr_internal void vkr_geometry_write_box_vertices(VkrVertex3d *verts,
 
   uint32_t w = 0;
   vkr_write_vertex(verts, w++, vec3_new(cx - hw, cy - hh, cz + hd),
-                   front_normal, vec2_new(0.0f, 0.0f), zero_color,
+                   front_normal, vec2_new(0.0f, 0.0f), neutral_color,
                    zero_tangent);
   vkr_write_vertex(verts, w++, vec3_new(cx + hw, cy - hh, cz + hd),
-                   front_normal, vec2_new(1.0f, 0.0f), zero_color,
+                   front_normal, vec2_new(1.0f, 0.0f), neutral_color,
                    zero_tangent);
   vkr_write_vertex(verts, w++, vec3_new(cx + hw, cy + hh, cz + hd),
-                   front_normal, vec2_new(1.0f, 1.0f), zero_color,
+                   front_normal, vec2_new(1.0f, 1.0f), neutral_color,
                    zero_tangent);
   vkr_write_vertex(verts, w++, vec3_new(cx - hw, cy + hh, cz + hd),
-                   front_normal, vec2_new(0.0f, 1.0f), zero_color,
+                   front_normal, vec2_new(0.0f, 1.0f), neutral_color,
                    zero_tangent);
 
   vkr_write_vertex(verts, w++, vec3_new(cx - hw, cy - hh, cz - hd), back_normal,
-                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
+                   vec2_new(1.0f, 0.0f), neutral_color, zero_tangent);
   vkr_write_vertex(verts, w++, vec3_new(cx + hw, cy - hh, cz - hd), back_normal,
-                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
+                   vec2_new(0.0f, 0.0f), neutral_color, zero_tangent);
   vkr_write_vertex(verts, w++, vec3_new(cx + hw, cy + hh, cz - hd), back_normal,
-                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
+                   vec2_new(0.0f, 1.0f), neutral_color, zero_tangent);
   vkr_write_vertex(verts, w++, vec3_new(cx - hw, cy + hh, cz - hd), back_normal,
-                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
+                   vec2_new(1.0f, 1.0f), neutral_color, zero_tangent);
 
   vkr_write_vertex(verts, w++, vec3_new(cx - hw, cy - hh, cz - hd), left_normal,
-                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
+                   vec2_new(0.0f, 0.0f), neutral_color, zero_tangent);
   vkr_write_vertex(verts, w++, vec3_new(cx - hw, cy - hh, cz + hd), left_normal,
-                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
+                   vec2_new(1.0f, 0.0f), neutral_color, zero_tangent);
   vkr_write_vertex(verts, w++, vec3_new(cx - hw, cy + hh, cz + hd), left_normal,
-                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
+                   vec2_new(1.0f, 1.0f), neutral_color, zero_tangent);
   vkr_write_vertex(verts, w++, vec3_new(cx - hw, cy + hh, cz - hd), left_normal,
-                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
+                   vec2_new(0.0f, 1.0f), neutral_color, zero_tangent);
 
   vkr_write_vertex(verts, w++, vec3_new(cx + hw, cy - hh, cz - hd),
-                   right_normal, vec2_new(0.0f, 0.0f), zero_color,
+                   right_normal, vec2_new(0.0f, 0.0f), neutral_color,
                    zero_tangent);
   vkr_write_vertex(verts, w++, vec3_new(cx + hw, cy - hh, cz + hd),
-                   right_normal, vec2_new(1.0f, 0.0f), zero_color,
+                   right_normal, vec2_new(1.0f, 0.0f), neutral_color,
                    zero_tangent);
   vkr_write_vertex(verts, w++, vec3_new(cx + hw, cy + hh, cz + hd),
-                   right_normal, vec2_new(1.0f, 1.0f), zero_color,
+                   right_normal, vec2_new(1.0f, 1.0f), neutral_color,
                    zero_tangent);
   vkr_write_vertex(verts, w++, vec3_new(cx + hw, cy + hh, cz - hd),
-                   right_normal, vec2_new(0.0f, 1.0f), zero_color,
+                   right_normal, vec2_new(0.0f, 1.0f), neutral_color,
                    zero_tangent);
 
   vkr_write_vertex(verts, w++, vec3_new(cx - hw, cy + hh, cz + hd), top_normal,
-                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
+                   vec2_new(0.0f, 0.0f), neutral_color, zero_tangent);
   vkr_write_vertex(verts, w++, vec3_new(cx + hw, cy + hh, cz + hd), top_normal,
-                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
+                   vec2_new(1.0f, 0.0f), neutral_color, zero_tangent);
   vkr_write_vertex(verts, w++, vec3_new(cx + hw, cy + hh, cz - hd), top_normal,
-                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
+                   vec2_new(1.0f, 1.0f), neutral_color, zero_tangent);
   vkr_write_vertex(verts, w++, vec3_new(cx - hw, cy + hh, cz - hd), top_normal,
-                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
+                   vec2_new(0.0f, 1.0f), neutral_color, zero_tangent);
 
   vkr_write_vertex(verts, w++, vec3_new(cx - hw, cy - hh, cz - hd),
-                   bottom_normal, vec2_new(0.0f, 0.0f), zero_color,
+                   bottom_normal, vec2_new(0.0f, 0.0f), neutral_color,
                    zero_tangent);
   vkr_write_vertex(verts, w++, vec3_new(cx + hw, cy - hh, cz - hd),
-                   bottom_normal, vec2_new(1.0f, 0.0f), zero_color,
+                   bottom_normal, vec2_new(1.0f, 0.0f), neutral_color,
                    zero_tangent);
   vkr_write_vertex(verts, w++, vec3_new(cx + hw, cy - hh, cz + hd),
-                   bottom_normal, vec2_new(1.0f, 1.0f), zero_color,
+                   bottom_normal, vec2_new(1.0f, 1.0f), neutral_color,
                    zero_tangent);
   vkr_write_vertex(verts, w++, vec3_new(cx - hw, cy - hh, cz + hd),
-                   bottom_normal, vec2_new(0.0f, 1.0f), zero_color,
+                   bottom_normal, vec2_new(0.0f, 1.0f), neutral_color,
                    zero_tangent);
 }
 
@@ -646,7 +646,7 @@ VkrGeometryHandle vkr_geometry_system_create_cylinder(
     return (VkrGeometryHandle){0};
   }
 
-  Vec4 zero_color = vec4_zero();
+  Vec4 neutral_color = vec4_one();
   Vec4 zero_tangent = vec4_zero();
 
   uint32_t v = 0;
@@ -659,9 +659,9 @@ VkrGeometryHandle vkr_geometry_system_create_cylinder(
     Vec3 normal = vec3_normalize(vec3_new(x, y, 0.0f));
 
     vkr_write_vertex(verts, v++, vec3_new(x, y, 0.0f), normal,
-                     vec2_new(u, 0.0f), zero_color, zero_tangent);
+                     vec2_new(u, 0.0f), neutral_color, zero_tangent);
     vkr_write_vertex(verts, v++, vec3_new(x, y, height), normal,
-                     vec2_new(u, 1.0f), zero_color, zero_tangent);
+                     vec2_new(u, 1.0f), neutral_color, zero_tangent);
   }
 
   for (uint32_t s = 0; s < segments; ++s) {
@@ -678,7 +678,7 @@ VkrGeometryHandle vkr_geometry_system_create_cylinder(
   if (cap_bottom) {
     uint32_t center_index = v;
     vkr_write_vertex(verts, v++, vec3_zero(), vec3_new(0.0f, 0.0f, -1.0f),
-                     vec2_new(0.5f, 0.5f), zero_color, zero_tangent);
+                     vec2_new(0.5f, 0.5f), neutral_color, zero_tangent);
     for (uint32_t s = 0; s <= segments; ++s) {
       float32_t u = (float32_t)s / (float32_t)segments;
       float32_t angle = u * (VKR_PI * 2.0f);
@@ -687,7 +687,7 @@ VkrGeometryHandle vkr_geometry_system_create_cylinder(
       Vec2 uv =
           vec2_new((x / (radius * 2.0f)) + 0.5f, (y / (radius * 2.0f)) + 0.5f);
       vkr_write_vertex(verts, v++, vec3_new(x, y, 0.0f),
-                       vec3_new(0.0f, 0.0f, -1.0f), uv, zero_color,
+                       vec3_new(0.0f, 0.0f, -1.0f), uv, neutral_color,
                        zero_tangent);
     }
 
@@ -703,7 +703,7 @@ VkrGeometryHandle vkr_geometry_system_create_cylinder(
     uint32_t center_index = v;
     vkr_write_vertex(verts, v++, vec3_new(0.0f, 0.0f, height),
                      vec3_new(0.0f, 0.0f, 1.0f), vec2_new(0.5f, 0.5f),
-                     zero_color, zero_tangent);
+                     neutral_color, zero_tangent);
     for (uint32_t s = 0; s <= segments; ++s) {
       float32_t u = (float32_t)s / (float32_t)segments;
       float32_t angle = u * (VKR_PI * 2.0f);
@@ -712,7 +712,7 @@ VkrGeometryHandle vkr_geometry_system_create_cylinder(
       Vec2 uv =
           vec2_new((x / (radius * 2.0f)) + 0.5f, (y / (radius * 2.0f)) + 0.5f);
       vkr_write_vertex(verts, v++, vec3_new(x, y, height),
-                       vec3_new(0.0f, 0.0f, 1.0f), uv, zero_color,
+                       vec3_new(0.0f, 0.0f, 1.0f), uv, neutral_color,
                        zero_tangent);
     }
 
@@ -791,7 +791,7 @@ vkr_geometry_system_create_cone(VkrGeometrySystem *system, float32_t radius,
     return (VkrGeometryHandle){0};
   }
 
-  Vec4 zero_color = vec4_zero();
+  Vec4 neutral_color = vec4_one();
   Vec4 zero_tangent = vec4_zero();
   float32_t slope = radius / height;
 
@@ -806,9 +806,9 @@ vkr_geometry_system_create_cone(VkrGeometrySystem *system, float32_t radius,
         vec3_normalize(vec3_new(vkr_cos_f32(angle), vkr_sin_f32(angle), slope));
 
     vkr_write_vertex(verts, v++, vec3_new(x, y, 0.0f), normal,
-                     vec2_new(u, 0.0f), zero_color, zero_tangent);
+                     vec2_new(u, 0.0f), neutral_color, zero_tangent);
     vkr_write_vertex(verts, v++, vec3_new(0.0f, 0.0f, height), normal,
-                     vec2_new(u, 1.0f), zero_color, zero_tangent);
+                     vec2_new(u, 1.0f), neutral_color, zero_tangent);
   }
 
   for (uint32_t s = 0; s < segments; ++s) {
@@ -825,7 +825,7 @@ vkr_geometry_system_create_cone(VkrGeometrySystem *system, float32_t radius,
   if (cap_base) {
     uint32_t center_index = v;
     vkr_write_vertex(verts, v++, vec3_zero(), vec3_new(0.0f, 0.0f, -1.0f),
-                     vec2_new(0.5f, 0.5f), zero_color, zero_tangent);
+                     vec2_new(0.5f, 0.5f), neutral_color, zero_tangent);
     for (uint32_t s = 0; s <= segments; ++s) {
       float32_t u = (float32_t)s / (float32_t)segments;
       float32_t angle = u * (VKR_PI * 2.0f);
@@ -834,7 +834,7 @@ vkr_geometry_system_create_cone(VkrGeometrySystem *system, float32_t radius,
       Vec2 uv =
           vec2_new((x / (radius * 2.0f)) + 0.5f, (y / (radius * 2.0f)) + 0.5f);
       vkr_write_vertex(verts, v++, vec3_new(x, y, 0.0f),
-                       vec3_new(0.0f, 0.0f, -1.0f), uv, zero_color,
+                       vec3_new(0.0f, 0.0f, -1.0f), uv, neutral_color,
                        zero_tangent);
     }
 
@@ -912,7 +912,7 @@ VkrGeometryHandle vkr_geometry_system_create_torus(
     return (VkrGeometryHandle){0};
   }
 
-  Vec4 zero_color = vec4_zero();
+  Vec4 neutral_color = vec4_one();
   Vec4 zero_tangent = vec4_zero();
 
   uint32_t v = 0;
@@ -933,7 +933,7 @@ VkrGeometryHandle vkr_geometry_system_create_torus(
       Vec3 normal =
           vec3_normalize(vec3_new(cos_v * cos_u, cos_v * sin_u, sin_v));
       vkr_write_vertex(verts, v++, position, normal, vec2_new(u, v_coord),
-                       zero_color, zero_tangent);
+                       neutral_color, zero_tangent);
     }
   }
 
@@ -1017,7 +1017,7 @@ VkrGeometryHandle vkr_geometry_system_create_sphere(
     return (VkrGeometryHandle){0};
   }
 
-  Vec4 zero_color = vec4_zero();
+  Vec4 neutral_color = vec4_one();
   Vec4 zero_tangent = vec4_zero();
 
   uint32_t v = 0;
@@ -1036,7 +1036,8 @@ VkrGeometryHandle vkr_geometry_system_create_sphere(
       Vec3 normal = vec3_new(sin_phi * cos_theta, cos_phi, sin_phi * sin_theta);
       Vec3 position = vec3_scale(normal, radius);
       vkr_write_vertex(verts, v++, position, normal,
-                       vec2_new(u, 1.0f - v_coord), zero_color, zero_tangent);
+                       vec2_new(u, 1.0f - v_coord), neutral_color,
+                       zero_tangent);
     }
   }
 
@@ -1119,7 +1120,7 @@ VkrGeometryHandle vkr_geometry_system_create_arrow(
     return (VkrGeometryHandle){0};
   }
 
-  Vec4 zero_color = vec4_zero();
+  Vec4 neutral_color = vec4_one();
   Vec4 zero_tangent = vec4_zero();
   float32_t cone_slope = head_radius / head_length;
 
@@ -1135,9 +1136,9 @@ VkrGeometryHandle vkr_geometry_system_create_arrow(
     Vec3 normal = vec3_normalize(vec3_new(cos_a, sin_a, 0.0f));
 
     vkr_write_vertex(verts, v++, vec3_new(x, y, 0.0f), normal,
-                     vec2_new(u, 0.0f), zero_color, zero_tangent);
+                     vec2_new(u, 0.0f), neutral_color, zero_tangent);
     vkr_write_vertex(verts, v++, vec3_new(x, y, shaft_length), normal,
-                     vec2_new(u, 1.0f), zero_color, zero_tangent);
+                     vec2_new(u, 1.0f), neutral_color, zero_tangent);
   }
 
   for (uint32_t s = 0; s < segments; ++s) {
@@ -1162,10 +1163,10 @@ VkrGeometryHandle vkr_geometry_system_create_arrow(
     Vec3 normal = vec3_normalize(vec3_new(cos_a, sin_a, cone_slope));
 
     vkr_write_vertex(verts, v++, vec3_new(x, y, shaft_length), normal,
-                     vec2_new(u, 0.0f), zero_color, zero_tangent);
+                     vec2_new(u, 0.0f), neutral_color, zero_tangent);
     vkr_write_vertex(verts, v++,
                      vec3_new(0.0f, 0.0f, shaft_length + head_length), normal,
-                     vec2_new(u, 1.0f), zero_color, zero_tangent);
+                     vec2_new(u, 1.0f), neutral_color, zero_tangent);
   }
 
   for (uint32_t s = 0; s < segments; ++s) {

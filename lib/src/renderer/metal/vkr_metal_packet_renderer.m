@@ -50,6 +50,8 @@ enum {
 _Static_assert(VKR_TEXTURE_MAX_DIMENSION ==
                    (1u << (VKR_METAL_PACKET_MAX_TEXTURE_MIPS - 1u)),
                "Metal sampler mip-domain bound must match texture limits");
+_Static_assert(VKR_TEXTURE_MAX_DIMENSION <= UINT16_MAX,
+               "Packed transmission pixels require 16-bit coordinates");
 
 vkr_internal uint64_t vkr_metal_packet_align_up(uint64_t value,
                                                 uint64_t alignment);
@@ -249,14 +251,18 @@ typedef struct VkrMetalPacketCommandSlot {
   id<MTLIndirectCommandBuffer>
       gpu_draw_icbs[VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX];
   id<MTLIndirectCommandBuffer> transmission_gpu_draw_icb;
-  VkrMetalPacketResult timing_result;
+  VkrMetalPacketResult pending_result;
   uint64_t submit_value;
   uint64_t resource_reuse_submit_value;
   uint32_t timestamp_entry_count;
+  bool8_t result_pending;
+  bool8_t result_collected;
   bool8_t timing_requested;
-  bool8_t timing_collected;
+  const uint8_t *gpu_draw_diagnostics_readback;
   const uint8_t *transmission_coverage_readback;
+  uint32_t shadow_cascade_count;
   uint32_t transmission_coverage_extent[2];
+  bool8_t gpu_draw_diagnostics_requested;
   bool8_t transmission_coverage_requested;
   uint32_t gpu_draw_icb_residency_count;
 } VkrMetalPacketCommandSlot;
@@ -339,6 +345,8 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> deferred_lighting_pipeline;
   id<MTLComputePipelineState> transmission_shade_pipeline;
   id<MTLComputePipelineState> transmission_coverage_pipeline;
+  id<MTLComputePipelineState> transmission_compact_pipeline;
+  id<MTLComputePipelineState> transmission_compact_finalize_pipeline;
   id<MTLComputePipelineState> picking_resolve_pipeline;
   id<MTLComputePipelineState> hzb_build_pipeline;
   id<MTLArgumentEncoder> gpu_draw_icb_argument_encoder;
@@ -367,9 +375,11 @@ struct VkrMetalPacketRenderer {
   uint64_t upload_slot_size;
   uint32_t resize_count;
   VkrMetalPacketTargetKind target_kind;
+  VkrPresentMode actual_present_mode;
   bool8_t srgb_output;
   bool8_t convert_vulkan_clip_y;
   bool8_t deferred_enabled;
+  bool8_t transmission_compact_enabled;
   bool8_t hzb_enabled;
   bool8_t frame_prepared;
   bool8_t pipeline_archive_warm;
@@ -496,5 +506,10 @@ VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_retired_image_views_bytes,
 #include "renderer/metal/internal/vkr_metal_packet_frame.inc"
 #include "renderer/metal/internal/vkr_metal_packet_lifecycle.inc"
 // clang-format on
+
+VkrPresentMode
+vkr_metal_packet_renderer_present_mode(const VkrMetalPacketRenderer *renderer) {
+  return renderer ? renderer->actual_present_mode : VKR_PRESENT_MODE_DEFAULT;
+}
 
 #endif

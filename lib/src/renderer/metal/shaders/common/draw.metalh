@@ -70,9 +70,9 @@ struct VkrMetalPacketFrameRoot {
   float4 directional_color_intensity;
   float4 ambient_color;
   uint render_mode;
+  uint shadow_debug_mode;
   uint reserved_2;
   uint reserved_3;
-  uint reserved_4;
   device float4 *point_light_data;
   device uint4 *point_light_masks;
   float4 point_light_grid_origin_cell_size;

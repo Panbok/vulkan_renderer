@@ -45,6 +45,8 @@ typedef struct VkrMetalPacketRendererConfig {
   VkrMetalPacketTargetKind target_kind;
   /** Borrowed CAMetalLayer pointer; required only for WINDOW. */
   void *metal_layer;
+  /** Requested window presentation policy; offscreen targets ignore it. */
+  VkrPresentMode requested_present_mode;
   uint64_t heap_size;
   uint64_t upload_ring_size;
   uint64_t readback_ring_size;
@@ -59,8 +61,10 @@ typedef struct VkrMetalPacketRendererConfig {
   bool8_t srgb_output;
   /** Converts the shared Vulkan-oriented clip-Y matrices for Metal raster. */
   bool8_t convert_vulkan_clip_y;
-  /** Enables the provisional Metal-only deferred visibility stack. */
+  /** Selects the P20 Metal deferred default; false is diagnostic forward. */
   bool8_t deferred_enabled;
+  /** Enables the measured P19 transmission pixel-list candidate. */
+  bool8_t transmission_compact_enabled;
   /** Diagnostic rollback for P14 while retaining the deferred graph. */
   bool8_t hzb_enabled;
   uint32_t max_images;
@@ -144,6 +148,10 @@ typedef struct VkrMetalPacketPassTiming {
 typedef struct VkrMetalPacketResult {
   uint64_t submit_value;
   uint64_t source_frame_index;
+  /** Actual whole-frame topology selected for this packet. */
+  bool8_t deferred_selected;
+  /** VkrDeferredFallbackReason bits when requested deferred work rerouted. */
+  uint32_t deferred_fallback_reasons;
   uint32_t executed_pass_count;
   uint32_t graphics_pass_count;
   uint32_t compute_pass_count;
@@ -172,6 +180,7 @@ typedef struct VkrMetalPacketResult {
   uint32_t transmission_gpu_bucket_counts[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
   uint32_t transmission_gpu_overflow_count;
   uint32_t transmission_gpu_occlusion_culled_count;
+  uint32_t transmission_compact_overflow_count;
   uint32_t transmission_covered_pixels[4];
   uint32_t transmission_coverage_extent[2];
   bool8_t has_transmission_coverage;
@@ -319,6 +328,9 @@ uint64_t
 vkr_metal_packet_renderer_submit_value(const VkrMetalPacketRenderer *renderer);
 uint64_t vkr_metal_packet_renderer_completed_value(
     const VkrMetalPacketRenderer *renderer);
+/** Returns the presentation mode actually applied to the Metal target. */
+VkrPresentMode
+vkr_metal_packet_renderer_present_mode(const VkrMetalPacketRenderer *renderer);
 bool8_t vkr_metal_packet_renderer_get_memory_metrics(
     const VkrMetalPacketRenderer *renderer,
     VkrMetalMemoryDeviceMetrics *out_metrics);

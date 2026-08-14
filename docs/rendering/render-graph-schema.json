@@ -29,12 +29,27 @@
         "editor_enabled && !deferred_enabled",
         "!editor_enabled && deferred_enabled",
         "!editor_enabled && !deferred_enabled",
+        "editor_enabled && deferred_enabled && transmission_pending",
+        "!editor_enabled && deferred_enabled && transmission_pending",
         "hzb_history_valid",
         "!hzb_history_valid",
+        "shadow_cascades_active",
         "transmission_pending",
         "!transmission_pending",
+        "deferred_enabled && transmission_pending",
+        "deferred_enabled && transmission_pending && timing_enabled",
+        "transmission_compact_enabled",
+        "editor_enabled && transmission_compact_enabled",
+        "!editor_enabled && transmission_compact_enabled",
+        "editor_enabled && transmission_pending && !transmission_compact_enabled",
+        "!editor_enabled && transmission_pending && !transmission_compact_enabled",
+        "transmission_pending && timing_enabled && !transmission_compact_enabled",
         "picking_pending",
-        "!picking_pending"
+        "!picking_pending",
+        "picking_pending && deferred_enabled",
+        "picking_pending && !deferred_enabled",
+        "picking_pending && deferred_enabled && transmission_pending",
+        "picking_pending && deferred_enabled && !transmission_pending"
       ]
     },
     "repeat": {
@@ -112,7 +127,20 @@
             { "type": "string", "enum": ["full_chain"] }
           ]
         },
-        "size": { "type": "integer", "minimum": 1 }
+        "size": {
+          "oneOf": [
+            { "type": "integer", "minimum": 1 },
+            {
+              "type": "object",
+              "required": ["mode", "bytes_per_pixel"],
+              "properties": {
+                "mode": { "const": "viewport_pixels" },
+                "bytes_per_pixel": { "type": "integer", "minimum": 1 }
+              },
+              "additionalProperties": false
+            }
+          ]
+        }
       },
       "additionalProperties": false
     },
@@ -124,6 +152,7 @@
         "buffer": { "type": "string" },
         "access": { "type": "string" },
         "binding": { "type": "integer", "minimum": 0 },
+        "when": { "$ref": "#/definitions/condition" },
         "array_index": {
           "oneOf": [{ "type": "integer" }, { "type": "string" }]
         },

@@ -601,6 +601,8 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t hzb_reduce_pass_count;
   /** True when the packet contains transmissive world work. */
   bool8_t transmission_pending;
+  /** Metal P19 selector; implies deferred transmission work is pending. */
+  bool8_t transmission_compact_enabled;
   /** True when this frame requests backend pass timestamps. */
   bool8_t timing_enabled;
   /**

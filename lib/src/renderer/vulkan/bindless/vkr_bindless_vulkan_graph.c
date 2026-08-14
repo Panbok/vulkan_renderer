@@ -14,6 +14,8 @@ typedef enum VkrBindlessVkGraphExecutorKind {
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_PICKING_READBACK,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_IBL_BAKE,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_TRANSMISSION_COVERAGE,
+  VKR_BINDLESS_VK_GRAPH_EXECUTOR_TRANSMISSION_COMPACT,
+  VKR_BINDLESS_VK_GRAPH_EXECUTOR_TRANSMISSION_COMPACT_FINALIZE,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_SKYBOX,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_WORLD_OPAQUE,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_FULLSCREEN,
@@ -40,6 +42,8 @@ vkr_global const VkrBindlessVkGraphExecutorSpec
         {"pass.picking.readback", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.ibl_bake", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.transmission.coverage", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.transmission.compact", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.transmission.compact_finalize", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.skybox", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.world.opaque", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.copy.pre_transmission.fullscreen", VKR_RG_PASS_TYPE_TRANSFER},
@@ -879,8 +883,9 @@ vkr_internal bool8_t vkr_bindless_vk_record_graphics_body(
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_WORLD_OPAQUE: {
     if (!packet->world)
       return true_v;
-    uint32_t shadow_texture = 0u;
-    if (!vkr_bindless_vk_graph_sampled_index(renderer, pass, 0u,
+    uint32_t shadow_texture = VKR_BINDLESS_VK_SENTINEL_SLOT_INDEX;
+    if (renderer->prepared_frame.shadow_cascade_count > 0u &&
+        !vkr_bindless_vk_graph_sampled_index(renderer, pass, 0u,
                                              &shadow_texture))
       return false_v;
     return vkr_bindless_vk_record_packet_draws(
@@ -893,10 +898,11 @@ vkr_internal bool8_t vkr_bindless_vk_record_graphics_body(
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_WORLD_TRANSMISSION: {
     if (!packet->world)
       return true_v;
-    uint32_t shadow_texture = 0u;
+    uint32_t shadow_texture = VKR_BINDLESS_VK_SENTINEL_SLOT_INDEX;
     uint32_t transmission_texture = 0u;
-    if (!vkr_bindless_vk_graph_sampled_index(renderer, pass, 0u,
-                                             &shadow_texture) ||
+    if ((renderer->prepared_frame.shadow_cascade_count > 0u &&
+         !vkr_bindless_vk_graph_sampled_index(renderer, pass, 0u,
+                                              &shadow_texture)) ||
         !vkr_bindless_vk_graph_sampled_index(renderer, pass, 1u,
                                              &transmission_texture))
       return false_v;
@@ -913,8 +919,9 @@ vkr_internal bool8_t vkr_bindless_vk_record_graphics_body(
       return true_v;
     const Mat4 view_projection =
         mat4_mul(packet->globals.projection, packet->globals.view);
-    uint32_t shadow_texture = 0u;
-    if (!vkr_bindless_vk_graph_sampled_index(renderer, pass, 0u,
+    uint32_t shadow_texture = VKR_BINDLESS_VK_SENTINEL_SLOT_INDEX;
+    if (renderer->prepared_frame.shadow_cascade_count > 0u &&
+        !vkr_bindless_vk_graph_sampled_index(renderer, pass, 0u,
                                              &shadow_texture))
       return false_v;
     return vkr_bindless_vk_record_packet_draws(

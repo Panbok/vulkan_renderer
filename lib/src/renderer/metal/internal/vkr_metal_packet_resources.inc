@@ -1649,11 +1649,14 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
                   gpu_draw_icb_group_count - 1u;
   }
   if (transmission_gpu_draw_count > 0u)
-    root_count += 17u +
-                  (packet->debug && packet->debug->enable_timing &&
-                           packet->debug->capture_pass_timestamps
-                       ? 4u
-                       : 0u);
+    root_count +=
+        17u +
+        (renderer->prepared_frame.transmission_compact_enabled ? 8u : 0u) +
+        (packet->debug && packet->debug->enable_timing &&
+                 packet->debug->capture_pass_timestamps &&
+                 !renderer->prepared_frame.transmission_compact_enabled
+             ? 4u
+             : 0u);
   if (packet->shadow && !renderer->prepared_frame.deferred_enabled) {
     root_count += ((uint64_t)packet->shadow->opaque_draw_count +
                    (uint64_t)packet->shadow->alpha_draw_count) *

@@ -13,6 +13,63 @@ typedef struct VkrRgJsonParseContext {
   VkrRgJsonGraph *graph;
 } VkrRgJsonParseContext;
 
+typedef struct VkrRgJsonConditionSpec {
+  const char *expression;
+  VkrRgJsonConditionKind kind;
+} VkrRgJsonConditionSpec;
+
+vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
+    {"editor_enabled", VKR_RG_JSON_CONDITION_EDITOR_ENABLED},
+    {"!editor_enabled", VKR_RG_JSON_CONDITION_EDITOR_DISABLED},
+    {"deferred_enabled", VKR_RG_JSON_CONDITION_DEFERRED_ENABLED},
+    {"!deferred_enabled", VKR_RG_JSON_CONDITION_DEFERRED_DISABLED},
+    {"editor_enabled && deferred_enabled",
+     VKR_RG_JSON_CONDITION_EDITOR_ENABLED_DEFERRED_ENABLED},
+    {"editor_enabled && !deferred_enabled",
+     VKR_RG_JSON_CONDITION_EDITOR_ENABLED_DEFERRED_DISABLED},
+    {"!editor_enabled && deferred_enabled",
+     VKR_RG_JSON_CONDITION_EDITOR_DISABLED_DEFERRED_ENABLED},
+    {"!editor_enabled && !deferred_enabled",
+     VKR_RG_JSON_CONDITION_EDITOR_DISABLED_DEFERRED_DISABLED},
+    {"editor_enabled && deferred_enabled && transmission_pending",
+     VKR_RG_JSON_CONDITION_EDITOR_ENABLED_DEFERRED_TRANSMISSION},
+    {"!editor_enabled && deferred_enabled && transmission_pending",
+     VKR_RG_JSON_CONDITION_EDITOR_DISABLED_DEFERRED_TRANSMISSION},
+    {"hzb_history_valid", VKR_RG_JSON_CONDITION_HZB_HISTORY_VALID},
+    {"!hzb_history_valid", VKR_RG_JSON_CONDITION_HZB_HISTORY_INVALID},
+    {"shadow_cascades_active", VKR_RG_JSON_CONDITION_SHADOW_CASCADES_ACTIVE},
+    {"transmission_pending", VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING},
+    {"!transmission_pending", VKR_RG_JSON_CONDITION_TRANSMISSION_IDLE},
+    {"deferred_enabled && transmission_pending",
+     VKR_RG_JSON_CONDITION_DEFERRED_TRANSMISSION_PENDING},
+    {"deferred_enabled && transmission_pending && timing_enabled",
+     VKR_RG_JSON_CONDITION_DEFERRED_TRANSMISSION_TIMING},
+    {"transmission_compact_enabled",
+     VKR_RG_JSON_CONDITION_TRANSMISSION_COMPACT_ENABLED},
+    {"editor_enabled && transmission_compact_enabled",
+     VKR_RG_JSON_CONDITION_EDITOR_ENABLED_TRANSMISSION_COMPACT},
+    {"!editor_enabled && transmission_compact_enabled",
+     VKR_RG_JSON_CONDITION_EDITOR_DISABLED_TRANSMISSION_COMPACT},
+    {"editor_enabled && transmission_pending && !transmission_compact_enabled",
+     VKR_RG_JSON_CONDITION_EDITOR_ENABLED_TRANSMISSION_FULLSCREEN},
+    {"!editor_enabled && transmission_pending && "
+     "!transmission_compact_enabled",
+     VKR_RG_JSON_CONDITION_EDITOR_DISABLED_TRANSMISSION_FULLSCREEN},
+    {"transmission_pending && timing_enabled && "
+     "!transmission_compact_enabled",
+     VKR_RG_JSON_CONDITION_TRANSMISSION_FULLSCREEN_TIMING},
+    {"picking_pending", VKR_RG_JSON_CONDITION_PICKING_PENDING},
+    {"!picking_pending", VKR_RG_JSON_CONDITION_PICKING_IDLE},
+    {"picking_pending && deferred_enabled",
+     VKR_RG_JSON_CONDITION_PICKING_PENDING_DEFERRED_ENABLED},
+    {"picking_pending && !deferred_enabled",
+     VKR_RG_JSON_CONDITION_PICKING_PENDING_DEFERRED_DISABLED},
+    {"picking_pending && deferred_enabled && transmission_pending",
+     VKR_RG_JSON_CONDITION_PICKING_PENDING_DEFERRED_TRANSMISSION},
+    {"picking_pending && deferred_enabled && !transmission_pending",
+     VKR_RG_JSON_CONDITION_PICKING_PENDING_DEFERRED_NO_TRANSMISSION},
+};
+
 vkr_internal bool8_t vkr_rg_json_error(VkrRgJsonParseContext *ctx,
                                        const char *field, const char *message) {
   if (ctx && ctx->path) {
@@ -25,15 +82,16 @@ vkr_internal bool8_t vkr_rg_json_error(VkrRgJsonParseContext *ctx,
 
 vkr_internal bool8_t vkr_rg_json_parse_condition(
     VkrRgJsonParseContext *ctx, VkrJsonReader *obj, const char *field_path,
-    VkrRgJsonCondition *out_condition) {
+    const char *json_field, VkrRgJsonCondition *out_condition) {
   assert_log(out_condition != NULL, "out_condition is NULL");
   assert_log(field_path != NULL, "field_path is NULL");
+  assert_log(json_field != NULL, "json_field is NULL");
   assert_log(ctx != NULL, "ctx is NULL");
 
   *out_condition = (VkrRgJsonCondition){0};
 
   VkrJsonReader reader = *obj;
-  if (!vkr_json_find_field(&reader, "condition")) {
+  if (!vkr_json_find_field(&reader, json_field)) {
     out_condition->kind = VKR_RG_JSON_CONDITION_NONE;
     return true_v;
   }
@@ -45,77 +103,16 @@ vkr_internal bool8_t vkr_rg_json_parse_condition(
 
   String8 trimmed = raw;
   string8_trim(&trimmed);
-  if (vkr_string8_equals_cstr_i(&trimmed, "editor_enabled")) {
-    out_condition->kind = VKR_RG_JSON_CONDITION_EDITOR_ENABLED;
-  } else if (vkr_string8_equals_cstr_i(&trimmed, "!editor_enabled")) {
-    out_condition->kind = VKR_RG_JSON_CONDITION_EDITOR_DISABLED;
-  } else if (vkr_string8_equals_cstr_i(&trimmed, "deferred_enabled")) {
-    out_condition->kind = VKR_RG_JSON_CONDITION_DEFERRED_ENABLED;
-  } else if (vkr_string8_equals_cstr_i(&trimmed, "!deferred_enabled")) {
-    out_condition->kind = VKR_RG_JSON_CONDITION_DEFERRED_DISABLED;
-  } else if (vkr_string8_equals_cstr_i(&trimmed,
-                                       "editor_enabled && deferred_enabled")) {
-    out_condition->kind = VKR_RG_JSON_CONDITION_EDITOR_ENABLED_DEFERRED_ENABLED;
-  } else if (vkr_string8_equals_cstr_i(&trimmed,
-                                       "editor_enabled && !deferred_enabled")) {
-    out_condition->kind =
-        VKR_RG_JSON_CONDITION_EDITOR_ENABLED_DEFERRED_DISABLED;
-  } else if (vkr_string8_equals_cstr_i(&trimmed,
-                                       "!editor_enabled && deferred_enabled")) {
-    out_condition->kind =
-        VKR_RG_JSON_CONDITION_EDITOR_DISABLED_DEFERRED_ENABLED;
-  } else if (vkr_string8_equals_cstr_i(
-                 &trimmed, "!editor_enabled && !deferred_enabled")) {
-    out_condition->kind =
-        VKR_RG_JSON_CONDITION_EDITOR_DISABLED_DEFERRED_DISABLED;
-  } else if (vkr_string8_equals_cstr_i(&trimmed,
-                                       "editor_enabled && deferred_enabled && "
-                                       "transmission_pending")) {
-    out_condition->kind =
-        VKR_RG_JSON_CONDITION_EDITOR_ENABLED_DEFERRED_TRANSMISSION;
-  } else if (vkr_string8_equals_cstr_i(&trimmed,
-                                       "!editor_enabled && deferred_enabled && "
-                                       "transmission_pending")) {
-    out_condition->kind =
-        VKR_RG_JSON_CONDITION_EDITOR_DISABLED_DEFERRED_TRANSMISSION;
-  } else if (vkr_string8_equals_cstr_i(&trimmed, "hzb_history_valid")) {
-    out_condition->kind = VKR_RG_JSON_CONDITION_HZB_HISTORY_VALID;
-  } else if (vkr_string8_equals_cstr_i(&trimmed, "!hzb_history_valid")) {
-    out_condition->kind = VKR_RG_JSON_CONDITION_HZB_HISTORY_INVALID;
-  } else if (vkr_string8_equals_cstr_i(&trimmed, "transmission_pending")) {
-    out_condition->kind = VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING;
-  } else if (vkr_string8_equals_cstr_i(&trimmed, "!transmission_pending")) {
-    out_condition->kind = VKR_RG_JSON_CONDITION_TRANSMISSION_IDLE;
-  } else if (vkr_string8_equals_cstr_i(
-                 &trimmed, "deferred_enabled && transmission_pending")) {
-    out_condition->kind = VKR_RG_JSON_CONDITION_DEFERRED_TRANSMISSION_PENDING;
-  } else if (vkr_string8_equals_cstr_i(
-                 &trimmed, "deferred_enabled && transmission_pending && "
-                           "timing_enabled")) {
-    out_condition->kind = VKR_RG_JSON_CONDITION_DEFERRED_TRANSMISSION_TIMING;
-  } else if (vkr_string8_equals_cstr_i(&trimmed, "picking_pending")) {
-    out_condition->kind = VKR_RG_JSON_CONDITION_PICKING_PENDING;
-  } else if (vkr_string8_equals_cstr_i(&trimmed, "!picking_pending")) {
-    out_condition->kind = VKR_RG_JSON_CONDITION_PICKING_IDLE;
-  } else if (vkr_string8_equals_cstr_i(&trimmed,
-                                       "picking_pending && deferred_enabled")) {
-    out_condition->kind =
-        VKR_RG_JSON_CONDITION_PICKING_PENDING_DEFERRED_ENABLED;
-  } else if (vkr_string8_equals_cstr_i(
-                 &trimmed, "picking_pending && !deferred_enabled")) {
-    out_condition->kind =
-        VKR_RG_JSON_CONDITION_PICKING_PENDING_DEFERRED_DISABLED;
-  } else if (vkr_string8_equals_cstr_i(&trimmed,
-                                       "picking_pending && deferred_enabled && "
-                                       "transmission_pending")) {
-    out_condition->kind =
-        VKR_RG_JSON_CONDITION_PICKING_PENDING_DEFERRED_TRANSMISSION;
-  } else if (vkr_string8_equals_cstr_i(&trimmed,
-                                       "picking_pending && deferred_enabled && "
-                                       "!transmission_pending")) {
-    out_condition->kind =
-        VKR_RG_JSON_CONDITION_PICKING_PENDING_DEFERRED_NO_TRANSMISSION;
-  } else {
+  bool8_t matched = false_v;
+  for (uint32_t i = 0u; i < ArrayCount(vkr_rg_json_condition_specs); ++i) {
+    const VkrRgJsonConditionSpec *spec = &vkr_rg_json_condition_specs[i];
+    if (!vkr_string8_equals_cstr_i(&trimmed, spec->expression))
+      continue;
+    out_condition->kind = spec->kind;
+    matched = true_v;
+    break;
+  }
+  if (!matched) {
     return vkr_rg_json_error(ctx, field_path, "unknown condition expression");
   }
 
@@ -658,10 +655,34 @@ vkr_internal bool8_t vkr_rg_json_parse_buffer_desc(
 
   VkrJsonReader size_reader = *obj;
   int32_t size = 0;
-  if (!vkr_json_get_int(&size_reader, "size", &size) || size <= 0) {
-    return vkr_rg_json_error(ctx, field_path, "buffer size is required");
+  if (vkr_json_get_int(&size_reader, "size", &size)) {
+    if (size <= 0)
+      return vkr_rg_json_error(ctx, field_path, "buffer size must be > 0");
+    out_desc->size_mode = VKR_RG_JSON_BUFFER_SIZE_FIXED;
+    out_desc->size = (uint64_t)size;
+  } else {
+    size_reader = *obj;
+    if (!vkr_json_find_field(&size_reader, "size"))
+      return vkr_rg_json_error(ctx, field_path, "buffer size is required");
+    VkrJsonReader size_obj = {0};
+    if (!vkr_json_enter_object(&size_reader, &size_obj))
+      return vkr_rg_json_error(ctx, field_path,
+                               "buffer size must be an integer or object");
+    VkrJsonReader mode_reader = size_obj;
+    String8 mode = {0};
+    if (!vkr_json_get_string(&mode_reader, "mode", &mode) ||
+        !vkr_string8_equals_cstr_i(&mode, "viewport_pixels"))
+      return vkr_rg_json_error(ctx, field_path, "unknown buffer size mode");
+    VkrJsonReader stride_reader = size_obj;
+    int32_t bytes_per_pixel = 0;
+    if (!vkr_json_get_int(&stride_reader, "bytes_per_pixel",
+                          &bytes_per_pixel) ||
+        bytes_per_pixel <= 0)
+      return vkr_rg_json_error(ctx, field_path,
+                               "size.bytes_per_pixel must be > 0");
+    out_desc->size_mode = VKR_RG_JSON_BUFFER_SIZE_VIEWPORT_PIXELS;
+    out_desc->bytes_per_pixel = (uint32_t)bytes_per_pixel;
   }
-  out_desc->size = (uint64_t)size;
 
   if (!vkr_rg_json_parse_buffer_usage(ctx, obj, field_path, &out_desc->usage)) {
     return false_v;
@@ -703,7 +724,7 @@ vkr_rg_json_parse_resource(VkrRgJsonParseContext *ctx, VkrJsonReader *obj,
     return vkr_rg_json_error(ctx, field_path, "unknown resource type");
   }
 
-  if (!vkr_rg_json_parse_condition(ctx, obj, field_path,
+  if (!vkr_rg_json_parse_condition(ctx, obj, field_path, "condition",
                                    &out_resource->condition)) {
     return false_v;
   }
@@ -784,6 +805,11 @@ vkr_internal bool8_t vkr_rg_json_parse_use(VkrRgJsonParseContext *ctx,
     if (!vkr_rg_json_parse_buffer_access(access, &out_use->buffer_access)) {
       return vkr_rg_json_error(ctx, field_path, "unknown buffer access");
     }
+  }
+
+  if (!vkr_rg_json_parse_condition(ctx, obj, field_path, "when",
+                                   &out_use->condition)) {
+    return false_v;
   }
 
   if (!vkr_rg_json_parse_repeat(ctx, obj, field_path, &out_use->repeat)) {
@@ -1198,7 +1224,7 @@ vkr_internal bool8_t vkr_rg_json_parse_pass(VkrRgJsonParseContext *ctx,
     goto cleanup;
   }
 
-  if (!vkr_rg_json_parse_condition(ctx, obj, field_path,
+  if (!vkr_rg_json_parse_condition(ctx, obj, field_path, "condition",
                                    &out_pass->condition)) {
     ok = false_v;
     goto cleanup;
@@ -1690,6 +1716,8 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->hzb_history_valid;
   case VKR_RG_JSON_CONDITION_HZB_HISTORY_INVALID:
     return !frame->hzb_history_valid;
+  case VKR_RG_JSON_CONDITION_SHADOW_CASCADES_ACTIVE:
+    return frame->shadow_cascade_count > 0u;
   case VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING:
     return frame->transmission_pending;
   case VKR_RG_JSON_CONDITION_TRANSMISSION_IDLE:
@@ -1699,6 +1727,21 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
   case VKR_RG_JSON_CONDITION_DEFERRED_TRANSMISSION_TIMING:
     return frame->deferred_enabled && frame->transmission_pending &&
            frame->timing_enabled;
+  case VKR_RG_JSON_CONDITION_TRANSMISSION_COMPACT_ENABLED:
+    return frame->transmission_compact_enabled;
+  case VKR_RG_JSON_CONDITION_EDITOR_ENABLED_TRANSMISSION_COMPACT:
+    return frame->editor_enabled && frame->transmission_compact_enabled;
+  case VKR_RG_JSON_CONDITION_EDITOR_DISABLED_TRANSMISSION_COMPACT:
+    return !frame->editor_enabled && frame->transmission_compact_enabled;
+  case VKR_RG_JSON_CONDITION_EDITOR_ENABLED_TRANSMISSION_FULLSCREEN:
+    return frame->editor_enabled && frame->transmission_pending &&
+           !frame->transmission_compact_enabled;
+  case VKR_RG_JSON_CONDITION_EDITOR_DISABLED_TRANSMISSION_FULLSCREEN:
+    return !frame->editor_enabled && frame->transmission_pending &&
+           !frame->transmission_compact_enabled;
+  case VKR_RG_JSON_CONDITION_TRANSMISSION_FULLSCREEN_TIMING:
+    return frame->transmission_pending && frame->timing_enabled &&
+           !frame->transmission_compact_enabled;
   case VKR_RG_JSON_CONDITION_PICKING_PENDING:
     return frame->picking_pending;
   case VKR_RG_JSON_CONDITION_PICKING_IDLE:
@@ -2186,7 +2229,22 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
         }
       } else {
         VkrRgBufferDesc desc = {0};
-        desc.size = resource->buffer.size;
+        if (resource->buffer.size_mode ==
+            VKR_RG_JSON_BUFFER_SIZE_VIEWPORT_PIXELS) {
+          const uint64_t pixels =
+              (uint64_t)frame->viewport_width * frame->viewport_height;
+          if (!pixels ||
+              resource->buffer.bytes_per_pixel > UINT64_MAX / pixels) {
+            log_error("RenderGraph buffer '%.*s': viewport-pixel size "
+                      "overflow",
+                      (int)resolved_name.length, resolved_name.str);
+            vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
+            return false_v;
+          }
+          desc.size = pixels * resource->buffer.bytes_per_pixel;
+        } else {
+          desc.size = resource->buffer.size;
+        }
         desc.usage = resource->buffer.usage;
         desc.flags = vkr_rg_json_resource_flags(resource->flags);
         vkr_rg_create_buffer(rg, resolved_name, &desc);
@@ -2318,6 +2376,8 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
       for (uint64_t u = 0; u < pass->reads.length; ++u) {
         VkrRgJsonResourceUse *use =
             vector_get_VkrRgJsonResourceUse(&pass->reads, u);
+        if (!vkr_rg_json_condition_enabled(&use->condition, frame))
+          continue;
 
         uint32_t use_repeat = 1;
         if (!vkr_rg_json_repeat_count(&use->repeat, frame, &use_repeat)) {
@@ -2383,6 +2443,8 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
       for (uint64_t u = 0; u < pass->writes.length; ++u) {
         VkrRgJsonResourceUse *use =
             vector_get_VkrRgJsonResourceUse(&pass->writes, u);
+        if (!vkr_rg_json_condition_enabled(&use->condition, frame))
+          continue;
 
         uint32_t use_repeat = 1;
         if (!vkr_rg_json_repeat_count(&use->repeat, frame, &use_repeat)) {

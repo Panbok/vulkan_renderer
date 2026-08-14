@@ -62,6 +62,8 @@ vkr_packet_derive_frame_constants(const VkrRenderPacket *packet,
   constants.point_light_count = lighting ? lighting->point_light_count : 0u;
 
   constants.render_mode = packet->globals.render_mode;
+  constants.shadow_debug_mode =
+      packet->debug ? packet->debug->shadow_debug_mode : 0u;
   constants.prefilter_mip_count = VKR_IBL_PREFILTER_MIP_COUNT;
   constants.shadow_cascade_count =
       packet->shadow ? packet->shadow->cascade_count : 0u;

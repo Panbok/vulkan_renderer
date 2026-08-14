@@ -74,9 +74,8 @@ fragment uint2 vkr_metal_packet_transmission_vbuffer_fragment(
     constant VkrMetalPacketTransmissionPeelRoot &peel [[buffer(2)]],
     uint primitive_id [[primitive_id]]) {
   if (peel.previous_depth_enabled != 0u &&
-      input.position.z <=
-          peel.previous_depth.read(uint2(input.position.xy)).x +
-              peel.depth_epsilon)
+      input.position.z <= peel.previous_depth.read(uint2(input.position.xy)).x +
+                              peel.depth_epsilon)
     discard_fragment();
   const device VkrGpuVisibleDrawRow &visible =
       root->visible_rows[input.visible_row_index];
@@ -394,41 +393,47 @@ static void vkr_metal_packet_resolve_defaults(
   root.debug.write(float4(0.0, 0.0, 0.0, debug_marker), pixel);
 }
 
-static bool vkr_metal_packet_affine_barycentrics(float2 point, float2 p0,
-                                                 float2 p1, float2 p2,
-                                                 thread float3 &barycentrics) {
-  float2 e0 = p1 - p0;
-  float2 e1 = p2 - p0;
-  float determinant = e0.x * e1.y - e0.y * e1.x;
-  if (!isfinite(determinant) || abs(determinant) <= 1e-8)
+static bool vkr_metal_packet_perspective_barycentrics(
+    float2 point, thread const float4 (&clip)[3], thread float3 &barycentrics) {
+  for (uint i = 0u; i < 3u; ++i) {
+    if (!all(isfinite(clip[i])))
+      return false;
+  }
+
+  /* Solve the two homogeneous screen-point constraints plus sum(lambda)=1.
+     Unlike divide-by-w affine reconstruction, this remains defined when an
+     original triangle crosses the eye plane and Metal rasterizes its clipped
+     polygon. */
+  float3 horizontal =
+      float3(clip[0].x - point.x * clip[0].w, clip[1].x - point.x * clip[1].w,
+             clip[2].x - point.x * clip[2].w);
+  float3 vertical =
+      float3(clip[0].y - point.y * clip[0].w, clip[1].y - point.y * clip[1].w,
+             clip[2].y - point.y * clip[2].w);
+  float3 weights = cross(horizontal, vertical);
+  float scale = max(abs(weights.x), max(abs(weights.y), abs(weights.z)));
+  if (!all(isfinite(weights)) || !isfinite(scale) || scale <= 1e-12)
     return false;
-  float2 relative = point - p0;
-  float b1 = (relative.x * e1.y - relative.y * e1.x) / determinant;
-  float b2 = (e0.x * relative.y - e0.y * relative.x) / determinant;
-  barycentrics = float3(1.0 - b1 - b2, b1, b2);
+  weights /= scale;
+  float normalization = weights.x + weights.y + weights.z;
+  if (!isfinite(normalization) || abs(normalization) <= 1e-8)
+    return false;
+  barycentrics = weights / normalization;
   return all(isfinite(barycentrics));
 }
 
-static bool vkr_metal_packet_perspective_barycentrics(
-    float2 point, thread const float4 (&clip)[3], thread float3 &barycentrics) {
-  float2 ndc[3];
-  float3 inverse_w;
-  for (uint i = 0u; i < 3u; ++i) {
-    if (!all(isfinite(clip[i])) || abs(clip[i].w) <= 1e-7)
-      return false;
-    ndc[i] = clip[i].xy / clip[i].w;
-    inverse_w[i] = 1.0 / clip[i].w;
-  }
-  float3 affine;
-  if (!vkr_metal_packet_affine_barycentrics(point, ndc[0], ndc[1], ndc[2],
-                                            affine))
+static bool vkr_metal_packet_projected_face_sign(thread const float4 (&clip)[3],
+                                                 thread float &face_sign) {
+  float3 q0 = float3(clip[0].x, clip[0].y, clip[0].w);
+  float3 q1 = float3(clip[1].x, clip[1].y, clip[1].w);
+  float3 q2 = float3(clip[2].x, clip[2].y, clip[2].w);
+  float orientation = dot(cross(q0, q1), q2);
+  if (!isfinite(orientation) || abs(orientation) <= 1e-12)
     return false;
-  float3 weighted = affine * inverse_w;
-  float normalization = weighted.x + weighted.y + weighted.z;
-  if (!isfinite(normalization) || abs(normalization) <= 1e-8)
-    return false;
-  barycentrics = weighted / normalization;
-  return all(isfinite(barycentrics));
+  /* Metal screen Y is inverted relative to NDC, matching the former signed
+     screen-area test without dividing eye-plane-crossing vertices by w. */
+  face_sign = orientation > 0.0 ? 1.0 : -1.0;
+  return true;
 }
 
 static float2 vkr_metal_packet_resolve_ndc(float2 pixel, uint2 extent) {
@@ -591,24 +596,15 @@ vkr_metal_packet_gbuffer_resolve(constant VkrMetalPacketGBufferResolveRoot &root
   float4 object_tangent = vertices[0].tangent * barycentric.x +
                           vertices[1].tangent * barycentric.y +
                           vertices[2].tangent * barycentric.z;
-  float2 screen[3];
-  for (uint corner = 0u; corner < 3u; ++corner) {
-    float2 ndc = clip[corner].xy / clip[corner].w;
-    screen[corner] = float2((ndc.x * 0.5 + 0.5) * root.extent.x,
-                            (0.5 - ndc.y * 0.5) * root.extent.y);
-  }
-  float signed_area =
-      (screen[1].x - screen[0].x) * (screen[2].y - screen[0].y) -
-      (screen[1].y - screen[0].y) * (screen[2].x - screen[0].x);
   float3 transformed_normal = (instance.model * float4(object_normal, 0.0)).xyz;
-  if (!isfinite(signed_area) || abs(signed_area) <= 1e-8 ||
+  float face_sign;
+  if (!vkr_metal_packet_projected_face_sign(clip, face_sign) ||
       !vkr_metal_packet_finite_nonzero(transformed_normal)) {
     atomic_fetch_add_explicit(&root.compaction_state->resolve_invalid_count, 1u,
                               memory_order_relaxed);
     vkr_metal_packet_resolve_defaults(root, pixel, -1.0);
     return;
   }
-  float face_sign = signed_area < 0.0 ? 1.0 : -1.0;
   float3 normal = normalize(transformed_normal) * face_sign;
   if ((material.flags & 1u) != 0u) {
     float3 sampled =
@@ -756,17 +752,27 @@ kernel void vkr_metal_packet_deferred_lighting(
   }
   float3 world_position = vkr_metal_packet_deferred_world_position(
       root, pixel, root.depth.read(pixel).x);
+  if (frame->shadow_debug_mode != 0u) {
+    VkrMetalPacketShadowSample shadow_sample =
+        vkr_metal_packet_directional_shadow_sample(frame, world_position);
+    root.hdr.write(float4(vkr_metal_packet_shadow_debug_color(
+                              frame->shadow_debug_mode, shadow_sample),
+                          1.0),
+                   pixel);
+    return;
+  }
   float3 view = normalize(frame->view_position.xyz - world_position);
   float no_v = max(dot(normal, view), 0.0);
   float3 analytic_diffuse = 0.0;
   float3 analytic_specular = 0.0;
 
   if (frame->directional_direction_enabled.w > 0.5) {
-    float shadow = vkr_metal_packet_directional_shadow(frame, world_position);
+    VkrMetalPacketShadowSample shadow_sample =
+        vkr_metal_packet_directional_shadow_sample(frame, world_position);
     VkrMetalPacketDirectResult direct = vkr_metal_packet_direct_deferred(
         normal, view, normalize(-frame->directional_direction_enabled.xyz),
         frame->directional_color_intensity.rgb *
-            frame->directional_color_intensity.w * shadow,
+            frame->directional_color_intensity.w * shadow_sample.factor,
         diffuse_albedo, roughness, f0);
     analytic_diffuse = direct.diffuse;
     analytic_specular = direct.specular;
@@ -913,6 +919,8 @@ struct VkrMetalPacketTransmissionShadeRoot {
   device VkrMetalPacketInstance *instances;
   device VkrMetalPacketMaterial *materials;
   device VkrGpuDrawCompactionState *compaction_state;
+  device uint *pixel_list;
+  device atomic_uint *compact_counts;
   texture2d<uint, access::read> vbuffer;
   texture2d<float, access::read> depth;
   texture2d<float, access::sample> source;
@@ -924,7 +932,10 @@ struct VkrMetalPacketTransmissionShadeRoot {
   uint geometry_count;
   uint material_count;
   uint instance_count;
-  uint2 reserved;
+  uint pixel_capacity;
+  uint compact_layer;
+  uint compact_enabled;
+  uint reserved[3];
 };
 
 struct VkrMetalPacketTransmissionCoverageRoot {
@@ -933,6 +944,20 @@ struct VkrMetalPacketTransmissionCoverageRoot {
   uint2 extent;
   uint layer;
   uint reserved;
+};
+
+struct VkrMetalPacketTransmissionCompactRoot {
+  texture2d<uint, access::read> vbuffer;
+  device uint *pixel_list;
+  device atomic_uint *covered_pixels;
+  device atomic_uint *overflow_counts;
+  device uint *indirect_arguments;
+  texture2d<float, access::read> source;
+  texture2d<float, access::write> destination;
+  uint2 extent;
+  uint layer;
+  uint capacity;
+  uint2 reserved;
 };
 
 struct VkrMetalPacketTransmissionSurface {
@@ -1069,24 +1094,15 @@ static bool vkr_metal_packet_resolve_transmission_surface(
   float4 object_tangent = vertices[0].tangent * barycentric.x +
                           vertices[1].tangent * barycentric.y +
                           vertices[2].tangent * barycentric.z;
-  float2 screen[3];
-  for (uint corner = 0u; corner < 3u; ++corner) {
-    float2 ndc = clip[corner].xy / clip[corner].w;
-    screen[corner] = float2((ndc.x * 0.5 + 0.5) * root.extent.x,
-                            (0.5 - ndc.y * 0.5) * root.extent.y);
-  }
-  float signed_area =
-      (screen[1].x - screen[0].x) * (screen[2].y - screen[0].y) -
-      (screen[1].y - screen[0].y) * (screen[2].x - screen[0].x);
   float3 transformed_normal = (instance.model * float4(object_normal, 0.0)).xyz;
-  if (!isfinite(signed_area) || abs(signed_area) <= 1e-8 ||
+  float face_sign;
+  if (!vkr_metal_packet_projected_face_sign(clip, face_sign) ||
       !vkr_metal_packet_finite_nonzero(transformed_normal)) {
     atomic_fetch_add_explicit(&root.compaction_state->resolve_invalid_count, 1u,
                               memory_order_relaxed);
     return false;
   }
-  float3 normal =
-      normalize(transformed_normal) * (signed_area < 0.0 ? 1.0 : -1.0);
+  float3 normal = normalize(transformed_normal) * face_sign;
   if ((material.flags & 1u) != 0u) {
     float3 sampled =
         material.normal_texture
@@ -1152,17 +1168,24 @@ static float3 vkr_metal_packet_transmission_lighting(
   if (frame->render_mode == 6u)
     return float3(surface.metallic, surface.roughness,
                   max(f0.x, max(f0.y, f0.z)));
+  if (frame->shadow_debug_mode != 0u) {
+    VkrMetalPacketShadowSample shadow_sample =
+        vkr_metal_packet_directional_shadow_sample(frame, world_position);
+    return vkr_metal_packet_shadow_debug_color(frame->shadow_debug_mode,
+                                               shadow_sample);
+  }
   float3 view = normalize(frame->view_position.xyz - world_position);
   float no_v = max(dot(surface.normal, view), 0.0);
   float3 analytic_diffuse = 0.0;
   float3 analytic_specular = 0.0;
   if (frame->directional_direction_enabled.w > 0.5) {
-    float shadow = vkr_metal_packet_directional_shadow(frame, world_position);
+    VkrMetalPacketShadowSample shadow_sample =
+        vkr_metal_packet_directional_shadow_sample(frame, world_position);
     VkrMetalPacketDirectResult direct = vkr_metal_packet_direct(
         surface.normal, view,
         normalize(-frame->directional_direction_enabled.xyz),
         frame->directional_color_intensity.rgb *
-            frame->directional_color_intensity.w * shadow,
+            frame->directional_color_intensity.w * shadow_sample.factor,
         surface.base.rgb, surface.metallic, surface.roughness, f0);
     analytic_diffuse = direct.diffuse;
     analytic_specular = direct.specular;
@@ -1297,7 +1320,21 @@ static float3 vkr_metal_packet_transmission_lighting(
 
 kernel void vkr_metal_packet_transmission_shade(
     constant VkrMetalPacketTransmissionShadeRoot &root [[buffer(0)]],
-    uint2 pixel [[thread_position_in_grid]]) {
+    uint3 grid_position [[thread_position_in_grid]]) {
+  uint2 pixel = grid_position.xy;
+  if (root.compact_enabled != 0u) {
+    if (root.compact_layer >= 4u || root.pixel_list == nullptr ||
+        root.compact_counts == nullptr)
+      return;
+    uint compact_count =
+        min(atomic_load_explicit(&root.compact_counts[root.compact_layer],
+                                 memory_order_relaxed),
+            root.pixel_capacity);
+    if (grid_position.x >= compact_count)
+      return;
+    uint packed = root.pixel_list[grid_position.x];
+    pixel = uint2(packed & 0xffffu, packed >> 16u);
+  }
   if (any(pixel >= root.extent))
     return;
   float4 background = root.source.read(pixel);
@@ -1320,7 +1357,8 @@ kernel void vkr_metal_packet_transmission_shade(
   float3 world_position = world_h.xyz / safe_world_w;
   float3 color = vkr_metal_packet_transmission_lighting(
       frame, material, surface, world_position);
-  if (frame->render_mode == 0u && material.material_alpha.y > 0.0) {
+  if (frame->render_mode == 0u && frame->shadow_debug_mode == 0u &&
+      material.material_alpha.y > 0.0) {
     float3 view = normalize(frame->view_position.xyz - world_position);
     float no_v = max(dot(surface.normal, view), 0.0);
     float3 f0 = mix(saturate(material.material_dielectric_specular.rgb),
@@ -1351,6 +1389,56 @@ kernel void vkr_metal_packet_transmission_shade(
     color = mix(color, transmitted, saturate(weight));
   }
   root.destination.write(float4(color, 1.0), pixel);
+}
+
+kernel void vkr_metal_packet_transmission_compact(
+    constant VkrMetalPacketTransmissionCompactRoot &root [[buffer(0)]],
+    uint2 pixel [[thread_position_in_grid]],
+    ushort thread_index [[thread_index_in_threadgroup]]) {
+  if (root.layer >= 4u)
+    return;
+  if (all(pixel < root.extent))
+    root.destination.write(root.source.read(pixel), pixel);
+  threadgroup uint offsets[64];
+  threadgroup uint group_base;
+  bool covered = all(pixel < root.extent) && root.vbuffer.read(pixel).x != 0u;
+  offsets[thread_index] = covered ? 1u : 0u;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (thread_index == 0u) {
+    uint group_count = 0u;
+    for (uint i = 0u; i < 64u; ++i) {
+      uint present = offsets[i];
+      offsets[i] = group_count;
+      group_count += present;
+    }
+    group_base = atomic_fetch_add_explicit(&root.covered_pixels[root.layer],
+                                           group_count, memory_order_relaxed);
+    uint writable = group_base < root.capacity
+                        ? min(group_count, root.capacity - group_base)
+                        : 0u;
+    if (writable < group_count)
+      atomic_fetch_add_explicit(&root.overflow_counts[root.layer],
+                                group_count - writable, memory_order_relaxed);
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (covered) {
+    uint destination = group_base + offsets[thread_index];
+    if (destination < root.capacity)
+      root.pixel_list[destination] = (pixel.y << 16u) | pixel.x;
+  }
+}
+
+kernel void vkr_metal_packet_transmission_compact_finalize(
+    constant VkrMetalPacketTransmissionCompactRoot &root [[buffer(0)]],
+    uint thread_index [[thread_position_in_grid]]) {
+  if (thread_index != 0u)
+    return;
+  uint count = min(atomic_load_explicit(&root.covered_pixels[root.layer],
+                                        memory_order_relaxed),
+                   root.capacity);
+  root.indirect_arguments[0] = (count + 63u) / 64u;
+  root.indirect_arguments[1] = 1u;
+  root.indirect_arguments[2] = 1u;
 }
 
 kernel void vkr_metal_packet_transmission_coverage(
@@ -1413,10 +1501,12 @@ static_assert(sizeof(VkrMetalPacketGBufferResolveRoot) == 192,
               "G-buffer resolve root ABI must remain 192 bytes");
 static_assert(sizeof(VkrMetalPacketDeferredLightingRoot) == 144,
               "Deferred-lighting root ABI must remain 144 bytes");
-static_assert(sizeof(VkrMetalPacketTransmissionShadeRoot) == 240,
-              "Transmission-shade root ABI must remain 240 bytes");
+static_assert(sizeof(VkrMetalPacketTransmissionShadeRoot) == 272,
+              "Transmission-shade root ABI must remain 272 bytes");
 static_assert(sizeof(VkrMetalPacketTransmissionCoverageRoot) == 32,
               "Transmission-coverage root ABI must remain 32 bytes");
+static_assert(sizeof(VkrMetalPacketTransmissionCompactRoot) == 80,
+              "Transmission-compact root ABI must remain 80 bytes");
 static_assert(sizeof(VkrMetalPacketGpuDrawRoot) == 192,
               "GPU draw root ABI must remain 192 bytes");
 static_assert(sizeof(VkrMetalPacketTransmissionPeelRoot) == 16,

@@ -401,6 +401,14 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
   VKR_REGISTER_U64(visibility_candidate_capacity,
                    "visibility.gpu_candidates.capacity", VKR_METRIC_DOMAIN_DRAW,
                    VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(visibility_deferred_selected, "visibility.deferred.selected",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_COUNTER(visibility_deferred_legacy_forward_fallbacks,
+                       "visibility.deferred.legacy_forward_fallbacks",
+                       VKR_METRIC_DOMAIN_DRAW);
+  VKR_REGISTER_COUNTER(visibility_deferred_unsupported_input_fallbacks,
+                       "visibility.deferred.unsupported_input_fallbacks",
+                       VKR_METRIC_DOMAIN_DRAW);
   VKR_REGISTER_COUNTER(visibility_candidate_overflow_fallbacks,
                        "visibility.gpu_candidates.overflow_fallbacks",
                        VKR_METRIC_DOMAIN_DRAW);
@@ -430,8 +438,23 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
   VKR_REGISTER_U64(visibility_transmission_gpu_visible_count,
                    "visibility.transmission.gpu_visible.count",
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(visibility_transmission_gpu_bucket_opaque_single,
+                   "visibility.transmission.gpu_visible.bucket.opaque_single",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(visibility_transmission_gpu_bucket_opaque_double,
+                   "visibility.transmission.gpu_visible.bucket.opaque_double",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(visibility_transmission_gpu_bucket_cutout_single,
+                   "visibility.transmission.gpu_visible.bucket.cutout_single",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(visibility_transmission_gpu_bucket_cutout_double,
+                   "visibility.transmission.gpu_visible.bucket.cutout_double",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(visibility_transmission_gpu_compaction_overflow,
                    "visibility.transmission.gpu_visible.overflow",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(visibility_transmission_pixel_compaction_overflow,
+                   "visibility.transmission.compact_pixels.overflow",
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   const char *transmission_coverage_names[4] = {
       "visibility.transmission.covered_pixels.layer_0",
@@ -1136,6 +1159,13 @@ void vkr_renderer_metrics_collect(
   VKR_SET_U64(visibility_candidate_capacity, world->gpu_candidate_capacity);
   VKR_SET_U64(visibility_transmission_candidate_count,
               world->transmission_gpu_candidate_count);
+  VKR_SET_U64(visibility_deferred_selected, world->deferred_selected ? 1u : 0u);
+  vkr_metrics_counter_add(metrics,
+                          ids->visibility_deferred_legacy_forward_fallbacks,
+                          world->deferred_legacy_forward_fallbacks);
+  vkr_metrics_counter_add(metrics,
+                          ids->visibility_deferred_unsupported_input_fallbacks,
+                          world->deferred_unsupported_input_fallbacks);
   VKR_SET_U64(visibility_hzb_history_valid, world->hzb_history_valid ? 1u : 0u);
   vkr_metrics_counter_add(metrics, ids->visibility_candidate_overflow_fallbacks,
                           world->gpu_candidate_overflow_fallbacks);
@@ -1155,8 +1185,18 @@ void vkr_renderer_metrics_collect(
                 world->gpu_resolve_invalid_count);
     VKR_SET_U64(visibility_transmission_gpu_visible_count,
                 world->transmission_gpu_visible_count);
+    VKR_SET_U64(visibility_transmission_gpu_bucket_opaque_single,
+                world->transmission_gpu_bucket_counts[0]);
+    VKR_SET_U64(visibility_transmission_gpu_bucket_opaque_double,
+                world->transmission_gpu_bucket_counts[1]);
+    VKR_SET_U64(visibility_transmission_gpu_bucket_cutout_single,
+                world->transmission_gpu_bucket_counts[2]);
+    VKR_SET_U64(visibility_transmission_gpu_bucket_cutout_double,
+                world->transmission_gpu_bucket_counts[3]);
     VKR_SET_U64(visibility_transmission_gpu_compaction_overflow,
                 world->transmission_gpu_compaction_overflow_count);
+    VKR_SET_U64(visibility_transmission_pixel_compaction_overflow,
+                world->transmission_pixel_compaction_overflow_count);
     VKR_SET_U64(visibility_hzb_rejected, world->gpu_occlusion_culled_count);
     VKR_SET_U64(visibility_transmission_hzb_rejected,
                 world->transmission_gpu_occlusion_culled_count);
@@ -1170,7 +1210,12 @@ void vkr_renderer_metrics_collect(
         ids->visibility_gpu_compaction_overflow,
         ids->visibility_gpu_resolve_invalid,
         ids->visibility_transmission_gpu_visible_count,
+        ids->visibility_transmission_gpu_bucket_opaque_single,
+        ids->visibility_transmission_gpu_bucket_opaque_double,
+        ids->visibility_transmission_gpu_bucket_cutout_single,
+        ids->visibility_transmission_gpu_bucket_cutout_double,
         ids->visibility_transmission_gpu_compaction_overflow,
+        ids->visibility_transmission_pixel_compaction_overflow,
         ids->visibility_hzb_rejected,
         ids->visibility_transmission_hzb_rejected,
     };

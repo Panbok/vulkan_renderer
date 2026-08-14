@@ -213,6 +213,104 @@ static void test_deferred_transmission_condition_requires_both_inputs(void) {
       "  test_deferred_transmission_condition_requires_both_inputs PASSED\n");
 }
 
+static void test_transmission_compact_conditions_and_viewport_buffer(void) {
+  printf("  Running "
+         "test_transmission_compact_conditions_and_viewport_buffer...\n");
+  Arena *arena = arena_create(MB(2), MB(2));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+
+  const char *source =
+      "{\"version\":1,\"name\":\"compact\",\"resources\":[{"
+      "\"name\":\"pixels\",\"type\":\"buffer\",\"condition\":"
+      "\"transmission_compact_enabled\",\"size\":{\"mode\":"
+      "\"viewport_pixels\",\"bytes_per_pixel\":4},\"usage\":["
+      "\"STORAGE\"],\"flags\":[\"PER_FRAME_SLOT\"]}],\"passes\":[{"
+      "\"name\":\"compact\",\"type\":\"compute\",\"condition\":"
+      "\"transmission_compact_enabled\",\"flags\":[\"NO_CULL\"],"
+      "\"execute\":\"test.compute\"},{\"name\":\"compact-editor\","
+      "\"type\":\"compute\",\"condition\":"
+      "\"editor_enabled && transmission_compact_enabled\",\"flags\":["
+      "\"NO_CULL\"],\"execute\":\"test.compute\"},{\"name\":"
+      "\"compact-fullscreen\",\"type\":\"compute\",\"condition\":"
+      "\"!editor_enabled && transmission_compact_enabled\",\"flags\":["
+      "\"NO_CULL\"],\"execute\":\"test.compute\"},{\"name\":"
+      "\"shade-editor\",\"type\":\"compute\",\"condition\":"
+      "\"editor_enabled && transmission_pending && "
+      "!transmission_compact_enabled\",\"flags\":[\"NO_CULL\"],"
+      "\"execute\":\"test.compute\"},{\"name\":\"shade-fullscreen\","
+      "\"type\":\"compute\",\"condition\":"
+      "\"!editor_enabled && transmission_pending && "
+      "!transmission_compact_enabled\",\"flags\":[\"NO_CULL\"],"
+      "\"execute\":\"test.compute\"},{\"name\":\"coverage\","
+      "\"type\":\"compute\",\"condition\":"
+      "\"transmission_pending && timing_enabled && "
+      "!transmission_compact_enabled\",\"flags\":[\"NO_CULL\"],"
+      "\"execute\":\"test.compute\"}]}";
+  VkrRgJsonGraph json = {0};
+  assert(rg_barrier_test_load_json(&allocator, source, &json));
+  assert(json.resources.data[0].buffer.size_mode ==
+         VKR_RG_JSON_BUFFER_SIZE_VIEWPORT_PIXELS);
+  assert(json.resources.data[0].buffer.bytes_per_pixel == 4u);
+  assert(json.passes.data[0].condition.kind ==
+         VKR_RG_JSON_CONDITION_TRANSMISSION_COMPACT_ENABLED);
+  assert(json.passes.data[1].condition.kind ==
+         VKR_RG_JSON_CONDITION_EDITOR_ENABLED_TRANSMISSION_COMPACT);
+  assert(json.passes.data[2].condition.kind ==
+         VKR_RG_JSON_CONDITION_EDITOR_DISABLED_TRANSMISSION_COMPACT);
+  assert(json.passes.data[3].condition.kind ==
+         VKR_RG_JSON_CONDITION_EDITOR_ENABLED_TRANSMISSION_FULLSCREEN);
+  assert(json.passes.data[4].condition.kind ==
+         VKR_RG_JSON_CONDITION_EDITOR_DISABLED_TRANSMISSION_FULLSCREEN);
+  assert(json.passes.data[5].condition.kind ==
+         VKR_RG_JSON_CONDITION_TRANSMISSION_FULLSCREEN_TIMING);
+
+  VkrRgExecutorRegistry registry = {0};
+  assert(vkr_rg_executor_registry_init(&registry, &allocator));
+  const VkrRgPassExecutor executor = {
+      .name = string8_lit("test.compute"),
+      .id = 1u,
+      .type = VKR_RG_PASS_TYPE_COMPUTE,
+      .execute = rg_barrier_test_execute,
+  };
+  assert(vkr_rg_executor_registry_register(&registry, &executor));
+  assert(vkr_rg_json_bind_executors(&json, &registry));
+
+  VkrRenderGraph *graph = vkr_rg_create(&allocator);
+  assert(graph);
+  VkrRenderGraphFrameInfo frame = {
+      .viewport_width = 320u,
+      .viewport_height = 200u,
+      .transmission_pending = true_v,
+      .transmission_compact_enabled = true_v,
+  };
+  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_build_from_json(graph, &json, &frame));
+  assert(graph->buffers.length == 1u);
+  assert(graph->buffers.data[0].desc.size == 320u * 200u * 4u);
+  assert(graph->passes.length == 2u);
+
+  frame.viewport_width = UINT32_MAX;
+  frame.viewport_height = UINT32_MAX;
+  vkr_rg_begin_frame(graph, &frame);
+  assert(!vkr_rg_build_from_json(graph, &json, &frame));
+
+  const char *bad_stride =
+      "{\"version\":1,\"name\":\"bad\",\"resources\":[{\"name\":"
+      "\"pixels\",\"type\":\"buffer\",\"size\":{\"mode\":"
+      "\"viewport_pixels\",\"bytes_per_pixel\":0},\"usage\":["
+      "\"STORAGE\"],\"flags\":[\"PER_FRAME_SLOT\"]}],\"passes\":[]}";
+  VkrRgJsonGraph rejected = {0};
+  assert(!rg_barrier_test_load_json(&allocator, bad_stride, &rejected));
+
+  vkr_rg_destroy(graph);
+  vkr_rg_executor_registry_destroy(&registry);
+  vkr_rg_json_destroy(&json);
+  arena_destroy(arena);
+  printf("  test_transmission_compact_conditions_and_viewport_buffer "
+         "PASSED\n");
+}
+
 static void test_shadow_map_capacity_is_independent_of_active_cascades(void) {
   printf("  Running "
          "test_shadow_map_capacity_is_independent_of_active_cascades...\n");
@@ -247,6 +345,62 @@ static void test_shadow_map_capacity_is_independent_of_active_cascades(void) {
   arena_destroy(arena);
   printf("  test_shadow_map_capacity_is_independent_of_active_cascades "
          "PASSED\n");
+}
+
+static void test_shadow_reads_follow_active_cascades(void) {
+  printf("  Running test_shadow_reads_follow_active_cascades...\n");
+  Arena *arena = arena_create(MB(1), MB(1));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+
+  const char *source =
+      "{\"version\":1,\"name\":\"conditional-shadow-read\",\"resources\":[{"
+      "\"name\":\"shadow\",\"type\":\"image\",\"extent\":{\"mode\":"
+      "\"fixed\",\"width\":16,\"height\":16},\"format\":\"D32_SFLOAT\","
+      "\"usage\":[\"SAMPLED\"]}],\"passes\":[{\"name\":\"consumer\","
+      "\"type\":\"compute\",\"flags\":[\"NO_CULL\"],\"reads\":[{\"image\":"
+      "\"shadow\",\"access\":\"SAMPLED\",\"binding\":0,\"when\":"
+      "\"shadow_cascades_active\"}],\"execute\":\"test.compute\"}]}";
+  VkrRgJsonGraph json = {0};
+  assert(rg_barrier_test_load_json(&allocator, source, &json));
+  const VkrRgJsonResourceUse *parsed_use =
+      vector_get_VkrRgJsonResourceUse(&json.passes.data[0].reads, 0u);
+  assert(parsed_use && parsed_use->condition.kind ==
+                           VKR_RG_JSON_CONDITION_SHADOW_CASCADES_ACTIVE);
+
+  VkrRgExecutorRegistry registry = {0};
+  assert(vkr_rg_executor_registry_init(&registry, &allocator));
+  const VkrRgPassExecutor executor = {
+      .name = string8_lit("test.compute"),
+      .id = 1u,
+      .type = VKR_RG_PASS_TYPE_COMPUTE,
+      .execute = rg_barrier_test_execute,
+  };
+  assert(vkr_rg_executor_registry_register(&registry, &executor));
+  assert(vkr_rg_json_bind_executors(&json, &registry));
+
+  VkrRenderGraph *graph = vkr_rg_create(&allocator);
+  assert(graph);
+  VkrRenderGraphFrameInfo frame = {
+      .target_width = 16u,
+      .target_height = 16u,
+  };
+  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_build_from_json(graph, &json, &frame));
+  assert(graph->passes.length == 1u);
+  assert(graph->passes.data[0].desc.image_reads.length == 0u);
+
+  frame.shadow_cascade_count = 4u;
+  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_build_from_json(graph, &json, &frame));
+  assert(graph->passes.length == 1u);
+  assert(graph->passes.data[0].desc.image_reads.length == 1u);
+
+  vkr_rg_destroy(graph);
+  vkr_rg_executor_registry_destroy(&registry);
+  vkr_rg_json_destroy(&json);
+  arena_destroy(arena);
+  printf("  test_shadow_reads_follow_active_cascades PASSED\n");
 }
 
 static void test_conflicting_runtime_bindings_are_rejected(void) {
@@ -1131,7 +1285,7 @@ static void test_main_graph_declares_transmission_stages(void) {
       const VkrRgJsonConditionKind expected_condition =
           found < 8u
               ? VKR_RG_JSON_CONDITION_DEFERRED_TRANSMISSION_PENDING
-              : VKR_RG_JSON_CONDITION_EDITOR_DISABLED_DEFERRED_TRANSMISSION;
+              : VKR_RG_JSON_CONDITION_EDITOR_DISABLED_TRANSMISSION_FULLSCREEN;
       assert(pass->condition.kind == expected_condition);
       found++;
     }
@@ -1145,15 +1299,47 @@ static void test_main_graph_declares_transmission_stages(void) {
         !vkr_string8_starts_with(&pass->name, "Transmission.Coverage."))
       continue;
     assert(pass->condition.kind ==
-           VKR_RG_JSON_CONDITION_DEFERRED_TRANSMISSION_TIMING);
+           VKR_RG_JSON_CONDITION_TRANSMISSION_FULLSCREEN_TIMING);
     assert(pass->type == VKR_RG_JSON_PASS_COMPUTE && pass->reads.length == 2u &&
            pass->writes.length == 0u);
     transmission_coverage_passes++;
   }
   assert(transmission_coverage_passes == 4u);
 
+  uint32_t transmission_compact_passes = 0u;
+  uint32_t transmission_compact_finalize_passes = 0u;
+  uint32_t transmission_compact_shade_passes = 0u;
+  for (uint64_t i = 0u; i < graph.passes.length; ++i) {
+    VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph.passes, i);
+    if (!pass)
+      continue;
+    if (vkr_string8_starts_with(&pass->name,
+                                "Transmission.Compact.Finalize.")) {
+      assert(pass->condition.kind ==
+             VKR_RG_JSON_CONDITION_TRANSMISSION_COMPACT_ENABLED);
+      assert(pass->reads.length == 3u && pass->writes.length == 1u);
+      transmission_compact_finalize_passes++;
+    } else if (vkr_string8_starts_with(&pass->name, "Transmission.Compact.")) {
+      assert(pass->condition.kind ==
+                 VKR_RG_JSON_CONDITION_EDITOR_DISABLED_TRANSMISSION_COMPACT ||
+             pass->condition.kind ==
+                 VKR_RG_JSON_CONDITION_EDITOR_ENABLED_TRANSMISSION_COMPACT);
+      assert(pass->reads.length == 2u && pass->writes.length == 3u);
+      transmission_compact_passes++;
+    } else if (vkr_string8_starts_with(&pass->name,
+                                       "Transmission.Shade.Compact.")) {
+      assert(pass->dispatch.kind == VKR_RG_DISPATCH_INDIRECT);
+      assert(pass->dispatch.indirect_binding == 7u);
+      transmission_compact_shade_passes++;
+    }
+  }
+  assert(transmission_compact_passes == 8u);
+  assert(transmission_compact_finalize_passes == 4u);
+  assert(transmission_compact_shade_passes == 8u);
+
   uint32_t layered_resource_count = 0u;
   bool8_t found_transmission_feedback = false_v;
+  bool8_t found_transmission_compact_pixels = false_v;
   for (uint64_t i = 0u; i < graph.resources.length; ++i) {
     VkrRgJsonResource *resource =
         vector_get_VkrRgJsonResource(&graph.resources, i);
@@ -1171,9 +1357,18 @@ static void test_main_graph_declares_transmission_stages(void) {
       assert(resource->condition.kind ==
              VKR_RG_JSON_CONDITION_DEFERRED_TRANSMISSION_PENDING);
       found_transmission_feedback = true_v;
+    } else if (vkr_string8_equals_cstr(&resource->name,
+                                       "transmission_compact_pixels")) {
+      assert(resource->condition.kind ==
+             VKR_RG_JSON_CONDITION_TRANSMISSION_COMPACT_ENABLED);
+      assert(resource->buffer.size_mode ==
+             VKR_RG_JSON_BUFFER_SIZE_VIEWPORT_PIXELS);
+      assert(resource->buffer.bytes_per_pixel == sizeof(uint32_t));
+      found_transmission_compact_pixels = true_v;
     }
   }
-  assert(layered_resource_count == 2u && found_transmission_feedback);
+  assert(layered_resource_count == 2u && found_transmission_feedback &&
+         found_transmission_compact_pixels);
 
   const char *multi_view_ordered[] = {"Cull.Classify", "Cull.Prefix",
                                       "Cull.Encode",
@@ -1309,7 +1504,7 @@ static void test_main_graph_fits_runtime_pass_capacity(void) {
 
   VkrRenderGraph *runtime = vkr_rg_create(&allocator);
   assert(runtime);
-  const VkrRenderGraphFrameInfo frame = {
+  VkrRenderGraphFrameInfo frame = {
       .target_width = 3840u,
       .target_height = 2160u,
       .window_width = 3840u,
@@ -1331,6 +1526,42 @@ static void test_main_graph_fits_runtime_pass_capacity(void) {
   vkr_rg_begin_frame(runtime, &frame);
   assert(vkr_rg_build_from_json(runtime, &graph, &frame));
   assert(runtime->passes.length <= 64u);
+  assert(vkr_rg_compile_schedule(runtime));
+  vkr_rg_end_frame(runtime);
+
+  frame.transmission_compact_enabled = true_v;
+  vkr_rg_begin_frame(runtime, &frame);
+  assert(vkr_rg_build_from_json(runtime, &graph, &frame));
+  assert(runtime->passes.length <= 64u);
+  assert(vkr_rg_compile_schedule(runtime));
+  vkr_rg_end_frame(runtime);
+
+  frame = (VkrRenderGraphFrameInfo){
+      .target_width = 3840u,
+      .target_height = 2160u,
+      .window_width = 3840u,
+      .window_height = 2160u,
+      .viewport_width = 3840u,
+      .viewport_height = 2160u,
+      .target_color_format = VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB,
+      .target_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
+      .shadow_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
+      .shadow_map_size = 2048u,
+      .shadow_map_layer_count = 4u,
+  };
+  vkr_rg_begin_frame(runtime, &frame);
+  assert(vkr_rg_build_from_json(runtime, &graph, &frame));
+  bool8_t found_world_opaque = false_v;
+  for (uint64_t i = 0u; i < runtime->passes.length; ++i) {
+    VkrRgPass *pass = vector_get_VkrRgPass(&runtime->passes, i);
+    if (!pass ||
+        !vkr_string8_equals_cstr(&pass->desc.name, "World.Opaque.Fullscreen"))
+      continue;
+    assert(pass->desc.image_reads.length == 0u);
+    found_world_opaque = true_v;
+    break;
+  }
+  assert(found_world_opaque);
   assert(vkr_rg_compile_schedule(runtime));
   vkr_rg_end_frame(runtime);
 
@@ -1402,7 +1633,9 @@ bool32_t run_render_graph_barrier_tests() {
   test_image_access_is_write();
   test_json_bindings_and_condition_parity();
   test_deferred_transmission_condition_requires_both_inputs();
+  test_transmission_compact_conditions_and_viewport_buffer();
   test_shadow_map_capacity_is_independent_of_active_cascades();
+  test_shadow_reads_follow_active_cascades();
   test_conflicting_runtime_bindings_are_rejected();
   test_typed_executor_and_direct_dispatch_contract();
   test_indirect_dispatch_dependency_contract();

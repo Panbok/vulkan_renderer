@@ -39,6 +39,7 @@ static void test_packet_frame_constants(void) {
           },
       .lighting = &lighting,
       .shadow = &shadow,
+      .debug = &(const VkrGpuDebugPayload){.shadow_debug_mode = 3u},
   };
 
   const VkrPacketFrameConstants constants =
@@ -64,6 +65,7 @@ static void test_packet_frame_constants(void) {
   assert(constants.point_light_global_mask.words[0] == 9u &&
          constants.point_light_global_mask.words[3] == 12u);
   assert(constants.point_light_count == 3u && constants.render_mode == 17u &&
+         constants.shadow_debug_mode == 3u &&
          constants.prefilter_mip_count == VKR_IBL_PREFILTER_MIP_COUNT &&
          constants.shadow_cascade_count == 4u &&
          constants.shadow_bias == 0.0001f);
@@ -74,7 +76,8 @@ static void test_packet_frame_constants(void) {
       vkr_packet_derive_frame_constants(&unlit, 0u, 0u);
   assert(defaults.ibl_controls.x == 1.0f && defaults.ibl_controls.y == 1.0f &&
          defaults.ibl_controls.z == 1.0f && defaults.ibl_controls.w == 1.0f);
-  assert(defaults.ambient_color.w == 1.0f && defaults.point_light_count == 0u);
+  assert(defaults.ambient_color.w == 1.0f && defaults.point_light_count == 0u &&
+         defaults.shadow_debug_mode == 0u);
   printf("  test_packet_frame_constants PASSED\n");
 }
 

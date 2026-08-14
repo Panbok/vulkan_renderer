@@ -13,7 +13,7 @@
 #include "renderer/vkr_renderer.h"
 
 /** Version constant for VkrRenderPacket.packet_version validation. */
-#define VKR_RENDER_PACKET_VERSION 11u
+#define VKR_RENDER_PACKET_VERSION 12u
 
 /** Default manual camera exposure for HDR scene presentation. */
 #define VKR_DEFAULT_EXPOSURE 0.30f
@@ -163,6 +163,10 @@ typedef struct VkrPreparedTextDraw {
 typedef struct VkrWorldPassPayload {
   const VkrWorldDrawCandidate *gpu_candidates;
   uint32_t gpu_candidate_count;
+  /** Rows in gpu_candidates eligible for the camera opaque/cutout view. */
+  uint32_t gpu_camera_opaque_candidate_count;
+  /** Rows in gpu_candidates eligible for shadow-cascade views. */
+  uint32_t gpu_shadow_candidate_count;
   /** Independent unculled transmissive stream consumed by Metal P12. */
   const VkrWorldDrawCandidate *transmission_gpu_candidates;
   uint32_t transmission_gpu_candidate_count;
@@ -177,23 +181,6 @@ typedef struct VkrWorldPassPayload {
   const VkrPreparedTextDraw *text_draws;
   uint32_t text_draw_count;
 } VkrWorldPassPayload;
-
-/** Whether this packet can use the provisional fixed-capacity GPU draw path. */
-static INLINE bool8_t
-vkr_world_gpu_candidates_deferred_eligible(const VkrWorldPassPayload *world) {
-  return world &&
-                 (world->gpu_candidate_count > 0u ||
-                  world->transmission_gpu_candidate_count > 0u) &&
-                 world->gpu_candidate_count <=
-                     VKR_GPU_DRAW_CANDIDATE_CAPACITY &&
-                 world->transmission_gpu_candidate_count <=
-                     VKR_GPU_DRAW_CANDIDATE_CAPACITY &&
-                 (world->gpu_candidate_count == 0u || world->gpu_candidates) &&
-                 (world->transmission_gpu_candidate_count == 0u ||
-                  world->transmission_gpu_candidates)
-             ? true_v
-             : false_v;
-}
 
 /**
  * @brief Optional overrides for shadow depth bias settings.
@@ -294,6 +281,8 @@ typedef struct VkrTextUpdatesPayload {
 typedef struct VkrGpuDebugPayload {
   bool8_t enable_timing;
   bool8_t capture_pass_timestamps;
+  /** 0=off, 1=cascade index, 2=shadow factor, 3=sampled map depth. */
+  uint32_t shadow_debug_mode;
   /** Optional batch reserved and copied by this frame. Borrowed for submit. */
   const VkrCaptureBatchRequest *capture;
 } VkrGpuDebugPayload;
@@ -318,6 +307,87 @@ typedef struct VkrRenderPacket {
   const VkrTextUpdatesPayload *text_updates;
   const VkrGpuDebugPayload *debug;
 } VkrRenderPacket;
+
+/** Deferred cannot represent the opaque/cutout candidate stream this frame. */
+#define VKR_DEFERRED_FALLBACK_OPAQUE_INPUT 0x1u
+/** Deferred cannot represent the transmission candidate stream this frame. */
+#define VKR_DEFERRED_FALLBACK_TRANSMISSION_INPUT 0x2u
+/** The opaque/cutout candidate capacity would be exceeded. */
+#define VKR_DEFERRED_FALLBACK_OPAQUE_CAPACITY 0x4u
+/** The transmission candidate capacity would be exceeded. */
+#define VKR_DEFERRED_FALLBACK_TRANSMISSION_CAPACITY 0x8u
+
+/**
+ * @brief Complete, side-effect-free decision for the pre-P21 deferred reroute.
+ *
+ * A fallback reason always applies to the whole frame; candidate rows are
+ * never truncated. `has_deferred_work=false` is not a fallback: blend/text/UI
+ * only frames have no opaque, transmission, or shadow work to migrate.
+ */
+typedef struct VkrDeferredEligibility {
+  uint32_t fallback_reasons;
+  bool8_t has_deferred_work;
+} VkrDeferredEligibility;
+
+static INLINE VkrDeferredEligibility
+vkr_render_packet_deferred_eligibility(const VkrRenderPacket *packet) {
+  VkrDeferredEligibility result = {0};
+  if (!packet)
+    return result;
+
+  const VkrWorldPassPayload *world = packet->world;
+  const uint32_t opaque_candidates = world ? world->gpu_candidate_count : 0u;
+  const uint32_t transmission_candidates =
+      world ? world->transmission_gpu_candidate_count : 0u;
+  const uint32_t opaque_draws = world ? world->opaque_draw_count : 0u;
+  const uint32_t transmission_draws =
+      world ? world->transmission_draw_count : 0u;
+  const uint32_t camera_opaque_candidates =
+      world ? world->gpu_camera_opaque_candidate_count : 0u;
+  const uint32_t shadow_candidates =
+      world ? world->gpu_shadow_candidate_count : 0u;
+  const bool8_t shadow_work =
+      packet->shadow && (packet->shadow->opaque_draw_count > 0u ||
+                         packet->shadow->alpha_draw_count > 0u);
+  const uint64_t shadow_draws =
+      packet->shadow ? (uint64_t)packet->shadow->opaque_draw_count +
+                           packet->shadow->alpha_draw_count
+                     : 0u;
+
+  result.has_deferred_work =
+      opaque_candidates > 0u || transmission_candidates > 0u ||
+              opaque_draws > 0u || transmission_draws > 0u || shadow_work
+          ? true_v
+          : false_v;
+  if (!result.has_deferred_work)
+    return result;
+
+  if (opaque_candidates > VKR_GPU_DRAW_CANDIDATE_CAPACITY)
+    result.fallback_reasons |= VKR_DEFERRED_FALLBACK_OPAQUE_CAPACITY;
+  if (transmission_candidates > VKR_GPU_DRAW_CANDIDATE_CAPACITY)
+    result.fallback_reasons |= VKR_DEFERRED_FALLBACK_TRANSMISSION_CAPACITY;
+  if ((opaque_candidates > 0u && (!world || !world->gpu_candidates)) ||
+      camera_opaque_candidates > opaque_candidates ||
+      shadow_candidates > opaque_candidates ||
+      camera_opaque_candidates < opaque_draws ||
+      (shadow_work && shadow_candidates < shadow_draws))
+    result.fallback_reasons |= VKR_DEFERRED_FALLBACK_OPAQUE_INPUT;
+  if ((transmission_candidates > 0u &&
+       (!world || !world->transmission_gpu_candidates)) ||
+      transmission_candidates < transmission_draws)
+    result.fallback_reasons |= VKR_DEFERRED_FALLBACK_TRANSMISSION_INPUT;
+  return result;
+}
+
+/** Whether the packet contains representable deferred work with no fallback. */
+static INLINE bool8_t
+vkr_render_packet_deferred_eligible(const VkrRenderPacket *packet) {
+  const VkrDeferredEligibility eligibility =
+      vkr_render_packet_deferred_eligibility(packet);
+  return eligibility.has_deferred_work && eligibility.fallback_reasons == 0u
+             ? true_v
+             : false_v;
+}
 
 /**
  * @brief Validation error detail for packet submission.

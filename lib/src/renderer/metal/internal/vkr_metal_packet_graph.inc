@@ -28,6 +28,8 @@ typedef enum VkrMetalPacketGraphExecutorKind {
   VKR_METAL_PACKET_GRAPH_EXECUTOR_DEFERRED_LIGHTING,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_SHADE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_COVERAGE,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_COMPACT,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_COMPACT_FINALIZE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_HZB_BUILD,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_SKYBOX,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_WORLD_OPAQUE,
@@ -70,6 +72,8 @@ vkr_global const VkrMetalPacketGraphExecutorSpec
         {"pass.lighting.deferred", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.transmission.shade", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.transmission.coverage", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.transmission.compact", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.transmission.compact_finalize", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.hzb.build", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.skybox", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.world.opaque", VKR_RG_PASS_TYPE_GRAPHICS},
@@ -1140,6 +1144,50 @@ vkr_internal void vkr_metal_packet_collect_pass_timings(
                        (float64_t)renderer->timestamp_frequency;
     }
   }
+}
+
+vkr_internal void vkr_metal_packet_decode_gpu_draw_diagnostics(
+    VkrMetalPacketResult *result, const uint8_t *camera_and_shadow_readback,
+    uint32_t shadow_cascade_count, const uint8_t *transmission_readback) {
+  if (!result || !camera_and_shadow_readback)
+    return;
+  const VkrGpuDrawCompactionState *camera =
+      (const VkrGpuDrawCompactionState *)camera_and_shadow_readback;
+  result->gpu_visible_count = camera->visible_count;
+  MemCopy(result->gpu_bucket_counts, camera->bucket_counts,
+          sizeof(result->gpu_bucket_counts));
+  result->gpu_overflow_count = camera->overflow_count;
+  result->gpu_resolve_invalid_count = camera->resolve_invalid_count;
+  result->gpu_occlusion_culled_count = camera->occlusion_culled_count;
+  for (uint32_t cascade = 0u;
+       cascade < Min(shadow_cascade_count, VKR_SHADOW_CASCADE_COUNT_MAX);
+       ++cascade) {
+    const VkrGpuDrawCompactionState *shadow = camera + cascade + 1u;
+    result->shadow_gpu_visible_count[cascade] = shadow->visible_count;
+    MemCopy(result->shadow_gpu_bucket_counts[cascade], shadow->bucket_counts,
+            sizeof(result->shadow_gpu_bucket_counts[cascade]));
+    result->shadow_gpu_overflow_count[cascade] = shadow->overflow_count;
+    result->shadow_draw_count += shadow->visible_count;
+  }
+  if (transmission_readback) {
+    const VkrMetalPacketTransmissionDiagnostics *transmission =
+        (const VkrMetalPacketTransmissionDiagnostics *)transmission_readback;
+    result->transmission_gpu_visible_count =
+        transmission->compaction.visible_count;
+    MemCopy(result->transmission_gpu_bucket_counts,
+            transmission->compaction.bucket_counts,
+            sizeof(result->transmission_gpu_bucket_counts));
+    result->transmission_gpu_overflow_count =
+        transmission->compaction.overflow_count;
+    result->transmission_gpu_occlusion_culled_count =
+        transmission->compaction.occlusion_culled_count;
+  }
+  result->opaque_draw_count = result->gpu_visible_count;
+  result->transmission_draw_count = result->transmission_gpu_visible_count;
+  result->indexed_draw_count = result->opaque_draw_count +
+                               result->transmission_draw_count +
+                               result->blend_draw_count;
+  result->has_gpu_draw_diagnostics = true_v;
 }
 
 vkr_internal void

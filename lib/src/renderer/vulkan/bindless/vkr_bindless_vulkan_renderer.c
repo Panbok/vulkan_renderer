@@ -682,10 +682,10 @@ bool8_t vkr_bindless_vulkan_renderer_submit_packet(
   /* P19 coverage is Metal-only; keep authored timing-conditioned passes out
      of the Vulkan graph until its parity phase. */
   renderer->prepared_frame.timing_enabled = false_v;
-  if (packet->shadow) {
-    renderer->prepared_frame.shadow_cascade_count =
-        Min(packet->shadow->cascade_count, VKR_SHADOW_CASCADE_COUNT_MAX);
-  }
+  renderer->prepared_frame.shadow_cascade_count =
+      packet->shadow
+          ? Min(packet->shadow->cascade_count, VKR_SHADOW_CASCADE_COUNT_MAX)
+          : 0u;
   vkr_rg_begin_frame(renderer->graph, &renderer->prepared_frame);
   vkr_rg_set_packet(renderer->graph, packet);
   if (!vkr_rg_build_from_json(renderer->graph, &renderer->json_graph,

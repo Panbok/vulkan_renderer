@@ -399,6 +399,13 @@ typedef enum VkrSurfaceDepthFormat {
   VKR_SURFACE_DEPTH_FORMAT_D24_UNORM_S8_UINT,
 } VkrSurfaceDepthFormat;
 
+/** Whole-frame opaque/transmission topology configured at backend startup. */
+typedef enum VkrWorldRendererTopology {
+  VKR_WORLD_RENDERER_TOPOLOGY_UNKNOWN = 0,
+  VKR_WORLD_RENDERER_TOPOLOGY_LEGACY_FORWARD,
+  VKR_WORLD_RENDERER_TOPOLOGY_DEFERRED,
+} VkrWorldRendererTopology;
+
 typedef struct VkrDeviceInformation {
   String8 device_name;
   String8 vendor_name;
@@ -433,6 +440,7 @@ typedef struct VkrDeviceInformation {
   VkrSurfaceColorFormat actual_color_format;
   VkrSurfaceDepthFormat actual_depth_format;
   VkrSurfaceColorSpace actual_color_space;
+  VkrWorldRendererTopology actual_world_renderer_topology;
 } VkrDeviceInformation;
 
 // ============================================================================

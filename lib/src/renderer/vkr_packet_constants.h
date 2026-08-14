@@ -27,6 +27,7 @@ typedef struct VkrPacketFrameConstants {
   VkrPointLightMask point_light_global_mask;
   uint32_t point_light_count;
   uint32_t render_mode;
+  uint32_t shadow_debug_mode;
   uint32_t prefilter_mip_count;
   uint32_t shadow_cascade_count;
   float32_t shadow_bias;

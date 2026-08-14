@@ -10,31 +10,44 @@ vkr_internal bool8_t vkr_metal_packet_wait(VkrMetalPacketRenderer *renderer,
 }
 
 vkr_internal void
-vkr_metal_packet_cache_slot_timing(VkrMetalPacketRenderer *renderer,
+vkr_metal_packet_cache_slot_result(VkrMetalPacketRenderer *renderer,
                                    VkrMetalPacketCommandSlot *slot) {
-  if (!slot->timing_requested || slot->timing_collected)
+  if (!slot->result_pending || slot->result_collected)
     return;
-  vkr_metal_packet_collect_pass_timings(renderer, slot->timestamp_heap,
-                                        slot->timestamp_entry_count,
-                                        &slot->timing_result);
+  if (slot->timing_requested) {
+    vkr_metal_packet_collect_pass_timings(renderer, slot->timestamp_heap,
+                                          slot->timestamp_entry_count,
+                                          &slot->pending_result);
+  }
+  if (slot->gpu_draw_diagnostics_requested &&
+      slot->gpu_draw_diagnostics_readback) {
+    vkr_metal_packet_decode_gpu_draw_diagnostics(
+        &slot->pending_result, slot->gpu_draw_diagnostics_readback,
+        slot->shadow_cascade_count, slot->transmission_coverage_readback);
+  }
   if (slot->transmission_coverage_requested &&
       slot->transmission_coverage_readback) {
     const VkrMetalPacketTransmissionDiagnostics *diagnostics =
         (const VkrMetalPacketTransmissionDiagnostics *)
             slot->transmission_coverage_readback;
-    MemCopy(slot->timing_result.transmission_covered_pixels,
+    MemCopy(slot->pending_result.transmission_covered_pixels,
             diagnostics->covered_pixels,
-            sizeof(slot->timing_result.transmission_covered_pixels));
-    MemCopy(slot->timing_result.transmission_coverage_extent,
+            sizeof(slot->pending_result.transmission_covered_pixels));
+    MemCopy(slot->pending_result.transmission_coverage_extent,
             slot->transmission_coverage_extent,
-            sizeof(slot->timing_result.transmission_coverage_extent));
-    slot->timing_result.has_transmission_coverage = true_v;
+            sizeof(slot->pending_result.transmission_coverage_extent));
+    for (uint32_t layer = 0u;
+         layer < VKR_METAL_PACKET_TRANSMISSION_LAYER_COUNT; ++layer) {
+      slot->pending_result.transmission_compact_overflow_count +=
+          diagnostics->compact_overflow[layer];
+    }
+    slot->pending_result.has_transmission_coverage = true_v;
   }
   renderer->completed_timing_results[renderer->next_completed_timing] =
-      slot->timing_result;
+      slot->pending_result;
   renderer->next_completed_timing =
       (renderer->next_completed_timing + 1u) % renderer->command_slot_count;
-  slot->timing_collected = true_v;
+  slot->result_collected = true_v;
 }
 
 vkr_internal void
@@ -44,7 +57,7 @@ vkr_metal_packet_cache_ready_timings(VkrMetalPacketRenderer *renderer)
   for (uint32_t i = 0; i < renderer->command_slot_count; ++i) {
     VkrMetalPacketCommandSlot *slot = &renderer->command_slots[i];
     if (slot->submit_value != 0 && slot->submit_value <= completed)
-      vkr_metal_packet_cache_slot_timing(renderer, slot);
+      vkr_metal_packet_cache_slot_result(renderer, slot);
   }
 }
 
@@ -74,20 +87,24 @@ vkr_internal bool8_t vkr_metal_packet_complete_command_slot(
     if (!vkr_metal_packet_wait(renderer, wait_value))
       return false_v;
   }
-  vkr_metal_packet_cache_slot_timing(renderer, slot);
+  vkr_metal_packet_cache_slot_result(renderer, slot);
   vkr_capture_ring_collect(&renderer->capture_ring,
                            renderer->completion.signaledValue);
   [slot->allocator reset];
   slot->submit_value = 0;
   slot->resource_reuse_submit_value = 0;
   slot->timestamp_entry_count = 0;
+  slot->result_pending = false_v;
+  slot->result_collected = false_v;
   slot->timing_requested = false_v;
-  slot->timing_collected = false_v;
+  slot->gpu_draw_diagnostics_readback = NULL;
   slot->transmission_coverage_readback = NULL;
+  slot->shadow_cascade_count = 0u;
   slot->transmission_coverage_extent[0] = 0u;
   slot->transmission_coverage_extent[1] = 0u;
+  slot->gpu_draw_diagnostics_requested = false_v;
   slot->transmission_coverage_requested = false_v;
-  slot->timing_result = (VkrMetalPacketResult){0};
+  slot->pending_result = (VkrMetalPacketResult){0};
   return true_v;
 }
 

@@ -25,10 +25,17 @@ typedef enum VkrRgJsonConditionKind {
   VKR_RG_JSON_CONDITION_EDITOR_DISABLED_DEFERRED_TRANSMISSION,
   VKR_RG_JSON_CONDITION_HZB_HISTORY_VALID,
   VKR_RG_JSON_CONDITION_HZB_HISTORY_INVALID,
+  VKR_RG_JSON_CONDITION_SHADOW_CASCADES_ACTIVE,
   VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING,
   VKR_RG_JSON_CONDITION_TRANSMISSION_IDLE,
   VKR_RG_JSON_CONDITION_DEFERRED_TRANSMISSION_PENDING,
   VKR_RG_JSON_CONDITION_DEFERRED_TRANSMISSION_TIMING,
+  VKR_RG_JSON_CONDITION_TRANSMISSION_COMPACT_ENABLED,
+  VKR_RG_JSON_CONDITION_EDITOR_ENABLED_TRANSMISSION_COMPACT,
+  VKR_RG_JSON_CONDITION_EDITOR_DISABLED_TRANSMISSION_COMPACT,
+  VKR_RG_JSON_CONDITION_EDITOR_ENABLED_TRANSMISSION_FULLSCREEN,
+  VKR_RG_JSON_CONDITION_EDITOR_DISABLED_TRANSMISSION_FULLSCREEN,
+  VKR_RG_JSON_CONDITION_TRANSMISSION_FULLSCREEN_TIMING,
   /** True only on frames whose packet actually requests a pick. */
   VKR_RG_JSON_CONDITION_PICKING_PENDING,
   VKR_RG_JSON_CONDITION_PICKING_IDLE,
@@ -40,9 +47,9 @@ typedef enum VkrRgJsonConditionKind {
 
 /**
  * Condition expression.
- * @note: The condition expression is only used to determine if a resource or
- * pass should be included in the render graph. It is not used to determine if
- * a resource or pass should be executed.
+ * @note: The condition expression is only used to determine if a resource,
+ * pass, or resource use should be included in the render graph. It is not used
+ * to determine if a resource or pass should be executed.
  */
 typedef struct VkrRgJsonCondition {
   VkrRgJsonConditionKind kind; // The kind of condition expression.
@@ -135,8 +142,15 @@ typedef struct VkrRgJsonImageDesc {
  * Buffer description.
  * @note: The buffer description is only used to describe a buffer.
  */
+typedef enum VkrRgJsonBufferSizeMode {
+  VKR_RG_JSON_BUFFER_SIZE_FIXED = 0,
+  VKR_RG_JSON_BUFFER_SIZE_VIEWPORT_PIXELS,
+} VkrRgJsonBufferSizeMode;
+
 typedef struct VkrRgJsonBufferDesc {
-  uint64_t size;             // The size of the buffer.
+  VkrRgJsonBufferSizeMode size_mode;
+  uint64_t size;             // Fixed byte size.
+  uint32_t bytes_per_pixel;  // Viewport-pixel stride.
   VkrBufferUsageFlags usage; // The usage of the buffer.
 } VkrRgJsonBufferDesc;
 
@@ -224,11 +238,12 @@ typedef struct VkrRgJsonIndex {
  * @note: The resource use is only used to describe a resource use.
  */
 typedef struct VkrRgJsonResourceUse {
-  bool8_t is_image;           // Whether the resource use is an image.
-  String8 name;               // The name of the resource.
-  VkrRgJsonRepeat repeat;     // The repeat of the resource.
-  VkrRgJsonBinding binding;   // The binding of the resource.
-  VkrRgJsonIndex array_index; // The array index of the resource.
+  bool8_t is_image;             // Whether the resource use is an image.
+  String8 name;                 // The name of the resource.
+  VkrRgJsonCondition condition; // The condition of the resource use.
+  VkrRgJsonRepeat repeat;       // The repeat of the resource.
+  VkrRgJsonBinding binding;     // The binding of the resource.
+  VkrRgJsonIndex array_index;   // The array index of the resource.
   VkrRgJsonImageAccessFlags image_access; // The image access of the resource.
   VkrRgJsonBufferAccessFlags
       buffer_access; // The buffer access of the resource.

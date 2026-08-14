@@ -1,7 +1,15 @@
-float vkr_metal_packet_directional_shadow(
+struct VkrMetalPacketShadowSample {
+  float factor;
+  float receiver_depth;
+  float map_depth;
+  uint cascade;
+  bool valid;
+};
+
+VkrMetalPacketShadowSample vkr_metal_packet_directional_shadow_sample(
     constant VkrMetalPacketFrameRoot *root, float3 world_position) {
   if (root->shadow_cascade_count == 0u || root->shadow_cascades == nullptr)
-    return 1.0;
+    return {1.0, 1.0, 1.0, 0u, false};
   float view_depth = abs((root->view * float4(world_position, 1.0)).z);
   uint cascade = 0u;
   for (uint i = 0u; i + 1u < root->shadow_cascade_count; ++i) {
@@ -11,13 +19,42 @@ float vkr_metal_packet_directional_shadow(
   float4 clip = root->shadow_cascades[cascade].light_view_projection *
                 float4(world_position, 1.0);
   if (abs(clip.w) <= 1e-6)
-    return 1.0;
+    return {1.0, 1.0, 1.0, cascade, false};
   float3 projected = clip.xyz / clip.w;
   float2 uv = projected.xy * 0.5 + 0.5;
   if (any(uv < 0.0) || any(uv > 1.0) || projected.z < 0.0 || projected.z > 1.0)
-    return 1.0;
+    return {1.0, projected.z, 1.0, cascade, false};
   constexpr sampler shadow_sampler(coord::normalized, address::clamp_to_edge,
                                    filter::nearest);
   float shadow_depth = root->shadow_map.sample(shadow_sampler, uv, cascade).r;
-  return projected.z - root->shadow_bias <= shadow_depth ? 1.0 : 0.0;
+  float factor =
+      projected.z - root->shadow_bias <= shadow_depth ? 1.0 : 0.0;
+  return {factor, projected.z, shadow_depth, cascade, true};
+}
+
+float vkr_metal_packet_directional_shadow(
+    constant VkrMetalPacketFrameRoot *root, float3 world_position) {
+  return vkr_metal_packet_directional_shadow_sample(root, world_position)
+      .factor;
+}
+
+float3 vkr_metal_packet_shadow_debug_color(
+    uint mode, VkrMetalPacketShadowSample sample) {
+  if (mode == 1u) {
+    switch (sample.cascade & 3u) {
+    case 0u:
+      return float3(1.0, 0.2, 0.2);
+    case 1u:
+      return float3(0.2, 1.0, 0.2);
+    case 2u:
+      return float3(0.2, 0.4, 1.0);
+    default:
+      return float3(1.0, 0.85, 0.2);
+    }
+  }
+  if (mode == 2u)
+    return float3(sample.factor);
+  if (mode == 3u)
+    return float3(sample.valid ? sample.map_depth : 1.0);
+  return float3(0.0);
 }
