@@ -1,9 +1,15 @@
 ---
-status: partial
-updated: 2026-07-31
+status: superseded
+updated: 2026-08-12
 authority: design
 ---
 # UI Element Primitives Design
+
+**Superseded by [ui-architecture-spec.md](../ui/ui-architecture-spec.md) §7**
+(rationale in [ADR-027](../architecture/adr/027-immediate-mode-grid-ui.md)).
+The retained element tree with generational handles is replaced by hashed
+immediate-mode identity over a retained state table, and the per-element draw
+command list by a single per-frame vertex stream split into scissored batches.
 
 **Legacy note:** This document references the deprecated view/layer system
 (`VkrLayerContext`) in renderer APIs. Render orchestration now uses the render
@@ -16,7 +22,7 @@ This document describes the base UI element types that serve as building blocks 
 Related documents:
 - [UI System Overview](./ui-system-overview.md) - High-level architecture
 - [UI Layout Engine Design](./ui-layout-engine-design.md) - Layout computation
-- [UI Components Library Design](./ui-components-library-design.md) - Components built on elements
+- [UI Components Library Design](../ui/ui-components-library-design.md) - Components built on elements
 
 ## Goals
 

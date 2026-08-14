@@ -233,11 +233,12 @@ Working rules for allocator choice and lifetime:
 
 | Document | Status | Purpose |
 |---|---|---|
-| [ui-system-overview.md](ui/ui-system-overview.md) | partial | UI architecture overview and roadmap |
-| [ui-element-primitives-design.md](ui/ui-element-primitives-design.md) | partial | UI element primitives |
-| [ui-layout-engine-design.md](ui/ui-layout-engine-design.md) | proposed | Layout engine |
-| [ui-components-library-design.md](ui/ui-components-library-design.md) | proposed | Component library; no code exists |
-| [ui-docking-system-design.md](ui/ui-docking-system-design.md) | proposed | Docking system; no code exists |
+| [ui-architecture-spec.md](ui/ui-architecture-spec.md) | proposed | **Authoritative UI design.** Immediate-mode API over a retained cache, grid-only layout, batched scissored draw list, tile binning and hashing, composited editor viewport. Rationale in [ADR-027](architecture/adr/027-immediate-mode-grid-ui.md) |
+| [ui-components-library-design.md](ui/ui-components-library-design.md) | proposed | Component library under the spec (phase P3); component inventory still useful, retained-element lifetimes superseded. No code exists |
+| [ui-docking-system-design.md](ui/ui-docking-system-design.md) | proposed | Docking system under the spec (phase P6); in-window only. No code exists |
+
+The overview, layout-engine, and element-primitives designs are superseded by the
+spec above and archived — see the [archive index](archive/README.md).
 
 ## Effects system
 

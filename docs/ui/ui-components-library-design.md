@@ -1,18 +1,25 @@
 ---
 status: proposed
-updated: 2026-07-31
+updated: 2026-08-12
 authority: design
 ---
 # UI Components Library Design
+
+**Scope note:** [ui-architecture-spec.md](./ui-architecture-spec.md) is the
+authoritative UI design; this document sits under it and covers phase P3
+(widgets). Its retained-element API shape predates the immediate-mode decision in
+[ADR-027](../architecture/adr/027-immediate-mode-grid-ui.md) and must be re-read
+against §4 and §7 of the spec — the component *inventory* and per-component
+behaviour remain useful, the create/destroy lifetimes do not. No code exists.
 
 ## Document Purpose
 
 This document describes the reusable UI components built on top of the element primitives. Components encapsulate common UI patterns like buttons, input fields, lists, and panels.
 
 Related documents:
-- [UI System Overview](./ui-system-overview.md) - High-level architecture
-- [UI Layout Engine Design](./ui-layout-engine-design.md) - Layout computation
-- [UI Element Primitives Design](./ui-element-primitives-design.md) - Base elements
+- [UI System Overview](../archive/ui-system-overview.md) - High-level architecture
+- [UI Layout Engine Design](../archive/ui-layout-engine-design.md) - Layout computation
+- [UI Element Primitives Design](../archive/ui-element-primitives-design.md) - Base elements
 - [UI Docking System Design](./ui-docking-system-design.md) - Editor docking
 
 ## Goals

@@ -1,9 +1,16 @@
 ---
-status: proposed
-updated: 2026-07-31
+status: superseded
+updated: 2026-08-12
 authority: design
 ---
 # UI Layout Engine Design
+
+**Superseded by [ui-architecture-spec.md](../ui/ui-architecture-spec.md) §5**
+(rationale in [ADR-027](../architecture/adr/027-immediate-mode-grid-ui.md)).
+Grid track solving replaces the flexbox model described here: `fr` tracks cover
+the proportional-distribution case that motivated flex, and a 1×N grid is a row
+stack, so only one solver is written. The box model, size units, and
+dirty-subtree approach in this document informed the replacement.
 
 ## Document Purpose
 

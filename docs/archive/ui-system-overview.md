@@ -1,9 +1,16 @@
 ---
-status: partial
-updated: 2026-07-31
+status: superseded
+updated: 2026-08-12
 authority: design
 ---
 # UI System Overview
+
+**Superseded by [ui-architecture-spec.md](../ui/ui-architecture-spec.md)**
+(rationale in [ADR-027](../architecture/adr/027-immediate-mode-grid-ui.md)).
+That specification replaces this document's retained-mode element tree with an
+immediate-mode API over a retained cache, and its flexbox layer with a
+grid-only layout model. Retained for the history of the original five-layer
+plan; its file inventory was already stale.
 
 **Legacy note:** This document still uses `VkrLayerContext` in some examples
 from the removed view/layer system. Render orchestration now uses the render
@@ -15,8 +22,8 @@ This document provides a high-level architecture overview of the UI system for t
 
 - [UI Layout Engine Design](./ui-layout-engine-design.md) - Flexbox-inspired layout system
 - [UI Element Primitives Design](./ui-element-primitives-design.md) - Base element types and rendering
-- [UI Components Library Design](./ui-components-library-design.md) - Reusable UI components
-- [UI Docking System Design](./ui-docking-system-design.md) - Editor docking and panels
+- [UI Components Library Design](../ui/ui-components-library-design.md) - Reusable UI components
+- [UI Docking System Design](../ui/ui-docking-system-design.md) - Editor docking and panels
 
 ## Goals
 

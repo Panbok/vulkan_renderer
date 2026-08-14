@@ -1,9 +1,16 @@
 ---
 status: proposed
-updated: 2026-07-31
+updated: 2026-08-12
 authority: design
 ---
 # UI Docking System Design
+
+**Scope note:** [ui-architecture-spec.md](./ui-architecture-spec.md) is the
+authoritative UI design; this document sits under it and covers phase P6. Per
+§9 of the spec, docking is in-window only, the dock tree owns the scene viewport
+panel rect via `vkr_editor_viewport_mapping_from_panel_rect()`, and dock splits
+are grid track lists rather than a separate splitter model. Rationale in
+[ADR-027](../architecture/adr/027-immediate-mode-grid-ui.md). No code exists.
 
 **Legacy note:** This document uses historical `VkrViewEditorState` naming from
 the removed view/layer system. In the stateless renderer, editor UI is driven by
@@ -13,9 +20,9 @@ This document defines the docking system for editor-style panel arrangement, ena
 
 ## Related Documents
 
-- [UI System Overview](./ui-system-overview.md) - High-level architecture
-- [UI Layout Engine Design](./ui-layout-engine-design.md) - Layout computation
-- [UI Element Primitives Design](./ui-element-primitives-design.md) - Base elements
+- [UI System Overview](../archive/ui-system-overview.md) - High-level architecture
+- [UI Layout Engine Design](../archive/ui-layout-engine-design.md) - Layout computation
+- [UI Element Primitives Design](../archive/ui-element-primitives-design.md) - Base elements
 - [UI Components Library Design](./ui-components-library-design.md) - Panel components
 
 ---

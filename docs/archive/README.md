@@ -24,6 +24,9 @@ graph plus pass executors under `lib/src/renderer/passes/`.
 | [frustum-culling-design.md](frustum-culling-design.md) | [ADR-013 draw-submission strategy](../architecture/adr/013-draw-submission-strategy.md) |
 | [adr-001-frontend-backend-separation.md](adr-001-frontend-backend-separation.md) | [ADR-025 selected renderer implementation](../architecture/adr/025-selected-renderer-implementation-strategy.md) |
 | [adr-011-vulkan-1-2-baseline.md](adr-011-vulkan-1-2-baseline.md) | [ADR-023 bindless capability profile](../architecture/adr/023-vulkan-1-4-bindless-capability-profile.md) and [ADR-026 retirement](../architecture/adr/026-vulkan-1-2-retirement.md) |
+| [ui-system-overview.md](ui-system-overview.md) | [UI architecture spec](../ui/ui-architecture-spec.md) — five-layer retained plan replaced |
+| [ui-layout-engine-design.md](ui-layout-engine-design.md) | [UI architecture spec §5](../ui/ui-architecture-spec.md) — flexbox replaced by grid-only track solving |
+| [ui-element-primitives-design.md](ui-element-primitives-design.md) | [UI architecture spec §7](../ui/ui-architecture-spec.md) — retained element tree replaced by hashed immediate-mode identity |
 
 ## Completed progress logs
 
