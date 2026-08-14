@@ -9,25 +9,63 @@ authority: adr
 ## Status
 
 **Accepted (partial).** P0-P3 foundations ship on both backends. Metal P4, P6,
-P8, P10, P12, P14, P16, P17, and P18 provisionally ship behind
-`VKR_DEFERRED_ENABLED`: GPU-frustum-classified four-bucket ICB submission,
+P8, P10, P12, P14, P16, P17, P18, and a provisional P19 transmission-pixel
+compaction candidate ship in the Metal P20 default topology:
+GPU-frustum-classified four-bucket ICB submission,
 opaque visibility raster, compute material resolve and lighting, a separate
 transmission vbuffer/ICB stream with four-layer depth peeling and fused
 back-to-front shading, conservative
 completed-history HZB occlusion, requested-pixel visibility picking, and
 camera-plus-cascade multi-view indirect submission. P5/P7/P9/P11/P13/P15
-Vulkan parity and the Vulkan halves of P16-P18 remain proposed. P19 has no
-valid post-fix measured trigger and no optimization has started. Metal now
-publishes completion-gated four-layer transmission coverage from timing-only
-graph-authored passes ordered after `Transmission.Shade.*`, so the eventual
-selection can pair coverage with unchanged shade-pass timestamps. The
-minimal serial Debug witness passes with Metal API and shader/GPU validation
-enabled and reports valid four-layer coverage. This is correctness evidence,
-not a measured optimization trigger; no P19 optimization is selected without a
-matched Release comparison. Metal validation processes must remain strictly
-serial. The
+Vulkan parity and the Vulkan halves of P16-P18 remain proposed. Metal now
+publishes completion-gated four-layer transmission coverage, draw-compaction
+counts, indirect work volume, and overflow in ordinary asynchronous execution.
+A local Release observation reports 10.13% per-layer coverage at 1920×1440.
+The resulting default-off `Transmission.Compact` implementation folds
+background copy into a bounded 8×8 scan, finalizes indirect arguments, and
+shades only compacted winners through one serially reused pixel list per slot.
+World/editor captures match the full-screen branch byte-for-byte and focused
+serial API-plus-shader validation passes. A matched local Release observation
+reduces the estimated normal transmission chain by 12.1% and total measured GPU
+pass time by 15.6%, but does not improve frame wall and increases CPU submit.
+Because the observation is dirty, single-repetition, and warmup-unstable, the
+candidate remains disabled by default and no owner-level speed claim is
+accepted. Metal P20 stabilization is default-on for Metal: typed packet eligibility and
+named fallback metrics distinguish legacy-forward, unsupported-input, and
+capacity reroutes without truncation. `VKR_DEFERRED_ENABLED=0` explicitly
+selects diagnostic forward; absent configuration selects deferred. Missing
+deferred pipelines or indirect-command capacity now fails Metal initialization
+instead of silently changing topology. Backend submit results and harness
+`world_renderer` provenance record the actual selection.
+
+Two-repetition local state-matrix, Sponza-orbit, and Bistro-static runs select
+deferred throughout with every named fallback/overflow counter zero. The first
+Sponza orbit exposed eye-plane-crossing resolve failures; homogeneous
+barycentric and face-orientation reconstruction removed them, and the repeated
+240-sample orbit plus the 120-sample Bistro run report zero invalid resolve
+pixels. A strictly serial
+default-selector API-plus-shader validation run covers all four opaque and all
+four transmission state buckets with every asserted counter zero. This is
+local, dirty, warmup-unstable evidence, not the accepted stable-default soak;
+Vulkan parity, stable authoritative repetitions, and owner visual acceptance
+remain open. Metal validation processes must remain strictly serial. The
 implementation contract, migration slices, phase status, and evidence gates are in
 [deferred-visibility-buffer/SPEC.md](../../rendering/deferred-visibility-buffer/SPEC.md).
+
+The subsequent visual audit fixed zero vertex colors in all procedural 3D
+generators, which had made both deferred and forward state-matrix controls
+black. Repeated captures now show the authored materials. Packet version 12
+also transports shadow debug mode through the shared frame constants; Metal
+deferred opaque/transmission and retained diagnostic forward now render live
+cascade, factor, and sampled-depth views from the lighting shadow sample.
+Focused report `20260814T150017.827Z-006977` passes 23 material, visibility,
+HDR, depth, and shadow captures. Refreshed world/editor layered-transmission
+captures visibly retain the additional deferred peel layers, while the
+explicit-forward controls retain the expected shallower result. Strictly
+serial dual-validation report `20260814T150227.499Z-00749a` passes after these
+changes with deferred selected throughout and every named fallback/overflow
+counter zero. These remain local evidence for owner review and do not close the
+P20 acceptance boundary.
 
 ## Context
 
@@ -124,8 +162,10 @@ The editor path uses the equivalent
 **Use a fused, initially full-screen transmission resolve.** A separate
 visibility buffer retains only the nearest transmissive surface after a
 declared opaque-depth seed. The compute pass exits on empty pixels. Pixel-list
-compaction is optional and, if measured worthwhile, requires an explicit scan
-producer plus bounded list/count/dispatch buffers.
+compaction remains optional. The provisional Metal P19 branch uses an explicit
+scan producer with bounded list/count/overflow/dispatch buffers, fuses the
+required background copy into that scan, and retains full-screen resolve as the
+default until owner-level performance evidence accepts the branch.
 
 **Decide single-layer transmission fidelity before building on it, and resolve
 a rejection with bounded depth peeling rather than a retained forward path.**
