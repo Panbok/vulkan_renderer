@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "id": "local.bistro.deferred.retina_gpu",
+  "suite": "local",
+  "description": "Single-process full-resolution Bistro Metal deferred pass-attribution observation.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 1,
+  "resolution": [1512, 949],
+  "boot": "full",
+  "target": "windowed_hidden",
+  "present": "immediate",
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 600000,
+  "asset_ready_timeout_ms": 300000,
+  "frames": { "warmup": 4, "measure": 8 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "backend": "metal",
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [-28.4774647, 4.60749865, 2.86034966],
+    "yaw": 228.125198,
+    "pitch": -3.32655358,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500
+  }
+}
