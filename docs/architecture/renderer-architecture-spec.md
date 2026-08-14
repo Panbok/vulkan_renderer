@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-14
+updated: 2026-08-15
 authority: spec
 ---
 # VKR Renderer — Architecture and Status Specification
@@ -102,13 +102,13 @@ The normal frame path is:
    the selected implementation's `VkrAssetPublisher`.
 3. The application creates `VkrRenderPacket` and its arrays in caller-owned
    scratch memory.
-4. `vkr_renderer_submit_packet()` validates the packet and delegates graph
-   realization, recording, submission, capture, and presentation to the
-   selected implementation.
+4. `vkr_renderer_submit_packet()` trusts the renderer-owned packet contract and
+   delegates graph realization, recording, submission, capture, and
+   presentation to the selected implementation.
 
 This remains an ordered stateful protocol rather than a replayable command API.
-A rejected packet is canceled through the selected strategy so the acquired
-target and frame slot return to a valid state.
+Runtime graph or submission failures cancel through the selected strategy so
+the acquired target and frame slot return to a valid state.
 
 ### 3.2 Packet-based submission
 
@@ -118,7 +118,8 @@ world, shadow, skybox, UI, editor, picking, text-update, and debug payloads.
 Important properties are implemented:
 
 - optional payload pointers control pass participation;
-- version and field validation produce `VkrValidationError` with a field path;
+- packet structure is a producer invariant and is not revalidated on the frame
+  submission path;
 - payload arrays remain caller-owned and must live until submission returns;
 - draw items refer to stable renderer handles rather than Vulkan objects;
 - implementations retrieve typed payloads through graph packet helpers.
@@ -131,7 +132,8 @@ fully stateless:
   state, and metrics;
 - the packet is not self-contained enough to serialize and replay without the
   retained handle registries and subsystem state;
-- validation failures cancel the prepared frame after target acquisition.
+- runtime graph or submission failures cancel the prepared frame after target
+  acquisition.
 
 ### 3.3 JSON render graph
 

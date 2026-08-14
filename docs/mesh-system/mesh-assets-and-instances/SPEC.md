@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-07-31
+updated: 2026-08-15
 authority: spec
 ---
 # Mesh System Refactor: Asset Dedup + Mesh Instances
@@ -415,7 +415,7 @@ for (uint32_t inst_i = 0; inst_i < instance_count; ++inst_i) {
   uint32_t instance_slot = 0;
   VkrMeshInstance *inst = vkr_mesh_manager_get_instance_by_live_index(
       &rf->mesh_manager, inst_i, &instance_slot);
-  if (!inst || !inst->visible || inst->loading_state != VKR_MESH_LOADING_STATE_LOADED)
+  if (!inst->visible || inst->loading_state != VKR_MESH_LOADING_STATE_LOADED)
     continue;
 
   VkrMeshAsset *asset = vkr_mesh_manager_get_asset(&rf->mesh_manager, inst->asset);
@@ -505,9 +505,10 @@ Added instance iteration in `vkr_picking_render()` after the legacy mesh loop:
 // Instance iteration
 uint32_t instance_count = vkr_mesh_manager_instance_count(mesh_manager);
 for (uint32_t inst_idx = 0; inst_idx < instance_count; inst_idx++) {
+  uint32_t instance_slot = 0;
   VkrMeshInstance *inst = vkr_mesh_manager_get_instance_by_live_index(
-      mesh_manager, inst_idx, NULL);
-  if (!inst || !inst->visible || inst->loading_state != VKR_MESH_LOADING_STATE_LOADED)
+      mesh_manager, inst_idx, &instance_slot);
+  if (!inst->visible || inst->loading_state != VKR_MESH_LOADING_STATE_LOADED)
     continue;
 
   VkrMeshAsset *asset = vkr_mesh_manager_get_asset(mesh_manager, inst->asset);
@@ -745,9 +746,10 @@ Added instance iteration loop after legacy mesh loop:
 // Instance iteration
 uint32_t instance_count = vkr_mesh_manager_instance_count(&rf->mesh_manager);
 for (uint32_t i = 0; i < instance_count; ++i) {
+  uint32_t instance_slot = 0;
   VkrMeshInstance *inst = vkr_mesh_manager_get_instance_by_live_index(
-      &rf->mesh_manager, i, NULL);
-  if (!inst || !inst->visible || inst->loading_state != VKR_MESH_LOADING_STATE_LOADED)
+      &rf->mesh_manager, i, &instance_slot);
+  if (!inst->visible || inst->loading_state != VKR_MESH_LOADING_STATE_LOADED)
     continue;
 
   // Frustum culling against shadow frustum
