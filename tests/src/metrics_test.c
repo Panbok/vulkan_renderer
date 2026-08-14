@@ -613,6 +613,14 @@ static void test_renderer_owner_metric_catalog(void) {
   MetricsFixture fixture = metrics_fixture_create();
   VkrRendererMetrics renderer_metrics = {0};
   assert(vkr_renderer_metrics_register(&renderer_metrics, fixture.metrics));
+  for (uint32_t layer = 0u; layer < 4u; ++layer) {
+    assert(renderer_metrics.ids.visibility_transmission_covered_pixels[layer] !=
+           VKR_METRIC_ID_INVALID);
+  }
+  assert(renderer_metrics.ids.visibility_transmission_coverage_extent_width !=
+         VKR_METRIC_ID_INVALID);
+  assert(renderer_metrics.ids.visibility_transmission_coverage_extent_height !=
+         VKR_METRIC_ID_INVALID);
   assert(renderer_metrics.previous.gpu_memory_interval_contiguous);
 
   uint32_t catalog_count = 0;

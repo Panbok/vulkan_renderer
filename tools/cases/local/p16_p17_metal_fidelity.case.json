@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "id": "local.p12.metal.transmission.deferred",
+  "id": "local.p16_p17.metal.fidelity",
   "suite": "local",
-  "description": "Metal P12 layered transmission with direct opaque/transmission visibility captures.",
+  "description": "Shared-channel forward/deferred Metal picking and shadow fidelity witness.",
   "scene": "assets/scenes/fixtures/layered_glass.scene.json",
-  "seed": 7,
-  "resolution": [960, 720],
+  "seed": 16,
+  "resolution": [640, 480],
   "boot": "full",
   "target": "offscreen",
   "present": "none",
@@ -15,10 +15,11 @@
   "repetitions": 1,
   "repetition_timeout_ms": 120000,
   "asset_ready_timeout_ms": 60000,
-  "frames": { "warmup": 2, "measure": 1 },
+  "frames": { "warmup": 2, "measure": 7 },
   "renderer": {
     "editor": false,
     "skybox": true,
+    "backend": "metal",
     "shadow_preset": "balanced",
     "shadow_cascades": 4,
     "render_mode": "default"
@@ -33,17 +34,12 @@
     "far_plane": 100
   },
   "captures": [
-    {
-      "at_frame": 0,
-      "channels": [
-        "final_color",
-        "scene_color",
-        "visibility_ids",
-        "visibility_primitives",
-        "transmission_visibility_ids",
-        "transmission_visibility_primitives",
-        "picking_ids"
-      ]
-    }
+    { "at_frame": 0, "channels": ["final_color"] },
+    { "at_frame": 1, "channels": ["depth"] },
+    { "at_frame": 2, "channels": ["picking_ids"] },
+    { "at_frame": 3, "channels": ["shadow_cascade_0"] },
+    { "at_frame": 4, "channels": ["shadow_cascade_1"] },
+    { "at_frame": 5, "channels": ["shadow_cascade_2"] },
+    { "at_frame": 6, "channels": ["shadow_cascade_3"] }
   ]
 }

@@ -601,6 +601,8 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t hzb_reduce_pass_count;
   /** True when the packet contains transmissive world work. */
   bool8_t transmission_pending;
+  /** True when this frame requests backend pass timestamps. */
+  bool8_t timing_enabled;
   /**
    * Whether this frame's packet requests a pick. Gates the picking resources
    * and passes so a non-picking frame pays nothing for them.
@@ -615,7 +617,10 @@ typedef struct VkrRenderGraphFrameInfo {
   VkrPresentTargetImageState target_terminal_state;
   VkrTextureFormat shadow_depth_format; /**< Shadow map depth format */
   uint32_t shadow_map_size;             /**< Shadow map dimension */
-  uint32_t shadow_cascade_count;        /**< Number of shadow cascades */
+  /** Configured shadow-map layer capacity; independent of packet readiness. */
+  uint32_t shadow_map_layer_count;
+  /** Number of active shadow cascades in the submitted packet. */
+  uint32_t shadow_cascade_count;
 } VkrRenderGraphFrameInfo;
 
 /**

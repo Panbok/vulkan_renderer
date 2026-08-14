@@ -82,7 +82,14 @@ static int vkr_harness_spawn_child(const char *executable,
   };
   int32_t exit_code = VKR_HARNESS_EXIT_ERROR;
   bool8_t timed_out = false_v;
-  if (!vkr_platform_process_run(&config, &exit_code, &timed_out) || timed_out) {
+  if (!vkr_platform_process_run(&config, &exit_code, &timed_out)) {
+    vkr_harness_stderr("Unable to launch child process; inspect '%s'\n",
+                       stderr_path);
+    return VKR_HARNESS_EXIT_ERROR;
+  }
+  if (timed_out) {
+    vkr_harness_stderr("Child timed out after %u ms; inspect '%s'\n",
+                       timeout_ms, stderr_path);
     return VKR_HARNESS_EXIT_ERROR;
   }
   return exit_code;
@@ -425,11 +432,17 @@ static bool8_t vkr_harness_execute_repetition(
   if (case_manifest->cache == VKR_HARNESS_CACHE_ISOLATED_WARM) {
     char prewarm_dir[VKR_HARNESS_PATH_MAX];
     string_format(prewarm_dir, sizeof(prewarm_dir), "%s/prewarm", run_dir);
-    if (!vkr_harness_make_directories(prewarm_dir, error) ||
-        vkr_harness_spawn_child(executable, repo_root, case_path, profile_path,
-                                prewarm_dir, cache_path,
-                                case_manifest->repetition_timeout_ms,
-                                true_v) != VKR_HARNESS_EXIT_PASS) {
+    if (!vkr_harness_make_directories(prewarm_dir, error)) {
+      return false_v;
+    }
+    const int prewarm_exit = vkr_harness_spawn_child(
+        executable, repo_root, case_path, profile_path, prewarm_dir, cache_path,
+        case_manifest->repetition_timeout_ms, true_v);
+    if (prewarm_exit != VKR_HARNESS_EXIT_PASS) {
+      vkr_harness_error_set(
+          error, "execution.prewarm_failed", "$",
+          "Prewarm child exited with code %d; inspect '%s/stderr.log'",
+          prewarm_exit, prewarm_dir);
       return false_v;
     }
   }
@@ -748,6 +761,8 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
     if (!vkr_harness_execute_repetition(
             &arenas, executable, repo_root, case_path, profile_path, run_root,
             run, &case_manifest, reference, &runs[run], &error)) {
+      if (error.code[0])
+        vkr_harness_stderr("%s: %s\n", error.code, error.message);
       break;
     }
     if (run > 0u && !vkr_harness_run_is_compatible(&runs[0], &runs[run])) {

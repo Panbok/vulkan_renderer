@@ -9,6 +9,8 @@ vkr_internal void vkr_metal_packet_noop(VkrRgPassContext *ctx,
 typedef enum VkrMetalPacketGraphExecutorKind {
   VKR_METAL_PACKET_GRAPH_EXECUTOR_SHADOW = 0,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING_DEPTH_SEED,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING_RESOLVE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING_READBACK,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_IBL_BAKE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_UPLOAD,
@@ -25,6 +27,7 @@ typedef enum VkrMetalPacketGraphExecutorKind {
   VKR_METAL_PACKET_GRAPH_EXECUTOR_GBUFFER_RESOLVE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_DEFERRED_LIGHTING,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_SHADE,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_COVERAGE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_HZB_BUILD,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_SKYBOX,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_WORLD_OPAQUE,
@@ -48,6 +51,8 @@ vkr_global const VkrMetalPacketGraphExecutorSpec
     s_metal_packet_graph_executors[] = {
         {"pass.shadow.cascade", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.picking", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.picking.depth_seed", VKR_RG_PASS_TYPE_TRANSFER},
+        {"pass.picking.resolve", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.picking.readback", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.ibl_bake", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.gpu_draw_upload", VKR_RG_PASS_TYPE_TRANSFER},
@@ -64,6 +69,7 @@ vkr_global const VkrMetalPacketGraphExecutorSpec
         {"pass.gbuffer.resolve", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.lighting.deferred", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.transmission.shade", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.transmission.coverage", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.hzb.build", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.skybox", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.world.opaque", VKR_RG_PASS_TYPE_GRAPHICS},
@@ -210,6 +216,13 @@ vkr_metal_packet_release_image_views(VkrMetalPacketImageInstance *instance) {
       instance->mip_views[mip] = NULL;
     }
   }
+  for (uint32_t layer = 0u; layer < VKR_METAL_PACKET_MAX_TEXTURE_LAYERS;
+       ++layer) {
+    if (instance->layer_views[layer]) {
+      [(id<MTLTexture>)instance->layer_views[layer] release];
+      instance->layer_views[layer] = NULL;
+    }
+  }
 }
 
 vkr_internal bool8_t vkr_metal_packet_retire_image_instance(
@@ -301,6 +314,35 @@ vkr_internal bool8_t vkr_metal_packet_create_image_instance(
     }
     instance->mip_views[mip] = view;
   }
+  if (image->desc.layers > 1u) {
+    if (image->desc.layers > VKR_METAL_PACKET_MAX_TEXTURE_LAYERS) {
+      vkr_metal_packet_release_image_views(instance);
+      (void)vkr_metal_memory_device_retire(renderer->memory, resource.handle,
+                                           renderer->completion.signaledValue);
+      (void)vkr_metal_memory_device_collect(
+          renderer->memory, renderer->completion.signaledValue, NULL);
+      *instance = (VkrMetalPacketImageInstance){0};
+      return false_v;
+    }
+    for (uint32_t layer = 0u; layer < image->desc.layers; ++layer) {
+      id<MTLTexture> view =
+          [texture newTextureViewWithPixelFormat:format
+                                     textureType:MTLTextureType2D
+                                          levels:NSMakeRange(0u, 1u)
+                                          slices:NSMakeRange(layer, 1u)];
+      if (!view) {
+        vkr_metal_packet_release_image_views(instance);
+        (void)vkr_metal_memory_device_retire(
+            renderer->memory, resource.handle,
+            renderer->completion.signaledValue);
+        (void)vkr_metal_memory_device_collect(
+            renderer->memory, renderer->completion.signaledValue, NULL);
+        *instance = (VkrMetalPacketImageInstance){0};
+        return false_v;
+      }
+      instance->layer_views[layer] = view;
+    }
+  }
   return true_v;
 }
 
@@ -348,11 +390,16 @@ vkr_metal_packet_realize_images(VkrMetalPacketRenderer *renderer) {
             slot->instances[instance].last_use_submit_value > completed) {
           log_error(
               "Metal graph image '%.*s' replacement is busy through submit "
-              "%llu (completed %llu)",
+              "%llu (completed %llu); generation %u -> %u, extent %ux%u -> "
+              "%ux%u, layers %u -> %u, mips %u -> %u, flags 0x%x -> 0x%x",
               (int)image->name.length, image->name.str,
               (unsigned long long)slot->instances[instance]
                   .last_use_submit_value,
-              (unsigned long long)completed);
+              (unsigned long long)completed, slot->graph_generation,
+              image->generation, slot->desc.width, slot->desc.height,
+              image->desc.width, image->desc.height, slot->desc.layers,
+              image->desc.layers, slot->desc.mip_levels, image->desc.mip_levels,
+              slot->desc.flags, image->desc.flags);
           return false_v;
         }
       }
@@ -1274,9 +1321,14 @@ vkr_internal bool8_t vkr_metal_packet_encode_transfer(
         transmission_gpu_upload
             ? upload->transmission_gpu_draw_state_zero_source_offset
             : upload->gpu_draw_state_zero_source_offset;
+    const uint64_t state_bytes =
+        transmission_gpu_upload
+            ? sizeof(VkrMetalPacketTransmissionDiagnostics)
+            : (uint64_t)(1u + renderer->prepared_frame.shadow_cascade_count) *
+                  sizeof(VkrGpuDrawCompactionState);
     if (!candidates || !state ||
         candidate_bytes > candidates->resource.length ||
-        sizeof(VkrGpuDrawCompactionState) > state->resource.length)
+        state_bytes > state->resource.length)
       return false_v;
     if (candidate_bytes > 0u) {
       [encoder copyFromBuffer:upload->buffer
@@ -1289,7 +1341,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_transfer(
                sourceOffset:state_source_offset
                    toBuffer:(id<MTLBuffer>)state->resource.metal_buffer
           destinationOffset:0u
-                       size:sizeof(VkrGpuDrawCompactionState)];
+                       size:state_bytes];
     return true_v;
   }
   const VkrRgImageUse *read = vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);

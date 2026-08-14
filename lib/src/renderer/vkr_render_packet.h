@@ -111,9 +111,14 @@ typedef struct VkrDrawItem {
 
 /** The candidate has a conservative local-space bounding sphere. */
 #define VKR_WORLD_DRAW_CANDIDATE_BOUNDS_VALID 0x1u
+/** The candidate participates in the camera opaque/cutout view. */
+#define VKR_WORLD_DRAW_CANDIDATE_CAMERA_OPAQUE 0x2u
+/** The candidate participates in shadow-cascade views. */
+#define VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER 0x4u
 
 /**
- * @brief Unculled opaque/cutout source row borrowed for one packet submission.
+ * @brief Unculled multi-view draw source row borrowed for one packet
+ * submission.
  *
  * This is deliberately separate from VkrDrawItem: the retained lists are
  * camera-culled and may be instance-merged before a backend sees them, while

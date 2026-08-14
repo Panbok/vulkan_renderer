@@ -17,6 +17,19 @@ vkr_metal_packet_cache_slot_timing(VkrMetalPacketRenderer *renderer,
   vkr_metal_packet_collect_pass_timings(renderer, slot->timestamp_heap,
                                         slot->timestamp_entry_count,
                                         &slot->timing_result);
+  if (slot->transmission_coverage_requested &&
+      slot->transmission_coverage_readback) {
+    const VkrMetalPacketTransmissionDiagnostics *diagnostics =
+        (const VkrMetalPacketTransmissionDiagnostics *)
+            slot->transmission_coverage_readback;
+    MemCopy(slot->timing_result.transmission_covered_pixels,
+            diagnostics->covered_pixels,
+            sizeof(slot->timing_result.transmission_covered_pixels));
+    MemCopy(slot->timing_result.transmission_coverage_extent,
+            slot->transmission_coverage_extent,
+            sizeof(slot->timing_result.transmission_coverage_extent));
+    slot->timing_result.has_transmission_coverage = true_v;
+  }
   renderer->completed_timing_results[renderer->next_completed_timing] =
       slot->timing_result;
   renderer->next_completed_timing =
@@ -70,6 +83,10 @@ vkr_internal bool8_t vkr_metal_packet_complete_command_slot(
   slot->timestamp_entry_count = 0;
   slot->timing_requested = false_v;
   slot->timing_collected = false_v;
+  slot->transmission_coverage_readback = NULL;
+  slot->transmission_coverage_extent[0] = 0u;
+  slot->transmission_coverage_extent[1] = 0u;
+  slot->transmission_coverage_requested = false_v;
   slot->timing_result = (VkrMetalPacketResult){0};
   return true_v;
 }

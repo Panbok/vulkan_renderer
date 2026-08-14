@@ -115,6 +115,9 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId visibility_transmission_candidate_count;
   VkrMetricId visibility_transmission_gpu_visible_count;
   VkrMetricId visibility_transmission_gpu_compaction_overflow;
+  VkrMetricId visibility_transmission_covered_pixels[4];
+  VkrMetricId visibility_transmission_coverage_extent_width;
+  VkrMetricId visibility_transmission_coverage_extent_height;
   VkrMetricId visibility_hzb_rejected;
   VkrMetricId visibility_transmission_hzb_rejected;
   VkrMetricId visibility_hzb_history_valid;
@@ -134,6 +137,7 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId shadow_batches_alpha[VKR_SHADOW_CASCADE_COUNT_MAX];
   VkrMetricId shadow_indirect_draws_opaque[VKR_SHADOW_CASCADE_COUNT_MAX];
   VkrMetricId shadow_indirect_calls_opaque[VKR_SHADOW_CASCADE_COUNT_MAX];
+  VkrMetricId shadow_indirect_overflow[VKR_SHADOW_CASCADE_COUNT_MAX];
 
   VkrMetricId rg_live_images;
   VkrMetricId rg_peak_images;

@@ -15,12 +15,12 @@ struct VkrMetalPacketGpuDrawRoot {
   device uint *classifications;
   device VkrGpuDrawCompactionState *compaction_state;
   device VkrGpuVisibleDrawRow *visible_rows;
-  device VkrMetalPacketDrawRoot *draw_root;
-  float4 frustum_planes[6];
+  constant VkrMetalPacketDrawRoot *draw_roots;
+  constant struct VkrMetalPacketGpuDrawView *views;
   uint candidate_count;
   uint visible_capacity;
-  uint reserved_0;
-  uint reserved_1;
+  uint view_count;
+  uint encode_view_index;
   texture2d<float, access::read> hzb;
   ulong reserved_2;
   float4x4 history_view_projection;
@@ -28,11 +28,25 @@ struct VkrMetalPacketGpuDrawRoot {
   uint hzb_mip_count;
   uint hzb_enabled;
   float hzb_depth_epsilon;
-  uint reserved_3[3];
+  uint icb_view_group_size;
+  uint reserved_3[2];
+};
+
+struct VkrMetalPacketGpuDrawView {
+  float4 frustum_planes[6];
+  uint required_candidate_flags;
+  uint hzb_enabled;
+  uint reserved[2];
 };
 
 struct VkrMetalPacketIcbContainer {
   command_buffer command_buffer [[id(0)]];
+};
+
+struct VkrMetalPacketTransmissionPeelRoot {
+  texture2d<float, access::read> previous_depth;
+  float depth_epsilon;
+  uint previous_depth_enabled;
 };
 
 fragment uint2 vkr_metal_packet_vbuffer_fragment(
@@ -54,8 +68,51 @@ fragment uint2 vkr_metal_packet_vbuffer_fragment(
   return uint2(input.visible_row_index + 1u, primitive_id);
 }
 
+fragment uint2 vkr_metal_packet_transmission_vbuffer_fragment(
+    VkrMetalPacketVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    constant VkrMetalPacketTransmissionPeelRoot &peel [[buffer(2)]],
+    uint primitive_id [[primitive_id]]) {
+  if (peel.previous_depth_enabled != 0u &&
+      input.position.z <=
+          peel.previous_depth.read(uint2(input.position.xy)).x +
+              peel.depth_epsilon)
+    discard_fragment();
+  const device VkrGpuVisibleDrawRow &visible =
+      root->visible_rows[input.visible_row_index];
+  const device VkrMetalPacketMaterial &material =
+      root->frame->materials[visible.material_index];
+  if (material.alpha_mode == 1u) {
+    float alpha = material.base_color_texture
+                      .sample(material.base_color_sampler, input.texcoord)
+                      .a *
+                  material.tint.a * input.color.a;
+    if (alpha < material.material_alpha.x)
+      discard_fragment();
+  }
+  return uint2(input.visible_row_index + 1u, primitive_id);
+}
+
+fragment void vkr_metal_packet_gpu_shadow_fragment(
+    VkrMetalPacketVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]]) {
+  const device VkrGpuVisibleDrawRow &visible =
+      root->visible_rows[input.visible_row_index];
+  const device VkrMetalPacketMaterial &material =
+      root->frame->materials[visible.material_index];
+  if (material.alpha_mode == 1u) {
+    float alpha = material.base_color_texture
+                      .sample(material.base_color_sampler, input.texcoord)
+                      .a *
+                  material.tint.a * input.color.a;
+    if (alpha < material.material_alpha.x)
+      discard_fragment();
+  }
+}
+
 static bool vkr_metal_packet_candidate_in_frustum(
     constant VkrMetalPacketGpuDrawRoot &root,
+    constant VkrMetalPacketGpuDrawView &view,
     const device VkrGpuCandidateDrawRow &candidate) {
   if ((candidate.flags & 1u) == 0u)
     return true;
@@ -68,7 +125,7 @@ static bool vkr_metal_packet_candidate_in_frustum(
           max(length(instance.model[1].xyz), length(instance.model[2].xyz)));
   float radius = candidate.local_bounding_sphere.w * scale;
   for (uint plane = 0u; plane < 6u; ++plane) {
-    float4 equation = root.frustum_planes[plane];
+    float4 equation = view.frustum_planes[plane];
     if (dot(equation.xyz, center) + equation.w < -radius)
       return false;
   }
@@ -133,50 +190,60 @@ static bool vkr_metal_packet_candidate_occluded(
 kernel void
 vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
                                    [[buffer(0)]],
-                                   uint index [[thread_position_in_grid]]) {
-  if (index >= root.candidate_count)
+                                   uint2 position [[thread_position_in_grid]]) {
+  uint index = position.x;
+  uint view_index = position.y;
+  if (index >= root.candidate_count || view_index >= root.view_count)
     return;
+  const constant VkrMetalPacketGpuDrawView &view = root.views[view_index];
   const device VkrGpuCandidateDrawRow &candidate = root.candidates[index];
+  uint classification_index = view_index * root.visible_capacity + index;
   if (candidate.state_bucket >= 4u ||
-      !vkr_metal_packet_candidate_in_frustum(root, candidate)) {
-    root.classifications[index] = 0u;
+      (candidate.flags & view.required_candidate_flags) !=
+          view.required_candidate_flags ||
+      !vkr_metal_packet_candidate_in_frustum(root, view, candidate)) {
+    root.classifications[classification_index] = 0u;
     return;
   }
-  if (vkr_metal_packet_candidate_occluded(root, candidate)) {
-    root.classifications[index] = 0u;
-    atomic_fetch_add_explicit(&root.compaction_state->occlusion_culled_count,
-                              1u, memory_order_relaxed);
+  device VkrGpuDrawCompactionState &state = root.compaction_state[view_index];
+  if (view.hzb_enabled != 0u &&
+      vkr_metal_packet_candidate_occluded(root, candidate)) {
+    root.classifications[classification_index] = 0u;
+    atomic_fetch_add_explicit(&state.occlusion_culled_count, 1u,
+                              memory_order_relaxed);
     return;
   }
-  root.classifications[index] = candidate.state_bucket + 1u;
-  atomic_fetch_add_explicit(
-      &root.compaction_state->bucket_counts[candidate.state_bucket], 1u,
-      memory_order_relaxed);
+  root.classifications[classification_index] = candidate.state_bucket + 1u;
+  atomic_fetch_add_explicit(&state.bucket_counts[candidate.state_bucket], 1u,
+                            memory_order_relaxed);
 }
 
 kernel void
 vkr_metal_packet_gpu_draw_prefix(constant VkrMetalPacketGpuDrawRoot &root
                                  [[buffer(0)]],
-                                 uint index [[thread_position_in_grid]]) {
-  if (index != 0u)
+                                 uint view_index [[thread_position_in_grid]]) {
+  if (view_index >= root.view_count)
     return;
+  device VkrGpuDrawCompactionState &state = root.compaction_state[view_index];
+  uint command_base =
+      (view_index % root.icb_view_group_size) * root.visible_capacity;
   uint visible_count = 0u;
   for (uint bucket = 0u; bucket < 4u; ++bucket) {
-    uint bucket_count = atomic_load_explicit(
-        &root.compaction_state->bucket_counts[bucket], memory_order_relaxed);
-    root.compaction_state->execution_ranges[bucket] =
-        uint2(visible_count, bucket_count);
+    uint bucket_count = atomic_load_explicit(&state.bucket_counts[bucket],
+                                             memory_order_relaxed);
+    state.execution_ranges[bucket] =
+        uint2(command_base + visible_count, bucket_count);
     visible_count += bucket_count;
-    atomic_store_explicit(&root.compaction_state->bucket_cursors[bucket], 0u,
+    atomic_store_explicit(&state.bucket_cursors[bucket], 0u,
                           memory_order_relaxed);
   }
-  root.compaction_state->visible_count = visible_count;
+  state.visible_count = visible_count;
   const bool overflow = visible_count > root.visible_capacity;
   if (overflow) {
     for (uint bucket = 0u; bucket < 4u; ++bucket)
-      root.compaction_state->execution_ranges[bucket].y = 0u;
+      state.execution_ranges[bucket].y = 0u;
   }
-  atomic_store_explicit(&root.compaction_state->overflow_count,
+  atomic_store_explicit(&state.overflow_count,
                         overflow ? visible_count - root.visible_capacity : 0u,
                         memory_order_relaxed);
 }
@@ -184,25 +251,31 @@ vkr_metal_packet_gpu_draw_prefix(constant VkrMetalPacketGpuDrawRoot &root
 kernel void vkr_metal_packet_gpu_draw_encode(
     constant VkrMetalPacketGpuDrawRoot &root [[buffer(0)]],
     constant VkrMetalPacketIcbContainer *icb [[buffer(1)]],
-    uint index [[thread_position_in_grid]]) {
-  if (index >= root.candidate_count || icb == nullptr)
+    uint2 position [[thread_position_in_grid]]) {
+  uint index = position.x;
+  uint view_index = root.encode_view_index + position.y;
+  if (index >= root.candidate_count || view_index >= root.view_count ||
+      icb == nullptr)
     return;
-  uint classification = root.classifications[index];
+  uint view_base = view_index * root.visible_capacity;
+  uint classification = root.classifications[view_base + index];
   if (classification == 0u)
     return;
+  device VkrGpuDrawCompactionState &state = root.compaction_state[view_index];
   uint bucket = classification - 1u;
-  uint local_index = atomic_fetch_add_explicit(
-      &root.compaction_state->bucket_cursors[bucket], 1u, memory_order_relaxed);
+  uint local_index = atomic_fetch_add_explicit(&state.bucket_cursors[bucket],
+                                               1u, memory_order_relaxed);
+  uint command_base =
+      (view_index % root.icb_view_group_size) * root.visible_capacity;
   uint visible_index =
-      root.compaction_state->execution_ranges[bucket].x + local_index;
+      state.execution_ranges[bucket].x - command_base + local_index;
   if (visible_index >= root.visible_capacity) {
-    atomic_fetch_add_explicit(&root.compaction_state->overflow_count, 1u,
-                              memory_order_relaxed);
+    atomic_fetch_add_explicit(&state.overflow_count, 1u, memory_order_relaxed);
     return;
   }
 
   const device VkrGpuCandidateDrawRow &candidate = root.candidates[index];
-  root.visible_rows[visible_index] = {
+  root.visible_rows[view_base + visible_index] = {
       candidate.geometry_index, candidate.material_index,
       candidate.instance_index, candidate.first_index,
       candidate.index_count,    candidate.vertex_offset,
@@ -212,12 +285,79 @@ kernel void vkr_metal_packet_gpu_draw_encode(
   device uint *indices = reinterpret_cast<device uint *>(
       geometry.index_address + ulong(candidate.first_index) * sizeof(uint));
 
-  render_command command(icb->command_buffer, visible_index);
-  command.set_vertex_buffer(root.draw_root, 0u);
-  command.set_fragment_buffer(root.draw_root, 1u);
+  render_command command(icb->command_buffer, command_base + visible_index);
+  command.set_vertex_buffer(&root.draw_roots[view_index], 0u);
+  command.set_fragment_buffer(&root.draw_roots[view_index], 1u);
   command.draw_indexed_primitives(primitive_type::triangle,
                                   candidate.index_count, indices, 1u,
                                   candidate.vertex_offset, visible_index);
+}
+
+struct VkrMetalPacketPickingResolveRoot {
+  device VkrGpuVisibleDrawRow *opaque_visible_rows;
+  device VkrMetalPacketInstance *opaque_instances;
+  device VkrGpuDrawCompactionState *opaque_compaction_state;
+  device VkrGpuVisibleDrawRow *transmission_visible_rows;
+  device VkrMetalPacketInstance *transmission_instances;
+  device VkrGpuDrawCompactionState *transmission_compaction_state;
+  texture2d<uint, access::read> opaque_vbuffer;
+  texture2d<float, access::read> opaque_depth;
+  texture2d<uint, access::read> transmission_vbuffer;
+  texture2d<float, access::read> transmission_depth;
+  texture2d<uint, access::write> destination;
+  uint2 pixel;
+  uint2 extent;
+  uint opaque_visible_capacity;
+  uint opaque_instance_count;
+  uint transmission_visible_capacity;
+  uint transmission_instance_count;
+  uint transmission_enabled;
+  uint reserved[1];
+};
+
+static uint vkr_metal_packet_picking_object_id(
+    texture2d<uint, access::read> vbuffer,
+    const device VkrGpuVisibleDrawRow *visible_rows,
+    const device VkrMetalPacketInstance *instances,
+    const device VkrGpuDrawCompactionState *state, uint visible_capacity,
+    uint instance_count, uint2 pixel) {
+  uint encoded = vbuffer.read(pixel).x;
+  if (encoded == 0u || visible_rows == nullptr || instances == nullptr ||
+      state == nullptr)
+    return 0u;
+  uint visible_index = encoded - 1u;
+  if (visible_index >= visible_capacity ||
+      visible_index >= state->visible_count)
+    return 0u;
+  uint instance_index = visible_rows[visible_index].instance_index;
+  return instance_index < instance_count ? instances[instance_index].object_id
+                                         : 0u;
+}
+
+kernel void
+vkr_metal_packet_picking_resolve(constant VkrMetalPacketPickingResolveRoot &root
+                                 [[buffer(0)]],
+                                 uint index [[thread_position_in_grid]]) {
+  if (index != 0u || any(root.pixel >= root.extent))
+    return;
+  uint object_id = vkr_metal_packet_picking_object_id(
+      root.opaque_vbuffer, root.opaque_visible_rows, root.opaque_instances,
+      root.opaque_compaction_state, root.opaque_visible_capacity,
+      root.opaque_instance_count, root.pixel);
+  uint transmission_encoded = root.transmission_enabled != 0u
+                                  ? root.transmission_vbuffer.read(root.pixel).x
+                                  : 0u;
+  if (transmission_encoded != 0u &&
+      (root.opaque_vbuffer.read(root.pixel).x == 0u ||
+       root.transmission_depth.read(root.pixel).x <=
+           root.opaque_depth.read(root.pixel).x)) {
+    object_id = vkr_metal_packet_picking_object_id(
+        root.transmission_vbuffer, root.transmission_visible_rows,
+        root.transmission_instances, root.transmission_compaction_state,
+        root.transmission_visible_capacity, root.transmission_instance_count,
+        root.pixel);
+  }
+  root.destination.write(uint4(object_id, 0u, 0u, 0u), root.pixel);
 }
 
 struct VkrMetalPacketGBufferResolveRoot {
@@ -776,7 +916,7 @@ struct VkrMetalPacketTransmissionShadeRoot {
   texture2d<uint, access::read> vbuffer;
   texture2d<float, access::read> depth;
   texture2d<float, access::sample> source;
-  texture2d<float, access::read_write> destination;
+  texture2d<float, access::write> destination;
   float4x4 view_projection;
   float4x4 inverse_view_projection;
   uint2 extent;
@@ -785,6 +925,14 @@ struct VkrMetalPacketTransmissionShadeRoot {
   uint material_count;
   uint instance_count;
   uint2 reserved;
+};
+
+struct VkrMetalPacketTransmissionCoverageRoot {
+  texture2d<uint, access::read> vbuffer;
+  device atomic_uint *covered_pixels;
+  uint2 extent;
+  uint layer;
+  uint reserved;
 };
 
 struct VkrMetalPacketTransmissionSurface {
@@ -1150,11 +1298,18 @@ static float3 vkr_metal_packet_transmission_lighting(
 kernel void vkr_metal_packet_transmission_shade(
     constant VkrMetalPacketTransmissionShadeRoot &root [[buffer(0)]],
     uint2 pixel [[thread_position_in_grid]]) {
-  if (any(pixel >= root.extent) || root.vbuffer.read(pixel).x == 0u)
+  if (any(pixel >= root.extent))
     return;
+  float4 background = root.source.read(pixel);
+  if (root.vbuffer.read(pixel).x == 0u) {
+    root.destination.write(background, pixel);
+    return;
+  }
   VkrMetalPacketTransmissionSurface surface;
-  if (!vkr_metal_packet_resolve_transmission_surface(root, pixel, surface))
+  if (!vkr_metal_packet_resolve_transmission_surface(root, pixel, surface)) {
+    root.destination.write(background, pixel);
     return;
+  }
   constant VkrMetalPacketFrameRoot *frame = root.frame;
   const device VkrMetalPacketMaterial &material =
       root.materials[surface.material_index];
@@ -1196,6 +1351,24 @@ kernel void vkr_metal_packet_transmission_shade(
     color = mix(color, transmitted, saturate(weight));
   }
   root.destination.write(float4(color, 1.0), pixel);
+}
+
+kernel void vkr_metal_packet_transmission_coverage(
+    constant VkrMetalPacketTransmissionCoverageRoot &root [[buffer(0)]],
+    uint2 pixel [[thread_position_in_grid]],
+    ushort thread_index [[thread_index_in_threadgroup]]) {
+  threadgroup atomic_uint group_coverage;
+  if (thread_index == 0u)
+    atomic_store_explicit(&group_coverage, 0u, memory_order_relaxed);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (all(pixel < root.extent) && root.vbuffer.read(pixel).x != 0u)
+    atomic_fetch_add_explicit(&group_coverage, 1u, memory_order_relaxed);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (thread_index == 0u && root.layer < 4u)
+    atomic_fetch_add_explicit(
+        &root.covered_pixels[root.layer],
+        atomic_load_explicit(&group_coverage, memory_order_relaxed),
+        memory_order_relaxed);
 }
 
 struct VkrMetalPacketHzbBuildRoot {
@@ -1242,7 +1415,13 @@ static_assert(sizeof(VkrMetalPacketDeferredLightingRoot) == 144,
               "Deferred-lighting root ABI must remain 144 bytes");
 static_assert(sizeof(VkrMetalPacketTransmissionShadeRoot) == 240,
               "Transmission-shade root ABI must remain 240 bytes");
-static_assert(sizeof(VkrMetalPacketGpuDrawRoot) == 288,
-              "GPU draw root ABI must remain 288 bytes");
+static_assert(sizeof(VkrMetalPacketTransmissionCoverageRoot) == 32,
+              "Transmission-coverage root ABI must remain 32 bytes");
+static_assert(sizeof(VkrMetalPacketGpuDrawRoot) == 192,
+              "GPU draw root ABI must remain 192 bytes");
+static_assert(sizeof(VkrMetalPacketTransmissionPeelRoot) == 16,
+              "Transmission-peel root ABI must remain 16 bytes");
+static_assert(sizeof(VkrMetalPacketGpuDrawView) == 112,
+              "GPU draw view ABI must remain 112 bytes");
 static_assert(sizeof(VkrMetalPacketHzbBuildRoot) == 48,
               "HZB build root ABI must remain 48 bytes");

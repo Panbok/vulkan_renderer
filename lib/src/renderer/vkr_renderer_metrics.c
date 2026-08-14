@@ -433,6 +433,26 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
   VKR_REGISTER_U64(visibility_transmission_gpu_compaction_overflow,
                    "visibility.transmission.gpu_visible.overflow",
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  const char *transmission_coverage_names[4] = {
+      "visibility.transmission.covered_pixels.layer_0",
+      "visibility.transmission.covered_pixels.layer_1",
+      "visibility.transmission.covered_pixels.layer_2",
+      "visibility.transmission.covered_pixels.layer_3",
+  };
+  for (uint32_t layer = 0u; layer < ArrayCount(transmission_coverage_names);
+       ++layer) {
+    if (!vkr_renderer_metric_register(
+            metrics, transmission_coverage_names[layer], VKR_METRIC_DOMAIN_DRAW,
+            VKR_METRIC_KIND_GAUGE, VKR_METRIC_UNIT_COUNT, VKR_METRIC_SCALAR_U64,
+            &ids->visibility_transmission_covered_pixels[layer]))
+      return false_v;
+  }
+  VKR_REGISTER_U64(visibility_transmission_coverage_extent_width,
+                   "visibility.transmission.coverage_extent.width",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(visibility_transmission_coverage_extent_height,
+                   "visibility.transmission.coverage_extent.height",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(visibility_hzb_rejected, "visibility.hzb.rejected",
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(visibility_transmission_hzb_rejected,
@@ -480,6 +500,7 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
     VKR_REGISTER_CASCADE(shadow_batches_alpha, "alpha_batches");
     VKR_REGISTER_CASCADE(shadow_indirect_draws_opaque, "indirect_commands");
     VKR_REGISTER_CASCADE(shadow_indirect_calls_opaque, "indirect_calls");
+    VKR_REGISTER_CASCADE(shadow_indirect_overflow, "indirect_overflow");
 #undef VKR_REGISTER_CASCADE
   }
 
@@ -1159,6 +1180,33 @@ void vkr_renderer_metrics_collect(
                        VKR_METRIC_REASON_NOT_SAMPLED);
     }
   }
+  const VkrRendererImplSubmitResult *completed = &renderer->timing_result;
+  if (completed->transmission_coverage_valid) {
+    for (uint32_t layer = 0u;
+         layer < ArrayCount(completed->transmission_covered_pixels); ++layer) {
+      vkr_metrics_gauge_set_u64(
+          metrics, ids->visibility_transmission_covered_pixels[layer],
+          completed->transmission_covered_pixels[layer]);
+    }
+    VKR_SET_U64(visibility_transmission_coverage_extent_width,
+                completed->transmission_coverage_extent[0]);
+    VKR_SET_U64(visibility_transmission_coverage_extent_height,
+                completed->transmission_coverage_extent[1]);
+  } else {
+    for (uint32_t layer = 0u;
+         layer < ArrayCount(ids->visibility_transmission_covered_pixels);
+         ++layer) {
+      vkr_metrics_mark(
+          metrics, ids->visibility_transmission_covered_pixels[layer],
+          VKR_METRIC_AVAILABILITY_UNAVAILABLE, VKR_METRIC_REASON_NOT_SAMPLED);
+    }
+    vkr_metrics_mark(
+        metrics, ids->visibility_transmission_coverage_extent_width,
+        VKR_METRIC_AVAILABILITY_UNAVAILABLE, VKR_METRIC_REASON_NOT_SAMPLED);
+    vkr_metrics_mark(
+        metrics, ids->visibility_transmission_coverage_extent_height,
+        VKR_METRIC_AVAILABILITY_UNAVAILABLE, VKR_METRIC_REASON_NOT_SAMPLED);
+  }
   const VkrGeometryMegabufferMetrics *mega = &world->geometry_megabuffer;
   VKR_SET_U64(geometry_megabuffer_vertex_capacity, mega->vertex_capacity_bytes);
   VKR_SET_U64(geometry_megabuffer_index_capacity, mega->index_capacity_bytes);
@@ -1187,6 +1235,8 @@ void vkr_renderer_metrics_collect(
                               shadow->shadow_indirect_draws_opaque[i]);
     vkr_metrics_gauge_set_u64(metrics, ids->shadow_indirect_calls_opaque[i],
                               shadow->shadow_indirect_calls_opaque[i]);
+    vkr_metrics_gauge_set_u64(metrics, ids->shadow_indirect_overflow[i],
+                              shadow->shadow_indirect_overflow[i]);
   }
 
   VkrRenderGraphResourceStats rg = {0};
@@ -1441,6 +1491,8 @@ vkr_renderer_metrics_read_frame(const VkrRendererMetrics *renderer_metrics,
                    ids->shadow_indirect_draws_opaque[i]);
       VKR_READ_U32(shadow->shadow_indirect_calls_opaque[i],
                    ids->shadow_indirect_calls_opaque[i]);
+      VKR_READ_U32(shadow->shadow_indirect_overflow[i],
+                   ids->shadow_indirect_overflow[i]);
     }
   }
 

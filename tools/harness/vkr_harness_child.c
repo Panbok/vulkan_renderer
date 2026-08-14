@@ -20,7 +20,11 @@ typedef struct VkrHarnessChildContext {
   const VkrHarnessArenas *arenas;
   VkrResourceHandleInfo scene_resource;
   float64_t load_started;
-  /** Set once the scene is resident; simulation time is zero until then. */
+  /** The scene closure is resident and installed on the renderer frontend. */
+  bool8_t scene_active;
+  /** Pass storage was sized from a frame rendered with the active scene. */
+  bool8_t pass_catalog_ready;
+  /** Set once bootstrap/allocation frames are discarded and sampling begins. */
   bool8_t phase_started;
   bool8_t failed;
   char failure[128];
@@ -333,8 +337,7 @@ static void vkr_harness_child_drain_events(Application *application) {
 
 /**
  * Determinism rule 1: nothing is measured until the requested scene reaches a
- * successful terminal state. Sizing the pass storage here rather than during
- * the measured window keeps execution allocation-free.
+ * successful terminal state.
  */
 static bool8_t vkr_harness_child_activate_scene(Application *application) {
   VkrHarnessChildContext *child = g_harness_child;
@@ -377,6 +380,19 @@ static bool8_t vkr_harness_child_activate_scene(Application *application) {
   }
   vkr_scene_handle_full_sync(child->scene_resource.as.scene,
                              &application->renderer);
+  child->scene_active = true_v;
+  return true_v;
+}
+
+/**
+ * Freeze the pass catalog only after one frame has executed with the requested
+ * scene. The activation update still exposes the preceding boot graph's pass
+ * table; using it would make the strict name-at-index check reject every
+ * sample when scene activation changes graph scheduling.
+ */
+static bool8_t
+vkr_harness_child_prepare_pass_catalog(Application *application) {
+  VkrHarnessChildContext *child = g_harness_child;
   const VkrRendererMetricsPassTable *passes =
       vkr_renderer_metrics_get_pass_table(&application->renderer_metrics);
   if (!passes || passes->count == 0u || passes->truncated) {
@@ -417,7 +433,7 @@ static bool8_t vkr_harness_child_activate_scene(Application *application) {
                   sizeof(child->pass_catalog[pass].name), "%s",
                   passes->samples[pass].name);
   }
-  child->phase_started = true_v;
+  child->pass_catalog_ready = true_v;
   return true_v;
 }
 
@@ -428,6 +444,15 @@ void application_update(Application *application, float64_t delta) {
     return;
   }
   vkr_harness_child_drain_events(application);
+  /* A failed renderer frame cannot contribute valid timing or snapshot
+     evidence. Abort on the following update instead of repeatedly hitting the
+     same bounded GPU wait until the parent process timeout hides the cause. */
+  if (application->last_renderer_error != VKR_RENDERER_ERROR_NONE &&
+      application->last_renderer_error != VKR_RENDERER_ERROR_CAPTURE_BUSY &&
+      application->last_renderer_error != VKR_RENDERER_ERROR_FRAME_SKIPPED) {
+    vkr_harness_child_fail(application, "renderer.frame_failed");
+    return;
+  }
   vkr_harness_child_sample(application);
   if (child->capture_requested && !child->capture_complete) {
     VkrCapturePollResult poll = {0};
@@ -476,8 +501,16 @@ void application_update(Application *application, float64_t delta) {
     return;
   }
   vkr_resource_system_pump(NULL);
-  if (!child->phase_started && !vkr_harness_child_activate_scene(application)) {
-    return;
+  if (!child->scene_active) {
+    if (!vkr_harness_child_activate_scene(application))
+      return;
+  } else if (!child->pass_catalog_ready) {
+    if (!vkr_harness_child_prepare_pass_catalog(application))
+      return;
+  } else if (!child->phase_started) {
+    /* The catalog allocation happened in the preceding bootstrap frame. Drop
+       that publication too so a zero-warmup case remains allocation-free. */
+    child->phase_started = true_v;
   }
   if (!vkr_harness_child_resize_round_trip(application)) {
     return;
@@ -646,6 +679,12 @@ static bool8_t
 vkr_harness_child_apply_renderer(Application *application,
                                  const VkrHarnessCase *case_manifest) {
   application->editor_viewport.enabled = case_manifest->renderer.editor;
+  /* Renderer creation can submit initialization work. Shadow reconfiguration
+     destroys resources whose graph replacements must not race that work. */
+  if (vkr_renderer_wait_idle(&application->renderer) !=
+      VKR_RENDERER_ERROR_NONE) {
+    return false_v;
+  }
   VkrShadowConfig shadow_config =
       string_equals(case_manifest->renderer.shadow_preset, "balanced")
           ? VKR_SHADOW_CONFIG_BALANCED

@@ -593,20 +593,6 @@ vkr_internal bool8_t application_material_is_transmissive(
                         : false_v;
 }
 
-typedef enum VkrWorldGpuCandidateStream {
-  VKR_WORLD_GPU_CANDIDATE_STREAM_NONE = 0,
-  VKR_WORLD_GPU_CANDIDATE_STREAM_OPAQUE,
-  VKR_WORLD_GPU_CANDIDATE_STREAM_TRANSMISSION,
-} VkrWorldGpuCandidateStream;
-
-vkr_internal VkrWorldGpuCandidateStream application_world_gpu_candidate_stream(
-    VkrDrawAlphaRouting alpha, bool8_t transmissive) {
-  if (transmissive)
-    return VKR_WORLD_GPU_CANDIDATE_STREAM_TRANSMISSION;
-  return alpha.world_transparent ? VKR_WORLD_GPU_CANDIDATE_STREAM_NONE
-                                 : VKR_WORLD_GPU_CANDIDATE_STREAM_OPAQUE;
-}
-
 /**
  * Local reflection-probe descriptors are selected from world position and
  * applied once per draw. Until probe selection moves into per-instance data,
@@ -779,12 +765,9 @@ vkr_internal bool8_t application_build_world_payload(
           application_material_alpha_routing(rf, material);
       const bool8_t transmissive =
           application_material_is_transmissive(rf, material);
-      const VkrWorldGpuCandidateStream gpu_stream =
-          application_world_gpu_candidate_stream(alpha, transmissive);
-      if (gpu_stream == VKR_WORLD_GPU_CANDIDATE_STREAM_TRANSMISSION) {
+      gpu_candidate_count++;
+      if (transmissive) {
         transmission_gpu_candidate_count++;
-      } else if (gpu_stream == VKR_WORLD_GPU_CANDIDATE_STREAM_OPAQUE) {
-        gpu_candidate_count++;
       }
       if (flags == 0) {
         continue;
@@ -849,12 +832,9 @@ vkr_internal bool8_t application_build_world_payload(
           application_material_alpha_routing(rf, material);
       const bool8_t transmissive =
           application_material_is_transmissive(rf, material);
-      const VkrWorldGpuCandidateStream gpu_stream =
-          application_world_gpu_candidate_stream(alpha, transmissive);
-      if (gpu_stream == VKR_WORLD_GPU_CANDIDATE_STREAM_TRANSMISSION) {
+      gpu_candidate_count++;
+      if (transmissive) {
         transmission_gpu_candidate_count++;
-      } else if (gpu_stream == VKR_WORLD_GPU_CANDIDATE_STREAM_OPAQUE) {
-        gpu_candidate_count++;
       }
       if (flags == 0) {
         continue;
@@ -1048,33 +1028,32 @@ vkr_internal bool8_t application_build_world_payload(
           application_material_alpha_routing(rf, material);
       const bool8_t transmissive =
           application_material_is_transmissive(rf, material);
-      const VkrWorldGpuCandidateStream gpu_stream =
-          application_world_gpu_candidate_stream(alpha, transmissive);
-      if (gpu_stream != VKR_WORLD_GPU_CANDIDATE_STREAM_NONE) {
-        const Vec3 half_extents = vec3_scale(
-            vec3_sub(submesh->max_extents, submesh->min_extents), 0.5f);
-        VkrWorldDrawCandidate gpu_candidate = (VkrWorldDrawCandidate){
-            .mesh = {.id = mesh_slot + 1u, .generation = 0},
-            .geometry = submesh->geometry,
-            .submesh_index = s,
-            .material = draw_material,
-            .instance = {.model = mesh->model, .object_id = object_id},
-            .local_bounding_sphere = {submesh->center.x, submesh->center.y,
-                                      submesh->center.z,
-                                      vec3_length(half_extents)},
-            .state_bucket = vkr_world_draw_state_bucket(
-                alpha.shadow_alpha_tested ? VKR_MATERIAL_ALPHA_CUTOUT
-                                          : VKR_MATERIAL_ALPHA_OPAQUE,
-                material ? material->double_sided : false_v),
-            .flags =
-                mesh->bounds_valid ? VKR_WORLD_DRAW_CANDIDATE_BOUNDS_VALID : 0u,
-        };
-        if (gpu_stream == VKR_WORLD_GPU_CANDIDATE_STREAM_TRANSMISSION) {
-          transmission_gpu_candidates[transmission_gpu_candidate_index++] =
-              gpu_candidate;
-        } else {
-          gpu_candidates[gpu_candidate_index++] = gpu_candidate;
-        }
+      const Vec3 half_extents = vec3_scale(
+          vec3_sub(submesh->max_extents, submesh->min_extents), 0.5f);
+      VkrWorldDrawCandidate gpu_candidate = (VkrWorldDrawCandidate){
+          .mesh = {.id = mesh_slot + 1u, .generation = 0},
+          .geometry = submesh->geometry,
+          .submesh_index = s,
+          .material = draw_material,
+          .instance = {.model = mesh->model, .object_id = object_id},
+          .local_bounding_sphere = {submesh->center.x, submesh->center.y,
+                                    submesh->center.z,
+                                    vec3_length(half_extents)},
+          .state_bucket = vkr_world_draw_state_bucket(
+              alpha.shadow_alpha_tested ? VKR_MATERIAL_ALPHA_CUTOUT
+                                        : VKR_MATERIAL_ALPHA_OPAQUE,
+              material ? material->double_sided : false_v),
+          .flags = (mesh->bounds_valid ? VKR_WORLD_DRAW_CANDIDATE_BOUNDS_VALID
+                                       : 0u) |
+                   (!transmissive && !alpha.world_transparent
+                        ? VKR_WORLD_DRAW_CANDIDATE_CAMERA_OPAQUE
+                        : 0u) |
+                   VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER,
+      };
+      gpu_candidates[gpu_candidate_index++] = gpu_candidate;
+      if (transmissive) {
+        transmission_gpu_candidates[transmission_gpu_candidate_index++] =
+            gpu_candidate;
       }
       if (flags == 0) {
         continue;
@@ -1168,35 +1147,34 @@ vkr_internal bool8_t application_build_world_payload(
           application_material_alpha_routing(rf, material);
       const bool8_t transmissive =
           application_material_is_transmissive(rf, material);
-      const VkrWorldGpuCandidateStream gpu_stream =
-          application_world_gpu_candidate_stream(alpha, transmissive);
-      if (gpu_stream != VKR_WORLD_GPU_CANDIDATE_STREAM_NONE) {
-        const Vec3 half_extents = vec3_scale(
-            vec3_sub(submesh->max_extents, submesh->min_extents), 0.5f);
-        VkrWorldDrawCandidate gpu_candidate = (VkrWorldDrawCandidate){
-            .mesh = {.id = instance_slot + 1u,
-                     .generation = instance->generation},
-            .geometry = submesh->geometry,
-            .submesh_index = s,
-            .material = draw_material,
-            .instance = {.model = instance->model, .object_id = object_id},
-            .local_bounding_sphere = {submesh->center.x, submesh->center.y,
-                                      submesh->center.z,
-                                      vec3_length(half_extents)},
-            .state_bucket = vkr_world_draw_state_bucket(
-                alpha.shadow_alpha_tested ? VKR_MATERIAL_ALPHA_CUTOUT
-                                          : VKR_MATERIAL_ALPHA_OPAQUE,
-                material ? material->double_sided : false_v),
-            .flags = instance->bounds_valid
-                         ? VKR_WORLD_DRAW_CANDIDATE_BOUNDS_VALID
-                         : 0u,
-        };
-        if (gpu_stream == VKR_WORLD_GPU_CANDIDATE_STREAM_TRANSMISSION) {
-          transmission_gpu_candidates[transmission_gpu_candidate_index++] =
-              gpu_candidate;
-        } else {
-          gpu_candidates[gpu_candidate_index++] = gpu_candidate;
-        }
+      const Vec3 half_extents = vec3_scale(
+          vec3_sub(submesh->max_extents, submesh->min_extents), 0.5f);
+      VkrWorldDrawCandidate gpu_candidate = (VkrWorldDrawCandidate){
+          .mesh = {.id = instance_slot + 1u,
+                   .generation = instance->generation},
+          .geometry = submesh->geometry,
+          .submesh_index = s,
+          .material = draw_material,
+          .instance = {.model = instance->model, .object_id = object_id},
+          .local_bounding_sphere = {submesh->center.x, submesh->center.y,
+                                    submesh->center.z,
+                                    vec3_length(half_extents)},
+          .state_bucket = vkr_world_draw_state_bucket(
+              alpha.shadow_alpha_tested ? VKR_MATERIAL_ALPHA_CUTOUT
+                                        : VKR_MATERIAL_ALPHA_OPAQUE,
+              material ? material->double_sided : false_v),
+          .flags =
+              (instance->bounds_valid ? VKR_WORLD_DRAW_CANDIDATE_BOUNDS_VALID
+                                      : 0u) |
+              (!transmissive && !alpha.world_transparent
+                   ? VKR_WORLD_DRAW_CANDIDATE_CAMERA_OPAQUE
+                   : 0u) |
+              VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER,
+      };
+      gpu_candidates[gpu_candidate_index++] = gpu_candidate;
+      if (transmissive) {
+        transmission_gpu_candidates[transmission_gpu_candidate_index++] =
+            gpu_candidate;
       }
       if (flags == 0) {
         continue;
@@ -1353,6 +1331,7 @@ void application_draw_frame(Application *application, float64_t delta) {
                        application->metric_ids.render_prepare) {
     prepare_err = vkr_renderer_prepare_frame(&application->renderer, &setup);
   }
+  application->last_renderer_error = prepare_err;
   if (prepare_err != VKR_RENDERER_ERROR_NONE) {
     // A minimized or resizing window skips frames as a matter of course; this
     // path runs every tick while minimized, so it must not log.

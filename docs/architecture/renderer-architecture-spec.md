@@ -1,12 +1,13 @@
 ---
 status: implemented
-updated: 2026-08-13
+updated: 2026-08-14
 authority: spec
 ---
 # VKR Renderer — Architecture and Status Specification
 
 **Document status:** Reviewed against the completed V7 working tree and the
-provisional Metal deferred P4/P6/P8/P10/P12/P14 implementation on 2026-08-13.
+provisional Metal deferred P4/P6/P8/P10/P12/P14/P16/P17/P18 implementation on
+2026-08-14.
 Metal 4 Stages 0–5 and bindless Vulkan V0–V6 are implemented. ADR-026 V7 is
 complete under explicit owner authorization: Vulkan 1.2, its descriptor-set
 shaders and manifests, the legacy-only frontend resource model, the
@@ -360,9 +361,10 @@ restricted to specular reflection rays.
 | PBR materials | Implemented, evolving | Metallic-roughness and texture slots plus prepared, cached specular-glossiness lowering with retained dielectric F0/F90 response; transmission adds IOR, volume, attenuation, and scene-color refraction while clearcoat and sheen remain absent |
 | IBL | Implemented, partial integration | HDR/cubemap sources, prepared RGBA16F bakes, global environment, and two fragment-weighted local probes per draw ship; bake work remains undeclared to the graph and explicitly barriered |
 | glTF and scene loading | Implemented | CPU async pipeline; nested texture URIs and sidecars resolve without flattening; UVs lower once to VKR convention; point, spot, and directional punctual lights import through the scene transform into a stable 128-light table with a fragment-local 384-cell bitmask grid; frame-path uploads measured non-blocking |
-| Transmission | Implemented, initial | Graph-declared opaque, HDR feedback-copy, transmission, and ordinary-blend stages; screen-space refraction has no order-independent transparency or deep compositing |
+| Transmission | Implemented, bounded on Metal | Graph-declared opaque, HDR feedback-copy, transmission, and ordinary-blend stages. Metal deferred P18 peels and composites four ordered transmissive surfaces; Vulkan and selector-off forward retain the initial single-layer feedback contract. No order-independent or unbounded deep compositing is claimed |
 | KTX2/UASTC textures | Implemented | BC7/BC5, ASTC, ETC2, EAC RG11, and RGBA32 paths; every selector result is transcodable |
-| Editor viewport and picking | Implemented | Picking fully declared in the render graph; readback usually deferred but ring wrap can block |
+| Editor viewport and picking | Partial | Picking is fully declared in the render graph and runs; readback is usually deferred but ring wrap can block. Metal now copies packet `editor_enabled` into its graph frame, so its authored editor branch is reachable. Bindless Vulkan still does not assign the condition, and both implementations pin viewport extent to window size; a true offscreen editor viewport remains absent. See §8 P1 item 15 |
+| UI system | Absent | `VkrUiSystem` is 16 corner-anchored text slots. No rectangle primitive, layout engine, hit testing, clipping, or UI input model. `VkrUiPassPayload.draws` is plumbed end to end but always submitted empty. Design in [ui-architecture-spec.md](../ui/ui-architecture-spec.md), rationale in [ADR-027](adr/027-immediate-mode-grid-ui.md); both are `proposed` |
 | Text | Implemented | Bitmap, MTSDF, system-font, UI and world text paths publish packet-native resources; the dedicated Metal harness fixture remains deterministic |
 | CPU frustum culling | Implemented | Per-submesh; camera and union-of-cascade light visibility classified independently; rejects ~37% on San Miguel, 0% on Sponza |
 | Draw batching | Implemented | Opaque draws merge by complete compatible state; local-probe descriptors prevent unsafe world instancing across positions |
@@ -370,7 +372,7 @@ restricted to specular reflection rays.
 | Compute dispatch | Implemented; production Metal deferred kernels, Vulkan foundation | Typed executors carry validated direct or indirect launch descriptors without per-frame name lookup. Metal P4/P8/P10/P12/P14 uses graph-declared classify, prefix, ICB encode, G-buffer resolve, deferred-lighting, fused-transmission, and HZB-reduction kernels; Vulkan lowers the shared dispatch contract but its P5/P9/P11/P13/P15 production kernels remain absent |
 | Device-memory suballocation | Implemented | Bindless Vulkan uses keyed DEVICE, UPLOAD, and READBACK pools backed by `vkr_gpu_memory`; Metal uses the same range/submit cores through its placement adapter. Logical and physical totals, peaks, retirement, failure classes, and capacity lower into renderer metrics. |
 | Bindless resource model | Implemented | Metal 4 and Vulkan 1.4 use GPU-addressed buffers, backend-native texture/sampler rows, completion-gated publication/retirement, authored graph lowering, and shared memory/submit/slot/capture cores. Immutable GPU material rows carry PBR parameters; each non-empty indexed packet pass publishes one 432-byte frame root and each retained draw references geometry/visible tables through a reflected 48-byte draw root. Shared flags give lighting, IBL readiness, and transmission identical shader semantics. Packet version 11 adds the bounded opaque/cutout GPU-candidate stream while preserving retained lists. Corrected Metal pixels are owner-accepted, though no replacement golden generation is accepted; bindless Vulkan is the sole Vulkan renderer after V7. Native Apple M1 Pro reflection, focused Metal API/GPU validation, and exact text/picking captures now pass for the changed root ABI; the bindless-renderer audit records the evidence. |
-| Deferred visibility-buffer migration | Partial; Metal P4/P6/P8/P10/P12/P14 provisional | P0-P3 foundations remain shared. With `VKR_DEFERRED_ENABLED=1`, Metal compacts independent opaque/cutout and transmission candidate streams into completion-safe four-bucket ICBs; writes opaque and frontmost-transmission `R32G32_UINT` visibility; resolves the opaque G-buffer; computes directional, punctual, shadow, IBL, ambient, emissive, and sky lighting; samples an immutable HDR feedback copy for fused single-layer transmission; and builds a graph-declared max-depth HZB mip chain. HZB reads select only a compatible completed producer and are invalidated by extent, exact view/projection, or opaque-world epoch changes; `VKR_HZB_DISABLED=1` retains frustum-only deferred culling. The retained GPU-forward path remains the selector-off oracle instead of running beside deferred final color. Focused Metal API and shader/GPU validation pass locally. A static Sponza witness rejects 7 of 34 candidates while producing byte-identical final-color and depth captures to HZB-disabled deferred rendering, with zero compaction overflow or invalid resolves. The selector remains disabled by default; P5/P7/P9/P11/P13/P15 Vulkan parity is absent. Captures and timings are not owner-accepted authoritative evidence. |
+| Deferred visibility-buffer migration | Partial; Metal P4/P6/P8/P10/P12/P14/P16/P17/P18 provisional | P0-P3 foundations remain shared. With `VKR_DEFERRED_ENABLED=1`, Metal compacts independent opaque/cutout and transmission candidate streams into completion-safe four-bucket ICBs; writes opaque visibility and four depth-peeled transmission `R32G32_UINT` layers; resolves the opaque G-buffer; computes directional, punctual, shadow, IBL, ambient, emissive, and sky lighting; composites four transmission layers back-to-front through graph-declared HDR ping-pong; and builds a graph-declared max-depth HZB mip chain. P16 resolves requested opaque/transmission picking; P17 classifies camera plus up to four cascades into disjoint ICB ranges. Selector-off Metal and Vulkan still require generated CPU lists, so both-backend retirement is incomplete. Production uses three slots and one five-view ICB per slot. Focused P16/P17 and a minimal serial P18/P19 witness pass with Metal API and shader/GPU validation enabled; the latter executes all four peel/shade stages and publishes completion-gated coverage for all four layers without a validator diagnostic. Validation-enabled Metal renderer processes must remain strictly serial because earlier broad runs correlated with watchdog failures. P18's four-layer fullscreen capture differs from single-layer; the post-fix editor capture remains open. The harness pass catalog waits for active-scene publication, aborts renderer frame failures, and reports child/prewarm timeouts. Metal timing frames publish per-layer transmission coverage from four graph-authored passes ordered after `Transmission.Shade.*`, leaving shade-pass timings untouched. No P19 optimization is selected because the validator run is Debug correctness evidence, not a matched Release performance result. The selector remains disabled by default; P5/P7/P9/P11/P13/P15 and Vulkan P16-P18 are absent. Captures and local diagnostics are not owner-accepted performance evidence. |
 | Bindless Vulkan V1–V4 migration | Complete for RX 6700 XT | V1 characterization and V2's selected strategy are complete on macOS and Windows. V3 extracted the memory, submit-ring, and shared ABI cores alongside their production Vulkan callers and passes native window resize with reacquisition and retired-swapchain completion proof. V4 extracted the slot table, added completion-gated asset publication, and moved geometry, staging, images, startup buffers, and readback into keyed dynamic pools with complete logical/physical metrics. Prepared and writable initialization records before the next frame draw, staging retirement uses that submit value, publication dirty ranges flush once per backing buffer, and logical totals return to baseline. MoltenVK cannot execute the descriptor-buffer path. ADR-024's required cross-platform extraction witnesses now pass. |
 | Bindless Vulkan V5–V7 | Implemented; post-V7 target rerun passes | V5 lowers the authored graph to synchronization2/dynamic rendering and implements all packet pass/capture/timing categories. V6 completed selection, cache, lifecycle, metrics, and native RX 6700 XT validation. V7 removed the Vulkan 1.2 path, temporary selector, shaders/manifests, legacy frontend systems, interface/adaptor, and graph residue. CPU and Metal gates pass after deletion; fresh RX 6700 XT Debug/Release whole-graph, synchronization-validation, and GPU-assisted witnesses pass. |
 | HDR/tonemap/post chain | Implemented, initial | RGBA16F fullscreen/editor scene color, packet-carried manual exposure (default `0.30`), ACES-fitted tonemap, and exposure-equivalent canonical HDR capture; automatic exposure and additional post effects are absent |
@@ -736,6 +738,28 @@ pin the 17-image/13-sampler contract, and exact Bistro validation replay
     [ADR-025](adr/025-selected-renderer-implementation-strategy.md) is Accepted.
     The Windows CPU/runtime witnesses and the matched clean Release Metal
     profile pass their declared gates.
+
+15. **The editor viewport topology is only partially connected.**
+    `assets/render_graphs/main.rendergraph.json` declares the complete editor
+    branch — `scene_color`, `scene_depth`, and `scene_pre_transmission` at
+    `extent:{mode:viewport}`, plus `Editor.Composite` and `UI.Editor` — gated on
+    the `editor_enabled` condition. Metal now assigns
+    `packet.frame.editor_enabled` immediately before graph build, so the branch
+    and P18 editor transmission chain are reachable there. Bindless Vulkan
+    still patches only picking, transmission, and shadow conditions, so its
+    editor condition remains false and `UI.Fullscreen` always builds.
+
+    `prepared_frame.viewport_width/height` has the same defect from the other
+    direction: both backends initialize it to the window size in `prepare_frame`
+    and never update it from `packet.frame.viewport_*`, so
+    `extent:{mode:viewport}` is indistinguishable from `extent:{mode:window}`.
+    The packet's viewport values reach shader constants only.
+
+    Fixing both is phase P0 of
+    [ui-architecture-spec.md](../ui/ui-architecture-spec.md) and a prerequisite
+    for any editor UI work. It enables three previously-unbuilt passes, so it
+    requires a Debug validation-layer run on both backends rather than a CPU
+    suite alone.
 
 ### P2 — Throughput
 

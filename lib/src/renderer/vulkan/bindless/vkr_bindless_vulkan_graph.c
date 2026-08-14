@@ -9,8 +9,11 @@ vkr_internal void vkr_bindless_vk_graph_noop(VkrRgPassContext *ctx,
 typedef enum VkrBindlessVkGraphExecutorKind {
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_SHADOW = 0,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_PICKING,
+  VKR_BINDLESS_VK_GRAPH_EXECUTOR_PICKING_DEPTH_SEED,
+  VKR_BINDLESS_VK_GRAPH_EXECUTOR_PICKING_RESOLVE,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_PICKING_READBACK,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_IBL_BAKE,
+  VKR_BINDLESS_VK_GRAPH_EXECUTOR_TRANSMISSION_COVERAGE,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_SKYBOX,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_WORLD_OPAQUE,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_FULLSCREEN,
@@ -32,8 +35,11 @@ vkr_global const VkrBindlessVkGraphExecutorSpec
     s_bindless_vk_graph_executors[] = {
         {"pass.shadow.cascade", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.picking", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.picking.depth_seed", VKR_RG_PASS_TYPE_TRANSFER},
+        {"pass.picking.resolve", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.picking.readback", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.ibl_bake", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.transmission.coverage", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.skybox", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.world.opaque", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.copy.pre_transmission.fullscreen", VKR_RG_PASS_TYPE_TRANSFER},
@@ -1115,6 +1121,11 @@ vkr_internal bool8_t vkr_bindless_vk_record_graph_pass(
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_FULLSCREEN:
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_EDITOR:
     return vkr_bindless_vk_record_graph_transfer_pass(renderer, command, pass);
+  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_PICKING_DEPTH_SEED:
+  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_PICKING_RESOLVE:
+  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_TRANSMISSION_COVERAGE:
+    // The deferred Vulkan path is intentionally absent through P15/P16.
+    return false_v;
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_PICKING_READBACK:
     // The one-pixel copy is recorded after capture selection in record_draw().
     return true_v;

@@ -188,26 +188,37 @@ vkr_global const VkrMetalPacketAbiField vkr_gpu_draw_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, compaction_state,
                   "compaction_state", 32),
     VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, visible_rows, "visible_rows", 40),
-    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, draw_root, "draw_root", 48),
-    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, frustum_planes, "frustum_planes",
-                  64),
+    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, draw_roots, "draw_roots", 48),
+    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, views, "views", 56),
     VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, candidate_count, "candidate_count",
-                  160),
+                  64),
     VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, visible_capacity,
-                  "visible_capacity", 164),
-    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, reserved_0, "reserved_0", 168),
-    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, reserved_1, "reserved_1", 172),
-    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, hzb_texture_id, "hzb", 176),
-    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, reserved_2, "reserved_2", 184),
+                  "visible_capacity", 68),
+    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, view_count, "view_count", 72),
+    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, encode_view_index,
+                  "encode_view_index", 76),
+    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, hzb_texture_id, "hzb", 80),
+    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, reserved_2, "reserved_2", 88),
     VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, history_view_projection,
-                  "history_view_projection", 192),
-    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, hzb_extent, "hzb_extent", 256),
+                  "history_view_projection", 96),
+    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, hzb_extent, "hzb_extent", 160),
     VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, hzb_mip_count, "hzb_mip_count",
-                  264),
-    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, hzb_enabled, "hzb_enabled", 268),
+                  168),
+    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, hzb_enabled, "hzb_enabled", 172),
     VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, hzb_depth_epsilon,
-                  "hzb_depth_epsilon", 272),
-    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, reserved_3, "reserved_3", 276),
+                  "hzb_depth_epsilon", 176),
+    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, icb_view_group_size,
+                  "icb_view_group_size", 180),
+    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, reserved_3, "reserved_3", 184),
+};
+
+vkr_global const VkrMetalPacketAbiField vkr_transmission_peel_root_fields[] = {
+    VKR_ABI_FIELD(VkrMetalPacketTransmissionPeelRoot, previous_depth_texture_id,
+                  "previous_depth", 0),
+    VKR_ABI_FIELD(VkrMetalPacketTransmissionPeelRoot, depth_epsilon,
+                  "depth_epsilon", 8),
+    VKR_ABI_FIELD(VkrMetalPacketTransmissionPeelRoot, previous_depth_enabled,
+                  "previous_depth_enabled", 12),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_hzb_build_root_fields[] = {
@@ -324,6 +335,60 @@ vkr_global const VkrMetalPacketAbiField vkr_transmission_shade_root_fields[] = {
                   232),
 };
 
+vkr_global const VkrMetalPacketAbiField
+    vkr_transmission_coverage_root_fields[] = {
+        VKR_ABI_FIELD(VkrMetalPacketTransmissionCoverageRoot,
+                      vbuffer_texture_id, "vbuffer", 0),
+        VKR_ABI_FIELD(VkrMetalPacketTransmissionCoverageRoot, covered_pixels,
+                      "covered_pixels", 8),
+        VKR_ABI_FIELD(VkrMetalPacketTransmissionCoverageRoot, extent, "extent",
+                      16),
+        VKR_ABI_FIELD(VkrMetalPacketTransmissionCoverageRoot, layer, "layer",
+                      24),
+        VKR_ABI_FIELD(VkrMetalPacketTransmissionCoverageRoot, reserved,
+                      "reserved", 28),
+};
+
+vkr_global const VkrMetalPacketAbiField vkr_picking_resolve_root_fields[] = {
+    VKR_ABI_FIELD(VkrMetalPacketPickingResolveRoot, opaque_visible_rows,
+                  "opaque_visible_rows", 0),
+    VKR_ABI_FIELD(VkrMetalPacketPickingResolveRoot, opaque_instances,
+                  "opaque_instances", 8),
+    VKR_ABI_FIELD(VkrMetalPacketPickingResolveRoot, opaque_compaction_state,
+                  "opaque_compaction_state", 16),
+    VKR_ABI_FIELD(VkrMetalPacketPickingResolveRoot, transmission_visible_rows,
+                  "transmission_visible_rows", 24),
+    VKR_ABI_FIELD(VkrMetalPacketPickingResolveRoot, transmission_instances,
+                  "transmission_instances", 32),
+    VKR_ABI_FIELD(VkrMetalPacketPickingResolveRoot,
+                  transmission_compaction_state,
+                  "transmission_compaction_state", 40),
+    VKR_ABI_FIELD(VkrMetalPacketPickingResolveRoot, opaque_vbuffer_texture_id,
+                  "opaque_vbuffer", 48),
+    VKR_ABI_FIELD(VkrMetalPacketPickingResolveRoot, opaque_depth_texture_id,
+                  "opaque_depth", 56),
+    VKR_ABI_FIELD(VkrMetalPacketPickingResolveRoot,
+                  transmission_vbuffer_texture_id, "transmission_vbuffer", 64),
+    VKR_ABI_FIELD(VkrMetalPacketPickingResolveRoot,
+                  transmission_depth_texture_id, "transmission_depth", 72),
+    VKR_ABI_FIELD(VkrMetalPacketPickingResolveRoot, destination_texture_id,
+                  "destination", 80),
+    VKR_ABI_FIELD(VkrMetalPacketPickingResolveRoot, pixel, "pixel", 88),
+    VKR_ABI_FIELD(VkrMetalPacketPickingResolveRoot, extent, "extent", 96),
+    VKR_ABI_FIELD(VkrMetalPacketPickingResolveRoot, opaque_visible_capacity,
+                  "opaque_visible_capacity", 104),
+    VKR_ABI_FIELD(VkrMetalPacketPickingResolveRoot, opaque_instance_count,
+                  "opaque_instance_count", 108),
+    VKR_ABI_FIELD(VkrMetalPacketPickingResolveRoot,
+                  transmission_visible_capacity,
+                  "transmission_visible_capacity", 112),
+    VKR_ABI_FIELD(VkrMetalPacketPickingResolveRoot, transmission_instance_count,
+                  "transmission_instance_count", 116),
+    VKR_ABI_FIELD(VkrMetalPacketPickingResolveRoot, transmission_enabled,
+                  "transmission_enabled", 120),
+    VKR_ABI_FIELD(VkrMetalPacketPickingResolveRoot, reserved, "reserved", 124),
+};
+
 #define VKR_ABI_RECORD(TYPE, SHADER, SIZE, ALIGNMENT, FIELDS)                  \
   {#TYPE,                                                                      \
    SHADER,                                                                     \
@@ -373,8 +438,12 @@ vkr_global const VkrMetalPacketAbiRecord
             VKR_ABI_RECORD(VkrMetalPacketTextRoot, "VkrMetalPacketTextRoot",
                            176, 16, vkr_text_root_fields),
         [VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT] = VKR_ABI_RECORD(
-            VkrMetalPacketGpuDrawRoot, "VkrMetalPacketGpuDrawRoot", 288, 16,
+            VkrMetalPacketGpuDrawRoot, "VkrMetalPacketGpuDrawRoot", 192, 16,
             vkr_gpu_draw_root_fields),
+        [VKR_METAL_PACKET_ABI_TRANSMISSION_PEEL_ROOT] =
+            VKR_ABI_RECORD(VkrMetalPacketTransmissionPeelRoot,
+                           "VkrMetalPacketTransmissionPeelRoot", 16, 16,
+                           vkr_transmission_peel_root_fields),
         [VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketGBufferResolveRoot,
                            "VkrMetalPacketGBufferResolveRoot", 192, 16,
@@ -387,6 +456,14 @@ vkr_global const VkrMetalPacketAbiRecord
             VKR_ABI_RECORD(VkrMetalPacketTransmissionShadeRoot,
                            "VkrMetalPacketTransmissionShadeRoot", 240, 16,
                            vkr_transmission_shade_root_fields),
+        [VKR_METAL_PACKET_ABI_TRANSMISSION_COVERAGE_ROOT] =
+            VKR_ABI_RECORD(VkrMetalPacketTransmissionCoverageRoot,
+                           "VkrMetalPacketTransmissionCoverageRoot", 32, 16,
+                           vkr_transmission_coverage_root_fields),
+        [VKR_METAL_PACKET_ABI_PICKING_RESOLVE_ROOT] =
+            VKR_ABI_RECORD(VkrMetalPacketPickingResolveRoot,
+                           "VkrMetalPacketPickingResolveRoot", 128, 16,
+                           vkr_picking_resolve_root_fields),
         [VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketHzbBuildRoot, "VkrMetalPacketHzbBuildRoot", 48, 16,
             vkr_hzb_build_root_fields),

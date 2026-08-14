@@ -86,10 +86,35 @@ vkr_internal bool8_t vkr_rg_json_parse_condition(
     out_condition->kind = VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING;
   } else if (vkr_string8_equals_cstr_i(&trimmed, "!transmission_pending")) {
     out_condition->kind = VKR_RG_JSON_CONDITION_TRANSMISSION_IDLE;
+  } else if (vkr_string8_equals_cstr_i(
+                 &trimmed, "deferred_enabled && transmission_pending")) {
+    out_condition->kind = VKR_RG_JSON_CONDITION_DEFERRED_TRANSMISSION_PENDING;
+  } else if (vkr_string8_equals_cstr_i(
+                 &trimmed, "deferred_enabled && transmission_pending && "
+                           "timing_enabled")) {
+    out_condition->kind = VKR_RG_JSON_CONDITION_DEFERRED_TRANSMISSION_TIMING;
   } else if (vkr_string8_equals_cstr_i(&trimmed, "picking_pending")) {
     out_condition->kind = VKR_RG_JSON_CONDITION_PICKING_PENDING;
   } else if (vkr_string8_equals_cstr_i(&trimmed, "!picking_pending")) {
     out_condition->kind = VKR_RG_JSON_CONDITION_PICKING_IDLE;
+  } else if (vkr_string8_equals_cstr_i(&trimmed,
+                                       "picking_pending && deferred_enabled")) {
+    out_condition->kind =
+        VKR_RG_JSON_CONDITION_PICKING_PENDING_DEFERRED_ENABLED;
+  } else if (vkr_string8_equals_cstr_i(
+                 &trimmed, "picking_pending && !deferred_enabled")) {
+    out_condition->kind =
+        VKR_RG_JSON_CONDITION_PICKING_PENDING_DEFERRED_DISABLED;
+  } else if (vkr_string8_equals_cstr_i(&trimmed,
+                                       "picking_pending && deferred_enabled && "
+                                       "transmission_pending")) {
+    out_condition->kind =
+        VKR_RG_JSON_CONDITION_PICKING_PENDING_DEFERRED_TRANSMISSION;
+  } else if (vkr_string8_equals_cstr_i(&trimmed,
+                                       "picking_pending && deferred_enabled && "
+                                       "!transmission_pending")) {
+    out_condition->kind =
+        VKR_RG_JSON_CONDITION_PICKING_PENDING_DEFERRED_NO_TRANSMISSION;
   } else {
     return vkr_rg_json_error(ctx, field_path, "unknown condition expression");
   }
@@ -1669,10 +1694,25 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->transmission_pending;
   case VKR_RG_JSON_CONDITION_TRANSMISSION_IDLE:
     return !frame->transmission_pending;
+  case VKR_RG_JSON_CONDITION_DEFERRED_TRANSMISSION_PENDING:
+    return frame->deferred_enabled && frame->transmission_pending;
+  case VKR_RG_JSON_CONDITION_DEFERRED_TRANSMISSION_TIMING:
+    return frame->deferred_enabled && frame->transmission_pending &&
+           frame->timing_enabled;
   case VKR_RG_JSON_CONDITION_PICKING_PENDING:
     return frame->picking_pending;
   case VKR_RG_JSON_CONDITION_PICKING_IDLE:
     return !frame->picking_pending;
+  case VKR_RG_JSON_CONDITION_PICKING_PENDING_DEFERRED_ENABLED:
+    return frame->picking_pending && frame->deferred_enabled;
+  case VKR_RG_JSON_CONDITION_PICKING_PENDING_DEFERRED_DISABLED:
+    return frame->picking_pending && !frame->deferred_enabled;
+  case VKR_RG_JSON_CONDITION_PICKING_PENDING_DEFERRED_TRANSMISSION:
+    return frame->picking_pending && frame->deferred_enabled &&
+           frame->transmission_pending;
+  case VKR_RG_JSON_CONDITION_PICKING_PENDING_DEFERRED_NO_TRANSMISSION:
+    return frame->picking_pending && frame->deferred_enabled &&
+           !frame->transmission_pending;
   default:
     return false_v;
   }
@@ -1768,6 +1808,13 @@ vkr_internal bool8_t vkr_rg_json_resolve_layers(
   if (desc->layers_source.length > 0) {
     if (!frame) {
       return false_v;
+    }
+    if (vkr_string8_equals_cstr_i(&desc->layers_source,
+                                  "shadow_map_layer_count")) {
+      // Allocation capacity must not shrink while early async packets omit
+      // shadow work; active pass repetition uses shadow_cascade_count.
+      *out_layers = Max(frame->shadow_map_layer_count, 1u);
+      return true_v;
     }
     if (vkr_string8_equals_cstr_i(&desc->layers_source,
                                   "shadow_cascade_count")) {

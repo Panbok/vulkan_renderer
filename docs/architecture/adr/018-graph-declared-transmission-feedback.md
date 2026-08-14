@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-04
+updated: 2026-08-14
 authority: adr
 ---
 
@@ -40,9 +40,17 @@ backend image copy; it does not hide barriers or alias sampling with an active
 attachment. Opaque fragment output alpha is one.
 
 The initial transmission shader uses screen-space refraction, Fresnel-weighted
-surface reflection, thickness, and Beer-Lambert attenuation. This is a bounded
-single-layer approximation: it samples the opaque snapshot and does not claim
-order-independent or recursive transmission.
+surface reflection, thickness, and Beer-Lambert attenuation.
+
+ADR-028 P18 fires this ADR's ordered-layer revisit trigger for Metal. The Metal
+graph now owns a fixed four-layer visibility/depth peel and an RGBA16F feedback
+image. Every peel starts from opaque depth and rejects depths already captured
+by the preceding layer. Shading runs layers 3 through 0, alternating between
+the feedback image and scene color so every refractive layer samples an
+immutable background. Four covers the entry/exit surfaces of both closed
+transmissive meshes in the current layered witness; deeper overlap is outside
+the accepted bound. Vulkan retains the original single-layer implementation
+until its ADR-028 P18 parity slice.
 
 ## Consequences
 
@@ -51,9 +59,9 @@ order-independent or recursive transmission.
   cutout routing.
 - The graph owns the extra RGBA16F pre-transmission image and full-resolution
   copy, so synchronization is inspectable and validation-testable.
-- Multiple transmissive layers see the same pre-transmission source. Supporting
-  recursive layers would require a different feedback topology and explicit
-  ordering policy.
+- Metal supports four explicitly ordered transmissive surfaces through the
+  graph-owned ping-pong topology. Vulkan still exposes only the initial
+  pre-transmission source until parity lands.
 - Ordinary blend draws remain after transmission; they do not appear through
   the current refractive source.
 

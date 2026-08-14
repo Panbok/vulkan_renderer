@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "id": "local.p12.metal.transmission.deferred",
+  "id": "local.p16_p17.metal.gpu_validation",
   "suite": "local",
-  "description": "Metal P12 layered transmission with direct opaque/transmission visibility captures.",
+  "description": "Historical minimal Metal ICB residency diagnostic; do not run with shader validation on the affected host.",
   "scene": "assets/scenes/fixtures/layered_glass.scene.json",
-  "seed": 7,
-  "resolution": [960, 720],
+  "seed": 16,
+  "resolution": [320, 240],
   "boot": "full",
   "target": "offscreen",
   "present": "none",
@@ -15,10 +15,11 @@
   "repetitions": 1,
   "repetition_timeout_ms": 120000,
   "asset_ready_timeout_ms": 60000,
-  "frames": { "warmup": 2, "measure": 1 },
+  "frames": { "warmup": 0, "measure": 1 },
   "renderer": {
     "editor": false,
     "skybox": true,
+    "backend": "metal",
     "shadow_preset": "balanced",
     "shadow_cascades": 4,
     "render_mode": "default"
@@ -32,18 +33,11 @@
     "near_plane": 0.1,
     "far_plane": 100
   },
-  "captures": [
-    {
-      "at_frame": 0,
-      "channels": [
-        "final_color",
-        "scene_color",
-        "visibility_ids",
-        "visibility_primitives",
-        "transmission_visibility_ids",
-        "transmission_visibility_primitives",
-        "picking_ids"
-      ]
-    }
+  "captures": [],
+  "assertions": [
+    { "metric": "visibility.gpu_candidates.count", "stat": "min", "min": 1 },
+    { "metric": "visibility.gpu_visible.overflow", "stat": "max", "max": 0 },
+    { "metric": "draw.shadow.cascade0.indirect_commands", "stat": "min", "min": 1 },
+    { "metric": "draw.shadow.cascade3.indirect_commands", "stat": "min", "min": 1 }
   ]
 }

@@ -1,19 +1,26 @@
 ---
 status: partial
-updated: 2026-08-13
+updated: 2026-08-14
 authority: spec
 ---
 
 # GPU-Driven Deferred Visibility-Buffer Renderer
 
 The P0-P3 graph, lifetime, format, shared-ABI, and megabuffer foundations are
-implemented on both backends. Provisional Metal P4, P6, P8, P10, P12, and P14
-slices now ship behind the disabled-by-default `VKR_DEFERRED_ENABLED` selector:
-GPU frustum/HZB culling and four-bucket ICB submission, opaque and transmission
-visibility buffers, compute material resolve and deferred lighting, fused
-single-layer transmission shading, and a completion-gated HZB history ring.
-Vulkan P5/P7/P9/P11/P13/P15 parity and visibility-based picking remain
-proposed. The retained GPU-driven forward path remains available for
+implemented on both backends. Provisional Metal P4, P6, P8, P10, P12, P14,
+P16, P17, and P18 slices now ship behind the disabled-by-default
+`VKR_DEFERRED_ENABLED` selector: GPU frustum/HZB culling and four-bucket ICB
+submission, opaque and transmission visibility buffers, compute material
+resolve and deferred lighting, four-layer depth-peeled transmission shading, a
+completion-gated HZB history ring, requested-pixel visibility picking, and
+camera-plus-cascade multi-view indirect submission. Vulkan
+P5/P7/P9/P11/P13/P15 parity and the Vulkan halves of P16-P18 remain proposed.
+P19 evidence plumbing now publishes completion-gated per-layer transmission
+coverage beside Metal pass timestamps, but the optimization remains unselected
+pending matched Release timing. A minimal serial Debug witness now passes with
+Metal API and shader/GPU validation enabled and publishes valid P19 coverage;
+that diagnostic is correctness evidence only, not performance evidence.
+The retained GPU-driven forward path remains available for
 selector-off comparison and bounded pre-P21 fallback, but does not run beside
 deferred final color. `VKR_HZB_DISABLED=1` is the focused P14 diagnostic
 rollback to frustum-only deferred culling.
@@ -177,10 +184,11 @@ Lighting.Deferred         compute   read/write hdr_pre_transmission;
                                      add lighting or write sky
 HZB.BuildMip.${i}         compute   current depth -> current HZB history slot
 World.FeedbackCopy        transfer  hdr_pre_transmission -> hdr_scene_color
-Transmission.DepthSeed   transfer  opaque depth -> transmission depth
-VBuffer.Transmission      graphics  indirect buckets -> transmission vbuffer/depth
-Transmission.Shade        compute   hdr_pre_transmission + transmission vbuffer
-                                     -> composite hdr_scene_color
+Transmission.DepthSeed.N transfer  opaque depth -> transmission depth layer N
+VBuffer.Transmission.N   graphics  indirect buckets + prior peel depth
+                                     -> transmission vbuffer/depth layer N
+Transmission.Shade.N     compute   back-to-front source + layer N visibility
+                                     -> ping-pong HDR composite
 World.Blend               graphics  unchanged, composites hdr_scene_color
 Post.Tonemap              graphics  unchanged
 UI                        graphics  unchanged
@@ -508,9 +516,14 @@ dispatch arguments. Those buffers require the same capacity, overflow,
 not append the list because they cannot know that they are the final depth
 winners.
 
-Only the frontmost transmissive layer is represented. Existing layered
-transmission cases must demonstrate the delta, and the owner must explicitly
-accept it.
+Metal P18 represents four ordered transmissive surfaces. Each peel begins from
+the opaque depth seed, rejects fragments at or in front of the preceding peel,
+and records the next normal-Z surface in one layer of the graph-owned visibility
+and depth arrays. Four shade passes then composite layers 3 through 0 through a
+separate RGBA16F ping-pong image. The bound covers the entry and exit surfaces
+of the two closed double-sided transmissive meshes in the current layered
+witness. It is a documented fidelity/capacity bound, not an unmeasured claim
+that four layers are free or universally sufficient.
 
 That decision is resolved **before P4**, not at P12, by the spike described in
 §11. It is answerable on the current forward path at negligible cost, and it
@@ -519,8 +532,8 @@ depends on it:
 
 - **Accepted.** Single-layer deferred transmission ships at P12/P13, P18 is
   skipped, and retirement proceeds.
-- **Rejected.** P18 delivers bounded layered transmission (§11) before P20.
-  Retirement still proceeds; it is scheduled work rather than an open blocker.
+- **Rejected.** The owner selected P18; Metal now delivers a provisional
+  four-layer bound. Vulkan parity and P20 acceptance evidence remain open.
 
 In neither case does transmission remain on the legacy forward path at P21.
 Deferring this decision to P12 is what would turn it into a blocker, because by
@@ -698,7 +711,7 @@ is owner-accepted on both backends. Once P21 lands, runtime rollback and
 per-frame rerouting no longer exist; rollback means reverting the retirement
 change in source control and rebuilding.
 
-Implementation status on 2026-08-13: P0, P1, and P2 are implemented and pass
+Implementation status on 2026-08-14: P0, P1, and P2 are implemented and pass
 the cross-platform CPU/build gates. P3 is implemented on both backend code
 paths and passes Metal native growth/API-validation evidence; native Vulkan
 validation and an accepted retained-forward pixel reference are still open
@@ -706,7 +719,13 @@ evidence gates. P4, P6, P8, P10, P12, and P14 are provisionally implemented on
 Metal behind
 `VKR_DEFERRED_ENABLED=1`. Focused Metal API and shader/GPU validation pass with
 34 candidates, 34 visible rows split 28/6/0/0 across the four state buckets,
-zero compaction overflow, and zero rejected material-resolve pixels. The P10
+zero compaction overflow, and zero rejected material-resolve pixels. The Metal
+shader-validation configuration uses two completion slots and one
+262,144-command ICB per camera/cascade view because Apple's validator crashes
+while committing either a larger ICB allocation or more than twelve live ICBs.
+Normal execution retains three completion slots and one five-view ICB per slot;
+both configurations execute the same bounded view-group ABI and command ranges.
+The P10
 slice seeds the graph-owned pre-transmission HDR target with emissive during
 material resolve, then computes directional, punctual, shadow, IBL, ambient,
 and sky lighting into that same target before feedback copy. Direct
@@ -721,9 +740,54 @@ view/projection, render extent, and an opaque-world content epoch invalidate
 history; a fixed normal-Z convention completes the record. The static Sponza
 witness rejects 7 of 34 candidates with zero overflow/invalid resolves and
 produces byte-identical final-color and depth captures to frustum-only deferred
-culling. P5, P7, P9, P11, P13, and P15 Vulkan parity have not started. The
-captures and local Release profiles are non-authoritative until the owner
-accepts a clean matched evidence set.
+culling.
+
+The provisional Metal P16 slice resolves the requested opaque/transmission
+visibility pixel to an object ID on the GPU, seeds feature-picking depth from
+the winning deferred depth, and retains only ordinary blend/world-text/UI-text
+picking raster before the existing completion-gated one-pixel readback. The
+Metal P17 slice classifies one bounded candidate source over the camera and up
+to four cascade views, owns disjoint per-view visible/state/ICB ranges, and
+executes shadow buckets indirectly. Focused forward/deferred captures produce
+byte-identical depth for all four shadow cascades; positive opaque and
+transmission picking witnesses return the same requested-pixel IDs as forward,
+while deferred writes no redundant full-target mesh IDs. CPU opaque/shadow
+lists remain generated for the retained selector-off forward path and Vulkan,
+so full both-backend P17 retirement is not claimed. P5, P7, P9, P11, P13, P15,
+and the Vulkan halves of P16/P17 have not started.
+
+The provisional Metal P18 slice stores four explicit visibility/depth layers,
+peels each layer against the prior normal-Z depth, and shades back-to-front
+through a graph-declared HDR ping-pong target. Layer views share the owning
+per-image allocation and are released only after that allocation's submission
+has completed. The layered fullscreen capture differs from the prior
+single-layer result and focused API validation passed before the host-safety
+incident. The editor graph branch is now reachable on Metal because packet
+`editor_enabled` is copied into the graph frame; its post-fix capture remains
+an open gate. A later minimal serial run passed all four peel/shade stages with
+both `MTL_DEBUG_LAYER=1` and `MTL_SHADER_VALIDATION=1` and no validator
+diagnostic. Metal validation children must remain strictly serial; the earlier
+watchdog incidents still prohibit broad or parallel validation suites.
+
+P19 optimization work has not started because the harness formerly froze its pass catalog from
+the boot graph during scene activation and therefore discarded every
+active-scene CPU and GPU pass row by name mismatch. The catalog handoff is
+repaired and its allocation frame is excluded from sampling. A post-fix serial
+Debug diagnostic now publishes valid coverage samples with both Metal
+validators enabled, but it intentionally provides no performance evidence. The
+harness aborts after a renderer prepare/submit failure and reports child/prewarm
+timeouts instead of silently repeating until the parent deadline. No P19
+optimization is selected without a matched Release measurement; existing
+synchronized/local observations remain non-authoritative. Timing-enabled Metal
+frames now scan the four
+final transmission visibility layers in graph-authored coverage passes ordered
+after `Transmission.Shade.*`, using one atomic accumulation per 8×8
+threadgroup, and publish
+`visibility.transmission.covered_pixels.layer_0` through `layer_3` plus the
+coverage extent only after the owning submit completes. The coverage passes
+therefore do not contaminate `Transmission.Shade.*` timestamps and add no work when
+timing is disabled. These metrics are a selection prerequisite, not a P19
+optimization or performance result.
 
 ### 11.1 P21 complete-retirement contract
 
@@ -806,8 +870,9 @@ fallback counters. Sponza orbit and the existing Bistro static case cover
 different work distributions; neither alone authorizes a general claim.
 
 Debug/API/shader validation runs are diagnostic and separate from baselines and
-performance. `MTL_SHADER_VALIDATION=1` is limited to a minimal reproduction.
-The CPU suite alone is never evidence of legal GPU use.
+performance. Run exactly one validation-enabled Metal renderer process at a
+time; never launch parallel validation children or a broad shader-validation
+suite. The CPU suite alone is never evidence of legal GPU use.
 
 ## 13. Risks, fallbacks, and stop conditions
 
@@ -854,6 +919,7 @@ measurement, including the doubled geometry work, supports it.
 | Earlier megabuffer/MDI proposals | Reconcile or archive only when P3/P5 implementations subsume them |
 | `docs/README.md`, ADR index, this specification, and ADR-028 | Update status/purpose only when the relevant phase ships; P21 must explicitly record that the legacy forward renderer was deleted |
 
-The architecture spec remains the shipping-status authority. This proposal and
-ADR-028 remain `proposed` until implementation evidence supports a status
-change.
+The architecture spec remains the shipping-status authority. This spec and
+ADR-028 remain `partial` while the selector is disabled by default, Vulkan
+parity is absent, the P18 acceptance evidence is incomplete, and P19 remains
+unselected.

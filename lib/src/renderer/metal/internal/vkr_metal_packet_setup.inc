@@ -42,6 +42,8 @@ vkr_metal_packet_create_library(VkrMetalPacketRenderer *renderer,
 
 vkr_internal uint32_t
 vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
+  if (record_id == VKR_METAL_PACKET_ABI_TRANSMISSION_PEEL_ROOT)
+    return 2;
   switch (record_id) {
   case VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT:
   case VKR_METAL_PACKET_ABI_EQUIRECT_ROOT:
@@ -51,6 +53,8 @@ vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
   case VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT:
   case VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT:
   case VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT:
+  case VKR_METAL_PACKET_ABI_TRANSMISSION_COVERAGE_ROOT:
+  case VKR_METAL_PACKET_ABI_PICKING_RESOLVE_ROOT:
   case VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT:
     return 0;
   default:
@@ -246,9 +250,9 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
        !vkr_metal_packet_validate_nested_gpu_abi(
            pipeline_label, root.bufferStructType, "visible_rows",
            VKR_GPU_ABI_VISIBLE_DRAW_ROW) ||
-       !vkr_metal_packet_validate_nested_abi(pipeline_label,
-                                             root.bufferStructType, "draw_root",
-                                             VKR_METAL_PACKET_ABI_DRAW_ROOT)))
+       !vkr_metal_packet_validate_nested_abi(
+           pipeline_label, root.bufferStructType, "draw_roots",
+           VKR_METAL_PACKET_ABI_DRAW_ROOT)))
     return false_v;
   if (record_id == VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT &&
       (!vkr_metal_packet_validate_nested_gpu_abi(
@@ -387,7 +391,7 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       renderer, slang, "vkr_metal_packet_vertex", slang,
       "vkr_metal_packet_shadow_fragment", MTLPixelFormatInvalid, false_v,
       VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_RECORD_COUNT,
-      false_v, @"VKR Metal packet shadow");
+      renderer->deferred_enabled, @"VKR Metal packet shadow");
   renderer->skybox_pipeline = vkr_metal_packet_create_pipeline(
       renderer, fragment, "vkr_metal_packet_skybox_vertex", fragment,
       "vkr_metal_packet_skybox_fragment", MTLPixelFormatRGBA16Float, false_v,
@@ -399,11 +403,32 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_DRAW_ROOT,
       renderer->deferred_enabled, @"VKR Metal packet opaque world");
   if (renderer->deferred_enabled) {
+    renderer->gpu_shadow_pipeline = vkr_metal_packet_create_pipeline(
+        renderer, slang, "vkr_metal_packet_vertex", fragment,
+        "vkr_metal_packet_gpu_shadow_fragment", MTLPixelFormatInvalid, false_v,
+        VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_DRAW_ROOT,
+        true_v, @"VKR Metal packet GPU shadow");
     renderer->vbuffer_pipeline = vkr_metal_packet_create_pipeline(
         renderer, slang, "vkr_metal_packet_vertex", fragment,
         "vkr_metal_packet_vbuffer_fragment", MTLPixelFormatRG32Uint, false_v,
         VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_DRAW_ROOT,
         true_v, @"VKR Metal packet opaque visibility buffer");
+    renderer->transmission_vbuffer_pipeline =
+        vkr_metal_packet_create_pipeline(
+            renderer, slang, "vkr_metal_packet_vertex", fragment,
+            "vkr_metal_packet_transmission_vbuffer_fragment",
+            MTLPixelFormatRG32Uint, false_v,
+            VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+            VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
+            @"VKR Metal packet transmission peel visibility buffer");
+    if (renderer->transmission_vbuffer_pipeline &&
+        !vkr_metal_packet_validate_abi_binding(
+            @"VKR Metal packet transmission peel visibility buffer",
+            renderer->transmission_vbuffer_pipeline.reflection.fragmentBindings,
+            VKR_METAL_PACKET_ABI_TRANSMISSION_PEEL_ROOT)) {
+      [renderer->transmission_vbuffer_pipeline release];
+      renderer->transmission_vbuffer_pipeline = nil;
+    }
   }
   renderer->blend_pipeline = vkr_metal_packet_create_pipeline(
       renderer, slang, "vkr_metal_packet_vertex", fragment,
@@ -486,6 +511,16 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
             renderer, fragment, "vkr_metal_packet_transmission_shade",
             VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT, false_v,
             @"VKR Metal packet transmission shade");
+    renderer->transmission_coverage_pipeline =
+        vkr_metal_packet_create_compute_pipeline(
+            renderer, fragment, "vkr_metal_packet_transmission_coverage",
+            VKR_METAL_PACKET_ABI_TRANSMISSION_COVERAGE_ROOT, false_v,
+            @"VKR Metal packet transmission coverage");
+    renderer->picking_resolve_pipeline =
+        vkr_metal_packet_create_compute_pipeline(
+            renderer, fragment, "vkr_metal_packet_picking_resolve",
+            VKR_METAL_PACKET_ABI_PICKING_RESOLVE_ROOT, false_v,
+            @"VKR Metal packet deferred picking resolve");
     renderer->hzb_build_pipeline = vkr_metal_packet_create_compute_pipeline(
         renderer, fragment, "vkr_metal_packet_hzb_build",
         VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT, false_v,
@@ -501,7 +536,10 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
         !renderer->gbuffer_resolve_pipeline ||
         !renderer->deferred_lighting_pipeline ||
         !renderer->transmission_shade_pipeline ||
-        !renderer->hzb_build_pipeline || !renderer->vbuffer_pipeline ||
+        !renderer->transmission_coverage_pipeline ||
+        !renderer->picking_resolve_pipeline || !renderer->hzb_build_pipeline ||
+        !renderer->gpu_shadow_pipeline || !renderer->vbuffer_pipeline ||
+        !renderer->transmission_vbuffer_pipeline ||
         !renderer->gpu_draw_icb_argument_encoder) {
       log_warn("Metal GPU draw capability unavailable; retaining forward path");
       renderer->deferred_enabled = false_v;
@@ -520,7 +558,7 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       [renderer->device newDepthStencilStateWithDescriptor:depth];
   [depth release];
   MTL4ArgumentTableDescriptor *table = [MTL4ArgumentTableDescriptor new];
-  table.maxBufferBindCount = 2;
+  table.maxBufferBindCount = 3;
   table.initializeBindings = YES;
   NSError *error = nil;
   renderer->argument_table =
@@ -548,6 +586,18 @@ vkr_metal_packet_create_gpu_draw_icbs(VkrMetalPacketRenderer *renderer)
     API_AVAILABLE(macos(26.0)) {
   if (!renderer || !renderer->deferred_enabled)
     return;
+  const char *shader_validation = getenv("MTL_SHADER_VALIDATION");
+  const bool8_t validation_enabled = shader_validation &&
+                                             shader_validation[0] != '\0' &&
+                                             strcmp(shader_validation, "0") != 0
+                                         ? true_v
+                                         : false_v;
+  renderer->gpu_draw_icb_view_group_size =
+      validation_enabled ? 1u : VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX;
+  renderer->gpu_draw_icb_group_count =
+      (VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX +
+       renderer->gpu_draw_icb_view_group_size - 1u) /
+      renderer->gpu_draw_icb_view_group_size;
   MTLIndirectCommandBufferDescriptor *descriptor =
       [MTLIndirectCommandBufferDescriptor new];
   descriptor.commandTypes = MTLIndirectCommandTypeDrawIndexed;
@@ -556,53 +606,83 @@ vkr_metal_packet_create_gpu_draw_icbs(VkrMetalPacketRenderer *renderer)
   descriptor.inheritDepthStencilState = YES;
   descriptor.inheritCullMode = YES;
   descriptor.maxVertexBufferBindCount = 1u;
-  descriptor.maxFragmentBufferBindCount = 2u;
-  id<MTLResidencySet> residency =
-      (id<MTLResidencySet>)vkr_metal_memory_device_residency_set(
-          renderer->memory);
+  descriptor.maxFragmentBufferBindCount = 3u;
+  MTLResidencySetDescriptor *residency_descriptor =
+      [MTLResidencySetDescriptor new];
+  residency_descriptor.label = @"VKR Metal GPU draw indirect commands";
   for (uint32_t i = 0u; i < renderer->command_slot_count; ++i) {
-    id<MTLIndirectCommandBuffer> icb = [renderer->device
-        newIndirectCommandBufferWithDescriptor:descriptor
-                               maxCommandCount:VKR_GPU_DRAW_CANDIDATE_CAPACITY
-                                       options:MTLResourceStorageModePrivate];
-    renderer->command_slots[i].gpu_draw_icb = icb;
-    id<MTLIndirectCommandBuffer> transmission_icb = [renderer->device
-        newIndirectCommandBufferWithDescriptor:descriptor
-                               maxCommandCount:VKR_GPU_DRAW_CANDIDATE_CAPACITY
-                                       options:MTLResourceStorageModePrivate];
-    renderer->command_slots[i].transmission_gpu_draw_icb = transmission_icb;
-    if (icb)
+    VkrMetalPacketCommandSlot *slot = &renderer->command_slots[i];
+    for (uint32_t group = 0u; group < renderer->gpu_draw_icb_group_count;
+         ++group) {
+      residency_descriptor.initialCapacity = group == 0u ? 2u : 1u;
+      NSError *residency_error = nil;
+      id<MTLResidencySet> residency =
+          [renderer->device newResidencySetWithDescriptor:residency_descriptor
+                                                    error:&residency_error];
+      slot->gpu_draw_icb_residencies[group] = residency;
+      if (!residency) {
+        (void)residency_error;
+        renderer->deferred_enabled = false_v;
+        break;
+      }
+      const uint32_t first_view =
+          group * renderer->gpu_draw_icb_view_group_size;
+      const uint32_t group_view_count =
+          MIN(renderer->gpu_draw_icb_view_group_size,
+              VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX - first_view);
+      id<MTLIndirectCommandBuffer> icb = [renderer->device
+          newIndirectCommandBufferWithDescriptor:descriptor
+                                 maxCommandCount:
+                                     VKR_GPU_DRAW_CANDIDATE_CAPACITY *
+                                     group_view_count
+                                         options:MTLResourceStorageModePrivate];
+      slot->gpu_draw_icbs[group] = icb;
+      if (!icb) {
+        renderer->deferred_enabled = false_v;
+        break;
+      }
       [residency addAllocation:icb];
-    if (transmission_icb)
-      [residency addAllocation:transmission_icb];
-    if (!icb || !transmission_icb) {
-      renderer->deferred_enabled = false_v;
-      break;
+      if (group == 0u) {
+        id<MTLIndirectCommandBuffer> transmission_icb = [renderer->device
+            newIndirectCommandBufferWithDescriptor:descriptor
+                                   maxCommandCount:
+                                       VKR_GPU_DRAW_CANDIDATE_CAPACITY
+                                           options:
+                                               MTLResourceStorageModePrivate];
+        slot->transmission_gpu_draw_icb = transmission_icb;
+        if (!transmission_icb) {
+          renderer->deferred_enabled = false_v;
+          break;
+        }
+        [residency addAllocation:transmission_icb];
+      }
+      [residency commit];
+      [residency requestResidency];
+      slot->gpu_draw_icb_residency_count++;
     }
+    if (!renderer->deferred_enabled)
+      break;
   }
   [descriptor release];
-  if (renderer->deferred_enabled) {
-    [residency commit];
-  } else {
+  [residency_descriptor release];
+  if (!renderer->deferred_enabled) {
     log_warn("Metal indirect command buffer capacity unavailable; retaining "
              "forward path");
     for (uint32_t i = 0u; i < renderer->command_slot_count; ++i) {
-      id<MTLIndirectCommandBuffer> icb =
-          renderer->command_slots[i].gpu_draw_icb;
-      if (icb) {
-        [residency removeAllocation:icb];
-        [icb release];
-        renderer->command_slots[i].gpu_draw_icb = nil;
+      VkrMetalPacketCommandSlot *slot = &renderer->command_slots[i];
+      for (uint32_t group = 0u;
+           group < VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX; ++group) {
+        if (group < slot->gpu_draw_icb_residency_count)
+          [slot->gpu_draw_icb_residencies[group] endResidency];
+        [slot->gpu_draw_icbs[group] release];
+        slot->gpu_draw_icbs[group] = nil;
+        [slot->gpu_draw_icb_residencies[group] release];
+        slot->gpu_draw_icb_residencies[group] = nil;
       }
-      id<MTLIndirectCommandBuffer> transmission_icb =
-          renderer->command_slots[i].transmission_gpu_draw_icb;
-      if (transmission_icb) {
-        [residency removeAllocation:transmission_icb];
-        [transmission_icb release];
-        renderer->command_slots[i].transmission_gpu_draw_icb = nil;
-      }
+      [slot->transmission_gpu_draw_icb release];
+      slot->transmission_gpu_draw_icb = nil;
+      slot->gpu_draw_icb_residency_count = 0u;
     }
-    [residency commit];
   }
 }
 

@@ -10,6 +10,7 @@
 enum {
   VKR_METAL_PACKET_ROOT_ALIGNMENT = 256,
   VKR_METAL_PACKET_DRAW_ROOT_STRIDE = 512,
+  VKR_METAL_PACKET_TRANSMISSION_LAYER_COUNT = 4,
 };
 
 /** Converts VKR's column-major matrix for Slang's row-vector MSL lowering. */
@@ -70,6 +71,21 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketDrawRoot {
 
 typedef VkrMetalPacketDrawRoot VkrMetalPacketVertexDrawRoot;
 
+enum {
+  VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX = 5u,
+};
+
+/** One frustum and routing policy in the bounded multi-view cull set. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketGpuDrawView {
+  Vec4 frustum_planes[6];
+  uint32_t required_candidate_flags;
+  uint32_t hzb_enabled;
+  uint32_t reserved[2];
+} VkrMetalPacketGpuDrawView;
+
+_Static_assert(sizeof(VkrMetalPacketGpuDrawView) == 112,
+               "Metal GPU draw view ABI must remain 112 bytes");
+
 /** Shared root for the classify, prefix, and GPU ICB-encoding kernels. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketGpuDrawRoot {
   uint64_t candidates;
@@ -78,12 +94,12 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketGpuDrawRoot {
   uint64_t classifications;
   uint64_t compaction_state;
   uint64_t visible_rows;
-  uint64_t draw_root;
-  Vec4 frustum_planes[6];
+  uint64_t draw_roots;
+  uint64_t views;
   uint32_t candidate_count;
   uint32_t visible_capacity;
-  uint32_t reserved_0;
-  uint32_t reserved_1;
+  uint32_t view_count;
+  uint32_t encode_view_index;
   uint64_t hzb_texture_id;
   uint64_t reserved_2;
   Mat4 history_view_projection;
@@ -91,11 +107,22 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketGpuDrawRoot {
   uint32_t hzb_mip_count;
   uint32_t hzb_enabled;
   float32_t hzb_depth_epsilon;
-  uint32_t reserved_3[3];
+  uint32_t icb_view_group_size;
+  uint32_t reserved_3[2];
 } VkrMetalPacketGpuDrawRoot;
 
-_Static_assert(sizeof(VkrMetalPacketGpuDrawRoot) == 288,
-               "Metal GPU draw root ABI must remain 288 bytes");
+_Static_assert(sizeof(VkrMetalPacketGpuDrawRoot) == 192,
+               "Metal GPU draw root ABI must remain 192 bytes");
+
+/** Per-peel visibility raster state bound outside GPU-encoded draw commands. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketTransmissionPeelRoot {
+  uint64_t previous_depth_texture_id;
+  float32_t depth_epsilon;
+  uint32_t previous_depth_enabled;
+} VkrMetalPacketTransmissionPeelRoot;
+
+_Static_assert(sizeof(VkrMetalPacketTransmissionPeelRoot) == 16,
+               "Metal transmission-peel root ABI must remain 16 bytes");
 
 /** One HZB base/reduction dispatch over explicit source/destination views. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketHzbBuildRoot {
@@ -180,6 +207,56 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketTransmissionShadeRoot {
 
 _Static_assert(sizeof(VkrMetalPacketTransmissionShadeRoot) == 240,
                "Metal transmission-shade root ABI must remain 240 bytes");
+
+/** Metal-only tail stored after transmission draw compaction state. */
+typedef struct VkrMetalPacketTransmissionDiagnostics {
+  VkrGpuDrawCompactionState compaction;
+  uint32_t covered_pixels[VKR_METAL_PACKET_TRANSMISSION_LAYER_COUNT];
+} VkrMetalPacketTransmissionDiagnostics;
+
+_Static_assert(sizeof(VkrMetalPacketTransmissionDiagnostics) == 96,
+               "Metal transmission diagnostics ABI must remain 96 bytes");
+_Static_assert(offsetof(VkrMetalPacketTransmissionDiagnostics,
+                        covered_pixels) == sizeof(VkrGpuDrawCompactionState),
+               "Metal transmission coverage must follow compaction state");
+
+/** Timing-only scan of one transmission visibility layer. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketTransmissionCoverageRoot {
+  uint64_t vbuffer_texture_id;
+  uint64_t covered_pixels;
+  uint32_t extent[2];
+  uint32_t layer;
+  uint32_t reserved;
+} VkrMetalPacketTransmissionCoverageRoot;
+
+_Static_assert(sizeof(VkrMetalPacketTransmissionCoverageRoot) == 32,
+               "Metal transmission-coverage root ABI must remain 32 bytes");
+
+/** Resolves the requested deferred visibility pixel to one object ID. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketPickingResolveRoot {
+  uint64_t opaque_visible_rows;
+  uint64_t opaque_instances;
+  uint64_t opaque_compaction_state;
+  uint64_t transmission_visible_rows;
+  uint64_t transmission_instances;
+  uint64_t transmission_compaction_state;
+  uint64_t opaque_vbuffer_texture_id;
+  uint64_t opaque_depth_texture_id;
+  uint64_t transmission_vbuffer_texture_id;
+  uint64_t transmission_depth_texture_id;
+  uint64_t destination_texture_id;
+  uint32_t pixel[2];
+  uint32_t extent[2];
+  uint32_t opaque_visible_capacity;
+  uint32_t opaque_instance_count;
+  uint32_t transmission_visible_capacity;
+  uint32_t transmission_instance_count;
+  uint32_t transmission_enabled;
+  uint32_t reserved[1];
+} VkrMetalPacketPickingResolveRoot;
+
+_Static_assert(sizeof(VkrMetalPacketPickingResolveRoot) == 128,
+               "Metal picking-resolve root ABI must remain 128 bytes");
 
 /** One upload-ring cell used by the retained table-driven forward path. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketTableDrawUpload {
@@ -271,9 +348,12 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_PREFILTER_ROOT,
   VKR_METAL_PACKET_ABI_TEXT_ROOT,
   VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT,
+  VKR_METAL_PACKET_ABI_TRANSMISSION_PEEL_ROOT,
   VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT,
   VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT,
   VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT,
+  VKR_METAL_PACKET_ABI_TRANSMISSION_COVERAGE_ROOT,
+  VKR_METAL_PACKET_ABI_PICKING_RESOLVE_ROOT,
   VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT,
   VKR_METAL_PACKET_ABI_RECORD_COUNT,
 } VkrMetalPacketAbiRecordId;

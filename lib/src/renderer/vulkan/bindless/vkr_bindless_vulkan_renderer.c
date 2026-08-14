@@ -451,6 +451,7 @@ bool8_t vkr_bindless_vulkan_renderer_prepare_frame(
       },
       .shadow_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
       .shadow_map_size = shadow_map_size,
+      .shadow_map_layer_count = shadow_cascade_count,
       .shadow_cascade_count = shadow_cascade_count,
   };
   return true_v;
@@ -678,6 +679,9 @@ bool8_t vkr_bindless_vulkan_renderer_submit_packet(
       packet->picking && packet->picking->pending;
   renderer->prepared_frame.transmission_pending =
       packet->world && packet->world->transmission_draw_count > 0u;
+  /* P19 coverage is Metal-only; keep authored timing-conditioned passes out
+     of the Vulkan graph until its parity phase. */
+  renderer->prepared_frame.timing_enabled = false_v;
   if (packet->shadow) {
     renderer->prepared_frame.shadow_cascade_count =
         Min(packet->shadow->cascade_count, VKR_SHADOW_CASCADE_COUNT_MAX);

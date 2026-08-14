@@ -172,6 +172,13 @@ typedef struct VkrMetalPacketResult {
   uint32_t transmission_gpu_bucket_counts[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
   uint32_t transmission_gpu_overflow_count;
   uint32_t transmission_gpu_occlusion_culled_count;
+  uint32_t transmission_covered_pixels[4];
+  uint32_t transmission_coverage_extent[2];
+  bool8_t has_transmission_coverage;
+  uint32_t shadow_gpu_visible_count[VKR_SHADOW_CASCADE_COUNT_MAX];
+  uint32_t shadow_gpu_bucket_counts[VKR_SHADOW_CASCADE_COUNT_MAX]
+                                   [VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
+  uint32_t shadow_gpu_overflow_count[VKR_SHADOW_CASCADE_COUNT_MAX];
   bool8_t hzb_history_valid;
   bool8_t has_gpu_draw_diagnostics;
   uint32_t resize_count;

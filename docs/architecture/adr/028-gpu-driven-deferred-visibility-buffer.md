@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-13
+updated: 2026-08-14
 authority: adr
 ---
 
@@ -9,13 +9,24 @@ authority: adr
 ## Status
 
 **Accepted (partial).** P0-P3 foundations ship on both backends. Metal P4, P6,
-P8, P10, P12, and P14 provisionally ship behind `VKR_DEFERRED_ENABLED`:
-GPU-frustum-classified four-bucket ICB submission, opaque visibility raster,
-compute material resolve and lighting, a separate transmission vbuffer/ICB
-stream with fused shading, and conservative completed-history HZB occlusion.
-P5/P7/P9/P11/P13/P15 Vulkan parity and picking integration remain proposed. The
-implementation contract, migration slices, phase status, and evidence gates
-are in
+P8, P10, P12, P14, P16, P17, and P18 provisionally ship behind
+`VKR_DEFERRED_ENABLED`: GPU-frustum-classified four-bucket ICB submission,
+opaque visibility raster, compute material resolve and lighting, a separate
+transmission vbuffer/ICB stream with four-layer depth peeling and fused
+back-to-front shading, conservative
+completed-history HZB occlusion, requested-pixel visibility picking, and
+camera-plus-cascade multi-view indirect submission. P5/P7/P9/P11/P13/P15
+Vulkan parity and the Vulkan halves of P16-P18 remain proposed. P19 has no
+valid post-fix measured trigger and no optimization has started. Metal now
+publishes completion-gated four-layer transmission coverage from timing-only
+graph-authored passes ordered after `Transmission.Shade.*`, so the eventual
+selection can pair coverage with unchanged shade-pass timestamps. The
+minimal serial Debug witness passes with Metal API and shader/GPU validation
+enabled and reports valid four-layer coverage. This is correctness evidence,
+not a measured optimization trigger; no P19 optimization is selected without a
+matched Release comparison. Metal validation processes must remain strictly
+serial. The
+implementation contract, migration slices, phase status, and evidence gates are in
 [deferred-visibility-buffer/SPEC.md](../../rendering/deferred-visibility-buffer/SPEC.md).
 
 ## Context
@@ -122,7 +133,13 @@ The decision is answerable on the current forward renderer by depth-testing
 transmissive draws against each other, so it is scheduled before GPU submission
 work rather than at the transmission phase. If rejected, a bounded N-layer
 depth peel repeats the ADR-018 topology per layer, reusing the graph `repeat`
-mechanism, and ships before deferred becomes the default.
+mechanism, and ships before deferred becomes the default. The owner selected
+the rejection path. Metal P18 fixes the current bound at four ordered surfaces:
+four opaque-depth seeds and peel visibility/depth layers feed four
+back-to-front shade passes through a graph-declared RGBA16F ping-pong target.
+That bound covers entry and exit surfaces for both closed transmissive meshes
+in the current layered witness. It is an explicit capacity/fidelity limit;
+Vulkan parity and P20 budget acceptance remain separate gates.
 
 Depth peeling is chosen over an order-independent accumulation scheme because
 transmission here is not alpha blending: it refracts a background sample with
@@ -197,13 +214,11 @@ decision.
   survive analytic reconstruction for free. A geometric-gradient first version
   is an explicit fidelity delta and needs direct evidence or extra normal-map
   taps.
-- A single transmission visibility buffer represents only the nearest
-  transmissive surface. Existing layered cases and explicit owner acceptance
-  decide whether that is sufficient. Because the decision is scheduled before
-  GPU submission work rather than at the transmission phase, a rejection costs a
-  scheduled peeling phase instead of blocking retirement or stranding twelve
-  phases on an unvalidated assumption.
-- Bounded depth peeling, if required, adds one full transmission
+- Metal no longer relies on a single nearest transmission surface: P18 stores
+  and composites four ordered layers. More than four visible surfaces remain
+  intentionally clipped by the documented bound, and Vulkan still has only
+  the proposed contract.
+- Bounded depth peeling adds one full transmission
   visibility/resolve/feedback iteration per layer. Cost scales linearly with the
   peel bound, so the accepted bound is a measured budget decision and the
   renderer gains a documented maximum transmissive depth rather than unbounded
@@ -224,8 +239,8 @@ decision.
 - ADR-019's bitmask grid, stable light table, exact range/cone rejection, and
   local probe model remain unchanged. This decision does not introduce
   clustered lighting.
-- ADR-018's immutable-source copy remains. It is amended only if deferred
-  transmission ships.
+- ADR-018's immutable-source rule remains and now records the four-layer Metal
+  feedback chain selected by P18.
 - ADR-013 is superseded for opaque/transmission submission only after P21. It
   remains in force for feature-local blend/text/UI submission and for every
   path while this ADR is merely proposed.

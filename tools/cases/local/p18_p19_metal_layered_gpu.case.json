@@ -1,24 +1,24 @@
 {
   "schema_version": 1,
-  "id": "local.p12.metal.transmission.deferred",
+  "id": "local.p18_p19.metal.layered_gpu",
   "suite": "local",
-  "description": "Metal P12 layered transmission with direct opaque/transmission visibility captures.",
+  "description": "Capture-free layered-glass workload for matched Metal P18 peel-bound and P19 GPU timing observations.",
   "scene": "assets/scenes/fixtures/layered_glass.scene.json",
   "seed": 7,
   "resolution": [960, 720],
   "boot": "full",
-  "target": "offscreen",
-  "present": "none",
-  "target_image_count": 3,
-  "cache": "isolated_cold",
+  "target": "windowed_hidden",
+  "present": "immediate",
+  "cache": "isolated_warm",
   "fixed_delta": 0.016666667,
   "repetitions": 1,
   "repetition_timeout_ms": 120000,
   "asset_ready_timeout_ms": 60000,
-  "frames": { "warmup": 2, "measure": 1 },
+  "frames": { "warmup": 30, "measure": 120 },
   "renderer": {
     "editor": false,
     "skybox": true,
+    "backend": "metal",
     "shadow_preset": "balanced",
     "shadow_cascades": 4,
     "render_mode": "default"
@@ -31,19 +31,5 @@
     "vertical_fov_degrees": 60,
     "near_plane": 0.1,
     "far_plane": 100
-  },
-  "captures": [
-    {
-      "at_frame": 0,
-      "channels": [
-        "final_color",
-        "scene_color",
-        "visibility_ids",
-        "visibility_primitives",
-        "transmission_visibility_ids",
-        "transmission_visibility_primitives",
-        "picking_ids"
-      ]
-    }
-  ]
+  }
 }

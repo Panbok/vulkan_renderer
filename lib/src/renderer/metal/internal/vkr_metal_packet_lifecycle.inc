@@ -378,24 +378,20 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
         [renderer->render_passes[i] release];
     }
     if (renderer->command_slots) {
-      id<MTLResidencySet> residency =
-          renderer->memory
-              ? (id<MTLResidencySet>)vkr_metal_memory_device_residency_set(
-                    renderer->memory)
-              : nil;
       for (uint32_t i = 0; i < renderer->command_slot_count; ++i) {
-        if (renderer->command_slots[i].gpu_draw_icb && residency)
-          [residency removeAllocation:renderer->command_slots[i].gpu_draw_icb];
-        [renderer->command_slots[i].gpu_draw_icb release];
-        if (renderer->command_slots[i].transmission_gpu_draw_icb && residency)
-          [residency removeAllocation:renderer->command_slots[i]
-                                          .transmission_gpu_draw_icb];
-        [renderer->command_slots[i].transmission_gpu_draw_icb release];
-        [renderer->command_slots[i].buffer release];
-        [renderer->command_slots[i].allocator release];
-        [renderer->command_slots[i].timestamp_heap release];
+        VkrMetalPacketCommandSlot *slot = &renderer->command_slots[i];
+        for (uint32_t group = 0u;
+             group < VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX; ++group) {
+          if (group < slot->gpu_draw_icb_residency_count)
+            [slot->gpu_draw_icb_residencies[group] endResidency];
+          [slot->gpu_draw_icbs[group] release];
+          [slot->gpu_draw_icb_residencies[group] release];
+        }
+        [slot->transmission_gpu_draw_icb release];
+        [slot->buffer release];
+        [slot->allocator release];
+        [slot->timestamp_heap release];
       }
-      [residency commit];
     }
     if (renderer->samplers) {
       for (uint32_t i = 0; i < renderer->sampler_count; ++i)
@@ -416,10 +412,14 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
     [renderer->gbuffer_resolve_pipeline release];
     [renderer->deferred_lighting_pipeline release];
     [renderer->transmission_shade_pipeline release];
+    [renderer->transmission_coverage_pipeline release];
+    [renderer->picking_resolve_pipeline release];
     [renderer->hzb_build_pipeline release];
     [renderer->gpu_draw_prefix_pipeline release];
     [renderer->gpu_draw_classify_pipeline release];
     [renderer->vbuffer_pipeline release];
+    [renderer->transmission_vbuffer_pipeline release];
+    [renderer->gpu_shadow_pipeline release];
     [renderer->picking_pipeline release];
     [renderer->opaque_pipeline release];
     [renderer->blend_pipeline release];

@@ -33,7 +33,10 @@ enum {
   VKR_METAL_PACKET_MAX_COLOR_ATTACHMENTS = 8,
   VKR_METAL_PACKET_LOADER_SUBMESH_MAX = 4096,
   VKR_METAL_PACKET_MAX_TEXTURE_MIPS = 15,
+  VKR_METAL_PACKET_MAX_TEXTURE_LAYERS = 8,
   VKR_METAL_PACKET_GRAPH_INSTANCE_MAX = 8,
+  VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX =
+      VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX,
   /* Four address modes on three axes, two min/mag filters, one canonical
      non-mipmapped key plus fifteen keys for each mip filter, and anisotropy
      on/off. Samplers remain alive with immutable material rows, so this cache
@@ -65,6 +68,7 @@ vkr_internal Mat4 vkr_metal_packet_clip_matrix(bool8_t convert, Mat4 matrix) {
 typedef struct VkrMetalPacketImageInstance {
   VkrMetalTextureResource resource;
   void *mip_views[VKR_METAL_PACKET_MAX_TEXTURE_MIPS];
+  void *layer_views[VKR_METAL_PACKET_MAX_TEXTURE_LAYERS];
   uint64_t last_use_submit_value;
   uint64_t history_producer_submit_value;
   uint64_t history_world_epoch;
@@ -193,7 +197,10 @@ typedef struct VkrMetalPacketFrameUpload {
   uint64_t ui_instances_gpu;
   uint64_t gpu_draw_instances_gpu;
   uint64_t gpu_draw_geometry_rows_gpu;
+  uint64_t gpu_draw_views_gpu;
+  uint64_t transmission_gpu_draw_view_gpu;
   uint64_t gpu_draw_icb_argument_gpu;
+  uint64_t gpu_draw_icb_argument_stride;
   uint64_t gpu_draw_candidate_source_offset;
   uint64_t gpu_draw_state_zero_source_offset;
   uint64_t gpu_draw_candidate_bytes;
@@ -227,7 +234,10 @@ typedef struct VkrMetalPacketCommandSlot {
   id<MTL4CommandAllocator> allocator;
   id<MTL4CommandBuffer> buffer;
   id<MTL4CounterHeap> timestamp_heap;
-  id<MTLIndirectCommandBuffer> gpu_draw_icb;
+  id<MTLResidencySet>
+      gpu_draw_icb_residencies[VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX];
+  id<MTLIndirectCommandBuffer>
+      gpu_draw_icbs[VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX];
   id<MTLIndirectCommandBuffer> transmission_gpu_draw_icb;
   VkrMetalPacketResult timing_result;
   uint64_t submit_value;
@@ -235,6 +245,10 @@ typedef struct VkrMetalPacketCommandSlot {
   uint32_t timestamp_entry_count;
   bool8_t timing_requested;
   bool8_t timing_collected;
+  const uint8_t *transmission_coverage_readback;
+  uint32_t transmission_coverage_extent[2];
+  bool8_t transmission_coverage_requested;
+  uint32_t gpu_draw_icb_residency_count;
 } VkrMetalPacketCommandSlot;
 
 struct VkrMetalPacketRenderer {
@@ -291,9 +305,11 @@ struct VkrMetalPacketRenderer {
   id<MTL4CounterHeap> timestamp_heap;
   uint64_t timestamp_frequency;
   id<MTLRenderPipelineState> shadow_pipeline;
+  id<MTLRenderPipelineState> gpu_shadow_pipeline;
   id<MTLRenderPipelineState> skybox_pipeline;
   id<MTLRenderPipelineState> opaque_pipeline;
   id<MTLRenderPipelineState> vbuffer_pipeline;
+  id<MTLRenderPipelineState> transmission_vbuffer_pipeline;
   id<MTLRenderPipelineState> blend_pipeline;
   id<MTLRenderPipelineState> overlay_pipeline;
   id<MTLRenderPipelineState> picking_pipeline;
@@ -310,6 +326,8 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> gbuffer_resolve_pipeline;
   id<MTLComputePipelineState> deferred_lighting_pipeline;
   id<MTLComputePipelineState> transmission_shade_pipeline;
+  id<MTLComputePipelineState> transmission_coverage_pipeline;
+  id<MTLComputePipelineState> picking_resolve_pipeline;
   id<MTLComputePipelineState> hzb_build_pipeline;
   id<MTLArgumentEncoder> gpu_draw_icb_argument_encoder;
   id<MTLDepthStencilState> depth_write_state;
@@ -332,6 +350,8 @@ struct VkrMetalPacketRenderer {
   uint32_t sampler_count;
   uint32_t max_draws;
   uint32_t max_instances;
+  uint32_t gpu_draw_icb_view_group_size;
+  uint32_t gpu_draw_icb_group_count;
   uint64_t upload_slot_size;
   uint32_t resize_count;
   VkrMetalPacketTargetKind target_kind;

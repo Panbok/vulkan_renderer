@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "id": "local.p16_p17.metal.deferred",
+  "suite": "local",
+  "description": "Focused Metal GPU picking and multi-view shadow-indirect witness.",
+  "scene": "assets/scenes/fixtures/layered_glass.scene.json",
+  "seed": 16,
+  "resolution": [640, 480],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": { "warmup": 2, "measure": 9 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "backend": "metal",
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [0, 1.4, 5.5],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 60,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "captures": [
+    { "at_frame": 0, "channels": ["final_color"] },
+    { "at_frame": 1, "channels": ["depth"] },
+    { "at_frame": 2, "channels": ["visibility_ids"] },
+    { "at_frame": 3, "channels": ["transmission_visibility_ids"] },
+    { "at_frame": 4, "channels": ["picking_ids"] },
+    { "at_frame": 5, "channels": ["shadow_cascade_0"] },
+    { "at_frame": 6, "channels": ["shadow_cascade_1"] },
+    { "at_frame": 7, "channels": ["shadow_cascade_2"] },
+    { "at_frame": 8, "channels": ["shadow_cascade_3"] }
+  ],
+  "assertions": [
+    { "metric": "visibility.gpu_candidates.count", "stat": "min", "min": 1 },
+    { "metric": "visibility.gpu_visible.overflow", "stat": "max", "max": 0 },
+    { "metric": "draw.shadow.cascade0.indirect_commands", "stat": "min", "min": 1 },
+    { "metric": "draw.shadow.cascade0.indirect_commands", "stat": "max", "max": 3 },
+    { "metric": "draw.shadow.cascade0.indirect_calls", "stat": "min", "min": 1 },
+    { "metric": "draw.shadow.cascade0.indirect_overflow", "stat": "max", "max": 0 },
+    { "metric": "draw.shadow.cascade1.indirect_commands", "stat": "min", "min": 1 },
+    { "metric": "draw.shadow.cascade1.indirect_overflow", "stat": "max", "max": 0 },
+    { "metric": "draw.shadow.cascade2.indirect_commands", "stat": "min", "min": 1 },
+    { "metric": "draw.shadow.cascade2.indirect_overflow", "stat": "max", "max": 0 },
+    { "metric": "draw.shadow.cascade3.indirect_commands", "stat": "min", "min": 1 },
+    { "metric": "draw.shadow.cascade3.indirect_overflow", "stat": "max", "max": 0 }
+  ]
+}

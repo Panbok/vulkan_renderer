@@ -58,6 +58,10 @@ static void test_gpu_world_state_bucket_contract(void) {
          VKR_WORLD_DRAW_STATE_CUTOUT_BACK);
   assert(vkr_world_draw_state_bucket(VKR_MATERIAL_ALPHA_CUTOUT, true_v) ==
          VKR_WORLD_DRAW_STATE_CUTOUT_DOUBLE_SIDED);
+  assert((VKR_WORLD_DRAW_CANDIDATE_BOUNDS_VALID &
+          VKR_WORLD_DRAW_CANDIDATE_CAMERA_OPAQUE) == 0u);
+  assert((VKR_WORLD_DRAW_CANDIDATE_CAMERA_OPAQUE &
+          VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER) == 0u);
   printf("  test_gpu_world_state_bucket_contract PASSED\n");
 }
 

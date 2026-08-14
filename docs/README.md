@@ -109,7 +109,7 @@ owning document status in the same change.
 | [015](architecture/adr/015-metrics-module.md) | implemented | Centralized metrics registry with pre-registered slots |
 | [016](architecture/adr/016-hdr-environment-format.md) | implemented | Equirectangular HDR delivery, cubemap runtime |
 | [017](architecture/adr/017-prepared-specular-glossiness-lowering.md) | implemented | Prepared specular-glossiness lowering with retained dielectric F0/F90 response in the runtime PBR path |
-| [018](architecture/adr/018-graph-declared-transmission-feedback.md) | implemented | Separate opaque, feedback-copy, transmission, and ordinary-blend graph stages |
+| [018](architecture/adr/018-graph-declared-transmission-feedback.md) | implemented | Separate opaque, feedback-copy, transmission, and ordinary-blend stages; Metal P18 adds a four-layer ordered feedback chain |
 | [019](architecture/adr/019-bounded-forward-spatial-lighting.md) | implemented | Stable punctual-light table, fragment-local bitmask grid, and fragment-aware local IBL |
 | [020](architecture/adr/020-bindless-backend-seam.md) | partial | Parallel renderer implementation boundary for the bindless path |
 | [021](architecture/adr/021-metal-first-bindless-backend.md) | implemented | Metal 4 selected on macOS; capability-gated bindless Vulkan selected on Windows |
@@ -118,13 +118,14 @@ owning document status in the same change.
 | [024](architecture/adr/024-shared-bindless-gpu-cores.md) | implemented | Memory, submit-ring, ABI, slot-table, and capture-ring cores have real Metal and Vulkan callers with cross-platform regression witnesses |
 | [025](architecture/adr/025-selected-renderer-implementation-strategy.md) | accepted | One coarse selected renderer strategy for Metal and bindless Vulkan, replacing the backend-type ladder and legacy adaptor |
 | [026](architecture/adr/026-vulkan-1-2-retirement.md) | implemented | Vulkan 1.2 backend, shaders, legacy frontend model, interface, and graph migration residue removed under explicit owner authorization |
-| [028](architecture/adr/028-gpu-driven-deferred-visibility-buffer.md) | partial; Metal P4/P6/P8/P10/P12/P14 implemented | GPU-driven deferred visibility buffer; Metal opaque/transmission visibility, deferred shading, and conservative HZB history ship provisionally, while Vulkan parity and later phases remain proposed |
+| [027](architecture/adr/027-immediate-mode-grid-ui.md) | proposed | Immediate-mode UI over a retained cache, grid-only layout, batched scissored draw list with evidence-gated tile caching, and a composited offscreen editor viewport |
+| [028](architecture/adr/028-gpu-driven-deferred-visibility-buffer.md) | partial; Metal P4/P6/P8/P10/P12/P14/P16/P17/P18 implemented | GPU-driven deferred visibility buffer; Metal adds requested-pixel picking, camera/cascade indirect submission, and four-layer depth-peeled transmission. Vulkan parity and measured P19 selection remain open |
 
 ## Rendering
 
 | Document | Status | Purpose |
 |---|---|---|
-| [deferred-visibility-buffer/SPEC.md](rendering/deferred-visibility-buffer/SPEC.md) | partial; Metal P4/P6/P8/P10/P12/P14 implemented | GPU-driven deferred visibility-buffer design. Metal opaque/transmission visibility, deferred shading, direct captures, and conservative HZB history ship behind a selector; Vulkan parity remains proposed. Rationale in [ADR-028](architecture/adr/028-gpu-driven-deferred-visibility-buffer.md) |
+| [deferred-visibility-buffer/SPEC.md](rendering/deferred-visibility-buffer/SPEC.md) | partial; Metal P4/P6/P8/P10/P12/P14/P16/P17/P18 implemented | GPU-driven deferred visibility-buffer design. Metal opaque visibility, deferred shading, four-layer transmission, visibility picking, multi-view shadow submission, and conservative HZB ship behind a selector; Vulkan parity and P19 remain open. Rationale in [ADR-028](architecture/adr/028-gpu-driven-deferred-visibility-buffer.md) |
 | [render-graph-design.md](rendering/render-graph-design.md) | partial | Access/subresource synchronization implemented; IBL bake coverage remains incomplete |
 | [render-graph-schema.json](rendering/render-graph-schema.json) | — | JSON schema for `assets/render_graphs/*.rendergraph.json` |
 | [stateless_renderer/stateless_renderer_spec.md](rendering/stateless_renderer/stateless_renderer_spec.md) | partial | Packet API design; see ADR-004 for the real boundary |

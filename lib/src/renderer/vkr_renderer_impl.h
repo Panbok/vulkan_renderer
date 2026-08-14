@@ -147,6 +147,9 @@ typedef struct VkrRendererImplSubmitResult {
   uint32_t opaque_draw_count;
   uint32_t transmission_draw_count;
   uint32_t blend_draw_count;
+  uint32_t transmission_covered_pixels[4];
+  uint32_t transmission_coverage_extent[2];
+  bool8_t transmission_coverage_valid;
   VkrCapturePollResult capture;
   VkrRendererImplMemoryMetrics memory;
   VkrRendererImplMaterialMetrics materials;

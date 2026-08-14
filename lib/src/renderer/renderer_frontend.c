@@ -46,6 +46,7 @@ vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
       .opaque_draw_count = source->opaque_draw_count,
       .transmission_draw_count = source->transmission_draw_count,
       .blend_draw_count = source->blend_draw_count,
+      .transmission_coverage_valid = source->has_transmission_coverage,
       .capture = source->capture,
       .materials =
           {
@@ -63,6 +64,12 @@ vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
       .pass_timing_count =
           Min(source->pass_timing_count, VKR_RENDERER_IMPL_MAX_PASS_TIMINGS),
   };
+  MemCopy(destination->transmission_covered_pixels,
+          source->transmission_covered_pixels,
+          sizeof(destination->transmission_covered_pixels));
+  MemCopy(destination->transmission_coverage_extent,
+          source->transmission_coverage_extent,
+          sizeof(destination->transmission_coverage_extent));
   const VkrMetalMemoryMetrics *source_memory = &source->memory.suballocations;
   VkrRendererImplMemoryMetrics *memory = &destination->memory;
 #define VKR_LOWER_MEMORY_FIELD(FIELD) memory->FIELD = source_memory->FIELD
@@ -566,7 +573,8 @@ renderer_impl_metal_initialize(void *state, VkrWindow *window, uint32_t width,
   (void)device_requirements;
   RendererFrontend *renderer = state;
 #if defined(PLATFORM_APPLE)
-  const uint32_t frame_slot_count = 3u;
+  const uint32_t frame_slot_count =
+      vkr_renderer_env_enabled("MTL_SHADER_VALIDATION") ? 2u : 3u;
   const uint32_t capture_capacity = backend_config->capture_ring_capacity > 0
                                         ? backend_config->capture_ring_capacity
                                         : frame_slot_count;
@@ -1977,6 +1985,9 @@ renderer_impl_metal_prepare_frame(void *state, VkrFrameSetup *out_setup) {
           rf->shadow_system.initialized
               ? vkr_shadow_config_get_max_map_size(&rf->shadow_system.config)
               : 2048,
+      .shadow_map_layer_count = rf->shadow_system.initialized
+                                    ? rf->shadow_system.config.cascade_count
+                                    : 1u,
       .shadow_cascade_count = rf->shadow_system.initialized
                                   ? rf->shadow_system.config.cascade_count
                                   : 0,
@@ -2580,8 +2591,26 @@ renderer_impl_metal_submit_packet(void *state, const VkrRenderPacket *packet,
         result.transmission_gpu_occlusion_culled_count;
     rf->frame_metrics.world.gpu_diagnostics_valid = true_v;
   }
-  rf->frame_metrics.shadow.shadow_draw_calls_opaque[0] =
-      result.shadow_draw_count;
+  if (result.has_gpu_draw_diagnostics) {
+    for (uint32_t cascade = 0u; cascade < VKR_SHADOW_CASCADE_COUNT_MAX;
+         ++cascade) {
+      rf->frame_metrics.shadow.shadow_indirect_draws_opaque[cascade] =
+          result.shadow_gpu_visible_count[cascade];
+      uint32_t indirect_calls = 0u;
+      for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
+           ++bucket) {
+        indirect_calls +=
+            result.shadow_gpu_bucket_counts[cascade][bucket] > 0u ? 1u : 0u;
+      }
+      rf->frame_metrics.shadow.shadow_indirect_calls_opaque[cascade] =
+          indirect_calls;
+      rf->frame_metrics.shadow.shadow_indirect_overflow[cascade] =
+          result.shadow_gpu_overflow_count[cascade];
+    }
+  } else {
+    rf->frame_metrics.shadow.shadow_draw_calls_opaque[0] =
+        result.shadow_draw_count;
+  }
   if (out_metrics) {
     *out_metrics = rf->frame_metrics;
   }
