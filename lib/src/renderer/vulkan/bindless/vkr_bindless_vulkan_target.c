@@ -431,8 +431,6 @@ vkr_internal bool8_t vkr_bindless_vk_present_cancelled_frame(
 
 void vkr_bindless_vulkan_renderer_cancel_frame(
     VkrBindlessVulkanRenderer *renderer) {
-  if (!renderer)
-    return;
   VkrBindlessVkFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   const bool8_t submitted =

@@ -115,8 +115,6 @@ vkr_metal_packet_default_material_sampler(VkrMetalPacketRenderer *renderer,
 
 vkr_internal bool8_t vkr_metal_packet_megabuffer_capacity(
     uint64_t current, uint64_t required, uint64_t *out_capacity) {
-  if (!out_capacity || required == 0u)
-    return false_v;
   uint64_t capacity = current ? current : MB(8);
   while (capacity < required) {
     if (capacity > UINT64_MAX / 2u)
@@ -1492,8 +1490,6 @@ vkr_metal_packet_renderer_destroy_texture(VkrMetalPacketRenderer *renderer,
 
 vkr_internal bool8_t vkr_metal_packet_ibl_source(const VkrRenderPacket *packet,
                                                  VkrTextureHandle *out_source) {
-  if (!packet || !out_source)
-    return false_v;
   *out_source = VKR_TEXTURE_HANDLE_INVALID;
   if (packet->lighting && packet->lighting->ibl_source.id != 0) {
     *out_source = packet->lighting->ibl_source;
@@ -1506,7 +1502,7 @@ vkr_internal bool8_t vkr_metal_packet_ibl_source(const VkrRenderPacket *packet,
 vkr_internal bool8_t vkr_metal_packet_ibl_needs_bake(
     const VkrMetalPacketRenderer *renderer, const VkrRenderPacket *packet) {
   VkrTextureHandle source = VKR_TEXTURE_HANDLE_INVALID;
-  if (!renderer || !vkr_metal_packet_ibl_source(packet, &source))
+  if (!vkr_metal_packet_ibl_source(packet, &source))
     return false_v;
   return !renderer->ibl_ready || renderer->ibl_source.id != source.id ||
                  renderer->ibl_source.generation != source.generation
@@ -1538,8 +1534,6 @@ vkr_internal bool8_t vkr_metal_packet_pack_gpu_draw_stream(
     VkrGpuCandidateDrawRow *candidates, VkrGpuGeometryRow *geometry_rows) {
   if (count == 0u)
     return true_v;
-  if (!renderer || !sources || !instances || !candidates || !geometry_rows)
-    return false_v;
   const uint64_t pending_submit = renderer->submit_value + 1u;
   for (uint32_t i = 0u; i < count; ++i) {
     const VkrWorldDrawCandidate *source = &sources[i];
@@ -1551,8 +1545,7 @@ vkr_internal bool8_t vkr_metal_packet_pack_gpu_draw_stream(
         vkr_metal_packet_resolve_mesh(renderer, geometry);
     VkrMetalPacketMaterial *material =
         vkr_metal_packet_resolve_material(renderer, source->material);
-    if (!mesh || !material || source->submesh_index >= mesh->submesh_count ||
-        source->state_bucket >= VKR_WORLD_DRAW_STATE_BUCKET_COUNT)
+    if (!mesh || !material || source->submesh_index >= mesh->submesh_count)
       return false_v;
     const VkrMetalPacketSubmeshCreateInfo *submesh =
         &renderer->submeshes[(uint64_t)(geometry.id - 1u) *
@@ -1606,19 +1599,6 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   const uint32_t world_text_count =
       packet->world ? packet->world->text_draw_count : 0;
   const uint32_t ui_text_count = packet->ui ? packet->ui->text_draw_count : 0;
-  if ((world_count > 0 && !packet->world->instances) ||
-      (shadow_count > 0 && !packet->shadow->instances) ||
-      (picking_count > 0 && !packet->picking->instances) ||
-      (editor_count > 0 && !packet->editor->instances) ||
-      (ui_count > 0 && !packet->ui->instances) ||
-      (gpu_draw_count > 0 && !packet->world->gpu_candidates) ||
-      (transmission_gpu_draw_count > 0 &&
-       !packet->world->transmission_gpu_candidates) ||
-      gpu_draw_count > VKR_GPU_DRAW_CANDIDATE_CAPACITY ||
-      transmission_gpu_draw_count > VKR_GPU_DRAW_CANDIDATE_CAPACITY ||
-      (packet->shadow &&
-       packet->shadow->cascade_count > VKR_SHADOW_CASCADE_COUNT_MAX))
-    return false_v;
   if ((uint64_t)world_text_count + ui_text_count > renderer->max_draws)
     return false_v;
   const uint64_t retained_instance_count = (uint64_t)world_count +
@@ -1873,20 +1853,14 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   uint8_t *cpu = upload->addresses.cpu_address;
   uint64_t gpu = upload->addresses.gpu_address;
   if (world_bytes > 0) {
-    if (!packet->world->instances)
-      return false_v;
     MemCopy(cpu, packet->world->instances, world_bytes);
     upload->world_instances_gpu = gpu;
   }
   if (shadow_bytes > 0) {
-    if (!packet->shadow->instances)
-      return false_v;
     MemCopy(cpu + world_bytes, packet->shadow->instances, shadow_bytes);
     upload->shadow_instances_gpu = gpu + world_bytes;
   }
   if (picking_bytes > 0) {
-    if (!packet->picking->instances)
-      return false_v;
     MemCopy(cpu + world_bytes + shadow_bytes, packet->picking->instances,
             picking_bytes);
     upload->picking_instances_gpu = gpu + world_bytes + shadow_bytes;
@@ -1928,13 +1902,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     MemZero(cpu + transmission_gpu_draw_state_zero_offset,
             transmission_gpu_draw_state_zero_bytes);
     VkrMetalPacketCommandSlot *slot = renderer->active_command_slot;
-    if (!slot || !slot->gpu_draw_icbs[0] ||
-        (transmission_gpu_draw_count > 0u && !slot->transmission_gpu_draw_icb))
-      return false_v;
     if (gpu_draw_count > 0u) {
       for (uint32_t group = 0u; group < gpu_draw_icb_group_count; ++group) {
-        if (!slot->gpu_draw_icbs[group])
-          return false_v;
         [renderer->gpu_draw_icb_argument_encoder
             setArgumentBuffer:upload->buffer
                        offset:upload->slice.offset +

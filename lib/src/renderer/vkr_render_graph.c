@@ -206,55 +206,48 @@ vkr_rg_resource_instance_domain(VkrRgResourceFlags flags) {
 }
 
 void vkr_rg_set_packet(VkrRenderGraph *graph, const VkrRenderPacket *packet) {
-  if (!graph) {
-    return;
-  }
-
   graph->packet = packet;
 }
 
 vkr_internal const VkrRenderPacket *
 vkr_rg_get_packet_from_ctx(const VkrRgPassContext *ctx) {
-  if (!ctx || !ctx->graph) {
-    return NULL;
-  }
   return ctx->graph->packet;
 }
 
 const VkrWorldPassPayload *
 vkr_rg_pass_get_world_payload(const VkrRgPassContext *ctx) {
   const VkrRenderPacket *packet = vkr_rg_get_packet_from_ctx(ctx);
-  return packet ? packet->world : NULL;
+  return packet->world;
 }
 
 const VkrShadowPassPayload *
 vkr_rg_pass_get_shadow_payload(const VkrRgPassContext *ctx) {
   const VkrRenderPacket *packet = vkr_rg_get_packet_from_ctx(ctx);
-  return packet ? packet->shadow : NULL;
+  return packet->shadow;
 }
 
 const VkrSkyboxPassPayload *
 vkr_rg_pass_get_skybox_payload(const VkrRgPassContext *ctx) {
   const VkrRenderPacket *packet = vkr_rg_get_packet_from_ctx(ctx);
-  return packet ? packet->skybox : NULL;
+  return packet->skybox;
 }
 
 const VkrUiPassPayload *
 vkr_rg_pass_get_ui_payload(const VkrRgPassContext *ctx) {
   const VkrRenderPacket *packet = vkr_rg_get_packet_from_ctx(ctx);
-  return packet ? packet->ui : NULL;
+  return packet->ui;
 }
 
 const VkrEditorPassPayload *
 vkr_rg_pass_get_editor_payload(const VkrRgPassContext *ctx) {
   const VkrRenderPacket *packet = vkr_rg_get_packet_from_ctx(ctx);
-  return packet ? packet->editor : NULL;
+  return packet->editor;
 }
 
 const VkrPickingPassPayload *
 vkr_rg_pass_get_picking_payload(const VkrRgPassContext *ctx) {
   const VkrRenderPacket *packet = vkr_rg_get_packet_from_ctx(ctx);
-  return packet ? packet->picking : NULL;
+  return packet->picking;
 }
 
 const VkrRenderPacket *vkr_rg_pass_get_packet(const VkrRgPassContext *ctx) {
@@ -263,13 +256,13 @@ const VkrRenderPacket *vkr_rg_pass_get_packet(const VkrRgPassContext *ctx) {
 
 const VkrFrameInfo *vkr_rg_pass_get_frame_info(const VkrRgPassContext *ctx) {
   const VkrRenderPacket *packet = vkr_rg_get_packet_from_ctx(ctx);
-  return packet ? &packet->frame : NULL;
+  return &packet->frame;
 }
 
 const VkrFrameGlobals *
 vkr_rg_pass_get_frame_globals(const VkrRgPassContext *ctx) {
   const VkrRenderPacket *packet = vkr_rg_get_packet_from_ctx(ctx);
-  return packet ? &packet->globals : NULL;
+  return &packet->globals;
 }
 
 bool8_t vkr_rg_get_resource_stats(const VkrRenderGraph *graph,
@@ -616,11 +609,6 @@ void vkr_rg_destroy(VkrRenderGraph *graph) {
 
 void vkr_rg_begin_frame(VkrRenderGraph *graph,
                         const VkrRenderGraphFrameInfo *frame) {
-  if (!graph || !frame) {
-    log_error("RenderGraph begin frame failed: invalid args");
-    return;
-  }
-
   graph->frame_info = *frame;
   graph->packet = NULL;
 
@@ -657,13 +645,7 @@ void vkr_rg_begin_frame(VkrRenderGraph *graph,
   vkr_rg_clear_compiled(graph);
 }
 
-void vkr_rg_end_frame(VkrRenderGraph *graph) {
-  if (!graph) {
-    return;
-  }
-
-  graph->packet = NULL;
-}
+void vkr_rg_end_frame(VkrRenderGraph *graph) { graph->packet = NULL; }
 
 bool8_t vkr_rg_get_frame_info(const VkrRenderGraph *graph,
                               VkrRenderGraphFrameInfo *out_frame) {

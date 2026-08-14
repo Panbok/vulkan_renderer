@@ -36,8 +36,8 @@ vkr_metal_packet_cache_slot_result(VkrMetalPacketRenderer *renderer,
     MemCopy(slot->pending_result.transmission_coverage_extent,
             slot->transmission_coverage_extent,
             sizeof(slot->pending_result.transmission_coverage_extent));
-    for (uint32_t layer = 0u;
-         layer < VKR_METAL_PACKET_TRANSMISSION_LAYER_COUNT; ++layer) {
+    for (uint32_t layer = 0u; layer < VKR_METAL_PACKET_TRANSMISSION_LAYER_COUNT;
+         ++layer) {
       slot->pending_result.transmission_compact_overflow_count +=
           diagnostics->compact_overflow[layer];
     }
@@ -75,8 +75,6 @@ vkr_metal_packet_find_completed_timing(const VkrMetalPacketRenderer *renderer,
 vkr_internal bool8_t vkr_metal_packet_complete_command_slot(
     VkrMetalPacketRenderer *renderer, VkrMetalPacketCommandSlot *slot,
     bool8_t upload_path) {
-  if (!slot)
-    return false_v;
   const uint64_t wait_value =
       MAX(slot->submit_value, slot->resource_reuse_submit_value);
   if (wait_value == 0)
@@ -110,8 +108,7 @@ vkr_internal bool8_t vkr_metal_packet_complete_command_slot(
 
 vkr_internal bool8_t vkr_metal_packet_acquire_command_slot(
     VkrMetalPacketRenderer *renderer, bool8_t upload_path) {
-  if (!renderer || renderer->active_command_slot ||
-      renderer->command_slot_count == 0)
+  if (renderer->active_command_slot)
     return false_v;
   VkrMetalPacketCommandSlot *slot =
       &renderer->command_slots[renderer->next_command_slot];
@@ -128,8 +125,6 @@ vkr_internal bool8_t vkr_metal_packet_acquire_command_slot(
 
 vkr_internal void vkr_metal_packet_release_unsubmitted_command_slot(
     VkrMetalPacketRenderer *renderer) {
-  if (!renderer || !renderer->active_command_slot)
-    return;
   [renderer->active_command_slot->allocator reset];
   renderer->active_command_slot = NULL;
   renderer->command_allocator = nil;
@@ -167,8 +162,6 @@ vkr_metal_packet_discard_unsubmitted_uses(VkrMetalPacketRenderer *renderer) {
 vkr_internal void
 vkr_metal_packet_finish_frame(VkrMetalPacketRenderer *renderer,
                               bool8_t graph_active, bool8_t submitted) {
-  if (!renderer)
-    return;
   if (!submitted)
     vkr_metal_packet_discard_unsubmitted_uses(renderer);
   if (graph_active)
@@ -185,8 +178,7 @@ vkr_internal bool8_t vkr_metal_packet_begin_upload(
     VkrMetalRingSlice *out_slice, VkrMetalAddressPair *out_upload,
     id<MTLBuffer> *out_buffer, id<MTL4ComputeCommandEncoder> *out_encoder)
     API_AVAILABLE(macos(26.0)) {
-  if (!renderer || size == 0 || !out_slice || !out_upload || !out_buffer ||
-      !out_encoder || !vkr_metal_packet_acquire_command_slot(renderer, true_v))
+  if (!vkr_metal_packet_acquire_command_slot(renderer, true_v))
     return false_v;
   void *buffer = NULL;
   if (vkr_metal_memory_device_acquire_ring(

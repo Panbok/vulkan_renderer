@@ -1050,10 +1050,6 @@ void vkr_renderer_metrics_collect(
   (void)context;
   return;
 #else
-  if (!renderer_metrics || !renderer_metrics->metrics || !context ||
-      !context->renderer || !context->frame_metrics || !context->visibility) {
-    return;
-  }
   VkrMetrics *metrics = renderer_metrics->metrics;
   VkrRendererMetricIds *ids = &renderer_metrics->ids;
   RendererFrontend *renderer = (RendererFrontend *)context->renderer;

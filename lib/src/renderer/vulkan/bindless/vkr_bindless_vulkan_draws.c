@@ -8,8 +8,6 @@ void *vkr_bindless_vk_frame_upload_allocate(VkrBindlessVkFrameSlot *slot,
                                             uint64_t size, uint64_t alignment,
                                             uint64_t *out_address,
                                             uint64_t *out_offset) {
-  if (!slot || !size || !alignment || (alignment & (alignment - 1u)) != 0u)
-    return NULL;
   const uint64_t offset =
       vkr_bindless_vk_align_up(slot->frame_upload_cursor, alignment);
   if (offset > slot->frame_upload.size ||
@@ -34,7 +32,7 @@ vkr_internal bool8_t vkr_bindless_vk_upload_instances(
   *out_address = 0u;
   if (count == 0u)
     return true_v;
-  if (!instances || count > VKR_INSTANCE_BUFFER_MAX_INSTANCES)
+  if (count > VKR_INSTANCE_BUFFER_MAX_INSTANCES)
     return false_v;
   const uint64_t size = (uint64_t)count * sizeof(*instances);
   void *destination = vkr_bindless_vk_frame_upload_allocate(
@@ -226,8 +224,7 @@ vkr_bindless_vk_prepare_packet_uploads(VkrBindlessVulkanRenderer *renderer,
 vkr_internal VkrBindlessVkPublishedGeometry *
 vkr_bindless_vk_resolve_geometry(VkrBindlessVulkanRenderer *renderer,
                                  VkrGeometryHandle handle) {
-  if (!renderer || handle.id == 0u ||
-      handle.id > renderer->config.geometry_capacity)
+  if (handle.id == 0u || handle.id > renderer->config.geometry_capacity)
     return NULL;
   VkrBindlessVkPublishedGeometry *geometry =
       &renderer->published_geometries[handle.id - 1u];
@@ -240,8 +237,7 @@ vkr_bindless_vk_resolve_geometry(VkrBindlessVulkanRenderer *renderer,
 vkr_internal VkrBindlessVkPublishedMaterial *
 vkr_bindless_vk_resolve_material(VkrBindlessVulkanRenderer *renderer,
                                  VkrMaterialHandle handle) {
-  if (!renderer || handle.id == 0u ||
-      handle.id > renderer->config.material_record_capacity)
+  if (handle.id == 0u || handle.id > renderer->config.material_record_capacity)
     return NULL;
   VkrBindlessVkPublishedMaterial *material =
       &renderer->published_materials[handle.id - 1u];
@@ -321,13 +317,11 @@ vkr_internal void vkr_bindless_vk_fill_packet_frame_root(
 bool8_t vkr_bindless_vk_record_packet_draws(
     VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
     VkrBindlessVkPacketPipeline pipeline, const VkrDrawItem *draws,
-    uint32_t draw_count, uint64_t instances, uint32_t instance_count,
-    Mat4 view_projection, bool8_t alpha_cutout, uint32_t shadow_texture,
+    uint32_t draw_count, uint64_t instances, Mat4 view_projection,
+    bool8_t alpha_cutout, uint32_t shadow_texture,
     uint32_t transmission_texture, bool8_t transmission_pass) {
   if (draw_count == 0u)
     return true_v;
-  if (!draws || !instances)
-    return false_v;
   VkrBindlessVkFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   const VkrRenderPacket *packet = renderer->graph->packet;
@@ -352,9 +346,6 @@ bool8_t vkr_bindless_vk_record_packet_draws(
                     renderer->packet_pipelines[pipeline]);
   for (uint32_t i = 0; i < draw_count; ++i) {
     const VkrDrawItem *draw = &draws[i];
-    if (draw->instance_count == 0u || draw->first_instance > instance_count ||
-        draw->instance_count > instance_count - draw->first_instance)
-      return false_v;
     VkrBindlessVkPublishedGeometry *geometry =
         vkr_bindless_vk_resolve_geometry(renderer, draw->geometry);
     VkrBindlessVkPublishedMaterial *material =
@@ -371,19 +362,7 @@ bool8_t vkr_bindless_vk_record_packet_draws(
     if (!geometry || !material ||
         draw->submesh_index >= geometry->submesh_count)
       return false_v;
-    bool8_t material_ready = true_v;
-    for (uint32_t texture_index = 0u;
-         texture_index < ArrayCount(material->texture_record_indices);
-         ++texture_index) {
-      const uint32_t record_index =
-          material->texture_record_indices[texture_index];
-      if (record_index != UINT32_MAX &&
-          renderer->published_textures[record_index].initialization_pending) {
-        material_ready = false_v;
-        break;
-      }
-    }
-    if (!material_ready)
+    if (material->pending_texture_count)
       continue;
     const VkrBindlessVkSubmeshRange *range =
         &geometry->submeshes[draw->submesh_index];
@@ -471,17 +450,12 @@ bool8_t vkr_bindless_vk_record_text_draws(
     uint32_t target_height, bool8_t ui_domain) {
   if (draw_count == 0u)
     return true_v;
-  if (!draws || !target_width || !target_height)
-    return false_v;
   VkrBindlessVkFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     renderer->packet_pipelines[pipeline]);
   for (uint32_t i = 0u; i < draw_count; ++i) {
     const VkrPreparedTextDraw *draw = &draws[i];
-    if (!draw->vertices || !draw->indices || draw->vertex_count == 0u ||
-        draw->index_count == 0u || draw->max_index >= draw->vertex_count)
-      return false_v;
     VkrBindlessVkPublishedTexture *atlas =
         vkr_bindless_vk_published_texture(renderer, draw->atlas, NULL);
     /* Retained text can become visible while its asynchronously loaded atlas

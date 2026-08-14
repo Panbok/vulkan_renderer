@@ -3,8 +3,7 @@
 vkr_internal void *vkr_metal_packet_next_root(VkrMetalPacketFrameUpload *upload,
                                               uint64_t size,
                                               uint64_t *out_gpu_address) {
-  if (!upload || !out_gpu_address || size == 0 ||
-      size > VKR_METAL_PACKET_DRAW_ROOT_STRIDE ||
+  if (size > VKR_METAL_PACKET_DRAW_ROOT_STRIDE ||
       upload->root_cursor >= upload->root_capacity)
     return NULL;
   const uint64_t offset =
@@ -18,7 +17,7 @@ vkr_internal void *vkr_metal_packet_next_root(VkrMetalPacketFrameUpload *upload,
 vkr_internal VkrMetalPacketMesh *
 vkr_metal_packet_resolve_mesh(VkrMetalPacketRenderer *renderer,
                               VkrMeshHandle handle) {
-  if (!renderer || handle.id == 0 || handle.id > renderer->max_meshes)
+  if (handle.id == 0 || handle.id > renderer->max_meshes)
     return NULL;
   VkrMetalPacketMesh *mesh = &renderer->meshes[handle.id - 1];
   return mesh->live && mesh->generation == handle.generation ? mesh : NULL;
@@ -27,7 +26,7 @@ vkr_metal_packet_resolve_mesh(VkrMetalPacketRenderer *renderer,
 vkr_internal VkrMetalPacketMaterial *
 vkr_metal_packet_resolve_material(VkrMetalPacketRenderer *renderer,
                                   VkrMaterialHandle handle) {
-  if (!renderer || handle.id == 0 || handle.id > renderer->max_materials)
+  if (handle.id == 0 || handle.id > renderer->max_materials)
     return NULL;
   VkrMetalPacketMaterial *material = &renderer->packet_materials[handle.id - 1];
   return material->live && material->generation == handle.generation ? material
@@ -37,7 +36,7 @@ vkr_metal_packet_resolve_material(VkrMetalPacketRenderer *renderer,
 vkr_internal VkrMetalPacketTexture *
 vkr_metal_packet_resolve_texture(VkrMetalPacketRenderer *renderer,
                                  VkrTextureHandle handle) {
-  if (!renderer || handle.id == 0 || handle.id > renderer->max_textures)
+  if (handle.id == 0 || handle.id > renderer->max_textures)
     return NULL;
   VkrMetalPacketTexture *texture = &renderer->textures[handle.id - 1];
   return texture->live && texture->generation == handle.generation ? texture
@@ -50,9 +49,6 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
     uint32_t target_width, uint32_t target_height, Mat4 view_projection,
     bool8_t lighting_pass, bool8_t transmission_pass, uint64_t *out_root_gpu,
     uint32_t *out_frame_flags) {
-  if (!renderer || !packet || !upload || !instances_gpu || !out_root_gpu ||
-      !out_frame_flags)
-    return false_v;
   VkrMetalPacketFrameRoot *frame_root =
       vkr_metal_packet_next_root(upload, sizeof(*frame_root), out_root_gpu);
   if (!frame_root)
@@ -107,19 +103,13 @@ vkr_internal bool8_t vkr_metal_packet_encode_draws(
     VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
     id<MTLRenderPipelineState> pipeline, id<MTLDepthStencilState> depth_state,
     const VkrDrawItem *draws, uint32_t draw_count, uint64_t instances_gpu,
-    uint32_t instance_count, uint32_t target_width, uint32_t target_height,
-    Mat4 view_projection, const VkrRenderPacket *packet, bool8_t lighting_pass,
+    uint32_t target_width, uint32_t target_height, Mat4 view_projection,
+    const VkrRenderPacket *packet, bool8_t lighting_pass,
     bool8_t transmission_pass, VkrMetalPacketFrameUpload *upload,
     uint32_t *domain_draw_count, VkrMetalPacketResult *result)
     API_AVAILABLE(macos(26.0)) {
   if (draw_count == 0)
     return true_v;
-  if (!draws || !instances_gpu) {
-    log_error(
-        "Metal draw encoding failed: draws=%p instances_gpu=%llu count=%u",
-        (const void *)draws, (unsigned long long)instances_gpu, draw_count);
-    return false_v;
-  }
   [encoder setViewport:(MTLViewport){0.0, 0.0, target_width, target_height, 0.0,
                                      1.0}];
   MTLCullMode active_cull_mode = MTLCullModeNone;
@@ -139,13 +129,6 @@ vkr_internal bool8_t vkr_metal_packet_encode_draws(
   }
   for (uint32_t i = 0; i < draw_count; ++i) {
     const VkrDrawItem *draw = &draws[i];
-    if (draw->instance_count == 0 || draw->first_instance > instance_count ||
-        draw->instance_count > instance_count - draw->first_instance) {
-      log_error("Metal draw %u instance range invalid: first=%u count=%u "
-                "available=%u",
-                i, draw->first_instance, draw->instance_count, instance_count);
-      return false_v;
-    }
     const VkrMeshHandle geometry = {.id = draw->geometry.id,
                                     .generation = draw->geometry.generation};
     VkrMetalPacketMesh *mesh =
@@ -240,8 +223,6 @@ vkr_internal bool8_t vkr_metal_packet_encode_text_draws(
     API_AVAILABLE(macos(26.0)) {
   if (draw_count == 0)
     return true_v;
-  if (!draws || !upload->text_uploads || !domain_draw_count)
-    return false_v;
   [encoder setViewport:(MTLViewport){0.0, 0.0, target_width, target_height, 0.0,
                                      1.0}];
   [encoder setCullMode:MTLCullModeNone];
@@ -1314,8 +1295,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_pass_body(
             renderer, encoder, renderer->shadow_pipeline,
             renderer->depth_write_state, packet->shadow->opaque_draws,
             packet->shadow->opaque_draw_count, upload->shadow_instances_gpu,
-            packet->shadow->instance_count, (uint32_t)target.width,
-            (uint32_t)target.height,
+            (uint32_t)target.width, (uint32_t)target.height,
             vkr_metal_packet_clip_matrix(
                 renderer->convert_vulkan_clip_y,
                 packet->shadow->light_view_proj[cascade]),
@@ -1326,8 +1306,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_pass_body(
         renderer, encoder, renderer->shadow_pipeline,
         renderer->depth_write_state, packet->shadow->alpha_draws,
         packet->shadow->alpha_draw_count, upload->shadow_instances_gpu,
-        packet->shadow->instance_count, (uint32_t)target.width,
-        (uint32_t)target.height,
+        (uint32_t)target.width, (uint32_t)target.height,
         vkr_metal_packet_clip_matrix(renderer->convert_vulkan_clip_y,
                                      packet->shadow->light_view_proj[cascade]),
         packet, false_v, false_v, upload, &result->shadow_draw_count, result);
@@ -1339,8 +1318,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_pass_body(
         renderer, encoder, renderer->opaque_pipeline,
         renderer->depth_write_state, packet->world->opaque_draws,
         packet->world->opaque_draw_count, upload->world_instances_gpu,
-        packet->world->instance_count, (uint32_t)target.width,
-        (uint32_t)target.height,
+        (uint32_t)target.width, (uint32_t)target.height,
         vkr_metal_packet_clip_matrix(
             renderer->convert_vulkan_clip_y,
             mat4_mul(packet->globals.projection, packet->globals.view)),
@@ -1365,8 +1343,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_pass_body(
         renderer, encoder, renderer->opaque_pipeline,
         renderer->depth_read_state, packet->world->transmission_draws,
         packet->world->transmission_draw_count, upload->world_instances_gpu,
-        packet->world->instance_count, (uint32_t)target.width,
-        (uint32_t)target.height,
+        (uint32_t)target.width, (uint32_t)target.height,
         vkr_metal_packet_clip_matrix(
             renderer->convert_vulkan_clip_y,
             mat4_mul(packet->globals.projection, packet->globals.view)),
@@ -1383,9 +1360,8 @@ vkr_internal bool8_t vkr_metal_packet_encode_pass_body(
             renderer, encoder, renderer->blend_pipeline,
             renderer->depth_read_state, packet->world->transparent_draws,
             packet->world->transparent_draw_count, upload->world_instances_gpu,
-            packet->world->instance_count, (uint32_t)target.width,
-            (uint32_t)target.height, view_projection, packet, true_v, false_v,
-            upload, &result->blend_draw_count, result))
+            (uint32_t)target.width, (uint32_t)target.height, view_projection,
+            packet, true_v, false_v, upload, &result->blend_draw_count, result))
       return false_v;
     return vkr_metal_packet_encode_text_draws(
         renderer, encoder, renderer->world_text_pipeline,
@@ -1409,15 +1385,12 @@ vkr_internal bool8_t vkr_metal_packet_encode_pass_body(
                                     : packet->picking->draw_count;
     const uint64_t instances_gpu =
         deferred ? upload->world_instances_gpu : upload->picking_instances_gpu;
-    const uint32_t instance_count = deferred && packet->world
-                                        ? packet->world->instance_count
-                                        : packet->picking->instance_count;
     if (!vkr_metal_packet_encode_draws(
             renderer, encoder, renderer->picking_pipeline,
             renderer->depth_write_state, draws, draw_count, instances_gpu,
-            instance_count, (uint32_t)target.width, (uint32_t)target.height,
-            view_projection, packet, false_v, false_v, upload,
-            &result->picking_draw_count, result))
+            (uint32_t)target.width, (uint32_t)target.height, view_projection,
+            packet, false_v, false_v, upload, &result->picking_draw_count,
+            result))
       return false_v;
     if (packet->world &&
         !vkr_metal_packet_encode_text_draws(
@@ -1447,9 +1420,9 @@ vkr_internal bool8_t vkr_metal_packet_encode_pass_body(
     return vkr_metal_packet_encode_draws(
         renderer, encoder, renderer->overlay_pipeline, nil,
         packet->editor->draws, packet->editor->draw_count,
-        upload->editor_instances_gpu, packet->editor->instance_count,
-        (uint32_t)target.width, (uint32_t)target.height, mat4_identity(),
-        packet, false_v, false_v, upload, &result->editor_draw_count, result);
+        upload->editor_instances_gpu, (uint32_t)target.width,
+        (uint32_t)target.height, mat4_identity(), packet, false_v, false_v,
+        upload, &result->editor_draw_count, result);
   }
   if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_UI) {
     if (!packet->ui)
@@ -1457,9 +1430,8 @@ vkr_internal bool8_t vkr_metal_packet_encode_pass_body(
     if (!vkr_metal_packet_encode_draws(
             renderer, encoder, renderer->overlay_pipeline, nil,
             packet->ui->draws, packet->ui->draw_count, upload->ui_instances_gpu,
-            packet->ui->instance_count, (uint32_t)target.width,
-            (uint32_t)target.height, mat4_identity(), packet, false_v, false_v,
-            upload, &result->ui_draw_count, result))
+            (uint32_t)target.width, (uint32_t)target.height, mat4_identity(),
+            packet, false_v, false_v, upload, &result->ui_draw_count, result))
       return false_v;
     return vkr_metal_packet_encode_text_draws(
         renderer, encoder, renderer->ui_text_pipeline, nil,
@@ -1474,9 +1446,8 @@ vkr_internal bool8_t vkr_metal_packet_encode_pass_body(
 bool8_t vkr_metal_packet_renderer_prepare_frame(
     VkrMetalPacketRenderer *renderer,
     const VkrRenderGraphFrameInfo *frame_info) {
-  if (!renderer || !frame_info || frame_info->target_width == 0 ||
-      frame_info->target_height == 0 || frame_info->viewport_width == 0 ||
-      frame_info->viewport_height == 0 || renderer->frame_prepared)
+  if (frame_info->target_width == 0 || frame_info->target_height == 0 ||
+      frame_info->viewport_width == 0 || frame_info->viewport_height == 0)
     return false_v;
   [renderer->drawable release];
   renderer->drawable = nil;
@@ -1509,19 +1480,6 @@ bool8_t
 vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
                                         const VkrRenderPacket *packet,
                                         VkrMetalPacketResult *out_result) {
-  if (!renderer || !packet || !out_result || !renderer->frame_prepared)
-    return false_v;
-  if (packet->packet_version != VKR_RENDER_PACKET_VERSION ||
-      !vkr_metal_packet_lighting_valid(packet->lighting) ||
-      (packet->world &&
-       !vkr_metal_packet_text_draws_valid(packet->world->text_draws,
-                                          packet->world->text_draw_count)) ||
-      (packet->ui &&
-       !vkr_metal_packet_text_draws_valid(packet->ui->text_draws,
-                                          packet->ui->text_draw_count))) {
-    vkr_metal_packet_finish_frame(renderer, false_v, false_v);
-    return false_v;
-  }
   if (!@available(macOS 26.0, *)) {
     vkr_metal_packet_finish_frame(renderer, false_v, false_v);
     return false_v;
@@ -1534,7 +1492,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
       packet->picking && packet->picking->pending;
   renderer->prepared_frame.editor_enabled = packet->frame.editor_enabled;
   const VkrDeferredEligibility deferred_eligibility =
-      vkr_render_packet_deferred_eligibility(packet);
+      vkr_render_packet_deferred_eligibility_unchecked(packet);
   renderer->prepared_frame.deferred_enabled =
       renderer->deferred_enabled && deferred_eligibility.has_deferred_work &&
               deferred_eligibility.fallback_reasons == 0u

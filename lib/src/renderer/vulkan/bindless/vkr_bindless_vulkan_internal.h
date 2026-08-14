@@ -623,6 +623,7 @@ typedef struct VkrBindlessVkPublishedMaterial {
   VkrMaterialAlphaMode alpha_mode;
   bool8_t double_sided;
   uint32_t texture_record_indices[4];
+  uint8_t pending_texture_count;
   bool8_t live;
 } VkrBindlessVkPublishedMaterial;
 
@@ -850,8 +851,8 @@ bool8_t vkr_bindless_vk_record_ibl_bakes(VkrBindlessVulkanRenderer *renderer,
 bool8_t vkr_bindless_vk_record_packet_draws(
     VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
     VkrBindlessVkPacketPipeline pipeline, const VkrDrawItem *draws,
-    uint32_t draw_count, uint64_t instances, uint32_t instance_count,
-    Mat4 view_projection, bool8_t alpha_cutout, uint32_t shadow_texture,
+    uint32_t draw_count, uint64_t instances, Mat4 view_projection,
+    bool8_t alpha_cutout, uint32_t shadow_texture,
     uint32_t transmission_texture, bool8_t transmission_pass);
 bool8_t vkr_bindless_vk_record_packet_fullscreen(
     VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,

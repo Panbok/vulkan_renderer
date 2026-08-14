@@ -91,8 +91,6 @@ bool8_t vkr_metal_packet_renderer_wait_idle(VkrMetalPacketRenderer *renderer) {
 
 bool8_t
 vkr_metal_packet_renderer_cancel_frame(VkrMetalPacketRenderer *renderer) {
-  if (!renderer || !renderer->frame_prepared)
-    return false_v;
   if (@available(macOS 26.0, *)) {
     vkr_metal_packet_finish_frame(renderer, false_v, false_v);
     return true_v;

@@ -841,8 +841,8 @@ vkr_internal bool8_t vkr_bindless_vk_record_graphics_body(
     if (!vkr_bindless_vk_record_packet_draws(
             renderer, command, VKR_BINDLESS_VK_PACKET_PIPELINE_SHADOW,
             packet->shadow->opaque_draws, packet->shadow->opaque_draw_count,
-            slot->shadow_instances, packet->shadow->instance_count,
-            packet->shadow->light_view_proj[cascade], false_v, 0u, 0u, false_v))
+            slot->shadow_instances, packet->shadow->light_view_proj[cascade],
+            false_v, 0u, 0u, false_v))
       return false_v;
     slot->shadow_opaque_draw_count[cascade] =
         slot->shadow_draw_count - opaque_draw_begin;
@@ -850,8 +850,8 @@ vkr_internal bool8_t vkr_bindless_vk_record_graphics_body(
     if (!vkr_bindless_vk_record_packet_draws(
             renderer, command, VKR_BINDLESS_VK_PACKET_PIPELINE_SHADOW,
             packet->shadow->alpha_draws, packet->shadow->alpha_draw_count,
-            slot->shadow_instances, packet->shadow->instance_count,
-            packet->shadow->light_view_proj[cascade], true_v, 0u, 0u, false_v))
+            slot->shadow_instances, packet->shadow->light_view_proj[cascade],
+            true_v, 0u, 0u, false_v))
       return false_v;
     slot->shadow_alpha_draw_count[cascade] =
         slot->shadow_draw_count - alpha_draw_begin;
@@ -865,8 +865,8 @@ vkr_internal bool8_t vkr_bindless_vk_record_graphics_body(
     return vkr_bindless_vk_record_packet_draws(
                renderer, command, VKR_BINDLESS_VK_PACKET_PIPELINE_PICKING,
                packet->picking->draws, packet->picking->draw_count,
-               slot->picking_instances, packet->picking->instance_count,
-               view_projection, false_v, 0u, 0u, false_v) &&
+               slot->picking_instances, view_projection, false_v, 0u, 0u,
+               false_v) &&
            (!packet->world ||
             vkr_bindless_vk_record_text_draws(
                 renderer, command, VKR_BINDLESS_VK_PACKET_PIPELINE_PICKING_TEXT,
@@ -891,7 +891,7 @@ vkr_internal bool8_t vkr_bindless_vk_record_graphics_body(
     return vkr_bindless_vk_record_packet_draws(
         renderer, command, VKR_BINDLESS_VK_PACKET_PIPELINE_WORLD_OPAQUE,
         packet->world->opaque_draws, packet->world->opaque_draw_count,
-        slot->world_instances, packet->world->instance_count,
+        slot->world_instances,
         mat4_mul(packet->globals.projection, packet->globals.view), false_v,
         shadow_texture, 0u, false_v);
   }
@@ -910,7 +910,6 @@ vkr_internal bool8_t vkr_bindless_vk_record_graphics_body(
         renderer, command, VKR_BINDLESS_VK_PACKET_PIPELINE_WORLD_BLEND,
         packet->world->transmission_draws,
         packet->world->transmission_draw_count, slot->world_instances,
-        packet->world->instance_count,
         mat4_mul(packet->globals.projection, packet->globals.view), false_v,
         shadow_texture, transmission_texture, true_v);
   }
@@ -928,8 +927,7 @@ vkr_internal bool8_t vkr_bindless_vk_record_graphics_body(
                renderer, command, VKR_BINDLESS_VK_PACKET_PIPELINE_WORLD_BLEND,
                packet->world->transparent_draws,
                packet->world->transparent_draw_count, slot->world_instances,
-               packet->world->instance_count, view_projection, false_v,
-               shadow_texture, 0u, false_v) &&
+               view_projection, false_v, shadow_texture, 0u, false_v) &&
            vkr_bindless_vk_record_text_draws(
                renderer, command, VKR_BINDLESS_VK_PACKET_PIPELINE_WORLD_TEXT,
                packet->world->text_draws, packet->world->text_draw_count,
@@ -949,8 +947,8 @@ vkr_internal bool8_t vkr_bindless_vk_record_graphics_body(
            vkr_bindless_vk_record_packet_draws(
                renderer, command, VKR_BINDLESS_VK_PACKET_PIPELINE_UI,
                packet->editor->draws, packet->editor->draw_count,
-               slot->editor_instances, packet->editor->instance_count,
-               mat4_identity(), false_v, 0u, 0u, false_v);
+               slot->editor_instances, mat4_identity(), false_v, 0u, 0u,
+               false_v);
   }
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_TONEMAP: {
     uint32_t texture_index = 0u;
@@ -970,8 +968,7 @@ vkr_internal bool8_t vkr_bindless_vk_record_graphics_body(
     return vkr_bindless_vk_record_packet_draws(
                renderer, command, VKR_BINDLESS_VK_PACKET_PIPELINE_UI,
                packet->ui->draws, packet->ui->draw_count, slot->ui_instances,
-               packet->ui->instance_count, mat4_identity(), false_v, 0u, 0u,
-               false_v) &&
+               mat4_identity(), false_v, 0u, 0u, false_v) &&
            vkr_bindless_vk_record_text_draws(
                renderer, command, VKR_BINDLESS_VK_PACKET_PIPELINE_UI_TEXT,
                packet->ui->text_draws, packet->ui->text_draw_count,

@@ -85,6 +85,30 @@ vkr_internal void vkr_bindless_vk_release_texture_initialization(
   MemZero(initialization, sizeof(*initialization));
 }
 
+vkr_internal uint8_t vkr_bindless_vk_material_pending_texture_count(
+    const VkrBindlessVulkanRenderer *renderer,
+    const VkrBindlessVkPublishedMaterial *material) {
+  uint8_t pending = 0u;
+  for (uint32_t i = 0u; i < ArrayCount(material->texture_record_indices); ++i) {
+    const uint32_t texture_index = material->texture_record_indices[i];
+    if (texture_index != UINT32_MAX &&
+        renderer->published_textures[texture_index].initialization_pending)
+      pending++;
+  }
+  return pending;
+}
+
+vkr_internal void vkr_bindless_vk_refresh_material_texture_readiness(
+    VkrBindlessVulkanRenderer *renderer) {
+  for (uint32_t i = 0u; i < renderer->config.material_record_capacity; ++i) {
+    VkrBindlessVkPublishedMaterial *material =
+        &renderer->published_materials[i];
+    if (material->live)
+      material->pending_texture_count =
+          vkr_bindless_vk_material_pending_texture_count(renderer, material);
+  }
+}
+
 vkr_internal bool8_t vkr_bindless_vk_enqueue_texture_initialization(
     VkrBindlessVulkanRenderer *renderer,
     const VkrBindlessVkPendingTextureInitialization *initialization) {
@@ -785,6 +809,7 @@ bool8_t vkr_bindless_vk_commit_texture_initializations(
     return false_v;
 
   uint32_t write_index = 0u;
+  bool8_t readiness_changed = false_v;
   const uint32_t pending_count = renderer->pending_texture_initialization_count;
   for (uint32_t read_index = 0; read_index < pending_count; ++read_index) {
     VkrBindlessVkPendingTextureInitialization *initialization =
@@ -810,6 +835,7 @@ bool8_t vkr_bindless_vk_commit_texture_initializations(
         initialization->next_batch == initialization->batch_count;
     if (completed) {
       texture->initialization_pending = false_v;
+      readiness_changed = true_v;
       vkr_bindless_vk_release_texture_initialization(renderer, initialization);
       continue;
     }
@@ -823,11 +849,15 @@ bool8_t vkr_bindless_vk_commit_texture_initializations(
     MemZero(&renderer->pending_texture_initializations[i],
             sizeof(renderer->pending_texture_initializations[i]));
   renderer->pending_texture_initialization_count = write_index;
+  if (readiness_changed)
+    vkr_bindless_vk_refresh_material_texture_readiness(renderer);
   return true_v;
 }
 
 void vkr_bindless_vk_discard_texture_initializations(
     VkrBindlessVulkanRenderer *renderer) {
+  const bool8_t readiness_changed =
+      renderer->pending_texture_initialization_count > 0u;
   for (uint32_t i = 0; i < renderer->pending_texture_initialization_count;
        ++i) {
     VkrBindlessVkPendingTextureInitialization *initialization =
@@ -841,6 +871,8 @@ void vkr_bindless_vk_discard_texture_initializations(
     vkr_bindless_vk_release_texture_initialization(renderer, initialization);
   }
   renderer->pending_texture_initialization_count = 0u;
+  if (readiness_changed)
+    vkr_bindless_vk_refresh_material_texture_readiness(renderer);
 }
 
 vkr_internal void vkr_bindless_vk_cancel_texture_initialization(
@@ -869,8 +901,10 @@ vkr_internal void vkr_bindless_vk_cancel_texture_initialization(
   renderer->pending_texture_initialization_count = write_index;
   VkrBindlessVkPublishedTexture *texture =
       vkr_bindless_vk_texture_publication(renderer, texture_handle);
-  if (texture)
+  if (texture) {
     texture->initialization_pending = false_v;
+    vkr_bindless_vk_refresh_material_texture_readiness(renderer);
+  }
 }
 
 bool8_t vkr_bindless_vk_publish_sampled_view(
@@ -2337,6 +2371,8 @@ vkr_internal bool8_t vkr_bindless_vk_asset_publish_material(
   };
   MemCopy(record->texture_record_indices, texture_record_indices,
           sizeof(record->texture_record_indices));
+  record->pending_texture_count =
+      vkr_bindless_vk_material_pending_texture_count(renderer, record);
   return true_v;
 }
 

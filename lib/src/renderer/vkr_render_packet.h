@@ -330,11 +330,9 @@ typedef struct VkrDeferredEligibility {
 } VkrDeferredEligibility;
 
 static INLINE VkrDeferredEligibility
-vkr_render_packet_deferred_eligibility(const VkrRenderPacket *packet) {
+vkr_render_packet_deferred_eligibility_unchecked(
+    const VkrRenderPacket *packet) {
   VkrDeferredEligibility result = {0};
-  if (!packet)
-    return result;
-
   const VkrWorldPassPayload *world = packet->world;
   const uint32_t opaque_candidates = world ? world->gpu_candidate_count : 0u;
   const uint32_t transmission_candidates =
@@ -377,6 +375,12 @@ vkr_render_packet_deferred_eligibility(const VkrRenderPacket *packet) {
       transmission_candidates < transmission_draws)
     result.fallback_reasons |= VKR_DEFERRED_FALLBACK_TRANSMISSION_INPUT;
   return result;
+}
+
+static INLINE VkrDeferredEligibility
+vkr_render_packet_deferred_eligibility(const VkrRenderPacket *packet) {
+  return packet ? vkr_render_packet_deferred_eligibility_unchecked(packet)
+                : (VkrDeferredEligibility){0};
 }
 
 /** Whether the packet contains representable deferred work with no fallback. */

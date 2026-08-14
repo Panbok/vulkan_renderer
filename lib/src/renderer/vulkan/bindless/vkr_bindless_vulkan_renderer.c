@@ -294,9 +294,7 @@ bool8_t vkr_bindless_vulkan_renderer_prepare_frame(
     VkrBindlessVulkanRenderer *renderer, uint64_t source_frame_index,
     uint32_t shadow_map_size, uint32_t shadow_cascade_count,
     VkrFrameSetup *out_setup) {
-  if (!renderer || !out_setup || renderer->frame_active ||
-      renderer->terminal_failure || !shadow_map_size ||
-      shadow_cascade_count > VKR_SHADOW_CASCADE_COUNT_MAX) {
+  if (renderer->terminal_failure) {
     return false_v;
   }
   uint64_t completed = vkr_bindless_vk_refresh_completed(renderer);
@@ -672,9 +670,6 @@ vkr_internal bool8_t vkr_bindless_vk_fail_after_submit(
 bool8_t vkr_bindless_vulkan_renderer_submit_packet(
     VkrBindlessVulkanRenderer *renderer, const VkrRenderPacket *packet,
     VkrBindlessVulkanResult *out_result) {
-  if (!renderer || !packet || !renderer->frame_active) {
-    return false_v;
-  }
   renderer->prepared_frame.picking_pending =
       packet->picking && packet->picking->pending;
   renderer->prepared_frame.transmission_pending =
