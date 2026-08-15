@@ -1,0 +1,24 @@
+VkrBindlessVertexOutput packet_vertex_impl(uint vertex_id, uint instance_id,
+                                            float4x4 view_projection)
+{
+    VkrBindlessPacketDrawRoot* draw = g_push.root;
+    VkrBindlessPacketFrameRoot* frame = draw.frame;
+    VkrGpuVisibleDrawRow visible = draw.visible_rows[draw.visible_row_index];
+    VkrGpuGeometryRow geometry = draw.geometry_rows[visible.geometry_index];
+    VkrBindlessVertex vertex = draw.vertices[geometry.first_vertex + vertex_id];
+    VkrBindlessInstance instance =
+        frame.instances[visible.instance_index + instance_id];
+    float4 world = mul(instance.model, float4(vertex.position, 1.0f));
+    VkrBindlessVertexOutput output;
+    output.position = mul(view_projection, world);
+    output.uv = vertex.texcoord;
+    output.color = vertex.color;
+    output.world_position = world.xyz;
+    output.world_normal = normalize(mul(instance.model,
+                                        float4(vertex.normal, 0.0f)).xyz);
+    output.world_tangent = float4(
+        normalize(mul(instance.model, float4(vertex.tangent.xyz, 0.0f)).xyz),
+        vertex.tangent.w);
+    output.object_id = instance.object_id;
+    return output;
+}

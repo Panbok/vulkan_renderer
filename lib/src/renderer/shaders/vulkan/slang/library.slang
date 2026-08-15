@@ -1,0 +1,13 @@
+#include "common/resources.slangh"
+#include "ibl/common.slangh"
+#include "common/vertex.slangh"
+#include "post/tonemap.slangh"
+
+#include "ibl/default.slang"
+#include "world/default.slang"
+#include "shadow/default.slang"
+#include "picking/default.slang"
+#include "common/fullscreen.slang"
+#include "post/default.slang"
+#include "skybox/default.slang"
+#include "text/default.slang"

@@ -1,0 +1,218 @@
+struct VkrBindlessVertex
+{
+    float3 position;
+    float3 normal;
+    float2 texcoord;
+    float4 color;
+    float4 tangent;
+};
+
+struct VkrBindlessInstance
+{
+    float4x4 model;
+    uint object_id;
+    uint3 reserved;
+};
+
+struct VkrBindlessMaterial
+{
+    float4 tint;
+    uint base_color_texture;
+    uint normal_texture;
+    uint orm_texture;
+    uint emissive_texture;
+    uint base_color_sampler;
+    uint normal_sampler;
+    uint orm_sampler;
+    uint emissive_sampler;
+    uint material_id;
+    uint flags;
+    uint alpha_mode;
+    uint reserved;
+    float4 material_emissive;
+    float4 material_dielectric_specular;
+    float4 material_surface;
+    float4 material_alpha;
+    float4 material_attenuation_color;
+};
+
+struct VkrBindlessShadowCascade
+{
+    float4x4 light_view_projection;
+    float4 split_depth;
+};
+
+struct VkrBindlessIblProbe
+{
+    uint irradiance_texture;
+    uint irradiance_sampler;
+    uint prefilter_texture;
+    uint prefilter_sampler;
+    float4 center_blend;
+    float4 extents_weight;
+    float4 intensity_box;
+};
+
+struct VkrBindlessPacketFrameRoot
+{
+    VkrBindlessInstance* instances;
+    uint2 instance_address_padding;
+    float4x4 view_projection;
+    VkrBindlessMaterial* materials;
+    uint irradiance_texture;
+    uint irradiance_sampler;
+    uint prefilter_texture;
+    uint prefilter_sampler;
+    // Retired; the environment BRDF is analytic. Explicit padding.
+    uint reserved_brdf_texture;
+    uint reserved_brdf_sampler;
+    uint shadow_texture;
+    uint shadow_sampler;
+    uint transmission_texture;
+    uint transmission_sampler;
+    float4 view_position;
+    uint prefilter_mip_count;
+    uint flags;
+    uint2 reserved_0;
+    float4 ibl_controls;
+    float4 directional_direction_enabled;
+    float4 directional_color_intensity;
+    float4 ambient_color;
+    uint render_mode;
+    uint3 reserved_1;
+    float4* point_light_data;
+    uint4* point_light_masks;
+    float4 point_light_grid_origin_cell_size;
+    uint4 point_light_grid_dimensions_count;
+    uint4 point_light_global_mask;
+    uint point_light_count;
+    uint3 point_light_reserved;
+    VkrBindlessShadowCascade* shadow_cascades;
+    uint2 shadow_address_padding;
+    float4x4 view;
+    uint shadow_cascade_count;
+    float shadow_bias;
+    uint2 shadow_reserved;
+    VkrBindlessIblProbe* ibl_probes;
+    uint ibl_probe_count;
+    uint ibl_probe_reserved;
+};
+
+#include "../../../shared/gpu_draw.slangh"
+
+struct VkrBindlessPacketDrawRoot
+{
+    VkrGpuGeometryRow* geometry_rows;
+    VkrGpuVisibleDrawRow* visible_rows;
+    VkrBindlessVertex* vertices;
+    VkrBindlessPacketFrameRoot* frame;
+    uint visible_row_index;
+    uint flags;
+    uint2 reserved;
+};
+
+struct VkrBindlessPacketUtilityRoot
+{
+    VkrBindlessVertex* vertices;
+    VkrBindlessInstance* instances;
+    float4x4 view_projection;
+    VkrBindlessMaterial* materials;
+    uint irradiance_texture;
+    uint irradiance_sampler;
+    uint prefilter_texture;
+    uint prefilter_sampler;
+    uint reserved_brdf_texture;
+    uint reserved_brdf_sampler;
+    uint shadow_texture;
+    uint shadow_sampler;
+    uint transmission_texture;
+    uint transmission_sampler;
+    float4 view_position;
+    uint material_index;
+    uint first_instance;
+    uint prefilter_mip_count;
+    uint flags;
+    float4 material_emissive;
+    float4 material_dielectric_specular;
+    float4 material_surface;
+    float4 material_alpha;
+    float4 material_attenuation_color;
+    float4 ibl_controls;
+    float4 directional_direction_enabled;
+    float4 directional_color_intensity;
+    float4 ambient_color;
+    uint render_mode;
+    uint alpha_mode;
+    uint material_flags;
+    uint reserved_0;
+    float4* point_light_data;
+    uint4* point_light_masks;
+    float4 point_light_grid_origin_cell_size;
+    uint4 point_light_grid_dimensions_count;
+    uint4 point_light_global_mask;
+    uint point_light_count;
+    uint3 point_light_reserved;
+    VkrBindlessShadowCascade* shadow_cascades;
+    uint2 shadow_address_padding;
+    float4x4 view;
+    uint shadow_cascade_count;
+    float shadow_bias;
+    uint2 shadow_reserved;
+    VkrBindlessIblProbe* ibl_probes;
+    uint ibl_probe_count;
+    uint ibl_probe_reserved;
+};
+
+struct VkrBindlessPushConstants
+{
+    VkrBindlessPacketDrawRoot* root;
+    uint material_index;
+    uint flags;
+};
+
+struct VkrBindlessIblRoot
+{
+    uint source_texture;
+    uint source_sampler;
+    uint target_texture;
+    uint target_size;
+    uint sample_count;
+    uint source_face_size;
+    uint source_mip_count;
+    float roughness;
+};
+
+struct VkrBindlessVertexOutput
+{
+    float4 position : SV_Position;
+    float2 uv : TEXCOORD0;
+    float4 color : COLOR0;
+    float3 world_position : TEXCOORD1;
+    float3 world_normal : TEXCOORD2;
+    nointerpolation uint object_id : TEXCOORD3;
+    float4 world_tangent : TEXCOORD4;
+};
+
+struct VkrBindlessTextVertex
+{
+    float2 position;
+    float2 texcoord;
+    float4 color;
+};
+
+struct VkrBindlessTextOutput
+{
+    float4 position : SV_Position;
+    float2 uv : TEXCOORD0;
+    float4 color : COLOR0;
+    nointerpolation uint object_id : TEXCOORD1;
+};
+
+[[vk::binding(0, 0)]] Texture2D<float4> g_textures[];
+[[vk::binding(0, 0)]] TextureCube<float4> g_cube_textures[];
+[[vk::binding(0, 0)]] Texture2DArray<float4> g_array_textures[];
+[[vk::binding(0, 1)]] SamplerState g_samplers[];
+[[vk::binding(1, 0)]] RWTexture2DArray<float4> g_storage_images[];
+[[vk::push_constant]] ConstantBuffer<VkrBindlessPushConstants> g_push;
+
+static const float vkr_pi = 3.14159265359f;
