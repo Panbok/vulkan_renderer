@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-12
+updated: 2026-08-15
 authority: design
 ---
 
@@ -862,15 +862,15 @@ extensions. That forks the shader language across backends and must be an
 
 ### 7.6 Shader source ownership
 
-The bindless source lives under
-`lib/src/renderer/vulkan/bindless/shaders/`. `packet.slang` owns the shared
-packet ABI and the `world`, `shadow`, `picking`, `text`, `skybox`, `ibl`, and
-`post` entry points in one compilation unit; API-neutral helpers such as
-tonemapping remain includes. CMake compiles each entry point into a **separate
-output namespace** so the fifteen existing Vulkan outputs and their `.shadercfg`
-manifests remain untouched throughout migration. Split a domain into its own
-source only when it owns an independent ABI or the shared compilation unit
-creates measured build-time or maintenance cost.
+The bindless source lives under `lib/src/renderer/shaders/vulkan/slang/`.
+`library.slang` assembles the shared packet ABI and domain-owned `world`,
+`shadow`, `picking`, `text`, `skybox`, `ibl`, and `post` sources into one Slang
+compilation unit. This preserves cross-domain helpers and the single packet ABI
+without hiding every entry point inside one physical source file. CMake compiles
+each entry point into a **separate output namespace**, preserving the established
+SPIR-V basenames and runtime macro contracts. A domain should become an
+independent compilation unit only when it owns an independent ABI or measured
+build-time or maintenance cost justifies that stronger boundary.
 
 Do **not** reuse the legacy `vulkan/shaders/common/*.slangh` headers. The
 umbrella spec already records that the transform, instance, alpha-cutout, cube,

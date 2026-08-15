@@ -73,8 +73,9 @@ lib/src/
     ├── vkr_rg_json.c/h        JSON graph parsing and authored realization
     ├── systems/               Scene-facing renderer subsystems
     ├── resources/loaders/     Asset loaders
-    ├── metal/                 Metal packet backend and production shaders
-    └── vulkan/bindless/       Vulkan 1.4 implementation and shaders
+    ├── metal/                 Metal packet implementation
+    ├── vulkan/bindless/       Vulkan 1.4 packet implementation
+    └── shaders/               Shared, Metal, and Vulkan production sources
 app/src/main.c                 Sample/editor application
 assets/                        Materials, scenes, textures, and render graphs
 tools/                         Offline utilities and renderer harness
@@ -202,13 +203,15 @@ implemented.
 
 ### 3.4 Shader and pipeline construction
 
-Shader and pipeline ownership is private to each selected implementation. Metal
-builds its Slang/native MSL library and pipeline archive under `renderer/metal/`.
-Bindless Vulkan builds only the packet shaders under
-`renderer/vulkan/bindless/shaders/`; recursive SPIR-V reflection validates the
-physical-storage-buffer and packet ABI against shared host manifests. The
-frontend has no shader manifests, shader system, pipeline registry, render-pass
-compatibility objects, or public pipeline creation API.
+Shader and pipeline ownership is private to each selected implementation.
+Production sources live under `renderer/shaders/`: `metal/slang` and
+`metal/msl` separate Metal's two source dialects, while `vulkan/slang` contains
+the domain-split Vulkan packet library. `shared` is reserved for source consumed
+by both production targets and does not own backend ABI or resource bindings.
+Recursive SPIR-V reflection validates the Vulkan physical-storage-buffer and
+packet ABI against shared host manifests. The frontend has no shader manifests,
+shader system, pipeline registry, render-pass compatibility objects, or public
+pipeline creation API.
 
 Static assertions and shared `vkr_gpu_abi` manifests pin the vertex, instance,
 text, and implementation-specific record layouts. Bindless Vulkan persists its
