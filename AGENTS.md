@@ -60,6 +60,7 @@ enumerated.
 | Task | Skill |
 |---|---|
 | Multi-step research, diagnosis, implementation, subagent delegation, task notes | `.codex/skills/vkr-task-workflow/SKILL.md` |
+| Named renderer agents, root-only Sol routing, cold subagent context, delegation order | `.codex/skills/vkr-agent-team/SKILL.md` |
 | Renderer architecture, refactors, backend/graph/pass changes, hot paths, API design | `.codex/skills/vkr-renderer-design/SKILL.md` |
 | Auditing for LOC reduction, file-by-file compression plans, consolidation passes | `.codex/skills/compress-codebase/SKILL.md` |
 | Frame-time or hitch investigation, optimization, benchmarks, any speed claim | `.codex/skills/vkr-performance/SKILL.md` |
@@ -75,7 +76,10 @@ gaps in `VULKAN_PATTERNS.md`, and audit sequencing in `WORKFLOW.md`.
 `vkr-task-workflow` is the entry point for multi-step work. Classify every
 request first: answer a focused question, a brief explanation, or a status check
 directly. It routes to the skills above rather than restating them, and owns
-task notes under `.scratch/`, which is local and untracked.
+task notes under `.scratch/`, which is local and untracked. When it selects
+delegation, load `vkr-agent-team` for the repository's named roles, strict model
+routing, minimal child context, and orchestration order; task lifecycle and
+evidence remain with `vkr-task-workflow`.
 
 ## Build, test, validate
 
@@ -184,10 +188,10 @@ communication is required.
 
 ## Agent context
 
-`AGENTS.md`, `CLAUDE.md`, `docs/`, `.codex/skills/`, and the
-`.claude/skills/` symlinks are committed repository context. Keep them in the
-same change when an architectural decision, status claim, or skill rule moves.
-Start documentation discovery at `docs/README.md`.
+`AGENTS.md`, `CLAUDE.md`, `docs/`, `.codex/config.toml`, `.codex/agents/`,
+`.codex/skills/`, and the `.claude/skills/` symlinks are committed repository
+context. Keep them in the same change when an architectural decision, status
+claim, or skill rule moves. Start documentation discovery at `docs/README.md`.
 
 Task notes under `.scratch/` are local and untracked; move anything that must
 survive into `docs/`.

@@ -31,6 +31,7 @@ and obtain authorization before expanding implementation scope.
 | You need | Authority |
 |---|---|
 | Ordering of concerns, conventions, build and test scripts | `AGENTS.md` |
+| Named agent roles, model routing, cold spawn context, orchestration order | `vkr-agent-team` — load only when delegation is selected |
 | Renderer runtime gates and test conventions | `vkr-validation` — "Choose the cheapest gate that completely covers the invariant" |
 | What counts as a performance result, and the report shape | `vkr-performance` — "Evidence policy", "Reporting template" |
 | Renderer architecture, hot-path rules, packet and graph contracts | `vkr-renderer-design` |
@@ -66,14 +67,17 @@ authority. Anything that must survive outside this worktree leaves through
 
 Stay the coordinator and integrator. Delegate only when the active agent
 environment permits it and a concrete, independent, bounded branch can make
-progress in parallel. Keep nesting at depth one.
+progress in parallel. Keep nesting at depth one. When delegation is selected,
+load `vkr-agent-team`; it owns named roles, model routing, cold spawn context,
+and orchestration order while this skill continues to own scope, reservations,
+evidence, and completion.
 
 - Assign an explicit scope, deliverable, read paths, write reservation, and
   must-not-write paths before launch. Keep one writer per overlapping region.
-- Choose agents by capability: use the cheapest capable read-only/search agent
-  for deterministic inventory and a stronger general/planning agent for
-  ambiguous code-path analysis or review. Do not depend on platform-specific
-  model or subagent names.
+- Choose agents through `vkr-agent-team` when it is available. If that companion
+  is unavailable, choose the cheapest capable read-only/search agent for
+  deterministic inventory and a stronger general agent for ambiguous code-path
+  analysis or review without inventing unsupported platform configuration.
 - Require returns with agent identity and status, files inspected or changed,
   commands/evidence, conclusions, and remaining uncertainty.
 - Verify the cited evidence for every material claim; independently re-derive
