@@ -12,5 +12,6 @@
   "rad-debugger-communication.targetPath": "build/app/vulkan_renderer.exe",
   "rad-debugger-communication.targetPathIsWorkspaceRelative": true,
   "rad-debugger-communication.closeRaddbgOnProgramExit": true,
-  "rad-debugger-communication.autoRun": true
+  "rad-debugger-communication.autoRun": true,
+  "clang-format.executable": "/opt/homebrew/bin/clang-format"
 }
