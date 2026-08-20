@@ -96,18 +96,18 @@ This work is mostly consolidation. Reuse these; do not rebuild them.
 | Offscreen editor color target | conditional graph resource `scene_color`, realized by the selected implementation |
 | Monotonic timer | `vkr_platform_get_absolute_time()` |
 
-### 2.1 Backend topology and Metal deferred targets
+### 2.1 Backend topology and deferred targets
 
-Vulkan remains forward while its deferred parity phases are absent. Metal now
-defaults to the deferred visibility-buffer topology; explicit
-`VKR_DEFERRED_ENABLED=0` retains forward only for P20 diagnosis. Harness
+Metal and Windows Vulkan now default to the deferred visibility-buffer
+topology; explicit `VKR_DEFERRED_ENABLED=0` retains forward only for diagnosis
+until the separately authorized P21 retirement. Harness
 provenance and effective configuration publish `world_renderer`, and that value
 enters the environment fingerprint so evidence from the two topologies cannot
 be compared under one identity.
 
-Metal realizes an opaque visibility attachment and material-resolve G-buffer
-targets. Their direct channels are diagnostic evidence for the migration and
-remain unavailable on Vulkan. `normals`, `unlit`, lighting-only, visibility,
+Both backends realize opaque/transmission visibility attachments and
+material-resolve G-buffer targets. Their direct channels are diagnostic evidence
+for the migration. `normals`, `unlit`, lighting-only, visibility,
 G-buffer, emissive, and resolve-debug channels are captured by replaying a
 settled frame with the corresponding render mode or direct graph resource.
 Shadow replay modes 1–3 are likewise packet data, not harness-only globals:
@@ -677,8 +677,10 @@ A fixed `VkrCaptureChannelDescription` catalog maps each ID to source resource,
 required graph condition/subsystems, aspect, value kind, canonical encoding, and
 `capture_version`. Adding a direct channel extends this table and its producer
 publication; no string switch is added to the executor. `depth` resolves to
-`swapchain_depth` or `scene_depth` from the effective editor configuration, which
-is recorded in the workload fingerprint rather than inferred after capture.
+`opaque_vbuffer_depth` for deferred, `scene_depth` for retained-forward editor,
+or `swapchain_depth` for retained-forward fullscreen. Effective renderer/editor
+configuration is recorded in the workload fingerprint rather than inferred
+after capture.
 
 The JSON-owned `scene_depth`, `scene_color`, and `shadow_map` resources declare
 `TRANSFER_SRC`. Imported swapchain color/depth resources are augmented only by
@@ -893,7 +895,15 @@ requirement, not a default.
 6. **Self-check.** Independent repetitions of the same case/build must produce
    bit-identical work-volume metrics: draw, batch, visibility, overflow, and
    capture-request counts. A difference invalidates timing evidence regardless
-   of its average. Timing samples are never expected to be bit-identical.
+   of its average. Completion-availability gauges such as
+   `visibility.hzb.history_valid` are excluded; actual candidate, visibility,
+   HZB-rejection, command, overflow, and resolve counts remain part of the
+   identity. Timing samples are never expected to be bit-identical.
+
+When GPU timings are requested, the child freezes its pass catalog only after
+eight consecutive completed frames expose the same pass-name topology and every
+row has a valid GPU result. A scene's first packet may precede light/cascade
+synchronization and therefore must not define the steady-state catalog.
 
 ### 6.2 Execution profiles and independent repetitions
 
@@ -904,6 +914,14 @@ present mode, power/thermal policy, process priority, exclusive GPU-lane policy,
 instrumentation flags, minimum isolated repetitions, warmup stability
 metric/window/drift, required metrics/channels, and comparison-threshold
 ownership.
+
+P20 acceptance adds three clean-tree, five-repetition profiles:
+`p20-acceptance-offscreen-gpu.json` for ordinary offscreen workloads,
+`p20-acceptance-offscreen-gpu-work.json` for synthetic fixtures whose stable
+candidate count is the warmup invariant, and
+`p20-acceptance-windowed-gpu.json` for hidden-window IMMEDIATE presentation.
+They require complete requested GPU timestamps, deterministic work, stable
+warmup, and an exclusive GPU lane. They do not promote snapshot baselines.
 
 Authoritative performance thresholds live with an accepted profile baseline,
 not in a case that can weaken its own gate. Case-local timing assertions are

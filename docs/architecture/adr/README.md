@@ -51,7 +51,7 @@ Considered → Revisit When**.
 | [ADR-025](025-selected-renderer-implementation-strategy.md) | One selected renderer implementation strategy replacing the backend-type ladder | Accepted |
 | [ADR-026](026-vulkan-1-2-retirement.md) | Vulkan 1.2 retirement and bindless-only end state | Accepted |
 | [ADR-027](027-immediate-mode-grid-ui.md) | Immediate-mode grid UI with a composited editor viewport | Proposed |
-| [ADR-028](028-gpu-driven-deferred-visibility-buffer.md) | GPU-driven deferred visibility-buffer rendering | Accepted (partial); Metal P4/P6/P8/P10/P12/P14/P16/P17/P18, a default-off P19 compact-list candidate, and default-on Metal P20 fallback/state/Sponza/Bistro stabilization are implemented; owner-accepted stable evidence and Vulkan parity remain open |
+| [ADR-028](028-gpu-driven-deferred-visibility-buffer.md) | GPU-driven deferred visibility-buffer rendering | Accepted (partial); the P20 boundary is owner-accepted on Metal and Vulkan, deferred is the default, P19 remains a default-off Metal-only candidate, and P21 retirement remains unclaimed |
 
 ## Relationship to the Specification
 
