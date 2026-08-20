@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "id": "local.p20.vulkan.bistro.default",
+  "suite": "local",
+  "description": "Bounded Windows Vulkan default-deferred P20 Bistro static witness with every whole-frame fallback prohibited.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 20,
+  "resolution": [800, 600],
+  "boot": "automation",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 2,
+  "repetition_timeout_ms": 900000,
+  "asset_ready_timeout_ms": 600000,
+  "frames": { "warmup": 256, "measure": 120 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "text_fixture": true,
+    "backend": "vulkan",
+    "shadow_preset": "balanced",
+    "shadow_cascades": 1,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [-28.4774647, 4.60749865, 2.86034966],
+    "yaw": 228.125198,
+    "pitch": -3.32655358,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500
+  },
+  "captures": [
+    { "at_frame": 119, "channels": ["final_color", "visibility_ids", "gbuffer_diffuse", "gbuffer_specular", "gbuffer_normal", "deferred_emissive", "depth"] }
+  ],
+  "assertions": [
+    { "metric": "visibility.deferred.selected", "stat": "min", "min": 1 },
+    { "metric": "visibility.deferred.legacy_forward_fallbacks", "stat": "max", "max": 0 },
+    { "metric": "visibility.deferred.unsupported_input_fallbacks", "stat": "max", "max": 0 },
+    { "metric": "visibility.gpu_candidates.overflow_fallbacks", "stat": "max", "max": 0 },
+    { "metric": "visibility.gpu_visible.overflow", "stat": "max", "max": 0 },
+    { "metric": "visibility.transmission.gpu_visible.overflow", "stat": "max", "max": 0 },
+    { "metric": "visibility.gbuffer.resolve_invalid", "stat": "max", "max": 0 },
+    { "metric": "geometry.megabuffer.rejected_publications_total", "stat": "max", "max": 0 },
+    { "metric": "draw.shadow.cascade0.indirect_overflow", "stat": "max", "max": 0 }
+  ]
+}

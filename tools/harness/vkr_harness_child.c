@@ -26,6 +26,9 @@ typedef struct VkrHarnessChildContext {
   uint64_t scene_first_frame_index;
   /** Pass storage was sized from a frame rendered with the active scene. */
   bool8_t pass_catalog_ready;
+  uint64_t pending_pass_catalog_signature;
+  uint32_t pending_pass_catalog_count;
+  uint32_t pass_catalog_stable_frames;
   /** Set once bootstrap/allocation frames are discarded and sampling begins. */
   bool8_t phase_started;
   bool8_t failed;
@@ -418,6 +421,34 @@ vkr_harness_child_prepare_pass_catalog(Application *application) {
   }
   if (passes->samples[0].gpu_source_frame_index <
       child->scene_first_frame_index)
+    return true_v;
+  uint64_t signature = 1469598103934665603ull;
+  bool8_t completed = true_v;
+  for (uint32_t pass = 0u; pass < passes->count; ++pass) {
+    const char *name = passes->samples[pass].name;
+    for (uint64_t i = 0u; name[i] != '\0'; ++i) {
+      signature ^= (uint8_t)name[i];
+      signature *= 1099511628211ull;
+    }
+    signature ^= 0xffu;
+    signature *= 1099511628211ull;
+    completed = completed && (!application->metrics->config.pass_gpu_timings ||
+                              passes->samples[pass].gpu_valid);
+  }
+  signature ^= passes->count;
+  signature *= 1099511628211ull;
+  if (signature != child->pending_pass_catalog_signature ||
+      passes->count != child->pending_pass_catalog_count) {
+    child->pending_pass_catalog_signature = signature;
+    child->pending_pass_catalog_count = passes->count;
+    child->pass_catalog_stable_frames = completed ? 1u : 0u;
+    return true_v;
+  }
+  if (!completed) {
+    child->pass_catalog_stable_frames = 0u;
+    return true_v;
+  }
+  if (++child->pass_catalog_stable_frames < 8u)
     return true_v;
   child->pass_count = passes->count;
   const uint64_t pass_value_count =

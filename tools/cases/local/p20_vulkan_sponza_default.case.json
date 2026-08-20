@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "id": "local.p20.vulkan.sponza.default",
+  "suite": "local",
+  "description": "Bounded Windows Vulkan default-deferred P20 Sponza orbit with every whole-frame fallback prohibited.",
+  "scene": "assets/scenes/sponza.scene.json",
+  "seed": 20,
+  "resolution": [1280, 720],
+  "boot": "full",
+  "target": "windowed_hidden",
+  "present": "immediate",
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 2,
+  "repetition_timeout_ms": 300000,
+  "asset_ready_timeout_ms": 90000,
+  "frames": { "warmup": 120, "measure": 300 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "backend": "vulkan",
+    "shadow_preset": "default",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "orbit",
+    "speed": "medium",
+    "center": [0, 2, 0],
+    "radius": 12,
+    "height": 3,
+    "revolutions": 1.4,
+    "duration_seconds": 7,
+    "start_angle_degrees": 0,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.1,
+    "far_plane": 500
+  },
+  "captures": [
+    { "at_frame": 299, "channels": ["final_color", "visibility_ids", "gbuffer_normal", "depth"] }
+  ],
+  "assertions": [
+    { "metric": "visibility.deferred.selected", "stat": "min", "min": 1 },
+    { "metric": "visibility.deferred.legacy_forward_fallbacks", "stat": "max", "max": 0 },
+    { "metric": "visibility.deferred.unsupported_input_fallbacks", "stat": "max", "max": 0 },
+    { "metric": "visibility.gpu_candidates.overflow_fallbacks", "stat": "max", "max": 0 },
+    { "metric": "visibility.gpu_visible.overflow", "stat": "max", "max": 0 },
+    { "metric": "visibility.transmission.gpu_visible.overflow", "stat": "max", "max": 0 },
+    { "metric": "visibility.gbuffer.resolve_invalid", "stat": "max", "max": 0 },
+    { "metric": "geometry.megabuffer.rejected_publications_total", "stat": "max", "max": 0 },
+    { "metric": "draw.shadow.cascade0.indirect_overflow", "stat": "max", "max": 0 },
+    { "metric": "draw.shadow.cascade1.indirect_overflow", "stat": "max", "max": 0 },
+    { "metric": "draw.shadow.cascade2.indirect_overflow", "stat": "max", "max": 0 },
+    { "metric": "draw.shadow.cascade3.indirect_overflow", "stat": "max", "max": 0 }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "id": "local.p20.vulkan.state_matrix.forward_diagnostic",
+  "suite": "local",
+  "description": "Windows Vulkan VKR_DEFERRED_ENABLED=0 diagnostic-forward witness; invoke with that environment override.",
+  "scene": "assets/scenes/fixtures/deferred_state_matrix.scene.json",
+  "seed": 20,
+  "resolution": [640, 480],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 300000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": { "warmup": 256, "measure": 8 },
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "backend": "vulkan",
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [0, 1.4, 6.0],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 58,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "captures": [
+    { "at_frame": 0, "channels": ["final_color", "scene_color", "depth", "normals"] }
+  ],
+  "assertions": [
+    { "metric": "visibility.deferred.selected", "stat": "max", "max": 0 },
+    { "metric": "visibility.deferred.legacy_forward_fallbacks", "stat": "max", "max": 0 },
+    { "metric": "visibility.deferred.unsupported_input_fallbacks", "stat": "max", "max": 0 },
+    { "metric": "visibility.gpu_candidates.overflow_fallbacks", "stat": "max", "max": 0 },
+    { "metric": "draw.world.calls_issued", "stat": "min", "min": 1 }
+  ]
+}

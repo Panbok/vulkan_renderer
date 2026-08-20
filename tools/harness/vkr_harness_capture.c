@@ -420,6 +420,7 @@ static void vkr_harness_capture_depth_preview(const VkrCaptureItemResult *item,
  */
 static void vkr_harness_capture_uint_preview(const VkrCaptureItemResult *item,
                                              uint32_t component,
+                                             uint32_t value_mask,
                                              uint8_t *rgba) {
   const uint64_t texel_stride =
       item->format == VKR_TEXTURE_FORMAT_R32G32_UINT ? 8u : 4u;
@@ -427,8 +428,10 @@ static void vkr_harness_capture_uint_preview(const VkrCaptureItemResult *item,
     const uint8_t *row = vkr_harness_capture_row(item, y);
     uint8_t *target = rgba + (uint64_t)y * item->width * 4u;
     for (uint32_t x = 0; x < item->width; ++x) {
-      const uint32_t source_id = vkr_harness_capture_read_u32(
-          row + (uint64_t)x * texel_stride + (uint64_t)component * 4u);
+      const uint32_t source_id =
+          vkr_harness_capture_read_u32(row + (uint64_t)x * texel_stride +
+                                       (uint64_t)component * 4u) &
+          value_mask;
       uint32_t id = source_id;
       id ^= id >> 16;
       id *= 0x7feb352du;
@@ -451,6 +454,7 @@ static void vkr_harness_capture_uint_preview(const VkrCaptureItemResult *item,
  */
 static void vkr_harness_capture_canonical_u32(const VkrCaptureItemResult *item,
                                               uint32_t component,
+                                              uint32_t value_mask,
                                               uint8_t *tight) {
   const bool8_t depth = item->value_kind == VKR_CAPTURE_VALUE_DEPTH;
   const uint64_t texel_stride =
@@ -464,8 +468,10 @@ static void vkr_harness_capture_canonical_u32(const VkrCaptureItemResult *item,
         const float32_t value = vkr_harness_capture_depth_at(item, source, x);
         MemCopy(&canonical, &value, sizeof(canonical));
       } else {
-        canonical = vkr_harness_capture_read_u32(
-            source + (uint64_t)x * texel_stride + (uint64_t)component * 4u);
+        canonical =
+            vkr_harness_capture_read_u32(source + (uint64_t)x * texel_stride +
+                                         (uint64_t)component * 4u) &
+            value_mask;
       }
       vkr_harness_capture_write_u32_le(target + (uint64_t)x * 4u, canonical);
     }
@@ -618,6 +624,7 @@ bool8_t vkr_harness_capture_publish(
                               "transmission_visibility_primitives")
             ? 1u
             : 0u;
+    const uint32_t uint_mask = uint_component == 1u ? 0x7fffffffu : UINT32_MAX;
     if (report->capture_count >= report->capture_capacity || !channel ||
         !logical_channel || !item->data) {
       vkr_harness_error_set(error, "capture.publish", "captures",
@@ -656,13 +663,13 @@ bool8_t vkr_harness_capture_publish(
         vkr_harness_capture_depth_preview(item, rgba, &preview_min,
                                           &preview_max);
       } else {
-        vkr_harness_capture_uint_preview(item, uint_component, rgba);
+        vkr_harness_capture_uint_preview(item, uint_component, uint_mask, rgba);
       }
     }
 
     VkrHarnessCaptureResult *capture = &report->captures[report->capture_count];
     if (ok && !color) {
-      vkr_harness_capture_canonical_u32(item, uint_component, tight);
+      vkr_harness_capture_canonical_u32(item, uint_component, uint_mask, tight);
       ok = vkr_harness_atomic_write(data_path, tight, pixel_bytes, error);
     }
     ok = ok && vkr_harness_capture_png_write(png_path, rgba, item->width,

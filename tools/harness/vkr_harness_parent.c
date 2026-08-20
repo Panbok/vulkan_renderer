@@ -140,6 +140,11 @@ static bool8_t vkr_harness_child_sample_digest_matches(const char *report_path,
  * evidence regardless of its average.
  */
 static bool8_t vkr_harness_work_metric(const char *name) {
+  /* Completion-only HZB selection is scheduling state. Its reject count is
+   *
+   * work volume and remains covered by the visibility prefix below. */
+  if (string_equals(name, "visibility.hzb.history_valid"))
+    return false_v;
   return string_n_equals(name, "draw.", 5u) ||
          string_n_equals(name, "visibility.", 11u) ||
          string_find(name, "overflow") || string_find(name, "capture");

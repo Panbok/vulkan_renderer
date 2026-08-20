@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "id": "acceptance.p20.offscreen_gpu",
+  "description": "Authoritative P20 offscreen CPU, deterministic-work, and complete per-pass GPU timestamp evidence.",
+  "authoritative": true,
+  "dirty_policy": "require_clean",
+  "environment": {
+    "target": "offscreen",
+    "required_present": "none",
+    "require_actual_present": false
+  },
+  "instrumentation": {
+    "gpu_timing": true,
+    "event_subjects": false
+  },
+  "execution": {
+    "minimum_repetitions": 5,
+    "warmup_stability_window": 60,
+    "warmup_stability_metric": "cpu.render_submit",
+    "warmup_max_drift_ratio": 0.1,
+    "require_warmup_stability": true,
+    "exclusive_gpu_lane": true
+  },
+  "required_metrics": [
+    "frame.wall",
+    "cpu.frame_work",
+    "cpu.render_prepare",
+    "cpu.render_submit",
+    "frame.command_slot_waits",
+    "draw.world.commands_issued",
+    "draw.world.calls_issued",
+    "draw.world.indirect_commands_issued",
+    "draw.world.indirect_calls_issued",
+    "visibility.objects_tested",
+    "upload.fence_waits",
+    "instance_buffer.overflows"
+  ]
+}
