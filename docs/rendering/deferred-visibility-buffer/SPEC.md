@@ -1,5 +1,5 @@
 ---
-status: partial
+status: implemented
 updated: 2026-08-20
 authority: spec
 ---
@@ -26,7 +26,8 @@ is corrected. The owner accepted the classified remainder of 520 double-sided
 secondary-side pixels, 147 shared raster-edge pixels, and 2,410 pixels in the
 separate transmission debug composite for the P20 visual threshold. P20 was
 owner-accepted on both backends on 2026-08-20 without promoting a snapshot
-baseline. P21 remains a separate deletion phase and is not claimed.
+baseline. P21 is implemented: the renderer now exposes one world topology,
+with no runtime selector or legacy whole-frame fallback.
 P19 now has a default-off Metal `Transmission.Compact` candidate. Each layer
 uses one 8×8 scan to copy its background, compact final visibility winners into
 a viewport-sized bounded pixel list, and accumulate count/overflow; a finalize
@@ -40,12 +41,10 @@ local Release observation reduces the estimated normal transmission chain from
 is flat/slightly worse and CPU submit is higher. The run is dirty,
 single-repetition, and warmup-unstable, so the candidate remains default-off and
 is not an accepted speed claim.
-The retained GPU-driven forward path remains available only when explicitly
-selected with `VKR_DEFERRED_ENABLED=0` for diagnosis and as a bounded pre-P21
-whole-frame fallback; it does not run beside deferred final color. Missing
-Metal deferred pipelines or indirect-command capacity now fails backend
-initialization instead of silently changing topology. `VKR_HZB_DISABLED=1` is
-the focused P14 diagnostic rollback to frustum-only deferred culling.
+Unsupported packet structure and exhausted candidate capacity are rejected
+before backend recording; neither backend silently changes topology. Missing
+Metal deferred pipelines fail backend initialization. `VKR_HZB_DISABLED=1`
+remains the focused P14 diagnostic rollback to frustum-only GPU culling.
 Rationale and the durable decisions this specification constrains are in
 [ADR-028](../../architecture/adr/028-gpu-driven-deferred-visibility-buffer.md).
 
@@ -72,12 +71,11 @@ Rationale and the durable decisions this specification constrains are in
   raster; remove only redundant opaque/transmission re-rasterization.
 - Implement Metal first for each feature slice, then mirror it on Vulkan before
   advancing to the next layer of the renderer.
-- Stop and keep the selectable legacy forward path if visual parity, GPU
-  correctness, work-volume equivalence, or matched Release measurements fail
-  before stabilization.
-- After deferred becomes the stable default on both backends, retire and delete
-  the legacy forward topology, all whole-frame/material/overflow fallbacks to
-  it, and the `deferred_enabled` migration flag. Runtime rollback ends there;
+- The P20 migration retained the legacy renderer until visual parity, GPU
+  correctness, work-volume equivalence, and matched Release evidence were
+  accepted.
+- P21 deletes the legacy topology, whole-frame/material/overflow reroutes, and
+  the `deferred_enabled` migration flag. Runtime rollback has ended;
   source-control rollback remains available.
 
 ## 1. Intent and scope
@@ -172,7 +170,7 @@ workspace.
 | B7 | Neither backend executes a GPU-generated command stream today | Implement and capability-gate a Metal 4 indirect/ICB strategy and Vulkan indirect-count execution |
 | B8 | Geometry is published as separate vertex/index buffers | Add stable-generation vertex/index megabuffers, publication tables, retirement, and Vulkan index-buffer device-address usage |
 | B9 | Draw state is not represented by GPU compaction | Pin triangle-list/u32-index input and compact into legal cutout/cull-mode state buckets |
-| B10 | Schema/parser condition parity is incomplete | Add `deferred_enabled`, HZB-history validity, and transmission/picking conditions to both schema and parser validation |
+| B10 | Schema/parser condition parity was incomplete | Keep HZB-history validity and transmission/picking conditions aligned across authored schema and parser validation; P21 removed the temporary topology condition |
 
 As of 2026-08-17, B1-B10 are implemented on both backend code paths, including
 Vulkan indirect-count execution and four legal cutout/cull-mode partitions.
@@ -189,10 +187,9 @@ semantics—not generic buffer syntax.
 
 ## 3. Target frame topology
 
-The deferred and legacy forward topologies coexist behind a
-`deferred_enabled` frame-info condition through deferred-default stabilization.
-P21 then deletes the legacy topology and the condition. The surviving world
-target is:
+The renderer has one world topology. P21 removed the temporary
+`deferred_enabled` condition and the legacy graph branch. The surviving world
+topology is:
 
 ```text
 Shadow.Cascade.${i}       graphics  unchanged
@@ -267,20 +264,16 @@ copied to the visible row.
 `Cull.Draws` is defined over a **view set**, not a single camera. A view is a
 frustum plus the output partition its survivors compact into. The camera is view
 0; each shadow cascade is a further view. One candidate array is tested against
-every view in the set, which is the same shape as today's CPU contract —
-`vkr_visibility_classify()` already takes `shadow_frustums` and
-`shadow_frustum_count` and derives camera and shadow visibility from a single
-bounds test, and `VkrVisibilityStats` already reports `objects_culled_camera`
-and `objects_culled_shadow` separately.
+every view in the set. P17 replaced the earlier CPU contract, in which
+`vkr_visibility_classify()` tested the camera and shadow frusta together, with
+this backend-owned GPU classification.
 
-This matters for retirement, not for the camera path. If shadow cascades keep
-CPU visibility and CPU draw merging, then `vkr_visibility.c`,
-`vkr_draw_merge_candidates()`, and per-draw encoding all survive P21 to serve
-them, and §11.1's requirement that "the surviving candidate build owns the
-input once" cannot be met. Cascades are the natural second consumer: same
-instances, same candidate rows, different frusta, and the shadow state buckets
-are a subset of the opaque/cutout buckets already defined in §4.2 because shadow
-draws need only cutout and cull-mode distinctions.
+This matters for retirement, not only for the camera path. Keeping CPU shadow
+visibility and draw merging would have kept the old per-draw machinery alive
+through P21 and violated §11.1's single-owner requirement. Cascades therefore
+became the natural second GPU consumer: same instances, same candidate rows,
+different frusta, and shadow state buckets that are a subset of the
+opaque/cutout buckets in §4.2.
 
 Per-view differences that the contract must carry:
 
@@ -724,14 +717,13 @@ tool for ordinary alpha blend, which is out of scope and not a blocker.
 | P18 | Bounded layered transmission by depth peeling, if and only if the §11 fidelity spike rejected the single-layer result | Metal, then Vulkan parity |
 | P19 | Optional measured work: transmission pixel compaction, material/tile classification, or current-frame two-phase HZB | one Metal slice, then Vulkan parity per accepted feature |
 | P20 — accepted 2026-08-20 | Make deferred the default and stabilize it on both backends: accepted visual/GPU/performance evidence, full opaque/transmission material and state coverage, zero legacy-fallback incidence in the accepted workload matrix, capacity failure/growth coverage, and a bounded soak with the legacy topology available only for diagnosis | both |
-| P21 | Completely retire the legacy forward renderer: delete its graph branch, opaque/transmission shaders and pipelines, CPU submission/fallback routes, migration flag/configuration, dual-path metrics/tests, and dead compatibility code; keep only feature-local blend/text/UI raster passes in the sole deferred topology | both |
+| P21 — implemented 2026-08-20 | Completely retire the legacy forward renderer: delete its graph branch, opaque/transmission shaders and pipelines, CPU submission/fallback routes, migration flag/configuration, dual-path metrics/tests, and dead compatibility code; keep only feature-local blend/text/UI raster passes in the sole deferred topology | both |
 
-P0-P20 are independently revertible behind the retained legacy topology. P20
-is the explicit stability boundary: it is not a short smoke run and does not
-delete the diagnostic comparison path. P21 starts only after the P20 evidence
-is owner-accepted on both backends. Once P21 lands, runtime rollback and
-per-frame rerouting no longer exist; rollback means reverting the retirement
-change in source control and rebuilding.
+P0-P20 were independently revertible behind the temporary legacy topology.
+P20 was the explicit stability boundary rather than a short smoke run. P21
+started only after the P20 evidence was owner-accepted on both backends. Runtime
+rollback and per-frame rerouting no longer exist; rollback means reverting the
+retirement change in source control and rebuilding.
 
 ### Historical implementation checkpoints
 
@@ -1076,7 +1068,7 @@ These Metal witnesses supplied the previously recorded backend half of the P20
 decision. The owner accepted their visual result together with the clean,
 authoritative Windows Vulkan evidence above on 2026-08-20. Exact cross-topology
 normal equality is not claimed; its classified residual is the accepted P20
-threshold. P20 is closed. P21 remains unclaimed.
+threshold. P20 is closed, and P21 is implemented.
 
 ### 11.1 P21 complete-retirement contract
 
@@ -1114,6 +1106,28 @@ all of the following are true:
 If any opaque/transmission fallback remains reachable, including forward
 transmission because its fidelity decision is unresolved, P21 is not complete
 and the renderer must not be described as forward-retired.
+
+P21 satisfies this contract in the production tree. Packet version 13 carries
+GPU candidate streams plus feature-local ordinary blend and text payloads; CPU
+opaque, transmission, shadow, and picking-mesh draw lists are absent. The main
+graph, parser, backend executors, pipelines, shaders, metrics, and harness cases
+have no selectable legacy world branch. Both backends consume the same
+candidate contract. Opaque/shadow and transmission candidate streams are
+independently bounded; invalid structure or capacity in either stream is
+reported as an explicit pre-recording error.
+
+The macOS retirement pass built the Release and sanitized Debug/CPU targets,
+then passed the deferred-only Release state matrix
+(`20260820T181514.584Z-0038f4`), the retained Metal picking witness
+(`20260820T180655.173Z-0029cf`), the isolated cold/warm cache pair
+(`20260820T180913.036Z-002f8c` and `20260820T180921.559Z-00320a`), and the
+focused serial API-plus-shader validation matrix
+(`20260820T181620.914Z-003db1`). The empty-candidate witness also passes after
+making the Metal compaction-state zero upload unconditional
+(`20260820T182725.701Z-004ed1`). Native P21 Vulkan validation still requires a
+Windows/Vulkan rerun; the macOS build verifies the Vulkan sources and Slang
+shader set, while the accepted P20 Windows evidence remains the runtime
+baseline.
 
 ## 12. Evidence and acceptance gates
 
@@ -1153,6 +1167,17 @@ already-accepted matched Release result to reproduce with deferred selected by
 default and with every fallback counter at zero. P21 verifies that deletion did
 not change that workload; any new performance conclusion requires its own
 matched comparison.
+
+The P21 Bistro rerun used a local profile identical to
+`performance.offscreen` except for its non-authoritative dirty-worktree policy.
+Report `20260820T181642.400Z-003e80`, digest
+`sha256:fcdf1d5a9221d5af3a8eb2083ad662cfb575b38a085ef66fff976d6bf30dfe5d`,
+completed all five repetitions and both assertions over 1,500 measured frames.
+Work volume stayed at 77 commands and 6 calls per frame, with zero upload fence
+waits. Frame-wall mean/p50/p95 were 7.979/7.743/11.561 ms versus
+8.807/7.788/15.302 ms before P21. Both runs failed the strict warmup-stability
+gate, and the post-change tree was dirty; these values are diagnostic only and
+do not establish a performance improvement.
 
 Report CPU submit time, per-pass GPU time, frame time, candidate/visible/command
 counts, shaded pixels, HZB rejects, memory high-water marks, and all overflow or
@@ -1210,6 +1235,6 @@ measurement, including the doubled geometry work, supports it.
 | `docs/README.md`, ADR index, this specification, and ADR-028 | Keep status and purpose aligned with shipped phases; P21 must explicitly record that the legacy forward renderer was deleted |
 
 The architecture spec remains the shipping-status authority. This spec and
-ADR-028 remain `partial` after P20 because P21 has not retired the diagnostic
-forward topology and the default-off P19 candidate lacks accepted owner-level
-performance evidence.
+ADR-028 are implemented after P21. The default-off P19 Metal candidate remains
+optional measured work; its lack of an accepted speed claim does not make the
+sole production topology partial.

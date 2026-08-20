@@ -1,49 +1,47 @@
 ---
 status: partial
-updated: 2026-07-31
+updated: 2026-08-20
 authority: adr
 ---
 # ADR-013: Measured Draw Submission — Culling, Instancing, and MDI
 
-**Status:** Accepted (partial)
+**Status:** Accepted; superseded in part by ADR-028
 
 ## Context
 
 ### Implemented behavior
 
-Application world-payload construction scans live mesh-manager slots for
-capacity, then performs a count/visibility pass and a population pass.
-Conservative world-space submesh spheres are classified against the camera and
-the union of all shadow cascade volumes before final arrays are materialized.
-The two visible sets and their instance arrays remain independent.
+Application world-payload construction emits one bounded instance × submesh
+candidate stream. The Metal and Vulkan implementations classify camera and
+shadow-cascade views on the GPU and compact opaque, cutout, and transmission
+work into backend-native indirect buckets. There is no CPU opaque,
+transmission, or shadow draw list and no direct world fallback.
 
-Opaque candidates are sorted by a complete instancing key. Compatible runs
-emit contiguous instance records and one indexed draw. Position-dependent local
-reflection-probe descriptors are still selected once per draw, so their binding
-context deliberately prevents unsafe merging across different positions.
-Transparent/alpha-tested lists remain ordered and direct.
-
-The world and opaque shadow paths accumulate bounded MDI groups. A group uses
-one `vkCmdDrawIndexedIndirect` only when it contains multiple commands and all
-bound state—including the selected index buffer—matches; otherwise it uses the
-direct fallback. Metrics distinguish logical commands from API calls.
+Ordinary alpha blend remains the narrow exception: the application performs
+conservative camera culling, sorts survivors back to front, and emits direct
+feature-local draws. World text, UI text, and UI are likewise outside the
+retired whole-frame submission path.
 
 Integrated infrastructure and remaining boundaries:
 
 | Module | Current state |
 |---|---|
-| `math/vkr_frustum.*` | Production camera/cascade sphere classification with Vulkan-ZO tests |
+| `math/vkr_frustum.*` | Shared frustum math; CPU world use is limited to feature-local ordinary blend |
 | `renderer/vkr_draw_batch.*` | Draw key/batch structures; no production caller |
-| `renderer/vkr_visibility.*` | Production candidate sorting, conservative bounds, visibility, and merge metrics |
-| `renderer/vkr_indirect_draw.*` | Production fixed mapped command ring with bounded direct fallback |
+| `renderer/vkr_visibility.*` | Alpha routing, conservative bounds, ordinary-blend sorting, and direct emission |
+| Backend indirect submission | Metal ICB and Vulkan indirect-count implementations own GPU command compaction and execution |
 | Geometry/submesh bounds | Transformed conservatively for TRS/non-uniform scale; no spatial hierarchy |
-| Capability flags | MDI and indirect first-instance gate submission independently |
-| Batch metrics | Commands, direct/indirect calls, visibility, and merge runs reported separately |
+| Capacity policy | Invalid structure or exhausted fixed candidate capacity is rejected before recording |
+| Submission metrics | GPU candidate, visible, bucket, command, and overflow diagnostics remain; CPU merge and fallback metrics are removed |
 
 These modules are useful starting points, not proof that the final pipeline is
 already designed. In particular, the existing key includes geometry/range; one
 indirect command per such “batch” followed by one MDI call per batch would not
 reduce draw calls.
+
+ADR-028 P17 supersedes this ADR for shadow-cascade visibility and submission;
+P21 supersedes it for opaque, cutout, and transmission submission. The ordered
+ordinary-blend policy and its conservative-bound rules remain in force.
 
 ## Decision
 

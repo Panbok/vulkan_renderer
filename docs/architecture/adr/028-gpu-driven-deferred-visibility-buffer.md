@@ -1,5 +1,5 @@
 ---
-status: partial
+status: implemented
 updated: 2026-08-20
 authority: adr
 ---
@@ -8,15 +8,17 @@ authority: adr
 
 ## Status
 
-**Accepted (partial).** The P20 boundary is satisfied on both backends, and
-deferred is the owner-accepted default topology. Metal uses
+**Accepted and implemented.** The P20 boundary is satisfied on both backends,
+and P21 has retired the legacy whole-frame renderer. Metal uses
 GPU-frustum-classified four-bucket
 ICB submission; Vulkan uses fixed-partition indirect-count submission. Both
 backends provide opaque visibility raster, compute material resolve and
 lighting, completion-compatible HZB history, requested-pixel picking,
 camera-plus-cascade multi-view submission, and four-layer depth-peeled
-transmission with completion-gated coverage. `VKR_DEFERRED_ENABLED=0` retains
-the whole-frame forward topology only as a diagnostic control until P21.
+transmission with completion-gated coverage. There is no runtime topology
+selector or whole-frame fallback; unsupported structure and exhausted capacity
+are explicit pre-recording errors, and the opaque/shadow and transmission
+candidate streams retain independent bounds.
 
 Vulkan opaque and transmission shading share punctual/environment helpers and
 surface reconstruction with the retained forward model. Its resolver samples
@@ -50,8 +52,8 @@ capacity work, not the bounded P20 workload.
 
 Metal's P19 `Transmission.Compact` candidate remains default-off. Its local
 pass-time improvement did not improve the owner-level frame outcome, so no
-speed claim or Vulkan P19 implementation is accepted. P21 remains a separate,
-unauthorized deletion phase. Metal validation processes must remain strictly
+speed claim or Vulkan P19 implementation is accepted. P21 was authorized and
+implemented on 2026-08-20. Metal validation processes must remain strictly
 serial. The implementation contract, evidence digests, and phase details are in
 [deferred-visibility-buffer/SPEC.md](../../rendering/deferred-visibility-buffer/SPEC.md).
 
@@ -193,16 +195,16 @@ text, whose candidate is depth-compared with the deferred result. Only
 redundant opaque/transmission mesh re-rasterization may be removed.
 
 **Migrate in narrow vertical slices, then delete the legacy renderer.** Shared
-graph/ABI/lifetime foundations land on both backends. Each rendering feature
-lands on Metal first and is then mirrored on Vulkan before the next layer. A
-temporary `deferred_enabled` condition keeps the legacy forward topology
-selectable through P20, when deferred becomes the default and completes a
-bounded cross-backend stability soak. P21 then completely removes the legacy
+graph/ABI/lifetime foundations landed on both backends. Each rendering feature
+landed on Metal first and was then mirrored on Vulkan before the next layer. A
+temporary `deferred_enabled` condition kept the legacy forward topology
+selectable through P20, when deferred became the default and completed a
+bounded cross-backend stability soak. P21 completely removed the legacy
 graph branch, opaque/transmission shaders and pipelines, CPU
 visibility/submission and fallback routes, selector/configuration state,
-dual-path metrics/tests, and dead compatibility code. P21 cannot begin while
-any shipping opaque/transmission material, state, topology, capacity overflow,
-or unresolved transmission-fidelity case still needs that path.
+dual-path metrics/tests, and dead compatibility code. It began only after no
+shipping opaque/transmission material, state, topology, capacity overflow, or
+unresolved transmission-fidelity case needed that path.
 
 After P21, the renderer has one world topology. Ordinary blend, world/UI text,
 UI, post processing, and their picking coverage keep only their narrow
@@ -268,9 +270,8 @@ decision.
   clustered lighting.
 - ADR-018's immutable-source rule remains and now records the four-layer Metal
   feedback chain selected by P18.
-- ADR-013 is superseded for opaque/transmission submission only after P21. It
-  remains in force for feature-local blend/text/UI submission and for the
-  retained diagnostic-forward path until P21.
+- ADR-013 is superseded for opaque/transmission and shadow submission. It
+  remains in force only for feature-local blend/text/UI submission.
 - P21 deliberately removes a compatibility surface rather than leaving dead
   code behind a default-off flag. This reduces graph, pipeline, cache,
   lifecycle, metric, and validation combinations, but post-retirement rollback
@@ -283,9 +284,8 @@ decision.
 
 ## Alternatives Considered
 
-**Keep the former forward renderer.** This was the fallback through P20 and now
-remains only as an explicitly selected diagnostic control. P21 does not retain
-it as a runtime option.
+**Keep the former forward renderer.** This was the fallback through P20. P21
+rejected retaining it as a runtime option.
 
 **Classic rasterized G-buffer deferred.** This is simpler and avoids analytic
 surface reconstruction, but material evaluation still follows raster overdraw

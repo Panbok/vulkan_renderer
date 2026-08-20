@@ -123,13 +123,13 @@ owning document status in the same change.
 | [025](architecture/adr/025-selected-renderer-implementation-strategy.md) | accepted | One coarse selected renderer strategy for Metal and bindless Vulkan, replacing the backend-type ladder and legacy adaptor |
 | [026](architecture/adr/026-vulkan-1-2-retirement.md) | implemented | Vulkan 1.2 backend, shaders, legacy frontend model, interface, and graph migration residue removed under explicit owner authorization |
 | [027](architecture/adr/027-immediate-mode-grid-ui.md) | proposed | Immediate-mode UI over a retained cache, grid-only layout, batched scissored draw list with evidence-gated tile caching, and a composited offscreen editor viewport |
-| [028](architecture/adr/028-gpu-driven-deferred-visibility-buffer.md) | partial; P20 boundary accepted on Metal and Vulkan | GPU-driven deferred visibility buffer; deferred is the accepted default on both backends with GPU submission, opaque/deferred shading, HZB, picking, four-layer transmission, and completion-gated layer coverage. P19 remains Metal-only/default-off; P21 retirement is unclaimed |
+| [028](architecture/adr/028-gpu-driven-deferred-visibility-buffer.md) | implemented through P21 | GPU-driven deferred visibility buffer; both backends use one GPU-submitted topology with opaque/deferred shading, HZB, picking, four-layer transmission, and completion-gated layer coverage. The legacy world renderer and runtime fallback are retired; P19 remains Metal-only/default-off |
 
 ## Rendering
 
 | Document | Status | Purpose |
 |---|---|---|
-| [deferred-visibility-buffer/SPEC.md](rendering/deferred-visibility-buffer/SPEC.md) | partial; P20 boundary accepted on Metal and Vulkan | GPU-driven deferred visibility-buffer design. Both backends ship the accepted P20 default topology with GPU submission, opaque/deferred shading, HZB, picking, four-layer transmission, and completion-gated coverage. Metal additionally owns the default-off P19 compact candidate; P21 retirement is unclaimed. Rationale in [ADR-028](architecture/adr/028-gpu-driven-deferred-visibility-buffer.md) |
+| [deferred-visibility-buffer/SPEC.md](rendering/deferred-visibility-buffer/SPEC.md) | implemented through P21 | GPU-driven deferred visibility-buffer contract. Both backends use the sole GPU-submitted topology with opaque/deferred shading, HZB, picking, four-layer transmission, and completion-gated coverage. Metal additionally owns the default-off P19 compact candidate. Rationale in [ADR-028](architecture/adr/028-gpu-driven-deferred-visibility-buffer.md) |
 | [render-graph-design.md](rendering/render-graph-design.md) | partial | Access/subresource synchronization implemented; IBL bake coverage remains incomplete |
 | [render-graph-schema.json](rendering/render-graph-schema.json) | — | JSON schema for `assets/render_graphs/*.rendergraph.json` |
 | [stateless_renderer/stateless_renderer_spec.md](rendering/stateless_renderer/stateless_renderer_spec.md) | partial | Packet API design; see ADR-004 for the real boundary |

@@ -98,12 +98,10 @@ This work is mostly consolidation. Reuse these; do not rebuild them.
 
 ### 2.1 Backend topology and deferred targets
 
-Metal and Windows Vulkan now default to the deferred visibility-buffer
-topology; explicit `VKR_DEFERRED_ENABLED=0` retains forward only for diagnosis
-until the separately authorized P21 retirement. Harness
-provenance and effective configuration publish `world_renderer`, and that value
-enters the environment fingerprint so evidence from the two topologies cannot
-be compared under one identity.
+Metal and Windows Vulkan execute the sole deferred visibility-buffer topology.
+Harness provenance and effective configuration still publish
+`world_renderer=deferred`; the field now identifies the renderer contract
+rather than a runtime selector.
 
 Both backends realize opaque/transmission visibility attachments and
 material-resolve G-buffer targets. Their direct channels are diagnostic evidence

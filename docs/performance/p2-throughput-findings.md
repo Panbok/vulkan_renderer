@@ -1,6 +1,6 @@
 ---
 status: investigation
-updated: 2026-08-11
+updated: 2026-08-20
 authority: investigation
 ---
 # P2 Throughput — Measured Findings
@@ -126,9 +126,10 @@ cascade centers shift with their receiver slices, so the final/widest cascade
 does not necessarily contain earlier cascades. Testing only it could drop a
 near-only caster.
 
-`tests/src/draw_merge_test.c` pins the property directly: an object outside the
-camera volume but inside the light volume must be marked
-`VKR_VISIBLE_SHADOW` and not `VKR_VISIBLE_CAMERA`.
+P21 later removed that CPU classifier and its `draw_merge_test.c` coverage.
+The surviving frustum properties live in `tests/src/visibility_test.c`; the
+camera-plus-cascade GPU partition is covered by the focused P16/P17 harness
+case instead.
 
 ## Finding 4 — instancing and MDI ship, and MDI fires only in the shadow pass
 
