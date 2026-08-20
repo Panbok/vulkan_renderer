@@ -61,8 +61,6 @@ typedef struct VkrMetalPacketRendererConfig {
   bool8_t srgb_output;
   /** Converts the shared Vulkan-oriented clip-Y matrices for Metal raster. */
   bool8_t convert_vulkan_clip_y;
-  /** Selects the P20 Metal deferred default; false is diagnostic forward. */
-  bool8_t deferred_enabled;
   /** Enables the measured P19 transmission pixel-list candidate. */
   bool8_t transmission_compact_enabled;
   /** Diagnostic rollback for P14 while retaining the deferred graph. */
@@ -148,10 +146,6 @@ typedef struct VkrMetalPacketPassTiming {
 typedef struct VkrMetalPacketResult {
   uint64_t submit_value;
   uint64_t source_frame_index;
-  /** Actual whole-frame topology selected for this packet. */
-  bool8_t deferred_selected;
-  /** VkrDeferredFallbackReason bits when requested deferred work rerouted. */
-  uint32_t deferred_fallback_reasons;
   uint32_t executed_pass_count;
   uint32_t graphics_pass_count;
   uint32_t compute_pass_count;
@@ -165,9 +159,6 @@ typedef struct VkrMetalPacketResult {
   uint32_t editor_draw_count;
   uint32_t ui_draw_count;
   uint32_t text_draw_count;
-  uint32_t picking_text_draw_count;
-  uint32_t picking_draw_count;
-  uint32_t skybox_draw_count;
   uint32_t ibl_dispatch_count;
   uint32_t gpu_candidate_count;
   uint32_t gpu_visible_count;

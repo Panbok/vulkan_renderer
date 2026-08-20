@@ -232,10 +232,8 @@ vkr_bindless_vk_prepare_packet_uploads(VkrBindlessVulkanRenderer *renderer,
   slot->frame_upload_cursor = 0u;
   slot->frame_upload_exhaustions = 0u;
   slot->world_instances = 0u;
-  slot->shadow_instances = 0u;
   slot->ui_instances = 0u;
   slot->editor_instances = 0u;
-  slot->picking_instances = 0u;
   slot->gpu_candidate_instances = 0u;
   slot->transmission_gpu_candidate_instances = 0u;
   slot->gpu_geometry_rows = 0u;
@@ -246,12 +244,6 @@ vkr_bindless_vk_prepare_packet_uploads(VkrBindlessVulkanRenderer *renderer,
   slot->gpu_world_epoch = 0u;
   slot->hzb_history_valid = false_v;
   slot->indexed_draw_count = 0u;
-  slot->shadow_draw_count = 0u;
-  MemZero(slot->shadow_opaque_draw_count,
-          sizeof(slot->shadow_opaque_draw_count));
-  MemZero(slot->shadow_alpha_draw_count, sizeof(slot->shadow_alpha_draw_count));
-  slot->opaque_draw_count = 0u;
-  slot->transmission_draw_count = 0u;
   slot->blend_draw_count = 0u;
   const bool8_t common_uploads =
       vkr_bindless_vk_upload_packet_tables(renderer, slot, packet) &&
@@ -259,23 +251,14 @@ vkr_bindless_vk_prepare_packet_uploads(VkrBindlessVulkanRenderer *renderer,
        vkr_bindless_vk_upload_instances(slot, packet->world->instances,
                                         packet->world->instance_count,
                                         &slot->world_instances)) &&
-      (!packet->shadow ||
-       vkr_bindless_vk_upload_instances(slot, packet->shadow->instances,
-                                        packet->shadow->instance_count,
-                                        &slot->shadow_instances)) &&
       (!packet->ui || vkr_bindless_vk_upload_instances(
                           slot, packet->ui->instances,
                           packet->ui->instance_count, &slot->ui_instances)) &&
       (!packet->editor ||
        vkr_bindless_vk_upload_instances(slot, packet->editor->instances,
                                         packet->editor->instance_count,
-                                        &slot->editor_instances)) &&
-      (!packet->picking ||
-       vkr_bindless_vk_upload_instances(slot, packet->picking->instances,
-                                        packet->picking->instance_count,
-                                        &slot->picking_instances));
-  if (!common_uploads || !renderer->prepared_frame.deferred_enabled ||
-      !packet->world)
+                                        &slot->editor_instances));
+  if (!common_uploads)
     return common_uploads;
 
   const uint64_t geometry_bytes =
@@ -292,16 +275,22 @@ vkr_bindless_vk_prepare_packet_uploads(VkrBindlessVulkanRenderer *renderer,
     if (geometry->live && geometry->pending_initialization_count == 0u)
       geometry_rows[i] = geometry->gpu_row;
   }
-  slot->gpu_world_epoch = vkr_bindless_vk_candidate_epoch(
-      packet->world->gpu_candidates, packet->world->gpu_candidate_count);
+  slot->gpu_world_epoch =
+      packet->world
+          ? vkr_bindless_vk_candidate_epoch(packet->world->gpu_candidates,
+                                            packet->world->gpu_candidate_count)
+          : 0u;
   return vkr_bindless_vk_pack_gpu_candidates(
-             renderer, slot, packet->world->gpu_candidates,
-             packet->world->gpu_candidate_count,
+             renderer, slot,
+             packet->world ? packet->world->gpu_candidates : NULL,
+             packet->world ? packet->world->gpu_candidate_count : 0u,
              &slot->gpu_candidate_upload_offset, &slot->gpu_candidate_instances,
              &slot->gpu_candidate_count) &&
          vkr_bindless_vk_pack_gpu_candidates(
-             renderer, slot, packet->world->transmission_gpu_candidates,
-             packet->world->transmission_gpu_candidate_count,
+             renderer, slot,
+             packet->world ? packet->world->transmission_gpu_candidates : NULL,
+             packet->world ? packet->world->transmission_gpu_candidate_count
+                           : 0u,
              &slot->transmission_gpu_candidate_upload_offset,
              &slot->transmission_gpu_candidate_instances,
              &slot->transmission_gpu_candidate_count);
@@ -393,12 +382,12 @@ vkr_internal bool8_t vkr_bindless_vk_pack_gpu_candidates(
     geometry->last_use_submit_value =
         Max(geometry->last_use_submit_value, pending_submit);
   }
-  if (packed_count != count && !renderer->deferred_candidate_drop_logged) {
-    log_warn("Bindless Vulkan deferred publication boundary omitted %u/%u "
-             "candidates (geometry=%u material=%u submesh=%u)",
-             count - packed_count, count, missing_geometry_count,
-             missing_material_count, invalid_submesh_count);
-    renderer->deferred_candidate_drop_logged = true_v;
+  if (packed_count != count) {
+    log_error("Bindless Vulkan rejected %u/%u malformed deferred candidates "
+              "(geometry=%u material=%u submesh=%u)",
+              count - packed_count, count, missing_geometry_count,
+              missing_material_count, invalid_submesh_count);
+    return false_v;
   }
   *out_packed_count = packed_count;
   return true_v;
@@ -490,7 +479,6 @@ bool8_t vkr_bindless_vk_record_packet_draws(
       packet->frame.viewport_height ? packet->frame.viewport_height
                                     : packet->frame.window_height);
   const bool8_t lighting_pass =
-      pipeline == VKR_BINDLESS_VK_PACKET_PIPELINE_WORLD_OPAQUE ||
       pipeline == VKR_BINDLESS_VK_PACKET_PIPELINE_WORLD_BLEND;
   uint64_t frame_root_address = 0u;
   VkrBindlessVkPacketFrameRoot *frame_root =
@@ -587,16 +575,8 @@ bool8_t vkr_bindless_vk_record_packet_draws(
             pending_submit;
     }
     slot->indexed_draw_count++;
-    if (pipeline == VKR_BINDLESS_VK_PACKET_PIPELINE_SHADOW)
-      slot->shadow_draw_count++;
-    else if (pipeline == VKR_BINDLESS_VK_PACKET_PIPELINE_WORLD_BLEND)
+    if (pipeline == VKR_BINDLESS_VK_PACKET_PIPELINE_WORLD_BLEND)
       slot->blend_draw_count++;
-    else if (pipeline == VKR_BINDLESS_VK_PACKET_PIPELINE_WORLD_OPAQUE) {
-      if (transmission_pass)
-        slot->transmission_draw_count++;
-      else
-        slot->opaque_draw_count++;
-    }
   }
   return true_v;
 }
@@ -703,52 +683,5 @@ bool8_t vkr_bindless_vk_record_packet_fullscreen(
                          VK_SHADER_STAGE_COMPUTE_BIT,
                      0u, sizeof(push), &push);
   vkCmdDraw(command, 3u, 1u, 0u, 0u);
-  return true_v;
-}
-
-bool8_t
-vkr_bindless_vk_record_packet_skybox(VkrBindlessVulkanRenderer *renderer,
-                                     VkCommandBuffer command,
-                                     const VkrSkyboxPassPayload *skybox) {
-  if (!skybox)
-    return true_v;
-  VkrBindlessVkPublishedTexture *cubemap =
-      vkr_bindless_vk_published_texture(renderer, skybox->cubemap, NULL);
-  if (!cubemap)
-    return false_v;
-  if (cubemap->initialization_pending)
-    return true_v;
-  if (cubemap->image.array_layers != 6u ||
-      cubemap->sampler_record_index >= renderer->config.sampler_capacity)
-    return false_v;
-  VkrBindlessVkPublishedSampler *sampler =
-      &renderer->published_samplers[cubemap->sampler_record_index];
-  if (!sampler->live)
-    return false_v;
-  VkrBindlessVkFrameSlot *slot =
-      &renderer->frame_slots[renderer->active_frame_slot];
-  uint64_t root_address = 0u;
-  VkrBindlessVkPacketUtilityRoot *root =
-      vkr_bindless_vk_packet_utility_root(slot, &root_address);
-  if (!root)
-    return false_v;
-  const VkrRenderPacket *packet = renderer->graph->packet;
-  root->view_projection =
-      mat4_inverse(mat4_mul(packet->globals.projection, packet->globals.view));
-  root->view_position =
-      (Vec4){packet->globals.view_position.x, packet->globals.view_position.y,
-             packet->globals.view_position.z, 1.0f};
-  root->transmission_texture = cubemap->sampled_slot.index;
-  root->transmission_sampler = sampler->slot.index;
-  const VkrBindlessVkPushConstants push = {.root = root_address};
-  vkCmdBindPipeline(
-      command, VK_PIPELINE_BIND_POINT_GRAPHICS,
-      renderer->packet_pipelines[VKR_BINDLESS_VK_PACKET_PIPELINE_SKYBOX]);
-  vkCmdPushConstants(command, renderer->pipeline_layout,
-                     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT |
-                         VK_SHADER_STAGE_COMPUTE_BIT,
-                     0u, sizeof(push), &push);
-  vkCmdDraw(command, 3u, 1u, 0u, 0u);
-  cubemap->last_use_submit_value = renderer->submit_value + 1u;
   return true_v;
 }

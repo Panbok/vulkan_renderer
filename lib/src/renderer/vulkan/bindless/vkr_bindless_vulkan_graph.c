@@ -31,12 +31,8 @@ typedef enum VkrBindlessVkGraphExecutorKind {
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_TRANSMISSION_COMPACT,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_TRANSMISSION_COMPACT_FINALIZE,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_HZB_BUILD,
-  VKR_BINDLESS_VK_GRAPH_EXECUTOR_SKYBOX,
-  VKR_BINDLESS_VK_GRAPH_EXECUTOR_WORLD_OPAQUE,
-  VKR_BINDLESS_VK_GRAPH_EXECUTOR_WORLD_GPU_OPAQUE,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_FULLSCREEN,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_EDITOR,
-  VKR_BINDLESS_VK_GRAPH_EXECUTOR_WORLD_TRANSMISSION,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_WORLD_BLEND,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_TONEMAP,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_EDITOR,
@@ -75,12 +71,8 @@ vkr_global const VkrBindlessVkGraphExecutorSpec
         {"pass.transmission.compact", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.transmission.compact_finalize", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.hzb.build", VKR_RG_PASS_TYPE_COMPUTE},
-        {"pass.skybox", VKR_RG_PASS_TYPE_GRAPHICS},
-        {"pass.world.opaque", VKR_RG_PASS_TYPE_GRAPHICS},
-        {"pass.world.gpu_opaque", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.copy.pre_transmission.fullscreen", VKR_RG_PASS_TYPE_TRANSFER},
         {"pass.copy.pre_transmission.editor", VKR_RG_PASS_TYPE_TRANSFER},
-        {"pass.world.transmission", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.world.blend", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.tonemap", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.editor", VKR_RG_PASS_TYPE_GRAPHICS},
@@ -873,28 +865,8 @@ vkr_internal bool8_t vkr_bindless_vk_record_graphics_body(
     vkCmdSetDepthBias(command, override ? override->depth_bias_constant : 1.25f,
                       override ? override->depth_bias_clamp : 0.0f,
                       override ? override->depth_bias_slope : 1.75f);
-    if (renderer->prepared_frame.deferred_enabled)
-      return vkr_bindless_vk_record_deferred_raster(renderer, command, pass,
-                                                    true_v, false_v);
-    const uint32_t opaque_draw_begin = slot->shadow_draw_count;
-    if (!vkr_bindless_vk_record_packet_draws(
-            renderer, command, VKR_BINDLESS_VK_PACKET_PIPELINE_SHADOW,
-            packet->shadow->opaque_draws, packet->shadow->opaque_draw_count,
-            slot->shadow_instances, packet->shadow->light_view_proj[cascade],
-            false_v, 0u, 0u, false_v))
-      return false_v;
-    slot->shadow_opaque_draw_count[cascade] =
-        slot->shadow_draw_count - opaque_draw_begin;
-    const uint32_t alpha_draw_begin = slot->shadow_draw_count;
-    if (!vkr_bindless_vk_record_packet_draws(
-            renderer, command, VKR_BINDLESS_VK_PACKET_PIPELINE_SHADOW,
-            packet->shadow->alpha_draws, packet->shadow->alpha_draw_count,
-            slot->shadow_instances, packet->shadow->light_view_proj[cascade],
-            true_v, 0u, 0u, false_v))
-      return false_v;
-    slot->shadow_alpha_draw_count[cascade] =
-        slot->shadow_draw_count - alpha_draw_begin;
-    return true_v;
+    return vkr_bindless_vk_record_deferred_raster(renderer, command, pass,
+                                                  true_v, false_v);
   }
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_PICKING: {
     if (!packet->picking || !packet->picking->pending)
@@ -902,19 +874,12 @@ vkr_internal bool8_t vkr_bindless_vk_record_graphics_body(
     const Mat4 view_projection =
         mat4_mul(packet->globals.projection, packet->globals.view);
     const VkrDrawItem *picking_draws =
-        renderer->prepared_frame.deferred_enabled && packet->world
-            ? packet->world->transparent_draws
-            : packet->picking->draws;
+        packet->world ? packet->world->transparent_draws : NULL;
     const uint32_t picking_draw_count =
-        renderer->prepared_frame.deferred_enabled && packet->world
-            ? packet->world->transparent_draw_count
-            : packet->picking->draw_count;
-    const uint64_t picking_instances = renderer->prepared_frame.deferred_enabled
-                                           ? slot->world_instances
-                                           : slot->picking_instances;
+        packet->world ? packet->world->transparent_draw_count : 0u;
     return vkr_bindless_vk_record_packet_draws(
                renderer, command, VKR_BINDLESS_VK_PACKET_PIPELINE_PICKING,
-               picking_draws, picking_draw_count, picking_instances,
+               picking_draws, picking_draw_count, slot->world_instances,
                view_projection, false_v, 0u, 0u, false_v) &&
            (!packet->world ||
             vkr_bindless_vk_record_text_draws(
@@ -929,45 +894,12 @@ vkr_internal bool8_t vkr_bindless_vk_record_graphics_body(
                 mat4_identity(), renderer->config.width,
                 renderer->config.height, true_v));
   }
-  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_WORLD_OPAQUE: {
-    if (!packet->world)
-      return true_v;
-    uint32_t shadow_texture = VKR_BINDLESS_VK_SENTINEL_SLOT_INDEX;
-    if (renderer->prepared_frame.shadow_cascade_count > 0u &&
-        !vkr_bindless_vk_graph_sampled_index(renderer, pass, 0u,
-                                             &shadow_texture))
-      return false_v;
-    return vkr_bindless_vk_record_packet_draws(
-        renderer, command, VKR_BINDLESS_VK_PACKET_PIPELINE_WORLD_OPAQUE,
-        packet->world->opaque_draws, packet->world->opaque_draw_count,
-        slot->world_instances,
-        mat4_mul(packet->globals.projection, packet->globals.view), false_v,
-        shadow_texture, 0u, false_v);
-  }
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_VBUFFER_OPAQUE:
     return vkr_bindless_vk_record_deferred_raster(renderer, command, pass,
                                                   false_v, false_v);
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_VBUFFER_TRANSMISSION:
     return vkr_bindless_vk_record_deferred_raster(renderer, command, pass,
                                                   false_v, true_v);
-  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_WORLD_TRANSMISSION: {
-    if (!packet->world)
-      return true_v;
-    uint32_t shadow_texture = VKR_BINDLESS_VK_SENTINEL_SLOT_INDEX;
-    uint32_t transmission_texture = 0u;
-    if ((renderer->prepared_frame.shadow_cascade_count > 0u &&
-         !vkr_bindless_vk_graph_sampled_index(renderer, pass, 0u,
-                                              &shadow_texture)) ||
-        !vkr_bindless_vk_graph_sampled_index(renderer, pass, 1u,
-                                             &transmission_texture))
-      return false_v;
-    return vkr_bindless_vk_record_packet_draws(
-        renderer, command, VKR_BINDLESS_VK_PACKET_PIPELINE_WORLD_BLEND,
-        packet->world->transmission_draws,
-        packet->world->transmission_draw_count, slot->world_instances,
-        mat4_mul(packet->globals.projection, packet->globals.view), false_v,
-        shadow_texture, transmission_texture, true_v);
-  }
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_WORLD_BLEND: {
     if (!packet->world)
       return true_v;
@@ -1022,9 +954,6 @@ vkr_internal bool8_t vkr_bindless_vk_record_graphics_body(
           VKR_BINDLESS_VK_FRAME_UPLOAD_SIZE);
     return recorded;
   }
-  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_SKYBOX:
-    return vkr_bindless_vk_record_packet_skybox(renderer, command,
-                                                packet->skybox);
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_UI: {
     if (!packet->ui)
       return true_v;
@@ -1202,12 +1131,8 @@ vkr_internal bool8_t vkr_bindless_vk_record_graph_pass(
   switch (kind) {
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_SHADOW:
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_PICKING:
-  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_SKYBOX:
-  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_WORLD_OPAQUE:
-  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_WORLD_GPU_OPAQUE:
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_VBUFFER_OPAQUE:
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_VBUFFER_TRANSMISSION:
-  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_WORLD_TRANSMISSION:
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_WORLD_BLEND:
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_TONEMAP:
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_EDITOR:

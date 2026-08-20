@@ -38,12 +38,6 @@
 #ifndef VKR_BINDLESS_VK_PACKET_WORLD_FRAG_SPV
 #define VKR_BINDLESS_VK_PACKET_WORLD_FRAG_SPV "packet.world.frag.spv"
 #endif
-#ifndef VKR_BINDLESS_VK_PACKET_SHADOW_VERT_SPV
-#define VKR_BINDLESS_VK_PACKET_SHADOW_VERT_SPV "packet.shadow.vert.spv"
-#endif
-#ifndef VKR_BINDLESS_VK_PACKET_SHADOW_FRAG_SPV
-#define VKR_BINDLESS_VK_PACKET_SHADOW_FRAG_SPV "packet.shadow.frag.spv"
-#endif
 #ifndef VKR_BINDLESS_VK_PACKET_PICKING_FRAG_SPV
 #define VKR_BINDLESS_VK_PACKET_PICKING_FRAG_SPV "packet.picking.frag.spv"
 #endif
@@ -52,9 +46,6 @@
 #endif
 #ifndef VKR_BINDLESS_VK_PACKET_FULLSCREEN_FRAG_SPV
 #define VKR_BINDLESS_VK_PACKET_FULLSCREEN_FRAG_SPV "packet.fullscreen.frag.spv"
-#endif
-#ifndef VKR_BINDLESS_VK_PACKET_SKYBOX_FRAG_SPV
-#define VKR_BINDLESS_VK_PACKET_SKYBOX_FRAG_SPV "packet.skybox.frag.spv"
 #endif
 #ifndef VKR_BINDLESS_VK_PACKET_TEXT_VERT_SPV
 #define VKR_BINDLESS_VK_PACKET_TEXT_VERT_SPV "packet.text.vert.spv"
@@ -156,12 +147,8 @@ enum {
 };
 
 typedef enum VkrBindlessVkPacketPipeline {
-  VKR_BINDLESS_VK_PACKET_PIPELINE_SHADOW = 0,
-  VKR_BINDLESS_VK_PACKET_PIPELINE_PICKING,
-  VKR_BINDLESS_VK_PACKET_PIPELINE_WORLD_OPAQUE,
+  VKR_BINDLESS_VK_PACKET_PIPELINE_PICKING = 0,
   VKR_BINDLESS_VK_PACKET_PIPELINE_WORLD_BLEND,
-  VKR_BINDLESS_VK_PACKET_PIPELINE_FULLSCREEN_HDR,
-  VKR_BINDLESS_VK_PACKET_PIPELINE_SKYBOX,
   VKR_BINDLESS_VK_PACKET_PIPELINE_FULLSCREEN_FINAL,
   VKR_BINDLESS_VK_PACKET_PIPELINE_UI,
   VKR_BINDLESS_VK_PACKET_PIPELINE_WORLD_TEXT,
@@ -175,12 +162,9 @@ typedef enum VkrBindlessVkPacketPipeline {
 typedef enum VkrBindlessVkPacketShader {
   VKR_BINDLESS_VK_PACKET_SHADER_WORLD_VERTEX = 0,
   VKR_BINDLESS_VK_PACKET_SHADER_WORLD_FRAGMENT,
-  VKR_BINDLESS_VK_PACKET_SHADER_SHADOW_VERTEX,
-  VKR_BINDLESS_VK_PACKET_SHADER_SHADOW_FRAGMENT,
   VKR_BINDLESS_VK_PACKET_SHADER_PICKING_FRAGMENT,
   VKR_BINDLESS_VK_PACKET_SHADER_FULLSCREEN_VERTEX,
   VKR_BINDLESS_VK_PACKET_SHADER_FULLSCREEN_FRAGMENT,
-  VKR_BINDLESS_VK_PACKET_SHADER_SKYBOX_FRAGMENT,
   VKR_BINDLESS_VK_PACKET_SHADER_TEXT_VERTEX,
   VKR_BINDLESS_VK_PACKET_SHADER_TEXT_FRAGMENT,
   VKR_BINDLESS_VK_PACKET_SHADER_TEXT_PICKING_FRAGMENT,
@@ -314,8 +298,7 @@ typedef struct VKR_SIMD_ALIGN VkrBindlessVkLightingRoot {
   uint32_t normal_texture;
   uint32_t scene_texture;
   uint32_t extent[2];
-  /* Deferred owns the background: the authored skybox pass is declared
-     `!deferred_enabled`, so lighting samples the packet cubemap itself. */
+  /* Deferred lighting owns the background and samples the packet cubemap. */
   uint32_t sky_texture;
   uint32_t sky_sampler;
   uint32_t sky_enabled;
@@ -689,10 +672,8 @@ typedef struct VkrBindlessVkFrameSlot {
    *  rejected for want of upload bytes, not for a malformed packet. */
   uint32_t frame_upload_exhaustions;
   uint64_t world_instances;
-  uint64_t shadow_instances;
   uint64_t ui_instances;
   uint64_t editor_instances;
-  uint64_t picking_instances;
   uint64_t gpu_candidate_instances;
   uint64_t transmission_gpu_candidate_instances;
   uint64_t gpu_geometry_rows;
@@ -720,14 +701,7 @@ typedef struct VkrBindlessVkFrameSlot {
   VkrBindlessVkGraphImageInstance *hzb_history_output;
   bool8_t hzb_history_valid;
   uint32_t indexed_draw_count;
-  uint32_t shadow_draw_count;
-  uint32_t shadow_opaque_draw_count[VKR_SHADOW_CASCADE_COUNT_MAX];
-  uint32_t shadow_alpha_draw_count[VKR_SHADOW_CASCADE_COUNT_MAX];
-  uint32_t opaque_draw_count;
-  uint32_t transmission_draw_count;
   uint32_t blend_draw_count;
-  uint32_t deferred_fallback_reasons;
-  bool8_t deferred_selected;
 } VkrBindlessVkFrameSlot;
 
 typedef struct VkrBindlessVkWindowTarget {
@@ -968,7 +942,6 @@ struct VkrBindlessVulkanRenderer {
   /* Which publication class claims the single bounded staging chunk next.
      Buffers and textures alternate so neither starves the other. */
   bool8_t stage_textures_first;
-  bool8_t deferred_candidate_drop_logged;
   void *sampled_image_slot_storage;
   void *storage_image_slot_storage;
   void *sampler_slot_storage;
@@ -1175,10 +1148,6 @@ bool8_t vkr_bindless_vk_record_packet_fullscreen(
     VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
     VkrBindlessVkPacketPipeline pipeline, uint32_t texture_index,
     uint32_t flags);
-bool8_t
-vkr_bindless_vk_record_packet_skybox(VkrBindlessVulkanRenderer *renderer,
-                                     VkCommandBuffer command,
-                                     const VkrSkyboxPassPayload *skybox);
 bool8_t vkr_bindless_vk_record_text_draws(
     VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
     VkrBindlessVkPacketPipeline pipeline, const VkrPreparedTextDraw *draws,

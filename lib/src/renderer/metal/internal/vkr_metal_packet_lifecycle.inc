@@ -402,9 +402,9 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
     [renderer->gpu_draw_icb_argument_encoder release];
     [renderer->depth_read_state release];
     [renderer->depth_write_state release];
-    [renderer->picking_text_pipeline release];
     [renderer->ui_text_pipeline release];
     [renderer->world_text_pipeline release];
+    [renderer->picking_text_pipeline release];
     [renderer->tonemap_pipeline release];
     [renderer->ibl_equirect_pipeline release];
     [renderer->ibl_prefilter_pipeline release];
@@ -423,12 +423,9 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
     [renderer->vbuffer_pipeline release];
     [renderer->transmission_vbuffer_pipeline release];
     [renderer->gpu_shadow_pipeline release];
-    [renderer->picking_pipeline release];
-    [renderer->opaque_pipeline release];
     [renderer->blend_pipeline release];
     [renderer->overlay_pipeline release];
-    [renderer->skybox_pipeline release];
-    [renderer->shadow_pipeline release];
+    [renderer->picking_pipeline release];
     [renderer->compiler release];
     [renderer->compiler_options release];
     [renderer->pipeline_archive release];

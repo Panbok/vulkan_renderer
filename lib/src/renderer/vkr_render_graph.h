@@ -593,8 +593,6 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t viewport_width;  /**< Viewport width */
   uint32_t viewport_height; /**< Viewport height */
   bool8_t editor_enabled;   /**< Whether editor is enabled */
-  /** Temporary migration condition; false keeps the retained forward graph. */
-  bool8_t deferred_enabled;
   /** True only when a completion-protected HZB history generation is valid. */
   bool8_t hzb_history_valid;
   /** Number of graph-authored reductions after the HZB base mip. */

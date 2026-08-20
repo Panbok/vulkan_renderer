@@ -128,8 +128,6 @@ bool8_t vkr_bindless_vk_record_deferred_upload(
 bool8_t
 vkr_bindless_vk_record_deferred_readback(VkrBindlessVulkanRenderer *renderer,
                                          VkCommandBuffer command) {
-  if (!renderer->prepared_frame.deferred_enabled)
-    return true_v;
   VkrBindlessVkFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   VkrBindlessVkGraphBufferInstance *opaque = slot->gpu_compaction_state;
@@ -376,8 +374,6 @@ vkr_internal bool8_t vkr_bindless_vk_deferred_cull_root(
 
 void vkr_bindless_vk_mark_hzb_submitted(VkrBindlessVulkanRenderer *renderer,
                                         uint64_t submit_value) {
-  if (!renderer->prepared_frame.deferred_enabled)
-    return;
   VkrBindlessVkFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   if (slot->hzb_history_input)

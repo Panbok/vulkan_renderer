@@ -158,27 +158,6 @@ typedef struct ApplicationMetricIds {
  * Encapsulates all core components, state, and resources needed for the
  * application to run.
  */
-/**
- * @brief Draw lists for the shadow pass, built from light visibility.
- *
- * Kept separate from the world payload because camera-culled objects can still
- * cast visible shadows: reusing a camera-culled list for CSM drops them. Both
- * lists index the same instance array, which holds every object visible to
- * either the camera or the light.
- */
-typedef struct VkrShadowDrawLists {
-  VkrDrawItem *opaque_draws;
-  uint32_t opaque_draw_count;
-  VkrDrawItem *alpha_draws;
-  uint32_t alpha_draw_count;
-  /**
-   * Shadow keeps its own instance array: its visible set differs from the
-   * camera's, so one array cannot hold contiguous merged runs for both.
-   */
-  VkrInstanceDataGPU *instances;
-  uint32_t instance_count;
-} VkrShadowDrawLists;
-
 typedef struct Application {
   Arena *app_arena; /**< Main memory arena for general application use (e.g.,
                        game entities, state). */
@@ -578,31 +557,6 @@ vkr_internal bool8_t application_material_is_transmissive(
                                                       material);
 }
 
-/**
- * Local reflection-probe descriptors are selected from world position and
- * applied once per draw. Until probe selection moves into per-instance data,
- * instances at different positions cannot legally share one world draw.
- */
-vkr_internal bool8_t
-application_world_may_have_position_dependent_ibl(const RendererFrontend *rf) {
-  if (!rf->world_resources.initialized || !rf->active_scene) {
-    return false_v;
-  }
-
-  const VkrScene *scene = rf->active_scene;
-  for (uint32_t i = 0; i < scene->reflection_probe_count; ++i) {
-    const VkrSceneReflectionProbe *probe = &scene->reflection_probes[i];
-    // PENDING matters too: the IBL-bake pass precedes the world pass and can
-    // make the probe READY after this packet has already been built.
-    if (probe->enabled &&
-        (probe->bake_state == VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_PENDING ||
-         probe->bake_state == VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_READY)) {
-      return true_v;
-    }
-  }
-  return false_v;
-}
-
 vkr_internal float32_t application_transparent_depth(Mat4 view, Mat4 model,
                                                      Vec3 local_center) {
   Vec3 world_center = mat4_mul_vec3(model, local_center);
@@ -619,458 +573,182 @@ vkr_internal uint64_t application_pack_transparent_sort_key(
   return ((uint64_t)distance_bits << 32) | (uint64_t)tie_breaker;
 }
 
+typedef struct ApplicationWorldSource {
+  VkrMeshHandle mesh;
+  VkrGeometryHandle geometry;
+  VkrMaterialHandle material;
+  Mat4 model;
+  Vec3 center;
+  Vec3 min_extents;
+  Vec3 max_extents;
+  VkrDrawAlphaRouting alpha;
+  uint32_t submesh_index;
+  uint32_t object_id;
+  bool8_t bounds_valid;
+  bool8_t transmissive;
+  bool8_t double_sided;
+} ApplicationWorldSource;
+
+typedef struct ApplicationWorldEmitContext {
+  Mat4 view;
+  const uint8_t *transparent_visible;
+  VkrWorldDrawCandidate *gpu_candidates;
+  VkrWorldDrawCandidate *transmission_gpu_candidates;
+  VkrTransparentDrawCandidate *transparent_candidates;
+  uint32_t source_index;
+  uint32_t gpu_index;
+  uint32_t transmission_index;
+  uint32_t transparent_index;
+} ApplicationWorldEmitContext;
+
+vkr_internal inline void
+application_emit_world_source(ApplicationWorldEmitContext *context,
+                              const ApplicationWorldSource *source) {
+  const Vec3 half_extents =
+      vec3_scale(vec3_sub(source->max_extents, source->min_extents), 0.5f);
+  const VkrWorldDrawCandidate candidate = {
+      .mesh = source->mesh,
+      .geometry = source->geometry,
+      .submesh_index = source->submesh_index,
+      .material = source->material,
+      .instance = {.model = source->model, .object_id = source->object_id},
+      .local_bounding_sphere = {source->center.x, source->center.y,
+                                source->center.z, vec3_length(half_extents)},
+      .state_bucket = vkr_world_draw_state_bucket(
+          source->alpha.shadow_alpha_tested ? VKR_MATERIAL_ALPHA_CUTOUT
+                                            : VKR_MATERIAL_ALPHA_OPAQUE,
+          source->double_sided),
+      .flags =
+          (source->bounds_valid ? VKR_WORLD_DRAW_CANDIDATE_BOUNDS_VALID : 0u) |
+          (!source->transmissive && !source->alpha.world_transparent
+               ? VKR_WORLD_DRAW_CANDIDATE_CAMERA_OPAQUE
+               : 0u) |
+          VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER,
+  };
+  context->gpu_candidates[context->gpu_index++] = candidate;
+  if (source->transmissive)
+    context->transmission_gpu_candidates[context->transmission_index++] =
+        candidate;
+  if (!source->transmissive && source->alpha.world_transparent &&
+      context->transparent_visible[context->source_index]) {
+    const float32_t depth = application_transparent_depth(
+        context->view, source->model, source->center);
+    context->transparent_candidates[context->transparent_index++] =
+        (VkrTransparentDrawCandidate){
+            .model = source->model,
+            .mesh = source->mesh,
+            .geometry = source->geometry,
+            .material = source->material,
+            .submesh_index = source->submesh_index,
+            .object_id = source->object_id,
+            .sort_key = application_pack_transparent_sort_key(
+                depth, context->source_index + 1u),
+        };
+  }
+  context->source_index++;
+}
+
 /**
- * @brief Builds the world and shadow draw lists for one frame.
+ * @brief Builds the sole GPU-driven world source and retained blend list.
  *
- * Both lists are produced in one traversal so their visibility decisions are
- * taken from the same classification. The camera list and the shadow list are
- * independent: an object behind the camera can still cast a shadow into view,
- * so the shadow list is built from the light's volume rather than reusing the
- * camera-culled list.
- *
- * Visibility is decided once per object in the count pass and cached in
- * `visibility`, because the count and populate passes must agree exactly --
- * re-testing risks a divergence that would desynchronize the arrays.
- *
- * @param shadow_frustums Cascade volumes to test casters against. Shadow
- *        visibility is their union; zero count disables shadow emission.
- * @param out_shadow Shadow draw-list storage, empty when shadows are disabled.
+ * Opaque, cutout, transmission, and shadow visibility remain unculled packet
+ * candidates; the selected backend owns their multi-view classification.
+ * Ordinary alpha blend is the only camera-culled and depth-sorted CPU list.
  */
 vkr_internal bool8_t application_build_world_payload(
     Application *application, VkrAllocator *scratch,
-    const VkrFrustum *shadow_frustums, uint32_t shadow_frustum_count,
-    VkrWorldPassPayload *out_payload, VkrShadowDrawLists *out_shadow,
-    VkrVisibilityStats *out_stats) {
+    VkrWorldPassPayload *out_payload, VkrVisibilityStats *out_stats) {
   RendererFrontend *rf = &application->renderer;
-  Mat4 view = rf->globals.view;
-  VkrFrustum camera_frustum =
+  const Mat4 view = rf->globals.view;
+  const VkrFrustum camera_frustum =
       vkr_frustum_from_view_projection(view, rf->globals.projection);
-
-  VkrVisibilityStats stats = {0};
-  const bool8_t position_dependent_ibl =
-      application_world_may_have_position_dependent_ibl(rf);
-  *out_shadow = (VkrShadowDrawLists){0};
-
   const uint32_t mesh_count = vkr_mesh_manager_count(&rf->mesh_manager);
   const uint32_t live_instance_count =
       vkr_mesh_manager_instance_count(&rf->mesh_manager);
+  VkrVisibilityStats stats = {0};
+  uint64_t candidate_count_64 = 0u;
 
-  // Visibility is decided per submesh, not per object. A scene like Sponza is a
-  // handful of instances whose bounds enclose the camera, so object-granularity
-  // culling rejects nothing; the submesh AABBs are what actually localize
-  // geometry.
-  uint32_t submesh_slot_capacity = 0;
   for (uint32_t i = 0; i < mesh_count; ++i) {
     uint32_t mesh_slot = 0;
     VkrMesh *mesh = vkr_mesh_manager_get_mesh_by_live_index(&rf->mesh_manager,
                                                             i, &mesh_slot);
-    if (!mesh->visible ||
-        mesh->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
-      continue;
-    }
-    submesh_slot_capacity += vkr_mesh_manager_submesh_count(mesh);
+    if (mesh->visible && mesh->loading_state == VKR_MESH_LOADING_STATE_LOADED)
+      candidate_count_64 += vkr_mesh_manager_submesh_count(mesh);
   }
   for (uint32_t i = 0; i < live_instance_count; ++i) {
     uint32_t instance_slot = 0;
     VkrMeshInstance *instance = vkr_mesh_manager_get_instance_by_live_index(
         &rf->mesh_manager, i, &instance_slot);
     if (!instance->visible ||
-        instance->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
+        instance->loading_state != VKR_MESH_LOADING_STATE_LOADED)
       continue;
-    }
     VkrMeshAsset *asset =
         vkr_mesh_manager_get_live_asset(&rf->mesh_manager, instance->asset);
-    submesh_slot_capacity += (uint32_t)asset->submeshes.length;
+    candidate_count_64 += asset->submeshes.length;
   }
 
-  uint8_t *visibility = NULL;
-  if (submesh_slot_capacity > 0) {
-    visibility = vkr_allocator_alloc(scratch, submesh_slot_capacity,
-                                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    if (!visibility) {
-      *out_payload = (VkrWorldPassPayload){0};
-      return false_v;
-    }
-    MemZero(visibility, submesh_slot_capacity);
-  }
-  // Ordinal walked identically by the count and populate passes, so a cached
-  // decision always lands on the submesh it was taken for.
-  uint32_t vis_slot = 0;
-
-  uint32_t camera_opaque_count = 0;
-  uint32_t camera_transmission_count = 0;
-  uint32_t camera_transparent_count = 0;
-  uint32_t shadow_opaque_count = 0;
-  uint32_t shadow_alpha_count = 0;
-  uint32_t instance_slot_count = 0;
-  uint32_t gpu_candidate_count = 0;
-  uint32_t gpu_camera_opaque_candidate_count = 0;
-  uint32_t gpu_shadow_candidate_count = 0;
-  uint32_t transmission_gpu_candidate_count = 0;
-
-  // ---- Count pass: classify each object once, then size the lists. ----
-  for (uint32_t i = 0; i < mesh_count; ++i) {
-    uint32_t mesh_slot = 0;
-    VkrMesh *mesh = vkr_mesh_manager_get_mesh_by_live_index(&rf->mesh_manager,
-                                                            i, &mesh_slot);
-    if (!mesh->visible ||
-        mesh->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
-      continue;
-    }
-
-    uint32_t submesh_count = vkr_mesh_manager_submesh_count(mesh);
-    for (uint32_t s = 0; s < submesh_count; ++s) {
-      VkrSubMesh *submesh =
-          vkr_mesh_manager_get_submesh(&rf->mesh_manager, mesh_slot, s);
-      Vec3 sphere_center = {0};
-      float32_t sphere_radius = 0.0f;
-      vkr_visibility_submesh_sphere(mesh->model, submesh->center,
-                                    submesh->min_extents, submesh->max_extents,
-                                    &sphere_center, &sphere_radius);
-      uint8_t flags = vkr_visibility_classify(
-          &camera_frustum, shadow_frustums, shadow_frustum_count,
-          mesh->bounds_valid, sphere_center, sphere_radius, &stats);
-      visibility[vis_slot++] = flags;
-      VkrMaterial *material = application_get_material(rf, submesh->material);
-      const VkrDrawAlphaRouting alpha =
-          application_material_alpha_routing(rf, material);
-      const bool8_t transmissive =
-          application_material_is_transmissive(rf, material);
-      gpu_candidate_count++;
-      if (!transmissive && !alpha.world_transparent) {
-        gpu_camera_opaque_candidate_count++;
-      }
-      gpu_shadow_candidate_count++;
-      if (transmissive) {
-        transmission_gpu_candidate_count++;
-      }
-      if (flags == 0) {
-        continue;
-      }
-      if (flags & VKR_VISIBLE_CAMERA) {
-        if (transmissive) {
-          camera_transmission_count++;
-        } else if (alpha.world_transparent) {
-          camera_transparent_count++;
-        } else {
-          camera_opaque_count++;
-        }
-      }
-      if (flags & VKR_VISIBLE_SHADOW) {
-        if (alpha.shadow_alpha_tested) {
-          shadow_alpha_count++;
-        } else {
-          shadow_opaque_count++;
-        }
-      }
-      instance_slot_count++;
-    }
-  }
-
-  for (uint32_t i = 0; i < live_instance_count; ++i) {
-    uint32_t instance_slot = 0;
-    VkrMeshInstance *instance = vkr_mesh_manager_get_instance_by_live_index(
-        &rf->mesh_manager, i, &instance_slot);
-    if (!instance->visible ||
-        instance->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
-      continue;
-    }
-
-    VkrMeshAsset *asset =
-        vkr_mesh_manager_get_live_asset(&rf->mesh_manager, instance->asset);
-
-    uint32_t submesh_count = (uint32_t)asset->submeshes.length;
-    for (uint32_t s = 0; s < submesh_count; ++s) {
-      VkrMeshAssetSubmesh *submesh = &asset->submeshes.data[s];
-
-      Vec3 sphere_center = {0};
-      float32_t sphere_radius = 0.0f;
-      vkr_visibility_submesh_sphere(instance->model, submesh->center,
-                                    submesh->min_extents, submesh->max_extents,
-                                    &sphere_center, &sphere_radius);
-      uint8_t flags = vkr_visibility_classify(
-          &camera_frustum, shadow_frustums, shadow_frustum_count,
-          instance->bounds_valid, sphere_center, sphere_radius, &stats);
-      visibility[vis_slot++] = flags;
-      VkrMaterial *material = application_get_material(rf, submesh->material);
-      const VkrDrawAlphaRouting alpha =
-          application_material_alpha_routing(rf, material);
-      const bool8_t transmissive =
-          application_material_is_transmissive(rf, material);
-      gpu_candidate_count++;
-      if (!transmissive && !alpha.world_transparent) {
-        gpu_camera_opaque_candidate_count++;
-      }
-      gpu_shadow_candidate_count++;
-      if (transmissive) {
-        transmission_gpu_candidate_count++;
-      }
-      if (flags == 0) {
-        continue;
-      }
-      if (flags & VKR_VISIBLE_CAMERA) {
-        if (transmissive) {
-          camera_transmission_count++;
-        } else if (alpha.world_transparent) {
-          camera_transparent_count++;
-        } else {
-          camera_opaque_count++;
-        }
-      }
-      if (flags & VKR_VISIBLE_SHADOW) {
-        if (alpha.shadow_alpha_tested) {
-          shadow_alpha_count++;
-        } else {
-          shadow_opaque_count++;
-        }
-      }
-      instance_slot_count++;
-    }
-  }
-
-  if (out_stats) {
-    *out_stats = stats;
-  }
-
-  if (instance_slot_count == 0 && gpu_candidate_count == 0 &&
-      transmission_gpu_candidate_count == 0) {
-    *out_payload = (VkrWorldPassPayload){0};
+  if (candidate_count_64 > VKR_GPU_DRAW_CANDIDATE_CAPACITY) {
+    *out_payload = (VkrWorldPassPayload){
+        .gpu_candidate_count = VKR_GPU_DRAW_CANDIDATE_CAPACITY + 1u,
+    };
+    stats.objects_tested = VKR_GPU_DRAW_CANDIDATE_CAPACITY + 1u;
+    if (out_stats)
+      *out_stats = stats;
     return true_v;
   }
 
-  // Candidates are collected first so emission order can be chosen after the
-  // fact: merging needs equal keys adjacent AND their instance records
-  // contiguous, which is only decidable once every candidate is known.
-  VkrDrawCandidate *camera_opaque_cands = NULL;
-  VkrDrawCandidate *camera_transmission_cands = NULL;
-  VkrDrawCandidate *camera_transparent_cands = NULL;
-  VkrDrawCandidate *shadow_opaque_cands = NULL;
-  VkrDrawCandidate *shadow_alpha_cands = NULL;
-  VkrWorldDrawCandidate *gpu_candidates = NULL;
-  VkrWorldDrawCandidate *transmission_gpu_candidates = NULL;
-  if (gpu_candidate_count > 0) {
-    gpu_candidates = vkr_allocator_alloc(
-        scratch, sizeof(VkrWorldDrawCandidate) * (uint64_t)gpu_candidate_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  }
-  if (transmission_gpu_candidate_count > 0) {
-    transmission_gpu_candidates =
-        vkr_allocator_alloc(scratch,
-                            sizeof(VkrWorldDrawCandidate) *
-                                (uint64_t)transmission_gpu_candidate_count,
-                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  }
-  if (camera_opaque_count > 0) {
-    camera_opaque_cands = vkr_allocator_alloc(
-        scratch, sizeof(VkrDrawCandidate) * (uint64_t)camera_opaque_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  }
-  if (camera_transparent_count > 0) {
-    camera_transparent_cands = vkr_allocator_alloc(
-        scratch, sizeof(VkrDrawCandidate) * (uint64_t)camera_transparent_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  }
-  if (camera_transmission_count > 0) {
-    camera_transmission_cands = vkr_allocator_alloc(
-        scratch, sizeof(VkrDrawCandidate) * (uint64_t)camera_transmission_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  }
-  if (shadow_opaque_count > 0) {
-    shadow_opaque_cands = vkr_allocator_alloc(
-        scratch, sizeof(VkrDrawCandidate) * (uint64_t)shadow_opaque_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  }
-  if (shadow_alpha_count > 0) {
-    shadow_alpha_cands = vkr_allocator_alloc(
-        scratch, sizeof(VkrDrawCandidate) * (uint64_t)shadow_alpha_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  const uint32_t gpu_candidate_count = (uint32_t)candidate_count_64;
+  uint8_t *transparent_visible = NULL;
+  if (gpu_candidate_count > 0u) {
+    transparent_visible = vkr_allocator_alloc(scratch, gpu_candidate_count,
+                                              VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!transparent_visible) {
+      *out_payload = (VkrWorldPassPayload){0};
+      return false_v;
+    }
+    MemZero(transparent_visible, gpu_candidate_count);
   }
 
-  VkrDrawItem *opaque_draws = NULL;
-  if (camera_opaque_count > 0) {
-    opaque_draws = vkr_allocator_alloc(
-        scratch, sizeof(VkrDrawItem) * (uint64_t)camera_opaque_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  }
-  VkrDrawItem *transparent_draws = NULL;
-  if (camera_transparent_count > 0) {
-    transparent_draws = vkr_allocator_alloc(
-        scratch, sizeof(VkrDrawItem) * (uint64_t)camera_transparent_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  }
-  VkrDrawItem *transmission_draws = NULL;
-  if (camera_transmission_count > 0) {
-    transmission_draws = vkr_allocator_alloc(
-        scratch, sizeof(VkrDrawItem) * (uint64_t)camera_transmission_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  }
-  VkrDrawItem *shadow_opaque_draws = NULL;
-  if (shadow_opaque_count > 0) {
-    shadow_opaque_draws = vkr_allocator_alloc(
-        scratch, sizeof(VkrDrawItem) * (uint64_t)shadow_opaque_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  }
-  VkrDrawItem *shadow_alpha_draws = NULL;
-  if (shadow_alpha_count > 0) {
-    shadow_alpha_draws = vkr_allocator_alloc(
-        scratch, sizeof(VkrDrawItem) * (uint64_t)shadow_alpha_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  }
+  uint32_t gpu_camera_opaque_candidate_count = 0u;
+  uint32_t transmission_gpu_candidate_count = 0u;
+  uint32_t transparent_draw_count = 0u;
+  uint32_t source_index = 0u;
 
-  // World and shadow keep separate instance arrays: their visible sets differ,
-  // so one array cannot hold contiguous merged runs for both.
-  const uint32_t world_instance_count = camera_opaque_count +
-                                        camera_transmission_count +
-                                        camera_transparent_count;
-  const uint32_t shadow_instance_count =
-      shadow_opaque_count + shadow_alpha_count;
-  VkrInstanceDataGPU *instances = NULL;
-  if (world_instance_count > 0) {
-    instances = vkr_allocator_alloc(
-        scratch, sizeof(VkrInstanceDataGPU) * (uint64_t)world_instance_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  }
-  VkrInstanceDataGPU *shadow_instances = NULL;
-  if (shadow_instance_count > 0) {
-    shadow_instances = vkr_allocator_alloc(
-        scratch, sizeof(VkrInstanceDataGPU) * (uint64_t)shadow_instance_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  }
-
-  if ((camera_opaque_count > 0 && (!opaque_draws || !camera_opaque_cands)) ||
-      (camera_transmission_count > 0 &&
-       (!transmission_draws || !camera_transmission_cands)) ||
-      (camera_transparent_count > 0 &&
-       (!transparent_draws || !camera_transparent_cands)) ||
-      (shadow_opaque_count > 0 &&
-       (!shadow_opaque_draws || !shadow_opaque_cands)) ||
-      (shadow_alpha_count > 0 &&
-       (!shadow_alpha_draws || !shadow_alpha_cands)) ||
-      (gpu_candidate_count > 0 && !gpu_candidates) ||
-      (transmission_gpu_candidate_count > 0 && !transmission_gpu_candidates) ||
-      (world_instance_count > 0 && !instances) ||
-      (shadow_instance_count > 0 && !shadow_instances)) {
-    *out_payload = (VkrWorldPassPayload){0};
-    *out_shadow = (VkrShadowDrawLists){0};
-    return false_v;
-  }
-
-  uint32_t opaque_index = 0;
-  uint32_t transmission_index = 0;
-  uint32_t transparent_index = 0;
-  uint32_t shadow_opaque_index = 0;
-  uint32_t shadow_alpha_index = 0;
-  uint32_t gpu_candidate_index = 0;
-  uint32_t transmission_gpu_candidate_index = 0;
-  vis_slot = 0;
-
-  // ---- Populate pass: reuse the cached visibility, never re-test. ----
   for (uint32_t i = 0; i < mesh_count; ++i) {
     uint32_t mesh_slot = 0;
     VkrMesh *mesh = vkr_mesh_manager_get_mesh_by_live_index(&rf->mesh_manager,
                                                             i, &mesh_slot);
-    if (!mesh->visible ||
-        mesh->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
+    if (!mesh->visible || mesh->loading_state != VKR_MESH_LOADING_STATE_LOADED)
       continue;
-    }
-    uint32_t object_id =
-        mesh->render_id
-            ? vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE, mesh->render_id)
-            : 0;
-
-    uint32_t submesh_count = vkr_mesh_manager_submesh_count(mesh);
+    const uint32_t submesh_count = vkr_mesh_manager_submesh_count(mesh);
     for (uint32_t s = 0; s < submesh_count; ++s) {
       VkrSubMesh *submesh =
           vkr_mesh_manager_get_submesh(&rf->mesh_manager, mesh_slot, s);
-      const uint8_t flags = visibility[vis_slot++];
       VkrMaterial *material = application_get_material(rf, submesh->material);
-      const VkrMaterialHandle draw_material =
-          material ? (VkrMaterialHandle){.id = material->id,
-                                         .generation = material->generation}
-                   : submesh->material;
       const VkrDrawAlphaRouting alpha =
           application_material_alpha_routing(rf, material);
       const bool8_t transmissive =
           application_material_is_transmissive(rf, material);
-      const Vec3 half_extents = vec3_scale(
-          vec3_sub(submesh->max_extents, submesh->min_extents), 0.5f);
-      VkrWorldDrawCandidate gpu_candidate = (VkrWorldDrawCandidate){
-          .mesh = {.id = mesh_slot + 1u, .generation = 0},
-          .geometry = submesh->geometry,
-          .submesh_index = s,
-          .material = draw_material,
-          .instance = {.model = mesh->model, .object_id = object_id},
-          .local_bounding_sphere = {submesh->center.x, submesh->center.y,
-                                    submesh->center.z,
-                                    vec3_length(half_extents)},
-          .state_bucket = vkr_world_draw_state_bucket(
-              alpha.shadow_alpha_tested ? VKR_MATERIAL_ALPHA_CUTOUT
-                                        : VKR_MATERIAL_ALPHA_OPAQUE,
-              material ? material->double_sided : false_v),
-          .flags = (mesh->bounds_valid ? VKR_WORLD_DRAW_CANDIDATE_BOUNDS_VALID
-                                       : 0u) |
-                   (!transmissive && !alpha.world_transparent
-                        ? VKR_WORLD_DRAW_CANDIDATE_CAMERA_OPAQUE
-                        : 0u) |
-                   VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER,
-      };
-      gpu_candidates[gpu_candidate_index++] = gpu_candidate;
-      if (transmissive) {
-        transmission_gpu_candidates[transmission_gpu_candidate_index++] =
-            gpu_candidate;
-      }
-      if (flags == 0) {
-        continue;
-      }
-      const float32_t mesh_distance =
-          (transmissive || alpha.world_transparent)
-              ? application_transparent_depth(view, mesh->model,
-                                              submesh->center)
-              : 0.0f;
-      const uint64_t sort_key =
-          (transmissive || alpha.world_transparent)
-              ? application_pack_transparent_sort_key(mesh_distance, vis_slot)
-              : 0u;
-      const VkrDrawCandidate candidate = {
-          .key =
-              {
-                  .geometry = ((uint64_t)submesh->geometry.id << 32) |
-                              (uint64_t)submesh->geometry.generation,
-                  .material = ((uint64_t)draw_material.id << 32) |
-                              (uint64_t)draw_material.generation,
-                  .binding_context =
-                      position_dependent_ibl ? (uint64_t)vis_slot : 0u,
-                  .first_index = submesh->first_index,
-                  .index_count = submesh->index_count,
-                  .vertex_offset = submesh->vertex_offset,
-                  .domain = (uint32_t)submesh->pipeline_domain,
-              },
-          .model = mesh->model,
-          .mesh = {.id = mesh_slot + 1u, .generation = 0},
-          .geometry = submesh->geometry,
-          .submesh_index = s,
-          .object_id = object_id,
-          .sort_key = sort_key,
-      };
-
-      if (flags & VKR_VISIBLE_CAMERA) {
-        if (transmissive) {
-          camera_transmission_cands[transmission_index++] = candidate;
-        } else if (alpha.world_transparent) {
-          camera_transparent_cands[transparent_index++] = candidate;
-        } else {
-          camera_opaque_cands[opaque_index++] = candidate;
+      stats.objects_tested++;
+      stats.objects_without_bounds += mesh->bounds_valid ? 0u : 1u;
+      gpu_camera_opaque_candidate_count +=
+          !transmissive && !alpha.world_transparent ? 1u : 0u;
+      transmission_gpu_candidate_count += transmissive ? 1u : 0u;
+      if (!transmissive && alpha.world_transparent) {
+        bool8_t visible = true_v;
+        if (mesh->bounds_valid) {
+          Vec3 center = {0};
+          float32_t radius = 0.0f;
+          vkr_visibility_submesh_sphere(mesh->model, submesh->center,
+                                        submesh->min_extents,
+                                        submesh->max_extents, &center, &radius);
+          visible = vkr_frustum_test_sphere(&camera_frustum, center, radius);
         }
+        transparent_visible[source_index] = visible;
+        transparent_draw_count += visible ? 1u : 0u;
+        stats.objects_culled_camera += visible ? 0u : 1u;
       }
-      if (flags & VKR_VISIBLE_SHADOW) {
-        VkrDrawCandidate shadow_candidate = candidate;
-        shadow_candidate.key.binding_context = 0u;
-        if (alpha.shadow_alpha_tested) {
-          shadow_alpha_cands[shadow_alpha_index++] = shadow_candidate;
-        } else {
-          shadow_opaque_cands[shadow_opaque_index++] = shadow_candidate;
-        }
-      }
+      source_index++;
     }
   }
 
@@ -1079,22 +757,100 @@ vkr_internal bool8_t application_build_world_payload(
     VkrMeshInstance *instance = vkr_mesh_manager_get_instance_by_live_index(
         &rf->mesh_manager, i, &instance_slot);
     if (!instance->visible ||
-        instance->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
+        instance->loading_state != VKR_MESH_LOADING_STATE_LOADED)
       continue;
-    }
-
     VkrMeshAsset *asset =
         vkr_mesh_manager_get_live_asset(&rf->mesh_manager, instance->asset);
-    uint32_t object_id = 0;
-    if (instance->render_id != 0) {
-      object_id =
-          vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE, instance->render_id);
-    }
-
-    uint32_t submesh_count = (uint32_t)asset->submeshes.length;
+    const uint32_t submesh_count = (uint32_t)asset->submeshes.length;
     for (uint32_t s = 0; s < submesh_count; ++s) {
       VkrMeshAssetSubmesh *submesh = &asset->submeshes.data[s];
-      const uint8_t flags = visibility[vis_slot++];
+      VkrMaterial *material = application_get_material(rf, submesh->material);
+      const VkrDrawAlphaRouting alpha =
+          application_material_alpha_routing(rf, material);
+      const bool8_t transmissive =
+          application_material_is_transmissive(rf, material);
+      stats.objects_tested++;
+      stats.objects_without_bounds += instance->bounds_valid ? 0u : 1u;
+      gpu_camera_opaque_candidate_count +=
+          !transmissive && !alpha.world_transparent ? 1u : 0u;
+      transmission_gpu_candidate_count += transmissive ? 1u : 0u;
+      if (!transmissive && alpha.world_transparent) {
+        bool8_t visible = true_v;
+        if (instance->bounds_valid) {
+          Vec3 center = {0};
+          float32_t radius = 0.0f;
+          vkr_visibility_submesh_sphere(instance->model, submesh->center,
+                                        submesh->min_extents,
+                                        submesh->max_extents, &center, &radius);
+          visible = vkr_frustum_test_sphere(&camera_frustum, center, radius);
+        }
+        transparent_visible[source_index] = visible;
+        transparent_draw_count += visible ? 1u : 0u;
+        stats.objects_culled_camera += visible ? 0u : 1u;
+      }
+      source_index++;
+    }
+  }
+
+  VkrWorldDrawCandidate *gpu_candidates = NULL;
+  VkrWorldDrawCandidate *transmission_gpu_candidates = NULL;
+  VkrTransparentDrawCandidate *transparent_candidates = NULL;
+  VkrDrawItem *transparent_draws = NULL;
+  VkrInstanceDataGPU *transparent_instances = NULL;
+  if (gpu_candidate_count > 0u)
+    gpu_candidates = vkr_allocator_alloc(
+        scratch, sizeof(*gpu_candidates) * (uint64_t)gpu_candidate_count,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (transmission_gpu_candidate_count > 0u)
+    transmission_gpu_candidates =
+        vkr_allocator_alloc(scratch,
+                            sizeof(*transmission_gpu_candidates) *
+                                (uint64_t)transmission_gpu_candidate_count,
+                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (transparent_draw_count > 0u) {
+    transparent_candidates = vkr_allocator_alloc(
+        scratch,
+        sizeof(*transparent_candidates) * (uint64_t)transparent_draw_count,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    transparent_draws = vkr_allocator_alloc(
+        scratch, sizeof(*transparent_draws) * (uint64_t)transparent_draw_count,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    transparent_instances = vkr_allocator_alloc(
+        scratch,
+        sizeof(*transparent_instances) * (uint64_t)transparent_draw_count,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if ((gpu_candidate_count > 0u && !gpu_candidates) ||
+      (transmission_gpu_candidate_count > 0u && !transmission_gpu_candidates) ||
+      (transparent_draw_count > 0u &&
+       (!transparent_candidates || !transparent_draws ||
+        !transparent_instances))) {
+    *out_payload = (VkrWorldPassPayload){0};
+    return false_v;
+  }
+
+  ApplicationWorldEmitContext emit = {
+      .view = view,
+      .transparent_visible = transparent_visible,
+      .gpu_candidates = gpu_candidates,
+      .transmission_gpu_candidates = transmission_gpu_candidates,
+      .transparent_candidates = transparent_candidates,
+  };
+
+  for (uint32_t i = 0; i < mesh_count; ++i) {
+    uint32_t mesh_slot = 0;
+    VkrMesh *mesh = vkr_mesh_manager_get_mesh_by_live_index(&rf->mesh_manager,
+                                                            i, &mesh_slot);
+    if (!mesh->visible || mesh->loading_state != VKR_MESH_LOADING_STATE_LOADED)
+      continue;
+    const uint32_t object_id =
+        mesh->render_id
+            ? vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE, mesh->render_id)
+            : 0u;
+    const uint32_t submesh_count = vkr_mesh_manager_submesh_count(mesh);
+    for (uint32_t s = 0; s < submesh_count; ++s) {
+      VkrSubMesh *submesh =
+          vkr_mesh_manager_get_submesh(&rf->mesh_manager, mesh_slot, s);
       VkrMaterial *material = application_get_material(rf, submesh->material);
       const VkrMaterialHandle draw_material =
           material ? (VkrMaterialHandle){.id = material->id,
@@ -1104,151 +860,90 @@ vkr_internal bool8_t application_build_world_payload(
           application_material_alpha_routing(rf, material);
       const bool8_t transmissive =
           application_material_is_transmissive(rf, material);
-      const Vec3 half_extents = vec3_scale(
-          vec3_sub(submesh->max_extents, submesh->min_extents), 0.5f);
-      VkrWorldDrawCandidate gpu_candidate = (VkrWorldDrawCandidate){
-          .mesh = {.id = instance_slot + 1u,
-                   .generation = instance->generation},
+      const ApplicationWorldSource source = {
+          .mesh = {.id = mesh_slot + 1u, .generation = 0u},
           .geometry = submesh->geometry,
-          .submesh_index = s,
           .material = draw_material,
-          .instance = {.model = instance->model, .object_id = object_id},
-          .local_bounding_sphere = {submesh->center.x, submesh->center.y,
-                                    submesh->center.z,
-                                    vec3_length(half_extents)},
-          .state_bucket = vkr_world_draw_state_bucket(
-              alpha.shadow_alpha_tested ? VKR_MATERIAL_ALPHA_CUTOUT
-                                        : VKR_MATERIAL_ALPHA_OPAQUE,
-              material ? material->double_sided : false_v),
-          .flags =
-              (instance->bounds_valid ? VKR_WORLD_DRAW_CANDIDATE_BOUNDS_VALID
-                                      : 0u) |
-              (!transmissive && !alpha.world_transparent
-                   ? VKR_WORLD_DRAW_CANDIDATE_CAMERA_OPAQUE
-                   : 0u) |
-              VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER,
-      };
-      gpu_candidates[gpu_candidate_index++] = gpu_candidate;
-      if (transmissive) {
-        transmission_gpu_candidates[transmission_gpu_candidate_index++] =
-            gpu_candidate;
-      }
-      if (flags == 0) {
-        continue;
-      }
-      const float32_t instance_distance =
-          (transmissive || alpha.world_transparent)
-              ? application_transparent_depth(view, instance->model,
-                                              submesh->center)
-              : 0.0f;
-      const uint64_t sort_key = (transmissive || alpha.world_transparent)
-                                    ? application_pack_transparent_sort_key(
-                                          instance_distance, vis_slot)
-                                    : 0u;
-      const VkrDrawCandidate candidate = {
-          .key =
-              {
-                  .geometry = ((uint64_t)submesh->geometry.id << 32) |
-                              (uint64_t)submesh->geometry.generation,
-                  .material = ((uint64_t)draw_material.id << 32) |
-                              (uint64_t)draw_material.generation,
-                  .binding_context =
-                      position_dependent_ibl ? (uint64_t)vis_slot : 0u,
-                  .first_index = submesh->first_index,
-                  .index_count = submesh->index_count,
-                  .vertex_offset = submesh->vertex_offset,
-                  .domain = (uint32_t)submesh->pipeline_domain,
-              },
-          .model = instance->model,
-          .mesh = {.id = instance_slot + 1u,
-                   .generation = instance->generation},
-          .geometry = submesh->geometry,
+          .model = mesh->model,
+          .center = submesh->center,
+          .min_extents = submesh->min_extents,
+          .max_extents = submesh->max_extents,
+          .alpha = alpha,
           .submesh_index = s,
           .object_id = object_id,
-          .sort_key = sort_key,
+          .bounds_valid = mesh->bounds_valid,
+          .transmissive = transmissive,
+          .double_sided = material ? material->double_sided : false_v,
       };
-
-      if (flags & VKR_VISIBLE_CAMERA) {
-        if (transmissive) {
-          camera_transmission_cands[transmission_index++] = candidate;
-        } else if (alpha.world_transparent) {
-          camera_transparent_cands[transparent_index++] = candidate;
-        } else {
-          camera_opaque_cands[opaque_index++] = candidate;
-        }
-      }
-      if (flags & VKR_VISIBLE_SHADOW) {
-        VkrDrawCandidate shadow_candidate = candidate;
-        shadow_candidate.key.binding_context = 0u;
-        if (alpha.shadow_alpha_tested) {
-          shadow_alpha_cands[shadow_alpha_index++] = shadow_candidate;
-        } else {
-          shadow_opaque_cands[shadow_opaque_index++] = shadow_candidate;
-        }
-      }
+      application_emit_world_source(&emit, &source);
     }
   }
 
-  // ---- Emission: opaque merges; transparent and alpha do not. ----
-  // Transparent draws carry a back-to-front order and alpha-tested shadow draws
-  // rebind per-draw material state, so collapsing either would change what is
-  // drawn, not merely how many calls it takes.
-  uint32_t merged_opaque_draws = 0;
-  const uint32_t opaque_instances_written = vkr_draw_merge_candidates_measured(
-      camera_opaque_cands, camera_opaque_count, 0u, opaque_draws,
-      &merged_opaque_draws, instances, &stats);
-
-  if (camera_transmission_count > 1) {
-    qsort(camera_transmission_cands, camera_transmission_count,
-          sizeof(VkrDrawCandidate), vkr_draw_candidate_depth_compare);
+  for (uint32_t i = 0; i < live_instance_count; ++i) {
+    uint32_t instance_slot = 0;
+    VkrMeshInstance *instance = vkr_mesh_manager_get_instance_by_live_index(
+        &rf->mesh_manager, i, &instance_slot);
+    if (!instance->visible ||
+        instance->loading_state != VKR_MESH_LOADING_STATE_LOADED)
+      continue;
+    VkrMeshAsset *asset =
+        vkr_mesh_manager_get_live_asset(&rf->mesh_manager, instance->asset);
+    const uint32_t object_id =
+        instance->render_id ? vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE,
+                                                    instance->render_id)
+                            : 0u;
+    const uint32_t submesh_count = (uint32_t)asset->submeshes.length;
+    for (uint32_t s = 0; s < submesh_count; ++s) {
+      VkrMeshAssetSubmesh *submesh = &asset->submeshes.data[s];
+      VkrMaterial *material = application_get_material(rf, submesh->material);
+      const VkrMaterialHandle draw_material =
+          material ? (VkrMaterialHandle){.id = material->id,
+                                         .generation = material->generation}
+                   : submesh->material;
+      const VkrDrawAlphaRouting alpha =
+          application_material_alpha_routing(rf, material);
+      const bool8_t transmissive =
+          application_material_is_transmissive(rf, material);
+      const ApplicationWorldSource source = {
+          .mesh = {.id = instance_slot + 1u,
+                   .generation = instance->generation},
+          .geometry = submesh->geometry,
+          .material = draw_material,
+          .model = instance->model,
+          .center = submesh->center,
+          .min_extents = submesh->min_extents,
+          .max_extents = submesh->max_extents,
+          .alpha = alpha,
+          .submesh_index = s,
+          .object_id = object_id,
+          .bounds_valid = instance->bounds_valid,
+          .transmissive = transmissive,
+          .double_sided = material ? material->double_sided : false_v,
+      };
+      application_emit_world_source(&emit, &source);
+    }
   }
-  vkr_draw_emit_unmerged(camera_transmission_cands, camera_transmission_count,
-                         opaque_instances_written, transmission_draws,
-                         instances);
 
-  if (camera_transparent_count > 1) {
-    qsort(camera_transparent_cands, camera_transparent_count,
-          sizeof(VkrDrawCandidate), vkr_draw_candidate_depth_compare);
-  }
-  vkr_draw_emit_unmerged(camera_transparent_cands, camera_transparent_count,
-                         opaque_instances_written + camera_transmission_count,
-                         transparent_draws, instances);
-
-  uint32_t merged_shadow_draws = 0;
-  const uint32_t shadow_written = vkr_draw_merge_candidates(
-      shadow_opaque_cands, shadow_opaque_count, 0u, shadow_opaque_draws,
-      &merged_shadow_draws, shadow_instances);
-  vkr_draw_emit_unmerged(shadow_alpha_cands, shadow_alpha_count, shadow_written,
-                         shadow_alpha_draws, shadow_instances);
-
-  stats.opaque_draws_before_merge = camera_opaque_count;
-  stats.opaque_draws_emitted = merged_opaque_draws;
-  *out_stats = stats;
+  if (transparent_draw_count > 1u)
+    qsort(transparent_candidates, transparent_draw_count,
+          sizeof(*transparent_candidates), vkr_transparent_draw_depth_compare);
+  vkr_transparent_draw_emit(transparent_candidates, transparent_draw_count,
+                            transparent_draws, transparent_instances);
 
   *out_payload = (VkrWorldPassPayload){
       .gpu_candidates = gpu_candidates,
       .gpu_candidate_count = gpu_candidate_count,
       .gpu_camera_opaque_candidate_count = gpu_camera_opaque_candidate_count,
-      .gpu_shadow_candidate_count = gpu_shadow_candidate_count,
+      .gpu_shadow_candidate_count = gpu_candidate_count,
       .transmission_gpu_candidates = transmission_gpu_candidates,
       .transmission_gpu_candidate_count = transmission_gpu_candidate_count,
-      .opaque_draws = opaque_draws,
-      .opaque_draw_count = merged_opaque_draws,
-      .transmission_draws = transmission_draws,
-      .transmission_draw_count = camera_transmission_count,
       .transparent_draws = transparent_draws,
-      .transparent_draw_count = camera_transparent_count,
-      .instances = instances,
-      .instance_count = world_instance_count,
+      .transparent_draw_count = transparent_draw_count,
+      .instances = transparent_instances,
+      .instance_count = transparent_draw_count,
   };
-  *out_shadow = (VkrShadowDrawLists){
-      .opaque_draws = shadow_opaque_draws,
-      .opaque_draw_count = merged_shadow_draws,
-      .alpha_draws = shadow_alpha_draws,
-      .alpha_draw_count = shadow_alpha_count,
-      .instances = shadow_instances,
-      .instance_count = shadow_instance_count,
-  };
+  if (out_stats)
+    *out_stats = stats;
   return true_v;
 }
 /**
@@ -1292,8 +987,6 @@ void application_draw_frame(Application *application, float64_t delta) {
 
   VkrAllocator *scratch = &application->renderer.scratch_allocator;
 
-  // Shadow frame data is fetched before the payload because the caster list is
-  // built from the light's volume, not from the camera-culled list.
   VkrShadowFrameData shadow_frame = {0};
   uint32_t shadow_cascade_count = 0;
   const bool8_t shadows_active =
@@ -1310,21 +1003,10 @@ void application_draw_frame(Application *application, float64_t delta) {
     }
   }
 
-  // Cascade projections have different centers and are not generally nested.
-  // A caster survives if it intersects any cascade; testing only the last one
-  // can drop near-cascade shadows near the edge of its shifted far volume.
-  VkrFrustum shadow_frustums[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
-  for (uint32_t i = 0; i < shadow_cascade_count; ++i) {
-    shadow_frustums[i] =
-        vkr_frustum_from_matrix(shadow_frame.view_projection[i]);
-  }
-
   VkrWorldPassPayload world_payload = {0};
-  VkrShadowDrawLists shadow_lists = {0};
   VkrVisibilityStats visibility_stats = {0};
   bool8_t has_world = application_build_world_payload(
-      application, scratch, shadow_frustums, shadow_cascade_count,
-      &world_payload, &shadow_lists, &visibility_stats);
+      application, scratch, &world_payload, &visibility_stats);
   application->visibility_stats = visibility_stats;
 
   VkrShadowPassPayload shadow_payload = {0};
@@ -1335,15 +1017,8 @@ void application_draw_frame(Application *application, float64_t delta) {
       shadow_payload.light_view_proj[i] = shadow_frame.view_projection[i];
       shadow_payload.split_depths[i] = shadow_frame.split_far[i];
     }
-    shadow_payload.opaque_draws = shadow_lists.opaque_draws;
-    shadow_payload.opaque_draw_count = shadow_lists.opaque_draw_count;
-    shadow_payload.alpha_draws = shadow_lists.alpha_draws;
-    shadow_payload.alpha_draw_count = shadow_lists.alpha_draw_count;
-    shadow_payload.instances = shadow_lists.instances;
-    shadow_payload.instance_count = shadow_lists.instance_count;
     shadow_payload.config_override = NULL;
-    has_shadow = shadow_payload.opaque_draw_count > 0 ||
-                 shadow_payload.alpha_draw_count > 0;
+    has_shadow = world_payload.gpu_shadow_candidate_count > 0u;
   }
 
   VkrPickingPassPayload picking_payload = {0};
@@ -1369,42 +1044,6 @@ void application_draw_frame(Application *application, float64_t delta) {
     picking_payload.pending = true_v;
     picking_payload.x = application->renderer.picking.requested_x;
     picking_payload.y = application->renderer.picking.requested_y;
-    if (has_world) {
-      const uint32_t picking_draw_count =
-          world_payload.opaque_draw_count +
-          world_payload.transmission_draw_count +
-          world_payload.transparent_draw_count;
-      VkrDrawItem *picking_draws =
-          picking_draw_count > 0
-              ? vkr_allocator_alloc(scratch,
-                                    (uint64_t)picking_draw_count *
-                                        sizeof(*picking_draws),
-                                    VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
-              : NULL;
-      if (picking_draw_count == 0 || picking_draws) {
-        uint32_t offset = 0;
-#define VKR_COPY_PICKING_DRAWS(FIELD)                                          \
-  do {                                                                         \
-    if (world_payload.FIELD##_draw_count > 0) {                                \
-      MemCopy(picking_draws + offset, world_payload.FIELD##_draws,             \
-              (uint64_t)world_payload.FIELD##_draw_count *                     \
-                  sizeof(*picking_draws));                                     \
-      offset += world_payload.FIELD##_draw_count;                              \
-    }                                                                          \
-  } while (0)
-        VKR_COPY_PICKING_DRAWS(opaque);
-        VKR_COPY_PICKING_DRAWS(transmission);
-        VKR_COPY_PICKING_DRAWS(transparent);
-#undef VKR_COPY_PICKING_DRAWS
-        picking_payload.draws = picking_draws;
-        picking_payload.draw_count = picking_draw_count;
-        picking_payload.instances = world_payload.instances;
-        picking_payload.instance_count = world_payload.instance_count;
-      } else {
-        log_error("Unable to allocate the frame picking draw list");
-        has_picking = false_v;
-      }
-    }
   }
 
   bool8_t editor_enabled = application->editor_viewport.enabled &&

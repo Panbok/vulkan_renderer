@@ -29,13 +29,6 @@ static bool8_t vkr_renderer_env_enabled(const char *name) {
                                                               : false_v;
 }
 
-/** P20 default: only an explicit zero selects the diagnostic forward route. */
-static bool8_t vkr_renderer_env_default_enabled(const char *name) {
-  const char *value = name ? getenv(name) : NULL;
-  return !value || value[0] == '\0' || strcmp(value, "0") != 0 ? true_v
-                                                               : false_v;
-}
-
 #if defined(PLATFORM_APPLE)
 _Static_assert(VKR_RENDERER_IMPL_DRAW_BUCKET_COUNT ==
                    VKR_WORLD_DRAW_STATE_BUCKET_COUNT,
@@ -53,8 +46,6 @@ vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
   *destination = (VkrRendererImplSubmitResult){
       .submit_value = source->submit_value,
       .source_frame_index = source->source_frame_index,
-      .deferred_selected = source->deferred_selected,
-      .deferred_fallback_reasons = source->deferred_fallback_reasons,
       .executed_pass_count = source->executed_pass_count,
       .indexed_draw_count = source->indexed_draw_count,
       .shadow_draw_count = source->shadow_draw_count,
@@ -188,9 +179,9 @@ vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
 }
 #endif
 
-static void vkr_renderer_record_gpu_candidate_metrics(
-    RendererFrontend *renderer, const VkrRenderPacket *packet,
-    const VkrRendererImplSubmitResult *submit_result) {
+static void
+vkr_renderer_record_gpu_candidate_metrics(RendererFrontend *renderer,
+                                          const VkrRenderPacket *packet) {
   const uint32_t count =
       packet && packet->world ? packet->world->gpu_candidate_count : 0u;
   const uint32_t transmission_count =
@@ -201,26 +192,6 @@ static void vkr_renderer_record_gpu_candidate_metrics(
       transmission_count;
   renderer->frame_metrics.world.gpu_candidate_capacity =
       VKR_GPU_DRAW_CANDIDATE_CAPACITY;
-  const VkrDeferredEligibility eligibility =
-      vkr_render_packet_deferred_eligibility_unchecked(packet);
-  const uint32_t capacity_reasons = VKR_DEFERRED_FALLBACK_OPAQUE_CAPACITY |
-                                    VKR_DEFERRED_FALLBACK_TRANSMISSION_CAPACITY;
-  const uint32_t unsupported_reasons = VKR_DEFERRED_FALLBACK_OPAQUE_INPUT |
-                                       VKR_DEFERRED_FALLBACK_TRANSMISSION_INPUT;
-  const uint32_t fallback_reasons =
-      submit_result ? submit_result->deferred_fallback_reasons
-                    : eligibility.fallback_reasons;
-  const bool8_t fallback = renderer->deferred_requested &&
-                           eligibility.has_deferred_work &&
-                           fallback_reasons != 0u;
-  renderer->frame_metrics.world.deferred_selected =
-      submit_result ? submit_result->deferred_selected : false_v;
-  renderer->frame_metrics.world.deferred_legacy_forward_fallbacks =
-      fallback ? 1u : 0u;
-  renderer->frame_metrics.world.gpu_candidate_overflow_fallbacks =
-      fallback && (fallback_reasons & capacity_reasons) != 0u ? 1u : 0u;
-  renderer->frame_metrics.world.deferred_unsupported_input_fallbacks =
-      fallback && (fallback_reasons & unsupported_reasons) != 0u ? 1u : 0u;
   VkrGeometryMegabufferMetrics *mega =
       &renderer->frame_metrics.world.geometry_megabuffer;
 #if defined(PLATFORM_APPLE)
@@ -626,19 +597,13 @@ renderer_impl_metal_initialize(void *state, VkrWindow *window, uint32_t width,
   (void)device_requirements;
   RendererFrontend *renderer = state;
 #if defined(PLATFORM_APPLE)
-  const bool8_t deferred_enabled =
-      vkr_renderer_env_default_enabled("VKR_DEFERRED_ENABLED");
-  renderer->deferred_requested = deferred_enabled;
-  const bool8_t shader_validation =
-      vkr_renderer_env_enabled("MTL_SHADER_VALIDATION");
   /* Full-resolution deferred intermediates scale with the completion-slot
      count. Two slots keep the placement heap plus scene assets below Metal's
      recommended working set on the supported M1 Pro without serializing the
      GPU to a single slot. Shader validation retains the same bounded topology.
    */
-  const uint32_t frame_slot_count =
-      deferred_enabled || shader_validation ? 2u : 3u;
-  const uint64_t placement_heap_size = deferred_enabled ? GB(7) : GB(6);
+  const uint32_t frame_slot_count = 2u;
+  const uint64_t placement_heap_size = GB(7);
   const uint32_t capture_capacity = backend_config->capture_ring_capacity > 0
                                         ? backend_config->capture_ring_capacity
                                         : frame_slot_count;
@@ -667,7 +632,6 @@ renderer_impl_metal_initialize(void *state, VkrWindow *window, uint32_t width,
           vkr_renderer_env_enabled("VKR_METAL_SYNCHRONOUS_VALIDATION"),
       .srgb_output = true_v,
       .convert_vulkan_clip_y = true_v,
-      .deferred_enabled = deferred_enabled,
       .transmission_compact_enabled =
           vkr_renderer_env_enabled("VKR_TRANSMISSION_COMPACT_ENABLED"),
       .hzb_enabled = !vkr_renderer_env_enabled("VKR_HZB_DISABLED"),
@@ -710,9 +674,6 @@ static bool32_t renderer_impl_bindless_initialize(
     VkrRendererError *out_error) {
   (void)device_requirements;
   RendererFrontend *renderer = state;
-  const bool8_t deferred_enabled =
-      vkr_renderer_env_default_enabled("VKR_DEFERRED_ENABLED");
-  renderer->deferred_requested = deferred_enabled;
   VkrBindlessVulkanRendererConfig config = {
       .allocator = &renderer->render_graph_allocator,
       .graph_path = "assets/render_graphs/main.rendergraph.json",
@@ -763,7 +724,6 @@ static bool32_t renderer_impl_bindless_initialize(
       .max_graph_images = 128u,
       .max_graph_buffers = 128u,
       .max_graph_passes = 64u,
-      .deferred_enabled = deferred_enabled,
       .hzb_enabled = !vkr_renderer_env_enabled("VKR_HZB_DISABLED"),
 #if !defined(NDEBUG)
       .enable_validation = true_v,
@@ -1160,8 +1120,6 @@ renderer_impl_bindless_submit_packet(void *state, const VkrRenderPacket *packet,
     rf->timing_result = (VkrRendererImplSubmitResult){
         .submit_value = result.submit_value,
         .source_frame_index = packet->frame.frame_index,
-        .deferred_selected = result.deferred_selected,
-        .deferred_fallback_reasons = result.deferred_fallback_reasons,
         .executed_pass_count = result.pass_timing_count,
         .indexed_draw_count = result.indexed_draw_count,
         .shadow_draw_count = result.shadow_draw_count,
@@ -1184,15 +1142,13 @@ renderer_impl_bindless_submit_packet(void *state, const VkrRenderPacket *packet,
   rf->frame_metrics.world.transparent_draws = result.blend_draw_count;
   rf->frame_metrics.world.draws_issued = world_draw_count;
   rf->frame_metrics.world.draw_calls_issued = world_draw_count;
-  const VkrRendererImplSubmitResult current_result = {
-      .deferred_selected = result.deferred_selected,
-      .deferred_fallback_reasons = result.deferred_fallback_reasons,
-  };
-  vkr_renderer_record_gpu_candidate_metrics(rf, &prepared.packet,
-                                            &current_result);
+  vkr_renderer_record_gpu_candidate_metrics(rf, &prepared.packet);
   const VkrRendererImplSubmitResult *observed = &rf->timing_result;
   rf->frame_metrics.world.hzb_history_valid = observed->hzb_history_valid;
   if (observed->has_gpu_draw_diagnostics) {
+    rf->frame_metrics.world.opaque_draws = observed->gpu_visible_count;
+    rf->frame_metrics.world.transmission_draws =
+        observed->transmission_gpu_visible_count;
     rf->frame_metrics.world.draws_collected =
         rf->frame_metrics.world.gpu_candidate_count +
         rf->frame_metrics.world.transmission_gpu_candidate_count +
@@ -1254,13 +1210,6 @@ renderer_impl_bindless_submit_packet(void *state, const VkrRenderPacket *packet,
           observed->shadow_gpu_overflow_count[cascade];
     }
   }
-  for (uint32_t cascade = 0u; cascade < VKR_SHADOW_CASCADE_COUNT_MAX;
-       ++cascade) {
-    rf->frame_metrics.shadow.shadow_draw_calls_opaque[cascade] =
-        result.shadow_opaque_draw_count[cascade];
-    rf->frame_metrics.shadow.shadow_draw_calls_alpha[cascade] =
-        result.shadow_alpha_draw_count[cascade];
-  }
   if (out_metrics) {
     *out_metrics = rf->frame_metrics;
   }
@@ -1319,10 +1268,7 @@ static void renderer_impl_metal_get_device_information(
               : VKR_SURFACE_COLOR_FORMAT_BGRA8_SRGB,
       .actual_depth_format = VKR_SURFACE_DEPTH_FORMAT_D32_SFLOAT,
       .actual_color_space = VKR_SURFACE_COLOR_SPACE_SRGB_NONLINEAR,
-      .actual_world_renderer_topology =
-          renderer->deferred_requested
-              ? VKR_WORLD_RENDERER_TOPOLOGY_DEFERRED
-              : VKR_WORLD_RENDERER_TOPOLOGY_LEGACY_FORWARD,
+      .actual_world_renderer_topology = VKR_WORLD_RENDERER_TOPOLOGY_DEFERRED,
   };
 }
 
@@ -1403,10 +1349,7 @@ static void renderer_impl_bindless_get_device_information(
       .actual_color_format = color_format,
       .actual_depth_format = depth_format,
       .actual_color_space = color_space,
-      .actual_world_renderer_topology =
-          renderer->deferred_requested
-              ? VKR_WORLD_RENDERER_TOPOLOGY_DEFERRED
-              : VKR_WORLD_RENDERER_TOPOLOGY_LEGACY_FORWARD,
+      .actual_world_renderer_topology = VKR_WORLD_RENDERER_TOPOLOGY_DEFERRED,
   };
 }
 
@@ -1785,6 +1728,8 @@ String8 vkr_renderer_get_error_string(VkrRendererError error) {
     return string8_lit("Invalid handle");
   case VKR_RENDERER_ERROR_INVALID_PARAMETER:
     return string8_lit("Invalid parameter");
+  case VKR_RENDERER_ERROR_UNSUPPORTED_INPUT:
+    return string8_lit("Unsupported renderer input");
   case VKR_RENDERER_ERROR_SHADER_COMPILATION_FAILED:
     return string8_lit("Shader compilation failed");
   case VKR_RENDERER_ERROR_OUT_OF_MEMORY:
@@ -2023,6 +1968,55 @@ vkr_renderer_validation_fail(VkrValidationError *out_error,
   return code;
 }
 
+static VkrRendererError vkr_renderer_validate_packet_array(
+    const void *data, uint32_t count, uint32_t capacity, const char *data_field,
+    const char *count_field, VkrValidationError *out_error) {
+  if (count > capacity)
+    return vkr_renderer_validation_fail(
+        out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT, count_field,
+        "exceeds the fixed packet capacity");
+  if (count > 0u && !data)
+    return vkr_renderer_validation_fail(
+        out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT, data_field,
+        "must contain every declared row");
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+static VkrRendererError
+vkr_renderer_validate_draw_ranges(const VkrDrawItem *draws, uint32_t draw_count,
+                                  uint32_t instance_count, const char *field,
+                                  VkrValidationError *out_error) {
+  for (uint32_t i = 0u; i < draw_count; ++i) {
+    const VkrDrawItem *draw = &draws[i];
+    if (draw->first_instance > instance_count ||
+        draw->instance_count > instance_count - draw->first_instance)
+      return vkr_renderer_validation_fail(
+          out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT, field,
+          "contains a draw outside the payload instance array");
+  }
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+static VkrRendererError vkr_renderer_validate_text_draws(
+    const VkrPreparedTextDraw *draws, uint32_t draw_count, const char *field,
+    const char *count_field, VkrValidationError *out_error) {
+  const VkrRendererError array_error = vkr_renderer_validate_packet_array(
+      draws, draw_count, VKR_GPU_DRAW_CANDIDATE_CAPACITY, field, count_field,
+      out_error);
+  if (array_error != VKR_RENDERER_ERROR_NONE)
+    return array_error;
+  for (uint32_t i = 0u; i < draw_count; ++i) {
+    const VkrPreparedTextDraw *draw = &draws[i];
+    if (draw->vertex_count == 0u || draw->index_count == 0u ||
+        !draw->vertices || !draw->indices ||
+        draw->max_index >= draw->vertex_count)
+      return vkr_renderer_validation_fail(
+          out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT, field,
+          "contains incomplete or out-of-range indexed geometry");
+  }
+  return VKR_RENDERER_ERROR_NONE;
+}
+
 static VkrRendererError
 renderer_impl_metal_prepare_frame(void *state, VkrFrameSetup *out_setup) {
   RendererFrontend *rf = state;
@@ -2177,10 +2171,12 @@ renderer_impl_metal_submit_packet(void *state, const VkrRenderPacket *packet,
   rf->frame_metrics.world.transparent_draws = observed->blend_draw_count;
   rf->frame_metrics.world.draws_issued = observed->indexed_draw_count;
   rf->frame_metrics.world.draw_calls_issued = observed->indexed_draw_count;
-  vkr_renderer_record_gpu_candidate_metrics(rf, &prepared.packet,
-                                            &current_result);
+  vkr_renderer_record_gpu_candidate_metrics(rf, &prepared.packet);
   rf->frame_metrics.world.hzb_history_valid = observed->hzb_history_valid;
   if (observed->has_gpu_draw_diagnostics) {
+    rf->frame_metrics.world.opaque_draws = observed->gpu_visible_count;
+    rf->frame_metrics.world.transmission_draws =
+        observed->transmission_gpu_visible_count;
     rf->frame_metrics.world.draws_collected =
         rf->frame_metrics.world.gpu_candidate_count +
         rf->frame_metrics.world.transmission_gpu_candidate_count +
@@ -2254,9 +2250,6 @@ renderer_impl_metal_submit_packet(void *state, const VkrRenderPacket *packet,
       rf->frame_metrics.shadow.shadow_indirect_overflow[cascade] =
           observed->shadow_gpu_overflow_count[cascade];
     }
-  } else {
-    rf->frame_metrics.shadow.shadow_draw_calls_opaque[0] =
-        observed->shadow_draw_count;
   }
   if (out_metrics) {
     *out_metrics = rf->frame_metrics;
@@ -2269,10 +2262,197 @@ renderer_impl_metal_submit_packet(void *state, const VkrRenderPacket *packet,
 }
 
 VkrRendererError
+vkr_renderer_validate_packet(const VkrRenderPacket *packet,
+                             VkrValidationError *out_validation_error) {
+  if (!packet) {
+    return vkr_renderer_validation_fail(out_validation_error,
+                                        VKR_RENDERER_ERROR_INVALID_PARAMETER,
+                                        "packet", "must not be null");
+  }
+
+#define VKR_REJECT_PACKET(CODE, FIELD, MESSAGE)                                \
+  do {                                                                         \
+    return vkr_renderer_validation_fail(out_validation_error, CODE, FIELD,     \
+                                        MESSAGE);                              \
+  } while (0)
+
+  if (packet->packet_version != VKR_RENDER_PACKET_VERSION)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_INCOMPATIBLE_SIGNATURE,
+                      "packet.packet_version",
+                      "does not match VKR_RENDER_PACKET_VERSION");
+
+  const VkrWorldPassPayload *world = packet->world;
+  if (world) {
+    VkrRendererError error = vkr_renderer_validate_packet_array(
+        world->gpu_candidates, world->gpu_candidate_count,
+        VKR_GPU_DRAW_CANDIDATE_CAPACITY, "packet.world.gpu_candidates",
+        "packet.world.gpu_candidate_count", out_validation_error);
+    if (error != VKR_RENDERER_ERROR_NONE)
+      return error;
+    error = vkr_renderer_validate_packet_array(
+        world->transmission_gpu_candidates,
+        world->transmission_gpu_candidate_count,
+        VKR_GPU_DRAW_CANDIDATE_CAPACITY,
+        "packet.world.transmission_gpu_candidates",
+        "packet.world.transmission_gpu_candidate_count", out_validation_error);
+    if (error != VKR_RENDERER_ERROR_NONE)
+      return error;
+    if (world->gpu_camera_opaque_candidate_count > world->gpu_candidate_count)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.world.gpu_camera_opaque_candidate_count",
+                        "cannot exceed the source candidate count");
+    if (world->gpu_shadow_candidate_count > world->gpu_candidate_count)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.world.gpu_shadow_candidate_count",
+                        "cannot exceed the source candidate count");
+    error = vkr_renderer_validate_packet_array(
+        world->instances, world->instance_count,
+        VKR_INSTANCE_BUFFER_MAX_INSTANCES, "packet.world.instances",
+        "packet.world.instance_count", out_validation_error);
+    if (error != VKR_RENDERER_ERROR_NONE)
+      return error;
+    error = vkr_renderer_validate_packet_array(
+        world->transparent_draws, world->transparent_draw_count,
+        VKR_INSTANCE_BUFFER_MAX_INSTANCES, "packet.world.transparent_draws",
+        "packet.world.transparent_draw_count", out_validation_error);
+    if (error != VKR_RENDERER_ERROR_NONE)
+      return error;
+    error = vkr_renderer_validate_draw_ranges(
+        world->transparent_draws, world->transparent_draw_count,
+        world->instance_count, "packet.world.transparent_draws",
+        out_validation_error);
+    if (error != VKR_RENDERER_ERROR_NONE)
+      return error;
+    error = vkr_renderer_validate_text_draws(
+        world->text_draws, world->text_draw_count, "packet.world.text_draws",
+        "packet.world.text_draw_count", out_validation_error);
+    if (error != VKR_RENDERER_ERROR_NONE)
+      return error;
+  }
+  if (packet->shadow &&
+      (packet->shadow->cascade_count == 0u ||
+       packet->shadow->cascade_count > VKR_SHADOW_CASCADE_COUNT_MAX))
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.shadow.cascade_count",
+                      "must be within the supported cascade range");
+
+  const VkrUiPassPayload *ui = packet->ui;
+  if (ui) {
+    VkrRendererError error = vkr_renderer_validate_packet_array(
+        ui->instances, ui->instance_count, VKR_INSTANCE_BUFFER_MAX_INSTANCES,
+        "packet.ui.instances", "packet.ui.instance_count",
+        out_validation_error);
+    if (error != VKR_RENDERER_ERROR_NONE)
+      return error;
+    error = vkr_renderer_validate_packet_array(
+        ui->draws, ui->draw_count, VKR_INSTANCE_BUFFER_MAX_INSTANCES,
+        "packet.ui.draws", "packet.ui.draw_count", out_validation_error);
+    if (error != VKR_RENDERER_ERROR_NONE)
+      return error;
+    error = vkr_renderer_validate_draw_ranges(
+        ui->draws, ui->draw_count, ui->instance_count, "packet.ui.draws",
+        out_validation_error);
+    if (error != VKR_RENDERER_ERROR_NONE)
+      return error;
+    error = vkr_renderer_validate_text_draws(
+        ui->text_draws, ui->text_draw_count, "packet.ui.text_draws",
+        "packet.ui.text_draw_count", out_validation_error);
+    if (error != VKR_RENDERER_ERROR_NONE)
+      return error;
+  }
+
+  const VkrEditorPassPayload *editor = packet->editor;
+  if (editor) {
+    VkrRendererError error = vkr_renderer_validate_packet_array(
+        editor->instances, editor->instance_count,
+        VKR_INSTANCE_BUFFER_MAX_INSTANCES, "packet.editor.instances",
+        "packet.editor.instance_count", out_validation_error);
+    if (error != VKR_RENDERER_ERROR_NONE)
+      return error;
+    error = vkr_renderer_validate_packet_array(
+        editor->draws, editor->draw_count, VKR_INSTANCE_BUFFER_MAX_INSTANCES,
+        "packet.editor.draws", "packet.editor.draw_count",
+        out_validation_error);
+    if (error != VKR_RENDERER_ERROR_NONE)
+      return error;
+    error = vkr_renderer_validate_draw_ranges(
+        editor->draws, editor->draw_count, editor->instance_count,
+        "packet.editor.draws", out_validation_error);
+    if (error != VKR_RENDERER_ERROR_NONE)
+      return error;
+  }
+
+  const VkrFrameLighting *lighting = packet->lighting;
+  if (lighting) {
+    if (lighting->point_light_count > VKR_MAX_SCENE_POINT_LIGHTS)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.lighting.point_light_count",
+                        "exceeds the fixed scene-light capacity");
+    if (lighting->point_light_count > 0u &&
+        (!lighting->point_lights || !lighting->point_light_grid))
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.lighting.point_lights",
+                        "lights and their lookup grid must both be present");
+    if (lighting->point_light_grid &&
+        lighting->point_light_grid->cell_count > VKR_POINT_LIGHT_GRID_MAX_CELLS)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.lighting.point_light_grid.cell_count",
+                        "exceeds the fixed light-grid capacity");
+    if (lighting->ibl_probe_count > VKR_FRAME_IBL_PROBE_MAX)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.lighting.ibl_probe_count",
+                        "exceeds the fixed frame-probe capacity");
+    if (lighting->ibl_probe_count > 0u && !lighting->ibl_probes)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.lighting.ibl_probes",
+                        "must contain every declared probe");
+  }
+
+  const VkrTextUpdatesPayload *updates = packet->text_updates;
+  if (updates) {
+    if (updates->world_text_update_count > 0u && !updates->world_text_updates)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.text_updates.world_text_updates",
+                        "must contain every declared update");
+    if (updates->ui_text_update_count > 0u && !updates->ui_text_updates)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.text_updates.ui_text_updates",
+                        "must contain every declared update");
+  }
+
+  if (packet->debug && packet->debug->shadow_debug_mode > 3u)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.debug.shadow_debug_mode",
+                      "must be a supported debug view");
+
+#undef VKR_REJECT_PACKET
+  if (out_validation_error)
+    *out_validation_error = (VkrValidationError){0};
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+VkrRendererError
 vkr_renderer_submit_packet(VkrRendererFrontendHandle renderer,
                            const VkrRenderPacket *packet,
                            VkrRendererFrameMetrics *out_metrics,
                            VkrValidationError *out_validation_error) {
+  if (!renderer)
+    return vkr_renderer_validation_fail(out_validation_error,
+                                        VKR_RENDERER_ERROR_INVALID_PARAMETER,
+                                        "renderer", "must not be null");
+  const VkrRendererError validation_error =
+      vkr_renderer_validate_packet(packet, out_validation_error);
+  if (validation_error != VKR_RENDERER_ERROR_NONE) {
+    if (renderer->frame_active) {
+      const VkrRendererError cancel_error =
+          renderer->impl.ops->cancel_frame(renderer->impl.state);
+      if (cancel_error != VKR_RENDERER_ERROR_NONE)
+        return vkr_renderer_validation_fail(
+            out_validation_error, cancel_error, "frame",
+            "failed to cancel the active frame after packet rejection");
+    }
+    return validation_error;
+  }
   return renderer->impl.ops->submit_packet(renderer->impl.state, packet,
                                            out_metrics, out_validation_error);
 }
@@ -2374,8 +2554,6 @@ static bool8_t renderer_impl_bindless_poll_submit_result(
   *out_result = (VkrRendererImplSubmitResult){
       .submit_value = source.submit_value,
       .source_frame_index = source.source_frame_index,
-      .deferred_selected = source.deferred_selected,
-      .deferred_fallback_reasons = source.deferred_fallback_reasons,
       .executed_pass_count = source.pass_timing_count,
       .indexed_draw_count = source.indexed_draw_count,
       .shadow_draw_count = source.shadow_draw_count,

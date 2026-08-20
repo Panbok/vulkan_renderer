@@ -46,10 +46,6 @@
   ],
   "assertions": [
     { "metric": "visibility.gpu_candidates.count", "stat": "min", "min": 1 },
-    { "metric": "visibility.deferred.selected", "stat": "min", "min": 1 },
-    { "metric": "visibility.deferred.legacy_forward_fallbacks", "stat": "max", "max": 0 },
-    { "metric": "visibility.deferred.unsupported_input_fallbacks", "stat": "max", "max": 0 },
-    { "metric": "visibility.gpu_candidates.overflow_fallbacks", "stat": "max", "max": 0 },
     { "metric": "visibility.gpu_visible.overflow", "stat": "max", "max": 0 },
     { "metric": "draw.shadow.cascade0.indirect_commands", "stat": "min", "min": 1 },
     { "metric": "draw.shadow.cascade0.indirect_commands", "stat": "max", "max": 3 },

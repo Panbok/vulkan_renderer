@@ -89,7 +89,6 @@
     {
       "name": "gpu_draw_candidates",
       "type": "buffer",
-      "condition": "deferred_enabled",
       "size": 12582912,
       "usage": ["STORAGE", "TRANSFER_DST"],
       "flags": ["PER_FRAME_SLOT"]
@@ -97,7 +96,6 @@
     {
       "name": "gpu_visible_draws",
       "type": "buffer",
-      "condition": "deferred_enabled",
       "size": 41943040,
       "usage": ["STORAGE"],
       "flags": ["PER_FRAME_SLOT"]
@@ -105,7 +103,6 @@
     {
       "name": "gpu_draw_classifications",
       "type": "buffer",
-      "condition": "deferred_enabled",
       "size": 5242880,
       "usage": ["STORAGE"],
       "flags": ["PER_FRAME_SLOT"]
@@ -113,7 +110,6 @@
     {
       "name": "gpu_draw_compaction_state",
       "type": "buffer",
-      "condition": "deferred_enabled",
       "size": 400,
       "usage": ["STORAGE", "INDIRECT", "TRANSFER_SRC", "TRANSFER_DST"],
       "flags": ["PER_FRAME_SLOT"]
@@ -121,7 +117,6 @@
     {
       "name": "gpu_draw_arguments",
       "type": "buffer",
-      "condition": "deferred_enabled",
       "size": 26214400,
       "usage": ["STORAGE", "INDIRECT"],
       "flags": ["PER_FRAME_SLOT"]
@@ -129,7 +124,7 @@
     {
       "name": "transmission_gpu_draw_candidates",
       "type": "buffer",
-      "condition": "deferred_enabled && transmission_pending",
+      "condition": "transmission_pending",
       "size": 12582912,
       "usage": ["STORAGE", "TRANSFER_DST"],
       "flags": ["PER_FRAME_SLOT"]
@@ -137,7 +132,7 @@
     {
       "name": "transmission_gpu_visible_draws",
       "type": "buffer",
-      "condition": "deferred_enabled && transmission_pending",
+      "condition": "transmission_pending",
       "size": 8388608,
       "usage": ["STORAGE"],
       "flags": ["PER_FRAME_SLOT"]
@@ -145,7 +140,7 @@
     {
       "name": "transmission_gpu_draw_classifications",
       "type": "buffer",
-      "condition": "deferred_enabled && transmission_pending",
+      "condition": "transmission_pending",
       "size": 1048576,
       "usage": ["STORAGE"],
       "flags": ["PER_FRAME_SLOT"]
@@ -153,7 +148,7 @@
     {
       "name": "transmission_gpu_draw_compaction_state",
       "type": "buffer",
-      "condition": "deferred_enabled && transmission_pending",
+      "condition": "transmission_pending",
       "size": 112,
       "usage": ["STORAGE", "INDIRECT", "TRANSFER_SRC", "TRANSFER_DST"],
       "flags": ["PER_FRAME_SLOT"]
@@ -161,7 +156,7 @@
     {
       "name": "transmission_gpu_draw_arguments",
       "type": "buffer",
-      "condition": "deferred_enabled && transmission_pending",
+      "condition": "transmission_pending",
       "size": 5242880,
       "usage": ["STORAGE", "INDIRECT"],
       "flags": ["PER_FRAME_SLOT"]
@@ -185,7 +180,6 @@
     {
       "name": "opaque_vbuffer",
       "type": "image",
-      "condition": "deferred_enabled",
       "extent": { "mode": "viewport" },
       "format": "R32G32_UINT",
       "usage": ["COLOR_ATTACHMENT", "SAMPLED", "STORAGE", "TRANSFER_SRC"],
@@ -194,7 +188,6 @@
     {
       "name": "opaque_vbuffer_depth",
       "type": "image",
-      "condition": "deferred_enabled",
       "extent": { "mode": "viewport" },
       "format": "SWAPCHAIN_DEPTH",
       "usage": ["DEPTH_STENCIL_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"],
@@ -203,7 +196,6 @@
     {
       "name": "hzb_history",
       "type": "image",
-      "condition": "deferred_enabled",
       "extent": { "mode": "viewport" },
       "format": "R32_SFLOAT",
       "mip_levels": "full_chain",
@@ -213,7 +205,7 @@
     {
       "name": "transmission_vbuffer",
       "type": "image",
-      "condition": "deferred_enabled && transmission_pending",
+      "condition": "transmission_pending",
       "extent": { "mode": "viewport" },
       "layers": 4,
       "format": "R32G32_UINT",
@@ -223,7 +215,7 @@
     {
       "name": "transmission_vbuffer_depth",
       "type": "image",
-      "condition": "deferred_enabled && transmission_pending",
+      "condition": "transmission_pending",
       "extent": { "mode": "viewport" },
       "layers": 4,
       "format": "SWAPCHAIN_DEPTH",
@@ -233,7 +225,7 @@
     {
       "name": "transmission_feedback",
       "type": "image",
-      "condition": "deferred_enabled && transmission_pending",
+      "condition": "transmission_pending",
       "extent": { "mode": "viewport" },
       "format": "R16G16B16A16_SFLOAT",
       "usage": ["SAMPLED", "STORAGE"],
@@ -242,7 +234,6 @@
     {
       "name": "gbuffer_albedo",
       "type": "image",
-      "condition": "deferred_enabled",
       "extent": { "mode": "viewport" },
       "format": "R8G8B8A8_UNORM",
       "usage": ["STORAGE", "SAMPLED", "TRANSFER_SRC"],
@@ -251,7 +242,6 @@
     {
       "name": "gbuffer_specular",
       "type": "image",
-      "condition": "deferred_enabled",
       "extent": { "mode": "viewport" },
       "format": "R8G8B8A8_UNORM",
       "usage": ["STORAGE", "SAMPLED", "TRANSFER_SRC"],
@@ -260,7 +250,6 @@
     {
       "name": "gbuffer_normal",
       "type": "image",
-      "condition": "deferred_enabled",
       "extent": { "mode": "viewport" },
       "format": "R16G16_SNORM",
       "usage": ["STORAGE", "SAMPLED", "TRANSFER_SRC"],
@@ -269,7 +258,6 @@
     {
       "name": "deferred_emissive_seed",
       "type": "image",
-      "condition": "deferred_enabled",
       "extent": { "mode": "viewport" },
       "format": "R16G16B16A16_SFLOAT",
       "usage": ["STORAGE", "SAMPLED", "TRANSFER_SRC"],
@@ -278,7 +266,6 @@
     {
       "name": "deferred_resolve_debug",
       "type": "image",
-      "condition": "deferred_enabled",
       "extent": { "mode": "viewport" },
       "format": "R16G16B16A16_SFLOAT",
       "usage": ["STORAGE", "SAMPLED", "TRANSFER_SRC"],
@@ -286,47 +273,6 @@
     }
   ],
   "passes": [
-    {
-      "name": "Shadow.Cascade.${i}",
-      "type": "graphics",
-      "domain": "SHADOW",
-      "condition": "!deferred_enabled",
-      "repeat": { "count_source": "shadow_cascade_count" },
-      "attachments": {
-        "depth": {
-          "image": "shadow_map",
-          "load": "CLEAR",
-          "store": "STORE",
-          "clear": { "depth": 1.0, "stencil": 0 },
-          "slice": { "base_layer": "${i}", "layer_count": 1 }
-        }
-      },
-      "execute": "pass.shadow.cascade"
-    },
-    {
-      "name": "Picking.Request.Legacy",
-      "type": "graphics",
-      "domain": "PICKING",
-      "condition": "picking_pending && !deferred_enabled",
-      "flags": ["NO_CULL"],
-      "attachments": {
-        "color": [
-          {
-            "image": "picking_color",
-            "load": "CLEAR",
-            "store": "STORE",
-            "clear": { "color": [0, 0, 0, 0] }
-          }
-        ],
-        "depth": {
-          "image": "picking_depth",
-          "load": "CLEAR",
-          "store": "DONT_CARE",
-          "clear": { "depth": 1.0, "stencil": 0 }
-        }
-      },
-      "execute": "pass.picking"
-    },
     {
       "name": "IBL.Bake",
       "type": "compute",
@@ -336,7 +282,6 @@
     {
       "name": "Cull.Upload",
       "type": "transfer",
-      "condition": "deferred_enabled",
       "flags": ["NO_CULL"],
       "writes": [
         { "buffer": "gpu_draw_candidates", "access": "TRANSFER_DST", "binding": 0 },
@@ -347,7 +292,6 @@
     {
       "name": "Cull.Classify",
       "type": "compute",
-      "condition": "deferred_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "buffer": "gpu_draw_candidates", "access": "STORAGE_READ", "binding": 0 },
@@ -362,7 +306,6 @@
     {
       "name": "Cull.Prefix",
       "type": "compute",
-      "condition": "deferred_enabled",
       "flags": ["NO_CULL"],
       "writes": [
         { "buffer": "gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 0 }
@@ -372,7 +315,6 @@
     {
       "name": "Cull.Encode",
       "type": "compute",
-      "condition": "deferred_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "buffer": "gpu_draw_candidates", "access": "STORAGE_READ", "binding": 0 },
@@ -386,10 +328,9 @@
       "execute": "pass.gpu_draw_encode"
     },
     {
-      "name": "Shadow.Cascade.Deferred.${i}",
+      "name": "Shadow.Cascade.${i}",
       "type": "graphics",
       "domain": "SHADOW",
-      "condition": "deferred_enabled",
       "repeat": { "count_source": "shadow_cascade_count" },
       "reads": [
         { "buffer": "gpu_visible_draws", "access": "STORAGE_READ", "binding": 1 },
@@ -410,7 +351,7 @@
     {
       "name": "Transmission.Cull.Upload",
       "type": "transfer",
-      "condition": "deferred_enabled && transmission_pending",
+      "condition": "transmission_pending",
       "flags": ["NO_CULL"],
       "writes": [
         { "buffer": "transmission_gpu_draw_candidates", "access": "TRANSFER_DST", "binding": 0 },
@@ -421,7 +362,7 @@
     {
       "name": "Transmission.Cull.Classify",
       "type": "compute",
-      "condition": "deferred_enabled && transmission_pending",
+      "condition": "transmission_pending",
       "flags": ["NO_CULL"],
       "reads": [
         { "buffer": "transmission_gpu_draw_candidates", "access": "STORAGE_READ", "binding": 0 },
@@ -436,7 +377,7 @@
     {
       "name": "Transmission.Cull.Prefix",
       "type": "compute",
-      "condition": "deferred_enabled && transmission_pending",
+      "condition": "transmission_pending",
       "flags": ["NO_CULL"],
       "writes": [
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 0 }
@@ -446,7 +387,7 @@
     {
       "name": "Transmission.Cull.Encode",
       "type": "compute",
-      "condition": "deferred_enabled && transmission_pending",
+      "condition": "transmission_pending",
       "flags": ["NO_CULL"],
       "reads": [
         { "buffer": "transmission_gpu_draw_candidates", "access": "STORAGE_READ", "binding": 0 },
@@ -463,7 +404,6 @@
       "name": "VBuffer.Opaque",
       "type": "graphics",
       "domain": "WORLD",
-      "condition": "deferred_enabled",
       "reads": [
         { "buffer": "gpu_visible_draws", "access": "STORAGE_READ", "binding": 1 },
         { "buffer": "gpu_draw_compaction_state", "access": "INDIRECT_READ", "binding": 2 },
@@ -490,7 +430,6 @@
     {
       "name": "HZB.BuildBase",
       "type": "compute",
-      "condition": "deferred_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "opaque_vbuffer_depth", "access": "SAMPLED", "binding": 0 }
@@ -508,7 +447,6 @@
     {
       "name": "HZB.BuildMip.${i}",
       "type": "compute",
-      "condition": "deferred_enabled",
       "repeat": { "count_source": "hzb_reduce_pass_count" },
       "flags": ["NO_CULL"],
       "reads": [
@@ -532,7 +470,7 @@
     {
       "name": "Transmission.DepthSeed.0",
       "type": "transfer",
-      "condition": "deferred_enabled && transmission_pending",
+      "condition": "transmission_pending",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "opaque_vbuffer_depth", "access": "TRANSFER_SRC", "binding": 0 }
@@ -550,7 +488,7 @@
     {
       "name": "Transmission.DepthSeed.1",
       "type": "transfer",
-      "condition": "deferred_enabled && transmission_pending",
+      "condition": "transmission_pending",
       "flags": ["NO_CULL"],
       "reads": [{ "image": "opaque_vbuffer_depth", "access": "TRANSFER_SRC", "binding": 0 }],
       "writes": [{
@@ -562,7 +500,7 @@
     {
       "name": "Transmission.DepthSeed.2",
       "type": "transfer",
-      "condition": "deferred_enabled && transmission_pending",
+      "condition": "transmission_pending",
       "flags": ["NO_CULL"],
       "reads": [{ "image": "opaque_vbuffer_depth", "access": "TRANSFER_SRC", "binding": 0 }],
       "writes": [{
@@ -574,7 +512,7 @@
     {
       "name": "Transmission.DepthSeed.3",
       "type": "transfer",
-      "condition": "deferred_enabled && transmission_pending",
+      "condition": "transmission_pending",
       "flags": ["NO_CULL"],
       "reads": [{ "image": "opaque_vbuffer_depth", "access": "TRANSFER_SRC", "binding": 0 }],
       "writes": [{
@@ -587,7 +525,7 @@
       "name": "VBuffer.Transmission.0",
       "type": "graphics",
       "domain": "WORLD_TRANSPARENT",
-      "condition": "deferred_enabled && transmission_pending",
+      "condition": "transmission_pending",
       "reads": [
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 1 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "INDIRECT_READ", "binding": 2 },
@@ -610,7 +548,7 @@
       "name": "VBuffer.Transmission.1",
       "type": "graphics",
       "domain": "WORLD_TRANSPARENT",
-      "condition": "deferred_enabled && transmission_pending",
+      "condition": "transmission_pending",
       "reads": [
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 1 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "INDIRECT_READ", "binding": 2 },
@@ -637,7 +575,7 @@
       "name": "VBuffer.Transmission.2",
       "type": "graphics",
       "domain": "WORLD_TRANSPARENT",
-      "condition": "deferred_enabled && transmission_pending",
+      "condition": "transmission_pending",
       "reads": [
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 1 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "INDIRECT_READ", "binding": 2 },
@@ -664,7 +602,7 @@
       "name": "VBuffer.Transmission.3",
       "type": "graphics",
       "domain": "WORLD_TRANSPARENT",
-      "condition": "deferred_enabled && transmission_pending",
+      "condition": "transmission_pending",
       "reads": [
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 1 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "INDIRECT_READ", "binding": 2 },
@@ -690,7 +628,7 @@
     {
       "name": "GBuffer.Resolve.Fullscreen",
       "type": "compute",
-      "condition": "!editor_enabled && deferred_enabled",
+      "condition": "!editor_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "opaque_vbuffer", "access": "STORAGE_READ", "binding": 0 },
@@ -710,7 +648,7 @@
     {
       "name": "GBuffer.Resolve.Editor",
       "type": "compute",
-      "condition": "editor_enabled && deferred_enabled",
+      "condition": "editor_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "opaque_vbuffer", "access": "STORAGE_READ", "binding": 0 },
@@ -730,7 +668,7 @@
     {
       "name": "Lighting.Deferred.Fullscreen",
       "type": "compute",
-      "condition": "!editor_enabled && deferred_enabled",
+      "condition": "!editor_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "opaque_vbuffer", "access": "STORAGE_READ", "binding": 0 },
@@ -754,7 +692,7 @@
     {
       "name": "Lighting.Deferred.Editor",
       "type": "compute",
-      "condition": "editor_enabled && deferred_enabled",
+      "condition": "editor_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "opaque_vbuffer", "access": "STORAGE_READ", "binding": 0 },
@@ -774,102 +712,6 @@
         { "image": "scene_pre_transmission", "access": "STORAGE_WRITE", "binding": 6 }
       ],
       "execute": "pass.lighting.deferred"
-    },
-    {
-      "name": "Skybox.Fullscreen",
-      "type": "graphics",
-      "domain": "SKYBOX",
-      "condition": "!editor_enabled && !deferred_enabled",
-      "attachments": {
-        "color": [
-          {
-            "image": "hdr_pre_transmission",
-            "load": "CLEAR",
-            "store": "STORE",
-            "clear": { "color": [0.02, 0.02, 0.03, 1.0] }
-          }
-        ],
-        "depth": {
-          "image": "swapchain_depth",
-          "load": "CLEAR",
-          "store": "STORE",
-          "clear": { "depth": 1.0, "stencil": 0 }
-        }
-      },
-      "execute": "pass.skybox"
-    },
-    {
-      "name": "Skybox.Editor",
-      "type": "graphics",
-      "domain": "SKYBOX",
-      "condition": "editor_enabled && !deferred_enabled",
-      "attachments": {
-        "color": [
-          {
-            "image": "scene_pre_transmission",
-            "load": "CLEAR",
-            "store": "STORE",
-            "clear": { "color": [0.02, 0.02, 0.03, 1.0] }
-          }
-        ],
-        "depth": {
-          "image": "scene_depth",
-          "load": "CLEAR",
-          "store": "STORE",
-          "clear": { "depth": 1.0, "stencil": 0 }
-        }
-      },
-      "execute": "pass.skybox"
-    },
-    {
-      "name": "World.Opaque.Fullscreen",
-      "type": "graphics",
-      "domain": "WORLD",
-      "condition": "!editor_enabled && !deferred_enabled",
-      "reads": [
-        {
-          "image": "shadow_map",
-          "access": "SAMPLED",
-          "binding": 0,
-          "when": "shadow_cascades_active"
-        }
-      ],
-      "attachments": {
-        "color": [
-          { "image": "hdr_pre_transmission", "load": "LOAD", "store": "STORE" }
-        ],
-        "depth": {
-          "image": "swapchain_depth",
-          "load": "LOAD",
-          "store": "STORE"
-        }
-      },
-      "execute": "pass.world.opaque"
-    },
-    {
-      "name": "World.Opaque.Editor",
-      "type": "graphics",
-      "domain": "WORLD",
-      "condition": "editor_enabled && !deferred_enabled",
-      "reads": [
-        {
-          "image": "shadow_map",
-          "access": "SAMPLED",
-          "binding": 0,
-          "when": "shadow_cascades_active"
-        }
-      ],
-      "attachments": {
-        "color": [
-          { "image": "scene_pre_transmission", "load": "LOAD", "store": "STORE" }
-        ],
-        "depth": {
-          "image": "scene_depth",
-          "load": "LOAD",
-          "store": "STORE"
-        }
-      },
-      "execute": "pass.world.opaque"
     },
     {
       "name": "World.FeedbackCopy.Fullscreen",
@@ -894,58 +736,6 @@
         { "image": "scene_color", "access": "TRANSFER_DST", "binding": 1 }
       ],
       "execute": "pass.copy.pre_transmission.editor"
-    },
-    {
-      "name": "World.Transmission.Fullscreen",
-      "type": "graphics",
-      "domain": "WORLD_TRANSPARENT",
-      "condition": "!editor_enabled && !deferred_enabled",
-      "reads": [
-        {
-          "image": "shadow_map",
-          "access": "SAMPLED",
-          "binding": 0,
-          "when": "shadow_cascades_active"
-        },
-        { "image": "hdr_pre_transmission", "access": "SAMPLED", "binding": 1 }
-      ],
-      "attachments": {
-        "color": [
-          { "image": "hdr_scene_color", "load": "LOAD", "store": "STORE" }
-        ],
-        "depth": {
-          "image": "swapchain_depth",
-          "load": "LOAD",
-          "store": "STORE"
-        }
-      },
-      "execute": "pass.world.transmission"
-    },
-    {
-      "name": "World.Transmission.Editor",
-      "type": "graphics",
-      "domain": "WORLD_TRANSPARENT",
-      "condition": "editor_enabled && !deferred_enabled",
-      "reads": [
-        {
-          "image": "shadow_map",
-          "access": "SAMPLED",
-          "binding": 0,
-          "when": "shadow_cascades_active"
-        },
-        { "image": "scene_pre_transmission", "access": "SAMPLED", "binding": 1 }
-      ],
-      "attachments": {
-        "color": [
-          { "image": "scene_color", "load": "LOAD", "store": "STORE" }
-        ],
-        "depth": {
-          "image": "scene_depth",
-          "load": "LOAD",
-          "store": "STORE"
-        }
-      },
-      "execute": "pass.world.transmission"
     },
     {
       "name": "Transmission.Compact.Fullscreen.3",
@@ -1496,7 +1286,7 @@
     {
       "name": "Picking.DepthSeed.Opaque",
       "type": "transfer",
-      "condition": "picking_pending && deferred_enabled && !transmission_pending",
+      "condition": "picking_pending && !transmission_pending",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "opaque_vbuffer_depth", "access": "TRANSFER_SRC", "binding": 0 }
@@ -1509,7 +1299,7 @@
     {
       "name": "Picking.DepthSeed.Transmission",
       "type": "transfer",
-      "condition": "picking_pending && deferred_enabled && transmission_pending",
+      "condition": "picking_pending && transmission_pending",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer_depth", "access": "TRANSFER_SRC", "binding": 0, "subresource": { "base_layer": 0, "layer_count": 1 } }
@@ -1522,7 +1312,7 @@
     {
       "name": "Picking.Resolve.Opaque",
       "type": "compute",
-      "condition": "picking_pending && deferred_enabled && !transmission_pending",
+      "condition": "picking_pending && !transmission_pending",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "opaque_vbuffer", "access": "STORAGE_READ", "binding": 0 },
@@ -1538,7 +1328,7 @@
     {
       "name": "Picking.Resolve.Transmission",
       "type": "compute",
-      "condition": "picking_pending && deferred_enabled && transmission_pending",
+      "condition": "picking_pending && transmission_pending",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "opaque_vbuffer", "access": "STORAGE_READ", "binding": 0 },
@@ -1559,7 +1349,7 @@
       "name": "Picking.Features",
       "type": "graphics",
       "domain": "PICKING",
-      "condition": "picking_pending && deferred_enabled",
+      "condition": "picking_pending",
       "flags": ["NO_CULL"],
       "attachments": {
         "color": [
@@ -1595,32 +1385,7 @@
       "name": "World.Blend.Fullscreen",
       "type": "graphics",
       "domain": "WORLD_TRANSPARENT",
-      "condition": "!editor_enabled && !deferred_enabled",
-      "reads": [
-        {
-          "image": "shadow_map",
-          "access": "SAMPLED",
-          "binding": 0,
-          "when": "shadow_cascades_active"
-        }
-      ],
-      "attachments": {
-        "color": [
-          { "image": "hdr_scene_color", "load": "LOAD", "store": "STORE" }
-        ],
-        "depth": {
-          "image": "swapchain_depth",
-          "load": "LOAD",
-          "store": "STORE"
-        }
-      },
-      "execute": "pass.world.blend"
-    },
-    {
-      "name": "World.Blend.Deferred.Fullscreen",
-      "type": "graphics",
-      "domain": "WORLD_TRANSPARENT",
-      "condition": "!editor_enabled && deferred_enabled",
+      "condition": "!editor_enabled",
       "reads": [
         {
           "image": "shadow_map",
@@ -1645,32 +1410,7 @@
       "name": "World.Blend.Editor",
       "type": "graphics",
       "domain": "WORLD_TRANSPARENT",
-      "condition": "editor_enabled && !deferred_enabled",
-      "reads": [
-        {
-          "image": "shadow_map",
-          "access": "SAMPLED",
-          "binding": 0,
-          "when": "shadow_cascades_active"
-        }
-      ],
-      "attachments": {
-        "color": [
-          { "image": "scene_color", "load": "LOAD", "store": "STORE" }
-        ],
-        "depth": {
-          "image": "scene_depth",
-          "load": "LOAD",
-          "store": "STORE"
-        }
-      },
-      "execute": "pass.world.blend"
-    },
-    {
-      "name": "World.Blend.Deferred.Editor",
-      "type": "graphics",
-      "domain": "WORLD_TRANSPARENT",
-      "condition": "editor_enabled && deferred_enabled",
+      "condition": "editor_enabled",
       "reads": [
         {
           "image": "shadow_map",

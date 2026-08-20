@@ -135,13 +135,6 @@ vkr_global const VkrMetalPacketAbiField vkr_tonemap_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketTonemapRoot, reserved, "reserved", 16),
 };
 
-vkr_global const VkrMetalPacketAbiField vkr_skybox_root_fields[] = {
-    VKR_ABI_FIELD(VkrMetalPacketSkyboxRoot, inverse_view_projection,
-                  "inverse_view_projection", 0),
-    VKR_ABI_FIELD(VkrMetalPacketSkyboxRoot, cubemap_texture_id, "cubemap", 64),
-    VKR_ABI_FIELD(VkrMetalPacketSkyboxRoot, target_width, "target_size", 72),
-};
-
 vkr_global const VkrMetalPacketAbiField vkr_equirect_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketEquirectRoot, source_texture_id, "source", 0),
     VKR_ABI_FIELD(VkrMetalPacketEquirectRoot, target_texture_id, "target", 8),
@@ -460,9 +453,6 @@ vkr_global const VkrMetalPacketAbiRecord
         [VKR_METAL_PACKET_ABI_TONEMAP_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketTonemapRoot, "VkrMetalPacketTonemapRoot", 32, 16,
             vkr_tonemap_root_fields),
-        [VKR_METAL_PACKET_ABI_SKYBOX_ROOT] =
-            VKR_ABI_RECORD(VkrMetalPacketSkyboxRoot, "VkrMetalPacketSkyboxRoot",
-                           80, 16, vkr_skybox_root_fields),
         [VKR_METAL_PACKET_ABI_EQUIRECT_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketEquirectRoot, "VkrMetalPacketEquirectRoot", 32, 16,
             vkr_equirect_root_fields),

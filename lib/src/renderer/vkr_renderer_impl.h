@@ -143,8 +143,6 @@ typedef struct VkrRendererImplPassTiming {
 typedef struct VkrRendererImplSubmitResult {
   uint64_t submit_value;
   uint64_t source_frame_index;
-  bool8_t deferred_selected;
-  uint32_t deferred_fallback_reasons;
   uint32_t executed_pass_count;
   uint32_t indexed_draw_count;
   uint32_t shadow_draw_count;

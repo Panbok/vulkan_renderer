@@ -354,7 +354,7 @@
           "minLength": 1
         },
         "world_renderer": {
-          "enum": ["legacy_forward", "deferred", "unknown"]
+          "enum": ["deferred", "unknown"]
         },
         "power_mode": {
           "type": "string",
@@ -439,7 +439,7 @@
           "description": "Actual WSI color space; unknown for an ordinary-image offscreen target."
         },
         "world_renderer": {
-          "enum": ["legacy_forward", "deferred", "unknown"]
+          "enum": ["deferred", "unknown"]
         },
         "present_mode": {
           "enum": [

@@ -1892,10 +1892,10 @@ vkr_internal void application_update_fps_text(Application *application,
             "Batch avg: %.2f  Batch max: %u\n"
             "RG images: %u (peak %u)  RG buffers: %u (peak %u)\n"
             "RG image MB: %.2f (peak %.2f)  RG buffer MB: %.2f (peak %.2f)\n"
-            "Shadow C0 o d:%u b:%u  a d:%u b:%u  s1:%u\n"
-            "Shadow C1 o d:%u b:%u  a d:%u b:%u  s1:%u\n"
-            "Shadow C2 o d:%u b:%u  a d:%u b:%u  s1:%u\n"
-            "Shadow C3 o d:%u b:%u  a d:%u b:%u  s1:%u",
+            "Shadow C0 indirect d:%u calls:%u overflow:%u\n"
+            "Shadow C1 indirect d:%u calls:%u overflow:%u\n"
+            "Shadow C2 indirect d:%u calls:%u overflow:%u\n"
+            "Shadow C3 indirect d:%u calls:%u overflow:%u",
             world->draws_collected, world->opaque_draws,
             world->transparent_draws, world->batches_created,
             world->opaque_batches, world->draw_calls_issued,
@@ -1906,22 +1906,18 @@ vkr_internal void application_update_fps_text(Application *application,
             have_rg_stats ? rg_stats.live_buffers : 0u,
             have_rg_stats ? rg_stats.peak_buffers : 0u, rg_image_live_mb,
             rg_image_peak_mb, rg_buffer_live_mb, rg_buffer_peak_mb,
-            shadow->shadow_draw_calls_opaque[0],
-            shadow->shadow_batches_opaque[0],
-            shadow->shadow_draw_calls_alpha[0], shadow->shadow_batches_alpha[0],
-            shadow->shadow_descriptor_binds_set1[0],
-            shadow->shadow_draw_calls_opaque[1],
-            shadow->shadow_batches_opaque[1],
-            shadow->shadow_draw_calls_alpha[1], shadow->shadow_batches_alpha[1],
-            shadow->shadow_descriptor_binds_set1[1],
-            shadow->shadow_draw_calls_opaque[2],
-            shadow->shadow_batches_opaque[2],
-            shadow->shadow_draw_calls_alpha[2], shadow->shadow_batches_alpha[2],
-            shadow->shadow_descriptor_binds_set1[2],
-            shadow->shadow_draw_calls_opaque[3],
-            shadow->shadow_batches_opaque[3],
-            shadow->shadow_draw_calls_alpha[3], shadow->shadow_batches_alpha[3],
-            shadow->shadow_descriptor_binds_set1[3]);
+            shadow->shadow_indirect_draws_opaque[0],
+            shadow->shadow_indirect_calls_opaque[0],
+            shadow->shadow_indirect_overflow[0],
+            shadow->shadow_indirect_draws_opaque[1],
+            shadow->shadow_indirect_calls_opaque[1],
+            shadow->shadow_indirect_overflow[1],
+            shadow->shadow_indirect_draws_opaque[2],
+            shadow->shadow_indirect_calls_opaque[2],
+            shadow->shadow_indirect_overflow[2],
+            shadow->shadow_indirect_draws_opaque[3],
+            shadow->shadow_indirect_calls_opaque[3],
+            shadow->shadow_indirect_overflow[3]);
         if (metrics_text.length > 0 &&
             application->metrics->config.pass_gpu_timings && have_rg_timings &&
             rg_pass_timings && rg_pass_timing_count > 0) {

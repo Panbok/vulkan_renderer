@@ -841,7 +841,8 @@ float3 vkr_vk_deferred_homogeneous(float4 value)
 }
 
 // Deferred owns the background because the authored skybox pass is declared
-// `!deferred_enabled`; the fallback matches that pass's clear colour.
+// The deferred lighting path owns the background colour when no cubemap is
+// available.
 float3 vkr_vk_deferred_sky(VkrVkLightingRoot* root, uint2 pixel)
 {
     if (root.sky_enabled == 0u)

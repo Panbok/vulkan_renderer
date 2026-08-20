@@ -8,7 +8,6 @@
 #include "bitset_test.h"
 #include "clock_test.h"
 #include "dmemory_test.h"
-#include "draw_merge_test.h"
 #include "entity_test.h"
 #include "event_data_buffer_test.h"
 #include "event_test.h"
@@ -51,3 +50,4 @@
 #include "transform_test.h"
 #include "vec_test.h"
 #include "vector_test.h"
+#include "visibility_test.h"

@@ -309,13 +309,6 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketTonemapRoot {
   uint32_t reserved[3];
 } VkrMetalPacketTonemapRoot;
 
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketSkyboxRoot {
-  Mat4 inverse_view_projection;
-  uint64_t cubemap_texture_id;
-  float32_t target_width;
-  float32_t target_height;
-} VkrMetalPacketSkyboxRoot;
-
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketEquirectRoot {
   uint64_t source_texture_id;
   uint64_t target_texture_id;
@@ -362,7 +355,6 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_IBL_PROBE,
   VKR_METAL_PACKET_ABI_SHADOW_CASCADE,
   VKR_METAL_PACKET_ABI_TONEMAP_ROOT,
-  VKR_METAL_PACKET_ABI_SKYBOX_ROOT,
   VKR_METAL_PACKET_ABI_EQUIRECT_ROOT,
   VKR_METAL_PACKET_ABI_IRRADIANCE_ROOT,
   VKR_METAL_PACKET_ABI_PREFILTER_ROOT,

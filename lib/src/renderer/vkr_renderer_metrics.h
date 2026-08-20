@@ -93,21 +93,9 @@ typedef struct VkrRendererMetricIds {
 
   VkrMetricId visibility_objects_tested;
   VkrMetricId visibility_culled_camera;
-  VkrMetricId visibility_culled_shadow;
   VkrMetricId visibility_without_bounds;
-  VkrMetricId visibility_mergeable_opaque;
-  VkrMetricId visibility_distinct_opaque_keys;
-  VkrMetricId visibility_largest_mergeable_run;
-  VkrMetricId visibility_opaque_emitted;
-  VkrMetricId visibility_opaque_before_merge;
-  VkrMetricId visibility_distinct_geometries;
-  VkrMetricId visibility_distinct_geometry_material_pairs;
   VkrMetricId visibility_candidate_count;
   VkrMetricId visibility_candidate_capacity;
-  VkrMetricId visibility_deferred_selected;
-  VkrMetricId visibility_deferred_legacy_forward_fallbacks;
-  VkrMetricId visibility_deferred_unsupported_input_fallbacks;
-  VkrMetricId visibility_candidate_overflow_fallbacks;
   VkrMetricId visibility_gpu_visible_count;
   VkrMetricId visibility_gpu_bucket_opaque_single;
   VkrMetricId visibility_gpu_bucket_opaque_double;
@@ -138,11 +126,6 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId geometry_megabuffer_generation_replacements;
   VkrMetricId geometry_megabuffer_generation;
 
-  VkrMetricId shadow_draw_calls_opaque[VKR_SHADOW_CASCADE_COUNT_MAX];
-  VkrMetricId shadow_draw_calls_alpha[VKR_SHADOW_CASCADE_COUNT_MAX];
-  VkrMetricId shadow_descriptor_binds_set1[VKR_SHADOW_CASCADE_COUNT_MAX];
-  VkrMetricId shadow_batches_opaque[VKR_SHADOW_CASCADE_COUNT_MAX];
-  VkrMetricId shadow_batches_alpha[VKR_SHADOW_CASCADE_COUNT_MAX];
   VkrMetricId shadow_indirect_draws_opaque[VKR_SHADOW_CASCADE_COUNT_MAX];
   VkrMetricId shadow_indirect_calls_opaque[VKR_SHADOW_CASCADE_COUNT_MAX];
   VkrMetricId shadow_indirect_overflow[VKR_SHADOW_CASCADE_COUNT_MAX];

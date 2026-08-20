@@ -61,9 +61,6 @@ typedef struct VkrBindlessVulkanRendererConfig {
   uint32_t max_graph_images;
   uint32_t max_graph_buffers;
   uint32_t max_graph_passes;
-  /** P20 default-on deferred route; false retains the diagnostic forward path.
-   */
-  bool8_t deferred_enabled;
   /** Previous-frame HZB occlusion is independent from frustum culling. */
   bool8_t hzb_enabled;
   bool8_t enable_validation;
@@ -74,11 +71,8 @@ typedef struct VkrBindlessVulkanRendererConfig {
 typedef struct VkrBindlessVulkanResult {
   uint64_t submit_value;
   uint64_t source_frame_index;
-  uint32_t deferred_fallback_reasons;
   uint32_t indexed_draw_count;
   uint32_t shadow_draw_count;
-  uint32_t shadow_opaque_draw_count[VKR_SHADOW_CASCADE_COUNT_MAX];
-  uint32_t shadow_alpha_draw_count[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t opaque_draw_count;
   uint32_t transmission_draw_count;
   uint32_t blend_draw_count;
@@ -103,7 +97,6 @@ typedef struct VkrBindlessVulkanResult {
   uint32_t pass_timing_count;
   VkrRendererImplPassTiming pass_timings[VKR_RENDERER_IMPL_MAX_PASS_TIMINGS];
   bool8_t readback_ready;
-  bool8_t deferred_selected;
   bool8_t hzb_history_valid;
   bool8_t has_gpu_draw_diagnostics;
   bool8_t has_transmission_coverage;

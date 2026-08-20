@@ -690,23 +690,14 @@ vkr_internal bool8_t vkr_bindless_vk_fail_after_submit(
 bool8_t vkr_bindless_vulkan_renderer_submit_packet(
     VkrBindlessVulkanRenderer *renderer, const VkrRenderPacket *packet,
     VkrBindlessVulkanResult *out_result) {
-  const VkrDeferredEligibility deferred_eligibility =
-      vkr_render_packet_deferred_eligibility_unchecked(packet);
   const bool8_t timing_requested = packet->debug &&
                                    packet->debug->enable_timing &&
                                    packet->debug->capture_pass_timestamps;
   renderer->prepared_frame.editor_enabled = packet->frame.editor_enabled;
-  renderer->prepared_frame.deferred_enabled =
-      renderer->config.deferred_enabled &&
-              deferred_eligibility.has_deferred_work &&
-              deferred_eligibility.fallback_reasons == 0u
-          ? true_v
-          : false_v;
   renderer->prepared_frame.picking_pending =
       packet->picking && packet->picking->pending;
   renderer->prepared_frame.transmission_pending =
-      renderer->prepared_frame.deferred_enabled && packet->world &&
-      packet->world->transmission_gpu_candidate_count > 0u;
+      packet->world && packet->world->transmission_gpu_candidate_count > 0u;
   renderer->prepared_frame.transmission_compact_enabled = false_v;
   renderer->prepared_frame.timing_enabled = timing_requested;
   renderer->prepared_frame.shadow_cascade_count =
@@ -765,12 +756,6 @@ bool8_t vkr_bindless_vulkan_renderer_submit_packet(
   }
   VkrBindlessVkFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
-  slot->deferred_selected = renderer->prepared_frame.deferred_enabled;
-  slot->deferred_fallback_reasons =
-      renderer->config.deferred_enabled &&
-              deferred_eligibility.has_deferred_work
-          ? deferred_eligibility.fallback_reasons
-          : 0u;
   if (!vkr_bindless_vk_plan_capture(renderer, packet, slot)) {
     log_error("Bindless Vulkan failed to plan the requested capture batch");
     vkr_bindless_vulkan_renderer_cancel_frame(renderer);
@@ -969,21 +954,11 @@ bool8_t vkr_bindless_vulkan_renderer_submit_packet(
     *out_result = (VkrBindlessVulkanResult){
         .submit_value = signal_value,
         .source_frame_index = slot->source_frame_index,
-        .deferred_selected = slot->deferred_selected,
-        .deferred_fallback_reasons = slot->deferred_fallback_reasons,
         .indexed_draw_count = slot->indexed_draw_count,
-        .shadow_draw_count = slot->shadow_draw_count,
-        .opaque_draw_count = slot->opaque_draw_count,
-        .transmission_draw_count = slot->transmission_draw_count,
         .blend_draw_count = slot->blend_draw_count,
         .image_index = slot->image_index,
         .pass_timing_count = slot->pass_timing_count,
     };
-    MemCopy(out_result->shadow_opaque_draw_count,
-            slot->shadow_opaque_draw_count,
-            sizeof(out_result->shadow_opaque_draw_count));
-    MemCopy(out_result->shadow_alpha_draw_count, slot->shadow_alpha_draw_count,
-            sizeof(out_result->shadow_alpha_draw_count));
     MemCopy(out_result->pass_timings, slot->pass_timings,
             (uint64_t)slot->pass_timing_count *
                 sizeof(*out_result->pass_timings));
@@ -1028,12 +1003,7 @@ vkr_bindless_vulkan_renderer_poll_result(VkrBindlessVulkanRenderer *renderer,
   *out_result = (VkrBindlessVulkanResult){
       .submit_value = best->retire_value,
       .source_frame_index = best->source_frame_index,
-      .deferred_selected = best->deferred_selected,
-      .deferred_fallback_reasons = best->deferred_fallback_reasons,
       .indexed_draw_count = best->indexed_draw_count,
-      .shadow_draw_count = best->shadow_draw_count,
-      .opaque_draw_count = best->opaque_draw_count,
-      .transmission_draw_count = best->transmission_draw_count,
       .blend_draw_count = best->blend_draw_count,
       .gpu_visible_count = opaque[0].visible_count,
       .gpu_overflow_count = opaque[0].overflow_count,
@@ -1050,7 +1020,7 @@ vkr_bindless_vulkan_renderer_poll_result(VkrBindlessVulkanRenderer *renderer,
       .pass_timing_count = best->pass_timing_count,
       .readback_ready = true_v,
       .hzb_history_valid = best->hzb_history_valid,
-      .has_gpu_draw_diagnostics = best->deferred_selected,
+      .has_gpu_draw_diagnostics = true_v,
       .has_transmission_coverage = best->transmission_coverage_requested,
   };
   MemCopy(out_result->gpu_bucket_counts, opaque[0].bucket_counts,

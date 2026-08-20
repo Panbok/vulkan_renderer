@@ -397,8 +397,6 @@ vkr_internal bool8_t vkr_bindless_vk_create_packet_pipeline(
           .pName =
               vertex_shader == VKR_BINDLESS_VK_PACKET_SHADER_WORLD_VERTEX
                   ? "world_vertex"
-              : vertex_shader == VKR_BINDLESS_VK_PACKET_SHADER_SHADOW_VERTEX
-                  ? "shadow_vertex"
               : vertex_shader == VKR_BINDLESS_VK_PACKET_SHADER_TEXT_VERTEX
                   ? "text_vertex"
               : vertex_shader == VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_VERTEX
@@ -412,8 +410,6 @@ vkr_internal bool8_t vkr_bindless_vk_create_packet_pipeline(
           .pName =
               fragment_shader == VKR_BINDLESS_VK_PACKET_SHADER_WORLD_FRAGMENT
                   ? "world_fragment"
-              : fragment_shader == VKR_BINDLESS_VK_PACKET_SHADER_SHADOW_FRAGMENT
-                  ? "shadow_fragment"
               : fragment_shader ==
                       VKR_BINDLESS_VK_PACKET_SHADER_PICKING_FRAGMENT
                   ? "picking_fragment"
@@ -422,8 +418,6 @@ vkr_internal bool8_t vkr_bindless_vk_create_packet_pipeline(
               : fragment_shader ==
                       VKR_BINDLESS_VK_PACKET_SHADER_TEXT_PICKING_FRAGMENT
                   ? "text_picking_fragment"
-              : fragment_shader == VKR_BINDLESS_VK_PACKET_SHADER_SKYBOX_FRAGMENT
-                  ? "skybox_fragment"
               : fragment_shader ==
                       VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_FRAGMENT
                   ? "vk_visibility_fragment"
@@ -527,12 +521,9 @@ vkr_bindless_vk_create_packet_pipelines(VkrBindlessVulkanRenderer *renderer) {
       *const paths[VKR_BINDLESS_VK_PACKET_SHADER_COUNT] = {
           VKR_BINDLESS_VK_PACKET_WORLD_VERT_SPV,
           VKR_BINDLESS_VK_PACKET_WORLD_FRAG_SPV,
-          VKR_BINDLESS_VK_PACKET_SHADOW_VERT_SPV,
-          VKR_BINDLESS_VK_PACKET_SHADOW_FRAG_SPV,
           VKR_BINDLESS_VK_PACKET_PICKING_FRAG_SPV,
           VKR_BINDLESS_VK_PACKET_FULLSCREEN_VERT_SPV,
           VKR_BINDLESS_VK_PACKET_FULLSCREEN_FRAG_SPV,
-          VKR_BINDLESS_VK_PACKET_SKYBOX_FRAG_SPV,
           VKR_BINDLESS_VK_PACKET_TEXT_VERT_SPV,
           VKR_BINDLESS_VK_PACKET_TEXT_FRAG_SPV,
           VKR_BINDLESS_VK_PACKET_TEXT_PICKING_FRAG_SPV,
@@ -546,39 +537,16 @@ vkr_bindless_vk_create_packet_pipelines(VkrBindlessVulkanRenderer *renderer) {
       return false_v;
   }
   return vkr_bindless_vk_create_packet_pipeline(
-             renderer, VKR_BINDLESS_VK_PACKET_PIPELINE_SHADOW,
-             VKR_BINDLESS_VK_PACKET_SHADER_SHADOW_VERTEX,
-             VKR_BINDLESS_VK_PACKET_SHADER_SHADOW_FRAGMENT, VK_FORMAT_UNDEFINED,
-             VK_FORMAT_D32_SFLOAT, true_v, true_v, false_v, true_v) &&
-         vkr_bindless_vk_create_packet_pipeline(
              renderer, VKR_BINDLESS_VK_PACKET_PIPELINE_PICKING,
              VKR_BINDLESS_VK_PACKET_SHADER_WORLD_VERTEX,
              VKR_BINDLESS_VK_PACKET_SHADER_PICKING_FRAGMENT, VK_FORMAT_R32_UINT,
              VK_FORMAT_D32_SFLOAT, true_v, true_v, false_v, false_v) &&
-         vkr_bindless_vk_create_packet_pipeline(
-             renderer, VKR_BINDLESS_VK_PACKET_PIPELINE_WORLD_OPAQUE,
-             VKR_BINDLESS_VK_PACKET_SHADER_WORLD_VERTEX,
-             VKR_BINDLESS_VK_PACKET_SHADER_WORLD_FRAGMENT,
-             VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_D32_SFLOAT, true_v,
-             true_v, false_v, false_v) &&
          vkr_bindless_vk_create_packet_pipeline(
              renderer, VKR_BINDLESS_VK_PACKET_PIPELINE_WORLD_BLEND,
              VKR_BINDLESS_VK_PACKET_SHADER_WORLD_VERTEX,
              VKR_BINDLESS_VK_PACKET_SHADER_WORLD_FRAGMENT,
              VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_D32_SFLOAT, true_v,
              false_v, true_v, false_v) &&
-         vkr_bindless_vk_create_packet_pipeline(
-             renderer, VKR_BINDLESS_VK_PACKET_PIPELINE_FULLSCREEN_HDR,
-             VKR_BINDLESS_VK_PACKET_SHADER_FULLSCREEN_VERTEX,
-             VKR_BINDLESS_VK_PACKET_SHADER_FULLSCREEN_FRAGMENT,
-             VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_D32_SFLOAT, true_v,
-             false_v, false_v, false_v) &&
-         vkr_bindless_vk_create_packet_pipeline(
-             renderer, VKR_BINDLESS_VK_PACKET_PIPELINE_SKYBOX,
-             VKR_BINDLESS_VK_PACKET_SHADER_FULLSCREEN_VERTEX,
-             VKR_BINDLESS_VK_PACKET_SHADER_SKYBOX_FRAGMENT,
-             VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_D32_SFLOAT, true_v,
-             false_v, false_v, false_v) &&
          vkr_bindless_vk_create_packet_pipeline(
              renderer, VKR_BINDLESS_VK_PACKET_PIPELINE_FULLSCREEN_FINAL,
              VKR_BINDLESS_VK_PACKET_SHADER_FULLSCREEN_VERTEX,

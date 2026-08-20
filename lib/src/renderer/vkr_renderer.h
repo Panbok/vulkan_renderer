@@ -44,6 +44,8 @@ typedef enum VkrRendererError {
   VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED,
   VKR_RENDERER_ERROR_INVALID_HANDLE,
   VKR_RENDERER_ERROR_INVALID_PARAMETER,
+  /** Packet input cannot be represented by the shipping renderer contract. */
+  VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
   VKR_RENDERER_ERROR_SHADER_COMPILATION_FAILED,
   VKR_RENDERER_ERROR_OUT_OF_MEMORY,
   VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED,
@@ -399,10 +401,8 @@ typedef enum VkrSurfaceDepthFormat {
   VKR_SURFACE_DEPTH_FORMAT_D24_UNORM_S8_UINT,
 } VkrSurfaceDepthFormat;
 
-/** Whole-frame opaque/transmission topology configured at backend startup. */
 typedef enum VkrWorldRendererTopology {
   VKR_WORLD_RENDERER_TOPOLOGY_UNKNOWN = 0,
-  VKR_WORLD_RENDERER_TOPOLOGY_LEGACY_FORWARD,
   VKR_WORLD_RENDERER_TOPOLOGY_DEFERRED,
 } VkrWorldRendererTopology;
 

@@ -59,12 +59,9 @@ function(vkr_add_bindless_vulkan_packet_shader output_name entry stage)
 endfunction()
 vkr_add_bindless_vulkan_packet_shader("packet.world.vert" world_vertex vertex)
 vkr_add_bindless_vulkan_packet_shader("packet.world.frag" world_fragment fragment)
-vkr_add_bindless_vulkan_packet_shader("packet.shadow.vert" shadow_vertex vertex)
-vkr_add_bindless_vulkan_packet_shader("packet.shadow.frag" shadow_fragment fragment)
 vkr_add_bindless_vulkan_packet_shader("packet.picking.frag" picking_fragment fragment)
 vkr_add_bindless_vulkan_packet_shader("packet.fullscreen.vert" fullscreen_vertex vertex)
 vkr_add_bindless_vulkan_packet_shader("packet.fullscreen.frag" fullscreen_fragment fragment)
-vkr_add_bindless_vulkan_packet_shader("packet.skybox.frag" skybox_fragment fragment)
 vkr_add_bindless_vulkan_packet_shader("packet.text.vert" text_vertex vertex)
 vkr_add_bindless_vulkan_packet_shader("packet.text.frag" text_fragment fragment)
 vkr_add_bindless_vulkan_packet_shader("packet.text_picking.frag" text_picking_fragment fragment)
@@ -218,7 +215,6 @@ if(APPLE)
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/ibl/diffuse_convolution.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/ibl/specular_prefilter.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/text/default.metal"
-        "${VKR_METAL_PACKET_MSL_SHADER_DIR}/skybox/default.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/tonemap.metal")
     list(JOIN VKR_METAL_PACKET_MSL_SOURCES "|"
          VKR_METAL_PACKET_MSL_SOURCE_ARGUMENT)

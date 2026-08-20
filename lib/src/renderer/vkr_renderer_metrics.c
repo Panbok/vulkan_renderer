@@ -369,49 +369,15 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
   VKR_REGISTER_U64_REQUIRED(visibility_culled_camera,
                             "visibility.objects_culled_camera",
                             VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
-  VKR_REGISTER_U64_REQUIRED(visibility_culled_shadow,
-                            "visibility.objects_culled_shadow",
-                            VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(visibility_without_bounds,
                    "visibility.objects_without_bounds", VKR_METRIC_DOMAIN_DRAW,
                    VKR_METRIC_UNIT_COUNT);
-  VKR_REGISTER_U64(visibility_mergeable_opaque,
-                   "visibility.mergeable_opaque_draws", VKR_METRIC_DOMAIN_DRAW,
-                   VKR_METRIC_UNIT_COUNT);
-  VKR_REGISTER_U64(visibility_distinct_opaque_keys,
-                   "visibility.distinct_opaque_keys", VKR_METRIC_DOMAIN_DRAW,
-                   VKR_METRIC_UNIT_COUNT);
-  VKR_REGISTER_U64(visibility_largest_mergeable_run,
-                   "visibility.largest_mergeable_run", VKR_METRIC_DOMAIN_DRAW,
-                   VKR_METRIC_UNIT_COUNT);
-  VKR_REGISTER_U64(visibility_opaque_emitted, "visibility.opaque_draws_emitted",
-                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
-  VKR_REGISTER_U64(visibility_opaque_before_merge,
-                   "visibility.opaque_draws_before_merge",
-                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
-  VKR_REGISTER_U64(visibility_distinct_geometries,
-                   "visibility.distinct_geometries", VKR_METRIC_DOMAIN_DRAW,
-                   VKR_METRIC_UNIT_COUNT);
-  VKR_REGISTER_U64(visibility_distinct_geometry_material_pairs,
-                   "visibility.distinct_geometry_material_pairs",
-                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(visibility_candidate_count,
                    "visibility.gpu_candidates.count", VKR_METRIC_DOMAIN_DRAW,
                    VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(visibility_candidate_capacity,
                    "visibility.gpu_candidates.capacity", VKR_METRIC_DOMAIN_DRAW,
                    VKR_METRIC_UNIT_COUNT);
-  VKR_REGISTER_U64(visibility_deferred_selected, "visibility.deferred.selected",
-                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
-  VKR_REGISTER_COUNTER(visibility_deferred_legacy_forward_fallbacks,
-                       "visibility.deferred.legacy_forward_fallbacks",
-                       VKR_METRIC_DOMAIN_DRAW);
-  VKR_REGISTER_COUNTER(visibility_deferred_unsupported_input_fallbacks,
-                       "visibility.deferred.unsupported_input_fallbacks",
-                       VKR_METRIC_DOMAIN_DRAW);
-  VKR_REGISTER_COUNTER(visibility_candidate_overflow_fallbacks,
-                       "visibility.gpu_candidates.overflow_fallbacks",
-                       VKR_METRIC_DOMAIN_DRAW);
   VKR_REGISTER_U64(visibility_gpu_visible_count, "visibility.gpu_visible.count",
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(visibility_gpu_bucket_opaque_single,
@@ -516,11 +482,6 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
           metrics, name, VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_KIND_GAUGE,        \
           VKR_METRIC_UNIT_COUNT, VKR_METRIC_SCALAR_U64, &ids->FIELD[i]))       \
   return false_v
-    VKR_REGISTER_CASCADE(shadow_draw_calls_opaque, "opaque_calls");
-    VKR_REGISTER_CASCADE(shadow_draw_calls_alpha, "alpha_calls");
-    VKR_REGISTER_CASCADE(shadow_descriptor_binds_set1, "set1_binds");
-    VKR_REGISTER_CASCADE(shadow_batches_opaque, "opaque_batches");
-    VKR_REGISTER_CASCADE(shadow_batches_alpha, "alpha_batches");
     VKR_REGISTER_CASCADE(shadow_indirect_draws_opaque, "indirect_commands");
     VKR_REGISTER_CASCADE(shadow_indirect_calls_opaque, "indirect_calls");
     VKR_REGISTER_CASCADE(shadow_indirect_overflow, "indirect_overflow");
@@ -1138,33 +1099,12 @@ void vkr_renderer_metrics_collect(
 
   VKR_SET_U64(visibility_objects_tested, visibility->objects_tested);
   VKR_SET_U64(visibility_culled_camera, visibility->objects_culled_camera);
-  VKR_SET_U64(visibility_culled_shadow, visibility->objects_culled_shadow);
   VKR_SET_U64(visibility_without_bounds, visibility->objects_without_bounds);
-  VKR_SET_U64(visibility_mergeable_opaque, visibility->mergeable_opaque_draws);
-  VKR_SET_U64(visibility_distinct_opaque_keys,
-              visibility->distinct_opaque_keys);
-  VKR_SET_U64(visibility_largest_mergeable_run,
-              visibility->largest_mergeable_run);
-  VKR_SET_U64(visibility_opaque_emitted, visibility->opaque_draws_emitted);
-  VKR_SET_U64(visibility_opaque_before_merge,
-              visibility->opaque_draws_before_merge);
-  VKR_SET_U64(visibility_distinct_geometries, visibility->distinct_geometries);
-  VKR_SET_U64(visibility_distinct_geometry_material_pairs,
-              visibility->distinct_geometry_material_pairs);
   VKR_SET_U64(visibility_candidate_count, world->gpu_candidate_count);
   VKR_SET_U64(visibility_candidate_capacity, world->gpu_candidate_capacity);
   VKR_SET_U64(visibility_transmission_candidate_count,
               world->transmission_gpu_candidate_count);
-  VKR_SET_U64(visibility_deferred_selected, world->deferred_selected ? 1u : 0u);
-  vkr_metrics_counter_add(metrics,
-                          ids->visibility_deferred_legacy_forward_fallbacks,
-                          world->deferred_legacy_forward_fallbacks);
-  vkr_metrics_counter_add(metrics,
-                          ids->visibility_deferred_unsupported_input_fallbacks,
-                          world->deferred_unsupported_input_fallbacks);
   VKR_SET_U64(visibility_hzb_history_valid, world->hzb_history_valid ? 1u : 0u);
-  vkr_metrics_counter_add(metrics, ids->visibility_candidate_overflow_fallbacks,
-                          world->gpu_candidate_overflow_fallbacks);
   if (world->gpu_diagnostics_valid) {
     VKR_SET_U64(visibility_gpu_visible_count, world->gpu_visible_count);
     VKR_SET_U64(visibility_gpu_bucket_opaque_single,
@@ -1262,16 +1202,6 @@ void vkr_renderer_metrics_collect(
   VKR_SET_U64(geometry_megabuffer_generation, mega->generation);
 
   for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
-    vkr_metrics_gauge_set_u64(metrics, ids->shadow_draw_calls_opaque[i],
-                              shadow->shadow_draw_calls_opaque[i]);
-    vkr_metrics_gauge_set_u64(metrics, ids->shadow_draw_calls_alpha[i],
-                              shadow->shadow_draw_calls_alpha[i]);
-    vkr_metrics_gauge_set_u64(metrics, ids->shadow_descriptor_binds_set1[i],
-                              shadow->shadow_descriptor_binds_set1[i]);
-    vkr_metrics_gauge_set_u64(metrics, ids->shadow_batches_opaque[i],
-                              shadow->shadow_batches_opaque[i]);
-    vkr_metrics_gauge_set_u64(metrics, ids->shadow_batches_alpha[i],
-                              shadow->shadow_batches_alpha[i]);
     vkr_metrics_gauge_set_u64(metrics, ids->shadow_indirect_draws_opaque[i],
                               shadow->shadow_indirect_draws_opaque[i]);
     vkr_metrics_gauge_set_u64(metrics, ids->shadow_indirect_calls_opaque[i],
@@ -1526,16 +1456,6 @@ vkr_renderer_metrics_read_frame(const VkrRendererMetrics *renderer_metrics,
 
     VkrShadowMetrics *shadow = &out_frame_metrics->shadow;
     for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
-      VKR_READ_U32(shadow->shadow_draw_calls_opaque[i],
-                   ids->shadow_draw_calls_opaque[i]);
-      VKR_READ_U32(shadow->shadow_draw_calls_alpha[i],
-                   ids->shadow_draw_calls_alpha[i]);
-      VKR_READ_U32(shadow->shadow_descriptor_binds_set1[i],
-                   ids->shadow_descriptor_binds_set1[i]);
-      VKR_READ_U32(shadow->shadow_batches_opaque[i],
-                   ids->shadow_batches_opaque[i]);
-      VKR_READ_U32(shadow->shadow_batches_alpha[i],
-                   ids->shadow_batches_alpha[i]);
       VKR_READ_U32(shadow->shadow_indirect_draws_opaque[i],
                    ids->shadow_indirect_draws_opaque[i]);
       VKR_READ_U32(shadow->shadow_indirect_calls_opaque[i],
@@ -1550,24 +1470,8 @@ vkr_renderer_metrics_read_frame(const VkrRendererMetrics *renderer_metrics,
                  ids->visibility_objects_tested);
     VKR_READ_U32(out_visibility->objects_culled_camera,
                  ids->visibility_culled_camera);
-    VKR_READ_U32(out_visibility->objects_culled_shadow,
-                 ids->visibility_culled_shadow);
     VKR_READ_U32(out_visibility->objects_without_bounds,
                  ids->visibility_without_bounds);
-    VKR_READ_U32(out_visibility->mergeable_opaque_draws,
-                 ids->visibility_mergeable_opaque);
-    VKR_READ_U32(out_visibility->distinct_opaque_keys,
-                 ids->visibility_distinct_opaque_keys);
-    VKR_READ_U32(out_visibility->largest_mergeable_run,
-                 ids->visibility_largest_mergeable_run);
-    VKR_READ_U32(out_visibility->opaque_draws_emitted,
-                 ids->visibility_opaque_emitted);
-    VKR_READ_U32(out_visibility->opaque_draws_before_merge,
-                 ids->visibility_opaque_before_merge);
-    VKR_READ_U32(out_visibility->distinct_geometries,
-                 ids->visibility_distinct_geometries);
-    VKR_READ_U32(out_visibility->distinct_geometry_material_pairs,
-                 ids->visibility_distinct_geometry_material_pairs);
   }
 
   if (out_rg_stats) {

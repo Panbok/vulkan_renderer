@@ -388,47 +388,29 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
     [slang release];
     return false_v;
   }
-  bool8_t deferred_pipelines_ready = true_v;
-  renderer->shadow_pipeline = vkr_metal_packet_create_pipeline(
-      renderer, slang, "vkr_metal_packet_vertex", slang,
-      "vkr_metal_packet_shadow_fragment", MTLPixelFormatInvalid, false_v,
-      VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_RECORD_COUNT,
-      renderer->deferred_enabled, @"VKR Metal packet shadow");
-  renderer->skybox_pipeline = vkr_metal_packet_create_pipeline(
-      renderer, fragment, "vkr_metal_packet_skybox_vertex", fragment,
-      "vkr_metal_packet_skybox_fragment", MTLPixelFormatRGBA16Float, false_v,
-      VKR_METAL_PACKET_ABI_RECORD_COUNT, VKR_METAL_PACKET_ABI_SKYBOX_ROOT,
-      false_v, @"VKR Metal packet skybox");
-  renderer->opaque_pipeline = vkr_metal_packet_create_pipeline(
+  renderer->gpu_shadow_pipeline = vkr_metal_packet_create_pipeline(
       renderer, slang, "vkr_metal_packet_vertex", fragment,
-      "vkr_metal_packet_opaque_fragment", MTLPixelFormatRGBA16Float, false_v,
+      "vkr_metal_packet_gpu_shadow_fragment", MTLPixelFormatInvalid, false_v,
       VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_DRAW_ROOT,
-      renderer->deferred_enabled, @"VKR Metal packet opaque world");
-  if (renderer->deferred_enabled) {
-    renderer->gpu_shadow_pipeline = vkr_metal_packet_create_pipeline(
-        renderer, slang, "vkr_metal_packet_vertex", fragment,
-        "vkr_metal_packet_gpu_shadow_fragment", MTLPixelFormatInvalid, false_v,
-        VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_DRAW_ROOT,
-        true_v, @"VKR Metal packet GPU shadow");
-    renderer->vbuffer_pipeline = vkr_metal_packet_create_pipeline(
-        renderer, slang, "vkr_metal_packet_vertex", fragment,
-        "vkr_metal_packet_vbuffer_fragment", MTLPixelFormatRG32Uint, false_v,
-        VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_DRAW_ROOT,
-        true_v, @"VKR Metal packet opaque visibility buffer");
-    renderer->transmission_vbuffer_pipeline = vkr_metal_packet_create_pipeline(
-        renderer, slang, "vkr_metal_packet_vertex", fragment,
-        "vkr_metal_packet_transmission_vbuffer_fragment",
-        MTLPixelFormatRG32Uint, false_v, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
-        VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
-        @"VKR Metal packet transmission peel visibility buffer");
-    if (renderer->transmission_vbuffer_pipeline &&
-        !vkr_metal_packet_validate_abi_binding(
-            @"VKR Metal packet transmission peel visibility buffer",
-            renderer->transmission_vbuffer_pipeline.reflection.fragmentBindings,
-            VKR_METAL_PACKET_ABI_TRANSMISSION_PEEL_ROOT)) {
-      [renderer->transmission_vbuffer_pipeline release];
-      renderer->transmission_vbuffer_pipeline = nil;
-    }
+      true_v, @"VKR Metal packet GPU shadow");
+  renderer->vbuffer_pipeline = vkr_metal_packet_create_pipeline(
+      renderer, slang, "vkr_metal_packet_vertex", fragment,
+      "vkr_metal_packet_vbuffer_fragment", MTLPixelFormatRG32Uint, false_v,
+      VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_DRAW_ROOT,
+      true_v, @"VKR Metal packet opaque visibility buffer");
+  renderer->transmission_vbuffer_pipeline = vkr_metal_packet_create_pipeline(
+      renderer, slang, "vkr_metal_packet_vertex", fragment,
+      "vkr_metal_packet_transmission_vbuffer_fragment", MTLPixelFormatRG32Uint,
+      false_v, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+      VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
+      @"VKR Metal packet transmission peel visibility buffer");
+  if (renderer->transmission_vbuffer_pipeline &&
+      !vkr_metal_packet_validate_abi_binding(
+          @"VKR Metal packet transmission peel visibility buffer",
+          renderer->transmission_vbuffer_pipeline.reflection.fragmentBindings,
+          VKR_METAL_PACKET_ABI_TRANSMISSION_PEEL_ROOT)) {
+    [renderer->transmission_vbuffer_pipeline release];
+    renderer->transmission_vbuffer_pipeline = nil;
   }
   renderer->blend_pipeline = vkr_metal_packet_create_pipeline(
       renderer, slang, "vkr_metal_packet_vertex", fragment,
@@ -445,7 +427,7 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       renderer, slang, "vkr_metal_packet_vertex", slang,
       "vkr_metal_packet_picking_fragment", MTLPixelFormatR32Uint, false_v,
       VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_RECORD_COUNT,
-      false_v, @"VKR Metal packet picking");
+      false_v, @"VKR Metal packet feature picking");
   renderer->tonemap_pipeline = vkr_metal_packet_create_pipeline(
       renderer, fragment, "vkr_metal_packet_tonemap_vertex", fragment,
       "vkr_metal_packet_tonemap_fragment",
@@ -467,7 +449,7 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       renderer, fragment, "vkr_metal_packet_text_vertex", fragment,
       "vkr_metal_packet_text_picking_fragment", MTLPixelFormatR32Uint, false_v,
       VKR_METAL_PACKET_ABI_TEXT_ROOT, VKR_METAL_PACKET_ABI_TEXT_ROOT, false_v,
-      @"VKR Metal packet picking text");
+      @"VKR Metal packet text picking");
   renderer->ibl_equirect_pipeline = vkr_metal_packet_create_compute_pipeline(
       renderer, fragment, "vkr_metal_packet_ibl_equirect",
       VKR_METAL_PACKET_ABI_EQUIRECT_ROOT, false_v,
@@ -480,84 +462,79 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       renderer, fragment, "vkr_metal_packet_ibl_prefilter",
       VKR_METAL_PACKET_ABI_PREFILTER_ROOT, false_v,
       @"VKR Metal packet IBL prefilter");
-  if (renderer->deferred_enabled) {
-    renderer->gpu_draw_classify_pipeline =
-        vkr_metal_packet_create_compute_pipeline(
-            renderer, fragment, "vkr_metal_packet_gpu_draw_classify",
-            VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT, false_v,
-            @"VKR Metal packet GPU draw classify");
-    renderer->gpu_draw_prefix_pipeline =
-        vkr_metal_packet_create_compute_pipeline(
-            renderer, fragment, "vkr_metal_packet_gpu_draw_prefix",
-            VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT, false_v,
-            @"VKR Metal packet GPU draw prefix");
-    renderer->gpu_draw_encode_pipeline =
-        vkr_metal_packet_create_compute_pipeline(
-            renderer, fragment, "vkr_metal_packet_gpu_draw_encode",
-            VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT, true_v,
-            @"VKR Metal packet GPU draw encode");
-    renderer->gbuffer_resolve_pipeline =
-        vkr_metal_packet_create_compute_pipeline(
-            renderer, fragment, "vkr_metal_packet_gbuffer_resolve",
-            VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT, false_v,
-            @"VKR Metal packet G-buffer resolve");
-    renderer->deferred_lighting_pipeline =
-        vkr_metal_packet_create_compute_pipeline(
-            renderer, fragment, "vkr_metal_packet_deferred_lighting",
-            VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT, false_v,
-            @"VKR Metal packet deferred lighting");
-    renderer->transmission_shade_pipeline =
-        vkr_metal_packet_create_compute_pipeline(
-            renderer, fragment, "vkr_metal_packet_transmission_shade",
-            VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT, false_v,
-            @"VKR Metal packet transmission shade");
-    renderer->transmission_coverage_pipeline =
-        vkr_metal_packet_create_compute_pipeline(
-            renderer, fragment, "vkr_metal_packet_transmission_coverage",
-            VKR_METAL_PACKET_ABI_TRANSMISSION_COVERAGE_ROOT, false_v,
-            @"VKR Metal packet transmission coverage");
-    renderer->transmission_compact_pipeline =
-        vkr_metal_packet_create_compute_pipeline(
-            renderer, fragment, "vkr_metal_packet_transmission_compact",
-            VKR_METAL_PACKET_ABI_TRANSMISSION_COMPACT_ROOT, false_v,
-            @"VKR Metal packet transmission compact");
-    renderer->transmission_compact_finalize_pipeline =
-        vkr_metal_packet_create_compute_pipeline(
-            renderer, fragment,
-            "vkr_metal_packet_transmission_compact_finalize",
-            VKR_METAL_PACKET_ABI_TRANSMISSION_COMPACT_ROOT, false_v,
-            @"VKR Metal packet transmission compact finalize");
-    renderer->picking_resolve_pipeline =
-        vkr_metal_packet_create_compute_pipeline(
-            renderer, fragment, "vkr_metal_packet_picking_resolve",
-            VKR_METAL_PACKET_ABI_PICKING_RESOLVE_ROOT, false_v,
-            @"VKR Metal packet deferred picking resolve");
-    renderer->hzb_build_pipeline = vkr_metal_packet_create_compute_pipeline(
-        renderer, fragment, "vkr_metal_packet_hzb_build",
-        VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT, false_v,
-        @"VKR Metal packet HZB build");
-    id<MTLFunction> encode_function =
-        [fragment newFunctionWithName:@"vkr_metal_packet_gpu_draw_encode"];
-    renderer->gpu_draw_icb_argument_encoder =
-        [encode_function newArgumentEncoderWithBufferIndex:1u];
-    [encode_function release];
-    if (!renderer->gpu_draw_classify_pipeline ||
-        !renderer->gpu_draw_prefix_pipeline ||
-        !renderer->gpu_draw_encode_pipeline ||
-        !renderer->gbuffer_resolve_pipeline ||
-        !renderer->deferred_lighting_pipeline ||
-        !renderer->transmission_shade_pipeline ||
-        !renderer->transmission_coverage_pipeline ||
-        !renderer->transmission_compact_pipeline ||
-        !renderer->transmission_compact_finalize_pipeline ||
-        !renderer->picking_resolve_pipeline || !renderer->hzb_build_pipeline ||
-        !renderer->gpu_shadow_pipeline || !renderer->vbuffer_pipeline ||
-        !renderer->transmission_vbuffer_pipeline ||
-        !renderer->gpu_draw_icb_argument_encoder) {
-      log_error("Metal deferred pipelines or indirect argument encoder are "
-                "unavailable");
-      deferred_pipelines_ready = false_v;
-    }
+  renderer->gpu_draw_classify_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_gpu_draw_classify",
+          VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT, false_v,
+          @"VKR Metal packet GPU draw classify");
+  renderer->gpu_draw_prefix_pipeline = vkr_metal_packet_create_compute_pipeline(
+      renderer, fragment, "vkr_metal_packet_gpu_draw_prefix",
+      VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT, false_v,
+      @"VKR Metal packet GPU draw prefix");
+  renderer->gpu_draw_encode_pipeline = vkr_metal_packet_create_compute_pipeline(
+      renderer, fragment, "vkr_metal_packet_gpu_draw_encode",
+      VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT, true_v,
+      @"VKR Metal packet GPU draw encode");
+  renderer->gbuffer_resolve_pipeline = vkr_metal_packet_create_compute_pipeline(
+      renderer, fragment, "vkr_metal_packet_gbuffer_resolve",
+      VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT, false_v,
+      @"VKR Metal packet G-buffer resolve");
+  renderer->deferred_lighting_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_deferred_lighting",
+          VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT, false_v,
+          @"VKR Metal packet deferred lighting");
+  renderer->transmission_shade_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_transmission_shade",
+          VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT, false_v,
+          @"VKR Metal packet transmission shade");
+  renderer->transmission_coverage_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_transmission_coverage",
+          VKR_METAL_PACKET_ABI_TRANSMISSION_COVERAGE_ROOT, false_v,
+          @"VKR Metal packet transmission coverage");
+  renderer->transmission_compact_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_transmission_compact",
+          VKR_METAL_PACKET_ABI_TRANSMISSION_COMPACT_ROOT, false_v,
+          @"VKR Metal packet transmission compact");
+  renderer->transmission_compact_finalize_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_transmission_compact_finalize",
+          VKR_METAL_PACKET_ABI_TRANSMISSION_COMPACT_ROOT, false_v,
+          @"VKR Metal packet transmission compact finalize");
+  renderer->picking_resolve_pipeline = vkr_metal_packet_create_compute_pipeline(
+      renderer, fragment, "vkr_metal_packet_picking_resolve",
+      VKR_METAL_PACKET_ABI_PICKING_RESOLVE_ROOT, false_v,
+      @"VKR Metal packet deferred picking resolve");
+  renderer->hzb_build_pipeline = vkr_metal_packet_create_compute_pipeline(
+      renderer, fragment, "vkr_metal_packet_hzb_build",
+      VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT, false_v,
+      @"VKR Metal packet HZB build");
+  id<MTLFunction> encode_function =
+      [fragment newFunctionWithName:@"vkr_metal_packet_gpu_draw_encode"];
+  renderer->gpu_draw_icb_argument_encoder =
+      [encode_function newArgumentEncoderWithBufferIndex:1u];
+  [encode_function release];
+  if (!renderer->gpu_draw_classify_pipeline ||
+      !renderer->gpu_draw_prefix_pipeline ||
+      !renderer->gpu_draw_encode_pipeline ||
+      !renderer->gbuffer_resolve_pipeline ||
+      !renderer->deferred_lighting_pipeline ||
+      !renderer->transmission_shade_pipeline ||
+      !renderer->transmission_coverage_pipeline ||
+      !renderer->transmission_compact_pipeline ||
+      !renderer->transmission_compact_finalize_pipeline ||
+      !renderer->picking_resolve_pipeline || !renderer->hzb_build_pipeline ||
+      !renderer->gpu_shadow_pipeline || !renderer->vbuffer_pipeline ||
+      !renderer->transmission_vbuffer_pipeline ||
+      !renderer->gpu_draw_icb_argument_encoder) {
+    log_error("Metal deferred pipelines or indirect argument encoder are "
+              "unavailable");
+    [fragment release];
+    [slang release];
+    return false_v;
   }
   [fragment release];
   [slang release];
@@ -580,17 +557,27 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
   [table release];
   if (!renderer->argument_table)
     vkr_metal_packet_print_error("argument_table", error);
-  return renderer->shadow_pipeline && renderer->skybox_pipeline &&
-                 renderer->opaque_pipeline && renderer->blend_pipeline &&
-                 renderer->overlay_pipeline && renderer->picking_pipeline &&
-                 renderer->tonemap_pipeline && renderer->world_text_pipeline &&
-                 renderer->ui_text_pipeline &&
+  return renderer->blend_pipeline && renderer->overlay_pipeline &&
+                 renderer->picking_pipeline && renderer->tonemap_pipeline &&
+                 renderer->world_text_pipeline && renderer->ui_text_pipeline &&
                  renderer->picking_text_pipeline &&
                  renderer->ibl_equirect_pipeline &&
                  renderer->ibl_irradiance_pipeline &&
-                 renderer->ibl_prefilter_pipeline && deferred_pipelines_ready &&
-                 renderer->depth_write_state && renderer->depth_read_state &&
-                 renderer->argument_table
+                 renderer->ibl_prefilter_pipeline &&
+                 renderer->gpu_shadow_pipeline && renderer->vbuffer_pipeline &&
+                 renderer->transmission_vbuffer_pipeline &&
+                 renderer->gpu_draw_classify_pipeline &&
+                 renderer->gpu_draw_prefix_pipeline &&
+                 renderer->gpu_draw_encode_pipeline &&
+                 renderer->gbuffer_resolve_pipeline &&
+                 renderer->deferred_lighting_pipeline &&
+                 renderer->transmission_shade_pipeline &&
+                 renderer->transmission_coverage_pipeline &&
+                 renderer->transmission_compact_pipeline &&
+                 renderer->transmission_compact_finalize_pipeline &&
+                 renderer->picking_resolve_pipeline &&
+                 renderer->hzb_build_pipeline && renderer->depth_write_state &&
+                 renderer->depth_read_state && renderer->argument_table
              ? true_v
              : false_v;
 }
@@ -599,8 +586,6 @@ vkr_internal bool8_t vkr_metal_packet_create_gpu_draw_icbs(
     VkrMetalPacketRenderer *renderer) API_AVAILABLE(macos(26.0)) {
   if (!renderer)
     return false_v;
-  if (!renderer->deferred_enabled)
-    return true_v;
   const char *shader_validation = getenv("MTL_SHADER_VALIDATION");
   const bool8_t validation_enabled = shader_validation &&
                                              shader_validation[0] != '\0' &&
@@ -1120,7 +1105,6 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
     renderer->max_submeshes_per_mesh = config->max_submeshes_per_mesh;
     renderer->max_materials = config->max_material_rows;
     renderer->max_textures = config->max_textures;
-    renderer->deferred_enabled = config->deferred_enabled;
     renderer->transmission_compact_enabled =
         config->transmission_compact_enabled;
     renderer->hzb_enabled = config->hzb_enabled;

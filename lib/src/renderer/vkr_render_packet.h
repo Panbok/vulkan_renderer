@@ -13,7 +13,7 @@
 #include "renderer/vkr_renderer.h"
 
 /** Version constant for VkrRenderPacket.packet_version validation. */
-#define VKR_RENDER_PACKET_VERSION 12u
+#define VKR_RENDER_PACKET_VERSION 13u
 
 /** Default manual camera exposure for HDR scene presentation. */
 #define VKR_DEFAULT_EXPOSURE 0.30f
@@ -120,9 +120,7 @@ typedef struct VkrDrawItem {
  * @brief Unculled multi-view draw source row borrowed for one packet
  * submission.
  *
- * This is deliberately separate from VkrDrawItem: the retained lists are
- * camera-culled and may be instance-merged before a backend sees them, while
- * GPU culling needs one source row per original instance x submesh pair.
+ * GPU culling consumes one source row per original instance x submesh pair.
  */
 typedef struct VkrWorldDrawCandidate {
   VkrMeshHandle mesh;
@@ -158,7 +156,7 @@ typedef struct VkrPreparedTextDraw {
 } VkrPreparedTextDraw;
 
 /**
- * @brief Payload for explicit opaque, transmission, and blend world stages.
+ * @brief Payload for GPU-driven world stages and retained ordinary blend.
  */
 typedef struct VkrWorldPassPayload {
   const VkrWorldDrawCandidate *gpu_candidates;
@@ -170,10 +168,7 @@ typedef struct VkrWorldPassPayload {
   /** Independent unculled transmissive stream consumed by Metal P12. */
   const VkrWorldDrawCandidate *transmission_gpu_candidates;
   uint32_t transmission_gpu_candidate_count;
-  const VkrDrawItem *opaque_draws;
-  uint32_t opaque_draw_count;
-  const VkrDrawItem *transmission_draws;
-  uint32_t transmission_draw_count;
+  /** Camera-culled, back-to-front ordinary blend draws. */
   const VkrDrawItem *transparent_draws;
   uint32_t transparent_draw_count;
   const VkrInstanceDataGPU *instances;
@@ -200,12 +195,6 @@ typedef struct VkrShadowPassPayload {
   uint32_t cascade_count;
   Mat4 light_view_proj[VKR_SHADOW_CASCADE_COUNT_MAX];
   float32_t split_depths[VKR_SHADOW_CASCADE_COUNT_MAX];
-  const VkrDrawItem *opaque_draws;
-  uint32_t opaque_draw_count;
-  const VkrDrawItem *alpha_draws;
-  uint32_t alpha_draw_count;
-  const VkrInstanceDataGPU *instances;
-  uint32_t instance_count;
   const VkrShadowConfigOverride *config_override;
 } VkrShadowPassPayload;
 
@@ -248,10 +237,6 @@ typedef struct VkrPickingPassPayload {
   bool8_t pending;
   uint32_t x;
   uint32_t y;
-  const VkrDrawItem *draws;
-  uint32_t draw_count;
-  const VkrInstanceDataGPU *instances;
-  uint32_t instance_count;
 } VkrPickingPassPayload;
 
 /**
@@ -307,91 +292,6 @@ typedef struct VkrRenderPacket {
   const VkrTextUpdatesPayload *text_updates;
   const VkrGpuDebugPayload *debug;
 } VkrRenderPacket;
-
-/** Deferred cannot represent the opaque/cutout candidate stream this frame. */
-#define VKR_DEFERRED_FALLBACK_OPAQUE_INPUT 0x1u
-/** Deferred cannot represent the transmission candidate stream this frame. */
-#define VKR_DEFERRED_FALLBACK_TRANSMISSION_INPUT 0x2u
-/** The opaque/cutout candidate capacity would be exceeded. */
-#define VKR_DEFERRED_FALLBACK_OPAQUE_CAPACITY 0x4u
-/** The transmission candidate capacity would be exceeded. */
-#define VKR_DEFERRED_FALLBACK_TRANSMISSION_CAPACITY 0x8u
-
-/**
- * @brief Complete, side-effect-free decision for the pre-P21 deferred reroute.
- *
- * A fallback reason always applies to the whole frame; candidate rows are
- * never truncated. `has_deferred_work=false` is not a fallback: blend/text/UI
- * only frames have no opaque, transmission, or shadow work to migrate.
- */
-typedef struct VkrDeferredEligibility {
-  uint32_t fallback_reasons;
-  bool8_t has_deferred_work;
-} VkrDeferredEligibility;
-
-static INLINE VkrDeferredEligibility
-vkr_render_packet_deferred_eligibility_unchecked(
-    const VkrRenderPacket *packet) {
-  VkrDeferredEligibility result = {0};
-  const VkrWorldPassPayload *world = packet->world;
-  const uint32_t opaque_candidates = world ? world->gpu_candidate_count : 0u;
-  const uint32_t transmission_candidates =
-      world ? world->transmission_gpu_candidate_count : 0u;
-  const uint32_t opaque_draws = world ? world->opaque_draw_count : 0u;
-  const uint32_t transmission_draws =
-      world ? world->transmission_draw_count : 0u;
-  const uint32_t camera_opaque_candidates =
-      world ? world->gpu_camera_opaque_candidate_count : 0u;
-  const uint32_t shadow_candidates =
-      world ? world->gpu_shadow_candidate_count : 0u;
-  const bool8_t shadow_work =
-      packet->shadow && (packet->shadow->opaque_draw_count > 0u ||
-                         packet->shadow->alpha_draw_count > 0u);
-  const uint64_t shadow_draws =
-      packet->shadow ? (uint64_t)packet->shadow->opaque_draw_count +
-                           packet->shadow->alpha_draw_count
-                     : 0u;
-
-  result.has_deferred_work =
-      opaque_candidates > 0u || transmission_candidates > 0u ||
-              opaque_draws > 0u || transmission_draws > 0u || shadow_work
-          ? true_v
-          : false_v;
-  if (!result.has_deferred_work)
-    return result;
-
-  if (opaque_candidates > VKR_GPU_DRAW_CANDIDATE_CAPACITY)
-    result.fallback_reasons |= VKR_DEFERRED_FALLBACK_OPAQUE_CAPACITY;
-  if (transmission_candidates > VKR_GPU_DRAW_CANDIDATE_CAPACITY)
-    result.fallback_reasons |= VKR_DEFERRED_FALLBACK_TRANSMISSION_CAPACITY;
-  if ((opaque_candidates > 0u && (!world || !world->gpu_candidates)) ||
-      camera_opaque_candidates > opaque_candidates ||
-      shadow_candidates > opaque_candidates ||
-      camera_opaque_candidates < opaque_draws ||
-      (shadow_work && shadow_candidates < shadow_draws))
-    result.fallback_reasons |= VKR_DEFERRED_FALLBACK_OPAQUE_INPUT;
-  if ((transmission_candidates > 0u &&
-       (!world || !world->transmission_gpu_candidates)) ||
-      transmission_candidates < transmission_draws)
-    result.fallback_reasons |= VKR_DEFERRED_FALLBACK_TRANSMISSION_INPUT;
-  return result;
-}
-
-static INLINE VkrDeferredEligibility
-vkr_render_packet_deferred_eligibility(const VkrRenderPacket *packet) {
-  return packet ? vkr_render_packet_deferred_eligibility_unchecked(packet)
-                : (VkrDeferredEligibility){0};
-}
-
-/** Whether the packet contains representable deferred work with no fallback. */
-static INLINE bool8_t
-vkr_render_packet_deferred_eligible(const VkrRenderPacket *packet) {
-  const VkrDeferredEligibility eligibility =
-      vkr_render_packet_deferred_eligibility(packet);
-  return eligibility.has_deferred_work && eligibility.fallback_reasons == 0u
-             ? true_v
-             : false_v;
-}
 
 /**
  * @brief Validation error detail for packet submission.

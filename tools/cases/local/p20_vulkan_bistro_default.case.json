@@ -38,10 +38,6 @@
     { "at_frame": 119, "channels": ["final_color", "visibility_ids", "gbuffer_diffuse", "gbuffer_specular", "gbuffer_normal", "deferred_emissive", "depth"] }
   ],
   "assertions": [
-    { "metric": "visibility.deferred.selected", "stat": "min", "min": 1 },
-    { "metric": "visibility.deferred.legacy_forward_fallbacks", "stat": "max", "max": 0 },
-    { "metric": "visibility.deferred.unsupported_input_fallbacks", "stat": "max", "max": 0 },
-    { "metric": "visibility.gpu_candidates.overflow_fallbacks", "stat": "max", "max": 0 },
     { "metric": "visibility.gpu_visible.overflow", "stat": "max", "max": 0 },
     { "metric": "visibility.transmission.gpu_visible.overflow", "stat": "max", "max": 0 },
     { "metric": "visibility.gbuffer.resolve_invalid", "stat": "max", "max": 0 },

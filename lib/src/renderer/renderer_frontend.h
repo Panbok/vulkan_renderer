@@ -59,10 +59,6 @@ typedef struct VkrWorldBatchMetrics {
   uint32_t max_batch_size;
   uint32_t gpu_candidate_count;
   uint32_t gpu_candidate_capacity;
-  bool8_t deferred_selected;
-  uint32_t deferred_legacy_forward_fallbacks;
-  uint32_t deferred_unsupported_input_fallbacks;
-  uint32_t gpu_candidate_overflow_fallbacks;
   uint32_t gpu_visible_count;
   uint32_t gpu_bucket_counts[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
   uint32_t gpu_compaction_overflow_count;
@@ -79,19 +75,8 @@ typedef struct VkrWorldBatchMetrics {
   VkrGeometryMegabufferMetrics geometry_megabuffer;
 } VkrWorldBatchMetrics;
 
-/**
- * @brief Per-frame shadow pass statistics, indexed by cascade.
- *
- * descriptor_binds_set1 counts alpha-tested material set binds; the opaque
- * shadow pipeline uses no set 1. Draw/batch counts are split by opaque vs
- * alpha-tested pipelines.
- */
+/** Per-frame GPU shadow-submission statistics, indexed by cascade. */
 typedef struct VkrShadowMetrics {
-  uint32_t shadow_draw_calls_opaque[VKR_SHADOW_CASCADE_COUNT_MAX];
-  uint32_t shadow_draw_calls_alpha[VKR_SHADOW_CASCADE_COUNT_MAX];
-  uint32_t shadow_descriptor_binds_set1[VKR_SHADOW_CASCADE_COUNT_MAX];
-  uint32_t shadow_batches_opaque[VKR_SHADOW_CASCADE_COUNT_MAX];
-  uint32_t shadow_batches_alpha[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t shadow_indirect_draws_opaque[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t shadow_indirect_calls_opaque[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t shadow_indirect_overflow[VKR_SHADOW_CASCADE_COUNT_MAX];
@@ -108,6 +93,11 @@ typedef struct VkrRendererFrameMetrics {
   uint64_t backend_present_ns;
   bool8_t backend_present_valid;
 } VkrRendererFrameMetrics;
+
+/** Validates the packet's backend-neutral pre-recording contract. */
+VkrRendererError
+vkr_renderer_validate_packet(const VkrRenderPacket *packet,
+                             VkrValidationError *out_validation_error);
 
 struct s_RendererFrontend {
   Arena *arena;
@@ -130,8 +120,6 @@ struct s_RendererFrontend {
   bool8_t timing_completed_ready;
   bool8_t supports_multi_draw_indirect;
   bool8_t supports_draw_indirect_first_instance;
-  /** Metal P20 default request; false only for diagnostic forward selection. */
-  bool8_t deferred_requested;
   VkrRendererBootMetrics boot_metrics;
   VkrSubsystemPlan subsystem_plan;
   VkrMetricEventProducer hdr_decode_metrics;

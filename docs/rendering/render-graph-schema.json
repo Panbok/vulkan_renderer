@@ -23,21 +23,11 @@
       "enum": [
         "editor_enabled",
         "!editor_enabled",
-        "deferred_enabled",
-        "!deferred_enabled",
-        "editor_enabled && deferred_enabled",
-        "editor_enabled && !deferred_enabled",
-        "!editor_enabled && deferred_enabled",
-        "!editor_enabled && !deferred_enabled",
-        "editor_enabled && deferred_enabled && transmission_pending",
-        "!editor_enabled && deferred_enabled && transmission_pending",
         "hzb_history_valid",
         "!hzb_history_valid",
         "shadow_cascades_active",
         "transmission_pending",
         "!transmission_pending",
-        "deferred_enabled && transmission_pending",
-        "deferred_enabled && transmission_pending && timing_enabled",
         "transmission_compact_enabled",
         "editor_enabled && transmission_compact_enabled",
         "!editor_enabled && transmission_compact_enabled",
@@ -46,10 +36,8 @@
         "transmission_pending && timing_enabled && !transmission_compact_enabled",
         "picking_pending",
         "!picking_pending",
-        "picking_pending && deferred_enabled",
-        "picking_pending && !deferred_enabled",
-        "picking_pending && deferred_enabled && transmission_pending",
-        "picking_pending && deferred_enabled && !transmission_pending"
+        "picking_pending && transmission_pending",
+        "picking_pending && !transmission_pending"
       ]
     },
     "repeat": {

@@ -21,29 +21,11 @@ typedef struct VkrRgJsonConditionSpec {
 vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"editor_enabled", VKR_RG_JSON_CONDITION_EDITOR_ENABLED},
     {"!editor_enabled", VKR_RG_JSON_CONDITION_EDITOR_DISABLED},
-    {"deferred_enabled", VKR_RG_JSON_CONDITION_DEFERRED_ENABLED},
-    {"!deferred_enabled", VKR_RG_JSON_CONDITION_DEFERRED_DISABLED},
-    {"editor_enabled && deferred_enabled",
-     VKR_RG_JSON_CONDITION_EDITOR_ENABLED_DEFERRED_ENABLED},
-    {"editor_enabled && !deferred_enabled",
-     VKR_RG_JSON_CONDITION_EDITOR_ENABLED_DEFERRED_DISABLED},
-    {"!editor_enabled && deferred_enabled",
-     VKR_RG_JSON_CONDITION_EDITOR_DISABLED_DEFERRED_ENABLED},
-    {"!editor_enabled && !deferred_enabled",
-     VKR_RG_JSON_CONDITION_EDITOR_DISABLED_DEFERRED_DISABLED},
-    {"editor_enabled && deferred_enabled && transmission_pending",
-     VKR_RG_JSON_CONDITION_EDITOR_ENABLED_DEFERRED_TRANSMISSION},
-    {"!editor_enabled && deferred_enabled && transmission_pending",
-     VKR_RG_JSON_CONDITION_EDITOR_DISABLED_DEFERRED_TRANSMISSION},
     {"hzb_history_valid", VKR_RG_JSON_CONDITION_HZB_HISTORY_VALID},
     {"!hzb_history_valid", VKR_RG_JSON_CONDITION_HZB_HISTORY_INVALID},
     {"shadow_cascades_active", VKR_RG_JSON_CONDITION_SHADOW_CASCADES_ACTIVE},
     {"transmission_pending", VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING},
     {"!transmission_pending", VKR_RG_JSON_CONDITION_TRANSMISSION_IDLE},
-    {"deferred_enabled && transmission_pending",
-     VKR_RG_JSON_CONDITION_DEFERRED_TRANSMISSION_PENDING},
-    {"deferred_enabled && transmission_pending && timing_enabled",
-     VKR_RG_JSON_CONDITION_DEFERRED_TRANSMISSION_TIMING},
     {"transmission_compact_enabled",
      VKR_RG_JSON_CONDITION_TRANSMISSION_COMPACT_ENABLED},
     {"editor_enabled && transmission_compact_enabled",
@@ -60,14 +42,10 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
      VKR_RG_JSON_CONDITION_TRANSMISSION_FULLSCREEN_TIMING},
     {"picking_pending", VKR_RG_JSON_CONDITION_PICKING_PENDING},
     {"!picking_pending", VKR_RG_JSON_CONDITION_PICKING_IDLE},
-    {"picking_pending && deferred_enabled",
-     VKR_RG_JSON_CONDITION_PICKING_PENDING_DEFERRED_ENABLED},
-    {"picking_pending && !deferred_enabled",
-     VKR_RG_JSON_CONDITION_PICKING_PENDING_DEFERRED_DISABLED},
-    {"picking_pending && deferred_enabled && transmission_pending",
-     VKR_RG_JSON_CONDITION_PICKING_PENDING_DEFERRED_TRANSMISSION},
-    {"picking_pending && deferred_enabled && !transmission_pending",
-     VKR_RG_JSON_CONDITION_PICKING_PENDING_DEFERRED_NO_TRANSMISSION},
+    {"picking_pending && transmission_pending",
+     VKR_RG_JSON_CONDITION_PICKING_PENDING_TRANSMISSION},
+    {"picking_pending && !transmission_pending",
+     VKR_RG_JSON_CONDITION_PICKING_PENDING_NO_TRANSMISSION},
 };
 
 vkr_internal bool8_t vkr_rg_json_error(VkrRgJsonParseContext *ctx,
@@ -1694,24 +1672,6 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->editor_enabled;
   case VKR_RG_JSON_CONDITION_EDITOR_DISABLED:
     return !frame->editor_enabled;
-  case VKR_RG_JSON_CONDITION_DEFERRED_ENABLED:
-    return frame->deferred_enabled;
-  case VKR_RG_JSON_CONDITION_DEFERRED_DISABLED:
-    return !frame->deferred_enabled;
-  case VKR_RG_JSON_CONDITION_EDITOR_ENABLED_DEFERRED_ENABLED:
-    return frame->editor_enabled && frame->deferred_enabled;
-  case VKR_RG_JSON_CONDITION_EDITOR_ENABLED_DEFERRED_DISABLED:
-    return frame->editor_enabled && !frame->deferred_enabled;
-  case VKR_RG_JSON_CONDITION_EDITOR_DISABLED_DEFERRED_ENABLED:
-    return !frame->editor_enabled && frame->deferred_enabled;
-  case VKR_RG_JSON_CONDITION_EDITOR_DISABLED_DEFERRED_DISABLED:
-    return !frame->editor_enabled && !frame->deferred_enabled;
-  case VKR_RG_JSON_CONDITION_EDITOR_ENABLED_DEFERRED_TRANSMISSION:
-    return frame->editor_enabled && frame->deferred_enabled &&
-           frame->transmission_pending;
-  case VKR_RG_JSON_CONDITION_EDITOR_DISABLED_DEFERRED_TRANSMISSION:
-    return !frame->editor_enabled && frame->deferred_enabled &&
-           frame->transmission_pending;
   case VKR_RG_JSON_CONDITION_HZB_HISTORY_VALID:
     return frame->hzb_history_valid;
   case VKR_RG_JSON_CONDITION_HZB_HISTORY_INVALID:
@@ -1722,11 +1682,6 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->transmission_pending;
   case VKR_RG_JSON_CONDITION_TRANSMISSION_IDLE:
     return !frame->transmission_pending;
-  case VKR_RG_JSON_CONDITION_DEFERRED_TRANSMISSION_PENDING:
-    return frame->deferred_enabled && frame->transmission_pending;
-  case VKR_RG_JSON_CONDITION_DEFERRED_TRANSMISSION_TIMING:
-    return frame->deferred_enabled && frame->transmission_pending &&
-           frame->timing_enabled;
   case VKR_RG_JSON_CONDITION_TRANSMISSION_COMPACT_ENABLED:
     return frame->transmission_compact_enabled;
   case VKR_RG_JSON_CONDITION_EDITOR_ENABLED_TRANSMISSION_COMPACT:
@@ -1746,16 +1701,10 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->picking_pending;
   case VKR_RG_JSON_CONDITION_PICKING_IDLE:
     return !frame->picking_pending;
-  case VKR_RG_JSON_CONDITION_PICKING_PENDING_DEFERRED_ENABLED:
-    return frame->picking_pending && frame->deferred_enabled;
-  case VKR_RG_JSON_CONDITION_PICKING_PENDING_DEFERRED_DISABLED:
-    return frame->picking_pending && !frame->deferred_enabled;
-  case VKR_RG_JSON_CONDITION_PICKING_PENDING_DEFERRED_TRANSMISSION:
-    return frame->picking_pending && frame->deferred_enabled &&
-           frame->transmission_pending;
-  case VKR_RG_JSON_CONDITION_PICKING_PENDING_DEFERRED_NO_TRANSMISSION:
-    return frame->picking_pending && frame->deferred_enabled &&
-           !frame->transmission_pending;
+  case VKR_RG_JSON_CONDITION_PICKING_PENDING_TRANSMISSION:
+    return frame->picking_pending && frame->transmission_pending;
+  case VKR_RG_JSON_CONDITION_PICKING_PENDING_NO_TRANSMISSION:
+    return frame->picking_pending && !frame->transmission_pending;
   default:
     return false_v;
   }

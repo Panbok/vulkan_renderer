@@ -203,8 +203,6 @@ typedef struct VkrMetalPacketFrameUpload {
   uint8_t *root_cpu;
   uint64_t root_gpu;
   uint64_t world_instances_gpu;
-  uint64_t shadow_instances_gpu;
-  uint64_t picking_instances_gpu;
   uint64_t editor_instances_gpu;
   uint64_t ui_instances_gpu;
   uint64_t gpu_draw_instances_gpu;
@@ -322,10 +320,7 @@ struct VkrMetalPacketRenderer {
   id<MTL4CommandBuffer> command_buffer;
   id<MTL4CounterHeap> timestamp_heap;
   uint64_t timestamp_frequency;
-  id<MTLRenderPipelineState> shadow_pipeline;
   id<MTLRenderPipelineState> gpu_shadow_pipeline;
-  id<MTLRenderPipelineState> skybox_pipeline;
-  id<MTLRenderPipelineState> opaque_pipeline;
   id<MTLRenderPipelineState> vbuffer_pipeline;
   id<MTLRenderPipelineState> transmission_vbuffer_pipeline;
   id<MTLRenderPipelineState> blend_pipeline;
@@ -378,7 +373,6 @@ struct VkrMetalPacketRenderer {
   VkrPresentMode actual_present_mode;
   bool8_t srgb_output;
   bool8_t convert_vulkan_clip_y;
-  bool8_t deferred_enabled;
   bool8_t transmission_compact_enabled;
   bool8_t hzb_enabled;
   bool8_t frame_prepared;

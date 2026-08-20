@@ -141,8 +141,6 @@ static const char *vkr_harness_color_space_name(VkrSurfaceColorSpace space) {
 static const char *
 vkr_harness_world_renderer_name(VkrWorldRendererTopology topology) {
   switch (topology) {
-  case VKR_WORLD_RENDERER_TOPOLOGY_LEGACY_FORWARD:
-    return "legacy_forward";
   case VKR_WORLD_RENDERER_TOPOLOGY_DEFERRED:
     return "deferred";
   default:

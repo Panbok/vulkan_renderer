@@ -101,44 +101,43 @@ static void test_json_bindings_and_condition_parity(void) {
       "\"width\":1,\"height\":1},\"format\":\"R8G8B8A8_UNORM\",\"usage\":["
       "\"SAMPLED\"]}],"
       "\"passes\":["
-      "{\"name\":\"deferred\",\"type\":\"compute\",\"condition\":\"deferred_"
-      "enabled\",\"reads\":[{\"image\":\"image\",\"access\":\"SAMPLED\","
-      "\"binding\":2}],\"execute\":\"test\"},"
-      "{\"name\":\"history\",\"type\":\"compute\",\"condition\":\"!hzb_history_"
-      "valid\",\"execute\":\"test\"},"
+      "{\"name\":\"editor\",\"type\":\"compute\",\"condition\":\"editor_"
+      "enabled\","
+      "\"reads\":[{\"image\":\"image\",\"access\":\"SAMPLED\",\"binding\":2}],"
+      "\"execute\":\"test\"},"
+      "{\"name\":\"history\",\"type\":\"compute\",\"condition\":"
+      "\"!hzb_history_valid\",\"execute\":\"test\"},"
       "{\"name\":\"transmission\",\"type\":\"compute\",\"condition\":"
       "\"transmission_pending\",\"execute\":\"test\"},"
-      "{\"name\":\"deferred-transmission\",\"type\":\"compute\","
-      "\"condition\":\"deferred_enabled && transmission_pending\","
+      "{\"name\":\"picking-no-transmission\",\"type\":\"compute\","
+      "\"condition\":\"picking_pending && !transmission_pending\","
       "\"execute\":\"test\"},"
-      "{\"name\":\"picking\",\"type\":\"compute\",\"condition\":\"!picking_"
-      "pending\",\"execute\":\"test\"},"
-      "{\"name\":\"legacy-full\",\"type\":\"compute\",\"condition\":"
-      "\"!editor_enabled && !deferred_enabled\",\"execute\":\"test\"},"
-      "{\"name\":\"deferred-editor\",\"type\":\"compute\","
-      "\"condition\":\"editor_enabled && deferred_enabled\","
+      "{\"name\":\"picking-transmission\",\"type\":\"compute\","
+      "\"condition\":\"picking_pending && transmission_pending\","
       "\"execute\":\"test\"}]}";
   VkrRgJsonGraph graph = {0};
   assert(rg_barrier_test_load_json(&allocator, valid, &graph));
-  assert(graph.passes.length == 7u);
+  assert(graph.passes.length == 5u);
   assert(vector_get_VkrRgJsonPass(&graph.passes, 0)->condition.kind ==
-         VKR_RG_JSON_CONDITION_DEFERRED_ENABLED);
+         VKR_RG_JSON_CONDITION_EDITOR_ENABLED);
   assert(vector_get_VkrRgJsonPass(&graph.passes, 1)->condition.kind ==
          VKR_RG_JSON_CONDITION_HZB_HISTORY_INVALID);
   assert(vector_get_VkrRgJsonPass(&graph.passes, 2)->condition.kind ==
          VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING);
   assert(vector_get_VkrRgJsonPass(&graph.passes, 3)->condition.kind ==
-         VKR_RG_JSON_CONDITION_DEFERRED_TRANSMISSION_PENDING);
+         VKR_RG_JSON_CONDITION_PICKING_PENDING_NO_TRANSMISSION);
   assert(vector_get_VkrRgJsonPass(&graph.passes, 4)->condition.kind ==
-         VKR_RG_JSON_CONDITION_PICKING_IDLE);
-  assert(vector_get_VkrRgJsonPass(&graph.passes, 5)->condition.kind ==
-         VKR_RG_JSON_CONDITION_EDITOR_DISABLED_DEFERRED_DISABLED);
-  assert(vector_get_VkrRgJsonPass(&graph.passes, 6)->condition.kind ==
-         VKR_RG_JSON_CONDITION_EDITOR_ENABLED_DEFERRED_ENABLED);
+         VKR_RG_JSON_CONDITION_PICKING_PENDING_TRANSMISSION);
   const VkrRgJsonResourceUse *use = vector_get_VkrRgJsonResourceUse(
       &vector_get_VkrRgJsonPass(&graph.passes, 0)->reads, 0u);
   assert(use && use->binding.is_set && use->binding.value == 2u);
   vkr_rg_json_destroy(&graph);
+
+  const char *retired_condition =
+      "{\"version\":1,\"name\":\"retired\",\"resources\":[],\"passes\":["
+      "{\"name\":\"pass\",\"type\":\"compute\",\"condition\":"
+      "\"deferred_enabled\",\"execute\":\"test\"}]}";
+  assert(!rg_barrier_test_load_json(&allocator, retired_condition, &graph));
 
   const char *missing_binding =
       "{\"version\":1,\"name\":\"missing\",\"resources\":["
@@ -162,19 +161,17 @@ static void test_json_bindings_and_condition_parity(void) {
   printf("  test_json_bindings_and_condition_parity PASSED\n");
 }
 
-static void test_deferred_transmission_condition_requires_both_inputs(void) {
-  printf("  Running "
-         "test_deferred_transmission_condition_requires_both_inputs...\n");
+static void test_transmission_condition(void) {
+  printf("  Running test_transmission_condition...\n");
   Arena *arena = arena_create(MB(1), MB(1));
   VkrAllocator allocator = {.ctx = arena};
   assert(vkr_allocator_arena(&allocator));
 
   const char *source =
-      "{\"version\":1,\"name\":\"deferred-transmission\",\"resources\":[],"
+      "{\"version\":1,\"name\":\"transmission\",\"resources\":[],"
       "\"passes\":[{\"name\":\"conditional\",\"type\":\"compute\","
-      "\"flags\":[\"NO_CULL\"],\"condition\":"
-      "\"deferred_enabled && transmission_pending\",\"execute\":"
-      "\"test.compute\"}]}";
+      "\"flags\":[\"NO_CULL\"],\"condition\":\"transmission_pending\","
+      "\"execute\":\"test.compute\"}]}";
   VkrRgJsonGraph json = {0};
   assert(rg_barrier_test_load_json(&allocator, source, &json));
 
@@ -191,16 +188,11 @@ static void test_deferred_transmission_condition_requires_both_inputs(void) {
 
   VkrRenderGraph *graph = vkr_rg_create(&allocator);
   assert(graph);
-  VkrRenderGraphFrameInfo frame = {
-      .target_width = 1u,
-      .target_height = 1u,
-      .transmission_pending = true_v,
-  };
+  VkrRenderGraphFrameInfo frame = {.target_width = 1u, .target_height = 1u};
   vkr_rg_begin_frame(graph, &frame);
   assert(vkr_rg_build_from_json(graph, &json, &frame));
   assert(graph->passes.length == 0u);
-
-  frame.deferred_enabled = true_v;
+  frame.transmission_pending = true_v;
   vkr_rg_begin_frame(graph, &frame);
   assert(vkr_rg_build_from_json(graph, &json, &frame));
   assert(graph->passes.length == 1u);
@@ -209,8 +201,7 @@ static void test_deferred_transmission_condition_requires_both_inputs(void) {
   vkr_rg_executor_registry_destroy(&registry);
   vkr_rg_json_destroy(&json);
   arena_destroy(arena);
-  printf(
-      "  test_deferred_transmission_condition_requires_both_inputs PASSED\n");
+  printf("  test_transmission_condition PASSED\n");
 }
 
 static void test_transmission_compact_conditions_and_viewport_buffer(void) {
@@ -1195,34 +1186,10 @@ static void test_main_graph_declares_transmission_stages(void) {
                                "assets/render_graphs/main.rendergraph.json",
                                &graph) == true_v);
 
-  const char *ordered[] = {
-      "World.Opaque.Fullscreen", "World.FeedbackCopy.Fullscreen",
-      "World.Transmission.Fullscreen", "World.Blend.Fullscreen"};
-  uint32_t found = 0u;
-  for (uint64_t i = 0u; i < graph.passes.length && found < ArrayCount(ordered);
-       ++i) {
-    VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph.passes, i);
-    if (pass && vkr_string8_equals_cstr(&pass->name, ordered[found])) {
-      if (found == 1u) {
-        assert(pass->type == VKR_RG_JSON_PASS_TRANSFER);
-        assert(pass->reads.length == 1u && pass->writes.length == 1u);
-        VkrRgJsonResourceUse *read =
-            vector_get_VkrRgJsonResourceUse(&pass->reads, 0u);
-        VkrRgJsonResourceUse *write =
-            vector_get_VkrRgJsonResourceUse(&pass->writes, 0u);
-        assert(read && write);
-        assert(read->image_access == VKR_RG_JSON_IMAGE_ACCESS_TRANSFER_SRC);
-        assert(write->image_access == VKR_RG_JSON_IMAGE_ACCESS_TRANSFER_DST);
-      }
-      found++;
-    }
-  }
-  assert(found == ArrayCount(ordered));
-
   const char *deferred_ordered[] = {
       "VBuffer.Opaque", "GBuffer.Resolve.Fullscreen",
       "Lighting.Deferred.Fullscreen", "World.FeedbackCopy.Fullscreen"};
-  found = 0u;
+  uint32_t found = 0u;
   for (uint64_t i = 0u;
        i < graph.passes.length && found < ArrayCount(deferred_ordered); ++i) {
     VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph.passes, i);
@@ -1255,19 +1222,20 @@ static void test_main_graph_declares_transmission_stages(void) {
   }
   assert(found == ArrayCount(deferred_ordered));
 
-  bool8_t found_deferred_blend = false_v;
+  bool8_t found_blend = false_v;
   for (uint64_t i = 0u; i < graph.passes.length; ++i) {
     VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph.passes, i);
-    if (!pass || !vkr_string8_equals_cstr(&pass->name,
-                                          "World.Blend.Deferred.Fullscreen"))
+    if (!pass ||
+        !vkr_string8_equals_cstr(&pass->name, "World.Blend.Fullscreen"))
       continue;
     assert(pass->attachments.has_depth);
     assert(vkr_string8_equals_cstr(&pass->attachments.depth.image,
                                    "opaque_vbuffer_depth"));
-    found_deferred_blend = true_v;
+    assert(pass->condition.kind == VKR_RG_JSON_CONDITION_EDITOR_DISABLED);
+    found_blend = true_v;
     break;
   }
-  assert(found_deferred_blend);
+  assert(found_blend);
 
   const char *transmission_deferred_ordered[] = {
       "Transmission.Cull.Upload",        "Transmission.Cull.Classify",
@@ -1284,7 +1252,7 @@ static void test_main_graph_declares_transmission_stages(void) {
                                         transmission_deferred_ordered[found])) {
       const VkrRgJsonConditionKind expected_condition =
           found < 8u
-              ? VKR_RG_JSON_CONDITION_DEFERRED_TRANSMISSION_PENDING
+              ? VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING
               : VKR_RG_JSON_CONDITION_EDITOR_DISABLED_TRANSMISSION_FULLSCREEN;
       assert(pass->condition.kind == expected_condition);
       found++;
@@ -1349,13 +1317,13 @@ static void test_main_graph_declares_transmission_stages(void) {
         vkr_string8_equals_cstr(&resource->name,
                                 "transmission_vbuffer_depth")) {
       assert(resource->condition.kind ==
-             VKR_RG_JSON_CONDITION_DEFERRED_TRANSMISSION_PENDING);
+             VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING);
       assert(resource->image.layers_is_set && resource->image.layers == 4u);
       layered_resource_count++;
     } else if (vkr_string8_equals_cstr(&resource->name,
                                        "transmission_feedback")) {
       assert(resource->condition.kind ==
-             VKR_RG_JSON_CONDITION_DEFERRED_TRANSMISSION_PENDING);
+             VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING);
       found_transmission_feedback = true_v;
     } else if (vkr_string8_equals_cstr(&resource->name,
                                        "transmission_compact_pixels")) {
@@ -1371,8 +1339,7 @@ static void test_main_graph_declares_transmission_stages(void) {
          found_transmission_compact_pixels);
 
   const char *multi_view_ordered[] = {"Cull.Classify", "Cull.Prefix",
-                                      "Cull.Encode",
-                                      "Shadow.Cascade.Deferred.${i}"};
+                                      "Cull.Encode", "Shadow.Cascade.${i}"};
   found = 0u;
   for (uint64_t i = 0u;
        i < graph.passes.length && found < ArrayCount(multi_view_ordered); ++i) {
@@ -1381,7 +1348,7 @@ static void test_main_graph_declares_transmission_stages(void) {
         !vkr_string8_equals_cstr(&pass->name, multi_view_ordered[found]))
       continue;
     if (found == 3u) {
-      assert(pass->condition.kind == VKR_RG_JSON_CONDITION_DEFERRED_ENABLED);
+      assert(pass->condition.kind == VKR_RG_JSON_CONDITION_NONE);
       assert(pass->repeat.enabled &&
              vkr_string8_equals_cstr(&pass->repeat.count_source,
                                      "shadow_cascade_count"));
@@ -1522,7 +1489,6 @@ static void test_main_graph_fits_runtime_pass_capacity(void) {
       .shadow_map_layer_count = 4u,
       .shadow_cascade_count = 4u,
       .hzb_reduce_pass_count = 11u,
-      .deferred_enabled = true_v,
       .transmission_pending = true_v,
       .timing_enabled = true_v,
       .picking_pending = true_v,
@@ -1555,17 +1521,15 @@ static void test_main_graph_fits_runtime_pass_capacity(void) {
   };
   vkr_rg_begin_frame(runtime, &frame);
   assert(vkr_rg_build_from_json(runtime, &graph, &frame));
-  bool8_t found_world_opaque = false_v;
+  bool8_t found_vbuffer = false_v;
   for (uint64_t i = 0u; i < runtime->passes.length; ++i) {
     VkrRgPass *pass = vector_get_VkrRgPass(&runtime->passes, i);
-    if (!pass ||
-        !vkr_string8_equals_cstr(&pass->desc.name, "World.Opaque.Fullscreen"))
+    if (!pass || !vkr_string8_equals_cstr(&pass->desc.name, "VBuffer.Opaque"))
       continue;
-    assert(pass->desc.image_reads.length == 0u);
-    found_world_opaque = true_v;
+    found_vbuffer = true_v;
     break;
   }
-  assert(found_world_opaque);
+  assert(found_vbuffer);
   assert(vkr_rg_compile_schedule(runtime));
   vkr_rg_end_frame(runtime);
 
@@ -1636,7 +1600,7 @@ bool32_t run_render_graph_barrier_tests() {
   test_resource_instance_domains();
   test_image_access_is_write();
   test_json_bindings_and_condition_parity();
-  test_deferred_transmission_condition_requires_both_inputs();
+  test_transmission_condition();
   test_transmission_compact_conditions_and_viewport_buffer();
   test_shadow_map_capacity_is_independent_of_active_cascades();
   test_shadow_reads_follow_active_cascades();
