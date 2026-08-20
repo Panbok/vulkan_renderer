@@ -1,0 +1,4 @@
+interface:
+  display_name: "VKR Performance"
+  short_description: "Measure and improve VKR renderer performance"
+  default_prompt: "Use $vkr-performance to investigate this renderer performance question with measured evidence."

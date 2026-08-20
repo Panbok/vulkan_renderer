@@ -1,0 +1,4 @@
+interface:
+  display_name: "VKR Documentation"
+  short_description: "Maintain accurate, indexed VKR documentation"
+  default_prompt: "Use $vkr-docs to update this document and keep status, authority, and indexes accurate."

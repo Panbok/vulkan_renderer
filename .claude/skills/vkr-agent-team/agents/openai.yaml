@@ -1,0 +1,4 @@
+interface:
+  display_name: "VKR Agent Team"
+  short_description: "Route bounded renderer work to named agents"
+  default_prompt: "Use $vkr-agent-team with $vkr-task-workflow to delegate bounded renderer work."

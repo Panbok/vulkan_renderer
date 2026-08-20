@@ -1,0 +1,4 @@
+interface:
+  display_name: "VKR Validation"
+  short_description: "Select and run VKR validation gates"
+  default_prompt: "Use $vkr-validation to choose and run the evidence gates for this change."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "VKR Memory"
+  short_description: "Review VKR allocation, ownership, and lifetime"
+  default_prompt: "Use $vkr-memory to review this allocator, ownership, or lifetime change."

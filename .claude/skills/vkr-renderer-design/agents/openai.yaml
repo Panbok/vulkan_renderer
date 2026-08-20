@@ -1,0 +1,4 @@
+interface:
+  display_name: "VKR Renderer Design"
+  short_description: "Review and evolve VKR renderer architecture"
+  default_prompt: "Use $vkr-renderer-design to review this renderer architecture or refactor."
