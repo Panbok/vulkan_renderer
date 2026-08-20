@@ -209,10 +209,16 @@ struct VkrBindlessTextOutput
 };
 
 [[vk::binding(0, 0)]] Texture2D<float4> g_textures[];
+[[vk::binding(0, 0)]] Texture2D<float> g_depth_textures[];
 [[vk::binding(0, 0)]] TextureCube<float4> g_cube_textures[];
 [[vk::binding(0, 0)]] Texture2DArray<float4> g_array_textures[];
 [[vk::binding(0, 1)]] SamplerState g_samplers[];
+[[vk::binding(1, 0)]] RWTexture2D<float4> g_storage_2d[];
+[[vk::binding(1, 0)]] RWTexture2D<float2> g_storage_float2_2d[];
+[[vk::binding(1, 0)]] RWTexture2D<uint> g_storage_uint_2d[];
+[[vk::binding(1, 0)]] RWTexture2D<uint2> g_storage_uint2_2d[];
 [[vk::binding(1, 0)]] RWTexture2DArray<float4> g_storage_images[];
+[[vk::binding(1, 0)]] RWTexture2DArray<uint2> g_storage_uint2_images[];
 [[vk::push_constant]] ConstantBuffer<VkrBindlessPushConstants> g_push;
 
 static const float vkr_pi = 3.14159265359f;

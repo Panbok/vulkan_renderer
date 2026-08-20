@@ -67,6 +67,20 @@ vkr_bindless_vulkan_memory_type_rank(VkrBindlessVkMemoryClass memory_class,
     if (properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
       return 1;
     return 2;
+  case VKR_BINDLESS_VK_MEMORY_CLASS_STAGING:
+    if (!(properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
+      return -1;
+    /* Inverse of UPLOAD: a copy source is never read by a shader, so keep it
+       out of the small device-local host-visible heap. Falling back to that
+       heap is still better than failing the transfer. */
+    if ((properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) &&
+        !(properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+      return 0;
+    if (!(properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+      return 1;
+    if (properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+      return 2;
+    return 3;
   case VKR_BINDLESS_VK_MEMORY_CLASS_READBACK:
     if (!(properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
       return -1;

@@ -10,8 +10,10 @@ enum { VKR_BINDLESS_VK_MAX_EXTENSIONS = 256 };
 
 typedef struct VkrBindlessVkFeatureSet {
   bool8_t shader_int64;
+  bool8_t geometry_shader;
   bool8_t shader_draw_parameters;
   bool8_t buffer_device_address;
+  bool8_t draw_indirect_count;
   bool8_t timeline_semaphore;
   bool8_t descriptor_indexing;
   bool8_t runtime_descriptor_array;
@@ -396,8 +398,10 @@ vkr_internal void vkr_bindless_vk_query_candidate(
   vkGetPhysicalDeviceFeatures2(candidate->physical, &features2);
   candidate->features = (VkrBindlessVkFeatureSet){
       .shader_int64 = features2.features.shaderInt64,
+      .geometry_shader = features2.features.geometryShader,
       .shader_draw_parameters = features11.shaderDrawParameters,
       .buffer_device_address = features12.bufferDeviceAddress,
+      .draw_indirect_count = features12.drawIndirectCount,
       .timeline_semaphore = features12.timelineSemaphore,
       .descriptor_indexing = features12.descriptorIndexing,
       .runtime_descriptor_array = features12.runtimeDescriptorArray,
@@ -460,10 +464,14 @@ vkr_internal void vkr_bindless_vk_query_candidate(
       candidate->has_descriptor_buffer_extension ? "available" : "missing");
   vkr_bindless_vk_add_feature(report, "shaderInt64",
                               candidate->features.shader_int64);
+  vkr_bindless_vk_add_feature(report, "geometryShader",
+                              candidate->features.geometry_shader);
   vkr_bindless_vk_add_feature(report, "shaderDrawParameters",
                               candidate->features.shader_draw_parameters);
   vkr_bindless_vk_add_feature(report, "bufferDeviceAddress",
                               candidate->features.buffer_device_address);
+  vkr_bindless_vk_add_feature(report, "drawIndirectCount",
+                              candidate->features.draw_indirect_count);
   vkr_bindless_vk_add_feature(report, "timelineSemaphore",
                               candidate->features.timeline_semaphore);
   vkr_bindless_vk_add_feature(report, "descriptorIndexing",
@@ -932,6 +940,7 @@ vkr_internal bool8_t vkr_bindless_vk_try_candidate(
       .hostQueryReset = VK_TRUE,
       .timelineSemaphore = VK_TRUE,
       .bufferDeviceAddress = VK_TRUE,
+      .drawIndirectCount = VK_TRUE,
   };
   VkPhysicalDeviceVulkan11Features features11 = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
@@ -941,7 +950,7 @@ vkr_internal bool8_t vkr_bindless_vk_try_candidate(
   VkPhysicalDeviceFeatures2 features2 = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
       .pNext = &features11,
-      .features = {.shaderInt64 = VK_TRUE},
+      .features = {.shaderInt64 = VK_TRUE, .geometryShader = VK_TRUE},
   };
   const char *extensions[3] = {VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME};
   uint32_t extension_count = 1u;

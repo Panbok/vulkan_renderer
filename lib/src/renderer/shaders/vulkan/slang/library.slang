@@ -5,6 +5,7 @@
 
 #include "ibl/default.slang"
 #include "world/default.slang"
+#include "world/deferred.slang"
 #include "shadow/default.slang"
 #include "picking/default.slang"
 #include "common/fullscreen.slang"

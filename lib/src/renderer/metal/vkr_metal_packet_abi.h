@@ -214,12 +214,7 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketTransmissionShadeRoot {
 _Static_assert(sizeof(VkrMetalPacketTransmissionShadeRoot) == 272,
                "Metal transmission-shade root ABI must remain 272 bytes");
 
-/** Metal-only tail stored after transmission draw compaction state. */
-typedef struct VkrMetalPacketTransmissionDiagnostics {
-  VkrGpuDrawCompactionState compaction;
-  uint32_t covered_pixels[VKR_METAL_PACKET_TRANSMISSION_LAYER_COUNT];
-  uint32_t compact_overflow[VKR_METAL_PACKET_TRANSMISSION_LAYER_COUNT];
-} VkrMetalPacketTransmissionDiagnostics;
+typedef VkrGpuTransmissionDiagnostics VkrMetalPacketTransmissionDiagnostics;
 
 _Static_assert(sizeof(VkrMetalPacketTransmissionDiagnostics) == 112,
                "Metal transmission diagnostics ABI must remain 112 bytes");

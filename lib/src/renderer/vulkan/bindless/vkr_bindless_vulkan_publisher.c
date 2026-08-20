@@ -332,7 +332,7 @@ vkr_bindless_vk_stage_next_buffer_batch(VkrBindlessVulkanRenderer *renderer) {
         Min((VkDeviceSize)renderer->config.upload_buffer_block_size,
             initialization->size - initialization->next_offset);
     if (!vkr_bindless_vk_create_buffer(
-            renderer, VKR_BINDLESS_VK_MEMORY_CLASS_UPLOAD, chunk_size,
+            renderer, VKR_BINDLESS_VK_MEMORY_CLASS_STAGING, chunk_size,
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &initialization->staging)) {
       log_error("Bindless Vulkan failed to create bounded %llu-byte buffer "
                 "staging chunk at offset %llu/%llu",
@@ -396,7 +396,7 @@ vkr_bindless_vk_stage_next_texture_batch(VkrBindlessVulkanRenderer *renderer) {
       staged_count++;
     }
     if (!vkr_bindless_vk_create_buffer(
-            renderer, VKR_BINDLESS_VK_MEMORY_CLASS_UPLOAD, staging_size,
+            renderer, VKR_BINDLESS_VK_MEMORY_CLASS_STAGING, staging_size,
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &initialization->staging)) {
       log_error("Bindless Vulkan failed to create bounded %llu-byte texture "
                 "staging chunk at region %u/%u",
@@ -432,10 +432,32 @@ vkr_bindless_vk_stage_next_texture_batch(VkrBindlessVulkanRenderer *renderer) {
   return true_v;
 }
 
+/** Claims the single bounded host-visible staging chunk for one publication
+ *
+ * class per frame, alternating between buffers and textures.
+ *
+ * Both classes share `staging_buffer_count`, and a chunk stays claimed until
+ * the GPU completes its copy. Trying buffers first unconditionally therefore
+ * starves textures outright rather than merely delaying them: a scene that
+ * still has geometry to publish reclaims the slot every time it frees, so
+ * material textures never leave `initialization_pending`, every draw whose
+ * material references them is skipped, and the deferred resolve samples an
+ * image that was never uploaded. Alternation preserves the memory bound and
+ * the one-chunk-per-frame submit invariant while giving both classes
+ * throughput. The flag only turns when a chunk is actually claimed, so a class
+ * with nothing pending never costs the other one a frame. */
 bool8_t vkr_bindless_vk_stage_next_publication_batch(
     VkrBindlessVulkanRenderer *renderer) {
-  return vkr_bindless_vk_stage_next_buffer_batch(renderer) &&
-         vkr_bindless_vk_stage_next_texture_batch(renderer);
+  const uint32_t claimed_before = renderer->staging_buffer_count;
+  const bool8_t textures_first = renderer->stage_textures_first;
+  const bool8_t staged =
+      textures_first ? (vkr_bindless_vk_stage_next_texture_batch(renderer) &&
+                        vkr_bindless_vk_stage_next_buffer_batch(renderer))
+                     : (vkr_bindless_vk_stage_next_buffer_batch(renderer) &&
+                        vkr_bindless_vk_stage_next_texture_batch(renderer));
+  if (renderer->staging_buffer_count != claimed_before)
+    renderer->stage_textures_first = !textures_first;
+  return staged;
 }
 
 void vkr_bindless_vk_record_texture_initializations(
@@ -533,7 +555,8 @@ void vkr_bindless_vk_record_buffer_initializations(
         {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
          .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
          .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-         .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+         .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
          .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
          .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
          .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -543,7 +566,8 @@ void vkr_bindless_vk_record_buffer_initializations(
          .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
          .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
          .dstStageMask = VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT |
-                         VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+                         VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
          .dstAccessMask =
              VK_ACCESS_2_INDEX_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
          .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -1479,11 +1503,12 @@ vkr_internal bool8_t vkr_bindless_vk_ensure_geometry_megabuffer(
   }
   const VkBufferUsageFlags vertex_usage =
       VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
   const VkBufferUsageFlags index_usage =
       VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-      VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
   VkrBindlessVkBuffer vertices = {0};
   VkrBindlessVkBuffer indices = {0};
   if (!vkr_bindless_vk_create_buffer(
@@ -1715,13 +1740,15 @@ vkr_internal bool8_t vkr_bindless_vk_asset_publish_geometry_internal(
   const bool8_t created =
       vkr_bindless_vk_prepare_published_upload(
           renderer, vertices, vertex_size, &mega->vertices, vertex_offset,
-          VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+          VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+              VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
           VK_ACCESS_2_SHADER_STORAGE_READ_BIT, handle.id - 1u,
           &initializations[0]) &&
       vkr_bindless_vk_prepare_published_upload(
           renderer, indices, index_size, &mega->indices, index_offset,
           VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT |
-              VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+              VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+              VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
           VK_ACCESS_2_INDEX_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
           handle.id - 1u, &initializations[1]);
   if (converted_indices)

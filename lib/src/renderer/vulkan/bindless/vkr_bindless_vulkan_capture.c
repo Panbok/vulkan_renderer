@@ -7,13 +7,16 @@ vkr_internal uint64_t vkr_bindless_vk_capture_align(uint64_t value) {
 
 vkr_internal bool8_t vkr_bindless_vk_capture_source(
     const VkrCaptureChannelDescription *channel, const VkrRenderPacket *packet,
-    const char **out_name, uint32_t *out_layer) {
+    bool8_t deferred_enabled, const char **out_name, uint32_t *out_layer) {
   const char *name = channel->source_name;
   uint32_t layer = 0u;
   if (string_equals(channel->name, "scene_color")) {
     name = packet->frame.editor_enabled ? "scene_color" : "hdr_scene_color";
   } else if (string_equals(channel->name, "depth")) {
-    name = packet->frame.editor_enabled ? "scene_depth" : "swapchain_depth";
+    name = deferred_enabled
+               ? "opaque_vbuffer_depth"
+               : (packet->frame.editor_enabled ? "scene_depth"
+                                               : "swapchain_depth");
   } else if (string_n_equals(channel->name, "shadow_cascade_", 15u)) {
     const char suffix = channel->name[15];
     if (suffix < '0' || suffix > '3')
@@ -55,8 +58,9 @@ bool8_t vkr_bindless_vk_plan_capture(VkrBindlessVulkanRenderer *renderer,
 
     const char *source_name = NULL;
     uint32_t source_layer = 0u;
-    if (!vkr_bindless_vk_capture_source(channel, packet, &source_name,
-                                        &source_layer))
+    if (!vkr_bindless_vk_capture_source(
+            channel, packet, renderer->prepared_frame.deferred_enabled,
+            &source_name, &source_layer))
       return false_v;
     const String8 graph_name = string8_create_from_cstr(
         (const uint8_t *)source_name, string_length(source_name));

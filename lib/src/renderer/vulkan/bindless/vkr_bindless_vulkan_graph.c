@@ -13,11 +13,27 @@ typedef enum VkrBindlessVkGraphExecutorKind {
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_PICKING_RESOLVE,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_PICKING_READBACK,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_IBL_BAKE,
+  VKR_BINDLESS_VK_GRAPH_EXECUTOR_GPU_DRAW_UPLOAD,
+  VKR_BINDLESS_VK_GRAPH_EXECUTOR_GPU_DRAW_CLASSIFY,
+  VKR_BINDLESS_VK_GRAPH_EXECUTOR_GPU_DRAW_PREFIX,
+  VKR_BINDLESS_VK_GRAPH_EXECUTOR_GPU_DRAW_ENCODE,
+  VKR_BINDLESS_VK_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_UPLOAD,
+  VKR_BINDLESS_VK_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_CLASSIFY,
+  VKR_BINDLESS_VK_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_PREFIX,
+  VKR_BINDLESS_VK_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_ENCODE,
+  VKR_BINDLESS_VK_GRAPH_EXECUTOR_TRANSMISSION_DEPTH_SEED,
+  VKR_BINDLESS_VK_GRAPH_EXECUTOR_VBUFFER_OPAQUE,
+  VKR_BINDLESS_VK_GRAPH_EXECUTOR_VBUFFER_TRANSMISSION,
+  VKR_BINDLESS_VK_GRAPH_EXECUTOR_GBUFFER_RESOLVE,
+  VKR_BINDLESS_VK_GRAPH_EXECUTOR_LIGHTING_DEFERRED,
+  VKR_BINDLESS_VK_GRAPH_EXECUTOR_TRANSMISSION_SHADE,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_TRANSMISSION_COVERAGE,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_TRANSMISSION_COMPACT,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_TRANSMISSION_COMPACT_FINALIZE,
+  VKR_BINDLESS_VK_GRAPH_EXECUTOR_HZB_BUILD,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_SKYBOX,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_WORLD_OPAQUE,
+  VKR_BINDLESS_VK_GRAPH_EXECUTOR_WORLD_GPU_OPAQUE,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_FULLSCREEN,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_EDITOR,
   VKR_BINDLESS_VK_GRAPH_EXECUTOR_WORLD_TRANSMISSION,
@@ -41,11 +57,27 @@ vkr_global const VkrBindlessVkGraphExecutorSpec
         {"pass.picking.resolve", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.picking.readback", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.ibl_bake", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.gpu_draw_upload", VKR_RG_PASS_TYPE_TRANSFER},
+        {"pass.gpu_draw_classify", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.gpu_draw_prefix", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.gpu_draw_encode", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.transmission.gpu_draw_upload", VKR_RG_PASS_TYPE_TRANSFER},
+        {"pass.transmission.gpu_draw_classify", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.transmission.gpu_draw_prefix", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.transmission.gpu_draw_encode", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.transmission.depth_seed", VKR_RG_PASS_TYPE_TRANSFER},
+        {"pass.vbuffer.opaque", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.vbuffer.transmission", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.gbuffer.resolve", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.lighting.deferred", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.transmission.shade", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.transmission.coverage", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.transmission.compact", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.transmission.compact_finalize", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.hzb.build", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.skybox", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.world.opaque", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.world.gpu_opaque", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.copy.pre_transmission.fullscreen", VKR_RG_PASS_TYPE_TRANSFER},
         {"pass.copy.pre_transmission.editor", VKR_RG_PASS_TYPE_TRANSFER},
         {"pass.world.transmission", VKR_RG_PASS_TYPE_GRAPHICS},
@@ -502,7 +534,8 @@ vkr_bindless_vk_graph_buffer_usage(VkrBufferUsageFlags usage) {
       (VKR_BUFFER_USAGE_GLOBAL_UNIFORM_BUFFER | VKR_BUFFER_USAGE_UNIFORM))
     result |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
   if (usage.set & VKR_BUFFER_USAGE_STORAGE)
-    result |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    result |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
   if (usage.set & VKR_BUFFER_USAGE_TRANSFER_SRC)
     result |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
   if (usage.set & VKR_BUFFER_USAGE_TRANSFER_DST)
@@ -767,8 +800,11 @@ vkr_internal bool8_t vkr_bindless_vk_graph_attachment(
       attachment->desc.slice.layer_count >
           instance->image.array_layers - attachment->desc.slice.base_layer)
     return false_v;
+  const VkrBindlessVkGraphImage *graph_image =
+      &renderer->graph_images[attachment->image.id - 1u];
   VkImageView view =
-      attachment->desc.slice.layer_count == 1u
+      graph_image->external_swapchain ? instance->image.view
+      : attachment->desc.slice.layer_count == 1u
           ? instance->mip_layer_views[attachment->desc.slice.mip_level]
                                      [attachment->desc.slice.base_layer]
           : instance->mip_views[attachment->desc.slice.mip_level];
@@ -837,6 +873,9 @@ vkr_internal bool8_t vkr_bindless_vk_record_graphics_body(
     vkCmdSetDepthBias(command, override ? override->depth_bias_constant : 1.25f,
                       override ? override->depth_bias_clamp : 0.0f,
                       override ? override->depth_bias_slope : 1.75f);
+    if (renderer->prepared_frame.deferred_enabled)
+      return vkr_bindless_vk_record_deferred_raster(renderer, command, pass,
+                                                    true_v, false_v);
     const uint32_t opaque_draw_begin = slot->shadow_draw_count;
     if (!vkr_bindless_vk_record_packet_draws(
             renderer, command, VKR_BINDLESS_VK_PACKET_PIPELINE_SHADOW,
@@ -862,11 +901,21 @@ vkr_internal bool8_t vkr_bindless_vk_record_graphics_body(
       return true_v;
     const Mat4 view_projection =
         mat4_mul(packet->globals.projection, packet->globals.view);
+    const VkrDrawItem *picking_draws =
+        renderer->prepared_frame.deferred_enabled && packet->world
+            ? packet->world->transparent_draws
+            : packet->picking->draws;
+    const uint32_t picking_draw_count =
+        renderer->prepared_frame.deferred_enabled && packet->world
+            ? packet->world->transparent_draw_count
+            : packet->picking->draw_count;
+    const uint64_t picking_instances = renderer->prepared_frame.deferred_enabled
+                                           ? slot->world_instances
+                                           : slot->picking_instances;
     return vkr_bindless_vk_record_packet_draws(
                renderer, command, VKR_BINDLESS_VK_PACKET_PIPELINE_PICKING,
-               packet->picking->draws, packet->picking->draw_count,
-               slot->picking_instances, view_projection, false_v, 0u, 0u,
-               false_v) &&
+               picking_draws, picking_draw_count, picking_instances,
+               view_projection, false_v, 0u, 0u, false_v) &&
            (!packet->world ||
             vkr_bindless_vk_record_text_draws(
                 renderer, command, VKR_BINDLESS_VK_PACKET_PIPELINE_PICKING_TEXT,
@@ -895,6 +944,12 @@ vkr_internal bool8_t vkr_bindless_vk_record_graphics_body(
         mat4_mul(packet->globals.projection, packet->globals.view), false_v,
         shadow_texture, 0u, false_v);
   }
+  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_VBUFFER_OPAQUE:
+    return vkr_bindless_vk_record_deferred_raster(renderer, command, pass,
+                                                  false_v, false_v);
+  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_VBUFFER_TRANSMISSION:
+    return vkr_bindless_vk_record_deferred_raster(renderer, command, pass,
+                                                  false_v, true_v);
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_WORLD_TRANSMISSION: {
     if (!packet->world)
       return true_v;
@@ -953,11 +1008,19 @@ vkr_internal bool8_t vkr_bindless_vk_record_graphics_body(
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_TONEMAP: {
     uint32_t texture_index = 0u;
     if (!vkr_bindless_vk_graph_sampled_index(renderer, pass, 0u,
-                                             &texture_index))
+                                             &texture_index)) {
+      log_error("Bindless Vulkan tonemap input has no sampled descriptor");
       return false_v;
-    return vkr_bindless_vk_record_packet_fullscreen(
+    }
+    const bool8_t recorded = vkr_bindless_vk_record_packet_fullscreen(
         renderer, command, VKR_BINDLESS_VK_PACKET_PIPELINE_FULLSCREEN_FINAL,
         texture_index, 2u);
+    if (!recorded)
+      log_error(
+          "Bindless Vulkan tonemap root allocation failed at %llu/%u bytes",
+          (unsigned long long)slot->frame_upload_cursor,
+          VKR_BINDLESS_VK_FRAME_UPLOAD_SIZE);
+    return recorded;
   }
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_SKYBOX:
     return vkr_bindless_vk_record_packet_skybox(renderer, command,
@@ -993,34 +1056,47 @@ vkr_internal bool8_t vkr_bindless_vk_record_graph_graphics_pass(
   uint32_t width = 0, height = 0, layers = 0;
   for (uint64_t i = 0; i < pass->desc.color_attachments.length; ++i) {
     uint32_t attachment_width = 0, attachment_height = 0, attachment_layers = 0;
-    if (!vkr_bindless_vk_graph_attachment(
-            renderer,
-            vector_get_VkrRgAttachment(&pass->desc.color_attachments, i),
-            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, &colors[i],
-            &attachment_width, &attachment_height, &attachment_layers) ||
-        (layers != 0u && layers != attachment_layers))
+    const bool8_t attachment_ready = vkr_bindless_vk_graph_attachment(
+        renderer, vector_get_VkrRgAttachment(&pass->desc.color_attachments, i),
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, &colors[i], &attachment_width,
+        &attachment_height, &attachment_layers);
+    if (!attachment_ready || (layers != 0u && layers != attachment_layers)) {
+      log_error("Bindless Vulkan graphics pass '%.*s' color attachment %llu "
+                "is unavailable (image=%u, layers=%u/%u)",
+                (int)pass->desc.name.length, pass->desc.name.str,
+                (unsigned long long)i, renderer->prepared_frame.image_index,
+                layers, attachment_layers);
       return false_v;
+    }
     width = width ? Min(width, attachment_width) : attachment_width;
     height = height ? Min(height, attachment_height) : attachment_height;
     layers = attachment_layers;
   }
   if (pass->desc.has_depth_attachment) {
     uint32_t attachment_width = 0, attachment_height = 0, attachment_layers = 0;
-    if (!vkr_bindless_vk_graph_attachment(
-            renderer, &pass->desc.depth_attachment,
-            pass->desc.depth_attachment.read_only
-                ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
-                : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-            &depth, &attachment_width, &attachment_height,
-            &attachment_layers) ||
-        (layers != 0u && layers != attachment_layers))
+    const bool8_t attachment_ready = vkr_bindless_vk_graph_attachment(
+        renderer, &pass->desc.depth_attachment,
+        pass->desc.depth_attachment.read_only
+            ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+            : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        &depth, &attachment_width, &attachment_height, &attachment_layers);
+    if (!attachment_ready || (layers != 0u && layers != attachment_layers)) {
+      log_error("Bindless Vulkan graphics pass '%.*s' depth attachment is "
+                "unavailable (image=%u, layers=%u/%u)",
+                (int)pass->desc.name.length, pass->desc.name.str,
+                renderer->prepared_frame.image_index, layers,
+                attachment_layers);
       return false_v;
+    }
     width = width ? Min(width, attachment_width) : attachment_width;
     height = height ? Min(height, attachment_height) : attachment_height;
     layers = attachment_layers;
   }
-  if (!width || !height || !layers)
+  if (!width || !height || !layers) {
+    log_error("Bindless Vulkan graphics pass '%.*s' has an empty render area",
+              (int)pass->desc.name.length, pass->desc.name.str);
     return false_v;
+  }
   const VkRenderingInfo rendering = {
       .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
       .renderArea = {.extent = {.width = width, .height = height}},
@@ -1049,6 +1125,7 @@ vkr_internal bool8_t vkr_bindless_vk_record_graph_graphics_pass(
   const VkRect2D scissor = {.extent = {.width = width, .height = height}};
   vkCmdSetViewport(command, 0u, 1u, &viewport);
   vkCmdSetScissor(command, 0u, 1u, &scissor);
+  vkCmdSetCullMode(command, VK_CULL_MODE_NONE);
   if (!vkr_bindless_vk_record_graphics_body(renderer, command, pass, kind)) {
     vkCmdEndRendering(command);
     return false_v;
@@ -1075,15 +1152,29 @@ vkr_internal bool8_t vkr_bindless_vk_record_graph_transfer_pass(
     return false_v;
   const VkImageCopy2 region = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_COPY_2,
-      .srcSubresource = {.aspectMask = vkr_bindless_vk_format_aspects(
-                             source->image.format),
-                         .layerCount = 1u},
-      .dstSubresource = {.aspectMask = vkr_bindless_vk_format_aspects(
-                             destination->image.format),
-                         .layerCount = 1u},
-      .extent = {.width = Min(source->image.width, destination->image.width),
-                 .height = Min(source->image.height, destination->image.height),
-                 .depth = 1u},
+      .srcSubresource =
+          {.aspectMask = vkr_bindless_vk_format_aspects(source->image.format),
+           .mipLevel = read->has_slice ? read->slice.mip_level : 0u,
+           .baseArrayLayer = read->has_slice ? read->slice.base_layer : 0u,
+           .layerCount = read->has_slice ? read->slice.layer_count : 1u},
+      .dstSubresource =
+          {.aspectMask =
+               vkr_bindless_vk_format_aspects(destination->image.format),
+           .mipLevel = write->has_slice ? write->slice.mip_level : 0u,
+           .baseArrayLayer = write->has_slice ? write->slice.base_layer : 0u,
+           .layerCount = write->has_slice ? write->slice.layer_count : 1u},
+      .extent =
+          {.width = Min(
+               Max(1u, source->image.width >>
+                           (read->has_slice ? read->slice.mip_level : 0u)),
+               Max(1u, destination->image.width >>
+                           (write->has_slice ? write->slice.mip_level : 0u))),
+           .height = Min(
+               Max(1u, source->image.height >>
+                           (read->has_slice ? read->slice.mip_level : 0u)),
+               Max(1u, destination->image.height >>
+                           (write->has_slice ? write->slice.mip_level : 0u))),
+           .depth = 1u},
   };
   const VkCopyImageInfo2 copy = {
       .sType = VK_STRUCTURE_TYPE_COPY_IMAGE_INFO_2,
@@ -1113,6 +1204,9 @@ vkr_internal bool8_t vkr_bindless_vk_record_graph_pass(
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_PICKING:
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_SKYBOX:
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_WORLD_OPAQUE:
+  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_WORLD_GPU_OPAQUE:
+  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_VBUFFER_OPAQUE:
+  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_VBUFFER_TRANSMISSION:
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_WORLD_TRANSMISSION:
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_WORLD_BLEND:
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_TONEMAP:
@@ -1122,14 +1216,58 @@ vkr_internal bool8_t vkr_bindless_vk_record_graph_pass(
                                                       kind);
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_IBL_BAKE:
     return vkr_bindless_vk_record_ibl_bakes(renderer, command);
+  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_GPU_DRAW_UPLOAD:
+    return vkr_bindless_vk_record_deferred_upload(renderer, command, pass,
+                                                  false_v);
+  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_UPLOAD:
+    return vkr_bindless_vk_record_deferred_upload(renderer, command, pass,
+                                                  true_v);
+  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_GPU_DRAW_CLASSIFY:
+    return vkr_bindless_vk_record_deferred_cull(
+        renderer, command, pass, VKR_BINDLESS_VK_DEFERRED_PIPELINE_CLASSIFY,
+        false_v);
+  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_GPU_DRAW_PREFIX:
+    return vkr_bindless_vk_record_deferred_cull(
+        renderer, command, pass, VKR_BINDLESS_VK_DEFERRED_PIPELINE_PREFIX,
+        false_v);
+  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_GPU_DRAW_ENCODE:
+    return vkr_bindless_vk_record_deferred_cull(
+        renderer, command, pass, VKR_BINDLESS_VK_DEFERRED_PIPELINE_ENCODE,
+        false_v);
+  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_CLASSIFY:
+    return vkr_bindless_vk_record_deferred_cull(
+        renderer, command, pass, VKR_BINDLESS_VK_DEFERRED_PIPELINE_CLASSIFY,
+        true_v);
+  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_PREFIX:
+    return vkr_bindless_vk_record_deferred_cull(
+        renderer, command, pass, VKR_BINDLESS_VK_DEFERRED_PIPELINE_PREFIX,
+        true_v);
+  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_ENCODE:
+    return vkr_bindless_vk_record_deferred_cull(
+        renderer, command, pass, VKR_BINDLESS_VK_DEFERRED_PIPELINE_ENCODE,
+        true_v);
+  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_GBUFFER_RESOLVE:
+    return vkr_bindless_vk_record_deferred_gbuffer(renderer, command, pass);
+  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_LIGHTING_DEFERRED:
+    return vkr_bindless_vk_record_deferred_lighting(renderer, command, pass);
+  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_HZB_BUILD:
+    return vkr_bindless_vk_record_deferred_hzb(renderer, command, pass);
+  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_TRANSMISSION_SHADE:
+    return vkr_bindless_vk_record_deferred_transmission(renderer, command,
+                                                        pass);
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_FULLSCREEN:
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_EDITOR:
-    return vkr_bindless_vk_record_graph_transfer_pass(renderer, command, pass);
+  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_TRANSMISSION_DEPTH_SEED:
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_PICKING_DEPTH_SEED:
+    return vkr_bindless_vk_record_graph_transfer_pass(renderer, command, pass);
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_PICKING_RESOLVE:
+    return vkr_bindless_vk_record_deferred_picking(renderer, command, pass);
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_TRANSMISSION_COVERAGE:
-    // The deferred Vulkan path is intentionally absent through P15/P16.
-    return false_v;
+    return vkr_bindless_vk_record_deferred_transmission_coverage(renderer,
+                                                                 command, pass);
+  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_TRANSMISSION_COMPACT:
+  case VKR_BINDLESS_VK_GRAPH_EXECUTOR_TRANSMISSION_COMPACT_FINALIZE:
+    return true_v;
   case VKR_BINDLESS_VK_GRAPH_EXECUTOR_PICKING_READBACK:
     // The one-pixel copy is recorded after capture selection in record_draw().
     return true_v;
@@ -1143,6 +1281,10 @@ bool8_t vkr_bindless_vk_record_graph(VkrBindlessVulkanRenderer *renderer,
   VkrBindlessVkFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   slot->pass_timing_count = 0u;
+  slot->gpu_compaction_state = NULL;
+  slot->transmission_gpu_compaction_state = NULL;
+  slot->hzb_history_input = NULL;
+  slot->hzb_history_output = NULL;
   for (uint64_t order = 0; order < renderer->graph->execution_order.length;
        ++order) {
     const uint32_t pass_index =

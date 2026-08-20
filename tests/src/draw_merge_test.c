@@ -90,10 +90,19 @@ static void test_gpu_candidate_capacity_selects_fallback(void) {
   world.transmission_gpu_candidates = candidates;
   world.transmission_gpu_candidate_count = 1u;
   assert(vkr_render_packet_deferred_eligible(&packet));
+  world.transmission_gpu_candidate_count = VKR_GPU_DRAW_CANDIDATE_CAPACITY;
+  assert(vkr_render_packet_deferred_eligible(&packet));
   world.transmission_gpu_candidate_count = VKR_GPU_DRAW_CANDIDATE_CAPACITY + 1u;
   eligibility = vkr_render_packet_deferred_eligibility(&packet);
   assert(eligibility.fallback_reasons ==
          VKR_DEFERRED_FALLBACK_TRANSMISSION_CAPACITY);
+  world.gpu_candidates = candidates;
+  world.gpu_candidate_count = VKR_GPU_DRAW_CANDIDATE_CAPACITY + 1u;
+  eligibility = vkr_render_packet_deferred_eligibility(&packet);
+  assert(eligibility.fallback_reasons ==
+         (VKR_DEFERRED_FALLBACK_OPAQUE_CAPACITY |
+          VKR_DEFERRED_FALLBACK_TRANSMISSION_CAPACITY));
+  world.gpu_candidate_count = 0u;
   world.transmission_gpu_candidate_count = 0u;
   eligibility = vkr_render_packet_deferred_eligibility(&packet);
   assert(!eligibility.has_deferred_work);
@@ -109,6 +118,10 @@ static void test_gpu_candidate_capacity_selects_fallback(void) {
   world.opaque_draw_count = 0u;
   world.transmission_draw_count = 2u;
   world.transmission_gpu_candidate_count = 1u;
+  world.transmission_gpu_candidates = NULL;
+  eligibility = vkr_render_packet_deferred_eligibility(&packet);
+  assert(eligibility.fallback_reasons ==
+         VKR_DEFERRED_FALLBACK_TRANSMISSION_INPUT);
   world.transmission_gpu_candidates = candidates;
   eligibility = vkr_render_packet_deferred_eligibility(&packet);
   assert(eligibility.fallback_reasons ==

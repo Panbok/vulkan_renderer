@@ -380,7 +380,8 @@ bool8_t vkr_bindless_vk_create_buffer(VkrBindlessVulkanRenderer *renderer,
       .device_address_required = has_address,
   };
   const uint64_t pool_block_size =
-      memory_class == VKR_BINDLESS_VK_MEMORY_CLASS_UPLOAD
+      memory_class == VKR_BINDLESS_VK_MEMORY_CLASS_UPLOAD ||
+              memory_class == VKR_BINDLESS_VK_MEMORY_CLASS_STAGING
           ? renderer->config.upload_buffer_block_size
       : memory_class == VKR_BINDLESS_VK_MEMORY_CLASS_READBACK
           ? renderer->config.readback_buffer_block_size
@@ -696,7 +697,7 @@ bool8_t vkr_bindless_vk_create_image(VkrBindlessVulkanRenderer *renderer,
 vkr_internal bool8_t
 vkr_bindless_vk_create_frame_slots(VkrBindlessVulkanRenderer *renderer) {
   VkDevice device = vkr_bindless_vk_renderer_device(renderer);
-  const VkDeviceSize readback_size = 4u;
+  const VkDeviceSize readback_size = VKR_BINDLESS_VK_READBACK_SIZE;
   for (uint32_t i = 0; i < VKR_BINDLESS_VK_FRAME_SLOT_COUNT; ++i) {
     VkrBindlessVkFrameSlot *slot = &renderer->frame_slots[i];
     VkCommandPoolCreateInfo pool_info = {
@@ -731,7 +732,8 @@ vkr_bindless_vk_create_frame_slots(VkrBindlessVulkanRenderer *renderer) {
             renderer, VKR_BINDLESS_VK_MEMORY_CLASS_UPLOAD,
             VKR_BINDLESS_VK_FRAME_UPLOAD_SIZE,
             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             &slot->frame_upload) ||
         (renderer->config.capture_ring_capacity > 0u &&
          !vkr_bindless_vk_create_buffer(

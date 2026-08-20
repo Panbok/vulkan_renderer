@@ -220,6 +220,9 @@ static void test_shared_gpu_memory_and_abi_contracts(void) {
          48u);
   assert(vkr_gpu_abi_record(VKR_GPU_ABI_VISIBLE_DRAW_ROW)->expected_size ==
          32u);
+  assert(sizeof(VkrGpuDrawCompactionState) == 80u);
+  assert(sizeof(VkrGpuTransmissionDiagnostics) == 112u);
+  assert(offsetof(VkrGpuTransmissionDiagnostics, covered_pixels) == 80u);
 
   const VkrGpuMemoryConfig config = {256u, 2u, 2u, 3u};
   uint8_t storage[2048] = {0};

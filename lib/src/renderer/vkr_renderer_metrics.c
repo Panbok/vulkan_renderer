@@ -1422,9 +1422,17 @@ void vkr_renderer_metrics_collect(
 
   vkr_renderer_metrics_collect_impl_memory(renderer_metrics, renderer);
 
-  vkr_metrics_mark(metrics, ids->pipelines_created,
-                   VKR_METRIC_AVAILABILITY_UNAVAILABLE,
-                   VKR_METRIC_REASON_UNSUPPORTED);
+  // Bindless Vulkan constructs its complete immutable pipeline set during
+  // renderer initialization. No vkCreate*Pipelines call is reachable from a
+  // prepared frame, so the per-frame creation counter is valid and zero.
+  if (vkr_renderer_get_backend_type(context->renderer) ==
+      VKR_RENDERER_BACKEND_TYPE_VULKAN) {
+    vkr_metrics_counter_add(metrics, ids->pipelines_created, 0u);
+  } else {
+    vkr_metrics_mark(metrics, ids->pipelines_created,
+                     VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                     VKR_METRIC_REASON_UNSUPPORTED);
+  }
   vkr_metrics_mark(metrics, ids->pipeline_binds,
                    VKR_METRIC_AVAILABILITY_UNAVAILABLE,
                    VKR_METRIC_REASON_UNSUPPORTED);

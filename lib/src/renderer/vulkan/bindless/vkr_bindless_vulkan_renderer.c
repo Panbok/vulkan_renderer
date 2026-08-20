@@ -242,6 +242,13 @@ bool8_t vkr_bindless_vulkan_renderer_create(
                       [VKR_BINDLESS_VK_MEMORY_KIND_IMAGE] =
                           config->upload_buffer_block_size,
                   },
+              [VKR_BINDLESS_VK_MEMORY_CLASS_STAGING] =
+                  {
+                      [VKR_BINDLESS_VK_MEMORY_KIND_BUFFER] =
+                          config->upload_buffer_block_size,
+                      [VKR_BINDLESS_VK_MEMORY_KIND_IMAGE] =
+                          config->upload_buffer_block_size,
+                  },
               [VKR_BINDLESS_VK_MEMORY_CLASS_READBACK] =
                   {
                       [VKR_BINDLESS_VK_MEMORY_KIND_BUFFER] =
@@ -491,6 +498,7 @@ vkr_internal bool8_t vkr_bindless_vk_record_draw(
                      slot->timestamp_pool, 0u,
                      VKR_RENDERER_IMPL_MAX_PASS_TIMINGS * 2u);
   if (vkBeginCommandBuffer(command, &begin_info) != VK_SUCCESS) {
+    log_error("Bindless Vulkan failed to begin the frame command buffer");
     return false_v;
   }
   vkr_bindless_vk_record_buffer_initializations(renderer, command);
@@ -554,8 +562,14 @@ vkr_internal bool8_t vkr_bindless_vk_record_draw(
   }
 
   VkrBindlessVkImage *target = &renderer->targets.images[slot->image_index];
-  if (!vkr_bindless_vk_record_capture(renderer, command, slot))
+  if (!vkr_bindless_vk_record_capture(renderer, command, slot)) {
+    log_error("Bindless Vulkan failed to record capture copies");
     return false_v;
+  }
+  if (!vkr_bindless_vk_record_deferred_readback(renderer, command)) {
+    log_error("Bindless Vulkan failed to record deferred diagnostics readback");
+    return false_v;
+  }
   VkrBindlessVkImage *readback_image = target;
   uint32_t readback_x = 0u;
   uint32_t readback_y = 0u;
@@ -567,8 +581,10 @@ vkr_internal bool8_t vkr_bindless_vk_record_draw(
     VkrBindlessVkGraphImageInstance *picking = vkr_bindless_vk_graph_image(
         renderer, picking_handle, slot->image_index);
     if (!picking || packet->picking->x >= picking->image.width ||
-        packet->picking->y >= picking->image.height)
+        packet->picking->y >= picking->image.height) {
+      log_error("Bindless Vulkan picking readback target is unavailable");
       return false_v;
+    }
     readback_image = &picking->image;
     readback_x = packet->picking->x;
     readback_y = packet->picking->y;
@@ -650,9 +666,13 @@ vkr_internal bool8_t vkr_bindless_vk_record_draw(
   };
   vkCmdPipelineBarrier2(command, &readback_dependency);
   if (!vkr_bindless_vk_flush(renderer, &slot->frame_upload.allocation, 0u,
-                             slot->frame_upload_cursor))
+                             slot->frame_upload_cursor)) {
+    log_error("Bindless Vulkan failed to flush %llu frame-upload bytes",
+              (unsigned long long)slot->frame_upload_cursor);
     return false_v;
+  }
   if (vkEndCommandBuffer(command) != VK_SUCCESS) {
+    log_error("Bindless Vulkan failed to end the frame command buffer");
     return false_v;
   }
   return true_v;
@@ -670,17 +690,37 @@ vkr_internal bool8_t vkr_bindless_vk_fail_after_submit(
 bool8_t vkr_bindless_vulkan_renderer_submit_packet(
     VkrBindlessVulkanRenderer *renderer, const VkrRenderPacket *packet,
     VkrBindlessVulkanResult *out_result) {
+  const VkrDeferredEligibility deferred_eligibility =
+      vkr_render_packet_deferred_eligibility_unchecked(packet);
+  const bool8_t timing_requested = packet->debug &&
+                                   packet->debug->enable_timing &&
+                                   packet->debug->capture_pass_timestamps;
+  renderer->prepared_frame.editor_enabled = packet->frame.editor_enabled;
+  renderer->prepared_frame.deferred_enabled =
+      renderer->config.deferred_enabled &&
+              deferred_eligibility.has_deferred_work &&
+              deferred_eligibility.fallback_reasons == 0u
+          ? true_v
+          : false_v;
   renderer->prepared_frame.picking_pending =
       packet->picking && packet->picking->pending;
   renderer->prepared_frame.transmission_pending =
-      packet->world && packet->world->transmission_draw_count > 0u;
-  /* P19 coverage is Metal-only; keep authored timing-conditioned passes out
-     of the Vulkan graph until its parity phase. */
-  renderer->prepared_frame.timing_enabled = false_v;
+      renderer->prepared_frame.deferred_enabled && packet->world &&
+      packet->world->transmission_gpu_candidate_count > 0u;
+  renderer->prepared_frame.transmission_compact_enabled = false_v;
+  renderer->prepared_frame.timing_enabled = timing_requested;
   renderer->prepared_frame.shadow_cascade_count =
       packet->shadow
           ? Min(packet->shadow->cascade_count, VKR_SHADOW_CASCADE_COUNT_MAX)
           : 0u;
+  uint32_t hzb_mip_count = 1u;
+  uint32_t hzb_extent = Max(renderer->prepared_frame.viewport_width,
+                            renderer->prepared_frame.viewport_height);
+  while (hzb_extent > 1u) {
+    hzb_extent >>= 1u;
+    hzb_mip_count++;
+  }
+  renderer->prepared_frame.hzb_reduce_pass_count = hzb_mip_count - 1u;
   vkr_rg_begin_frame(renderer->graph, &renderer->prepared_frame);
   vkr_rg_set_packet(renderer->graph, packet);
   if (!vkr_rg_build_from_json(renderer->graph, &renderer->json_graph,
@@ -725,16 +765,30 @@ bool8_t vkr_bindless_vulkan_renderer_submit_packet(
   }
   VkrBindlessVkFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
+  slot->deferred_selected = renderer->prepared_frame.deferred_enabled;
+  slot->deferred_fallback_reasons =
+      renderer->config.deferred_enabled &&
+              deferred_eligibility.has_deferred_work
+          ? deferred_eligibility.fallback_reasons
+          : 0u;
   if (!vkr_bindless_vk_plan_capture(renderer, packet, slot)) {
     log_error("Bindless Vulkan failed to plan the requested capture batch");
     vkr_bindless_vulkan_renderer_cancel_frame(renderer);
     return false_v;
   }
-  slot->timing_requested = packet->debug && packet->debug->enable_timing &&
-                           packet->debug->capture_pass_timestamps;
+  slot->timing_requested = timing_requested;
   slot->timing_collected = !slot->timing_requested;
+  slot->transmission_coverage_requested =
+      renderer->prepared_frame.transmission_pending &&
+      renderer->prepared_frame.timing_enabled &&
+      !renderer->prepared_frame.transmission_compact_enabled;
+  slot->transmission_coverage_extent[0] =
+      renderer->prepared_frame.viewport_width;
+  slot->transmission_coverage_extent[1] =
+      renderer->prepared_frame.viewport_height;
   slot->timestamp_query_count = 0u;
   if (!vkr_bindless_vk_record_draw(renderer, slot)) {
+    log_error("Bindless Vulkan command recording failed");
     if (slot->capture_request_id)
       (void)vkr_capture_ring_fail(&renderer->capture_ring,
                                   slot->capture_request_id,
@@ -743,6 +797,7 @@ bool8_t vkr_bindless_vulkan_renderer_submit_packet(
     return false_v;
   }
   if (!vkr_bindless_vk_flush_publication_ranges(renderer)) {
+    log_error("Bindless Vulkan publication range flush failed");
     if (slot->capture_request_id)
       (void)vkr_capture_ring_fail(&renderer->capture_ring,
                                   slot->capture_request_id,
@@ -789,8 +844,12 @@ bool8_t vkr_bindless_vulkan_renderer_submit_packet(
       .signalSemaphoreInfoCount = signal_count,
       .pSignalSemaphoreInfos = signals,
   };
-  if (vkQueueSubmit2(vkr_bindless_vulkan_device_queue(renderer->device), 1u,
-                     &submit_info, VK_NULL_HANDLE) != VK_SUCCESS) {
+  const VkResult submit_result =
+      vkQueueSubmit2(vkr_bindless_vulkan_device_queue(renderer->device), 1u,
+                     &submit_info, VK_NULL_HANDLE);
+  if (submit_result != VK_SUCCESS) {
+    log_error("Bindless Vulkan queue submission failed (result=%d)",
+              (int)submit_result);
     if (slot->capture_request_id)
       (void)vkr_capture_ring_fail(&renderer->capture_ring,
                                   slot->capture_request_id,
@@ -803,6 +862,7 @@ bool8_t vkr_bindless_vulkan_renderer_submit_packet(
     return false_v;
   }
   renderer->submit_value = signal_value;
+  vkr_bindless_vk_mark_hzb_submitted(renderer, signal_value);
   vkr_bindless_vk_mark_graph_images_submitted(renderer, signal_value);
   vkr_bindless_vk_mark_graph_buffers_submitted(renderer, signal_value);
   slot->retire_value = signal_value;
@@ -909,6 +969,8 @@ bool8_t vkr_bindless_vulkan_renderer_submit_packet(
     *out_result = (VkrBindlessVulkanResult){
         .submit_value = signal_value,
         .source_frame_index = slot->source_frame_index,
+        .deferred_selected = slot->deferred_selected,
+        .deferred_fallback_reasons = slot->deferred_fallback_reasons,
         .indexed_draw_count = slot->indexed_draw_count,
         .shadow_draw_count = slot->shadow_draw_count,
         .opaque_draw_count = slot->opaque_draw_count,
@@ -947,28 +1009,73 @@ vkr_bindless_vulkan_renderer_poll_result(VkrBindlessVulkanRenderer *renderer,
     }
   }
   if (!best || !vkr_bindless_vk_invalidate(renderer, &best->readback.allocation,
-                                           0u, 4u)) {
+                                           0u, VKR_BINDLESS_VK_READBACK_SIZE)) {
     return false_v;
   }
   if (best->timing_requested && !best->timing_collected &&
       !vkr_bindless_vk_collect_slot_timings(renderer, best))
     return false_v;
   const uint8_t *color = best->readback.allocation.mapped;
+  const VkrGpuDrawCompactionState *opaque =
+      (const VkrGpuDrawCompactionState
+           *)(color + VKR_BINDLESS_VK_READBACK_DRAW_STATE_OFFSET);
+  const VkrGpuDrawCompactionState *transmission =
+      (const VkrGpuDrawCompactionState
+           *)(color + VKR_BINDLESS_VK_READBACK_TRANSMISSION_STATE_OFFSET);
+  const VkrGpuTransmissionDiagnostics *transmission_diagnostics =
+      (const VkrGpuTransmissionDiagnostics
+           *)(color + VKR_BINDLESS_VK_READBACK_TRANSMISSION_STATE_OFFSET);
   *out_result = (VkrBindlessVulkanResult){
       .submit_value = best->retire_value,
       .source_frame_index = best->source_frame_index,
+      .deferred_selected = best->deferred_selected,
+      .deferred_fallback_reasons = best->deferred_fallback_reasons,
       .indexed_draw_count = best->indexed_draw_count,
       .shadow_draw_count = best->shadow_draw_count,
       .opaque_draw_count = best->opaque_draw_count,
       .transmission_draw_count = best->transmission_draw_count,
       .blend_draw_count = best->blend_draw_count,
+      .gpu_visible_count = opaque[0].visible_count,
+      .gpu_overflow_count = opaque[0].overflow_count,
+      .gpu_resolve_invalid_count = opaque[0].resolve_invalid_count,
+      .gpu_occlusion_culled_count = opaque[0].occlusion_culled_count,
+      .transmission_gpu_visible_count = transmission->visible_count,
+      .transmission_gpu_overflow_count = transmission->overflow_count,
+      .transmission_gpu_occlusion_culled_count =
+          transmission->occlusion_culled_count,
       .image_index = best->image_index,
       .color = {color[0], color[1], color[2], color[3]},
       .identifier = (uint32_t)color[0] | ((uint32_t)color[1] << 8u) |
                     ((uint32_t)color[2] << 16u) | ((uint32_t)color[3] << 24u),
       .pass_timing_count = best->pass_timing_count,
       .readback_ready = true_v,
+      .hzb_history_valid = best->hzb_history_valid,
+      .has_gpu_draw_diagnostics = best->deferred_selected,
+      .has_transmission_coverage = best->transmission_coverage_requested,
   };
+  MemCopy(out_result->gpu_bucket_counts, opaque[0].bucket_counts,
+          sizeof(out_result->gpu_bucket_counts));
+  MemCopy(out_result->transmission_gpu_bucket_counts,
+          transmission->bucket_counts,
+          sizeof(out_result->transmission_gpu_bucket_counts));
+  if (best->transmission_coverage_requested) {
+    MemCopy(out_result->transmission_covered_pixels,
+            transmission_diagnostics->covered_pixels,
+            sizeof(out_result->transmission_covered_pixels));
+    MemCopy(out_result->transmission_coverage_extent,
+            best->transmission_coverage_extent,
+            sizeof(out_result->transmission_coverage_extent));
+  }
+  for (uint32_t cascade = 0u; cascade < VKR_SHADOW_CASCADE_COUNT_MAX;
+       ++cascade) {
+    out_result->shadow_gpu_visible_count[cascade] =
+        opaque[cascade + 1u].visible_count;
+    out_result->shadow_gpu_overflow_count[cascade] =
+        opaque[cascade + 1u].overflow_count;
+    MemCopy(out_result->shadow_gpu_bucket_counts[cascade],
+            opaque[cascade + 1u].bucket_counts,
+            sizeof(out_result->shadow_gpu_bucket_counts[cascade]));
+  }
   MemCopy(out_result->pass_timings, best->pass_timings,
           (uint64_t)best->pass_timing_count *
               sizeof(*out_result->pass_timings));
@@ -1422,6 +1529,12 @@ void vkr_bindless_vulkan_renderer_destroy(VkrBindlessVulkanRenderer *renderer) {
     for (uint32_t i = 0u; i < VKR_BINDLESS_VK_PACKET_PIPELINE_COUNT; ++i) {
       if (renderer->packet_pipelines[i])
         vkDestroyPipeline(device, renderer->packet_pipelines[i], NULL);
+    }
+    for (uint32_t i = 0u; i < VKR_BINDLESS_VK_DEFERRED_PIPELINE_COUNT; ++i) {
+      if (renderer->deferred_pipelines[i])
+        vkDestroyPipeline(device, renderer->deferred_pipelines[i], NULL);
+      if (renderer->deferred_shaders[i])
+        vkDestroyShaderModule(device, renderer->deferred_shaders[i], NULL);
     }
     for (uint32_t i = 0u; i < VKR_BINDLESS_VK_IBL_PIPELINE_COUNT; ++i) {
       if (renderer->ibl_pipelines[i])

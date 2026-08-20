@@ -166,6 +166,171 @@ float3 packet_box_project(float3 direction, float3 world_position,
     return normalize(world_position + safe_direction * t_hit - center);
 }
 
+// Every enabled punctual light for one shaded point. `albedo` and `metallic`
+// follow packet_direct: the forward path passes base color with its metallic
+// factor, the deferred path passes G-buffer diffuse albedo and zero. Both
+// spell the same product, so the two paths shade identically.
+VkrBindlessDirectResult packet_punctual(VkrBindlessPacketFrameRoot* frame,
+                                        float3 world_position, float3 normal,
+                                        float3 view, float3 albedo,
+                                        float metallic, float roughness,
+                                        float3 f0)
+{
+    VkrBindlessDirectResult result;
+    result.diffuse = 0.0f;
+    result.specular = 0.0f;
+    uint4 point_mask = packet_point_light_mask(frame, world_position);
+    uint point_count = min(frame.point_light_count, 128u);
+    for (uint word = 0u; word < 4u; ++word)
+    {
+        uint remaining = point_mask[word];
+        while (remaining != 0u)
+        {
+            uint light_index = word * 32u + uint(firstbitlow(remaining));
+            remaining &= remaining - 1u;
+            if (light_index >= point_count)
+                continue;
+            float4 p0 = frame.point_light_data[light_index * 4u + 0u];
+            float4 p1 = frame.point_light_data[light_index * 4u + 1u];
+            float4 p2 = frame.point_light_data[light_index * 4u + 2u];
+            float4 p3 = frame.point_light_data[light_index * 4u + 3u];
+            uint kind = uint(p2.w + 0.5f);
+            float3 to_light = p0.xyz - world_position;
+            float distance_squared = dot(to_light, to_light);
+            if (kind != 0u && p2.z > 0.0f &&
+                distance_squared >= p2.z * p2.z)
+                continue;
+            float distance = sqrt(distance_squared);
+            float3 light_direction = distance > 1e-6f
+                                         ? to_light / distance
+                                         : float3(0.0f);
+            float attenuation = 0.0f;
+            if (kind == 0u)
+            {
+                attenuation = 1.0f /
+                    max(max(p0.w, 1.0f) + p1.w * distance +
+                            p2.y * distance_squared,
+                        1e-6f);
+            }
+            else
+            {
+                float range_attenuation = 1.0f;
+                if (p2.z > 0.0f)
+                {
+                    float ratio = distance / p2.z;
+                    range_attenuation = saturate(1.0f - ratio * ratio *
+                                                 ratio * ratio);
+                    range_attenuation *= range_attenuation;
+                }
+                attenuation = range_attenuation /
+                              max(distance_squared, 1e-4f);
+                if (kind == 2u)
+                {
+                    float cone = dot(-light_direction, normalize(p3.xyz));
+                    float cone_attenuation = smoothstep(p1.w, p0.w, cone);
+                    if (cone_attenuation <= 0.0f)
+                        continue;
+                    attenuation *= cone_attenuation;
+                }
+            }
+            VkrBindlessDirectResult direct = packet_direct(
+                normal, view, light_direction, p1.rgb * p2.x * attenuation,
+                albedo, metallic, roughness, f0);
+            result.diffuse += direct.diffuse;
+            result.specular += direct.specular;
+        }
+    }
+    return result;
+}
+
+// Global environment plus weighted local probes. `horizon_normal` is the
+// geometric normal where one survives; the deferred G-buffer keeps only the
+// shading normal and passes it for both.
+float3 packet_environment(VkrBindlessPacketFrameRoot* frame,
+                          float3 world_position, float3 normal,
+                          float3 horizon_normal, float3 view,
+                          float3 albedo, float metallic, float roughness,
+                          float ao, float3 f0)
+{
+    float no_v = max(dot(normal, view), 0.0f);
+    float3 reflection = reflect(-view, normal);
+    float3 fresnel = packet_fresnel_roughness(no_v, f0, roughness);
+    float3 kd = (1.0f - fresnel) * (1.0f - metallic);
+    uint irradiance_texture =
+        NonUniformResourceIndex(frame.irradiance_texture);
+    uint irradiance_sampler =
+        NonUniformResourceIndex(frame.irradiance_sampler);
+    uint prefilter_texture =
+        NonUniformResourceIndex(frame.prefilter_texture);
+    uint prefilter_sampler =
+        NonUniformResourceIndex(frame.prefilter_sampler);
+    float3 global_irradiance = g_cube_textures[irradiance_texture]
+        .SampleLevel(g_samplers[irradiance_sampler], normal, 0.0f).rgb;
+    float3 global_prefiltered = g_cube_textures[prefilter_texture]
+        .SampleLevel(g_samplers[prefilter_sampler], reflection,
+                     roughness * float(max(frame.prefilter_mip_count, 1u) -
+                                       1u)).rgb;
+    float2 brdf = packet_brdf_approximation(no_v, roughness);
+    float f90 = saturate(max(f0.x, max(f0.y, f0.z)) * 25.0f);
+    float horizon = saturate(1.0f + dot(reflection, horizon_normal));
+    float specular_visibility = horizon * horizon *
+        packet_specular_ao(ao, no_v, roughness);
+    float3 diffuse = 0.0f;
+    float3 specular = 0.0f;
+    float local_weight_sum = 0.0f;
+    uint probe_count = min(frame.ibl_probe_count, 16u);
+    for (uint i = 0u; i < probe_count; ++i)
+        local_weight_sum += packet_probe_influence(frame.ibl_probes[i],
+                                                    world_position);
+    float weight_scale = local_weight_sum > 1.0f
+                             ? 1.0f / local_weight_sum
+                             : 1.0f;
+    for (uint i = 0u; i < probe_count; ++i)
+    {
+        VkrBindlessIblProbe probe = frame.ibl_probes[i];
+        float weight = packet_probe_influence(probe,
+                                              world_position) *
+                       weight_scale;
+        if (weight <= 1e-6f)
+            continue;
+        float3 probe_reflection = probe.intensity_box.w > 0.5f
+            ? packet_box_project(reflection, world_position,
+                                 probe.center_blend.xyz,
+                                 max(probe.extents_weight.xyz, 0.0f))
+            : reflection;
+        uint probe_irradiance_texture =
+            NonUniformResourceIndex(probe.irradiance_texture);
+        uint probe_irradiance_sampler =
+            NonUniformResourceIndex(probe.irradiance_sampler);
+        uint probe_prefilter_texture =
+            NonUniformResourceIndex(probe.prefilter_texture);
+        uint probe_prefilter_sampler =
+            NonUniformResourceIndex(probe.prefilter_sampler);
+        float3 probe_irradiance =
+            g_cube_textures[probe_irradiance_texture].SampleLevel(
+                g_samplers[probe_irradiance_sampler], normal, 0.0f).rgb;
+        float3 probe_prefiltered =
+            g_cube_textures[probe_prefilter_texture].SampleLevel(
+                g_samplers[probe_prefilter_sampler], probe_reflection,
+                 roughness * float(max(frame.prefilter_mip_count, 1u) -
+                                  1u)).rgb;
+        diffuse += kd * probe_irradiance * albedo * ao *
+                   probe.intensity_box.x * probe.intensity_box.y * weight;
+        specular += probe_prefiltered *
+                    (fresnel * brdf.x + f90 * brdf.y) *
+                    specular_visibility * probe.intensity_box.x *
+                    probe.intensity_box.z * weight;
+    }
+    float global_weight = max(1.0f - min(local_weight_sum, 1.0f), 0.0f);
+    diffuse += kd * global_irradiance * albedo * ao * global_weight;
+    specular += global_prefiltered *
+                (fresnel * brdf.x + f90 * brdf.y) *
+                specular_visibility * global_weight;
+    return (diffuse * frame.ibl_controls.y +
+            specular * frame.ibl_controls.z) *
+           frame.ibl_controls.x;
+}
+
 [shader("fragment")]
 float4 world_fragment(VkrBindlessVertexOutput input,
                       bool front_facing : SV_IsFrontFace) : SV_Target0
@@ -251,146 +416,18 @@ float4 world_fragment(VkrBindlessVertexOutput input,
         analytic_diffuse = direct.diffuse;
         analytic_specular = direct.specular;
     }
-    uint4 point_mask = packet_point_light_mask(frame, input.world_position);
-    uint point_count = min(frame.point_light_count, 128u);
-    for (uint word = 0u; word < 4u; ++word)
-    {
-        uint remaining = point_mask[word];
-        while (remaining != 0u)
-        {
-            uint light_index = word * 32u + uint(firstbitlow(remaining));
-            remaining &= remaining - 1u;
-            if (light_index >= point_count)
-                continue;
-            float4 p0 = frame.point_light_data[light_index * 4u + 0u];
-            float4 p1 = frame.point_light_data[light_index * 4u + 1u];
-            float4 p2 = frame.point_light_data[light_index * 4u + 2u];
-            float4 p3 = frame.point_light_data[light_index * 4u + 3u];
-            uint kind = uint(p2.w + 0.5f);
-            float3 to_light = p0.xyz - input.world_position;
-            float distance_squared = dot(to_light, to_light);
-            if (kind != 0u && p2.z > 0.0f &&
-                distance_squared >= p2.z * p2.z)
-                continue;
-            float distance = sqrt(distance_squared);
-            float3 light_direction = distance > 1e-6f
-                                         ? to_light / distance
-                                         : float3(0.0f);
-            float attenuation = 0.0f;
-            if (kind == 0u)
-            {
-                attenuation = 1.0f /
-                    max(max(p0.w, 1.0f) + p1.w * distance +
-                            p2.y * distance_squared,
-                        1e-6f);
-            }
-            else
-            {
-                float range_attenuation = 1.0f;
-                if (p2.z > 0.0f)
-                {
-                    float ratio = distance / p2.z;
-                    range_attenuation = saturate(1.0f - ratio * ratio *
-                                                 ratio * ratio);
-                    range_attenuation *= range_attenuation;
-                }
-                attenuation = range_attenuation /
-                              max(distance_squared, 1e-4f);
-                if (kind == 2u)
-                {
-                    float cone = dot(-light_direction, normalize(p3.xyz));
-                    float cone_attenuation = smoothstep(p1.w, p0.w, cone);
-                    if (cone_attenuation <= 0.0f)
-                        continue;
-                    attenuation *= cone_attenuation;
-                }
-            }
-            VkrBindlessDirectResult direct = packet_direct(
-                normal, view, light_direction, p1.rgb * p2.x * attenuation,
-                base.rgb, metallic, roughness, f0);
-            analytic_diffuse += direct.diffuse;
-            analytic_specular += direct.specular;
-        }
-    }
+    VkrBindlessDirectResult punctual = packet_punctual(
+        frame, input.world_position, normal, view, base.rgb, metallic,
+        roughness, f0);
+    analytic_diffuse += punctual.diffuse;
+    analytic_specular += punctual.specular;
     float3 color = analytic_diffuse + analytic_specular;
 
     if ((frame.flags & 2u) != 0u)
     {
-        float3 reflection = reflect(-view, normal);
-        float3 fresnel = packet_fresnel_roughness(no_v, f0, roughness);
-        float3 kd = (1.0f - fresnel) * (1.0f - metallic);
-        uint irradiance_texture =
-            NonUniformResourceIndex(frame.irradiance_texture);
-        uint irradiance_sampler =
-            NonUniformResourceIndex(frame.irradiance_sampler);
-        uint prefilter_texture =
-            NonUniformResourceIndex(frame.prefilter_texture);
-        uint prefilter_sampler =
-            NonUniformResourceIndex(frame.prefilter_sampler);
-        float3 global_irradiance = g_cube_textures[irradiance_texture]
-            .SampleLevel(g_samplers[irradiance_sampler], normal, 0.0f).rgb;
-        float3 global_prefiltered = g_cube_textures[prefilter_texture]
-            .SampleLevel(g_samplers[prefilter_sampler], reflection,
-                         roughness * float(max(frame.prefilter_mip_count, 1u) -
-                                           1u)).rgb;
-        float2 brdf = packet_brdf_approximation(no_v, roughness);
-        float f90 = saturate(max(f0.x, max(f0.y, f0.z)) * 25.0f);
-        float horizon = saturate(1.0f + dot(reflection, geometric_normal));
-        float specular_visibility = horizon * horizon *
-            packet_specular_ao(ao, no_v, roughness);
-        float3 diffuse = 0.0f;
-        float3 specular = 0.0f;
-        float local_weight_sum = 0.0f;
-        uint probe_count = min(frame.ibl_probe_count, 16u);
-        for (uint i = 0u; i < probe_count; ++i)
-            local_weight_sum += packet_probe_influence(frame.ibl_probes[i],
-                                                        input.world_position);
-        float weight_scale = local_weight_sum > 1.0f
-                                 ? 1.0f / local_weight_sum
-                                 : 1.0f;
-        for (uint i = 0u; i < probe_count; ++i)
-        {
-            VkrBindlessIblProbe probe = frame.ibl_probes[i];
-            float weight = packet_probe_influence(probe,
-                                                  input.world_position) *
-                           weight_scale;
-            if (weight <= 1e-6f)
-                continue;
-            float3 probe_reflection = probe.intensity_box.w > 0.5f
-                ? packet_box_project(reflection, input.world_position,
-                                     probe.center_blend.xyz,
-                                     max(probe.extents_weight.xyz, 0.0f))
-                : reflection;
-            uint probe_irradiance_texture =
-                NonUniformResourceIndex(probe.irradiance_texture);
-            uint probe_irradiance_sampler =
-                NonUniformResourceIndex(probe.irradiance_sampler);
-            uint probe_prefilter_texture =
-                NonUniformResourceIndex(probe.prefilter_texture);
-            uint probe_prefilter_sampler =
-                NonUniformResourceIndex(probe.prefilter_sampler);
-            float3 probe_irradiance =
-                g_cube_textures[probe_irradiance_texture].SampleLevel(
-                    g_samplers[probe_irradiance_sampler], normal, 0.0f).rgb;
-            float3 probe_prefiltered =
-                g_cube_textures[probe_prefilter_texture].SampleLevel(
-                    g_samplers[probe_prefilter_sampler], probe_reflection,
-                     roughness * float(max(frame.prefilter_mip_count, 1u) -
-                                      1u)).rgb;
-            diffuse += kd * probe_irradiance * base.rgb * ao *
-                       probe.intensity_box.x * probe.intensity_box.y * weight;
-            specular += probe_prefiltered *
-                        (fresnel * brdf.x + f90 * brdf.y) *
-                        specular_visibility * probe.intensity_box.x *
-                        probe.intensity_box.z * weight;
-        }
-        float global_weight = max(1.0f - min(local_weight_sum, 1.0f), 0.0f);
-        diffuse += kd * global_irradiance * base.rgb * ao * global_weight;
-        specular += global_prefiltered *
-                    (fresnel * brdf.x + f90 * brdf.y) *
-                    specular_visibility * global_weight;
-        color += (diffuse * frame.ibl_controls.y +
-                  specular * frame.ibl_controls.z) * frame.ibl_controls.x;
+        color += packet_environment(frame, input.world_position, normal,
+                                    geometric_normal, view, base.rgb,
+                                    metallic, roughness, ao, f0);
     }
     else
     {

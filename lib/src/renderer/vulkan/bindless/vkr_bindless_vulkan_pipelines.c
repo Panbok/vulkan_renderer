@@ -4,6 +4,8 @@ vkr_internal bool8_t
 vkr_bindless_vk_create_packet_pipelines(VkrBindlessVulkanRenderer *renderer);
 vkr_internal bool8_t
 vkr_bindless_vk_create_ibl_pipelines(VkrBindlessVulkanRenderer *renderer);
+vkr_internal bool8_t
+vkr_bindless_vk_create_deferred_pipelines(VkrBindlessVulkanRenderer *renderer);
 
 bool8_t
 vkr_bindless_vk_pipeline_cache_initialize(VkrBindlessVulkanRenderer *renderer) {
@@ -377,7 +379,8 @@ bool8_t vkr_bindless_vk_create_pipelines(VkrBindlessVulkanRenderer *renderer) {
     return false_v;
   }
   return vkr_bindless_vk_create_packet_pipelines(renderer) &&
-         vkr_bindless_vk_create_ibl_pipelines(renderer);
+         vkr_bindless_vk_create_ibl_pipelines(renderer) &&
+         vkr_bindless_vk_create_deferred_pipelines(renderer);
 }
 
 vkr_internal bool8_t vkr_bindless_vk_create_packet_pipeline(
@@ -398,6 +401,8 @@ vkr_internal bool8_t vkr_bindless_vk_create_packet_pipeline(
                   ? "shadow_vertex"
               : vertex_shader == VKR_BINDLESS_VK_PACKET_SHADER_TEXT_VERTEX
                   ? "text_vertex"
+              : vertex_shader == VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_VERTEX
+                  ? "vk_visibility_vertex"
                   : "fullscreen_vertex",
       },
       {
@@ -419,6 +424,12 @@ vkr_internal bool8_t vkr_bindless_vk_create_packet_pipeline(
                   ? "text_picking_fragment"
               : fragment_shader == VKR_BINDLESS_VK_PACKET_SHADER_SKYBOX_FRAGMENT
                   ? "skybox_fragment"
+              : fragment_shader ==
+                      VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_FRAGMENT
+                  ? "vk_visibility_fragment"
+              : fragment_shader ==
+                      VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_SHADOW_FRAGMENT
+                  ? "vk_visibility_shadow_fragment"
                   : "fullscreen_fragment",
       },
   };
@@ -472,11 +483,12 @@ vkr_internal bool8_t vkr_bindless_vk_create_packet_pipeline(
   const VkDynamicState dynamic_states[] = {
       VK_DYNAMIC_STATE_VIEWPORT,
       VK_DYNAMIC_STATE_SCISSOR,
+      VK_DYNAMIC_STATE_CULL_MODE,
       VK_DYNAMIC_STATE_DEPTH_BIAS,
   };
   const VkPipelineDynamicStateCreateInfo dynamic = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-      .dynamicStateCount = depth_bias ? ArrayCount(dynamic_states) : 2u,
+      .dynamicStateCount = depth_bias ? ArrayCount(dynamic_states) : 3u,
       .pDynamicStates = dynamic_states,
   };
   const VkPipelineRenderingCreateInfo rendering = {
@@ -524,6 +536,9 @@ vkr_bindless_vk_create_packet_pipelines(VkrBindlessVulkanRenderer *renderer) {
           VKR_BINDLESS_VK_PACKET_TEXT_VERT_SPV,
           VKR_BINDLESS_VK_PACKET_TEXT_FRAG_SPV,
           VKR_BINDLESS_VK_PACKET_TEXT_PICKING_FRAG_SPV,
+          VKR_BINDLESS_VK_PACKET_VISIBILITY_VERT_SPV,
+          VKR_BINDLESS_VK_PACKET_VISIBILITY_FRAG_SPV,
+          VKR_BINDLESS_VK_PACKET_VISIBILITY_SHADOW_FRAG_SPV,
       };
   for (uint32_t i = 0u; i < VKR_BINDLESS_VK_PACKET_SHADER_COUNT; ++i) {
     if (!vkr_bindless_vk_create_shader_module(renderer, paths[i],
@@ -593,7 +608,19 @@ vkr_bindless_vk_create_packet_pipelines(VkrBindlessVulkanRenderer *renderer) {
              VKR_BINDLESS_VK_PACKET_SHADER_TEXT_VERTEX,
              VKR_BINDLESS_VK_PACKET_SHADER_TEXT_FRAGMENT,
              VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_UNDEFINED, false_v, false_v,
-             true_v, false_v);
+             true_v, false_v) &&
+         vkr_bindless_vk_create_packet_pipeline(
+             renderer, VKR_BINDLESS_VK_PACKET_PIPELINE_VISIBILITY,
+             VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_VERTEX,
+             VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_FRAGMENT,
+             VK_FORMAT_R32G32_UINT, VK_FORMAT_D32_SFLOAT, true_v, true_v,
+             false_v, false_v) &&
+         vkr_bindless_vk_create_packet_pipeline(
+             renderer, VKR_BINDLESS_VK_PACKET_PIPELINE_VISIBILITY_SHADOW,
+             VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_VERTEX,
+             VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_SHADOW_FRAGMENT,
+             VK_FORMAT_UNDEFINED, VK_FORMAT_D32_SFLOAT, true_v, true_v, false_v,
+             true_v);
 }
 
 vkr_internal bool8_t
@@ -629,6 +656,52 @@ vkr_bindless_vk_create_ibl_pipelines(VkrBindlessVulkanRenderer *renderer) {
     if (vkCreateComputePipelines(vkr_bindless_vk_renderer_device(renderer),
                                  renderer->pipeline_cache, 1u, &info, NULL,
                                  &renderer->ibl_pipelines[i]) != VK_SUCCESS)
+      return false_v;
+  }
+  return true_v;
+}
+
+vkr_internal bool8_t
+vkr_bindless_vk_create_deferred_pipelines(VkrBindlessVulkanRenderer *renderer) {
+  vkr_local_persist const char
+      *const paths[VKR_BINDLESS_VK_DEFERRED_PIPELINE_COUNT] = {
+          VKR_BINDLESS_VK_PACKET_GPU_DRAW_CLASSIFY_COMP_SPV,
+          VKR_BINDLESS_VK_PACKET_GPU_DRAW_PREFIX_COMP_SPV,
+          VKR_BINDLESS_VK_PACKET_GPU_DRAW_ENCODE_COMP_SPV,
+          VKR_BINDLESS_VK_PACKET_GBUFFER_RESOLVE_COMP_SPV,
+          VKR_BINDLESS_VK_PACKET_DEFERRED_LIGHTING_COMP_SPV,
+          VKR_BINDLESS_VK_PACKET_HZB_BUILD_COMP_SPV,
+          VKR_BINDLESS_VK_PACKET_PICKING_RESOLVE_COMP_SPV,
+          VKR_BINDLESS_VK_PACKET_TRANSMISSION_SHADE_COMP_SPV,
+          VKR_BINDLESS_VK_PACKET_TRANSMISSION_COVERAGE_COMP_SPV,
+      };
+  vkr_local_persist const char
+      *const entries[VKR_BINDLESS_VK_DEFERRED_PIPELINE_COUNT] = {
+          "vk_gpu_draw_classify",     "vk_gpu_draw_prefix",
+          "vk_gpu_draw_encode",       "vk_gbuffer_resolve",
+          "vk_deferred_lighting",     "vk_hzb_build",
+          "vk_picking_resolve",       "vk_transmission_shade",
+          "vk_transmission_coverage",
+      };
+  for (uint32_t i = 0u; i < VKR_BINDLESS_VK_DEFERRED_PIPELINE_COUNT; ++i) {
+    if (!vkr_bindless_vk_create_shader_module(renderer, paths[i],
+                                              &renderer->deferred_shaders[i]))
+      return false_v;
+    const VkPipelineShaderStageCreateInfo stage = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+        .module = renderer->deferred_shaders[i],
+        .pName = entries[i],
+    };
+    const VkComputePipelineCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT,
+        .stage = stage,
+        .layout = renderer->pipeline_layout,
+    };
+    if (vkCreateComputePipelines(
+            vkr_bindless_vk_renderer_device(renderer), renderer->pipeline_cache,
+            1u, &info, NULL, &renderer->deferred_pipelines[i]) != VK_SUCCESS)
       return false_v;
   }
   return true_v;

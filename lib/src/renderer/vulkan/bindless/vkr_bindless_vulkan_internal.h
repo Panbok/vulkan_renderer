@@ -78,6 +78,51 @@
 #define VKR_BINDLESS_VK_PACKET_IBL_PREFILTER_COMP_SPV                          \
   "packet.ibl_prefilter.comp.spv"
 #endif
+#ifndef VKR_BINDLESS_VK_PACKET_VISIBILITY_VERT_SPV
+#define VKR_BINDLESS_VK_PACKET_VISIBILITY_VERT_SPV "packet.visibility.vert.spv"
+#endif
+#ifndef VKR_BINDLESS_VK_PACKET_VISIBILITY_FRAG_SPV
+#define VKR_BINDLESS_VK_PACKET_VISIBILITY_FRAG_SPV "packet.visibility.frag.spv"
+#endif
+#ifndef VKR_BINDLESS_VK_PACKET_VISIBILITY_SHADOW_FRAG_SPV
+#define VKR_BINDLESS_VK_PACKET_VISIBILITY_SHADOW_FRAG_SPV                      \
+  "packet.visibility_shadow.frag.spv"
+#endif
+#ifndef VKR_BINDLESS_VK_PACKET_GPU_DRAW_CLASSIFY_COMP_SPV
+#define VKR_BINDLESS_VK_PACKET_GPU_DRAW_CLASSIFY_COMP_SPV                      \
+  "packet.gpu_draw_classify.comp.spv"
+#endif
+#ifndef VKR_BINDLESS_VK_PACKET_GPU_DRAW_PREFIX_COMP_SPV
+#define VKR_BINDLESS_VK_PACKET_GPU_DRAW_PREFIX_COMP_SPV                        \
+  "packet.gpu_draw_prefix.comp.spv"
+#endif
+#ifndef VKR_BINDLESS_VK_PACKET_GPU_DRAW_ENCODE_COMP_SPV
+#define VKR_BINDLESS_VK_PACKET_GPU_DRAW_ENCODE_COMP_SPV                        \
+  "packet.gpu_draw_encode.comp.spv"
+#endif
+#ifndef VKR_BINDLESS_VK_PACKET_GBUFFER_RESOLVE_COMP_SPV
+#define VKR_BINDLESS_VK_PACKET_GBUFFER_RESOLVE_COMP_SPV                        \
+  "packet.gbuffer_resolve.comp.spv"
+#endif
+#ifndef VKR_BINDLESS_VK_PACKET_DEFERRED_LIGHTING_COMP_SPV
+#define VKR_BINDLESS_VK_PACKET_DEFERRED_LIGHTING_COMP_SPV                      \
+  "packet.deferred_lighting.comp.spv"
+#endif
+#ifndef VKR_BINDLESS_VK_PACKET_HZB_BUILD_COMP_SPV
+#define VKR_BINDLESS_VK_PACKET_HZB_BUILD_COMP_SPV "packet.hzb_build.comp.spv"
+#endif
+#ifndef VKR_BINDLESS_VK_PACKET_PICKING_RESOLVE_COMP_SPV
+#define VKR_BINDLESS_VK_PACKET_PICKING_RESOLVE_COMP_SPV                        \
+  "packet.picking_resolve.comp.spv"
+#endif
+#ifndef VKR_BINDLESS_VK_PACKET_TRANSMISSION_SHADE_COMP_SPV
+#define VKR_BINDLESS_VK_PACKET_TRANSMISSION_SHADE_COMP_SPV                     \
+  "packet.transmission_shade.comp.spv"
+#endif
+#ifndef VKR_BINDLESS_VK_PACKET_TRANSMISSION_COVERAGE_COMP_SPV
+#define VKR_BINDLESS_VK_PACKET_TRANSMISSION_COVERAGE_COMP_SPV                  \
+  "packet.transmission_coverage.comp.spv"
+#endif
 
 enum {
   /**
@@ -94,7 +139,20 @@ enum {
   VKR_BINDLESS_VK_GRAPH_LAYER_MAX = 16,
   VKR_BINDLESS_VK_TEXTURE_MIP_MAX = 16,
   VKR_BINDLESS_VK_PENDING_IBL_BAKE_MAX = 32,
-  VKR_BINDLESS_VK_FRAME_UPLOAD_SIZE = 16u * 1024u * 1024u,
+  VKR_BINDLESS_VK_FRAME_UPLOAD_SIZE = 48u * 1024u * 1024u,
+};
+
+enum {
+  VKR_BINDLESS_VK_DEFERRED_VIEW_COUNT_MAX = 1 + VKR_SHADOW_CASCADE_COUNT_MAX,
+  VKR_BINDLESS_VK_READBACK_COLOR_SIZE = 4,
+  VKR_BINDLESS_VK_READBACK_DRAW_STATE_OFFSET = 16,
+  VKR_BINDLESS_VK_READBACK_TRANSMISSION_STATE_OFFSET =
+      VKR_BINDLESS_VK_READBACK_DRAW_STATE_OFFSET +
+      VKR_BINDLESS_VK_DEFERRED_VIEW_COUNT_MAX *
+          sizeof(VkrGpuDrawCompactionState),
+  VKR_BINDLESS_VK_READBACK_SIZE =
+      VKR_BINDLESS_VK_READBACK_TRANSMISSION_STATE_OFFSET +
+      sizeof(VkrGpuTransmissionDiagnostics),
 };
 
 typedef enum VkrBindlessVkPacketPipeline {
@@ -109,6 +167,8 @@ typedef enum VkrBindlessVkPacketPipeline {
   VKR_BINDLESS_VK_PACKET_PIPELINE_WORLD_TEXT,
   VKR_BINDLESS_VK_PACKET_PIPELINE_PICKING_TEXT,
   VKR_BINDLESS_VK_PACKET_PIPELINE_UI_TEXT,
+  VKR_BINDLESS_VK_PACKET_PIPELINE_VISIBILITY,
+  VKR_BINDLESS_VK_PACKET_PIPELINE_VISIBILITY_SHADOW,
   VKR_BINDLESS_VK_PACKET_PIPELINE_COUNT,
 } VkrBindlessVkPacketPipeline;
 
@@ -124,6 +184,9 @@ typedef enum VkrBindlessVkPacketShader {
   VKR_BINDLESS_VK_PACKET_SHADER_TEXT_VERTEX,
   VKR_BINDLESS_VK_PACKET_SHADER_TEXT_FRAGMENT,
   VKR_BINDLESS_VK_PACKET_SHADER_TEXT_PICKING_FRAGMENT,
+  VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_VERTEX,
+  VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_FRAGMENT,
+  VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_SHADOW_FRAGMENT,
   VKR_BINDLESS_VK_PACKET_SHADER_COUNT,
 } VkrBindlessVkPacketShader;
 
@@ -133,6 +196,19 @@ typedef enum VkrBindlessVkIblPipeline {
   VKR_BINDLESS_VK_IBL_PIPELINE_PREFILTER,
   VKR_BINDLESS_VK_IBL_PIPELINE_COUNT,
 } VkrBindlessVkIblPipeline;
+
+typedef enum VkrBindlessVkDeferredPipeline {
+  VKR_BINDLESS_VK_DEFERRED_PIPELINE_CLASSIFY = 0,
+  VKR_BINDLESS_VK_DEFERRED_PIPELINE_PREFIX,
+  VKR_BINDLESS_VK_DEFERRED_PIPELINE_ENCODE,
+  VKR_BINDLESS_VK_DEFERRED_PIPELINE_GBUFFER,
+  VKR_BINDLESS_VK_DEFERRED_PIPELINE_LIGHTING,
+  VKR_BINDLESS_VK_DEFERRED_PIPELINE_HZB,
+  VKR_BINDLESS_VK_DEFERRED_PIPELINE_PICKING,
+  VKR_BINDLESS_VK_DEFERRED_PIPELINE_TRANSMISSION,
+  VKR_BINDLESS_VK_DEFERRED_PIPELINE_TRANSMISSION_COVERAGE,
+  VKR_BINDLESS_VK_DEFERRED_PIPELINE_COUNT,
+} VkrBindlessVkDeferredPipeline;
 
 typedef enum VkrBindlessVkMaterialFlag {
   VKR_BINDLESS_VK_MATERIAL_TEXTURE_NORMAL = 1u << 0u,
@@ -166,6 +242,142 @@ typedef struct VkrBindlessVkPushConstants {
   uint32_t material_index;
   uint32_t flags;
 } VkrBindlessVkPushConstants;
+
+typedef struct VKR_SIMD_ALIGN VkrBindlessVkCullRoot {
+  uint64_t candidates;
+  uint64_t classifications;
+  uint64_t visible;
+  uint64_t states;
+  uint64_t commands;
+  uint64_t instances;
+  uint64_t view_projections;
+  uint64_t frustum_planes;
+  uint32_t candidate_count;
+  uint32_t view_count;
+  uint32_t candidate_capacity;
+  uint32_t command_partition_capacity;
+  uint32_t hzb_textures[VKR_BINDLESS_VK_TEXTURE_MIP_MAX];
+  uint32_t hzb_mip_count;
+  uint32_t hzb_extent[2];
+  uint32_t hzb_enabled;
+  float32_t hzb_depth_epsilon;
+  uint32_t camera_required_flags;
+  uint32_t shadow_required_flags;
+} VkrBindlessVkCullRoot;
+
+typedef struct VKR_SIMD_ALIGN VkrBindlessVkRasterRoot {
+  uint64_t geometry_rows;
+  uint64_t visible_rows;
+  uint64_t states;
+  uint64_t frame;
+  uint32_t view_index;
+  uint32_t visible_capacity;
+  uint32_t previous_depth_texture;
+  uint32_t previous_depth_layer;
+} VkrBindlessVkRasterRoot;
+
+typedef struct VKR_SIMD_ALIGN VkrBindlessVkResolveRoot {
+  uint64_t geometry_rows;
+  uint64_t visible_rows;
+  uint64_t reserved_address;
+  uint64_t instances;
+  uint64_t materials;
+  uint64_t vertices;
+  uint64_t indices;
+  uint64_t compaction_state;
+  Mat4 view_projection;
+  uint32_t vbuffer_texture;
+  uint32_t albedo_texture;
+  uint32_t specular_texture;
+  uint32_t normal_texture;
+  uint32_t emissive_texture;
+  uint32_t debug_texture;
+  uint32_t scene_texture;
+  uint32_t extent[2];
+  uint32_t visible_capacity;
+  uint32_t geometry_count;
+  uint32_t material_count;
+  uint32_t instance_count;
+  uint32_t render_mode;
+  /* Names the alignment tail the resolve root already carried. */
+  uint32_t reserved_tail[2];
+} VkrBindlessVkResolveRoot;
+
+typedef struct VKR_SIMD_ALIGN VkrBindlessVkLightingRoot {
+  uint64_t frame;
+  uint64_t frame_padding;
+  Mat4 inverse_view_projection;
+  uint32_t vbuffer_texture;
+  uint32_t depth_texture;
+  uint32_t albedo_texture;
+  uint32_t specular_texture;
+  uint32_t normal_texture;
+  uint32_t scene_texture;
+  uint32_t extent[2];
+  /* Deferred owns the background: the authored skybox pass is declared
+     `!deferred_enabled`, so lighting samples the packet cubemap itself. */
+  uint32_t sky_texture;
+  uint32_t sky_sampler;
+  uint32_t sky_enabled;
+  uint32_t reserved_sky;
+} VkrBindlessVkLightingRoot;
+
+typedef struct VKR_SIMD_ALIGN VkrBindlessVkHzbRoot {
+  uint32_t source_texture;
+  uint32_t destination_texture;
+  uint32_t source_extent[2];
+  uint32_t destination_extent[2];
+  uint32_t source_is_depth;
+  uint32_t reserved[3];
+} VkrBindlessVkHzbRoot;
+
+typedef struct VKR_SIMD_ALIGN VkrBindlessVkPickingRoot {
+  uint64_t opaque_visible;
+  uint64_t transmission_visible;
+  uint64_t opaque_instances;
+  uint64_t transmission_instances;
+  uint32_t opaque_vbuffer;
+  uint32_t transmission_vbuffer;
+  uint32_t output_texture;
+  uint32_t pixel[2];
+  uint32_t transmission_layer;
+  uint32_t use_transmission;
+} VkrBindlessVkPickingRoot;
+
+typedef struct VKR_SIMD_ALIGN VkrBindlessVkTransmissionRoot {
+  uint64_t visible_rows;
+  uint64_t materials;
+  /* Offset 16 stays free of physical-buffer addresses; see the resolve root. */
+  uint64_t reserved_address;
+  uint64_t geometry_rows;
+  uint64_t instances;
+  uint64_t vertices;
+  uint64_t indices;
+  uint64_t compaction_state;
+  uint64_t frame;
+  uint32_t frame_address_padding[2];
+  Mat4 view_projection;
+  Mat4 inverse_view_projection;
+  uint32_t vbuffer_texture;
+  uint32_t depth_texture;
+  uint32_t feedback_texture;
+  uint32_t feedback_sampler;
+  uint32_t output_texture;
+  uint32_t layer;
+  uint32_t extent[2];
+  uint32_t visible_capacity;
+  uint32_t geometry_count;
+  uint32_t material_count;
+  uint32_t instance_count;
+} VkrBindlessVkTransmissionRoot;
+
+typedef struct VKR_SIMD_ALIGN VkrBindlessVkTransmissionCoverageRoot {
+  uint64_t covered_pixels;
+  uint32_t vbuffer_texture;
+  uint32_t layer;
+  uint32_t extent[2];
+  uint32_t reserved[2];
+} VkrBindlessVkTransmissionCoverageRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrBindlessVkIblRoot {
   uint32_t source_texture;
@@ -314,6 +526,37 @@ _Static_assert(offsetof(VkrBindlessVkMaterialGpuRow, material_emissive) == 64u,
                "Vulkan material parameter ABI drift");
 _Static_assert(sizeof(VkrBindlessVkPushConstants) == 16u,
                "Push-constant ABI drift");
+_Static_assert(sizeof(VkrBindlessVkCullRoot) == 176u,
+               "Deferred cull-root ABI size drift");
+_Static_assert(offsetof(VkrBindlessVkCullRoot, view_projections) == 48u,
+               "Deferred cull-root address ABI drift");
+_Static_assert(offsetof(VkrBindlessVkCullRoot, hzb_textures) == 80u,
+               "Deferred cull-root HZB ABI drift");
+_Static_assert(sizeof(VkrBindlessVkRasterRoot) == 48u,
+               "Deferred raster-root ABI size drift");
+_Static_assert(sizeof(VkrBindlessVkResolveRoot) == 192u,
+               "Deferred resolve-root ABI size drift");
+_Static_assert(offsetof(VkrBindlessVkResolveRoot, vertices) == 40u,
+               "Deferred resolve-root vertex address ABI drift");
+_Static_assert(offsetof(VkrBindlessVkResolveRoot, view_projection) == 64u,
+               "Deferred resolve-root matrix ABI drift");
+_Static_assert(sizeof(VkrBindlessVkLightingRoot) == 128u,
+               "Deferred lighting-root ABI size drift");
+_Static_assert(offsetof(VkrBindlessVkLightingRoot, inverse_view_projection) ==
+                   16u,
+               "Deferred lighting-root matrix ABI drift");
+_Static_assert(sizeof(VkrBindlessVkHzbRoot) == 48u,
+               "Deferred HZB-root ABI size drift");
+_Static_assert(sizeof(VkrBindlessVkPickingRoot) == 64u,
+               "Deferred picking-root ABI size drift");
+_Static_assert(sizeof(VkrBindlessVkTransmissionRoot) == 256u,
+               "Deferred transmission-root ABI size drift");
+_Static_assert(offsetof(VkrBindlessVkTransmissionRoot, geometry_rows) == 24u,
+               "Deferred transmission-root address ABI drift");
+_Static_assert(offsetof(VkrBindlessVkTransmissionRoot, view_projection) == 80u,
+               "Deferred transmission-root matrix ABI drift");
+_Static_assert(sizeof(VkrBindlessVkTransmissionCoverageRoot) == 32u,
+               "Deferred transmission-coverage root ABI drift");
 _Static_assert(sizeof(VkrBindlessVkIblRoot) == 32u, "IBL-root ABI drift");
 _Static_assert(sizeof(VkrBindlessVkPacketFrameRoot) == 432u,
                "Packet frame-root ABI size drift");
@@ -378,10 +621,16 @@ typedef struct VkrBindlessVkGraphImageInstance {
   VkrGpuSlotHandle sampled_slot;
   VkrGpuSlotHandle storage_slot;
   uint64_t last_use_submit_value;
+  uint64_t history_producer_submit_value;
+  uint64_t history_world_epoch;
+  Mat4 history_view_projection;
+  uint32_t history_width;
+  uint32_t history_height;
   bool8_t has_sampled_mip_slot[VKR_BINDLESS_VK_TEXTURE_MIP_MAX];
   bool8_t has_storage_mip_slot[VKR_BINDLESS_VK_TEXTURE_MIP_MAX];
   bool8_t has_sampled_slot;
   bool8_t has_storage_slot;
+  bool8_t history_valid;
 } VkrBindlessVkGraphImageInstance;
 
 typedef struct VkrBindlessVkGraphImage {
@@ -431,6 +680,8 @@ typedef struct VkrBindlessVkFrameSlot {
   VkrRendererImplPassTiming pass_timings[VKR_RENDERER_IMPL_MAX_PASS_TIMINGS];
   bool8_t timing_requested;
   bool8_t timing_collected;
+  bool8_t transmission_coverage_requested;
+  uint32_t transmission_coverage_extent[2];
   bool8_t acquired_window_image;
   bool8_t reacquired_presented_image;
   uint64_t frame_upload_cursor;
@@ -442,6 +693,16 @@ typedef struct VkrBindlessVkFrameSlot {
   uint64_t ui_instances;
   uint64_t editor_instances;
   uint64_t picking_instances;
+  uint64_t gpu_candidate_instances;
+  uint64_t transmission_gpu_candidate_instances;
+  uint64_t gpu_geometry_rows;
+  uint64_t gpu_candidate_upload_offset;
+  uint64_t transmission_gpu_candidate_upload_offset;
+  VkrBindlessVkGraphBufferInstance *gpu_compaction_state;
+  VkrBindlessVkGraphBufferInstance *transmission_gpu_compaction_state;
+  uint32_t gpu_candidate_count;
+  uint32_t transmission_gpu_candidate_count;
+  uint64_t gpu_world_epoch;
   uint64_t point_light_data;
   uint64_t point_light_masks;
   uint64_t shadow_cascades;
@@ -455,6 +716,9 @@ typedef struct VkrBindlessVkFrameSlot {
   uint32_t picking_x;
   uint32_t picking_y;
   bool8_t picking_readback_pending;
+  VkrBindlessVkGraphImageInstance *hzb_history_input;
+  VkrBindlessVkGraphImageInstance *hzb_history_output;
+  bool8_t hzb_history_valid;
   uint32_t indexed_draw_count;
   uint32_t shadow_draw_count;
   uint32_t shadow_opaque_draw_count[VKR_SHADOW_CASCADE_COUNT_MAX];
@@ -462,6 +726,8 @@ typedef struct VkrBindlessVkFrameSlot {
   uint32_t opaque_draw_count;
   uint32_t transmission_draw_count;
   uint32_t blend_draw_count;
+  uint32_t deferred_fallback_reasons;
+  bool8_t deferred_selected;
 } VkrBindlessVkFrameSlot;
 
 typedef struct VkrBindlessVkWindowTarget {
@@ -699,6 +965,10 @@ struct VkrBindlessVulkanRenderer {
   uint32_t pending_buffer_initialization_capacity;
   uint32_t retired_staging_buffer_capacity;
   uint32_t staging_buffer_count;
+  /* Which publication class claims the single bounded staging chunk next.
+     Buffers and textures alternate so neither starves the other. */
+  bool8_t stage_textures_first;
+  bool8_t deferred_candidate_drop_logged;
   void *sampled_image_slot_storage;
   void *storage_image_slot_storage;
   void *sampler_slot_storage;
@@ -723,6 +993,8 @@ struct VkrBindlessVulkanRenderer {
   VkPipeline packet_pipelines[VKR_BINDLESS_VK_PACKET_PIPELINE_COUNT];
   VkShaderModule ibl_shaders[VKR_BINDLESS_VK_IBL_PIPELINE_COUNT];
   VkPipeline ibl_pipelines[VKR_BINDLESS_VK_IBL_PIPELINE_COUNT];
+  VkShaderModule deferred_shaders[VKR_BINDLESS_VK_DEFERRED_PIPELINE_COUNT];
+  VkPipeline deferred_pipelines[VKR_BINDLESS_VK_DEFERRED_PIPELINE_COUNT];
   VkrBindlessVkPendingIblBake
       pending_ibl_bakes[VKR_BINDLESS_VK_PENDING_IBL_BAKE_MAX];
   uint32_t pending_ibl_bake_count;
@@ -832,6 +1104,15 @@ bool8_t
 vkr_bindless_vk_prepare_packet_uploads(VkrBindlessVulkanRenderer *renderer,
                                        VkrBindlessVkFrameSlot *slot,
                                        const VkrRenderPacket *packet);
+VkrBindlessVkPacketFrameRoot *
+vkr_bindless_vk_packet_frame_root(VkrBindlessVkFrameSlot *slot,
+                                  uint64_t *out_address);
+void vkr_bindless_vk_fill_packet_frame_root(
+    VkrBindlessVulkanRenderer *renderer, VkrBindlessVkPacketFrameRoot *root,
+    const VkrBindlessVkFrameSlot *slot, const VkrPacketFrameConstants *frame,
+    uint64_t instances, Mat4 view_projection, uint32_t shadow_texture,
+    uint32_t transmission_texture, bool8_t lighting_pass,
+    bool8_t transmission_pass);
 bool8_t vkr_bindless_vk_publish_sampled_view(
     VkrBindlessVulkanRenderer *renderer, VkImageView view,
     VkImageLayout image_layout, VkrGpuSlotHandle *out_handle);
@@ -846,6 +1127,42 @@ bool8_t vkr_bindless_vk_record_capture(VkrBindlessVulkanRenderer *renderer,
                                        VkrBindlessVkFrameSlot *slot);
 bool8_t vkr_bindless_vk_record_graph(VkrBindlessVulkanRenderer *renderer,
                                      VkCommandBuffer command);
+bool8_t vkr_bindless_vk_record_deferred_upload(
+    VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
+    const VkrRgPass *pass, bool8_t transmission);
+bool8_t
+vkr_bindless_vk_record_deferred_readback(VkrBindlessVulkanRenderer *renderer,
+                                         VkCommandBuffer command);
+bool8_t vkr_bindless_vk_record_deferred_cull(
+    VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
+    const VkrRgPass *pass, VkrBindlessVkDeferredPipeline pipeline,
+    bool8_t transmission);
+bool8_t vkr_bindless_vk_record_deferred_raster(
+    VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
+    const VkrRgPass *pass, bool8_t shadow, bool8_t transmission);
+bool8_t
+vkr_bindless_vk_record_deferred_gbuffer(VkrBindlessVulkanRenderer *renderer,
+                                        VkCommandBuffer command,
+                                        const VkrRgPass *pass);
+bool8_t
+vkr_bindless_vk_record_deferred_lighting(VkrBindlessVulkanRenderer *renderer,
+                                         VkCommandBuffer command,
+                                         const VkrRgPass *pass);
+bool8_t vkr_bindless_vk_record_deferred_hzb(VkrBindlessVulkanRenderer *renderer,
+                                            VkCommandBuffer command,
+                                            const VkrRgPass *pass);
+bool8_t
+vkr_bindless_vk_record_deferred_picking(VkrBindlessVulkanRenderer *renderer,
+                                        VkCommandBuffer command,
+                                        const VkrRgPass *pass);
+bool8_t vkr_bindless_vk_record_deferred_transmission(
+    VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
+    const VkrRgPass *pass);
+bool8_t vkr_bindless_vk_record_deferred_transmission_coverage(
+    VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
+    const VkrRgPass *pass);
+void vkr_bindless_vk_mark_hzb_submitted(VkrBindlessVulkanRenderer *renderer,
+                                        uint64_t submit_value);
 bool8_t vkr_bindless_vk_record_ibl_bakes(VkrBindlessVulkanRenderer *renderer,
                                          VkCommandBuffer command);
 bool8_t vkr_bindless_vk_record_packet_draws(

@@ -1385,15 +1385,19 @@ static void test_main_graph_declares_transmission_stages(void) {
       assert(pass->repeat.enabled &&
              vkr_string8_equals_cstr(&pass->repeat.count_source,
                                      "shadow_cascade_count"));
-      assert(pass->reads.length == 2u);
+      assert(pass->reads.length == 3u);
       VkrRgJsonResourceUse *visible =
           vector_get_VkrRgJsonResourceUse(&pass->reads, 0u);
       VkrRgJsonResourceUse *state =
           vector_get_VkrRgJsonResourceUse(&pass->reads, 1u);
-      assert(visible && state && visible->binding.value == 1u &&
-             state->binding.value == 2u &&
+      VkrRgJsonResourceUse *arguments =
+          vector_get_VkrRgJsonResourceUse(&pass->reads, 2u);
+      assert(visible && state && arguments && visible->binding.value == 1u &&
+             state->binding.value == 2u && arguments->binding.value == 3u &&
              visible->buffer_access == VKR_RG_JSON_BUFFER_ACCESS_STORAGE_READ &&
-             state->buffer_access == VKR_RG_JSON_BUFFER_ACCESS_INDIRECT_READ);
+             state->buffer_access == VKR_RG_JSON_BUFFER_ACCESS_INDIRECT_READ &&
+             arguments->buffer_access ==
+                 VKR_RG_JSON_BUFFER_ACCESS_INDIRECT_READ);
     }
     found++;
   }

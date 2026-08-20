@@ -1,5 +1,51 @@
 #include "renderer/vulkan/bindless/vkr_bindless_vulkan_internal.h"
 
+vkr_internal bool8_t vkr_bindless_vk_pack_gpu_candidates(
+    VkrBindlessVulkanRenderer *renderer, VkrBindlessVkFrameSlot *slot,
+    const VkrWorldDrawCandidate *source, uint32_t count,
+    uint64_t *out_candidate_offset, uint64_t *out_instances_address,
+    uint32_t *out_packed_count);
+
+vkr_internal uint64_t vkr_bindless_vk_hash_bytes(uint64_t hash,
+                                                 const void *bytes,
+                                                 uint64_t size) {
+  const uint8_t *data = bytes;
+  for (uint64_t i = 0u; i < size; ++i) {
+    hash ^= data[i];
+    hash *= 1099511628211ull;
+  }
+  return hash;
+}
+
+vkr_internal uint64_t vkr_bindless_vk_candidate_epoch(
+    const VkrWorldDrawCandidate *candidates, uint32_t count) {
+  uint64_t hash = 1469598103934665603ull;
+  uint32_t occluder_count = 0u;
+#define VKR_HASH_CANDIDATE_FIELD(FIELD)                                        \
+  hash = vkr_bindless_vk_hash_bytes(hash, &candidate->FIELD,                   \
+                                    sizeof(candidate->FIELD))
+  for (uint32_t i = 0u; i < count; ++i) {
+    const VkrWorldDrawCandidate *candidate = &candidates[i];
+    if ((candidate->flags & VKR_WORLD_DRAW_CANDIDATE_CAMERA_OPAQUE) == 0u)
+      continue;
+    occluder_count++;
+    VKR_HASH_CANDIDATE_FIELD(mesh.id);
+    VKR_HASH_CANDIDATE_FIELD(mesh.generation);
+    VKR_HASH_CANDIDATE_FIELD(geometry.id);
+    VKR_HASH_CANDIDATE_FIELD(geometry.generation);
+    VKR_HASH_CANDIDATE_FIELD(submesh_index);
+    VKR_HASH_CANDIDATE_FIELD(material.id);
+    VKR_HASH_CANDIDATE_FIELD(material.generation);
+    VKR_HASH_CANDIDATE_FIELD(instance.model);
+    VKR_HASH_CANDIDATE_FIELD(local_bounding_sphere);
+    VKR_HASH_CANDIDATE_FIELD(state_bucket);
+    VKR_HASH_CANDIDATE_FIELD(flags);
+  }
+#undef VKR_HASH_CANDIDATE_FIELD
+  return vkr_bindless_vk_hash_bytes(hash, &occluder_count,
+                                    sizeof(occluder_count));
+}
+
 uint64_t vkr_bindless_vk_align_up(uint64_t value, uint64_t alignment) {
   return (value + alignment - 1u) & ~(alignment - 1u);
 }
@@ -190,6 +236,15 @@ vkr_bindless_vk_prepare_packet_uploads(VkrBindlessVulkanRenderer *renderer,
   slot->ui_instances = 0u;
   slot->editor_instances = 0u;
   slot->picking_instances = 0u;
+  slot->gpu_candidate_instances = 0u;
+  slot->transmission_gpu_candidate_instances = 0u;
+  slot->gpu_geometry_rows = 0u;
+  slot->gpu_candidate_upload_offset = 0u;
+  slot->transmission_gpu_candidate_upload_offset = 0u;
+  slot->gpu_candidate_count = 0u;
+  slot->transmission_gpu_candidate_count = 0u;
+  slot->gpu_world_epoch = 0u;
+  slot->hzb_history_valid = false_v;
   slot->indexed_draw_count = 0u;
   slot->shadow_draw_count = 0u;
   MemZero(slot->shadow_opaque_draw_count,
@@ -198,27 +253,58 @@ vkr_bindless_vk_prepare_packet_uploads(VkrBindlessVulkanRenderer *renderer,
   slot->opaque_draw_count = 0u;
   slot->transmission_draw_count = 0u;
   slot->blend_draw_count = 0u;
-  return vkr_bindless_vk_upload_packet_tables(renderer, slot, packet) &&
-         (!packet->world ||
-          vkr_bindless_vk_upload_instances(slot, packet->world->instances,
-                                           packet->world->instance_count,
-                                           &slot->world_instances)) &&
-         (!packet->shadow ||
-          vkr_bindless_vk_upload_instances(slot, packet->shadow->instances,
-                                           packet->shadow->instance_count,
-                                           &slot->shadow_instances)) &&
-         (!packet->ui ||
-          vkr_bindless_vk_upload_instances(slot, packet->ui->instances,
-                                           packet->ui->instance_count,
-                                           &slot->ui_instances)) &&
-         (!packet->editor ||
-          vkr_bindless_vk_upload_instances(slot, packet->editor->instances,
-                                           packet->editor->instance_count,
-                                           &slot->editor_instances)) &&
-         (!packet->picking ||
-          vkr_bindless_vk_upload_instances(slot, packet->picking->instances,
-                                           packet->picking->instance_count,
-                                           &slot->picking_instances));
+  const bool8_t common_uploads =
+      vkr_bindless_vk_upload_packet_tables(renderer, slot, packet) &&
+      (!packet->world ||
+       vkr_bindless_vk_upload_instances(slot, packet->world->instances,
+                                        packet->world->instance_count,
+                                        &slot->world_instances)) &&
+      (!packet->shadow ||
+       vkr_bindless_vk_upload_instances(slot, packet->shadow->instances,
+                                        packet->shadow->instance_count,
+                                        &slot->shadow_instances)) &&
+      (!packet->ui || vkr_bindless_vk_upload_instances(
+                          slot, packet->ui->instances,
+                          packet->ui->instance_count, &slot->ui_instances)) &&
+      (!packet->editor ||
+       vkr_bindless_vk_upload_instances(slot, packet->editor->instances,
+                                        packet->editor->instance_count,
+                                        &slot->editor_instances)) &&
+      (!packet->picking ||
+       vkr_bindless_vk_upload_instances(slot, packet->picking->instances,
+                                        packet->picking->instance_count,
+                                        &slot->picking_instances));
+  if (!common_uploads || !renderer->prepared_frame.deferred_enabled ||
+      !packet->world)
+    return common_uploads;
+
+  const uint64_t geometry_bytes =
+      (uint64_t)renderer->config.geometry_capacity * sizeof(VkrGpuGeometryRow);
+  VkrGpuGeometryRow *geometry_rows = vkr_bindless_vk_frame_upload_allocate(
+      slot, geometry_bytes, _Alignof(VkrGpuGeometryRow),
+      &slot->gpu_geometry_rows, NULL);
+  if (!geometry_rows)
+    return false_v;
+  MemZero(geometry_rows, geometry_bytes);
+  for (uint32_t i = 0u; i < renderer->config.geometry_capacity; ++i) {
+    const VkrBindlessVkPublishedGeometry *geometry =
+        &renderer->published_geometries[i];
+    if (geometry->live && geometry->pending_initialization_count == 0u)
+      geometry_rows[i] = geometry->gpu_row;
+  }
+  slot->gpu_world_epoch = vkr_bindless_vk_candidate_epoch(
+      packet->world->gpu_candidates, packet->world->gpu_candidate_count);
+  return vkr_bindless_vk_pack_gpu_candidates(
+             renderer, slot, packet->world->gpu_candidates,
+             packet->world->gpu_candidate_count,
+             &slot->gpu_candidate_upload_offset, &slot->gpu_candidate_instances,
+             &slot->gpu_candidate_count) &&
+         vkr_bindless_vk_pack_gpu_candidates(
+             renderer, slot, packet->world->transmission_gpu_candidates,
+             packet->world->transmission_gpu_candidate_count,
+             &slot->transmission_gpu_candidate_upload_offset,
+             &slot->transmission_gpu_candidate_instances,
+             &slot->transmission_gpu_candidate_count);
 }
 
 vkr_internal VkrBindlessVkPublishedGeometry *
@@ -246,6 +332,78 @@ vkr_bindless_vk_resolve_material(VkrBindlessVulkanRenderer *renderer,
              : NULL;
 }
 
+vkr_internal bool8_t vkr_bindless_vk_pack_gpu_candidates(
+    VkrBindlessVulkanRenderer *renderer, VkrBindlessVkFrameSlot *slot,
+    const VkrWorldDrawCandidate *source, uint32_t count,
+    uint64_t *out_candidate_offset, uint64_t *out_instances_address,
+    uint32_t *out_packed_count) {
+  *out_packed_count = 0u;
+  if (!count) {
+    *out_candidate_offset = 0u;
+    *out_instances_address = 0u;
+    return true_v;
+  }
+  if (!source || count > VKR_GPU_DRAW_CANDIDATE_CAPACITY)
+    return false_v;
+  VkrGpuCandidateDrawRow *candidates = vkr_bindless_vk_frame_upload_allocate(
+      slot, (uint64_t)count * sizeof(*candidates),
+      _Alignof(VkrGpuCandidateDrawRow), NULL, out_candidate_offset);
+  VkrInstanceDataGPU *instances = vkr_bindless_vk_frame_upload_allocate(
+      slot, (uint64_t)count * sizeof(*instances), _Alignof(VkrInstanceDataGPU),
+      out_instances_address, NULL);
+  if (!candidates || !instances)
+    return false_v;
+  const uint64_t pending_submit = renderer->submit_value + 1u;
+  uint32_t packed_count = 0u;
+  uint32_t missing_geometry_count = 0u;
+  uint32_t missing_material_count = 0u;
+  uint32_t invalid_submesh_count = 0u;
+  for (uint32_t i = 0u; i < count; ++i) {
+    const VkrWorldDrawCandidate *candidate = &source[i];
+    VkrBindlessVkPublishedGeometry *geometry =
+        vkr_bindless_vk_resolve_geometry(renderer, candidate->geometry);
+    VkrBindlessVkPublishedMaterial *material =
+        vkr_bindless_vk_resolve_material(renderer, candidate->material);
+    if (!geometry) {
+      missing_geometry_count++;
+      continue;
+    }
+    if (!material) {
+      missing_material_count++;
+      continue;
+    }
+    if (candidate->submesh_index >= geometry->submesh_count) {
+      invalid_submesh_count++;
+      continue;
+    }
+    const VkrBindlessVkSubmeshRange *submesh =
+        &geometry->submeshes[candidate->submesh_index];
+    candidates[packed_count] = (VkrGpuCandidateDrawRow){
+        .geometry_index = candidate->geometry.id - 1u,
+        .material_index = material->slot.index,
+        .instance_index = packed_count,
+        .first_index = geometry->gpu_row.first_index + submesh->first_index,
+        .index_count = submesh->index_count,
+        .vertex_offset = submesh->vertex_offset,
+        .state_bucket = candidate->state_bucket,
+        .flags = candidate->flags,
+        .local_bounding_sphere = candidate->local_bounding_sphere,
+    };
+    instances[packed_count++] = candidate->instance;
+    geometry->last_use_submit_value =
+        Max(geometry->last_use_submit_value, pending_submit);
+  }
+  if (packed_count != count && !renderer->deferred_candidate_drop_logged) {
+    log_warn("Bindless Vulkan deferred publication boundary omitted %u/%u "
+             "candidates (geometry=%u material=%u submesh=%u)",
+             count - packed_count, count, missing_geometry_count,
+             missing_material_count, invalid_submesh_count);
+    renderer->deferred_candidate_drop_logged = true_v;
+  }
+  *out_packed_count = packed_count;
+  return true_v;
+}
+
 vkr_internal VkrBindlessVkPacketUtilityRoot *
 vkr_bindless_vk_packet_utility_root(VkrBindlessVkFrameSlot *slot,
                                     uint64_t *out_address) {
@@ -257,7 +415,7 @@ vkr_bindless_vk_packet_utility_root(VkrBindlessVkFrameSlot *slot,
   return root;
 }
 
-vkr_internal VkrBindlessVkPacketFrameRoot *
+VkrBindlessVkPacketFrameRoot *
 vkr_bindless_vk_packet_frame_root(VkrBindlessVkFrameSlot *slot,
                                   uint64_t *out_address) {
   VkrBindlessVkPacketFrameRoot *root = vkr_bindless_vk_frame_upload_allocate(
@@ -268,7 +426,7 @@ vkr_bindless_vk_packet_frame_root(VkrBindlessVkFrameSlot *slot,
   return root;
 }
 
-vkr_internal void vkr_bindless_vk_fill_packet_frame_root(
+void vkr_bindless_vk_fill_packet_frame_root(
     VkrBindlessVulkanRenderer *renderer, VkrBindlessVkPacketFrameRoot *root,
     const VkrBindlessVkFrameSlot *slot, const VkrPacketFrameConstants *frame,
     uint64_t instances, Mat4 view_projection, uint32_t shadow_texture,

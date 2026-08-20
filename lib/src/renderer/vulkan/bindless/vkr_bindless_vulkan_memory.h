@@ -8,7 +8,14 @@
 
 typedef enum VkrBindlessVkMemoryClass {
   VKR_BINDLESS_VK_MEMORY_CLASS_DEVICE = 0,
+  /** Host-written memory the GPU reads directly: descriptor buffers, frame
+      roots, material rows. Prefers device-local host-visible memory so the
+      write lands where the GPU reads it. */
   VKR_BINDLESS_VK_MEMORY_CLASS_UPLOAD,
+  /** Bulk transfer sources that are only ever a copy source. These are large
+      and short-lived, so they must not compete for the small device-local
+      host-visible heap that UPLOAD depends on. */
+  VKR_BINDLESS_VK_MEMORY_CLASS_STAGING,
   VKR_BINDLESS_VK_MEMORY_CLASS_READBACK,
   VKR_BINDLESS_VK_MEMORY_CLASS_COUNT,
 } VkrBindlessVkMemoryClass;
