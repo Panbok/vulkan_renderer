@@ -53,8 +53,10 @@ document's existence is not evidence that its feature ships.
 
 ## Skills
 
-Skills live in `.codex/skills/` and are linked into `.claude/skills/` by tracked
-symlinks, so both agents read the same files. This is the only place they are
+Skills live in `.codex/skills/` and are mirrored into `.claude/skills/` as
+tracked regular-file copies, so both agents read the same content. Editing a
+skill means writing both trees and leaving them byte-identical; `diff -rq
+.codex/skills .claude/skills` is the check. This is the only place they are
 enumerated.
 
 | Task | Skill |
@@ -189,12 +191,20 @@ communication is required.
 ## Agent context
 
 `AGENTS.md`, `CLAUDE.md`, `docs/`, `.codex/config.toml`, `.codex/agents/`,
-`.codex/skills/`, and the `.claude/skills/` symlinks are committed repository
+`.codex/skills/`, and the `.claude/skills/` mirror are committed repository
 context. Keep them in the same change when an architectural decision, status
 claim, or skill rule moves. Start documentation discovery at `docs/README.md`.
 
 Task notes under `.scratch/` are local and untracked; move anything that must
 survive into `docs/`.
+
+**A retained artifact tree is not a record.** Measurement, testing, snapshot,
+and diagnostic runs write regenerable output — `build/_artifacts/`, Instruments
+traces, exported XML, scratch captures — and nothing prunes it. Carry the
+result out as documented numbers, report digests, and the command that
+reproduces them, then delete the tree in the same turn that produced it.
+Leaving gigabytes behind is a defect; see `vkr-harness` for what is safe to
+purge.
 
 ## Commits and PRs
 
@@ -208,5 +218,8 @@ survive into `docs/`.
 
 Required: CMake 3.27+, Vulkan SDK 1.4.357+, and Slang 2026.13.1+ (`slangc`).
 Older local toolchains fail on the current Vulkan headers and shader semantics.
+Export `VULKAN_SDK` so CMake resolves the required SDK: with it unset, a
+package-manager Vulkan earlier than 1.4.357 wins the search and the build fails
+on undeclared symbols in files that merely include a changed Vulkan header.
 Optional: set `VCPKG_ROOT` to use the vcpkg toolchain. Build scripts prefer
 Ninja and clang when available.

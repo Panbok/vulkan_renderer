@@ -1,6 +1,6 @@
 ---
 name: vkr-performance
-description: The measured-performance workflow for the VKR renderer. Use when investigating frame-time or hitch regressions, optimizing a renderer hot path, adding or reading per-pass timings, comparing before/after numbers, running a structured performance profile, or validating any claim that a change made the renderer faster or slower.
+description: The measured-performance workflow for the VKR renderer. Use when investigating frame-time or hitch regressions, optimizing a renderer hot path, adding or reading per-pass timings, recording a GPU trace for occupancy or limiter data, comparing before/after numbers, running a structured performance profile, or validating any claim that a change made the renderer faster or slower.
 ---
 
 # VKR Performance
@@ -15,10 +15,11 @@ That principle is only useful with its counterweight: **an unmeasured
 performance claim is not a result.** This skill defines what counts as evidence
 in this repository, which instruments exist, and what they do and do not prove.
 
-This project has **no Tracy or external profiler integration.** Structured
-performance evidence comes from `vkr_harness profile`; the former application
-`BENCHMARK_SUMMARY` log and grep/awk shell runner were retired after Phase-2b
-parity. Everything below is a real, present API, profile, or report field.
+This project has **no in-process profiler integration** — no Tracy, no frame
+markers beyond the graph's own timestamps. Structured performance evidence comes
+from `vkr_harness profile`; the former application `BENCHMARK_SUMMARY` log and
+grep/awk shell runner were retired after Phase-2b parity. Everything below is a
+real, present API, profile, or report field.
 
 ## Instruments that exist
 
@@ -39,6 +40,15 @@ The backend timestamp path is `vkr_renderer_rg_timing_begin_frame` /
 `_begin_pass` / `_end_pass` / `_get_results` (`vkr_renderer.h`). It requires
 device timestamp support; absence is an unavailable instrument, not a
 regression.
+
+### Why a pass is slow
+
+Pass timings say which pass costs; they never say why. Read
+[GPU-TRACE.md](GPU-TRACE.md) to record an Instruments GPU trace of a harness run
+from the CLI and read hardware limiters, occupancy, and bandwidth per pass —
+when a pass is the suspect and you need occupancy, a bound, or a shader-level
+cause. Both backends label their GPU work from the graph pass name, so a trace
+attributes to passes; keep new encoder creation sites labelled.
 
 ### Frame work-volume metrics
 
@@ -192,6 +202,16 @@ submit path directly rather than concluding "no change".
 command stream. Compare timestamp-on against timestamp-on, never against a
 timestamp-off baseline.
 
+**A GPU trace explains, it does not prove.** Instruments perturbs the command
+stream and one recording is one process. Quote trace numbers as diagnosis and
+carry the claim on a `performance-windowed-gpu.json` run.
+
+**Transcribe, then purge.** The reporting template below *is* the artifact that
+survives; the run tree under `build/_artifacts/` and any Instruments trace are
+working material to delete once the numbers are written down. The digest still
+names the run and the command still regenerates it. See `vkr-harness` for what
+is safe to purge and the one pending-baseline exception.
+
 ## Current throughput baseline
 
 The ranked P2 plan in `docs/architecture/renderer-architecture-spec.md` §8 and
@@ -232,7 +252,7 @@ still-pending slot (§7.3).
 Change:        <what>
 Config:        Release / <GPU> / <driver> / <WxH> / <scene> / <N> swapchain images /
                present <mode> / editor <on|off> / <N> cascades
-Instrument:    <vkr_harness profile/report metric or pass row | direct diagnostic API>
+Instrument:    <vkr_harness profile/report metric or pass row | GPU trace counter | direct diagnostic API>
 Runs:          <N>, <window> frames each
 Before:        <metric> = <value> (spread <lo>–<hi>)
 After:         <metric> = <value> (spread <lo>–<hi>)

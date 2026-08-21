@@ -118,6 +118,8 @@ supported evidence paths.
 - Batch barrier and publication-range commits.
 - Gate physical resource retirement and slot reuse on a proven submit value.
 - Keep pipelines immutable and prebuilt; no frame-time variant creation.
+- Label every command encoder and pass from its graph pass name; unlabelled GPU
+  work is anonymous in a profiler trace.
 - Keep capabilities immutable typed data, not a growing query interface.
 - Keep Vulkan types in `renderer/vulkan/bindless/`.
 - Preserve one coarse selected-implementation seam; do not add per-draw

@@ -119,6 +119,33 @@ invalid usage or manifest, `3` unavailable environment, `4` missing or
 incompatible profile/baseline, and `5` timeout, cancellation, internal error,
 or incomplete evidence.
 
+## Retire run artifacts
+
+Every `profile`, `snapshot`, `autotest`, and `compare` invocation writes a new
+timestamped tree under `build/_artifacts/`, and nothing ever prunes it. The
+tree is gitignored and fully regenerable from its case and profile, so it is
+working material, not evidence. Snapshot runs dominate: a single capture suite
+reaches gigabytes, and left alone the directory fills the disk.
+
+Transcribe first, then delete. What survives a run is the report path, its
+SHA-256, the metric values with their spread, and the exact command — carried
+into the task note, doc, or PR body. The digest still identifies the run after
+the tree is gone, and the command regenerates it.
+
+```sh
+du -sh build/_artifacts/*/                      # find the weight
+rm -rf build/_artifacts/{snapshot,profile,compare,autotest}
+```
+
+Two things are not regenerable and stay out of the purge. Accepted baselines
+live in tracked `tools/baselines/` as self-contained content-addressed
+generations that never source from `build/_artifacts/`, so purging cannot
+endanger them. A **pending** `baseline propose` under
+`build/_artifacts/baseline/` is the exception: it verifies against digests of
+the snapshot run it came from, so deleting that snapshot makes the proposal
+permanently unacceptable. Accept or abandon a pending proposal before purging
+the snapshot it references.
+
 ## Baseline safety
 
 Ordinary `profile`, `snapshot`, `autotest`, and `compare` commands are
