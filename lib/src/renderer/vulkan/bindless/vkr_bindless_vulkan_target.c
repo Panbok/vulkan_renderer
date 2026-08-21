@@ -72,12 +72,11 @@ vkr_bindless_vk_window_presents_complete(VkrBindlessVulkanRenderer *renderer,
 
 void vkr_bindless_vk_collect_retired_window_targets(
     VkrBindlessVulkanRenderer *renderer, uint64_t completed_submit_value) {
-  const VkrBindlessVulkanReacquireResult reacquire =
-      vkr_bindless_vulkan_reacquire_complete(
-          &renderer->window_target.reacquire_state, completed_submit_value);
-  if (reacquire.image_present_complete)
-    if (!renderer->window_target.reacquire_state.successor_present_complete)
-      return;
+  (void)vkr_bindless_vulkan_reacquire_complete(
+      &renderer->window_target.reacquire_state, completed_submit_value);
+  if (!vkr_bindless_vulkan_device_present_fences_enabled(renderer->device) &&
+      !renderer->window_target.reacquire_state.successor_present_complete)
+    return;
   for (uint32_t i = 0; i < ArrayCount(renderer->retired_window_targets); ++i) {
     VkrBindlessVkRetiredWindowTarget *retired =
         &renderer->retired_window_targets[i];

@@ -2132,6 +2132,13 @@ renderer_impl_bindless_prepare_frame(void *state, VkrFrameSetup *out_setup) {
 
 VkrRendererError vkr_renderer_prepare_frame(VkrRendererFrontendHandle renderer,
                                             VkrFrameSetup *out_setup) {
+  if (!renderer->frame_active) {
+    const uint64_t resize = vkr_atomic_uint64_exchange(
+        &renderer->pending_resize_mailbox, 0u, VKR_MEMORY_ORDER_ACQ_REL);
+    if (resize) {
+      vkr_renderer_resize(renderer, (uint32_t)(resize >> 32), (uint32_t)resize);
+    }
+  }
   return renderer->impl.ops->prepare_frame(renderer->impl.state, out_setup);
 }
 
