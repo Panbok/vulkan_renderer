@@ -54,7 +54,35 @@ Metal's P19 `Transmission.Compact` candidate remains default-off. Its local
 pass-time improvement did not improve the owner-level frame outcome, so no
 speed claim or Vulkan P19 implementation is accepted. P21 was authorized and
 implemented on 2026-08-20. Metal validation processes must remain strictly
-serial. The implementation contract, evidence digests, and phase details are in
+serial.
+
+The native Windows Vulkan P21 gate ran on 2026-08-21 and passed after one
+repair. P21's deletion had collapsed the Vulkan candidate-packing tail into a
+single hard error, which made the bounded geometry/material publication
+boundary — a lifetime state every cold scene load passes through — fail command
+recording instead of omitting the affected candidates for the frame. Metal has
+no equivalent CPU-side resolve step, so a Metal-only retirement pass could not
+observe it. The consequence recorded below now reads explicitly: unsupported
+*structure* and exhausted *capacity* are pre-recording errors, while an
+unpublished handle is not. The repaired Vulkan runs reproduce the accepted P20
+work volumes exactly on the RX 6700 XT — 25 candidates over 27 GPU passes for
+Sponza (`20260821T111229.346Z-001eff`), 254 opaque plus 18 transmission
+candidates over 43 GPU passes for Bistro (`20260821T111300.634Z-003d93`), and
+15,100 / 7,572 / 0 / 0 layer coverage over 46 GPU passes for the state matrix
+(`20260821T111157.816Z-003b85`) — with every fallback, overflow,
+invalid-resolve, and publication-rejection assertion at zero, a clean focused
+synchronization-validation replay (`20260821T111524.783Z-003ffe`), and a
+cold/warm pipeline-cache pair whose 204,280-byte cache is smaller than the
+pre-P21 217,752 bytes. Those runs are non-authoritative (local profile, dirty
+worktree) and carry no speed claim. SPEC §11.1 holds the complete table.
+
+The same pass removed the retirement residue the deletion diff had missed: the
+unreferenced CPU draw batcher `vkr_draw_batch.*`, two graph resources no
+surviving pass used (`swapchain_depth` and the editor-only `scene_depth`), and
+a Metal `depth` capture channel still naming them. The earlier megabuffer and
+MDI proposals this decision subsumes are archived as `superseded`.
+
+The implementation contract, evidence digests, and phase details are in
 [deferred-visibility-buffer/SPEC.md](../../rendering/deferred-visibility-buffer/SPEC.md).
 
 ## Context
@@ -246,10 +274,14 @@ decision.
   publication contract. It retains only genuine geometric-degeneracy rejection
   in the per-pixel path. Malformed GPU rows and non-finite published inputs are
   outside the accepted packet/publication contract.
-- The current normal-mapped roughness variance filter cannot be assumed to
-  survive analytic reconstruction for free. A geometric-gradient first version
-  is an explicit fidelity delta and needs direct evidence or extra normal-map
-  taps.
+- Viewport-to-NDC conversion is backend-owned. Vulkan's positive-height
+  viewport plus the shared Y-inverted projection maps framebuffer top to NDC
+  Y = -1; Metal uses its own inverted screen mapping. Vulkan visibility resolve
+  formerly applied the Metal flip a second time, so it reconstructed material
+  attributes at the vertically mirrored raster location. Its sample point and
+  analytic Y derivative now use the Vulkan mapping shared by deferred world-
+  position reconstruction, without adding per-pixel samples, branches, or
+  resource work.
 - Both backends store and composite four ordered transmission layers. More than
   four visible surfaces remain intentionally clipped by the documented bound.
 - Bounded depth peeling adds one full transmission
@@ -283,7 +315,12 @@ decision.
   becomes a source-control/build operation.
 - Unsupported opaque/transmission input and exhausted capacity become explicit
   pre-recording errors after P21. Silently omitting work or reviving a hidden
-  forward reroute is not an acceptable degradation mode.
+  forward reroute is not an acceptable degradation mode. This covers malformed
+  candidate structure and exhausted bounds only. A candidate whose geometry or
+  material has not finished publishing is a bounded lifetime boundary, not
+  unsupported input; it is omitted for that frame and recorded once by a
+  one-shot warning. Conflating the two makes every frame of a cold scene load
+  a hard failure on any backend that resolves publication before recording.
 - The renderer architecture spec and harness/metrics documentation are updated
   only as individual phases ship; this ADR does not change status by existing.
 

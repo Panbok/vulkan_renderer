@@ -1,13 +1,14 @@
 ---
 status: implemented
-updated: 2026-08-20
+updated: 2026-08-21
 authority: spec
 ---
 # VKR Renderer — Architecture and Status Specification
 
 **Document status:** Reviewed against the completed V7 working tree, the
 accepted Metal and Windows Vulkan deferred P20 boundary, the default-off Metal
-P19 candidate, and the implemented P21 retirement on 2026-08-20.
+P19 candidate, the implemented P21 retirement on 2026-08-20, and the native
+Windows Vulkan P21 gate passed on 2026-08-21.
 Metal 4 Stages 0–5 and bindless Vulkan V0–V6 are implemented. ADR-026 V7 is
 complete under explicit owner authorization: Vulkan 1.2, its descriptor-set
 shaders and manifests, the legacy-only frontend resource model, the
@@ -379,7 +380,7 @@ restricted to specular reflection rays.
 | Compute dispatch | Implemented; production Metal and Vulkan deferred kernels | Typed executors carry validated direct or indirect launch descriptors without per-frame name lookup. Metal P4/P8/P10/P12/P14 uses graph-declared classify, prefix, ICB encode, G-buffer resolve, deferred-lighting, fused-transmission, and HZB-reduction kernels. Vulkan P5/P9/P11/P13/P15 provides classify/prefix/encode, G-buffer, lighting, transmission, coverage, and HZB kernels plus indirect-count raster, with its opaque and transmission shading sharing the forward fragment shader's lighting helpers and surface reconstruction; P20 owner evidence is accepted |
 | Device-memory suballocation | Implemented | Bindless Vulkan uses keyed DEVICE, UPLOAD, and READBACK pools backed by `vkr_gpu_memory`; Metal uses the same range/submit cores through its placement adapter. Logical and physical totals, peaks, retirement, failure classes, and capacity lower into renderer metrics. |
 | Bindless resource model | Implemented | Metal 4 and Vulkan 1.4 use GPU-addressed buffers, backend-native texture/sampler rows, completion-gated publication/retirement, authored graph lowering, and shared memory/submit/slot/capture cores. Immutable GPU material rows carry PBR parameters; each non-empty indexed packet pass publishes one 432-byte frame root and each retained draw references geometry/visible tables through a reflected 48-byte draw root. Shared flags give lighting, IBL readiness, and transmission identical shader semantics. Packet version 13 carries the bounded opaque/cutout/transmission GPU-candidate streams, packetized shadow-debug state, feature-local blend/text payloads, and no CPU opaque/transmission/shadow draw lists, without changing the reflected Metal frame-root size. Corrected Metal pixels are owner-accepted, though no replacement golden generation is accepted; bindless Vulkan is the sole Vulkan renderer after V7. Native Apple M1 Pro reflection, focused Metal API/GPU validation, and exact text/picking captures pass for the changed root ABI; the bindless-renderer audit records the evidence. |
-| Deferred visibility-buffer migration | Implemented through P21 | Both backends execute one topology: bounded GPU candidate classification and indirect submission for camera/cascade views; opaque visibility, G-buffer resolve, HDR lighting, HZB, picking, and four-layer transmission; completion-gated coverage and diagnostics. P21 removed the selector, legacy graph branch, CPU opaque/transmission/shadow draw construction, fallback routes, backend executors/pipelines/shaders, and dual-path metrics/tests. Packet version 13 rejects invalid or over-capacity input before recording. Ordinary blend, world/UI text, UI, post, and their picking coverage remain narrow feature passes. The accepted P20 Windows evidence and visual threshold remain the migration oracle; native Vulkan validation of the P21 deletion still requires a Windows target rerun. P19 remains Metal-only and default-off. |
+| Deferred visibility-buffer migration | Implemented through P21 | Both backends execute one topology: bounded GPU candidate classification and indirect submission for camera/cascade views; opaque visibility, G-buffer resolve, HDR lighting, HZB, picking, and four-layer transmission; completion-gated coverage and diagnostics. P21 removed the selector, legacy graph branch, CPU opaque/transmission/shadow draw construction, fallback routes, backend executors/pipelines/shaders, and dual-path metrics/tests. Packet version 13 rejects invalid or over-capacity input before recording. Ordinary blend, world/UI text, UI, post, and their picking coverage remain narrow feature passes. The accepted P20 Windows evidence and visual threshold remain the migration oracle. The native Windows Vulkan P21 gate passed on 2026-08-21 after repairing a retirement defect that made the bounded geometry/material publication boundary fail command recording instead of omitting the affected candidates for the frame; a malformed submesh index is still an explicit pre-recording error. P19 remains Metal-only and default-off. |
 | Bindless Vulkan V1–V4 migration | Complete for RX 6700 XT | V1 characterization and V2's selected strategy are complete on macOS and Windows. V3 extracted the memory, submit-ring, and shared ABI cores alongside their production Vulkan callers and passes native window resize with reacquisition and retired-swapchain completion proof. V4 extracted the slot table, added completion-gated asset publication, and moved geometry, staging, images, startup buffers, and readback into keyed dynamic pools with complete logical/physical metrics. Prepared and writable initialization records before the next frame draw, staging retirement uses that submit value, publication dirty ranges flush once per backing buffer, and logical totals return to baseline. MoltenVK cannot execute the descriptor-buffer path. ADR-024's required cross-platform extraction witnesses now pass. |
 | Bindless Vulkan V5–V7 | Implemented; post-V7 target rerun passes | V5 lowers the authored graph to synchronization2/dynamic rendering and implements all packet pass/capture/timing categories. V6 completed selection, cache, lifecycle, metrics, and native RX 6700 XT validation. V7 removed the Vulkan 1.2 path, temporary selector, shaders/manifests, legacy frontend systems, interface/adaptor, and graph residue. CPU and Metal gates pass after deletion; fresh RX 6700 XT Debug/Release whole-graph, synchronization-validation, and GPU-assisted witnesses pass. |
 | HDR/tonemap/post chain | Implemented, initial | RGBA16F fullscreen/editor scene color, packet-carried manual exposure (default `0.30`), ACES-fitted tonemap, and exposure-equivalent canonical HDR capture; automatic exposure and additional post effects are absent |
@@ -505,12 +506,21 @@ Current priorities after V7 are:
    publication arena is not a resolution.
 3. Establish matched Release evidence before making any performance claim about
    the two surviving implementations or the V7 deletion.
-4. Rerun the P21 deletion natively on the target Windows Vulkan system; macOS
-   builds the Vulkan implementation but cannot execute its descriptor-buffer
-   path.
-5. Broaden native Vulkan validation beyond the target RX 6700 XT to the
-   two-/four-image, queue-family, resize/minimize/cancel, interactive-picking,
-   and injected-failure matrix named in §10.
+4. Establish a direct same-surface temporal texture-attachment oracle. The
+   reported Vulkan-only inversion/swimming defect was a visibility-resolve
+   framebuffer-to-NDC Y mismatch: the positive-height Vulkan viewport and
+   already Y-inverted projection were flipped a second time during attribute
+   reconstruction. A moving-camera Vulkan snapshot now exercises resolved
+   diffuse, barycentric/LOD, and final-colour endpoints at the reported Bistro
+   sign. Still images do not measure attachment error directly, so retain a
+   focused temporal metric as regression automation even though this concrete
+   mapping defect is closed.
+5. Broaden native Vulkan validation beyond the target RX 6700 XT. §10 records
+   what was closed on 2026-08-21 (two-/four-image WSI-free targets, picking, and
+   a windowed resize round trip under validation) and which parts remain
+   blocked by absent capability: other GPUs, windowed image-count selection,
+   queue-family layouts, minimize/cancel, and injected acquire/fence/submit/
+   present failures.
 6. Treat Linux as unsupported until its platform integration and native evidence
    exist.
 
@@ -914,7 +924,7 @@ following checks were rerun:
 | Bindless Vulkan V1–V4 migration | Complete on the RX 6700 XT. V4 uses keyed DEVICE/UPLOAD/READBACK buffer/image pools, maintenance4 pre-creation requirements, dedicated-hint handling, persistent host mapping, device-local staged geometry, and complete logical/physical metric projection. Native window/reacquisition synchronization, GPU-assisted validation, exact readback, submit-value staging retirement, balanced retirement/collection, and logical totals returning to baseline are implemented. macOS builds the shared code and passes the CPU contract but cannot execute the descriptor-buffer backend. ADR-024's cross-platform extraction witnesses are complete. |
 | Bindless Vulkan V5–V7 | V5/V6 native Windows evidence covers the authored synchronization2/dynamic-rendering graph, analytical IBL, shared capture, timestamps, cache, lifecycle, metrics, and validation. V7 removed the legacy renderer and migration surface. Post-V7 CPU and Metal gates pass. On 2026-08-12, Debug and Release offscreen text-graph reports each passed two repetitions with three images and nine pass rows; focused offscreen/windowed synchronization and GPU-assisted validation also passed on the RX 6700 XT. These are correctness witnesses, not performance evidence. |
 | `vkr_frustum` production references | Application world-payload construction creates camera and cascade frustums and classifies submeshes against them |
-| `VkrDrawBatcher` production references | None outside its module/tests/docs. V7 audited and retained it as an API-neutral proposed utility; P2 batching uses visibility and pass-local batch structures. |
+| `VkrDrawBatcher` production references | Removed. It never gained a production caller after GPU compaction replaced it, and ADR-028 P21 deleted `vkr_draw_batch.*`; the symbol appears in no build output. |
 | Generic indirect-draw subsystem | Removed by V7; selected implementations own packet draw submission |
 | `vkAllocateMemory` call sites | Bindless Vulkan has pooled-block allocation plus required dedicated buffer/image paths, all accounted by its keyed memory adapter |
 | VMA | Not present |
@@ -923,7 +933,38 @@ following checks were rerun:
 | Bindless packet ABI reflection | Shared host ABI records are covered by the CPU suite. Recursive SPIR-V layout and descriptor checks run when native Vulkan pipelines are created; the fresh post-V7 focused Windows diagnostic passes this gate. |
 | Image-state lowering | Canonical graph barriers are covered by the CPU suite and lowered privately to synchronization2 by the bindless Vulkan implementation. Upload, IBL, capture, and presentation transitions remain explicit Vulkan-private barriers; the legacy layout-pair helper and `vulkan_image.c` were removed by V7. |
 
-The CPU suite, historical MoltenVK evidence, and the target RX 6700 XT rerun do
-not replace validation-layer runs across two- and four-image swapchains,
-queue-family layouts, other GPUs, resize/minimize/cancel paths, interactive
-picking, and injected acquire, fence, submit, and present failures.
+On 2026-08-21 part of that matrix was closed on the RX 6700 XT. Debug
+validation-layer runs of the deferred-only topology pass on two-image
+(`local.p21.vulkan.offscreen_2image`, `20260821T111543.460Z-002735`) and four-image
+(`local.p21.vulkan.offscreen_4image`, `20260821T111555.540Z-003f61`) WSI-free targets, with the report
+confirming actual image counts of 2 and 4, and on requested-pixel picking
+(`local.p21.vulkan.picking_hit`, `20260821T111607.646Z-0035e3`), all with no VUID, validation error,
+device-loss, renderer-error, or fatal marker.
+
+The rest of the matrix is still not covered, and three parts of it are blocked
+by absent capability rather than by unspent effort:
+
+- **Other GPUs and drivers.** One device is available here.
+- **Windowed two-/four-image swapchains.** The harness rejects
+  `target_image_count` on windowed cases by design — the WSI selects it — so
+  only the WSI-free target can vary image count.
+- **Queue-family layouts.** The bindless Vulkan device selects a single
+  graphics+compute+transfer(+present) family; there is no separate-transfer-queue
+  configuration to vary. Varying it is backend work, not a test run.
+- **Minimize/cancel.** The Windows resize round trip now passes, but zero-extent
+  suspension and cancellation have no focused harness witness.
+- **Injected acquire, fence, submit, and present failures.** No fault-injection
+  facility exists in the renderer or the harness.
+
+The Windows resize diagnostic now also exercises the destruction boundary that
+previously produced `VUID-vkDestroySemaphore-semaphore-05149` and
+`VUID-vkDestroySwapchainKHR-swapchain-01282`. The platform resize mailbox is
+consumed before frame preparation, and fallback retired-target collection waits
+for successor acquire-submit completion when present fences are unavailable.
+`smoke.sponza.windowed_resize` final report `20260821T124314.444Z-000821`,
+digest
+`sha256:280927c35ca78de4f035f6673a5631310bb84a49e23559251df74b8e09487ad0`,
+passes two Debug repetitions on the RX 6700 XT and observes
+`320x240 -> 400x300 -> 320x240` without a VUID, validation error, device loss,
+renderer error, or fatal marker. The local profile, dirty tree, and unstable
+three-frame warmup make it a non-authoritative correctness diagnostic.

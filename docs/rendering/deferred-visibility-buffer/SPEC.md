@@ -15,7 +15,10 @@ resolve and deferred lighting, four-layer depth-peeled transmission shading, a
 completion-gated HZB history ring, requested-pixel visibility picking, and
 camera-plus-cascade multi-view indirect submission. Windows Vulkan
 P5/P7/P9/P11/P13/P15 and P16-P18 execute the same authored topology, and the
-accepted P20 stabilization makes it the default there:
+accepted P20 stabilization makes it the default there, with the native P21
+Vulkan gate passing on 2026-08-21 after repairing a retirement defect that
+turned the bounded geometry/material publication boundary into a hard frame
+failure (§11.1):
 GPU classification/compaction, indirect-count visibility and cascade raster,
 G-buffer resolve and deferred lighting, completed-history HZB, requested-pixel
 picking, and four transmission peel/shade layers. Target RX 6700 XT Debug
@@ -484,13 +487,26 @@ Malformed GPU rows or non-finite published inputs are unsupported input, not a
 recoverable per-pixel case. The retained epsilon and edge rules match across
 both backends and remain visible through the dedicated debug view.
 
-The current roughness filter uses screen derivatives of the normal-mapped
-normal. The initial compute implementation may use geometric-normal gradients
-only, but this is a fidelity delta that needs direct comparison. If it exceeds
-the accepted threshold, use the additional offset normal-map samples or keep
-the affected materials on the legacy forward path while deferred remains
-provisional. Every such material must migrate or be explicitly unsupported
-before P21.
+Viewport-to-NDC conversion is backend-specific. Vulkan records a positive-
+height viewport and the shared projection already inverts clip-space Y, so a
+top-left framebuffer pixel maps to NDC Y = -1. Visibility resolve previously
+applied Metal's additional Y flip, reconstructing UVs and vertex colour from
+the vertically mirrored raster location. Branded base-colour textures therefore
+appeared upside down, repeated across unrelated geometry, and moved like a
+screen-space projection as the camera rotated. Vulkan resolve now uses the same
+unflipped framebuffer-to-NDC mapping as its deferred world-position paths, and
+the analytic barycentric Y derivative uses the corresponding positive
+`2 / height` step. Metal retains its own flipped mapping.
+
+`smoke.bistro.texture_attachment_snapshot` reproduces the reported Bistro
+lumberyard-sign view and captures final colour, resolved diffuse, and
+barycentric/LOD diagnostics at two camera angles. The RX 6700 XT Release run
+passes with distinct captures whose resolved sign and surrounding textures are
+upright and remain attached to their geometry: report
+`20260821T142239.074Z-003b07`, digest
+`sha256:617a19207bd7f6057c95efbb8ecb78294e8e562133e14c4b59376458031dd833`.
+The case has no accepted image baseline, so it is a focused visual witness, not
+an automated temporal-error metric or performance result.
 
 ### 6.3 Deferred lighting
 
@@ -1113,14 +1129,19 @@ If any opaque/transmission fallback remains reachable, including forward
 transmission because its fidelity decision is unresolved, P21 is not complete
 and the renderer must not be described as forward-retired.
 
-P21 satisfies this contract in the production tree. Packet version 13 carries
+P21 satisfies this contract in the production tree, with the publication-
+boundary repair recorded below. Packet version 13 carries
 GPU candidate streams plus feature-local ordinary blend and text payloads; CPU
 opaque, transmission, shadow, and picking-mesh draw lists are absent. The main
 graph, parser, backend executors, pipelines, shaders, metrics, and harness cases
 have no selectable legacy world branch. Both backends consume the same
 candidate contract. Opaque/shadow and transmission candidate streams are
 independently bounded; invalid structure or capacity in either stream is
-reported as an explicit pre-recording error.
+reported as an explicit pre-recording error. "Invalid structure" means the
+candidate itself is malformed — a submesh index outside the geometry it names.
+A candidate whose geometry or material has not finished publishing is a bounded
+lifetime boundary crossed on every scene load, not invalid structure, and is
+omitted for that frame instead of failing it.
 
 The macOS retirement pass built the Release and sanitized Debug/CPU targets,
 then passed the deferred-only Release state matrix
@@ -1130,10 +1151,117 @@ then passed the deferred-only Release state matrix
 focused serial API-plus-shader validation matrix
 (`20260820T181620.914Z-003db1`). The empty-candidate witness also passes after
 making the Metal compaction-state zero upload unconditional
-(`20260820T182725.701Z-004ed1`). Native P21 Vulkan validation still requires a
-Windows/Vulkan rerun; the macOS build verifies the Vulkan sources and Slang
-shader set, while the accepted P20 Windows evidence remains the runtime
-baseline.
+(`20260820T182725.701Z-004ed1`).
+
+The native Windows Vulkan P21 rerun completed on 2026-08-21 and found a
+retirement defect that the macOS pass structurally could not observe.
+`vkr_bindless_vk_pack_gpu_candidates()` resolves each candidate's published
+geometry and material on the CPU before recording. P21 replaced its tolerant
+tail with a single `log_error` plus `false_v`, folding three conditions into
+one. Two of them are not malformed input: `vkr_bindless_vk_resolve_geometry()`
+returns nothing while `pending_initialization_count` is non-zero, and materials
+publish on their own schedule. Publication is bounded at roughly one staging
+chunk per two frames, so every frame of a cold scene load legitimately presents
+candidates whose GPU rows are still uploading. After P21 each of those frames
+failed command recording and then packet validation, so the Vulkan state matrix
+could not render a single frame: `9/9` candidates rejected, report
+`20260821T080258.646Z-002597`, zero of two repetitions. Metal never had this
+path — its frame executor passes the packet candidate count straight to the
+classify dispatch and lets the GPU read a geometry row table whose unpublished
+rows are zero — which is exactly why a Metal-only retirement pass was green.
+
+The fix restores the distinction the contract actually draws. A `submesh_index`
+outside a *resolved* geometry is malformed candidate structure and is still an
+explicit pre-recording error. An unresolved geometry or material handle is the
+bounded publication boundary: those candidates are omitted for that frame, the
+one-shot boundary warning is restored, and they reappear once publication
+completes. `local.p21.vulkan.publication_boundary` pins this by warming only
+two frames, far below the publication boundary, and requiring the frame to
+execute anyway.
+
+With that repair the Windows Vulkan P21 gate passes on the RX 6700 XT. The nine
+runs below are one coherent set taken against the same final tree. All are
+non-authoritative for the same two reasons — a local-only profile and a dirty
+worktree carrying unrelated `.vkb` and vendor changes — so none of them is a
+performance claim; they are correctness and work-volume evidence. Every one
+completes both repetitions, passes every assertion, keeps work-volume rows
+bit-identical across repetitions, and contains no VUID, validation error,
+device-loss, renderer-error, or fatal marker.
+
+| Gate | Case | Report | Result |
+|---|---|---|---|
+| Deferred-only state matrix | `local.p20.vulkan.state_matrix` | `20260821T111157.816Z-003b85` | 9 candidates, all eight opaque/transmission state buckets, 46 complete GPU passes, stable 15,100 / 7,572 / 0 / 0 layer coverage |
+| Publication boundary | `local.p21.vulkan.publication_boundary` | `20260821T111202.674Z-003bfb` | 2-frame warmup leaves candidates unpublished; frames execute and omit them instead of failing |
+| Empty candidates | `local.p21.vulkan.empty_candidates` | `20260821T111206.427Z-001c9e` | text-only world drives 0 opaque and 0 transmission candidates through the deferred-only graph |
+| Retained picking | `local.p21.vulkan.picking_hit` | `20260821T111211.250Z-00311b` | opaque and transmission picking resolve from visibility data with no mesh re-raster |
+| Cold pipeline cache | `local.p5_p18.vulkan.deferred` | `20260821T111215.866Z-0027c7` | 204,280-byte cache built cold |
+| Warm pipeline cache | `local.p21.vulkan.deferred_warm` | `20260821T111220.584Z-003a25` | prewarm child writes and measured child loads the same 204,280-byte cache |
+| Sponza | `local.p20.vulkan.sponza_default` | `20260821T111229.346Z-001eff` | 25 candidates over 27 complete GPU passes |
+| Bistro | `local.p20.vulkan.bistro_default` | `20260821T111300.634Z-003d93` | 254 opaque plus 18 transmission candidates over 43 complete GPU passes; all four peel layers populated at 33,140 / 1,545 / 1,002 / 837 |
+| Debug synchronization validation | `local.p20.vulkan.state_matrix_validation` | `20260821T111524.783Z-003ffe` | two repetitions with the debug messenger active and no marker |
+
+The state matrix, Sponza, and Bistro work volumes reproduce the accepted P20
+Windows numbers exactly. The post-deletion pipeline cache is 204,280 bytes,
+down from the 217,752 bytes the pre-P21 pipeline set produced, which is
+independent corroboration that the retired pipelines are gone rather than
+merely unreachable. `build_release.bat`, `build.bat Debug`, and the fresh-configure
+`build_test.bat` all pass; the CPU suite is green at 453 assertions with zero
+failures, and `vkr_draw_batcher` appears in no build output. No
+snapshot baseline was promoted.
+
+Coverage counters are published only when `timing_enabled` is set, because the
+`Transmission.Coverage.${i}` graph nodes carry that condition. A timestamp-off
+profile reports all four layers and both coverage extents as invalid rather
+than zero; that is a profile-selection error, not a renderer defect.
+
+The same pass also closed the retirement residue the deletion diff had left
+behind. `lib/src/renderer/vkr_draw_batch.*` — the CPU draw-key/batch structures
+ADR-013 proposed — survived P21 with zero references anywhere in `lib/`, `app/`,
+`tests/`, or `tools/`; it is deleted, and `vkr_draw_batcher` now appears in no
+build output. The graph declared two resources no surviving pass used:
+`swapchain_depth` and the editor-only `scene_depth`, the latter a viewport-sized
+per-image transient that allocated for nothing. Both are removed, leaving 31
+resources with no orphan and no dangling reference. Metal's `depth` capture
+channel still selected those two dead names, so it captured an image the
+deferred topology never writes; it now selects `opaque_vbuffer_depth`, matching
+the Vulkan capture path fixed during P20. That Metal edit is not exercised here
+— this host has no Metal device — so it carries Vulkan-validated reasoning and
+a compile check only, and a Metal run should confirm it. Finally,
+`local.p5_p18.vulkan.deferred` asserted
+`visibility.transmission.gpu_visible.count` with `stat: max` against a `min`
+limit, which the harness resolves as max-over-samples ≥ 1; it now reads
+`stat: min` as intended.
+
+Swapchain-multiplicity and picking coverage was added on the same day. Debug
+validation-layer runs of the deferred-only topology pass on two-image
+(`20260821T111543.460Z-002735`) and four-image (`20260821T111555.540Z-003f61`)
+WSI-free targets — the reports confirm actual image counts of 2 and 4 — and on
+requested-pixel picking (`20260821T111607.646Z-0035e3`), all with no VUID,
+validation error, device-loss, renderer-error, or fatal marker. Windowed image
+counts cannot be varied: the harness rejects `target_image_count` on windowed
+cases because the WSI selects it.
+
+The Windows resize path was repaired and exercised separately on 2026-08-21.
+The platform event already wrote a latest-value resize mailbox, but no frame
+boundary consumed it. `vkr_renderer_prepare_frame()` now exchanges that mailbox
+before beginning a frame and forwards the requested extent to the selected
+implementation. Retired Vulkan window targets also had an inverted fallback
+guard: when present fences are unavailable, collection fell through before a
+successor acquire-submit proved that presentation had released the retired
+swapchain and its present-wait semaphore. Collection now waits for that proof;
+devices with `VK_EXT_swapchain_maintenance1` continue to use each retired
+target's present fences directly.
+
+The Debug `smoke.sponza.windowed_resize` diagnostic passes two repetitions on
+the RX 6700 XT, observing `320x240 -> 400x300 -> 320x240` with three swapchain
+images and immediate present. Final report `20260821T124314.444Z-000821`,
+digest
+`sha256:280927c35ca78de4f035f6673a5631310bb84a49e23559251df74b8e09487ad0`,
+contains no VUID, validation error, device loss, renderer error, or fatal
+marker. It is a non-authoritative correctness diagnostic because the profile
+is local-only, the tree is dirty, and its three-frame warmup is unstable.
+Minimize/cancel and injected WSI-failure coverage remain open in the
+architecture spec.
 
 ## 12. Evidence and acceptance gates
 
@@ -1232,12 +1360,12 @@ measurement, including the doubled geometry work, supports it.
 | `docs/architecture/renderer-architecture-spec.md` | Keep compute, indirect, and G-buffer status aligned with shipped phases; record the sole deferred topology and deletion boundary when P21 ships |
 | `docs/tooling/renderer-harness-and-metrics-spec.md` | Keep the G-buffer and normals-attachment description aligned with shipped P8/P9 behavior |
 | ADR-018 | Record the P12/P13 transmission routing and the accepted P18 four-layer peel bound |
-| ADR-013 (shadow submission) | Record P17's supersession of CPU shadow-cascade culling and merging separately from the opaque/transmission supersession at P21 |
+| ADR-013 (shadow submission) | Recorded: ADR-013 names P17 for shadow-cascade visibility/submission and P21 for opaque, cutout, and transmission, and records that P21 deleted `vkr_draw_batch.*` |
 | ADR-019 | Keep light assignment unchanged; amend an instance-ABI consequence only if the selected candidate design actually changes it |
 | ADR-013 | Supersede opaque/transmission CPU submission only after P21; retain it for feature-local blend/text/UI |
 | ADR-002 | Retain the exercised P1 graph-buffer and indirect-synchronization contract |
 | ADR-022 / ADR-024 | Extend the shared GPU ABI tables that actually land |
-| Earlier megabuffer/MDI proposals | Keep them reconciled or archived where the shipped P3/P5 implementations subsume them |
+| Earlier megabuffer/MDI proposals | Archived 2026-08-21: `instanced-rendering/SPEC.md`, its `opaque-compaction/SPEC.md`, and `san-miguel-obj-import-megabuffer-and-mdi-plan.md` are `superseded` under `docs/archive/` with pointers here |
 | `docs/README.md`, ADR index, this specification, and ADR-028 | Keep status and purpose aligned with shipped phases; P21 must explicitly record that the legacy forward renderer was deleted |
 
 The architecture spec remains the shipping-status authority. This spec and
