@@ -27,6 +27,9 @@ graph plus pass executors under `lib/src/renderer/passes/`.
 | [ui-system-overview.md](ui-system-overview.md) | [UI architecture spec](../ui/ui-architecture-spec.md) — five-layer retained plan replaced |
 | [ui-layout-engine-design.md](ui-layout-engine-design.md) | [UI architecture spec §5](../ui/ui-architecture-spec.md) — flexbox replaced by grid-only track solving |
 | [ui-element-primitives-design.md](ui-element-primitives-design.md) | [UI architecture spec §7](../ui/ui-architecture-spec.md) — retained element tree replaced by hashed immediate-mode identity |
+| [instanced-rendering/SPEC.md](instanced-rendering/SPEC.md) | [ADR-028 GPU-driven deferred visibility buffer](../architecture/adr/028-gpu-driven-deferred-visibility-buffer.md) — CPU draw sorting, instance/indirect buffers, and the CPU batcher replaced by GPU compaction; P21 deleted `vkr_draw_batch.*` |
+| [instanced-rendering/opaque-compaction/SPEC.md](instanced-rendering/opaque-compaction/SPEC.md) | [ADR-028](../architecture/adr/028-gpu-driven-deferred-visibility-buffer.md) — subsumed by the P3 megabuffer and P4/P5 GPU compaction |
+| [san-miguel-obj-import-megabuffer-and-mdi-plan.md](san-miguel-obj-import-megabuffer-and-mdi-plan.md) | [ADR-028](../architecture/adr/028-gpu-driven-deferred-visibility-buffer.md) — megabuffer and MDI shipped as P3 publication plus GPU indirect submission; import dedup never taken up |
 
 ## Completed progress logs
 

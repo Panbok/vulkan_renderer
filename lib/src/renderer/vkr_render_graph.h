@@ -767,21 +767,6 @@ VkrRgImageHandle vkr_rg_import_image(VkrRenderGraph *graph, String8 name,
                                      const VkrRgImageDesc *desc);
 
 /**
- * @brief Imports the swapchain image for the current frame (one image per
- * image_index).
- * @param graph Render graph
- * @return Image handle for the swapchain image
- */
-VkrRgImageHandle vkr_rg_import_swapchain(VkrRenderGraph *graph);
-
-/**
- * @brief Imports the shared depth buffer used for the frame.
- * @param graph Render graph
- * @return Image handle for the depth buffer
- */
-VkrRgImageHandle vkr_rg_import_depth(VkrRenderGraph *graph);
-
-/**
  * @brief Adds a usage capability to an imported image for the current graph.
  *
  * The caller must only advertise capabilities that the backing external image

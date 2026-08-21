@@ -159,16 +159,13 @@ owning document status in the same change.
 | [parallel-asset-loading.md](assets/parallel-asset-loading.md) | partial | Async CPU prep; parallel upload needs an unsafe opt-in |
 | [async-gpu-transfer-queue.md](assets/async-gpu-transfer-queue.md) | proposed | Independent-submit end state; in-frame uploads are deferred, out-of-frame uploads still wait |
 | [resource_loading_analysis.md](assets/resource_loading_analysis.md) | proposed | Resource loading analysis |
-| [static-scene-batching-spec.md](assets/static-scene-batching-spec.md) | proposed | Static batching; `VkrDrawBatcher` is unwired |
-| [san-miguel-obj-import-megabuffer-and-mdi-plan.md](assets/san-miguel-obj-import-megabuffer-and-mdi-plan.md) | proposed | Import dedup, mega-buffers, multi-draw indirect |
+| [static-scene-batching-spec.md](assets/static-scene-batching-spec.md) | proposed | Static batching; the `VkrDrawBatcher` it targeted was deleted by ADR-028 P21 |
 
 ## Mesh, instancing, and performance
 
 | Document | Status | Purpose |
 |---|---|---|
 | [mesh-system/mesh-assets-and-instances/SPEC.md](mesh-system/mesh-assets-and-instances/SPEC.md) | partial | Mesh asset dedup/instances ship; historical renderer names remain |
-| [instanced-rendering/SPEC.md](instanced-rendering/SPEC.md) | partial | Direct instancing and shadow MDI ship; bindless/material-table phase absent |
-| [instanced-rendering/opaque-compaction/SPEC.md](instanced-rendering/opaque-compaction/SPEC.md) | proposed | Opaque index compaction for an MDI megabuffer |
 | [performance/ecs-hot-path-optimization-spec.md](performance/ecs-hot-path-optimization-spec.md) | partial | ECS hot-path changes ship; before/after performance is unmeasured |
 | [performance/gpu-memory-baseline.md](performance/gpu-memory-baseline.md) | investigation | Captured device-memory baseline; concludes pooling is not justified by the numbers |
 | [performance/p2-throughput-findings.md](performance/p2-throughput-findings.md) | investigation | Measured P2 plus review corrections for visibility, instancing, MDI, and camera handedness |

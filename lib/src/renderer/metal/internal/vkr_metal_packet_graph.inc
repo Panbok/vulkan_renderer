@@ -940,8 +940,10 @@ vkr_internal bool8_t vkr_metal_packet_capture_plan(
       source_name =
           packet->frame.editor_enabled ? "scene_color" : "hdr_scene_color";
     else if (string_equals(channel->name, "depth"))
-      source_name =
-          packet->frame.editor_enabled ? "scene_depth" : "swapchain_depth";
+      // The deferred topology writes depth only in the visibility raster, so
+      // both editor and fullscreen capture read the same image. The retired
+      // forward attachments are gone; naming them captured nothing.
+      source_name = "opaque_vbuffer_depth";
     else if (string_n_equals(channel->name, "shadow_cascade_", 15))
       source_slice = (uint32_t)(channel->name[15] - '0');
     else if (string_equals(channel->name, "picking_ids") &&

@@ -1,9 +1,15 @@
 ---
-status: proposed
-updated: 2026-07-31
+status: superseded
+updated: 2026-08-21
 authority: spec
 ---
 # Opaque Index Compaction for MDI Megabuffer
+
+> **Superseded.** P3 shipped the vertex/index megabuffer and P4/P5 shipped
+> GPU candidate classification and compaction, which subsume this CPU-side
+> opaque index compaction. See
+> [ADR-028](../../../architecture/adr/028-gpu-driven-deferred-visibility-buffer.md).
+
 
 > **Target**: Reduce opaque world/shadow draw overhead by building a compact
 > opaque-only index buffer for merged megabuffers.

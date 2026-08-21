@@ -754,18 +754,6 @@ VkrRgImageHandle vkr_rg_import_image(VkrRenderGraph *graph, String8 name,
   return (VkrRgImageHandle){id, image.generation};
 }
 
-VkrRgImageHandle vkr_rg_import_swapchain(VkrRenderGraph *graph) {
-  return vkr_rg_import_image(graph, string8_lit("swapchain"), NULL,
-                             VKR_RG_IMAGE_ACCESS_PRESENT,
-                             VKR_TEXTURE_LAYOUT_UNDEFINED, NULL);
-}
-
-VkrRgImageHandle vkr_rg_import_depth(VkrRenderGraph *graph) {
-  return vkr_rg_import_image(graph, string8_lit("swapchain_depth"), NULL,
-                             VKR_RG_IMAGE_ACCESS_DEPTH_ATTACHMENT,
-                             VKR_TEXTURE_LAYOUT_UNDEFINED, NULL);
-}
-
 bool8_t vkr_rg_imported_image_add_usage(VkrRenderGraph *graph,
                                         VkrRgImageHandle handle,
                                         VkrTextureUsageBits usage) {

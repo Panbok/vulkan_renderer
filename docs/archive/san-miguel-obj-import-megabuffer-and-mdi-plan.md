@@ -1,9 +1,15 @@
 ---
-status: proposed
-updated: 2026-07-31
+status: superseded
+updated: 2026-08-21
 authority: design
 ---
 # San Miguel OBJ: Import Dedup, Static Batching, Mega-Buffers, and Multi-Draw Indirect
+
+> **Superseded.** The megabuffer and multi-draw-indirect parts shipped as
+> P3 megabuffer publication plus GPU compaction and indirect submission under
+> [ADR-028](../architecture/adr/028-gpu-driven-deferred-visibility-buffer.md).
+> Import dedup was never taken up. Historical only.
+
 
 ## Purpose
 

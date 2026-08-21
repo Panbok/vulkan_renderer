@@ -1,9 +1,18 @@
 ---
-status: partial
-updated: 2026-07-31
+status: superseded
+updated: 2026-08-21
 authority: spec
 ---
 # Instanced Rendering Implementation Specification
+
+> **Superseded.** GPU candidate compaction and backend-native indirect
+> submission replaced this design. The draw sorting, instance buffer,
+> indirect-draw buffer, material-SSBO, and shadow-pass phases below all ship
+> in a different shape under
+> [ADR-028](../../architecture/adr/028-gpu-driven-deferred-visibility-buffer.md);
+> P21 deleted the CPU batcher this document specifies. Read it for the
+> original reasoning, never as current behaviour.
+
 
 > **Target**: Improve San Miguel scene performance from ~10 FPS (debug) / ~40 FPS (release) toward 60+ FPS on Apple M1 with CSM (4 cascades) and 4K textures.
 >

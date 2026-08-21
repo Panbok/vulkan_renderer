@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-20
+updated: 2026-08-21
 authority: adr
 ---
 # ADR-013: Measured Draw Submission — Culling, Instancing, and MDI
@@ -27,17 +27,18 @@ Integrated infrastructure and remaining boundaries:
 | Module | Current state |
 |---|---|
 | `math/vkr_frustum.*` | Shared frustum math; CPU world use is limited to feature-local ordinary blend |
-| `renderer/vkr_draw_batch.*` | Draw key/batch structures; no production caller |
 | `renderer/vkr_visibility.*` | Alpha routing, conservative bounds, ordinary-blend sorting, and direct emission |
 | Backend indirect submission | Metal ICB and Vulkan indirect-count implementations own GPU command compaction and execution |
 | Geometry/submesh bounds | Transformed conservatively for TRS/non-uniform scale; no spatial hierarchy |
 | Capacity policy | Invalid structure or exhausted fixed candidate capacity is rejected before recording |
 | Submission metrics | GPU candidate, visible, bucket, command, and overflow diagnostics remain; CPU merge and fallback metrics are removed |
 
+`renderer/vkr_draw_batch.*` held the CPU draw-key/batch structures this ADR
+proposed. GPU compaction replaced them, it never gained a production caller, and
+P21 deleted it.
+
 These modules are useful starting points, not proof that the final pipeline is
-already designed. In particular, the existing key includes geometry/range; one
-indirect command per such “batch” followed by one MDI call per batch would not
-reduce draw calls.
+already designed.
 
 ADR-028 P17 supersedes this ADR for shadow-cascade visibility and submission;
 P21 supersedes it for opaque, cutout, and transmission submission. The ordered

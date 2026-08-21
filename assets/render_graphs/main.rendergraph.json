@@ -9,12 +9,6 @@
       "flags": ["EXTERNAL", "PER_IMAGE"]
     },
     {
-      "name": "swapchain_depth",
-      "type": "image",
-      "import": "swapchain_depth",
-      "flags": ["EXTERNAL", "PER_IMAGE"]
-    },
-    {
       "name": "shadow_map",
       "type": "image",
       "extent": { "mode": "square", "size_source": "shadow_map_size" },
@@ -57,15 +51,6 @@
       "extent": { "mode": "window" },
       "format": "R16G16B16A16_SFLOAT",
       "usage": ["COLOR_ATTACHMENT", "SAMPLED", "STORAGE", "TRANSFER_SRC"],
-      "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
-    },
-    {
-      "name": "scene_depth",
-      "type": "image",
-      "condition": "editor_enabled",
-      "extent": { "mode": "viewport" },
-      "format": "SWAPCHAIN_DEPTH",
-      "usage": ["DEPTH_STENCIL_ATTACHMENT", "TRANSFER_SRC"],
       "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
     },
     {
