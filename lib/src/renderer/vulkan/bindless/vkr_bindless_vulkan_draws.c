@@ -344,8 +344,8 @@ vkr_internal bool8_t vkr_bindless_vk_pack_gpu_candidates(
     return false_v;
   const uint64_t pending_submit = renderer->submit_value + 1u;
   uint32_t packed_count = 0u;
-  uint32_t missing_geometry_count = 0u;
-  uint32_t missing_material_count = 0u;
+  uint32_t unpublished_geometry_count = 0u;
+  uint32_t unpublished_material_count = 0u;
   uint32_t invalid_submesh_count = 0u;
   for (uint32_t i = 0u; i < count; ++i) {
     const VkrWorldDrawCandidate *candidate = &source[i];
@@ -354,11 +354,11 @@ vkr_internal bool8_t vkr_bindless_vk_pack_gpu_candidates(
     VkrBindlessVkPublishedMaterial *material =
         vkr_bindless_vk_resolve_material(renderer, candidate->material);
     if (!geometry) {
-      missing_geometry_count++;
+      unpublished_geometry_count++;
       continue;
     }
     if (!material) {
-      missing_material_count++;
+      unpublished_material_count++;
       continue;
     }
     if (candidate->submesh_index >= geometry->submesh_count) {
@@ -382,12 +382,26 @@ vkr_internal bool8_t vkr_bindless_vk_pack_gpu_candidates(
     geometry->last_use_submit_value =
         Max(geometry->last_use_submit_value, pending_submit);
   }
-  if (packed_count != count) {
-    log_error("Bindless Vulkan rejected %u/%u malformed deferred candidates "
-              "(geometry=%u material=%u submesh=%u)",
-              count - packed_count, count, missing_geometry_count,
-              missing_material_count, invalid_submesh_count);
+  // A submesh index outside a resolved geometry is malformed candidate
+  // structure and is rejected before recording, per the P21 retirement
+  // contract. An unresolved geometry or material handle is the bounded
+  // publication boundary instead: uploads land at roughly one staging chunk
+  // per two frames, so a freshly loaded scene legitimately presents candidates
+  // whose GPU rows have not been initialized yet. Those are omitted for the
+  // frame and reappear once publication completes; treating them as an error
+  // would fail every frame of scene load.
+  if (invalid_submesh_count) {
+    log_error("Bindless Vulkan rejected %u/%u deferred candidates naming a "
+              "submesh outside their geometry",
+              invalid_submesh_count, count);
     return false_v;
+  }
+  if (packed_count != count && !renderer->deferred_candidate_drop_logged) {
+    log_warn("Bindless Vulkan deferred publication boundary omitted %u/%u "
+             "candidates (geometry=%u material=%u)",
+             count - packed_count, count, unpublished_geometry_count,
+             unpublished_material_count);
+    renderer->deferred_candidate_drop_logged = true_v;
   }
   *out_packed_count = packed_count;
   return true_v;

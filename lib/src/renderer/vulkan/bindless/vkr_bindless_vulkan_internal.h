@@ -990,6 +990,8 @@ struct VkrBindlessVulkanRenderer {
   bool8_t sentinel_uploaded;
   bool8_t target_dirty;
   bool8_t terminal_failure;
+  // One-shot so the bounded publication boundary cannot log per frame.
+  bool8_t deferred_candidate_drop_logged;
 };
 
 VkDevice
