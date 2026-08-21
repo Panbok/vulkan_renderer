@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-05
+updated: 2026-08-21
 authority: design
 ---
 
@@ -11,14 +11,20 @@ shippable work described here now exists. Prerequisite reading:
 [bistro-baseline-shading-investigation.md](bistro-baseline-shading-investigation.md),
 which records the original diagnosis and the later owner-driven corrections.
 
+The implemented transmission, transparency, and historical shadow-fit record
+remains authoritative here. The residual PCF, SDSM, and future shadow-work
+proposals are superseded by
+[shadow-cpu-cost-and-csm-rewrite-spec.md](shadow-cpu-cost-and-csm-rewrite-spec.md),
+which defines the current ownership, lifetime, and evidence gates.
+
 ## Implementation status
 
 | Item | Status | Implementation authority |
 |---|---|---|
 | PCF light-space origin | Implemented | `vkr_shadow_light_space_origin_from_view()` and CPU basis tests |
 | Caster-relevant cascade Z fit | Implemented | `vkr_shadow_fit_relevant_caster_z()` clips scene bounds against each cascade XY rectangle |
-| PCF uniform-region early-out | Proposed | The 16-tap kernel is intentionally unchanged; no qualified Release evidence yet justifies a kernel change |
-| SDSM depth-range fitting | Proposed | No depth pyramid/readback path exists; exact Bistro shadow-factor captures exclude it as the reported moving-wall cause |
+| PCF uniform-region early-out | Proposed in replacement spec | See the packet, sampler, bias-unit, capture, and GPU-budget contract in `shadow-cpu-cost-and-csm-rewrite-spec.md` |
+| SDSM depth-range fitting | Proposed in replacement spec | See the occupied-depth, source-projection, completion, and fallback contract in `shadow-cpu-cost-and-csm-rewrite-spec.md` |
 | glTF transmission and volume import | Implemented | Material/import tests plus [ADR-018](../architecture/adr/018-graph-declared-transmission-feedback.md) |
 | Graph-declared transmission feedback/refraction | Implemented, initial | Separate opaque, feedback-copy, transmission, and ordinary-blend stages; one immutable feedback copy per frame |
 | Stable transparent ordering and opaque alpha | Implemented | Packed depth/tie-break keys and explicit opaque output alpha |
