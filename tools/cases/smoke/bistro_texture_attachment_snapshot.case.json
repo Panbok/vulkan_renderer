@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "id": "smoke.bistro.texture_attachment_snapshot",
+  "suite": "smoke",
+  "description": "Vulkan visibility-resolve base-colour attachment witness at the Bistro lumberyard sign.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 20,
+  "resolution": [640, 480],
+  "boot": "automation",
+  "target": "windowed_hidden",
+  "present": "immediate",
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 900000,
+  "asset_ready_timeout_ms": 600000,
+  "frames": { "warmup": 256, "measure": 8 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "text_fixture": false,
+    "backend": "vulkan",
+    "shadow_preset": "balanced",
+    "shadow_cascades": 1,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "keyframes",
+    "speed": "medium",
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.1,
+    "far_plane": 500,
+    "interpolation": "linear",
+    "keys": [
+      { "t": 4.266666752, "position": [-29.99, 13.32, -10.12], "yaw": -77.15, "pitch": -58.19 },
+      { "t": 4.400000088, "position": [-29.99, 13.32, -10.12], "yaw": -70.15, "pitch": -58.19 }
+    ]
+  },
+  "captures": [
+    { "at_frame": 0, "channels": ["final_color", "gbuffer_diffuse", "resolve_barycentric_lod"] },
+    { "at_frame": 6, "channels": ["final_color", "gbuffer_diffuse", "resolve_barycentric_lod"] }
+  ],
+  "assertions": [
+    { "metric": "visibility.gpu_visible.overflow", "stat": "max", "max": 0 },
+    { "metric": "visibility.gbuffer.resolve_invalid", "stat": "max", "max": 0 },
+    { "metric": "geometry.megabuffer.rejected_publications_total", "stat": "max", "max": 0 }
+  ]
+}

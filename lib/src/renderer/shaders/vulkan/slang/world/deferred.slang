@@ -576,15 +576,16 @@ bool vkr_vk_perspective_barycentric(float2 point, float4 ca, float4 cb,
         normalization * (2.0f / float(extent.x));
     barycentric_dy =
         (weights_dy - barycentric * dot(weights_dy, 1.0f)) /
-        normalization * (-2.0f / float(extent.y));
+        normalization * (2.0f / float(extent.y));
     return true;
 }
 
 float2 vkr_vk_resolve_ndc(float2 pixel, uint2 extent)
 {
-    float2 normalized = pixel / float2(extent);
-    return float2(normalized.x * 2.0f - 1.0f,
-                  1.0f - normalized.y * 2.0f);
+    // Vulkan's positive-height viewport maps framebuffer top to NDC Y = -1.
+    // The shared projection already inverts Y, so flipping it again here would
+    // reconstruct attributes from the vertically mirrored raster location.
+    return pixel / float2(extent) * 2.0f - 1.0f;
 }
 
 bool vkr_vk_finite_nonzero(float3 value)
