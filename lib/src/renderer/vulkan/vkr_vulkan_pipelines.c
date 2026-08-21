@@ -1,18 +1,16 @@
-#include "renderer/vulkan/bindless/vkr_bindless_vulkan_internal.h"
+#include "renderer/vulkan/vkr_vulkan_internal.h"
 
 vkr_internal bool8_t
-vkr_bindless_vk_create_packet_pipelines(VkrBindlessVulkanRenderer *renderer);
+vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer);
+vkr_internal bool8_t vkr_vk_create_ibl_pipelines(VkrVulkanRenderer *renderer);
 vkr_internal bool8_t
-vkr_bindless_vk_create_ibl_pipelines(VkrBindlessVulkanRenderer *renderer);
-vkr_internal bool8_t
-vkr_bindless_vk_create_deferred_pipelines(VkrBindlessVulkanRenderer *renderer);
+vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer);
 
-bool8_t
-vkr_bindless_vk_pipeline_cache_initialize(VkrBindlessVulkanRenderer *renderer) {
+bool8_t vkr_vk_pipeline_cache_initialize(VkrVulkanRenderer *renderer) {
   const char *path = getenv("VKR_PIPELINE_CACHE_PATH");
   const size_t path_length = path ? strlen(path) : 0u;
   if (path_length >= sizeof(renderer->pipeline_cache_path)) {
-    log_error("Bindless Vulkan pipeline cache path exceeds %zu bytes",
+    log_error("Vulkan pipeline cache path exceeds %zu bytes",
               sizeof(renderer->pipeline_cache_path) - 1u);
     return false_v;
   }
@@ -53,8 +51,8 @@ vkr_bindless_vk_pipeline_cache_initialize(VkrBindlessVulkanRenderer *renderer) {
       .pInitialData = initial_data,
   };
   VkResult result =
-      vkCreatePipelineCache(vkr_bindless_vulkan_device_handle(renderer->device),
-                            &info, NULL, &renderer->pipeline_cache);
+      vkCreatePipelineCache(vkr_vulkan_device_handle(renderer->device), &info,
+                            NULL, &renderer->pipeline_cache);
   if (initial_data) {
     vkr_allocator_free(renderer->allocator, initial_data, initial_size,
                        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
@@ -62,9 +60,8 @@ vkr_bindless_vk_pipeline_cache_initialize(VkrBindlessVulkanRenderer *renderer) {
   if (result != VK_SUCCESS && initial_size) {
     info.initialDataSize = 0u;
     info.pInitialData = NULL;
-    result = vkCreatePipelineCache(
-        vkr_bindless_vulkan_device_handle(renderer->device), &info, NULL,
-        &renderer->pipeline_cache);
+    result = vkCreatePipelineCache(vkr_vulkan_device_handle(renderer->device),
+                                   &info, NULL, &renderer->pipeline_cache);
   }
   if (result != VK_SUCCESS)
     return false_v;
@@ -75,11 +72,10 @@ vkr_bindless_vk_pipeline_cache_initialize(VkrBindlessVulkanRenderer *renderer) {
   return true_v;
 }
 
-void vkr_bindless_vk_pipeline_cache_shutdown(
-    VkrBindlessVulkanRenderer *renderer) {
+void vkr_vk_pipeline_cache_shutdown(VkrVulkanRenderer *renderer) {
   if (!renderer->pipeline_cache)
     return;
-  VkDevice device = vkr_bindless_vulkan_device_handle(renderer->device);
+  VkDevice device = vkr_vulkan_device_handle(renderer->device);
   if (renderer->pipeline_cache_path[0]) {
     size_t size = 0u;
     if (vkGetPipelineCacheData(device, renderer->pipeline_cache, &size, NULL) ==
@@ -130,8 +126,7 @@ void vkr_bindless_vk_pipeline_cache_shutdown(
 }
 
 vkr_internal SpvReflectBlockVariable *
-vkr_bindless_vk_reflect_member(SpvReflectBlockVariable *parent,
-                               const char *name) {
+vkr_vk_reflect_member(SpvReflectBlockVariable *parent, const char *name) {
   if (!parent || !name)
     return NULL;
   for (uint32_t i = 0; i < parent->member_count; ++i) {
@@ -142,15 +137,14 @@ vkr_bindless_vk_reflect_member(SpvReflectBlockVariable *parent,
   return NULL;
 }
 
-vkr_internal bool8_t vkr_bindless_vk_reflect_member_offset(
+vkr_internal bool8_t vkr_vk_reflect_member_offset(
     SpvReflectBlockVariable *parent, const char *name, uint32_t offset,
     SpvReflectBlockVariable **out_member) {
-  SpvReflectBlockVariable *member =
-      vkr_bindless_vk_reflect_member(parent, name);
+  SpvReflectBlockVariable *member = vkr_vk_reflect_member(parent, name);
   if (out_member)
     *out_member = member;
   if (!member || member->offset != offset) {
-    log_error("Bindless Vulkan shader ABI member %s is %s (offset %u, "
+    log_error("Vulkan shader ABI member %s is %s (offset %u, "
               "expected %u)",
               name, member ? "misaligned" : "missing",
               member ? member->offset : UINT32_MAX, offset);
@@ -160,7 +154,7 @@ vkr_internal bool8_t vkr_bindless_vk_reflect_member_offset(
 }
 
 vkr_internal uint32_t
-vkr_bindless_vk_reflected_struct_size(const SpvReflectBlockVariable *value) {
+vkr_vk_reflected_struct_size(const SpvReflectBlockVariable *value) {
   uint32_t size = 0u;
   if (!value)
     return size;
@@ -173,26 +167,26 @@ vkr_bindless_vk_reflected_struct_size(const SpvReflectBlockVariable *value) {
   return size;
 }
 
-vkr_internal bool8_t vkr_bindless_vk_validate_reflected_gpu_abi(
+vkr_internal bool8_t vkr_vk_validate_reflected_gpu_abi(
     SpvReflectBlockVariable *value, VkrGpuAbiRecordId id) {
   const VkrGpuAbiRecord *record = vkr_gpu_abi_record(id);
   if (!value || !record ||
-      vkr_bindless_vk_reflected_struct_size(value) != record->expected_size)
+      vkr_vk_reflected_struct_size(value) != record->expected_size)
     return false_v;
   bool8_t valid = true_v;
   for (uint32_t i = 0u; i < record->field_count; ++i) {
     const VkrGpuAbiField *field = &record->fields[i];
-    valid &= vkr_bindless_vk_reflect_member_offset(
-        value, field->shader_name, field->expected_offset, NULL);
+    valid &= vkr_vk_reflect_member_offset(value, field->shader_name,
+                                          field->expected_offset, NULL);
   }
   return valid;
 }
 
 vkr_internal bool8_t
-vkr_bindless_vk_validate_packet_root_abi(VkrBindlessVulkanRenderer *renderer) {
+vkr_vk_validate_packet_root_abi(VkrVulkanRenderer *renderer) {
   FilePath shader_path =
-      file_path_create(VKR_BINDLESS_VK_PACKET_WORLD_FRAG_SPV,
-                       renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
+      file_path_create(VKR_VULKAN_PACKET_WORLD_FRAG_SPV, renderer->allocator,
+                       FILE_PATH_TYPE_ABSOLUTE);
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
   if (file_load_spirv_shader(&shader_path, renderer->allocator, &bytes,
@@ -216,9 +210,9 @@ vkr_bindless_vk_validate_packet_root_abi(VkrBindlessVulkanRenderer *renderer) {
                   spvReflectEnumerateEntryPointPushConstantBlocks(
                       &module, "world_fragment", &count, blocks) ==
                       SPV_REFLECT_RESULT_SUCCESS;
-  valid &= blocks[0] && blocks[0]->size == sizeof(VkrBindlessVkPushConstants);
+  valid &= blocks[0] && blocks[0]->size == sizeof(VkrVulkanPushConstants);
   SpvReflectBlockVariable *root =
-      valid ? vkr_bindless_vk_reflect_member(blocks[0], "root") : NULL;
+      valid ? vkr_vk_reflect_member(blocks[0], "root") : NULL;
   if (!root || root->member_count == 0u) {
     valid = false_v;
   } else {
@@ -227,105 +221,102 @@ vkr_bindless_vk_validate_packet_root_abi(VkrBindlessVulkanRenderer *renderer) {
     SpvReflectBlockVariable *vertices = NULL;
     SpvReflectBlockVariable *frame = NULL;
     SpvReflectBlockVariable *materials = NULL;
-    valid &= vkr_bindless_vk_reflect_member_offset(
-        root, "geometry_rows",
-        offsetof(VkrBindlessVkPacketDrawRoot, geometry_rows), &geometry_rows);
-    valid &= vkr_bindless_vk_reflect_member_offset(
-        root, "visible_rows",
-        offsetof(VkrBindlessVkPacketDrawRoot, visible_rows), &visible_rows);
-    valid &= vkr_bindless_vk_reflect_member_offset(
-        root, "vertices", offsetof(VkrBindlessVkPacketDrawRoot, vertices),
+    valid &= vkr_vk_reflect_member_offset(
+        root, "geometry_rows", offsetof(VkrVulkanPacketDrawRoot, geometry_rows),
+        &geometry_rows);
+    valid &= vkr_vk_reflect_member_offset(
+        root, "visible_rows", offsetof(VkrVulkanPacketDrawRoot, visible_rows),
+        &visible_rows);
+    valid &= vkr_vk_reflect_member_offset(
+        root, "vertices", offsetof(VkrVulkanPacketDrawRoot, vertices),
         &vertices);
-    valid &= vkr_bindless_vk_reflect_member_offset(
-        root, "frame", offsetof(VkrBindlessVkPacketDrawRoot, frame), &frame);
-    valid &= vkr_bindless_vk_reflect_member_offset(
+    valid &= vkr_vk_reflect_member_offset(
+        root, "frame", offsetof(VkrVulkanPacketDrawRoot, frame), &frame);
+    valid &= vkr_vk_reflect_member_offset(
         root, "visible_row_index",
-        offsetof(VkrBindlessVkPacketDrawRoot, visible_row_index), NULL);
-    valid &= vkr_bindless_vk_reflect_member_offset(
-        root, "flags", offsetof(VkrBindlessVkPacketDrawRoot, flags), NULL);
-    valid &= vkr_bindless_vk_reflect_member_offset(
-        root, "reserved", offsetof(VkrBindlessVkPacketDrawRoot, reserved),
-        NULL);
-    valid &= vkr_bindless_vk_reflected_struct_size(root) ==
-             sizeof(VkrBindlessVkPacketDrawRoot);
+        offsetof(VkrVulkanPacketDrawRoot, visible_row_index), NULL);
+    valid &= vkr_vk_reflect_member_offset(
+        root, "flags", offsetof(VkrVulkanPacketDrawRoot, flags), NULL);
+    valid &= vkr_vk_reflect_member_offset(
+        root, "reserved", offsetof(VkrVulkanPacketDrawRoot, reserved), NULL);
+    valid &=
+        vkr_vk_reflected_struct_size(root) == sizeof(VkrVulkanPacketDrawRoot);
 
-    valid &= vkr_bindless_vk_reflect_member_offset(
-        frame, "materials", offsetof(VkrBindlessVkPacketFrameRoot, materials),
+    valid &= vkr_vk_reflect_member_offset(
+        frame, "materials", offsetof(VkrVulkanPacketFrameRoot, materials),
         &materials);
-    valid &= vkr_bindless_vk_reflect_member_offset(
+    valid &= vkr_vk_reflect_member_offset(
         frame, "instance_address_padding",
-        offsetof(VkrBindlessVkPacketFrameRoot, instance_address_padding), NULL);
-    valid &= vkr_bindless_vk_reflect_member_offset(
+        offsetof(VkrVulkanPacketFrameRoot, instance_address_padding), NULL);
+    valid &= vkr_vk_reflect_member_offset(
         frame, "view_projection",
-        offsetof(VkrBindlessVkPacketFrameRoot, view_projection), NULL);
-    valid &= vkr_bindless_vk_reflect_member_offset(
+        offsetof(VkrVulkanPacketFrameRoot, view_projection), NULL);
+    valid &= vkr_vk_reflect_member_offset(
         frame, "transmission_texture",
-        offsetof(VkrBindlessVkPacketFrameRoot, transmission_texture), NULL);
-    valid &= vkr_bindless_vk_reflect_member_offset(
+        offsetof(VkrVulkanPacketFrameRoot, transmission_texture), NULL);
+    valid &= vkr_vk_reflect_member_offset(
         frame, "transmission_sampler",
-        offsetof(VkrBindlessVkPacketFrameRoot, transmission_sampler), NULL);
-    valid &= vkr_bindless_vk_reflect_member_offset(
-        frame, "flags", offsetof(VkrBindlessVkPacketFrameRoot, flags), NULL);
-    valid &= vkr_bindless_vk_reflect_member_offset(
+        offsetof(VkrVulkanPacketFrameRoot, transmission_sampler), NULL);
+    valid &= vkr_vk_reflect_member_offset(
+        frame, "flags", offsetof(VkrVulkanPacketFrameRoot, flags), NULL);
+    valid &= vkr_vk_reflect_member_offset(
         frame, "point_light_grid_origin_cell_size",
-        offsetof(VkrBindlessVkPacketFrameRoot,
-                 point_light_grid_origin_cell_size),
+        offsetof(VkrVulkanPacketFrameRoot, point_light_grid_origin_cell_size),
         NULL);
-    valid &= vkr_bindless_vk_reflect_member_offset(
-        frame, "view", offsetof(VkrBindlessVkPacketFrameRoot, view), NULL);
-    valid &= frame && vkr_bindless_vk_reflected_struct_size(frame) ==
-                          sizeof(VkrBindlessVkPacketFrameRoot);
+    valid &= vkr_vk_reflect_member_offset(
+        frame, "view", offsetof(VkrVulkanPacketFrameRoot, view), NULL);
+    valid &= frame && vkr_vk_reflected_struct_size(frame) ==
+                          sizeof(VkrVulkanPacketFrameRoot);
 
     const VkrGpuAbiRecord *vertex_abi = vkr_gpu_abi_record(VKR_GPU_ABI_VERTEX);
-    valid &= vertices && materials && vertex_abi &&
-             vkr_bindless_vk_reflected_struct_size(vertices) ==
-                 vertex_abi->expected_size &&
-             vkr_bindless_vk_reflected_struct_size(materials) ==
-                 sizeof(VkrBindlessVkMaterialGpuRow);
-    valid &= vkr_bindless_vk_validate_reflected_gpu_abi(
-        geometry_rows, VKR_GPU_ABI_GEOMETRY_ROW);
-    valid &= vkr_bindless_vk_validate_reflected_gpu_abi(
-        visible_rows, VKR_GPU_ABI_VISIBLE_DRAW_ROW);
-    valid &= vkr_bindless_vk_reflect_member_offset(
+    valid &=
+        vertices && materials && vertex_abi &&
+        vkr_vk_reflected_struct_size(vertices) == vertex_abi->expected_size &&
+        vkr_vk_reflected_struct_size(materials) ==
+            sizeof(VkrVulkanMaterialGpuRow);
+    valid &= vkr_vk_validate_reflected_gpu_abi(geometry_rows,
+                                               VKR_GPU_ABI_GEOMETRY_ROW);
+    valid &= vkr_vk_validate_reflected_gpu_abi(visible_rows,
+                                               VKR_GPU_ABI_VISIBLE_DRAW_ROW);
+    valid &= vkr_vk_reflect_member_offset(
         vertices, "position", offsetof(VkrVertex3d, position), NULL);
-    valid &= vkr_bindless_vk_reflect_member_offset(
-        vertices, "normal", offsetof(VkrVertex3d, normal), NULL);
-    valid &= vkr_bindless_vk_reflect_member_offset(
+    valid &= vkr_vk_reflect_member_offset(vertices, "normal",
+                                          offsetof(VkrVertex3d, normal), NULL);
+    valid &= vkr_vk_reflect_member_offset(
         vertices, "texcoord", offsetof(VkrVertex3d, texcoord), NULL);
-    valid &= vkr_bindless_vk_reflect_member_offset(
-        vertices, "color", offsetof(VkrVertex3d, colour), NULL);
-    valid &= vkr_bindless_vk_reflect_member_offset(
-        vertices, "tangent", offsetof(VkrVertex3d, tangent), NULL);
-    valid &= vkr_bindless_vk_reflect_member_offset(
+    valid &= vkr_vk_reflect_member_offset(vertices, "color",
+                                          offsetof(VkrVertex3d, colour), NULL);
+    valid &= vkr_vk_reflect_member_offset(vertices, "tangent",
+                                          offsetof(VkrVertex3d, tangent), NULL);
+    valid &= vkr_vk_reflect_member_offset(
         materials, "base_color_texture",
-        offsetof(VkrBindlessVkMaterialGpuRow, base_color_texture), NULL);
-    valid &= vkr_bindless_vk_reflect_member_offset(
+        offsetof(VkrVulkanMaterialGpuRow, base_color_texture), NULL);
+    valid &= vkr_vk_reflect_member_offset(
         materials, "base_color_sampler",
-        offsetof(VkrBindlessVkMaterialGpuRow, base_color_sampler), NULL);
-    valid &= vkr_bindless_vk_reflect_member_offset(
+        offsetof(VkrVulkanMaterialGpuRow, base_color_sampler), NULL);
+    valid &= vkr_vk_reflect_member_offset(
         materials, "material_id",
-        offsetof(VkrBindlessVkMaterialGpuRow, material_id), NULL);
-    valid &= vkr_bindless_vk_reflect_member_offset(
-        materials, "alpha_mode",
-        offsetof(VkrBindlessVkMaterialGpuRow, alpha_mode), NULL);
-    valid &= vkr_bindless_vk_reflect_member_offset(
-        materials, "material_emissive",
-        offsetof(VkrBindlessVkMaterialGpuRow, material_emissive), NULL);
-    valid &= vkr_bindless_vk_reflect_member_offset(
-        materials, "material_surface",
-        offsetof(VkrBindlessVkMaterialGpuRow, material_surface), NULL);
-    valid &= vkr_bindless_vk_reflect_member_offset(
-        materials, "material_attenuation_color",
-        offsetof(VkrBindlessVkMaterialGpuRow, material_attenuation_color),
+        offsetof(VkrVulkanMaterialGpuRow, material_id), NULL);
+    valid &= vkr_vk_reflect_member_offset(
+        materials, "alpha_mode", offsetof(VkrVulkanMaterialGpuRow, alpha_mode),
         NULL);
+    valid &= vkr_vk_reflect_member_offset(
+        materials, "material_emissive",
+        offsetof(VkrVulkanMaterialGpuRow, material_emissive), NULL);
+    valid &= vkr_vk_reflect_member_offset(
+        materials, "material_surface",
+        offsetof(VkrVulkanMaterialGpuRow, material_surface), NULL);
+    valid &= vkr_vk_reflect_member_offset(
+        materials, "material_attenuation_color",
+        offsetof(VkrVulkanMaterialGpuRow, material_attenuation_color), NULL);
   }
   spvReflectDestroyShaderModule(&module);
   return valid;
 }
 
-vkr_internal bool8_t vkr_bindless_vk_create_shader_module(
-    VkrBindlessVulkanRenderer *renderer, const char *path,
-    VkShaderModule *out_module) {
+vkr_internal bool8_t vkr_vk_create_shader_module(VkrVulkanRenderer *renderer,
+                                                 const char *path,
+                                                 VkShaderModule *out_module) {
   FilePath shader_path =
       file_path_create(path, renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
   uint8_t *bytes = NULL;
@@ -340,22 +331,21 @@ vkr_internal bool8_t vkr_bindless_vk_create_shader_module(
       .codeSize = (size_t)size,
       .pCode = (const uint32_t *)bytes,
   };
-  const VkResult result =
-      vkCreateShaderModule(vkr_bindless_vk_renderer_device(renderer),
-                           &module_info, NULL, out_module);
+  const VkResult result = vkCreateShaderModule(vkr_vk_renderer_device(renderer),
+                                               &module_info, NULL, out_module);
   vkr_allocator_free(renderer->allocator, bytes, size,
                      VKR_ALLOCATOR_MEMORY_TAG_FILE);
   return result == VK_SUCCESS;
 }
 
-bool8_t vkr_bindless_vk_create_pipelines(VkrBindlessVulkanRenderer *renderer) {
-  if (!vkr_bindless_vk_validate_packet_root_abi(renderer)) {
+bool8_t vkr_vk_create_pipelines(VkrVulkanRenderer *renderer) {
+  if (!vkr_vk_validate_packet_root_abi(renderer)) {
     return false_v;
   }
-  const VkrBindlessVulkanDescriptorLayout *resource_layout =
-      vkr_bindless_vulkan_device_resource_layout(renderer->device);
-  const VkrBindlessVulkanDescriptorLayout *sampler_layout =
-      vkr_bindless_vulkan_device_sampler_layout(renderer->device);
+  const VkrVulkanDescriptorLayout *resource_layout =
+      vkr_vulkan_device_resource_layout(renderer->device);
+  const VkrVulkanDescriptorLayout *sampler_layout =
+      vkr_vulkan_device_sampler_layout(renderer->device);
   VkDescriptorSetLayout layouts[] = {
       resource_layout->handle,
       sampler_layout->handle,
@@ -364,7 +354,7 @@ bool8_t vkr_bindless_vk_create_pipelines(VkrBindlessVulkanRenderer *renderer) {
       .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT |
                     VK_SHADER_STAGE_COMPUTE_BIT,
       .offset = 0u,
-      .size = sizeof(VkrBindlessVkPushConstants),
+      .size = sizeof(VkrVulkanPushConstants),
   };
   VkPipelineLayoutCreateInfo layout_info = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -373,40 +363,37 @@ bool8_t vkr_bindless_vk_create_pipelines(VkrBindlessVulkanRenderer *renderer) {
       .pushConstantRangeCount = 1u,
       .pPushConstantRanges = &push_range,
   };
-  VkDevice device = vkr_bindless_vk_renderer_device(renderer);
+  VkDevice device = vkr_vk_renderer_device(renderer);
   if (vkCreatePipelineLayout(device, &layout_info, NULL,
                              &renderer->pipeline_layout) != VK_SUCCESS) {
     return false_v;
   }
-  return vkr_bindless_vk_create_packet_pipelines(renderer) &&
-         vkr_bindless_vk_create_ibl_pipelines(renderer) &&
-         vkr_bindless_vk_create_deferred_pipelines(renderer);
+  return vkr_vk_create_packet_pipelines(renderer) &&
+         vkr_vk_create_ibl_pipelines(renderer) &&
+         vkr_vk_create_deferred_pipelines(renderer);
 }
 
-vkr_internal bool8_t vkr_bindless_vk_create_packet_pipeline(
-    VkrBindlessVulkanRenderer *renderer, VkrBindlessVkPacketPipeline pipeline,
-    VkrBindlessVkPacketShader vertex_shader,
-    VkrBindlessVkPacketShader fragment_shader, VkFormat color_format,
-    VkFormat depth_format, bool8_t depth_test, bool8_t depth_write,
-    bool8_t blend_enabled, bool8_t depth_bias) {
-  // A fragment shader of VKR_BINDLESS_VK_PACKET_SHADER_COUNT builds a
+vkr_internal bool8_t vkr_vk_create_packet_pipeline(
+    VkrVulkanRenderer *renderer, VkrVulkanPacketPipeline pipeline,
+    VkrVulkanPacketShader vertex_shader, VkrVulkanPacketShader fragment_shader,
+    VkFormat color_format, VkFormat depth_format, bool8_t depth_test,
+    bool8_t depth_write, bool8_t blend_enabled, bool8_t depth_bias) {
+  // A fragment shader of VKR_VULKAN_PACKET_SHADER_COUNT builds a
   // depth-only pipeline with no fragment stage, which is what a shadow cascade
   // rendering opaque geometry should use.
-  const bool8_t depth_only =
-      fragment_shader == VKR_BINDLESS_VK_PACKET_SHADER_COUNT;
+  const bool8_t depth_only = fragment_shader == VKR_VULKAN_PACKET_SHADER_COUNT;
   const VkPipelineShaderStageCreateInfo stages[] = {
       {
           .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
           .stage = VK_SHADER_STAGE_VERTEX_BIT,
           .module = renderer->packet_shaders[vertex_shader],
-          .pName =
-              vertex_shader == VKR_BINDLESS_VK_PACKET_SHADER_WORLD_VERTEX
-                  ? "world_vertex"
-              : vertex_shader == VKR_BINDLESS_VK_PACKET_SHADER_TEXT_VERTEX
-                  ? "text_vertex"
-              : vertex_shader == VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_VERTEX
-                  ? "vk_visibility_vertex"
-                  : "fullscreen_vertex",
+          .pName = vertex_shader == VKR_VULKAN_PACKET_SHADER_WORLD_VERTEX
+                       ? "world_vertex"
+                   : vertex_shader == VKR_VULKAN_PACKET_SHADER_TEXT_VERTEX
+                       ? "text_vertex"
+                   : vertex_shader == VKR_VULKAN_PACKET_SHADER_VISIBILITY_VERTEX
+                       ? "vk_visibility_vertex"
+                       : "fullscreen_vertex",
       },
       {
           .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -415,24 +402,22 @@ vkr_internal bool8_t vkr_bindless_vk_create_packet_pipeline(
                                : renderer->packet_shaders[fragment_shader],
           .pName =
               depth_only ? ""
-              : fragment_shader == VKR_BINDLESS_VK_PACKET_SHADER_WORLD_FRAGMENT
+              : fragment_shader == VKR_VULKAN_PACKET_SHADER_WORLD_FRAGMENT
                   ? "world_fragment"
-              : fragment_shader ==
-                      VKR_BINDLESS_VK_PACKET_SHADER_PICKING_FRAGMENT
+              : fragment_shader == VKR_VULKAN_PACKET_SHADER_PICKING_FRAGMENT
                   ? "picking_fragment"
-              : fragment_shader == VKR_BINDLESS_VK_PACKET_SHADER_TEXT_FRAGMENT
+              : fragment_shader == VKR_VULKAN_PACKET_SHADER_TEXT_FRAGMENT
                   ? "text_fragment"
               : fragment_shader ==
-                      VKR_BINDLESS_VK_PACKET_SHADER_TEXT_PICKING_FRAGMENT
+                      VKR_VULKAN_PACKET_SHADER_TEXT_PICKING_FRAGMENT
                   ? "text_picking_fragment"
-              : fragment_shader ==
-                      VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_FRAGMENT
+              : fragment_shader == VKR_VULKAN_PACKET_SHADER_VISIBILITY_FRAGMENT
                   ? "vk_visibility_fragment"
               : fragment_shader ==
-                      VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_OPAQUE_FRAGMENT
+                      VKR_VULKAN_PACKET_SHADER_VISIBILITY_OPAQUE_FRAGMENT
                   ? "vk_visibility_opaque_fragment"
               : fragment_shader ==
-                      VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_SHADOW_FRAGMENT
+                      VKR_VULKAN_PACKET_SHADER_VISIBILITY_SHADOW_FRAGMENT
                   ? "vk_visibility_shadow_fragment"
                   : "fullscreen_fragment",
       },
@@ -520,116 +505,109 @@ vkr_internal bool8_t vkr_bindless_vk_create_packet_pipeline(
       .layout = renderer->pipeline_layout,
   };
   return vkCreateGraphicsPipelines(
-             vkr_bindless_vk_renderer_device(renderer),
-             renderer->pipeline_cache, 1u, &create_info, NULL,
+             vkr_vk_renderer_device(renderer), renderer->pipeline_cache, 1u,
+             &create_info, NULL,
              &renderer->packet_pipelines[pipeline]) == VK_SUCCESS;
 }
 
 vkr_internal bool8_t
-vkr_bindless_vk_create_packet_pipelines(VkrBindlessVulkanRenderer *renderer) {
-  vkr_local_persist const char
-      *const paths[VKR_BINDLESS_VK_PACKET_SHADER_COUNT] = {
-          VKR_BINDLESS_VK_PACKET_WORLD_VERT_SPV,
-          VKR_BINDLESS_VK_PACKET_WORLD_FRAG_SPV,
-          VKR_BINDLESS_VK_PACKET_PICKING_FRAG_SPV,
-          VKR_BINDLESS_VK_PACKET_FULLSCREEN_VERT_SPV,
-          VKR_BINDLESS_VK_PACKET_FULLSCREEN_FRAG_SPV,
-          VKR_BINDLESS_VK_PACKET_TEXT_VERT_SPV,
-          VKR_BINDLESS_VK_PACKET_TEXT_FRAG_SPV,
-          VKR_BINDLESS_VK_PACKET_TEXT_PICKING_FRAG_SPV,
-          VKR_BINDLESS_VK_PACKET_VISIBILITY_VERT_SPV,
-          VKR_BINDLESS_VK_PACKET_VISIBILITY_FRAG_SPV,
-          VKR_BINDLESS_VK_PACKET_VISIBILITY_OPAQUE_FRAG_SPV,
-          VKR_BINDLESS_VK_PACKET_VISIBILITY_SHADOW_FRAG_SPV,
-      };
-  for (uint32_t i = 0u; i < VKR_BINDLESS_VK_PACKET_SHADER_COUNT; ++i) {
-    if (!vkr_bindless_vk_create_shader_module(renderer, paths[i],
-                                              &renderer->packet_shaders[i]))
+vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
+  vkr_local_persist const char *const paths[VKR_VULKAN_PACKET_SHADER_COUNT] = {
+      VKR_VULKAN_PACKET_WORLD_VERT_SPV,
+      VKR_VULKAN_PACKET_WORLD_FRAG_SPV,
+      VKR_VULKAN_PACKET_PICKING_FRAG_SPV,
+      VKR_VULKAN_PACKET_FULLSCREEN_VERT_SPV,
+      VKR_VULKAN_PACKET_FULLSCREEN_FRAG_SPV,
+      VKR_VULKAN_PACKET_TEXT_VERT_SPV,
+      VKR_VULKAN_PACKET_TEXT_FRAG_SPV,
+      VKR_VULKAN_PACKET_TEXT_PICKING_FRAG_SPV,
+      VKR_VULKAN_PACKET_VISIBILITY_VERT_SPV,
+      VKR_VULKAN_PACKET_VISIBILITY_FRAG_SPV,
+      VKR_VULKAN_PACKET_VISIBILITY_OPAQUE_FRAG_SPV,
+      VKR_VULKAN_PACKET_VISIBILITY_SHADOW_FRAG_SPV,
+  };
+  for (uint32_t i = 0u; i < VKR_VULKAN_PACKET_SHADER_COUNT; ++i) {
+    if (!vkr_vk_create_shader_module(renderer, paths[i],
+                                     &renderer->packet_shaders[i]))
       return false_v;
   }
-  return vkr_bindless_vk_create_packet_pipeline(
-             renderer, VKR_BINDLESS_VK_PACKET_PIPELINE_PICKING,
-             VKR_BINDLESS_VK_PACKET_SHADER_WORLD_VERTEX,
-             VKR_BINDLESS_VK_PACKET_SHADER_PICKING_FRAGMENT, VK_FORMAT_R32_UINT,
+  return vkr_vk_create_packet_pipeline(
+             renderer, VKR_VULKAN_PACKET_PIPELINE_PICKING,
+             VKR_VULKAN_PACKET_SHADER_WORLD_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_PICKING_FRAGMENT, VK_FORMAT_R32_UINT,
              VK_FORMAT_D32_SFLOAT, true_v, true_v, false_v, false_v) &&
-         vkr_bindless_vk_create_packet_pipeline(
-             renderer, VKR_BINDLESS_VK_PACKET_PIPELINE_WORLD_BLEND,
-             VKR_BINDLESS_VK_PACKET_SHADER_WORLD_VERTEX,
-             VKR_BINDLESS_VK_PACKET_SHADER_WORLD_FRAGMENT,
+         vkr_vk_create_packet_pipeline(
+             renderer, VKR_VULKAN_PACKET_PIPELINE_WORLD_BLEND,
+             VKR_VULKAN_PACKET_SHADER_WORLD_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_WORLD_FRAGMENT,
              VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_D32_SFLOAT, true_v,
              false_v, true_v, false_v) &&
-         vkr_bindless_vk_create_packet_pipeline(
-             renderer, VKR_BINDLESS_VK_PACKET_PIPELINE_FULLSCREEN_FINAL,
-             VKR_BINDLESS_VK_PACKET_SHADER_FULLSCREEN_VERTEX,
-             VKR_BINDLESS_VK_PACKET_SHADER_FULLSCREEN_FRAGMENT,
+         vkr_vk_create_packet_pipeline(
+             renderer, VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_FINAL,
+             VKR_VULKAN_PACKET_SHADER_FULLSCREEN_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_FULLSCREEN_FRAGMENT,
              VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_UNDEFINED, false_v, false_v,
              false_v, false_v) &&
-         vkr_bindless_vk_create_packet_pipeline(
-             renderer, VKR_BINDLESS_VK_PACKET_PIPELINE_UI,
-             VKR_BINDLESS_VK_PACKET_SHADER_WORLD_VERTEX,
-             VKR_BINDLESS_VK_PACKET_SHADER_WORLD_FRAGMENT,
-             VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_UNDEFINED, false_v, false_v,
-             true_v, false_v) &&
-         vkr_bindless_vk_create_packet_pipeline(
-             renderer, VKR_BINDLESS_VK_PACKET_PIPELINE_WORLD_TEXT,
-             VKR_BINDLESS_VK_PACKET_SHADER_TEXT_VERTEX,
-             VKR_BINDLESS_VK_PACKET_SHADER_TEXT_FRAGMENT,
+         vkr_vk_create_packet_pipeline(
+             renderer, VKR_VULKAN_PACKET_PIPELINE_UI,
+             VKR_VULKAN_PACKET_SHADER_WORLD_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_WORLD_FRAGMENT, VK_FORMAT_R8G8B8A8_UNORM,
+             VK_FORMAT_UNDEFINED, false_v, false_v, true_v, false_v) &&
+         vkr_vk_create_packet_pipeline(
+             renderer, VKR_VULKAN_PACKET_PIPELINE_WORLD_TEXT,
+             VKR_VULKAN_PACKET_SHADER_TEXT_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_TEXT_FRAGMENT,
              VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_D32_SFLOAT, true_v,
              false_v, true_v, false_v) &&
-         vkr_bindless_vk_create_packet_pipeline(
-             renderer, VKR_BINDLESS_VK_PACKET_PIPELINE_PICKING_TEXT,
-             VKR_BINDLESS_VK_PACKET_SHADER_TEXT_VERTEX,
-             VKR_BINDLESS_VK_PACKET_SHADER_TEXT_PICKING_FRAGMENT,
-             VK_FORMAT_R32_UINT, VK_FORMAT_D32_SFLOAT, true_v, true_v, false_v,
-             false_v) &&
-         vkr_bindless_vk_create_packet_pipeline(
-             renderer, VKR_BINDLESS_VK_PACKET_PIPELINE_UI_TEXT,
-             VKR_BINDLESS_VK_PACKET_SHADER_TEXT_VERTEX,
-             VKR_BINDLESS_VK_PACKET_SHADER_TEXT_FRAGMENT,
-             VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_UNDEFINED, false_v, false_v,
-             true_v, false_v) &&
-         vkr_bindless_vk_create_packet_pipeline(
-             renderer, VKR_BINDLESS_VK_PACKET_PIPELINE_VISIBILITY,
-             VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_VERTEX,
-             VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_FRAGMENT,
+         vkr_vk_create_packet_pipeline(
+             renderer, VKR_VULKAN_PACKET_PIPELINE_PICKING_TEXT,
+             VKR_VULKAN_PACKET_SHADER_TEXT_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_TEXT_PICKING_FRAGMENT, VK_FORMAT_R32_UINT,
+             VK_FORMAT_D32_SFLOAT, true_v, true_v, false_v, false_v) &&
+         vkr_vk_create_packet_pipeline(
+             renderer, VKR_VULKAN_PACKET_PIPELINE_UI_TEXT,
+             VKR_VULKAN_PACKET_SHADER_TEXT_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_TEXT_FRAGMENT, VK_FORMAT_R8G8B8A8_UNORM,
+             VK_FORMAT_UNDEFINED, false_v, false_v, true_v, false_v) &&
+         vkr_vk_create_packet_pipeline(
+             renderer, VKR_VULKAN_PACKET_PIPELINE_VISIBILITY,
+             VKR_VULKAN_PACKET_SHADER_VISIBILITY_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_VISIBILITY_FRAGMENT,
              VK_FORMAT_R32G32_UINT, VK_FORMAT_D32_SFLOAT, true_v, true_v,
              false_v, false_v) &&
-         vkr_bindless_vk_create_packet_pipeline(
-             renderer, VKR_BINDLESS_VK_PACKET_PIPELINE_VISIBILITY_OPAQUE,
-             VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_VERTEX,
-             VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_OPAQUE_FRAGMENT,
+         vkr_vk_create_packet_pipeline(
+             renderer, VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_OPAQUE,
+             VKR_VULKAN_PACKET_SHADER_VISIBILITY_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_VISIBILITY_OPAQUE_FRAGMENT,
              VK_FORMAT_R32G32_UINT, VK_FORMAT_D32_SFLOAT, true_v, true_v,
              false_v, false_v) &&
-         vkr_bindless_vk_create_packet_pipeline(
-             renderer, VKR_BINDLESS_VK_PACKET_PIPELINE_VISIBILITY_SHADOW,
-             VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_VERTEX,
-             VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_SHADOW_FRAGMENT,
+         vkr_vk_create_packet_pipeline(
+             renderer, VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_SHADOW,
+             VKR_VULKAN_PACKET_SHADER_VISIBILITY_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_VISIBILITY_SHADOW_FRAGMENT,
              VK_FORMAT_UNDEFINED, VK_FORMAT_D32_SFLOAT, true_v, true_v, false_v,
              true_v) &&
-         vkr_bindless_vk_create_packet_pipeline(
-             renderer, VKR_BINDLESS_VK_PACKET_PIPELINE_VISIBILITY_SHADOW_OPAQUE,
-             VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_VERTEX,
-             VKR_BINDLESS_VK_PACKET_SHADER_COUNT, VK_FORMAT_UNDEFINED,
+         vkr_vk_create_packet_pipeline(
+             renderer, VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_SHADOW_OPAQUE,
+             VKR_VULKAN_PACKET_SHADER_VISIBILITY_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_COUNT, VK_FORMAT_UNDEFINED,
              VK_FORMAT_D32_SFLOAT, true_v, true_v, false_v, true_v);
 }
 
-vkr_internal bool8_t
-vkr_bindless_vk_create_ibl_pipelines(VkrBindlessVulkanRenderer *renderer) {
-  vkr_local_persist const char
-      *const paths[VKR_BINDLESS_VK_IBL_PIPELINE_COUNT] = {
-          VKR_BINDLESS_VK_PACKET_IBL_EQUIRECT_COMP_SPV,
-          VKR_BINDLESS_VK_PACKET_IBL_IRRADIANCE_COMP_SPV,
-          VKR_BINDLESS_VK_PACKET_IBL_PREFILTER_COMP_SPV,
-      };
-  vkr_local_persist const char
-      *const entries[VKR_BINDLESS_VK_IBL_PIPELINE_COUNT] = {
-          "ibl_equirect",
-          "ibl_irradiance",
-          "ibl_prefilter",
-      };
-  for (uint32_t i = 0u; i < VKR_BINDLESS_VK_IBL_PIPELINE_COUNT; ++i) {
-    if (!vkr_bindless_vk_create_shader_module(renderer, paths[i],
-                                              &renderer->ibl_shaders[i]))
+vkr_internal bool8_t vkr_vk_create_ibl_pipelines(VkrVulkanRenderer *renderer) {
+  vkr_local_persist const char *const paths[VKR_VULKAN_IBL_PIPELINE_COUNT] = {
+      VKR_VULKAN_PACKET_IBL_EQUIRECT_COMP_SPV,
+      VKR_VULKAN_PACKET_IBL_IRRADIANCE_COMP_SPV,
+      VKR_VULKAN_PACKET_IBL_PREFILTER_COMP_SPV,
+  };
+  vkr_local_persist const char *const entries[VKR_VULKAN_IBL_PIPELINE_COUNT] = {
+      "ibl_equirect",
+      "ibl_irradiance",
+      "ibl_prefilter",
+  };
+  for (uint32_t i = 0u; i < VKR_VULKAN_IBL_PIPELINE_COUNT; ++i) {
+    if (!vkr_vk_create_shader_module(renderer, paths[i],
+                                     &renderer->ibl_shaders[i]))
       return false_v;
     const VkPipelineShaderStageCreateInfo stage = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -643,7 +621,7 @@ vkr_bindless_vk_create_ibl_pipelines(VkrBindlessVulkanRenderer *renderer) {
         .stage = stage,
         .layout = renderer->pipeline_layout,
     };
-    if (vkCreateComputePipelines(vkr_bindless_vk_renderer_device(renderer),
+    if (vkCreateComputePipelines(vkr_vk_renderer_device(renderer),
                                  renderer->pipeline_cache, 1u, &info, NULL,
                                  &renderer->ibl_pipelines[i]) != VK_SUCCESS)
       return false_v;
@@ -652,30 +630,30 @@ vkr_bindless_vk_create_ibl_pipelines(VkrBindlessVulkanRenderer *renderer) {
 }
 
 vkr_internal bool8_t
-vkr_bindless_vk_create_deferred_pipelines(VkrBindlessVulkanRenderer *renderer) {
+vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
   vkr_local_persist const char
-      *const paths[VKR_BINDLESS_VK_DEFERRED_PIPELINE_COUNT] = {
-          VKR_BINDLESS_VK_PACKET_GPU_DRAW_CLASSIFY_COMP_SPV,
-          VKR_BINDLESS_VK_PACKET_GPU_DRAW_PREFIX_COMP_SPV,
-          VKR_BINDLESS_VK_PACKET_GPU_DRAW_ENCODE_COMP_SPV,
-          VKR_BINDLESS_VK_PACKET_GBUFFER_RESOLVE_COMP_SPV,
-          VKR_BINDLESS_VK_PACKET_DEFERRED_LIGHTING_COMP_SPV,
-          VKR_BINDLESS_VK_PACKET_HZB_BUILD_COMP_SPV,
-          VKR_BINDLESS_VK_PACKET_PICKING_RESOLVE_COMP_SPV,
-          VKR_BINDLESS_VK_PACKET_TRANSMISSION_SHADE_COMP_SPV,
-          VKR_BINDLESS_VK_PACKET_TRANSMISSION_COVERAGE_COMP_SPV,
+      *const paths[VKR_VULKAN_DEFERRED_PIPELINE_COUNT] = {
+          VKR_VULKAN_PACKET_GPU_DRAW_CLASSIFY_COMP_SPV,
+          VKR_VULKAN_PACKET_GPU_DRAW_PREFIX_COMP_SPV,
+          VKR_VULKAN_PACKET_GPU_DRAW_ENCODE_COMP_SPV,
+          VKR_VULKAN_PACKET_GBUFFER_RESOLVE_COMP_SPV,
+          VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV,
+          VKR_VULKAN_PACKET_HZB_BUILD_COMP_SPV,
+          VKR_VULKAN_PACKET_PICKING_RESOLVE_COMP_SPV,
+          VKR_VULKAN_PACKET_TRANSMISSION_SHADE_COMP_SPV,
+          VKR_VULKAN_PACKET_TRANSMISSION_COVERAGE_COMP_SPV,
       };
   vkr_local_persist const char
-      *const entries[VKR_BINDLESS_VK_DEFERRED_PIPELINE_COUNT] = {
+      *const entries[VKR_VULKAN_DEFERRED_PIPELINE_COUNT] = {
           "vk_gpu_draw_classify",     "vk_gpu_draw_prefix",
           "vk_gpu_draw_encode",       "vk_gbuffer_resolve",
           "vk_deferred_lighting",     "vk_hzb_build",
           "vk_picking_resolve",       "vk_transmission_shade",
           "vk_transmission_coverage",
       };
-  for (uint32_t i = 0u; i < VKR_BINDLESS_VK_DEFERRED_PIPELINE_COUNT; ++i) {
-    if (!vkr_bindless_vk_create_shader_module(renderer, paths[i],
-                                              &renderer->deferred_shaders[i]))
+  for (uint32_t i = 0u; i < VKR_VULKAN_DEFERRED_PIPELINE_COUNT; ++i) {
+    if (!vkr_vk_create_shader_module(renderer, paths[i],
+                                     &renderer->deferred_shaders[i]))
       return false_v;
     const VkPipelineShaderStageCreateInfo stage = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -690,8 +668,8 @@ vkr_bindless_vk_create_deferred_pipelines(VkrBindlessVulkanRenderer *renderer) {
         .layout = renderer->pipeline_layout,
     };
     if (vkCreateComputePipelines(
-            vkr_bindless_vk_renderer_device(renderer), renderer->pipeline_cache,
-            1u, &info, NULL, &renderer->deferred_pipelines[i]) != VK_SUCCESS)
+            vkr_vk_renderer_device(renderer), renderer->pipeline_cache, 1u,
+            &info, NULL, &renderer->deferred_pipelines[i]) != VK_SUCCESS)
       return false_v;
   }
   return true_v;

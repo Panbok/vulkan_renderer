@@ -90,7 +90,7 @@ float vkr_metal_packet_specular_ao(float ao, float no_v, float roughness) {
  * Split-sum environment BRDF, analytic (Karis' mobile approximation).
  *
  * This must stay numerically identical to packet_brdf_approximation() in the
- * bindless Vulkan packet.slang. The two backends previously disagreed here —
+ * Vulkan Slang shaders. The two backends previously disagreed here:
  * Metal sampled a baked LUT while Vulkan approximated — which made their
  * specular IBL differ for the same scene and quietly invalidated any
  * cross-backend byte comparison. One shared formula is the whole point; if this

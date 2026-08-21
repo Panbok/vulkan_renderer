@@ -1,8 +1,8 @@
 [shader("fragment")]
-float4 fullscreen_fragment(VkrBindlessVertexOutput input) : SV_Target0
+float4 fullscreen_fragment(VkrVulkanVertexOutput input) : SV_Target0
 {
-    VkrBindlessPacketUtilityRoot* root =
-        (VkrBindlessPacketUtilityRoot*)g_push.root;
+    VkrVulkanPacketUtilityRoot* root =
+        (VkrVulkanPacketUtilityRoot*)g_push.root;
     uint texture_index =
         NonUniformResourceIndex(root.transmission_texture);
     uint sampler_index =

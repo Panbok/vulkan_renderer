@@ -29,7 +29,7 @@ struct VkrVkIndirectCommand
 
 struct VkrVkGeometryRow
 {
-    VkrBindlessVertex* vertices;
+    VkrVulkanVertex* vertices;
     uint* indices;
     uint first_vertex;
     uint first_index;
@@ -47,7 +47,7 @@ struct VkrVkCullRoot
     VkrGpuVisibleDrawRow* visible;
     VkrVkDrawState* states;
     VkrVkIndirectCommand* commands;
-    VkrBindlessInstance* instances;
+    VkrVulkanInstance* instances;
     float4x4* view_projections;
     float4* frustum_planes;
     uint candidate_count;
@@ -68,7 +68,7 @@ struct VkrVkRasterRoot
     VkrVkGeometryRow* geometry_rows;
     VkrGpuVisibleDrawRow* visible_rows;
     VkrVkDrawState* states;
-    VkrBindlessPacketFrameRoot* frame;
+    VkrVulkanPacketFrameRoot* frame;
     uint view_index;
     uint visible_capacity;
     uint previous_depth_texture;
@@ -93,9 +93,9 @@ struct VkrVkResolveRoot
     VkrVkGeometryRow* geometry_rows;
     VkrGpuVisibleDrawRow* visible_rows;
     uint2 reserved_address;
-    VkrBindlessInstance* instances;
-    VkrBindlessMaterial* materials;
-    VkrBindlessVertex* vertices;
+    VkrVulkanInstance* instances;
+    VkrVulkanMaterial* materials;
+    VkrVulkanVertex* vertices;
     uint* indices;
     VkrVkDrawState* compaction_state;
     float4x4 view_projection;
@@ -117,7 +117,7 @@ struct VkrVkResolveRoot
 
 struct VkrVkLightingRoot
 {
-    VkrBindlessPacketFrameRoot* frame;
+    VkrVulkanPacketFrameRoot* frame;
     uint2 frame_address_padding;
     float4x4 inverse_view_projection;
     uint vbuffer_texture;
@@ -147,8 +147,8 @@ struct VkrVkPickingRoot
 {
     VkrGpuVisibleDrawRow* opaque_visible;
     VkrGpuVisibleDrawRow* transmission_visible;
-    VkrBindlessInstance* opaque_instances;
-    VkrBindlessInstance* transmission_instances;
+    VkrVulkanInstance* opaque_instances;
+    VkrVulkanInstance* transmission_instances;
     uint opaque_vbuffer;
     uint transmission_vbuffer;
     uint output_texture;
@@ -160,15 +160,15 @@ struct VkrVkPickingRoot
 struct VkrVkTransmissionRoot
 {
     VkrGpuVisibleDrawRow* visible_rows;
-    VkrBindlessMaterial* materials;
+    VkrVulkanMaterial* materials;
     // Offset 16 stays free of physical-buffer addresses; see the resolve root.
     uint2 reserved_address;
     VkrVkGeometryRow* geometry_rows;
-    VkrBindlessInstance* instances;
-    VkrBindlessVertex* vertices;
+    VkrVulkanInstance* instances;
+    VkrVulkanVertex* vertices;
     uint* indices;
     VkrVkDrawState* compaction_state;
-    VkrBindlessPacketFrameRoot* frame;
+    VkrVulkanPacketFrameRoot* frame;
     uint2 frame_address_padding;
     float4x4 view_projection;
     float4x4 inverse_view_projection;
@@ -243,7 +243,7 @@ static bool vkr_vk_candidate_occluded(VkrVkCullRoot* root,
     if (root.hzb_enabled == 0u || root.hzb_mip_count == 0u ||
         any(root.hzb_extent == 0u) || (candidate.flags & 1u) == 0u)
         return false;
-    VkrBindlessInstance instance = root.instances[candidate.instance_index];
+    VkrVulkanInstance instance = root.instances[candidate.instance_index];
     float3 center = mul(instance.model,
                         float4(candidate.local_bounding_sphere.xyz, 1.0f)).xyz;
     float scale = max(length(instance.model[0].xyz),
@@ -322,7 +322,7 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
             0xffffffffu;
         return;
     }
-    VkrBindlessInstance instance = root.instances[candidate.instance_index];
+    VkrVulkanInstance instance = root.instances[candidate.instance_index];
     float4 local = candidate.local_bounding_sphere;
     float4 world_center = mul(instance.model, float4(local.xyz, 1.0f));
     float3 scale_x = instance.model[0].xyz;
@@ -430,8 +430,8 @@ VkrVkVisibilityOutput vk_visibility_vertex(uint vertex_id : SV_VertexID,
     uint visible_index = root.view_index * root.visible_capacity + visible_instance;
     VkrGpuVisibleDrawRow visible = root.visible_rows[visible_index];
     VkrVkGeometryRow geometry = root.geometry_rows[visible.geometry_index];
-    VkrBindlessVertex vertex = geometry.vertices[geometry.first_vertex + vertex_id];
-    VkrBindlessInstance instance = root.frame.instances[visible.instance_index];
+    VkrVulkanVertex vertex = geometry.vertices[geometry.first_vertex + vertex_id];
+    VkrVulkanInstance instance = root.frame.instances[visible.instance_index];
     VkrVkVisibilityOutput output;
     output.position = mul(root.frame.view_projection,
                           mul(instance.model, float4(vertex.position, 1.0f)));
@@ -457,7 +457,7 @@ VkrVkVisibilityFragment vk_visibility_fragment(
     }
     VkrGpuVisibleDrawRow visible = root.visible_rows[
         root.view_index * root.visible_capacity + input.visible_index];
-    VkrBindlessMaterial material = root.frame.materials[visible.material_index];
+    VkrVulkanMaterial material = root.frame.materials[visible.material_index];
     if (material.alpha_mode == 1u)
     {
         float alpha = g_textures[NonUniformResourceIndex(material.base_color_texture)]
@@ -496,7 +496,7 @@ void vk_visibility_shadow_fragment(VkrVkVisibilityOutput input)
     VkrVkRasterRoot* root = g_raster_push.root;
     VkrGpuVisibleDrawRow visible = root.visible_rows[
         root.view_index * root.visible_capacity + input.visible_index];
-    VkrBindlessMaterial material = root.frame.materials[visible.material_index];
+    VkrVulkanMaterial material = root.frame.materials[visible.material_index];
     if (material.alpha_mode == 1u)
     {
         float alpha = g_textures[NonUniformResourceIndex(material.base_color_texture)]
@@ -613,9 +613,9 @@ struct VkrVkSurfaceSource
 {
     VkrVkGeometryRow* geometry_rows;
     VkrGpuVisibleDrawRow* visible_rows;
-    VkrBindlessInstance* instances;
-    VkrBindlessMaterial* materials;
-    VkrBindlessVertex* vertices;
+    VkrVulkanInstance* instances;
+    VkrVulkanMaterial* materials;
+    VkrVulkanVertex* vertices;
     uint* indices;
     VkrVkDrawState* compaction_state;
     float4x4 view_projection;
@@ -668,16 +668,16 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
     uint visible_index = encoded.x - 1u;
     uint primitive_id = encoded.y & VKR_VK_PRIMITIVE_ID_MASK;
     VkrGpuVisibleDrawRow visible = source.visible_rows[visible_index];
-    VkrBindlessMaterial material = source.materials[visible.material_index];
+    VkrVulkanMaterial material = source.materials[visible.material_index];
     VkrVkGeometryRow geometry = source.geometry_rows[visible.geometry_index];
     uint triangle = primitive_id * 3u;
     int ia = int(source.indices[visible.first_index + triangle + 0u]) + visible.vertex_offset;
     int ib = int(source.indices[visible.first_index + triangle + 1u]) + visible.vertex_offset;
     int ic = int(source.indices[visible.first_index + triangle + 2u]) + visible.vertex_offset;
-    VkrBindlessVertex a = source.vertices[geometry.first_vertex + uint(ia)];
-    VkrBindlessVertex b = source.vertices[geometry.first_vertex + uint(ib)];
-    VkrBindlessVertex c = source.vertices[geometry.first_vertex + uint(ic)];
-    VkrBindlessInstance instance = source.instances[visible.instance_index];
+    VkrVulkanVertex a = source.vertices[geometry.first_vertex + uint(ia)];
+    VkrVulkanVertex b = source.vertices[geometry.first_vertex + uint(ib)];
+    VkrVulkanVertex c = source.vertices[geometry.first_vertex + uint(ic)];
+    VkrVulkanInstance instance = source.instances[visible.instance_index];
     float4 wa = mul(instance.model, float4(a.position, 1.0f));
     float4 wb = mul(instance.model, float4(b.position, 1.0f));
     float4 wc = mul(instance.model, float4(c.position, 1.0f));
@@ -813,7 +813,7 @@ void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
         vkr_vk_resolve_defaults(root, thread_id.xy, -1.0f);
         return;
     }
-    VkrBindlessInstance instance = source.instances[surface.instance_index];
+    VkrVulkanInstance instance = source.instances[surface.instance_index];
     // Opaque and transmission own different fixed matrix operations. Matched
     // retained-raster captures require this opaque OpMatrixTimesVector form;
     // keeping it at the entry call site avoids a per-pixel convention selector.
@@ -883,7 +883,7 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
     VkrVkLightingRoot* root = g_lighting_push.root;
     if (any(thread_id.xy >= root.extent))
         return;
-    VkrBindlessPacketFrameRoot* frame = root.frame;
+    VkrVulkanPacketFrameRoot* frame = root.frame;
     uint2 encoded = g_storage_uint2_2d[root.vbuffer_texture][thread_id.xy];
     if (encoded.x == 0u)
     {
@@ -930,7 +930,7 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
     if (frame.directional_direction_enabled.w > 0.5f)
     {
         float shadow = packet_directional_shadow(frame, world);
-        VkrBindlessDirectResult direct = packet_direct(
+        VkrVulkanDirectResult direct = packet_direct(
             normal, view, normalize(-frame.directional_direction_enabled.xyz),
             frame.directional_color_intensity.rgb *
                 frame.directional_color_intensity.w * shadow,
@@ -938,7 +938,7 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
         analytic_diffuse = direct.diffuse;
         analytic_specular = direct.specular;
     }
-    VkrBindlessDirectResult punctual = packet_punctual(
+    VkrVulkanDirectResult punctual = packet_punctual(
         frame, world, normal, view, diffuse_albedo, 0.0f, roughness, f0);
     analytic_diffuse += punctual.diffuse;
     analytic_specular += punctual.specular;
@@ -1051,7 +1051,7 @@ void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
         g_storage_2d[root.output_texture][thread_id.xy] = background;
         return;
     }
-    VkrBindlessInstance instance = source.instances[surface.instance_index];
+    VkrVulkanInstance instance = source.instances[surface.instance_index];
     if (!vkr_vk_finish_surface_normal(
             source,
             mul(instance.model, float4(surface.object_normal, 0.0f)).xyz,
@@ -1061,8 +1061,8 @@ void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
         g_storage_2d[root.output_texture][thread_id.xy] = background;
         return;
     }
-    VkrBindlessPacketFrameRoot* frame = root.frame;
-    VkrBindlessMaterial material = root.materials[surface.material_index];
+    VkrVulkanPacketFrameRoot* frame = root.frame;
+    VkrVulkanMaterial material = root.materials[surface.material_index];
     float depth = g_depth_textures[root.depth_texture]
                       .Load(int3(thread_id.xy, 0));
     // See vkr_vk_deferred_sky: no Y flip when inverting the view-projection.
@@ -1097,7 +1097,7 @@ void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
         if (frame.directional_direction_enabled.w > 0.5f)
         {
             float shadow = packet_directional_shadow(frame, world);
-            VkrBindlessDirectResult direct = packet_direct(
+            VkrVulkanDirectResult direct = packet_direct(
                 surface.normal, view,
                 normalize(-frame.directional_direction_enabled.xyz),
                 frame.directional_color_intensity.rgb *
@@ -1106,7 +1106,7 @@ void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
             analytic_diffuse = direct.diffuse;
             analytic_specular = direct.specular;
         }
-        VkrBindlessDirectResult punctual = packet_punctual(
+        VkrVulkanDirectResult punctual = packet_punctual(
             frame, world, surface.normal, view, surface.base.rgb,
             surface.metallic, surface.roughness, f0);
         analytic_diffuse += punctual.diffuse;

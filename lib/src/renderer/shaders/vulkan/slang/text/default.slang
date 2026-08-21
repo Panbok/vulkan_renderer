@@ -1,13 +1,13 @@
 [shader("vertex")]
-VkrBindlessTextOutput text_vertex(uint vertex_id : SV_VertexID)
+VkrVulkanTextOutput text_vertex(uint vertex_id : SV_VertexID)
 {
-    VkrBindlessPacketUtilityRoot* root =
-        (VkrBindlessPacketUtilityRoot*)g_push.root;
-    VkrBindlessTextVertex* vertices =
-        (VkrBindlessTextVertex*)root.vertices;
-    VkrBindlessTextVertex glyph = vertices[vertex_id];
+    VkrVulkanPacketUtilityRoot* root =
+        (VkrVulkanPacketUtilityRoot*)g_push.root;
+    VkrVulkanTextVertex* vertices =
+        (VkrVulkanTextVertex*)root.vertices;
+    VkrVulkanTextVertex glyph = vertices[vertex_id];
     float4 position = mul(root.view, float4(glyph.position, 0.0f, 1.0f));
-    VkrBindlessTextOutput output;
+    VkrVulkanTextOutput output;
     if ((root.flags & 1u) != 0u)
     {
         float2 target = max(root.point_light_grid_origin_cell_size.xy,
@@ -26,10 +26,10 @@ VkrBindlessTextOutput text_vertex(uint vertex_id : SV_VertexID)
     return output;
 }
 
-float text_alpha(VkrBindlessTextOutput input)
+float text_alpha(VkrVulkanTextOutput input)
 {
-    VkrBindlessPacketUtilityRoot* root =
-        (VkrBindlessPacketUtilityRoot*)g_push.root;
+    VkrVulkanPacketUtilityRoot* root =
+        (VkrVulkanPacketUtilityRoot*)g_push.root;
     uint texture_index = NonUniformResourceIndex(root.transmission_texture);
     uint sampler_index = NonUniformResourceIndex(root.transmission_sampler);
     float4 atlas =
@@ -42,14 +42,14 @@ float text_alpha(VkrBindlessTextOutput input)
 }
 
 [shader("fragment")]
-float4 text_fragment(VkrBindlessTextOutput input) : SV_Target0
+float4 text_fragment(VkrVulkanTextOutput input) : SV_Target0
 {
     float alpha = text_alpha(input);
     return float4(input.color.rgb, input.color.a * alpha);
 }
 
 [shader("fragment")]
-uint text_picking_fragment(VkrBindlessTextOutput input) : SV_Target0
+uint text_picking_fragment(VkrVulkanTextOutput input) : SV_Target0
 {
     if (text_alpha(input) <= 0.01f)
         discard;

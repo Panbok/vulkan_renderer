@@ -2,7 +2,7 @@
 [numthreads(8, 8, 1)]
 void ibl_equirect(uint3 position : SV_DispatchThreadID)
 {
-    VkrBindlessIblRoot* root = (VkrBindlessIblRoot*)g_push.root;
+    VkrVulkanIblRoot* root = (VkrVulkanIblRoot*)g_push.root;
     if (position.x >= root.target_size || position.y >= root.target_size ||
         position.z >= 6u)
         return;
@@ -23,7 +23,7 @@ void ibl_equirect(uint3 position : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void ibl_irradiance(uint3 position : SV_DispatchThreadID)
 {
-    VkrBindlessIblRoot* root = (VkrBindlessIblRoot*)g_push.root;
+    VkrVulkanIblRoot* root = (VkrVulkanIblRoot*)g_push.root;
     if (position.x >= root.target_size || position.y >= root.target_size ||
         position.z >= 6u)
         return;
@@ -51,7 +51,7 @@ void ibl_irradiance(uint3 position : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void ibl_prefilter(uint3 position : SV_DispatchThreadID)
 {
-    VkrBindlessIblRoot* root = (VkrBindlessIblRoot*)g_push.root;
+    VkrVulkanIblRoot* root = (VkrVulkanIblRoot*)g_push.root;
     if (position.x >= root.target_size || position.y >= root.target_size ||
         position.z >= 6u)
         return;

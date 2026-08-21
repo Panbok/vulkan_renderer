@@ -1,9 +1,9 @@
-#include "renderer/vulkan/bindless/vkr_bindless_vulkan_memory.h"
+#include "renderer/vulkan/vkr_vulkan_memory.h"
 
 #include "core/logger.h"
 
-typedef struct VkrBindlessVkMemoryBlock {
-  VkrBindlessVkMemoryPoolKey key;
+typedef struct VkrVulkanMemoryBlock {
+  VkrVulkanMemoryPoolKey key;
   VkDeviceMemory memory;
   VkDeviceSize size;
   void *mapped;
@@ -11,11 +11,11 @@ typedef struct VkrBindlessVkMemoryBlock {
   VkrGpuMemoryCore *core;
   void *core_storage;
   uint64_t core_storage_size;
-} VkrBindlessVkMemoryBlock;
+} VkrVulkanMemoryBlock;
 
-struct VkrBindlessVkMemoryPoolManager {
-  VkrBindlessVkMemoryPoolConfig config;
-  VkrBindlessVkMemoryBlock *blocks;
+struct VkrVulkanMemoryPoolManager {
+  VkrVulkanMemoryPoolConfig config;
+  VkrVulkanMemoryBlock *blocks;
   uint64_t blocks_size;
   uint32_t block_count;
   uint64_t physical_allocations_peak;
@@ -29,9 +29,10 @@ struct VkrBindlessVkMemoryPoolManager {
   VkrGpuMemoryMetrics dedicated_metrics;
 };
 
-bool8_t vkr_bindless_vulkan_noncoherent_range(
-    uint64_t offset, uint64_t size, uint64_t allocation_size,
-    uint64_t noncoherent_atom_size, VkrBindlessVkMappedRange *out_range) {
+bool8_t vkr_vulkan_noncoherent_range(uint64_t offset, uint64_t size,
+                                     uint64_t allocation_size,
+                                     uint64_t noncoherent_atom_size,
+                                     VkrVulkanMappedRange *out_range) {
   if (!out_range || !size || !allocation_size || !noncoherent_atom_size ||
       (noncoherent_atom_size & (noncoherent_atom_size - 1u)) != 0u ||
       offset >= allocation_size || size > allocation_size - offset)
@@ -43,22 +44,21 @@ bool8_t vkr_bindless_vulkan_noncoherent_range(
     end = AlignPow2(requested_end, noncoherent_atom_size);
   if (end > allocation_size)
     end = allocation_size;
-  *out_range = (VkrBindlessVkMappedRange){.offset = start, .size = end - start};
+  *out_range = (VkrVulkanMappedRange){.offset = start, .size = end - start};
   return true_v;
 }
 
-int32_t
-vkr_bindless_vulkan_memory_type_rank(VkrBindlessVkMemoryClass memory_class,
-                                     VkMemoryPropertyFlags properties) {
+int32_t vkr_vulkan_memory_type_rank(VkrVulkanMemoryClass memory_class,
+                                    VkMemoryPropertyFlags properties) {
   switch (memory_class) {
-  case VKR_BINDLESS_VK_MEMORY_CLASS_DEVICE:
+  case VKR_VULKAN_MEMORY_CLASS_DEVICE:
     if ((properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) &&
         !(properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
       return 0;
     if (properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
       return 1;
     return 2;
-  case VKR_BINDLESS_VK_MEMORY_CLASS_UPLOAD:
+  case VKR_VULKAN_MEMORY_CLASS_UPLOAD:
     if (!(properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
       return -1;
     if ((properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) &&
@@ -67,7 +67,7 @@ vkr_bindless_vulkan_memory_type_rank(VkrBindlessVkMemoryClass memory_class,
     if (properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
       return 1;
     return 2;
-  case VKR_BINDLESS_VK_MEMORY_CLASS_STAGING:
+  case VKR_VULKAN_MEMORY_CLASS_STAGING:
     if (!(properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
       return -1;
     /* Inverse of UPLOAD: a copy source is never read by a shader, so keep it
@@ -81,7 +81,7 @@ vkr_bindless_vulkan_memory_type_rank(VkrBindlessVkMemoryClass memory_class,
     if (properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
       return 2;
     return 3;
-  case VKR_BINDLESS_VK_MEMORY_CLASS_READBACK:
+  case VKR_VULKAN_MEMORY_CLASS_READBACK:
     if (!(properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
       return -1;
     if ((properties & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) &&
@@ -97,18 +97,16 @@ vkr_bindless_vulkan_memory_type_rank(VkrBindlessVkMemoryClass memory_class,
   }
 }
 
-bool8_t
-vkr_bindless_vulkan_memory_pool_key_equal(VkrBindlessVkMemoryPoolKey left,
-                                          VkrBindlessVkMemoryPoolKey right) {
+bool8_t vkr_vulkan_memory_pool_key_equal(VkrVulkanMemoryPoolKey left,
+                                         VkrVulkanMemoryPoolKey right) {
   return left.memory_class == right.memory_class && left.kind == right.kind &&
          left.memory_type_index == right.memory_type_index &&
          left.device_address_required == right.device_address_required;
 }
 
-bool8_t vkr_bindless_vulkan_memory_block_size(uint64_t configured_size,
-                                              uint64_t resource_size,
-                                              uint64_t alignment,
-                                              uint64_t *out_size) {
+bool8_t vkr_vulkan_memory_block_size(uint64_t configured_size,
+                                     uint64_t resource_size, uint64_t alignment,
+                                     uint64_t *out_size) {
   if (!out_size || !configured_size || !resource_size || !alignment ||
       (alignment & (alignment - 1u)) != 0u)
     return false_v;
@@ -119,23 +117,23 @@ bool8_t vkr_bindless_vulkan_memory_block_size(uint64_t configured_size,
   return true_v;
 }
 
-bool8_t vkr_bindless_vulkan_memory_pool_create(
-    const VkrBindlessVkMemoryPoolConfig *config,
-    VkrBindlessVkMemoryPoolManager **out_manager) {
+bool8_t
+vkr_vulkan_memory_pool_create(const VkrVulkanMemoryPoolConfig *config,
+                              VkrVulkanMemoryPoolManager **out_manager) {
   if (!config || !out_manager || !config->allocator || !config->device ||
       !config->max_blocks || !config->max_blocks_per_pool ||
       config->max_blocks_per_pool > config->max_blocks ||
       !config->max_allocations_per_block)
     return false_v;
-  for (uint32_t memory_class = 0;
-       memory_class < VKR_BINDLESS_VK_MEMORY_CLASS_COUNT; ++memory_class) {
-    for (uint32_t kind = 0; kind < VKR_BINDLESS_VK_MEMORY_KIND_COUNT; ++kind) {
+  for (uint32_t memory_class = 0; memory_class < VKR_VULKAN_MEMORY_CLASS_COUNT;
+       ++memory_class) {
+    for (uint32_t kind = 0; kind < VKR_VULKAN_MEMORY_KIND_COUNT; ++kind) {
       if (!config->block_sizes[memory_class][kind])
         return false_v;
     }
   }
   *out_manager = NULL;
-  VkrBindlessVkMemoryPoolManager *manager = vkr_allocator_alloc(
+  VkrVulkanMemoryPoolManager *manager = vkr_allocator_alloc(
       config->allocator, sizeof(*manager), VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!manager)
     return false_v;
@@ -156,8 +154,8 @@ bool8_t vkr_bindless_vulkan_memory_pool_create(
 }
 
 vkr_internal void
-vkr_bindless_vk_memory_destroy_block(VkrBindlessVkMemoryPoolManager *manager,
-                                     VkrBindlessVkMemoryBlock *block) {
+vkr_vk_memory_destroy_block(VkrVulkanMemoryPoolManager *manager,
+                            VkrVulkanMemoryBlock *block) {
   if (block->mapped)
     vkUnmapMemory(manager->config.device, block->memory);
   if (block->memory)
@@ -169,21 +167,20 @@ vkr_bindless_vk_memory_destroy_block(VkrBindlessVkMemoryPoolManager *manager,
   MemZero(block, sizeof(*block));
 }
 
-void vkr_bindless_vulkan_memory_pool_destroy(
-    VkrBindlessVkMemoryPoolManager *manager) {
+void vkr_vulkan_memory_pool_destroy(VkrVulkanMemoryPoolManager *manager) {
   if (!manager)
     return;
-  VkrBindlessVkMemoryPoolMetrics metrics = {0};
-  vkr_bindless_vulkan_memory_pool_get_metrics(manager, &metrics);
+  VkrVulkanMemoryPoolMetrics metrics = {0};
+  vkr_vulkan_memory_pool_get_metrics(manager, &metrics);
   if (metrics.aggregate.live_allocations ||
       metrics.aggregate.retired_allocations) {
-    log_error("Bindless Vulkan memory pool destroyed with %llu live and %llu "
+    log_error("Vulkan memory pool destroyed with %llu live and %llu "
               "retired placements",
               (unsigned long long)metrics.aggregate.live_allocations,
               (unsigned long long)metrics.aggregate.retired_allocations);
   }
   for (uint32_t i = 0; i < manager->block_count; ++i)
-    vkr_bindless_vk_memory_destroy_block(manager, &manager->blocks[i]);
+    vkr_vk_memory_destroy_block(manager, &manager->blocks[i]);
   VkrAllocator *allocator = manager->config.allocator;
   vkr_allocator_free(allocator, manager->blocks, manager->blocks_size,
                      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
@@ -191,13 +188,13 @@ void vkr_bindless_vulkan_memory_pool_destroy(
                      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
 }
 
-vkr_internal VkrBindlessVkMemoryBlock *vkr_bindless_vk_memory_create_block(
-    VkrBindlessVkMemoryPoolManager *manager, VkrBindlessVkMemoryPoolKey key,
+vkr_internal VkrVulkanMemoryBlock *vkr_vk_memory_create_block(
+    VkrVulkanMemoryPoolManager *manager, VkrVulkanMemoryPoolKey key,
     VkMemoryPropertyFlags properties, uint64_t resource_size,
     uint64_t alignment, uint32_t *out_block_index) {
   uint32_t pool_block_count = 0u;
   for (uint32_t i = 0; i < manager->block_count; ++i) {
-    if (vkr_bindless_vulkan_memory_pool_key_equal(manager->blocks[i].key, key))
+    if (vkr_vulkan_memory_pool_key_equal(manager->blocks[i].key, key))
       pool_block_count++;
   }
   if (manager->block_count == manager->config.max_blocks ||
@@ -206,7 +203,7 @@ vkr_internal VkrBindlessVkMemoryBlock *vkr_bindless_vk_memory_create_block(
     return NULL;
   }
   uint64_t block_size = 0;
-  if (!vkr_bindless_vulkan_memory_block_size(
+  if (!vkr_vulkan_memory_block_size(
           manager->config.block_sizes[key.memory_class][key.kind],
           resource_size, alignment, &block_size))
     return NULL;
@@ -216,7 +213,7 @@ vkr_internal VkrBindlessVkMemoryBlock *vkr_bindless_vk_memory_create_block(
       .max_retirements = manager->config.max_allocations_per_block,
       .max_free_ranges = manager->config.max_allocations_per_block + 1u,
   };
-  VkrBindlessVkMemoryBlock pending = {
+  VkrVulkanMemoryBlock pending = {
       .key = key,
       .size = block_size,
       .properties = properties,
@@ -253,7 +250,7 @@ vkr_internal VkrBindlessVkMemoryBlock *vkr_bindless_vk_memory_create_block(
        vkMapMemory(manager->config.device, pending.memory, 0u, block_size, 0u,
                    &pending.mapped) != VK_SUCCESS)) {
     manager->native_allocation_failures++;
-    vkr_bindless_vk_memory_destroy_block(manager, &pending);
+    vkr_vk_memory_destroy_block(manager, &pending);
     return NULL;
   }
   const uint32_t block_index = manager->block_count++;
@@ -270,23 +267,22 @@ vkr_internal VkrBindlessVkMemoryBlock *vkr_bindless_vk_memory_create_block(
   return &manager->blocks[block_index];
 }
 
-bool8_t vkr_bindless_vulkan_memory_pool_allocate(
-    VkrBindlessVkMemoryPoolManager *manager, VkrBindlessVkMemoryPoolKey key,
+bool8_t vkr_vulkan_memory_pool_allocate(
+    VkrVulkanMemoryPoolManager *manager, VkrVulkanMemoryPoolKey key,
     VkMemoryPropertyFlags properties, VkDeviceSize size, VkDeviceSize alignment,
-    VkrBindlessVkPooledAllocation *out_allocation) {
+    VkrVulkanPooledAllocation *out_allocation) {
   if (!manager || !out_allocation || !size || !alignment ||
-      key.memory_class >= VKR_BINDLESS_VK_MEMORY_CLASS_COUNT ||
-      key.kind >= VKR_BINDLESS_VK_MEMORY_KIND_COUNT ||
-      (key.kind == VKR_BINDLESS_VK_MEMORY_KIND_IMAGE &&
-       key.device_address_required))
+      key.memory_class >= VKR_VULKAN_MEMORY_CLASS_COUNT ||
+      key.kind >= VKR_VULKAN_MEMORY_KIND_COUNT ||
+      (key.kind == VKR_VULKAN_MEMORY_KIND_IMAGE && key.device_address_required))
     return false_v;
   MemZero(out_allocation, sizeof(*out_allocation));
-  const uint32_t gpu_kind = key.kind == VKR_BINDLESS_VK_MEMORY_KIND_BUFFER
+  const uint32_t gpu_kind = key.kind == VKR_VULKAN_MEMORY_KIND_BUFFER
                                 ? VKR_GPU_MEMORY_CLASS_BUFFER
                                 : VKR_GPU_MEMORY_CLASS_TEXTURE;
   for (uint32_t i = 0; i < manager->block_count; ++i) {
-    VkrBindlessVkMemoryBlock *candidate = &manager->blocks[i];
-    if (!vkr_bindless_vulkan_memory_pool_key_equal(candidate->key, key))
+    VkrVulkanMemoryBlock *candidate = &manager->blocks[i];
+    if (!vkr_vulkan_memory_pool_key_equal(candidate->key, key))
       continue;
     VkrGpuMemoryMetrics metrics = {0};
     vkr_gpu_memory_get_metrics(candidate->core, &metrics);
@@ -302,7 +298,7 @@ bool8_t vkr_bindless_vulkan_memory_pool_allocate(
                                 &handle,
                                 &placement) != VKR_GPU_MEMORY_STATUS_OK)
       continue;
-    *out_allocation = (VkrBindlessVkPooledAllocation){
+    *out_allocation = (VkrVulkanPooledAllocation){
         .memory = candidate->memory,
         .memory_size = candidate->size,
         .offset = placement.resource_offset,
@@ -318,7 +314,7 @@ bool8_t vkr_bindless_vulkan_memory_pool_allocate(
     return true_v;
   }
   uint32_t block_index = UINT32_MAX;
-  VkrBindlessVkMemoryBlock *block = vkr_bindless_vk_memory_create_block(
+  VkrVulkanMemoryBlock *block = vkr_vk_memory_create_block(
       manager, key, properties, size, alignment, &block_index);
   if (!block)
     return false_v;
@@ -327,7 +323,7 @@ bool8_t vkr_bindless_vulkan_memory_pool_allocate(
   if (vkr_gpu_memory_allocate(block->core, size, alignment, gpu_kind, &handle,
                               &placement) != VKR_GPU_MEMORY_STATUS_OK)
     return false_v;
-  *out_allocation = (VkrBindlessVkPooledAllocation){
+  *out_allocation = (VkrVulkanPooledAllocation){
       .memory = block->memory,
       .memory_size = block->size,
       .offset = placement.resource_offset,
@@ -343,18 +339,18 @@ bool8_t vkr_bindless_vulkan_memory_pool_allocate(
   return true_v;
 }
 
-bool8_t vkr_bindless_vulkan_memory_pool_release(
-    VkrBindlessVkMemoryPoolManager *manager,
-    VkrBindlessVkPooledAllocation *allocation, uint64_t last_use_submit_value,
-    uint64_t completed_submit_value) {
+bool8_t vkr_vulkan_memory_pool_release(VkrVulkanMemoryPoolManager *manager,
+                                       VkrVulkanPooledAllocation *allocation,
+                                       uint64_t last_use_submit_value,
+                                       uint64_t completed_submit_value) {
   if (!manager || !allocation || !allocation->valid ||
       allocation->block_index >= manager->block_count ||
       last_use_submit_value > completed_submit_value ||
       (allocation->retired &&
        allocation->retire_value > completed_submit_value))
     return false_v;
-  VkrBindlessVkMemoryBlock *block = &manager->blocks[allocation->block_index];
-  if (!vkr_bindless_vulkan_memory_pool_key_equal(block->key, allocation->key) ||
+  VkrVulkanMemoryBlock *block = &manager->blocks[allocation->block_index];
+  if (!vkr_vulkan_memory_pool_key_equal(block->key, allocation->key) ||
       vkr_gpu_memory_collect(block->core, completed_submit_value, NULL, NULL,
                              NULL) != VKR_GPU_MEMORY_STATUS_OK)
     return false_v;
@@ -369,14 +365,14 @@ bool8_t vkr_bindless_vulkan_memory_pool_release(
   return true_v;
 }
 
-bool8_t vkr_bindless_vulkan_memory_pool_retire(
-    VkrBindlessVkMemoryPoolManager *manager,
-    VkrBindlessVkPooledAllocation *allocation, uint64_t retire_value) {
+bool8_t vkr_vulkan_memory_pool_retire(VkrVulkanMemoryPoolManager *manager,
+                                      VkrVulkanPooledAllocation *allocation,
+                                      uint64_t retire_value) {
   if (!manager || !allocation || !allocation->valid || allocation->retired ||
       allocation->block_index >= manager->block_count)
     return false_v;
-  VkrBindlessVkMemoryBlock *block = &manager->blocks[allocation->block_index];
-  if (!vkr_bindless_vulkan_memory_pool_key_equal(block->key, allocation->key) ||
+  VkrVulkanMemoryBlock *block = &manager->blocks[allocation->block_index];
+  if (!vkr_vulkan_memory_pool_key_equal(block->key, allocation->key) ||
       vkr_gpu_memory_retire(block->core, allocation->handle, retire_value) !=
           VKR_GPU_MEMORY_STATUS_OK)
     return false_v;
@@ -386,22 +382,22 @@ bool8_t vkr_bindless_vulkan_memory_pool_retire(
 }
 
 vkr_internal VkrGpuMemoryClassMetrics *
-vkr_bindless_vk_dedicated_class_metrics(VkrGpuMemoryMetrics *metrics,
-                                        VkrBindlessVkMemoryPoolKey key) {
-  const uint32_t gpu_kind = key.kind == VKR_BINDLESS_VK_MEMORY_KIND_BUFFER
+vkr_vk_dedicated_class_metrics(VkrGpuMemoryMetrics *metrics,
+                               VkrVulkanMemoryPoolKey key) {
+  const uint32_t gpu_kind = key.kind == VKR_VULKAN_MEMORY_KIND_BUFFER
                                 ? VKR_GPU_MEMORY_CLASS_BUFFER
                                 : VKR_GPU_MEMORY_CLASS_TEXTURE;
   return &metrics->classes[gpu_kind];
 }
 
-void vkr_bindless_vulkan_memory_pool_record_dedicated_allocate(
-    VkrBindlessVkMemoryPoolManager *manager, VkrBindlessVkMemoryPoolKey key,
+void vkr_vulkan_memory_pool_record_dedicated_allocate(
+    VkrVulkanMemoryPoolManager *manager, VkrVulkanMemoryPoolKey key,
     uint64_t size) {
   if (!manager || !size)
     return;
   VkrGpuMemoryMetrics *metrics = &manager->dedicated_metrics;
   VkrGpuMemoryClassMetrics *class_metrics =
-      vkr_bindless_vk_dedicated_class_metrics(metrics, key);
+      vkr_vk_dedicated_class_metrics(metrics, key);
   metrics->allocations_created++;
   metrics->live_allocations++;
   metrics->live_requested_bytes += size;
@@ -433,15 +429,15 @@ void vkr_bindless_vulkan_memory_pool_record_dedicated_allocate(
           (uint64_t)manager->block_count + manager->dedicated_live);
 }
 
-void vkr_bindless_vulkan_memory_pool_record_dedicated_release(
-    VkrBindlessVkMemoryPoolManager *manager, VkrBindlessVkMemoryPoolKey key,
+void vkr_vulkan_memory_pool_record_dedicated_release(
+    VkrVulkanMemoryPoolManager *manager, VkrVulkanMemoryPoolKey key,
     uint64_t size, bool8_t retired) {
   if (!manager || !size || !manager->dedicated_live ||
       manager->dedicated_bytes < size)
     return;
   VkrGpuMemoryMetrics *metrics = &manager->dedicated_metrics;
   VkrGpuMemoryClassMetrics *class_metrics =
-      vkr_bindless_vk_dedicated_class_metrics(metrics, key);
+      vkr_vk_dedicated_class_metrics(metrics, key);
   uint64_t *allocations =
       retired ? &metrics->retired_allocations : &metrics->live_allocations;
   uint64_t *requested = retired ? &metrics->retired_requested_bytes
@@ -468,14 +464,14 @@ void vkr_bindless_vulkan_memory_pool_record_dedicated_release(
   manager->dedicated_bytes -= size;
 }
 
-bool8_t vkr_bindless_vulkan_memory_pool_record_dedicated_retire(
-    VkrBindlessVkMemoryPoolManager *manager, VkrBindlessVkMemoryPoolKey key,
+bool8_t vkr_vulkan_memory_pool_record_dedicated_retire(
+    VkrVulkanMemoryPoolManager *manager, VkrVulkanMemoryPoolKey key,
     uint64_t size) {
   if (!manager || !size)
     return false_v;
   VkrGpuMemoryMetrics *metrics = &manager->dedicated_metrics;
   VkrGpuMemoryClassMetrics *class_metrics =
-      vkr_bindless_vk_dedicated_class_metrics(metrics, key);
+      vkr_vk_dedicated_class_metrics(metrics, key);
   if (!metrics->live_allocations || metrics->live_requested_bytes < size ||
       metrics->live_reserved_bytes < size || !class_metrics->live_allocations ||
       class_metrics->live_requested_bytes < size ||
@@ -496,15 +492,15 @@ bool8_t vkr_bindless_vulkan_memory_pool_record_dedicated_retire(
   return true_v;
 }
 
-void vkr_bindless_vulkan_memory_pool_record_native_failure(
-    VkrBindlessVkMemoryPoolManager *manager) {
+void vkr_vulkan_memory_pool_record_native_failure(
+    VkrVulkanMemoryPoolManager *manager) {
   if (manager)
     manager->native_allocation_failures++;
 }
 
-void vkr_bindless_vulkan_memory_pool_get_metrics(
-    const VkrBindlessVkMemoryPoolManager *manager,
-    VkrBindlessVkMemoryPoolMetrics *out_metrics) {
+void vkr_vulkan_memory_pool_get_metrics(
+    const VkrVulkanMemoryPoolManager *manager,
+    VkrVulkanMemoryPoolMetrics *out_metrics) {
   if (!out_metrics)
     return;
   MemZero(out_metrics, sizeof(*out_metrics));

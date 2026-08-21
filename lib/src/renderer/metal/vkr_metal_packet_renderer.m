@@ -286,8 +286,9 @@ struct VkrMetalPacketRenderer {
    * The capture ring is sized by capture_max_batch_bytes times the ring
    * capacity and reaches ~96 MiB at the production defaults — far larger than
    * the renderer arena, which is sized for per-frame graph work. It therefore
-   * gets its own reservation, exactly as the bindless Vulkan renderer does,
-   * instead of displacing every other renderer allocation.
+   * gets its own reservation, exactly as the Vulkan renderer does,
+   * instead
+   * of displacing every other renderer allocation.
    */
   VkrDMemory capture_storage_memory;
   VkrAllocator capture_storage_allocator;

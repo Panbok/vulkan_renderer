@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "id": "smoke.bistro.bindless.gate_a",
+  "id": "smoke.bistro.vulkan.gate_a",
   "suite": "smoke",
-  "description": "Backend-neutral Bistro capture fixture for the bindless Gate A color, depth, and identifier contract.",
+  "description": "Backend-neutral Bistro capture fixture for the Vulkan Gate A color, depth, and identifier contract.",
   "scene": "assets/scenes/bistro.scene.json",
   "seed": 1,
   "resolution": [1280, 720],

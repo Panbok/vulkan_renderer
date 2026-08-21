@@ -1,4 +1,4 @@
-struct VkrBindlessVertex
+struct VkrVulkanVertex
 {
     float3 position;
     float3 normal;
@@ -7,14 +7,14 @@ struct VkrBindlessVertex
     float4 tangent;
 };
 
-struct VkrBindlessInstance
+struct VkrVulkanInstance
 {
     float4x4 model;
     uint object_id;
     uint3 reserved;
 };
 
-struct VkrBindlessMaterial
+struct VkrVulkanMaterial
 {
     float4 tint;
     uint base_color_texture;
@@ -36,13 +36,13 @@ struct VkrBindlessMaterial
     float4 material_attenuation_color;
 };
 
-struct VkrBindlessShadowCascade
+struct VkrVulkanShadowCascade
 {
     float4x4 light_view_projection;
     float4 split_depth;
 };
 
-struct VkrBindlessIblProbe
+struct VkrVulkanIblProbe
 {
     uint irradiance_texture;
     uint irradiance_sampler;
@@ -53,12 +53,12 @@ struct VkrBindlessIblProbe
     float4 intensity_box;
 };
 
-struct VkrBindlessPacketFrameRoot
+struct VkrVulkanPacketFrameRoot
 {
-    VkrBindlessInstance* instances;
+    VkrVulkanInstance* instances;
     uint2 instance_address_padding;
     float4x4 view_projection;
-    VkrBindlessMaterial* materials;
+    VkrVulkanMaterial* materials;
     uint irradiance_texture;
     uint irradiance_sampler;
     uint prefilter_texture;
@@ -87,36 +87,36 @@ struct VkrBindlessPacketFrameRoot
     uint4 point_light_global_mask;
     uint point_light_count;
     uint3 point_light_reserved;
-    VkrBindlessShadowCascade* shadow_cascades;
+    VkrVulkanShadowCascade* shadow_cascades;
     uint2 shadow_address_padding;
     float4x4 view;
     uint shadow_cascade_count;
     float shadow_bias;
     uint2 shadow_reserved;
-    VkrBindlessIblProbe* ibl_probes;
+    VkrVulkanIblProbe* ibl_probes;
     uint ibl_probe_count;
     uint ibl_probe_reserved;
 };
 
 #include "../../../shared/gpu_draw.slangh"
 
-struct VkrBindlessPacketDrawRoot
+struct VkrVulkanPacketDrawRoot
 {
     VkrGpuGeometryRow* geometry_rows;
     VkrGpuVisibleDrawRow* visible_rows;
-    VkrBindlessVertex* vertices;
-    VkrBindlessPacketFrameRoot* frame;
+    VkrVulkanVertex* vertices;
+    VkrVulkanPacketFrameRoot* frame;
     uint visible_row_index;
     uint flags;
     uint2 reserved;
 };
 
-struct VkrBindlessPacketUtilityRoot
+struct VkrVulkanPacketUtilityRoot
 {
-    VkrBindlessVertex* vertices;
-    VkrBindlessInstance* instances;
+    VkrVulkanVertex* vertices;
+    VkrVulkanInstance* instances;
     float4x4 view_projection;
-    VkrBindlessMaterial* materials;
+    VkrVulkanMaterial* materials;
     uint irradiance_texture;
     uint irradiance_sampler;
     uint prefilter_texture;
@@ -152,25 +152,25 @@ struct VkrBindlessPacketUtilityRoot
     uint4 point_light_global_mask;
     uint point_light_count;
     uint3 point_light_reserved;
-    VkrBindlessShadowCascade* shadow_cascades;
+    VkrVulkanShadowCascade* shadow_cascades;
     uint2 shadow_address_padding;
     float4x4 view;
     uint shadow_cascade_count;
     float shadow_bias;
     uint2 shadow_reserved;
-    VkrBindlessIblProbe* ibl_probes;
+    VkrVulkanIblProbe* ibl_probes;
     uint ibl_probe_count;
     uint ibl_probe_reserved;
 };
 
-struct VkrBindlessPushConstants
+struct VkrVulkanPushConstants
 {
-    VkrBindlessPacketDrawRoot* root;
+    VkrVulkanPacketDrawRoot* root;
     uint material_index;
     uint flags;
 };
 
-struct VkrBindlessIblRoot
+struct VkrVulkanIblRoot
 {
     uint source_texture;
     uint source_sampler;
@@ -182,7 +182,7 @@ struct VkrBindlessIblRoot
     float roughness;
 };
 
-struct VkrBindlessVertexOutput
+struct VkrVulkanVertexOutput
 {
     float4 position : SV_Position;
     float2 uv : TEXCOORD0;
@@ -193,14 +193,14 @@ struct VkrBindlessVertexOutput
     float4 world_tangent : TEXCOORD4;
 };
 
-struct VkrBindlessTextVertex
+struct VkrVulkanTextVertex
 {
     float2 position;
     float2 texcoord;
     float4 color;
 };
 
-struct VkrBindlessTextOutput
+struct VkrVulkanTextOutput
 {
     float4 position : SV_Position;
     float2 uv : TEXCOORD0;
@@ -219,6 +219,6 @@ struct VkrBindlessTextOutput
 [[vk::binding(1, 0)]] RWTexture2D<uint2> g_storage_uint2_2d[];
 [[vk::binding(1, 0)]] RWTexture2DArray<float4> g_storage_images[];
 [[vk::binding(1, 0)]] RWTexture2DArray<uint2> g_storage_uint2_images[];
-[[vk::push_constant]] ConstantBuffer<VkrBindlessPushConstants> g_push;
+[[vk::push_constant]] ConstantBuffer<VkrVulkanPushConstants> g_push;
 
 static const float vkr_pi = 3.14159265359f;

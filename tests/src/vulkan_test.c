@@ -1,22 +1,25 @@
-#include "bindless_vulkan_test.h"
+#include "vulkan_test.h"
 
+#include "memory/vkr_dmemory.h"
+#include "memory/vkr_dmemory_allocator.h"
 #include "renderer/vkr_gpu_abi.h"
 #include "renderer/vkr_gpu_memory.h"
 #include "renderer/vkr_gpu_slot_table.h"
 #include "renderer/vkr_gpu_submit_ring.h"
-#include "renderer/vulkan/bindless/vkr_bindless_vulkan_memory.h"
-#include "renderer/vulkan/bindless/vkr_bindless_vulkan_wsi.h"
+#include "renderer/vulkan/vkr_vulkan_memory.h"
+#include "renderer/vulkan/vkr_vulkan_renderer.h"
+#include "renderer/vulkan/vkr_vulkan_wsi.h"
 
 #include <assert.h>
 #include <stdio.h>
 
 typedef struct PresentCase {
   VkResult result;
-  VkrBindlessVulkanPresentResult expected;
+  VkrVulkanPresentResult expected;
 } PresentCase;
 
-static void assert_present_result(VkrBindlessVulkanPresentResult actual,
-                                  VkrBindlessVulkanPresentResult expected) {
+static void assert_present_result(VkrVulkanPresentResult actual,
+                                  VkrVulkanPresentResult expected) {
   assert(actual.enqueue_state_known == expected.enqueue_state_known);
   assert(actual.queue_operations_enqueued ==
          expected.queue_operations_enqueued);
@@ -30,18 +33,18 @@ static void assert_present_result(VkrBindlessVulkanPresentResult actual,
 
 static void test_present_result_classifier(void) {
   printf("  Running test_present_result_classifier...\n");
-  const VkrBindlessVulkanPresentResult enqueued = {
+  const VkrVulkanPresentResult enqueued = {
       .enqueue_state_known = true_v,
       .queue_operations_enqueued = true_v,
       .present_completion_tracking_required = true_v,
   };
-  const VkrBindlessVulkanPresentResult enqueued_recreate = {
+  const VkrVulkanPresentResult enqueued_recreate = {
       .enqueue_state_known = true_v,
       .queue_operations_enqueued = true_v,
       .present_completion_tracking_required = true_v,
       .target_recreate_required = true_v,
   };
-  const VkrBindlessVulkanPresentResult not_enqueued = {
+  const VkrVulkanPresentResult not_enqueued = {
       .enqueue_state_known = true_v,
       .acquired_image_recovery_required = true_v,
   };
@@ -54,126 +57,155 @@ static void test_present_result_classifier(void) {
       {VK_ERROR_PRESENT_TIMING_QUEUE_FULL_EXT, enqueued_recreate},
       {VK_ERROR_OUT_OF_HOST_MEMORY, not_enqueued},
       {VK_ERROR_OUT_OF_DEVICE_MEMORY, not_enqueued},
-      {VK_ERROR_DEVICE_LOST,
-       (VkrBindlessVulkanPresentResult){.device_lost = true_v}},
+      {VK_ERROR_DEVICE_LOST, (VkrVulkanPresentResult){.device_lost = true_v}},
       {VK_ERROR_FORMAT_NOT_SUPPORTED, {0}},
   };
   for (uint32_t i = 0; i < ArrayCount(cases); ++i) {
-    assert_present_result(
-        vkr_bindless_vulkan_present_result_classify(cases[i].result),
-        cases[i].expected);
+    assert_present_result(vkr_vulkan_present_result_classify(cases[i].result),
+                          cases[i].expected);
   }
   printf("  test_present_result_classifier PASSED\n");
 }
 
 static void test_reacquisition_completion_contract(void) {
   printf("  Running test_reacquisition_completion_contract...\n");
-  VkrBindlessVulkanReacquireState state = {0};
-  vkr_bindless_vulkan_reacquire_record(&state, false_v, 7u);
-  VkrBindlessVulkanReacquireResult result =
-      vkr_bindless_vulkan_reacquire_complete(&state, 7u);
+  VkrVulkanReacquireState state = {0};
+  vkr_vulkan_reacquire_record(&state, false_v, 7u);
+  VkrVulkanReacquireResult result = vkr_vulkan_reacquire_complete(&state, 7u);
   assert(!result.image_present_complete && !result.collect_retired_swapchains &&
          !state.pending_wait_submit_value && !state.successor_present_complete);
-  vkr_bindless_vulkan_reacquire_record(&state, true_v, 7u);
+  vkr_vulkan_reacquire_record(&state, true_v, 7u);
   assert(state.pending_wait_submit_value == 7u);
-  result = vkr_bindless_vulkan_reacquire_complete(&state, 6u);
+  result = vkr_vulkan_reacquire_complete(&state, 6u);
   assert(!result.image_present_complete && !result.collect_retired_swapchains &&
          state.pending_wait_submit_value == 7u &&
          !state.successor_present_complete);
-  result = vkr_bindless_vulkan_reacquire_complete(&state, 7u);
+  result = vkr_vulkan_reacquire_complete(&state, 7u);
   assert(result.image_present_complete && result.collect_retired_swapchains &&
          !state.pending_wait_submit_value && state.successor_present_complete);
-  assert(
-      !vkr_bindless_vulkan_reacquire_complete(NULL, 7u).image_present_complete);
+  assert(!vkr_vulkan_reacquire_complete(NULL, 7u).image_present_complete);
   printf("  test_reacquisition_completion_contract PASSED\n");
 }
 
 static void test_surface_extension_classifier(void) {
   printf("  Running test_surface_extension_classifier...\n");
-  assert(vkr_bindless_vulkan_instance_extension_is_surface(
-      VK_KHR_SURFACE_EXTENSION_NAME));
-  assert(vkr_bindless_vulkan_instance_extension_is_surface(
+  assert(
+      vkr_vulkan_instance_extension_is_surface(VK_KHR_SURFACE_EXTENSION_NAME));
+  assert(vkr_vulkan_instance_extension_is_surface(
       VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME));
-  assert(vkr_bindless_vulkan_instance_extension_is_surface(
+  assert(vkr_vulkan_instance_extension_is_surface(
       VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME));
-  assert(vkr_bindless_vulkan_instance_extension_is_surface(
-      "VK_KHR_win32_surface"));
-  assert(!vkr_bindless_vulkan_instance_extension_is_surface(
+  assert(vkr_vulkan_instance_extension_is_surface("VK_KHR_win32_surface"));
+  assert(!vkr_vulkan_instance_extension_is_surface(
       VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME));
-  assert(!vkr_bindless_vulkan_instance_extension_is_surface(NULL));
+  assert(!vkr_vulkan_instance_extension_is_surface(NULL));
   printf("  test_surface_extension_classifier PASSED\n");
 }
 
 static void test_noncoherent_atom_ranges(void) {
   printf("  Running test_noncoherent_atom_ranges...\n");
-  VkrBindlessVkMappedRange range = {0};
-  assert(vkr_bindless_vulkan_noncoherent_range(129u, 1u, 1024u, 128u, &range));
+  VkrVulkanMappedRange range = {0};
+  assert(vkr_vulkan_noncoherent_range(129u, 1u, 1024u, 128u, &range));
   assert(range.offset == 128u && range.size == 128u);
-  assert(
-      vkr_bindless_vulkan_noncoherent_range(900u, 124u, 1024u, 128u, &range));
+  assert(vkr_vulkan_noncoherent_range(900u, 124u, 1024u, 128u, &range));
   assert(range.offset == 896u && range.size == 128u);
-  assert(
-      vkr_bindless_vulkan_noncoherent_range(1000u, 24u, 1024u, 128u, &range));
+  assert(vkr_vulkan_noncoherent_range(1000u, 24u, 1024u, 128u, &range));
   assert(range.offset == 896u && range.size == 128u);
-  assert(
-      !vkr_bindless_vulkan_noncoherent_range(1024u, 1u, 1024u, 128u, &range));
-  assert(!vkr_bindless_vulkan_noncoherent_range(0u, 1u, 1024u, 96u, &range));
-  assert(!vkr_bindless_vulkan_noncoherent_range(UINT64_MAX - 3u, 8u, UINT64_MAX,
-                                                128u, &range));
+  assert(!vkr_vulkan_noncoherent_range(1024u, 1u, 1024u, 128u, &range));
+  assert(!vkr_vulkan_noncoherent_range(0u, 1u, 1024u, 96u, &range));
+  assert(!vkr_vulkan_noncoherent_range(UINT64_MAX - 3u, 8u, UINT64_MAX, 128u,
+                                       &range));
   printf("  test_noncoherent_atom_ranges PASSED\n");
 }
 
 static void test_memory_pool_topology_contract(void) {
   printf("  Running test_memory_pool_topology_contract...\n");
-  assert(vkr_bindless_vulkan_memory_type_rank(
-             VKR_BINDLESS_VK_MEMORY_CLASS_DEVICE,
-             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0);
-  assert(vkr_bindless_vulkan_memory_type_rank(
-             VKR_BINDLESS_VK_MEMORY_CLASS_DEVICE,
-             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
-                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 1);
-  assert(vkr_bindless_vulkan_memory_type_rank(
-             VKR_BINDLESS_VK_MEMORY_CLASS_UPLOAD,
-             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
-                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0);
-  assert(vkr_bindless_vulkan_memory_type_rank(
-             VKR_BINDLESS_VK_MEMORY_CLASS_UPLOAD,
-             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == -1);
-  assert(vkr_bindless_vulkan_memory_type_rank(
-             VKR_BINDLESS_VK_MEMORY_CLASS_READBACK,
+  assert(vkr_vulkan_memory_type_rank(VKR_VULKAN_MEMORY_CLASS_DEVICE,
+                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0);
+  assert(vkr_vulkan_memory_type_rank(VKR_VULKAN_MEMORY_CLASS_DEVICE,
+                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ==
+         1);
+  assert(vkr_vulkan_memory_type_rank(VKR_VULKAN_MEMORY_CLASS_UPLOAD,
+                                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ==
+         0);
+  assert(vkr_vulkan_memory_type_rank(VKR_VULKAN_MEMORY_CLASS_UPLOAD,
+                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ==
+         -1);
+  assert(vkr_vulkan_memory_type_rank(
+             VKR_VULKAN_MEMORY_CLASS_READBACK,
              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                  VK_MEMORY_PROPERTY_HOST_CACHED_BIT |
                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0);
 
-  const VkrBindlessVkMemoryPoolKey buffer = {
-      .memory_class = VKR_BINDLESS_VK_MEMORY_CLASS_DEVICE,
-      .kind = VKR_BINDLESS_VK_MEMORY_KIND_BUFFER,
+  const VkrVulkanMemoryPoolKey buffer = {
+      .memory_class = VKR_VULKAN_MEMORY_CLASS_DEVICE,
+      .kind = VKR_VULKAN_MEMORY_KIND_BUFFER,
       .memory_type_index = 2u,
       .device_address_required = true_v,
   };
-  assert(vkr_bindless_vulkan_memory_pool_key_equal(buffer, buffer));
-  VkrBindlessVkMemoryPoolKey different = buffer;
-  different.memory_class = VKR_BINDLESS_VK_MEMORY_CLASS_UPLOAD;
-  assert(!vkr_bindless_vulkan_memory_pool_key_equal(buffer, different));
+  assert(vkr_vulkan_memory_pool_key_equal(buffer, buffer));
+  VkrVulkanMemoryPoolKey different = buffer;
+  different.memory_class = VKR_VULKAN_MEMORY_CLASS_UPLOAD;
+  assert(!vkr_vulkan_memory_pool_key_equal(buffer, different));
   different = buffer;
-  different.kind = VKR_BINDLESS_VK_MEMORY_KIND_IMAGE;
-  assert(!vkr_bindless_vulkan_memory_pool_key_equal(buffer, different));
+  different.kind = VKR_VULKAN_MEMORY_KIND_IMAGE;
+  assert(!vkr_vulkan_memory_pool_key_equal(buffer, different));
   different = buffer;
   different.memory_type_index++;
-  assert(!vkr_bindless_vulkan_memory_pool_key_equal(buffer, different));
+  assert(!vkr_vulkan_memory_pool_key_equal(buffer, different));
   different = buffer;
   different.device_address_required = false_v;
-  assert(!vkr_bindless_vulkan_memory_pool_key_equal(buffer, different));
+  assert(!vkr_vulkan_memory_pool_key_equal(buffer, different));
 
   uint64_t block_size = 0u;
-  assert(
-      vkr_bindless_vulkan_memory_block_size(1024u, 2049u, 256u, &block_size));
+  assert(vkr_vulkan_memory_block_size(1024u, 2049u, 256u, &block_size));
   assert(block_size == 2304u);
-  assert(!vkr_bindless_vulkan_memory_block_size(1024u, 1u, 96u, &block_size));
-  assert(!vkr_bindless_vulkan_memory_block_size(UINT64_MAX, UINT64_MAX, 256u,
-                                                &block_size));
+  assert(!vkr_vulkan_memory_block_size(1024u, 1u, 96u, &block_size));
+  assert(
+      !vkr_vulkan_memory_block_size(UINT64_MAX, UINT64_MAX, 256u, &block_size));
   printf("  test_memory_pool_topology_contract PASSED\n");
+}
+
+static void test_renderer_create_failure_is_transactional(void) {
+  printf("  Running test_renderer_create_failure_is_transactional...\n");
+  VkrDMemory memory = {0};
+  assert(vkr_dmemory_create(MB(16), MB(16), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  const uint64_t free_before = vkr_dmemory_get_free_space(&memory);
+  const VkrVulkanRendererConfig config = {
+      .allocator = &allocator,
+      .graph_path =
+          "build/missing_vulkan_renderer_create_test.rendergraph.json",
+      .target_kind = VKR_PRESENT_TARGET_OFFSCREEN,
+      .width = 1u,
+      .height = 1u,
+      .image_count = 1u,
+      .sampled_image_capacity = 1u,
+      .storage_image_capacity = 1u,
+      .sampler_capacity = 1u,
+      .geometry_capacity = 1u,
+      .texture_capacity = 1u,
+      .material_record_capacity = 1u,
+      .material_slot_capacity = 3u,
+      .device_buffer_block_size = 1u,
+      .device_image_block_size = 1u,
+      .upload_buffer_block_size = 1u,
+      .readback_buffer_block_size = 1u,
+      .memory_block_capacity = 1u,
+      .memory_blocks_per_pool = 1u,
+      .memory_block_allocation_capacity = 1u,
+      .publication_staging_capacity = 2u,
+  };
+  VkrVulkanRenderer *renderer = NULL;
+  assert(!vkr_vulkan_renderer_create(&config, &renderer));
+  assert(renderer == NULL);
+  assert(vkr_dmemory_get_free_space(&memory) == free_before);
+  vkr_dmemory_destroy(&memory);
+  printf("  test_renderer_create_failure_is_transactional PASSED\n");
 }
 
 static void test_shared_submit_ring_completion_contract(void) {
@@ -331,17 +363,18 @@ static void test_shared_slot_table_retirement_preflight(void) {
   printf("  test_shared_slot_table_retirement_preflight PASSED\n");
 }
 
-bool32_t run_bindless_vulkan_tests(void) {
-  printf("--- Running bindless Vulkan tests... ---\n");
+bool32_t run_vulkan_tests(void) {
+  printf("--- Running Vulkan tests... ---\n");
   test_present_result_classifier();
   test_reacquisition_completion_contract();
   test_surface_extension_classifier();
   test_noncoherent_atom_ranges();
   test_memory_pool_topology_contract();
+  test_renderer_create_failure_is_transactional();
   test_shared_submit_ring_completion_contract();
   test_shared_gpu_memory_and_abi_contracts();
   test_shared_slot_table_metric_contract();
   test_shared_slot_table_retirement_preflight();
-  printf("--- Bindless Vulkan tests completed. ---\n");
+  printf("--- Vulkan tests completed. ---\n");
   return true;
 }

@@ -4,7 +4,7 @@
 
 typedef enum VkrRendererImplKind {
   VKR_RENDERER_IMPL_METAL = 0,
-  VKR_RENDERER_IMPL_BINDLESS_VULKAN,
+  VKR_RENDERER_IMPL_VULKAN,
 } VkrRendererImplKind;
 
 /**
@@ -221,7 +221,7 @@ typedef struct VkrRendererImplOps {
 
 typedef struct VkrRendererImplStrategies {
   const VkrRendererImplOps *metal;
-  const VkrRendererImplOps *bindless_vulkan;
+  const VkrRendererImplOps *vulkan;
 } VkrRendererImplStrategies;
 
 /** Coarse renderer implementation selected exactly once at initialization. */
@@ -234,7 +234,7 @@ typedef struct VkrRendererImpl {
 } VkrRendererImpl;
 
 /**
- * Selects immutable implementation properties. Bindless Vulkan is the
+ * Selects immutable implementation properties. Vulkan is the
  * production Windows strategy and remains unavailable elsewhere.
  */
 bool8_t vkr_renderer_impl_select(VkrRendererBackendType backend_type,

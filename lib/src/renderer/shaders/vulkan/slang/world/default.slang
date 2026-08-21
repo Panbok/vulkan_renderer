@@ -1,15 +1,15 @@
 [shader("vertex")]
-VkrBindlessVertexOutput world_vertex(uint vertex_id : SV_VertexID,
+VkrVulkanVertexOutput world_vertex(uint vertex_id : SV_VertexID,
                                      uint instance_id : SV_InstanceID)
 {
     return packet_vertex_impl(vertex_id, instance_id,
                               g_push.root.frame.view_projection);
 }
-float4 packet_base_color(VkrBindlessVertexOutput input)
+float4 packet_base_color(VkrVulkanVertexOutput input)
 {
     VkrGpuVisibleDrawRow visible =
         g_push.root.visible_rows[g_push.root.visible_row_index];
-    VkrBindlessMaterial material =
+    VkrVulkanMaterial material =
         g_push.root.frame.materials[visible.material_index];
     uint texture_index = NonUniformResourceIndex(material.base_color_texture);
     uint sampler_index = NonUniformResourceIndex(material.base_color_sampler);
@@ -17,7 +17,7 @@ float4 packet_base_color(VkrBindlessVertexOutput input)
            * material.tint * input.color;
 }
 
-struct VkrBindlessDirectResult
+struct VkrVulkanDirectResult
 {
     float3 diffuse;
     float3 specular;
@@ -52,7 +52,7 @@ float packet_geometry_schlick(float no_x, float roughness)
     return no_x / max(no_x * (1.0f - k) + k, 1e-6f);
 }
 
-VkrBindlessDirectResult packet_direct(float3 normal, float3 view, float3 light,
+VkrVulkanDirectResult packet_direct(float3 normal, float3 view, float3 light,
                                       float3 radiance, float3 albedo,
                                       float metallic, float roughness,
                                       float3 f0)
@@ -69,7 +69,7 @@ VkrBindlessDirectResult packet_direct(float3 normal, float3 view, float3 light,
                       max(4.0f * no_v * no_l, 1e-6f);
     float3 kd = (1.0f - fresnel) * (1.0f - metallic);
     float3 scale = radiance * no_l;
-    VkrBindlessDirectResult result;
+    VkrVulkanDirectResult result;
     result.diffuse = kd * albedo / vkr_pi * scale;
     result.specular = specular * scale;
     return result;
@@ -91,7 +91,7 @@ float2 packet_brdf_approximation(float no_v, float roughness)
     return float2(-1.04f, 1.04f) * a004 + r.zw;
 }
 
-uint4 packet_point_light_mask(VkrBindlessPacketFrameRoot* root,
+uint4 packet_point_light_mask(VkrVulkanPacketFrameRoot* root,
                               float3 world_position)
 {
     uint4 result = root.point_light_global_mask;
@@ -110,7 +110,7 @@ uint4 packet_point_light_mask(VkrBindlessPacketFrameRoot* root,
     return result | root.point_light_masks[index];
 }
 
-float packet_directional_shadow(VkrBindlessPacketFrameRoot* root,
+float packet_directional_shadow(VkrVulkanPacketFrameRoot* root,
                                 float3 world_position)
 {
     if (root.shadow_cascade_count == 0u)
@@ -139,7 +139,7 @@ float packet_directional_shadow(VkrBindlessPacketFrameRoot* root,
     return projected.z - root.shadow_bias <= shadow_depth ? 1.0f : 0.0f;
 }
 
-float packet_probe_influence(VkrBindlessIblProbe probe,
+float packet_probe_influence(VkrVulkanIblProbe probe,
                              float3 world_position)
 {
     float weight = max(probe.extents_weight.w, 0.0f);
@@ -179,13 +179,13 @@ float3 packet_box_project(float3 direction, float3 world_position,
 // follow packet_direct: the forward path passes base color with its metallic
 // factor, the deferred path passes G-buffer diffuse albedo and zero. Both
 // spell the same product, so the two paths shade identically.
-VkrBindlessDirectResult packet_punctual(VkrBindlessPacketFrameRoot* frame,
+VkrVulkanDirectResult packet_punctual(VkrVulkanPacketFrameRoot* frame,
                                         float3 world_position, float3 normal,
                                         float3 view, float3 albedo,
                                         float metallic, float roughness,
                                         float3 f0)
 {
-    VkrBindlessDirectResult result;
+    VkrVulkanDirectResult result;
     result.diffuse = 0.0f;
     result.specular = 0.0f;
     uint4 point_mask = packet_point_light_mask(frame, world_position);
@@ -251,7 +251,7 @@ VkrBindlessDirectResult packet_punctual(VkrBindlessPacketFrameRoot* frame,
                     attenuation *= cone_attenuation;
                 }
             }
-            VkrBindlessDirectResult direct = packet_direct(
+            VkrVulkanDirectResult direct = packet_direct(
                 normal, view, light_direction, p1.rgb * p2.x * attenuation,
                 albedo, metallic, roughness, f0);
             result.diffuse += direct.diffuse;
@@ -264,7 +264,7 @@ VkrBindlessDirectResult packet_punctual(VkrBindlessPacketFrameRoot* frame,
 // Global environment plus weighted local probes. `horizon_normal` is the
 // geometric normal where one survives; the deferred G-buffer keeps only the
 // shading normal and passes it for both.
-float3 packet_environment(VkrBindlessPacketFrameRoot* frame,
+float3 packet_environment(VkrVulkanPacketFrameRoot* frame,
                           float3 world_position, float3 normal,
                           float3 horizon_normal, float3 view,
                           float3 albedo, float metallic, float roughness,
@@ -299,7 +299,7 @@ float3 packet_environment(VkrBindlessPacketFrameRoot* frame,
                              : 1.0f;
     for (uint i = 0u; i < probe_count; ++i)
     {
-        VkrBindlessIblProbe probe = frame.ibl_probes[i];
+        VkrVulkanIblProbe probe = frame.ibl_probes[i];
         float weight = packet_probe_influence(probe,
                                               world_position) *
                        weight_scale;
@@ -336,13 +336,13 @@ float3 packet_environment(VkrBindlessPacketFrameRoot* frame,
 }
 
 [shader("fragment")]
-float4 world_fragment(VkrBindlessVertexOutput input,
+float4 world_fragment(VkrVulkanVertexOutput input,
                       bool front_facing : SV_IsFrontFace) : SV_Target0
 {
-    VkrBindlessPacketDrawRoot* draw = g_push.root;
-    VkrBindlessPacketFrameRoot* frame = draw.frame;
+    VkrVulkanPacketDrawRoot* draw = g_push.root;
+    VkrVulkanPacketFrameRoot* frame = draw.frame;
     VkrGpuVisibleDrawRow visible = draw.visible_rows[draw.visible_row_index];
-    VkrBindlessMaterial material = frame.materials[visible.material_index];
+    VkrVulkanMaterial material = frame.materials[visible.material_index];
     float4 base = packet_base_color(input);
     if (material.alpha_mode == 1u && base.a < material.material_alpha.x)
         discard;
@@ -412,7 +412,7 @@ float4 world_fragment(VkrBindlessVertexOutput input,
     if (frame.directional_direction_enabled.w > 0.5f)
     {
         float shadow = packet_directional_shadow(frame, input.world_position);
-        VkrBindlessDirectResult direct = packet_direct(
+        VkrVulkanDirectResult direct = packet_direct(
             normal, view, normalize(-frame.directional_direction_enabled.xyz),
             frame.directional_color_intensity.rgb *
                 frame.directional_color_intensity.w * shadow,
@@ -420,7 +420,7 @@ float4 world_fragment(VkrBindlessVertexOutput input,
         analytic_diffuse = direct.diffuse;
         analytic_specular = direct.specular;
     }
-    VkrBindlessDirectResult punctual = packet_punctual(
+    VkrVulkanDirectResult punctual = packet_punctual(
         frame, input.world_position, normal, view, base.rgb, metallic,
         roughness, f0);
     analytic_diffuse += punctual.diffuse;

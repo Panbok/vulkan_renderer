@@ -29,8 +29,8 @@ bool8_t vkr_renderer_impl_select(VkrRendererBackendType backend_type,
   switch (backend_type) {
   case VKR_RENDERER_BACKEND_TYPE_VULKAN:
     *out_impl = (VkrRendererImpl){
-        .kind = VKR_RENDERER_IMPL_BINDLESS_VULKAN,
-        .ops = strategies->bindless_vulkan,
+        .kind = VKR_RENDERER_IMPL_VULKAN,
+        .ops = strategies->vulkan,
         .caps = vkr_renderer_impl_default_caps(target_kind),
 #if defined(PLATFORM_WINDOWS)
         .initialization_supported = true_v,

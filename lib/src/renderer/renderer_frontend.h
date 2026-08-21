@@ -30,7 +30,7 @@
 #include "renderer/vkr_renderer_impl.h"
 
 typedef struct VkrMetalPacketRenderer VkrMetalPacketRenderer;
-typedef struct VkrBindlessVulkanRenderer VkrBindlessVulkanRenderer;
+typedef struct VkrVulkanRenderer VkrVulkanRenderer;
 
 /**
  * @brief Per-frame batching statistics for the world render path.
@@ -113,7 +113,7 @@ struct s_RendererFrontend {
   VkrRendererBackendType backend_type;
   VkrRendererImpl impl;
   VkrMetalPacketRenderer *metal_renderer;
-  VkrBindlessVulkanRenderer *bindless_vulkan_renderer;
+  VkrVulkanRenderer *vulkan_renderer;
   VkrAssetPublisher asset_publisher;
   VkrRendererImplSubmitResult timing_result;
   uint64_t timing_last_completed_submit_value;

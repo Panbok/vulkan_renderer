@@ -16,9 +16,10 @@
  * and none is used here.
  *
  * Publication order: a virgin table hands out slot 0 first, then 1, 2, ... The
- * sentinel contract in the bindless design depends on that. Slots freed by
- * `collect` are reused in LIFO order, so index reuse after a retirement is not
- * ascending — no caller may depend on which free index is returned.
+ * sentinel contract in the GPU slot-table design depends on that. Slots freed
+ * by
+ * `collect` are reused in LIFO order, so index reuse after a retirement
+ * is not ascending — no caller may depend on which free index is returned.
  */
 typedef struct VkrGpuSlotTable VkrGpuSlotTable;
 

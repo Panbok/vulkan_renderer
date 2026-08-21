@@ -78,7 +78,7 @@ int main(int argc, char **argv) {
   printf("\n"); // Add spacing
   all_passed &= run_renderer_impl_tests();
   printf("\n"); // Add spacing
-  all_passed &= run_bindless_vulkan_tests();
+  all_passed &= run_vulkan_tests();
   printf("\n"); // Add spacing
   all_passed &= run_packet_constants_tests();
   printf("\n"); // Add spacing

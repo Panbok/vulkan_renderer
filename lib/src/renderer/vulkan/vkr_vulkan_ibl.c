@@ -1,6 +1,6 @@
-#include "renderer/vulkan/bindless/vkr_bindless_vulkan_internal.h"
+#include "renderer/vulkan/vkr_vulkan_internal.h"
 
-vkr_internal void vkr_bindless_vk_cmd_ibl_image_barrier(
+vkr_internal void vkr_vk_cmd_ibl_image_barrier(
     VkCommandBuffer command, VkImage image, uint32_t mip_level,
     uint32_t layer_count, VkPipelineStageFlags2 src_stage,
     VkAccessFlags2 src_access, VkPipelineStageFlags2 dst_stage,
@@ -34,27 +34,26 @@ vkr_internal void vkr_bindless_vk_cmd_ibl_image_barrier(
   vkCmdPipelineBarrier2(command, &dependency);
 }
 
-vkr_internal bool8_t vkr_bindless_vk_record_ibl_dispatch(
-    VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
-    VkrBindlessVkIblPipeline pipeline,
-    const VkrBindlessVkPublishedTexture *source,
-    const VkrBindlessVkPublishedTexture *target, uint32_t target_mip,
+vkr_internal bool8_t vkr_vk_record_ibl_dispatch(
+    VkrVulkanRenderer *renderer, VkCommandBuffer command,
+    VkrVulkanIblPipeline pipeline, const VkrVulkanPublishedTexture *source,
+    const VkrVulkanPublishedTexture *target, uint32_t target_mip,
     uint32_t sample_count, float32_t roughness) {
   if (!source || !target || target_mip >= target->storage_slot_count ||
       source->sampler_record_index >= renderer->config.sampler_capacity)
     return false_v;
-  const VkrBindlessVkPublishedSampler *sampler =
+  const VkrVulkanPublishedSampler *sampler =
       &renderer->published_samplers[source->sampler_record_index];
   if (!sampler->live)
     return false_v;
-  VkrBindlessVkFrameSlot *slot =
+  VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   uint64_t root_address = 0u;
-  VkrBindlessVkIblRoot *root = vkr_bindless_vk_frame_upload_allocate(
-      slot, sizeof(*root), _Alignof(VkrBindlessVkIblRoot), &root_address, NULL);
+  VkrVulkanIblRoot *root = vkr_vk_frame_upload_allocate(
+      slot, sizeof(*root), _Alignof(VkrVulkanIblRoot), &root_address, NULL);
   if (!root)
     return false_v;
-  *root = (VkrBindlessVkIblRoot){
+  *root = (VkrVulkanIblRoot){
       .source_texture = source->sampled_slot.index,
       .source_sampler = sampler->slot.index,
       .target_texture = target->storage_slots[target_mip].index,
@@ -64,7 +63,7 @@ vkr_internal bool8_t vkr_bindless_vk_record_ibl_dispatch(
       .source_mip_count = source->image.mip_levels,
       .roughness = roughness,
   };
-  const VkrBindlessVkPushConstants push = {.root = root_address};
+  const VkrVulkanPushConstants push = {.root = root_address};
   vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
                     renderer->ibl_pipelines[pipeline]);
   vkCmdPushConstants(command, renderer->pipeline_layout,
@@ -77,10 +76,10 @@ vkr_internal bool8_t vkr_bindless_vk_record_ibl_dispatch(
 }
 
 vkr_internal void
-vkr_bindless_vk_record_ibl_source_mips(VkCommandBuffer command,
-                                       VkrBindlessVkPublishedTexture *source) {
+vkr_vk_record_ibl_source_mips(VkCommandBuffer command,
+                              VkrVulkanPublishedTexture *source) {
   if (source->image.mip_levels == 1u) {
-    vkr_bindless_vk_cmd_ibl_image_barrier(
+    vkr_vk_cmd_ibl_image_barrier(
         command, source->image.handle, 0u, source->image.array_layers,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
         VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
@@ -90,7 +89,7 @@ vkr_bindless_vk_record_ibl_source_mips(VkCommandBuffer command,
     return;
   }
   for (uint32_t mip = 1u; mip < source->image.mip_levels; ++mip) {
-    vkr_bindless_vk_cmd_ibl_image_barrier(
+    vkr_vk_cmd_ibl_image_barrier(
         command, source->image.handle, mip - 1u, source->image.array_layers,
         mip == 1u ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
                   : VK_PIPELINE_STAGE_2_BLIT_BIT,
@@ -100,7 +99,7 @@ vkr_bindless_vk_record_ibl_source_mips(VkCommandBuffer command,
         mip == 1u ? VK_IMAGE_LAYOUT_GENERAL
                   : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    vkr_bindless_vk_cmd_ibl_image_barrier(
+    vkr_vk_cmd_ibl_image_barrier(
         command, source->image.handle, mip, source->image.array_layers,
         VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
         VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -144,7 +143,7 @@ vkr_bindless_vk_record_ibl_source_mips(VkCommandBuffer command,
   }
   for (uint32_t mip = 0u; mip < source->image.mip_levels; ++mip) {
     const bool8_t last = mip == source->image.mip_levels - 1u;
-    vkr_bindless_vk_cmd_ibl_image_barrier(
+    vkr_vk_cmd_ibl_image_barrier(
         command, source->image.handle, mip, source->image.array_layers,
         VK_PIPELINE_STAGE_2_BLIT_BIT,
         last ? VK_ACCESS_2_TRANSFER_WRITE_BIT : VK_ACCESS_2_TRANSFER_READ_BIT,
@@ -156,41 +155,41 @@ vkr_bindless_vk_record_ibl_source_mips(VkCommandBuffer command,
   }
 }
 
-bool8_t vkr_bindless_vk_record_ibl_bakes(VkrBindlessVulkanRenderer *renderer,
-                                         VkCommandBuffer command) {
+bool8_t vkr_vk_record_ibl_bakes(VkrVulkanRenderer *renderer,
+                                VkCommandBuffer command) {
   for (uint32_t i = 0u; i < renderer->pending_ibl_bake_count; ++i) {
-    VkrBindlessVkPendingIblBake *job = &renderer->pending_ibl_bakes[i];
+    VkrVulkanPendingIblBake *job = &renderer->pending_ibl_bakes[i];
     job->recorded = false_v;
-    VkrBindlessVkPublishedTexture *source =
-        vkr_bindless_vk_texture_publication(renderer, job->source);
-    VkrBindlessVkPublishedTexture *irradiance =
-        vkr_bindless_vk_texture_publication(renderer, job->irradiance);
-    VkrBindlessVkPublishedTexture *prefilter =
-        vkr_bindless_vk_texture_publication(renderer, job->prefilter);
-    VkrBindlessVkPublishedTexture *equirect =
+    VkrVulkanPublishedTexture *source =
+        vkr_vk_texture_publication(renderer, job->source);
+    VkrVulkanPublishedTexture *irradiance =
+        vkr_vk_texture_publication(renderer, job->irradiance);
+    VkrVulkanPublishedTexture *prefilter =
+        vkr_vk_texture_publication(renderer, job->prefilter);
+    VkrVulkanPublishedTexture *equirect =
         job->convert_equirect
-            ? vkr_bindless_vk_texture_publication(renderer, job->equirect)
+            ? vkr_vk_texture_publication(renderer, job->equirect)
             : NULL;
     if (!source || !irradiance || !prefilter ||
         (job->convert_equirect && !equirect))
       return false_v;
-    const VkrBindlessVkPublishedTexture *input =
+    const VkrVulkanPublishedTexture *input =
         job->convert_equirect ? equirect : source;
     if (input->initialization_pending) {
       continue;
     }
     if (job->convert_equirect) {
-      if (!vkr_bindless_vk_record_ibl_dispatch(
-              renderer, command, VKR_BINDLESS_VK_IBL_PIPELINE_EQUIRECT,
-              equirect, source, 0u, 1u, 0.0f))
+      if (!vkr_vk_record_ibl_dispatch(renderer, command,
+                                      VKR_VULKAN_IBL_PIPELINE_EQUIRECT,
+                                      equirect, source, 0u, 1u, 0.0f))
         return false_v;
-      vkr_bindless_vk_record_ibl_source_mips(command, source);
+      vkr_vk_record_ibl_source_mips(command, source);
     }
-    if (!vkr_bindless_vk_record_ibl_dispatch(
-            renderer, command, VKR_BINDLESS_VK_IBL_PIPELINE_IRRADIANCE, source,
-            irradiance, 0u, 128u, 0.0f))
+    if (!vkr_vk_record_ibl_dispatch(renderer, command,
+                                    VKR_VULKAN_IBL_PIPELINE_IRRADIANCE, source,
+                                    irradiance, 0u, 128u, 0.0f))
       return false_v;
-    vkr_bindless_vk_cmd_ibl_image_barrier(
+    vkr_vk_cmd_ibl_image_barrier(
         command, irradiance->image.handle, 0u, irradiance->image.array_layers,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
         VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
@@ -202,11 +201,11 @@ bool8_t vkr_bindless_vk_record_ibl_bakes(VkrBindlessVulkanRenderer *renderer,
           prefilter->image.mip_levels > 1u
               ? (float32_t)mip / (float32_t)(prefilter->image.mip_levels - 1u)
               : 0.0f;
-      if (!vkr_bindless_vk_record_ibl_dispatch(
-              renderer, command, VKR_BINDLESS_VK_IBL_PIPELINE_PREFILTER, source,
-              prefilter, mip, 256u, roughness))
+      if (!vkr_vk_record_ibl_dispatch(renderer, command,
+                                      VKR_VULKAN_IBL_PIPELINE_PREFILTER, source,
+                                      prefilter, mip, 256u, roughness))
         return false_v;
-      vkr_bindless_vk_cmd_ibl_image_barrier(
+      vkr_vk_cmd_ibl_image_barrier(
           command, prefilter->image.handle, mip, prefilter->image.array_layers,
           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
           VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,

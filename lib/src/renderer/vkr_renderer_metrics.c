@@ -4,7 +4,7 @@
 #include "memory/vkr_allocator.h"
 #include "renderer/vkr_render_graph.h"
 #include "renderer/vkr_renderer.h"
-#include "renderer/vulkan/bindless/vkr_bindless_vulkan_renderer.h"
+#include "renderer/vulkan/vkr_vulkan_renderer.h"
 
 vkr_internal bool8_t vkr_renderer_metric_register_full(
     VkrMetrics *metrics, const char *name, VkrMetricDomain domain,
@@ -1212,9 +1212,8 @@ void vkr_renderer_metrics_collect(
 
   VkrRenderGraphResourceStats rg = {0};
   const bool8_t rg_stats_valid =
-      renderer->impl.kind == VKR_RENDERER_IMPL_BINDLESS_VULKAN &&
-      vkr_bindless_vulkan_renderer_graph_resource_stats(
-          renderer->bindless_vulkan_renderer, &rg);
+      renderer->impl.kind == VKR_RENDERER_IMPL_VULKAN &&
+      vkr_vulkan_renderer_graph_resource_stats(renderer->vulkan_renderer, &rg);
   if (rg_stats_valid) {
     VKR_SET_U64(rg_live_images, rg.live_image_textures);
     VKR_SET_U64(rg_peak_images, rg.peak_image_textures);
@@ -1352,7 +1351,7 @@ void vkr_renderer_metrics_collect(
 
   vkr_renderer_metrics_collect_impl_memory(renderer_metrics, renderer);
 
-  // Bindless Vulkan constructs its complete immutable pipeline set during
+  // Vulkan constructs its complete immutable pipeline set during
   // renderer initialization. No vkCreate*Pipelines call is reachable from a
   // prepared frame, so the per-frame creation counter is valid and zero.
   if (vkr_renderer_get_backend_type(context->renderer) ==

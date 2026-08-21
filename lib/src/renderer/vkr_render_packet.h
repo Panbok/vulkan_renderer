@@ -99,8 +99,9 @@ typedef struct VkrFrameLighting {
  */
 typedef struct VkrDrawItem {
   VkrMeshHandle mesh;
-  /** Shared GPU geometry identity. Bindless renderers resolve this handle so
-   * repeated scene instances do not duplicate vertex/index allocations. */
+  /** Shared GPU geometry identity. GPU-driven renderers resolve this handle so
+
+   * * repeated scene instances do not duplicate vertex/index allocations. */
   VkrGeometryHandle geometry;
   uint32_t submesh_index;
   VkrMaterialHandle material;

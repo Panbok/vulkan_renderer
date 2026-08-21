@@ -1,14 +1,13 @@
-#include "renderer/vulkan/bindless/vkr_bindless_vulkan_internal.h"
+#include "renderer/vulkan/vkr_vulkan_internal.h"
 
-vkr_internal bool8_t vkr_bindless_vk_pack_gpu_candidates(
-    VkrBindlessVulkanRenderer *renderer, VkrBindlessVkFrameSlot *slot,
+vkr_internal bool8_t vkr_vk_pack_gpu_candidates(
+    VkrVulkanRenderer *renderer, VkrVulkanFrameSlot *slot,
     const VkrWorldDrawCandidate *source, uint32_t count,
     uint64_t *out_candidate_offset, uint64_t *out_instances_address,
     uint32_t *out_packed_count);
 
-vkr_internal uint64_t vkr_bindless_vk_hash_bytes(uint64_t hash,
-                                                 const void *bytes,
-                                                 uint64_t size) {
+vkr_internal uint64_t vkr_vk_hash_bytes(uint64_t hash, const void *bytes,
+                                        uint64_t size) {
   const uint8_t *data = bytes;
   for (uint64_t i = 0u; i < size; ++i) {
     hash ^= data[i];
@@ -17,13 +16,12 @@ vkr_internal uint64_t vkr_bindless_vk_hash_bytes(uint64_t hash,
   return hash;
 }
 
-vkr_internal uint64_t vkr_bindless_vk_candidate_epoch(
+vkr_internal uint64_t vkr_vk_candidate_epoch(
     const VkrWorldDrawCandidate *candidates, uint32_t count) {
   uint64_t hash = 1469598103934665603ull;
   uint32_t occluder_count = 0u;
 #define VKR_HASH_CANDIDATE_FIELD(FIELD)                                        \
-  hash = vkr_bindless_vk_hash_bytes(hash, &candidate->FIELD,                   \
-                                    sizeof(candidate->FIELD))
+  hash = vkr_vk_hash_bytes(hash, &candidate->FIELD, sizeof(candidate->FIELD))
   for (uint32_t i = 0u; i < count; ++i) {
     const VkrWorldDrawCandidate *candidate = &candidates[i];
     if ((candidate->flags & VKR_WORLD_DRAW_CANDIDATE_CAMERA_OPAQUE) == 0u)
@@ -42,20 +40,17 @@ vkr_internal uint64_t vkr_bindless_vk_candidate_epoch(
     VKR_HASH_CANDIDATE_FIELD(flags);
   }
 #undef VKR_HASH_CANDIDATE_FIELD
-  return vkr_bindless_vk_hash_bytes(hash, &occluder_count,
-                                    sizeof(occluder_count));
+  return vkr_vk_hash_bytes(hash, &occluder_count, sizeof(occluder_count));
 }
 
-uint64_t vkr_bindless_vk_align_up(uint64_t value, uint64_t alignment) {
+uint64_t vkr_vk_align_up(uint64_t value, uint64_t alignment) {
   return (value + alignment - 1u) & ~(alignment - 1u);
 }
 
-void *vkr_bindless_vk_frame_upload_allocate(VkrBindlessVkFrameSlot *slot,
-                                            uint64_t size, uint64_t alignment,
-                                            uint64_t *out_address,
-                                            uint64_t *out_offset) {
-  const uint64_t offset =
-      vkr_bindless_vk_align_up(slot->frame_upload_cursor, alignment);
+void *vkr_vk_frame_upload_allocate(VkrVulkanFrameSlot *slot, uint64_t size,
+                                   uint64_t alignment, uint64_t *out_address,
+                                   uint64_t *out_offset) {
+  const uint64_t offset = vkr_vk_align_up(slot->frame_upload_cursor, alignment);
   if (offset > slot->frame_upload.size ||
       size > slot->frame_upload.size - offset) {
     /* Exhaustion fails the whole frame at the call site. Count it so the
@@ -72,8 +67,8 @@ void *vkr_bindless_vk_frame_upload_allocate(VkrBindlessVkFrameSlot *slot,
   return (uint8_t *)slot->frame_upload.allocation.mapped + offset;
 }
 
-vkr_internal bool8_t vkr_bindless_vk_upload_instances(
-    VkrBindlessVkFrameSlot *slot, const VkrInstanceDataGPU *instances,
+vkr_internal bool8_t vkr_vk_upload_instances(
+    VkrVulkanFrameSlot *slot, const VkrInstanceDataGPU *instances,
     uint32_t count, uint64_t *out_address) {
   *out_address = 0u;
   if (count == 0u)
@@ -81,7 +76,7 @@ vkr_internal bool8_t vkr_bindless_vk_upload_instances(
   if (count > VKR_INSTANCE_BUFFER_MAX_INSTANCES)
     return false_v;
   const uint64_t size = (uint64_t)count * sizeof(*instances);
-  void *destination = vkr_bindless_vk_frame_upload_allocate(
+  void *destination = vkr_vk_frame_upload_allocate(
       slot, size, _Alignof(VkrInstanceDataGPU), out_address, NULL);
   if (!destination)
     return false_v;
@@ -89,15 +84,16 @@ vkr_internal bool8_t vkr_bindless_vk_upload_instances(
   return true_v;
 }
 
-vkr_internal bool8_t vkr_bindless_vk_resolve_sampled_pair(
-    VkrBindlessVulkanRenderer *renderer, VkrTextureHandle handle,
-    uint32_t *out_texture, uint32_t *out_sampler) {
-  VkrBindlessVkPublishedTexture *texture =
-      vkr_bindless_vk_published_texture(renderer, handle, NULL);
+vkr_internal bool8_t vkr_vk_resolve_sampled_pair(VkrVulkanRenderer *renderer,
+                                                 VkrTextureHandle handle,
+                                                 uint32_t *out_texture,
+                                                 uint32_t *out_sampler) {
+  VkrVulkanPublishedTexture *texture =
+      vkr_vk_published_texture(renderer, handle, NULL);
   if (!texture || texture->initialization_pending ||
       texture->sampler_record_index >= renderer->config.sampler_capacity)
     return false_v;
-  const VkrBindlessVkPublishedSampler *sampler =
+  const VkrVulkanPublishedSampler *sampler =
       &renderer->published_samplers[texture->sampler_record_index];
   if (!sampler->live)
     return false_v;
@@ -107,8 +103,8 @@ vkr_internal bool8_t vkr_bindless_vk_resolve_sampled_pair(
   return true_v;
 }
 
-vkr_internal bool8_t vkr_bindless_vk_upload_packet_tables(
-    VkrBindlessVulkanRenderer *renderer, VkrBindlessVkFrameSlot *slot,
+vkr_internal bool8_t vkr_vk_upload_packet_tables(
+    VkrVulkanRenderer *renderer, VkrVulkanFrameSlot *slot,
     const VkrRenderPacket *packet) {
   slot->point_light_data = 0u;
   slot->point_light_masks = 0u;
@@ -125,7 +121,7 @@ vkr_internal bool8_t vkr_bindless_vk_upload_packet_tables(
   if (lighting && lighting->point_light_count) {
     const uint64_t light_bytes =
         (uint64_t)lighting->point_light_count * 4u * sizeof(Vec4);
-    Vec4 *packed = vkr_bindless_vk_frame_upload_allocate(
+    Vec4 *packed = vkr_vk_frame_upload_allocate(
         slot, light_bytes, _Alignof(Vec4), &slot->point_light_data, NULL);
     if (!packed)
       return false_v;
@@ -150,7 +146,7 @@ vkr_internal bool8_t vkr_bindless_vk_upload_packet_tables(
         (uint64_t)lighting->point_light_grid->cell_count *
         sizeof(VkrPointLightMask);
     if (mask_bytes) {
-      void *masks = vkr_bindless_vk_frame_upload_allocate(
+      void *masks = vkr_vk_frame_upload_allocate(
           slot, mask_bytes, _Alignof(VkrPointLightMask),
           &slot->point_light_masks, NULL);
       if (!masks)
@@ -161,15 +157,14 @@ vkr_internal bool8_t vkr_bindless_vk_upload_packet_tables(
 
   if (packet->shadow && packet->shadow->cascade_count) {
     const uint64_t cascade_bytes = (uint64_t)packet->shadow->cascade_count *
-                                   sizeof(VkrBindlessVkPacketShadowCascade);
-    VkrBindlessVkPacketShadowCascade *cascades =
-        vkr_bindless_vk_frame_upload_allocate(
-            slot, cascade_bytes, _Alignof(VkrBindlessVkPacketShadowCascade),
-            &slot->shadow_cascades, NULL);
+                                   sizeof(VkrVulkanPacketShadowCascade);
+    VkrVulkanPacketShadowCascade *cascades = vkr_vk_frame_upload_allocate(
+        slot, cascade_bytes, _Alignof(VkrVulkanPacketShadowCascade),
+        &slot->shadow_cascades, NULL);
     if (!cascades)
       return false_v;
     for (uint32_t i = 0u; i < packet->shadow->cascade_count; ++i) {
-      cascades[i] = (VkrBindlessVkPacketShadowCascade){
+      cascades[i] = (VkrVulkanPacketShadowCascade){
           .light_view_projection = packet->shadow->light_view_proj[i],
           .split_depth =
               (Vec4){packet->shadow->split_depths[i], 0.0f, 0.0f, 0.0f},
@@ -178,30 +173,30 @@ vkr_internal bool8_t vkr_bindless_vk_upload_packet_tables(
   }
 
   if (lighting && lighting->ibl_enabled && lighting->ibl_source.id) {
-    VkrBindlessVkPublishedTexture *source =
-        vkr_bindless_vk_published_texture(renderer, lighting->ibl_source, NULL);
+    VkrVulkanPublishedTexture *source =
+        vkr_vk_published_texture(renderer, lighting->ibl_source, NULL);
     if (source &&
-        vkr_bindless_vk_resolve_sampled_pair(renderer, source->ibl_irradiance,
-                                             &slot->irradiance_texture,
-                                             &slot->irradiance_sampler) &&
-        vkr_bindless_vk_resolve_sampled_pair(renderer, source->ibl_prefilter,
-                                             &slot->prefilter_texture,
-                                             &slot->prefilter_sampler)) {
+        vkr_vk_resolve_sampled_pair(renderer, source->ibl_irradiance,
+                                    &slot->irradiance_texture,
+                                    &slot->irradiance_sampler) &&
+        vkr_vk_resolve_sampled_pair(renderer, source->ibl_prefilter,
+                                    &slot->prefilter_texture,
+                                    &slot->prefilter_sampler)) {
       slot->ibl_ready = true_v;
     }
   }
 
   if (lighting && lighting->ibl_probe_count) {
-    const uint64_t probe_bytes = (uint64_t)lighting->ibl_probe_count *
-                                 sizeof(VkrBindlessVkPacketIblProbe);
-    VkrBindlessVkPacketIblProbe *probes = vkr_bindless_vk_frame_upload_allocate(
-        slot, probe_bytes, _Alignof(VkrBindlessVkPacketIblProbe),
-        &slot->ibl_probes, NULL);
+    const uint64_t probe_bytes =
+        (uint64_t)lighting->ibl_probe_count * sizeof(VkrVulkanPacketIblProbe);
+    VkrVulkanPacketIblProbe *probes = vkr_vk_frame_upload_allocate(
+        slot, probe_bytes, _Alignof(VkrVulkanPacketIblProbe), &slot->ibl_probes,
+        NULL);
     if (!probes)
       return false_v;
     for (uint32_t i = 0u; i < lighting->ibl_probe_count; ++i) {
       const VkrFrameIblProbe *probe = &lighting->ibl_probes[i];
-      VkrBindlessVkPacketIblProbe packed = {
+      VkrVulkanPacketIblProbe packed = {
           .center_blend = {probe->center.x, probe->center.y, probe->center.z,
                            probe->blend_distance},
           .extents_weight = {probe->extents.x, probe->extents.y,
@@ -210,12 +205,12 @@ vkr_internal bool8_t vkr_bindless_vk_upload_packet_tables(
                             probe->specular_intensity,
                             probe->box_projection_enabled ? 1.0f : 0.0f},
       };
-      if (!vkr_bindless_vk_resolve_sampled_pair(renderer, probe->irradiance,
-                                                &packed.irradiance_texture,
-                                                &packed.irradiance_sampler) ||
-          !vkr_bindless_vk_resolve_sampled_pair(renderer, probe->prefilter,
-                                                &packed.prefilter_texture,
-                                                &packed.prefilter_sampler))
+      if (!vkr_vk_resolve_sampled_pair(renderer, probe->irradiance,
+                                       &packed.irradiance_texture,
+                                       &packed.irradiance_sampler) ||
+          !vkr_vk_resolve_sampled_pair(renderer, probe->prefilter,
+                                       &packed.prefilter_texture,
+                                       &packed.prefilter_sampler))
         continue;
       probes[slot->ibl_probe_count++] = packed;
     }
@@ -225,10 +220,9 @@ vkr_internal bool8_t vkr_bindless_vk_upload_packet_tables(
   return true_v;
 }
 
-bool8_t
-vkr_bindless_vk_prepare_packet_uploads(VkrBindlessVulkanRenderer *renderer,
-                                       VkrBindlessVkFrameSlot *slot,
-                                       const VkrRenderPacket *packet) {
+bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
+                                      VkrVulkanFrameSlot *slot,
+                                      const VkrRenderPacket *packet) {
   slot->frame_upload_cursor = 0u;
   slot->frame_upload_exhaustions = 0u;
   slot->world_instances = 0u;
@@ -246,47 +240,45 @@ vkr_bindless_vk_prepare_packet_uploads(VkrBindlessVulkanRenderer *renderer,
   slot->indexed_draw_count = 0u;
   slot->blend_draw_count = 0u;
   const bool8_t common_uploads =
-      vkr_bindless_vk_upload_packet_tables(renderer, slot, packet) &&
-      (!packet->world ||
-       vkr_bindless_vk_upload_instances(slot, packet->world->instances,
-                                        packet->world->instance_count,
-                                        &slot->world_instances)) &&
-      (!packet->ui || vkr_bindless_vk_upload_instances(
-                          slot, packet->ui->instances,
-                          packet->ui->instance_count, &slot->ui_instances)) &&
+      vkr_vk_upload_packet_tables(renderer, slot, packet) &&
+      (!packet->world || vkr_vk_upload_instances(slot, packet->world->instances,
+                                                 packet->world->instance_count,
+                                                 &slot->world_instances)) &&
+      (!packet->ui || vkr_vk_upload_instances(slot, packet->ui->instances,
+                                              packet->ui->instance_count,
+                                              &slot->ui_instances)) &&
       (!packet->editor ||
-       vkr_bindless_vk_upload_instances(slot, packet->editor->instances,
-                                        packet->editor->instance_count,
-                                        &slot->editor_instances));
+       vkr_vk_upload_instances(slot, packet->editor->instances,
+                               packet->editor->instance_count,
+                               &slot->editor_instances));
   if (!common_uploads)
     return common_uploads;
 
   const uint64_t geometry_bytes =
       (uint64_t)renderer->config.geometry_capacity * sizeof(VkrGpuGeometryRow);
-  VkrGpuGeometryRow *geometry_rows = vkr_bindless_vk_frame_upload_allocate(
+  VkrGpuGeometryRow *geometry_rows = vkr_vk_frame_upload_allocate(
       slot, geometry_bytes, _Alignof(VkrGpuGeometryRow),
       &slot->gpu_geometry_rows, NULL);
   if (!geometry_rows)
     return false_v;
   MemZero(geometry_rows, geometry_bytes);
   for (uint32_t i = 0u; i < renderer->config.geometry_capacity; ++i) {
-    const VkrBindlessVkPublishedGeometry *geometry =
+    const VkrVulkanPublishedGeometry *geometry =
         &renderer->published_geometries[i];
     if (geometry->live && geometry->pending_initialization_count == 0u)
       geometry_rows[i] = geometry->gpu_row;
   }
   slot->gpu_world_epoch =
-      packet->world
-          ? vkr_bindless_vk_candidate_epoch(packet->world->gpu_candidates,
-                                            packet->world->gpu_candidate_count)
-          : 0u;
-  return vkr_bindless_vk_pack_gpu_candidates(
+      packet->world ? vkr_vk_candidate_epoch(packet->world->gpu_candidates,
+                                             packet->world->gpu_candidate_count)
+                    : 0u;
+  return vkr_vk_pack_gpu_candidates(
              renderer, slot,
              packet->world ? packet->world->gpu_candidates : NULL,
              packet->world ? packet->world->gpu_candidate_count : 0u,
              &slot->gpu_candidate_upload_offset, &slot->gpu_candidate_instances,
              &slot->gpu_candidate_count) &&
-         vkr_bindless_vk_pack_gpu_candidates(
+         vkr_vk_pack_gpu_candidates(
              renderer, slot,
              packet->world ? packet->world->transmission_gpu_candidates : NULL,
              packet->world ? packet->world->transmission_gpu_candidate_count
@@ -296,12 +288,11 @@ vkr_bindless_vk_prepare_packet_uploads(VkrBindlessVulkanRenderer *renderer,
              &slot->transmission_gpu_candidate_count);
 }
 
-vkr_internal VkrBindlessVkPublishedGeometry *
-vkr_bindless_vk_resolve_geometry(VkrBindlessVulkanRenderer *renderer,
-                                 VkrGeometryHandle handle) {
+vkr_internal VkrVulkanPublishedGeometry *
+vkr_vk_resolve_geometry(VkrVulkanRenderer *renderer, VkrGeometryHandle handle) {
   if (handle.id == 0u || handle.id > renderer->config.geometry_capacity)
     return NULL;
-  VkrBindlessVkPublishedGeometry *geometry =
+  VkrVulkanPublishedGeometry *geometry =
       &renderer->published_geometries[handle.id - 1u];
   return geometry->live && geometry->handle.generation == handle.generation &&
                  geometry->pending_initialization_count == 0u
@@ -309,20 +300,19 @@ vkr_bindless_vk_resolve_geometry(VkrBindlessVulkanRenderer *renderer,
              : NULL;
 }
 
-vkr_internal VkrBindlessVkPublishedMaterial *
-vkr_bindless_vk_resolve_material(VkrBindlessVulkanRenderer *renderer,
-                                 VkrMaterialHandle handle) {
+vkr_internal VkrVulkanPublishedMaterial *
+vkr_vk_resolve_material(VkrVulkanRenderer *renderer, VkrMaterialHandle handle) {
   if (handle.id == 0u || handle.id > renderer->config.material_record_capacity)
     return NULL;
-  VkrBindlessVkPublishedMaterial *material =
+  VkrVulkanPublishedMaterial *material =
       &renderer->published_materials[handle.id - 1u];
   return material->live && material->handle.generation == handle.generation
              ? material
              : NULL;
 }
 
-vkr_internal bool8_t vkr_bindless_vk_pack_gpu_candidates(
-    VkrBindlessVulkanRenderer *renderer, VkrBindlessVkFrameSlot *slot,
+vkr_internal bool8_t vkr_vk_pack_gpu_candidates(
+    VkrVulkanRenderer *renderer, VkrVulkanFrameSlot *slot,
     const VkrWorldDrawCandidate *source, uint32_t count,
     uint64_t *out_candidate_offset, uint64_t *out_instances_address,
     uint32_t *out_packed_count) {
@@ -334,10 +324,10 @@ vkr_internal bool8_t vkr_bindless_vk_pack_gpu_candidates(
   }
   if (!source || count > VKR_GPU_DRAW_CANDIDATE_CAPACITY)
     return false_v;
-  VkrGpuCandidateDrawRow *candidates = vkr_bindless_vk_frame_upload_allocate(
+  VkrGpuCandidateDrawRow *candidates = vkr_vk_frame_upload_allocate(
       slot, (uint64_t)count * sizeof(*candidates),
       _Alignof(VkrGpuCandidateDrawRow), NULL, out_candidate_offset);
-  VkrInstanceDataGPU *instances = vkr_bindless_vk_frame_upload_allocate(
+  VkrInstanceDataGPU *instances = vkr_vk_frame_upload_allocate(
       slot, (uint64_t)count * sizeof(*instances), _Alignof(VkrInstanceDataGPU),
       out_instances_address, NULL);
   if (!candidates || !instances)
@@ -349,10 +339,10 @@ vkr_internal bool8_t vkr_bindless_vk_pack_gpu_candidates(
   uint32_t invalid_submesh_count = 0u;
   for (uint32_t i = 0u; i < count; ++i) {
     const VkrWorldDrawCandidate *candidate = &source[i];
-    VkrBindlessVkPublishedGeometry *geometry =
-        vkr_bindless_vk_resolve_geometry(renderer, candidate->geometry);
-    VkrBindlessVkPublishedMaterial *material =
-        vkr_bindless_vk_resolve_material(renderer, candidate->material);
+    VkrVulkanPublishedGeometry *geometry =
+        vkr_vk_resolve_geometry(renderer, candidate->geometry);
+    VkrVulkanPublishedMaterial *material =
+        vkr_vk_resolve_material(renderer, candidate->material);
     if (!geometry) {
       unpublished_geometry_count++;
       continue;
@@ -365,7 +355,7 @@ vkr_internal bool8_t vkr_bindless_vk_pack_gpu_candidates(
       invalid_submesh_count++;
       continue;
     }
-    const VkrBindlessVkSubmeshRange *submesh =
+    const VkrVulkanSubmeshRange *submesh =
         &geometry->submeshes[candidate->submesh_index];
     candidates[packed_count] = (VkrGpuCandidateDrawRow){
         .geometry_index = candidate->geometry.id - 1u,
@@ -391,13 +381,13 @@ vkr_internal bool8_t vkr_bindless_vk_pack_gpu_candidates(
   // frame and reappear once publication completes; treating them as an error
   // would fail every frame of scene load.
   if (invalid_submesh_count) {
-    log_error("Bindless Vulkan rejected %u/%u deferred candidates naming a "
+    log_error("Vulkan rejected %u/%u deferred candidates naming a "
               "submesh outside their geometry",
               invalid_submesh_count, count);
     return false_v;
   }
   if (packed_count != count && !renderer->deferred_candidate_drop_logged) {
-    log_warn("Bindless Vulkan deferred publication boundary omitted %u/%u "
+    log_warn("Vulkan deferred publication boundary omitted %u/%u "
              "candidates (geometry=%u material=%u)",
              count - packed_count, count, unpublished_geometry_count,
              unpublished_material_count);
@@ -407,31 +397,29 @@ vkr_internal bool8_t vkr_bindless_vk_pack_gpu_candidates(
   return true_v;
 }
 
-vkr_internal VkrBindlessVkPacketUtilityRoot *
-vkr_bindless_vk_packet_utility_root(VkrBindlessVkFrameSlot *slot,
-                                    uint64_t *out_address) {
-  VkrBindlessVkPacketUtilityRoot *root = vkr_bindless_vk_frame_upload_allocate(
-      slot, sizeof(*root), _Alignof(VkrBindlessVkPacketUtilityRoot),
-      out_address, NULL);
-  if (root)
-    MemZero(root, sizeof(*root));
-  return root;
-}
-
-VkrBindlessVkPacketFrameRoot *
-vkr_bindless_vk_packet_frame_root(VkrBindlessVkFrameSlot *slot,
-                                  uint64_t *out_address) {
-  VkrBindlessVkPacketFrameRoot *root = vkr_bindless_vk_frame_upload_allocate(
-      slot, sizeof(*root), _Alignof(VkrBindlessVkPacketFrameRoot), out_address,
+vkr_internal VkrVulkanPacketUtilityRoot *
+vkr_vk_packet_utility_root(VkrVulkanFrameSlot *slot, uint64_t *out_address) {
+  VkrVulkanPacketUtilityRoot *root = vkr_vk_frame_upload_allocate(
+      slot, sizeof(*root), _Alignof(VkrVulkanPacketUtilityRoot), out_address,
       NULL);
   if (root)
     MemZero(root, sizeof(*root));
   return root;
 }
 
-void vkr_bindless_vk_fill_packet_frame_root(
-    VkrBindlessVulkanRenderer *renderer, VkrBindlessVkPacketFrameRoot *root,
-    const VkrBindlessVkFrameSlot *slot, const VkrPacketFrameConstants *frame,
+VkrVulkanPacketFrameRoot *vkr_vk_packet_frame_root(VkrVulkanFrameSlot *slot,
+                                                   uint64_t *out_address) {
+  VkrVulkanPacketFrameRoot *root = vkr_vk_frame_upload_allocate(
+      slot, sizeof(*root), _Alignof(VkrVulkanPacketFrameRoot), out_address,
+      NULL);
+  if (root)
+    MemZero(root, sizeof(*root));
+  return root;
+}
+
+void vkr_vk_fill_packet_frame_root(
+    VkrVulkanRenderer *renderer, VkrVulkanPacketFrameRoot *root,
+    const VkrVulkanFrameSlot *slot, const VkrPacketFrameConstants *frame,
     uint64_t instances, Mat4 view_projection, uint32_t shadow_texture,
     uint32_t transmission_texture, bool8_t lighting_pass,
     bool8_t transmission_pass) {
@@ -443,9 +431,9 @@ void vkr_bindless_vk_fill_packet_frame_root(
   root->prefilter_texture = slot->prefilter_texture;
   root->prefilter_sampler = slot->prefilter_sampler;
   root->shadow_texture = shadow_texture;
-  root->shadow_sampler = VKR_BINDLESS_VK_SENTINEL_SLOT_INDEX;
+  root->shadow_sampler = VKR_VULKAN_SENTINEL_SLOT_INDEX;
   root->transmission_texture = transmission_texture;
-  root->transmission_sampler = VKR_BINDLESS_VK_SENTINEL_SLOT_INDEX;
+  root->transmission_sampler = VKR_VULKAN_SENTINEL_SLOT_INDEX;
   root->flags =
       vkr_packet_derive_frame_flags(renderer->graph->packet, lighting_pass,
                                     slot->ibl_ready, transmission_pass);
@@ -475,15 +463,15 @@ void vkr_bindless_vk_fill_packet_frame_root(
   root->shadow_bias = frame->shadow_bias;
 }
 
-bool8_t vkr_bindless_vk_record_packet_draws(
-    VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
-    VkrBindlessVkPacketPipeline pipeline, const VkrDrawItem *draws,
+bool8_t vkr_vk_record_packet_draws(
+    VkrVulkanRenderer *renderer, VkCommandBuffer command,
+    VkrVulkanPacketPipeline pipeline, const VkrDrawItem *draws,
     uint32_t draw_count, uint64_t instances, Mat4 view_projection,
     bool8_t alpha_cutout, uint32_t shadow_texture,
     uint32_t transmission_texture, bool8_t transmission_pass) {
   if (draw_count == 0u)
     return true_v;
-  VkrBindlessVkFrameSlot *slot =
+  VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   const VkrRenderPacket *packet = renderer->graph->packet;
   const VkrPacketFrameConstants frame = vkr_packet_derive_frame_constants(
@@ -493,26 +481,26 @@ bool8_t vkr_bindless_vk_record_packet_draws(
       packet->frame.viewport_height ? packet->frame.viewport_height
                                     : packet->frame.window_height);
   const bool8_t lighting_pass =
-      pipeline == VKR_BINDLESS_VK_PACKET_PIPELINE_WORLD_BLEND;
+      pipeline == VKR_VULKAN_PACKET_PIPELINE_WORLD_BLEND;
   uint64_t frame_root_address = 0u;
-  VkrBindlessVkPacketFrameRoot *frame_root =
-      vkr_bindless_vk_packet_frame_root(slot, &frame_root_address);
+  VkrVulkanPacketFrameRoot *frame_root =
+      vkr_vk_packet_frame_root(slot, &frame_root_address);
   if (!frame_root)
     return false_v;
-  vkr_bindless_vk_fill_packet_frame_root(
+  vkr_vk_fill_packet_frame_root(
       renderer, frame_root, slot, &frame, instances, view_projection,
       shadow_texture, transmission_texture, lighting_pass, transmission_pass);
   vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     renderer->packet_pipelines[pipeline]);
   for (uint32_t i = 0; i < draw_count; ++i) {
     const VkrDrawItem *draw = &draws[i];
-    VkrBindlessVkPublishedGeometry *geometry =
-        vkr_bindless_vk_resolve_geometry(renderer, draw->geometry);
-    VkrBindlessVkPublishedMaterial *material =
-        vkr_bindless_vk_resolve_material(renderer, draw->material);
+    VkrVulkanPublishedGeometry *geometry =
+        vkr_vk_resolve_geometry(renderer, draw->geometry);
+    VkrVulkanPublishedMaterial *material =
+        vkr_vk_resolve_material(renderer, draw->material);
     if (!geometry && draw->geometry.id > 0u &&
         draw->geometry.id <= renderer->config.geometry_capacity) {
-      const VkrBindlessVkPublishedGeometry *pending_geometry =
+      const VkrVulkanPublishedGeometry *pending_geometry =
           &renderer->published_geometries[draw->geometry.id - 1u];
       if (pending_geometry->live &&
           pending_geometry->handle.generation == draw->geometry.generation &&
@@ -524,28 +512,26 @@ bool8_t vkr_bindless_vk_record_packet_draws(
       return false_v;
     if (material->pending_texture_count)
       continue;
-    const VkrBindlessVkSubmeshRange *range =
+    const VkrVulkanSubmeshRange *range =
         &geometry->submeshes[draw->submesh_index];
-    typedef struct VkrBindlessVkTableDrawUpload {
-      VkrBindlessVkPacketDrawRoot root;
+    typedef struct VkrVulkanTableDrawUpload {
+      VkrVulkanPacketDrawRoot root;
       VkrGpuGeometryRow geometry;
       VkrGpuVisibleDrawRow visible;
-    } VkrBindlessVkTableDrawUpload;
+    } VkrVulkanTableDrawUpload;
     uint64_t draw_root_address = 0u;
-    VkrBindlessVkTableDrawUpload *table_draw =
-        vkr_bindless_vk_frame_upload_allocate(
-            slot, sizeof(*table_draw), _Alignof(VkrBindlessVkTableDrawUpload),
-            &draw_root_address, NULL);
+    VkrVulkanTableDrawUpload *table_draw = vkr_vk_frame_upload_allocate(
+        slot, sizeof(*table_draw), _Alignof(VkrVulkanTableDrawUpload),
+        &draw_root_address, NULL);
     if (!table_draw)
       return false_v;
-    *table_draw = (VkrBindlessVkTableDrawUpload){
+    *table_draw = (VkrVulkanTableDrawUpload){
         .root =
             {
-                .geometry_rows =
-                    draw_root_address +
-                    offsetof(VkrBindlessVkTableDrawUpload, geometry),
+                .geometry_rows = draw_root_address +
+                                 offsetof(VkrVulkanTableDrawUpload, geometry),
                 .visible_rows = draw_root_address +
-                                offsetof(VkrBindlessVkTableDrawUpload, visible),
+                                offsetof(VkrVulkanTableDrawUpload, visible),
                 .vertices = renderer->geometry_megabuffer.vertices.address,
                 .frame = frame_root_address,
             },
@@ -562,7 +548,7 @@ bool8_t vkr_bindless_vk_record_packet_draws(
                 .flags = alpha_cutout ? 1u : 0u,
             },
     };
-    const VkrBindlessVkPushConstants push = {
+    const VkrVulkanPushConstants push = {
         .root = draw_root_address,
         .material_index = material->slot.index,
         .flags = alpha_cutout ? 1u : 0u,
@@ -589,27 +575,29 @@ bool8_t vkr_bindless_vk_record_packet_draws(
             pending_submit;
     }
     slot->indexed_draw_count++;
-    if (pipeline == VKR_BINDLESS_VK_PACKET_PIPELINE_WORLD_BLEND)
+    if (pipeline == VKR_VULKAN_PACKET_PIPELINE_WORLD_BLEND)
       slot->blend_draw_count++;
   }
   return true_v;
 }
 
-bool8_t vkr_bindless_vk_record_text_draws(
-    VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
-    VkrBindlessVkPacketPipeline pipeline, const VkrPreparedTextDraw *draws,
-    uint32_t draw_count, Mat4 view_projection, uint32_t target_width,
-    uint32_t target_height, bool8_t ui_domain) {
+bool8_t vkr_vk_record_text_draws(VkrVulkanRenderer *renderer,
+                                 VkCommandBuffer command,
+                                 VkrVulkanPacketPipeline pipeline,
+                                 const VkrPreparedTextDraw *draws,
+                                 uint32_t draw_count, Mat4 view_projection,
+                                 uint32_t target_width, uint32_t target_height,
+                                 bool8_t ui_domain) {
   if (draw_count == 0u)
     return true_v;
-  VkrBindlessVkFrameSlot *slot =
+  VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     renderer->packet_pipelines[pipeline]);
   for (uint32_t i = 0u; i < draw_count; ++i) {
     const VkrPreparedTextDraw *draw = &draws[i];
-    VkrBindlessVkPublishedTexture *atlas =
-        vkr_bindless_vk_published_texture(renderer, draw->atlas, NULL);
+    VkrVulkanPublishedTexture *atlas =
+        vkr_vk_published_texture(renderer, draw->atlas, NULL);
     /* Retained text can become visible while its asynchronously loaded atlas
 
      * is still crossing the asset-publisher seam. Omit that draw until the
@@ -622,7 +610,7 @@ bool8_t vkr_bindless_vk_record_text_draws(
     if (!atlas || atlas->initialization_pending ||
         atlas->sampler_record_index >= renderer->config.sampler_capacity)
       continue;
-    VkrBindlessVkPublishedSampler *sampler =
+    VkrVulkanPublishedSampler *sampler =
         &renderer->published_samplers[atlas->sampler_record_index];
     if (!sampler->live)
       continue;
@@ -632,14 +620,14 @@ bool8_t vkr_bindless_vk_record_text_draws(
     const uint64_t index_bytes =
         (uint64_t)draw->index_count * sizeof(*draw->indices);
     uint64_t vertex_address = 0u;
-    void *vertices = vkr_bindless_vk_frame_upload_allocate(
+    void *vertices = vkr_vk_frame_upload_allocate(
         slot, vertex_bytes, _Alignof(VkrTextVertex), &vertex_address, NULL);
     uint64_t index_offset = 0u;
-    void *indices = vkr_bindless_vk_frame_upload_allocate(
+    void *indices = vkr_vk_frame_upload_allocate(
         slot, index_bytes, _Alignof(uint32_t), NULL, &index_offset);
     uint64_t root_address = 0u;
-    VkrBindlessVkPacketUtilityRoot *root =
-        vkr_bindless_vk_packet_utility_root(slot, &root_address);
+    VkrVulkanPacketUtilityRoot *root =
+        vkr_vk_packet_utility_root(slot, &root_address);
     if (!vertices || !indices || !root)
       return false_v;
     MemCopy(vertices, draw->vertices, vertex_bytes);
@@ -655,7 +643,7 @@ bool8_t vkr_bindless_vk_record_text_draws(
     root->flags = ui_domain ? 1u : 0u;
     root->point_light_grid_origin_cell_size =
         (Vec4){(float32_t)target_width, (float32_t)target_height, 0.0f, 0.0f};
-    const VkrBindlessVkPushConstants push = {.root = root_address};
+    const VkrVulkanPushConstants push = {.root = root_address};
     vkCmdBindIndexBuffer2(command, slot->frame_upload.handle, index_offset,
                           index_bytes, VK_INDEX_TYPE_UINT32);
     vkCmdPushConstants(command, renderer->pipeline_layout,
@@ -670,22 +658,23 @@ bool8_t vkr_bindless_vk_record_text_draws(
   return true_v;
 }
 
-bool8_t vkr_bindless_vk_record_packet_fullscreen(
-    VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command,
-    VkrBindlessVkPacketPipeline pipeline, uint32_t texture_index,
-    uint32_t flags) {
-  VkrBindlessVkFrameSlot *slot =
+bool8_t vkr_vk_record_packet_fullscreen(VkrVulkanRenderer *renderer,
+                                        VkCommandBuffer command,
+                                        VkrVulkanPacketPipeline pipeline,
+                                        uint32_t texture_index,
+                                        uint32_t flags) {
+  VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   uint64_t root_address = 0u;
-  VkrBindlessVkPacketUtilityRoot *root =
-      vkr_bindless_vk_packet_utility_root(slot, &root_address);
+  VkrVulkanPacketUtilityRoot *root =
+      vkr_vk_packet_utility_root(slot, &root_address);
   if (!root)
     return false_v;
   root->materials = renderer->materials.address;
   root->transmission_texture = texture_index;
   root->transmission_sampler = 0u;
   root->ibl_controls.x = renderer->graph->packet->globals.exposure;
-  const VkrBindlessVkPushConstants push = {
+  const VkrVulkanPushConstants push = {
       .root = root_address,
       .material_index = 0u,
       .flags = flags,

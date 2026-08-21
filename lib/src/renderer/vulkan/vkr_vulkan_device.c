@@ -1,4 +1,4 @@
-#include "renderer/vulkan/bindless/vkr_bindless_vulkan_device.h"
+#include "renderer/vulkan/vkr_vulkan_device.h"
 
 #include "core/logger.h"
 
@@ -6,9 +6,9 @@
 #include <stdio.h>
 #include <string.h>
 
-enum { VKR_BINDLESS_VK_MAX_EXTENSIONS = 256 };
+enum { VKR_VULKAN_MAX_EXTENSIONS = 256 };
 
-typedef struct VkrBindlessVkFeatureSet {
+typedef struct VkrVulkanFeatureSet {
   bool8_t shader_int64;
   bool8_t geometry_shader;
   bool8_t shader_draw_parameters;
@@ -32,15 +32,15 @@ typedef struct VkrBindlessVkFeatureSet {
   bool8_t descriptor_buffer_image_layout_ignored;
   bool8_t descriptor_buffer_push_descriptors;
   bool8_t swapchain_maintenance1;
-} VkrBindlessVkFeatureSet;
+} VkrVulkanFeatureSet;
 
-typedef struct VkrBindlessVkCandidate {
+typedef struct VkrVulkanCandidate {
   VkPhysicalDevice physical;
   VkPhysicalDeviceProperties2 properties;
   VkPhysicalDeviceDriverProperties driver;
   VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptor_properties;
   VkPhysicalDeviceMemoryProperties memory_properties;
-  VkrBindlessVkFeatureSet features;
+  VkrVulkanFeatureSet features;
   uint32_t queue_family_index;
   uint32_t score;
   bool8_t common_viable;
@@ -48,25 +48,25 @@ typedef struct VkrBindlessVkCandidate {
   bool8_t has_descriptor_buffer_extension;
   bool8_t has_swapchain_extension;
   bool8_t has_swapchain_maintenance_extension;
-} VkrBindlessVkCandidate;
+} VkrVulkanCandidate;
 
-struct VkrBindlessVulkanDevice {
+struct VkrVulkanDevice {
   VkrAllocator *allocator;
-  VkrBindlessVulkanDeviceConfig config;
+  VkrVulkanDeviceConfig config;
   VkInstance instance;
   VkDebugUtilsMessengerEXT debug_messenger;
   VkSurfaceKHR surface;
   VkDevice device;
   VkQueue queue;
-  VkrBindlessVkCandidate candidates[VKR_BINDLESS_VK_MAX_CANDIDATES];
-  VkExtensionProperties instance_extensions[VKR_BINDLESS_VK_MAX_EXTENSIONS];
-  VkExtensionProperties device_extensions[VKR_BINDLESS_VK_MAX_EXTENSIONS];
+  VkrVulkanCandidate candidates[VKR_VULKAN_MAX_CANDIDATES];
+  VkExtensionProperties instance_extensions[VKR_VULKAN_MAX_EXTENSIONS];
+  VkExtensionProperties device_extensions[VKR_VULKAN_MAX_EXTENSIONS];
   uint32_t candidate_count;
   uint32_t selected_candidate_index;
-  VkrBindlessVkCandidate *selected;
-  VkrBindlessVkCapabilityProfile profile;
-  VkrBindlessVulkanDescriptorLayout resource_layout;
-  VkrBindlessVulkanDescriptorLayout sampler_layout;
+  VkrVulkanCandidate *selected;
+  VkrVulkanCapabilityProfile profile;
+  VkrVulkanDescriptorLayout resource_layout;
+  VkrVulkanDescriptorLayout sampler_layout;
   PFN_vkGetDescriptorSetLayoutSizeEXT get_layout_size;
   PFN_vkGetDescriptorSetLayoutBindingOffsetEXT get_binding_offset;
   PFN_vkGetDescriptorEXT get_descriptor;
@@ -79,7 +79,7 @@ struct VkrBindlessVulkanDevice {
   bool8_t ready;
 };
 
-vkr_internal bool8_t vkr_bindless_vk_extension_present(
+vkr_internal bool8_t vkr_vk_extension_present(
     const VkExtensionProperties *extensions, uint32_t count, const char *name) {
   for (uint32_t i = 0; i < count; ++i) {
     if (strcmp(extensions[i].extensionName, name) == 0) {
@@ -89,13 +89,13 @@ vkr_internal bool8_t vkr_bindless_vk_extension_present(
   return false_v;
 }
 
-vkr_internal bool8_t vkr_bindless_vk_layer_present(const char *name) {
+vkr_internal bool8_t vkr_vk_layer_present(const char *name) {
   uint32_t count = 0;
   if (vkEnumerateInstanceLayerProperties(&count, NULL) != VK_SUCCESS ||
-      count == 0 || count > VKR_BINDLESS_VK_MAX_EXTENSIONS) {
+      count == 0 || count > VKR_VULKAN_MAX_EXTENSIONS) {
     return false_v;
   }
-  VkLayerProperties layers[VKR_BINDLESS_VK_MAX_EXTENSIONS];
+  VkLayerProperties layers[VKR_VULKAN_MAX_EXTENSIONS];
   if (vkEnumerateInstanceLayerProperties(&count, layers) != VK_SUCCESS) {
     return false_v;
   }
@@ -107,14 +107,15 @@ vkr_internal bool8_t vkr_bindless_vk_layer_present(const char *name) {
   return false_v;
 }
 
-vkr_internal void vkr_bindless_vk_report_add(
-    VkrBindlessVkCandidateReport *report, VkrBindlessVkReportKind kind,
-    const char *name, bool8_t required, bool8_t present, const char *detail) {
-  if (report->entry_count >= VKR_BINDLESS_VK_MAX_REPORT_ENTRIES) {
+vkr_internal void vkr_vk_report_add(VkrVulkanCandidateReport *report,
+                                    VkrVulkanReportKind kind, const char *name,
+                                    bool8_t required, bool8_t present,
+                                    const char *detail) {
+  if (report->entry_count >= VKR_VULKAN_MAX_REPORT_ENTRIES) {
     report->overflowed = true_v;
     return;
   }
-  VkrBindlessVkReportEntry *entry = &report->entries[report->entry_count++];
+  VkrVulkanReportEntry *entry = &report->entries[report->entry_count++];
   MemZero(entry, sizeof(*entry));
   entry->kind = kind;
   entry->required = required;
@@ -123,33 +124,32 @@ vkr_internal void vkr_bindless_vk_report_add(
   snprintf(entry->detail, sizeof(entry->detail), "%s", detail ? detail : "");
 }
 
-vkr_internal void
-vkr_bindless_vk_report_limit(VkrBindlessVkCandidateReport *report,
-                             const char *name, uint64_t actual,
-                             uint64_t minimum) {
-  char detail[VKR_BINDLESS_VK_REPORT_DETAIL_CAPACITY];
+vkr_internal void vkr_vk_report_limit(VkrVulkanCandidateReport *report,
+                                      const char *name, uint64_t actual,
+                                      uint64_t minimum) {
+  char detail[VKR_VULKAN_REPORT_DETAIL_CAPACITY];
   snprintf(detail, sizeof(detail), "actual=%" PRIu64 " minimum=%" PRIu64,
            actual, minimum);
-  vkr_bindless_vk_report_add(report, VKR_BINDLESS_VK_REPORT_LIMIT, name, true_v,
-                             actual >= minimum, detail);
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_LIMIT, name, true_v,
+                    actual >= minimum, detail);
 }
 
-vkr_internal void
-vkr_bindless_vk_report_record_limit(VkrBindlessVkCandidateReport *report,
-                                    const char *name, uint64_t actual) {
-  char detail[VKR_BINDLESS_VK_REPORT_DETAIL_CAPACITY];
+vkr_internal void vkr_vk_report_record_limit(VkrVulkanCandidateReport *report,
+                                             const char *name,
+                                             uint64_t actual) {
+  char detail[VKR_VULKAN_REPORT_DETAIL_CAPACITY];
   snprintf(detail, sizeof(detail), "actual=%" PRIu64, actual);
-  vkr_bindless_vk_report_add(report, VKR_BINDLESS_VK_REPORT_LIMIT, name,
-                             false_v, true_v, detail);
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_LIMIT, name, false_v, true_v,
+                    detail);
 }
 
 vkr_internal bool8_t
-vkr_bindless_vk_report_passes(const VkrBindlessVkCandidateReport *report) {
+vkr_vk_report_passes(const VkrVulkanCandidateReport *report) {
   if (report->overflowed) {
     return false_v;
   }
   for (uint32_t i = 0; i < report->entry_count; ++i) {
-    const VkrBindlessVkReportEntry *entry = &report->entries[i];
+    const VkrVulkanReportEntry *entry = &report->entries[i];
     if (entry->required && !entry->present) {
       return false_v;
     }
@@ -157,12 +157,12 @@ vkr_bindless_vk_report_passes(const VkrBindlessVkCandidateReport *report) {
   return true_v;
 }
 
-vkr_internal VKAPI_ATTR VkBool32 VKAPI_CALL vkr_bindless_vk_debug_callback(
-    VkDebugUtilsMessageSeverityFlagBitsEXT severity,
-    VkDebugUtilsMessageTypeFlagsEXT types,
-    const VkDebugUtilsMessengerCallbackDataEXT *callback_data,
-    void *user_data) {
-  VkrBindlessVulkanDevice *device = user_data;
+vkr_internal VKAPI_ATTR VkBool32 VKAPI_CALL
+vkr_vk_debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+                      VkDebugUtilsMessageTypeFlagsEXT types,
+                      const VkDebugUtilsMessengerCallbackDataEXT *callback_data,
+                      void *user_data) {
+  VkrVulkanDevice *device = user_data;
   const char *message = callback_data && callback_data->pMessage
                             ? callback_data->pMessage
                             : "<no message>";
@@ -175,33 +175,32 @@ vkr_internal VKAPI_ATTR VkBool32 VKAPI_CALL vkr_bindless_vk_debug_callback(
           0;
   if (validation_message &&
       (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)) {
-    log_error("Bindless Vulkan validation: %s", message);
+    log_error("Vulkan validation: %s", message);
   } else if (validation_message &&
              (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) &&
              gpuav_setup_notice) {
-    log_info("Bindless Vulkan GPU-AV setup: %s", message);
+    log_info("Vulkan GPU-AV setup: %s", message);
   } else if (validation_message &&
              (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)) {
-    log_warn("Bindless Vulkan validation: %s", message);
+    log_warn("Vulkan validation: %s", message);
   } else {
-    log_debug("Bindless Vulkan loader: %s", message);
+    log_debug("Vulkan loader: %s", message);
   }
   return VK_FALSE;
 }
 
-vkr_internal bool8_t
-vkr_bindless_vk_create_instance(VkrBindlessVulkanDevice *device) {
+vkr_internal bool8_t vkr_vk_create_instance(VkrVulkanDevice *device) {
   uint32_t loader_version = VK_API_VERSION_1_0;
   if (vkEnumerateInstanceVersion(&loader_version) != VK_SUCCESS ||
       loader_version < VK_API_VERSION_1_4) {
-    log_error("Bindless Vulkan requires a Vulkan 1.4 loader");
+    log_error("Vulkan requires a Vulkan 1.4 loader");
     return false_v;
   }
 
   uint32_t available_count = 0;
   if (vkEnumerateInstanceExtensionProperties(NULL, &available_count, NULL) !=
           VK_SUCCESS ||
-      available_count > VKR_BINDLESS_VK_MAX_EXTENSIONS) {
+      available_count > VKR_VULKAN_MAX_EXTENSIONS) {
     return false_v;
   }
   VkExtensionProperties *available = device->instance_extensions;
@@ -220,9 +219,9 @@ vkr_bindless_vk_create_instance(VkrBindlessVulkanDevice *device) {
 #endif
     };
     for (uint32_t i = 0; i < ArrayCount(window_extensions); ++i) {
-      if (!vkr_bindless_vk_extension_present(available, available_count,
-                                             window_extensions[i])) {
-        log_error("Bindless Vulkan window profile missing instance extension: "
+      if (!vkr_vk_extension_present(available, available_count,
+                                    window_extensions[i])) {
+        log_error("Vulkan window profile missing instance extension: "
                   "%s",
                   window_extensions[i]);
         return false_v;
@@ -231,14 +230,14 @@ vkr_bindless_vk_create_instance(VkrBindlessVulkanDevice *device) {
     }
   }
   const bool8_t validation_available =
-      vkr_bindless_vk_layer_present("VK_LAYER_KHRONOS_validation");
+      vkr_vk_layer_present("VK_LAYER_KHRONOS_validation");
   if (device->config.enable_validation && !validation_available) {
-    log_error("Bindless Vulkan validation requested but layer is unavailable");
+    log_error("Vulkan validation requested but layer is unavailable");
     return false_v;
   }
   // Independent of validation: the messenger needs this extension, and so do
   // the per-pass command-buffer labels that name GPU work in a capture.
-  const bool8_t debug_utils_available = vkr_bindless_vk_extension_present(
+  const bool8_t debug_utils_available = vkr_vk_extension_present(
       available, available_count, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
   if (debug_utils_available) {
     enabled_extensions[enabled_extension_count++] =
@@ -248,7 +247,7 @@ vkr_bindless_vk_create_instance(VkrBindlessVulkanDevice *device) {
   const char *layers[] = {"VK_LAYER_KHRONOS_validation"};
   VkApplicationInfo application_info = {
       .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-      .pApplicationName = "VKR bindless renderer",
+      .pApplicationName = "VKR Vulkan renderer",
       .applicationVersion = VK_MAKE_API_VERSION(0, 0, 3, 0),
       .pEngineName = "VKR",
       .engineVersion = VK_MAKE_API_VERSION(0, 0, 3, 0),
@@ -261,7 +260,7 @@ vkr_bindless_vk_create_instance(VkrBindlessVulkanDevice *device) {
       .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
                      VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
                      VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
-      .pfnUserCallback = vkr_bindless_vk_debug_callback,
+      .pfnUserCallback = vkr_vk_debug_callback,
       .pUserData = device,
   };
   VkValidationFeatureEnableEXT validation_enables[2];
@@ -347,19 +346,18 @@ vkr_bindless_vk_create_instance(VkrBindlessVulkanDevice *device) {
   return true_v;
 }
 
-vkr_internal void
-vkr_bindless_vk_add_feature(VkrBindlessVkCandidateReport *report,
-                            const char *name, bool8_t present) {
-  vkr_bindless_vk_report_add(report, VKR_BINDLESS_VK_REPORT_FEATURE, name,
-                             true_v, present, present ? "enabled" : "missing");
+vkr_internal void vkr_vk_add_feature(VkrVulkanCandidateReport *report,
+                                     const char *name, bool8_t present) {
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_FEATURE, name, true_v, present,
+                    present ? "enabled" : "missing");
 }
 
-vkr_internal void vkr_bindless_vk_query_candidate(
-    VkrBindlessVulkanDevice *device, uint32_t candidate_index,
-    const VkExtensionProperties *instance_extensions,
-    uint32_t instance_extension_count) {
-  VkrBindlessVkCandidate *candidate = &device->candidates[candidate_index];
-  VkrBindlessVkCandidateReport *report =
+vkr_internal void
+vkr_vk_query_candidate(VkrVulkanDevice *device, uint32_t candidate_index,
+                       const VkExtensionProperties *instance_extensions,
+                       uint32_t instance_extension_count) {
+  VkrVulkanCandidate *candidate = &device->candidates[candidate_index];
+  VkrVulkanCandidateReport *report =
       &device->profile.candidates[candidate_index];
   candidate->driver = (VkPhysicalDeviceDriverProperties){
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
@@ -417,7 +415,7 @@ vkr_internal void vkr_bindless_vk_query_candidate(
       .pNext = &features11,
   };
   vkGetPhysicalDeviceFeatures2(candidate->physical, &features2);
-  candidate->features = (VkrBindlessVkFeatureSet){
+  candidate->features = (VkrVulkanFeatureSet){
       .shader_int64 = features2.features.shaderInt64,
       .geometry_shader = features2.features.geometryShader,
       .shader_draw_parameters = features11.shaderDrawParameters,
@@ -453,20 +451,17 @@ vkr_internal void vkr_bindless_vk_query_candidate(
   VkExtensionProperties *extensions = device->device_extensions;
   if (vkEnumerateDeviceExtensionProperties(
           candidate->physical, NULL, &extension_count, NULL) == VK_SUCCESS &&
-      extension_count <= VKR_BINDLESS_VK_MAX_EXTENSIONS &&
+      extension_count <= VKR_VULKAN_MAX_EXTENSIONS &&
       vkEnumerateDeviceExtensionProperties(candidate->physical, NULL,
                                            &extension_count,
                                            extensions) == VK_SUCCESS) {
-    candidate->has_descriptor_buffer_extension =
-        vkr_bindless_vk_extension_present(
-            extensions, extension_count,
-            VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
-    candidate->has_swapchain_extension = vkr_bindless_vk_extension_present(
+    candidate->has_descriptor_buffer_extension = vkr_vk_extension_present(
+        extensions, extension_count, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
+    candidate->has_swapchain_extension = vkr_vk_extension_present(
         extensions, extension_count, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
     candidate->has_swapchain_maintenance_extension =
-        vkr_bindless_vk_extension_present(
-            extensions, extension_count,
-            VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
+        vkr_vk_extension_present(extensions, extension_count,
+                                 VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
   }
 
   const bool8_t api_present =
@@ -476,58 +471,52 @@ vkr_internal void vkr_bindless_vk_query_candidate(
            VK_API_VERSION_MAJOR(report->api_version),
            VK_API_VERSION_MINOR(report->api_version),
            VK_API_VERSION_PATCH(report->api_version));
-  vkr_bindless_vk_report_add(report, VKR_BINDLESS_VK_REPORT_API_VERSION,
-                             "apiVersion", true_v, api_present, api_detail);
-  vkr_bindless_vk_report_add(
-      report, VKR_BINDLESS_VK_REPORT_DEVICE_EXTENSION,
-      VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME, true_v,
-      candidate->has_descriptor_buffer_extension,
-      candidate->has_descriptor_buffer_extension ? "available" : "missing");
-  vkr_bindless_vk_add_feature(report, "shaderInt64",
-                              candidate->features.shader_int64);
-  vkr_bindless_vk_add_feature(report, "geometryShader",
-                              candidate->features.geometry_shader);
-  vkr_bindless_vk_add_feature(report, "shaderDrawParameters",
-                              candidate->features.shader_draw_parameters);
-  vkr_bindless_vk_add_feature(report, "bufferDeviceAddress",
-                              candidate->features.buffer_device_address);
-  vkr_bindless_vk_add_feature(report, "drawIndirectCount",
-                              candidate->features.draw_indirect_count);
-  vkr_bindless_vk_add_feature(report, "timelineSemaphore",
-                              candidate->features.timeline_semaphore);
-  vkr_bindless_vk_add_feature(report, "descriptorIndexing",
-                              candidate->features.descriptor_indexing);
-  vkr_bindless_vk_add_feature(report, "runtimeDescriptorArray",
-                              candidate->features.runtime_descriptor_array);
-  vkr_bindless_vk_add_feature(report,
-                              "shaderSampledImageArrayNonUniformIndexing",
-                              candidate->features.sampled_image_non_uniform);
-  vkr_bindless_vk_add_feature(report,
-                              "shaderStorageImageArrayNonUniformIndexing",
-                              candidate->features.storage_image_non_uniform);
-  vkr_bindless_vk_add_feature(report, "scalarBlockLayout",
-                              candidate->features.scalar_block_layout);
-  vkr_bindless_vk_add_feature(report, "hostQueryReset",
-                              candidate->features.host_query_reset);
-  vkr_bindless_vk_add_feature(report, "dynamicRendering",
-                              candidate->features.dynamic_rendering);
-  vkr_bindless_vk_add_feature(report, "synchronization2",
-                              candidate->features.synchronization2);
-  vkr_bindless_vk_add_feature(report, "maintenance4",
-                              candidate->features.maintenance4);
-  vkr_bindless_vk_add_feature(
-      report, "shaderDemoteToHelperInvocation",
-      candidate->features.shader_demote_to_helper_invocation);
-  vkr_bindless_vk_add_feature(report, "maintenance5",
-                              candidate->features.maintenance5);
-  vkr_bindless_vk_add_feature(report, "descriptorBuffer",
-                              candidate->features.descriptor_buffer);
-  vkr_bindless_vk_report_add(
-      report, VKR_BINDLESS_VK_REPORT_FEATURE, "hostImageCopy", false_v,
-      candidate->features.host_image_copy,
-      candidate->features.host_image_copy ? "recorded" : "unavailable");
-  vkr_bindless_vk_report_add(
-      report, VKR_BINDLESS_VK_REPORT_FEATURE, "descriptorBufferCaptureReplay",
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_API_VERSION, "apiVersion", true_v,
+                    api_present, api_detail);
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_DEVICE_EXTENSION,
+                    VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME, true_v,
+                    candidate->has_descriptor_buffer_extension,
+                    candidate->has_descriptor_buffer_extension ? "available"
+                                                               : "missing");
+  vkr_vk_add_feature(report, "shaderInt64", candidate->features.shader_int64);
+  vkr_vk_add_feature(report, "geometryShader",
+                     candidate->features.geometry_shader);
+  vkr_vk_add_feature(report, "shaderDrawParameters",
+                     candidate->features.shader_draw_parameters);
+  vkr_vk_add_feature(report, "bufferDeviceAddress",
+                     candidate->features.buffer_device_address);
+  vkr_vk_add_feature(report, "drawIndirectCount",
+                     candidate->features.draw_indirect_count);
+  vkr_vk_add_feature(report, "timelineSemaphore",
+                     candidate->features.timeline_semaphore);
+  vkr_vk_add_feature(report, "descriptorIndexing",
+                     candidate->features.descriptor_indexing);
+  vkr_vk_add_feature(report, "runtimeDescriptorArray",
+                     candidate->features.runtime_descriptor_array);
+  vkr_vk_add_feature(report, "shaderSampledImageArrayNonUniformIndexing",
+                     candidate->features.sampled_image_non_uniform);
+  vkr_vk_add_feature(report, "shaderStorageImageArrayNonUniformIndexing",
+                     candidate->features.storage_image_non_uniform);
+  vkr_vk_add_feature(report, "scalarBlockLayout",
+                     candidate->features.scalar_block_layout);
+  vkr_vk_add_feature(report, "hostQueryReset",
+                     candidate->features.host_query_reset);
+  vkr_vk_add_feature(report, "dynamicRendering",
+                     candidate->features.dynamic_rendering);
+  vkr_vk_add_feature(report, "synchronization2",
+                     candidate->features.synchronization2);
+  vkr_vk_add_feature(report, "maintenance4", candidate->features.maintenance4);
+  vkr_vk_add_feature(report, "shaderDemoteToHelperInvocation",
+                     candidate->features.shader_demote_to_helper_invocation);
+  vkr_vk_add_feature(report, "maintenance5", candidate->features.maintenance5);
+  vkr_vk_add_feature(report, "descriptorBuffer",
+                     candidate->features.descriptor_buffer);
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_FEATURE, "hostImageCopy", false_v,
+                    candidate->features.host_image_copy,
+                    candidate->features.host_image_copy ? "recorded"
+                                                        : "unavailable");
+  vkr_vk_report_add(
+      report, VKR_VULKAN_REPORT_FEATURE, "descriptorBufferCaptureReplay",
       false_v, candidate->features.descriptor_buffer_capture_replay,
       candidate->features.descriptor_buffer_capture_replay ? "recorded"
                                                            : "unavailable");
@@ -559,75 +548,69 @@ vkr_internal void vkr_bindless_vk_query_candidate(
   char queue_detail[64];
   snprintf(queue_detail, sizeof(queue_detail), "family=%u flags=G|C|T%s",
            candidate->queue_family_index, device->config.windowed ? "|P" : "");
-  vkr_bindless_vk_report_add(
-      report, VKR_BINDLESS_VK_REPORT_QUEUE, "graphics+compute+transfer", true_v,
-      candidate->queue_family_index != UINT32_MAX, queue_detail);
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_QUEUE,
+                    "graphics+compute+transfer", true_v,
+                    candidate->queue_family_index != UINT32_MAX, queue_detail);
 
   const VkPhysicalDeviceLimits *limits =
       &candidate->properties.properties.limits;
-  const VkrBindlessVulkanDeviceConfig *config = &device->config;
-  vkr_bindless_vk_report_limit(report, "maxPerStageDescriptorSampledImages",
-                               limits->maxPerStageDescriptorSampledImages,
-                               config->sampled_image_capacity);
-  vkr_bindless_vk_report_limit(report, "maxDescriptorSetSampledImages",
-                               limits->maxDescriptorSetSampledImages,
-                               config->sampled_image_capacity);
-  vkr_bindless_vk_report_limit(report, "maxPerStageDescriptorSamplers",
-                               limits->maxPerStageDescriptorSamplers,
-                               config->sampler_capacity);
-  vkr_bindless_vk_report_limit(report, "maxDescriptorSetSamplers",
-                               limits->maxDescriptorSetSamplers,
-                               config->sampler_capacity);
-  vkr_bindless_vk_report_limit(report, "maxPerStageDescriptorStorageImages",
-                               limits->maxPerStageDescriptorStorageImages,
-                               config->storage_image_capacity);
-  vkr_bindless_vk_report_limit(report, "maxDescriptorSetStorageImages",
-                               limits->maxDescriptorSetStorageImages,
-                               config->storage_image_capacity);
-  vkr_bindless_vk_report_limit(report, "maxPerStageResources",
-                               limits->maxPerStageResources,
-                               (uint64_t)config->sampled_image_capacity +
-                                   config->storage_image_capacity + 1u);
-  vkr_bindless_vk_report_limit(report, "maxPushConstantsSize",
-                               limits->maxPushConstantsSize,
-                               config->root_push_constant_size);
-  vkr_bindless_vk_report_limit(report, "maxBoundDescriptorSets",
-                               limits->maxBoundDescriptorSets, 2u);
+  const VkrVulkanDeviceConfig *config = &device->config;
+  vkr_vk_report_limit(report, "maxPerStageDescriptorSampledImages",
+                      limits->maxPerStageDescriptorSampledImages,
+                      config->sampled_image_capacity);
+  vkr_vk_report_limit(report, "maxDescriptorSetSampledImages",
+                      limits->maxDescriptorSetSampledImages,
+                      config->sampled_image_capacity);
+  vkr_vk_report_limit(report, "maxPerStageDescriptorSamplers",
+                      limits->maxPerStageDescriptorSamplers,
+                      config->sampler_capacity);
+  vkr_vk_report_limit(report, "maxDescriptorSetSamplers",
+                      limits->maxDescriptorSetSamplers,
+                      config->sampler_capacity);
+  vkr_vk_report_limit(report, "maxPerStageDescriptorStorageImages",
+                      limits->maxPerStageDescriptorStorageImages,
+                      config->storage_image_capacity);
+  vkr_vk_report_limit(report, "maxDescriptorSetStorageImages",
+                      limits->maxDescriptorSetStorageImages,
+                      config->storage_image_capacity);
+  vkr_vk_report_limit(report, "maxPerStageResources",
+                      limits->maxPerStageResources,
+                      (uint64_t)config->sampled_image_capacity +
+                          config->storage_image_capacity + 1u);
+  vkr_vk_report_limit(report, "maxPushConstantsSize",
+                      limits->maxPushConstantsSize,
+                      config->root_push_constant_size);
+  vkr_vk_report_limit(report, "maxBoundDescriptorSets",
+                      limits->maxBoundDescriptorSets, 2u);
   const VkPhysicalDeviceDescriptorBufferPropertiesEXT *descriptor_properties =
       &candidate->descriptor_properties;
-  vkr_bindless_vk_report_limit(
-      report, "maxDescriptorBufferBindings",
-      descriptor_properties->maxDescriptorBufferBindings, 2u);
-  vkr_bindless_vk_report_limit(
+  vkr_vk_report_limit(report, "maxDescriptorBufferBindings",
+                      descriptor_properties->maxDescriptorBufferBindings, 2u);
+  vkr_vk_report_limit(
       report, "maxResourceDescriptorBufferBindings",
       descriptor_properties->maxResourceDescriptorBufferBindings, 1u);
-  vkr_bindless_vk_report_limit(
-      report, "maxSamplerDescriptorBufferBindings",
-      descriptor_properties->maxSamplerDescriptorBufferBindings, 1u);
-  vkr_bindless_vk_report_limit(
-      report, "sampledImageDescriptorSize",
-      descriptor_properties->sampledImageDescriptorSize, 1u);
-  vkr_bindless_vk_report_limit(
-      report, "storageImageDescriptorSize",
-      descriptor_properties->storageImageDescriptorSize, 1u);
-  vkr_bindless_vk_report_limit(report, "samplerDescriptorSize",
-                               descriptor_properties->samplerDescriptorSize,
-                               1u);
-  vkr_bindless_vk_report_limit(
-      report, "descriptorBufferOffsetAlignment",
-      descriptor_properties->descriptorBufferOffsetAlignment, 1u);
-  vkr_bindless_vk_report_record_limit(report, "bufferImageGranularity",
-                                      limits->bufferImageGranularity);
-  vkr_bindless_vk_report_record_limit(report, "nonCoherentAtomSize",
-                                      limits->nonCoherentAtomSize);
-  vkr_bindless_vk_report_record_limit(report, "minMemoryMapAlignment",
-                                      limits->minMemoryMapAlignment);
-  vkr_bindless_vk_report_record_limit(report,
-                                      "optimalBufferCopyOffsetAlignment",
-                                      limits->optimalBufferCopyOffsetAlignment);
-  vkr_bindless_vk_report_record_limit(
-      report, "optimalBufferCopyRowPitchAlignment",
-      limits->optimalBufferCopyRowPitchAlignment);
+  vkr_vk_report_limit(report, "maxSamplerDescriptorBufferBindings",
+                      descriptor_properties->maxSamplerDescriptorBufferBindings,
+                      1u);
+  vkr_vk_report_limit(report, "sampledImageDescriptorSize",
+                      descriptor_properties->sampledImageDescriptorSize, 1u);
+  vkr_vk_report_limit(report, "storageImageDescriptorSize",
+                      descriptor_properties->storageImageDescriptorSize, 1u);
+  vkr_vk_report_limit(report, "samplerDescriptorSize",
+                      descriptor_properties->samplerDescriptorSize, 1u);
+  vkr_vk_report_limit(report, "descriptorBufferOffsetAlignment",
+                      descriptor_properties->descriptorBufferOffsetAlignment,
+                      1u);
+  vkr_vk_report_record_limit(report, "bufferImageGranularity",
+                             limits->bufferImageGranularity);
+  vkr_vk_report_record_limit(report, "nonCoherentAtomSize",
+                             limits->nonCoherentAtomSize);
+  vkr_vk_report_record_limit(report, "minMemoryMapAlignment",
+                             limits->minMemoryMapAlignment);
+  vkr_vk_report_record_limit(report, "optimalBufferCopyOffsetAlignment",
+                             limits->optimalBufferCopyOffsetAlignment);
+  vkr_vk_report_record_limit(report, "optimalBufferCopyRowPitchAlignment",
+                             limits->optimalBufferCopyRowPitchAlignment);
 
   VkFormatProperties3 format3 = {
       .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3,
@@ -644,16 +627,14 @@ vkr_internal void vkr_bindless_vk_query_candidate(
   const VkFormatFeatureFlags2 target_floor =
       VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT |
       VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT;
-  vkr_bindless_vk_report_add(report, VKR_BINDLESS_VK_REPORT_FORMAT,
-                             "R8G8B8A8_UNORM sampled+transfer-dst", true_v,
-                             (format3.optimalTilingFeatures & texture_floor) ==
-                                 texture_floor,
-                             "optimal tiling");
-  vkr_bindless_vk_report_add(report, VKR_BINDLESS_VK_REPORT_FORMAT,
-                             "R8G8B8A8_UNORM color+transfer-src", true_v,
-                             (format3.optimalTilingFeatures & target_floor) ==
-                                 target_floor,
-                             "optimal tiling");
+  vkr_vk_report_add(
+      report, VKR_VULKAN_REPORT_FORMAT, "R8G8B8A8_UNORM sampled+transfer-dst",
+      true_v, (format3.optimalTilingFeatures & texture_floor) == texture_floor,
+      "optimal tiling");
+  vkr_vk_report_add(
+      report, VKR_VULKAN_REPORT_FORMAT, "R8G8B8A8_UNORM color+transfer-src",
+      true_v, (format3.optimalTilingFeatures & target_floor) == target_floor,
+      "optimal tiling");
 
   const char *window_instance_extensions[] = {
       VK_KHR_SURFACE_EXTENSION_NAME,
@@ -662,30 +643,29 @@ vkr_internal void vkr_bindless_vk_query_candidate(
 #endif
   };
   for (uint32_t i = 0; i < ArrayCount(window_instance_extensions); ++i) {
-    const bool8_t present = vkr_bindless_vk_extension_present(
-        instance_extensions, instance_extension_count,
-        window_instance_extensions[i]);
-    vkr_bindless_vk_report_add(
-        report, VKR_BINDLESS_VK_REPORT_INSTANCE_EXTENSION,
+    const bool8_t present =
+        vkr_vk_extension_present(instance_extensions, instance_extension_count,
+                                 window_instance_extensions[i]);
+    vkr_vk_report_add(
+        report, VKR_VULKAN_REPORT_INSTANCE_EXTENSION,
         window_instance_extensions[i], device->config.windowed, present,
         device->config.windowed ? "window floor" : "offscreen omitted");
   }
-  vkr_bindless_vk_report_add(
-      report, VKR_BINDLESS_VK_REPORT_DEVICE_EXTENSION,
-      VK_KHR_SWAPCHAIN_EXTENSION_NAME, device->config.windowed,
-      candidate->has_swapchain_extension,
-      device->config.windowed ? "window floor" : "offscreen omitted");
-  vkr_bindless_vk_report_add(report, VKR_BINDLESS_VK_REPORT_DEVICE_EXTENSION,
-                             VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME,
-                             false_v,
-                             candidate->has_swapchain_maintenance_extension &&
-                                 candidate->features.swapchain_maintenance1,
-                             candidate->has_swapchain_maintenance_extension &&
-                                     candidate->features.swapchain_maintenance1
-                                 ? "optional present-fence path enabled"
-                                 : "reacquisition completion path");
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_DEVICE_EXTENSION,
+                    VK_KHR_SWAPCHAIN_EXTENSION_NAME, device->config.windowed,
+                    candidate->has_swapchain_extension,
+                    device->config.windowed ? "window floor"
+                                            : "offscreen omitted");
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_DEVICE_EXTENSION,
+                    VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME, false_v,
+                    candidate->has_swapchain_maintenance_extension &&
+                        candidate->features.swapchain_maintenance1,
+                    candidate->has_swapchain_maintenance_extension &&
+                            candidate->features.swapchain_maintenance1
+                        ? "optional present-fence path enabled"
+                        : "reacquisition completion path");
 
-  candidate->common_viable = vkr_bindless_vk_report_passes(report);
+  candidate->common_viable = vkr_vk_report_passes(report);
   candidate->window_viable =
       candidate->common_viable && candidate->has_swapchain_extension;
   report->offscreen_viable = candidate->common_viable;
@@ -710,13 +690,12 @@ vkr_internal void vkr_bindless_vk_query_candidate(
   }
 }
 
-vkr_internal bool8_t
-vkr_bindless_vk_enumerate_candidates(VkrBindlessVulkanDevice *device) {
+vkr_internal bool8_t vkr_vk_enumerate_candidates(VkrVulkanDevice *device) {
   uint32_t instance_extension_count = 0;
   VkExtensionProperties *instance_extensions = device->instance_extensions;
   if (vkEnumerateInstanceExtensionProperties(NULL, &instance_extension_count,
                                              NULL) != VK_SUCCESS ||
-      instance_extension_count > VKR_BINDLESS_VK_MAX_EXTENSIONS ||
+      instance_extension_count > VKR_VULKAN_MAX_EXTENSIONS ||
       vkEnumerateInstanceExtensionProperties(
           NULL, &instance_extension_count, instance_extensions) != VK_SUCCESS) {
     return false_v;
@@ -724,10 +703,10 @@ vkr_bindless_vk_enumerate_candidates(VkrBindlessVulkanDevice *device) {
   uint32_t count = 0;
   if (vkEnumeratePhysicalDevices(device->instance, &count, NULL) !=
           VK_SUCCESS ||
-      count == 0 || count > VKR_BINDLESS_VK_MAX_CANDIDATES) {
+      count == 0 || count > VKR_VULKAN_MAX_CANDIDATES) {
     return false_v;
   }
-  VkPhysicalDevice physical[VKR_BINDLESS_VK_MAX_CANDIDATES];
+  VkPhysicalDevice physical[VKR_VULKAN_MAX_CANDIDATES];
   if (vkEnumeratePhysicalDevices(device->instance, &count, physical) !=
       VK_SUCCESS) {
     return false_v;
@@ -736,14 +715,13 @@ vkr_bindless_vk_enumerate_candidates(VkrBindlessVulkanDevice *device) {
   device->profile.candidate_count = count;
   for (uint32_t i = 0; i < count; ++i) {
     device->candidates[i].physical = physical[i];
-    vkr_bindless_vk_query_candidate(device, i, instance_extensions,
-                                    instance_extension_count);
+    vkr_vk_query_candidate(device, i, instance_extensions,
+                           instance_extension_count);
   }
   return true_v;
 }
 
-vkr_internal bool8_t
-vkr_bindless_vk_load_descriptor_functions(VkrBindlessVulkanDevice *device) {
+vkr_internal bool8_t vkr_vk_load_descriptor_functions(VkrVulkanDevice *device) {
   device->get_layout_size =
       (PFN_vkGetDescriptorSetLayoutSizeEXT)vkGetDeviceProcAddr(
           device->device, "vkGetDescriptorSetLayoutSizeEXT");
@@ -763,8 +741,7 @@ vkr_bindless_vk_load_descriptor_functions(VkrBindlessVulkanDevice *device) {
          device->cmd_set_descriptor_offsets;
 }
 
-vkr_internal void
-vkr_bindless_vk_destroy_logical_device(VkrBindlessVulkanDevice *device) {
+vkr_internal void vkr_vk_destroy_logical_device(VkrVulkanDevice *device) {
   if (!device->device) {
     return;
   }
@@ -788,9 +765,9 @@ vkr_bindless_vk_destroy_logical_device(VkrBindlessVulkanDevice *device) {
   MemZero(&device->sampler_layout, sizeof(device->sampler_layout));
 }
 
-vkr_internal bool8_t vkr_bindless_vk_create_layouts(
-    VkrBindlessVulkanDevice *device, VkrBindlessVkCandidate *candidate,
-    VkrBindlessVkCandidateReport *report) {
+vkr_internal bool8_t vkr_vk_create_layouts(VkrVulkanDevice *device,
+                                           VkrVulkanCandidate *candidate,
+                                           VkrVulkanCandidateReport *report) {
   VkDescriptorSetLayoutBinding resource_bindings[] = {
       {
           .binding = 0u,
@@ -835,14 +812,14 @@ vkr_internal bool8_t vkr_bindless_vk_create_layouts(
                                   &resource_support);
   vkGetDescriptorSetLayoutSupport(device->device, &sampler_info,
                                   &sampler_support);
-  vkr_bindless_vk_report_add(report, VKR_BINDLESS_VK_REPORT_LAYOUT,
-                             "resource descriptor-buffer layout support",
-                             true_v, resource_support.supported,
-                             "vkGetDescriptorSetLayoutSupport");
-  vkr_bindless_vk_report_add(report, VKR_BINDLESS_VK_REPORT_LAYOUT,
-                             "sampler descriptor-buffer layout support", true_v,
-                             sampler_support.supported,
-                             "vkGetDescriptorSetLayoutSupport");
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_LAYOUT,
+                    "resource descriptor-buffer layout support", true_v,
+                    resource_support.supported,
+                    "vkGetDescriptorSetLayoutSupport");
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_LAYOUT,
+                    "sampler descriptor-buffer layout support", true_v,
+                    sampler_support.supported,
+                    "vkGetDescriptorSetLayoutSupport");
   if (!resource_support.supported || !sampler_support.supported ||
       vkCreateDescriptorSetLayout(device->device, &resource_info, NULL,
                                   &device->resource_layout.handle) !=
@@ -882,32 +859,32 @@ vkr_internal bool8_t vkr_bindless_vk_create_layouts(
       device->resource_layout.size <=
           properties->descriptorBufferAddressSpaceSize -
               device->sampler_layout.size;
-  char detail[VKR_BINDLESS_VK_REPORT_DETAIL_CAPACITY];
+  char detail[VKR_VULKAN_REPORT_DETAIL_CAPACITY];
   snprintf(detail, sizeof(detail), "actual=%" PRIu64 " maximum=%" PRIu64,
            (uint64_t)device->resource_layout.size,
            (uint64_t)properties->maxResourceDescriptorBufferRange);
-  vkr_bindless_vk_report_add(report, VKR_BINDLESS_VK_REPORT_LIMIT,
-                             "resource descriptor layout bytes", true_v,
-                             resource_range && resource_space, detail);
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_LIMIT,
+                    "resource descriptor layout bytes", true_v,
+                    resource_range && resource_space, detail);
   snprintf(detail, sizeof(detail), "actual=%" PRIu64 " maximum=%" PRIu64,
            (uint64_t)device->sampler_layout.size,
            (uint64_t)properties->maxSamplerDescriptorBufferRange);
-  vkr_bindless_vk_report_add(report, VKR_BINDLESS_VK_REPORT_LIMIT,
-                             "sampler descriptor layout bytes", true_v,
-                             sampler_range && sampler_space, detail);
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_LIMIT,
+                    "sampler descriptor layout bytes", true_v,
+                    sampler_range && sampler_space, detail);
   snprintf(detail, sizeof(detail), "resource=%" PRIu64 " sampler=%" PRIu64,
            (uint64_t)device->resource_layout.size,
            (uint64_t)device->sampler_layout.size);
-  vkr_bindless_vk_report_add(report, VKR_BINDLESS_VK_REPORT_LIMIT,
-                             "descriptor buffer address spaces", true_v,
-                             combined_space, detail);
-  return vkr_bindless_vk_report_passes(report);
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_LIMIT,
+                    "descriptor buffer address spaces", true_v, combined_space,
+                    detail);
+  return vkr_vk_report_passes(report);
 }
 
-vkr_internal bool8_t vkr_bindless_vk_try_candidate(
-    VkrBindlessVulkanDevice *device, uint32_t candidate_index) {
-  VkrBindlessVkCandidate *candidate = &device->candidates[candidate_index];
-  VkrBindlessVkCandidateReport *report =
+vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
+                                          uint32_t candidate_index) {
+  VkrVulkanCandidate *candidate = &device->candidates[candidate_index];
+  VkrVulkanCandidateReport *report =
       &device->profile.candidates[candidate_index];
   float32_t priority = 1.0f;
   VkDeviceQueueCreateInfo queue_info = {
@@ -992,33 +969,29 @@ vkr_internal bool8_t vkr_bindless_vk_try_candidate(
       vkCreateDevice(candidate->physical, &create_info, NULL, &device->device);
   char detail[96];
   snprintf(detail, sizeof(detail), "VkResult=%d", result);
-  vkr_bindless_vk_report_add(report, VKR_BINDLESS_VK_REPORT_DEVICE_CREATE,
-                             "vkCreateDevice", true_v, result == VK_SUCCESS,
-                             detail);
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_DEVICE_CREATE, "vkCreateDevice",
+                    true_v, result == VK_SUCCESS, detail);
   if (result != VK_SUCCESS) {
     return false_v;
   }
   vkGetDeviceQueue(device->device, candidate->queue_family_index, 0u,
                    &device->queue);
-  const bool8_t functions_loaded =
-      vkr_bindless_vk_load_descriptor_functions(device);
-  vkr_bindless_vk_report_add(
-      report, VKR_BINDLESS_VK_REPORT_DEVICE_CREATE,
-      "descriptor-buffer function table", true_v, functions_loaded,
-      functions_loaded ? "all required entry points resolved"
-                       : "required entry point was NULL");
-  return functions_loaded &&
-         vkr_bindless_vk_create_layouts(device, candidate, report);
+  const bool8_t functions_loaded = vkr_vk_load_descriptor_functions(device);
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_DEVICE_CREATE,
+                    "descriptor-buffer function table", true_v,
+                    functions_loaded,
+                    functions_loaded ? "all required entry points resolved"
+                                     : "required entry point was NULL");
+  return functions_loaded && vkr_vk_create_layouts(device, candidate, report);
 }
 
-vkr_internal bool8_t
-vkr_bindless_vk_select_device(VkrBindlessVulkanDevice *device) {
-  bool8_t attempted[VKR_BINDLESS_VK_MAX_CANDIDATES] = {0};
+vkr_internal bool8_t vkr_vk_select_device(VkrVulkanDevice *device) {
+  bool8_t attempted[VKR_VULKAN_MAX_CANDIDATES] = {0};
   for (uint32_t attempt = 0; attempt < device->candidate_count; ++attempt) {
     uint32_t best = UINT32_MAX;
     uint32_t best_score = 0;
     for (uint32_t i = 0; i < device->candidate_count; ++i) {
-      const VkrBindlessVkCandidate *candidate = &device->candidates[i];
+      const VkrVulkanCandidate *candidate = &device->candidates[i];
       const bool8_t viable = device->config.windowed ? candidate->window_viable
                                                      : candidate->common_viable;
       if (!attempted[i] && viable &&
@@ -1031,21 +1004,20 @@ vkr_bindless_vk_select_device(VkrBindlessVulkanDevice *device) {
       break;
     }
     attempted[best] = true_v;
-    if (vkr_bindless_vk_try_candidate(device, best)) {
+    if (vkr_vk_try_candidate(device, best)) {
       device->selected_candidate_index = best;
       device->profile.selected_candidate_index = best;
       device->selected = &device->candidates[best];
       device->ready = true_v;
       return true_v;
     }
-    vkr_bindless_vk_destroy_logical_device(device);
+    vkr_vk_destroy_logical_device(device);
   }
   return false_v;
 }
 
-bool8_t
-vkr_bindless_vulkan_device_create(const VkrBindlessVulkanDeviceConfig *config,
-                                  VkrBindlessVulkanDevice **out_device) {
+bool8_t vkr_vulkan_device_create(const VkrVulkanDeviceConfig *config,
+                                 VkrVulkanDevice **out_device) {
   if (!config || !config->allocator || !out_device ||
       config->sampled_image_capacity == 0 ||
       config->storage_image_capacity == 0 || config->sampler_capacity == 0 ||
@@ -1054,7 +1026,7 @@ vkr_bindless_vulkan_device_create(const VkrBindlessVulkanDeviceConfig *config,
     return false_v;
   }
   *out_device = NULL;
-  VkrBindlessVulkanDevice *device = vkr_allocator_alloc(
+  VkrVulkanDevice *device = vkr_allocator_alloc(
       config->allocator, sizeof(*device), VKR_ALLOCATOR_MEMORY_TAG_VULKAN);
   if (!device) {
     return false_v;
@@ -1066,24 +1038,24 @@ vkr_bindless_vulkan_device_create(const VkrBindlessVulkanDeviceConfig *config,
   device->profile.selected_candidate_index = UINT32_MAX;
   device->selected_candidate_index = UINT32_MAX;
   *out_device = device;
-  if (!vkr_bindless_vk_create_instance(device)) {
+  if (!vkr_vk_create_instance(device)) {
     return false_v;
   }
-  if (!vkr_bindless_vk_enumerate_candidates(device)) {
+  if (!vkr_vk_enumerate_candidates(device)) {
     return false_v;
   }
-  if (!vkr_bindless_vk_select_device(device)) {
+  if (!vkr_vk_select_device(device)) {
     return false_v;
   }
   return true_v;
 }
 
-void vkr_bindless_vulkan_device_destroy(VkrBindlessVulkanDevice *device) {
+void vkr_vulkan_device_destroy(VkrVulkanDevice *device) {
   if (!device) {
     return;
   }
   VkrAllocator *allocator = device->allocator;
-  vkr_bindless_vk_destroy_logical_device(device);
+  vkr_vk_destroy_logical_device(device);
   if (device->surface) {
     vkDestroySurfaceKHR(device->instance, device->surface, NULL);
   }
@@ -1104,110 +1076,96 @@ void vkr_bindless_vulkan_device_destroy(VkrBindlessVulkanDevice *device) {
                      VKR_ALLOCATOR_MEMORY_TAG_VULKAN);
 }
 
-bool8_t
-vkr_bindless_vulkan_device_is_ready(const VkrBindlessVulkanDevice *device) {
+bool8_t vkr_vulkan_device_is_ready(const VkrVulkanDevice *device) {
   return device && device->ready;
 }
 
-const VkrBindlessVkCapabilityProfile *
-vkr_bindless_vulkan_device_profile(const VkrBindlessVulkanDevice *device) {
+const VkrVulkanCapabilityProfile *
+vkr_vulkan_device_profile(const VkrVulkanDevice *device) {
   return device ? &device->profile : NULL;
 }
 
-VkInstance
-vkr_bindless_vulkan_device_instance(const VkrBindlessVulkanDevice *device) {
+VkInstance vkr_vulkan_device_instance(const VkrVulkanDevice *device) {
   return device ? device->instance : VK_NULL_HANDLE;
 }
 
-VkPhysicalDevice
-vkr_bindless_vulkan_device_physical(const VkrBindlessVulkanDevice *device) {
+VkPhysicalDevice vkr_vulkan_device_physical(const VkrVulkanDevice *device) {
   return device && device->selected ? device->selected->physical
                                     : VK_NULL_HANDLE;
 }
 
-VkDevice
-vkr_bindless_vulkan_device_handle(const VkrBindlessVulkanDevice *device) {
+VkDevice vkr_vulkan_device_handle(const VkrVulkanDevice *device) {
   return device ? device->device : VK_NULL_HANDLE;
 }
 
-VkQueue
-vkr_bindless_vulkan_device_queue(const VkrBindlessVulkanDevice *device) {
+VkQueue vkr_vulkan_device_queue(const VkrVulkanDevice *device) {
   return device ? device->queue : VK_NULL_HANDLE;
 }
 
-VkSurfaceKHR
-vkr_bindless_vulkan_device_surface(const VkrBindlessVulkanDevice *device) {
+VkSurfaceKHR vkr_vulkan_device_surface(const VkrVulkanDevice *device) {
   return device ? device->surface : VK_NULL_HANDLE;
 }
 
-bool8_t vkr_bindless_vulkan_device_present_fences_enabled(
-    const VkrBindlessVulkanDevice *device) {
+bool8_t
+vkr_vulkan_device_present_fences_enabled(const VkrVulkanDevice *device) {
   return device && device->selected && device->config.windowed &&
          device->selected->has_swapchain_maintenance_extension &&
          device->selected->features.swapchain_maintenance1;
 }
 
-uint32_t
-vkr_bindless_vulkan_device_queue_family(const VkrBindlessVulkanDevice *device) {
+uint32_t vkr_vulkan_device_queue_family(const VkrVulkanDevice *device) {
   return device && device->selected ? device->selected->queue_family_index
                                     : UINT32_MAX;
 }
 
 const VkPhysicalDeviceProperties2 *
-vkr_bindless_vulkan_device_properties(const VkrBindlessVulkanDevice *device) {
+vkr_vulkan_device_properties(const VkrVulkanDevice *device) {
   return device && device->selected ? &device->selected->properties : NULL;
 }
 
 const VkPhysicalDeviceMemoryProperties *
-vkr_bindless_vulkan_device_memory_properties(
-    const VkrBindlessVulkanDevice *device) {
+vkr_vulkan_device_memory_properties(const VkrVulkanDevice *device) {
   return device && device->selected ? &device->selected->memory_properties
                                     : NULL;
 }
 
 const VkPhysicalDeviceDescriptorBufferPropertiesEXT *
-vkr_bindless_vulkan_device_descriptor_properties(
-    const VkrBindlessVulkanDevice *device) {
+vkr_vulkan_device_descriptor_properties(const VkrVulkanDevice *device) {
   return device && device->selected ? &device->selected->descriptor_properties
                                     : NULL;
 }
 
-const VkrBindlessVulkanDescriptorLayout *
-vkr_bindless_vulkan_device_resource_layout(
-    const VkrBindlessVulkanDevice *device) {
+const VkrVulkanDescriptorLayout *
+vkr_vulkan_device_resource_layout(const VkrVulkanDevice *device) {
   return device ? &device->resource_layout : NULL;
 }
 
-const VkrBindlessVulkanDescriptorLayout *
-vkr_bindless_vulkan_device_sampler_layout(
-    const VkrBindlessVulkanDevice *device) {
+const VkrVulkanDescriptorLayout *
+vkr_vulkan_device_sampler_layout(const VkrVulkanDevice *device) {
   return device ? &device->sampler_layout : NULL;
 }
 
-PFN_vkGetDescriptorEXT vkr_bindless_vulkan_device_get_descriptor(
-    const VkrBindlessVulkanDevice *device) {
+PFN_vkGetDescriptorEXT
+vkr_vulkan_device_get_descriptor(const VkrVulkanDevice *device) {
   return device ? device->get_descriptor : NULL;
 }
 
 PFN_vkCmdBindDescriptorBuffersEXT
-vkr_bindless_vulkan_device_cmd_bind_descriptor_buffers(
-    const VkrBindlessVulkanDevice *device) {
+vkr_vulkan_device_cmd_bind_descriptor_buffers(const VkrVulkanDevice *device) {
   return device ? device->cmd_bind_descriptor_buffers : NULL;
 }
 
 PFN_vkCmdSetDescriptorBufferOffsetsEXT
-vkr_bindless_vulkan_device_cmd_set_descriptor_offsets(
-    const VkrBindlessVulkanDevice *device) {
+vkr_vulkan_device_cmd_set_descriptor_offsets(const VkrVulkanDevice *device) {
   return device ? device->cmd_set_descriptor_offsets : NULL;
 }
 
 PFN_vkCmdBeginDebugUtilsLabelEXT
-vkr_bindless_vulkan_device_cmd_begin_debug_label(
-    const VkrBindlessVulkanDevice *device) {
+vkr_vulkan_device_cmd_begin_debug_label(const VkrVulkanDevice *device) {
   return device ? device->cmd_begin_debug_label : NULL;
 }
 
-PFN_vkCmdEndDebugUtilsLabelEXT vkr_bindless_vulkan_device_cmd_end_debug_label(
-    const VkrBindlessVulkanDevice *device) {
+PFN_vkCmdEndDebugUtilsLabelEXT
+vkr_vulkan_device_cmd_end_debug_label(const VkrVulkanDevice *device) {
   return device ? device->cmd_end_debug_label : NULL;
 }

@@ -1,11 +1,11 @@
-#include "renderer/vulkan/bindless/vkr_bindless_vulkan_internal.h"
+#include "renderer/vulkan/vkr_vulkan_internal.h"
 
-vkr_internal uint64_t vkr_bindless_vk_capture_align(uint64_t value) {
+vkr_internal uint64_t vkr_vk_capture_align(uint64_t value) {
   return (value + VKR_CAPTURE_BUFFER_ALIGNMENT - 1u) &
          ~(uint64_t)(VKR_CAPTURE_BUFFER_ALIGNMENT - 1u);
 }
 
-vkr_internal bool8_t vkr_bindless_vk_capture_source(
+vkr_internal bool8_t vkr_vk_capture_source(
     const VkrCaptureChannelDescription *channel, const VkrRenderPacket *packet,
     const char **out_name, uint32_t *out_layer) {
   const char *name = channel->source_name;
@@ -28,9 +28,9 @@ vkr_internal bool8_t vkr_bindless_vk_capture_source(
   return true_v;
 }
 
-bool8_t vkr_bindless_vk_plan_capture(VkrBindlessVulkanRenderer *renderer,
-                                     const VkrRenderPacket *packet,
-                                     VkrBindlessVkFrameSlot *slot) {
+bool8_t vkr_vk_plan_capture(VkrVulkanRenderer *renderer,
+                            const VkrRenderPacket *packet,
+                            VkrVulkanFrameSlot *slot) {
   slot->capture_request_id = 0u;
   slot->capture_item_count = 0u;
   const VkrCaptureBatchRequest *request =
@@ -55,14 +55,13 @@ bool8_t vkr_bindless_vk_plan_capture(VkrBindlessVulkanRenderer *renderer,
 
     const char *source_name = NULL;
     uint32_t source_layer = 0u;
-    if (!vkr_bindless_vk_capture_source(channel, packet, &source_name,
-                                        &source_layer))
+    if (!vkr_vk_capture_source(channel, packet, &source_name, &source_layer))
       return false_v;
     const String8 graph_name = string8_create_from_cstr(
         (const uint8_t *)source_name, string_length(source_name));
     const VkrRgImageHandle handle =
         vkr_rg_find_image(renderer->graph, graph_name);
-    VkrBindlessVkGraphImageInstance *instance = vkr_bindless_vk_graph_image(
+    VkrVulkanGraphImageInstance *instance = vkr_vk_graph_image(
         renderer, handle, renderer->prepared_frame.image_index);
     if (!instance || source_layer >= instance->image.array_layers)
       return false_v;
@@ -78,7 +77,7 @@ bool8_t vkr_bindless_vk_plan_capture(VkrBindlessVulkanRenderer *renderer,
     const uint64_t row_pitch =
         (uint64_t)instance->image.width * format_info.bytes_per_block;
     const uint64_t data_size = row_pitch * instance->image.height;
-    offset = vkr_bindless_vk_capture_align(offset);
+    offset = vkr_vk_capture_align(offset);
     if (data_size == 0u || offset > UINT64_MAX - data_size ||
         offset + data_size > renderer->config.capture_max_batch_bytes)
       return false_v;
@@ -108,7 +107,7 @@ bool8_t vkr_bindless_vk_plan_capture(VkrBindlessVulkanRenderer *renderer,
       vkr_capture_ring_reserve(&renderer->capture_ring, request,
                                slot->capture_plans, packet->frame.frame_index);
   if (reserve != VKR_RENDERER_ERROR_NONE) {
-    log_error("Bindless Vulkan capture reservation %llu failed (%u)",
+    log_error("Vulkan capture reservation %llu failed (%u)",
               (unsigned long long)request->request_id, reserve);
     return false_v;
   }
@@ -117,14 +116,14 @@ bool8_t vkr_bindless_vk_plan_capture(VkrBindlessVulkanRenderer *renderer,
   return true_v;
 }
 
-bool8_t vkr_bindless_vk_record_capture(VkrBindlessVulkanRenderer *renderer,
-                                       VkCommandBuffer command,
-                                       VkrBindlessVkFrameSlot *slot) {
+bool8_t vkr_vk_record_capture(VkrVulkanRenderer *renderer,
+                              VkCommandBuffer command,
+                              VkrVulkanFrameSlot *slot) {
   if (slot->capture_request_id == 0u)
     return true_v;
   for (uint32_t i = 0; i < slot->capture_item_count; ++i) {
     const VkrRgImageHandle handle = slot->capture_images[i];
-    VkrBindlessVkGraphImageInstance *instance = vkr_bindless_vk_graph_image(
+    VkrVulkanGraphImageInstance *instance = vkr_vk_graph_image(
         renderer, handle, renderer->prepared_frame.image_index);
     const VkrRgImage *graph_image =
         vkr_rg_image_handle_valid(handle)
@@ -135,9 +134,9 @@ bool8_t vkr_bindless_vk_record_capture(VkrBindlessVulkanRenderer *renderer,
       return false_v;
     const VkrCaptureBackendItemPlan *plan = &slot->capture_plans[i];
     const VkImageAspectFlags aspects =
-        vkr_bindless_vk_format_aspects(instance->image.format);
+        vkr_vk_format_aspects(instance->image.format);
     const VkImageLayout old_layout =
-        vkr_bindless_vk_texture_layout(graph_image->final_layout);
+        vkr_vk_texture_layout(graph_image->final_layout);
     if (old_layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
       const VkImageMemoryBarrier2 barrier = {
           .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -205,23 +204,22 @@ bool8_t vkr_bindless_vk_record_capture(VkrBindlessVulkanRenderer *renderer,
   return true_v;
 }
 
-bool8_t vkr_bindless_vk_collect_captures(VkrBindlessVulkanRenderer *renderer,
-                                         uint64_t completed_value) {
+bool8_t vkr_vk_collect_captures(VkrVulkanRenderer *renderer,
+                                uint64_t completed_value) {
   if (!renderer->capture_ring.initialized)
     return true_v;
-  for (uint32_t i = 0; i < VKR_BINDLESS_VK_FRAME_SLOT_COUNT; ++i) {
-    VkrBindlessVkFrameSlot *slot = &renderer->frame_slots[i];
+  for (uint32_t i = 0; i < VKR_VULKAN_FRAME_SLOT_COUNT; ++i) {
+    VkrVulkanFrameSlot *slot = &renderer->frame_slots[i];
     if (slot->capture_request_id && slot->retire_value &&
         slot->retire_value <= completed_value &&
-        !vkr_bindless_vk_invalidate(renderer,
-                                    &slot->capture_readback.allocation, 0u,
-                                    renderer->config.capture_max_batch_bytes)) {
+        !vkr_vk_invalidate(renderer, &slot->capture_readback.allocation, 0u,
+                           renderer->config.capture_max_batch_bytes)) {
       return false_v;
     }
   }
   vkr_capture_ring_collect(&renderer->capture_ring, completed_value);
-  for (uint32_t i = 0; i < VKR_BINDLESS_VK_FRAME_SLOT_COUNT; ++i) {
-    VkrBindlessVkFrameSlot *slot = &renderer->frame_slots[i];
+  for (uint32_t i = 0; i < VKR_VULKAN_FRAME_SLOT_COUNT; ++i) {
+    VkrVulkanFrameSlot *slot = &renderer->frame_slots[i];
     if (slot->capture_request_id && slot->retire_value &&
         slot->retire_value <= completed_value) {
       slot->capture_request_id = 0u;

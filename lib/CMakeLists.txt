@@ -22,21 +22,21 @@ set(VKR_RENDERER_SHADER_SOURCE_DIR
 file(GLOB_RECURSE VKR_SHARED_SHADER_SOURCES CONFIGURE_DEPENDS
      "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/*.slang"
      "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/*.slangh")
-set(VKR_BINDLESS_VK_SHADER_OUTPUT_DIR
-    "${CMAKE_CURRENT_BINARY_DIR}/generated/bindless_vulkan")
-set(VKR_BINDLESS_VK_PACKET_SHADER_DIR
+set(VKR_VULKAN_SHADER_OUTPUT_DIR
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/vulkan")
+set(VKR_VULKAN_PACKET_SHADER_DIR
     "${VKR_RENDERER_SHADER_SOURCE_DIR}/vulkan/slang")
-set(VKR_BINDLESS_VK_PACKET_SHADER_SOURCE
-    "${VKR_BINDLESS_VK_PACKET_SHADER_DIR}/library.slang")
-file(GLOB_RECURSE VKR_BINDLESS_VK_PACKET_SHADER_SOURCES CONFIGURE_DEPENDS
-     "${VKR_BINDLESS_VK_PACKET_SHADER_DIR}/*.slang"
-     "${VKR_BINDLESS_VK_PACKET_SHADER_DIR}/*.slangh")
-function(vkr_add_bindless_vulkan_packet_shader output_name entry stage)
-    set(output "${VKR_BINDLESS_VK_SHADER_OUTPUT_DIR}/${output_name}.spv")
+set(VKR_VULKAN_PACKET_SHADER_SOURCE
+    "${VKR_VULKAN_PACKET_SHADER_DIR}/library.slang")
+file(GLOB_RECURSE VKR_VULKAN_PACKET_SHADER_SOURCES CONFIGURE_DEPENDS
+     "${VKR_VULKAN_PACKET_SHADER_DIR}/*.slang"
+     "${VKR_VULKAN_PACKET_SHADER_DIR}/*.slangh")
+function(vkr_add_vulkan_packet_shader output_name entry stage)
+    set(output "${VKR_VULKAN_SHADER_OUTPUT_DIR}/${output_name}.spv")
     add_custom_command(
         OUTPUT "${output}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory
-                "${VKR_BINDLESS_VK_SHADER_OUTPUT_DIR}"
+                "${VKR_VULKAN_SHADER_OUTPUT_DIR}"
         COMMAND "${VKR_SLANGC_EXECUTABLE}"
                 -target spirv
                 -profile "spirv_1_6+SPV_GOOGLE_user_type+spvDerivativeControl+spvImageQuery+spvImageGatherExtended+spvSparseResidency+spvMinLod+spvFragmentFullyCoveredEXT+spvGroupNonUniformArithmetic"
@@ -47,46 +47,46 @@ function(vkr_add_bindless_vulkan_packet_shader output_name entry stage)
                 -O2
                 -entry "${entry}"
                 -stage "${stage}"
-                "${VKR_BINDLESS_VK_PACKET_SHADER_SOURCE}"
+                "${VKR_VULKAN_PACKET_SHADER_SOURCE}"
                 -o "${output}"
-        DEPENDS ${VKR_BINDLESS_VK_PACKET_SHADER_SOURCES}
+        DEPENDS ${VKR_VULKAN_PACKET_SHADER_SOURCES}
                 ${VKR_SHARED_SHADER_SOURCES}
-        COMMENT "Compiling bindless Vulkan packet ${entry} shader"
+        COMMENT "Compiling Vulkan packet ${entry} shader"
         VERBATIM)
-    set(VKR_BINDLESS_VK_PACKET_SHADER_OUTPUTS
-        ${VKR_BINDLESS_VK_PACKET_SHADER_OUTPUTS} "${output}" PARENT_SCOPE)
+    set(VKR_VULKAN_PACKET_SHADER_OUTPUTS
+        ${VKR_VULKAN_PACKET_SHADER_OUTPUTS} "${output}" PARENT_SCOPE)
     string(TOUPPER "${output_name}" macro_name)
     string(REPLACE "." "_" macro_name "${macro_name}")
     target_compile_definitions(renderer_lib PRIVATE
-        "VKR_BINDLESS_VK_${macro_name}_SPV=\"${output}\"")
+        "VKR_VULKAN_${macro_name}_SPV=\"${output}\"")
 endfunction()
-vkr_add_bindless_vulkan_packet_shader("packet.world.vert" world_vertex vertex)
-vkr_add_bindless_vulkan_packet_shader("packet.world.frag" world_fragment fragment)
-vkr_add_bindless_vulkan_packet_shader("packet.picking.frag" picking_fragment fragment)
-vkr_add_bindless_vulkan_packet_shader("packet.fullscreen.vert" fullscreen_vertex vertex)
-vkr_add_bindless_vulkan_packet_shader("packet.fullscreen.frag" fullscreen_fragment fragment)
-vkr_add_bindless_vulkan_packet_shader("packet.text.vert" text_vertex vertex)
-vkr_add_bindless_vulkan_packet_shader("packet.text.frag" text_fragment fragment)
-vkr_add_bindless_vulkan_packet_shader("packet.text_picking.frag" text_picking_fragment fragment)
-vkr_add_bindless_vulkan_packet_shader("packet.ibl_equirect.comp" ibl_equirect compute)
-vkr_add_bindless_vulkan_packet_shader("packet.ibl_irradiance.comp" ibl_irradiance compute)
-vkr_add_bindless_vulkan_packet_shader("packet.ibl_prefilter.comp" ibl_prefilter compute)
-vkr_add_bindless_vulkan_packet_shader("packet.gpu_draw_classify.comp" vk_gpu_draw_classify compute)
-vkr_add_bindless_vulkan_packet_shader("packet.gpu_draw_prefix.comp" vk_gpu_draw_prefix compute)
-vkr_add_bindless_vulkan_packet_shader("packet.gpu_draw_encode.comp" vk_gpu_draw_encode compute)
-vkr_add_bindless_vulkan_packet_shader("packet.visibility.vert" vk_visibility_vertex vertex)
-vkr_add_bindless_vulkan_packet_shader("packet.visibility.frag" vk_visibility_fragment fragment)
-vkr_add_bindless_vulkan_packet_shader("packet.visibility_opaque.frag" vk_visibility_opaque_fragment fragment)
-vkr_add_bindless_vulkan_packet_shader("packet.visibility_shadow.frag" vk_visibility_shadow_fragment fragment)
-vkr_add_bindless_vulkan_packet_shader("packet.gbuffer_resolve.comp" vk_gbuffer_resolve compute)
-vkr_add_bindless_vulkan_packet_shader("packet.deferred_lighting.comp" vk_deferred_lighting compute)
-vkr_add_bindless_vulkan_packet_shader("packet.hzb_build.comp" vk_hzb_build compute)
-vkr_add_bindless_vulkan_packet_shader("packet.picking_resolve.comp" vk_picking_resolve compute)
-vkr_add_bindless_vulkan_packet_shader("packet.transmission_shade.comp" vk_transmission_shade compute)
-vkr_add_bindless_vulkan_packet_shader("packet.transmission_coverage.comp" vk_transmission_coverage compute)
-add_custom_target(vkr_bindless_vulkan_packet_shaders DEPENDS
-    ${VKR_BINDLESS_VK_PACKET_SHADER_OUTPUTS})
-add_dependencies(renderer_lib vkr_bindless_vulkan_packet_shaders)
+vkr_add_vulkan_packet_shader("packet.world.vert" world_vertex vertex)
+vkr_add_vulkan_packet_shader("packet.world.frag" world_fragment fragment)
+vkr_add_vulkan_packet_shader("packet.picking.frag" picking_fragment fragment)
+vkr_add_vulkan_packet_shader("packet.fullscreen.vert" fullscreen_vertex vertex)
+vkr_add_vulkan_packet_shader("packet.fullscreen.frag" fullscreen_fragment fragment)
+vkr_add_vulkan_packet_shader("packet.text.vert" text_vertex vertex)
+vkr_add_vulkan_packet_shader("packet.text.frag" text_fragment fragment)
+vkr_add_vulkan_packet_shader("packet.text_picking.frag" text_picking_fragment fragment)
+vkr_add_vulkan_packet_shader("packet.ibl_equirect.comp" ibl_equirect compute)
+vkr_add_vulkan_packet_shader("packet.ibl_irradiance.comp" ibl_irradiance compute)
+vkr_add_vulkan_packet_shader("packet.ibl_prefilter.comp" ibl_prefilter compute)
+vkr_add_vulkan_packet_shader("packet.gpu_draw_classify.comp" vk_gpu_draw_classify compute)
+vkr_add_vulkan_packet_shader("packet.gpu_draw_prefix.comp" vk_gpu_draw_prefix compute)
+vkr_add_vulkan_packet_shader("packet.gpu_draw_encode.comp" vk_gpu_draw_encode compute)
+vkr_add_vulkan_packet_shader("packet.visibility.vert" vk_visibility_vertex vertex)
+vkr_add_vulkan_packet_shader("packet.visibility.frag" vk_visibility_fragment fragment)
+vkr_add_vulkan_packet_shader("packet.visibility_opaque.frag" vk_visibility_opaque_fragment fragment)
+vkr_add_vulkan_packet_shader("packet.visibility_shadow.frag" vk_visibility_shadow_fragment fragment)
+vkr_add_vulkan_packet_shader("packet.gbuffer_resolve.comp" vk_gbuffer_resolve compute)
+vkr_add_vulkan_packet_shader("packet.deferred_lighting.comp" vk_deferred_lighting compute)
+vkr_add_vulkan_packet_shader("packet.hzb_build.comp" vk_hzb_build compute)
+vkr_add_vulkan_packet_shader("packet.picking_resolve.comp" vk_picking_resolve compute)
+vkr_add_vulkan_packet_shader("packet.transmission_shade.comp" vk_transmission_shade compute)
+vkr_add_vulkan_packet_shader("packet.transmission_coverage.comp" vk_transmission_coverage compute)
+add_custom_target(vkr_vulkan_packet_shaders DEPENDS
+    ${VKR_VULKAN_PACKET_SHADER_OUTPUTS})
+add_dependencies(renderer_lib vkr_vulkan_packet_shaders)
 
 target_compile_definitions(renderer_lib PUBLIC SPIRV_REFLECT_USE_SYSTEM_SPIRV_H)
 
