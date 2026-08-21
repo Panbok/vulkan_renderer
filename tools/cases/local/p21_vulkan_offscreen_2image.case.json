@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "id": "local.p21.vulkan.offscreen_2image",
+  "suite": "local",
+  "description": "Vulkan deferred-only topology on a two-image WSI-free target under validation.",
+  "scene": "assets/scenes/fixtures/deferred_state_matrix.scene.json",
+  "seed": 21,
+  "resolution": [
+    320,
+    240
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 2,
+  "repetition_timeout_ms": 600000,
+  "asset_ready_timeout_ms": 120000,
+  "frames": {
+    "warmup": 256,
+    "measure": 8
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "backend": "vulkan",
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      0,
+      1.4,
+      6.0
+    ],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 58,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "assertions": [
+    {
+      "metric": "visibility.gpu_visible.overflow",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "visibility.transmission.gpu_visible.overflow",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "visibility.gbuffer.resolve_invalid",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "geometry.megabuffer.rejected_publications_total",
+      "stat": "max",
+      "max": 0
+    }
+  ],
+  "target_image_count": 2
+}

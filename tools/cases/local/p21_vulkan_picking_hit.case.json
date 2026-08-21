@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "id": "local.p21.vulkan.picking_hit",
+  "suite": "local",
+  "description": "Retained Windows Vulkan visibility-picking witness after legacy-forward retirement; opaque and transmission picking resolve from visibility data with no mesh re-rasterization.",
+  "scene": "assets/scenes/fixtures/layered_glass.scene.json",
+  "seed": 16,
+  "resolution": [320, 240],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 2,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": { "warmup": 256, "measure": 2 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "backend": "vulkan",
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [0, 1.3, -5],
+    "yaw": 90,
+    "pitch": 0,
+    "vertical_fov_degrees": 10,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "captures": [
+    { "at_frame": 0, "channels": ["picking_ids"] },
+    { "at_frame": 1, "channels": ["final_color"] }
+  ],
+  "assertions": [
+    { "metric": "visibility.gpu_visible.count", "stat": "min", "min": 1 },
+    { "metric": "visibility.transmission.gpu_visible.count", "stat": "min", "min": 1 },
+    { "metric": "visibility.gpu_visible.overflow", "stat": "max", "max": 0 },
+    { "metric": "visibility.transmission.gpu_visible.overflow", "stat": "max", "max": 0 },
+    { "metric": "visibility.gbuffer.resolve_invalid", "stat": "max", "max": 0 }
+  ]
+}

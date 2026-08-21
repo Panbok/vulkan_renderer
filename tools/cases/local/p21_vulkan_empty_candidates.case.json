@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "id": "local.p21.vulkan.empty_candidates",
+  "suite": "local",
+  "description": "Windows Vulkan empty-candidate witness: a world with no opaque or transmissive meshes must still execute the deferred-only graph and the retained world-text raster without overflow, invalid resolve, or a reroute that no longer exists.",
+  "scene": "assets/scenes/fixtures/text_rendering.scene.json",
+  "seed": 21,
+  "resolution": [320, 240],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 2,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": { "warmup": 256, "measure": 3 },
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "backend": "vulkan",
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [0, 0, 6.0],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 58,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "captures": [
+    { "at_frame": 2, "channels": ["final_color"] }
+  ],
+  "assertions": [
+    { "metric": "visibility.gpu_candidates.count", "stat": "max", "max": 0 },
+    { "metric": "visibility.gpu_visible.count", "stat": "max", "max": 0 },
+    { "metric": "visibility.transmission.gpu_candidates.count", "stat": "max", "max": 0 },
+    { "metric": "visibility.transmission.gpu_visible.count", "stat": "max", "max": 0 },
+    { "metric": "visibility.gpu_visible.overflow", "stat": "max", "max": 0 },
+    { "metric": "visibility.transmission.gpu_visible.overflow", "stat": "max", "max": 0 },
+    { "metric": "visibility.gbuffer.resolve_invalid", "stat": "max", "max": 0 },
+    { "metric": "geometry.megabuffer.rejected_publications_total", "stat": "max", "max": 0 }
+  ]
+}

@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "id": "local.p21.vulkan.bistro_windowed_validation",
+  "suite": "local",
+  "description": "Windowed Bistro under Vulkan validation: swapchain lifetime plus orbiting camera for view-dependent shading review.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 20,
+  "resolution": [
+    640,
+    480
+  ],
+  "boot": "automation",
+  "target": "windowed_hidden",
+  "present": "immediate",
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 900000,
+  "asset_ready_timeout_ms": 600000,
+  "frames": {
+    "warmup": 256,
+    "measure": 60
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "text_fixture": true,
+    "backend": "vulkan",
+    "shadow_preset": "balanced",
+    "shadow_cascades": 1,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "orbit",
+    "speed": "medium",
+    "center": [
+      -28.5,
+      4.6,
+      2.9
+    ],
+    "radius": 8,
+    "height": 3,
+    "revolutions": 1.0,
+    "duration_seconds": 4.0,
+    "start_angle_degrees": 0,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.1,
+    "far_plane": 500
+  },
+  "captures": [
+    {
+      "at_frame": 10,
+      "channels": [
+        "final_color"
+      ]
+    },
+    {
+      "at_frame": 40,
+      "channels": [
+        "final_color"
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "metric": "visibility.gpu_visible.overflow",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "visibility.transmission.gpu_visible.overflow",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "visibility.gbuffer.resolve_invalid",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "geometry.megabuffer.rejected_publications_total",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "draw.shadow.cascade0.indirect_overflow",
+      "stat": "max",
+      "max": 0
+    }
+  ]
+}

@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "id": "local.p5_p18.vulkan.deferred",
+  "id": "local.p21.vulkan.publication_boundary",
   "suite": "local",
-  "description": "Focused Windows Vulkan GPU-driven deferred visibility-buffer witness.",
+  "description": "Windows Vulkan publication-boundary witness: warmup far below the frames a cold scene needs to publish, so unresolved candidates must be omitted for the frame rather than failing it.",
   "scene": "assets/scenes/fixtures/deferred_state_matrix.scene.json",
-  "seed": 20,
+  "seed": 21,
   "resolution": [
-    640,
-    480
+    320,
+    240
   ],
   "boot": "full",
   "target": "offscreen",
@@ -16,11 +16,11 @@
   "cache": "isolated_cold",
   "fixed_delta": 0.016666667,
   "repetitions": 2,
-  "repetition_timeout_ms": 300000,
+  "repetition_timeout_ms": 120000,
   "asset_ready_timeout_ms": 60000,
   "frames": {
-    "warmup": 256,
-    "measure": 33
+    "warmup": 2,
+    "measure": 4
   },
   "renderer": {
     "editor": false,
@@ -35,7 +35,7 @@
     "position": [
       0,
       1.4,
-      6
+      6.0
     ],
     "yaw": -90,
     "pitch": 0,
@@ -43,25 +43,6 @@
     "near_plane": 0.1,
     "far_plane": 100
   },
-  "captures": [
-    {
-      "at_frame": 32,
-      "channels": [
-        "final_color",
-        "scene_color",
-        "visibility_ids",
-        "visibility_primitives",
-        "gbuffer_diffuse",
-        "gbuffer_specular",
-        "gbuffer_normal",
-        "deferred_emissive",
-        "normals",
-        "transmission_visibility_ids",
-        "transmission_visibility_primitives",
-        "picking_ids"
-      ]
-    }
-  ],
   "assertions": [
     {
       "metric": "visibility.gpu_candidates.count",
@@ -69,17 +50,12 @@
       "min": 1
     },
     {
-      "metric": "visibility.gpu_visible.count",
-      "stat": "min",
-      "min": 1
-    },
-    {
-      "metric": "visibility.transmission.gpu_visible.count",
-      "stat": "min",
-      "min": 1
-    },
-    {
       "metric": "visibility.gpu_visible.overflow",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "visibility.transmission.gpu_visible.overflow",
       "stat": "max",
       "max": 0
     },
