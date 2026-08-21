@@ -470,15 +470,32 @@ bool8_t vkr_bindless_vk_record_deferred_raster(
           renderer, command, &root, sizeof(root),
           _Alignof(VkrBindlessVkRasterRoot), &root_address))
     return false_v;
-  vkCmdBindPipeline(
-      command, VK_PIPELINE_BIND_POINT_GRAPHICS,
-      renderer->packet_pipelines
-          [shadow ? VKR_BINDLESS_VK_PACKET_PIPELINE_VISIBILITY_SHADOW
-                  : VKR_BINDLESS_VK_PACKET_PIPELINE_VISIBILITY]);
+  // Opaque camera buckets can use the discard-free visibility fragment. A
+  // transmission peel cannot because every bucket may discard against the
+  // preceding layer's depth.
+  const bool8_t early_z_opaque =
+      !shadow && root.previous_depth_texture == UINT32_MAX;
+  VkrBindlessVkPacketPipeline bound_pipeline =
+      VKR_BINDLESS_VK_PACKET_PIPELINE_COUNT;
   vkCmdBindIndexBuffer(command, renderer->geometry_megabuffer.indices.handle,
                        0u, VK_INDEX_TYPE_UINT32);
   for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
        ++bucket) {
+    const bool8_t opaque_bucket =
+        bucket == VKR_WORLD_DRAW_STATE_OPAQUE_BACK ||
+        bucket == VKR_WORLD_DRAW_STATE_OPAQUE_DOUBLE_SIDED;
+    const VkrBindlessVkPacketPipeline wanted_pipeline =
+        shadow ? (opaque_bucket
+                      ? VKR_BINDLESS_VK_PACKET_PIPELINE_VISIBILITY_SHADOW_OPAQUE
+                      : VKR_BINDLESS_VK_PACKET_PIPELINE_VISIBILITY_SHADOW)
+        : (early_z_opaque && opaque_bucket)
+            ? VKR_BINDLESS_VK_PACKET_PIPELINE_VISIBILITY_OPAQUE
+            : VKR_BINDLESS_VK_PACKET_PIPELINE_VISIBILITY;
+    if (wanted_pipeline != bound_pipeline) {
+      vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        renderer->packet_pipelines[wanted_pipeline]);
+      bound_pipeline = wanted_pipeline;
+    }
     const VkrBindlessVkPushConstants push = {
         .root = root_address,
         .material_index = bucket,

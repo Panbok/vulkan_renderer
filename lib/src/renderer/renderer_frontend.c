@@ -610,12 +610,15 @@ renderer_impl_metal_initialize(void *state, VkrWindow *window, uint32_t width,
   const uint64_t capture_bytes = backend_config->capture_max_batch_bytes > 0
                                      ? backend_config->capture_max_batch_bytes
                                      : MB(32);
+  const char *pipeline_archive_path = getenv("VKR_PIPELINE_CACHE_PATH");
+  if (!pipeline_archive_path || pipeline_archive_path[0] == '\0')
+    pipeline_archive_path = VKR_METAL_PACKET_ARCHIVE_PATH;
   VkrMetalPacketRendererConfig metal_config = {
       .allocator = &renderer->render_graph_allocator,
       .graph_path = "assets/render_graphs/main.rendergraph.json",
       .slang_msl_path = VKR_METAL_PACKET_SLANG_MSL,
       .fragment_msl_path = VKR_METAL_PACKET_FRAGMENT_MSL,
-      .pipeline_archive_path = VKR_METAL_PACKET_ARCHIVE_PATH,
+      .pipeline_archive_path = pipeline_archive_path,
       .target_kind =
           renderer->present_target.kind == VKR_PRESENT_TARGET_OFFSCREEN
               ? VKR_METAL_PACKET_TARGET_OFFSCREEN

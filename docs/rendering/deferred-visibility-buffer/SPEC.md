@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-20
+updated: 2026-08-21
 authority: spec
 ---
 
@@ -307,14 +307,15 @@ The minimum compacted buckets are:
 4. Alpha cutout, double-sided.
 
 This makes cull mode and cutout shader selection legal without per-command
-pipeline mutation. Opaque buckets execute before cutout buckets. Alpha test
-prevents an unconditional early depth write; opaque-first improves rejection,
-but the exact early-test behavior remains implementation-dependent.
+pipeline mutation. Opaque buckets execute before cutout buckets and use a
+discard-free visibility fragment; opaque shadow buckets use a depth-only
+pipeline. Cutout buckets retain alpha testing, so their exact early-test
+behavior remains implementation-dependent.
 
-Additional opaque/transmission state that cannot be represented by these four
-pipelines stays on the legacy forward path until it has an explicit bucket or
-legal ICB encoding. Deferred stabilization requires complete production-state
-coverage; P21 cannot delete the legacy path while this fallback is reachable.
+Before P21, additional opaque/transmission state stayed on the legacy forward
+path until it had an explicit bucket or legal ICB encoding. The accepted
+production state now fits these buckets; unsupported state is rejected during
+publication instead of selecting another renderer topology.
 
 ### 4.3 Command and visibility encoding
 
@@ -472,11 +473,16 @@ pixel:
 8. Evaluate the material, octahedrally encode the mapped normal, write the three
    G-buffer targets, and seed `hdr_pre_transmission` with emissive.
 
-The solver guards non-finite clip values, near-zero `w`, a near-zero matrix
-determinant, and a near-zero barycentric normalization denominator. A degenerate
-or invalid triangle writes a diagnostic counter and safe defaults; it must not
-produce out-of-bounds texture/index access or NaNs. The epsilon and edge rules
-are shared by both backends and exercised by a dedicated debug view.
+The publication contract requires finite geometry and frame matrices. GPU
+compaction owns table indices and draw ranges. Resolve trusts those producer
+contracts instead of repeating their checks for every shaded pixel. The solver
+still rejects a near-zero homogeneous solve scale or barycentric normalization
+denominator, and normal reconstruction rejects degenerate interpolated inputs.
+These legitimate
+degeneracies increment the invalid-resolve diagnostic and write safe defaults.
+Malformed GPU rows or non-finite published inputs are unsupported input, not a
+recoverable per-pixel case. The retained epsilon and edge rules match across
+both backends and remain visible through the dedicated debug view.
 
 The current roughness filter uses screen derivatives of the normal-mapped
 normal. The initial compute implementation may use geometric-normal gradients

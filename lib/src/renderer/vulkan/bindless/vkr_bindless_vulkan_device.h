@@ -133,3 +133,10 @@ vkr_bindless_vulkan_device_cmd_bind_descriptor_buffers(
 PFN_vkCmdSetDescriptorBufferOffsetsEXT
 vkr_bindless_vulkan_device_cmd_set_descriptor_offsets(
     const VkrBindlessVulkanDevice *device);
+
+/** Null when VK_EXT_debug_utils is absent; callers skip labelling. */
+PFN_vkCmdBeginDebugUtilsLabelEXT
+vkr_bindless_vulkan_device_cmd_begin_debug_label(
+    const VkrBindlessVulkanDevice *device);
+PFN_vkCmdEndDebugUtilsLabelEXT vkr_bindless_vulkan_device_cmd_end_debug_label(
+    const VkrBindlessVulkanDevice *device);

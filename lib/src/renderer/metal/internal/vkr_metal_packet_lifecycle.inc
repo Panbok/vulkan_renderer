@@ -378,6 +378,12 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
       for (uint32_t i = 0; i < renderer->max_passes; ++i)
         [renderer->render_passes[i] release];
     }
+    if (renderer->pass_labels) {
+      for (uint32_t i = 0; i < renderer->max_passes; ++i) {
+        [renderer->pass_labels[i].value release];
+        renderer->pass_labels[i].value = nil;
+      }
+    }
     if (renderer->command_slots) {
       for (uint32_t i = 0; i < renderer->command_slot_count; ++i) {
         VkrMetalPacketCommandSlot *slot = &renderer->command_slots[i];
@@ -423,6 +429,8 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
     [renderer->vbuffer_pipeline release];
     [renderer->transmission_vbuffer_pipeline release];
     [renderer->gpu_shadow_pipeline release];
+    [renderer->gpu_shadow_opaque_pipeline release];
+    [renderer->vbuffer_opaque_pipeline release];
     [renderer->blend_pipeline release];
     [renderer->overlay_pipeline release];
     [renderer->picking_pipeline release];

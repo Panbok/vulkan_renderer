@@ -67,6 +67,12 @@ vkr_internal Mat4 vkr_metal_packet_clip_matrix(bool8_t convert, Mat4 matrix) {
   return matrix;
 }
 
+typedef struct VkrMetalPacketPassLabel {
+  NSString *value;
+  char name[VKR_RENDERER_IMPL_TIMING_NAME_CAPACITY];
+  uint32_t length;
+} VkrMetalPacketPassLabel;
+
 typedef struct VkrMetalPacketImageViews {
   void *mip_views[VKR_METAL_PACKET_MAX_TEXTURE_MIPS];
   void *layer_views[VKR_METAL_PACKET_MAX_TEXTURE_LAYERS];
@@ -301,6 +307,9 @@ struct VkrMetalPacketRenderer {
   VkrMetalPacketSampler *samplers;
   VkrMetalPacketTextUpload *text_uploads;
   MTL4RenderPassDescriptor **render_passes;
+  // Encoder labels are reused while an expanded graph pass keeps the same name.
+  // Conditional passes and repeat counts can move a name to another index.
+  VkrMetalPacketPassLabel *pass_labels;
   id<MTLDevice> device;
   id<MTL4Compiler> compiler;
   id<MTL4PipelineDataSetSerializer> pipeline_serializer;
@@ -321,6 +330,8 @@ struct VkrMetalPacketRenderer {
   id<MTL4CounterHeap> timestamp_heap;
   uint64_t timestamp_frequency;
   id<MTLRenderPipelineState> gpu_shadow_pipeline;
+  id<MTLRenderPipelineState> gpu_shadow_opaque_pipeline;
+  id<MTLRenderPipelineState> vbuffer_opaque_pipeline;
   id<MTLRenderPipelineState> vbuffer_pipeline;
   id<MTLRenderPipelineState> transmission_vbuffer_pipeline;
   id<MTLRenderPipelineState> blend_pipeline;
@@ -475,6 +486,8 @@ VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_text_uploads_bytes, text_uploads,
                              renderer->max_draws)
 VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_render_passes_bytes,
                              render_passes, renderer->max_passes)
+VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_pass_labels_bytes, pass_labels,
+                             renderer->max_passes)
 VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_command_slots_bytes,
                              command_slots, renderer->command_slot_count)
 VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_timing_results_bytes,

@@ -23,18 +23,26 @@ struct VkrBindlessDirectResult
     float3 specular;
 };
 
+// Schlick's fifth power as three multiplies. `pow` lowers to exp2/log2, which
+// this runs once per light per pixel inside packet_punctual's inner loop.
+float packet_schlick_weight(float cosine)
+{
+    float m = max(1.0f - cosine, 0.0f);
+    float m2 = m * m;
+    return m2 * m2 * m;
+}
+
 float3 packet_fresnel(float cosine, float3 f0)
 {
     float f90 = saturate(max(f0.x, max(f0.y, f0.z)) * 25.0f);
-    return f0 + (f90 - f0) * pow(max(1.0f - cosine, 0.0f), 5.0f);
+    return f0 + (f90 - f0) * packet_schlick_weight(cosine);
 }
 
 float3 packet_fresnel_roughness(float cosine, float3 f0, float roughness)
 {
     float f90 = saturate(max(f0.x, max(f0.y, f0.z)) * 25.0f);
     float3 rough_f90 = f90 * (1.0f - roughness);
-    return f0 + (max(rough_f90, f0) - f0) *
-                    pow(max(1.0f - cosine, 0.0f), 5.0f);
+    return f0 + (max(rough_f90, f0) - f0) * packet_schlick_weight(cosine);
 }
 
 float packet_geometry_schlick(float no_x, float roughness)
@@ -123,10 +131,11 @@ float packet_directional_shadow(VkrBindlessPacketFrameRoot* root,
     if (any(uv < 0.0f) || any(uv > 1.0f) || projected.z < 0.0f ||
         projected.z > 1.0f)
         return 1.0f;
-    uint texture_index = NonUniformResourceIndex(root.shadow_texture);
-    uint sampler_index = NonUniformResourceIndex(root.shadow_sampler);
-    float shadow_depth = g_array_textures[texture_index].SampleLevel(
-        g_samplers[sampler_index], float3(uv, float(cascade)), 0.0f).r;
+    // Frame-root descriptor indices are dynamically uniform: every invocation
+    // reads the same push-constant-addressed root. Decorating them NonUniform
+    // costs a waterfall loop and blocks scalarization for nothing.
+    float shadow_depth = g_array_textures[root.shadow_texture].SampleLevel(
+        g_samplers[root.shadow_sampler], float3(uv, float(cascade)), 0.0f).r;
     return projected.z - root.shadow_bias <= shadow_depth ? 1.0f : 0.0f;
 }
 
@@ -183,17 +192,26 @@ VkrBindlessDirectResult packet_punctual(VkrBindlessPacketFrameRoot* frame,
     uint point_count = min(frame.point_light_count, 128u);
     for (uint word = 0u; word < 4u; ++word)
     {
-        uint remaining = point_mask[word];
+        // The mask comes from a per-pixel cluster cell, so lanes straddling a
+        // cell boundary carry different masks and the wave already pays for the
+        // union of their set bits. Iterating that union explicitly makes
+        // `light_index` wave-uniform, which lets the light rows load as scalars
+        // instead of per-lane vectors. Each lane still accumulates only its own
+        // bits, so the summation order and result are unchanged.
+        uint remaining = WaveActiveBitOr(point_mask[word]);
         while (remaining != 0u)
         {
-            uint light_index = word * 32u + uint(firstbitlow(remaining));
+            uint bit = uint(firstbitlow(remaining));
             remaining &= remaining - 1u;
+            uint light_index = word * 32u + bit;
             if (light_index >= point_count)
                 continue;
             float4 p0 = frame.point_light_data[light_index * 4u + 0u];
             float4 p1 = frame.point_light_data[light_index * 4u + 1u];
             float4 p2 = frame.point_light_data[light_index * 4u + 2u];
             float4 p3 = frame.point_light_data[light_index * 4u + 3u];
+            if ((point_mask[word] & (1u << bit)) == 0u)
+                continue;
             uint kind = uint(p2.w + 0.5f);
             float3 to_light = p0.xyz - world_position;
             float distance_squared = dot(to_light, to_light);
@@ -256,18 +274,12 @@ float3 packet_environment(VkrBindlessPacketFrameRoot* frame,
     float3 reflection = reflect(-view, normal);
     float3 fresnel = packet_fresnel_roughness(no_v, f0, roughness);
     float3 kd = (1.0f - fresnel) * (1.0f - metallic);
-    uint irradiance_texture =
-        NonUniformResourceIndex(frame.irradiance_texture);
-    uint irradiance_sampler =
-        NonUniformResourceIndex(frame.irradiance_sampler);
-    uint prefilter_texture =
-        NonUniformResourceIndex(frame.prefilter_texture);
-    uint prefilter_sampler =
-        NonUniformResourceIndex(frame.prefilter_sampler);
-    float3 global_irradiance = g_cube_textures[irradiance_texture]
-        .SampleLevel(g_samplers[irradiance_sampler], normal, 0.0f).rgb;
-    float3 global_prefiltered = g_cube_textures[prefilter_texture]
-        .SampleLevel(g_samplers[prefilter_sampler], reflection,
+    // Frame-root indices are uniform. Each local-probe loop iteration also
+    // visits one shared table row across the active lanes.
+    float3 global_irradiance = g_cube_textures[frame.irradiance_texture]
+        .SampleLevel(g_samplers[frame.irradiance_sampler], normal, 0.0f).rgb;
+    float3 global_prefiltered = g_cube_textures[frame.prefilter_texture]
+        .SampleLevel(g_samplers[frame.prefilter_sampler], reflection,
                      roughness * float(max(frame.prefilter_mip_count, 1u) -
                                        1u)).rgb;
     float2 brdf = packet_brdf_approximation(no_v, roughness);
@@ -298,20 +310,12 @@ float3 packet_environment(VkrBindlessPacketFrameRoot* frame,
                                  probe.center_blend.xyz,
                                  max(probe.extents_weight.xyz, 0.0f))
             : reflection;
-        uint probe_irradiance_texture =
-            NonUniformResourceIndex(probe.irradiance_texture);
-        uint probe_irradiance_sampler =
-            NonUniformResourceIndex(probe.irradiance_sampler);
-        uint probe_prefilter_texture =
-            NonUniformResourceIndex(probe.prefilter_texture);
-        uint probe_prefilter_sampler =
-            NonUniformResourceIndex(probe.prefilter_sampler);
         float3 probe_irradiance =
-            g_cube_textures[probe_irradiance_texture].SampleLevel(
-                g_samplers[probe_irradiance_sampler], normal, 0.0f).rgb;
+            g_cube_textures[probe.irradiance_texture].SampleLevel(
+                g_samplers[probe.irradiance_sampler], normal, 0.0f).rgb;
         float3 probe_prefiltered =
-            g_cube_textures[probe_prefilter_texture].SampleLevel(
-                g_samplers[probe_prefilter_sampler], probe_reflection,
+            g_cube_textures[probe.prefilter_texture].SampleLevel(
+                g_samplers[probe.prefilter_sampler], probe_reflection,
                  roughness * float(max(frame.prefilter_mip_count, 1u) -
                                   1u)).rgb;
         diffuse += kd * probe_irradiance * albedo * ao *

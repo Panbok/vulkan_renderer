@@ -12,11 +12,11 @@ void ibl_equirect(uint3 position : SV_DispatchThreadID)
     float2 environment_uv = float2(
         atan2(direction.z, direction.x) * (0.5f / vkr_pi) + 0.5f,
         acos(clamp(direction.y, -1.0f, 1.0f)) / vkr_pi);
-    uint source = NonUniformResourceIndex(root.source_texture);
-    uint sampler_index = NonUniformResourceIndex(root.source_sampler);
-    uint target = NonUniformResourceIndex(root.target_texture);
-    g_storage_images[target][position] = g_textures[source].SampleLevel(
-        g_samplers[sampler_index], environment_uv, 0.0f);
+    // IBL-root descriptor indices are dynamically uniform; see
+    // packet_directional_shadow.
+    g_storage_images[root.target_texture][position] =
+        g_textures[root.source_texture].SampleLevel(
+            g_samplers[root.source_sampler], environment_uv, 0.0f);
 }
 
 [shader("compute")]
@@ -31,8 +31,6 @@ void ibl_irradiance(uint3 position : SV_DispatchThreadID)
     float3 normal = normalize(cube_direction(position.z, uv));
     float3 irradiance = 0.0f;
     uint count = max(root.sample_count, 1u);
-    uint source = NonUniformResourceIndex(root.source_texture);
-    uint sampler_index = NonUniformResourceIndex(root.source_sampler);
     for (uint i = 0u; i < count; ++i)
     {
         float2 xi = hammersley(i, count);
@@ -42,11 +40,10 @@ void ibl_irradiance(uint3 position : SV_DispatchThreadID)
         float3 direction = tangent_sample(
             normal, float3(cos(phi) * sin_theta, sin(phi) * sin_theta,
                            cos_theta));
-        irradiance += g_cube_textures[source].SampleLevel(
-            g_samplers[sampler_index], direction, 0.0f).rgb;
+        irradiance += g_cube_textures[root.source_texture].SampleLevel(
+            g_samplers[root.source_sampler], direction, 0.0f).rgb;
     }
-    uint target = NonUniformResourceIndex(root.target_texture);
-    g_storage_images[target][position] =
+    g_storage_images[root.target_texture][position] =
         float4(irradiance / float(count), 1.0f);
 }
 
@@ -64,8 +61,6 @@ void ibl_prefilter(uint3 position : SV_DispatchThreadID)
     float3 color = 0.0f;
     float total_weight = 0.0f;
     uint count = max(root.sample_count, 1u);
-    uint source = NonUniformResourceIndex(root.source_texture);
-    uint sampler_index = NonUniformResourceIndex(root.source_sampler);
     for (uint i = 0u; i < count; ++i)
     {
         float3 half_vector = importance_ggx(hammersley(i, count), normal,
@@ -88,11 +83,10 @@ void ibl_prefilter(uint3 position : SV_DispatchThreadID)
                         : 0.5f * log2(4.0f * sample_solid_angle /
                                       texel_solid_angle);
         lod = clamp(lod, 0.0f, float(max(root.source_mip_count, 1u) - 1u));
-        color += g_cube_textures[source].SampleLevel(
-            g_samplers[sampler_index], light, lod).rgb * no_l;
+        color += g_cube_textures[root.source_texture].SampleLevel(
+            g_samplers[root.source_sampler], light, lod).rgb * no_l;
         total_weight += no_l;
     }
-    uint target = NonUniformResourceIndex(root.target_texture);
-    g_storage_images[target][position] =
+    g_storage_images[root.target_texture][position] =
         float4(color / max(total_weight, 1e-4f), 1.0f);
 }

@@ -282,9 +282,15 @@ vkr_internal id<MTLRenderPipelineState> vkr_metal_packet_create_pipeline(
   MTL4LibraryFunctionDescriptor *vertex = [MTL4LibraryFunctionDescriptor new];
   vertex.library = vertex_library;
   vertex.name = [NSString stringWithUTF8String:vertex_name];
-  MTL4LibraryFunctionDescriptor *fragment = [MTL4LibraryFunctionDescriptor new];
-  fragment.library = fragment_library;
-  fragment.name = [NSString stringWithUTF8String:fragment_name];
+  // A null fragment name builds a depth-only pipeline. Metal's tiler takes a
+  // materially faster path when there is no fragment stage at all, which a
+  // shadow cascade that never shades anything should be using.
+  MTL4LibraryFunctionDescriptor *fragment = nil;
+  if (fragment_name) {
+    fragment = [MTL4LibraryFunctionDescriptor new];
+    fragment.library = fragment_library;
+    fragment.name = [NSString stringWithUTF8String:fragment_name];
+  }
   MTL4RenderPipelineDescriptor *descriptor = [MTL4RenderPipelineDescriptor new];
   descriptor.label = label;
   descriptor.vertexFunctionDescriptor = vertex;
@@ -319,11 +325,11 @@ vkr_internal id<MTLRenderPipelineState> vkr_metal_packet_create_pipeline(
                                      error:&error];
   if (!pipeline)
     vkr_metal_packet_print_error("pipeline_compile", error);
-  if (pipeline &&
-      (!vkr_metal_packet_validate_abi_binding(
-           label, pipeline.reflection.vertexBindings, vertex_abi) ||
-       !vkr_metal_packet_validate_abi_binding(
-           label, pipeline.reflection.fragmentBindings, fragment_abi))) {
+  if (pipeline && (!vkr_metal_packet_validate_abi_binding(
+                       label, pipeline.reflection.vertexBindings, vertex_abi) ||
+                   (fragment && !vkr_metal_packet_validate_abi_binding(
+                                    label, pipeline.reflection.fragmentBindings,
+                                    fragment_abi)))) {
     [pipeline release];
     pipeline = nil;
   }
@@ -393,6 +399,20 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       "vkr_metal_packet_gpu_shadow_fragment", MTLPixelFormatInvalid, false_v,
       VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_DRAW_ROOT,
       true_v, @"VKR Metal packet GPU shadow");
+  // Opaque cascade geometry never alpha-tests, so it needs no fragment stage.
+  renderer->gpu_shadow_opaque_pipeline = vkr_metal_packet_create_pipeline(
+      renderer, slang, "vkr_metal_packet_vertex", nil, NULL,
+      MTLPixelFormatInvalid, false_v, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+      VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
+      @"VKR Metal packet GPU shadow opaque");
+  renderer->vbuffer_opaque_pipeline = vkr_metal_packet_create_pipeline(
+      renderer, slang, "vkr_metal_packet_vertex", fragment,
+      "vkr_metal_packet_vbuffer_opaque_fragment", MTLPixelFormatRG32Uint,
+      false_v, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+      // The opaque variant binds no fragment root buffer, so there is no
+      // fragment-side ABI record to validate.
+      VKR_METAL_PACKET_ABI_RECORD_COUNT, true_v,
+      @"VKR Metal packet vbuffer opaque");
   renderer->vbuffer_pipeline = vkr_metal_packet_create_pipeline(
       renderer, slang, "vkr_metal_packet_vertex", fragment,
       "vkr_metal_packet_vbuffer_fragment", MTLPixelFormatRG32Uint, false_v,
@@ -527,7 +547,8 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       !renderer->transmission_compact_pipeline ||
       !renderer->transmission_compact_finalize_pipeline ||
       !renderer->picking_resolve_pipeline || !renderer->hzb_build_pipeline ||
-      !renderer->gpu_shadow_pipeline || !renderer->vbuffer_pipeline ||
+      !renderer->gpu_shadow_pipeline || !renderer->gpu_shadow_opaque_pipeline ||
+      !renderer->vbuffer_pipeline || !renderer->vbuffer_opaque_pipeline ||
       !renderer->transmission_vbuffer_pipeline ||
       !renderer->gpu_draw_icb_argument_encoder) {
     log_error("Metal deferred pipelines or indirect argument encoder are "
@@ -564,7 +585,10 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
                  renderer->ibl_equirect_pipeline &&
                  renderer->ibl_irradiance_pipeline &&
                  renderer->ibl_prefilter_pipeline &&
-                 renderer->gpu_shadow_pipeline && renderer->vbuffer_pipeline &&
+                 renderer->gpu_shadow_pipeline &&
+                 renderer->gpu_shadow_opaque_pipeline &&
+                 renderer->vbuffer_pipeline &&
+                 renderer->vbuffer_opaque_pipeline &&
                  renderer->transmission_vbuffer_pipeline &&
                  renderer->gpu_draw_classify_pipeline &&
                  renderer->gpu_draw_prefix_pipeline &&
@@ -1160,6 +1184,7 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
         vkr_metal_packet_command_slots_bytes(renderer),
         vkr_metal_packet_timing_results_bytes(renderer),
         vkr_metal_packet_retired_image_views_bytes(renderer),
+        vkr_metal_packet_pass_labels_bytes(renderer),
     };
     uint64_t record_total = KB(64);
     bool8_t record_size_valid = true_v;
@@ -1203,12 +1228,15 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
         vkr_metal_packet_record_alloc(records, record_bytes[11], true_v);
     renderer->retired_image_views =
         vkr_metal_packet_record_alloc(records, record_bytes[12], true_v);
+    renderer->pass_labels =
+        vkr_metal_packet_record_alloc(records, record_bytes[13], true_v);
     if (!renderer->images || !renderer->graph_buffers ||
         !renderer->graph_buffer_instances || !renderer->meshes ||
         !renderer->submeshes || !renderer->packet_materials ||
         !renderer->textures || !renderer->samplers || !renderer->text_uploads ||
         !renderer->render_passes || !renderer->command_slots ||
-        !renderer->completed_timing_results || !renderer->retired_image_views) {
+        !renderer->completed_timing_results || !renderer->retired_image_views ||
+        !renderer->pass_labels) {
       vkr_metal_packet_renderer_destroy(renderer);
       return false_v;
     }

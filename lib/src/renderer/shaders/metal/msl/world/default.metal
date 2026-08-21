@@ -90,16 +90,20 @@ fragment float4 vkr_metal_packet_opaque_fragment(
       vkr_metal_packet_point_light_mask(frame, input.world_position);
   uint point_count = min(frame->point_light_count, 128u);
   for (uint word = 0u; word < 4u; ++word) {
-    uint remaining = point_mask[word];
+    /* SIMD-uniform light index; see vkr_metal_packet_deferred_lighting. */
+    uint remaining = simd_or(point_mask[word]);
     while (remaining != 0u) {
-      uint light_index = word * 32u + ctz(remaining);
+      uint bit = ctz(remaining);
       remaining &= remaining - 1u;
+      uint light_index = word * 32u + bit;
       if (light_index >= point_count)
         continue;
       float4 p0 = frame->point_light_data[light_index * 4u + 0u];
       float4 p1 = frame->point_light_data[light_index * 4u + 1u];
       float4 p2 = frame->point_light_data[light_index * 4u + 2u];
       float4 p3 = frame->point_light_data[light_index * 4u + 3u];
+      if ((point_mask[word] & (1u << bit)) == 0u)
+        continue;
       uint kind = uint(p2.w + 0.5);
       float3 to_light = p0.xyz - input.world_position;
       float distance_squared = dot(to_light, to_light);

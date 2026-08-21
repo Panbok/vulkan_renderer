@@ -389,6 +389,11 @@ vkr_internal bool8_t vkr_bindless_vk_create_packet_pipeline(
     VkrBindlessVkPacketShader fragment_shader, VkFormat color_format,
     VkFormat depth_format, bool8_t depth_test, bool8_t depth_write,
     bool8_t blend_enabled, bool8_t depth_bias) {
+  // A fragment shader of VKR_BINDLESS_VK_PACKET_SHADER_COUNT builds a
+  // depth-only pipeline with no fragment stage, which is what a shadow cascade
+  // rendering opaque geometry should use.
+  const bool8_t depth_only =
+      fragment_shader == VKR_BINDLESS_VK_PACKET_SHADER_COUNT;
   const VkPipelineShaderStageCreateInfo stages[] = {
       {
           .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -406,9 +411,11 @@ vkr_internal bool8_t vkr_bindless_vk_create_packet_pipeline(
       {
           .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
           .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-          .module = renderer->packet_shaders[fragment_shader],
+          .module = depth_only ? VK_NULL_HANDLE
+                               : renderer->packet_shaders[fragment_shader],
           .pName =
-              fragment_shader == VKR_BINDLESS_VK_PACKET_SHADER_WORLD_FRAGMENT
+              depth_only ? ""
+              : fragment_shader == VKR_BINDLESS_VK_PACKET_SHADER_WORLD_FRAGMENT
                   ? "world_fragment"
               : fragment_shader ==
                       VKR_BINDLESS_VK_PACKET_SHADER_PICKING_FRAGMENT
@@ -421,6 +428,9 @@ vkr_internal bool8_t vkr_bindless_vk_create_packet_pipeline(
               : fragment_shader ==
                       VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_FRAGMENT
                   ? "vk_visibility_fragment"
+              : fragment_shader ==
+                      VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_OPAQUE_FRAGMENT
+                  ? "vk_visibility_opaque_fragment"
               : fragment_shader ==
                       VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_SHADOW_FRAGMENT
                   ? "vk_visibility_shadow_fragment"
@@ -496,7 +506,7 @@ vkr_internal bool8_t vkr_bindless_vk_create_packet_pipeline(
       .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
       .pNext = &rendering,
       .flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT,
-      .stageCount = ArrayCount(stages),
+      .stageCount = depth_only ? 1u : (uint32_t)ArrayCount(stages),
       .pStages = stages,
       .pVertexInputState = &vertex_input,
       .pInputAssemblyState = &input_assembly,
@@ -529,6 +539,7 @@ vkr_bindless_vk_create_packet_pipelines(VkrBindlessVulkanRenderer *renderer) {
           VKR_BINDLESS_VK_PACKET_TEXT_PICKING_FRAG_SPV,
           VKR_BINDLESS_VK_PACKET_VISIBILITY_VERT_SPV,
           VKR_BINDLESS_VK_PACKET_VISIBILITY_FRAG_SPV,
+          VKR_BINDLESS_VK_PACKET_VISIBILITY_OPAQUE_FRAG_SPV,
           VKR_BINDLESS_VK_PACKET_VISIBILITY_SHADOW_FRAG_SPV,
       };
   for (uint32_t i = 0u; i < VKR_BINDLESS_VK_PACKET_SHADER_COUNT; ++i) {
@@ -584,11 +595,22 @@ vkr_bindless_vk_create_packet_pipelines(VkrBindlessVulkanRenderer *renderer) {
              VK_FORMAT_R32G32_UINT, VK_FORMAT_D32_SFLOAT, true_v, true_v,
              false_v, false_v) &&
          vkr_bindless_vk_create_packet_pipeline(
+             renderer, VKR_BINDLESS_VK_PACKET_PIPELINE_VISIBILITY_OPAQUE,
+             VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_VERTEX,
+             VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_OPAQUE_FRAGMENT,
+             VK_FORMAT_R32G32_UINT, VK_FORMAT_D32_SFLOAT, true_v, true_v,
+             false_v, false_v) &&
+         vkr_bindless_vk_create_packet_pipeline(
              renderer, VKR_BINDLESS_VK_PACKET_PIPELINE_VISIBILITY_SHADOW,
              VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_VERTEX,
              VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_SHADOW_FRAGMENT,
              VK_FORMAT_UNDEFINED, VK_FORMAT_D32_SFLOAT, true_v, true_v, false_v,
-             true_v);
+             true_v) &&
+         vkr_bindless_vk_create_packet_pipeline(
+             renderer, VKR_BINDLESS_VK_PACKET_PIPELINE_VISIBILITY_SHADOW_OPAQUE,
+             VKR_BINDLESS_VK_PACKET_SHADER_VISIBILITY_VERTEX,
+             VKR_BINDLESS_VK_PACKET_SHADER_COUNT, VK_FORMAT_UNDEFINED,
+             VK_FORMAT_D32_SFLOAT, true_v, true_v, false_v, true_v);
 }
 
 vkr_internal bool8_t

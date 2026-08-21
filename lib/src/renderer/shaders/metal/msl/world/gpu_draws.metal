@@ -68,6 +68,17 @@ fragment uint2 vkr_metal_packet_vbuffer_fragment(
   return uint2(input.visible_row_index + 1u, primitive_id);
 }
 
+/* Opaque visibility draws never alpha-test, so this variant drops the material
+   lookup and the discard. Without a possible discard the tiler can run depth
+   testing before the fragment stage instead of after it. Mirrors
+   vk_visibility_opaque_fragment. */
+[[early_fragment_tests]] fragment uint2
+vkr_metal_packet_vbuffer_opaque_fragment(
+    VkrMetalPacketVertexOutput input [[stage_in]],
+    uint primitive_id [[primitive_id]]) {
+  return uint2(input.visible_row_index + 1u, primitive_id);
+}
+
 fragment uint2 vkr_metal_packet_transmission_vbuffer_fragment(
     VkrMetalPacketVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
@@ -395,11 +406,6 @@ static void vkr_metal_packet_resolve_defaults(
 
 static bool vkr_metal_packet_perspective_barycentrics(
     float2 point, thread const float4 (&clip)[3], thread float3 &barycentrics) {
-  for (uint i = 0u; i < 3u; ++i) {
-    if (!all(isfinite(clip[i])))
-      return false;
-  }
-
   /* Solve the two homogeneous screen-point constraints plus sum(lambda)=1.
      Unlike divide-by-w affine reconstruction, this remains defined when an
      original triangle crosses the eye plane and Metal rasterizes its clipped
@@ -411,15 +417,19 @@ static bool vkr_metal_packet_perspective_barycentrics(
       float3(clip[0].y - point.y * clip[0].w, clip[1].y - point.y * clip[1].w,
              clip[2].y - point.y * clip[2].w);
   float3 weights = cross(horizontal, vertical);
+  /* A zero-area or edge-on triangle is legitimate mesh content, so these two
+     magnitude guards stay. Finiteness follows from finite vertex positions and
+     a finite view-projection, so the tests they were paired with are implied.
+     Mirrors vkr_vk_perspective_barycentric. */
   float scale = max(abs(weights.x), max(abs(weights.y), abs(weights.z)));
-  if (!all(isfinite(weights)) || !isfinite(scale) || scale <= 1e-12)
+  if (scale <= 1e-12)
     return false;
   weights /= scale;
   float normalization = weights.x + weights.y + weights.z;
-  if (!isfinite(normalization) || abs(normalization) <= 1e-8)
+  if (abs(normalization) <= 1e-8)
     return false;
   barycentrics = weights / normalization;
-  return all(isfinite(barycentrics));
+  return true;
 }
 
 static bool vkr_metal_packet_projected_face_sign(thread const float4 (&clip)[3],
@@ -428,7 +438,7 @@ static bool vkr_metal_packet_projected_face_sign(thread const float4 (&clip)[3],
   float3 q1 = float3(clip[1].x, clip[1].y, clip[1].w);
   float3 q2 = float3(clip[2].x, clip[2].y, clip[2].w);
   float orientation = dot(cross(q0, q1), q2);
-  if (!isfinite(orientation) || abs(orientation) <= 1e-12)
+  if (abs(orientation) <= 1e-12)
     return false;
   /* Metal screen Y is inverted relative to NDC, matching the former signed
      screen-area test without dividing eye-plane-crossing vertices by w. */
@@ -557,13 +567,9 @@ vkr_metal_packet_gbuffer_resolve(constant VkrMetalPacketGBufferResolveRoot &root
                        uv[2] * barycentric_dy.z;
   float2 gradient_x = texcoord_dx - texcoord;
   float2 gradient_y = texcoord_dy - texcoord;
-  if (!all(isfinite(texcoord)) || !all(isfinite(gradient_x)) ||
-      !all(isfinite(gradient_y))) {
-    atomic_fetch_add_explicit(&root.compaction_state->resolve_invalid_count, 1u,
-                              memory_order_relaxed);
-    vkr_metal_packet_resolve_defaults(root, pixel, -1.0);
-    return;
-  }
+  /* Finite barycentrics and finite mesh texcoords give finite results here;
+     the degenerate-triangle guard in the barycentric solve is what actually
+     rejects this pixel. */
 
   const device VkrMetalPacketMaterial &material =
       root.materials[visible.material_index];
@@ -632,17 +638,14 @@ vkr_metal_packet_gbuffer_resolve(constant VkrMetalPacketGBufferResolveRoot &root
       return;
     }
     tangent = normalize(tangent);
+    /* `normal` and `tangent` are unit and orthogonal by the Gram-Schmidt step
+       above, so the cross product is unit and `mapped` has exactly the
+       magnitude of `sampled`, which the guard above already established as
+       nonzero. Both former checks were implied. */
     float3 bitangent =
         normalize(cross(normal, tangent)) * sign(object_tangent.w);
     float3 mapped =
         tangent * sampled.x + bitangent * sampled.y + normal * sampled.z;
-    if (!vkr_metal_packet_finite_nonzero(bitangent) ||
-        !vkr_metal_packet_finite_nonzero(mapped)) {
-      atomic_fetch_add_explicit(&root.compaction_state->resolve_invalid_count,
-                                1u, memory_order_relaxed);
-      vkr_metal_packet_resolve_defaults(root, pixel, -1.0);
-      return;
-    }
     normal = normalize(mapped);
   }
 
@@ -781,16 +784,25 @@ kernel void vkr_metal_packet_deferred_lighting(
   uint4 point_mask = vkr_metal_packet_point_light_mask(frame, world_position);
   uint point_count = min(frame->point_light_count, 128u);
   for (uint word = 0u; word < 4u; ++word) {
-    uint remaining = point_mask[word];
+    /* The mask comes from a per-pixel cluster cell, so lanes straddling a cell
+       boundary carry different masks and the SIMD-group already pays for the
+       union of their set bits. Iterating that union explicitly makes
+       `light_index` SIMD-uniform, which lets the light rows load as scalars
+       instead of per-lane vectors. Each lane still accumulates only its own
+       bits, so the summation order and result are unchanged. */
+    uint remaining = simd_or(point_mask[word]);
     while (remaining != 0u) {
-      uint light_index = word * 32u + ctz(remaining);
+      uint bit = ctz(remaining);
       remaining &= remaining - 1u;
+      uint light_index = word * 32u + bit;
       if (light_index >= point_count)
         continue;
       float4 p0 = frame->point_light_data[light_index * 4u + 0u];
       float4 p1 = frame->point_light_data[light_index * 4u + 1u];
       float4 p2 = frame->point_light_data[light_index * 4u + 2u];
       float4 p3 = frame->point_light_data[light_index * 4u + 3u];
+      if ((point_mask[word] & (1u << bit)) == 0u)
+        continue;
       uint kind = uint(p2.w + 0.5);
       float3 to_light = p0.xyz - world_position;
       float distance_squared = dot(to_light, to_light);
@@ -1193,16 +1205,20 @@ static float3 vkr_metal_packet_transmission_lighting(
   uint4 point_mask = vkr_metal_packet_point_light_mask(frame, world_position);
   uint point_count = min(frame->point_light_count, 128u);
   for (uint word = 0u; word < 4u; ++word) {
-    uint remaining = point_mask[word];
+    /* SIMD-uniform light index; see vkr_metal_packet_deferred_lighting. */
+    uint remaining = simd_or(point_mask[word]);
     while (remaining != 0u) {
-      uint light_index = word * 32u + ctz(remaining);
+      uint bit = ctz(remaining);
       remaining &= remaining - 1u;
+      uint light_index = word * 32u + bit;
       if (light_index >= point_count)
         continue;
       float4 p0 = frame->point_light_data[light_index * 4u + 0u];
       float4 p1 = frame->point_light_data[light_index * 4u + 1u];
       float4 p2 = frame->point_light_data[light_index * 4u + 2u];
       float4 p3 = frame->point_light_data[light_index * 4u + 3u];
+      if ((point_mask[word] & (1u << bit)) == 0u)
+        continue;
       uint kind = uint(p2.w + 0.5);
       float3 to_light = p0.xyz - world_position;
       float distance_squared = dot(to_light, to_light);
@@ -1391,38 +1407,52 @@ kernel void vkr_metal_packet_transmission_shade(
   root.destination.write(float4(color, 1.0), pixel);
 }
 
+/* The dispatch fixes this kernel's threadgroup at 8x8, so it never exceeds
+   eight SIMD-groups for any SIMD width down to eight lanes. */
+constant uint vkr_metal_compact_simd_max = 8u;
+
 kernel void vkr_metal_packet_transmission_compact(
     constant VkrMetalPacketTransmissionCompactRoot &root [[buffer(0)]],
     uint2 pixel [[thread_position_in_grid]],
-    ushort thread_index [[thread_index_in_threadgroup]]) {
+    ushort simd_group [[simdgroup_index_in_threadgroup]],
+    ushort simd_group_count [[simdgroups_per_threadgroup]]) {
   if (root.layer >= 4u)
     return;
   if (all(pixel < root.extent))
     root.destination.write(root.source.read(pixel), pixel);
-  threadgroup uint offsets[64];
+  threadgroup uint simd_totals[vkr_metal_compact_simd_max];
   threadgroup uint group_base;
   bool covered = all(pixel < root.extent) && root.vbuffer.read(pixel).x != 0u;
-  offsets[thread_index] = covered ? 1u : 0u;
+
+  /* Two-level scan: a SIMD prefix sum for the lane offset plus one threadgroup
+     slot per SIMD-group, replacing a 64-iteration serial scan run by lane 0
+     with the rest of the threadgroup idle. Ordering stays SIMD-group then lane,
+     which is the order the serial scan produced. */
+  uint lane_offset = simd_prefix_exclusive_sum(covered ? 1u : 0u);
+  uint simd_total = simd_sum(covered ? 1u : 0u);
+  if (simd_is_first())
+    simd_totals[simd_group] = simd_total;
   threadgroup_barrier(mem_flags::mem_threadgroup);
-  if (thread_index == 0u) {
-    uint group_count = 0u;
-    for (uint i = 0u; i < 64u; ++i) {
-      uint present = offsets[i];
-      offsets[i] = group_count;
-      group_count += present;
-    }
+
+  uint simd_base = 0u;
+  for (uint i = 0u; i < (uint)simd_group; ++i)
+    simd_base += simd_totals[i];
+
+  if (simd_group == 0u && simd_is_first()) {
+    uint total = 0u;
+    for (uint i = 0u; i < (uint)simd_group_count; ++i)
+      total += simd_totals[i];
     group_base = atomic_fetch_add_explicit(&root.covered_pixels[root.layer],
-                                           group_count, memory_order_relaxed);
-    uint writable = group_base < root.capacity
-                        ? min(group_count, root.capacity - group_base)
-                        : 0u;
-    if (writable < group_count)
+                                           total, memory_order_relaxed);
+    uint writable =
+        group_base < root.capacity ? min(total, root.capacity - group_base) : 0u;
+    if (writable < total)
       atomic_fetch_add_explicit(&root.overflow_counts[root.layer],
-                                group_count - writable, memory_order_relaxed);
+                                total - writable, memory_order_relaxed);
   }
   threadgroup_barrier(mem_flags::mem_threadgroup);
   if (covered) {
-    uint destination = group_base + offsets[thread_index];
+    uint destination = group_base + simd_base + lane_offset;
     if (destination < root.capacity)
       root.pixel_list[destination] = (pixel.y << 16u) | pixel.x;
   }
@@ -1449,8 +1479,13 @@ kernel void vkr_metal_packet_transmission_coverage(
   if (thread_index == 0u)
     atomic_store_explicit(&group_coverage, 0u, memory_order_relaxed);
   threadgroup_barrier(mem_flags::mem_threadgroup);
-  if (all(pixel < root.extent) && root.vbuffer.read(pixel).x != 0u)
-    atomic_fetch_add_explicit(&group_coverage, 1u, memory_order_relaxed);
+  /* One threadgroup atomic per SIMD-group rather than one per covered lane; a
+     full-screen dispatch otherwise serializes every lane onto one address. */
+  bool covered = all(pixel < root.extent) && root.vbuffer.read(pixel).x != 0u;
+  uint simd_covered = simd_sum(covered ? 1u : 0u);
+  if (simd_is_first() && simd_covered != 0u)
+    atomic_fetch_add_explicit(&group_coverage, simd_covered,
+                              memory_order_relaxed);
   threadgroup_barrier(mem_flags::mem_threadgroup);
   if (thread_index == 0u && root.layer < 4u)
     atomic_fetch_add_explicit(

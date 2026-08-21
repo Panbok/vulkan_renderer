@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-20
+updated: 2026-08-21
 authority: adr
 ---
 
@@ -226,8 +226,9 @@ decision.
   loop may still leave CPU command calls; GPU-encoded ICB execution is compared
   explicitly before claiming submission collapse.
 - Alpha-cutout acceptance samples base color during raster and full material
-  resolve evaluates it again. Opaque-first bucket ordering helps rejection, but
-  early depth behavior is implementation-dependent.
+  resolve evaluates it again. Opaque camera buckets use a discard-free fragment
+  with forced early tests, and opaque shadow buckets omit the fragment stage.
+  Cutout early-depth behavior remains implementation-dependent.
 - Geometry publication becomes more complex. Megabuffer addresses must remain
   stable within a generation; growth, compaction, physical range reuse, and
   table retirement are completion-gated and observable.
@@ -241,6 +242,10 @@ decision.
 - Compute material resolve must reproduce raster pixel-center, viewport Y,
   winding/front-face, two-sided normal, model/tangent transform, degenerate
   triangle, and explicit-gradient LOD semantics on both backends.
+- Material resolve trusts GPU compaction bounds and the finite-geometry
+  publication contract. It retains only genuine geometric-degeneracy rejection
+  in the per-pixel path. Malformed GPU rows and non-finite published inputs are
+  outside the accepted packet/publication contract.
 - The current normal-mapped roughness variance filter cannot be assumed to
   survive analytic reconstruction for free. A geometric-gradient first version
   is an explicit fidelity delta and needs direct evidence or extra normal-map

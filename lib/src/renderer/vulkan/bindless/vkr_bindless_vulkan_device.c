@@ -72,6 +72,10 @@ struct VkrBindlessVulkanDevice {
   PFN_vkGetDescriptorEXT get_descriptor;
   PFN_vkCmdBindDescriptorBuffersEXT cmd_bind_descriptor_buffers;
   PFN_vkCmdSetDescriptorBufferOffsetsEXT cmd_set_descriptor_offsets;
+  // Null unless VK_EXT_debug_utils is present. Labels are available outside
+  // validation because Release GPU captures also need graph pass names.
+  PFN_vkCmdBeginDebugUtilsLabelEXT cmd_begin_debug_label;
+  PFN_vkCmdEndDebugUtilsLabelEXT cmd_end_debug_label;
   bool8_t ready;
 };
 
@@ -232,9 +236,11 @@ vkr_bindless_vk_create_instance(VkrBindlessVulkanDevice *device) {
     log_error("Bindless Vulkan validation requested but layer is unavailable");
     return false_v;
   }
-  if (device->config.enable_validation &&
-      vkr_bindless_vk_extension_present(available, available_count,
-                                        VK_EXT_DEBUG_UTILS_EXTENSION_NAME)) {
+  // Independent of validation: the messenger needs this extension, and so do
+  // the per-pass command-buffer labels that name GPU work in a capture.
+  const bool8_t debug_utils_available = vkr_bindless_vk_extension_present(
+      available, available_count, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+  if (debug_utils_available) {
     enabled_extensions[enabled_extension_count++] =
         VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
   }
@@ -304,6 +310,21 @@ vkr_bindless_vk_create_instance(VkrBindlessVulkanDevice *device) {
     if (create_debug && create_debug(device->instance, &debug_info, NULL,
                                      &device->debug_messenger) != VK_SUCCESS) {
       return false_v;
+    }
+  }
+
+  if (debug_utils_available) {
+    device->cmd_begin_debug_label =
+        (PFN_vkCmdBeginDebugUtilsLabelEXT)vkGetInstanceProcAddr(
+            device->instance, "vkCmdBeginDebugUtilsLabelEXT");
+    device->cmd_end_debug_label =
+        (PFN_vkCmdEndDebugUtilsLabelEXT)vkGetInstanceProcAddr(
+            device->instance, "vkCmdEndDebugUtilsLabelEXT");
+    // Both or neither: the recorder brackets every pass and must not emit an
+    // unmatched begin.
+    if (!device->cmd_begin_debug_label || !device->cmd_end_debug_label) {
+      device->cmd_begin_debug_label = NULL;
+      device->cmd_end_debug_label = NULL;
     }
   }
 
@@ -1074,6 +1095,8 @@ void vkr_bindless_vulkan_device_destroy(VkrBindlessVulkanDevice *device) {
       destroy_debug(device->instance, device->debug_messenger, NULL);
     }
   }
+  device->cmd_begin_debug_label = NULL;
+  device->cmd_end_debug_label = NULL;
   if (device->instance) {
     vkDestroyInstance(device->instance, NULL);
   }
@@ -1176,4 +1199,15 @@ PFN_vkCmdSetDescriptorBufferOffsetsEXT
 vkr_bindless_vulkan_device_cmd_set_descriptor_offsets(
     const VkrBindlessVulkanDevice *device) {
   return device ? device->cmd_set_descriptor_offsets : NULL;
+}
+
+PFN_vkCmdBeginDebugUtilsLabelEXT
+vkr_bindless_vulkan_device_cmd_begin_debug_label(
+    const VkrBindlessVulkanDevice *device) {
+  return device ? device->cmd_begin_debug_label : NULL;
+}
+
+PFN_vkCmdEndDebugUtilsLabelEXT vkr_bindless_vulkan_device_cmd_end_debug_label(
+    const VkrBindlessVulkanDevice *device) {
+  return device ? device->cmd_end_debug_label : NULL;
 }

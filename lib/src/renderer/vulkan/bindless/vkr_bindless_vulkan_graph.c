@@ -1210,6 +1210,10 @@ bool8_t vkr_bindless_vk_record_graph(VkrBindlessVulkanRenderer *renderer,
   slot->transmission_gpu_compaction_state = NULL;
   slot->hzb_history_input = NULL;
   slot->hzb_history_output = NULL;
+  const PFN_vkCmdBeginDebugUtilsLabelEXT begin_label =
+      vkr_bindless_vulkan_device_cmd_begin_debug_label(renderer->device);
+  const PFN_vkCmdEndDebugUtilsLabelEXT end_label =
+      vkr_bindless_vulkan_device_cmd_end_debug_label(renderer->device);
   for (uint64_t order = 0; order < renderer->graph->execution_order.length;
        ++order) {
     const uint32_t pass_index =
@@ -1217,6 +1221,22 @@ bool8_t vkr_bindless_vk_record_graph(VkrBindlessVulkanRenderer *renderer,
     const VkrRgPass *pass =
         vector_get_VkrRgPass(&renderer->graph->passes, pass_index);
     const float64_t cpu_begin = vkr_platform_get_absolute_time();
+    // Graph names are String8 and not null-terminated; pLabelName is a C
+    // string. The copy is stack-only and bounded, so no per-pass allocation.
+    if (begin_label) {
+      char label_name[VKR_RENDERER_IMPL_TIMING_NAME_CAPACITY];
+      const uint64_t label_length =
+          Min(pass->desc.name.length,
+              (uint64_t)VKR_RENDERER_IMPL_TIMING_NAME_CAPACITY - 1u);
+      if (label_length > 0u)
+        MemCopy(label_name, pass->desc.name.str, label_length);
+      label_name[label_length] = '\0';
+      const VkDebugUtilsLabelEXT label = {
+          .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
+          .pLabelName = label_name,
+      };
+      begin_label(command, &label);
+    }
     const uint32_t timing_index = slot->pass_timing_count;
     const bool8_t timestamp_pass =
         slot->timing_requested &&
@@ -1228,17 +1248,23 @@ bool8_t vkr_bindless_vk_record_graph(VkrBindlessVulkanRenderer *renderer,
     if (!vkr_bindless_vk_record_graph_pass_barriers(renderer, command, pass)) {
       log_error("Bindless Vulkan failed to record barriers for pass '%.*s'",
                 (int)pass->desc.name.length, pass->desc.name.str);
+      if (end_label)
+        end_label(command);
       return false_v;
     }
     if (!vkr_bindless_vk_record_graph_pass(renderer, command, pass)) {
       log_error("Bindless Vulkan failed to record pass '%.*s'",
                 (int)pass->desc.name.length, pass->desc.name.str);
+      if (end_label)
+        end_label(command);
       return false_v;
     }
     if (timestamp_pass) {
       vkCmdWriteTimestamp2(command, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
                            slot->timestamp_pool, timing_index * 2u + 1u);
     }
+    if (end_label)
+      end_label(command);
     if (slot->pass_timing_count < VKR_RENDERER_IMPL_MAX_PASS_TIMINGS) {
       VkrRendererImplPassTiming *timing =
           &slot->pass_timings[slot->pass_timing_count++];

@@ -1131,8 +1131,9 @@ vkr_internal bool8_t vkr_metal_packet_encode_hzb_build(
 vkr_internal bool8_t vkr_metal_packet_encode_gpu_draws(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrRenderPacket *packet, id<MTL4RenderCommandEncoder> encoder,
-    id<MTLRenderPipelineState> pipeline, VkrMetalPacketFrameUpload *upload)
-    API_AVAILABLE(macos(26.0)) {
+    id<MTLRenderPipelineState> pipeline,
+    id<MTLRenderPipelineState> opaque_pipeline,
+    VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
   VkrMetalPacketGraphBufferInstance *state =
       vkr_metal_packet_pass_buffer(renderer, pass, 2u);
   const bool8_t transmission = vkr_metal_packet_graph_pass_is(
@@ -1175,9 +1176,21 @@ vkr_internal bool8_t vkr_metal_packet_encode_gpu_draws(
                            renderer->prepared_frame.viewport_height, 0.0, 1.0}];
   [encoder setFrontFacingWinding:MTLWindingCounterClockwise];
   [encoder setDepthStencilState:renderer->depth_write_state];
-  [encoder setRenderPipelineState:pipeline];
+  id<MTLRenderPipelineState> bound_pipeline = nil;
   for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
        ++bucket) {
+    // Opaque buckets take the discard-free variant when one exists; the
+    // transmission pass passes nil because its peel logic needs the full stage.
+    id<MTLRenderPipelineState> wanted_pipeline =
+        (opaque_pipeline &&
+         (bucket == VKR_WORLD_DRAW_STATE_OPAQUE_BACK ||
+          bucket == VKR_WORLD_DRAW_STATE_OPAQUE_DOUBLE_SIDED))
+            ? opaque_pipeline
+            : pipeline;
+    if (wanted_pipeline != bound_pipeline) {
+      [encoder setRenderPipelineState:wanted_pipeline];
+      bound_pipeline = wanted_pipeline;
+    }
     [encoder
         setCullMode:(bucket & 1u) != 0u ? MTLCullModeNone : MTLCullModeBack];
     [encoder executeCommandsInBuffer:icb
@@ -1208,9 +1221,20 @@ vkr_internal bool8_t vkr_metal_packet_encode_gpu_shadow(
                                      1.0}];
   [encoder setFrontFacingWinding:MTLWindingCounterClockwise];
   [encoder setDepthStencilState:renderer->depth_write_state];
-  [encoder setRenderPipelineState:renderer->gpu_shadow_pipeline];
+  id<MTLRenderPipelineState> bound_shadow_pipeline = nil;
   for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
        ++bucket) {
+    // Opaque cascade geometry runs the depth-only pipeline; only the cutout
+    // buckets need the alpha-testing fragment stage.
+    id<MTLRenderPipelineState> wanted_shadow_pipeline =
+        (bucket == VKR_WORLD_DRAW_STATE_OPAQUE_BACK ||
+         bucket == VKR_WORLD_DRAW_STATE_OPAQUE_DOUBLE_SIDED)
+            ? renderer->gpu_shadow_opaque_pipeline
+            : renderer->gpu_shadow_pipeline;
+    if (wanted_shadow_pipeline != bound_shadow_pipeline) {
+      [encoder setRenderPipelineState:wanted_shadow_pipeline];
+      bound_shadow_pipeline = wanted_shadow_pipeline;
+    }
     [encoder
         setCullMode:(bucket & 1u) != 0u ? MTLCullModeNone : MTLCullModeBack];
     [encoder executeCommandsInBuffer:icb
@@ -1256,11 +1280,12 @@ vkr_internal bool8_t vkr_metal_packet_encode_pass_body(
   }
   if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_VBUFFER_OPAQUE)
     return vkr_metal_packet_encode_gpu_draws(
-        renderer, pass, packet, encoder, renderer->vbuffer_pipeline, upload);
+        renderer, pass, packet, encoder, renderer->vbuffer_pipeline,
+        renderer->vbuffer_opaque_pipeline, upload);
   if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_VBUFFER_TRANSMISSION)
     return vkr_metal_packet_encode_gpu_draws(
         renderer, pass, packet, encoder,
-        renderer->transmission_vbuffer_pipeline, upload);
+        renderer->transmission_vbuffer_pipeline, nil, upload);
   if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_WORLD_BLEND) {
     if (!packet->world)
       return true_v;
@@ -1391,6 +1416,35 @@ bool8_t vkr_metal_packet_renderer_prepare_frame(
   }
   renderer->frame_prepared = true_v;
   return true_v;
+}
+
+/* Rebuild a cached label only when that graph-pass index changes name. */
+vkr_internal NSString *
+vkr_metal_packet_pass_label(VkrMetalPacketRenderer *renderer, uint32_t index,
+                            const VkrRgPass *pass) {
+  if (!renderer->pass_labels || index >= renderer->max_passes)
+    return nil;
+  VkrMetalPacketPassLabel *cached = &renderer->pass_labels[index];
+  const uint32_t length =
+      (uint32_t)Min(pass->desc.name.length,
+                    (uint64_t)VKR_RENDERER_IMPL_TIMING_NAME_CAPACITY - 1u);
+  const bool8_t matches =
+      cached->value && cached->length == length &&
+      (length == 0u ||
+       MemCompare(cached->name, pass->desc.name.str, length) == 0);
+  if (!matches) {
+    [cached->value release];
+    cached->value = nil;
+    cached->length = length;
+    if (length > 0u) {
+      MemCopy(cached->name, pass->desc.name.str, length);
+      cached->name[length] = '\0';
+      cached->value = [[NSString alloc] initWithBytes:cached->name
+                                               length:length
+                                             encoding:NSUTF8StringEncoding];
+    }
+  }
+  return cached->value;
 }
 
 bool8_t
@@ -1655,6 +1709,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
           passed ? [renderer->command_buffer
                        renderCommandEncoderWithDescriptor:descriptor]
                  : nil;
+      encoder.label = vkr_metal_packet_pass_label(renderer, *pass_index, pass);
       passed =
           passed && encoder &&
           vkr_metal_packet_encode_consumers(encoder, pass,
@@ -1687,6 +1742,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     } else {
       id<MTL4ComputeCommandEncoder> encoder =
           [renderer->command_buffer computeCommandEncoder];
+      encoder.label = vkr_metal_packet_pass_label(renderer, *pass_index, pass);
       passed = encoder && vkr_metal_packet_encode_consumers(
                               encoder, pass, &out_result->dependency_count);
       if (passed && pass->desc.type == VKR_RG_PASS_TYPE_TRANSFER)

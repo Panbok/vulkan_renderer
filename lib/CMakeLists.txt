@@ -39,9 +39,12 @@ function(vkr_add_bindless_vulkan_packet_shader output_name entry stage)
                 "${VKR_BINDLESS_VK_SHADER_OUTPUT_DIR}"
         COMMAND "${VKR_SLANGC_EXECUTABLE}"
                 -target spirv
-                -profile "spirv_1_6+SPV_GOOGLE_user_type+spvDerivativeControl+spvImageQuery+spvImageGatherExtended+spvSparseResidency+spvMinLod+spvFragmentFullyCoveredEXT"
+                -profile "spirv_1_6+SPV_GOOGLE_user_type+spvDerivativeControl+spvImageQuery+spvImageGatherExtended+spvSparseResidency+spvMinLod+spvFragmentFullyCoveredEXT+spvGroupNonUniformArithmetic"
                 -fvk-use-entrypoint-name
                 -fvk-use-scalar-layout
+                # Shader-audit setting. -O3 produced byte-identical modules for
+                # the current entry points.
+                -O2
                 -entry "${entry}"
                 -stage "${stage}"
                 "${VKR_BINDLESS_VK_PACKET_SHADER_SOURCE}"
@@ -73,6 +76,7 @@ vkr_add_bindless_vulkan_packet_shader("packet.gpu_draw_prefix.comp" vk_gpu_draw_
 vkr_add_bindless_vulkan_packet_shader("packet.gpu_draw_encode.comp" vk_gpu_draw_encode compute)
 vkr_add_bindless_vulkan_packet_shader("packet.visibility.vert" vk_visibility_vertex vertex)
 vkr_add_bindless_vulkan_packet_shader("packet.visibility.frag" vk_visibility_fragment fragment)
+vkr_add_bindless_vulkan_packet_shader("packet.visibility_opaque.frag" vk_visibility_opaque_fragment fragment)
 vkr_add_bindless_vulkan_packet_shader("packet.visibility_shadow.frag" vk_visibility_shadow_fragment fragment)
 vkr_add_bindless_vulkan_packet_shader("packet.gbuffer_resolve.comp" vk_gbuffer_resolve compute)
 vkr_add_bindless_vulkan_packet_shader("packet.deferred_lighting.comp" vk_deferred_lighting compute)

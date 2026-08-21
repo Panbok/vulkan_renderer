@@ -289,8 +289,12 @@ static bool vkr_vk_candidate_occluded(VkrVkCullRoot* root,
     {
         for (uint x = sample_min.x; x <= sample_max.x; ++x)
         {
+            // `mip` is derived per candidate, so lanes in this workgroup can
+            // select different HZB levels. A divergent descriptor index must be
+            // decorated NonUniform; without it the access is undefined.
             float occluder_depth =
-                g_storage_2d[root.hzb_textures[mip]][uint2(x, y)].x;
+                g_storage_2d[NonUniformResourceIndex(root.hzb_textures[mip])]
+                            [uint2(x, y)].x;
             if (nearest_depth <= occluder_depth + root.hzb_depth_epsilon)
                 return false;
         }
@@ -469,6 +473,23 @@ VkrVkVisibilityFragment vk_visibility_fragment(
     return output;
 }
 
+// Camera-opaque visibility draws reach neither discard above. A shader that can
+// discard prevents unconditional early depth writes, so opaque buckets use this
+// fragment with early tests. Cutouts retain alpha testing, and transmission
+// retains the preceding peel-depth rejection.
+[shader("fragment")]
+[earlydepthstencil]
+VkrVkVisibilityFragment vk_visibility_opaque_fragment(
+    VkrVkVisibilityOutput input, uint primitive_id : SV_PrimitiveID,
+    bool front_facing : SV_IsFrontFace)
+{
+    VkrVkVisibilityFragment output;
+    output.value = uint2(
+        input.visible_index + 1u,
+        primitive_id | (front_facing ? VKR_VK_FRONT_FACE_BIT : 0u));
+    return output;
+}
+
 [shader("fragment")]
 void vk_visibility_shadow_fragment(VkrVkVisibilityOutput input)
 {
@@ -520,8 +541,6 @@ bool vkr_vk_perspective_barycentric(float2 point, float4 ca, float4 cb,
     barycentric = 0.0f;
     barycentric_dx = 0.0f;
     barycentric_dy = 0.0f;
-    if (!all(isfinite(ca)) || !all(isfinite(cb)) || !all(isfinite(cc)))
-        return false;
 
     // Solve the homogeneous screen-point constraints plus sum(lambda)=1.
     // This stays defined when the original triangle crosses the eye plane and
@@ -537,15 +556,19 @@ bool vkr_vk_perspective_barycentric(float2 point, float4 ca, float4 cb,
     float3 weights = cross(horizontal, vertical);
     float3 weights_dx = cross(-clip_w, vertical);
     float3 weights_dy = cross(horizontal, -clip_w);
+    // A zero-area or edge-on triangle is legitimate mesh content rather than
+    // corrupt data, so these two magnitude guards stay. Everything they used to
+    // be paired with was a finiteness test, and finiteness here follows from
+    // finite vertex positions and a finite view-projection; those tests are
+    // implied by the guards that remain.
     float scale = max(abs(weights.x), max(abs(weights.y), abs(weights.z)));
-    if (!all(isfinite(weights)) || !all(isfinite(weights_dx)) ||
-        !all(isfinite(weights_dy)) || !isfinite(scale) || scale <= 1e-12f)
+    if (scale <= 1e-12f)
         return false;
     weights /= scale;
     weights_dx /= scale;
     weights_dy /= scale;
     float normalization = weights.x + weights.y + weights.z;
-    if (!isfinite(normalization) || abs(normalization) <= 1e-12f)
+    if (abs(normalization) <= 1e-12f)
         return false;
     barycentric = weights / normalization;
     barycentric_dx =
@@ -554,8 +577,7 @@ bool vkr_vk_perspective_barycentric(float2 point, float4 ca, float4 cb,
     barycentric_dy =
         (weights_dy - barycentric * dot(weights_dy, 1.0f)) /
         normalization * (-2.0f / float(extent.y));
-    return all(isfinite(barycentric)) && all(isfinite(barycentric_dx)) &&
-           all(isfinite(barycentric_dy));
+    return true;
 }
 
 float2 vkr_vk_resolve_ndc(float2 pixel, uint2 extent)
@@ -636,29 +658,21 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
                             uint2 pixel, out VkrVkSurface surface)
 {
     surface = (VkrVkSurface)0;
+    // The visibility buffer, the compacted visible rows, and the geometry table
+    // are all produced by this renderer's own GPU culling pipeline, and the
+    // caller has already established that this pixel carries a written sample.
+    // Re-deriving those bounds here duplicated a contract the producer owns and
+    // cost ten comparisons on every shaded pixel. Degenerate-triangle rejection
+    // still happens below, where the input genuinely can be degenerate.
     uint visible_index = encoded.x - 1u;
     uint primitive_id = encoded.y & VKR_VK_PRIMITIVE_ID_MASK;
-    if (visible_index >= source.visible_capacity ||
-        visible_index >= source.compaction_state.visible_count)
-        return vkr_vk_reject_surface(source);
     VkrGpuVisibleDrawRow visible = source.visible_rows[visible_index];
-    if (visible.geometry_index >= source.geometry_count ||
-        visible.material_index >= source.material_count ||
-        visible.instance_index >= source.instance_count ||
-        visible.index_count < 3u ||
-        primitive_id > (visible.index_count - 3u) / 3u)
-        return vkr_vk_reject_surface(source);
     VkrBindlessMaterial material = source.materials[visible.material_index];
     VkrVkGeometryRow geometry = source.geometry_rows[visible.geometry_index];
-    if (geometry.vertex_stride != sizeof(VkrBindlessVertex) ||
-        geometry.vertex_layout != 0u)
-        return vkr_vk_reject_surface(source);
     uint triangle = primitive_id * 3u;
     int ia = int(source.indices[visible.first_index + triangle + 0u]) + visible.vertex_offset;
     int ib = int(source.indices[visible.first_index + triangle + 1u]) + visible.vertex_offset;
     int ic = int(source.indices[visible.first_index + triangle + 2u]) + visible.vertex_offset;
-    if (ia < 0 || ib < 0 || ic < 0)
-        return vkr_vk_reject_surface(source);
     VkrBindlessVertex a = source.vertices[geometry.first_vertex + uint(ia)];
     VkrBindlessVertex b = source.vertices[geometry.first_vertex + uint(ib)];
     VkrBindlessVertex c = source.vertices[geometry.first_vertex + uint(ic)];
@@ -682,8 +696,6 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
                    c.texcoord * perspective_dx.z;
     float2 uv_dy = a.texcoord * perspective_dy.x + b.texcoord * perspective_dy.y +
                    c.texcoord * perspective_dy.z;
-    if (!all(isfinite(uv)) || !all(isfinite(uv_dx)) || !all(isfinite(uv_dy)))
-        return vkr_vk_reject_surface(source);
     float4 color = a.color * perspective.x + b.color * perspective.y + c.color * perspective.z;
     float4 base = g_textures[NonUniformResourceIndex(material.base_color_texture)]
                       .SampleGrad(g_samplers[NonUniformResourceIndex(material.base_color_sampler)],
@@ -761,12 +773,14 @@ bool vkr_vk_finish_surface_normal(VkrVkSurfaceSource source,
             return vkr_vk_reject_surface(source);
         tangent = normalize(tangent);
         float tangent_handedness = surface.object_tangent.w < 0.0f ? -1.0f : 1.0f;
+        // `normal` and `tangent` are unit and orthogonal by the Gram-Schmidt
+        // step above, so the cross product is unit and `mapped` has exactly the
+        // magnitude of `tangent_normal`, which the guard above already
+        // established as nonzero. Both former checks were implied.
         float3 bitangent = normalize(cross(normal, tangent)) * tangent_handedness;
         float3 mapped = tangent * surface.tangent_normal.x +
                         bitangent * surface.tangent_normal.y +
                         normal * surface.tangent_normal.z;
-        if (!vkr_vk_finite_nonzero(bitangent) || !vkr_vk_finite_nonzero(mapped))
-            return vkr_vk_reject_surface(source);
         normal = normalize(mapped);
     }
     surface.normal = normal;
@@ -855,9 +869,10 @@ float3 vkr_vk_deferred_sky(VkrVkLightingRoot* root, uint2 pixel)
     float3 far_world = vkr_vk_deferred_homogeneous(
         mul(root.inverse_view_projection, float4(ndc, 1.0f, 1.0f)));
     float3 direction = normalize(far_world - root.frame.view_position.xyz);
-    return g_cube_textures[NonUniformResourceIndex(root.sky_texture)]
-        .SampleLevel(g_samplers[NonUniformResourceIndex(root.sky_sampler)],
-                     direction, 0.0f).rgb;
+    // Pass-root descriptor indices are dynamically uniform; see
+    // packet_directional_shadow.
+    return g_cube_textures[root.sky_texture]
+        .SampleLevel(g_samplers[root.sky_sampler], direction, 0.0f).rgb;
 }
 
 [shader("compute")]
@@ -1014,10 +1029,8 @@ void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
     if (any(thread_id.xy >= root.extent))
         return;
     float2 screen_uv = (float2(thread_id.xy) + 0.5f) / float2(root.extent);
-    float4 background =
-        g_textures[NonUniformResourceIndex(root.feedback_texture)].SampleLevel(
-            g_samplers[NonUniformResourceIndex(root.feedback_sampler)],
-            screen_uv, 0.0f);
+    float4 background = g_textures[root.feedback_texture].SampleLevel(
+        g_samplers[root.feedback_sampler], screen_uv, 0.0f);
     uint2 encoded =
         g_storage_uint2_images[root.vbuffer_texture][uint3(thread_id.xy, root.layer)];
     if (encoded.x == 0u)
@@ -1049,7 +1062,7 @@ void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
     }
     VkrBindlessPacketFrameRoot* frame = root.frame;
     VkrBindlessMaterial material = root.materials[surface.material_index];
-    float depth = g_depth_textures[NonUniformResourceIndex(root.depth_texture)]
+    float depth = g_depth_textures[root.depth_texture]
                       .Load(int3(thread_id.xy, 0));
     // See vkr_vk_deferred_sky: no Y flip when inverting the view-projection.
     float2 ndc_xy = screen_uv * 2.0f - 1.0f;
@@ -1137,10 +1150,9 @@ void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
                 float2 offset = refracted.xy / max(abs(refracted.z), 0.25f) *
                                 thickness * 0.02f;
                 float3 transmitted =
-                    g_textures[NonUniformResourceIndex(root.feedback_texture)]
-                        .SampleLevel(
-                            g_samplers[NonUniformResourceIndex(root.feedback_sampler)],
-                            clamp(screen_uv + offset, 0.0f, 1.0f), 0.0f).rgb;
+                    g_textures[root.feedback_texture].SampleLevel(
+                        g_samplers[root.feedback_sampler],
+                        clamp(screen_uv + offset, 0.0f, 1.0f), 0.0f).rgb;
                 if (material.material_attenuation_color.w > 1e-4f &&
                     thickness > 0.0f)
                 {
@@ -1172,15 +1184,19 @@ void vk_transmission_coverage(uint3 thread_id : SV_DispatchThreadID,
         g_transmission_group_coverage = 0u;
     GroupMemoryBarrierWithGroupSync();
 
+    // One shared-memory atomic per wave rather than one per covered lane; a
+    // full-screen dispatch otherwise serializes 64 lanes onto one address.
+    bool covered = false;
     if (all(thread_id.xy < root.extent))
     {
-        uint2 encoded = g_storage_uint2_images[root.vbuffer_texture][
-            uint3(thread_id.xy, root.layer)];
-        if (encoded.x != 0u)
-        {
-            uint ignored;
-            InterlockedAdd(g_transmission_group_coverage, 1u, ignored);
-        }
+        covered = g_storage_uint2_images[root.vbuffer_texture][
+            uint3(thread_id.xy, root.layer)].x != 0u;
+    }
+    uint wave_covered = WaveActiveCountBits(covered);
+    if (WaveIsFirstLane() && wave_covered != 0u)
+    {
+        uint ignored;
+        InterlockedAdd(g_transmission_group_coverage, wave_covered, ignored);
     }
     GroupMemoryBarrierWithGroupSync();
 

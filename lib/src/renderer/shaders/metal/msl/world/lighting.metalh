@@ -1,15 +1,24 @@
 constant float vkr_metal_packet_pbr_pi = 3.14159265359;
 
+/* Schlick's fifth power as three multiplies. `pow` lowers to exp2/log2, which
+   this runs once per light per pixel inside the punctual loop. */
+float vkr_metal_packet_schlick_weight(float cosine) {
+  float m = max(1.0 - cosine, 0.0);
+  float m2 = m * m;
+  return m2 * m2 * m;
+}
+
 float3 vkr_metal_packet_fresnel(float cosine, float3 f0) {
   float f90 = saturate(max(f0.x, max(f0.y, f0.z)) * 25.0);
-  return f0 + (f90 - f0) * pow(max(1.0 - cosine, 0.0), 5.0);
+  return f0 + (f90 - f0) * vkr_metal_packet_schlick_weight(cosine);
 }
 
 float3 vkr_metal_packet_fresnel_roughness(float cosine, float3 f0,
                                           float roughness) {
   float f90 = saturate(max(f0.x, max(f0.y, f0.z)) * 25.0);
   float3 rough_f90 = f90 * (1.0 - roughness);
-  return f0 + (max(rough_f90, f0) - f0) * pow(max(1.0 - cosine, 0.0), 5.0);
+  return f0 + (max(rough_f90, f0) - f0) *
+                  vkr_metal_packet_schlick_weight(cosine);
 }
 
 float vkr_metal_packet_pbr_geometry_schlick(float no_x, float roughness) {
