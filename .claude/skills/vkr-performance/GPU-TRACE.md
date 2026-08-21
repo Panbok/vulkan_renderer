@@ -11,7 +11,7 @@ process. The authoritative number stays `vkr_harness profile` with
 `performance-windowed-gpu.json`. Use a trace to decide what to change, then
 prove the change with the harness.
 
-Metal only. The bindless Vulkan implementation returns
+Metal only. The Vulkan implementation returns
 `initialization_supported = false` outside Windows (`vkr_renderer_impl.c`), so a
 macOS trace always records the Metal path.
 
@@ -23,7 +23,7 @@ a trace is attributable to a pass:
 - Metal sets `encoder.label` at both encoder creation sites in the pass loop
   (`vkr_metal_packet_frame.inc`), from an `NSString` cached per pass index.
 - Vulkan brackets each pass with `vkCmdBeginDebugUtilsLabelEXT` /
-  `EndDebugUtilsLabelEXT` (`vkr_bindless_vulkan_graph.c`), with
+  `EndDebugUtilsLabelEXT` (`vkr_vulkan_graph.c`), with
   `VK_EXT_debug_utils` enabled whenever present rather than only under
   validation.
 

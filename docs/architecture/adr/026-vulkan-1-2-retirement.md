@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-12
+updated: 2026-08-21
 authority: adr
 ---
 
@@ -10,11 +10,11 @@ authority: adr
 
 **Accepted and implemented.** The owner explicitly authorized full V7 retirement
 on 2026-08-11, superseding this ADR's earlier B2 observation-period condition.
-All six deletion steps are complete: public `vulkan` selects the bindless
+All six deletion steps are complete: public `vulkan` selects the Vulkan
 implementation; legacy selectors, shaders, manifests, build rules, frontend
 subsystems, Vulkan 1.2 backend/adaptor, 87-operation interface, wrappers, and
 render-pass/render-target graph residue are absent. Metal remains the macOS
-default and bindless Vulkan is the Windows Vulkan implementation.
+default and Vulkan is the Windows Vulkan implementation.
 
 The authorization changed the risk decision; it did not manufacture evidence.
 The complete CPU suite and macOS Metal gates pass after deletion. On 2026-08-12,
@@ -180,14 +180,14 @@ render-pass handle, render-target array and count, render-target cache, and
 render-pass hash map. Imported and final layout fields survive unless unified
 image layouts have landed. Remove any remaining temporary selector aliases or
 migration-only tests; `VKR_RENDERER_BACKEND_TYPE_VULKAN` now unambiguously means
-the bindless implementation, while Metal remains unchanged. The unused future
+the Vulkan implementation, while Metal remains unchanged. The unused future
 DX12 enumerator is outside this ADR and is neither evidence for nor against the
 retirement. Evidence: render-graph barrier tests, selector tests, and both
 surviving backends' snapshots.
 
 ### 4. The end state is recorded, not discovered
 
-After B2 the project has Metal on macOS and bindless Vulkan on Windows, and
+After B2 the project has Metal on macOS and Vulkan on Windows, and
 **no portable diagnostic path at all**. A Windows machine without
 `VK_EXT_descriptor_buffer` will have no renderer. There is no software fallback,
 no descriptor-set path, and no MoltenVK.

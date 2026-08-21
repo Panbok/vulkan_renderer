@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-12
+updated: 2026-08-21
 authority: adr
 ---
 
@@ -9,9 +9,8 @@ authority: adr
 ## Status
 
 **Accepted** — `VkrRendererImpl` selects one immutable capability
-record and coarse operation strategy for Metal or production bindless Vulkan.
-The bindless
-strategy now owns a Vulkan 1.4 device, offscreen and window-target state,
+record and coarse operation strategy for Metal or production Vulkan.
+The Vulkan strategy now owns a Vulkan 1.4 device, offscreen and window-target state,
 descriptor heaps, prepare/submit execution, completion, memory/heap metrics,
 the validated V4 asset-publication and dynamic-memory boundary, and the V5
 authored graph, asynchronous capture, IBL, and pass-timing path.
@@ -21,7 +20,7 @@ backend type after factory selection; and the normal frame path contains only
 the declared prepare and submit indirect calls. This ADR acts on
 [ADR-020](020-bindless-backend-seam.md)'s contingency that "if sharing
 `renderer_frontend.c` produces branch duplication, split it." The production
-bindless Vulkan strategy now passes the V3 offscreen and native RX 6700 XT
+Vulkan strategy now passes the V3 offscreen and native RX 6700 XT
 window/resize gates, so the ADR's final acceptance condition is met; V4
 completeness is not an acceptance condition for this selection seam. V2 is
 complete on both required platforms. The matched clean Release Metal profile passes its
@@ -42,7 +41,7 @@ swapchain extensions. The portable path now treats a completed submit that
 consumed the reacquired image's acquire semaphore as the presentation proof;
 when maintenance1 is available, per-image present fences provide explicit
 completion. Neither path adds a backend-type branch or per-draw dispatch.
-Windows selects bindless Vulkan by default and `--renderer vulkan` names that
+Windows selects Vulkan by default and `--renderer vulkan` names that
 same implementation explicitly. ADR-026 V7 removed the legacy adaptor,
 temporary `vulkan-bindless` spelling, and the capability boolean that existed
 only to distinguish retained pipeline state. The normal frame path still has
@@ -153,7 +152,7 @@ Metal and legacy Vulkan already provide two concrete implementations of these
 coarse operations, even though the current dispatch shape exposes them
 unevenly. V2 first proved they fit one ownership and completion contract through
 the real implementations and a rejecting bindless stub; V3 then made the
-production bindless Vulkan backend the third caller. Only these coarse operations
+production Vulkan backend the third caller. Only these coarse operations
 satisfy ADR-020's extraction condition. They become a `VkrRendererImpl` struct
 of function pointers carrying an opaque state pointer, the capability struct
 from kinds 1 and 2, and the asset publisher from kind 3.
@@ -278,11 +277,11 @@ duplication is measurable, not in advance.**
 
 ## Revisit When
 
-- The bindless Vulkan implementation needs a coarse operation the table lacks. One
+- The Vulkan implementation needs a coarse operation the table lacks. One
   addition is normal; a pattern of additions means the partition was wrong.
 - The capability struct gains a behavior-selecting boolean, which would suggest
   implementation behavior is leaking back above the selected strategy.
-- The two bindless implementations share enough operation-level contracts that
+- The Metal and Vulkan implementations share enough operation-level contracts that
   ADR-020's low-level `VkrGpuInterface` question can be reopened with evidence
   rather than speculation.
 - Duplication between Metal and Vulkan orchestration becomes measurable, which is

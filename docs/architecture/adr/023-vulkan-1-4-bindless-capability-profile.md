@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-12
+updated: 2026-08-21
 authority: adr
 ---
 
@@ -8,7 +8,7 @@ authority: adr
 
 ## Status
 
-**Accepted** — the selected production bindless strategy enumerates, reports,
+**Accepted** — the selected production Vulkan strategy enumerates, reports,
 selects, and creates a Vulkan 1.4 device through this immutable profile. Its
 production offscreen and windowed prepare/submit paths pass deterministic
 readback, recursive SPIR-V ABI reflection, synchronization validation, and

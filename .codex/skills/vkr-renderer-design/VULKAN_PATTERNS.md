@@ -13,14 +13,14 @@ Status authority is
 ### Selected implementation boundary — ADR-025, ADR-026
 
 `renderer_frontend.c/h` owns scene-facing CPU systems and selects one coarse
-`VkrRendererImpl` strategy at initialization: Metal on macOS or bindless
-Vulkan on Windows. A normal successful frame crosses the strategy seam through
+`VkrRendererImpl` strategy at initialization: Metal on macOS or Vulkan on
+Windows. A normal successful frame crosses the strategy seam through
 `prepare_frame` and `submit_packet`; lifecycle, asset-publication, capture,
 and metrics operations are also coarse strategy calls.
 
 There is no Vulkan 1.2 adaptor, generic backend interface, view/layer system, or
 temporary `vulkan-bindless` selector. Vulkan types stay under
-`lib/src/renderer/vulkan/bindless/` and do not appear in public renderer
+`lib/src/renderer/vulkan/` and do not appear in public renderer
 headers. Do not recreate a command RHI or a second descriptor-set path.
 
 ### Authored JSON render graph — ADR-002, ADR-003
@@ -31,7 +31,7 @@ the current packet and dimensions, and `vkr_rg_compile_schedule()` produces
 the shared order, culling, conditions, and image dependencies.
 
 The selected implementation owns graph resource realization and command
-recording. Metal encodes through its packet implementation; bindless Vulkan
+recording. Metal encodes through its packet implementation; Vulkan
 lowers the shared dependency records to synchronization2 barriers and executes
 dynamic-rendering/transfer/compute pass categories. The graph owns semantic
 state, not API objects.
@@ -56,10 +56,10 @@ generation-safe. Physical resources and descriptor/material slots are retired
 only after the last proven submit value. Samplers are canonical and shared;
 replacing one republishes dependent material rows before retiring the old slot.
 
-### Bindless Vulkan pipelines and ABI
+### Vulkan pipelines and bindless ABI
 
 Production Vulkan shaders are Slang sources under
-`lib/src/renderer/vulkan/bindless/shaders/`. The packet graphics and IBL
+`lib/src/renderer/shaders/vulkan/slang/`. The packet graphics and IBL
 compute pipelines are prebuilt and share one descriptor-buffer pipeline layout.
 The host validates the shared GPU ABI and reflects the packet draw-root layout
 from production SPIR-V. The retired walking shader/pipeline and standalone
@@ -84,7 +84,7 @@ cannot otherwise be proven.
 
 ### Memory, descriptors, and capture
 
-Bindless Vulkan uses keyed DEVICE, UPLOAD, and READBACK memory pools, with
+Vulkan uses keyed DEVICE, UPLOAD, and READBACK memory pools, with
 dedicated-allocation bypass when required. Descriptor and material slots use
 `vkr_gpu_slot_table`; command slices use `vkr_gpu_submit_ring`; asynchronous
 multi-channel capture uses `vkr_capture_ring`. All have fixed capacities,
@@ -121,7 +121,7 @@ supported evidence paths.
 - Label every command encoder and pass from its graph pass name; unlabelled GPU
   work is anonymous in a profiler trace.
 - Keep capabilities immutable typed data, not a growing query interface.
-- Keep Vulkan types in `renderer/vulkan/bindless/`.
+- Keep Vulkan types in `renderer/vulkan/`.
 - Preserve one coarse selected-implementation seam; do not add per-draw
   function-pointer dispatch.
 

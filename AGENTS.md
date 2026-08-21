@@ -24,7 +24,7 @@ Renderer and engine framework in C11 with selected Metal 4 and Vulkan 1.4
 bindless packet strategies.
 The frontend (`lib/src/renderer/renderer_frontend.c`) owns the subsystems and
 selects one coarse `VkrRendererImpl` strategy at initialization. Vulkan types
-stay behind `lib/src/renderer/vulkan/bindless/`; the Vulkan 1.2 adaptor and
+stay behind `lib/src/renderer/vulkan/`; the Vulkan 1.2 adaptor and
 generic backend interface were removed by ADR-026.
 Frame orchestration is a JSON-authored render graph
 (`assets/render_graphs/main.rendergraph.json`) realized and executed inside the

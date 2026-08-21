@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-15
+updated: 2026-08-21
 authority: design
 ---
 
@@ -38,7 +38,7 @@ cross-backend reference. Packet-native retained editor/gizmo
 initialization satisfies the full-boot subsystem contract, and packet
 submission publishes the required no-overflow instance metric. Windows V6 and
 Gate B1 are complete. ADR-026 V7 is also complete: no-argument application and
-unpinned harness selection use bindless Vulkan on Windows; explicit `vulkan`
+unpinned harness selection use Vulkan on Windows; explicit `vulkan`
 selects the same implementation; and the temporary `vulkan-bindless` spelling,
 Vulkan 1.2 backend, descriptor-set shaders, legacy-only frontend systems,
 adaptor/interface, and graph migration residue are removed. The required
@@ -926,7 +926,7 @@ Access lowering mirrors the legacy access mapping with `VkAccessFlags2` bits.
   `VkBufferMemoryBarrier2` per compiled buffer barrier, preserving resource
   identity and the graph's current whole-buffer range, batched into the pass's
   single barrier command. No authored pass declares a graph buffer, so this has
-  no caller and was never written. `vkr_bindless_vk_record_graph_pass_barriers()`
+  no caller and was never written. `vkr_vk_record_graph_pass_barriers()`
   **rejects** any pass that declares one, with a named error, rather than
   silently executing without the barrier the pass asked for; the graph validator
   rejects the same at load. A 2026-08-12 audit removed the scratch array that
@@ -1039,10 +1039,10 @@ did.
 
 ### 10.1 The platform seam
 
-The bindless path parameterizes platform work on primitives — instance, window
+The Vulkan path parameterizes platform work on primitives — instance, window
 handle, an output surface, extension lists, and the surface-extension
 classifier. ADR-026 removed the older state-typed platform seam and both of its
-per-OS files. Windows support is owned by the bindless implementation; Linux
+per-OS files. Windows support is owned by the Vulkan implementation; Linux
 still requires its own evidence-gated platform integration.
 
 ### 10.2 Swapchain
@@ -1137,7 +1137,7 @@ test groups compile and register unconditionally on Windows. Per ADR-024, this
 characterization creates no shared forwarding API and authorizes no extraction
 before the corresponding V3–V5 Vulkan caller exists.
 
-**V2 implementation status (2026-08-09):** the implementation seam is
+**Historical V2 implementation status (2026-08-09):** the implementation seam is
 implemented. `VkrRendererImpl` owns one immutable capability record, opaque
 state, asset publisher, and coarse operation table. The factory selects real
 Metal and legacy-Vulkan strategies and recognizes a bindless Vulkan strategy
@@ -1197,12 +1197,12 @@ are authoritative, have empty authority reasons, share all three fingerprints,
 and each contain 1,500 valid samples at exactly 322 calls per frame. Candidate
 deltas are `frame.wall` mean +0.890%, p50 +0.419%, p95 -2.182%; prepare p50
 +0.231%; and submit p50 -2.199%. Every threshold passes. Therefore V2 is
-complete on both required platforms. ADR-025 is Accepted because the production
-V3 bindless strategy now passes its target gates.
+complete on both required platforms. ADR-025 was accepted after the production
+V3 Vulkan strategy passed its target gates.
 
-**V3 implementation status (complete for RX 6700 XT, 2026-08-09):** the selected
-production bindless strategy creates the ADR-023 Vulkan 1.4 device and owns
-the queue, timeline semaphore, bounded command-slot ring, fixed descriptor
+**Historical V3 implementation status (complete for RX 6700 XT, 2026-08-09):**
+the selected production Vulkan strategy creates the ADR-023 Vulkan 1.4 device
+and owns the queue, timeline semaphore, bounded command-slot ring, fixed descriptor
 buffers, per-memory-type allocation blocks, offscreen targets, window/swapchain
 state, and retired-present collection. Its real frontend `prepare_frame` /
 `submit_packet` path renders and reads back exact RGBA `{37,91,173,255}` and
@@ -1212,7 +1212,7 @@ pipeline creation: stages, entry points, push constants, recursive
 descriptor arrays are checked against the host ABI. The runtime reports zero
 command-slot waits for the deterministic sequence.
 
-`renderer/vulkan/bindless/vkr_bindless_vulkan_wsi.*` classifies every handled
+`renderer/vulkan/vkr_vulkan_wsi.*` classifies every handled
 present result and pins the per-image reacquisition state machine. The RX 6700
 XT exposes `VK_EXT_descriptor_buffer`, core surface/Win32-surface/swapchain, and
 neither maintenance1 extension. The production window path therefore retains
@@ -1291,7 +1291,7 @@ allocations, 45 MiB allocated, 31 live logical allocations before fixture
 settling, zero retired allocations, and zero pool-capacity failures.
 
 **V5 implementation status (complete, 2026-08-11):** the Vulkan-private
-`vkr_bindless_vulkan_dependency` module purely lowers canonical graph stage,
+`vkr_vulkan_dependency` module purely lowers canonical graph stage,
 access, and visibility records into synchronization2 masks. It preserves real
 stage-none, splits vertex input and transfer stages, emits zero access masks for
 execution-only dependencies, and rejects unsupported resource-alias visibility
@@ -1372,7 +1372,7 @@ temporary selector no longer exist.
 steps in ADR-026 are complete in the current tree:
 
 1. Public and harness selection have one Vulkan spelling, `vulkan`, which names
-   the bindless implementation. The temporary selector and its migration-only
+   the Vulkan implementation. The temporary selector and its migration-only
    test are absent; generic invalid-selector coverage remains.
 2. Descriptor-set shader sources, manifests, runtime assets, and their build
    rules are absent. The final audit also removed eight wrapper blocks that
@@ -1383,7 +1383,7 @@ steps in ADR-026 are complete in the current tree:
    future batching utility rather than Vulkan 1.2 residue.
 4. The Vulkan 1.2 backend, platform files, and selected-implementation adaptor
    are absent. Vulkan implementation types live only under
-   `renderer/vulkan/bindless/`; the still-shared SPIR-V reflection wrapper was
+   `renderer/vulkan/`; the still-shared SPIR-V reflection wrapper was
    retained and relocated rather than deleted.
 5. `VkrRendererBackendInterface` and its 87 operations, frontend wrappers, and
    legacy-only capability boolean are absent. ADR-001 is archived as
@@ -1797,7 +1797,7 @@ broaden hardware support or establish a performance result.
   present fences when supported rather than changing the profile floor.
 - Eliminating the legacy path entirely removes the only renderer that runs on
   non-descriptor-buffer hardware and on MoltenVK. After the final gate the
-  project has Metal on macOS and bindless Vulkan on Windows and **no portable
+  project has Metal on macOS and Vulkan on Windows and **no portable
   diagnostic path at all**. That is the intended end state; it is recorded here
   so it is not discovered later.
 

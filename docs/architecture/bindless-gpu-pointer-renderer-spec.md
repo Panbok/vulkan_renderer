@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-12
+updated: 2026-08-21
 authority: design
 ---
 
@@ -59,7 +59,7 @@ the implementation seam, and [ADR-026](adr/026-vulkan-1-2-retirement.md) the
 retirement sequence. ADRs 023–026 are accepted and implemented.
 
 The status authority remains the renderer status specification. It records the
-implemented Metal path separately from the bindless Vulkan Windows path.
+implemented Metal path separately from the Vulkan Windows path.
 
 ---
 
@@ -228,9 +228,10 @@ not from deleting names from the Vulkan vtable.
 
 ### 5.2 Where dispatch lives
 
-`renderer_frontend.c` currently owns both public orchestration and the legacy
-backend wrappers. The bindless implementation must not add a backend test to
-each of its 141 backend call sites.
+At the Stage 6 design point, `renderer_frontend.c` owned both public
+orchestration and the legacy backend wrappers. The planned Vulkan
+implementation was forbidden from adding a backend test to each of those 141
+backend call sites.
 
 Initialization installs a coarse renderer-implementation strategy. Resource
 creation, frame preparation, packet submission, capture, metrics, and shutdown
@@ -968,7 +969,7 @@ Validation, and all shader execution runs under API plus GPU Validation with
 archive lookup disabled. No compilation-speed claim is made. The application
 frontend now selects this same renderer with `--renderer metal`, publishes
 loader-owned mesh, texture, cubemap, and material resources through a coarse
-backend boundary. On Windows, bindless Vulkan is the default and explicit
+backend boundary. On Windows, Vulkan is the default and explicit
 `--renderer vulkan` selects it directly; no diagnostic Vulkan 1.2 path remains.
 The harness selects Metal with `VKR_HARNESS_RENDERER_BACKEND=metal`.
 Scalar PBR, four material texture slots, alpha cutoff, directional and grid-

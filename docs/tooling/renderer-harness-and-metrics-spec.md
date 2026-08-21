@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-14
+updated: 2026-08-21
 authority: spec
 ---
 # Renderer Metrics Module and Automation Harness
@@ -89,9 +89,9 @@ This work is mostly consolidation. Reuse these; do not rebuild them.
 | Pipeline creation time (measured, then discarded into a log line) | `vulkan_graphics_graphics_pipeline_create()` in `vulkan/vulkan_pipeline.c` |
 | Pipeline bind and descriptor telemetry | `VkrPipelineRegistry.stats` |
 | Image→buffer copy with checked mip/layer/aspect regions and row layout | `vulkan_image_copy_to_buffer_region()` |
-| Completion-gated readback ring | `vkr_capture_ring` shared by the Metal and bindless Vulkan implementations |
+| Completion-gated readback ring | `vkr_capture_ring` shared by the Metal and Vulkan implementations |
 | A **declared** graph readback pass — the pattern to copy | `Picking.Readback` in `assets/render_graphs/main.rendergraph.json`, lowered privately by each selected implementation |
-| Debug channels: normals, unlit, lighting | `VkrRenderMode`, consumed by the production Metal and bindless Vulkan packet shaders |
+| Debug channels: normals, unlit, lighting | `VkrRenderMode`, consumed by the production Metal and Vulkan packet shaders |
 | Shadow debug: cascades, factor, depth | `RendererFrontend.shadow_debug_mode` packetized through `VkrGpuDebugPayload` and frame constants |
 | Offscreen editor color target | conditional graph resource `scene_color`, realized by the selected implementation |
 | Monotonic timer | `vkr_platform_get_absolute_time()` |

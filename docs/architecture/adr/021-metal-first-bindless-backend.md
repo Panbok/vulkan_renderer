@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-11
+updated: 2026-08-21
 authority: adr
 ---
 
@@ -13,7 +13,7 @@ Bistro bootstrap allocator race and the later retained-IBL, sampler,
 transparency, and presentation defects are fixed; the owner accepted the
 corrected output on 2026-08-11. Gate A is complete, and ADR-026's explicitly
 authorized V7 retirement completed Gate A2 by removing the Vulkan 1.2/MoltenVK
-path. Bindless Vulkan is the selected Windows implementation; no Linux target is
+path. Vulkan is the selected Windows implementation; no Linux target is
 currently claimed. Historical milestone fixtures and focused backend validators
 have been retired. CPU tests own deterministic subsystem/ABI checks, and
 backend-pinned harness snapshots consume the domain-organized production shader

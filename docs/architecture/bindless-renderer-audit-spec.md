@@ -1,6 +1,6 @@
 ---
-status: implemented
-updated: 2026-08-13
+status: investigation
+updated: 2026-08-21
 authority: investigation
 ---
 
@@ -13,6 +13,12 @@ implementations), the four shared GPU cores, and
 **Recommendations 1–11 are implemented in source as of 2026-08-12; see §7.**
 The recommendation-10 ABI now passes native Metal reflection, focused API/GPU
 validation, and exact final-color/picking capture on Apple M1 Pro (§7.7).
+
+**Post-audit source note (2026-08-21):** The sole Vulkan implementation now
+lives directly under `lib/src/renderer/vulkan/` and uses `vkr_vulkan_*` /
+`VkrVulkan*` source identifiers. Old paths, symbols, and line citations below
+remain unchanged because they record the audited `e028164` tree rather than the
+current source layout.
 
 **Authority:** This is an *audit* document. Per `AGENTS.md`, code remains the
 implementation authority, `renderer-architecture-spec.md` the status authority,

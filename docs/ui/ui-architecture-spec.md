@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-08-12
+updated: 2026-08-21
 authority: design
 ---
 # UI Architecture Specification
@@ -44,12 +44,12 @@ conditioned on `editor_enabled`: `scene_color`, `scene_depth` and
 pass, and `UI.Editor`.
 
 `VkrRenderGraphFrameInfo.editor_enabled` is **never assigned** in either backend.
-`vkr_bindless_vulkan_renderer_submit_packet()` and the Metal equivalent in
+`vkr_vulkan_renderer_submit_packet()` and the Metal equivalent in
 `vkr_metal_packet_frame.inc` patch only `picking_pending` and
 `shadow_cascade_count` into `prepared_frame` before `vkr_rg_begin_frame()` — the
 Metal site under a comment reading "Patch packet-derived graph conditions here,
 immediately before graph build". `packet.frame.editor_enabled` reaches only
-capture-channel selection in `vkr_bindless_vulkan_capture.c` and
+capture-channel selection in `vkr_vulkan_capture.c` and
 `vkr_metal_packet_graph.inc`.
 
 Consequences, all derivable from the authored graph:
@@ -256,7 +256,7 @@ Deliberate omissions:
 
 ### 7.2 Backend work
 
-Written twice — bindless Vulkan and Metal.
+Written twice — Vulkan and Metal.
 
 **Per-batch scissor.** Scissor is currently set once to the full render area.
 Vulkan already declares `VK_DYNAMIC_STATE_SCISSOR`, so this is one
@@ -287,7 +287,7 @@ reflection-validated and has ample unused fields. Metal's
 field-by-field reflection-validated, so growing it touches the header, the
 `.metal` source, the ABI field table, and a size assertion. Budget both.
 
-**A dedicated small UI root.** `vkr_bindless_vk_packet_utility_root()` allocates
+**A dedicated small UI root.** `vkr_vk_packet_utility_root()` allocates
 and zeroes 512 bytes per draw. Hundreds of UI batches × 512 B of `MemZero` per
 frame is precisely the per-draw cost AGENTS.md classifies as a defect. UI batches
 use a 32–64 byte root instead.

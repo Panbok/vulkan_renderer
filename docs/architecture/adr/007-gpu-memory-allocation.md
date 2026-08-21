@@ -1,12 +1,12 @@
 ---
 status: partial
-updated: 2026-07-31
+updated: 2026-08-21
 authority: adr
 ---
 # ADR-007: Per-Resource Device-Memory Allocation
 
 **Status:** Accepted (partial) — retained legacy policy. The selected Vulkan
-1.4 bindless implementation now uses the keyed block allocator specified by
+1.4 implementation now uses the keyed block allocator specified by
 [ADR-023](023-vulkan-1-4-bindless-capability-profile.md).
 
 ## Context
@@ -31,7 +31,7 @@ Keep direct device-memory ownership in the legacy Vulkan implementation:
 - no VMA or custom block allocator is present in that legacy path.
 
 Legacy device allocation/free operations route through one tracked backend
-wrapper. Bindless Vulkan instead owns keyed pooled-block and dedicated
+wrapper. The Vulkan implementation instead owns keyed pooled-block and dedicated
 allocation sites below its Vulkan-private strategy boundary.
 Every `VulkanBuffer` also owns a `VkrDMemory` offset allocator over its virtual
 byte range. Callers may use that to suballocate logical ranges when they

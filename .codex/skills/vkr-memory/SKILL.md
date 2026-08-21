@@ -112,7 +112,7 @@ render targets), scopes, and pool slots alike.
 - GPU device memory is separate and is **not** managed by `VkrAllocator`. There
   is no VMA. Legacy Vulkan calls `vkAllocateMemory` per image, buffer
   create/resize, and readback buffer; a `VulkanBuffer` may use `VkrDMemory` only
-  for ranges within one deliberately shared buffer. Bindless Vulkan V4 instead
+  for ranges within one deliberately shared buffer. Vulkan 1.4 instead
   uses keyed DEVICE/UPLOAD/READBACK blocks backed by `vkr_gpu_memory`, segregates
   buffers from images, and keeps required/preferred dedicated allocations on a
   separately accounted path. Neither policy makes `VkrAllocator` the GPU
