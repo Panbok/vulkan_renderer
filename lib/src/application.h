@@ -1002,18 +1002,11 @@ void application_draw_frame(Application *application, float64_t delta) {
 
   VkrShadowFrameData shadow_frame = {0};
   uint32_t shadow_cascade_count = 0;
-  const bool8_t shadows_active =
-      application->renderer.shadow_system.initialized &&
-      application->renderer.lighting_system.directional.enabled;
-  if (shadows_active) {
+  if (application->renderer.shadow_system.initialized) {
     vkr_shadow_system_get_frame_data(&application->renderer.shadow_system,
                                      setup.image_index, &shadow_frame);
-    shadow_cascade_count = shadow_frame.cascade_count;
-    if (shadow_cascade_count > VKR_SHADOW_CASCADE_COUNT_MAX) {
-      log_error("Shadow frame returned %u cascades; clamping to %u",
-                shadow_cascade_count, VKR_SHADOW_CASCADE_COUNT_MAX);
-      shadow_cascade_count = VKR_SHADOW_CASCADE_COUNT_MAX;
-    }
+    shadow_cascade_count =
+        shadow_frame.enabled ? shadow_frame.cascade_count : 0u;
   }
 
   VkrWorldPassPayload world_payload = {0};
@@ -1027,6 +1020,12 @@ void application_draw_frame(Application *application, float64_t delta) {
   application->visibility_stats = visibility_stats;
 
   VkrShadowPassPayload shadow_payload = {0};
+  /* Raster depth bias, distinct from receiver bias. Lowered from the shadow
+     config so both selected implementations apply the same configured values
+     instead of one backend hardcoding defaults and the other applying none.
+     Lives in the frame scope because the payload borrows it until submit
+     returns. */
+  VkrShadowConfigOverride raster_bias_override = {0};
   bool8_t has_shadow = false_v;
   if (has_world && shadow_cascade_count > 0) {
     shadow_payload.cascade_count = shadow_cascade_count;
@@ -1034,7 +1033,14 @@ void application_draw_frame(Application *application, float64_t delta) {
       shadow_payload.light_view_proj[i] = shadow_frame.view_projection[i];
       shadow_payload.split_depths[i] = shadow_frame.split_far[i];
     }
-    shadow_payload.config_override = NULL;
+    const VkrShadowConfig *shadow_config =
+        &application->renderer.shadow_system.config;
+    raster_bias_override = (VkrShadowConfigOverride){
+        .depth_bias_constant = shadow_config->depth_bias_constant_factor,
+        .depth_bias_slope = shadow_config->depth_bias_slope_factor,
+        .depth_bias_clamp = shadow_config->depth_bias_clamp,
+    };
+    shadow_payload.config_override = &raster_bias_override;
     has_shadow = world_payload.gpu_shadow_candidate_count > 0u;
   }
 

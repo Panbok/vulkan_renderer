@@ -71,21 +71,6 @@ vkr_internal float32_t vkr_shadow_default_z_extension(float32_t base,
   return base * vkr_shadow_profile_lerp(0.6f, 1.2f, cascade, count);
 }
 
-vkr_internal float32_t vkr_shadow_default_uv_margin_scale(uint32_t cascade,
-                                                          uint32_t count) {
-  return vkr_shadow_profile_lerp(0.75f, 1.5f, cascade, count);
-}
-
-vkr_internal float32_t vkr_shadow_default_uv_soft_margin_scale(uint32_t cascade,
-                                                               uint32_t count) {
-  return vkr_shadow_profile_lerp(1.0f, 2.0f, cascade, count);
-}
-
-vkr_internal float32_t
-vkr_shadow_default_uv_kernel_margin_scale(uint32_t cascade, uint32_t count) {
-  return vkr_shadow_profile_lerp(1.0f, 1.2f, cascade, count);
-}
-
 vkr_internal void vkr_shadow_compute_frustum_corners(const VkrCamera *camera,
                                                      float32_t near_split,
                                                      float32_t far_split,
@@ -360,13 +345,85 @@ bool8_t vkr_shadow_fit_relevant_caster_z(
   return true_v;
 }
 
+float32_t vkr_shadow_quantize_extent_up(float32_t extent,
+                                        uint32_t shadow_map_size) {
+  // The quantum has to be independent of the extent, or quantization is a
+  // no-op: a quantum derived from the extent itself always divides it exactly.
+  // Bracketing the extent up to the next power of two gives a step that only
+  // changes when the extent crosses a binade, so the derived texel size takes
+  // discrete values across ordinary camera motion instead of sliding with it.
+  int exponent = 0;
+  (void)frexpf(extent, &exponent);
+  const float32_t bracket = ldexpf(1.0f, exponent);
+  const float32_t quantum = bracket / (float32_t)shadow_map_size;
+  return vkr_ceil_f32(extent / quantum) * quantum;
+}
+
+VkrShadowFit vkr_shadow_apply_fit_hysteresis(const VkrShadowFit *previous,
+                                             const VkrShadowFit *raw) {
+  VkrShadowFit fit = *raw;
+
+  // Growth is taken immediately; only contraction is deadbanded. Extent and Z
+  // therefore never become smaller than the raw fit.
+  const float32_t raw_texel = raw->world_units_per_texel;
+  if (raw->extent < previous->extent &&
+      (previous->extent - raw->extent) < 2.0f * raw_texel) {
+    fit.extent = previous->extent;
+    fit.world_units_per_texel = previous->world_units_per_texel;
+  }
+
+  // Compared against the final texel size because keeping the previous extent
+  // also keeps its grid. The fit reserved one guard texel for this shift.
+  const float32_t texel = fit.world_units_per_texel;
+  if (vkr_abs_f32(raw->center_x - previous->center_x) <= texel) {
+    fit.center_x = previous->center_x;
+  }
+  if (vkr_abs_f32(raw->center_y - previous->center_y) <= texel) {
+    fit.center_y = previous->center_y;
+  }
+
+  // Each depth bound deadbands independently: one end of the interval can be
+  // stable while the other legitimately moves.
+  if (raw->min_z > previous->min_z &&
+      (raw->min_z - previous->min_z) < 2.0f * texel) {
+    fit.min_z = previous->min_z;
+  }
+  if (raw->max_z < previous->max_z &&
+      (previous->max_z - raw->max_z) < 2.0f * texel) {
+    fit.max_z = previous->max_z;
+  }
+  return fit;
+}
+
+vkr_internal bool8_t vkr_shadow_fit_history_matches(
+    const VkrShadowFitHistory *history, Vec3 light_direction,
+    uint32_t cascade_count, uint32_t shadow_map_size,
+    uint32_t projection_convention, uint64_t enable_generation) {
+  // Any mismatch means the stored fit was framed by different rules, so it is
+  // not a previous value of the same quantity and must not be blended with.
+  return history->valid && history->cascade_count == cascade_count &&
+         history->shadow_map_size == shadow_map_size &&
+         history->projection_convention == projection_convention &&
+         history->enable_generation == enable_generation &&
+         history->light_direction.x == light_direction.x &&
+         history->light_direction.y == light_direction.y &&
+         history->light_direction.z == light_direction.z;
+}
+
+void vkr_shadow_system_invalidate_fit_history(VkrShadowSystem *system) {
+  if (system) {
+    system->fit_history.valid = false_v;
+  }
+}
+
 vkr_internal void vkr_shadow_compute_cascade_matrix(
     const Mat4 *light_view, const Vec3 frustum_corners[8],
     uint32_t shadow_map_size, bool8_t stabilize, float32_t guard_band_texels,
     bool8_t use_constant_cascade_size, const VkrShadowSceneBounds *scene_bounds,
-    float32_t z_extension_factor, Mat4 *out_view_projection,
-    float32_t *out_world_units_per_texel, Vec2 *out_light_space_origin) {
-  Mat4 view = light_view ? *light_view : mat4_identity();
+    float32_t z_extension_factor, const VkrShadowFit *previous_fit,
+    Mat4 *out_view_projection, VkrShadowFit *out_fit,
+    Vec2 *out_light_space_origin) {
+  const Mat4 view = *light_view;
 
   // Compute the slice center and its bounding sphere radius.
   Vec3 center = vec3_zero();
@@ -455,6 +512,9 @@ vkr_internal void vkr_shadow_compute_cascade_matrix(
   // casters just outside the camera frustum can still contribute. This reduces
   // shadow pop-in when rotating the camera, at the cost of some resolution.
   extent += 2.0f * texel_size * guard_texels;
+  if (stabilize) {
+    extent = vkr_shadow_quantize_extent_up(extent, shadow_map_size);
+  }
   texel_size = (shadow_map_size > 0) ? (extent / (float32_t)shadow_map_size)
                                      : texel_size;
   if (texel_size < 0.000001f) {
@@ -473,17 +533,15 @@ vkr_internal void vkr_shadow_compute_cascade_matrix(
     center_y = snap_y + half;
   }
 
-  float32_t left = center_x - half;
-  float32_t right = center_x + half;
-  float32_t bottom = center_y - half;
-  float32_t top = center_y + half;
-
+  // The caster-Z fit needs the XY rectangle, so it runs before hysteresis. The
+  // deadbands then apply to the complete raw interval rather than to a partial
+  // one that a later widening would invalidate.
   if (scene_bounds && scene_bounds->use_scene_bounds) {
     float32_t caster_min_z = 0.0f;
     float32_t caster_max_z = 0.0f;
-    if (vkr_shadow_fit_relevant_caster_z(&view, scene_bounds, left, right,
-                                         bottom, top, &caster_min_z,
-                                         &caster_max_z)) {
+    if (vkr_shadow_fit_relevant_caster_z(
+            &view, scene_bounds, center_x - half, center_x + half,
+            center_y - half, center_y + half, &caster_min_z, &caster_max_z)) {
       min_z = vkr_min_f32(min_z, caster_min_z);
       max_z = vkr_max_f32(max_z, caster_max_z);
     }
@@ -494,14 +552,30 @@ vkr_internal void vkr_shadow_compute_cascade_matrix(
   min_z -= z_pad;
   max_z += z_pad;
 
-  *out_world_units_per_texel = texel_size;
-  if (out_light_space_origin) {
-    *out_light_space_origin =
-        vkr_shadow_light_space_origin_from_view(&view, left, bottom);
+  VkrShadowFit fit = {
+      .center_x = center_x,
+      .center_y = center_y,
+      .extent = extent,
+      .min_z = min_z,
+      .max_z = max_z,
+      .world_units_per_texel = texel_size,
+  };
+  if (stabilize && previous_fit) {
+    fit = vkr_shadow_apply_fit_hysteresis(previous_fit, &fit);
   }
 
-  float32_t near_clip = -max_z;
-  float32_t far_clip = -min_z;
+  const float32_t final_half = fit.extent * 0.5f;
+  const float32_t left = fit.center_x - final_half;
+  const float32_t right = fit.center_x + final_half;
+  const float32_t bottom = fit.center_y - final_half;
+  const float32_t top = fit.center_y + final_half;
+
+  *out_fit = fit;
+  *out_light_space_origin =
+      vkr_shadow_light_space_origin_from_view(&view, left, bottom);
+
+  float32_t near_clip = -fit.max_z;
+  float32_t far_clip = -fit.min_z;
   if (near_clip < 0.0f) {
     near_clip = 0.0f;
   }
@@ -543,8 +617,7 @@ bool8_t vkr_shadow_system_init(VkrShadowSystem *system, RendererFrontend *rf,
   if (!(system->config.anchor_snap_texels >= 0.0f)) {
     system->config.anchor_snap_texels = 0.0f;
   }
-  // Vulkan rasterization depth bias: keep parameters non-negative and
-  // deterministic even if caller passes NaNs.
+  // Raster depth bias reaches both native encoders. Normalize it once here.
   if (!(system->config.depth_bias_constant_factor >= 0.0f)) {
     system->config.depth_bias_constant_factor = 0.0f;
   }
@@ -554,27 +627,6 @@ bool8_t vkr_shadow_system_init(VkrShadowSystem *system, RendererFrontend *rf,
   if (!(system->config.depth_bias_clamp >= 0.0f)) {
     system->config.depth_bias_clamp = 0.0f;
   }
-  if (!(system->config.shadow_bias >= 0.0f)) {
-    system->config.shadow_bias = 0.0f;
-  }
-  if (!(system->config.normal_bias >= 0.0f)) {
-    system->config.normal_bias = 0.0f;
-  }
-  if (!(system->config.shadow_slope_bias >= 0.0f)) {
-    system->config.shadow_slope_bias = 0.0f;
-  }
-  if (!(system->config.shadow_bias_texel_scale >= 0.0f)) {
-    system->config.shadow_bias_texel_scale = 0.0f;
-  }
-  if (!(system->config.shadow_slope_bias_texel_scale >= 0.0f)) {
-    system->config.shadow_slope_bias_texel_scale = 0.0f;
-  }
-  if (!(system->config.shadow_distance_fade_range >= 0.0f)) {
-    system->config.shadow_distance_fade_range = 0.0f;
-  }
-  system->config.foliage_alpha_cutoff_bias =
-      vkr_clamp_f32(system->config.foliage_alpha_cutoff_bias, 0.0f, 1.0f);
-
   for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
     if (!(system->config.cascade_guard_band_texels_per[i] >= 0.0f)) {
       system->config.cascade_guard_band_texels_per[i] = 0.0f;
@@ -582,17 +634,12 @@ bool8_t vkr_shadow_system_init(VkrShadowSystem *system, RendererFrontend *rf,
     if (!(system->config.cascade_z_extension_factor_per[i] >= 0.0f)) {
       system->config.cascade_z_extension_factor_per[i] = 0.0f;
     }
-    if (!(system->config.shadow_uv_margin_scale_per[i] >= 0.0f)) {
-      system->config.shadow_uv_margin_scale_per[i] = 0.0f;
-    }
-    if (!(system->config.shadow_uv_soft_margin_scale_per[i] >= 0.0f)) {
-      system->config.shadow_uv_soft_margin_scale_per[i] = 0.0f;
-    }
-    if (!(system->config.shadow_uv_kernel_margin_scale_per[i] >= 0.0f)) {
-      system->config.shadow_uv_kernel_margin_scale_per[i] = 0.0f;
-    }
   }
 
+  // Generation 1, not 0: a zeroed history compares equal to generation 0 and
+  // would be treated as valid before any fit exists.
+  system->enable_generation = 1u;
+  system->fit_history.valid = false_v;
   system->initialized = true_v;
   return true_v;
 }
@@ -610,15 +657,24 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
     return;
   }
 
+  const bool8_t was_enabled = system->light_enabled;
   system->light_enabled = light_enabled;
   system->light_direction = light_direction;
 
   if (!light_enabled) {
+    // The camera may travel arbitrarily far while shadows are off, so the fit
+    // stored before the gap is not a previous value of the same quantity.
+    // Bumping here rather than on re-enable keeps the invalidation on the edge
+    // that actually creates the discontinuity.
+    if (was_enabled) {
+      system->enable_generation++;
+    }
     for (uint32_t i = 0; i < system->config.cascade_count; ++i) {
       system->cascades[i].view_projection = mat4_identity();
       system->cascades[i].split_far = 0.0f;
       system->cascades[i].world_units_per_texel = 0.0f;
       system->cascades[i].light_space_origin = vec2_zero();
+      system->cascades[i].light_space_depth_span = 0.0f;
       system->cascades[i].bounds_center = vec3_zero();
       system->cascades[i].bounds_radius = 0.0f;
     }
@@ -640,6 +696,17 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
       system->config.cascade_guard_band_texels_per, cascade_count);
   bool8_t has_z_per = vkr_shadow_has_any_per_cascade(
       system->config.cascade_z_extension_factor_per, cascade_count);
+
+  // Projection convention is fixed for this build (reverse-Z off, zero-to-one
+  // depth with an inverted Y). It is stamped anyway so that changing it later
+  // invalidates stored fits instead of silently mixing conventions.
+  const uint32_t projection_convention = 0u;
+  VkrShadowFitHistory *history = &system->fit_history;
+  const bool8_t history_usable =
+      system->config.stabilize_cascades &&
+      vkr_shadow_fit_history_matches(history, light_direction, cascade_count,
+                                     shadow_map_size, projection_convention,
+                                     system->enable_generation);
 
   for (uint32_t i = 0; i < system->config.cascade_count; ++i) {
     float32_t split_near = system->cascade_splits[i];
@@ -669,13 +736,17 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
           vkr_shadow_default_z_extension(z_extension, i, cascade_count);
     }
 
+    VkrShadowFit fit = {0};
     vkr_shadow_compute_cascade_matrix(
         &light_view, corners, shadow_map_size,
         system->config.stabilize_cascades, guard_band,
         system->config.use_constant_cascade_size, &system->config.scene_bounds,
-        z_extension, &system->cascades[i].view_projection,
-        &system->cascades[i].world_units_per_texel,
+        z_extension, history_usable ? &history->cascades[i] : NULL,
+        &system->cascades[i].view_projection, &fit,
         &system->cascades[i].light_space_origin);
+    history->cascades[i] = fit;
+    system->cascades[i].world_units_per_texel = fit.world_units_per_texel;
+    system->cascades[i].light_space_depth_span = fit.max_z - fit.min_z;
 
     Vec3 cascade_center = vec3_zero();
     for (int c = 0; c < 8; ++c) {
@@ -696,11 +767,22 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
     system->cascades[i].bounds_radius = vkr_sqrt_f32(max_radius_sq);
     system->cascades[i].split_far = split_far;
   }
+
+  history->light_direction = light_direction;
+  history->cascade_count = cascade_count;
+  history->shadow_map_size = shadow_map_size;
+  history->projection_convention = projection_convention;
+  history->enable_generation = system->enable_generation;
+  history->valid = system->config.stabilize_cascades;
 }
 
 void vkr_shadow_system_get_frame_data(const VkrShadowSystem *system,
                                       uint32_t frame_index,
                                       VkrShadowFrameData *out_data) {
+  /* Per-target-image shadow state does not exist yet: one raw fit set is
+     produced per frame and every image reads the same one. The parameter is
+     retained because the retained-history phase makes fits per image, and
+     removing it now would only have to be added back at that seam. */
   (void)frame_index;
   if (!out_data) {
     return;
@@ -713,83 +795,13 @@ void vkr_shadow_system_get_frame_data(const VkrShadowSystem *system,
   }
 
   out_data->enabled = system->light_enabled;
+  if (!out_data->enabled) {
+    return;
+  }
   out_data->cascade_count = system->config.cascade_count;
-  out_data->pcf_radius = system->config.pcf_radius;
-  out_data->shadow_bias = system->config.shadow_bias;
-  out_data->normal_bias = system->config.normal_bias;
-  out_data->shadow_slope_bias = system->config.shadow_slope_bias;
-  out_data->shadow_bias_texel_scale = system->config.shadow_bias_texel_scale;
-  out_data->shadow_slope_bias_texel_scale =
-      system->config.shadow_slope_bias_texel_scale;
-  out_data->shadow_distance_fade_range =
-      system->config.shadow_distance_fade_range;
-  out_data->cascade_blend_range = system->config.cascade_blend_range;
-  out_data->debug_show_cascades = system->config.debug_show_cascades;
 
-  uint32_t map_size = vkr_shadow_config_get_max_map_size(&system->config);
-  uint32_t cascade_count = system->config.cascade_count;
-  bool8_t has_margin_per = vkr_shadow_has_any_per_cascade(
-      system->config.shadow_uv_margin_scale_per, cascade_count);
-  bool8_t has_soft_margin_per = vkr_shadow_has_any_per_cascade(
-      system->config.shadow_uv_soft_margin_scale_per, cascade_count);
-  bool8_t has_kernel_margin_per = vkr_shadow_has_any_per_cascade(
-      system->config.shadow_uv_kernel_margin_scale_per, cascade_count);
-
-  for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
-    if (i < cascade_count) {
-      float32_t uv_margin_scale;
-      if (has_margin_per) {
-        float32_t per = system->config.shadow_uv_margin_scale_per[i];
-        uv_margin_scale =
-            (per > 0.0f) ? per
-                         : vkr_shadow_default_uv_margin_scale(i, cascade_count);
-      } else {
-        uv_margin_scale = vkr_shadow_default_uv_margin_scale(i, cascade_count);
-      }
-
-      float32_t uv_soft_margin_scale;
-      if (has_soft_margin_per) {
-        float32_t per = system->config.shadow_uv_soft_margin_scale_per[i];
-        uv_soft_margin_scale =
-            (per > 0.0f)
-                ? per
-                : vkr_shadow_default_uv_soft_margin_scale(i, cascade_count);
-      } else {
-        uv_soft_margin_scale =
-            vkr_shadow_default_uv_soft_margin_scale(i, cascade_count);
-      }
-
-      float32_t uv_kernel_margin_scale;
-      if (has_kernel_margin_per) {
-        float32_t per = system->config.shadow_uv_kernel_margin_scale_per[i];
-        uv_kernel_margin_scale =
-            (per > 0.0f)
-                ? per
-                : vkr_shadow_default_uv_kernel_margin_scale(i, cascade_count);
-      } else {
-        uv_kernel_margin_scale =
-            vkr_shadow_default_uv_kernel_margin_scale(i, cascade_count);
-      }
-
-      out_data->shadow_map_inv_size[i] =
-          (map_size > 0) ? (1.0f / (float32_t)map_size) : 0.0f;
-      out_data->split_far[i] = system->cascades[i].split_far;
-      out_data->world_units_per_texel[i] =
-          system->cascades[i].world_units_per_texel;
-      out_data->shadow_uv_margin_scale[i] = uv_margin_scale;
-      out_data->shadow_uv_soft_margin_scale[i] = uv_soft_margin_scale;
-      out_data->shadow_uv_kernel_margin_scale[i] = uv_kernel_margin_scale;
-      out_data->light_space_origin[i] = system->cascades[i].light_space_origin;
-      out_data->view_projection[i] = system->cascades[i].view_projection;
-    } else {
-      out_data->shadow_map_inv_size[i] = 0.0f;
-      out_data->split_far[i] = 0.0f;
-      out_data->world_units_per_texel[i] = 0.0f;
-      out_data->shadow_uv_margin_scale[i] = 1.0f;
-      out_data->shadow_uv_soft_margin_scale[i] = 1.0f;
-      out_data->shadow_uv_kernel_margin_scale[i] = 1.0f;
-      out_data->light_space_origin[i] = vec2_zero();
-      out_data->view_projection[i] = mat4_identity();
-    }
+  for (uint32_t i = 0; i < system->config.cascade_count; ++i) {
+    out_data->split_far[i] = system->cascades[i].split_far;
+    out_data->view_projection[i] = system->cascades[i].view_projection;
   }
 }

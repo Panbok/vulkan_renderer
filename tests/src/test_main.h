@@ -38,6 +38,7 @@
 #include "renderer_impl_test.h"
 #include "resource_async_state_tests.h"
 #include "scene_loader_tests.h"
+#include "shadow_system_test.h"
 #include "simd_test.h"
 #include "string_test.h"
 #include "text_test.h"

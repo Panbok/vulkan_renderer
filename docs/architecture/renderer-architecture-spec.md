@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-21
+updated: 2026-08-22
 authority: spec
 ---
 # VKR Renderer — Architecture and Status Specification
@@ -266,9 +266,16 @@ disabled. The skybox pass runs before world rendering and disables depth
 test/write so it contributes color without occluding geometry farther than the
 finite cube mesh. Material alpha routing is resolved once per draw candidate:
 `BLEND` selects the transparent world list while `CUTOUT` independently selects
-the alpha-tested shadow list. The PCF hash grid converts the fitted light-view
-origin into the shader's reconstructed right/up basis, including the negated X
-axis introduced by `mat4_look_at`. Two-sided PBR shading uses
+the alpha-tested shadow list. Directional shadow receivers take a single
+nearest-filtered tap biased by one global constant,
+`vkr_packet_shadow_bias`; there is no PCF kernel, cascade blend, or
+distance fade in either backend. The PCF hash grid this section previously
+described belonged to the world renderer that ADR-028 P21 deleted.
+`vkr_shadow_light_space_origin_from_view()` still converts the fitted light-view
+origin into the right/up basis, including the negated X axis introduced by
+`mat4_look_at`, and the cascade data retains `world_units_per_texel`,
+`light_space_origin`, and the fitted light-space depth span so a filtered
+receiver can be restored without re-deriving them. Two-sided PBR shading uses
 `SV_IsFrontFace` to orient geometric and tangent-space normals; it never flips
 a stationary receiver according to the camera vector.
 
@@ -365,7 +372,7 @@ restricted to specular reflection rays.
 | Pipeline cache | Implemented per backend | Disk-backed Vulkan driver cache and Metal pipeline archive |
 | Metrics registry and snapshot export | Implemented | Bounded typed slots, MPSC cold-event ring, triple-buffered snapshots, renderer catalog/validity, explicit GPU allocation-owner aggregates, metrics-backed HUD, atomic `--metrics-json`, and harness aggregation |
 | Renderer automation harness | Implemented | Strict cases/profiles, deterministic cameras, isolated repetitions, dependency-resolved boot, authoritative evidence policies, metric/pass/event aggregation, atomic artifacts, direct and auxiliary captures, canonical comparison/diffs, separated `autotest`, guarded immutable baselines, target-neutral windowed or true surface-free offscreen execution with actual configuration provenance, and a sorted transitive scene-content manifest—including prepared glTF material files, generated textures, and present packed siblings—whose digest participates in workload identity |
-| Cascaded shadow maps | Implemented | Four-cascade default with debug/fit controls; cutout casters use the alpha-tested path, PCF grid coordinates share the shader basis, and opt-in scene-bounds Z fit clips caster bounds against each final cascade XY rectangle |
+| Cascaded shadow maps | Implemented, partial quality | Four-cascade default with fit hysteresis and backend-neutral raster-bias lowering; cutout casters use the alpha-tested path, and opt-in scene-bounds Z fit clips caster bounds against each final cascade XY rectangle. P0 CPU scopes and row-byte gauges ship on both backends. Receivers still use one nearest tap and one global bias; PCF, cascade blending, and distance fade remain absent |
 | PBR materials | Implemented, evolving | Metallic-roughness and texture slots plus prepared, cached specular-glossiness lowering with retained dielectric F0/F90 response; transmission adds IOR, volume, attenuation, and scene-color refraction while clearcoat and sheen remain absent |
 | IBL | Implemented, partial integration | HDR/cubemap sources, prepared RGBA16F bakes, global environment, and two fragment-weighted local probes per draw ship; bake work remains undeclared to the graph and explicitly barriered |
 | glTF and scene loading | Implemented | CPU async pipeline; nested texture URIs and sidecars resolve without flattening; UVs lower once to VKR convention; point, spot, and directional punctual lights import through the scene transform into a stable 128-light table with a fragment-local 384-cell bitmask grid; frame-path uploads measured non-blocking |

@@ -23,6 +23,8 @@
 #include "renderer/vkr_rg_json.h"
 #include "renderer/vulkan/vkr_vulkan_renderer.h"
 
+#include <math.h>
+
 static bool8_t vkr_renderer_env_enabled(const char *name) {
   const char *value = name ? getenv(name) : NULL;
   return value && value[0] != '\0' && strcmp(value, "0") != 0 ? true_v
@@ -1930,6 +1932,7 @@ vkr_renderer_present_target_recreate(VkrRendererFrontendHandle renderer,
   if (renderer->ui_system.initialized) {
     vkr_ui_system_resize(renderer, &renderer->ui_system, width, height);
   }
+  vkr_shadow_system_invalidate_fit_history(&renderer->shadow_system);
   return VKR_RENDERER_ERROR_NONE;
 }
 
@@ -2331,12 +2334,30 @@ vkr_renderer_validate_packet(const VkrRenderPacket *packet,
     if (error != VKR_RENDERER_ERROR_NONE)
       return error;
   }
-  if (packet->shadow &&
-      (packet->shadow->cascade_count == 0u ||
-       packet->shadow->cascade_count > VKR_SHADOW_CASCADE_COUNT_MAX))
-    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                      "packet.shadow.cascade_count",
-                      "must be within the supported cascade range");
+  const VkrShadowPassPayload *shadow = packet->shadow;
+  if (shadow) {
+    if (shadow->cascade_count == 0u ||
+        shadow->cascade_count > VKR_SHADOW_CASCADE_COUNT_MAX)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.shadow.cascade_count",
+                        "must be within the supported cascade range");
+    const VkrShadowConfigOverride *bias = shadow->config_override;
+    if (bias) {
+      if (!isfinite(bias->depth_bias_constant) ||
+          bias->depth_bias_constant < 0.0f)
+        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                          "packet.shadow.config_override.depth_bias_constant",
+                          "must be finite and non-negative");
+      if (!isfinite(bias->depth_bias_slope) || bias->depth_bias_slope < 0.0f)
+        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                          "packet.shadow.config_override.depth_bias_slope",
+                          "must be finite and non-negative");
+      if (!isfinite(bias->depth_bias_clamp) || bias->depth_bias_clamp < 0.0f)
+        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                          "packet.shadow.config_override.depth_bias_clamp",
+                          "must be finite and non-negative");
+    }
+  }
 
   const VkrUiPassPayload *ui = packet->ui;
   if (ui) {
@@ -2487,6 +2508,9 @@ void vkr_renderer_resize(VkrRendererFrontendHandle renderer, uint32_t width,
   if (rf->ui_system.initialized) {
     vkr_ui_system_resize(rf, &rf->ui_system, width, height);
   }
+  /* Every resize path recreates or invalidates target state. A skipped frame
+     may separate the stored fit from the next camera pose. */
+  vkr_shadow_system_invalidate_fit_history(&rf->shadow_system);
 }
 
 static VkrRendererError renderer_impl_metal_cancel_frame(void *state) {

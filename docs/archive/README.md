@@ -57,6 +57,7 @@ documents and skills listed beside them.
 | [csm-implementation-analysis.md](csm-implementation-analysis.md) | [CSM design](../rendering/cascading-shadow-mapping-design.md) |
 | [csm-debugging-postmortem-and-next-steps.md](csm-debugging-postmortem-and-next-steps.md) | [CSM design](../rendering/cascading-shadow-mapping-design.md) |
 | [csm-shadow-cutoff-investigation.md](csm-shadow-cutoff-investigation.md) | [CSM design](../rendering/cascading-shadow-mapping-design.md) |
+| [csm-cascade-coverage-spec.md](csm-cascade-coverage-spec.md) | [Shadow CPU cost and CSM rewrite](../rendering/shadow-cpu-cost-and-csm-rewrite-spec.md) |
 | [world-text-picking-investigation.md](world-text-picking-investigation.md) | [Editor viewport and picking](../editor/editor-viewport-and-picking-design.md) |
 
 ## `spec-legacy/`

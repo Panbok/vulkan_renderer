@@ -1221,6 +1221,15 @@ vkr_internal bool8_t vkr_metal_packet_encode_gpu_shadow(
                                      1.0}];
   [encoder setFrontFacingWinding:MTLWindingCounterClockwise];
   [encoder setDepthStencilState:renderer->depth_write_state];
+  /* Raster depth bias from the shared packet contract. Each backend lowers the
+     same constant/slope/clamp controls through its native depth-bias command;
+     receiver bias remains a separate shader input. */
+  const VkrShadowConfigOverride bias = packet->shadow->config_override
+                                           ? *packet->shadow->config_override
+                                           : (VkrShadowConfigOverride){0};
+  [encoder setDepthBias:bias.depth_bias_constant
+             slopeScale:bias.depth_bias_slope
+                  clamp:bias.depth_bias_clamp];
   id<MTLRenderPipelineState> bound_shadow_pipeline = nil;
   for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
        ++bucket) {

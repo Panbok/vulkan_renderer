@@ -1,12 +1,15 @@
 ---
-status: partial
-updated: 2026-07-31
+status: superseded
+updated: 2026-08-22
 authority: spec
 ---
 # CSM Cascade Coverage Spec (Sharp → Loose)
 
-> **Current boundary.** The cascade scale policy is implemented, but the
-> documented shader-recompile and debug-mode validation gate remains unchecked.
+> **Superseded by**
+> [Shadow CPU Cost and CSM Rewrite Spec](../rendering/shadow-cpu-cost-and-csm-rewrite-spec.md).
+> The per-cascade CPU guard-band and Z-extension controls remain active, but the
+> proposed UV-margin packet fields had no shipped receiver and were removed by
+> that spec's truthful-contract phase.
 
 ## Summary
 Define per-cascade coverage controls so near cascades are tighter (sharper) and

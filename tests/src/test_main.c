@@ -86,6 +86,8 @@ int main(int argc, char **argv) {
   printf("\n"); // Add spacing
   all_passed &= run_visibility_tests();
   printf("\n"); // Add spacing
+  all_passed &= run_shadow_system_tests();
+  printf("\n"); // Add spacing
   all_passed &= run_render_graph_barrier_tests();
   printf("\n"); // Add spacing
   all_passed &= run_resource_async_state_tests();

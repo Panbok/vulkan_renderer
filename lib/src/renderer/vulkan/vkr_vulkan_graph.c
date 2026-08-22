@@ -844,10 +844,14 @@ vkr_internal bool8_t vkr_vk_record_graphics_body(
     const uint32_t cascade = pass->desc.depth_attachment.desc.slice.base_layer;
     if (cascade >= packet->shadow->cascade_count)
       return false_v;
-    const VkrShadowConfigOverride *override = packet->shadow->config_override;
-    vkCmdSetDepthBias(command, override ? override->depth_bias_constant : 1.25f,
-                      override ? override->depth_bias_clamp : 0.0f,
-                      override ? override->depth_bias_slope : 1.75f);
+    /* No hardcoded fallback: the configured value is the contract, and a
+       backend-local default would silently disagree with the other selected
+       implementation. A packet without an override means no raster bias. */
+    const VkrShadowConfigOverride bias = packet->shadow->config_override
+                                             ? *packet->shadow->config_override
+                                             : (VkrShadowConfigOverride){0};
+    vkCmdSetDepthBias(command, bias.depth_bias_constant, bias.depth_bias_clamp,
+                      bias.depth_bias_slope);
     return vkr_vk_record_deferred_raster(renderer, command, pass, true_v,
                                          false_v);
   }

@@ -1,12 +1,19 @@
 ---
-status: proposed
-updated: 2026-08-21
+status: partial
+updated: 2026-08-22
 authority: design
 ---
 
 # Directional shadow cost reduction and CSM rewrite
 
-Design proposal. No code in this document ships yet.
+P0 instrumentation and P1 contract repair ship in the current implementation.
+The renderer publishes the named CPU scopes and row-byte gauges on Metal and
+Vulkan, routes raster depth bias through the packet on both backends, retains
+the future fit data, and applies cascade-fit hysteresis. P2 and later phases do
+not ship. The available P0 runs rejected P2 at 35 and 254 candidates, but they
+were dirty-tree observations rather than authoritative profiles and do not
+represent an identified larger reported workload. Exact unchanged-default
+capture comparison also remains open for P1.
 
 Prerequisite reading:
 [shadow-transmission-transparency-improvements.md](shadow-transmission-transparency-improvements.md)
@@ -287,6 +294,9 @@ reference material, not performance or correctness evidence for VKR.
 
 ## 4. Phase 0, measurement and instrumentation
 
+**Status:** Implemented. Authoritative clean-tree profiles for the actual
+reported workload remain open.
+
 Phase 0 is its own instrumentation PR. No optimization or quality preset change
 belongs in that PR. The gate must run on a clean tree in Release and must include
 the scene and camera path where the CPU problem was reported. The existing
@@ -357,6 +367,9 @@ approval may replace it with an explicit millisecond budget for the target
 machine, but that budget must be written into the report before Phase 2 starts.
 
 ## 5. Phase 1, make the current contract truthful
+
+**Status:** Implemented. Exact unchanged-default capture comparison remains
+open.
 
 Phase 1 may land after Phase 0 even when no optimization is authorized. It must
 not delete fields that Phase 7 will immediately restore or change quality

@@ -137,13 +137,12 @@ owning document status in the same change.
 | [pbr-material-system-design.md](rendering/pbr-material-system-design.md) | implemented | Metallic-roughness PBR materials, texture slots, and legacy diffuse compatibility |
 | [texture-format-and-colorspace-design.md](rendering/texture-format-and-colorspace-design.md) | implemented | sRGB vs linear UNORM format selection |
 | [cascading-shadow-mapping-design.md](rendering/cascading-shadow-mapping-design.md) | partial | CSM ships; historical view/layer integration examples remain |
-| [csm/cascade-coverage-spec.md](rendering/csm/cascade-coverage-spec.md) | partial | Cascade policy ships; debug-mode validation remains unchecked |
 | [csm/confirmed-assumptions.md](rendering/csm/confirmed-assumptions.md) | investigation | Verified CSM assumptions |
 | [stable-csm-spec.md](rendering/stable-csm-spec.md) | proposed | Texel-snapped stable directional CSM |
 | [lighting-system-design-plan.md](rendering/lighting-system-design-plan.md) | partial | Lighting across scene, ECS, and picking |
 | [bistro-baseline-shading-investigation.md](rendering/bistro-baseline-shading-investigation.md) | investigation | Historical Bistro diagnosis, owner-audit corrections for punctual lights, materials, face orientation, and indoor IBL, plus validation-clean evidence |
 | [shadow-transmission-transparency-improvements.md](rendering/shadow-transmission-transparency-improvements.md) | partial | Implemented transmission, cascade-fit, and transparency record; residual PCF/SDSM work is superseded by the current shadow rewrite spec |
-| [shadow-cpu-cost-and-csm-rewrite-spec.md](rendering/shadow-cpu-cost-and-csm-rewrite-spec.md) | proposed | Implementation-gated directional-shadow plan: measured candidate residency, retained per-image cascade history, current-depth-confirmed temporal visibility, occupied-depth SDSM feedback, and unit-defined PCF quality |
+| [shadow-cpu-cost-and-csm-rewrite-spec.md](rendering/shadow-cpu-cost-and-csm-rewrite-spec.md) | partial | P0 CPU instrumentation and P1 fit/config repair ship; candidate residency, retained per-image history, two-phase visibility, SDSM feedback, and unit-defined PCF quality remain proposed |
 | [hdr-environment-ibl-spec.md](rendering/hdr-environment-ibl-spec.md) | implemented | HDR equirect loading, equirect→cubemap bake, half-float IBL storage, prefilter mip fix, and tonemap activation |
 | [uniform-buffer-std430-migration.md](rendering/uniform-buffer-std430-migration.md) | partial | DX cbuffer → std140/std430 migration; phase 0 done |
 | [render-pass-and-target-improvements.md](rendering/render-pass-and-target-improvements.md) | proposed | Render pass and target system improvements |
