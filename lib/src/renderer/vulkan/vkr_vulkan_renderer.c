@@ -939,6 +939,7 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
         .blend_draw_count = slot->blend_draw_count,
         .image_index = slot->image_index,
         .pass_timing_count = slot->pass_timing_count,
+        .packet_build = slot->packet_build,
     };
     MemCopy(out_result->pass_timings, slot->pass_timings,
             (uint64_t)slot->pass_timing_count *

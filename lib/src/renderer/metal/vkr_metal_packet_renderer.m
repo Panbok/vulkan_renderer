@@ -367,6 +367,9 @@ struct VkrMetalPacketRenderer {
   uint64_t current_hzb_world_epoch;
   Mat4 current_hzb_view_projection;
   uint32_t selected_hzb_history_instance;
+  /** Accumulated during this frame's packet lowering; copied into the result.
+   */
+  VkrPacketBuildMetrics packet_build;
   uint32_t max_images;
   uint32_t max_passes;
   uint32_t max_meshes;

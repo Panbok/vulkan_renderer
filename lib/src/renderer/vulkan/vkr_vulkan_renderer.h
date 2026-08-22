@@ -96,6 +96,8 @@ typedef struct VkrVulkanResult {
   uint32_t identifier;
   uint32_t pass_timing_count;
   VkrRendererImplPassTiming pass_timings[VKR_RENDERER_IMPL_MAX_PASS_TIMINGS];
+  /** Same-frame packet-lowering CPU cost; only submit fills it, not poll. */
+  VkrPacketBuildMetrics packet_build;
   bool8_t readback_ready;
   bool8_t hzb_history_valid;
   bool8_t has_gpu_draw_diagnostics;

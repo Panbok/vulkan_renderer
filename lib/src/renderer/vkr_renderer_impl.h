@@ -139,6 +139,36 @@ typedef struct VkrRendererImplPassTiming {
   bool8_t valid;
 } VkrRendererImplPassTiming;
 
+/**
+ * @brief Backend-produced CPU cost of lowering one packet, per frame.
+ *
+ * Every selected implementation fills these with the same semantics, because a
+ * cost comparison only one backend can produce cannot authorize a change to the
+ * shared frontend. Durations are nanoseconds.
+ *
+ * The byte counts are the work volume the durations describe, and they are not
+ * optional. Candidate and instance bytes count rows actually written, so a
+ * publication-boundary omission changes work volume instead of looking like a
+ * faster pack.
+ *
+ * `geometry_table_build_ns` covers the geometry-row clear and rebuild. Vulkan
+ * performs that as a separate capacity walk. Metal writes rows during candidate
+ * packing, so its geometry duration overlaps `candidate_pack_ns`; callers must
+ * not sum those two Metal scopes.
+ *
+ * `valid` stays false until a submitted frame fills the block, so a missing
+ * producer reads as unavailable rather than as zero cost.
+ */
+typedef struct VkrPacketBuildMetrics {
+  uint64_t candidate_hash_ns;
+  uint64_t candidate_pack_ns;
+  uint64_t geometry_table_build_ns;
+  uint64_t candidate_row_bytes;
+  uint64_t instance_row_bytes;
+  uint64_t geometry_row_bytes;
+  bool8_t valid;
+} VkrPacketBuildMetrics;
+
 /** Backend-neutral subset consumed by the frontend and shared metrics path. */
 typedef struct VkrRendererImplSubmitResult {
   uint64_t submit_value;

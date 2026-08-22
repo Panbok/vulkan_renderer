@@ -523,6 +523,25 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
     return false_v;
   }
 
+#define VKR_REGISTER_PACKET_BUILD_NS(FIELD, NAME)                              \
+  if (!vkr_renderer_metric_register(                                           \
+          metrics, NAME, VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_KIND_DURATION,    \
+          VKR_METRIC_UNIT_NANOSECONDS, VKR_METRIC_SCALAR_U64, &ids->FIELD))    \
+  return false_v
+  VKR_REGISTER_PACKET_BUILD_NS(packet_candidate_hash,
+                               "cpu.packet_candidate_hash");
+  VKR_REGISTER_PACKET_BUILD_NS(packet_candidate_pack,
+                               "cpu.packet_candidate_pack");
+  VKR_REGISTER_PACKET_BUILD_NS(packet_geometry_table_build,
+                               "cpu.packet_geometry_table_build");
+#undef VKR_REGISTER_PACKET_BUILD_NS
+  VKR_REGISTER_U64(packet_candidate_row_bytes, "packet.candidate_row_bytes",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(packet_instance_row_bytes, "packet.instance_row_bytes",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(packet_geometry_row_bytes, "packet.geometry_row_bytes",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_BYTES);
+
 #define VKR_REGISTER_BOOT(FIELD, NAME)                                         \
   if (!vkr_renderer_metric_register(                                           \
           metrics, NAME, VKR_METRIC_DOMAIN_BOOT, VKR_METRIC_KIND_DURATION,     \
@@ -1029,6 +1048,34 @@ void vkr_renderer_metrics_collect(
     vkr_metrics_mark(metrics, ids->backend_present,
                      VKR_METRIC_AVAILABILITY_UNAVAILABLE,
                      VKR_METRIC_REASON_NOT_SAMPLED);
+  }
+
+  /* Publishing the durations without their byte counts, or either without the
+     other, would let a run report a cheaper frame that had merely dropped
+     draws. The block is published whole or marked unavailable whole. */
+  const VkrPacketBuildMetrics *packet_build =
+      &context->frame_metrics->packet_build;
+  if (packet_build->valid) {
+    vkr_metrics_duration_add_ns(metrics, ids->packet_candidate_hash,
+                                packet_build->candidate_hash_ns);
+    vkr_metrics_duration_add_ns(metrics, ids->packet_candidate_pack,
+                                packet_build->candidate_pack_ns);
+    vkr_metrics_duration_add_ns(metrics, ids->packet_geometry_table_build,
+                                packet_build->geometry_table_build_ns);
+    VKR_SET_U64(packet_candidate_row_bytes, packet_build->candidate_row_bytes);
+    VKR_SET_U64(packet_instance_row_bytes, packet_build->instance_row_bytes);
+    VKR_SET_U64(packet_geometry_row_bytes, packet_build->geometry_row_bytes);
+  } else {
+    const VkrMetricId packet_build_ids[] = {
+        ids->packet_candidate_hash,       ids->packet_candidate_pack,
+        ids->packet_geometry_table_build, ids->packet_candidate_row_bytes,
+        ids->packet_instance_row_bytes,   ids->packet_geometry_row_bytes,
+    };
+    for (uint32_t i = 0u; i < ArrayCount(packet_build_ids); ++i) {
+      vkr_metrics_mark(metrics, packet_build_ids[i],
+                       VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                       VKR_METRIC_REASON_NOT_SAMPLED);
+    }
   }
 
 #define VKR_SET_BOOT(FIELD, VALUE)                                             \

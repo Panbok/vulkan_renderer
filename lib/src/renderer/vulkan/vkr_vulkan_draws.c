@@ -239,6 +239,7 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
   slot->hzb_history_valid = false_v;
   slot->indexed_draw_count = 0u;
   slot->blend_draw_count = 0u;
+  slot->packet_build = (VkrPacketBuildMetrics){0};
   const bool8_t common_uploads =
       vkr_vk_upload_packet_tables(renderer, slot, packet) &&
       (!packet->world || vkr_vk_upload_instances(slot, packet->world->instances,
@@ -261,6 +262,9 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
       &slot->gpu_geometry_rows, NULL);
   if (!geometry_rows)
     return false_v;
+#if VKR_METRICS_ENABLED
+  const float64_t geometry_table_start = vkr_platform_get_absolute_time();
+#endif
   MemZero(geometry_rows, geometry_bytes);
   for (uint32_t i = 0u; i < renderer->config.geometry_capacity; ++i) {
     const VkrVulkanPublishedGeometry *geometry =
@@ -268,24 +272,50 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
     if (geometry->live && geometry->pending_initialization_count == 0u)
       geometry_rows[i] = geometry->gpu_row;
   }
+#if VKR_METRICS_ENABLED
+  slot->packet_build.geometry_table_build_ns =
+      vkr_metrics_elapsed_ns(geometry_table_start);
+#endif
+  slot->packet_build.geometry_row_bytes = geometry_bytes;
+
+#if VKR_METRICS_ENABLED
+  const float64_t hash_start = vkr_platform_get_absolute_time();
+#endif
   slot->gpu_world_epoch =
       packet->world ? vkr_vk_candidate_epoch(packet->world->gpu_candidates,
                                              packet->world->gpu_candidate_count)
                     : 0u;
-  return vkr_vk_pack_gpu_candidates(
-             renderer, slot,
-             packet->world ? packet->world->gpu_candidates : NULL,
-             packet->world ? packet->world->gpu_candidate_count : 0u,
-             &slot->gpu_candidate_upload_offset, &slot->gpu_candidate_instances,
-             &slot->gpu_candidate_count) &&
-         vkr_vk_pack_gpu_candidates(
-             renderer, slot,
-             packet->world ? packet->world->transmission_gpu_candidates : NULL,
-             packet->world ? packet->world->transmission_gpu_candidate_count
-                           : 0u,
-             &slot->transmission_gpu_candidate_upload_offset,
-             &slot->transmission_gpu_candidate_instances,
-             &slot->transmission_gpu_candidate_count);
+#if VKR_METRICS_ENABLED
+  slot->packet_build.candidate_hash_ns = vkr_metrics_elapsed_ns(hash_start);
+
+  const float64_t pack_start = vkr_platform_get_absolute_time();
+#endif
+  const bool8_t packed =
+      vkr_vk_pack_gpu_candidates(
+          renderer, slot, packet->world ? packet->world->gpu_candidates : NULL,
+          packet->world ? packet->world->gpu_candidate_count : 0u,
+          &slot->gpu_candidate_upload_offset, &slot->gpu_candidate_instances,
+          &slot->gpu_candidate_count) &&
+      vkr_vk_pack_gpu_candidates(
+          renderer, slot,
+          packet->world ? packet->world->transmission_gpu_candidates : NULL,
+          packet->world ? packet->world->transmission_gpu_candidate_count : 0u,
+          &slot->transmission_gpu_candidate_upload_offset,
+          &slot->transmission_gpu_candidate_instances,
+          &slot->transmission_gpu_candidate_count);
+#if VKR_METRICS_ENABLED
+  slot->packet_build.candidate_pack_ns = vkr_metrics_elapsed_ns(pack_start);
+#endif
+  /* The gauges report actual row writes. A publication-boundary omission must
+     change work volume or a timing drop could be mistaken for a faster pack. */
+  const uint64_t written_candidates = (uint64_t)slot->gpu_candidate_count +
+                                      slot->transmission_gpu_candidate_count;
+  slot->packet_build.candidate_row_bytes =
+      written_candidates * sizeof(VkrGpuCandidateDrawRow);
+  slot->packet_build.instance_row_bytes =
+      written_candidates * sizeof(VkrInstanceDataGPU);
+  slot->packet_build.valid = packed;
+  return packed;
 }
 
 vkr_internal VkrVulkanPublishedGeometry *

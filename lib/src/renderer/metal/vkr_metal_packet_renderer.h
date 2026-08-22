@@ -8,6 +8,7 @@
 #include "renderer/vkr_ibl_math.h"
 #include "renderer/vkr_render_graph.h"
 #include "renderer/vkr_render_packet.h"
+#include "renderer/vkr_renderer_impl.h"
 
 typedef struct VkrMetalPacketRenderer VkrMetalPacketRenderer;
 struct VkrMeshLoaderResult;
@@ -203,6 +204,8 @@ typedef struct VkrMetalPacketResult {
   VkrCapturePollResult capture;
   VkrMetalMemoryDeviceMetrics memory;
   VkrMetalMaterialTableMetrics materials;
+  /** Same-frame packet-lowering CPU cost, matching the Vulkan name set. */
+  VkrPacketBuildMetrics packet_build;
 } VkrMetalPacketResult;
 
 bool8_t

@@ -1146,6 +1146,10 @@ renderer_impl_vulkan_submit_packet(void *state, const VkrRenderPacket *packet,
   rf->frame_metrics.world.draws_issued = world_draw_count;
   rf->frame_metrics.world.draw_calls_issued = world_draw_count;
   vkr_renderer_record_gpu_candidate_metrics(rf, &prepared.packet);
+  /* Packet lowering happened on this thread during this submit, so it comes
+     from the call's own result rather than from `timing_result`, which may
+     still describe an older completed frame. */
+  rf->frame_metrics.packet_build = result.packet_build;
   const VkrRendererImplSubmitResult *observed = &rf->timing_result;
   rf->frame_metrics.world.hzb_history_valid = observed->hzb_history_valid;
   if (observed->has_gpu_draw_diagnostics) {
@@ -2167,6 +2171,9 @@ renderer_impl_metal_submit_packet(void *state, const VkrRenderPacket *packet,
   rf->frame_metrics.world.draws_issued = observed->indexed_draw_count;
   rf->frame_metrics.world.draw_calls_issued = observed->indexed_draw_count;
   vkr_renderer_record_gpu_candidate_metrics(rf, &prepared.packet);
+  /* From this submit's own result: packet lowering ran on this thread now,
+     while `observed` may still describe an older completed frame. */
+  rf->frame_metrics.packet_build = result.packet_build;
   rf->frame_metrics.world.hzb_history_valid = observed->hzb_history_valid;
   if (observed->has_gpu_draw_diagnostics) {
     rf->frame_metrics.world.opaque_draws = observed->gpu_visible_count;

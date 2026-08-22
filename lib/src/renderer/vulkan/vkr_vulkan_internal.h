@@ -4,6 +4,7 @@
 #include "renderer/vulkan/vkr_vulkan_renderer.h"
 
 #include "core/logger.h"
+#include "core/vkr_metrics.h"
 #include "filesystem/filesystem.h"
 #include "renderer/resources/loaders/mesh_loader.h"
 #include "renderer/systems/vkr_geometry_system.h"
@@ -703,6 +704,8 @@ typedef struct VkrVulkanFrameSlot {
   bool8_t hzb_history_valid;
   uint32_t indexed_draw_count;
   uint32_t blend_draw_count;
+  /** Same-frame CPU cost of lowering this packet, reported at submit. */
+  VkrPacketBuildMetrics packet_build;
 } VkrVulkanFrameSlot;
 
 typedef struct VkrVulkanWindowTarget {

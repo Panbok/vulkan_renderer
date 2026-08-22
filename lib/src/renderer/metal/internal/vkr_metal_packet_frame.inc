@@ -1475,8 +1475,19 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   renderer->current_hzb_view_projection = vkr_metal_packet_clip_matrix(
       renderer->convert_vulkan_clip_y,
       mat4_mul(packet->globals.projection, packet->globals.view));
+  /* Seeded valid so a frame with no candidates publishes an honest zero rather
+     than reading as an absent producer; the pack path overwrites it on
+     failure. */
+  renderer->packet_build = (VkrPacketBuildMetrics){.valid = true_v};
+#if VKR_METRICS_ENABLED
+  const float64_t candidate_hash_start = vkr_platform_get_absolute_time();
+#endif
   renderer->current_hzb_world_epoch =
       vkr_metal_packet_world_occluder_epoch(packet->world);
+#if VKR_METRICS_ENABLED
+  renderer->packet_build.candidate_hash_ns =
+      vkr_metrics_elapsed_ns(candidate_hash_start);
+#endif
   uint32_t hzb_mip_count = 1u;
   uint32_t hzb_max_extent = MAX(renderer->prepared_frame.viewport_width,
                                 renderer->prepared_frame.viewport_height);
@@ -2183,6 +2194,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   }
   out_result->submit_value = submit_value;
   out_result->source_frame_index = packet->frame.frame_index;
+  out_result->packet_build = renderer->packet_build;
   out_result->hzb_history_valid = renderer->prepared_frame.hzb_history_valid;
   out_result->resize_count = renderer->resize_count;
   out_result->pipeline_count = 24u;

@@ -90,6 +90,7 @@ typedef struct VkrShadowMetrics {
 typedef struct VkrRendererFrameMetrics {
   VkrWorldBatchMetrics world;
   VkrShadowMetrics shadow;
+  VkrPacketBuildMetrics packet_build;
   uint64_t backend_present_ns;
   bool8_t backend_present_valid;
 } VkrRendererFrameMetrics;

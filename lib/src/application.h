@@ -151,6 +151,11 @@ typedef struct ApplicationMetricIds {
   VkrMetricId render_prepare;
   VkrMetricId render_submit;
   VkrMetricId limiter_sleep;
+  // Nested inside update and frame_work respectively. Both are frontend work
+  // that runs before any backend sees the packet, so they belong here rather
+  // than in the renderer catalog.
+  VkrMetricId shadow_update;
+  VkrMetricId world_payload_build;
 } ApplicationMetricIds;
 
 /**
@@ -323,6 +328,14 @@ vkr_internal bool8_t application_metrics_initialize(Application *application) {
       !application_register_duration_metric(
           application->metrics, "frame.limiter_sleep", VKR_METRIC_DOMAIN_FRAME,
           false_v, &ids->limiter_sleep) ||
+      // Shadow update is absent without an active camera. Keep both optional so
+      // non-rendering and partial-boot frames do not make reports incomplete.
+      !application_register_duration_metric(
+          application->metrics, "cpu.shadow_update", VKR_METRIC_DOMAIN_FRAME,
+          false_v, &ids->shadow_update) ||
+      !application_register_duration_metric(
+          application->metrics, "cpu.world_payload_build",
+          VKR_METRIC_DOMAIN_FRAME, false_v, &ids->world_payload_build) ||
       !vkr_renderer_metrics_register(&application->renderer_metrics,
                                      application->metrics)) {
     return false_v;
@@ -1005,8 +1018,12 @@ void application_draw_frame(Application *application, float64_t delta) {
 
   VkrWorldPassPayload world_payload = {0};
   VkrVisibilityStats visibility_stats = {0};
-  bool8_t has_world = application_build_world_payload(
-      application, scratch, &world_payload, &visibility_stats);
+  bool8_t has_world = false_v;
+  VKR_METRICS_SCOPE_NS(application->metrics,
+                       application->metric_ids.world_payload_build) {
+    has_world = application_build_world_payload(
+        application, scratch, &world_payload, &visibility_stats);
+  }
   application->visibility_stats = visibility_stats;
 
   VkrShadowPassPayload shadow_payload = {0};
@@ -1440,10 +1457,13 @@ void application_start(Application *application) {
     }
 
     if (camera) {
-      vkr_shadow_system_update(
-          &application->renderer.shadow_system, camera,
-          application->renderer.lighting_system.directional.enabled,
-          application->renderer.lighting_system.directional.direction);
+      VKR_METRICS_SCOPE_NS(application->metrics,
+                           application->metric_ids.shadow_update) {
+        vkr_shadow_system_update(
+            &application->renderer.shadow_system, camera,
+            application->renderer.lighting_system.directional.enabled,
+            application->renderer.lighting_system.directional.direction);
+      }
     }
 
     if (camera) {

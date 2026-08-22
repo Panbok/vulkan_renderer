@@ -1862,14 +1862,39 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
                                    transmission_gpu_draw_candidates_offset);
     VkrGpuGeometryRow *geometry_rows =
         (VkrGpuGeometryRow *)(cpu + gpu_draw_geometry_rows_offset);
+#if VKR_METRICS_ENABLED
+    const float64_t geometry_table_start = vkr_platform_get_absolute_time();
+#endif
     MemZero(geometry_rows, gpu_draw_geometry_rows_bytes);
-    if (!vkr_metal_packet_pack_gpu_draw_stream(
+    renderer->packet_build.geometry_row_bytes = gpu_draw_geometry_rows_bytes;
+
+#if VKR_METRICS_ENABLED
+    const float64_t pack_start = vkr_platform_get_absolute_time();
+#endif
+    const bool8_t packed =
+        vkr_metal_packet_pack_gpu_draw_stream(
             renderer, packet->world->gpu_candidates, gpu_draw_count,
-            gpu_instances, gpu_candidates, geometry_rows) ||
-        !vkr_metal_packet_pack_gpu_draw_stream(
+            gpu_instances, gpu_candidates, geometry_rows) &&
+        vkr_metal_packet_pack_gpu_draw_stream(
             renderer, packet->world->transmission_gpu_candidates,
             transmission_gpu_draw_count, transmission_gpu_instances,
-            transmission_gpu_candidates, geometry_rows))
+            transmission_gpu_candidates, geometry_rows);
+#if VKR_METRICS_ENABLED
+    renderer->packet_build.candidate_pack_ns =
+        vkr_metrics_elapsed_ns(pack_start);
+    /* Metal rebuilds geometry rows inside the candidate walk, so this duration
+       covers the clear and fused rebuild and intentionally overlaps packing. */
+    renderer->packet_build.geometry_table_build_ns =
+        vkr_metrics_elapsed_ns(geometry_table_start);
+#endif
+    const uint64_t written_candidates =
+        (uint64_t)gpu_draw_count + transmission_gpu_draw_count;
+    renderer->packet_build.candidate_row_bytes =
+        written_candidates * sizeof(VkrGpuCandidateDrawRow);
+    renderer->packet_build.instance_row_bytes =
+        written_candidates * sizeof(VkrInstanceDataGPU);
+    renderer->packet_build.valid = packed;
+    if (!packed)
       return false_v;
     VkrMetalPacketCommandSlot *slot = renderer->active_command_slot;
     if (gpu_draw_count > 0u) {

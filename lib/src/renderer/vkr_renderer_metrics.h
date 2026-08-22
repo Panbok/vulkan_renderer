@@ -139,6 +139,16 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId rg_live_buffer_bytes;
   VkrMetricId rg_peak_buffer_bytes;
 
+  /* Packet-lowering CPU cost and the work volume it describes. Registered
+     under one name set for every selected implementation so a frontend
+     comparison is not backend-specific. */
+  VkrMetricId packet_candidate_hash;
+  VkrMetricId packet_candidate_pack;
+  VkrMetricId packet_geometry_table_build;
+  VkrMetricId packet_candidate_row_bytes;
+  VkrMetricId packet_instance_row_bytes;
+  VkrMetricId packet_geometry_row_bytes;
+
   VkrMetricId upload_fence_waits;
   VkrMetricId upload_queue_idle_waits;
   VkrMetricId upload_device_idle_waits;
