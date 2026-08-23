@@ -1965,9 +1965,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     VkrMetalPacketShadowCascade *cascades =
         (VkrMetalPacketShadowCascade *)(cpu + shadow_cascades_offset);
     for (uint32_t i = 0; i < shadow_cascade_count; ++i) {
+      const VkrShadowCascadePacketData *source = &packet->shadow->cascades[i];
       cascades[i] = (VkrMetalPacketShadowCascade){
-          .light_view_projection = packet->shadow->light_view_proj[i],
-          .split_depth = {packet->shadow->split_depths[i], 0.0f, 0.0f, 0.0f},
+          .light_view_projection = source->light_view_projection,
+          .split_near_far_texel_depth = source->split_near_far_texel_depth,
+          .origin_inv_size_pad = source->origin_inv_size_pad,
       };
     }
     id<MTLTexture> shadow_texture =
@@ -2015,8 +2017,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
         renderer->prepared_frame.hzb_history_valid);
     for (uint32_t cascade = 0u;
          cascade < renderer->prepared_frame.shadow_cascade_count; ++cascade) {
-      const VkrFrustum shadow =
-          vkr_frustum_from_matrix(packet->shadow->light_view_proj[cascade]);
+      const VkrFrustum shadow = vkr_frustum_from_matrix(
+          packet->shadow->cascades[cascade].light_view_projection);
       vkr_metal_packet_pack_gpu_draw_view(
           &views[cascade + 1u], &shadow, VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER,
           false_v);

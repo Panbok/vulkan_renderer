@@ -757,7 +757,7 @@ kernel void vkr_metal_packet_deferred_lighting(
       root, pixel, root.depth.read(pixel).x);
   if (frame->shadow_debug_mode != 0u) {
     VkrMetalPacketShadowSample shadow_sample =
-        vkr_metal_packet_directional_shadow_sample(frame, world_position);
+        vkr_metal_packet_directional_shadow_sample(frame, world_position, normal);
     root.hdr.write(float4(vkr_metal_packet_shadow_debug_color(
                               frame->shadow_debug_mode, shadow_sample),
                           1.0),
@@ -771,7 +771,7 @@ kernel void vkr_metal_packet_deferred_lighting(
 
   if (frame->directional_direction_enabled.w > 0.5) {
     VkrMetalPacketShadowSample shadow_sample =
-        vkr_metal_packet_directional_shadow_sample(frame, world_position);
+        vkr_metal_packet_directional_shadow_sample(frame, world_position, normal);
     VkrMetalPacketDirectResult direct = vkr_metal_packet_direct_deferred(
         normal, view, normalize(-frame->directional_direction_enabled.xyz),
         frame->directional_color_intensity.rgb *
@@ -1182,7 +1182,8 @@ static float3 vkr_metal_packet_transmission_lighting(
                   max(f0.x, max(f0.y, f0.z)));
   if (frame->shadow_debug_mode != 0u) {
     VkrMetalPacketShadowSample shadow_sample =
-        vkr_metal_packet_directional_shadow_sample(frame, world_position);
+        vkr_metal_packet_directional_shadow_sample(frame, world_position,
+                                                   surface.normal);
     return vkr_metal_packet_shadow_debug_color(frame->shadow_debug_mode,
                                                shadow_sample);
   }
@@ -1192,7 +1193,8 @@ static float3 vkr_metal_packet_transmission_lighting(
   float3 analytic_specular = 0.0;
   if (frame->directional_direction_enabled.w > 0.5) {
     VkrMetalPacketShadowSample shadow_sample =
-        vkr_metal_packet_directional_shadow_sample(frame, world_position);
+        vkr_metal_packet_directional_shadow_sample(frame, world_position,
+                                                   surface.normal);
     VkrMetalPacketDirectResult direct = vkr_metal_packet_direct(
         surface.normal, view,
         normalize(-frame->directional_direction_enabled.xyz),

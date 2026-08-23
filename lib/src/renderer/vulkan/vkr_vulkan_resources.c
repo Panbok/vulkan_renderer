@@ -795,6 +795,29 @@ bool8_t vkr_vk_create_resources(VkrVulkanRenderer *renderer) {
     log_error("Vulkan failed to create the sentinel sampler");
     return false_v;
   }
+  /* The comparison sampler carries the filter: each receiver tap becomes a
+     bilinear 2x2 PCF. Vulkan has no raw shadow-map read, so the legacy raw root
+     field remains on the sentinel instead of consuming a permanent heap row. */
+  VkSamplerCreateInfo comparison_info = {
+      .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+      .magFilter = VK_FILTER_LINEAR,
+      .minFilter = VK_FILTER_LINEAR,
+      .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+      .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .maxLod = 0.0f,
+      .compareEnable = VK_TRUE,
+      .compareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
+  };
+  /* LESS_OR_EQUAL matches the receiver's test direction: the reference is the
+     biased receiver depth and the sampler returns 1.0 where it is in front of
+     the stored caster depth. */
+  if (vkCreateSampler(vkr_vk_renderer_device(renderer), &comparison_info, NULL,
+                      &renderer->shadow_comparison_sampler) != VK_SUCCESS) {
+    log_error("Vulkan failed to create the shadow comparison sampler");
+    return false_v;
+  }
   return true_v;
 }
 
@@ -1029,6 +1052,26 @@ bool8_t vkr_vk_publish_sentinel_descriptors(VkrVulkanRenderer *renderer) {
       sampler_handle.index != 0u) {
     return false_v;
   }
+  /* Published immediately after the sentinel so its heap slot is fixed for the
+     device's lifetime. Index 1 is asserted rather than assumed because the
+     single dirty range below publishes both contiguous rows. */
+  VkDescriptorGetInfoEXT shadow_comparison_get = {
+      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
+      .type = VK_DESCRIPTOR_TYPE_SAMPLER,
+      .data.pSampler = &renderer->shadow_comparison_sampler,
+  };
+  VkrGpuSlotHandle shadow_comparison_handle = {0};
+  get_descriptor(vkr_vk_renderer_device(renderer), &shadow_comparison_get,
+                 properties->samplerDescriptorSize,
+                 renderer->descriptor_scratch);
+  if (vkr_gpu_slot_table_publish(
+          renderer->sampler_slots, renderer->descriptor_scratch,
+          &shadow_comparison_handle) != VKR_GPU_SLOT_STATUS_OK ||
+      shadow_comparison_handle.index != 1u) {
+    return false_v;
+  }
+  renderer->shadow_comparison_sampler_slot = shadow_comparison_handle.index;
+
   get_descriptor(vkr_vk_renderer_device(renderer), &storage_get,
                  properties->storageImageDescriptorSize,
                  renderer->descriptor_scratch);
@@ -1066,10 +1109,11 @@ bool8_t vkr_vk_publish_sentinel_descriptors(VkrVulkanRenderer *renderer) {
                            &renderer->resource_descriptors,
                            resource_layout->storage_image_offset,
                            properties->storageImageDescriptorSize) &&
+         /* Two contiguous sampler rows: sentinel and shadow comparison. */
          vkr_vk_mark_dirty(&renderer->sampler_descriptor_dirty,
                            &renderer->sampler_descriptors,
                            sampler_layout->sampler_offset,
-                           properties->samplerDescriptorSize) &&
+                           properties->samplerDescriptorSize * 2u) &&
          vkr_vk_mark_dirty(&renderer->material_dirty, &renderer->materials, 0u,
                            sizeof(material));
 }

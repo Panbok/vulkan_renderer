@@ -347,16 +347,40 @@ static void test_frame_data_carries_only_consumed_fields(void) {
   vkr_shadow_system_shutdown(&system, test_frontend());
 }
 
+/* A payload the receiver can trust: one cascade with a real slice, texel size,
+   and depth span, and a supported tap count. Tests mutate one field at a time
+   from this baseline so a rejection names the field under test. */
+static VkrShadowPassPayload test_shadow_valid_payload(void) {
+  VkrShadowPassPayload shadow = {
+      .cascade_count = 1u,
+      .receiver =
+          {
+              .receiver_bias_texels = 1.0f,
+              .slope_bias_texels = 2.0f,
+              .normal_offset_texels = 1.0f,
+              .pcf_radius_texels = 1.5f,
+              .pcf_sample_count = 16u,
+              .cascade_blend_fraction = 0.08f,
+              .fade_start = 180.0f,
+              .fade_end = 200.0f,
+          },
+  };
+  shadow.cascades[0].light_view_projection = mat4_identity();
+  shadow.cascades[0].split_near_far_texel_depth =
+      (Vec4){0.1f, 200.0f, 0.01f, 120.0f};
+  shadow.cascades[0].origin_inv_size_pad =
+      (Vec4){3.0f, 4.0f, 1.0f / 2048.0f, 0.0f};
+  return shadow;
+}
+
 static void test_shadow_raster_bias_packet_validation(void) {
   VkrShadowConfigOverride bias = {
       .depth_bias_constant = 1.25f,
       .depth_bias_slope = 1.75f,
       .depth_bias_clamp = 0.0f,
   };
-  VkrShadowPassPayload shadow = {
-      .cascade_count = 1u,
-      .config_override = &bias,
-  };
+  VkrShadowPassPayload shadow = test_shadow_valid_payload();
+  shadow.config_override = &bias;
   const VkrRenderPacket packet = {
       .packet_version = VKR_RENDER_PACKET_VERSION,
       .shadow = &shadow,
@@ -384,6 +408,149 @@ static void test_shadow_raster_bias_packet_validation(void) {
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path,
                 "packet.shadow.config_override.depth_bias_clamp") == 0);
+}
+
+/* Receiver quality (spec section 11). The shader hot path has no recovery
+   branch, so each of these is the only thing standing between a bad
+   configuration and an out-of-range table index or a divide by zero. */
+
+static void test_shadow_receiver_packet_validation(void) {
+  VkrShadowPassPayload shadow = test_shadow_valid_payload();
+  const VkrRenderPacket packet = {
+      .packet_version = VKR_RENDER_PACKET_VERSION,
+      .shadow = &shadow,
+  };
+  VkrValidationError validation = {0};
+  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+         VKR_RENDERER_ERROR_NONE);
+
+  /* Every supported tap count passes; the one immediately outside each does
+     not. A rejected count would otherwise index the 64-entry table freely. */
+  const uint32_t supported[] = {1u, 4u, 9u, 16u, 32u};
+  for (uint32_t i = 0; i < ArrayCount(supported); ++i) {
+    shadow.receiver.pcf_sample_count = supported[i];
+    assert(vkr_renderer_validate_packet(&packet, &validation) ==
+           VKR_RENDERER_ERROR_NONE);
+  }
+  const uint32_t rejected[] = {0u, 2u, 8u, 17u, 64u, 65u};
+  for (uint32_t i = 0; i < ArrayCount(rejected); ++i) {
+    shadow.receiver.pcf_sample_count = rejected[i];
+    assert(vkr_renderer_validate_packet(&packet, &validation) ==
+           VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
+    assert(strcmp(validation.field_path,
+                  "packet.shadow.receiver.pcf_sample_count") == 0);
+  }
+  shadow.receiver.pcf_sample_count = 16u;
+
+  shadow.receiver.pcf_radius_texels = -0.1f;
+  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+         VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
+  assert(strcmp(validation.field_path,
+                "packet.shadow.receiver.pcf_radius_texels") == 0);
+  shadow.receiver.pcf_radius_texels = 1.5f;
+
+  shadow.receiver.slope_bias_texels = NAN;
+  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+         VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
+  assert(strcmp(validation.field_path, "packet.shadow.receiver") == 0);
+  shadow.receiver.slope_bias_texels = 2.0f;
+
+  /* Above 0.5 the band would consume more than half a cascade's span and the
+     fade would reach back past the previous split. */
+  shadow.receiver.cascade_blend_fraction = 0.51f;
+  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+         VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
+  assert(strcmp(validation.field_path,
+                "packet.shadow.receiver.cascade_blend_fraction") == 0);
+  shadow.receiver.cascade_blend_fraction = 0.08f;
+
+  shadow.receiver.fade_end = shadow.receiver.fade_start - 1.0f;
+  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+         VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
+  assert(strcmp(validation.field_path, "packet.shadow.receiver.fade_end") == 0);
+  shadow.receiver.fade_end = 200.0f;
+
+  shadow.receiver.fade_end = 201.0f;
+  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+         VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
+  assert(strcmp(validation.field_path, "packet.shadow.receiver.fade_end") == 0);
+  shadow.receiver.fade_end = 200.0f;
+
+  /* A zero depth span is the receiver's bias divisor. Rejecting it here is why
+     the shader can divide unconditionally. */
+  shadow.cascades[0].split_near_far_texel_depth.w = 0.0f;
+  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+         VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
+  assert(strcmp(validation.field_path,
+                "packet.shadow.cascades.split_near_far_texel_depth") == 0);
+  shadow.cascades[0].split_near_far_texel_depth.w = 120.0f;
+
+  shadow.cascades[0].origin_inv_size_pad.x = NAN;
+  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+         VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
+  assert(strcmp(validation.field_path,
+                "packet.shadow.cascades.origin_inv_size_pad") == 0);
+  shadow.cascades[0].origin_inv_size_pad.x = 3.0f;
+
+  shadow.cascades[0].origin_inv_size_pad.z = 0.0f;
+  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+         VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
+  assert(strcmp(validation.field_path,
+                "packet.shadow.cascades.origin_inv_size_pad") == 0);
+  shadow.cascades[0].origin_inv_size_pad.z = 1.0f / 2048.0f;
+
+  shadow.cascades[0].split_near_far_texel_depth.y =
+      shadow.cascades[0].split_near_far_texel_depth.x;
+  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+         VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
+  assert(strcmp(validation.field_path,
+                "packet.shadow.cascades.split_near_far_texel_depth") == 0);
+}
+
+static void test_shadow_receiver_config_normalization(void) {
+  /* Normalization happens once at init so nothing downstream needs a guard.
+     A hostile configuration must come out of init already valid. */
+  VkrShadowConfig config = VKR_SHADOW_CONFIG_HIGH;
+  config.receiver_bias_texels = NAN;
+  config.receiver_slope_bias_texels = -1.0f;
+  config.normal_offset_texels = -INFINITY;
+  config.pcf_radius_texels = NAN;
+  config.pcf_sample_count = 7u;
+  config.cascade_blend_fraction = 12.0f;
+  config.shadow_distance_fade_range = NAN;
+
+  VkrShadowSystem system = {0};
+  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+  assert(system.config.receiver_bias_texels == 0.0f);
+  assert(system.config.receiver_slope_bias_texels == 0.0f);
+  assert(system.config.normal_offset_texels == 0.0f);
+  assert(system.config.pcf_radius_texels == 0.0f);
+  /* An unsupported tap count degrades to the one-tap kernel; it never reaches
+     the shader as an unvalidated index. */
+  assert(system.config.pcf_sample_count == 1u);
+  assert(system.config.cascade_blend_fraction == 0.5f);
+  assert(system.config.shadow_distance_fade_range == 0.0f);
+  vkr_shadow_system_shutdown(&system, test_frontend());
+
+  /* A fade range wider than the shadow distance would put fade_start behind the
+     camera and fade every visible shadow. */
+  config = VKR_SHADOW_CONFIG_HIGH;
+  config.max_shadow_distance = 50.0f;
+  config.shadow_distance_fade_range = 400.0f;
+  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+  assert(system.config.shadow_distance_fade_range == 50.0f);
+  vkr_shadow_system_shutdown(&system, test_frontend());
+
+  /* Every shipped preset must already satisfy packet validation. */
+  const VkrShadowConfig presets[] = {VKR_SHADOW_CONFIG_HIGH,
+                                     VKR_SHADOW_CONFIG_BALANCED};
+  for (uint32_t i = 0; i < ArrayCount(presets); ++i) {
+    assert(vkr_shadow_pcf_sample_count_supported(presets[i].pcf_sample_count));
+    assert(presets[i].cascade_blend_fraction >= 0.0f &&
+           presets[i].cascade_blend_fraction <= 0.5f);
+    assert(presets[i].shadow_distance_fade_range <=
+           presets[i].max_shadow_distance);
+  }
 }
 
 /* Mobility partition and generations (spec section 6.1-6.2). These exist to
@@ -473,6 +640,64 @@ test_retained_history_reuses_per_image_and_commits_only_on_submit(void) {
                                   VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
   vkr_shadow_system_commit_frame(&system, 19u);
   assert(system.cascade_history[1][0].last_submit_value == 19u);
+  vkr_shadow_system_shutdown(&system, test_frontend());
+}
+
+static void test_reused_cascade_publishes_its_rendered_receiver_data(void) {
+  /* A reused layer publishes the matrix it was rendered with. Its texel size,
+     origin, and depth span must come from that same committed fit: pairing the
+     rendered matrix with the current raw fit's divisors would misconvert every
+     texel-denominated bias for that cascade and read as a bias defect. */
+  VkrShadowSystem system = {0};
+  const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+  VkrCamera camera = test_camera();
+  VkrWorldPassPayload payload = retained_static_payload();
+  prime_retained_history(&system, &camera, 0u, &payload);
+
+  /* Move far enough that the raw fit differs from the committed one, but not so
+     far that reuse fails. */
+  camera.position.x += 0.05f;
+  update_for_reuse(&system, &camera);
+  VkrShadowFrameData frame = {0};
+  const VkrRetainedShadowToken valid = {
+      .resource_generation = 3u,
+      .valid_layer_mask = cascade_mask(&system),
+  };
+  vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == 0u);
+
+  for (uint32_t i = 0u; i < config.cascade_count; ++i) {
+    const VkrShadowCascadeHistory *history = &system.cascade_history[0][i];
+    assert(frame.reused[i] == 1u);
+    assert(MemCompare(&frame.view_projection[i],
+                      &history->rendered_view_projection, sizeof(Mat4)) == 0);
+    assert(frame.world_units_per_texel[i] ==
+           history->rendered_fit.world_units_per_texel);
+    /* The guarded fit is wider than the raw fit, so the published texel size
+       must not be the raw one. Otherwise this assertion could pass by
+       coincidence. */
+    assert(frame.world_units_per_texel[i] !=
+           system.cascades[i].world_units_per_texel);
+    assert(frame.light_space_depth_span[i] > 0.0f);
+    assert(frame.split_far[i] == system.cascades[i].split_far);
+    assert(frame.split_far[i] > frame.split_near[i]);
+  }
+
+  /* A rendered cascade publishes its own guard-banded fit instead. */
+  camera.position.x += 2000.0f;
+  update_for_reuse(&system, &camera);
+  vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == cascade_mask(&system));
+  for (uint32_t i = 0u; i < config.cascade_count; ++i) {
+    assert(frame.rendered[i] == 1u);
+    assert(
+        frame.world_units_per_texel[i] ==
+        system.pending_history.cascades[i].rendered_fit.world_units_per_texel);
+    assert(frame.light_space_depth_span[i] > 0.0f);
+  }
   vkr_shadow_system_shutdown(&system, test_frontend());
 }
 
@@ -741,6 +966,7 @@ bool32_t run_shadow_system_tests(void) {
   test_dynamic_overlap_and_publication_fail_closed();
   test_retained_history_signatures_and_invalidation_fail_closed();
   test_stale_dynamic_contents_render_once_after_caster_leaves();
+  test_reused_cascade_publishes_its_rendered_receiver_data();
   printf("  retained cascade reuse tests PASSED\n");
   printf("  Running test_frame_data_carries_only_consumed_fields...\n");
   test_frame_data_carries_only_consumed_fields();
@@ -748,6 +974,12 @@ bool32_t run_shadow_system_tests(void) {
   printf("  Running test_shadow_raster_bias_packet_validation...\n");
   test_shadow_raster_bias_packet_validation();
   printf("  test_shadow_raster_bias_packet_validation PASSED\n");
+  printf("  Running test_shadow_receiver_packet_validation...\n");
+  test_shadow_receiver_packet_validation();
+  printf("  test_shadow_receiver_packet_validation PASSED\n");
+  printf("  Running test_shadow_receiver_config_normalization...\n");
+  test_shadow_receiver_config_normalization();
+  printf("  test_shadow_receiver_config_normalization PASSED\n");
   printf("--- Shadow System Tests Completed ---\n");
   return true_v;
 }

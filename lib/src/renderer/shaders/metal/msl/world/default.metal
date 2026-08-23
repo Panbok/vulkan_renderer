@@ -67,7 +67,8 @@ fragment float4 vkr_metal_packet_opaque_fragment(
     return float4(metallic, roughness, max(f0.x, max(f0.y, f0.z)), 1.0);
   if (frame->shadow_debug_mode != 0u) {
     VkrMetalPacketShadowSample shadow_sample =
-        vkr_metal_packet_directional_shadow_sample(frame, input.world_position);
+        vkr_metal_packet_directional_shadow_sample(frame, input.world_position,
+                                                   normal);
     return float4(vkr_metal_packet_shadow_debug_color(frame->shadow_debug_mode,
                                                       shadow_sample),
                   1.0);
@@ -77,7 +78,8 @@ fragment float4 vkr_metal_packet_opaque_fragment(
   float3 analytic_specular = 0.0;
   if (frame->directional_direction_enabled.w > 0.5) {
     VkrMetalPacketShadowSample shadow_sample =
-        vkr_metal_packet_directional_shadow_sample(frame, input.world_position);
+        vkr_metal_packet_directional_shadow_sample(frame, input.world_position,
+                                                   normal);
     VkrMetalPacketDirectResult direct = vkr_metal_packet_direct(
         normal, view, normalize(-frame->directional_direction_enabled.xyz),
         frame->directional_color_intensity.rgb *

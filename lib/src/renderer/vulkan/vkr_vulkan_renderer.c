@@ -65,7 +65,9 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
        !config->image_count) ||
       config->image_count > VKR_VULKAN_TARGET_IMAGE_MAX ||
       !config->sampled_image_capacity || !config->storage_image_capacity ||
-      !config->sampler_capacity || !config->geometry_capacity ||
+      /* Slot 0 is the sentinel and slot 1 is the permanent shadow comparison
+         sampler. Both must fit before descriptor publication begins. */
+      config->sampler_capacity < 2u || !config->geometry_capacity ||
       !config->texture_capacity ||
       /* Every published texture also takes one sampled descriptor slot, so a
          texture ID space wider than the heap could never be fully resident. */
@@ -1502,6 +1504,9 @@ void vkr_vulkan_renderer_destroy(VkrVulkanRenderer *renderer) {
     }
     if (renderer->sentinel_sampler) {
       vkDestroySampler(device, renderer->sentinel_sampler, NULL);
+    }
+    if (renderer->shadow_comparison_sampler) {
+      vkDestroySampler(device, renderer->shadow_comparison_sampler, NULL);
     }
     for (uint32_t i = 0; i < renderer->config.sampler_capacity; ++i) {
       if (renderer->published_samplers &&

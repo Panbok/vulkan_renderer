@@ -39,7 +39,8 @@ struct VkrVulkanMaterial
 struct VkrVulkanShadowCascade
 {
     float4x4 light_view_projection;
-    float4 split_depth;
+    float4 split_near_far_texel_depth;
+    float4 origin_inv_size_pad;
 };
 
 struct VkrVulkanIblProbe
@@ -91,8 +92,17 @@ struct VkrVulkanPacketFrameRoot
     uint2 shadow_address_padding;
     float4x4 view;
     uint shadow_cascade_count;
-    float shadow_bias;
-    uint2 shadow_reserved;
+    // Receiver quality. Scalar to match the host layout; a float4 here would be
+    // 16-byte aligned and move every following field.
+    uint shadow_pcf_sample_count;
+    float shadow_receiver_bias_texels;
+    float shadow_slope_bias_texels;
+    float shadow_normal_offset_texels;
+    float shadow_pcf_radius_texels;
+    float shadow_cascade_blend_fraction;
+    float shadow_fade_start;
+    float shadow_fade_end;
+    uint shadow_comparison_sampler;
     VkrVulkanIblProbe* ibl_probes;
     uint ibl_probe_count;
     uint ibl_probe_reserved;
@@ -156,8 +166,17 @@ struct VkrVulkanPacketUtilityRoot
     uint2 shadow_address_padding;
     float4x4 view;
     uint shadow_cascade_count;
-    float shadow_bias;
-    uint2 shadow_reserved;
+    // Receiver quality. Scalar to match the host layout; a float4 here would be
+    // 16-byte aligned and move every following field.
+    uint shadow_pcf_sample_count;
+    float shadow_receiver_bias_texels;
+    float shadow_slope_bias_texels;
+    float shadow_normal_offset_texels;
+    float shadow_pcf_radius_texels;
+    float shadow_cascade_blend_fraction;
+    float shadow_fade_start;
+    float shadow_fade_end;
+    uint shadow_comparison_sampler;
     VkrVulkanIblProbe* ibl_probes;
     uint ibl_probe_count;
     uint ibl_probe_reserved;
@@ -212,7 +231,14 @@ struct VkrVulkanTextOutput
 [[vk::binding(0, 0)]] Texture2D<float> g_depth_textures[];
 [[vk::binding(0, 0)]] TextureCube<float4> g_cube_textures[];
 [[vk::binding(0, 0)]] Texture2DArray<float4> g_array_textures[];
+// Scalar-typed alias of the same sampled-image heap. SampleCmpLevelZero is only
+// defined on a single-channel texture, and the shadow array is D32.
+[[vk::binding(0, 0)]] Texture2DArray<float> g_depth_array_textures[];
 [[vk::binding(0, 1)]] SamplerState g_samplers[];
+// Aliases the same sampler heap by type, exactly as the texture arrays alias
+// binding (0, 0). A comparison sampler is still a VkSampler descriptor; only
+// the shader-side interpretation differs.
+[[vk::binding(0, 1)]] SamplerComparisonState g_comparison_samplers[];
 [[vk::binding(1, 0)]] RWTexture2D<float4> g_storage_2d[];
 [[vk::binding(1, 0)]] RWTexture2D<float2> g_storage_float2_2d[];
 [[vk::binding(1, 0)]] RWTexture2D<uint> g_storage_uint_2d[];

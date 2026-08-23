@@ -1178,7 +1178,7 @@ transmission because its fidelity decision is unresolved, P21 is not complete
 and the renderer must not be described as forward-retired.
 
 P21 satisfies this contract in the production tree, with the publication-
-boundary repair recorded below. Packet version 13 carries
+boundary repair recorded below. Packet version 14 carries
 GPU candidate streams plus feature-local ordinary blend and text payloads; CPU
 opaque, transmission, shadow, and picking-mesh draw lists are absent. The main
 graph, parser, backend executors, pipelines, shaders, metrics, and harness cases

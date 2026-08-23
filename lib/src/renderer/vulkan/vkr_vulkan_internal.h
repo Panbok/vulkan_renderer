@@ -376,9 +376,11 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanIblRoot {
   float32_t roughness;
 } VkrVulkanIblRoot;
 
+/** Mirrors VkrShadowCascadePacketData; see vkr_render_packet.h for units. */
 typedef struct VKR_SIMD_ALIGN VkrVulkanPacketShadowCascade {
   Mat4 light_view_projection;
-  Vec4 split_depth;
+  Vec4 split_near_far_texel_depth;
+  Vec4 origin_inv_size_pad;
 } VkrVulkanPacketShadowCascade;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanPacketIblProbe {
@@ -429,8 +431,19 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketFrameRoot {
   uint64_t shadow_cascades;
   Mat4 view;
   uint32_t shadow_cascade_count;
-  float32_t shadow_bias;
-  uint32_t shadow_reserved[2];
+  /* Receiver quality, mirroring VkrShadowReceiverPacketData. Scalars rather
+     than Vec4s so the layout matches the Metal root and the Slang mirror
+     without padding holes. */
+  uint32_t shadow_pcf_sample_count;
+  float32_t shadow_receiver_bias_texels;
+  float32_t shadow_slope_bias_texels;
+  float32_t shadow_normal_offset_texels;
+  float32_t shadow_pcf_radius_texels;
+  float32_t shadow_cascade_blend_fraction;
+  float32_t shadow_fade_start;
+  float32_t shadow_fade_end;
+  /** Comparison-sampler heap slot; `shadow_sampler` remains the sentinel. */
+  uint32_t shadow_comparison_sampler;
   uint64_t ibl_probes;
   uint32_t ibl_probe_count;
   uint32_t ibl_probe_reserved;
@@ -492,8 +505,19 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketUtilityRoot {
   uint64_t shadow_cascades;
   Mat4 view;
   uint32_t shadow_cascade_count;
-  float32_t shadow_bias;
-  uint32_t shadow_reserved[2];
+  /* Receiver quality, mirroring VkrShadowReceiverPacketData. Scalars rather
+     than Vec4s so the layout matches the Metal root and the Slang mirror
+     without padding holes. */
+  uint32_t shadow_pcf_sample_count;
+  float32_t shadow_receiver_bias_texels;
+  float32_t shadow_slope_bias_texels;
+  float32_t shadow_normal_offset_texels;
+  float32_t shadow_pcf_radius_texels;
+  float32_t shadow_cascade_blend_fraction;
+  float32_t shadow_fade_start;
+  float32_t shadow_fade_end;
+  /** Comparison-sampler heap slot; `shadow_sampler` remains the sentinel. */
+  uint32_t shadow_comparison_sampler;
   uint64_t ibl_probes;
   uint32_t ibl_probe_count;
   uint32_t ibl_probe_reserved;
@@ -543,11 +567,17 @@ _Static_assert(offsetof(VkrVulkanTransmissionRoot, view_projection) == 80u,
 _Static_assert(sizeof(VkrVulkanTransmissionCoverageRoot) == 32u,
                "Deferred transmission-coverage root ABI drift");
 _Static_assert(sizeof(VkrVulkanIblRoot) == 32u, "IBL-root ABI drift");
-_Static_assert(sizeof(VkrVulkanPacketFrameRoot) == 432u,
+_Static_assert(sizeof(VkrVulkanPacketShadowCascade) == 96u,
+               "Packet shadow-cascade ABI size drift");
+_Static_assert(sizeof(VkrVulkanPacketFrameRoot) == 464u,
                "Packet frame-root ABI size drift");
+_Static_assert(offsetof(VkrVulkanPacketFrameRoot, shadow_cascade_count) == 400u,
+               "Packet frame-root receiver block moved");
+_Static_assert(offsetof(VkrVulkanPacketFrameRoot, ibl_probes) == 440u,
+               "Packet frame-root receiver block changed size");
 _Static_assert(sizeof(VkrVulkanPacketDrawRoot) == 48u,
                "Packet draw-root ABI size drift");
-_Static_assert(sizeof(VkrVulkanPacketUtilityRoot) == 512u,
+_Static_assert(sizeof(VkrVulkanPacketUtilityRoot) == 544u,
                "Packet utility-root ABI size drift");
 
 typedef struct VkrVulkanAllocation {
@@ -973,6 +1003,11 @@ struct VkrVulkanRenderer {
   VkrVulkanBuffer materials;
   VkrVulkanImage sentinel_image;
   VkSampler sentinel_sampler;
+  /** Linear clamp, LESS_OR_EQUAL comparison sampler for the CSM receiver.
+      Published once beside the sentinel and never retired, so its heap slot is
+      stable for the device's lifetime. */
+  VkSampler shadow_comparison_sampler;
+  uint32_t shadow_comparison_sampler_slot;
   VkPipelineLayout pipeline_layout;
   VkPipelineCache pipeline_cache;
   char pipeline_cache_path[1024];

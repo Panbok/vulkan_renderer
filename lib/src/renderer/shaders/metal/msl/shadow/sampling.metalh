@@ -1,45 +1,183 @@
 struct VkrMetalPacketShadowSample {
   float factor;
-  float receiver_depth;
   float map_depth;
   uint cascade;
   bool valid;
 };
 
-VkrMetalPacketShadowSample vkr_metal_packet_directional_shadow_sample(
-    constant VkrMetalPacketFrameRoot *root, float3 world_position) {
-  if (root->shadow_cascade_count == 0u || root->shadow_cascades == nullptr)
-    return {1.0, 1.0, 1.0, 0u, false};
-  float view_depth = abs((root->view * float4(world_position, 1.0)).z);
-  uint cascade = 0u;
-  for (uint i = 0u; i + 1u < root->shadow_cascade_count; ++i) {
-    if (view_depth > root->shadow_cascades[i].split_depth.x)
-      cascade = i + 1u;
+// Each tap already costs a hardware bilinear 2x2 comparison, so a distant
+// cascade degrades into softness rather than into crawling staircase noise.
+constexpr sampler vkr_metal_shadow_compare_sampler(coord::normalized,
+                                                   address::clamp_to_edge,
+                                                   filter::linear,
+                                                   compare_func::less_equal);
+// Debug readout only; the filter path never uses it. Nearest keeps the reported
+// value a real stored texel rather than an interpolation of four.
+constexpr sampler vkr_metal_shadow_raw_sampler(coord::normalized,
+                                               address::clamp_to_edge,
+                                               filter::nearest);
+
+/**
+ * Stable rotation for the Poisson kernel.
+ *
+ * The cell index is built in the cascade's light-space texel grid, not in
+ * screen space, so it does not swim when the camera moves: the fit snaps in
+ * whole texels and `light_space_origin` cancels the remaining translation. A
+ * screen-space or world-position hash would reintroduce the crawling the
+ * rotation exists to hide.
+ */
+static float2 vkr_metal_shadow_kernel_rotation(float2 uv, float2 origin_texels,
+                                               float map_size) {
+  // `origin - uv * map_size`, not the sum. The fit anchor appears in both terms
+  // with the same sign, so subtracting cancels it and leaves the world point's
+  // own light-basis projection in texels. Adding would double it, and the cell
+  // would jump every time the cascade re-anchors -- the exact swimming this
+  // rotation exists to prevent.
+  int2 cell = int2(floor(origin_texels - uv * map_size));
+  uint hash = (uint(cell.x) * 73856093u) ^ (uint(cell.y) * 19349663u);
+  float angle = float(hash & 1023u) * (6.28318530718 / 1024.0);
+  return float2(cos(angle), sin(angle));
+}
+
+/**
+ * Accumulates `count` rotated taps and returns the mean visibility.
+ *
+ * Taps read a prefix of the shared progressive table, so the caller's tap count
+ * is the only thing that changes between kernel sizes.
+ */
+static float
+vkr_metal_shadow_kernel(depth2d_array<float, access::sample> shadow_map,
+                        uint cascade, float2 uv, float reference,
+                        float2 rotation, float2 tap_scale, uint first,
+                        uint count) {
+  float sum = 0.0;
+  for (uint i = first; i < count; ++i) {
+    float2 tap = vkr_shadow_poisson[i];
+    float2 rotated = float2(tap.x * rotation.x - tap.y * rotation.y,
+                            tap.x * rotation.y + tap.y * rotation.x);
+    sum +=
+        shadow_map.sample_compare(vkr_metal_shadow_compare_sampler,
+                                  uv + rotated * tap_scale, cascade, reference);
   }
-  float4 clip = root->shadow_cascades[cascade].light_view_projection *
-                float4(world_position, 1.0);
+  return sum;
+}
+
+/** One cascade's visibility. `valid` is false when the receiver misses it. */
+static VkrMetalPacketShadowSample
+vkr_metal_packet_shadow_cascade_sample(constant VkrMetalPacketFrameRoot *root,
+                                       uint cascade, float3 world_position,
+                                       float3 normal, float n_dot_l) {
+  device const VkrMetalPacketShadowCascade &data =
+      root->shadow_cascades[cascade];
+  float texel = data.split_near_far_texel_depth.z;
+  float depth_span = data.split_near_far_texel_depth.w;
+
+  // Normal offset is a world-space push along the surface normal applied before
+  // projection, so it moves the sample off the surface instead of biasing the
+  // comparison. It costs nothing at grazing angles where depth bias is weakest.
+  float3 offset_position =
+      world_position + normal * (root->shadow_normal_offset_texels * texel);
+  float4 clip = data.light_view_projection * float4(offset_position, 1.0);
   if (abs(clip.w) <= 1e-6)
-    return {1.0, 1.0, 1.0, cascade, false};
+    return {1.0, 1.0, cascade, false};
   float3 projected = clip.xyz / clip.w;
   float2 uv = projected.xy * 0.5 + 0.5;
   if (any(uv < 0.0) || any(uv > 1.0) || projected.z < 0.0 || projected.z > 1.0)
-    return {1.0, projected.z, 1.0, cascade, false};
-  constexpr sampler shadow_sampler(coord::normalized, address::clamp_to_edge,
-                                   filter::nearest);
-  float shadow_depth = root->shadow_map.sample(shadow_sampler, uv, cascade).r;
-  float factor =
-      projected.z - root->shadow_bias <= shadow_depth ? 1.0 : 0.0;
-  return {factor, projected.z, shadow_depth, cascade, true};
+    return {1.0, 1.0, cascade, false};
+
+  // Both biases are configured in texels and converted through *this* cascade's
+  // own footprint and fitted depth span. That is what makes one configured
+  // value mean the same world distance in cascade 0 and cascade 3, whose depth
+  // ranges differ by orders of magnitude.
+  float slope = saturate(1.0 - n_dot_l);
+  float bias_texels = root->shadow_receiver_bias_texels +
+                      root->shadow_slope_bias_texels * slope;
+  float reference = projected.z - bias_texels * texel / depth_span;
+
+  float inv_size = data.origin_inv_size_pad.z;
+  float map_size = 1.0 / inv_size;
+  float2 rotation = vkr_metal_shadow_kernel_rotation(
+      uv, data.origin_inv_size_pad.xy / texel, map_size);
+  float2 tap_scale = root->shadow_pcf_radius_texels * inv_size;
+  uint count = root->shadow_pcf_sample_count;
+
+  float factor;
+  if (count >= 16u) {
+    // Fully lit and fully shadowed regions are the common case and resolve in
+    // nine taps. Only the penumbra pays for the full kernel.
+    float probe = vkr_metal_shadow_kernel(
+        root->shadow_map, cascade, uv, reference, rotation, tap_scale, 0u, 9u);
+    if (probe <= 0.0 || probe >= 9.0) {
+      factor = probe * (1.0 / 9.0);
+    } else {
+      factor = (probe + vkr_metal_shadow_kernel(root->shadow_map, cascade, uv,
+                                                reference, rotation, tap_scale,
+                                                9u, count)) /
+               float(count);
+    }
+  } else {
+    factor = vkr_metal_shadow_kernel(root->shadow_map, cascade, uv, reference,
+                                     rotation, tap_scale, 0u, count) /
+             float(count);
+  }
+
+  // Only the raw-map debug view consumes stored depth. This uniform branch
+  // avoids an otherwise unused texture read in normal shading and in the other
+  // debug modes.
+  float map_depth =
+      root->shadow_debug_mode == 3u
+          ? root->shadow_map.sample(vkr_metal_shadow_raw_sampler, uv, cascade)
+          : 1.0;
+  return {factor, map_depth, cascade, true};
 }
 
-float vkr_metal_packet_directional_shadow(
-    constant VkrMetalPacketFrameRoot *root, float3 world_position) {
-  return vkr_metal_packet_directional_shadow_sample(root, world_position)
-      .factor;
+VkrMetalPacketShadowSample vkr_metal_packet_directional_shadow_sample(
+    constant VkrMetalPacketFrameRoot *root, float3 world_position,
+    float3 normal) {
+  if (root->shadow_cascade_count == 0u || root->shadow_cascades == nullptr)
+    return {1.0, 1.0, 0u, false};
+  float view_depth = abs((root->view * float4(world_position, 1.0)).z);
+
+  // Fade to unshadowed before the last split so the shadowed range ends in a
+  // gradient rather than on a hard terminating edge.
+  float fade_span = root->shadow_fade_end - root->shadow_fade_start;
+  float fade = fade_span > 0.0
+                   ? saturate((root->shadow_fade_end - view_depth) / fade_span)
+                   : 1.0;
+  if (fade <= 0.0)
+    return {1.0, 1.0, root->shadow_cascade_count - 1u, false};
+
+  uint cascade = 0u;
+  for (uint i = 0u; i + 1u < root->shadow_cascade_count; ++i) {
+    if (view_depth > root->shadow_cascades[i].split_near_far_texel_depth.y)
+      cascade = i + 1u;
+  }
+
+  float3 light = normalize(-root->directional_direction_enabled.xyz);
+  float n_dot_l = dot(normal, light);
+  VkrMetalPacketShadowSample sample = vkr_metal_packet_shadow_cascade_sample(
+      root, cascade, world_position, normal, n_dot_l);
+
+  // Cross-fade over the last `blend_fraction` of this cascade's span. Outside
+  // the band exactly one cascade is sampled, so the seam cost is confined to
+  // the band instead of being paid everywhere.
+  if (cascade + 1u < root->shadow_cascade_count) {
+    float4 slice = root->shadow_cascades[cascade].split_near_far_texel_depth;
+    float band = (slice.y - slice.x) * root->shadow_cascade_blend_fraction;
+    if (band > 0.0 && view_depth > slice.y - band) {
+      float t = saturate((view_depth - (slice.y - band)) / band);
+      VkrMetalPacketShadowSample next = vkr_metal_packet_shadow_cascade_sample(
+          root, cascade + 1u, world_position, normal, n_dot_l);
+      sample.factor = mix(sample.factor, next.factor, t);
+    }
+  }
+
+  sample.factor = mix(1.0, sample.factor, fade);
+  return sample;
 }
 
-float3 vkr_metal_packet_shadow_debug_color(
-    uint mode, VkrMetalPacketShadowSample sample) {
+float3 vkr_metal_packet_shadow_debug_color(uint mode,
+                                           VkrMetalPacketShadowSample sample) {
   if (mode == 1u) {
     switch (sample.cascade & 3u) {
     case 0u:

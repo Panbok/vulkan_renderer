@@ -2363,12 +2363,77 @@ vkr_renderer_validate_packet(const VkrRenderPacket *packet,
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.shadow.cascade_count",
                         "must be within the supported cascade range");
-    const uint32_t cascade_mask =
-        (UINT32_C(1) << shadow->cascade_count) - 1u;
+    const uint32_t cascade_mask = (UINT32_C(1) << shadow->cascade_count) - 1u;
     if ((shadow->cascade_render_mask & ~cascade_mask) != 0u)
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.shadow.cascade_render_mask",
                         "contains a bit outside cascade_count");
+    /* The receiver hot path indexes the Poisson table and divides by the
+       per-cascade depth span with no recovery branch, so every value it trusts
+       is proven here instead. */
+    const VkrShadowReceiverPacketData *receiver = &shadow->receiver;
+    if (!vkr_shadow_pcf_sample_count_supported(receiver->pcf_sample_count))
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.shadow.receiver.pcf_sample_count",
+                        "must be one of the supported tap counts");
+    if (!isfinite(receiver->pcf_radius_texels) ||
+        receiver->pcf_radius_texels < 0.0f)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.shadow.receiver.pcf_radius_texels",
+                        "must be finite and non-negative");
+    if (!isfinite(receiver->receiver_bias_texels) ||
+        receiver->receiver_bias_texels < 0.0f ||
+        !isfinite(receiver->slope_bias_texels) ||
+        receiver->slope_bias_texels < 0.0f ||
+        !isfinite(receiver->normal_offset_texels) ||
+        receiver->normal_offset_texels < 0.0f)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.shadow.receiver",
+                        "bias texel counts must be finite and non-negative");
+    if (!isfinite(receiver->cascade_blend_fraction) ||
+        receiver->cascade_blend_fraction < 0.0f ||
+        receiver->cascade_blend_fraction > 0.5f)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.shadow.receiver.cascade_blend_fraction",
+                        "must be finite and within [0, 0.5]");
+    if (!isfinite(receiver->fade_start) || receiver->fade_start < 0.0f)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.shadow.receiver.fade_start",
+                        "must be finite and non-negative");
+    if (!isfinite(receiver->fade_end) ||
+        receiver->fade_end < receiver->fade_start)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.shadow.receiver.fade_end",
+                        "must be finite and not precede fade_start");
+    for (uint32_t i = 0; i < shadow->cascade_count; ++i) {
+      const Vec4 slice = shadow->cascades[i].split_near_far_texel_depth;
+      if (!isfinite(slice.x) || !isfinite(slice.y) || slice.y <= slice.x)
+        VKR_REJECT_PACKET(
+            VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+            "packet.shadow.cascades.split_near_far_texel_depth",
+            "cascade slice bounds must be finite and strictly ordered");
+      /* Both must be strictly positive: the receiver divides the light-space
+         origin by the texel size to build its rotation cell, and divides the
+         texel-denominated bias by the depth span. */
+      if (!isfinite(slice.z) || slice.z <= 0.0f || !isfinite(slice.w) ||
+          slice.w <= 0.0f)
+        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                          "packet.shadow.cascades.split_near_far_texel_depth",
+                          "texel size and depth span must be positive");
+      const Vec4 origin = shadow->cascades[i].origin_inv_size_pad;
+      if (!isfinite(origin.x) || !isfinite(origin.y) || !isfinite(origin.z) ||
+          origin.z <= 0.0f)
+        VKR_REJECT_PACKET(
+            VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+            "packet.shadow.cascades.origin_inv_size_pad",
+            "light-space origin must be finite and inverse map size positive");
+    }
+    const float32_t final_split = shadow->cascades[shadow->cascade_count - 1u]
+                                      .split_near_far_texel_depth.y;
+    if (receiver->fade_end > final_split)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.shadow.receiver.fade_end",
+                        "must not extend beyond the final cascade split");
     const VkrShadowConfigOverride *bias = shadow->config_override;
     if (bias) {
       if (!isfinite(bias->depth_bias_constant) ||

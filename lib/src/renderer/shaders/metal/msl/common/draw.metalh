@@ -82,13 +82,24 @@ struct VkrMetalPacketFrameRoot {
   uint point_light_reserved_0;
   uint point_light_reserved_1;
   uint point_light_reserved_2;
-  texture2d_array<float, access::sample> shadow_map;
+  // depth2d_array, not texture2d_array: sample_compare is only available on a
+  // depth texture, and the underlying MTLTexture is already D32Float.
+  depth2d_array<float, access::sample> shadow_map;
   device struct VkrMetalPacketShadowCascade *shadow_cascades;
   float4x4 view;
   uint shadow_cascade_count;
-  float shadow_bias;
-  uint shadow_reserved_0;
-  uint shadow_reserved_1;
+  // Receiver quality. See VkrShadowReceiverPacketData for units; every bias is
+  // in shadow-map texels and is converted through the owning cascade's own
+  // texel size and depth span.
+  uint shadow_pcf_sample_count;
+  float shadow_receiver_bias_texels;
+  float shadow_slope_bias_texels;
+  float shadow_normal_offset_texels;
+  float shadow_pcf_radius_texels;
+  float shadow_cascade_blend_fraction;
+  float shadow_fade_start;
+  float shadow_fade_end;
+  uint shadow_receiver_reserved;
   texture2d<float, access::sample> transmission_source;
   device VkrMetalPacketIblProbe *ibl_probes;
   uint ibl_probe_count;
@@ -144,7 +155,8 @@ struct VkrMetalPacketDrawRoot {
 
 struct VkrMetalPacketShadowCascade {
   float4x4 light_view_projection;
-  float4 split_depth;
+  float4 split_near_far_texel_depth;
+  float4 origin_inv_size_pad;
 };
 
 struct VkrMetalPacketVertexOutput {
@@ -164,11 +176,11 @@ static_assert(sizeof(VkrMetalPacketInstance) == 80,
               "VkrInstanceDataGPU Metal ABI must remain 80 bytes");
 static_assert(sizeof(VkrMetalPacketMaterial) == 176,
               "Metal material row ABI must remain 176 bytes");
-static_assert(sizeof(VkrMetalPacketFrameRoot) == 432,
-              "Metal packet frame root ABI must remain 432 bytes");
+static_assert(sizeof(VkrMetalPacketFrameRoot) == 448,
+              "Metal packet frame root ABI must remain 448 bytes");
 static_assert(sizeof(VkrMetalPacketDrawRoot) == 48,
               "Metal packet draw root ABI must remain 48 bytes");
 static_assert(sizeof(VkrMetalPacketIblProbe) == 64,
               "Metal packet IBL probe ABI must remain 64 bytes");
-static_assert(sizeof(VkrMetalPacketShadowCascade) == 80,
-              "Metal packet shadow cascade ABI must remain 80 bytes");
+static_assert(sizeof(VkrMetalPacketShadowCascade) == 96,
+              "Metal packet shadow cascade ABI must remain 96 bytes");

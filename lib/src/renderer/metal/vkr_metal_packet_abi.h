@@ -51,8 +51,19 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketFrameRoot {
   uint64_t shadow_cascades;
   Mat4 view;
   uint32_t shadow_cascade_count;
-  float32_t shadow_bias;
-  uint32_t shadow_reserved[2];
+  /* Receiver quality, mirroring VkrShadowReceiverPacketData. Contiguous and
+     scalar rather than packed into Vec4s: Metal aligns a float4 to 16 bytes and
+     would open padding holes between the frame root's neighbouring handles. */
+  uint32_t shadow_pcf_sample_count;
+  float32_t shadow_receiver_bias_texels;
+  float32_t shadow_slope_bias_texels;
+  float32_t shadow_normal_offset_texels;
+  float32_t shadow_pcf_radius_texels;
+  float32_t shadow_cascade_blend_fraction;
+  float32_t shadow_fade_start;
+  float32_t shadow_fade_end;
+  /** Restores 8-byte alignment for the resource handle that follows. */
+  uint32_t shadow_receiver_reserved;
   uint64_t transmission_texture_id;
   uint64_t ibl_probes;
   uint32_t ibl_probe_count;
@@ -297,9 +308,11 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketIblProbe {
   Vec4 intensity_box;
 } VkrMetalPacketIblProbe;
 
+/** Mirrors VkrShadowCascadePacketData; see vkr_render_packet.h for units. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketShadowCascade {
   Mat4 light_view_projection;
-  Vec4 split_depth;
+  Vec4 split_near_far_texel_depth;
+  Vec4 origin_inv_size_pad;
 } VkrMetalPacketShadowCascade;
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketTonemapRoot {

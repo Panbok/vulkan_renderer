@@ -26,7 +26,20 @@ static void test_packet_frame_constants(void) {
       .point_light_count = 3u,
       .point_light_grid = &grid,
   };
-  const VkrShadowPassPayload shadow = {.cascade_count = 4u};
+  const VkrShadowPassPayload shadow = {
+      .cascade_count = 4u,
+      .receiver =
+          {
+              .receiver_bias_texels = 1.0f,
+              .slope_bias_texels = 2.0f,
+              .normal_offset_texels = 0.5f,
+              .pcf_radius_texels = 1.5f,
+              .pcf_sample_count = 16u,
+              .cascade_blend_fraction = 0.08f,
+              .fade_start = 180.0f,
+              .fade_end = 200.0f,
+          },
+  };
   Mat4 view = mat4_identity();
   view.elements[12] = 13.0f;
   const VkrRenderPacket packet = {
@@ -67,8 +80,11 @@ static void test_packet_frame_constants(void) {
   assert(constants.point_light_count == 3u && constants.render_mode == 17u &&
          constants.shadow_debug_mode == 3u &&
          constants.prefilter_mip_count == VKR_IBL_PREFILTER_MIP_COUNT &&
-         constants.shadow_cascade_count == 4u &&
-         constants.shadow_bias == 0.0001f);
+         constants.shadow_cascade_count == 4u);
+  /* The receiver block is forwarded verbatim: normalization is the shadow
+     system's job at its cold boundary, not this derivation's. */
+  assert(MemCompare(&constants.shadow_receiver, &shadow.receiver,
+                    sizeof(shadow.receiver)) == 0);
   assert(MemCompare(&constants.view, &view, sizeof(view)) == 0);
 
   const VkrRenderPacket unlit = {0};
@@ -78,6 +94,10 @@ static void test_packet_frame_constants(void) {
          defaults.ibl_controls.z == 1.0f && defaults.ibl_controls.w == 1.0f);
   assert(defaults.ambient_color.w == 1.0f && defaults.point_light_count == 0u &&
          defaults.shadow_debug_mode == 0u);
+  /* No shadow payload leaves the block zeroed, and a zero tap count is the
+     receiver's own "no cascades" signal. */
+  assert(defaults.shadow_cascade_count == 0u &&
+         defaults.shadow_receiver.pcf_sample_count == 0u);
   printf("  test_packet_frame_constants PASSED\n");
 }
 

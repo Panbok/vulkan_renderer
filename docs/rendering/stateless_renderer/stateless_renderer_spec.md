@@ -230,6 +230,12 @@ typedef struct VkrWorldPassPayload {
 
 The shadow pass payload provides cascade matrices, draw lists, and optional config overrides. The renderer's `VkrShadowSystem` owns shadow map resources and produces `VkrShadowFrameData` for shader binding.
 
+**Superseded.** The shipped payload replaced the parallel matrix/split arrays
+with a per-cascade `VkrShadowCascadePacketData` block and a shared
+`VkrShadowReceiverPacketData` block, and the CPU draw lists below were removed
+by ADR-028 P21. `lib/src/renderer/vkr_render_packet.h` is the implementation
+authority; the sketch below is the original design.
+
 ```c
 typedef struct VkrShadowPassPayload {
   // Cascade matrices computed by app from VkrShadowSystem state

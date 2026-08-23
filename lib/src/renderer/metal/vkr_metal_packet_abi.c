@@ -104,14 +104,29 @@ vkr_global const VkrMetalPacketAbiField vkr_frame_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, view, "view", 320),
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, shadow_cascade_count,
                   "shadow_cascade_count", 384),
-    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, shadow_bias, "shadow_bias", 388),
-    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, transmission_texture_id,
-                  "transmission_source", 400),
-    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, ibl_probes, "ibl_probes", 408),
-    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, ibl_probe_count, "ibl_probe_count",
+    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, shadow_pcf_sample_count,
+                  "shadow_pcf_sample_count", 388),
+    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, shadow_receiver_bias_texels,
+                  "shadow_receiver_bias_texels", 392),
+    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, shadow_slope_bias_texels,
+                  "shadow_slope_bias_texels", 396),
+    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, shadow_normal_offset_texels,
+                  "shadow_normal_offset_texels", 400),
+    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, shadow_pcf_radius_texels,
+                  "shadow_pcf_radius_texels", 404),
+    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, shadow_cascade_blend_fraction,
+                  "shadow_cascade_blend_fraction", 408),
+    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, shadow_fade_start,
+                  "shadow_fade_start", 412),
+    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, shadow_fade_end, "shadow_fade_end",
                   416),
+    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, transmission_texture_id,
+                  "transmission_source", 424),
+    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, ibl_probes, "ibl_probes", 432),
+    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, ibl_probe_count, "ibl_probe_count",
+                  440),
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, ibl_probe_reserved,
-                  "ibl_probe_reserved", 420),
+                  "ibl_probe_reserved", 444),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_ibl_probe_fields[] = {
@@ -126,7 +141,10 @@ vkr_global const VkrMetalPacketAbiField vkr_ibl_probe_fields[] = {
 vkr_global const VkrMetalPacketAbiField vkr_shadow_cascade_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketShadowCascade, light_view_projection,
                   "light_view_projection", 0),
-    VKR_ABI_FIELD(VkrMetalPacketShadowCascade, split_depth, "split_depth", 64),
+    VKR_ABI_FIELD(VkrMetalPacketShadowCascade, split_near_far_texel_depth,
+                  "split_near_far_texel_depth", 64),
+    VKR_ABI_FIELD(VkrMetalPacketShadowCascade, origin_inv_size_pad,
+                  "origin_inv_size_pad", 80),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_tonemap_root_fields[] = {
@@ -443,12 +461,12 @@ vkr_global const VkrMetalPacketAbiRecord
                            16, vkr_draw_root_fields),
         [VKR_METAL_PACKET_ABI_FRAME_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketFrameRoot, "VkrMetalPacketFrameRoot",
-                           432, 16, vkr_frame_root_fields),
+                           448, 16, vkr_frame_root_fields),
         [VKR_METAL_PACKET_ABI_IBL_PROBE] =
             VKR_ABI_RECORD(VkrMetalPacketIblProbe, "VkrMetalPacketIblProbe", 64,
                            16, vkr_ibl_probe_fields),
         [VKR_METAL_PACKET_ABI_SHADOW_CASCADE] = VKR_ABI_RECORD(
-            VkrMetalPacketShadowCascade, "VkrMetalPacketShadowCascade", 80, 16,
+            VkrMetalPacketShadowCascade, "VkrMetalPacketShadowCascade", 96, 16,
             vkr_shadow_cascade_fields),
         [VKR_METAL_PACKET_ABI_TONEMAP_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketTonemapRoot, "VkrMetalPacketTonemapRoot", 32, 16,

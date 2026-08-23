@@ -90,7 +90,20 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
       .shadow_cascades = upload->shadow_cascades_gpu,
       .view = frame_constants.view,
       .shadow_cascade_count = frame_constants.shadow_cascade_count,
-      .shadow_bias = frame_constants.shadow_bias,
+      .shadow_pcf_sample_count =
+          frame_constants.shadow_receiver.pcf_sample_count,
+      .shadow_receiver_bias_texels =
+          frame_constants.shadow_receiver.receiver_bias_texels,
+      .shadow_slope_bias_texels =
+          frame_constants.shadow_receiver.slope_bias_texels,
+      .shadow_normal_offset_texels =
+          frame_constants.shadow_receiver.normal_offset_texels,
+      .shadow_pcf_radius_texels =
+          frame_constants.shadow_receiver.pcf_radius_texels,
+      .shadow_cascade_blend_fraction =
+          frame_constants.shadow_receiver.cascade_blend_fraction,
+      .shadow_fade_start = frame_constants.shadow_receiver.fade_start,
+      .shadow_fade_end = frame_constants.shadow_receiver.fade_end,
       .transmission_texture_id = upload->transmission_texture_id,
       .ibl_probes = upload->ibl_probes_gpu,
       .ibl_probe_count =
@@ -576,7 +589,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_gpu_draw_compute(
                   mat4_mul(packet->globals.projection, packet->globals.view))
             : vkr_metal_packet_clip_matrix(
                   renderer->convert_vulkan_clip_y,
-                  packet->shadow->light_view_proj[view - 1u]);
+                  packet->shadow->cascades[view - 1u].light_view_projection);
     uint64_t frame_root_gpu = 0u;
     uint32_t view_frame_flags = 0u;
     if (!vkr_metal_packet_create_frame_root(

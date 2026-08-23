@@ -2,13 +2,6 @@
 
 #include "renderer/vkr_ibl_math.h"
 
-/**
- * Shadow depth bias applied by every backend. A single literal so the two
- * cannot drift; the value is empirical and belongs with the lowering rather
- * than in either backend's draw loop.
- */
-vkr_global const float32_t vkr_packet_shadow_bias = 0.0001f;
-
 VkrPacketFrameConstants
 vkr_packet_derive_frame_constants(const VkrRenderPacket *packet,
                                   uint32_t target_width,
@@ -67,7 +60,10 @@ vkr_packet_derive_frame_constants(const VkrRenderPacket *packet,
   constants.prefilter_mip_count = VKR_IBL_PREFILTER_MIP_COUNT;
   constants.shadow_cascade_count =
       packet->shadow ? packet->shadow->cascade_count : 0u;
-  constants.shadow_bias = vkr_packet_shadow_bias;
+  /* Zeroed without a shadow payload: a zero tap count is the receiver's own
+     "no cascades" signal, so no separate enable bit is needed. */
+  if (packet->shadow)
+    constants.shadow_receiver = packet->shadow->receiver;
   constants.view = packet->globals.view;
   return constants;
 }

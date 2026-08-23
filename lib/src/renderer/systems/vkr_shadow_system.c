@@ -101,19 +101,59 @@ vkr_internal uint64_t vkr_shadow_bias_signature(
   return hash;
 }
 
-vkr_internal Mat4 vkr_shadow_view_projection_from_fit(const Mat4 *light_view,
-                                                      const VkrShadowFit *fit) {
-  const float32_t half = fit->extent * 0.5f;
+/**
+ * Clamps a fit's light-space Z interval into the ortho near/far pair the
+ * projection is actually built from. Two callers depend on producing the same
+ * pair: the matrix builder and the receiver's depth-span divisor. Deriving the
+ * span from the raw interval instead would disagree with the matrix whenever
+ * either clamp fires.
+ */
+vkr_internal void vkr_shadow_fit_depth_clip(const VkrShadowFit *fit,
+                                            float32_t *out_near,
+                                            float32_t *out_far) {
   float32_t near_clip = -fit->max_z;
   float32_t far_clip = -fit->min_z;
   if (near_clip < 0.0f)
     near_clip = 0.0f;
   if (far_clip <= near_clip + 0.001f)
     far_clip = near_clip + 0.001f;
+  *out_near = near_clip;
+  *out_far = far_clip;
+}
+
+vkr_internal Mat4 vkr_shadow_view_projection_from_fit(const Mat4 *light_view,
+                                                      const VkrShadowFit *fit) {
+  const float32_t half = fit->extent * 0.5f;
+  float32_t near_clip = 0.0f;
+  float32_t far_clip = 0.0f;
+  vkr_shadow_fit_depth_clip(fit, &near_clip, &far_clip);
   const Mat4 projection = mat4_ortho_zo_yinv(
       fit->center_x - half, fit->center_x + half, fit->center_y - half,
       fit->center_y + half, near_clip, far_clip);
   return mat4_mul(projection, *light_view);
+}
+
+/**
+ * Publishes the receiver-facing description of one fit: the texel footprint,
+ * the normalized-depth divisor, and the light-space grid origin.
+ *
+ * Whichever fit produced the published matrix must produce these values too. A
+ * reused cascade passes its committed rendered fit and that fit's light view; a
+ * rendered cascade passes the guard-banded fit and the current light view.
+ */
+vkr_internal void
+vkr_shadow_publish_cascade_receiver(const Mat4 *light_view,
+                                    const VkrShadowFit *fit, uint32_t cascade,
+                                    VkrShadowFrameData *out_data) {
+  float32_t near_clip = 0.0f;
+  float32_t far_clip = 0.0f;
+  vkr_shadow_fit_depth_clip(fit, &near_clip, &far_clip);
+  const float32_t half = fit->extent * 0.5f;
+  out_data->world_units_per_texel[cascade] = fit->world_units_per_texel;
+  out_data->light_space_depth_span[cascade] = far_clip - near_clip;
+  out_data->light_space_origin[cascade] =
+      vkr_shadow_light_space_origin_from_view(light_view, fit->center_x - half,
+                                              fit->center_y - half);
 }
 
 vkr_internal VkrShadowFit vkr_shadow_guarded_fit(const VkrShadowSystem *system,
@@ -817,6 +857,31 @@ bool8_t vkr_shadow_system_init(VkrShadowSystem *system, RendererFrontend *rf,
   if (system->config.reuse_dynamic_scan_budget == 0u)
     system->config.reuse_dynamic_scan_budget =
         VKR_SHADOW_DYNAMIC_SCAN_BUDGET_DEFAULT;
+  /* Receiver quality is normalized once here so the packet lowering, packet
+     validation, and both receiver shaders can trust it. The comparisons are
+     written as negated `>=` so a NaN configuration falls into the safe branch
+     rather than through it. An unsupported tap count degrades to the one-tap
+     kernel instead of indexing the Poisson table out of range. */
+  if (!(system->config.receiver_bias_texels >= 0.0f))
+    system->config.receiver_bias_texels = 0.0f;
+  if (!(system->config.receiver_slope_bias_texels >= 0.0f))
+    system->config.receiver_slope_bias_texels = 0.0f;
+  if (!(system->config.normal_offset_texels >= 0.0f))
+    system->config.normal_offset_texels = 0.0f;
+  if (!(system->config.pcf_radius_texels >= 0.0f))
+    system->config.pcf_radius_texels = 0.0f;
+  if (!vkr_shadow_pcf_sample_count_supported(system->config.pcf_sample_count))
+    system->config.pcf_sample_count = 1u;
+  if (!(system->config.cascade_blend_fraction >= 0.0f))
+    system->config.cascade_blend_fraction = 0.0f;
+  if (system->config.cascade_blend_fraction > 0.5f)
+    system->config.cascade_blend_fraction = 0.5f;
+  if (!(system->config.shadow_distance_fade_range >= 0.0f))
+    system->config.shadow_distance_fade_range = 0.0f;
+  if (system->config.shadow_distance_fade_range >
+      system->config.max_shadow_distance)
+    system->config.shadow_distance_fade_range =
+        system->config.max_shadow_distance;
   for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
     if (!(system->config.cascade_guard_band_texels_per[i] >= 0.0f)) {
       system->config.cascade_guard_band_texels_per[i] = 0.0f;
@@ -942,7 +1007,13 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
     history->cascades[i] = fit;
     cascade->fit = fit;
     cascade->world_units_per_texel = fit.world_units_per_texel;
-    cascade->light_space_depth_span = fit.max_z - fit.min_z;
+    /* The clamped ortho pair, not the raw interval: this span is the divisor
+       that converts a texel-denominated receiver bias into the normalized depth
+       the matrix above actually produces. */
+    float32_t fit_near = 0.0f;
+    float32_t fit_far = 0.0f;
+    vkr_shadow_fit_depth_clip(&fit, &fit_near, &fit_far);
+    cascade->light_space_depth_span = fit_far - fit_near;
 
     Vec3 cascade_center = vec3_zero();
     for (int c = 0; c < 8; ++c) {
@@ -995,8 +1066,14 @@ void vkr_shadow_system_get_frame_data(const VkrShadowSystem *system,
       (UINT32_C(1) << system->config.cascade_count) - 1u;
 
   for (uint32_t i = 0; i < system->config.cascade_count; ++i) {
+    out_data->split_near[i] = system->cascade_splits[i];
     out_data->split_far[i] = system->cascades[i].split_far;
     out_data->view_projection[i] = system->cascades[i].view_projection;
+    out_data->world_units_per_texel[i] =
+        system->cascades[i].world_units_per_texel;
+    out_data->light_space_depth_span[i] =
+        system->cascades[i].light_space_depth_span;
+    out_data->light_space_origin[i] = system->cascades[i].light_space_origin;
     out_data->rendered[i] = 1u;
     out_data->correctness_forced[i] = 1u;
   }
@@ -1050,6 +1127,7 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
   bool8_t guarded_dynamic_overlap[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
   for (uint32_t cascade = 0u; cascade < cascade_count; ++cascade) {
     guarded_fits[cascade] = vkr_shadow_guarded_fit(system, cascade);
+    out_data->split_near[cascade] = system->cascade_splits[cascade];
     out_data->split_far[cascade] = system->cascades[cascade].split_far;
   }
 
@@ -1119,6 +1197,9 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
 
     if (reuse) {
       out_data->view_projection[cascade] = history->rendered_view_projection;
+      vkr_shadow_publish_cascade_receiver(&history->rendered_light_view,
+                                          &history->rendered_fit, cascade,
+                                          out_data);
       out_data->reused[cascade] = 1u;
       continue;
     }
@@ -1129,6 +1210,9 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
     out_data->dynamic_forced[cascade] = dynamic_forced ? 1u : 0u;
     out_data->view_projection[cascade] = vkr_shadow_view_projection_from_fit(
         &system->cascades[cascade].light_view, &guarded_fits[cascade]);
+    vkr_shadow_publish_cascade_receiver(&system->cascades[cascade].light_view,
+                                        &guarded_fits[cascade], cascade,
+                                        out_data);
 
     pending->cascade_mask |= bit;
     pending->cascades[cascade] = (VkrShadowCascadeHistory){

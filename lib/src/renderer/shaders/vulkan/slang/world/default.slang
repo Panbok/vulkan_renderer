@@ -110,20 +110,72 @@ uint4 packet_point_light_mask(VkrVulkanPacketFrameRoot* root,
     return result | root.point_light_masks[index];
 }
 
-float packet_directional_shadow(VkrVulkanPacketFrameRoot* root,
-                                float3 world_position)
+/**
+ * Stable rotation for the Poisson kernel.
+ *
+ * The cell index lives in the cascade's light-space texel grid, not in screen
+ * space, so it does not swim as the camera moves: the fit snaps in whole texels
+ * and `light_space_origin` cancels the remaining translation. A screen-space or
+ * raw world-position hash would reintroduce the crawling the rotation exists to
+ * hide.
+ */
+float2 packet_shadow_kernel_rotation(float2 uv, float2 origin_texels,
+                                     float map_size)
 {
-    if (root.shadow_cascade_count == 0u)
-        return 1.0f;
-    float view_depth = abs(mul(root.view, float4(world_position, 1.0f)).z);
-    uint cascade = 0u;
-    for (uint i = 0u; i + 1u < root.shadow_cascade_count; ++i)
+    // `origin - uv * map_size`, not the sum. The fit anchor appears in both
+    // terms with the same sign, so subtracting cancels it and leaves the world
+    // point's own light-basis projection in texels. Adding would double it, and
+    // the cell would jump every time the cascade re-anchors -- the exact
+    // swimming this rotation exists to prevent.
+    int2 cell = int2(floor(origin_texels - uv * map_size));
+    uint hash = (uint(cell.x) * 73856093u) ^ (uint(cell.y) * 19349663u);
+    float angle = float(hash & 1023u) * (6.28318530718f / 1024.0f);
+    return float2(cos(angle), sin(angle));
+}
+
+/**
+ * Accumulates rotated taps `[first, count)` of the shared progressive table.
+ *
+ * Frame-root descriptor indices are dynamically uniform: every invocation reads
+ * the same push-constant-addressed root. Decorating them NonUniform costs a
+ * waterfall loop and blocks scalarization for nothing.
+ */
+float packet_shadow_kernel(VkrVulkanPacketFrameRoot* root, uint cascade,
+                           float2 uv, float reference, float2 rotation,
+                           float2 tap_scale, uint first, uint count)
+{
+    float sum = 0.0f;
+    for (uint i = first; i < count; ++i)
     {
-        if (view_depth > root.shadow_cascades[i].split_depth.x)
-            cascade = i + 1u;
+        float2 tap = vkr_shadow_poisson[i];
+        float2 rotated = float2(tap.x * rotation.x - tap.y * rotation.y,
+                                tap.x * rotation.y + tap.y * rotation.x);
+        // A comparison sampler makes every tap a hardware bilinear 2x2 PCF, so
+        // a distant cascade degrades into softness instead of into crawling
+        // staircase noise.
+        sum += g_depth_array_textures[root.shadow_texture].SampleCmpLevelZero(
+            g_comparison_samplers[root.shadow_comparison_sampler],
+            float3(uv + rotated * tap_scale, float(cascade)), reference);
     }
-    float4 clip = mul(root.shadow_cascades[cascade].light_view_projection,
-                      float4(world_position, 1.0f));
+    return sum;
+}
+
+/** One cascade's visibility. Returns 1.0 where the receiver misses it. */
+float packet_shadow_cascade(VkrVulkanPacketFrameRoot* root, uint cascade,
+                            float3 world_position, float3 normal,
+                            float n_dot_l)
+{
+    VkrVulkanShadowCascade data = root.shadow_cascades[cascade];
+    float texel = data.split_near_far_texel_depth.z;
+    float depth_span = data.split_near_far_texel_depth.w;
+
+    // Normal offset is a world-space push before projection, so it moves the
+    // sample off the surface rather than biasing the comparison. It stays
+    // effective at grazing angles, where depth bias is weakest.
+    float3 offset_position =
+        world_position + normal * (root.shadow_normal_offset_texels * texel);
+    float4 clip =
+        mul(data.light_view_projection, float4(offset_position, 1.0f));
     if (abs(clip.w) <= 1e-6f)
         return 1.0f;
     float3 projected = clip.xyz / clip.w;
@@ -131,12 +183,84 @@ float packet_directional_shadow(VkrVulkanPacketFrameRoot* root,
     if (any(uv < 0.0f) || any(uv > 1.0f) || projected.z < 0.0f ||
         projected.z > 1.0f)
         return 1.0f;
-    // Frame-root descriptor indices are dynamically uniform: every invocation
-    // reads the same push-constant-addressed root. Decorating them NonUniform
-    // costs a waterfall loop and blocks scalarization for nothing.
-    float shadow_depth = g_array_textures[root.shadow_texture].SampleLevel(
-        g_samplers[root.shadow_sampler], float3(uv, float(cascade)), 0.0f).r;
-    return projected.z - root.shadow_bias <= shadow_depth ? 1.0f : 0.0f;
+
+    // Both biases are configured in texels and converted through *this*
+    // cascade's own footprint and fitted depth span. That is what makes one
+    // configured value mean the same world distance in cascade 0 and cascade 3,
+    // whose depth ranges differ by orders of magnitude.
+    float slope = saturate(1.0f - n_dot_l);
+    float bias_texels = root.shadow_receiver_bias_texels +
+                        root.shadow_slope_bias_texels * slope;
+    float reference = projected.z - bias_texels * texel / depth_span;
+
+    float inv_size = data.origin_inv_size_pad.z;
+    float2 rotation = packet_shadow_kernel_rotation(
+        uv, data.origin_inv_size_pad.xy / texel, 1.0f / inv_size);
+    float2 tap_scale = root.shadow_pcf_radius_texels * inv_size;
+    uint count = root.shadow_pcf_sample_count;
+
+    if (count >= 16u)
+    {
+        // Fully lit and fully shadowed regions are the common case and resolve
+        // in nine taps. Only the penumbra pays for the full kernel.
+        float probe = packet_shadow_kernel(root, cascade, uv, reference,
+                                           rotation, tap_scale, 0u, 9u);
+        if (probe <= 0.0f || probe >= 9.0f)
+            return probe * (1.0f / 9.0f);
+        return (probe + packet_shadow_kernel(root, cascade, uv, reference,
+                                             rotation, tap_scale, 9u, count)) /
+               float(count);
+    }
+    return packet_shadow_kernel(root, cascade, uv, reference, rotation,
+                                tap_scale, 0u, count) /
+           float(count);
+}
+
+float packet_directional_shadow(VkrVulkanPacketFrameRoot* root,
+                                float3 world_position, float3 normal)
+{
+    if (root.shadow_cascade_count == 0u)
+        return 1.0f;
+    float view_depth = abs(mul(root.view, float4(world_position, 1.0f)).z);
+
+    // Fade to unshadowed before the last split so the shadowed range ends in a
+    // gradient rather than on a hard terminating edge.
+    float fade_span = root.shadow_fade_end - root.shadow_fade_start;
+    float fade = fade_span > 0.0f
+                     ? saturate((root.shadow_fade_end - view_depth) / fade_span)
+                     : 1.0f;
+    if (fade <= 0.0f)
+        return 1.0f;
+
+    uint cascade = 0u;
+    for (uint i = 0u; i + 1u < root.shadow_cascade_count; ++i)
+    {
+        if (view_depth > root.shadow_cascades[i].split_near_far_texel_depth.y)
+            cascade = i + 1u;
+    }
+
+    float n_dot_l =
+        dot(normal, normalize(-root.directional_direction_enabled.xyz));
+    float factor =
+        packet_shadow_cascade(root, cascade, world_position, normal, n_dot_l);
+
+    // Cross-fade over the last `blend_fraction` of this cascade's span. Outside
+    // the band exactly one cascade is sampled, so the seam cost is confined to
+    // the band instead of being paid everywhere.
+    if (cascade + 1u < root.shadow_cascade_count)
+    {
+        float4 slice = root.shadow_cascades[cascade].split_near_far_texel_depth;
+        float band = (slice.y - slice.x) * root.shadow_cascade_blend_fraction;
+        if (band > 0.0f && view_depth > slice.y - band)
+        {
+            float t = saturate((view_depth - (slice.y - band)) / band);
+            float next = packet_shadow_cascade(root, cascade + 1u,
+                                               world_position, normal, n_dot_l);
+            factor = lerp(factor, next, t);
+        }
+    }
+
+    return lerp(1.0f, factor, fade);
 }
 
 float packet_probe_influence(VkrVulkanIblProbe probe,
@@ -411,7 +535,8 @@ float4 world_fragment(VkrVulkanVertexOutput input,
     float3 analytic_specular = 0.0f;
     if (frame.directional_direction_enabled.w > 0.5f)
     {
-        float shadow = packet_directional_shadow(frame, input.world_position);
+        float shadow =
+            packet_directional_shadow(frame, input.world_position, normal);
         VkrVulkanDirectResult direct = packet_direct(
             normal, view, normalize(-frame.directional_direction_enabled.xyz),
             frame.directional_color_intensity.rgb *

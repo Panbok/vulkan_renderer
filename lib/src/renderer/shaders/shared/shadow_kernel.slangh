@@ -1,0 +1,58 @@
+// Shared receiver-filter kernel. Consumed by both production shadow receivers:
+// the Vulkan Slang path includes this file, and the Metal path concatenates it
+// into the native MSL library ahead of shadow/sampling.metalh. `float2` and
+// brace initialization mean the same thing in both languages; only the
+// program-scope storage qualifier differs, so that is the one thing selected
+// here.
+//
+// The order is progressive, built by best-candidate sampling: each entry
+// maximizes its distance to every earlier entry. Any prefix is therefore a
+// usable kernel on its own, which is what lets 1, 4, 9, 16, and 32 taps read
+// from one table instead of from five hand-tuned ones. The nine-tap
+// uniform-region probe uses the same prefix property.
+//
+// Points lie on the unit disk. The receiver scales them by its radius in texels
+// and rotates them by a per-cell angle before sampling.
+
+#if defined(__METAL_VERSION__)
+#define VKR_SHADOW_KERNEL_CONST constant
+#else
+#define VKR_SHADOW_KERNEL_CONST static const
+#endif
+
+#define VKR_SHADOW_POISSON_COUNT 64
+
+VKR_SHADOW_KERNEL_CONST float2 vkr_shadow_poisson[VKR_SHADOW_POISSON_COUNT] = {
+    float2(+0.000000f, +0.000000f), float2(-0.883484f, -0.392682f),
+    float2(+0.131614f, +0.946681f), float2(+0.975201f, +0.072918f),
+    float2(+0.322811f, -0.843098f), float2(-0.733630f, +0.594417f),
+    float2(-0.322046f, -0.633667f), float2(+0.506967f, +0.464155f),
+    float2(+0.767140f, -0.523378f), float2(-0.553820f, +0.011194f),
+    float2(-0.256848f, +0.627263f), float2(+0.460029f, -0.066944f),
+    float2(+0.152559f, -0.394351f), float2(-0.987282f, +0.089949f),
+    float2(+0.140891f, +0.503553f), float2(-0.148644f, -0.983424f),
+    float2(-0.201872f, -0.293092f), float2(-0.190778f, +0.940482f),
+    float2(-0.252069f, +0.246195f), float2(+0.550058f, +0.823005f),
+    float2(-0.550878f, -0.361091f), float2(+0.843353f, +0.452905f),
+    float2(-0.681024f, -0.700271f), float2(-0.554769f, +0.334136f),
+    float2(+0.951619f, -0.251519f), float2(+0.473905f, -0.444724f),
+    float2(+0.652577f, +0.201938f), float2(+0.272042f, +0.196403f),
+    float2(+0.038561f, -0.736637f), float2(+0.604827f, -0.741858f),
+    float2(-0.734072f, -0.168793f), float2(-0.472608f, +0.855070f),
+    float2(-0.855883f, +0.348709f), float2(-0.452093f, -0.866344f),
+    float2(+0.740494f, -0.057050f), float2(+0.018253f, +0.256668f),
+    float2(-0.281243f, -0.004060f), float2(+0.291460f, +0.742346f),
+    float2(-0.974144f, -0.170781f), float2(+0.672108f, -0.291203f),
+    float2(+0.004038f, +0.733097f), float2(+0.221360f, -0.111848f),
+    float2(+0.727541f, +0.661112f), float2(+0.086638f, -0.992216f),
+    float2(-0.117840f, -0.514815f), float2(-0.131543f, +0.438758f),
+    float2(+0.298692f, -0.590636f), float2(-0.492305f, +0.619063f),
+    float2(+0.013660f, -0.209021f), float2(-0.741579f, +0.095521f),
+    float2(+0.360598f, -0.258447f), float2(-0.361478f, +0.450450f),
+    float2(-0.416242f, -0.192031f), float2(+0.869560f, +0.255893f),
+    float2(-0.515171f, -0.573573f), float2(-0.189892f, -0.782379f),
+    float2(-0.699019f, -0.498351f), float2(+0.321069f, +0.922833f),
+    float2(-0.635490f, +0.762901f), float2(+0.319472f, +0.379903f),
+    float2(-0.355954f, -0.428479f), float2(+0.448874f, +0.636056f),
+    float2(-0.435902f, +0.170981f), float2(+0.458944f, +0.206565f),
+};

@@ -929,7 +929,7 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
     float3 analytic_specular = 0.0f;
     if (frame.directional_direction_enabled.w > 0.5f)
     {
-        float shadow = packet_directional_shadow(frame, world);
+        float shadow = packet_directional_shadow(frame, world, normal);
         VkrVulkanDirectResult direct = packet_direct(
             normal, view, normalize(-frame.directional_direction_enabled.xyz),
             frame.directional_color_intensity.rgb *
@@ -1096,7 +1096,8 @@ void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
         float3 analytic_specular = 0.0f;
         if (frame.directional_direction_enabled.w > 0.5f)
         {
-            float shadow = packet_directional_shadow(frame, world);
+            float shadow =
+                packet_directional_shadow(frame, world, surface.normal);
             VkrVulkanDirectResult direct = packet_direct(
                 surface.normal, view,
                 normalize(-frame.directional_direction_enabled.xyz),

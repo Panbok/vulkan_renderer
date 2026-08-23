@@ -1,4 +1,5 @@
 #include "common/resources.slangh"
+#include "../../shared/shadow_kernel.slangh"
 #include "ibl/common.slangh"
 #include "common/vertex.slangh"
 #include "post/tonemap.slangh"

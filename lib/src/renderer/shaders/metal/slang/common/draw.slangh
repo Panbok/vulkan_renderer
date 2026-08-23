@@ -23,7 +23,8 @@ struct VkrMetalPacketInstance
 struct VkrMetalPacketShadowCascade
 {
     column_major float4x4 light_view_projection;
-    float4 split_depth;
+    float4 split_near_far_texel_depth;
+    float4 origin_inv_size_pad;
 };
 
 struct VkrMetalPacketIblProbe
@@ -68,12 +69,21 @@ struct VkrMetalPacketFrameRoot
     uint point_light_reserved_0;
     uint point_light_reserved_1;
     uint point_light_reserved_2;
-    Texture2DArray<float4> shadow_map;
+    Texture2DArray<float> shadow_map;
     StructuredBuffer<VkrMetalPacketShadowCascade> shadow_cascades;
     column_major float4x4 view;
     uint shadow_cascade_count;
-    float shadow_bias;
-    uint2 shadow_reserved;
+    // Scalar, not float4: matching the host and native-MSL layout. Metal aligns
+    // a float4 to 16 bytes and would move every following field.
+    uint shadow_pcf_sample_count;
+    float shadow_receiver_bias_texels;
+    float shadow_slope_bias_texels;
+    float shadow_normal_offset_texels;
+    float shadow_pcf_radius_texels;
+    float shadow_cascade_blend_fraction;
+    float shadow_fade_start;
+    float shadow_fade_end;
+    uint shadow_receiver_reserved;
     Texture2D<float4> transmission_source;
     StructuredBuffer<VkrMetalPacketIblProbe> ibl_probes;
     uint ibl_probe_count;

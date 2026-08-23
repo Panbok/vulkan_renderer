@@ -21,6 +21,27 @@ struct VkrCamera;
 #define VKR_SHADOW_TARGET_IMAGE_COUNT_MAX 8
 #define VKR_SHADOW_DYNAMIC_SCAN_BUDGET_DEFAULT 4096
 
+/**
+ * @brief Tap counts the receiver kernel is built for.
+ *
+ * Packet validation rejects anything outside this set at the cold boundary, so
+ * the receiver hot path indexes the shared Poisson table without a bounds or
+ * fallback branch. One tap is retained deliberately: it is the low-granularity
+ * comparand for the receiver-quality sweep, not a legacy path.
+ */
+static INLINE bool8_t vkr_shadow_pcf_sample_count_supported(uint32_t count) {
+  switch (count) {
+  case 1u:
+  case 4u:
+  case 9u:
+  case 16u:
+  case 32u:
+    return true_v;
+  default:
+    return false_v;
+  }
+}
+
 struct VkrWorldPassPayload;
 
 /**
@@ -30,8 +51,8 @@ struct VkrWorldPassPayload;
  * reuse would have to compare, so it is a named value rather than locals inside
  * the matrix builder. Center and extent are light-space XY; the extent is
  * square, so one value covers both axes. `min_z`/`max_z` are the light-space
- * depth interval before near/far conversion, and their span is what receiver
- * bias must be divided by to be expressed in world units.
+ * depth interval before near/far conversion; the receiver divides its
+ * texel-denominated bias by the clamped span derived from them.
  */
 typedef struct VkrShadowFit {
   float32_t center_x;
@@ -69,11 +90,12 @@ typedef struct VkrShadowFitHistory {
  * view_projection is valid only after vkr_shadow_system_update() for the
  * current frame. split_far is a view-space distance (positive along forward).
  *
- * `world_units_per_texel`, `light_space_origin`, and `light_space_depth_span`
- * are deliberately retained while no shader consumes them: Phase 3 guard-band
- * math needs the first, and Phase 7 needs all three to express receiver bias in
- * texels rather than in raw normalized depth. They are system-side state, not
- * packet ABI, so keeping them costs nothing at the seam.
+ * `world_units_per_texel` drives guard-band math; together with
+ * `light_space_origin` and `light_space_depth_span` it is also what lets the
+ * receiver express bias in texels rather than in raw normalized depth. These
+ * are the *raw* fit's values. A cascade reused from retained contents publishes
+ * its committed rendered fit instead, so the receiver never pairs a rendered
+ * matrix with a raw fit's divisors.
  */
 typedef struct VkrCascadeData {
   Mat4 view_projection;
@@ -84,7 +106,7 @@ typedef struct VkrCascadeData {
   float32_t split_far;
   float32_t world_units_per_texel;
   Vec2 light_space_origin; // Light-space grid origin in right/up basis.
-  /** max_z - min_z of the fitted light-space interval, in world units. */
+  /** Clamped orthographic far-minus-near span, in world units. */
   float32_t light_space_depth_span;
   Vec3 bounds_center;
   float32_t bounds_radius;
@@ -138,14 +160,10 @@ typedef struct VkrShadowCasterDepthBounds {
 /**
  * @brief Shadow system configuration.
  *
- * Every field is classified as ACTIVE or RESERVED. A field is ACTIVE only when
- * a shipped consumer reads the value it produces; "the shadow system computes
- * it each frame" is not a consumer. RESERVED fields stay here so external
- * configuration does not churn when their consumer ships, but they are kept out
- * of `VkrShadowFrameData` until then, so the per-frame structure cannot imply a
- * capability the renderer does not have.
+ * Every field is ACTIVE: a shipped consumer reads the value it produces.
+ * "The shadow system computes it each frame" is not a consumer, and a field
+ * without one belongs in neither this struct nor `VkrShadowFrameData`.
  *
- * ACTIVE
  * | Field | Consumer |
  * |---|---|
  * | cascade_count | split/matrix loop; packet cascade count |
@@ -160,17 +178,14 @@ typedef struct VkrShadowCasterDepthBounds {
  * | scene_bounds | vkr_shadow_fit_relevant_caster_z(), off by default |
  * | depth_bias_constant_factor, _slope_factor, _clamp | raster depth bias, via
  *   VkrShadowConfigOverride, on both selected implementations |
- *
- * RESERVED for the receiver-quality phase. Computed nowhere and consumed
- * nowhere today; the shipped receiver takes one nearest tap and one global
- * constant (`vkr_packet_shadow_bias`). Do not add these to the packet until the
- * shader that reads them ships.
- * | Field | Blocked on |
- * |---|---|
- * | shadow_bias, normal_bias, shadow_slope_bias | receiver bias block |
- * | pcf_radius | PCF kernel |
- * | cascade_blend_range | cascade cross-fade |
- * | shadow_distance_fade_range | max-distance fade |
+ * | receiver_bias_texels, receiver_slope_bias_texels, normal_offset_texels,
+ *   pcf_radius_texels, pcf_sample_count, cascade_blend_fraction,
+ *   shadow_distance_fade_range | lowered into VkrShadowReceiverPacketData and
+ *   read by packet_directional_shadow() and
+ *   vkr_metal_packet_directional_shadow_sample() |
+ * | reuse_guard_band_texels, reuse_depth_guard_fraction,
+ *   reuse_predictive_max_texels, reuse_dynamic_scan_budget |
+ *   vkr_shadow_guarded_fit() and the bounded dynamic overlap scan |
  *
  * Removed as obsolete rather than reserved: `shadow_bias_texel_scale`,
  * `shadow_slope_bias_texel_scale`, the three `shadow_uv_*_scale_per` arrays,
@@ -192,19 +207,24 @@ typedef struct VkrShadowConfig {
   float32_t depth_bias_constant_factor;
   float32_t depth_bias_clamp;
   float32_t depth_bias_slope_factor;
-  /* RESERVED below this line. See the table above. */
-  float32_t shadow_bias;
-  float32_t normal_bias;
-  float32_t shadow_slope_bias;
-  float32_t pcf_radius;
+  /* Receiver quality. Biases are in shadow-map texels, so one value means the
+     same world distance in every cascade; the receiver divides through each
+     cascade's own texel size and fitted depth span. */
+  float32_t receiver_bias_texels;
+  float32_t receiver_slope_bias_texels;
+  float32_t normal_offset_texels;
+  float32_t pcf_radius_texels;
+  /** Must pass vkr_shadow_pcf_sample_count_supported(). */
+  uint32_t pcf_sample_count;
+  /** Fraction of each cascade's span spent fading into the next cascade. */
+  float32_t cascade_blend_fraction;
+  /** World distance over which shadows fade out before max_shadow_distance. */
   float32_t shadow_distance_fade_range;
-  float32_t cascade_blend_range;
   /** Phase 3B retained-cache expansion and bounded dynamic overlap scan. */
   float32_t reuse_guard_band_texels;
   float32_t reuse_depth_guard_fraction;
   float32_t reuse_predictive_max_texels;
   uint32_t reuse_dynamic_scan_budget;
-  /* ACTIVE again. */
   bool8_t use_constant_cascade_size;
   float32_t anchor_snap_texels;
   bool8_t stabilize_cascades;
@@ -214,9 +234,7 @@ typedef struct VkrShadowConfig {
 /**
  * @brief High-quality CSM preset (recommended on modern GPUs).
  *
- * Four cascades at 2048. The reserved receiver-quality values below are carried
- * for the phase that consumes them; the shipped receiver takes one nearest tap
- * with a global constant bias and reads none of them.
+ * Four cascades at 2048.
  *
  * `cascade_split_lambda` stays at 0.80 deliberately. Lowering it trades near
  * texel density for far density and is a named quality experiment with its own
@@ -225,6 +243,11 @@ typedef struct VkrShadowConfig {
  * The 1.25/1.75 raster-bias factors transcribe the values Vulkan previously
  * hardcoded while this preset claimed zero. Vulkan output therefore keeps its
  * prior bias, and Metal now consumes the same packet controls.
+ *
+ * The receiver values are the design's starting points, not tuned defaults.
+ * Tap count, radius, blend fraction, and every bias are independent sweep
+ * variables; changing more than one at a time makes a capture or timing result
+ * uninterpretable.
  */
 #define VKR_SHADOW_CONFIG_HIGH                                                 \
   ((VkrShadowConfig){                                                          \
@@ -239,13 +262,14 @@ typedef struct VkrShadowConfig {
       .depth_bias_constant_factor = 1.25f,                                     \
       .depth_bias_clamp = 0.0f,                                                \
       .depth_bias_slope_factor = 1.75f,                                        \
-      .shadow_bias = 0.00001f,                                                 \
-      .normal_bias = 0.001f,                                                   \
-      .shadow_slope_bias = 0.0002f,                                            \
-      .pcf_radius = 1.6f,                                                      \
-      .shadow_distance_fade_range = 1.0f,                                      \
+      .receiver_bias_texels = 1.0f,                                            \
+      .receiver_slope_bias_texels = 2.0f,                                      \
+      .normal_offset_texels = 1.0f,                                            \
+      .pcf_radius_texels = 1.5f,                                               \
+      .pcf_sample_count = 16u,                                                 \
+      .cascade_blend_fraction = 0.08f,                                         \
+      .shadow_distance_fade_range = 20.0f,                                     \
       .use_constant_cascade_size = true_v,                                     \
-      .cascade_blend_range = 1.0f,                                             \
       .reuse_guard_band_texels = 128.0f,                                       \
       .reuse_depth_guard_fraction = 0.0625f,                                   \
       .reuse_predictive_max_texels = 64.0f,                                    \
@@ -276,13 +300,14 @@ typedef struct VkrShadowConfig {
       .depth_bias_constant_factor = 1.50f,                                     \
       .depth_bias_clamp = 0.0f,                                                \
       .depth_bias_slope_factor = 2.00f,                                        \
-      .shadow_bias = 0.001f,                                                   \
-      .normal_bias = 0.01f,                                                    \
-      .shadow_slope_bias = 0.001f,                                             \
-      .pcf_radius = 2.0f,                                                      \
-      .shadow_distance_fade_range = 10.0f,                                     \
+      .receiver_bias_texels = 1.0f,                                            \
+      .receiver_slope_bias_texels = 2.0f,                                      \
+      .normal_offset_texels = 1.0f,                                            \
+      .pcf_radius_texels = 1.5f,                                               \
+      .pcf_sample_count = 9u,                                                  \
+      .cascade_blend_fraction = 0.08f,                                         \
+      .shadow_distance_fade_range = 12.0f,                                     \
       .use_constant_cascade_size = true_v,                                     \
-      .cascade_blend_range = 8.0f,                                             \
       .anchor_snap_texels = 8.0f,                                              \
       .stabilize_cascades = true_v,                                            \
       .scene_bounds = VKR_SHADOW_SCENE_BOUNDS_DEFAULT,                         \
@@ -330,20 +355,28 @@ bool8_t vkr_shadow_fit_relevant_caster_z(
  *
  * Contains exactly what the current packet path consumes and nothing else. Each
  * field below has a named reader in `application_draw_frame()`, which lowers
- * them into `VkrShadowPassPayload`. Quality values the receiver does not read
- * live in `VkrShadowConfig` as RESERVED and deliberately do not appear here: a
- * per-frame field that no shader reads is a claim the renderer cannot honour.
+ * them into `VkrShadowPassPayload`.
  *
  * `enabled` is the validity bit for the rest of the structure. The application
  * reads it instead of reaching back into the lighting system, so this data has
  * one activation authority.
+ *
+ * The four receiver arrays are the resolved per-cascade description of the
+ * matrix published in `view_projection`. For a cascade reused from retained
+ * contents they come from the committed rendered fit, never from the current
+ * raw fit; pairing a reused layer with a raw fit's texel size or depth span
+ * would misconvert every texel-denominated bias for that cascade.
  */
 typedef struct VkrShadowFrameData {
   bool8_t enabled;
   uint32_t cascade_count;
   uint32_t cascade_render_mask;
+  float32_t split_near[VKR_SHADOW_CASCADE_COUNT_MAX];
   float32_t split_far[VKR_SHADOW_CASCADE_COUNT_MAX];
   Mat4 view_projection[VKR_SHADOW_CASCADE_COUNT_MAX];
+  float32_t world_units_per_texel[VKR_SHADOW_CASCADE_COUNT_MAX];
+  float32_t light_space_depth_span[VKR_SHADOW_CASCADE_COUNT_MAX];
+  Vec2 light_space_origin[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t rendered[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t reused[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t correctness_forced[VKR_SHADOW_CASCADE_COUNT_MAX];

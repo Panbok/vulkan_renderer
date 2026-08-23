@@ -207,9 +207,13 @@ if(APPLE)
     file(GLOB_RECURSE VKR_METAL_PACKET_SLANG_SOURCES CONFIGURE_DEPENDS
          "${VKR_METAL_PACKET_SLANG_SHADER_DIR}/*.slang"
          "${VKR_METAL_PACKET_SLANG_SHADER_DIR}/*.slangh")
+    # The shared receiver kernel must precede shadow/sampling.metalh: the MSL
+    # library is concatenated, not include-resolved, so order is the only
+    # declaration order there is.
     set(VKR_METAL_PACKET_MSL_SOURCES
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/common/draw.metalh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/world/lighting.metalh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/shadow_kernel.slangh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/shadow/sampling.metalh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/common/fullscreen.metalh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/world/gpu_draws.metal"

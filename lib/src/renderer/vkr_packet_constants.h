@@ -30,7 +30,8 @@ typedef struct VkrPacketFrameConstants {
   uint32_t shadow_debug_mode;
   uint32_t prefilter_mip_count;
   uint32_t shadow_cascade_count;
-  float32_t shadow_bias;
+  /** Receiver filter and bias, already normalized by the shadow system. */
+  VkrShadowReceiverPacketData shadow_receiver;
   Mat4 view;
 } VkrPacketFrameConstants;
 

@@ -164,10 +164,11 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
     if (!cascades)
       return false_v;
     for (uint32_t i = 0u; i < packet->shadow->cascade_count; ++i) {
+      const VkrShadowCascadePacketData *source = &packet->shadow->cascades[i];
       cascades[i] = (VkrVulkanPacketShadowCascade){
-          .light_view_projection = packet->shadow->light_view_proj[i],
-          .split_depth =
-              (Vec4){packet->shadow->split_depths[i], 0.0f, 0.0f, 0.0f},
+          .light_view_projection = source->light_view_projection,
+          .split_near_far_texel_depth = source->split_near_far_texel_depth,
+          .origin_inv_size_pad = source->origin_inv_size_pad,
       };
     }
   }
@@ -462,6 +463,7 @@ void vkr_vk_fill_packet_frame_root(
   root->prefilter_sampler = slot->prefilter_sampler;
   root->shadow_texture = shadow_texture;
   root->shadow_sampler = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  root->shadow_comparison_sampler = renderer->shadow_comparison_sampler_slot;
   root->transmission_texture = transmission_texture;
   root->transmission_sampler = VKR_VULKAN_SENTINEL_SLOT_INDEX;
   root->flags =
@@ -490,7 +492,17 @@ void vkr_vk_fill_packet_frame_root(
   root->point_light_count = frame->point_light_count;
   root->view = frame->view;
   root->shadow_cascade_count = frame->shadow_cascade_count;
-  root->shadow_bias = frame->shadow_bias;
+  root->shadow_pcf_sample_count = frame->shadow_receiver.pcf_sample_count;
+  root->shadow_receiver_bias_texels =
+      frame->shadow_receiver.receiver_bias_texels;
+  root->shadow_slope_bias_texels = frame->shadow_receiver.slope_bias_texels;
+  root->shadow_normal_offset_texels =
+      frame->shadow_receiver.normal_offset_texels;
+  root->shadow_pcf_radius_texels = frame->shadow_receiver.pcf_radius_texels;
+  root->shadow_cascade_blend_fraction =
+      frame->shadow_receiver.cascade_blend_fraction;
+  root->shadow_fade_start = frame->shadow_receiver.fade_start;
+  root->shadow_fade_end = frame->shadow_receiver.fade_end;
 }
 
 bool8_t vkr_vk_record_packet_draws(

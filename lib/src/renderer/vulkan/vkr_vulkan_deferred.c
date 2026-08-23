@@ -263,7 +263,7 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
                              source->normal.z, source->d};
     }
     for (uint32_t i = 1u; i < view_count; ++i) {
-      views[i] = packet->shadow->light_view_proj[i - 1u];
+      views[i] = packet->shadow->cascades[i - 1u].light_view_projection;
       const VkrFrustum shadow = vkr_frustum_from_matrix(views[i]);
       for (uint32_t plane = 0u; plane < VKR_FRUSTUM_PLANE_COUNT; ++plane) {
         const VkrPlane *source = &shadow.planes[plane];
@@ -429,7 +429,7 @@ bool8_t vkr_vk_record_deferred_raster(VkrVulkanRenderer *renderer,
   const uint32_t view_index =
       shadow ? 1u + pass->desc.depth_attachment.desc.slice.base_layer : 0u;
   const Mat4 view_projection =
-      shadow ? packet->shadow->light_view_proj[view_index - 1u]
+      shadow ? packet->shadow->cascades[view_index - 1u].light_view_projection
              : mat4_mul(packet->globals.projection, packet->globals.view);
   const VkrPacketFrameConstants frame = vkr_packet_derive_frame_constants(
       packet, renderer->prepared_frame.viewport_width,

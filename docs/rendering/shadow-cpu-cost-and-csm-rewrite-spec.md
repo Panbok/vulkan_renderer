@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-22
+updated: 2026-08-23
 authority: design
 ---
 
@@ -13,8 +13,18 @@ the future fit data, and applies cascade-fit hysteresis. P2's static/dynamic
 candidate partition and generation substrate ships without the rejected GPU
 residency expansion. P3A and P3B also ship: `shadow_map` is a retained,
 per-image graph resource (ADR-029), and the backend-neutral shadow resolver
-omits eligible cascade passes against committed per-image history. P4 and later
-phases do not ship; P3B performs no proactive refresh.
+omits eligible cascade passes against committed per-image history. P7 ships:
+packet version 14 carries a per-cascade block and a shared receiver block, and
+both receivers run a rotated Poisson PCF kernel with texel-denominated bias,
+cascade cross-fade, and max-distance fade. P4, P5, and P6 do not ship; P3B
+performs no proactive refresh.
+
+P7's shadow-map contents are unchanged by construction and by capture: all four
+D32 cascade layers are byte-identical across the change, because only the
+receiver moved. The remaining unshipped phases are each blocked on a
+precondition this document itself sets — P4 and P6 on proposed ADRs that do not
+exist, P5 on moving-camera evidence of guard exhaustion that P3B's 84–100%
+per-cascade reuse does not show.
 
 The same-tree local Release P3B comparison on Bistro orbit at 2560x1440 reduced
 realized `Shadow.Cascade.*` GPU work from 9.197 ms/frame to 0.663 ms/frame and
@@ -68,8 +78,9 @@ The source audit supports four facts.
    Metal then hash, resolve, and pack that stream again.
 3. Temporal HZB rejection requires an exact view-projection and world epoch,
    and the shader uses it only for camera view index zero.
-4. The current P21 receiver samples one shadow texel and drops most quality data
-   produced by `VkrShadowSystem`.
+4. The P21 receiver sampled one shadow texel and dropped most quality data
+   produced by `VkrShadowSystem`. Phase 7 closed this; the fact is retained
+   because sections 2.5 and 11 argue from it.
 
 Those are code facts. They do not prove which work dominates the reported CPU
 cost. Candidate extraction, graph construction, command recording, and cascade
@@ -96,12 +107,19 @@ Retained graph history, two-phase visibility, and asynchronous SDSM feedback
 constrain future renderer work. Proposed ADRs must be accepted before those
 implementation slices start. Section 12 names the decisions and owned files.
 
-### 1.1 Current receiver quality
+### 1.1 Receiver quality before Phase 7
 
+**Superseded by the shipped Phase 7.** This section describes the receiver
+before that phase and is retained because sections 2.5 and 11 argue from it.
 `packet_directional_shadow()` in `world/default.slang` and
-`vkr_metal_packet_directional_shadow_sample()` in `shadow/sampling.metalh` both
-do a single nearest-filtered tap with one scalar bias. No PCF. No cascade
-blending. No normal or slope bias. Meanwhile `VkrShadowConfig` carries
+`vkr_metal_packet_directional_shadow_sample()` in `shadow/sampling.metalh` now
+run a rotated Poisson PCF kernel through a hardware comparison sampler, with
+texel-denominated constant, slope, and normal-offset bias, cascade cross-fade,
+and max-distance fade. `vkr_packet_shadow_bias` is removed. What follows is the
+prior state.
+
+Both receivers did a single nearest-filtered tap with one scalar bias. No PCF.
+No cascade blending. No normal or slope bias. Meanwhile `VkrShadowConfig` carried
 `pcf_radius`, `normal_bias`, `shadow_slope_bias`, `shadow_bias_texel_scale`,
 `shadow_uv_margin_scale_per`, `shadow_uv_soft_margin_scale_per`,
 `shadow_uv_kernel_margin_scale_per`, `cascade_blend_range`,
@@ -930,8 +948,19 @@ split stability; matched GPU profiles decide whether the reduction is affordable
 
 ## 11. Phase 7, PCF and receiver quality
 
+**Status:** Implemented. Sections 11.1 through 11.4 ship on both selected
+implementations. The Vulkan receiver and its published comparison-sampler heap
+alias compile and are covered by CPU tests, but have never executed: Vulkan is
+not selectable on the development host. Split lambda, map size, and shadow
+distance are deliberately unchanged and remain the separate quality
+experiments section 11.5 and section 5 describe.
+
 This phase adds GPU cost and ships independently of the CPU work. Its baseline
 is the current one-tap receiver at the same map size and split distribution.
+That baseline is a point in the section 11.5 sweep rather than a separate build:
+`pcf_sample_count = 1` is retained and reachable through the
+`renderer.shadow_pcf_samples` case field, so the comparand is produced by the
+same binary.
 
 ### 11.1 Payload and ABI
 
@@ -954,8 +983,10 @@ piecemeal until reflection proves the ABI on both backends. Bump the packet
 version, update validation, and update the Metal and Vulkan ABI tests in the
 same PR.
 
-Validate `pcf_sample_count` against a fixed supported set before recording. The
-shader hot path receives normalized data and has no recovery branches.
+Validate `pcf_sample_count` against a fixed supported set before recording.
+Also prove the per-cascade texel size, depth span, light-space origin, and
+inverse map size before the shader divides by them. The shader hot path receives
+normalized data and has no recovery branches.
 
 ### 11.2 Filter
 
@@ -970,8 +1001,9 @@ lower-granularity one-tap path for the quality sweep.
   count is 16 or more. Fully lit and fully shadowed regions cost nine taps
   instead of sixteen or more. Measure early-out enabled and disabled with the
   same tap count.
-- Vulkan publishes logical raw and comparison sampler heap indices through its
-  frame root. Metal uses matching constexpr raw and comparison samplers. The
+- Vulkan publishes the comparison sampler heap index through its frame root;
+  the unused raw field remains on the sentinel slot for ABI compatibility.
+  Metal uses constexpr comparison and debug-only raw samplers. The
   backend-neutral packet contains filter settings, never backend sampler IDs.
 
 ### 11.3 Bias
@@ -987,9 +1019,10 @@ Bias has five separate controls and units:
 | normal offset | world units, `normal_offset_texels * world_units_per_texel`, applied before light projection |
 
 Do not multiply an already normalized NDC constant by world-units-per-texel.
-Remove `vkr_packet_shadow_bias` only when both receiver shaders consume the new
-block. Nuri's values are starting points for captures, not compatible defaults.
-Tune after caster-depth fitting stabilizes the Z span.
+`vkr_packet_shadow_bias` was removed once both receiver shaders consumed the new
+block, which is the condition this paragraph set. Nuri's values are starting
+points for captures, not compatible defaults. Tune after caster-depth fitting
+stabilizes the Z span.
 
 ### 11.4 Blending and fade
 

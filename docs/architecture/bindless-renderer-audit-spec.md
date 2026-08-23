@@ -962,9 +962,11 @@ is evidence for platforms or configurations that were not run.
   conclusion (arrays sized by the wrong capacity) does not depend on the exact
   number.
 - **The original 512-byte root size was initially computed by hand.** The
-  implementation now pins the 432-byte frame root, 48-byte draw root, 144-byte
+  implementation pinned a 432-byte frame root, 48-byte draw root, 144-byte
   Vulkan material row, and retained 512-byte utility root with compile-time and
-  reflection checks.
+  reflection checks. Those root sizes were current at this audit; the shadow
+  receiver-quality block later widened the frame and utility roots. The
+  architecture spec is the status authority for their current sizes.
 - **Linux, mesh shaders, device-generated commands, shader objects, and the
   other §3.5 optional capabilities were out of scope**, as were the harness,
   the ECS, and the asset loaders except where they call the publisher.

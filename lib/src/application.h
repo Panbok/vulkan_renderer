@@ -1160,14 +1160,43 @@ void application_draw_frame(Application *application, float64_t delta) {
   VkrShadowConfigOverride raster_bias_override = {0};
   bool8_t has_shadow = false_v;
   if (has_world && shadow_cascade_count > 0) {
+    const VkrShadowConfig *shadow_config =
+        &application->renderer.shadow_system.config;
+    const float32_t inverse_map_size =
+        1.0f / (float32_t)shadow_config->shadow_map_size;
     shadow_payload.cascade_count = shadow_cascade_count;
     shadow_payload.cascade_render_mask = shadow_frame.cascade_render_mask;
     for (uint32_t i = 0; i < shadow_cascade_count; ++i) {
-      shadow_payload.light_view_proj[i] = shadow_frame.view_projection[i];
-      shadow_payload.split_depths[i] = shadow_frame.split_far[i];
+      shadow_payload.cascades[i] = (VkrShadowCascadePacketData){
+          .light_view_projection = shadow_frame.view_projection[i],
+          .split_near_far_texel_depth =
+              {shadow_frame.split_near[i], shadow_frame.split_far[i],
+               shadow_frame.world_units_per_texel[i],
+               shadow_frame.light_space_depth_span[i]},
+          .origin_inv_size_pad = {shadow_frame.light_space_origin[i].x,
+                                  shadow_frame.light_space_origin[i].y,
+                                  inverse_map_size, 0.0f},
+      };
     }
-    const VkrShadowConfig *shadow_config =
-        &application->renderer.shadow_system.config;
+    /* The fade ends at the *resolved* last split, not at
+       `max_shadow_distance`. The split loop clamps the far split to the
+       camera's far plane as well, so a camera closer than the configured
+       distance would otherwise leave the band unfinished and restore the hard
+       terminating edge the fade exists to remove. */
+    const float32_t last_split =
+        shadow_frame.split_far[shadow_cascade_count - 1u];
+    const float32_t fade_start = vkr_max_f32(
+        last_split - shadow_config->shadow_distance_fade_range, 0.0f);
+    shadow_payload.receiver = (VkrShadowReceiverPacketData){
+        .receiver_bias_texels = shadow_config->receiver_bias_texels,
+        .slope_bias_texels = shadow_config->receiver_slope_bias_texels,
+        .normal_offset_texels = shadow_config->normal_offset_texels,
+        .pcf_radius_texels = shadow_config->pcf_radius_texels,
+        .pcf_sample_count = shadow_config->pcf_sample_count,
+        .cascade_blend_fraction = shadow_config->cascade_blend_fraction,
+        .fade_start = fade_start,
+        .fade_end = vkr_max_f32(last_split, fade_start),
+    };
     raster_bias_override = (VkrShadowConfigOverride){
         .depth_bias_constant = shadow_config->depth_bias_constant_factor,
         .depth_bias_slope = shadow_config->depth_bias_slope_factor,

@@ -13,7 +13,7 @@
 #include "renderer/vkr_renderer.h"
 
 /** Version constant for VkrRenderPacket.packet_version validation. */
-#define VKR_RENDER_PACKET_VERSION 13u
+#define VKR_RENDER_PACKET_VERSION 14u
 
 /** Default manual camera exposure for HDR scene presentation. */
 #define VKR_DEFAULT_EXPOSURE 0.30f
@@ -211,6 +211,55 @@ typedef struct VkrShadowConfigOverride {
 } VkrShadowConfigOverride;
 
 /**
+ * @brief One cascade's receiver-facing description.
+ *
+ * These values must describe the matrix actually published for this cascade.
+ * A cascade reused from retained contents publishes the fit it was *rendered*
+ * with, so its texel size, origin, and depth span come from that committed fit
+ * rather than from the current frame's raw fit.
+ *
+ * `light_view_projection` maps world space to the cascade's light clip space.
+ * `split_near_far_texel_depth` is (near, far, world units per texel, fitted
+ * light-space depth span). Near and far are view-space distances along forward
+ * and bound the slice used for cascade selection and cross-fade. The depth span
+ * is the divisor that converts a texel-denominated receiver bias into the
+ * normalized orthographic depth the shadow map stores.
+ * `origin_inv_size_pad` is (light-space origin x, y, 1 / shadow map size, 0).
+ * The origin is in the receiver's reconstructed right/up basis, which is what
+ * makes the rotated kernel's cell hash stable under light-view translation.
+ */
+typedef struct VkrShadowCascadePacketData {
+  Mat4 light_view_projection;
+  Vec4 split_near_far_texel_depth;
+  Vec4 origin_inv_size_pad;
+} VkrShadowCascadePacketData;
+
+/**
+ * @brief Receiver filter and bias state shared by every cascade.
+ *
+ * Every bias here is denominated in shadow-map texels, not in normalized depth.
+ * The receiver converts through the owning cascade's `world_units_per_texel`
+ * and `light_space_depth_span`, so one configured value means the same world
+ * distance in cascade 0 and cascade 3 even though their fitted Z ranges differ
+ * by orders of magnitude. Raster depth bias is a separate control in backend
+ * units and stays in `VkrShadowConfigOverride`.
+ */
+typedef struct VkrShadowReceiverPacketData {
+  float32_t receiver_bias_texels;
+  float32_t slope_bias_texels;
+  /** Texel count converted to a world-space normal offset before projection. */
+  float32_t normal_offset_texels;
+  float32_t pcf_radius_texels;
+  /** Must pass vkr_shadow_pcf_sample_count_supported() at the cold boundary. */
+  uint32_t pcf_sample_count;
+  /** Fraction of a cascade's span spent cross-fading into the next one. */
+  float32_t cascade_blend_fraction;
+  /** View distances over which shadow strength falls to zero. */
+  float32_t fade_start;
+  float32_t fade_end;
+} VkrShadowReceiverPacketData;
+
+/**
  * @brief Payload for the shadow pass across cascades.
  *
  * cascade_count must be in [1, VKR_SHADOW_CASCADE_COUNT_MAX].
@@ -219,8 +268,8 @@ typedef struct VkrShadowPassPayload {
   uint32_t cascade_count;
   /** Bit i is set only when cascade i must execute its graph pass. */
   uint32_t cascade_render_mask;
-  Mat4 light_view_proj[VKR_SHADOW_CASCADE_COUNT_MAX];
-  float32_t split_depths[VKR_SHADOW_CASCADE_COUNT_MAX];
+  VkrShadowCascadePacketData cascades[VKR_SHADOW_CASCADE_COUNT_MAX];
+  VkrShadowReceiverPacketData receiver;
   const VkrShadowConfigOverride *config_override;
 } VkrShadowPassPayload;
 
