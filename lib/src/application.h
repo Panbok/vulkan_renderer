@@ -204,7 +204,7 @@ typedef struct Application {
   ApplicationEditorViewport editor_viewport;
   const VkrCaptureBatchRequest *capture_request;
   VkrRendererError last_renderer_error;
-  /* Per-pass GPU timing is owned by `metrics->config.pass_gpu_timings`. */
+  /* GPU timing policy is owned by `metrics->config`. */
 } Application;
 
 /**
@@ -1356,10 +1356,14 @@ void application_draw_frame(Application *application, float64_t delta) {
   // recorded. A second copy could drift and make a report claim timestamps
   // were on for a run that never took one, which would silently mislabel the
   // run's comparison configuration.
-  const bool8_t gpu_timing = application->metrics->config.pass_gpu_timings;
+  const bool8_t pass_gpu_timing = application->metrics->config.pass_gpu_timings;
+  const bool8_t submission_gpu_timing =
+      application->metrics->config.submission_gpu_timings;
+  const bool8_t gpu_timing = pass_gpu_timing || submission_gpu_timing;
   VkrGpuDebugPayload debug_payload = {
       .enable_timing = gpu_timing,
-      .capture_pass_timestamps = gpu_timing,
+      .capture_pass_timestamps = pass_gpu_timing,
+      .capture_submission_timing = submission_gpu_timing,
       .shadow_debug_mode = application->renderer.shadow_debug_mode,
       .capture = application->capture_request,
   };

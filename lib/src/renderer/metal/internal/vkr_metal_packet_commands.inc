@@ -10,15 +10,77 @@ vkr_internal bool8_t vkr_metal_packet_wait(VkrMetalPacketRenderer *renderer,
 }
 
 vkr_internal void
+vkr_metal_packet_cache_completed_result(VkrMetalPacketRenderer *renderer,
+                                        const VkrMetalPacketResult *result) {
+  renderer->completed_timing_results[renderer->next_completed_timing] = *result;
+  renderer->next_completed_timing = (renderer->next_completed_timing + 1u) %
+                                    VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY;
+}
+
+vkr_internal VkrMetalPacketCommitFeedbackRecord *
+vkr_metal_packet_acquire_commit_feedback(VkrMetalPacketRenderer *renderer) {
+  for (uint32_t offset = 0u; offset < VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY;
+       ++offset) {
+    const uint32_t index = (renderer->next_commit_feedback + offset) %
+                           VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY;
+    VkrMetalPacketCommitFeedbackRecord *record =
+        &renderer->commit_feedback_records[index];
+    if (record->in_use)
+      continue;
+    record->result = (VkrMetalPacketResult){0};
+    record->gpu_start_time = 0.0;
+    record->gpu_end_time = 0.0;
+    record->has_error = false_v;
+    vkr_atomic_bool_store(&record->feedback_ready, false_v,
+                          VKR_MEMORY_ORDER_RELAXED);
+    vkr_atomic_bool_store(&record->result_ready, false_v,
+                          VKR_MEMORY_ORDER_RELAXED);
+    [record->options addFeedbackHandler:record->handler];
+    record->in_use = true_v;
+    renderer->next_commit_feedback =
+        (index + 1u) % VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY;
+    return record;
+  }
+  return NULL;
+}
+
+vkr_internal void
+vkr_metal_packet_harvest_commit_feedback(VkrMetalPacketRenderer *renderer) {
+  for (uint32_t i = 0u; i < VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY; ++i) {
+    VkrMetalPacketCommitFeedbackRecord *record =
+        &renderer->commit_feedback_records[i];
+    if (!record->in_use ||
+        !vkr_atomic_bool_load(&record->feedback_ready,
+                              VKR_MEMORY_ORDER_ACQUIRE) ||
+        !vkr_atomic_bool_load(&record->result_ready, VKR_MEMORY_ORDER_ACQUIRE))
+      continue;
+    VkrMetalPacketResult *result = &record->result;
+    const CFTimeInterval duration =
+        record->gpu_end_time - record->gpu_start_time;
+    if (!record->has_error && isfinite(record->gpu_start_time) &&
+        isfinite(record->gpu_end_time) && record->gpu_start_time > 0.0 &&
+        duration > 0.0 &&
+        duration <= (CFTimeInterval)UINT64_MAX / 1000000000.0) {
+      result->gpu_submission_ns = (uint64_t)(duration * 1000000000.0 + 0.5);
+      result->gpu_submission_valid = true_v;
+      result->gpu_submission_unavailable_reason =
+          VKR_RENDERER_IMPL_GPU_TIMING_REASON_NONE;
+    } else {
+      result->gpu_submission_ns = 0u;
+      result->gpu_submission_valid = false_v;
+      result->gpu_submission_unavailable_reason =
+          VKR_RENDERER_IMPL_GPU_TIMING_REASON_FEEDBACK_ERROR;
+    }
+    vkr_metal_packet_cache_completed_result(renderer, result);
+    record->in_use = false_v;
+  }
+}
+
+vkr_internal void
 vkr_metal_packet_cache_slot_result(VkrMetalPacketRenderer *renderer,
                                    VkrMetalPacketCommandSlot *slot) {
   if (!slot->result_pending || slot->result_collected)
     return;
-  if (slot->timing_requested) {
-    vkr_metal_packet_collect_pass_timings(
-        renderer, slot->timestamp_heap, slot->timestamp_entry_count,
-        slot->timestamp_pass_entry_count, &slot->pending_result);
-  }
   if (slot->gpu_draw_diagnostics_requested &&
       slot->gpu_draw_diagnostics_readback) {
     vkr_metal_packet_decode_gpu_draw_diagnostics(
@@ -43,10 +105,13 @@ vkr_metal_packet_cache_slot_result(VkrMetalPacketRenderer *renderer,
     }
     slot->pending_result.has_transmission_coverage = true_v;
   }
-  renderer->completed_timing_results[renderer->next_completed_timing] =
-      slot->pending_result;
-  renderer->next_completed_timing =
-      (renderer->next_completed_timing + 1u) % renderer->command_slot_count;
+  if (slot->commit_feedback) {
+    slot->commit_feedback->result = slot->pending_result;
+    vkr_atomic_bool_store(&slot->commit_feedback->result_ready, true_v,
+                          VKR_MEMORY_ORDER_RELEASE);
+  } else {
+    vkr_metal_packet_cache_completed_result(renderer, &slot->pending_result);
+  }
   slot->result_collected = true_v;
 }
 
@@ -59,12 +124,13 @@ vkr_metal_packet_cache_ready_timings(VkrMetalPacketRenderer *renderer)
     if (slot->submit_value != 0 && slot->submit_value <= completed)
       vkr_metal_packet_cache_slot_result(renderer, slot);
   }
+  vkr_metal_packet_harvest_commit_feedback(renderer);
 }
 
 vkr_internal const VkrMetalPacketResult *
 vkr_metal_packet_find_completed_timing(const VkrMetalPacketRenderer *renderer,
                                        uint64_t submit_value) {
-  for (uint32_t i = 0; i < renderer->command_slot_count; ++i) {
+  for (uint32_t i = 0; i < VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY; ++i) {
     const VkrMetalPacketResult *result = &renderer->completed_timing_results[i];
     if (result->submit_value == submit_value)
       return result;
@@ -91,11 +157,9 @@ vkr_internal bool8_t vkr_metal_packet_complete_command_slot(
   [slot->allocator reset];
   slot->submit_value = 0;
   slot->resource_reuse_submit_value = 0;
-  slot->timestamp_entry_count = 0;
-  slot->timestamp_pass_entry_count = 0;
   slot->result_pending = false_v;
   slot->result_collected = false_v;
-  slot->timing_requested = false_v;
+  slot->commit_feedback = NULL;
   slot->gpu_draw_diagnostics_readback = NULL;
   slot->transmission_coverage_readback = NULL;
   slot->shadow_cascade_count = 0u;
@@ -120,7 +184,6 @@ vkr_internal bool8_t vkr_metal_packet_acquire_command_slot(
   renderer->active_command_slot = slot;
   renderer->command_allocator = slot->allocator;
   renderer->command_buffer = slot->buffer;
-  renderer->timestamp_heap = slot->timestamp_heap;
   return true_v;
 }
 
@@ -130,7 +193,6 @@ vkr_internal void vkr_metal_packet_release_unsubmitted_command_slot(
   renderer->active_command_slot = NULL;
   renderer->command_allocator = nil;
   renderer->command_buffer = nil;
-  renderer->timestamp_heap = nil;
 }
 
 vkr_internal void
@@ -138,7 +200,6 @@ vkr_metal_packet_detach_active_command_slot(VkrMetalPacketRenderer *renderer) {
   renderer->active_command_slot = NULL;
   renderer->command_allocator = nil;
   renderer->command_buffer = nil;
-  renderer->timestamp_heap = nil;
 }
 
 vkr_internal void

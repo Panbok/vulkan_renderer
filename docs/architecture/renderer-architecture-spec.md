@@ -386,7 +386,7 @@ restricted to specular reflection rays.
 | Pipeline cache | Implemented per backend | Disk-backed Vulkan driver cache and Metal pipeline archive |
 | Metrics registry and snapshot export | Implemented | Bounded typed slots, MPSC cold-event ring, triple-buffered snapshots, renderer catalog/validity, explicit GPU allocation-owner aggregates, metrics-backed HUD, atomic `--metrics-json`, and harness aggregation |
 | Renderer automation harness | Implemented | Strict cases/profiles, deterministic cameras, isolated repetitions, dependency-resolved boot, authoritative evidence policies, metric/pass/event aggregation, atomic artifacts, direct and auxiliary captures, canonical comparison/diffs, separated `autotest`, guarded immutable baselines, target-neutral windowed or true surface-free offscreen execution with actual configuration provenance, and a sorted transitive scene-content manifest—including prepared glTF material files, generated textures, and present packed siblings—whose digest participates in workload identity |
-| Cascaded shadow maps | Implemented, partial quality | Four-cascade default with fit hysteresis and backend-neutral raster-bias lowering; cutout casters use the alpha-tested path, and opt-in scene-bounds Z fit clips caster bounds against each final cascade XY rectangle. Static/dynamic caster generations feed committed per-target-image retained history; guard-contained static cascades omit their authored graph passes, while dynamic overlap, incomplete publication, invalid retained contents, or signature drift fail closed. P0 CPU scopes and P3B reuse/force counters ship on both backends. Local dirty-tree Bistro evidence reduced realized shadow GPU work from 9.197 to 0.663 ms/frame, but clean authoritative and Vulkan runtime evidence remain open. Receiver quality (P7) ships: a rotated Poisson PCF kernel through a comparison sampler at 1/4/9/16/32 taps from one shared progressive table, a nine-tap uniform-region early out at 16 taps or more, texel-denominated constant/slope/normal-offset bias converted through each cascade's own texel size and fitted depth span, cascade cross-fade, and max-distance fade. Reused cascades publish the fit they were rendered with. Split lambda, map size, and shadow distance are unchanged and remain separate quality experiments. The shipped tap counts (16 high, 9 balanced) are design starting points, not measured selections: the five-lane GPU sweep runs but `Lighting.Deferred` timing intermittently collapses to ~0.012 ms for whole repetitions, so no receiver cost figure is available |
+| Cascaded shadow maps | Implemented, partial quality | Four-cascade default with fit hysteresis and backend-neutral raster-bias lowering; cutout casters use the alpha-tested path, and opt-in scene-bounds Z fit clips caster bounds against each final cascade XY rectangle. Static/dynamic caster generations feed committed per-target-image retained history; guard-contained static cascades omit their authored graph passes, while dynamic overlap, incomplete publication, invalid retained contents, or signature drift fail closed. P0 CPU scopes and P3B reuse/force counters ship on both backends. Local dirty-tree Bistro evidence reduced realized shadow GPU work from 9.197 to 0.663 ms/frame, but clean authoritative and Vulkan runtime evidence remain open. Receiver quality (P7) ships: a rotated Poisson PCF kernel through a comparison sampler at 1/4/9/16/32 taps from one shared progressive table, a nine-tap uniform-region early out at 16 taps or more, texel-denominated constant/slope/normal-offset bias converted through each cascade's own texel size and fitted depth span, cascade cross-fade, and max-distance fade. Reused cascades publish the fit they were rendered with. Split lambda, map size, and shadow distance are unchanged and remain separate quality experiments. The shipped tap counts (16 high, 9 balanced) are design starting points, not measured selections. Metal per-pass timing is unavailable, but exact whole-submission timing now permits a matched end-to-end tap sweep; that rerun remains open |
 | PBR materials | Implemented, evolving | Metallic-roughness and texture slots plus prepared, cached specular-glossiness lowering with retained dielectric F0/F90 response; transmission adds IOR, volume, attenuation, and scene-color refraction while clearcoat and sheen remain absent |
 | IBL | Implemented, partial integration | HDR/cubemap sources, prepared RGBA16F bakes, global environment, and two fragment-weighted local probes per draw ship; bake work remains undeclared to the graph and explicitly barriered |
 | glTF and scene loading | Implemented | CPU async pipeline; nested texture URIs and sidecars resolve without flattening; UVs lower once to VKR convention; point, spot, and directional punctual lights import through the scene transform into a stable 128-light table with a fragment-local 384-cell bitmask grid; frame-path uploads measured non-blocking |
@@ -399,9 +399,10 @@ restricted to specular reflection rays.
 | Draw batching | GPU-owned world submission | Opaque, cutout, transmission, and shadow commands are compacted into backend-native indirect buckets. Ordinary blend remains ordered and direct |
 | Multi-draw indirect | Implementation-owned | Metal executes GPU-encoded ICB ranges and Vulkan executes fixed-partition indirect-count draws; there is no generic CPU indirect subsystem or direct world fallback |
 | Compute dispatch | Implemented; production Metal and Vulkan deferred kernels | Typed executors carry validated direct or indirect launch descriptors without per-frame name lookup. Metal P4/P8/P10/P12/P14 uses graph-declared classify, prefix, ICB encode, G-buffer resolve, deferred-lighting, fused-transmission, and HZB-reduction kernels. Vulkan P5/P9/P11/P13/P15 provides classify/prefix/encode, G-buffer, lighting, transmission, coverage, and HZB kernels plus indirect-count raster, with its opaque and transmission shading sharing the forward fragment shader's lighting helpers and surface reconstruction; P20 owner evidence is accepted |
+| GPU timing | Implemented with backend-specific scope | Vulkan retains per-pass query timing. Metal per-pass timing is explicitly unavailable because command-buffer markers cannot attribute overlapping encoders. Metal publishes exact `gpu.submission` start-to-end latency from `MTL4CommitFeedback`; the harness associates asynchronous completions with their source frames and drains only after the measured window |
 | Device-memory suballocation | Implemented | Vulkan uses keyed DEVICE, UPLOAD, and READBACK pools backed by `vkr_gpu_memory`; Metal uses the same range/submit cores through its placement adapter. Logical and physical totals, peaks, retirement, failure classes, and capacity lower into renderer metrics. |
-| Bindless resource model | Implemented | Metal 4 and Vulkan 1.4 use GPU-addressed buffers, backend-native texture/sampler rows, completion-gated publication/retirement, authored graph lowering, and shared memory/submit/slot/capture cores. Immutable GPU material rows carry PBR parameters; each non-empty indexed packet pass publishes one 448-byte Metal frame root (464-byte Vulkan) and each retained draw references geometry/visible tables through a reflected 48-byte draw root. Shared flags give lighting, IBL readiness, and transmission identical shader semantics. Packet version 14 carries the bounded opaque/cutout/transmission GPU-candidate streams, packetized shadow-debug state, feature-local blend/text payloads, no CPU opaque/transmission/shadow draw lists, and the backend-neutral per-cascade and shared receiver-quality blocks that replaced the frame root's single global shadow bias. Corrected Metal pixels are owner-accepted, though no replacement golden generation is accepted; Vulkan is the sole Vulkan renderer after V7. Native Apple M1 Pro reflection, focused Metal API/GPU validation, and exact text/picking captures pass for the changed root ABI; the bindless-renderer audit records the evidence. |
-| Deferred visibility-buffer migration | Implemented through P21 | Both backends execute one topology: bounded GPU candidate classification and indirect submission for camera/cascade views; opaque visibility, G-buffer resolve, HDR lighting, HZB, picking, and four-layer transmission; completion-gated coverage and diagnostics. P21 removed the selector, legacy graph branch, CPU opaque/transmission/shadow draw construction, fallback routes, backend executors/pipelines/shaders, and dual-path metrics/tests. Packet version 14 rejects invalid or over-capacity input before recording. Ordinary blend, world/UI text, UI, post, and their picking coverage remain narrow feature passes. The accepted P20 Windows evidence and visual threshold remain the migration oracle. The native Windows Vulkan P21 gate passed on 2026-08-21 after repairing a retirement defect that made the bounded geometry/material publication boundary fail command recording instead of omitting the affected candidates for the frame; a malformed submesh index is still an explicit pre-recording error. P19 is Metal-only and default-on after its scan/finalize consolidation; Vulkan retains full-screen transmission. |
+| Bindless resource model | Implemented | Metal 4 and Vulkan 1.4 use GPU-addressed buffers, backend-native texture/sampler rows, completion-gated publication/retirement, authored graph lowering, and shared memory/submit/slot/capture cores. Immutable GPU material rows carry PBR parameters; each non-empty indexed packet pass publishes one 448-byte Metal frame root (464-byte Vulkan) and each retained draw references geometry/visible tables through a reflected 48-byte draw root. Shared flags give lighting, IBL readiness, and transmission identical shader semantics. Packet version 15 carries the bounded opaque/cutout/transmission GPU-candidate streams, packetized shadow-debug and independent pass/submission timing requests, feature-local blend/text payloads, no CPU opaque/transmission/shadow draw lists, and the backend-neutral per-cascade and shared receiver-quality blocks that replaced the frame root's single global shadow bias. Corrected Metal pixels are owner-accepted, though no replacement golden generation is accepted; Vulkan is the sole Vulkan renderer after V7. Native Apple M1 Pro reflection, focused Metal API/GPU validation, and exact text/picking captures pass for the changed root ABI; the bindless-renderer audit records the evidence. |
+| Deferred visibility-buffer migration | Implemented through P21 | Both backends execute one topology: bounded GPU candidate classification and indirect submission for camera/cascade views; opaque visibility, G-buffer resolve, HDR lighting, HZB, picking, and four-layer transmission; completion-gated coverage and diagnostics. P21 removed the selector, legacy graph branch, CPU opaque/transmission/shadow draw construction, fallback routes, backend executors/pipelines/shaders, and dual-path metrics/tests. Packet version 15 rejects invalid or over-capacity input before recording. Ordinary blend, world/UI text, UI, post, and their picking coverage remain narrow feature passes. The accepted P20 Windows evidence and visual threshold remain the migration oracle. The native Windows Vulkan P21 gate passed on 2026-08-21 after repairing a retirement defect that made the bounded geometry/material publication boundary fail command recording instead of omitting the affected candidates for the frame; a malformed submesh index is still an explicit pre-recording error. P19 is Metal-only and default-on after its scan/finalize consolidation; Vulkan retains full-screen transmission. |
 | Vulkan V1–V4 migration | Complete for RX 6700 XT | V1 characterization and V2's selected strategy are complete on macOS and Windows. V3 extracted the memory, submit-ring, and shared ABI cores alongside their production Vulkan callers and passes native window resize with reacquisition and retired-swapchain completion proof. V4 extracted the slot table, added completion-gated asset publication, and moved geometry, staging, images, startup buffers, and readback into keyed dynamic pools with complete logical/physical metrics. Prepared and writable initialization records before the next frame draw, staging retirement uses that submit value, publication dirty ranges flush once per backing buffer, and logical totals return to baseline. MoltenVK cannot execute the descriptor-buffer path. ADR-024's required cross-platform extraction witnesses now pass. |
 | Vulkan V5–V7 | Implemented; post-V7 target rerun passes | V5 lowers the authored graph to synchronization2/dynamic rendering and implements all packet pass/capture/timing categories. V6 completed selection, cache, lifecycle, metrics, and native RX 6700 XT validation. V7 removed the Vulkan 1.2 path, temporary selector, shaders/manifests, legacy frontend systems, interface/adaptor, and graph residue. CPU and Metal gates pass after deletion; fresh RX 6700 XT Debug/Release whole-graph, synchronization-validation, and GPU-assisted witnesses pass. |
 | HDR/tonemap/post chain | Implemented, initial | RGBA16F fullscreen/editor scene color, packet-carried manual exposure (default `0.30`), ACES-fitted tonemap, and exposure-equivalent canonical HDR capture; automatic exposure and additional post effects are absent |
@@ -528,51 +529,60 @@ Current priorities after V7 are:
 3. Establish matched Release evidence before making any performance claim about
    the two surviving implementations or the V7 deletion.
 3b. **Per-pass GPU timing on Metal does not measure per-pass work.** Both
-   timestamps are written with
+   timestamps were historically written with
    `[MTL4CommandBuffer writeTimestampIntoHeap:atIndex:]`, outside the encoder.
-   Apple documents that call as capturing "a timestamp after work prior to this
-   command in the command buffer is complete. Work after this call may or may
-   not have started." Under Metal 4's overlapping encoders that interval can
-   measure command-stream stall rather than pass duration. Two repetitions of
-   one binary with **bit-identical work volume** (84,645 indirect commands,
-   65,269 visible) and `frame.wall` 4.4% apart attributed their GPU time 45%
-   differently (per-frame pass totals 20.700 ms against 11.280 ms);
-   `Lighting.Deferred` alone read 6.2003 ms and 0.0125 ms. Which pass collapses
-   moves between runs, and it predates the receiver-quality work — at `c74d5e7`
-   it hit `HZB.BuildBase`.
+   Under Metal 4's overlapping encoders that interval measured command-stream
+   progress rather than the named pass. Two repetitions of one binary with
+   **bit-identical work volume** (84,645 indirect commands, 65,269 visible) and
+   `frame.wall` 4.4% apart attributed their GPU time 45% differently;
+   `Lighting.Deferred` alone read 6.2003 ms and 0.0125 ms. Which pass collapsed
+   moved between runs, and the defect predated receiver-quality work.
 
-   **Partially mitigated, not repaired.** The renderer brackets the authored
-   pass region with two more command-buffer timestamps. A large shortfall
-   between that interval and the per-pass sum detects the collapse already seen
-   in practice: below `VKR_METAL_PACKET_PASS_TIMING_MIN_COVERAGE`, every pass
-   sample for the frame is published unavailable and the renderer emits one
-   latched warning. Zero-length intervals and intervals outside the region are
-   invalid. This is a one-way defect detector, not a trust gate; the bracket has
-   the same command-buffer-scope limitation as the samples it checks.
+   **False publication is repaired; per-pass capability remains unavailable.**
+   Metal no longer records or resolves command-buffer-scope pass timestamps.
+   Every requested Metal pass sample is invalid with the explicit reason
+   `unsupported_timestamp_scope`; Vulkan per-pass query timing is unchanged.
+   The former coverage bracket and heuristic invalidation path were removed
+   because passing a heuristic built from the same invalid scope could never
+   prove attribution.
 
-   **The documented repair does not work here.** Moving the per-pass timestamps
-   to encoder scope with `writeTimestampWithGranularity:` hangs the GPU: the
-   main thread blocks in
-   `[IOSurfaceSharedEvent waitUntilSignaledValue:timeoutMS:]` and the device
-   never signals. It hangs at both granularities, with compute-only writes, and
-   with graphics left on the legacy path. `MTL4CounterHeap` conforms only to
-   `NSObject`, not `MTLAllocation`, so counter-heap residency is not available
-   as a lever. The cause is unresolved. `MTL4CommitFeedback` can provide exact
-   start/end time for a committed submission and is a candidate independent
-   control total, but it has no per-pass attribution and is not integrated.
-   Its asynchronous callback ownership must be designed against command-slot
-   reuse before it can become a metric.
+   Metal now publishes a separate exact `gpu.submission` duration from
+   `MTL4CommitFeedback.GPUStartTime` and `GPUEndTime`. Sixteen fixed feedback
+   records outlive command-slot reuse. Each owns a precreated commit-options
+   object plus feedback and trailing-ack blocks; because feedback handlers are
+   one-shot, the same retained block is registered again only when its record
+   is recycled. One process-lifetime serial queue runs feedback and publishes
+   readiness from the trailing block, proving the callback has returned before
+   options reuse. Atomic feedback/result halves prevent either completion order
+   from exposing a partial result. The harness maps each asynchronous
+   completion back to its source frame and performs a bounded idle/drain only
+   after the measured window, so
+   measured frames never wait for timing. `gpu.submission` is submission
+   start-to-end latency, not a pass sum or GPU-busy counter; overlapping
+   submissions can make its total exceed wall time.
 
-   Since the mitigation landed, six consecutive repetitions held
-   `Lighting.Deferred` within 0.9% and the guard never fired. That is
-   suggestive, not proof: the collapse was always intermittent, and the
-   invalidation path therefore remains unobserved on a live collapse. A run
-   without the warning only says the heuristic found no large coverage
-   shortfall; it does not make a per-pass Metal GPU number publishable evidence.
-   Diagnosis and the abandoned approach are recorded in
+   `tools/profiles/local-windowed-gpu-submission-single.json` provides a local
+   Metal observation, and
+   `tools/profiles/performance-windowed-gpu-submission.json` owns the clean,
+   five-repetition evidence policy. The flags `gpu_timing` and
+   `submission_gpu_timing` are independent and both participate in comparison
+   identity.
+
+   Encoder-scope attribution remains an investigation, not a production path.
+   The original renderer experiment hung at both granularities, including a
+   compute-only variant. The standalone
+   `vkr_metal_timestamp_diagnostic` does not hang for empty/fill compute
+   encoders, relaxed/precise granularity, residency, 24 encoders, or 30
+   iterations with three rotating slots and reused heaps. However, every
+   encoder pair resolved to a zero-length interval around the fill operation;
+   the diagnostic completes the matrix but exits `invalid_sample`. The reduced
+   sequence therefore provides no valid per-encoder duration. The next
+   diagnostic additions are real shader dispatch, render encoders, and
+   production dependency/residency structure. Until one of those produces
+   strictly positive, stable intervals without a stall, Metal pass timing stays
+   unavailable. The historical trail remains in
    `.scratch/diagnose-lighting-deferred-timestamp-collapse.md` and
-   `.scratch/fix-metal-per-pass-gpu-timing.md`. This still blocks section 11.5
-   of [shadow-cpu-cost-and-csm-rewrite-spec.md](../rendering/shadow-cpu-cost-and-csm-rewrite-spec.md).
+   `.scratch/fix-metal-per-pass-gpu-timing.md`.
 4. Establish a direct same-surface temporal texture-attachment oracle. The
    reported Vulkan-only inversion/swimming defect was a visibility-resolve
    framebuffer-to-NDC Y mismatch: the positive-height Vulkan viewport and

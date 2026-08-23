@@ -50,6 +50,7 @@ typedef struct VkrRendererMetricsPassSample {
   bool8_t culled;
   bool8_t disabled;
   bool8_t gpu_valid;
+  VkrRendererImplGpuTimingReason gpu_unavailable_reason;
 } VkrRendererMetricsPassSample;
 
 /**
@@ -160,6 +161,7 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId upload_device_idle_waits;
   VkrMetricId frame_upload_exhaustions;
   VkrMetricId frame_command_slot_waits;
+  VkrMetricId gpu_submission;
   VkrMetricId backend_present;
 
   VkrMetricId boot_instance;

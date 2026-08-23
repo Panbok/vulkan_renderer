@@ -134,25 +134,6 @@ enum {
   VKR_METAL_PACKET_MAX_PASS_TIMINGS = 64,
 };
 
-/** Diagnostic lower bound for detecting known timestamp-attribution collapse.
-    Passing it does not prove that command-buffer-scope intervals measure their
-    named passes. */
-#define VKR_METAL_PACKET_PASS_TIMING_MIN_COVERAGE 0.85
-
-/** True when the pass sum exposes the known command-buffer timestamp collapse.
-
-    The bracket covers only the authored pass region and has the same loose
-    command-buffer timestamp semantics as the pass markers. This is therefore
-    a one-way detector: true rejects a broken sample, while false is not proof
-    of correct attribution. */
-static INLINE bool8_t vkr_metal_packet_pass_timing_collapse_detected(
-    uint64_t region_begin, uint64_t region_end, uint64_t attributed) {
-  if (region_begin == 0u || region_end <= region_begin)
-    return true_v;
-  return (float64_t)attributed < (float64_t)(region_end - region_begin) *
-                                     VKR_METAL_PACKET_PASS_TIMING_MIN_COVERAGE;
-}
-
 /** Completed Metal timestamp interval for one authored graph pass. */
 typedef struct VkrMetalPacketPassTiming {
   char name[VKR_METAL_PACKET_TIMING_NAME_CAPACITY];
@@ -160,12 +141,16 @@ typedef struct VkrMetalPacketPassTiming {
   float64_t gpu_ms;
   uint32_t pass_index;
   bool8_t valid;
+  VkrRendererImplGpuTimingReason unavailable_reason;
 } VkrMetalPacketPassTiming;
 
 /** CPU-visible evidence returned after the requested readbacks complete. */
 typedef struct VkrMetalPacketResult {
   uint64_t submit_value;
   uint64_t source_frame_index;
+  uint64_t gpu_submission_ns;
+  VkrRendererImplGpuTimingReason gpu_submission_unavailable_reason;
+  bool8_t gpu_submission_valid;
   uint32_t executed_pass_count;
   uint32_t graphics_pass_count;
   uint32_t compute_pass_count;
@@ -226,13 +211,6 @@ typedef struct VkrMetalPacketResult {
   /** Same-frame packet-lowering CPU cost, matching the Vulkan name set. */
   VkrPacketBuildMetrics packet_build;
 } VkrMetalPacketResult;
-
-/** Removes every per-pass GPU sample from a result whose attribution failed. */
-static INLINE void
-vkr_metal_packet_pass_timings_invalidate(VkrMetalPacketResult *result) {
-  for (uint32_t i = 0u; i < result->pass_timing_count; ++i)
-    result->pass_timings[i].valid = false_v;
-}
 
 bool8_t
 vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
@@ -343,7 +321,7 @@ bool8_t vkr_metal_packet_renderer_pass_timings_poll(
     uint32_t *out_count);
 
 /** Copies the newest completed timing result after `after_submit_value`. */
-bool8_t vkr_metal_packet_renderer_pass_timings_poll_latest(
+bool8_t vkr_metal_packet_renderer_submit_result_poll_next(
     VkrMetalPacketRenderer *renderer, uint64_t after_submit_value,
     VkrMetalPacketResult *out_result);
 

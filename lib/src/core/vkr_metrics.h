@@ -210,13 +210,13 @@ typedef struct VkrMetricEventSlot {
 /**
  * @brief Runtime instrumentation policy.
  *
- * Both flags change what a run measures, so both are part of a run's
- * comparison fingerprint and both are reported. `pass_gpu_timings` is
- * authoritative: the render graph asks the registry, it does not keep a
- * second copy of the answer.
+ * These flags change what a run measures, so each is part of a run's
+ * comparison fingerprint and report. The registry is authoritative: packet
+ * construction asks this config instead of keeping a second policy copy.
  */
 typedef struct VkrMetricsConfig {
   bool8_t pass_gpu_timings;
+  bool8_t submission_gpu_timings;
   bool8_t event_subjects;
 } VkrMetricsConfig;
 

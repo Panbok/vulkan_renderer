@@ -40,7 +40,7 @@ bool8_t vkr_metal_packet_renderer_pass_timings_poll(
   return true_v;
 }
 
-bool8_t vkr_metal_packet_renderer_pass_timings_poll_latest(
+bool8_t vkr_metal_packet_renderer_submit_result_poll_next(
     VkrMetalPacketRenderer *renderer, uint64_t after_submit_value,
     VkrMetalPacketResult *out_result) {
   if (!renderer || !out_result)
@@ -49,17 +49,17 @@ bool8_t vkr_metal_packet_renderer_pass_timings_poll_latest(
   if (!@available(macOS 26.0, *))
     return false_v;
   vkr_metal_packet_cache_ready_timings(renderer);
-  const VkrMetalPacketResult *latest = NULL;
-  for (uint32_t i = 0; i < renderer->command_slot_count; ++i) {
+  const VkrMetalPacketResult *next = NULL;
+  for (uint32_t i = 0; i < VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY; ++i) {
     const VkrMetalPacketResult *candidate =
         &renderer->completed_timing_results[i];
     if (candidate->submit_value > after_submit_value &&
-        (!latest || candidate->submit_value > latest->submit_value))
-      latest = candidate;
+        (!next || candidate->submit_value < next->submit_value))
+      next = candidate;
   }
-  if (!latest)
+  if (!next)
     return false_v;
-  *out_result = *latest;
+  *out_result = *next;
   return true_v;
 }
 
@@ -75,6 +75,31 @@ bool8_t vkr_metal_packet_renderer_wait_idle(VkrMetalPacketRenderer *renderer) {
               renderer, &renderer->command_slots[i], false_v))
         return false_v;
     }
+    if (renderer->commit_feedback_records) {
+      const CFTimeInterval deadline =
+          CACurrentMediaTime() +
+          (CFTimeInterval)VKR_METAL_PACKET_TIMEOUT_MS / 1000.0;
+      bool8_t feedback_complete = false_v;
+      do {
+        dispatch_sync(vkr_metal_packet_feedback_queue(), ^{
+                      });
+        feedback_complete = true_v;
+        for (uint32_t i = 0u; i < VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY;
+             ++i) {
+          const VkrMetalPacketCommitFeedbackRecord *record =
+              &renderer->commit_feedback_records[i];
+          if (record->in_use &&
+              !vkr_atomic_bool_load(&record->feedback_ready,
+                                    VKR_MEMORY_ORDER_ACQUIRE)) {
+            feedback_complete = false_v;
+            break;
+          }
+        }
+      } while (!feedback_complete && CACurrentMediaTime() < deadline);
+      if (!feedback_complete)
+        return false_v;
+    }
+    vkr_metal_packet_harvest_commit_feedback(renderer);
     vkr_capture_ring_collect(&renderer->capture_ring,
                              renderer->completion.signaledValue);
     vkr_metal_packet_collect_retired_image_views(
@@ -416,7 +441,16 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
         [slot->transmission_gpu_draw_icb release];
         [slot->buffer release];
         [slot->allocator release];
-        [slot->timestamp_heap release];
+      }
+    }
+    if (renderer->commit_feedback_records) {
+      for (uint32_t i = 0u; i < VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY;
+           ++i) {
+        [renderer->commit_feedback_records[i].options release];
+        if (renderer->commit_feedback_records[i].handler)
+          Block_release(renderer->commit_feedback_records[i].handler);
+        if (renderer->commit_feedback_records[i].ready_handler)
+          Block_release(renderer->commit_feedback_records[i].ready_handler);
       }
     }
     if (renderer->samplers) {

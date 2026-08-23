@@ -97,6 +97,9 @@ typedef struct VkrRendererFrameMetrics {
   VkrWorldBatchMetrics world;
   VkrShadowMetrics shadow;
   VkrPacketBuildMetrics packet_build;
+  uint64_t gpu_submission_ns;
+  VkrMetricReason gpu_submission_unavailable_reason;
+  bool8_t gpu_submission_valid;
   uint64_t backend_present_ns;
   bool8_t backend_present_valid;
 } VkrRendererFrameMetrics;

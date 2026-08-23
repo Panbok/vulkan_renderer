@@ -1160,6 +1160,26 @@ VkrRendererBackendType
 vkr_renderer_get_backend_type(VkrRendererFrontendHandle renderer);
 bool32_t vkr_renderer_is_frame_active(VkrRendererFrontendHandle renderer);
 VkrRendererError vkr_renderer_wait_idle(VkrRendererFrontendHandle renderer);
+
+/** One completed GPU queue submission, associated with its source frame. */
+typedef struct VkrGpuSubmissionTiming {
+  uint64_t submit_serial;
+  uint64_t source_frame_index;
+  uint64_t duration_ns;
+  VkrMetricReason unavailable_reason;
+  bool8_t valid;
+} VkrGpuSubmissionTiming;
+
+/**
+ * Polls the earliest retained submission timing newer than
+ * `after_submit_serial`. The call is nonblocking; `false` means no newer
+ * completion is ready.
+ */
+bool8_t
+vkr_renderer_gpu_submission_timing_poll(VkrRendererFrontendHandle renderer,
+                                        uint64_t after_submit_serial,
+                                        VkrGpuSubmissionTiming *out_timing);
+
 void vkr_renderer_get_device_information(
     VkrRendererFrontendHandle renderer,
     VkrDeviceInformation *device_information, Arena *temp_arena);

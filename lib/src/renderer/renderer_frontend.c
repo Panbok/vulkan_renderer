@@ -39,6 +39,25 @@ _Static_assert(VKR_RENDERER_IMPL_SHADOW_CASCADE_COUNT ==
                    VKR_SHADOW_CASCADE_COUNT_MAX,
                "backend-neutral and frontend cascade counts must match");
 
+static VkrMetricReason
+vkr_renderer_gpu_timing_metric_reason(VkrRendererImplGpuTimingReason reason) {
+  switch (reason) {
+  case VKR_RENDERER_IMPL_GPU_TIMING_REASON_DISABLED:
+    return VKR_METRIC_REASON_DISABLED;
+  case VKR_RENDERER_IMPL_GPU_TIMING_REASON_NOT_READY:
+    return VKR_METRIC_REASON_NOT_READY;
+  case VKR_RENDERER_IMPL_GPU_TIMING_REASON_UNSUPPORTED_TIMESTAMP_SCOPE:
+    return VKR_METRIC_REASON_UNSUPPORTED;
+  case VKR_RENDERER_IMPL_GPU_TIMING_REASON_FEEDBACK_UNAVAILABLE:
+    return VKR_METRIC_REASON_PUBLICATION_DROPPED;
+  case VKR_RENDERER_IMPL_GPU_TIMING_REASON_FEEDBACK_ERROR:
+    return VKR_METRIC_REASON_NOT_SAMPLED;
+  case VKR_RENDERER_IMPL_GPU_TIMING_REASON_NONE:
+  default:
+    return VKR_METRIC_REASON_NONE;
+  }
+}
+
 static void
 vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
                                      VkrRendererImplSubmitResult *destination) {
@@ -48,6 +67,10 @@ vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
   *destination = (VkrRendererImplSubmitResult){
       .submit_value = source->submit_value,
       .source_frame_index = source->source_frame_index,
+      .gpu_submission_ns = source->gpu_submission_ns,
+      .gpu_submission_unavailable_reason =
+          source->gpu_submission_unavailable_reason,
+      .gpu_submission_valid = source->gpu_submission_valid,
       .executed_pass_count = source->executed_pass_count,
       .indexed_draw_count = source->indexed_draw_count,
       .shadow_draw_count = source->shadow_draw_count,
@@ -177,6 +200,7 @@ vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
     destination_timing->gpu_ms = source_timing->gpu_ms;
     destination_timing->pass_index = source_timing->pass_index;
     destination_timing->valid = source_timing->valid;
+    destination_timing->unavailable_reason = source_timing->unavailable_reason;
   }
 }
 #endif
@@ -1707,7 +1731,7 @@ static bool8_t renderer_impl_metal_poll_submit_result(
   RendererFrontend *renderer = state;
   VkrMetalPacketResult result = {0};
   if (!out_result ||
-      !vkr_metal_packet_renderer_pass_timings_poll_latest(
+      !vkr_metal_packet_renderer_submit_result_poll_next(
           renderer->metal_renderer, after_submit_value, &result)) {
     return false_v;
   }
@@ -1810,6 +1834,27 @@ bool32_t vkr_renderer_is_frame_active(VkrRendererFrontendHandle renderer) {
 
 VkrRendererError vkr_renderer_wait_idle(VkrRendererFrontendHandle renderer) {
   return renderer->impl.ops->wait_idle(renderer->impl.state);
+}
+
+bool8_t
+vkr_renderer_gpu_submission_timing_poll(VkrRendererFrontendHandle renderer,
+                                        uint64_t after_submit_serial,
+                                        VkrGpuSubmissionTiming *out_timing) {
+  if (!renderer || !out_timing)
+    return false_v;
+  VkrRendererImplSubmitResult result = {0};
+  if (!renderer->impl.ops->poll_submit_result(renderer->impl.state,
+                                              after_submit_serial, &result))
+    return false_v;
+  *out_timing = (VkrGpuSubmissionTiming){
+      .submit_serial = result.submit_value,
+      .source_frame_index = result.source_frame_index,
+      .duration_ns = result.gpu_submission_ns,
+      .unavailable_reason = vkr_renderer_gpu_timing_metric_reason(
+          result.gpu_submission_unavailable_reason),
+      .valid = result.gpu_submission_valid,
+  };
+  return true_v;
 }
 
 uint64_t vkr_renderer_get_submit_serial(VkrRendererFrontendHandle renderer) {
@@ -2188,6 +2233,11 @@ renderer_impl_metal_submit_packet(void *state, const VkrRenderPacket *packet,
     rf->timing_result.source_frame_index = packet->frame.frame_index;
   }
   const VkrRendererImplSubmitResult *observed = &rf->timing_result;
+  rf->frame_metrics.gpu_submission_ns = observed->gpu_submission_ns;
+  rf->frame_metrics.gpu_submission_valid = observed->gpu_submission_valid;
+  rf->frame_metrics.gpu_submission_unavailable_reason =
+      vkr_renderer_gpu_timing_metric_reason(
+          observed->gpu_submission_unavailable_reason);
   rf->frame_metrics.world.draws_collected = observed->indexed_draw_count;
   rf->frame_metrics.world.opaque_draws = observed->opaque_draw_count;
   rf->frame_metrics.world.transmission_draws =

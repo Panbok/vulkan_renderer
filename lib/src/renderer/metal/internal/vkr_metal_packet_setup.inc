@@ -1183,6 +1183,7 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
         vkr_metal_packet_render_passes_bytes(renderer),
         vkr_metal_packet_command_slots_bytes(renderer),
         vkr_metal_packet_timing_results_bytes(renderer),
+        vkr_metal_packet_commit_feedback_bytes(renderer),
         vkr_metal_packet_retired_image_views_bytes(renderer),
         vkr_metal_packet_pass_labels_bytes(renderer),
     };
@@ -1226,60 +1227,80 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
         vkr_metal_packet_record_alloc(records, record_bytes[10], true_v);
     renderer->completed_timing_results =
         vkr_metal_packet_record_alloc(records, record_bytes[11], true_v);
-    renderer->retired_image_views =
+    renderer->commit_feedback_records =
         vkr_metal_packet_record_alloc(records, record_bytes[12], true_v);
-    renderer->pass_labels =
+    renderer->retired_image_views =
         vkr_metal_packet_record_alloc(records, record_bytes[13], true_v);
+    renderer->pass_labels =
+        vkr_metal_packet_record_alloc(records, record_bytes[14], true_v);
     if (!renderer->images || !renderer->graph_buffers ||
         !renderer->graph_buffer_instances || !renderer->meshes ||
         !renderer->submeshes || !renderer->packet_materials ||
         !renderer->textures || !renderer->samplers || !renderer->text_uploads ||
         !renderer->render_passes || !renderer->command_slots ||
-        !renderer->completed_timing_results || !renderer->retired_image_views ||
+        !renderer->completed_timing_results ||
+        !renderer->commit_feedback_records || !renderer->retired_image_views ||
         !renderer->pass_labels) {
       vkr_metal_packet_renderer_destroy(renderer);
       return false_v;
     }
     renderer->device = [MTLCreateSystemDefaultDevice() retain];
-    renderer->queue = [renderer->device newMTL4CommandQueue];
+    MTL4CommandQueueDescriptor *queue_descriptor =
+        [MTL4CommandQueueDescriptor new];
+    queue_descriptor.feedbackQueue = vkr_metal_packet_feedback_queue();
+    renderer->queue =
+        [renderer->device newMTL4CommandQueueWithDescriptor:queue_descriptor
+                                                      error:nil];
+    [queue_descriptor release];
     renderer->completion = [renderer->device newSharedEvent];
-    MTL4CounterHeapDescriptor *timestamp_descriptor =
-        [MTL4CounterHeapDescriptor new];
-    timestamp_descriptor.type = MTL4CounterHeapTypeTimestamp;
-    /* One extra pair beyond the per-pass entries brackets the whole command
-       buffer. The per-pass breakdown is cross-checked against it, because a
-       per-pass number that silently stops measuring its pass is otherwise
-       indistinguishable from a fast pass. */
-    timestamp_descriptor.count = (NSUInteger)(config->max_passes + 1u) * 2u;
     bool8_t command_slots_created = renderer->command_slots != NULL;
     for (uint32_t i = 0;
          command_slots_created && i < renderer->command_slot_count; ++i) {
       VkrMetalPacketCommandSlot *slot = &renderer->command_slots[i];
       slot->allocator = [renderer->device newCommandAllocator];
       slot->buffer = [renderer->device newCommandBuffer];
-      slot->timestamp_heap =
-          [renderer->device newCounterHeapWithDescriptor:timestamp_descriptor
-                                                   error:nil];
-      command_slots_created =
-          slot->allocator && slot->buffer && slot->timestamp_heap;
+      command_slots_created = slot->allocator && slot->buffer;
     }
-    renderer->timestamp_frequency = [renderer->device queryTimestampFrequency];
-    [timestamp_descriptor release];
+    bool8_t commit_feedback_created = renderer->commit_feedback_records != NULL;
+    for (uint32_t i = 0u; commit_feedback_created &&
+                          i < VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY;
+         ++i) {
+      VkrMetalPacketCommitFeedbackRecord *record =
+          &renderer->commit_feedback_records[i];
+      record->options = [MTL4CommitOptions new];
+      if (!record->options) {
+        commit_feedback_created = false_v;
+        break;
+      }
+      record->ready_handler = Block_copy(^{
+        vkr_atomic_bool_store(&record->feedback_ready, true_v,
+                              VKR_MEMORY_ORDER_RELEASE);
+      });
+      record->handler = Block_copy(^(id<MTL4CommitFeedback> feedback) {
+        record->gpu_start_time = feedback.GPUStartTime;
+        record->gpu_end_time = feedback.GPUEndTime;
+        record->has_error = feedback.error != nil ? true_v : false_v;
+        dispatch_async(vkr_metal_packet_feedback_queue(),
+                       record->ready_handler);
+      });
+      if (!record->handler || !record->ready_handler)
+        commit_feedback_created = false_v;
+    }
     if (config->target_kind == VKR_METAL_PACKET_TARGET_WINDOW)
       renderer->layer = [(CAMetalLayer *)config->metal_layer retain];
-    bool8_t passed = renderer->graph_frame_arena &&
-                     vkr_allocator_arena(&renderer->graph_frame_allocator) &&
-                     renderer->capture_storage && command_slots_created &&
-                     vkr_capture_ring_init(
-                         &renderer->capture_ring, config->capture_ring_capacity,
-                         config->capture_max_batch_bytes,
-                         renderer->capture_storage, capture_storage_size) &&
-                     renderer->device &&
-                     [renderer->device supportsFamily:MTLGPUFamilyMetal4] &&
-                     vkr_metal_packet_create_compiler(
-                         renderer, config->pipeline_archive_path) &&
-                     renderer->queue && renderer->completion &&
-                     renderer->timestamp_frequency > 0;
+    bool8_t passed =
+        renderer->graph_frame_arena &&
+        vkr_allocator_arena(&renderer->graph_frame_allocator) &&
+        renderer->capture_storage && command_slots_created &&
+        vkr_capture_ring_init(
+            &renderer->capture_ring, config->capture_ring_capacity,
+            config->capture_max_batch_bytes, renderer->capture_storage,
+            capture_storage_size) &&
+        renderer->device &&
+        [renderer->device supportsFamily:MTLGPUFamilyMetal4] &&
+        vkr_metal_packet_create_compiler(renderer,
+                                         config->pipeline_archive_path) &&
+        renderer->queue && renderer->completion && commit_feedback_created;
     if (config->target_kind == VKR_METAL_PACKET_TARGET_WINDOW) {
       passed = passed && renderer->layer;
       renderer->actual_present_mode =

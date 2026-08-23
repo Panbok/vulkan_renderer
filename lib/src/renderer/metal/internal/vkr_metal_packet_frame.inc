@@ -1579,14 +1579,12 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   VkrTextureHandle ibl_source = VKR_TEXTURE_HANDLE_INVALID;
   const bool8_t ibl = vkr_metal_packet_ibl_source(packet, &ibl_source);
   const bool8_t ibl_bake = vkr_metal_packet_ibl_needs_bake(renderer, packet);
-  const bool8_t timing_requested = packet->debug &&
-                                   packet->debug->enable_timing &&
-                                   packet->debug->capture_pass_timestamps;
-  if (timing_requested) {
-    [renderer->timestamp_heap
-        invalidateCounterRange:NSMakeRange(0,
-                                           (renderer->max_passes + 1u) * 2u)];
-  }
+  const bool8_t pass_timing_requested = packet->debug &&
+                                        packet->debug->enable_timing &&
+                                        packet->debug->capture_pass_timestamps;
+  const bool8_t submission_timing_requested =
+      packet->debug && packet->debug->enable_timing &&
+      packet->debug->capture_submission_timing;
   const uint64_t ibl_capture_offset = picking ? 16 : 8;
   const uint64_t ibl_prefilter_capture_offset = ibl_capture_offset + 8;
   const uint64_t probe_size =
@@ -1597,7 +1595,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
       renderer->synchronous_validation_readback && deferred_diagnostics;
   const bool8_t transmission_coverage =
       renderer->prepared_frame.transmission_pending &&
-      (timing_requested ||
+      (pass_timing_requested ||
        renderer->prepared_frame.transmission_compact_enabled);
   const uint64_t deferred_diagnostics_offset =
       vkr_metal_packet_align_up(probe_size, 16u);
@@ -1698,15 +1696,6 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
         renderer->active_command_slot->gpu_draw_icb_residencies[group];
   [renderer->command_buffer useResidencySets:residency_sets
                                        count:residency_set_count];
-  /* Diagnostic bracket around the authored pass region. Command-buffer scope
-     cannot prove pass attribution, but a large shortfall between this interval
-     and the pass sum exposes the known collapse before publication. */
-  if (timing_requested) {
-    [renderer->command_buffer
-        writeTimestampIntoHeap:renderer->timestamp_heap
-                       atIndex:(NSUInteger)renderer->max_passes * 2u];
-  }
-
   const VkrGpuDependency capture_dependency = {
       .src_stages = VKR_GPU_STAGE_COLOR_OUTPUT,
       .dst_stages = VKR_GPU_STAGE_TRANSFER,
@@ -1743,11 +1732,6 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     const CFTimeInterval pass_cpu_begin = CACurrentMediaTime();
     const bool8_t last_present_writer =
         vkr_metal_packet_is_last_present_writer(renderer, order);
-    if (timing_requested) {
-      [renderer->command_buffer
-          writeTimestampIntoHeap:renderer->timestamp_heap
-                         atIndex:(NSUInteger)*pass_index * 2u];
-    }
     if (pass->desc.type == VKR_RG_PASS_TYPE_GRAPHICS) {
       MTL4RenderPassDescriptor *descriptor =
           renderer->render_passes[*pass_index];
@@ -1892,11 +1876,6 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     }
     if (!passed)
       failed_pass = pass;
-    if (timing_requested) {
-      [renderer->command_buffer
-          writeTimestampIntoHeap:renderer->timestamp_heap
-                         atIndex:(NSUInteger)*pass_index * 2u + 1u];
-    }
     if (out_result->pass_timing_count < VKR_METAL_PACKET_MAX_PASS_TIMINGS) {
       VkrMetalPacketPassTiming *timing =
           &out_result->pass_timings[out_result->pass_timing_count++];
@@ -1909,15 +1888,13 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
       timing->pass_index = *pass_index;
       timing->cpu_ms = (CACurrentMediaTime() - pass_cpu_begin) * 1000.0;
       timing->valid = false_v;
+      timing->unavailable_reason =
+          pass_timing_requested
+              ? VKR_RENDERER_IMPL_GPU_TIMING_REASON_UNSUPPORTED_TIMESTAMP_SCOPE
+              : VKR_RENDERER_IMPL_GPU_TIMING_REASON_DISABLED;
     }
     out_result->executed_pass_count++;
   }
-  if (timing_requested) {
-    [renderer->command_buffer
-        writeTimestampIntoHeap:renderer->timestamp_heap
-                       atIndex:(NSUInteger)renderer->max_passes * 2u + 1u];
-  }
-
   id<MTLTexture> present =
       vkr_metal_packet_texture(renderer, renderer->graph->present_image);
   id<MTL4ComputeCommandEncoder> capture_encoder =
@@ -2070,11 +2047,17 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   vkr_metal_packet_mark_graph_buffers_submitted(renderer, submit_value);
   VkrMetalPacketCommandSlot *command_slot = renderer->active_command_slot;
   command_slot->submit_value = submit_value;
-  /* Covers the per-pass entries and the trailing whole-frame bracket. */
-  command_slot->timestamp_entry_count = (renderer->max_passes + 1u) * 2u;
-  command_slot->timestamp_pass_entry_count =
-      (uint32_t)renderer->graph->passes.length * 2u;
-  command_slot->timing_requested = timing_requested;
+  VkrMetalPacketCommitFeedbackRecord *commit_feedback =
+      submission_timing_requested
+          ? vkr_metal_packet_acquire_commit_feedback(renderer)
+          : NULL;
+  command_slot->commit_feedback = commit_feedback;
+  out_result->gpu_submission_unavailable_reason =
+      submission_timing_requested
+          ? (commit_feedback
+                 ? VKR_RENDERER_IMPL_GPU_TIMING_REASON_NOT_READY
+                 : VKR_RENDERER_IMPL_GPU_TIMING_REASON_FEEDBACK_UNAVAILABLE)
+          : VKR_RENDERER_IMPL_GPU_TIMING_REASON_DISABLED;
   command_slot->gpu_draw_diagnostics_requested = deferred_diagnostics;
   command_slot->shadow_cascade_count =
       renderer->prepared_frame.shadow_cascade_count;
@@ -2096,7 +2079,16 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   id<MTL4CommandBuffer> submissions[] = {renderer->command_buffer};
   if (renderer->drawable)
     [renderer->queue waitForDrawable:renderer->drawable];
-  [renderer->queue commit:submissions count:1];
+  out_result->submit_value = submit_value;
+  out_result->source_frame_index = packet->frame.frame_index;
+  command_slot->pending_result = *out_result;
+  command_slot->result_pending = true_v;
+  if (commit_feedback)
+    [renderer->queue commit:submissions
+                      count:1
+                    options:commit_feedback->options];
+  else
+    [renderer->queue commit:submissions count:1];
   [renderer->queue signalEvent:renderer->completion value:submit_value];
   /* Past the commit, so retained contents are now proven to have been written.
      Every earlier failure path returns without reaching here, which is the
@@ -2151,11 +2143,6 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     }
     vkr_capture_ring_collect(&renderer->capture_ring,
                              renderer->completion.signaledValue);
-    if (timing_requested)
-      vkr_metal_packet_collect_pass_timings(
-          renderer, command_slot->timestamp_heap,
-          command_slot->timestamp_entry_count,
-          command_slot->timestamp_pass_entry_count, out_result);
     if (transmission_coverage) {
       VkrMetalPacketTransmissionDiagnostics transmission_diagnostics = {0};
       MemCopy(&transmission_diagnostics,
@@ -2236,8 +2223,6 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
         &renderer->capture_ring, capture_request->request_id,
         renderer->completion.signaledValue, &out_result->capture);
   }
-  out_result->submit_value = submit_value;
-  out_result->source_frame_index = packet->frame.frame_index;
   out_result->packet_build = renderer->packet_build;
   out_result->hzb_history_valid = renderer->prepared_frame.hzb_history_valid;
   out_result->resize_count = renderer->resize_count;
@@ -2252,12 +2237,10 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   vkr_metal_memory_device_get_metrics(renderer->memory, &out_result->memory);
   vkr_metal_material_table_device_get_metrics(renderer->materials,
                                               &out_result->materials);
+  command_slot->pending_result = *out_result;
   if (renderer->synchronous_validation_readback) {
     (void)vkr_metal_packet_complete_command_slot(renderer, command_slot,
                                                  false_v);
-  } else {
-    command_slot->pending_result = *out_result;
-    command_slot->result_pending = true_v;
   }
   vkr_metal_packet_detach_active_command_slot(renderer);
   vkr_metal_packet_finish_frame(renderer, true_v, true_v);

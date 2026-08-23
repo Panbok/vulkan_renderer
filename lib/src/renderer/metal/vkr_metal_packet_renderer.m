@@ -7,7 +7,11 @@
 #import <QuartzCore/CAMetalLayer.h>
 #import <simd/simd.h>
 
+#include <Block.h>
+#include <dispatch/dispatch.h>
+
 #include "core/logger.h"
+#include "core/vkr_atomic.h"
 #include "math/vkr_frustum.h"
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
@@ -37,6 +41,7 @@ enum {
   VKR_METAL_PACKET_GRAPH_INSTANCE_MAX = 8,
   VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX =
       VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX,
+  VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY = 16,
   /* Four address modes on three axes, two min/mag filters, one canonical
      non-mipmapped key plus fifteen keys for each mip filter, and anisotropy
      on/off. Samplers remain alive with immutable material rows, so this cache
@@ -46,6 +51,21 @@ enum {
       VKR_TEXTURE_REPEAT_MODE_COUNT * VKR_FILTER_COUNT * VKR_FILTER_COUNT *
       (1 + (VKR_MIP_FILTER_COUNT - 1) * VKR_METAL_PACKET_MAX_TEXTURE_MIPS) * 2,
 };
+
+/**
+ * Metal requires a serial feedback queue. Keeping one process-lifetime queue
+ * avoids ambiguous per-renderer dispatch ownership and lets a trailing block
+ * prove that each callback returned before its commit options are reused.
+ */
+vkr_internal dispatch_queue_t vkr_metal_packet_feedback_queue(void) {
+  static dispatch_once_t once;
+  static dispatch_queue_t queue;
+  dispatch_once(&once, ^{
+    queue = dispatch_queue_create("com.vkr.metal.commit-feedback",
+                                  DISPATCH_QUEUE_SERIAL);
+  });
+  return queue;
+}
 
 _Static_assert(VKR_TEXTURE_MAX_DIMENSION ==
                    (1u << (VKR_METAL_PACKET_MAX_TEXTURE_MIPS - 1u)),
@@ -255,24 +275,38 @@ typedef struct VkrMetalPacketCapturePlan {
   uint32_t source_slice;
 } VkrMetalPacketCapturePlan;
 
+/**
+ * Commit feedback outlives the command slot that produced it. The render
+ * thread owns acquisition and recycling; Metal's serial callback queue only
+ * writes the feedback half and publishes it with `feedback_ready`.
+ */
+typedef struct VkrMetalPacketCommitFeedbackRecord {
+  MTL4CommitOptions *options;
+  MTL4CommitFeedbackHandler handler;
+  dispatch_block_t ready_handler;
+  VkrMetalPacketResult result;
+  CFTimeInterval gpu_start_time;
+  CFTimeInterval gpu_end_time;
+  bool8_t has_error;
+  VkrAtomicBool feedback_ready;
+  VkrAtomicBool result_ready;
+  bool8_t in_use;
+} VkrMetalPacketCommitFeedbackRecord;
+
 typedef struct VkrMetalPacketCommandSlot {
   id<MTL4CommandAllocator> allocator;
   id<MTL4CommandBuffer> buffer;
-  id<MTL4CounterHeap> timestamp_heap;
   id<MTLResidencySet>
       gpu_draw_icb_residencies[VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX];
   id<MTLIndirectCommandBuffer>
       gpu_draw_icbs[VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX];
   id<MTLIndirectCommandBuffer> transmission_gpu_draw_icb;
   VkrMetalPacketResult pending_result;
+  VkrMetalPacketCommitFeedbackRecord *commit_feedback;
   uint64_t submit_value;
   uint64_t resource_reuse_submit_value;
-  uint32_t timestamp_entry_count;
-  /** Entries belonging to passes; the frame bracket lives past this bound. */
-  uint32_t timestamp_pass_entry_count;
   bool8_t result_pending;
   bool8_t result_collected;
-  bool8_t timing_requested;
   const uint8_t *gpu_draw_diagnostics_readback;
   const uint8_t *transmission_coverage_readback;
   uint32_t shadow_cascade_count;
@@ -331,18 +365,16 @@ struct VkrMetalPacketRenderer {
   id<MTLSharedEvent> completion;
   VkrMetalPacketCommandSlot *command_slots;
   VkrMetalPacketResult *completed_timing_results;
+  VkrMetalPacketCommitFeedbackRecord *commit_feedback_records;
   VkrMetalPacketCommandSlot *active_command_slot;
   uint32_t command_slot_count;
   uint32_t next_command_slot;
   uint32_t next_completed_timing;
+  uint32_t next_commit_feedback;
   VkrMetalPacketWaitCounters wait_counters;
   /* Active-slot aliases keep encoding code independent of slot selection. */
   id<MTL4CommandAllocator> command_allocator;
   id<MTL4CommandBuffer> command_buffer;
-  id<MTL4CounterHeap> timestamp_heap;
-  uint64_t timestamp_frequency;
-  /** Latches the one-time unattributed-pass-timing warning. */
-  bool8_t reported_unattributed_pass_timings;
   id<MTLRenderPipelineState> gpu_shadow_pipeline;
   id<MTLRenderPipelineState> gpu_shadow_opaque_pipeline;
   id<MTLRenderPipelineState> vbuffer_opaque_pipeline;
@@ -509,7 +541,10 @@ VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_command_slots_bytes,
                              command_slots, renderer->command_slot_count)
 VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_timing_results_bytes,
                              completed_timing_results,
-                             renderer->command_slot_count)
+                             VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY)
+VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_commit_feedback_bytes,
+                             commit_feedback_records,
+                             VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY)
 VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_retired_image_views_bytes,
                              retired_image_views,
                              (uint64_t)renderer->max_images *

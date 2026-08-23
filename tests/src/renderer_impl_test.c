@@ -4,6 +4,7 @@
 
 #include <assert.h>
 #include <stdio.h>
+#include <string.h>
 
 static void test_renderer_impl_capability_partition(void) {
   printf("  Running test_renderer_impl_capability_partition...\n");
@@ -59,10 +60,39 @@ static void test_vulkan_platform_availability(void) {
   printf("  test_vulkan_platform_availability PASSED\n");
 }
 
+static void test_gpu_timing_reason_names(void) {
+  printf("  Running test_gpu_timing_reason_names...\n");
+  assert(strcmp(vkr_renderer_impl_gpu_timing_reason_name(
+                    VKR_RENDERER_IMPL_GPU_TIMING_REASON_NONE),
+                "none") == 0);
+  assert(strcmp(vkr_renderer_impl_gpu_timing_reason_name(
+                    VKR_RENDERER_IMPL_GPU_TIMING_REASON_DISABLED),
+                "disabled") == 0);
+  assert(strcmp(vkr_renderer_impl_gpu_timing_reason_name(
+                    VKR_RENDERER_IMPL_GPU_TIMING_REASON_NOT_READY),
+                "not_ready") == 0);
+  assert(
+      strcmp(
+          vkr_renderer_impl_gpu_timing_reason_name(
+              VKR_RENDERER_IMPL_GPU_TIMING_REASON_UNSUPPORTED_TIMESTAMP_SCOPE),
+          "unsupported_timestamp_scope") == 0);
+  assert(strcmp(vkr_renderer_impl_gpu_timing_reason_name(
+                    VKR_RENDERER_IMPL_GPU_TIMING_REASON_FEEDBACK_UNAVAILABLE),
+                "feedback_unavailable") == 0);
+  assert(strcmp(vkr_renderer_impl_gpu_timing_reason_name(
+                    VKR_RENDERER_IMPL_GPU_TIMING_REASON_FEEDBACK_ERROR),
+                "feedback_error") == 0);
+  assert(strcmp(vkr_renderer_impl_gpu_timing_reason_name(
+                    (VkrRendererImplGpuTimingReason)UINT32_MAX),
+                "unknown") == 0);
+  printf("  test_gpu_timing_reason_names PASSED\n");
+}
+
 bool32_t run_renderer_impl_tests(void) {
   printf("--- Running renderer implementation tests... ---\n");
   test_renderer_impl_capability_partition();
   test_vulkan_platform_availability();
+  test_gpu_timing_reason_names();
   printf("--- Renderer implementation tests completed. ---\n");
   return true_v;
 }

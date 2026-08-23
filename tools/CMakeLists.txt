@@ -2,6 +2,10 @@ cmake_minimum_required(VERSION 3.27)
 
 project(vkr_tools)
 
+if(APPLE)
+    enable_language(OBJC)
+endif()
+
 find_package(Vulkan REQUIRED)
 
 add_library(vkr_harness_core STATIC
@@ -78,3 +82,15 @@ target_link_libraries(vkr_vkt_packer
     PRIVATE
         ktx
 )
+
+if(APPLE)
+    add_executable(vkr_metal_timestamp_diagnostic
+        metal/vkr_metal_timestamp_diagnostic.m
+    )
+    find_library(VKR_DIAGNOSTIC_FOUNDATION_LIBRARY Foundation)
+    find_library(VKR_DIAGNOSTIC_METAL_LIBRARY Metal)
+    target_link_libraries(vkr_metal_timestamp_diagnostic PRIVATE
+        ${VKR_DIAGNOSTIC_FOUNDATION_LIBRARY}
+        ${VKR_DIAGNOSTIC_METAL_LIBRARY}
+    )
+endif()

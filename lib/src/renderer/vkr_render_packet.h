@@ -13,7 +13,7 @@
 #include "renderer/vkr_renderer.h"
 
 /** Version constant for VkrRenderPacket.packet_version validation. */
-#define VKR_RENDER_PACKET_VERSION 14u
+#define VKR_RENDER_PACKET_VERSION 15u
 
 /** Default manual camera exposure for HDR scene presentation. */
 #define VKR_DEFAULT_EXPOSURE 0.30f
@@ -341,6 +341,7 @@ typedef struct VkrTextUpdatesPayload {
 typedef struct VkrGpuDebugPayload {
   bool8_t enable_timing;
   bool8_t capture_pass_timestamps;
+  bool8_t capture_submission_timing;
   /** 0=off, 1=cascade index, 2=shadow factor, 3=sampled map depth. */
   uint32_t shadow_debug_mode;
   /** Optional batch reserved and copied by this frame. Borrowed for submit. */

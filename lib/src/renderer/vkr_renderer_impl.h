@@ -31,6 +31,36 @@ enum {
   VKR_RENDERER_IMPL_SHADOW_CASCADE_COUNT = 8,
 };
 
+/** Why a requested GPU duration could not be published. */
+typedef enum VkrRendererImplGpuTimingReason {
+  VKR_RENDERER_IMPL_GPU_TIMING_REASON_NONE = 0,
+  VKR_RENDERER_IMPL_GPU_TIMING_REASON_DISABLED,
+  VKR_RENDERER_IMPL_GPU_TIMING_REASON_NOT_READY,
+  VKR_RENDERER_IMPL_GPU_TIMING_REASON_UNSUPPORTED_TIMESTAMP_SCOPE,
+  VKR_RENDERER_IMPL_GPU_TIMING_REASON_FEEDBACK_UNAVAILABLE,
+  VKR_RENDERER_IMPL_GPU_TIMING_REASON_FEEDBACK_ERROR,
+} VkrRendererImplGpuTimingReason;
+
+static INLINE const char *vkr_renderer_impl_gpu_timing_reason_name(
+    VkrRendererImplGpuTimingReason reason) {
+  switch (reason) {
+  case VKR_RENDERER_IMPL_GPU_TIMING_REASON_NONE:
+    return "none";
+  case VKR_RENDERER_IMPL_GPU_TIMING_REASON_DISABLED:
+    return "disabled";
+  case VKR_RENDERER_IMPL_GPU_TIMING_REASON_NOT_READY:
+    return "not_ready";
+  case VKR_RENDERER_IMPL_GPU_TIMING_REASON_UNSUPPORTED_TIMESTAMP_SCOPE:
+    return "unsupported_timestamp_scope";
+  case VKR_RENDERER_IMPL_GPU_TIMING_REASON_FEEDBACK_UNAVAILABLE:
+    return "feedback_unavailable";
+  case VKR_RENDERER_IMPL_GPU_TIMING_REASON_FEEDBACK_ERROR:
+    return "feedback_error";
+  default:
+    return "unknown";
+  }
+}
+
 typedef enum VkrRendererImplMemoryClass {
   VKR_RENDERER_IMPL_MEMORY_CLASS_UNKNOWN = 0,
   VKR_RENDERER_IMPL_MEMORY_CLASS_BUFFER,
@@ -137,6 +167,7 @@ typedef struct VkrRendererImplPassTiming {
   float64_t gpu_ms;
   uint32_t pass_index;
   bool8_t valid;
+  VkrRendererImplGpuTimingReason unavailable_reason;
 } VkrRendererImplPassTiming;
 
 /**
@@ -173,6 +204,9 @@ typedef struct VkrPacketBuildMetrics {
 typedef struct VkrRendererImplSubmitResult {
   uint64_t submit_value;
   uint64_t source_frame_index;
+  uint64_t gpu_submission_ns;
+  VkrRendererImplGpuTimingReason gpu_submission_unavailable_reason;
+  bool8_t gpu_submission_valid;
   uint32_t executed_pass_count;
   uint32_t indexed_draw_count;
   uint32_t shadow_draw_count;

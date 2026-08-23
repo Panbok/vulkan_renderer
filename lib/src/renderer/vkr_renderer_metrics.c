@@ -529,6 +529,12 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
           VKR_METRIC_SCALAR_U64, &ids->backend_present)) {
     return false_v;
   }
+  if (!vkr_renderer_metric_register(
+          metrics, "gpu.submission", VKR_METRIC_DOMAIN_FRAME,
+          VKR_METRIC_KIND_DURATION, VKR_METRIC_UNIT_NANOSECONDS,
+          VKR_METRIC_SCALAR_U64, &ids->gpu_submission)) {
+    return false_v;
+  }
 
 #define VKR_REGISTER_PACKET_BUILD_NS(FIELD, NAME)                              \
   if (!vkr_renderer_metric_register(                                           \
@@ -868,6 +874,7 @@ vkr_renderer_metrics_collect_passes(VkrRendererMetrics *renderer_metrics,
       sample->gpu_source_frame_index = result->source_frame_index;
       sample->gpu_source_submit_serial = result->submit_value;
       sample->gpu_valid = source->valid;
+      sample->gpu_unavailable_reason = source->unavailable_reason;
     }
     if (valid && vkr_renderer_metrics_publish_pass_samples(
                      renderer_metrics, samples, result->pass_timing_count,
@@ -1048,6 +1055,21 @@ void vkr_renderer_metrics_collect(
   vkr_metrics_gauge_set_u64(metrics, ids->FIELD, (uint64_t)(VALUE))
 #define VKR_SET_F64(FIELD, VALUE)                                              \
   vkr_metrics_gauge_set_f64(metrics, ids->FIELD, (float64_t)(VALUE))
+  if (!metrics->config.submission_gpu_timings) {
+    vkr_metrics_mark(metrics, ids->gpu_submission,
+                     VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                     VKR_METRIC_REASON_DISABLED);
+  } else if (context->frame_metrics->gpu_submission_valid) {
+    vkr_metrics_duration_add_ns(metrics, ids->gpu_submission,
+                                context->frame_metrics->gpu_submission_ns);
+  } else {
+    VkrMetricReason reason =
+        context->frame_metrics->gpu_submission_unavailable_reason;
+    if (reason == VKR_METRIC_REASON_NONE)
+      reason = VKR_METRIC_REASON_UNSUPPORTED;
+    vkr_metrics_mark(metrics, ids->gpu_submission,
+                     VKR_METRIC_AVAILABILITY_UNAVAILABLE, reason);
+  }
   if (context->frame_metrics->backend_present_valid) {
     vkr_metrics_duration_add_ns(metrics, ids->backend_present,
                                 context->frame_metrics->backend_present_ns);
@@ -1270,8 +1292,7 @@ void vkr_renderer_metrics_collect(
                               shadow->correctness_forced[i]);
     vkr_metrics_gauge_set_u64(metrics, ids->shadow_proactive_refreshed[i],
                               shadow->proactive_refreshed[i]);
-    vkr_metrics_gauge_set_u64(metrics,
-                              ids->shadow_dynamic_candidates_tested[i],
+    vkr_metrics_gauge_set_u64(metrics, ids->shadow_dynamic_candidates_tested[i],
                               shadow->dynamic_candidates_tested[i]);
     vkr_metrics_gauge_set_u64(metrics, ids->shadow_dynamic_forced[i],
                               shadow->dynamic_forced[i]);
@@ -1728,6 +1749,9 @@ bool8_t vkr_renderer_metrics_write_json(VkrRendererMetrics *renderer_metrics,
         vkr_json_name(writer, "pass_gpu_timings") &&
         vkr_json_writer_bool(
             writer, renderer_metrics->metrics->config.pass_gpu_timings) &&
+        vkr_json_name(writer, "submission_gpu_timings") &&
+        vkr_json_writer_bool(
+            writer, renderer_metrics->metrics->config.submission_gpu_timings) &&
         vkr_json_name(writer, "event_subjects") &&
         vkr_json_writer_bool(
             writer, renderer_metrics->metrics->config.event_subjects) &&
@@ -1768,33 +1792,38 @@ bool8_t vkr_renderer_metrics_write_json(VkrRendererMetrics *renderer_metrics,
   }
   for (uint32_t i = 0; success && i < passes->count; ++i) {
     const VkrRendererMetricsPassSample *pass = &passes->samples[i];
-    success = vkr_json_writer_begin_object(writer) &&
-              vkr_json_name(writer, "name") &&
-              vkr_json_writer_string(
-                  writer, string8_create_from_cstr((const uint8_t *)pass->name,
-                                                   pass->name_length)) &&
-              vkr_json_name(writer, "cpu_ms") &&
-              vkr_json_writer_f64(writer, pass->cpu_ms) &&
-              vkr_json_name(writer, "cpu_frame_index") &&
-              vkr_json_writer_u64(writer, pass->cpu_frame_index) &&
-              vkr_json_name(writer, "gpu_ms") &&
-              (pass->gpu_valid ? vkr_json_writer_f64(writer, pass->gpu_ms)
-                               : vkr_json_writer_null(writer)) &&
-              vkr_json_name(writer, "gpu_valid") &&
-              vkr_json_writer_bool(writer, pass->gpu_valid) &&
-              vkr_json_name(writer, "gpu_source_frame_index") &&
-              (pass->gpu_valid
-                   ? vkr_json_writer_u64(writer, pass->gpu_source_frame_index)
-                   : vkr_json_writer_null(writer)) &&
-              vkr_json_name(writer, "gpu_source_submit_serial") &&
-              (pass->gpu_valid
-                   ? vkr_json_writer_u64(writer, pass->gpu_source_submit_serial)
-                   : vkr_json_writer_null(writer)) &&
-              vkr_json_name(writer, "culled") &&
-              vkr_json_writer_bool(writer, pass->culled) &&
-              vkr_json_name(writer, "disabled") &&
-              vkr_json_writer_bool(writer, pass->disabled) &&
-              vkr_json_writer_end_object(writer);
+    success =
+        vkr_json_writer_begin_object(writer) && vkr_json_name(writer, "name") &&
+        vkr_json_writer_string(
+            writer, string8_create_from_cstr((const uint8_t *)pass->name,
+                                             pass->name_length)) &&
+        vkr_json_name(writer, "cpu_ms") &&
+        vkr_json_writer_f64(writer, pass->cpu_ms) &&
+        vkr_json_name(writer, "cpu_frame_index") &&
+        vkr_json_writer_u64(writer, pass->cpu_frame_index) &&
+        vkr_json_name(writer, "gpu_ms") &&
+        (pass->gpu_valid ? vkr_json_writer_f64(writer, pass->gpu_ms)
+                         : vkr_json_writer_null(writer)) &&
+        vkr_json_name(writer, "gpu_valid") &&
+        vkr_json_writer_bool(writer, pass->gpu_valid) &&
+        vkr_json_name(writer, "gpu_unavailable_reason") &&
+        (pass->gpu_valid
+             ? vkr_json_writer_null(writer)
+             : vkr_json_cstr(writer, vkr_renderer_impl_gpu_timing_reason_name(
+                                         pass->gpu_unavailable_reason))) &&
+        vkr_json_name(writer, "gpu_source_frame_index") &&
+        (pass->gpu_valid
+             ? vkr_json_writer_u64(writer, pass->gpu_source_frame_index)
+             : vkr_json_writer_null(writer)) &&
+        vkr_json_name(writer, "gpu_source_submit_serial") &&
+        (pass->gpu_valid
+             ? vkr_json_writer_u64(writer, pass->gpu_source_submit_serial)
+             : vkr_json_writer_null(writer)) &&
+        vkr_json_name(writer, "culled") &&
+        vkr_json_writer_bool(writer, pass->culled) &&
+        vkr_json_name(writer, "disabled") &&
+        vkr_json_writer_bool(writer, pass->disabled) &&
+        vkr_json_writer_end_object(writer);
   }
   if (success) {
     success =

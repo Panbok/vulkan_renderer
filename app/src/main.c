@@ -2556,6 +2556,8 @@ int main(int argc, char **argv) {
   }
   const bool8_t rg_gpu_timing_enabled =
       application_env_flag("VKR_RG_GPU_TIMING", false_v);
+  const bool8_t submission_gpu_timing_enabled =
+      application_env_flag("VKR_GPU_SUBMISSION_TIMING", false_v);
   const bool8_t metrics_event_subjects =
       application_env_flag("VKR_METRICS_EVENT_SUBJECTS", false_v);
 
@@ -2570,6 +2572,7 @@ int main(int argc, char **argv) {
   config.renderer_backend = renderer_backend;
   config.metrics_config = (VkrMetricsConfig){
       .pass_gpu_timings = rg_gpu_timing_enabled,
+      .submission_gpu_timings = submission_gpu_timing_enabled,
       .event_subjects = metrics_event_subjects,
   };
   config.device_requirements = (VkrDeviceRequirements){
