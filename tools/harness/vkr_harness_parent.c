@@ -331,9 +331,10 @@ static bool8_t vkr_harness_collect_run_evidence(VkrHarnessReport *report,
  * inside the statistics, so the aggregate case describes exactly what it
  * summarizes.
  *
- * `out_gpu_pass_complete` reports whether every aggregated pass row carries
- * matching CPU/GPU samples. It is answered here, over the concatenated flags,
- * so the completeness claim covers exactly the window that was summarized.
+ * `out_gpu_pass_complete` reports whether every aggregated pass row is
+ * skipped, carries matching CPU/GPU samples, or explicitly reports an
+ * unsupported GPU timestamp scope. It is answered here over the concatenated
+ * flags, so the completeness claim covers exactly the summarized window.
  */
 static bool8_t vkr_harness_aggregate_runs(const VkrHarnessArenas *arenas,
                                           VkrHarnessReport *report,

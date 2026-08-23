@@ -107,6 +107,9 @@ Read these report fields before quoting a number:
 - `aggregate.metrics` and `aggregate.passes` contain nearest-rank percentiles
   and population standard deviation; unavailable GPU samples retain an
   unavailable reason.
+- With `gpu_timing`, completeness means each pass row is timed, skipped, or
+  explicitly `unsupported_timestamp_scope`. Unsupported rows stay
+  statistically invalid and cannot support a duration claim.
 - `events`, required-metric invalid counts, snapshot-publication drops, and
   artifact digests determine completeness.
 
@@ -173,7 +176,7 @@ for repository performance claims.
 | `local-offscreen.json` | off | Observational WSI-free correctness/work-volume evidence; two repetitions |
 | `local-windowed-gpu.json` | on | Observational per-pass GPU timing |
 | `performance-windowed.json` | off | Authoritative CPU and work-volume evidence |
-| `performance-windowed-gpu.json` | on | Authoritative evidence including complete per-pass GPU timing |
+| `performance-windowed-gpu.json` | on | Authoritative per-pass timing availability evidence |
 | `local-windowed-boot.json` | off | Observational five-repetition boot, residency, and work equivalence |
 | `performance-windowed-boot.json` | off | Authoritative clean-tree boot/residency evidence |
 

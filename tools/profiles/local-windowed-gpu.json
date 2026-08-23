@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "id": "local.windowed_gpu",
-  "description": "Non-authoritative local profiling with complete per-pass GPU timestamps required.",
+  "description": "Non-authoritative local profiling with complete per-pass GPU timing availability required.",
   "authoritative": false,
   "dirty_policy": "allow",
   "environment": {

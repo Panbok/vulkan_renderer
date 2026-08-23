@@ -57,6 +57,17 @@ static void test_harness_hash_and_statistics(void) {
   };
   assert(vkr_harness_gpu_pass_samples_complete(pass_flags,
                                                ArrayCount(pass_flags)));
+  pass_flags[0] = VKR_HARNESS_PASS_FLAG_CPU_VALID |
+                  VKR_HARNESS_PASS_FLAG_GPU_UNSUPPORTED_SCOPE;
+  assert(vkr_harness_gpu_pass_samples_complete(pass_flags,
+                                               ArrayCount(pass_flags)));
+  pass_flags[0] = VKR_HARNESS_PASS_FLAG_CPU_VALID |
+                  VKR_HARNESS_PASS_FLAG_GPU_VALID |
+                  VKR_HARNESS_PASS_FLAG_GPU_UNSUPPORTED_SCOPE;
+  assert(!vkr_harness_gpu_pass_samples_complete(pass_flags,
+                                                ArrayCount(pass_flags)));
+  pass_flags[0] =
+      VKR_HARNESS_PASS_FLAG_CPU_VALID | VKR_HARNESS_PASS_FLAG_GPU_VALID;
   assert(!vkr_harness_gpu_pass_samples_complete(NULL, 0u));
   pass_flags[1] = 0u;
   assert(!vkr_harness_gpu_pass_samples_complete(pass_flags,

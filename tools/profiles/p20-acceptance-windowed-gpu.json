@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "id": "acceptance.p20.windowed_gpu",
-  "description": "Authoritative P20 windowed deterministic-work and complete per-pass GPU timestamp evidence.",
+  "description": "Authoritative P20 windowed deterministic-work and per-pass GPU timing availability evidence.",
   "authoritative": true,
   "dirty_policy": "require_clean",
   "environment": {
