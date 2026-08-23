@@ -247,6 +247,27 @@ static void test_harness_camera_determinism(void) {
   printf("  test_harness_camera_determinism PASSED\n");
 }
 
+static void test_harness_camera_warmup_holds_start_pose(void) {
+  printf("  Running test_harness_camera_warmup_holds_start_pose...\n");
+  const float64_t delta = 1.0 / 60.0;
+  const uint32_t warmup = 120u;
+  /* Every warmup frame maps to authored time zero, so the drift check in
+     vkr_harness_warmup_stable() sees one pose instead of a moving view. */
+  for (uint32_t frame = 0; frame < warmup; ++frame) {
+    assert(vkr_harness_camera_script_time(frame, warmup, delta) == 0.0);
+  }
+  /* The measured window starts at the authored origin and advances one delta
+     per frame from there. */
+  assert(vkr_harness_camera_script_time(warmup, warmup, delta) == 0.0);
+  assert(vkr_harness_camera_script_time(warmup + 1u, warmup, delta) == delta);
+  assert(vkr_harness_camera_script_time(warmup + 300u, warmup, delta) ==
+         300.0 * delta);
+  /* A zero-warmup case keeps the frame index as its authored time. */
+  assert(vkr_harness_camera_script_time(0u, 0u, delta) == 0.0);
+  assert(vkr_harness_camera_script_time(7u, 0u, delta) == 7.0 * delta);
+  printf("  test_harness_camera_warmup_holds_start_pose PASSED\n");
+}
+
 static void test_harness_fingerprints(void) {
   printf("  Running test_harness_fingerprints...\n");
   VkrHarnessFingerprintField a[] = {{.name = "z", .value = "2"},
@@ -1192,6 +1213,7 @@ bool32_t run_harness_tests(void) {
   test_harness_case_parser();
   test_harness_profile_parser();
   test_harness_camera_determinism();
+  test_harness_camera_warmup_holds_start_pose();
   test_harness_fingerprints();
 #if !defined(_WIN32)
   test_harness_scene_manifest_tracks_transitive_content();

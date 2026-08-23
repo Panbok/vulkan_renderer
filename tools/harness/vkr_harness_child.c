@@ -716,11 +716,13 @@ void application_update(Application *application, float64_t delta) {
   /* Determinism rule 2: the pose is a function of the case-frame index and the
      fixed delta, never of wall-clock time or input. */
   VkrHarnessCameraPose pose = {0};
-  if (!camera || !vkr_harness_camera_evaluate(
-                     &child->case_manifest->camera,
-                     (float64_t)child->completed_frames *
-                         child->case_manifest->fixed_delta_seconds,
-                     &pose)) {
+  if (!camera ||
+      !vkr_harness_camera_evaluate(
+          &child->case_manifest->camera,
+          vkr_harness_camera_script_time(
+              child->completed_frames, child->case_manifest->warmup_frames,
+              child->case_manifest->fixed_delta_seconds),
+          &pose)) {
     vkr_harness_child_fail(application, "camera.evaluate_failed");
     return;
   }

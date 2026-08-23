@@ -246,3 +246,11 @@ bool8_t vkr_harness_camera_evaluate(const VkrHarnessCamera *camera,
   vkr_harness_camera_evaluate_keys(camera, key_time, out_pose);
   return true_v;
 }
+
+float64_t vkr_harness_camera_script_time(uint32_t frame_index,
+                                         uint32_t warmup_frames,
+                                         float64_t fixed_delta_seconds) {
+  const uint32_t script_frame =
+      frame_index > warmup_frames ? frame_index - warmup_frames : 0u;
+  return (float64_t)script_frame * fixed_delta_seconds;
+}

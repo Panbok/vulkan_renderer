@@ -14,7 +14,13 @@
 #include "renderer/vkr_renderer.h"
 
 #define VKR_HARNESS_SCHEMA_VERSION 1u
-#define VKR_HARNESS_CAMERA_SCRIPT_VERSION 1u
+/**
+ * Bumped to 2 when warmup stopped advancing the camera. Version 1 evaluated the
+ * authored path from frame 0, so warmup consumed the head of every script and
+ * the measured window began mid-path. No version-1 measurement compares to a
+ * version-2 one; the value is part of the workload fingerprint so they cannot.
+ */
+#define VKR_HARNESS_CAMERA_SCRIPT_VERSION 2u
 #define VKR_HARNESS_PATH_MAX 1024u
 /**
  * Paths recorded inside a report are relative to its run root, never absolute.
@@ -593,6 +599,20 @@ bool8_t vkr_harness_camera_prepare(VkrHarnessCamera *camera,
 bool8_t vkr_harness_camera_evaluate(const VkrHarnessCamera *camera,
                                     float64_t authored_time_seconds,
                                     VkrHarnessCameraPose *out_pose);
+/**
+ * @brief Authored camera time for one case frame index.
+ *
+ * Warmup holds the authored start pose, so the measured window begins at
+ * authored time zero and covers the head of the script rather than its tail.
+ * Advancing the camera through warmup made the drift check in
+ * vkr_harness_warmup_stable() measure the cost gradient of a moving view
+ * instead of settling, which no moving-camera case could pass.
+ *
+ * `frame_index` counts warmup and measured frames together from zero.
+ */
+float64_t vkr_harness_camera_script_time(uint32_t frame_index,
+                                         uint32_t warmup_frames,
+                                         float64_t fixed_delta_seconds);
 float64_t vkr_harness_speed_multiplier(VkrHarnessSpeed speed);
 
 bool8_t vkr_harness_path_is_safe_relative(const char *path);
