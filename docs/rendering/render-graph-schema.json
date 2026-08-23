@@ -48,6 +48,15 @@
       },
       "additionalProperties": false
     },
+    "passRepeat": {
+      "type": "object",
+      "required": ["count_source"],
+      "properties": {
+        "count_source": { "type": "string" },
+        "condition_mask_source": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
     "extent": {
       "type": "object",
       "required": ["mode"],
@@ -81,6 +90,7 @@
               "PER_IMAGE",
               "PER_FRAME_SLOT",
               "HISTORY",
+              "RETAINED",
               "RESIZABLE"
             ]
           }
@@ -242,7 +252,7 @@
         },
         "domain": { "type": "string" },
         "condition": { "$ref": "#/definitions/condition" },
-        "repeat": { "$ref": "#/definitions/repeat" },
+        "repeat": { "$ref": "#/definitions/passRepeat" },
         "reads": {
           "type": "array",
           "items": { "$ref": "#/definitions/resourceUse" }

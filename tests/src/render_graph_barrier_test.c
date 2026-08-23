@@ -200,6 +200,17 @@ static void test_transmission_condition(void) {
   vkr_rg_destroy(graph);
   vkr_rg_executor_registry_destroy(&registry);
   vkr_rg_json_destroy(&json);
+
+  const char *resource_mask_source =
+      "{\"version\":1,\"name\":\"resource-mask\",\"resources\":[{"
+      "\"name\":\"image.${i}\",\"type\":\"image\",\"extent\":{"
+      "\"mode\":\"fixed\",\"width\":1,\"height\":1},\"format\":"
+      "\"R8G8B8A8_UNORM\",\"usage\":[\"SAMPLED\"],\"repeat\":{"
+      "\"count_source\":\"shadow_cascade_count\","
+      "\"condition_mask_source\":\"shadow_cascade_render_mask\"}}],"
+      "\"passes\":[]}";
+  json = (VkrRgJsonGraph){0};
+  assert(!rg_barrier_test_load_json(&allocator, resource_mask_source, &json));
   arena_destroy(arena);
   printf("  test_transmission_condition PASSED\n");
 }
@@ -392,6 +403,76 @@ static void test_shadow_reads_follow_active_cascades(void) {
   vkr_rg_json_destroy(&json);
   arena_destroy(arena);
   printf("  test_shadow_reads_follow_active_cascades PASSED\n");
+}
+
+static void test_repeat_condition_mask_filters_iterations(void) {
+  printf("  Running test_repeat_condition_mask_filters_iterations...\n");
+  Arena *arena = arena_create(MB(1), MB(1));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+
+  const char *source =
+      "{\"version\":1,\"name\":\"masked-repeat\",\"resources\":[],"
+      "\"passes\":[{\"name\":\"cascade.${i}\",\"type\":\"compute\","
+      "\"flags\":[\"NO_CULL\"],\"repeat\":{\"count_source\":"
+      "\"shadow_cascade_count\",\"condition_mask_source\":"
+      "\"shadow_cascade_render_mask\"},\"execute\":\"test.compute\"}]}";
+  VkrRgJsonGraph json = {0};
+  assert(rg_barrier_test_load_json(&allocator, source, &json));
+  assert(json.passes.length == 1u);
+  assert(json.passes.data[0].repeat.enabled);
+  assert(
+      vkr_string8_equals_cstr(&json.passes.data[0].repeat.condition_mask_source,
+                              "shadow_cascade_render_mask"));
+
+  VkrRgExecutorRegistry registry = {0};
+  assert(vkr_rg_executor_registry_init(&registry, &allocator));
+  const VkrRgPassExecutor executor = {
+      .name = string8_lit("test.compute"),
+      .id = 1u,
+      .type = VKR_RG_PASS_TYPE_COMPUTE,
+      .execute = rg_barrier_test_execute,
+  };
+  assert(vkr_rg_executor_registry_register(&registry, &executor));
+  assert(vkr_rg_json_bind_executors(&json, &registry));
+
+  VkrRenderGraph *graph = vkr_rg_create(&allocator);
+  assert(graph);
+  const VkrRenderGraphFrameInfo frame = {
+      .target_width = 1u,
+      .target_height = 1u,
+      .shadow_cascade_count = 4u,
+      .shadow_cascade_render_mask = 0x5u,
+  };
+  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_build_from_json(graph, &json, &frame));
+  assert(graph->passes.length == 2u);
+  assert(
+      vkr_string8_equals_cstr(&graph->passes.data[0].desc.name, "cascade.0"));
+  assert(
+      vkr_string8_equals_cstr(&graph->passes.data[1].desc.name, "cascade.2"));
+
+  vkr_rg_destroy(graph);
+  vkr_rg_json_destroy(&json);
+
+  const char *unknown_source =
+      "{\"version\":1,\"name\":\"unknown-mask\",\"resources\":[],"
+      "\"passes\":[{\"name\":\"cascade.${i}\",\"type\":\"compute\","
+      "\"flags\":[\"NO_CULL\"],\"repeat\":{\"count_source\":"
+      "\"shadow_cascade_count\",\"condition_mask_source\":"
+      "\"not_a_mask\"},\"execute\":\"test.compute\"}]}";
+  json = (VkrRgJsonGraph){0};
+  assert(rg_barrier_test_load_json(&allocator, unknown_source, &json));
+  assert(vkr_rg_json_bind_executors(&json, &registry));
+  graph = vkr_rg_create(&allocator);
+  assert(graph);
+  vkr_rg_begin_frame(graph, &frame);
+  assert(!vkr_rg_build_from_json(graph, &json, &frame));
+  vkr_rg_destroy(graph);
+  vkr_rg_executor_registry_destroy(&registry);
+  vkr_rg_json_destroy(&json);
+  arena_destroy(arena);
+  printf("  test_repeat_condition_mask_filters_iterations PASSED\n");
 }
 
 static void test_conflicting_runtime_bindings_are_rejected(void) {
@@ -965,7 +1046,7 @@ static void test_cascade_slices_are_per_layer_then_coalesce(void) {
   desc.width = 128;
   desc.height = 128;
   desc.layers = cascade_count;
-  desc.format = VKR_TEXTURE_FORMAT_D32_SFLOAT;
+  desc.format = VKR_TEXTURE_FORMAT_R32_SFLOAT;
   desc.usage = vkr_texture_usage_flags_from_bits(
       VKR_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT | VKR_TEXTURE_USAGE_SAMPLED);
   VkrRgImageHandle shadow_map =
@@ -1032,7 +1113,7 @@ static void test_disjoint_layer_writes_coalesce_on_read(void) {
   desc.width = 64;
   desc.height = 64;
   desc.layers = 4;
-  desc.format = VKR_TEXTURE_FORMAT_D32_SFLOAT;
+  desc.format = VKR_TEXTURE_FORMAT_R32_SFLOAT;
   desc.usage = vkr_texture_usage_flags_from_bits(
       VKR_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT | VKR_TEXTURE_USAGE_SAMPLED);
   VkrRgImageHandle image =
@@ -1388,7 +1469,11 @@ static void test_main_graph_declares_transmission_stages(void) {
     } else if (vkr_string8_equals_cstr(&resource->name, "shadow_map")) {
       assert(vkr_string8_equals_cstr(&resource->image.layers_source,
                                      "shadow_map_layer_count"));
-      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_TRANSIENT) != 0u);
+      /* RETAINED since ADR-029: cascade contents must survive across frames
+         for reuse to be possible at all. TRANSIENT would discard them, and
+         PERSISTENT only suppresses a diagnostic without preserving anything. */
+      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_RETAINED) != 0u);
+      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_TRANSIENT) == 0u);
       assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_PER_IMAGE) != 0u);
       assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_PERSISTENT) == 0u);
       found_stable_shadow_capacity = true_v;
@@ -1598,16 +1683,373 @@ static void test_frame_allocator_reclaims_authored_passes(void) {
   printf("  test_frame_allocator_reclaims_authored_passes PASSED\n");
 }
 
+/* ===========================================================================
+   Retained graph resources (ADR-029).
+
+   These pin the contract that makes cascade reuse possible: contents survive
+   across frames per instance and per subresource, a reader with no writer is a
+   compile error unless the backend vouches for the contents, and nothing is
+   committed until a submit is proven.
+   ===========================================================================
+ */
+
+typedef struct RgRetainedTestStore {
+  VkrRgRetainedState states[8][4][64];
+  uint32_t read_calls;
+  uint32_t commit_calls;
+} RgRetainedTestStore;
+
+static RgRetainedTestStore g_retained_store;
+
+static void rg_retained_test_read(void *context, uint32_t image_index,
+                                  uint32_t instance_index, uint32_t subresource,
+                                  VkrRgRetainedState *out_state) {
+  RgRetainedTestStore *store = context;
+  store->read_calls++;
+  if (image_index >= 8u || instance_index >= 4u || subresource >= 64u)
+    return;
+  *out_state = store->states[image_index][instance_index][subresource];
+}
+
+static void rg_retained_test_commit(void *context, uint32_t image_index,
+                                    uint32_t instance_index,
+                                    uint32_t subresource,
+                                    const VkrRgRetainedState *state) {
+  RgRetainedTestStore *store = context;
+  store->commit_calls++;
+  if (image_index >= 8u || instance_index >= 4u || subresource >= 64u)
+    return;
+  store->states[image_index][instance_index][subresource] = *state;
+}
+
+static void test_retained_flag_rejects_conflicting_lifetimes(void) {
+  printf("  Running test_retained_flag_rejects_conflicting_lifetimes...\n");
+  Arena *arena = arena_create(MB(2), MB(2));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+
+  /* RETAINED describes content lifetime; each of these describes where
+     instances come from or who owns them, and contradicts in-place retention.
+   */
+  static const char *const conflicts[] = {"TRANSIENT", "EXTERNAL", "HISTORY",
+                                          "PER_FRAME_SLOT"};
+  for (uint32_t i = 0; i < ArrayCount(conflicts); ++i) {
+    char source[512];
+    snprintf(source, sizeof(source),
+             "{\"version\":1,\"name\":\"retained\",\"resources\":[{"
+             "\"name\":\"img\",\"type\":\"image\",\"extent\":{\"mode\":"
+             "\"viewport\"},\"format\":\"D32_SFLOAT\",\"usage\":["
+             "\"DEPTH_STENCIL_ATTACHMENT\",\"SAMPLED\"],\"flags\":["
+             "\"RETAINED\",\"%s\"]}],\"passes\":[]}",
+             conflicts[i]);
+    VkrRgJsonGraph json = {0};
+    assert(!rg_barrier_test_load_json(&allocator, source, &json));
+    vkr_rg_json_destroy(&json);
+  }
+
+  /* PER_IMAGE and RESIZABLE are orthogonal axes and must still compose. */
+  const char *ok_source =
+      "{\"version\":1,\"name\":\"retained\",\"resources\":[{"
+      "\"name\":\"img\",\"type\":\"image\",\"extent\":{\"mode\":\"viewport\"},"
+      "\"format\":\"D32_SFLOAT\",\"usage\":[\"DEPTH_STENCIL_ATTACHMENT\","
+      "\"SAMPLED\"],\"flags\":[\"RETAINED\",\"PER_IMAGE\",\"RESIZABLE\"]}],"
+      "\"passes\":[]}";
+  VkrRgJsonGraph json = {0};
+  assert(rg_barrier_test_load_json(&allocator, ok_source, &json));
+  vkr_rg_json_destroy(&json);
+
+  const char *buffer_source =
+      "{\"version\":1,\"name\":\"retained\",\"resources\":[{"
+      "\"name\":\"buffer\",\"type\":\"buffer\",\"size\":16,"
+      "\"usage\":[\"STORAGE\"],\"flags\":[\"RETAINED\"]}],"
+      "\"passes\":[]}";
+  assert(!rg_barrier_test_load_json(&allocator, buffer_source, &json));
+  vkr_rg_json_destroy(&json);
+
+  arena_destroy(arena);
+  printf("  test_retained_flag_rejects_conflicting_lifetimes PASSED\n");
+}
+
+static void test_retained_is_not_an_instance_domain(void) {
+  printf("  Running test_retained_is_not_an_instance_domain...\n");
+  /* RETAINED alone must not move a resource off the single-instance domain,
+     and must not displace PER_IMAGE when both are set. */
+  assert(vkr_rg_resource_instance_domain(VKR_RG_RESOURCE_FLAG_RETAINED) ==
+         VKR_RG_RESOURCE_INSTANCE_SINGLE);
+  assert(vkr_rg_resource_instance_domain(VKR_RG_RESOURCE_FLAG_RETAINED |
+                                         VKR_RG_RESOURCE_FLAG_PER_IMAGE) ==
+         VKR_RG_RESOURCE_INSTANCE_PER_IMAGE);
+  printf("  test_retained_is_not_an_instance_domain PASSED\n");
+}
+
+static void test_retained_read_without_contents_fails_compile(void) {
+  printf("  Running test_retained_read_without_contents_fails_compile...\n");
+  Arena *arena = arena_create(MB(4), MB(4));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+
+  MemZero(&g_retained_store, sizeof(g_retained_store));
+  VkrRenderGraph *graph = vkr_rg_create(&allocator);
+  assert(graph);
+  const VkrRgRetainedStateProvider provider = {
+      .context = &g_retained_store,
+      .read = rg_retained_test_read,
+      .commit = rg_retained_test_commit,
+  };
+  vkr_rg_set_retained_state_provider(graph, &provider);
+
+  VkrRenderGraphFrameInfo frame = {.target_width = 4u, .target_height = 4u};
+  vkr_rg_begin_frame(graph, &frame);
+
+  VkrRgImageDesc desc = VKR_RG_IMAGE_DESC_DEFAULT;
+  desc.width = 4u;
+  desc.height = 4u;
+  desc.format = VKR_TEXTURE_FORMAT_R32_SFLOAT;
+  desc.flags = VKR_RG_RESOURCE_FLAG_RETAINED;
+  desc.usage = vkr_texture_usage_flags_from_bits(VKR_TEXTURE_USAGE_STORAGE |
+                                                 VKR_TEXTURE_USAGE_SAMPLED);
+  VkrRgImageHandle image =
+      vkr_rg_create_image(graph, string8_lit("retained"), &desc);
+  assert(vkr_rg_image_handle_valid(image));
+
+  /* A sampled read with no writer anywhere in the frame. The backend reports
+     no contents, so scheduling this would sample undefined memory. */
+  VkrRgPassBuilder reader =
+      rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "reader");
+  vkr_rg_pass_read_image(&reader, image, VKR_RG_IMAGE_ACCESS_STORAGE_READ, 0u,
+                         0u);
+
+  assert(!vkr_rg_compile_schedule(graph));
+  assert(g_retained_store.read_calls > 0u);
+
+  vkr_rg_destroy(graph);
+  arena_destroy(arena);
+  printf("  test_retained_read_without_contents_fails_compile PASSED\n");
+}
+
+static void test_retained_commit_then_read_succeeds(void) {
+  printf("  Running test_retained_commit_then_read_succeeds...\n");
+  Arena *arena = arena_create(MB(4), MB(4));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+
+  MemZero(&g_retained_store, sizeof(g_retained_store));
+  VkrRenderGraph *graph = vkr_rg_create(&allocator);
+  assert(graph);
+  const VkrRgRetainedStateProvider provider = {
+      .context = &g_retained_store,
+      .read = rg_retained_test_read,
+      .commit = rg_retained_test_commit,
+  };
+  vkr_rg_set_retained_state_provider(graph, &provider);
+
+  VkrRgImageDesc desc = VKR_RG_IMAGE_DESC_DEFAULT;
+  desc.width = 4u;
+  desc.height = 4u;
+  desc.format = VKR_TEXTURE_FORMAT_R32_SFLOAT;
+  desc.flags = VKR_RG_RESOURCE_FLAG_RETAINED;
+  desc.usage = vkr_texture_usage_flags_from_bits(VKR_TEXTURE_USAGE_STORAGE |
+                                                 VKR_TEXTURE_USAGE_SAMPLED);
+
+  /* Frame 1 writes the image, then commits as a successful submit would. */
+  VkrRenderGraphFrameInfo frame = {.target_width = 4u, .target_height = 4u};
+  vkr_rg_begin_frame(graph, &frame);
+  VkrRgImageHandle image =
+      vkr_rg_create_image(graph, string8_lit("retained"), &desc);
+  assert(vkr_rg_image_handle_valid(image));
+  VkrRgPassBuilder writer =
+      rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "writer");
+  vkr_rg_pass_write_image(&writer, image, VKR_RG_IMAGE_ACCESS_STORAGE_WRITE, 0u,
+                          0u);
+  assert(vkr_rg_compile_schedule(graph));
+  vkr_rg_commit_retained_state(graph);
+  assert(g_retained_store.commit_calls > 0u);
+  assert(g_retained_store.states[0][0][0].content_valid);
+
+  /* Frame 2 only reads. This is the case that must now compile: a reader whose
+     producer ran in an earlier frame is exactly what retention is for. */
+  vkr_rg_begin_frame(graph, &frame);
+  image = vkr_rg_create_image(graph, string8_lit("retained"), &desc);
+  assert(vkr_rg_image_handle_valid(image));
+  VkrRgPassBuilder reader =
+      rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "reader");
+  vkr_rg_pass_read_image(&reader, image, VKR_RG_IMAGE_ACCESS_STORAGE_READ, 0u,
+                         0u);
+  assert(vkr_rg_compile_schedule(graph));
+
+  vkr_rg_destroy(graph);
+  arena_destroy(arena);
+  printf("  test_retained_commit_then_read_succeeds PASSED\n");
+}
+
+static void test_retained_uncommitted_frame_rolls_back(void) {
+  printf("  Running test_retained_uncommitted_frame_rolls_back...\n");
+  Arena *arena = arena_create(MB(4), MB(4));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+
+  MemZero(&g_retained_store, sizeof(g_retained_store));
+  VkrRenderGraph *graph = vkr_rg_create(&allocator);
+  assert(graph);
+  const VkrRgRetainedStateProvider provider = {
+      .context = &g_retained_store,
+      .read = rg_retained_test_read,
+      .commit = rg_retained_test_commit,
+  };
+  vkr_rg_set_retained_state_provider(graph, &provider);
+
+  VkrRgImageDesc desc = VKR_RG_IMAGE_DESC_DEFAULT;
+  desc.width = 4u;
+  desc.height = 4u;
+  desc.format = VKR_TEXTURE_FORMAT_R32_SFLOAT;
+  desc.flags = VKR_RG_RESOURCE_FLAG_RETAINED;
+  desc.usage = vkr_texture_usage_flags_from_bits(VKR_TEXTURE_USAGE_STORAGE |
+                                                 VKR_TEXTURE_USAGE_SAMPLED);
+
+  VkrRenderGraphFrameInfo frame = {.target_width = 4u, .target_height = 4u};
+  vkr_rg_begin_frame(graph, &frame);
+  VkrRgImageHandle image =
+      vkr_rg_create_image(graph, string8_lit("retained"), &desc);
+  VkrRgPassBuilder writer =
+      rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "writer");
+  vkr_rg_pass_write_image(&writer, image, VKR_RG_IMAGE_ACCESS_STORAGE_WRITE, 0u,
+                          0u);
+  assert(vkr_rg_compile_schedule(graph));
+
+  /* Frame compiled and planned a write, but never submitted, so commit is not
+     called. Contents must stay invalid: the write never reached the GPU. */
+  assert(g_retained_store.commit_calls == 0u);
+  assert(!g_retained_store.states[0][0][0].content_valid);
+
+  vkr_rg_destroy(graph);
+  arena_destroy(arena);
+  printf("  test_retained_uncommitted_frame_rolls_back PASSED\n");
+}
+
+static void test_retained_state_is_per_instance_and_per_layer(void) {
+  printf("  Running test_retained_state_is_per_instance_and_per_layer...\n");
+  Arena *arena = arena_create(MB(4), MB(4));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+
+  MemZero(&g_retained_store, sizeof(g_retained_store));
+  /* Layer 1 of instance 1 has contents; nothing else does. If seeding ignored
+     either axis, the reader below would be allowed to run. */
+  g_retained_store.states[0][1][1] = (VkrRgRetainedState){
+      .layout = VKR_TEXTURE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+      .content_valid = true_v,
+  };
+
+  VkrRenderGraph *graph = vkr_rg_create(&allocator);
+  assert(graph);
+  const VkrRgRetainedStateProvider provider = {
+      .context = &g_retained_store,
+      .read = rg_retained_test_read,
+      .commit = rg_retained_test_commit,
+  };
+  vkr_rg_set_retained_state_provider(graph, &provider);
+
+  VkrRgImageDesc desc = VKR_RG_IMAGE_DESC_DEFAULT;
+  desc.width = 4u;
+  desc.height = 4u;
+  desc.layers = 4u;
+  desc.format = VKR_TEXTURE_FORMAT_R32_SFLOAT;
+  desc.flags = VKR_RG_RESOURCE_FLAG_RETAINED | VKR_RG_RESOURCE_FLAG_PER_IMAGE;
+  desc.usage = vkr_texture_usage_flags_from_bits(VKR_TEXTURE_USAGE_STORAGE |
+                                                 VKR_TEXTURE_USAGE_SAMPLED);
+
+  /* Selecting target image 1 must consult instance 1. An exact read of its
+     valid layer succeeds. */
+  VkrRenderGraphFrameInfo frame = {
+      .target_width = 4u, .target_height = 4u, .image_index = 1u};
+  vkr_rg_begin_frame(graph, &frame);
+  VkrRgImageHandle image =
+      vkr_rg_create_image(graph, string8_lit("retained"), &desc);
+  VkrRgPassBuilder reader =
+      rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "reader");
+  vkr_rg_pass_read_image_slice(
+      &reader, image, VKR_RG_IMAGE_ACCESS_STORAGE_READ, 0u, 0u,
+      (VkrRgImageSlice){.base_layer = 1u, .layer_count = 1u});
+  assert(vkr_rg_compile_schedule(graph));
+  vkr_rg_end_frame(graph);
+
+  /* A whole-image read still fails because the other layers have nothing. */
+  vkr_rg_begin_frame(graph, &frame);
+  image = vkr_rg_create_image(graph, string8_lit("retained"), &desc);
+  reader = rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "reader");
+  vkr_rg_pass_read_image(&reader, image, VKR_RG_IMAGE_ACCESS_STORAGE_READ, 0u,
+                         0u);
+  assert(!vkr_rg_compile_schedule(graph));
+
+  vkr_rg_destroy(graph);
+  arena_destroy(arena);
+  printf("  test_retained_state_is_per_instance_and_per_layer PASSED\n");
+}
+
+static void test_retained_write_does_not_validate_other_layers(void) {
+  printf("  Running test_retained_write_does_not_validate_other_layers...\n");
+  Arena *arena = arena_create(MB(4), MB(4));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+
+  MemZero(&g_retained_store, sizeof(g_retained_store));
+  VkrRenderGraph *graph = vkr_rg_create(&allocator);
+  assert(graph);
+  const VkrRgRetainedStateProvider provider = {
+      .context = &g_retained_store,
+      .read = rg_retained_test_read,
+      .commit = rg_retained_test_commit,
+  };
+  vkr_rg_set_retained_state_provider(graph, &provider);
+
+  VkrRgImageDesc desc = VKR_RG_IMAGE_DESC_DEFAULT;
+  desc.width = 4u;
+  desc.height = 4u;
+  desc.layers = 2u;
+  desc.format = VKR_TEXTURE_FORMAT_R32_SFLOAT;
+  desc.flags = VKR_RG_RESOURCE_FLAG_RETAINED;
+  desc.usage = vkr_texture_usage_flags_from_bits(VKR_TEXTURE_USAGE_STORAGE);
+
+  VkrRenderGraphFrameInfo frame = {.target_width = 4u, .target_height = 4u};
+  vkr_rg_begin_frame(graph, &frame);
+  VkrRgImageHandle image =
+      vkr_rg_create_image(graph, string8_lit("retained"), &desc);
+  VkrRgPassBuilder writer =
+      rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "writer");
+  vkr_rg_pass_write_image_slice_at_stages(
+      &writer, image, VKR_RG_IMAGE_ACCESS_STORAGE_WRITE,
+      VKR_GPU_STAGE_COMPUTE_SHADER, 0u, 0u,
+      (VkrRgImageSlice){.base_layer = 0u, .layer_count = 1u});
+  VkrRgPassBuilder reader =
+      rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "reader");
+  vkr_rg_pass_read_image_slice(
+      &reader, image, VKR_RG_IMAGE_ACCESS_STORAGE_READ, 0u, 0u,
+      (VkrRgImageSlice){.base_layer = 1u, .layer_count = 1u});
+  assert(!vkr_rg_compile_schedule(graph));
+
+  vkr_rg_destroy(graph);
+  arena_destroy(arena);
+  printf("  test_retained_write_does_not_validate_other_layers PASSED\n");
+}
+
 bool32_t run_render_graph_barrier_tests() {
   printf("--- Running RenderGraph barrier tests... ---\n");
 
   test_resource_instance_domains();
+  test_retained_flag_rejects_conflicting_lifetimes();
+  test_retained_is_not_an_instance_domain();
+  test_retained_read_without_contents_fails_compile();
+  test_retained_commit_then_read_succeeds();
+  test_retained_uncommitted_frame_rolls_back();
+  test_retained_state_is_per_instance_and_per_layer();
+  test_retained_write_does_not_validate_other_layers();
   test_image_access_is_write();
   test_json_bindings_and_condition_parity();
   test_transmission_condition();
   test_transmission_compact_conditions_and_viewport_buffer();
   test_shadow_map_capacity_is_independent_of_active_cascades();
   test_shadow_reads_follow_active_cascades();
+  test_repeat_condition_mask_filters_iterations();
   test_conflicting_runtime_bindings_are_rejected();
   test_typed_executor_and_direct_dispatch_contract();
   test_indirect_dispatch_dependency_contract();

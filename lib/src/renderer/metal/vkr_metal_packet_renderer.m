@@ -90,6 +90,15 @@ typedef struct VkrMetalPacketImageInstance {
   bool8_t history_valid;
   bool8_t live;
   bool8_t owned;
+  /**
+   * Committed cross-frame state for a RETAINED resource (ADR-029), indexed
+   * mip * layer_count + layer to match the graph's subresource ordering.
+   *
+   * Sized to this backend's realized image bounds. Vulkan has its own larger
+   * fixed bound; retained tracking never needs slots Metal cannot realize.
+   */
+  VkrRgRetainedState retained_states[VKR_METAL_PACKET_MAX_TEXTURE_MIPS *
+                                     VKR_METAL_PACKET_MAX_TEXTURE_LAYERS];
 } VkrMetalPacketImageInstance;
 
 typedef struct VkrMetalPacketImage {

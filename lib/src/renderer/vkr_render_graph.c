@@ -47,6 +47,18 @@ vkr_internal bool8_t vkr_rg_buffer_desc_equal(const VkrRgBufferDesc *a,
          a->flags == b->flags;
 }
 
+vkr_internal bool8_t
+vkr_rg_retained_image_flags_valid(String8 name, VkrRgResourceFlags flags) {
+  if ((flags & VKR_RG_RESOURCE_FLAG_RETAINED) == 0u)
+    return true_v;
+  if ((flags & VKR_RG_RESOURCE_RETAINED_EXCLUSIONS) == 0u)
+    return true_v;
+  log_error("RenderGraph image '%.*s': RETAINED cannot combine with "
+            "TRANSIENT, EXTERNAL, HISTORY, or PER_FRAME_SLOT",
+            (int)name.length, name.str);
+  return false_v;
+}
+
 VkrRgImage *vkr_rg_image_from_handle(VkrRenderGraph *graph,
                                      VkrRgImageHandle handle) {
   if (!graph || !vkr_rg_image_handle_valid(handle)) {
@@ -207,6 +219,44 @@ vkr_rg_resource_instance_domain(VkrRgResourceFlags flags) {
 
 void vkr_rg_set_packet(VkrRenderGraph *graph, const VkrRenderPacket *packet) {
   graph->packet = packet;
+}
+
+void vkr_rg_set_retained_state_provider(
+    VkrRenderGraph *graph, const VkrRgRetainedStateProvider *provider) {
+  if (!graph)
+    return;
+  graph->retained_provider =
+      provider ? *provider : (VkrRgRetainedStateProvider){0};
+}
+
+void vkr_rg_commit_retained_state(VkrRenderGraph *graph) {
+  if (!graph || !graph->retained_provider.commit || !graph->subresource_states)
+    return;
+  const uint32_t image_count = (uint32_t)graph->images.length;
+  for (uint32_t i = 0; i < image_count; ++i) {
+    const VkrRgImage *image = vector_get_VkrRgImage(&graph->images, i);
+    if (!image || !(image->desc.flags & VKR_RG_RESOURCE_FLAG_RETAINED))
+      continue;
+    const uint32_t offset = graph->image_state_offsets[i];
+    const uint32_t count = vkr_rg_image_subresource_count(image);
+    const uint32_t instance = graph->retained_instance_indices
+                                  ? graph->retained_instance_indices[i]
+                                  : 0u;
+    for (uint32_t s = 0; s < count; ++s) {
+      const VkrRgSubresourceState *terminal =
+          &graph->subresource_states[offset + s];
+      const VkrRgRetainedState state = {
+          .access = terminal->access,
+          .stages = terminal->stages,
+          .layout = terminal->layout,
+          .content_valid = graph->retained_content_valid
+                               ? graph->retained_content_valid[offset + s]
+                               : false_v,
+      };
+      graph->retained_provider.commit(graph->retained_provider.context, i,
+                                      instance, s, &state);
+    }
+  }
 }
 
 vkr_internal const VkrRenderPacket *
@@ -568,6 +618,17 @@ void vkr_rg_destroy(VkrRenderGraph *graph) {
                            graph->subresource_state_capacity,
                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
+  if (graph->retained_content_valid) {
+    vkr_allocator_free(graph->allocator, graph->retained_content_valid,
+                       sizeof(bool8_t) * graph->retained_content_valid_capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if (graph->retained_instance_indices) {
+    vkr_allocator_free(graph->allocator, graph->retained_instance_indices,
+                       sizeof(uint32_t) *
+                           graph->retained_instance_index_capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
   if (graph->image_state_offsets) {
     vkr_allocator_free(graph->allocator, graph->image_state_offsets,
                        sizeof(uint32_t) * graph->image_state_offset_capacity,
@@ -663,6 +724,8 @@ VkrRgImageHandle vkr_rg_create_image(VkrRenderGraph *graph, String8 name,
     log_error("RenderGraph create image failed: invalid args");
     return VKR_RG_IMAGE_HANDLE_INVALID;
   }
+  if (!vkr_rg_retained_image_flags_valid(name, desc->flags))
+    return VKR_RG_IMAGE_HANDLE_INVALID;
 
   int64_t index = vkr_rg_find_image_index(graph, name);
   if (index >= 0) {
@@ -713,6 +776,8 @@ VkrRgImageHandle vkr_rg_import_image(VkrRenderGraph *graph, String8 name,
     resolved_desc = *desc;
   }
   resolved_desc.flags |= VKR_RG_RESOURCE_FLAG_EXTERNAL;
+  if (!vkr_rg_retained_image_flags_valid(name, resolved_desc.flags))
+    return VKR_RG_IMAGE_HANDLE_INVALID;
 
   int64_t index = vkr_rg_find_image_index(graph, name);
   if (index >= 0) {
@@ -773,6 +838,12 @@ VkrRgBufferHandle vkr_rg_create_buffer(VkrRenderGraph *graph, String8 name,
                                        const VkrRgBufferDesc *desc) {
   if (!graph || !desc || name.length == 0) {
     log_error("RenderGraph create buffer failed: invalid args");
+    return VKR_RG_BUFFER_HANDLE_INVALID;
+  }
+  if (desc->flags & VKR_RG_RESOURCE_FLAG_RETAINED) {
+    log_error("RenderGraph buffer '%.*s': RETAINED currently supports images "
+              "only",
+              (int)name.length, name.str);
     return VKR_RG_BUFFER_HANDLE_INVALID;
   }
 

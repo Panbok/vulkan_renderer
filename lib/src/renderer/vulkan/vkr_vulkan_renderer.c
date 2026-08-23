@@ -444,6 +444,8 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
       .shadow_map_layer_count = shadow_cascade_count,
       .shadow_cascade_count = shadow_cascade_count,
   };
+  vkr_vulkan_renderer_retained_shadow_token(renderer, slot->image_index,
+                                            &out_setup->retained_shadow);
   return true_v;
 }
 
@@ -697,6 +699,9 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
   renderer->prepared_frame.hzb_reduce_pass_count = hzb_mip_count - 1u;
   vkr_rg_begin_frame(renderer->graph, &renderer->prepared_frame);
   vkr_rg_set_packet(renderer->graph, packet);
+  /* Installed before compilation, because seeding a retained subresource reads
+     through this provider. */
+  vkr_vk_install_retained_provider(renderer);
   if (!vkr_rg_build_from_json(renderer->graph, &renderer->json_graph,
                               &renderer->prepared_frame)) {
     log_error("Vulkan failed to build the authored render graph");
@@ -829,6 +834,11 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
     return false_v;
   }
   renderer->submit_value = signal_value;
+  /* Past the submit, so retained contents are now proven to have been written.
+     Every earlier failure path returns without reaching here, which is the
+     ADR-029 rollback: a cancelled frame commits nothing and the previous
+     contents stay authoritative. */
+  vkr_rg_commit_retained_state(renderer->graph);
   vkr_vk_mark_hzb_submitted(renderer, signal_value);
   vkr_vk_mark_graph_images_submitted(renderer, signal_value);
   vkr_vk_mark_graph_buffers_submitted(renderer, signal_value);

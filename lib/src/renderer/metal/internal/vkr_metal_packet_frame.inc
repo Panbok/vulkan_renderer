@@ -1403,6 +1403,8 @@ bool8_t vkr_metal_packet_renderer_prepare_frame(
               (unsigned long long)renderer->submit_value);
     return false_v;
   }
+  renderer->prepared_frame.image_index =
+      (uint32_t)(renderer->active_command_slot - renderer->command_slots);
   if (renderer->target_kind == VKR_METAL_PACKET_TARGET_WINDOW) {
     renderer->layer.drawableSize =
         CGSizeMake(frame_info->target_width, frame_info->target_height);
@@ -1420,6 +1422,11 @@ bool8_t vkr_metal_packet_renderer_prepare_frame(
   }
   renderer->frame_prepared = true_v;
   return true_v;
+}
+
+uint32_t vkr_metal_packet_renderer_frame_image_index(
+    const VkrMetalPacketRenderer *renderer) {
+  return renderer->prepared_frame.image_index;
 }
 
 /* Rebuild a cached label only when that graph-pass index changes name. */
@@ -1522,6 +1529,9 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
 
   vkr_rg_begin_frame(renderer->graph, &renderer->prepared_frame);
   vkr_rg_set_packet(renderer->graph, packet);
+  /* Installed before compilation, because seeding a retained subresource reads
+     through this provider. */
+  vkr_metal_packet_install_retained_provider(renderer);
   if (!vkr_rg_build_from_json(renderer->graph, &renderer->json_graph,
                               &renderer->prepared_frame)) {
     log_error("Metal packet stage failed: graph build");
@@ -2058,6 +2068,11 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     [renderer->queue waitForDrawable:renderer->drawable];
   [renderer->queue commit:submissions count:1];
   [renderer->queue signalEvent:renderer->completion value:submit_value];
+  /* Past the commit, so retained contents are now proven to have been written.
+     Every earlier failure path returns without reaching here, which is the
+     ADR-029 rollback: a cancelled frame commits nothing and the previous
+     contents stay authoritative. */
+  vkr_rg_commit_retained_state(renderer->graph);
   if (renderer->drawable) {
     [renderer->queue signalDrawable:renderer->drawable];
     [renderer->drawable present];

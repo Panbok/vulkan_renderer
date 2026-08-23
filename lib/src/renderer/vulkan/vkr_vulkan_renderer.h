@@ -135,6 +135,9 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
                                           uint32_t shadow_map_size,
                                           uint32_t shadow_cascade_count,
                                           VkrFrameSetup *out_setup);
+void vkr_vulkan_renderer_retained_shadow_token(
+    VkrVulkanRenderer *renderer, uint32_t image_index,
+    VkrRetainedShadowToken *out_token);
 bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
                                           const VkrRenderPacket *packet,
                                           VkrVulkanResult *out_result);

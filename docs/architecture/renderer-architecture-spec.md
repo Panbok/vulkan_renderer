@@ -610,6 +610,21 @@ required gate — see §10.
    `vulkan_image.c` for the ~20 upload, mipmap, and copy call sites that
    legitimately think in layout pairs and run outside the graph.
 
+   Graph-owned contents can now survive across frames. `RETAINED` (ADR-029)
+   seeds a resource's barrier planning from the last successfully submitted
+   state instead of `UNDEFINED`, tracked per physical instance and per
+   subresource by the selected implementation, and committed only after a submit
+   is proven. Reading a retained subresource with no valid contents is a compile
+   error rather than the warning `PERSISTENT` produces — `PERSISTENT` only
+   suppresses that diagnostic and preserves nothing. `shadow_map` is declared
+   `RETAINED, PER_IMAGE, RESIZABLE`. Each cascade pass selected by the committed
+   per-image history clears and rewrites its layer, while guard-contained
+   reusable layers omit their authored passes and preserve prior contents.
+   Dynamic-caster overlap, incomplete publication, invalid retained contents,
+   or signature drift forces a rewrite. The Vulkan half is implemented and
+   CPU-tested but has never executed, because Vulkan initialization is
+   Windows-only.
+
    **Residual gap:** this is correct synchronization for *declared* resources.
    Picking is now declared (P1 item 6), but IBL baking still records nested GPU
    work on resources the graph cannot see.

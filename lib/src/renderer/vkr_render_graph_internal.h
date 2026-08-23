@@ -189,7 +189,24 @@ typedef struct VkrRenderGraph {
   uint32_t buffer_state_capacity;
   uint32_t *touched_buffer_indices;
   uint32_t touched_buffer_capacity;
+
+  /**
+   * Retained cross-frame state (ADR-029). The provider is backend-owned; the
+   * graph only caches this frame's seed validity so the read-before-write check
+   * can consult it, and remembers which instance each retained image compiled
+   * against so the commit writes back to the same one.
+   *
+   * `retained_content_valid` parallels `subresource_states` slot for slot.
+   */
+  VkrRgRetainedStateProvider retained_provider;
+  bool8_t *retained_content_valid;
+  uint32_t retained_content_valid_capacity;
+  uint32_t *retained_instance_indices;
+  uint32_t retained_instance_index_capacity;
 } VkrRenderGraph;
+
+/** Mip levels times array layers; the stride of `subresource_states`. */
+uint32_t vkr_rg_image_subresource_count(const VkrRgImage *image);
 
 /**
  * @brief Runs the renderer-independent half of compile: validation, dependency

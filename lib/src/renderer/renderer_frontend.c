@@ -656,6 +656,13 @@ renderer_impl_metal_initialize(void *state, VkrWindow *window, uint32_t width,
   }
   vkr_metal_packet_renderer_get_asset_publisher(renderer->metal_renderer,
                                                 &renderer->asset_publisher);
+  /* Caps are seeded with a backend-neutral default before any renderer exists.
+     Correct the frames-in-flight count to the number of command slots this
+     renderer actually built, so callers sizing per-slot storage are not handed
+     a larger count than there are slots. Present image count is unrelated and
+     stays as configured. */
+  renderer->impl.caps.frame_in_flight_count =
+      vkr_metal_packet_renderer_frame_slot_count(renderer->metal_renderer);
   if (renderer->present_target.kind != VKR_PRESENT_TARGET_OFFSCREEN) {
     event_manager_subscribe(renderer->event_manager, EVENT_TYPE_WINDOW_RESIZE,
                             vkr_renderer_on_window_resize, renderer);
@@ -749,6 +756,10 @@ renderer_impl_vulkan_initialize(void *state, VkrWindow *window, uint32_t width,
   }
   vkr_vulkan_renderer_get_asset_publisher(renderer->vulkan_renderer,
                                           &renderer->asset_publisher);
+  /* Stated explicitly rather than inherited from the default caps, so this
+     backend's slot count and the caps it publishes cannot drift apart the way
+     Metal's did. */
+  renderer->impl.caps.frame_in_flight_count = VKR_VULKAN_FRAME_SLOT_COUNT;
   if (renderer->present_target.kind != VKR_PRESENT_TARGET_OFFSCREEN) {
     event_manager_subscribe(renderer->event_manager, EVENT_TYPE_WINDOW_RESIZE,
                             vkr_renderer_on_window_resize, renderer);
@@ -1635,8 +1646,15 @@ static VkrRendererError renderer_impl_metal_present_target_recreate(
 
 static uint32_t renderer_impl_metal_frame_in_flight_index(void *state) {
   RendererFrontend *renderer = state;
-  return (uint32_t)(renderer->frame_number %
-                    renderer->impl.caps.frame_in_flight_count);
+#if defined(PLATFORM_APPLE)
+  /* Ask the backend which slot it acquired, the way the Vulkan path does.
+     Deriving the index from the frame counter assumed the slot count in caps
+     matched the one the Metal renderer actually built, and it did not. */
+  return vkr_metal_packet_renderer_frame_slot(renderer->metal_renderer);
+#else
+  (void)renderer;
+  return 0u;
+#endif
 }
 
 static VkrCaptureStatus
@@ -2066,6 +2084,8 @@ renderer_impl_metal_prepare_frame(void *state, VkrFrameSetup *out_setup) {
     rf->frame_active = false_v;
     return VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED;
   }
+  frame.image_index =
+      vkr_metal_packet_renderer_frame_image_index(rf->metal_renderer);
   rf->timing_completed_ready = renderer_impl_metal_poll_submit_result(
       rf, rf->timing_last_completed_submit_value, &rf->timing_result);
   if (rf->timing_completed_ready) {
@@ -2074,12 +2094,14 @@ renderer_impl_metal_prepare_frame(void *state, VkrFrameSetup *out_setup) {
   rf->frame_number++;
   MemZero(&rf->frame_metrics, sizeof(rf->frame_metrics));
   *out_setup = (VkrFrameSetup){
-      .image_index = 0,
+      .image_index = frame.image_index,
       .window_width = rf->last_window_width,
       .window_height = rf->last_window_height,
       .swapchain_format = frame.target_color_format,
       .swapchain_depth_format = frame.target_depth_format,
   };
+  vkr_metal_packet_renderer_retained_shadow_token(
+      rf->metal_renderer, frame.image_index, &out_setup->retained_shadow);
   return VKR_RENDERER_ERROR_NONE;
 #else
   (void)out_setup;

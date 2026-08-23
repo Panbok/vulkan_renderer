@@ -124,6 +124,7 @@ owning document status in the same change.
 | [026](architecture/adr/026-vulkan-1-2-retirement.md) | implemented | Vulkan 1.2 backend, shaders, legacy frontend model, interface, and graph migration residue removed under explicit owner authorization |
 | [027](architecture/adr/027-immediate-mode-grid-ui.md) | proposed | Immediate-mode UI over a retained cache, grid-only layout, batched scissored draw list with evidence-gated tile caching, and a composited offscreen editor viewport |
 | [028](architecture/adr/028-gpu-driven-deferred-visibility-buffer.md) | implemented through P21 | GPU-driven deferred visibility buffer; both backends use one GPU-submitted topology with opaque/deferred shading, HZB, picking, four-layer transmission, and completion-gated layer coverage. The legacy world renderer and runtime fallback are retired; the measured eight-pass P19 compact path is the Metal default with a diagnostic full-screen rollback |
+| [029](architecture/adr/029-retained-graph-resources.md) | partial | Retained graph-owned contents with per-instance, per-subresource content validity, seeded from the last successfully submitted state and committed only on proven submit. Prerequisite for directional cascade reuse; distinct from the `HISTORY` ring and from `PERSISTENT`, which only suppresses a diagnostic |
 
 ## Rendering
 

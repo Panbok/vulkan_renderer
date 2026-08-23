@@ -52,6 +52,7 @@ Considered → Revisit When**.
 | [ADR-026](026-vulkan-1-2-retirement.md) | Vulkan 1.2 retirement and bindless-only end state | Accepted |
 | [ADR-027](027-immediate-mode-grid-ui.md) | Immediate-mode grid UI with a composited editor viewport | Proposed |
 | [ADR-028](028-gpu-driven-deferred-visibility-buffer.md) | GPU-driven deferred visibility-buffer rendering | Accepted and implemented through P21; the legacy world topology and runtime fallback are retired, and the measured eight-pass P19 compact path is the Metal default with a diagnostic full-screen rollback |
+| [ADR-029](029-retained-graph-resources.md) | Retained graph resources with per-subresource content validity | Accepted (partial); load-bearing for Metal P3B cascade reuse, while the Vulkan path remains unexecuted and unvalidated at runtime |
 
 ## Relationship to the Specification
 

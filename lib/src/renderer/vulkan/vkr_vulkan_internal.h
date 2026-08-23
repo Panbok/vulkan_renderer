@@ -616,6 +616,16 @@ typedef struct VkrVulkanGraphImageInstance {
   bool8_t has_sampled_slot;
   bool8_t has_storage_slot;
   bool8_t history_valid;
+  /**
+   * Committed cross-frame state for a RETAINED resource (ADR-029), indexed
+   * mip * layer_count + layer to match the graph's subresource ordering.
+   *
+   * Lives on the instance rather than in the graph because the physical image
+   * outlives any one frame's graph, and it is written only after a submit is
+   * proven, so a cancelled frame leaves the previous frame's contents standing.
+   */
+  VkrRgRetainedState
+      retained_states[VKR_VULKAN_TEXTURE_MIP_MAX * VKR_VULKAN_GRAPH_LAYER_MAX];
 } VkrVulkanGraphImageInstance;
 
 typedef struct VkrVulkanGraphImage {
@@ -1018,6 +1028,8 @@ bool8_t vkr_vk_invalidate(const VkrVulkanRenderer *renderer,
                           VkDeviceSize offset, VkDeviceSize size);
 bool8_t vkr_vk_pipeline_cache_initialize(VkrVulkanRenderer *renderer);
 bool8_t vkr_vk_realize_graph_images(VkrVulkanRenderer *renderer);
+/** Installs this renderer as the graph's retained cross-frame state provider. */
+void vkr_vk_install_retained_provider(VkrVulkanRenderer *renderer);
 bool8_t vkr_vk_realize_graph_buffers(VkrVulkanRenderer *renderer);
 void vkr_vk_mark_graph_images_submitted(VkrVulkanRenderer *renderer,
                                         uint64_t submit_value);

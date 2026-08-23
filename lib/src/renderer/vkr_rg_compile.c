@@ -35,9 +35,10 @@ vkr_internal bool8_t vkr_rg_buffer_usage_has(const VkrBufferUsageFlags *usage,
 
 vkr_internal bool8_t
 vkr_rg_image_allows_read_without_write(const VkrRgImage *image) {
-  return image && (image->imported || (image->desc.flags &
-                                       (VKR_RG_RESOURCE_FLAG_EXTERNAL |
-                                        VKR_RG_RESOURCE_FLAG_PERSISTENT)) != 0);
+  return image && (image->imported ||
+                   (image->desc.flags & (VKR_RG_RESOURCE_FLAG_EXTERNAL |
+                                         VKR_RG_RESOURCE_FLAG_PERSISTENT |
+                                         VKR_RG_RESOURCE_FLAG_RETAINED)) != 0);
 }
 
 vkr_internal bool8_t
@@ -1018,7 +1019,7 @@ vkr_internal void vkr_rg_compute_lifetimes(VkrRenderGraph *graph) {
 }
 
 /** @brief Subresource count an image's barrier state occupies. */
-vkr_internal uint32_t vkr_rg_image_subresource_count(const VkrRgImage *image) {
+uint32_t vkr_rg_image_subresource_count(const VkrRgImage *image) {
   uint32_t mips = image->desc.mip_levels ? image->desc.mip_levels : 1;
   uint32_t layers = image->desc.layers ? image->desc.layers : 1;
   return mips * layers;
@@ -1113,6 +1114,46 @@ vkr_internal bool8_t vkr_rg_ensure_barrier_state(VkrRenderGraph *graph) {
     graph->subresource_state_capacity = subresource_total;
   }
 
+  /* Parallels subresource_states slot for slot, so the read-before-write check
+     can ask whether this specific subresource actually has contents. */
+  if (subresource_total > graph->retained_content_valid_capacity) {
+    bool8_t *valid = vkr_allocator_alloc(graph->allocator,
+                                         sizeof(bool8_t) * subresource_total,
+                                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!valid) {
+      log_error("RenderGraph barrier state: retained validity allocation "
+                "failed");
+      return false_v;
+    }
+    if (graph->retained_content_valid) {
+      vkr_allocator_free(graph->allocator, graph->retained_content_valid,
+                         sizeof(bool8_t) *
+                             graph->retained_content_valid_capacity,
+                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    }
+    graph->retained_content_valid = valid;
+    graph->retained_content_valid_capacity = subresource_total;
+  }
+
+  if (image_count > graph->retained_instance_index_capacity) {
+    uint32_t *instances =
+        vkr_allocator_alloc(graph->allocator, sizeof(uint32_t) * image_count,
+                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!instances) {
+      log_error("RenderGraph barrier state: retained instance allocation "
+                "failed");
+      return false_v;
+    }
+    if (graph->retained_instance_indices) {
+      vkr_allocator_free(graph->allocator, graph->retained_instance_indices,
+                         sizeof(uint32_t) *
+                             graph->retained_instance_index_capacity,
+                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    }
+    graph->retained_instance_indices = instances;
+    graph->retained_instance_index_capacity = image_count;
+  }
+
   if (buffer_count > graph->buffer_state_capacity) {
     VkrRgBufferState *states = vkr_allocator_alloc(
         graph->allocator, sizeof(VkrRgBufferState) * buffer_count,
@@ -1158,6 +1199,48 @@ vkr_internal bool8_t vkr_rg_ensure_barrier_state(VkrRenderGraph *graph) {
     VkrRgImage *image = vector_get_VkrRgImage(&graph->images, i);
     graph->image_state_offsets[i] = offset;
     uint32_t count = vkr_rg_image_subresource_count(image);
+    const bool8_t retained =
+        (image->desc.flags & VKR_RG_RESOURCE_FLAG_RETAINED) != 0;
+    /* A retained image's contents belong to one physical instance, so the seed
+       has to name which instance this frame selected. Everything else is
+       instance-independent and uses 0. */
+    const uint32_t instance_index =
+        retained && vkr_rg_resource_instance_domain(image->desc.flags) ==
+                        VKR_RG_RESOURCE_INSTANCE_PER_IMAGE
+            ? graph->frame_info.image_index
+            : 0u;
+    graph->retained_instance_indices[i] = instance_index;
+
+    if (retained && graph->retained_provider.read) {
+      for (uint32_t s = 0; s < count; ++s) {
+        VkrRgRetainedState state = {
+            .access = VKR_RG_IMAGE_ACCESS_NONE,
+            .stages = vkr_gpu_stages_for_image_access(VKR_RG_IMAGE_ACCESS_NONE,
+                                                      true_v),
+            .layout = VKR_TEXTURE_LAYOUT_UNDEFINED,
+            .content_valid = false_v,
+        };
+        graph->retained_provider.read(graph->retained_provider.context, i,
+                                      instance_index, s, &state);
+        /* Contents the backend cannot vouch for must not be seeded with a
+           layout that implies they exist; an invalid subresource seeds
+           UNDEFINED so its first writer transitions from scratch. */
+        graph->subresource_states[offset + s] =
+            state.content_valid
+                ? (VkrRgSubresourceState){.access = state.access,
+                                          .stages = state.stages,
+                                          .layout = state.layout}
+                : (VkrRgSubresourceState){
+                      .access = VKR_RG_IMAGE_ACCESS_NONE,
+                      .stages = vkr_gpu_stages_for_image_access(
+                          VKR_RG_IMAGE_ACCESS_NONE, true_v),
+                      .layout = VKR_TEXTURE_LAYOUT_UNDEFINED};
+        graph->retained_content_valid[offset + s] = state.content_valid;
+      }
+      offset += count;
+      continue;
+    }
+
     VkrRgSubresourceState seed = {
         .access =
             image->imported ? image->imported_access : VKR_RG_IMAGE_ACCESS_NONE,
@@ -1169,6 +1252,7 @@ vkr_internal bool8_t vkr_rg_ensure_barrier_state(VkrRenderGraph *graph) {
     };
     for (uint32_t s = 0; s < count; ++s) {
       graph->subresource_states[offset + s] = seed;
+      graph->retained_content_valid[offset + s] = false_v;
     }
     offset += count;
   }
@@ -1188,17 +1272,35 @@ vkr_internal bool8_t vkr_rg_ensure_barrier_state(VkrRenderGraph *graph) {
   return true_v;
 }
 
+typedef enum VkrRgRetainedContentEffect {
+  VKR_RG_RETAINED_CONTENT_PRESERVE = 0,
+  VKR_RG_RETAINED_CONTENT_WRITE_VALID,
+  VKR_RG_RETAINED_CONTENT_DISCARD,
+} VkrRgRetainedContentEffect;
+
+vkr_internal bool8_t
+vkr_rg_image_access_requires_contents(VkrRgImageAccessFlags access) {
+  return (access &
+          (VKR_RG_IMAGE_ACCESS_SAMPLED | VKR_RG_IMAGE_ACCESS_STORAGE_READ |
+           VKR_RG_IMAGE_ACCESS_DEPTH_READ_ONLY |
+           VKR_RG_IMAGE_ACCESS_TRANSFER_SRC)) != 0u;
+}
+
 /**
  * @brief Accumulates one image use into this pass's desired subresource state.
  *
  * Every pre-barrier executes before the pass, so multiple declarations in one
  * pass cannot be treated as a sequence. Compatible accesses are unioned and
- * lowered once; incompatible layouts are rejected at compile time.
+ * lowered once; incompatible layouts are rejected at compile time. Retained
+ * validity follows the exact mip/layer range in execution order, so writing one
+ * layer cannot authorize a read from another.
  */
 vkr_internal bool8_t vkr_rg_declare_image_access(
     VkrRenderGraph *graph, const VkrRgPass *pass, VkrRgImageHandle handle,
     VkrRgImageAccessFlags access, VkrGpuStageFlags stages,
-    const VkrRgImageSlice *slice, uint32_t token, uint32_t *touched_count) {
+    const VkrRgImageSlice *slice, bool8_t requires_contents,
+    VkrRgRetainedContentEffect content_effect, uint32_t token,
+    uint32_t *touched_count) {
   VkrRgImage *image = vkr_rg_image_from_handle(graph, handle);
   if (!image) {
     return false_v;
@@ -1232,6 +1334,26 @@ vkr_internal bool8_t vkr_rg_declare_image_access(
   vkr_image_subresource_range_resolve(slice ? &requested : NULL, mips, layers,
                                       &base_mip, &mip_count, &base_layer,
                                       &layer_count);
+
+  bool8_t *retained_valid = NULL;
+  if (image->desc.flags & VKR_RG_RESOURCE_FLAG_RETAINED) {
+    retained_valid =
+        &graph->retained_content_valid[graph->image_state_offsets[image_index]];
+    if (requires_contents) {
+      for (uint32_t mip = base_mip; mip < base_mip + mip_count; ++mip) {
+        for (uint32_t layer = base_layer; layer < base_layer + layer_count;
+             ++layer) {
+          if (retained_valid[mip * layers + layer])
+            continue;
+          log_error("RenderGraph retained image '%.*s' mip %u layer %u is read "
+                    "by pass '%.*s' with no valid contents",
+                    (int)image->name.length, image->name.str, mip, layer,
+                    (int)pass->desc.name.length, pass->desc.name.str);
+          return false_v;
+        }
+      }
+    }
+  }
 
   VkrTextureLayout desired_layout =
       vkr_rg_layout_for_image_access(image, access);
@@ -1273,6 +1395,15 @@ vkr_internal bool8_t vkr_rg_declare_image_access(
         state->pending_layout = desired_layout;
         state->pending_token = token;
       }
+    }
+  }
+
+  if (retained_valid && content_effect != VKR_RG_RETAINED_CONTENT_PRESERVE) {
+    const bool8_t valid = content_effect == VKR_RG_RETAINED_CONTENT_WRITE_VALID;
+    for (uint32_t mip = base_mip; mip < base_mip + mip_count; ++mip) {
+      for (uint32_t layer = base_layer; layer < base_layer + layer_count;
+           ++layer)
+        retained_valid[mip * layers + layer] = valid;
     }
   }
 
@@ -1432,10 +1563,18 @@ vkr_internal bool8_t vkr_rg_generate_barriers(VkrRenderGraph *graph) {
 
     for (uint64_t i = 0; i < pass->desc.image_reads.length; ++i) {
       VkrRgImageUse *use = vector_get_VkrRgImageUse(&pass->desc.image_reads, i);
-      if (!vkr_rg_declare_image_access(graph, pass, use->image, use->access,
-                                       use->stages,
-                                       use->has_slice ? &use->slice : NULL,
-                                       token, &touched_image_count)) {
+      const VkrRgRetainedContentEffect content_effect =
+          (use->access & (VKR_RG_IMAGE_ACCESS_STORAGE_WRITE |
+                          VKR_RG_IMAGE_ACCESS_COLOR_ATTACHMENT |
+                          VKR_RG_IMAGE_ACCESS_DEPTH_ATTACHMENT |
+                          VKR_RG_IMAGE_ACCESS_TRANSFER_DST)) != 0u
+              ? VKR_RG_RETAINED_CONTENT_WRITE_VALID
+              : VKR_RG_RETAINED_CONTENT_PRESERVE;
+      if (!vkr_rg_declare_image_access(
+              graph, pass, use->image, use->access, use->stages,
+              use->has_slice ? &use->slice : NULL,
+              vkr_rg_image_access_requires_contents(use->access),
+              content_effect, token, &touched_image_count)) {
         return false_v;
       }
     }
@@ -1443,10 +1582,18 @@ vkr_internal bool8_t vkr_rg_generate_barriers(VkrRenderGraph *graph) {
     for (uint64_t i = 0; i < pass->desc.image_writes.length; ++i) {
       VkrRgImageUse *use =
           vector_get_VkrRgImageUse(&pass->desc.image_writes, i);
-      if (!vkr_rg_declare_image_access(graph, pass, use->image, use->access,
-                                       use->stages,
-                                       use->has_slice ? &use->slice : NULL,
-                                       token, &touched_image_count)) {
+      const VkrRgRetainedContentEffect content_effect =
+          (use->access & (VKR_RG_IMAGE_ACCESS_STORAGE_WRITE |
+                          VKR_RG_IMAGE_ACCESS_COLOR_ATTACHMENT |
+                          VKR_RG_IMAGE_ACCESS_DEPTH_ATTACHMENT |
+                          VKR_RG_IMAGE_ACCESS_TRANSFER_DST)) != 0u
+              ? VKR_RG_RETAINED_CONTENT_WRITE_VALID
+              : VKR_RG_RETAINED_CONTENT_PRESERVE;
+      if (!vkr_rg_declare_image_access(
+              graph, pass, use->image, use->access, use->stages,
+              use->has_slice ? &use->slice : NULL,
+              vkr_rg_image_access_requires_contents(use->access),
+              content_effect, token, &touched_image_count)) {
         return false_v;
       }
     }
@@ -1454,10 +1601,17 @@ vkr_internal bool8_t vkr_rg_generate_barriers(VkrRenderGraph *graph) {
     for (uint64_t i = 0; i < pass->desc.color_attachments.length; ++i) {
       VkrRgAttachment *att =
           vector_get_VkrRgAttachment(&pass->desc.color_attachments, i);
+      const bool8_t loads_contents =
+          att->desc.load_op == VKR_ATTACHMENT_LOAD_OP_LOAD;
+      const VkrRgRetainedContentEffect content_effect =
+          att->desc.store_op == VKR_ATTACHMENT_STORE_OP_DONT_CARE ||
+                  att->desc.load_op == VKR_ATTACHMENT_LOAD_OP_DONT_CARE
+              ? VKR_RG_RETAINED_CONTENT_DISCARD
+              : VKR_RG_RETAINED_CONTENT_WRITE_VALID;
       if (!vkr_rg_declare_image_access(
               graph, pass, att->image, VKR_RG_IMAGE_ACCESS_COLOR_ATTACHMENT,
-              VKR_GPU_STAGE_COLOR_OUTPUT, &att->desc.slice, token,
-              &touched_image_count)) {
+              VKR_GPU_STAGE_COLOR_OUTPUT, &att->desc.slice, loads_contents,
+              content_effect, token, &touched_image_count)) {
         return false_v;
       }
     }
@@ -1467,10 +1621,20 @@ vkr_internal bool8_t vkr_rg_generate_barriers(VkrRenderGraph *graph) {
       VkrRgImageAccessFlags access = att->read_only
                                          ? VKR_RG_IMAGE_ACCESS_DEPTH_READ_ONLY
                                          : VKR_RG_IMAGE_ACCESS_DEPTH_ATTACHMENT;
+      const bool8_t loads_contents =
+          att->read_only || att->desc.load_op == VKR_ATTACHMENT_LOAD_OP_LOAD;
+      const VkrRgRetainedContentEffect content_effect =
+          att->read_only
+              ? VKR_RG_RETAINED_CONTENT_PRESERVE
+              : (att->desc.store_op == VKR_ATTACHMENT_STORE_OP_DONT_CARE ||
+                         att->desc.load_op == VKR_ATTACHMENT_LOAD_OP_DONT_CARE
+                     ? VKR_RG_RETAINED_CONTENT_DISCARD
+                     : VKR_RG_RETAINED_CONTENT_WRITE_VALID);
       if (!vkr_rg_declare_image_access(
               graph, pass, att->image, access,
               vkr_gpu_stages_for_image_access(access, false_v),
-              &att->desc.slice, token, &touched_image_count)) {
+              &att->desc.slice, loads_contents, content_effect, token,
+              &touched_image_count)) {
         return false_v;
       }
     }

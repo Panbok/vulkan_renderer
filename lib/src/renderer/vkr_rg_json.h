@@ -51,8 +51,9 @@ typedef struct VkrRgJsonCondition {
  * determine if a resource or pass should be executed.
  */
 typedef struct VkrRgJsonRepeat {
-  bool8_t enabled;      // Whether the repeat expression is enabled.
-  String8 count_source; // The source of the repeat count.
+  bool8_t enabled;               // Whether repeat is enabled.
+  String8 count_source;          // Source of the repeat count.
+  String8 condition_mask_source; // Optional bit mask indexed by repetition.
 } VkrRgJsonRepeat;
 
 /**
@@ -71,6 +72,8 @@ typedef enum VkrRgJsonResourceFlags {
   VKR_RG_JSON_RESOURCE_FLAG_PER_FRAME_SLOT =
       1 << 5, // One resource per completion-gated frame slot.
   VKR_RG_JSON_RESOURCE_FLAG_HISTORY = 1 << 6, // Completion-gated history ring.
+  VKR_RG_JSON_RESOURCE_FLAG_RETAINED =
+      1 << 7, // Contents survive across frames in place. See ADR-029.
 } VkrRgJsonResourceFlags;
 
 /**

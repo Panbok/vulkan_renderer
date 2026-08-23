@@ -1041,12 +1041,25 @@ typedef struct VkrPresentTargetImageState {
 // ============================================================================
 // Stateless Frame Setup
 // ============================================================================
+/**
+ * Proven retained state for the selected physical shadow-map instance.
+ *
+ * `valid_layer_mask` is authoritative for content existence. The shadow
+ * system associates fits and caster signatures with `resource_generation`, but
+ * never promotes its own history to content validity.
+ */
+typedef struct VkrRetainedShadowToken {
+  uint64_t resource_generation;
+  uint32_t valid_layer_mask;
+} VkrRetainedShadowToken;
+
 typedef struct VkrFrameSetup {
   uint32_t image_index;
   uint32_t window_width;
   uint32_t window_height;
   VkrTextureFormat swapchain_format;
   VkrTextureFormat swapchain_depth_format;
+  VkrRetainedShadowToken retained_shadow;
 } VkrFrameSetup;
 
 typedef struct VkrRendererUploadWaitStats {

@@ -1,5 +1,13 @@
 #include "renderer/vkr_renderer_impl.h"
 
+/**
+ * Seed values only. Selection runs before any renderer exists, so anything the
+ * chosen implementation actually determines is corrected during its
+ * initialization. `frame_in_flight_count` in particular is a per-backend fact:
+ * Vulkan builds VKR_VULKAN_FRAME_SLOT_COUNT slots and Metal builds fewer, so
+ * both restate it after creating their renderer. Do not read these as the
+ * shipped values.
+ */
 static VkrRendererImplCapabilities
 vkr_renderer_impl_default_caps(VkrPresentTargetKind target_kind) {
   return (VkrRendererImplCapabilities){

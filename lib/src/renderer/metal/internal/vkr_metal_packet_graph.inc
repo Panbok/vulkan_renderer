@@ -745,6 +745,96 @@ vkr_metal_packet_realize_buffers(VkrMetalPacketRenderer *renderer) {
   return true_v;
 }
 
+/**
+ * Resolves one retained subresource slot, or NULL when the request cannot name
+ * a live instance. Shared by the read and commit halves so both agree on
+ * bounds and liveness, mirroring the Vulkan implementation.
+ */
+vkr_internal VkrRgRetainedState *
+vkr_metal_packet_retained_slot(VkrMetalPacketRenderer *renderer,
+                               uint32_t image_index, uint32_t instance_index,
+                               uint32_t subresource) {
+  if (image_index >= renderer->graph->images.length)
+    return NULL;
+  const VkrRgImage *image =
+      vector_get_VkrRgImage(&renderer->graph->images, image_index);
+  VkrMetalPacketImage *slot = &renderer->images[image_index];
+  if (!image || !slot->live || slot->graph_generation != image->generation ||
+      instance_index >= slot->instance_count)
+    return NULL;
+  if (subresource >=
+      ArrayCount(slot->instances[instance_index].retained_states))
+    return NULL;
+  return &slot->instances[instance_index].retained_states[subresource];
+}
+
+vkr_internal void
+vkr_metal_packet_retained_read(void *context, uint32_t image_index,
+                               uint32_t instance_index, uint32_t subresource,
+                               VkrRgRetainedState *out_state) {
+  const VkrRgRetainedState *state =
+      vkr_metal_packet_retained_slot((VkrMetalPacketRenderer *)context,
+                                     image_index, instance_index, subresource);
+  /* An unresolvable slot leaves the caller's invalid default in place, which
+     the compiler reads as "must be written this frame". */
+  if (state)
+    *out_state = *state;
+}
+
+vkr_internal void
+vkr_metal_packet_retained_commit(void *context, uint32_t image_index,
+                                 uint32_t instance_index, uint32_t subresource,
+                                 const VkrRgRetainedState *state) {
+  VkrRgRetainedState *slot =
+      vkr_metal_packet_retained_slot((VkrMetalPacketRenderer *)context,
+                                     image_index, instance_index, subresource);
+  if (slot)
+    *slot = *state;
+}
+
+vkr_internal void
+vkr_metal_packet_install_retained_provider(VkrMetalPacketRenderer *renderer) {
+  const VkrRgRetainedStateProvider provider = {
+      .context = renderer,
+      .read = vkr_metal_packet_retained_read,
+      .commit = vkr_metal_packet_retained_commit,
+  };
+  vkr_rg_set_retained_state_provider(renderer->graph, &provider);
+}
+
+void vkr_metal_packet_renderer_retained_shadow_token(
+    VkrMetalPacketRenderer *renderer, uint32_t image_index,
+    VkrRetainedShadowToken *out_token) {
+  *out_token = (VkrRetainedShadowToken){0};
+  for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
+    const VkrRgImage *image =
+        vector_get_VkrRgImage(&renderer->graph->images, i);
+    if (!image || !vkr_string8_equals_cstr(&image->name, "shadow_map"))
+      continue;
+    VkrMetalPacketImage *slot = &renderer->images[i];
+    if (!slot->live || slot->graph_generation != image->generation ||
+        slot->instance_count != renderer->command_slot_count ||
+        image_index >= slot->instance_count || slot->desc.mip_levels != 1u ||
+        slot->desc.samples != VKR_SAMPLE_COUNT_1 ||
+        slot->desc.type != VKR_TEXTURE_TYPE_2D ||
+        slot->desc.width != renderer->prepared_frame.shadow_map_size ||
+        slot->desc.height != renderer->prepared_frame.shadow_map_size ||
+        slot->desc.format != renderer->prepared_frame.shadow_depth_format ||
+        slot->desc.layers != renderer->prepared_frame.shadow_map_layer_count)
+      return;
+    const VkrMetalPacketImageInstance *instance = &slot->instances[image_index];
+    if (!instance->live)
+      return;
+    out_token->resource_generation = slot->graph_generation;
+    const uint32_t layer_count = MIN(slot->desc.layers, 32u);
+    for (uint32_t layer = 0u; layer < layer_count; ++layer) {
+      if (instance->retained_states[layer].content_valid)
+        out_token->valid_layer_mask |= UINT32_C(1) << layer;
+    }
+    return;
+  }
+}
+
 vkr_internal void
 vkr_metal_packet_mark_graph_images_submitted(VkrMetalPacketRenderer *renderer,
                                              uint64_t submit_value) {

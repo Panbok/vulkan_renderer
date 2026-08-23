@@ -101,6 +101,7 @@ vkr_internal bool8_t vkr_rg_json_parse_condition(
 vkr_internal bool8_t vkr_rg_json_parse_repeat(VkrRgJsonParseContext *ctx,
                                               VkrJsonReader *obj,
                                               const char *field_path,
+                                              bool8_t allow_condition_mask,
                                               VkrRgJsonRepeat *out_repeat) {
   assert_log(out_repeat != NULL, "out_repeat is NULL");
   assert_log(field_path != NULL, "field_path is NULL");
@@ -123,6 +124,21 @@ vkr_internal bool8_t vkr_rg_json_parse_repeat(VkrRgJsonParseContext *ctx,
                            &out_repeat->count_source)) {
     return vkr_rg_json_error(ctx, field_path,
                              "repeat.count_source is required");
+  }
+
+  VkrJsonReader mask_reader = repeat_obj;
+  if (vkr_json_find_field(&mask_reader, "condition_mask_source")) {
+    if (!allow_condition_mask) {
+      return vkr_rg_json_error(
+          ctx, field_path,
+          "repeat.condition_mask_source is valid only on passes");
+    }
+    mask_reader = repeat_obj;
+    if (!vkr_json_get_string(&mask_reader, "condition_mask_source",
+                             &out_repeat->condition_mask_source)) {
+      return vkr_rg_json_error(ctx, field_path,
+                               "repeat.condition_mask_source must be a string");
+    }
   }
 
   out_repeat->enabled = true_v;
@@ -163,6 +179,8 @@ vkr_rg_json_parse_resource_flags(VkrRgJsonParseContext *ctx, VkrJsonReader *obj,
       *out_flags |= VKR_RG_JSON_RESOURCE_FLAG_PER_FRAME_SLOT;
     } else if (vkr_string8_equals_cstr_i(&value, "HISTORY")) {
       *out_flags |= VKR_RG_JSON_RESOURCE_FLAG_HISTORY;
+    } else if (vkr_string8_equals_cstr_i(&value, "RETAINED")) {
+      *out_flags |= VKR_RG_JSON_RESOURCE_FLAG_RETAINED;
     } else {
       return vkr_rg_json_error(ctx, field_path, "unknown resource flag");
     }
@@ -707,7 +725,8 @@ vkr_rg_json_parse_resource(VkrRgJsonParseContext *ctx, VkrJsonReader *obj,
     return false_v;
   }
 
-  if (!vkr_rg_json_parse_repeat(ctx, obj, field_path, &out_resource->repeat)) {
+  if (!vkr_rg_json_parse_repeat(ctx, obj, field_path, false_v,
+                                &out_resource->repeat)) {
     return false_v;
   }
 
@@ -716,7 +735,24 @@ vkr_rg_json_parse_resource(VkrRgJsonParseContext *ctx, VkrJsonReader *obj,
     return false_v;
   }
 
+  if (out_resource->flags & VKR_RG_JSON_RESOURCE_FLAG_RETAINED) {
+    /* RETAINED describes content lifetime; these four describe where instances
+       come from or who owns them, and each contradicts in-place retention. */
+    const uint32_t conflicts =
+        out_resource->flags & (VKR_RG_JSON_RESOURCE_FLAG_TRANSIENT |
+                               VKR_RG_JSON_RESOURCE_FLAG_EXTERNAL |
+                               VKR_RG_JSON_RESOURCE_FLAG_HISTORY |
+                               VKR_RG_JSON_RESOURCE_FLAG_PER_FRAME_SLOT);
+    if (conflicts)
+      return vkr_rg_json_error(ctx, field_path,
+                               "RETAINED cannot combine with TRANSIENT, "
+                               "EXTERNAL, HISTORY, or PER_FRAME_SLOT");
+  }
+
   if (out_resource->type == VKR_RG_JSON_RESOURCE_BUFFER) {
+    if (out_resource->flags & VKR_RG_JSON_RESOURCE_FLAG_RETAINED)
+      return vkr_rg_json_error(ctx, field_path,
+                               "RETAINED currently supports images only");
     const uint32_t lifetime_flags =
         out_resource->flags & (VKR_RG_JSON_RESOURCE_FLAG_PERSISTENT |
                                VKR_RG_JSON_RESOURCE_FLAG_EXTERNAL |
@@ -790,7 +826,8 @@ vkr_internal bool8_t vkr_rg_json_parse_use(VkrRgJsonParseContext *ctx,
     return false_v;
   }
 
-  if (!vkr_rg_json_parse_repeat(ctx, obj, field_path, &out_use->repeat)) {
+  if (!vkr_rg_json_parse_repeat(ctx, obj, field_path, false_v,
+                                &out_use->repeat)) {
     return false_v;
   }
 
@@ -1208,7 +1245,8 @@ vkr_internal bool8_t vkr_rg_json_parse_pass(VkrRgJsonParseContext *ctx,
     goto cleanup;
   }
 
-  if (!vkr_rg_json_parse_repeat(ctx, obj, field_path, &out_pass->repeat)) {
+  if (!vkr_rg_json_parse_repeat(ctx, obj, field_path, true_v,
+                                &out_pass->repeat)) {
     ok = false_v;
     goto cleanup;
   }
@@ -1741,6 +1779,28 @@ vkr_internal bool8_t vkr_rg_json_repeat_count(
   return false_v;
 }
 
+vkr_internal bool8_t vkr_rg_json_repeat_iteration_enabled(
+    const VkrRgJsonRepeat *repeat, const VkrRenderGraphFrameInfo *frame,
+    uint32_t repeat_index, bool8_t *out_enabled) {
+  if (!out_enabled)
+    return false_v;
+  *out_enabled = true_v;
+  if (!repeat || repeat->condition_mask_source.length == 0u)
+    return true_v;
+  if (!frame)
+    return false_v;
+  if (vkr_string8_equals_cstr_i(&repeat->condition_mask_source,
+                                "shadow_cascade_render_mask")) {
+    *out_enabled = repeat_index < 32u && (frame->shadow_cascade_render_mask &
+                                          (UINT32_C(1) << repeat_index)) != 0u;
+    return true_v;
+  }
+  log_error("RenderGraph JSON: unknown repeat condition mask source '%.*s'",
+            (int)repeat->condition_mask_source.length,
+            repeat->condition_mask_source.str);
+  return false_v;
+}
+
 vkr_internal bool8_t vkr_rg_json_resolve_extent(
     const VkrRgJsonExtent *extent, const VkrRenderGraphFrameInfo *frame,
     uint32_t *out_width, uint32_t *out_height) {
@@ -1850,6 +1910,9 @@ vkr_internal VkrRgResourceFlags vkr_rg_json_resource_flags(uint32_t flags) {
   }
   if (flags & VKR_RG_JSON_RESOURCE_FLAG_PER_FRAME_SLOT) {
     out |= VKR_RG_RESOURCE_FLAG_PER_FRAME_SLOT;
+  }
+  if (flags & VKR_RG_JSON_RESOURCE_FLAG_RETAINED) {
+    out |= VKR_RG_RESOURCE_FLAG_RETAINED;
   }
   if (flags & VKR_RG_JSON_RESOURCE_FLAG_HISTORY) {
     out |= VKR_RG_RESOURCE_FLAG_HISTORY;
@@ -2216,6 +2279,12 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
     }
 
     for (uint32_t r = 0; r < repeat_count; ++r) {
+      bool8_t repeat_enabled = true_v;
+      if (!vkr_rg_json_repeat_iteration_enabled(&pass->repeat, frame, r,
+                                                &repeat_enabled))
+        return false_v;
+      if (!repeat_enabled)
+        continue;
       String8 resolved_name = {0};
       bool8_t owned_name = false_v;
       if (!vkr_rg_expand_name(frame_allocator, pass->name, r, &resolved_name,

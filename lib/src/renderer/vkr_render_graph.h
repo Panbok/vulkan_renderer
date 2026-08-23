@@ -105,7 +105,28 @@ typedef enum VkrRgResourceFlags {
       1 << 6, /**< One resource per completion-gated frame slot */
   VKR_RG_RESOURCE_FLAG_HISTORY =
       1 << 7, /**< Completion-gated history ring owned by the backend */
+  /**
+   * Contents survive across frames in place, per physical instance and per
+   * subresource. See ADR-029.
+   *
+   * Distinct from HISTORY, which is a ring: history writes a new instance each
+   * frame and reads an older one, while a retained subresource keeps whatever
+   * was last written to it and may be sampled for many frames with no writer
+   * scheduled at all. Distinct from PERSISTENT, which only suppresses the
+   * read-before-write diagnostic and preserves nothing.
+   *
+   * Describes content lifetime, not instance domain, so it composes with
+   * PER_IMAGE and RESIZABLE. Mutually exclusive with TRANSIENT, EXTERNAL,
+   * HISTORY, and PER_FRAME_SLOT.
+   */
+  VKR_RG_RESOURCE_FLAG_RETAINED = 1 << 8,
 } VkrRgResourceFlags;
+
+/** Lifetime flags that cannot combine with RETAINED, for validation. */
+#define VKR_RG_RESOURCE_RETAINED_EXCLUSIONS                                    \
+  (VKR_RG_RESOURCE_FLAG_TRANSIENT | VKR_RG_RESOURCE_FLAG_EXTERNAL |            \
+   VKR_RG_RESOURCE_FLAG_HISTORY | VKR_RG_RESOURCE_FLAG_PER_FRAME_SLOT)
+
 
 /** Backend allocation/selection domain implied by resource lifetime flags. */
 typedef enum VkrRgResourceInstanceDomain {
@@ -273,6 +294,61 @@ typedef VkrBufferAccessFlags VkrRgBufferAccessFlags;
 #define VKR_RG_BUFFER_ACCESS_TRANSFER_SRC VKR_BUFFER_ACCESS_TRANSFER_SRC
 #define VKR_RG_BUFFER_ACCESS_TRANSFER_DST VKR_BUFFER_ACCESS_TRANSFER_DST
 #define VKR_RG_BUFFER_ACCESS_INDIRECT_READ VKR_BUFFER_ACCESS_INDIRECT_READ
+
+/**
+ * @brief One retained subresource's committed cross-frame state. See ADR-029.
+ *
+ * `content_valid` is the authority for whether a reader may run with no writer
+ * scheduled this frame. Access, stages, and layout describe how the last
+ * successful submit left the subresource, so the next frame seeds its barrier
+ * planning from there instead of from UNDEFINED.
+ */
+typedef struct VkrRgRetainedState {
+  VkrRgImageAccessFlags access;
+  VkrGpuStageFlags stages;
+  VkrTextureLayout layout;
+  bool8_t content_valid;
+} VkrRgRetainedState;
+
+/**
+ * @brief Backend hook for retained cross-frame subresource state.
+ *
+ * The graph does not own retained state: physical instances outlive any single
+ * frame's graph, so the selected implementation stores it beside the realized
+ * instance and answers these calls.
+ *
+ * `read` is called during compilation to seed a retained subresource and must
+ * report the last *successfully submitted* state. `commit` is called only after
+ * a submit is proven to have happened, which is what stops a cancelled frame
+ * from advertising contents it never wrote.
+ */
+typedef struct VkrRgRetainedStateProvider {
+  void *context;
+  void (*read)(void *context, uint32_t image_index, uint32_t instance_index,
+               uint32_t subresource, VkrRgRetainedState *out_state);
+  void (*commit)(void *context, uint32_t image_index, uint32_t instance_index,
+                 uint32_t subresource, const VkrRgRetainedState *state);
+} VkrRgRetainedStateProvider;
+
+struct VkrRenderGraph;
+
+/**
+ * @brief Installs the retained-state provider. Pass NULL to clear it.
+ *
+ * Without a provider, retained resources seed as UNDEFINED with invalid
+ * content, so a graph declaring one still compiles but can never reuse.
+ */
+void vkr_rg_set_retained_state_provider(
+    struct VkrRenderGraph *graph, const VkrRgRetainedStateProvider *provider);
+
+/**
+ * @brief Commits this frame's retained terminal states.
+ *
+ * Call only after a submit has provably happened. Not calling it is the
+ * rollback path; there is no separate discard entry point, so a cancelled frame
+ * rolls back by doing nothing.
+ */
+void vkr_rg_commit_retained_state(struct VkrRenderGraph *graph);
 
 /**
  * @brief Declares one buffer use in a pass.
@@ -599,7 +675,7 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t hzb_reduce_pass_count;
   /** True when the packet contains transmissive world work. */
   bool8_t transmission_pending;
-  /** Metal P19 selector; implies deferred transmission work is pending. */
+  /** Metal P19 state; false only for the diagnostic full-screen rollback. */
   bool8_t transmission_compact_enabled;
   /** True when this frame requests backend pass timestamps. */
   bool8_t timing_enabled;
@@ -621,6 +697,8 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t shadow_map_layer_count;
   /** Number of active shadow cascades in the submitted packet. */
   uint32_t shadow_cascade_count;
+  /** Bits of repeated shadow passes that must be instantiated this frame. */
+  uint32_t shadow_cascade_render_mask;
 } VkrRenderGraphFrameInfo;
 
 /**

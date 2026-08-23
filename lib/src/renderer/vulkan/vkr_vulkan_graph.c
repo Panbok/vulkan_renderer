@@ -428,6 +428,11 @@ bool8_t vkr_vk_realize_graph_images(VkrVulkanRenderer *renderer) {
       }
       vkr_vk_destroy_graph_image(renderer, slot);
     }
+    /* Wholesale reassignment zeroes every instance's retained_states, so
+       content_valid goes false. That is the ADR-029 invalidation rule for
+       resize, format, layer, mip, and image-count changes: reaching this line
+       at all means the descriptor changed, and stale contents must not be
+       advertised against a differently shaped image. */
     *slot = (VkrVulkanGraphImage){
         .desc = image->desc,
         .graph_generation = image->generation,
@@ -453,6 +458,91 @@ bool8_t vkr_vk_realize_graph_images(VkrVulkanRenderer *renderer) {
     }
   }
   return true_v;
+}
+
+/**
+ * Resolves one retained subresource slot, or NULL when the request cannot name
+ * a live instance. Shared by the read and commit halves of the provider so both
+ * agree on bounds and liveness.
+ */
+vkr_internal VkrRgRetainedState *
+vkr_vk_retained_slot(VkrVulkanRenderer *renderer, uint32_t image_index,
+                     uint32_t instance_index, uint32_t subresource) {
+  if (image_index >= renderer->graph->images.length)
+    return NULL;
+  const VkrRgImage *image =
+      vector_get_VkrRgImage(&renderer->graph->images, image_index);
+  VkrVulkanGraphImage *slot = &renderer->graph_images[image_index];
+  if (!image || !slot->live || slot->graph_generation != image->generation ||
+      instance_index >= slot->instance_count)
+    return NULL;
+  if (subresource >=
+      ArrayCount(slot->instances[instance_index].retained_states))
+    return NULL;
+  return &slot->instances[instance_index].retained_states[subresource];
+}
+
+vkr_internal void vkr_vk_retained_read(void *context, uint32_t image_index,
+                                       uint32_t instance_index,
+                                       uint32_t subresource,
+                                       VkrRgRetainedState *out_state) {
+  const VkrRgRetainedState *state = vkr_vk_retained_slot(
+      (VkrVulkanRenderer *)context, image_index, instance_index, subresource);
+  /* An unresolvable slot reports invalid rather than failing: the compiler
+     treats invalid contents as "must be written this frame", which is the safe
+     reading of "this backend cannot vouch for it". */
+  if (state)
+    *out_state = *state;
+}
+
+vkr_internal void vkr_vk_retained_commit(void *context, uint32_t image_index,
+                                         uint32_t instance_index,
+                                         uint32_t subresource,
+                                         const VkrRgRetainedState *state) {
+  VkrRgRetainedState *slot = vkr_vk_retained_slot(
+      (VkrVulkanRenderer *)context, image_index, instance_index, subresource);
+  if (slot)
+    *slot = *state;
+}
+
+void vkr_vk_install_retained_provider(VkrVulkanRenderer *renderer) {
+  const VkrRgRetainedStateProvider provider = {
+      .context = renderer,
+      .read = vkr_vk_retained_read,
+      .commit = vkr_vk_retained_commit,
+  };
+  vkr_rg_set_retained_state_provider(renderer->graph, &provider);
+}
+
+void vkr_vulkan_renderer_retained_shadow_token(
+    VkrVulkanRenderer *renderer, uint32_t image_index,
+    VkrRetainedShadowToken *out_token) {
+  *out_token = (VkrRetainedShadowToken){0};
+  for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
+    const VkrRgImage *image =
+        vector_get_VkrRgImage(&renderer->graph->images, i);
+    if (!image || !vkr_string8_equals_cstr(&image->name, "shadow_map"))
+      continue;
+    VkrVulkanGraphImage *slot = &renderer->graph_images[i];
+    if (!slot->live || slot->graph_generation != image->generation ||
+        slot->instance_count != renderer->targets.image_count ||
+        image_index >= slot->instance_count || slot->desc.mip_levels != 1u ||
+        slot->desc.samples != VKR_SAMPLE_COUNT_1 ||
+        slot->desc.type != VKR_TEXTURE_TYPE_2D ||
+        slot->desc.width != renderer->prepared_frame.shadow_map_size ||
+        slot->desc.height != renderer->prepared_frame.shadow_map_size ||
+        slot->desc.format != renderer->prepared_frame.shadow_depth_format ||
+        slot->desc.layers != renderer->prepared_frame.shadow_map_layer_count)
+      return;
+    const VkrVulkanGraphImageInstance *instance = &slot->instances[image_index];
+    out_token->resource_generation = slot->graph_generation;
+    const uint32_t layer_count = Min(slot->desc.layers, 32u);
+    for (uint32_t layer = 0u; layer < layer_count; ++layer) {
+      if (instance->retained_states[layer].content_valid)
+        out_token->valid_layer_mask |= UINT32_C(1) << layer;
+    }
+    return;
+  }
 }
 
 VkrVulkanGraphImageInstance *vkr_vk_graph_image(VkrVulkanRenderer *renderer,
