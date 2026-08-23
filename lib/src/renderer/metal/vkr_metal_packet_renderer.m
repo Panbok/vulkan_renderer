@@ -268,6 +268,8 @@ typedef struct VkrMetalPacketCommandSlot {
   uint64_t submit_value;
   uint64_t resource_reuse_submit_value;
   uint32_t timestamp_entry_count;
+  /** Entries belonging to passes; the frame bracket lives past this bound. */
+  uint32_t timestamp_pass_entry_count;
   bool8_t result_pending;
   bool8_t result_collected;
   bool8_t timing_requested;
@@ -339,6 +341,8 @@ struct VkrMetalPacketRenderer {
   id<MTL4CommandBuffer> command_buffer;
   id<MTL4CounterHeap> timestamp_heap;
   uint64_t timestamp_frequency;
+  /** Latches the one-time unattributed-pass-timing warning. */
+  bool8_t reported_unattributed_pass_timings;
   id<MTLRenderPipelineState> gpu_shadow_pipeline;
   id<MTLRenderPipelineState> gpu_shadow_opaque_pipeline;
   id<MTLRenderPipelineState> vbuffer_opaque_pipeline;

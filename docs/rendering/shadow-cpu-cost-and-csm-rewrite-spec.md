@@ -1034,6 +1034,8 @@ the blend fraction at the cold boundary.
 
 ### 11.5 Cost control
 
+**Status: the sweep is expressible but its result is not yet obtained.**
+
 Run matched GPU profiles at 1, 4, 9, 16, and 32 taps, plus the uniform-region
 early-out A/B at 16 and 32. Record `Lighting.Deferred` GPU time and work volume.
 Choose the default from a written GPU budget and exact captures. Do not claim
@@ -1041,6 +1043,34 @@ the filter is paid for by a CPU optimization; report its cost independently.
 
 Keep map size, split lambda, and tap count as separate experimental variables.
 Changing more than one makes the capture and timing result uninterpretable.
+
+The tap count is a case field, `renderer.shadow_pcf_samples`, folded into the
+workload fingerprint so two lanes differing only by it cannot compare as the
+same measurement. Five lanes ship as
+`tools/cases/performance/bistro_shadow_orbit_pcf{1,4,9,16,32}.case.json`.
+
+All five lanes ran and passed on Apple M1 Pro under
+`tools/profiles/local-windowed-gpu.json`, and **the result is unusable**. The
+per-lane means order non-monotonically with tap count, which cannot be a real
+cost curve. A follow-up diagnosis found the cause is not specific to this phase
+or to this pass: Metal per-pass GPU timing writes both timestamps at
+command-buffer scope, which under Metal 4's overlapping encoders measures
+command-stream stalls rather than pass duration. Two repetitions of one binary
+with bit-identical work volume attributed their GPU time 45% differently. The
+defect predates P7. See issue 3b in
+[renderer-architecture-spec.md](../architecture/renderer-architecture-spec.md),
+which also records the partial mitigation that now marks an unattributed frame's
+pass samples unavailable, and the fact that the documented encoder-scope repair
+hangs the GPU on this renderer. The mitigation is only a one-way collapse
+detector: absence of its warning does not prove attribution. No cost figure may
+be quoted from these runs and none is; the sweep must be re-run once per-pass
+timing has a valid scope.
+
+Consequently the shipped tap counts — 16 for `HIGH`, 9 for `BALANCED` — are the
+design's starting points carried forward, **not** measured selections. Choosing
+them properly requires first repairing Metal per-pass GPU timing, which is an
+instrumentation defect independent of this phase. The early-out A/B at 16 and 32
+is blocked behind the same defect and has not run.
 
 ## 12. Implementation slices and ADRs
 
@@ -1112,7 +1142,7 @@ the remaining gaps at the top.
 | 4 | CPU tests for projection bounds, `./build_test.sh`, both backend validation runs, disocclusion captures behind static and moving occluders, overflow coverage, and matched profiles showing net gain after confirmation work |
 | 5 | Phase 3B gates plus p95 comparison and proof that only proactive, still-valid layers were scheduled |
 | 6 | Reduction/linearization/staleness tests, `./build_test.sh`, both backend validation runs, status metrics covering every fallback, exact split-stability captures, and matched GPU profiles |
-| 7 | Packet ABI/reflection tests, `./build_test.sh`, cold/warm production pipeline-cache runs, both backend validation runs, exact quality captures, and matched GPU sweeps for every proposed default |
+| 7 | Packet ABI/reflection tests, `./build_test.sh`, cold/warm production pipeline-cache runs, both backend validation runs, exact quality captures, and matched GPU sweeps for every proposed default. All pass except the GPU sweep, which section 11.5 records as blocked on a `Lighting.Deferred` timestamp defect, and Vulkan runtime validation, which is unavailable on the development host |
 
 Correctness is a separate gate. See
 [`.codex/skills/vkr-validation/SKILL.md`](../../.codex/skills/vkr-validation/SKILL.md).

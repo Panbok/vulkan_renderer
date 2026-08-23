@@ -527,6 +527,52 @@ Current priorities after V7 are:
    publication arena is not a resolution.
 3. Establish matched Release evidence before making any performance claim about
    the two surviving implementations or the V7 deletion.
+3b. **Per-pass GPU timing on Metal does not measure per-pass work.** Both
+   timestamps are written with
+   `[MTL4CommandBuffer writeTimestampIntoHeap:atIndex:]`, outside the encoder.
+   Apple documents that call as capturing "a timestamp after work prior to this
+   command in the command buffer is complete. Work after this call may or may
+   not have started." Under Metal 4's overlapping encoders that interval can
+   measure command-stream stall rather than pass duration. Two repetitions of
+   one binary with **bit-identical work volume** (84,645 indirect commands,
+   65,269 visible) and `frame.wall` 4.4% apart attributed their GPU time 45%
+   differently (per-frame pass totals 20.700 ms against 11.280 ms);
+   `Lighting.Deferred` alone read 6.2003 ms and 0.0125 ms. Which pass collapses
+   moves between runs, and it predates the receiver-quality work — at `c74d5e7`
+   it hit `HZB.BuildBase`.
+
+   **Partially mitigated, not repaired.** The renderer brackets the authored
+   pass region with two more command-buffer timestamps. A large shortfall
+   between that interval and the per-pass sum detects the collapse already seen
+   in practice: below `VKR_METAL_PACKET_PASS_TIMING_MIN_COVERAGE`, every pass
+   sample for the frame is published unavailable and the renderer emits one
+   latched warning. Zero-length intervals and intervals outside the region are
+   invalid. This is a one-way defect detector, not a trust gate; the bracket has
+   the same command-buffer-scope limitation as the samples it checks.
+
+   **The documented repair does not work here.** Moving the per-pass timestamps
+   to encoder scope with `writeTimestampWithGranularity:` hangs the GPU: the
+   main thread blocks in
+   `[IOSurfaceSharedEvent waitUntilSignaledValue:timeoutMS:]` and the device
+   never signals. It hangs at both granularities, with compute-only writes, and
+   with graphics left on the legacy path. `MTL4CounterHeap` conforms only to
+   `NSObject`, not `MTLAllocation`, so counter-heap residency is not available
+   as a lever. The cause is unresolved. `MTL4CommitFeedback` can provide exact
+   start/end time for a committed submission and is a candidate independent
+   control total, but it has no per-pass attribution and is not integrated.
+   Its asynchronous callback ownership must be designed against command-slot
+   reuse before it can become a metric.
+
+   Since the mitigation landed, six consecutive repetitions held
+   `Lighting.Deferred` within 0.9% and the guard never fired. That is
+   suggestive, not proof: the collapse was always intermittent, and the
+   invalidation path therefore remains unobserved on a live collapse. A run
+   without the warning only says the heuristic found no large coverage
+   shortfall; it does not make a per-pass Metal GPU number publishable evidence.
+   Diagnosis and the abandoned approach are recorded in
+   `.scratch/diagnose-lighting-deferred-timestamp-collapse.md` and
+   `.scratch/fix-metal-per-pass-gpu-timing.md`. This still blocks section 11.5
+   of [shadow-cpu-cost-and-csm-rewrite-spec.md](../rendering/shadow-cpu-cost-and-csm-rewrite-spec.md).
 4. Establish a direct same-surface temporal texture-attachment oracle. The
    reported Vulkan-only inversion/swimming defect was a visibility-resolve
    framebuffer-to-NDC Y mismatch: the positive-height Vulkan viewport and

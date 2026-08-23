@@ -1,6 +1,7 @@
 #include "metal_packet_abi_test.h"
 
 #include "renderer/metal/vkr_metal_packet_abi.h"
+#include "renderer/metal/vkr_metal_packet_renderer.h"
 
 #include <assert.h>
 #include <stddef.h>
@@ -83,12 +84,28 @@ static void test_metal_packet_transmission_coverage_abi(void) {
   printf("  test_metal_packet_transmission_coverage_abi PASSED\n");
 }
 
+static void test_metal_packet_timing_collapse_detector(void) {
+  printf("  Running test_metal_packet_timing_collapse_detector...\n");
+  assert(vkr_metal_packet_pass_timing_collapse_detected(0u, 1100u, 1000u));
+  assert(vkr_metal_packet_pass_timing_collapse_detected(100u, 100u, 1000u));
+  assert(vkr_metal_packet_pass_timing_collapse_detected(100u, 1100u, 849u));
+  assert(!vkr_metal_packet_pass_timing_collapse_detected(100u, 1100u, 850u));
+  assert(!vkr_metal_packet_pass_timing_collapse_detected(100u, 1100u, 1100u));
+  VkrMetalPacketResult result = {.pass_timing_count = 2u};
+  result.pass_timings[0].valid = true_v;
+  result.pass_timings[1].valid = true_v;
+  vkr_metal_packet_pass_timings_invalidate(&result);
+  assert(!result.pass_timings[0].valid && !result.pass_timings[1].valid);
+  printf("  test_metal_packet_timing_collapse_detector PASSED\n");
+}
+
 bool32_t run_metal_packet_abi_tests(void) {
   printf("--- Running Metal packet ABI tests... ---\n");
   test_metal_packet_host_abi_manifest();
   test_metal_packet_slang_draw_matrix_conversion();
   test_metal_packet_shader_minimum_alignment();
   test_metal_packet_transmission_coverage_abi();
+  test_metal_packet_timing_collapse_detector();
   printf("--- Metal packet ABI tests completed. ---\n");
   return true_v;
 }

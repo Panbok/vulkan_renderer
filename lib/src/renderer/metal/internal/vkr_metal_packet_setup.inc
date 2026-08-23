@@ -1246,7 +1246,11 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
     MTL4CounterHeapDescriptor *timestamp_descriptor =
         [MTL4CounterHeapDescriptor new];
     timestamp_descriptor.type = MTL4CounterHeapTypeTimestamp;
-    timestamp_descriptor.count = (NSUInteger)config->max_passes * 2u;
+    /* One extra pair beyond the per-pass entries brackets the whole command
+       buffer. The per-pass breakdown is cross-checked against it, because a
+       per-pass number that silently stops measuring its pass is otherwise
+       indistinguishable from a fast pass. */
+    timestamp_descriptor.count = (NSUInteger)(config->max_passes + 1u) * 2u;
     bool8_t command_slots_created = renderer->command_slots != NULL;
     for (uint32_t i = 0;
          command_slots_created && i < renderer->command_slot_count; ++i) {

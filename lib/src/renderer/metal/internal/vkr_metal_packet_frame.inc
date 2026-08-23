@@ -1584,8 +1584,8 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
                                    packet->debug->capture_pass_timestamps;
   if (timing_requested) {
     [renderer->timestamp_heap
-        invalidateCounterRange:NSMakeRange(0, renderer->graph->passes.length *
-                                                  2u)];
+        invalidateCounterRange:NSMakeRange(0,
+                                           (renderer->max_passes + 1u) * 2u)];
   }
   const uint64_t ibl_capture_offset = picking ? 16 : 8;
   const uint64_t ibl_prefilter_capture_offset = ibl_capture_offset + 8;
@@ -1698,6 +1698,14 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
         renderer->active_command_slot->gpu_draw_icb_residencies[group];
   [renderer->command_buffer useResidencySets:residency_sets
                                        count:residency_set_count];
+  /* Diagnostic bracket around the authored pass region. Command-buffer scope
+     cannot prove pass attribution, but a large shortfall between this interval
+     and the pass sum exposes the known collapse before publication. */
+  if (timing_requested) {
+    [renderer->command_buffer
+        writeTimestampIntoHeap:renderer->timestamp_heap
+                       atIndex:(NSUInteger)renderer->max_passes * 2u];
+  }
 
   const VkrGpuDependency capture_dependency = {
       .src_stages = VKR_GPU_STAGE_COLOR_OUTPUT,
@@ -1904,6 +1912,11 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     }
     out_result->executed_pass_count++;
   }
+  if (timing_requested) {
+    [renderer->command_buffer
+        writeTimestampIntoHeap:renderer->timestamp_heap
+                       atIndex:(NSUInteger)renderer->max_passes * 2u + 1u];
+  }
 
   id<MTLTexture> present =
       vkr_metal_packet_texture(renderer, renderer->graph->present_image);
@@ -2057,7 +2070,9 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   vkr_metal_packet_mark_graph_buffers_submitted(renderer, submit_value);
   VkrMetalPacketCommandSlot *command_slot = renderer->active_command_slot;
   command_slot->submit_value = submit_value;
-  command_slot->timestamp_entry_count =
+  /* Covers the per-pass entries and the trailing whole-frame bracket. */
+  command_slot->timestamp_entry_count = (renderer->max_passes + 1u) * 2u;
+  command_slot->timestamp_pass_entry_count =
       (uint32_t)renderer->graph->passes.length * 2u;
   command_slot->timing_requested = timing_requested;
   command_slot->gpu_draw_diagnostics_requested = deferred_diagnostics;
@@ -2139,7 +2154,8 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     if (timing_requested)
       vkr_metal_packet_collect_pass_timings(
           renderer, command_slot->timestamp_heap,
-          command_slot->timestamp_entry_count, out_result);
+          command_slot->timestamp_entry_count,
+          command_slot->timestamp_pass_entry_count, out_result);
     if (transmission_coverage) {
       VkrMetalPacketTransmissionDiagnostics transmission_diagnostics = {0};
       MemCopy(&transmission_diagnostics,

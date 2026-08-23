@@ -15,9 +15,9 @@ vkr_metal_packet_cache_slot_result(VkrMetalPacketRenderer *renderer,
   if (!slot->result_pending || slot->result_collected)
     return;
   if (slot->timing_requested) {
-    vkr_metal_packet_collect_pass_timings(renderer, slot->timestamp_heap,
-                                          slot->timestamp_entry_count,
-                                          &slot->pending_result);
+    vkr_metal_packet_collect_pass_timings(
+        renderer, slot->timestamp_heap, slot->timestamp_entry_count,
+        slot->timestamp_pass_entry_count, &slot->pending_result);
   }
   if (slot->gpu_draw_diagnostics_requested &&
       slot->gpu_draw_diagnostics_readback) {
@@ -92,6 +92,7 @@ vkr_internal bool8_t vkr_metal_packet_complete_command_slot(
   slot->submit_value = 0;
   slot->resource_reuse_submit_value = 0;
   slot->timestamp_entry_count = 0;
+  slot->timestamp_pass_entry_count = 0;
   slot->result_pending = false_v;
   slot->result_collected = false_v;
   slot->timing_requested = false_v;

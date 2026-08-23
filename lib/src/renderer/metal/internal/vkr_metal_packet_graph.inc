@@ -1094,28 +1094,75 @@ vkr_internal bool8_t vkr_metal_packet_capture_plan(
 
 vkr_internal void vkr_metal_packet_collect_pass_timings(
     VkrMetalPacketRenderer *renderer, id<MTL4CounterHeap> timestamp_heap,
-    uint32_t entry_count, VkrMetalPacketResult *result)
-    API_AVAILABLE(macos(26.0)) {
-  if (!renderer || !timestamp_heap || !result || entry_count == 0)
+    uint32_t entry_count, uint32_t pass_entry_count,
+    VkrMetalPacketResult *result) API_AVAILABLE(macos(26.0)) {
+  if (!renderer || !timestamp_heap || !result || entry_count < 2u ||
+      pass_entry_count > entry_count - 2u)
     return;
+  const uint32_t region_bracket_index = entry_count - 2u;
   NSData *resolved =
       [timestamp_heap resolveCounterRange:NSMakeRange(0, entry_count)];
   if (!resolved ||
       resolved.length < entry_count * sizeof(MTL4TimestampHeapEntry))
     return;
   const MTL4TimestampHeapEntry *entries = resolved.bytes;
+  const uint64_t region_begin = entries[region_bracket_index].timestamp;
+  const uint64_t region_end = entries[region_bracket_index + 1u].timestamp;
+  const bool8_t region_valid = region_begin > 0u && region_end > region_begin;
+  const float64_t to_ms = 1000.0 / (float64_t)renderer->timestamp_frequency;
+
+  uint64_t attributed = 0u;
+  uint32_t measured = 0u;
   for (uint32_t i = 0; i < result->pass_timing_count; ++i) {
     VkrMetalPacketPassTiming *timing = &result->pass_timings[i];
     const uint32_t begin_index = timing->pass_index * 2u;
-    if (begin_index + 1u >= entry_count)
+    if (begin_index + 1u >= pass_entry_count)
       continue;
     const uint64_t begin = entries[begin_index].timestamp;
     const uint64_t end = entries[begin_index + 1u].timestamp;
-    timing->valid = begin > 0 && end >= begin;
+    /* Strictly greater: a zero-length interval means both samples resolved to
+       the same GPU point, which is a failure to measure rather than a pass that
+       genuinely took no time. */
+    timing->valid = begin > 0u && end > begin && region_valid &&
+                    begin >= region_begin && end <= region_end;
     if (timing->valid) {
-      timing->gpu_ms = (float64_t)(end - begin) * 1000.0 /
-                       (float64_t)renderer->timestamp_frequency;
+      attributed += end - begin;
+      measured++;
+      timing->gpu_ms = (float64_t)(end - begin) * to_ms;
     }
+  }
+
+  /* Per-pass timestamps are command-buffer scope, and Apple documents that call
+     as capturing "a timestamp after work prior to this command in the command
+     buffer is complete. Work after this call may or may not have started."
+     Under Metal 4's overlapping encoders that interval can measure command
+     stream stall rather than pass duration, and a pass can silently stop
+     accounting for its own work. Two repetitions with bit-identical work volume
+     have attributed one frame 45% differently, with a single pass reading
+     6.2003 ms and 0.0125 ms. In isolation a small value is indistinguishable
+     from a fast pass, so a large coverage shortfall is used as a one-way defect
+     detector. Passing the check does not prove attribution. When it fails,
+     every pass sample for the frame is published unavailable instead of
+     aggregated as real.
+     Encoder-scope timestamps are the documented alternative but currently hang
+     this renderer; see the architecture spec's issue 3b. */
+  if (result->pass_timing_count == 0u)
+    return;
+  if (measured > 0u && !vkr_metal_packet_pass_timing_collapse_detected(
+                           region_begin, region_end, attributed))
+    return;
+  vkr_metal_packet_pass_timings_invalidate(result);
+  /* Latched: the condition persists for as long as the GPU keeps scheduling the
+     frame that way, and one line is enough to tell a reader why an entire run's
+     per-pass GPU column came back empty. */
+  if (!renderer->reported_unattributed_pass_timings) {
+    renderer->reported_unattributed_pass_timings = true_v;
+    log_warn("Metal per-pass GPU timing accounted for %.3f ms of a %.3f ms "
+             "authored pass region; publishing pass samples as unavailable. "
+             "See the renderer architecture spec, issue 3b.",
+             (float64_t)attributed * to_ms,
+             region_valid ? (float64_t)(region_end - region_begin) * to_ms
+                          : 0.0);
   }
 }
 
