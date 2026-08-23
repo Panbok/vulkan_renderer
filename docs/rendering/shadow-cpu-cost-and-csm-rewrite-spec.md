@@ -14,7 +14,7 @@ candidate partition and generation substrate ships without the rejected GPU
 residency expansion. P3A and P3B also ship: `shadow_map` is a retained,
 per-image graph resource (ADR-029), and the backend-neutral shadow resolver
 omits eligible cascade passes against committed per-image history. P7 ships:
-packet version 14 carries a per-cascade block and a shared receiver block, and
+packet version 15 carries a per-cascade block and a shared receiver block, and
 both receivers run a rotated Poisson PCF kernel with texel-denominated bias,
 cascade cross-fade, and max-distance fade. P4, P5, and P6 do not ship; P3B
 performs no proactive refresh.
@@ -1034,12 +1034,14 @@ the blend fraction at the cold boundary.
 
 ### 11.5 Cost control
 
-**Status: the sweep is expressible but its result is not yet obtained.**
+**Status: the original per-pass result is invalid; an exact end-to-end rerun is
+now unblocked but not yet obtained.**
 
-Run matched GPU profiles at 1, 4, 9, 16, and 32 taps, plus the uniform-region
-early-out A/B at 16 and 32. Record `Lighting.Deferred` GPU time and work volume.
-Choose the default from a written GPU budget and exact captures. Do not claim
-the filter is paid for by a CPU optimization; report its cost independently.
+Run matched Metal submission-GPU profiles at 1, 4, 9, 16, and 32 taps, plus the
+uniform-region early-out A/B at 16 and 32. Record `gpu.submission`, `frame.wall`,
+and work volume. Choose the default from a written end-to-end GPU-latency budget
+and exact captures. Do not claim the filter is paid for by a CPU optimization;
+report its cost independently.
 
 Keep map size, split lambda, and tap count as separate experimental variables.
 Changing more than one makes the capture and timing result uninterpretable.
@@ -1049,28 +1051,29 @@ workload fingerprint so two lanes differing only by it cannot compare as the
 same measurement. Five lanes ship as
 `tools/cases/performance/bistro_shadow_orbit_pcf{1,4,9,16,32}.case.json`.
 
-All five lanes ran and passed on Apple M1 Pro under
-`tools/profiles/local-windowed-gpu.json`, and **the result is unusable**. The
-per-lane means order non-monotonically with tap count, which cannot be a real
-cost curve. A follow-up diagnosis found the cause is not specific to this phase
-or to this pass: Metal per-pass GPU timing writes both timestamps at
-command-buffer scope, which under Metal 4's overlapping encoders measures
-command-stream stalls rather than pass duration. Two repetitions of one binary
-with bit-identical work volume attributed their GPU time 45% differently. The
-defect predates P7. See issue 3b in
-[renderer-architecture-spec.md](../architecture/renderer-architecture-spec.md),
-which also records the partial mitigation that now marks an unattributed frame's
-pass samples unavailable, and the fact that the documented encoder-scope repair
-hangs the GPU on this renderer. The mitigation is only a one-way collapse
-detector: absence of its warning does not prove attribution. No cost figure may
-be quoted from these runs and none is; the sweep must be re-run once per-pass
-timing has a valid scope.
+All five lanes ran and passed on Apple M1 Pro under the former
+`tools/profiles/local-windowed-gpu.json`, and **that result is unusable**. The
+per-lane means order non-monotonically with tap count because Metal's former
+command-buffer markers did not attribute the named pass. Two repetitions of one
+binary with bit-identical work volume attributed their pass time 45%
+differently. Those numbers remain historical defect evidence only.
 
-Consequently the shipped tap counts — 16 for `HIGH`, 9 for `BALANCED` — are the
-design's starting points carried forward, **not** measured selections. Choosing
-them properly requires first repairing Metal per-pass GPU timing, which is an
-instrumentation defect independent of this phase. The early-out A/B at 16 and 32
-is blocked behind the same defect and has not run.
+Issue 3b in
+[renderer-architecture-spec.md](../architecture/renderer-architecture-spec.md)
+records the repair: Metal pass rows are now explicitly
+`unsupported_timestamp_scope`, and `MTL4CommitFeedback` supplies exact
+submission start/end latency. The harness associates those delayed completions
+with the source frames and drains after the measured window. This does not
+restore a `Lighting.Deferred` number, but the five lanes differ only in receiver
+tap count, so a matched `gpu.submission` curve is a valid end-to-end cost test.
+If the delta is smaller than repetition spread, the result is inconclusive
+rather than evidence that the receiver is free.
+
+Consequently the shipped tap counts — 16 for `HIGH`, 9 for `BALANCED` — remain
+design starting points, **not** measured selections. Rerun the five lanes with
+`tools/profiles/performance-windowed-gpu-submission.json`; run the early-out A/B
+at 16 and 32 through the same profile. Per-pass attribution remains useful
+future instrumentation, but it no longer blocks this end-to-end selection.
 
 ## 12. Implementation slices and ADRs
 

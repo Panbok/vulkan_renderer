@@ -183,7 +183,7 @@ static void test_harness_profile_parser(void) {
   assert(vkr_harness_profile_parse(profile, strlen(profile), "memory", &parsed,
                                    &error));
   assert(parsed.minimum_repetitions == 2u &&
-         parsed.required_metric_count == 1u);
+         parsed.required_metric_count == 1u && !parsed.submission_gpu_timing);
   assert(string_equals(parsed.warmup_stability_metric, "frame.wall"));
   const char *one_authoritative =
       "{\"schema_version\":1,\"id\":\"performance.test\","

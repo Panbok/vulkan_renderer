@@ -1071,16 +1071,22 @@ bool8_t vkr_harness_profile_parse(const char *json, uint64_t json_length,
     out_profile->required_process_priority = (int32_t)priority;
     out_profile->has_required_process_priority = true_v;
   }
-  static const char *const instrumentation_fields[] = {"gpu_timing",
-                                                       "event_subjects"};
+  static const char *const instrumentation_fields[] = {
+      "gpu_timing", "submission_gpu_timing", "event_subjects"};
+  static const char *const required_instrumentation_fields[] = {
+      "gpu_timing", "event_subjects"};
   if (!vkr_harness_manifest_field(&doc, 0, "instrumentation", true_v,
                                   &instrumentation, out_error) ||
       !vkr_harness_json_object_validate(
           &doc, instrumentation, instrumentation_fields,
-          ArrayCount(instrumentation_fields), instrumentation_fields,
-          ArrayCount(instrumentation_fields), "$.instrumentation", out_error) ||
+          ArrayCount(instrumentation_fields), required_instrumentation_fields,
+          ArrayCount(required_instrumentation_fields), "$.instrumentation",
+          out_error) ||
       !vkr_harness_manifest_bool(&doc, instrumentation, "gpu_timing", true_v,
                                  &out_profile->gpu_timing, out_error) ||
+      !vkr_harness_manifest_bool(&doc, instrumentation, "submission_gpu_timing",
+                                 false_v, &out_profile->submission_gpu_timing,
+                                 out_error) ||
       !vkr_harness_manifest_bool(&doc, instrumentation, "event_subjects",
                                  true_v, &out_profile->event_subjects,
                                  out_error)) {

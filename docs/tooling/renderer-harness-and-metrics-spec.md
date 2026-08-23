@@ -17,7 +17,9 @@ authority: spec
 > profile-scoped immutable baseline generations with digest-confirmed guarded
 > promotion. Phase 6 adds target-neutral attachment/state queries and a true
 > ordinary-image offscreen target that creates no window, surface, swapchain, or
-> present queue.
+> present queue. Metal pass timings now terminate explicitly as unsupported,
+> while a separate source-associated `MTL4CommitFeedback` lane supplies exact
+> whole-submission latency without waiting inside the measured window.
 > Evidence is recorded in
 > [renderer-metrics-phase1-verification.md](renderer-metrics-phase1-verification.md)
 > and
@@ -346,13 +348,15 @@ gate that requires complete events becomes `incomplete` after a drop.
 ### 3.7 Overhead policy
 
 `VKR_METRICS_ENABLED` (default 1) compiles every call to nothing when 0. At
-runtime `VkrMetricsConfig` gates `pass_gpu_timings` — off by default, because
-timestamp queries perturb the command stream and a timestamp-on run may only be
-compared against another timestamp-on run — and event subjects. Counts required
-for work-volume and overflow correctness remain enabled together.
+runtime `VkrMetricsConfig` independently gates `pass_gpu_timings`,
+`submission_gpu_timings`, and event subjects. Both timing modes are off by
+default because instrumentation changes the command/commit path and a timed run
+may only be compared with the same mode. Counts required for work-volume and
+overflow correctness remain enabled together.
 
-The report records both compile-time and runtime instrumentation flags. A
-timestamp-on or event-subject-on run is a different comparison configuration.
+The report records the compile-time flag and all runtime instrumentation flags.
+A pass-timestamp, submission-timing, or event-subject change creates a different
+comparison configuration.
 
 **Acceptance gate:** run at least five paired blocks, each containing one
 isolated Release process with `VKR_METRICS_ENABLED=0` and one with `1`, on one
@@ -899,10 +903,23 @@ requirement, not a default.
    HZB-rejection, command, overflow, and resolve counts remain part of the
    identity. Timing samples are never expected to be bit-identical.
 
-When GPU timings are requested, the child freezes its pass catalog only after
-eight consecutive completed frames expose the same pass-name topology and every
-row has a valid GPU result. A scene's first packet may precede light/cascade
-synchronization and therefore must not define the steady-state catalog.
+When pass GPU timings are requested, the child freezes its pass catalog only
+after eight consecutive completed frames expose the same pass-name topology and
+every row has either a valid result or the terminal
+`unsupported_timestamp_scope` reason. A scene's first packet may precede
+light/cascade synchronization and therefore must not define the steady-state
+catalog. The terminal reason lets a Metal child finish and report the unsupported
+instrument instead of spinning until timeout; the parent still rejects the
+requested per-pass evidence as incomplete.
+
+Metal submission timings are asynchronous. Each completion carries its source
+frame and submit serial. The child backfills the corresponding raw frame sample,
+polls the earliest retained result so intermediate completions are not skipped,
+and performs a bounded idle/feedback drain only after the warmup and measurement
+windows have submitted. No measured frame waits for its timestamp. Invalid or
+missing source-frame completions remain unavailable; an explicitly invalid
+feedback completion fails the child with a stable reason, while a missing tail
+sample makes a required `gpu.submission` metric incomplete.
 
 ### 6.2 Execution profiles and independent repetitions
 
@@ -921,6 +938,15 @@ candidate count is the warmup invariant, and
 `p20-acceptance-windowed-gpu.json` for hidden-window IMMEDIATE presentation.
 They require complete requested GPU timestamps, deterministic work, stable
 warmup, and an exclusive GPU lane. They do not promote snapshot baselines.
+
+Metal whole-submission timing has separate profiles:
+`local-windowed-gpu-submission-single.json` for a non-authoritative diagnostic
+observation and `performance-windowed-gpu-submission.json` for clean,
+five-repetition evidence. Both require driver `Metal 4`, set
+`gpu_timing=false`, set `submission_gpu_timing=true`, and require
+`gpu.submission`. The metric is exact submission start-to-end latency from
+`MTL4CommitFeedback`; it is neither a pass sum nor GPU-busy time, and overlapping
+submissions can make summed submission duration exceed wall time.
 
 Authoritative performance thresholds live with an accepted profile baseline,
 not in a case that can weaken its own gate. Case-local timing assertions are
@@ -1029,6 +1055,7 @@ leaves an incomplete run directory, never a plausible partial report.
     "cache": "isolated_warm",
     "camera_script_version": 1,
     "gpu_timing": false,
+    "submission_gpu_timing": false,
     "metrics_compile_enabled": true,
     "events_enabled": true
   },
@@ -1165,8 +1192,9 @@ it as a gate or a performance result.
   pre-P2 status in live agent guidance while the harness is only proposed.
 - Phase 2b rewrites that skill to use the harness after parity with the legacy
   benchmark is established. Authoritative profiles require multiple isolated
-  repetitions, and timestamp-enabled profiles require complete per-pass GPU
-  samples.
+  repetitions. Pass-timestamp profiles require complete per-pass GPU samples;
+  submission-timing profiles require one exact source-associated
+  `gpu.submission` sample for every measured frame.
 - `AGENTS.md`: one row in the skill table, and an updated build/test command
   block.
 - **Baseline rule, stated in the skill:** an agent never runs

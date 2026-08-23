@@ -175,7 +175,8 @@ bool8_t vkr_harness_case_fingerprints_with_scene_digest(
   ADD("target", "%s,%s,%u", vkr_harness_target_name(case_manifest->target),
       vkr_harness_present_name(case_manifest->present),
       case_manifest->target_image_count);
-  ADD("instrumentation", "%u,%u", profile->gpu_timing, profile->event_subjects);
+  ADD("instrumentation", "%u,%u,%u", profile->gpu_timing,
+      profile->submission_gpu_timing, profile->event_subjects);
   if (tool != VKR_HARNESS_TOOL_PROFILE) {
     for (uint32_t i = 0; i < case_manifest->capture_count; ++i) {
       char name[96];

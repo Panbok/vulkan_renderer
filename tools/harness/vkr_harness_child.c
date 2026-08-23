@@ -31,6 +31,11 @@ typedef struct VkrHarnessChildContext {
   uint32_t pass_catalog_stable_frames;
   /** Set once bootstrap/allocation frames are discarded and sampling begins. */
   bool8_t phase_started;
+  uint64_t phase_first_frame_index;
+  uint64_t submission_timing_cursor;
+  uint32_t submission_metric_index;
+  bool8_t submission_gpu_timing;
+  bool8_t submission_timings_drained;
   bool8_t failed;
   char failure[128];
   uint64_t last_publication;
@@ -77,6 +82,58 @@ typedef struct VkrHarnessChildContext {
  * per process.
  */
 static VkrHarnessChildContext *g_harness_child;
+static void vkr_harness_child_fail(Application *application,
+                                   const char *reason);
+
+static void
+vkr_harness_child_collect_submission_timings(Application *application) {
+  VkrHarnessChildContext *child = g_harness_child;
+  if (!child->submission_gpu_timing || !child->phase_started)
+    return;
+  VkrGpuSubmissionTiming timing = {0};
+  while (vkr_renderer_gpu_submission_timing_poll(
+      &application->renderer, child->submission_timing_cursor, &timing)) {
+    if (timing.submit_serial <= child->submission_timing_cursor) {
+      vkr_harness_child_fail(application, "gpu.submission_non_monotonic");
+      return;
+    }
+    child->submission_timing_cursor = timing.submit_serial;
+    if (timing.source_frame_index < child->phase_first_frame_index)
+      continue;
+    const uint64_t frame =
+        timing.source_frame_index - child->phase_first_frame_index;
+    if (frame >= child->total_frames)
+      continue;
+    if (!timing.valid || timing.duration_ns == 0u) {
+      const char *failure = "gpu.submission_invalid";
+      switch (timing.unavailable_reason) {
+      case VKR_METRIC_REASON_PUBLICATION_DROPPED:
+        failure = "gpu.submission_feedback_unavailable";
+        break;
+      case VKR_METRIC_REASON_NOT_SAMPLED:
+        failure = "gpu.submission_feedback_error";
+        break;
+      case VKR_METRIC_REASON_DISABLED:
+        failure = "gpu.submission_disabled";
+        break;
+      case VKR_METRIC_REASON_NOT_READY:
+        failure = "gpu.submission_not_ready";
+        break;
+      case VKR_METRIC_REASON_UNSUPPORTED:
+        failure = "gpu.submission_unsupported";
+        break;
+      default:
+        break;
+      }
+      vkr_harness_child_fail(application, failure);
+      return;
+    }
+    const uint64_t offset =
+        frame * child->metric_count + child->submission_metric_index;
+    child->samples[offset] = (float64_t)timing.duration_ns;
+    child->availability[offset] = VKR_METRIC_AVAILABILITY_VALID;
+  }
+}
 
 bool8_t application_on_event(Event *event, UserData user_data) {
   (void)event;
@@ -273,6 +330,9 @@ static void vkr_harness_child_sample(Application *application) {
   }
   const uint32_t frame = child->completed_frames++;
   for (uint32_t metric = 0; metric < child->metric_count; ++metric) {
+    if (child->submission_gpu_timing &&
+        metric == child->submission_metric_index)
+      continue;
     const VkrMetricSample *sample = &view.frame->samples[metric];
     const uint64_t offset = (uint64_t)frame * child->metric_count + metric;
     child->availability[offset] = (uint8_t)sample->availability;
@@ -336,10 +396,15 @@ static void vkr_harness_child_sample(Application *application) {
                          ? VKR_HARNESS_PASS_FLAG_GPU_VALID
                          : 0u) |
                     (source->culled ? VKR_HARNESS_PASS_FLAG_CULLED : 0u) |
-                    (source->disabled ? VKR_HARNESS_PASS_FLAG_DISABLED : 0u));
+                    (source->disabled ? VKR_HARNESS_PASS_FLAG_DISABLED : 0u) |
+                    (source->gpu_unavailable_reason ==
+                             VKR_RENDERER_IMPL_GPU_TIMING_REASON_UNSUPPORTED_TIMESTAMP_SCOPE
+                         ? VKR_HARNESS_PASS_FLAG_GPU_UNSUPPORTED_SCOPE
+                         : 0u));
     }
   }
   vkr_metrics_snapshot_release(application->metrics, &view);
+  vkr_harness_child_collect_submission_timings(application);
 }
 
 static void vkr_harness_child_drain_events(Application *application) {
@@ -450,8 +515,12 @@ vkr_harness_child_prepare_pass_catalog(Application *application) {
     }
     signature ^= 0xffu;
     signature *= 1099511628211ull;
-    completed = completed && (!application->metrics->config.pass_gpu_timings ||
-                              passes->samples[pass].gpu_valid);
+    completed =
+        completed &&
+        (!application->metrics->config.pass_gpu_timings ||
+         passes->samples[pass].gpu_valid ||
+         passes->samples[pass].gpu_unavailable_reason ==
+             VKR_RENDERER_IMPL_GPU_TIMING_REASON_UNSUPPORTED_TIMESTAMP_SCOPE);
   }
   signature ^= passes->count;
   signature *= 1099511628211ull;
@@ -602,6 +671,15 @@ void application_update(Application *application, float64_t delta) {
   }
   if (child->completed_frames >= child->total_frames &&
       (child->capture_index < 0 || child->capture_complete)) {
+    if (child->submission_gpu_timing && !child->submission_timings_drained) {
+      if (vkr_renderer_wait_idle(&application->renderer) !=
+          VKR_RENDERER_ERROR_NONE) {
+        vkr_harness_child_fail(application, "gpu.submission_drain_failed");
+        return;
+      }
+      vkr_harness_child_collect_submission_timings(application);
+      child->submission_timings_drained = true_v;
+    }
     application_close(application);
     return;
   }
@@ -616,6 +694,9 @@ void application_update(Application *application, float64_t delta) {
     /* The catalog allocation happened in the preceding bootstrap frame. Drop
        that publication too so a zero-warmup case remains allocation-free. */
     child->phase_started = true_v;
+    child->phase_first_frame_index = application->renderer.frame_number + 1u;
+    child->submission_timing_cursor =
+        vkr_renderer_get_submit_serial(&application->renderer);
   }
   if (!vkr_harness_child_resize_round_trip(application)) {
     return;
@@ -746,6 +827,8 @@ static ApplicationConfig vkr_harness_child_application_config(
       .app_arena_size = MB(2),
       .renderer_backend = renderer_backend,
       .metrics_config = {.pass_gpu_timings = profile->gpu_timing,
+                         .submission_gpu_timings =
+                             profile->submission_gpu_timing,
                          .event_subjects = profile->event_subjects},
       .fixed_delta_seconds = case_manifest->fixed_delta_seconds,
       .disable_camera_controller = true_v,
@@ -1370,6 +1453,18 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
     string_format(sample_catalog[i].unit, sizeof(sample_catalog[i].unit), "%s",
                   vkr_harness_metric_unit_name(metric_catalog[i].unit));
   }
+  uint32_t submission_metric_index = UINT32_MAX;
+  for (uint32_t i = 0; i < metric_count; ++i) {
+    if (string_equals(sample_catalog[i].name, "gpu.submission")) {
+      submission_metric_index = i;
+      break;
+    }
+  }
+  if (profile.submission_gpu_timing && submission_metric_index == UINT32_MAX) {
+    vkr_harness_stderr("Submission GPU metric is not registered\n");
+    exit_code = VKR_HARNESS_EXIT_INVALID;
+    goto cleanup;
+  }
   child = (VkrHarnessChildContext){
       .case_manifest = &case_manifest,
       .arenas = &arenas,
@@ -1379,6 +1474,8 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
       .events = events,
       .samples = samples,
       .availability = availability,
+      .submission_metric_index = submission_metric_index,
+      .submission_gpu_timing = profile.submission_gpu_timing,
       .capture_index = capture_index,
       .run_dir = run_dir,
   };

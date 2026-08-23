@@ -437,6 +437,8 @@ bool8_t vkr_harness_report_write(const char *path,
                                 VKR_HARNESS_CAMERA_SCRIPT_VERSION) &&
       vkr_harness_json_emit_bool(writer, "gpu_timing",
                                  report->profile.gpu_timing) &&
+      vkr_harness_json_emit_bool(writer, "submission_gpu_timing",
+                                 report->profile.submission_gpu_timing) &&
       vkr_harness_json_emit_bool(writer, "metrics_compile_enabled",
                                  VKR_METRICS_ENABLED ? true_v : false_v) &&
       vkr_harness_json_emit_bool(writer, "events_enabled",
@@ -521,13 +523,18 @@ bool8_t vkr_harness_report_write(const char *path,
         vkr_harness_report_write_statistics_reason(
             writer, &gpu,
             gpu.statistics.sample_count == 0u
-                ? (report->profile.gpu_timing ? "no_valid_samples" : "disabled")
+                ? (pass->gpu_unsupported_scope_count > 0u
+                       ? "unsupported_timestamp_scope"
+                       : (report->profile.gpu_timing ? "no_valid_samples"
+                                                     : "disabled"))
                 : NULL) &&
         vkr_harness_json_emit_u64(writer, "culled_count", pass->culled_count) &&
         vkr_harness_json_emit_u64(writer, "disabled_count",
                                   pass->disabled_count) &&
         vkr_harness_json_emit_u64(writer, "omitted_count",
                                   pass->omitted_count) &&
+        vkr_harness_json_emit_u64(writer, "gpu_unsupported_scope_count",
+                                  pass->gpu_unsupported_scope_count) &&
         vkr_json_writer_end_object(writer);
   }
   ok = ok && vkr_json_writer_end_array(writer) &&
@@ -674,7 +681,8 @@ bool8_t vkr_harness_report_write(const char *path,
              writer, "message", "Run is not authoritative for this reason") &&
          vkr_json_writer_end_object(writer);
   }
-  if (ok && !report->profile.gpu_timing) {
+  if (ok && !report->profile.gpu_timing &&
+      !report->profile.submission_gpu_timing) {
     ok = vkr_json_writer_begin_object(writer) &&
          vkr_harness_json_emit_string(writer, "code", "gpu_timing.disabled") &&
          vkr_harness_json_emit_string(writer, "severity", "info") &&

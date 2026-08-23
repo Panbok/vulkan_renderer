@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "local.windowed_gpu_submission.single_observation",
+  "description": "Non-authoritative single-process Metal whole-submission GPU timing observation.",
+  "authoritative": false,
+  "dirty_policy": "allow",
+  "environment": {
+    "target": "windowed_hidden",
+    "required_present": "immediate",
+    "require_actual_present": true,
+    "driver": "Metal 4"
+  },
+  "instrumentation": {
+    "gpu_timing": false,
+    "submission_gpu_timing": true,
+    "event_subjects": false
+  },
+  "execution": {
+    "minimum_repetitions": 1,
+    "warmup_stability_window": 4,
+    "warmup_stability_metric": "gpu.submission",
+    "warmup_max_drift_ratio": 1.0,
+    "require_warmup_stability": false,
+    "exclusive_gpu_lane": false
+  },
+  "required_metrics": [
+    "frame.wall",
+    "gpu.submission",
+    "cpu.render_prepare",
+    "cpu.render_submit",
+    "draw.world.calls_issued"
+  ]
+}

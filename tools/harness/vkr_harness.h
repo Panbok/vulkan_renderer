@@ -63,6 +63,7 @@
 #define VKR_HARNESS_PASS_FLAG_CULLED 0x4u
 #define VKR_HARNESS_PASS_FLAG_DISABLED 0x8u
 #define VKR_HARNESS_PASS_FLAG_OMITTED 0x10u
+#define VKR_HARNESS_PASS_FLAG_GPU_UNSUPPORTED_SCOPE 0x20u
 
 typedef enum VkrHarnessExitCode {
   VKR_HARNESS_EXIT_PASS = 0,
@@ -320,6 +321,7 @@ typedef struct VkrHarnessProfile {
   VkrHarnessPresentMode required_present;
   bool8_t require_actual_present;
   bool8_t gpu_timing;
+  bool8_t submission_gpu_timing;
   bool8_t event_subjects;
   uint32_t minimum_repetitions;
   uint32_t warmup_stability_window;
@@ -384,6 +386,7 @@ typedef struct VkrHarnessPassResult {
   uint64_t culled_count;
   uint64_t disabled_count;
   uint64_t omitted_count;
+  uint64_t gpu_unsupported_scope_count;
 } VkrHarnessPassResult;
 
 typedef struct VkrHarnessProvenance {

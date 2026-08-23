@@ -243,6 +243,9 @@ bool8_t vkr_harness_compute_pass_results(
               (flags[offset] & VKR_HARNESS_PASS_FLAG_DISABLED) != 0u;
           results[pass].omitted_count +=
               (flags[offset] & VKR_HARNESS_PASS_FLAG_OMITTED) != 0u;
+          results[pass].gpu_unsupported_scope_count +=
+              (flags[offset] & VKR_HARNESS_PASS_FLAG_GPU_UNSUPPORTED_SCOPE) !=
+              0u;
         }
       }
       if (!vkr_harness_statistics_compute(valid, valid_count, invalid_count,
