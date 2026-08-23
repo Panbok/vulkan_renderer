@@ -10,6 +10,40 @@ vkr_internal bool8_t vkr_metal_packet_wait(VkrMetalPacketRenderer *renderer,
 }
 
 vkr_internal void
+vkr_metal_packet_collect_encoder_timings(VkrMetalPacketRenderer *renderer,
+                                         VkrMetalPacketCommandSlot *slot) {
+  if (!slot->pass_timing_requested || !slot->timestamp_heap ||
+      slot->timestamp_entry_count == 0u || renderer->timestamp_frequency == 0u)
+    return;
+  NSData *resolved = [slot->timestamp_heap
+      resolveCounterRange:NSMakeRange(0u, slot->timestamp_entry_count)];
+  if (!resolved || resolved.length < (NSUInteger)slot->timestamp_entry_count *
+                                         sizeof(MTL4TimestampHeapEntry))
+    return;
+  const MTL4TimestampHeapEntry *entries = resolved.bytes;
+  const float64_t to_ms = 1000.0 / (float64_t)renderer->timestamp_frequency;
+  for (uint32_t i = 0u; i < slot->pending_result.pass_timing_count; ++i) {
+    VkrMetalPacketPassTiming *timing = &slot->pending_result.pass_timings[i];
+    if (timing->unavailable_reason !=
+        VKR_RENDERER_IMPL_GPU_TIMING_REASON_NOT_READY)
+      continue;
+    const uint32_t begin_index = timing->pass_index * 2u;
+    if (begin_index + 1u >= slot->timestamp_entry_count)
+      continue;
+    const uint64_t begin = entries[begin_index].timestamp;
+    const uint64_t end = entries[begin_index + 1u].timestamp;
+    if (begin > 0u && end > begin) {
+      timing->gpu_ms = (float64_t)(end - begin) * to_ms;
+      timing->valid = true_v;
+      timing->unavailable_reason = VKR_RENDERER_IMPL_GPU_TIMING_REASON_NONE;
+    } else {
+      timing->unavailable_reason =
+          VKR_RENDERER_IMPL_GPU_TIMING_REASON_UNSUPPORTED_TIMESTAMP_SCOPE;
+    }
+  }
+}
+
+vkr_internal void
 vkr_metal_packet_cache_completed_result(VkrMetalPacketRenderer *renderer,
                                         const VkrMetalPacketResult *result) {
   renderer->completed_timing_results[renderer->next_completed_timing] = *result;
@@ -81,6 +115,7 @@ vkr_metal_packet_cache_slot_result(VkrMetalPacketRenderer *renderer,
                                    VkrMetalPacketCommandSlot *slot) {
   if (!slot->result_pending || slot->result_collected)
     return;
+  vkr_metal_packet_collect_encoder_timings(renderer, slot);
   if (slot->gpu_draw_diagnostics_requested &&
       slot->gpu_draw_diagnostics_readback) {
     vkr_metal_packet_decode_gpu_draw_diagnostics(
@@ -157,6 +192,8 @@ vkr_internal bool8_t vkr_metal_packet_complete_command_slot(
   [slot->allocator reset];
   slot->submit_value = 0;
   slot->resource_reuse_submit_value = 0;
+  slot->timestamp_entry_count = 0u;
+  slot->pass_timing_requested = false_v;
   slot->result_pending = false_v;
   slot->result_collected = false_v;
   slot->commit_feedback = NULL;

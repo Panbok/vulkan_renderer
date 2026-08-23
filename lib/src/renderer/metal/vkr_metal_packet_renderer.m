@@ -296,6 +296,7 @@ typedef struct VkrMetalPacketCommitFeedbackRecord {
 typedef struct VkrMetalPacketCommandSlot {
   id<MTL4CommandAllocator> allocator;
   id<MTL4CommandBuffer> buffer;
+  id<MTL4CounterHeap> timestamp_heap;
   id<MTLResidencySet>
       gpu_draw_icb_residencies[VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX];
   id<MTLIndirectCommandBuffer>
@@ -305,6 +306,8 @@ typedef struct VkrMetalPacketCommandSlot {
   VkrMetalPacketCommitFeedbackRecord *commit_feedback;
   uint64_t submit_value;
   uint64_t resource_reuse_submit_value;
+  uint32_t timestamp_entry_count;
+  bool8_t pass_timing_requested;
   bool8_t result_pending;
   bool8_t result_collected;
   const uint8_t *gpu_draw_diagnostics_readback;
@@ -375,6 +378,7 @@ struct VkrMetalPacketRenderer {
   /* Active-slot aliases keep encoding code independent of slot selection. */
   id<MTL4CommandAllocator> command_allocator;
   id<MTL4CommandBuffer> command_buffer;
+  uint64_t timestamp_frequency;
   id<MTLRenderPipelineState> gpu_shadow_pipeline;
   id<MTLRenderPipelineState> gpu_shadow_opaque_pipeline;
   id<MTLRenderPipelineState> vbuffer_opaque_pipeline;

@@ -1679,6 +1679,14 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   }
   MemZero(readback.cpu_address, capture_size);
 
+  if (pass_timing_requested) {
+    [renderer->active_command_slot->timestamp_heap
+        invalidateCounterRange:NSMakeRange(
+                                   0u,
+                                   (NSUInteger)renderer->graph->passes.length *
+                                       2u)];
+  }
+
   [renderer->command_buffer
       beginCommandBufferWithAllocator:renderer->command_allocator];
   id<MTLResidencySet>
@@ -1729,6 +1737,8 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
         vector_get_VkrRgPass(&renderer->graph->passes, *pass_index);
     if (!pass || pass->culled)
       continue;
+    const bool8_t encoder_timing_pass =
+        pass_timing_requested && pass->desc.type != VKR_RG_PASS_TYPE_TRANSFER;
     const CFTimeInterval pass_cpu_begin = CACurrentMediaTime();
     const bool8_t last_present_writer =
         vkr_metal_packet_is_last_present_writer(renderer, order);
@@ -1742,6 +1752,13 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
                        renderCommandEncoderWithDescriptor:descriptor]
                  : nil;
       encoder.label = vkr_metal_packet_pass_label(renderer, *pass_index, pass);
+      if (encoder_timing_pass && encoder) {
+        [encoder writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
+                                    afterStage:MTLRenderStageFragment
+                                      intoHeap:renderer->active_command_slot
+                                                   ->timestamp_heap
+                                       atIndex:(NSUInteger)*pass_index * 2u];
+      }
       passed =
           passed && encoder &&
           vkr_metal_packet_encode_consumers(encoder, pass,
@@ -1769,12 +1786,26 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
             encoder, &batch_capture_dependency, true_v);
         out_result->dependency_count++;
       }
+      if (encoder_timing_pass && passed) {
+        [encoder
+            writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
+                               afterStage:MTLRenderStageFragment
+                                 intoHeap:renderer->active_command_slot
+                                              ->timestamp_heap
+                                  atIndex:(NSUInteger)*pass_index * 2u + 1u];
+      }
       [encoder endEncoding];
       out_result->graphics_pass_count++;
     } else {
       id<MTL4ComputeCommandEncoder> encoder =
           [renderer->command_buffer computeCommandEncoder];
       encoder.label = vkr_metal_packet_pass_label(renderer, *pass_index, pass);
+      if (encoder_timing_pass && encoder) {
+        [encoder writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
+                                      intoHeap:renderer->active_command_slot
+                                                   ->timestamp_heap
+                                       atIndex:(NSUInteger)*pass_index * 2u];
+      }
       passed = encoder && vkr_metal_packet_encode_consumers(
                               encoder, pass, &out_result->dependency_count);
       if (passed && pass->desc.type == VKR_RG_PASS_TYPE_TRANSFER)
@@ -1868,6 +1899,13 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
             encoder, &batch_capture_dependency, true_v);
         out_result->dependency_count++;
       }
+      if (encoder_timing_pass && passed) {
+        [encoder
+            writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
+                                 intoHeap:renderer->active_command_slot
+                                              ->timestamp_heap
+                                  atIndex:(NSUInteger)*pass_index * 2u + 1u];
+      }
       [encoder endEncoding];
       if (pass->desc.type == VKR_RG_PASS_TYPE_TRANSFER)
         out_result->transfer_pass_count++;
@@ -1889,9 +1927,11 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
       timing->cpu_ms = (CACurrentMediaTime() - pass_cpu_begin) * 1000.0;
       timing->valid = false_v;
       timing->unavailable_reason =
-          pass_timing_requested
-              ? VKR_RENDERER_IMPL_GPU_TIMING_REASON_UNSUPPORTED_TIMESTAMP_SCOPE
-              : VKR_RENDERER_IMPL_GPU_TIMING_REASON_DISABLED;
+          encoder_timing_pass
+              ? VKR_RENDERER_IMPL_GPU_TIMING_REASON_NOT_READY
+              : (pass_timing_requested
+                     ? VKR_RENDERER_IMPL_GPU_TIMING_REASON_UNSUPPORTED_TIMESTAMP_SCOPE
+                     : VKR_RENDERER_IMPL_GPU_TIMING_REASON_DISABLED);
     }
     out_result->executed_pass_count++;
   }
@@ -2047,6 +2087,10 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   vkr_metal_packet_mark_graph_buffers_submitted(renderer, submit_value);
   VkrMetalPacketCommandSlot *command_slot = renderer->active_command_slot;
   command_slot->submit_value = submit_value;
+  command_slot->timestamp_entry_count =
+      pass_timing_requested ? (uint32_t)renderer->graph->passes.length * 2u
+                            : 0u;
+  command_slot->pass_timing_requested = pass_timing_requested;
   VkrMetalPacketCommitFeedbackRecord *commit_feedback =
       submission_timing_requested
           ? vkr_metal_packet_acquire_commit_feedback(renderer)

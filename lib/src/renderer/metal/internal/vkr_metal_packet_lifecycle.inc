@@ -439,6 +439,7 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
           [slot->gpu_draw_icb_residencies[group] release];
         }
         [slot->transmission_gpu_draw_icb release];
+        [slot->timestamp_heap release];
         [slot->buffer release];
         [slot->allocator release];
       }

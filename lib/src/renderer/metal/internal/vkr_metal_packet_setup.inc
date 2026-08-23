@@ -1253,14 +1253,24 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
                                                       error:nil];
     [queue_descriptor release];
     renderer->completion = [renderer->device newSharedEvent];
+    MTL4CounterHeapDescriptor *timestamp_descriptor =
+        [MTL4CounterHeapDescriptor new];
+    timestamp_descriptor.type = MTL4CounterHeapTypeTimestamp;
+    timestamp_descriptor.count = (NSUInteger)config->max_passes * 2u;
     bool8_t command_slots_created = renderer->command_slots != NULL;
     for (uint32_t i = 0;
          command_slots_created && i < renderer->command_slot_count; ++i) {
       VkrMetalPacketCommandSlot *slot = &renderer->command_slots[i];
       slot->allocator = [renderer->device newCommandAllocator];
       slot->buffer = [renderer->device newCommandBuffer];
-      command_slots_created = slot->allocator && slot->buffer;
+      slot->timestamp_heap =
+          [renderer->device newCounterHeapWithDescriptor:timestamp_descriptor
+                                                   error:nil];
+      command_slots_created =
+          slot->allocator && slot->buffer && slot->timestamp_heap;
     }
+    renderer->timestamp_frequency = [renderer->device queryTimestampFrequency];
+    [timestamp_descriptor release];
     bool8_t commit_feedback_created = renderer->commit_feedback_records != NULL;
     for (uint32_t i = 0u; commit_feedback_created &&
                           i < VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY;
@@ -1300,7 +1310,8 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
         [renderer->device supportsFamily:MTLGPUFamilyMetal4] &&
         vkr_metal_packet_create_compiler(renderer,
                                          config->pipeline_archive_path) &&
-        renderer->queue && renderer->completion && commit_feedback_created;
+        renderer->queue && renderer->completion && commit_feedback_created &&
+        renderer->timestamp_frequency > 0u;
     if (config->target_kind == VKR_METAL_PACKET_TARGET_WINDOW) {
       passed = passed && renderer->layer;
       renderer->actual_present_mode =
