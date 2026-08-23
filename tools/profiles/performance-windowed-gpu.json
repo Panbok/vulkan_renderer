@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "id": "performance.windowed_gpu",
-  "description": "Authoritative CPU, work-volume, and per-pass GPU timing availability evidence.",
+  "description": "Authoritative CPU, work-volume, and per-pass GPU timing evidence. Warmup stability uses frame.wall, not the cpu.render_submit default: submit time tracks frame-slot wait jitter and drifts 3.6-32.5% on a settled orbit where frame.wall drifts 0.4-1.0%.",
   "authoritative": true,
   "dirty_policy": "require_clean",
   "environment": {
@@ -16,6 +16,7 @@
   "execution": {
     "minimum_repetitions": 5,
     "warmup_stability_window": 60,
+    "warmup_stability_metric": "frame.wall",
     "warmup_max_drift_ratio": 0.1,
     "require_warmup_stability": true,
     "exclusive_gpu_lane": true
