@@ -1034,14 +1034,15 @@ the blend fraction at the cold boundary.
 
 ### 11.5 Cost control
 
-**Status: the original per-pass result is invalid; an exact end-to-end rerun is
-now unblocked but not yet obtained.**
+**Status: the original result is invalid; the Metal timing blocker is repaired,
+but the exact tap sweep has not been rerun.**
 
-Run matched Metal submission-GPU profiles at 1, 4, 9, 16, and 32 taps, plus the
-uniform-region early-out A/B at 16 and 32. Record `gpu.submission`, `frame.wall`,
-and work volume. Choose the default from a written end-to-end GPU-latency budget
-and exact captures. Do not claim the filter is paid for by a CPU optimization;
-report its cost independently.
+Run matched Metal pass and submission GPU profiles at 1, 4, 9, 16, and 32 taps,
+plus the uniform-region early-out A/B at 16 and 32. Record
+`Lighting.Deferred.Fullscreen`, `gpu.submission`, `frame.wall`, and work volume.
+Choose the default from a written end-to-end GPU-latency budget and exact
+captures. Do not claim the filter is paid for by a CPU optimization; report its
+cost independently.
 
 Keep map size, split lambda, and tap count as separate experimental variables.
 Changing more than one makes the capture and timing result uninterpretable.
@@ -1060,20 +1061,23 @@ differently. Those numbers remain historical defect evidence only.
 
 Issue 3b in
 [renderer-architecture-spec.md](../architecture/renderer-architecture-spec.md)
-records the repair: Metal pass rows are now explicitly
-`unsupported_timestamp_scope`, and `MTL4CommitFeedback` supplies exact
-submission start/end latency. The harness associates those delayed completions
-with the source frames and drains after the measured window. This does not
-restore a `Lighting.Deferred` number, but the five lanes differ only in receiver
-tap count, so a matched `gpu.submission` curve is a valid end-to-end cost test.
-If the delta is smaller than repetition spread, the result is inconclusive
-rather than evidence that the receiver is free.
+records the repair. Metal compute and graphics passes now use precise
+encoder-scope timestamps with completion-owned heaps, which restores the
+`Lighting.Deferred.Fullscreen` row. Transfer and zero-work passes remain
+explicitly `unsupported_timestamp_scope`. `MTL4CommitFeedback` independently
+supplies exact submission start/end latency, and the harness associates both
+delayed result paths with their source frames before draining after the measured
+window.
+
+Use `tools/profiles/performance-windowed-gpu.json` for the receiver-pass curve
+and `tools/profiles/performance-windowed-gpu-submission.json` for the
+end-to-end control curve. Both runs must retain identical work volume within
+their own five-lane sweep. If a delta is smaller than repetition spread, the
+result is inconclusive rather than evidence that the receiver is free.
 
 Consequently the shipped tap counts — 16 for `HIGH`, 9 for `BALANCED` — remain
 design starting points, **not** measured selections. Rerun the five lanes with
-`tools/profiles/performance-windowed-gpu-submission.json`; run the early-out A/B
-at 16 and 32 through the same profile. Per-pass attribution remains useful
-future instrumentation, but it no longer blocks this end-to-end selection.
+both profiles; run the early-out A/B at 16 and 32 through the same pair.
 
 ## 12. Implementation slices and ADRs
 

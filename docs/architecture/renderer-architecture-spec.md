@@ -528,8 +528,8 @@ Current priorities after V7 are:
    publication arena is not a resolution.
 3. Establish matched Release evidence before making any performance claim about
    the two surviving implementations or the V7 deletion.
-3b. **Per-pass GPU timing on Metal does not measure per-pass work.** Both
-   timestamps were historically written with
+3b. **Metal compute and graphics pass timing is repaired; transfer timing is
+   explicitly unsupported.** Both timestamps were historically written with
    `[MTL4CommandBuffer writeTimestampIntoHeap:atIndex:]`, outside the encoder.
    Under Metal 4's overlapping encoders that interval measured command-stream
    progress rather than the named pass. Two repetitions of one binary with
@@ -538,15 +538,24 @@ Current priorities after V7 are:
    `Lighting.Deferred` alone read 6.2003 ms and 0.0125 ms. Which pass collapsed
    moved between runs, and the defect predated receiver-quality work.
 
-   **False publication is repaired; per-pass capability remains unavailable.**
-   Metal no longer records or resolves command-buffer-scope pass timestamps.
-   Every requested Metal pass sample is invalid with the explicit reason
-   `unsupported_timestamp_scope`; Vulkan per-pass query timing is unchanged.
-   The former coverage bracket and heuristic invalidation path were removed
-   because passing a heuristic built from the same invalid scope could never
-   prove attribution.
+   Requested Metal compute and graphics passes now write precise timestamps on
+   their owning `MTL4ComputeCommandEncoder` or `MTL4RenderCommandEncoder`.
+   Every command slot owns one fixed timestamp heap. The heap is invalidated
+   before recording, retained through shared-event completion, and resolved
+   only when that slot completes. A sample is valid only when `begin > 0` and
+   `end > begin`; no command-buffer-scope fallback or coverage heuristic
+   remains. Vulkan per-pass query timing is unchanged.
 
-   Metal now publishes a separate exact `gpu.submission` duration from
+   Transfer passes remain unavailable. On the tested Metal 4 device and API,
+   precise compute-encoder timestamps around one 4 MiB copy, 64 consecutive
+   4 KiB copies, and the transfer third of a mixed lane all resolved equal
+   begin/end values. Passes that submit no timed dispatch or fragment work can
+   produce the same result. These rows publish
+   `unsupported_timestamp_scope`, never zero milliseconds. The harness treats
+   that explicit classification as complete availability evidence while
+   retaining an invalid timing sample, so it cannot support a duration claim.
+
+   Metal also publishes a separate exact `gpu.submission` duration from
    `MTL4CommitFeedback.GPUStartTime` and `GPUEndTime`. Sixteen fixed feedback
    records outlive command-slot reuse. Each owns a precreated commit-options
    object plus feedback and trailing-ack blocks; because feedback handlers are
@@ -555,34 +564,38 @@ Current priorities after V7 are:
    readiness from the trailing block, proving the callback has returned before
    options reuse. Atomic feedback/result halves prevent either completion order
    from exposing a partial result. The harness maps each asynchronous
-   completion back to its source frame and performs a bounded idle/drain only
-   after the measured window, so
-   measured frames never wait for timing. `gpu.submission` is submission
-   start-to-end latency, not a pass sum or GPU-busy counter; overlapping
-   submissions can make its total exceed wall time.
+   completion back to its source frame and drains only after the measured
+   window. `gpu.submission` is submission start-to-end latency, not a pass sum
+   or GPU-busy counter; overlapping submissions can make its total exceed wall
+   time. Pass and submission timing flags remain independent comparison inputs.
 
-   `tools/profiles/local-windowed-gpu-submission-single.json` provides a local
-   Metal observation, and
-   `tools/profiles/performance-windowed-gpu-submission.json` owns the clean,
-   five-repetition evidence policy. The flags `gpu_timing` and
-   `submission_gpu_timing` are independent and both participate in comparison
-   identity.
+   The standalone `vkr_metal_timestamp_diagnostic` now covers real compute and
+   render pipelines, cross- and intra-encoder barriers, one or two residency
+   sets, buffer-backed argument tables, direct/untracked/placement resources,
+   GPU-authored ICBs, GPU-written indirect ranges, and the production indexed
+   ICB contract. That indexed contract uses `DrawIndexed`, inherited pipeline
+   state, explicit vertex/fragment root bindings, and a private index buffer.
+   Its full mixed lane resolved 720/720 strict intervals across 24 encoders,
+   30 iterations, and three rotating slots.
 
-   Encoder-scope attribution remains an investigation, not a production path.
-   The original renderer experiment hung at both granularities, including a
-   compute-only variant. The standalone
-   `vkr_metal_timestamp_diagnostic` does not hang for empty/fill compute
-   encoders, relaxed/precise granularity, residency, 24 encoders, or 30
-   iterations with three rotating slots and reused heaps. However, every
-   encoder pair resolved to a zero-length interval around the fill operation;
-   the diagnostic completes the matrix but exits `invalid_sample`. The reduced
-   sequence therefore provides no valid per-encoder duration. The next
-   diagnostic additions are real shader dispatch, render encoders, and
-   production dependency/residency structure. Until one of those produces
-   strictly positive, stable intervals without a stall, Metal pass timing stays
-   unavailable. The historical trail remains in
-   `.scratch/diagnose-lighting-deferred-timestamp-collapse.md` and
-   `.scratch/fix-metal-per-pass-gpu-timing.md`.
+   An earlier production experiment stalled GPU completion, including a
+   compute-only variant. That stall does not reproduce on the current renderer:
+   six independent cold Sponza processes completed the full production graph
+   with strict compute/graphics intervals and no command-slot timeout. Five
+   steady `Lighting.Deferred.Fullscreen` process means were 0.5937 to 0.6005 ms;
+   the first process averaged 0.6423 ms because one of its three frames reached
+   0.7329 ms. These local dirty observations prove completion and attribution
+   mechanics, not performance. A final default-path run passed with 0.5933 to
+   0.5967 ms across three frames, and focused Metal API validation reported no
+   diagnostic beyond its enablement notice. No causal claim is made about why
+   the former stall disappeared. Both used
+   `build_release/tools/vkr_harness profile --case
+   tools/cases/smoke/sponza_offscreen.case.json --profile
+   tools/profiles/local-offscreen-gpu-single.json`; the default report digest
+   was
+   `sha256:1a515b85b2713c799aa4c5d1f98a9d30eaea374c3d78b2189088da9843d4e9ba`
+   and the `MTL_DEBUG_LAYER=1` report digest was
+   `sha256:4a729855a07b6bdcb3815a20ee094faeb010c07e2ca6d8744cccd28c9ce755c9`.
 4. Establish a direct same-surface temporal texture-attachment oracle. The
    reported Vulkan-only inversion/swimming defect was a visibility-resolve
    framebuffer-to-NDC Y mismatch: the positive-height Vulkan viewport and
