@@ -125,6 +125,8 @@ owning document status in the same change.
 | [027](architecture/adr/027-immediate-mode-grid-ui.md) | proposed | Immediate-mode UI over a retained cache, grid-only layout, batched scissored draw list with evidence-gated tile caching, and a composited offscreen editor viewport |
 | [028](architecture/adr/028-gpu-driven-deferred-visibility-buffer.md) | implemented through P21 | GPU-driven deferred visibility buffer; both backends use one GPU-submitted topology with opaque/deferred shading, HZB, picking, four-layer transmission, and completion-gated layer coverage. The legacy world renderer and runtime fallback are retired; the measured eight-pass P19 compact path is the Metal default with a diagnostic full-screen rollback |
 | [029](architecture/adr/029-retained-graph-resources.md) | partial | Retained graph-owned contents with per-instance, per-subresource content validity, seeded from the last successfully submitted state and committed only on proven submit. Prerequisite for directional cascade reuse; distinct from the `HISTORY` ring and from `PERSISTENT`, which only suppresses a diagnostic |
+| [030](architecture/adr/030-offline-mesh-optimization-and-cooking.md) | proposed | Meshoptimizer-backed offline `.vkb` cooking, with runtime worker decode and versioned artifact validation; the versioned payload replaces the local raw-cache contract |
+| [031](architecture/adr/031-versioned-packed-static-geometry-abi.md) | proposed | Third-step tight packed static-geometry ABI, shared by Metal and Vulkan, required before mesh codec integration can reduce GPU upload and residency bytes |
 
 ## Rendering
 
@@ -160,6 +162,7 @@ owning document status in the same change.
 | [parallel-asset-loading.md](assets/parallel-asset-loading.md) | partial | Async CPU prep; parallel upload needs an unsafe opt-in |
 | [async-gpu-transfer-queue.md](assets/async-gpu-transfer-queue.md) | proposed | Independent-submit end state; in-frame uploads are deferred, out-of-frame uploads still wait |
 | [resource_loading_analysis.md](assets/resource_loading_analysis.md) | proposed | Resource loading analysis |
+| [meshoptimizer-geometry-pipeline-spec.md](assets/meshoptimizer-geometry-pipeline-spec.md) | proposed | Current geometry-load assessment and three-step cooking, runtime optimization, tight GPU packing, and validation plan |
 | [static-scene-batching-spec.md](assets/static-scene-batching-spec.md) | proposed | Static batching; the `VkrDrawBatcher` it targeted was deleted by ADR-028 P21 |
 
 ## Mesh, instancing, and performance
