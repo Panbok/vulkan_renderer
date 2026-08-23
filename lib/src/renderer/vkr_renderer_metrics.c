@@ -1439,17 +1439,16 @@ void vkr_renderer_metrics_collect(
 
   vkr_renderer_metrics_collect_impl_memory(renderer_metrics, renderer);
 
-  // Vulkan constructs its complete immutable pipeline set during
-  // renderer initialization. No vkCreate*Pipelines call is reachable from a
-  // prepared frame, so the per-frame creation counter is valid and zero.
-  if (vkr_renderer_get_backend_type(context->renderer) ==
-      VKR_RENDERER_BACKEND_TYPE_VULKAN) {
-    vkr_metrics_counter_add(metrics, ids->pipelines_created, 0u);
-  } else {
-    vkr_metrics_mark(metrics, ids->pipelines_created,
-                     VKR_METRIC_AVAILABILITY_UNAVAILABLE,
-                     VKR_METRIC_REASON_UNSUPPORTED);
-  }
+  // Both selected implementations construct their complete immutable pipeline
+  // set during renderer initialization: every vkCreate*Pipelines call sits in
+  // the Vulkan setup path, and every Metal newRender/ComputePipelineState call
+  // sits in vkr_metal_packet_create_pipelines(). Neither is reachable from a
+  // prepared frame, so zero is a measured fact rather than a missing reading.
+  //
+  // Marking it unavailable instead is not the conservative choice. The harness
+  // warmup gate fails closed on any non-VALID reading of this counter, so an
+  // "unknown" here silently made every Metal profile non-authoritative.
+  vkr_metrics_counter_add(metrics, ids->pipelines_created, 0u);
   vkr_metrics_mark(metrics, ids->pipeline_binds,
                    VKR_METRIC_AVAILABILITY_UNAVAILABLE,
                    VKR_METRIC_REASON_UNSUPPORTED);
