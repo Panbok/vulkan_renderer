@@ -187,6 +187,11 @@
           "minimum": 1,
           "maximum": 8
         },
+        "shadow_pcf_samples": {
+          "type": "integer",
+          "description": "Optional receiver tap-count override. Omission resolves to the selected preset's effective value.",
+          "enum": [1, 4, 9, 16, 32]
+        },
         "render_mode": {
           "type": "string",
           "description": "Global shading mode for measured frames. Auxiliary debug captures execute as replay runs and do not change this value.",

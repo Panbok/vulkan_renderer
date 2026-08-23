@@ -164,8 +164,11 @@ bool8_t vkr_harness_case_fingerprints_with_scene_digest(
   ADD("renderer.backend", "%s",
       case_manifest->renderer.backend[0] ? case_manifest->renderer.backend
                                          : "external");
-  ADD("renderer.shadow", "%s,%u", case_manifest->renderer.shadow_preset,
-      case_manifest->renderer.shadow_cascades);
+  /* The tap count is part of the workload: two sweep lanes that differ only by
+     it must not compare as the same measurement. */
+  ADD("renderer.shadow", "%s,%u,%u", case_manifest->renderer.shadow_preset,
+      case_manifest->renderer.shadow_cascades,
+      case_manifest->renderer.shadow_pcf_samples);
   ADD("renderer.render_mode", "%s", case_manifest->renderer.render_mode);
   ADD("renderer.shadow_debug_mode", "%u",
       case_manifest->renderer.shadow_debug_mode);

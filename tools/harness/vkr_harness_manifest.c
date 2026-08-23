@@ -1,5 +1,7 @@
 #include "vkr_harness_json.h"
 
+#include "renderer/systems/vkr_shadow_system.h"
+
 #define VKR_HARNESS_MANIFEST_MAX_BYTES MB(1)
 
 static bool8_t vkr_harness_manifest_field(const VkrHarnessJsonDocument *doc,
@@ -431,8 +433,8 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
                                           VkrHarnessRendererConfig *renderer,
                                           VkrHarnessError *error) {
   static const char *const allowed[] = {
-      "editor",        "skybox",          "text_fixture", "backend",
-      "shadow_preset", "shadow_cascades", "render_mode"};
+      "editor",        "skybox",          "text_fixture",       "backend",
+      "shadow_preset", "shadow_cascades", "shadow_pcf_samples", "render_mode"};
   static const char *const required[] = {"editor", "skybox", "shadow_preset",
                                          "shadow_cascades"};
   if (!vkr_harness_json_object_validate(
@@ -442,6 +444,7 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
   }
   string_copy(renderer->render_mode, "default");
   uint64_t cascades = 0;
+  uint64_t pcf_samples = 0;
   if (!vkr_harness_manifest_bool(doc, token, "editor", true_v,
                                  &renderer->editor, error) ||
       !vkr_harness_manifest_bool(doc, token, "skybox", true_v,
@@ -456,12 +459,21 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
                                    sizeof(renderer->shadow_preset), error) ||
       !vkr_harness_manifest_u64(doc, token, "shadow_cascades", true_v,
                                 &cascades, error) ||
+      !vkr_harness_manifest_u64(doc, token, "shadow_pcf_samples", false_v,
+                                &pcf_samples, error) ||
       !vkr_harness_manifest_string(doc, token, "render_mode", false_v,
                                    renderer->render_mode,
                                    sizeof(renderer->render_mode), error)) {
     return false_v;
   }
   renderer->shadow_cascades = (uint32_t)cascades;
+  /* Rejected here rather than silently normalized: a sweep lane that asked for
+     an unsupported tap count and quietly measured a different one would be a
+     mislabelled result. */
+  const bool8_t pcf_valid =
+      pcf_samples == 0u ||
+      (pcf_samples <= UINT32_MAX &&
+       vkr_shadow_pcf_sample_count_supported((uint32_t)pcf_samples));
   const bool8_t preset_valid =
       string_equals(renderer->shadow_preset, "default") ||
       string_equals(renderer->shadow_preset, "balanced") ||
@@ -477,13 +489,22 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
   const bool8_t backend_valid = renderer->backend[0] == '\0' ||
                                 string_equals(renderer->backend, "vulkan") ||
                                 string_equals(renderer->backend, "metal");
-  if (!preset_valid || !mode_valid || !backend_valid || cascades < 1u ||
-      cascades > 8u) {
-    vkr_harness_error_set(
-        error, "renderer.config", "$.renderer",
-        "Renderer backend, preset, mode, or cascade count is invalid");
+  if (!preset_valid || !mode_valid || !backend_valid || !pcf_valid ||
+      cascades < 1u || cascades > 8u) {
+    vkr_harness_error_set(error, "renderer.config", "$.renderer",
+                          "Renderer backend, preset, mode, cascade count, or "
+                          "PCF sample count is invalid");
     return false_v;
   }
+  /* Reports and workload fingerprints describe the workload that ran, not the
+     optional syntax used to request it. Resolve the preset-owned default once
+     at this cold boundary so zero cannot leak out as an "effective" count. */
+  const VkrShadowConfig shadow_config =
+      string_equals(renderer->shadow_preset, "balanced")
+          ? VKR_SHADOW_CONFIG_BALANCED
+          : VKR_SHADOW_CONFIG_DEFAULT;
+  renderer->shadow_pcf_samples =
+      pcf_samples ? (uint32_t)pcf_samples : shadow_config.pcf_sample_count;
   return true_v;
 }
 

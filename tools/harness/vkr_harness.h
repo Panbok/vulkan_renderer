@@ -221,6 +221,8 @@ typedef struct VkrHarnessRendererConfig {
   char backend[16];
   char shadow_preset[32];
   uint32_t shadow_cascades;
+  /** Effective receiver tap count after the optional case field is resolved. */
+  uint32_t shadow_pcf_samples;
   char render_mode[16];
   uint32_t shadow_debug_mode;
 } VkrHarnessRendererConfig;

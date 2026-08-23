@@ -83,6 +83,7 @@ static void test_harness_case_parser(void) {
   assert(parsed.target_image_count == 3u);
   assert(!parsed.renderer.text_fixture);
   assert(parsed.renderer.backend[0] == '\0');
+  assert(parsed.renderer.shadow_pcf_samples == 16u);
   assert(harness_parse_case("windowed_hidden", "immediate", static_camera,
                             ",\"resize_round_trip\":[80,72]", &parsed));
   assert(parsed.resize_round_trip && parsed.resize_width == 80u &&
@@ -98,13 +99,15 @@ static void test_harness_case_parser(void) {
       "\"present\":\"none\",\"cache\":\"isolated_cold\",\"fixed_delta\":0.016,"
       "\"frames\":{\"measure\":3},\"renderer\":{\"editor\":false,"
       "\"skybox\":true,\"text_fixture\":true,\"backend\":\"metal\","
-      "\"shadow_preset\":\"default\",\"shadow_cascades\":4},"
+      "\"shadow_preset\":\"default\",\"shadow_cascades\":4,"
+      "\"shadow_pcf_samples\":4},"
       "\"camera\":{\"mode\":\"static\",\"position\":[1,2,3],\"yaw\":10,"
       "\"pitch\":-5}}";
   VkrHarnessError backend_error = {0};
   assert(vkr_harness_case_parse(metal_case, strlen(metal_case), "memory",
                                 &parsed, &backend_error));
   assert(strcmp(parsed.renderer.backend, "metal") == 0);
+  assert(parsed.renderer.shadow_pcf_samples == 4u);
   VkrRendererBackendType resolved_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
   assert(vkr_harness_renderer_backend_resolve(&parsed.renderer, NULL,
                                               &resolved_backend));
@@ -131,6 +134,13 @@ static void test_harness_case_parser(void) {
   memcpy(metal_value, "\"dx12x\"", 7u);
   assert(!vkr_harness_case_parse(invalid_backend, strlen(invalid_backend),
                                  "memory", &parsed, &backend_error));
+  char invalid_pcf[2048];
+  snprintf(invalid_pcf, sizeof(invalid_pcf), "%s", metal_case);
+  char *pcf_value = strstr(invalid_pcf, "\"shadow_pcf_samples\":4");
+  assert(pcf_value);
+  pcf_value[strlen("\"shadow_pcf_samples\":")] = '7';
+  assert(!vkr_harness_case_parse(invalid_pcf, strlen(invalid_pcf), "memory",
+                                 &parsed, &backend_error));
   assert(!harness_parse_case(
       "windowed_hidden", "immediate",
       "{\"mode\":\"keyframes\",\"keys\":[{\"t\":1,\"position\":[0,0,0],"
@@ -664,6 +674,8 @@ static void test_harness_report_shape(void) {
            "smoke.test.static");
   snprintf(report.case_manifest.suite, sizeof(report.case_manifest.suite),
            "smoke");
+  report.case_manifest.renderer.shadow_cascades = 4u;
+  report.case_manifest.renderer.shadow_pcf_samples = 16u;
   snprintf(report.case_manifest.manifest_sha256,
            sizeof(report.case_manifest.manifest_sha256),
            "sha256:"

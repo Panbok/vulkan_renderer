@@ -795,6 +795,7 @@ vkr_harness_child_apply_renderer(Application *application,
           ? VKR_SHADOW_CONFIG_BALANCED
           : VKR_SHADOW_CONFIG_DEFAULT;
   shadow_config.cascade_count = case_manifest->renderer.shadow_cascades;
+  shadow_config.pcf_sample_count = case_manifest->renderer.shadow_pcf_samples;
   vkr_shadow_system_shutdown(&application->renderer.shadow_system,
                              &application->renderer);
   if (!vkr_shadow_system_init(&application->renderer.shadow_system,
@@ -1222,6 +1223,7 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
             ? VKR_SHADOW_CONFIG_BALANCED
             : VKR_SHADOW_CONFIG_DEFAULT;
     shadow_config.cascade_count = case_manifest.renderer.shadow_cascades;
+    shadow_config.pcf_sample_count = case_manifest.renderer.shadow_pcf_samples;
     const uint32_t shadow_size =
         vkr_shadow_config_get_max_map_size(&shadow_config);
     for (uint32_t i = 0; i < replay.channel_count; ++i) {

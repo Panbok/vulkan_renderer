@@ -427,6 +427,9 @@ bool8_t vkr_harness_report_write(const char *path,
                                        : "external") &&
       vkr_harness_json_emit_u64(
           writer, "cascades", report->case_manifest.renderer.shadow_cascades) &&
+      vkr_harness_json_emit_u64(
+          writer, "pcf_samples",
+          report->case_manifest.renderer.shadow_pcf_samples) &&
       vkr_harness_json_emit_string(
           writer, "cache",
           vkr_harness_cache_name(report->case_manifest.cache)) &&

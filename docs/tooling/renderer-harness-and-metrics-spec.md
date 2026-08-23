@@ -805,7 +805,8 @@ One manifest format serves all three subcommands:
     "editor": false,
     "skybox": true,
     "shadow_preset": "default",
-    "shadow_cascades": 4
+    "shadow_cascades": 4,
+    "shadow_pcf_samples": 16
   },
   "camera": {
     "mode": "orbit",
@@ -1024,6 +1025,7 @@ leaves an incomplete run directory, never a plausible partial report.
     "subsystem_mask": "0x...",
     "editor": false,
     "cascades": 4,
+    "pcf_samples": 16,
     "cache": "isolated_warm",
     "camera_script_version": 1,
     "gpu_timing": false,

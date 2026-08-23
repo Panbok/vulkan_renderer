@@ -392,6 +392,7 @@
         "text_fixture",
         "renderer_backend",
         "cascades",
+        "pcf_samples",
         "cache",
         "camera_script_version",
         "gpu_timing",
@@ -472,6 +473,11 @@
         "cascades": {
           "type": "integer",
           "minimum": 1
+        },
+        "pcf_samples": {
+          "type": "integer",
+          "description": "Effective receiver tap count after resolving any preset default.",
+          "enum": [1, 4, 9, 16, 32]
         },
         "cache": {
           "enum": [
