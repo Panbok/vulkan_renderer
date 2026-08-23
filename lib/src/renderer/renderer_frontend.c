@@ -638,7 +638,7 @@ renderer_impl_metal_initialize(void *state, VkrWindow *window, uint32_t width,
       .srgb_output = true_v,
       .convert_vulkan_clip_y = true_v,
       .transmission_compact_enabled =
-          vkr_renderer_env_enabled("VKR_TRANSMISSION_COMPACT_ENABLED"),
+          !vkr_renderer_env_enabled("VKR_TRANSMISSION_COMPACT_DISABLED"),
       .hzb_enabled = !vkr_renderer_env_enabled("VKR_HZB_DISABLED"),
       .max_images = 128,
       .max_passes = 64,

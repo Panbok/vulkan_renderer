@@ -73,9 +73,9 @@ fragment uint2 vkr_metal_packet_vbuffer_fragment(
    testing before the fragment stage instead of after it. Mirrors
    vk_visibility_opaque_fragment. */
 [[early_fragment_tests]] fragment uint2
-vkr_metal_packet_vbuffer_opaque_fragment(
-    VkrMetalPacketVertexOutput input [[stage_in]],
-    uint primitive_id [[primitive_id]]) {
+vkr_metal_packet_vbuffer_opaque_fragment(VkrMetalPacketVertexOutput input
+                                         [[stage_in]],
+                                         uint primitive_id [[primitive_id]]) {
   return uint2(input.visible_row_index + 1u, primitive_id);
 }
 
@@ -1444,8 +1444,9 @@ kernel void vkr_metal_packet_transmission_compact(
       total += simd_totals[i];
     group_base = atomic_fetch_add_explicit(&root.covered_pixels[root.layer],
                                            total, memory_order_relaxed);
-    uint writable =
-        group_base < root.capacity ? min(total, root.capacity - group_base) : 0u;
+    uint writable = group_base < root.capacity
+                        ? min(total, root.capacity - group_base)
+                        : 0u;
     if (writable < total)
       atomic_fetch_add_explicit(&root.overflow_counts[root.layer],
                                 total - writable, memory_order_relaxed);

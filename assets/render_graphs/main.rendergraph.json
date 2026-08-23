@@ -734,6 +734,7 @@
       "writes": [
         { "buffer": "transmission_compact_pixels", "access": "STORAGE_WRITE", "binding": 1 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 2 },
+        { "buffer": "transmission_compact_arguments", "access": "STORAGE_WRITE", "binding": 3 },
         { "image": "transmission_feedback", "access": "STORAGE_WRITE", "binding": 5 }
       ],
       "execute": "pass.transmission.compact"
@@ -750,24 +751,10 @@
       "writes": [
         { "buffer": "transmission_compact_pixels", "access": "STORAGE_WRITE", "binding": 1 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 2 },
+        { "buffer": "transmission_compact_arguments", "access": "STORAGE_WRITE", "binding": 3 },
         { "image": "transmission_feedback", "access": "STORAGE_WRITE", "binding": 5 }
       ],
       "execute": "pass.transmission.compact"
-    },
-    {
-      "name": "Transmission.Compact.Finalize.3",
-      "type": "compute",
-      "condition": "transmission_compact_enabled",
-      "flags": ["NO_CULL"],
-      "reads": [
-        { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 3, "layer_count": 1 } },
-        { "buffer": "transmission_compact_pixels", "access": "STORAGE_READ", "binding": 1 },
-        { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ", "binding": 2 }
-      ],
-      "writes": [
-        { "buffer": "transmission_compact_arguments", "access": "STORAGE_WRITE", "binding": 3 }
-      ],
-      "execute": "pass.transmission.compact_finalize"
     },
     {
       "name": "Transmission.Shade.Compact.Fullscreen.3",
@@ -817,6 +804,7 @@
       "writes": [
         { "buffer": "transmission_compact_pixels", "access": "STORAGE_WRITE", "binding": 1 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 2 },
+        { "buffer": "transmission_compact_arguments", "access": "STORAGE_WRITE", "binding": 3 },
         { "image": "hdr_scene_color", "access": "STORAGE_WRITE", "binding": 5 }
       ],
       "execute": "pass.transmission.compact"
@@ -833,22 +821,10 @@
       "writes": [
         { "buffer": "transmission_compact_pixels", "access": "STORAGE_WRITE", "binding": 1 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 2 },
+        { "buffer": "transmission_compact_arguments", "access": "STORAGE_WRITE", "binding": 3 },
         { "image": "scene_color", "access": "STORAGE_WRITE", "binding": 5 }
       ],
       "execute": "pass.transmission.compact"
-    },
-    {
-      "name": "Transmission.Compact.Finalize.2",
-      "type": "compute",
-      "condition": "transmission_compact_enabled",
-      "flags": ["NO_CULL"],
-      "reads": [
-        { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 2, "layer_count": 1 } },
-        { "buffer": "transmission_compact_pixels", "access": "STORAGE_READ", "binding": 1 },
-        { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ", "binding": 2 }
-      ],
-      "writes": [{ "buffer": "transmission_compact_arguments", "access": "STORAGE_WRITE", "binding": 3 }],
-      "execute": "pass.transmission.compact_finalize"
     },
     {
       "name": "Transmission.Shade.Compact.Fullscreen.2",
@@ -898,6 +874,7 @@
       "writes": [
         { "buffer": "transmission_compact_pixels", "access": "STORAGE_WRITE", "binding": 1 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 2 },
+        { "buffer": "transmission_compact_arguments", "access": "STORAGE_WRITE", "binding": 3 },
         { "image": "transmission_feedback", "access": "STORAGE_WRITE", "binding": 5 }
       ],
       "execute": "pass.transmission.compact"
@@ -914,22 +891,10 @@
       "writes": [
         { "buffer": "transmission_compact_pixels", "access": "STORAGE_WRITE", "binding": 1 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 2 },
+        { "buffer": "transmission_compact_arguments", "access": "STORAGE_WRITE", "binding": 3 },
         { "image": "transmission_feedback", "access": "STORAGE_WRITE", "binding": 5 }
       ],
       "execute": "pass.transmission.compact"
-    },
-    {
-      "name": "Transmission.Compact.Finalize.1",
-      "type": "compute",
-      "condition": "transmission_compact_enabled",
-      "flags": ["NO_CULL"],
-      "reads": [
-        { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 1, "layer_count": 1 } },
-        { "buffer": "transmission_compact_pixels", "access": "STORAGE_READ", "binding": 1 },
-        { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ", "binding": 2 }
-      ],
-      "writes": [{ "buffer": "transmission_compact_arguments", "access": "STORAGE_WRITE", "binding": 3 }],
-      "execute": "pass.transmission.compact_finalize"
     },
     {
       "name": "Transmission.Shade.Compact.Fullscreen.1",
@@ -979,6 +944,7 @@
       "writes": [
         { "buffer": "transmission_compact_pixels", "access": "STORAGE_WRITE", "binding": 1 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 2 },
+        { "buffer": "transmission_compact_arguments", "access": "STORAGE_WRITE", "binding": 3 },
         { "image": "hdr_scene_color", "access": "STORAGE_WRITE", "binding": 5 }
       ],
       "execute": "pass.transmission.compact"
@@ -995,22 +961,10 @@
       "writes": [
         { "buffer": "transmission_compact_pixels", "access": "STORAGE_WRITE", "binding": 1 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 2 },
+        { "buffer": "transmission_compact_arguments", "access": "STORAGE_WRITE", "binding": 3 },
         { "image": "scene_color", "access": "STORAGE_WRITE", "binding": 5 }
       ],
       "execute": "pass.transmission.compact"
-    },
-    {
-      "name": "Transmission.Compact.Finalize.0",
-      "type": "compute",
-      "condition": "transmission_compact_enabled",
-      "flags": ["NO_CULL"],
-      "reads": [
-        { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 0, "layer_count": 1 } },
-        { "buffer": "transmission_compact_pixels", "access": "STORAGE_READ", "binding": 1 },
-        { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ", "binding": 2 }
-      ],
-      "writes": [{ "buffer": "transmission_compact_arguments", "access": "STORAGE_WRITE", "binding": 3 }],
-      "execute": "pass.transmission.compact_finalize"
     },
     {
       "name": "Transmission.Shade.Compact.Fullscreen.0",

@@ -1632,7 +1632,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   if (transmission_gpu_draw_count > 0u)
     root_count +=
         17u +
-        (renderer->prepared_frame.transmission_compact_enabled ? 8u : 0u) +
+        (renderer->prepared_frame.transmission_compact_enabled ? 4u : 0u) +
         (packet->debug && packet->debug->enable_timing &&
                  packet->debug->capture_pass_timestamps &&
                  !renderer->prepared_frame.transmission_compact_enabled

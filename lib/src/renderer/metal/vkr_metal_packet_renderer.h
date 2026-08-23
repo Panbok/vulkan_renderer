@@ -62,7 +62,7 @@ typedef struct VkrMetalPacketRendererConfig {
   bool8_t srgb_output;
   /** Converts the shared Vulkan-oriented clip-Y matrices for Metal raster. */
   bool8_t convert_vulkan_clip_y;
-  /** Enables the measured P19 transmission pixel-list candidate. */
+  /** Enables P19 transmission compaction; production defaults on. */
   bool8_t transmission_compact_enabled;
   /** Diagnostic rollback for P14 while retaining the deferred graph. */
   bool8_t hzb_enabled;

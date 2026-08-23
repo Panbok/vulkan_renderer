@@ -1292,7 +1292,11 @@ static void test_main_graph_declares_transmission_stages(void) {
                  VKR_RG_JSON_CONDITION_EDITOR_DISABLED_TRANSMISSION_COMPACT ||
              pass->condition.kind ==
                  VKR_RG_JSON_CONDITION_EDITOR_ENABLED_TRANSMISSION_COMPACT);
-      assert(pass->reads.length == 2u && pass->writes.length == 3u);
+      assert(pass->reads.length == 2u && pass->writes.length == 4u);
+      assert(!pass->writes.data[2].is_image &&
+             pass->writes.data[2].binding.value == 3u &&
+             pass->writes.data[2].buffer_access ==
+                 VKR_RG_JSON_BUFFER_ACCESS_STORAGE_WRITE);
       transmission_compact_passes++;
     } else if (vkr_string8_starts_with(&pass->name,
                                        "Transmission.Shade.Compact.")) {
@@ -1302,7 +1306,7 @@ static void test_main_graph_declares_transmission_stages(void) {
     }
   }
   assert(transmission_compact_passes == 8u);
-  assert(transmission_compact_finalize_passes == 4u);
+  assert(transmission_compact_finalize_passes == 0u);
   assert(transmission_compact_shade_passes == 8u);
 
   uint32_t layered_resource_count = 0u;

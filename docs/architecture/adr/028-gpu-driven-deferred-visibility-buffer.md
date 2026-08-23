@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-21
+updated: 2026-08-23
 authority: adr
 ---
 
@@ -50,11 +50,19 @@ precondition. Enlarging the publication arena is not an accepted substitute. A
 reserve and then the target GPU image budget; that is separate streaming and
 capacity work, not the bounded P20 workload.
 
-Metal's P19 `Transmission.Compact` candidate remains default-off. Its local
-pass-time improvement did not improve the owner-level frame outcome, so no
-speed claim or Vulkan P19 implementation is accepted. P21 was authorized and
-implemented on 2026-08-20. Metal validation processes must remain strictly
-serial.
+Metal's P19 `Transmission.Compact` path is now the Metal default. The accepted
+follow-up folds each one-thread indirect-argument finalizer into its preceding
+scan encoder behind an explicit dispatch-to-dispatch device-visible barrier,
+reducing the compact chain from twelve graph passes to eight. Matched local
+dirty-tree Bistro evidence reports 3.204 ms of non-diagnostic transmission GPU
+work versus 6.095 ms for the full-screen branch, and a timestamp-off frame-wall
+mean of 20.279 ms versus a contemporaneous 20.943 ms full-screen control. These
+runs remain non-authoritative because they are local, dirty, and warmup-
+unstable; the decision is a measured local default selection, not a portable
+speed claim. `VKR_TRANSMISSION_COMPACT_DISABLED=1` retains a focused Metal
+diagnostic rollback. No Vulkan P19 implementation is accepted. P21 was
+authorized and implemented on 2026-08-20. Metal validation processes must
+remain strictly serial.
 
 The native Windows Vulkan P21 gate ran on 2026-08-21 and passed after one
 repair. P21's deletion had collapsed the Vulkan candidate-packing tail into a
@@ -180,10 +188,11 @@ The editor path uses the equivalent
 **Use a fused, initially full-screen transmission resolve.** A separate
 visibility buffer retains only the nearest transmissive surface after a
 declared opaque-depth seed. The compute pass exits on empty pixels. Pixel-list
-compaction remains optional. The provisional Metal P19 branch uses an explicit
+compaction remains implementation-owned. The Metal P19 path uses an explicit
 scan producer with bounded list/count/overflow/dispatch buffers, fuses the
-required background copy into that scan, and retains full-screen resolve as the
-default until owner-level performance evidence accepts the branch.
+required background copy and indirect-argument finalization into that scan,
+and makes sparse indirect shading the Metal default. The full-screen resolve is
+retained only as a focused diagnostic rollback; Vulkan continues to use it.
 
 **Decide single-layer transmission fidelity before building on it, and resolve
 a rejection with bounded depth peeling rather than a retained forward path.**

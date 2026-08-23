@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-21
+updated: 2026-08-23
 authority: spec
 ---
 
@@ -8,7 +8,7 @@ authority: spec
 
 The P0-P3 graph, lifetime, format, shared-ABI, and megabuffer foundations are
 implemented on both backends. Metal P4, P6, P8, P10, P12, P14, P16, P17, P18,
-and a provisional P19 transmission-compaction slice now ship in the accepted
+and the P19 transmission-compaction path now ship in the accepted
 P20 default topology: GPU frustum/HZB culling and four-bucket ICB
 submission, opaque and transmission visibility buffers, compute material
 resolve and deferred lighting, four-layer depth-peeled transmission shading, a
@@ -31,19 +31,23 @@ separate transmission debug composite for the P20 visual threshold. P20 was
 owner-accepted on both backends on 2026-08-20 without promoting a snapshot
 baseline. P21 is implemented: the renderer now exposes one world topology,
 with no runtime selector or legacy whole-frame fallback.
-P19 now has a default-off Metal `Transmission.Compact` candidate. Each layer
-uses one 8×8 scan to copy its background, compact final visibility winners into
-a viewport-sized bounded pixel list, and accumulate count/overflow; a finalize
-kernel emits indirect compute arguments and a sparse shade dispatch consumes
-the list. One list and one argument buffer are reused serially across layers in
-each completion slot. Completion-gated coverage and overflow metrics remain
-available. World and editor captures are byte-identical to the full-screen
-fallback, and a minimal serial API-plus-shader validation run passes. A matched
-local Release observation reduces the estimated normal transmission chain from
-3.084 ms to 2.710 ms and total measured GPU pass time by 15.6%, but frame wall
-is flat/slightly worse and CPU submit is higher. The run is dirty,
-single-repetition, and warmup-unstable, so the candidate remains default-off and
-is not an accepted speed claim.
+P19 now provides the default Metal `Transmission.Compact` path. Each layer uses
+one 8×8 scan to copy its background, compact final visibility winners into a
+viewport-sized bounded pixel list, accumulate count/overflow, and invoke the
+one-thread indirect-argument finalizer in the same compute encoder after an
+explicit dispatch-to-dispatch device-visible barrier. A sparse indirect shade
+dispatch consumes the list. One list and one argument buffer are reused
+serially across layers in each completion slot. This consolidation reduces the
+compact chain from twelve graph passes to eight. Completion-gated coverage and
+overflow metrics remain available, and `VKR_TRANSMISSION_COMPACT_DISABLED=1`
+selects the retained full-screen Metal diagnostic path. World and editor
+captures are byte-identical to full-screen controls; the complete CPU suite,
+serial API-plus-shader validation, and isolated cold/warm cache runs pass. A
+matched local dirty-tree Release observation reports 3.204 ms of
+non-diagnostic transmission GPU work versus 6.095 ms for full-screen and a
+timestamp-off frame mean of 20.279 ms versus a contemporaneous 20.943 ms
+full-screen control. The evidence remains local, dirty, and warmup-unstable, so
+it supports the owner-selected Metal default but is not a portable speed claim.
 Unsupported packet structure and exhausted candidate capacity are rejected
 before backend recording; neither backend silently changes topology. Missing
 Metal deferred pipelines fail backend initialization. `VKR_HZB_DISABLED=1`
@@ -546,12 +550,15 @@ samples the immutable `hdr_pre_transmission`, and composites the result into
 without introducing an unowned pixel list.
 
 GPU timing showed that sparse coverage made the full-screen dispatch material,
-so provisional P19 adds an optional `Transmission.Compact` scan of each final
+so P19 adds a `Transmission.Compact` scan of each final
 transmission vbuffer. It produces a bounded pixel list, count, overflow, and
 indirect dispatch arguments while copying the layer background in the same
-viewport traversal. The buffers follow the same capacity, `INDIRECT_READ`, and
-completion rules as draw arguments. Raster fragments do not append the list
-because they cannot know that they are the final depth winners.
+viewport traversal. On Metal, the scan encoder invokes the one-thread finalizer
+after an explicit dispatch-to-dispatch device-visible barrier; the finalizer is
+not a separate graph pass. The buffers follow the same capacity,
+`INDIRECT_READ`, and completion rules as draw arguments. Raster fragments do
+not append the list because they cannot know that they are the final depth
+winners.
 
 Metal P18 represents four ordered transmissive surfaces. Each peel begins from
 the opaque depth seed, rejects fragments at or in front of the preceding peel,
@@ -880,8 +887,8 @@ pixels at 640×480 across 66 samples, with valid timestamps for all four coverag
 passes and zero invalid resolve or overflow. Debug synchronization-validation
 profile `20260820T112108.929Z-000040` passes two repetitions without a VUID,
 validation error, device loss, renderer error, or fatal marker. P19's
-`Transmission.Compact` remains Metal-only and default-off by ADR-028, and Vulkan
-records its compact/finalize nodes as no-ops.
+`Transmission.Compact` remains Metal-only by ADR-028. Its conditional compact
+nodes are unrealized on Vulkan, which retains the full-screen shade chain.
 
 Windows Vulkan P20 stabilization is implemented and accepted as part of the
 cross-backend P20 boundary. The shared typed whole-packet eligibility
@@ -973,15 +980,18 @@ both `MTL_DEBUG_LAYER=1` and `MTL_SHADER_VALIDATION=1` and no validator
 diagnostic. Metal validation children must remain strictly serial; the earlier
 watchdog incidents still prohibit broad or parallel validation suites.
 
-The provisional P19 Metal slice adds explicit bounded transmission-pixel
-compaction behind `VKR_TRANSMISSION_COMPACT_ENABLED=1`. A viewport-sized packed
+The P19 Metal slice adds explicit bounded transmission-pixel compaction by
+default. `VKR_TRANSMISSION_COMPACT_DISABLED=1` is the focused diagnostic
+rollback. A viewport-sized packed
 `uint32_t` coordinate list and 12-byte indirect-argument buffer are allocated
 only when selected and reused serially for layers 3 through 0 in each completion
 slot. Each branch-specific `Transmission.Compact.*` kernel folds the required
 background copy into its 8×8 visibility scan, reserves the list once per
-threadgroup, bounds every write, and records overflow per layer. A one-thread
-finalize kernel writes 64-thread indirect group counts; sparse shade consumes
-the list. The full-screen path remains the default fallback. The harness waits
+threadgroup, bounds every write, and records overflow per layer. The same
+compute encoder then inserts a dispatch-to-dispatch device-visible barrier and
+invokes a one-thread finalize kernel to write 64-thread indirect group counts;
+sparse shade consumes the list. The full-screen path remains the explicit Metal
+diagnostic rollback and the Vulkan production path. The harness waits
 until a completion result built from the active scene before freezing its pass
 catalog, and normal Metal frames retain bounded diagnostics with their owning
 command slot, so coverage and overflow publish without a synchronous wait.
@@ -997,7 +1007,7 @@ work when timing is disabled. In local Release run
 the four shade intervals total 2.27 ms, and the four diagnostic scans total
 0.93 ms. That observation triggered the compact-list implementation.
 
-Post-consolidation world run `20260814T132413.052Z-018388` and editor run
+The original post-consolidation world run `20260814T132413.052Z-018388` and editor run
 `20260814T132431.297Z-01848e` execute the 12-pass compact/finalize/indirect-shade
 chain, report zero overflow, and produce byte-identical final and scene-color
 captures to the full-screen branch. Focused serial run
@@ -1007,9 +1017,47 @@ Release observations `20260814T131908.463Z-016868` and
 indirect shades total 2.710 ms versus 3.084 ms for the estimated normal
 full-screen shade chain, a 12.1% reduction; total measured GPU pass time falls
 15.6%. Frame wall rises 0.9% and CPU submit rises 24.2%, however. Both runs are
-local, dirty, single-repetition, and warmup-unstable. P19 therefore remains a
-default-off candidate until a clean, stable comparison establishes an owner
-outcome rather than only a pass-local GPU reduction.
+local, dirty, single-repetition, and warmup-unstable. That implementation
+therefore remained default-off.
+
+The 2026-08-23 follow-up first reproduced the owner-level loss, then used a
+production-like Metal System Trace to isolate the fused scan/copy kernel as
+95.8% texture-sample-limited and 95.3% texture-cache-limited. Replacing the
+shader copy with a Metal texture-copy command was measured and rejected because
+the scan/copy family rose from 1.957 to 2.182 ms. The accepted change instead
+folds each one-thread finalizer into the preceding scan encoder and declares the
+indirect-argument write on that graph pass, reducing the compact chain from
+twelve to eight passes without changing the four-layer topology or bounded
+resources.
+
+Matched local dirty-tree Bistro GPU report
+`20260822T224507.334Z-00524e` (report digest
+`sha256:87f2856ff9909c0415e74a310d274bf0e0ac6bd4b449cbb7d17fb9ed32705a62`)
+reports 0.061 ms cull, 0.339 ms depth seed, 1.392 ms peel raster, 0.750 ms
+compact scan/finalize, and 0.663 ms sparse shade: 3.204 ms of
+non-diagnostic transmission work. That is 44.7% below the original compact
+5.792 ms and 47.4% below the comparable full-screen 6.095 ms. The matched
+timestamp-off compact report `20260822T224903.750Z-005bcf` (digest
+`sha256:dab424c7a92774f5a3a18cf56df264dddf4d92184ebb3993002e0407ced1afed`)
+records frame mean/p95 20.279/25.396 ms and prepare mean 18.151 ms. The
+contemporaneous full-screen control `20260822T223524.870Z-0044ea` (digest
+`sha256:e91c85ce6c892881967e9c17ec0cd3782cddd2b2cc16f9f5388569bd38d66d17`)
+records 20.943/26.354 ms and 19.247 ms, so frame mean improves 3.17%, frame p95
+3.64%, and prepare 5.69%; submit remains 30.9% higher at 1.334 versus 1.020 ms.
+Both compact child frame means agree within 0.148 ms. The comparisons have
+matching lane-specific fingerprints and work volume with zero compact overflow,
+but remain non-authoritative because they are local, dirty, and warmup-unstable.
+
+World and editor final/scene-color captures are byte-identical to their
+full-screen controls. A default-selector nine-channel snapshot
+`20260822T225723.839Z-00661a` passes, as do the complete CPU suite, Release
+build, isolated cold and warm cache reports `20260822T225833.427Z-00665d` and
+`20260822T225840.103Z-00680f`, and focused serial Metal API-plus-shader
+validation report `20260822T225753.614Z-0064a4` with no validator diagnostic.
+Diagnostic rollback report `20260822T225857.013Z-0068e4` realizes the
+full-screen shade chain. Native Vulkan validation was not available on the
+macOS host; compact conditions remain false on Vulkan and the CPU graph suite
+covers the shared authored declarations.
 
 Metal P20 stabilization is the accepted default-on implementation. Deferred
 eligibility is a typed whole-packet
@@ -1338,7 +1386,7 @@ suite. The CPU suite alone is never evidence of legal GPU use.
 | Multi-view culling regresses shadow submission cost | P17 matched Release profiles, per-view candidate/command counts | Retain CPU cascade submission and accept the §11.1 amendment; do not enter P21 on an unaccepted result |
 | HZB produces any false-negative omission | Visibility-reference comparison on motion/invalidation cases | Disable HZB and retain frustum-only GPU culling |
 | Material resolve plus G-buffer loses to forward shading | Complete P8–P11 GPU/frame evidence | Try a measured fused visibility-shading variant or keep the legacy forward renderer; do not enter P20/P21 |
-| Full-screen sparse transmission dispatch is material | Coverage, overflow, and pass timing | Keep the measured compact-list candidate default-off until clean stable evidence improves the owner outcome |
+| Full-screen sparse transmission dispatch is material | Coverage, overflow, pass timing, and owner frame wall | Metal defaults to the measured compact-list path; retain the full-screen diagnostic rollback and re-evaluate on regressions or materially denser coverage |
 | In-flight memory exceeds the target budget | Graph resource stats including multiplicity/history | Reduce formats/history or stop; “20 B/pixel” is not a budget defense |
 
 Classic rasterized G-buffer deferred remains the simpler fallback if analytic
@@ -1369,6 +1417,6 @@ measurement, including the doubled geometry work, supports it.
 | `docs/README.md`, ADR index, this specification, and ADR-028 | Keep status and purpose aligned with shipped phases; P21 must explicitly record that the legacy forward renderer was deleted |
 
 The architecture spec remains the shipping-status authority. This spec and
-ADR-028 are implemented after P21. The default-off P19 Metal candidate remains
-optional measured work; its lack of an accepted speed claim does not make the
-sole production topology partial.
+ADR-028 are implemented after P21. The P19 Metal compact path is default-on
+after its eight-pass consolidation; the full-screen diagnostic rollback and
+Vulkan production branch preserve the same bounded four-layer topology.
