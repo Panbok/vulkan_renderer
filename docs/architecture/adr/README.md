@@ -55,6 +55,8 @@ Considered → Revisit When**.
 | [ADR-029](029-retained-graph-resources.md) | Retained graph resources with per-subresource content validity | Accepted (partial); load-bearing for Metal P3B cascade reuse, while the Vulkan path remains unexecuted and unvalidated at runtime |
 | [ADR-030](030-offline-mesh-optimization-and-cooking.md) | Offline mesh optimization and cooked geometry artifacts | Proposed |
 | [ADR-031](031-versioned-packed-static-geometry-abi.md) | Tight packed static-geometry GPU ABI | Proposed |
+| [ADR-032](032-two-phase-confirmed-visibility.md) | Two-phase current-depth-confirmed visibility | Proposed |
+| [ADR-033](033-occupied-depth-sdsm-feedback.md) | Occupied-depth SDSM through completed asynchronous feedback | Proposed |
 
 ## Relationship to the Specification
 

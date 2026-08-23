@@ -127,6 +127,8 @@ owning document status in the same change.
 | [029](architecture/adr/029-retained-graph-resources.md) | partial | Retained graph-owned contents with per-instance, per-subresource content validity, seeded from the last successfully submitted state and committed only on proven submit. Prerequisite for directional cascade reuse; distinct from the `HISTORY` ring and from `PERSISTENT`, which only suppresses a diagnostic |
 | [030](architecture/adr/030-offline-mesh-optimization-and-cooking.md) | proposed | Meshoptimizer-backed offline `.vkb` cooking, with runtime worker decode and versioned artifact validation; the versioned payload replaces the local raw-cache contract |
 | [031](architecture/adr/031-versioned-packed-static-geometry-abi.md) | proposed | Third-step tight packed static-geometry ABI, shared by Metal and Vulkan, required before mesh codec integration can reduce GPU upload and residency bytes |
+| [032](architecture/adr/032-two-phase-confirmed-visibility.md) | proposed | Previous-frame HZB demoted to a predictor, with correctness from a current-depth confirmation phase. Amends ADR-028's visibility topology; the one-phase exact-gated path stays in force. Benefit is unquantified and the ADR carries an explicit net-win stop condition |
+| [033](architecture/adr/033-occupied-depth-sdsm-feedback.md) | proposed | Sample-distribution cascade splits from an occupied-depth reduction and a completed, non-blocking feedback record carrying its own source projection. Quality feature only; the fixed final split and fixed-split fallback are retained |
 
 ## Rendering
 
