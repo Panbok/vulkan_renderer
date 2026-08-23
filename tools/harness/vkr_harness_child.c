@@ -38,6 +38,7 @@ typedef struct VkrHarnessChildContext {
   uint32_t total_frames;
   uint32_t metric_count;
   uint32_t pass_count;
+  uint32_t pass_capacity;
   uint64_t events_dropped;
   uint64_t event_subjects_truncated;
   uint64_t snapshot_publications_dropped;
@@ -48,6 +49,7 @@ typedef struct VkrHarnessChildContext {
   float64_t *pass_cpu_samples;
   float64_t *pass_gpu_samples;
   uint8_t *pass_flags;
+  uint8_t *pass_frame_valid;
   float64_t *samples;
   uint8_t *availability;
   int32_t capture_index;
@@ -288,23 +290,44 @@ static void vkr_harness_child_sample(Application *application) {
     }
   }
   /* The pass table is single-buffered and owned by the collecting thread, so
-     it only describes this snapshot when both name the same CPU frame. A row
-     that fails any check stays flagged invalid rather than contributing a
-     zero millisecond sample. */
+     it only describes this snapshot when both name the same CPU frame. The
+     catalog grows by name when cold graph conditions produce a new topology;
+     absent names are explicit omissions, while a mismatched table leaves the
+     whole frame invalid. */
   const VkrRendererMetricsPassTable *passes =
       vkr_renderer_metrics_get_pass_table(&application->renderer_metrics);
-  if (passes && passes->cpu_frame_index == view.frame->cpu_frame_index &&
-      passes->count == child->pass_count) {
+  if (passes && !passes->truncated &&
+      passes->cpu_frame_index == view.frame->cpu_frame_index) {
+    child->pass_frame_valid[frame] = 1u;
     for (uint32_t pass = 0; pass < child->pass_count; ++pass) {
-      const VkrRendererMetricsPassSample *source = &passes->samples[pass];
-      const uint64_t offset = (uint64_t)frame * child->pass_count + pass;
-      /* Culled and disabled describe the catalog row only when the source row
-         is that row; inherited from a reordered table they would claim this
-         pass was legitimately skipped and satisfy the completeness gate on
-         another pass's evidence. */
-      const bool8_t matched =
-          string_equals(source->name, child->pass_catalog[pass].name);
-      const bool8_t executed = matched && !source->culled && !source->disabled;
+      child->pass_flags[(uint64_t)frame * child->pass_capacity + pass] =
+          VKR_HARNESS_PASS_FLAG_OMITTED;
+    }
+    for (uint32_t source_index = 0; source_index < passes->count;
+         ++source_index) {
+      const VkrRendererMetricsPassSample *source =
+          &passes->samples[source_index];
+      uint32_t pass = 0u;
+      while (pass < child->pass_count &&
+             !string_equals(source->name, child->pass_catalog[pass].name))
+        pass++;
+      if (pass == child->pass_count) {
+        if (child->pass_count >= child->pass_capacity) {
+          vkr_harness_child_fail(application, "passes.catalog_capacity");
+          break;
+        }
+        string_format(child->pass_catalog[pass].name,
+                      sizeof(child->pass_catalog[pass].name), "%s",
+                      source->name);
+        for (uint32_t prior = 0u; prior < frame; ++prior) {
+          if (child->pass_frame_valid[prior])
+            child->pass_flags[(uint64_t)prior * child->pass_capacity + pass] =
+                VKR_HARNESS_PASS_FLAG_OMITTED;
+        }
+        child->pass_count++;
+      }
+      const uint64_t offset = (uint64_t)frame * child->pass_capacity + pass;
+      const bool8_t executed = !source->culled && !source->disabled;
       child->pass_cpu_samples[offset] = source->cpu_ms;
       child->pass_gpu_samples[offset] = source->gpu_ms;
       child->pass_flags[offset] =
@@ -312,11 +335,8 @@ static void vkr_harness_child_sample(Application *application) {
                     (executed && source->gpu_valid
                          ? VKR_HARNESS_PASS_FLAG_GPU_VALID
                          : 0u) |
-                    (matched && source->culled ? VKR_HARNESS_PASS_FLAG_CULLED
-                                               : 0u) |
-                    (matched && source->disabled
-                         ? VKR_HARNESS_PASS_FLAG_DISABLED
-                         : 0u));
+                    (source->culled ? VKR_HARNESS_PASS_FLAG_CULLED : 0u) |
+                    (source->disabled ? VKR_HARNESS_PASS_FLAG_DISABLED : 0u));
     }
   }
   vkr_metrics_snapshot_release(application->metrics, &view);
@@ -449,11 +469,12 @@ vkr_harness_child_prepare_pass_catalog(Application *application) {
   if (++child->pass_catalog_stable_frames < 8u)
     return true_v;
   child->pass_count = passes->count;
+  child->pass_capacity = VKR_METRICS_MAX_SLOTS;
   const uint64_t pass_value_count =
-      (uint64_t)child->total_frames * child->pass_count;
+      (uint64_t)child->total_frames * child->pass_capacity;
   Arena *arena = child->arenas->persistent;
   child->pass_catalog =
-      arena_alloc(arena, child->pass_count * sizeof(*child->pass_catalog),
+      arena_alloc(arena, child->pass_capacity * sizeof(*child->pass_catalog),
                   ARENA_MEMORY_TAG_STRUCT);
   child->pass_cpu_samples =
       arena_alloc(arena, pass_value_count * sizeof(*child->pass_cpu_samples),
@@ -463,26 +484,61 @@ vkr_harness_child_prepare_pass_catalog(Application *application) {
                   ARENA_MEMORY_TAG_ARRAY);
   child->pass_flags =
       arena_alloc(arena, pass_value_count, ARENA_MEMORY_TAG_ARRAY);
+  child->pass_frame_valid =
+      arena_alloc(arena, child->total_frames, ARENA_MEMORY_TAG_ARRAY);
   if (!child->pass_catalog || !child->pass_cpu_samples ||
-      !child->pass_gpu_samples || !child->pass_flags) {
+      !child->pass_gpu_samples || !child->pass_flags ||
+      !child->pass_frame_valid) {
     vkr_harness_child_fail(application, "passes.allocation_failed");
     return false_v;
   }
   /* Arenas bump rather than zero: a frame whose pass row is never written must
      still read back as an invalid sample, not as stale bytes. */
   MemZero(child->pass_catalog,
-          child->pass_count * sizeof(*child->pass_catalog));
+          child->pass_capacity * sizeof(*child->pass_catalog));
   MemZero(child->pass_cpu_samples,
           pass_value_count * sizeof(*child->pass_cpu_samples));
   MemZero(child->pass_gpu_samples,
           pass_value_count * sizeof(*child->pass_gpu_samples));
   MemZero(child->pass_flags, pass_value_count);
+  MemZero(child->pass_frame_valid, child->total_frames);
   for (uint32_t pass = 0; pass < child->pass_count; ++pass) {
     string_format(child->pass_catalog[pass].name,
                   sizeof(child->pass_catalog[pass].name), "%s",
                   passes->samples[pass].name);
   }
   child->pass_catalog_ready = true_v;
+  return true_v;
+}
+
+static bool8_t
+vkr_harness_child_compact_pass_samples(VkrHarnessChildContext *child) {
+  if (!child || child->pass_count == 0u ||
+      child->pass_capacity == child->pass_count)
+    return true_v;
+  const uint64_t value_count =
+      (uint64_t)child->total_frames * child->pass_count;
+  Arena *arena = child->arenas->persistent;
+  float64_t *cpu =
+      arena_alloc(arena, value_count * sizeof(*cpu), ARENA_MEMORY_TAG_ARRAY);
+  float64_t *gpu =
+      arena_alloc(arena, value_count * sizeof(*gpu), ARENA_MEMORY_TAG_ARRAY);
+  uint8_t *flags = arena_alloc(arena, value_count, ARENA_MEMORY_TAG_ARRAY);
+  if (!cpu || !gpu || !flags)
+    return false_v;
+  for (uint32_t frame = 0u; frame < child->total_frames; ++frame) {
+    const uint64_t source = (uint64_t)frame * child->pass_capacity;
+    const uint64_t destination = (uint64_t)frame * child->pass_count;
+    MemCopy(cpu + destination, child->pass_cpu_samples + source,
+            child->pass_count * sizeof(*cpu));
+    MemCopy(gpu + destination, child->pass_gpu_samples + source,
+            child->pass_count * sizeof(*gpu));
+    MemCopy(flags + destination, child->pass_flags + source, child->pass_count);
+  }
+  child->pass_cpu_samples = cpu;
+  child->pass_gpu_samples = gpu;
+  child->pass_flags = flags;
+  child->pass_capacity = child->pass_count;
   return true_v;
 }
 
@@ -1384,6 +1440,11 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
   g_harness_child = NULL;
   if (prewarm) {
     exit_code = child.failed ? VKR_HARNESS_EXIT_ERROR : VKR_HARNESS_EXIT_PASS;
+    goto cleanup;
+  }
+  if (!vkr_harness_child_compact_pass_samples(&child)) {
+    vkr_harness_stderr("Unable to compact repetition pass samples\n");
+    exit_code = VKR_HARNESS_EXIT_ERROR;
     goto cleanup;
   }
 

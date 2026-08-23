@@ -1437,6 +1437,8 @@ static void test_main_graph_declares_transmission_stages(void) {
       assert(pass->repeat.enabled &&
              vkr_string8_equals_cstr(&pass->repeat.count_source,
                                      "shadow_cascade_count"));
+      assert(vkr_string8_equals_cstr(&pass->repeat.condition_mask_source,
+                                     "shadow_cascade_render_mask"));
       assert(pass->reads.length == 3u);
       VkrRgJsonResourceUse *visible =
           vector_get_VkrRgJsonResourceUse(&pass->reads, 0u);
@@ -1577,6 +1579,7 @@ static void test_main_graph_fits_runtime_pass_capacity(void) {
       .shadow_map_size = 2048u,
       .shadow_map_layer_count = 4u,
       .shadow_cascade_count = 4u,
+      .shadow_cascade_render_mask = 0xfu,
       .hzb_reduce_pass_count = 11u,
       .transmission_pending = true_v,
       .timing_enabled = true_v,

@@ -61,8 +61,9 @@ bool8_t vkr_harness_gpu_pass_samples_complete(const uint8_t *flags,
   }
   static const uint8_t kTimed =
       VKR_HARNESS_PASS_FLAG_CPU_VALID | VKR_HARNESS_PASS_FLAG_GPU_VALID;
-  static const uint8_t kSkipped =
-      VKR_HARNESS_PASS_FLAG_CULLED | VKR_HARNESS_PASS_FLAG_DISABLED;
+  static const uint8_t kSkipped = VKR_HARNESS_PASS_FLAG_CULLED |
+                                  VKR_HARNESS_PASS_FLAG_DISABLED |
+                                  VKR_HARNESS_PASS_FLAG_OMITTED;
   for (uint64_t i = 0; i < sample_count; ++i) {
     /* A skipped pass carries no samples at all and an executed pass carries
        both; anything else is a missing or half-recorded row, and a row without

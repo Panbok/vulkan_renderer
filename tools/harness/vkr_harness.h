@@ -62,6 +62,7 @@
 #define VKR_HARNESS_PASS_FLAG_GPU_VALID 0x2u
 #define VKR_HARNESS_PASS_FLAG_CULLED 0x4u
 #define VKR_HARNESS_PASS_FLAG_DISABLED 0x8u
+#define VKR_HARNESS_PASS_FLAG_OMITTED 0x10u
 
 typedef enum VkrHarnessExitCode {
   VKR_HARNESS_EXIT_PASS = 0,
@@ -380,6 +381,7 @@ typedef struct VkrHarnessPassResult {
   VkrHarnessStatistics gpu_ms;
   uint64_t culled_count;
   uint64_t disabled_count;
+  uint64_t omitted_count;
 } VkrHarnessPassResult;
 
 typedef struct VkrHarnessProvenance {
@@ -716,7 +718,8 @@ bool8_t vkr_harness_statistics_compute(const float64_t *samples,
 
 /**
  * GPU timing is complete only when each measured pass/frame row is explicitly
- * culled/disabled or has matching valid CPU/GPU samples.
+ * culled, disabled, omitted by graph construction, or has matching valid
+ * CPU/GPU samples.
  */
 bool8_t vkr_harness_gpu_pass_samples_complete(const uint8_t *flags,
                                               uint64_t sample_count);

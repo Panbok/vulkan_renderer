@@ -316,7 +316,10 @@
       "name": "Shadow.Cascade.${i}",
       "type": "graphics",
       "domain": "SHADOW",
-      "repeat": { "count_source": "shadow_cascade_count" },
+      "repeat": {
+        "count_source": "shadow_cascade_count",
+        "condition_mask_source": "shadow_cascade_render_mask"
+      },
       "reads": [
         { "buffer": "gpu_visible_draws", "access": "STORAGE_READ", "binding": 1 },
         { "buffer": "gpu_draw_compaction_state", "access": "INDIRECT_READ", "binding": 2 },

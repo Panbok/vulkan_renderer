@@ -1511,6 +1511,8 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
       packet->shadow
           ? MIN(packet->shadow->cascade_count, VKR_SHADOW_CASCADE_COUNT_MAX)
           : 0u;
+  renderer->prepared_frame.shadow_cascade_render_mask =
+      packet->shadow ? packet->shadow->cascade_render_mask : 0u;
   const uint64_t completed_submit_value = renderer->completion.signaledValue;
   vkr_capture_ring_collect(&renderer->capture_ring, completed_submit_value);
   vkr_metal_packet_collect_retired_image_views(renderer,

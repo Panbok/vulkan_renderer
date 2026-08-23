@@ -129,6 +129,12 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId shadow_indirect_draws_opaque[VKR_SHADOW_CASCADE_COUNT_MAX];
   VkrMetricId shadow_indirect_calls_opaque[VKR_SHADOW_CASCADE_COUNT_MAX];
   VkrMetricId shadow_indirect_overflow[VKR_SHADOW_CASCADE_COUNT_MAX];
+  VkrMetricId shadow_rendered[VKR_SHADOW_CASCADE_COUNT_MAX];
+  VkrMetricId shadow_reused[VKR_SHADOW_CASCADE_COUNT_MAX];
+  VkrMetricId shadow_correctness_forced[VKR_SHADOW_CASCADE_COUNT_MAX];
+  VkrMetricId shadow_proactive_refreshed[VKR_SHADOW_CASCADE_COUNT_MAX];
+  VkrMetricId shadow_dynamic_candidates_tested[VKR_SHADOW_CASCADE_COUNT_MAX];
+  VkrMetricId shadow_dynamic_forced[VKR_SHADOW_CASCADE_COUNT_MAX];
 
   VkrMetricId rg_live_images;
   VkrMetricId rg_peak_images;

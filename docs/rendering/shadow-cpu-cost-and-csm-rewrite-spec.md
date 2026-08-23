@@ -9,11 +9,46 @@ authority: design
 P0 instrumentation and P1 contract repair ship in the current implementation.
 The renderer publishes the named CPU scopes and row-byte gauges on Metal and
 Vulkan, routes raster depth bias through the packet on both backends, retains
-the future fit data, and applies cascade-fit hysteresis. P2 and later phases do
-not ship. The available P0 runs rejected P2 at 35 and 254 candidates, but they
-were dirty-tree observations rather than authoritative profiles and do not
-represent an identified larger reported workload. Exact unchanged-default
-capture comparison also remains open for P1.
+the future fit data, and applies cascade-fit hysteresis. P2's static/dynamic
+candidate partition and generation substrate ships without the rejected GPU
+residency expansion. P3A and P3B also ship: `shadow_map` is a retained,
+per-image graph resource (ADR-029), and the backend-neutral shadow resolver
+omits eligible cascade passes against committed per-image history. P4 and later
+phases do not ship; P3B performs no proactive refresh.
+
+The same-tree local Release P3B comparison on Bistro orbit at 2560x1440 reduced
+realized `Shadow.Cascade.*` GPU work from 9.197 ms/frame to 0.663 ms/frame and
+made transmission the dominant remaining family. A later matched P19 local
+dirty-tree comparison reduced transmission from 6.095 ms to 3.204 ms. Its
+timestamp-off frame mean/p95 changed from 20.943/26.354 ms to 20.279/25.396 ms,
+and CPU prepare from 19.247 ms to 18.151 ms. These are investigative local,
+dirty-tree, warmup-unstable observations, not authoritative or portable speed
+claims.
+
+The available P0 runs rejected P2 at 35 and 254 candidates, but they were
+dirty-tree observations rather than authoritative profiles and do not represent
+an identified larger reported workload. Exact unchanged-default capture
+comparison also remains open for P1.
+
+Two measured findings revise this document's premise and should be read before
+acting on sections 2.2, 2.3, or 6:
+
+- **The renderer is GPU-bound on the measured workload, not CPU-bound.** Bistro
+  orbit at 2560x1440 on Metal: 28.591 ms of GPU pass work against a 29.650 ms
+  frame, while real CPU work is about 1.5 ms. `cpu.render_prepare` at 93% is the
+  CPU blocking in the frame-slot wait, not doing work. Every CPU hypothesis in
+  sections 2.2 and 2.3 is refuted at these candidate counts.
+- **Cascade cost is geometry-bound, not fill-bound.** Halving the shadow map
+  changed the four-cascade total by 3% (9.402 ms to 9.126 ms). Every cascade
+  re-submits nearly the whole scene; cascade 0 draws 211.7 of 254 candidates.
+
+Consequently P2 is not being built as the CPU optimization this document
+describes. Its static/dynamic partition, generations, and caster-depth snapshot
+are prerequisites of the section 7.3 reuse rule, and that is the only
+justification in force. **No performance claim may be attached to P2.** The
+GPU-side residency and deferred-publication machinery in sections 6.4 and 6.5
+remain unauthorized and unbuilt: they target CPU cost that measurement did not
+find.
 
 Prerequisite reading:
 [shadow-transmission-transparency-improvements.md](shadow-transmission-transparency-improvements.md)
@@ -563,6 +598,10 @@ scenes. Exact shadow-factor captures must show that the tighter interval does
 not clip off-camera casters before the fallback tuning fields are deprecated.
 
 ## 7. Phase 3, retained shadow history and static-only reuse
+
+**Status:** Implemented through Phase 3B on Metal. Vulkan compiles and has CPU
+coverage, but retained read-without-write barriers remain unvalidated at
+runtime on a supported Windows host.
 
 Phase 3 has two PRs. Phase 3A adds retained graph-resource semantics and renders
 all cascades exactly as before. Phase 3B uses that contract to omit eligible

@@ -114,15 +114,30 @@ typedef struct VkrMeshAssetEntry {
 VkrHashTable(VkrMeshAssetEntry);
 
 /**
- * @brief Manager for the mesh system.
- * @param arena The arena to use for the mesh manager.
- * @param scratch_arena The scratch arena to use for the mesh manager.
- * @param geometry_system The geometry system to use for the mesh manager.
- * @param material_system The material system to use for the mesh manager.
- * @param config The configuration for the mesh manager.
- * @param meshes The meshes managed by the mesh manager.
- * @param free_indices The indices of the free meshes.
+ * @brief Monotonic generations describing what changed since a previous frame.
+ *
+ * Cascade reuse compares these against the generations a shadow layer was last
+ * rendered with, so a mismatch is what forces a re-render. Zero is never a
+ * valid published generation: a zeroed consumer record must compare unequal to
+ * every live generation, or a reuse decision would be made against state
+ * nobody produced.
+ *
+ * These describe *content*, not draw submission. Bumping one is cheap; failing
+ * to bump one produces a stale shadow, so the rule is to bump on any mutation
+ * whose effect a retained cascade could have captured.
  */
+typedef struct VkrMeshManagerGenerations {
+  /** Instance or mesh added, removed, made visible, or finished loading. */
+  uint64_t topology;
+  /** Any change to a caster classified STATIC, including reclassification. */
+  uint64_t static_content;
+  /** Any change to a caster classified DYNAMIC. */
+  uint64_t dynamic_content;
+  /** World-space caster bounds changed; invalidates the light-space Z fit. */
+  uint64_t caster_bounds;
+} VkrMeshManagerGenerations;
+
+/** @brief Owns mesh instances, shared assets, and their shadow generations. */
 typedef struct VkrMeshManager {
   Arena *arena;
   Arena *scratch_arena;
@@ -132,6 +147,7 @@ typedef struct VkrMeshManager {
   VkrMaterialSystem *material_system;
   VkrMeshLoaderContext *loader_context; // For batch loading
   VkrMeshManagerConfig config;
+  VkrMeshManagerGenerations generations;
 
   Array_VkrMesh meshes;
   Array_uint32_t mesh_live_indices;
@@ -459,6 +475,23 @@ VkrMeshInstanceHandle vkr_mesh_manager_create_instance_from_resource(
     VkrMeshManager *manager, const VkrMeshLoadDesc *desc,
     const VkrResourceHandleInfo *handle_info, uint32_t render_id,
     bool8_t visible, VkrRendererError *out_error);
+
+/**
+ * @brief Sets a mesh instance's shadow-caster mobility contract.
+ *
+ * Declaring STATIC asserts that the transform, visibility, geometry, and
+ * material routing of this instance cannot change except through mesh-manager
+ * APIs, all of which bump the relevant generation. A caller that mutates a
+ * STATIC instance by writing its fields directly breaks cascade reuse and
+ * produces a stale shadow that nothing corrects.
+ *
+ * Reclassification is itself a topology change, because a retained cascade may
+ * already have captured this caster under the old contract.
+ */
+bool8_t
+vkr_mesh_manager_instance_set_shadow_mobility(VkrMeshManager *manager,
+                                              VkrMeshInstanceHandle handle,
+                                              VkrShadowCasterMobility mobility);
 
 /**
  * @brief Batch create mesh instances from load descriptors.

@@ -231,7 +231,9 @@ bool8_t vkr_harness_compute_pass_results(
             (uint64_t)(warmup_frames + frame) * pass_count + pass;
         if ((flags[offset] & series_flag[which]) != 0u) {
           valid[valid_count++] = series[which][offset];
-        } else {
+        } else if ((flags[offset] & (VKR_HARNESS_PASS_FLAG_CULLED |
+                                     VKR_HARNESS_PASS_FLAG_DISABLED |
+                                     VKR_HARNESS_PASS_FLAG_OMITTED)) == 0u) {
           invalid_count++;
         }
         if (which == 0u) {
@@ -239,6 +241,8 @@ bool8_t vkr_harness_compute_pass_results(
               (flags[offset] & VKR_HARNESS_PASS_FLAG_CULLED) != 0u;
           results[pass].disabled_count +=
               (flags[offset] & VKR_HARNESS_PASS_FLAG_DISABLED) != 0u;
+          results[pass].omitted_count +=
+              (flags[offset] & VKR_HARNESS_PASS_FLAG_OMITTED) != 0u;
         }
       }
       if (!vkr_harness_statistics_compute(valid, valid_count, invalid_count,

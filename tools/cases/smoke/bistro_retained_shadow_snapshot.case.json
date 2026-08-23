@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "id": "smoke.bistro.retained_shadow.snapshot",
+  "suite": "smoke",
+  "description": "Deterministic multi-image retained-shadow witness with direct final-color and cascade-layer captures after every realized target image has been revisited.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 1,
+  "resolution": [960, 540],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 4,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": { "warmup": 4, "measure": 5 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [-24.5338593, 7.14362192, 8.75533485],
+    "yaw": 13.5542097,
+    "pitch": -18.3844624,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500
+  },
+  "captures": [
+    { "at_frame": 0, "channels": ["final_color"] },
+    { "at_frame": 1, "channels": ["shadow_cascade_0"] },
+    { "at_frame": 2, "channels": ["shadow_cascade_1"] },
+    { "at_frame": 3, "channels": ["shadow_cascade_2"] },
+    { "at_frame": 4, "channels": ["shadow_cascade_3"] }
+  ]
+}

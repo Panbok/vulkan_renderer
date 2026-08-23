@@ -52,6 +52,7 @@ static void test_harness_hash_and_statistics(void) {
   uint8_t pass_flags[] = {
       VKR_HARNESS_PASS_FLAG_CPU_VALID | VKR_HARNESS_PASS_FLAG_GPU_VALID,
       VKR_HARNESS_PASS_FLAG_CULLED,
+      VKR_HARNESS_PASS_FLAG_OMITTED,
       VKR_HARNESS_PASS_FLAG_CPU_VALID | VKR_HARNESS_PASS_FLAG_GPU_VALID,
   };
   assert(vkr_harness_gpu_pass_samples_complete(pass_flags,

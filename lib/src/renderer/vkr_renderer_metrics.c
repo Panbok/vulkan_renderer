@@ -485,6 +485,13 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
     VKR_REGISTER_CASCADE(shadow_indirect_draws_opaque, "indirect_commands");
     VKR_REGISTER_CASCADE(shadow_indirect_calls_opaque, "indirect_calls");
     VKR_REGISTER_CASCADE(shadow_indirect_overflow, "indirect_overflow");
+    VKR_REGISTER_CASCADE(shadow_rendered, "rendered");
+    VKR_REGISTER_CASCADE(shadow_reused, "reused");
+    VKR_REGISTER_CASCADE(shadow_correctness_forced, "correctness_forced");
+    VKR_REGISTER_CASCADE(shadow_proactive_refreshed, "proactive_refreshed");
+    VKR_REGISTER_CASCADE(shadow_dynamic_candidates_tested,
+                         "dynamic_candidates_tested");
+    VKR_REGISTER_CASCADE(shadow_dynamic_forced, "dynamic_forced");
 #undef VKR_REGISTER_CASCADE
   }
 
@@ -1255,6 +1262,19 @@ void vkr_renderer_metrics_collect(
                               shadow->shadow_indirect_calls_opaque[i]);
     vkr_metrics_gauge_set_u64(metrics, ids->shadow_indirect_overflow[i],
                               shadow->shadow_indirect_overflow[i]);
+    vkr_metrics_gauge_set_u64(metrics, ids->shadow_rendered[i],
+                              shadow->rendered[i]);
+    vkr_metrics_gauge_set_u64(metrics, ids->shadow_reused[i],
+                              shadow->reused[i]);
+    vkr_metrics_gauge_set_u64(metrics, ids->shadow_correctness_forced[i],
+                              shadow->correctness_forced[i]);
+    vkr_metrics_gauge_set_u64(metrics, ids->shadow_proactive_refreshed[i],
+                              shadow->proactive_refreshed[i]);
+    vkr_metrics_gauge_set_u64(metrics,
+                              ids->shadow_dynamic_candidates_tested[i],
+                              shadow->dynamic_candidates_tested[i]);
+    vkr_metrics_gauge_set_u64(metrics, ids->shadow_dynamic_forced[i],
+                              shadow->dynamic_forced[i]);
   }
 
   VkrRenderGraphResourceStats rg = {0};
@@ -1508,6 +1528,15 @@ vkr_renderer_metrics_read_frame(const VkrRendererMetrics *renderer_metrics,
                    ids->shadow_indirect_calls_opaque[i]);
       VKR_READ_U32(shadow->shadow_indirect_overflow[i],
                    ids->shadow_indirect_overflow[i]);
+      VKR_READ_U32(shadow->rendered[i], ids->shadow_rendered[i]);
+      VKR_READ_U32(shadow->reused[i], ids->shadow_reused[i]);
+      VKR_READ_U32(shadow->correctness_forced[i],
+                   ids->shadow_correctness_forced[i]);
+      VKR_READ_U32(shadow->proactive_refreshed[i],
+                   ids->shadow_proactive_refreshed[i]);
+      VKR_READ_U32(shadow->dynamic_candidates_tested[i],
+                   ids->shadow_dynamic_candidates_tested[i]);
+      VKR_READ_U32(shadow->dynamic_forced[i], ids->shadow_dynamic_forced[i]);
     }
   }
 

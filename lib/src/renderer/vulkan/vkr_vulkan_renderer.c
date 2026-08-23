@@ -689,6 +689,8 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
       packet->shadow
           ? Min(packet->shadow->cascade_count, VKR_SHADOW_CASCADE_COUNT_MAX)
           : 0u;
+  renderer->prepared_frame.shadow_cascade_render_mask =
+      packet->shadow ? packet->shadow->cascade_render_mask : 0u;
   uint32_t hzb_mip_count = 1u;
   uint32_t hzb_extent = Max(renderer->prepared_frame.viewport_width,
                             renderer->prepared_frame.viewport_height);

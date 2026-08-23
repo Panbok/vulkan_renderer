@@ -523,6 +523,8 @@ bool8_t vkr_harness_report_write(const char *path,
         vkr_harness_json_emit_u64(writer, "culled_count", pass->culled_count) &&
         vkr_harness_json_emit_u64(writer, "disabled_count",
                                   pass->disabled_count) &&
+        vkr_harness_json_emit_u64(writer, "omitted_count",
+                                  pass->omitted_count) &&
         vkr_json_writer_end_object(writer);
   }
   ok = ok && vkr_json_writer_end_array(writer) &&

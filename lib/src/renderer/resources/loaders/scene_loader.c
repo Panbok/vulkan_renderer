@@ -92,6 +92,8 @@ typedef struct SceneEntityImport {
   String8 mesh_path;
   String8 shader_override;
   VkrPipelineDomain pipeline_domain;
+  /** False marks the caster DYNAMIC; scene meshes are static by default. */
+  bool8_t shadow_caster_static;
   bool8_t has_text3d;
   SceneText3DImport text3d;
   bool8_t has_shape;
@@ -1343,6 +1345,19 @@ vkr_internal void scene_json_parse_mesh(const VkrJsonReader *entity_reader,
     }
   }
 
+  /* Scene-authored meshes are architecture and do not move, so STATIC is the
+     useful default; without it the static span is empty and cascade reuse can
+     never fire. An authored mover opts out with "dynamic_caster": true. The
+     contract this asserts is enforceable because every mesh-manager mutation
+     path bumps a generation. */
+  out_entity->shadow_caster_static = true_v;
+  bool8_t dynamic_caster = false_v;
+  if (scene_json_read_bool_field(&mesh_obj, "dynamic_caster",
+                                 &dynamic_caster) &&
+      dynamic_caster) {
+    out_entity->shadow_caster_static = false_v;
+  }
+
   String8 shader_override = {0};
   if (scene_json_read_string_field(&mesh_obj, "shader_override",
                                    &shader_override) &&
@@ -1857,6 +1872,12 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene, struct s_RendererFrontend *rf,
         log_error("Scene loader: failed to track instance %u", instance.id);
         return false_v;
       }
+
+      (void)vkr_mesh_manager_instance_set_shadow_mobility(
+          &rf->mesh_manager, instance,
+          imports[entity_index].shadow_caster_static
+              ? VKR_SHADOW_CASTER_MOBILITY_STATIC
+              : VKR_SHADOW_CASTER_MOBILITY_DYNAMIC);
 
       loaded_meshes++;
     }
@@ -2478,6 +2499,15 @@ vkr_internal bool8_t scene_loader_attach_mesh_for_entity(
     *out_error = scene_error_to_renderer_error(scene_error);
     return false_v;
   }
+
+  /* The asynchronous attach path creates instances too, so it needs the same
+     classification as the batch path; without it every async-loaded scene
+     mesh stays DYNAMIC and the static span is empty. */
+  (void)vkr_mesh_manager_instance_set_shadow_mobility(
+      &payload->rf->mesh_manager, instance,
+      entity_import->shadow_caster_static
+          ? VKR_SHADOW_CASTER_MOBILITY_STATIC
+          : VKR_SHADOW_CASTER_MOBILITY_DYNAMIC);
 
   payload->load_result.mesh_count++;
   mesh_state->attached = true_v;

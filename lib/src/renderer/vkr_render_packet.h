@@ -176,6 +176,29 @@ typedef struct VkrWorldPassPayload {
   uint32_t instance_count;
   const VkrPreparedTextDraw *text_draws;
   uint32_t text_draw_count;
+
+  /**
+   * Shadow-caster mobility partition and the generations that describe it.
+   *
+   * Cascade reuse needs three things this block provides: which generations the
+   * captured contents correspond to, a bounded set of dynamic casters to test
+   * for overlap, and whether any candidate was omitted at the publication
+   * boundary. Without them a reuse decision would be made on faith.
+   *
+   * The partition is a *view* of `gpu_candidates`, not a second copy: static
+   * candidates occupy `[0, static_candidate_count)` and dynamic candidates
+   * `[static_candidate_count, gpu_shadow_candidate_count)`. One stream keeps
+   * the GPU classify path free of a per-candidate mobility branch.
+   *
+   * `publication_pending` is true when any candidate was dropped this frame
+   * because its geometry or material had not published yet. A cascade cannot be
+   * reused while it is set: the missing caster might belong inside the volume.
+   */
+  uint32_t static_candidate_count;
+  uint64_t static_generation;
+  uint64_t dynamic_generation;
+  uint64_t caster_bounds_generation;
+  bool8_t publication_pending;
 } VkrWorldPassPayload;
 
 /**
@@ -194,6 +217,8 @@ typedef struct VkrShadowConfigOverride {
  */
 typedef struct VkrShadowPassPayload {
   uint32_t cascade_count;
+  /** Bit i is set only when cascade i must execute its graph pass. */
+  uint32_t cascade_render_mask;
   Mat4 light_view_proj[VKR_SHADOW_CASCADE_COUNT_MAX];
   float32_t split_depths[VKR_SHADOW_CASCADE_COUNT_MAX];
   const VkrShadowConfigOverride *config_override;

@@ -14,6 +14,15 @@
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/systems/vkr_resource_system.h"
 
+/* Generation bookkeeping for cascade reuse; defined below, declared here
+   because load-completion sites appear earlier in the file. */
+vkr_internal void
+vkr_mesh_manager_note_content_change(VkrMeshManager *manager,
+                                     VkrShadowCasterMobility mobility,
+                                     bool8_t bounds_changed);
+vkr_internal void
+vkr_mesh_manager_note_topology_change(VkrMeshManager *manager);
+
 /**
  * @brief FNV-1a hash helper for stable geometry keys.
  *
@@ -762,6 +771,7 @@ vkr_mesh_manager_refresh_instances_for_asset(VkrMeshManager *manager,
         instance->bounds_valid = false_v;
       } else {
         instance->loading_state = VKR_MESH_LOADING_STATE_LOADED;
+        vkr_mesh_manager_note_topology_change(manager);
         vkr_mesh_manager_update_instance_bounds(instance, asset,
                                                 instance->model);
       }
@@ -851,6 +861,7 @@ vkr_internal bool8_t vkr_mesh_manager_sync_pending_asset(
   asset->pending_request_id = 0;
   asset->last_error = VKR_RENDERER_ERROR_NONE;
   asset->loading_state = VKR_MESH_LOADING_STATE_LOADED;
+  vkr_mesh_manager_note_topology_change(manager);
   vkr_mesh_manager_refresh_instances_for_asset(manager, slot);
   return true_v;
 }
@@ -1013,6 +1024,14 @@ bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
   assert_log(config->max_mesh_count > 0, "Max mesh count is 0");
 
   MemZero(manager, sizeof(*manager));
+  /* Seeded at 1 so a zeroed consumer record cannot compare equal to a live
+     generation and be mistaken for "unchanged since I last rendered". */
+  manager->generations = (VkrMeshManagerGenerations){
+      .topology = 1u,
+      .static_content = 1u,
+      .dynamic_content = 1u,
+      .caster_bounds = 1u,
+  };
 
   ArenaFlags mesh_arena_flags = bitset8_create();
   bitset8_set(&mesh_arena_flags, ARENA_FLAG_LARGE_PAGES);
@@ -1180,6 +1199,7 @@ bool8_t vkr_mesh_manager_create(VkrMeshManager *manager,
   }
 
   mesh->loading_state = VKR_MESH_LOADING_STATE_LOADED;
+  vkr_mesh_manager_note_topology_change(manager);
 
   return true_v;
 }
@@ -1777,6 +1797,7 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
     VkrMesh *mesh = array_get_VkrMesh(&manager->meshes, mesh_index);
     if (mesh) {
       mesh->loading_state = VKR_MESH_LOADING_STATE_LOADED;
+      vkr_mesh_manager_note_topology_change(manager);
     }
     if (out_error) {
       *out_error = VKR_RENDERER_ERROR_NONE;
@@ -1880,6 +1901,9 @@ bool8_t vkr_mesh_manager_set_submesh_material(VkrMeshManager *manager,
   }
 
   VkrSubMesh *submesh = array_get_VkrSubMesh(&mesh->submeshes, submesh_index);
+  const bool8_t material_changed =
+      submesh->material.id != material.id ||
+      submesh->material.generation != material.generation;
 
   vkr_material_system_add_ref(manager->material_system, material);
 
@@ -1890,6 +1914,9 @@ bool8_t vkr_mesh_manager_set_submesh_material(VkrMeshManager *manager,
   submesh->material = material;
   submesh->owns_material = true_v;
   submesh->last_render_frame = 0;
+  if (material_changed && mesh->visible)
+    vkr_mesh_manager_note_content_change(manager, mesh->shadow_mobility,
+                                         false_v);
 
   *out_error = VKR_RENDERER_ERROR_NONE;
   return true_v;
@@ -1905,15 +1932,44 @@ void vkr_mesh_manager_update_model(VkrMeshManager *manager, uint32_t index) {
   if (!mesh || !mesh->submeshes.data || mesh->submeshes.length == 0)
     return;
 
-  mesh->model = vkr_transform_get_world(&mesh->transform);
+  (void)vkr_mesh_manager_set_model(manager, index,
+                                   vkr_transform_get_world(&mesh->transform));
+}
 
-  vkr_mesh_update_world_bounds(mesh);
-
-  for (uint32_t submesh_index = 0; submesh_index < mesh->submeshes.length;
-       ++submesh_index) {
-    VkrSubMesh *submesh = array_get_VkrSubMesh(&mesh->submeshes, submesh_index);
-    submesh->last_render_frame = 0;
+/**
+ * Records that a caster's content changed. Which generation moves is decided by
+ * the caster's mobility contract, because a reused shadow layer only cares
+ * about the class of caster it captured.
+ *
+ * Bounds changes additionally move `caster_bounds`, which invalidates the
+ * light-space depth fit derived from those bounds.
+ */
+vkr_internal void
+vkr_mesh_manager_note_content_change(VkrMeshManager *manager,
+                                     VkrShadowCasterMobility mobility,
+                                     bool8_t bounds_changed) {
+  if (mobility == VKR_SHADOW_CASTER_MOBILITY_STATIC) {
+    manager->generations.static_content++;
+  } else {
+    manager->generations.dynamic_content++;
   }
+  if (bounds_changed) {
+    manager->generations.caster_bounds++;
+  }
+}
+
+/**
+ * Records that the caster set itself changed: something appeared, disappeared,
+ * changed visibility, or finished loading. Topology moves both content
+ * generations, because a consumer cannot know which class the added or removed
+ * caster belonged to.
+ */
+vkr_internal void
+vkr_mesh_manager_note_topology_change(VkrMeshManager *manager) {
+  manager->generations.topology++;
+  manager->generations.static_content++;
+  manager->generations.dynamic_content++;
+  manager->generations.caster_bounds++;
 }
 
 bool8_t vkr_mesh_manager_set_model(VkrMeshManager *manager, uint32_t index,
@@ -1927,9 +1983,15 @@ bool8_t vkr_mesh_manager_set_model(VkrMeshManager *manager, uint32_t index,
   if (!mesh || !mesh->submeshes.data || mesh->submeshes.length == 0)
     return false_v;
 
+  if (MemCompare(&mesh->model, &model, sizeof(model)) == 0)
+    return true_v;
+
   mesh->model = model;
 
   vkr_mesh_update_world_bounds(mesh);
+  if (mesh->visible)
+    vkr_mesh_manager_note_content_change(manager, mesh->shadow_mobility,
+                                         true_v);
 
   // Reset instance cache for all submeshes
   for (uint32_t submesh_index = 0; submesh_index < mesh->submeshes.length;
@@ -1952,7 +2014,10 @@ bool8_t vkr_mesh_manager_set_visible(VkrMeshManager *manager, uint32_t index,
   if (!mesh || !mesh->submeshes.data || mesh->submeshes.length == 0)
     return false_v;
 
-  mesh->visible = visible;
+  if (mesh->visible != visible) {
+    mesh->visible = visible;
+    vkr_mesh_manager_note_topology_change(manager);
+  }
 
   return true_v;
 }
@@ -2374,6 +2439,10 @@ VkrMeshInstanceHandle vkr_mesh_manager_create_instance(
   inst->render_id = render_id;
   inst->visible = visible;
   inst->loading_state = VKR_MESH_LOADING_STATE_PENDING;
+  /* Runtime-created instances default to DYNAMIC: the safe classification is
+     the one a caller gets by saying nothing. */
+  inst->shadow_mobility = VKR_SHADOW_CASTER_MOBILITY_DYNAMIC;
+  vkr_mesh_manager_note_topology_change(manager);
 
   if (asset->loading_state == VKR_MESH_LOADING_STATE_LOADED) {
     uint32_t submesh_count = (uint32_t)asset->submeshes.length;
@@ -3379,11 +3448,31 @@ bool8_t vkr_mesh_manager_destroy_instance(VkrMeshManager *manager,
     manager->instance_count--;
   }
 
+  /* Removal is a topology change: a retained cascade may still hold this
+     caster's depth, and nothing else would tell a reuse decision to drop it. */
+  vkr_mesh_manager_note_topology_change(manager);
+
   MemZero(inst, sizeof(*inst));
   array_set_uint32_t(&manager->instance_free_indices,
                      manager->instance_free_count, slot);
   manager->instance_free_count++;
 
+  return true_v;
+}
+
+bool8_t vkr_mesh_manager_instance_set_shadow_mobility(
+    VkrMeshManager *manager, VkrMeshInstanceHandle handle,
+    VkrShadowCasterMobility mobility) {
+  assert_log(manager != NULL, "Manager is NULL");
+  VkrMeshInstance *inst = vkr_mesh_manager_get_instance(manager, handle);
+  if (!inst)
+    return false_v;
+  if (inst->shadow_mobility == mobility)
+    return true_v;
+  inst->shadow_mobility = mobility;
+  /* A retained cascade may already hold this caster's depth under the old
+     contract, so the classification change itself must invalidate. */
+  vkr_mesh_manager_note_topology_change(manager);
   return true_v;
 }
 
@@ -3439,14 +3528,23 @@ void vkr_mesh_manager_instance_sync_render_state(VkrMeshManager *manager,
                                                  bool8_t visible) {
   VkrMeshInstance *inst = &manager->mesh_instances.data[instance.id - 1u];
 
+  const bool8_t visibility_changed = inst->visible != visible;
+  const bool8_t model_changed =
+      MemCompare(&inst->model, &model, sizeof(model)) != 0;
+  if (visibility_changed) {
+    vkr_mesh_manager_note_topology_change(manager);
+  }
   inst->visible = visible;
   inst->render_id = render_id;
-  if (!visible) {
+  if (!model_changed) {
     return;
   }
   inst->model = model;
   VkrMeshAsset *asset = vkr_mesh_manager_get_live_asset(manager, inst->asset);
   vkr_mesh_manager_update_instance_bounds(inst, asset, model);
+  if (visible && !visibility_changed)
+    vkr_mesh_manager_note_content_change(manager, inst->shadow_mobility,
+                                         true_v);
 }
 
 uint32_t vkr_mesh_manager_instance_count(const VkrMeshManager *manager) {

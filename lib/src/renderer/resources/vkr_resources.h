@@ -231,6 +231,23 @@ typedef struct VkrSubMesh {
 } VkrSubMesh;
 Array(VkrSubMesh);
 
+/**
+ * @brief Whether a caster may move without an explicit invalidating call.
+ *
+ * This is a contract, not an observation. `STATIC` asserts that the transform,
+ * geometry, deformation, and material routing cannot change except through an
+ * API that bumps the owning generation. "Has not moved recently" is not a
+ * static classification, and misclassifying a mover as static produces a stale
+ * shadow that nothing will correct.
+ *
+ * Unknown and runtime-created instances default to `DYNAMIC`, so the safe
+ * answer is the one you get by saying nothing.
+ */
+typedef enum VkrShadowCasterMobility {
+  VKR_SHADOW_CASTER_MOBILITY_DYNAMIC = 0,
+  VKR_SHADOW_CASTER_MOBILITY_STATIC = 1,
+} VkrShadowCasterMobility;
+
 typedef struct VkrMesh {
   VkrTransform transform;
   Mat4 model;
@@ -246,6 +263,9 @@ typedef struct VkrMesh {
   float32_t bounds_local_radius;
   Vec3 bounds_world_center; // Cached world-space center (updated with model)
   float32_t bounds_world_radius;
+
+  /** Shadow-caster mobility contract; see VkrShadowCasterMobility. */
+  VkrShadowCasterMobility shadow_mobility;
 } VkrMesh;
 Array(VkrMesh);
 
@@ -373,6 +393,8 @@ typedef struct VkrMeshInstance {
   Vec3 bounds_world_center;
   float32_t bounds_world_radius;
 
+  /** Shadow-caster mobility contract; see VkrShadowCasterMobility. */
+  VkrShadowCasterMobility shadow_mobility;
 } VkrMeshInstance;
 Array(VkrMeshInstance);
 

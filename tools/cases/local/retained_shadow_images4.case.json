@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "id": "local.bistro.retained_shadow.images4",
+  "suite": "local",
+  "description": "Retained shadow-map validation witness at four target images. Pairs with the two-image smoke case to cover the ADR-029 per-image separation rule on both selected implementations.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 1,
+  "resolution": [
+    960,
+    540
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 4,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": {
+    "warmup": 2,
+    "measure": 5
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "keyframes",
+    "speed": "slow",
+    "interpolation": "linear",
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500,
+    "keys": [
+      {
+        "t": 0.033333334,
+        "position": [
+          -24.5338593,
+          7.14362192,
+          8.75533485
+        ],
+        "yaw": 13.5542097,
+        "pitch": -18.3844624
+      },
+      {
+        "t": 0.050000001,
+        "position": [
+          -24.4838593,
+          7.14362192,
+          8.75533485
+        ],
+        "yaw": 13.5542097,
+        "pitch": -18.3844624
+      },
+      {
+        "t": 0.066666668,
+        "position": [
+          -24.4338593,
+          7.14362192,
+          8.75533485
+        ],
+        "yaw": 13.5542097,
+        "pitch": -18.3844624
+      },
+      {
+        "t": 0.083333335,
+        "position": [
+          -24.3838593,
+          7.14362192,
+          8.75533485
+        ],
+        "yaw": 13.5542097,
+        "pitch": -18.3844624
+      },
+      {
+        "t": 0.100000002,
+        "position": [
+          -24.3338593,
+          7.14362192,
+          8.75533485
+        ],
+        "yaw": 13.5542097,
+        "pitch": -18.3844624
+      }
+    ]
+  }
+}

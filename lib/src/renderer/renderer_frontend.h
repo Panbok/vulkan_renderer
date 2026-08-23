@@ -80,6 +80,12 @@ typedef struct VkrShadowMetrics {
   uint32_t shadow_indirect_draws_opaque[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t shadow_indirect_calls_opaque[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t shadow_indirect_overflow[VKR_SHADOW_CASCADE_COUNT_MAX];
+  uint32_t rendered[VKR_SHADOW_CASCADE_COUNT_MAX];
+  uint32_t reused[VKR_SHADOW_CASCADE_COUNT_MAX];
+  uint32_t correctness_forced[VKR_SHADOW_CASCADE_COUNT_MAX];
+  uint32_t proactive_refreshed[VKR_SHADOW_CASCADE_COUNT_MAX];
+  uint32_t dynamic_candidates_tested[VKR_SHADOW_CASCADE_COUNT_MAX];
+  uint32_t dynamic_forced[VKR_SHADOW_CASCADE_COUNT_MAX];
 } VkrShadowMetrics;
 
 /**

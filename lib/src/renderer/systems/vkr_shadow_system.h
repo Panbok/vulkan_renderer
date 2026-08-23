@@ -18,6 +18,10 @@ struct VkrCamera;
 
 #define VKR_SHADOW_CASCADE_COUNT_MAX 8
 #define VKR_SHADOW_MAP_SIZE_DEFAULT 4096
+#define VKR_SHADOW_TARGET_IMAGE_COUNT_MAX 8
+#define VKR_SHADOW_DYNAMIC_SCAN_BUDGET_DEFAULT 4096
+
+struct VkrWorldPassPayload;
 
 /**
  * @brief One cascade's fitted light-space volume, before projection.
@@ -73,6 +77,10 @@ typedef struct VkrShadowFitHistory {
  */
 typedef struct VkrCascadeData {
   Mat4 view_projection;
+  Mat4 light_view;
+  VkrShadowFit fit;
+  VkrShadowFit previous_fit;
+  bool8_t previous_fit_valid;
   float32_t split_far;
   float32_t world_units_per_texel;
   Vec2 light_space_origin; // Light-space grid origin in right/up basis.
@@ -104,6 +112,28 @@ typedef struct VkrShadowSceneBounds {
       .max = {20.0f, 20.0f, 20.0f},                                            \
       .use_scene_bounds = false_v,                                             \
   })
+
+/**
+ * @brief Measured world-space bounds of the scene's shadow casters.
+ *
+ * A Z-only input to cascade fitting (spec section 6.6). It replaces the blind
+ * `z_extension_factor * radius` guess with the depth interval real casters
+ * actually occupy, which matters because receiver bias is applied in normalized
+ * depth: a Z range six times wider than the geometry needs makes the same
+ * normalized bias mean six times more world distance.
+ *
+ * Deliberately *not* routed through `VkrShadowSceneBounds.use_scene_bounds`.
+ * That flag also moves light-view anchoring and the XY fit; this input must
+ * change the Z interval and nothing else.
+ *
+ * `valid` is false for an empty or unmeasurable scene, in which case fitting
+ * falls back to `z_extension_factor`.
+ */
+typedef struct VkrShadowCasterDepthBounds {
+  Vec3 min;
+  Vec3 max;
+  bool8_t valid;
+} VkrShadowCasterDepthBounds;
 
 /**
  * @brief Shadow system configuration.
@@ -169,6 +199,11 @@ typedef struct VkrShadowConfig {
   float32_t pcf_radius;
   float32_t shadow_distance_fade_range;
   float32_t cascade_blend_range;
+  /** Phase 3B retained-cache expansion and bounded dynamic overlap scan. */
+  float32_t reuse_guard_band_texels;
+  float32_t reuse_depth_guard_fraction;
+  float32_t reuse_predictive_max_texels;
+  uint32_t reuse_dynamic_scan_budget;
   /* ACTIVE again. */
   bool8_t use_constant_cascade_size;
   float32_t anchor_snap_texels;
@@ -211,6 +246,10 @@ typedef struct VkrShadowConfig {
       .shadow_distance_fade_range = 1.0f,                                      \
       .use_constant_cascade_size = true_v,                                     \
       .cascade_blend_range = 1.0f,                                             \
+      .reuse_guard_band_texels = 128.0f,                                       \
+      .reuse_depth_guard_fraction = 0.0625f,                                   \
+      .reuse_predictive_max_texels = 64.0f,                                    \
+      .reuse_dynamic_scan_budget = VKR_SHADOW_DYNAMIC_SCAN_BUDGET_DEFAULT,     \
       .anchor_snap_texels = 16.0f,                                             \
       .stabilize_cascades = true_v,                                            \
       .scene_bounds = VKR_SHADOW_SCENE_BOUNDS_DEFAULT,                         \
@@ -302,9 +341,36 @@ bool8_t vkr_shadow_fit_relevant_caster_z(
 typedef struct VkrShadowFrameData {
   bool8_t enabled;
   uint32_t cascade_count;
+  uint32_t cascade_render_mask;
   float32_t split_far[VKR_SHADOW_CASCADE_COUNT_MAX];
   Mat4 view_projection[VKR_SHADOW_CASCADE_COUNT_MAX];
+  uint32_t rendered[VKR_SHADOW_CASCADE_COUNT_MAX];
+  uint32_t reused[VKR_SHADOW_CASCADE_COUNT_MAX];
+  uint32_t correctness_forced[VKR_SHADOW_CASCADE_COUNT_MAX];
+  uint32_t proactive_refreshed[VKR_SHADOW_CASCADE_COUNT_MAX];
+  uint32_t dynamic_candidates_tested[VKR_SHADOW_CASCADE_COUNT_MAX];
+  uint32_t dynamic_forced[VKR_SHADOW_CASCADE_COUNT_MAX];
 } VkrShadowFrameData;
+
+typedef struct VkrShadowCascadeHistory {
+  bool8_t static_only_contents;
+  VkrShadowFit rendered_fit;
+  Mat4 rendered_light_view;
+  Mat4 rendered_view_projection;
+  uint64_t static_generation;
+  uint64_t caster_bounds_generation;
+  uint64_t bias_signature;
+  uint64_t light_signature;
+  uint64_t resource_generation;
+  uint64_t last_submit_value;
+} VkrShadowCascadeHistory;
+
+typedef struct VkrShadowPendingHistory {
+  VkrShadowCascadeHistory cascades[VKR_SHADOW_CASCADE_COUNT_MAX];
+  uint32_t image_index;
+  uint32_t cascade_mask;
+  bool8_t active;
+} VkrShadowPendingHistory;
 
 /**
  * @brief Shadow system state.
@@ -323,6 +389,10 @@ typedef struct VkrShadowSystem {
   VkrShadowFitHistory fit_history;
   /** Bumped when enabled shadows are disabled; invalidates fit_history. */
   uint64_t enable_generation;
+
+  VkrShadowCascadeHistory cascade_history[VKR_SHADOW_TARGET_IMAGE_COUNT_MAX]
+                                         [VKR_SHADOW_CASCADE_COUNT_MAX];
+  VkrShadowPendingHistory pending_history;
 
   bool8_t initialized;
 } VkrShadowSystem;
@@ -398,7 +468,8 @@ void vkr_shadow_system_shutdown(VkrShadowSystem *system,
  */
 void vkr_shadow_system_update(VkrShadowSystem *system,
                               const struct VkrCamera *camera,
-                              bool8_t light_enabled, Vec3 light_direction);
+                              bool8_t light_enabled, Vec3 light_direction,
+                              const VkrShadowCasterDepthBounds *caster_bounds);
 
 /**
  * @brief Fill frame data for shader upload and sampler binding.
@@ -406,3 +477,15 @@ void vkr_shadow_system_update(VkrShadowSystem *system,
 void vkr_shadow_system_get_frame_data(const VkrShadowSystem *system,
                                       uint32_t frame_index,
                                       VkrShadowFrameData *out_data);
+
+/** Resolves retained reuse after prepare selected the physical target image. */
+void vkr_shadow_system_resolve_frame(
+    VkrShadowSystem *system, uint32_t image_index,
+    VkrRetainedShadowToken retained_token,
+    const struct VkrWorldPassPayload *candidates,
+    VkrTextureFormat shadow_depth_format, VkrShadowFrameData *out_data);
+
+/** Publishes staged rendered fits only after packet submission succeeds. */
+void vkr_shadow_system_commit_frame(VkrShadowSystem *system,
+                                    uint64_t submit_value);
+void vkr_shadow_system_discard_frame(VkrShadowSystem *system);

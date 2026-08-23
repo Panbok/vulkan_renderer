@@ -2363,6 +2363,12 @@ vkr_renderer_validate_packet(const VkrRenderPacket *packet,
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.shadow.cascade_count",
                         "must be within the supported cascade range");
+    const uint32_t cascade_mask =
+        (UINT32_C(1) << shadow->cascade_count) - 1u;
+    if ((shadow->cascade_render_mask & ~cascade_mask) != 0u)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.shadow.cascade_render_mask",
+                        "contains a bit outside cascade_count");
     const VkrShadowConfigOverride *bias = shadow->config_override;
     if (bias) {
       if (!isfinite(bias->depth_bias_constant) ||

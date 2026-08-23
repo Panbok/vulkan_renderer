@@ -4,6 +4,7 @@
 #include "math/vkr_math.h"
 #include "renderer/renderer_frontend.h"
 #include "renderer/systems/vkr_camera.h"
+#include "renderer/vkr_render_packet.h"
 
 // ============================================================================
 // Cascade Helpers
@@ -69,6 +70,149 @@ vkr_internal float32_t vkr_shadow_default_z_extension(float32_t base,
                                                       uint32_t cascade,
                                                       uint32_t count) {
   return base * vkr_shadow_profile_lerp(0.6f, 1.2f, cascade, count);
+}
+
+vkr_internal uint64_t vkr_shadow_hash_bytes(uint64_t hash, const void *data,
+                                            uint64_t size) {
+  const uint8_t *bytes = data;
+  for (uint64_t i = 0u; i < size; ++i) {
+    hash ^= bytes[i];
+    hash *= UINT64_C(1099511628211);
+  }
+  return hash;
+}
+
+vkr_internal uint64_t vkr_shadow_light_signature(Vec3 direction) {
+  return vkr_shadow_hash_bytes(UINT64_C(1469598103934665603), &direction,
+                               sizeof(direction));
+}
+
+vkr_internal uint64_t vkr_shadow_bias_signature(
+    const VkrShadowConfig *config, VkrTextureFormat shadow_depth_format) {
+  uint64_t hash = UINT64_C(1469598103934665603);
+  hash = vkr_shadow_hash_bytes(hash, &config->depth_bias_constant_factor,
+                               sizeof(config->depth_bias_constant_factor));
+  hash = vkr_shadow_hash_bytes(hash, &config->depth_bias_slope_factor,
+                               sizeof(config->depth_bias_slope_factor));
+  hash = vkr_shadow_hash_bytes(hash, &config->depth_bias_clamp,
+                               sizeof(config->depth_bias_clamp));
+  hash = vkr_shadow_hash_bytes(hash, &shadow_depth_format,
+                               sizeof(shadow_depth_format));
+  return hash;
+}
+
+vkr_internal Mat4 vkr_shadow_view_projection_from_fit(const Mat4 *light_view,
+                                                      const VkrShadowFit *fit) {
+  const float32_t half = fit->extent * 0.5f;
+  float32_t near_clip = -fit->max_z;
+  float32_t far_clip = -fit->min_z;
+  if (near_clip < 0.0f)
+    near_clip = 0.0f;
+  if (far_clip <= near_clip + 0.001f)
+    far_clip = near_clip + 0.001f;
+  const Mat4 projection = mat4_ortho_zo_yinv(
+      fit->center_x - half, fit->center_x + half, fit->center_y - half,
+      fit->center_y + half, near_clip, far_clip);
+  return mat4_mul(projection, *light_view);
+}
+
+vkr_internal VkrShadowFit vkr_shadow_guarded_fit(const VkrShadowSystem *system,
+                                                 uint32_t cascade) {
+  const VkrCascadeData *data = &system->cascades[cascade];
+  VkrShadowFit guarded = data->fit;
+  const float32_t texel = vkr_max_f32(data->fit.world_units_per_texel, 0.0f);
+  guarded.extent += 2.0f * texel * system->config.reuse_guard_band_texels;
+
+  if (data->previous_fit_valid && texel > 0.0f) {
+    const float32_t max_motion =
+        texel * system->config.reuse_predictive_max_texels;
+    const float32_t dx =
+        vkr_clamp_f32(data->fit.center_x - data->previous_fit.center_x,
+                      -max_motion, max_motion);
+    const float32_t dy =
+        vkr_clamp_f32(data->fit.center_y - data->previous_fit.center_y,
+                      -max_motion, max_motion);
+    guarded.center_x += dx * 0.5f;
+    guarded.center_y += dy * 0.5f;
+    guarded.extent += vkr_max_f32(vkr_abs_f32(dx), vkr_abs_f32(dy));
+  }
+
+  const float32_t z_guard = (data->fit.max_z - data->fit.min_z) *
+                            system->config.reuse_depth_guard_fraction;
+  guarded.min_z -= z_guard;
+  guarded.max_z += z_guard;
+  guarded.world_units_per_texel =
+      guarded.extent / (float32_t)system->config.shadow_map_size;
+  return guarded;
+}
+
+vkr_internal bool8_t vkr_shadow_rendered_fit_contains(
+    const VkrShadowCascadeHistory *history, const VkrCascadeData *current) {
+  const Mat4 current_to_world = mat4_inverse_rigid(current->light_view);
+  const float32_t half = current->fit.extent * 0.5f;
+  const float32_t min_x = current->fit.center_x - half;
+  const float32_t max_x = current->fit.center_x + half;
+  const float32_t min_y = current->fit.center_y - half;
+  const float32_t max_y = current->fit.center_y + half;
+  const float32_t rendered_half = history->rendered_fit.extent * 0.5f;
+  const float32_t rendered_min_x =
+      history->rendered_fit.center_x - rendered_half;
+  const float32_t rendered_max_x =
+      history->rendered_fit.center_x + rendered_half;
+  const float32_t rendered_min_y =
+      history->rendered_fit.center_y - rendered_half;
+  const float32_t rendered_max_y =
+      history->rendered_fit.center_y + rendered_half;
+  const float32_t epsilon = 0.0001f;
+
+  for (uint32_t corner = 0u; corner < 8u; ++corner) {
+    const Vec4 current_ls = {
+        (corner & 1u) ? max_x : min_x, (corner & 2u) ? max_y : min_y,
+        (corner & 4u) ? current->fit.max_z : current->fit.min_z, 1.0f};
+    const Vec4 world = mat4_mul_vec4(current_to_world, current_ls);
+    const Vec4 rendered = mat4_mul_vec4(history->rendered_light_view, world);
+    if (rendered.x < rendered_min_x - epsilon ||
+        rendered.x > rendered_max_x + epsilon ||
+        rendered.y < rendered_min_y - epsilon ||
+        rendered.y > rendered_max_y + epsilon ||
+        rendered.z < history->rendered_fit.min_z - epsilon ||
+        rendered.z > history->rendered_fit.max_z + epsilon)
+      return false_v;
+  }
+  return true_v;
+}
+
+vkr_internal void
+vkr_shadow_candidate_world_sphere(const VkrWorldDrawCandidate *candidate,
+                                  Vec3 *out_center, float32_t *out_radius) {
+  const Mat4 model = candidate->instance.model;
+  *out_center =
+      mat4_mul_vec3(model, vec3_new(candidate->local_bounding_sphere.x,
+                                    candidate->local_bounding_sphere.y,
+                                    candidate->local_bounding_sphere.z));
+  const float32_t sx = vec3_length(vec3_new(model.m00, model.m10, model.m20));
+  const float32_t sy = vec3_length(vec3_new(model.m01, model.m11, model.m21));
+  const float32_t sz = vec3_length(vec3_new(model.m02, model.m12, model.m22));
+  *out_radius =
+      candidate->local_bounding_sphere.w * vkr_max_f32(sx, vkr_max_f32(sy, sz));
+}
+
+vkr_internal bool8_t vkr_shadow_sphere_intersects_fit(Vec3 world_center,
+                                                      float32_t radius,
+                                                      const Mat4 *light_view,
+                                                      const VkrShadowFit *fit) {
+  const Vec3 center = vec4_to_vec3(
+      mat4_mul_vec4(*light_view, vec3_to_vec4(world_center, 1.0f)));
+  const float32_t half = fit->extent * 0.5f;
+  const float32_t dx =
+      vkr_max_f32(vkr_abs_f32(center.x - fit->center_x) - half, 0.0f);
+  const float32_t dy =
+      vkr_max_f32(vkr_abs_f32(center.y - fit->center_y) - half, 0.0f);
+  const float32_t dz =
+      center.z < fit->min_z
+          ? fit->min_z - center.z
+          : (center.z > fit->max_z ? center.z - fit->max_z : 0.0f);
+  return dx * dx + dy * dy + dz * dz <= radius * radius;
 }
 
 vkr_internal void vkr_shadow_compute_frustum_corners(const VkrCamera *camera,
@@ -413,6 +557,8 @@ vkr_internal bool8_t vkr_shadow_fit_history_matches(
 void vkr_shadow_system_invalidate_fit_history(VkrShadowSystem *system) {
   if (system) {
     system->fit_history.valid = false_v;
+    MemZero(system->cascade_history, sizeof(system->cascade_history));
+    system->pending_history = (VkrShadowPendingHistory){0};
   }
 }
 
@@ -420,9 +566,10 @@ vkr_internal void vkr_shadow_compute_cascade_matrix(
     const Mat4 *light_view, const Vec3 frustum_corners[8],
     uint32_t shadow_map_size, bool8_t stabilize, float32_t guard_band_texels,
     bool8_t use_constant_cascade_size, const VkrShadowSceneBounds *scene_bounds,
-    float32_t z_extension_factor, const VkrShadowFit *previous_fit,
-    Mat4 *out_view_projection, VkrShadowFit *out_fit,
-    Vec2 *out_light_space_origin) {
+    float32_t z_extension_factor,
+    const VkrShadowCasterDepthBounds *caster_bounds,
+    const VkrShadowFit *previous_fit, Mat4 *out_view_projection,
+    VkrShadowFit *out_fit, Vec2 *out_light_space_origin) {
   const Mat4 view = *light_view;
 
   // Compute the slice center and its bounding sphere radius.
@@ -472,8 +619,12 @@ vkr_internal void vkr_shadow_compute_cascade_matrix(
     max_z = vkr_max_f32(max_z, corner_ls.z);
   }
 
+  /* The blind extension exists only because nothing measured the casters. With
+     real bounds it would re-inflate the interval the measurement just
+     tightened, which is the bias-scaling problem section 2.5 describes. */
+  const bool8_t have_measured_bounds = caster_bounds && caster_bounds->valid;
   if ((!scene_bounds || !scene_bounds->use_scene_bounds) &&
-      z_extension_factor > 0.0f) {
+      !have_measured_bounds && z_extension_factor > 0.0f) {
     float32_t z_ext = radius * z_extension_factor;
     min_z -= z_ext;
     max_z += z_ext;
@@ -544,6 +695,34 @@ vkr_internal void vkr_shadow_compute_cascade_matrix(
             center_y - half, center_y + half, &caster_min_z, &caster_max_z)) {
       min_z = vkr_min_f32(min_z, caster_min_z);
       max_z = vkr_max_f32(max_z, caster_max_z);
+    }
+  }
+
+  if (have_measured_bounds) {
+    /* Reuses the scene-bounds clipper, which already fits the light-space Z of
+       the AABB portion intersecting this cascade's XY rectangle. Only the Z
+       interval is taken; the XY fit and light anchoring above are untouched.
+       The result *replaces* the slice interval rather than widening it: casters
+       are what the cascade must contain, and the frustum slice's own Z carries
+       no caster information. */
+    const VkrShadowSceneBounds measured = {
+        .min = caster_bounds->min,
+        .max = caster_bounds->max,
+        .use_scene_bounds = true_v,
+    };
+    float32_t caster_min_z = 0.0f;
+    float32_t caster_max_z = 0.0f;
+    if (vkr_shadow_fit_relevant_caster_z(
+            &view, &measured, center_x - half, center_x + half, center_y - half,
+            center_y + half, &caster_min_z, &caster_max_z)) {
+      min_z = caster_min_z;
+      max_z = caster_max_z;
+    } else if (z_extension_factor > 0.0f) {
+      /* No caster overlaps this cascade's footprint. Fall back rather than
+         keep an interval fitted to nothing. */
+      const float32_t z_ext = radius * z_extension_factor;
+      min_z -= z_ext;
+      max_z += z_ext;
     }
   }
 
@@ -627,6 +806,17 @@ bool8_t vkr_shadow_system_init(VkrShadowSystem *system, RendererFrontend *rf,
   if (!(system->config.depth_bias_clamp >= 0.0f)) {
     system->config.depth_bias_clamp = 0.0f;
   }
+  if (!(system->config.reuse_guard_band_texels > 0.0f))
+    system->config.reuse_guard_band_texels = 128.0f;
+  system->config.reuse_depth_guard_fraction =
+      vkr_clamp_f32(system->config.reuse_depth_guard_fraction, 0.0f, 0.5f);
+  if (!(system->config.reuse_depth_guard_fraction > 0.0f))
+    system->config.reuse_depth_guard_fraction = 0.0625f;
+  if (!(system->config.reuse_predictive_max_texels >= 0.0f))
+    system->config.reuse_predictive_max_texels = 0.0f;
+  if (system->config.reuse_dynamic_scan_budget == 0u)
+    system->config.reuse_dynamic_scan_budget =
+        VKR_SHADOW_DYNAMIC_SCAN_BUDGET_DEFAULT;
   for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
     if (!(system->config.cascade_guard_band_texels_per[i] >= 0.0f)) {
       system->config.cascade_guard_band_texels_per[i] = 0.0f;
@@ -652,7 +842,8 @@ void vkr_shadow_system_shutdown(VkrShadowSystem *system, RendererFrontend *rf) {
 }
 
 void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
-                              bool8_t light_enabled, Vec3 light_direction) {
+                              bool8_t light_enabled, Vec3 light_direction,
+                              const VkrShadowCasterDepthBounds *caster_bounds) {
   if (!system || !system->initialized || !camera) {
     return;
   }
@@ -709,6 +900,10 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
                                      system->enable_generation);
 
   for (uint32_t i = 0; i < system->config.cascade_count; ++i) {
+    VkrCascadeData *cascade = &system->cascades[i];
+    cascade->previous_fit = cascade->fit;
+    cascade->previous_fit_valid = history_usable;
+    cascade->light_view = light_view;
     float32_t split_near = system->cascade_splits[i];
     float32_t split_far = system->cascade_splits[i + 1];
 
@@ -741,12 +936,13 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
         &light_view, corners, shadow_map_size,
         system->config.stabilize_cascades, guard_band,
         system->config.use_constant_cascade_size, &system->config.scene_bounds,
-        z_extension, history_usable ? &history->cascades[i] : NULL,
-        &system->cascades[i].view_projection, &fit,
-        &system->cascades[i].light_space_origin);
+        z_extension, caster_bounds,
+        history_usable ? &history->cascades[i] : NULL,
+        &cascade->view_projection, &fit, &cascade->light_space_origin);
     history->cascades[i] = fit;
-    system->cascades[i].world_units_per_texel = fit.world_units_per_texel;
-    system->cascades[i].light_space_depth_span = fit.max_z - fit.min_z;
+    cascade->fit = fit;
+    cascade->world_units_per_texel = fit.world_units_per_texel;
+    cascade->light_space_depth_span = fit.max_z - fit.min_z;
 
     Vec3 cascade_center = vec3_zero();
     for (int c = 0; c < 8; ++c) {
@@ -763,9 +959,9 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
       }
     }
 
-    system->cascades[i].bounds_center = cascade_center;
-    system->cascades[i].bounds_radius = vkr_sqrt_f32(max_radius_sq);
-    system->cascades[i].split_far = split_far;
+    cascade->bounds_center = cascade_center;
+    cascade->bounds_radius = vkr_sqrt_f32(max_radius_sq);
+    cascade->split_far = split_far;
   }
 
   history->light_direction = light_direction;
@@ -779,10 +975,6 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
 void vkr_shadow_system_get_frame_data(const VkrShadowSystem *system,
                                       uint32_t frame_index,
                                       VkrShadowFrameData *out_data) {
-  /* Per-target-image shadow state does not exist yet: one raw fit set is
-     produced per frame and every image reads the same one. The parameter is
-     retained because the retained-history phase makes fits per image, and
-     removing it now would only have to be added back at that seam. */
   (void)frame_index;
   if (!out_data) {
     return;
@@ -799,9 +991,159 @@ void vkr_shadow_system_get_frame_data(const VkrShadowSystem *system,
     return;
   }
   out_data->cascade_count = system->config.cascade_count;
+  out_data->cascade_render_mask =
+      (UINT32_C(1) << system->config.cascade_count) - 1u;
 
   for (uint32_t i = 0; i < system->config.cascade_count; ++i) {
     out_data->split_far[i] = system->cascades[i].split_far;
     out_data->view_projection[i] = system->cascades[i].view_projection;
+    out_data->rendered[i] = 1u;
+    out_data->correctness_forced[i] = 1u;
   }
+}
+
+void vkr_shadow_system_discard_frame(VkrShadowSystem *system) {
+  if (system)
+    system->pending_history = (VkrShadowPendingHistory){0};
+}
+
+void vkr_shadow_system_commit_frame(VkrShadowSystem *system,
+                                    uint64_t submit_value) {
+  if (!system || !system->pending_history.active)
+    return;
+  VkrShadowPendingHistory *pending = &system->pending_history;
+  if (pending->image_index < VKR_SHADOW_TARGET_IMAGE_COUNT_MAX) {
+    for (uint32_t cascade = 0u; cascade < system->config.cascade_count;
+         ++cascade) {
+      if ((pending->cascade_mask & (UINT32_C(1) << cascade)) == 0u)
+        continue;
+      pending->cascades[cascade].last_submit_value = submit_value;
+      system->cascade_history[pending->image_index][cascade] =
+          pending->cascades[cascade];
+    }
+  }
+  *pending = (VkrShadowPendingHistory){0};
+}
+
+void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
+                                     uint32_t image_index,
+                                     VkrRetainedShadowToken retained_token,
+                                     const VkrWorldPassPayload *candidates,
+                                     VkrTextureFormat shadow_depth_format,
+                                     VkrShadowFrameData *out_data) {
+  MemZero(out_data, sizeof(*out_data));
+  vkr_shadow_system_discard_frame(system);
+  if (!system || !system->initialized || !system->light_enabled)
+    return;
+
+  const uint32_t cascade_count = system->config.cascade_count;
+  out_data->enabled = true_v;
+  out_data->cascade_count = cascade_count;
+  const bool8_t image_valid = image_index < VKR_SHADOW_TARGET_IMAGE_COUNT_MAX;
+  const uint64_t light_signature =
+      vkr_shadow_light_signature(system->light_direction);
+  const uint64_t bias_signature =
+      vkr_shadow_bias_signature(&system->config, shadow_depth_format);
+
+  VkrShadowFit guarded_fits[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
+  bool8_t history_dynamic_overlap[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
+  bool8_t guarded_dynamic_overlap[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
+  for (uint32_t cascade = 0u; cascade < cascade_count; ++cascade) {
+    guarded_fits[cascade] = vkr_shadow_guarded_fit(system, cascade);
+    out_data->split_far[cascade] = system->cascades[cascade].split_far;
+  }
+
+  const uint32_t shadow_count =
+      candidates ? candidates->gpu_shadow_candidate_count : 0u;
+  const uint32_t static_count =
+      candidates ? Min(candidates->static_candidate_count, shadow_count) : 0u;
+  const uint32_t dynamic_count = shadow_count - static_count;
+  bool8_t dynamic_scan_failed =
+      dynamic_count > system->config.reuse_dynamic_scan_budget;
+  if (!dynamic_scan_failed) {
+    for (uint32_t index = static_count; index < shadow_count; ++index) {
+      const VkrWorldDrawCandidate *candidate =
+          &candidates->gpu_candidates[index];
+      if ((candidate->flags & VKR_WORLD_DRAW_CANDIDATE_BOUNDS_VALID) == 0u) {
+        dynamic_scan_failed = true_v;
+        break;
+      }
+      Vec3 center = vec3_zero();
+      float32_t radius = 0.0f;
+      vkr_shadow_candidate_world_sphere(candidate, &center, &radius);
+      for (uint32_t cascade = 0u; cascade < cascade_count; ++cascade) {
+        out_data->dynamic_candidates_tested[cascade]++;
+        const VkrShadowCascadeHistory *history =
+            image_valid ? &system->cascade_history[image_index][cascade] : NULL;
+        if (history && history->last_submit_value != 0u &&
+            vkr_shadow_sphere_intersects_fit(center, radius,
+                                             &history->rendered_light_view,
+                                             &history->rendered_fit))
+          history_dynamic_overlap[cascade] = true_v;
+        if (vkr_shadow_sphere_intersects_fit(
+                center, radius, &system->cascades[cascade].light_view,
+                &guarded_fits[cascade]))
+          guarded_dynamic_overlap[cascade] = true_v;
+      }
+    }
+  }
+
+  const bool8_t publication_pending =
+      candidates && candidates->publication_pending;
+  VkrShadowPendingHistory *pending = &system->pending_history;
+  pending->image_index = image_index;
+
+  for (uint32_t cascade = 0u; cascade < cascade_count; ++cascade) {
+    const uint32_t bit = UINT32_C(1) << cascade;
+    VkrShadowCascadeHistory *history =
+        image_valid ? &system->cascade_history[image_index][cascade] : NULL;
+    const bool8_t signatures_match =
+        history && history->last_submit_value != 0u &&
+        history->static_only_contents &&
+        history->static_generation ==
+            (candidates ? candidates->static_generation : 0u) &&
+        history->caster_bounds_generation ==
+            (candidates ? candidates->caster_bounds_generation : 0u) &&
+        history->bias_signature == bias_signature &&
+        history->light_signature == light_signature &&
+        history->resource_generation == retained_token.resource_generation;
+    const bool8_t retained_valid =
+        (retained_token.valid_layer_mask & bit) != 0u;
+    const bool8_t contains =
+        signatures_match &&
+        vkr_shadow_rendered_fit_contains(history, &system->cascades[cascade]);
+    const bool8_t dynamic_forced =
+        dynamic_scan_failed || history_dynamic_overlap[cascade];
+    const bool8_t reuse =
+        retained_valid && contains && !publication_pending && !dynamic_forced;
+
+    if (reuse) {
+      out_data->view_projection[cascade] = history->rendered_view_projection;
+      out_data->reused[cascade] = 1u;
+      continue;
+    }
+
+    out_data->cascade_render_mask |= bit;
+    out_data->rendered[cascade] = 1u;
+    out_data->correctness_forced[cascade] = 1u;
+    out_data->dynamic_forced[cascade] = dynamic_forced ? 1u : 0u;
+    out_data->view_projection[cascade] = vkr_shadow_view_projection_from_fit(
+        &system->cascades[cascade].light_view, &guarded_fits[cascade]);
+
+    pending->cascade_mask |= bit;
+    pending->cascades[cascade] = (VkrShadowCascadeHistory){
+        .static_only_contents = !publication_pending && !dynamic_scan_failed &&
+                                !guarded_dynamic_overlap[cascade],
+        .rendered_fit = guarded_fits[cascade],
+        .rendered_light_view = system->cascades[cascade].light_view,
+        .rendered_view_projection = out_data->view_projection[cascade],
+        .static_generation = candidates ? candidates->static_generation : 0u,
+        .caster_bounds_generation =
+            candidates ? candidates->caster_bounds_generation : 0u,
+        .bias_signature = bias_signature,
+        .light_signature = light_signature,
+        .resource_generation = retained_token.resource_generation,
+    };
+  }
+  pending->active = pending->cascade_mask != 0u;
 }

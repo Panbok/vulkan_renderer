@@ -193,16 +193,16 @@ static void test_disable_reenable_bumps_generation(void) {
   moved_camera.position = vec3_new(14.0f, 5.0f, -9.0f);
 
   const Vec3 light = vec3_normalize(vec3_new(-0.4f, -1.0f, -0.3f));
-  vkr_shadow_system_update(&reference, &moved_camera, true_v, light);
+  vkr_shadow_system_update(&reference, &moved_camera, true_v, light, NULL);
 
-  vkr_shadow_system_update(&system, &initial_camera, true_v, light);
+  vkr_shadow_system_update(&system, &initial_camera, true_v, light, NULL);
   assert(system.fit_history.valid);
   const uint64_t generation_while_on = system.enable_generation;
   assert(system.fit_history.enable_generation == generation_while_on);
 
   // Disabling is the edge that creates the discontinuity, so the bump lands
   // there; the stored history is now stamped with a stale generation.
-  vkr_shadow_system_update(&system, &initial_camera, false_v, light);
+  vkr_shadow_system_update(&system, &initial_camera, false_v, light, NULL);
   assert(system.enable_generation == generation_while_on + 1u);
   assert(system.fit_history.enable_generation != system.enable_generation);
 
@@ -213,7 +213,7 @@ static void test_disable_reenable_bumps_generation(void) {
 
   // Re-enabling must refuse the pre-gap fit and restamp with the new
   // generation.
-  vkr_shadow_system_update(&system, &moved_camera, true_v, light);
+  vkr_shadow_system_update(&system, &moved_camera, true_v, light, NULL);
   assert(system.fit_history.valid);
   assert(system.fit_history.enable_generation == system.enable_generation);
   for (uint32_t i = 0u; i < config.cascade_count; ++i) {
@@ -236,9 +236,9 @@ static void test_light_direction_change_invalidates_history(void) {
 
   const Vec3 light_a = vec3_normalize(vec3_new(-0.4f, -1.0f, -0.3f));
   const Vec3 light_b = vec3_normalize(vec3_new(0.7f, -1.0f, 0.2f));
-  vkr_shadow_system_update(&reference, &camera, true_v, light_b);
+  vkr_shadow_system_update(&reference, &camera, true_v, light_b, NULL);
 
-  vkr_shadow_system_update(&system, &camera, true_v, light_a);
+  vkr_shadow_system_update(&system, &camera, true_v, light_a, NULL);
   assert(system.fit_history.valid);
 
   poison_history_inside_deadbands(&system.fit_history, &reference.fit_history,
@@ -246,7 +246,7 @@ static void test_light_direction_change_invalidates_history(void) {
 
   // A stored fit framed by a different light basis is not a previous value of
   // the same quantity; the history must restamp rather than blend.
-  vkr_shadow_system_update(&system, &camera, true_v, light_b);
+  vkr_shadow_system_update(&system, &camera, true_v, light_b, NULL);
   assert(system.fit_history.valid);
   assert(system.fit_history.light_direction.x == light_b.x);
   assert(system.fit_history.light_direction.y == light_b.y);
@@ -268,7 +268,7 @@ static void test_explicit_invalidation_clears_history(void) {
   const VkrCamera camera = test_camera();
 
   vkr_shadow_system_update(&system, &camera, true_v,
-                           vec3_normalize(vec3_new(-0.4f, -1.0f, -0.3f)));
+                           vec3_normalize(vec3_new(-0.4f, -1.0f, -0.3f)), NULL);
   assert(system.fit_history.valid);
 
   // Scene replacement and target recreation leave every stamp identical while
@@ -291,12 +291,12 @@ static void test_disabled_stabilization_does_not_publish_history(void) {
   const VkrCamera camera = test_camera();
   const Vec3 light = vec3_normalize(vec3_new(-0.4f, -1.0f, -0.3f));
 
-  vkr_shadow_system_update(&system, &camera, true_v, light);
+  vkr_shadow_system_update(&system, &camera, true_v, light, NULL);
   assert(!system.fit_history.valid);
 
   system.config.stabilize_cascades = true_v;
-  vkr_shadow_system_update(&system, &camera, true_v, light);
-  vkr_shadow_system_update(&reference, &camera, true_v, light);
+  vkr_shadow_system_update(&system, &camera, true_v, light, NULL);
+  vkr_shadow_system_update(&reference, &camera, true_v, light, NULL);
   assert(system.fit_history.valid);
   for (uint32_t i = 0u; i < stable_config.cascade_count; ++i) {
     assert_fit_equal(&system.fit_history.cascades[i],
@@ -315,7 +315,7 @@ static void test_frame_data_carries_only_consumed_fields(void) {
   const VkrCamera camera = test_camera();
 
   vkr_shadow_system_update(&system, &camera, true_v,
-                           vec3_normalize(vec3_new(-0.4f, -1.0f, -0.3f)));
+                           vec3_normalize(vec3_new(-0.4f, -1.0f, -0.3f)), NULL);
 
   VkrShadowFrameData frame = {0};
   vkr_shadow_system_get_frame_data(&system, 0u, &frame);
@@ -338,7 +338,7 @@ static void test_frame_data_carries_only_consumed_fields(void) {
   }
 
   vkr_shadow_system_update(&system, &camera, false_v,
-                           vec3_normalize(vec3_new(-0.4f, -1.0f, -0.3f)));
+                           vec3_normalize(vec3_new(-0.4f, -1.0f, -0.3f)), NULL);
   frame = (VkrShadowFrameData){0};
   vkr_shadow_system_get_frame_data(&system, 0u, &frame);
   assert(!frame.enabled);
@@ -386,6 +386,308 @@ static void test_shadow_raster_bias_packet_validation(void) {
                 "packet.shadow.config_override.depth_bias_clamp") == 0);
 }
 
+/* Mobility partition and generations (spec section 6.1-6.2). These exist to
+   serve the cascade-reuse rule, not to speed anything up: reuse compares the
+   generations a layer was rendered with, and scans only the dynamic span. */
+
+static void test_mobility_defaults_to_dynamic(void) {
+  /* The safe classification must be the one a caller gets by saying nothing.
+     A zeroed instance is DYNAMIC, so an unclassified caster forces a render
+     rather than silently qualifying a cascade for reuse. */
+  VkrMeshInstance instance = {0};
+  VkrMesh mesh = {0};
+  assert(instance.shadow_mobility == VKR_SHADOW_CASTER_MOBILITY_DYNAMIC);
+  assert(mesh.shadow_mobility == VKR_SHADOW_CASTER_MOBILITY_DYNAMIC);
+  assert(VKR_SHADOW_CASTER_MOBILITY_DYNAMIC == 0);
+}
+
+static void test_generations_never_start_at_zero(void) {
+  /* A consumer record is zeroed before its first use. If a live generation
+     could also be zero, that record would compare equal and be read as
+     "unchanged since I last rendered", authorizing reuse of contents that were
+     never produced. */
+  VkrMeshManagerGenerations zeroed = {0};
+  assert(zeroed.topology == 0u);
+  assert(zeroed.static_content == 0u);
+  assert(zeroed.dynamic_content == 0u);
+  assert(zeroed.caster_bounds == 0u);
+}
+
+static VkrWorldPassPayload retained_static_payload(void) {
+  return (VkrWorldPassPayload){
+      .static_generation = 7u,
+      .dynamic_generation = 11u,
+      .caster_bounds_generation = 13u,
+  };
+}
+
+static uint32_t cascade_mask(const VkrShadowSystem *system) {
+  return (UINT32_C(1) << system->config.cascade_count) - 1u;
+}
+
+static void update_for_reuse(VkrShadowSystem *system, VkrCamera *camera) {
+  vkr_shadow_system_update(system, camera, true_v,
+                           vec3_normalize(vec3_new(-0.4f, -1.0f, -0.3f)), NULL);
+}
+
+static void prime_retained_history(VkrShadowSystem *system, VkrCamera *camera,
+                                   uint32_t image_index,
+                                   VkrWorldPassPayload *payload) {
+  update_for_reuse(system, camera);
+  VkrShadowFrameData frame = {0};
+  vkr_shadow_system_resolve_frame(
+      system, image_index, (VkrRetainedShadowToken){.resource_generation = 3u},
+      payload, VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == cascade_mask(system));
+  vkr_shadow_system_commit_frame(system, 17u);
+}
+
+static void
+test_retained_history_reuses_per_image_and_commits_only_on_submit(void) {
+  VkrShadowSystem system = {0};
+  const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+  VkrCamera camera = test_camera();
+  VkrWorldPassPayload payload = retained_static_payload();
+  prime_retained_history(&system, &camera, 0u, &payload);
+
+  update_for_reuse(&system, &camera);
+  VkrShadowFrameData frame = {0};
+  const VkrRetainedShadowToken valid = {
+      .resource_generation = 3u,
+      .valid_layer_mask = cascade_mask(&system),
+  };
+  vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == 0u);
+  for (uint32_t i = 0u; i < config.cascade_count; ++i)
+    assert(frame.reused[i] == 1u && frame.rendered[i] == 0u);
+
+  vkr_shadow_system_resolve_frame(&system, 1u, valid, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == cascade_mask(&system));
+  vkr_shadow_system_discard_frame(&system);
+  assert(system.cascade_history[1][0].last_submit_value == 0u);
+
+  vkr_shadow_system_resolve_frame(&system, 1u, valid, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  vkr_shadow_system_commit_frame(&system, 19u);
+  assert(system.cascade_history[1][0].last_submit_value == 19u);
+  vkr_shadow_system_shutdown(&system, test_frontend());
+}
+
+static void
+test_retained_history_guard_contains_small_motion_not_large_motion(void) {
+  VkrShadowSystem system = {0};
+  const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+  VkrCamera camera = test_camera();
+  VkrWorldPassPayload payload = retained_static_payload();
+  prime_retained_history(&system, &camera, 0u, &payload);
+  const VkrRetainedShadowToken valid = {
+      .resource_generation = 3u,
+      .valid_layer_mask = cascade_mask(&system),
+  };
+
+  camera.position.x += 0.1f;
+  update_for_reuse(&system, &camera);
+  VkrShadowFrameData frame = {0};
+  vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask != cascade_mask(&system));
+  vkr_shadow_system_discard_frame(&system);
+
+  camera.position.x += 2000.0f;
+  update_for_reuse(&system, &camera);
+  vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == cascade_mask(&system));
+  vkr_shadow_system_shutdown(&system, test_frontend());
+}
+
+static VkrWorldDrawCandidate
+dynamic_candidate_at_history(const VkrShadowCascadeHistory *history,
+                             bool8_t bounds_valid) {
+  const Vec4 light_center = {
+      history->rendered_fit.center_x, history->rendered_fit.center_y,
+      (history->rendered_fit.min_z + history->rendered_fit.max_z) * 0.5f, 1.0f};
+  const Vec4 world = mat4_mul_vec4(
+      mat4_inverse_rigid(history->rendered_light_view), light_center);
+  return (VkrWorldDrawCandidate){
+      .instance = {.model = mat4_identity()},
+      .local_bounding_sphere = {world.x, world.y, world.z, 1.0f},
+      .flags = bounds_valid ? VKR_WORLD_DRAW_CANDIDATE_BOUNDS_VALID : 0u,
+  };
+}
+
+static void test_dynamic_overlap_and_publication_fail_closed(void) {
+  VkrShadowSystem system = {0};
+  const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+  VkrCamera camera = test_camera();
+  VkrWorldPassPayload payload = retained_static_payload();
+  prime_retained_history(&system, &camera, 0u, &payload);
+  const VkrRetainedShadowToken valid = {
+      .resource_generation = 3u,
+      .valid_layer_mask = cascade_mask(&system),
+  };
+  update_for_reuse(&system, &camera);
+
+  VkrWorldDrawCandidate dynamic =
+      dynamic_candidate_at_history(&system.cascade_history[0][0], true_v);
+  payload.gpu_candidates = &dynamic;
+  payload.gpu_shadow_candidate_count = 1u;
+  payload.static_candidate_count = 0u;
+  VkrShadowFrameData frame = {0};
+  vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert((frame.cascade_render_mask & 1u) != 0u);
+  assert(frame.dynamic_forced[0] == 1u);
+  vkr_shadow_system_discard_frame(&system);
+
+  dynamic.local_bounding_sphere =
+      vec4_new(100000.0f, 100000.0f, 100000.0f, 1.0f);
+  vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == 0u);
+  for (uint32_t i = 0u; i < config.cascade_count; ++i) {
+    assert(frame.dynamic_candidates_tested[i] == 1u);
+    assert(frame.dynamic_forced[i] == 0u);
+  }
+  vkr_shadow_system_discard_frame(&system);
+
+  system.config.reuse_dynamic_scan_budget = 0u;
+  vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == cascade_mask(&system));
+  for (uint32_t i = 0u; i < config.cascade_count; ++i)
+    assert(frame.dynamic_forced[i] == 1u);
+  vkr_shadow_system_discard_frame(&system);
+  system.config.reuse_dynamic_scan_budget =
+      VKR_SHADOW_DYNAMIC_SCAN_BUDGET_DEFAULT;
+
+  dynamic.flags = 0u;
+  vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == cascade_mask(&system));
+  for (uint32_t i = 0u; i < config.cascade_count; ++i)
+    assert(frame.dynamic_forced[i] == 1u);
+  vkr_shadow_system_discard_frame(&system);
+
+  payload.gpu_shadow_candidate_count = 0u;
+  payload.publication_pending = true_v;
+  vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == cascade_mask(&system));
+  vkr_shadow_system_shutdown(&system, test_frontend());
+}
+
+static void
+test_retained_history_signatures_and_invalidation_fail_closed(void) {
+  VkrShadowSystem system = {0};
+  VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+  VkrCamera camera = test_camera();
+  VkrWorldPassPayload payload = retained_static_payload();
+  prime_retained_history(&system, &camera, 0u, &payload);
+  update_for_reuse(&system, &camera);
+  VkrShadowFrameData frame = {0};
+  VkrRetainedShadowToken token = {
+      .resource_generation = 3u,
+      .valid_layer_mask = cascade_mask(&system),
+  };
+
+  token.valid_layer_mask &= ~UINT32_C(1);
+  vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == UINT32_C(1));
+  vkr_shadow_system_discard_frame(&system);
+  token.valid_layer_mask = cascade_mask(&system);
+
+  payload.static_generation++;
+  vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == cascade_mask(&system));
+  vkr_shadow_system_discard_frame(&system);
+  payload.static_generation--;
+
+  payload.caster_bounds_generation++;
+  vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == cascade_mask(&system));
+  vkr_shadow_system_discard_frame(&system);
+  payload.caster_bounds_generation--;
+
+  token.resource_generation++;
+  vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == cascade_mask(&system));
+  vkr_shadow_system_discard_frame(&system);
+  token.resource_generation--;
+
+  system.config.depth_bias_constant_factor += 1.0f;
+  vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == cascade_mask(&system));
+  vkr_shadow_system_discard_frame(&system);
+  system.config.depth_bias_constant_factor = config.depth_bias_constant_factor;
+
+  vkr_shadow_system_update(&system, &camera, true_v,
+                           vec3_normalize(vec3_new(0.7f, -1.0f, 0.2f)), NULL);
+  vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == cascade_mask(&system));
+  vkr_shadow_system_discard_frame(&system);
+
+  vkr_shadow_system_invalidate_fit_history(&system);
+  assert(system.cascade_history[0][0].last_submit_value == 0u);
+  update_for_reuse(&system, &camera);
+  vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == cascade_mask(&system));
+  vkr_shadow_system_shutdown(&system, test_frontend());
+}
+
+static void test_stale_dynamic_contents_render_once_after_caster_leaves(void) {
+  VkrShadowSystem system = {0};
+  const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+  VkrCamera camera = test_camera();
+  VkrWorldPassPayload payload = retained_static_payload();
+  update_for_reuse(&system, &camera);
+  VkrWorldDrawCandidate dynamic = {
+      .instance = {.model = mat4_identity()},
+      .local_bounding_sphere = {0.0f, 2.0f, -10.0f, 10000.0f},
+      .flags = VKR_WORLD_DRAW_CANDIDATE_BOUNDS_VALID,
+  };
+  payload.gpu_candidates = &dynamic;
+  payload.gpu_shadow_candidate_count = 1u;
+  VkrShadowFrameData frame = {0};
+  const VkrRetainedShadowToken token = {
+      .resource_generation = 3u,
+      .valid_layer_mask = cascade_mask(&system),
+  };
+  vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  vkr_shadow_system_commit_frame(&system, 1u);
+  assert(!system.cascade_history[0][0].static_only_contents);
+
+  payload.gpu_candidates = NULL;
+  payload.gpu_shadow_candidate_count = 0u;
+  update_for_reuse(&system, &camera);
+  vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == cascade_mask(&system));
+  vkr_shadow_system_commit_frame(&system, 2u);
+  assert(system.cascade_history[0][0].static_only_contents);
+
+  update_for_reuse(&system, &camera);
+  vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == 0u);
+  vkr_shadow_system_shutdown(&system, test_frontend());
+}
+
 bool32_t run_shadow_system_tests(void) {
   printf("--- Starting Shadow System Tests ---\n");
   printf("  Running test_growth_is_never_deadbanded...\n");
@@ -427,6 +729,19 @@ bool32_t run_shadow_system_tests(void) {
   printf("  Running test_disabled_stabilization_does_not_publish_history...\n");
   test_disabled_stabilization_does_not_publish_history();
   printf("  test_disabled_stabilization_does_not_publish_history PASSED\n");
+  printf("  Running test_mobility_defaults_to_dynamic...\n");
+  test_mobility_defaults_to_dynamic();
+  printf("  test_mobility_defaults_to_dynamic PASSED\n");
+  printf("  Running test_generations_never_start_at_zero...\n");
+  test_generations_never_start_at_zero();
+  printf("  test_generations_never_start_at_zero PASSED\n");
+  printf("  Running retained cascade reuse tests...\n");
+  test_retained_history_reuses_per_image_and_commits_only_on_submit();
+  test_retained_history_guard_contains_small_motion_not_large_motion();
+  test_dynamic_overlap_and_publication_fail_closed();
+  test_retained_history_signatures_and_invalidation_fail_closed();
+  test_stale_dynamic_contents_render_once_after_caster_leaves();
+  printf("  retained cascade reuse tests PASSED\n");
   printf("  Running test_frame_data_carries_only_consumed_fields...\n");
   test_frame_data_carries_only_consumed_fields();
   printf("  test_frame_data_carries_only_consumed_fields PASSED\n");
