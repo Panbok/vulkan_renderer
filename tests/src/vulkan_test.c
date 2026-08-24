@@ -6,6 +6,7 @@
 #include "renderer/vkr_gpu_memory.h"
 #include "renderer/vkr_gpu_slot_table.h"
 #include "renderer/vkr_gpu_submit_ring.h"
+#include "renderer/vulkan/vkr_vulkan_device.h"
 #include "renderer/vulkan/vkr_vulkan_memory.h"
 #include "renderer/vulkan/vkr_vulkan_renderer.h"
 #include "renderer/vulkan/vkr_vulkan_wsi.h"
@@ -102,6 +103,43 @@ static void test_surface_extension_classifier(void) {
   printf("  test_surface_extension_classifier PASSED\n");
 }
 
+static void test_encoded_surface_format_selection(void) {
+  printf("  Running test_encoded_surface_format_selection...\n");
+  const VkSurfaceFormatKHR formats[] = {
+      {VK_FORMAT_R8G8B8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR},
+      {VK_FORMAT_R8G8B8A8_UNORM, VK_COLOR_SPACE_DISPLAY_P3_NONLINEAR_EXT},
+      {VK_FORMAT_R8G8B8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR},
+      {VK_FORMAT_B8G8R8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR},
+  };
+  const bool8_t all_usable[] = {true_v, true_v, true_v, true_v};
+  VkSurfaceFormatKHR selected = vkr_vulkan_device_choose_surface_format(
+      formats, all_usable, ArrayCount(formats));
+  assert(selected.format == VK_FORMAT_B8G8R8A8_UNORM &&
+         selected.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
+
+  selected = vkr_vulkan_device_choose_surface_format(formats, all_usable, 3u);
+  assert(selected.format == VK_FORMAT_R8G8B8A8_UNORM &&
+         selected.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
+
+  selected = vkr_vulkan_device_choose_surface_format(formats, all_usable, 2u);
+  assert(selected.format == VK_FORMAT_UNDEFINED);
+
+  const bool8_t rgba_fallback[] = {true_v, true_v, true_v, false_v};
+  selected = vkr_vulkan_device_choose_surface_format(formats, rgba_fallback,
+                                                     ArrayCount(formats));
+  assert(selected.format == VK_FORMAT_R8G8B8A8_UNORM &&
+         selected.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
+
+  const VkSurfaceFormatKHR unrestricted = {VK_FORMAT_UNDEFINED,
+                                           VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
+  const bool8_t unrestricted_usable = true_v;
+  selected = vkr_vulkan_device_choose_surface_format(&unrestricted,
+                                                     &unrestricted_usable, 1u);
+  assert(selected.format == VK_FORMAT_B8G8R8A8_UNORM &&
+         selected.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
+  printf("  test_encoded_surface_format_selection PASSED\n");
+}
+
 static void test_noncoherent_atom_ranges(void) {
   printf("  Running test_noncoherent_atom_ranges...\n");
   VkrVulkanMappedRange range = {0};
@@ -186,7 +224,7 @@ static void test_renderer_create_failure_is_transactional(void) {
       .image_count = 1u,
       .sampled_image_capacity = 1u,
       .storage_image_capacity = 1u,
-      .sampler_capacity = 1u,
+      .sampler_capacity = 3u,
       .geometry_capacity = 1u,
       .texture_capacity = 1u,
       .material_record_capacity = 1u,
@@ -368,6 +406,7 @@ bool32_t run_vulkan_tests(void) {
   test_present_result_classifier();
   test_reacquisition_completion_contract();
   test_surface_extension_classifier();
+  test_encoded_surface_format_selection();
   test_noncoherent_atom_ranges();
   test_memory_pool_topology_contract();
   test_renderer_create_failure_is_transactional();

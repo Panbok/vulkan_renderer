@@ -79,6 +79,34 @@ struct VkrVulkanDevice {
   bool8_t ready;
 };
 
+VkSurfaceFormatKHR
+vkr_vulkan_device_choose_surface_format(const VkSurfaceFormatKHR *formats,
+                                        const bool8_t *format_usable,
+                                        uint32_t count) {
+  // Tonemapping writes display-encoded values into the UNORM render target.
+  // Presenting through an SRGB swapchain would encode those values a second
+  // time during the blit. Keep presentation in the same encoded domain.
+  if (!formats || !format_usable || !count)
+    return (VkSurfaceFormatKHR){VK_FORMAT_UNDEFINED,
+                                VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
+  if (count == 1u && formats[0].format == VK_FORMAT_UNDEFINED &&
+      format_usable[0])
+    return (VkSurfaceFormatKHR){VK_FORMAT_B8G8R8A8_UNORM,
+                                VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
+  const VkFormat preferred[] = {VK_FORMAT_B8G8R8A8_UNORM,
+                                VK_FORMAT_R8G8B8A8_UNORM};
+  for (uint32_t preference = 0u; preference < ArrayCount(preferred);
+       ++preference) {
+    for (uint32_t i = 0u; i < count; ++i) {
+      if (format_usable[i] && formats[i].format == preferred[preference] &&
+          formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+        return formats[i];
+    }
+  }
+  return (VkSurfaceFormatKHR){VK_FORMAT_UNDEFINED,
+                              VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
+}
+
 vkr_internal bool8_t vkr_vk_extension_present(
     const VkExtensionProperties *extensions, uint32_t count, const char *name) {
   for (uint32_t i = 0; i < count; ++i) {
@@ -656,6 +684,46 @@ vkr_vk_query_candidate(VkrVulkanDevice *device, uint32_t candidate_index,
                     candidate->has_swapchain_extension,
                     device->config.windowed ? "window floor"
                                             : "offscreen omitted");
+  const bool8_t encoded_source_supported =
+      (format3.optimalTilingFeatures & VK_FORMAT_FEATURE_2_BLIT_SRC_BIT) != 0u;
+  bool8_t encoded_present_supported = false_v;
+  if (device->config.windowed && candidate->queue_family_index != UINT32_MAX) {
+    uint32_t surface_format_count = 0u;
+    VkSurfaceFormatKHR surface_formats[64];
+    bool8_t surface_format_usable[64] = {0};
+    if (vkGetPhysicalDeviceSurfaceFormatsKHR(
+            candidate->physical, device->surface, &surface_format_count,
+            NULL) == VK_SUCCESS &&
+        surface_format_count > 0u &&
+        surface_format_count <= ArrayCount(surface_formats) &&
+        vkGetPhysicalDeviceSurfaceFormatsKHR(
+            candidate->physical, device->surface, &surface_format_count,
+            surface_formats) == VK_SUCCESS) {
+      for (uint32_t i = 0u; i < surface_format_count; ++i) {
+        const VkFormat format =
+            surface_format_count == 1u &&
+                    surface_formats[i].format == VK_FORMAT_UNDEFINED
+                ? VK_FORMAT_B8G8R8A8_UNORM
+                : surface_formats[i].format;
+        VkFormatProperties properties = {0};
+        vkGetPhysicalDeviceFormatProperties(candidate->physical, format,
+                                            &properties);
+        surface_format_usable[i] = (properties.optimalTilingFeatures &
+                                    VK_FORMAT_FEATURE_BLIT_DST_BIT) != 0u;
+      }
+      const VkSurfaceFormatKHR selected =
+          vkr_vulkan_device_choose_surface_format(
+              surface_formats, surface_format_usable, surface_format_count);
+      encoded_present_supported =
+          encoded_source_supported && selected.format != VK_FORMAT_UNDEFINED;
+    }
+  }
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_FORMAT,
+                    "BGRA8/RGBA8 UNORM encoded presentation target",
+                    device->config.windowed, encoded_present_supported,
+                    device->config.windowed
+                        ? "RGBA8 blit-src, sRGB nonlinear target and blit-dst"
+                        : "offscreen omitted");
   vkr_vk_report_add(report, VKR_VULKAN_REPORT_DEVICE_EXTENSION,
                     VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME, false_v,
                     candidate->has_swapchain_maintenance_extension &&
@@ -666,8 +734,9 @@ vkr_vk_query_candidate(VkrVulkanDevice *device, uint32_t candidate_index,
                         : "reacquisition completion path");
 
   candidate->common_viable = vkr_vk_report_passes(report);
-  candidate->window_viable =
-      candidate->common_viable && candidate->has_swapchain_extension;
+  candidate->window_viable = candidate->common_viable &&
+                             candidate->has_swapchain_extension &&
+                             encoded_present_supported;
   report->offscreen_viable = candidate->common_viable;
   report->window_viable = candidate->window_viable;
   report->queue_family_index = candidate->queue_family_index;

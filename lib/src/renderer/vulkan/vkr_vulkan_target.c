@@ -86,24 +86,6 @@ void vkr_vk_collect_retired_window_targets(VkrVulkanRenderer *renderer,
   }
 }
 
-vkr_internal VkSurfaceFormatKHR vkr_vk_choose_surface_format(
-    const VkSurfaceFormatKHR *formats, uint32_t count) {
-  if (count == 1u && formats[0].format == VK_FORMAT_UNDEFINED)
-    return (VkSurfaceFormatKHR){VK_FORMAT_B8G8R8A8_SRGB,
-                                VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
-  for (uint32_t i = 0; i < count; ++i) {
-    if (formats[i].format == VK_FORMAT_B8G8R8A8_SRGB &&
-        formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
-      return formats[i];
-  }
-  for (uint32_t i = 0; i < count; ++i) {
-    if (formats[i].format == VK_FORMAT_R8G8B8A8_SRGB &&
-        formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
-      return formats[i];
-  }
-  return formats[0];
-}
-
 vkr_internal VkPresentModeKHR
 vkr_vk_choose_present_mode(const VkPresentModeKHR *modes, uint32_t count,
                            VkrPresentMode requested_mode) {
@@ -141,6 +123,7 @@ bool8_t vkr_vk_create_window_target(VkrVulkanRenderer *renderer,
       !mode_count || mode_count > 64u)
     return false_v;
   VkSurfaceFormatKHR formats[64];
+  bool8_t format_usable[64] = {0};
   VkPresentModeKHR modes[64];
   if (vkGetPhysicalDeviceSurfaceFormatsKHR(physical, surface, &format_count,
                                            formats) != VK_SUCCESS ||
@@ -148,17 +131,29 @@ bool8_t vkr_vk_create_window_target(VkrVulkanRenderer *renderer,
                                                 modes) != VK_SUCCESS)
     return false_v;
 
+  for (uint32_t i = 0u; i < format_count; ++i) {
+    const VkFormat format =
+        format_count == 1u && formats[i].format == VK_FORMAT_UNDEFINED
+            ? VK_FORMAT_B8G8R8A8_UNORM
+            : formats[i].format;
+    VkFormatProperties properties = {0};
+    vkGetPhysicalDeviceFormatProperties(physical, format, &properties);
+    format_usable[i] = (properties.optimalTilingFeatures &
+                        VK_FORMAT_FEATURE_BLIT_DST_BIT) != 0u;
+  }
   const VkSurfaceFormatKHR surface_format =
-      vkr_vk_choose_surface_format(formats, format_count);
-  VkFormatProperties source_properties = {0}, target_properties = {0};
+      vkr_vulkan_device_choose_surface_format(formats, format_usable,
+                                              format_count);
+  if (surface_format.format == VK_FORMAT_UNDEFINED) {
+    log_error("Vulkan window surface exposes no BGRA8/RGBA8 UNORM format "
+              "compatible with the encoded presentation target");
+    return false_v;
+  }
+  VkFormatProperties source_properties = {0};
   vkGetPhysicalDeviceFormatProperties(physical, VK_FORMAT_R8G8B8A8_UNORM,
                                       &source_properties);
-  vkGetPhysicalDeviceFormatProperties(physical, surface_format.format,
-                                      &target_properties);
   if ((source_properties.optimalTilingFeatures &
-       VK_FORMAT_FEATURE_BLIT_SRC_BIT) == 0u ||
-      (target_properties.optimalTilingFeatures &
-       VK_FORMAT_FEATURE_BLIT_DST_BIT) == 0u)
+       VK_FORMAT_FEATURE_BLIT_SRC_BIT) == 0u)
     return false_v;
   VkExtent2D extent = capabilities.currentExtent;
   if (extent.width == UINT32_MAX) {
