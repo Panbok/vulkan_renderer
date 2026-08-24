@@ -192,6 +192,21 @@
           "description": "Optional receiver tap-count override. Omission resolves to the selected preset's effective value.",
           "enum": [1, 4, 9, 16, 32]
         },
+        "shadow_split_lambda": {
+          "type": "number",
+          "description": "Optional fixed cascade-split override. Omission resolves to the selected preset's effective value.",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "shadow_map_size": {
+          "type": "integer",
+          "description": "Optional per-cascade square map size. Omission resolves to the selected preset's effective value.",
+          "enum": [1024, 2048, 4096]
+        },
+        "shadow_pcf_early_out": {
+          "type": "boolean",
+          "description": "Optional nine-tap uniform-region early-out control. Omission resolves to the selected preset's effective value."
+        },
         "render_mode": {
           "type": "string",
           "description": "Global shading mode for measured frames. Auxiliary debug captures execute as replay runs and do not change this value.",

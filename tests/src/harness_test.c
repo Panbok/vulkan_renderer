@@ -79,6 +79,31 @@ static void test_harness_hash_and_statistics(void) {
   printf("  test_harness_hash_and_statistics PASSED\n");
 }
 
+static void test_harness_current_frame_work_metrics(void) {
+  printf("  Running test_harness_current_frame_work_metrics...\n");
+  assert(vkr_harness_metric_is_current_frame_work("visibility.objects_tested"));
+  assert(vkr_harness_metric_is_current_frame_work(
+      "visibility.gpu_candidates.count"));
+  assert(vkr_harness_metric_is_current_frame_work(
+      "visibility.transmission.gpu_candidates.count"));
+  assert(vkr_harness_metric_is_current_frame_work(
+      "draw.shadow.cascade0.rendered"));
+  assert(vkr_harness_metric_is_current_frame_work("instance_buffer.overflows"));
+  assert(!vkr_harness_metric_is_current_frame_work(
+      "visibility.gpu_visible.count"));
+  assert(!vkr_harness_metric_is_current_frame_work(
+      "visibility.transmission.covered_pixels.layer_0"));
+  assert(!vkr_harness_metric_is_current_frame_work(
+      "draw.world.indirect_commands_issued"));
+  assert(!vkr_harness_metric_is_current_frame_work(
+      "draw.shadow.cascade0.indirect_commands"));
+  assert(!vkr_harness_metric_is_current_frame_work(
+      "draw.shadow.cascade0.indirect_overflow"));
+  assert(!vkr_harness_metric_is_current_frame_work(
+      "visibility.gpu_visible.overflow"));
+  printf("  test_harness_current_frame_work_metrics PASSED\n");
+}
+
 static void test_harness_case_parser(void) {
   printf("  Running test_harness_case_parser...\n");
   const char *static_camera =
@@ -95,6 +120,9 @@ static void test_harness_case_parser(void) {
   assert(!parsed.renderer.text_fixture);
   assert(parsed.renderer.backend[0] == '\0');
   assert(parsed.renderer.shadow_pcf_samples == 16u);
+  assert(parsed.renderer.shadow_pcf_early_out);
+  assert(parsed.renderer.shadow_split_lambda == 0.80f);
+  assert(parsed.renderer.shadow_map_size == 2048u);
   assert(harness_parse_case("windowed_hidden", "immediate", static_camera,
                             ",\"resize_round_trip\":[80,72]", &parsed));
   assert(parsed.resize_round_trip && parsed.resize_width == 80u &&
@@ -111,7 +139,8 @@ static void test_harness_case_parser(void) {
       "\"frames\":{\"measure\":3},\"renderer\":{\"editor\":false,"
       "\"skybox\":true,\"text_fixture\":true,\"backend\":\"metal\","
       "\"shadow_preset\":\"default\",\"shadow_cascades\":4,"
-      "\"shadow_pcf_samples\":4},"
+      "\"shadow_pcf_samples\":4,\"shadow_split_lambda\":0.25,"
+      "\"shadow_map_size\":4096,\"shadow_pcf_early_out\":false},"
       "\"camera\":{\"mode\":\"static\",\"position\":[1,2,3],\"yaw\":10,"
       "\"pitch\":-5}}";
   VkrHarnessError backend_error = {0};
@@ -119,6 +148,9 @@ static void test_harness_case_parser(void) {
                                 &parsed, &backend_error));
   assert(strcmp(parsed.renderer.backend, "metal") == 0);
   assert(parsed.renderer.shadow_pcf_samples == 4u);
+  assert(!parsed.renderer.shadow_pcf_early_out);
+  assert(parsed.renderer.shadow_split_lambda == 0.25f);
+  assert(parsed.renderer.shadow_map_size == 4096u);
   VkrRendererBackendType resolved_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
   assert(vkr_harness_renderer_backend_resolve(&parsed.renderer, NULL,
                                               &resolved_backend));
@@ -152,6 +184,20 @@ static void test_harness_case_parser(void) {
   pcf_value[strlen("\"shadow_pcf_samples\":")] = '7';
   assert(!vkr_harness_case_parse(invalid_pcf, strlen(invalid_pcf), "memory",
                                  &parsed, &backend_error));
+  char invalid_lambda[2048];
+  snprintf(invalid_lambda, sizeof(invalid_lambda), "%s", metal_case);
+  char *lambda_value = strstr(invalid_lambda, "0.25");
+  assert(lambda_value);
+  memcpy(lambda_value, "1.25", 4u);
+  assert(!vkr_harness_case_parse(invalid_lambda, strlen(invalid_lambda),
+                                 "memory", &parsed, &backend_error));
+  char invalid_map_size[2048];
+  snprintf(invalid_map_size, sizeof(invalid_map_size), "%s", metal_case);
+  char *map_size_value = strstr(invalid_map_size, "4096");
+  assert(map_size_value);
+  memcpy(map_size_value, "4095", 4u);
+  assert(!vkr_harness_case_parse(invalid_map_size, strlen(invalid_map_size),
+                                 "memory", &parsed, &backend_error));
   assert(!harness_parse_case(
       "windowed_hidden", "immediate",
       "{\"mode\":\"keyframes\",\"keys\":[{\"t\":1,\"position\":[0,0,0],"
@@ -334,6 +380,27 @@ static void test_harness_fingerprints(void) {
                                        VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
                                        environment, workload, policy, &error));
   assert(strcmp(original_workload, workload) == 0);
+  case_manifest.renderer.shadow_pcf_early_out = false_v;
+  assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
+                                       &case_manifest, &profile,
+                                       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
+                                       environment, workload, policy, &error));
+  assert(strcmp(original_workload, workload) != 0);
+  case_manifest.renderer.shadow_pcf_early_out = true_v;
+  case_manifest.renderer.shadow_split_lambda = 0.25f;
+  assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
+                                       &case_manifest, &profile,
+                                       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
+                                       environment, workload, policy, &error));
+  assert(strcmp(original_workload, workload) != 0);
+  case_manifest.renderer.shadow_split_lambda = 0.80f;
+  case_manifest.renderer.shadow_map_size = 4096u;
+  assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
+                                       &case_manifest, &profile,
+                                       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
+                                       environment, workload, policy, &error));
+  assert(strcmp(original_workload, workload) != 0);
+  case_manifest.renderer.shadow_map_size = 2048u;
   case_manifest.resize_round_trip = true_v;
   case_manifest.resize_width = 80u;
   case_manifest.resize_height = 72u;
@@ -708,6 +775,9 @@ static void test_harness_report_shape(void) {
            "smoke");
   report.case_manifest.renderer.shadow_cascades = 4u;
   report.case_manifest.renderer.shadow_pcf_samples = 16u;
+  report.case_manifest.renderer.shadow_pcf_early_out = true_v;
+  report.case_manifest.renderer.shadow_split_lambda = 0.25f;
+  report.case_manifest.renderer.shadow_map_size = 4096u;
   snprintf(report.case_manifest.manifest_sha256,
            sizeof(report.case_manifest.manifest_sha256),
            "sha256:"
@@ -741,6 +811,9 @@ static void test_harness_report_shape(void) {
   fclose(file);
   assert(strstr(json, "\"subsystem_mask\":\"0x0000000000001234\"") != NULL);
   assert(strstr(json, "\"world_renderer\":\"deferred\"") != NULL);
+  assert(strstr(json, "\"pcf_uniform_early_out\":true") != NULL);
+  assert(strstr(json, "\"shadow_split_lambda\":0.25") != NULL);
+  assert(strstr(json, "\"shadow_map_size\":4096") != NULL);
   VkrHarnessJsonDocument document = {0};
   assert(vkr_harness_json_parse(&document, json, (uint64_t)length, &error));
   static const char *const fields[] = {"schema_version",
@@ -1210,6 +1283,7 @@ static void test_harness_guarded_baseline_accept(void) {
 bool32_t run_harness_tests(void) {
   printf("--- Running Harness tests... ---\n");
   test_harness_hash_and_statistics();
+  test_harness_current_frame_work_metrics();
   test_harness_case_parser();
   test_harness_profile_parser();
   test_harness_camera_determinism();

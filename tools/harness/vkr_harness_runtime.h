@@ -94,6 +94,14 @@ typedef struct VkrHarnessSampleSet {
   const VkrHarnessSampleEvent *events;
 } VkrHarnessSampleSet;
 
+/**
+ * Returns whether a metric is produced from the current packet/frame rather
+ * than from an asynchronously completed GPU result. Pure submission-timing
+ * profiles use this subset for repetition determinism because their
+ * completion-owned draw telemetry is not source-frame-indexed.
+ */
+bool8_t vkr_harness_metric_is_current_frame_work(const char *name);
+
 bool8_t vkr_harness_samples_write(const char *path,
                                   const VkrHarnessSampleFileHeader *header,
                                   const VkrHarnessSampleSet *samples,

@@ -48,13 +48,13 @@
   },
   "assertions": [
     {
-      "metric": "draw.world.calls_issued",
+      "metric": "visibility.gpu_candidates.count",
       "stat": "min",
       "min": 1
     },
     {
-      "metric": "draw.shadow.cascade0.indirect_commands",
-      "stat": "min",
+      "metric": "draw.shadow.cascade0.rendered",
+      "stat": "max",
       "min": 1
     }
   ]

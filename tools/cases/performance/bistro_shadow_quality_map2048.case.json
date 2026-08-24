@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "id": "performance.bistro.shadow_quality.map2048",
+  "suite": "performance",
+  "description": "Bistro shadow-quality control at the shipped 2048-square shadow map size.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 1,
+  "resolution": [
+    1280,
+    720
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 2,
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 2,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": {
+    "warmup": 120,
+    "measure": 300
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "shadow_preset": "default",
+    "shadow_cascades": 4,
+    "shadow_pcf_samples": 16,
+    "shadow_pcf_early_out": true,
+    "shadow_split_lambda": 0.80,
+    "shadow_map_size": 2048,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      -15.4823837,
+      4.51190281,
+      17.0369129
+    ],
+    "yaw": 389.674835,
+    "pitch": -4.85786676,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.1,
+    "far_plane": 500
+  },
+  "captures": [
+    {
+      "at_frame": 0,
+      "channels": [
+        "final_color",
+        "shadow_debug_cascades",
+        "shadow_debug_factor"
+      ]
+    }
+  ]
+}

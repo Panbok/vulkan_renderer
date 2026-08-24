@@ -150,17 +150,21 @@ static bool8_t vkr_harness_work_metric(const char *name) {
          string_find(name, "overflow") || string_find(name, "capture");
 }
 
-static bool8_t
-vkr_harness_work_volume_matches(const VkrHarnessCase *case_manifest,
-                                const VkrHarnessSampleSet *runs,
-                                uint32_t run_count) {
+static bool8_t vkr_harness_work_volume_matches(
+    const VkrHarnessCase *case_manifest, const VkrHarnessProfile *profile,
+    const VkrHarnessSampleSet *runs, uint32_t run_count) {
   if (run_count < 2u) {
     return true_v;
   }
   const uint32_t metric_count = runs[0].header.metric_count;
   bool8_t is_work[VKR_METRICS_MAX_SLOTS];
+  const bool8_t current_frame_only =
+      profile->submission_gpu_timing && !profile->gpu_timing;
   for (uint32_t metric = 0; metric < metric_count; ++metric) {
-    is_work[metric] = vkr_harness_work_metric(runs[0].metrics[metric].name);
+    const char *name = runs[0].metrics[metric].name;
+    is_work[metric] = current_frame_only
+                          ? vkr_harness_metric_is_current_frame_work(name)
+                          : vkr_harness_work_metric(name);
   }
   const uint64_t first = (uint64_t)case_manifest->warmup_frames * metric_count;
   const uint64_t count = (uint64_t)case_manifest->measure_frames * metric_count;
@@ -542,7 +546,7 @@ static void vkr_harness_apply_verdict(VkrHarnessReport *report,
     vkr_harness_report_mark_incomplete(report, "events.subjects_truncated");
   }
   if (report->completed_repetitions == report->requested_repetitions &&
-      !vkr_harness_work_volume_matches(case_manifest, runs,
+      !vkr_harness_work_volume_matches(case_manifest, profile, runs,
                                        report->completed_repetitions)) {
     vkr_harness_report_mark_incomplete(report,
                                        "determinism.work_volume_mismatch");

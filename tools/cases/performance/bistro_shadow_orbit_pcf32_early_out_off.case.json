@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "id": "performance.bistro.shadow_orbit.pcf4",
+  "id": "performance.bistro.shadow_orbit.pcf32_early_out_off",
   "suite": "performance",
-  "description": "Bistro orbit receiver-cost sweep lane at 4 PCF taps. Identical to performance.bistro.shadow_orbit except for the tap count, which is the single swept variable.",
+  "description": "Bistro orbit receiver-cost lane at 32 PCF taps with the uniform-region early out disabled. The matching enabled arm is performance.bistro.shadow_orbit.pcf32.",
   "scene": "assets/scenes/bistro.scene.json",
   "seed": 1,
   "resolution": [
@@ -27,7 +27,8 @@
     "shadow_preset": "default",
     "shadow_cascades": 4,
     "render_mode": "default",
-    "shadow_pcf_samples": 4
+    "shadow_pcf_samples": 32,
+    "shadow_pcf_early_out": false
   },
   "camera": {
     "mode": "orbit",

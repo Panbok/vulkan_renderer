@@ -430,6 +430,15 @@ bool8_t vkr_harness_report_write(const char *path,
       vkr_harness_json_emit_u64(
           writer, "pcf_samples",
           report->case_manifest.renderer.shadow_pcf_samples) &&
+      vkr_harness_json_emit_bool(
+          writer, "pcf_uniform_early_out",
+          report->case_manifest.renderer.shadow_pcf_early_out) &&
+      vkr_harness_json_emit_f64(
+          writer, "shadow_split_lambda",
+          report->case_manifest.renderer.shadow_split_lambda) &&
+      vkr_harness_json_emit_u64(
+          writer, "shadow_map_size",
+          report->case_manifest.renderer.shadow_map_size) &&
       vkr_harness_json_emit_string(
           writer, "cache",
           vkr_harness_cache_name(report->case_manifest.cache)) &&

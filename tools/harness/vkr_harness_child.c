@@ -864,6 +864,20 @@ static ApplicationConfig vkr_harness_child_application_config(
   };
 }
 
+static VkrShadowConfig
+vkr_harness_child_shadow_config(const VkrHarnessCase *case_manifest) {
+  VkrShadowConfig config =
+      string_equals(case_manifest->renderer.shadow_preset, "balanced")
+          ? VKR_SHADOW_CONFIG_BALANCED
+          : VKR_SHADOW_CONFIG_DEFAULT;
+  config.cascade_count = case_manifest->renderer.shadow_cascades;
+  config.pcf_sample_count = case_manifest->renderer.shadow_pcf_samples;
+  config.pcf_uniform_early_out = case_manifest->renderer.shadow_pcf_early_out;
+  config.cascade_split_lambda = case_manifest->renderer.shadow_split_lambda;
+  config.shadow_map_size = case_manifest->renderer.shadow_map_size;
+  return config;
+}
+
 /** Applies the case's renderer configuration to an already-created boot. */
 static bool8_t
 vkr_harness_child_apply_renderer(Application *application,
@@ -875,12 +889,8 @@ vkr_harness_child_apply_renderer(Application *application,
       VKR_RENDERER_ERROR_NONE) {
     return false_v;
   }
-  VkrShadowConfig shadow_config =
-      string_equals(case_manifest->renderer.shadow_preset, "balanced")
-          ? VKR_SHADOW_CONFIG_BALANCED
-          : VKR_SHADOW_CONFIG_DEFAULT;
-  shadow_config.cascade_count = case_manifest->renderer.shadow_cascades;
-  shadow_config.pcf_sample_count = case_manifest->renderer.shadow_pcf_samples;
+  const VkrShadowConfig shadow_config =
+      vkr_harness_child_shadow_config(case_manifest);
   vkr_shadow_system_shutdown(&application->renderer.shadow_system,
                              &application->renderer);
   if (!vkr_shadow_system_init(&application->renderer.shadow_system,
@@ -1303,12 +1313,8 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
   VkrCaptureItemRequest capture_items[VKR_HARNESS_MAX_CAPTURE_CHANNELS] = {0};
   if (capture_index >= 0) {
     uint64_t seen = 0u;
-    VkrShadowConfig shadow_config =
-        string_equals(case_manifest.renderer.shadow_preset, "balanced")
-            ? VKR_SHADOW_CONFIG_BALANCED
-            : VKR_SHADOW_CONFIG_DEFAULT;
-    shadow_config.cascade_count = case_manifest.renderer.shadow_cascades;
-    shadow_config.pcf_sample_count = case_manifest.renderer.shadow_pcf_samples;
+    const VkrShadowConfig shadow_config =
+        vkr_harness_child_shadow_config(&case_manifest);
     const uint32_t shadow_size =
         vkr_shadow_config_get_max_map_size(&shadow_config);
     for (uint32_t i = 0; i < replay.channel_count; ++i) {

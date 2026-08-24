@@ -225,11 +225,14 @@ typedef struct VkrHarnessRendererConfig {
   bool8_t editor;
   bool8_t skybox;
   bool8_t text_fixture;
+  bool8_t shadow_pcf_early_out;
   char backend[16];
   char shadow_preset[32];
   uint32_t shadow_cascades;
   /** Effective receiver tap count after the optional case field is resolved. */
   uint32_t shadow_pcf_samples;
+  uint32_t shadow_map_size;
+  float32_t shadow_split_lambda;
   char render_mode[16];
   uint32_t shadow_debug_mode;
 } VkrHarnessRendererConfig;

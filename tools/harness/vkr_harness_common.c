@@ -1,5 +1,22 @@
 #include "vkr_harness.h"
 
+bool8_t vkr_harness_metric_is_current_frame_work(const char *name) {
+  if (!name)
+    return false_v;
+  if (string_equals(name, "instance_buffer.overflows"))
+    return true_v;
+  if (string_n_equals(name, "visibility.objects_",
+                      sizeof("visibility.objects_") - 1u) ||
+      string_n_equals(name, "visibility.gpu_candidates.",
+                      sizeof("visibility.gpu_candidates.") - 1u) ||
+      string_n_equals(name, "visibility.transmission.gpu_candidates.",
+                      sizeof("visibility.transmission.gpu_candidates.") - 1u)) {
+    return true_v;
+  }
+  return string_n_equals(name, "draw.shadow.", sizeof("draw.shadow.") - 1u) &&
+         !string_find(name, ".indirect_");
+}
+
 bool8_t
 vkr_harness_renderer_backend_resolve(const VkrHarnessRendererConfig *renderer,
                                      const char *environment_request,

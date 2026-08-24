@@ -432,9 +432,17 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
                                           int32_t token,
                                           VkrHarnessRendererConfig *renderer,
                                           VkrHarnessError *error) {
-  static const char *const allowed[] = {
-      "editor",        "skybox",          "text_fixture",       "backend",
-      "shadow_preset", "shadow_cascades", "shadow_pcf_samples", "render_mode"};
+  static const char *const allowed[] = {"editor",
+                                        "skybox",
+                                        "text_fixture",
+                                        "backend",
+                                        "shadow_preset",
+                                        "shadow_cascades",
+                                        "shadow_pcf_samples",
+                                        "shadow_split_lambda",
+                                        "shadow_map_size",
+                                        "shadow_pcf_early_out",
+                                        "render_mode"};
   static const char *const required[] = {"editor", "skybox", "shadow_preset",
                                          "shadow_cascades"};
   if (!vkr_harness_json_object_validate(
@@ -444,7 +452,6 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
   }
   string_copy(renderer->render_mode, "default");
   uint64_t cascades = 0;
-  uint64_t pcf_samples = 0;
   if (!vkr_harness_manifest_bool(doc, token, "editor", true_v,
                                  &renderer->editor, error) ||
       !vkr_harness_manifest_bool(doc, token, "skybox", true_v,
@@ -459,21 +466,12 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
                                    sizeof(renderer->shadow_preset), error) ||
       !vkr_harness_manifest_u64(doc, token, "shadow_cascades", true_v,
                                 &cascades, error) ||
-      !vkr_harness_manifest_u64(doc, token, "shadow_pcf_samples", false_v,
-                                &pcf_samples, error) ||
       !vkr_harness_manifest_string(doc, token, "render_mode", false_v,
                                    renderer->render_mode,
                                    sizeof(renderer->render_mode), error)) {
     return false_v;
   }
   renderer->shadow_cascades = (uint32_t)cascades;
-  /* Rejected here rather than silently normalized: a sweep lane that asked for
-     an unsupported tap count and quietly measured a different one would be a
-     mislabelled result. */
-  const bool8_t pcf_valid =
-      pcf_samples == 0u ||
-      (pcf_samples <= UINT32_MAX &&
-       vkr_shadow_pcf_sample_count_supported((uint32_t)pcf_samples));
   const bool8_t preset_valid =
       string_equals(renderer->shadow_preset, "default") ||
       string_equals(renderer->shadow_preset, "balanced") ||
@@ -489,22 +487,54 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
   const bool8_t backend_valid = renderer->backend[0] == '\0' ||
                                 string_equals(renderer->backend, "vulkan") ||
                                 string_equals(renderer->backend, "metal");
-  if (!preset_valid || !mode_valid || !backend_valid || !pcf_valid ||
-      cascades < 1u || cascades > 8u) {
+  if (!preset_valid || !mode_valid || !backend_valid || cascades < 1u ||
+      cascades > 8u) {
     vkr_harness_error_set(error, "renderer.config", "$.renderer",
-                          "Renderer backend, preset, mode, cascade count, or "
-                          "PCF sample count is invalid");
+                          "Renderer backend, preset, mode, or cascade count "
+                          "is invalid");
     return false_v;
   }
-  /* Reports and workload fingerprints describe the workload that ran, not the
-     optional syntax used to request it. Resolve the preset-owned default once
-     at this cold boundary so zero cannot leak out as an "effective" count. */
+
+  /* Resolve optional fields from the preset before parsing them. Reports and
+     fingerprints describe the effective workload, not whether the JSON
+     omitted a default. */
   const VkrShadowConfig shadow_config =
       string_equals(renderer->shadow_preset, "balanced")
           ? VKR_SHADOW_CONFIG_BALANCED
           : VKR_SHADOW_CONFIG_DEFAULT;
-  renderer->shadow_pcf_samples =
-      pcf_samples ? (uint32_t)pcf_samples : shadow_config.pcf_sample_count;
+  uint64_t pcf_samples = shadow_config.pcf_sample_count;
+  uint64_t map_size = shadow_config.shadow_map_size;
+  float64_t split_lambda = shadow_config.cascade_split_lambda;
+  renderer->shadow_pcf_early_out = shadow_config.pcf_uniform_early_out;
+  if (!vkr_harness_manifest_u64(doc, token, "shadow_pcf_samples", false_v,
+                                &pcf_samples, error) ||
+      !vkr_harness_manifest_f64(doc, token, "shadow_split_lambda", false_v,
+                                &split_lambda, error) ||
+      !vkr_harness_manifest_u64(doc, token, "shadow_map_size", false_v,
+                                &map_size, error) ||
+      !vkr_harness_manifest_bool(doc, token, "shadow_pcf_early_out", false_v,
+                                 &renderer->shadow_pcf_early_out, error)) {
+    return false_v;
+  }
+
+  /* Reject invalid experiment labels instead of normalizing them into a
+     different workload. The map-size set is deliberately bounded because one
+     four-layer D32 image is already 256 MiB at 4096. */
+  const bool8_t pcf_valid =
+      pcf_samples <= UINT32_MAX &&
+      vkr_shadow_pcf_sample_count_supported((uint32_t)pcf_samples);
+  const bool8_t map_size_valid =
+      map_size == 1024u || map_size == 2048u || map_size == 4096u;
+  if (!pcf_valid || !map_size_valid || split_lambda < 0.0 ||
+      split_lambda > 1.0) {
+    vkr_harness_error_set(
+        error, "renderer.shadow_config", "$.renderer",
+        "Shadow PCF samples, split lambda, or map size is unsupported");
+    return false_v;
+  }
+  renderer->shadow_pcf_samples = (uint32_t)pcf_samples;
+  renderer->shadow_map_size = (uint32_t)map_size;
+  renderer->shadow_split_lambda = (float32_t)split_lambda;
   return true_v;
 }
 
