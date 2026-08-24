@@ -207,6 +207,10 @@
           "type": "boolean",
           "description": "Optional nine-tap uniform-region early-out control. Omission resolves to the selected preset's effective value."
         },
+        "shadow_sdsm": {
+          "type": "boolean",
+          "description": "Enables completed occupied-depth feedback for cascade split distribution. Omission keeps the preset's fixed-split default."
+        },
         "render_mode": {
           "type": "string",
           "description": "Global shading mode for measured frames. Auxiliary debug captures execute as replay runs and do not change this value.",

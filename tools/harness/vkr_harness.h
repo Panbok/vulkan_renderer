@@ -226,6 +226,7 @@ typedef struct VkrHarnessRendererConfig {
   bool8_t skybox;
   bool8_t text_fixture;
   bool8_t shadow_pcf_early_out;
+  bool8_t shadow_sdsm;
   char backend[16];
   char shadow_preset[32];
   uint32_t shadow_cascades;

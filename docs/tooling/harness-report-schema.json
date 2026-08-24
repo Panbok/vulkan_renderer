@@ -393,9 +393,14 @@
         "renderer_backend",
         "cascades",
         "pcf_samples",
+        "pcf_uniform_early_out",
+        "shadow_sdsm",
+        "shadow_split_lambda",
+        "shadow_map_size",
         "cache",
         "camera_script_version",
         "gpu_timing",
+        "submission_gpu_timing",
         "metrics_compile_enabled",
         "events_enabled"
       ],
@@ -479,6 +484,21 @@
           "description": "Effective receiver tap count after resolving any preset default.",
           "enum": [1, 4, 9, 16, 32]
         },
+        "pcf_uniform_early_out": {
+          "type": "boolean"
+        },
+        "shadow_sdsm": {
+          "type": "boolean"
+        },
+        "shadow_split_lambda": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "shadow_map_size": {
+          "type": "integer",
+          "enum": [1024, 2048, 4096]
+        },
         "cache": {
           "enum": [
             "isolated_cold",
@@ -490,6 +510,9 @@
           "const": 1
         },
         "gpu_timing": {
+          "type": "boolean"
+        },
+        "submission_gpu_timing": {
           "type": "boolean"
         },
         "metrics_compile_enabled": {

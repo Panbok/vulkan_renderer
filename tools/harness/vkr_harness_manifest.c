@@ -442,6 +442,7 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
                                         "shadow_split_lambda",
                                         "shadow_map_size",
                                         "shadow_pcf_early_out",
+                                        "shadow_sdsm",
                                         "render_mode"};
   static const char *const required[] = {"editor", "skybox", "shadow_preset",
                                          "shadow_cascades"};
@@ -506,6 +507,7 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
   uint64_t map_size = shadow_config.shadow_map_size;
   float64_t split_lambda = shadow_config.cascade_split_lambda;
   renderer->shadow_pcf_early_out = shadow_config.pcf_uniform_early_out;
+  renderer->shadow_sdsm = shadow_config.sdsm_enabled;
   if (!vkr_harness_manifest_u64(doc, token, "shadow_pcf_samples", false_v,
                                 &pcf_samples, error) ||
       !vkr_harness_manifest_f64(doc, token, "shadow_split_lambda", false_v,
@@ -513,7 +515,9 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
       !vkr_harness_manifest_u64(doc, token, "shadow_map_size", false_v,
                                 &map_size, error) ||
       !vkr_harness_manifest_bool(doc, token, "shadow_pcf_early_out", false_v,
-                                 &renderer->shadow_pcf_early_out, error)) {
+                                 &renderer->shadow_pcf_early_out, error) ||
+      !vkr_harness_manifest_bool(doc, token, "shadow_sdsm", false_v,
+                                 &renderer->shadow_sdsm, error)) {
     return false_v;
   }
 

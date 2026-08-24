@@ -165,13 +165,14 @@ bool8_t vkr_harness_case_fingerprints_with_scene_digest(
       case_manifest->renderer.backend[0] ? case_manifest->renderer.backend
                                          : "external");
   /* Every resolved shadow experiment control belongs to the workload. */
-  ADD("renderer.shadow", "%s,%u,%u,%.9g,%u,%u",
+  ADD("renderer.shadow", "%s,%u,%u,%.9g,%u,%u,%u",
       case_manifest->renderer.shadow_preset,
       case_manifest->renderer.shadow_cascades,
       case_manifest->renderer.shadow_pcf_samples,
       case_manifest->renderer.shadow_split_lambda,
       case_manifest->renderer.shadow_map_size,
-      case_manifest->renderer.shadow_pcf_early_out);
+      case_manifest->renderer.shadow_pcf_early_out,
+      case_manifest->renderer.shadow_sdsm);
   ADD("renderer.render_mode", "%s", case_manifest->renderer.render_mode);
   ADD("renderer.shadow_debug_mode", "%u",
       case_manifest->renderer.shadow_debug_mode);

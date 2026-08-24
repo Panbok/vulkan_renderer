@@ -121,6 +121,7 @@ static void test_harness_case_parser(void) {
   assert(parsed.renderer.backend[0] == '\0');
   assert(parsed.renderer.shadow_pcf_samples == 16u);
   assert(parsed.renderer.shadow_pcf_early_out);
+  assert(!parsed.renderer.shadow_sdsm);
   assert(parsed.renderer.shadow_split_lambda == 0.80f);
   assert(parsed.renderer.shadow_map_size == 2048u);
   assert(harness_parse_case("windowed_hidden", "immediate", static_camera,
@@ -140,7 +141,8 @@ static void test_harness_case_parser(void) {
       "\"skybox\":true,\"text_fixture\":true,\"backend\":\"metal\","
       "\"shadow_preset\":\"default\",\"shadow_cascades\":4,"
       "\"shadow_pcf_samples\":4,\"shadow_split_lambda\":0.25,"
-      "\"shadow_map_size\":4096,\"shadow_pcf_early_out\":false},"
+      "\"shadow_map_size\":4096,\"shadow_pcf_early_out\":false,"
+      "\"shadow_sdsm\":true},"
       "\"camera\":{\"mode\":\"static\",\"position\":[1,2,3],\"yaw\":10,"
       "\"pitch\":-5}}";
   VkrHarnessError backend_error = {0};
@@ -149,6 +151,7 @@ static void test_harness_case_parser(void) {
   assert(strcmp(parsed.renderer.backend, "metal") == 0);
   assert(parsed.renderer.shadow_pcf_samples == 4u);
   assert(!parsed.renderer.shadow_pcf_early_out);
+  assert(parsed.renderer.shadow_sdsm);
   assert(parsed.renderer.shadow_split_lambda == 0.25f);
   assert(parsed.renderer.shadow_map_size == 4096u);
   VkrRendererBackendType resolved_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
@@ -387,6 +390,13 @@ static void test_harness_fingerprints(void) {
                                        environment, workload, policy, &error));
   assert(strcmp(original_workload, workload) != 0);
   case_manifest.renderer.shadow_pcf_early_out = true_v;
+  case_manifest.renderer.shadow_sdsm = true_v;
+  assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
+                                       &case_manifest, &profile,
+                                       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
+                                       environment, workload, policy, &error));
+  assert(strcmp(original_workload, workload) != 0);
+  case_manifest.renderer.shadow_sdsm = false_v;
   case_manifest.renderer.shadow_split_lambda = 0.25f;
   assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
                                        &case_manifest, &profile,
@@ -776,6 +786,7 @@ static void test_harness_report_shape(void) {
   report.case_manifest.renderer.shadow_cascades = 4u;
   report.case_manifest.renderer.shadow_pcf_samples = 16u;
   report.case_manifest.renderer.shadow_pcf_early_out = true_v;
+  report.case_manifest.renderer.shadow_sdsm = true_v;
   report.case_manifest.renderer.shadow_split_lambda = 0.25f;
   report.case_manifest.renderer.shadow_map_size = 4096u;
   snprintf(report.case_manifest.manifest_sha256,
@@ -812,6 +823,7 @@ static void test_harness_report_shape(void) {
   assert(strstr(json, "\"subsystem_mask\":\"0x0000000000001234\"") != NULL);
   assert(strstr(json, "\"world_renderer\":\"deferred\"") != NULL);
   assert(strstr(json, "\"pcf_uniform_early_out\":true") != NULL);
+  assert(strstr(json, "\"shadow_sdsm\":true") != NULL);
   assert(strstr(json, "\"shadow_split_lambda\":0.25") != NULL);
   assert(strstr(json, "\"shadow_map_size\":4096") != NULL);
   VkrHarnessJsonDocument document = {0};
