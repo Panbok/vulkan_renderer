@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-08-23
+updated: 2026-08-24
 authority: adr
 ---
 
@@ -36,6 +36,23 @@ interval to the depth range of visible geometry.
 The renderer already has the raw material: `VBuffer.Opaque` produces final
 opaque depth plus a `uint2` visibility ID, and an HZB reduction chain already
 runs over that depth.
+
+### Pre-acceptance control result
+
+The required lambda/map-size control experiment ran before this ADR was
+accepted. Four local, non-authoritative Release offscreen captures held one
+Bistro corridor camera, 16-tap PCF, and the early-out policy fixed while
+varying one control at a time.
+Lowering lambda from 0.80 to 0.25 strongly changed cascade assignment
+(cascade-debug PSNR 15.97 dB) but produced no final-color change above the tiny
+variation between identical controls. Raising map size from 2048 to 4096 kept
+cascade assignment byte-identical and changed the shadow-factor diagnostic
+(39.73 dB), but again showed no visible final-color improvement.
+
+This result retains lambda 0.80 and map size 2048. It does not prove that SDSM
+is worth its feedback edge: one view showed no final-color quality gap for SDSM
+to close. Acceptance still requires broader far-field captures that demonstrate
+a problem fixed splits cannot solve, followed by a measured reduction cost.
 
 ### Why this is not a small change
 
@@ -173,9 +190,9 @@ already feeds the cascade Z interval.
 **Do nothing and tune `cascade_split_lambda` instead.** The cheapest option and
 a genuine competitor. Lowering lambda toward 0.25 roughly doubles far-cascade
 texel density for a one-line configuration change. It is already scoped as a
-separate named quality experiment, and it should be measured *before* this ADR
-is accepted — if lambda tuning closes the observed quality gap, this feedback
-edge may not be worth its cost.
+separate named quality experiment. The completed single-view control did not
+show a final-color gain from lambda 0.25, so it neither selects the cheaper
+change nor supplies the missing evidence needed to accept this feedback edge.
 
 ## Revisit When
 

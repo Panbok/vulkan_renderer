@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-23
+updated: 2026-08-24
 authority: design
 ---
 
@@ -14,17 +14,20 @@ candidate partition and generation substrate ships without the rejected GPU
 residency expansion. P3A and P3B also ship: `shadow_map` is a retained,
 per-image graph resource (ADR-029), and the backend-neutral shadow resolver
 omits eligible cascade passes against committed per-image history. P7 ships:
-packet version 15 carries a per-cascade block and a shared receiver block, and
+packet version 16 carries a per-cascade block and a shared receiver block, and
 both receivers run a rotated Poisson PCF kernel with texel-denominated bias,
-cascade cross-fade, and max-distance fade. P4, P5, and P6 do not ship; P3B
-performs no proactive refresh.
+cascade cross-fade, max-distance fade, and a case-selectable uniform-region
+early out. P4, P5, and P6 do not ship; P3B
+performs no proactive refresh. The Metal tap and early-out sweeps are complete;
+section 11.5 records why they retain the shipped defaults and what evidence was
+not retained before their run trees were purged.
 
 P7's shadow-map contents are unchanged by construction and by capture: all four
 D32 cascade layers are byte-identical across the change, because only the
 receiver moved. The remaining unshipped phases are each blocked on a
-precondition this document itself sets — P4 and P6 on proposed ADRs that do not
-exist, P5 on moving-camera evidence of guard exhaustion that P3B's 84–100%
-per-cascade reuse does not show.
+precondition this document itself sets. P4 and P6 depend on proposed,
+unaccepted ADRs and their evidence gates. P5 depends on moving-camera evidence
+of guard exhaustion that P3B's 84–100% per-cascade reuse does not show.
 
 The same-tree local Release P3B comparison on Bistro orbit at 2560x1440 reduced
 realized `Shadow.Cascade.*` GPU work from 9.197 ms/frame to 0.663 ms/frame and
@@ -951,9 +954,9 @@ split stability; matched GPU profiles decide whether the reduction is affordable
 **Status:** Implemented. Sections 11.1 through 11.4 ship on both selected
 implementations. The Vulkan receiver and its published comparison-sampler heap
 alias compile and are covered by CPU tests, but have never executed: Vulkan is
-not selectable on the development host. Split lambda, map size, and shadow
-distance are deliberately unchanged and remain the separate quality
-experiments section 11.5 and section 5 describe.
+not selectable on the development host. The section 11.5 control experiment
+retains split lambda 0.80 and map size 2048. Shadow distance remains a separate
+quality experiment.
 
 This phase adds GPU cost and ships independently of the CPU work. Its baseline
 is the current one-tap receiver at the same map size and split distribution.
@@ -976,8 +979,9 @@ typedef struct VkrShadowCascadePacketData {
 
 Shared state contains `receiver_bias_texels`, `slope_bias_texels`,
 `normal_offset_texels`, `pcf_sample_count`, `pcf_radius_texels`,
-`cascade_blend_fraction`, `fade_start`, and `fade_end`. Put shared state and the
-cascade array in one backend-neutral packet block. Each selected implementation
+`pcf_uniform_early_out`, `cascade_blend_fraction`, `fade_start`, and
+`fade_end`. Put shared state and the cascade array in one backend-neutral packet
+block. Each selected implementation
 lowers it once into its immutable frame upload. Do not consume reserved words
 piecemeal until reflection proves the ABI on both backends. Bump the packet
 version, update validation, and update the Metal and Vulkan ABI tests in the
@@ -1034,15 +1038,12 @@ the blend fraction at the cold boundary.
 
 ### 11.5 Cost control
 
-**Status: the original result is invalid; the Metal timing blocker is repaired,
-but the exact tap sweep has not been rerun.**
-
-Run matched Metal pass and submission GPU profiles at 1, 4, 9, 16, and 32 taps,
-plus the uniform-region early-out A/B at 16 and 32. Record
-`Lighting.Deferred.Fullscreen`, `gpu.submission`, `frame.wall`, and work volume.
-Choose the default from a written end-to-end GPU-latency budget and exact
-captures. Do not claim the filter is paid for by a CPU optimization; report its
-cost independently.
+**Status: complete on Metal. The corrected tap and early-out reports passed
+their harness authority gates on 2026-08-24. They retain the existing tap
+defaults and keep the early-out enabled. The durable transcription lacks the
+per-repetition ranges and actual target-image count required for a portable
+speed claim. Vulkan runtime evidence remains unavailable on the development
+host.**
 
 Keep map size, split lambda, and tap count as separate experimental variables.
 Changing more than one makes the capture and timing result uninterpretable.
@@ -1051,13 +1052,15 @@ The tap count is a case field, `renderer.shadow_pcf_samples`, folded into the
 workload fingerprint so two lanes differing only by it cannot compare as the
 same measurement. Five lanes ship as
 `tools/cases/performance/bistro_shadow_orbit_pcf{1,4,9,16,32}.case.json`.
+The early-out controls are
+`bistro_shadow_orbit_pcf{16,32}_early_out_off.case.json`. The four exact-capture
+inputs are `bistro_shadow_quality_{lambda025,lambda080,map2048,map4096}.case.json`.
+These manifests are reproduction inputs, not retained run artifacts.
 
-All five lanes ran and passed on Apple M1 Pro under the former
-`tools/profiles/local-windowed-gpu.json`, and **that result is unusable**. The
-per-lane means order non-monotonically with tap count because Metal's former
-command-buffer markers did not attribute the named pass. Two repetitions of one
-binary with bit-identical work volume attributed their pass time 45%
-differently. Those numbers remain historical defect evidence only.
+The former `tools/profiles/local-windowed-gpu.json` result remains unusable
+historical defect evidence. It used command-buffer markers that could not
+attribute the named pass. The result below uses precise encoder-scope
+timestamps and completion-owned query storage.
 
 Issue 3b in
 [renderer-architecture-spec.md](../architecture/renderer-architecture-spec.md)
@@ -1069,15 +1072,70 @@ supplies exact submission start/end latency, and the harness associates both
 delayed result paths with their source frames before draining after the measured
 window.
 
-Use `tools/profiles/performance-windowed-gpu.json` for the receiver-pass curve
-and `tools/profiles/performance-windowed-gpu-submission.json` for the
-end-to-end control curve. Both runs must retain identical work volume within
-their own five-lane sweep. If a delta is smaller than repetition spread, the
-result is inconclusive rather than evidence that the receiver is free.
+The valid sweep used Apple M1 Pro, Metal 4, Release, Bistro orbit, 2560x1440
+drawable extent, immediate presentation, editor disabled, four cascades, five
+isolated repetitions, and 1500 measured frames per lane. Every report has
+`status=pass`, `authoritative=true`, empty `authority_reasons`, and zero invalid
+samples. Work is identical at 254 GPU candidates, 282.1567 world indirect
+commands, and 10 world indirect calls.
 
-Consequently the shipped tap counts — 16 for `HIGH`, 9 for `BALANCED` — remain
-design starting points, **not** measured selections. Rerun the five lanes with
-both profiles; run the early-out A/B at 16 and 32 through the same pair.
+| taps / early-out | `Lighting.Deferred.Fullscreen` mean / p50 / p95 / sd (ms) | `gpu.submission` mean / p50 / p95 / sd (ms) |
+|---|---:|---:|
+| 1 / enabled | 6.028 / 5.997 / 7.757 / 1.006 | 39.012 / 38.436 / 48.920 / 5.991 |
+| 4 / enabled | 6.375 / 6.333 / 8.086 / 0.995 | 39.887 / 39.310 / 49.166 / 5.929 |
+| 9 / enabled | 6.853 / 6.834 / 8.583 / 1.009 | 40.940 / 40.352 / 50.839 / 6.185 |
+| 16 / enabled | 6.193 / 6.181 / 8.041 / 1.045 | 39.829 / 39.457 / 49.363 / 6.084 |
+| 32 / enabled | 6.346 / 6.407 / 8.442 / 1.127 | 39.804 / 39.432 / 49.544 / 6.040 |
+| 16 / disabled | 7.476 / 7.506 / 9.263 / 1.036 | 42.372 / 41.705 / 52.639 / 6.600 |
+| 32 / disabled | 8.816 / 8.847 / 10.701 / 1.090 | 45.777 / 44.752 / 56.788 / 7.104 |
+
+The enabled tap-count curve does not select a new default. The retained spread
+is population deviation across 1500 frame samples, not the range of five
+independent repetition means. That is the wrong statistic for selecting a tap
+count. `HIGH=16` and `BALANCED=9` therefore remain design defaults.
+
+The retained aggregates favor the early-out in both metrics. At 16 taps the
+mean differences are 1.283 ms in the named pass and 2.543 ms in submission. At
+32 taps they are 2.471 ms and 5.973 ms. Keep the already-enabled default, but do
+not quote these deltas as portable speedups without a rerun that retains the
+per-repetition ranges.
+
+The aggregate report SHA-256 values are retained in full:
+
+| taps / early-out | pass report | submission report |
+|---|---|---|
+| 1 / enabled | `8eb025834423f62b683dbb72e1822757afca7ef015e1e62acef693064ba64278` | `56c431c71416a4f75e1c99b0f81e6b627a54bfc2d0cb34d86f58bd0fba1299b7` |
+| 4 / enabled | `59c4ccf5a18216528a66d6f3f65ef8d20827db603216695d2cb52d9b749abfe7` | `bc1a9c548a11f8820326d74961b64c9676c9caab4cbea97dfe8de01edbbc47e1` |
+| 9 / enabled | `02b8127404fe75f23eb9205c71d63851fa67ea179e2a2f49ab57699c44bf3749` | `405daa195dbc3538dffd01d8048c57a150881279e2655f965377802fc265482e` |
+| 16 / enabled | `301829a5b80218b3e4f0e6a5c6e492e02cc9e63d6b7824490f91c73f93b826b8` | `dbdadfc5918af8458e24cc862e841d1d5578b451892b1aa6dabbcd6192cc9205` |
+| 32 / enabled | `b0354ec667f01190357c6870dbd2b134e49144d012246be94be245e8f6c05ea9` | `9c5a937c7478e4feaea6e10d46b330068dfca0df100b4caee12d792f55528bcb` |
+| 16 / disabled | `adb1c95ffdb071de6d188eea243d11963b4bd9aa75a533205a7693bca0e884aa` | `86d78ec1519ddac21e6e7e5c5758d919f97b1ef4a2a2d4c1b9c5c02a5240258c` |
+| 32 / disabled | `df527164daeb98d4a30f2a03b8f9b63e3e13198a20d01c12d6781a41daa03328` | `192da62d26a731907f6ce66da02fa42c90d7827e7f7cdac66f3e22fdf9608f3f` |
+
+Reproduce a lane with `vkr_harness profile`, its case above, and either
+`tools/profiles/performance-windowed-gpu.json` or
+`tools/profiles/performance-windowed-gpu-submission.json`. The run artifacts
+were purged after transcription. The actual target-image count and the five
+per-repetition means were not transcribed first, which is the retained evidence
+gap.
+
+The separate Release quality experiment uses one 1280x720 offscreen Bistro
+corridor frame. Lowering split lambda from 0.80 to 0.25 strongly repartitions
+the visible cascades (cascade-debug PSNR 15.97 dB) but does not produce a
+final-color change above the tiny identical-control variation. Raising map size
+from 2048 to 4096 keeps cascade assignment byte-identical and changes the
+shadow-factor diagnostic (39.73 dB), but shows no visible final-color
+improvement. Keep lambda 0.80 and map size 2048. The experiment does not justify
+the 4096 map's fourfold per-layer pixel count.
+
+The local snapshot report SHA-256 values for lambda 0.80, lambda 0.25, map
+2048, and map 4096 are
+`a8b6160aab8b296db2ac8ddb879f0ec622841b6925f95b241cbfde12603e1ba9`,
+`b819c0fec92407d4db3edd6c98635eb64a8f19caf54aa1e72ecbdd242ed7cf97`,
+`5412cdd33803a9b8f9f681ce05d92b1202271f2a9df2c7e20adfd3c53b2d42ea`,
+and `59073668f1f60b49cb599f31930b73b35b0ff0d48584ab7f133661536508d17b`.
+They cover one Metal corridor view only. They do not cover Vulkan, other
+cameras, shadow distance, or the 4096 map's timing and memory cost.
 
 ## 12. Implementation slices and ADRs
 
@@ -1149,7 +1207,7 @@ the remaining gaps at the top.
 | 4 | CPU tests for projection bounds, `./build_test.sh`, both backend validation runs, disocclusion captures behind static and moving occluders, overflow coverage, and matched profiles showing net gain after confirmation work |
 | 5 | Phase 3B gates plus p95 comparison and proof that only proactive, still-valid layers were scheduled |
 | 6 | Reduction/linearization/staleness tests, `./build_test.sh`, both backend validation runs, status metrics covering every fallback, exact split-stability captures, and matched GPU profiles |
-| 7 | Packet ABI/reflection tests, `./build_test.sh`, cold/warm production pipeline-cache runs, both backend validation runs, exact quality captures, and matched GPU sweeps for every proposed default. All pass except the GPU sweep, which section 11.5 records as blocked on a `Lighting.Deferred` timestamp defect, and Vulkan runtime validation, which is unavailable on the development host |
+| 7 | Packet ABI/reflection tests, `./build_test.sh`, cold/warm production pipeline-cache runs, exact quality captures, and harness-authoritative Metal pass/submission sweeps pass. Section 11.5 records the completed default decisions and the incomplete durable transcription. Focused Metal API/GPU validation passes. Vulkan runtime validation remains unavailable on the development host |
 
 Correctness is a separate gate. See
 [`.codex/skills/vkr-validation/SKILL.md`](../../.codex/skills/vkr-validation/SKILL.md).
