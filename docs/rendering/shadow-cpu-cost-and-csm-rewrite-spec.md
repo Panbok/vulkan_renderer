@@ -9,30 +9,35 @@ authority: design
 P0 instrumentation and P1 contract repair ship in the current implementation.
 The renderer publishes the named CPU scopes and row-byte gauges on Metal and
 Vulkan, routes raster depth bias through the packet on both backends, retains
-the future fit data, and applies cascade-fit hysteresis. P2's static/dynamic
-candidate partition and generation substrate ships without the rejected GPU
-residency expansion. P3A and P3B also ship: `shadow_map` is a retained,
+the future fit data, and applies cascade-fit hysteresis. P2 now ships the
+static/dynamic partition, generation substrate, and completion-safe per-slot GPU
+candidate/instance residency on both selected implementations. Publication
+generation changes revalidate retained static rows; unresolved dependencies are
+omitted and later retried. P3A and P3B also ship: `shadow_map` is a retained,
 per-image graph resource (ADR-029), and the backend-neutral shadow resolver
 omits eligible cascade passes against committed per-image history. P7 ships:
-packet version 17 carries a per-cascade block, a shared receiver block, and the
-SDSM enable/source-scene contract. Both receivers run a rotated Poisson PCF
-kernel with texel-denominated bias,
+packet version 18 carries the candidate publication generation, a per-cascade
+block, a shared receiver block, and the SDSM enable/source-scene contract. Both
+receivers run a rotated Poisson PCF kernel with texel-denominated bias,
 cascade cross-fade, max-distance fade, and a case-selectable uniform-region
 early out. P4 is closed at its measured stop condition: an experimental Metal
 predictor deferred zero candidates across 600 moving-camera frames, so the
 one-phase exact-gated topology remains. P5 ships as a bounded, opt-in proactive
 refresh budget and defaults to zero. P6's completed asynchronous feedback path
-ships on Metal behind an opt-in config and harness control, but the fixed-split
-default remains after its matched GPU cost gate failed. The Metal tap and
-early-out sweeps are complete; section 11.5 records why they retain the shipped
-defaults and what evidence was not retained before their run trees were purged.
+ships on both backends behind the same opt-in config and harness control, but
+the fixed-split default remains after its matched Metal GPU cost gate failed.
+The Metal tap and early-out sweeps are complete; section 11.5 records why they
+retain the shipped defaults and what evidence was not retained before their run
+trees were purged.
 
 P7's shadow-map contents are unchanged by construction and by capture: all four
 D32 cascade layers are byte-identical across the change, because only the
-receiver moved. The remaining platform gap is P6's Vulkan reduction and
-completion-slot lowering. P5 remains off because its prerequisite moving-camera
-guard-exhaustion evidence is absent. P4 has no remaining implementation work
-unless a future workload changes the measured zero-prediction result.
+receiver moved. No authorized implementation phase remains open. P3's Vulkan
+retained-read-without-write seam and P7's exact Vulkan receiver captures remain
+evidence gaps rather than missing code. P5 remains off because its prerequisite
+moving-camera guard-exhaustion evidence is absent. P4 has no remaining
+implementation work unless a future workload changes the measured
+zero-prediction result.
 
 The same-tree local Release P3B comparison on Bistro orbit at 2560x1440 reduced
 realized `Shadow.Cascade.*` GPU work from 9.197 ms/frame to 0.663 ms/frame and
@@ -43,10 +48,11 @@ and CPU prepare from 19.247 ms to 18.151 ms. These are investigative local,
 dirty-tree, warmup-unstable observations, not authoritative or portable speed
 claims.
 
-The available P0 runs rejected P2 at 35 and 254 candidates, but they were
-dirty-tree observations rather than authoritative profiles and do not represent
-an identified larger reported workload. Exact unchanged-default capture
-comparison also remains open for P1.
+The available P0 runs rejected P2 at 35 and 254 candidates, and no later
+measurement reversed that result. On 2026-08-24 the owner explicitly directed
+completion of the remaining P2 GPU residency/publication contract anyway. That
+authorization carries no CPU budget and supports no performance claim. Exact
+unchanged-default capture comparison also remains open for P1.
 
 Two measured findings revise this document's premise and should be read before
 acting on sections 2.2, 2.3, or 6:
@@ -60,13 +66,11 @@ acting on sections 2.2, 2.3, or 6:
   changed the four-cascade total by 3% (9.402 ms to 9.126 ms). Every cascade
   re-submits nearly the whole scene; cascade 0 draws 211.7 of 254 candidates.
 
-Consequently P2 is not being built as the CPU optimization this document
-describes. Its static/dynamic partition, generations, and caster-depth snapshot
-are prerequisites of the section 7.3 reuse rule, and that is the only
-justification in force. **No performance claim may be attached to P2.** The
-GPU-side residency and deferred-publication machinery in sections 6.4 and 6.5
-remain unauthorized and unbuilt: they target CPU cost that measurement did not
-find.
+Consequently P2 is not described as a CPU optimization. Its static/dynamic
+partition, generations, and caster-depth snapshot remain prerequisites of the
+section 7.3 reuse rule. The later owner-directed GPU residency slice preserves
+the completion and publication contract but does not overturn the measured
+finding. **No performance claim may be attached to P2.**
 
 Prerequisite reading:
 [shadow-transmission-transparency-improvements.md](shadow-transmission-transparency-improvements.md)
@@ -483,18 +487,19 @@ quality experiments after Phase 7 has a stable filter. A 4096 D32 array costs
 256 MiB per physical image, or 768 MiB at three target images.
 
 ## 6. Phase 2, versioned candidate residency
+**Status: implemented under explicit owner authorization.** The static-first
+frontend substrate and generations ship, and both selected implementations
+retain packed static candidate/instance rows per completion-protected graph
+slot. This status is architectural only; Phase 0 did not establish a CPU
+performance need.
 
-Phase 2 is authorized only when Phase 0 finds material CPU cost in payload
-construction or backend candidate packing. It is a world-renderer throughput
-change, not a shadow subsystem change, and must preserve one candidate source
-for camera, transmission, picking, and cascades.
 
-### 6.1 Frontend ownership and mobility
-
-Add a renderer-owned `VkrWorldCandidateCache`. Allocate its reloadable arrays
-from `VkrDMemory`, not the frame scratch arena or a grow-only scene arena. Free
-them on renderer shutdown and replace their contents transactionally on scene
-reload.
+The original Phase 0 gate did not authorize a retained CPU candidate cache, and
+none was added. The frontend continues to build one bounded borrowed candidate
+array in frame scratch, partitioned static-first. `VkrMeshManager` owns the
+topology, static-content, dynamic-content, and caster-bounds generations; the
+selected asset publisher owns the publication generation. Backend residency
+retains only lowered GPU rows and never stores frontend pointers.
 
 Every mesh instance gets explicit shadow mobility:
 
@@ -510,15 +515,16 @@ may mark an instance `STATIC` only when its transform, geometry, deformation,
 and material routing cannot change without going through an invalidating API.
 "Has not moved recently" is not a static classification.
 
-The cache stores two contiguous backend-neutral arrays, static and dynamic.
-Static candidates rebuild on a cache generation change. Dynamic candidates
-rebuild every frame. Blend visibility and depth sorting remain per frame.
+The borrowed array contains the static prefix and dynamic suffix. Blend
+visibility and sorting remain per-frame work. The scene loader marks imported
+scene meshes static by default; unknown and runtime-created instances remain
+dynamic until an explicit mobility mutation.
 
 ### 6.2 Generations and invalidation
 
-`VkrWorldCandidateCache` owns monotonic 64-bit generations. Zero is invalid and
-wrap is fatal in Debug. Mutators bump generations at the cold boundary, before
-the next packet is built.
+`VkrMeshManager` and the selected asset publisher own monotonic nonzero 64-bit
+generations. Mutators and successful publication/readiness transitions bump
+them at the cold boundary before the next packet is built.
 
 | Change | Required invalidation |
 |---|---|
@@ -536,32 +542,34 @@ the old rebuild path for that object until the mutation seam is closed.
 
 ### 6.3 CPU build contract
 
-Rebuild the static array in one count-and-emit operation when its generation
-changes. Exact pre-counting or fixed-capacity storage is allowed; repeated
-growth during emission is not. Build the dynamic array once per frame. Preserve
-the current conservative rule that off-camera candidates may cast into a
-cascade.
-
-The packet carries borrowed spans plus their generations:
+Build the static prefix and dynamic suffix in the existing bounded frame
+allocation. Preserve the conservative rule that off-camera candidates may cast
+into a cascade. The packet carries the combined borrowed stream plus its
+partition and generations:
 
 ```c
-typedef struct VkrWorldCandidateSpans {
-  const VkrWorldDrawCandidate *static_candidates;
-  uint32_t static_count;
+typedef struct VkrWorldPassPayload {
+  const VkrWorldDrawCandidate *gpu_candidates;
+  uint32_t gpu_candidate_count;
+  uint32_t static_candidate_count;
   uint64_t static_generation;
-  const VkrWorldDrawCandidate *dynamic_candidates;
-  uint32_t dynamic_count;
   uint64_t dynamic_generation;
   uint64_t publication_generation;
-} VkrWorldCandidateSpans;
+  uint64_t caster_bounds_generation;
+  bool8_t publication_pending;
+} VkrWorldPassPayload;
 ```
 
-The cache owns the static span. The frame scope owns the dynamic span. Both stay
-alive until `vkr_renderer_submit_packet()` returns. Their combined count must
-fit `VKR_GPU_DRAW_CANDIDATE_CAPACITY`; packet validation reports overflow before
-command recording.
+The frame scope owns the array until `vkr_renderer_submit_packet()` returns.
+The selected implementation resolves it into retained rows. The total must fit
+`VKR_GPU_DRAW_CANDIDATE_CAPACITY`; packet validation reports overflow and zero
+generations before command recording.
 
 ### 6.4 GPU storage and in-flight safety
+The authored graph owns `gpu_draw_candidates` and `gpu_draw_instances`, plus
+their transmission counterparts, as `PER_FRAME_SLOT` buffers. Candidate and
+instance rows therefore share one completion and barrier domain.
+
 
 Keep the current per-frame-slot candidate and instance buffers. Each slot stores
 the static and publication generations last packed into that slot. A slot may
@@ -590,16 +598,17 @@ semantics.
 ### 6.5 Deferred publication
 
 Packing resolves geometry and material handles against the selected
-implementation. An unpublished dependency omits that candidate from the slot's
-packed range for the current frame and records its source index in a bounded
-pending set. Completion or retirement increments `publication_generation`, so
-every completed slot retries affected candidates. A pending list is an
-optimization, not the sole invalidation mechanism.
+implementation. An unpublished dependency is omitted from that slot's packed
+range and increments the bounded omission count. Successful geometry/material
+publication, readiness, replacement, or retirement increments
+`publication_generation`; every completed slot then revalidates its entire
+static prefix. This full-generation retry is authoritative, so no redundant
+pending-index list is stored.
 
-Tests must cover publication after omission, retirement and republish with a
-new handle generation, scene unload with pending entries, and capacity
-overflow. A candidate may disappear temporarily while its dependency is
-unpublished; it may not remain absent after the publisher reports it ready.
+A candidate may disappear temporarily while its dependency is unpublished; it
+cannot remain absent after the publisher advances the generation and the slot
+is next acquired. Malformed submesh indices remain pre-recording errors.
+`packet.publication_omitted_candidates` exposes temporary omissions.
 
 The fixed geometry table is a separate cost. Instrument it in Phase 0. Do not
 fold geometry-table residency into this slice unless its own scope crosses the
@@ -896,16 +905,17 @@ shadow captures outside the deliberately enlarged guard fit.
 
 ## 10. Phase 6, occupied-depth SDSM feedback
 
-**Status: implemented on Metal, opt-in; default rejected by measurement.** The
-authored graph has a conditional `SDSM.Reduce` pass over occupied final opaque
-pixels, a per-frame-slot reduction state, completion-gated readback, and source
-projection/frame/scene/submit metadata. The frontend never waits. The shadow
-system rejects empty, stale, malformed, projection-mismatched, and
-scene-mismatched samples; reuses a completion only as cached data; clamps linear
-contraction; retains the fixed final split; invalidates feedback at target or
-scene lifecycle boundaries; and publishes the status, lag, occupancy, and range
-metrics. `tools/cases/performance/sponza_orbit_sdsm.case.json` is the explicit
-opt-in control. Vulkan lowering remains open.
+**Status: implemented on Metal and Vulkan, opt-in; default rejected by
+measurement.** The authored graph has a conditional `SDSM.Reduce` pass over
+occupied final opaque pixels, a per-frame-slot reduction state,
+completion-gated readback, and source projection/frame/scene/submit metadata.
+The frontend never waits. The shadow system rejects empty, stale, malformed,
+projection-mismatched, and scene-mismatched samples; reuses a completion only as
+cached data; clamps linear contraction; retains the fixed final split;
+invalidates feedback at target or scene lifecycle boundaries; and publishes the
+status, lag, occupancy, and range metrics.
+`tools/cases/performance/sponza_orbit_sdsm.case.json` remains the explicit
+opt-in control.
 
 The final same-binary Metal pair used `local.windowed_gpu`, 2560x1440 Sponza
 orbit, two repetitions of 300 measured frames after 120 warmup frames. Both
@@ -928,10 +938,19 @@ exercised the empty/background fallback; the occupied active path is covered by
 the Sponza profile above. Validation digest:
 `sha256:6b990397ee5bbc5aec14597c691f1341d419bb1d6e70f944fb2fb16fb8730f46`.
 
+The native Windows Vulkan lowering passed a two-repetition Debug
+synchronization-validation profile on the RX 6700 XT. The 800x600, three-image
+Sponza case completed 30 warmup and eight measured frames per repetition.
+SDSM status was active on every measured frame, occupied pixels were at least
+284,800, source lag was at most three frames, overflow and resolve-invalid
+counters stayed zero, and both stderr logs were empty. Report digest:
+`sha256:0e8212586c0498727b32ca69de77ab17f781d070947e776090d84db38ff228e4`.
+This is correctness evidence; Vulkan GPU cost was not measured.
+
 ADR-033 owns SDSM because it adds delayed GPU-to-CPU feedback to frontend-owned
-cascade fitting. It is accepted partially: Metal implements the opt-in path,
-Vulkan remains open, and fixed splits remain the default. It is a quality and
-distribution feature, not a proven CPU optimization.
+cascade fitting. It is accepted: Metal and Vulkan implement the opt-in path,
+while fixed splits remain the default. It is a quality and distribution
+feature, not a proven CPU optimization.
 
 ### 10.1 Reduction source
 
@@ -1010,11 +1029,11 @@ split stability; matched GPU profiles decide whether the reduction is affordable
 ## 11. Phase 7, PCF and receiver quality
 
 **Status:** Implemented. Sections 11.1 through 11.4 ship on both selected
-implementations. The Vulkan receiver and its published comparison-sampler heap
-alias compile and are covered by CPU tests, but have never executed: Vulkan is
-not selectable on the development host. The section 11.5 control experiment
-retains split lambda 0.80 and map size 2048. Shadow distance remains a separate
-quality experiment.
+implementations. The Vulkan receiver and comparison-sampler heap alias execute
+under the native P6 validation witness at the balanced preset's nine taps.
+Exact Vulkan receiver-quality captures remain unrecorded. The section 11.5
+control experiment retains split lambda 0.80 and map size 2048. Shadow distance
+remains a separate quality experiment.
 
 This phase adds GPU cost and ships independently of the CPU work. Its baseline
 is the current one-tap receiver at the same map size and split distribution.
@@ -1096,12 +1115,12 @@ the blend fraction at the cold boundary.
 
 ### 11.5 Cost control
 
-**Status: complete on Metal. The corrected tap and early-out reports passed
-their harness authority gates on 2026-08-24. They retain the existing tap
-defaults and keep the early-out enabled. The durable transcription lacks the
-per-repetition ranges and actual target-image count required for a portable
-speed claim. Vulkan runtime evidence remains unavailable on the development
-host.**
+**Status: cost controls complete on Metal. The corrected tap and early-out
+reports passed their harness authority gates on 2026-08-24. They retain the
+existing tap defaults and keep the early-out enabled. The durable transcription
+lacks the per-repetition ranges and actual target-image count required for a
+portable speed claim. Vulkan runtime correctness now has a native validation
+witness; no Vulkan tap-cost sweep was run.**
 
 Keep map size, split lambda, and tap count as separate experimental variables.
 Changing more than one makes the capture and timing result uninterpretable.
@@ -1209,7 +1228,7 @@ topology, and shader quality into one change.
 | 3A, retained graph images | `vkr_render_graph.h`, `vkr_rg_compile.c`, `vkr_rg_execute.c`, `vkr_rg_json.c`, graph schema, both backend graph realizations, graph compiler tests | new proposed retained-resource ADR, accepted before implementation |
 | 3B/5, reuse and refresh | `vkr_shadow_system.c/h`, application frame resolution, packet payload, graph JSON, both shadow executors, reuse tests/case | mark retained-resource ADR implemented or partial |
 | 4, two-phase HZB | graph JSON, cull roots/shaders, both backend encoders, metrics, disocclusion case | ADR-032 declined for the measured workload; reopen only with a material predicted-deferred set |
-| 6, SDSM | occupied-depth shaders, graph JSON, backend readback slots, shadow-system input/status, tests | ADR-033 accepted partially; Metal opt-in implemented, Vulkan lowering open |
+| 6, SDSM | occupied-depth shaders, graph JSON, backend readback slots, shadow-system input/status, tests | ADR-033 accepted; Metal and Vulkan opt-in lowering implemented |
 | 7, PCF | shadow config and packet ABI, Vulkan and Metal receiver shaders/samplers, reflection tests, capture cases | architecture feature/status update when shipped |
 
 Every implementation PR must update this document's phase status, the
@@ -1259,13 +1278,13 @@ the remaining gaps at the top.
 |---|---|
 | 0 | Clean authoritative CPU and GPU profiles for Sponza orbit and the actual reported workload; both backends where available; exact scopes, bytes, HZB validity, work rows, report digest, and stop decision recorded |
 | 1 | Focused hysteresis/config tests, `./build_test.sh`, packet validation tests, and exact unchanged-default captures; no performance claim |
-| 2 | Mutation/publication/overflow/load-unload tests, `./build_test.sh`, one focused Vulkan validation run, one strictly serial Metal validation run, then matched authoritative Release profiles with identical work volume and candidate bytes |
+| 2 | Shared generation/transaction tests and `./build_test.bat` pass. Native RX 6700 XT Debug synchronization validation covers three target images, two static plus two dynamic candidates, zero measured static-row rewrites after warmup, 96 dynamic row bytes per frame, zero omissions/overflow/resolve-invalid, and empty stderr logs: `sha256:fdefd96e0f772e0d95c379b70a77e1dc89e68c0aca891cff7f08116446e5dcb4`. Metal runtime validation remains unavailable on Windows. No Release performance claim was requested or made |
 | 3A | Retained-state compiler tests, `./build_test.sh`, Vulkan validation at two and four target images, and one serial Metal validation run; no performance claim |
 | 3B | Phase 3A gates plus static, moving-camera, dynamic-caster, resize, and forced-publication cases; exact shadow-layer/final captures; matched profiles with per-cascade reuse and forced-refresh counters |
 | 4 | CPU tests for projection bounds, `./build_test.sh`, both backend validation runs, disocclusion captures behind static and moving occluders, overflow coverage, and matched profiles showing net gain after confirmation work |
 | 5 | Phase 3B gates plus p95 comparison and proof that only proactive, still-valid layers were scheduled |
 | 6 | Reduction/linearization/staleness tests, `./build_test.sh`, both backend validation runs, status metrics covering every fallback, exact split-stability captures, and matched GPU profiles |
-| 7 | Packet ABI/reflection tests, `./build_test.sh`, cold/warm production pipeline-cache runs, exact quality captures, and harness-authoritative Metal pass/submission sweeps pass. Section 11.5 records the completed default decisions and the incomplete durable transcription. Focused Metal API/GPU validation passes. Vulkan runtime validation remains unavailable on the development host |
+| 7 | Packet ABI/reflection tests, `./build_test.sh`, cold/warm production pipeline-cache runs, exact quality captures, and harness-authoritative Metal pass/submission sweeps pass. Section 11.5 records the completed default decisions and the incomplete durable transcription. Focused Metal API/GPU validation passes. Native Vulkan synchronization validation executes the nine-tap receiver; exact Vulkan receiver-quality captures remain open |
 
 Correctness is a separate gate. See
 [`.codex/skills/vkr-validation/SKILL.md`](../../.codex/skills/vkr-validation/SKILL.md).

@@ -57,7 +57,7 @@ Considered → Revisit When**.
 | [ADR-030](030-offline-mesh-optimization-and-cooking.md) | Offline mesh optimization and cooked geometry artifacts | Proposed |
 | [ADR-031](031-versioned-packed-static-geometry-abi.md) | Tight packed static-geometry GPU ABI | Proposed |
 | [ADR-032](032-two-phase-confirmed-visibility.md) | Two-phase current-depth-confirmed visibility | Declined for the measured workload |
-| [ADR-033](033-occupied-depth-sdsm-feedback.md) | Occupied-depth SDSM through completed asynchronous feedback | Accepted (partial); Metal opt-in, Vulkan open |
+| [ADR-033](033-occupied-depth-sdsm-feedback.md) | Occupied-depth SDSM through completed asynchronous feedback | Accepted; opt-in on Metal and Vulkan, fixed splits remain default |
 
 ## Relationship to the Specification
 

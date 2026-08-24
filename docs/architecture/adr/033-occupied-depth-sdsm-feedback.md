@@ -1,5 +1,5 @@
 ---
-status: partial
+status: implemented
 updated: 2026-08-24
 authority: adr
 ---
@@ -8,11 +8,11 @@ authority: adr
 
 ## Status
 
-**Accepted (partial).** Metal implements the graph-declared occupied-depth
+**Accepted.** Metal and Vulkan implement the graph-declared occupied-depth
 reduction, completion-slot readback, source metadata, non-blocking frontend
-consumption, fixed fallback, smoothing, and status metrics. It is opt-in and the
-high/default preset remains fixed-split because the matched Metal control failed
-the measured cost gate. Vulkan lowering remains unimplemented.
+consumption, fixed fallback, smoothing, and status metrics. The feature remains
+opt-in and the high/default preset remains fixed-split because the matched Metal
+control failed the measured cost gate.
 
 The same-binary local Sponza pair measured fixed-split cascade work at 0.985
 ms/frame. SDSM raised cascade work to 1.795 ms/frame and added a 0.501 ms
@@ -21,6 +21,14 @@ and warmup-unstable. Control digest:
 `sha256:b11b8cff1a0ae24cc6a2cc1c06092d258f88a077abd637c7df25d22cfbfbc7c2`;
 SDSM digest:
 `sha256:d278c81761052aa4068ef6402a2fc81c0a37d06f1605d5ba329774ad00681693`.
+
+The native Windows Vulkan completion path passed a two-repetition Debug
+synchronization-validation profile on the RX 6700 XT at 800x600 with three
+target images. Every measured frame was active, occupied pixels were at least
+284,800, source lag was at most three frames, overflow and resolve-invalid
+counters stayed zero, and both stderr logs were empty. Report digest:
+`sha256:0e8212586c0498727b32ca69de77ab17f781d070947e776090d84db38ff228e4`.
+This is correctness evidence, not a performance result.
 
 Design source: section 10 of
 [shadow-cpu-cost-and-csm-rewrite-spec.md](../../rendering/shadow-cpu-cost-and-csm-rewrite-spec.md).
@@ -211,8 +219,6 @@ the cheaper change nor supplies evidence for enabling SDSM by default.
   enough to reconsider the fixed-split default.
 - A controlled lambda and map-size sweep closes that quality gap without
   feedback. Retire the SDSM path.
-- Vulkan lowering is prioritized and can preserve the completion and fallback
-  contract without a frame-path wait.
 - Split-stability captures show visible crawling that contraction clamping and
   hysteresis cannot remove.
 - A shared min/max representation is proven cheaper than the separate chain, at

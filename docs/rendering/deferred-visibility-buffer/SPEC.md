@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-23
+updated: 2026-08-24
 authority: spec
 ---
 
@@ -1178,18 +1178,19 @@ transmission because its fidelity decision is unresolved, P21 is not complete
 and the renderer must not be described as forward-retired.
 
 P21 satisfies this contract in the production tree, with the publication-
-boundary repair recorded below. Packet version 17 carries
-GPU candidate streams plus feature-local ordinary blend and text payloads; CPU
-opaque, transmission, shadow, and picking-mesh draw lists are absent. The main
-graph, parser, backend executors, pipelines, shaders, metrics, and harness cases
-have no selectable legacy world branch. Both backends consume the same
-candidate contract. Opaque/shadow and transmission candidate streams are
-independently bounded; invalid structure or capacity in either stream is
-reported as an explicit pre-recording error. "Invalid structure" means the
-candidate itself is malformed — a submesh index outside the geometry it names.
-A candidate whose geometry or material has not finished publishing is a bounded
-lifetime boundary crossed on every scene load, not invalid structure, and is
-omitted for that frame instead of failing it.
+boundary repair recorded below. Packet version 18 carries GPU candidate streams
+plus static/dynamic/publication generations and feature-local ordinary blend
+and text payloads; CPU opaque, transmission, shadow, and picking-mesh draw lists
+are absent. The main graph, parser, backend executors, pipelines, shaders,
+metrics, and harness cases have no selectable legacy world branch. Both
+backends consume the same candidate contract. Opaque/shadow and transmission
+candidate streams are independently bounded; invalid structure or capacity in
+either stream is reported as an explicit pre-recording error. "Invalid
+structure" means the candidate itself is malformed — a submesh index outside
+the geometry it names. A candidate whose geometry or material has not finished
+publishing is a bounded lifetime boundary crossed on every scene load and is
+omitted for that slot. Publication-generation changes force every completed
+slot to retry its static prefix.
 
 The macOS retirement pass built the Release and sanitized Debug/CPU targets,
 then passed the deferred-only Release state matrix

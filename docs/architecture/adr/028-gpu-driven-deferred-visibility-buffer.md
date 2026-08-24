@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-23
+updated: 2026-08-24
 authority: adr
 ---
 
@@ -15,7 +15,9 @@ ICB submission; Vulkan uses fixed-partition indirect-count submission. Both
 backends provide opaque visibility raster, compute material resolve and
 lighting, completion-compatible HZB history, requested-pixel picking,
 camera-plus-cascade multi-view submission, and four-layer depth-peeled
-transmission with completion-gated coverage. There is no runtime topology
+transmission with completion-gated coverage. The static prefix of each candidate
+stream is retained in completion-protected per-slot candidate/instance buffers;
+dynamic rows are copied after it every frame. There is no runtime topology
 selector or whole-frame fallback; unsupported structure and exhausted capacity
 are explicit pre-recording errors, and the opaque/shadow and transmission
 candidate streams retain independent bounds.
@@ -327,9 +329,14 @@ decision.
   forward reroute is not an acceptable degradation mode. This covers malformed
   candidate structure and exhausted bounds only. A candidate whose geometry or
   material has not finished publishing is a bounded lifetime boundary, not
-  unsupported input; it is omitted for that frame and recorded once by a
-  one-shot warning. Conflating the two makes every frame of a cold scene load
-  a hard failure on any backend that resolves publication before recording.
+  unsupported input; both implementations omit it for that slot. Successful
+  publication, readiness, replacement, or retirement advances a nonzero
+  publication generation, forcing every completed slot to revalidate its static
+  prefix. `packet.publication_omitted_candidates` makes the temporary omission
+  observable.
+- Candidate and instance rows are graph-owned `PER_FRAME_SLOT` buffers. Static
+  residency state commits only after successful queue submission; rejected or
+  cancelled frames cannot publish generation stamps for copies that never ran.
 - The renderer architecture spec and harness/metrics documentation are updated
   only as individual phases ship; this ADR does not change status by existing.
 

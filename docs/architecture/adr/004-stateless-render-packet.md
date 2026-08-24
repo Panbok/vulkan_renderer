@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-07-31
+updated: 2026-08-24
 authority: adr
 ---
 # ADR-004: Versioned Render-Packet Submission
@@ -21,8 +21,9 @@ requested work.
 ## Decision
 
 Submit optional typed pass payloads through one versioned `VkrRenderPacket`.
-Packet version 2 includes frame data, globals, world/shadow/skybox/UI/editor/
-picking payloads, text updates, and debug controls.
+Packet version 18 includes frame data, globals, world/shadow/skybox/UI/editor/
+picking payloads, text updates, debug controls, and candidate publication
+generations.
 
 Implemented contract:
 
@@ -32,6 +33,12 @@ Implemented contract:
 - packet memory is caller-owned and must remain valid until submit returns;
 - draw items use renderer handles and instance ranges rather than Vulkan state;
 - pass executors obtain typed payloads through the graph context.
+- world candidates are one borrowed static-first array with nonzero
+  static/dynamic/publication generations; selected implementations lower it into
+  completion-protected per-slot candidate/instance buffers;
+- static residency state is staged while recording and committed only after
+  successful queue submission, so packet rejection cannot publish rows that
+  were never copied;
 
 The application normally calls `vkr_renderer_prepare_frame()` first, builds the
 packet in scratch storage, and calls `vkr_renderer_submit_packet()`.
