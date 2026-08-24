@@ -1193,6 +1193,7 @@ void application_draw_frame(Application *application, float64_t delta) {
         .normal_offset_texels = shadow_config->normal_offset_texels,
         .pcf_radius_texels = shadow_config->pcf_radius_texels,
         .pcf_sample_count = shadow_config->pcf_sample_count,
+        .pcf_uniform_early_out = shadow_config->pcf_uniform_early_out,
         .cascade_blend_fraction = shadow_config->cascade_blend_fraction,
         .fade_start = fade_start,
         .fade_end = vkr_max_f32(last_split, fade_start),

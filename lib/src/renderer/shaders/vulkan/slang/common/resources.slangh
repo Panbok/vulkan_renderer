@@ -103,6 +103,7 @@ struct VkrVulkanPacketFrameRoot
     float shadow_fade_start;
     float shadow_fade_end;
     uint shadow_comparison_sampler;
+    uint shadow_pcf_uniform_early_out;
     VkrVulkanIblProbe* ibl_probes;
     uint ibl_probe_count;
     uint ibl_probe_reserved;

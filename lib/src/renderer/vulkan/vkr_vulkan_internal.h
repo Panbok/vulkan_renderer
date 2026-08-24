@@ -444,6 +444,7 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketFrameRoot {
   float32_t shadow_fade_end;
   /** Comparison-sampler heap slot; `shadow_sampler` remains the sentinel. */
   uint32_t shadow_comparison_sampler;
+  uint32_t shadow_pcf_uniform_early_out;
   uint64_t ibl_probes;
   uint32_t ibl_probe_count;
   uint32_t ibl_probe_reserved;
@@ -573,12 +574,14 @@ _Static_assert(sizeof(VkrVulkanPacketFrameRoot) == 464u,
                "Packet frame-root ABI size drift");
 _Static_assert(offsetof(VkrVulkanPacketFrameRoot, shadow_cascade_count) == 400u,
                "Packet frame-root receiver block moved");
-_Static_assert(offsetof(VkrVulkanPacketFrameRoot, ibl_probes) == 440u,
+_Static_assert(offsetof(VkrVulkanPacketFrameRoot, ibl_probes) == 448u,
                "Packet frame-root receiver block changed size");
 _Static_assert(sizeof(VkrVulkanPacketDrawRoot) == 48u,
                "Packet draw-root ABI size drift");
 _Static_assert(sizeof(VkrVulkanPacketUtilityRoot) == 544u,
                "Packet utility-root ABI size drift");
+_Static_assert(offsetof(VkrVulkanPacketUtilityRoot, ibl_probes) == 520u,
+               "Packet utility-root shadow block changed size");
 
 typedef struct VkrVulkanAllocation {
   VkDeviceMemory memory;

@@ -872,6 +872,8 @@ bool8_t vkr_shadow_system_init(VkrShadowSystem *system, RendererFrontend *rf,
     system->config.pcf_radius_texels = 0.0f;
   if (!vkr_shadow_pcf_sample_count_supported(system->config.pcf_sample_count))
     system->config.pcf_sample_count = 1u;
+  system->config.pcf_uniform_early_out =
+      system->config.pcf_uniform_early_out ? true_v : false_v;
   if (!(system->config.cascade_blend_fraction >= 0.0f))
     system->config.cascade_blend_fraction = 0.0f;
   if (system->config.cascade_blend_fraction > 0.5f)

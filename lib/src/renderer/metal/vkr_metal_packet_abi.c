@@ -120,6 +120,8 @@ vkr_global const VkrMetalPacketAbiField vkr_frame_root_fields[] = {
                   "shadow_fade_start", 412),
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, shadow_fade_end, "shadow_fade_end",
                   416),
+    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, shadow_pcf_uniform_early_out,
+                  "shadow_pcf_uniform_early_out", 420),
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, transmission_texture_id,
                   "transmission_source", 424),
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, ibl_probes, "ibl_probes", 432),

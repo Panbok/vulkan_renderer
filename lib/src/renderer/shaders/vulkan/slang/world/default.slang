@@ -199,7 +199,7 @@ float packet_shadow_cascade(VkrVulkanPacketFrameRoot* root, uint cascade,
     float2 tap_scale = root.shadow_pcf_radius_texels * inv_size;
     uint count = root.shadow_pcf_sample_count;
 
-    if (count >= 16u)
+    if (count >= 16u && root.shadow_pcf_uniform_early_out != 0u)
     {
         // Fully lit and fully shadowed regions are the common case and resolve
         // in nine taps. Only the penumbra pays for the full kernel.

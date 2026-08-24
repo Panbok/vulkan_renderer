@@ -2426,6 +2426,10 @@ vkr_renderer_validate_packet(const VkrRenderPacket *packet,
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.shadow.receiver.pcf_sample_count",
                         "must be one of the supported tap counts");
+    if (receiver->pcf_uniform_early_out > 1u)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.shadow.receiver.pcf_uniform_early_out",
+                        "must be zero or one");
     if (!isfinite(receiver->pcf_radius_texels) ||
         receiver->pcf_radius_texels < 0.0f)
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,

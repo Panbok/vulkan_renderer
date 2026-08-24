@@ -13,7 +13,7 @@
 #include "renderer/vkr_renderer.h"
 
 /** Version constant for VkrRenderPacket.packet_version validation. */
-#define VKR_RENDER_PACKET_VERSION 15u
+#define VKR_RENDER_PACKET_VERSION 16u
 
 /** Default manual camera exposure for HDR scene presentation. */
 #define VKR_DEFAULT_EXPOSURE 0.30f
@@ -252,6 +252,8 @@ typedef struct VkrShadowReceiverPacketData {
   float32_t pcf_radius_texels;
   /** Must pass vkr_shadow_pcf_sample_count_supported() at the cold boundary. */
   uint32_t pcf_sample_count;
+  /** Zero or one. Enables the nine-tap uniform-region probe at 16+ taps. */
+  bool32_t pcf_uniform_early_out;
   /** Fraction of a cascade's span spent cross-fading into the next one. */
   float32_t cascade_blend_fraction;
   /** View distances over which shadow strength falls to zero. */

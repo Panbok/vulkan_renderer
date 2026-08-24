@@ -35,6 +35,7 @@ static void test_packet_frame_constants(void) {
               .normal_offset_texels = 0.5f,
               .pcf_radius_texels = 1.5f,
               .pcf_sample_count = 16u,
+              .pcf_uniform_early_out = true_v,
               .cascade_blend_fraction = 0.08f,
               .fade_start = 180.0f,
               .fade_end = 200.0f,

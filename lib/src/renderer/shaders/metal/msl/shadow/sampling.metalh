@@ -102,7 +102,7 @@ vkr_metal_packet_shadow_cascade_sample(constant VkrMetalPacketFrameRoot *root,
   uint count = root->shadow_pcf_sample_count;
 
   float factor;
-  if (count >= 16u) {
+  if (count >= 16u && root->shadow_pcf_uniform_early_out != 0u) {
     // Fully lit and fully shadowed regions are the common case and resolve in
     // nine taps. Only the penumbra pays for the full kernel.
     float probe = vkr_metal_shadow_kernel(

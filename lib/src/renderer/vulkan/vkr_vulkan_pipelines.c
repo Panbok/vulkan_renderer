@@ -265,6 +265,12 @@ vkr_vk_validate_packet_root_abi(VkrVulkanRenderer *renderer) {
         NULL);
     valid &= vkr_vk_reflect_member_offset(
         frame, "view", offsetof(VkrVulkanPacketFrameRoot, view), NULL);
+    valid &= vkr_vk_reflect_member_offset(
+        frame, "shadow_pcf_uniform_early_out",
+        offsetof(VkrVulkanPacketFrameRoot, shadow_pcf_uniform_early_out), NULL);
+    valid &= vkr_vk_reflect_member_offset(
+        frame, "ibl_probes", offsetof(VkrVulkanPacketFrameRoot, ibl_probes),
+        NULL);
     valid &= frame && vkr_vk_reflected_struct_size(frame) ==
                           sizeof(VkrVulkanPacketFrameRoot);
 

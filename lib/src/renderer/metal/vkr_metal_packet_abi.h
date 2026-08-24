@@ -62,8 +62,7 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketFrameRoot {
   float32_t shadow_cascade_blend_fraction;
   float32_t shadow_fade_start;
   float32_t shadow_fade_end;
-  /** Restores 8-byte alignment for the resource handle that follows. */
-  uint32_t shadow_receiver_reserved;
+  uint32_t shadow_pcf_uniform_early_out;
   uint64_t transmission_texture_id;
   uint64_t ibl_probes;
   uint32_t ibl_probe_count;

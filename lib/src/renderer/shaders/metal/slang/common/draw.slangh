@@ -83,7 +83,7 @@ struct VkrMetalPacketFrameRoot
     float shadow_cascade_blend_fraction;
     float shadow_fade_start;
     float shadow_fade_end;
-    uint shadow_receiver_reserved;
+    uint shadow_pcf_uniform_early_out;
     Texture2D<float4> transmission_source;
     StructuredBuffer<VkrMetalPacketIblProbe> ibl_probes;
     uint ibl_probe_count;

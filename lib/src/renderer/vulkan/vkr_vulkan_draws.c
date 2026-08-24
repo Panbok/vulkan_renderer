@@ -503,6 +503,8 @@ void vkr_vk_fill_packet_frame_root(
       frame->shadow_receiver.cascade_blend_fraction;
   root->shadow_fade_start = frame->shadow_receiver.fade_start;
   root->shadow_fade_end = frame->shadow_receiver.fade_end;
+  root->shadow_pcf_uniform_early_out =
+      frame->shadow_receiver.pcf_uniform_early_out;
 }
 
 bool8_t vkr_vk_record_packet_draws(

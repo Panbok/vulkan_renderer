@@ -360,6 +360,7 @@ static VkrShadowPassPayload test_shadow_valid_payload(void) {
               .normal_offset_texels = 1.0f,
               .pcf_radius_texels = 1.5f,
               .pcf_sample_count = 16u,
+              .pcf_uniform_early_out = true_v,
               .cascade_blend_fraction = 0.08f,
               .fade_start = 180.0f,
               .fade_end = 200.0f,
@@ -442,6 +443,13 @@ static void test_shadow_receiver_packet_validation(void) {
   }
   shadow.receiver.pcf_sample_count = 16u;
 
+  shadow.receiver.pcf_uniform_early_out = 2u;
+  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+         VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
+  assert(strcmp(validation.field_path,
+                "packet.shadow.receiver.pcf_uniform_early_out") == 0);
+  shadow.receiver.pcf_uniform_early_out = true_v;
+
   shadow.receiver.pcf_radius_texels = -0.1f;
   assert(vkr_renderer_validate_packet(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
@@ -516,6 +524,7 @@ static void test_shadow_receiver_config_normalization(void) {
   config.normal_offset_texels = -INFINITY;
   config.pcf_radius_texels = NAN;
   config.pcf_sample_count = 7u;
+  config.pcf_uniform_early_out = (bool8_t)7;
   config.cascade_blend_fraction = 12.0f;
   config.shadow_distance_fade_range = NAN;
 
@@ -528,6 +537,7 @@ static void test_shadow_receiver_config_normalization(void) {
   /* An unsupported tap count degrades to the one-tap kernel; it never reaches
      the shader as an unvalidated index. */
   assert(system.config.pcf_sample_count == 1u);
+  assert(system.config.pcf_uniform_early_out == true_v);
   assert(system.config.cascade_blend_fraction == 0.5f);
   assert(system.config.shadow_distance_fade_range == 0.0f);
   vkr_shadow_system_shutdown(&system, test_frontend());
@@ -546,6 +556,7 @@ static void test_shadow_receiver_config_normalization(void) {
                                      VKR_SHADOW_CONFIG_BALANCED};
   for (uint32_t i = 0; i < ArrayCount(presets); ++i) {
     assert(vkr_shadow_pcf_sample_count_supported(presets[i].pcf_sample_count));
+    assert(presets[i].pcf_uniform_early_out == true_v);
     assert(presets[i].cascade_blend_fraction >= 0.0f &&
            presets[i].cascade_blend_fraction <= 0.5f);
     assert(presets[i].shadow_distance_fade_range <=

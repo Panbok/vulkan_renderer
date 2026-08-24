@@ -179,7 +179,8 @@ typedef struct VkrShadowCasterDepthBounds {
  * | depth_bias_constant_factor, _slope_factor, _clamp | raster depth bias, via
  *   VkrShadowConfigOverride, on both selected implementations |
  * | receiver_bias_texels, receiver_slope_bias_texels, normal_offset_texels,
- *   pcf_radius_texels, pcf_sample_count, cascade_blend_fraction,
+ *   pcf_radius_texels, pcf_sample_count, pcf_uniform_early_out,
+ *   cascade_blend_fraction,
  *   shadow_distance_fade_range | lowered into VkrShadowReceiverPacketData and
  *   read by packet_directional_shadow() and
  *   vkr_metal_packet_directional_shadow_sample() |
@@ -216,6 +217,8 @@ typedef struct VkrShadowConfig {
   float32_t pcf_radius_texels;
   /** Must pass vkr_shadow_pcf_sample_count_supported(). */
   uint32_t pcf_sample_count;
+  /** Allows the nine-tap uniform-region probe for kernels of 16+ taps. */
+  bool8_t pcf_uniform_early_out;
   /** Fraction of each cascade's span spent fading into the next cascade. */
   float32_t cascade_blend_fraction;
   /** World distance over which shadows fade out before max_shadow_distance. */
@@ -267,6 +270,7 @@ typedef struct VkrShadowConfig {
       .normal_offset_texels = 1.0f,                                            \
       .pcf_radius_texels = 1.5f,                                               \
       .pcf_sample_count = 16u,                                                 \
+      .pcf_uniform_early_out = true_v,                                         \
       .cascade_blend_fraction = 0.08f,                                         \
       .shadow_distance_fade_range = 20.0f,                                     \
       .use_constant_cascade_size = true_v,                                     \
@@ -305,6 +309,7 @@ typedef struct VkrShadowConfig {
       .normal_offset_texels = 1.0f,                                            \
       .pcf_radius_texels = 1.5f,                                               \
       .pcf_sample_count = 9u,                                                  \
+      .pcf_uniform_early_out = true_v,                                         \
       .cascade_blend_fraction = 0.08f,                                         \
       .shadow_distance_fade_range = 12.0f,                                     \
       .use_constant_cascade_size = true_v,                                     \

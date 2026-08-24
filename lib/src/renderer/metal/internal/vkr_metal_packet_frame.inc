@@ -104,6 +104,8 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
           frame_constants.shadow_receiver.cascade_blend_fraction,
       .shadow_fade_start = frame_constants.shadow_receiver.fade_start,
       .shadow_fade_end = frame_constants.shadow_receiver.fade_end,
+      .shadow_pcf_uniform_early_out =
+          frame_constants.shadow_receiver.pcf_uniform_early_out,
       .transmission_texture_id = upload->transmission_texture_id,
       .ibl_probes = upload->ibl_probes_gpu,
       .ibl_probe_count =
