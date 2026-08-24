@@ -83,6 +83,12 @@ target_link_libraries(vkr_vkt_packer
         ktx
 )
 
+add_executable(vkr_mesh_cooker
+    vkr_mesh_cooker.c
+)
+vkr_require_declared_c_functions(vkr_mesh_cooker)
+target_link_libraries(vkr_mesh_cooker PRIVATE renderer_lib)
+
 if(APPLE)
     add_executable(vkr_metal_timestamp_diagnostic
         metal/vkr_metal_timestamp_diagnostic.m

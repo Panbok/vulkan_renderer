@@ -158,6 +158,15 @@ vkr_internal String8 vkr_mesh_loader_gltf_basename_view(String8 path) {
   return string8_substring(&path, start, path.length);
 }
 
+vkr_internal bool8_t vkr_mesh_loader_gltf_path_equals(String8 lhs,
+                                                      String8 rhs) {
+#if defined(PLATFORM_WINDOWS)
+  return string8_equalsi(&lhs, &rhs);
+#else
+  return string8_equals(&lhs, &rhs);
+#endif
+}
+
 vkr_internal bool8_t vkr_mesh_loader_gltf_push_unique_path(
     Vector_String8 *paths, String8 value, VkrAllocator *allocator) {
   if (!paths || !allocator || !value.str || value.length == 0) {
@@ -166,7 +175,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_push_unique_path(
 
   for (uint64_t i = 0; i < paths->length; ++i) {
     String8 *existing = vector_get_String8(paths, i);
-    if (existing && string8_equalsi(existing, &value)) {
+    if (existing && vkr_mesh_loader_gltf_path_equals(*existing, value)) {
       return true_v;
     }
   }

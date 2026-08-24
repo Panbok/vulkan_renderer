@@ -58,7 +58,7 @@ cmake -S . -B "%BUILD_DIR%" -U CMAKE_TOOLCHAIN_FILE -DCMAKE_BUILD_TYPE:STRING=%B
 if errorlevel 1 goto :vkr_cmake_configure_failed
 
 echo Building vulkan_renderer (%BUILD_TYPE%)
-cmake --build ".\%BUILD_DIR%" --target vulkan_renderer vkr_harness --config %BUILD_TYPE%
+cmake --build ".\%BUILD_DIR%" --target vulkan_renderer vkr_harness vkr_mesh_cooker --config %BUILD_TYPE%
 if errorlevel 1 goto :vkr_build_failed
 
 echo Build completed successfully!

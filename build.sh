@@ -33,6 +33,6 @@ esac
   echo "Using build directory: ${BUILD_DIR}"
   cmake -S . -B "${BUILD_DIR}" -U CMAKE_TOOLCHAIN_FILE -DCMAKE_BUILD_TYPE:STRING="${BUILD_TYPE}" -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE ${GENERATOR} ${COMPILERS}
 
-  BUILD_TARGETS="vulkan_renderer vkr_harness"
+  BUILD_TARGETS="vulkan_renderer vkr_harness vkr_mesh_cooker"
   cmake --build "./${BUILD_DIR}" --target $BUILD_TARGETS --config "${BUILD_TYPE}"
 )

@@ -122,6 +122,25 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build KTX dependencies statically." FORCE)
 add_subdirectory("${VKR_KTX_SOFTWARE_DIR}" "${CMAKE_BINARY_DIR}/vendor/ktx-software" EXCLUDE_FROM_ALL)
 set(BUILD_SHARED_LIBS "${_VKR_BUILD_SHARED_LIBS_PREV}" CACHE BOOL "Restore shared library default after KTX setup." FORCE)
 
+# meshoptimizer geometry codecs and offline range optimization.
+set(VKR_MESHOPTIMIZER_DIR "${CMAKE_SOURCE_DIR}/vendor/meshoptimizer")
+if(NOT EXISTS "${VKR_MESHOPTIMIZER_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR "meshoptimizer submodule not found. Run: git submodule update --init --recursive")
+endif()
+set(MESHOPT_BUILD_DEMO OFF CACHE BOOL "Disable meshoptimizer demo." FORCE)
+set(MESHOPT_BUILD_GLTFPACK OFF CACHE BOOL "Disable meshoptimizer gltfpack." FORCE)
+set(MESHOPT_BUILD_SHARED_LIBS OFF CACHE BOOL "Build meshoptimizer statically." FORCE)
+set(MESHOPT_INSTALL OFF CACHE BOOL "Disable meshoptimizer install targets." FORCE)
+add_subdirectory("${VKR_MESHOPTIMIZER_DIR}"
+                 "${CMAKE_BINARY_DIR}/vendor/meshoptimizer"
+                 EXCLUDE_FROM_ALL)
+add_library(vkr_meshoptimizer_bridge STATIC
+    src/renderer/resources/loaders/vkr_meshoptimizer_bridge.cpp)
+target_compile_features(vkr_meshoptimizer_bridge PRIVATE cxx_std_11)
+target_include_directories(vkr_meshoptimizer_bridge
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(vkr_meshoptimizer_bridge PRIVATE meshoptimizer)
+
 # Locate SPIR-V headers (needed by spirv_reflect.h when using system headers).
 set(_VKR_VULKAN_SDK_INCLUDE "")
 if(DEFINED ENV{VULKAN_SDK})
@@ -193,6 +212,7 @@ else()
     target_link_libraries(renderer_lib PRIVATE ${Vulkan_LIBRARIES})
 endif()
 target_link_libraries(renderer_lib PRIVATE ktx_read)
+target_link_libraries(renderer_lib PRIVATE vkr_meshoptimizer_bridge)
 
 # Set platform-specific definitions and link libraries
 if(APPLE)
