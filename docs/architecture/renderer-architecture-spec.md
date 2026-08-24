@@ -339,9 +339,10 @@ materials and an optional generated linear-RGB companion for packed
 specular/glossiness textures. Direct and IBL Fresnel derive
 `F90 = saturate(max(F0) * 25)`, so zero authored specular cannot regain a
 camera-moving white grazing highlight. Generated namespace version 2 includes
-the Khronos sub-F0 non-metal rule; companion image version 1 and mesh-cache
-version 12 invalidate incomplete or stale prepared references. Generated image
-and material-file publication is atomic and resumable.
+the Khronos sub-F0 non-metal rule and companion image version 1. Runtime-written
+raw mesh sidecars are retired; direct `.vkb` loads require the deterministic
+version-13 cooked contract. Generated image and material-file publication
+remains atomic and resumable.
 
 Transmission is a distinct material and draw class. The graph renders opaque
 geometry into a pre-transmission HDR image, copies it into the working scene
@@ -392,6 +393,7 @@ restricted to specular reflection rays.
 | PBR materials | Implemented, evolving | Metallic-roughness and texture slots plus prepared, cached specular-glossiness lowering with retained dielectric F0/F90 response; transmission adds IOR, volume, attenuation, and scene-color refraction while clearcoat and sheen remain absent |
 | IBL | Implemented, partial integration | HDR/cubemap sources, prepared RGBA16F bakes, global environment, and two fragment-weighted local probes per draw ship; bake work remains undeclared to the graph and explicitly barriered |
 | glTF and scene loading | Implemented | CPU async pipeline; nested texture URIs and sidecars resolve without flattening; UVs lower once to VKR convention; point, spot, and directional punctual lights import through the scene transform into a stable 128-light table with a fragment-local 384-cell bitmask grid; frame-path uploads measured non-blocking |
+| Offline mesh cooking | Implemented, partial rollout | `vkr_mesh_cooker` uses pinned meshoptimizer v1.2 to atomically emit deterministic version-13 `.vkb` artifacts with per-range cache/fetch optimization, lossless current-ABI codecs, SHA-256 dependency/settings identity, and CRC32 metadata/stream checksums. The mesh worker validates and decodes explicit `.vkb` requests into the result arena; source requests no longer write sidecars. Strict validation still reads every recorded dependency, so source-free packaging, runtime source optimization, packed geometry, asset conversion, byte metrics, cooked-path cancellation/reload stress, and matched Release evidence remain open. |
 | Transmission | Implemented, bounded deferred paths | Graph-declared opaque, HDR feedback-copy, transmission, and ordinary-blend stages. Both backends peel and composite four ordered transmissive surfaces and publish completion-gated per-layer coverage. Metal defaults to the eight-pass compact-scan/indirect-shade P19 path; `VKR_TRANSMISSION_COMPACT_DISABLED=1` selects its focused full-screen diagnostic rollback. Vulkan retains full-screen shading. No order-independent or unbounded deep compositing is claimed |
 | KTX2/UASTC textures | Implemented | BC7/BC5, ASTC, ETC2, EAC RG11, and RGBA32 paths; every selector result is transcodable |
 | Editor viewport and picking | Partial | Picking is fully declared in the render graph and runs; readback is usually deferred but ring wrap can block. Both packet implementations copy `editor_enabled` into the graph frame, so the authored editor branch is reachable. Both implementations still pin viewport extent to window size; a true offscreen editor viewport remains absent. See §8 P1 item 15 |

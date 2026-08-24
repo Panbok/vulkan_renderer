@@ -1,6 +1,6 @@
 ---
-status: proposed
-updated: 2026-08-23
+status: partial
+updated: 2026-08-24
 authority: design
 ---
 
@@ -8,23 +8,25 @@ authority: design
 
 ## Conclusion
 
-VKR should integrate [meshoptimizer](https://github.com/zeux/meshoptimizer)
-through two separate paths. Ship deterministic offline cooking first. Then add
-per-load runtime optimization for uncooked or dynamic source meshes. The current
-resource-system split has the correct seam for both: a worker prepares CPU mesh
-bytes and the render thread finalizes dependencies and publishes geometry.
+VKR integrates [meshoptimizer](https://github.com/zeux/meshoptimizer) through
+the first, offline path. `vkr_mesh_cooker` emits deterministic version-13
+`.vkb` artifacts, and the existing mesh worker validates dependency hashes and
+decodes them into its result arena. Runtime optimization for uncooked or
+dynamic source meshes remains the separate second phase.
 
 Meshoptimizer alone is not a VRAM optimization in this renderer. The current
 publishers accept only `VkrVertex3d` (64 bytes) and 16/32-bit input indices,
 then Vulkan always allocates and uploads 64-byte vertices plus 32-bit indices.
-Using the codec while reconstructing that ABI reduces source/disk bytes and
-parsing time, but leaves resident geometry and upload bytes unchanged. Tight
-GPU packing is a separate third phase, after offline cooking and per-load
-runtime optimization.
+Using the codec while reconstructing that ABI reduces cooked artifact bytes and
+source-format parsing, but leaves resident geometry and upload bytes unchanged.
+The current strict dependency policy still reads and hashes authoring inputs at
+load time. Tight GPU packing is a separate third phase, after offline cooking
+and per-load runtime optimization.
 
-No performance or size reduction is claimed by this document. Establish the
-baseline and apply the acceptance gates before treating the proposal as a
-result.
+No performance or representative-content size reduction is claimed by this
+document. The source/cooked/decoded/upload/resident-byte baseline, runtime
+optimizer, packed GPU ABI, production asset conversion, and Release comparison
+remain open.
 
 ## Current implementation
 
@@ -49,16 +51,17 @@ source/cooked bytes (worker scope)
 
 The existing load metric records only the requested file's source size. A scene
 metric does not include its mesh/material closure, and a mesh metric does not
-record decoded CPU bytes, upload bytes, or resident GPU bytes. Those additions
-are prerequisite observability work for this proposal.
+record decoded CPU bytes, upload bytes, or resident GPU bytes. This remains
+prerequisite observability work before any storage or performance conclusion.
 
 ### Mesh ingestion and cache
 
-The single `VKR_RESOURCE_TYPE_MESH` loader dispatches `.obj`, `.gltf`, and
-`.glb` inside `vkr_mesh_loader_parse_source()`. It is intentionally one loader:
-the resource system routes ordinary batch loading by resource type, so a second
-mesh loader would not safely route mixed source formats. The glTF design
-documents the same constraint in [gltf-loader-design.md](gltf-loader-design.md).
+The single `VKR_RESOURCE_TYPE_MESH` loader dispatches `.obj`, `.gltf`, `.glb`,
+and `.vkb`. Source requests parse authoring data without writing a sidecar.
+Explicit `.vkb` requests enter the version-13 validator/decoder. It remains one
+loader because ordinary batch routing is by resource type; a second mesh loader
+would not safely route mixed formats. The glTF design documents the same
+constraint in [gltf-loader-design.md](gltf-loader-design.md).
 
 For each material bucket, `vkr_mesh_loader_finalize_builder()` currently:
 
@@ -68,11 +71,11 @@ For each material bucket, `vkr_mesh_loader_finalize_builder()` currently:
 4. appends the resulting vertices and globally offset 32-bit indices to one
    merged payload.
 
-The sidecar `.vkb` cache (magic `VKMH`, currently version 12) persists those
-same merged `VkrVertex3d` and `uint32_t` arrays verbatim, together with source
-paths, dependency mtimes, and submesh metadata. It avoids repeated parse work,
-but it is not compressed and is not a production asset contract: it is written
-during runtime loading beside source data and invalidated from source mtimes.
+Version-12 raw `.vkb` sidecars are retired. `vkr_mesh_cooker` is the sole
+version-13 writer; each material range has separately cache/fetch-optimized and
+meshoptimizer-encoded `VkrVertex3d` and `uint32_t` streams. The artifact records
+SHA-256 dependency/settings hashes, bounds, material metadata, aligned stream
+ranges, encoded/decoded sizes, and CRC32 metadata/stream checksums.
 
 The glTF importer reads every accessor into temporary `VkrVertex3d` and bakes
 each node's world transform into its vertices before it emits a primitive.
@@ -111,30 +114,34 @@ the passes that pull those records. Cache-line behaviour, shader-generated
 loads, and decode arithmetic decide the frame-time result, so byte savings do
 not prove a large frame-time gain.
 
-## Proposed asset pipeline
+## Asset pipeline
 
-### Offline artifact boundary, first implementation
+### Offline artifact boundary, implemented
 
-Promote the existing `.vkb` extension into the deterministic cooked artifact.
-`vkr_mesh_cooker` consumes source OBJ/glTF/GLB and writes versioned immutable
-`.vkb` files. Source formats remain authoring inputs. Production scenes refer
-to `.vkb` explicitly, or the asset build rewrites their references atomically.
-The runtime does not silently cook source assets, write beside them, or fall
-back to source parsing in a shipped build.
+The existing `.vkb` extension is the deterministic cooked artifact.
+`vkr_mesh_cooker` consumes source OBJ/glTF/GLB and atomically writes immutable
+version-13 `.vkb` files. Source formats remain authoring inputs and runtime
+source loads do not write beside them. Production scene-reference rewriting
+and asset conversion remain open. Generated material files referenced by cooked
+ranges are included in the dependency manifest.
 
-The cooker replaces the current raw-cache payload by bumping
-`VKR_MESH_CACHE_VERSION`. The `.vkb` header must contain:
+The cooker keeps persistent importer state in a source arena and parser/codec
+temporaries in an independent scratch arena. Parser scope rollback therefore
+cannot invalidate accumulated vertices, ranges, or dependency paths.
+
+The version-13 `.vkb` header contains:
 
 - magic, format version, endianness, and explicit meshoptimizer codec version;
 - a content hash of all source/dependency bytes and a cooker-settings hash;
 - layout identifier and per-range decode parameters;
 - exact byte ranges, encoded/decoded sizes, alignment, and checksum for every
   vertex and index stream;
-- range/submesh metadata, material identifiers, bounds, and dependency data.
+- range/submesh metadata, material identifiers, bounds, and dependency data,
+  covered by a separate metadata checksum.
 
 All untrusted lengths and offsets are validated once at the file boundary
-before allocation. Invalid artifacts fail the request; they never reach a
-publisher with partly decoded data.
+before dependency I/O or result-buffer allocation. Invalid artifacts fail the
+request; they never reach a publisher with partly decoded data.
 
 ### Cook order per independent renderable range
 
@@ -158,45 +165,65 @@ lossy operation. The cooker records quantization error and rejects input that
 exceeds the range's configured position, normal/tangent, UV, or color error
 budget.
 
+Version 13 deliberately encodes the current 64-byte `VkrVertex3d` layout and
+32-bit indices losslessly. Deduplication and tangent generation remain in the
+source importer; the cooker then applies vertex-cache and vertex-fetch
+optimization per range before codec encoding. It does not remove triangles,
+run overdraw optimization, or quantize. ADR-031 owns the later packed layout
+and its error budgets.
+
 Pull meshoptimizer through a pinned `vendor/meshoptimizer` git submodule. This
 matches the existing `vendor/ktx-software` pattern: the checkout is part of the
 source tree, CMake builds it as a static child target, and configure fails with
 a direct `git submodule update --init --recursive` instruction when it is
 missing. Do not use `FetchContent` or any configure-time network download.
 
-The submodule pin is the reviewed upstream commit. Record its release/tag and
-commit in the asset-pipeline documentation, preserve its MIT license text, and
-update it only through an explicit dependency review. Do not copy its source
+The reviewed dependency is meshoptimizer v1.2 at commit
+`9d9890c73011d75920af614485296d1e03e95448`. Its MIT license remains in the
+pinned submodule. Updates require an explicit dependency review; do not copy
 files into VKR. That would create a snapshot with less upgrade provenance than
 the submodule.
 
-meshoptimizer source is C++, although its header/API is C-compatible. Build a
-small internal C++ bridge that links the static upstream target and exports only
-VKR-owned `extern "C"` functions to C11 loader and cooker code. The bridge
-header stays private to the mesh pipeline. CMake enables C++ for the bridge and
-cooker targets, and the final link uses the C++ runtime through the target
-dependency. Public VKR headers and per-draw code do not expose C++ or
+meshoptimizer source is C++. The internal `vkr_meshoptimizer_bridge` target
+links the static upstream target and exports only VKR-owned `extern "C"`
+functions to the C11 loader and cooker. Its header stays private to the mesh
+pipeline, and final targets acquire the C++ runtime through target
+dependencies. Public VKR headers and per-draw code expose neither C++ nor
 meshoptimizer types.
 
-### Runtime `.vkb` load
+### Runtime `.vkb` load, implemented with observability gaps
 
 `vkr_mesh_loader_create()` remains the sole mesh loader. Its `can_load` and
 source dispatch retain `.vkb`; no new resource type, extension, or scene API is
 needed.
 
-1. Worker `prepare_async` validates the `.vkb` directory and dependency hash.
+1. Worker `prepare_async` validates the complete `.vkb` structure, metadata and
+   stream checksums, codec headers, and dependency hash.
 2. It decodes streams into the result arena in their already packed runtime
    representation, creates the existing submesh ranges, and records material
    dependency requests.
 3. `finalize_async` retains its present render-thread material resolution and
-   publication contract. It must account for decoded/upload bytes in its
-   `VkrResourceAsyncFinalizeCost` before publication.
+   publication contract. Decoded/upload byte metrics and upload-cost projection
+   remain open because geometry upload occurs later in mesh publication, not in
+   mesh resource finalization.
 4. Unload continues to release the loader result, material request references,
    and finally GPU resources through their existing proven-submit retirement
    path.
 
 The decoder is CPU work and belongs to the worker stage. There is no per-draw
 decode, allocation, lookup, or fallback branch.
+
+Strict dependency verification currently requires every recorded dependency,
+including authoring inputs and generated material files, to remain available to
+the runtime and reads those bytes to reject stale output. This is a provenance
+contract, not a source-free delivery contract. A production policy for
+source-free packages remains part of asset conversion and must be explicit
+before cooked assets replace scene references.
+
+Focused tests cover deterministic encoding, SHA-256 metadata, direct loader
+dispatch, valid range reconstruction, malformed offsets, checksum and codec
+failures, dependency-hash failure, and one load/unload pool return. Cooked-path
+async cancellation and repeated scene load/unload coverage remain open.
 
 ### Runtime source optimization, second implementation
 
@@ -321,13 +348,14 @@ would add storage without a consumer.
    upload bytes, GPU live/high-water bytes, triangle/vertex counts, and
    meshoptimizer cache/fetch analyzers. Run the normal Release profile on at
    least Sponza and Bistro before changing assets.
-2. **Cooker.** Add the pinned `vendor/meshoptimizer` submodule, build it as a
-   static dependency, build `vkr_mesh_cooker`, and add
-   deterministic byte-for-byte and malformed-artifact tests. Compare decoded
-   vertex/index bytes with the canonical pre-quantization representation.
-3. **Cooked runtime load.** Add `.vkb` worker decode with bounded per-request memory,
-   source/dependency hash validation, and CPU-only tests. Exercise cancellation,
-   failure, and repeated load/unload paths.
+2. **Cooker — implemented.** The pinned static dependency, private bridge,
+   `vkr_mesh_cooker`, atomic version-13 writer, deterministic byte comparison,
+   malformed-artifact coverage, and current-ABI round trip ship.
+3. **Cooked runtime load — partial.** `.vkb` worker decode validates bounded
+   metadata, metadata/stream checksums, codecs, decoded bounds, and
+   source/dependency hashes before normal material finalization. Focused CPU
+   coverage includes direct load/unload;
+   cooked-path cancellation and repeated scene load/unload remain open.
 4. **Runtime optimizer.** Add the separately tested, opt-in source path with
    the current ABI's remap/cache/fetch operations. Measure cold and warm scene
    load time, request deduplication, and renderer frame time against cooked

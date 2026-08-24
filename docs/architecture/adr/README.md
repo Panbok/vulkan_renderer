@@ -54,7 +54,7 @@ Considered → Revisit When**.
 | [ADR-027](027-immediate-mode-grid-ui.md) | Immediate-mode grid UI with a composited editor viewport | Proposed |
 | [ADR-028](028-gpu-driven-deferred-visibility-buffer.md) | GPU-driven deferred visibility-buffer rendering | Accepted and implemented through P21; the legacy world topology and runtime fallback are retired, and the measured eight-pass P19 compact path is the Metal default with a diagnostic full-screen rollback |
 | [ADR-029](029-retained-graph-resources.md) | Retained graph resources with per-subresource content validity | Accepted (partial); load-bearing for Metal P3B cascade reuse, while the Vulkan path remains unexecuted and unvalidated at runtime |
-| [ADR-030](030-offline-mesh-optimization-and-cooking.md) | Offline mesh optimization and cooked geometry artifacts | Proposed |
+| [ADR-030](030-offline-mesh-optimization-and-cooking.md) | Offline mesh optimization and cooked geometry artifacts | Accepted (partial); version-13 cooker and worker decode ship, while runtime source optimization, packed geometry, metrics, asset conversion, and Release evidence remain open |
 | [ADR-031](031-versioned-packed-static-geometry-abi.md) | Tight packed static-geometry GPU ABI | Proposed |
 | [ADR-032](032-two-phase-confirmed-visibility.md) | Two-phase current-depth-confirmed visibility | Declined for the measured workload |
 | [ADR-033](033-occupied-depth-sdsm-feedback.md) | Occupied-depth SDSM through completed asynchronous feedback | Accepted; opt-in on Metal and Vulkan, fixed splits remain default |
