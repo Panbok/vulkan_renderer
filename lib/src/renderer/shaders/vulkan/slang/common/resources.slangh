@@ -80,7 +80,8 @@ struct VkrVulkanPacketFrameRoot
     float4 directional_color_intensity;
     float4 ambient_color;
     uint render_mode;
-    uint3 reserved_1;
+    uint shadow_debug_mode;
+    uint2 reserved_1;
     float4* point_light_data;
     uint4* point_light_masks;
     float4 point_light_grid_origin_cell_size;

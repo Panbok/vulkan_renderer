@@ -29,8 +29,8 @@ struct VkrVkIndirectCommand
 
 struct VkrVkGeometryRow
 {
-    VkrVulkanVertex* vertices;
-    uint* indices;
+    VkrVulkanVertex *vertices;
+    uint *indices;
     uint first_vertex;
     uint first_index;
     uint vertex_stride;
@@ -42,14 +42,14 @@ struct VkrVkGeometryRow
 
 struct VkrVkCullRoot
 {
-    VkrGpuCandidateDrawRow* candidates;
-    uint* classifications;
-    VkrGpuVisibleDrawRow* visible;
-    VkrVkDrawState* states;
-    VkrVkIndirectCommand* commands;
-    VkrVulkanInstance* instances;
-    float4x4* view_projections;
-    float4* frustum_planes;
+    VkrGpuCandidateDrawRow *candidates;
+    uint *classifications;
+    VkrGpuVisibleDrawRow *visible;
+    VkrVkDrawState *states;
+    VkrVkIndirectCommand *commands;
+    VkrVulkanInstance *instances;
+    float4x4 *view_projections;
+    float4 *frustum_planes;
     uint candidate_count;
     uint view_count;
     uint candidate_capacity;
@@ -65,10 +65,10 @@ struct VkrVkCullRoot
 
 struct VkrVkRasterRoot
 {
-    VkrVkGeometryRow* geometry_rows;
-    VkrGpuVisibleDrawRow* visible_rows;
-    VkrVkDrawState* states;
-    VkrVulkanPacketFrameRoot* frame;
+    VkrVkGeometryRow *geometry_rows;
+    VkrGpuVisibleDrawRow *visible_rows;
+    VkrVkDrawState *states;
+    VkrVulkanPacketFrameRoot *frame;
     uint view_index;
     uint visible_capacity;
     uint previous_depth_texture;
@@ -90,14 +90,14 @@ struct VkrVkVisibilityFragment
 
 struct VkrVkResolveRoot
 {
-    VkrVkGeometryRow* geometry_rows;
-    VkrGpuVisibleDrawRow* visible_rows;
+    VkrVkGeometryRow *geometry_rows;
+    VkrGpuVisibleDrawRow *visible_rows;
     uint2 reserved_address;
-    VkrVulkanInstance* instances;
-    VkrVulkanMaterial* materials;
-    VkrVulkanVertex* vertices;
-    uint* indices;
-    VkrVkDrawState* compaction_state;
+    VkrVulkanInstance *instances;
+    VkrVulkanMaterial *materials;
+    VkrVulkanVertex *vertices;
+    uint *indices;
+    VkrVkDrawState *compaction_state;
     float4x4 view_projection;
     uint vbuffer_texture;
     uint albedo_texture;
@@ -117,7 +117,7 @@ struct VkrVkResolveRoot
 
 struct VkrVkLightingRoot
 {
-    VkrVulkanPacketFrameRoot* frame;
+    VkrVulkanPacketFrameRoot *frame;
     uint2 frame_address_padding;
     float4x4 inverse_view_projection;
     uint vbuffer_texture;
@@ -152,20 +152,19 @@ struct VkrVkSdsmState
 
 struct VkrVkSdsmRoot
 {
-    VkrVkSdsmState* reduce_state;
+    VkrVkSdsmState *reduce_state;
     uint depth_texture;
     uint vbuffer_texture;
     uint2 extent;
     uint2 reserved;
 };
 
-
 struct VkrVkPickingRoot
 {
-    VkrGpuVisibleDrawRow* opaque_visible;
-    VkrGpuVisibleDrawRow* transmission_visible;
-    VkrVulkanInstance* opaque_instances;
-    VkrVulkanInstance* transmission_instances;
+    VkrGpuVisibleDrawRow *opaque_visible;
+    VkrGpuVisibleDrawRow *transmission_visible;
+    VkrVulkanInstance *opaque_instances;
+    VkrVulkanInstance *transmission_instances;
     uint opaque_vbuffer;
     uint transmission_vbuffer;
     uint output_texture;
@@ -176,16 +175,16 @@ struct VkrVkPickingRoot
 
 struct VkrVkTransmissionRoot
 {
-    VkrGpuVisibleDrawRow* visible_rows;
-    VkrVulkanMaterial* materials;
+    VkrGpuVisibleDrawRow *visible_rows;
+    VkrVulkanMaterial *materials;
     // Offset 16 stays free of physical-buffer addresses; see the resolve root.
     uint2 reserved_address;
-    VkrVkGeometryRow* geometry_rows;
-    VkrVulkanInstance* instances;
-    VkrVulkanVertex* vertices;
-    uint* indices;
-    VkrVkDrawState* compaction_state;
-    VkrVulkanPacketFrameRoot* frame;
+    VkrVkGeometryRow *geometry_rows;
+    VkrVulkanInstance *instances;
+    VkrVulkanVertex *vertices;
+    uint *indices;
+    VkrVkDrawState *compaction_state;
+    VkrVulkanPacketFrameRoot *frame;
     uint2 frame_address_padding;
     float4x4 view_projection;
     float4x4 inverse_view_projection;
@@ -204,24 +203,57 @@ struct VkrVkTransmissionRoot
 
 struct VkrVkTransmissionCoverageRoot
 {
-    uint* covered_pixels;
+    uint *covered_pixels;
     uint vbuffer_texture;
     uint layer;
     uint2 extent;
     uint2 reserved;
 };
 
-struct VkrVkCullPush { VkrVkCullRoot* root; uint2 reserved; };
-struct VkrVkRasterPush { VkrVkRasterRoot* root; uint bucket; uint reserved; };
-struct VkrVkResolvePush { VkrVkResolveRoot* root; uint2 reserved; };
-struct VkrVkLightingPush { VkrVkLightingRoot* root; uint2 reserved; };
-struct VkrVkHzbPush { VkrVkHzbRoot* root; uint2 reserved; };
-struct VkrVkSdsmPush { VkrVkSdsmRoot* root; uint2 reserved; };
-struct VkrVkPickingPush { VkrVkPickingRoot* root; uint2 reserved; };
-struct VkrVkTransmissionPush { VkrVkTransmissionRoot* root; uint2 reserved; };
+struct VkrVkCullPush
+{
+    VkrVkCullRoot *root;
+    uint2 reserved;
+};
+struct VkrVkRasterPush
+{
+    VkrVkRasterRoot *root;
+    uint bucket;
+    uint reserved;
+};
+struct VkrVkResolvePush
+{
+    VkrVkResolveRoot *root;
+    uint2 reserved;
+};
+struct VkrVkLightingPush
+{
+    VkrVkLightingRoot *root;
+    uint2 reserved;
+};
+struct VkrVkHzbPush
+{
+    VkrVkHzbRoot *root;
+    uint2 reserved;
+};
+struct VkrVkSdsmPush
+{
+    VkrVkSdsmRoot *root;
+    uint2 reserved;
+};
+struct VkrVkPickingPush
+{
+    VkrVkPickingRoot *root;
+    uint2 reserved;
+};
+struct VkrVkTransmissionPush
+{
+    VkrVkTransmissionRoot *root;
+    uint2 reserved;
+};
 struct VkrVkTransmissionCoveragePush
 {
-    VkrVkTransmissionCoverageRoot* root;
+    VkrVkTransmissionCoverageRoot *root;
     uint2 reserved;
 };
 
@@ -236,44 +268,41 @@ struct VkrVkTransmissionCoveragePush
 [[vk::push_constant]] ConstantBuffer<VkrVkTransmissionCoveragePush>
     g_transmission_coverage_push;
 
-static VkrVkCullRoot* vkr_vk_cull_root()
-{
-    return g_cull_push.root;
-}
+static VkrVkCullRoot *vkr_vk_cull_root() { return g_cull_push.root; }
 
-static bool vkr_vk_sphere_visible(VkrVkCullRoot* root, float4 sphere,
+static bool vkr_vk_sphere_visible(VkrVkCullRoot *root, float4 sphere,
                                   uint view_index)
 {
     float radius = max(sphere.w, 0.0f);
-    [unroll]
-    for (uint plane = 0u; plane < VKR_VK_FRUSTUM_PLANE_COUNT; ++plane)
+    [unroll] for (uint plane = 0u; plane < VKR_VK_FRUSTUM_PLANE_COUNT; ++plane)
     {
-        float4 equation = root.frustum_planes[
-            view_index * VKR_VK_FRUSTUM_PLANE_COUNT + plane];
+        float4 equation =
+            root.frustum_planes[view_index * VKR_VK_FRUSTUM_PLANE_COUNT +
+                                plane];
         if (dot(equation.xyz, sphere.xyz) + equation.w < -radius)
             return false;
     }
     return true;
 }
 
-static bool vkr_vk_candidate_occluded(VkrVkCullRoot* root,
+static bool vkr_vk_candidate_occluded(VkrVkCullRoot *root,
                                       VkrGpuCandidateDrawRow candidate)
 {
     if (root.hzb_enabled == 0u || root.hzb_mip_count == 0u ||
         any(root.hzb_extent == 0u) || (candidate.flags & 1u) == 0u)
         return false;
     VkrVulkanInstance instance = root.instances[candidate.instance_index];
-    float3 center = mul(instance.model,
-                        float4(candidate.local_bounding_sphere.xyz, 1.0f)).xyz;
-    float scale = max(length(instance.model[0].xyz),
-                      max(length(instance.model[1].xyz),
-                          length(instance.model[2].xyz)));
+    float3 center =
+        mul(instance.model, float4(candidate.local_bounding_sphere.xyz, 1.0f))
+            .xyz;
+    float scale =
+        max(length(instance.model[0].xyz),
+            max(length(instance.model[1].xyz), length(instance.model[2].xyz)));
     float radius = max(candidate.local_bounding_sphere.w * scale, 0.0f);
     float2 ndc_min = 1e30f;
     float2 ndc_max = -1e30f;
     float nearest_depth = 1.0f;
-    [unroll]
-    for (uint corner = 0u; corner < 8u; ++corner)
+    [unroll] for (uint corner = 0u; corner < 8u; ++corner)
     {
         float3 sign_vector = float3((corner & 1u) != 0u ? 1.0f : -1.0f,
                                     (corner & 2u) != 0u ? 1.0f : -1.0f,
@@ -289,10 +318,10 @@ static bool vkr_vk_candidate_occluded(VkrVkCullRoot* root,
     }
     if (nearest_depth <= 0.0f || any(ndc_min > 1.0f) || any(ndc_max < -1.0f))
         return false;
-    float2 uv_min = clamp(float2(ndc_min.x, -ndc_max.y) * 0.5f + 0.5f,
-                          0.0f, 1.0f);
-    float2 uv_max = clamp(float2(ndc_max.x, -ndc_min.y) * 0.5f + 0.5f,
-                          0.0f, 1.0f);
+    float2 uv_min =
+        clamp(float2(ndc_min.x, -ndc_max.y) * 0.5f + 0.5f, 0.0f, 1.0f);
+    float2 uv_max =
+        clamp(float2(ndc_max.x, -ndc_min.y) * 0.5f + 0.5f, 0.0f, 1.0f);
     uint2 base_min = min(uint2(floor(uv_min * float2(root.hzb_extent))),
                          root.hzb_extent - 1u);
     uint2 base_max = min(uint2(floor(uv_max * float2(root.hzb_extent))),
@@ -313,7 +342,8 @@ static bool vkr_vk_candidate_occluded(VkrVkCullRoot* root,
             // decorated NonUniform; without it the access is undefined.
             float occluder_depth =
                 g_storage_2d[NonUniformResourceIndex(root.hzb_textures[mip])]
-                            [uint2(x, y)].x;
+                            [uint2(x, y)]
+                                .x;
             if (nearest_depth <= occluder_depth + root.hzb_depth_epsilon)
                 return false;
         }
@@ -325,7 +355,7 @@ static bool vkr_vk_candidate_occluded(VkrVkCullRoot* root,
 [numthreads(64, 1, 1)]
 void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkCullRoot* root = vkr_vk_cull_root();
+    VkrVkCullRoot *root = vkr_vk_cull_root();
     uint total = root.candidate_count * root.view_count;
     if (thread_id.x >= total)
         return;
@@ -333,12 +363,12 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
     uint candidate_index = thread_id.x - view_index * root.candidate_count;
     VkrGpuCandidateDrawRow candidate = root.candidates[candidate_index];
     uint required_flags = view_index == 0u ? root.camera_required_flags
-                                          : root.shadow_required_flags;
+                                           : root.shadow_required_flags;
     if (candidate.state_bucket >= VKR_VK_DRAW_BUCKET_COUNT ||
         (candidate.flags & required_flags) != required_flags)
     {
-        root.classifications[view_index * root.candidate_capacity + candidate_index] =
-            0xffffffffu;
+        root.classifications[view_index * root.candidate_capacity +
+                             candidate_index] = 0xffffffffu;
         return;
     }
     VkrVulkanInstance instance = root.instances[candidate.instance_index];
@@ -347,8 +377,10 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
     float3 scale_x = instance.model[0].xyz;
     float3 scale_y = instance.model[1].xyz;
     float3 scale_z = instance.model[2].xyz;
-    float world_radius = local.w * max(length(scale_x), max(length(scale_y), length(scale_z)));
-    uint classification_index = view_index * root.candidate_capacity + candidate_index;
+    float world_radius =
+        local.w * max(length(scale_x), max(length(scale_y), length(scale_z)));
+    uint classification_index =
+        view_index * root.candidate_capacity + candidate_index;
     float4 world_sphere = float4(world_center.xyz, world_radius);
     if ((candidate.flags & 1u) != 0u &&
         !vkr_vk_sphere_visible(root, world_sphere, view_index))
@@ -374,14 +406,13 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
 [numthreads(1, 1, 1)]
 void vk_gpu_draw_prefix(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkCullRoot* root = vkr_vk_cull_root();
+    VkrVkCullRoot *root = vkr_vk_cull_root();
     uint view_index = thread_id.x;
     if (view_index >= root.view_count)
         return;
     uint cursor = 0u;
     uint overflow = 0u;
-    [unroll]
-    for (uint bucket = 0u; bucket < VKR_VK_DRAW_BUCKET_COUNT; ++bucket)
+    [unroll] for (uint bucket = 0u; bucket < VKR_VK_DRAW_BUCKET_COUNT; ++bucket)
     {
         uint count = root.states[view_index].bucket_counts[bucket];
         uint written_count = min(count, root.command_partition_capacity);
@@ -399,21 +430,24 @@ void vk_gpu_draw_prefix(uint3 thread_id : SV_DispatchThreadID)
 [numthreads(64, 1, 1)]
 void vk_gpu_draw_encode(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkCullRoot* root = vkr_vk_cull_root();
+    VkrVkCullRoot *root = vkr_vk_cull_root();
     uint total = root.candidate_count * root.view_count;
     if (thread_id.x >= total)
         return;
     uint view_index = thread_id.x / root.candidate_count;
     uint candidate_index = thread_id.x - view_index * root.candidate_count;
-    uint classification_index = view_index * root.candidate_capacity + candidate_index;
+    uint classification_index =
+        view_index * root.candidate_capacity + candidate_index;
     uint bucket = root.classifications[classification_index];
     if (bucket >= VKR_VK_DRAW_BUCKET_COUNT)
         return;
     uint local_index;
-    InterlockedAdd(root.states[view_index].bucket_cursors[bucket], 1u, local_index);
+    InterlockedAdd(root.states[view_index].bucket_cursors[bucket], 1u,
+                   local_index);
     if (local_index >= root.command_partition_capacity)
         return;
-    uint visible_index = root.states[view_index].execution_ranges[bucket].x + local_index;
+    uint visible_index =
+        root.states[view_index].execution_ranges[bucket].x + local_index;
     if (visible_index >= root.candidate_capacity)
         return;
     VkrGpuCandidateDrawRow candidate = root.candidates[candidate_index];
@@ -426,9 +460,11 @@ void vk_gpu_draw_encode(uint3 thread_id : SV_DispatchThreadID)
     visible.vertex_offset = candidate.vertex_offset;
     visible.state_bucket = bucket;
     visible.flags = candidate.flags;
-    root.visible[view_index * root.candidate_capacity + visible_index] = visible;
+    root.visible[view_index * root.candidate_capacity + visible_index] =
+        visible;
     uint argument_index = (view_index * VKR_VK_DRAW_BUCKET_COUNT + bucket) *
-                          root.command_partition_capacity + local_index;
+                              root.command_partition_capacity +
+                          local_index;
     VkrVkIndirectCommand command;
     command.index_count = candidate.index_count;
     command.instance_count = 1u;
@@ -442,14 +478,16 @@ void vk_gpu_draw_encode(uint3 thread_id : SV_DispatchThreadID)
 VkrVkVisibilityOutput vk_visibility_vertex(uint vertex_id : SV_VertexID,
                                            uint draw_index : SV_DrawIndex)
 {
-    VkrVkRasterRoot* root = g_raster_push.root;
+    VkrVkRasterRoot *root = g_raster_push.root;
     uint visible_instance =
         root.states[root.view_index].execution_ranges[g_raster_push.bucket].x +
         draw_index;
-    uint visible_index = root.view_index * root.visible_capacity + visible_instance;
+    uint visible_index =
+        root.view_index * root.visible_capacity + visible_instance;
     VkrGpuVisibleDrawRow visible = root.visible_rows[visible_index];
     VkrVkGeometryRow geometry = root.geometry_rows[visible.geometry_index];
-    VkrVulkanVertex vertex = geometry.vertices[geometry.first_vertex + vertex_id];
+    VkrVulkanVertex vertex =
+        geometry.vertices[geometry.first_vertex + vertex_id];
     VkrVulkanInstance instance = root.frame.instances[visible.instance_index];
     VkrVkVisibilityOutput output;
     output.position = mul(root.frame.view_projection,
@@ -461,66 +499,80 @@ VkrVkVisibilityOutput vk_visibility_vertex(uint vertex_id : SV_VertexID,
 }
 
 [shader("fragment")]
-VkrVkVisibilityFragment vk_visibility_fragment(
-    VkrVkVisibilityOutput input, uint primitive_id : SV_PrimitiveID,
-    bool front_facing : SV_IsFrontFace)
+VkrVkVisibilityFragment
+vk_visibility_fragment(VkrVkVisibilityOutput input,
+                       uint primitive_id : SV_PrimitiveID,
+                       bool front_facing : SV_IsFrontFace)
 {
-    VkrVkRasterRoot* root = g_raster_push.root;
+    VkrVkRasterRoot *root = g_raster_push.root;
     if (root.previous_depth_texture != 0xffffffffu)
     {
         float previous_depth =
-            g_array_textures[root.previous_depth_texture].Load(
-                int4(int2(input.position.xy), int(root.previous_depth_layer), 0)).r;
+            g_array_textures[root.previous_depth_texture]
+                .Load(int4(int2(input.position.xy),
+                           int(root.previous_depth_layer), 0))
+                .r;
         if (input.position.z <= previous_depth + 1e-5f)
             discard;
     }
-    VkrGpuVisibleDrawRow visible = root.visible_rows[
-        root.view_index * root.visible_capacity + input.visible_index];
+    VkrGpuVisibleDrawRow visible =
+        root.visible_rows[root.view_index * root.visible_capacity +
+                          input.visible_index];
     VkrVulkanMaterial material = root.frame.materials[visible.material_index];
     if (material.alpha_mode == 1u)
     {
-        float alpha = g_textures[NonUniformResourceIndex(material.base_color_texture)]
-                          .Sample(g_samplers[NonUniformResourceIndex(material.base_color_sampler)], input.uv).a *
-                      material.tint.a * input.color.a;
+        float alpha =
+            g_textures[NonUniformResourceIndex(material.base_color_texture)]
+                .Sample(g_samplers[NonUniformResourceIndex(
+                            material.base_color_sampler)],
+                        input.uv)
+                .a *
+            material.tint.a * input.color.a;
         if (alpha < material.material_alpha.x)
             discard;
     }
     VkrVkVisibilityFragment output;
-    output.value = uint2(
-        input.visible_index + 1u,
-        primitive_id | (front_facing ? VKR_VK_FRONT_FACE_BIT : 0u));
+    output.value =
+        uint2(input.visible_index + 1u,
+              primitive_id | (front_facing ? VKR_VK_FRONT_FACE_BIT : 0u));
     return output;
 }
 
-// Camera-opaque visibility draws reach neither discard above. A shader that can
-// discard prevents unconditional early depth writes, so opaque buckets use this
-// fragment with early tests. Cutouts retain alpha testing, and transmission
-// retains the preceding peel-depth rejection.
+// Camera-opaque visibility draws reach neither discard above. A shader that
+// can discard prevents unconditional early depth writes, so opaque buckets
+// use this fragment with early tests. Cutouts retain alpha testing, and
+// transmission retains the preceding peel-depth rejection.
 [shader("fragment")]
 [earlydepthstencil]
-VkrVkVisibilityFragment vk_visibility_opaque_fragment(
-    VkrVkVisibilityOutput input, uint primitive_id : SV_PrimitiveID,
-    bool front_facing : SV_IsFrontFace)
+VkrVkVisibilityFragment
+vk_visibility_opaque_fragment(VkrVkVisibilityOutput input,
+                              uint primitive_id : SV_PrimitiveID,
+                              bool front_facing : SV_IsFrontFace)
 {
     VkrVkVisibilityFragment output;
-    output.value = uint2(
-        input.visible_index + 1u,
-        primitive_id | (front_facing ? VKR_VK_FRONT_FACE_BIT : 0u));
+    output.value =
+        uint2(input.visible_index + 1u,
+              primitive_id | (front_facing ? VKR_VK_FRONT_FACE_BIT : 0u));
     return output;
 }
 
 [shader("fragment")]
 void vk_visibility_shadow_fragment(VkrVkVisibilityOutput input)
 {
-    VkrVkRasterRoot* root = g_raster_push.root;
-    VkrGpuVisibleDrawRow visible = root.visible_rows[
-        root.view_index * root.visible_capacity + input.visible_index];
+    VkrVkRasterRoot *root = g_raster_push.root;
+    VkrGpuVisibleDrawRow visible =
+        root.visible_rows[root.view_index * root.visible_capacity +
+                          input.visible_index];
     VkrVulkanMaterial material = root.frame.materials[visible.material_index];
     if (material.alpha_mode == 1u)
     {
-        float alpha = g_textures[NonUniformResourceIndex(material.base_color_texture)]
-                          .Sample(g_samplers[NonUniformResourceIndex(material.base_color_sampler)], input.uv).a *
-                      material.tint.a * input.color.a;
+        float alpha =
+            g_textures[NonUniformResourceIndex(material.base_color_texture)]
+                .Sample(g_samplers[NonUniformResourceIndex(
+                            material.base_color_sampler)],
+                        input.uv)
+                .a *
+            material.tint.a * input.color.a;
         if (alpha < material.material_alpha.x)
             discard;
     }
@@ -565,11 +617,9 @@ bool vkr_vk_perspective_barycentric(float2 point, float4 ca, float4 cb,
     // This stays defined when the original triangle crosses the eye plane and
     // Vulkan rasterizes the clipped polygon; dividing each original vertex by
     // w does not.
-    float3 horizontal = float3(ca.x - point.x * ca.w,
-                               cb.x - point.x * cb.w,
+    float3 horizontal = float3(ca.x - point.x * ca.w, cb.x - point.x * cb.w,
                                cc.x - point.x * cc.w);
-    float3 vertical = float3(ca.y - point.y * ca.w,
-                             cb.y - point.y * cb.w,
+    float3 vertical = float3(ca.y - point.y * ca.w, cb.y - point.y * cb.w,
                              cc.y - point.y * cc.w);
     float3 clip_w = float3(ca.w, cb.w, cc.w);
     float3 weights = cross(horizontal, vertical);
@@ -590,12 +640,10 @@ bool vkr_vk_perspective_barycentric(float2 point, float4 ca, float4 cb,
     if (abs(normalization) <= 1e-12f)
         return false;
     barycentric = weights / normalization;
-    barycentric_dx =
-        (weights_dx - barycentric * dot(weights_dx, 1.0f)) /
-        normalization * (2.0f / float(extent.x));
-    barycentric_dy =
-        (weights_dy - barycentric * dot(weights_dy, 1.0f)) /
-        normalization * (2.0f / float(extent.y));
+    barycentric_dx = (weights_dx - barycentric * dot(weights_dx, 1.0f)) /
+                     normalization * (2.0f / float(extent.x));
+    barycentric_dy = (weights_dy - barycentric * dot(weights_dy, 1.0f)) /
+                     normalization * (2.0f / float(extent.y));
     return true;
 }
 
@@ -614,7 +662,7 @@ bool vkr_vk_finite_nonzero(float3 value)
 
 // `marker` is the documented resolve-debug alpha: 0 for an unwritten background
 // pixel and -1 for a rejected row, matching the Metal channel contract.
-void vkr_vk_resolve_defaults(VkrVkResolveRoot* root, uint2 pixel, float marker)
+void vkr_vk_resolve_defaults(VkrVkResolveRoot *root, uint2 pixel, float marker)
 {
     g_storage_2d[root.albedo_texture][pixel] = float4(0.0f, 0.0f, 0.0f, 1.0f);
     g_storage_2d[root.specular_texture][pixel] = float4(0.0f, 0.0f, 0.0f, 1.0f);
@@ -630,13 +678,13 @@ void vkr_vk_resolve_defaults(VkrVkResolveRoot* root, uint2 pixel, float marker)
 // barycentric, gradient, tangent-frame, and validity rules.
 struct VkrVkSurfaceSource
 {
-    VkrVkGeometryRow* geometry_rows;
-    VkrGpuVisibleDrawRow* visible_rows;
-    VkrVulkanInstance* instances;
-    VkrVulkanMaterial* materials;
-    VkrVulkanVertex* vertices;
-    uint* indices;
-    VkrVkDrawState* compaction_state;
+    VkrVkGeometryRow *geometry_rows;
+    VkrGpuVisibleDrawRow *visible_rows;
+    VkrVulkanInstance *instances;
+    VkrVulkanMaterial *materials;
+    VkrVulkanVertex *vertices;
+    uint *indices;
+    VkrVkDrawState *compaction_state;
     float4x4 view_projection;
     uint2 extent;
     uint visible_capacity;
@@ -690,9 +738,12 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
     VkrVulkanMaterial material = source.materials[visible.material_index];
     VkrVkGeometryRow geometry = source.geometry_rows[visible.geometry_index];
     uint triangle = primitive_id * 3u;
-    int ia = int(source.indices[visible.first_index + triangle + 0u]) + visible.vertex_offset;
-    int ib = int(source.indices[visible.first_index + triangle + 1u]) + visible.vertex_offset;
-    int ic = int(source.indices[visible.first_index + triangle + 2u]) + visible.vertex_offset;
+    int ia = int(source.indices[visible.first_index + triangle + 0u]) +
+             visible.vertex_offset;
+    int ib = int(source.indices[visible.first_index + triangle + 1u]) +
+             visible.vertex_offset;
+    int ic = int(source.indices[visible.first_index + triangle + 2u]) +
+             visible.vertex_offset;
     VkrVulkanVertex a = source.vertices[geometry.first_vertex + uint(ia)];
     VkrVulkanVertex b = source.vertices[geometry.first_vertex + uint(ib)];
     VkrVulkanVertex c = source.vertices[geometry.first_vertex + uint(ic)];
@@ -707,57 +758,74 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
     float3 perspective;
     float3 perspective_dx;
     float3 perspective_dy;
-    if (!vkr_vk_perspective_barycentric(
-            vkr_vk_resolve_ndc(p, source.extent), ca, cb, cc, source.extent,
-            perspective, perspective_dx, perspective_dy))
+    if (!vkr_vk_perspective_barycentric(vkr_vk_resolve_ndc(p, source.extent),
+                                        ca, cb, cc, source.extent, perspective,
+                                        perspective_dx, perspective_dy))
         return vkr_vk_reject_surface(source);
-    float2 uv = a.texcoord * perspective.x + b.texcoord * perspective.y + c.texcoord * perspective.z;
-    float2 uv_dx = a.texcoord * perspective_dx.x + b.texcoord * perspective_dx.y +
+    float2 uv = a.texcoord * perspective.x + b.texcoord * perspective.y +
+                c.texcoord * perspective.z;
+    float2 uv_dx = a.texcoord * perspective_dx.x +
+                   b.texcoord * perspective_dx.y +
                    c.texcoord * perspective_dx.z;
-    float2 uv_dy = a.texcoord * perspective_dy.x + b.texcoord * perspective_dy.y +
+    float2 uv_dy = a.texcoord * perspective_dy.x +
+                   b.texcoord * perspective_dy.y +
                    c.texcoord * perspective_dy.z;
-    float4 color = a.color * perspective.x + b.color * perspective.y + c.color * perspective.z;
-    float4 base = g_textures[NonUniformResourceIndex(material.base_color_texture)]
-                      .SampleGrad(g_samplers[NonUniformResourceIndex(material.base_color_sampler)],
-                                  uv, uv_dx, uv_dy) *
-                  material.tint * color;
+    float4 color = a.color * perspective.x + b.color * perspective.y +
+                   c.color * perspective.z;
+    float4 base =
+        g_textures[NonUniformResourceIndex(material.base_color_texture)]
+            .SampleGrad(g_samplers[NonUniformResourceIndex(
+                            material.base_color_sampler)],
+                        uv, uv_dx, uv_dy) *
+        material.tint * color;
     float metallic = saturate(material.material_surface.x);
     float roughness = clamp(material.material_surface.y, 0.04f, 1.0f);
     float ao = saturate(material.material_surface.w);
     if ((material.flags & 2u) != 0u)
     {
-        float3 orm = g_textures[NonUniformResourceIndex(material.orm_texture)]
-                         .SampleGrad(g_samplers[NonUniformResourceIndex(material.orm_sampler)],
-                                     uv, uv_dx, uv_dy).rgb;
+        float3 orm =
+            g_textures[NonUniformResourceIndex(material.orm_texture)]
+                .SampleGrad(
+                    g_samplers[NonUniformResourceIndex(material.orm_sampler)],
+                    uv, uv_dx, uv_dy)
+                .rgb;
         ao *= orm.r;
         roughness = clamp(roughness * orm.g, 0.04f, 1.0f);
         metallic = saturate(metallic * orm.b);
     }
     float3 object_normal = a.normal * perspective.x + b.normal * perspective.y +
                            c.normal * perspective.z;
-    float4 object_tangent = a.tangent * perspective.x + b.tangent * perspective.y +
+    float4 object_tangent = a.tangent * perspective.x +
+                            b.tangent * perspective.y +
                             c.tangent * perspective.z;
     if ((material.flags & 1u) != 0u)
     {
         surface.tangent_normal =
             g_textures[NonUniformResourceIndex(material.normal_texture)]
-                .SampleGrad(g_samplers[NonUniformResourceIndex(material.normal_sampler)],
-                            uv, uv_dx, uv_dy).xyz * 2.0f - 1.0f;
+                    .SampleGrad(g_samplers[NonUniformResourceIndex(
+                                    material.normal_sampler)],
+                                uv, uv_dx, uv_dy)
+                    .xyz *
+                2.0f -
+            1.0f;
         surface.tangent_normal.xy *= material.material_surface.z;
         surface.tangent_normal.y = -surface.tangent_normal.y;
         surface.normal_mapped = 1u;
     }
     float3 emissive = material.material_emissive.rgb;
     if ((material.flags & 4u) != 0u)
-        emissive *= g_textures[NonUniformResourceIndex(material.emissive_texture)]
-                        .SampleGrad(g_samplers[NonUniformResourceIndex(material.emissive_sampler)],
-                                    uv, uv_dx, uv_dy).rgb;
+        emissive *=
+            g_textures[NonUniformResourceIndex(material.emissive_texture)]
+                .SampleGrad(g_samplers[NonUniformResourceIndex(
+                                material.emissive_sampler)],
+                            uv, uv_dx, uv_dy)
+                .rgb;
     uint2 base_color_extent;
     g_textures[NonUniformResourceIndex(material.base_color_texture)]
         .GetDimensions(base_color_extent.x, base_color_extent.y);
     float2 texture_extent = float2(base_color_extent);
-    float footprint = max(length(uv_dx * texture_extent),
-                          length(uv_dy * texture_extent));
+    float footprint =
+        max(length(uv_dx * texture_extent), length(uv_dy * texture_extent));
     surface.base = base;
     surface.object_normal = object_normal;
     surface.object_tangent = object_tangent;
@@ -792,12 +860,14 @@ bool vkr_vk_finish_surface_normal(VkrVkSurfaceSource source,
         if (!vkr_vk_finite_nonzero(tangent))
             return vkr_vk_reject_surface(source);
         tangent = normalize(tangent);
-        float tangent_handedness = surface.object_tangent.w < 0.0f ? -1.0f : 1.0f;
+        float tangent_handedness =
+            surface.object_tangent.w < 0.0f ? -1.0f : 1.0f;
         // `normal` and `tangent` are unit and orthogonal by the Gram-Schmidt
         // step above, so the cross product is unit and `mapped` has exactly the
         // magnitude of `tangent_normal`, which the guard above already
         // established as nonzero. Both former checks were implied.
-        float3 bitangent = normalize(cross(normal, tangent)) * tangent_handedness;
+        float3 bitangent =
+            normalize(cross(normal, tangent)) * tangent_handedness;
         float3 mapped = tangent * surface.tangent_normal.x +
                         bitangent * surface.tangent_normal.y +
                         normal * surface.tangent_normal.z;
@@ -811,7 +881,7 @@ bool vkr_vk_finish_surface_normal(VkrVkSurfaceSource source,
 [numthreads(8, 8, 1)]
 void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkResolveRoot* root = g_resolve_push.root;
+    VkrVkResolveRoot *root = g_resolve_push.root;
     if (any(thread_id.xy >= root.extent))
         return;
     uint2 encoded = g_storage_uint2_2d[root.vbuffer_texture][thread_id.xy];
@@ -821,10 +891,11 @@ void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
         return;
     }
     VkrVkSurfaceSource source = {
-        root.geometry_rows, root.visible_rows, root.instances, root.materials,
-        root.vertices, root.indices, root.compaction_state,
-        root.view_projection, root.extent, root.visible_capacity,
-        root.geometry_count, root.material_count, root.instance_count,
+        root.geometry_rows,    root.visible_rows,    root.instances,
+        root.materials,        root.vertices,        root.indices,
+        root.compaction_state, root.view_projection, root.extent,
+        root.visible_capacity, root.geometry_count,  root.material_count,
+        root.instance_count,
     };
     VkrVkSurface surface;
     if (!vkr_vk_resolve_surface(source, encoded, thread_id.xy, surface))
@@ -874,10 +945,9 @@ float3 vkr_vk_deferred_homogeneous(float4 value)
     return value.xyz / max(abs(value.w), 1e-7f) * sign(value.w);
 }
 
-// Deferred owns the background because the authored skybox pass is declared
 // The deferred lighting path owns the background colour when no cubemap is
 // available.
-float3 vkr_vk_deferred_sky(VkrVkLightingRoot* root, uint2 pixel)
+float3 vkr_vk_deferred_sky(VkrVkLightingRoot *root, uint2 pixel)
 {
     if (root.sky_enabled == 0u)
         return float3(0.02f, 0.02f, 0.03f);
@@ -892,17 +962,18 @@ float3 vkr_vk_deferred_sky(VkrVkLightingRoot* root, uint2 pixel)
     // Pass-root descriptor indices are dynamically uniform; see
     // packet_directional_shadow.
     return g_cube_textures[root.sky_texture]
-        .SampleLevel(g_samplers[root.sky_sampler], direction, 0.0f).rgb;
+        .SampleLevel(g_samplers[root.sky_sampler], direction, 0.0f)
+        .rgb;
 }
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkLightingRoot* root = g_lighting_push.root;
+    VkrVkLightingRoot *root = g_lighting_push.root;
     if (any(thread_id.xy >= root.extent))
         return;
-    VkrVulkanPacketFrameRoot* frame = root.frame;
+    VkrVulkanPacketFrameRoot *frame = root.frame;
     uint2 encoded = g_storage_uint2_2d[root.vbuffer_texture][thread_id.xy];
     if (encoded.x == 0u)
     {
@@ -936,23 +1007,35 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
             float4(seed.a, roughness, max(f0.x, max(f0.y, f0.z)), 1.0f);
         return;
     }
-    float depth = g_depth_textures[root.depth_texture].Load(int3(thread_id.xy, 0));
+    float depth =
+        g_depth_textures[root.depth_texture].Load(int3(thread_id.xy, 0));
     // See vkr_vk_deferred_sky: no Y flip when inverting the view-projection.
-    float2 ndc_xy = (float2(thread_id.xy) + 0.5f) / float2(root.extent) * 2.0f - 1.0f;
+    float2 ndc_xy =
+        (float2(thread_id.xy) + 0.5f) / float2(root.extent) * 2.0f - 1.0f;
     float3 world = vkr_vk_deferred_homogeneous(
         mul(root.inverse_view_projection, float4(ndc_xy, depth, 1.0f)));
+    if (frame.shadow_debug_mode != 0u)
+    {
+        VkrVulkanShadowDebugSample shadow_sample =
+            packet_directional_shadow_debug(frame, world, normal);
+        g_storage_2d[root.scene_texture][thread_id.xy] = float4(
+            packet_shadow_debug_color(frame.shadow_debug_mode, shadow_sample),
+            1.0f);
+        return;
+    }
     float3 view = normalize(frame.view_position.xyz - world);
     // The G-buffer already folded metallic into diffuse albedo and F0, so the
     // shared helpers take a zero metallic factor here.
     float3 analytic_diffuse = 0.0f;
     float3 analytic_specular = 0.0f;
+    float directional_shadow = 0.0f;
     if (frame.directional_direction_enabled.w > 0.5f)
     {
-        float shadow = packet_directional_shadow(frame, world, normal);
+        directional_shadow = packet_directional_shadow(frame, world, normal);
         VkrVulkanDirectResult direct = packet_direct(
             normal, view, normalize(-frame.directional_direction_enabled.xyz),
             frame.directional_color_intensity.rgb *
-                frame.directional_color_intensity.w * shadow,
+                frame.directional_color_intensity.w * directional_shadow,
             diffuse_albedo, 0.0f, roughness, f0);
         analytic_diffuse = direct.diffuse;
         analytic_specular = direct.specular;
@@ -976,7 +1059,8 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
     if ((frame.flags & 2u) != 0u)
     {
         color += packet_environment(frame, world, normal, normal, view,
-                                    diffuse_albedo, 0.0f, roughness, ao, f0);
+                                    diffuse_albedo, 0.0f, roughness, ao,
+                                    directional_shadow, f0);
     }
     else
     {
@@ -990,7 +1074,7 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void vk_hzb_build(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkHzbRoot* root = g_hzb_push.root;
+    VkrVkHzbRoot *root = g_hzb_push.root;
     if (any(thread_id.xy >= root.destination_extent))
         return;
     if (root.source_is_depth == 2u)
@@ -1005,30 +1089,36 @@ void vk_hzb_build(uint3 thread_id : SV_DispatchThreadID)
     float maximum = 0.0f;
     [unroll]
     for (uint y = 0u; y < 2u; ++y)
-    [unroll]
-    for (uint x = 0u; x < 2u; ++x)
     {
-        uint2 p = min(source + uint2(x, y), root.source_extent - 1u);
-        float value = root.source_is_depth != 0u
-                          ? g_depth_textures[root.source_texture].Load(int3(p, 0))
-                          : g_storage_2d[root.source_texture][p].x;
-        maximum = max(maximum, value);
+        [unroll]
+        for (uint x = 0u; x < 2u; ++x)
+        {
+            uint2 p = min(source + uint2(x, y), root.source_extent - 1u);
+            float value =
+                root.source_is_depth != 0u
+                    ? g_depth_textures[root.source_texture].Load(int3(p, 0))
+                    : g_storage_2d[root.source_texture][p].x;
+            maximum = max(maximum, value);
+        }
     }
-    g_storage_2d[root.destination_texture][thread_id.xy] = float4(maximum, 0.0f, 0.0f, 0.0f);
+    g_storage_2d[root.destination_texture][thread_id.xy] =
+        float4(maximum, 0.0f, 0.0f, 0.0f);
 }
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void vk_sdsm_reduce(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkSdsmRoot* root = g_sdsm_push.root;
+    VkrVkSdsmRoot *root = g_sdsm_push.root;
     bool occupied = false;
     float depth = 0.0f;
     if (all(thread_id.xy < root.extent))
     {
-        occupied =
-            g_uint2_textures[root.vbuffer_texture].Load(int3(thread_id.xy, 0)).x != 0u;
+        occupied = g_uint2_textures[root.vbuffer_texture]
+                       .Load(int3(thread_id.xy, 0))
+                       .x != 0u;
         if (occupied)
-            depth = g_depth_textures[root.depth_texture].Load(int3(thread_id.xy, 0));
+            depth = g_depth_textures[root.depth_texture].Load(
+                int3(thread_id.xy, 0));
     }
     uint wave_occupied = WaveActiveCountBits(occupied);
     float wave_minimum = WaveActiveMin(occupied ? depth : 1.0f);
@@ -1040,31 +1130,35 @@ void vk_sdsm_reduce(uint3 thread_id : SV_DispatchThreadID)
                        asuint(wave_minimum), ignored);
         InterlockedMax(root.reduce_state->max_device_z_bits,
                        asuint(wave_maximum), ignored);
-        InterlockedAdd(root.reduce_state->occupied_count, wave_occupied, ignored);
+        InterlockedAdd(root.reduce_state->occupied_count, wave_occupied,
+                       ignored);
     }
 }
-
 
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void vk_picking_resolve(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkPickingRoot* root = g_picking_push.root;
+    VkrVkPickingRoot *root = g_picking_push.root;
     uint2 opaque_encoded = g_storage_uint2_2d[root.opaque_vbuffer][root.pixel];
-    uint2 transmission_encoded = root.use_transmission != 0u
-                                     ? g_storage_uint2_images[root.transmission_vbuffer][uint3(root.pixel, root.transmission_layer)]
-                                     : uint2(0u);
+    uint2 transmission_encoded =
+        root.use_transmission != 0u
+            ? g_storage_uint2_images[root.transmission_vbuffer]
+                                    [uint3(root.pixel, root.transmission_layer)]
+            : uint2(0u);
     bool selected_transmission = transmission_encoded.x != 0u;
-    uint2 encoded = selected_transmission ? transmission_encoded : opaque_encoded;
+    uint2 encoded =
+        selected_transmission ? transmission_encoded : opaque_encoded;
     uint identifier = 0u;
     if (encoded.x != 0u)
     {
-        VkrGpuVisibleDrawRow visible = selected_transmission
-                                           ? root.transmission_visible[encoded.x - 1u]
-                                           : root.opaque_visible[encoded.x - 1u];
-        identifier = selected_transmission
-                         ? root.transmission_instances[visible.instance_index].object_id
-                         : root.opaque_instances[visible.instance_index].object_id;
+        VkrGpuVisibleDrawRow visible =
+            selected_transmission ? root.transmission_visible[encoded.x - 1u]
+                                  : root.opaque_visible[encoded.x - 1u];
+        identifier =
+            selected_transmission
+                ? root.transmission_instances[visible.instance_index].object_id
+                : root.opaque_instances[visible.instance_index].object_id;
     }
     g_storage_uint_2d[root.output_texture][root.pixel] = identifier;
 }
@@ -1073,24 +1167,25 @@ void vk_picking_resolve(uint3 thread_id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
 {
-    VkrVkTransmissionRoot* root = g_transmission_push.root;
+    VkrVkTransmissionRoot *root = g_transmission_push.root;
     if (any(thread_id.xy >= root.extent))
         return;
     float2 screen_uv = (float2(thread_id.xy) + 0.5f) / float2(root.extent);
     float4 background = g_textures[root.feedback_texture].SampleLevel(
         g_samplers[root.feedback_sampler], screen_uv, 0.0f);
-    uint2 encoded =
-        g_storage_uint2_images[root.vbuffer_texture][uint3(thread_id.xy, root.layer)];
+    uint2 encoded = g_storage_uint2_images[root.vbuffer_texture]
+                                          [uint3(thread_id.xy, root.layer)];
     if (encoded.x == 0u)
     {
         g_storage_2d[root.output_texture][thread_id.xy] = background;
         return;
     }
     VkrVkSurfaceSource source = {
-        root.geometry_rows, root.visible_rows, root.instances, root.materials,
-        root.vertices, root.indices, root.compaction_state,
-        root.view_projection, root.extent, root.visible_capacity,
-        root.geometry_count, root.material_count, root.instance_count,
+        root.geometry_rows,    root.visible_rows,    root.instances,
+        root.materials,        root.vertices,        root.indices,
+        root.compaction_state, root.view_projection, root.extent,
+        root.visible_capacity, root.geometry_count,  root.material_count,
+        root.instance_count,
     };
     VkrVkSurface surface;
     if (!vkr_vk_resolve_surface(source, encoded, thread_id.xy, surface))
@@ -1108,10 +1203,10 @@ void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
         g_storage_2d[root.output_texture][thread_id.xy] = background;
         return;
     }
-    VkrVulkanPacketFrameRoot* frame = root.frame;
+    VkrVulkanPacketFrameRoot *frame = root.frame;
     VkrVulkanMaterial material = root.materials[surface.material_index];
-    float depth = g_depth_textures[root.depth_texture]
-                      .Load(int3(thread_id.xy, 0));
+    float depth = g_depth_array_textures[root.depth_texture].Load(
+        int4(thread_id.xy, root.layer, 0));
     // See vkr_vk_deferred_sky: no Y flip when inverting the view-projection.
     float2 ndc_xy = screen_uv * 2.0f - 1.0f;
     float3 world = vkr_vk_deferred_homogeneous(
@@ -1119,7 +1214,7 @@ void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
     float3 f0 = lerp(saturate(material.material_dielectric_specular.rgb),
                      surface.base.rgb, surface.metallic);
     float3 view = normalize(frame.view_position.xyz - world);
-    float no_v = max(dot(surface.normal, view), 0.0f);
+    float no_v = saturate(abs(dot(surface.normal, view)));
     float3 color;
     // Transmissive surfaces keep their unfolded base colour and metallic
     // factor, so the shared helpers take the same arguments the forward
@@ -1137,19 +1232,59 @@ void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
         color = float3(surface.metallic, surface.roughness,
                        max(f0.x, max(f0.y, f0.z)));
     }
+    else if (frame.shadow_debug_mode != 0u)
+    {
+        VkrVulkanShadowDebugSample shadow_sample =
+            packet_directional_shadow_debug(frame, world, surface.normal);
+        color =
+            packet_shadow_debug_color(frame.shadow_debug_mode, shadow_sample);
+    }
+    else if (frame.render_mode == 0u && material.material_alpha.y > 0.0f)
+    {
+        // Thin dielectric transmission keeps an unlit surface veil for the
+        // non-transmitted share. Lighting this veil as opaque glass produces an
+        // HDR specular spike that hides the authored feedback.
+        float thickness = max(material.material_alpha.w, 0.0f);
+        float3 view_normal =
+            normalize(mul(frame.view, float4(surface.normal, 0.0f)).xyz);
+        float3 refracted = refract(float3(0.0f, 0.0f, -1.0f), view_normal,
+                                   1.0f / max(material.material_alpha.z, 1.0f));
+        float2 offset =
+            refracted.xy / max(abs(refracted.z), 0.25f) * thickness * 0.02f;
+        float3 transmitted =
+            g_textures[root.feedback_texture]
+                .SampleLevel(g_samplers[root.feedback_sampler],
+                             clamp(screen_uv + offset, 0.0f, 1.0f), 0.0f)
+                .rgb;
+        if (material.material_attenuation_color.w > 1e-4f && thickness > 0.0f)
+        {
+            transmitted *=
+                pow(clamp(material.material_attenuation_color.rgb, 1e-4f, 1.0f),
+                    thickness / material.material_attenuation_color.w);
+        }
+        float transmission =
+            saturate(material.material_alpha.y) * (1.0f - surface.metallic);
+        float3 fresnel = packet_fresnel(no_v, f0);
+        float transmitted_weight =
+            transmission * (1.0f - max(fresnel.x, max(fresnel.y, fresnel.z)));
+        float surface_weight = 1.0f - transmitted_weight;
+        color = surface.base.rgb * surface_weight +
+                transmitted * transmitted_weight + surface.emissive;
+    }
     else
     {
         float3 analytic_diffuse = 0.0f;
         float3 analytic_specular = 0.0f;
+        float directional_shadow = 0.0f;
         if (frame.directional_direction_enabled.w > 0.5f)
         {
-            float shadow =
+            directional_shadow =
                 packet_directional_shadow(frame, world, surface.normal);
             VkrVulkanDirectResult direct = packet_direct(
                 surface.normal, view,
                 normalize(-frame.directional_direction_enabled.xyz),
                 frame.directional_color_intensity.rgb *
-                    frame.directional_color_intensity.w * shadow,
+                    frame.directional_color_intensity.w * directional_shadow,
                 surface.base.rgb, surface.metallic, surface.roughness, f0);
             analytic_diffuse = direct.diffuse;
             analytic_specular = direct.specular;
@@ -1170,51 +1305,24 @@ void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
         }
         else
         {
-            color = analytic_diffuse + analytic_specular;
+            float3 diffuse = analytic_diffuse;
+            float3 specular = analytic_specular;
             if ((frame.flags & 2u) != 0u)
             {
-                color += packet_environment(
-                    frame, world, surface.normal, surface.normal, view,
-                    surface.base.rgb, surface.metallic, surface.roughness,
-                    surface.occlusion, f0);
+                VkrVulkanEnvironmentResult environment =
+                    packet_environment_terms(
+                        frame, world, surface.normal, surface.normal, view,
+                        surface.base.rgb, surface.metallic, surface.roughness,
+                        surface.occlusion, f0);
+                diffuse += environment.diffuse;
+                specular += environment.specular;
             }
             else
             {
-                color += frame.ambient_color.rgb * surface.base.rgb *
-                         surface.occlusion;
+                diffuse += frame.ambient_color.rgb * surface.base.rgb *
+                           surface.occlusion;
             }
-            color += surface.emissive;
-            if (material.material_alpha.y > 0.0f)
-            {
-                // Refraction reads the immutable layer background at a
-                // thickness-scaled screen offset, then attenuates over the
-                // travelled distance and gives up whatever the surface
-                // reflects.
-                float thickness = max(material.material_alpha.w, 0.0f);
-                float3 view_normal =
-                    normalize(mul(frame.view, float4(surface.normal, 0.0f)).xyz);
-                float3 refracted =
-                    refract(float3(0.0f, 0.0f, -1.0f), view_normal,
-                            1.0f / max(material.material_alpha.z, 1.0f));
-                float2 offset = refracted.xy / max(abs(refracted.z), 0.25f) *
-                                thickness * 0.02f;
-                float3 transmitted =
-                    g_textures[root.feedback_texture].SampleLevel(
-                        g_samplers[root.feedback_sampler],
-                        clamp(screen_uv + offset, 0.0f, 1.0f), 0.0f).rgb;
-                if (material.material_attenuation_color.w > 1e-4f &&
-                    thickness > 0.0f)
-                {
-                    transmitted *= pow(
-                        clamp(material.material_attenuation_color.rgb, 1e-4f, 1.0f),
-                        thickness / material.material_attenuation_color.w);
-                }
-                float3 fresnel = packet_fresnel(no_v, f0);
-                float weight = saturate(material.material_alpha.y) *
-                               (1.0f - surface.metallic) *
-                               (1.0f - max(fresnel.x, max(fresnel.y, fresnel.z)));
-                color = lerp(color, transmitted, saturate(weight));
-            }
+            color = diffuse + specular + surface.emissive;
         }
     }
     g_storage_2d[root.output_texture][thread_id.xy] = float4(color, 1.0f);
@@ -1227,8 +1335,7 @@ groupshared uint g_transmission_group_coverage;
 void vk_transmission_coverage(uint3 thread_id : SV_DispatchThreadID,
                               uint3 group_thread_id : SV_GroupThreadID)
 {
-    VkrVkTransmissionCoverageRoot* root =
-        g_transmission_coverage_push.root;
+    VkrVkTransmissionCoverageRoot *root = g_transmission_coverage_push.root;
     if (all(group_thread_id == 0u))
         g_transmission_group_coverage = 0u;
     GroupMemoryBarrierWithGroupSync();
@@ -1238,8 +1345,9 @@ void vk_transmission_coverage(uint3 thread_id : SV_DispatchThreadID,
     bool covered = false;
     if (all(thread_id.xy < root.extent))
     {
-        covered = g_storage_uint2_images[root.vbuffer_texture][
-            uint3(thread_id.xy, root.layer)].x != 0u;
+        covered = g_storage_uint2_images[root.vbuffer_texture]
+                                        [uint3(thread_id.xy, root.layer)]
+                                            .x != 0u;
     }
     uint wave_covered = WaveActiveCountBits(covered);
     if (WaveIsFirstLane() && wave_covered != 0u)

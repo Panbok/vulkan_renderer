@@ -1,10 +1,11 @@
 [shader("vertex")]
 VkrVulkanVertexOutput world_vertex(uint vertex_id : SV_VertexID,
-                                     uint instance_id : SV_InstanceID)
+                                   uint instance_id : SV_InstanceID)
 {
     return packet_vertex_impl(vertex_id, instance_id,
                               g_push.root.frame.view_projection);
 }
+
 float4 packet_base_color(VkrVulkanVertexOutput input)
 {
     VkrGpuVisibleDrawRow visible =
@@ -13,8 +14,9 @@ float4 packet_base_color(VkrVulkanVertexOutput input)
         g_push.root.frame.materials[visible.material_index];
     uint texture_index = NonUniformResourceIndex(material.base_color_texture);
     uint sampler_index = NonUniformResourceIndex(material.base_color_sampler);
-    return g_textures[texture_index].Sample(g_samplers[sampler_index], input.uv)
-           * material.tint * input.color;
+    return g_textures[texture_index].Sample(g_samplers[sampler_index],
+                                            input.uv) *
+           material.tint * input.color;
 }
 
 struct VkrVulkanDirectResult
@@ -53,20 +55,19 @@ float packet_geometry_schlick(float no_x, float roughness)
 }
 
 VkrVulkanDirectResult packet_direct(float3 normal, float3 view, float3 light,
-                                      float3 radiance, float3 albedo,
-                                      float metallic, float roughness,
-                                      float3 f0)
+                                    float3 radiance, float3 albedo,
+                                    float metallic, float roughness, float3 f0)
 {
     float3 half_vector = normalize(view + light);
     float no_l = max(dot(normal, light), 0.0f);
     float no_v = max(dot(normal, view), 0.0f);
     float3 fresnel = packet_fresnel(max(dot(half_vector, view), 0.0f), f0);
-    float distribution = distribution_ggx(max(dot(normal, half_vector), 0.0f),
-                                          roughness);
+    float distribution =
+        distribution_ggx(max(dot(normal, half_vector), 0.0f), roughness);
     float geometry = packet_geometry_schlick(no_v, roughness) *
                      packet_geometry_schlick(no_l, roughness);
-    float3 specular = distribution * geometry * fresnel /
-                      max(4.0f * no_v * no_l, 1e-6f);
+    float3 specular =
+        distribution * geometry * fresnel / max(4.0f * no_v * no_l, 1e-6f);
     float3 kd = (1.0f - fresnel) * (1.0f - metallic);
     float3 scale = radiance * no_l;
     VkrVulkanDirectResult result;
@@ -77,8 +78,8 @@ VkrVulkanDirectResult packet_direct(float3 normal, float3 view, float3 light,
 
 float packet_specular_ao(float ao, float no_v, float roughness)
 {
-    return saturate(pow(no_v + ao, exp2(-16.0f * roughness - 1.0f)) -
-                    1.0f + ao);
+    return saturate(pow(no_v + ao, exp2(-16.0f * roughness - 1.0f)) - 1.0f +
+                    ao);
 }
 
 // Epic's split-sum fit avoids a per-frame dependency on a mutable BRDF LUT.
@@ -91,7 +92,7 @@ float2 packet_brdf_approximation(float no_v, float roughness)
     return float2(-1.04f, 1.04f) * a004 + r.zw;
 }
 
-uint4 packet_point_light_mask(VkrVulkanPacketFrameRoot* root,
+uint4 packet_point_light_mask(VkrVulkanPacketFrameRoot *root,
                               float3 world_position)
 {
     uint4 result = root.point_light_global_mask;
@@ -99,14 +100,14 @@ uint4 packet_point_light_mask(VkrVulkanPacketFrameRoot* root,
     float cell_size = root.point_light_grid_origin_cell_size.w;
     if (dimensions.w == 0u || cell_size <= 0.0f)
         return result;
-    int3 cell = int3(floor((world_position -
-                            root.point_light_grid_origin_cell_size.xyz) /
-                           cell_size));
+    int3 cell = int3(
+        floor((world_position - root.point_light_grid_origin_cell_size.xyz) /
+              cell_size));
     if (any(cell < 0) || cell.x >= int(dimensions.x) ||
         cell.y >= int(dimensions.y) || cell.z >= int(dimensions.z))
         return result;
-    uint index = uint(cell.x) + dimensions.x *
-                 (uint(cell.y) + dimensions.y * uint(cell.z));
+    uint index = uint(cell.x) +
+                 dimensions.x * (uint(cell.y) + dimensions.y * uint(cell.z));
     return result | root.point_light_masks[index];
 }
 
@@ -140,7 +141,7 @@ float2 packet_shadow_kernel_rotation(float2 uv, float2 origin_texels,
  * the same push-constant-addressed root. Decorating them NonUniform costs a
  * waterfall loop and blocks scalarization for nothing.
  */
-float packet_shadow_kernel(VkrVulkanPacketFrameRoot* root, uint cascade,
+float packet_shadow_kernel(VkrVulkanPacketFrameRoot *root, uint cascade,
                            float2 uv, float reference, float2 rotation,
                            float2 tap_scale, uint first, uint count)
 {
@@ -161,9 +162,8 @@ float packet_shadow_kernel(VkrVulkanPacketFrameRoot* root, uint cascade,
 }
 
 /** One cascade's visibility. Returns 1.0 where the receiver misses it. */
-float packet_shadow_cascade(VkrVulkanPacketFrameRoot* root, uint cascade,
-                            float3 world_position, float3 normal,
-                            float n_dot_l)
+float packet_shadow_cascade(VkrVulkanPacketFrameRoot *root, uint cascade,
+                            float3 world_position, float3 normal, float n_dot_l)
 {
     VkrVulkanShadowCascade data = root.shadow_cascades[cascade];
     float texel = data.split_near_far_texel_depth.z;
@@ -216,7 +216,7 @@ float packet_shadow_cascade(VkrVulkanPacketFrameRoot* root, uint cascade,
            float(count);
 }
 
-float packet_directional_shadow(VkrVulkanPacketFrameRoot* root,
+float packet_directional_shadow(VkrVulkanPacketFrameRoot *root,
                                 float3 world_position, float3 normal)
 {
     if (root.shadow_cascade_count == 0u)
@@ -263,14 +263,116 @@ float packet_directional_shadow(VkrVulkanPacketFrameRoot* root,
     return lerp(1.0f, factor, fade);
 }
 
-float packet_probe_influence(VkrVulkanIblProbe probe,
-                             float3 world_position)
+struct VkrVulkanShadowDebugSample
+{
+    float factor;
+    float map_depth;
+    uint cascade;
+    uint valid;
+};
+
+VkrVulkanShadowDebugSample
+packet_directional_shadow_debug(VkrVulkanPacketFrameRoot *root,
+                                float3 world_position, float3 normal)
+{
+    VkrVulkanShadowDebugSample sample;
+    sample.factor = 1.0f;
+    sample.map_depth = 1.0f;
+    sample.cascade = 0u;
+    sample.valid = 0u;
+    if (root.shadow_cascade_count == 0u)
+        return sample;
+
+    float view_depth = abs(mul(root.view, float4(world_position, 1.0f)).z);
+    float fade_span = root.shadow_fade_end - root.shadow_fade_start;
+    float fade = fade_span > 0.0f
+                     ? saturate((root.shadow_fade_end - view_depth) / fade_span)
+                     : 1.0f;
+    if (fade <= 0.0f)
+    {
+        sample.cascade = root.shadow_cascade_count - 1u;
+        return sample;
+    }
+
+    for (uint i = 0u; i + 1u < root.shadow_cascade_count; ++i)
+    {
+        if (view_depth > root.shadow_cascades[i].split_near_far_texel_depth.y)
+            sample.cascade = i + 1u;
+    }
+    float n_dot_l =
+        dot(normal, normalize(-root.directional_direction_enabled.xyz));
+    sample.factor = packet_shadow_cascade(root, sample.cascade, world_position,
+                                          normal, n_dot_l);
+    if (sample.cascade + 1u < root.shadow_cascade_count)
+    {
+        float4 slice =
+            root.shadow_cascades[sample.cascade].split_near_far_texel_depth;
+        float band = (slice.y - slice.x) * root.shadow_cascade_blend_fraction;
+        if (band > 0.0f && view_depth > slice.y - band)
+        {
+            float t = saturate((view_depth - (slice.y - band)) / band);
+            float next = packet_shadow_cascade(root, sample.cascade + 1u,
+                                               world_position, normal, n_dot_l);
+            sample.factor = lerp(sample.factor, next, t);
+        }
+    }
+    sample.factor = lerp(1.0f, sample.factor, fade);
+
+    VkrVulkanShadowCascade data = root.shadow_cascades[sample.cascade];
+    float texel = data.split_near_far_texel_depth.z;
+    float3 offset_position =
+        world_position + normal * (root.shadow_normal_offset_texels * texel);
+    float4 clip =
+        mul(data.light_view_projection, float4(offset_position, 1.0f));
+    if (abs(clip.w) <= 1e-6f)
+        return sample;
+    float3 projected = clip.xyz / clip.w;
+    float2 uv = projected.xy * 0.5f + 0.5f;
+    if (any(uv < 0.0f) || any(uv > 1.0f) || projected.z < 0.0f ||
+        projected.z > 1.0f)
+        return sample;
+    sample.valid = 1u;
+    if (root.shadow_debug_mode == 3u)
+    {
+        sample.map_depth =
+            g_depth_array_textures[root.shadow_texture].SampleLevel(
+                g_samplers[root.shadow_sampler],
+                float3(uv, float(sample.cascade)), 0.0f);
+    }
+    return sample;
+}
+
+float3 packet_shadow_debug_color(uint mode, VkrVulkanShadowDebugSample sample)
+{
+    if (mode == 1u)
+    {
+        switch (sample.cascade & 3u)
+        {
+        case 0u:
+            return float3(1.0f, 0.2f, 0.2f);
+        case 1u:
+            return float3(0.2f, 1.0f, 0.2f);
+        case 2u:
+            return float3(0.2f, 0.4f, 1.0f);
+        default:
+            return float3(1.0f, 0.85f, 0.2f);
+        }
+    }
+    if (mode == 2u)
+        return sample.factor;
+    if (mode == 3u)
+        return sample.map_depth;
+    return sample.valid != 0u ? sample.factor : 1.0f;
+}
+
+float packet_probe_influence(VkrVulkanIblProbe probe, float3 world_position)
 {
     float weight = max(probe.extents_weight.w, 0.0f);
     if (weight <= 1e-6f || probe.intensity_box.w <= 0.5f)
         return weight;
     float3 outside = max(abs(world_position - probe.center_blend.xyz) -
-                         max(probe.extents_weight.xyz, 0.0f), 0.0f);
+                             max(probe.extents_weight.xyz, 0.0f),
+                         0.0f);
     float distance = length(outside);
     if (distance <= 1e-6f)
         return weight;
@@ -288,9 +390,7 @@ float3 packet_box_project(float3 direction, float3 world_position,
     for (uint axis = 0u; axis < 3u; ++axis)
     {
         if (abs(safe_direction[axis]) < 1e-4f)
-            safe_direction[axis] = safe_direction[axis] < 0.0f
-                                           ? -1e-4f
-                                           : 1e-4f;
+            safe_direction[axis] = safe_direction[axis] < 0.0f ? -1e-4f : 1e-4f;
     }
     float3 t_min = (center - extents - world_position) / safe_direction;
     float3 t_max = (center + extents - world_position) / safe_direction;
@@ -303,11 +403,11 @@ float3 packet_box_project(float3 direction, float3 world_position,
 // follow packet_direct: the forward path passes base color with its metallic
 // factor, the deferred path passes G-buffer diffuse albedo and zero. Both
 // spell the same product, so the two paths shade identically.
-VkrVulkanDirectResult packet_punctual(VkrVulkanPacketFrameRoot* frame,
-                                        float3 world_position, float3 normal,
-                                        float3 view, float3 albedo,
-                                        float metallic, float roughness,
-                                        float3 f0)
+VkrVulkanDirectResult packet_punctual(VkrVulkanPacketFrameRoot *frame,
+                                      float3 world_position, float3 normal,
+                                      float3 view, float3 albedo,
+                                      float metallic, float roughness,
+                                      float3 f0)
 {
     VkrVulkanDirectResult result;
     result.diffuse = 0.0f;
@@ -339,20 +439,17 @@ VkrVulkanDirectResult packet_punctual(VkrVulkanPacketFrameRoot* frame,
             uint kind = uint(p2.w + 0.5f);
             float3 to_light = p0.xyz - world_position;
             float distance_squared = dot(to_light, to_light);
-            if (kind != 0u && p2.z > 0.0f &&
-                distance_squared >= p2.z * p2.z)
+            if (kind != 0u && p2.z > 0.0f && distance_squared >= p2.z * p2.z)
                 continue;
             float distance = sqrt(distance_squared);
-            float3 light_direction = distance > 1e-6f
-                                         ? to_light / distance
-                                         : float3(0.0f);
+            float3 light_direction =
+                distance > 1e-6f ? to_light / distance : float3(0.0f);
             float attenuation = 0.0f;
             if (kind == 0u)
             {
-                attenuation = 1.0f /
-                    max(max(p0.w, 1.0f) + p1.w * distance +
-                            p2.y * distance_squared,
-                        1e-6f);
+                attenuation = 1.0f / max(max(p0.w, 1.0f) + p1.w * distance +
+                                             p2.y * distance_squared,
+                                         1e-6f);
             }
             else
             {
@@ -360,12 +457,11 @@ VkrVulkanDirectResult packet_punctual(VkrVulkanPacketFrameRoot* frame,
                 if (p2.z > 0.0f)
                 {
                     float ratio = distance / p2.z;
-                    range_attenuation = saturate(1.0f - ratio * ratio *
-                                                 ratio * ratio);
+                    range_attenuation =
+                        saturate(1.0f - ratio * ratio * ratio * ratio);
                     range_attenuation *= range_attenuation;
                 }
-                attenuation = range_attenuation /
-                              max(distance_squared, 1e-4f);
+                attenuation = range_attenuation / max(distance_squared, 1e-4f);
                 if (kind == 2u)
                 {
                     float cone = dot(-light_direction, normalize(p3.xyz));
@@ -388,11 +484,17 @@ VkrVulkanDirectResult packet_punctual(VkrVulkanPacketFrameRoot* frame,
 // Global environment plus weighted local probes. `horizon_normal` is the
 // geometric normal where one survives; the deferred G-buffer keeps only the
 // shading normal and passes it for both.
-float3 packet_environment(VkrVulkanPacketFrameRoot* frame,
-                          float3 world_position, float3 normal,
-                          float3 horizon_normal, float3 view,
-                          float3 albedo, float metallic, float roughness,
-                          float ao, float3 f0)
+struct VkrVulkanEnvironmentResult
+{
+    float3 diffuse;
+    float3 specular;
+};
+
+VkrVulkanEnvironmentResult
+packet_environment_terms(VkrVulkanPacketFrameRoot *frame, float3 world_position,
+                         float3 normal, float3 horizon_normal, float3 view,
+                         float3 albedo, float metallic, float roughness,
+                         float ao, float3 f0)
 {
     float no_v = max(dot(normal, view), 0.0f);
     float3 reflection = reflect(-view, normal);
@@ -400,71 +502,92 @@ float3 packet_environment(VkrVulkanPacketFrameRoot* frame,
     float3 kd = (1.0f - fresnel) * (1.0f - metallic);
     // Frame-root indices are uniform. Each local-probe loop iteration also
     // visits one shared table row across the active lanes.
-    float3 global_irradiance = g_cube_textures[frame.irradiance_texture]
-        .SampleLevel(g_samplers[frame.irradiance_sampler], normal, 0.0f).rgb;
-    float3 global_prefiltered = g_cube_textures[frame.prefilter_texture]
-        .SampleLevel(g_samplers[frame.prefilter_sampler], reflection,
-                     roughness * float(max(frame.prefilter_mip_count, 1u) -
-                                       1u)).rgb;
+    float3 global_irradiance =
+        g_cube_textures[frame.irradiance_texture]
+            .SampleLevel(g_samplers[frame.irradiance_sampler], normal, 0.0f)
+            .rgb;
+    float3 global_prefiltered =
+        g_cube_textures[frame.prefilter_texture]
+            .SampleLevel(g_samplers[frame.prefilter_sampler], reflection,
+                         roughness *
+                             float(max(frame.prefilter_mip_count, 1u) - 1u))
+            .rgb;
     float2 brdf = packet_brdf_approximation(no_v, roughness);
     float f90 = saturate(max(f0.x, max(f0.y, f0.z)) * 25.0f);
     float horizon = saturate(1.0f + dot(reflection, horizon_normal));
-    float specular_visibility = horizon * horizon *
-        packet_specular_ao(ao, no_v, roughness);
+    float specular_visibility =
+        horizon * horizon * packet_specular_ao(ao, no_v, roughness);
     float3 diffuse = 0.0f;
     float3 specular = 0.0f;
     float local_weight_sum = 0.0f;
     uint probe_count = min(frame.ibl_probe_count, 16u);
     for (uint i = 0u; i < probe_count; ++i)
-        local_weight_sum += packet_probe_influence(frame.ibl_probes[i],
-                                                    world_position);
-    float weight_scale = local_weight_sum > 1.0f
-                             ? 1.0f / local_weight_sum
-                             : 1.0f;
+        local_weight_sum +=
+            packet_probe_influence(frame.ibl_probes[i], world_position);
+    float weight_scale =
+        local_weight_sum > 1.0f ? 1.0f / local_weight_sum : 1.0f;
     for (uint i = 0u; i < probe_count; ++i)
     {
         VkrVulkanIblProbe probe = frame.ibl_probes[i];
-        float weight = packet_probe_influence(probe,
-                                              world_position) *
-                       weight_scale;
+        float weight =
+            packet_probe_influence(probe, world_position) * weight_scale;
         if (weight <= 1e-6f)
             continue;
-        float3 probe_reflection = probe.intensity_box.w > 0.5f
-            ? packet_box_project(reflection, world_position,
-                                 probe.center_blend.xyz,
-                                 max(probe.extents_weight.xyz, 0.0f))
-            : reflection;
+        float3 probe_reflection =
+            probe.intensity_box.w > 0.5f
+                ? packet_box_project(reflection, world_position,
+                                     probe.center_blend.xyz,
+                                     max(probe.extents_weight.xyz, 0.0f))
+                : reflection;
         float3 probe_irradiance =
-            g_cube_textures[probe.irradiance_texture].SampleLevel(
-                g_samplers[probe.irradiance_sampler], normal, 0.0f).rgb;
+            g_cube_textures[probe.irradiance_texture]
+                .SampleLevel(g_samplers[probe.irradiance_sampler], normal, 0.0f)
+                .rgb;
         float3 probe_prefiltered =
-            g_cube_textures[probe.prefilter_texture].SampleLevel(
-                g_samplers[probe.prefilter_sampler], probe_reflection,
-                 roughness * float(max(frame.prefilter_mip_count, 1u) -
-                                  1u)).rgb;
-        diffuse += kd * probe_irradiance * albedo * ao *
-                   probe.intensity_box.x * probe.intensity_box.y * weight;
-        specular += probe_prefiltered *
-                    (fresnel * brdf.x + f90 * brdf.y) *
+            g_cube_textures[probe.prefilter_texture]
+                .SampleLevel(
+                    g_samplers[probe.prefilter_sampler], probe_reflection,
+                    roughness * float(max(frame.prefilter_mip_count, 1u) - 1u))
+                .rgb;
+        diffuse += kd * probe_irradiance * albedo * ao * probe.intensity_box.x *
+                   probe.intensity_box.y * weight;
+        specular += probe_prefiltered * (fresnel * brdf.x + f90 * brdf.y) *
                     specular_visibility * probe.intensity_box.x *
                     probe.intensity_box.z * weight;
     }
     float global_weight = max(1.0f - min(local_weight_sum, 1.0f), 0.0f);
     diffuse += kd * global_irradiance * albedo * ao * global_weight;
-    specular += global_prefiltered *
-                (fresnel * brdf.x + f90 * brdf.y) *
+    specular += global_prefiltered * (fresnel * brdf.x + f90 * brdf.y) *
                 specular_visibility * global_weight;
-    return (diffuse * frame.ibl_controls.y +
-            specular * frame.ibl_controls.z) *
-           frame.ibl_controls.x;
+    VkrVulkanEnvironmentResult result;
+    result.diffuse = diffuse * frame.ibl_controls.y * frame.ibl_controls.x;
+    result.specular = specular * frame.ibl_controls.z * frame.ibl_controls.x;
+    return result;
+}
+
+float3 packet_environment(VkrVulkanPacketFrameRoot *frame,
+                          float3 world_position, float3 normal,
+                          float3 horizon_normal, float3 view, float3 albedo,
+                          float metallic, float roughness, float ao,
+                          float directional_visibility, float3 f0)
+{
+    VkrVulkanEnvironmentResult result =
+        packet_environment_terms(frame, world_position, normal, horizon_normal,
+                                 view, albedo, metallic, roughness, ao, f0);
+    // Keep the authored IBL floor in shadow, then add its sun-visible diffuse
+    // share through the existing CSM result. Specular IBL remains unchanged.
+    float sun_visible_diffuse_scale =
+        1.0f + saturate(directional_visibility) *
+                   max(frame.directional_color_intensity.w, 0.0f);
+    return result.diffuse * sun_visible_diffuse_scale + result.specular;
 }
 
 [shader("fragment")]
 float4 world_fragment(VkrVulkanVertexOutput input,
                       bool front_facing : SV_IsFrontFace) : SV_Target0
 {
-    VkrVulkanPacketDrawRoot* draw = g_push.root;
-    VkrVulkanPacketFrameRoot* frame = draw.frame;
+    VkrVulkanPacketDrawRoot *draw = g_push.root;
+    VkrVulkanPacketFrameRoot *frame = draw.frame;
     VkrGpuVisibleDrawRow visible = draw.visible_rows[draw.visible_row_index];
     VkrVulkanMaterial material = frame.materials[visible.material_index];
     float4 base = packet_base_color(input);
@@ -480,8 +603,11 @@ float4 world_fragment(VkrVulkanVertexOutput input,
     {
         uint texture_index = NonUniformResourceIndex(material.normal_texture);
         uint sampler_index = NonUniformResourceIndex(material.normal_sampler);
-        float3 sampled = g_textures[texture_index].Sample(
-            g_samplers[sampler_index], input.uv).xyz * 2.0f - 1.0f;
+        float3 sampled = g_textures[texture_index]
+                                 .Sample(g_samplers[sampler_index], input.uv)
+                                 .xyz *
+                             2.0f -
+                         1.0f;
         sampled.xy *= material.material_surface.z;
         sampled.y = -sampled.y;
         float3 tangent = normalize(input.world_tangent.xyz);
@@ -503,23 +629,25 @@ float4 world_fragment(VkrVulkanVertexOutput input,
     {
         uint texture_index = NonUniformResourceIndex(material.orm_texture);
         uint sampler_index = NonUniformResourceIndex(material.orm_sampler);
-        float3 orm = g_textures[texture_index].Sample(
-            g_samplers[sampler_index], input.uv).rgb;
+        float3 orm = g_textures[texture_index]
+                         .Sample(g_samplers[sampler_index], input.uv)
+                         .rgb;
         ao *= orm.r;
         roughness = clamp(roughness * orm.g, 0.04f, 1.0f);
         metallic = saturate(metallic * orm.b);
     }
     float3 normal_dx = ddx(normal);
     float3 normal_dy = ddy(normal);
-    float variance = 0.25f * (dot(normal_dx, normal_dx) +
-                              dot(normal_dy, normal_dy));
+    float variance =
+        0.25f * (dot(normal_dx, normal_dx) + dot(normal_dy, normal_dy));
     roughness = sqrt(saturate(roughness * roughness + min(variance, 0.25f)));
     if ((material.flags & 4u) != 0u)
     {
         uint texture_index = NonUniformResourceIndex(material.emissive_texture);
         uint sampler_index = NonUniformResourceIndex(material.emissive_sampler);
-        emissive *= g_textures[texture_index].Sample(
-            g_samplers[sampler_index], input.uv).rgb;
+        emissive *= g_textures[texture_index]
+                        .Sample(g_samplers[sampler_index], input.uv)
+                        .rgb;
     }
     if (frame.render_mode == 3u)
         return float4(base.rgb + emissive,
@@ -528,26 +656,35 @@ float4 world_fragment(VkrVulkanVertexOutput input,
     float3 f0 = lerp(saturate(material.material_dielectric_specular.rgb),
                      base.rgb, metallic);
     if (frame.render_mode == 6u)
-        return float4(metallic, roughness,
-                      max(f0.x, max(f0.y, f0.z)), 1.0f);
+        return float4(metallic, roughness, max(f0.x, max(f0.y, f0.z)), 1.0f);
+    if (frame.shadow_debug_mode != 0u)
+    {
+        VkrVulkanShadowDebugSample shadow_sample =
+            packet_directional_shadow_debug(frame, input.world_position,
+                                            normal);
+        return float4(
+            packet_shadow_debug_color(frame.shadow_debug_mode, shadow_sample),
+            1.0f);
+    }
 
     float3 analytic_diffuse = 0.0f;
     float3 analytic_specular = 0.0f;
+    float directional_shadow = 0.0f;
     if (frame.directional_direction_enabled.w > 0.5f)
     {
-        float shadow =
+        directional_shadow =
             packet_directional_shadow(frame, input.world_position, normal);
         VkrVulkanDirectResult direct = packet_direct(
             normal, view, normalize(-frame.directional_direction_enabled.xyz),
             frame.directional_color_intensity.rgb *
-                frame.directional_color_intensity.w * shadow,
+                frame.directional_color_intensity.w * directional_shadow,
             base.rgb, metallic, roughness, f0);
         analytic_diffuse = direct.diffuse;
         analytic_specular = direct.specular;
     }
-    VkrVulkanDirectResult punctual = packet_punctual(
-        frame, input.world_position, normal, view, base.rgb, metallic,
-        roughness, f0);
+    VkrVulkanDirectResult punctual =
+        packet_punctual(frame, input.world_position, normal, view, base.rgb,
+                        metallic, roughness, f0);
     analytic_diffuse += punctual.diffuse;
     analytic_specular += punctual.specular;
     float3 color = analytic_diffuse + analytic_specular;
@@ -555,8 +692,8 @@ float4 world_fragment(VkrVulkanVertexOutput input,
     if ((frame.flags & 2u) != 0u)
     {
         color += packet_environment(frame, input.world_position, normal,
-                                    geometric_normal, view, base.rgb,
-                                    metallic, roughness, ao, f0);
+                                    geometric_normal, view, base.rgb, metallic,
+                                    roughness, ao, directional_shadow, f0);
     }
     else
     {
@@ -574,27 +711,28 @@ float4 world_fragment(VkrVulkanVertexOutput input,
     {
         float transmission = saturate(material.material_alpha.y);
         float thickness = max(material.material_alpha.w, 0.0f);
-        float3 view_normal = normalize(mul(frame.view,
-                                           float4(normal, 0.0f)).xyz);
+        float3 view_normal =
+            normalize(mul(frame.view, float4(normal, 0.0f)).xyz);
         float3 refracted = refract(float3(0.0f, 0.0f, -1.0f), view_normal,
                                    1.0f / max(material.material_alpha.z, 1.0f));
         float2 screen_uv = input.position.xy *
                            float2(frame.ibl_controls.w, frame.ambient_color.w);
-        float2 offset = refracted.xy / max(abs(refracted.z), 0.25f) *
-                        thickness * 0.02f;
+        float2 offset =
+            refracted.xy / max(abs(refracted.z), 0.25f) * thickness * 0.02f;
         uint texture_index =
             NonUniformResourceIndex(frame.transmission_texture);
         uint sampler_index =
             NonUniformResourceIndex(frame.transmission_sampler);
-        float3 transmitted = g_textures[texture_index].SampleLevel(
-            g_samplers[sampler_index],
-            clamp(screen_uv + offset, 0.0f, 1.0f), 0.0f).rgb;
+        float3 transmitted =
+            g_textures[texture_index]
+                .SampleLevel(g_samplers[sampler_index],
+                             clamp(screen_uv + offset, 0.0f, 1.0f), 0.0f)
+                .rgb;
         if (material.material_attenuation_color.w > 1e-4f && thickness > 0.0f)
         {
-            transmitted *= pow(clamp(material.material_attenuation_color.rgb,
-                                     1e-4f, 1.0f),
-                               thickness /
-                                   material.material_attenuation_color.w);
+            transmitted *=
+                pow(clamp(material.material_attenuation_color.rgb, 1e-4f, 1.0f),
+                    thickness / material.material_attenuation_color.w);
         }
         float3 fresnel = packet_fresnel(no_v, f0);
         float weight = transmission * (1.0f - metallic) *

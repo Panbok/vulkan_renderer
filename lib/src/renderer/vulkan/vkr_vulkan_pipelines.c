@@ -260,6 +260,9 @@ vkr_vk_validate_packet_root_abi(VkrVulkanRenderer *renderer) {
     valid &= vkr_vk_reflect_member_offset(
         frame, "flags", offsetof(VkrVulkanPacketFrameRoot, flags), NULL);
     valid &= vkr_vk_reflect_member_offset(
+        frame, "shadow_debug_mode",
+        offsetof(VkrVulkanPacketFrameRoot, shadow_debug_mode), NULL);
+    valid &= vkr_vk_reflect_member_offset(
         frame, "point_light_grid_origin_cell_size",
         offsetof(VkrVulkanPacketFrameRoot, point_light_grid_origin_cell_size),
         NULL);

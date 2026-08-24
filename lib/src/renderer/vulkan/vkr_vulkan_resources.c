@@ -795,6 +795,14 @@ bool8_t vkr_vk_create_resources(VkrVulkanRenderer *renderer) {
     log_error("Vulkan failed to create the sentinel sampler");
     return false_v;
   }
+  VkSamplerCreateInfo transmission_info = sampler_info;
+  transmission_info.magFilter = VK_FILTER_LINEAR;
+  transmission_info.minFilter = VK_FILTER_LINEAR;
+  if (vkCreateSampler(vkr_vk_renderer_device(renderer), &transmission_info,
+                      NULL, &renderer->transmission_sampler) != VK_SUCCESS) {
+    log_error("Vulkan failed to create the transmission feedback sampler");
+    return false_v;
+  }
   /* The comparison sampler carries the filter: each receiver tap becomes a
      bilinear 2x2 PCF. Vulkan has no raw shadow-map read, so the legacy raw root
      field remains on the sentinel instead of consuming a permanent heap row. */
@@ -1071,6 +1079,22 @@ bool8_t vkr_vk_publish_sentinel_descriptors(VkrVulkanRenderer *renderer) {
     return false_v;
   }
   renderer->shadow_comparison_sampler_slot = shadow_comparison_handle.index;
+  VkDescriptorGetInfoEXT transmission_get = {
+      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
+      .type = VK_DESCRIPTOR_TYPE_SAMPLER,
+      .data.pSampler = &renderer->transmission_sampler,
+  };
+  VkrGpuSlotHandle transmission_handle = {0};
+  get_descriptor(vkr_vk_renderer_device(renderer), &transmission_get,
+                 properties->samplerDescriptorSize,
+                 renderer->descriptor_scratch);
+  if (vkr_gpu_slot_table_publish(
+          renderer->sampler_slots, renderer->descriptor_scratch,
+          &transmission_handle) != VKR_GPU_SLOT_STATUS_OK ||
+      transmission_handle.index != 2u) {
+    return false_v;
+  }
+  renderer->transmission_sampler_slot = transmission_handle.index;
 
   get_descriptor(vkr_vk_renderer_device(renderer), &storage_get,
                  properties->storageImageDescriptorSize,
@@ -1109,11 +1133,11 @@ bool8_t vkr_vk_publish_sentinel_descriptors(VkrVulkanRenderer *renderer) {
                            &renderer->resource_descriptors,
                            resource_layout->storage_image_offset,
                            properties->storageImageDescriptorSize) &&
-         /* Two contiguous sampler rows: sentinel and shadow comparison. */
+         /* Three permanent rows: sentinel, shadow comparison, transmission. */
          vkr_vk_mark_dirty(&renderer->sampler_descriptor_dirty,
                            &renderer->sampler_descriptors,
                            sampler_layout->sampler_offset,
-                           properties->samplerDescriptorSize * 2u) &&
+                           properties->samplerDescriptorSize * 3u) &&
          vkr_vk_mark_dirty(&renderer->material_dirty, &renderer->materials, 0u,
                            sizeof(material));
 }

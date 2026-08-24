@@ -889,7 +889,7 @@ bool8_t vkr_vk_record_deferred_transmission(VkrVulkanRenderer *renderer,
       .vbuffer_texture = vbuffer,
       .depth_texture = depth,
       .feedback_texture = feedback,
-      .feedback_sampler = VKR_VULKAN_SENTINEL_SLOT_INDEX,
+      .feedback_sampler = renderer->transmission_sampler_slot,
       .output_texture = output,
       .layer = vbuffer_use && vbuffer_use->has_slice
                    ? vbuffer_use->slice.base_layer

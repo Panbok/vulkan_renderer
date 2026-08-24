@@ -443,7 +443,8 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketFrameRoot {
   Vec4 directional_color_intensity;
   Vec4 ambient_color;
   uint32_t render_mode;
-  uint32_t reserved_1[3];
+  uint32_t shadow_debug_mode;
+  uint32_t reserved_1[2];
   uint64_t point_light_data;
   uint64_t point_light_masks;
   Vec4 point_light_grid_origin_cell_size;
@@ -1052,6 +1053,10 @@ struct VkrVulkanRenderer {
   VkrVulkanBuffer materials;
   VkrVulkanImage sentinel_image;
   VkSampler sentinel_sampler;
+  // Linear clamp sampler for immutable transmission feedback. Its permanent
+  // slot avoids per-pass sampler publication and matches Metal filtering.
+  VkSampler transmission_sampler;
+  uint32_t transmission_sampler_slot;
   /** Linear clamp, LESS_OR_EQUAL comparison sampler for the CSM receiver.
       Published once beside the sentinel and never retired, so its heap slot is
       stable for the device's lifetime. */

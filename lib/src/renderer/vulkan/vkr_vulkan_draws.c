@@ -567,6 +567,7 @@ void vkr_vk_fill_packet_frame_root(
   root->directional_color_intensity = frame->directional_color_intensity;
   root->ambient_color = frame->ambient_color;
   root->render_mode = frame->render_mode;
+  root->shadow_debug_mode = frame->shadow_debug_mode;
   root->point_light_grid_origin_cell_size =
       frame->point_light_grid_origin_cell_size;
   for (uint32_t i = 0; i < 4u; ++i) {
