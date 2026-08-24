@@ -58,6 +58,7 @@ typedef struct VkrWorldBatchMetrics {
   float32_t avg_batch_size;
   uint32_t max_batch_size;
   uint32_t gpu_candidate_count;
+  uint32_t static_gpu_candidate_count;
   uint32_t gpu_candidate_capacity;
   uint32_t gpu_visible_count;
   uint32_t gpu_bucket_counts[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];

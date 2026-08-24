@@ -31,14 +31,6 @@ static bool8_t vkr_renderer_env_enabled(const char *name) {
                                                               : false_v;
 }
 
-#if defined(PLATFORM_APPLE)
-_Static_assert(VKR_RENDERER_IMPL_DRAW_BUCKET_COUNT ==
-                   VKR_WORLD_DRAW_STATE_BUCKET_COUNT,
-               "backend-neutral and Metal draw bucket counts must match");
-_Static_assert(VKR_RENDERER_IMPL_SHADOW_CASCADE_COUNT ==
-                   VKR_SHADOW_CASCADE_COUNT_MAX,
-               "backend-neutral and frontend cascade counts must match");
-
 static VkrMetricReason
 vkr_renderer_gpu_timing_metric_reason(VkrRendererImplGpuTimingReason reason) {
   switch (reason) {
@@ -57,6 +49,13 @@ vkr_renderer_gpu_timing_metric_reason(VkrRendererImplGpuTimingReason reason) {
     return VKR_METRIC_REASON_NONE;
   }
 }
+#if defined(PLATFORM_APPLE)
+_Static_assert(VKR_RENDERER_IMPL_DRAW_BUCKET_COUNT ==
+                   VKR_WORLD_DRAW_STATE_BUCKET_COUNT,
+               "backend-neutral and Metal draw bucket counts must match");
+_Static_assert(VKR_RENDERER_IMPL_SHADOW_CASCADE_COUNT ==
+                   VKR_SHADOW_CASCADE_COUNT_MAX,
+               "backend-neutral and frontend cascade counts must match");
 
 static void
 vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
@@ -215,6 +214,8 @@ vkr_renderer_record_gpu_candidate_metrics(RendererFrontend *renderer,
       packet && packet->world ? packet->world->transmission_gpu_candidate_count
                               : 0u;
   renderer->frame_metrics.world.gpu_candidate_count = count;
+  renderer->frame_metrics.world.static_gpu_candidate_count =
+      packet && packet->world ? packet->world->static_candidate_count : 0u;
   renderer->frame_metrics.world.transmission_gpu_candidate_count =
       transmission_count;
   renderer->frame_metrics.world.gpu_candidate_capacity =
@@ -2377,6 +2378,20 @@ vkr_renderer_validate_packet(const VkrRenderPacket *packet,
         "packet.world.transmission_gpu_candidate_count", out_validation_error);
     if (error != VKR_RENDERER_ERROR_NONE)
       return error;
+    if (world->static_candidate_count > world->gpu_candidate_count)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.world.static_candidate_count",
+                        "cannot exceed the source candidate count");
+    if (world->gpu_candidate_count > 0u && world->static_generation == 0u)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.world.static_generation", "must be nonzero");
+    if (world->gpu_candidate_count > 0u && world->dynamic_generation == 0u)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.world.dynamic_generation", "must be nonzero");
+    if (world->gpu_candidate_count > 0u && world->publication_generation == 0u)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.world.publication_generation",
+                        "must be nonzero");
     if (world->gpu_camera_opaque_candidate_count > world->gpu_candidate_count)
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.world.gpu_camera_opaque_candidate_count",
@@ -2746,6 +2761,7 @@ static bool8_t renderer_impl_vulkan_poll_submit_result(
           source.transmission_gpu_occlusion_culled_count,
       .transmission_coverage_valid = source.has_transmission_coverage,
       .hzb_history_valid = source.hzb_history_valid,
+      .shadow_depth_range = source.shadow_depth_range,
       .has_gpu_draw_diagnostics = source.has_gpu_draw_diagnostics,
       .pass_timing_count = source.pass_timing_count,
   };

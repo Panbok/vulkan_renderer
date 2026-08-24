@@ -197,6 +197,9 @@ typedef struct VkrPacketBuildMetrics {
   uint64_t geometry_table_build_ns;
   uint64_t candidate_row_bytes;
   uint64_t instance_row_bytes;
+  uint64_t static_candidate_row_bytes;
+  uint64_t dynamic_candidate_row_bytes;
+  uint32_t publication_omitted_count;
   uint64_t geometry_row_bytes;
   bool8_t valid;
 } VkrPacketBuildMetrics;

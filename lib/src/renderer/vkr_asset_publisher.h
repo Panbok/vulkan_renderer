@@ -18,6 +18,8 @@ typedef struct VkrAssetPublisher {
   void *state;
   /** True once every accepted publication is ordered before the next frame. */
   bool8_t (*publications_idle)(void *state);
+  /** Monotonic nonzero stamp for geometry/material resolvability changes. */
+  uint64_t (*publication_generation)(void *state);
   bool8_t (*publish_geometry)(void *state, VkrGeometryHandle handle,
                               const struct VkrGeometryConfig *geometry);
   bool8_t (*publish_loaded_mesh)(void *state, VkrGeometryHandle handle,

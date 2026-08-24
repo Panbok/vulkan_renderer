@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "id": "local.p6.vulkan.sdsm_validation",
+  "suite": "local",
+  "description": "Focused Vulkan synchronization-validation witness for occupied-depth SDSM reduction and completion-gated feedback.",
+  "scene": "assets/scenes/sponza.scene.json",
+  "seed": 6,
+  "resolution": [800, 600],
+  "boot": "full",
+  "target": "windowed_hidden",
+  "present": "fifo",
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 2,
+  "repetition_timeout_ms": 300000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": { "warmup": 30, "measure": 8 },
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "backend": "vulkan",
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "shadow_sdsm": true,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [-1.5, 0, 17],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.1,
+    "far_plane": 500
+  },
+  "assertions": [
+    { "metric": "visibility.gpu_candidates.static_count", "stat": "min", "min": 1 },
+    { "metric": "packet.static_candidate_row_bytes", "stat": "max", "max": 0 },
+    { "metric": "draw.shadow.sdsm.status", "stat": "min", "min": 2 },
+    { "metric": "draw.shadow.sdsm.occupied_pixels", "stat": "min", "min": 1 },
+    { "metric": "draw.shadow.sdsm.source_lag", "stat": "max", "max": 4 },
+    { "metric": "visibility.gpu_visible.overflow", "stat": "max", "max": 0 },
+    { "metric": "visibility.transmission.gpu_visible.overflow", "stat": "max", "max": 0 },
+    { "metric": "visibility.gbuffer.resolve_invalid", "stat": "max", "max": 0 }
+  ]
+}

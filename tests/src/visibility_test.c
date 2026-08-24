@@ -3,6 +3,7 @@
 #include "math/vkr_frustum.h"
 #include "math/vkr_math.h"
 #include "renderer/renderer_frontend.h"
+#include "renderer/vkr_candidate_residency.h"
 #include "renderer/vkr_visibility.h"
 
 #include <assert.h>
@@ -32,14 +33,63 @@ static void test_packet_pre_recording_rejection(void) {
 
   VkrWorldDrawCandidate candidate = {0};
   world.gpu_candidates = &candidate;
+  world.static_generation = 1u;
+  world.dynamic_generation = 1u;
+  world.publication_generation = 1u;
   validation = (VkrValidationError){0};
   assert(vkr_renderer_validate_packet(&packet, &validation) ==
          VKR_RENDERER_ERROR_NONE);
   assert(validation.field_path == NULL && validation.message == NULL);
+  world.static_generation = 0u;
+  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+         VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
+  assert(strcmp(validation.field_path, "packet.world.static_generation") == 0);
+  world.static_generation = 1u;
+  world.dynamic_generation = 0u;
+  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+         VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
+  assert(strcmp(validation.field_path, "packet.world.dynamic_generation") == 0);
+  world.dynamic_generation = 1u;
+  world.publication_generation = 0u;
+  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+         VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
+  assert(strcmp(validation.field_path, "packet.world.publication_generation") ==
+         0);
+  world.publication_generation = 1u;
+  world.static_candidate_count = 2u;
+  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+         VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
+  assert(strcmp(validation.field_path, "packet.world.static_candidate_count") ==
+         0);
+  world.static_candidate_count = 0u;
 
   packet.world = NULL;
   assert(vkr_renderer_validate_packet(&packet, &validation) ==
          VKR_RENDERER_ERROR_NONE);
+}
+static void test_candidate_residency_generation_contract(void) {
+  VkrCandidateResidencyState committed = {0};
+  assert(vkr_candidate_residency_needs_static_repack(&committed, 1u, 1u, 1u));
+  const VkrCandidateResidencyState staged =
+      vkr_candidate_residency_stage(3u, 5u, 7u, 11u, 2u);
+  assert(
+      staged.valid && staged.static_generation == 3u &&
+      staged.publication_generation == 5u && staged.resource_generation == 7u &&
+      staged.packed_static_count == 11u && staged.omitted_static_count == 2u);
+  /* Recording stages a replacement without mutating committed slot authority.
+     Only the backend's successful-submit path performs this assignment. */
+  assert(!committed.valid);
+  committed = staged;
+  assert(!vkr_candidate_residency_needs_static_repack(&committed, 3u, 5u, 7u));
+  assert(vkr_candidate_residency_needs_static_repack(&committed, 3u, 6u, 7u));
+  committed = vkr_candidate_residency_stage(3u, 6u, 7u, 13u, 0u);
+  assert(committed.packed_static_count == 13u &&
+         committed.omitted_static_count == 0u);
+  assert(!vkr_candidate_residency_needs_static_repack(&staged, 3u, 5u, 7u));
+  assert(vkr_candidate_residency_needs_static_repack(&staged, 4u, 5u, 7u));
+  assert(vkr_candidate_residency_needs_static_repack(&staged, 3u, 6u, 7u));
+  assert(vkr_candidate_residency_needs_static_repack(&staged, 3u, 5u, 8u));
+  assert(!vkr_candidate_residency_stage(0u, 1u, 1u, 0u, 0u).valid);
 }
 
 static void test_packet_independent_transmission_stream(void) {
@@ -281,6 +331,7 @@ static void test_submesh_sphere_is_conservative_under_scale(void) {
 bool32_t run_visibility_tests(void) {
   printf("--- Starting Visibility Tests ---\n");
   test_packet_pre_recording_rejection();
+  test_candidate_residency_generation_contract();
   test_packet_independent_transmission_stream();
   test_packet_borrowed_array_validation();
   test_packet_text_geometry_validation();

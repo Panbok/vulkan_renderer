@@ -142,6 +142,23 @@ struct VkrVkHzbRoot
     uint source_is_depth;
     uint3 reserved;
 };
+struct VkrVkSdsmState
+{
+    uint min_device_z_bits;
+    uint max_device_z_bits;
+    uint occupied_count;
+    uint reserved;
+};
+
+struct VkrVkSdsmRoot
+{
+    VkrVkSdsmState* reduce_state;
+    uint depth_texture;
+    uint vbuffer_texture;
+    uint2 extent;
+    uint2 reserved;
+};
+
 
 struct VkrVkPickingRoot
 {
@@ -199,6 +216,7 @@ struct VkrVkRasterPush { VkrVkRasterRoot* root; uint bucket; uint reserved; };
 struct VkrVkResolvePush { VkrVkResolveRoot* root; uint2 reserved; };
 struct VkrVkLightingPush { VkrVkLightingRoot* root; uint2 reserved; };
 struct VkrVkHzbPush { VkrVkHzbRoot* root; uint2 reserved; };
+struct VkrVkSdsmPush { VkrVkSdsmRoot* root; uint2 reserved; };
 struct VkrVkPickingPush { VkrVkPickingRoot* root; uint2 reserved; };
 struct VkrVkTransmissionPush { VkrVkTransmissionRoot* root; uint2 reserved; };
 struct VkrVkTransmissionCoveragePush
@@ -212,6 +230,7 @@ struct VkrVkTransmissionCoveragePush
 [[vk::push_constant]] ConstantBuffer<VkrVkResolvePush> g_resolve_push;
 [[vk::push_constant]] ConstantBuffer<VkrVkLightingPush> g_lighting_push;
 [[vk::push_constant]] ConstantBuffer<VkrVkHzbPush> g_hzb_push;
+[[vk::push_constant]] ConstantBuffer<VkrVkSdsmPush> g_sdsm_push;
 [[vk::push_constant]] ConstantBuffer<VkrVkPickingPush> g_picking_push;
 [[vk::push_constant]] ConstantBuffer<VkrVkTransmissionPush> g_transmission_push;
 [[vk::push_constant]] ConstantBuffer<VkrVkTransmissionCoveragePush>
@@ -997,6 +1016,34 @@ void vk_hzb_build(uint3 thread_id : SV_DispatchThreadID)
     }
     g_storage_2d[root.destination_texture][thread_id.xy] = float4(maximum, 0.0f, 0.0f, 0.0f);
 }
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_sdsm_reduce(uint3 thread_id : SV_DispatchThreadID)
+{
+    VkrVkSdsmRoot* root = g_sdsm_push.root;
+    bool occupied = false;
+    float depth = 0.0f;
+    if (all(thread_id.xy < root.extent))
+    {
+        occupied =
+            g_uint2_textures[root.vbuffer_texture].Load(int3(thread_id.xy, 0)).x != 0u;
+        if (occupied)
+            depth = g_depth_textures[root.depth_texture].Load(int3(thread_id.xy, 0));
+    }
+    uint wave_occupied = WaveActiveCountBits(occupied);
+    float wave_minimum = WaveActiveMin(occupied ? depth : 1.0f);
+    float wave_maximum = WaveActiveMax(occupied ? depth : 0.0f);
+    if (WaveIsFirstLane() && wave_occupied != 0u)
+    {
+        uint ignored;
+        InterlockedMin(root.reduce_state->min_device_z_bits,
+                       asuint(wave_minimum), ignored);
+        InterlockedMax(root.reduce_state->max_device_z_bits,
+                       asuint(wave_maximum), ignored);
+        InterlockedAdd(root.reduce_state->occupied_count, wave_occupied, ignored);
+    }
+}
+
 
 [shader("compute")]
 [numthreads(1, 1, 1)]

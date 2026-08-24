@@ -1374,6 +1374,8 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
         history->static_only_contents &&
         history->static_generation ==
             (candidates ? candidates->static_generation : 0u) &&
+        history->publication_generation ==
+            (candidates ? candidates->publication_generation : 0u) &&
         history->caster_bounds_generation ==
             (candidates ? candidates->caster_bounds_generation : 0u) &&
         history->bias_signature == bias_signature &&
@@ -1442,6 +1444,8 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
         .rendered_light_view = system->cascades[cascade].light_view,
         .rendered_view_projection = out_data->view_projection[cascade],
         .static_generation = candidates ? candidates->static_generation : 0u,
+        .publication_generation =
+            candidates ? candidates->publication_generation : 0u,
         .caster_bounds_generation =
             candidates ? candidates->caster_bounds_generation : 0u,
         .bias_signature = bias_signature,

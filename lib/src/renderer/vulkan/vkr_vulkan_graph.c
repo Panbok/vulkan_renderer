@@ -29,6 +29,7 @@ typedef enum VkrVulkanGraphExecutorKind {
   VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_COVERAGE,
   VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_COMPACT,
   VKR_VULKAN_GRAPH_EXECUTOR_HZB_BUILD,
+  VKR_VULKAN_GRAPH_EXECUTOR_SDSM_REDUCE,
   VKR_VULKAN_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_FULLSCREEN,
   VKR_VULKAN_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_EDITOR,
   VKR_VULKAN_GRAPH_EXECUTOR_WORLD_BLEND,
@@ -67,6 +68,7 @@ vkr_global const VkrVulkanGraphExecutorSpec s_vk_graph_executors[] = {
     {"pass.transmission.coverage", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.transmission.compact", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.hzb.build", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.sdsm.reduce", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.copy.pre_transmission.fullscreen", VKR_RG_PASS_TYPE_TRANSFER},
     {"pass.copy.pre_transmission.editor", VKR_RG_PASS_TYPE_TRANSFER},
     {"pass.world.blend", VKR_RG_PASS_TYPE_GRAPHICS},
@@ -635,11 +637,26 @@ bool8_t vkr_vk_realize_graph_buffers(VkrVulkanRenderer *renderer) {
   if (renderer->graph->buffers.length > renderer->config.max_graph_buffers)
     return false_v;
   const uint64_t completed = vkr_vk_refresh_completed(renderer);
+  renderer->gpu_candidate_buffer_handle = VKR_RG_BUFFER_HANDLE_INVALID;
+  renderer->gpu_candidate_instance_buffer_handle = VKR_RG_BUFFER_HANDLE_INVALID;
+  renderer->transmission_gpu_candidate_instance_buffer_handle =
+      VKR_RG_BUFFER_HANDLE_INVALID;
   for (uint64_t i = 0u; i < renderer->graph->buffers.length; ++i) {
     const VkrRgBuffer *buffer =
         vector_get_VkrRgBuffer(&renderer->graph->buffers, i);
     if (!buffer || !buffer->declared_this_frame)
       continue;
+    const VkrRgBufferHandle handle = {
+        .id = (uint32_t)i + 1u,
+        .generation = buffer->generation,
+    };
+    if (vkr_string8_equals_cstr(&buffer->name, "gpu_draw_candidates"))
+      renderer->gpu_candidate_buffer_handle = handle;
+    else if (vkr_string8_equals_cstr(&buffer->name, "gpu_draw_instances"))
+      renderer->gpu_candidate_instance_buffer_handle = handle;
+    else if (vkr_string8_equals_cstr(&buffer->name,
+                                     "transmission_gpu_draw_instances"))
+      renderer->transmission_gpu_candidate_instance_buffer_handle = handle;
     if (buffer->imported ||
         (buffer->desc.flags & VKR_RG_RESOURCE_FLAG_EXTERNAL)) {
       log_error("Vulkan graph buffer '%.*s' has no imported native "
@@ -1238,6 +1255,8 @@ vkr_internal bool8_t vkr_vk_record_graph_pass(VkrVulkanRenderer *renderer,
     return vkr_vk_record_deferred_lighting(renderer, command, pass);
   case VKR_VULKAN_GRAPH_EXECUTOR_HZB_BUILD:
     return vkr_vk_record_deferred_hzb(renderer, command, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_SDSM_REDUCE:
+    return vkr_vk_record_deferred_sdsm(renderer, command, pass);
   case VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_SHADE:
     return vkr_vk_record_deferred_transmission(renderer, command, pass);
   case VKR_VULKAN_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_FULLSCREEN:
@@ -1269,6 +1288,7 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
   slot->transmission_gpu_compaction_state = NULL;
   slot->hzb_history_input = NULL;
   slot->hzb_history_output = NULL;
+  slot->sdsm_reduce_state = NULL;
   const PFN_vkCmdBeginDebugUtilsLabelEXT begin_label =
       vkr_vulkan_device_cmd_begin_debug_label(renderer->device);
   const PFN_vkCmdEndDebugUtilsLabelEXT end_label =

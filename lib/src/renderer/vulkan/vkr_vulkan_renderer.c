@@ -1,4 +1,5 @@
 #include "renderer/vulkan/vkr_vulkan_internal.h"
+#include <math.h>
 
 vkr_internal bool8_t vkr_vk_create_timeline(VkrVulkanRenderer *renderer) {
   VkSemaphoreTypeCreateInfo type_info = {
@@ -121,6 +122,7 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
   }
   if (!renderer->config.graph_path)
     renderer->config.graph_path = "assets/render_graphs/main.rendergraph.json";
+  renderer->candidate_publication_generation = 1u;
   if (!renderer->config.max_graph_images)
     renderer->config.max_graph_images = 128u;
   if (!renderer->config.max_graph_buffers)
@@ -687,6 +689,8 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
       packet->world && packet->world->transmission_gpu_candidate_count > 0u;
   renderer->prepared_frame.transmission_compact_enabled = false_v;
   renderer->prepared_frame.timing_enabled = timing_requested;
+  renderer->prepared_frame.sdsm_enabled =
+      packet->shadow && packet->shadow->sdsm_enabled;
   renderer->prepared_frame.shadow_cascade_count =
       packet->shadow
           ? Min(packet->shadow->cascade_count, VKR_SHADOW_CASCADE_COUNT_MAX)
@@ -755,6 +759,8 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
   }
   slot->timing_requested = timing_requested;
   slot->timing_collected = !slot->timing_requested;
+  slot->sdsm_requested = renderer->prepared_frame.sdsm_enabled;
+  slot->shadow_depth_range = (VkrShadowDepthRangeSample){0};
   slot->transmission_coverage_requested =
       renderer->prepared_frame.transmission_pending &&
       renderer->prepared_frame.timing_enabled &&
@@ -783,6 +789,21 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
     return false_v;
   }
   const uint64_t signal_value = renderer->submit_value + 1u;
+  if (slot->sdsm_requested) {
+    const float32_t a = packet->globals.projection.elements[10];
+    const float32_t b = packet->globals.projection.elements[14];
+    slot->shadow_depth_range = (VkrShadowDepthRangeSample){
+        .projection_convention = 0u,
+        .source_depth_linearize = {a, b, 0.0f, 0.0f},
+        .source_near = a != 0.0f ? b / a : 0.0f,
+        .source_far = (1.0f + a) != 0.0f ? b / (1.0f + a) : 0.0f,
+        .source_frame_index = packet->frame.frame_index,
+        .source_projection_generation =
+            vkr_shadow_projection_generation(&packet->globals.projection),
+        .source_scene_generation = packet->frame.scene_generation,
+        .submit_value = signal_value,
+    };
+  }
   VkCommandBufferSubmitInfo command_info = {
       .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
       .commandBuffer = slot->command_buffer,
@@ -838,6 +859,10 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
     return false_v;
   }
   renderer->submit_value = signal_value;
+  if (slot->candidate_residency_pending) {
+    slot->candidate_residency = slot->pending_candidate_residency;
+    slot->candidate_residency_pending = false_v;
+  }
   /* Past the submit, so retained contents are now proven to have been written.
      Every earlier failure path returns without reaching here, which is the
      ADR-029 rollback: a cancelled frame commits nothing and the previous
@@ -962,6 +987,37 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
+vkr_internal void
+vkr_vk_decode_sdsm_result(const VkrVulkanFrameSlot *slot,
+                          const uint8_t *readback,
+                          VkrShadowDepthRangeSample *out_sample) {
+  *out_sample = slot->shadow_depth_range;
+  if (!slot->sdsm_requested)
+    return;
+  VkrVulkanSdsmState state = {0};
+  MemCopy(&state, readback + VKR_VULKAN_READBACK_SDSM_STATE_OFFSET,
+          sizeof(state));
+  out_sample->occupied_count = state.occupied_count;
+  if (state.occupied_count == 0u) {
+    out_sample->valid = true_v;
+    return;
+  }
+  if (state.min_device_z_bits == UINT32_MAX)
+    return;
+  MemCopy(&out_sample->min_device_z, &state.min_device_z_bits,
+          sizeof(float32_t));
+  MemCopy(&out_sample->max_device_z, &state.max_device_z_bits,
+          sizeof(float32_t));
+  out_sample->valid =
+      isfinite(out_sample->min_device_z) &&
+              isfinite(out_sample->max_device_z) &&
+              out_sample->min_device_z >= 0.0f &&
+              out_sample->max_device_z <= 1.0f &&
+              out_sample->min_device_z <= out_sample->max_device_z
+          ? true_v
+          : false_v;
+}
+
 bool8_t vkr_vulkan_renderer_poll_result(VkrVulkanRenderer *renderer,
                                         uint64_t after_submit_value,
                                         VkrVulkanResult *out_result) {
@@ -1018,6 +1074,7 @@ bool8_t vkr_vulkan_renderer_poll_result(VkrVulkanRenderer *renderer,
       .has_gpu_draw_diagnostics = true_v,
       .has_transmission_coverage = best->transmission_coverage_requested,
   };
+  vkr_vk_decode_sdsm_result(best, color, &out_result->shadow_depth_range);
   MemCopy(out_result->gpu_bucket_counts, opaque[0].bucket_counts,
           sizeof(out_result->gpu_bucket_counts));
   MemCopy(out_result->transmission_gpu_bucket_counts,

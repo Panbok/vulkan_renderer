@@ -1,4 +1,5 @@
 #include "render_graph_barrier_test.h"
+#include "renderer/vkr_render_packet.h"
 #include "renderer/vkr_rg_json.h"
 
 /**
@@ -1439,19 +1440,23 @@ static void test_main_graph_declares_transmission_stages(void) {
                                      "shadow_cascade_count"));
       assert(vkr_string8_equals_cstr(&pass->repeat.condition_mask_source,
                                      "shadow_cascade_render_mask"));
-      assert(pass->reads.length == 3u);
+      assert(pass->reads.length == 4u);
       VkrRgJsonResourceUse *visible =
           vector_get_VkrRgJsonResourceUse(&pass->reads, 0u);
-      VkrRgJsonResourceUse *state =
+      VkrRgJsonResourceUse *instances =
           vector_get_VkrRgJsonResourceUse(&pass->reads, 1u);
-      VkrRgJsonResourceUse *arguments =
+      VkrRgJsonResourceUse *state =
           vector_get_VkrRgJsonResourceUse(&pass->reads, 2u);
-      assert(visible && state && arguments && visible->binding.value == 1u &&
-             state->binding.value == 2u && arguments->binding.value == 3u &&
-             visible->buffer_access == VKR_RG_JSON_BUFFER_ACCESS_STORAGE_READ &&
-             state->buffer_access == VKR_RG_JSON_BUFFER_ACCESS_INDIRECT_READ &&
-             arguments->buffer_access ==
-                 VKR_RG_JSON_BUFFER_ACCESS_INDIRECT_READ);
+      VkrRgJsonResourceUse *arguments =
+          vector_get_VkrRgJsonResourceUse(&pass->reads, 3u);
+      assert(
+          visible && instances && state && arguments &&
+          visible->binding.value == 1u && instances->binding.value == 9u &&
+          state->binding.value == 2u && arguments->binding.value == 3u &&
+          visible->buffer_access == VKR_RG_JSON_BUFFER_ACCESS_STORAGE_READ &&
+          instances->buffer_access == VKR_RG_JSON_BUFFER_ACCESS_STORAGE_READ &&
+          state->buffer_access == VKR_RG_JSON_BUFFER_ACCESS_INDIRECT_READ &&
+          arguments->buffer_access == VKR_RG_JSON_BUFFER_ACCESS_INDIRECT_READ);
     }
     found++;
   }
@@ -1459,6 +1464,9 @@ static void test_main_graph_declares_transmission_stages(void) {
 
   bool8_t found_hzb_resource = false_v;
   bool8_t found_stable_shadow_capacity = false_v;
+  bool8_t found_sdsm_resource = false_v;
+  bool8_t found_gpu_instances = false_v;
+  bool8_t found_transmission_gpu_instances = false_v;
   for (uint64_t i = 0u; i < graph.resources.length; ++i) {
     VkrRgJsonResource *resource =
         vector_get_VkrRgJsonResource(&graph.resources, i);
@@ -1468,6 +1476,28 @@ static void test_main_graph_declares_transmission_stages(void) {
       assert(resource->image.mip_levels_full);
       assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_HISTORY) != 0u);
       found_hzb_resource = true_v;
+    } else if (vkr_string8_equals_cstr(&resource->name, "sdsm_reduce_state")) {
+      assert(resource->buffer.size == 16u);
+      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_PER_FRAME_SLOT) !=
+             0u);
+      found_sdsm_resource = true_v;
+    } else if (vkr_string8_equals_cstr(&resource->name, "gpu_draw_instances")) {
+      assert(resource->buffer.size ==
+             (uint64_t)VKR_GPU_DRAW_CANDIDATE_CAPACITY *
+                 sizeof(VkrInstanceDataGPU));
+      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_PER_FRAME_SLOT) !=
+             0u);
+      found_gpu_instances = true_v;
+    } else if (vkr_string8_equals_cstr(&resource->name,
+                                       "transmission_gpu_draw_instances")) {
+      assert(resource->condition.kind ==
+             VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING);
+      assert(resource->buffer.size ==
+             (uint64_t)VKR_GPU_DRAW_CANDIDATE_CAPACITY *
+                 sizeof(VkrInstanceDataGPU));
+      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_PER_FRAME_SLOT) !=
+             0u);
+      found_transmission_gpu_instances = true_v;
     } else if (vkr_string8_equals_cstr(&resource->name, "shadow_map")) {
       assert(vkr_string8_equals_cstr(&resource->image.layers_source,
                                      "shadow_map_layer_count"));
@@ -1481,12 +1511,33 @@ static void test_main_graph_declares_transmission_stages(void) {
       found_stable_shadow_capacity = true_v;
     }
   }
-  assert(found_hzb_resource && found_stable_shadow_capacity);
+  assert(found_hzb_resource && found_sdsm_resource && found_gpu_instances &&
+         found_transmission_gpu_instances && found_stable_shadow_capacity);
 
   bool8_t found_hzb_reduce = false_v;
+  bool8_t found_sdsm_reduce = false_v;
   for (uint64_t i = 0u; i < graph.passes.length; ++i) {
     VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph.passes, i);
-    if (!pass || !vkr_string8_equals_cstr(&pass->name, "HZB.BuildMip.${i}"))
+    if (!pass)
+      continue;
+    if (vkr_string8_equals_cstr(&pass->name, "SDSM.Reduce")) {
+      assert(pass->condition.kind == VKR_RG_JSON_CONDITION_SDSM_ENABLED);
+      assert(pass->reads.length == 2u && pass->writes.length == 1u);
+      VkrRgJsonResourceUse *depth =
+          vector_get_VkrRgJsonResourceUse(&pass->reads, 0u);
+      VkrRgJsonResourceUse *vbuffer =
+          vector_get_VkrRgJsonResourceUse(&pass->reads, 1u);
+      VkrRgJsonResourceUse *state =
+          vector_get_VkrRgJsonResourceUse(&pass->writes, 0u);
+      assert(depth && vbuffer && state && depth->binding.value == 0u &&
+             vbuffer->binding.value == 1u && state->binding.value == 2u &&
+             depth->image_access == VKR_RG_JSON_IMAGE_ACCESS_SAMPLED &&
+             vbuffer->image_access == VKR_RG_JSON_IMAGE_ACCESS_SAMPLED &&
+             state->buffer_access == VKR_RG_JSON_BUFFER_ACCESS_STORAGE_WRITE);
+      found_sdsm_reduce = true_v;
+      continue;
+    }
+    if (!vkr_string8_equals_cstr(&pass->name, "HZB.BuildMip.${i}"))
       continue;
     assert(pass->repeat.enabled &&
            vkr_string8_equals_cstr(&pass->repeat.count_source,
@@ -1501,7 +1552,7 @@ static void test_main_graph_declares_transmission_stages(void) {
     assert(vkr_string8_equals_cstr(&write->slice_base_mip.token, "${i+1}"));
     found_hzb_reduce = true_v;
   }
-  assert(found_hzb_reduce);
+  assert(found_hzb_reduce && found_sdsm_reduce);
 
   const char *picking_deferred_ordered[] = {
       "Picking.DepthSeed.Opaque", "Picking.Resolve.Opaque", "Picking.Features",
@@ -1519,7 +1570,7 @@ static void test_main_graph_declares_transmission_stages(void) {
       assert(pass->reads.length == 1u && pass->writes.length == 1u);
     } else if (found == 1u) {
       assert(pass->type == VKR_RG_JSON_PASS_COMPUTE);
-      assert(pass->reads.length == 4u && pass->writes.length == 1u);
+      assert(pass->reads.length == 5u && pass->writes.length == 1u);
     } else if (found == 2u) {
       assert(pass->type == VKR_RG_JSON_PASS_GRAPHICS);
       assert(pass->attachments.colors.length == 1u &&
@@ -1581,6 +1632,7 @@ static void test_main_graph_fits_runtime_pass_capacity(void) {
       .shadow_cascade_count = 4u,
       .shadow_cascade_render_mask = 0xfu,
       .hzb_reduce_pass_count = 11u,
+      .sdsm_enabled = true_v,
       .transmission_pending = true_v,
       .timing_enabled = true_v,
       .picking_pending = true_v,

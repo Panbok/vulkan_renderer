@@ -446,6 +446,7 @@ typedef struct VkrShadowCascadeHistory {
   Mat4 rendered_light_view;
   Mat4 rendered_view_projection;
   uint64_t static_generation;
+  uint64_t publication_generation;
   uint64_t caster_bounds_generation;
   uint64_t bias_signature;
   uint64_t light_signature;

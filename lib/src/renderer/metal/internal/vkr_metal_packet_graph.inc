@@ -683,11 +683,26 @@ vkr_metal_packet_realize_buffers(VkrMetalPacketRenderer *renderer) {
               renderer->max_images);
     return false_v;
   }
+  renderer->gpu_candidate_buffer_handle = VKR_RG_BUFFER_HANDLE_INVALID;
+  renderer->gpu_candidate_instance_buffer_handle = VKR_RG_BUFFER_HANDLE_INVALID;
+  renderer->transmission_gpu_candidate_instance_buffer_handle =
+      VKR_RG_BUFFER_HANDLE_INVALID;
   for (uint64_t i = 0u; i < renderer->graph->buffers.length; ++i) {
     const VkrRgBuffer *buffer =
         vector_get_VkrRgBuffer(&renderer->graph->buffers, i);
     if (!buffer || !buffer->declared_this_frame)
       continue;
+    const VkrRgBufferHandle handle = {
+        .id = (uint32_t)i + 1u,
+        .generation = buffer->generation,
+    };
+    if (vkr_string8_equals_cstr(&buffer->name, "gpu_draw_candidates"))
+      renderer->gpu_candidate_buffer_handle = handle;
+    else if (vkr_string8_equals_cstr(&buffer->name, "gpu_draw_instances"))
+      renderer->gpu_candidate_instance_buffer_handle = handle;
+    else if (vkr_string8_equals_cstr(&buffer->name,
+                                     "transmission_gpu_draw_instances"))
+      renderer->transmission_gpu_candidate_instance_buffer_handle = handle;
     if (buffer->imported ||
         (buffer->desc.flags & VKR_RG_RESOURCE_FLAG_EXTERNAL)) {
       log_error("Metal graph buffer '%.*s' cannot be external",
@@ -1423,6 +1438,9 @@ vkr_internal bool8_t vkr_metal_packet_encode_transfer(
         vkr_rg_pass_find_buffer_use(&pass->desc, 0u, 0u);
     const VkrRgBufferUse *state_use =
         vkr_rg_pass_find_buffer_use(&pass->desc, 1u, 0u);
+    const uint32_t instance_binding = transmission_gpu_upload ? 2u : 3u;
+    const VkrRgBufferUse *instance_use =
+        vkr_rg_pass_find_buffer_use(&pass->desc, instance_binding, 0u);
     const bool8_t sdsm_enabled =
         opaque_gpu_upload && renderer->prepared_frame.sdsm_enabled;
     const VkrRgBufferUse *sdsm_use =
@@ -1431,19 +1449,16 @@ vkr_internal bool8_t vkr_metal_packet_encode_transfer(
         candidate_use
             ? vkr_metal_packet_graph_buffer(renderer, candidate_use->buffer)
             : NULL;
+    VkrMetalPacketGraphBufferInstance *instances =
+        instance_use
+            ? vkr_metal_packet_graph_buffer(renderer, instance_use->buffer)
+            : NULL;
     VkrMetalPacketGraphBufferInstance *state =
         state_use ? vkr_metal_packet_graph_buffer(renderer, state_use->buffer)
                   : NULL;
     VkrMetalPacketGraphBufferInstance *sdsm_state =
         sdsm_use ? vkr_metal_packet_graph_buffer(renderer, sdsm_use->buffer)
                  : NULL;
-    const uint64_t candidate_bytes =
-        transmission_gpu_upload ? upload->transmission_gpu_draw_candidate_bytes
-                                : upload->gpu_draw_candidate_bytes;
-    const uint64_t candidate_source_offset =
-        transmission_gpu_upload
-            ? upload->transmission_gpu_draw_candidate_source_offset
-            : upload->gpu_draw_candidate_source_offset;
     const uint64_t state_source_offset =
         transmission_gpu_upload
             ? upload->transmission_gpu_draw_state_zero_source_offset
@@ -1453,16 +1468,60 @@ vkr_internal bool8_t vkr_metal_packet_encode_transfer(
             ? sizeof(VkrMetalPacketTransmissionDiagnostics)
             : (uint64_t)(1u + renderer->prepared_frame.shadow_cascade_count) *
                   sizeof(VkrGpuDrawCompactionState);
-    if (!candidates || !state || (sdsm_enabled && !sdsm_state) ||
-        candidate_bytes > candidates->resource.length ||
+    if (!candidates || !instances || !state || (sdsm_enabled && !sdsm_state) ||
         state_bytes > state->resource.length)
       return false_v;
-    if (candidate_bytes > 0u) {
-      [encoder copyFromBuffer:upload->buffer
-                 sourceOffset:candidate_source_offset
-                     toBuffer:(id<MTLBuffer>)candidates->resource.metal_buffer
+    if (transmission_gpu_upload) {
+      const uint64_t count = renderer->transmission_gpu_draw_count;
+      const uint64_t candidate_bytes = count * sizeof(VkrGpuCandidateDrawRow);
+      const uint64_t instance_bytes = count * sizeof(VkrInstanceDataGPU);
+      if (candidate_bytes > candidates->resource.length ||
+          instance_bytes > instances->resource.length)
+        return false_v;
+      if (count > 0u) {
+        [encoder copyFromBuffer:upload->buffer
+                   sourceOffset:
+                       upload->transmission_gpu_draw_candidate_source_offset
+                       toBuffer:(id<MTLBuffer>)candidates->resource.metal_buffer
+              destinationOffset:0u
+                           size:candidate_bytes];
+        [encoder
+               copyFromBuffer:upload->buffer
+                 sourceOffset:upload
+                                  ->transmission_gpu_draw_instance_source_offset
+                     toBuffer:(id<MTLBuffer>)instances->resource.metal_buffer
             destinationOffset:0u
-                         size:candidate_bytes];
+                         size:instance_bytes];
+      }
+    } else {
+      for (uint32_t i = 0u; i < upload->gpu_draw_candidate_copy_count; ++i) {
+        const VkrMetalPacketCandidateCopyRange *range =
+            &upload->gpu_draw_candidate_copies[i];
+        const uint64_t candidate_destination =
+            (uint64_t)range->destination_first * sizeof(VkrGpuCandidateDrawRow);
+        const uint64_t instance_destination =
+            (uint64_t)range->destination_first * sizeof(VkrInstanceDataGPU);
+        const uint64_t candidate_bytes =
+            (uint64_t)range->count * sizeof(VkrGpuCandidateDrawRow);
+        const uint64_t instance_bytes =
+            (uint64_t)range->count * sizeof(VkrInstanceDataGPU);
+        if (candidate_destination > candidates->resource.length ||
+            candidate_bytes >
+                candidates->resource.length - candidate_destination ||
+            instance_destination > instances->resource.length ||
+            instance_bytes > instances->resource.length - instance_destination)
+          return false_v;
+        [encoder copyFromBuffer:upload->buffer
+                   sourceOffset:range->candidate_source_offset
+                       toBuffer:(id<MTLBuffer>)candidates->resource.metal_buffer
+              destinationOffset:candidate_destination
+                           size:candidate_bytes];
+        [encoder copyFromBuffer:upload->buffer
+                   sourceOffset:range->instance_source_offset
+                       toBuffer:(id<MTLBuffer>)instances->resource.metal_buffer
+              destinationOffset:instance_destination
+                           size:instance_bytes];
+      }
     }
     [encoder copyFromBuffer:upload->buffer
                sourceOffset:state_source_offset

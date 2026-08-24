@@ -230,6 +230,7 @@ struct VkrVulkanTextOutput
 
 [[vk::binding(0, 0)]] Texture2D<float4> g_textures[];
 [[vk::binding(0, 0)]] Texture2D<float> g_depth_textures[];
+[[vk::binding(0, 0)]] Texture2D<uint2> g_uint2_textures[];
 [[vk::binding(0, 0)]] TextureCube<float4> g_cube_textures[];
 [[vk::binding(0, 0)]] Texture2DArray<float4> g_array_textures[];
 // Scalar-typed alias of the same sampled-image heap. SampleCmpLevelZero is only

@@ -773,6 +773,11 @@ vkr_internal bool8_t application_build_world_payload(
   bool8_t publication_pending =
       !rf->asset_publisher.publications_idle ||
       !rf->asset_publisher.publications_idle(rf->asset_publisher.state);
+  const uint64_t publication_generation =
+      rf->asset_publisher.publication_generation
+          ? rf->asset_publisher.publication_generation(
+                rf->asset_publisher.state)
+          : 1u;
 
   for (uint32_t i = 0; i < mesh_count; ++i) {
     uint32_t mesh_slot = 0;
@@ -1070,6 +1075,7 @@ vkr_internal bool8_t application_build_world_payload(
       .static_candidate_count = static_candidate_count,
       .static_generation = rf->mesh_manager.generations.static_content,
       .dynamic_generation = rf->mesh_manager.generations.dynamic_content,
+      .publication_generation = publication_generation,
       .caster_bounds_generation = rf->mesh_manager.generations.caster_bounds,
       .publication_pending = publication_pending,
       .transmission_gpu_candidates = transmission_gpu_candidates,

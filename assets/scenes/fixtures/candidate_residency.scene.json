@@ -1,0 +1,39 @@
+{
+  "version": 2,
+  "entities": [
+    {
+      "name": "Root",
+      "parent": null,
+      "transform": { "pos": [0, 0, 0], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] }
+    },
+    {
+      "name": "Sun",
+      "parent": 0,
+      "transform": { "pos": [0, 4, 3], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "directional_light": {
+        "direction": [-0.4, -1.0, -0.3],
+        "color": [1.0, 0.95, 0.85],
+        "intensity": 1.0
+      }
+    },
+    {
+      "name": "StaticMesh",
+      "parent": 0,
+      "transform": { "pos": [-1.2, 0, -2.5], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "mesh": {
+        "path": "tests/fixtures/rendering/specgloss_factor_parity.gltf",
+        "pipeline_domain": "world"
+      }
+    },
+    {
+      "name": "DynamicMesh",
+      "parent": 0,
+      "transform": { "pos": [1.2, 0, -2.5], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "mesh": {
+        "path": "tests/fixtures/rendering/specgloss_factor_parity.gltf",
+        "pipeline_domain": "world",
+        "dynamic_caster": true
+      }
+    }
+  ]
+}

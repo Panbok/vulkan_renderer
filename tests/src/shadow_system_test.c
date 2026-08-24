@@ -595,6 +595,7 @@ static VkrWorldPassPayload retained_static_payload(void) {
   return (VkrWorldPassPayload){
       .static_generation = 7u,
       .dynamic_generation = 11u,
+      .publication_generation = 17u,
       .caster_bounds_generation = 13u,
   };
 }
@@ -846,6 +847,12 @@ test_retained_history_signatures_and_invalidation_fail_closed(void) {
   assert(frame.cascade_render_mask == cascade_mask(&system));
   vkr_shadow_system_discard_frame(&system);
   payload.static_generation--;
+  payload.publication_generation++;
+  vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == cascade_mask(&system));
+  vkr_shadow_system_discard_frame(&system);
+  payload.publication_generation--;
 
   payload.caster_bounds_generation++;
   vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,

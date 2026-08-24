@@ -127,7 +127,6 @@ typedef enum VkrRgResourceFlags {
   (VKR_RG_RESOURCE_FLAG_TRANSIENT | VKR_RG_RESOURCE_FLAG_EXTERNAL |            \
    VKR_RG_RESOURCE_FLAG_HISTORY | VKR_RG_RESOURCE_FLAG_PER_FRAME_SLOT)
 
-
 /** Backend allocation/selection domain implied by resource lifetime flags. */
 typedef enum VkrRgResourceInstanceDomain {
   VKR_RG_RESOURCE_INSTANCE_SINGLE = 0,

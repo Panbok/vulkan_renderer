@@ -79,6 +79,13 @@
       "flags": ["PER_FRAME_SLOT"]
     },
     {
+      "name": "gpu_draw_instances",
+      "type": "buffer",
+      "size": 20971520,
+      "usage": ["STORAGE", "TRANSFER_DST"],
+      "flags": ["PER_FRAME_SLOT"]
+    },
+    {
       "name": "gpu_visible_draws",
       "type": "buffer",
       "size": 41943040,
@@ -118,6 +125,14 @@
       "type": "buffer",
       "condition": "transmission_pending",
       "size": 12582912,
+      "usage": ["STORAGE", "TRANSFER_DST"],
+      "flags": ["PER_FRAME_SLOT"]
+    },
+    {
+      "name": "transmission_gpu_draw_instances",
+      "type": "buffer",
+      "condition": "transmission_pending",
+      "size": 20971520,
       "usage": ["STORAGE", "TRANSFER_DST"],
       "flags": ["PER_FRAME_SLOT"]
     },
@@ -278,7 +293,8 @@
       "writes": [
         { "buffer": "gpu_draw_candidates", "access": "TRANSFER_DST", "binding": 0 },
         { "buffer": "gpu_draw_compaction_state", "access": "TRANSFER_DST", "binding": 1 },
-        { "buffer": "sdsm_reduce_state", "access": "TRANSFER_DST", "binding": 2 }
+        { "buffer": "sdsm_reduce_state", "access": "TRANSFER_DST", "binding": 2 },
+        { "buffer": "gpu_draw_instances", "access": "TRANSFER_DST", "binding": 3 }
       ],
       "execute": "pass.gpu_draw_upload"
     },
@@ -288,6 +304,7 @@
       "flags": ["NO_CULL"],
       "reads": [
         { "buffer": "gpu_draw_candidates", "access": "STORAGE_READ", "binding": 0 },
+        { "buffer": "gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "image": "hzb_history", "access": "STORAGE_READ", "binding": 3 }
       ],
       "writes": [
@@ -330,6 +347,7 @@
       },
       "reads": [
         { "buffer": "gpu_visible_draws", "access": "STORAGE_READ", "binding": 1 },
+        { "buffer": "gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "gpu_draw_compaction_state", "access": "INDIRECT_READ", "binding": 2 },
         { "buffer": "gpu_draw_arguments", "access": "INDIRECT_READ", "binding": 3 }
       ],
@@ -351,7 +369,8 @@
       "flags": ["NO_CULL"],
       "writes": [
         { "buffer": "transmission_gpu_draw_candidates", "access": "TRANSFER_DST", "binding": 0 },
-        { "buffer": "transmission_gpu_draw_compaction_state", "access": "TRANSFER_DST", "binding": 1 }
+        { "buffer": "transmission_gpu_draw_compaction_state", "access": "TRANSFER_DST", "binding": 1 },
+        { "buffer": "transmission_gpu_draw_instances", "access": "TRANSFER_DST", "binding": 2 }
       ],
       "execute": "pass.transmission.gpu_draw_upload"
     },
@@ -362,6 +381,7 @@
       "flags": ["NO_CULL"],
       "reads": [
         { "buffer": "transmission_gpu_draw_candidates", "access": "STORAGE_READ", "binding": 0 },
+        { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "image": "hzb_history", "access": "STORAGE_READ", "binding": 3 }
       ],
       "writes": [
@@ -402,6 +422,7 @@
       "domain": "WORLD",
       "reads": [
         { "buffer": "gpu_visible_draws", "access": "STORAGE_READ", "binding": 1 },
+        { "buffer": "gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "gpu_draw_compaction_state", "access": "INDIRECT_READ", "binding": 2 },
         { "buffer": "gpu_draw_arguments", "access": "INDIRECT_READ", "binding": 3 }
       ],
@@ -538,6 +559,7 @@
       "condition": "transmission_pending",
       "reads": [
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 1 },
+        { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "INDIRECT_READ", "binding": 2 },
         { "buffer": "transmission_gpu_draw_arguments", "access": "INDIRECT_READ", "binding": 4 }
       ],
@@ -561,6 +583,7 @@
       "condition": "transmission_pending",
       "reads": [
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 1 },
+        { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "INDIRECT_READ", "binding": 2 },
         { "buffer": "transmission_gpu_draw_arguments", "access": "INDIRECT_READ", "binding": 4 },
         {
@@ -588,6 +611,7 @@
       "condition": "transmission_pending",
       "reads": [
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 1 },
+        { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "INDIRECT_READ", "binding": 2 },
         { "buffer": "transmission_gpu_draw_arguments", "access": "INDIRECT_READ", "binding": 4 },
         {
@@ -615,6 +639,7 @@
       "condition": "transmission_pending",
       "reads": [
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 1 },
+        { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "INDIRECT_READ", "binding": 2 },
         { "buffer": "transmission_gpu_draw_arguments", "access": "INDIRECT_READ", "binding": 4 },
         {
@@ -642,7 +667,8 @@
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "opaque_vbuffer", "access": "STORAGE_READ", "binding": 0 },
-        { "buffer": "gpu_visible_draws", "access": "STORAGE_READ", "binding": 1 }
+        { "buffer": "gpu_visible_draws", "access": "STORAGE_READ", "binding": 1 },
+        { "buffer": "gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 }
       ],
       "writes": [
         { "image": "gbuffer_albedo", "access": "STORAGE_WRITE", "binding": 2 },
@@ -662,7 +688,8 @@
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "opaque_vbuffer", "access": "STORAGE_READ", "binding": 0 },
-        { "buffer": "gpu_visible_draws", "access": "STORAGE_READ", "binding": 1 }
+        { "buffer": "gpu_visible_draws", "access": "STORAGE_READ", "binding": 1 },
+        { "buffer": "gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 }
       ],
       "writes": [
         { "image": "gbuffer_albedo", "access": "STORAGE_WRITE", "binding": 2 },
@@ -790,6 +817,7 @@
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 3, "layer_count": 1 } },
         { "image": "transmission_vbuffer_depth", "access": "SAMPLED", "binding": 1, "subresource": { "base_layer": 3, "layer_count": 1 } },
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 2 },
+        { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
         { "image": "hdr_pre_transmission", "access": "SAMPLED", "binding": 4 },
         { "buffer": "transmission_compact_pixels", "access": "STORAGE_READ", "binding": 6 },
@@ -808,6 +836,7 @@
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 3, "layer_count": 1 } },
         { "image": "transmission_vbuffer_depth", "access": "SAMPLED", "binding": 1, "subresource": { "base_layer": 3, "layer_count": 1 } },
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 2 },
+        { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
         { "image": "scene_pre_transmission", "access": "SAMPLED", "binding": 4 },
         { "buffer": "transmission_compact_pixels", "access": "STORAGE_READ", "binding": 6 },
@@ -860,6 +889,7 @@
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 2, "layer_count": 1 } },
         { "image": "transmission_vbuffer_depth", "access": "SAMPLED", "binding": 1, "subresource": { "base_layer": 2, "layer_count": 1 } },
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 2 },
+        { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
         { "image": "transmission_feedback", "access": "SAMPLED", "binding": 4 },
         { "buffer": "transmission_compact_pixels", "access": "STORAGE_READ", "binding": 6 },
@@ -878,6 +908,7 @@
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 2, "layer_count": 1 } },
         { "image": "transmission_vbuffer_depth", "access": "SAMPLED", "binding": 1, "subresource": { "base_layer": 2, "layer_count": 1 } },
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 2 },
+        { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
         { "image": "transmission_feedback", "access": "SAMPLED", "binding": 4 },
         { "buffer": "transmission_compact_pixels", "access": "STORAGE_READ", "binding": 6 },
@@ -930,6 +961,7 @@
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 1, "layer_count": 1 } },
         { "image": "transmission_vbuffer_depth", "access": "SAMPLED", "binding": 1, "subresource": { "base_layer": 1, "layer_count": 1 } },
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 2 },
+        { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
         { "image": "hdr_scene_color", "access": "SAMPLED", "binding": 4 },
         { "buffer": "transmission_compact_pixels", "access": "STORAGE_READ", "binding": 6 },
@@ -948,6 +980,7 @@
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 1, "layer_count": 1 } },
         { "image": "transmission_vbuffer_depth", "access": "SAMPLED", "binding": 1, "subresource": { "base_layer": 1, "layer_count": 1 } },
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 2 },
+        { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
         { "image": "scene_color", "access": "SAMPLED", "binding": 4 },
         { "buffer": "transmission_compact_pixels", "access": "STORAGE_READ", "binding": 6 },
@@ -1000,6 +1033,7 @@
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 0, "layer_count": 1 } },
         { "image": "transmission_vbuffer_depth", "access": "SAMPLED", "binding": 1, "subresource": { "base_layer": 0, "layer_count": 1 } },
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 2 },
+        { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
         { "image": "transmission_feedback", "access": "SAMPLED", "binding": 4 },
         { "buffer": "transmission_compact_pixels", "access": "STORAGE_READ", "binding": 6 },
@@ -1018,6 +1052,7 @@
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 0, "layer_count": 1 } },
         { "image": "transmission_vbuffer_depth", "access": "SAMPLED", "binding": 1, "subresource": { "base_layer": 0, "layer_count": 1 } },
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 2 },
+        { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
         { "image": "transmission_feedback", "access": "SAMPLED", "binding": 4 },
         { "buffer": "transmission_compact_pixels", "access": "STORAGE_READ", "binding": 6 },
@@ -1036,6 +1071,7 @@
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 3, "layer_count": 1 } },
         { "image": "transmission_vbuffer_depth", "access": "SAMPLED", "binding": 1, "subresource": { "base_layer": 3, "layer_count": 1 } },
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 2 },
+        { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
         { "image": "hdr_pre_transmission", "access": "SAMPLED", "binding": 4 }
 ,
@@ -1058,6 +1094,7 @@
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 2, "layer_count": 1 } },
         { "image": "transmission_vbuffer_depth", "access": "SAMPLED", "binding": 1, "subresource": { "base_layer": 2, "layer_count": 1 } },
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 2 },
+        { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
         { "image": "transmission_feedback", "access": "SAMPLED", "binding": 4 }
 ,
@@ -1080,6 +1117,7 @@
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 1, "layer_count": 1 } },
         { "image": "transmission_vbuffer_depth", "access": "SAMPLED", "binding": 1, "subresource": { "base_layer": 1, "layer_count": 1 } },
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 2 },
+        { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
         { "image": "hdr_scene_color", "access": "SAMPLED", "binding": 4 }
 ,
@@ -1102,6 +1140,7 @@
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 0, "layer_count": 1 } },
         { "image": "transmission_vbuffer_depth", "access": "SAMPLED", "binding": 1, "subresource": { "base_layer": 0, "layer_count": 1 } },
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 2 },
+        { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
         { "image": "transmission_feedback", "access": "SAMPLED", "binding": 4 }
 ,
@@ -1124,6 +1163,7 @@
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 3, "layer_count": 1 } },
         { "image": "transmission_vbuffer_depth", "access": "SAMPLED", "binding": 1, "subresource": { "base_layer": 3, "layer_count": 1 } },
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 2 },
+        { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
         { "image": "scene_pre_transmission", "access": "SAMPLED", "binding": 4 }
 ,
@@ -1146,6 +1186,7 @@
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 2, "layer_count": 1 } },
         { "image": "transmission_vbuffer_depth", "access": "SAMPLED", "binding": 1, "subresource": { "base_layer": 2, "layer_count": 1 } },
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 2 },
+        { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
         { "image": "transmission_feedback", "access": "SAMPLED", "binding": 4 }
 ,
@@ -1168,6 +1209,7 @@
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 1, "layer_count": 1 } },
         { "image": "transmission_vbuffer_depth", "access": "SAMPLED", "binding": 1, "subresource": { "base_layer": 1, "layer_count": 1 } },
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 2 },
+        { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
         { "image": "scene_color", "access": "SAMPLED", "binding": 4 }
 ,
@@ -1190,6 +1232,7 @@
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 0, "layer_count": 1 } },
         { "image": "transmission_vbuffer_depth", "access": "SAMPLED", "binding": 1, "subresource": { "base_layer": 0, "layer_count": 1 } },
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 2 },
+        { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
         { "image": "transmission_feedback", "access": "SAMPLED", "binding": 4 }
 ,
@@ -1282,6 +1325,7 @@
         { "image": "opaque_vbuffer", "access": "STORAGE_READ", "binding": 0 },
         { "image": "opaque_vbuffer_depth", "access": "SAMPLED", "binding": 1 },
         { "buffer": "gpu_visible_draws", "access": "STORAGE_READ", "binding": 2 },
+        { "buffer": "gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "gpu_draw_compaction_state", "access": "STORAGE_READ", "binding": 3 }
       ],
       "writes": [
@@ -1298,10 +1342,12 @@
         { "image": "opaque_vbuffer", "access": "STORAGE_READ", "binding": 0 },
         { "image": "opaque_vbuffer_depth", "access": "SAMPLED", "binding": 1 },
         { "buffer": "gpu_visible_draws", "access": "STORAGE_READ", "binding": 2 },
+        { "buffer": "gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "gpu_draw_compaction_state", "access": "STORAGE_READ", "binding": 3 },
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 5, "subresource": { "base_layer": 0, "layer_count": 1 } },
         { "image": "transmission_vbuffer_depth", "access": "SAMPLED", "binding": 6, "subresource": { "base_layer": 0, "layer_count": 1 } },
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 7 },
+        { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 10 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ", "binding": 8 }
       ],
       "writes": [

@@ -1127,6 +1127,7 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
     if (!renderer)
       return false_v;
     renderer->allocator = config->allocator;
+    renderer->candidate_publication_generation = 1u;
     renderer->graph_frame_arena = arena_create(MB(8), KB(256));
     renderer->graph_frame_allocator =
         (VkrAllocator){.ctx = renderer->graph_frame_arena};

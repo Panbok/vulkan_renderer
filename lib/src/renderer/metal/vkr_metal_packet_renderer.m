@@ -22,6 +22,7 @@
 #include "renderer/metal/vkr_metal_packet_abi.h"
 #include "renderer/resources/loaders/mesh_loader.h"
 #include "renderer/systems/vkr_texture_system.h"
+#include "renderer/vkr_candidate_residency.h"
 #include "renderer/vkr_capture_ring.h"
 #include "renderer/vkr_ibl_math.h"
 #include "renderer/vkr_packet_constants.h"
@@ -231,6 +232,13 @@ typedef struct VkrMetalPacketTextUpload {
   uint64_t indices_length;
 } VkrMetalPacketTextUpload;
 
+typedef struct VkrMetalPacketCandidateCopyRange {
+  uint64_t candidate_source_offset;
+  uint64_t instance_source_offset;
+  uint32_t destination_first;
+  uint32_t count;
+} VkrMetalPacketCandidateCopyRange;
+
 typedef struct VkrMetalPacketFrameUpload {
   VkrMetalRingSlice slice;
   VkrMetalAddressPair addresses;
@@ -246,13 +254,14 @@ typedef struct VkrMetalPacketFrameUpload {
   uint64_t transmission_gpu_draw_view_gpu;
   uint64_t gpu_draw_icb_argument_gpu;
   uint64_t gpu_draw_icb_argument_stride;
-  uint64_t gpu_draw_candidate_source_offset;
+  VkrMetalPacketCandidateCopyRange gpu_draw_candidate_copies[2];
+  uint32_t gpu_draw_candidate_copy_count;
   uint64_t gpu_draw_state_zero_source_offset;
   uint64_t sdsm_state_reset_source_offset;
-  uint64_t gpu_draw_candidate_bytes;
   uint64_t transmission_gpu_draw_instances_gpu;
   uint64_t transmission_gpu_draw_icb_argument_gpu;
   uint64_t transmission_gpu_draw_candidate_source_offset;
+  uint64_t transmission_gpu_draw_instance_source_offset;
   uint64_t transmission_gpu_draw_state_zero_source_offset;
   uint64_t transmission_gpu_draw_candidate_bytes;
   uint64_t point_light_data_gpu;
@@ -320,6 +329,9 @@ typedef struct VkrMetalPacketCommandSlot {
   bool8_t sdsm_requested;
   bool8_t transmission_coverage_requested;
   uint32_t gpu_draw_icb_residency_count;
+  VkrCandidateResidencyState candidate_residency;
+  VkrCandidateResidencyState pending_candidate_residency;
+  bool8_t candidate_residency_pending;
 } VkrMetalPacketCommandSlot;
 
 struct VkrMetalPacketRenderer {
@@ -351,6 +363,9 @@ struct VkrMetalPacketRenderer {
   uint64_t retired_image_view_count;
   VkrMetalPacketGraphBuffer *graph_buffers;
   VkrMetalPacketGraphBufferInstance *graph_buffer_instances;
+  VkrRgBufferHandle gpu_candidate_buffer_handle;
+  VkrRgBufferHandle gpu_candidate_instance_buffer_handle;
+  VkrRgBufferHandle transmission_gpu_candidate_instance_buffer_handle;
   VkrMetalPacketMesh *meshes;
   VkrMetalPacketGeometryMegabuffer geometry_megabuffer;
   VkrMetalPacketSubmeshCreateInfo *submeshes;
@@ -417,6 +432,9 @@ struct VkrMetalPacketRenderer {
   id<CAMetalDrawable> drawable;
   VkrRenderGraphFrameInfo prepared_frame;
   uint64_t submit_value;
+  uint64_t candidate_publication_generation;
+  uint32_t gpu_draw_count;
+  uint32_t transmission_gpu_draw_count;
   uint64_t current_hzb_world_epoch;
   Mat4 current_hzb_view_projection;
   uint32_t selected_hzb_history_instance;
@@ -440,6 +458,7 @@ struct VkrMetalPacketRenderer {
   VkrMetalPacketTargetKind target_kind;
   VkrPresentMode actual_present_mode;
   bool8_t srgb_output;
+  bool8_t deferred_candidate_drop_logged;
   bool8_t convert_vulkan_clip_y;
   bool8_t transmission_compact_enabled;
   bool8_t hzb_enabled;

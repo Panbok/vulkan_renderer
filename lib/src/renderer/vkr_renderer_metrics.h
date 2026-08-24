@@ -96,6 +96,7 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId visibility_culled_camera;
   VkrMetricId visibility_without_bounds;
   VkrMetricId visibility_candidate_count;
+  VkrMetricId visibility_static_candidate_count;
   VkrMetricId visibility_candidate_capacity;
   VkrMetricId visibility_gpu_visible_count;
   VkrMetricId visibility_gpu_bucket_opaque_single;
@@ -159,6 +160,9 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId packet_geometry_table_build;
   VkrMetricId packet_candidate_row_bytes;
   VkrMetricId packet_instance_row_bytes;
+  VkrMetricId packet_static_candidate_row_bytes;
+  VkrMetricId packet_dynamic_candidate_row_bytes;
+  VkrMetricId packet_publication_omitted;
   VkrMetricId packet_geometry_row_bytes;
 
   VkrMetricId upload_fence_waits;

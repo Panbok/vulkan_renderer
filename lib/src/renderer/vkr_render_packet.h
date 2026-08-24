@@ -13,7 +13,7 @@
 #include "renderer/vkr_renderer.h"
 
 /** Version constant for VkrRenderPacket.packet_version validation. */
-#define VKR_RENDER_PACKET_VERSION 17u
+#define VKR_RENDER_PACKET_VERSION 18u
 
 /** Default manual camera exposure for HDR scene presentation. */
 #define VKR_DEFAULT_EXPOSURE 0.30f
@@ -198,6 +198,8 @@ typedef struct VkrWorldPassPayload {
   uint32_t static_candidate_count;
   uint64_t static_generation;
   uint64_t dynamic_generation;
+  /** Selected-backend geometry/material resolvability generation. */
+  uint64_t publication_generation;
   uint64_t caster_bounds_generation;
   bool8_t publication_pending;
 } VkrWorldPassPayload;

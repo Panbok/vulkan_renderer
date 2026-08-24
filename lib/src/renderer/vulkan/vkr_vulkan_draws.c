@@ -1,10 +1,10 @@
 #include "renderer/vulkan/vkr_vulkan_internal.h"
 
-vkr_internal bool8_t vkr_vk_pack_gpu_candidates(
+vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
     VkrVulkanRenderer *renderer, VkrVulkanFrameSlot *slot,
     const VkrWorldDrawCandidate *source, uint32_t count,
-    uint64_t *out_candidate_offset, uint64_t *out_instances_address,
-    uint32_t *out_packed_count);
+    uint32_t destination_first, VkrVulkanCandidateCopyRange *out_range,
+    uint32_t *out_packed_count, uint32_t *out_omitted_count);
 
 vkr_internal uint64_t vkr_vk_hash_bytes(uint64_t hash, const void *bytes,
                                         uint64_t size) {
@@ -16,31 +16,23 @@ vkr_internal uint64_t vkr_vk_hash_bytes(uint64_t hash, const void *bytes,
   return hash;
 }
 
-vkr_internal uint64_t vkr_vk_candidate_epoch(
-    const VkrWorldDrawCandidate *candidates, uint32_t count) {
+vkr_internal uint64_t vkr_vk_candidate_epoch(const VkrWorldPassPayload *world) {
+  if (!world)
+    return 0u;
   uint64_t hash = 1469598103934665603ull;
-  uint32_t occluder_count = 0u;
-#define VKR_HASH_CANDIDATE_FIELD(FIELD)                                        \
-  hash = vkr_vk_hash_bytes(hash, &candidate->FIELD, sizeof(candidate->FIELD))
-  for (uint32_t i = 0u; i < count; ++i) {
-    const VkrWorldDrawCandidate *candidate = &candidates[i];
-    if ((candidate->flags & VKR_WORLD_DRAW_CANDIDATE_CAMERA_OPAQUE) == 0u)
-      continue;
-    occluder_count++;
-    VKR_HASH_CANDIDATE_FIELD(mesh.id);
-    VKR_HASH_CANDIDATE_FIELD(mesh.generation);
-    VKR_HASH_CANDIDATE_FIELD(geometry.id);
-    VKR_HASH_CANDIDATE_FIELD(geometry.generation);
-    VKR_HASH_CANDIDATE_FIELD(submesh_index);
-    VKR_HASH_CANDIDATE_FIELD(material.id);
-    VKR_HASH_CANDIDATE_FIELD(material.generation);
-    VKR_HASH_CANDIDATE_FIELD(instance.model);
-    VKR_HASH_CANDIDATE_FIELD(local_bounding_sphere);
-    VKR_HASH_CANDIDATE_FIELD(state_bucket);
-    VKR_HASH_CANDIDATE_FIELD(flags);
-  }
-#undef VKR_HASH_CANDIDATE_FIELD
-  return vkr_vk_hash_bytes(hash, &occluder_count, sizeof(occluder_count));
+  hash = vkr_vk_hash_bytes(hash, &world->static_generation,
+                           sizeof(world->static_generation));
+  hash = vkr_vk_hash_bytes(hash, &world->dynamic_generation,
+                           sizeof(world->dynamic_generation));
+  hash = vkr_vk_hash_bytes(hash, &world->publication_generation,
+                           sizeof(world->publication_generation));
+  hash = vkr_vk_hash_bytes(hash, &world->gpu_candidate_count,
+                           sizeof(world->gpu_candidate_count));
+  hash = vkr_vk_hash_bytes(hash, &world->static_candidate_count,
+                           sizeof(world->static_candidate_count));
+  hash = vkr_vk_hash_bytes(hash, &world->gpu_camera_opaque_candidate_count,
+                           sizeof(world->gpu_camera_opaque_candidate_count));
+  return hash;
 }
 
 uint64_t vkr_vk_align_up(uint64_t value, uint64_t alignment) {
@@ -221,6 +213,36 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
   return true_v;
 }
 
+vkr_internal bool8_t vkr_vk_candidate_graph_buffers(
+    VkrVulkanRenderer *renderer, VkrVulkanGraphBufferInstance **out_candidates,
+    VkrVulkanGraphBufferInstance **out_instances,
+    uint64_t *out_resource_generation) {
+  const VkrRgBufferHandle candidate_handle =
+      renderer->gpu_candidate_buffer_handle;
+  const VkrRgBufferHandle instance_handle =
+      renderer->gpu_candidate_instance_buffer_handle;
+  if (!vkr_rg_buffer_handle_valid(candidate_handle) ||
+      !vkr_rg_buffer_handle_valid(instance_handle))
+    return false_v;
+  VkrVulkanGraphBuffer *candidate_graph =
+      &renderer->graph_buffers[candidate_handle.id - 1u];
+  VkrVulkanGraphBuffer *instance_graph =
+      &renderer->graph_buffers[instance_handle.id - 1u];
+  *out_candidates = vkr_vk_graph_buffer(renderer, candidate_handle);
+  *out_instances = vkr_vk_graph_buffer(renderer, instance_handle);
+  *out_resource_generation =
+      ((uint64_t)candidate_graph->graph_generation << 32u) |
+      instance_graph->graph_generation;
+  return *out_candidates && *out_instances &&
+         (*out_candidates)->buffer.size >=
+             (uint64_t)VKR_GPU_DRAW_CANDIDATE_CAPACITY *
+                 sizeof(VkrGpuCandidateDrawRow) &&
+         (*out_instances)->buffer.size >=
+             (uint64_t)VKR_GPU_DRAW_CANDIDATE_CAPACITY *
+                 sizeof(VkrInstanceDataGPU) &&
+         *out_resource_generation != 0u;
+}
+
 bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
                                       VkrVulkanFrameSlot *slot,
                                       const VkrRenderPacket *packet) {
@@ -232,8 +254,12 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
   slot->gpu_candidate_instances = 0u;
   slot->transmission_gpu_candidate_instances = 0u;
   slot->gpu_geometry_rows = 0u;
-  slot->gpu_candidate_upload_offset = 0u;
+  slot->gpu_candidate_copy_count = 0u;
   slot->transmission_gpu_candidate_upload_offset = 0u;
+  slot->transmission_gpu_instance_upload_offset = 0u;
+  slot->gpu_candidate_buffer = NULL;
+  slot->gpu_candidate_instance_buffer = NULL;
+  slot->candidate_residency_pending = false_v;
   slot->gpu_candidate_count = 0u;
   slot->transmission_gpu_candidate_count = 0u;
   slot->gpu_world_epoch = 0u;
@@ -254,7 +280,7 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
                                packet->editor->instance_count,
                                &slot->editor_instances));
   if (!common_uploads)
-    return common_uploads;
+    return false_v;
 
   const uint64_t geometry_bytes =
       (uint64_t)renderer->config.geometry_capacity * sizeof(VkrGpuGeometryRow);
@@ -282,39 +308,100 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
 #if VKR_METRICS_ENABLED
   const float64_t hash_start = vkr_platform_get_absolute_time();
 #endif
-  slot->gpu_world_epoch =
-      packet->world ? vkr_vk_candidate_epoch(packet->world->gpu_candidates,
-                                             packet->world->gpu_candidate_count)
-                    : 0u;
+  const VkrWorldPassPayload *world = packet->world;
+  slot->gpu_world_epoch = vkr_vk_candidate_epoch(world);
 #if VKR_METRICS_ENABLED
   slot->packet_build.candidate_hash_ns = vkr_metrics_elapsed_ns(hash_start);
-
   const float64_t pack_start = vkr_platform_get_absolute_time();
 #endif
-  const bool8_t packed =
-      vkr_vk_pack_gpu_candidates(
-          renderer, slot, packet->world ? packet->world->gpu_candidates : NULL,
-          packet->world ? packet->world->gpu_candidate_count : 0u,
-          &slot->gpu_candidate_upload_offset, &slot->gpu_candidate_instances,
-          &slot->gpu_candidate_count) &&
-      vkr_vk_pack_gpu_candidates(
-          renderer, slot,
-          packet->world ? packet->world->transmission_gpu_candidates : NULL,
-          packet->world ? packet->world->transmission_gpu_candidate_count : 0u,
-          &slot->transmission_gpu_candidate_upload_offset,
-          &slot->transmission_gpu_candidate_instances,
-          &slot->transmission_gpu_candidate_count);
+
+  uint32_t omitted_count = 0u;
+  uint32_t static_rows_written = 0u;
+  uint32_t dynamic_rows_written = 0u;
+  bool8_t packed = true_v;
+  if (world) {
+    uint64_t resource_generation = 0u;
+    packed = vkr_vk_candidate_graph_buffers(
+        renderer, &slot->gpu_candidate_buffer,
+        &slot->gpu_candidate_instance_buffer, &resource_generation);
+    if (packed) {
+      slot->gpu_candidate_instances =
+          slot->gpu_candidate_instance_buffer->buffer.address;
+      const uint32_t source_static_count = world->static_candidate_count;
+      const uint32_t source_dynamic_count =
+          world->gpu_candidate_count - source_static_count;
+      const bool8_t repack_static = vkr_candidate_residency_needs_static_repack(
+          &slot->candidate_residency, world->static_generation,
+          world->publication_generation, resource_generation);
+      uint32_t packed_static_count =
+          repack_static ? 0u : slot->candidate_residency.packed_static_count;
+      uint32_t omitted_static_count =
+          repack_static ? 0u : slot->candidate_residency.omitted_static_count;
+      if (repack_static) {
+        VkrVulkanCandidateCopyRange *range =
+            &slot->gpu_candidate_copies[slot->gpu_candidate_copy_count];
+        packed = vkr_vk_pack_gpu_candidate_range(
+            renderer, slot, world->gpu_candidates, source_static_count, 0u,
+            range, &packed_static_count, &omitted_static_count);
+        if (packed && range->count > 0u) {
+          slot->gpu_candidate_copy_count++;
+          static_rows_written += range->count;
+        }
+        slot->pending_candidate_residency = vkr_candidate_residency_stage(
+            world->static_generation, world->publication_generation,
+            resource_generation, packed_static_count, omitted_static_count);
+        slot->candidate_residency_pending = packed;
+      }
+      if (packed && source_dynamic_count > 0u) {
+        VkrVulkanCandidateCopyRange *range =
+            &slot->gpu_candidate_copies[slot->gpu_candidate_copy_count];
+        uint32_t packed_dynamic_count = 0u;
+        uint32_t omitted_dynamic_count = 0u;
+        packed = vkr_vk_pack_gpu_candidate_range(
+            renderer, slot, world->gpu_candidates + source_static_count,
+            source_dynamic_count, packed_static_count, range,
+            &packed_dynamic_count, &omitted_dynamic_count);
+        if (packed && range->count > 0u) {
+          slot->gpu_candidate_copy_count++;
+          dynamic_rows_written += range->count;
+        }
+        slot->gpu_candidate_count = packed_static_count + packed_dynamic_count;
+        omitted_count = omitted_static_count + omitted_dynamic_count;
+      } else {
+        slot->gpu_candidate_count = packed_static_count;
+        omitted_count = omitted_static_count;
+      }
+    }
+
+    if (packed && world->transmission_gpu_candidate_count > 0u) {
+      VkrVulkanCandidateCopyRange range = {0};
+      uint32_t omitted_transmission_count = 0u;
+      packed = vkr_vk_pack_gpu_candidate_range(
+          renderer, slot, world->transmission_gpu_candidates,
+          world->transmission_gpu_candidate_count, 0u, &range,
+          &slot->transmission_gpu_candidate_count, &omitted_transmission_count);
+      slot->transmission_gpu_candidate_upload_offset =
+          range.candidate_source_offset;
+      slot->transmission_gpu_instance_upload_offset =
+          range.instance_source_offset;
+      dynamic_rows_written += range.count;
+      omitted_count += omitted_transmission_count;
+    }
+  }
 #if VKR_METRICS_ENABLED
   slot->packet_build.candidate_pack_ns = vkr_metrics_elapsed_ns(pack_start);
 #endif
-  /* The gauges report actual row writes. A publication-boundary omission must
-     change work volume or a timing drop could be mistaken for a faster pack. */
-  const uint64_t written_candidates = (uint64_t)slot->gpu_candidate_count +
-                                      slot->transmission_gpu_candidate_count;
+  const uint64_t written_candidates =
+      (uint64_t)static_rows_written + dynamic_rows_written;
   slot->packet_build.candidate_row_bytes =
       written_candidates * sizeof(VkrGpuCandidateDrawRow);
   slot->packet_build.instance_row_bytes =
       written_candidates * sizeof(VkrInstanceDataGPU);
+  slot->packet_build.static_candidate_row_bytes =
+      (uint64_t)static_rows_written * sizeof(VkrGpuCandidateDrawRow);
+  slot->packet_build.dynamic_candidate_row_bytes =
+      (uint64_t)dynamic_rows_written * sizeof(VkrGpuCandidateDrawRow);
+  slot->packet_build.publication_omitted_count = omitted_count;
   slot->packet_build.valid = packed;
   return packed;
 }
@@ -342,28 +429,29 @@ vkr_vk_resolve_material(VkrVulkanRenderer *renderer, VkrMaterialHandle handle) {
              : NULL;
 }
 
-vkr_internal bool8_t vkr_vk_pack_gpu_candidates(
+vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
     VkrVulkanRenderer *renderer, VkrVulkanFrameSlot *slot,
     const VkrWorldDrawCandidate *source, uint32_t count,
-    uint64_t *out_candidate_offset, uint64_t *out_instances_address,
-    uint32_t *out_packed_count) {
+    uint32_t destination_first, VkrVulkanCandidateCopyRange *out_range,
+    uint32_t *out_packed_count, uint32_t *out_omitted_count) {
+  *out_range = (VkrVulkanCandidateCopyRange){0};
   *out_packed_count = 0u;
-  if (!count) {
-    *out_candidate_offset = 0u;
-    *out_instances_address = 0u;
+  *out_omitted_count = 0u;
+  if (!count)
     return true_v;
-  }
-  if (!source || count > VKR_GPU_DRAW_CANDIDATE_CAPACITY)
+  if (!source || destination_first > VKR_GPU_DRAW_CANDIDATE_CAPACITY ||
+      count > VKR_GPU_DRAW_CANDIDATE_CAPACITY - destination_first)
     return false_v;
+  uint64_t candidate_source_offset = 0u;
+  uint64_t instance_source_offset = 0u;
   VkrGpuCandidateDrawRow *candidates = vkr_vk_frame_upload_allocate(
       slot, (uint64_t)count * sizeof(*candidates),
-      _Alignof(VkrGpuCandidateDrawRow), NULL, out_candidate_offset);
+      _Alignof(VkrGpuCandidateDrawRow), NULL, &candidate_source_offset);
   VkrInstanceDataGPU *instances = vkr_vk_frame_upload_allocate(
       slot, (uint64_t)count * sizeof(*instances), _Alignof(VkrInstanceDataGPU),
-      out_instances_address, NULL);
+      NULL, &instance_source_offset);
   if (!candidates || !instances)
     return false_v;
-  const uint64_t pending_submit = renderer->submit_value + 1u;
   uint32_t packed_count = 0u;
   uint32_t unpublished_geometry_count = 0u;
   uint32_t unpublished_material_count = 0u;
@@ -391,7 +479,7 @@ vkr_internal bool8_t vkr_vk_pack_gpu_candidates(
     candidates[packed_count] = (VkrGpuCandidateDrawRow){
         .geometry_index = candidate->geometry.id - 1u,
         .material_index = material->slot.index,
-        .instance_index = packed_count,
+        .instance_index = destination_first + packed_count,
         .first_index = geometry->gpu_row.first_index + submesh->first_index,
         .index_count = submesh->index_count,
         .vertex_offset = submesh->vertex_offset,
@@ -400,17 +488,7 @@ vkr_internal bool8_t vkr_vk_pack_gpu_candidates(
         .local_bounding_sphere = candidate->local_bounding_sphere,
     };
     instances[packed_count++] = candidate->instance;
-    geometry->last_use_submit_value =
-        Max(geometry->last_use_submit_value, pending_submit);
   }
-  // A submesh index outside a resolved geometry is malformed candidate
-  // structure and is rejected before recording, per the P21 retirement
-  // contract. An unresolved geometry or material handle is the bounded
-  // publication boundary instead: uploads land at roughly one staging chunk
-  // per two frames, so a freshly loaded scene legitimately presents candidates
-  // whose GPU rows have not been initialized yet. Those are omitted for the
-  // frame and reappear once publication completes; treating them as an error
-  // would fail every frame of scene load.
   if (invalid_submesh_count) {
     log_error("Vulkan rejected %u/%u deferred candidates naming a "
               "submesh outside their geometry",
@@ -424,7 +502,14 @@ vkr_internal bool8_t vkr_vk_pack_gpu_candidates(
              unpublished_material_count);
     renderer->deferred_candidate_drop_logged = true_v;
   }
+  *out_range = (VkrVulkanCandidateCopyRange){
+      .candidate_source_offset = candidate_source_offset,
+      .instance_source_offset = instance_source_offset,
+      .destination_first = destination_first,
+      .count = packed_count,
+  };
   *out_packed_count = packed_count;
+  *out_omitted_count = count - packed_count;
   return true_v;
 }
 

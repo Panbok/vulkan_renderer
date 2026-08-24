@@ -305,22 +305,47 @@ bool8_t vkr_metal_packet_renderer_drain(
   return true_v;
 }
 
+vkr_internal bool8_t vkr_metal_packet_publish_candidate_result(
+    VkrMetalPacketRenderer *renderer, bool8_t result) {
+  if (!result)
+    return false_v;
+  if (renderer->candidate_publication_generation == UINT64_MAX) {
+    renderer->candidate_publication_generation = 0u;
+    log_fatal("Metal candidate publication generation exhausted");
+  } else {
+    renderer->candidate_publication_generation++;
+  }
+  return true_v;
+}
+
+vkr_internal uint64_t
+vkr_metal_packet_candidate_publication_generation(void *state) {
+  const VkrMetalPacketRenderer *renderer = state;
+  return renderer ? renderer->candidate_publication_generation : 0u;
+}
+
 vkr_internal bool8_t vkr_metal_packet_publish_geometry_adapter(
     void *state, VkrGeometryHandle handle,
     const struct VkrGeometryConfig *geometry) {
-  return vkr_metal_packet_renderer_publish_geometry(state, handle, geometry);
+  return vkr_metal_packet_publish_candidate_result(
+      state,
+      vkr_metal_packet_renderer_publish_geometry(state, handle, geometry));
 }
 
 vkr_internal bool8_t vkr_metal_packet_publish_loaded_mesh_adapter(
     void *state, VkrGeometryHandle handle,
     const struct VkrMeshLoaderResult *mesh) {
-  return vkr_metal_packet_renderer_publish_loaded_mesh(state, handle, mesh);
+  return vkr_metal_packet_publish_candidate_result(
+      state,
+      vkr_metal_packet_renderer_publish_loaded_mesh(state, handle, mesh));
 }
 
 vkr_internal bool8_t vkr_metal_packet_unpublish_geometry_adapter(
     void *state, VkrGeometryHandle handle) {
-  return vkr_metal_packet_renderer_destroy_mesh(
-      state, (VkrMeshHandle){.id = handle.id, .generation = handle.generation});
+  return vkr_metal_packet_publish_candidate_result(
+      state, vkr_metal_packet_renderer_destroy_mesh(
+                 state, (VkrMeshHandle){.id = handle.id,
+                                        .generation = handle.generation}));
 }
 
 vkr_internal bool8_t vkr_metal_packet_publish_texture_adapter(
@@ -365,12 +390,15 @@ vkr_internal bool8_t vkr_metal_packet_unpublish_texture_adapter(
 
 vkr_internal bool8_t vkr_metal_packet_publish_material_adapter(
     void *state, VkrMaterialHandle handle, const struct VkrMaterial *material) {
-  return vkr_metal_packet_renderer_publish_material(state, handle, material);
+  return vkr_metal_packet_publish_candidate_result(
+      state,
+      vkr_metal_packet_renderer_publish_material(state, handle, material));
 }
 
 vkr_internal bool8_t vkr_metal_packet_unpublish_material_adapter(
     void *state, VkrMaterialHandle handle) {
-  return vkr_metal_packet_renderer_destroy_material(state, handle);
+  return vkr_metal_packet_publish_candidate_result(
+      state, vkr_metal_packet_renderer_destroy_material(state, handle));
 }
 
 vkr_internal bool8_t vkr_metal_packet_publications_idle_adapter(void *state) {
@@ -386,6 +414,8 @@ void vkr_metal_packet_renderer_get_asset_publisher(
                              .state = renderer,
                              .publications_idle =
                                  vkr_metal_packet_publications_idle_adapter,
+                             .publication_generation =
+                                 vkr_metal_packet_candidate_publication_generation,
                              .publish_geometry =
                                  vkr_metal_packet_publish_geometry_adapter,
                              .publish_loaded_mesh =

@@ -375,6 +375,9 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
   VKR_REGISTER_U64(visibility_candidate_count,
                    "visibility.gpu_candidates.count", VKR_METRIC_DOMAIN_DRAW,
                    VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(visibility_static_candidate_count,
+                   "visibility.gpu_candidates.static_count",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(visibility_candidate_capacity,
                    "visibility.gpu_candidates.capacity", VKR_METRIC_DOMAIN_DRAW,
                    VKR_METRIC_UNIT_COUNT);
@@ -563,6 +566,15 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_BYTES);
   VKR_REGISTER_U64(packet_instance_row_bytes, "packet.instance_row_bytes",
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(packet_static_candidate_row_bytes,
+                   "packet.static_candidate_row_bytes", VKR_METRIC_DOMAIN_DRAW,
+                   VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(packet_dynamic_candidate_row_bytes,
+                   "packet.dynamic_candidate_row_bytes", VKR_METRIC_DOMAIN_DRAW,
+                   VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(packet_publication_omitted,
+                   "packet.publication_omitted_candidates",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(packet_geometry_row_bytes, "packet.geometry_row_bytes",
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_BYTES);
 
@@ -1104,12 +1116,24 @@ void vkr_renderer_metrics_collect(
                                 packet_build->geometry_table_build_ns);
     VKR_SET_U64(packet_candidate_row_bytes, packet_build->candidate_row_bytes);
     VKR_SET_U64(packet_instance_row_bytes, packet_build->instance_row_bytes);
+    VKR_SET_U64(packet_static_candidate_row_bytes,
+                packet_build->static_candidate_row_bytes);
+    VKR_SET_U64(packet_dynamic_candidate_row_bytes,
+                packet_build->dynamic_candidate_row_bytes);
+    VKR_SET_U64(packet_publication_omitted,
+                packet_build->publication_omitted_count);
     VKR_SET_U64(packet_geometry_row_bytes, packet_build->geometry_row_bytes);
   } else {
     const VkrMetricId packet_build_ids[] = {
-        ids->packet_candidate_hash,       ids->packet_candidate_pack,
-        ids->packet_geometry_table_build, ids->packet_candidate_row_bytes,
-        ids->packet_instance_row_bytes,   ids->packet_geometry_row_bytes,
+        ids->packet_candidate_hash,
+        ids->packet_candidate_pack,
+        ids->packet_geometry_table_build,
+        ids->packet_candidate_row_bytes,
+        ids->packet_instance_row_bytes,
+        ids->packet_static_candidate_row_bytes,
+        ids->packet_dynamic_candidate_row_bytes,
+        ids->packet_publication_omitted,
+        ids->packet_geometry_row_bytes,
     };
     for (uint32_t i = 0u; i < ArrayCount(packet_build_ids); ++i) {
       vkr_metrics_mark(metrics, packet_build_ids[i],
@@ -1188,6 +1212,8 @@ void vkr_renderer_metrics_collect(
   VKR_SET_U64(visibility_culled_camera, visibility->objects_culled_camera);
   VKR_SET_U64(visibility_without_bounds, visibility->objects_without_bounds);
   VKR_SET_U64(visibility_candidate_count, world->gpu_candidate_count);
+  VKR_SET_U64(visibility_static_candidate_count,
+              world->static_gpu_candidate_count);
   VKR_SET_U64(visibility_candidate_capacity, world->gpu_candidate_capacity);
   VKR_SET_U64(visibility_transmission_candidate_count,
               world->transmission_gpu_candidate_count);

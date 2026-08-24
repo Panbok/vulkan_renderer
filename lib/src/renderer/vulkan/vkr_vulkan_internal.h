@@ -9,6 +9,7 @@
 #include "renderer/resources/loaders/mesh_loader.h"
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_texture_system.h"
+#include "renderer/vkr_candidate_residency.h"
 #include "renderer/vkr_capture_ring.h"
 #include "renderer/vkr_gpu_abi.h"
 #include "renderer/vkr_gpu_memory.h"
@@ -104,6 +105,9 @@
 #ifndef VKR_VULKAN_PACKET_HZB_BUILD_COMP_SPV
 #define VKR_VULKAN_PACKET_HZB_BUILD_COMP_SPV "packet.hzb_build.comp.spv"
 #endif
+#ifndef VKR_VULKAN_PACKET_SDSM_REDUCE_COMP_SPV
+#define VKR_VULKAN_PACKET_SDSM_REDUCE_COMP_SPV "packet.sdsm_reduce.comp.spv"
+#endif
 #ifndef VKR_VULKAN_PACKET_PICKING_RESOLVE_COMP_SPV
 #define VKR_VULKAN_PACKET_PICKING_RESOLVE_COMP_SPV                             \
   "packet.picking_resolve.comp.spv"
@@ -142,8 +146,12 @@ enum {
   VKR_VULKAN_READBACK_TRANSMISSION_STATE_OFFSET =
       VKR_VULKAN_READBACK_DRAW_STATE_OFFSET +
       VKR_VULKAN_DEFERRED_VIEW_COUNT_MAX * sizeof(VkrGpuDrawCompactionState),
-  VKR_VULKAN_READBACK_SIZE = VKR_VULKAN_READBACK_TRANSMISSION_STATE_OFFSET +
-                             sizeof(VkrGpuTransmissionDiagnostics),
+  VKR_VULKAN_SDSM_STATE_SIZE = 16,
+  VKR_VULKAN_READBACK_SDSM_STATE_OFFSET =
+      VKR_VULKAN_READBACK_TRANSMISSION_STATE_OFFSET +
+      sizeof(VkrGpuTransmissionDiagnostics),
+  VKR_VULKAN_READBACK_SIZE =
+      VKR_VULKAN_READBACK_SDSM_STATE_OFFSET + VKR_VULKAN_SDSM_STATE_SIZE,
 };
 
 typedef enum VkrVulkanPacketPipeline {
@@ -191,6 +199,7 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER,
   VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING,
   VKR_VULKAN_DEFERRED_PIPELINE_HZB,
+  VKR_VULKAN_DEFERRED_PIPELINE_SDSM,
   VKR_VULKAN_DEFERRED_PIPELINE_PICKING,
   VKR_VULKAN_DEFERRED_PIPELINE_TRANSMISSION,
   VKR_VULKAN_DEFERRED_PIPELINE_TRANSMISSION_COVERAGE,
@@ -316,6 +325,20 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanHzbRoot {
   uint32_t source_is_depth;
   uint32_t reserved[3];
 } VkrVulkanHzbRoot;
+typedef struct VKR_SIMD_ALIGN VkrVulkanSdsmRoot {
+  uint64_t reduce_state;
+  uint32_t depth_texture;
+  uint32_t vbuffer_texture;
+  uint32_t extent[2];
+  uint32_t reserved[2];
+} VkrVulkanSdsmRoot;
+
+typedef struct VkrVulkanSdsmState {
+  uint32_t min_device_z_bits;
+  uint32_t max_device_z_bits;
+  uint32_t occupied_count;
+  uint32_t reserved;
+} VkrVulkanSdsmState;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanPickingRoot {
   uint64_t opaque_visible;
@@ -557,6 +580,10 @@ _Static_assert(offsetof(VkrVulkanLightingRoot, inverse_view_projection) == 16u,
                "Deferred lighting-root matrix ABI drift");
 _Static_assert(sizeof(VkrVulkanHzbRoot) == 48u,
                "Deferred HZB-root ABI size drift");
+_Static_assert(sizeof(VkrVulkanSdsmRoot) == 32u,
+               "Deferred SDSM-root ABI size drift");
+_Static_assert(sizeof(VkrVulkanSdsmState) == VKR_VULKAN_SDSM_STATE_SIZE,
+               "Deferred SDSM-state ABI size drift");
 _Static_assert(sizeof(VkrVulkanPickingRoot) == 64u,
                "Deferred picking-root ABI size drift");
 _Static_assert(sizeof(VkrVulkanTransmissionRoot) == 256u,
@@ -682,6 +709,12 @@ typedef struct VkrVulkanGraphBuffer {
   uint32_t instance_count;
   bool8_t live;
 } VkrVulkanGraphBuffer;
+typedef struct VkrVulkanCandidateCopyRange {
+  uint64_t candidate_source_offset;
+  uint64_t instance_source_offset;
+  uint32_t destination_first;
+  uint32_t count;
+} VkrVulkanCandidateCopyRange;
 
 typedef struct VkrVulkanRetiredTargetSet {
   VkrVulkanTargetSet targets;
@@ -710,6 +743,9 @@ typedef struct VkrVulkanFrameSlot {
   bool8_t timing_collected;
   bool8_t transmission_coverage_requested;
   uint32_t transmission_coverage_extent[2];
+  bool8_t sdsm_requested;
+  VkrVulkanGraphBufferInstance *sdsm_reduce_state;
+  VkrShadowDepthRangeSample shadow_depth_range;
   bool8_t acquired_window_image;
   bool8_t reacquired_presented_image;
   uint64_t frame_upload_cursor;
@@ -722,8 +758,15 @@ typedef struct VkrVulkanFrameSlot {
   uint64_t gpu_candidate_instances;
   uint64_t transmission_gpu_candidate_instances;
   uint64_t gpu_geometry_rows;
-  uint64_t gpu_candidate_upload_offset;
+  VkrVulkanCandidateCopyRange gpu_candidate_copies[2];
+  uint32_t gpu_candidate_copy_count;
   uint64_t transmission_gpu_candidate_upload_offset;
+  uint64_t transmission_gpu_instance_upload_offset;
+  VkrVulkanGraphBufferInstance *gpu_candidate_buffer;
+  VkrVulkanGraphBufferInstance *gpu_candidate_instance_buffer;
+  VkrCandidateResidencyState candidate_residency;
+  VkrCandidateResidencyState pending_candidate_residency;
+  bool8_t candidate_residency_pending;
   VkrVulkanGraphBufferInstance *gpu_compaction_state;
   VkrVulkanGraphBufferInstance *transmission_gpu_compaction_state;
   uint32_t gpu_candidate_count;
@@ -935,6 +978,9 @@ struct VkrVulkanRenderer {
   uint64_t graph_images_size;
   VkrVulkanGraphBuffer *graph_buffers;
   uint64_t graph_buffers_size;
+  VkrRgBufferHandle gpu_candidate_buffer_handle;
+  VkrRgBufferHandle gpu_candidate_instance_buffer_handle;
+  VkrRgBufferHandle transmission_gpu_candidate_instance_buffer_handle;
   VkImageMemoryBarrier2 *graph_image_barriers;
   uint64_t graph_image_barriers_size;
   VkBufferMemoryBarrier2 *graph_buffer_barriers;
@@ -1025,6 +1071,7 @@ struct VkrVulkanRenderer {
   VkSemaphore timeline;
   uint64_t submit_value;
   uint64_t completed_value;
+  uint64_t candidate_publication_generation;
   uint64_t upload_wait_count;
   uint64_t frame_upload_exhaustion_count;
   uint64_t command_slot_wait_count;
@@ -1066,7 +1113,8 @@ bool8_t vkr_vk_invalidate(const VkrVulkanRenderer *renderer,
                           VkDeviceSize offset, VkDeviceSize size);
 bool8_t vkr_vk_pipeline_cache_initialize(VkrVulkanRenderer *renderer);
 bool8_t vkr_vk_realize_graph_images(VkrVulkanRenderer *renderer);
-/** Installs this renderer as the graph's retained cross-frame state provider. */
+/** Installs this renderer as the graph's retained cross-frame state provider.
+ */
 void vkr_vk_install_retained_provider(VkrVulkanRenderer *renderer);
 bool8_t vkr_vk_realize_graph_buffers(VkrVulkanRenderer *renderer);
 void vkr_vk_mark_graph_images_submitted(VkrVulkanRenderer *renderer,
@@ -1163,6 +1211,9 @@ bool8_t vkr_vk_record_deferred_lighting(VkrVulkanRenderer *renderer,
 bool8_t vkr_vk_record_deferred_hzb(VkrVulkanRenderer *renderer,
                                    VkCommandBuffer command,
                                    const VkrRgPass *pass);
+bool8_t vkr_vk_record_deferred_sdsm(VkrVulkanRenderer *renderer,
+                                    VkCommandBuffer command,
+                                    const VkrRgPass *pass);
 bool8_t vkr_vk_record_deferred_picking(VkrVulkanRenderer *renderer,
                                        VkCommandBuffer command,
                                        const VkrRgPass *pass);

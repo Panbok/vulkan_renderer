@@ -81,6 +81,7 @@ vkr_add_vulkan_packet_shader("packet.visibility_shadow.frag" vk_visibility_shado
 vkr_add_vulkan_packet_shader("packet.gbuffer_resolve.comp" vk_gbuffer_resolve compute)
 vkr_add_vulkan_packet_shader("packet.deferred_lighting.comp" vk_deferred_lighting compute)
 vkr_add_vulkan_packet_shader("packet.hzb_build.comp" vk_hzb_build compute)
+vkr_add_vulkan_packet_shader("packet.sdsm_reduce.comp" vk_sdsm_reduce compute)
 vkr_add_vulkan_packet_shader("packet.picking_resolve.comp" vk_picking_resolve compute)
 vkr_add_vulkan_packet_shader("packet.transmission_shade.comp" vk_transmission_shade compute)
 vkr_add_vulkan_packet_shader("packet.transmission_coverage.comp" vk_transmission_coverage compute)

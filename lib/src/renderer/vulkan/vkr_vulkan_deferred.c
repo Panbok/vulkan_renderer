@@ -105,26 +105,67 @@ bool8_t vkr_vk_record_deferred_upload(VkrVulkanRenderer *renderer,
       vkr_vk_deferred_buffer(renderer, pass, 0u);
   VkrVulkanGraphBufferInstance *state =
       vkr_vk_deferred_buffer(renderer, pass, 1u);
-  const uint32_t count = transmission ? slot->transmission_gpu_candidate_count
-                                      : slot->gpu_candidate_count;
-  const uint64_t source_offset =
-      transmission ? slot->transmission_gpu_candidate_upload_offset
-                   : slot->gpu_candidate_upload_offset;
-  if (!candidates || !state)
+  VkrVulkanGraphBufferInstance *instances =
+      vkr_vk_deferred_buffer(renderer, pass, transmission ? 2u : 3u);
+  VkrVulkanGraphBufferInstance *sdsm =
+      !transmission && slot->sdsm_requested
+          ? vkr_vk_deferred_buffer(renderer, pass, 2u)
+          : NULL;
+  if (!candidates || !instances || !state ||
+      (!transmission && slot->sdsm_requested && !sdsm))
     return false_v;
-  if (transmission)
+  if (transmission) {
     slot->transmission_gpu_compaction_state = state;
-  else
+    slot->transmission_gpu_candidate_instances = instances->buffer.address;
+    const uint32_t count = slot->transmission_gpu_candidate_count;
+    if (count) {
+      const VkBufferCopy candidate_copy = {
+          .srcOffset = slot->transmission_gpu_candidate_upload_offset,
+          .size = (uint64_t)count * sizeof(VkrGpuCandidateDrawRow),
+      };
+      const VkBufferCopy instance_copy = {
+          .srcOffset = slot->transmission_gpu_instance_upload_offset,
+          .size = (uint64_t)count * sizeof(VkrInstanceDataGPU),
+      };
+      vkCmdCopyBuffer(command, slot->frame_upload.handle,
+                      candidates->buffer.handle, 1u, &candidate_copy);
+      vkCmdCopyBuffer(command, slot->frame_upload.handle,
+                      instances->buffer.handle, 1u, &instance_copy);
+    }
+  } else {
+    if (slot->gpu_candidate_buffer != candidates ||
+        slot->gpu_candidate_instance_buffer != instances)
+      return false_v;
     slot->gpu_compaction_state = state;
-  if (count) {
-    const VkBufferCopy copy = {
-        .srcOffset = source_offset,
-        .size = (uint64_t)count * sizeof(VkrGpuCandidateDrawRow),
-    };
-    vkCmdCopyBuffer(command, slot->frame_upload.handle,
-                    candidates->buffer.handle, 1u, &copy);
+    slot->sdsm_reduce_state = sdsm;
+    slot->gpu_candidate_instances = instances->buffer.address;
+    for (uint32_t i = 0u; i < slot->gpu_candidate_copy_count; ++i) {
+      const VkrVulkanCandidateCopyRange *range = &slot->gpu_candidate_copies[i];
+      const VkBufferCopy candidate_copy = {
+          .srcOffset = range->candidate_source_offset,
+          .dstOffset = (uint64_t)range->destination_first *
+                       sizeof(VkrGpuCandidateDrawRow),
+          .size = (uint64_t)range->count * sizeof(VkrGpuCandidateDrawRow),
+      };
+      const VkBufferCopy instance_copy = {
+          .srcOffset = range->instance_source_offset,
+          .dstOffset =
+              (uint64_t)range->destination_first * sizeof(VkrInstanceDataGPU),
+          .size = (uint64_t)range->count * sizeof(VkrInstanceDataGPU),
+      };
+      vkCmdCopyBuffer(command, slot->frame_upload.handle,
+                      candidates->buffer.handle, 1u, &candidate_copy);
+      vkCmdCopyBuffer(command, slot->frame_upload.handle,
+                      instances->buffer.handle, 1u, &instance_copy);
+    }
   }
   vkCmdFillBuffer(command, state->buffer.handle, 0u, VK_WHOLE_SIZE, 0u);
+  if (sdsm) {
+    vkCmdFillBuffer(command, sdsm->buffer.handle, 0u, sizeof(uint32_t),
+                    UINT32_MAX);
+    vkCmdFillBuffer(command, sdsm->buffer.handle, sizeof(uint32_t),
+                    VKR_VULKAN_SDSM_STATE_SIZE - sizeof(uint32_t), 0u);
+  }
   return true_v;
 }
 
@@ -140,9 +181,11 @@ bool8_t vkr_vk_record_deferred_readback(VkrVulkanRenderer *renderer,
   if (!opaque ||
       (renderer->prepared_frame.transmission_pending && !transmission))
     return false_v;
-  VkBufferMemoryBarrier2 barriers[2] = {0};
+  VkBufferMemoryBarrier2 barriers[3] = {0};
   uint32_t barrier_count = 0u;
-  VkrVulkanGraphBufferInstance *sources[] = {opaque, transmission};
+  VkrVulkanGraphBufferInstance *sources[] = {
+      opaque, transmission,
+      slot->sdsm_requested ? slot->sdsm_reduce_state : NULL};
   for (uint32_t i = 0u; i < ArrayCount(sources); ++i) {
     if (!sources[i])
       continue;
@@ -199,6 +242,16 @@ bool8_t vkr_vk_record_deferred_readback(VkrVulkanRenderer *renderer,
     };
     vkCmdCopyBuffer(command, transmission->buffer.handle, slot->readback.handle,
                     1u, &transmission_copy);
+  }
+  if (slot->sdsm_requested) {
+    if (!slot->sdsm_reduce_state)
+      return false_v;
+    const VkBufferCopy sdsm_copy = {
+        .dstOffset = VKR_VULKAN_READBACK_SDSM_STATE_OFFSET,
+        .size = VKR_VULKAN_SDSM_STATE_SIZE,
+    };
+    vkCmdCopyBuffer(command, slot->sdsm_reduce_state->buffer.handle,
+                    slot->readback.handle, 1u, &sdsm_copy);
   }
   return true_v;
 }
@@ -705,6 +758,36 @@ bool8_t vkr_vk_record_deferred_hzb(VkrVulkanRenderer *renderer,
       renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_HZB]);
   vkCmdDispatch(command, (root.destination_extent[0] + 7u) / 8u,
                 (root.destination_extent[1] + 7u) / 8u, 1u);
+  return true_v;
+}
+bool8_t vkr_vk_record_deferred_sdsm(VkrVulkanRenderer *renderer,
+                                    VkCommandBuffer command,
+                                    const VkrRgPass *pass) {
+  VkrVulkanGraphBufferInstance *state =
+      vkr_vk_deferred_buffer(renderer, pass, 2u);
+  uint32_t depth = 0u, vbuffer = 0u;
+  if (!state || !vkr_vk_deferred_sampled_index(renderer, pass, 0u, &depth) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &vbuffer))
+    return false_v;
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  slot->sdsm_reduce_state = state;
+  const VkrVulkanSdsmRoot root = {
+      .reduce_state = state->buffer.address,
+      .depth_texture = depth,
+      .vbuffer_texture = vbuffer,
+      .extent = {renderer->prepared_frame.viewport_width,
+                 renderer->prepared_frame.viewport_height},
+  };
+  uint64_t root_address = 0u;
+  if (!vkr_vk_deferred_push_root(renderer, command, &root, sizeof(root),
+                                 _Alignof(VkrVulkanSdsmRoot), &root_address))
+    return false_v;
+  vkCmdBindPipeline(
+      command, VK_PIPELINE_BIND_POINT_COMPUTE,
+      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_SDSM]);
+  vkCmdDispatch(command, (root.extent[0] + 7u) / 8u, (root.extent[1] + 7u) / 8u,
+                1u);
   return true_v;
 }
 

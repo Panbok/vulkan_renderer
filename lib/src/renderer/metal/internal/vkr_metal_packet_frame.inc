@@ -401,40 +401,23 @@ vkr_internal uint64_t vkr_metal_packet_hash_bytes(uint64_t hash,
 
 vkr_internal uint64_t
 vkr_metal_packet_world_occluder_epoch(const VkrWorldPassPayload *world) {
+  if (!world)
+    return 0u;
   uint64_t hash = 1469598103934665603ull;
-  const uint32_t count = world ? world->gpu_candidate_count : 0u;
-  uint32_t occluder_count = 0u;
-  for (uint32_t i = 0u; i < count; ++i) {
-    const VkrWorldDrawCandidate *candidate = &world->gpu_candidates[i];
-    if ((candidate->flags & VKR_WORLD_DRAW_CANDIDATE_CAMERA_OPAQUE) == 0u)
-      continue;
-    occluder_count++;
-    hash = vkr_metal_packet_hash_bytes(hash, &candidate->mesh.id,
-                                       sizeof(candidate->mesh.id));
-    hash = vkr_metal_packet_hash_bytes(hash, &candidate->mesh.generation,
-                                       sizeof(candidate->mesh.generation));
-    hash = vkr_metal_packet_hash_bytes(hash, &candidate->geometry.id,
-                                       sizeof(candidate->geometry.id));
-    hash = vkr_metal_packet_hash_bytes(hash, &candidate->geometry.generation,
-                                       sizeof(candidate->geometry.generation));
-    hash = vkr_metal_packet_hash_bytes(hash, &candidate->submesh_index,
-                                       sizeof(candidate->submesh_index));
-    hash = vkr_metal_packet_hash_bytes(hash, &candidate->material.id,
-                                       sizeof(candidate->material.id));
-    hash = vkr_metal_packet_hash_bytes(hash, &candidate->material.generation,
-                                       sizeof(candidate->material.generation));
-    hash = vkr_metal_packet_hash_bytes(hash, &candidate->instance.model,
-                                       sizeof(candidate->instance.model));
-    hash =
-        vkr_metal_packet_hash_bytes(hash, &candidate->local_bounding_sphere,
-                                    sizeof(candidate->local_bounding_sphere));
-    hash = vkr_metal_packet_hash_bytes(hash, &candidate->state_bucket,
-                                       sizeof(candidate->state_bucket));
-    hash = vkr_metal_packet_hash_bytes(hash, &candidate->flags,
-                                       sizeof(candidate->flags));
-  }
-  return vkr_metal_packet_hash_bytes(hash, &occluder_count,
-                                     sizeof(occluder_count));
+  hash = vkr_metal_packet_hash_bytes(hash, &world->static_generation,
+                                     sizeof(world->static_generation));
+  hash = vkr_metal_packet_hash_bytes(hash, &world->dynamic_generation,
+                                     sizeof(world->dynamic_generation));
+  hash = vkr_metal_packet_hash_bytes(hash, &world->publication_generation,
+                                     sizeof(world->publication_generation));
+  hash = vkr_metal_packet_hash_bytes(hash, &world->gpu_candidate_count,
+                                     sizeof(world->gpu_candidate_count));
+  hash = vkr_metal_packet_hash_bytes(hash, &world->static_candidate_count,
+                                     sizeof(world->static_candidate_count));
+  hash = vkr_metal_packet_hash_bytes(
+      hash, &world->gpu_camera_opaque_candidate_count,
+      sizeof(world->gpu_camera_opaque_candidate_count));
+  return hash;
 }
 
 vkr_internal id<MTLTexture>
@@ -487,11 +470,9 @@ vkr_internal bool8_t vkr_metal_packet_encode_gpu_draw_compute(
       kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_CLASSIFY ||
       kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_PREFIX ||
       kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_ENCODE;
-  const uint32_t candidate_count =
-      packet->world
-          ? (transmission ? packet->world->transmission_gpu_candidate_count
-                          : packet->world->gpu_candidate_count)
-          : 0u;
+  const uint32_t candidate_count = transmission
+                                       ? renderer->transmission_gpu_draw_count
+                                       : renderer->gpu_draw_count;
   const uint64_t instances_gpu =
       transmission ? upload->transmission_gpu_draw_instances_gpu
                    : upload->gpu_draw_instances_gpu;
@@ -714,7 +695,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_gbuffer_resolve(
       .visible_capacity = VKR_GPU_DRAW_CANDIDATE_CAPACITY,
       .geometry_count = renderer->max_meshes,
       .material_count = renderer->max_materials,
-      .instance_count = packet->world ? packet->world->gpu_candidate_count : 0u,
+      .instance_count = renderer->gpu_draw_count,
       .render_mode = packet->globals.render_mode,
   };
   [renderer->argument_table setAddress:root_gpu atIndex:0u];
@@ -869,7 +850,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_transmission_shade(
       .visible_capacity = VKR_GPU_DRAW_CANDIDATE_CAPACITY,
       .geometry_count = renderer->max_meshes,
       .material_count = renderer->max_materials,
-      .instance_count = packet->world->transmission_gpu_candidate_count,
+      .instance_count = renderer->transmission_gpu_draw_count,
       .pixel_capacity = (uint32_t)pixel_capacity,
       .compact_layer = compact_layer,
       .compact_enabled = compact ? 1u : 0u,
@@ -1069,11 +1050,9 @@ vkr_internal bool8_t vkr_metal_packet_encode_picking_resolve(
                 MIN(packet->picking->y, (uint32_t)destination.height - 1u)},
       .extent = {(uint32_t)destination.width, (uint32_t)destination.height},
       .opaque_visible_capacity = VKR_GPU_DRAW_CANDIDATE_CAPACITY,
-      .opaque_instance_count =
-          packet->world ? packet->world->gpu_candidate_count : 0u,
+      .opaque_instance_count = renderer->gpu_draw_count,
       .transmission_visible_capacity = VKR_GPU_DRAW_CANDIDATE_CAPACITY,
-      .transmission_instance_count =
-          packet->world ? packet->world->transmission_gpu_candidate_count : 0u,
+      .transmission_instance_count = renderer->transmission_gpu_draw_count,
       .transmission_enabled = transmission ? 1u : 0u,
   };
   [renderer->argument_table setAddress:root_gpu atIndex:0u];
@@ -1182,11 +1161,9 @@ vkr_internal bool8_t vkr_metal_packet_encode_gpu_draws(
       vkr_metal_packet_pass_buffer(renderer, pass, 2u);
   const bool8_t transmission = vkr_metal_packet_graph_pass_is(
       pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_VBUFFER_TRANSMISSION);
-  const uint32_t candidate_count =
-      packet->world
-          ? (transmission ? packet->world->transmission_gpu_candidate_count
-                          : packet->world->gpu_candidate_count)
-          : 0u;
+  const uint32_t candidate_count = transmission
+                                       ? renderer->transmission_gpu_draw_count
+                                       : renderer->gpu_draw_count;
   if (candidate_count == 0u)
     return true_v;
   id<MTLIndirectCommandBuffer> icb =
@@ -1325,7 +1302,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_pass_body(
     const uint32_t cascade = (uint32_t)(uintptr_t)pass->desc.user_data;
     if (cascade >= packet->shadow->cascade_count)
       return true_v;
-    if (!packet->world || packet->world->gpu_candidate_count == 0u)
+    if (!packet->world || renderer->gpu_draw_count == 0u)
       return true_v;
     return vkr_metal_packet_encode_gpu_shadow(renderer, pass, packet, encoder,
                                               cascade, (uint32_t)target.width,
@@ -2218,6 +2195,11 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   else
     [renderer->queue commit:submissions count:1];
   [renderer->queue signalEvent:renderer->completion value:submit_value];
+  if (command_slot->candidate_residency_pending) {
+    command_slot->candidate_residency =
+        command_slot->pending_candidate_residency;
+    command_slot->candidate_residency_pending = false_v;
+  }
   /* Past the commit, so retained contents are now proven to have been written.
      Every earlier failure path returns without reaching here, which is the
      ADR-029 rollback: a cancelled frame commits nothing and the previous
@@ -2319,9 +2301,9 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
       out_result->has_ibl_convolution = true_v;
     }
     if (synchronous_deferred_validation) {
-      out_result->gpu_candidate_count = packet->world->gpu_candidate_count;
+      out_result->gpu_candidate_count = renderer->gpu_draw_count;
       out_result->transmission_gpu_candidate_count =
-          packet->world->transmission_gpu_candidate_count;
+          renderer->transmission_gpu_draw_count;
       vkr_metal_packet_decode_gpu_draw_diagnostics(
           out_result,
           (const uint8_t *)readback.cpu_address + deferred_diagnostics_offset,
@@ -2358,9 +2340,9 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   out_result->pipeline_archive_warm = renderer->pipeline_archive_warm;
   out_result->pipeline_archive_written = renderer->pipeline_archive_written;
   if (deferred_diagnostics) {
-    out_result->gpu_candidate_count = packet->world->gpu_candidate_count;
+    out_result->gpu_candidate_count = renderer->gpu_draw_count;
     out_result->transmission_gpu_candidate_count =
-        packet->world->transmission_gpu_candidate_count;
+        renderer->transmission_gpu_draw_count;
   }
   vkr_metal_memory_device_get_metrics(renderer->memory, &out_result->memory);
   vkr_metal_material_table_device_get_metrics(renderer->materials,
