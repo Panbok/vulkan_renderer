@@ -1,6 +1,6 @@
 ---
-status: proposed
-updated: 2026-08-23
+status: investigation
+updated: 2026-08-24
 authority: adr
 ---
 
@@ -8,18 +8,23 @@ authority: adr
 
 ## Status
 
-**Proposed.** Nothing is implemented. This amends the visibility topology of
-[ADR-028](028-gpu-driven-deferred-visibility-buffer.md), which stays in force
-until this is accepted and implemented; the existing one-phase path and its
-exact history gates continue unchanged in the meantime.
+**Declined for the measured workload.** A transient Metal predictor deferred
+zero candidates across the 600 measured moving-camera frames. With no predicted
+set to confirm, the required second classify, raster, and HZB topology cannot
+produce a net win. The experiment was removed;
+[ADR-028](028-gpu-driven-deferred-visibility-buffer.md) and its exact one-phase
+history gates remain in force.
+
+The passing local report digest is
+`sha256:f54a508cbb1adac7233738b682cb6ac12c017b1bb263e595eaf8d0671e3b5f0e`.
+It was a dirty-tree, warmup-unstable observation, so this decision applies to
+the measured workload rather than claiming universal predictor behavior.
 
 Design source: section 8 of
 [shadow-cpu-cost-and-csm-rewrite-spec.md](../../rendering/shadow-cpu-cost-and-csm-rewrite-spec.md).
 
-**The benefit is unquantified.** Measurement has confirmed that the HZB
-contributes nothing under camera motion, but not that rejecting the occluded set
-would be worth the confirmation work this ADR adds. That is the explicit stop
-condition below, and it is the reason this is Proposed rather than Accepted.
+The benefit was measured as zero at the predictor boundary. Revisit only when a
+materially different candidate population produces a nonzero deferred set.
 
 ## Context
 

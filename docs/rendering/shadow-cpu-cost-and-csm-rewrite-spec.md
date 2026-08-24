@@ -14,20 +14,25 @@ candidate partition and generation substrate ships without the rejected GPU
 residency expansion. P3A and P3B also ship: `shadow_map` is a retained,
 per-image graph resource (ADR-029), and the backend-neutral shadow resolver
 omits eligible cascade passes against committed per-image history. P7 ships:
-packet version 16 carries a per-cascade block and a shared receiver block, and
-both receivers run a rotated Poisson PCF kernel with texel-denominated bias,
+packet version 17 carries a per-cascade block, a shared receiver block, and the
+SDSM enable/source-scene contract. Both receivers run a rotated Poisson PCF
+kernel with texel-denominated bias,
 cascade cross-fade, max-distance fade, and a case-selectable uniform-region
-early out. P4, P5, and P6 do not ship; P3B
-performs no proactive refresh. The Metal tap and early-out sweeps are complete;
-section 11.5 records why they retain the shipped defaults and what evidence was
-not retained before their run trees were purged.
+early out. P4 is closed at its measured stop condition: an experimental Metal
+predictor deferred zero candidates across 600 moving-camera frames, so the
+one-phase exact-gated topology remains. P5 ships as a bounded, opt-in proactive
+refresh budget and defaults to zero. P6's completed asynchronous feedback path
+ships on Metal behind an opt-in config and harness control, but the fixed-split
+default remains after its matched GPU cost gate failed. The Metal tap and
+early-out sweeps are complete; section 11.5 records why they retain the shipped
+defaults and what evidence was not retained before their run trees were purged.
 
 P7's shadow-map contents are unchanged by construction and by capture: all four
 D32 cascade layers are byte-identical across the change, because only the
-receiver moved. The remaining unshipped phases are each blocked on a
-precondition this document itself sets. P4 and P6 depend on proposed,
-unaccepted ADRs and their evidence gates. P5 depends on moving-camera evidence
-of guard exhaustion that P3B's 84–100% per-cascade reuse does not show.
+receiver moved. The remaining platform gap is P6's Vulkan reduction and
+completion-slot lowering. P5 remains off because its prerequisite moving-camera
+guard-exhaustion evidence is absent. P4 has no remaining implementation work
+unless a future workload changes the measured zero-prediction result.
 
 The same-tree local Release P3B comparison on Bistro orbit at 2560x1440 reduced
 realized `Shadow.Cascade.*` GPU work from 9.197 ms/frame to 0.663 ms/frame and
@@ -772,13 +777,25 @@ or resolution requires separate images or an atlas and is outside this design.
 
 ## 8. Phase 4, correctness-preserving temporal occlusion
 
+**Status: closed without topology change.** A transient Metal implementation
+added the previous-HZB predictor and `visibility.hzb.predicted_deferred`, then
+ran the two-repetition, 600-frame local Bistro orbit control. The metric was
+zero on every frame, as were exact history validity and HZB rejection. With no
+deferred set for confirmation, the section 8.3 stop condition rejects the
+second classify/raster/HZB topology. The experiment was removed and the
+exact-gated one-phase path remains. Report digest:
+`sha256:f54a508cbb1adac7233738b682cb6ac12c017b1bb263e595eaf8d0671e3b5f0e`.
+The report was local, dirty-tree, and warmup-unstable, so this is a workload
+stop decision rather than a portable performance claim.
+
 Deleting the exact-matrix or world-epoch gates and authorizing rejection from
 previous depth is not safe. Camera motion can reveal a static object, and a
 moving occluder can reveal a static object. Bounds-inside guards prevent invalid
 projections; they do not prevent disocclusion.
 
-The existing one-phase path keeps its exact history gates. Moving-camera reuse
-requires a two-phase topology and a proposed amendment to ADR-028.
+The existing one-phase path keeps its exact history gates. Reconsidering
+moving-camera reuse requires reopening ADR-032 with a workload that produces a
+material predicted-deferred set.
 
 ### 8.1 Previous HZB is a predictor
 
@@ -855,6 +872,14 @@ against a shared representation before merging the resources.
 
 ## 9. Phase 5, optional proactive refresh scheduling
 
+**Status: implemented, default off.** `reuse_proactive_refresh_budget` selects
+at most that many still-reusable cascades with the smallest remaining guarded
+fit margin. Scheduled layers render without being tagged correctness-forced;
+dynamic overlap, publication gaps, invalid retained contents, and exhausted
+guards still bypass the schedule and render immediately. The high/default
+preset keeps the budget at zero because no moving-camera profile demonstrates
+clustered guard exhaustion or a p95 benefit.
+
 Staggering is not independent of Phase 3. It uses the retained image, per-image
 history, guarded fit, dynamic-overlap test, pending commit, and rendered-fit
 publication rules from that phase.
@@ -871,9 +896,42 @@ shadow captures outside the deliberately enlarged guard fit.
 
 ## 10. Phase 6, occupied-depth SDSM feedback
 
-SDSM is a separate proposed ADR because it adds delayed GPU-to-CPU feedback to
-frontend-owned cascade fitting. It is a quality and distribution feature, not a
-proven CPU optimization.
+**Status: implemented on Metal, opt-in; default rejected by measurement.** The
+authored graph has a conditional `SDSM.Reduce` pass over occupied final opaque
+pixels, a per-frame-slot reduction state, completion-gated readback, and source
+projection/frame/scene/submit metadata. The frontend never waits. The shadow
+system rejects empty, stale, malformed, projection-mismatched, and
+scene-mismatched samples; reuses a completion only as cached data; clamps linear
+contraction; retains the fixed final split; invalidates feedback at target or
+scene lifecycle boundaries; and publishes the status, lag, occupancy, and range
+metrics. `tools/cases/performance/sponza_orbit_sdsm.case.json` is the explicit
+opt-in control. Vulkan lowering remains open.
+
+The final same-binary Metal pair used `local.windowed_gpu`, 2560x1440 Sponza
+orbit, two repetitions of 300 measured frames after 120 warmup frames. Both
+reports passed but were local, dirty-tree, and warmup-unstable. Fixed splits
+realized 0.985 ms/frame of cascade GPU work. Opt-in SDSM realized 1.795 ms/frame
+of cascade work and added a 0.501 ms reduction (0.022 ms CPU encoding), for
+2.296 ms/frame combined: +1.310 ms against fixed splits. Frame mean/p95 changed
+from 28.782/31.130 ms to 28.412/31.981 ms; the unstable warmup makes that
+end-to-end reversal observational rather than evidence of a speedup. SDSM
+stayed active with source lag 2, mean occupied pixels 3,613,451, and mean
+resolved range [0.929, 22.464]. Control
+digest: `sha256:b11b8cff1a0ae24cc6a2cc1c06092d258f88a077abd637c7df25d22cfbfbc7c2`;
+SDSM digest:
+`sha256:d278c81761052aa4068ef6402a2fc81c0a37d06f1605d5ba329774ad00681693`.
+The measured gate therefore keeps `sdsm_enabled = false` in the shipped preset.
+
+A focused single-process Metal API and shader validation run passed with no
+diagnostic beyond the two validation-enable notices. Its short Bistro case
+exercised the empty/background fallback; the occupied active path is covered by
+the Sponza profile above. Validation digest:
+`sha256:6b990397ee5bbc5aec14597c691f1341d419bb1d6e70f944fb2fb16fb8730f46`.
+
+ADR-033 owns SDSM because it adds delayed GPU-to-CPU feedback to frontend-owned
+cascade fitting. It is accepted partially: Metal implements the opt-in path,
+Vulkan remains open, and fixed splits remain the default. It is a quality and
+distribution feature, not a proven CPU optimization.
 
 ### 10.1 Reduction source
 
@@ -1150,8 +1208,8 @@ topology, and shader quality into one change.
 | 2, candidate residency | mesh-manager mutation APIs, `application.h`, `vkr_render_packet.h`, Vulkan draw packing, Metal packet resources, publication tests | update ADR-004 and ADR-028 with split spans, ownership, and generation semantics |
 | 3A, retained graph images | `vkr_render_graph.h`, `vkr_rg_compile.c`, `vkr_rg_execute.c`, `vkr_rg_json.c`, graph schema, both backend graph realizations, graph compiler tests | new proposed retained-resource ADR, accepted before implementation |
 | 3B/5, reuse and refresh | `vkr_shadow_system.c/h`, application frame resolution, packet payload, graph JSON, both shadow executors, reuse tests/case | mark retained-resource ADR implemented or partial |
-| 4, two-phase HZB | graph JSON, cull roots/shaders, both backend encoders, metrics, disocclusion case | new proposed ADR amending ADR-028's visibility topology |
-| 6, SDSM | occupied-depth shaders, graph JSON, backend readback slots, shadow-system input/status, tests | new proposed GPU-feedback ADR |
+| 4, two-phase HZB | graph JSON, cull roots/shaders, both backend encoders, metrics, disocclusion case | ADR-032 declined for the measured workload; reopen only with a material predicted-deferred set |
+| 6, SDSM | occupied-depth shaders, graph JSON, backend readback slots, shadow-system input/status, tests | ADR-033 accepted partially; Metal opt-in implemented, Vulkan lowering open |
 | 7, PCF | shadow config and packet ABI, Vulkan and Metal receiver shaders/samplers, reflection tests, capture cases | architecture feature/status update when shipped |
 
 Every implementation PR must update this document's phase status, the

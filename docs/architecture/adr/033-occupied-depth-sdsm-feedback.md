@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: partial
 updated: 2026-08-24
 authority: adr
 ---
@@ -8,8 +8,19 @@ authority: adr
 
 ## Status
 
-**Proposed.** Nothing is implemented. Cascade splits remain fixed by
-configuration.
+**Accepted (partial).** Metal implements the graph-declared occupied-depth
+reduction, completion-slot readback, source metadata, non-blocking frontend
+consumption, fixed fallback, smoothing, and status metrics. It is opt-in and the
+high/default preset remains fixed-split because the matched Metal control failed
+the measured cost gate. Vulkan lowering remains unimplemented.
+
+The same-binary local Sponza pair measured fixed-split cascade work at 0.985
+ms/frame. SDSM raised cascade work to 1.795 ms/frame and added a 0.501 ms
+reduction, for +1.310 ms/frame combined. The reports passed but were dirty-tree
+and warmup-unstable. Control digest:
+`sha256:b11b8cff1a0ae24cc6a2cc1c06092d258f88a077abd637c7df25d22cfbfbc7c2`;
+SDSM digest:
+`sha256:d278c81761052aa4068ef6402a2fc81c0a37d06f1605d5ba329774ad00681693`.
 
 Design source: section 10 of
 [shadow-cpu-cost-and-csm-rewrite-spec.md](../../rendering/shadow-cpu-cost-and-csm-rewrite-spec.md).
@@ -49,10 +60,11 @@ variation between identical controls. Raising map size from 2048 to 4096 kept
 cascade assignment byte-identical and changed the shadow-factor diagnostic
 (39.73 dB), but again showed no visible final-color improvement.
 
-This result retains lambda 0.80 and map size 2048. It does not prove that SDSM
-is worth its feedback edge: one view showed no final-color quality gap for SDSM
-to close. Acceptance still requires broader far-field captures that demonstrate
-a problem fixed splits cannot solve, followed by a measured reduction cost.
+This result retains lambda 0.80 and map size 2048. It did not prove that SDSM
+was worth its feedback edge: one view showed no final-color quality gap for SDSM
+to close. Default enablement still requires broader far-field captures that
+demonstrate a problem fixed splits cannot solve and justify the measured
+reduction cost.
 
 ### Why this is not a small change
 
@@ -152,8 +164,8 @@ debug data.
   gains an input whose availability depends on GPU completion, so the same
   camera can produce different splits depending on history. Exact-capture cases
   must pin the fallback path or tolerate that.
-- A new reduction chain costs bandwidth every frame, whether or not the sample
-  is consumed.
+- A new reduction chain costs bandwidth on every SDSM-enabled frame, whether or
+  not its completed sample is consumed.
 - Readback slots and their completion tracking join the frame-slot lifetime
   rules already used for command and upload storage.
 - The status vocabulary above becomes part of the metrics surface, and every
@@ -189,17 +201,18 @@ already feeds the cascade Z interval.
 
 **Do nothing and tune `cascade_split_lambda` instead.** The cheapest option and
 a genuine competitor. Lowering lambda toward 0.25 roughly doubles far-cascade
-texel density for a one-line configuration change. It is already scoped as a
-separate named quality experiment. The completed single-view control did not
-show a final-color gain from lambda 0.25, so it neither selects the cheaper
-change nor supplies the missing evidence needed to accept this feedback edge.
+texel density for a one-line configuration change. The completed single-view
+control did not show a final-color gain from lambda 0.25, so it neither selects
+the cheaper change nor supplies evidence for enabling SDSM by default.
 
 ## Revisit When
 
-- A controlled lambda and map-size sweep closes the far-field quality gap
-  without feedback. Close this ADR.
-- The occupied-depth reduction's measured GPU cost exceeds the quality benefit
-  in matched profiles.
+- Broader controlled captures demonstrate a far-field quality benefit large
+  enough to reconsider the fixed-split default.
+- A controlled lambda and map-size sweep closes that quality gap without
+  feedback. Retire the SDSM path.
+- Vulkan lowering is prioritized and can preserve the completion and fallback
+  contract without a frame-path wait.
 - Split-stability captures show visible crawling that contraction clamping and
   hysteresis cannot remove.
 - A shared min/max representation is proven cheaper than the separate chain, at

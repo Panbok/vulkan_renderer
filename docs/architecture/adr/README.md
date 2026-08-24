@@ -18,6 +18,7 @@ Considered → Revisit When**.
 - **Accepted (partial)** — decided and implemented, but with known unfinished
   integration; the gap is stated in the ADR.
 - **Proposed** — recommended, not yet implemented.
+- **Declined** — measured or reviewed and deliberately not adopted.
 - **Superseded by ADR-NNN** — no longer in force.
 
 ## Index
@@ -55,8 +56,8 @@ Considered → Revisit When**.
 | [ADR-029](029-retained-graph-resources.md) | Retained graph resources with per-subresource content validity | Accepted (partial); load-bearing for Metal P3B cascade reuse, while the Vulkan path remains unexecuted and unvalidated at runtime |
 | [ADR-030](030-offline-mesh-optimization-and-cooking.md) | Offline mesh optimization and cooked geometry artifacts | Proposed |
 | [ADR-031](031-versioned-packed-static-geometry-abi.md) | Tight packed static-geometry GPU ABI | Proposed |
-| [ADR-032](032-two-phase-confirmed-visibility.md) | Two-phase current-depth-confirmed visibility | Proposed |
-| [ADR-033](033-occupied-depth-sdsm-feedback.md) | Occupied-depth SDSM through completed asynchronous feedback | Proposed |
+| [ADR-032](032-two-phase-confirmed-visibility.md) | Two-phase current-depth-confirmed visibility | Declined for the measured workload |
+| [ADR-033](033-occupied-depth-sdsm-feedback.md) | Occupied-depth SDSM through completed asynchronous feedback | Accepted (partial); Metal opt-in, Vulkan open |
 
 ## Relationship to the Specification
 
