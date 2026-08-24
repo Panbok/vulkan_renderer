@@ -24,6 +24,7 @@
 #include "mat_test.h"
 #include "material_pbr_tests.h"
 #include "math_test.h"
+#include "mesh_cooked_tests.h"
 #include "metal_capture_ring_test.h"
 #include "metal_material_test.h"
 #include "metal_memory_test.h"
