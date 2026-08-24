@@ -29,6 +29,7 @@ typedef enum VkrMetalPacketGraphExecutorKind {
   VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_SHADE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_COVERAGE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_COMPACT,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_SDSM_REDUCE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_HZB_BUILD,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_FULLSCREEN,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_EDITOR,
@@ -68,6 +69,7 @@ vkr_global const VkrMetalPacketGraphExecutorSpec
         {"pass.transmission.shade", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.transmission.coverage", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.transmission.compact", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.sdsm.reduce", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.hzb.build", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.copy.pre_transmission.fullscreen", VKR_RG_PASS_TYPE_TRANSFER},
         {"pass.copy.pre_transmission.editor", VKR_RG_PASS_TYPE_TRANSFER},
@@ -1136,6 +1138,30 @@ vkr_internal void vkr_metal_packet_decode_gpu_draw_diagnostics(
   result->has_gpu_draw_diagnostics = true_v;
 }
 
+vkr_internal void vkr_metal_packet_decode_sdsm(VkrMetalPacketResult *result,
+                                               const uint8_t *readback) {
+  if (!result || !readback)
+    return;
+  VkrMetalPacketSdsmState state = {0};
+  MemCopy(&state, readback, sizeof(state));
+  VkrShadowDepthRangeSample *sample = &result->shadow_depth_range;
+  sample->occupied_count = state.occupied_count;
+  if (state.occupied_count == 0u) {
+    sample->valid = true_v;
+    return;
+  }
+  if (state.min_device_z_bits == UINT32_MAX)
+    return;
+  MemCopy(&sample->min_device_z, &state.min_device_z_bits, sizeof(float32_t));
+  MemCopy(&sample->max_device_z, &state.max_device_z_bits, sizeof(float32_t));
+  sample->valid =
+      isfinite(sample->min_device_z) && isfinite(sample->max_device_z) &&
+              sample->min_device_z >= 0.0f && sample->max_device_z <= 1.0f &&
+              sample->min_device_z <= sample->max_device_z
+          ? true_v
+          : false_v;
+}
+
 vkr_internal void
 vkr_metal_packet_capture_fail_reserved(VkrMetalPacketRenderer *renderer,
                                        const VkrCaptureBatchRequest *request,
@@ -1397,6 +1423,10 @@ vkr_internal bool8_t vkr_metal_packet_encode_transfer(
         vkr_rg_pass_find_buffer_use(&pass->desc, 0u, 0u);
     const VkrRgBufferUse *state_use =
         vkr_rg_pass_find_buffer_use(&pass->desc, 1u, 0u);
+    const bool8_t sdsm_enabled =
+        opaque_gpu_upload && renderer->prepared_frame.sdsm_enabled;
+    const VkrRgBufferUse *sdsm_use =
+        sdsm_enabled ? vkr_rg_pass_find_buffer_use(&pass->desc, 2u, 0u) : NULL;
     VkrMetalPacketGraphBufferInstance *candidates =
         candidate_use
             ? vkr_metal_packet_graph_buffer(renderer, candidate_use->buffer)
@@ -1404,6 +1434,9 @@ vkr_internal bool8_t vkr_metal_packet_encode_transfer(
     VkrMetalPacketGraphBufferInstance *state =
         state_use ? vkr_metal_packet_graph_buffer(renderer, state_use->buffer)
                   : NULL;
+    VkrMetalPacketGraphBufferInstance *sdsm_state =
+        sdsm_use ? vkr_metal_packet_graph_buffer(renderer, sdsm_use->buffer)
+                 : NULL;
     const uint64_t candidate_bytes =
         transmission_gpu_upload ? upload->transmission_gpu_draw_candidate_bytes
                                 : upload->gpu_draw_candidate_bytes;
@@ -1420,7 +1453,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_transfer(
             ? sizeof(VkrMetalPacketTransmissionDiagnostics)
             : (uint64_t)(1u + renderer->prepared_frame.shadow_cascade_count) *
                   sizeof(VkrGpuDrawCompactionState);
-    if (!candidates || !state ||
+    if (!candidates || !state || (sdsm_enabled && !sdsm_state) ||
         candidate_bytes > candidates->resource.length ||
         state_bytes > state->resource.length)
       return false_v;
@@ -1436,6 +1469,13 @@ vkr_internal bool8_t vkr_metal_packet_encode_transfer(
                    toBuffer:(id<MTLBuffer>)state->resource.metal_buffer
           destinationOffset:0u
                        size:state_bytes];
+    if (sdsm_state) {
+      [encoder copyFromBuffer:upload->buffer
+                 sourceOffset:upload->sdsm_state_reset_source_offset
+                     toBuffer:(id<MTLBuffer>)sdsm_state->resource.metal_buffer
+            destinationOffset:0u
+                         size:sizeof(VkrMetalPacketSdsmState)];
+    }
     return true_v;
   }
   const VkrRgImageUse *read = vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);

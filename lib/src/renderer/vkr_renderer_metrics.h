@@ -136,6 +136,11 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId shadow_proactive_refreshed[VKR_SHADOW_CASCADE_COUNT_MAX];
   VkrMetricId shadow_dynamic_candidates_tested[VKR_SHADOW_CASCADE_COUNT_MAX];
   VkrMetricId shadow_dynamic_forced[VKR_SHADOW_CASCADE_COUNT_MAX];
+  VkrMetricId shadow_sdsm_status;
+  VkrMetricId shadow_sdsm_source_lag;
+  VkrMetricId shadow_sdsm_occupied_pixels;
+  VkrMetricId shadow_sdsm_linear_near;
+  VkrMetricId shadow_sdsm_linear_far;
 
   VkrMetricId rg_live_images;
   VkrMetricId rg_peak_images;

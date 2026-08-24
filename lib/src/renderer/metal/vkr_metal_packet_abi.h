@@ -148,6 +148,26 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketHzbBuildRoot {
 _Static_assert(sizeof(VkrMetalPacketHzbBuildRoot) == 48,
                "Metal HZB build root ABI must remain 48 bytes");
 
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketSdsmRoot {
+  uint64_t depth_texture_id;
+  uint64_t vbuffer_texture_id;
+  uint64_t reduce_state;
+  uint32_t extent[2];
+} VkrMetalPacketSdsmRoot;
+
+_Static_assert(sizeof(VkrMetalPacketSdsmRoot) == 32,
+               "Metal SDSM root ABI must remain 32 bytes");
+
+typedef struct VkrMetalPacketSdsmState {
+  uint32_t min_device_z_bits;
+  uint32_t max_device_z_bits;
+  uint32_t occupied_count;
+  uint32_t reserved;
+} VkrMetalPacketSdsmState;
+
+_Static_assert(sizeof(VkrMetalPacketSdsmState) == 16,
+               "Metal SDSM state ABI must remain 16 bytes");
+
 /** Per-dispatch material-resolve resource table and viewport contract. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketGBufferResolveRoot {
   uint64_t visible_rows;
@@ -380,6 +400,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_TRANSMISSION_COMPACT_ROOT,
   VKR_METAL_PACKET_ABI_PICKING_RESOLVE_ROOT,
   VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT,
+  VKR_METAL_PACKET_ABI_SDSM_ROOT,
   VKR_METAL_PACKET_ABI_RECORD_COUNT,
 } VkrMetalPacketAbiRecordId;
 

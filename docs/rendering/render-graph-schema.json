@@ -26,6 +26,7 @@
         "hzb_history_valid",
         "!hzb_history_valid",
         "shadow_cascades_active",
+        "sdsm_enabled",
         "transmission_pending",
         "!transmission_pending",
         "transmission_compact_enabled",

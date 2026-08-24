@@ -1533,6 +1533,40 @@ kernel void vkr_metal_packet_hzb_build(constant VkrMetalPacketHzbBuildRoot &root
   root.destination.write(float4(maximum_depth), pixel);
 }
 
+struct VkrMetalPacketSdsmState {
+  atomic_uint min_device_z_bits;
+  atomic_uint max_device_z_bits;
+  atomic_uint occupied_count;
+  uint reserved;
+};
+
+struct VkrMetalPacketSdsmRoot {
+  texture2d<float, access::read> depth;
+  texture2d<uint, access::read> vbuffer;
+  device VkrMetalPacketSdsmState *reduce_state;
+  uint2 extent;
+};
+
+kernel void vkr_metal_packet_sdsm_reduce(
+    constant VkrMetalPacketSdsmRoot &root [[buffer(0)]],
+    uint2 pixel [[thread_position_in_grid]]) {
+  bool occupied = all(pixel < root.extent) && root.vbuffer.read(pixel).x != 0u;
+  float depth = occupied ? root.depth.read(pixel).x : 0.0f;
+  uint occupied_in_simd = simd_sum(occupied ? 1u : 0u);
+  float minimum_in_simd = simd_min(occupied ? depth : 1.0f);
+  float maximum_in_simd = simd_max(occupied ? depth : 0.0f);
+  if (simd_is_first() && occupied_in_simd != 0u) {
+    atomic_fetch_min_explicit(&root.reduce_state->min_device_z_bits,
+                              as_type<uint>(minimum_in_simd),
+                              memory_order_relaxed);
+    atomic_fetch_max_explicit(&root.reduce_state->max_device_z_bits,
+                              as_type<uint>(maximum_in_simd),
+                              memory_order_relaxed);
+    atomic_fetch_add_explicit(&root.reduce_state->occupied_count,
+                              occupied_in_simd, memory_order_relaxed);
+  }
+}
+
 static_assert(sizeof(VkrGpuDrawCompactionState) == 80,
               "GPU draw compaction state ABI must remain 80 bytes");
 static_assert(sizeof(VkrMetalPacketGBufferResolveRoot) == 192,
@@ -1553,3 +1587,7 @@ static_assert(sizeof(VkrMetalPacketGpuDrawView) == 112,
               "GPU draw view ABI must remain 112 bytes");
 static_assert(sizeof(VkrMetalPacketHzbBuildRoot) == 48,
               "HZB build root ABI must remain 48 bytes");
+static_assert(sizeof(VkrMetalPacketSdsmRoot) == 32,
+              "SDSM root ABI must remain 32 bytes");
+static_assert(sizeof(VkrMetalPacketSdsmState) == 16,
+              "SDSM state ABI must remain 16 bytes");

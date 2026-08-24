@@ -13,7 +13,7 @@
 #include "renderer/vkr_renderer.h"
 
 /** Version constant for VkrRenderPacket.packet_version validation. */
-#define VKR_RENDER_PACKET_VERSION 16u
+#define VKR_RENDER_PACKET_VERSION 17u
 
 /** Default manual camera exposure for HDR scene presentation. */
 #define VKR_DEFAULT_EXPOSURE 0.30f
@@ -54,6 +54,7 @@ typedef struct VkrFrameInfo {
   uint32_t viewport_width;
   uint32_t viewport_height;
   bool8_t editor_enabled;
+  uint64_t scene_generation;
 } VkrFrameInfo;
 
 /**
@@ -268,6 +269,7 @@ typedef struct VkrShadowReceiverPacketData {
  */
 typedef struct VkrShadowPassPayload {
   uint32_t cascade_count;
+  bool8_t sdsm_enabled;
   /** Bit i is set only when cascade i must execute its graph pass. */
   uint32_t cascade_render_mask;
   VkrShadowCascadePacketData cascades[VKR_SHADOW_CASCADE_COUNT_MAX];

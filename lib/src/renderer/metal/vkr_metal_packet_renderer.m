@@ -248,6 +248,7 @@ typedef struct VkrMetalPacketFrameUpload {
   uint64_t gpu_draw_icb_argument_stride;
   uint64_t gpu_draw_candidate_source_offset;
   uint64_t gpu_draw_state_zero_source_offset;
+  uint64_t sdsm_state_reset_source_offset;
   uint64_t gpu_draw_candidate_bytes;
   uint64_t transmission_gpu_draw_instances_gpu;
   uint64_t transmission_gpu_draw_icb_argument_gpu;
@@ -311,10 +312,12 @@ typedef struct VkrMetalPacketCommandSlot {
   bool8_t result_pending;
   bool8_t result_collected;
   const uint8_t *gpu_draw_diagnostics_readback;
+  const uint8_t *sdsm_readback;
   const uint8_t *transmission_coverage_readback;
   uint32_t shadow_cascade_count;
   uint32_t transmission_coverage_extent[2];
   bool8_t gpu_draw_diagnostics_requested;
+  bool8_t sdsm_requested;
   bool8_t transmission_coverage_requested;
   uint32_t gpu_draw_icb_residency_count;
 } VkrMetalPacketCommandSlot;
@@ -405,6 +408,7 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> transmission_compact_finalize_pipeline;
   id<MTLComputePipelineState> picking_resolve_pipeline;
   id<MTLComputePipelineState> hzb_build_pipeline;
+  id<MTLComputePipelineState> sdsm_reduce_pipeline;
   id<MTLArgumentEncoder> gpu_draw_icb_argument_encoder;
   id<MTLDepthStencilState> depth_write_state;
   id<MTLDepthStencilState> depth_read_state;

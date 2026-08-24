@@ -185,6 +185,7 @@ typedef struct VkrMetalPacketResult {
                                    [VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
   uint32_t shadow_gpu_overflow_count[VKR_SHADOW_CASCADE_COUNT_MAX];
   bool8_t hzb_history_valid;
+  VkrShadowDepthRangeSample shadow_depth_range;
   bool8_t has_gpu_draw_diagnostics;
   uint32_t resize_count;
   uint8_t color[4];

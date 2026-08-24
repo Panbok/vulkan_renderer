@@ -86,6 +86,11 @@ typedef struct VkrShadowMetrics {
   uint32_t proactive_refreshed[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t dynamic_candidates_tested[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t dynamic_forced[VKR_SHADOW_CASCADE_COUNT_MAX];
+  uint32_t sdsm_status;
+  uint32_t sdsm_source_lag;
+  uint32_t sdsm_occupied_count;
+  float32_t sdsm_linear_near;
+  float32_t sdsm_linear_far;
 } VkrShadowMetrics;
 
 /**
@@ -153,6 +158,7 @@ struct s_RendererFrontend {
 
   // Active scene for lighting and other ECS-driven systems
   VkrScene *active_scene;
+  uint64_t scene_generation;
 
   // Camera moved into frontend
   VkrCameraSystem camera_system;

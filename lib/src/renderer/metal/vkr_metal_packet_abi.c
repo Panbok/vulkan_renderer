@@ -249,6 +249,13 @@ vkr_global const VkrMetalPacketAbiField vkr_hzb_build_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketHzbBuildRoot, reserved, "reserved", 36),
 };
 
+vkr_global const VkrMetalPacketAbiField vkr_sdsm_root_fields[] = {
+    VKR_ABI_FIELD(VkrMetalPacketSdsmRoot, depth_texture_id, "depth", 0),
+    VKR_ABI_FIELD(VkrMetalPacketSdsmRoot, vbuffer_texture_id, "vbuffer", 8),
+    VKR_ABI_FIELD(VkrMetalPacketSdsmRoot, reduce_state, "reduce_state", 16),
+    VKR_ABI_FIELD(VkrMetalPacketSdsmRoot, extent, "extent", 24),
+};
+
 vkr_global const VkrMetalPacketAbiField vkr_gbuffer_resolve_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketGBufferResolveRoot, visible_rows,
                   "visible_rows", 0),
@@ -519,6 +526,9 @@ vkr_global const VkrMetalPacketAbiRecord
         [VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketHzbBuildRoot, "VkrMetalPacketHzbBuildRoot", 48, 16,
             vkr_hzb_build_root_fields),
+        [VKR_METAL_PACKET_ABI_SDSM_ROOT] =
+            VKR_ABI_RECORD(VkrMetalPacketSdsmRoot, "VkrMetalPacketSdsmRoot", 32,
+                           16, vkr_sdsm_root_fields),
 };
 
 const VkrMetalPacketAbiRecord *

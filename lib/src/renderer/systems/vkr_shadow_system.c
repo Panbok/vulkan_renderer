@@ -11,30 +11,26 @@
 // ============================================================================
 
 vkr_internal void vkr_shadow_compute_cascade_splits(VkrShadowSystem *system,
-                                                    float32_t near_clip,
-                                                    float32_t far_clip,
+                                                    float32_t working_near,
+                                                    float32_t working_far,
+                                                    float32_t fixed_far,
                                                     float32_t lambda) {
   uint32_t count = system->config.cascade_count;
   if (count == 0) {
-    system->cascade_splits[0] = near_clip;
-    system->cascade_splits[1] = far_clip;
+    system->cascade_splits[0] = working_near;
+    system->cascade_splits[1] = fixed_far;
     return;
   }
 
-  float32_t far_for_shadows = far_clip;
-  if (system->config.max_shadow_distance > 0.0f) {
-    far_for_shadows =
-        vkr_min_f32(far_for_shadows, system->config.max_shadow_distance);
-  }
-  far_for_shadows = vkr_max_f32(far_for_shadows, near_clip + 0.001f);
-
-  for (uint32_t i = 0; i <= count; ++i) {
+  working_far = vkr_max_f32(working_far, working_near + 0.001f);
+  for (uint32_t i = 0; i < count; ++i) {
     float32_t p = (float32_t)i / (float32_t)count;
-    float32_t log_split = near_clip * powf(far_for_shadows / near_clip, p);
-    float32_t linear_split = near_clip + (far_for_shadows - near_clip) * p;
+    float32_t log_split = working_near * powf(working_far / working_near, p);
+    float32_t linear_split = working_near + (working_far - working_near) * p;
     system->cascade_splits[i] =
         lambda * log_split + (1.0f - lambda) * linear_split;
   }
+  system->cascade_splits[count] = fixed_far;
 }
 
 vkr_internal bool8_t vkr_shadow_has_any_per_cascade(const float32_t *values,
@@ -80,6 +76,160 @@ vkr_internal uint64_t vkr_shadow_hash_bytes(uint64_t hash, const void *data,
     hash *= UINT64_C(1099511628211);
   }
   return hash;
+}
+
+uint64_t vkr_shadow_projection_generation(const Mat4 *projection) {
+  return projection ? vkr_shadow_hash_bytes(UINT64_C(1469598103934665603),
+                                            projection, sizeof(*projection))
+                    : 0u;
+}
+
+void vkr_shadow_system_set_depth_range_sample(
+    VkrShadowSystem *system, const VkrShadowDepthRangeSample *sample,
+    uint64_t current_frame_index, uint64_t current_scene_generation) {
+  if (!system)
+    return;
+  system->sdsm_current_frame_index = current_frame_index;
+  system->sdsm_current_scene_generation = current_scene_generation;
+  system->pending_sdsm_sample =
+      sample ? *sample : (VkrShadowDepthRangeSample){0};
+}
+
+vkr_internal void vkr_shadow_sdsm_use_fixed(VkrShadowSystem *system,
+                                            const VkrCamera *camera,
+                                            float32_t fixed_far,
+                                            VkrShadowSdsmStatus status) {
+  system->sdsm_linear_near = camera->near_clip;
+  system->sdsm_linear_far = fixed_far;
+  system->sdsm_range_valid = false_v;
+  system->sdsm_status = status;
+}
+
+vkr_internal void vkr_shadow_consume_sdsm(VkrShadowSystem *system,
+                                          const VkrCamera *camera,
+                                          float32_t fixed_far,
+                                          float32_t *out_near,
+                                          float32_t *out_far) {
+  *out_near = camera->near_clip;
+  *out_far = fixed_far;
+  if (!system->config.sdsm_enabled) {
+    system->pending_sdsm_sample = (VkrShadowDepthRangeSample){0};
+    system->sdsm_source_frame_index = 0u;
+    system->sdsm_submit_value = 0u;
+    system->sdsm_source_lag = 0u;
+    system->sdsm_occupied_count = 0u;
+    vkr_shadow_sdsm_use_fixed(system, camera, fixed_far,
+                              VKR_SHADOW_SDSM_FIXED_FALLBACK);
+    return;
+  }
+
+  const VkrShadowDepthRangeSample sample = system->pending_sdsm_sample;
+  system->pending_sdsm_sample = (VkrShadowDepthRangeSample){0};
+  if (!sample.valid) {
+    if (!system->sdsm_range_valid) {
+      system->sdsm_source_lag = 0u;
+      system->sdsm_occupied_count = 0u;
+      vkr_shadow_sdsm_use_fixed(system, camera, fixed_far,
+                                VKR_SHADOW_SDSM_WARMUP);
+      return;
+    }
+    const uint64_t lag =
+        system->sdsm_current_frame_index >= system->sdsm_source_frame_index
+            ? system->sdsm_current_frame_index - system->sdsm_source_frame_index
+            : UINT64_MAX;
+    system->sdsm_source_lag = lag > UINT32_MAX ? UINT32_MAX : (uint32_t)lag;
+    if (lag > system->config.sdsm_max_source_lag_frames) {
+      vkr_shadow_sdsm_use_fixed(system, camera, fixed_far,
+                                VKR_SHADOW_SDSM_STALE);
+      return;
+    }
+    system->sdsm_status = VKR_SHADOW_SDSM_CACHED;
+    *out_near = system->sdsm_linear_near;
+    *out_far = system->sdsm_linear_far;
+    return;
+  }
+
+  const uint64_t lag =
+      system->sdsm_current_frame_index >= sample.source_frame_index
+          ? system->sdsm_current_frame_index - sample.source_frame_index
+          : UINT64_MAX;
+  system->sdsm_source_lag = lag > UINT32_MAX ? UINT32_MAX : (uint32_t)lag;
+  system->sdsm_occupied_count = sample.occupied_count;
+  if (sample.occupied_count == 0u) {
+    vkr_shadow_sdsm_use_fixed(system, camera, fixed_far, VKR_SHADOW_SDSM_EMPTY);
+    return;
+  }
+  if (sample.submit_value == 0u || sample.projection_convention != 0u ||
+      sample.source_projection_generation !=
+          vkr_shadow_projection_generation(&camera->projection) ||
+      sample.source_scene_generation != system->sdsm_current_scene_generation ||
+      lag > system->config.sdsm_max_source_lag_frames ||
+      !isfinite(sample.source_near) || !isfinite(sample.source_far) ||
+      sample.source_near <= 0.0f || sample.source_far <= sample.source_near ||
+      !isfinite(sample.min_device_z) || !isfinite(sample.max_device_z) ||
+      sample.min_device_z < 0.0f || sample.max_device_z > 1.0f ||
+      sample.min_device_z > sample.max_device_z) {
+    vkr_shadow_sdsm_use_fixed(system, camera, fixed_far, VKR_SHADOW_SDSM_STALE);
+    return;
+  }
+
+  if (sample.submit_value == system->sdsm_submit_value &&
+      system->sdsm_range_valid) {
+    system->sdsm_status = VKR_SHADOW_SDSM_CACHED;
+    *out_near = system->sdsm_linear_near;
+    *out_far = system->sdsm_linear_far;
+    return;
+  }
+
+  const float32_t a = sample.source_depth_linearize.x;
+  const float32_t b = sample.source_depth_linearize.y;
+  const float32_t min_denominator = sample.min_device_z + a;
+  const float32_t max_denominator = sample.max_device_z + a;
+  if (!isfinite(a) || !isfinite(b) || min_denominator == 0.0f ||
+      max_denominator == 0.0f) {
+    vkr_shadow_sdsm_use_fixed(system, camera, fixed_far, VKR_SHADOW_SDSM_STALE);
+    return;
+  }
+  float32_t linear_near = b / min_denominator;
+  float32_t linear_far = b / max_denominator;
+  if (!isfinite(linear_near) || !isfinite(linear_far) || linear_near <= 0.0f ||
+      linear_far < linear_near) {
+    vkr_shadow_sdsm_use_fixed(system, camera, fixed_far, VKR_SHADOW_SDSM_STALE);
+    return;
+  }
+  const float32_t min_interval = 0.001f;
+  const float32_t max_linear_near = fixed_far - min_interval;
+  if (max_linear_near < camera->near_clip || linear_near > max_linear_near) {
+    vkr_shadow_sdsm_use_fixed(system, camera, fixed_far, VKR_SHADOW_SDSM_STALE);
+    return;
+  }
+  linear_near = vkr_clamp_f32(linear_near, camera->near_clip, max_linear_near);
+  linear_far = vkr_clamp_f32(linear_far, linear_near + min_interval, fixed_far);
+
+  if (system->sdsm_range_valid) {
+    const float32_t old_span =
+        system->sdsm_linear_far - system->sdsm_linear_near;
+    const float32_t max_contraction =
+        old_span * system->config.sdsm_max_contraction_fraction;
+    linear_near =
+        vkr_min_f32(linear_near, system->sdsm_linear_near + max_contraction);
+    linear_far =
+        vkr_max_f32(linear_far, system->sdsm_linear_far - max_contraction);
+    const float32_t keep = system->config.sdsm_temporal_blend;
+    linear_near = system->sdsm_linear_near * keep + linear_near * (1.0f - keep);
+    linear_far = system->sdsm_linear_far * keep + linear_far * (1.0f - keep);
+  }
+  linear_near = vkr_clamp_f32(linear_near, camera->near_clip, max_linear_near);
+  linear_far = vkr_clamp_f32(linear_far, linear_near + min_interval, fixed_far);
+
+  system->sdsm_linear_near = linear_near;
+  system->sdsm_linear_far = linear_far;
+  system->sdsm_source_frame_index = sample.source_frame_index;
+  system->sdsm_submit_value = sample.submit_value;
+  system->sdsm_range_valid = true_v;
+  system->sdsm_status = VKR_SHADOW_SDSM_ACTIVE;
+  *out_near = linear_near;
+  *out_far = linear_far;
 }
 
 vkr_internal uint64_t vkr_shadow_light_signature(Vec3 direction) {
@@ -186,7 +336,7 @@ vkr_internal VkrShadowFit vkr_shadow_guarded_fit(const VkrShadowSystem *system,
   return guarded;
 }
 
-vkr_internal bool8_t vkr_shadow_rendered_fit_contains(
+vkr_internal float32_t vkr_shadow_rendered_fit_margin(
     const VkrShadowCascadeHistory *history, const VkrCascadeData *current) {
   const Mat4 current_to_world = mat4_inverse_rigid(current->light_view);
   const float32_t half = current->fit.extent * 0.5f;
@@ -204,6 +354,7 @@ vkr_internal bool8_t vkr_shadow_rendered_fit_contains(
   const float32_t rendered_max_y =
       history->rendered_fit.center_y + rendered_half;
   const float32_t epsilon = 0.0001f;
+  float32_t minimum_margin = VKR_FLOAT_MAX;
 
   for (uint32_t corner = 0u; corner < 8u; ++corner) {
     const Vec4 current_ls = {
@@ -211,15 +362,17 @@ vkr_internal bool8_t vkr_shadow_rendered_fit_contains(
         (corner & 4u) ? current->fit.max_z : current->fit.min_z, 1.0f};
     const Vec4 world = mat4_mul_vec4(current_to_world, current_ls);
     const Vec4 rendered = mat4_mul_vec4(history->rendered_light_view, world);
-    if (rendered.x < rendered_min_x - epsilon ||
-        rendered.x > rendered_max_x + epsilon ||
-        rendered.y < rendered_min_y - epsilon ||
-        rendered.y > rendered_max_y + epsilon ||
-        rendered.z < history->rendered_fit.min_z - epsilon ||
-        rendered.z > history->rendered_fit.max_z + epsilon)
-      return false_v;
+    const float32_t margin = vkr_min_f32(
+        vkr_min_f32(rendered.x - rendered_min_x, rendered_max_x - rendered.x),
+        vkr_min_f32(vkr_min_f32(rendered.y - rendered_min_y,
+                                rendered_max_y - rendered.y),
+                    vkr_min_f32(rendered.z - history->rendered_fit.min_z,
+                                history->rendered_fit.max_z - rendered.z)));
+    if (margin < -epsilon)
+      return -1.0f;
+    minimum_margin = vkr_min_f32(minimum_margin, margin);
   }
-  return true_v;
+  return vkr_max_f32(minimum_margin, 0.0f);
 }
 
 vkr_internal void
@@ -599,6 +752,17 @@ void vkr_shadow_system_invalidate_fit_history(VkrShadowSystem *system) {
     system->fit_history.valid = false_v;
     MemZero(system->cascade_history, sizeof(system->cascade_history));
     system->pending_history = (VkrShadowPendingHistory){0};
+    system->pending_sdsm_sample = (VkrShadowDepthRangeSample){0};
+    system->sdsm_range_valid = false_v;
+    system->sdsm_source_frame_index = 0u;
+    system->sdsm_submit_value = 0u;
+    system->sdsm_source_lag = 0u;
+    system->sdsm_occupied_count = 0u;
+    system->sdsm_linear_near = 0.0f;
+    system->sdsm_linear_far = 0.0f;
+    system->sdsm_status = system->config.sdsm_enabled
+                              ? VKR_SHADOW_SDSM_WARMUP
+                              : VKR_SHADOW_SDSM_FIXED_FALLBACK;
   }
 }
 
@@ -857,6 +1021,12 @@ bool8_t vkr_shadow_system_init(VkrShadowSystem *system, RendererFrontend *rf,
   if (system->config.reuse_dynamic_scan_budget == 0u)
     system->config.reuse_dynamic_scan_budget =
         VKR_SHADOW_DYNAMIC_SCAN_BUDGET_DEFAULT;
+  if (system->config.sdsm_max_source_lag_frames == 0u)
+    system->config.sdsm_max_source_lag_frames = 4u;
+  system->config.sdsm_temporal_blend =
+      vkr_clamp_f32(system->config.sdsm_temporal_blend, 0.0f, 0.99f);
+  system->config.sdsm_max_contraction_fraction =
+      vkr_clamp_f32(system->config.sdsm_max_contraction_fraction, 0.0f, 1.0f);
   /* Receiver quality is normalized once here so the packet lowering, packet
      validation, and both receiver shaders can trust it. The comparisons are
      written as negated `>=` so a NaN configuration falls into the safe branch
@@ -939,7 +1109,16 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
     return;
   }
 
-  vkr_shadow_compute_cascade_splits(system, camera->near_clip, camera->far_clip,
+  float32_t fixed_far = camera->far_clip;
+  if (system->config.max_shadow_distance > 0.0f)
+    fixed_far = vkr_min_f32(fixed_far, system->config.max_shadow_distance);
+  fixed_far = vkr_max_f32(fixed_far, camera->near_clip + 0.001f);
+  float32_t working_near = camera->near_clip;
+  float32_t working_far = fixed_far;
+  vkr_shadow_consume_sdsm(system, camera, fixed_far, &working_near,
+                          &working_far);
+  vkr_shadow_compute_cascade_splits(system, working_near, working_far,
+                                    fixed_far,
                                     system->config.cascade_split_lambda);
 
   uint32_t shadow_map_size =
@@ -1079,6 +1258,11 @@ void vkr_shadow_system_get_frame_data(const VkrShadowSystem *system,
     out_data->rendered[i] = 1u;
     out_data->correctness_forced[i] = 1u;
   }
+  out_data->sdsm_status = system->sdsm_status;
+  out_data->sdsm_source_lag = system->sdsm_source_lag;
+  out_data->sdsm_occupied_count = system->sdsm_occupied_count;
+  out_data->sdsm_linear_near = system->sdsm_linear_near;
+  out_data->sdsm_linear_far = system->sdsm_linear_far;
 }
 
 void vkr_shadow_system_discard_frame(VkrShadowSystem *system) {
@@ -1118,6 +1302,11 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
   const uint32_t cascade_count = system->config.cascade_count;
   out_data->enabled = true_v;
   out_data->cascade_count = cascade_count;
+  out_data->sdsm_status = system->sdsm_status;
+  out_data->sdsm_source_lag = system->sdsm_source_lag;
+  out_data->sdsm_occupied_count = system->sdsm_occupied_count;
+  out_data->sdsm_linear_near = system->sdsm_linear_near;
+  out_data->sdsm_linear_far = system->sdsm_linear_far;
   const bool8_t image_valid = image_index < VKR_SHADOW_TARGET_IMAGE_COUNT_MAX;
   const uint64_t light_signature =
       vkr_shadow_light_signature(system->light_direction);
@@ -1173,6 +1362,9 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
   VkrShadowPendingHistory *pending = &system->pending_history;
   pending->image_index = image_index;
 
+  bool8_t reusable[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
+  bool8_t proactive[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
+  float32_t remaining_margin[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
   for (uint32_t cascade = 0u; cascade < cascade_count; ++cascade) {
     const uint32_t bit = UINT32_C(1) << cascade;
     VkrShadowCascadeHistory *history =
@@ -1187,17 +1379,42 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
         history->bias_signature == bias_signature &&
         history->light_signature == light_signature &&
         history->resource_generation == retained_token.resource_generation;
-    const bool8_t retained_valid =
-        (retained_token.valid_layer_mask & bit) != 0u;
-    const bool8_t contains =
-        signatures_match &&
-        vkr_shadow_rendered_fit_contains(history, &system->cascades[cascade]);
+    remaining_margin[cascade] = signatures_match
+                                    ? vkr_shadow_rendered_fit_margin(
+                                          history, &system->cascades[cascade])
+                                    : -1.0f;
     const bool8_t dynamic_forced =
         dynamic_scan_failed || history_dynamic_overlap[cascade];
-    const bool8_t reuse =
-        retained_valid && contains && !publication_pending && !dynamic_forced;
+    reusable[cascade] = (retained_token.valid_layer_mask & bit) != 0u &&
+                        remaining_margin[cascade] >= 0.0f &&
+                        !publication_pending && !dynamic_forced;
+  }
 
-    if (reuse) {
+  const uint32_t proactive_budget =
+      Min(system->config.reuse_proactive_refresh_budget, cascade_count);
+  for (uint32_t refresh = 0u; refresh < proactive_budget; ++refresh) {
+    uint32_t selected = UINT32_MAX;
+    float32_t selected_margin = VKR_FLOAT_MAX;
+    for (uint32_t cascade = 0u; cascade < cascade_count; ++cascade) {
+      if (reusable[cascade] && !proactive[cascade] &&
+          remaining_margin[cascade] < selected_margin) {
+        selected = cascade;
+        selected_margin = remaining_margin[cascade];
+      }
+    }
+    if (selected == UINT32_MAX)
+      break;
+    proactive[selected] = true_v;
+  }
+
+  for (uint32_t cascade = 0u; cascade < cascade_count; ++cascade) {
+    const uint32_t bit = UINT32_C(1) << cascade;
+    VkrShadowCascadeHistory *history =
+        image_valid ? &system->cascade_history[image_index][cascade] : NULL;
+    const bool8_t dynamic_forced =
+        dynamic_scan_failed || history_dynamic_overlap[cascade];
+
+    if (reusable[cascade] && !proactive[cascade]) {
       out_data->view_projection[cascade] = history->rendered_view_projection;
       vkr_shadow_publish_cascade_receiver(&history->rendered_light_view,
                                           &history->rendered_fit, cascade,
@@ -1208,7 +1425,8 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
 
     out_data->cascade_render_mask |= bit;
     out_data->rendered[cascade] = 1u;
-    out_data->correctness_forced[cascade] = 1u;
+    out_data->correctness_forced[cascade] = reusable[cascade] ? 0u : 1u;
+    out_data->proactive_refreshed[cascade] = proactive[cascade] ? 1u : 0u;
     out_data->dynamic_forced[cascade] = dynamic_forced ? 1u : 0u;
     out_data->view_projection[cascade] = vkr_shadow_view_projection_from_fit(
         &system->cascades[cascade].light_view, &guarded_fits[cascade]);

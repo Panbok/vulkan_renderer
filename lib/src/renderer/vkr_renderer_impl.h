@@ -1,5 +1,6 @@
 #pragma once
 
+#include "renderer/systems/vkr_shadow_system.h"
 #include "renderer/vkr_renderer.h"
 
 typedef enum VkrRendererImplKind {
@@ -228,6 +229,7 @@ typedef struct VkrRendererImplSubmitResult {
                                    [VKR_RENDERER_IMPL_DRAW_BUCKET_COUNT];
   uint32_t shadow_gpu_overflow_count[VKR_RENDERER_IMPL_SHADOW_CASCADE_COUNT];
   bool8_t hzb_history_valid;
+  VkrShadowDepthRangeSample shadow_depth_range;
   bool8_t has_gpu_draw_diagnostics;
   uint32_t transmission_covered_pixels[4];
   uint32_t transmission_coverage_extent[2];

@@ -494,6 +494,17 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
     VKR_REGISTER_CASCADE(shadow_dynamic_forced, "dynamic_forced");
 #undef VKR_REGISTER_CASCADE
   }
+  VKR_REGISTER_U64(shadow_sdsm_status, "draw.shadow.sdsm.status",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(shadow_sdsm_source_lag, "draw.shadow.sdsm.source_lag",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(shadow_sdsm_occupied_pixels,
+                   "draw.shadow.sdsm.occupied_pixels", VKR_METRIC_DOMAIN_DRAW,
+                   VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_F64(shadow_sdsm_linear_near, "draw.shadow.sdsm.linear_near",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_F64(shadow_sdsm_linear_far, "draw.shadow.sdsm.linear_far",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
 
   VKR_REGISTER_U64(rg_live_images, "rendergraph.images.live",
                    VKR_METRIC_DOMAIN_RENDERGRAPH, VKR_METRIC_UNIT_COUNT);
@@ -1297,6 +1308,11 @@ void vkr_renderer_metrics_collect(
     vkr_metrics_gauge_set_u64(metrics, ids->shadow_dynamic_forced[i],
                               shadow->dynamic_forced[i]);
   }
+  VKR_SET_U64(shadow_sdsm_status, shadow->sdsm_status);
+  VKR_SET_U64(shadow_sdsm_source_lag, shadow->sdsm_source_lag);
+  VKR_SET_U64(shadow_sdsm_occupied_pixels, shadow->sdsm_occupied_count);
+  VKR_SET_F64(shadow_sdsm_linear_near, shadow->sdsm_linear_near);
+  VKR_SET_F64(shadow_sdsm_linear_far, shadow->sdsm_linear_far);
 
   VkrRenderGraphResourceStats rg = {0};
   const bool8_t rg_stats_valid =
@@ -1558,6 +1574,16 @@ vkr_renderer_metrics_read_frame(const VkrRendererMetrics *renderer_metrics,
                    ids->shadow_dynamic_candidates_tested[i]);
       VKR_READ_U32(shadow->dynamic_forced[i], ids->shadow_dynamic_forced[i]);
     }
+    VKR_READ_U32(shadow->sdsm_status, ids->shadow_sdsm_status);
+    VKR_READ_U32(shadow->sdsm_source_lag, ids->shadow_sdsm_source_lag);
+    VKR_READ_U32(shadow->sdsm_occupied_count, ids->shadow_sdsm_occupied_pixels);
+    float64_t sdsm_value = 0.0;
+    if (vkr_metrics_frame_read_f64(frame, ids->shadow_sdsm_linear_near,
+                                   &sdsm_value))
+      shadow->sdsm_linear_near = (float32_t)sdsm_value;
+    if (vkr_metrics_frame_read_f64(frame, ids->shadow_sdsm_linear_far,
+                                   &sdsm_value))
+      shadow->sdsm_linear_far = (float32_t)sdsm_value;
   }
 
   if (out_visibility) {

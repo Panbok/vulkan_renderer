@@ -57,6 +57,7 @@ vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
   case VKR_METAL_PACKET_ABI_TRANSMISSION_COMPACT_ROOT:
   case VKR_METAL_PACKET_ABI_PICKING_RESOLVE_ROOT:
   case VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT:
+  case VKR_METAL_PACKET_ABI_SDSM_ROOT:
     return 0;
   default:
     return 1;
@@ -532,6 +533,9 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       renderer, fragment, "vkr_metal_packet_hzb_build",
       VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT, false_v,
       @"VKR Metal packet HZB build");
+  renderer->sdsm_reduce_pipeline = vkr_metal_packet_create_compute_pipeline(
+      renderer, fragment, "vkr_metal_packet_sdsm_reduce",
+      VKR_METAL_PACKET_ABI_SDSM_ROOT, false_v, @"VKR Metal packet SDSM reduce");
   id<MTLFunction> encode_function =
       [fragment newFunctionWithName:@"vkr_metal_packet_gpu_draw_encode"];
   renderer->gpu_draw_icb_argument_encoder =
@@ -547,8 +551,9 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       !renderer->transmission_compact_pipeline ||
       !renderer->transmission_compact_finalize_pipeline ||
       !renderer->picking_resolve_pipeline || !renderer->hzb_build_pipeline ||
-      !renderer->gpu_shadow_pipeline || !renderer->gpu_shadow_opaque_pipeline ||
-      !renderer->vbuffer_pipeline || !renderer->vbuffer_opaque_pipeline ||
+      !renderer->sdsm_reduce_pipeline || !renderer->gpu_shadow_pipeline ||
+      !renderer->gpu_shadow_opaque_pipeline || !renderer->vbuffer_pipeline ||
+      !renderer->vbuffer_opaque_pipeline ||
       !renderer->transmission_vbuffer_pipeline ||
       !renderer->gpu_draw_icb_argument_encoder) {
     log_error("Metal deferred pipelines or indirect argument encoder are "
@@ -600,8 +605,10 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
                  renderer->transmission_compact_pipeline &&
                  renderer->transmission_compact_finalize_pipeline &&
                  renderer->picking_resolve_pipeline &&
-                 renderer->hzb_build_pipeline && renderer->depth_write_state &&
-                 renderer->depth_read_state && renderer->argument_table
+                 renderer->hzb_build_pipeline &&
+                 renderer->sdsm_reduce_pipeline &&
+                 renderer->depth_write_state && renderer->depth_read_state &&
+                 renderer->argument_table
              ? true_v
              : false_v;
 }

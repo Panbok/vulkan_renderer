@@ -924,6 +924,153 @@ static void test_stale_dynamic_contents_render_once_after_caster_leaves(void) {
   vkr_shadow_system_shutdown(&system, test_frontend());
 }
 
+static void test_proactive_refresh_is_bounded_to_reusable_cascades(void) {
+  VkrShadowSystem system = {0};
+  VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  config.reuse_proactive_refresh_budget = 1u;
+  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+  VkrCamera camera = test_camera();
+  VkrWorldPassPayload payload = retained_static_payload();
+  prime_retained_history(&system, &camera, 0u, &payload);
+  update_for_reuse(&system, &camera);
+
+  const VkrRetainedShadowToken token = {
+      .resource_generation = 3u,
+      .valid_layer_mask = cascade_mask(&system),
+  };
+  VkrShadowFrameData frame = {0};
+  vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+
+  uint32_t proactive_count = 0u;
+  uint32_t reused_count = 0u;
+  for (uint32_t cascade = 0u; cascade < config.cascade_count; ++cascade) {
+    proactive_count += frame.proactive_refreshed[cascade];
+    reused_count += frame.reused[cascade];
+    if (frame.proactive_refreshed[cascade]) {
+      assert(frame.rendered[cascade] == 1u);
+      assert(frame.correctness_forced[cascade] == 0u);
+    }
+  }
+  assert(proactive_count == 1u);
+  assert(reused_count == config.cascade_count - 1u);
+  assert(frame.cascade_render_mask != 0u);
+  vkr_shadow_system_shutdown(&system, test_frontend());
+}
+
+static void test_sdsm_uses_completed_occupied_depth_and_keeps_fixed_tail(void) {
+  VkrShadowSystem system = {0};
+  VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  config.sdsm_enabled = true_v;
+  config.sdsm_temporal_blend = 0.0f;
+  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+  VkrCamera camera = test_camera();
+  camera.projection =
+      mat4_perspective(vkr_to_radians(camera.zoom),
+                       (float32_t)camera.cached_window_width /
+                           (float32_t)camera.cached_window_height,
+                       camera.near_clip, camera.far_clip);
+  const float32_t a = camera.projection.elements[10];
+  const float32_t b = camera.projection.elements[14];
+  VkrShadowDepthRangeSample sample = {
+      .min_device_z = b / 10.0f - a,
+      .max_device_z = b / 100.0f - a,
+      .occupied_count = 4096u,
+      .projection_convention = 0u,
+      .source_depth_linearize = {a, b, 0.0f, 0.0f},
+      .source_near = camera.near_clip,
+      .source_far = camera.far_clip,
+      .source_frame_index = 8u,
+      .source_projection_generation =
+          vkr_shadow_projection_generation(&camera.projection),
+      .source_scene_generation = 3u,
+      .submit_value = 9u,
+      .valid = true_v,
+  };
+  vkr_shadow_system_set_depth_range_sample(&system, &sample, 10u, 3u);
+  vkr_shadow_system_update(&system, &camera, true_v,
+                           vec3_normalize((Vec3){-1.0f, -1.0f, -1.0f}), NULL);
+
+  assert(system.sdsm_status == VKR_SHADOW_SDSM_ACTIVE);
+  assert(system.sdsm_source_lag == 2u);
+  assert(system.sdsm_occupied_count == 4096u);
+  assert(fabsf(system.cascade_splits[0] - 10.0f) < 0.01f);
+  assert(fabsf(system.cascade_splits[config.cascade_count] -
+               config.max_shadow_distance) < 0.01f);
+
+  vkr_shadow_system_set_depth_range_sample(&system, &sample, 11u, 3u);
+  vkr_shadow_system_update(&system, &camera, true_v,
+                           vec3_normalize((Vec3){-1.0f, -1.0f, -1.0f}), NULL);
+  assert(system.sdsm_status == VKR_SHADOW_SDSM_CACHED);
+  assert(fabsf(system.cascade_splits[0] - 10.0f) < 0.01f);
+
+  sample.min_device_z = b / 50.0f - a;
+  sample.max_device_z = b / 60.0f - a;
+  sample.source_frame_index = 10u;
+  sample.submit_value = 10u;
+  vkr_shadow_system_set_depth_range_sample(&system, &sample, 12u, 3u);
+  vkr_shadow_system_update(&system, &camera, true_v,
+                           vec3_normalize((Vec3){-1.0f, -1.0f, -1.0f}), NULL);
+  assert(system.sdsm_status == VKR_SHADOW_SDSM_ACTIVE);
+  assert(fabsf(system.sdsm_linear_near - 19.0f) < 0.02f);
+  assert(fabsf(system.sdsm_linear_far - 91.0f) < 0.02f);
+
+  sample.occupied_count = 0u;
+  sample.source_frame_index = 12u;
+  sample.submit_value = 11u;
+  vkr_shadow_system_set_depth_range_sample(&system, &sample, 13u, 3u);
+  vkr_shadow_system_update(&system, &camera, true_v,
+                           vec3_normalize((Vec3){-1.0f, -1.0f, -1.0f}), NULL);
+  assert(system.sdsm_status == VKR_SHADOW_SDSM_EMPTY);
+  assert(fabsf(system.cascade_splits[0] - camera.near_clip) < 0.001f);
+
+  sample.occupied_count = 4096u;
+  sample.source_frame_index = 8u;
+  sample.submit_value = 12u;
+  vkr_shadow_system_set_depth_range_sample(&system, &sample, 20u, 3u);
+  vkr_shadow_system_update(&system, &camera, true_v,
+                           vec3_normalize((Vec3){-1.0f, -1.0f, -1.0f}), NULL);
+  assert(system.sdsm_status == VKR_SHADOW_SDSM_STALE);
+  assert(fabsf(system.cascade_splits[0] - camera.near_clip) < 0.001f);
+
+  sample.source_frame_index = 20u;
+  sample.source_projection_generation++;
+  vkr_shadow_system_set_depth_range_sample(&system, &sample, 21u, 3u);
+  vkr_shadow_system_update(&system, &camera, true_v,
+                           vec3_normalize((Vec3){-1.0f, -1.0f, -1.0f}), NULL);
+  assert(system.sdsm_status == VKR_SHADOW_SDSM_STALE);
+
+  sample.source_projection_generation =
+      vkr_shadow_projection_generation(&camera.projection);
+  sample.source_frame_index = 21u;
+  sample.submit_value = 0u;
+  vkr_shadow_system_set_depth_range_sample(&system, &sample, 22u, 3u);
+  vkr_shadow_system_update(&system, &camera, true_v,
+                           vec3_normalize((Vec3){-1.0f, -1.0f, -1.0f}), NULL);
+  assert(system.sdsm_status == VKR_SHADOW_SDSM_STALE);
+
+  sample.min_device_z = b / config.max_shadow_distance - a;
+  sample.max_device_z = sample.min_device_z;
+  sample.source_frame_index = 22u;
+  sample.submit_value = 13u;
+  vkr_shadow_system_set_depth_range_sample(&system, &sample, 23u, 3u);
+  vkr_shadow_system_update(&system, &camera, true_v,
+                           vec3_normalize((Vec3){-1.0f, -1.0f, -1.0f}), NULL);
+  assert(system.sdsm_status == VKR_SHADOW_SDSM_STALE);
+  for (uint32_t cascade = 0u; cascade < config.cascade_count; ++cascade)
+    assert(system.cascade_splits[cascade] <
+           system.cascade_splits[cascade + 1u]);
+
+  system.sdsm_status = VKR_SHADOW_SDSM_ACTIVE;
+  system.sdsm_range_valid = true_v;
+  vkr_shadow_system_invalidate_fit_history(&system);
+  assert(system.sdsm_status == VKR_SHADOW_SDSM_WARMUP);
+  assert(!system.sdsm_range_valid);
+  assert(system.sdsm_source_lag == 0u);
+  assert(system.sdsm_occupied_count == 0u);
+  vkr_shadow_system_shutdown(&system, test_frontend());
+}
+
 bool32_t run_shadow_system_tests(void) {
   printf("--- Starting Shadow System Tests ---\n");
   printf("  Running test_growth_is_never_deadbanded...\n");
@@ -977,6 +1124,8 @@ bool32_t run_shadow_system_tests(void) {
   test_dynamic_overlap_and_publication_fail_closed();
   test_retained_history_signatures_and_invalidation_fail_closed();
   test_stale_dynamic_contents_render_once_after_caster_leaves();
+  test_proactive_refresh_is_bounded_to_reusable_cascades();
+  test_sdsm_uses_completed_occupied_depth_and_keeps_fixed_tail();
   test_reused_cascade_publishes_its_rendered_receiver_data();
   printf("  retained cascade reuse tests PASSED\n");
   printf("  Running test_frame_data_carries_only_consumed_fields...\n");

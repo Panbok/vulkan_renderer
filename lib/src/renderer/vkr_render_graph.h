@@ -671,6 +671,8 @@ typedef struct VkrRenderGraphFrameInfo {
   bool8_t editor_enabled;   /**< Whether editor is enabled */
   /** True only when a completion-protected HZB history generation is valid. */
   bool8_t hzb_history_valid;
+  /** Metal P6 occupied-depth feedback is enabled for this packet. */
+  bool8_t sdsm_enabled;
   /** Number of graph-authored reductions after the HZB base mip. */
   uint32_t hzb_reduce_pass_count;
   /** True when the packet contains transmissive world work. */

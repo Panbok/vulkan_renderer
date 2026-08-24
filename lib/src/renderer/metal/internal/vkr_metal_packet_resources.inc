@@ -1629,6 +1629,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     root_count += 9u + renderer->prepared_frame.hzb_reduce_pass_count +
                   gpu_draw_icb_group_count - 1u;
   }
+  root_count += renderer->prepared_frame.sdsm_enabled ? 1u : 0u;
   if (transmission_gpu_draw_count > 0u)
     root_count +=
         17u +
@@ -1747,11 +1748,21 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
       AlignOf(VkrGpuDrawCompactionState));
   const uint64_t gpu_draw_state_zero_bytes =
       (uint64_t)gpu_draw_view_count * sizeof(VkrGpuDrawCompactionState);
+  const uint64_t gpu_draw_state_zero_end =
+      gpu_draw_state_zero_offset + gpu_draw_state_zero_bytes;
+  const uint64_t sdsm_state_reset_offset =
+      renderer->prepared_frame.sdsm_enabled
+          ? vkr_metal_packet_align_up(gpu_draw_state_zero_end,
+                                      AlignOf(VkrMetalPacketSdsmState))
+          : gpu_draw_state_zero_end;
+  const uint64_t sdsm_state_reset_bytes = renderer->prepared_frame.sdsm_enabled
+                                              ? sizeof(VkrMetalPacketSdsmState)
+                                              : 0u;
   const uint64_t gpu_draw_icb_argument_alignment =
       gpu_draw_count > 0u ? renderer->gpu_draw_icb_argument_encoder.alignment
                           : 1u;
   const uint64_t gpu_draw_icb_argument_offset = vkr_metal_packet_align_up(
-      gpu_draw_state_zero_offset + gpu_draw_state_zero_bytes,
+      sdsm_state_reset_offset + sdsm_state_reset_bytes,
       gpu_draw_icb_argument_alignment);
   const uint64_t gpu_draw_icb_argument_stride = vkr_metal_packet_align_up(
       renderer->gpu_draw_icb_argument_encoder.encodedLength,
@@ -1826,6 +1837,15 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   MemZero(cpu + gpu_draw_state_zero_offset, gpu_draw_state_zero_bytes);
   upload->gpu_draw_state_zero_source_offset =
       upload->slice.offset + gpu_draw_state_zero_offset;
+  if (sdsm_state_reset_bytes > 0u) {
+    VkrMetalPacketSdsmState *sdsm_reset =
+        (VkrMetalPacketSdsmState *)(cpu + sdsm_state_reset_offset);
+    *sdsm_reset = (VkrMetalPacketSdsmState){
+        .min_device_z_bits = UINT32_MAX,
+    };
+    upload->sdsm_state_reset_source_offset =
+        upload->slice.offset + sdsm_state_reset_offset;
+  }
   if (transmission_gpu_draw_state_zero_bytes > 0u) {
     MemZero(cpu + transmission_gpu_draw_state_zero_offset,
             transmission_gpu_draw_state_zero_bytes);

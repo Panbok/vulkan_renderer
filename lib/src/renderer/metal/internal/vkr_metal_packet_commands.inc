@@ -122,6 +122,8 @@ vkr_metal_packet_cache_slot_result(VkrMetalPacketRenderer *renderer,
         &slot->pending_result, slot->gpu_draw_diagnostics_readback,
         slot->shadow_cascade_count, slot->transmission_coverage_readback);
   }
+  if (slot->sdsm_requested && slot->sdsm_readback)
+    vkr_metal_packet_decode_sdsm(&slot->pending_result, slot->sdsm_readback);
   if (slot->transmission_coverage_requested &&
       slot->transmission_coverage_readback) {
     const VkrMetalPacketTransmissionDiagnostics *diagnostics =
@@ -199,11 +201,13 @@ vkr_internal bool8_t vkr_metal_packet_complete_command_slot(
   slot->commit_feedback = NULL;
   slot->gpu_draw_diagnostics_readback = NULL;
   slot->transmission_coverage_readback = NULL;
+  slot->sdsm_readback = NULL;
   slot->shadow_cascade_count = 0u;
   slot->transmission_coverage_extent[0] = 0u;
   slot->transmission_coverage_extent[1] = 0u;
   slot->gpu_draw_diagnostics_requested = false_v;
   slot->transmission_coverage_requested = false_v;
+  slot->sdsm_requested = false_v;
   slot->pending_result = (VkrMetalPacketResult){0};
   return true_v;
 }

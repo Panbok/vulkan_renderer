@@ -157,6 +157,36 @@ typedef struct VkrShadowCasterDepthBounds {
   bool8_t valid;
 } VkrShadowCasterDepthBounds;
 
+typedef struct VkrSdsmReduceValue {
+  float32_t min_device_z;
+  float32_t max_device_z;
+  uint32_t occupied_count;
+} VkrSdsmReduceValue;
+
+typedef struct VkrShadowDepthRangeSample {
+  float32_t min_device_z;
+  float32_t max_device_z;
+  uint32_t occupied_count;
+  uint32_t projection_convention;
+  Vec4 source_depth_linearize;
+  float32_t source_near;
+  float32_t source_far;
+  uint64_t source_frame_index;
+  uint64_t source_projection_generation;
+  uint64_t source_scene_generation;
+  uint64_t submit_value;
+  bool8_t valid;
+} VkrShadowDepthRangeSample;
+
+typedef enum VkrShadowSdsmStatus {
+  VKR_SHADOW_SDSM_FIXED_FALLBACK = 0,
+  VKR_SHADOW_SDSM_WARMUP,
+  VKR_SHADOW_SDSM_ACTIVE,
+  VKR_SHADOW_SDSM_CACHED,
+  VKR_SHADOW_SDSM_EMPTY,
+  VKR_SHADOW_SDSM_STALE,
+} VkrShadowSdsmStatus;
+
 /**
  * @brief Shadow system configuration.
  *
@@ -185,7 +215,8 @@ typedef struct VkrShadowCasterDepthBounds {
  *   read by packet_directional_shadow() and
  *   vkr_metal_packet_directional_shadow_sample() |
  * | reuse_guard_band_texels, reuse_depth_guard_fraction,
- *   reuse_predictive_max_texels, reuse_dynamic_scan_budget |
+ *   reuse_predictive_max_texels, reuse_dynamic_scan_budget,
+ *   reuse_proactive_refresh_budget |
  *   vkr_shadow_guarded_fit() and the bounded dynamic overlap scan |
  *
  * Removed as obsolete rather than reserved: `shadow_bias_texel_scale`,
@@ -228,6 +259,12 @@ typedef struct VkrShadowConfig {
   float32_t reuse_depth_guard_fraction;
   float32_t reuse_predictive_max_texels;
   uint32_t reuse_dynamic_scan_budget;
+  /** Max still-reusable cascades refreshed per frame. Zero disables P5. */
+  uint32_t reuse_proactive_refresh_budget;
+  bool8_t sdsm_enabled;
+  uint32_t sdsm_max_source_lag_frames;
+  float32_t sdsm_temporal_blend;
+  float32_t sdsm_max_contraction_fraction;
   bool8_t use_constant_cascade_size;
   float32_t anchor_snap_texels;
   bool8_t stabilize_cascades;
@@ -251,6 +288,9 @@ typedef struct VkrShadowConfig {
  * Tap count, radius, blend fraction, and every bias are independent sweep
  * variables; changing more than one at a time makes a capture or timing result
  * uninterpretable.
+ *
+ * SDSM remains opt-in; the rewrite specification records the measured Metal
+ * gate that rejected it as a default.
  */
 #define VKR_SHADOW_CONFIG_HIGH                                                 \
   ((VkrShadowConfig){                                                          \
@@ -278,6 +318,11 @@ typedef struct VkrShadowConfig {
       .reuse_depth_guard_fraction = 0.0625f,                                   \
       .reuse_predictive_max_texels = 64.0f,                                    \
       .reuse_dynamic_scan_budget = VKR_SHADOW_DYNAMIC_SCAN_BUDGET_DEFAULT,     \
+      .reuse_proactive_refresh_budget = 0u,                                    \
+      .sdsm_enabled = false_v,                                                 \
+      .sdsm_max_source_lag_frames = 4u,                                        \
+      .sdsm_temporal_blend = 0.85f,                                            \
+      .sdsm_max_contraction_fraction = 0.10f,                                  \
       .anchor_snap_texels = 16.0f,                                             \
       .stabilize_cascades = true_v,                                            \
       .scene_bounds = VKR_SHADOW_SCENE_BOUNDS_DEFAULT,                         \
@@ -388,6 +433,11 @@ typedef struct VkrShadowFrameData {
   uint32_t proactive_refreshed[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t dynamic_candidates_tested[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t dynamic_forced[VKR_SHADOW_CASCADE_COUNT_MAX];
+  VkrShadowSdsmStatus sdsm_status;
+  uint32_t sdsm_source_lag;
+  uint32_t sdsm_occupied_count;
+  float32_t sdsm_linear_near;
+  float32_t sdsm_linear_far;
 } VkrShadowFrameData;
 
 typedef struct VkrShadowCascadeHistory {
@@ -432,6 +482,18 @@ typedef struct VkrShadowSystem {
                                          [VKR_SHADOW_CASCADE_COUNT_MAX];
   VkrShadowPendingHistory pending_history;
 
+  VkrShadowDepthRangeSample pending_sdsm_sample;
+  float32_t sdsm_linear_near;
+  float32_t sdsm_linear_far;
+  uint64_t sdsm_current_frame_index;
+  uint64_t sdsm_current_scene_generation;
+  uint64_t sdsm_source_frame_index;
+  uint64_t sdsm_submit_value;
+  uint32_t sdsm_source_lag;
+  uint32_t sdsm_occupied_count;
+  VkrShadowSdsmStatus sdsm_status;
+  bool8_t sdsm_range_valid;
+
   bool8_t initialized;
 } VkrShadowSystem;
 
@@ -443,6 +505,12 @@ typedef struct VkrShadowSystem {
  * those stamps identical while making the stored fit meaningless anyway.
  */
 void vkr_shadow_system_invalidate_fit_history(VkrShadowSystem *system);
+
+uint64_t vkr_shadow_projection_generation(const Mat4 *projection);
+
+void vkr_shadow_system_set_depth_range_sample(
+    VkrShadowSystem *system, const VkrShadowDepthRangeSample *sample,
+    uint64_t current_frame_index, uint64_t current_scene_generation);
 
 /**
  * @brief Rounds a light-space extent up to a whole texel multiple.

@@ -24,6 +24,7 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"hzb_history_valid", VKR_RG_JSON_CONDITION_HZB_HISTORY_VALID},
     {"!hzb_history_valid", VKR_RG_JSON_CONDITION_HZB_HISTORY_INVALID},
     {"shadow_cascades_active", VKR_RG_JSON_CONDITION_SHADOW_CASCADES_ACTIVE},
+    {"sdsm_enabled", VKR_RG_JSON_CONDITION_SDSM_ENABLED},
     {"transmission_pending", VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING},
     {"!transmission_pending", VKR_RG_JSON_CONDITION_TRANSMISSION_IDLE},
     {"transmission_compact_enabled",
@@ -1716,6 +1717,8 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return !frame->hzb_history_valid;
   case VKR_RG_JSON_CONDITION_SHADOW_CASCADES_ACTIVE:
     return frame->shadow_cascade_count > 0u;
+  case VKR_RG_JSON_CONDITION_SDSM_ENABLED:
+    return frame->sdsm_enabled;
   case VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING:
     return frame->transmission_pending;
   case VKR_RG_JSON_CONDITION_TRANSMISSION_IDLE:

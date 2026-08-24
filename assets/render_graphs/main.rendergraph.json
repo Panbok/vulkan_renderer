@@ -107,6 +107,13 @@
       "flags": ["PER_FRAME_SLOT"]
     },
     {
+      "name": "sdsm_reduce_state",
+      "type": "buffer",
+      "size": 16,
+      "usage": ["STORAGE", "TRANSFER_SRC", "TRANSFER_DST"],
+      "flags": ["PER_FRAME_SLOT"]
+    },
+    {
       "name": "transmission_gpu_draw_candidates",
       "type": "buffer",
       "condition": "transmission_pending",
@@ -270,7 +277,8 @@
       "flags": ["NO_CULL"],
       "writes": [
         { "buffer": "gpu_draw_candidates", "access": "TRANSFER_DST", "binding": 0 },
-        { "buffer": "gpu_draw_compaction_state", "access": "TRANSFER_DST", "binding": 1 }
+        { "buffer": "gpu_draw_compaction_state", "access": "TRANSFER_DST", "binding": 1 },
+        { "buffer": "sdsm_reduce_state", "access": "TRANSFER_DST", "binding": 2 }
       ],
       "execute": "pass.gpu_draw_upload"
     },
@@ -414,6 +422,20 @@
         }
       },
       "execute": "pass.vbuffer.opaque"
+    },
+    {
+      "name": "SDSM.Reduce",
+      "type": "compute",
+      "condition": "sdsm_enabled",
+      "flags": ["NO_CULL"],
+      "reads": [
+        { "image": "opaque_vbuffer_depth", "access": "SAMPLED", "binding": 0 },
+        { "image": "opaque_vbuffer", "access": "SAMPLED", "binding": 1 }
+      ],
+      "writes": [
+        { "buffer": "sdsm_reduce_state", "access": "STORAGE_WRITE", "binding": 2 }
+      ],
+      "execute": "pass.sdsm.reduce"
     },
     {
       "name": "HZB.BuildBase",

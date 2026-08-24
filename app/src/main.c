@@ -1348,6 +1348,10 @@ application_try_activate_scene_resource(Application *application) {
   state->scene_load_terminal_logged = false_v;
   if (application->renderer.active_scene != scene) {
     application->renderer.active_scene = scene;
+    application->renderer.scene_generation =
+        application->renderer.scene_generation == UINT64_MAX
+            ? 1u
+            : application->renderer.scene_generation + 1u;
     /* A fit from the previous scene is framed by a camera and caster set that
        no longer exist, so it is not a previous value of the same quantity. The
        configuration stamps cannot catch this: they are all identical across a
@@ -1466,6 +1470,10 @@ vkr_internal void application_unload_scene_system(Application *application) {
   state->scene_load_timer_active = false_v;
   state->scene_load_start_time_seconds = 0.0;
   application->renderer.active_scene = NULL;
+  application->renderer.scene_generation =
+      application->renderer.scene_generation == UINT64_MAX
+          ? 1u
+          : application->renderer.scene_generation + 1u;
   vkr_shadow_system_invalidate_fit_history(
       &application->renderer.shadow_system);
   application_log_backend_allocator_stats(application, "unload", NULL);

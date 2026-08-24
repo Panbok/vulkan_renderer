@@ -1138,6 +1138,40 @@ vkr_internal bool8_t vkr_metal_packet_encode_hzb_build(
   return true_v;
 }
 
+vkr_internal bool8_t vkr_metal_packet_encode_sdsm_reduce(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    id<MTL4ComputeCommandEncoder> encoder, VkrMetalPacketFrameUpload *upload)
+    API_AVAILABLE(macos(26.0)) {
+  if (!renderer || !pass || !encoder || !upload ||
+      !renderer->sdsm_reduce_pipeline)
+    return false_v;
+  id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 0u);
+  id<MTLTexture> vbuffer = vkr_metal_packet_pass_texture(renderer, pass, 1u);
+  VkrMetalPacketGraphBufferInstance *state =
+      vkr_metal_packet_pass_buffer(renderer, pass, 2u);
+  if (!depth || !vbuffer || !state || depth.width == 0u || depth.height == 0u ||
+      depth.width > UINT32_MAX || depth.height > UINT32_MAX ||
+      depth.width > UINT32_MAX / depth.height)
+    return false_v;
+  uint64_t root_gpu = 0u;
+  VkrMetalPacketSdsmRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  if (!root)
+    return false_v;
+  *root = (VkrMetalPacketSdsmRoot){
+      .depth_texture_id = depth.gpuResourceID._impl,
+      .vbuffer_texture_id = vbuffer.gpuResourceID._impl,
+      .reduce_state = state->resource.gpu_address,
+      .extent = {(uint32_t)depth.width, (uint32_t)depth.height},
+  };
+  [renderer->argument_table setAddress:root_gpu atIndex:0u];
+  [encoder setComputePipelineState:renderer->sdsm_reduce_pipeline];
+  [encoder setArgumentTable:renderer->argument_table];
+  [encoder dispatchThreads:MTLSizeMake(depth.width, depth.height, 1u)
+      threadsPerThreadgroup:MTLSizeMake(16u, 16u, 1u)];
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_metal_packet_encode_gpu_draws(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrRenderPacket *packet, id<MTL4RenderCommandEncoder> encoder,
@@ -1526,6 +1560,8 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
       packet->shadow
           ? MIN(packet->shadow->cascade_count, VKR_SHADOW_CASCADE_COUNT_MAX)
           : 0u;
+  renderer->prepared_frame.sdsm_enabled =
+      packet->shadow && packet->shadow->sdsm_enabled;
   renderer->prepared_frame.shadow_cascade_render_mask =
       packet->shadow ? packet->shadow->cascade_render_mask : 0u;
   const uint64_t completed_submit_value = renderer->completion.signaledValue;
@@ -1612,9 +1648,14 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
       deferred_diagnostics && renderer->prepared_frame.transmission_pending
           ? sizeof(VkrMetalPacketTransmissionDiagnostics)
           : 0u;
+  const uint64_t sdsm_readback_offset =
+      transmission_diagnostics_offset + transmission_readback_bytes;
+  const uint64_t sdsm_readback_bytes = renderer->prepared_frame.sdsm_enabled
+                                           ? sizeof(VkrMetalPacketSdsmState)
+                                           : 0u;
   const uint64_t readback_prefix_size =
-      deferred_diagnostics || transmission_coverage
-          ? transmission_diagnostics_offset + transmission_readback_bytes
+      deferred_diagnostics || transmission_coverage || sdsm_readback_bytes > 0u
+          ? sdsm_readback_offset + sdsm_readback_bytes
           : probe_size;
   VkrMetalPacketCapturePlan capture_plans[VKR_CAPTURE_MAX_ITEMS] = {0};
   VkrCaptureBackendItemPlan capture_ring_plans[VKR_CAPTURE_MAX_ITEMS] = {0};
@@ -1731,6 +1772,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   const VkrRgPass *failed_pass = NULL;
   VkrMetalPacketGraphBufferInstance *deferred_state = NULL;
   VkrMetalPacketGraphBufferInstance *transmission_deferred_state = NULL;
+  VkrMetalPacketGraphBufferInstance *sdsm_reduce_state = NULL;
   for (uint64_t order = 0;
        passed && order < renderer->graph->execution_order.length; ++order) {
     const uint32_t *pass_index =
@@ -1849,6 +1891,13 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
                         pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_HZB_BUILD))
         passed = vkr_metal_packet_encode_hzb_build(renderer, pass, encoder,
                                                    &frame_upload);
+      if (passed && vkr_metal_packet_graph_pass_is(
+                        pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_SDSM_REDUCE))
+        passed = vkr_metal_packet_encode_sdsm_reduce(renderer, pass, encoder,
+                                                     &frame_upload);
+      if (passed && vkr_metal_packet_graph_pass_is(
+                        pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_SDSM_REDUCE))
+        sdsm_reduce_state = vkr_metal_packet_pass_buffer(renderer, pass, 2u);
       if (passed && deferred_diagnostics &&
           vkr_metal_packet_graph_pass_is(
               pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_GBUFFER_RESOLVE))
@@ -1896,7 +1945,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
         out_result->dependency_count++;
       }
       if (passed && (capture_count > 0 || deferred_diagnostics ||
-                     transmission_coverage)) {
+                     transmission_coverage || sdsm_readback_bytes > 0u)) {
         passed = vkr_metal_packet_encode_dependency(
             encoder, &batch_capture_dependency, true_v);
         out_result->dependency_count++;
@@ -1953,8 +2002,8 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
           capture_encoder, &ibl_capture_dependency, false_v);
       out_result->dependency_count++;
     }
-    if (passed &&
-        (capture_count > 0 || deferred_diagnostics || transmission_coverage)) {
+    if (passed && (capture_count > 0 || deferred_diagnostics ||
+                   transmission_coverage || sdsm_readback_bytes > 0u)) {
       passed = vkr_metal_packet_encode_dependency(
           capture_encoder, &batch_capture_dependency, false_v);
       out_result->dependency_count++;
@@ -2046,6 +2095,19 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
         }
       }
     }
+    if (passed && sdsm_readback_bytes > 0u) {
+      if (!sdsm_reduce_state) {
+        passed = false_v;
+      } else {
+        [capture_encoder
+               copyFromBuffer:(id<MTLBuffer>)
+                                  sdsm_reduce_state->resource.metal_buffer
+                 sourceOffset:0u
+                     toBuffer:(id<MTLBuffer>)readback_object
+            destinationOffset:readback_slice.offset + sdsm_readback_offset
+                         size:sdsm_readback_bytes];
+      }
+    }
     for (uint32_t i = 0; passed && i < capture_count; ++i) {
       const VkrMetalPacketCapturePlan *plan = &capture_plans[i];
       [capture_encoder
@@ -2105,12 +2167,17 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
                  : VKR_RENDERER_IMPL_GPU_TIMING_REASON_FEEDBACK_UNAVAILABLE)
           : VKR_RENDERER_IMPL_GPU_TIMING_REASON_DISABLED;
   command_slot->gpu_draw_diagnostics_requested = deferred_diagnostics;
+  command_slot->sdsm_requested = sdsm_readback_bytes > 0u;
   command_slot->shadow_cascade_count =
       renderer->prepared_frame.shadow_cascade_count;
   if (deferred_diagnostics) {
     command_slot->gpu_draw_diagnostics_readback =
         (const uint8_t *)readback.cpu_address + deferred_diagnostics_offset;
   }
+  command_slot->sdsm_readback =
+      sdsm_readback_bytes > 0u
+          ? (const uint8_t *)readback.cpu_address + sdsm_readback_offset
+          : NULL;
   command_slot->transmission_coverage_requested = transmission_coverage;
   if (renderer->prepared_frame.transmission_pending) {
     command_slot->transmission_coverage_readback =
@@ -2127,6 +2194,21 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     [renderer->queue waitForDrawable:renderer->drawable];
   out_result->submit_value = submit_value;
   out_result->source_frame_index = packet->frame.frame_index;
+  if (sdsm_readback_bytes > 0u) {
+    const float32_t a = packet->globals.projection.elements[10];
+    const float32_t b = packet->globals.projection.elements[14];
+    out_result->shadow_depth_range = (VkrShadowDepthRangeSample){
+        .projection_convention = 0u,
+        .source_depth_linearize = {a, b, 0.0f, 0.0f},
+        .source_near = a != 0.0f ? b / a : 0.0f,
+        .source_far = (1.0f + a) != 0.0f ? b / (1.0f + a) : 0.0f,
+        .source_frame_index = packet->frame.frame_index,
+        .source_projection_generation =
+            vkr_shadow_projection_generation(&packet->globals.projection),
+        .source_scene_generation = packet->frame.scene_generation,
+        .submit_value = submit_value,
+    };
+  }
   command_slot->pending_result = *out_result;
   command_slot->result_pending = true_v;
   if (commit_feedback)
@@ -2272,7 +2354,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   out_result->packet_build = renderer->packet_build;
   out_result->hzb_history_valid = renderer->prepared_frame.hzb_history_valid;
   out_result->resize_count = renderer->resize_count;
-  out_result->pipeline_count = 24u;
+  out_result->pipeline_count = 25u;
   out_result->pipeline_archive_warm = renderer->pipeline_archive_warm;
   out_result->pipeline_archive_written = renderer->pipeline_archive_written;
   if (deferred_diagnostics) {

@@ -1165,6 +1165,7 @@ void application_draw_frame(Application *application, float64_t delta) {
     const float32_t inverse_map_size =
         1.0f / (float32_t)shadow_config->shadow_map_size;
     shadow_payload.cascade_count = shadow_cascade_count;
+    shadow_payload.sdsm_enabled = shadow_config->sdsm_enabled;
     shadow_payload.cascade_render_mask = shadow_frame.cascade_render_mask;
     for (uint32_t i = 0; i < shadow_cascade_count; ++i) {
       shadow_payload.cascades[i] = (VkrShadowCascadePacketData){
@@ -1437,6 +1438,7 @@ void application_draw_frame(Application *application, float64_t delta) {
               .viewport_width = viewport_width,
               .viewport_height = viewport_height,
               .editor_enabled = editor_enabled,
+              .scene_generation = application->renderer.scene_generation,
           },
       .globals =
           {
@@ -1490,6 +1492,11 @@ void application_draw_frame(Application *application, float64_t delta) {
     metrics.shadow.dynamic_forced[cascade] =
         shadow_frame.dynamic_forced[cascade];
   }
+  metrics.shadow.sdsm_status = (uint32_t)shadow_frame.sdsm_status;
+  metrics.shadow.sdsm_source_lag = shadow_frame.sdsm_source_lag;
+  metrics.shadow.sdsm_occupied_count = shadow_frame.sdsm_occupied_count;
+  metrics.shadow.sdsm_linear_near = shadow_frame.sdsm_linear_near;
+  metrics.shadow.sdsm_linear_far = shadow_frame.sdsm_linear_far;
   application->last_renderer_error = submit_err;
   if (submit_err != VKR_RENDERER_ERROR_CAPTURE_BUSY) {
     application->capture_request = NULL;
@@ -1653,6 +1660,15 @@ void application_start(Application *application) {
                            application->metric_ids.shadow_update) {
         VkrShadowCasterDepthBounds caster_bounds = {0};
         application_measure_caster_bounds(application, &caster_bounds);
+        const VkrShadowDepthRangeSample *sdsm_sample =
+            application->renderer.timing_result.shadow_depth_range
+                        .submit_value > 0u
+                ? &application->renderer.timing_result.shadow_depth_range
+                : NULL;
+        vkr_shadow_system_set_depth_range_sample(
+            &application->renderer.shadow_system, sdsm_sample,
+            application->renderer.frame_number,
+            application->renderer.scene_generation);
         vkr_shadow_system_update(
             &application->renderer.shadow_system, camera,
             application->renderer.lighting_system.directional.enabled,

@@ -89,6 +89,7 @@ vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
       .transmission_compact_overflow_count =
           source->transmission_compact_overflow_count,
       .hzb_history_valid = source->hzb_history_valid,
+      .shadow_depth_range = source->shadow_depth_range,
       .has_gpu_draw_diagnostics = source->has_gpu_draw_diagnostics,
       .transmission_coverage_valid = source->has_transmission_coverage,
       .capture = source->capture,
@@ -901,6 +902,7 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   renderer->ui_system = (VkrUiSystem){0};
   renderer->skybox_system = (VkrSkyboxSystem){0};
   renderer->active_scene = NULL;
+  renderer->scene_generation = 1u;
   renderer->camera_system = (VkrCameraSystem){0};
   renderer->active_camera = VKR_CAMERA_HANDLE_INVALID;
   renderer->camera_controller = (VkrCameraController){0};
@@ -1996,6 +1998,7 @@ vkr_renderer_present_target_recreate(VkrRendererFrontendHandle renderer,
     vkr_ui_system_resize(renderer, &renderer->ui_system, width, height);
   }
   vkr_shadow_system_invalidate_fit_history(&renderer->shadow_system);
+  renderer->timing_result.shadow_depth_range = (VkrShadowDepthRangeSample){0};
   return VKR_RENDERER_ERROR_NONE;
 }
 
@@ -2658,6 +2661,7 @@ void vkr_renderer_resize(VkrRendererFrontendHandle renderer, uint32_t width,
   /* Every resize path recreates or invalidates target state. A skipped frame
      may separate the stored fit from the next camera pose. */
   vkr_shadow_system_invalidate_fit_history(&rf->shadow_system);
+  rf->timing_result.shadow_depth_range = (VkrShadowDepthRangeSample){0};
 }
 
 static VkrRendererError renderer_impl_metal_cancel_frame(void *state) {
