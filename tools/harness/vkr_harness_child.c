@@ -265,6 +265,12 @@ static bool8_t vkr_harness_child_resize_round_trip(Application *application) {
       return false_v;
     }
     child->resize_outbound_observed = true_v;
+  }
+
+  if (child->resize_outbound_observed && !child->resize_restore_requested) {
+    if (child->capture_index >= 0 && !child->capture_complete) {
+      return true_v;
+    }
     if (!vkr_window_resize(&application->window, case_manifest->width,
                            case_manifest->height)) {
       vkr_harness_child_fail(application, "resize.restore_request_failed");
@@ -670,7 +676,9 @@ void application_update(Application *application, float64_t delta) {
     }
   }
   if (child->completed_frames >= child->total_frames &&
-      (child->capture_index < 0 || child->capture_complete)) {
+      (child->capture_index < 0 || child->capture_complete) &&
+      (!child->case_manifest->resize_round_trip ||
+       child->resize_round_trip_complete)) {
     if (child->submission_gpu_timing && !child->submission_timings_drained) {
       if (vkr_renderer_wait_idle(&application->renderer) !=
           VKR_RENDERER_ERROR_NONE) {
@@ -949,11 +957,16 @@ vkr_harness_child_create_text_fixture(Application *application,
     float32_t size;
     Vec2 padding;
   } VkrHarnessUiTextFixture;
+#if defined(_WIN32)
+  const float32_t system_fixture_size = 32.0f;
+#else
+  const float32_t system_fixture_size = 40.0f;
+#endif
   const VkrHarnessUiTextFixture fixtures[] = {
       {.content = string8_lit("SYSTEM | Aa Bb 0123456789 !?"),
        .font = application->renderer.font_system.default_system_font_handle,
        .color = {0.20f, 0.85f, 1.00f, 1.00f},
-       .size = 40.0f,
+       .size = system_fixture_size,
        .padding = {32.0f, 32.0f}},
       {.content = string8_lit("BITMAP | PIXEL 0123456789"),
        .font = application->renderer.font_system.default_bitmap_font_handle,

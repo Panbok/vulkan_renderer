@@ -38,11 +38,12 @@ Array(VkrUiTextSlot);
  * for editor viewport overlay). Call vkr_ui_system_resize on window resize.
  */
 typedef struct VkrUiSystem {
-  uint32_t offscreen_width;  /**< Override width when offscreen enabled */
-  uint32_t offscreen_height; /**< Override height when offscreen enabled */
-  bool8_t offscreen_enabled; /**< Use offscreen dimensions for layout */
-  uint32_t screen_width;     /**< Last layout width used */
-  uint32_t screen_height;    /**< Last layout height used */
+  uint32_t offscreen_width;     /**< Override width when offscreen enabled */
+  uint32_t offscreen_height;    /**< Override height when offscreen enabled */
+  bool8_t offscreen_enabled;    /**< Use offscreen dimensions for layout */
+  uint32_t screen_width;        /**< Last layout width used */
+  uint32_t screen_height;       /**< Last layout height used */
+  float32_t text_content_scale; /**< Windows 800x600 design-extent scale */
 
   Array_VkrUiTextSlot text_slots; /**< Allocated text slots */
   bool8_t initialized;            /**< System has been initialized */

@@ -1,4 +1,6 @@
 #include "text_test.h"
+#include "renderer/renderer_frontend.h"
+#include "renderer/systems/vkr_ui_system.h"
 
 static Arena *arena = NULL;
 static VkrAllocator allocator = {0};
@@ -191,6 +193,23 @@ static void test_rich_text_spans(void) {
   printf("  test_rich_text_spans PASSED\n");
 }
 
+static void test_ui_text_resize_scale(void) {
+  printf("  Running test_ui_text_resize_scale...\n");
+
+  RendererFrontend renderer = {0};
+  VkrUiSystem system = {0};
+  vkr_ui_system_resize(&renderer, &system, 800u, 600u);
+  assert_f32_eq(system.text_content_scale, 1.0f, 0.0001f, "design extent");
+#if defined(_WIN32)
+  vkr_ui_system_resize(&renderer, &system, 480u, 270u);
+  assert_f32_eq(system.text_content_scale, 0.45f, 0.0001f, "downsized extent");
+  vkr_ui_system_resize(&renderer, &system, 1600u, 900u);
+  assert_f32_eq(system.text_content_scale, 1.5f, 0.0001f, "maxsized extent");
+#endif
+
+  printf("  test_ui_text_resize_scale PASSED\n");
+}
+
 bool32_t run_text_tests(void) {
   printf("--- Starting Text Tests ---\n");
 
@@ -201,6 +220,7 @@ bool32_t run_text_tests(void) {
   test_text_measurement();
   test_text_layout();
   test_rich_text_spans();
+  test_ui_text_resize_scale();
 
   return true_v;
 }

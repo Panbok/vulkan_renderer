@@ -1490,14 +1490,18 @@ vkr_internal void application_init_memory_text(Application *application) {
   state->memory_update_clock = vkr_clock_create();
   vkr_clock_start(&state->memory_update_clock);
 
-  VkrFont *font = vkr_font_system_get_default_system_font(
-      &application->renderer.font_system);
   VkrUiTextConfig text_config = VKR_UI_TEXT_CONFIG_DEFAULT;
   text_config.font =
       application->renderer.font_system.default_system_font_handle;
+#if defined(_WIN32)
+  text_config.font_size = 24.0f;
+#else
+  VkrFont *font = vkr_font_system_get_default_system_font(
+      &application->renderer.font_system);
   if (font) {
     text_config.font_size = (float32_t)font->size * 1.5f;
   }
+#endif
   text_config.color = (Vec4){1.0f, 1.0f, 1.0f, 1.0f};
 
   VkrUiTextCreateData payload = {
@@ -1989,14 +1993,18 @@ vkr_internal void application_init_ui_texts(Application *application) {
   state->left_text_id = VKR_INVALID_ID;
   state->metrics_text_id = VKR_INVALID_ID;
 
-  VkrFont *font = vkr_font_system_get_default_system_font(
-      &application->renderer.font_system);
   VkrUiTextConfig text_config = VKR_UI_TEXT_CONFIG_DEFAULT;
   text_config.font =
       application->renderer.font_system.default_system_font_handle;
+#if defined(_WIN32)
+  text_config.font_size = 32.0f;
+#else
+  VkrFont *font = vkr_font_system_get_default_system_font(
+      &application->renderer.font_system);
   if (font) {
     text_config.font_size = (float32_t)font->size * 2.0f;
   }
+#endif
   text_config.color = (Vec4){1.0f, 1.0f, 1.0f, 1.0f};
 
   VkrUiTextCreateData fps_payload = {

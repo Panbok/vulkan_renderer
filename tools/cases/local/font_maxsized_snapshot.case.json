@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "id": "local.font.maxsized_snapshot",
+  "suite": "local",
+  "description": "Windows UI text scale and edge-quality snapshot after a live resize to a maximized-class native window extent.",
+  "scene": "assets/scenes/fixtures/text_rendering.scene.json",
+  "seed": 1,
+  "resolution": [800, 600],
+  "resize_round_trip": [1600, 900],
+  "boot": "full",
+  "target": "windowed_hidden",
+  "present": "fifo",
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 2,
+  "frames": { "warmup": 30, "measure": 3 },
+  "asset_ready_timeout_ms": 60000,
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "text_fixture": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 1,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [0.0, 0.0, 6.0],
+    "yaw": -90.0,
+    "pitch": 0.0,
+    "vertical_fov_degrees": 60.0,
+    "near_plane": 0.1,
+    "far_plane": 100.0
+  },
+  "captures": [
+    { "at_frame": 1, "channels": ["final_color"] }
+  ]
+}

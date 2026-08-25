@@ -16,6 +16,11 @@
 
 #define VKR_UI_SYSTEM_MAX_TEXTS 16
 
+enum {
+  VKR_UI_DESIGN_WIDTH = 800u,
+  VKR_UI_DESIGN_HEIGHT = 600u,
+};
+
 vkr_internal bool8_t vkr_ui_system_get_layout_size(RendererFrontend *rf,
                                                    VkrUiSystem *system,
                                                    uint32_t *out_width,
@@ -44,8 +49,30 @@ vkr_internal bool8_t vkr_ui_system_get_layout_size(RendererFrontend *rf,
   return true_v;
 }
 
+vkr_internal float32_t vkr_ui_system_text_content_scale(uint32_t width,
+                                                        uint32_t height) {
+  if (!width || !height) {
+    return 1.0f;
+  }
+  return Min((float32_t)width / (float32_t)VKR_UI_DESIGN_WIDTH,
+             (float32_t)height / (float32_t)VKR_UI_DESIGN_HEIGHT);
+}
+
+vkr_internal void vkr_ui_system_update_text_content_scale(VkrUiSystem *system,
+                                                          uint32_t width,
+                                                          uint32_t height) {
+#if defined(PLATFORM_WINDOWS)
+  system->text_content_scale = vkr_ui_system_text_content_scale(width, height);
+#else
+  (void)width;
+  (void)height;
+  system->text_content_scale = 1.0f;
+#endif
+}
+
 vkr_internal void vkr_ui_system_position_slot(VkrUiTextSlot *slot,
-                                              uint32_t width, uint32_t height);
+                                              uint32_t width, uint32_t height,
+                                              float32_t content_scale);
 
 vkr_internal void vkr_ui_system_refresh_layout(RendererFrontend *rf,
                                                VkrUiSystem *system) {
@@ -68,47 +95,50 @@ vkr_internal void vkr_ui_system_refresh_layout(RendererFrontend *rf,
 
   system->screen_width = layout_width;
   system->screen_height = layout_height;
+  vkr_ui_system_update_text_content_scale(system, layout_width, layout_height);
 
   for (uint64_t i = 0; i < system->text_slots.length; ++i) {
     VkrUiTextSlot *slot = &system->text_slots.data[i];
     if (!slot->active) {
       continue;
     }
-    vkr_ui_system_position_slot(slot, layout_width, layout_height);
+    vkr_ui_system_position_slot(slot, layout_width, layout_height,
+                                system->text_content_scale);
   }
 }
 
 vkr_internal void vkr_ui_system_position_slot(VkrUiTextSlot *slot,
-                                              uint32_t width, uint32_t height) {
+                                              uint32_t width, uint32_t height,
+                                              float32_t content_scale) {
   if (!slot || !slot->active || width == 0 || height == 0) {
     return;
   }
 
   VkrTextBounds bounds = vkr_ui_text_get_bounds(&slot->text);
+  const float32_t scaled_width = bounds.size.x * content_scale;
+  const float32_t scaled_height = bounds.size.y * content_scale;
   float32_t x = slot->padding.x;
   float32_t y = slot->padding.y;
 
   switch (slot->anchor) {
   case VKR_UI_TEXT_ANCHOR_TOP_RIGHT:
-    x = (float32_t)width - bounds.size.x - slot->padding.x;
-    y = (float32_t)height - bounds.size.y - slot->padding.y;
+    x = (float32_t)width - scaled_width - slot->padding.x;
+    y = (float32_t)height - scaled_height - slot->padding.y;
     break;
   case VKR_UI_TEXT_ANCHOR_BOTTOM_LEFT:
-    x = slot->padding.x;
-    y = slot->padding.y;
     break;
   case VKR_UI_TEXT_ANCHOR_BOTTOM_RIGHT:
-    x = (float32_t)width - bounds.size.x - slot->padding.x;
-    y = slot->padding.y;
+    x = (float32_t)width - scaled_width - slot->padding.x;
     break;
   case VKR_UI_TEXT_ANCHOR_TOP_LEFT:
   default:
-    x = slot->padding.x;
-    y = (float32_t)height - bounds.size.y - slot->padding.y;
+    y = (float32_t)height - scaled_height - slot->padding.y;
     break;
   }
 
   vkr_transform_set_position(&slot->text.transform, vec3_new(x, y, 0.0f));
+  vkr_transform_set_scale(&slot->text.transform,
+                          vec3_new(content_scale, content_scale, 1.0f));
 }
 
 vkr_internal bool8_t vkr_ui_system_ensure_slot(VkrUiSystem *system,
@@ -173,6 +203,8 @@ bool8_t vkr_ui_system_init(RendererFrontend *rf, VkrUiSystem *system) {
           sizeof(VkrUiTextSlot) * (uint64_t)system->text_slots.length);
   system->screen_width = rf->last_window_width;
   system->screen_height = rf->last_window_height;
+  vkr_ui_system_update_text_content_scale(system, system->screen_width,
+                                          system->screen_height);
   system->initialized = true_v;
   return true_v;
 }
@@ -214,13 +246,15 @@ void vkr_ui_system_resize(RendererFrontend *rf, VkrUiSystem *system,
 
   system->screen_width = layout_width;
   system->screen_height = layout_height;
+  vkr_ui_system_update_text_content_scale(system, layout_width, layout_height);
 
   for (uint64_t i = 0; i < system->text_slots.length; ++i) {
     VkrUiTextSlot *slot = &system->text_slots.data[i];
     if (!slot->active) {
       continue;
     }
-    vkr_ui_system_position_slot(slot, layout_width, layout_height);
+    vkr_ui_system_position_slot(slot, layout_width, layout_height,
+                                system->text_content_scale);
   }
 }
 
@@ -276,7 +310,8 @@ bool8_t vkr_ui_system_text_create(RendererFrontend *rf, VkrUiSystem *system,
   uint32_t layout_width = 0;
   uint32_t layout_height = 0;
   vkr_ui_system_get_layout_size(rf, system, &layout_width, &layout_height);
-  vkr_ui_system_position_slot(slot, layout_width, layout_height);
+  vkr_ui_system_position_slot(slot, layout_width, layout_height,
+                              system->text_content_scale);
 
   if (out_text_id) {
     *out_text_id = text_id;
@@ -304,7 +339,8 @@ bool8_t vkr_ui_system_text_update(RendererFrontend *rf, VkrUiSystem *system,
   uint32_t layout_width = 0;
   uint32_t layout_height = 0;
   vkr_ui_system_get_layout_size(rf, system, &layout_width, &layout_height);
-  vkr_ui_system_position_slot(slot, layout_width, layout_height);
+  vkr_ui_system_position_slot(slot, layout_width, layout_height,
+                              system->text_content_scale);
   return true_v;
 }
 
@@ -349,9 +385,10 @@ uint32_t vkr_ui_system_prepare_text_draws(RendererFrontend *rf,
     float32_t screen_px_range = 0.0f;
     uint32_t font_mode = 0;
     if (font->type == VKR_FONT_TYPE_MTSDF && font->em_size > 0.0f) {
-      float32_t render_size = slot->text.config.font_size > 0.0f
-                                  ? slot->text.config.font_size
-                                  : (float32_t)font->size;
+      float32_t render_size =
+          (slot->text.config.font_size > 0.0f ? slot->text.config.font_size
+                                              : (float32_t)font->size) *
+          system->text_content_scale;
       font_mode = 1;
       screen_px_range = Clamp(
           font->sdf_distance_range * (render_size / font->em_size), 1.0f, 4.0f);

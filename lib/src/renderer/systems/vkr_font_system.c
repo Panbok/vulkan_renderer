@@ -620,8 +620,14 @@ bool8_t vkr_font_system_init(VkrFontSystem *system,
   system->next_free_index = 0;
   system->generation_counter = 1;
 
+#if defined(PLATFORM_WINDOWS)
+  String8 font_name = string8_lit("NotoSansCJK-Windows");
+  String8 fontcfg_path =
+      string8_lit("assets/fonts/NotoSansCJK-Windows.fontcfg");
+#else
   String8 font_name = string8_lit("NotoSansCJK");
   String8 fontcfg_path = string8_lit("assets/fonts/NotoSansCJK.fontcfg");
+#endif
   VkrRendererError font_load_error = VKR_RENDERER_ERROR_NONE;
   if (!vkr_font_system_load_from_file(system, font_name, fontcfg_path,
                                       &font_load_error)) {
