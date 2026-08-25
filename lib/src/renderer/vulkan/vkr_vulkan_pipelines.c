@@ -277,26 +277,19 @@ vkr_vk_validate_packet_root_abi(VkrVulkanRenderer *renderer) {
     valid &= frame && vkr_vk_reflected_struct_size(frame) ==
                           sizeof(VkrVulkanPacketFrameRoot);
 
-    const VkrGpuAbiRecord *vertex_abi = vkr_gpu_abi_record(VKR_GPU_ABI_VERTEX);
+    const VkrGpuAbiRecord *vertex_abi =
+        vkr_gpu_abi_record(VKR_GPU_ABI_PACKED_STATIC_VERTEX);
     valid &=
         vertices && materials && vertex_abi &&
         vkr_vk_reflected_struct_size(vertices) == vertex_abi->expected_size &&
         vkr_vk_reflected_struct_size(materials) ==
             sizeof(VkrVulkanMaterialGpuRow);
+    valid &= vkr_vk_validate_reflected_gpu_abi(
+        vertices, VKR_GPU_ABI_PACKED_STATIC_VERTEX);
     valid &= vkr_vk_validate_reflected_gpu_abi(geometry_rows,
                                                VKR_GPU_ABI_GEOMETRY_ROW);
     valid &= vkr_vk_validate_reflected_gpu_abi(visible_rows,
                                                VKR_GPU_ABI_VISIBLE_DRAW_ROW);
-    valid &= vkr_vk_reflect_member_offset(
-        vertices, "position", offsetof(VkrVertex3d, position), NULL);
-    valid &= vkr_vk_reflect_member_offset(vertices, "normal",
-                                          offsetof(VkrVertex3d, normal), NULL);
-    valid &= vkr_vk_reflect_member_offset(
-        vertices, "texcoord", offsetof(VkrVertex3d, texcoord), NULL);
-    valid &= vkr_vk_reflect_member_offset(vertices, "color",
-                                          offsetof(VkrVertex3d, colour), NULL);
-    valid &= vkr_vk_reflect_member_offset(vertices, "tangent",
-                                          offsetof(VkrVertex3d, tangent), NULL);
     valid &= vkr_vk_reflect_member_offset(
         materials, "base_color_texture",
         offsetof(VkrVulkanMaterialGpuRow, base_color_texture), NULL);

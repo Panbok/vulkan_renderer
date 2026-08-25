@@ -25,6 +25,9 @@ typedef struct VkrAssetPublisher {
   bool8_t (*publish_loaded_mesh)(void *state, VkrGeometryHandle handle,
                                  const struct VkrMeshLoaderResult *mesh);
   bool8_t (*unpublish_geometry)(void *state, VkrGeometryHandle handle);
+  /** Opens/closes one render-thread batch for ordinary texture publications. */
+  bool8_t (*begin_texture_upload_batch)(void *state);
+  bool8_t (*end_texture_upload_batch)(void *state);
   bool8_t (*publish_texture)(void *state, VkrTextureHandle handle,
                              const struct VkrTexturePreparedLoad *texture);
   bool8_t (*publish_writable_texture)(void *state, VkrTextureHandle handle,

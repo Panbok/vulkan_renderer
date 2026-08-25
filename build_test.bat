@@ -55,6 +55,11 @@ if %errorlevel% neq 0 (
 rem Return to the original directory
 popd
 
+rem Unit fixtures intentionally exercise source and legacy compatibility.
+set "VKR_TEXTURE_VKT_STRICT=0"
+set "VKR_TEXTURE_VKT_ALLOW_SOURCE_FALLBACK=1"
+set "VKR_TEXTURE_VKT_ALLOW_LEGACY=1"
+
 rem Execute the test runner (single-config first, then multi-config fallback).
 set "TEST_EXE=%~dp0build_test\tests\vulkan_renderer_tester.exe"
 if not exist "!TEST_EXE!" set "TEST_EXE=%~dp0build_test\tests\Debug\vulkan_renderer_tester.exe"

@@ -61,6 +61,7 @@ typedef struct SceneEnvironmentImport {
   bool8_t valid;
   bool8_t enabled;
   VkrSceneEnvironmentSourceKind source_kind;
+  String8 cubemap_path;
   String8 cubemap_base_path;
   String8 cubemap_extension;
   String8 equirect_path;
@@ -90,6 +91,7 @@ typedef struct SceneEntityImport {
   Vec3 scale;
   bool8_t has_mesh;
   String8 mesh_path;
+  String8 gltf_light_source;
   String8 shader_override;
   VkrPipelineDomain pipeline_domain;
   /** False marks the caster DYNAMIC; scene meshes are static by default. */
@@ -198,7 +200,7 @@ scene_loader_reset_scene_environment(VkrScene *scene,
 vkr_internal void scene_loader_apply_environment_import(
     VkrScene *scene, struct s_RendererFrontend *rf,
     const SceneEnvironmentImport *environment_import,
-    const VkrTexturePreparedLoad *prepared_equirect);
+    const VkrTexturePreparedLoad *prepared_environment);
 vkr_internal void
 scene_loader_reset_scene_reflection_probes(VkrScene *scene,
                                            struct s_RendererFrontend *rf);
@@ -649,21 +651,26 @@ scene_loader_collect_gltf_punctual_lights(VkrSceneLoaderAsyncPayload *payload) {
   for (uint32_t entity_index = 0; entity_index < payload->entity_count;
        ++entity_index) {
     const SceneEntityImport *entity = &payload->imports[entity_index];
-    if (!entity->has_mesh || !entity->mesh_path.str ||
-        entity->mesh_path.length < 4u) {
+    if (!entity->has_mesh) {
+      continue;
+    }
+    const String8 light_source = entity->gltf_light_source.str
+                                     ? entity->gltf_light_source
+                                     : entity->mesh_path;
+    if (!light_source.str || light_source.length < 4u) {
       continue;
     }
     const String8 gltf_extension = string8_lit(".gltf");
     const String8 glb_extension = string8_lit(".glb");
     const String8 extension =
-        string8_substring(&entity->mesh_path,
-                          entity->mesh_path.length >= gltf_extension.length
-                              ? entity->mesh_path.length - gltf_extension.length
-                              : entity->mesh_path.length,
-                          entity->mesh_path.length);
+        string8_substring(&light_source,
+                          light_source.length >= gltf_extension.length
+                              ? light_source.length - gltf_extension.length
+                              : light_source.length,
+                          light_source.length);
     const String8 short_extension = string8_substring(
-        &entity->mesh_path, entity->mesh_path.length - glb_extension.length,
-        entity->mesh_path.length);
+        &light_source, light_source.length - glb_extension.length,
+        light_source.length);
     if (!string8_equalsi(&extension, &gltf_extension) &&
         !string8_equalsi(&short_extension, &glb_extension)) {
       continue;
@@ -680,11 +687,11 @@ scene_loader_collect_gltf_punctual_lights(VkrSceneLoaderAsyncPayload *payload) {
     }
     uint32_t imported_count = 0u;
     if (!vkr_scene_loader_read_gltf_punctual_lights(
-            entity->mesh_path, scene_world, entity_index,
+            light_source, scene_world, entity_index,
             payload->gltf_punctual_lights + payload->gltf_punctual_light_count,
             remaining, &imported_count)) {
       log_warn("Scene loader: unable to inspect glTF punctual lights in '%.*s'",
-               (int32_t)entity->mesh_path.length, entity->mesh_path.str);
+               (int32_t)light_source.length, light_source.str);
       continue;
     }
     payload->gltf_punctual_light_count += imported_count;
@@ -701,6 +708,7 @@ vkr_internal SceneEnvironmentImport scene_environment_import_defaults(void) {
       .valid = true_v,
       .enabled = false_v,
       .source_kind = VKR_SCENE_ENV_SOURCE_NONE,
+      .cubemap_path = {0},
       .cubemap_base_path = {0},
       .cubemap_extension = {0},
       .equirect_path = {0},
@@ -778,13 +786,17 @@ scene_loader_parse_environment_import(String8 json) {
     result.valid = false_v;
     return result;
   }
-  bool8_t has_base_path = scene_json_read_string_field(
+  const bool8_t has_path = scene_json_read_string_field(&cubemap_object, "path",
+                                                        &result.cubemap_path);
+  const bool8_t has_base_path = scene_json_read_string_field(
       &cubemap_object, "base_path", &result.cubemap_base_path);
-  bool8_t has_extension = scene_json_read_string_field(
+  const bool8_t has_extension = scene_json_read_string_field(
       &cubemap_object, "extension", &result.cubemap_extension);
-  if (!has_base_path || !has_extension ||
-      result.cubemap_base_path.length == 0 ||
-      result.cubemap_extension.length == 0) {
+  const bool8_t direct = has_path && result.cubemap_path.length > 0u;
+  const bool8_t faces = has_base_path && has_extension &&
+                        result.cubemap_base_path.length > 0u &&
+                        result.cubemap_extension.length > 0u;
+  if (direct == faces) {
     result.valid = false_v;
   } else {
     result.source_kind = VKR_SCENE_ENV_SOURCE_CUBEMAP;
@@ -957,24 +969,23 @@ vkr_internal void scene_loader_reset_scene_environment(VkrScene *scene,
     }
   }
 
-  scene->environment = (VkrSceneEnvironment){
-      .enabled = false_v,
-      .source_kind = VKR_SCENE_ENV_SOURCE_NONE,
-      .intensity = 1.0f,
-      .diffuse_intensity = 1.0f,
-      .specular_intensity = 1.0f,
-      .delivery_equirect = VKR_TEXTURE_HANDLE_INVALID,
-      .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
-      .irradiance_cubemap = VKR_TEXTURE_HANDLE_INVALID,
-      .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
-      .bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE,
-  };
+  scene->environment =
+      (VkrSceneEnvironment){.enabled = false_v,
+                            .source_kind = VKR_SCENE_ENV_SOURCE_NONE,
+                            .intensity = 1.0f,
+                            .diffuse_intensity = 1.0f,
+                            .specular_intensity = 1.0f,
+                            .delivery_equirect = VKR_TEXTURE_HANDLE_INVALID,
+                            .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+                            .irradiance_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+                            .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+                            .bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE};
 }
 
 vkr_internal void scene_loader_apply_environment_import(
     VkrScene *scene, struct s_RendererFrontend *rf,
     const SceneEnvironmentImport *environment_import,
-    const VkrTexturePreparedLoad *prepared_equirect) {
+    const VkrTexturePreparedLoad *prepared_environment) {
   if (!scene) {
     return;
   }
@@ -1013,10 +1024,31 @@ vkr_internal void scene_loader_apply_environment_import(
   if (environment_import->source_kind == VKR_SCENE_ENV_SOURCE_CUBEMAP) {
     VkrTextureHandle source_cubemap = VKR_TEXTURE_HANDLE_INVALID;
     VkrRendererError cubemap_error = VKR_RENDERER_ERROR_NONE;
-    if (!vkr_texture_system_load_cube_map(&rf->texture_system,
-                                          environment_import->cubemap_base_path,
-                                          environment_import->cubemap_extension,
-                                          &source_cubemap, &cubemap_error)) {
+    if (environment_import->cubemap_path.length > 0u) {
+      VkrTexturePreparedLoad local_prepared = {0};
+      const VkrTexturePreparedLoad *upload = prepared_environment;
+      if (!upload && !vkr_texture_system_prepare_load_from_file(
+                         &rf->texture_system, environment_import->cubemap_path,
+                         VKR_TEXTURE_RGBA_CHANNELS, &rf->scratch_allocator,
+                         &local_prepared, &cubemap_error)) {
+        goto failed;
+      }
+      upload = upload ? upload : &local_prepared;
+      const bool8_t valid =
+          upload->description.type == VKR_TEXTURE_TYPE_CUBE_MAP;
+      const bool8_t finalized =
+          valid && vkr_texture_system_finalize_prepared_load(
+                       &rf->texture_system, environment_import->cubemap_path,
+                       upload, &source_cubemap, &cubemap_error);
+      vkr_texture_system_release_prepared_load(&local_prepared);
+      if (!finalized) {
+        goto failed;
+      }
+      vkr_texture_system_add_ref_by_handle(&rf->texture_system, source_cubemap);
+    } else if (!vkr_texture_system_load_cube_map(
+                   &rf->texture_system, environment_import->cubemap_base_path,
+                   environment_import->cubemap_extension, &source_cubemap,
+                   &cubemap_error)) {
       String8 err_str = vkr_renderer_get_error_string(cubemap_error);
       log_warn("Scene loader: environment cubemap load failed for '%.*s': %.*s",
                (int)environment_import->cubemap_base_path.length,
@@ -1027,7 +1059,7 @@ vkr_internal void scene_loader_apply_environment_import(
     scene->environment.source_cubemap = source_cubemap;
   } else if (environment_import->source_kind == VKR_SCENE_ENV_SOURCE_EQUIRECT) {
     VkrTexturePreparedLoad local_prepared = {0};
-    const VkrTexturePreparedLoad *upload = prepared_equirect;
+    const VkrTexturePreparedLoad *upload = prepared_environment;
     VkrRendererError texture_error = VKR_RENDERER_ERROR_NONE;
     if (!upload) {
       if (!vkr_texture_system_prepare_load_from_file(
@@ -1332,6 +1364,13 @@ vkr_internal void scene_json_parse_mesh(const VkrJsonReader *entity_reader,
     } else {
       log_warn("Scene loader: entity %u mesh path is empty", entity_index);
     }
+  }
+
+  String8 gltf_light_source = {0};
+  if (scene_json_read_string_field(&mesh_obj, "gltf_light_source",
+                                   &gltf_light_source) &&
+      gltf_light_source.length > 0) {
+    out_entity->gltf_light_source = gltf_light_source;
   }
 
   String8 domain_str = {0};
@@ -2435,6 +2474,15 @@ vkr_internal bool8_t scene_loader_attach_mesh_for_entity(
   if (load_state == VKR_RESOURCE_LOAD_STATE_FAILED ||
       load_state == VKR_RESOURCE_LOAD_STATE_CANCELED ||
       load_state == VKR_RESOURCE_LOAD_STATE_INVALID) {
+    const VkrRendererError failure =
+        load_state_error != VKR_RENDERER_ERROR_NONE
+            ? load_state_error
+            : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    const String8 error_string = vkr_renderer_get_error_string(failure);
+    log_error("Scene loader: required mesh dependency '%.*s' failed: %.*s",
+              (int)entity_import->mesh_path.length,
+              entity_import->mesh_path.str, (int)error_string.length,
+              error_string.str);
     if (mesh_state->request_info.request_id != 0) {
       vkr_resource_system_unload(&mesh_state->request_info,
                                  entity_import->mesh_path);
@@ -2442,8 +2490,8 @@ vkr_internal bool8_t scene_loader_attach_mesh_for_entity(
                                      VKR_RESOURCE_TYPE_MESH);
     }
     mesh_state->completed = true_v;
-    *out_error = VKR_RENDERER_ERROR_NONE;
-    return true_v;
+    *out_error = failure;
+    return false_v;
   }
 
   VkrMeshLoadDesc mesh_desc = {
@@ -2470,7 +2518,11 @@ vkr_internal bool8_t scene_loader_attach_mesh_for_entity(
       return false_v;
     }
 
-    String8 error_string = vkr_renderer_get_error_string(mesh_error);
+    const VkrRendererError failure =
+        mesh_error != VKR_RENDERER_ERROR_NONE
+            ? mesh_error
+            : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    String8 error_string = vkr_renderer_get_error_string(failure);
     log_error("Scene loader: failed to create mesh instance for '%.*s': %.*s",
               (int)entity_import->mesh_path.length,
               entity_import->mesh_path.str, (int)error_string.length,
@@ -2482,8 +2534,8 @@ vkr_internal bool8_t scene_loader_attach_mesh_for_entity(
                                      VKR_RESOURCE_TYPE_MESH);
     }
     mesh_state->completed = true_v;
-    *out_error = VKR_RENDERER_ERROR_NONE;
-    return true_v;
+    *out_error = failure;
+    return false_v;
   }
 
   VkrScene *scene = vkr_scene_handle_get_scene(payload->scene_handle);
@@ -2505,9 +2557,8 @@ vkr_internal bool8_t scene_loader_attach_mesh_for_entity(
      mesh stays DYNAMIC and the static span is empty. */
   (void)vkr_mesh_manager_instance_set_shadow_mobility(
       &payload->rf->mesh_manager, instance,
-      entity_import->shadow_caster_static
-          ? VKR_SHADOW_CASTER_MOBILITY_STATIC
-          : VKR_SHADOW_CASTER_MOBILITY_DYNAMIC);
+      entity_import->shadow_caster_static ? VKR_SHADOW_CASTER_MOBILITY_STATIC
+                                          : VKR_SHADOW_CASTER_MOBILITY_DYNAMIC);
 
   payload->load_result.mesh_count++;
   mesh_state->attached = true_v;
@@ -2646,21 +2697,28 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
 
   payload->environment_import =
       scene_loader_parse_environment_import(json_copy);
+  const bool8_t direct_cubemap =
+      payload->environment_import.source_kind == VKR_SCENE_ENV_SOURCE_CUBEMAP &&
+      payload->environment_import.cubemap_path.length > 0u;
+  const bool8_t equirect =
+      payload->environment_import.source_kind == VKR_SCENE_ENV_SOURCE_EQUIRECT;
   if (payload->environment_import.valid &&
-      payload->environment_import.enabled &&
-      payload->environment_import.source_kind ==
-          VKR_SCENE_ENV_SOURCE_EQUIRECT) {
+      payload->environment_import.enabled && (equirect || direct_cubemap)) {
+    const String8 environment_path =
+        direct_cubemap ? payload->environment_import.cubemap_path
+                       : payload->environment_import.equirect_path;
     VkrRendererError environment_error = VKR_RENDERER_ERROR_NONE;
     if (vkr_texture_system_prepare_load_from_file(
-            &rf->texture_system, payload->environment_import.equirect_path,
-            VKR_TEXTURE_RGBA_CHANNELS, temp_alloc,
-            &payload->environment_prepared, &environment_error)) {
+            &rf->texture_system, environment_path, VKR_TEXTURE_RGBA_CHANNELS,
+            temp_alloc, &payload->environment_prepared, &environment_error) &&
+        (!direct_cubemap || payload->environment_prepared.description.type ==
+                                VKR_TEXTURE_TYPE_CUBE_MAP)) {
       payload->environment_prepared_ready = true_v;
     } else {
+      vkr_texture_system_release_prepared_load(&payload->environment_prepared);
       payload->environment_import.valid = false_v;
-      log_warn("Scene loader: failed to prepare HDR environment '%.*s'",
-               (int)payload->environment_import.equirect_path.length,
-               payload->environment_import.equirect_path.str);
+      log_warn("Scene loader: failed to prepare environment '%.*s'",
+               (int)environment_path.length, environment_path.str);
     }
   }
   payload->reflection_probe_import_count =

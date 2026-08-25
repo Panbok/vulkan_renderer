@@ -99,4 +99,11 @@ if(APPLE)
         ${VKR_DIAGNOSTIC_FOUNDATION_LIBRARY}
         ${VKR_DIAGNOSTIC_METAL_LIBRARY}
     )
+    add_executable(vkr_metal_texture_array_diagnostic
+        metal/vkr_metal_texture_array_diagnostic.m
+    )
+    target_link_libraries(vkr_metal_texture_array_diagnostic PRIVATE
+        ${VKR_DIAGNOSTIC_FOUNDATION_LIBRARY}
+        ${VKR_DIAGNOSTIC_METAL_LIBRARY}
+    )
 endif()

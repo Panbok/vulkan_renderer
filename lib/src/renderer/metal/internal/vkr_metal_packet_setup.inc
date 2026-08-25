@@ -209,9 +209,9 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
         !vkr_metal_packet_validate_nested_gpu_abi(
             pipeline_label, root.bufferStructType, "visible_rows",
             VKR_GPU_ABI_VISIBLE_DRAW_ROW) ||
-        !vkr_metal_packet_validate_nested_abi(pipeline_label,
-                                              root.bufferStructType, "vertices",
-                                              VKR_METAL_PACKET_ABI_VERTEX) ||
+        !vkr_metal_packet_validate_nested_gpu_abi(
+            pipeline_label, root.bufferStructType, "vertices",
+            VKR_GPU_ABI_PACKED_STATIC_VERTEX) ||
         !vkr_metal_packet_validate_nested_abi(pipeline_label,
                                               root.bufferStructType, "frame",
                                               VKR_METAL_PACKET_ABI_FRAME_ROOT))
@@ -831,26 +831,35 @@ vkr_internal bool8_t vkr_metal_packet_create_ibl_targets(
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_upload_texture(
-    VkrMetalPacketRenderer *renderer,
+vkr_internal bool8_t vkr_metal_packet_validate_texture_upload(
     const VkrMetalPacketTextureUpload *payload, VkrTextureFormat format,
-    id<MTLTexture> destination) API_AVAILABLE(macos(26.0)) {
-  VkrTextureFormatInfo info = {0};
-  if (!renderer || !payload || !payload->data || payload->data_size == 0 ||
+    id<MTLTexture> destination, VkrTextureFormatInfo *out_info)
+    API_AVAILABLE(macos(26.0)) {
+  if (!payload || !payload->data || payload->data_size == 0 ||
       !payload->regions || payload->region_count == 0 || !destination ||
-      !vkr_texture_format_get_info(format, &info) || info.is_depth_stencil ||
-      payload->is_compressed != info.is_block_compressed ||
-      payload->mip_levels != destination.mipmapLevelCount ||
-      payload->array_layers != destination.arrayLength)
+      !out_info || !vkr_texture_format_get_info(format, out_info) ||
+      out_info->is_depth_stencil ||
+      payload->is_compressed != out_info->is_block_compressed ||
+      payload->mip_levels != destination.mipmapLevelCount)
+    return false_v;
+  uint64_t destination_layers = destination.arrayLength;
+  if (destination.textureType == MTLTextureTypeCube) {
+    destination_layers = 6u;
+  } else if (destination.textureType == MTLTextureTypeCubeArray) {
+    destination_layers *= 6u;
+  }
+  if (payload->array_layers != destination_layers)
     return false_v;
   for (uint32_t i = 0; i < payload->region_count; ++i) {
     const VkrTextureUploadRegion *region = &payload->regions[i];
     const uint64_t blocks_x =
-        ((uint64_t)region->width + info.block_width - 1u) / info.block_width;
+        ((uint64_t)region->width + out_info->block_width - 1u) /
+        out_info->block_width;
     const uint64_t blocks_y =
-        ((uint64_t)region->height + info.block_height - 1u) / info.block_height;
-    const uint64_t bytes_per_row = blocks_x * info.bytes_per_block;
-    const uint64_t required = bytes_per_row * blocks_y * region->depth;
+        ((uint64_t)region->height + out_info->block_height - 1u) /
+        out_info->block_height;
+    const uint64_t required =
+        blocks_x * out_info->bytes_per_block * blocks_y * region->depth;
     if (region->width == 0 || region->height == 0 || region->depth != 1 ||
         region->mip_level >= payload->mip_levels ||
         region->array_layer >= payload->array_layers ||
@@ -859,23 +868,24 @@ vkr_internal bool8_t vkr_metal_packet_upload_texture(
         required > region->byte_size)
       return false_v;
   }
-  VkrMetalRingSlice slice = {0};
-  VkrMetalAddressPair upload = {0};
-  id<MTLBuffer> upload_buffer = nil;
-  id<MTL4ComputeCommandEncoder> encoder = nil;
-  if (!vkr_metal_packet_begin_upload(renderer, payload->data_size, &slice,
-                                     &upload, &upload_buffer, &encoder))
-    return false_v;
-  MemCopy(upload.cpu_address, payload->data, payload->data_size);
+  return true_v;
+}
+
+vkr_internal void vkr_metal_packet_encode_texture_upload(
+    const VkrMetalPacketTextureUpload *payload,
+    const VkrTextureFormatInfo *info, id<MTLBuffer> upload_buffer,
+    uint64_t upload_offset, id<MTL4ComputeCommandEncoder> encoder,
+    id<MTLTexture> destination) API_AVAILABLE(macos(26.0)) {
   for (uint32_t i = 0; i < payload->region_count; ++i) {
     const VkrTextureUploadRegion *region = &payload->regions[i];
     const uint64_t blocks_x =
-        ((uint64_t)region->width + info.block_width - 1u) / info.block_width;
+        ((uint64_t)region->width + info->block_width - 1u) / info->block_width;
     const uint64_t blocks_y =
-        ((uint64_t)region->height + info.block_height - 1u) / info.block_height;
-    const uint64_t bytes_per_row = blocks_x * info.bytes_per_block;
+        ((uint64_t)region->height + info->block_height - 1u) /
+        info->block_height;
+    const uint64_t bytes_per_row = blocks_x * info->bytes_per_block;
     [encoder copyFromBuffer:upload_buffer
-               sourceOffset:slice.offset + region->byte_offset
+               sourceOffset:upload_offset + region->byte_offset
           sourceBytesPerRow:bytes_per_row
         sourceBytesPerImage:bytes_per_row * blocks_y
                  sourceSize:MTLSizeMake(region->width, region->height, 1)
@@ -884,6 +894,69 @@ vkr_internal bool8_t vkr_metal_packet_upload_texture(
            destinationLevel:region->mip_level
           destinationOrigin:MTLOriginMake(0, 0, 0)];
   }
+}
+
+vkr_internal bool8_t vkr_metal_packet_upload_texture_batched(
+    VkrMetalPacketRenderer *renderer,
+    const VkrMetalPacketTextureUpload *payload, VkrTextureFormat format,
+    id<MTLTexture> destination) API_AVAILABLE(macos(26.0)) {
+  VkrTextureFormatInfo info = {0};
+  if (!renderer || !vkr_metal_packet_validate_texture_upload(
+                       payload, format, destination, &info))
+    return false_v;
+
+  VkrMetalPacketTextureUploadBatch *batch = &renderer->texture_upload_batch;
+  uint64_t offset =
+      vkr_metal_packet_align_up(batch->used, VKR_METAL_PACKET_ROOT_ALIGNMENT);
+  const bool8_t full =
+      batch->active &&
+      (batch->texture_count == VKR_METAL_PACKET_TEXTURE_UPLOAD_BATCH_MAX ||
+       offset > batch->capacity ||
+       payload->data_size > batch->capacity - offset);
+  if (full && !vkr_metal_packet_texture_upload_batch_flush(renderer, false_v))
+    return false_v;
+
+  batch = &renderer->texture_upload_batch;
+  if (!batch->active) {
+    const uint64_t aligned_size = vkr_metal_packet_align_up(
+        payload->data_size, VKR_METAL_PACKET_ROOT_ALIGNMENT);
+    const uint64_t capacity =
+        aligned_size > VKR_METAL_PACKET_TEXTURE_UPLOAD_BATCH_BYTES
+            ? aligned_size
+            : VKR_METAL_PACKET_TEXTURE_UPLOAD_BATCH_BYTES;
+    if (!vkr_metal_packet_texture_upload_batch_start(renderer, capacity))
+      return false_v;
+    offset = 0u;
+  }
+
+  MemCopy((uint8_t *)batch->upload.cpu_address + offset, payload->data,
+          payload->data_size);
+  vkr_metal_packet_encode_texture_upload(payload, &info, batch->upload_buffer,
+                                         batch->slice.offset + offset,
+                                         batch->encoder, destination);
+  batch->used = offset + payload->data_size;
+  batch->texture_count++;
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_metal_packet_upload_texture(
+    VkrMetalPacketRenderer *renderer,
+    const VkrMetalPacketTextureUpload *payload, VkrTextureFormat format,
+    id<MTLTexture> destination) API_AVAILABLE(macos(26.0)) {
+  VkrTextureFormatInfo info = {0};
+  if (!renderer || !vkr_metal_packet_validate_texture_upload(
+                       payload, format, destination, &info))
+    return false_v;
+  VkrMetalRingSlice slice = {0};
+  VkrMetalAddressPair upload = {0};
+  id<MTLBuffer> upload_buffer = nil;
+  id<MTL4ComputeCommandEncoder> encoder = nil;
+  if (!vkr_metal_packet_begin_upload(renderer, payload->data_size, &slice,
+                                     &upload, &upload_buffer, &encoder))
+    return false_v;
+  MemCopy(upload.cpu_address, payload->data, payload->data_size);
+  vkr_metal_packet_encode_texture_upload(payload, &info, upload_buffer,
+                                         slice.offset, encoder, destination);
   return vkr_metal_packet_submit_upload(renderer, encoder, slice);
 }
 

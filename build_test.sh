@@ -19,4 +19,7 @@ set -e # Exit early if any commands fail
 )
 
 # Execute the test runner
+export VKR_TEXTURE_VKT_STRICT=0
+export VKR_TEXTURE_VKT_ALLOW_SOURCE_FALLBACK=1
+export VKR_TEXTURE_VKT_ALLOW_LEGACY=1
 exec "$(dirname "$0")/build_test/tests/vulkan_renderer_tester" "$@"

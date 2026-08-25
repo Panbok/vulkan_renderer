@@ -73,6 +73,8 @@ typedef struct VkrTextureHandle {
 Array(VkrTextureHandle);
 
 #define VKR_TEXTURE_MAX_DIMENSION 16384
+#define VKR_TEXTURE_MAX_ARRAY_LAYERS 2048
+#define VKR_TEXTURE_MAX_UPLOAD_REGIONS 32768
 #define VKR_TEXTURE_RGBA_CHANNELS 4
 #define VKR_TEXTURE_RGB_CHANNELS 3
 #define VKR_TEXTURE_RG_CHANNELS 2
@@ -95,6 +97,7 @@ typedef struct VkrTexture {
   VkrTextureOpaqueHandle handle;
   FilePath file_path;
   uint8_t *image;
+  uint64_t resident_bytes;
 } VkrTexture;
 Array(VkrTexture);
 
@@ -318,6 +321,31 @@ typedef struct VkrMeshAssetSubmesh {
 } VkrMeshAssetSubmesh;
 Array(VkrMeshAssetSubmesh);
 
+typedef enum VkrMeshPreparationKind {
+  VKR_MESH_PREPARATION_SOURCE = 0,
+  VKR_MESH_PREPARATION_COOKED = 1,
+} VkrMeshPreparationKind;
+
+typedef struct VkrMeshLoadMetrics {
+  uint64_t source_bytes;
+  uint64_t cooked_bytes;
+  uint64_t decoded_bytes;
+  uint64_t upload_bytes;
+  uint64_t analyzed_triangles;
+  uint64_t analyzed_vertex_bytes_before;
+  uint64_t analyzed_vertex_bytes_after;
+  uint64_t analyzed_vertices;
+  uint64_t vertices_transformed_before;
+  uint64_t vertices_transformed_after;
+  uint64_t bytes_fetched_before;
+  uint64_t bytes_fetched_after;
+  uint32_t vertex_count;
+  uint32_t index_count;
+  uint32_t range_count;
+  VkrMeshPreparationKind preparation;
+  bool8_t runtime_optimized;
+} VkrMeshLoadMetrics;
+
 /**
  * @brief Shared mesh asset storing geometry/material data for multiple
  * instances.
@@ -339,6 +367,7 @@ typedef struct VkrMeshAsset {
   char *key_string;        // Owned key for asset_by_key removal
 
   Array_VkrMeshAssetSubmesh submeshes;
+  VkrMeshLoadMetrics load_metrics;
 
   bool8_t bounds_valid;
   Vec3 bounds_local_center;

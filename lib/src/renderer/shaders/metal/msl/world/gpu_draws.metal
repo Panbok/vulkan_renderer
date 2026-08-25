@@ -504,18 +504,16 @@ vkr_metal_packet_gbuffer_resolve(constant VkrMetalPacketGBufferResolveRoot &root
   }
   const device VkrGpuGeometryRow &geometry =
       root.geometry_rows[visible.geometry_index];
-  if (geometry.vertex_address == 0u || geometry.index_address == 0u ||
-      geometry.vertex_stride != sizeof(VkrMetalPacketVertex) ||
-      geometry.vertex_layout != 0u) {
-    atomic_fetch_add_explicit(&root.compaction_state->resolve_invalid_count, 1u,
-                              memory_order_relaxed);
-    vkr_metal_packet_resolve_defaults(root, pixel, -1.0);
-    return;
-  }
   device const uint *indices = reinterpret_cast<device const uint *>(
       geometry.index_address + ulong(visible.first_index) * sizeof(uint));
-  VkrMetalPacketVertex vertices[3];
+  VkrGpuDecodedVertex vertices[3];
   float4 clip[3];
+  device const VkrPackedStaticVertex *vertex_rows =
+      reinterpret_cast<device const VkrPackedStaticVertex *>(
+          geometry.vertex_address);
+  device const VkrGpuGeometryDecodeRecord &decode =
+      *reinterpret_cast<device const VkrGpuGeometryDecodeRecord *>(
+          geometry.decode_address);
   const device VkrMetalPacketInstance &instance =
       root.instances[visible.instance_index];
   for (uint corner = 0u; corner < 3u; ++corner) {
@@ -527,13 +525,9 @@ vkr_metal_packet_gbuffer_resolve(constant VkrMetalPacketGBufferResolveRoot &root
       vkr_metal_packet_resolve_defaults(root, pixel, -1.0);
       return;
     }
-    device const VkrMetalPacketVertex *vertex_rows =
-        reinterpret_cast<device const VkrMetalPacketVertex *>(
-            geometry.vertex_address);
-    vertices[corner] = vertex_rows[geometry.first_vertex + uint(vertex_index)];
-    float3 position =
-        float3(vertices[corner].position_x, vertices[corner].position_y,
-               vertices[corner].position_z);
+    vertices[corner] = vkr_decode_packed_vertex(
+        vertex_rows[geometry.first_vertex + uint(vertex_index)], decode);
+    float3 position = vertices[corner].position;
     clip[corner] =
         root.view_projection * (instance.model * float4(position, 1.0));
   }
@@ -592,13 +586,9 @@ vkr_metal_packet_gbuffer_resolve(constant VkrMetalPacketGBufferResolveRoot &root
     metallic = saturate(metallic * orm.b);
   }
 
-  float3 object_normal =
-      float3(vertices[0].normal_x, vertices[0].normal_y, vertices[0].normal_z) *
-          barycentric.x +
-      float3(vertices[1].normal_x, vertices[1].normal_y, vertices[1].normal_z) *
-          barycentric.y +
-      float3(vertices[2].normal_x, vertices[2].normal_y, vertices[2].normal_z) *
-          barycentric.z;
+  float3 object_normal = vertices[0].normal * barycentric.x +
+                         vertices[1].normal * barycentric.y +
+                         vertices[2].normal * barycentric.z;
   float4 object_tangent = vertices[0].tangent * barycentric.x +
                           vertices[1].tangent * barycentric.y +
                           vertices[2].tangent * barycentric.z;
@@ -1008,19 +998,15 @@ static bool vkr_metal_packet_resolve_transmission_surface(
   }
   const device VkrGpuGeometryRow &geometry =
       root.geometry_rows[visible.geometry_index];
-  if (geometry.vertex_address == 0u || geometry.index_address == 0u ||
-      geometry.vertex_stride != sizeof(VkrMetalPacketVertex) ||
-      geometry.vertex_layout != 0u) {
-    atomic_fetch_add_explicit(&root.compaction_state->resolve_invalid_count, 1u,
-                              memory_order_relaxed);
-    return false;
-  }
   device const uint *indices = reinterpret_cast<device const uint *>(
       geometry.index_address + ulong(visible.first_index) * sizeof(uint));
-  device const VkrMetalPacketVertex *vertex_rows =
-      reinterpret_cast<device const VkrMetalPacketVertex *>(
+  device const VkrPackedStaticVertex *vertex_rows =
+      reinterpret_cast<device const VkrPackedStaticVertex *>(
           geometry.vertex_address);
-  VkrMetalPacketVertex vertices[3];
+  device const VkrGpuGeometryDecodeRecord &decode =
+      *reinterpret_cast<device const VkrGpuGeometryDecodeRecord *>(
+          geometry.decode_address);
+  VkrGpuDecodedVertex vertices[3];
   float4 clip[3];
   const device VkrMetalPacketInstance &instance =
       root.instances[visible.instance_index];
@@ -1032,10 +1018,9 @@ static bool vkr_metal_packet_resolve_transmission_surface(
                                 1u, memory_order_relaxed);
       return false;
     }
-    vertices[corner] = vertex_rows[geometry.first_vertex + uint(vertex_index)];
-    float3 position =
-        float3(vertices[corner].position_x, vertices[corner].position_y,
-               vertices[corner].position_z);
+    vertices[corner] = vkr_decode_packed_vertex(
+        vertex_rows[geometry.first_vertex + uint(vertex_index)], decode);
+    float3 position = vertices[corner].position;
     clip[corner] =
         root.view_projection * (instance.model * float4(position, 1.0));
   }
@@ -1096,13 +1081,9 @@ static bool vkr_metal_packet_resolve_transmission_surface(
     metallic = saturate(metallic * orm.b);
   }
 
-  float3 object_normal =
-      float3(vertices[0].normal_x, vertices[0].normal_y, vertices[0].normal_z) *
-          barycentric.x +
-      float3(vertices[1].normal_x, vertices[1].normal_y, vertices[1].normal_z) *
-          barycentric.y +
-      float3(vertices[2].normal_x, vertices[2].normal_y, vertices[2].normal_z) *
-          barycentric.z;
+  float3 object_normal = vertices[0].normal * barycentric.x +
+                         vertices[1].normal * barycentric.y +
+                         vertices[2].normal * barycentric.z;
   float4 object_tangent = vertices[0].tangent * barycentric.x +
                           vertices[1].tangent * barycentric.y +
                           vertices[2].tangent * barycentric.z;

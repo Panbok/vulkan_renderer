@@ -1225,11 +1225,23 @@ void vkr_vulkan_renderer_geometry_megabuffer_metrics(
   const VkrVulkanGeometryMegabuffer *mega = &renderer->geometry_megabuffer;
   out_metrics->vertex_capacity_bytes = mega->vertices.size;
   out_metrics->index_capacity_bytes = mega->indices.size;
-  out_metrics->live_bytes = mega->vertex_live_bytes + mega->index_live_bytes;
+  out_metrics->vertex_live_bytes = mega->vertex_live_bytes;
+  out_metrics->index_live_bytes = mega->index_live_bytes;
+  out_metrics->decode_metadata_live_bytes = mega->decode_metadata_live_bytes;
+  out_metrics->live_bytes = mega->vertex_live_bytes + mega->index_live_bytes +
+                            mega->decode_metadata_live_bytes;
   out_metrics->fragmentation_bytes =
       mega->vertex_cursor + mega->index_cursor - out_metrics->live_bytes;
   out_metrics->high_water_bytes =
       mega->vertex_high_water + mega->index_high_water;
+  out_metrics->vertex_high_water_bytes = mega->vertex_high_water;
+  out_metrics->index_high_water_bytes = mega->index_high_water;
+  out_metrics->vertex_uploaded_bytes_total = mega->vertex_uploaded_bytes_total;
+  out_metrics->index_uploaded_bytes_total = mega->index_uploaded_bytes_total;
+  out_metrics->decode_metadata_high_water_bytes =
+      mega->decode_metadata_high_water;
+  out_metrics->decode_metadata_uploaded_bytes_total =
+      mega->decode_metadata_uploaded_bytes_total;
   out_metrics->rejected_publications = mega->rejected_publications;
   out_metrics->generation_replacements = mega->generation_replacements;
   out_metrics->generation = mega->generation;

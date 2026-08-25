@@ -8,6 +8,7 @@
 #include "memory/vkr_allocator.h"
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/vkr_asset_publisher.h"
+#include "renderer/vkr_gpu_abi.h"
 #include "renderer/vkr_renderer.h"
 
 // =============================================================================
@@ -35,6 +36,8 @@ typedef struct VkrGeometryConfig {
   uint32_t index_count;
   /** @brief Pointer to index data. */
   const void *indices;
+  VkrGpuVertexLayout vertex_layout;
+  VkrGpuGeometryDecodeRecord decode;
 
   Vec3 center;
   Vec3 min_extents;

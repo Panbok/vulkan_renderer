@@ -16,6 +16,22 @@
    FIELDS,                                                                     \
    ArrayCount(FIELDS)}
 
+void vkr_gpu_geometry_row_relocate(VkrGpuGeometryRow *row,
+                                   uint64_t vertex_address,
+                                   uint64_t index_address,
+                                   uint32_t publication_generation) {
+  assert_log(row != NULL, "Geometry row is NULL");
+  assert_log(row->decode_address >= row->vertex_address,
+             "Geometry decode address precedes the vertex megabuffer");
+  const uint64_t decode_offset = row->decode_address - row->vertex_address;
+  assert_log(vertex_address <= UINT64_MAX - decode_offset,
+             "Relocated geometry decode address overflows");
+  row->vertex_address = vertex_address;
+  row->index_address = index_address;
+  row->decode_address = vertex_address + decode_offset;
+  row->publication_generation = publication_generation;
+}
+
 vkr_global const VkrGpuAbiField vkr_gpu_vertex_fields[] = {
     VKR_GPU_ABI_FIELD(VkrVertex3d, position.x, "position_x", 0),
     VKR_GPU_ABI_FIELD(VkrVertex3d, position.y, "position_y", 4),
@@ -26,6 +42,18 @@ vkr_global const VkrGpuAbiField vkr_gpu_vertex_fields[] = {
     VKR_GPU_ABI_FIELD(VkrVertex3d, texcoord, "texcoord", 24),
     VKR_GPU_ABI_FIELD(VkrVertex3d, colour, "color", 32),
     VKR_GPU_ABI_FIELD(VkrVertex3d, tangent, "tangent", 48),
+};
+
+vkr_global const VkrGpuAbiField vkr_gpu_packed_static_vertex_fields[] = {
+    VKR_GPU_ABI_FIELD(VkrPackedStaticVertex, words, "words", 0),
+};
+
+vkr_global const VkrGpuAbiField vkr_gpu_geometry_decode_record_fields[] = {
+    VKR_GPU_ABI_FIELD(VkrGpuGeometryDecodeRecord, position_bias,
+                      "position_bias", 0),
+    VKR_GPU_ABI_FIELD(VkrGpuGeometryDecodeRecord, flags, "flags", 12),
+    VKR_GPU_ABI_FIELD(VkrGpuGeometryDecodeRecord, position_scale,
+                      "position_scale", 16),
 };
 
 vkr_global const VkrGpuAbiField vkr_gpu_instance_fields[] = {
@@ -50,6 +78,7 @@ vkr_global const VkrGpuAbiField vkr_gpu_geometry_row_fields[] = {
     VKR_GPU_ABI_FIELD(VkrGpuGeometryRow, publication_generation,
                       "publication_generation", 32),
     VKR_GPU_ABI_FIELD(VkrGpuGeometryRow, flags, "flags", 36),
+    VKR_GPU_ABI_FIELD(VkrGpuGeometryRow, decode_address, "decode_address", 40),
 };
 
 vkr_global const VkrGpuAbiField vkr_gpu_candidate_draw_row_fields[] = {
@@ -87,6 +116,12 @@ vkr_global const VkrGpuAbiRecord
     vkr_gpu_abi_records[VKR_GPU_ABI_RECORD_COUNT] = {
         [VKR_GPU_ABI_VERTEX] = VKR_GPU_ABI_RECORD(
             VkrVertex3d, "VkrMetalPacketVertex", 64, 16, vkr_gpu_vertex_fields),
+        [VKR_GPU_ABI_PACKED_STATIC_VERTEX] =
+            VKR_GPU_ABI_RECORD(VkrPackedStaticVertex, "VkrPackedStaticVertex",
+                               32, 4, vkr_gpu_packed_static_vertex_fields),
+        [VKR_GPU_ABI_GEOMETRY_DECODE_RECORD] = VKR_GPU_ABI_RECORD(
+            VkrGpuGeometryDecodeRecord, "VkrGpuGeometryDecodeRecord", 32, 4,
+            vkr_gpu_geometry_decode_record_fields),
         [VKR_GPU_ABI_INSTANCE] =
             VKR_GPU_ABI_RECORD(VkrInstanceDataGPU, "VkrMetalPacketInstance", 80,
                                16, vkr_gpu_instance_fields),

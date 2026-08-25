@@ -220,6 +220,8 @@ vkr_renderer_record_gpu_candidate_metrics(RendererFrontend *renderer,
       transmission_count;
   renderer->frame_metrics.world.gpu_candidate_capacity =
       VKR_GPU_DRAW_CANDIDATE_CAPACITY;
+  vkr_mesh_manager_get_metrics(&renderer->mesh_manager,
+                               &renderer->frame_metrics.world.mesh_assets);
   VkrGeometryMegabufferMetrics *mega =
       &renderer->frame_metrics.world.geometry_megabuffer;
 #if defined(PLATFORM_APPLE)
@@ -2079,6 +2081,87 @@ static VkrRendererError vkr_renderer_validate_text_draws(
   return VKR_RENDERER_ERROR_NONE;
 }
 
+bool8_t vkr_renderer_texture_pressure_budget(const VkrDeviceMemoryStats *stats,
+                                             bool8_t pressure_active,
+                                             uint64_t *out_budget,
+                                             bool8_t *out_pressure_active) {
+  if (!stats || !out_budget || !out_pressure_active ||
+      !stats->heap_usage_valid || stats->heap_count == 0u) {
+    return false_v;
+  }
+  uint64_t usage = 0u;
+  uint64_t budget = 0u;
+  for (uint32_t i = 0u; i < stats->heap_count; ++i) {
+    if (UINT64_MAX - usage < stats->heap_usage_bytes[i] ||
+        UINT64_MAX - budget < stats->heap_budget_bytes[i]) {
+      return false_v;
+    }
+    usage += stats->heap_usage_bytes[i];
+    budget += stats->heap_budget_bytes[i];
+  }
+  if (budget == 0u) {
+    return false_v;
+  }
+  if (usage >= budget - budget / 10u) {
+    const uint64_t texture_bytes =
+        stats->owners[VKR_GPU_ALLOCATION_OWNER_TEXTURE].live_bytes;
+    const uint64_t non_texture_bytes =
+        usage > texture_bytes ? usage - texture_bytes : 0u;
+    const uint64_t target_usage = budget - budget / 5u;
+    *out_budget = target_usage > non_texture_bytes
+                      ? target_usage - non_texture_bytes
+                      : 0u;
+    *out_pressure_active = true_v;
+    return true_v;
+  }
+  if (pressure_active && usage <= budget - budget / 4u) {
+    *out_budget = UINT64_MAX;
+    *out_pressure_active = false_v;
+    return true_v;
+  }
+  return false_v;
+}
+
+static void renderer_frontend_update_texture_pressure(RendererFrontend *rf) {
+  if (!rf || rf->material_system.texture_stream_budget_user_configured ||
+      rf->frame_number < rf->texture_pressure_poll_frame + 60u ||
+      !rf->impl.ops || !rf->impl.ops->get_device_memory_stats) {
+    return;
+  }
+  rf->texture_pressure_poll_frame = rf->frame_number;
+  VkrDeviceMemoryStats stats = {0};
+  if (!rf->impl.ops->get_device_memory_stats(rf->impl.state, &stats)) {
+    return;
+  }
+  uint64_t texture_budget = 0u;
+  bool8_t pressure_active = rf->texture_pressure_active;
+  if (vkr_renderer_texture_pressure_budget(&stats, rf->texture_pressure_active,
+                                           &texture_budget, &pressure_active)) {
+    vkr_material_system_set_automatic_texture_residency_budget(
+        &rf->material_system, texture_budget);
+    rf->texture_pressure_active = pressure_active;
+  }
+}
+
+static bool8_t renderer_frontend_pump_assets(RendererFrontend *rf) {
+  renderer_frontend_update_texture_pressure(rf);
+  const VkrAssetPublisher *publisher = &rf->asset_publisher;
+  const bool8_t batching = publisher->begin_texture_upload_batch != NULL;
+  if (batching != (publisher->end_texture_upload_batch != NULL) ||
+      (batching && !publisher->begin_texture_upload_batch(publisher->state))) {
+    log_error("Renderer asset texture upload batch initialization failed");
+    return false_v;
+  }
+  vkr_resource_system_pump(NULL);
+  if (batching && !publisher->end_texture_upload_batch(publisher->state)) {
+    log_error("Renderer asset texture upload batch submission failed");
+    return false_v;
+  }
+  vkr_material_system_pump_texture_streams(&rf->material_system, 32u);
+  vkr_mesh_manager_pump_async(&rf->mesh_manager);
+  return true_v;
+}
+
 static VkrRendererError
 renderer_impl_metal_prepare_frame(void *state, VkrFrameSetup *out_setup) {
   RendererFrontend *rf = state;
@@ -2095,8 +2178,10 @@ renderer_impl_metal_prepare_frame(void *state, VkrFrameSetup *out_setup) {
     rf->last_window_height = pixels.height;
   }
   rf->frame_active = true_v;
-  vkr_resource_system_pump(NULL);
-  vkr_mesh_manager_pump_async(&rf->mesh_manager);
+  if (!renderer_frontend_pump_assets(rf)) {
+    rf->frame_active = false_v;
+    return VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED;
+  }
   VkrRenderGraphFrameInfo frame = {
       .frame_index = (uint32_t)(rf->frame_number + 1u),
       .image_index = 0,
@@ -2179,8 +2264,9 @@ renderer_impl_vulkan_prepare_frame(void *state, VkrFrameSetup *out_setup) {
   // implementation has activated a frame. Both selected strategies pump at
   // this lifecycle point so dependency closures can reach READY and stamp the
   // submit that carries their uploads.
-  vkr_resource_system_pump(NULL);
-  vkr_mesh_manager_pump_async(&rf->mesh_manager);
+  if (!renderer_frontend_pump_assets(rf)) {
+    return VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED;
+  }
   rf->frame_number++;
   rf->last_window_width = out_setup->window_width;
   rf->last_window_height = out_setup->window_height;

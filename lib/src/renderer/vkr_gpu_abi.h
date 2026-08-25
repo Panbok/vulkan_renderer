@@ -7,6 +7,7 @@
 #define VKR_INSTANCE_BUFFER_MAX_INSTANCES 65536
 /** Fixed P3 candidate/visible capacity; growth publishes a later generation. */
 #define VKR_GPU_DRAW_CANDIDATE_CAPACITY 262144u
+#define VKR_GPU_GEOMETRY_DECODE_STATIC_V1 1u
 
 enum { VKR_GPU_TRANSMISSION_LAYER_COUNT = 4 };
 
@@ -22,9 +23,18 @@ typedef enum VkrWorldDrawStateBucket {
 typedef struct VkrGeometryMegabufferMetrics {
   uint64_t vertex_capacity_bytes;
   uint64_t index_capacity_bytes;
+  uint64_t vertex_live_bytes;
+  uint64_t index_live_bytes;
   uint64_t live_bytes;
   uint64_t fragmentation_bytes;
   uint64_t high_water_bytes;
+  uint64_t vertex_high_water_bytes;
+  uint64_t index_high_water_bytes;
+  uint64_t vertex_uploaded_bytes_total;
+  uint64_t decode_metadata_live_bytes;
+  uint64_t decode_metadata_high_water_bytes;
+  uint64_t decode_metadata_uploaded_bytes_total;
+  uint64_t index_uploaded_bytes_total;
   uint64_t rejected_publications;
   uint64_t generation_replacements;
   uint32_t generation;
@@ -45,8 +55,25 @@ _Static_assert(sizeof(VkrInstanceDataGPU) % 16 == 0,
 /** Vertex layouts addressable through a published geometry row. */
 typedef enum VkrGpuVertexLayout {
   VKR_GPU_VERTEX_LAYOUT_3D = 0,
+  VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1 = 1,
   VKR_GPU_VERTEX_LAYOUT_COUNT,
 } VkrGpuVertexLayout;
+
+typedef struct VkrPackedStaticVertex {
+  uint32_t words[8];
+} VkrPackedStaticVertex;
+
+typedef struct VkrGpuGeometryDecodeRecord {
+  float32_t position_bias[3];
+  uint32_t flags;
+  float32_t position_scale[3];
+  uint32_t reserved;
+} VkrGpuGeometryDecodeRecord;
+
+_Static_assert(sizeof(VkrPackedStaticVertex) == 32,
+               "Packed static vertex ABI must be 32 bytes");
+_Static_assert(sizeof(VkrGpuGeometryDecodeRecord) == 32,
+               "Geometry decode record ABI must be 32 bytes");
 
 /**
  * Immutable geometry-table row for one publication generation.
@@ -63,8 +90,16 @@ typedef struct VkrGpuGeometryRow {
   uint32_t vertex_layout;
   uint32_t publication_generation;
   uint32_t flags;
-  uint32_t reserved[2];
+  uint64_t decode_address;
 } VkrGpuGeometryRow;
+
+/**
+ * Relocates megabuffer base addresses while preserving decode-record offset.
+ */
+void vkr_gpu_geometry_row_relocate(VkrGpuGeometryRow *row,
+                                   uint64_t vertex_address,
+                                   uint64_t index_address,
+                                   uint32_t publication_generation);
 
 /** One bounded instance x submesh source row consumed by GPU culling. */
 typedef struct VkrGpuCandidateDrawRow {
@@ -123,6 +158,8 @@ _Static_assert(offsetof(VkrGpuTransmissionDiagnostics, covered_pixels) == 80u,
 
 typedef enum VkrGpuAbiRecordId {
   VKR_GPU_ABI_VERTEX = 0,
+  VKR_GPU_ABI_PACKED_STATIC_VERTEX,
+  VKR_GPU_ABI_GEOMETRY_DECODE_RECORD,
   VKR_GPU_ABI_INSTANCE,
   VKR_GPU_ABI_TEXT_VERTEX,
   VKR_GPU_ABI_GEOMETRY_ROW,

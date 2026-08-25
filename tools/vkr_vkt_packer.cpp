@@ -11,12 +11,17 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -25,10 +30,15 @@ namespace {
 constexpr float kAlphaMaskIntermediateRatio = 0.30f;
 constexpr uint64_t kFnvOffsetBasis = 1469598103934665603ull;
 constexpr uint64_t kFnvPrime = 1099511628211ull;
+constexpr uint32_t kMaxTextureDimension = 16384u;
+constexpr uint32_t kMaxPhysicalLayers = 2048u;
+constexpr uint32_t kMaxUploadRegions = 32768u;
 
 struct AlphaAnalysis {
   bool has_transparency = false;
   bool alpha_mask = false;
+  uint64_t transparent_count = 0u;
+  uint64_t intermediate_count = 0u;
 };
 
 struct LevelImage {
@@ -44,8 +54,24 @@ struct PackStats {
   uint32_t failed = 0;
 };
 
+enum class ParseResult { kOk, kHelp, kError };
+enum class TextureClass {
+  kColorSrgb = 0,
+  kColorLinear,
+  kNormalRg,
+  kDataMask,
+};
+enum class TextureShape { k2D, k2DArray, kCube, kCubeArray };
+
 struct PackConfig {
   fs::path input_dir;
+  fs::path output;
+  std::vector<fs::path> layers;
+  TextureShape shape = TextureShape::k2D;
+  TextureClass texture_class = TextureClass::kColorSrgb;
+  bool layered_mode = false;
+  bool shape_explicit = false;
+  bool texture_class_explicit = false;
   bool strict = false;
   bool force = false;
   bool verbose = false;
@@ -55,15 +81,44 @@ struct PackConfig {
   bool write_source_hash = true;
 };
 
-enum class ParseResult { kOk, kHelp, kError };
-enum class TextureClass {
-  kColorSrgb = 0,
-  kColorLinear,
-  kNormalRg,
-  kDataMask,
-};
-
 std::string to_lower_ascii(std::string value);
+
+bool parse_texture_shape(const std::string &value, TextureShape *out) {
+  const std::string normalized = to_lower_ascii(value);
+  if (normalized == "2d") {
+    *out = TextureShape::k2D;
+    return true;
+  }
+  if (normalized == "2d-array") {
+    *out = TextureShape::k2DArray;
+    return true;
+  }
+  if (normalized == "cube") {
+    *out = TextureShape::kCube;
+    return true;
+  }
+  if (normalized == "cube-array") {
+    *out = TextureShape::kCubeArray;
+    return true;
+  }
+  return false;
+}
+
+bool parse_texture_class_option(const std::string &value, TextureClass *out) {
+  const std::string normalized = to_lower_ascii(value);
+  if (normalized == "color-srgb") {
+    *out = TextureClass::kColorSrgb;
+  } else if (normalized == "color-linear") {
+    *out = TextureClass::kColorLinear;
+  } else if (normalized == "normal-rg") {
+    *out = TextureClass::kNormalRg;
+  } else if (normalized == "data-mask") {
+    *out = TextureClass::kDataMask;
+  } else {
+    return false;
+  }
+  return true;
+}
 
 bool parse_uint32_nonzero(const std::string &value, uint32_t *out_value) {
   if (!out_value || value.empty()) {
@@ -151,6 +206,43 @@ ParseResult parse_args(int argc, char **argv, PackConfig &out_config) {
       out_config.input_dir = fs::path(argv[++index]);
       continue;
     }
+    if (arg == "--output") {
+      if (index + 1 >= argc) {
+        std::cerr << "Missing value for --output\n";
+        return ParseResult::kError;
+      }
+      out_config.output = fs::path(argv[++index]);
+      out_config.layered_mode = true;
+      continue;
+    }
+    if (arg == "--type") {
+      if (index + 1 >= argc ||
+          !parse_texture_shape(argv[++index], &out_config.shape)) {
+        std::cerr << "Invalid --type (expected 2d|2d-array|cube|cube-array)\n";
+        return ParseResult::kError;
+      }
+      out_config.shape_explicit = true;
+      out_config.layered_mode = true;
+      continue;
+    }
+    if (arg == "--layer") {
+      if (index + 1 >= argc) {
+        std::cerr << "Missing value for --layer\n";
+        return ParseResult::kError;
+      }
+      out_config.layers.emplace_back(argv[++index]);
+      out_config.layered_mode = true;
+      continue;
+    }
+    if (arg == "--texture-class") {
+      if (index + 1 >= argc || !parse_texture_class_option(
+                                   argv[++index], &out_config.texture_class)) {
+        std::cerr << "Invalid --texture-class\n";
+        return ParseResult::kError;
+      }
+      out_config.texture_class_explicit = true;
+      continue;
+    }
     if (arg == "--strict") {
       out_config.strict = true;
       continue;
@@ -219,7 +311,14 @@ ParseResult parse_args(int argc, char **argv, PackConfig &out_config) {
     return ParseResult::kError;
   }
 
-  if (out_config.input_dir.empty()) {
+  if (out_config.layered_mode) {
+    if (!out_config.input_dir.empty() || out_config.output.empty() ||
+        !out_config.shape_explicit || out_config.layers.empty()) {
+      std::cerr << "Layered mode requires --output, --type, and repeated "
+                   "--layer; it cannot use --input-dir\n";
+      return ParseResult::kError;
+    }
+  } else if (out_config.input_dir.empty()) {
     std::cerr << "Missing required argument --input-dir\n";
     return ParseResult::kError;
   }
@@ -228,12 +327,19 @@ ParseResult parse_args(int argc, char **argv, PackConfig &out_config) {
 }
 
 void print_usage(const char *program_name) {
-  std::cout << "Usage: " << program_name
-            << " --input-dir <path> [--strict] [--force] [--verbose]"
-               " [--progress|--no-progress]"
-               " [--basis-threads <auto|n>]"
-               " [--uastc-level <fastest|faster|default|slower|veryslow>]"
-               " [--source-hash|--no-source-hash]\n";
+  std::cout
+      << "Usage: " << program_name
+      << " --input-dir <path> [options]\n"
+         "   or: "
+      << program_name
+      << " --output <file.vkt> --type <2d|2d-array|cube|cube-array>"
+         " --layer <image> [--layer <image> ...]"
+         " [--texture-class <color-srgb|color-linear|normal-rg|data-mask>]"
+         " [options]\n"
+         "Options: [--strict] [--force] [--verbose]"
+         " [--progress|--no-progress] [--basis-threads <auto|n>]"
+         " [--uastc-level <fastest|faster|default|slower|veryslow>]"
+         " [--source-hash|--no-source-hash]\n";
 }
 
 std::string format_duration(double seconds) {
@@ -403,6 +509,8 @@ AlphaAnalysis analyze_alpha(const uint8_t *pixels, uint32_t width,
     return analysis;
   }
 
+  analysis.transparent_count = transparent_count;
+  analysis.intermediate_count = intermediate_count;
   analysis.has_transparency = true;
   const float ratio = static_cast<float>(intermediate_count) /
                       static_cast<float>(transparent_count);
@@ -445,6 +553,65 @@ std::string to_hex_u64(uint64_t value) {
   return out;
 }
 
+bool combined_source_hash(const std::vector<fs::path> &source_paths,
+                          uint64_t *out_hash) {
+  if (!out_hash || source_paths.empty()) {
+    return false;
+  }
+  uint64_t combined = kFnvOffsetBasis;
+  for (const fs::path &path : source_paths) {
+    bool ok = true;
+    const uint64_t source_hash = fnv1a_file_hash(path, &ok);
+    if (!ok) {
+      return false;
+    }
+    combined ^= source_hash;
+    combined *= kFnvPrime;
+  }
+  *out_hash = combined;
+  return true;
+}
+
+const char *texture_shape_metadata_value(TextureShape shape) {
+  switch (shape) {
+  case TextureShape::k2D:
+    return "2d";
+  case TextureShape::k2DArray:
+    return "2d-array";
+  case TextureShape::kCube:
+    return "cube";
+  case TextureShape::kCubeArray:
+    return "cube-array";
+  }
+  return "invalid";
+}
+
+std::string pack_settings_identity(TextureClass texture_class,
+                                   TextureShape shape,
+                                   const PackConfig &config) {
+  std::ostringstream settings;
+  settings << "asset=1;shape=" << texture_shape_metadata_value(shape)
+           << ";class=" << texture_class_metadata_value(texture_class)
+           << ";uastc=" << uastc_level_to_string(config.uastc_level)
+           << ";mips=rgba8-box-v1;flip=vertical";
+  return settings.str();
+}
+
+bool texture_metadata_equals(ktxTexture2 *texture, const char *key,
+                             const std::string &expected) {
+  if (!texture || !key) {
+    return false;
+  }
+  unsigned int value_length = 0u;
+  void *value = nullptr;
+  return ktxHashList_FindValue(&texture->kvDataHead, key, &value_length,
+                               &value) == KTX_SUCCESS &&
+         value && value_length == expected.size() + 1u &&
+         std::equal(expected.begin(), expected.end(),
+                    static_cast<const char *>(value)) &&
+         static_cast<const char *>(value)[expected.size()] == '\0';
+}
+
 bool add_kv_string(ktxTexture2 *texture, const char *key,
                    const std::string &value) {
   if (!texture || !key) {
@@ -462,120 +629,219 @@ bool add_kv_bool(ktxTexture2 *texture, const char *key, bool value) {
          KTX_SUCCESS;
 }
 
-bool should_skip_output(const fs::path &src, const fs::path &dst, bool force) {
-  if (force || !fs::exists(dst)) {
+bool should_skip_output(const std::vector<fs::path> &source_paths,
+                        const fs::path &dst, TextureClass texture_class,
+                        TextureShape shape, const PackConfig &config) {
+  if (config.force || !config.write_source_hash || !fs::exists(dst)) {
     return false;
   }
-
-  std::error_code ec_src;
-  std::error_code ec_dst;
-  const auto src_time = fs::last_write_time(src, ec_src);
-  const auto dst_time = fs::last_write_time(dst, ec_dst);
-  if (ec_src || ec_dst) {
+  uint64_t source_hash = 0u;
+  if (!combined_source_hash(source_paths, &source_hash)) {
     return false;
   }
-  return dst_time >= src_time;
+  ktxTexture2 *texture = nullptr;
+  if (ktxTexture2_CreateFromNamedFile(dst.string().c_str(),
+                                      KTX_TEXTURE_CREATE_NO_FLAGS,
+                                      &texture) != KTX_SUCCESS ||
+      !texture) {
+    return false;
+  }
+  const bool matches =
+      texture_metadata_equals(texture, "vkr.source_hash",
+                              to_hex_u64(source_hash)) &&
+      texture_metadata_equals(
+          texture, "vkr.pack_settings",
+          pack_settings_identity(texture_class, shape, config));
+  ktxTexture_Destroy(ktxTexture(texture));
+  return matches;
 }
 
-bool pack_texture_to_vkt(const fs::path &src_path, const fs::path &dst_path,
-                         TextureClass texture_class, const PackConfig &config) {
-  const bool srgb_colorspace = texture_class_prefers_srgb(texture_class);
-  log_progress_line(config.progress,
-                    "  - decode: " + src_path.generic_string());
-  int width = 0;
-  int height = 0;
-  int channels = 0;
-  stbi_uc *loaded =
-      stbi_load(src_path.string().c_str(), &width, &height, &channels, 4);
-  if (!loaded || width <= 0 || height <= 0) {
-    std::cerr << "Failed to decode texture: " << src_path << "\n";
-    if (loaded) {
-      stbi_image_free(loaded);
-    }
+bool publish_temporary_output(const fs::path &temporary,
+                              const fs::path &destination,
+                              std::error_code *out_error) {
+  if (!out_error) {
+    return false;
+  }
+  out_error->clear();
+#if defined(_WIN32)
+  if (MoveFileExW(temporary.c_str(), destination.c_str(),
+                  MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    return true;
+  }
+  *out_error =
+      std::error_code(static_cast<int>(GetLastError()), std::system_category());
+  return false;
+#else
+  fs::rename(temporary, destination, *out_error);
+  return !*out_error;
+#endif
+}
+
+struct PackedSource {
+  fs::path path;
+  uint32_t width = 0u;
+  uint32_t height = 0u;
+  std::vector<LevelImage> levels;
+  AlphaAnalysis alpha = {};
+};
+
+bool pack_texture_set_to_vkt(const std::vector<fs::path> &source_paths,
+                             const fs::path &dst_path,
+                             TextureClass texture_class, TextureShape shape,
+                             const PackConfig &config) {
+  const size_t source_count = source_paths.size();
+  const bool valid_count =
+      (shape == TextureShape::k2D && source_count == 1u) ||
+      (shape == TextureShape::k2DArray && source_count > 1u) ||
+      (shape == TextureShape::kCube && source_count == 6u) ||
+      (shape == TextureShape::kCubeArray && source_count > 6u &&
+       source_count % 6u == 0u);
+  if (!valid_count || source_count > kMaxPhysicalLayers) {
+    std::cerr << "Invalid source count " << source_count
+              << " for the requested texture shape or runtime layer limit\n";
     return false;
   }
 
-  log_progress_line(config.progress, "  - mips: build chain");
-  std::vector<LevelImage> levels = build_mip_chain_rgba8(
-      loaded, static_cast<uint32_t>(width), static_cast<uint32_t>(height));
-  const AlphaAnalysis alpha = analyze_alpha(
-      loaded, static_cast<uint32_t>(width), static_cast<uint32_t>(height));
-  stbi_image_free(loaded);
+  std::vector<PackedSource> sources;
+  sources.reserve(source_count);
+  uint32_t width = 0u;
+  uint32_t height = 0u;
+  size_t mip_count = 0u;
+  AlphaAnalysis aggregate_alpha = {};
+  for (const fs::path &path : source_paths) {
+    int source_width = 0;
+    int source_height = 0;
+    int channels = 0;
+    if (!stbi_info(path.string().c_str(), &source_width, &source_height,
+                   &channels) ||
+        source_width <= 0 || source_height <= 0 ||
+        source_width > static_cast<int>(kMaxTextureDimension) ||
+        source_height > static_cast<int>(kMaxTextureDimension)) {
+      std::cerr << "Texture extent exceeds the runtime contract: " << path
+                << "\n";
+      return false;
+    }
+    stbi_uc *loaded = stbi_load(path.string().c_str(), &source_width,
+                                &source_height, &channels, 4);
+    if (!loaded || source_width <= 0 || source_height <= 0 ||
+        source_width > static_cast<int>(kMaxTextureDimension) ||
+        source_height > static_cast<int>(kMaxTextureDimension)) {
+      std::cerr << "Failed to decode texture: " << path << "\n";
+      if (loaded) {
+        stbi_image_free(loaded);
+      }
+      return false;
+    }
+    PackedSource source;
+    source.path = path;
+    source.width = static_cast<uint32_t>(source_width);
+    source.height = static_cast<uint32_t>(source_height);
+    source.levels = build_mip_chain_rgba8(loaded, source.width, source.height);
+    source.alpha = analyze_alpha(loaded, source.width, source.height);
+    stbi_image_free(loaded);
+    if (sources.empty()) {
+      width = source.width;
+      height = source.height;
+      mip_count = source.levels.size();
+    } else if (source.width != width || source.height != height ||
+               source.levels.size() != mip_count) {
+      std::cerr << "Layered texture sources must have identical extents\n";
+      return false;
+    }
+    aggregate_alpha.transparent_count += source.alpha.transparent_count;
+    aggregate_alpha.intermediate_count += source.alpha.intermediate_count;
+    sources.push_back(std::move(source));
+  }
+  aggregate_alpha.has_transparency = aggregate_alpha.transparent_count > 0u;
+  aggregate_alpha.alpha_mask =
+      aggregate_alpha.has_transparency &&
+      static_cast<double>(aggregate_alpha.intermediate_count) /
+              static_cast<double>(aggregate_alpha.transparent_count) <=
+          kAlphaMaskIntermediateRatio;
+  if (mip_count == 0u ||
+      mip_count * source_count > static_cast<size_t>(kMaxUploadRegions)) {
+    std::cerr << "Layered texture exceeds the runtime upload-region limit\n";
+    return false;
+  }
+  if ((shape == TextureShape::kCube || shape == TextureShape::kCubeArray) &&
+      width != height) {
+    std::cerr << "Cubemap sources must be square\n";
+    return false;
+  }
 
+  const bool cube =
+      shape == TextureShape::kCube || shape == TextureShape::kCubeArray;
+  const uint32_t face_count = cube ? 6u : 1u;
+  const uint32_t layer_count = cube ? static_cast<uint32_t>(source_count / 6u)
+                                    : static_cast<uint32_t>(source_count);
+  const bool srgb_colorspace = texture_class_prefers_srgb(texture_class);
   ktxTextureCreateInfo create_info = {};
   create_info.vkFormat =
       srgb_colorspace ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
-  create_info.baseWidth = static_cast<ktx_uint32_t>(width);
-  create_info.baseHeight = static_cast<ktx_uint32_t>(height);
-  create_info.baseDepth = 1;
-  create_info.numDimensions = 2;
-  create_info.numLevels = static_cast<ktx_uint32_t>(levels.size());
-  create_info.numLayers = 1;
-  create_info.numFaces = 1;
-  create_info.isArray = KTX_FALSE;
+  create_info.baseWidth = width;
+  create_info.baseHeight = height;
+  create_info.baseDepth = 1u;
+  create_info.numDimensions = 2u;
+  create_info.numLevels = static_cast<uint32_t>(mip_count);
+  create_info.numLayers = layer_count;
+  create_info.numFaces = face_count;
+  create_info.isArray = layer_count > 1u ? KTX_TRUE : KTX_FALSE;
   create_info.generateMipmaps = KTX_FALSE;
 
   ktxTexture2 *texture = nullptr;
   KTX_error_code result = ktxTexture2_Create(
       &create_info, KTX_TEXTURE_CREATE_ALLOC_STORAGE, &texture);
   if (result != KTX_SUCCESS || !texture) {
-    std::cerr << "Failed to create KTX2 object for '" << src_path
-              << "': " << ktxErrorString(result) << "\n";
+    std::cerr << "Failed to create KTX2 object: " << ktxErrorString(result)
+              << "\n";
     return false;
   }
 
   bool success = false;
   do {
-    log_progress_line(config.progress, "  - ktx2: write mip payloads");
-    for (uint32_t level_index = 0; level_index < levels.size(); ++level_index) {
-      const LevelImage &level = levels[level_index];
-      result = ktxTexture_SetImageFromMemory(
-          ktxTexture(texture), level_index, 0, 0, level.pixels.data(),
-          static_cast<ktx_size_t>(level.pixels.size()));
+    for (uint32_t layer = 0u; layer < layer_count; ++layer) {
+      for (uint32_t face = 0u; face < face_count; ++face) {
+        const PackedSource &source = sources[layer * face_count + face];
+        for (uint32_t mip = 0u; mip < source.levels.size(); ++mip) {
+          const LevelImage &level = source.levels[mip];
+          result = ktxTexture_SetImageFromMemory(
+              ktxTexture(texture), mip, layer, face, level.pixels.data(),
+              static_cast<ktx_size_t>(level.pixels.size()));
+          if (result != KTX_SUCCESS) {
+            break;
+          }
+        }
+        if (result != KTX_SUCCESS) {
+          break;
+        }
+      }
       if (result != KTX_SUCCESS) {
-        std::cerr << "Failed to set mip level " << level_index << " for '"
-                  << src_path << "': " << ktxErrorString(result) << "\n";
         break;
       }
     }
-    if (result != KTX_SUCCESS) {
-      break;
-    }
-
-    if (!add_kv_string(texture, "vkr.colorspace_hint",
+    if (result != KTX_SUCCESS ||
+        !add_kv_string(texture, "vkr.colorspace_hint",
                        srgb_colorspace ? "srgb" : "linear") ||
         !add_kv_string(texture, "vkr.texture_class",
                        texture_class_metadata_value(texture_class)) ||
-        !add_kv_bool(texture, "vkr.has_transparency", alpha.has_transparency) ||
-        !add_kv_bool(texture, "vkr.alpha_mask", alpha.alpha_mask) ||
-        !add_kv_string(texture, "vkr.asset_version", "1")) {
-      std::cerr << "Failed to set metadata for '" << src_path << "'\n";
+        !add_kv_bool(texture, "vkr.has_transparency",
+                     aggregate_alpha.has_transparency) ||
+        !add_kv_bool(texture, "vkr.alpha_mask", aggregate_alpha.alpha_mask) ||
+        !add_kv_string(texture, "vkr.asset_version", "1") ||
+        !add_kv_string(texture, "vkr.pack_settings",
+                       pack_settings_identity(texture_class, shape, config))) {
       break;
     }
 
     if (config.write_source_hash) {
-      bool hash_ok = false;
-      const uint64_t source_hash = fnv1a_file_hash(src_path, &hash_ok);
-      if (hash_ok) {
-        if (!add_kv_string(texture, "vkr.source_hash",
-                           to_hex_u64(source_hash))) {
-          std::cerr << "Failed to set source hash metadata for '" << src_path
-                    << "'\n";
-          break;
-        }
-      } else if (config.verbose) {
-        std::cerr << "Failed to hash source '" << src_path
-                  << "' (continuing without vkr.source_hash)\n";
+      uint64_t combined_hash = 0u;
+      if (!combined_source_hash(source_paths, &combined_hash) ||
+          !add_kv_string(texture, "vkr.source_hash",
+                         to_hex_u64(combined_hash))) {
+        break;
       }
     }
 
-    {
-      std::ostringstream compress_line;
-      compress_line << "  - compress: UASTC (basis, level="
-                    << uastc_level_to_string(config.uastc_level)
-                    << ", threads=" << config.basis_threads << ")";
-      log_progress_line(config.progress, compress_line.str());
-    }
     ktxBasisParams basis_params = {};
     basis_params.structSize = sizeof(basis_params);
     basis_params.compressionLevel = KTX_ETC1S_DEFAULT_COMPRESSION_LEVEL;
@@ -583,52 +849,54 @@ bool pack_texture_to_vkt(const fs::path &src_path, const fs::path &dst_path,
     basis_params.threadCount = config.basis_threads;
     basis_params.uastcFlags = config.uastc_level;
     basis_params.uastcRDO = KTX_FALSE;
-
     result = ktxTexture2_CompressBasisEx(texture, &basis_params);
     if (result != KTX_SUCCESS) {
-      std::cerr << "Failed to compress texture '" << src_path
-                << "' as UASTC: " << ktxErrorString(result) << "\n";
+      std::cerr << "Failed to compress layered texture: "
+                << ktxErrorString(result) << "\n";
       break;
     }
 
-    log_progress_line(config.progress,
-                      "  - write: " + dst_path.generic_string());
+    std::error_code ec;
+    if (!dst_path.parent_path().empty()) {
+      fs::create_directories(dst_path.parent_path(), ec);
+      if (ec) {
+        std::cerr << "Failed to create output directory: " << ec.message()
+                  << "\n";
+        break;
+      }
+    }
     fs::path tmp_path = dst_path;
-    tmp_path += ".tmp";
+    const uint64_t unique_suffix =
+        static_cast<uint64_t>(
+            std::chrono::steady_clock::now().time_since_epoch().count()) ^
+        static_cast<uint64_t>(
+            std::hash<std::thread::id>{}(std::this_thread::get_id()));
+    tmp_path += ".tmp." + to_hex_u64(unique_suffix);
     result = ktxTexture_WriteToNamedFile(ktxTexture(texture),
                                          tmp_path.string().c_str());
     if (result != KTX_SUCCESS) {
       std::cerr << "Failed to write temporary output '" << tmp_path
                 << "': " << ktxErrorString(result) << "\n";
+      fs::remove(tmp_path, ec);
       break;
     }
-
-    std::error_code ec_remove;
-    fs::remove(dst_path, ec_remove);
-    std::error_code ec_rename;
-    fs::rename(tmp_path, dst_path, ec_rename);
-    if (ec_rename) {
-      std::cerr << "Failed to move temporary output to destination '"
-                << dst_path << "': " << ec_rename.message() << "\n";
-      fs::remove(tmp_path, ec_remove);
+    if (!publish_temporary_output(tmp_path, dst_path, &ec)) {
+      std::cerr << "Failed to publish layered output '" << dst_path
+                << "': " << ec.message() << "\n";
+      fs::remove(tmp_path, ec);
       break;
-    }
-
-    if (config.verbose) {
-      std::cout << "Packed " << src_path << " -> " << dst_path << " ("
-                << levels.size()
-                << " mips, colorspace=" << (srgb_colorspace ? "srgb" : "linear")
-                << ", class=" << texture_class_metadata_value(texture_class)
-                << ", uastc_level=" << uastc_level_to_string(config.uastc_level)
-                << ", basis_threads=" << config.basis_threads
-                << ", source_hash="
-                << (config.write_source_hash ? "enabled" : "disabled") << ")\n";
     }
     success = true;
   } while (false);
 
   ktxTexture_Destroy(ktxTexture(texture));
   return success;
+}
+
+bool pack_texture_to_vkt(const fs::path &src_path, const fs::path &dst_path,
+                         TextureClass texture_class, const PackConfig &config) {
+  return pack_texture_set_to_vkt({src_path}, dst_path, texture_class,
+                                 TextureShape::k2D, config);
 }
 
 std::vector<fs::path> discover_source_textures(const fs::path &root_dir) {
@@ -669,14 +937,36 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  config.basis_threads = resolve_basis_thread_count(config.basis_threads);
+  stbi_set_flip_vertically_on_load(1);
+  if (config.layered_mode) {
+    for (const fs::path &layer : config.layers) {
+      if (!fs::exists(layer) || !fs::is_regular_file(layer)) {
+        std::cerr << "Layer source does not exist: " << layer << "\n";
+        return 1;
+      }
+    }
+    const TextureClass texture_class =
+        config.texture_class_explicit
+            ? config.texture_class
+            : infer_texture_class(config.layers.front());
+    if (should_skip_output(config.layers, config.output, texture_class,
+                           config.shape, config)) {
+      std::cout << "Layered output is up to date: " << config.output << "\n";
+      return 0;
+    }
+    const bool packed = pack_texture_set_to_vkt(
+        config.layers, config.output, texture_class, config.shape, config);
+    std::cout << "vkt layered pack: output=" << config.output
+              << " sources=" << config.layers.size()
+              << " status=" << (packed ? "packed" : "failed") << "\n";
+    return packed ? 0 : 1;
+  }
+
   if (!fs::exists(config.input_dir) || !fs::is_directory(config.input_dir)) {
     std::cerr << "Input directory does not exist: " << config.input_dir << "\n";
     return config.strict ? 1 : 0;
   }
-
-  config.basis_threads = resolve_basis_thread_count(config.basis_threads);
-
-  stbi_set_flip_vertically_on_load(1);
 
   const std::vector<fs::path> sources =
       discover_source_textures(config.input_dir);
@@ -731,13 +1021,14 @@ int main(int argc, char **argv) {
     }
 
     const fs::path dst_path = src_path.string() + ".vkt";
-    if (should_skip_output(src_path, dst_path, config.force)) {
+    const TextureClass texture_class = infer_texture_class(src_path);
+    if (should_skip_output({src_path}, dst_path, texture_class,
+                           TextureShape::k2D, config)) {
       ++stats.skipped;
-      log_progress_line(config.progress, "  - skip: up-to-date");
+      log_progress_line(config.progress, "  - skip: content/settings match");
       continue;
     }
 
-    const TextureClass texture_class = infer_texture_class(src_path);
     if (pack_texture_to_vkt(src_path, dst_path, texture_class, config)) {
       ++stats.packed;
       log_progress_line(config.progress, "  - ok");

@@ -24,7 +24,7 @@ if %errorlevel% neq 0 (
 
 REM Build target
 echo Building vulkan_renderer (RelWithDebInfo)
-cmake --build .\build_release_info --target vulkan_renderer vkr_harness --config RelWithDebInfo
+cmake --build .\build_release_info --target vulkan_renderer vkr_harness vkr_mesh_cooker --config RelWithDebInfo
 if %errorlevel% neq 0 (
     echo Build failed.
     exit /b 1

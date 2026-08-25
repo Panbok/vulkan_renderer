@@ -759,6 +759,7 @@ vkr_internal bool8_t application_build_world_payload(
     Application *application, VkrAllocator *scratch,
     VkrWorldPassPayload *out_payload, VkrVisibilityStats *out_stats) {
   RendererFrontend *rf = &application->renderer;
+  vkr_material_system_begin_texture_residency_frame(&rf->material_system);
   const Mat4 view = rf->globals.view;
   const VkrFrustum camera_frustum =
       vkr_frustum_from_view_projection(view, rf->globals.projection);
@@ -988,6 +989,10 @@ vkr_internal bool8_t application_build_world_payload(
             material ? (VkrMaterialHandle){.id = material->id,
                                            .generation = material->generation}
                      : submesh->material;
+        if (pass == 0u) {
+          vkr_material_system_touch_texture_residency(&rf->material_system,
+                                                      draw_material);
+        }
         const VkrDrawAlphaRouting alpha =
             application_material_alpha_routing(rf, material);
         const bool8_t transmissive =
@@ -1033,6 +1038,10 @@ vkr_internal bool8_t application_build_world_payload(
             material ? (VkrMaterialHandle){.id = material->id,
                                            .generation = material->generation}
                      : submesh->material;
+        if (pass == 0u) {
+          vkr_material_system_touch_texture_residency(&rf->material_system,
+                                                      draw_material);
+        }
         const VkrDrawAlphaRouting alpha =
             application_material_alpha_routing(rf, material);
         const bool8_t transmissive =

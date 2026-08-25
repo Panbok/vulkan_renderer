@@ -458,6 +458,12 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
   VKR_REGISTER_U64(geometry_megabuffer_index_capacity,
                    "geometry.megabuffer.index_capacity_bytes",
                    VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(geometry_megabuffer_vertex_live_bytes,
+                   "geometry.megabuffer.vertex_live_bytes",
+                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(geometry_megabuffer_index_live_bytes,
+                   "geometry.megabuffer.index_live_bytes",
+                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_BYTES);
   VKR_REGISTER_U64(geometry_megabuffer_live_bytes,
                    "geometry.megabuffer.live_bytes",
                    VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_BYTES);
@@ -466,6 +472,27 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
                    VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_BYTES);
   VKR_REGISTER_U64(geometry_megabuffer_high_water_bytes,
                    "geometry.megabuffer.high_water_bytes",
+                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(geometry_megabuffer_vertex_high_water_bytes,
+                   "geometry.megabuffer.vertex_high_water_bytes",
+                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(geometry_megabuffer_index_high_water_bytes,
+                   "geometry.megabuffer.index_high_water_bytes",
+                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(geometry_megabuffer_vertex_uploaded_bytes_total,
+                   "geometry.megabuffer.vertex_uploaded_bytes_total",
+                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(geometry_megabuffer_index_uploaded_bytes_total,
+                   "geometry.megabuffer.index_uploaded_bytes_total",
+                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(geometry_megabuffer_decode_metadata_live_bytes,
+                   "geometry.megabuffer.decode_metadata_live_bytes",
+                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(geometry_megabuffer_decode_metadata_high_water_bytes,
+                   "geometry.megabuffer.decode_metadata_high_water_bytes",
+                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(geometry_megabuffer_decode_metadata_uploaded_bytes_total,
+                   "geometry.megabuffer.decode_metadata_uploaded_bytes_total",
                    VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_BYTES);
   VKR_REGISTER_U64(geometry_megabuffer_rejected_publications,
                    "geometry.megabuffer.rejected_publications_total",
@@ -476,6 +503,85 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
   VKR_REGISTER_U64(geometry_megabuffer_generation,
                    "geometry.megabuffer.generation",
                    VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(mesh_source_bytes, "asset.mesh.source_bytes",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(mesh_cooked_bytes, "asset.mesh.cooked_bytes",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(mesh_decoded_bytes, "asset.mesh.decoded_bytes",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(mesh_upload_bytes, "asset.mesh.upload_bytes",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(mesh_vertex_count, "asset.mesh.vertex_count",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(mesh_index_count, "asset.mesh.index_count",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(mesh_range_count, "asset.mesh.range_count",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(mesh_live_assets, "asset.mesh.live_assets",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(mesh_source_assets, "asset.mesh.source_assets",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(mesh_cooked_assets, "asset.mesh.cooked_assets",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(mesh_runtime_optimized_assets,
+                   "asset.mesh.runtime_optimized_assets",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_F64(mesh_cache_acmr_before, "asset.mesh.cache_acmr_before",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_RATIO);
+  VKR_REGISTER_F64(mesh_cache_acmr_after, "asset.mesh.cache_acmr_after",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_RATIO);
+  VKR_REGISTER_F64(mesh_cache_atvr_before, "asset.mesh.cache_atvr_before",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_RATIO);
+  VKR_REGISTER_F64(mesh_cache_atvr_after, "asset.mesh.cache_atvr_after",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_RATIO);
+  VKR_REGISTER_F64(mesh_fetch_overfetch_before,
+                   "asset.mesh.fetch_overfetch_before", VKR_METRIC_DOMAIN_ASSET,
+                   VKR_METRIC_UNIT_RATIO);
+  VKR_REGISTER_F64(mesh_fetch_overfetch_after,
+                   "asset.mesh.fetch_overfetch_after", VKR_METRIC_DOMAIN_ASSET,
+                   VKR_METRIC_UNIT_RATIO);
+  VKR_REGISTER_U64(texture_transcode_cache_hits,
+                   "asset.texture.transcode_cache.hits_total",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(texture_transcode_cache_misses,
+                   "asset.texture.transcode_cache.misses_total",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(texture_transcode_cache_writes,
+                   "asset.texture.transcode_cache.writes_total",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(material_texture_stream_pending,
+                   "asset.material.texture_stream.pending",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(material_texture_stream_in_flight,
+                   "asset.material.texture_stream.in_flight",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(material_texture_stream_resident,
+                   "asset.material.texture_stream.resident",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(material_texture_stream_evicted,
+                   "asset.material.texture_stream.evicted",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(material_texture_stream_resident_bytes,
+                   "asset.material.texture_stream.resident_bytes",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(material_texture_stream_budget_bytes,
+                   "asset.material.texture_stream.budget_bytes",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(material_texture_stream_applied,
+                   "asset.material.texture_stream.applied_total",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(material_texture_stream_failed,
+                   "asset.material.texture_stream.failed_total",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(material_texture_stream_evicted_total,
+                   "asset.material.texture_stream.evicted_total",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(material_texture_stream_pressure_stalls,
+                   "asset.material.texture_stream.pressure_stalls_total",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(material_texture_stream_automatic_pressure_active,
+                   "asset.material.texture_stream.automatic_pressure_active",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
 
   for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
     char name[64];
@@ -1304,15 +1410,109 @@ void vkr_renderer_metrics_collect(
   const VkrGeometryMegabufferMetrics *mega = &world->geometry_megabuffer;
   VKR_SET_U64(geometry_megabuffer_vertex_capacity, mega->vertex_capacity_bytes);
   VKR_SET_U64(geometry_megabuffer_index_capacity, mega->index_capacity_bytes);
+  VKR_SET_U64(geometry_megabuffer_vertex_live_bytes, mega->vertex_live_bytes);
+  VKR_SET_U64(geometry_megabuffer_index_live_bytes, mega->index_live_bytes);
   VKR_SET_U64(geometry_megabuffer_live_bytes, mega->live_bytes);
   VKR_SET_U64(geometry_megabuffer_fragmentation_bytes,
               mega->fragmentation_bytes);
   VKR_SET_U64(geometry_megabuffer_high_water_bytes, mega->high_water_bytes);
+  VKR_SET_U64(geometry_megabuffer_vertex_high_water_bytes,
+              mega->vertex_high_water_bytes);
+  VKR_SET_U64(geometry_megabuffer_index_high_water_bytes,
+              mega->index_high_water_bytes);
+  VKR_SET_U64(geometry_megabuffer_vertex_uploaded_bytes_total,
+              mega->vertex_uploaded_bytes_total);
+  VKR_SET_U64(geometry_megabuffer_index_uploaded_bytes_total,
+              mega->index_uploaded_bytes_total);
+  VKR_SET_U64(geometry_megabuffer_decode_metadata_live_bytes,
+              mega->decode_metadata_live_bytes);
+  VKR_SET_U64(geometry_megabuffer_decode_metadata_high_water_bytes,
+              mega->decode_metadata_high_water_bytes);
+  VKR_SET_U64(geometry_megabuffer_decode_metadata_uploaded_bytes_total,
+              mega->decode_metadata_uploaded_bytes_total);
   VKR_SET_U64(geometry_megabuffer_rejected_publications,
               mega->rejected_publications);
   VKR_SET_U64(geometry_megabuffer_generation_replacements,
               mega->generation_replacements);
   VKR_SET_U64(geometry_megabuffer_generation, mega->generation);
+
+  const VkrMeshManagerMetrics *mesh = &world->mesh_assets;
+  VKR_SET_U64(mesh_source_bytes, mesh->source_bytes);
+  VKR_SET_U64(mesh_cooked_bytes, mesh->cooked_bytes);
+  VKR_SET_U64(mesh_decoded_bytes, mesh->decoded_bytes);
+  VKR_SET_U64(mesh_upload_bytes, mesh->upload_bytes);
+  VKR_SET_U64(mesh_vertex_count, mesh->vertex_count);
+  VKR_SET_U64(mesh_index_count, mesh->index_count);
+  VKR_SET_U64(mesh_range_count, mesh->range_count);
+  VKR_SET_U64(mesh_live_assets, mesh->live_assets);
+  VKR_SET_U64(mesh_source_assets, mesh->source_assets);
+  VKR_SET_U64(mesh_cooked_assets, mesh->cooked_assets);
+  VKR_SET_U64(mesh_runtime_optimized_assets, mesh->runtime_optimized_assets);
+  VKR_SET_F64(mesh_cache_acmr_before,
+              mesh->analyzed_triangles
+                  ? (float64_t)mesh->vertices_transformed_before /
+                        (float64_t)mesh->analyzed_triangles
+                  : 0.0);
+  VKR_SET_F64(mesh_cache_acmr_after,
+              mesh->analyzed_triangles
+                  ? (float64_t)mesh->vertices_transformed_after /
+                        (float64_t)mesh->analyzed_triangles
+                  : 0.0);
+  VKR_SET_F64(mesh_cache_atvr_before,
+              mesh->analyzed_vertices
+                  ? (float64_t)mesh->vertices_transformed_before /
+                        (float64_t)mesh->analyzed_vertices
+                  : 0.0);
+  VKR_SET_F64(mesh_cache_atvr_after,
+              mesh->analyzed_vertices
+                  ? (float64_t)mesh->vertices_transformed_after /
+                        (float64_t)mesh->analyzed_vertices
+                  : 0.0);
+  VKR_SET_F64(mesh_fetch_overfetch_before,
+              mesh->analyzed_vertex_bytes_before
+                  ? (float64_t)mesh->bytes_fetched_before /
+                        (float64_t)mesh->analyzed_vertex_bytes_before
+                  : 0.0);
+  VKR_SET_F64(mesh_fetch_overfetch_after,
+              mesh->analyzed_vertex_bytes_after
+                  ? (float64_t)mesh->bytes_fetched_after /
+                        (float64_t)mesh->analyzed_vertex_bytes_after
+                  : 0.0);
+  VKR_SET_U64(
+      texture_transcode_cache_hits,
+      vkr_atomic_uint64_load(&renderer->texture_system.transcode_cache_hits,
+                             VKR_MEMORY_ORDER_RELAXED));
+  VKR_SET_U64(
+      texture_transcode_cache_misses,
+      vkr_atomic_uint64_load(&renderer->texture_system.transcode_cache_misses,
+                             VKR_MEMORY_ORDER_RELAXED));
+  VKR_SET_U64(
+      texture_transcode_cache_writes,
+      vkr_atomic_uint64_load(&renderer->texture_system.transcode_cache_writes,
+                             VKR_MEMORY_ORDER_RELAXED));
+  VKR_SET_U64(material_texture_stream_pending,
+              renderer->material_system.texture_stream_queued_count +
+                  renderer->material_system.texture_stream_active_count);
+  VKR_SET_U64(material_texture_stream_in_flight,
+              renderer->material_system.texture_stream_active_count);
+  VKR_SET_U64(material_texture_stream_resident,
+              renderer->material_system.texture_stream_resident_count);
+  VKR_SET_U64(material_texture_stream_evicted,
+              renderer->material_system.texture_stream_evicted_count);
+  VKR_SET_U64(material_texture_stream_resident_bytes,
+              renderer->material_system.texture_stream_resident_bytes);
+  VKR_SET_U64(material_texture_stream_budget_bytes,
+              renderer->material_system.texture_stream_budget_bytes);
+  VKR_SET_U64(material_texture_stream_applied,
+              renderer->material_system.texture_stream_applied_total);
+  VKR_SET_U64(material_texture_stream_failed,
+              renderer->material_system.texture_stream_failed_total);
+  VKR_SET_U64(material_texture_stream_evicted_total,
+              renderer->material_system.texture_stream_evicted_total);
+  VKR_SET_U64(material_texture_stream_pressure_stalls,
+              renderer->material_system.texture_stream_pressure_stalls_total);
+  VKR_SET_U64(material_texture_stream_automatic_pressure_active,
+              renderer->texture_pressure_active ? 1u : 0u);
 
   for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
     vkr_metrics_gauge_set_u64(metrics, ids->shadow_indirect_draws_opaque[i],

@@ -76,7 +76,6 @@ typedef struct VkrMaterialParseJobPayload {
 
 typedef struct VkrMaterialAsyncDependency {
   bool8_t requested;
-  bool8_t failure_reported;
   VkrTextureSlot slot;
   char resolved_path[VKR_MATERIAL_PATH_MAX];
   VkrResourceHandleInfo request_info;
@@ -1144,16 +1143,11 @@ vkr_internal void vkr_material_loader_prepare_dependency(
     return;
   }
 
-  VkrRendererError dependency_error = VKR_RENDERER_ERROR_NONE;
   MemZero(&dependency->request_info, sizeof(dependency->request_info));
   dependency->request_info.type = VKR_RESOURCE_TYPE_TEXTURE;
   dependency->request_info.loader_id = VKR_INVALID_ID;
   dependency->request_info.load_state = VKR_RESOURCE_LOAD_STATE_INVALID;
   dependency->request_info.last_error = VKR_RENDERER_ERROR_NONE;
-  dependency->request_info.request_id = 0;
-  (void)vkr_resource_system_load(VKR_RESOURCE_TYPE_TEXTURE, dependency_path,
-                                 temp_alloc, &dependency->request_info,
-                                 &dependency_error);
   dependency->requested = true_v;
   dependency->slot = slot;
 }
@@ -1244,37 +1238,6 @@ vkr_internal bool8_t vkr_material_loader_finalize_async(
     return false_v;
   }
 
-  for (uint32_t i = 0; i < VKR_TEXTURE_SLOT_COUNT; ++i) {
-    VkrMaterialAsyncDependency *dependency = &async_payload->dependencies[i];
-    if (!dependency->requested) {
-      continue;
-    }
-
-    VkrRendererError dependency_error = VKR_RENDERER_ERROR_NONE;
-    VkrResourceLoadState state = vkr_resource_system_get_state(
-        &dependency->request_info, &dependency_error);
-    if ((state == VKR_RESOURCE_LOAD_STATE_FAILED ||
-         state == VKR_RESOURCE_LOAD_STATE_INVALID) &&
-        !dependency->failure_reported) {
-      String8 dependency_path =
-          vkr_material_make_string8_from_path_buffer(dependency->resolved_path);
-      String8 error_string = vkr_renderer_get_error_string(dependency_error);
-      log_warn("Material '%.*s': %s texture '%.*s' failed to load (%.*s); "
-               "using default",
-               (int32_t)material_name.length, material_name.str,
-               vkr_material_slot_name(dependency->slot),
-               (int32_t)dependency_path.length, dependency_path.str,
-               (int32_t)error_string.length, error_string.str);
-      dependency->failure_reported = true_v;
-    }
-    if (state == VKR_RESOURCE_LOAD_STATE_PENDING_CPU ||
-        state == VKR_RESOURCE_LOAD_STATE_PENDING_DEPENDENCIES ||
-        state == VKR_RESOURCE_LOAD_STATE_PENDING_GPU) {
-      *out_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
-      return false_v;
-    }
-  }
-
   uint32_t slot = vkr_material_find_slot(system);
   if (slot == VKR_INVALID_ID) {
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
@@ -1303,61 +1266,8 @@ vkr_internal bool8_t vkr_material_loader_finalize_async(
     }
   }
 
-  VkrTextureHandle acquired_textures[VKR_TEXTURE_SLOT_COUNT] = {
-      VKR_TEXTURE_HANDLE_INVALID, VKR_TEXTURE_HANDLE_INVALID,
-      VKR_TEXTURE_HANDLE_INVALID};
-
   VkrMaterial material = {0};
   vkr_material_loader_init_from_parsed(&material, parsed, system);
-
-  for (uint32_t i = 0; i < VKR_TEXTURE_SLOT_COUNT; ++i) {
-    VkrMaterialAsyncDependency *dependency = &async_payload->dependencies[i];
-    if (!dependency->requested || dependency->resolved_path[0] == '\0') {
-      continue;
-    }
-
-    VkrRendererError dependency_error = VKR_RENDERER_ERROR_NONE;
-    VkrResourceLoadState state = vkr_resource_system_get_state(
-        &dependency->request_info, &dependency_error);
-    if (state != VKR_RESOURCE_LOAD_STATE_READY) {
-      continue;
-    }
-
-    VkrResourceHandleInfo resolved_texture = {0};
-    if (!vkr_resource_system_try_get_resolved(&dependency->request_info,
-                                              &resolved_texture) ||
-        resolved_texture.type != VKR_RESOURCE_TYPE_TEXTURE ||
-        resolved_texture.as.texture.id == 0) {
-      for (uint32_t j = 0; j < VKR_TEXTURE_SLOT_COUNT; ++j) {
-        if (acquired_textures[j].id != 0) {
-          vkr_texture_system_release_by_handle(system->texture_system,
-                                               acquired_textures[j]);
-          acquired_textures[j] = VKR_TEXTURE_HANDLE_INVALID;
-        }
-      }
-      if (stable_shader &&
-          vkr_dmemory_owns_ptr(&system->string_memory, (void *)stable_shader)) {
-        vkr_allocator_free(&system->string_allocator, stable_shader,
-                           shader_name_len + 1,
-                           VKR_ALLOCATOR_MEMORY_TAG_STRING);
-      }
-      if (stable_name &&
-          vkr_dmemory_owns_ptr(&system->string_memory, (void *)stable_name)) {
-        vkr_allocator_free(&system->string_allocator, stable_name,
-                           material_name.length + 1,
-                           VKR_ALLOCATOR_MEMORY_TAG_STRING);
-      }
-      *out_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
-      return false_v;
-    }
-
-    VkrTextureHandle acquired = resolved_texture.as.texture;
-    vkr_texture_system_add_ref_by_handle(system->texture_system, acquired);
-
-    acquired_textures[dependency->slot] = acquired;
-    material.textures[dependency->slot].handle = acquired;
-    material.textures[dependency->slot].enabled = true;
-  }
 
   VkrMaterial *dst = &system->materials.data[slot];
   *dst = material;
@@ -1374,12 +1284,6 @@ vkr_internal bool8_t vkr_material_loader_finalize_async(
   };
   if (!vkr_hash_table_insert_VkrMaterialEntry(&system->material_by_name,
                                               stable_name, new_entry)) {
-    for (uint32_t i = 0; i < VKR_TEXTURE_SLOT_COUNT; ++i) {
-      if (acquired_textures[i].id != 0) {
-        vkr_texture_system_release_by_handle(system->texture_system,
-                                             acquired_textures[i]);
-      }
-    }
     if (stable_shader &&
         vkr_dmemory_owns_ptr(&system->string_memory, (void *)stable_shader)) {
       vkr_allocator_free(&system->string_allocator, stable_shader,
@@ -1406,6 +1310,21 @@ vkr_internal bool8_t vkr_material_loader_finalize_async(
   if (!vkr_material_system_publish(system, material_handle, out_error)) {
     vkr_material_loader_discard_slot(system, slot, false_v);
     return false_v;
+  }
+
+  for (uint32_t i = 0; i < VKR_TEXTURE_SLOT_COUNT; ++i) {
+    VkrMaterialAsyncDependency *dependency = &async_payload->dependencies[i];
+    if (!dependency->requested || dependency->resolved_path[0] == '\0') {
+      continue;
+    }
+    if (!vkr_material_system_stream_texture(system, material_handle,
+                                            dependency->slot,
+                                            dependency->resolved_path)) {
+      log_warn("Material '%.*s': texture stream queue is full for %s; using "
+               "default",
+               (int32_t)material_name.length, material_name.str,
+               vkr_material_slot_name(dependency->slot));
+    }
   }
 
   out_handle->type = VKR_RESOURCE_TYPE_MATERIAL;
@@ -1502,10 +1421,11 @@ vkr_material_loader_unload(VkrResourceLoader *self,
   VkrMaterial *material = &system->materials.data[material_index];
   const char *stable_name = entry->name;
   const char *stable_shader = material->shader_name;
+  const VkrMaterialHandle material_handle = {
+      .id = material->id, .generation = material->generation};
+  vkr_material_system_cancel_texture_streams(system, material_handle);
 
-  (void)vkr_material_system_unpublish(
-      system, (VkrMaterialHandle){.id = material->id,
-                                  .generation = material->generation});
+  (void)vkr_material_system_unpublish(system, material_handle);
 
   for (uint32_t tex_slot = 0; tex_slot < VKR_TEXTURE_SLOT_COUNT; tex_slot++) {
     VkrTextureHandle handle = material->textures[tex_slot].handle;

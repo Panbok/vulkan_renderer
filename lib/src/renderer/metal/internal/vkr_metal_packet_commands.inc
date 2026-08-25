@@ -276,11 +276,117 @@ vkr_metal_packet_finish_frame(VkrMetalPacketRenderer *renderer,
     vkr_metal_packet_release_unsubmitted_command_slot(renderer);
 }
 
+vkr_internal bool8_t vkr_metal_packet_texture_upload_batch_start(
+    VkrMetalPacketRenderer *renderer, uint64_t capacity)
+    API_AVAILABLE(macos(26.0)) {
+  VkrMetalPacketTextureUploadBatch *batch = &renderer->texture_upload_batch;
+  if (batch->active)
+    return true_v;
+  if (!batch->enabled || renderer->frame_prepared ||
+      !vkr_metal_packet_acquire_command_slot(renderer, true_v))
+    return false_v;
+
+  void *upload_buffer = NULL;
+  if (vkr_metal_memory_device_acquire_ring(
+          renderer->memory, VKR_METAL_RING_KIND_UPLOAD, capacity,
+          renderer->completion.signaledValue, &batch->slice, &batch->upload,
+          &upload_buffer) != VKR_METAL_MEMORY_STATUS_OK) {
+    vkr_metal_packet_release_unsubmitted_command_slot(renderer);
+    return false_v;
+  }
+  batch->upload_buffer = (id<MTLBuffer>)upload_buffer;
+  batch->capacity = capacity;
+  [renderer->command_buffer
+      beginCommandBufferWithAllocator:renderer->command_allocator];
+  [renderer->command_buffer
+      useResidencySet:(id<MTLResidencySet>)
+                          vkr_metal_memory_device_residency_set(
+                              renderer->memory)];
+  batch->encoder = [renderer->command_buffer computeCommandEncoder];
+  if (!batch->encoder) {
+    [renderer->command_buffer endCommandBuffer];
+    vkr_metal_memory_device_cancel_ring(
+        renderer->memory, VKR_METAL_RING_KIND_UPLOAD, batch->slice);
+    vkr_metal_packet_release_unsubmitted_command_slot(renderer);
+    *batch = (VkrMetalPacketTextureUploadBatch){.enabled = true_v};
+    return false_v;
+  }
+  batch->active = true_v;
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_metal_packet_texture_upload_batch_flush(
+    VkrMetalPacketRenderer *renderer, bool8_t finish)
+    API_AVAILABLE(macos(26.0)) {
+  VkrMetalPacketTextureUploadBatch *batch = &renderer->texture_upload_batch;
+  if (!batch->active) {
+    batch->enabled = finish ? false_v : batch->enabled;
+    return true_v;
+  }
+  [batch->encoder endEncoding];
+  [renderer->command_buffer endCommandBuffer];
+  if (batch->texture_count == 0u) {
+    vkr_metal_memory_device_cancel_ring(
+        renderer->memory, VKR_METAL_RING_KIND_UPLOAD, batch->slice);
+    vkr_metal_packet_release_unsubmitted_command_slot(renderer);
+    *batch = (VkrMetalPacketTextureUploadBatch){.enabled =
+                                                    finish ? false_v : true_v};
+    return true_v;
+  }
+  const uint64_t submit_value = ++renderer->submit_value;
+  VkrMetalPacketCommandSlot *slot = renderer->active_command_slot;
+  slot->submit_value = submit_value;
+  id<MTL4CommandBuffer> submissions[] = {renderer->command_buffer};
+  [renderer->queue commit:submissions count:1];
+  [renderer->queue signalEvent:renderer->completion value:submit_value];
+  const bool8_t submitted =
+      vkr_metal_memory_device_submit_ring(
+          renderer->memory, VKR_METAL_RING_KIND_UPLOAD, batch->slice,
+          submit_value) == VKR_METAL_MEMORY_STATUS_OK;
+  if (!submitted) {
+    const bool8_t completed = vkr_metal_packet_wait(renderer, submit_value);
+    if (completed) {
+      vkr_metal_memory_device_cancel_ring(
+          renderer->memory, VKR_METAL_RING_KIND_UPLOAD, batch->slice);
+      (void)vkr_metal_packet_complete_command_slot(renderer, slot, false_v);
+    }
+    vkr_metal_packet_detach_active_command_slot(renderer);
+    *batch = (VkrMetalPacketTextureUploadBatch){.enabled =
+                                                    finish ? false_v : true_v};
+    return false_v;
+  }
+  vkr_metal_packet_detach_active_command_slot(renderer);
+  *batch =
+      (VkrMetalPacketTextureUploadBatch){.enabled = finish ? false_v : true_v};
+  return !finish || vkr_metal_packet_wait(renderer, submit_value);
+}
+
+bool8_t vkr_metal_packet_renderer_begin_texture_upload_batch(
+    VkrMetalPacketRenderer *renderer) {
+  if (!renderer || renderer->frame_prepared ||
+      renderer->texture_upload_batch.enabled)
+    return false_v;
+  renderer->texture_upload_batch.enabled = true_v;
+  return true_v;
+}
+
+bool8_t vkr_metal_packet_renderer_end_texture_upload_batch(
+    VkrMetalPacketRenderer *renderer) {
+  if (!renderer || !renderer->texture_upload_batch.enabled)
+    return false_v;
+  if (!@available(macOS 26.0, *))
+    return false_v;
+  return vkr_metal_packet_texture_upload_batch_flush(renderer, true_v);
+}
+
 vkr_internal bool8_t vkr_metal_packet_begin_upload(
     VkrMetalPacketRenderer *renderer, uint64_t size,
     VkrMetalRingSlice *out_slice, VkrMetalAddressPair *out_upload,
     id<MTLBuffer> *out_buffer, id<MTL4ComputeCommandEncoder> *out_encoder)
     API_AVAILABLE(macos(26.0)) {
+  if (renderer->texture_upload_batch.active &&
+      !vkr_metal_packet_texture_upload_batch_flush(renderer, false_v))
+    return false_v;
   if (!vkr_metal_packet_acquire_command_slot(renderer, true_v))
     return false_v;
   void *buffer = NULL;

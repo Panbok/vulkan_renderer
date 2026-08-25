@@ -10,6 +10,28 @@ extern "C" {
 #define VKR_MESHOPT_VERTEX_CODEC_VERSION 1u
 #define VKR_MESHOPT_INDEX_CODEC_VERSION 1u
 
+typedef struct VkrMeshoptAnalysis {
+  uint32_t vertices_transformed;
+  uint32_t bytes_fetched;
+  float cache_acmr;
+  float cache_atvr;
+  float fetch_overfetch;
+} VkrMeshoptAnalysis;
+
+typedef enum VkrMeshoptGltfMode {
+  VKR_MESHOPT_GLTF_MODE_ATTRIBUTES = 1,
+  VKR_MESHOPT_GLTF_MODE_TRIANGLES = 2,
+  VKR_MESHOPT_GLTF_MODE_INDICES = 3,
+} VkrMeshoptGltfMode;
+
+typedef enum VkrMeshoptGltfFilter {
+  VKR_MESHOPT_GLTF_FILTER_NONE = 0,
+  VKR_MESHOPT_GLTF_FILTER_OCTAHEDRAL = 1,
+  VKR_MESHOPT_GLTF_FILTER_QUATERNION = 2,
+  VKR_MESHOPT_GLTF_FILTER_EXPONENTIAL = 3,
+  VKR_MESHOPT_GLTF_FILTER_COLOR = 4,
+} VkrMeshoptGltfFilter;
+
 uint32_t vkr_meshopt_library_version(void);
 
 size_t vkr_meshopt_optimize_range(void *destination_vertices,
@@ -18,6 +40,13 @@ size_t vkr_meshopt_optimize_range(void *destination_vertices,
                                   const uint32_t *source_indices,
                                   size_t vertex_count, size_t index_count,
                                   size_t vertex_stride);
+int vkr_meshopt_analyze_range(const uint32_t *indices, size_t index_count,
+                              size_t vertex_count, size_t vertex_stride,
+                              VkrMeshoptAnalysis *out_analysis);
+int vkr_meshopt_decode_gltf_buffer(void *destination, size_t count,
+                                   size_t stride, const uint8_t *encoded,
+                                   size_t encoded_size, VkrMeshoptGltfMode mode,
+                                   VkrMeshoptGltfFilter filter);
 
 size_t vkr_meshopt_vertex_encode_bound(size_t vertex_count,
                                        size_t vertex_stride);

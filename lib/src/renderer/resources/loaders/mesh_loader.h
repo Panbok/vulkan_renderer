@@ -13,6 +13,7 @@
 #include "renderer/systems/vkr_material_system.h"
 #include "renderer/systems/vkr_mesh_manager.h"
 #include "renderer/systems/vkr_resource_system.h"
+#include "renderer/vkr_packed_geometry.h"
 
 // =============================================================================
 // Mesh Loader Types
@@ -39,6 +40,9 @@ typedef struct VkrMeshLoaderBuffer {
   uint32_t index_size;
   uint32_t index_count;
   void *indices;
+  VkrGpuVertexLayout vertex_layout;
+  VkrGpuGeometryDecodeRecord decode;
+  VkrGeometryQuantizationMetrics quantization;
 } VkrMeshLoaderBuffer;
 
 /**
@@ -71,6 +75,7 @@ typedef struct VkrMeshLoaderResult {
   bool8_t
       has_mesh_buffer; /**< True when mesh_buffer/submeshes are populated. */
   VkrMeshLoaderBuffer mesh_buffer; /**< Merged vertex/index payload. */
+  VkrMeshLoadMetrics load_metrics;
   Array_VkrMeshLoaderSubmeshRange submeshes; /**< Per-submesh ranges. */
   Array_VkrMeshLoaderSubset subsets;
 } VkrMeshLoaderResult;

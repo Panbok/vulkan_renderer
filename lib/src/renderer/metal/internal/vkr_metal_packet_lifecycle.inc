@@ -157,11 +157,23 @@ void vkr_metal_packet_renderer_geometry_megabuffer_metrics(
   const VkrMetalPacketGeometryMegabuffer *mega = &renderer->geometry_megabuffer;
   out_metrics->vertex_capacity_bytes = mega->vertices.length;
   out_metrics->index_capacity_bytes = mega->indices.length;
-  out_metrics->live_bytes = mega->vertex_live_bytes + mega->index_live_bytes;
+  out_metrics->vertex_live_bytes = mega->vertex_live_bytes;
+  out_metrics->index_live_bytes = mega->index_live_bytes;
+  out_metrics->decode_metadata_live_bytes = mega->decode_metadata_live_bytes;
+  out_metrics->live_bytes = mega->vertex_live_bytes + mega->index_live_bytes +
+                            mega->decode_metadata_live_bytes;
   out_metrics->fragmentation_bytes =
       mega->vertex_cursor + mega->index_cursor - out_metrics->live_bytes;
   out_metrics->high_water_bytes =
       mega->vertex_high_water + mega->index_high_water;
+  out_metrics->vertex_high_water_bytes = mega->vertex_high_water;
+  out_metrics->index_high_water_bytes = mega->index_high_water;
+  out_metrics->vertex_uploaded_bytes_total = mega->vertex_uploaded_bytes_total;
+  out_metrics->index_uploaded_bytes_total = mega->index_uploaded_bytes_total;
+  out_metrics->decode_metadata_high_water_bytes =
+      mega->decode_metadata_high_water;
+  out_metrics->decode_metadata_uploaded_bytes_total =
+      mega->decode_metadata_uploaded_bytes_total;
   out_metrics->rejected_publications = mega->rejected_publications;
   out_metrics->generation_replacements = mega->generation_replacements;
   out_metrics->generation = mega->generation;
@@ -348,6 +360,16 @@ vkr_internal bool8_t vkr_metal_packet_unpublish_geometry_adapter(
                                         .generation = handle.generation}));
 }
 
+vkr_internal bool8_t
+vkr_metal_packet_begin_texture_upload_batch_adapter(void *state) {
+  return vkr_metal_packet_renderer_begin_texture_upload_batch(state);
+}
+
+vkr_internal bool8_t
+vkr_metal_packet_end_texture_upload_batch_adapter(void *state) {
+  return vkr_metal_packet_renderer_end_texture_upload_batch(state);
+}
+
 vkr_internal bool8_t vkr_metal_packet_publish_texture_adapter(
     void *state, VkrTextureHandle handle,
     const struct VkrTexturePreparedLoad *texture) {
@@ -422,6 +444,10 @@ void vkr_metal_packet_renderer_get_asset_publisher(
                                  vkr_metal_packet_publish_loaded_mesh_adapter,
                              .unpublish_geometry =
                                  vkr_metal_packet_unpublish_geometry_adapter,
+                             .begin_texture_upload_batch =
+                                 vkr_metal_packet_begin_texture_upload_batch_adapter,
+                             .end_texture_upload_batch =
+                                 vkr_metal_packet_end_texture_upload_batch_adapter,
                              .publish_texture =
                                  vkr_metal_packet_publish_texture_adapter,
                              .publish_writable_texture =

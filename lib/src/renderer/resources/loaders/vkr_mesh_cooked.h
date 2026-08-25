@@ -5,9 +5,9 @@
 #include "renderer/resources/loaders/mesh_loader.h"
 
 #define VKR_MESH_COOKED_MAGIC 0x564B4D48u /* 'VKMH' */
-#define VKR_MESH_COOKED_VERSION 13u
+#define VKR_MESH_COOKED_VERSION 14u
 #define VKR_MESH_COOKED_ENDIAN_TAG 0x01020304u
-#define VKR_MESH_COOKED_LAYOUT_VERTEX3D 1u
+#define VKR_MESH_COOKED_LAYOUT_STATIC_PACKED_V1 2u
 #define VKR_MESH_COOKED_STREAM_ALIGNMENT 16u
 
 typedef struct VkrMeshCookedEncodeInfo {
@@ -17,9 +17,13 @@ typedef struct VkrMeshCookedEncodeInfo {
   VkrMeshLoaderBuffer mesh_buffer;
   const VkrMeshLoaderSubmeshRange *ranges;
   uint32_t range_count;
+  VkrGeometryQuantizationBudgets budgets;
 } VkrMeshCookedEncodeInfo;
 
 typedef struct VkrMeshCookedDecoded {
+  uint64_t source_bytes;
+  uint64_t cooked_bytes;
+  uint64_t decoded_bytes;
   VkrMeshLoaderBuffer mesh_buffer;
   Array_VkrMeshLoaderSubmeshRange ranges;
 } VkrMeshCookedDecoded;
@@ -44,19 +48,19 @@ bool8_t vkr_mesh_cook_source(String8 source_path, String8 output_path,
                              VkrMeshCookStats *out_stats,
                              VkrRendererError *out_error);
 
-/** Encodes an immutable version-13 artifact into scratch-owned memory. */
+/** Encodes an immutable version-14 artifact into scratch-owned memory. */
 bool8_t vkr_mesh_cooked_encode(VkrAllocator *scratch_allocator,
                                const VkrMeshCookedEncodeInfo *info,
                                uint8_t **out_data, uint64_t *out_size);
 
 /**
- * Validates the complete artifact, optionally verifies dependency bytes, then
- * decodes all ranges into result-owned current-ABI buffers.
+ * Validates the complete self-contained artifact and decodes all ranges into
+ * result-owned current-ABI buffers. Dependency hashes remain build provenance;
+ * runtime decode performs no authoring-source I/O.
  */
 bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
                                VkrAllocator *scratch_allocator,
                                const uint8_t *data, uint64_t size,
-                               bool8_t verify_dependencies,
                                VkrMeshCookedDecoded *out_decoded);
 
 /** Writes bytes to a sibling temporary file and atomically replaces output. */

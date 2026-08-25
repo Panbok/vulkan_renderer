@@ -74,6 +74,7 @@ typedef struct VkrWorldBatchMetrics {
   bool8_t hzb_history_valid;
   bool8_t gpu_diagnostics_valid;
   VkrGeometryMegabufferMetrics geometry_megabuffer;
+  VkrMeshManagerMetrics mesh_assets;
 } VkrWorldBatchMetrics;
 
 /** Per-frame GPU shadow-submission statistics, indexed by cascade. */
@@ -206,10 +207,17 @@ struct s_RendererFrontend {
 
   bool32_t frame_active;
   uint64_t frame_number;
+  uint64_t texture_pressure_poll_frame;
+  bool8_t texture_pressure_active;
 
   uint64_t target_frame_rate;
 
   VkrAtomicUint64 pending_resize_mailbox;
 };
+
+bool8_t vkr_renderer_texture_pressure_budget(const VkrDeviceMemoryStats *stats,
+                                             bool8_t pressure_active,
+                                             uint64_t *out_budget,
+                                             bool8_t *out_pressure_active);
 
 typedef struct s_RendererFrontend RendererFrontend;

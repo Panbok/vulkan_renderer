@@ -80,6 +80,9 @@ typedef struct VkrTextureSystem {
   VkrJobSystem *job_system;                      // For async texture loading
   struct VkrTextureCacheWriteGuard *cache_guard; // Internal cache write guard
   VkrMetricEventProducer hdr_decode_metrics;
+  VkrAtomicUint64 transcode_cache_hits;
+  VkrAtomicUint64 transcode_cache_misses;
+  VkrAtomicUint64 transcode_cache_writes;
 
   // Device-dependent transcode policy inputs for KTX2/UASTC decode.
   VkrDeviceTypeFlags device_types;   // Device type bits used as preference hint

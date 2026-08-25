@@ -909,6 +909,11 @@ typedef struct VkrVulkanGeometryMegabuffer {
   uint64_t index_live_bytes;
   uint64_t vertex_high_water;
   uint64_t index_high_water;
+  uint64_t vertex_uploaded_bytes_total;
+  uint64_t index_uploaded_bytes_total;
+  uint64_t decode_metadata_live_bytes;
+  uint64_t decode_metadata_high_water;
+  uint64_t decode_metadata_uploaded_bytes_total;
   uint64_t rejected_publications;
   uint64_t generation_replacements;
   uint32_t generation;

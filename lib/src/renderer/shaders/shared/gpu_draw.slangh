@@ -8,8 +8,70 @@ struct VkrGpuGeometryRow
     uint vertex_layout;
     uint publication_generation;
     uint flags;
-    uint2 reserved;
+    uint64_t decode_address;
 };
+
+struct VkrPackedStaticVertex
+{
+    uint words[8];
+};
+
+struct VkrGpuGeometryDecodeRecord
+{
+    float3 position_bias;
+    uint flags;
+    float3 position_scale;
+    uint reserved;
+};
+
+struct VkrGpuDecodedVertex
+{
+    float3 position;
+    float3 normal;
+    float2 texcoord;
+    float4 color;
+    float4 tangent;
+};
+
+float vkr_packed_snorm16(uint value)
+{
+    int signed_value = int(value << 16u) >> 16;
+    return clamp(float(signed_value) / 32767.0f, -1.0f, 1.0f);
+}
+
+float3 vkr_packed_oct_decode(uint value)
+{
+    float2 oct = float2(vkr_packed_snorm16(value),
+                        vkr_packed_snorm16(value >> 16u));
+    float3 result = float3(oct, 1.0f - abs(oct.x) - abs(oct.y));
+    float fold = clamp(-result.z, 0.0f, 1.0f);
+    result.x += result.x >= 0.0f ? -fold : fold;
+    result.y += result.y >= 0.0f ? -fold : fold;
+    return normalize(result);
+}
+
+VkrGpuDecodedVertex vkr_decode_packed_vertex(
+    VkrPackedStaticVertex packed, VkrGpuGeometryDecodeRecord decode)
+{
+    float3 position_unorm = float3(
+        float(packed.words[0] & 0xffffu) / 65535.0f,
+        float(packed.words[0] >> 16u) / 65535.0f,
+        float(packed.words[1] & 0xffffu) / 65535.0f);
+    uint tangent_flags = packed.words[1] >> 16u;
+    uint color = packed.words[6];
+    VkrGpuDecodedVertex result;
+    result.position = decode.position_bias + position_unorm * decode.position_scale;
+    result.normal = vkr_packed_oct_decode(packed.words[2]);
+    result.tangent = float4(vkr_packed_oct_decode(packed.words[3]),
+                            (tangent_flags & 1u) != 0u ? -1.0f : 1.0f);
+    result.texcoord = float2(asfloat(packed.words[4]),
+                             asfloat(packed.words[5]));
+    result.color = float4(float(color & 0xffu),
+                          float((color >> 8u) & 0xffu),
+                          float((color >> 16u) & 0xffu),
+                          float(color >> 24u)) / 255.0f;
+    return result;
+}
 
 struct VkrGpuCandidateDrawRow
 {

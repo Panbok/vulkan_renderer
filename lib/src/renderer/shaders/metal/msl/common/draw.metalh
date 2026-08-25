@@ -115,9 +115,64 @@ struct VkrGpuGeometryRow {
   uint vertex_layout;
   uint publication_generation;
   uint flags;
-  uint reserved_0;
-  uint reserved_1;
+  ulong decode_address;
 };
+
+struct VkrPackedStaticVertex {
+  uint words[8];
+};
+
+struct VkrGpuGeometryDecodeRecord {
+  packed_float3 position_bias;
+  uint flags;
+  packed_float3 position_scale;
+  uint reserved;
+};
+
+struct VkrGpuDecodedVertex {
+  float3 position;
+  float3 normal;
+  float2 texcoord;
+  float4 color;
+  float4 tangent;
+};
+
+inline float vkr_packed_snorm16(uint value) {
+  return clamp(float(as_type<short>(ushort(value))) / 32767.0f, -1.0f, 1.0f);
+}
+
+inline float3 vkr_packed_oct_decode(uint value) {
+  float2 oct(vkr_packed_snorm16(value), vkr_packed_snorm16(value >> 16u));
+  float3 result(oct, 1.0f - abs(oct.x) - abs(oct.y));
+  float fold = clamp(-result.z, 0.0f, 1.0f);
+  result.x += select(fold, -fold, result.x >= 0.0f);
+  result.y += select(fold, -fold, result.y >= 0.0f);
+  return normalize(result);
+}
+
+inline VkrGpuDecodedVertex vkr_decode_packed_vertex(
+    VkrPackedStaticVertex packed,
+    device const VkrGpuGeometryDecodeRecord &decode) {
+  float3 position_unorm(float(packed.words[0] & 0xffffu) / 65535.0f,
+                        float(packed.words[0] >> 16u) / 65535.0f,
+                        float(packed.words[1] & 0xffffu) / 65535.0f);
+  uint tangent_flags = packed.words[1] >> 16u;
+  uint color = packed.words[6];
+  VkrGpuDecodedVertex result;
+  result.position = float3(decode.position_bias) +
+                    position_unorm * float3(decode.position_scale);
+  result.normal = vkr_packed_oct_decode(packed.words[2]);
+  result.tangent =
+      float4(vkr_packed_oct_decode(packed.words[3]),
+             (tangent_flags & 1u) != 0u ? -1.0f : 1.0f);
+  result.texcoord =
+      float2(as_type<float>(packed.words[4]),
+             as_type<float>(packed.words[5]));
+  result.color = float4(float(color & 0xffu), float((color >> 8u) & 0xffu),
+                        float((color >> 16u) & 0xffu), float(color >> 24u)) /
+                 255.0f;
+  return result;
+}
 
 struct VkrGpuCandidateDrawRow {
   uint geometry_index;
@@ -145,7 +200,7 @@ struct VkrGpuVisibleDrawRow {
 struct VkrMetalPacketDrawRoot {
   device VkrGpuGeometryRow *geometry_rows;
   device VkrGpuVisibleDrawRow *visible_rows;
-  device VkrMetalPacketVertex *vertices;
+  device VkrPackedStaticVertex *vertices;
   constant VkrMetalPacketFrameRoot *frame;
   uint visible_row_index;
   uint flags;
@@ -172,6 +227,10 @@ struct VkrMetalPacketVertexOutput {
 
 static_assert(sizeof(VkrMetalPacketVertex) == 64,
               "VkrVertex3d Metal ABI must remain 64 bytes");
+static_assert(sizeof(VkrPackedStaticVertex) == 32,
+              "Packed static vertex ABI must remain 32 bytes");
+static_assert(sizeof(VkrGpuGeometryDecodeRecord) == 32,
+              "Geometry decode record ABI must remain 32 bytes");
 static_assert(sizeof(VkrMetalPacketInstance) == 80,
               "VkrInstanceDataGPU Metal ABI must remain 80 bytes");
 static_assert(sizeof(VkrMetalPacketMaterial) == 176,

@@ -1,5 +1,6 @@
 #include "renderer/resources/loaders/mesh_loader_gltf.h"
 #include "renderer/resources/loaders/vkr_gltf_material_conversion.h"
+#include "renderer/resources/loaders/vkr_meshoptimizer_bridge.h"
 
 #include <cgltf.h>
 #include <stb_image.h>
@@ -1802,6 +1803,66 @@ vkr_internal void vkr_mesh_loader_gltf_collect_dependencies(
   }
 }
 
+vkr_internal bool8_t vkr_mesh_loader_gltf_required_extension(
+    const cgltf_data *data, const char *name) {
+  for (cgltf_size i = 0; i < data->extensions_required_count; ++i) {
+    if (data->extensions_required[i] &&
+        string_equals(data->extensions_required[i], name)) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+vkr_internal bool8_t vkr_mesh_loader_gltf_decode_meshopt(
+    const VkrMeshLoaderGltfParseInfo *info, cgltf_data *data) {
+  if (vkr_mesh_loader_gltf_required_extension(data,
+                                              "KHR_meshopt_compression")) {
+    log_error("MeshLoader(glTF): required KHR_meshopt_compression is "
+              "unsupported");
+    return false_v;
+  }
+  for (cgltf_size i = 0; i < data->buffer_views_count; ++i) {
+    cgltf_buffer_view *view = &data->buffer_views[i];
+    if (!view->has_meshopt_compression || view->meshopt_compression.is_khr) {
+      continue;
+    }
+    const cgltf_meshopt_compression *compression = &view->meshopt_compression;
+    if (!compression->buffer || !compression->buffer->data ||
+        compression->count == 0 || compression->stride == 0 ||
+        compression->count > SIZE_MAX / compression->stride) {
+      return false_v;
+    }
+    const size_t decoded_size =
+        (size_t)compression->count * (size_t)compression->stride;
+    if (decoded_size != view->size ||
+        compression->offset > compression->buffer->size ||
+        compression->size > compression->buffer->size - compression->offset) {
+      return false_v;
+    }
+    uint8_t *decoded = vkr_allocator_alloc(info->load_allocator, decoded_size,
+                                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!decoded) {
+      vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
+      return false_v;
+    }
+    VkrMeshoptGltfMode mode = (VkrMeshoptGltfMode)compression->mode;
+    VkrMeshoptGltfFilter filter = (VkrMeshoptGltfFilter)compression->filter;
+    const uint8_t *encoded =
+        (const uint8_t *)compression->buffer->data + compression->offset;
+    if (vkr_meshopt_decode_gltf_buffer(decoded, compression->count,
+                                       compression->stride, encoded,
+                                       compression->size, mode, filter) != 0) {
+      log_error("MeshLoader(glTF): EXT_meshopt_compression decode failed for "
+                "buffer view %llu",
+                (unsigned long long)i);
+      return false_v;
+    }
+    view->data = decoded;
+  }
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_mesh_loader_gltf_run_parse(
     const VkrMeshLoaderGltfParseInfo *info, bool8_t emit_primitives) {
   if (!info || !info->load_allocator || !info->scratch_allocator ||
@@ -1844,6 +1905,12 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_run_parse(
     if (validate_result != cgltf_result_success) {
       log_error("MeshLoader(glTF): validation failed for '%s' (result=%d)",
                 string8_cstr(&cstr_path), (int)validate_result);
+      vkr_mesh_loader_gltf_set_error(info,
+                                     VKR_RENDERER_ERROR_INVALID_PARAMETER);
+      ok = false_v;
+      break;
+    }
+    if (!vkr_mesh_loader_gltf_decode_meshopt(info, data)) {
       vkr_mesh_loader_gltf_set_error(info,
                                      VKR_RENDERER_ERROR_INVALID_PARAMETER);
       ok = false_v;
@@ -1916,6 +1983,12 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_run_parse(
   } while (false);
 
   if (data) {
+    for (cgltf_size i = 0; i < data->buffer_views_count; ++i) {
+      cgltf_buffer_view *view = &data->buffer_views[i];
+      if (view->has_meshopt_compression && !view->meshopt_compression.is_khr) {
+        view->data = NULL;
+      }
+    }
     cgltf_free(data);
   }
 

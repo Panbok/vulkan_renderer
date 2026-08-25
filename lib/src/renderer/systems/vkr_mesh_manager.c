@@ -1173,6 +1173,49 @@ void vkr_mesh_manager_shutdown(VkrMeshManager *manager) {
   arena_destroy(manager->scratch_arena);
 }
 
+void vkr_mesh_manager_get_metrics(const VkrMeshManager *manager,
+                                  VkrMeshManagerMetrics *out_metrics) {
+  if (!out_metrics) {
+    return;
+  }
+  *out_metrics = (VkrMeshManagerMetrics){0};
+  if (!manager) {
+    return;
+  }
+  for (uint64_t i = 0; i < manager->mesh_assets.length; ++i) {
+    const VkrMeshAsset *asset = &manager->mesh_assets.data[i];
+    if (asset->id == 0 ||
+        asset->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
+      continue;
+    }
+    const VkrMeshLoadMetrics *load = &asset->load_metrics;
+    out_metrics->source_bytes += load->source_bytes;
+    out_metrics->cooked_bytes += load->cooked_bytes;
+    out_metrics->decoded_bytes += load->decoded_bytes;
+    out_metrics->upload_bytes += load->upload_bytes;
+    out_metrics->analyzed_triangles += load->analyzed_triangles;
+    out_metrics->analyzed_vertex_bytes_before +=
+        load->analyzed_vertex_bytes_before;
+    out_metrics->analyzed_vertex_bytes_after +=
+        load->analyzed_vertex_bytes_after;
+    out_metrics->analyzed_vertices += load->analyzed_vertices;
+    out_metrics->vertices_transformed_before +=
+        load->vertices_transformed_before;
+    out_metrics->vertices_transformed_after += load->vertices_transformed_after;
+    out_metrics->bytes_fetched_before += load->bytes_fetched_before;
+    out_metrics->bytes_fetched_after += load->bytes_fetched_after;
+    out_metrics->vertex_count += load->vertex_count;
+    out_metrics->index_count += load->index_count;
+    out_metrics->range_count += load->range_count;
+    out_metrics->live_assets++;
+    out_metrics->source_assets +=
+        load->preparation == VKR_MESH_PREPARATION_SOURCE ? 1u : 0u;
+    out_metrics->cooked_assets +=
+        load->preparation == VKR_MESH_PREPARATION_COOKED ? 1u : 0u;
+    out_metrics->runtime_optimized_assets += load->runtime_optimized ? 1u : 0u;
+  }
+}
+
 bool8_t vkr_mesh_manager_create(VkrMeshManager *manager,
                                 const VkrMeshDesc *desc,
                                 VkrRendererError *out_error,
@@ -1577,6 +1620,8 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
         cfg.vertex_size = mesh_result->mesh_buffer.vertex_size;
         cfg.vertex_count = mesh_result->mesh_buffer.vertex_count;
         cfg.vertices = mesh_result->mesh_buffer.vertices;
+        cfg.vertex_layout = mesh_result->mesh_buffer.vertex_layout;
+        cfg.decode = mesh_result->mesh_buffer.decode;
         cfg.index_size = mesh_result->mesh_buffer.index_size;
         cfg.index_count = mesh_result->mesh_buffer.index_count;
         cfg.indices = mesh_result->mesh_buffer.indices;
@@ -2672,6 +2717,7 @@ vkr_internal bool8_t vkr_mesh_manager_build_asset_from_mesh_result(
     *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
     return false_v;
   }
+  asset->load_metrics = mesh_result->load_metrics;
 
   uint32_t subset_count = use_merged ? (uint32_t)mesh_result->submeshes.length
                                      : (uint32_t)mesh_result->subsets.length;
@@ -2727,6 +2773,8 @@ vkr_internal bool8_t vkr_mesh_manager_build_asset_from_mesh_result(
         cfg.vertex_size = mesh_result->mesh_buffer.vertex_size;
         cfg.vertex_count = mesh_result->mesh_buffer.vertex_count;
         cfg.vertices = mesh_result->mesh_buffer.vertices;
+        cfg.vertex_layout = mesh_result->mesh_buffer.vertex_layout;
+        cfg.decode = mesh_result->mesh_buffer.decode;
         cfg.index_size = mesh_result->mesh_buffer.index_size;
         cfg.index_count = mesh_result->mesh_buffer.index_count;
         cfg.indices = mesh_result->mesh_buffer.indices;
@@ -2985,6 +3033,7 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_asset_from_handle_info(
   asset->loading_state = VKR_MESH_LOADING_STATE_NOT_LOADED;
   asset->last_error = VKR_RENDERER_ERROR_NONE;
   asset->pending_request_id = 0;
+  asset->load_metrics = mesh_result->load_metrics;
 
   asset->mesh_path =
       string8_duplicate(&manager->asset_allocator, &desc->mesh_path);
@@ -3049,6 +3098,8 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_asset_from_handle_info(
         cfg.vertex_size = mesh_result->mesh_buffer.vertex_size;
         cfg.vertex_count = mesh_result->mesh_buffer.vertex_count;
         cfg.vertices = mesh_result->mesh_buffer.vertices;
+        cfg.vertex_layout = mesh_result->mesh_buffer.vertex_layout;
+        cfg.decode = mesh_result->mesh_buffer.decode;
         cfg.index_size = mesh_result->mesh_buffer.index_size;
         cfg.index_count = mesh_result->mesh_buffer.index_count;
         cfg.indices = mesh_result->mesh_buffer.indices;

@@ -96,7 +96,7 @@ struct VkrMetalPacketDrawRoot
 {
     StructuredBuffer<VkrGpuGeometryRow> geometry_rows;
     StructuredBuffer<VkrGpuVisibleDrawRow> visible_rows;
-    StructuredBuffer<VkrMetalPacketVertex> vertices;
+    StructuredBuffer<VkrPackedStaticVertex> vertices;
     ParameterBlock<VkrMetalPacketFrameRoot> frame;
     uint visible_row_index;
     uint flags;

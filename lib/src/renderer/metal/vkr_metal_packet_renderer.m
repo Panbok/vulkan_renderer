@@ -171,6 +171,11 @@ typedef struct VkrMetalPacketGeometryMegabuffer {
   uint64_t index_live_bytes;
   uint64_t vertex_high_water;
   uint64_t index_high_water;
+  uint64_t vertex_uploaded_bytes_total;
+  uint64_t index_uploaded_bytes_total;
+  uint64_t decode_metadata_live_bytes;
+  uint64_t decode_metadata_high_water;
+  uint64_t decode_metadata_uploaded_bytes_total;
   uint64_t rejected_publications;
   uint64_t generation_replacements;
   uint32_t generation;
@@ -334,6 +339,20 @@ typedef struct VkrMetalPacketCommandSlot {
   bool8_t candidate_residency_pending;
 } VkrMetalPacketCommandSlot;
 
+#define VKR_METAL_PACKET_TEXTURE_UPLOAD_BATCH_MAX 64u
+#define VKR_METAL_PACKET_TEXTURE_UPLOAD_BATCH_BYTES MB(32)
+typedef struct VkrMetalPacketTextureUploadBatch {
+  id<MTL4ComputeCommandEncoder> encoder;
+  id<MTLBuffer> upload_buffer;
+  VkrMetalRingSlice slice;
+  VkrMetalAddressPair upload;
+  uint64_t capacity;
+  uint64_t used;
+  uint32_t texture_count;
+  bool8_t enabled;
+  bool8_t active;
+} VkrMetalPacketTextureUploadBatch;
+
 struct VkrMetalPacketRenderer {
   VkrAllocator *allocator;
   Arena *graph_frame_arena;
@@ -396,6 +415,7 @@ struct VkrMetalPacketRenderer {
   /* Active-slot aliases keep encoding code independent of slot selection. */
   id<MTL4CommandAllocator> command_allocator;
   id<MTL4CommandBuffer> command_buffer;
+  VkrMetalPacketTextureUploadBatch texture_upload_batch;
   uint64_t timestamp_frequency;
   id<MTLRenderPipelineState> gpu_shadow_pipeline;
   id<MTLRenderPipelineState> gpu_shadow_opaque_pipeline;

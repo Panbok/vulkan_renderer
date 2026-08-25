@@ -505,8 +505,10 @@ typedef struct VkrGpuAllocationOwnerTotals {
 } VkrGpuAllocationOwnerTotals;
 
 typedef enum VkrTextureType {
-  VKR_TEXTURE_TYPE_2D,
-  VKR_TEXTURE_TYPE_CUBE_MAP,
+  VKR_TEXTURE_TYPE_2D = 0,
+  VKR_TEXTURE_TYPE_CUBE_MAP = 1,
+  VKR_TEXTURE_TYPE_2D_ARRAY = 2,
+  VKR_TEXTURE_TYPE_CUBE_MAP_ARRAY = 3,
   VKR_TEXTURE_TYPE_COUNT,
 } VkrTextureType;
 
@@ -792,6 +794,8 @@ typedef struct VkrTextureDescription {
   uint32_t height;
   uint32_t generation;
   uint32_t channels;
+  uint32_t mip_levels;
+  uint32_t array_layers;
 
   VkrTextureType type;
   VkrTextureFormat format;

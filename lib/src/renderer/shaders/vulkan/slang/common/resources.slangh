@@ -116,7 +116,7 @@ struct VkrVulkanPacketDrawRoot
 {
     VkrGpuGeometryRow* geometry_rows;
     VkrGpuVisibleDrawRow* visible_rows;
-    VkrVulkanVertex* vertices;
+    VkrPackedStaticVertex* vertices;
     VkrVulkanPacketFrameRoot* frame;
     uint visible_row_index;
     uint flags;

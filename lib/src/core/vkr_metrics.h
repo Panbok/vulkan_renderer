@@ -20,7 +20,7 @@
  * must fit with headroom; exhaustion degrades instrumentation and is never
  * allowed to fail startup. See vkr_renderer_metrics_register_device_memory().
  */
-#define VKR_METRICS_MAX_SLOTS 384u
+#define VKR_METRICS_MAX_SLOTS 512u
 #define VKR_METRIC_NAME_MAX 63u
 #define VKR_METRICS_SNAPSHOT_BUFFER_COUNT 3u
 #define VKR_METRIC_EVENT_CAPACITY 4096u

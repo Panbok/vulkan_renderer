@@ -5,6 +5,7 @@
 #include "memory/vkr_arena_allocator.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "renderer/systems/vkr_resource_system.h"
+#include "renderer/systems/vkr_texture_transcode_cache.h"
 #include "renderer/vkr_ibl_math.h"
 
 #include "ktx.h"
@@ -1274,7 +1275,7 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
   out_system->supports_texture_eac_rg11 = device_info.supports_texture_eac_rg11;
 
   out_system->strict_vkt_only_mode =
-      vkr_texture_env_flag("VKR_TEXTURE_VKT_STRICT", false_v);
+      vkr_texture_env_flag("VKR_TEXTURE_VKT_STRICT", true_v);
   out_system->allow_source_fallback =
       vkr_texture_env_flag("VKR_TEXTURE_VKT_ALLOW_SOURCE_FALLBACK",
                            out_system->strict_vkt_only_mode ? false_v : true_v);
@@ -2060,6 +2061,7 @@ typedef struct VkrTextureDecodeResult {
   uint32_t upload_mip_levels;
   uint32_t upload_array_layers;
   VkrTextureFormat upload_format;
+  VkrTextureType upload_type;
   bool8_t upload_is_compressed;
   bool8_t alpha_mask;
   int32_t width;
@@ -2118,6 +2120,7 @@ vkr_texture_decode_result_reset(VkrTextureDecodeResult *result) {
   result->upload_array_layers = 0;
   result->upload_is_compressed = false_v;
   result->upload_format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
+  result->upload_type = VKR_TEXTURE_TYPE_2D;
   result->alpha_mask = false_v;
   result->loaded_from_cache = false_v;
 }
@@ -2307,19 +2310,32 @@ vkr_internal bool8_t vkr_texture_decode_from_ktx2(
   }
 
   base_texture = ktxTexture(ktx_texture);
-  if (base_texture->numDimensions != 2 || base_texture->isCubemap ||
-      base_texture->numFaces != 1 || base_texture->numLayers != 1) {
+  const bool8_t cubemap = base_texture->isCubemap ? true_v : false_v;
+  const uint32_t face_count = base_texture->numFaces;
+  const uint64_t physical_layers_u64 =
+      (uint64_t)base_texture->numLayers * face_count;
+  if (base_texture->numDimensions != 2 || base_texture->numLayers == 0u ||
+      (face_count != 1u && face_count != 6u) || cubemap != (face_count == 6u) ||
+      physical_layers_u64 == 0u ||
+      physical_layers_u64 > VKR_TEXTURE_MAX_ARRAY_LAYERS) {
     log_error("Unsupported KTX2 texture shape for '%s' (dims=%u layers=%u "
               "faces=%u cubemap=%u)",
               path_cstr, base_texture->numDimensions, base_texture->numLayers,
-              base_texture->numFaces, base_texture->isCubemap);
+              face_count, base_texture->isCubemap);
     out_result->error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     goto cleanup;
   }
+  const uint32_t physical_layers = (uint32_t)physical_layers_u64;
+  const VkrTextureType texture_type =
+      cubemap ? (base_texture->numLayers > 1u ? VKR_TEXTURE_TYPE_CUBE_MAP_ARRAY
+                                              : VKR_TEXTURE_TYPE_CUBE_MAP)
+              : (base_texture->numLayers > 1u ? VKR_TEXTURE_TYPE_2D_ARRAY
+                                              : VKR_TEXTURE_TYPE_2D);
 
   if (base_texture->baseWidth == 0 || base_texture->baseHeight == 0 ||
       base_texture->baseWidth > VKR_TEXTURE_MAX_DIMENSION ||
-      base_texture->baseHeight > VKR_TEXTURE_MAX_DIMENSION) {
+      base_texture->baseHeight > VKR_TEXTURE_MAX_DIMENSION ||
+      (cubemap && base_texture->baseWidth != base_texture->baseHeight)) {
     out_result->error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     goto cleanup;
   }
@@ -2375,6 +2391,41 @@ vkr_internal bool8_t vkr_texture_decode_from_ktx2(
     goto cleanup;
   }
 
+  const bool8_t has_transparency = vkr_texture_ktx_metadata_bool(
+      base_texture, "vkr.has_transparency", false_v);
+  const bool8_t alpha_mask =
+      vkr_texture_ktx_metadata_bool(base_texture, "vkr.alpha_mask", false_v);
+  VkrTextureTranscodeCacheRecord cached = {0};
+  if (vkr_texture_transcode_cache_load(
+          allocator, vkt_path, file_data, file_size, target_format,
+          base_texture->baseWidth, base_texture->baseHeight,
+          base_texture->numLevels, physical_layers, &cached)) {
+    vkr_atomic_uint64_fetch_add(&system->transcode_cache_hits, 1u,
+                                VKR_MEMORY_ORDER_RELAXED);
+    out_result->upload_data = cached.data;
+    out_result->upload_data_size = cached.data_size;
+    out_result->upload_regions = cached.regions;
+    out_result->upload_region_count = cached.region_count;
+    out_result->upload_mip_levels = cached.mip_levels;
+    out_result->upload_array_layers = cached.array_layers;
+    out_result->upload_format = cached.format;
+    out_result->upload_type = texture_type;
+    out_result->upload_is_compressed = cached.is_compressed;
+    out_result->width = (int32_t)cached.width;
+    out_result->height = (int32_t)cached.height;
+    out_result->original_channels = (int32_t)cached.channels;
+    out_result->has_transparency = cached.has_transparency;
+    out_result->alpha_mask = cached.alpha_mask;
+    out_result->loaded_from_cache = true_v;
+    out_result->success = true_v;
+    cached.data = NULL;
+    cached.regions = NULL;
+    success = true_v;
+    goto cleanup;
+  }
+  vkr_atomic_uint64_fetch_add(&system->transcode_cache_misses, 1u,
+                              VKR_MEMORY_ORDER_RELAXED);
+
   ktx_result =
       ktxTexture2_TranscodeBasis(ktx_texture, target_transcode_format, 0);
   if (ktx_result != KTX_SUCCESS) {
@@ -2392,12 +2443,14 @@ vkr_internal bool8_t vkr_texture_decode_from_ktx2(
     goto cleanup;
   }
 
-  const uint32_t region_count =
-      base_texture->numLevels * base_texture->numLayers;
-  if (region_count == 0) {
+  const uint64_t region_count_u64 =
+      (uint64_t)base_texture->numLevels * physical_layers;
+  if (region_count_u64 == 0u ||
+      region_count_u64 > VKR_TEXTURE_MAX_UPLOAD_REGIONS) {
     out_result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
     goto cleanup;
   }
+  const uint32_t region_count = (uint32_t)region_count_u64;
 
   upload_data = (uint8_t *)malloc((size_t)ktx_data_size);
   upload_regions = (VkrTextureUploadRegion *)malloc(
@@ -2410,32 +2463,35 @@ vkr_internal bool8_t vkr_texture_decode_from_ktx2(
   MemCopy(upload_data, ktx_data, (size_t)ktx_data_size);
   uint32_t region_index = 0;
   for (uint32_t layer = 0; layer < base_texture->numLayers; ++layer) {
-    for (uint32_t mip = 0; mip < base_texture->numLevels; ++mip) {
-      ktx_size_t image_offset = 0;
-      ktx_result =
-          ktxTexture_GetImageOffset(base_texture, mip, layer, 0, &image_offset);
-      if (ktx_result != KTX_SUCCESS || image_offset > ktx_data_size) {
-        out_result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-        goto cleanup;
-      }
+    for (uint32_t face = 0; face < face_count; ++face) {
+      for (uint32_t mip = 0; mip < base_texture->numLevels; ++mip) {
+        ktx_size_t image_offset = 0;
+        ktx_result = ktxTexture_GetImageOffset(base_texture, mip, layer, face,
+                                               &image_offset);
+        if (ktx_result != KTX_SUCCESS || image_offset > ktx_data_size) {
+          out_result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+          goto cleanup;
+        }
 
-      const ktx_size_t image_size = ktxTexture_GetImageSize(base_texture, mip);
-      if (image_offset + image_size > ktx_data_size) {
-        out_result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-        goto cleanup;
-      }
+        const ktx_size_t image_size =
+            ktxTexture_GetImageSize(base_texture, mip);
+        if (image_offset + image_size > ktx_data_size) {
+          out_result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+          goto cleanup;
+        }
 
-      const uint32_t mip_width = Max(1u, base_texture->baseWidth >> mip);
-      const uint32_t mip_height = Max(1u, base_texture->baseHeight >> mip);
-      upload_regions[region_index++] = (VkrTextureUploadRegion){
-          .mip_level = mip,
-          .array_layer = layer,
-          .width = mip_width,
-          .height = mip_height,
-          .depth = 1,
-          .byte_offset = image_offset,
-          .byte_size = image_size,
-      };
+        const uint32_t mip_width = Max(1u, base_texture->baseWidth >> mip);
+        const uint32_t mip_height = Max(1u, base_texture->baseHeight >> mip);
+        upload_regions[region_index++] = (VkrTextureUploadRegion){
+            .mip_level = mip,
+            .array_layer = layer * face_count + face,
+            .width = mip_width,
+            .height = mip_height,
+            .depth = 1,
+            .byte_offset = image_offset,
+            .byte_size = image_size,
+        };
+      }
     }
   }
 
@@ -2444,18 +2500,37 @@ vkr_internal bool8_t vkr_texture_decode_from_ktx2(
   out_result->upload_regions = upload_regions;
   out_result->upload_region_count = region_count;
   out_result->upload_mip_levels = base_texture->numLevels;
-  out_result->upload_array_layers = base_texture->numLayers;
+  out_result->upload_array_layers = physical_layers;
   out_result->upload_format = target_format;
+  out_result->upload_type = texture_type;
   out_result->upload_is_compressed =
       vkr_texture_format_is_block_compressed(target_format);
   out_result->width = (int32_t)base_texture->baseWidth;
   out_result->height = (int32_t)base_texture->baseHeight;
   out_result->original_channels =
       (int32_t)vkr_texture_channel_count_from_format(target_format);
-  out_result->has_transparency = vkr_texture_ktx_metadata_bool(
-      base_texture, "vkr.has_transparency", false_v);
-  out_result->alpha_mask =
-      vkr_texture_ktx_metadata_bool(base_texture, "vkr.alpha_mask", false_v);
+  out_result->has_transparency = has_transparency;
+  out_result->alpha_mask = alpha_mask;
+  const VkrTextureTranscodeCacheRecord cache_record = {
+      .width = base_texture->baseWidth,
+      .height = base_texture->baseHeight,
+      .channels = out_result->original_channels,
+      .format = target_format,
+      .mip_levels = base_texture->numLevels,
+      .array_layers = physical_layers,
+      .is_compressed = out_result->upload_is_compressed,
+      .has_transparency = has_transparency,
+      .alpha_mask = alpha_mask,
+      .data = upload_data,
+      .data_size = ktx_data_size,
+      .regions = upload_regions,
+      .region_count = region_count,
+  };
+  if (vkr_texture_transcode_cache_store(allocator, vkt_path, file_data,
+                                        file_size, &cache_record)) {
+    vkr_atomic_uint64_fetch_add(&system->transcode_cache_writes, 1u,
+                                VKR_MEMORY_ORDER_RELAXED);
+  }
   out_result->success = true_v;
   success = true_v;
 
@@ -3201,9 +3276,13 @@ bool8_t vkr_texture_system_prepare_load_from_file(
       .width = (uint32_t)width,
       .height = (uint32_t)height,
       .channels = actual_channels,
+      .mip_levels = has_upload_payload ? decode_result.upload_mip_levels : 1u,
+      .array_layers =
+          has_upload_payload ? decode_result.upload_array_layers : 1u,
       .format = format,
       .allocation_owner = VKR_GPU_ALLOCATION_OWNER_TEXTURE,
-      .type = VKR_TEXTURE_TYPE_2D,
+      .type =
+          has_upload_payload ? decode_result.upload_type : VKR_TEXTURE_TYPE_2D,
       .properties = props,
       .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
       .v_repeat_mode = format == VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT
@@ -3331,6 +3410,7 @@ bool8_t vkr_texture_system_finalize_prepared_load(
   VkrTexture *texture = &system->textures.data[free_slot_index];
   MemZero(texture, sizeof(*texture));
   texture->description = prepared->description;
+  texture->resident_bytes = prepared->upload_data_size;
   texture->description.id = free_slot_index + 1;
   if (texture->description.generation == VKR_INVALID_ID) {
     texture->description.generation = system->generation_counter++;
@@ -3599,6 +3679,8 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
       .width = (uint32_t)width,
       .height = (uint32_t)height,
       .channels = 4,
+      .mip_levels = 1u,
+      .array_layers = 6u,
       // LDR cubemap source faces (jpg/png) are authored in sRGB space.
       // Sampling through an sRGB format ensures bake shaders receive linear
       // radiance values.
@@ -3640,6 +3722,7 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
   VkrTexture *texture = &system->textures.data[free_slot_index];
   MemZero(texture, sizeof(VkrTexture));
   texture->description = desc;
+  texture->resident_bytes = total_size;
   texture->description.id = free_slot_index + 1;
   texture->description.generation = system->generation_counter++;
   VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;

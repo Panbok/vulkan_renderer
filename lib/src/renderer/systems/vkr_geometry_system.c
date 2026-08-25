@@ -5,6 +5,7 @@
 #include "math/vkr_math.h"
 #include "math/vkr_quat.h"
 #include "memory/vkr_arena_allocator.h"
+#include "renderer/vkr_packed_geometry.h"
 
 vkr_internal INLINE VkrGeometry *
 vkr_geometry_from_handle(VkrGeometrySystem *system, VkrGeometryHandle handle) {
@@ -383,6 +384,87 @@ vkr_internal VkrGeometryHandle geometry_creation_failure(
   return VKR_GEOMETRY_HANDLE_INVALID;
 }
 
+vkr_internal bool8_t vkr_geometry_prepare_packed_config(
+    VkrGeometrySystem *system, const VkrGeometryConfig *source,
+    VkrGeometryConfig *out_config) {
+  *out_config = *source;
+  if (source->vertex_layout == VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1) {
+    return source->vertex_size == sizeof(VkrPackedStaticVertex) &&
+           source->index_size == sizeof(uint32_t) &&
+           vkr_packed_geometry_vertices_are_valid(
+               source->vertices, source->vertex_count, &source->decode);
+  }
+  if ((source->vertex_size != sizeof(VkrVertex3d) &&
+       source->vertex_size != sizeof(VkrVertex2d)) ||
+      (source->index_size != sizeof(uint16_t) &&
+       source->index_size != sizeof(uint32_t))) {
+    return false_v;
+  }
+  VkrVertex3d *converted = NULL;
+  const VkrVertex3d *vertices = source->vertices;
+  if (source->vertex_size == sizeof(VkrVertex2d)) {
+    converted = vkr_allocator_alloc(&system->allocator,
+                                    (uint64_t)source->vertex_count *
+                                        sizeof(VkrVertex3d),
+                                    VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!converted)
+      return false_v;
+    const VkrVertex2d *input = source->vertices;
+    for (uint32_t i = 0; i < source->vertex_count; ++i) {
+      converted[i] = (VkrVertex3d){
+          .position = {input[i].position.x, input[i].position.y, 0.0f},
+          .normal = {0.0f, 0.0f, 1.0f},
+          .texcoord = input[i].texcoord,
+          .colour = {1.0f, 1.0f, 1.0f, 1.0f},
+          .tangent = {1.0f, 0.0f, 0.0f, 1.0f},
+      };
+    }
+    vertices = converted;
+  }
+  VkrPackedStaticVertex *packed = vkr_allocator_alloc(
+      &system->allocator,
+      (uint64_t)source->vertex_count * sizeof(VkrPackedStaticVertex),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint32_t *indices = NULL;
+  if (source->index_size == sizeof(uint16_t)) {
+    indices = vkr_allocator_alloc(
+        &system->allocator, (uint64_t)source->index_count * sizeof(uint32_t),
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!indices)
+      return false_v;
+    const uint16_t *input = source->indices;
+    for (uint32_t i = 0; i < source->index_count; ++i)
+      indices[i] = input[i];
+  }
+  if (!packed)
+    return false_v;
+  Vec3 min = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);
+  Vec3 max = vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
+  for (uint32_t i = 0; i < source->vertex_count; ++i) {
+    const Vec3 position = vkr_vertex_unpack_vec3(vertices[i].position);
+    min.x = Min(min.x, position.x);
+    min.y = Min(min.y, position.y);
+    min.z = Min(min.z, position.z);
+    max.x = Max(max.x, position.x);
+    max.y = Max(max.y, position.y);
+    max.z = Max(max.z, position.z);
+  }
+  const VkrGeometryQuantizationBudgets budgets =
+      vkr_packed_geometry_default_budgets();
+  VkrGeometryQuantizationMetrics quantization = {0};
+  if (!vkr_packed_geometry_pack(vertices, source->vertex_count, min, max,
+                                &budgets, packed, &out_config->decode,
+                                &quantization)) {
+    return false_v;
+  }
+  out_config->vertex_size = sizeof(VkrPackedStaticVertex);
+  out_config->vertices = packed;
+  out_config->vertex_layout = VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1;
+  out_config->index_size = sizeof(uint32_t);
+  out_config->indices = indices ? indices : source->indices;
+  return true_v;
+}
+
 VkrGeometryHandle vkr_geometry_system_create(VkrGeometrySystem *system,
                                              const VkrGeometryConfig *config,
                                              bool8_t auto_release,
@@ -408,24 +490,37 @@ VkrGeometryHandle vkr_geometry_system_create(VkrGeometrySystem *system,
     return handle;
   }
 
-  geom->vertex_size = config->vertex_size;
-  geom->vertex_count = config->vertex_count;
-  geom->index_size = config->index_size;
-  geom->index_count = config->index_count;
-  geom->center = config->center;
-  geom->min_extents = config->min_extents;
-  geom->max_extents = config->max_extents;
-  if (config->name[0] != '\0') {
-    string_copy(geom->name, config->name);
+  VkrAllocatorScope publication_scope =
+      vkr_allocator_begin_scope(&system->allocator);
+  VkrGeometryConfig packed_config = {0};
+  if (!vkr_allocator_scope_is_valid(&publication_scope) ||
+      !vkr_geometry_prepare_packed_config(system, config, &packed_config)) {
+    if (vkr_allocator_scope_is_valid(&publication_scope))
+      vkr_allocator_end_scope(&publication_scope,
+                              VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return geometry_creation_failure(system, geom, handle);
+  }
+  geom->vertex_size = packed_config.vertex_size;
+  geom->vertex_count = packed_config.vertex_count;
+  geom->index_size = packed_config.index_size;
+  geom->index_count = packed_config.index_count;
+  geom->center = packed_config.center;
+  geom->min_extents = packed_config.min_extents;
+  geom->max_extents = packed_config.max_extents;
+  if (packed_config.name[0] != '\0') {
+    string_copy(geom->name, packed_config.name);
   } else {
     string_format(geom->name, sizeof(geom->name), "geometry_%u", handle.id);
   }
-  if (config->material_name[0] != '\0') {
-    string_copy(geom->material_name, config->material_name);
+  if (packed_config.material_name[0] != '\0') {
+    string_copy(geom->material_name, packed_config.material_name);
   }
 
-  if (!system->asset_publisher->publish_geometry(system->asset_publisher->state,
-                                                 handle, config)) {
+  const bool8_t published = system->asset_publisher->publish_geometry(
+      system->asset_publisher->state, handle, &packed_config);
+  vkr_allocator_end_scope(&publication_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!published) {
     log_error("Failed to publish geometry '%s'", geom->name);
     *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
     return geometry_creation_failure(system, geom, handle);

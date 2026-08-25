@@ -84,8 +84,9 @@ typedef struct VkrMetalPacketSubmeshCreateInfo {
 } VkrMetalPacketSubmeshCreateInfo;
 
 typedef struct VkrMetalPacketMeshCreateInfo {
-  const VkrVertex3d *vertices;
+  const VkrPackedStaticVertex *vertices;
   uint32_t vertex_count;
+  VkrGpuGeometryDecodeRecord decode;
   const uint32_t *indices;
   uint32_t index_count;
   const VkrMetalPacketSubmeshCreateInfo *submeshes;
@@ -255,6 +256,11 @@ bool8_t vkr_metal_packet_renderer_create_rgba8_texture(
     VkrMetalPacketRenderer *renderer,
     const VkrMetalPacketRgba8TextureCreateInfo *create_info,
     VkrTextureHandle *out_handle);
+bool8_t vkr_metal_packet_renderer_begin_texture_upload_batch(
+    VkrMetalPacketRenderer *renderer);
+bool8_t vkr_metal_packet_renderer_end_texture_upload_batch(
+    VkrMetalPacketRenderer *renderer);
+
 /** Publishes a shared decoder payload under its existing texture handle. */
 bool8_t vkr_metal_packet_renderer_publish_prepared_texture(
     VkrMetalPacketRenderer *renderer, VkrTextureHandle handle,

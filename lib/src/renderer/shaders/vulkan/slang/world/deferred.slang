@@ -29,7 +29,7 @@ struct VkrVkIndirectCommand
 
 struct VkrVkGeometryRow
 {
-    VkrVulkanVertex *vertices;
+    VkrPackedStaticVertex *vertices;
     uint *indices;
     uint first_vertex;
     uint first_index;
@@ -37,7 +37,7 @@ struct VkrVkGeometryRow
     uint vertex_layout;
     uint publication_generation;
     uint flags;
-    uint2 reserved;
+    VkrGpuGeometryDecodeRecord *decode;
 };
 
 struct VkrVkCullRoot
@@ -95,7 +95,7 @@ struct VkrVkResolveRoot
     uint2 reserved_address;
     VkrVulkanInstance *instances;
     VkrVulkanMaterial *materials;
-    VkrVulkanVertex *vertices;
+    VkrPackedStaticVertex *vertices;
     uint *indices;
     VkrVkDrawState *compaction_state;
     float4x4 view_projection;
@@ -181,7 +181,7 @@ struct VkrVkTransmissionRoot
     uint2 reserved_address;
     VkrVkGeometryRow *geometry_rows;
     VkrVulkanInstance *instances;
-    VkrVulkanVertex *vertices;
+    VkrPackedStaticVertex *vertices;
     uint *indices;
     VkrVkDrawState *compaction_state;
     VkrVulkanPacketFrameRoot *frame;
@@ -486,8 +486,9 @@ VkrVkVisibilityOutput vk_visibility_vertex(uint vertex_id : SV_VertexID,
         root.view_index * root.visible_capacity + visible_instance;
     VkrGpuVisibleDrawRow visible = root.visible_rows[visible_index];
     VkrVkGeometryRow geometry = root.geometry_rows[visible.geometry_index];
-    VkrVulkanVertex vertex =
-        geometry.vertices[geometry.first_vertex + vertex_id];
+    VkrGpuDecodedVertex vertex = vkr_decode_packed_vertex(
+        geometry.vertices[geometry.first_vertex + vertex_id],
+        geometry.decode[0]);
     VkrVulkanInstance instance = root.frame.instances[visible.instance_index];
     VkrVkVisibilityOutput output;
     output.position = mul(root.frame.view_projection,
@@ -682,7 +683,7 @@ struct VkrVkSurfaceSource
     VkrGpuVisibleDrawRow *visible_rows;
     VkrVulkanInstance *instances;
     VkrVulkanMaterial *materials;
-    VkrVulkanVertex *vertices;
+    VkrPackedStaticVertex *vertices;
     uint *indices;
     VkrVkDrawState *compaction_state;
     float4x4 view_projection;
@@ -744,9 +745,13 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
              visible.vertex_offset;
     int ic = int(source.indices[visible.first_index + triangle + 2u]) +
              visible.vertex_offset;
-    VkrVulkanVertex a = source.vertices[geometry.first_vertex + uint(ia)];
-    VkrVulkanVertex b = source.vertices[geometry.first_vertex + uint(ib)];
-    VkrVulkanVertex c = source.vertices[geometry.first_vertex + uint(ic)];
+    VkrGpuGeometryDecodeRecord decode = geometry.decode[0];
+    VkrGpuDecodedVertex a = vkr_decode_packed_vertex(
+        source.vertices[geometry.first_vertex + uint(ia)], decode);
+    VkrGpuDecodedVertex b = vkr_decode_packed_vertex(
+        source.vertices[geometry.first_vertex + uint(ib)], decode);
+    VkrGpuDecodedVertex c = vkr_decode_packed_vertex(
+        source.vertices[geometry.first_vertex + uint(ic)], decode);
     VkrVulkanInstance instance = source.instances[visible.instance_index];
     float4 wa = mul(instance.model, float4(a.position, 1.0f));
     float4 wb = mul(instance.model, float4(b.position, 1.0f));
