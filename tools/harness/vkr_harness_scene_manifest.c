@@ -295,6 +295,88 @@ static bool8_t vkr_harness_scene_manifest_add_gltf_material_cache(
   return true_v;
 }
 
+typedef struct VkrHarnessSceneHashJob {
+  VkrHarnessSceneManifest *manifest;
+  uint32_t *asset_indices;
+  char (*absolute_paths)[VKR_HARNESS_PATH_MAX];
+  uint32_t begin;
+  uint32_t end;
+  bool8_t success;
+} VkrHarnessSceneHashJob;
+
+static void *vkr_harness_scene_hash_worker(void *argument) {
+  VkrHarnessSceneHashJob *job = argument;
+  job->success = true_v;
+  for (uint32_t i = job->begin; i < job->end; ++i) {
+    VkrHarnessSceneAsset *asset = &job->manifest->assets[job->asset_indices[i]];
+    if (!vkr_harness_sha256_file_sized(job->absolute_paths[i], asset->sha256,
+                                       &asset->size)) {
+      job->success = false_v;
+      break;
+    }
+  }
+  return NULL;
+}
+
+static bool8_t
+vkr_harness_scene_manifest_hash_missing(const char *resolved_root, Arena *arena,
+                                        VkrHarnessSceneManifest *manifest,
+                                        VkrHarnessError *out_error) {
+  uint32_t *indices = arena_alloc(
+      arena, sizeof(*indices) * manifest->asset_count, ARENA_MEMORY_TAG_ARRAY);
+  char(*paths)[VKR_HARNESS_PATH_MAX] = arena_alloc(
+      arena, sizeof(*paths) * manifest->asset_count, ARENA_MEMORY_TAG_ARRAY);
+  if (!indices || !paths) {
+    return false_v;
+  }
+  uint32_t count = 0u;
+  for (uint32_t i = 0u; i < manifest->asset_count; ++i) {
+    if (manifest->assets[i].sha256[0] != '\0') {
+      continue;
+    }
+    if (!vkr_harness_resolve_existing_path(
+            resolved_root, manifest->assets[i].path, paths[count], out_error)) {
+      return false_v;
+    }
+    indices[count++] = i;
+  }
+  if (count == 0u) {
+    return true_v;
+  }
+
+  const uint32_t worker_count =
+      Min(Min(Max(vkr_platform_get_logical_core_count(), 1u), 8u), count);
+  VkrThread threads[8] = {0};
+  VkrHarnessSceneHashJob jobs[8] = {0};
+  VkrAllocator thread_allocator = {.ctx = arena};
+  vkr_allocator_arena(&thread_allocator);
+  uint32_t created = 0u;
+  for (uint32_t worker = 0u; worker < worker_count; ++worker) {
+    jobs[worker] = (VkrHarnessSceneHashJob){
+        .manifest = manifest,
+        .asset_indices = indices,
+        .absolute_paths = paths,
+        .begin = (uint32_t)(((uint64_t)count * worker) / worker_count),
+        .end = (uint32_t)(((uint64_t)count * (worker + 1u)) / worker_count),
+    };
+    if (!vkr_thread_create(&thread_allocator, &threads[worker],
+                           vkr_harness_scene_hash_worker, &jobs[worker])) {
+      break;
+    }
+    created++;
+  }
+  bool8_t ok = created == worker_count;
+  for (uint32_t worker = 0u; worker < created; ++worker) {
+    ok = vkr_thread_join(threads[worker]) && jobs[worker].success && ok;
+    (void)vkr_thread_destroy(&thread_allocator, &threads[worker]);
+  }
+  if (!ok) {
+    vkr_harness_error_set(out_error, "scene_manifest.unreadable", "$.scene",
+                          "Unable to digest the scene dependency closure");
+  }
+  return ok;
+}
+
 static void
 vkr_harness_scene_manifest_digest(VkrHarnessSceneManifest *manifest) {
   vkr_sort(manifest->assets, manifest->asset_count, sizeof(*manifest->assets),
@@ -374,11 +456,7 @@ bool8_t vkr_harness_scene_manifest_build(const char *repo_root,
     }
     char absolute[VKR_HARNESS_PATH_MAX];
     if (!vkr_harness_resolve_existing_path(resolved_root, asset->path, absolute,
-                                           out_error) ||
-        !vkr_harness_sha256_file_sized(absolute, asset->sha256, &asset->size)) {
-      vkr_harness_error_set(out_error, "scene_manifest.unreadable", "$.scene",
-                            "Unable to digest scene dependency '%s'",
-                            asset->path);
+                                           out_error)) {
       ok = false_v;
       break;
     }
@@ -406,6 +484,8 @@ bool8_t vkr_harness_scene_manifest_build(const char *repo_root,
       ok = false_v;
       break;
     }
+    asset->size = size;
+    vkr_harness_sha256_bytes(bytes, size, asset->sha256);
     const uint8_t *parse_bytes = bytes;
     uint64_t parse_size = size;
     if (is_glb) {
@@ -585,6 +665,10 @@ bool8_t vkr_harness_scene_manifest_build(const char *repo_root,
   if (!ok) {
     return false_v;
   }
+  if (!vkr_harness_scene_manifest_hash_missing(resolved_root, arena,
+                                               out_manifest, out_error)) {
+    return false_v;
+  }
   vkr_harness_scene_manifest_digest(out_manifest);
   return true_v;
 }
@@ -631,6 +715,18 @@ vkr_harness_scene_manifest_write(const char *path,
                           "Unable to publish scene manifest '%s'", path);
   }
   return ok;
+}
+
+bool8_t vkr_harness_scene_manifest_verify_file(const char *path,
+                                               const char *expected_digest) {
+  if (!path || !expected_digest || expected_digest[0] == '\0') {
+    return false_v;
+  }
+  char observed[VKR_HARNESS_DIGEST_MAX] = {0};
+  return vkr_harness_sha256_file(path, observed) &&
+                 string_equals(observed, expected_digest)
+             ? true_v
+             : false_v;
 }
 
 bool8_t vkr_harness_scene_manifest_publish(const char *repo_root,

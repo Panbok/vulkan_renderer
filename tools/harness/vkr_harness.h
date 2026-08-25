@@ -4,6 +4,7 @@
 #include "containers/vkr_sort.h"
 #include "core/vkr_json_writer.h"
 #include "core/vkr_metrics.h"
+#include "core/vkr_threads.h"
 #include "defines.h"
 #include "filesystem/filesystem.h"
 #include "math/vec.h"
@@ -695,6 +696,8 @@ bool8_t
 vkr_harness_scene_manifest_write(const char *path,
                                  const VkrHarnessSceneManifest *manifest,
                                  VkrHarnessError *out_error);
+bool8_t vkr_harness_scene_manifest_verify_file(const char *path,
+                                               const char *expected_digest);
 bool8_t vkr_harness_scene_manifest_publish(const char *repo_root,
                                            const char *scene,
                                            const char *run_root, Arena *arena,

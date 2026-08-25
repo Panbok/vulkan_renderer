@@ -218,16 +218,6 @@ int vkr_harness_autotest_run(const char *executable, const char *repo_root,
   }
   vkr_harness_timestamp_utc(report.provenance.started_at);
   vkr_harness_provenance_collect(executable, repo_root, &report.provenance);
-  VkrHarnessFingerprintField
-      initial_environment[VKR_HARNESS_ENVIRONMENT_FIELD_COUNT];
-  const uint32_t initial_environment_count = vkr_harness_environment_fields(
-      &report.provenance, profile.require_exclusive_gpu_lane,
-      initial_environment);
-  (void)vkr_harness_case_fingerprints(
-      repo_root, VKR_HARNESS_TOOL_AUTOTEST, &case_manifest, &profile,
-      report.subsystem_mask, initial_environment, initial_environment_count,
-      report.environment_fingerprint, report.workload_fingerprint,
-      report.policy_fingerprint, &error);
   if (!profile.authoritative) {
     vkr_harness_report_add_authority_reason(&report, "profile.local_only");
   }
@@ -340,8 +330,23 @@ publish:
                                             artifacts[i].absolute);
     }
   }
-  if (!vkr_harness_scene_manifest_publish(repo_root, case_manifest.scene,
-                                          run_root, arena, &report, &error)) {
+  if (primary.report[0] != '\0') {
+    char primary_report_path[VKR_HARNESS_PATH_MAX];
+    char primary_run_root[VKR_HARNESS_PATH_MAX];
+    char primary_manifest_path[VKR_HARNESS_PATH_MAX];
+    if (!vkr_harness_resolve_existing_path(repo_root, primary.report,
+                                           primary_report_path, &error) ||
+        !vkr_harness_path_parent(primary_report_path, primary_run_root) ||
+        string_format(primary_manifest_path, sizeof(primary_manifest_path),
+                      "%s/scene-content-manifest.json",
+                      primary_run_root) <= 0 ||
+        !vkr_harness_report_add_artifact(&report, "scene.content_manifest",
+                                         "primary/scene-content-manifest.json",
+                                         "application/json",
+                                         primary_manifest_path)) {
+      vkr_harness_report_mark_incomplete(&report, "scene_manifest.unavailable");
+    }
+  } else {
     vkr_harness_report_mark_incomplete(&report, "scene_manifest.unavailable");
   }
   char report_path[VKR_HARNESS_PATH_MAX];

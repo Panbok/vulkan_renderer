@@ -35,8 +35,17 @@ static int vkr_harness_snapshot_spawn(
     arguments[argument_count++] = "--capture-mode";
     arguments[argument_count++] = replay_mode;
   }
-  const VkrPlatformEnvironmentVariable environment = {
-      .name = "VKR_PIPELINE_CACHE_PATH", .value = cache_path};
+  char asset_cache_path[VKR_HARNESS_PATH_MAX];
+  string_format(asset_cache_path, sizeof(asset_cache_path),
+                "%s/build/_asset_cache", repo_root);
+  VkrPlatformEnvironmentVariable environment[2] = {
+      {.name = "VKR_ASSET_CACHE_ROOT", .value = asset_cache_path},
+  };
+  uint32_t environment_count = 1u;
+  if (cache_path && cache_path[0]) {
+    environment[environment_count++] = (VkrPlatformEnvironmentVariable){
+        .name = "VKR_PIPELINE_CACHE_PATH", .value = cache_path};
+  }
   const VkrPlatformProcessConfig config = {
       .executable = executable,
       .arguments = arguments,
@@ -44,8 +53,8 @@ static int vkr_harness_snapshot_spawn(
       .working_directory = repo_root,
       .stdout_path = stdout_path,
       .stderr_path = stderr_path,
-      .environment = cache_path && cache_path[0] ? &environment : NULL,
-      .environment_count = cache_path && cache_path[0] ? 1u : 0u,
+      .environment = environment,
+      .environment_count = environment_count,
       .timeout_ms = timeout_ms,
       .termination_grace_ms = 100u,
       .hidden = true_v,

@@ -53,20 +53,38 @@ static int vkr_harness_spawn_child(const char *executable,
                                    const char *repo_root, const char *case_path,
                                    const char *profile_path,
                                    const char *run_dir, const char *cache_path,
-                                   uint32_t timeout_ms, bool8_t prewarm) {
+                                   uint32_t timeout_ms, bool8_t prewarm,
+                                   const char *scene_content_digest) {
   char stdout_path[VKR_HARNESS_PATH_MAX];
   char stderr_path[VKR_HARNESS_PATH_MAX];
   string_format(stdout_path, sizeof(stdout_path), "%s/stdout.log", run_dir);
   string_format(stderr_path, sizeof(stderr_path), "%s/stderr.log", run_dir);
-  const char *arguments[11] = {"--child-profile", "--repo-root", repo_root,
-                               "--case",          case_path,     "--profile",
-                               profile_path,      "--run-dir",   run_dir};
-  uint32_t argument_count = 9u;
+  const char *arguments[13] = {"--child-profile",
+                               "--repo-root",
+                               repo_root,
+                               "--case",
+                               case_path,
+                               "--profile",
+                               profile_path,
+                               "--run-dir",
+                               run_dir,
+                               "--scene-content-digest",
+                               scene_content_digest};
+  uint32_t argument_count = 11u;
   if (prewarm) {
     arguments[argument_count++] = "--prewarm";
   }
-  const VkrPlatformEnvironmentVariable environment = {
-      .name = "VKR_PIPELINE_CACHE_PATH", .value = cache_path};
+  char asset_cache_path[VKR_HARNESS_PATH_MAX];
+  string_format(asset_cache_path, sizeof(asset_cache_path),
+                "%s/build/_asset_cache", repo_root);
+  VkrPlatformEnvironmentVariable environment[2] = {
+      {.name = "VKR_ASSET_CACHE_ROOT", .value = asset_cache_path},
+  };
+  uint32_t environment_count = 1u;
+  if (cache_path && cache_path[0]) {
+    environment[environment_count++] = (VkrPlatformEnvironmentVariable){
+        .name = "VKR_PIPELINE_CACHE_PATH", .value = cache_path};
+  }
   const VkrPlatformProcessConfig config = {
       .executable = executable,
       .arguments = arguments,
@@ -74,8 +92,8 @@ static int vkr_harness_spawn_child(const char *executable,
       .working_directory = repo_root,
       .stdout_path = stdout_path,
       .stderr_path = stderr_path,
-      .environment = cache_path && cache_path[0] ? &environment : NULL,
-      .environment_count = cache_path && cache_path[0] ? 1u : 0u,
+      .environment = environment,
+      .environment_count = environment_count,
       .timeout_ms = timeout_ms,
       .termination_grace_ms = 100u,
       .hidden = true_v,
@@ -429,8 +447,8 @@ static bool8_t vkr_harness_execute_repetition(
     const VkrHarnessArenas *arenas, const char *executable,
     const char *repo_root, const char *case_path, const char *profile_path,
     const char *run_root, uint32_t index, const VkrHarnessCase *case_manifest,
-    VkrHarnessRunReference *reference, VkrHarnessSampleSet *out_samples,
-    VkrHarnessError *error) {
+    const char *scene_content_digest, VkrHarnessRunReference *reference,
+    VkrHarnessSampleSet *out_samples, VkrHarnessError *error) {
   char run_dir[VKR_HARNESS_PATH_MAX];
   string_format(run_dir, sizeof(run_dir), "%s/runs/%u", run_root, index);
   reference->index = index;
@@ -452,7 +470,7 @@ static bool8_t vkr_harness_execute_repetition(
     }
     const int prewarm_exit = vkr_harness_spawn_child(
         executable, repo_root, case_path, profile_path, prewarm_dir, cache_path,
-        case_manifest->repetition_timeout_ms, true_v);
+        case_manifest->repetition_timeout_ms, true_v, scene_content_digest);
     if (prewarm_exit != VKR_HARNESS_EXIT_PASS) {
       vkr_harness_error_set(
           error, "execution.prewarm_failed", "$",
@@ -463,7 +481,7 @@ static bool8_t vkr_harness_execute_repetition(
   }
   const int child_exit = vkr_harness_spawn_child(
       executable, repo_root, case_path, profile_path, run_dir, cache_path,
-      case_manifest->repetition_timeout_ms, false_v);
+      case_manifest->repetition_timeout_ms, false_v, scene_content_digest);
   char child_report[VKR_HARNESS_PATH_MAX];
   char samples_path[VKR_HARNESS_PATH_MAX];
   string_format(child_report, sizeof(child_report), "%s/report.json", run_dir);
@@ -755,6 +773,28 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
     vkr_harness_emit_result("error", VKR_HARNESS_EXIT_ERROR, NULL, NULL);
     return VKR_HARNESS_EXIT_ERROR;
   }
+  VkrHarnessSceneManifest scene_manifest = {0};
+  char scene_manifest_path[VKR_HARNESS_PATH_MAX];
+  char scene_manifest_file_digest[VKR_HARNESS_DIGEST_MAX] = {0};
+  string_format(scene_manifest_path, sizeof(scene_manifest_path),
+                "%s/scene-content-manifest.json", run_root);
+  if (!vkr_harness_scene_manifest_build(repo_root, case_manifest.scene,
+                                        arenas.persistent, &scene_manifest,
+                                        &error) ||
+      !vkr_harness_scene_manifest_write(scene_manifest_path, &scene_manifest,
+                                        &error) ||
+      !vkr_harness_sha256_file(scene_manifest_path,
+                               scene_manifest_file_digest) ||
+      !vkr_harness_report_add_artifact(
+          &report, "scene.content_manifest", "scene-content-manifest.json",
+          "application/json", scene_manifest_path)) {
+    vkr_harness_stderr("%s: %s\n", error.code, error.message);
+    arena_destroy(arenas.transient);
+    arena_destroy(arenas.persistent);
+    vkr_harness_emit_result("error", VKR_HARNESS_EXIT_ERROR, NULL, NULL);
+    return VKR_HARNESS_EXIT_ERROR;
+  }
+
   VkrHarnessGpuLane lane;
   vkr_harness_gpu_lane_init(&lane);
   if (profile.require_exclusive_gpu_lane) {
@@ -773,11 +813,11 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
   VkrHarnessSampleSet runs[VKR_HARNESS_MAX_RUNS] = {0};
   for (uint32_t run = 0; run < report.requested_repetitions; ++run) {
     VkrHarnessRunReference *reference = &report.runs[report.run_count++];
-    if (!vkr_harness_execute_repetition(
-            &arenas, executable, repo_root, case_path, profile_path, run_root,
-            run, &case_manifest, reference, &runs[run], &error)) {
-      if (error.code[0])
-        vkr_harness_stderr("%s: %s\n", error.code, error.message);
+    if (!vkr_harness_execute_repetition(&arenas, executable, repo_root,
+                                        case_path, profile_path, run_root, run,
+                                        &case_manifest, scene_manifest.sha256,
+                                        reference, &runs[run], &error)) {
+      vkr_harness_stderr("%s: %s\n", error.code, error.message);
       break;
     }
     if (run > 0u && !vkr_harness_run_is_compatible(&runs[0], &runs[run])) {
@@ -812,12 +852,31 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
   VkrHarnessCase effective_case = case_manifest;
   effective_case.target_image_count =
       report.provenance.actual_target_image_count;
-  if (!vkr_harness_case_fingerprints(
-          repo_root, VKR_HARNESS_TOOL_PROFILE, &effective_case, &profile,
+  if (!vkr_harness_case_fingerprints_with_scene_digest(
+          VKR_HARNESS_TOOL_PROFILE, &effective_case, &profile,
           report.subsystem_mask, environment, environment_count,
-          report.environment_fingerprint, report.workload_fingerprint,
-          report.policy_fingerprint, &error)) {
+          scene_manifest.sha256, report.environment_fingerprint,
+          report.workload_fingerprint, report.policy_fingerprint, &error)) {
     vkr_harness_report_mark_incomplete(&report, "comparison.unavailable");
+  }
+  for (uint32_t run = 0u; run < report.completed_repetitions; ++run) {
+    const VkrHarnessRunReference *reference = &report.runs[run];
+    if (!string_equals(reference->environment_fingerprint,
+                       report.environment_fingerprint) ||
+        !string_equals(reference->workload_fingerprint,
+                       report.workload_fingerprint) ||
+        !string_equals(reference->policy_fingerprint,
+                       report.policy_fingerprint)) {
+      vkr_harness_report_mark_incomplete(
+          &report, "comparison.child_fingerprint_mismatch");
+      break;
+    }
+  }
+  const bool8_t scene_manifest_intact = vkr_harness_scene_manifest_verify_file(
+      scene_manifest_path, scene_manifest_file_digest);
+  if (!scene_manifest_intact) {
+    vkr_harness_report_mark_incomplete(
+        &report, "scene_manifest.changed_during_execution");
   }
 
   char final_report[VKR_HARNESS_PATH_MAX];
@@ -838,9 +897,7 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
     artifacts_complete &= vkr_harness_report_add_artifact(
         &report, "summary.metrics", "summary.csv", "text/csv", summary);
   }
-  artifacts_complete &= vkr_harness_scene_manifest_publish(
-      repo_root, case_manifest.scene, run_root, arenas.transient, &report,
-      &error);
+  artifacts_complete &= scene_manifest_intact;
   if (!artifacts_complete) {
     vkr_harness_report_mark_incomplete(&report, "artifacts.incomplete");
   }
