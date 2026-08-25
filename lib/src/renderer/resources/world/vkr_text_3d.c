@@ -4,6 +4,7 @@
 #include "core/logger.h"
 #include "math/mat.h"
 #include "memory/vkr_allocator.h"
+#include "renderer/vkr_color_transfer.h"
 
 #define VKR_TEXT_3D_QUAD_COUNT 4
 #define VKR_TEXT_3D_INDEX_COUNT 6
@@ -272,7 +273,7 @@ vkr_internal void vkr_text_3d_generate_vertices(
 
   uint32_t vertex_idx = 0;
   uint32_t index_idx = 0;
-  Vec4 color = text_3d->color;
+  Vec4 color = text_3d->linear_color;
 
   for (uint32_t i = 0; i < glyph_count; ++i) {
     const VkrTextGlyph *layout_glyph = &text_3d->layout.glyphs.data[i];
@@ -481,6 +482,7 @@ bool8_t vkr_text_3d_create(VkrText3D *text_3d, VkrFontSystem *font_system,
       cfg.font.id != 0 ? cfg.font : font_system->default_mtsdf_font_handle;
   text_3d->font_size = cfg.font_size;
   text_3d->color = cfg.color;
+  text_3d->linear_color = vkr_srgb_color_to_linear(cfg.color);
   text_3d->uv_inset_px = cfg.uv_inset_px;
   text_3d->text = vkr_text_3d_copy_text(allocator, cfg.text);
 
@@ -559,6 +561,7 @@ void vkr_text_3d_set_text(VkrText3D *text_3d, String8 text) {
 void vkr_text_3d_set_color(VkrText3D *text_3d, Vec4 color) {
   assert_log(text_3d != NULL, "Text3D instance is NULL");
   text_3d->color = color;
+  text_3d->linear_color = vkr_srgb_color_to_linear(color);
   text_3d->buffers_dirty = true_v;
 }
 

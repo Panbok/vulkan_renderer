@@ -34,6 +34,3 @@ typedef struct VkrGltfMetalRoughSample {
  */
 VkrGltfMetalRoughSample
 vkr_gltf_convert_spec_gloss_sample(VkrGltfSpecGlossSample sample);
-
-float32_t vkr_gltf_srgb_to_linear(float32_t value);
-float32_t vkr_gltf_linear_to_srgb(float32_t value);

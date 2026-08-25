@@ -548,12 +548,12 @@ vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
              renderer, VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_FINAL,
              VKR_VULKAN_PACKET_SHADER_FULLSCREEN_VERTEX,
              VKR_VULKAN_PACKET_SHADER_FULLSCREEN_FRAGMENT,
-             VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_UNDEFINED, false_v, false_v,
+             VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_UNDEFINED, false_v, false_v,
              false_v, false_v) &&
          vkr_vk_create_packet_pipeline(
              renderer, VKR_VULKAN_PACKET_PIPELINE_UI,
              VKR_VULKAN_PACKET_SHADER_WORLD_VERTEX,
-             VKR_VULKAN_PACKET_SHADER_WORLD_FRAGMENT, VK_FORMAT_R8G8B8A8_UNORM,
+             VKR_VULKAN_PACKET_SHADER_WORLD_FRAGMENT, VK_FORMAT_R8G8B8A8_SRGB,
              VK_FORMAT_UNDEFINED, false_v, false_v, true_v, false_v) &&
          vkr_vk_create_packet_pipeline(
              renderer, VKR_VULKAN_PACKET_PIPELINE_WORLD_TEXT,
@@ -569,7 +569,7 @@ vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
          vkr_vk_create_packet_pipeline(
              renderer, VKR_VULKAN_PACKET_PIPELINE_UI_TEXT,
              VKR_VULKAN_PACKET_SHADER_TEXT_VERTEX,
-             VKR_VULKAN_PACKET_SHADER_TEXT_FRAGMENT, VK_FORMAT_R8G8B8A8_UNORM,
+             VKR_VULKAN_PACKET_SHADER_TEXT_FRAGMENT, VK_FORMAT_R8G8B8A8_SRGB,
              VK_FORMAT_UNDEFINED, false_v, false_v, true_v, false_v) &&
          vkr_vk_create_packet_pipeline(
              renderer, VKR_VULKAN_PACKET_PIPELINE_VISIBILITY,

@@ -1,4 +1,5 @@
 #include "math_test.h"
+#include "renderer/vkr_color_transfer.h"
 
 static bool32_t float_equals(float32_t a, float32_t b, float32_t epsilon) {
   return vkr_abs_f32(a - b) < epsilon;
@@ -450,6 +451,31 @@ static void test_mathematical_identities(void) {
   printf("  test_mathematical_identities PASSED\n");
 }
 
+static void test_srgb_transfer(void) {
+  printf("  Running test_srgb_transfer...\n");
+
+  assert(float_equals(vkr_srgb_to_linear(0.0f), 0.0f, 1.0e-7f));
+  assert(float_equals(vkr_srgb_to_linear(0.02f), 0.001547988f, 1.0e-7f));
+  assert(float_equals(vkr_srgb_to_linear(0.04045f), 0.003130805f, 1.0e-7f));
+  assert(float_equals(vkr_srgb_to_linear(0.5f), 0.21404114f, 1.0e-6f));
+  assert(float_equals(vkr_srgb_to_linear(1.0f), 1.0f, 1.0e-7f));
+
+  assert(float_equals(vkr_linear_to_srgb(0.0f), 0.0f, 1.0e-7f));
+  assert(float_equals(vkr_linear_to_srgb(0.001f), 0.01292f, 1.0e-7f));
+  assert(float_equals(vkr_linear_to_srgb(0.0031308f), 0.040449936f, 1.0e-7f));
+  assert(float_equals(vkr_linear_to_srgb(0.18f), 0.46135613f, 1.0e-6f));
+  assert(float_equals(vkr_linear_to_srgb(1.0f), 1.0f, 1.0e-7f));
+
+  const Vec4 decoded =
+      vkr_srgb_color_to_linear(vec4_new(0.5f, 0.02f, 1.0f, 0.25f));
+  assert(float_equals(decoded.x, 0.21404114f, 1.0e-6f));
+  assert(float_equals(decoded.y, 0.001547988f, 1.0e-7f));
+  assert(float_equals(decoded.z, 1.0f, 1.0e-7f));
+  assert(float_equals(decoded.w, 0.25f, 1.0e-7f));
+
+  printf("  test_srgb_transfer PASSED\n");
+}
+
 bool32_t run_math_tests(void) {
   printf("--- Starting Math Tests ---\n");
 
@@ -462,6 +488,7 @@ bool32_t run_math_tests(void) {
   test_random_functions();
   test_edge_cases();
   test_mathematical_identities();
+  test_srgb_transfer();
 
   printf("--- Math Tests Completed ---\n");
   return true;

@@ -1,6 +1,7 @@
 #include "renderer/resources/loaders/mesh_loader_gltf.h"
 #include "renderer/resources/loaders/vkr_gltf_material_conversion.h"
 #include "renderer/resources/loaders/vkr_meshoptimizer_bridge.h"
+#include "renderer/vkr_color_transfer.h"
 
 #include <cgltf.h>
 #include <stb_image.h>
@@ -778,7 +779,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_prepare_missing_dielectric_specular(
 
   float32_t srgb_to_linear_lut[256];
   for (uint32_t i = 0; i < 256u; ++i) {
-    srgb_to_linear_lut[i] = vkr_gltf_srgb_to_linear((float32_t)i / 255.0f);
+    srgb_to_linear_lut[i] = vkr_srgb_to_linear((float32_t)i / 255.0f);
   }
   for (int32_t y = 0; y < metal_rough.height; ++y) {
     for (int32_t x = 0; x < metal_rough.width; ++x) {
@@ -980,10 +981,10 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_prepare_spec_gloss_inner(
   float32_t srgb_to_linear_lut[256];
   uint8_t linear_to_srgb_lut[VKR_GLTF_LINEAR_TO_SRGB_LUT_MAX + 1u];
   for (uint32_t i = 0; i < 256u; ++i) {
-    srgb_to_linear_lut[i] = vkr_gltf_srgb_to_linear((float32_t)i / 255.0f);
+    srgb_to_linear_lut[i] = vkr_srgb_to_linear((float32_t)i / 255.0f);
   }
   for (uint32_t i = 0; i <= VKR_GLTF_LINEAR_TO_SRGB_LUT_MAX; ++i) {
-    linear_to_srgb_lut[i] = vkr_mesh_loader_gltf_unorm8(vkr_gltf_linear_to_srgb(
+    linear_to_srgb_lut[i] = vkr_mesh_loader_gltf_unorm8(vkr_linear_to_srgb(
         (float32_t)i / (float32_t)VKR_GLTF_LINEAR_TO_SRGB_LUT_MAX));
   }
 

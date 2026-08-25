@@ -14,8 +14,9 @@
  * Layout and bounds are computed internally.
  */
 typedef struct VkrUiTextConfig {
-  VkrFontHandle font;          // Font to use (or invalid for default)
-  Vec4 color;                  // Text color (RGBA)
+  VkrFontHandle font; // Font to use (or invalid for default)
+  /** Authored sRGB RGB and linear alpha. */
+  Vec4 color;
   float32_t font_size;         // Font size in points (0 = use font's native)
   float32_t letter_spacing;    // Extra spacing between glyphs
   VkrTextLayoutOptions layout; // Word wrap, max dimensions, anchor
@@ -64,6 +65,7 @@ typedef struct VkrUiText {
   // Content & config
   String8 content; // Owned text content
   VkrUiTextConfig config;
+  Vec4 linear_color;      // Retained decode of config.color.
   VkrTransform transform; // Position/rotation/scale
 
   // Computed state

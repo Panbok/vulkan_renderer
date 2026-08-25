@@ -73,5 +73,5 @@ typedef struct VkrVertex2d {
 typedef struct VkrTextVertex {
   Vec2 position; /**< Screen position. */
   Vec2 texcoord; /**< Atlas UV. */
-  Vec4 color;    /**< Per-vertex color (from style). */
+  Vec4 color;    /**< Linear RGB and linear alpha for attachment blending. */
 } VkrTextVertex;

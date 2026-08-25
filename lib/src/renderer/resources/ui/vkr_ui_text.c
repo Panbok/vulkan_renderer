@@ -6,6 +6,7 @@
 #include "math/vkr_transform.h"
 #include "memory/vkr_allocator.h"
 #include "renderer/systems/vkr_font_system.h"
+#include "renderer/vkr_color_transfer.h"
 
 #define VKR_UI_TEXT_QUAD_COUNT 4
 #define VKR_UI_TEXT_INDEX_COUNT 6
@@ -185,7 +186,7 @@ vkr_internal bool8_t vkr_ui_text_generate_geometry(VkrUiText *text) {
 
   uint32_t vertex_idx = 0;
   uint32_t index_idx = 0;
-  Vec4 color = text->config.color;
+  Vec4 color = text->linear_color;
   // Flip layout Y (top-down) into UI screen space without changing winding.
   float32_t layout_bottom =
       (text->layout.baseline.y - text->bounds.ascent) + text->bounds.size.y;
@@ -324,6 +325,7 @@ bool8_t vkr_ui_text_create(VkrAllocator *allocator, VkrFontSystem *font_system,
   out_text->allocator = allocator;
   out_text->content = vkr_ui_text_copy_content(allocator, content);
   out_text->config = config ? *config : VKR_UI_TEXT_CONFIG_DEFAULT;
+  out_text->linear_color = vkr_srgb_color_to_linear(out_text->config.color);
   out_text->transform = vkr_transform_identity();
   out_text->layout_dirty = true_v;
   out_text->buffers_dirty = true_v;
@@ -414,10 +416,11 @@ void vkr_ui_text_set_config(VkrUiText *text, const VkrUiTextConfig *config) {
           config->layout.anchor.horizontal ||
       text->config.layout.anchor.vertical != config->layout.anchor.vertical;
 
-  bool8_t color_changed =
+  const bool8_t color_changed =
       !vec4_equal(text->config.color, config->color, VKR_FLOAT_EPSILON);
 
   text->config = *config;
+  text->linear_color = vkr_srgb_color_to_linear(config->color);
 
   if (font_changed) {
     if (config->font.id != 0) {
@@ -456,6 +459,7 @@ void vkr_ui_text_set_color(VkrUiText *text, Vec4 color) {
   }
 
   text->config.color = color;
+  text->linear_color = vkr_srgb_color_to_linear(color);
   text->buffers_dirty = true_v;
 }
 

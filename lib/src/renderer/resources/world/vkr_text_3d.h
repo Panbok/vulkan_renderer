@@ -19,7 +19,7 @@ typedef struct VkrText3DConfig {
   String8 text;            // Owned text content
   VkrFontHandle font;      // Font to use (or invalid for default)
   float32_t font_size;     // Font size in points (0 = use font's native)
-  Vec4 color;              // Text color (RGBA)
+  Vec4 color;              // Authored sRGB RGB and linear alpha.
   uint32_t texture_width;  // Texture width (0 = auto-size)
   uint32_t texture_height; // Texture height (0 = auto-size)
   float32_t uv_inset_px; // Half-texel inset (in atlas pixels) to avoid bleeding
@@ -44,7 +44,8 @@ typedef struct VkrText3D {
   String8 text;        // Owned text content
   VkrFontHandle font;  // Font to use (or invalid for default)
   float32_t font_size; // Font size in points (0 = use font's native)
-  Vec4 color;          // Text color (RGBA)
+  Vec4 color;          // Authored sRGB RGB and linear alpha.
+  Vec4 linear_color;   // Retained linear RGB and linear alpha.
 
   VkrTextLayout layout;                // Computed glyph positions
   VkrTextLayoutOptions layout_options; // Word wrap, max dimensions, anchor

@@ -424,7 +424,7 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
       .window_height = out_setup->window_height,
       .viewport_width = out_setup->window_width,
       .viewport_height = out_setup->window_height,
-      .target_color_format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM,
+      .target_color_format = VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB,
       .target_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
       .target_color_initial_state =
           target->layout == VK_IMAGE_LAYOUT_UNDEFINED
@@ -1444,7 +1444,7 @@ void vkr_vulkan_renderer_target_information(
   const bool8_t offscreen =
       renderer->config.target_kind == VKR_PRESENT_TARGET_OFFSCREEN;
   const VkFormat format =
-      offscreen ? VK_FORMAT_R8G8B8A8_UNORM : renderer->window_target.format;
+      offscreen ? VK_FORMAT_R8G8B8A8_SRGB : renderer->window_target.format;
   if (out_present_mode) {
     *out_present_mode =
         offscreen ? VKR_PRESENT_MODE_DEFAULT

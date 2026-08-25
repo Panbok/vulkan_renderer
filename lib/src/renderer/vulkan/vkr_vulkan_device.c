@@ -83,18 +83,15 @@ VkSurfaceFormatKHR
 vkr_vulkan_device_choose_surface_format(const VkSurfaceFormatKHR *formats,
                                         const bool8_t *format_usable,
                                         uint32_t count) {
-  // Tonemapping writes display-encoded values into the UNORM render target.
-  // Presenting through an SRGB swapchain would encode those values a second
-  // time during the blit. Keep presentation in the same encoded domain.
   if (!formats || !format_usable || !count)
     return (VkSurfaceFormatKHR){VK_FORMAT_UNDEFINED,
                                 VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
   if (count == 1u && formats[0].format == VK_FORMAT_UNDEFINED &&
       format_usable[0])
-    return (VkSurfaceFormatKHR){VK_FORMAT_B8G8R8A8_UNORM,
+    return (VkSurfaceFormatKHR){VK_FORMAT_B8G8R8A8_SRGB,
                                 VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
-  const VkFormat preferred[] = {VK_FORMAT_B8G8R8A8_UNORM,
-                                VK_FORMAT_R8G8B8A8_UNORM};
+  const VkFormat preferred[] = {VK_FORMAT_B8G8R8A8_SRGB,
+                                VK_FORMAT_R8G8B8A8_SRGB};
   for (uint32_t preference = 0u; preference < ArrayCount(preferred);
        ++preference) {
     for (uint32_t i = 0u; i < count; ++i) {
@@ -640,29 +637,41 @@ vkr_vk_query_candidate(VkrVulkanDevice *device, uint32_t candidate_index,
   vkr_vk_report_record_limit(report, "optimalBufferCopyRowPitchAlignment",
                              limits->optimalBufferCopyRowPitchAlignment);
 
-  VkFormatProperties3 format3 = {
+  VkFormatProperties3 unorm_format3 = {
       .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3,
   };
-  VkFormatProperties2 format2 = {
+  VkFormatProperties2 unorm_format2 = {
       .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2,
-      .pNext = &format3,
+      .pNext = &unorm_format3,
   };
-  vkGetPhysicalDeviceFormatProperties2(candidate->physical,
-                                       VK_FORMAT_R8G8B8A8_UNORM, &format2);
+  vkGetPhysicalDeviceFormatProperties2(
+      candidate->physical, VK_FORMAT_R8G8B8A8_UNORM, &unorm_format2);
   const VkFormatFeatureFlags2 texture_floor =
       VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT |
       VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_FORMAT,
+                    "R8G8B8A8_UNORM sampled+transfer-dst", true_v,
+                    (unorm_format3.optimalTilingFeatures & texture_floor) ==
+                        texture_floor,
+                    "optimal tiling");
+
+  VkFormatProperties3 srgb_format3 = {
+      .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3,
+  };
+  VkFormatProperties2 srgb_format2 = {
+      .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2,
+      .pNext = &srgb_format3,
+  };
+  vkGetPhysicalDeviceFormatProperties2(candidate->physical,
+                                       VK_FORMAT_R8G8B8A8_SRGB, &srgb_format2);
   const VkFormatFeatureFlags2 target_floor =
       VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT |
       VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT;
-  vkr_vk_report_add(
-      report, VKR_VULKAN_REPORT_FORMAT, "R8G8B8A8_UNORM sampled+transfer-dst",
-      true_v, (format3.optimalTilingFeatures & texture_floor) == texture_floor,
-      "optimal tiling");
-  vkr_vk_report_add(
-      report, VKR_VULKAN_REPORT_FORMAT, "R8G8B8A8_UNORM color+transfer-src",
-      true_v, (format3.optimalTilingFeatures & target_floor) == target_floor,
-      "optimal tiling");
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_FORMAT,
+                    "R8G8B8A8_SRGB color+transfer-src", true_v,
+                    (srgb_format3.optimalTilingFeatures & target_floor) ==
+                        target_floor,
+                    "optimal tiling");
 
   const char *window_instance_extensions[] = {
       VK_KHR_SURFACE_EXTENSION_NAME,
@@ -685,7 +694,8 @@ vkr_vk_query_candidate(VkrVulkanDevice *device, uint32_t candidate_index,
                     device->config.windowed ? "window floor"
                                             : "offscreen omitted");
   const bool8_t encoded_source_supported =
-      (format3.optimalTilingFeatures & VK_FORMAT_FEATURE_2_BLIT_SRC_BIT) != 0u;
+      (srgb_format3.optimalTilingFeatures & VK_FORMAT_FEATURE_2_BLIT_SRC_BIT) !=
+      0u;
   bool8_t encoded_present_supported = false_v;
   if (device->config.windowed && candidate->queue_family_index != UINT32_MAX) {
     uint32_t surface_format_count = 0u;
@@ -703,7 +713,7 @@ vkr_vk_query_candidate(VkrVulkanDevice *device, uint32_t candidate_index,
         const VkFormat format =
             surface_format_count == 1u &&
                     surface_formats[i].format == VK_FORMAT_UNDEFINED
-                ? VK_FORMAT_B8G8R8A8_UNORM
+                ? VK_FORMAT_B8G8R8A8_SRGB
                 : surface_formats[i].format;
         VkFormatProperties properties = {0};
         vkGetPhysicalDeviceFormatProperties(candidate->physical, format,
@@ -718,12 +728,11 @@ vkr_vk_query_candidate(VkrVulkanDevice *device, uint32_t candidate_index,
           encoded_source_supported && selected.format != VK_FORMAT_UNDEFINED;
     }
   }
-  vkr_vk_report_add(report, VKR_VULKAN_REPORT_FORMAT,
-                    "BGRA8/RGBA8 UNORM encoded presentation target",
-                    device->config.windowed, encoded_present_supported,
-                    device->config.windowed
-                        ? "RGBA8 blit-src, sRGB nonlinear target and blit-dst"
-                        : "offscreen omitted");
+  vkr_vk_report_add(
+      report, VKR_VULKAN_REPORT_FORMAT, "BGRA8/RGBA8 sRGB presentation target",
+      device->config.windowed, encoded_present_supported,
+      device->config.windowed ? "RGBA8 sRGB blit-src and sRGB blit-dst"
+                              : "offscreen omitted");
   vkr_vk_report_add(report, VKR_VULKAN_REPORT_DEVICE_EXTENSION,
                     VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME, false_v,
                     candidate->has_swapchain_maintenance_extension &&

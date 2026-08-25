@@ -11,9 +11,8 @@ float4 fullscreen_fragment(VkrVulkanVertexOutput input) : SV_Target0
         g_textures[texture_index].Sample(g_samplers[sampler_index], input.uv);
     if ((g_push.flags & 2u) != 0u)
     {
-        float3 mapped = vkr_aces_fitted(
+        source.rgb = vkr_aces_fitted(
             max(source.rgb * root.ibl_controls.x, 0.0f));
-        source.rgb = pow(mapped, 1.0f / 2.2f);
     }
     return source;
 }

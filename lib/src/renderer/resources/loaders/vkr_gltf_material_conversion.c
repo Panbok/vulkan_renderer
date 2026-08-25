@@ -22,18 +22,6 @@ vkr_internal Vec3 vkr_gltf_vec3_lerp(Vec3 lhs, Vec3 rhs, float32_t amount) {
                            vkr_gltf_vec3_scale(rhs, amount));
 }
 
-float32_t vkr_gltf_srgb_to_linear(float32_t value) {
-  value = Clamp(value, 0.0f, 1.0f);
-  return value <= 0.04045f ? value / 12.92f
-                           : powf((value + 0.055f) / 1.055f, 2.4f);
-}
-
-float32_t vkr_gltf_linear_to_srgb(float32_t value) {
-  value = Clamp(value, 0.0f, 1.0f);
-  return value <= 0.0031308f ? value * 12.92f
-                             : 1.055f * powf(value, 1.0f / 2.4f) - 0.055f;
-}
-
 VkrGltfMetalRoughSample
 vkr_gltf_convert_spec_gloss_sample(VkrGltfSpecGlossSample sample) {
   Vec3 diffuse = vec3_new(Clamp(sample.diffuse.x, 0.0f, 1.0f),
