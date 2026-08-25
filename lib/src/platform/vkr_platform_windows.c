@@ -8,6 +8,22 @@ static bool32_t high_res_timer_enabled = false;
 static UINT timer_resolution = 0;
 
 bool8_t vkr_platform_init() {
+  if (!SetProcessDpiAwarenessContext(
+          DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) {
+    const DWORD error = GetLastError();
+    fprintf(stderr,
+            "Failed to establish Per-Monitor V2 DPI awareness "
+            "(Win32 error %lu)\n",
+            (unsigned long)error);
+    return false_v;
+  }
+  if (!AreDpiAwarenessContextsEqual(
+          GetThreadDpiAwarenessContext(),
+          DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) {
+    fprintf(stderr,
+            "Per-Monitor V2 DPI awareness request did not become effective\n");
+    return false_v;
+  }
   LARGE_INTEGER frequency;
   QueryPerformanceFrequency(&frequency);
   clock_frequency = 1.0 / (float64_t)frequency.QuadPart;

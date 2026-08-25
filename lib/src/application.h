@@ -369,7 +369,7 @@ bool8_t application_create(Application *application,
   assert(config->height > 0 && "Application height is less than 0");
 
   if (!vkr_platform_init()) {
-    log_fatal("Failed to initialize platform!");
+    fprintf(stderr, "Failed to initialize platform\n");
     return false_v;
   }
 

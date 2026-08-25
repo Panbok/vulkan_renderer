@@ -2596,7 +2596,7 @@ int main(int argc, char **argv) {
 
   Application application = {0};
   if (!application_create(&application, &config)) {
-    log_fatal("Application creation failed!");
+    fprintf(stderr, "Application creation failed\n");
     return 1;
   }
 

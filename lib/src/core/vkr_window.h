@@ -134,10 +134,9 @@ void vkr_window_destroy(VkrWindow *window);
 bool8_t vkr_window_update(VkrWindow *window);
 
 /**
- * @brief Gets the pixel size of the window.
- * @param window Pointer to the `Window` to get the pixel size from. Must not
- * be NULL.
- * @return The pixel size of the window.
+ * @brief Gets the physical output-pixel size of the native client area.
+ * @param window Pointer to the `Window` to query. Must not be NULL.
+ * @return Physical output pixels, including the platform backing scale.
  */
 VkrWindowPixelSize vkr_window_get_pixel_size(VkrWindow *window);
 

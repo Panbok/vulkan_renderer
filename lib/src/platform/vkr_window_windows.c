@@ -113,27 +113,14 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
     return false_v;
   }
 
-  // Calculate window size including decorations
-  RECT window_rect = {0, 0, (LONG)width, (LONG)height};
   DWORD window_style = WS_OVERLAPPEDWINDOW;
   DWORD window_ex_style = WS_EX_APPWINDOW;
 
-  if (!AdjustWindowRectEx(&window_rect, window_style, FALSE, window_ex_style)) {
-    log_error("Failed to adjust window rect");
-    MessageBoxA(NULL, "Failed to adjust window rect", "Error",
-                MB_ICONEXCLAMATION | MB_OK);
-    free(state);
-    window->platform_state = NULL;
-    return false_v;
-  }
-
-  int32_t window_width = window_rect.right - window_rect.left;
-  int32_t window_height = window_rect.bottom - window_rect.top;
-
-  // Create window
+  // Create hidden at the requested monitor, then use its authoritative DPI to
+  // establish the exact client size before the first ShowWindow call.
   state->window = CreateWindowExA(
-      window_ex_style, class_name, title, window_style, x, y, window_width,
-      window_height, NULL, NULL, state->instance, state);
+      window_ex_style, class_name, title, window_style, x, y, (int32_t)width,
+      (int32_t)height, NULL, NULL, state->instance, state);
 
   if (!state->window) {
     log_error("Failed to create window");
@@ -143,10 +130,34 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
     window->platform_state = NULL;
     return false_v;
   }
+  if (!vkr_window_resize(window, width, height)) {
+    DestroyWindow(state->window);
+    free(state);
+    window->platform_state = NULL;
+    return false_v;
+  }
 
   // Show and update window
   ShowWindow(state->window, window->hidden ? SW_HIDE : SW_SHOW);
   UpdateWindow(state->window);
+  RECT client_rect = {0};
+  if (!GetClientRect(state->window, &client_rect)) {
+    log_error("Failed to query the created window client size (Win32 error "
+              "%lu)",
+              (unsigned long)GetLastError());
+    DestroyWindow(state->window);
+    free(state);
+    window->platform_state = NULL;
+    return false_v;
+  }
+  const DPI_AWARENESS_CONTEXT awareness = GetThreadDpiAwarenessContext();
+  log_info("Windows presentation: awareness=%d, per-monitor-v2=%u, dpi=%u, "
+           "output=%ldx%ld physical pixels",
+           (int)GetAwarenessFromDpiAwarenessContext(awareness),
+           (uint32_t)AreDpiAwarenessContextsEqual(
+               awareness, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2),
+           GetDpiForWindow(state->window), client_rect.right - client_rect.left,
+           client_rect.bottom - client_rect.top);
 
   // Dispatch window init event
   event_manager_dispatch(event_manager,
@@ -248,13 +259,32 @@ bool8_t vkr_window_resize(VkrWindow *window, uint32_t width, uint32_t height) {
   PlatformState *state = (PlatformState *)window->platform_state;
   const DWORD style = (DWORD)GetWindowLongPtr(state->window, GWL_STYLE);
   const DWORD ex_style = (DWORD)GetWindowLongPtr(state->window, GWL_EXSTYLE);
+  const UINT dpi = GetDpiForWindow(state->window);
+  if (!dpi) {
+    log_error("Failed to query native window DPI");
+    return false_v;
+  }
   RECT rect = {0, 0, (LONG)width, (LONG)height};
-  if (!AdjustWindowRectEx(&rect, style, FALSE, ex_style) ||
-      !SetWindowPos(state->window, NULL, 0, 0, rect.right - rect.left,
+  if (!AdjustWindowRectExForDpi(&rect, style, FALSE, ex_style, dpi)) {
+    log_error("Failed to adjust native window client area to %u x %u at DPI "
+              "%u (Win32 error %lu)",
+              width, height, dpi, (unsigned long)GetLastError());
+    return false_v;
+  }
+  if (!SetWindowPos(state->window, NULL, 0, 0, rect.right - rect.left,
                     rect.bottom - rect.top,
                     SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE)) {
-    log_error("Failed to resize native window client area to %u x %u", width,
-              height);
+    log_error("Failed to resize native window client area to %u x %u at DPI "
+              "%u (Win32 error %lu)",
+              width, height, dpi, (unsigned long)GetLastError());
+    return false_v;
+  }
+  RECT client_rect = {0};
+  if (!GetClientRect(state->window, &client_rect) ||
+      client_rect.right - client_rect.left != (LONG)width ||
+      client_rect.bottom - client_rect.top != (LONG)height) {
+    log_error("Native window client area did not resolve to %u x %u at DPI %u",
+              width, height, dpi);
     return false_v;
   }
   window->width = width;
@@ -397,6 +427,18 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
     return FALSE;
   }
 
+  case WM_DPICHANGED: {
+    const RECT *suggested = (const RECT *)lparam;
+    if (!SetWindowPos(hwnd, NULL, suggested->left, suggested->top,
+                      suggested->right - suggested->left,
+                      suggested->bottom - suggested->top,
+                      SWP_NOZORDER | SWP_NOACTIVATE)) {
+      log_error("Failed to apply WM_DPICHANGED rectangle (Win32 error %lu)",
+                (unsigned long)GetLastError());
+    }
+    return FALSE;
+  }
+
   case WM_SIZE: {
     uint32_t new_width = LOWORD(lparam);
     uint32_t new_height = HIWORD(lparam);
@@ -467,8 +509,6 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
   }
 
   case WM_MOUSEMOVE: {
-    // NOTE: We probably need to use ScreenToClient to get the correct position
-    // for the mouse.
     int32_t x = GET_X_LPARAM(lparam);
     int32_t y = GET_Y_LPARAM(lparam);
 
