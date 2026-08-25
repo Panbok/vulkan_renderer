@@ -891,10 +891,12 @@ requirement, not a default.
    Insufficient frames or unstable warmup sets `authoritative=false`, or makes
    the run `incomplete` when the selected profile requires stability.
 5. **Control pacing and cache state.** The frame limiter is off. Windowed
-   profiling verifies actual IMMEDIATE; offscreen uses `present=none`. An
-   `isolated_cold` run gets a new per-run cache path, while `isolated_warm`
-   prewarms that isolated cache. The harness never deletes or mutates the user's
-   ordinary pipeline cache.
+   profiling verifies actual IMMEDIATE; offscreen uses `present=none`. The case
+   `cache` field controls only the GPU pipeline cache: `isolated_cold` gets a
+   new per-run path, while `isolated_warm` prewarms that isolated path. Every
+   child receives the same persistent `build/_asset_cache` root for cooked
+   assets, including target-transcoded textures. Harness runs never delete or
+   isolate persistent asset caches.
 6. **Self-check.** Independent repetitions of the same case/build must produce
    bit-identical work-volume metrics: draw, batch, visibility, overflow, and
    capture-request counts. A difference invalidates timing evidence regardless
@@ -1137,6 +1139,20 @@ than equality identity. The policy fingerprint covers profile authority rules,
 required metrics/channels, capture versions, assertions, comparison thresholds,
 and statistic algorithms. A comparison may report raw observations across a
 policy mismatch, but it cannot issue an authoritative verdict.
+
+For `profile`, the parent resolves the transitive scene closure and SHA-256
+hashes every dependency exactly once before launching repetitions. Parseable
+JSON/glTF/material files are hashed from the bytes already read for dependency
+discovery. Remaining assets are full-content hashed by at most eight bounded
+workers. The parent atomically publishes the sorted manifest, passes its
+scene-content digest to prewarm and measured children, and uses the same digest
+for the aggregate workload fingerprint. Children never rescan assets. The
+parent rejects any child whose three fingerprints differ from the aggregate and
+rehashes the small manifest file before final publication; a missing or changed
+file makes the run incomplete. `snapshot` uses the same one-manifest pattern.
+`autotest` references its primary profile's manifest artifact instead of
+building a third copy. Asset identity remains full-content SHA-256. Size and
+modification time are not identity substitutes.
 
 Fingerprint inputs are command-projected, not a hash of unused manifest text:
 `profile` excludes capture requests/image thresholds, `snapshot` excludes

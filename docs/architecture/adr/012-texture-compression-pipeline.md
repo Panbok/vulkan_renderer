@@ -52,20 +52,47 @@ The decoded/transcoded bytes are uploaded through explicit mip/layer
 `VkrTextureUploadRegion` entries. Writable/resize paths reject block-compressed
 textures.
 
+Target-native transcode output and region metadata persist under
+`build/_asset_cache/textures`, keyed by complete source content and selected
+target format. Material activation is independent of texture residency:
+materials first publish with default textures, then a bounded eight-request
+window loads texture resources and republishes completed material rows. Normal
+loading is uncapped so full scene residency remains the default. Backend heap
+budget telemetry is sampled every 60 frames. A 90% high-water mark applies a
+texture limit targeting 80% total use; a 75% low-water mark clears it.
+`VKR_TEXTURE_STREAM_BUDGET_MB` overrides automatic pressure, and the runtime
+setter remains the direct policy boundary. Pressure counts shared GPU textures
+once, pins incoming shared handles before eviction, republishes
+least-recently-used slots with semantic defaults, and retires a texture only
+when its last resident slot leaves. Continuously demanded evictions do not retry
+until demand disappears and returns. Metal packs up to 64 texture payloads into
+one aligned 32 MiB upload-ring slice and command buffer; Vulkan records copies
+into the active frame command buffer.
+
+KTX2 2D arrays, cubemaps, and cubemap arrays share the same prepared payload.
+The decoder flattens layers and faces into physical array layers; Metal lowers
+them to `2DArray`, `Cube`, or `CubeArray`, while Vulkan selects the corresponding
+image view and cube-compatible flag. Scene environments may provide a direct
+compressed cubemap through `environment.cubemap.path`; six-file cubemaps remain
+compatible.
+The Metal layered-texture diagnostic samples a nonzero 2D-array layer and a
+nonzero cube from a cubemap array in a real compute shader and validates both
+results.
+
 Runtime rollout controls are separate from build packing controls:
 
 | Variable | Runtime effect |
 |---|---|
-| `VKR_TEXTURE_VKT_STRICT` | Require KTX2 `.vkt`; disable source and legacy fallback |
-| `VKR_TEXTURE_VKT_ALLOW_SOURCE_FALLBACK` | Permit source image decoding |
-| `VKR_TEXTURE_VKT_ALLOW_LEGACY` | Permit legacy raw `.vkt` reads |
+| `VKR_TEXTURE_VKT_STRICT` | Defaults on; set `0` only for explicit development/test compatibility |
+| `VKR_TEXTURE_VKT_ALLOW_SOURCE_FALLBACK` | Effective only when strict mode is disabled |
+| `VKR_TEXTURE_VKT_ALLOW_LEGACY` | Effective only when strict mode is disabled |
 | `VKR_TEXTURE_VKT_WRITE_LEGACY_CACHE` | Permit legacy cache writes |
 
-`VKR_VKT_PACK_STRICT` makes an explicit offline packing invocation strict; it
-does **not** set `VKR_TEXTURE_VKT_STRICT` for the application process. Release
-packaging that requires a complete packed asset set must therefore invoke the
-packer with `VKR_VKT_PACK_STRICT=1`. Compiling the Release application alone
-does not validate or regenerate assets.
+`VKR_VKT_PACK_STRICT` makes an explicit offline packing invocation fail on any
+source it cannot encode. Runtime strictness is independent and defaults on.
+The packer detects legacy raw outputs even when their timestamps are newer and
+replaces them with KTX2/UASTC. Test wrappers explicitly disable strict mode for
+fixtures that exercise compatibility.
 
 The vendored submodule is currently KTX-Software v4.4.2 at
 `4d6fc70eaf62ad0558e63e8d97eb9766118327a6`.
@@ -109,7 +136,3 @@ The vendored submodule is currently KTX-Software v4.4.2 at
 
 - Measure transcode time, peak temporary memory, packed size, and GPU residency
   on representative scenes/devices.
-- Add a native post-transcode cache if repeat load time warrants it.
-- Define compressed cubemap/array support for environment assets and streaming.
-- Remove legacy/source fallback only after a runtime strict-mode validation run,
-  not merely a strict pack.

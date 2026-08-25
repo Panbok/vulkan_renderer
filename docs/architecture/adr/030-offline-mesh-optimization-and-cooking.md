@@ -1,5 +1,5 @@
 ---
-status: partial
+status: accepted
 updated: 2026-08-24
 authority: adr
 ---
@@ -8,13 +8,12 @@ authority: adr
 
 ## Status
 
-Accepted (partial).
+Accepted and implemented.
 
-The pinned dependency, private bridge, deterministic version-13 cooker, and
-worker-side `.vkb` validation/decode are implemented. Runtime source
-optimization, packed/quantized geometry, production asset conversion,
-source/cooked/decoded/upload/resident metrics, and matched Release evidence
-remain open.
+Offline cooking, worker validation/decode, mandatory runtime source
+optimization, versioned packed geometry, lifecycle/byte/locality metrics,
+production scene conversion, and `EXT_meshopt_compression` input decode are
+implemented.
 
 ## Context
 
@@ -50,65 +49,65 @@ Meshoptimizer source remains behind the internal C++
 C11 loader and cooker call that bridge; no public VKR header or hot path exposes
 meshoptimizer or C++ types.
 
-After cooked loading has shipped and has a measured baseline, implement a
-second, opt-in runtime source-optimization path for OBJ/glTF/GLB. It runs on the
-mesh loader's worker during `prepare_async`, uses only scoped scratch data, and
-writes the final current-ABI mesh result to the normal result arena. It does not
-write `.vkb`, mutate source files, or run for `.vkb` requests. Its first slice
-is remap, vertex-cache order, and vertex-fetch order. Overdraw requires a
-separate measured opt-in. The cooked and runtime paths remain separate
-implementations; they may share pure range-level algorithms and test vectors.
+Every OBJ/glTF/GLB source load applies per-range cache and vertex-fetch
+optimization on the mesh worker. The optimizer uses request-local scratch and
+commits only final packed data to the result arena. There is no configuration
+or environment-variable bypass. Source loads never write `.vkb`, and cooked
+requests never rerun runtime optimization.
 
-The implemented version-13 cooker preserves importer deduplication and tangent
-generation, then optimizes vertex-cache order and vertex-fetch order before
-encoding each material/submesh range. It does not remove triangles, optimize
-overdraw, or quantize. Those operations remain evidence- or ADR-031-gated.
-Persistent importer state and scoped parser/codec scratch use independent
-arenas so temporary rollback cannot invalidate accumulated cook input.
+Version-14 `.vkb` preserves importer deduplication and tangent generation,
+optimizes cache and vertex-fetch order per material range, quantizes into the
+ADR-031 static geometry ABI, and meshoptimizer-encodes packed vertices and
+`uint32_t` indices. It records codec/library and layout versions, SHA-256
+dependency/settings identity, aligned stream directories, encoded and decoded
+sizes, optimized bounds, material/range metadata, quantization budgets and
+observed maxima, and CRC32 metadata/stream checksums.
 
-The `.vkb` extension is retained. Version 13 owns codec/library versions,
-SHA-256 content and settings hashes, aligned stream directories, encoded and
-decoded sizes, bounds, material/range metadata, and CRC32 metadata and stream
-checksums. The loader validates bounded metadata, checksums and codec headers,
-dependency hashes, decoded bounds, vertex values, and local indices before
-publication. Generated material files referenced by a range participate in the
-dependency manifest. A runtime source load never rewrites source assets or
-silently cooks them.
+The loader validates bounded metadata, metadata/stream checksums, codec headers,
+quantization maxima, decoded packed bounds, and local indices before
+publication. Dependency paths, sizes, and SHA-256 data remain embedded build
+provenance covered by the metadata checksum; runtime decode performs no
+authoring-source I/O. Version-12 and version-13 artifacts are stale;
+`vkr_mesh_cooker` is the sole version-14 writer.
 
-Version-12 raw `.vkb` files are stale. `vkr_mesh_cooker` is the sole version-13
-writer, and source requests no longer write sidecars. Production reference
-rewriting and asset conversion remain open; the runtime source optimizer will
-not update artifacts.
+Production scene manifests reference `.vkb`. `tools/cook_vkr_meshes.sh` and
+`tools/cook_vkr_meshes.bat` build the cooker, regenerate selected or default
+mesh artifacts, then run the shared texture packer once so glTF-generated
+material derivatives have `.vkt` siblings before the command succeeds.
+Authoring dependency identity remains recorded in the artifact but is not a
+runtime dependency. Normal renderer builds still do not cook meshes or pack
+textures.
 
-Treat tight GPU geometry packing as the third implementation, after these two
-paths. ADR-031 owns that ABI change. It must not be folded into codec work or
-the first runtime optimizer slice.
+For input interoperability, glTF buffer views using
+`EXT_meshopt_compression` decode on the loader worker before accessor reads.
+The supported modes are `ATTRIBUTES`, `TRIANGLES`, and `INDICES`, with the
+meshoptimizer `NONE`, `OCTAHEDRAL`, `QUATERNION`, `EXPONENTIAL`, and `COLOR`
+filters. `KHR_meshopt_compression` is rejected rather than misinterpreted.
 
 ## Consequences
 
 - Source format parsing and expensive mesh optimization move out of startup and
   load hitches for cooked content. Worker decode remains asynchronous and
   bounded by a mesh result's lifetime.
-- Runtime optimization gives development, dynamic, and uncooked content a
-  deliberate path. It adds CPU work to load time, so its policy must be explicit
-  and its cold/warm costs measured against cooked loading.
+- Runtime optimization adds mandatory CPU work to development, dynamic, and
+  uncooked source loads. Production scenes use pre-optimized `.vkb`, so their
+  runtime path pays only validation and decode.
 - The project gains a reproducible production geometry artifact and an asset
   build dependency. Cooker settings become versioned content decisions.
 - Retaining `.vkb` preserves the existing loader extension and type-only batch
   routing; creating a second `VKR_RESOURCE_TYPE_MESH` loader is still unsafe.
-- Resource deduplication keys only contain type and path today. Different
-  runtime policies cannot share a request. The first runtime implementation
-  therefore has one immutable process-wide policy; a future per-request policy
-  must extend the identity key before it is enabled.
-- Codec compression reduces cooked artifact storage, but strict dependency
-  verification still reads and hashes all recorded dependencies at runtime. It
-  does not, by itself, provide source-free delivery or reduce the current
-  64-byte GPU vertex ABI or 32-bit Vulkan index allocation. Asset conversion
-  must choose an explicit production dependency policy before rewriting scene
-  references. After offline cooking and runtime optimization, ADR-031 adds the
-  separate packed GPU ABI vertical slice.
-- Metrics must distinguish source, cooked, decoded, uploaded, and resident
-  bytes. File size alone is not a frame-time result.
+- Codec compression reduces cooked artifact storage; ADR-031 packing separately
+  halves static vertex upload and residency bytes. Version 14 is a source-free
+  runtime geometry contract: freshness is decided by the offline cook step,
+  while runtime validates the self-contained artifact. Indices remain 32-bit.
+- `.vkb` is the persistent geometry cache and live resource requests deduplicate
+  within one process. Harness cold/warm cache modes refer only to the GPU
+  pipeline cache; separate harness repetitions do not share decoded meshes,
+  transcoded textures, or GPU residency.
+- Metrics distinguish source, cooked, decoded, uploaded, and resident bytes,
+  vertex/index/decode-metadata occupancy and high-water values, range and
+  vertex/index counts, runtime-optimization counts, cache ACMR/ATVR, and fetch
+  overfetch. File size alone is not a frame-time result.
 - Meshoptimizer source is C++ although its header/API is C-compatible. Keep
   C++ restricted to the dependency and bridge targets; VKR's public interfaces
   and cooker remain C11.
@@ -118,10 +117,10 @@ the first runtime optimizer slice.
 ## Alternatives Considered
 
 **Run meshoptimizer on every runtime source load first.** Rejected as the first
-implementation. It repeats content-build work on the user-facing load path and
-does not produce a stable packaging artifact. It is accepted later as a
-separate, opt-in path for uncooked/dynamic content, with its own measurement and
-request-identity rules.
+implementation because it repeats content-build work without producing a stable
+packaging artifact. It is accepted as mandatory behavior for uncooked
+OBJ/glTF/GLB after the offline artifact path; production `.vkb` remains the
+preferred path.
 
 **Promote `.vkb` without changing its contract.** Rejected. The present cache
 has runtime writes, mtime-only identity, and raw ABI coupling. This ADR instead
@@ -148,13 +147,13 @@ instead of `.vkb`.
 
 - A measured Release comparison shows that cooker/decode overhead exceeds its
   storage and load benefit on representative content.
-- Runtime source optimization shows no net benefit, causes unacceptable cold
-  load time, or needs request-key variation that the resource system cannot
-  express safely.
+- Mandatory runtime source optimization causes unacceptable cold load time on
+  development or dynamic content; change the algorithm or source workflow
+  rather than adding a per-request bypass.
 - A second production source format or remote-streaming use case requires a
   broader artifact/container boundary.
-- Production asset conversion needs source-free packages; replace strict
-  authoring-input verification with an explicit signed/manifested publication
-  contract rather than silently weakening runtime validation.
+- Remote or untrusted artifact distribution requires a signed publication
+  manifest; CRC32 and embedded source provenance detect corruption and identify
+  inputs but are not an authenticity boundary.
 - A content pipeline adopts a different authoritative offline optimizer with a
   demonstrably better measured result and equivalent C11 integration boundary.

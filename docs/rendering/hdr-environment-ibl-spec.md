@@ -418,6 +418,22 @@ The existing form remains valid:
 }
 ```
 
+A prepacked UASTC/Basis cubemap may be prepared on the scene worker and
+published directly:
+
+```json
+"environment": {
+  "cubemap": {
+    "path": "assets/textures/environment.vkt?cs=linear&tc=color_linear"
+  }
+}
+```
+
+`cubemap.path` and the `base_path`/`extension` pair are mutually exclusive.
+The direct file must decode as `VKR_TEXTURE_TYPE_CUBE_MAP`; 2D arrays and
+cubemap arrays remain valid generic texture resources but are not environment
+sources. The target-transcode cache retains all six face/mip regions.
+
 If `enabled` is true, exactly one of `cubemap` or `equirect` must be present.
 Both together are an invalid environment block: warn with both field names,
 disable that custom environment, and use fallback IBL. Do not silently prefer

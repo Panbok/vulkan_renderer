@@ -76,7 +76,7 @@
     },
     "cache": {
       "type": "string",
-      "description": "Pipeline-cache policy. Isolated modes use a per-run path and never delete or mutate the user's ordinary cache; 'shared' is investigative.",
+      "description": "GPU pipeline-cache policy only. Isolated modes use a per-run pipeline path and never mutate the user's ordinary pipeline cache. All modes and repetitions share the persistent build/_asset_cache root.",
       "enum": ["isolated_cold", "isolated_warm", "shared"]
     },
     "fixed_delta": {

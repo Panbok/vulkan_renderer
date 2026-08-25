@@ -341,7 +341,7 @@ specular/glossiness textures. Direct and IBL Fresnel derive
 camera-moving white grazing highlight. Generated namespace version 2 includes
 the Khronos sub-F0 non-metal rule and companion image version 1. Runtime-written
 raw mesh sidecars are retired; direct `.vkb` loads require the deterministic
-version-13 cooked contract. Generated image and material-file publication
+version-14 packed cooked contract. Generated image and material-file publication
 remains atomic and resumable.
 
 Transmission is a distinct material and draw class. The graph renders opaque
@@ -388,14 +388,14 @@ restricted to specular reflection rays.
 | SPIR-V reflection | Implemented in Vulkan | Recursive physical-storage-buffer and packet ABI validation; no frontend shader manifests or reflection-driven pipeline system remains |
 | Pipeline cache | Implemented per backend | Disk-backed Vulkan driver cache and Metal pipeline archive |
 | Metrics registry and snapshot export | Implemented | Bounded typed slots, MPSC cold-event ring, triple-buffered snapshots, renderer catalog/validity, explicit GPU allocation-owner aggregates, metrics-backed HUD, atomic `--metrics-json`, and harness aggregation |
-| Renderer automation harness | Implemented | Strict cases/profiles, deterministic cameras, isolated repetitions, dependency-resolved boot, authoritative evidence policies, metric/pass/event aggregation, atomic artifacts, direct and auxiliary captures, canonical comparison/diffs, separated `autotest`, guarded immutable baselines, target-neutral windowed or true surface-free offscreen execution with actual configuration provenance, and a sorted transitive scene-content manifest—including prepared glTF material files, generated textures, and present packed siblings—whose digest participates in workload identity |
+| Renderer automation harness | Implemented | Strict cases/profiles, isolated repetitions, authoritative evidence policy, aggregation, captures, comparison, autotest, baselines, and windowed/offscreen targets. Profile/snapshot parents full-content hash one transitive scene manifest, hash already-read parseable files without a second read, fan remaining files across at most eight workers, pass one digest to children, reject fingerprint drift, and verify the manifest before publication. Autotest references its primary manifest rather than rebuilding it. |
 | Cascaded shadow maps | Implemented, partial quality | Four-cascade default with fit hysteresis and backend-neutral raster-bias lowering; cutout casters use the alpha-tested path, and opt-in scene-bounds Z fit clips caster bounds against each final cascade XY rectangle. Static/dynamic caster generations feed committed per-target-image retained history; P2 retains packed static candidate/instance rows per completion-protected graph slot and copies only dynamic or invalidated static ranges. Publication generation changes revalidate every slot. Guard-contained static cascades omit their authored graph passes, while dynamic overlap, incomplete publication, invalid retained contents, or signature drift fail closed. P0 CPU scopes and P3B reuse/force counters ship on both backends. P5 adds a bounded lowest-margin proactive-refresh scheduler and defaults its budget to zero. P4 was declined after its Metal predictor deferred zero candidates across 600 moving-camera frames, preserving the exact-gated one-phase topology. P6 implements graph-declared occupied-depth SDSM on Metal and Vulkan with completion-gated asynchronous feedback, source metadata, smoothing/fallback metrics, and a harness opt-in; fixed splits remain the default because the matched local Metal control measured +1.310 ms/frame of combined reduction and realized cascade work. Native RX 6700 XT synchronization validation covers active Vulkan feedback at three target images; no Vulkan timing claim is made. Receiver quality (P7) ships: a rotated Poisson PCF kernel through a comparison sampler at 1/4/9/16/32 taps from one shared progressive table, a case-selectable nine-tap uniform-region early out at 16 taps or more, texel-denominated constant/slope/normal-offset bias converted through each cascade's own texel size and fitted depth span, cascade cross-fade, and max-distance fade. Reused cascades publish the fit they were rendered with. Metal tap, early-out, split-lambda, and map-size experiments retained the current defaults; the shadow rewrite spec records their aggregates and evidence limits. Shadow distance remains a separate quality experiment |
 | PBR materials | Implemented, evolving | Metallic-roughness and texture slots plus prepared, cached specular-glossiness lowering with retained dielectric F0/F90 response; transmission adds IOR, volume, attenuation, and scene-color refraction while clearcoat and sheen remain absent |
 | IBL | Implemented, partial integration | HDR/cubemap sources, prepared RGBA16F bakes, global environment, and two fragment-weighted local probes per draw ship; bake work remains undeclared to the graph and explicitly barriered |
-| glTF and scene loading | Implemented | CPU async pipeline; nested texture URIs and sidecars resolve without flattening; UVs lower once to VKR convention; point, spot, and directional punctual lights import through the scene transform into a stable 128-light table with a fragment-local 384-cell bitmask grid; frame-path uploads measured non-blocking |
-| Offline mesh cooking | Implemented, partial rollout | `vkr_mesh_cooker` uses pinned meshoptimizer v1.2 to atomically emit deterministic version-13 `.vkb` artifacts with per-range cache/fetch optimization, lossless current-ABI codecs, SHA-256 dependency/settings identity, and CRC32 metadata/stream checksums. The mesh worker validates and decodes explicit `.vkb` requests into the result arena; source requests no longer write sidecars. Strict validation still reads every recorded dependency, so source-free packaging, runtime source optimization, packed geometry, asset conversion, byte metrics, cooked-path cancellation/reload stress, and matched Release evidence remain open. |
+| glTF and scene loading | Implemented | CPU async pipeline; nested texture URIs and sidecars resolve without flattening; `EXT_meshopt_compression` buffer views decode before accessor reads; UVs lower once to VKR convention; point, spot, and directional punctual lights import through the scene transform into a stable 128-light table with a fragment-local 384-cell bitmask grid. Cooked mesh entities may name `mesh.gltf_light_source` explicitly so geometry remains `.vkb` while scene-level light metadata comes from glTF. Required mesh dependency or GPU-publication failures fail the scene request instead of activating a meshless scene; frame-path uploads measured non-blocking |
+| Offline mesh cooking and packed geometry | Implemented | `vkr_mesh_cooker` uses pinned meshoptimizer v1.2 to atomically emit deterministic version-14 `.vkb` artifacts with per-range cache/fetch optimization, 32-byte packed static vertices, explicit quantization budgets, SHA-256 dependency/settings provenance, and CRC32 metadata/stream checksums. Worker decode performs no authoring-source I/O; mandatory runtime optimization applies to every OBJ/glTF/GLB source load. Production cook scripts/references, lifecycle stress coverage, byte/locality metrics, and branchless Metal/Vulkan packed publication ship. Indices remain 32-bit pending an explicitly partitioned draw/resolve ABI and matched evidence. |
 | Transmission | Implemented, bounded deferred paths | Graph-declared opaque, HDR feedback-copy, transmission, and ordinary-blend stages. Both backends peel and composite four ordered transmissive surfaces and publish completion-gated per-layer coverage. Metal defaults to the eight-pass compact-scan/indirect-shade P19 path; `VKR_TRANSMISSION_COMPACT_DISABLED=1` selects its focused full-screen diagnostic rollback. Vulkan retains full-screen shading. No order-independent or unbounded deep compositing is claimed |
-| KTX2/UASTC textures | Implemented | BC7/BC5, ASTC, ETC2, EAC RG11, and RGBA32 paths; every selector result is transcodable |
+| KTX2/UASTC textures | Implemented | BC7/BC5, ASTC, ETC2, EAC RG11, and RGBA32 paths; 2D arrays, cubemaps, and cubemap arrays lower to native Metal/Vulkan view types, while a Metal compute diagnostic samples nonzero array/cube-array indices. Runtime resolution is strict KTX2 by default; explicit test/development flags retain source/legacy coverage, and the packer replaces legacy outputs regardless of timestamp. Material streaming admits eight requests, defaults to uncapped full residency, automatically applies a 90/80/75% heap-budget pressure hysteresis every 60 frames, honors explicit overrides, uniquely accounts shared textures, and completion-retires only last references. Metal batches up to 64 copies into one 32 MiB upload command; Vulkan records into its active frame command buffer. |
 | Editor viewport and picking | Partial | Picking is fully declared in the render graph and runs; readback is usually deferred but ring wrap can block. Both packet implementations copy `editor_enabled` into the graph frame, so the authored editor branch is reachable. Both implementations still pin viewport extent to window size; a true offscreen editor viewport remains absent. See §8 P1 item 15 |
 | UI system | Absent | `VkrUiSystem` is 16 corner-anchored text slots. No rectangle primitive, layout engine, hit testing, clipping, or UI input model. `VkrUiPassPayload.draws` is plumbed end to end but always submitted empty. Design in [ui-architecture-spec.md](../ui/ui-architecture-spec.md), rationale in [ADR-027](adr/027-immediate-mode-grid-ui.md); both are `proposed` |
 | Text | Implemented | Bitmap, MTSDF, system-font, UI and world text paths publish packet-native resources; the dedicated Metal harness fixture remains deterministic |
@@ -490,9 +490,26 @@ forward progress by permitting the first oversized request.
 Finalization publishes decoded assets through `VkrAssetPublisher`. Vulkan
 records prepared and writable initialization into the next frame command
 buffer, batches dirty-range flushes, and retires staging at that submit value.
-Metal follows the same publication/completion contract through its adapter.
+Metal texture finalization packs up to 64 payloads into one aligned 32 MiB
+upload-ring slice and one command buffer; oversized payloads receive a dedicated
+slice. Batch completion is proven before frame recording, and a begin/end
+failure aborts preparation rather than exposing an unsubmitted publication.
 Replacement is publish-new-then-retire-old, and generation slots are not reused
 until their recorded completion value is proven.
+
+Material finalization does not make scene activation depend on texture
+residency. It publishes default-textured rows, queues texture paths, and admits
+at most eight texture resource requests at once. READY textures republish their
+material row. Normal loading has no residency cap, so a scene can reach full
+texture residency. Backend heap telemetry is sampled every 60 frames; crossing
+90% applies a texture limit targeting 80% total use, and falling below 75%
+clears it. `VKR_TEXTURE_STREAM_BUDGET_MB` and the runtime setter override that
+automatic policy. Residency counts each shared GPU texture once, pins incoming
+shared handles before choosing victims, republishes semantic defaults, and
+completion-retires a texture only after its last resident slot leaves.
+Continuously demanded evictions remain stable; reload requires an
+unused-to-used transition. Pending, active, resident, evicted, byte-budget,
+applied, failure, and pressure counters are metrics.
 
 ### 7.3 Readback
 
@@ -525,11 +542,19 @@ Current priorities after V7 are:
 1. Decide whether to publish new Metal and Vulkan snapshot baselines. Corrected
    pixels and the retained-forward oracle are owner-accepted, but no historical
    generation was replaced implicitly.
-2. Design bounded asset-streaming backpressure before claiming complete Bistro
-   texture residency. Generated specular-glossiness derivatives require packed
-   `.vkt` siblings. A 480-frame raw-texture publication stress exhausts the
-   bounded source reserve and then the target GPU image budget; growing the
-   publication arena is not a resolution.
+2. ~~Complete bounded Bistro asset startup after persistent transcode caching.~~
+   **Done for scene activation and incremental material residency.** Generated
+   derivatives have `.vkt` siblings, target-native transcodes persist across
+   processes, Metal batches texture copies, and materials publish with defaults
+   before an eight-request texture residency window begins. A Release Metal
+   Bistro run reached `boot.scene=1.141 s`, issued six world draws, and sampled
+   777 pending / 8 in-flight streams while completed textures advanced from 14
+   to 18. Its raw sample digest is
+   `sha256:a2cfd93d61f049cc4be9b0b0a737ab079d25715d2eed34905129de0f6659ddbf`.
+   The profile wrapper itself remained unsuitable for a short wall-clock gate:
+   after rendering completed, both child and parent content-manifest passes
+   hashed the full multi-gigabyte dependency set. That harness provenance cost
+   is not renderer startup and remains separate tooling work.
 3. Establish matched Release evidence before making any performance claim about
    the two surviving implementations or the V7 deletion.
 3b. **Metal compute and graphics pass timing is repaired; transfer timing is
