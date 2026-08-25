@@ -6,6 +6,7 @@
 #include "memory/vkr_arena_pool.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "renderer/resources/loaders/vkr_mesh_cooked.h"
+#include "renderer/systems/vkr_geometry_system.h"
 
 #include <assert.h>
 #include <math.h>
@@ -138,6 +139,37 @@ static void test_packed_geometry_validation_contract(void) {
       vertices, ArrayCount(vertices), vec3_new(0.0f, 0.0f, 0.0f),
       vec3_new(1.0f, 1.0f, 0.0f), &budgets, packed, &decode, &metrics));
   printf("  test_packed_geometry_validation_contract PASSED\n");
+}
+
+static void test_tangent_generation_repairs_parallel_accumulation(void) {
+  printf("  Running "
+         "test_tangent_generation_repairs_parallel_accumulation...\n");
+  Arena *arena = arena_create(KB(4), KB(4));
+  assert(arena != NULL);
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+  VkrVertex3d vertices[3] = {
+      test_vertex(0.0f, 0.0f, 0.0f),
+      test_vertex(1.0f, 0.0f, 0.0f),
+      test_vertex(0.0f, 1.0f, 0.0f),
+  };
+  for (uint32_t i = 0u; i < ArrayCount(vertices); ++i) {
+    vertices[i].normal = (VkrPackedVec3){1.0f, 0.0f, 0.0f};
+  }
+  const uint32_t indices[3] = {0u, 1u, 2u};
+  vkr_geometry_system_generate_tangents(
+      &allocator, vertices, ArrayCount(vertices), indices, ArrayCount(indices));
+  for (uint32_t i = 0u; i < ArrayCount(vertices); ++i) {
+    const Vec3 tangent = vec3_new(vertices[i].tangent.x, vertices[i].tangent.y,
+                                  vertices[i].tangent.z);
+    assert(isfinite(tangent.x) && isfinite(tangent.y) && isfinite(tangent.z));
+    assert(fabsf(vec3_length_squared(tangent) - 1.0f) < 1.0e-5f);
+    assert(fabsf(tangent.x) < 1.0e-5f);
+    assert(fabsf(fabsf(vertices[i].tangent.w) - 1.0f) < 1.0e-5f);
+  }
+  vkr_allocator_release_global_accounting(&allocator);
+  arena_destroy(arena);
+  printf("  test_tangent_generation_repairs_parallel_accumulation PASSED\n");
 }
 
 static void test_mesh_cooked_round_trip_and_malformed_boundaries(void) {
@@ -579,6 +611,7 @@ static void test_mesh_source_optimization_is_mandatory(void) {
 bool32_t run_mesh_cooked_tests(void) {
   printf("--- Starting Mesh Cooked Tests ---\n");
   test_packed_geometry_validation_contract();
+  test_tangent_generation_repairs_parallel_accumulation();
   test_mesh_cooked_round_trip_and_malformed_boundaries();
   test_mesh_source_optimization_is_mandatory();
   printf("--- Mesh Cooked Tests Completed ---\n");

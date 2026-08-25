@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "entities": [
+    {
+      "name": "missing-light-source",
+      "mesh": {
+        "path": "assets/models/missing.vkb",
+        "gltf_light_source": "tests/fixtures/rendering/missing.gltf"
+      }
+    }
+  ]
+}

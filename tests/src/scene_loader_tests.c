@@ -2,6 +2,7 @@
 
 #include "containers/str.h"
 #include "memory/vkr_arena_allocator.h"
+#include "memory/vkr_dmemory_allocator.h"
 #include "renderer/renderer_frontend.h"
 #include "renderer/resources/loaders/scene_loader.h"
 #include "renderer/systems/vkr_scene_system.h"
@@ -415,6 +416,45 @@ static void test_scene_loader_imports_gltf_punctual_lights(void) {
   printf("  test_scene_loader_imports_gltf_punctual_lights PASSED\n");
 }
 
+static void test_scene_loader_async_light_source_contract(void) {
+  printf("  Running test_scene_loader_async_light_source_contract...\n");
+
+  SceneLoaderTestContext ctx;
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  assert(vkr_dmemory_create(KB(64), MB(2), &ctx.renderer.scene_async_memory));
+  ctx.renderer.scene_async_allocator =
+      (VkrAllocator){.ctx = &ctx.renderer.scene_async_memory};
+  vkr_dmemory_allocator_create(&ctx.renderer.scene_async_allocator);
+  assert(vkr_mutex_create(&ctx.allocator, &ctx.renderer.scene_async_mutex));
+
+  VkrResourceLoader loader = vkr_scene_loader_create();
+  loader.resource_system = &ctx.renderer;
+  void *payload = NULL;
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+
+  assert(loader.prepare_async(
+      &loader, string8_lit("tests/fixtures/rendering/empty.scene.json"),
+      &ctx.allocator, &payload, &error));
+  assert(error == VKR_RENDERER_ERROR_NONE);
+  assert(payload != NULL);
+  loader.release_async_payload(&loader, payload);
+
+  payload = NULL;
+  error = VKR_RENDERER_ERROR_NONE;
+  assert(!loader.prepare_async(
+      &loader,
+      string8_lit(
+          "tests/fixtures/rendering/missing_gltf_light_source.scene.json"),
+      &ctx.allocator, &payload, &error));
+  assert(error == VKR_RENDERER_ERROR_INVALID_PARAMETER);
+  assert(payload == NULL);
+
+  vkr_mutex_destroy(&ctx.allocator, &ctx.renderer.scene_async_mutex);
+  vkr_dmemory_allocator_destroy(&ctx.renderer.scene_async_allocator);
+  scene_loader_test_context_shutdown(&ctx);
+  printf("  test_scene_loader_async_light_source_contract PASSED\n");
+}
+
 bool32_t run_scene_loader_tests(void) {
   printf("--- Starting Scene Loader Tests ---\n");
 
@@ -430,6 +470,7 @@ bool32_t run_scene_loader_tests(void) {
   test_scene_loader_reflection_probe_invalid_entries_skipped();
   test_scene_loader_reflection_probe_missing_cubemap_disables_probe();
   test_scene_loader_imports_gltf_punctual_lights();
+  test_scene_loader_async_light_source_contract();
 
   printf("--- Scene Loader Tests Completed ---\n");
   return true;

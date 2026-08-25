@@ -213,6 +213,8 @@ vkr_internal bool8_t scene_loader_parse_json_imports(
     uint32_t *out_import_capacity, VkrSceneError *out_error);
 vkr_internal void scene_loader_destroy_async_payload_contents(
     VkrSceneLoaderAsyncPayload *payload);
+vkr_internal void
+scene_loader_destroy_async_payload(VkrSceneLoaderAsyncPayload *payload);
 vkr_internal bool8_t scene_loader_ensure_scene_handle(
     VkrSceneLoaderAsyncPayload *payload, VkrRendererError *out_error);
 vkr_internal bool8_t scene_loader_apply_component_for_entity(
@@ -642,10 +644,10 @@ bool8_t vkr_scene_loader_read_gltf_punctual_lights(
   return true_v;
 }
 
-vkr_internal void
+vkr_internal bool8_t
 scene_loader_collect_gltf_punctual_lights(VkrSceneLoaderAsyncPayload *payload) {
-  if (!payload || !payload->imports) {
-    return;
+  if (!payload || (payload->entity_count > 0u && !payload->imports)) {
+    return false_v;
   }
 
   for (uint32_t entity_index = 0; entity_index < payload->entity_count;
@@ -654,25 +656,15 @@ scene_loader_collect_gltf_punctual_lights(VkrSceneLoaderAsyncPayload *payload) {
     if (!entity->has_mesh) {
       continue;
     }
-    const String8 light_source = entity->gltf_light_source.str
-                                     ? entity->gltf_light_source
-                                     : entity->mesh_path;
+    const bool8_t explicit_light_source =
+        entity->gltf_light_source.str && entity->gltf_light_source.length > 0u;
+    const String8 light_source =
+        explicit_light_source ? entity->gltf_light_source : entity->mesh_path;
     if (!light_source.str || light_source.length < 4u) {
       continue;
     }
-    const String8 gltf_extension = string8_lit(".gltf");
-    const String8 glb_extension = string8_lit(".glb");
-    const String8 extension =
-        string8_substring(&light_source,
-                          light_source.length >= gltf_extension.length
-                              ? light_source.length - gltf_extension.length
-                              : light_source.length,
-                          light_source.length);
-    const String8 short_extension = string8_substring(
-        &light_source, light_source.length - glb_extension.length,
-        light_source.length);
-    if (!string8_equalsi(&extension, &gltf_extension) &&
-        !string8_equalsi(&short_extension, &glb_extension)) {
+    if (!scene_string8_ends_with_cstr_i(light_source, ".gltf") &&
+        !scene_string8_ends_with_cstr_i(light_source, ".glb")) {
       continue;
     }
 
@@ -690,6 +682,13 @@ scene_loader_collect_gltf_punctual_lights(VkrSceneLoaderAsyncPayload *payload) {
             light_source, scene_world, entity_index,
             payload->gltf_punctual_lights + payload->gltf_punctual_light_count,
             remaining, &imported_count)) {
+      if (explicit_light_source) {
+        log_error(
+            "Scene loader: unable to inspect required glTF punctual lights "
+            "in '%.*s'",
+            (int32_t)light_source.length, light_source.str);
+        return false_v;
+      }
       log_warn("Scene loader: unable to inspect glTF punctual lights in '%.*s'",
                (int32_t)light_source.length, light_source.str);
       continue;
@@ -700,6 +699,7 @@ scene_loader_collect_gltf_punctual_lights(VkrSceneLoaderAsyncPayload *payload) {
                SCENE_GLTF_PUNCTUAL_LIGHT_MAX);
     }
   }
+  return true_v;
 }
 
 vkr_internal SceneEnvironmentImport scene_environment_import_defaults(void) {
@@ -2673,9 +2673,7 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
   if (!scene_loader_alloc_copy_string(&rf->scene_async_allocator,
                                       rf->scene_async_mutex, json,
                                       &payload->json_storage, &json_copy)) {
-    vkr_allocator_free_ts(&rf->scene_async_allocator, payload, sizeof(*payload),
-                          VKR_ALLOCATOR_MEMORY_TAG_STRUCT,
-                          rf->scene_async_mutex);
+    scene_loader_destroy_async_payload(payload);
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
@@ -2686,14 +2684,15 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
           &rf->scene_async_allocator, rf->scene_async_mutex, json_copy,
           &payload->imports, &payload->entity_count, &payload->imports_capacity,
           &scene_error)) {
-    scene_loader_destroy_async_payload_contents(payload);
-    vkr_allocator_free_ts(&rf->scene_async_allocator, payload, sizeof(*payload),
-                          VKR_ALLOCATOR_MEMORY_TAG_STRUCT,
-                          rf->scene_async_mutex);
+    scene_loader_destroy_async_payload(payload);
     *out_error = scene_error_to_renderer_error(scene_error);
     return false_v;
   }
-  scene_loader_collect_gltf_punctual_lights(payload);
+  if (!scene_loader_collect_gltf_punctual_lights(payload)) {
+    scene_loader_destroy_async_payload(payload);
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
 
   payload->environment_import =
       scene_loader_parse_environment_import(json_copy);
@@ -2745,10 +2744,7 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
             VKR_ALLOCATOR_MEMORY_TAG_ARRAY, rf->scene_async_mutex);
     if (!payload->entity_ids || !payload->mesh_states ||
         !payload->shape_material_states) {
-      scene_loader_destroy_async_payload_contents(payload);
-      vkr_allocator_free_ts(&rf->scene_async_allocator, payload,
-                            sizeof(*payload), VKR_ALLOCATOR_MEMORY_TAG_STRUCT,
-                            rf->scene_async_mutex);
+      scene_loader_destroy_async_payload(payload);
       *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
       return false_v;
     }
@@ -3117,6 +3113,18 @@ vkr_internal void scene_loader_destroy_async_payload_contents(
 }
 
 vkr_internal void
+scene_loader_destroy_async_payload(VkrSceneLoaderAsyncPayload *payload) {
+  if (!payload) {
+    return;
+  }
+
+  struct s_RendererFrontend *rf = payload->rf;
+  scene_loader_destroy_async_payload_contents(payload);
+  vkr_allocator_free_ts(&rf->scene_async_allocator, payload, sizeof(*payload),
+                        VKR_ALLOCATOR_MEMORY_TAG_STRUCT, rf->scene_async_mutex);
+}
+
+vkr_internal void
 vkr_scene_loader_release_async_payload(VkrResourceLoader *self, void *payload) {
   assert_log(self != NULL, "Self is NULL");
   if (!payload) {
@@ -3125,11 +3133,7 @@ vkr_scene_loader_release_async_payload(VkrResourceLoader *self, void *payload) {
 
   VkrSceneLoaderAsyncPayload *async_payload =
       (VkrSceneLoaderAsyncPayload *)payload;
-  scene_loader_destroy_async_payload_contents(async_payload);
-  vkr_allocator_free_ts(&async_payload->rf->scene_async_allocator,
-                        async_payload, sizeof(*async_payload),
-                        VKR_ALLOCATOR_MEMORY_TAG_STRUCT,
-                        async_payload->rf->scene_async_mutex);
+  scene_loader_destroy_async_payload(async_payload);
 }
 
 // =============================================================================

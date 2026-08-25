@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-24
+updated: 2026-08-25
 authority: spec
 ---
 # VKR Renderer — Architecture and Status Specification
@@ -375,6 +375,12 @@ irradiance rather than reusing the outdoor scene environment; its probe
 specular intensity is zero because no indoor reflection capture is authored.
 Diffuse irradiance samples the surface normal directly, while box projection is
 restricted to specular reflection rays.
+
+Cooked geometry's source-free boundary does not absorb scene-level glTF light
+metadata. `mesh.gltf_light_source` is a separate required scene dependency:
+failure to open or parse an explicitly authored path fails the scene request.
+Bistro therefore loads geometry from `bistro-lights.vkb` and imports its 72
+point-light instances from `bistro-lights.gltf` before activation.
 
 ---
 

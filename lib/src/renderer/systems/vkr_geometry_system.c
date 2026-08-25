@@ -1501,18 +1501,14 @@ void vkr_geometry_system_generate_tangents(VkrAllocator *allocator,
   for (uint32_t i = 0; i < vertex_count; ++i) {
     Vec3 normal = vkr_vertex_unpack_vec3(verts[i].normal);
     Vec3 tangent = tangent_accumulators[i];
-
-    float32_t tangent_len_sq = vec3_length_squared(tangent);
-    if (tangent_len_sq < VKR_FLOAT_EPSILON * VKR_FLOAT_EPSILON) {
-      if (vkr_abs_f32(normal.x) > 0.9f) {
-        tangent = vec3_new(0.0f, 1.0f, 0.0f);
-      } else {
-        tangent = vec3_new(1.0f, 0.0f, 0.0f);
-      }
-    }
-
     float32_t dot_nt = vec3_dot(normal, tangent);
     tangent = vec3_sub(tangent, vec3_scale(normal, dot_nt));
+    if (vec3_length_squared(tangent) < VKR_FLOAT_EPSILON * VKR_FLOAT_EPSILON) {
+      tangent = vkr_abs_f32(normal.x) > 0.9f ? vec3_new(0.0f, 1.0f, 0.0f)
+                                             : vec3_new(1.0f, 0.0f, 0.0f);
+      tangent =
+          vec3_sub(tangent, vec3_scale(normal, vec3_dot(normal, tangent)));
+    }
     tangent = vec3_normalize(tangent);
 
     float32_t handedness = (handedness_accumulators[i] >= 0.0f) ? 1.0f : -1.0f;

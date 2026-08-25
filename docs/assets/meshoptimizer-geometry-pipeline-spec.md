@@ -217,6 +217,14 @@ step owns freshness; deployment may omit authoring sources. Remote or untrusted
 distribution still requires a signed publication manifest because CRC32 and
 source provenance are not an authenticity boundary.
 
+The source-free contract is the geometry boundary, not a ban on separate
+scene metadata. A scene mesh may explicitly name `mesh.gltf_light_source`;
+the scene loader reads that glTF only for transformed `KHR_lights_punctual`
+nodes. An unreadable or malformed explicit light source fails the scene load
+instead of activating the cooked geometry without its authored lights. Bistro
+uses this split: `bistro-lights.vkb` supplies geometry and
+`bistro-lights.gltf` supplies 72 point lights plus one directional-light node.
+
 Cache terminology is explicit: `.vkb` and `.vkt` are persistent cooked asset
 artifacts, while the resource system deduplicates live requests only within one
 process. Harness `cache: isolated_cold|isolated_warm|shared` controls the GPU
