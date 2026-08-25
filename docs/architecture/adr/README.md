@@ -58,6 +58,9 @@ Considered → Revisit When**.
 | [ADR-031](031-versioned-packed-static-geometry-abi.md) | Tight packed static-geometry GPU ABI | Accepted and implemented as one branchless 32-byte static record on Metal and Vulkan |
 | [ADR-032](032-two-phase-confirmed-visibility.md) | Two-phase current-depth-confirmed visibility | Declined for the measured workload |
 | [ADR-033](033-occupied-depth-sdsm-feedback.md) | Occupied-depth SDSM through completed asynchronous feedback | Accepted; opt-in on Metal and Vulkan, fixed splits remain default |
+| [ADR-034](034-offline-cooked-font-artifacts.md) | Offline-cooked font artifacts | Proposed |
+| [ADR-035](035-canonical-mtsdf-screen-pixel-range-shading.md) | Canonical MTSDF screen-pixel-range shading | Proposed |
+| [ADR-036](036-dpi-derived-ui-text-scale.md) | DPI-derived UI text scale | Proposed |
 
 ## Relationship to the Specification
 

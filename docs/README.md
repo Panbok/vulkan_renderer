@@ -130,6 +130,9 @@ owning document status in the same change.
 | [031](architecture/adr/031-versioned-packed-static-geometry-abi.md) | accepted | Implemented 32-byte static geometry ABI shared by Metal and Vulkan; float32 UVs replace the rejected 24-byte float16-UV candidate |
 | [032](architecture/adr/032-two-phase-confirmed-visibility.md) | investigation | Declined for the measured workload after the predictor deferred zero candidates. The exact-gated one-phase path remains; revisit only for a materially different candidate population |
 | [033](architecture/adr/033-occupied-depth-sdsm-feedback.md) | partial | Metal implements opt-in occupied-depth feedback with completion and source-projection metadata. Fixed splits remain the measured default; Vulkan lowering is open |
+| [034](architecture/adr/034-offline-cooked-font-artifacts.md) | proposed | Replace manually authored font atlases and runtime metric conversion with a versioned offline-cooked artifact; no production implementation exists |
+| [035](architecture/adr/035-canonical-mtsdf-screen-pixel-range-shading.md) | proposed | Adopt the canonical MTSDF screen-pixel-range and true-distance fallback contract across backends; no production implementation exists |
+| [036](architecture/adr/036-dpi-derived-ui-text-scale.md) | proposed | Replace the Windows-only design-extent text transform with cross-platform DPI-derived layout scaling; no production implementation exists |
 
 ## Rendering
 
@@ -242,6 +245,7 @@ Working rules for allocator choice and lifetime:
 | [system-font-loader-design.md](text/system-font-loader-design.md) | partial | System-font loader ships; planned snippets/checklist remain |
 | [multi-variant-system-font-plan.md](text/multi-variant-system-font-plan.md) | partial | Multi-variant loading ships; pre-implementation baseline remains |
 | [ui-text-implementation-design.md](text/ui-text-implementation-design.md) | partial | UI text ships; historical examples/checklist remain |
+| [text-resolution-independence-and-font-cooking-spec.md](text/text-resolution-independence-and-font-cooking-spec.md) | proposed | Evidence-driven plan for offline font cooking, canonical MTSDF shading, and DPI-derived UI text layout; no production implementation exists |
 
 ## UI
 
