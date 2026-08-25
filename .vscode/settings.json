@@ -13,5 +13,5 @@
   "rad-debugger-communication.targetPathIsWorkspaceRelative": true,
   "rad-debugger-communication.closeRaddbgOnProgramExit": true,
   "rad-debugger-communication.autoRun": true,
-  "clang-format.executable": "/opt/homebrew/bin/clang-format"
+  "clang-format.executable": "clang-format"
 }
