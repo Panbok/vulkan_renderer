@@ -282,7 +282,24 @@ static void test_shared_submit_ring_completion_contract(void) {
 static void test_shared_gpu_memory_and_abi_contracts(void) {
   printf("  Running test_shared_gpu_memory_and_abi_contracts...\n");
   assert(vkr_gpu_abi_validate_host());
+
+  VkrGpuGeometryRow geometry = {
+      .vertex_address = 0x1000u,
+      .index_address = 0x2000u,
+      .publication_generation = 3u,
+      .decode_address = 0x1180u,
+  };
+  vkr_gpu_geometry_row_relocate(&geometry, 0x8000u, 0xa000u, 4u);
+  assert(geometry.vertex_address == 0x8000u);
+  assert(geometry.index_address == 0xa000u);
+  assert(geometry.decode_address == 0x8180u);
+  assert(geometry.publication_generation == 4u);
   assert(vkr_gpu_abi_record(VKR_GPU_ABI_VERTEX)->expected_size == 64u);
+  assert(vkr_gpu_abi_record(VKR_GPU_ABI_PACKED_STATIC_VERTEX)->expected_size ==
+         32u);
+  assert(
+      vkr_gpu_abi_record(VKR_GPU_ABI_GEOMETRY_DECODE_RECORD)->expected_size ==
+      32u);
   assert(vkr_gpu_abi_record(VKR_GPU_ABI_INSTANCE)->expected_size == 80u);
   assert(vkr_gpu_abi_record(VKR_GPU_ABI_TEXT_VERTEX)->expected_size == 32u);
   assert(vkr_gpu_abi_record(VKR_GPU_ABI_GEOMETRY_ROW)->expected_size == 48u);

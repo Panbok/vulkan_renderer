@@ -5,6 +5,7 @@
 #include "memory/vkr_arena_allocator.h"
 #include "renderer/resources/loaders/mesh_loader_gltf.h"
 #include "renderer/resources/loaders/vkr_gltf_material_conversion.h"
+#include "renderer/resources/loaders/vkr_meshoptimizer_bridge.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -33,6 +34,8 @@ typedef struct GltfImporterTestCapture {
   uint32_t total_indices;
   uint32_t first_texcoord_count;
   Vec2 first_texcoords[3];
+  uint32_t first_position_count;
+  Vec3 first_positions[3];
   String8 first_material_path;
 } GltfImporterTestCapture;
 
@@ -335,6 +338,14 @@ gltf_test_capture_primitive(void *user_data,
         primitive->vertex_count < 3u ? primitive->vertex_count : 3u;
     for (uint32_t i = 0; i < capture->first_texcoord_count; ++i) {
       capture->first_texcoords[i] = primitive->vertices[i].texcoord;
+    }
+  }
+  if (capture->first_position_count == 0) {
+    capture->first_position_count =
+        primitive->vertex_count < 3u ? primitive->vertex_count : 3u;
+    for (uint32_t i = 0; i < capture->first_position_count; ++i) {
+      capture->first_positions[i] =
+          vkr_vertex_unpack_vec3(primitive->vertices[i].position);
     }
   }
   if (capture->first_material_path.length == 0 &&
@@ -1461,6 +1472,100 @@ static void test_gltf_import_material_ids_are_unique_per_source(void) {
   printf("  test_gltf_import_material_ids_are_unique_per_source PASSED\n");
 }
 
+static void test_gltf_import_decodes_ext_meshopt_compression(void) {
+  printf("  Running test_gltf_import_decodes_ext_meshopt_compression...\n");
+  gltf_test_ensure_dirs();
+  static const char stem[] = "meshopt_compressed";
+  char gltf_path[1024];
+  char bin_path[1024];
+  snprintf(gltf_path, sizeof(gltf_path), "%stests/tmp/gltf_importer/%s.gltf",
+           PROJECT_SOURCE_DIR, stem);
+  snprintf(bin_path, sizeof(bin_path), "%stests/tmp/gltf_importer/%s.bin",
+           PROJECT_SOURCE_DIR, stem);
+
+  const float32_t positions[9] = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+                                  0.0f, 0.0f, 1.0f, 0.0f};
+  const uint32_t indices[3] = {0u, 1u, 2u};
+  const size_t position_bound = vkr_meshopt_vertex_encode_bound(3u, 12u);
+  const size_t index_bound = vkr_meshopt_index_encode_bound(3u, 3u);
+  uint8_t *encoded_positions = calloc(1u, position_bound);
+  uint8_t *encoded_indices = calloc(1u, index_bound);
+  assert(encoded_positions != NULL && encoded_indices != NULL);
+  const size_t position_size = vkr_meshopt_encode_vertices(
+      encoded_positions, position_bound, positions, 3u, 12u);
+  const size_t index_size =
+      vkr_meshopt_encode_indices(encoded_indices, index_bound, indices, 3u, 3u);
+  assert(position_size > 0 && index_size > 0);
+
+  const size_t position_offset = 48u;
+  const size_t index_offset = position_offset + position_size;
+  const size_t buffer_size = index_offset + index_size;
+  uint8_t *buffer = calloc(1u, buffer_size);
+  assert(buffer != NULL);
+  MemCopy(buffer + position_offset, encoded_positions, position_size);
+  MemCopy(buffer + index_offset, encoded_indices, index_size);
+  free(encoded_positions);
+  free(encoded_indices);
+  assert(gltf_test_write_file_bytes(bin_path, buffer, buffer_size));
+  free(buffer);
+
+  char json[4096];
+  snprintf(json, sizeof(json),
+           "{\"asset\":{\"version\":\"2.0\"},"
+           "\"extensionsUsed\":[\"EXT_meshopt_compression\"],"
+           "\"extensionsRequired\":[\"EXT_meshopt_compression\"],"
+           "\"buffers\":[{\"uri\":\"%s.bin\",\"byteLength\":%zu}],"
+           "\"bufferViews\":["
+           "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36,\"byteStride\":12,"
+           "\"extensions\":{\"EXT_meshopt_compression\":{"
+           "\"buffer\":0,\"byteOffset\":%zu,\"byteLength\":%zu,"
+           "\"byteStride\":12,\"count\":3,\"mode\":\"ATTRIBUTES\","
+           "\"filter\":\"NONE\"}}},"
+           "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":12,"
+           "\"extensions\":{\"EXT_meshopt_compression\":{"
+           "\"buffer\":0,\"byteOffset\":%zu,\"byteLength\":%zu,"
+           "\"byteStride\":4,\"count\":3,\"mode\":\"TRIANGLES\","
+           "\"filter\":\"NONE\"}}}],"
+           "\"accessors\":["
+           "{\"bufferView\":0,\"componentType\":5126,\"count\":3,"
+           "\"type\":\"VEC3\"},"
+           "{\"bufferView\":1,\"componentType\":5125,\"count\":3,"
+           "\"type\":\"SCALAR\"}],"
+           "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},"
+           "\"indices\":1}]}],"
+           "\"nodes\":[{\"mesh\":0}],\"scenes\":[{\"nodes\":[0]}],"
+           "\"scene\":0}",
+           stem, buffer_size, position_offset, position_size, index_offset,
+           index_size);
+  assert(gltf_test_write_file_text(gltf_path, json));
+
+  Arena *arena = arena_create(MB(2), MB(1));
+  Arena *scratch_arena = arena_create(MB(2), MB(1));
+  VkrAllocator allocator = {.ctx = arena};
+  VkrAllocator scratch = {.ctx = scratch_arena};
+  assert(vkr_allocator_arena(&allocator));
+  assert(vkr_allocator_arena(&scratch));
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  GltfImporterTestCapture capture = {.allocator = &allocator};
+  VkrMeshLoaderGltfParseInfo parse_info = gltf_test_make_parse_info(
+      &allocator, &scratch, gltf_path, &error, &capture);
+  assert(vkr_mesh_loader_gltf_parse(&parse_info));
+  assert(error == VKR_RENDERER_ERROR_NONE);
+  assert(capture.primitive_count == 1u);
+  assert(capture.total_vertices == 3u);
+  assert(capture.total_indices == 3u);
+  assert(capture.first_position_count == 3u);
+  assert(capture.first_positions[0].x == 0.0f);
+  assert(capture.first_positions[1].x == 1.0f);
+  assert(capture.first_positions[2].y == 1.0f);
+
+  arena_destroy(scratch_arena);
+  arena_destroy(arena);
+  gltf_test_remove_file(gltf_path);
+  gltf_test_remove_file(bin_path);
+  printf("  test_gltf_import_decodes_ext_meshopt_compression PASSED\n");
+}
+
 bool32_t run_gltf_importer_tests(void) {
   printf("--- Starting glTF Importer Tests ---\n");
 
@@ -1474,6 +1579,7 @@ bool32_t run_gltf_importer_tests(void) {
   test_gltf_import_preserves_transmission_volume();
   test_gltf_spec_gloss_numeric_conversion();
   test_gltf_import_prepares_spec_gloss_textures();
+  test_gltf_import_decodes_ext_meshopt_compression();
   test_gltf_import_material_ids_are_unique_per_source();
 
   printf("--- glTF Importer Tests Completed ---\n");

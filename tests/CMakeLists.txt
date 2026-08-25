@@ -25,7 +25,7 @@ else()
 endif()
 
 # The harness core exports renderer_lib transitively.
-target_link_libraries(vulkan_renderer_tester PRIVATE vkr_harness_core)
+target_link_libraries(vulkan_renderer_tester PRIVATE vkr_harness_core ktx)
 if(TARGET Vulkan::Vulkan)
     target_link_libraries(vulkan_renderer_tester PRIVATE Vulkan::Vulkan)
 endif()

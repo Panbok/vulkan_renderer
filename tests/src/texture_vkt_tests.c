@@ -1,4 +1,5 @@
 #include "texture_vkt_tests.h"
+#include "renderer/systems/vkr_texture_transcode_cache.h"
 
 static bool8_t string8_equals_cstr(String8 value, const char *cstr) {
   if (!cstr) {
@@ -188,6 +189,112 @@ static void test_transcode_target_always_transcodable(void) {
          checked);
 }
 
+static void test_persistent_transcode_cache_contract(void) {
+  printf("  Running test_persistent_transcode_cache_contract...\n");
+  Arena *arena = arena_create(MB(1), KB(64));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+  const String8 source_path =
+      string8_lit("tests/fixtures/persistent-cache-source.vkt");
+  const uint8_t source_data[] = {1u, 2u, 3u, 4u, 5u, 6u};
+  const uint8_t changed_source[] = {1u, 2u, 3u, 4u, 5u, 7u};
+  const uint8_t payload[] = {
+      0u,  1u,  2u,  3u,  4u,  5u,  6u,  7u,  8u,  9u,  10u,
+      11u, 12u, 13u, 14u, 15u, 16u, 17u, 18u, 19u, 20u, 21u,
+      22u, 23u, 24u, 25u, 26u, 27u, 28u, 29u, 30u, 31u,
+  };
+  const VkrTextureUploadRegion regions[] = {
+      {.mip_level = 0u,
+       .array_layer = 0u,
+       .width = 4u,
+       .height = 4u,
+       .depth = 1u,
+       .byte_offset = 0u,
+       .byte_size = 16u},
+      {.mip_level = 1u,
+       .array_layer = 0u,
+       .width = 2u,
+       .height = 2u,
+       .depth = 1u,
+       .byte_offset = 16u,
+       .byte_size = 16u},
+  };
+  const VkrTextureTranscodeCacheRecord source = {
+      .width = 4u,
+      .height = 4u,
+      .channels = 4u,
+      .format = VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB,
+      .mip_levels = 2u,
+      .array_layers = 1u,
+      .is_compressed = true_v,
+      .has_transparency = true_v,
+      .alpha_mask = true_v,
+      .data = (uint8_t *)payload,
+      .data_size = sizeof(payload),
+      .regions = (VkrTextureUploadRegion *)regions,
+      .region_count = ArrayCount(regions),
+  };
+  String8 cache_path = {0};
+  assert(vkr_texture_transcode_cache_path(&allocator, source_path,
+                                          source.format, &cache_path));
+  remove((const char *)cache_path.str);
+  assert(vkr_texture_transcode_cache_store(&allocator, source_path, source_data,
+                                           sizeof(source_data), &source));
+
+  VkrTextureTranscodeCacheRecord loaded = {0};
+  assert(vkr_texture_transcode_cache_load(
+      &allocator, source_path, source_data, sizeof(source_data), source.format,
+      source.width, source.height, source.mip_levels, source.array_layers,
+      &loaded));
+  assert(loaded.data_size == sizeof(payload));
+  assert(loaded.region_count == ArrayCount(regions));
+  assert(loaded.has_transparency && loaded.alpha_mask && loaded.is_compressed);
+  assert(MemCompare(loaded.data, payload, sizeof(payload)) == 0);
+  assert(loaded.regions[1].byte_offset == 16u);
+  vkr_texture_transcode_cache_release(&loaded);
+
+  VkrTextureUploadRegion invalid_regions[ArrayCount(regions)];
+  MemCopy(invalid_regions, regions, sizeof(regions));
+  invalid_regions[1].mip_level = 0u;
+  VkrTextureTranscodeCacheRecord invalid_source = source;
+  invalid_source.regions = invalid_regions;
+  assert(!vkr_texture_transcode_cache_store(&allocator, source_path,
+                                            source_data, sizeof(source_data),
+                                            &invalid_source));
+  MemCopy(invalid_regions, regions, sizeof(regions));
+  invalid_regions[1].byte_size--;
+  assert(!vkr_texture_transcode_cache_store(&allocator, source_path,
+                                            source_data, sizeof(source_data),
+                                            &invalid_source));
+  invalid_source = source;
+  invalid_source.is_compressed = false_v;
+  assert(!vkr_texture_transcode_cache_store(&allocator, source_path,
+                                            source_data, sizeof(source_data),
+                                            &invalid_source));
+
+  assert(!vkr_texture_transcode_cache_load(
+      &allocator, source_path, changed_source, sizeof(changed_source),
+      source.format, source.width, source.height, source.mip_levels,
+      source.array_layers, &loaded));
+  assert(vkr_texture_transcode_cache_store(&allocator, source_path, source_data,
+                                           sizeof(source_data), &source));
+  FILE *file = fopen((const char *)cache_path.str, "r+b");
+  assert(file != NULL);
+  assert(fseek(file, -1L, SEEK_END) == 0);
+  const int value = fgetc(file);
+  assert(value != EOF);
+  assert(fseek(file, -1L, SEEK_END) == 0);
+  assert(fputc(value ^ 0xff, file) != EOF);
+  assert(fclose(file) == 0);
+  assert(!vkr_texture_transcode_cache_load(
+      &allocator, source_path, source_data, sizeof(source_data), source.format,
+      source.width, source.height, source.mip_levels, source.array_layers,
+      &loaded));
+  remove((const char *)cache_path.str);
+  arena_destroy(arena);
+  printf("  test_persistent_transcode_cache_contract PASSED\n");
+}
+
 bool32_t run_texture_vkt_tests() {
   printf("--- Starting Texture VKT Tests ---\n");
 
@@ -198,6 +305,7 @@ bool32_t run_texture_vkt_tests() {
   test_texture_query_colorspace_policy();
   test_texture_transcode_target_policy();
   test_transcode_target_always_transcodable();
+  test_persistent_transcode_cache_contract();
 
   printf("--- Texture VKT Tests Completed ---\n");
   return true_v;

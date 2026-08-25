@@ -7,10 +7,14 @@
 #include "renderer/systems/vkr_material_system.h"
 #include "renderer/systems/vkr_texture_system.h"
 
+#include <ktx.h>
+#include <vulkan/vulkan_core.h>
+
 #include <assert.h>
 #include <errno.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #if defined(_WIN32)
@@ -147,6 +151,61 @@ static bool8_t material_pbr_test_write_text_file(const char *path,
   const size_t written = fwrite(text, 1, len, file);
   fclose(file);
   return written == len ? true_v : false_v;
+}
+
+static bool8_t material_pbr_test_write_uastc_texture(const char *path,
+                                                     uint32_t layer_count,
+                                                     uint32_t face_count) {
+  if (!path || layer_count == 0u || (face_count != 1u && face_count != 6u)) {
+    return false_v;
+  }
+  const ktxTextureCreateInfo create_info = {
+      .vkFormat = VK_FORMAT_R8G8B8A8_UNORM,
+      .baseWidth = 4u,
+      .baseHeight = 4u,
+      .baseDepth = 1u,
+      .numDimensions = 2u,
+      .numLevels = 1u,
+      .numLayers = layer_count,
+      .numFaces = face_count,
+      .isArray = layer_count > 1u ? KTX_TRUE : KTX_FALSE,
+      .generateMipmaps = KTX_FALSE,
+  };
+  ktxTexture2 *texture = NULL;
+  KTX_error_code result = ktxTexture2_Create(
+      &create_info, KTX_TEXTURE_CREATE_ALLOC_STORAGE, &texture);
+  if (result != KTX_SUCCESS || !texture) {
+    return false_v;
+  }
+  uint8_t pixels[4u * 4u * 4u];
+  for (uint32_t layer = 0u; layer < layer_count; ++layer) {
+    for (uint32_t face = 0u; face < face_count; ++face) {
+      for (uint32_t i = 0u; i < sizeof(pixels); i += 4u) {
+        pixels[i + 0u] = (uint8_t)(32u + layer * 17u);
+        pixels[i + 1u] = (uint8_t)(48u + face * 19u);
+        pixels[i + 2u] = (uint8_t)(64u + layer + face);
+        pixels[i + 3u] = 255u;
+      }
+      result = ktxTexture_SetImageFromMemory(ktxTexture(texture), 0u, layer,
+                                             face, pixels, sizeof(pixels));
+      if (result != KTX_SUCCESS) {
+        ktxTexture_Destroy(ktxTexture(texture));
+        return false_v;
+      }
+    }
+  }
+  ktxBasisParams basis = {
+      .structSize = sizeof(ktxBasisParams),
+      .uastc = KTX_TRUE,
+      .threadCount = 1u,
+      .uastcFlags = KTX_PACK_UASTC_LEVEL_DEFAULT,
+  };
+  result = ktxTexture2_CompressBasisEx(texture, &basis);
+  if (result == KTX_SUCCESS) {
+    result = ktxTexture_WriteToNamedFile(ktxTexture(texture), path);
+  }
+  ktxTexture_Destroy(ktxTexture(texture));
+  return result == KTX_SUCCESS ? true_v : false_v;
 }
 
 static void material_pbr_test_ensure_dirs(void) {
@@ -700,6 +759,285 @@ static void test_material_batch_load_honors_parsed_name_over_stem(
   printf("  test_material_batch_load_honors_parsed_name_over_stem PASSED\n");
 }
 
+static void
+test_material_texture_stream_queue_is_bounded(MaterialPbrTestContext *ctx) {
+  VkrMaterialSystem *system = &ctx->material_system;
+  assert(system->texture_stream_budget_bytes == UINT64_MAX);
+  assert(system->texture_stream_count == 0u);
+  const uint32_t capacity = system->texture_stream_capacity;
+  system->texture_stream_capacity = 2u;
+  const VkrMaterialHandle material = {.id = 123u, .generation = 7u};
+
+  assert(vkr_material_system_stream_texture(system, material,
+                                            VKR_TEXTURE_SLOT_DIFFUSE,
+                                            "textures/a.vkt") == true_v);
+  assert(vkr_material_system_stream_texture(system, material,
+                                            VKR_TEXTURE_SLOT_NORMAL,
+                                            "textures/b.vkt") == true_v);
+  assert(vkr_material_system_stream_texture(system, material,
+                                            VKR_TEXTURE_SLOT_SPECULAR,
+                                            "textures/c.vkt") == false_v);
+  assert(system->texture_stream_count == 2u);
+  assert(system->texture_stream_queued_count == 2u);
+  assert(system->texture_stream_active_count == 0u);
+  assert(system->texture_streams[0].state ==
+         VKR_MATERIAL_TEXTURE_RESIDENCY_QUEUED);
+  assert(system->texture_streams[1].state ==
+         VKR_MATERIAL_TEXTURE_RESIDENCY_QUEUED);
+
+  vkr_material_system_cancel_texture_streams(system, material);
+  assert(system->texture_stream_count == 0u);
+  assert(system->texture_stream_active_count == 0u);
+  system->texture_stream_capacity = capacity;
+
+  printf("  test_material_texture_stream_queue_is_bounded PASSED\n");
+}
+
+static void
+test_material_texture_residency_evicts_to_budget(MaterialPbrTestContext *ctx) {
+  VkrMaterialSystem *system = &ctx->material_system;
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  const VkrMaterialHandle material = vkr_material_system_create_colored(
+      system, "texture_eviction_material", vec4_one(), &error);
+  assert(material.id != 0u);
+  const VkrTextureDescription description = {
+      .width = 8u,
+      .height = 8u,
+      .channels = 4u,
+      .mip_levels = 1u,
+      .array_layers = 1u,
+      .type = VKR_TEXTURE_TYPE_2D,
+      .format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+      .sample_count = VKR_SAMPLE_COUNT_1,
+      .properties = {0},
+      .min_filter = VKR_FILTER_LINEAR,
+      .mag_filter = VKR_FILTER_LINEAR,
+      .mip_filter = VKR_MIP_FILTER_NONE,
+  };
+  VkrTextureHandle texture = VKR_TEXTURE_HANDLE_INVALID;
+  assert(vkr_texture_system_create_writable(
+             &ctx->texture_system, string8_lit("texture_eviction_resident"),
+             &description, &texture, &error) == true_v);
+  VkrTexture *resident =
+      vkr_texture_system_get_by_handle(&ctx->texture_system, texture);
+  assert(resident != NULL);
+  resident->resident_bytes = 256u;
+  VkrTextureEntry *resident_entry = vkr_hash_table_get_VkrTextureEntry(
+      &ctx->texture_system.texture_map, "texture_eviction_resident");
+  assert(resident_entry != NULL);
+  resident_entry->auto_release = false_v;
+
+  VkrMaterial *loaded = vkr_material_system_get_by_handle(system, material);
+  assert(loaded != NULL);
+  loaded->textures[VKR_TEXTURE_SLOT_DIFFUSE] = (VkrMaterialTexture){
+      .handle = texture,
+      .slot = VKR_TEXTURE_SLOT_DIFFUSE,
+      .enabled = true_v,
+  };
+  assert(vkr_material_system_stream_texture(system, material,
+                                            VKR_TEXTURE_SLOT_DIFFUSE,
+                                            "textures/evicted.vkt") == true_v);
+  VkrMaterialTextureStream *stream =
+      &system->texture_streams[system->texture_stream_count - 1u];
+  system->texture_stream_queued_count--;
+  system->texture_stream_resident_count++;
+  system->texture_stream_resident_bytes += resident->resident_bytes;
+  stream->state = VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT;
+  stream->resident_texture = texture;
+  stream->resident_bytes = resident->resident_bytes;
+
+  vkr_material_system_begin_texture_residency_frame(system);
+  vkr_material_system_touch_texture_residency(system, material);
+  vkr_material_system_set_texture_residency_budget(system, 0u);
+  vkr_material_system_pump_texture_streams(system, 1u);
+  assert(stream->state == VKR_MATERIAL_TEXTURE_RESIDENCY_EVICTED);
+  assert(system->texture_stream_resident_count == 0u);
+  assert(system->texture_stream_resident_bytes == 0u);
+  assert(system->texture_stream_evicted_count == 1u);
+  assert(system->texture_stream_evicted_total >= 1u);
+  assert(
+      loaded->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle.id ==
+      vkr_texture_system_get_default_diffuse_handle(&ctx->texture_system).id);
+
+  vkr_material_system_begin_texture_residency_frame(system);
+  vkr_material_system_touch_texture_residency(system, material);
+  assert(stream->state == VKR_MATERIAL_TEXTURE_RESIDENCY_EVICTED);
+  vkr_material_system_begin_texture_residency_frame(system);
+  vkr_material_system_begin_texture_residency_frame(system);
+  vkr_material_system_touch_texture_residency(system, material);
+  assert(stream->state == VKR_MATERIAL_TEXTURE_RESIDENCY_QUEUED);
+  vkr_material_system_cancel_texture_streams(system, material);
+  vkr_material_system_set_texture_residency_budget(system, UINT64_MAX);
+
+  printf("  test_material_texture_residency_evicts_to_budget PASSED\n");
+}
+
+static void
+test_shared_texture_eviction_tracks_unique_bytes(MaterialPbrTestContext *ctx) {
+  VkrMaterialSystem *system = &ctx->material_system;
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  const VkrTextureDescription description = {
+      .width = 8u,
+      .height = 8u,
+      .channels = 4u,
+      .mip_levels = 1u,
+      .array_layers = 1u,
+      .type = VKR_TEXTURE_TYPE_2D,
+      .format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+      .sample_count = VKR_SAMPLE_COUNT_1,
+      .properties = {0},
+      .min_filter = VKR_FILTER_LINEAR,
+      .mag_filter = VKR_FILTER_LINEAR,
+      .mip_filter = VKR_MIP_FILTER_NONE,
+  };
+  VkrTextureHandle texture = VKR_TEXTURE_HANDLE_INVALID;
+  assert(vkr_texture_system_create_writable(
+             &ctx->texture_system,
+             string8_lit("texture_eviction_shared_resident"), &description,
+             &texture, &error) == true_v);
+  VkrTexture *resident =
+      vkr_texture_system_get_by_handle(&ctx->texture_system, texture);
+  assert(resident != NULL);
+  resident->resident_bytes = 256u;
+  VkrTextureEntry *entry = vkr_hash_table_get_VkrTextureEntry(
+      &ctx->texture_system.texture_map, "texture_eviction_shared_resident");
+  assert(entry != NULL);
+  entry->auto_release = false_v;
+  vkr_texture_system_add_ref_by_handle(&ctx->texture_system, texture);
+
+  const VkrMaterialHandle first = {.id = 120u, .generation = 1u};
+  const VkrMaterialHandle second = {.id = 121u, .generation = 1u};
+  assert(vkr_material_system_stream_texture(system, first,
+                                            VKR_TEXTURE_SLOT_DIFFUSE,
+                                            "textures/shared.vkt") == true_v);
+  assert(vkr_material_system_stream_texture(system, second,
+                                            VKR_TEXTURE_SLOT_DIFFUSE,
+                                            "textures/shared.vkt") == true_v);
+  for (uint32_t i = system->texture_stream_count - 2u;
+       i < system->texture_stream_count; ++i) {
+    VkrMaterialTextureStream *stream = &system->texture_streams[i];
+    stream->state = VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT;
+    stream->resident_texture = texture;
+    stream->resident_bytes = resident->resident_bytes;
+  }
+  system->texture_stream_queued_count -= 2u;
+  system->texture_stream_resident_count += 2u;
+  system->texture_stream_resident_bytes += resident->resident_bytes;
+
+  const uint64_t evictions_before = system->texture_stream_evicted_total;
+  vkr_material_system_set_texture_residency_budget(system, 0u);
+  vkr_material_system_pump_texture_streams(system, 2u);
+  assert(system->texture_stream_resident_count == 0u);
+  assert(system->texture_stream_resident_bytes == 0u);
+  assert(system->texture_stream_evicted_total == evictions_before + 2u);
+  assert(entry->ref_count == 0u);
+  vkr_material_system_cancel_texture_streams(system, first);
+  vkr_material_system_cancel_texture_streams(system, second);
+  vkr_material_system_set_texture_residency_budget(system, UINT64_MAX);
+  const uint64_t failures_before = system->texture_stream_failed_total;
+  for (uint32_t cycle = 0u; cycle < 64u; ++cycle) {
+    vkr_texture_system_add_ref_by_handle(&ctx->texture_system, texture);
+    vkr_texture_system_add_ref_by_handle(&ctx->texture_system, texture);
+    assert(vkr_material_system_stream_texture(system, first,
+                                              VKR_TEXTURE_SLOT_DIFFUSE,
+                                              "textures/shared.vkt") == true_v);
+    assert(vkr_material_system_stream_texture(system, second,
+                                              VKR_TEXTURE_SLOT_DIFFUSE,
+                                              "textures/shared.vkt") == true_v);
+    for (uint32_t i = system->texture_stream_count - 2u;
+         i < system->texture_stream_count; ++i) {
+      VkrMaterialTextureStream *stream = &system->texture_streams[i];
+      stream->state = VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT;
+      stream->resident_texture = texture;
+      stream->resident_bytes = resident->resident_bytes;
+    }
+    system->texture_stream_queued_count -= 2u;
+    system->texture_stream_resident_count += 2u;
+    system->texture_stream_resident_bytes += resident->resident_bytes;
+    vkr_material_system_set_texture_residency_budget(system, 0u);
+    vkr_material_system_pump_texture_streams(system, 2u);
+    assert(system->texture_stream_resident_count == 0u);
+    assert(system->texture_stream_resident_bytes == 0u);
+    assert(entry->ref_count == 0u);
+    vkr_material_system_cancel_texture_streams(system, first);
+    vkr_material_system_cancel_texture_streams(system, second);
+  }
+  assert(system->texture_stream_count == 0u);
+  assert(system->texture_stream_evicted_count == 0u);
+  assert(system->texture_stream_failed_total == failures_before);
+  vkr_material_system_set_texture_residency_budget(system, UINT64_MAX);
+
+  printf("  test_shared_texture_eviction_tracks_unique_bytes PASSED\n");
+}
+
+static void
+test_compressed_texture_subresource_shapes(MaterialPbrTestContext *ctx) {
+  static const struct {
+    const char *name;
+    uint32_t layers;
+    uint32_t faces;
+    VkrTextureType type;
+    uint32_t physical_layers;
+  } cases[] = {
+      {"texture_array.vkt", 3u, 1u, VKR_TEXTURE_TYPE_2D_ARRAY, 3u},
+      {"texture_cube.vkt", 1u, 6u, VKR_TEXTURE_TYPE_CUBE_MAP, 6u},
+      {"texture_cube_array.vkt", 2u, 6u, VKR_TEXTURE_TYPE_CUBE_MAP_ARRAY, 12u},
+  };
+  ctx->texture_system.supports_texture_astc_4x4 = true_v;
+  for (uint32_t c = 0u; c < ArrayCount(cases); ++c) {
+    char relative_path[256] = {0};
+    char absolute_path[1024] = {0};
+    snprintf(relative_path, sizeof(relative_path), "tests/tmp/material_pbr/%s",
+             cases[c].name);
+    snprintf(absolute_path, sizeof(absolute_path), "%s%s", PROJECT_SOURCE_DIR,
+             relative_path);
+    material_pbr_test_remove_file(relative_path);
+    assert(material_pbr_test_write_uastc_texture(absolute_path, cases[c].layers,
+                                                 cases[c].faces) == true_v);
+
+    char request_path[320] = {0};
+    snprintf(request_path, sizeof(request_path), "%s?cs=linear&tc=color_linear",
+             relative_path);
+    VkrTexturePreparedLoad prepared = {0};
+    VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+    assert(vkr_texture_system_prepare_load_from_file(
+               &ctx->texture_system,
+               string8_create_from_cstr((const uint8_t *)request_path,
+                                        string_length(request_path)),
+               VKR_TEXTURE_RGBA_CHANNELS, &ctx->temp_allocator, &prepared,
+               &error) == true_v);
+    assert(prepared.description.type == cases[c].type);
+    assert(prepared.description.array_layers == cases[c].physical_layers);
+    assert(prepared.upload_array_layers == cases[c].physical_layers);
+    assert(prepared.upload_region_count == cases[c].physical_layers);
+    assert(prepared.upload_is_compressed == true_v);
+    for (uint32_t layer = 0u; layer < cases[c].physical_layers; ++layer) {
+      assert(prepared.upload_regions[layer].array_layer == layer);
+      assert(prepared.upload_regions[layer].mip_level == 0u);
+      assert(prepared.upload_regions[layer].byte_size > 0u);
+    }
+
+    VkrTextureHandle handle = VKR_TEXTURE_HANDLE_INVALID;
+    assert(vkr_texture_system_finalize_prepared_load(
+               &ctx->texture_system,
+               string8_create_from_cstr((const uint8_t *)request_path,
+                                        string_length(request_path)),
+               &prepared, &handle, &error) == true_v);
+    VkrTexture *texture =
+        vkr_texture_system_get_by_handle(&ctx->texture_system, handle);
+    assert(texture != NULL);
+    assert(texture->description.type == cases[c].type);
+    assert(texture->resident_bytes == prepared.upload_data_size);
+    vkr_texture_system_release_prepared_load(&prepared);
+    if (!getenv("VKR_KEEP_TEST_TEXTURE_FIXTURES")) {
+      material_pbr_test_remove_file(relative_path);
+    }
+  }
+  printf("  test_compressed_texture_subresource_shapes PASSED\n");
+}
+
 bool32_t run_material_pbr_tests(void) {
   printf("--- Starting Material PBR Tests ---\n");
 
@@ -717,6 +1055,10 @@ bool32_t run_material_pbr_tests(void) {
   test_material_texture_intent_query_normalization(&context);
   test_material_texture_intent_override_is_deterministic(&context);
   test_material_batch_load_honors_parsed_name_over_stem(&context);
+  test_material_texture_stream_queue_is_bounded(&context);
+  test_material_texture_residency_evicts_to_budget(&context);
+  test_shared_texture_eviction_tracks_unique_bytes(&context);
+  test_compressed_texture_subresource_shapes(&context);
 
   material_pbr_test_shutdown_context(&context);
 

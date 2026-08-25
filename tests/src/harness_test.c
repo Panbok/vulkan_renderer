@@ -533,6 +533,19 @@ static void test_harness_scene_manifest_tracks_transitive_content(void) {
     }
   }
   assert(first.asset_count == 7u);
+  char manifest_path[VKR_HARNESS_PATH_MAX];
+  char manifest_file_digest[VKR_HARNESS_DIGEST_MAX] = {0};
+  snprintf(manifest_path, sizeof(manifest_path), "%s/manifest.json", root);
+  assert(vkr_harness_scene_manifest_write(manifest_path, &first, &error));
+  assert(vkr_harness_sha256_file(manifest_path, manifest_file_digest));
+  assert(vkr_harness_scene_manifest_verify_file(manifest_path,
+                                                manifest_file_digest));
+  assert(vkr_harness_atomic_write(manifest_path, "tampered", 8u, &error));
+  assert(!vkr_harness_scene_manifest_verify_file(manifest_path,
+                                                 manifest_file_digest));
+  assert(vkr_harness_scene_manifest_write(manifest_path, &first, &error));
+  assert(vkr_harness_scene_manifest_verify_file(manifest_path,
+                                                manifest_file_digest));
 
   VkrHarnessCase case_manifest = {0};
   assert(harness_parse_case("windowed_hidden", "immediate",
@@ -551,6 +564,12 @@ static void test_harness_scene_manifest_tracks_transitive_content(void) {
       root, VKR_HARNESS_TOOL_PROFILE, &case_manifest, &profile,
       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u, environment, workload_before,
       policy, &error));
+  char workload_reused[VKR_HARNESS_DIGEST_MAX];
+  assert(vkr_harness_case_fingerprints_with_scene_digest(
+      VKR_HARNESS_TOOL_PROFILE, &case_manifest, &profile,
+      VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u, first.sha256, environment,
+      workload_reused, policy, &error));
+  assert(strcmp(workload_before, workload_reused) == 0);
 
   assert(vkr_harness_atomic_write(generated_packed_path, "packed-second", 13u,
                                   &error));
@@ -566,6 +585,7 @@ static void test_harness_scene_manifest_tracks_transitive_content(void) {
   arena_destroy(first_arena);
   arena_destroy(second_arena);
 
+  assert(remove(manifest_path) == 0);
   assert(remove(generated_packed_path) == 0);
   assert(remove(generated_texture_path) == 0);
   assert(remove(texture_path) == 0);
