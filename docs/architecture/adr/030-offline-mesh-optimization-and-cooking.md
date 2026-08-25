@@ -1,6 +1,6 @@
 ---
 status: accepted
-updated: 2026-08-24
+updated: 2026-08-25
 authority: adr
 ---
 
@@ -75,8 +75,14 @@ Production scene manifests reference `.vkb`. `tools/cook_vkr_meshes.sh` and
 mesh artifacts, then run the shared texture packer once so glTF-generated
 material derivatives have `.vkt` siblings before the command succeeds.
 Authoring dependency identity remains recorded in the artifact but is not a
-runtime dependency. Normal renderer builds still do not cook meshes or pack
-textures.
+runtime dependency. Normal renderer builds still do not cook meshes; they do run
+the shared incremental texture packer after successful compilation.
+
+The source-free statement applies to geometry decode. Scene-level metadata may
+remain an explicit runtime dependency: Bistro names `mesh.gltf_light_source`
+so its cooked `.vkb` geometry can retain the glTF punctual-light nodes without
+reopening the glTF during mesh decode. The scene loader treats that explicit
+metadata path as required and fails the scene request if it cannot be parsed.
 
 For input interoperability, glTF buffer views using
 `EXT_meshopt_compression` decode on the loader worker before accessor reads.

@@ -10,6 +10,12 @@ if errorlevel 1 (
     exit /b 1
 )
 
+call tools\pack_vkt_textures.bat
+if errorlevel 1 (
+    echo Texture packing failed!
+    exit /b 1
+)
+
 echo.
 echo === Running tests 50 times ===
 

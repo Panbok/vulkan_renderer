@@ -21,7 +21,7 @@ Target runtime platforms:
 ## Non-goals
 
 - Runtime recompression of writable textures.
-- Implicit texture packing during ordinary renderer builds.
+- Configuration-specific packer outputs or CMake target coupling.
 - Treating modification time or file size as content identity.
 
 ## Historical pre-implementation analysis
@@ -256,9 +256,11 @@ Offline pack pipeline:
 3. Generate and store mip chains.
 4. Emit self-contained `.vkt`.
 
-`tools/pack_vkt_textures.sh` and `.bat` own explicit incremental packing.
-Normal renderer builds do not pack implicitly, and shader compilation remains
-independent.
+Every root macOS/POSIX and Windows build wrapper that performs CMake
+compilation invokes `tools/pack_vkt_textures.sh` or `.bat` afterward and fails
+the build if packing fails. The pack remains configuration-independent and
+incremental; the standalone wrappers remain available for forced or strict
+asset preparation. Shader compilation remains independent.
 
 The same packer accepts explicit layered inputs. `--layer` order is physical
 array order; cubemaps use `+X,-X,+Y,-Y,+Z,-Z`, and cubemap arrays repeat that

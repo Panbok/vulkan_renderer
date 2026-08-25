@@ -1,3 +1,7 @@
+#if defined(_WIN32) && !defined(NOMINMAX)
+#define NOMINMAX
+#endif
+
 #include <ktx.h>
 #include <vulkan/vulkan_core.h>
 

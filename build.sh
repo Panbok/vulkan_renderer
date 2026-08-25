@@ -35,4 +35,5 @@ esac
 
   BUILD_TARGETS="vulkan_renderer vkr_harness vkr_mesh_cooker"
   cmake --build "./${BUILD_DIR}" --target $BUILD_TARGETS --config "${BUILD_TYPE}"
+  ./tools/pack_vkt_textures.sh
 )

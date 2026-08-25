@@ -6,6 +6,7 @@ set -e
 
 echo "=== Building project ==="
 cmake --build build_test --target vulkan_renderer_tester --config Debug
+./tools/pack_vkt_textures.sh
 
 echo ""
 echo "=== Running tests 50 times ==="

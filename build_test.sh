@@ -16,6 +16,7 @@ set -e # Exit early if any commands fail
   cmake --fresh -B build_test -S . -U CMAKE_TOOLCHAIN_FILE -DCMAKE_BUILD_TYPE:STRING=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE ${GENERATOR} ${COMPILERS}
   # Build only the test target
   cmake --build ./build_test --target vulkan_renderer_tester --config Debug
+  ./tools/pack_vkt_textures.sh
 )
 
 # Execute the test runner

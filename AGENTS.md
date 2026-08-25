@@ -95,15 +95,17 @@ build_release/tools/vkr_harness profile --case <case> --profile <profile>
 build_release/tools/vkr_harness profile \
   --case tools/cases/performance/sponza_orbit.case.json \
   --profile tools/profiles/performance-windowed.json # Release performance evidence
-tools/pack_vkt_textures.sh                       # explicit shared KTX2/UASTC packing
+tools/pack_vkt_textures.sh                       # standalone/forced KTX2/UASTC packing
 # Windows: tools\pack_vkt_textures.bat
 ```
 
-Build configurations use persistent, non-overlapping output trees. Normal
-builds never pack textures. Run `tools/pack_vkt_textures.sh` (or its `.bat`
-equivalent) when source textures change or before producing a packed asset set;
-the packer uses the shared `build_vkt_packer` tree and skips up-to-date `.vkt`
-outputs unless `VKR_VKT_PACK_FORCE=1` is set.
+Build configurations use persistent, non-overlapping output trees. Every root
+build wrapper that invokes CMake compilation runs the platform texture packer
+after a successful compile and treats packing failure as build failure. Run and
+batch-test wrappers reuse their build result and never add a second pack pass.
+The packer uses the shared `build_vkt_packer` tree and skips content-identical
+`.vkt` outputs unless `VKR_VKT_PACK_FORCE=1` is set; the standalone wrappers
+remain available for forced or strict asset preparation.
 
 Supported non-Windows Clang/GCC Debug configurations enable ASan and UBSan by
 default. Set `VKR_ENABLE_DEBUG_SANITIZERS=OFF` for an explicit diagnostic

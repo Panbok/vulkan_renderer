@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-08
+updated: 2026-08-25
 authority: adr
 ---
 # ADR-012: Offline KTX2/UASTC Packing with Runtime Transcode
@@ -25,16 +25,17 @@ signature rather than extension alone.
 
 `tools/vkr_vkt_packer.cpp` uses the vendored KTX-Software library to read source
 images, build mip payloads, attach texture-class/colorspace metadata, encode
-UASTC, and write KTX2 files. Texture packing is an explicit, build-type-
-independent asset operation: `tools/pack_vkt_textures.sh` and its `.bat`
-equivalent build the tool in the shared `build_vkt_packer` tree, then update
-only stale `.vkt` sidecars. Debug and Release application builds do not build or
-invoke the packer and keep separate output trees.
+UASTC, and write KTX2 files. Texture packing is build-type-independent:
+`tools/pack_vkt_textures.sh` and its `.bat` equivalent build the tool in the
+shared `build_vkt_packer` tree, then update only stale `.vkt` sidecars. Every
+root wrapper that compiles a CMake target invokes the platform packer after a
+successful compile. Debug and Release still keep separate application output
+trees and share the packer tree.
 
 Runtime resolution supports direct `.vkt`, a sidecar for a source path, and
-optional source decoding. KTX2 currently accepts 2D, single-layer,
-non-cubemap Basis payloads. It selects a target by texture class, device type,
-and format support:
+optional source decoding. KTX2 accepts 2D textures, 2D arrays, cubemaps, and
+cubemap arrays with Basis payloads. It selects a target by texture class,
+device type, and format support:
 
 - color/data textures prefer BC7, ASTC 4×4, or ETC2 and can transcode to RGBA32
   when no compressed target is supported;
@@ -88,11 +89,13 @@ Runtime rollout controls are separate from build packing controls:
 | `VKR_TEXTURE_VKT_ALLOW_LEGACY` | Effective only when strict mode is disabled |
 | `VKR_TEXTURE_VKT_WRITE_LEGACY_CACHE` | Permit legacy cache writes |
 
-`VKR_VKT_PACK_STRICT` makes an explicit offline packing invocation fail on any
-source it cannot encode. Runtime strictness is independent and defaults on.
-The packer detects legacy raw outputs even when their timestamps are newer and
-replaces them with KTX2/UASTC. Test wrappers explicitly disable strict mode for
-fixtures that exercise compatibility.
+Every root build wrapper that performs CMake compilation invokes the matching
+`tools/pack_vkt_textures.sh` or `.bat` after the compile succeeds; pack failure
+fails the build. `VKR_VKT_PACK_STRICT` tightens both automatic and standalone
+packing. Runtime strictness remains independent and defaults on. The packer
+detects legacy raw outputs even when their timestamps are newer and replaces
+them with KTX2/UASTC. Test wrappers disable runtime strictness only for fixtures
+that exercise compatibility; they still run incremental packing.
 
 The vendored submodule is currently KTX-Software v4.4.2 at
 `4d6fc70eaf62ad0558e63e8d97eb9766118327a6`.
@@ -105,8 +108,8 @@ The vendored submodule is currently KTX-Software v4.4.2 at
 - Mip data and texture intent metadata travel with the container.
 - Packing work is shared across build configurations and skipped for unchanged
   source textures.
-- Explicit strict packing catches missing/failed packed assets when an asset set
-  is prepared for distribution.
+- A successful root-wrapper build has refreshed every changed source texture;
+  standalone strict packing remains available for distribution preparation.
 - Dual-path rollout preserves development compatibility while migration is in
   progress.
 
@@ -114,10 +117,13 @@ The vendored submodule is currently KTX-Software v4.4.2 at
 
 - Runtime transcoding consumes CPU time and temporary memory; faster total load
   time must be measured rather than assumed.
-- Current KTX2 decode rejects cubemaps, arrays, and non-Basis KTX2 payloads.
+- Current KTX2 decode rejects non-Basis payloads and shapes outside 2D, 2D
+  array, cubemap, and cubemap array.
 - KTX-Software adds a sizeable C/C++ dependency and build cost.
-- Release packaging must explicitly run strict packing; a compile-only build no
-  longer proves that packed assets are complete.
+- The first build after source/settings changes includes packing cost; unchanged
+  builds still scan content identity before skipping current outputs. Direct
+  CMake compilation bypasses wrapper policy and does not prove packed assets are
+  complete.
 - Block-compressed assets cannot use generic writable/resize paths.
 - Output format and visual result can differ by device capability.
 

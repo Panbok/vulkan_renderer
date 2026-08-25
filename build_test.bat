@@ -52,6 +52,13 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
+call "%~dp0tools\pack_vkt_textures.bat"
+if %errorlevel% neq 0 (
+    echo Texture packing failed.
+    popd
+    exit /b 1
+)
+
 rem Return to the original directory
 popd
 

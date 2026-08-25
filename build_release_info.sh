@@ -15,4 +15,5 @@ set -e # Exit early if any commands fail
   fi
   cmake --fresh -B build_release_info -S . -U CMAKE_TOOLCHAIN_FILE -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE ${GENERATOR} ${COMPILERS}
   cmake --build ./build_release_info --target vulkan_renderer vkr_harness vkr_mesh_cooker --config RelWithDebInfo
+  ./tools/pack_vkt_textures.sh
 )

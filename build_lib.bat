@@ -30,5 +30,11 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
+call "%~dp0tools\pack_vkt_textures.bat"
+if %errorlevel% neq 0 (
+    echo Texture packing failed.
+    exit /b 1
+)
+
 echo Library build completed successfully!
 endlocal
