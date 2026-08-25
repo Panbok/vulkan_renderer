@@ -2041,6 +2041,11 @@ void vkr_resource_system_pump(const VkrResourceAsyncBudget *budget) {
             request->last_error = VKR_RENDERER_ERROR_NONE;
             continue;
           }
+          if (finalize_error == VKR_RENDERER_ERROR_RESOURCE_BUSY) {
+            request->load_state = VKR_RESOURCE_LOAD_STATE_PENDING_GPU;
+            request->last_error = VKR_RENDERER_ERROR_NONE;
+            continue;
+          }
           uint32_t payload_loader_id = request->loader_id;
           request->async_payload = NULL;
           request->load_state = VKR_RESOURCE_LOAD_STATE_FAILED;

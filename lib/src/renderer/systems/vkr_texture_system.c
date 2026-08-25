@@ -3391,6 +3391,14 @@ bool8_t vkr_texture_system_finalize_prepared_load(
     return false_v;
   }
 
+  const VkrAssetPublisher *publisher = system->asset_publisher;
+  if (publisher->texture_upload_available &&
+      !publisher->texture_upload_available(publisher->state,
+                                           prepared->upload_data_size)) {
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_BUSY;
+    return false_v;
+  }
+
   uint32_t free_slot_index = vkr_texture_system_find_free_slot(system);
   if (free_slot_index == VKR_INVALID_ID) {
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;

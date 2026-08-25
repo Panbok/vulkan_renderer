@@ -51,6 +51,7 @@ typedef struct ResourceAsyncBudgetContext {
   atomic_uint release_calls;
   uint32_t finalize_ops;
   uint64_t finalize_bytes;
+  uint32_t busy_finalize_attempts_remaining;
   atomic_uint token_counter;
 } ResourceAsyncBudgetContext;
 
@@ -441,6 +442,12 @@ static bool8_t resource_async_budget_finalize(VkrResourceLoader *self,
   ResourceAsyncBudgetPayload *budget_payload =
       (ResourceAsyncBudgetPayload *)payload;
   atomic_fetch_add_explicit(&ctx->finalize_calls, 1u, memory_order_relaxed);
+
+  if (ctx->busy_finalize_attempts_remaining) {
+    ctx->busy_finalize_attempts_remaining--;
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_BUSY;
+    return false_v;
+  }
 
   out_handle->type = VKR_RESOURCE_TYPE_SCENE;
   out_handle->as.scene = (VkrSceneHandle)(uintptr_t)budget_payload->token;
@@ -1201,6 +1208,71 @@ static void test_resource_async_gpu_budget_throttles_finalize(
   printf("  test_resource_async_gpu_budget_throttles_finalize PASSED\n");
 }
 
+static void test_resource_async_busy_finalize_retries(
+    VkrAllocator *allocator, RendererFrontend *renderer,
+    ResourceAsyncMockBackendState *backend_state,
+    ResourceAsyncBudgetContext *ctx) {
+  printf("  Running test_resource_async_busy_finalize_retries...\n");
+
+  String8 path = string8_lit("tests/assets/busy_retry.budget.mock");
+  VkrResourceHandleInfo handle = {0};
+  VkrRendererError load_error = VKR_RENDERER_ERROR_NONE;
+  renderer->frame_active = false_v;
+  ctx->busy_finalize_attempts_remaining = 2u;
+
+  assert(vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, path, allocator,
+                                  &handle, &load_error) == true_v);
+  assert(load_error == VKR_RENDERER_ERROR_NONE);
+
+  bool8_t pending_gpu = false_v;
+  for (uint32_t i = 0u; i < 400u; ++i) {
+    vkr_resource_system_pump(NULL);
+    VkrRendererError state_error = VKR_RENDERER_ERROR_NONE;
+    VkrResourceLoadState state =
+        vkr_resource_system_get_state(&handle, &state_error);
+    assert(state != VKR_RESOURCE_LOAD_STATE_FAILED);
+    if (state == VKR_RESOURCE_LOAD_STATE_PENDING_GPU) {
+      pending_gpu = true_v;
+      break;
+    }
+    vkr_platform_sleep(2);
+  }
+  assert(pending_gpu == true_v);
+
+  const uint32_t finalize_before =
+      atomic_load_explicit(&ctx->finalize_calls, memory_order_relaxed);
+  const uint32_t release_before =
+      atomic_load_explicit(&ctx->release_calls, memory_order_relaxed);
+  renderer->frame_active = true_v;
+  backend_state->submit_serial = 160u;
+  backend_state->completed_submit_serial = 161u;
+
+  for (uint32_t attempt = 1u; attempt <= 2u; ++attempt) {
+    vkr_resource_system_pump(NULL);
+    VkrRendererError state_error = VKR_RENDERER_ERROR_UNKNOWN;
+    assert(vkr_resource_system_get_state(&handle, &state_error) ==
+           VKR_RESOURCE_LOAD_STATE_PENDING_GPU);
+    assert(state_error == VKR_RENDERER_ERROR_NONE);
+    assert(atomic_load_explicit(&ctx->finalize_calls, memory_order_relaxed) ==
+           finalize_before + attempt);
+    assert(atomic_load_explicit(&ctx->release_calls, memory_order_relaxed) ==
+           release_before);
+  }
+
+  VkrRendererError ready_error = VKR_RENDERER_ERROR_UNKNOWN;
+  assert(resource_async_wait_for_state(&handle, VKR_RESOURCE_LOAD_STATE_READY,
+                                       &ready_error) == true_v);
+  assert(ready_error == VKR_RENDERER_ERROR_NONE);
+  assert(atomic_load_explicit(&ctx->finalize_calls, memory_order_relaxed) ==
+         finalize_before + 3u);
+  assert(atomic_load_explicit(&ctx->release_calls, memory_order_relaxed) ==
+         release_before + 1u);
+
+  vkr_resource_system_unload(&handle, path);
+  renderer->frame_active = false_v;
+  printf("  test_resource_async_busy_finalize_retries PASSED\n");
+}
+
 static void
 test_scene_async_load_smoke(VkrAllocator *allocator, RendererFrontend *renderer,
                             ResourceAsyncMockBackendState *backend_state,
@@ -1449,6 +1521,8 @@ bool32_t run_resource_async_state_tests(void) {
       &allocator, &renderer, &backend_state);
   test_resource_async_gpu_budget_throttles_finalize(
       &allocator, &renderer, &backend_state, &budget_ctx);
+  test_resource_async_busy_finalize_retries(&allocator, &renderer,
+                                            &backend_state, &budget_ctx);
   test_scene_async_load_smoke(&allocator, &renderer, &backend_state,
                               &scene_ctx);
   test_scene_reload_async_cancel(&allocator, &renderer, &backend_state,

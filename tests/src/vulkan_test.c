@@ -237,6 +237,7 @@ static void test_renderer_create_failure_is_transactional(void) {
       .memory_blocks_per_pool = 1u,
       .memory_block_allocation_capacity = 1u,
       .publication_staging_capacity = 2u,
+      .max_pending_texture_upload_bytes = MB(1),
   };
   VkrVulkanRenderer *renderer = NULL;
   assert(!vkr_vulkan_renderer_create(&config, &renderer));

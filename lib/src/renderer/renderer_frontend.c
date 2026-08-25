@@ -762,6 +762,7 @@ renderer_impl_vulkan_initialize(void *state, VkrWindow *window, uint32_t width,
       .memory_blocks_per_pool = 128u,
       .memory_block_allocation_capacity = 512u,
       .publication_staging_capacity = 256u,
+      .max_pending_texture_upload_bytes = MB(256),
       .max_graph_images = 128u,
       .max_graph_buffers = 128u,
       .max_graph_passes = 64u,
@@ -1803,6 +1804,8 @@ String8 vkr_renderer_get_error_string(VkrRendererError error) {
     return string8_lit("Capture ring busy");
   case VKR_RENDERER_ERROR_CAPTURE_UNAVAILABLE:
     return string8_lit("Capture unavailable");
+  case VKR_RENDERER_ERROR_RESOURCE_BUSY:
+    return string8_lit("Resource publication busy");
   case VKR_RENDERER_ERROR_COUNT:
     break;
   }

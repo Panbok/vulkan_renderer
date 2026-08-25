@@ -80,6 +80,7 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
       config->memory_blocks_per_pool > config->memory_block_capacity ||
       !config->memory_block_allocation_capacity ||
       config->publication_staging_capacity < 2u ||
+      !config->max_pending_texture_upload_bytes ||
       ((config->capture_ring_capacity == 0u) !=
        (config->capture_max_batch_bytes == 0u)) ||
       config->capture_ring_capacity > VKR_VULKAN_FRAME_SLOT_COUNT ||

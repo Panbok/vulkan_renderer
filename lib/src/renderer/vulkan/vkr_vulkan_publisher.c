@@ -93,6 +93,8 @@ vkr_internal void vkr_vk_release_texture_initialization(
     vkr_allocator_free(renderer->allocator, initialization->batches,
                        initialization->batches_size,
                        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  if (initialization->upload_data_accounted)
+    renderer->pending_texture_upload_bytes -= initialization->upload_data_size;
   if (initialization->upload_data)
     (void)vkr_dmemory_free(&renderer->publication_staging_memory,
                            initialization->upload_data,
@@ -129,9 +131,33 @@ vkr_internal bool8_t vkr_vk_enqueue_texture_initialization(
   if (renderer->pending_texture_initialization_count >=
       renderer->config.texture_capacity)
     return false_v;
-  renderer->pending_texture_initializations
-      [renderer->pending_texture_initialization_count++] = *initialization;
+  VkrVulkanPendingTextureInitialization *queued =
+      &renderer->pending_texture_initializations
+           [renderer->pending_texture_initialization_count++];
+  *queued = *initialization;
+  if (queued->upload_data) {
+    queued->upload_data_accounted = true_v;
+    renderer->pending_texture_upload_bytes += queued->upload_data_size;
+  }
   return true_v;
+}
+
+vkr_internal bool8_t
+vkr_vk_asset_texture_upload_available(void *state, uint64_t upload_bytes) {
+  VkrVulkanRenderer *renderer = state;
+  if (!renderer || !upload_bytes || upload_bytes > UINT64_MAX - 64u)
+    return false_v;
+
+  const uint64_t retained = renderer->pending_texture_upload_bytes;
+  const uint64_t limit = renderer->config.max_pending_texture_upload_bytes;
+  if (upload_bytes > limit ? retained != 0u : retained > limit - upload_bytes)
+    return false_v;
+
+  VkrDMemory *memory = &renderer->publication_staging_memory;
+  const uint64_t required = upload_bytes + 64u;
+  const uint64_t free_space = vkr_dmemory_get_free_space(memory);
+  const uint64_t growth = memory->reserve_size - memory->total_size;
+  return required <= free_space || required - free_space <= growth;
 }
 
 vkr_internal bool8_t vkr_vk_upload_prepared_texture(
@@ -2506,6 +2532,8 @@ void vkr_vulkan_renderer_get_asset_publisher(VkrVulkanRenderer *renderer,
                                  vkr_vk_asset_publications_idle,
                              .publication_generation =
                                  vkr_vk_candidate_publication_generation,
+                             .texture_upload_available =
+                                 vkr_vk_asset_texture_upload_available,
                              .publish_geometry =
                                   vkr_vk_asset_publish_geometry,
                               .publish_loaded_mesh =

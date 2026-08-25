@@ -69,6 +69,8 @@ typedef enum VkrRendererError {
   VKR_RENDERER_ERROR_CAPTURE_BUSY,
   /** A requested capture channel or subresource is unavailable. */
   VKR_RENDERER_ERROR_CAPTURE_UNAVAILABLE,
+  /** Recoverable: retry resource finalization after backend work drains. */
+  VKR_RENDERER_ERROR_RESOURCE_BUSY,
 
   VKR_RENDERER_ERROR_COUNT
 } VkrRendererError;

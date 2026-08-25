@@ -427,6 +427,11 @@ vkr_internal bool8_t vkr_metal_packet_publications_idle_adapter(void *state) {
   return state != NULL;
 }
 
+vkr_internal bool8_t vkr_metal_packet_texture_upload_available_adapter(
+    void *state, uint64_t upload_bytes) {
+  return state != NULL && upload_bytes != 0u;
+}
+
 void vkr_metal_packet_renderer_get_asset_publisher(
     VkrMetalPacketRenderer *renderer, VkrAssetPublisher *out_publisher) {
   if (!out_publisher)
@@ -438,6 +443,8 @@ void vkr_metal_packet_renderer_get_asset_publisher(
                                  vkr_metal_packet_publications_idle_adapter,
                              .publication_generation =
                                  vkr_metal_packet_candidate_publication_generation,
+                             .texture_upload_available =
+                                 vkr_metal_packet_texture_upload_available_adapter,
                              .publish_geometry =
                                  vkr_metal_packet_publish_geometry_adapter,
                              .publish_loaded_mesh =

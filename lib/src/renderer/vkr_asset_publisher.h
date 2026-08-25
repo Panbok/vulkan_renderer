@@ -20,6 +20,8 @@ typedef struct VkrAssetPublisher {
   bool8_t (*publications_idle)(void *state);
   /** Monotonic nonzero stamp for geometry/material resolvability changes. */
   uint64_t (*publication_generation)(void *state);
+  /** True when a prepared texture payload can be retained for publication. */
+  bool8_t (*texture_upload_available)(void *state, uint64_t upload_bytes);
   bool8_t (*publish_geometry)(void *state, VkrGeometryHandle handle,
                               const struct VkrGeometryConfig *geometry);
   bool8_t (*publish_loaded_mesh)(void *state, VkrGeometryHandle handle,

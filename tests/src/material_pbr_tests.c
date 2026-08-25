@@ -28,6 +28,7 @@
 typedef struct MaterialPbrMockPublisherState {
   uint32_t texture_create_calls;
   uint32_t texture_destroy_calls;
+  bool8_t texture_upload_available;
 } MaterialPbrMockPublisherState;
 
 typedef struct MaterialPbrTestContext {
@@ -53,6 +54,14 @@ static void material_pbr_mock_get_device_information(
 static const VkrRendererImplOps material_pbr_impl_ops = {
     .get_device_information = material_pbr_mock_get_device_information,
 };
+
+static bool8_t
+material_pbr_mock_texture_upload_available(void *publisher_state,
+                                           uint64_t upload_bytes) {
+  MaterialPbrMockPublisherState *state = publisher_state;
+  assert(state != NULL);
+  return upload_bytes != 0u && state->texture_upload_available;
+}
 
 static bool8_t material_pbr_mock_publish_texture(
     void *publisher_state, VkrTextureHandle handle,
@@ -238,8 +247,10 @@ static void material_pbr_test_init_renderer(MaterialPbrTestContext *ctx) {
 
   ctx->renderer.impl.ops = &material_pbr_impl_ops;
   ctx->renderer.impl.state = &ctx->publisher_state;
+  ctx->publisher_state.texture_upload_available = true_v;
   ctx->asset_publisher = (VkrAssetPublisher){
       .state = &ctx->publisher_state,
+      .texture_upload_available = material_pbr_mock_texture_upload_available,
       .publish_texture = material_pbr_mock_publish_texture,
       .publish_writable_texture = material_pbr_mock_publish_writable_texture,
       .unpublish_texture = material_pbr_mock_unpublish_texture,
@@ -1038,6 +1049,60 @@ test_compressed_texture_subresource_shapes(MaterialPbrTestContext *ctx) {
   printf("  test_compressed_texture_subresource_shapes PASSED\n");
 }
 
+static void test_texture_publication_backpressure_is_retryable(
+    MaterialPbrTestContext *ctx) {
+  uint8_t pixels[4] = {255u, 255u, 255u, 255u};
+  VkrTextureUploadRegion region = {
+      .width = 1u,
+      .height = 1u,
+      .depth = 1u,
+      .byte_size = sizeof(pixels),
+  };
+  VkrTexturePreparedLoad prepared = {
+      .description =
+          {
+              .type = VKR_TEXTURE_TYPE_2D,
+              .format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM,
+              .width = 1u,
+              .height = 1u,
+              .array_layers = 1u,
+          },
+      .upload_data = pixels,
+      .upload_data_size = sizeof(pixels),
+      .upload_regions = &region,
+      .upload_region_count = 1u,
+      .upload_mip_levels = 1u,
+      .upload_array_layers = 1u,
+  };
+  String8 name = string8_lit("texture_backpressure_retry");
+  VkrTextureHandle handle = VKR_TEXTURE_HANDLE_INVALID;
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  const uint32_t create_calls_before =
+      ctx->publisher_state.texture_create_calls;
+  const uint32_t next_free_before = ctx->texture_system.next_free_index;
+
+  ctx->publisher_state.texture_upload_available = false_v;
+  assert(vkr_texture_system_finalize_prepared_load(&ctx->texture_system, name,
+                                                   &prepared, &handle,
+                                                   &error) == false_v);
+  assert(error == VKR_RENDERER_ERROR_RESOURCE_BUSY);
+  assert(handle.id == VKR_TEXTURE_HANDLE_INVALID.id);
+  assert(ctx->publisher_state.texture_create_calls == create_calls_before);
+  assert(ctx->texture_system.next_free_index == next_free_before);
+  assert(vkr_hash_table_get_VkrTextureEntry(&ctx->texture_system.texture_map,
+                                            "texture_backpressure_retry") ==
+         NULL);
+
+  ctx->publisher_state.texture_upload_available = true_v;
+  assert(vkr_texture_system_finalize_prepared_load(
+             &ctx->texture_system, name, &prepared, &handle, &error) == true_v);
+  assert(error == VKR_RENDERER_ERROR_NONE);
+  assert(handle.id != VKR_TEXTURE_HANDLE_INVALID.id);
+  assert(ctx->publisher_state.texture_create_calls == create_calls_before + 1u);
+
+  printf("  test_texture_publication_backpressure_is_retryable PASSED\n");
+}
+
 bool32_t run_material_pbr_tests(void) {
   printf("--- Starting Material PBR Tests ---\n");
 
@@ -1059,6 +1124,7 @@ bool32_t run_material_pbr_tests(void) {
   test_material_texture_residency_evicts_to_budget(&context);
   test_shared_texture_eviction_tracks_unique_bytes(&context);
   test_compressed_texture_subresource_shapes(&context);
+  test_texture_publication_backpressure_is_retryable(&context);
 
   material_pbr_test_shutdown_context(&context);
 

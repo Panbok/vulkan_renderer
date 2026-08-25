@@ -874,6 +874,7 @@ typedef struct VkrVulkanPendingTextureInitialization {
   uint32_t next_batch;
   uint32_t staged_batch_count;
   bool8_t writable;
+  bool8_t upload_data_accounted;
 } VkrVulkanPendingTextureInitialization;
 
 typedef struct VkrVulkanPendingBufferInitialization {
@@ -1033,6 +1034,7 @@ struct VkrVulkanRenderer {
   uint64_t pending_texture_initializations_size;
   uint64_t pending_buffer_initializations_size;
   uint64_t retired_staging_buffers_size;
+  uint64_t pending_texture_upload_bytes;
   uint32_t pending_texture_initialization_count;
   uint32_t pending_buffer_initialization_count;
   uint32_t pending_buffer_initialization_capacity;

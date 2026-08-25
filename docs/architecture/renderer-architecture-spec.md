@@ -496,6 +496,10 @@ forward progress by permitting the first oversized request.
 Finalization publishes decoded assets through `VkrAssetPublisher`. Vulkan
 records prepared and writable initialization into the next frame command
 buffer, batches dirty-range flushes, and retires staging at that submit value.
+Decoded texture source retention is bounded independently of the shared
+publication arena. When that bound is full, finalization remains pending and
+retries after earlier upload batches drain instead of turning capacity pressure
+into a failed texture stream.
 Metal texture finalization packs up to 64 payloads into one aligned 32 MiB
 upload-ring slice and one command buffer; oversized payloads receive a dedicated
 slice. Batch completion is proven before frame recording, and a begin/end

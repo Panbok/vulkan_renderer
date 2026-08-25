@@ -58,6 +58,8 @@ typedef struct VkrVulkanRendererConfig {
   uint32_t memory_blocks_per_pool;
   uint32_t memory_block_allocation_capacity;
   uint32_t publication_staging_capacity;
+  /** Retained decoded texture bytes awaiting bounded staging. */
+  uint64_t max_pending_texture_upload_bytes;
   uint32_t max_graph_images;
   uint32_t max_graph_buffers;
   uint32_t max_graph_passes;
