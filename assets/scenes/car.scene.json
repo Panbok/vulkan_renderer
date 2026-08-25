@@ -34,7 +34,7 @@
           "scale": [0.2, 0.2, 0.2]
         },
         "mesh": {
-          "path": "assets/models/falcon.obj",
+          "path": "assets/models/falcon.vkb",
           "pipeline_domain": "world"
         }
       }
