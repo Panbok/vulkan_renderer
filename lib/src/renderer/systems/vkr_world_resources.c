@@ -220,118 +220,6 @@ bool8_t vkr_world_resources_init(RendererFrontend *rf,
   return true_v;
 }
 
-bool8_t vkr_world_resources_prepare_default_ibl(RendererFrontend *rf,
-                                                VkrWorldResources *resources) {
-  if (!rf || !resources) {
-    return false_v;
-  }
-  if (resources->ibl_default_prepared) {
-    return true_v;
-  }
-
-  VkrTextureHandle fallback_source = VKR_TEXTURE_HANDLE_INVALID;
-  if (rf->skybox_system.initialized &&
-      rf->skybox_system.cube_map_texture.id != 0) {
-    fallback_source = rf->skybox_system.cube_map_texture;
-    vkr_texture_system_add_ref_by_handle(&rf->texture_system, fallback_source);
-  } else {
-    VkrRendererError cube_error = VKR_RENDERER_ERROR_NONE;
-    if (!vkr_texture_system_load_cube_map(
-            &rf->texture_system, string8_lit("assets/textures/skybox"),
-            string8_lit("jpg"), &fallback_source, &cube_error)) {
-      String8 err_str = vkr_renderer_get_error_string(cube_error);
-      log_error(
-          "World resources: failed to initialize fallback IBL cubemap: %s",
-          string8_cstr(&err_str));
-      return false_v;
-    }
-  }
-
-  resources->ibl_fallback_irradiance_cubemap = VKR_TEXTURE_HANDLE_INVALID;
-  resources->ibl_fallback_prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID;
-
-  VkrTextureHandle irradiance = VKR_TEXTURE_HANDLE_INVALID;
-  VkrTextureHandle prefilter = VKR_TEXTURE_HANDLE_INVALID;
-  VkrTextureHandle delivery = VKR_TEXTURE_HANDLE_INVALID;
-  VkrTextureHandle source_cubemap = VKR_TEXTURE_HANDLE_INVALID;
-  VkrTexturePreparedLoad prepared_hdr = {0};
-  VkrRendererError hdr_error = VKR_RENDERER_ERROR_NONE;
-  const String8 hdr_path =
-      string8_lit("assets/textures/citrus_orchard_puresky_4k.hdr");
-  if (!vkr_texture_system_prepare_load_from_file(
-          &rf->texture_system, hdr_path, VKR_TEXTURE_RGBA_CHANNELS,
-          &rf->scratch_allocator, &prepared_hdr, &hdr_error) ||
-      prepared_hdr.description.format !=
-          VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT ||
-      !vkr_texture_system_finalize_prepared_load(&rf->texture_system, hdr_path,
-                                                 &prepared_hdr, &delivery,
-                                                 &hdr_error)) {
-    vkr_texture_system_release_prepared_load(&prepared_hdr);
-    log_warn("World resources: failed to prepare base HDR environment");
-    goto cleanup;
-  }
-  vkr_texture_system_release_prepared_load(&prepared_hdr);
-  vkr_texture_system_add_ref_by_handle(&rf->texture_system, delivery);
-
-  VkrTexture *delivery_texture =
-      vkr_texture_system_get_by_handle(&rf->texture_system, delivery);
-  uint32_t source_face_size = 0u;
-  uint32_t source_mip_count = 0u;
-  if (!delivery_texture ||
-      !vkr_ibl_derive_cubemap_size(delivery_texture->description.width,
-                                   delivery_texture->description.height,
-                                   resources->hdr_ibl_max_cube_extent,
-                                   vkr_world_resources_ibl_mip_limit(resources),
-                                   &source_face_size, &source_mip_count) ||
-      !vkr_world_resources_create_writable_cube_texture(
-          rf, string8_lit("__ibl.default.source"), source_face_size, true_v,
-          VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT, &source_cubemap) ||
-      !vkr_world_resources_create_writable_cube_texture(
-          rf, string8_lit("__ibl.default.irradiance"),
-          VKR_WORLD_RESOURCES_IBL_IRRADIANCE_SIZE, false_v,
-          VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT, &irradiance) ||
-      !vkr_world_resources_create_writable_cube_texture(
-          rf, string8_lit("__ibl.default.prefilter"),
-          VKR_WORLD_RESOURCES_IBL_PREFILTER_SIZE, true_v,
-          VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT, &prefilter)) {
-    goto cleanup;
-  }
-
-  if (!vkr_world_resources_has_retained_ibl_publisher(rf) ||
-      !rf->asset_publisher.bake_hdr_environment(rf->asset_publisher.state,
-                                                delivery, source_cubemap,
-                                                irradiance, prefilter)) {
-    goto cleanup;
-  }
-  resources->ibl_fallback_source_cubemap = source_cubemap;
-  resources->ibl_fallback_irradiance_cubemap = irradiance;
-  resources->ibl_fallback_prefilter_cubemap = prefilter;
-  resources->ibl_default_delivery_equirect = delivery;
-  (void)vkr_world_resources_release_texture(
-      &rf->texture_system, &resources->ibl_default_delivery_equirect);
-  (void)vkr_world_resources_release_texture(&rf->texture_system,
-                                            &fallback_source);
-  resources->ibl_default_prepared = true_v;
-  resources->ibl_default_ready = true_v;
-  return true_v;
-cleanup:
-  vkr_world_resources_release_texture(&rf->texture_system, &prefilter);
-  vkr_world_resources_release_texture(&rf->texture_system, &irradiance);
-  vkr_world_resources_release_texture(&rf->texture_system, &source_cubemap);
-  vkr_world_resources_release_texture(&rf->texture_system, &delivery);
-  vkr_world_resources_release_texture(&rf->texture_system, &fallback_source);
-  resources->ibl_fallback_source_cubemap = VKR_TEXTURE_HANDLE_INVALID;
-  return false_v;
-}
-
-bool8_t
-vkr_world_resources_ensure_default_ibl_ready(RendererFrontend *rf,
-                                             VkrWorldResources *resources) {
-  (void)rf;
-  return resources && resources->ibl_default_prepared &&
-         resources->ibl_default_ready;
-}
-
 void vkr_world_resources_release_scene_environment_targets(RendererFrontend *rf,
                                                            VkrScene *scene) {
   (void)rf;
@@ -356,6 +244,25 @@ vkr_world_resources_fail_scene_environment(RendererFrontend *rf,
   vkr_world_resources_release_texture(&rf->texture_system,
                                       &environment->delivery_equirect);
   environment->bake_state = VKR_SCENE_ENV_BAKE_STATE_FAILED;
+}
+
+vkr_internal void vkr_world_resources_retain_first_scene_environment_as_default(
+    RendererFrontend *rf, VkrWorldResources *resources,
+    const VkrSceneEnvironment *environment) {
+  if (resources->ibl_default_ready) {
+    return;
+  }
+
+  vkr_texture_system_add_ref_by_handle(&rf->texture_system,
+                                       environment->source_cubemap);
+  vkr_texture_system_add_ref_by_handle(&rf->texture_system,
+                                       environment->irradiance_cubemap);
+  vkr_texture_system_add_ref_by_handle(&rf->texture_system,
+                                       environment->prefilter_cubemap);
+  resources->ibl_fallback_source_cubemap = environment->source_cubemap;
+  resources->ibl_fallback_irradiance_cubemap = environment->irradiance_cubemap;
+  resources->ibl_fallback_prefilter_cubemap = environment->prefilter_cubemap;
+  resources->ibl_default_ready = true_v;
 }
 
 vkr_internal bool8_t vkr_world_resources_prepare_published_environment(
@@ -439,6 +346,8 @@ vkr_internal bool8_t vkr_world_resources_prepare_published_environment(
   (void)vkr_world_resources_release_texture(&rf->texture_system,
                                             &environment->delivery_equirect);
   environment->bake_state = VKR_SCENE_ENV_BAKE_STATE_READY;
+  vkr_world_resources_retain_first_scene_environment_as_default(rf, resources,
+                                                                environment);
   return true_v;
 
 failed:
@@ -679,10 +588,8 @@ void vkr_world_resources_select_probe_slots_for_bounds(
   }
 
   if (!resources->ibl_default_ready) {
-    if (!vkr_world_resources_ensure_default_ibl_ready(rf, resources)) {
-      out_slots[2].weight = 1.0f;
-      return;
-    }
+    out_slots[2].weight = 1.0f;
+    return;
   }
 
   VkrWorldIblProbeSlot fallback =
@@ -768,7 +675,7 @@ void vkr_world_resources_set_active_ibl_from_scene_or_default(
     return;
   }
 
-  if (!vkr_world_resources_ensure_default_ibl_ready(rf, resources)) {
+  if (!resources->ibl_default_ready) {
     resources->ibl_active_enabled = false_v;
     resources->ibl_active_irradiance_cubemap = VKR_TEXTURE_HANDLE_INVALID;
     resources->ibl_active_prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID;
@@ -828,8 +735,6 @@ void vkr_world_resources_shutdown(RendererFrontend *rf,
       &rf->texture_system, &resources->ibl_fallback_irradiance_cubemap);
   vkr_world_resources_release_texture(&rf->texture_system,
                                       &resources->ibl_fallback_source_cubemap);
-  vkr_world_resources_release_texture(
-      &rf->texture_system, &resources->ibl_default_delivery_equirect);
   MemZero(resources, sizeof(*resources));
 }
 

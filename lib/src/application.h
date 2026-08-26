@@ -1293,9 +1293,7 @@ void application_draw_frame(Application *application, float64_t delta) {
   VkrUiPassPayload ui_payload = {0};
   const VkrScene *active_scene = application->renderer.active_scene;
   VkrSkyboxPassPayload skybox_payload = {
-      .cubemap = application->renderer.skybox_system.initialized
-                     ? application->renderer.skybox_system.cube_map_texture
-                     : VKR_TEXTURE_HANDLE_INVALID,
+      .cubemap = VKR_TEXTURE_HANDLE_INVALID,
       .material = VKR_MATERIAL_HANDLE_INVALID,
   };
   const bool8_t scene_environment_ready =
@@ -1309,9 +1307,10 @@ void application_draw_frame(Application *application, float64_t delta) {
   } else if (application->renderer.world_resources.ibl_default_ready) {
     frame_ibl_source =
         application->renderer.world_resources.ibl_fallback_source_cubemap;
-  } else {
-    frame_ibl_source = skybox_payload.cubemap;
   }
+  skybox_payload.cubemap = application->renderer.skybox_system.initialized
+                               ? frame_ibl_source
+                               : VKR_TEXTURE_HANDLE_INVALID;
   bool8_t frame_ibl_enabled = application->renderer.material_system.ibl_enabled;
   float32_t frame_ibl_intensity =
       application->renderer.material_system.ibl_intensity;

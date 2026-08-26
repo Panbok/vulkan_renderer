@@ -1095,6 +1095,11 @@ vkr_internal void scene_loader_apply_environment_import(
                                                      scene)) {
     goto failed;
   }
+  if (environment_import->source_kind == VKR_SCENE_ENV_SOURCE_EQUIRECT) {
+    log_info("Prepared scene HDR skybox environment: %.*s",
+             (int)environment_import->equirect_path.length,
+             environment_import->equirect_path.str);
+  }
   return;
 
 failed:

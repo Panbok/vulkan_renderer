@@ -62,7 +62,6 @@ typedef struct VkrWorldResources {
   Array_VkrWorldTextSlot text_slots; /**< Allocated 3D text slots */
 
   VkrTextureHandle ibl_fallback_source_cubemap;
-  VkrTextureHandle ibl_default_delivery_equirect;
   VkrTextureHandle ibl_fallback_irradiance_cubemap;
   VkrTextureHandle ibl_fallback_prefilter_cubemap;
 
@@ -73,7 +72,6 @@ typedef struct VkrWorldResources {
   float32_t ibl_active_diffuse_intensity;
   float32_t ibl_active_specular_intensity;
   bool8_t ibl_default_ready;
-  bool8_t ibl_default_prepared;
   bool8_t hdr_capability_failure_logged;
   uint32_t hdr_ibl_max_cube_extent;
   uint32_t hdr_ibl_max_mip_levels;
@@ -97,20 +95,6 @@ bool8_t vkr_world_resources_init(struct s_RendererFrontend *rf,
  */
 void vkr_world_resources_shutdown(struct s_RendererFrontend *rf,
                                   VkrWorldResources *resources);
-
-/**
- * @brief Ensures fallback IBL maps and BRDF LUT are ready for binding.
- *
- * This function is safe to call every frame; work is done once and cached.
- * Returns false only when fallback cube acquisition fails.
- */
-bool8_t
-vkr_world_resources_ensure_default_ibl_ready(struct s_RendererFrontend *rf,
-                                             VkrWorldResources *resources);
-
-/** Allocates default HDR IBL targets after the skybox system is initialized. */
-bool8_t vkr_world_resources_prepare_default_ibl(struct s_RendererFrontend *rf,
-                                                VkrWorldResources *resources);
 
 /** Prepares all scene-owned bake products and cached face/mip targets. */
 bool8_t

@@ -1,13 +1,11 @@
 #pragma once
 
 #include "defines.h"
-#include "renderer/resources/vkr_resources.h"
 
 struct s_RendererFrontend;
 
 /** CPU-side skybox state consumed while assembling render packets. */
 typedef struct VkrSkyboxSystem {
-  VkrTextureHandle cube_map_texture;
   bool8_t initialized;
 } VkrSkyboxSystem;
 
