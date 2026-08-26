@@ -22,10 +22,12 @@ temporal consumer. It uses one backend-neutral contract and preserves
 one-sample rendering as the `VKR_TAA_DISABLED=1` fallback. FSR and MetalFX are
 not prerequisites for this implementation.
 
-Rigid previous transforms, Halton jitter, exact temporal identity, motion,
+Rigid previous transforms, Halton jitter, exact temporal identity, own-surface
+motion for opaque, transmission, and ordinary blend, authored material
 reactivity, reset reasons, completion-safe history, and motion/history debug
-views now ship. Deformation motion, particles, procedural material inputs, and
-exposure-discontinuity handling remain open.
+views now ship. Manual exposure stays after scene-linear temporal history and
+needs no reset. Deformation and procedural vertex motion, particles, and
+dynamic material-change signals remain open.
 
 Do not implement MSAA as part of the TAA work. The design below remains a
 separate control proposal. A visibility buffer avoids a fully multisampled
@@ -72,7 +74,8 @@ Define one backend-neutral contract before selecting a temporal consumer:
   visible instance;
 - a two-channel motion-vector image with a documented direction and unit;
 - current depth in the convention required by the consumer;
-- current exposure and any pre-exposure value;
+- exposure-domain metadata if a future pre-exposure path moves history out of
+  scene-linear HDR;
 - reactive and transparency/composition masks;
 - internal input extent and output extent;
 - frame delta, jitter offset, and frame index; and
@@ -103,15 +106,18 @@ surface reconstruction.
 
 ### 3.3 Masks and ordering
 
-FSR 3.1 Native AA still requires reactive and transparency/composition masks.
-The renderer already has useful producers:
+FSR 3.1 Native AA would still require reactive and
+transparency/composition masks. The current portable resolve instead carries
+authored material reactivity through transparent validity and uses bounded
+composition change as a moving-camera fallback. A future FSR integration can
+derive its masks from the same producers:
 
 - compare opaque HDR before transmission/ordinary blend with the composed HDR
   result to seed reactivity;
 - mark transmission, ordinary blend, UI-like world elements, animated
   emissives, and procedural material changes explicitly where the luminance
   heuristic is insufficient; and
-- composite UI and screen text after temporal reconstruction.
+- composite UI and screen text after temporal reconstruction and final FXAA.
 
 Zero-filled masks may make an integration run, but they are not acceptance
 evidence. Missing masks are a common cause of trails and locked transparent
@@ -126,7 +132,7 @@ Reset history on at least:
 - internal or output extent changes;
 - renderer or scene generation changes;
 - a temporal consumer or quality-mode change;
-- an exposure discontinuity outside the accepted range; and
+- a pre-exposure domain discontinuity that is not explicitly rescaled; and
 - a failed, cancelled, or skipped frame that breaks the expected history chain.
 
 History resources need completion-safe rings. They are not ADR-029 retained
@@ -137,10 +143,13 @@ new image is written, which matches the distinct `HISTORY` model.
 ### 3.5 Consumer choice
 
 ADR-037 selects a portable same-resolution TAA resolve so Metal and Vulkan share
-one algorithm and packet contract. The resolve consumes current HDR color,
-motion, validity, device depth, exact temporal index/generation and primitive
-identity, and luminance-derived reactivity. It reads the newest completed
-history and writes a completion-safe successor.
+one algorithm and packet contract. The resolve consumes current scene-linear
+HDR color, own-surface rigid motion, validity, device depth, exact temporal
+index/generation and primitive identity, authored material reactivity, and a
+bounded moving-camera composition fallback. Moving-camera validation searches
+the four metadata texels in the bilinear history-color footprint. The resolve
+reads the newest completed history and writes a completion-safe successor;
+manual exposure and output-space FXAA remain in the final draw after it.
 
 FSR 3.1 and MetalFX remain possible future consumers of the same foundation,
 not dependencies. FSR 3.1 officially supports DX12 and Vulkan; Metal is not an
@@ -279,9 +288,9 @@ of the accepted TAA implementation. A hybrid mode is not planned.
 
 | Phase | Status | Work | Gate |
 | --- | --- | --- | --- |
-| T0 | Implemented | Previous-transform, jitter, reset, extent, depth, exposure, and mask contract | Focused temporal contract tests cover sequences, reset reasons, cuts, and disabled mode |
-| T1 | Implemented, partial evidence | Motion-vector and mask debug views | Static capture shows valid zero motion; slow-orbit capture shows nonzero camera motion and accepted history; rigid-object direction remains open |
-| T2 | Implemented, partial evidence | Completion-safe history and portable resolve | CPU/shader gates, Vulkan capture, and focused synchronization validation pass; native Metal validation remains open |
+| T0 | Implemented | Previous-transform, jitter, reset, extent, depth, scene-linear history-domain, and reactivity contract | Focused temporal contract tests cover sequences, reset reasons, cuts, and disabled mode |
+| T1 | Implemented, partial evidence | Motion-vector and history debug views | Static capture shows valid zero motion; slow motion shows nonzero camera motion and accepted history; transmission and ordinary-blend fixtures show their own rigid motion; deformation remains open |
+| T2 | Implemented, partial evidence | Completion-safe history, portable resolve, and final-draw FXAA | CPU/shader gates, Vulkan capture, and focused synchronization validation pass; native Metal validation remains open |
 | T3 | Not scheduled | FSR 3.1 Vulkan prototype | Native AA runs with valid vectors and nonempty masks; no frame generation |
 | T4 | Not scheduled | MetalFX Metal prototype at a supported scale | Same input contract, correct sign/unit conversion, explicit algorithm difference |
 | M0 | Unstarted | One-sample-preserving graph, image, pipeline, descriptor, and capture plumbing | One-sample outputs remain byte-identical |

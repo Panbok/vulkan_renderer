@@ -174,6 +174,7 @@ device with a named report row.
 | `bufferDeviceAddress` | 1.2 | The entire model. Root records and every array are reached by address. Also required to bind a descriptor buffer, whose binding info takes a device address |
 | `shaderInt64` | 1.0 | Address fields and address arithmetic in the root record |
 | `shaderDrawParameters` | 1.1 | Packet vertex shaders consume `BaseInstance`/`BaseVertex` to preserve packet-local instance and indexed-draw semantics |
+| `independentBlend` | 1.0 | Ordinary blend enables alpha blending only on HDR color while overwriting integer identity and floating motion/validity MRTs |
 | `timelineSemaphore` | 1.2 | The ordinary GPU retirement domain (§6) |
 | `descriptorIndexing` | 1.2 | Gates the minimum descriptor-indexing set |
 | `runtimeDescriptorArray` | 1.2 | Unbounded `Texture2D g_textures[]` declaration |

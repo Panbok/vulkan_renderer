@@ -401,15 +401,38 @@ HZB, and picking remain unjittered.
 Rigid motion comes from a completion-protected transform `HISTORY` buffer keyed
 by temporal index, generation, and source frame. Motion maps current output-grid
 UV directly into the selected history; it does not apply a second jitter delta.
-Moving cameras reject history by extent, exact identity, primitive, and depth.
-Stationary cameras admit coverage transitions under a 3x3 neighborhood clamp so
-silhouettes and background samples accumulate instead of cycling with the
-jitter sequence. Transmission/blend luminance change reduces history weight.
+Opaque/cutout G-buffer resolve, transmission layer-0 shading, and ordinary-blend
+MRT rendering all emit the visible surface's own motion. Transmission retains
+its layer-0 identity and depth; ordinary blend overlays an exact bounded
+index/generation/primitive encoding into the existing vbuffer. An unencodable
+blend identity writes an invalid-foreground sentinel and rejects history rather
+than aliasing. Blend footprint validation omits current transparent depth
+because the reused resources have no spare channel; exact identity and primitive
+matching remain required.
 
-Vulkan selects reads and writes from a five-instance completion-safe `HISTORY`
-ring independently of the active frame slot. UI and screen text remain after
-reconstruction. `VKR_TAA_DISABLED=1` selects unjittered passthrough without
-changing graph topology.
+Moving cameras validate surface identity against all four metadata texels in the
+bilinear history-color footprint; opaque and transmission also validate device
+depth. Stationary cameras admit coverage transitions under a 3x3 neighborhood
+clamp so silhouettes, background samples, and stable composed transparency
+accumulate instead of cycling with the jitter sequence. PBR materials author
+`temporal_reactivity` in `[0,1]`; transparent validity carries it into resolve,
+where it remains active at rest. During camera motion, the existing
+transmission/blend luminance fallback is still capped at `0.75`. Both paths reuse
+existing passes and full-resolution resources.
+
+Manual exposure is a post-temporal display transform: `Temporal.Resolve` stores
+scene-linear HDR history and `Post.Tonemap` applies exposure afterward. Manual
+exposure steps therefore neither mix differently exposed history nor require a
+reset. A future pre-exposure or automatic-exposure path must rescale or reset
+history at the boundary where exposure first enters temporal storage.
+
+The existing final tonemap/composite draw applies edge-selective FXAA in
+tonemapped linear output space before editor/UI composition. Directional edge
+samples are supplemented by a cardinal-neighborhood subpixel blend so minified
+high-contrast geometry retains partial coverage. The implementation uses the
+permanent linear-clamp sampler and adds no graph pass or transient image.
+`VKR_FXAA_DISABLED=1` selects the center sample. `VKR_TAA_DISABLED=1` selects
+unjittered temporal passthrough without changing graph topology.
 
 ---
 
@@ -442,10 +465,10 @@ changing graph topology.
 | Device-memory suballocation | Implemented | Vulkan uses keyed DEVICE, UPLOAD, and READBACK pools backed by `vkr_gpu_memory`; Metal uses the same range/submit cores through its placement adapter. Logical and physical totals, peaks, retirement, failure classes, and capacity lower into renderer metrics. |
 | Bindless resource model | Implemented | Metal 4 and Vulkan 1.4 use GPU-addressed buffers, backend-native texture/sampler rows, completion-gated publication/retirement, authored graph lowering, and shared memory/submit/slot/capture cores. Packet version 19 carries bounded GPU candidate streams, stable temporal identity, renderer-owned temporal transforms/jitter/reset state, shadow debug, timing requests, feature-local payloads, per-cascade receiver quality, and SDSM metadata. Each non-empty indexed pass publishes one backend frame root and each retained draw references reflected GPU tables. |
 | Deferred visibility-buffer migration | Implemented through P21 | Both backends execute one topology: bounded GPU candidate classification and indirect submission for camera/cascade views; opaque visibility, G-buffer resolve, HDR lighting, HZB, picking, four-layer transmission, and completion-gated diagnostics. P21 removed the selector, legacy graph branch, CPU world draw construction, fallback routes, and dual-path metrics/tests. Packet version 19 rejects invalid, zero-generation, or over-capacity input before recording and carries completion-safe publication generations plus stable temporal identity. |
-| Portable temporal antialiasing | Implemented, partial evidence | Metal and Vulkan share one same-resolution resolve, rigid transform/motion inputs, exact visibility identity, completion-safe history, reset policy, debug modes, and one-sample passthrough fallback. Native Apple validation, deformation inputs, broader motion/disocclusion evidence, and final-color owner acceptance remain open. See ADR-037 |
+| Portable temporal antialiasing | Implemented, partial evidence | Metal and Vulkan share one same-resolution resolve, rigid opaque/transmission/blend motion, exact visibility identity, completion-safe history, reset policy, authored material reactivity, stable-transparency accumulation, bounded moving-camera composition reactivity, post-temporal manual exposure, debug modes, and one-sample passthrough fallback. Native Apple validation, deformation/procedural motion, dynamic particle/material signals, broader motion/disocclusion evidence, and final-color owner acceptance remain open. See ADR-037 |
 | Vulkan V1–V4 migration | Complete for RX 6700 XT | V1 characterization and V2's selected strategy are complete on macOS and Windows. V3 extracted the memory, submit-ring, and shared ABI cores alongside their production Vulkan callers and passes native window resize with reacquisition and retired-swapchain completion proof. V4 extracted the slot table, added completion-gated asset publication, and moved geometry, staging, images, startup buffers, and readback into keyed dynamic pools with complete logical/physical metrics. Prepared and writable initialization records before the next frame draw, staging retirement uses that submit value, publication dirty ranges flush once per backing buffer, and logical totals return to baseline. MoltenVK cannot execute the descriptor-buffer path. ADR-024's required cross-platform extraction witnesses now pass. |
 | Vulkan V5–V7 | Implemented; post-V7 target rerun passes | V5 lowers the authored graph to synchronization2/dynamic rendering and implements all packet pass/capture/timing categories. V6 completed selection, cache, lifecycle, metrics, and native RX 6700 XT validation. V7 removed the Vulkan 1.2 path, temporary selector, shaders/manifests, legacy frontend systems, interface/adaptor, and graph residue. CPU and Metal gates pass after deletion; fresh RX 6700 XT Debug/Release whole-graph, synchronization-validation, and GPU-assisted witnesses pass. |
-| HDR/tonemap/post chain | Implemented, initial | RGBA16F fullscreen/editor scene color, packet-carried manual exposure (default `0.30`), ACES-fitted tonemap, and exposure-equivalent canonical HDR capture; automatic exposure and additional post effects are absent |
+| HDR/tonemap/post chain | Implemented, initial | RGBA16F fullscreen/editor scene color, packet-carried manual exposure (default `0.30`), ACES-fitted tonemap, and output-space FXAA share the existing final draw before UI; `VKR_FXAA_DISABLED=1` is a cold diagnostic bypass. Temporal history remains scene-linear and exposure-independent because exposure is applied only after `Temporal.Resolve`. Exposure-equivalent canonical HDR capture remains upstream. Automatic exposure and additional post effects are absent |
 | Presentation DPI and output transfer | Implemented; visual evidence pending | Windows establishes Per-Monitor V2 before window creation, sizes non-client areas with monitor/window DPI, handles `WM_DPICHANGED`, and reports physical client pixels. Metal and Vulkan tonemap and blend linear RGB into sRGB window/offscreen attachments; Vulkan has no shader gamma encode, and retained UI/text colors decode authored sRGB once on the CPU. Replacement final-color goldens and mixed-DPI/translucent fixture evidence remain pending owner review. |
 | Shader hot reload | Absent | Build-time shader compilation only |
 
@@ -996,17 +1019,34 @@ pin the 17-image/13-sampler contract, and exact Bistro validation replay
     cases. They have no accepted baselines; any proposal requires normal owner
     review.
 
-17. **Portable TAA lacks deformation inputs and complete cross-platform
-    acceptance evidence.** Rigid meshes have completion-safe previous
-    transforms and exact temporal identity. Held recorded-camera captures show
-    reduced silhouette, thin-geometry, foliage, and bright-edge stair-stepping
-    without broad blur; a slow-orbit capture retains strict history rejection.
-    Skinned deformation, procedural vertex motion, particles,
-    animated-material reactivity, and exposure-discontinuity handling remain
-    absent. The RX 6700 XT CPU/shader, local timing, debug capture, and focused
-    synchronization-validation gates pass. Native Apple shader/runtime
-    validation, broad animation/disocclusion clips, changed final-color owner
-    acceptance, and authoritative clean-tree Release timing remain open. See
+17. **Portable TAA still lacks deformation inputs and complete cross-platform
+    acceptance evidence.** Rigid opaque, cutout, transmission, and ordinary
+    blend surfaces have completion-safe previous transforms and exact temporal
+    identity. Transmission layer 0 and ordinary blend now emit their own motion;
+    blend reuses the existing vbuffer through a bounded exact overlay encoding,
+    while transmission retains identity and depth. Materials author
+    `temporal_reactivity` in `[0,1]`, including at rest. Composition-derived
+    reactivity remains a capped moving-camera fallback.
+
+    Manual exposure is already safe across discontinuities because it is
+    applied by `Post.Tonemap` after scene-linear `Temporal.Resolve` history.
+    Adding an exposure-step reset would discard valid HDR history. Automatic
+    exposure remains absent; any future pre-exposure design must add history
+    rescaling or reset where that domain is introduced.
+
+    Two matched 320x240, two-process, 120-frame dirty-tree Release timestamp-on
+    observations measure `World.Blend.Fullscreen` at 0.03986 to 0.04654 ms mean
+    (+0.00668 ms) and `Temporal.Resolve.Fullscreen` at 0.04425 to 0.04517 ms
+    mean (+0.00092 ms). Environment, workload, and policy fingerprints match.
+    These are local per-pass observations, not authoritative whole-frame
+    evidence. Debug motion snapshots pass for both transmission and ordinary
+    blend; the CPU/shader suite and focused Vulkan synchronization validation
+    pass.
+
+    Skinned deformation, procedural vertex motion, particles, dynamic
+    material-change signals, native Apple shader/runtime validation, broad
+    animation/disocclusion clips, changed final-color owner acceptance, and
+    authoritative clean-tree Release timing remain open. See
     [ADR-037](adr/037-portable-same-resolution-temporal-antialiasing.md) and the
     [image-quality roadmap](../rendering/image-quality-roadmap.md).
 

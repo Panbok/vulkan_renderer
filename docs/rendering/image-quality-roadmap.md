@@ -18,19 +18,23 @@ Retain the portable same-resolution TAA path implemented on Metal and Vulkan.
 It establishes one backend-neutral temporal contract without depending on FSR,
 MetalFX, or multisampling.
 
-The production path owns jittered and unjittered camera matrices, rigid motion,
-completion-safe transform and image history, exact visibility identity,
-stationary-camera coverage accumulation, moving-camera rejection, reactivity
-for composed transmission/blend, reset reasons, and motion/history debug views.
-UI and screen text remain after reconstruction.
+The production path owns jittered and unjittered camera matrices, rigid opaque,
+transmission, and ordinary-blend motion, completion-safe transform and image
+history, exact visibility identity, stationary-camera coverage accumulation,
+moving-camera rejection, authored material reactivity, bounded composition
+reactivity, reset reasons, and motion/history debug views. Manual exposure is
+applied only after scene-linear temporal history. The existing final tonemap
+draw applies output-space FXAA after temporal reconstruction. UI and screen text
+remain after both stages.
 
 Do not schedule MSAA as part of this implementation. The visibility-buffer MSAA
 design remains a separate proposal with no production sample-count path.
 
-Next image-quality work should close temporal inputs that remain approximate:
-authored reactivity for animated materials and particles, deformation motion,
-and exposure-discontinuity handling. Automatic exposure remains separately
-ordered because deterministic cases still need manual exposure.
+Next image-quality work should close inputs that still lack an authored signal:
+deformation and procedural vertex motion, particles, and dynamic material
+changes. Automatic exposure remains separately ordered because deterministic
+cases still need manual exposure; if it introduces pre-exposure, it must rescale
+or reset temporal history at that new boundary.
 
 FSR frame generation is not part of this roadmap.
 
@@ -40,9 +44,9 @@ FSR frame generation is not part of this roadmap.
 | --- | --- | --- | --- |
 | 1 | Windows DPI correctness | [Presentation DPI and transfer function](presentation-dpi-and-transfer-function-spec.md) | Implemented. Per-Monitor V2 and physical client pixels ship; mixed-DPI display evidence remains pending. |
 | 2 | One linear-to-sRGB presentation contract | Same document | Implemented. Both backends use linear shader output and blending into sRGB attachments; replacement final-color goldens await owner review. |
-| 3 | Temporal-input foundation | [Visibility-buffer anti-aliasing evaluation](visibility-buffer-msaa-spec.md) | Implemented for rigid geometry: jitter, motion, exact identity, reactivity, reset rules, completion-safe history, and debug views ship. Deformation and authored material reactivity remain open. |
-| 4 | Automatic exposure | [Post, exposure, bloom, and ambient occlusion](post-exposure-bloom-and-ambient-occlusion-spec.md) | Implement after the presentation domain is fixed. Preserve manual exposure for deterministic cases and add explicit temporal reset policy. |
-| 5 | Portable same-resolution TAA | [ADR-037](../architecture/adr/037-portable-same-resolution-temporal-antialiasing.md) | Implemented on Metal and Vulkan. Native Apple runtime validation, broader motion fixtures, and final-color owner acceptance remain open. MSAA is not part of this slice. |
+| 3 | Temporal-input foundation | [Visibility-buffer anti-aliasing evaluation](visibility-buffer-msaa-spec.md) | Implemented for rigid opaque, transmission, and ordinary-blend geometry: jitter, own-surface motion, exact identity, authored material reactivity, reset rules, completion-safe history, and debug views ship. Deformation, procedural motion, particles, and dynamic material-change signals remain open. |
+| 4 | Automatic exposure | [Post, exposure, bloom, and ambient occlusion](post-exposure-bloom-and-ambient-occlusion-spec.md) | Implement after the presentation domain is fixed. Preserve manual exposure for deterministic cases. Current manual exposure is post-temporal and needs no reset; a future pre-exposure domain must rescale or reset history explicitly. |
+| 5 | Portable same-resolution TAA and post-TAA FXAA | [ADR-037](../architecture/adr/037-portable-same-resolution-temporal-antialiasing.md) | Implemented on Metal and Vulkan without an additional graph pass or full-resolution resource for transparent inputs. Native Apple runtime validation, broader motion fixtures, deformation/procedural/particle inputs, and final-color owner acceptance remain open. MSAA is not part of this slice. |
 | 6 | Bloom, then GTAO | [Post, exposure, bloom, and ambient occlusion](post-exposure-bloom-and-ambient-occlusion-spec.md) | Implement separately and measure separately. GTAO needs its own current-frame depth pyramid. |
 | 7 | D3D12 | [D3D12 backend evaluation](../architecture/d3d12-backend-evaluation.md) | Do not schedule for image quality. Revisit only for a concrete delivery, tooling, CI, or driver requirement. |
 
@@ -90,25 +94,38 @@ Both backends lower the same graph contract:
 
 - `Temporal.TransformHistory` publishes current rigid transforms into a
   completion-protected `HISTORY` buffer;
-- G-buffer resolve emits current motion and validity;
+- G-buffer resolve, transmission layer-0 shading, and ordinary-blend MRT
+  rendering emit current surface motion and validity;
+- ordinary blend overlays bounded exact index/generation/primitive identity
+  into the existing vbuffer, while transmission retains its layer-0 identity
+  and depth;
 - `Temporal.Resolve` reads the newest completed history and writes color,
   depth, identity, and primitive history;
-- moving-camera history uses exact identity, primitive, bounds, and depth
-  rejection, while a stationary camera permits clamped coverage accumulation;
-- composed transmission and ordinary blend derive a local reactive value; and
-- tonemap consumes the temporal output before UI and screen text.
+- moving-camera history searches the four metadata texels corresponding to the
+  bilinear history-color footprint. Opaque and transmission require exact
+  identity, primitive, bounds, and depth; blend requires exact identity,
+  primitive, and bounds. A stationary camera permits clamped coverage
+  accumulation;
+- PBR `temporal_reactivity` remains active at rest, while moving-camera
+  composition reactivity is capped at `0.75`;
+- manual exposure remains post-temporal, so scene-linear history is
+  exposure-independent; and
+- the existing final tonemap/composite draw applies directional FXAA with a
+  cardinal-neighborhood subpixel blend in tonemapped linear output space before
+  UI and screen text.
 
 `VKR_TAA_DISABLED=1` preserves the graph but selects unjittered passthrough.
-The `temporal_motion` and `temporal_history` debug modes expose the core
+`VKR_FXAA_DISABLED=1` selects the center sample in the same final draw. The
+`temporal_motion` and `temporal_history` debug modes expose the core temporal
 inputs through the harness.
 
-The remaining temporal gaps are explicit deformation motion, procedural vertex
-motion, particles, authored animated-material reactivity, and
-exposure-discontinuity handling. MSAA remains unimplemented: the JSON graph has
-no authored sample-count field, Vulkan graph realization rejects counts other
-than one, backend graphics pipelines use one sample, and production shader,
-picking, HZB, SDSM, transmission, blend, and capture paths assume one-sample
-images.
+The remaining temporal gaps are deformation and procedural vertex motion,
+particles, and dynamic material-change signals. Native Metal runtime evidence
+and broader animation/disocclusion acceptance also remain open. MSAA remains
+unimplemented: no authored sample-count field, Vulkan graph realization rejects
+counts other than one, backend graphics pipelines use one sample, and production
+shader, picking, HZB, SDSM, transmission, blend, and capture paths assume
+one-sample images.
 
 ### 3.4 Eight-bit linear albedo remains a separate risk
 
@@ -130,13 +147,14 @@ The current boundary is deliberately narrow:
 | Question | Current TAA answer |
 | --- | --- |
 | Geometry and cutout edges | Halton jitter plus history accumulation and neighborhood clamp |
-| Rigid motion | Previous object and camera transforms with exact source-frame tags |
-| Disocclusion | Extent, identity, primitive, and device-depth rejection |
-| Transmission and ordinary blend | Luminance-derived reactivity reduces history weight |
-| UI and screen text | Composited after reconstruction |
-| Deformation and procedural motion | No explicit vectors; history is not guaranteed correct |
-| Fallback | `VKR_TAA_DISABLED=1` selects unjittered passthrough |
-| Cross-backend parity | One resolve algorithm and packet contract on Metal and Vulkan |
+| Rigid motion | Previous object and camera transforms with exact source-frame tags across opaque, transmission, and ordinary blend |
+| Disocclusion | Extent, identity, and primitive rejection; opaque/transmission also retain device-depth rejection |
+| Transmission and ordinary blend | Own-surface rigid motion plus authored material reactivity; stable composition accumulates at rest and moving-camera luminance fallback remains capped |
+| Residual high-contrast edges | Output-space FXAA in the existing final tonemap draw; `VKR_FXAA_DISABLED=1` selects the center sample |
+| UI and screen text | Composited after temporal reconstruction and FXAA |
+| Deformation, procedural motion, particles, dynamic materials | No explicit per-frame vectors/reactive changes; history is not guaranteed correct |
+| Temporal fallback | `VKR_TAA_DISABLED=1` selects unjittered passthrough |
+| Cross-backend parity | One temporal resolve and FXAA algorithm on Metal and Vulkan |
 
 MSAA remains unimplemented and is not a prerequisite for continuing TAA quality
 work. Reopen a different AA algorithm only with matched quality and Release GPU
@@ -170,18 +188,26 @@ of this roadmap.
 ADR-037 accepts the portable TAA architecture. Current evidence records:
 
 1. three 1600x1200 held Bistro recorded-camera views with TAA enabled and
-   disabled, plus a focused slow-orbit capture;
+   disabled, plus focused held transparency/emissive and slow moving-camera
+   captures;
 2. motion-vector and history-acceptance debug captures, including full
-   stationary acceptance and strict moving-camera rejection;
-3. matched local dirty-tree Release GPU timings at identical extent and work;
+   stationary acceptance and a moving-camera bilinear-footprint correction
+   that reduces exact rejection from 12.291% to 2.852% without relaxing
+   identity, primitive, or depth checks;
+3. matched local dirty-tree Release GPU timings at identical extent and work:
+   three 120-frame observations before and after measure +0.03364 ms mean in
+   `Temporal.Resolve.Fullscreen` and +0.07904 ms mean in
+   `Post.Tonemap.Fullscreen` at 1600x1200;
 4. a synchronization-validation-clean RX 6700 XT run; and
-5. direct local visual improvement on silhouettes, foliage, lamps, railings,
-   chairs, and table edges without broad whole-frame blur.
+5. direct local visual improvement on transparent surfaces, bright emissive
+   silhouettes, foliage, lamps, railings, chairs, and table edges without broad
+   whole-frame blur. A far pendant crop's adjacent-luma mean-square edge energy
+   is 36.6% below the FXAA bypass.
 
-Still required: native M1 Pro shader/runtime validation, animation,
-disocclusion, transparency, and camera-cut clips, authoritative clean-tree
-performance evidence, and explicit owner acceptance of changed final-color
-goldens. The implementation remains partial until those gates pass.
+Still required: native M1 Pro shader/runtime validation, deformation,
+disocclusion, moving-transparency and animation fixtures, authoritative
+clean-tree performance evidence, and explicit owner acceptance of changed
+final-color goldens. The implementation remains partial until those gates pass.
 
 ## 7. Primary references
 

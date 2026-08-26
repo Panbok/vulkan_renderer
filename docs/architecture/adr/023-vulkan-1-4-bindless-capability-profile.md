@@ -108,7 +108,8 @@ Two corollaries are part of the decision rather than implementation detail:
 
 The required floor is enumerated in the backend specification §3.2. It comprises
 buffer device address, 64-bit shader integers, shader draw parameters for the
-packet vertex ABI, timeline semaphores, the descriptor-indexing minimum set with
+packet vertex ABI, independent blending for ordinary-blend color plus integer
+temporal MRTs, timeline semaphores, the descriptor-indexing minimum set with
 runtime descriptor arrays and non-uniform sampled-image and storage-image
 indexing, scalar block layout, host query reset, dynamic rendering,
 synchronization2, maintenance4, shader demotion for alpha cutout, maintenance5,

@@ -61,7 +61,7 @@ Considered → Revisit When**.
 | [ADR-034](034-offline-cooked-font-artifacts.md) | Offline-cooked font artifacts | Proposed |
 | [ADR-035](035-canonical-mtsdf-screen-pixel-range-shading.md) | Canonical MTSDF screen-pixel range with minification fallback | Proposed |
 | [ADR-036](036-dpi-derived-ui-text-scale.md) | DPI-derived UI text scale | Proposed |
-| [ADR-037](037-portable-same-resolution-temporal-antialiasing.md) | Portable same-resolution temporal antialiasing | Accepted (partial); shared Metal/Vulkan resolve and rigid temporal inputs ship, while native Apple validation and broader quality evidence remain open |
+| [ADR-037](037-portable-same-resolution-temporal-antialiasing.md) | Portable same-resolution temporal antialiasing | Accepted (partial); shared Metal/Vulkan resolve, rigid transparent motion, bounded composition reactivity, and output-space FXAA ship, while deformation/procedural/particle motion, native Apple validation, and broader quality evidence remain open |
 
 ## Relationship to the Specification
 
