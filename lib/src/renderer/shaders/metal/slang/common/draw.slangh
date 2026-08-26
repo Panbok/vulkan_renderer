@@ -13,11 +13,11 @@ struct VkrMetalPacketVertex
 
 struct VkrMetalPacketInstance
 {
-    column_major float4x4 model;
-    uint object_id;
-    uint reserved_0;
-    uint reserved_1;
-    uint reserved_2;
+  column_major float4x4 model;
+  uint object_id;
+    uint temporal_index;
+    uint temporal_generation;
+    uint temporal_flags;
 };
 
 struct VkrMetalPacketShadowCascade

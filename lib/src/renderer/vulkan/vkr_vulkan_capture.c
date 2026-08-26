@@ -11,7 +11,7 @@ vkr_internal bool8_t vkr_vk_capture_source(
   const char *name = channel->source_name;
   uint32_t layer = 0u;
   if (string_equals(channel->name, "scene_color")) {
-    name = packet->frame.editor_enabled ? "scene_color" : "hdr_scene_color";
+    name = "temporal_history_color";
   } else if (string_equals(channel->name, "depth")) {
     name = "opaque_vbuffer_depth";
   } else if (string_n_equals(channel->name, "shadow_cascade_", 15u)) {

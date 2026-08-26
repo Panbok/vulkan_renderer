@@ -98,9 +98,17 @@
 #define VKR_VULKAN_PACKET_GBUFFER_RESOLVE_COMP_SPV                             \
   "packet.gbuffer_resolve.comp.spv"
 #endif
+#ifndef VKR_VULKAN_PACKET_TEMPORAL_TRANSFORM_COMP_SPV
+#define VKR_VULKAN_PACKET_TEMPORAL_TRANSFORM_COMP_SPV                          \
+  "packet.temporal_transform.comp.spv"
+#endif
 #ifndef VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV
 #define VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV                           \
   "packet.deferred_lighting.comp.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_TEMPORAL_RESOLVE_COMP_SPV
+#define VKR_VULKAN_PACKET_TEMPORAL_RESOLVE_COMP_SPV                            \
+  "packet.temporal_resolve.comp.spv"
 #endif
 #ifndef VKR_VULKAN_PACKET_HZB_BUILD_COMP_SPV
 #define VKR_VULKAN_PACKET_HZB_BUILD_COMP_SPV "packet.hzb_build.comp.spv"
@@ -196,8 +204,10 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_CLASSIFY = 0,
   VKR_VULKAN_DEFERRED_PIPELINE_PREFIX,
   VKR_VULKAN_DEFERRED_PIPELINE_ENCODE,
+  VKR_VULKAN_DEFERRED_PIPELINE_TEMPORAL_TRANSFORM,
   VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER,
   VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING,
+  VKR_VULKAN_DEFERRED_PIPELINE_TEMPORAL_RESOLVE,
   VKR_VULKAN_DEFERRED_PIPELINE_HZB,
   VKR_VULKAN_DEFERRED_PIPELINE_SDSM,
   VKR_VULKAN_DEFERRED_PIPELINE_PICKING,
@@ -272,6 +282,15 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanRasterRoot {
   uint32_t previous_depth_layer;
 } VkrVulkanRasterRoot;
 
+typedef struct VKR_SIMD_ALIGN VkrVulkanTemporalTransformRoot {
+  uint64_t instances;
+  uint64_t transforms;
+  uint32_t instance_count;
+  uint32_t transform_capacity;
+  uint32_t frame_index;
+  uint32_t reserved;
+} VkrVulkanTemporalTransformRoot;
+
 typedef struct VKR_SIMD_ALIGN VkrVulkanResolveRoot {
   uint64_t geometry_rows;
   uint64_t visible_rows;
@@ -282,6 +301,9 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanResolveRoot {
   uint64_t indices;
   uint64_t compaction_state;
   Mat4 view_projection;
+  Mat4 current_view_projection;
+  Mat4 previous_view_projection;
+  uint64_t previous_transforms;
   uint32_t vbuffer_texture;
   uint32_t albedo_texture;
   uint32_t specular_texture;
@@ -289,15 +311,42 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanResolveRoot {
   uint32_t emissive_texture;
   uint32_t debug_texture;
   uint32_t scene_texture;
+  uint32_t motion_texture;
+  uint32_t validity_texture;
   uint32_t extent[2];
   uint32_t visible_capacity;
   uint32_t geometry_count;
   uint32_t material_count;
   uint32_t instance_count;
   uint32_t render_mode;
-  /* Names the alignment tail the resolve root already carried. */
+  uint32_t history_valid;
+  uint32_t previous_frame_index;
   uint32_t reserved_tail[2];
 } VkrVulkanResolveRoot;
+
+typedef struct VKR_SIMD_ALIGN VkrVulkanTemporalResolveRoot {
+  uint64_t visible_rows;
+  uint64_t instances;
+  uint32_t scene_texture;
+  uint32_t pre_transmission_texture;
+  uint32_t motion_texture;
+  uint32_t validity_texture;
+  uint32_t depth_texture;
+  uint32_t vbuffer_texture;
+  uint32_t history_color_texture;
+  uint32_t history_depth_texture;
+  uint32_t history_identity_texture;
+  uint32_t history_primitive_texture;
+  uint32_t output_color_texture;
+  uint32_t output_depth_texture;
+  uint32_t output_identity_texture;
+  uint32_t output_primitive_texture;
+  uint32_t history_sampler;
+  uint32_t extent[2];
+  uint32_t history_valid;
+  uint32_t render_mode;
+  uint32_t camera_stationary;
+} VkrVulkanTemporalResolveRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
   uint64_t frame;
@@ -569,12 +618,16 @@ _Static_assert(offsetof(VkrVulkanCullRoot, hzb_textures) == 80u,
                "Deferred cull-root HZB ABI drift");
 _Static_assert(sizeof(VkrVulkanRasterRoot) == 48u,
                "Deferred raster-root ABI size drift");
-_Static_assert(sizeof(VkrVulkanResolveRoot) == 192u,
+_Static_assert(sizeof(VkrVulkanTemporalTransformRoot) == 32u,
+               "Temporal transform-root ABI size drift");
+_Static_assert(sizeof(VkrVulkanResolveRoot) == 352u,
                "Deferred resolve-root ABI size drift");
 _Static_assert(offsetof(VkrVulkanResolveRoot, vertices) == 40u,
                "Deferred resolve-root vertex address ABI drift");
 _Static_assert(offsetof(VkrVulkanResolveRoot, view_projection) == 64u,
                "Deferred resolve-root matrix ABI drift");
+_Static_assert(sizeof(VkrVulkanTemporalResolveRoot) == 96u,
+               "Temporal resolve-root ABI size drift");
 _Static_assert(sizeof(VkrVulkanLightingRoot) == 128u,
                "Deferred lighting-root ABI size drift");
 _Static_assert(offsetof(VkrVulkanLightingRoot, inverse_view_projection) == 16u,
@@ -673,6 +726,8 @@ typedef struct VkrVulkanGraphImageInstance {
   Mat4 history_view_projection;
   uint32_t history_width;
   uint32_t history_height;
+  uint64_t history_frame_index;
+  uint64_t history_scene_generation;
   bool8_t has_sampled_mip_slot[VKR_VULKAN_TEXTURE_MIP_MAX];
   bool8_t has_storage_mip_slot[VKR_VULKAN_TEXTURE_MIP_MAX];
   bool8_t has_sampled_slot;
@@ -702,6 +757,10 @@ typedef struct VkrVulkanGraphImage {
 typedef struct VkrVulkanGraphBufferInstance {
   VkrVulkanBuffer buffer;
   uint64_t last_use_submit_value;
+  uint64_t history_producer_submit_value;
+  uint64_t history_frame_index;
+  uint64_t history_scene_generation;
+  bool8_t history_valid;
 } VkrVulkanGraphBufferInstance;
 
 typedef struct VkrVulkanGraphBuffer {
@@ -790,6 +849,17 @@ typedef struct VkrVulkanFrameSlot {
   VkrVulkanGraphImageInstance *hzb_history_input;
   VkrVulkanGraphImageInstance *hzb_history_output;
   bool8_t hzb_history_valid;
+  VkrVulkanGraphBufferInstance *temporal_transform_input;
+  VkrVulkanGraphBufferInstance *temporal_transform_output;
+  VkrVulkanGraphImageInstance *temporal_color_input;
+  VkrVulkanGraphImageInstance *temporal_color_output;
+  VkrVulkanGraphImageInstance *temporal_depth_input;
+  VkrVulkanGraphImageInstance *temporal_depth_output;
+  VkrVulkanGraphImageInstance *temporal_identity_input;
+  VkrVulkanGraphImageInstance *temporal_identity_output;
+  VkrVulkanGraphImageInstance *temporal_primitive_input;
+  VkrVulkanGraphImageInstance *temporal_primitive_output;
+  bool8_t temporal_history_valid;
   uint32_t indexed_draw_count;
   uint32_t blend_draw_count;
   /** Same-frame CPU cost of lowering this packet, reported at submit. */
@@ -989,6 +1059,7 @@ struct VkrVulkanRenderer {
   VkrRgBufferHandle gpu_candidate_buffer_handle;
   VkrRgBufferHandle gpu_candidate_instance_buffer_handle;
   VkrRgBufferHandle transmission_gpu_candidate_instance_buffer_handle;
+  VkrRgBufferHandle temporal_transform_history_handle;
   VkImageMemoryBarrier2 *graph_image_barriers;
   uint64_t graph_image_barriers_size;
   VkBufferMemoryBarrier2 *graph_buffer_barriers;
@@ -1089,6 +1160,7 @@ struct VkrVulkanRenderer {
   uint64_t frame_upload_exhaustion_count;
   uint64_t command_slot_wait_count;
   uint32_t active_frame_slot;
+  uint32_t history_output_index;
   uint32_t next_image_index;
   bool8_t frame_active;
   bool8_t sentinel_uploaded;
@@ -1130,6 +1202,7 @@ bool8_t vkr_vk_realize_graph_images(VkrVulkanRenderer *renderer);
  */
 void vkr_vk_install_retained_provider(VkrVulkanRenderer *renderer);
 bool8_t vkr_vk_realize_graph_buffers(VkrVulkanRenderer *renderer);
+bool8_t vkr_vk_select_history_output(VkrVulkanRenderer *renderer);
 void vkr_vk_mark_graph_images_submitted(VkrVulkanRenderer *renderer,
                                         uint64_t submit_value);
 void vkr_vk_mark_graph_buffers_submitted(VkrVulkanRenderer *renderer,
@@ -1217,9 +1290,15 @@ bool8_t vkr_vk_record_deferred_raster(VkrVulkanRenderer *renderer,
 bool8_t vkr_vk_record_deferred_gbuffer(VkrVulkanRenderer *renderer,
                                        VkCommandBuffer command,
                                        const VkrRgPass *pass);
+bool8_t vkr_vk_record_temporal_transform(VkrVulkanRenderer *renderer,
+                                         VkCommandBuffer command,
+                                         const VkrRgPass *pass);
 bool8_t vkr_vk_record_deferred_lighting(VkrVulkanRenderer *renderer,
                                         VkCommandBuffer command,
                                         const VkrRgPass *pass);
+bool8_t vkr_vk_record_temporal_resolve(VkrVulkanRenderer *renderer,
+                                       VkCommandBuffer command,
+                                       const VkrRgPass *pass);
 bool8_t vkr_vk_record_deferred_hzb(VkrVulkanRenderer *renderer,
                                    VkCommandBuffer command,
                                    const VkrRgPass *pass);
@@ -1238,6 +1317,8 @@ vkr_vk_record_deferred_transmission_coverage(VkrVulkanRenderer *renderer,
                                              const VkrRgPass *pass);
 void vkr_vk_mark_hzb_submitted(VkrVulkanRenderer *renderer,
                                uint64_t submit_value);
+void vkr_vk_mark_temporal_submitted(VkrVulkanRenderer *renderer,
+                                    uint64_t submit_value);
 bool8_t vkr_vk_record_ibl_bakes(VkrVulkanRenderer *renderer,
                                 VkCommandBuffer command);
 bool8_t vkr_vk_record_packet_draws(

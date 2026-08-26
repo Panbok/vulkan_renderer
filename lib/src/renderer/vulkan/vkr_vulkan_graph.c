@@ -16,6 +16,7 @@ typedef enum VkrVulkanGraphExecutorKind {
   VKR_VULKAN_GRAPH_EXECUTOR_GPU_DRAW_CLASSIFY,
   VKR_VULKAN_GRAPH_EXECUTOR_GPU_DRAW_PREFIX,
   VKR_VULKAN_GRAPH_EXECUTOR_GPU_DRAW_ENCODE,
+  VKR_VULKAN_GRAPH_EXECUTOR_TEMPORAL_TRANSFORM,
   VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_UPLOAD,
   VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_CLASSIFY,
   VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_PREFIX,
@@ -25,6 +26,7 @@ typedef enum VkrVulkanGraphExecutorKind {
   VKR_VULKAN_GRAPH_EXECUTOR_VBUFFER_TRANSMISSION,
   VKR_VULKAN_GRAPH_EXECUTOR_GBUFFER_RESOLVE,
   VKR_VULKAN_GRAPH_EXECUTOR_LIGHTING_DEFERRED,
+  VKR_VULKAN_GRAPH_EXECUTOR_TEMPORAL_RESOLVE,
   VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_SHADE,
   VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_COVERAGE,
   VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_COMPACT,
@@ -55,6 +57,7 @@ vkr_global const VkrVulkanGraphExecutorSpec s_vk_graph_executors[] = {
     {"pass.gpu_draw_classify", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.gpu_draw_prefix", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.gpu_draw_encode", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.temporal.transform_history", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.transmission.gpu_draw_upload", VKR_RG_PASS_TYPE_TRANSFER},
     {"pass.transmission.gpu_draw_classify", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.transmission.gpu_draw_prefix", VKR_RG_PASS_TYPE_COMPUTE},
@@ -64,6 +67,7 @@ vkr_global const VkrVulkanGraphExecutorSpec s_vk_graph_executors[] = {
     {"pass.vbuffer.transmission", VKR_RG_PASS_TYPE_GRAPHICS},
     {"pass.gbuffer.resolve", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.lighting.deferred", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.temporal.resolve", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.transmission.shade", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.transmission.coverage", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.transmission.compact", VKR_RG_PASS_TYPE_COMPUTE},
@@ -385,6 +389,8 @@ vkr_internal bool8_t vkr_vk_create_graph_image_instance(
 
 vkr_internal uint32_t vkr_vk_graph_image_instance_count(
     const VkrVulkanRenderer *renderer, VkrRgResourceFlags flags) {
+  if ((flags & VKR_RG_RESOURCE_FLAG_HISTORY) != 0u)
+    return VKR_VULKAN_HISTORY_INSTANCE_COUNT;
   const VkrRgResourceInstanceDomain domain =
       vkr_rg_resource_instance_domain(flags);
   if (domain == VKR_RG_RESOURCE_INSTANCE_PER_IMAGE)
@@ -569,6 +575,8 @@ VkrVulkanGraphImageInstance *vkr_vk_graph_image(VkrVulkanRenderer *renderer,
       vkr_rg_resource_instance_domain(slot->desc.flags);
   if (domain == VKR_RG_RESOURCE_INSTANCE_PER_IMAGE)
     instance = image_index;
+  else if ((slot->desc.flags & VKR_RG_RESOURCE_FLAG_HISTORY) != 0u)
+    instance = renderer->history_output_index;
   else if (domain == VKR_RG_RESOURCE_INSTANCE_PER_FRAME_SLOT)
     instance = renderer->active_frame_slot;
   return instance < slot->instance_count ? &slot->instances[instance] : NULL;
@@ -624,6 +632,8 @@ void vkr_vk_destroy_graph_buffer(VkrVulkanRenderer *renderer,
 
 vkr_internal uint32_t vkr_vk_graph_buffer_instance_count(
     const VkrVulkanRenderer *renderer, VkrRgResourceFlags flags) {
+  if ((flags & VKR_RG_RESOURCE_FLAG_HISTORY) != 0u)
+    return VKR_VULKAN_HISTORY_INSTANCE_COUNT;
   const VkrRgResourceInstanceDomain domain =
       vkr_rg_resource_instance_domain(flags);
   if (domain == VKR_RG_RESOURCE_INSTANCE_PER_IMAGE)
@@ -641,6 +651,7 @@ bool8_t vkr_vk_realize_graph_buffers(VkrVulkanRenderer *renderer) {
   renderer->gpu_candidate_instance_buffer_handle = VKR_RG_BUFFER_HANDLE_INVALID;
   renderer->transmission_gpu_candidate_instance_buffer_handle =
       VKR_RG_BUFFER_HANDLE_INVALID;
+  renderer->temporal_transform_history_handle = VKR_RG_BUFFER_HANDLE_INVALID;
   for (uint64_t i = 0u; i < renderer->graph->buffers.length; ++i) {
     const VkrRgBuffer *buffer =
         vector_get_VkrRgBuffer(&renderer->graph->buffers, i);
@@ -657,6 +668,9 @@ bool8_t vkr_vk_realize_graph_buffers(VkrVulkanRenderer *renderer) {
     else if (vkr_string8_equals_cstr(&buffer->name,
                                      "transmission_gpu_draw_instances"))
       renderer->transmission_gpu_candidate_instance_buffer_handle = handle;
+    else if (vkr_string8_equals_cstr(&buffer->name,
+                                     "temporal_transform_history"))
+      renderer->temporal_transform_history_handle = handle;
     if (buffer->imported ||
         (buffer->desc.flags & VKR_RG_RESOURCE_FLAG_EXTERNAL)) {
       log_error("Vulkan graph buffer '%.*s' has no imported native "
@@ -713,6 +727,80 @@ bool8_t vkr_vk_realize_graph_buffers(VkrVulkanRenderer *renderer) {
   return true_v;
 }
 
+bool8_t vkr_vk_select_history_output(VkrVulkanRenderer *renderer) {
+  const uint64_t completed = vkr_vk_refresh_completed(renderer);
+  uint64_t candidate_use[VKR_VULKAN_HISTORY_INSTANCE_COUNT] = {0};
+  bool8_t candidate_safe[VKR_VULKAN_HISTORY_INSTANCE_COUNT];
+  for (uint32_t candidate = 0u; candidate < VKR_VULKAN_HISTORY_INSTANCE_COUNT;
+       ++candidate)
+    candidate_safe[candidate] = true_v;
+
+  for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
+    const VkrRgImage *image =
+        vector_get_VkrRgImage(&renderer->graph->images, i);
+    if (!image || !image->declared_this_frame ||
+        (image->desc.flags & VKR_RG_RESOURCE_FLAG_HISTORY) == 0u)
+      continue;
+    VkrVulkanGraphImage *slot = &renderer->graph_images[i];
+    if (!slot->live ||
+        slot->instance_count != VKR_VULKAN_HISTORY_INSTANCE_COUNT)
+      return false_v;
+    for (uint32_t candidate = 0u; candidate < VKR_VULKAN_HISTORY_INSTANCE_COUNT;
+         ++candidate) {
+      const VkrVulkanGraphImageInstance *instance = &slot->instances[candidate];
+      const uint64_t use = Max(instance->last_use_submit_value,
+                               instance->history_producer_submit_value);
+      candidate_use[candidate] = Max(candidate_use[candidate], use);
+      if (use > completed)
+        candidate_safe[candidate] = false_v;
+    }
+  }
+
+  for (uint64_t i = 0u; i < renderer->graph->buffers.length; ++i) {
+    const VkrRgBuffer *buffer =
+        vector_get_VkrRgBuffer(&renderer->graph->buffers, i);
+    if (!buffer || !buffer->declared_this_frame ||
+        (buffer->desc.flags & VKR_RG_RESOURCE_FLAG_HISTORY) == 0u)
+      continue;
+    VkrVulkanGraphBuffer *slot = &renderer->graph_buffers[i];
+    if (!slot->live ||
+        slot->instance_count != VKR_VULKAN_HISTORY_INSTANCE_COUNT)
+      return false_v;
+    for (uint32_t candidate = 0u; candidate < VKR_VULKAN_HISTORY_INSTANCE_COUNT;
+         ++candidate) {
+      const VkrVulkanGraphBufferInstance *instance =
+          &slot->instances[candidate];
+      const uint64_t use = Max(instance->last_use_submit_value,
+                               instance->history_producer_submit_value);
+      candidate_use[candidate] = Max(candidate_use[candidate], use);
+      if (use > completed)
+        candidate_safe[candidate] = false_v;
+    }
+  }
+
+  uint32_t selected = VKR_VULKAN_HISTORY_INSTANCE_COUNT;
+  uint64_t selected_use = UINT64_MAX;
+  for (uint32_t candidate = 0u; candidate < VKR_VULKAN_HISTORY_INSTANCE_COUNT;
+       ++candidate) {
+    if (candidate_safe[candidate] && candidate_use[candidate] < selected_use) {
+      selected = candidate;
+      selected_use = candidate_use[candidate];
+    }
+  }
+  if (selected == VKR_VULKAN_HISTORY_INSTANCE_COUNT) {
+    for (uint32_t candidate = 0u; candidate < VKR_VULKAN_HISTORY_INSTANCE_COUNT;
+         ++candidate)
+      log_error("Vulkan history instance %u is busy through submit %llu",
+                candidate, (unsigned long long)candidate_use[candidate]);
+    log_error("Vulkan has no completion-safe history output instance "
+              "(completed %llu)",
+              (unsigned long long)completed);
+    return false_v;
+  }
+  renderer->history_output_index = selected;
+  return true_v;
+}
+
 VkrVulkanGraphBufferInstance *vkr_vk_graph_buffer(VkrVulkanRenderer *renderer,
                                                   VkrRgBufferHandle handle) {
   if (!vkr_rg_buffer_handle_valid(handle) ||
@@ -726,6 +814,8 @@ VkrVulkanGraphBufferInstance *vkr_vk_graph_buffer(VkrVulkanRenderer *renderer,
       vkr_rg_resource_instance_domain(slot->desc.flags);
   if (domain == VKR_RG_RESOURCE_INSTANCE_PER_IMAGE)
     instance = renderer->prepared_frame.image_index;
+  else if ((slot->desc.flags & VKR_RG_RESOURCE_FLAG_HISTORY) != 0u)
+    instance = renderer->history_output_index;
   else if (domain == VKR_RG_RESOURCE_INSTANCE_PER_FRAME_SLOT)
     instance = renderer->active_frame_slot;
   return instance < slot->instance_count ? &slot->instances[instance] : NULL;
@@ -996,8 +1086,8 @@ vkr_internal bool8_t vkr_vk_record_graphics_body(
   case VKR_VULKAN_GRAPH_EXECUTOR_WORLD_BLEND: {
     if (!packet->world)
       return true_v;
-    const Mat4 view_projection =
-        mat4_mul(packet->globals.projection, packet->globals.view);
+    const Mat4 view_projection = mat4_mul(
+        packet->globals.temporal.jittered_projection, packet->globals.view);
     uint32_t shadow_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
     if (renderer->prepared_frame.shadow_cascade_count > 0u &&
         !vkr_vk_graph_sampled_index(renderer, pass, 0u, &shadow_texture))
@@ -1241,6 +1331,8 @@ vkr_internal bool8_t vkr_vk_record_graph_pass(VkrVulkanRenderer *renderer,
   case VKR_VULKAN_GRAPH_EXECUTOR_GPU_DRAW_ENCODE:
     return vkr_vk_record_deferred_cull(
         renderer, command, pass, VKR_VULKAN_DEFERRED_PIPELINE_ENCODE, false_v);
+  case VKR_VULKAN_GRAPH_EXECUTOR_TEMPORAL_TRANSFORM:
+    return vkr_vk_record_temporal_transform(renderer, command, pass);
   case VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_CLASSIFY:
     return vkr_vk_record_deferred_cull(
         renderer, command, pass, VKR_VULKAN_DEFERRED_PIPELINE_CLASSIFY, true_v);
@@ -1254,6 +1346,8 @@ vkr_internal bool8_t vkr_vk_record_graph_pass(VkrVulkanRenderer *renderer,
     return vkr_vk_record_deferred_gbuffer(renderer, command, pass);
   case VKR_VULKAN_GRAPH_EXECUTOR_LIGHTING_DEFERRED:
     return vkr_vk_record_deferred_lighting(renderer, command, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_TEMPORAL_RESOLVE:
+    return vkr_vk_record_temporal_resolve(renderer, command, pass);
   case VKR_VULKAN_GRAPH_EXECUTOR_HZB_BUILD:
     return vkr_vk_record_deferred_hzb(renderer, command, pass);
   case VKR_VULKAN_GRAPH_EXECUTOR_SDSM_REDUCE:
@@ -1289,6 +1383,17 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
   slot->transmission_gpu_compaction_state = NULL;
   slot->hzb_history_input = NULL;
   slot->hzb_history_output = NULL;
+  slot->temporal_transform_input = NULL;
+  slot->temporal_transform_output = NULL;
+  slot->temporal_color_input = NULL;
+  slot->temporal_color_output = NULL;
+  slot->temporal_depth_input = NULL;
+  slot->temporal_depth_output = NULL;
+  slot->temporal_identity_input = NULL;
+  slot->temporal_identity_output = NULL;
+  slot->temporal_primitive_input = NULL;
+  slot->temporal_primitive_output = NULL;
+  slot->temporal_history_valid = false_v;
   slot->sdsm_reduce_state = NULL;
   const PFN_vkCmdBeginDebugUtilsLabelEXT begin_label =
       vkr_vulkan_device_cmd_begin_debug_label(renderer->device);

@@ -50,8 +50,10 @@ vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
   case VKR_METAL_PACKET_ABI_IRRADIANCE_ROOT:
   case VKR_METAL_PACKET_ABI_PREFILTER_ROOT:
   case VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT:
+  case VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT:
   case VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT:
   case VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT:
+  case VKR_METAL_PACKET_ABI_TEMPORAL_RESOLVE_ROOT:
   case VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT:
   case VKR_METAL_PACKET_ABI_TRANSMISSION_COVERAGE_ROOT:
   case VKR_METAL_PACKET_ABI_TRANSMISSION_COMPACT_ROOT:
@@ -256,6 +258,11 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
            pipeline_label, root.bufferStructType, "draw_roots",
            VKR_METAL_PACKET_ABI_DRAW_ROOT)))
     return false_v;
+  if (record_id == VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT &&
+      !vkr_metal_packet_validate_nested_abi(pipeline_label,
+                                            root.bufferStructType, "instances",
+                                            VKR_METAL_PACKET_ABI_INSTANCE))
+    return false_v;
   if (record_id == VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT &&
       (!vkr_metal_packet_validate_nested_gpu_abi(
            pipeline_label, root.bufferStructType, "visible_rows",
@@ -269,6 +276,14 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
        !vkr_metal_packet_validate_nested_abi(pipeline_label,
                                              root.bufferStructType, "materials",
                                              VKR_METAL_PACKET_ABI_MATERIAL)))
+    return false_v;
+  if (record_id == VKR_METAL_PACKET_ABI_TEMPORAL_RESOLVE_ROOT &&
+      (!vkr_metal_packet_validate_nested_gpu_abi(
+           pipeline_label, root.bufferStructType, "visible_rows",
+           VKR_GPU_ABI_VISIBLE_DRAW_ROW) ||
+       !vkr_metal_packet_validate_nested_abi(pipeline_label,
+                                             root.bufferStructType, "instances",
+                                             VKR_METAL_PACKET_ABI_INSTANCE)))
     return false_v;
   return true_v;
 }
@@ -496,6 +511,11 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       renderer, fragment, "vkr_metal_packet_gpu_draw_encode",
       VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT, true_v,
       @"VKR Metal packet GPU draw encode");
+  renderer->temporal_transform_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_temporal_transform",
+          VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT, false_v,
+          @"VKR Metal packet temporal transform");
   renderer->gbuffer_resolve_pipeline = vkr_metal_packet_create_compute_pipeline(
       renderer, fragment, "vkr_metal_packet_gbuffer_resolve",
       VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT, false_v,
@@ -505,6 +525,11 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
           renderer, fragment, "vkr_metal_packet_deferred_lighting",
           VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT, false_v,
           @"VKR Metal packet deferred lighting");
+  renderer->temporal_resolve_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_temporal_resolve",
+          VKR_METAL_PACKET_ABI_TEMPORAL_RESOLVE_ROOT, false_v,
+          @"VKR Metal packet temporal resolve");
   renderer->transmission_shade_pipeline =
       vkr_metal_packet_create_compute_pipeline(
           renderer, fragment, "vkr_metal_packet_transmission_shade",
@@ -544,8 +569,10 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
   if (!renderer->gpu_draw_classify_pipeline ||
       !renderer->gpu_draw_prefix_pipeline ||
       !renderer->gpu_draw_encode_pipeline ||
+      !renderer->temporal_transform_pipeline ||
       !renderer->gbuffer_resolve_pipeline ||
       !renderer->deferred_lighting_pipeline ||
+      !renderer->temporal_resolve_pipeline ||
       !renderer->transmission_shade_pipeline ||
       !renderer->transmission_coverage_pipeline ||
       !renderer->transmission_compact_pipeline ||
@@ -598,8 +625,10 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
                  renderer->gpu_draw_classify_pipeline &&
                  renderer->gpu_draw_prefix_pipeline &&
                  renderer->gpu_draw_encode_pipeline &&
+                 renderer->temporal_transform_pipeline &&
                  renderer->gbuffer_resolve_pipeline &&
                  renderer->deferred_lighting_pipeline &&
+                 renderer->temporal_resolve_pipeline &&
                  renderer->transmission_shade_pipeline &&
                  renderer->transmission_coverage_pipeline &&
                  renderer->transmission_compact_pipeline &&

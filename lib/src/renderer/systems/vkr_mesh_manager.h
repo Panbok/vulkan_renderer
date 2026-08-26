@@ -201,6 +201,7 @@ typedef struct VkrMeshManager {
   uint32_t instance_count;
   uint32_t next_instance_index;
   uint32_t instance_generation_counter;
+  uint32_t mesh_temporal_generation_counter;
 } VkrMeshManager;
 
 // ============================================================================

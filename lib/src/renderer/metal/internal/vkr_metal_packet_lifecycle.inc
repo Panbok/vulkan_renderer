@@ -533,8 +533,10 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
     [renderer->ibl_prefilter_pipeline release];
     [renderer->ibl_irradiance_pipeline release];
     [renderer->gpu_draw_encode_pipeline release];
+    [renderer->temporal_transform_pipeline release];
     [renderer->gbuffer_resolve_pipeline release];
     [renderer->deferred_lighting_pipeline release];
+    [renderer->temporal_resolve_pipeline release];
     [renderer->transmission_shade_pipeline release];
     [renderer->transmission_coverage_pipeline release];
     [renderer->transmission_compact_pipeline release];

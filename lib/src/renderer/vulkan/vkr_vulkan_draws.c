@@ -456,6 +456,7 @@ vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
   uint32_t unpublished_geometry_count = 0u;
   uint32_t unpublished_material_count = 0u;
   uint32_t invalid_submesh_count = 0u;
+  uint32_t last_temporal_index = UINT32_MAX;
   for (uint32_t i = 0u; i < count; ++i) {
     const VkrWorldDrawCandidate *candidate = &source[i];
     VkrVulkanPublishedGeometry *geometry =
@@ -487,7 +488,13 @@ vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
         .flags = candidate->flags,
         .local_bounding_sphere = candidate->local_bounding_sphere,
     };
-    instances[packed_count++] = candidate->instance;
+    instances[packed_count] = candidate->instance;
+    instances[packed_count].temporal_flags =
+        candidate->instance.temporal_index != last_temporal_index
+            ? VKR_INSTANCE_TEMPORAL_OWNER
+            : 0u;
+    last_temporal_index = candidate->instance.temporal_index;
+    packed_count++;
   }
   if (invalid_submesh_count) {
     log_error("Vulkan rejected %u/%u deferred candidates naming a "

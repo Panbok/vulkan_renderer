@@ -108,6 +108,8 @@ typedef struct VkrMetalPacketImageInstance {
   Mat4 history_view_projection;
   uint32_t history_width;
   uint32_t history_height;
+  uint64_t history_frame_index;
+  uint64_t history_scene_generation;
   bool8_t history_valid;
   bool8_t live;
   bool8_t owned;
@@ -140,6 +142,10 @@ typedef struct VkrMetalPacketRetiredImageViews {
 typedef struct VkrMetalPacketGraphBufferInstance {
   VkrMetalBufferResource resource;
   uint64_t last_use_submit_value;
+  uint64_t history_producer_submit_value;
+  uint64_t history_frame_index;
+  uint64_t history_scene_generation;
+  bool8_t history_valid;
   bool8_t live;
 } VkrMetalPacketGraphBufferInstance;
 
@@ -385,6 +391,7 @@ struct VkrMetalPacketRenderer {
   VkrRgBufferHandle gpu_candidate_buffer_handle;
   VkrRgBufferHandle gpu_candidate_instance_buffer_handle;
   VkrRgBufferHandle transmission_gpu_candidate_instance_buffer_handle;
+  VkrRgBufferHandle temporal_transform_history_handle;
   VkrMetalPacketMesh *meshes;
   VkrMetalPacketGeometryMegabuffer geometry_megabuffer;
   VkrMetalPacketSubmeshCreateInfo *submeshes;
@@ -435,8 +442,10 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> gpu_draw_classify_pipeline;
   id<MTLComputePipelineState> gpu_draw_prefix_pipeline;
   id<MTLComputePipelineState> gpu_draw_encode_pipeline;
+  id<MTLComputePipelineState> temporal_transform_pipeline;
   id<MTLComputePipelineState> gbuffer_resolve_pipeline;
   id<MTLComputePipelineState> deferred_lighting_pipeline;
+  id<MTLComputePipelineState> temporal_resolve_pipeline;
   id<MTLComputePipelineState> transmission_shade_pipeline;
   id<MTLComputePipelineState> transmission_coverage_pipeline;
   id<MTLComputePipelineState> transmission_compact_pipeline;
@@ -458,6 +467,7 @@ struct VkrMetalPacketRenderer {
   uint64_t current_hzb_world_epoch;
   Mat4 current_hzb_view_projection;
   uint32_t selected_hzb_history_instance;
+  uint32_t selected_temporal_history_instance;
   /** Accumulated during this frame's packet lowering; copied into the result.
    */
   VkrPacketBuildMetrics packet_build;

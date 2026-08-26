@@ -7,6 +7,11 @@
 #define VKR_INSTANCE_BUFFER_MAX_INSTANCES 65536
 /** Fixed P3 candidate/visible capacity; growth publishes a later generation. */
 #define VKR_GPU_DRAW_CANDIDATE_CAPACITY 262144u
+#define VKR_TEMPORAL_TRANSFORM_CAPACITY 32768u
+
+typedef enum VkrInstanceTemporalFlag {
+  VKR_INSTANCE_TEMPORAL_OWNER = 1u << 0u,
+} VkrInstanceTemporalFlag;
 #define VKR_GPU_GEOMETRY_DECODE_STATIC_V1 1u
 
 enum { VKR_GPU_TRANSMISSION_LAYER_COUNT = 4 };
@@ -44,13 +49,27 @@ typedef struct VkrGeometryMegabufferMetrics {
 typedef struct VkrInstanceDataGPU {
   Mat4 model;
   uint32_t object_id;
-  uint32_t reserved[3];
+  uint32_t temporal_index;
+  uint32_t temporal_generation;
+  uint32_t temporal_flags;
 } VkrInstanceDataGPU;
 
 _Static_assert(sizeof(VkrInstanceDataGPU) == 80,
                "VkrInstanceDataGPU must be 80 bytes");
 _Static_assert(sizeof(VkrInstanceDataGPU) % 16 == 0,
                "VkrInstanceDataGPU must be 16-byte aligned");
+
+/** One completion-protected object transform indexed by stable temporal ID. */
+typedef struct VkrTemporalTransformGPU {
+  Mat4 model;
+  uint32_t generation;
+  uint32_t frame_index;
+  uint32_t valid;
+  uint32_t reserved;
+} VkrTemporalTransformGPU;
+
+_Static_assert(sizeof(VkrTemporalTransformGPU) == 80,
+               "VkrTemporalTransformGPU must be 80 bytes");
 
 /** Vertex layouts addressable through a published geometry row. */
 typedef enum VkrGpuVertexLayout {

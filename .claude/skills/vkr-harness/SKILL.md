@@ -64,7 +64,8 @@ never primary performance evidence.
 Shipped direct channels are `final_color`, editor-only `scene_color`, `depth`,
 `shadow_cascade_0` through `_3`, and `picking_ids`. Logical auxiliary channels
 are `normals`, `unlit`, `lighting`, `shadow_debug_cascades`,
-`shadow_debug_factor`, and `shadow_debug_depth`. Channels sharing one render
+`shadow_debug_factor`, `shadow_debug_depth`, `temporal_motion`, and
+`temporal_history`. Channels sharing one render
 mode and checkpoint share a replay; distinct debug modes do not. Final-color
 availability is target capability dependent; unavailable means exit
 `3`, never a silent substitute.

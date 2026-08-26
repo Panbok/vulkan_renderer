@@ -1080,11 +1080,18 @@ static void test_harness_capture_catalog_and_converters(void) {
 
 static void test_harness_capture_replays(void) {
   printf("  Running test_harness_capture_replays...\n");
+  assert(sizeof(((VkrHarnessRendererConfig *)0)->render_mode) >
+         strlen("temporal_history"));
   VkrHarnessCase case_manifest = {.capture_count = 1u};
   VkrHarnessCapture *capture = &case_manifest.captures[0];
   capture->at_frame = 2u;
-  capture->channel_count = 5u;
-  const char *channels[] = {"final_color", "depth", "normals", "unlit",
+  capture->channel_count = 7u;
+  const char *channels[] = {"final_color",
+                            "depth",
+                            "normals",
+                            "unlit",
+                            "temporal_motion",
+                            "temporal_history",
                             "shadow_debug_factor"};
   for (uint32_t i = 0; i < ArrayCount(channels); ++i) {
     snprintf(capture->channels[i], sizeof(capture->channels[i]), "%s",
@@ -1095,15 +1102,19 @@ static void test_harness_capture_replays(void) {
   VkrHarnessError error = {0};
   assert(vkr_harness_capture_replays_build(
       &case_manifest, replays, ArrayCount(replays), &replay_count, &error));
-  assert(replay_count == 4u);
+  assert(replay_count == 6u);
   assert(strcmp(replays[0].mode, "direct") == 0 &&
          replays[0].channel_count == 2u);
   assert(strcmp(replays[1].mode, "normals") == 0 &&
          replays[1].render_mode == VKR_RENDER_MODE_NORMAL);
   assert(strcmp(replays[2].mode, "unlit") == 0 &&
          replays[2].render_mode == VKR_RENDER_MODE_UNLIT);
-  assert(strcmp(replays[3].mode, "shadow_debug_factor") == 0 &&
-         replays[3].shadow_debug_mode == 2u);
+  assert(strcmp(replays[3].mode, "temporal_motion") == 0 &&
+         replays[3].render_mode == VKR_RENDER_MODE_TEMPORAL_MOTION);
+  assert(strcmp(replays[4].mode, "temporal_history") == 0 &&
+         replays[4].render_mode == VKR_RENDER_MODE_TEMPORAL_HISTORY);
+  assert(strcmp(replays[5].mode, "shadow_debug_factor") == 0 &&
+         replays[5].shadow_debug_mode == 2u);
   VkrHarnessCaptureReplay found = {0};
   assert(vkr_harness_capture_replay_find(&case_manifest, 0u, "normals", &found,
                                          &error));

@@ -751,6 +751,11 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
     vkr_vulkan_renderer_cancel_frame(renderer);
     return false_v;
   }
+  if (!vkr_vk_select_history_output(renderer)) {
+    log_error("Vulkan failed to select a completion-safe history output");
+    vkr_vulkan_renderer_cancel_frame(renderer);
+    return false_v;
+  }
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   if (!vkr_vk_plan_capture(renderer, packet, slot)) {
@@ -870,6 +875,7 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
      contents stay authoritative. */
   vkr_rg_commit_retained_state(renderer->graph);
   vkr_vk_mark_hzb_submitted(renderer, signal_value);
+  vkr_vk_mark_temporal_submitted(renderer, signal_value);
   vkr_vk_mark_graph_images_submitted(renderer, signal_value);
   vkr_vk_mark_graph_buffers_submitted(renderer, signal_value);
   slot->retire_value = signal_value;

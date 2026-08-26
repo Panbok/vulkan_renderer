@@ -638,8 +638,10 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
           VKR_VULKAN_PACKET_GPU_DRAW_CLASSIFY_COMP_SPV,
           VKR_VULKAN_PACKET_GPU_DRAW_PREFIX_COMP_SPV,
           VKR_VULKAN_PACKET_GPU_DRAW_ENCODE_COMP_SPV,
+          VKR_VULKAN_PACKET_TEMPORAL_TRANSFORM_COMP_SPV,
           VKR_VULKAN_PACKET_GBUFFER_RESOLVE_COMP_SPV,
           VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV,
+          VKR_VULKAN_PACKET_TEMPORAL_RESOLVE_COMP_SPV,
           VKR_VULKAN_PACKET_HZB_BUILD_COMP_SPV,
           VKR_VULKAN_PACKET_SDSM_REDUCE_COMP_SPV,
           VKR_VULKAN_PACKET_PICKING_RESOLVE_COMP_SPV,
@@ -649,8 +651,9 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
   vkr_local_persist const char
       *const entries[VKR_VULKAN_DEFERRED_PIPELINE_COUNT] = {
           "vk_gpu_draw_classify",  "vk_gpu_draw_prefix",
-          "vk_gpu_draw_encode",    "vk_gbuffer_resolve",
-          "vk_deferred_lighting",  "vk_hzb_build",
+          "vk_gpu_draw_encode",    "vk_temporal_transform",
+          "vk_gbuffer_resolve",    "vk_deferred_lighting",
+          "vk_temporal_resolve",   "vk_hzb_build",
           "vk_sdsm_reduce",        "vk_picking_resolve",
           "vk_transmission_shade", "vk_transmission_coverage",
       };

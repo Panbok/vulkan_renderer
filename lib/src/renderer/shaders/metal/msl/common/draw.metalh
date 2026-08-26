@@ -16,10 +16,21 @@ struct VkrMetalPacketVertex {
 struct VkrMetalPacketInstance {
   float4x4 model;
   uint object_id;
-  uint reserved_0;
-  uint reserved_1;
-  uint reserved_2;
+  uint temporal_index;
+  uint temporal_generation;
+  uint temporal_flags;
 };
+
+struct VkrTemporalTransform {
+  float4x4 model;
+  uint generation;
+  uint frame_index;
+  uint valid;
+  uint reserved;
+};
+
+constant uint VKR_INSTANCE_TEMPORAL_OWNER = 1u;
+constant uint VKR_TEMPORAL_TRANSFORM_CAPACITY = 32768u;
 
 struct VkrMetalPacketMaterial {
   float4 tint;

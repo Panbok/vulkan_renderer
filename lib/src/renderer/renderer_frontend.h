@@ -28,6 +28,7 @@
 #include "renderer/vkr_render_graph.h"
 #include "renderer/vkr_renderer.h"
 #include "renderer/vkr_renderer_impl.h"
+#include "renderer/vkr_temporal.h"
 
 typedef struct VkrMetalPacketRenderer VkrMetalPacketRenderer;
 typedef struct VkrVulkanRenderer VkrVulkanRenderer;
@@ -166,6 +167,9 @@ struct s_RendererFrontend {
   VkrCameraSystem camera_system;
   VkrCameraHandle active_camera;
   VkrCameraController camera_controller;
+  VkrTemporalState temporal_state;
+  uint32_t temporal_reset_reasons;
+  bool8_t temporal_enabled;
 
   // Meshes
   VkrMeshManager mesh_manager;

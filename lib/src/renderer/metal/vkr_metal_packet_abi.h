@@ -168,6 +168,18 @@ typedef struct VkrMetalPacketSdsmState {
 _Static_assert(sizeof(VkrMetalPacketSdsmState) == 16,
                "Metal SDSM state ABI must remain 16 bytes");
 
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketTemporalTransformRoot {
+  uint64_t instances;
+  uint64_t transforms;
+  uint32_t instance_count;
+  uint32_t transform_capacity;
+  uint32_t frame_index;
+  uint32_t reserved;
+} VkrMetalPacketTemporalTransformRoot;
+
+_Static_assert(sizeof(VkrMetalPacketTemporalTransformRoot) == 32,
+               "Metal temporal-transform root ABI must remain 32 bytes");
+
 /** Per-dispatch material-resolve resource table and viewport contract. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketGBufferResolveRoot {
   uint64_t visible_rows;
@@ -183,17 +195,50 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketGBufferResolveRoot {
   uint64_t debug_texture_id;
   uint64_t hdr_seed_texture_id;
   Mat4 view_projection;
+  Mat4 current_view_projection;
+  Mat4 previous_view_projection;
+  uint64_t previous_transforms;
+  uint64_t motion_texture_id;
+  uint64_t validity_texture_id;
   uint32_t extent[2];
   uint32_t visible_capacity;
   uint32_t geometry_count;
   uint32_t material_count;
   uint32_t instance_count;
   uint32_t render_mode;
+  uint32_t history_valid;
+  uint32_t previous_frame_index;
   uint32_t reserved;
 } VkrMetalPacketGBufferResolveRoot;
 
-_Static_assert(sizeof(VkrMetalPacketGBufferResolveRoot) == 192,
-               "Metal G-buffer resolve root ABI must remain 192 bytes");
+_Static_assert(sizeof(VkrMetalPacketGBufferResolveRoot) == 352,
+               "Metal G-buffer resolve root ABI must remain 352 bytes");
+
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketTemporalResolveRoot {
+  uint64_t visible_rows;
+  uint64_t instances;
+  uint64_t scene_texture_id;
+  uint64_t pre_transmission_texture_id;
+  uint64_t motion_texture_id;
+  uint64_t validity_texture_id;
+  uint64_t depth_texture_id;
+  uint64_t vbuffer_texture_id;
+  uint64_t history_color_texture_id;
+  uint64_t history_depth_texture_id;
+  uint64_t history_identity_texture_id;
+  uint64_t history_primitive_texture_id;
+  uint64_t output_color_texture_id;
+  uint64_t output_depth_texture_id;
+  uint64_t output_identity_texture_id;
+  uint64_t output_primitive_texture_id;
+  uint32_t extent[2];
+  uint32_t history_valid;
+  uint32_t render_mode;
+  uint32_t camera_stationary;
+} VkrMetalPacketTemporalResolveRoot;
+
+_Static_assert(sizeof(VkrMetalPacketTemporalResolveRoot) == 160,
+               "Metal temporal-resolve root ABI must remain 160 bytes");
 
 /** Per-dispatch deferred-lighting resources and reconstruction contract. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketDeferredLightingRoot {
@@ -393,8 +438,10 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_TEXT_ROOT,
   VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT,
   VKR_METAL_PACKET_ABI_TRANSMISSION_PEEL_ROOT,
+  VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT,
   VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT,
   VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT,
+  VKR_METAL_PACKET_ABI_TEMPORAL_RESOLVE_ROOT,
   VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT,
   VKR_METAL_PACKET_ABI_TRANSMISSION_COVERAGE_ROOT,
   VKR_METAL_PACKET_ABI_TRANSMISSION_COMPACT_ROOT,

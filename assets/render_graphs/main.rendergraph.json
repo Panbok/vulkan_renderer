@@ -277,6 +277,61 @@
       "format": "R16G16B16A16_SFLOAT",
       "usage": ["STORAGE", "SAMPLED", "TRANSFER_SRC"],
       "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
+    },
+    {
+      "name": "temporal_transform_history",
+      "type": "buffer",
+      "size": 2621440,
+      "usage": ["STORAGE"],
+      "flags": ["HISTORY"]
+    },
+    {
+      "name": "temporal_motion",
+      "type": "image",
+      "extent": { "mode": "viewport" },
+      "format": "R16G16_SFLOAT",
+      "usage": ["STORAGE", "SAMPLED"],
+      "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
+    },
+    {
+      "name": "temporal_validity",
+      "type": "image",
+      "extent": { "mode": "viewport" },
+      "format": "R16G16_SFLOAT",
+      "usage": ["STORAGE", "SAMPLED"],
+      "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
+    },
+    {
+      "name": "temporal_history_color",
+      "type": "image",
+      "extent": { "mode": "viewport" },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": ["STORAGE", "SAMPLED", "TRANSFER_SRC"],
+      "flags": ["HISTORY", "RESIZABLE"]
+    },
+    {
+      "name": "temporal_history_depth",
+      "type": "image",
+      "extent": { "mode": "viewport" },
+      "format": "R16G16_SFLOAT",
+      "usage": ["STORAGE"],
+      "flags": ["HISTORY", "RESIZABLE"]
+    },
+    {
+      "name": "temporal_history_identity",
+      "type": "image",
+      "extent": { "mode": "viewport" },
+      "format": "R32G32_UINT",
+      "usage": ["STORAGE"],
+      "flags": ["HISTORY", "RESIZABLE"]
+    },
+    {
+      "name": "temporal_history_primitive",
+      "type": "image",
+      "extent": { "mode": "viewport" },
+      "format": "R32_UINT",
+      "usage": ["STORAGE"],
+      "flags": ["HISTORY", "RESIZABLE"]
     }
   ],
   "passes": [
@@ -297,6 +352,18 @@
         { "buffer": "gpu_draw_instances", "access": "TRANSFER_DST", "binding": 3 }
       ],
       "execute": "pass.gpu_draw_upload"
+    },
+    {
+      "name": "Temporal.TransformHistory",
+      "type": "compute",
+      "flags": ["NO_CULL"],
+      "reads": [
+        { "buffer": "gpu_draw_instances", "access": "STORAGE_READ", "binding": 0 }
+      ],
+      "writes": [
+        { "buffer": "temporal_transform_history", "access": "STORAGE_WRITE", "binding": 1 }
+      ],
+      "execute": "pass.temporal.transform_history"
     },
     {
       "name": "Cull.Classify",
@@ -668,7 +735,8 @@
       "reads": [
         { "image": "opaque_vbuffer", "access": "STORAGE_READ", "binding": 0 },
         { "buffer": "gpu_visible_draws", "access": "STORAGE_READ", "binding": 1 },
-        { "buffer": "gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 }
+        { "buffer": "gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
+        { "buffer": "temporal_transform_history", "access": "STORAGE_READ", "binding": 10 }
       ],
       "writes": [
         { "image": "gbuffer_albedo", "access": "STORAGE_WRITE", "binding": 2 },
@@ -677,7 +745,9 @@
         { "image": "deferred_emissive_seed", "access": "STORAGE_WRITE", "binding": 5 },
         { "image": "deferred_resolve_debug", "access": "STORAGE_WRITE", "binding": 6 },
         { "buffer": "gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 7 },
-        { "image": "hdr_pre_transmission", "access": "STORAGE_WRITE", "binding": 8 }
+        { "image": "hdr_pre_transmission", "access": "STORAGE_WRITE", "binding": 8 },
+        { "image": "temporal_motion", "access": "STORAGE_WRITE", "binding": 11 },
+        { "image": "temporal_validity", "access": "STORAGE_WRITE", "binding": 12 }
       ],
       "execute": "pass.gbuffer.resolve"
     },
@@ -689,7 +759,8 @@
       "reads": [
         { "image": "opaque_vbuffer", "access": "STORAGE_READ", "binding": 0 },
         { "buffer": "gpu_visible_draws", "access": "STORAGE_READ", "binding": 1 },
-        { "buffer": "gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 }
+        { "buffer": "gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
+        { "buffer": "temporal_transform_history", "access": "STORAGE_READ", "binding": 10 }
       ],
       "writes": [
         { "image": "gbuffer_albedo", "access": "STORAGE_WRITE", "binding": 2 },
@@ -698,7 +769,9 @@
         { "image": "deferred_emissive_seed", "access": "STORAGE_WRITE", "binding": 5 },
         { "image": "deferred_resolve_debug", "access": "STORAGE_WRITE", "binding": 6 },
         { "buffer": "gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 7 },
-        { "image": "scene_pre_transmission", "access": "STORAGE_WRITE", "binding": 8 }
+        { "image": "scene_pre_transmission", "access": "STORAGE_WRITE", "binding": 8 },
+        { "image": "temporal_motion", "access": "STORAGE_WRITE", "binding": 11 },
+        { "image": "temporal_validity", "access": "STORAGE_WRITE", "binding": 12 }
       ],
       "execute": "pass.gbuffer.resolve"
     },
@@ -1442,13 +1515,59 @@
       "execute": "pass.world.blend"
     },
     {
+      "name": "Temporal.Resolve.Fullscreen",
+      "type": "compute",
+      "condition": "!editor_enabled",
+      "flags": ["NO_CULL"],
+      "reads": [
+        { "image": "hdr_scene_color", "access": "SAMPLED", "binding": 0 },
+        { "image": "hdr_pre_transmission", "access": "SAMPLED", "binding": 1 },
+        { "image": "temporal_motion", "access": "SAMPLED", "binding": 2 },
+        { "image": "temporal_validity", "access": "SAMPLED", "binding": 3 },
+        { "image": "opaque_vbuffer_depth", "access": "SAMPLED", "binding": 4 },
+        { "image": "opaque_vbuffer", "access": "STORAGE_READ", "binding": 5 },
+        { "buffer": "gpu_visible_draws", "access": "STORAGE_READ", "binding": 6 },
+        { "buffer": "gpu_draw_instances", "access": "STORAGE_READ", "binding": 7 }
+      ],
+      "writes": [
+        { "image": "temporal_history_color", "access": "STORAGE_WRITE", "binding": 8 },
+        { "image": "temporal_history_depth", "access": "STORAGE_WRITE", "binding": 9 },
+        { "image": "temporal_history_identity", "access": "STORAGE_WRITE", "binding": 10 },
+        { "image": "temporal_history_primitive", "access": "STORAGE_WRITE", "binding": 11 }
+      ],
+      "execute": "pass.temporal.resolve"
+    },
+    {
+      "name": "Temporal.Resolve.Editor",
+      "type": "compute",
+      "condition": "editor_enabled",
+      "flags": ["NO_CULL"],
+      "reads": [
+        { "image": "scene_color", "access": "SAMPLED", "binding": 0 },
+        { "image": "scene_pre_transmission", "access": "SAMPLED", "binding": 1 },
+        { "image": "temporal_motion", "access": "SAMPLED", "binding": 2 },
+        { "image": "temporal_validity", "access": "SAMPLED", "binding": 3 },
+        { "image": "opaque_vbuffer_depth", "access": "SAMPLED", "binding": 4 },
+        { "image": "opaque_vbuffer", "access": "STORAGE_READ", "binding": 5 },
+        { "buffer": "gpu_visible_draws", "access": "STORAGE_READ", "binding": 6 },
+        { "buffer": "gpu_draw_instances", "access": "STORAGE_READ", "binding": 7 }
+      ],
+      "writes": [
+        { "image": "temporal_history_color", "access": "STORAGE_WRITE", "binding": 8 },
+        { "image": "temporal_history_depth", "access": "STORAGE_WRITE", "binding": 9 },
+        { "image": "temporal_history_identity", "access": "STORAGE_WRITE", "binding": 10 },
+        { "image": "temporal_history_primitive", "access": "STORAGE_WRITE", "binding": 11 }
+      ],
+      "execute": "pass.temporal.resolve"
+    },
+    {
       "name": "Post.Tonemap.Fullscreen",
       "type": "graphics",
       "domain": "POST",
       "condition": "!editor_enabled",
       "reads": [
         {
-          "image": "hdr_scene_color",
+          "image": "temporal_history_color",
           "access": "SAMPLED",
           "binding": 0,
           "array_index": 0
@@ -1473,7 +1592,7 @@
       "condition": "editor_enabled",
       "reads": [
         {
-          "image": "scene_color",
+          "image": "temporal_history_color",
           "access": "SAMPLED",
           "binding": 0,
           "array_index": 0

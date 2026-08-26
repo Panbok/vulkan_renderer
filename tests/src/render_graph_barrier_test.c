@@ -686,20 +686,27 @@ static void test_deferred_image_formats(void) {
       "\"R32G32_UINT\",\"usage\":[\"COLOR_ATTACHMENT\",\"STORAGE\"]},"
       "{\"name\":\"normal\",\"type\":\"image\",\"extent\":{"
       "\"mode\":\"fixed\",\"width\":4,\"height\":4},\"format\":"
-      "\"R16G16_SNORM\",\"usage\":[\"SAMPLED\",\"STORAGE\"]}],"
+      "\"R16G16_SNORM\",\"usage\":[\"SAMPLED\",\"STORAGE\"]},"
+      "{\"name\":\"motion\",\"type\":\"image\",\"extent\":{"
+      "\"mode\":\"fixed\",\"width\":4,\"height\":4},\"format\":"
+      "\"R16G16_SFLOAT\",\"usage\":[\"SAMPLED\",\"STORAGE\"]}],"
       "\"passes\":[]}";
   VkrRgJsonGraph graph = {0};
   assert(rg_barrier_test_load_json(&allocator, source, &graph));
-  assert(graph.resources.length == 2u);
+  assert(graph.resources.length == 3u);
   assert(graph.resources.data[0].image.format ==
          VKR_TEXTURE_FORMAT_R32G32_UINT);
   assert(graph.resources.data[1].image.format ==
          VKR_TEXTURE_FORMAT_R16G16_SNORM);
+  assert(graph.resources.data[2].image.format ==
+         VKR_TEXTURE_FORMAT_R16G16_SFLOAT);
 
   VkrTextureFormatInfo info = {0};
   assert(vkr_texture_format_get_info(VKR_TEXTURE_FORMAT_R32G32_UINT, &info));
   assert(info.channel_count == 2u && info.bytes_per_block == 8u);
   assert(vkr_texture_format_get_info(VKR_TEXTURE_FORMAT_R16G16_SNORM, &info));
+  assert(info.channel_count == 2u && info.bytes_per_block == 4u);
+  assert(vkr_texture_format_get_info(VKR_TEXTURE_FORMAT_R16G16_SFLOAT, &info));
   assert(info.channel_count == 2u && info.bytes_per_block == 4u);
 
   vkr_rg_json_destroy(&graph);
@@ -1278,7 +1285,7 @@ static void test_main_graph_declares_transmission_stages(void) {
     if (!pass || !vkr_string8_equals_cstr(&pass->name, deferred_ordered[found]))
       continue;
     if (found == 1u) {
-      assert(pass->writes.length == 7u);
+      assert(pass->writes.length == 9u);
       VkrRgJsonResourceUse *hdr_seed =
           vector_get_VkrRgJsonResourceUse(&pass->writes, 6u);
       assert(hdr_seed && hdr_seed->binding.is_set &&
@@ -1467,6 +1474,8 @@ static void test_main_graph_declares_transmission_stages(void) {
   bool8_t found_sdsm_resource = false_v;
   bool8_t found_gpu_instances = false_v;
   bool8_t found_transmission_gpu_instances = false_v;
+  bool8_t found_temporal_transform_resource = false_v;
+  bool8_t found_temporal_color_resource = false_v;
   for (uint64_t i = 0u; i < graph.resources.length; ++i) {
     VkrRgJsonResource *resource =
         vector_get_VkrRgJsonResource(&graph.resources, i);
@@ -1498,6 +1507,18 @@ static void test_main_graph_declares_transmission_stages(void) {
       assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_PER_FRAME_SLOT) !=
              0u);
       found_transmission_gpu_instances = true_v;
+    } else if (vkr_string8_equals_cstr(&resource->name,
+                                       "temporal_transform_history")) {
+      assert(resource->buffer.size ==
+             (uint64_t)VKR_TEMPORAL_TRANSFORM_CAPACITY *
+                 sizeof(VkrTemporalTransformGPU));
+      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_HISTORY) != 0u);
+      found_temporal_transform_resource = true_v;
+    } else if (vkr_string8_equals_cstr(&resource->name,
+                                       "temporal_history_color")) {
+      assert(resource->image.format == VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT);
+      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_HISTORY) != 0u);
+      found_temporal_color_resource = true_v;
     } else if (vkr_string8_equals_cstr(&resource->name, "shadow_map")) {
       assert(vkr_string8_equals_cstr(&resource->image.layers_source,
                                      "shadow_map_layer_count"));
@@ -1512,14 +1533,27 @@ static void test_main_graph_declares_transmission_stages(void) {
     }
   }
   assert(found_hzb_resource && found_sdsm_resource && found_gpu_instances &&
-         found_transmission_gpu_instances && found_stable_shadow_capacity);
+         found_transmission_gpu_instances && found_stable_shadow_capacity &&
+         found_temporal_transform_resource && found_temporal_color_resource);
 
   bool8_t found_hzb_reduce = false_v;
   bool8_t found_sdsm_reduce = false_v;
+  bool8_t found_temporal_transform = false_v;
+  bool8_t found_temporal_resolve = false_v;
   for (uint64_t i = 0u; i < graph.passes.length; ++i) {
     VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph.passes, i);
     if (!pass)
       continue;
+    if (vkr_string8_equals_cstr(&pass->name, "Temporal.TransformHistory")) {
+      assert(pass->reads.length == 1u && pass->writes.length == 1u);
+      found_temporal_transform = true_v;
+      continue;
+    }
+    if (vkr_string8_equals_cstr(&pass->name, "Temporal.Resolve.Fullscreen")) {
+      assert(pass->reads.length == 8u && pass->writes.length == 4u);
+      found_temporal_resolve = true_v;
+      continue;
+    }
     if (vkr_string8_equals_cstr(&pass->name, "SDSM.Reduce")) {
       assert(pass->condition.kind == VKR_RG_JSON_CONDITION_SDSM_ENABLED);
       assert(pass->reads.length == 2u && pass->writes.length == 1u);
@@ -1552,7 +1586,8 @@ static void test_main_graph_declares_transmission_stages(void) {
     assert(vkr_string8_equals_cstr(&write->slice_base_mip.token, "${i+1}"));
     found_hzb_reduce = true_v;
   }
-  assert(found_hzb_reduce && found_sdsm_reduce);
+  assert(found_hzb_reduce && found_sdsm_reduce && found_temporal_transform &&
+         found_temporal_resolve);
 
   const char *picking_deferred_ordered[] = {
       "Picking.DepthSeed.Opaque", "Picking.Resolve.Opaque", "Picking.Features",

@@ -257,6 +257,7 @@ typedef struct VkrMesh {
   Array_VkrSubMesh submeshes;
   VkrMeshLoadingState loading_state;
   uint32_t render_id;
+  uint32_t temporal_generation;
   uint32_t live_index; // Index in mesh manager's active mesh list.
   bool8_t visible;
 

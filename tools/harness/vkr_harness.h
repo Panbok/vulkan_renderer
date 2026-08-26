@@ -235,7 +235,7 @@ typedef struct VkrHarnessRendererConfig {
   uint32_t shadow_pcf_samples;
   uint32_t shadow_map_size;
   float32_t shadow_split_lambda;
-  char render_mode[16];
+  char render_mode[24];
   uint32_t shadow_debug_mode;
 } VkrHarnessRendererConfig;
 

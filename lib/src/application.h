@@ -597,6 +597,8 @@ typedef struct ApplicationWorldSource {
   VkrDrawAlphaRouting alpha;
   uint32_t submesh_index;
   uint32_t object_id;
+  uint32_t temporal_index;
+  uint32_t temporal_generation;
   bool8_t bounds_valid;
   bool8_t transmissive;
   bool8_t double_sided;
@@ -638,7 +640,13 @@ application_emit_world_source(ApplicationWorldEmitContext *context,
       .geometry = source->geometry,
       .submesh_index = source->submesh_index,
       .material = source->material,
-      .instance = {.model = source->model, .object_id = source->object_id},
+      .instance =
+          {
+              .model = source->model,
+              .object_id = source->object_id,
+              .temporal_index = source->temporal_index,
+              .temporal_generation = source->temporal_generation,
+          },
       .local_bounding_sphere = {source->center.x, source->center.y,
                                 source->center.z, vec3_length(half_extents)},
       .state_bucket = vkr_world_draw_state_bucket(
@@ -766,6 +774,15 @@ vkr_internal bool8_t application_build_world_payload(
   const uint32_t mesh_count = vkr_mesh_manager_count(&rf->mesh_manager);
   const uint32_t live_instance_count =
       vkr_mesh_manager_instance_count(&rf->mesh_manager);
+  const uint32_t temporal_instance_offset =
+      vkr_mesh_manager_capacity(&rf->mesh_manager);
+  const uint64_t temporal_slot_capacity =
+      (uint64_t)temporal_instance_offset +
+      vkr_mesh_manager_instance_capacity(&rf->mesh_manager);
+  if (temporal_slot_capacity > VKR_TEMPORAL_TRANSFORM_CAPACITY) {
+    *out_payload = (VkrWorldPassPayload){0};
+    return false_v;
+  }
   VkrVisibilityStats stats = {0};
   uint64_t candidate_count_64 = 0u;
   /* True when a visible caster exists that has not finished loading. Its
@@ -1008,6 +1025,8 @@ vkr_internal bool8_t application_build_world_payload(
             .alpha = alpha,
             .submesh_index = s,
             .object_id = object_id,
+            .temporal_index = mesh_slot,
+            .temporal_generation = mesh->temporal_generation,
             .bounds_valid = mesh->bounds_valid,
             .transmissive = transmissive,
             .double_sided = material ? material->double_sided : false_v,
@@ -1058,6 +1077,8 @@ vkr_internal bool8_t application_build_world_payload(
             .alpha = alpha,
             .submesh_index = s,
             .object_id = object_id,
+            .temporal_index = temporal_instance_offset + instance_slot,
+            .temporal_generation = instance->generation,
             .bounds_valid = instance->bounds_valid,
             .transmissive = transmissive,
             .double_sided = material ? material->double_sided : false_v,

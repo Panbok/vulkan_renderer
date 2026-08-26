@@ -1601,6 +1601,7 @@ vkr_internal bool8_t vkr_metal_packet_pack_gpu_draw_stream(
   const uint64_t pending_submit = renderer->submit_value + 1u;
   uint32_t packed_count = 0u;
   uint32_t unresolved_count = 0u;
+  uint32_t last_temporal_index = UINT32_MAX;
   for (uint32_t i = 0u; i < count; ++i) {
     const VkrWorldDrawCandidate *source = &sources[i];
     const VkrMeshHandle geometry = {
@@ -1622,6 +1623,11 @@ vkr_internal bool8_t vkr_metal_packet_pack_gpu_draw_stream(
                                  renderer->max_submeshes_per_mesh +
                              source->submesh_index];
     instances[packed_count] = source->instance;
+    instances[packed_count].temporal_flags =
+        source->instance.temporal_index != last_temporal_index
+            ? VKR_INSTANCE_TEMPORAL_OWNER
+            : 0u;
+    last_temporal_index = source->instance.temporal_index;
     geometry_rows[geometry.id - 1u] = mesh->gpu_row;
     candidates[packed_count] = (VkrGpuCandidateDrawRow){
         .geometry_index = geometry.id - 1u,

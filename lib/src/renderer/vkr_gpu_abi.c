@@ -59,7 +59,10 @@ vkr_global const VkrGpuAbiField vkr_gpu_geometry_decode_record_fields[] = {
 vkr_global const VkrGpuAbiField vkr_gpu_instance_fields[] = {
     VKR_GPU_ABI_FIELD(VkrInstanceDataGPU, model, "model", 0),
     VKR_GPU_ABI_FIELD(VkrInstanceDataGPU, object_id, "object_id", 64),
-    VKR_GPU_ABI_FIELD(VkrInstanceDataGPU, reserved, "reserved_0", 68),
+    VKR_GPU_ABI_FIELD(VkrInstanceDataGPU, temporal_index, "temporal_index", 68),
+    VKR_GPU_ABI_FIELD(VkrInstanceDataGPU, temporal_generation,
+                      "temporal_generation", 72),
+    VKR_GPU_ABI_FIELD(VkrInstanceDataGPU, temporal_flags, "temporal_flags", 76),
 };
 
 vkr_global const VkrGpuAbiField vkr_gpu_text_vertex_fields[] = {

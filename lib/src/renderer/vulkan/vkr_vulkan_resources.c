@@ -80,6 +80,8 @@ VkFormat vkr_vk_texture_format(VkrTextureFormat format) {
     return VK_FORMAT_R32G32_UINT;
   case VKR_TEXTURE_FORMAT_R16G16_SNORM:
     return VK_FORMAT_R16G16_SNORM;
+  case VKR_TEXTURE_FORMAT_R16G16_SFLOAT:
+    return VK_FORMAT_R16G16_SFLOAT;
   case VKR_TEXTURE_FORMAT_D16_UNORM:
     return VK_FORMAT_D16_UNORM;
   case VKR_TEXTURE_FORMAT_D32_SFLOAT:
@@ -112,6 +114,7 @@ bool8_t vkr_vk_format_block_info(VkFormat format, uint32_t *out_width,
   case VK_FORMAT_R8G8B8A8_SNORM:
   case VK_FORMAT_R8G8B8A8_SINT:
   case VK_FORMAT_R16G16_SNORM:
+  case VK_FORMAT_R16G16_SFLOAT:
   case VK_FORMAT_R32_SFLOAT:
   case VK_FORMAT_R32_UINT:
     bytes = 4u;

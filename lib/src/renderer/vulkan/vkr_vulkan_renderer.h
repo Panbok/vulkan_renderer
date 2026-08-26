@@ -12,6 +12,9 @@
 
 enum {
   VKR_VULKAN_FRAME_SLOT_COUNT = 3,
+  // N-1 queued frames may each retain distinct history input and output
+  // instances; the recording frame still needs one completion-safe output.
+  VKR_VULKAN_HISTORY_INSTANCE_COUNT = 2 * VKR_VULKAN_FRAME_SLOT_COUNT - 1,
   VKR_VULKAN_TARGET_IMAGE_MAX = 8,
 };
 

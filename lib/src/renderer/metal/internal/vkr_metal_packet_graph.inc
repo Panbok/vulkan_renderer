@@ -17,6 +17,7 @@ typedef enum VkrMetalPacketGraphExecutorKind {
   VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_CLASSIFY,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_PREFIX,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_ENCODE,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_TEMPORAL_TRANSFORM,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_UPLOAD,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_CLASSIFY,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_PREFIX,
@@ -26,6 +27,7 @@ typedef enum VkrMetalPacketGraphExecutorKind {
   VKR_METAL_PACKET_GRAPH_EXECUTOR_VBUFFER_TRANSMISSION,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_GBUFFER_RESOLVE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_DEFERRED_LIGHTING,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_TEMPORAL_RESOLVE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_SHADE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_COVERAGE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_COMPACT,
@@ -57,6 +59,7 @@ vkr_global const VkrMetalPacketGraphExecutorSpec
         {"pass.gpu_draw_classify", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.gpu_draw_prefix", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.gpu_draw_encode", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.temporal.transform_history", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.transmission.gpu_draw_upload", VKR_RG_PASS_TYPE_TRANSFER},
         {"pass.transmission.gpu_draw_classify", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.transmission.gpu_draw_prefix", VKR_RG_PASS_TYPE_COMPUTE},
@@ -66,6 +69,7 @@ vkr_global const VkrMetalPacketGraphExecutorSpec
         {"pass.vbuffer.transmission", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.gbuffer.resolve", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.lighting.deferred", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.temporal.resolve", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.transmission.shade", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.transmission.coverage", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.transmission.compact", VKR_RG_PASS_TYPE_COMPUTE},
@@ -163,6 +167,8 @@ vkr_metal_packet_pixel_format(VkrTextureFormat format) {
     return MTLPixelFormatRG32Uint;
   case VKR_TEXTURE_FORMAT_R16G16_SNORM:
     return MTLPixelFormatRG16Snorm;
+  case VKR_TEXTURE_FORMAT_R16G16_SFLOAT:
+    return MTLPixelFormatRG16Float;
   case VKR_TEXTURE_FORMAT_D16_UNORM:
     return MTLPixelFormatDepth16Unorm;
   case VKR_TEXTURE_FORMAT_D32_SFLOAT:
@@ -634,6 +640,72 @@ vkr_metal_packet_selected_hzb_texture(VkrMetalPacketRenderer *renderer) {
 }
 
 vkr_internal VkrMetalPacketGraphBufferInstance *
+vkr_metal_packet_graph_buffer_instance(VkrMetalPacketRenderer *renderer,
+                                       VkrRgBufferHandle handle,
+                                       uint32_t instance) {
+  if (!vkr_rg_buffer_handle_valid(handle) || handle.id > renderer->max_images)
+    return NULL;
+  VkrMetalPacketGraphBuffer *slot = &renderer->graph_buffers[handle.id - 1u];
+  if (!slot->live || slot->graph_generation != handle.generation ||
+      instance >= slot->instance_count)
+    return NULL;
+  VkrMetalPacketGraphBufferInstance *result =
+      &renderer->graph_buffer_instances[(uint64_t)(handle.id - 1u) *
+                                            renderer->command_slot_count +
+                                        instance];
+  return result->live ? result : NULL;
+}
+
+vkr_internal bool8_t
+vkr_metal_packet_select_temporal_history(VkrMetalPacketRenderer *renderer) {
+  renderer->selected_temporal_history_instance = UINT32_MAX;
+  const VkrRenderPacket *packet = renderer->graph->packet;
+  if (!packet || !packet->globals.temporal.history_valid)
+    return true_v;
+  VkrMetalPacketImage *colors =
+      vkr_metal_packet_named_image_slot(renderer, "temporal_history_color");
+  VkrMetalPacketImage *depths =
+      vkr_metal_packet_named_image_slot(renderer, "temporal_history_depth");
+  VkrMetalPacketImage *identities =
+      vkr_metal_packet_named_image_slot(renderer, "temporal_history_identity");
+  VkrMetalPacketImage *primitives =
+      vkr_metal_packet_named_image_slot(renderer, "temporal_history_primitive");
+  if (!colors || !depths || !identities || !primitives ||
+      !vkr_rg_buffer_handle_valid(
+          renderer->temporal_transform_history_handle) ||
+      colors->instance_count != renderer->command_slot_count ||
+      depths->instance_count != colors->instance_count ||
+      identities->instance_count != colors->instance_count ||
+      primitives->instance_count != colors->instance_count)
+    return false_v;
+  const uint32_t current =
+      (uint32_t)(renderer->active_command_slot - renderer->command_slots);
+  const uint64_t completed = renderer->completion.signaledValue;
+  uint64_t newest_producer = 0u;
+  for (uint32_t i = 0u; i < colors->instance_count; ++i) {
+    VkrMetalPacketImageInstance *color = &colors->instances[i];
+    VkrMetalPacketGraphBufferInstance *transform =
+        vkr_metal_packet_graph_buffer_instance(
+            renderer, renderer->temporal_transform_history_handle, i);
+    if (i == current || !color->live || !color->history_valid ||
+        color->history_producer_submit_value > completed ||
+        color->history_scene_generation != packet->frame.scene_generation ||
+        color->history_width != renderer->prepared_frame.viewport_width ||
+        color->history_height != renderer->prepared_frame.viewport_height ||
+        !depths->instances[i].live || !identities->instances[i].live ||
+        !primitives->instances[i].live || !transform ||
+        !transform->history_valid)
+      continue;
+    if (renderer->selected_temporal_history_instance == UINT32_MAX ||
+        color->history_producer_submit_value > newest_producer) {
+      renderer->selected_temporal_history_instance = i;
+      newest_producer = color->history_producer_submit_value;
+    }
+  }
+  return true_v;
+}
+
+vkr_internal VkrMetalPacketGraphBufferInstance *
 vkr_metal_packet_graph_buffer(VkrMetalPacketRenderer *renderer,
                               VkrRgBufferHandle handle) {
   if (!vkr_rg_buffer_handle_valid(handle) || handle.id > renderer->max_images)
@@ -687,6 +759,7 @@ vkr_metal_packet_realize_buffers(VkrMetalPacketRenderer *renderer) {
   renderer->gpu_candidate_instance_buffer_handle = VKR_RG_BUFFER_HANDLE_INVALID;
   renderer->transmission_gpu_candidate_instance_buffer_handle =
       VKR_RG_BUFFER_HANDLE_INVALID;
+  renderer->temporal_transform_history_handle = VKR_RG_BUFFER_HANDLE_INVALID;
   for (uint64_t i = 0u; i < renderer->graph->buffers.length; ++i) {
     const VkrRgBuffer *buffer =
         vector_get_VkrRgBuffer(&renderer->graph->buffers, i);
@@ -703,6 +776,9 @@ vkr_metal_packet_realize_buffers(VkrMetalPacketRenderer *renderer) {
     else if (vkr_string8_equals_cstr(&buffer->name,
                                      "transmission_gpu_draw_instances"))
       renderer->transmission_gpu_candidate_instance_buffer_handle = handle;
+    else if (vkr_string8_equals_cstr(&buffer->name,
+                                     "temporal_transform_history"))
+      renderer->temporal_transform_history_handle = handle;
     if (buffer->imported ||
         (buffer->desc.flags & VKR_RG_RESOURCE_FLAG_EXTERNAL)) {
       log_error("Metal graph buffer '%.*s' cannot be external",
@@ -898,6 +974,64 @@ vkr_metal_packet_mark_hzb_history_submitted(VkrMetalPacketRenderer *renderer,
 }
 
 vkr_internal void
+vkr_metal_packet_mark_temporal_submitted(VkrMetalPacketRenderer *renderer,
+                                         uint64_t submit_value) {
+  const VkrRenderPacket *packet = renderer->graph->packet;
+  if (!packet || !renderer->active_command_slot)
+    return;
+  VkrMetalPacketImage *slots[] = {
+      vkr_metal_packet_named_image_slot(renderer, "temporal_history_color"),
+      vkr_metal_packet_named_image_slot(renderer, "temporal_history_depth"),
+      vkr_metal_packet_named_image_slot(renderer, "temporal_history_identity"),
+      vkr_metal_packet_named_image_slot(renderer, "temporal_history_primitive"),
+  };
+  const uint32_t current =
+      (uint32_t)(renderer->active_command_slot - renderer->command_slots);
+  for (uint32_t i = 0u; i < ArrayCount(slots); ++i) {
+    if (!slots[i] || current >= slots[i]->instance_count)
+      continue;
+    VkrMetalPacketImageInstance *instance = &slots[i]->instances[current];
+    instance->history_producer_submit_value = submit_value;
+    instance->history_frame_index = packet->frame.frame_index;
+    instance->history_scene_generation = packet->frame.scene_generation;
+    instance->history_view_projection = vkr_metal_packet_clip_matrix(
+        renderer->convert_vulkan_clip_y,
+        packet->globals.temporal.current_view_projection);
+    instance->history_width = renderer->prepared_frame.viewport_width;
+    instance->history_height = renderer->prepared_frame.viewport_height;
+    instance->history_valid = true_v;
+  }
+  VkrMetalPacketGraphBufferInstance *current_transform =
+      vkr_metal_packet_graph_buffer_instance(
+          renderer, renderer->temporal_transform_history_handle, current);
+  if (current_transform) {
+    current_transform->history_producer_submit_value = submit_value;
+    current_transform->history_frame_index = packet->frame.frame_index;
+    current_transform->history_scene_generation =
+        packet->frame.scene_generation;
+    current_transform->history_valid = true_v;
+  }
+
+  const uint32_t selected = renderer->selected_temporal_history_instance;
+  if (selected == UINT32_MAX)
+    return;
+  for (uint32_t i = 0u; i < ArrayCount(slots); ++i) {
+    if (slots[i] && selected < slots[i]->instance_count)
+      slots[i]->instances[selected].last_use_submit_value = MAX(
+          slots[i]->instances[selected].last_use_submit_value, submit_value);
+  }
+  VkrMetalPacketGraphBufferInstance *selected_transform =
+      vkr_metal_packet_graph_buffer_instance(
+          renderer, renderer->temporal_transform_history_handle, selected);
+  if (selected_transform)
+    selected_transform->last_use_submit_value =
+        MAX(selected_transform->last_use_submit_value, submit_value);
+  renderer->command_slots[selected].resource_reuse_submit_value =
+      MAX(renderer->command_slots[selected].resource_reuse_submit_value,
+          submit_value);
+}
+
+vkr_internal void
 vkr_metal_packet_mark_graph_buffers_submitted(VkrMetalPacketRenderer *renderer,
                                               uint64_t submit_value) {
   for (uint64_t i = 0u; i < renderer->graph->buffers.length; ++i) {
@@ -1042,8 +1176,7 @@ vkr_internal bool8_t vkr_metal_packet_capture_plan(
     const char *source_name = channel->source_name;
     uint32_t source_slice = 0;
     if (string_equals(channel->name, "scene_color"))
-      source_name =
-          packet->frame.editor_enabled ? "scene_color" : "hdr_scene_color";
+      source_name = "temporal_history_color";
     else if (string_equals(channel->name, "depth"))
       // The deferred topology writes depth only in the visibility raster, so
       // both editor and fullscreen capture read the same image. The retired

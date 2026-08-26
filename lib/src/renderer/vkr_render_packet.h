@@ -11,9 +11,10 @@
 #include "renderer/vkr_buffer.h"
 #include "renderer/vkr_gpu_abi.h"
 #include "renderer/vkr_renderer.h"
+#include "renderer/vkr_temporal.h"
 
 /** Version constant for VkrRenderPacket.packet_version validation. */
-#define VKR_RENDER_PACKET_VERSION 18u
+#define VKR_RENDER_PACKET_VERSION 19u
 
 /** Default manual camera exposure for HDR scene presentation. */
 #define VKR_DEFAULT_EXPOSURE 0.30f
@@ -44,7 +45,8 @@ typedef VkrMeshInstanceHandle VkrMeshHandle;
  *
  * window_width/height must match the swapchain dimensions from
  * vkr_renderer_prepare_frame(). viewport_width/height of 0 means "use window
- * dimensions". frame_index is app-defined and not used for buffering.
+ * dimensions". frame_index is app-defined, but temporal history requires each
+ * successfully submitted frame to increment it by one; gaps reset history.
  */
 typedef struct VkrFrameInfo {
   uint32_t frame_index;
@@ -69,6 +71,11 @@ typedef struct VkrFrameGlobals {
   Vec4 ambient_color;
   float32_t exposure;
   uint32_t render_mode;
+  /**
+   * Renderer-owned temporal state. Callers leave this zeroed; the frontend
+   * derives it after validation and commits it only after successful submit.
+   */
+  VkrTemporalFrame temporal;
 } VkrFrameGlobals;
 
 /** Backend-neutral frame lighting controls consumed by world shading. */

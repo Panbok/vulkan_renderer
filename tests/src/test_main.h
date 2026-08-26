@@ -42,6 +42,7 @@
 #include "shadow_system_test.h"
 #include "simd_test.h"
 #include "string_test.h"
+#include "temporal_test.h"
 #include "text_test.h"
 #include "texture_format_tests.h"
 #include "texture_hdr_tests.h"

@@ -921,6 +921,13 @@ vkr_harness_child_apply_renderer(Application *application,
   } else if (string_equals(case_manifest->renderer.render_mode,
                            "material_params")) {
     application->renderer.globals.render_mode = VKR_RENDER_MODE_MATERIAL_PARAMS;
+  } else if (string_equals(case_manifest->renderer.render_mode,
+                           "temporal_motion")) {
+    application->renderer.globals.render_mode = VKR_RENDER_MODE_TEMPORAL_MOTION;
+  } else if (string_equals(case_manifest->renderer.render_mode,
+                           "temporal_history")) {
+    application->renderer.globals.render_mode =
+        VKR_RENDER_MODE_TEMPORAL_HISTORY;
   }
   application->renderer.shadow_debug_mode =
       case_manifest->renderer.shadow_debug_mode;
@@ -1273,6 +1280,10 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
             ? "direct_specular"
         : replay.render_mode == VKR_RENDER_MODE_MATERIAL_PARAMS
             ? "material_params"
+        : replay.render_mode == VKR_RENDER_MODE_TEMPORAL_MOTION
+            ? "temporal_motion"
+        : replay.render_mode == VKR_RENDER_MODE_TEMPORAL_HISTORY
+            ? "temporal_history"
             : "default";
     string_format(case_manifest.renderer.render_mode,
                   sizeof(case_manifest.renderer.render_mode), "%s",

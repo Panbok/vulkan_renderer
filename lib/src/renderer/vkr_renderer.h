@@ -544,6 +544,8 @@ typedef enum VkrTextureFormat {
   VKR_TEXTURE_FORMAT_R32G32_UINT,
   /** Two-channel signed-normalized octahedral world normal. */
   VKR_TEXTURE_FORMAT_R16G16_SNORM,
+  /** Two-channel half-float temporal motion in output UV units. */
+  VKR_TEXTURE_FORMAT_R16G16_SFLOAT,
 
   VKR_TEXTURE_FORMAT_COUNT,
 } VkrTextureFormat;
@@ -830,6 +832,8 @@ typedef enum VkrRenderMode {
   VKR_RENDER_MODE_DIRECT_DIFFUSE = 4,
   VKR_RENDER_MODE_DIRECT_SPECULAR = 5,
   VKR_RENDER_MODE_MATERIAL_PARAMS = 6,
+  VKR_RENDER_MODE_TEMPORAL_MOTION = 7,
+  VKR_RENDER_MODE_TEMPORAL_HISTORY = 8,
   VKR_RENDER_MODE_COUNT,
 } VkrRenderMode;
 
@@ -1273,6 +1277,9 @@ bool8_t vkr_renderer_capture_release(VkrRendererFrontendHandle renderer,
 
 void vkr_renderer_resize(VkrRendererFrontendHandle renderer, uint32_t width,
                          uint32_t height);
+/** Invalidates temporal accumulation before the next submitted frame. */
+void vkr_renderer_invalidate_temporal_history(
+    VkrRendererFrontendHandle renderer);
 
 // --- END Frame Lifecycle & Rendering Commands ---
 

@@ -1122,6 +1122,7 @@ bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
   manager->instance_count = 0;
   manager->next_instance_index = 0;
   manager->instance_generation_counter = 1;
+  manager->mesh_temporal_generation_counter = 1u;
 
   for (uint32_t i = 0; i < manager->mesh_instances.length; ++i) {
     VkrMeshInstance empty = {0};
@@ -1357,6 +1358,7 @@ bool8_t vkr_mesh_manager_add(VkrMeshManager *manager, const VkrMeshDesc *desc,
   new_mesh.model = vkr_transform_get_world(&new_mesh.transform);
   new_mesh.submeshes = submesh_array;
   new_mesh.render_id = 0;
+  new_mesh.temporal_generation = manager->mesh_temporal_generation_counter++;
   new_mesh.visible = true_v;
   new_mesh.loading_state = VKR_MESH_LOADING_STATE_LOADED;
 

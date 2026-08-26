@@ -370,6 +370,33 @@ vkr_metal_packet_picking_resolve(constant VkrMetalPacketPickingResolveRoot &root
   root.destination.write(uint4(object_id, 0u, 0u, 0u), root.pixel);
 }
 
+struct VkrMetalPacketTemporalTransformRoot {
+  device VkrMetalPacketInstance *instances;
+  device VkrTemporalTransform *transforms;
+  uint instance_count;
+  uint transform_capacity;
+  uint frame_index;
+  uint reserved;
+};
+
+kernel void vkr_metal_packet_temporal_transform(
+    constant VkrMetalPacketTemporalTransformRoot &root [[buffer(0)]],
+    uint index [[thread_position_in_grid]]) {
+  if (index >= root.instance_count)
+    return;
+  const device VkrMetalPacketInstance &instance = root.instances[index];
+  if ((instance.temporal_flags & VKR_INSTANCE_TEMPORAL_OWNER) == 0u ||
+      instance.temporal_index >= root.transform_capacity)
+    return;
+  VkrTemporalTransform transform;
+  transform.model = instance.model;
+  transform.generation = instance.temporal_generation;
+  transform.frame_index = root.frame_index;
+  transform.valid = 1u;
+  transform.reserved = 0u;
+  root.transforms[instance.temporal_index] = transform;
+}
+
 struct VkrMetalPacketGBufferResolveRoot {
   device VkrGpuVisibleDrawRow *visible_rows;
   device VkrGpuGeometryRow *geometry_rows;
@@ -384,12 +411,19 @@ struct VkrMetalPacketGBufferResolveRoot {
   texture2d<float, access::write> debug;
   texture2d<float, access::write> hdr_seed;
   float4x4 view_projection;
+  float4x4 current_view_projection;
+  float4x4 previous_view_projection;
+  device VkrTemporalTransform *previous_transforms;
+  texture2d<float, access::write> motion;
+  texture2d<float, access::write> validity;
   uint2 extent;
   uint visible_capacity;
   uint geometry_count;
   uint material_count;
   uint instance_count;
   uint render_mode;
+  uint history_valid;
+  uint previous_frame_index;
   uint reserved;
 };
 
@@ -402,6 +436,8 @@ static void vkr_metal_packet_resolve_defaults(
   root.emissive.write(float4(0.0), pixel);
   root.hdr_seed.write(float4(0.0), pixel);
   root.debug.write(float4(0.0, 0.0, 0.0, debug_marker), pixel);
+  root.motion.write(float4(0.0), pixel);
+  root.validity.write(float4(0.0), pixel);
 }
 
 static bool vkr_metal_packet_perspective_barycentrics(
@@ -589,6 +625,9 @@ vkr_metal_packet_gbuffer_resolve(constant VkrMetalPacketGBufferResolveRoot &root
   float3 object_normal = vertices[0].normal * barycentric.x +
                          vertices[1].normal * barycentric.y +
                          vertices[2].normal * barycentric.z;
+  float3 object_position = vertices[0].position * barycentric.x +
+                           vertices[1].position * barycentric.y +
+                           vertices[2].position * barycentric.z;
   float4 object_tangent = vertices[0].tangent * barycentric.x +
                           vertices[1].tangent * barycentric.y +
                           vertices[2].tangent * barycentric.z;
@@ -651,6 +690,33 @@ vkr_metal_packet_gbuffer_resolve(constant VkrMetalPacketGBufferResolveRoot &root
   float footprint = max(length(gradient_x * texture_extent),
                         length(gradient_y * texture_extent));
   float selected_lod = max(log2(max(footprint, 1e-8)), 0.0);
+  float2 motion = 0.0;
+  float2 validity = 0.0;
+  if (root.history_valid != 0u &&
+      instance.temporal_index < VKR_TEMPORAL_TRANSFORM_CAPACITY) {
+    const device VkrTemporalTransform &previous =
+        root.previous_transforms[instance.temporal_index];
+    if (previous.valid != 0u &&
+        previous.generation == instance.temporal_generation &&
+        previous.frame_index == root.previous_frame_index) {
+      float4 current_clip = root.current_view_projection *
+                            (instance.model * float4(object_position, 1.0));
+      float4 previous_clip = root.previous_view_projection *
+                             (previous.model * float4(object_position, 1.0));
+      if (current_clip.w > 1e-6 && previous_clip.w > 1e-6) {
+        float2 current_ndc = current_clip.xy / current_clip.w;
+        float2 previous_ndc = previous_clip.xy / previous_clip.w;
+        float2 current_uv =
+            float2(current_ndc.x * 0.5 + 0.5, 0.5 - current_ndc.y * 0.5);
+        float2 previous_uv =
+            float2(previous_ndc.x * 0.5 + 0.5, 0.5 - previous_ndc.y * 0.5);
+        motion = previous_uv - current_uv;
+        validity = float2(1.0, previous_clip.z / previous_clip.w);
+      }
+    }
+  }
+  root.motion.write(float4(motion, 0.0, 0.0), pixel);
+  root.validity.write(float4(validity, 0.0, 0.0), pixel);
 
   root.albedo.write(float4(base.rgb * (1.0 - metallic), occlusion), pixel);
   root.specular.write(float4(f0, roughness), pixel);
@@ -912,6 +978,116 @@ kernel void vkr_metal_packet_deferred_lighting(
   }
   color += hdr_seed.rgb;
   root.hdr.write(float4(color, 1.0), pixel);
+}
+
+struct VkrMetalPacketTemporalResolveRoot {
+  device VkrGpuVisibleDrawRow *visible_rows;
+  device VkrMetalPacketInstance *instances;
+  texture2d<float, access::read> scene;
+  texture2d<float, access::read> pre_transmission;
+  texture2d<float, access::read> motion;
+  texture2d<float, access::read> validity;
+  texture2d<float, access::read> depth;
+  texture2d<uint, access::read> vbuffer;
+  texture2d<float, access::sample> history_color;
+  texture2d<float, access::read> history_depth;
+  texture2d<uint, access::read> history_identity;
+  texture2d<uint, access::read> history_primitive;
+  texture2d<float, access::write> output_color;
+  texture2d<float, access::write> output_depth;
+  texture2d<uint, access::write> output_identity;
+  texture2d<uint, access::write> output_primitive;
+  uint2 extent;
+  uint history_valid;
+  uint render_mode;
+  uint camera_stationary;
+};
+
+static float vkr_metal_packet_temporal_luminance(float3 color) {
+  return dot(color, float3(0.2126, 0.7152, 0.0722));
+}
+
+kernel void vkr_metal_packet_temporal_resolve(
+    constant VkrMetalPacketTemporalResolveRoot &root [[buffer(0)]],
+    uint2 pixel [[thread_position_in_grid]]) {
+  if (any(pixel >= root.extent))
+    return;
+  float4 current = root.scene.read(pixel);
+  float3 pre_transmission = root.pre_transmission.read(pixel).rgb;
+  float2 motion = root.motion.read(pixel).xy;
+  float2 validity = root.validity.read(pixel).xy;
+  float depth = root.depth.read(pixel).x;
+  uint2 encoded = root.vbuffer.read(pixel).xy;
+  uint2 identity = 0u;
+  uint primitive = 0u;
+  if (encoded.x != 0u) {
+    const device VkrGpuVisibleDrawRow &visible =
+        root.visible_rows[encoded.x - 1u];
+    const device VkrMetalPacketInstance &instance =
+        root.instances[visible.instance_index];
+    identity =
+        uint2(instance.temporal_index + 1u, instance.temporal_generation);
+    primitive = encoded.y + 1u;
+  }
+
+  float current_luminance = vkr_metal_packet_temporal_luminance(current.rgb);
+  float pre_luminance = vkr_metal_packet_temporal_luminance(pre_transmission);
+  float reactive = saturate(abs(current_luminance - pre_luminance) /
+                            max(max(current_luminance, pre_luminance), 0.05));
+  float2 uv = (float2(pixel) + 0.5) / float2(root.extent);
+  float2 history_uv = uv + motion;
+  bool accepted = root.history_valid != 0u &&
+                  (validity.x > 0.5 || root.camera_stationary != 0u) &&
+                  all(history_uv >= 0.0) && all(history_uv <= 1.0);
+  float4 history = current;
+  if (accepted) {
+    uint2 history_pixel =
+        min(uint2(history_uv * float2(root.extent)), root.extent - 1u);
+    uint2 previous_identity = root.history_identity.read(history_pixel).xy;
+    uint previous_primitive = root.history_primitive.read(history_pixel).x;
+    float previous_depth = root.history_depth.read(history_pixel).x;
+    bool same_surface = all(previous_identity == identity) &&
+                        previous_primitive == primitive &&
+                        abs(previous_depth - validity.y) <= 0.005;
+    accepted = root.camera_stationary != 0u || same_surface;
+    if (accepted) {
+      constexpr sampler history_sampler(coord::normalized,
+                                        address::clamp_to_edge, filter::linear);
+      history = root.history_color.sample(history_sampler, history_uv);
+    }
+  }
+
+  if (accepted) {
+    float3 neighborhood_min = current.rgb;
+    float3 neighborhood_max = current.rgb;
+    for (int y = -1; y <= 1; ++y) {
+      for (int x = -1; x <= 1; ++x) {
+        int2 sample_pixel =
+            clamp(int2(pixel) + int2(x, y), int2(0), int2(root.extent) - 1);
+        float3 sample_color = root.scene.read(uint2(sample_pixel)).rgb;
+        neighborhood_min = min(neighborhood_min, sample_color);
+        neighborhood_max = max(neighborhood_max, sample_color);
+      }
+    }
+    history.rgb = clamp(history.rgb, neighborhood_min, neighborhood_max);
+  }
+  float motion_pixels = length(motion * float2(root.extent));
+  float history_weight =
+      accepted ? 0.9 * (1.0 - reactive) * saturate(1.0 - motion_pixels / 128.0)
+               : 0.0;
+  float4 resolved =
+      float4(mix(current.rgb, history.rgb, history_weight), current.a);
+  if (root.render_mode == 7u)
+    resolved = float4(saturate(abs(motion) * float2(root.extent) / 16.0),
+                      validity.x, 1.0);
+  else if (root.render_mode == 8u)
+    resolved =
+        accepted ? float4(0.0, 1.0, 0.0, 1.0) : float4(1.0, 0.0, 0.0, 1.0);
+
+  root.output_color.write(resolved, pixel);
+  root.output_depth.write(float4(depth, 0.0, 0.0, 0.0), pixel);
+  root.output_identity.write(uint4(identity, 0u, 0u), pixel);
+  root.output_primitive.write(uint4(primitive, 0u, 0u, 0u), pixel);
 }
 
 struct VkrMetalPacketTransmissionShadeRoot {
@@ -1550,8 +1726,12 @@ kernel void vkr_metal_packet_sdsm_reduce(
 
 static_assert(sizeof(VkrGpuDrawCompactionState) == 80,
               "GPU draw compaction state ABI must remain 80 bytes");
-static_assert(sizeof(VkrMetalPacketGBufferResolveRoot) == 192,
-              "G-buffer resolve root ABI must remain 192 bytes");
+static_assert(sizeof(VkrMetalPacketTemporalTransformRoot) == 32,
+              "Temporal-transform root ABI must remain 32 bytes");
+static_assert(sizeof(VkrMetalPacketGBufferResolveRoot) == 352,
+              "G-buffer resolve root ABI must remain 352 bytes");
+static_assert(sizeof(VkrMetalPacketTemporalResolveRoot) == 160,
+              "Temporal-resolve root ABI must remain 160 bytes");
 static_assert(sizeof(VkrMetalPacketDeferredLightingRoot) == 144,
               "Deferred-lighting root ABI must remain 144 bytes");
 static_assert(sizeof(VkrMetalPacketTransmissionShadeRoot) == 272,

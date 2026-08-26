@@ -910,6 +910,9 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   renderer->camera_system = (VkrCameraSystem){0};
   renderer->active_camera = VKR_CAMERA_HANDLE_INVALID;
   renderer->camera_controller = (VkrCameraController){0};
+  renderer->temporal_state = (VkrTemporalState){0};
+  renderer->temporal_reset_reasons = 0u;
+  renderer->temporal_enabled = !vkr_renderer_env_enabled("VKR_TAA_DISABLED");
   renderer->globals = (VkrGlobalMaterialState){
       .ambient_color = vec4_new(0.1, 0.1, 0.1, 1.0),
       .exposure = VKR_DEFAULT_EXPOSURE,
@@ -1086,12 +1089,33 @@ typedef struct VkrRendererPreparedPacket {
   VkrUiPassPayload ui;
   VkrPreparedTextDraw world_text_draws[VKR_PREPARED_TEXT_DRAW_MAX];
   VkrPreparedTextDraw ui_text_draws[VKR_PREPARED_TEXT_DRAW_MAX];
+  VkrTemporalFrameInput temporal_input;
 } VkrRendererPreparedPacket;
 
 static void vkr_renderer_prepare_packet(RendererFrontend *rf,
                                         const VkrRenderPacket *packet,
                                         VkrRendererPreparedPacket *prepared) {
   prepared->packet = *packet;
+  const uint32_t temporal_width = packet->frame.viewport_width
+                                      ? packet->frame.viewport_width
+                                      : packet->frame.window_width;
+  const uint32_t temporal_height = packet->frame.viewport_height
+                                       ? packet->frame.viewport_height
+                                       : packet->frame.window_height;
+  prepared->temporal_input = (VkrTemporalFrameInput){
+      .view = packet->globals.view,
+      .projection = packet->globals.projection,
+      .view_position = packet->globals.view_position,
+      .scene_generation = packet->frame.scene_generation,
+      .frame_index = packet->frame.frame_index,
+      .width = temporal_width,
+      .height = temporal_height,
+      .render_mode = packet->globals.render_mode,
+      .explicit_reset_reasons = rf->temporal_reset_reasons,
+      .enabled = rf->temporal_enabled,
+  };
+  prepared->packet.globals.temporal =
+      vkr_temporal_prepare(&rf->temporal_state, &prepared->temporal_input);
 
   const VkrTextUpdatesPayload *updates = packet->text_updates;
   if (updates) {
@@ -1159,6 +1183,8 @@ renderer_impl_vulkan_submit_packet(void *state, const VkrRenderPacket *packet,
         out_validation_error, VKR_RENDERER_ERROR_SUBMISSION_FAILED, "vulkan",
         "Vulkan packet submission failed");
   }
+  vkr_temporal_commit(&rf->temporal_state, &prepared.temporal_input);
+  rf->temporal_reset_reasons = 0u;
   if (packet->picking && packet->picking->pending &&
       rf->picking.state == VKR_PICKING_STATE_RENDER_PENDING)
     rf->picking.state = VKR_PICKING_STATE_READBACK_PENDING;
@@ -2344,6 +2370,8 @@ renderer_impl_metal_submit_packet(void *state, const VkrRenderPacket *packet,
         out_validation_error, VKR_RENDERER_ERROR_SUBMISSION_FAILED, "metal",
         "Metal packet submission failed");
   }
+  vkr_temporal_commit(&rf->temporal_state, &prepared.temporal_input);
+  rf->temporal_reset_reasons = 0u;
   VkrRendererImplSubmitResult current_result = {0};
   vkr_renderer_impl_lower_metal_result(&result, &current_result);
   current_result.source_frame_index = packet->frame.frame_index;
@@ -2792,6 +2820,14 @@ void vkr_renderer_resize(VkrRendererFrontendHandle renderer, uint32_t width,
      may separate the stored fit from the next camera pose. */
   vkr_shadow_system_invalidate_fit_history(&rf->shadow_system);
   rf->timing_result.shadow_depth_range = (VkrShadowDepthRangeSample){0};
+  rf->temporal_reset_reasons |= VKR_TEMPORAL_RESET_EXPLICIT;
+}
+
+void vkr_renderer_invalidate_temporal_history(
+    VkrRendererFrontendHandle renderer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  ((RendererFrontend *)renderer)->temporal_reset_reasons |=
+      VKR_TEMPORAL_RESET_EXPLICIT;
 }
 
 static VkrRendererError renderer_impl_metal_cancel_frame(void *state) {
