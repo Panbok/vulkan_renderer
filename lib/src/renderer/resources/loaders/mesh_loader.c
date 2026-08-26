@@ -335,6 +335,7 @@ vkr_internal bool8_t vkr_mesh_loader_commit_merged_buffer(
       source->index_size != sizeof(uint32_t) || source->vertex_count == 0 ||
       source->index_count == 0 || !source->vertices || !source->indices ||
       range_count == 0) {
+    log_error("MeshLoader: merged mesh state is incomplete");
     return false_v;
   }
   const uint64_t working_vertex_bytes =
@@ -352,6 +353,9 @@ vkr_internal bool8_t vkr_mesh_loader_commit_merged_buffer(
   Array_VkrMeshLoaderSubmeshRange ranges =
       array_create_VkrMeshLoaderSubmeshRange(result_allocator, range_count);
   if (!working_vertices || !vertices || !indices || !ranges.data) {
+    log_error("MeshLoader: failed to allocate optimized mesh (%u vertices, %u "
+              "indices, %u ranges)",
+              source->vertex_count, source->index_count, range_count);
     return false_v;
   }
 
@@ -363,6 +367,7 @@ vkr_internal bool8_t vkr_mesh_loader_commit_merged_buffer(
   }
   VkrAllocatorScope scope = vkr_allocator_begin_scope(scratch_allocator);
   if (!vkr_allocator_scope_is_valid(&scope)) {
+    log_error("MeshLoader: failed to acquire optimization scratch scope");
     return false_v;
   }
   uint32_t *local_indices = vkr_allocator_alloc(
@@ -370,6 +375,8 @@ vkr_internal bool8_t vkr_mesh_loader_commit_merged_buffer(
       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!local_indices) {
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    log_error("MeshLoader: failed to allocate %u optimization indices",
+              max_range_indices);
     return false_v;
   }
   const VkrVertex3d *source_vertices = source->vertices;
@@ -425,6 +432,10 @@ vkr_internal bool8_t vkr_mesh_loader_commit_merged_buffer(
           index_cursor == source->index_count;
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!valid) {
+    log_error("MeshLoader: optimized mesh ranges are not contiguous (%u/%u "
+              "vertices, %u/%u indices)",
+              source_vertex_cursor, source->vertex_count, index_cursor,
+              source->index_count);
     return false_v;
   }
   output_vertex_count = output_vertex_cursor;
@@ -447,6 +458,8 @@ vkr_internal bool8_t vkr_mesh_loader_commit_merged_buffer(
   if (!vkr_packed_geometry_pack(working_vertices, output_vertex_count,
                                 geometry_min, geometry_max, &budgets, vertices,
                                 &decode, &quantization)) {
+    log_error("MeshLoader: failed to quantize %u optimized vertices",
+              output_vertex_count);
     return false_v;
   }
 
@@ -1604,19 +1617,20 @@ vkr_internal bool8_t vkr_mesh_loader_can_load(VkrResourceLoader *self,
   return false_v;
 }
 
-vkr_internal bool8_t vkr_mesh_load_job_run_inner(VkrMeshLoadJobPayload *job,
-                                                 VkrAllocator *job_scratch) {
+vkr_internal bool8_t vkr_mesh_load_job_run_inner(
+    VkrMeshLoadJobPayload *job, VkrAllocator *parse_allocator,
+    VkrAllocator *scratch_allocator) {
   *job->success = false_v;
   *job->error = VKR_RENDERER_ERROR_NONE;
 
-  VkrMeshLoaderState state =
-      vkr_mesh_loader_state_create(job->context, job_scratch, job_scratch,
-                                   job_scratch, job->mesh_path, job->error);
+  VkrMeshLoaderState state = vkr_mesh_loader_state_create(
+      job->context, parse_allocator, scratch_allocator, scratch_allocator,
+      job->mesh_path, job->error);
 
   String8 vkb_ext = string8_lit("vkb");
   if (string8_equalsi(&state.source_extension, &vkb_ext)) {
     FilePath file_path =
-        file_path_create(string8_cstr(&state.source_path), job_scratch,
+        file_path_create(string8_cstr(&state.source_path), scratch_allocator,
                          vkr_mesh_loader_path_is_absolute(state.source_path)
                              ? FILE_PATH_TYPE_ABSOLUTE
                              : FILE_PATH_TYPE_RELATIVE);
@@ -1627,7 +1641,7 @@ vkr_internal bool8_t vkr_mesh_load_job_run_inner(VkrMeshLoadJobPayload *job,
     uint8_t *artifact = NULL;
     uint64_t artifact_size = 0;
     if (file_open(&file_path, mode, &file) != FILE_ERROR_NONE ||
-        file_read_all(&file, job_scratch, &artifact, &artifact_size) !=
+        file_read_all(&file, scratch_allocator, &artifact, &artifact_size) !=
             FILE_ERROR_NONE) {
       file_close(&file);
       *job->error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
@@ -1636,8 +1650,8 @@ vkr_internal bool8_t vkr_mesh_load_job_run_inner(VkrMeshLoadJobPayload *job,
     file_close(&file);
 
     VkrMeshCookedDecoded decoded = {0};
-    if (!vkr_mesh_cooked_decode(job->result_allocator, job_scratch, artifact,
-                                artifact_size, &decoded)) {
+    if (!vkr_mesh_cooked_decode(job->result_allocator, scratch_allocator,
+                                artifact, artifact_size, &decoded)) {
       *job->error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
       log_error("MeshLoader: invalid cooked mesh '%.*s'",
                 (int32_t)job->mesh_path.length, job->mesh_path.str);
@@ -1662,7 +1676,7 @@ vkr_internal bool8_t vkr_mesh_load_job_run_inner(VkrMeshLoadJobPayload *job,
     };
     if (!vkr_mesh_loader_analyze_buffer(
             &decoded.mesh_buffer, decoded.ranges.data,
-            (uint32_t)decoded.ranges.length, job_scratch, true_v,
+            (uint32_t)decoded.ranges.length, scratch_allocator, true_v,
             &job->result->load_metrics)) {
       *job->error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
       return false_v;
@@ -1692,10 +1706,10 @@ vkr_internal bool8_t vkr_mesh_load_job_run_inner(VkrMeshLoadJobPayload *job,
       .preparation = VKR_MESH_PREPARATION_SOURCE,
       .runtime_optimized = true_v,
   };
-  if (!vkr_mesh_loader_analyze_buffer(&state.merged_buffer,
-                                      state.merged_submeshes.data,
-                                      (uint32_t)state.merged_submeshes.length,
-                                      job_scratch, true_v, &load_metrics)) {
+  if (!vkr_mesh_loader_analyze_buffer(
+          &state.merged_buffer, state.merged_submeshes.data,
+          (uint32_t)state.merged_submeshes.length, scratch_allocator, true_v,
+          &load_metrics)) {
     *job->error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
@@ -1703,7 +1717,7 @@ vkr_internal bool8_t vkr_mesh_load_job_run_inner(VkrMeshLoadJobPayload *job,
   VkrMeshLoaderBuffer result_buffer = {0};
   Array_VkrMeshLoaderSubmeshRange result_ranges = {0};
   if (!vkr_mesh_loader_commit_merged_buffer(&state, job->result_allocator,
-                                            job_scratch, &result_buffer,
+                                            scratch_allocator, &result_buffer,
                                             &result_ranges)) {
     *job->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
     return false_v;
@@ -1714,9 +1728,9 @@ vkr_internal bool8_t vkr_mesh_load_job_run_inner(VkrMeshLoadJobPayload *job,
   load_metrics.decoded_bytes = decoded_bytes;
   load_metrics.upload_bytes = decoded_bytes;
   load_metrics.vertex_count = result_buffer.vertex_count;
-  if (!vkr_mesh_loader_analyze_buffer(&result_buffer, result_ranges.data,
-                                      (uint32_t)result_ranges.length,
-                                      job_scratch, false_v, &load_metrics)) {
+  if (!vkr_mesh_loader_analyze_buffer(
+          &result_buffer, result_ranges.data, (uint32_t)result_ranges.length,
+          scratch_allocator, false_v, &load_metrics)) {
     *job->error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
@@ -1745,10 +1759,22 @@ vkr_internal bool8_t vkr_mesh_load_job_run(VkrJobContext *ctx, void *payload) {
     *job->error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
+  Arena *scratch_arena = arena_create(GB(4), MB(8));
+  if (!scratch_arena) {
+    arena_destroy(parse_arena);
+    *job->success = false_v;
+    *job->error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
   VkrAllocator parse_allocator = {.ctx = parse_arena};
+  VkrAllocator scratch_allocator = {.ctx = scratch_arena};
   vkr_allocator_arena(&parse_allocator);
-  const bool8_t result = vkr_mesh_load_job_run_inner(job, &parse_allocator);
+  vkr_allocator_arena(&scratch_allocator);
+  const bool8_t result =
+      vkr_mesh_load_job_run_inner(job, &parse_allocator, &scratch_allocator);
+  vkr_allocator_release_global_accounting(&scratch_allocator);
   vkr_allocator_release_global_accounting(&parse_allocator);
+  arena_destroy(scratch_arena);
   arena_destroy(parse_arena);
   return result;
 }
@@ -2212,14 +2238,18 @@ vkr_internal bool8_t vkr_mesh_loader_prepare_async(
   vkr_allocator_end_scope(&parse_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
   if (!job_success) {
+    const VkrRendererError effective_error =
+        job_error != VKR_RENDERER_ERROR_NONE
+            ? job_error
+            : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    log_error("MeshLoader: failed to prepare '%.*s' (error %u)",
+              (int32_t)name.length, name.str, (uint32_t)effective_error);
     vkr_mesh_loader_destroy_result(context, result, false_v);
     payload->result = NULL;
     vkr_allocator_free_ts(&context->async_allocator, payload, sizeof(*payload),
                           VKR_ALLOCATOR_MEMORY_TAG_STRUCT,
                           context->async_mutex);
-    *out_error = job_error != VKR_RENDERER_ERROR_NONE
-                     ? job_error
-                     : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    *out_error = effective_error;
     return false_v;
   }
 
