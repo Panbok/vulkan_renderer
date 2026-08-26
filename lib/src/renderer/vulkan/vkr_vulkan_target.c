@@ -20,12 +20,12 @@ bool8_t vkr_vk_create_target_set(VkrVulkanRenderer *renderer, uint32_t width,
   out_targets->height = height;
   out_targets->image_count = image_count;
   for (uint32_t i = 0; i < image_count; ++i) {
-    if (!vkr_vk_create_image_ex(renderer, width, height, 1u, 1u,
-                                VK_FORMAT_R8G8B8A8_SRGB, 0u,
-                                VK_IMAGE_VIEW_TYPE_2D,
-                                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                                &out_targets->images[i])) {
+    if (!vkr_vk_create_image_ex(
+            renderer, width, height, 1u, 1u, VK_FORMAT_R8G8B8A8_SRGB, 0u,
+            VK_IMAGE_VIEW_TYPE_2D,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            VKR_GPU_ALLOCATION_OWNER_SWAPCHAIN, &out_targets->images[i])) {
       vkr_vk_destroy_target_set(renderer, out_targets);
       return false_v;
     }

@@ -122,6 +122,9 @@ typedef struct VkrVulkanMemoryMetrics {
   uint64_t physical_allocated_bytes_peak;
   uint64_t block_capacity_failures;
   VkrGpuMemoryMetrics aggregate;
+  VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT];
+  uint64_t live_bytes_by_type[VKR_DEVICE_MEMORY_TYPE_MAX];
+  uint64_t live_count_by_type[VKR_DEVICE_MEMORY_TYPE_MAX];
 } VkrVulkanMemoryMetrics;
 
 void vkr_vulkan_renderer_geometry_megabuffer_metrics(

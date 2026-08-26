@@ -282,8 +282,8 @@ vkr_internal bool8_t vkr_vk_release_allocation(
   vkFreeMemory(device, allocation->memory, NULL);
   if (allocation->dedicated)
     vkr_vulkan_memory_pool_record_dedicated_release(
-        renderer->memory_pool, allocation->pool_key, allocation->memory_size,
-        allocation->retired);
+        renderer->memory_pool, allocation->pool_key, allocation->owner,
+        allocation->memory_size, allocation->retired);
   return true_v;
 }
 
@@ -309,7 +309,7 @@ bool8_t vkr_vk_retire_allocation(VkrVulkanRenderer *renderer,
       return false_v;
   } else if (allocation->dedicated) {
     if (!vkr_vulkan_memory_pool_record_dedicated_retire(
-            renderer->memory_pool, allocation->pool_key,
+            renderer->memory_pool, allocation->pool_key, allocation->owner,
             allocation->memory_size))
       return false_v;
   } else {
@@ -327,7 +327,8 @@ bool8_t vkr_vk_retire_buffer(VkrVulkanRenderer *renderer,
 
 bool8_t vkr_vk_create_buffer(VkrVulkanRenderer *renderer,
                              VkrVulkanMemoryClass memory_class,
-                             VkDeviceSize size, VkBufferUsageFlags usage,
+                             VkrGpuAllocationOwner owner, VkDeviceSize size,
+                             VkBufferUsageFlags usage,
                              VkrVulkanBuffer *out_buffer) {
   MemZero(out_buffer, sizeof(*out_buffer));
   out_buffer->size = size;
@@ -352,6 +353,7 @@ bool8_t vkr_vk_create_buffer(VkrVulkanRenderer *renderer,
   vkGetDeviceBufferMemoryRequirements(device, &device_requirements,
                                       &requirements);
   VkrVulkanAllocation *allocation = &out_buffer->allocation;
+  allocation->owner = vkr_gpu_allocation_owner_normalize(owner);
   if (!vkr_vk_choose_memory_type(renderer,
                                  requirements.memoryRequirements.memoryTypeBits,
                                  memory_class, &allocation->memory_type_index,
@@ -381,7 +383,7 @@ bool8_t vkr_vk_create_buffer(VkrVulkanRenderer *renderer,
       !vkr_vulkan_memory_pool_allocate(
           renderer->memory_pool, allocation->pool_key, allocation->properties,
           requirements.memoryRequirements.size,
-          requirements.memoryRequirements.alignment,
+          requirements.memoryRequirements.alignment, allocation->owner,
           &allocation->pooled_allocation))
     return false_v;
   if (vkCreateBuffer(device, &buffer_info, NULL, &out_buffer->handle) !=
@@ -424,7 +426,8 @@ bool8_t vkr_vk_create_buffer(VkrVulkanRenderer *renderer,
       return false_v;
     }
     vkr_vulkan_memory_pool_record_dedicated_allocate(
-        renderer->memory_pool, allocation->pool_key, allocation->memory_size);
+        renderer->memory_pool, allocation->pool_key, allocation->owner,
+        allocation->memory_size);
     VkResult map_result = VK_SUCCESS;
     if ((allocation->properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
         memory_class != VKR_VULKAN_MEMORY_CLASS_DEVICE)
@@ -483,21 +486,24 @@ vkr_internal bool8_t vkr_vk_create_upload_buffers(VkrVulkanRenderer *renderer) {
   const VkrVulkanDescriptorLayout *sampler_layout =
       vkr_vulkan_device_sampler_layout(renderer->device);
   return vkr_vk_create_buffer(
-             renderer, VKR_VULKAN_MEMORY_CLASS_UPLOAD, resource_layout->size,
+             renderer, VKR_VULKAN_MEMORY_CLASS_UPLOAD,
+             VKR_GPU_ALLOCATION_OWNER_SHADER, resource_layout->size,
              VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |
                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
              &renderer->resource_descriptors) &&
          vkr_vk_create_buffer(
-             renderer, VKR_VULKAN_MEMORY_CLASS_UPLOAD, sampler_layout->size,
+             renderer, VKR_VULKAN_MEMORY_CLASS_UPLOAD,
+             VKR_GPU_ALLOCATION_OWNER_SHADER, sampler_layout->size,
              VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT |
                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
              &renderer->sampler_descriptors) &&
-         vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_UPLOAD,
-                              VKR_VULKAN_SENTINEL_UPLOAD_SIZE,
-                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                              &renderer->upload) &&
          vkr_vk_create_buffer(
              renderer, VKR_VULKAN_MEMORY_CLASS_UPLOAD,
+             VKR_GPU_ALLOCATION_OWNER_STAGING, VKR_VULKAN_SENTINEL_UPLOAD_SIZE,
+             VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &renderer->upload) &&
+         vkr_vk_create_buffer(
+             renderer, VKR_VULKAN_MEMORY_CLASS_UPLOAD,
+             VKR_GPU_ALLOCATION_OWNER_SHADER,
              (VkDeviceSize)renderer->config.material_slot_capacity *
                  sizeof(VkrVulkanMaterialGpuRow),
              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, &renderer->materials);
@@ -520,6 +526,7 @@ bool8_t vkr_vk_create_image_ex(VkrVulkanRenderer *renderer, uint32_t width,
                                VkImageCreateFlags flags,
                                VkImageViewType view_type,
                                VkImageUsageFlags usage,
+                               VkrGpuAllocationOwner owner,
                                VkrVulkanImage *out_image) {
   if (!width || !height || !mip_levels || !array_layers ||
       format == VK_FORMAT_UNDEFINED)
@@ -559,6 +566,7 @@ bool8_t vkr_vk_create_image_ex(VkrVulkanRenderer *renderer, uint32_t width,
   vkGetDeviceImageMemoryRequirements(device, &device_requirements,
                                      &requirements);
   VkrVulkanAllocation *allocation = &out_image->allocation;
+  allocation->owner = vkr_gpu_allocation_owner_normalize(owner);
   if (!vkr_vk_choose_memory_type(
           renderer, requirements.memoryRequirements.memoryTypeBits,
           VKR_VULKAN_MEMORY_CLASS_DEVICE, &allocation->memory_type_index,
@@ -579,7 +587,7 @@ bool8_t vkr_vk_create_image_ex(VkrVulkanRenderer *renderer, uint32_t width,
       !vkr_vulkan_memory_pool_allocate(
           renderer->memory_pool, allocation->pool_key, allocation->properties,
           requirements.memoryRequirements.size,
-          requirements.memoryRequirements.alignment,
+          requirements.memoryRequirements.alignment, allocation->owner,
           &allocation->pooled_allocation)) {
     log_error("Vulkan image pool allocation failed "
               "(%ux%u, mips=%u, layers=%u, format=%u, bytes=%llu, type=%u)",
@@ -628,7 +636,8 @@ bool8_t vkr_vk_create_image_ex(VkrVulkanRenderer *renderer, uint32_t width,
       return false_v;
     }
     vkr_vulkan_memory_pool_record_dedicated_allocate(
-        renderer->memory_pool, allocation->pool_key, allocation->memory_size);
+        renderer->memory_pool, allocation->pool_key, allocation->owner,
+        allocation->memory_size);
   } else {
     allocation->pooled = true_v;
     allocation->memory = allocation->pooled_allocation.memory;
@@ -667,14 +676,6 @@ bool8_t vkr_vk_create_image_ex(VkrVulkanRenderer *renderer, uint32_t width,
   return true_v;
 }
 
-bool8_t vkr_vk_create_image(VkrVulkanRenderer *renderer, uint32_t width,
-                            uint32_t height, VkImageUsageFlags usage,
-                            VkrVulkanImage *out_image) {
-  return vkr_vk_create_image_ex(renderer, width, height, 1u, 1u,
-                                VK_FORMAT_R8G8B8A8_UNORM, 0u,
-                                VK_IMAGE_VIEW_TYPE_2D, usage, out_image);
-}
-
 vkr_internal bool8_t vkr_vk_create_frame_slots(VkrVulkanRenderer *renderer) {
   VkDevice device = vkr_vk_renderer_device(renderer);
   const VkDeviceSize readback_size = VKR_VULKAN_READBACK_SIZE;
@@ -705,9 +706,11 @@ vkr_internal bool8_t vkr_vk_create_frame_slots(VkrVulkanRenderer *renderer) {
         vkCreateQueryPool(device, &query_info, NULL, &slot->timestamp_pool) !=
             VK_SUCCESS ||
         !vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_READBACK,
-                              readback_size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                              VKR_GPU_ALLOCATION_OWNER_READBACK, readback_size,
+                              VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                               &slot->readback) ||
         !vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_UPLOAD,
+                              VKR_GPU_ALLOCATION_OWNER_STAGING,
                               VKR_VULKAN_FRAME_UPLOAD_SIZE,
                               VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
                                   VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
@@ -715,6 +718,7 @@ vkr_internal bool8_t vkr_vk_create_frame_slots(VkrVulkanRenderer *renderer) {
                               &slot->frame_upload) ||
         (renderer->config.capture_ring_capacity > 0u &&
          !vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_READBACK,
+                               VKR_GPU_ALLOCATION_OWNER_READBACK,
                                renderer->config.capture_max_batch_bytes,
                                VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                &slot->capture_readback))) {
@@ -753,11 +757,12 @@ bool8_t vkr_vk_create_resources(VkrVulkanRenderer *renderer) {
     log_error("Vulkan failed to create upload buffers");
     return false_v;
   }
-  if (!vkr_vk_create_image(renderer, 1u, 1u,
-                           VK_IMAGE_USAGE_SAMPLED_BIT |
-                               VK_IMAGE_USAGE_STORAGE_BIT |
-                               VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                           &renderer->sentinel_image)) {
+  if (!vkr_vk_create_image_ex(
+          renderer, 1u, 1u, 1u, 1u, VK_FORMAT_R8G8B8A8_UNORM, 0u,
+          VK_IMAGE_VIEW_TYPE_2D,
+          VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
+              VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+          VKR_GPU_ALLOCATION_OWNER_SHADER, &renderer->sentinel_image)) {
     log_error("Vulkan failed to create the sentinel image");
     return false_v;
   }

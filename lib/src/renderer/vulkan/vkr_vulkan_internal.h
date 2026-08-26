@@ -620,6 +620,7 @@ typedef struct VkrVulkanAllocation {
   VkMemoryPropertyFlags properties;
   VkrVulkanPooledAllocation pooled_allocation;
   VkrVulkanMemoryPoolKey pool_key;
+  VkrGpuAllocationOwner owner;
   bool8_t pooled;
   bool8_t dedicated;
   bool8_t retired;
@@ -1145,18 +1146,17 @@ bool8_t vkr_vk_commit_texture_initializations(VkrVulkanRenderer *renderer,
                                               uint64_t retire_value);
 bool8_t vkr_vk_create_buffer(VkrVulkanRenderer *renderer,
                              VkrVulkanMemoryClass memory_class,
-                             VkDeviceSize size, VkBufferUsageFlags usage,
+                             VkrGpuAllocationOwner owner, VkDeviceSize size,
+                             VkBufferUsageFlags usage,
                              VkrVulkanBuffer *out_buffer);
 bool8_t vkr_vk_create_descriptor_slot_tables(VkrVulkanRenderer *renderer);
-bool8_t vkr_vk_create_image(VkrVulkanRenderer *renderer, uint32_t width,
-                            uint32_t height, VkImageUsageFlags usage,
-                            VkrVulkanImage *out_image);
 bool8_t vkr_vk_create_image_ex(VkrVulkanRenderer *renderer, uint32_t width,
                                uint32_t height, uint32_t mip_levels,
                                uint32_t array_layers, VkFormat format,
                                VkImageCreateFlags flags,
                                VkImageViewType view_type,
                                VkImageUsageFlags usage,
+                               VkrGpuAllocationOwner owner,
                                VkrVulkanImage *out_image);
 bool8_t vkr_vk_create_target_set(VkrVulkanRenderer *renderer, uint32_t width,
                                  uint32_t height, uint32_t image_count,

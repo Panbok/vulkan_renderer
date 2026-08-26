@@ -27,6 +27,9 @@ struct VkrVulkanMemoryPoolManager {
   uint64_t block_capacity_failures;
   uint64_t native_allocation_failures;
   VkrGpuMemoryMetrics dedicated_metrics;
+  VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT];
+  uint64_t live_bytes_by_type[VKR_DEVICE_MEMORY_TYPE_MAX];
+  uint64_t live_count_by_type[VKR_DEVICE_MEMORY_TYPE_MAX];
 };
 
 bool8_t vkr_vulkan_noncoherent_range(uint64_t offset, uint64_t size,
@@ -114,6 +117,35 @@ bool8_t vkr_vulkan_memory_block_size(uint64_t configured_size,
   if (minimum > UINT64_MAX - (alignment - 1u))
     return false_v;
   *out_size = AlignPow2(minimum, alignment);
+  return true_v;
+}
+void vkr_vulkan_memory_owner_record_allocate(
+    VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT],
+    VkrGpuAllocationOwner owner, uint64_t size) {
+  if (!owners || !size)
+    return;
+  VkrGpuAllocationOwnerTotals *totals =
+      &owners[vkr_gpu_allocation_owner_normalize(owner)];
+  totals->live_bytes += size;
+  totals->peak_bytes = Max(totals->peak_bytes, totals->live_bytes);
+  totals->total_bytes += size;
+  totals->live_allocation_count++;
+  totals->peak_allocation_count =
+      Max(totals->peak_allocation_count, totals->live_allocation_count);
+  totals->total_allocation_count++;
+}
+
+bool8_t vkr_vulkan_memory_owner_record_release(
+    VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT],
+    VkrGpuAllocationOwner owner, uint64_t size) {
+  if (!owners || !size)
+    return false_v;
+  VkrGpuAllocationOwnerTotals *totals =
+      &owners[vkr_gpu_allocation_owner_normalize(owner)];
+  if (!totals->live_allocation_count || totals->live_bytes < size)
+    return false_v;
+  totals->live_bytes -= size;
+  totals->live_allocation_count--;
   return true_v;
 }
 
@@ -257,6 +289,8 @@ vkr_internal VkrVulkanMemoryBlock *vkr_vk_memory_create_block(
   manager->blocks[block_index] = pending;
   manager->physical_allocations_created++;
   manager->block_bytes += block_size;
+  manager->live_bytes_by_type[key.memory_type_index] += block_size;
+  manager->live_count_by_type[key.memory_type_index]++;
   manager->physical_allocated_bytes_peak =
       Max(manager->physical_allocated_bytes_peak,
           manager->block_bytes + manager->dedicated_bytes);
@@ -270,10 +304,11 @@ vkr_internal VkrVulkanMemoryBlock *vkr_vk_memory_create_block(
 bool8_t vkr_vulkan_memory_pool_allocate(
     VkrVulkanMemoryPoolManager *manager, VkrVulkanMemoryPoolKey key,
     VkMemoryPropertyFlags properties, VkDeviceSize size, VkDeviceSize alignment,
-    VkrVulkanPooledAllocation *out_allocation) {
+    VkrGpuAllocationOwner owner, VkrVulkanPooledAllocation *out_allocation) {
   if (!manager || !out_allocation || !size || !alignment ||
       key.memory_class >= VKR_VULKAN_MEMORY_CLASS_COUNT ||
       key.kind >= VKR_VULKAN_MEMORY_KIND_COUNT ||
+      key.memory_type_index >= VKR_DEVICE_MEMORY_TYPE_MAX ||
       (key.kind == VKR_VULKAN_MEMORY_KIND_IMAGE && key.device_address_required))
     return false_v;
   MemZero(out_allocation, sizeof(*out_allocation));
@@ -308,9 +343,13 @@ bool8_t vkr_vulkan_memory_pool_allocate(
         .properties = candidate->properties,
         .handle = handle,
         .key = key,
+        .requested_size = placement.resource_size,
+        .owner = vkr_gpu_allocation_owner_normalize(owner),
         .block_index = i,
         .valid = true_v,
     };
+    vkr_vulkan_memory_owner_record_allocate(manager->owners, owner,
+                                            placement.resource_size);
     return true_v;
   }
   uint32_t block_index = UINT32_MAX;
@@ -333,9 +372,13 @@ bool8_t vkr_vulkan_memory_pool_allocate(
       .properties = block->properties,
       .handle = handle,
       .key = key,
+      .requested_size = placement.resource_size,
+      .owner = vkr_gpu_allocation_owner_normalize(owner),
       .block_index = block_index,
       .valid = true_v,
   };
+  vkr_vulkan_memory_owner_record_allocate(manager->owners, owner,
+                                          placement.resource_size);
   return true_v;
 }
 
@@ -350,17 +393,25 @@ bool8_t vkr_vulkan_memory_pool_release(VkrVulkanMemoryPoolManager *manager,
        allocation->retire_value > completed_submit_value))
     return false_v;
   VkrVulkanMemoryBlock *block = &manager->blocks[allocation->block_index];
+  const bool8_t was_retired = allocation->retired;
+  const VkrGpuAllocationOwner owner = allocation->owner;
+  const uint64_t requested_size = allocation->requested_size;
   if (!vkr_vulkan_memory_pool_key_equal(block->key, allocation->key) ||
       vkr_gpu_memory_collect(block->core, completed_submit_value, NULL, NULL,
                              NULL) != VKR_GPU_MEMORY_STATUS_OK)
     return false_v;
-  if (!allocation->retired &&
+  if (!was_retired &&
       (vkr_gpu_memory_retire(block->core, allocation->handle,
                              last_use_submit_value) !=
            VKR_GPU_MEMORY_STATUS_OK ||
        vkr_gpu_memory_collect(block->core, completed_submit_value, NULL, NULL,
                               NULL) != VKR_GPU_MEMORY_STATUS_OK))
     return false_v;
+  if (!was_retired) {
+    const bool8_t owner_released = vkr_vulkan_memory_owner_record_release(
+        manager->owners, owner, requested_size);
+    assert_log(owner_released, "Vulkan pooled owner accounting underflow");
+  }
   MemZero(allocation, sizeof(*allocation));
   return true_v;
 }
@@ -376,6 +427,9 @@ bool8_t vkr_vulkan_memory_pool_retire(VkrVulkanMemoryPoolManager *manager,
       vkr_gpu_memory_retire(block->core, allocation->handle, retire_value) !=
           VKR_GPU_MEMORY_STATUS_OK)
     return false_v;
+  const bool8_t owner_released = vkr_vulkan_memory_owner_record_release(
+      manager->owners, allocation->owner, allocation->requested_size);
+  assert_log(owner_released, "Vulkan pooled owner accounting underflow");
   allocation->retired = true_v;
   allocation->retire_value = retire_value;
   return true_v;
@@ -392,8 +446,8 @@ vkr_vk_dedicated_class_metrics(VkrGpuMemoryMetrics *metrics,
 
 void vkr_vulkan_memory_pool_record_dedicated_allocate(
     VkrVulkanMemoryPoolManager *manager, VkrVulkanMemoryPoolKey key,
-    uint64_t size) {
-  if (!manager || !size)
+    VkrGpuAllocationOwner owner, uint64_t size) {
+  if (!manager || !size || key.memory_type_index >= VKR_DEVICE_MEMORY_TYPE_MAX)
     return;
   VkrGpuMemoryMetrics *metrics = &manager->dedicated_metrics;
   VkrGpuMemoryClassMetrics *class_metrics =
@@ -421,6 +475,9 @@ void vkr_vulkan_memory_pool_record_dedicated_allocate(
   manager->dedicated_live++;
   manager->dedicated_bytes += size;
   manager->physical_allocations_created++;
+  manager->live_bytes_by_type[key.memory_type_index] += size;
+  manager->live_count_by_type[key.memory_type_index]++;
+  vkr_vulkan_memory_owner_record_allocate(manager->owners, owner, size);
   manager->physical_allocated_bytes_peak =
       Max(manager->physical_allocated_bytes_peak,
           manager->block_bytes + manager->dedicated_bytes);
@@ -431,9 +488,12 @@ void vkr_vulkan_memory_pool_record_dedicated_allocate(
 
 void vkr_vulkan_memory_pool_record_dedicated_release(
     VkrVulkanMemoryPoolManager *manager, VkrVulkanMemoryPoolKey key,
-    uint64_t size, bool8_t retired) {
-  if (!manager || !size || !manager->dedicated_live ||
-      manager->dedicated_bytes < size)
+    VkrGpuAllocationOwner owner, uint64_t size, bool8_t retired) {
+  if (!manager || !size ||
+      key.memory_type_index >= VKR_DEVICE_MEMORY_TYPE_MAX ||
+      !manager->dedicated_live || manager->dedicated_bytes < size ||
+      !manager->live_count_by_type[key.memory_type_index] ||
+      manager->live_bytes_by_type[key.memory_type_index] < size)
     return;
   VkrGpuMemoryMetrics *metrics = &manager->dedicated_metrics;
   VkrGpuMemoryClassMetrics *class_metrics =
@@ -462,11 +522,18 @@ void vkr_vulkan_memory_pool_record_dedicated_release(
   *class_reserved -= size;
   manager->dedicated_live--;
   manager->dedicated_bytes -= size;
+  manager->live_count_by_type[key.memory_type_index]--;
+  manager->live_bytes_by_type[key.memory_type_index] -= size;
+  if (!retired) {
+    const bool8_t owner_released =
+        vkr_vulkan_memory_owner_record_release(manager->owners, owner, size);
+    assert_log(owner_released, "Vulkan dedicated owner accounting underflow");
+  }
 }
 
 bool8_t vkr_vulkan_memory_pool_record_dedicated_retire(
     VkrVulkanMemoryPoolManager *manager, VkrVulkanMemoryPoolKey key,
-    uint64_t size) {
+    VkrGpuAllocationOwner owner, uint64_t size) {
   if (!manager || !size)
     return false_v;
   VkrGpuMemoryMetrics *metrics = &manager->dedicated_metrics;
@@ -489,6 +556,9 @@ bool8_t vkr_vulkan_memory_pool_record_dedicated_retire(
   class_metrics->retired_allocations++;
   class_metrics->retired_requested_bytes += size;
   class_metrics->retired_reserved_bytes += size;
+  const bool8_t owner_released =
+      vkr_vulkan_memory_owner_record_release(manager->owners, owner, size);
+  assert_log(owner_released, "Vulkan dedicated owner accounting underflow");
   return true_v;
 }
 
@@ -516,6 +586,11 @@ void vkr_vulkan_memory_pool_get_metrics(
   out_metrics->physical_allocated_bytes_peak =
       manager->physical_allocated_bytes_peak;
   out_metrics->block_capacity_failures = manager->block_capacity_failures;
+  MemCopy(out_metrics->owners, manager->owners, sizeof(out_metrics->owners));
+  MemCopy(out_metrics->live_bytes_by_type, manager->live_bytes_by_type,
+          sizeof(out_metrics->live_bytes_by_type));
+  MemCopy(out_metrics->live_count_by_type, manager->live_count_by_type,
+          sizeof(out_metrics->live_count_by_type));
   for (uint32_t i = 0; i < manager->block_count; ++i) {
     VkrGpuMemoryMetrics block_metrics = {0};
     vkr_gpu_memory_get_metrics(manager->blocks[i].core, &block_metrics);

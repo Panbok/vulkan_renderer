@@ -488,14 +488,10 @@ vkr_gpu_allocation_owner_normalize(VkrGpuAllocationOwner owner) {
 /**
  * @brief Device-memory accounting for one logical owner bucket.
  *
- * Kept as one struct per owner rather than parallel per-statistic arrays: an
- * allocation or free updates exactly one of these, so the six counters share a
- * cache line, and a new statistic is one field instead of one array in each of
- * the backend tracker and the public snapshot.
- *
- * `total_*` are cumulative and stay exact even after the handle table
- * saturates. `live_*` and `peak_*` are derived from that table and drift once
- * it does, which `VkrDeviceMemoryStats.live_totals_exact` reports.
+ * `live_*` describes logical resource allocations that have not retired,
+ * `peak_*` is the corresponding high-water mark, and `total_*` is cumulative.
+ * These requested bytes intentionally do not include block slack, placement
+ * alignment, or allocations retained while awaiting GPU completion.
  */
 typedef struct VkrGpuAllocationOwnerTotals {
   uint64_t live_bytes;
@@ -1087,16 +1083,16 @@ typedef struct VkrRendererUploadWaitStats {
 #define VKR_DEVICE_MEMORY_HEAP_MAX 16
 
 /**
- * @brief Device-memory allocation telemetry.
+ * @brief Physical device-memory and logical resource-owner telemetry.
  *
- * The renderer makes one device allocation per buffer, image, and readback
- * buffer. These are the numbers that decide whether block pooling is worth
- * doing and what block size it should use, which is why they are captured
- * before any allocator is written.
+ * The aggregate allocation counts/bytes and per-memory-type rows describe
+ * physical backend allocations and committed bytes. Owner rows describe
+ * caller-declared logical allocation requirements, so their sum may be lower
+ * than committed memory when resources share pooled blocks. Owners are never
+ * inferred from memory types.
  *
- * Owner rows use caller-declared resource metadata; they are never inferred
- * from memory types. `heap_usage_bytes`/`heap_budget_bytes` are populated only
- * when VK_EXT_memory_budget is available; `heap_usage_valid` says which it is.
+ * `heap_usage_bytes`/`heap_budget_bytes` are populated only when the backend
+ * can query driver residency data; `heap_usage_valid` reports availability.
  */
 typedef struct VkrDeviceMemoryStats {
   uint64_t live_allocation_count;
@@ -1110,8 +1106,7 @@ typedef struct VkrDeviceMemoryStats {
   uint64_t max_allocation_count;
   uint64_t live_bytes;
   uint64_t peak_bytes;
-  /** False once the tracking table overflowed; live figures are then inexact.
-   */
+  /** False when the backend cannot prove its physical live totals are exact. */
   bool8_t live_totals_exact;
 
   VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT];

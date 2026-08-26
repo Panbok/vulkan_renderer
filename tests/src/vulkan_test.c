@@ -205,6 +205,34 @@ static void test_memory_pool_topology_contract(void) {
   assert(!vkr_vulkan_memory_block_size(1024u, 1u, 96u, &block_size));
   assert(
       !vkr_vulkan_memory_block_size(UINT64_MAX, UINT64_MAX, 256u, &block_size));
+  VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT] = {0};
+  vkr_vulkan_memory_owner_record_allocate(
+      owners, VKR_GPU_ALLOCATION_OWNER_TEXTURE, 64u);
+  vkr_vulkan_memory_owner_record_allocate(
+      owners, VKR_GPU_ALLOCATION_OWNER_TEXTURE, 32u);
+  VkrGpuAllocationOwnerTotals *texture =
+      &owners[VKR_GPU_ALLOCATION_OWNER_TEXTURE];
+  assert(texture->live_bytes == 96u && texture->peak_bytes == 96u &&
+         texture->total_bytes == 96u && texture->live_allocation_count == 2u &&
+         texture->peak_allocation_count == 2u &&
+         texture->total_allocation_count == 2u);
+  assert(vkr_vulkan_memory_owner_record_release(
+      owners, VKR_GPU_ALLOCATION_OWNER_TEXTURE, 64u));
+  vkr_vulkan_memory_owner_record_allocate(
+      owners, VKR_GPU_ALLOCATION_OWNER_TEXTURE, 16u);
+  assert(texture->live_bytes == 48u && texture->peak_bytes == 96u &&
+         texture->total_bytes == 112u && texture->live_allocation_count == 2u &&
+         texture->peak_allocation_count == 2u &&
+         texture->total_allocation_count == 3u);
+  assert(vkr_vulkan_memory_owner_record_release(
+      owners, VKR_GPU_ALLOCATION_OWNER_TEXTURE, 32u));
+  assert(vkr_vulkan_memory_owner_record_release(
+      owners, VKR_GPU_ALLOCATION_OWNER_TEXTURE, 16u));
+  assert(!vkr_vulkan_memory_owner_record_release(
+      owners, VKR_GPU_ALLOCATION_OWNER_TEXTURE, 1u));
+  vkr_vulkan_memory_owner_record_allocate(
+      owners, (VkrGpuAllocationOwner)VKR_GPU_ALLOCATION_OWNER_COUNT, 7u);
+  assert(owners[VKR_GPU_ALLOCATION_OWNER_UNKNOWN].live_bytes == 7u);
   printf("  test_memory_pool_topology_contract PASSED\n");
 }
 

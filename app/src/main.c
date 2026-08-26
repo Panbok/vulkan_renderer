@@ -379,6 +379,64 @@ vkr_internal double application_bytes_to_mb(uint64_t bytes) {
 vkr_internal double application_delta_bytes_to_mb(int64_t bytes) {
   return (double)bytes / (double)MB(1);
 }
+vkr_internal const char *
+application_gpu_allocation_owner_name(VkrGpuAllocationOwner owner) {
+  switch (owner) {
+  case VKR_GPU_ALLOCATION_OWNER_MESH:
+    return "mesh";
+  case VKR_GPU_ALLOCATION_OWNER_TEXTURE:
+    return "texture";
+  case VKR_GPU_ALLOCATION_OWNER_FONT:
+    return "font";
+  case VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH:
+    return "render_graph";
+  case VKR_GPU_ALLOCATION_OWNER_SHADER:
+    return "shader";
+  case VKR_GPU_ALLOCATION_OWNER_INSTANCE:
+    return "instance";
+  case VKR_GPU_ALLOCATION_OWNER_INDIRECT:
+    return "indirect";
+  case VKR_GPU_ALLOCATION_OWNER_STAGING:
+    return "staging";
+  case VKR_GPU_ALLOCATION_OWNER_READBACK:
+    return "readback";
+  case VKR_GPU_ALLOCATION_OWNER_SWAPCHAIN:
+    return "swapchain";
+  case VKR_GPU_ALLOCATION_OWNER_UNKNOWN:
+  default:
+    return "unknown";
+  }
+}
+
+vkr_internal bool8_t application_memory_text_append(char **write,
+                                                    size_t *remaining,
+                                                    const char *text) {
+  if (!write || !*write || !remaining || !text)
+    return false_v;
+  const size_t length = strlen(text);
+  if (length >= *remaining)
+    return false_v;
+  MemCopy(*write, text, length);
+  *write += length;
+  *remaining -= length;
+  **write = '\0';
+  return true_v;
+}
+
+vkr_internal bool8_t application_memory_text_append_size(char **write,
+                                                         size_t *remaining,
+                                                         const char *label,
+                                                         uint64_t bytes) {
+  if (!write || !*write || !remaining || !label)
+    return false_v;
+  const size_t length =
+      vkr_allocator_format_size_to_buffer(*write, *remaining, label, bytes);
+  if (!length || length >= *remaining)
+    return false_v;
+  *write += length;
+  *remaining -= length;
+  return true_v;
+}
 
 vkr_internal void application_log_backend_allocator_breakdown(
     const char *label, const VkrAllocatorStatistics *stats) {
@@ -407,11 +465,7 @@ vkr_internal void application_log_backend_allocator_breakdown(
 }
 
 /**
- * @brief Logs device-memory allocation telemetry.
- *
- * This is the measurement the architecture spec asks for before any block
- * allocator is written: allocation count, peak, and per-memory-type
- * distribution decide whether pooling pays and what block size to use.
+ * @brief Logs physical device-memory and logical resource-owner telemetry.
  */
 vkr_internal void application_log_device_memory_stats(Application *application,
                                                       const char *label) {
@@ -424,8 +478,8 @@ vkr_internal void application_log_device_memory_stats(Application *application,
     return;
   }
 
-  log_info("GPU_MEM label=%s allocations=live:%llu peak:%llu total:%llu "
-           "limit:%llu bytes=live:%.3fMB peak:%.3fMB exact=%s",
+  log_info("GPU_MEM label=%s physical_allocations=live:%llu peak:%llu "
+           "total:%llu limit:%llu committed=live:%.3fMB peak:%.3fMB exact=%s",
            label, (unsigned long long)stats.live_allocation_count,
            (unsigned long long)stats.peak_allocation_count,
            (unsigned long long)stats.total_allocation_count,
@@ -433,6 +487,21 @@ vkr_internal void application_log_device_memory_stats(Application *application,
            application_bytes_to_mb(stats.live_bytes),
            application_bytes_to_mb(stats.peak_bytes),
            stats.live_totals_exact ? "yes" : "no");
+  for (uint32_t owner = 0; owner < VKR_GPU_ALLOCATION_OWNER_COUNT; ++owner) {
+    const VkrGpuAllocationOwnerTotals *totals = &stats.owners[owner];
+    if (!totals->live_allocation_count && !totals->total_allocation_count)
+      continue;
+    log_info(
+        "GPU_MEM   owner=%s allocations=live:%llu peak:%llu total:%llu "
+        "bytes=live:%.3fMB peak:%.3fMB total:%.3fMB",
+        application_gpu_allocation_owner_name((VkrGpuAllocationOwner)owner),
+        (unsigned long long)totals->live_allocation_count,
+        (unsigned long long)totals->peak_allocation_count,
+        (unsigned long long)totals->total_allocation_count,
+        application_bytes_to_mb(totals->live_bytes),
+        application_bytes_to_mb(totals->peak_bytes),
+        application_bytes_to_mb(totals->total_bytes));
+  }
 
   for (uint32_t i = 0; i < stats.memory_type_count; ++i) {
     if (stats.live_count_by_type[i] == 0) {
@@ -484,15 +553,22 @@ vkr_internal void application_dump_periodic_metrics(Application *application) {
 
   VkrAllocatorStatistics stats = {0};
   if (application_capture_backend_allocator_stats(application, &stats)) {
-    log_info("CPU_MEM label=%s total=%.3fMB gpu=%.3fMB vulkan=%.3fMB "
-             "texture=%.3fMB",
-             label, application_bytes_to_mb(stats.total_allocated),
-             application_bytes_to_mb(
-                 stats.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_GPU]),
-             application_bytes_to_mb(
-                 stats.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_VULKAN]),
-             application_bytes_to_mb(
-                 stats.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_TEXTURE]));
+    log_info(
+        "CPU_ALLOC label=%s total=%.3fMB renderer=%.3fMB array=%.3fMB "
+        "string=%.3fMB file=%.3fMB vulkan_state=%.3fMB texture_temp=%.3fMB",
+        label, application_bytes_to_mb(stats.total_allocated),
+        application_bytes_to_mb(
+            stats.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_RENDERER]),
+        application_bytes_to_mb(
+            stats.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_ARRAY]),
+        application_bytes_to_mb(
+            stats.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_STRING]),
+        application_bytes_to_mb(
+            stats.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_FILE]),
+        application_bytes_to_mb(
+            stats.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_VULKAN]),
+        application_bytes_to_mb(
+            stats.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_TEXTURE]));
   }
 }
 
@@ -509,19 +585,20 @@ vkr_internal void application_log_backend_allocator_stats(
   }
 
   const uint64_t total_bytes = stats.total_allocated;
-  const uint64_t gpu_bytes = stats.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_GPU];
-  const uint64_t vulkan_bytes =
+  const uint64_t renderer_bytes =
+      stats.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_RENDERER];
+  const uint64_t vulkan_state_bytes =
       stats.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_VULKAN];
-  const uint64_t texture_bytes =
+  const uint64_t texture_temp_bytes =
       stats.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_TEXTURE];
 
   if (!baseline_stats) {
-    log_debug("SCENE_MEM label=%s total=%.3fMB gpu=%.3fMB vulkan=%.3fMB "
-              "texture=%.3fMB",
+    log_debug("SCENE_CPU_ALLOC label=%s total=%.3fMB renderer=%.3fMB "
+              "vulkan_state=%.3fMB texture_temp=%.3fMB",
               label, application_bytes_to_mb(total_bytes),
-              application_bytes_to_mb(gpu_bytes),
-              application_bytes_to_mb(vulkan_bytes),
-              application_bytes_to_mb(texture_bytes));
+              application_bytes_to_mb(renderer_bytes),
+              application_bytes_to_mb(vulkan_state_bytes),
+              application_bytes_to_mb(texture_temp_bytes));
     if (state && state->scene_memory_verbose) {
       application_log_backend_allocator_breakdown(label, &stats);
     }
@@ -530,26 +607,28 @@ vkr_internal void application_log_backend_allocator_stats(
 
   const int64_t delta_total =
       application_stat_delta(total_bytes, baseline_stats->total_allocated);
-  const int64_t delta_gpu = application_stat_delta(
-      gpu_bytes, baseline_stats->tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_GPU]);
-  const int64_t delta_vulkan = application_stat_delta(
-      vulkan_bytes,
+  const int64_t delta_renderer = application_stat_delta(
+      renderer_bytes,
+      baseline_stats->tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_RENDERER]);
+  const int64_t delta_vulkan_state = application_stat_delta(
+      vulkan_state_bytes,
       baseline_stats->tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_VULKAN]);
-  const int64_t delta_texture = application_stat_delta(
-      texture_bytes,
+  const int64_t delta_texture_temp = application_stat_delta(
+      texture_temp_bytes,
       baseline_stats->tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_TEXTURE]);
 
-  log_debug(
-      "SCENE_MEM label=%s total=%.3fMB gpu=%.3fMB vulkan=%.3fMB texture=%.3fMB "
-      "delta_total=%+.3fMB delta_gpu=%+.3fMB delta_vulkan=%+.3fMB "
-      "delta_texture=%+.3fMB",
-      label, application_bytes_to_mb(total_bytes),
-      application_bytes_to_mb(gpu_bytes), application_bytes_to_mb(vulkan_bytes),
-      application_bytes_to_mb(texture_bytes),
-      application_delta_bytes_to_mb(delta_total),
-      application_delta_bytes_to_mb(delta_gpu),
-      application_delta_bytes_to_mb(delta_vulkan),
-      application_delta_bytes_to_mb(delta_texture));
+  log_debug("SCENE_CPU_ALLOC label=%s total=%.3fMB renderer=%.3fMB "
+            "vulkan_state=%.3fMB texture_temp=%.3fMB delta_total=%+.3fMB "
+            "delta_renderer=%+.3fMB delta_vulkan_state=%+.3fMB "
+            "delta_texture_temp=%+.3fMB",
+            label, application_bytes_to_mb(total_bytes),
+            application_bytes_to_mb(renderer_bytes),
+            application_bytes_to_mb(vulkan_state_bytes),
+            application_bytes_to_mb(texture_temp_bytes),
+            application_delta_bytes_to_mb(delta_total),
+            application_delta_bytes_to_mb(delta_renderer),
+            application_delta_bytes_to_mb(delta_vulkan_state),
+            application_delta_bytes_to_mb(delta_texture_temp));
   if (state && state->scene_memory_verbose) {
     application_log_backend_allocator_breakdown(label, &stats);
   }
@@ -1494,7 +1573,7 @@ vkr_internal void application_init_memory_text(Application *application) {
   text_config.font =
       application->renderer.font_system.default_system_font_handle;
 #if defined(_WIN32)
-  text_config.font_size = 24.0f;
+  text_config.font_size = 18.0f;
 #else
   VkrFont *font = vkr_font_system_get_default_system_font(
       &application->renderer.font_system);
@@ -1506,7 +1585,7 @@ vkr_internal void application_init_memory_text(Application *application) {
 
   VkrUiTextCreateData payload = {
       .text_id = state->memory_text_id,
-      .content = string8_lit("Global allocator stats: NULL"),
+      .content = string8_lit("Memory metrics: pending"),
       .config = &text_config,
       .anchor = VKR_UI_TEXT_ANCHOR_BOTTOM_RIGHT,
       .padding = (Vec2){10.0f, 10.0f},
@@ -1523,21 +1602,120 @@ vkr_internal void application_init_memory_text(Application *application) {
 }
 
 vkr_internal void application_update_memory_text(Application *application) {
-  if (!application || !state) {
+  if (!application || !state ||
+      !vkr_clock_interval_elapsed(&state->memory_update_clock,
+                                  VKR_MEMORY_UPDATE_INTERVAL)) {
     return;
   }
 
-  if (vkr_clock_interval_elapsed(&state->memory_update_clock,
-                                 VKR_MEMORY_UPDATE_INTERVAL)) {
-    VkrAllocator *frame_alloc = &application->renderer.scratch_allocator;
-    char *allocator_stats = vkr_allocator_print_global_statistics(frame_alloc);
-    String8 allocator_stats_str = string8_create_from_cstr(
-        (uint8_t *)allocator_stats, string_length(allocator_stats));
-    if (allocator_stats_str.length > 0) {
-      application_queue_ui_text_update(application, state->memory_text_id,
-                                       allocator_stats_str);
+  const VkrAllocatorStatistics cpu = vkr_allocator_get_global_statistics();
+  uint64_t cpu_other = 0u;
+  for (uint32_t tag = 0; tag < VKR_ALLOCATOR_MEMORY_TAG_MAX; ++tag) {
+    switch ((VkrAllocatorMemoryTag)tag) {
+    case VKR_ALLOCATOR_MEMORY_TAG_RENDERER:
+    case VKR_ALLOCATOR_MEMORY_TAG_ARRAY:
+    case VKR_ALLOCATOR_MEMORY_TAG_STRING:
+    case VKR_ALLOCATOR_MEMORY_TAG_FILE:
+    case VKR_ALLOCATOR_MEMORY_TAG_VULKAN:
+    case VKR_ALLOCATOR_MEMORY_TAG_TEXTURE:
+      break;
+    default:
+      cpu_other += cpu.tagged_allocs[tag];
+      break;
     }
   }
+
+  char formatted[2048] = {0};
+  char *write = formatted;
+  size_t remaining = sizeof(formatted);
+  bool8_t complete =
+      application_memory_text_append(&write, &remaining,
+                                     "CPU allocator (tracked live)\n") &&
+      application_memory_text_append_size(&write, &remaining, "  Total",
+                                          cpu.total_allocated) &&
+      application_memory_text_append_size(
+          &write, &remaining, "  Renderer",
+          cpu.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_RENDERER]) &&
+      application_memory_text_append_size(
+          &write, &remaining, "  Array",
+          cpu.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_ARRAY]) &&
+      application_memory_text_append_size(
+          &write, &remaining, "  String",
+          cpu.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_STRING]) &&
+      application_memory_text_append_size(
+          &write, &remaining, "  File",
+          cpu.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_FILE]) &&
+      application_memory_text_append_size(
+          &write, &remaining, "  Vulkan state",
+          cpu.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_VULKAN]) &&
+      application_memory_text_append_size(
+          &write, &remaining, "  Texture temp",
+          cpu.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_TEXTURE]) &&
+      application_memory_text_append_size(&write, &remaining, "  Other",
+                                          cpu_other) &&
+      application_memory_text_append(&write, &remaining,
+                                     "\nGPU device memory\n");
+
+  VkrDeviceMemoryStats gpu = {0};
+  if (complete &&
+      vkr_renderer_get_device_memory_stats(&application->renderer, &gpu)) {
+    uint64_t logical_live = 0u;
+    for (uint32_t owner = 0; owner < VKR_GPU_ALLOCATION_OWNER_COUNT; ++owner)
+      logical_live += gpu.owners[owner].live_bytes;
+    const uint64_t frame_data =
+        gpu.owners[VKR_GPU_ALLOCATION_OWNER_INSTANCE].live_bytes +
+        gpu.owners[VKR_GPU_ALLOCATION_OWNER_INDIRECT].live_bytes;
+    const uint64_t transfer =
+        gpu.owners[VKR_GPU_ALLOCATION_OWNER_STAGING].live_bytes +
+        gpu.owners[VKR_GPU_ALLOCATION_OWNER_READBACK].live_bytes;
+    const uint64_t shader_target =
+        gpu.owners[VKR_GPU_ALLOCATION_OWNER_SHADER].live_bytes +
+        gpu.owners[VKR_GPU_ALLOCATION_OWNER_SWAPCHAIN].live_bytes;
+    complete =
+        application_memory_text_append_size(&write, &remaining, "  Committed",
+                                            gpu.live_bytes) &&
+        application_memory_text_append_size(
+            &write, &remaining, "  Committed peak", gpu.peak_bytes) &&
+        application_memory_text_append_size(&write, &remaining,
+                                            "  Logical live", logical_live) &&
+        application_memory_text_append_size(
+            &write, &remaining, "  Mesh",
+            gpu.owners[VKR_GPU_ALLOCATION_OWNER_MESH].live_bytes) &&
+        application_memory_text_append_size(
+            &write, &remaining, "  Texture",
+            gpu.owners[VKR_GPU_ALLOCATION_OWNER_TEXTURE].live_bytes) &&
+        application_memory_text_append_size(
+            &write, &remaining, "  Font",
+            gpu.owners[VKR_GPU_ALLOCATION_OWNER_FONT].live_bytes) &&
+        application_memory_text_append_size(
+            &write, &remaining, "  Render graph",
+            gpu.owners[VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH].live_bytes) &&
+        application_memory_text_append_size(&write, &remaining, "  Frame data",
+                                            frame_data) &&
+        application_memory_text_append_size(&write, &remaining, "  Transfer",
+                                            transfer) &&
+        application_memory_text_append_size(&write, &remaining,
+                                            "  Shader/target", shader_target) &&
+        application_memory_text_append_size(
+            &write, &remaining, "  Unknown",
+            gpu.owners[VKR_GPU_ALLOCATION_OWNER_UNKNOWN].live_bytes);
+  } else if (complete) {
+    complete = application_memory_text_append(&write, &remaining,
+                                              "  Metrics unavailable\n");
+  }
+
+  if (!complete)
+    return;
+  const uint64_t content_length = (uint64_t)(write - formatted);
+  arena_clear(state->stats_arena, ARENA_MEMORY_TAG_STRING);
+  uint8_t *content = arena_alloc(state->stats_arena, content_length + 1u,
+                                 ARENA_MEMORY_TAG_STRING);
+  if (!content)
+    return;
+  MemCopy(content, formatted, content_length + 1u);
+  application_queue_ui_text_update(
+      application, state->memory_text_id,
+      (String8){.str = content, .length = content_length});
 }
 
 /** Logs a paste-ready static camera block for a harness snapshot case. */
@@ -1997,7 +2175,7 @@ vkr_internal void application_init_ui_texts(Application *application) {
   text_config.font =
       application->renderer.font_system.default_system_font_handle;
 #if defined(_WIN32)
-  text_config.font_size = 32.0f;
+  text_config.font_size = 18.0f;
 #else
   VkrFont *font = vkr_font_system_get_default_system_font(
       &application->renderer.font_system);
@@ -2820,6 +2998,9 @@ int main(int argc, char **argv) {
     vkr_resource_system_unload(&state->scene_resource, scene_path);
   }
   state->scene_resource = (VkrResourceHandleInfo){0};
+
+  arena_destroy(state->stats_arena);
+  state->stats_arena = NULL;
 
   application_shutdown(&application);
 

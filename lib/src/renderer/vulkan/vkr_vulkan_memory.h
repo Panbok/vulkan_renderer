@@ -3,6 +3,7 @@
 #include "defines.h"
 #include "memory/vkr_allocator.h"
 #include "renderer/vkr_gpu_memory.h"
+#include "renderer/vkr_renderer.h"
 
 #include <vulkan/vulkan.h>
 
@@ -51,6 +52,8 @@ typedef struct VkrVulkanPooledAllocation {
   VkMemoryPropertyFlags properties;
   VkrGpuAllocationHandle handle;
   VkrVulkanMemoryPoolKey key;
+  VkDeviceSize requested_size;
+  VkrGpuAllocationOwner owner;
   uint32_t block_index;
   bool8_t valid;
   bool8_t retired;
@@ -65,6 +68,9 @@ typedef struct VkrVulkanMemoryPoolMetrics {
   uint64_t physical_allocated_bytes_peak;
   uint64_t block_capacity_failures;
   VkrGpuMemoryMetrics aggregate;
+  VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT];
+  uint64_t live_bytes_by_type[VKR_DEVICE_MEMORY_TYPE_MAX];
+  uint64_t live_count_by_type[VKR_DEVICE_MEMORY_TYPE_MAX];
 } VkrVulkanMemoryPoolMetrics;
 
 typedef struct VkrVulkanMemoryPoolManager VkrVulkanMemoryPoolManager;
@@ -95,6 +101,13 @@ bool8_t vkr_vulkan_memory_block_size(uint64_t configured_size,
                                      uint64_t resource_size, uint64_t alignment,
                                      uint64_t *out_size);
 
+void vkr_vulkan_memory_owner_record_allocate(
+    VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT],
+    VkrGpuAllocationOwner owner, uint64_t size);
+bool8_t vkr_vulkan_memory_owner_record_release(
+    VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT],
+    VkrGpuAllocationOwner owner, uint64_t size);
+
 bool8_t vkr_vulkan_memory_pool_create(const VkrVulkanMemoryPoolConfig *config,
                                       VkrVulkanMemoryPoolManager **out_manager);
 void vkr_vulkan_memory_pool_destroy(VkrVulkanMemoryPoolManager *manager);
@@ -102,7 +115,7 @@ void vkr_vulkan_memory_pool_destroy(VkrVulkanMemoryPoolManager *manager);
 bool8_t vkr_vulkan_memory_pool_allocate(
     VkrVulkanMemoryPoolManager *manager, VkrVulkanMemoryPoolKey key,
     VkMemoryPropertyFlags properties, VkDeviceSize size, VkDeviceSize alignment,
-    VkrVulkanPooledAllocation *out_allocation);
+    VkrGpuAllocationOwner owner, VkrVulkanPooledAllocation *out_allocation);
 
 /** Releases a placement only after its submit value is proven complete. */
 bool8_t vkr_vulkan_memory_pool_release(VkrVulkanMemoryPoolManager *manager,
@@ -115,13 +128,13 @@ bool8_t vkr_vulkan_memory_pool_retire(VkrVulkanMemoryPoolManager *manager,
 
 void vkr_vulkan_memory_pool_record_dedicated_allocate(
     VkrVulkanMemoryPoolManager *manager, VkrVulkanMemoryPoolKey key,
-    uint64_t size);
+    VkrGpuAllocationOwner owner, uint64_t size);
 void vkr_vulkan_memory_pool_record_dedicated_release(
     VkrVulkanMemoryPoolManager *manager, VkrVulkanMemoryPoolKey key,
-    uint64_t size, bool8_t retired);
+    VkrGpuAllocationOwner owner, uint64_t size, bool8_t retired);
 bool8_t vkr_vulkan_memory_pool_record_dedicated_retire(
     VkrVulkanMemoryPoolManager *manager, VkrVulkanMemoryPoolKey key,
-    uint64_t size);
+    VkrGpuAllocationOwner owner, uint64_t size);
 void vkr_vulkan_memory_pool_record_native_failure(
     VkrVulkanMemoryPoolManager *manager);
 

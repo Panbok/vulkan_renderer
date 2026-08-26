@@ -1355,6 +1355,29 @@ static void renderer_impl_vulkan_get_device_information(
   vkr_vulkan_renderer_target_information(
       renderer->vulkan_renderer, &present_mode, &color_format, &depth_format,
       &color_space, &max_anisotropy);
+  VkrDeviceMemoryStats memory_stats = {0};
+  vkr_vulkan_renderer_device_memory_stats(renderer->vulkan_renderer,
+                                          &memory_stats);
+  bool8_t local_heaps[VKR_DEVICE_MEMORY_HEAP_MAX] = {0};
+  for (uint32_t type = 0; type < memory_stats.memory_type_count; ++type) {
+    const uint32_t heap = memory_stats.heap_index_by_type[type];
+    if (heap < memory_stats.heap_count &&
+        (memory_stats.property_flags_by_type[type] &
+         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+      local_heaps[heap] = true_v;
+    }
+  }
+  uint64_t vram_size = 0u;
+  uint64_t vram_local_size = 0u;
+  uint64_t vram_shared_size = 0u;
+  for (uint32_t heap = 0; heap < memory_stats.heap_count; ++heap) {
+    const uint64_t size = memory_stats.heap_size_bytes[heap];
+    vram_size += size;
+    if (local_heaps[heap])
+      vram_local_size += size;
+    else
+      vram_shared_size += size;
+  }
   *device_information = (VkrDeviceInformation){
       .device_name = selected ? string8_create_from_cstr(
                                     (const uint8_t *)selected->device_name,
@@ -1366,6 +1389,9 @@ static void renderer_impl_vulkan_get_device_information(
                                        strlen(selected->driver_info))
                                  : string8_lit("unknown"),
       .api_version = string8_lit("Vulkan 1.4"),
+      .vram_size = vram_size,
+      .vram_local_size = vram_local_size,
+      .vram_shared_size = vram_shared_size,
       .device_types = device_types,
       .device_queues = device_queues,
       .sampler_filters = sampler_filters,

@@ -1213,6 +1213,11 @@ void vkr_vulkan_renderer_memory_metrics(const VkrVulkanRenderer *renderer,
       metrics.physical_allocated_bytes_peak;
   out_metrics->block_capacity_failures = metrics.block_capacity_failures;
   out_metrics->aggregate = metrics.aggregate;
+  MemCopy(out_metrics->owners, metrics.owners, sizeof(out_metrics->owners));
+  MemCopy(out_metrics->live_bytes_by_type, metrics.live_bytes_by_type,
+          sizeof(out_metrics->live_bytes_by_type));
+  MemCopy(out_metrics->live_count_by_type, metrics.live_count_by_type,
+          sizeof(out_metrics->live_count_by_type));
 }
 
 void vkr_vulkan_renderer_geometry_megabuffer_metrics(
@@ -1267,14 +1272,22 @@ void vkr_vulkan_renderer_device_memory_stats(const VkrVulkanRenderer *renderer,
   out_stats->peak_bytes = metrics.physical_allocated_bytes_peak;
   out_stats->live_totals_exact = true_v;
 
+  MemCopy(out_stats->owners, metrics.owners, sizeof(out_stats->owners));
   const VkPhysicalDeviceMemoryProperties *memory =
       vkr_vulkan_device_memory_properties(renderer->device);
+  out_stats->memory_type_count =
+      Min(memory->memoryTypeCount, (uint32_t)VKR_DEVICE_MEMORY_TYPE_MAX);
+  for (uint32_t type = 0; type < out_stats->memory_type_count; ++type) {
+    out_stats->live_bytes_by_type[type] = metrics.live_bytes_by_type[type];
+    out_stats->live_count_by_type[type] = metrics.live_count_by_type[type];
+    out_stats->heap_index_by_type[type] = memory->memoryTypes[type].heapIndex;
+    out_stats->property_flags_by_type[type] =
+        memory->memoryTypes[type].propertyFlags;
+  }
   out_stats->heap_count =
       Min(memory->memoryHeapCount, (uint32_t)VKR_DEVICE_MEMORY_HEAP_MAX);
-  for (uint32_t heap = 0; heap < out_stats->heap_count; ++heap) {
+  for (uint32_t heap = 0; heap < out_stats->heap_count; ++heap)
     out_stats->heap_size_bytes[heap] = memory->memoryHeaps[heap].size;
-    out_stats->heap_budget_bytes[heap] = memory->memoryHeaps[heap].size;
-  }
 }
 
 void vkr_vulkan_renderer_heap_metrics(const VkrVulkanRenderer *renderer,

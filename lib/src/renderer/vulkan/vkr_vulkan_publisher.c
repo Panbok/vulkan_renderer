@@ -221,7 +221,7 @@ vkr_internal bool8_t vkr_vk_upload_prepared_texture(
           (cube || cube_array) ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0u,
           view_type,
           VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-          out_image)) {
+          prepared->description.allocation_owner, out_image)) {
     log_error("Vulkan failed to create prepared texture image "
               "(%ux%u, format=%u, mips=%u, layers=%u, bytes=%llu)",
               prepared->description.width, prepared->description.height, format,
@@ -384,7 +384,8 @@ vkr_vk_stage_next_buffer_batch(VkrVulkanRenderer *renderer) {
         Min((VkDeviceSize)renderer->config.upload_buffer_block_size,
             initialization->size - initialization->next_offset);
     if (!vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_STAGING,
-                              chunk_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                              VKR_GPU_ALLOCATION_OWNER_STAGING, chunk_size,
+                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                               &initialization->staging)) {
       log_error("Vulkan failed to create bounded %llu-byte buffer "
                 "staging chunk at offset %llu/%llu",
@@ -448,7 +449,8 @@ vkr_vk_stage_next_texture_batch(VkrVulkanRenderer *renderer) {
       staged_count++;
     }
     if (!vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_STAGING,
-                              staging_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                              VKR_GPU_ALLOCATION_OWNER_STAGING, staging_size,
+                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                               &initialization->staging)) {
       log_error("Vulkan failed to create bounded %llu-byte texture "
                 "staging chunk at region %u/%u",
@@ -1549,9 +1551,11 @@ vkr_internal bool8_t vkr_vk_ensure_geometry_megabuffer(
   VkrVulkanBuffer vertices = {0};
   VkrVulkanBuffer indices = {0};
   if (!vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_DEVICE,
-                            vertex_capacity, vertex_usage, &vertices) ||
+                            VKR_GPU_ALLOCATION_OWNER_MESH, vertex_capacity,
+                            vertex_usage, &vertices) ||
       !vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_DEVICE,
-                            index_capacity, index_usage, &indices)) {
+                            VKR_GPU_ALLOCATION_OWNER_MESH, index_capacity,
+                            index_usage, &indices)) {
     vkr_vk_destroy_buffer(renderer, &indices);
     vkr_vk_destroy_buffer(renderer, &vertices);
     return false_v;
@@ -1943,7 +1947,7 @@ vkr_internal bool8_t vkr_vk_asset_publish_writable_texture(
       cube ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_2D,
       VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
           VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-      &pending.image);
+      description->allocation_owner, &pending.image);
   const bool8_t sampler_acquired =
       image_created && vkr_vk_acquire_sampler(renderer, description, mip_levels,
                                               &pending.sampler_record_index);

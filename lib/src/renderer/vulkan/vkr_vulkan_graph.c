@@ -294,11 +294,11 @@ vkr_internal bool8_t vkr_vk_create_graph_image_instance(
     return false_v;
   const bool8_t array_view =
       desc->layers > 1u || (desc->flags & VKR_RG_RESOURCE_FLAG_FORCE_ARRAY);
-  if (!vkr_vk_create_image_ex(renderer, desc->width, desc->height,
-                              desc->mip_levels, desc->layers, format, 0u,
-                              array_view ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
-                                         : VK_IMAGE_VIEW_TYPE_2D,
-                              usage, &out_instance->image))
+  if (!vkr_vk_create_image_ex(
+          renderer, desc->width, desc->height, desc->mip_levels, desc->layers,
+          format, 0u,
+          array_view ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D,
+          usage, VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH, &out_instance->image))
     return false_v;
   const VkImageAspectFlags aspects = vkr_vk_format_aspects(format);
   for (uint32_t mip = 0u; mip < desc->mip_levels; ++mip) {
@@ -702,6 +702,7 @@ bool8_t vkr_vk_realize_graph_buffers(VkrVulkanRenderer *renderer) {
     };
     for (uint32_t instance = 0u; instance < instance_count; ++instance) {
       if (!vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_DEVICE,
+                                VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH,
                                 buffer->desc.size, usage,
                                 &slot->instances[instance].buffer)) {
         vkr_vk_destroy_graph_buffer(renderer, slot);
