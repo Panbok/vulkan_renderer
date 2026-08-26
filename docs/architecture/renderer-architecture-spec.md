@@ -6,9 +6,8 @@ authority: spec
 # VKR Renderer — Architecture and Status Specification
 
 **Document status:** Reviewed against the completed V7 working tree, the
-accepted Metal and Windows Vulkan deferred P20 boundary, the default-on Metal
-P19 compact path, the implemented P21 retirement on 2026-08-20, and the native
-Windows Vulkan P21 gate passed on 2026-08-21.
+accepted Metal and Windows Vulkan deferred P20 boundary, P21 retirement, and
+the portable same-resolution TAA implementation accepted by ADR-037.
 Metal 4 Stages 0–5 and Vulkan V0–V6 are implemented. ADR-026 V7 is
 complete under explicit owner authorization: Vulkan 1.2, its descriptor-set
 shaders and manifests, the legacy-only frontend resource model, the
@@ -16,9 +15,10 @@ shaders and manifests, the legacy-only frontend resource model, the
 migration state are removed. `VkrRendererImpl` now selects Metal or Vulkan
 once; `vulkan` unambiguously names the sole Vulkan implementation. The
 complete CPU suite and surviving macOS Metal evidence pass after retirement.
-Fresh native Windows Debug and Release whole-graph runs, focused offscreen and
-windowed synchronization validation, and GPU-assisted validation also pass on
-the target RX 6700 XT. MoltenVK still cannot execute the descriptor-buffer path.
+Fresh native Windows Debug and Release builds, focused offscreen TAA capture,
+and Vulkan synchronization validation pass on the target RX 6700 XT. Metal host
+ABI checks pass on Windows; native Apple TAA shader and runtime validation
+remain open. MoltenVK still cannot execute the descriptor-buffer path.
 **Scope:** Renderer architecture, implemented features, CPU/GPU memory, data
 transfer, synchronization, known issues, and recommended direction.
 **Audience:** Contributors and reviewers.
@@ -67,6 +67,7 @@ lib/src/
 ├── platform/                  Window and platform implementations
 └── renderer/
     ├── renderer_frontend.c/h  Public orchestration and subsystem ownership
+    ├── vkr_temporal.c/h       Backend-neutral temporal state and reset policy
     ├── vkr_renderer.h         Public handles, descriptions, and API
     ├── vkr_render_packet.h    Versioned per-frame payload contract
     ├── vkr_render_graph.*     Graph declaration and shared schedule state
@@ -114,7 +115,7 @@ the acquired target and frame slot return to a valid state.
 
 ### 3.2 Packet-based submission
 
-`VkrRenderPacket` version 18 contains frame information, globals (including
+`VkrRenderPacket` version 19 contains frame information, globals (including
 manual HDR exposure), and optional world, shadow, skybox, UI, editor, picking,
 text-update, and debug payloads.
 Important properties are implemented:
@@ -157,15 +158,17 @@ Implemented graph capabilities:
 - named executor registry owned by each selected implementation;
 - graph-owned/imported resource declarations and persistent image state;
 - implementation-owned CPU/GPU pass timing results;
+- completion-safe `HISTORY` resource instance domains; and
 - live/peak graph-resource statistics.
 
 The source JSON carries mutually exclusive retained-forward and deferred world
 branches, fullscreen/editor alternatives, optional picking and transmission,
-the deferred visibility/G-buffer/HZB intermediates, and the Metal P19
-compact-list branch. Conditions select resources, passes, and optional resource
-uses before realization. Fullscreen world output feeds tonemapping while editor
-world output feeds viewport composition; shadow cascades and HZB mip reductions
-expand from authored repeats at build time.
+the deferred visibility/G-buffer/HZB intermediates, the Metal P19 compact-list
+branch, and portable temporal transform/motion/history passes. Conditions select
+resources, passes, and optional resource uses before realization. Fullscreen and
+editor world output feed temporal reconstruction before tonemapping or viewport
+composition; shadow cascades and HZB mip reductions expand from authored
+repeats at build time.
 
 #### Synchronization boundary
 
@@ -364,7 +367,8 @@ position, iterates set bits, rejects zero range/cone contribution before BRDF
 work, then applies exact glTF attenuation. The grid grows its cell size rather
 than discarding references, so
 broad material-merged submeshes do not impose a secondary light cap. The
-80-byte instance ABI remains stable with its last three words reserved. Metrics
+80-byte instance ABI remains stable and reuses its final three words for
+temporal index, generation, and owner flags. Metrics
 distinguish scene-table overflow and report grid cells, references, peak local
 membership, and global lights. Color and intensity remain separate until the
 shader applies intensity once. World draws select at most two local reflection
@@ -384,6 +388,28 @@ metadata. `mesh.gltf_light_source` is a separate required scene dependency:
 failure to open or parse an explicitly authored path fails the scene request.
 Bistro therefore loads geometry from `bistro-lights.vkb` and imports its 72
 point-light instances from `bistro-lights.gltf` before activation.
+
+### 3.9 Portable temporal antialiasing
+
+The selected implementations execute one same-resolution TAA contract before
+tonemap and editor/UI composition. Renderer-owned state publishes an eight-step
+Halton 2/3 jitter sequence, jittered and unjittered camera transforms, reset
+reasons, and the newest completed history. Camera-visible opaque, cutout,
+transmission, and ordinary blend use the jittered projection; culling, shadows,
+HZB, and picking remain unjittered.
+
+Rigid motion comes from a completion-protected transform `HISTORY` buffer keyed
+by temporal index, generation, and source frame. Motion maps current output-grid
+UV directly into the selected history; it does not apply a second jitter delta.
+Moving cameras reject history by extent, exact identity, primitive, and depth.
+Stationary cameras admit coverage transitions under a 3x3 neighborhood clamp so
+silhouettes and background samples accumulate instead of cycling with the
+jitter sequence. Transmission/blend luminance change reduces history weight.
+
+Vulkan selects reads and writes from a five-instance completion-safe `HISTORY`
+ring independently of the active frame slot. UI and screen text remain after
+reconstruction. `VKR_TAA_DISABLED=1` selects unjittered passthrough without
+changing graph topology.
 
 ---
 
@@ -414,8 +440,9 @@ point-light instances from `bistro-lights.gltf` before activation.
 | Compute dispatch | Implemented; production Metal and Vulkan deferred kernels | Typed executors carry validated direct or indirect launch descriptors without per-frame name lookup. Metal P4/P8/P10/P12/P14 uses graph-declared classify, prefix, ICB encode, G-buffer resolve, deferred-lighting, fused-transmission, and HZB-reduction kernels. Vulkan P5/P9/P11/P13/P15 provides classify/prefix/encode, G-buffer, lighting, transmission, coverage, and HZB kernels plus indirect-count raster, with its opaque and transmission shading sharing the forward fragment shader's lighting helpers and surface reconstruction; P20 owner evidence is accepted |
 | GPU timing | Implemented with backend-specific scope | Vulkan retains per-pass query timing. Metal compute and graphics passes use precise encoder-scope timestamps with completion-owned query storage; transfer and zero-work scopes remain explicitly unsupported. Metal also publishes exact `gpu.submission` start-to-end latency from `MTL4CommitFeedback`. The harness associates both asynchronous result paths with their source frames and drains after the measured window |
 | Device-memory suballocation | Implemented | Vulkan uses keyed DEVICE, UPLOAD, and READBACK pools backed by `vkr_gpu_memory`; Metal uses the same range/submit cores through its placement adapter. Logical and physical totals, peaks, retirement, failure classes, and capacity lower into renderer metrics. |
-| Bindless resource model | Implemented | Metal 4 and Vulkan 1.4 use GPU-addressed buffers, backend-native texture/sampler rows, completion-gated publication/retirement, authored graph lowering, and shared memory/submit/slot/capture cores. Immutable GPU material rows carry PBR parameters; each non-empty indexed packet pass publishes one 448-byte Metal frame root (464-byte Vulkan) and each retained draw references geometry/visible tables through a reflected 48-byte draw root. Shared flags give lighting, IBL readiness, and transmission identical shader semantics. Packet version 18 carries the bounded opaque/cutout/transmission GPU-candidate streams, static/dynamic/publication generations, packetized shadow-debug and independent pass/submission timing requests, feature-local blend/text payloads, no CPU opaque/transmission/shadow draw lists, the backend-neutral per-cascade and shared receiver-quality blocks, and SDSM enable/source-scene metadata. Corrected Metal pixels are owner-accepted, though no replacement golden generation is accepted; Vulkan is the sole Vulkan renderer after V7. Native Apple M1 Pro reflection, focused Metal API/GPU validation, and exact text/picking captures pass for the changed root ABI; the bindless-renderer audit records the evidence. |
-| Deferred visibility-buffer migration | Implemented through P21 | Both backends execute one topology: bounded GPU candidate classification and indirect submission for camera/cascade views; opaque visibility, G-buffer resolve, HDR lighting, HZB, picking, and four-layer transmission; completion-gated coverage and diagnostics. P21 removed the selector, legacy graph branch, CPU opaque/transmission/shadow draw construction, fallback routes, backend executors/pipelines/shaders, and dual-path metrics/tests. Packet version 18 rejects invalid, zero-generation, or over-capacity input before recording and carries completion-safe candidate publication generations. Ordinary blend, world/UI text, UI, post, and their picking coverage remain narrow feature passes. The accepted P20 Windows evidence and visual threshold remain the migration oracle. The native Windows Vulkan P21 gate passed on 2026-08-21 after repairing a retirement defect that made the bounded geometry/material publication boundary fail command recording instead of omitting the affected candidates for the frame; a malformed submesh index is still an explicit pre-recording error. P19 is Metal-only and default-on after its scan/finalize consolidation; Vulkan retains full-screen transmission. |
+| Bindless resource model | Implemented | Metal 4 and Vulkan 1.4 use GPU-addressed buffers, backend-native texture/sampler rows, completion-gated publication/retirement, authored graph lowering, and shared memory/submit/slot/capture cores. Packet version 19 carries bounded GPU candidate streams, stable temporal identity, renderer-owned temporal transforms/jitter/reset state, shadow debug, timing requests, feature-local payloads, per-cascade receiver quality, and SDSM metadata. Each non-empty indexed pass publishes one backend frame root and each retained draw references reflected GPU tables. |
+| Deferred visibility-buffer migration | Implemented through P21 | Both backends execute one topology: bounded GPU candidate classification and indirect submission for camera/cascade views; opaque visibility, G-buffer resolve, HDR lighting, HZB, picking, four-layer transmission, and completion-gated diagnostics. P21 removed the selector, legacy graph branch, CPU world draw construction, fallback routes, and dual-path metrics/tests. Packet version 19 rejects invalid, zero-generation, or over-capacity input before recording and carries completion-safe publication generations plus stable temporal identity. |
+| Portable temporal antialiasing | Implemented, partial evidence | Metal and Vulkan share one same-resolution resolve, rigid transform/motion inputs, exact visibility identity, completion-safe history, reset policy, debug modes, and one-sample passthrough fallback. Native Apple validation, deformation inputs, broader motion/disocclusion evidence, and final-color owner acceptance remain open. See ADR-037 |
 | Vulkan V1–V4 migration | Complete for RX 6700 XT | V1 characterization and V2's selected strategy are complete on macOS and Windows. V3 extracted the memory, submit-ring, and shared ABI cores alongside their production Vulkan callers and passes native window resize with reacquisition and retired-swapchain completion proof. V4 extracted the slot table, added completion-gated asset publication, and moved geometry, staging, images, startup buffers, and readback into keyed dynamic pools with complete logical/physical metrics. Prepared and writable initialization records before the next frame draw, staging retirement uses that submit value, publication dirty ranges flush once per backing buffer, and logical totals return to baseline. MoltenVK cannot execute the descriptor-buffer path. ADR-024's required cross-platform extraction witnesses now pass. |
 | Vulkan V5–V7 | Implemented; post-V7 target rerun passes | V5 lowers the authored graph to synchronization2/dynamic rendering and implements all packet pass/capture/timing categories. V6 completed selection, cache, lifecycle, metrics, and native RX 6700 XT validation. V7 removed the Vulkan 1.2 path, temporary selector, shaders/manifests, legacy frontend systems, interface/adaptor, and graph residue. CPU and Metal gates pass after deletion; fresh RX 6700 XT Debug/Release whole-graph, synchronization-validation, and GPU-assisted witnesses pass. |
 | HDR/tonemap/post chain | Implemented, initial | RGBA16F fullscreen/editor scene color, packet-carried manual exposure (default `0.30`), ACES-fitted tonemap, and exposure-equivalent canonical HDR capture; automatic exposure and additional post effects are absent |
@@ -968,6 +995,20 @@ pin the 17-image/13-sampler contract, and exact Bistro validation replay
     `font_maxsized_snapshot.case.json` exercise the resize path as observational
     cases. They have no accepted baselines; any proposal requires normal owner
     review.
+
+17. **Portable TAA lacks deformation inputs and complete cross-platform
+    acceptance evidence.** Rigid meshes have completion-safe previous
+    transforms and exact temporal identity. Held recorded-camera captures show
+    reduced silhouette, thin-geometry, foliage, and bright-edge stair-stepping
+    without broad blur; a slow-orbit capture retains strict history rejection.
+    Skinned deformation, procedural vertex motion, particles,
+    animated-material reactivity, and exposure-discontinuity handling remain
+    absent. The RX 6700 XT CPU/shader, local timing, debug capture, and focused
+    synchronization-validation gates pass. Native Apple shader/runtime
+    validation, broad animation/disocclusion clips, changed final-color owner
+    acceptance, and authoritative clean-tree Release timing remain open. See
+    [ADR-037](adr/037-portable-same-resolution-temporal-antialiasing.md) and the
+    [image-quality roadmap](../rendering/image-quality-roadmap.md).
 
 ### P2 — Throughput
 

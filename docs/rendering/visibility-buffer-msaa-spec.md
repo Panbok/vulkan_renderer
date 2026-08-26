@@ -1,35 +1,38 @@
 ---
-status: proposed
-updated: 2026-08-25
+status: partial
+updated: 2026-08-26
 authority: design
 ---
 # Visibility-buffer anti-aliasing evaluation
 
-**Document status:** Proposed evaluation. No AA mode is accepted and no
-production AA code exists.
+**Document status:** Partial. The portable TAA path described by T0-T2 is
+implemented on Metal and Vulkan under ADR-037. FSR, MetalFX, and every MSAA
+phase remain unimplemented.
 
-**Scope:** A temporal-input foundation, FSR 3.1 and MetalFX evaluation, and a
-2x/4x visibility-buffer MSAA control.
+**Scope:** The shipped temporal foundation and portable TAA decision, plus the
+retained 2x/4x visibility-buffer MSAA evaluation.
 
 **Depends on:** [ADR-028](../architecture/adr/028-gpu-driven-deferred-visibility-buffer.md)
 and [the deferred visibility-buffer specification](deferred-visibility-buffer/SPEC.md).
 
 ## 1. Recommendation
 
-Build temporal inputs first. Do not begin with the FSR SDK and do not commit the
-frame contract to 4x MSAA before measurement.
+Retain the implemented portable same-resolution TAA path as the production
+temporal consumer. It uses one backend-neutral contract and preserves
+one-sample rendering as the `VKR_TAA_DISABLED=1` fallback. FSR and MetalFX are
+not prerequisites for this implementation.
 
-The temporal foundation is reusable by FSR 3.1, MetalFX, a portable TAA resolve,
-future internal render scaling, motion blur, and temporal denoisers. The current
-visibility buffer gives it unusually strong surface identity for disocclusion.
-The missing work is still substantial, but it is work the renderer will need if
-it ever adopts reconstruction.
+Rigid previous transforms, Halton jitter, exact temporal identity, motion,
+reactivity, reset reasons, completion-safe history, and motion/history debug
+views now ship. Deformation motion, particles, procedural material inputs, and
+exposure-discontinuity handling remain open.
 
-Keep MSAA as a separate control. A visibility buffer avoids a fully
-multisampled G-buffer, but that does not make MSAA cheap by default. Correct
-edge shading cannot average material attributes into one G-buffer texel.
-Transparency, ordinary blend, picking, HZB, SDSM, capture, and depth seeding all
-cross the sample-count boundary.
+Do not implement MSAA as part of the TAA work. The design below remains a
+separate control proposal. A visibility buffer avoids a fully multisampled
+G-buffer, but that does not make MSAA cheap by default. Correct edge shading
+cannot average material attributes into one G-buffer texel. Transparency,
+ordinary blend, picking, HZB, SDSM, capture, and depth seeding still cross the
+sample-count boundary.
 
 ## 2. Why the original MSAA plan was incomplete
 
@@ -75,11 +78,10 @@ Define one backend-neutral contract before selecting a temporal consumer:
 - frame delta, jitter offset, and frame index; and
 - a history-reset bit with a reason.
 
-Do not hide previous transforms in the three reserved words of
-`VkrInstanceDataGPU`. A matrix does not fit, and consuming the reservation
-without a versioned ABI decision would make later geometry changes harder. Use
-a separate completion-protected previous-transform table or a versioned wider
-instance representation after measuring its bandwidth.
+The 80-byte `VkrInstanceDataGPU` reuses its three formerly reserved words for a
+stable temporal index, generation, and owner flag. Previous matrices remain in
+a separate completion-protected table, so the per-instance draw stream does not
+grow and the transform lifetime stays independent of draw compaction.
 
 Visibility identity is useful for debug and rejection, but temporal consumers
 still need velocity. For rigid geometry, reconstruct the current surface from
@@ -134,19 +136,17 @@ new image is written, which matches the distinct `HISTORY` model.
 
 ### 3.5 Consumer choice
 
-FSR 3.1 officially supports DX12 and Vulkan and provides Native AA. AMD's own
-integration material states that Native AA has the largest quality-mode
-overhead and still requires reactive and transparency/composition masks. It is
-not a shortcut around temporal integration.
+ADR-037 selects a portable same-resolution TAA resolve so Metal and Vulkan share
+one algorithm and packet contract. The resolve consumes current HDR color,
+motion, validity, device depth, exact temporal index/generation and primitive
+identity, and luminance-derived reactivity. It reads the newest completed
+history and writes a completion-safe successor.
 
-Metal is not an official FSR 3.1 API target. Apple7 supports MetalFX temporal
-upscaling, which consumes color, depth, motion, exposure, and jitter. Evaluate
-it at a scale supported by the API. Do not assume it provides a same-resolution
-Native AA mode without a capability test.
-
-If cross-backend algorithm identity is required, VKR needs a portable temporal
-resolve. FSR plus MetalFX gives platform-native implementations, not identical
-pixels.
+FSR 3.1 and MetalFX remain possible future consumers of the same foundation,
+not dependencies. FSR 3.1 officially supports DX12 and Vulkan; Metal is not an
+official target. MetalFX temporal scaling is Apple-specific and does not
+promise cross-backend algorithm identity. Neither integration is scheduled by
+this decision.
 
 ## 4. Visibility-buffer MSAA control
 
@@ -264,41 +264,36 @@ For cutout:
 If cross-backend coverage differs visibly, a deterministic shader sample mask
 is the fallback, subject to sample-position and performance evidence.
 
-## 5. Decision matrix
+## 5. Decision
 
-Choose temporal native AA when the target includes render scaling, subpixel
-detail, and specular stability, and the project can own motion/mask quality.
-Choose MSAA when static and geometric sharpness dominates, temporal artifacts
-are unacceptable, and measured edge plus transparency cost fits the budget.
+ADR-037 accepts portable same-resolution TAA as the production path and
+one-sample passthrough as its fallback. The choice prioritizes subpixel and
+specular stability, exact visibility identity, and a shared Metal/Vulkan
+algorithm.
 
-A hybrid mode is possible, but it multiplies memory and temporal complexity.
-Do not plan one before either standalone path has evidence.
-
-The likely VKR outcome is temporal as the primary mode and one-sample rendering
-as the fallback. MSAA remains worth a control implementation because it gives a
-sharp, history-free comparison and may suit editor or capture modes. That is a
-recommendation, not an accepted decision.
+MSAA remains an unimplemented comparison proposal. It may be reconsidered for a
+concrete editor, capture, or history-free quality requirement, but is not part
+of the accepted TAA implementation. A hybrid mode is not planned.
 
 ## 6. Phases and gates
 
-| Phase | Work | Gate |
-| --- | --- | --- |
-| T0 | Previous-transform, jitter, reset, extent, depth, exposure, and mask contract | Jitter off is byte-identical; invalid previous state is explicit |
-| T1 | Motion-vector and mask debug views | Static world is zero-motion after camera compensation; rigid motion has correct direction and magnitude |
-| T2 | Completion-safe history and portable diagnostic resolve | Camera cuts, resize, skipped frames, and disocclusion reject history |
-| T3 | FSR 3.1 Vulkan prototype | Native AA runs with valid vectors and nonempty masks; no frame generation |
-| T4 | MetalFX Metal prototype at a supported scale | Same input contract, correct sign/unit conversion, explicit algorithm difference |
-| M0 | One-sample-preserving graph, image, pipeline, descriptor, and capture plumbing | One-sample outputs remain byte-identical |
-| M1 | 2x/4x opaque visibility plus edge classifier | Per-sample ID/depth debug capture and measured edge fraction |
-| M2 | Interior path plus fused edge shading | Sample-weighted color is correct for geometry and background edges |
-| M3 | Cutout alpha-to-coverage | Foliage motion clips accepted on both backends |
-| M4 | Picking, SDSM, HZB, transmission, blend, and capture contract | Whole graph is correct or limitations are explicitly rejected |
-| A0 | Matched quality and Release comparison | Owner selects primary mode and fallback; ADR records the choice |
+| Phase | Status | Work | Gate |
+| --- | --- | --- | --- |
+| T0 | Implemented | Previous-transform, jitter, reset, extent, depth, exposure, and mask contract | Focused temporal contract tests cover sequences, reset reasons, cuts, and disabled mode |
+| T1 | Implemented, partial evidence | Motion-vector and mask debug views | Static capture shows valid zero motion; slow-orbit capture shows nonzero camera motion and accepted history; rigid-object direction remains open |
+| T2 | Implemented, partial evidence | Completion-safe history and portable resolve | CPU/shader gates, Vulkan capture, and focused synchronization validation pass; native Metal validation remains open |
+| T3 | Not scheduled | FSR 3.1 Vulkan prototype | Native AA runs with valid vectors and nonempty masks; no frame generation |
+| T4 | Not scheduled | MetalFX Metal prototype at a supported scale | Same input contract, correct sign/unit conversion, explicit algorithm difference |
+| M0 | Unstarted | One-sample-preserving graph, image, pipeline, descriptor, and capture plumbing | One-sample outputs remain byte-identical |
+| M1 | Unstarted | 2x/4x opaque visibility plus edge classifier | Per-sample ID/depth debug capture and measured edge fraction |
+| M2 | Unstarted | Interior path plus fused edge shading | Sample-weighted color is correct for geometry and background edges |
+| M3 | Unstarted | Cutout alpha-to-coverage | Foliage motion clips accepted on both backends |
+| M4 | Unstarted | Picking, SDSM, HZB, transmission, blend, and capture contract | Whole graph is correct or limitations are explicitly rejected |
+| A0 | Partial | Matched quality and Release comparison | Owner acceptance, native Metal validation, and broader quality/performance evidence remain open |
 
-Each runtime slice needs the CPU suite, the relevant focused tests, Vulkan
-validation, focused Metal validation, and matched Release evidence for any cost
-claim. Exact commands and artifacts belong in the implementation task, not this
-proposal.
+Each runtime slice needs the CPU suite, relevant focused tests, backend
+validation, and matched Release evidence for any cost claim. ADR-037 records
+the portable TAA decision and its current evidence.
 
 ## 7. Primary references
 
