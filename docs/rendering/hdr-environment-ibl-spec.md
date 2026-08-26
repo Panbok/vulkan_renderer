@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-04
+updated: 2026-08-26
 authority: design
 ---
 
@@ -17,16 +17,16 @@ Implemented on 2026-08-03, seam-corrected and lighting-calibrated on
 decodes Radiance HDR through a worker-safe prepared-load path, converts a 2:1
 source to a full-mip cubemap, bakes half-float irradiance,
 specular prefilter, and BRDF products, and presents through an RGBA16F scene
-target plus an ACES-fitted tonemap. The default environment is the licensed
-4K Citrus Orchard asset recorded in
+target plus an ACES-fitted tonemap. The Bistro scene selects the licensed 4K
+Citrus Orchard asset through `environment.equirect`; its license is recorded in
 [`citrus_orchard_puresky_4k.hdr.license.md`](../../assets/textures/citrus_orchard_puresky_4k.hdr.license.md);
-the legacy six-face skybox remains the capability/load failure fallback and the
-source for local reflection probes.
+other scenes may select a different equirect or an authored cubemap.
 
 Asynchronous scene loads run the prepared decoder on resource workers. The
-built-in default environment currently calls the same decoder synchronously
-during cold renderer initialization; this is a measured-startup optimization
-boundary, not work performed by the `IBL.Bake` executor.
+renderer owns no built-in environment filename and performs no independent
+startup decode. After one scene environment bake succeeds, world resources
+retain its source, irradiance, and prefilter handles as the fallback without a
+second decode or bake.
 
 The remaining architectural gap is unchanged: `IBL.Bake` records prepared
 graphics work whose persistent resources are not declared to the render graph.
@@ -47,8 +47,8 @@ In scope:
 - ownership, synchronization, failure, validation, and measurement contracts;
   and
 - the HDR scene-color, packet-carried manual-exposure ACES tonemap, and
-  exposure-equivalent canonical HDR capture path required to activate the
-  default environment without hard clipping; and
+  exposure-equivalent canonical HDR capture path required to activate an
+  authored HDR environment without hard clipping; and
 - IBL-aware ambient composition: constant ambient is retained only as the
   no-IBL fallback.
 
@@ -84,8 +84,9 @@ Other non-negotiable constraints:
 
 - Vulkan formats and feature bits stay behind `lib/src/renderer/vulkan/`;
   frontend code receives immutable typed capabilities.
-- No unsupported HDR format silently falls back to UNORM. The scene uses the
-  existing LDR fallback and reports the environment bake as failed.
+- No unsupported HDR format silently falls back to UNORM. The scene reports the
+  environment bake as failed and uses the retained scene fallback when one
+  exists.
 - Logical release invalidates a handle immediately; image, sampler, view, and
   staging reuse waits for the submit serial/fence that proves the final GPU use
   complete.
@@ -167,8 +168,8 @@ be required. Publish only immutable typed results such as
 `hdr_ibl_max_mip_levels` through `VkrDeviceInformation`.
 
 When the required combination is unavailable, log one capability failure,
-mark the requested environment failed, and keep the LDR fallback. Do not create
-an 8-bit target under an HDR handle.
+mark the requested environment failed, and keep the retained scene fallback if
+one exists. Do not create an 8-bit target under an HDR handle.
 
 ### Render-pass compatibility
 
@@ -484,7 +485,7 @@ environment tuning.
 | 2 — Storage/LUT | Same-view Bistro comparison records the quantization change; no format/signature errors; load→unload returns handle counts |
 | 3 — Float decode | A licensed or generated `.hdr` fixture preserves known finite values; vertical orientation, clamp warning, cache bypass, and cleanup tests pass |
 | 4 — Prefilter LOD | Source mips are initialized; numeric PDF/LOD tests pass; roughness sweep shows bounded bright-source artifacts |
-| 5 — Conversion/schema | Dedicated HDR scene produces correctly oriented, seam-safe cubemap mips; fallback/partial-failure paths are clean; the production default switches only through the active tonemap path |
+| 5 — Conversion/schema | Dedicated HDR scene produces correctly oriented, seam-safe cubemap mips; fallback/partial-failure paths are clean; the authored production environment switches only through the active tonemap path |
 
 No checkpoint is a performance result. Any claim about bake, load, or frame
 cost needs the Release evidence below.

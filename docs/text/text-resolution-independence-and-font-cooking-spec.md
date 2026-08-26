@@ -1,21 +1,23 @@
 ---
 status: proposed
-updated: 2026-08-25
+updated: 2026-08-26
 authority: design
 ---
+
 # Text resolution independence and font cooking specification
 
-**Document status:** Proposed. No production code implements any part of this
-document. The measurements and defect claims below were read from current code
-and current assets; the remediation is a plan.
+**Document status:** Proposed. The defects below describe current code and
+assets. The target design and stages are not implemented.
 
-**Scope:** Why VKR text degrades as the window extent changes, why the font
-generation pipeline is manual, and what replaces both. Rationale for the three
-load-bearing decisions lives in [ADR-034](../architecture/adr/034-offline-cooked-font-artifacts.md),
+**Scope:** Establish the evidence for VKR's text scaling defects, define the
+runtime and offline target, and sequence the migration. Rationale for the three
+accepted directions lives in
+[ADR-034](../architecture/adr/034-offline-cooked-font-artifacts.md),
 [ADR-035](../architecture/adr/035-canonical-mtsdf-screen-pixel-range-shading.md),
 and [ADR-036](../architecture/adr/036-dpi-derived-ui-text-scale.md).
 
-Related current documents: [mtsdf-font-loader-design.md](mtsdf-font-loader-design.md),
+Related documents:
+[mtsdf-font-loader-design.md](mtsdf-font-loader-design.md),
 [system-font-loader-design.md](system-font-loader-design.md),
 [font-system-design.md](font-system-design.md),
 [ui-text-implementation-design.md](ui-text-implementation-design.md), and
@@ -25,526 +27,527 @@ Related current documents: [mtsdf-font-loader-design.md](mtsdf-font-loader-desig
 
 ## 1. Conclusion first
 
-The reported symptom — text that does not scale well with resolution — is not
-one defect in the MTSDF path. It is three independent facts:
+The reported resolution-scaling symptom has four causes with different owners:
 
-1. **The shipping UI does not use the MTSDF path.** Windows UI overlays resolve
-   `VkrFontSystem::default_system_font_handle`, which is a stb_truetype raster
-   baked at 128 px with no mip chain. The application authors those overlays at
-   32 px. Every HUD glyph is a 4× minification of an unmipped raster at the
-   800×600 design extent, and the minification factor moves with the window.
-   Text is sharp only where the window extent happens to drive the scale near
-   the baked raster size, which is around 4K.
-2. **The MTSDF path quantizes resolution-independent data into integer pixels
-   at a baked size.** `vkr_mtsdf_build_font()` converts em-normalized advances,
-   bearings, and line metrics into `int16_t`/`int32_t` pixel counts at one
-   authored size, and `vkr_text_layout_compute()` rescales those integers.
-   Atlas UVs are truncated from non-integer `atlasBounds`, giving every glyph a
-   systematic half-texel bias.
-3. **The MTSDF shader does not implement the msdf-atlas-gen contract.** The
-   correct screen-pixel range is computed on the CPU, uploaded, and never read.
-   `text/default.slang` instead antialiases from `fwidth()` of the distance
-   value, ignores the `.a` channel that exists precisely for minification, and
-   samples an atlas that the texture packer has block-compressed and tagged
-   sRGB.
+1. **The default UI uses a fixed raster, not MTSDF.** On Windows the system
+   font is rasterized at 128 pixels per em, while the primary overlays request
+   32 logical pixels before an extent-derived transform. At the 800 by 600
+   reference extent, the atlas is minified 4 times without mips. Small windows
+   increase the minification. macOS follows separate application sizing
+   branches.
+2. **The MTSDF runtime quantizes scalable metrics.** Em-space advances,
+   bearings, and line metrics are converted to integer pixels at one configured
+   size, then rescaled. Half-texel atlas bounds are truncated as well.
+3. **The stored field and shader violate the MTSDF sampling contract.** The
+   atlas sidecar is tagged sRGB, block-compressed, and mipmapped. The shader uses
+   `fwidth()` of the decoded median instead of reconstructing screen-pixel range
+   from UV derivatives. A CPU range value uses the wrong denominator and is
+   uploaded but ignored.
+4. **Window extent is being used as UI density.** The scale is applied through
+   the transform after layout. It changes with aspect and resize, does not
+   follow the OS content scale, and cannot reflow text correctly.
 
-Generation is manual because there is no cooker. `Ubuntu-2d.json` and its PNG
-were produced by hand with the msdf-atlas-gen CLI, checked in, and are now
-consumed by two systems that disagree about their coordinate conventions. The
-checked-in JSON contains `"kerning": []` because nobody passed `-kernpairs`,
-and the loader would not read it if it were there.
+Font production is also not reproducible. The repository contains generator
+outputs but no tracked producer recipe or provenance. The empty kerning array
+does not prove which generator option was used, and the runtime ignores kerning
+in any case.
 
-`nuri` already solves all three. Section 6 records what it does and which parts
-transfer.
+The target is a pinned offline cooker, a validated `.vkfa` artifact containing
+float em metrics and linear uncompressed MTSDF pixels, canonical
+derivative-based range reconstruction, direct glyph-ID lookup, and OS content
+scale applied to logical UI dimensions before layout.
 
----
+The safe order is strict: repair the atlas input and shader atomically, build
+the artifact path, migrate float layout and default UI, then add window content
+scale and retire proven-dead paths. Instancing remains optional and needs a
+profile that identifies CPU text geometry as a limiter.
 
 ## 2. Evidence
 
-### 2.1 The shipping Windows UI text path
+### 2.1 Default UI raster scaling
 
-`vkr_font_system_init()` loads `assets/fonts/NotoSansCJK-Windows.fontcfg`
-(`type=system`, `size=128`) as the default system font on Windows.
-`application_init_ui_texts()` and `application_init_memory_text()` in
-`app/src/main.c` set `text_config.font` to that handle and
-`text_config.font_size` to 32 and 24 respectively.
+`vkr_font_system_init()` selects
+`assets/fonts/NotoSansCJK-Windows.fontcfg` as the default system font on
+Windows. Its configured size is 128. `application_init_ui_texts()` requests 32
+for the primary overlays and `application_init_memory_text()` requests 24.
 
-`vkr_system_font_rasterize_glyphs()` rasterizes U+0020..U+00FF with
-`stbtt_MakeGlyphBitmap()` at the requested pixel height into a single RGBA
-atlas. The atlas is created with `mip_filter = VKR_MIP_FILTER_NONE` and
-`upload_mip_levels = 1`.
+`vkr_system_font_rasterize_glyphs()` rasterizes U+0020 through U+00FF with
+stb_truetype into one RGBA atlas. The texture has one uploaded mip and
+`VKR_MIP_FILTER_NONE`.
 
-`vkr_ui_system_text_content_scale()` returns `min(width/800, height/600)` and
-`vkr_ui_system_position_slot()` applies it through `vkr_transform_set_scale()`
-on each retained text transform. Both are compiled only under
-`PLATFORM_WINDOWS`; every other platform gets `1.0`.
+`vkr_ui_system_text_content_scale()` returns
+`min(width / 800, height / 600)` on Windows, and retained text transforms carry
+that value. The primary 32-unit overlay therefore has this nominal scaling:
 
-Device-pixel em height for the 32 px HUD text is therefore
-`32 × content_scale`, and the atlas minification factor is
-`128 / (32 × content_scale)`:
+| Client extent | extent scale | rendered em in device px | 128 px atlas minification |
+| --- | ---: | ---: | ---: |
+| 480 by 270 | 0.450 | 14.4 | 8.9x |
+| 800 by 600 | 1.000 | 32.0 | 4.0x |
+| 1280 by 720 | 1.200 | 38.4 | 3.3x |
+| 1600 by 900 | 1.500 | 48.0 | 2.7x |
+| 1920 by 1080 | 1.800 | 57.6 | 2.2x |
+| 2560 by 1440 | 2.400 | 76.8 | 1.7x |
+| 3840 by 2160 | 3.600 | 115.2 | 1.1x |
 
-| Client extent | `content_scale` | HUD em (device px) | Atlas minification |
-|---|---|---|---|
-| 480×270 | 0.450 | 14.4 | 8.9× |
-| 800×600 | 1.000 | 32.0 | 4.0× |
-| 1280×720 | 1.200 | 38.4 | 3.3× |
-| 1600×900 | 1.500 | 48.0 | 2.7× |
-| 1920×1080 | 1.800 | 57.6 | 2.2× |
-| 2560×1440 | 2.400 | 76.8 | 1.7× |
-| 3840×2160 | 3.600 | 115.2 | 1.1× |
+A single-mip bilinear sample cannot integrate the source texel footprint under
+heavy minification. Aliasing or unstable coverage is therefore expected, but
+the visual degree must come from captures rather than inference.
 
-A bilinear tap set covering a 9×9 texel footprint discards most of the glyph.
-The FPS and metrics overlays rewrite their content several times per second, so
-the discarded texels change frame to frame and the result shimmers. This is the
-reported symptom, and it is worst at small windows, not large ones.
+The `min()` rule also makes aspect ratio affect size. Because the rule is a
+transform, wrapping and clipping are solved at the authored size and stretched
+afterward. The layout does not reflow in the dimensions ultimately rendered.
 
-Two further consequences of the same formula. `min()` means a 16:9 window is
-scaled by its height against a 4:3 design extent, so text occupies a smaller
-fraction of a wide window than of a tall one at equal height. And because the
-whole quad is scaled by a matrix, layout — advances, wrapping, line breaks — is
-solved at the design size and then stretched, so wrap points do not move when
-the window does.
-
-On macOS and Linux the same overlays take the `#else` branch and request
-`font->size * 2.0f`, i.e. 256 px from a 128 px raster: constant 2×
-magnification at every resolution. The platforms do not share a scaling model.
+On macOS the primary overlay uses `font->size * 2.0f` and the memory overlay
+uses `font->size * 1.5f`. VKR has no production Linux window backend. The
+platforms in production do not share one authored-size contract.
 
 ### 2.2 MTSDF metric quantization
 
-`vkr_mtsdf_build_font()` computes `scale = target_size / metadata->em_size` and
-writes:
+`vkr_mtsdf_build_font()` computes a target-size scale and writes line metrics
+as rounded `int32_t` values. It writes advance and offsets into `int16_t`
+fields. At an 18-pixel configured size, rounding can contribute up to half a
+pixel per stored value before later layout scaling. The error accumulates along
+a run and is magnified by the retained transform.
 
-- `out_font->line_height`, `ascent`, `descent`, `baseline` as rounded `int32_t`
-  pixel counts;
-- `VkrFontGlyph::x_advance` as a rounded `int16_t`;
-- `VkrFontGlyph::x_offset` and `y_offset` as `int16_t`, and `x_offset` uses a
-  bare cast, which truncates toward zero. `planeBounds.left` is negative for
-  several Ubuntu glyphs, so the sign of the error flips with the glyph.
+The UI geometry path mixes conventions. MTSDF quad extents come from float
+`planeBounds * font_size`, while the origin and advance use quantized stored
+fields. The glyph plane and advance box can therefore disagree even before
+transform scaling.
 
-`vkr_text_glyph_base_advance()` and `vkr_text_font_get_kerning()` in
-`lib/src/core/vkr_text.c` then multiply those integers by
-`font_size / font->size`. For `UbuntuMono-2d.fontcfg` the bake size is 18, so
-each advance carries up to ±0.5 px of error at 18 px/em — ±2.8% of an em — and
-that error is multiplied by the render scale and accumulates along a run. At
-`content_scale = 3.6` a single glyph contributes up to ±1.8 device pixels of
-tracking error.
+The source values from msdf-atlas-gen are em-normalized. If `.vkfa` stores them
+in em units, the correct runtime conversion is:
 
-`vkr_ui_text_generate_geometry()` makes the inconsistency visible: quad
-*extents* for MTSDF come from exact `planeBounds × font_size`, while the quad
-*origin* comes from the quantized `x_offset`/`y_offset`. The glyph image and
-the advance box no longer agree, and the disagreement scales.
+```text
+device_value = em_value * requested_device_pixels_per_em
+```
 
-### 2.3 MTSDF atlas UV bias
+Dividing em-normalized values by the source font's TrueType `unitsPerEm` would
+be a second, incorrect normalization. Source `unitsPerEm` is useful provenance,
+not the runtime scale denominator for this representation.
 
-msdf-atlas-gen emits half-texel `atlasBounds`. From `assets/fonts/Ubuntu-2d.json`,
-U+0021:
+### 2.3 Atlas-bound truncation
+
+msdf-atlas-gen emits fractional atlas bounds. U+0021 in
+`assets/fonts/Ubuntu-2d.json` includes:
 
 ```json
 "atlasBounds": { "left": 948.5, "bottom": 973.5, "right": 965.5, "top": 1023.5 }
 ```
 
-`vkr_mtsdf_build_font()` stores `dst->x = (uint16_t)948.5 = 948` and
-`dst->y = (uint16_t)(1024 - 1023.5) = 0`. `vkr_ui_text_generate_geometry()`
-divides those integers by the atlas extent. Every glyph is sampled half a texel
-up and half a texel left of where it was rasterized. `VkrUiTextConfig::uv_inset_px`
-exists to fight the resulting bleed; it treats a systematic bias as if it were
-a filtering problem, and insetting an MTSDF quad's UVs also shrinks the
-distance field relative to the plane bounds.
+The loader casts these bounds into integer glyph fields. The stored origin is
+half a texel away from the generated rectangle. `uv_inset_px` cannot repair a
+coordinate conversion error without also changing the relationship between
+the distance field and plane bounds.
 
-### 2.4 The `emSize` read escapes its object
+The cooked representation stores normalized float UV bounds with the vertical
+convention already applied.
 
-`vkr_json_find_field()` scans forward to end of document. It tracks no brace
-depth, so it has no concept of object scope. `vkr_mtsdf_parse_atlas()` resets to
-`atlas_start` and looks for `emSize`, which does not exist in msdf-atlas-gen's
-`atlas` object. The search runs past the closing brace and returns
-`metrics.emSize`, which msdf-atlas-gen sets to `1`.
+### 2.4 JSON field lookup escapes its object
 
-The result happens to work: metrics are em-normalized, so `scale = target_size`
-is the correct em→pixel conversion. It works for the wrong reason, and any
-generator that emits a non-unit `emSize` breaks the font silently.
+`vkr_json_find_field()` scans forward without tracking brace depth.
+`vkr_mtsdf_parse_atlas()` searches from the atlas object for `emSize`, which is
+not an msdf-atlas-gen atlas field, and finds `metrics.emSize` later in the
+document. That value is `1` in the checked-in artifacts, so the bug currently
+produces the correct em-to-pixel multiplier by accident.
 
-Meanwhile `atlas.size` — 64 for `Ubuntu-2d.json`, the pixels-per-em the atlas
-was rasterized at, and the exact denominator the screen-pixel range needs — is
-parsed into `VkrMtsdfFontMetadata::size`, validated, and never used again.
+`atlas.size`, 64 for `Ubuntu-2d.json`, is parsed and validated but unused. It is
+quality/provenance metadata and is the denominator in an axis-aligned
+pixels-per-em estimate. Canonical shader range reconstruction instead needs the
+distance range and actual atlas page dimensions.
 
-### 2.5 The screen-pixel range is computed, uploaded, and ignored
+### 2.5 Dead and incorrect CPU range
 
-`vkr_ui_system_prepare_text_draws()` and
-`vkr_world_resources_prepare_text_draws()` both compute:
+UI and world text preparation compute:
 
 ```c
-screen_px_range = Clamp(font->sdf_distance_range * (render_size / font->em_size), 1.0f, 4.0f);
+screen_px_range = Clamp(
+    font->sdf_distance_range * (render_size / font->em_size), 1.0f, 4.0f);
 ```
 
-`vkr_vulkan_draws.c` writes it to `root->material_alpha.x` and the font mode to
-`root->material_flags`. `text/default.slang` reads `material_flags` and never
-reads `material_alpha`.
+The Vulkan path uploads the result, but the shader does not read it. For the
+Ubuntu artifact at 18 pixels per em, the expression computes `8 * 18 / 1` and
+clamps 144 to 4. An axis-aligned estimate based on the generated 64 atlas pixels
+per em would be `8 * 18 / 64 = 2.25`.
 
-The formula is also wrong. The msdf-atlas-gen contract is
+A correct draw-level constant is not a screen range. It is the two-component
+atlas unit range:
 
-```
-screenPxRange = distanceRange × (glyph size in screen px) / (glyph size in atlas px)
-```
-
-which for a whole-atlas constant is `distanceRange × render_size / atlas.size`.
-With `distanceRange = 8`, `atlas.size = 64`, and `render_size = 18` the correct
-value is 2.25. The shipped expression divides by `em_size = 1`, producing
-`8 × 18 = 144`, which the clamp pins to `4.0` for every font at every size. The
-clamp is what hides the error.
-
-Because the shader uses `fwidth()` of the distance value instead, none of this
-is currently observable. It becomes load-bearing the moment the shader is
-corrected, so both must move together.
-
-### 2.6 The MTSDF shader
-
-`text_alpha()` in `lib/src/renderer/shaders/vulkan/slang/text/default.slang`:
-
-```hlsl
-float distance = max(min(atlas.r, atlas.g), min(max(atlas.r, atlas.g), atlas.b)) - 0.5f;
-return saturate(distance / max(fwidth(distance), 1e-6f) + 0.5f);
+```text
+unitRange = (distanceRange / atlasWidth, distanceRange / atlasHeight)
 ```
 
-Three problems.
+The fragment shader combines it with UV derivatives, which also covers
+perspective and rotation for world text.
 
-`fwidth()` of the *median* is not the screen-space gradient of a continuous
-field. `median3` switches which channel it returns across a corner, so its
-derivative is discontinuous exactly where MSDF corners live. The correct
-reference form takes `fwidth()` of the *UV*, which is smooth everywhere, and
-converts through the known unit range.
+### 2.6 Shader reconstruction and alpha policy
 
-The `.a` channel is never sampled. In an MTSDF atlas `.a` holds the true
-single-channel signed distance. It is the channel that stays well-behaved under
-minification, and it is the reason to pay for four channels instead of three.
-Without it there is no graceful path for text below roughly two screen pixels
-of range.
+Both backends currently compute alpha from the median RGB distance divided by
+`fwidth(distance)`. `median3` changes its selected channel around corners, so
+the derivative follows a piecewise channel selection. The msdf-atlas-gen
+reference instead derives a projected texel footprint from the component-wise
+magnitude of `ddx(uv)` and `ddy(uv)`, then converts through `unitRange`. It
+documents `1 / fwidth(uv)` only as an approximation.
 
-At high magnification `fwidth(distance)` approaches zero, the guarded divide
-saturates, and the edge becomes a hard step with no antialiasing.
+The alpha channel of MTSDF contains a true single-channel signed distance. It
+can be useful under minification, but the specific `saturate(2 - range)` blend
+in `nuri` is project policy, not part of the canonical upstream range formula.
+It needs an A/B comparison with pure RGB MSDF and pure alpha SDF before VKR
+accepts a threshold.
 
-### 2.7 The atlas is block-compressed and sRGB-tagged
+### 2.7 Atlas storage corruption
 
-`tools/pack_vkt_textures.sh` walks all of `assets/textures` with no exclusions.
-`vkr_vkt_packer.cpp` classifies by filename; `Ubuntu-2d.png` matches no normal
-or data token, so it takes the `color-srgb` default. The KTX2 key/value block in
-`assets/textures/Ubuntu-2d.png.vkt` records it:
+The generic texture packer scans `assets/textures/`. The Ubuntu atlas filename
+matches no data-texture token, so its sidecar records `color_srgb`, UASTC, and a
+box-filtered mip chain. The loader supplies no explicit request class, allowing
+sidecar metadata to select that path.
 
-```
-vkr.texture_class   color_srgb
-vkr.colorspace_hint srgb
-vkr.pack_settings   asset=1;shape=2d;class=color_srgb;uastc=faster;mips=rgba8-box-v1;flip=vertical
-```
+sRGB decoding is categorically wrong for an encoded signed distance because it
+changes the location and slope around the nominal 0.5 boundary. Lossy block
+compression and generic box mips can also change relative color-channel values
+and encoded distances. They are not accepted inputs without visual and numeric
+evidence for a specific MTSDF-aware scheme.
 
-The file is 1,398,864 bytes for a 1024² source — UASTC at one byte per pixel
-plus a full mip chain.
+A `?cs=linear&tc=data-mask` query does not complete F0. `data-mask` may still
+select a lossy GPU block format, and a stale sidecar remains discoverable. F0
+must delete the sidecars and move loose atlases out of the generic texture
+input set, or add a verified exclusion, in the same change.
 
-`vkr_mtsdf_font_loader_load()` requests the atlas with no query string, so the
-request carries no explicit class and the KTX2 `vkr.texture_class` value wins.
-The atlas is transcoded to an sRGB block format and bound with a full mip
-chain.
+### 2.8 Runtime and ownership defects
 
-Both halves are wrong for a distance field:
+- The MTSDF loader does not populate kerning. The checked-in JSON's empty
+  kerning list has unknown provenance.
+- `vkr_ui_text_find_glyph()` formats codepoints as decimal strings during
+  geometry generation and falls back to a linear scan. The loader also creates
+  string keys per glyph. Cooked text needs an integer codepoint-to-glyph-ID
+  map.
+- All font loaders populate `VkrFont::atlas_cpu_data`, but no current consumer
+  reads it. The MTSDF loader decodes the PNG again for this copy. A 2048-square
+  RGBA8 image needs 16 MiB and fails in the 6 MiB font pool chunk.
+- Bitmap, system, and MTSDF paths maintain separate loaders, caches, metric
+  conventions, and fallback behavior. An unresolved UI font handle falls back
+  to the bitmap default rather than the intended scalable UI asset.
 
-- Block compression correlates the R, G, and B channels inside each 4×4 block.
-  `median3` depends on those channels being independent; msdfgen documents that
-  MSDF atlases must not be block-compressed. "faster" UASTC makes it worse.
-- An sRGB view applies the sRGB EOTF to distance values. The glyph edge at 0.5
-  decodes to about 0.214, so `median − 0.5` is negative across most of the
-  glyph and strokes erode. The erosion is non-linear in the distance, which
-  removes the linearity the technique is built on.
-- Box-filtered mips of an MSDF are not valid MSDFs.
+These are migration targets, not permission to delete every legacy path in F0.
+Usage and rollback evidence decide retirement.
 
-The runtime *asks* for linear/UNORM — `vkr_texture_parse_request()` defaults
-`prefers_srgb` to false — and gets sRGB anyway because the cooked sidecar
-overrides an unspecified class. That is the packer classifying an asset it
-should not have touched.
+### 2.9 Window content-scale boundary
 
-### 2.8 Smaller defects found along the way
+Per-Monitor V2 setup is already shipped on Windows, including
+`GetDpiForWindow()` and `WM_DPICHANGED` handling. macOS uses backing-coordinate
+conversion. The public window API exposes pixel extent but not content scale or
+a scale revision, so UI cannot reliably distinguish resize from a scale-only
+display transition.
 
-- **No MTSDF kerning.** `vkr_mtsdf_parse_glyphs()` has no kerning counterpart.
-  `VkrMtsdfFontMetadata::kernings` is never populated, so
-  `vkr_mtsdf_build_font()` always takes the empty branch. `Ubuntu-2d.json`
-  contains `"kerning": []` anyway, because the atlas was generated without
-  `-kernpairs`.
-- **Per-glyph `snprintf` in geometry generation.** `vkr_ui_text_find_glyph()`
-  formats the codepoint into a decimal string to probe a string-keyed hash
-  table, for every glyph, every time geometry is rebuilt — which for the FPS and
-  metrics overlays is several times a second. AGENTS.md names per-draw string
-  construction as a defect, not a style preference. `vkr_mtsdf_build_font()`
-  builds the same table by allocating one `String8` per glyph.
-- **Linear-scan fallback.** When the hash probe misses,
-  `vkr_ui_text_find_glyph()` scans the whole glyph array. Harmless for 224
-  Latin glyphs; not harmless for a CJK face.
-- **`VkrFont::atlas_cpu_data` is write-only.** All three loaders populate it;
-  nothing in `lib`, `app`, `tests`, or `tools` reads it.
-  `vkr_mtsdf_font_load_atlas_cpu_data()` opens the source PNG a second time,
-  decodes it with stb_image, and copies 4 MiB into the font's 6 MiB pool chunk.
-  For `Ubuntu-3d.json` the 2048² atlas needs 16 MiB, the allocation fails, and
-  the loader logs `out of memory for CPU atlas copy` at every startup. It also
-  decodes unflipped while the GPU copy is flipped, so the two would disagree if
-  anything did read it.
-- **Three parallel font paths.** Bitmap, system, and MTSDF each carry their own
-  loader, cache format, metric convention, and quality envelope, and
-  `vkr_ui_text_create()` falls back to the *bitmap* default when a handle does
-  not resolve.
-
----
+`dpi / 96` and macOS backing scale are logical-to-device coordinate scales.
+They are not physical-DPI measurements and do not convert typographic points.
+The target promises consistent OS-scaled logical UI size, not identical
+physical inches across displays.
 
 ## 3. Target design
 
-### 3.1 One cooked artifact
+### 3.1 Reproducible `.vkfa` artifact
 
-A new offline tool, `vkr_font_cooker`, links msdf-atlas-gen and emits one
-versioned binary `.vkfa` container per font. This mirrors `vkr_mesh_cooker`
-(ADR-030) and `vkr_vkt_packer` (ADR-012), including the build-wrapper
-integration and the content-hash skip. ADR-034 owns the rationale, the
-dependency pin, and the container ABI.
+`vkr_font_cooker` links a pinned `vendor/msdf-atlas-gen` only in an offline C++
+tool. Its `.fontcfg` input fixes source face, collection index, charset,
+variable axes, field type, atlas size and range, padding, edge-coloring settings
+and seed, fallback policy, and pixel format.
 
-The container holds, in one file:
+The versioned little-endian `.vkfa` file contains:
 
-- format magic `VKFA`, version, and a source content hash;
-- `distanceRange` in atlas pixels and `atlasPxPerEm`, both as `float32_t`;
-- em-normalized `FontMetrics`: ascender, descender, line height, underline
-  position and thickness, `unitsPerEm`;
-- a glyph table with `float32_t` advance, plane bounds, and **UVs already
-  normalized to [0,1] with the V flip applied**, plus a page index;
-- a sorted codepoint→glyph-index map;
-- a sorted kerning table with `float32_t` amounts in em units;
-- the atlas pages as uncompressed pixels, `R16G16B16A16_SFLOAT` by default.
+- a bounded header and section directory with file size, version, field kind,
+  fallback glyph ID, counts, source-and-settings identity, and checksums;
+- finite float em metrics where one em equals `1.0`;
+- sorted unique glyph-ID records with float plane bounds, advance, normalized
+  UVs, and page index;
+- a sorted unique codepoint-to-glyph-ID map and glyph-ID-pair kerning table;
+- symmetric distance range and atlas pixels per em as separate metadata;
+- a page directory and embedded, checksummed atlas payload.
 
-Nothing in the container is expressed in pixels of a chosen render size. The
-runtime never divides by an atlas extent, never truncates a bound, and never
-guesses a convention.
+The exact byte layout is frozen during F1 in a shared format header and tested
+with golden bytes and round trips. No implementation dumps native structures.
+Version 1 production loading accepts one MTSDF page. The schema can describe
+pages, but runtime multi-page support waits for a draw-partition design.
 
-### 3.2 Runtime consumption
+The baseline atlas is linear, uncompressed, single-mip RGBA8 UNORM. RGBA16F is
+an opt-in experiment because it doubles page residency. It is not the default
+until same-glyph captures show a material improvement after all other defects
+are fixed.
 
-`VkrFont` gains a float glyph representation for cooked fonts. `VkrFontGlyph`'s
-integer fields stay for the bitmap loader, which is genuinely a
-fixed-pixel-size format; the MTSDF path stops borrowing them.
+### 3.2 Cold loader and runtime representation
 
-Glyph lookup becomes a direct `uint32_t` codepoint key. The decimal-string hash
-table goes away on both the build and the lookup side.
+The C11 loader validates the complete file before publishing a font or GPU
+atlas: bounds and overflow, section overlap, checksums, finite values, sorted
+uniqueness, glyph and page references, UV order and range, field type, pixel
+format, row stride, exact payload size, and the v1 one-page restriction.
+Partial failure releases every temporary allocation and GPU handle through one
+cleanup path.
 
-`vkr_text_layout_compute()` scales em-normalized floats by
-`pxSize / unitsPerEm` at layout time, the way `computeFontScaleInfo()` and
-`scaleGlyphMetrics()` do in nuri's `text_layouter.cpp`. Advances, bearings,
-kerning, and line height all become float. Nothing rounds until the vertex
-position is written.
+Cooked glyph records remain in float em units. Layout multiplies them by device
+pixels per em. Lookup uses integer codepoints and glyph IDs. No formatting,
+allocation, file access, validation, or atlas query occurs per glyph or per
+draw.
 
-The `?size=` query parameter is removed from MTSDF font requests. A cooked font
-has no baked size; requesting one is meaningless and is the root of §2.2.
+The prepared draw carries `float2 unit_range`. It does not carry the current
+CPU-computed `screen_px_range`.
 
-### 3.3 Shading contract
+### 3.3 MTSDF shading contract
 
-ADR-035 owns this. `text/default.slang` and `metal/msl/text/default.metal`
-adopt the reference form:
+Both backends reconstruct:
 
 ```hlsl
-// unitRange = pxRange / atlasSize, computed once per vertex
-float screenPxRange(float2 uv, float2 unitRange)
-{
-    float2 screenTexSize = 1.0f / max(fwidth(uv), 1e-6f);
-    return max(0.5f * dot(unitRange, screenTexSize), 1.0f);
-}
-
-float3 msd  = atlas.rgb;
-float  sdM  = median3(msd) - 0.5f;
-float  sdS  = atlas.a - 0.5f;
-float  fall = saturate(2.0f - range);          // SDF below ~2 px of range
-float  sd   = lerp(sdM, sdS, fall);
-float  alpha = saturate(range * sd + 0.5f);
+float2 dx = ddx(uv);
+float2 dy = ddy(uv);
+float2 gradient_squared = max(dx * dx + dy * dy,
+                              float2(1e-12f, 1e-12f));
+float2 screen_tex_size = rsqrt(gradient_squared);
+float range = max(0.5f * dot(unit_range, screen_tex_size), 1.0f);
+float sd_msdf = median3(atlas.rgb) - 0.5f;
+float alpha = saturate(range * sd_msdf + 0.5f);
 ```
 
-`pxRange` reaches the shader as the cooked `distanceRange`, not a CPU-side
-product. The `screen_px_range` field in `VkrPreparedTextDraw` is repurposed to
-carry it, and `vkr_ui_system_prepare_text_draws()` and
-`vkr_world_resources_prepare_text_draws()` stop computing a render-size
-product. The `[1, 4]` clamp is deleted; the clamp that matters is the
-`max(..., 1.0)` inside `screenPxRange`.
+The candidate alpha fallback is evaluated independently. UI stays blended.
+Picking uses the same reconstructed coverage. Depth-writing world text may use
+an explicit domain-specific discard threshold represented in both backend root
+ABIs.
 
-The world/3D fragment shader additionally discards below a threshold so that
-text participates correctly in depth.
+No canonical-range shader change may land against the current packed sidecar.
+Clean atlas storage, field declaration, range metadata, and both backend ABI
+changes form one F0 landing boundary.
 
-### 3.4 Atlas asset policy
+### 3.4 Asset and build policy
 
-Font atlases leave the `vkr_vkt_packer` input set. ADR-034 makes the cooked
-`.vkfa` the only delivery path for cooked fonts, so there is no loose PNG for
-the packer to find and no classification heuristic to get wrong.
+Loose transition atlases and cooked font pages never enter the generic texture
+packer. Stale `.vkt` sidecars are deleted when the exclusion lands. Generated
+`.vkfa` files are ignored build products; source fonts and cooker configuration
+are committed only when their licenses permit redistribution.
 
-For the transition period, and for any font atlas that remains a loose texture,
-the packer gains an explicit skip and the MTSDF loader requests
-`?cs=linear&tc=data-mask` so an existing sidecar cannot override the class.
+Cooking is deterministic and skips an unchanged source-and-settings identity.
+Whether root wrappers invoke it automatically or production assets are prepared
+through an explicit wrapper is settled during F1. Either choice must stage the
+artifact after a successful cook and fail the requesting workflow on cook or
+copy error.
 
-Atlas pages upload as `R16G16B16A16_SFLOAT`, single mip, `LINEAR`/`LINEAR`,
-`MIP_FILTER_NONE`, clamp-to-edge. Sixteen-bit float removes both the 8-bit
-distance quantization and the sRGB question. A 1024² RGBA16F page is 8 MiB
-resident against 4 MiB for RGBA8; for the small number of font atlases a build
-carries, that is the right trade, and §5 records it as a measured gate rather
-than an assumption.
+### 3.5 Logical UI scale before layout
 
-`VkrUiTextConfig::uv_inset_px` is deleted. Exact float UVs make it unnecessary,
-and it actively harms a distance field.
+The window publishes a finite positive content scale and a change revision.
+Windows uses `GetDpiForWindow() / 96`; macOS uses the relevant backing scale;
+offscreen execution uses an explicit configured value that defaults to `1`.
+There is no Linux contract until a Linux window backend exists.
 
-### 3.5 UI text scale
+The UI converts all authored logical dimensions before layout:
 
-ADR-036 owns this. `vkr_ui_system_text_content_scale()` is replaced by a scale
-derived from the window's DPI, which
-[presentation-dpi-and-transfer-function-spec.md](../rendering/presentation-dpi-and-transfer-function-spec.md)
-already makes available and authoritative through Per-Monitor V2:
-
-```
-ui_scale = dpi / 96.0
+```text
+device_pixels = authored_logical_units * content_scale
 ```
 
-The scale multiplies the authored **point size** before layout, not the text
-transform after it. Layout then runs at the real device-pixel size, so wrap
-points, advances, and line breaks are solved where the text is actually drawn.
-The transform scale returns to 1.
+This includes font size, letter and line spacing, maximum dimensions, clipping,
+anchor padding, and slot offsets. The retained text transform does not also
+carry content scale. A scale revision dirties layout even if the pixel extent
+does not change.
 
-The same expression compiles on every platform. macOS supplies its backing
-scale factor; Linux supplies its per-output scale. The `#if PLATFORM_WINDOWS`
-divergence and the hardcoded `#if defined(_WIN32)` font sizes in `app/src/main.c`
-both go away.
+The code and documentation must stop calling these authored values points.
+`dpi / 96` is a logical-UI scale. It is not the `dpi / 72` conversion required
+for typographic points.
 
-A game HUD that wants design-extent scaling rather than DPI scaling keeps that
-option, but it becomes an explicit per-slot policy on `VkrUiTextSlot`, not a
-platform `#if` in the system.
+### 3.6 Deliberate non-goals
 
----
+This plan does not add shaping, bidirectional text, dynamic glyph generation,
+full CJK coverage, a multi-page draw strategy, a speculative design-extent
+policy, or instancing without measurement. Glyph IDs and an explicit charset
+keep those options open without placing them in current hot paths.
 
-## 4. Staged plan
+## 4. Five-stage plan
 
-Each stage is independently shippable and independently verifiable. Stages F1
-and F2 are the ones that change what the user sees.
+### F0: Correct loose-atlas input and shading
 
-**F0 — Stop the bleeding, no format change.**
-Exclude `assets/textures/Ubuntu-*.png` and `UbuntuMono-mtsdf-atlas.png` from the
-packer; delete their `.vkt` sidecars; request the atlas with
-`?cs=linear&tc=data-mask`. Correct `screen_px_range` to
-`distance_range * render_size / atlas.size` and store `atlas.size` instead of
-discarding it. Land the ADR-035 shader. This alone makes the MTSDF path usable
-and is a few hundred lines.
+Land as one rollback unit:
 
-**F1 — Cooked artifact.**
-Vendor msdf-atlas-gen, add `vkr_font_cooker`, define and implement the `.vkfa`
-container, add the loader, cook `UbuntuMono` and `NotoSansCJK`, wire the build
-wrappers. Keep the JSON+PNG loader behind the existing `can_load` so nothing
-breaks while assets migrate.
+1. move the loose MTSDF atlas outside generic texture inputs or add a verified
+   packer exclusion;
+2. delete stale atlas `.vkt` sidecars and request linear, uncompressed,
+   single-mip sampling;
+3. preserve float atlas bounds and validate explicit atlas size, symmetric
+   range, and MTSDF field kind;
+4. replace the scalar CPU range with two-component `unit_range` in UI, world,
+   Vulkan, and Metal contracts;
+5. implement canonical UV-derivative reconstruction and A/B the candidate alpha
+   fallback.
 
-**F2 — Float metrics and DPI scale.**
-Move `VkrFont`'s MTSDF representation to floats, delete `?size=`, convert
-`vkr_text.c` layout to float, land ADR-036, retire the `#if defined(_WIN32)`
-font sizes in `app/src/main.c`. Point the Windows default UI font at the cooked
-MTSDF font. This is where the reported symptom is actually fixed.
+F0 is a short-lived quality stopgap. If F1 is ready to land immediately, F0 may
+be folded into it, but the atlas correction still precedes shader evaluation
+inside the change.
 
-**F3 — Cleanup.**
-Delete `VkrFont::atlas_cpu_data` and its three writers. Replace the
-string-keyed glyph table with a `uint32_t` key. Delete `uv_inset_px`. Retire the
-`system` font type, or reduce it to a cooker input rather than a runtime
-rasterizer. Retire the JSON+PNG MTSDF loader once assets are migrated.
+### F1: Add cooker, format, and loader
 
-**F4 — Optional, behind measurement.**
-Per-glyph instancing in the style of nuri's `GlyphInstance` buffer: 6 vertices,
-`gl_InstanceIndex`, one 32-byte record per glyph in a BDA buffer, no CPU vertex
-array and no index buffer. Worth doing only if F3's profile shows text geometry
-on the critical path.
+Pin the dependency; implement deterministic `.fontcfg` parsing, artifact
+identity, and cooker output; freeze the byte layout; add the validated C11
+loader; integrate Windows and POSIX preparation/staging; cook the explicit
+production charset; and keep JSON-plus-PNG as rollback.
 
-Shaping with HarfBuzz is explicitly **out of scope**. VKR's current text is
-Latin overlays and world labels. Adding a shaper is a separate decision with its
-own dependency cost; the cooked container reserves a glyph-id space so it can be
-added later without a format break.
+Version 1 ships RGBA8 and exactly one page. Unsupported page counts, field
+types, versions, or asymmetric ranges fail at the cold boundary.
 
----
+### F2: Migrate float layout and default UI
+
+Add float em glyph records to `VkrFont`, direct integer lookup, glyph-ID-pair
+kerning, and float layout. Convert UI and world geometry to the same metric
+contract. Switch the default UI to the cooked MTSDF asset after coverage and
+fallback-glyph tests pass.
+
+Do not delete the system raster path in the same first migration commit. Keep a
+bounded rollback until the default UI, world text, picking, backend matrix, and
+required character coverage pass.
+
+### F3: Add content scale and retire proven-dead paths
+
+Expose per-window content scale and revision, record it in harness reports,
+scale every authored UI length before layout, remove the hidden transform
+scale, and remove platform-specific application sizes. Test scale-only changes
+separately from resize.
+
+After migration evidence, remove only paths with no remaining owner: obsolete
+JSON parsing, write-only CPU atlas copies, string glyph keys, and unused default
+font fallbacks. Retain bitmap or system-raster loading if a real caller still
+requires fixed-pixel or dynamic coverage.
+
+### F4: Optional measured instancing
+
+First add focused CPU timing or counters that distinguish layout, glyph lookup,
+geometry rebuild, upload, and draw submission. Convert retained text to a unit
+quad plus glyph instances only if an authoritative profile shows text geometry
+or upload work on the critical path. Preserve picking, world depth semantics,
+and both backend contracts.
+
+Without that evidence, F4 is not work to schedule.
 
 ## 5. Evidence gates
 
-Two harness cases already exist and target exactly this:
-`tools/cases/local/font_downsized_snapshot.case.json` (800×600 → 480×270) and
-`tools/cases/local/font_maxsized_snapshot.case.json` (800×600 → 1600×900). Both
-capture `final_color` after a live resize round trip against
-`assets/scenes/fixtures/text_rendering.scene.json`.
+The following are implementation gates. Editing this proposed document does not
+satisfy them.
 
-Required before any stage is called done:
+### 5.1 F0 gates
 
-1. Both existing cases, plus a new `local.font.native_snapshot` at 1920×1080 and
-   a 3840×2160 variant where hardware allows. Text must be legible and
-   stroke-weight-consistent at every extent. Replacement goldens need owner
-   acceptance; the current goldens encode the defect.
-2. A per-stage MTSDF comparison at 12, 18, 32, 64, and 128 px against the same
-   string, confirming that stem weight and tracking are stable across sizes.
-   The tracking test is the one that catches §2.2 regressions: measure the
-   rendered advance of a 40-character run and confirm it matches
-   `Σ advance × pxSize / unitsPerEm` within a quarter pixel.
-3. A corner-fidelity check on a glyph with a sharp junction — `M`, `W`, `4` —
-   confirming the ADR-035 shader removes the `fwidth(median)` notching. Compare
-   against a same-size msdfgen CPU render.
-4. Cooker determinism: two runs on the same input produce byte-identical
-   `.vkfa`, matching the ADR-030 cooker contract.
-5. `./build_test.sh` green, with new CPU tests in `tests/src/text_test.c`
-   covering `.vkfa` round-trip, float layout advance accumulation, and
-   codepoint lookup.
-6. A focused Vulkan validation run on the text pass after the shader and format
-   changes. Per AGENTS.md this is a separate diagnostic run, never folded into a
-   baseline or performance command.
-7. Release frame-time comparison at matched internal extents before and after
-   F2, since RGBA16F atlas pages change resident bytes and sampler bandwidth.
-   An unmeasured claim that this is free is not a result.
+- Assert the font atlas resolves to linear non-sRGB, uncompressed, one-mip
+  storage on Vulkan and Metal. Record the reported GPU format.
+- Prove no stale atlas `.vkt` is selected after a clean and an incremental
+  build.
+- Unit-test rectangular-page `unit_range` and known transform derivatives.
+- Capture pure MSDF, pure alpha SDF, and candidate blends at several projected
+  ranges, including corner glyphs such as `M`, `W`, `4`, and `@`.
+- Run `local.font.downsized_snapshot` and `local.font.maxsized_snapshot` for
+  observational reports. They have no accepted baselines today.
+- Run the offscreen text snapshot with final-color and picking-ID captures on
+  both backends.
+- Run one focused Vulkan validation pass and one focused single-process Metal
+  API/shader validation pass. Keep validation out of baseline and performance
+  runs.
 
-Delete the artifact tree in the same turn that produces it; carry out the
-numbers and the reproducing command.
+No baseline is accepted automatically. A changed capture is proposed and
+reviewed through the normal owner workflow.
 
----
+### 5.2 F1 gates
 
-## 6. What nuri does, and what transfers
+- Two cooks from identical inputs produce byte-identical output and the second
+  normal cook skips work.
+- Changing font bytes, face index, charset, an axis, a generator setting, tool
+  version, or pinned commit changes artifact identity.
+- Golden-header and round-trip tests fix the exact v1 layout on supported host
+  compilers.
+- Truncated, oversized, overlapping, trailing, checksum-invalid, non-finite,
+  unsorted, duplicate, bad-reference, bad-UV, unsupported-version,
+  unsupported-format, and multi-page v1 fixtures fail without publishing a
+  handle or leaking a GPU resource.
+- Windows and POSIX wrappers stage a usable artifact on clean and incremental
+  builds and report failures.
+- Record cook time, `.vkfa` bytes, peak temporary decode bytes, and GPU resident
+  atlas bytes separately.
 
-`nuri` is the other renderer in this workspace. It solved the same problem and
-its shape is the reference for §3.
+### 5.3 F2 gates
 
-| Concern | nuri | VKR today |
-|---|---|---|
-| Generation | `compileNFontFromFontFile()` links msdf-atlas-gen: `FontGeometry::loadCharset` → `edgeColoringInkTrap` → `TightAtlasPacker` → `ImmediateAtlasGenerator<float,4,mtsdfGenerator>` | Manual CLI invocation; JSON + PNG checked in |
-| Delivery | One binary `.nfont`: metrics, pxRange, glyphs, cmap, embedded atlas pages | Two files, parsed by a brace-unaware JSON scanner |
-| Glyph metrics | `GlyphMetrics` — all `float`, UVs pre-normalized and pre-flipped | `int16_t` advances and bearings baked at one size; UVs truncated from float bounds at runtime |
-| Layout scale | `scale = pxSize / unitsPerEm`, applied to float metrics per layout | Integer pixel metrics rescaled by `font_size / font->size` |
-| Atlas format | `RGBA16_FLOAT` by default (`useRgba16fAtlas`), uncompressed | RGBA8, UASTC block-compressed, sRGB-tagged, mipmapped |
-| Screen px range | `unitRange = pxRange / atlasSize` per vertex; `max(0.5 * dot(unitRange, 1/fwidth(uv)), 1.0)` per fragment | `fwidth(median(rgb) - 0.5)`; the CPU-computed range is uploaded and never read |
-| Minification | Blends MSDF median toward the `.a` SDF channel below 2 px of range | `.a` never sampled |
-| Multi-page / fallback | `AtlasPageHandle`, `localPageIndex`, validated fallback chains | Single page, `page_count = 1` |
-| Kerning | Shaper-driven, float | Absent for MTSDF |
-| Geometry | 6 vertices × `gl_InstanceIndex`, 32-byte `GlyphInstance` from a BDA buffer | 4 verts + 6 indices per glyph, rebuilt on the CPU |
-| Build integration | msdf-atlas-gen as an `external/` submodule linked **only into the editor target**; the runtime library has no msdf dependency | None |
+- Pure layout tests cover advances, negative bearings, kerning, fallback glyph,
+  multiline height, wrapping, clipping, non-integer sizes, UTF-8 mapping, and
+  long-run accumulation against known em metrics.
+- Assert that geometry rebuild performs no per-glyph formatting, heap
+  allocation, file access, or linear full-table fallback.
+- Capture the default overlays, world text, and picking IDs on Vulkan and Metal.
+- Verify the selected production charset and fallback glyph against every
+  shipped overlay string. Do not infer full CJK coverage from the source font's
+  filename.
+- Run `./build_test.sh`, the cold/warm production pipeline-cache sequence, and
+  focused validation as required by the touched shader and resource paths.
 
-Transfers directly: the container concept, float glyph metrics with baked UVs,
-the layout scale formula, the shader, the RGBA16F atlas, and the
-editor/tool-only dependency boundary.
+### 5.4 F3 gates
 
-Does not transfer as-is: `std::pmr`, `Result<T, E>`, and the C++ pimpl shape.
-VKR is C11 with `VkrAllocator`, arena pools, and `bool8_t`/error-enum returns.
-The cooker is a tool and may be C++ — `vkr_vkt_packer.cpp` and
-`vkr_meshoptimizer_bridge.cpp` set that precedent — but the runtime loader is
-C11 behind the existing `VkrResourceLoader` vtable.
+- Pure tests inject `1.0`, `1.25`, `1.5`, and `2.0` content scale and verify
+  size, advance, wrapping, clipping, padding, and slot offsets. Assert that the
+  transform does not apply the factor again.
+- Verify a scale-only revision dirties layout and an extent-only resize does not
+  invent a density change.
+- Offscreen reports explicitly record `content_scale = 1.0` unless a case
+  overrides it.
+- On available hardware, move a window between mixed-scale Windows displays or
+  1x and 2x macOS displays. Record actual reported scale and stale-layout
+  behavior. If the host cannot provide the transition, mark the gate
+  unavailable and retain the pure seam test as non-equivalent evidence.
+- Re-run windowed resize cases as behavior witnesses, not performance evidence.
 
-Also worth noting: nuri's `MtsdfParams` carries `outlineWidth` and `glow`, and
-its 3D path carries `maxScreenSizePx` and billboard modes. VKR has no equivalent
-and this document does not propose adding them. They are listed so the container
-can reserve space rather than break later.
+### 5.5 F4 gates
 
----
+- Use a Release performance case and profile with documented warmup,
+  repetitions, effective configuration, and validation disabled.
+- Compare matched before and after runs. Report CPU layout/rebuild/upload time,
+  GPU text-pass time when available, draw count, instance count, upload bytes,
+  and allocator deltas.
+- Keep the implementation only if the identified limiter improves without a
+  frame-time, hitch, memory, picking, or backend regression.
+
+Retained harness output is not the record. Carry commands, report digests, and
+numbers into the task record, then remove regenerable artifact trees in the
+same implementation turn.
+
+## 6. Comparison with `nuri`
+
+| Area | `nuri` evidence | VKR transfer | Caveat or rejection |
+| --- | --- | --- | --- |
+| Producer | Links msdf-atlas-gen into an offline compiler | Pin the dependency in `vkr_font_cooker` | Record full settings identity and licensing |
+| Runtime dependency | Runtime does not link generator code | Same separation | Required, not optional |
+| Metrics | Stores generator float metrics and scales at layout | Store float values in em units | Do not divide em-normalized values by source `unitsPerEm` |
+| Glyph identity | Carries codepoint mapping with serialized glyph records | Use codepoint to glyph ID plus glyph-ID kerning | Supports future shaping without adding it now |
+| UVs | Serializes normalized float UVs | Apply the vertical convention offline | Loader still validates order and bounds |
+| Atlas | Embeds RGBA16F pixels | Embed pages in `.vkfa` | Start with RGBA8; 16F needs A/B and residency evidence |
+| Range shader | Uses `unitRange` and the documented `1 / fwidth(uv)` approximation | Start with the exact upstream derivative magnitude | Store two components for rectangular pages; approximate only after visual and GPU evidence |
+| Alpha fallback | Blends toward true SDF below range 2 | Evaluate as a candidate VKR policy | Not part of the upstream canonical formula |
+| DPI | Caller supplies a pixel size | Apply window content scale before VKR layout | VKR must define and publish the window-scale boundary |
+| Instancing | Uses a scalable draw representation | Consider only after profiling | Current retained geometry may already be adequate |
+| Feature breadth | Supports effects and larger text systems | Preserve glyph IDs and field kind | Do not import unused effects, shaping, or dynamic atlases |
+
+The transferable lesson is offline ownership of generator output and a float
+runtime contract. The comparison does not establish VKR's pixel format, alpha
+threshold, scale semantics, or performance result.
 
 ## 7. Open questions
 
-1. **Does the `system` font type survive?** If the cooker can consume a `.ttc`
-   with a CJK charset in reasonable time and atlas budget, the runtime
-   stb_truetype rasterizer has no remaining purpose and F3 deletes it. If CJK
-   coverage makes the atlas impractical, the system loader stays for that case
-   and needs its own mip chain at minimum. Requires a cooker run against
-   `NotoSansCJK-Regular.ttc` to answer.
-2. **Charset policy.** nuri exposes only `Ascii` and `Latin1` presets. VKR's
-   `.fontcfg` should carry an explicit charset or glyph-range list so coverage
-   is an asset decision, not a tool default.
-3. **`.vkfa` versus extending `.vkt`.** The atlas page is a texture and `.vkt`
-   already handles versioned texture delivery. Embedding keeps a font one file
-   and one hash, which ADR-034 argues is worth the duplication; the alternative
-   is recorded there.
-4. **Whether F0 is worth landing separately** or whether the team goes straight
-   to F1. F0 is cheap and fixes real corruption, but it touches code F1 replaces.
+These questions must be answered by the named implementation stage, not by
+guessing in the runtime:
+
+1. **Production coverage and fallback (F1):** Which explicit ranges cover every
+   shipped UI and world string, and which licensed face supplies them? The
+   initial runtime is one page; full CJK is not implied.
+2. **Cook integration (F1):** Do root wrappers run the incremental cook, or do
+   production assets use an explicit preparation command? Both choices must
+   stage deterministically and fail visibly.
+3. **Alpha fallback (F0):** Does a blend improve small projected text over both
+   pure MSDF and pure SDF, and at what threshold on both backends?
+4. **Atlas precision (F1/F2):** Does RGBA16F show a visible benefit after the
+   current sampling defects are removed? If not, keep RGBA8.
+5. **Multi-page need (after F2):** Does any accepted coverage set exceed one
+   page? If so, choose draw partitioning or an array representation in a
+   separate design.
+6. **Legacy loaders (F3):** Which real callers still require bitmap or runtime
+   system-raster fonts after default UI migration?
+7. **Instancing (F4):** Does measured CPU text geometry or upload work limit a
+   representative Release case? If not, do not implement it.
+
+Shaping, bidirectional layout, dynamic glyph generation, speculative
+design-extent scaling, and full CJK are not current open implementation tasks.
+They require a product need and separate evidence before entering scope.

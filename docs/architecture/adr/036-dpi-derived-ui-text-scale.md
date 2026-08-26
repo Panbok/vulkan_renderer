@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-08-25
+updated: 2026-08-26
 authority: adr
 ---
 
@@ -13,170 +13,163 @@ Proposed. No production code implements this decision.
 ## Context
 
 `vkr_ui_system_text_content_scale()` returns
-`min(width / 800, height / 600)` and `vkr_ui_system_position_slot()` applies
-that value through `vkr_transform_set_scale()` on each retained text transform.
-Both are compiled only under `PLATFORM_WINDOWS`; every other platform gets a
-constant `1.0`.
+`min(width / 800, height / 600)`, and
+`vkr_ui_system_position_slot()` applies the result as a retained text-transform
+scale. That path is compiled only for Windows. The primary overlays request 32
+pixels on Windows and twice the loaded font size on macOS; the memory overlay
+requests 24 pixels on Windows and 1.5 times the loaded font size on macOS. The
+two production platforms therefore do not share a sizing model.
 
-The application compounds it. `application_init_ui_texts()` in `app/src/main.c`
-sets `text_config.font_size = 32.0f` under `#if defined(_WIN32)` and
-`font->size * 2.0f` otherwise. With the Windows default system font baked at
-128 px by `vkr_system_font_rasterize_glyphs()`, that means the Windows HUD
-minifies a 128 px raster by `128 / (32 × content_scale)` while macOS and Linux
-magnify the same raster by a constant 2×.
+The current Windows scale has three independent problems:
 
-The scaling table is in
-[text-resolution-independence-and-font-cooking-spec.md](../../text/text-resolution-independence-and-font-cooking-spec.md)
-§2.1. The short version: minification runs from 8.9× at a 480×270 client area
-down to 1.1× at 3840×2160. Text is sharp only where the window extent happens to
-put the effective size near the baked raster size, which is around 4K, and the
-worst case is a small window rather than a large one.
+- it treats output extent as display density, so resizing a window changes the
+  nominal UI size even when the OS content scale is unchanged;
+- `min()` against an 800 by 600 reference makes aspect ratio affect text size;
+- applying scale after layout stretches advances, clipping, and wrap decisions
+  that were solved at a different size.
 
-Three further problems with the formula itself, independent of the raster.
+The existing `font_size` comments call the value points, but current layout
+treats it as pixels. The proposed `dpi / 96` formula is not a conversion from
+typographic points. A true point is 1/72 inch. Windows effective DPI divided by
+96 and macOS backing scale instead convert logical UI units into backing or
+device pixels according to OS display policy. macOS also documents backing
+scale as a coordinate conversion, not a measurement of physical panel density.
 
-`min()` against a 4:3 design extent means a 16:9 window is scaled by its height.
-Going from 800×600 to 1600×900 doubles the horizontal pixel count but scales
-text by 1.5, so text occupies a smaller fraction of a wide window than of a tall
-one at equal height. Aspect ratio silently changes text size.
-
-Applying the scale as a **transform** rather than to the authored size means
-layout is solved at the design size and stretched afterward. Wrap points, line
-breaks, and `max_width` clipping are all computed against 800×600 geometry and
-then scaled, so a wrapped paragraph does not re-wrap when the window changes.
-Combined with the integer-quantized advances the spec's §2.2 documents, the
-per-glyph rounding error is multiplied by the scale factor and accumulates
-along a run — up to ±1.8 device pixels per glyph at `content_scale = 3.6`.
-
-And the scale tracks *resolution*, not *density*. Two 27-inch monitors at 1080p
-and 4K get text at 1.8× and 3.6×, which is correct for a game HUD authored
-against a fixed design extent and wrong for desktop UI, where the same physical
-size is the expectation. VKR's overlays are the latter — a metrics readout, a
-camera position, an FPS counter.
-
-[presentation-dpi-and-transfer-function-spec.md](../../rendering/presentation-dpi-and-transfer-function-spec.md)
-already made the correct input available. `vkr_platform_init()` establishes
-`DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2` before window creation, the Windows
-window layer uses `GetDpiForWindow()` with `AdjustWindowRectExForDpi()` and
-handles `WM_DPICHANGED`, and `vkr_window_get_pixel_size()` reports physical
-output pixels on Windows and macOS. The DPI is known and authoritative; the text
-system does not consume it.
-
-`nuri` has no design-extent scale at all. `TextStyle::pxSize` is a real
-device-pixel size, `computeFontScaleInfo()` derives `scale = pxSize /
-unitsPerEm`, and `scaleGlyphMetrics()` applies it to float metrics at layout
-time. The caller supplies the density.
+Per-Monitor V2 support provides most of the platform input but not the public
+contract this decision needs. Windows establishes
+`DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2`, sizes with
+[`GetDpiForWindow()`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getdpiforwindow),
+and handles `WM_DPICHANGED`. macOS converts through the window's
+[`backingScaleFactor`](https://developer.apple.com/documentation/appkit/nswindow/backingscalefactor).
+`vkr_window_get_pixel_size()` exposes physical output pixels, but `VkrWindow`
+does not currently expose content scale or a content-scale revision to the UI
+system. A resize event alone is not proof of a scale change, and a scale-only
+change must not leave layout stale.
 
 ## Decision
 
-Replace the design-extent transform scale with a DPI-derived scale applied to
-the authored point size before layout.
+Represent authored UI dimensions as logical UI units. Convert them to device
+pixels with a per-window OS content scale before text layout. Do not apply the
+same factor again through the text transform.
 
-**Scale source.** `VkrWindow` exposes a content scale. On Windows it is
-`GetDpiForWindow(hwnd) / 96.0`; on macOS it is the view's `backingScaleFactor`;
-on Linux it is the compositor's per-output scale. The value changes on
-`WM_DPICHANGED` and on the equivalent platform events, and it reaches the UI
-system through the existing resize path rather than a new one.
+### Scale source and lifecycle
 
-**Application point.** The scale multiplies `VkrUiTextConfig::font_size` before
-`vkr_text_layout_compute()` runs. It does **not** multiply the text transform.
-Layout therefore runs at the real device-pixel size: advances, kerning, wrap
-points, line breaks, and `max_width` clipping are all solved where the text is
-actually drawn. `vkr_transform_set_scale()` on a text slot returns to identity.
+The window layer stores and exposes a finite positive `content_scale`:
 
-Anchor padding and slot positions are scaled by the same factor, so a 10-pixel
-inset stays a 10-point inset.
+- Windows: `GetDpiForWindow(hwnd) / 96.0f`;
+- macOS: the relevant window or view backing scale;
+- deterministic offscreen and headless execution: an explicit configured
+  value, defaulting to `1.0f`.
 
-**One path for all platforms.** The `#if defined(PLATFORM_WINDOWS)` guard in
-`vkr_ui_system_update_text_content_scale()` is removed, and the
-`#if defined(_WIN32)` font-size branches in `application_init_ui_texts()` and
-`application_init_memory_text()` are removed. Overlays author one point size on
-every platform.
+Linux behavior is not specified because VKR has no production Linux window
+backend. A future backend must define its compositor-scale mapping and event
+semantics before joining this contract.
 
-**Design-extent scaling remains available as an explicit policy.** A game HUD
-that genuinely wants text to grow with resolution keeps that behaviour through a
-per-slot `VkrUiTextScalePolicy` on `VkrUiTextSlot` — `DPI` or `DesignExtent`
-with an authored reference extent. The default is `DPI`. What this decision
-removes is the *implicit, platform-conditional, aspect-sensitive* version of it
-hardcoded in the system.
+The window layer also publishes a monotonically changing scale revision, or an
+equivalent event payload containing both pixel extent and content scale.
+`WM_DPICHANGED`, macOS backing-property or screen changes, and initial window
+creation update the stored value. The UI system consumes the new scale before
+rebuilding layout. A change to scale dirties text and anchor layout even if the
+pixel extent is unchanged; an extent change does not imply a scale change.
 
-**Dependency.** This decision is only worth landing on top of float glyph
-metrics. Scaling the authored size instead of the transform reduces layout error
-only if `vkr_text.c` stops rescaling integer pixel advances, which
-[ADR-034](034-offline-cooked-font-artifacts.md) supplies. Landing DPI scale
-against the current quantized metrics moves the error rather than removing it.
+Harness reports record the effective content scale. Offscreen reports use the
+configured value, so a fixed offscreen baseline does not vary with the machine
+running it.
+
+### Application point and unit contract
+
+For each authored UI length:
+
+```text
+device_pixels = authored_logical_units * content_scale
+```
+
+Conversion occurs before `vkr_text_layout_compute()`. It applies consistently
+to font size, letter and line spacing, maximum width and height, clipping
+bounds, anchor padding, and slot offsets. Glyph em metrics are then multiplied
+by the resulting device pixels per em.
+
+Text transforms remain available for semantic animation or scene placement,
+but they do not carry OS content scale. Removing the hidden transform factor
+prevents double scaling and lets wrapping, clipping, kerning, and line breaks
+operate in the dimensions that are rendered.
+
+The implementation updates misleading `font_size` documentation to say
+logical UI units for UI configuration and device pixels per em at the layout
+boundary. It must not call these values typographic points unless a separate
+72-DPI point conversion is actually implemented.
+
+### Platform and application convergence
+
+The platform-conditional UI scale and font-size branches are removed. The
+application authors one logical size per overlay on Windows and macOS. The
+window's content scale supplies the platform-dependent conversion.
+
+This decision does not add a `VkrUiTextScalePolicy` abstraction. There is no
+current second caller that requires design-extent sizing. If a shipped HUD
+needs resolution-relative text, its accepted design may add an explicit
+policy; retaining the current implicit 800 by 600 rule as a speculative option
+would preserve unnecessary state and branches.
+
+### Relationship to float metrics
+
+Float em metrics from ADR-034 remove the current baked-size quantization and are
+the preferred implementation sequence. They are not a semantic prerequisite
+for applying content scale before layout: integer metrics would still produce
+correct scale and wrap ordering, with lower precision. F3 follows the float
+metric migration to reduce simultaneous variables and avoid preserving that
+quantization in a new API.
 
 ## Consequences
 
-Text renders at one physical size regardless of display resolution, which is the
-correct behaviour for the overlays VKR actually draws. A 1080p and a 4K monitor
-of the same physical size show the same text.
+UI text follows the operating system's logical UI scale. This aims for
+consistent OS-scaled logical size across displays; it does not promise equal
+physical inches on different panels.
 
-Layout becomes correct under resize. Because the authored size scales before
-layout, a wrapped paragraph re-wraps when the window changes and clipped text
-re-clips. The current code cannot do either.
+Resizing a window at a fixed content scale no longer changes nominal text size.
+Moving between displays with different OS scale rebuilds layout at the new
+device-pixel size. Aspect ratio no longer changes text size implicitly.
 
-The aspect-ratio sensitivity disappears. `min()` against a 4:3 reference is gone.
+Layout invalidation becomes a cold display-change operation. All retained text
+and anchor geometry affected by a scale revision must rebuild once. No content
+scale query, validation branch, allocation, or string work enters per-glyph or
+per-draw hot paths.
 
-Platform behaviour converges. One expression, one code path, one authored size.
-The macOS and Linux 2× magnification and the Windows minification ladder both
-stop existing.
+Existing windowed output can change. The local downsized and maxsized cases are
+observational cases with no accepted baselines. They can show resize behavior,
+but they cannot prove mixed-DPI behavior unless the harness can request and
+report an actual scale transition. Baseline changes, if proposed, require
+normal owner review.
 
-Layout runs more often. Today a resize only rewrites transforms; after this
-change a DPI change dirties layout for every text slot. That is bounded — 16
-corner-anchored slots per `VkrUiSystem` — and happens on a monitor move or a
-scale change, not per frame. It is not a hot path, but the dirty-flag path in
-`vkr_ui_text_set_config()` must actually be exercised by the DPI change rather
-than bypassed.
-
-Every windowed text golden changes, on every platform, including the two
-existing harness cases. The spec's evidence gates enumerate the required runs;
-fixed-extent offscreen goldens are unaffected, matching what
-`presentation-dpi-and-transfer-function-spec.md` §2.3 already records.
-
-The mixed-DPI evidence that spec lists as pending now has a second consumer.
-Moving a window between 100%, 125%, 150%, and 200% displays must produce a
-coherent text-size change with no stale layout, and that becomes part of the
-same validation run rather than a separate one.
+The authoritative mixed-scale gate therefore has two parts: a pure layout test
+with injected scale values and a windowed witness on available 100, 125, 150,
+or 200 percent Windows displays, or 1x and 2x macOS displays. Unsupported host
+combinations are reported as unavailable, not silently treated as passed.
 
 ## Alternatives Considered
 
-**Keep the design-extent scale, just fix the aspect handling and apply it to
-size instead of transform.** Preserves current visual behaviour at 800×600 and
-fixes the layout-stretch bug cheaply. Rejected as the default because it keeps
-resolution, not density, as the input, which is wrong for desktop overlays. It
-survives as the opt-in `DesignExtent` policy.
+**Keep design-extent scaling but apply it before layout.** This fixes stretched
+layout but continues to make window extent and aspect ratio determine UI size.
+Rejected for desktop-style overlays.
 
-**Scale by the framebuffer-to-logical-pixel ratio instead of DPI/96.** On macOS
-these are the same number; on Windows with Per-Monitor V2 they are also the
-same, since the client area is reported in physical pixels. Rejected as the
-stated source only because `dpi / 96.0` is the value the platform actually
-publishes on Windows and is meaningful when the two diverge — for example under
-a future internal render-scale feature, which the DPI spec explicitly keeps
-separate from output extent.
+**Use physical monitor DPI.** Physical size data is often absent or unreliable
+and does not represent the user's accessibility scale. Rejected.
 
-**Let the application own the scale entirely and pass a pre-scaled
-`font_size`.** Minimal renderer change; the app already computes platform
-branches. Rejected because it pushes a platform-specific correctness concern
-into every caller and because the UI system needs the scale anyway for anchor
-padding and slot placement. The current `#if defined(_WIN32)` sizes in
-`app/src/main.c` are the evidence that this does not work.
+**Let every application pre-scale `font_size`.** This duplicates platform
+policy and leaves the UI system without the same scale for padding and slots.
+Rejected.
 
-**Render UI text into a fixed-extent offscreen target and composite.** Makes UI
-scaling a single blit parameter and decouples it from the swapchain entirely.
-Rejected: it costs a target and a pass, it resamples already-antialiased text,
-and it makes crisp text at native resolution impossible — the exact property
-SDF text exists to provide.
+**Infer scale from framebuffer divided by logical window extent.** This can be
+equivalent on some platforms, but becomes ambiguous when an internal render
+scale exists. The window layer's explicit OS content scale is the authority.
+
+**Render UI into a fixed-size target and composite it.** This adds a pass and
+resamples already antialiased text. Rejected.
 
 ## Revisit When
 
-- An internal render-scale feature lands. `presentation-dpi-and-transfer-function-spec.md`
-  §1 explicitly reserves internal render extent as a separate field from output
-  extent; UI text must scale against the output extent, not the internal one,
-  and that distinction needs stating once the field exists.
-- The immediate-mode grid UI of [ADR-027](027-immediate-mode-grid-ui.md) is
-  implemented. A real layout engine owns scaling for all widgets, not just text,
-  and the per-slot policy here should fold into it rather than coexist.
-- A shipped game needs HUD text that scales with resolution across the whole UI.
-  That is a request to change the default policy, not to change this decision.
-- Linux windowing gains fractional per-output scaling that the platform layer
-  cannot report as a single number.
+- An internal render extent is added. UI content scale continues to follow the
+  output window, not the internal rendering resolution.
+- ADR-027's immediate-mode grid UI ships and owns scaling for every widget.
+- A real game HUD requires a design-extent policy.
+- A future Linux backend defines per-output fractional scaling.

@@ -1,10 +1,10 @@
 ---
 status: proposed
-updated: 2026-08-25
+updated: 2026-08-26
 authority: adr
 ---
 
-# ADR-035: Canonical MTSDF screen-pixel-range shading
+# ADR-035: Canonical MTSDF screen-pixel range with minification fallback
 
 ## Status
 
@@ -12,185 +12,195 @@ Proposed. No production code implements this decision.
 
 ## Context
 
-`text_alpha()` in `lib/src/renderer/shaders/vulkan/slang/text/default.slang`
-antialiases an MTSDF glyph like this:
+The Vulkan and Metal text shaders reconstruct MTSDF alpha from the median
+distance divided by `fwidth(distance)`. The form is not the
+[msdfgen reference contract](https://github.com/Chlumsky/msdfgen#using-a-multi-channel-distance-field).
+The
+reference converts the encoded atlas distance range into a projected
+screen-pixel range from UV derivatives, then multiplies that range by the
+decoded signed distance.
 
-```hlsl
-float distance = max(min(atlas.r, atlas.g), min(max(atlas.r, atlas.g), atlas.b)) - 0.5f;
-return saturate(distance / max(fwidth(distance), 1e-6f) + 0.5f);
-```
+Applying `fwidth()` after `median3` also makes the derivative follow whichever
+color channel currently supplies the median. That selection changes around
+MSDF corners. UV derivatives provide the stable geometric input the reference
+form expects.
 
-`lib/src/renderer/shaders/metal/msl/text/default.metal` carries the same form.
-
-This is not the msdf-atlas-gen contract, and it fails in three separate ways.
-
-`fwidth()` is applied to the median rather than to the UV. `median3` returns
-whichever of R, G, B is the middle value, and which channel that is changes
-across a corner — that switch is the entire mechanism by which MSDF preserves
-sharp junctions. The median is therefore piecewise-smooth with discontinuities
-exactly at corners, and its screen-space derivative spikes there. The reference
-form takes `fwidth()` of the UV, which is smooth everywhere, and converts to a
-distance-space rate through a known unit range.
-
-The `.a` channel is never sampled. In an MTSDF atlas the alpha channel holds the
-true single-channel signed distance. It is the channel that stays well-behaved
-under minification, where the three color channels disagree at a rate the
-sampler cannot resolve. It is the reason to pay four channels instead of three,
-and the current shader pays for it and discards it. Without it there is no
-graceful path below roughly two screen pixels of range, which is exactly the
-regime a downsized window puts UI text into.
-
-At high magnification `fwidth(distance)` tends to zero, the guarded divide
-saturates, and the glyph edge becomes a hard step with no antialiasing at all.
-
-The correct range is meanwhile computed on the CPU and thrown away.
-`vkr_ui_system_prepare_text_draws()` and
-`vkr_world_resources_prepare_text_draws()` both evaluate:
+The current CPU paths calculate a purported `screen_px_range`:
 
 ```c
-screen_px_range = Clamp(font->sdf_distance_range * (render_size / font->em_size), 1.0f, 4.0f);
+Clamp(font->sdf_distance_range * (render_size / font->em_size), 1.0f, 4.0f)
 ```
 
-`vkr_vulkan_draws.c` writes it into `root->material_alpha.x`. No shader reads
-`material_alpha`. The expression is also wrong: msdf-atlas-gen's contract
-divides by the atlas pixels-per-em, not by `emSize`. With `Ubuntu-2d.json`'s
-`distanceRange = 8` and `atlas.size = 64`, the correct value at 18 px is 2.25;
-the shipped expression computes `8 × 18 / 1 = 144` and the clamp pins it to
-`4.0` for every font at every size. The clamp is what conceals the error, and
-`atlas.size` is parsed into `VkrMtsdfFontMetadata::size`, validated, and never
-read.
+They upload it, but neither text shader reads it. The expression is not the
+canonical quantity either. `metrics.emSize` describes the metric coordinate
+system; it is not the atlas resolution. For the checked-in Ubuntu artifact,
+the expression computes `8 * 18 / 1 = 144` and the clamp returns `4`, while
+`distanceRange * render_size / atlasPxPerEm` would be `8 * 18 / 64 = 2.25` for
+an axis-aligned 18-pixel-em glyph. Perspective and rotation make a single CPU
+render-size product invalid for world text in any case.
 
-`nuri` implements the reference form in
-`assets/shaders/text_2d_mtsdf.{vert,frag}` and `text_3d_mtsdf.{vert,frag}`:
-`unitRange = pxRange / atlasSize` computed once per vertex,
-`max(0.5 * dot(unitRange, 1/fwidth(uv)), 1.0)` per fragment, and an explicit
-blend toward the `.a` SDF below two pixels of range.
+An MTSDF atlas also stores a true single-channel SDF in alpha. Upstream
+documentation identifies alpha as useful for true-distance effects and warns
+that antialiasing becomes unreliable when projected range is too small. The
+specific blend used by `nuri`, `saturate(2 - range)`, is not an upstream
+canonical rule. It is a VKR minification policy that must be compared against
+pure MSDF and pure alpha-SDF output.
+
+The checked-in loose atlas is not a valid input for evaluating either shader.
+Its `.vkt` sidecar declares sRGB color data, lossy block compression, and a box
+mip chain. A correct range can make damage in the stored field more visible.
+Shader replacement therefore cannot land before, or separately from, clean
+linear uncompressed atlas sampling.
 
 ## Decision
 
-Adopt the msdf-atlas-gen reference shading form in both backends, and make
-`pxRange` a cooked constant rather than a CPU-computed product.
+Adopt msdf-atlas-gen's derivative-based screen-pixel-range reconstruction in
+both backends. Evaluate the alpha-channel minification blend as an explicit VKR
+policy in the same implementation stage, but accept its threshold only through
+the visual evidence gate.
 
-**Fragment form.** Both `text/default.slang` and `metal/msl/text/default.metal`
-compute:
+### Range representation
 
-```hlsl
-// unitRange = pxRange / atlasSize, computed once per vertex
-float screenPxRange(float2 uv, float2 unitRange)
-{
-    float2 screenTexSize = 1.0f / max(fwidth(uv), 1e-6f);
-    return max(0.5f * dot(unitRange, screenTexSize), 1.0f);
-}
+For each atlas page, the cold load path computes:
 
-float range = screenPxRange(uv, unitRange);
-float sdMsdf = median3(atlas.rgb) - 0.5f;
-float sdSdf  = atlas.a - 0.5f;
-float fall   = saturate(2.0f - range);
-float sd     = lerp(sdMsdf, sdSdf, fall);
-float alpha  = saturate(range * sd + 0.5f);
+```text
+unitRange = (distanceRange / pageWidth, distanceRange / pageHeight)
 ```
 
-`unitRange` is a vertex output. Computing it per vertex keeps the atlas-extent
-query out of the fragment shader, matching nuri's arrangement.
+`distanceRange` is the symmetric cooked range in atlas pixels. `unitRange` is a
+two-component value because pages need not be square. It is constant for a
+bound atlas page and does not depend on authored font size, transform, output
+extent, or projection.
 
-**Range source.** `pxRange` is the cooked `distanceRange` in atlas pixels,
-delivered by [ADR-034](034-offline-cooked-font-artifacts.md), and `atlasSize` is
-the bound atlas extent. Neither is a function of render size; the projection
-derivative supplies that. `VkrPreparedTextDraw::screen_px_range` is repurposed
-to carry the cooked `distanceRange` and both `prepare_text_draws` functions stop
-computing a render-size product. The `[1, 4]` clamp is deleted. The clamp that
-matters is `max(..., 1.0)` inside `screenPxRange`, which is what stops sub-pixel
-text from vanishing.
+`VkrPreparedTextDraw` and both backend root ABIs gain this two-component
+contract. The existing scalar `screen_px_range` is removed rather than
+repurposed under a misleading name. UI and world preparation stop computing a
+render-size product and delete the `[1, 4]` CPU clamp. This is a packet/root ABI
+change on both Vulkan and Metal; it is not assumed to fit an unnamed spare
+field.
 
-**Minification fallback.** The `saturate(2.0 - range)` blend toward the `.a`
-channel is part of the contract, not an option. Two screen pixels of range is
-the documented threshold below which MSDF color-channel artifacts dominate.
+### Fragment reconstruction
 
-**World text.** The 3D fragment path discards below
-`alphaDiscardThreshold` so text participates correctly in depth, as nuri's
-`text_3d_mtsdf.frag` does. The threshold travels in the existing packet root
-alongside `pxRange`.
+The MTSDF branch uses the reference form:
 
-**Bitmap and system fonts** keep the `material_flags == 0` branch and continue
-to return `atlas.a` directly. This decision is about the MTSDF branch only.
+```hlsl
+float screen_px_range(float2 uv, float2 unit_range)
+{
+    float2 dx = ddx(uv);
+    float2 dy = ddy(uv);
+    float2 gradient_squared = max(dx * dx + dy * dy,
+                                  float2(1e-12f, 1e-12f));
+    float2 screen_tex_size = rsqrt(gradient_squared);
+    return max(0.5f * dot(unit_range, screen_tex_size), 1.0f);
+}
 
-**Atlas sampling preconditions.** The form assumes the atlas is sampled as
-linear UNORM or float, uncompressed, with no mip chain. ADR-034 guarantees that
-for cooked fonts. Until then, the MTSDF loader must request
-`?cs=linear&tc=data-mask` so a `.vkt` sidecar's class cannot override it, and
-`vkr_vkt_packer` must skip font atlases. Landing this shader against the current
-UASTC/sRGB atlas would make output worse, not better, because a correct range
-computation amplifies a corrupted field instead of blurring past it.
+float range = screen_px_range(uv, unit_range);
+float sd_msdf = median3(atlas.rgb) - 0.5f;
+float alpha_msdf = saturate(range * sd_msdf + 0.5f);
+```
+
+Equivalent Slang and Metal code must produce the same coverage within the
+cross-backend capture tolerance. Bitmap and system-raster branches continue to
+use the sampled alpha channel directly.
+
+### Alpha-channel fallback
+
+The candidate VKR policy is:
+
+```hlsl
+float sd_sdf = atlas.a - 0.5f;
+float sdf_weight = saturate(2.0f - range);
+float sd = lerp(sd_msdf, sd_sdf, sdf_weight);
+float alpha = saturate(range * sd + 0.5f);
+```
+
+It applies only to artifacts declared as MTSDF. The cooker records the field
+kind and the loader rejects incompatible four-channel data. F0 compares this
+blend at several thresholds against pure MSDF and pure alpha SDF. The accepted
+threshold becomes a named shader constant or cooked policy version, not an
+unexplained literal. If the comparison shows no advantage, the canonical MSDF
+form lands without the blend.
+
+### Visual, picking, and depth coverage
+
+UI text remains blended and does not add an alpha discard. Picking derives
+coverage from the same reconstructed alpha and retains its domain-specific
+threshold.
+
+World text that writes depth may discard below an explicit world-text alpha
+threshold so transparent quad regions do not claim depth. That threshold and a
+world/UI domain bit must have an explicit packet/root ABI representation and
+matching Vulkan and Metal behavior. It is not silently packed into the current
+dead range scalar.
+
+### Atlas preconditions and landing boundary
+
+The shader change lands atomically with all of the following:
+
+- source atlas sampled as linear UNORM or float, without lossy block
+  compression and without generated mips;
+- stale font-atlas `.vkt` sidecars deleted and the font atlas directory removed
+  from, or explicitly excluded by, generic texture packing;
+- atlas dimensions and symmetric distance range validated at load time;
+- correct MTSDF field-kind declaration and alpha-channel presence;
+- two-component `unitRange` delivered through both backend ABIs.
+
+The temporary request `?cs=linear&tc=data-mask` is defense in depth, not a
+substitute for deleting stale sidecars. If `tc=data-mask` can still transcode to
+a lossy block format on a device, it does not satisfy this decision.
 
 ## Consequences
 
-Antialiasing quality becomes a function of the actual projected glyph size on
-screen, which is the property that makes SDF text resolution-independent. The
-same font renders correctly at 12 px in a downsized window and at 128 px in a
-world label without a per-size asset or a per-size tuning constant.
+Coverage responds to projected glyph size and perspective rather than to a
+CPU guess. Expected outcomes are more stable corners and consistent edge width
+over scale, but the evidence gates determine whether those outcomes are met.
 
-Corner notching from `fwidth(median)` disappears. This is directly observable on
-`M`, `W`, and `4` and is the spec's corner-fidelity evidence gate.
+The alpha fallback is no longer described as part of the upstream canonical
+algorithm. VKR can keep, adjust, or reject it based on captures without
+changing the accepted range reconstruction.
 
-Small text stops falling apart, because the `.a` blend takes over below two
-pixels of range. This is the half of the reported scaling symptom that lives in
-the shader; the other half is metric quantization and UI scale, covered by
-ADR-034 and [ADR-036](036-dpi-derived-ui-text-scale.md).
+The packet/root contract becomes clearer: it carries an atlas-derived
+`unitRange`, not a render-size-derived scalar. The cost is additional fragment
+ALU and a backend ABI change. Any claim that the change is free, faster, or
+slower requires a measured profile with text shown.
 
-Dead data leaves the packet root. `screen_px_range` stops being a computed value
-nobody reads and becomes a cooked constant the shader consumes.
-
-Existing text goldens change. Every snapshot with visible text needs a
-replacement baseline and owner acceptance. The current goldens encode the
-defect, so this is expected rather than a regression, but it is not free — the
-spec's evidence gates enumerate the runs.
-
-Fragment cost rises slightly: one extra texture channel is already fetched, and
-the added work is a `dot`, a `lerp`, and a `saturate`. The removed work is a
-divide. This is not expected to be measurable, and the spec does not claim it is
-free without a measurement.
-
-The `text_picking_fragment` entry point shares `text_alpha()` and inherits the
-change, so picking coverage moves with visual coverage. That is correct, and it
-means picking captures are part of the evidence set.
+The two local resize snapshot cases are observational inputs, not accepted
+goldens. F0 records their reports and captures. If a new or existing baseline
+is proposed, it goes through the normal owner-acceptance workflow. The
+offscreen text snapshot's final-color and picking-ID captures remain the
+cross-backend coverage gate.
 
 ## Alternatives Considered
 
-**Keep `fwidth(distance)` and add the `.a` fallback only.** Cheaper, and it
-would fix the small-text case. Rejected because it leaves the corner-derivative
-discontinuity, leaves magnification unantialiased, and keeps a form that cannot
-be reasoned about against msdf-atlas-gen's documentation. Half-fixing a
-contract is worse than either endpoint.
+**Keep `fwidth(median)` and add alpha fallback.** This retains a shader that
+cannot be compared directly with the generator's documented contract.
+Rejected.
 
-**Use the CPU-computed `screen_px_range` as a uniform scalar with no
-derivative.** This is what the existing dead field was presumably intended for,
-and it works for axis-aligned screen-space UI text where the projected size is
-known on the CPU. Rejected because it cannot handle world text at all — a 3D
-label's projected size varies per fragment with perspective and rotation — and
-because it would require the UI and world paths to use different shading models
-for the same font.
+**Use a CPU scalar range.** This can approximate axis-aligned UI but does not
+handle perspective or rotation in world text. Rejected.
 
-**Supply the range through a per-glyph vertex attribute.** More flexible; lets
-different fonts batch together. Rejected as premature: text draws already batch
-per atlas, and a push-constant scalar plus a vertex-computed `unitRange` costs
-nothing. Revisit if multi-font batching becomes a measured need.
+**Always use alpha SDF.** This gives a simpler minification path but discards
+the corner fidelity for which MSDF is used. Retained as an A/B reference, not
+the production default.
 
-**Render text through a separate high-resolution offscreen target and
-downsample.** Sidesteps the shading question entirely and gives excellent
-quality. Rejected: it costs a target, a pass, and bandwidth proportional to
-supersample factor, for a problem that a correct four-line fragment shader
-solves.
+**Use a per-glyph range attribute.** Current draws bind one atlas, so the value
+is constant for the draw. Rejected until multi-font batching is a measured
+need.
+
+**Approximate projected texel size with `1 / fwidth(uv)`.** Upstream documents
+this form as an approximation and `nuri` uses it. It can reduce shader work, but
+the exact derivative magnitude is the initial correctness reference. Revisit
+only with matched skewed, rotated, and perspective captures plus a measured GPU
+benefit.
+
+**Supersample an offscreen text target.** This adds a render target, pass, and
+bandwidth, and resamples already reconstructed coverage. Rejected.
 
 ## Revisit When
 
-- Text needs outlines, glow, or drop shadows. nuri's `MtsdfParams` carries
-  `outlineWidth` and `glow`; adding them means a second distance threshold and a
-  second color, which changes the fragment contract.
-- Subpixel (RGB-stripe) antialiasing is requested for desktop UI text. That
-  needs three range evaluations at horizontal offsets and a different blend
-  equation, and it interacts with the output transfer function that
-  [presentation-dpi-and-transfer-function-spec.md](../../rendering/presentation-dpi-and-transfer-function-spec.md)
-  governs.
-- A measured profile puts the text fragment path on the critical path. The
-  per-vertex `unitRange` and the `.a` blend are the first things to reconsider.
-- msdf-atlas-gen changes its recommended shading form at a pin bump.
+- Text effects need true signed distance for outlines, glow, or shadows.
+- A measured GPU profile puts text fragments on the critical path.
+- Multi-page or multi-font batching changes the draw-level constant contract.
+- The pinned msdf-atlas-gen version changes its recommended reconstruction.
+- Subpixel antialiasing is requested and its output-transfer interaction has a
+  separate accepted design.

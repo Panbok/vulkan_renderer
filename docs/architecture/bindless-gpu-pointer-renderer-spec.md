@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-21
+updated: 2026-08-26
 authority: design
 ---
 
@@ -906,9 +906,13 @@ submit value. The focused world fragment consumes irradiance, prefilter, and
 BRDF references from its 512-byte root record. The version-10 packet additionally
 carries backend-neutral directional-light and IBL controls plus immutable PBR
 scalar material fields. Visible skybox selection and the lighting IBL source
-are distinct handles, so a compatibility sky may remain visible without
-silently replacing the scene-authored HDR environment used for convolution. It
-also borrows the application lighting system's
+remain distinct handles in the packet, but application submission selects the
+same ready scene-authored environment cubemap for both. The scene loader is the
+only owner of environment asset selection and preparation. World resources
+retain the first successfully prepared scene environment as the fallback; the
+six-face JPG loader remains available only for explicitly authored legacy
+cubemap sources.
+It also borrows the application lighting system's
 bounded point-light table and conservative grid; Metal packs those records once
 per frame into GPU-addressed upload storage. It also borrows up to 16 ready scene
 reflection probes. Metal resolves their generation handles once per frame into

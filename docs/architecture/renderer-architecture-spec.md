@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-25
+updated: 2026-08-26
 authority: spec
 ---
 # VKR Renderer — Architecture and Status Specification
@@ -297,12 +297,15 @@ a stationary receiver according to the camera vector.
 
 ### 3.7 HDR environment, IBL, and presentation
 
-The default world environment is the 4096×2048 Citrus Orchard Radiance HDR.
-Worker-side content probing decodes finite 2:1 HDR data without vertical flip,
-clamps it into binary16 range, and prepares an explicit RGBA16F payload without
-using the legacy `.vkt` cache. Exact backend capability results gate both the
-2D upload and cube-compatible sampled/color-attachment combinations; failure
-keeps the six-face LDR cubemap active.
+The enabled scene `environment` block is the sole world-environment source.
+Bistro currently authors the 4096×2048 Citrus Orchard Radiance HDR through its
+`equirect` field. Worker-side content probing decodes finite 2:1 HDR data
+without vertical flip, clamps it into binary16 range, and prepares an explicit
+RGBA16F payload without using the legacy `.vkt` cache. Exact backend capability
+results gate both the 2D upload and cube-compatible sampled/color-attachment
+combinations. World resources retain the first successfully prepared scene
+environment as a fallback; before one exists, environment failure disables the
+skybox and IBL.
 
 The runtime projects the source into a 1024², eleven-mip RGBA16F cubemap, then
 bakes a 64² irradiance cubemap, a 256² full-mip GGX prefilter, and a 128² BRDF
@@ -404,7 +407,7 @@ point-light instances from `bistro-lights.gltf` before activation.
 | KTX2/UASTC textures | Implemented | BC7/BC5, ASTC, ETC2, EAC RG11, and RGBA32 paths; 2D arrays, cubemaps, and cubemap arrays lower to native Metal/Vulkan view types, while a Metal compute diagnostic samples nonzero array/cube-array indices. Runtime resolution is strict KTX2 by default; explicit test/development flags retain source/legacy coverage, and the packer replaces legacy outputs regardless of timestamp. Material streaming admits eight requests, defaults to uncapped full residency, automatically applies a 90/80/75% heap-budget pressure hysteresis every 60 frames, honors explicit overrides, uniquely accounts shared textures, and completion-retires only last references. Metal batches up to 64 copies into one 32 MiB upload command; Vulkan records into its active frame command buffer. |
 | Editor viewport and picking | Partial | Picking is fully declared in the render graph and runs; readback is usually deferred but ring wrap can block. Both packet implementations copy `editor_enabled` into the graph frame, so the authored editor branch is reachable. Both implementations still pin viewport extent to window size; a true offscreen editor viewport remains absent. See §8 P1 item 15 |
 | UI system | Absent | `VkrUiSystem` is 16 corner-anchored text slots. No rectangle primitive, layout engine, hit testing, clipping, or UI input model. `VkrUiPassPayload.draws` is plumbed end to end but always submitted empty. Design in [ui-architecture-spec.md](../ui/ui-architecture-spec.md), rationale in [ADR-027](adr/027-immediate-mode-grid-ui.md); both are `proposed` |
-| Text | Implemented | Bitmap, MTSDF, system-font, UI and world text paths publish packet-native resources. Windows UI text applies the application's authored 800×600 scale through each retained text transform on every resize; the primary overlay is authored at 32 pixels, and the default Windows system font uses a 128-pixel atlas so downsized and maximized targets do not magnify a low-resolution glyph raster. Metal/macOS behavior is unchanged. |
+| Text | Implemented; resolution scaling defective | Bitmap, MTSDF, system-font, UI and world text paths publish packet-native resources. Windows UI text applies `min(width/800, height/600)` through each retained text transform, so layout is solved before the output scale and cannot reflow in rendered dimensions; `app/src/main.c` also authors different sizes for Windows and macOS. The shipping overlays use a 128-pixel system-font raster with one mip, producing 8.9x to 1.1x minification across the documented extent range. The MTSDF path quantizes em metrics at one size, truncates fractional atlas bounds, uploads an incorrect range no shader reads, and selects an sRGB, lossy block-compressed, mipmapped atlas sidecar. See §8 P1 item 16, [text-resolution-independence-and-font-cooking-spec.md](../text/text-resolution-independence-and-font-cooking-spec.md), and ADR-034/035/036 (all Proposed). |
 | CPU frustum culling | Feature-local only | Ordinary alpha blend remains conservatively camera-culled and back-to-front sorted. Opaque, cutout, transmission, and shadow visibility are GPU-classified from candidate streams |
 | Draw batching | GPU-owned world submission | Opaque, cutout, transmission, and shadow commands are compacted into backend-native indirect buckets. Ordinary blend remains ordered and direct |
 | Multi-draw indirect | Implementation-owned | Metal executes GPU-encoded ICB ranges and Vulkan executes fixed-partition indirect-count draws; there is no generic CPU indirect subsystem or direct world fallback |
@@ -923,6 +926,48 @@ pin the 17-image/13-sampler contract, and exact Bistro validation replay
     for any editor UI work. It enables three previously-unbuilt passes, so it
     requires a Debug validation-layer run on both backends rather than a CPU
     suite alone.
+
+16. **Text quality and layout are not resolution-independent, and the scalable
+    path is not the default UI path.** Windows UI overlays resolve
+    `default_system_font_handle`, a stb_truetype raster baked at 128 px with
+    `mip_filter = VKR_MIP_FILTER_NONE` and one uploaded mip level, and author it
+    at 32 px. `vkr_ui_system_text_content_scale()` returns
+    `min(width/800, height/600)` and is applied as a transform scale, so the
+    atlas minification factor is `4 / content_scale`: 8.9x at a 480 by 270
+    client area, 4.0x at 800 by 600, and 1.1x at 3840 by 2160. One-mip bilinear
+    sampling cannot integrate the source footprint under that minification;
+    captures must establish the visible degree of aliasing. The scale is also
+    `PLATFORM_WINDOWS`-only. On macOS, the primary overlay requests twice the
+    loaded font size and the memory overlay requests 1.5 times that size. VKR
+    has no production Linux window backend.
+
+    The MTSDF path is resolution-independent in principle and defective in
+    practice. `vkr_mtsdf_build_font()` quantizes em-normalized advances and
+    bearings into `int16_t` pixels at one authored size, which `vkr_text.c` then
+    rescales; `atlasBounds` half-texel floats are truncated into `uint16_t`,
+    biasing every glyph UV by half a texel; `vkr_json_find_field()` tracks no
+    brace depth, so the `atlas.emSize` read escapes its object and returns
+    `metrics.emSize`, and `atlas.size` is parsed and discarded. The
+    The incorrect `screen_px_range` computed by both `prepare_text_draws` functions reaches
+    `root.material_alpha.x` and no shader reads it; `text/default.slang`
+    antialiases from `fwidth()` of the median instead and never samples the
+    `.a` channel. `vkr_vkt_packer` sweeps the atlas PNGs out of
+    `assets/textures/`, classifies them `color_srgb` by filename, and emits
+    UASTC-compressed mipmapped sidecars whose class overrides the loader's
+    otherwise linear request. The KTX2 key/value block records
+    `class=color_srgb;uastc=faster;mips=rgba8-box-v1`. Block compression breaks
+    the reference storage assumption and can perturb channel ordering, while an
+    sRGB view applies the EOTF to distance values.
+
+    Diagnosis, measurements, staged remediation, and evidence gates are in
+    [text-resolution-independence-and-font-cooking-spec.md](../text/text-resolution-independence-and-font-cooking-spec.md).
+    Rationale is in [ADR-034](adr/034-offline-cooked-font-artifacts.md),
+    [ADR-035](adr/035-canonical-mtsdf-screen-pixel-range-shading.md), and
+    [ADR-036](adr/036-dpi-derived-ui-text-scale.md), all Proposed.
+    `tools/cases/local/font_downsized_snapshot.case.json` and
+    `font_maxsized_snapshot.case.json` exercise the resize path as observational
+    cases. They have no accepted baselines; any proposal requires normal owner
+    review.
 
 ### P2 — Throughput
 
