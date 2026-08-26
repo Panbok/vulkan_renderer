@@ -627,6 +627,32 @@ bool8_t vkr_vk_record_packet_draws(
   vkr_vk_fill_packet_frame_root(
       renderer, frame_root, slot, &frame, instances, view_projection,
       shadow_texture, transmission_texture, lighting_pass, transmission_pass);
+  if (lighting_pass) {
+    uint64_t temporal_address = 0u;
+    VkrVulkanPacketTemporalDrawState *temporal = vkr_vk_frame_upload_allocate(
+        slot, sizeof(*temporal), _Alignof(VkrVulkanPacketTemporalDrawState),
+        &temporal_address, NULL);
+    if (!temporal)
+      return false_v;
+    *temporal = (VkrVulkanPacketTemporalDrawState){
+        .previous_transforms =
+            (slot->temporal_history_valid ? slot->temporal_transform_input
+                                          : slot->temporal_transform_output)
+                ->buffer.address,
+        .current_view_projection =
+            packet->globals.temporal.current_view_projection,
+        .previous_view_projection =
+            slot->temporal_history_valid
+                ? slot->temporal_color_input->history_view_projection
+                : packet->globals.temporal.current_view_projection,
+        .history_valid = slot->temporal_history_valid,
+        .previous_frame_index =
+            slot->temporal_history_valid
+                ? slot->temporal_color_input->history_frame_index
+                : packet->frame.frame_index,
+    };
+    frame_root->temporal_draw_state = temporal_address;
+  }
   vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     renderer->packet_pipelines[pipeline]);
   for (uint32_t i = 0; i < draw_count; ++i) {
@@ -809,12 +835,15 @@ bool8_t vkr_vk_record_packet_fullscreen(VkrVulkanRenderer *renderer,
     return false_v;
   root->materials = renderer->materials.address;
   root->transmission_texture = texture_index;
-  root->transmission_sampler = 0u;
+  root->transmission_sampler =
+      renderer->config.fxaa_enabled ? renderer->transmission_sampler_slot : 0u;
   root->ibl_controls.x = renderer->graph->packet->globals.exposure;
   const VkrVulkanPushConstants push = {
       .root = root_address,
       .material_index = 0u,
-      .flags = flags,
+      .flags =
+          flags |
+          (renderer->config.fxaa_enabled ? VKR_VULKAN_FULLSCREEN_FXAA : 0u),
   };
   vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     renderer->packet_pipelines[pipeline]);

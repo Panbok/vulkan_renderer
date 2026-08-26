@@ -42,7 +42,7 @@ struct VkrVulkanMaterial
     uint material_id;
     uint flags;
     uint alpha_mode;
-    uint reserved;
+    float temporal_reactivity;
     float4 material_emissive;
     float4 material_dielectric_specular;
     float4 material_surface;
@@ -67,6 +67,17 @@ struct VkrVulkanIblProbe
     float4 extents_weight;
     float4 intensity_box;
 };
+struct VkrVulkanPacketTemporalDrawState
+{
+    VkrTemporalTransform* previous_transforms;
+    uint2 previous_transform_address_padding;
+    float4x4 current_view_projection;
+    float4x4 previous_view_projection;
+    uint history_valid;
+    uint previous_frame_index;
+    uint2 reserved;
+};
+
 
 struct VkrVulkanPacketFrameRoot
 {
@@ -122,6 +133,7 @@ struct VkrVulkanPacketFrameRoot
     VkrVulkanIblProbe* ibl_probes;
     uint ibl_probe_count;
     uint ibl_probe_reserved;
+    VkrVulkanPacketTemporalDrawState* temporal_draw_state;
 };
 
 #include "../../../shared/gpu_draw.slangh"
@@ -226,6 +238,21 @@ struct VkrVulkanVertexOutput
     float3 world_normal : TEXCOORD2;
     nointerpolation uint object_id : TEXCOORD3;
     float4 world_tangent : TEXCOORD4;
+};
+
+struct VkrVulkanTemporalVertexOutput
+{
+    float4 position : SV_Position;
+    float2 uv : TEXCOORD0;
+    float4 color : COLOR0;
+    float3 world_position : TEXCOORD1;
+    float3 world_normal : TEXCOORD2;
+    nointerpolation uint object_id : TEXCOORD3;
+    float4 world_tangent : TEXCOORD4;
+    float3 object_position : TEXCOORD5;
+    nointerpolation uint temporal_index : TEXCOORD6;
+    nointerpolation uint temporal_generation : TEXCOORD7;
+    nointerpolation uint temporal_flags : TEXCOORD8;
 };
 
 struct VkrVulkanTextVertex

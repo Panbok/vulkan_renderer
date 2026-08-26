@@ -185,8 +185,8 @@ vkr_internal bool8_t vkr_vk_validate_reflected_gpu_abi(
 vkr_internal bool8_t
 vkr_vk_validate_packet_root_abi(VkrVulkanRenderer *renderer) {
   FilePath shader_path =
-      file_path_create(VKR_VULKAN_PACKET_WORLD_FRAG_SPV, renderer->allocator,
-                       FILE_PATH_TYPE_ABSOLUTE);
+      file_path_create(VKR_VULKAN_PACKET_WORLD_TEMPORAL_FRAG_SPV,
+                       renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
   if (file_load_spirv_shader(&shader_path, renderer->allocator, &bytes,
@@ -204,11 +204,11 @@ vkr_vk_validate_packet_root_abi(VkrVulkanRenderer *renderer) {
   uint32_t count = 0u;
   SpvReflectBlockVariable *blocks[1] = {0};
   bool8_t valid = spvReflectEnumerateEntryPointPushConstantBlocks(
-                      &module, "world_fragment", &count, NULL) ==
+                      &module, "world_temporal_fragment", &count, NULL) ==
                       SPV_REFLECT_RESULT_SUCCESS &&
                   count == 1u &&
                   spvReflectEnumerateEntryPointPushConstantBlocks(
-                      &module, "world_fragment", &count, blocks) ==
+                      &module, "world_temporal_fragment", &count, blocks) ==
                       SPV_REFLECT_RESULT_SUCCESS;
   valid &= blocks[0] && blocks[0]->size == sizeof(VkrVulkanPushConstants);
   SpvReflectBlockVariable *root =
@@ -274,8 +274,13 @@ vkr_vk_validate_packet_root_abi(VkrVulkanRenderer *renderer) {
     valid &= vkr_vk_reflect_member_offset(
         frame, "ibl_probes", offsetof(VkrVulkanPacketFrameRoot, ibl_probes),
         NULL);
-    valid &= frame && vkr_vk_reflected_struct_size(frame) ==
-                          sizeof(VkrVulkanPacketFrameRoot);
+    valid &= vkr_vk_reflect_member_offset(
+        frame, "temporal_draw_state",
+        offsetof(VkrVulkanPacketFrameRoot, temporal_draw_state), NULL);
+    valid &=
+        frame && vkr_vk_reflected_struct_size(frame) ==
+                     offsetof(VkrVulkanPacketFrameRoot, temporal_draw_state) +
+                         sizeof(uint64_t);
 
     const VkrGpuAbiRecord *vertex_abi =
         vkr_gpu_abi_record(VKR_GPU_ABI_PACKED_STATIC_VERTEX);
@@ -311,6 +316,9 @@ vkr_vk_validate_packet_root_abi(VkrVulkanRenderer *renderer) {
     valid &= vkr_vk_reflect_member_offset(
         materials, "material_attenuation_color",
         offsetof(VkrVulkanMaterialGpuRow, material_attenuation_color), NULL);
+    valid &= vkr_vk_reflect_member_offset(
+        materials, "temporal_reactivity",
+        offsetof(VkrVulkanMaterialGpuRow, temporal_reactivity), NULL);
   }
   spvReflectDestroyShaderModule(&module);
   return valid;
@@ -389,13 +397,16 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline(
           .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
           .stage = VK_SHADER_STAGE_VERTEX_BIT,
           .module = renderer->packet_shaders[vertex_shader],
-          .pName = vertex_shader == VKR_VULKAN_PACKET_SHADER_WORLD_VERTEX
-                       ? "world_vertex"
-                   : vertex_shader == VKR_VULKAN_PACKET_SHADER_TEXT_VERTEX
-                       ? "text_vertex"
-                   : vertex_shader == VKR_VULKAN_PACKET_SHADER_VISIBILITY_VERTEX
-                       ? "vk_visibility_vertex"
-                       : "fullscreen_vertex",
+          .pName =
+              vertex_shader == VKR_VULKAN_PACKET_SHADER_WORLD_VERTEX
+                  ? "world_vertex"
+              : vertex_shader == VKR_VULKAN_PACKET_SHADER_WORLD_TEMPORAL_VERTEX
+                  ? "world_temporal_vertex"
+              : vertex_shader == VKR_VULKAN_PACKET_SHADER_TEXT_VERTEX
+                  ? "text_vertex"
+              : vertex_shader == VKR_VULKAN_PACKET_SHADER_VISIBILITY_VERTEX
+                  ? "vk_visibility_vertex"
+                  : "fullscreen_vertex",
       },
       {
           .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -404,6 +415,9 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline(
                                : renderer->packet_shaders[fragment_shader],
           .pName =
               depth_only ? ""
+              : fragment_shader ==
+                      VKR_VULKAN_PACKET_SHADER_WORLD_TEMPORAL_FRAGMENT
+                  ? "world_temporal_fragment"
               : fragment_shader == VKR_VULKAN_PACKET_SHADER_WORLD_FRAGMENT
                   ? "world_fragment"
               : fragment_shader == VKR_VULKAN_PACKET_SHADER_PICKING_FRAGMENT
@@ -454,22 +468,42 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline(
       .depthWriteEnable = depth_write,
       .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
   };
-  const VkPipelineColorBlendAttachmentState color_attachment = {
-      .blendEnable = blend_enabled,
-      .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
-      .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-      .colorBlendOp = VK_BLEND_OP_ADD,
-      .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
-      .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-      .alphaBlendOp = VK_BLEND_OP_ADD,
-      .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+  const bool8_t temporal_targets =
+      pipeline == VKR_VULKAN_PACKET_PIPELINE_WORLD_BLEND ||
+      pipeline == VKR_VULKAN_PACKET_PIPELINE_WORLD_TEXT;
+  const bool8_t temporal_writes =
+      pipeline == VKR_VULKAN_PACKET_PIPELINE_WORLD_BLEND;
+  const VkPipelineColorBlendAttachmentState color_attachments[] = {
+      {
+          .blendEnable = blend_enabled,
+          .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+          .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+          .colorBlendOp = VK_BLEND_OP_ADD,
+          .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+          .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+          .alphaBlendOp = VK_BLEND_OP_ADD,
+          .colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
+                            VK_COLOR_COMPONENT_G_BIT |
+                            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+      },
+      {.colorWriteMask =
+           temporal_writes ? VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
+                           : 0u},
+      {.colorWriteMask =
+           temporal_writes ? VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
+                           : 0u},
+      {.colorWriteMask =
+           temporal_writes ? VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
+                           : 0u},
   };
+  const uint32_t color_attachment_count = color_format == VK_FORMAT_UNDEFINED
+                                              ? 0u
+                                          : temporal_targets ? 4u
+                                                             : 1u;
   const VkPipelineColorBlendStateCreateInfo blend = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-      .attachmentCount = color_format != VK_FORMAT_UNDEFINED ? 1u : 0u,
-      .pAttachments =
-          color_format != VK_FORMAT_UNDEFINED ? &color_attachment : NULL,
+      .attachmentCount = color_attachment_count,
+      .pAttachments = color_attachment_count ? color_attachments : NULL,
   };
   const VkDynamicState dynamic_states[] = {
       VK_DYNAMIC_STATE_VIEWPORT,
@@ -482,11 +516,16 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline(
       .dynamicStateCount = depth_bias ? ArrayCount(dynamic_states) : 3u,
       .pDynamicStates = dynamic_states,
   };
+  const VkFormat color_formats[] = {
+      color_format,
+      VK_FORMAT_R32G32_UINT,
+      VK_FORMAT_R16G16_SFLOAT,
+      VK_FORMAT_R16G16_SFLOAT,
+  };
   const VkPipelineRenderingCreateInfo rendering = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-      .colorAttachmentCount = color_format != VK_FORMAT_UNDEFINED ? 1u : 0u,
-      .pColorAttachmentFormats =
-          color_format != VK_FORMAT_UNDEFINED ? &color_format : NULL,
+      .colorAttachmentCount = color_attachment_count,
+      .pColorAttachmentFormats = color_attachment_count ? color_formats : NULL,
       .depthAttachmentFormat = depth_format,
   };
   const VkGraphicsPipelineCreateInfo create_info = {
@@ -506,17 +545,24 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline(
       .pDynamicState = &dynamic,
       .layout = renderer->pipeline_layout,
   };
-  return vkCreateGraphicsPipelines(
-             vkr_vk_renderer_device(renderer), renderer->pipeline_cache, 1u,
-             &create_info, NULL,
-             &renderer->packet_pipelines[pipeline]) == VK_SUCCESS;
+  const VkResult result = vkCreateGraphicsPipelines(
+      vkr_vk_renderer_device(renderer), renderer->pipeline_cache, 1u,
+      &create_info, NULL, &renderer->packet_pipelines[pipeline]);
+  if (result != VK_SUCCESS) {
+    log_error("Vulkan packet pipeline %u creation failed: %d", pipeline,
+              result);
+    return false_v;
+  }
+  return true_v;
 }
 
 vkr_internal bool8_t
 vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
   vkr_local_persist const char *const paths[VKR_VULKAN_PACKET_SHADER_COUNT] = {
       VKR_VULKAN_PACKET_WORLD_VERT_SPV,
+      VKR_VULKAN_PACKET_WORLD_TEMPORAL_VERT_SPV,
       VKR_VULKAN_PACKET_WORLD_FRAG_SPV,
+      VKR_VULKAN_PACKET_WORLD_TEMPORAL_FRAG_SPV,
       VKR_VULKAN_PACKET_PICKING_FRAG_SPV,
       VKR_VULKAN_PACKET_FULLSCREEN_VERT_SPV,
       VKR_VULKAN_PACKET_FULLSCREEN_FRAG_SPV,
@@ -540,8 +586,8 @@ vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
              VK_FORMAT_D32_SFLOAT, true_v, true_v, false_v, false_v) &&
          vkr_vk_create_packet_pipeline(
              renderer, VKR_VULKAN_PACKET_PIPELINE_WORLD_BLEND,
-             VKR_VULKAN_PACKET_SHADER_WORLD_VERTEX,
-             VKR_VULKAN_PACKET_SHADER_WORLD_FRAGMENT,
+             VKR_VULKAN_PACKET_SHADER_WORLD_TEMPORAL_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_WORLD_TEMPORAL_FRAGMENT,
              VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_D32_SFLOAT, true_v,
              false_v, true_v, false_v) &&
          vkr_vk_create_packet_pipeline(

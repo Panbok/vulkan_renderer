@@ -452,6 +452,50 @@ test_material_pbr_inference_from_scalar_keys(MaterialPbrTestContext *ctx) {
   printf("  test_material_pbr_inference_from_scalar_keys PASSED\n");
 }
 
+static void
+test_material_temporal_reactivity_authoring(MaterialPbrTestContext *ctx) {
+  printf("  Running test_material_temporal_reactivity_authoring...\n");
+
+  const struct {
+    const char *stem;
+    const char *text;
+    float32_t expected;
+  } cases[] = {
+      {"temporal_reactivity_default", "pipeline=world\n", 0.0f},
+      {"temporal_reactivity_low",
+       "pipeline=world\n"
+       "temporal_reactivity=-0.5\n",
+       0.0f},
+      {"temporal_reactivity_high",
+       "pipeline=world\n"
+       "temporal_reactivity=1.5\n",
+       1.0f},
+      {"temporal_reactivity_authored",
+       "pipeline=world\n"
+       "temporal_reactivity=0.35\n",
+       0.35f},
+  };
+
+  for (uint32_t i = 0u; i < ArrayCount(cases); ++i) {
+    char material_path[1024] = {0};
+    VkrResourceHandleInfo handle_info = {0};
+    assert(material_pbr_test_load_material(ctx, cases[i].stem, cases[i].text,
+                                           material_path, sizeof(material_path),
+                                           &handle_info) == true_v);
+
+    VkrMaterial *material = vkr_material_system_get_by_handle(
+        &ctx->material_system, handle_info.as.material);
+    assert(material != NULL);
+    assert(fabsf(material->pbr.temporal_reactivity - cases[i].expected) <
+           0.0001f);
+
+    material_pbr_test_unload_material(ctx, &handle_info, material_path);
+    material_pbr_test_remove_file(material_path);
+  }
+
+  printf("  test_material_temporal_reactivity_authoring PASSED\n");
+}
+
 static void test_material_transmission_is_independent_of_alpha(
     MaterialPbrTestContext *ctx) {
   printf("  Running test_material_transmission_is_independent_of_alpha...\n");
@@ -1112,6 +1156,7 @@ bool32_t run_material_pbr_tests(void) {
   assert(material_pbr_test_init_context(&context) == true_v);
 
   test_material_pbr_inference_from_scalar_keys(&context);
+  test_material_temporal_reactivity_authoring(&context);
   test_material_transmission_is_independent_of_alpha(&context);
   test_material_pbr_alias_slots_and_inference(&context);
   test_material_alpha_mode_cutout_defaults(&context);

@@ -36,6 +36,26 @@ struct VkrMetalPacketIblProbe
     float4 intensity_box;
 };
 
+struct VkrTemporalTransform
+{
+    column_major float4x4 model;
+    uint generation;
+    uint frame_index;
+    uint valid;
+    uint reserved;
+};
+
+struct VkrMetalPacketTemporalDrawState
+{
+    VkrTemporalTransform* previous_transforms;
+    uint2 previous_transform_address_padding;
+    column_major float4x4 current_view_projection;
+    column_major float4x4 previous_view_projection;
+    uint history_valid;
+    uint previous_frame_index;
+    uint2 reserved;
+};
+
 struct VkrMetalPacketFrameRoot
 {
     StructuredBuffer<VkrMetalPacketInstance> instances;
@@ -88,6 +108,7 @@ struct VkrMetalPacketFrameRoot
     StructuredBuffer<VkrMetalPacketIblProbe> ibl_probes;
     uint ibl_probe_count;
     uint ibl_probe_reserved;
+    VkrMetalPacketTemporalDrawState* temporal_draw_state;
 };
 
 #include "../../../shared/gpu_draw.slangh"
@@ -113,4 +134,20 @@ struct VkrMetalPacketVertexOutput
     float3 world_normal : TEXCOORD3;
     float4 world_tangent : TEXCOORD4;
     nointerpolation uint visible_row_index : TEXCOORD5;
+};
+
+struct VkrMetalPacketTemporalVertexOutput
+{
+    float4 position : SV_Position;
+    float2 texcoord : TEXCOORD0;
+    float4 color : COLOR0;
+    nointerpolation uint object_id : TEXCOORD1;
+    float3 world_position : TEXCOORD2;
+    float3 world_normal : TEXCOORD3;
+    float4 world_tangent : TEXCOORD4;
+    nointerpolation uint visible_row_index : TEXCOORD5;
+    float3 object_position : TEXCOORD6;
+    nointerpolation uint temporal_index : TEXCOORD7;
+    nointerpolation uint temporal_generation : TEXCOORD8;
+    nointerpolation uint temporal_flags : TEXCOORD9;
 };

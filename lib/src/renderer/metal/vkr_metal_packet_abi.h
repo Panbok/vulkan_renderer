@@ -18,6 +18,16 @@ static INLINE Mat4 vkr_metal_packet_slang_draw_matrix(Mat4 matrix) {
   return mat4_transpose(matrix);
 }
 
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketTemporalDrawState {
+  uint64_t previous_transforms;
+  uint32_t previous_transform_address_padding[2];
+  Mat4 current_view_projection;
+  Mat4 previous_view_projection;
+  uint32_t history_valid;
+  uint32_t previous_frame_index;
+  uint32_t reserved[2];
+} VkrMetalPacketTemporalDrawState;
+
 /** Values shared by every indexed draw encoded for one pass. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketFrameRoot {
   uint64_t instances;
@@ -67,6 +77,7 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketFrameRoot {
   uint64_t ibl_probes;
   uint32_t ibl_probe_count;
   uint32_t ibl_probe_reserved;
+  uint64_t temporal_draw_state;
 } VkrMetalPacketFrameRoot;
 
 /** The only record written per indexed packet draw. */
@@ -235,10 +246,16 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketTemporalResolveRoot {
   uint32_t history_valid;
   uint32_t render_mode;
   uint32_t camera_stationary;
+  uint64_t transmission_visible_rows;
+  uint64_t transmission_instances;
+  uint64_t transmission_vbuffer_texture_id;
+  uint64_t transmission_depth_texture_id;
+  uint32_t transmission_enabled;
+  uint32_t transmission_reserved[3];
 } VkrMetalPacketTemporalResolveRoot;
 
-_Static_assert(sizeof(VkrMetalPacketTemporalResolveRoot) == 160,
-               "Metal temporal-resolve root ABI must remain 160 bytes");
+_Static_assert(sizeof(VkrMetalPacketTemporalResolveRoot) == 208,
+               "Metal temporal-resolve root ABI must remain 208 bytes");
 
 /** Per-dispatch deferred-lighting resources and reconstruction contract. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketDeferredLightingRoot {
@@ -284,10 +301,19 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketTransmissionShadeRoot {
   uint32_t compact_layer;
   uint32_t compact_enabled;
   uint32_t reserved[3];
+  uint64_t motion_texture_id;
+  uint64_t validity_texture_id;
+  uint64_t previous_transforms;
+  uint32_t previous_transform_address_padding[2];
+  Mat4 current_view_projection;
+  Mat4 previous_view_projection;
+  uint32_t history_valid;
+  uint32_t previous_frame_index;
+  uint32_t temporal_outputs_enabled;
+  uint32_t temporal_reserved;
 } VkrMetalPacketTransmissionShadeRoot;
-
-_Static_assert(sizeof(VkrMetalPacketTransmissionShadeRoot) == 272,
-               "Metal transmission-shade root ABI must remain 272 bytes");
+_Static_assert(sizeof(VkrMetalPacketTransmissionShadeRoot) == 448,
+               "Metal transmission-shade root ABI must remain 448 bytes");
 
 typedef VkrGpuTransmissionDiagnostics VkrMetalPacketTransmissionDiagnostics;
 

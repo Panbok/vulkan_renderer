@@ -1001,10 +1001,37 @@ struct VkrMetalPacketTemporalResolveRoot {
   uint history_valid;
   uint render_mode;
   uint camera_stationary;
+  device VkrGpuVisibleDrawRow *transmission_visible_rows;
+  device VkrMetalPacketInstance *transmission_instances;
+  texture2d<uint, access::read> transmission_vbuffer;
+  texture2d<float, access::read> transmission_depth;
+  uint transmission_enabled;
+  uint3 transmission_reserved;
 };
 
 static float vkr_metal_packet_temporal_luminance(float3 color) {
   return dot(color, float3(0.2126, 0.7152, 0.0722));
+}
+
+static bool vkr_metal_packet_temporal_history_footprint_matches(
+    constant VkrMetalPacketTemporalResolveRoot &root, float2 history_uv,
+    uint2 identity, uint primitive, float expected_depth, bool check_depth) {
+  float2 history_texel = history_uv * float2(root.extent) - 0.5;
+  int2 base = int2(floor(history_texel));
+  for (int y = 0; y < 2; ++y) {
+    for (int x = 0; x < 2; ++x) {
+      uint2 sample_pixel =
+          uint2(clamp(base + int2(x, y), int2(0), int2(root.extent) - 1));
+      uint2 previous_identity = root.history_identity.read(sample_pixel).xy;
+      uint previous_primitive = root.history_primitive.read(sample_pixel).x;
+      float previous_depth = root.history_depth.read(sample_pixel).x;
+      if (all(previous_identity == identity) &&
+          previous_primitive == primitive &&
+          (!check_depth || abs(previous_depth - expected_depth) <= 0.005))
+        return true;
+    }
+  }
+  return false;
 }
 
 kernel void vkr_metal_packet_temporal_resolve(
@@ -1016,40 +1043,68 @@ kernel void vkr_metal_packet_temporal_resolve(
   float3 pre_transmission = root.pre_transmission.read(pixel).rgb;
   float2 motion = root.motion.read(pixel).xy;
   float2 validity = root.validity.read(pixel).xy;
-  float depth = root.depth.read(pixel).x;
+  float surface_depth = root.depth.read(pixel).x;
   uint2 encoded = root.vbuffer.read(pixel).xy;
+  constexpr uint overlay_bit = 0x80000000u;
+  constexpr uint generation_mask = 0x7fffffffu;
+  constexpr uint primitive_mask = 0x1ffffu;
+  bool blend_overlay = (encoded.x & overlay_bit) != 0u;
+  bool check_history_depth = !blend_overlay;
   uint2 identity = 0u;
   uint primitive = 0u;
-  if (encoded.x != 0u) {
-    const device VkrGpuVisibleDrawRow &visible =
-        root.visible_rows[encoded.x - 1u];
-    const device VkrMetalPacketInstance &instance =
-        root.instances[visible.instance_index];
-    identity =
-        uint2(instance.temporal_index + 1u, instance.temporal_generation);
-    primitive = encoded.y + 1u;
+  if (blend_overlay) {
+    uint generation = encoded.x & generation_mask;
+    if (encoded.y != 0u && generation != 0u) {
+      identity = uint2((encoded.y >> 17u) + 1u, generation);
+      primitive = encoded.y & primitive_mask;
+    }
+  } else {
+    uint2 transmission_encoded =
+        root.transmission_enabled != 0u ? root.transmission_vbuffer.read(pixel).xy
+                                        : uint2(0u);
+    if (transmission_encoded.x != 0u) {
+      const device VkrGpuVisibleDrawRow &visible =
+          root.transmission_visible_rows[transmission_encoded.x - 1u];
+      const device VkrMetalPacketInstance &instance =
+          root.transmission_instances[visible.instance_index];
+      identity =
+          uint2(instance.temporal_index + 1u, instance.temporal_generation);
+      primitive = transmission_encoded.y + 1u;
+      surface_depth = root.transmission_depth.read(pixel).x;
+    } else if (encoded.x != 0u) {
+      const device VkrGpuVisibleDrawRow &visible =
+          root.visible_rows[encoded.x - 1u];
+      const device VkrMetalPacketInstance &instance =
+          root.instances[visible.instance_index];
+      identity =
+          uint2(instance.temporal_index + 1u, instance.temporal_generation);
+      primitive = encoded.y + 1u;
+    }
   }
 
   float current_luminance = vkr_metal_packet_temporal_luminance(current.rgb);
   float pre_luminance = vkr_metal_packet_temporal_luminance(pre_transmission);
-  float reactive = saturate(abs(current_luminance - pre_luminance) /
-                            max(max(current_luminance, pre_luminance), 0.05));
+  float derived_reactive =
+      root.camera_stationary != 0u
+          ? 0.0
+          : min(0.75, saturate(abs(current_luminance - pre_luminance) /
+                               max(max(current_luminance, pre_luminance), 0.05)));
+  float authored_reactive =
+      validity.x >= 2.0 ? saturate(validity.x - 2.0) : 0.0;
+  float reactive = max(derived_reactive, authored_reactive);
   float2 uv = (float2(pixel) + 0.5) / float2(root.extent);
   float2 history_uv = uv + motion;
-  bool accepted = root.history_valid != 0u &&
-                  (validity.x > 0.5 || root.camera_stationary != 0u) &&
-                  all(history_uv >= 0.0) && all(history_uv <= 1.0);
+  bool accepted =
+      root.history_valid != 0u && !(blend_overlay && identity.x == 0u) &&
+      (validity.x > 0.5 || root.camera_stationary != 0u) &&
+      all(history_uv >= 0.0) && all(history_uv <= 1.0);
   float4 history = current;
   if (accepted) {
-    uint2 history_pixel =
-        min(uint2(history_uv * float2(root.extent)), root.extent - 1u);
-    uint2 previous_identity = root.history_identity.read(history_pixel).xy;
-    uint previous_primitive = root.history_primitive.read(history_pixel).x;
-    float previous_depth = root.history_depth.read(history_pixel).x;
-    bool same_surface = all(previous_identity == identity) &&
-                        previous_primitive == primitive &&
-                        abs(previous_depth - validity.y) <= 0.005;
-    accepted = root.camera_stationary != 0u || same_surface;
+    accepted =
+        root.camera_stationary != 0u ||
+        vkr_metal_packet_temporal_history_footprint_matches(
+            root, history_uv, identity, primitive, validity.y,
+            check_history_depth);
     if (accepted) {
       constexpr sampler history_sampler(coord::normalized,
                                         address::clamp_to_edge, filter::linear);
@@ -1085,7 +1140,7 @@ kernel void vkr_metal_packet_temporal_resolve(
         accepted ? float4(0.0, 1.0, 0.0, 1.0) : float4(1.0, 0.0, 0.0, 1.0);
 
   root.output_color.write(resolved, pixel);
-  root.output_depth.write(float4(depth, 0.0, 0.0, 0.0), pixel);
+  root.output_depth.write(float4(surface_depth, 0.0, 0.0, 0.0), pixel);
   root.output_identity.write(uint4(identity, 0u, 0u), pixel);
   root.output_primitive.write(uint4(primitive, 0u, 0u, 0u), pixel);
 }
@@ -1114,6 +1169,16 @@ struct VkrMetalPacketTransmissionShadeRoot {
   uint compact_layer;
   uint compact_enabled;
   uint reserved[3];
+  texture2d<float, access::write> motion;
+  texture2d<float, access::write> validity;
+  device VkrTemporalTransform *previous_transforms;
+  uint2 previous_transform_address_padding;
+  float4x4 current_view_projection;
+  float4x4 previous_view_projection;
+  uint history_valid;
+  uint previous_frame_index;
+  uint temporal_outputs_enabled;
+  uint temporal_reserved;
 };
 
 struct VkrMetalPacketTransmissionCoverageRoot {
@@ -1146,6 +1211,9 @@ struct VkrMetalPacketTransmissionSurface {
   float occlusion;
   float3 emissive;
   uint material_index;
+  float3 object_position;
+  uint instance_index;
+  uint primitive_id;
 };
 
 static bool vkr_metal_packet_resolve_transmission_surface(
@@ -1313,13 +1381,20 @@ static bool vkr_metal_packet_resolve_transmission_surface(
     emissive *= material.emissive_texture
                     .sample(material.emissive_sampler, texcoord, gradients)
                     .rgb;
+  float3 object_position =
+      vertices[0].position * barycentric.x +
+      vertices[1].position * barycentric.y +
+      vertices[2].position * barycentric.z;
   surface = {base,
              normal,
              metallic,
              roughness,
              occlusion,
              emissive,
-             visible.material_index};
+             visible.material_index,
+             object_position,
+             visible.instance_index,
+             visibility.y};
   return true;
 }
 
@@ -1493,6 +1568,49 @@ static float3 vkr_metal_packet_transmission_lighting(
   return color + surface.emissive;
 }
 
+static void vkr_metal_packet_write_transmission_temporal(
+    constant VkrMetalPacketTransmissionShadeRoot &root,
+    const thread VkrMetalPacketTransmissionSurface &surface,
+    uint2 pixel) {
+  if (root.temporal_outputs_enabled == 0u)
+    return;
+  float2 motion = 0.0;
+  float2 validity = 0.0;
+  const device VkrMetalPacketInstance &instance =
+      root.instances[surface.instance_index];
+  if (root.history_valid != 0u &&
+      (instance.temporal_flags & VKR_INSTANCE_TEMPORAL_OWNER) != 0u &&
+      instance.temporal_index < VKR_TEMPORAL_TRANSFORM_CAPACITY) {
+    const device VkrTemporalTransform &previous =
+        root.previous_transforms[instance.temporal_index];
+    if (previous.valid != 0u &&
+        previous.generation == instance.temporal_generation &&
+        previous.frame_index == root.previous_frame_index) {
+      float4 current_clip =
+          root.current_view_projection *
+          (instance.model * float4(surface.object_position, 1.0));
+      float4 previous_clip =
+          root.previous_view_projection *
+          (previous.model * float4(surface.object_position, 1.0));
+      if (current_clip.w > 1e-6 && previous_clip.w > 1e-6) {
+        float2 current_ndc = current_clip.xy / current_clip.w;
+        float2 previous_ndc = previous_clip.xy / previous_clip.w;
+        float2 current_uv =
+            float2(current_ndc.x * 0.5 + 0.5, 0.5 - current_ndc.y * 0.5);
+        float2 previous_uv =
+            float2(previous_ndc.x * 0.5 + 0.5, 0.5 - previous_ndc.y * 0.5);
+        motion = previous_uv - current_uv;
+        validity =
+            float2(2.0 + saturate(root.materials[surface.material_index]
+                                      .temporal_reactivity),
+                   previous_clip.z / previous_clip.w);
+      }
+    }
+  }
+  root.motion.write(float4(motion, 0.0, 0.0), pixel);
+  root.validity.write(float4(validity, 0.0, 0.0), pixel);
+}
+
 kernel void vkr_metal_packet_transmission_shade(
     constant VkrMetalPacketTransmissionShadeRoot &root [[buffer(0)]],
     uint3 grid_position [[thread_position_in_grid]]) {
@@ -1517,11 +1635,16 @@ kernel void vkr_metal_packet_transmission_shade(
     root.destination.write(background, pixel);
     return;
   }
+  if (root.temporal_outputs_enabled != 0u) {
+    root.motion.write(float4(0.0), pixel);
+    root.validity.write(float4(0.0), pixel);
+  }
   VkrMetalPacketTransmissionSurface surface;
   if (!vkr_metal_packet_resolve_transmission_surface(root, pixel, surface)) {
     root.destination.write(background, pixel);
     return;
   }
+  vkr_metal_packet_write_transmission_temporal(root, surface, pixel);
   constant VkrMetalPacketFrameRoot *frame = root.frame;
   const device VkrMetalPacketMaterial &material =
       root.materials[surface.material_index];
@@ -1730,12 +1853,12 @@ static_assert(sizeof(VkrMetalPacketTemporalTransformRoot) == 32,
               "Temporal-transform root ABI must remain 32 bytes");
 static_assert(sizeof(VkrMetalPacketGBufferResolveRoot) == 352,
               "G-buffer resolve root ABI must remain 352 bytes");
-static_assert(sizeof(VkrMetalPacketTemporalResolveRoot) == 160,
-              "Temporal-resolve root ABI must remain 160 bytes");
+static_assert(sizeof(VkrMetalPacketTemporalResolveRoot) == 208,
+              "Temporal-resolve root ABI must remain 208 bytes");
 static_assert(sizeof(VkrMetalPacketDeferredLightingRoot) == 144,
               "Deferred-lighting root ABI must remain 144 bytes");
-static_assert(sizeof(VkrMetalPacketTransmissionShadeRoot) == 272,
-              "Transmission-shade root ABI must remain 272 bytes");
+static_assert(sizeof(VkrMetalPacketTransmissionShadeRoot) == 448,
+              "Transmission-shade root ABI must remain 448 bytes");
 static_assert(sizeof(VkrMetalPacketTransmissionCoverageRoot) == 32,
               "Transmission-coverage root ABI must remain 32 bytes");
 static_assert(sizeof(VkrMetalPacketTransmissionCompactRoot) == 80,

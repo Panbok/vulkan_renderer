@@ -6,6 +6,15 @@ VkrVulkanVertexOutput world_vertex(uint vertex_id : SV_VertexID,
                               g_push.root.frame.view_projection);
 }
 
+[shader("vertex")]
+VkrVulkanTemporalVertexOutput
+world_temporal_vertex(uint vertex_id : SV_VertexID,
+                      uint instance_id : SV_InstanceID)
+{
+    return packet_temporal_vertex_impl(vertex_id, instance_id,
+                                       g_push.root.frame.view_projection);
+}
+
 float4 packet_base_color(VkrVulkanVertexOutput input)
 {
     VkrGpuVisibleDrawRow visible =
@@ -582,9 +591,7 @@ float3 packet_environment(VkrVulkanPacketFrameRoot *frame,
     return result.diffuse * sun_visible_diffuse_scale + result.specular;
 }
 
-[shader("fragment")]
-float4 world_fragment(VkrVulkanVertexOutput input,
-                      bool front_facing : SV_IsFrontFace) : SV_Target0
+float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing)
 {
     VkrVulkanPacketDrawRoot *draw = g_push.root;
     VkrVulkanPacketFrameRoot *frame = draw.frame;
@@ -740,4 +747,94 @@ float4 world_fragment(VkrVulkanVertexOutput input,
         color = lerp(color, transmitted, saturate(weight));
     }
     return float4(color, material.alpha_mode == 0u ? 1.0f : base.a);
+}
+
+struct VkrVulkanTemporalBlendOutput
+{
+    float4 color : SV_Target0;
+    uint2 surface : SV_Target1;
+    float2 motion : SV_Target2;
+    float2 validity : SV_Target3;
+};
+
+[shader("fragment")]
+float4 world_fragment(VkrVulkanVertexOutput input,
+                      bool front_facing : SV_IsFrontFace) : SV_Target0
+{
+    return packet_world_shade(input, front_facing);
+}
+
+[shader("fragment")]
+VkrVulkanTemporalBlendOutput
+world_temporal_fragment(VkrVulkanTemporalVertexOutput input,
+                        bool front_facing : SV_IsFrontFace,
+                        uint primitive_id : SV_PrimitiveID)
+{
+    VkrVulkanTemporalBlendOutput output;
+    VkrVulkanVertexOutput surface;
+    surface.position = input.position;
+    surface.uv = input.uv;
+    surface.color = input.color;
+    surface.world_position = input.world_position;
+    surface.world_normal = input.world_normal;
+    surface.object_id = input.object_id;
+    surface.world_tangent = input.world_tangent;
+    output.color = packet_world_shade(surface, front_facing);
+    if (output.color.a <= 1e-4f)
+        discard;
+
+    const uint overlay_bit = 0x80000000u;
+    const uint generation_mask = 0x7fffffffu;
+    const uint primitive_mask = 0x1ffffu;
+    bool identity_valid =
+        (input.temporal_flags & VKR_INSTANCE_TEMPORAL_OWNER) != 0u &&
+        input.temporal_index < VKR_TEMPORAL_TRANSFORM_CAPACITY &&
+        input.temporal_generation > 0u &&
+        input.temporal_generation <= generation_mask &&
+        primitive_id < primitive_mask;
+    output.surface = uint2(overlay_bit, 0u);
+    if (identity_valid)
+    {
+        output.surface.x = overlay_bit | input.temporal_generation;
+        output.surface.y =
+            (input.temporal_index << 17u) | (primitive_id + 1u);
+    }
+    output.motion = 0.0f;
+    output.validity = 0.0f;
+
+    VkrVulkanPacketTemporalDrawState *temporal =
+        g_push.root.frame.temporal_draw_state;
+    if (identity_valid && temporal.history_valid != 0u)
+    {
+        VkrTemporalTransform previous =
+            temporal.previous_transforms[input.temporal_index];
+        if (previous.valid != 0u &&
+            previous.generation == input.temporal_generation &&
+            previous.frame_index == temporal.previous_frame_index)
+        {
+            float4 current_clip = mul(
+                temporal.current_view_projection,
+                float4(input.world_position, 1.0f));
+            float4 previous_clip = mul(
+                temporal.previous_view_projection,
+                mul(previous.model, float4(input.object_position, 1.0f)));
+            if (current_clip.w > 1e-6f && previous_clip.w > 1e-6f)
+            {
+                float2 current_uv =
+                    current_clip.xy / current_clip.w * 0.5f + 0.5f;
+                float2 previous_uv =
+                    previous_clip.xy / previous_clip.w * 0.5f + 0.5f;
+                VkrGpuVisibleDrawRow visible =
+                    g_push.root.visible_rows[g_push.root.visible_row_index];
+                float reactivity = saturate(
+                    g_push.root.frame.materials[visible.material_index]
+                        .temporal_reactivity);
+                output.motion = previous_uv - current_uv;
+                output.validity =
+                    float2(2.0f + reactivity,
+                           previous_clip.z / previous_clip.w);
+            }
+        }
+    }
+    return output;
 }

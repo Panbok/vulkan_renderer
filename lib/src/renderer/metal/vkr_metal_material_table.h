@@ -36,7 +36,7 @@ typedef struct VKR_SIMD_ALIGN VkrMetalMaterialGpuRow {
   uint32_t material_id;
   uint32_t flags;
   uint32_t alpha_mode;
-  uint32_t reserved;
+  float32_t temporal_reactivity;
   Vec4 material_emissive;
   Vec4 material_dielectric_specular;
   Vec4 material_surface;

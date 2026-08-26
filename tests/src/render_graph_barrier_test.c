@@ -1550,7 +1550,7 @@ static void test_main_graph_declares_transmission_stages(void) {
       continue;
     }
     if (vkr_string8_equals_cstr(&pass->name, "Temporal.Resolve.Fullscreen")) {
-      assert(pass->reads.length == 8u && pass->writes.length == 4u);
+      assert(pass->reads.length == 12u && pass->writes.length == 4u);
       found_temporal_resolve = true_v;
       continue;
     }

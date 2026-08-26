@@ -66,6 +66,8 @@ typedef struct VkrVulkanRendererConfig {
   uint32_t max_graph_images;
   uint32_t max_graph_buffers;
   uint32_t max_graph_passes;
+  /** Post-TAA spatial cleanup in the final fullscreen draw. */
+  bool8_t fxaa_enabled;
   /** Previous-frame HZB occlusion is independent from frustum culling. */
   bool8_t hzb_enabled;
   bool8_t enable_validation;

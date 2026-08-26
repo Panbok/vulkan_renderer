@@ -11,6 +11,7 @@ enum { VKR_VULKAN_MAX_EXTENSIONS = 256 };
 typedef struct VkrVulkanFeatureSet {
   bool8_t shader_int64;
   bool8_t geometry_shader;
+  bool8_t independent_blend;
   bool8_t shader_draw_parameters;
   bool8_t buffer_device_address;
   bool8_t draw_indirect_count;
@@ -443,6 +444,7 @@ vkr_vk_query_candidate(VkrVulkanDevice *device, uint32_t candidate_index,
   candidate->features = (VkrVulkanFeatureSet){
       .shader_int64 = features2.features.shaderInt64,
       .geometry_shader = features2.features.geometryShader,
+      .independent_blend = features2.features.independentBlend,
       .shader_draw_parameters = features11.shaderDrawParameters,
       .buffer_device_address = features12.bufferDeviceAddress,
       .draw_indirect_count = features12.drawIndirectCount,
@@ -506,6 +508,8 @@ vkr_vk_query_candidate(VkrVulkanDevice *device, uint32_t candidate_index,
   vkr_vk_add_feature(report, "shaderInt64", candidate->features.shader_int64);
   vkr_vk_add_feature(report, "geometryShader",
                      candidate->features.geometry_shader);
+  vkr_vk_add_feature(report, "independentBlend",
+                     candidate->features.independent_blend);
   vkr_vk_add_feature(report, "shaderDrawParameters",
                      candidate->features.shader_draw_parameters);
   vkr_vk_add_feature(report, "bufferDeviceAddress",
@@ -1026,7 +1030,9 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
   VkPhysicalDeviceFeatures2 features2 = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
       .pNext = &features11,
-      .features = {.shaderInt64 = VK_TRUE, .geometryShader = VK_TRUE},
+      .features = {.shaderInt64 = VK_TRUE,
+                   .geometryShader = VK_TRUE,
+                   .independentBlend = VK_TRUE},
   };
   const char *extensions[3] = {VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME};
   uint32_t extension_count = 1u;

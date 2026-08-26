@@ -1119,6 +1119,7 @@ vkr_internal bool8_t vkr_metal_packet_material_info_valid(
       pbr->attenuation_color.y,
       pbr->attenuation_color.z,
       pbr->attenuation_distance,
+      pbr->temporal_reactivity,
   };
   for (uint32_t i = 0; i < ArrayCount(values); ++i) {
     if (!isfinite(values[i]))

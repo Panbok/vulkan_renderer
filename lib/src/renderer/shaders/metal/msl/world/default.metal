@@ -1,7 +1,7 @@
-fragment float4 vkr_metal_packet_opaque_fragment(
-    VkrMetalPacketVertexOutput input [[stage_in]],
-    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
-    bool front_facing [[front_facing]]) {
+static float4 vkr_metal_packet_shade(
+    VkrMetalPacketVertexOutput input,
+    constant VkrMetalPacketDrawRoot *root,
+    bool front_facing) {
   constant VkrMetalPacketFrameRoot *frame = root->frame;
   const device VkrGpuVisibleDrawRow &visible =
       root->visible_rows[input.visible_row_index];
@@ -247,4 +247,90 @@ fragment float4 vkr_metal_packet_opaque_fragment(
     color = mix(color, transmitted, saturate(weight));
   }
   return float4(color, material.alpha_mode == 0u ? 1.0 : base.a);
+}
+
+struct VkrMetalPacketTemporalBlendOutput {
+  float4 color [[color(0)]];
+  uint2 surface [[color(1)]];
+  float2 motion [[color(2)]];
+  float2 validity [[color(3)]];
+};
+
+fragment float4 vkr_metal_packet_opaque_fragment(
+    VkrMetalPacketVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_packet_shade(input, root, front_facing);
+}
+
+fragment VkrMetalPacketTemporalBlendOutput
+vkr_metal_packet_temporal_blend_fragment(
+    VkrMetalPacketTemporalVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]],
+    uint primitive_id [[primitive_id]]) {
+  VkrMetalPacketTemporalBlendOutput output;
+  VkrMetalPacketVertexOutput surface;
+  surface.position = input.position;
+  surface.texcoord = input.texcoord;
+  surface.color = input.color;
+  surface.object_id = input.object_id;
+  surface.world_position = input.world_position;
+  surface.world_normal = input.world_normal;
+  surface.world_tangent = input.world_tangent;
+  surface.visible_row_index = input.visible_row_index;
+  output.color = vkr_metal_packet_shade(surface, root, front_facing);
+  if (output.color.a <= 1e-4)
+    discard_fragment();
+
+  constexpr uint overlay_bit = 0x80000000u;
+  constexpr uint generation_mask = 0x7fffffffu;
+  constexpr uint primitive_mask = 0x1ffffu;
+  bool identity_valid =
+      (input.temporal_flags & VKR_INSTANCE_TEMPORAL_OWNER) != 0u &&
+      input.temporal_index < VKR_TEMPORAL_TRANSFORM_CAPACITY &&
+      input.temporal_generation > 0u &&
+      input.temporal_generation <= generation_mask &&
+      primitive_id < primitive_mask;
+  output.surface = uint2(overlay_bit, 0u);
+  if (identity_valid) {
+    output.surface.x = overlay_bit | input.temporal_generation;
+    output.surface.y =
+        (input.temporal_index << 17u) | (primitive_id + 1u);
+  }
+  output.motion = 0.0;
+  output.validity = 0.0;
+
+  constant VkrMetalPacketTemporalDrawState *temporal =
+      root->frame->temporal_draw_state;
+  if (identity_valid && temporal->history_valid != 0u) {
+    const device VkrTemporalTransform &previous =
+        temporal->previous_transforms[input.temporal_index];
+    if (previous.valid != 0u &&
+        previous.generation == input.temporal_generation &&
+        previous.frame_index == temporal->previous_frame_index) {
+      float4 current_clip =
+          temporal->current_view_projection * float4(input.world_position, 1.0);
+      float4 previous_clip =
+          temporal->previous_view_projection *
+          (previous.model * float4(input.object_position, 1.0));
+      if (current_clip.w > 1e-6 && previous_clip.w > 1e-6) {
+        float2 current_ndc = current_clip.xy / current_clip.w;
+        float2 previous_ndc = previous_clip.xy / previous_clip.w;
+        float2 current_uv =
+            float2(current_ndc.x * 0.5 + 0.5, 0.5 - current_ndc.y * 0.5);
+        float2 previous_uv =
+            float2(previous_ndc.x * 0.5 + 0.5, 0.5 - previous_ndc.y * 0.5);
+        const device VkrGpuVisibleDrawRow &visible =
+            root->visible_rows[input.visible_row_index];
+        float reactivity =
+            saturate(root->frame->materials[visible.material_index]
+                         .temporal_reactivity);
+        output.motion = previous_uv - current_uv;
+        output.validity =
+            float2(2.0 + reactivity, previous_clip.z / previous_clip.w);
+      }
+    }
+  }
+  return output;
 }

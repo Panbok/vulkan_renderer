@@ -37,8 +37,16 @@
 #ifndef VKR_VULKAN_PACKET_WORLD_VERT_SPV
 #define VKR_VULKAN_PACKET_WORLD_VERT_SPV "packet.world.vert.spv"
 #endif
+#ifndef VKR_VULKAN_PACKET_WORLD_TEMPORAL_VERT_SPV
+#define VKR_VULKAN_PACKET_WORLD_TEMPORAL_VERT_SPV                              \
+  "packet.world.temporal.vert.spv"
+#endif
 #ifndef VKR_VULKAN_PACKET_WORLD_FRAG_SPV
 #define VKR_VULKAN_PACKET_WORLD_FRAG_SPV "packet.world.frag.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_WORLD_TEMPORAL_FRAG_SPV
+#define VKR_VULKAN_PACKET_WORLD_TEMPORAL_FRAG_SPV                              \
+  "packet.world.temporal.frag.spv"
 #endif
 #ifndef VKR_VULKAN_PACKET_PICKING_FRAG_SPV
 #define VKR_VULKAN_PACKET_PICKING_FRAG_SPV "packet.picking.frag.spv"
@@ -177,9 +185,16 @@ typedef enum VkrVulkanPacketPipeline {
   VKR_VULKAN_PACKET_PIPELINE_COUNT,
 } VkrVulkanPacketPipeline;
 
+typedef enum VkrVulkanFullscreenFlag {
+  VKR_VULKAN_FULLSCREEN_TONEMAP = 1u << 1u,
+  VKR_VULKAN_FULLSCREEN_FXAA = 1u << 2u,
+} VkrVulkanFullscreenFlag;
+
 typedef enum VkrVulkanPacketShader {
   VKR_VULKAN_PACKET_SHADER_WORLD_VERTEX = 0,
+  VKR_VULKAN_PACKET_SHADER_WORLD_TEMPORAL_VERTEX,
   VKR_VULKAN_PACKET_SHADER_WORLD_FRAGMENT,
+  VKR_VULKAN_PACKET_SHADER_WORLD_TEMPORAL_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_PICKING_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_FULLSCREEN_VERTEX,
   VKR_VULKAN_PACKET_SHADER_FULLSCREEN_FRAGMENT,
@@ -235,7 +250,7 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanMaterialGpuRow {
   uint32_t material_id;
   uint32_t flags;
   uint32_t alpha_mode;
-  uint32_t reserved;
+  float32_t temporal_reactivity;
   Vec4 material_emissive;
   Vec4 material_dielectric_specular;
   Vec4 material_surface;
@@ -346,6 +361,12 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanTemporalResolveRoot {
   uint32_t history_valid;
   uint32_t render_mode;
   uint32_t camera_stationary;
+  uint64_t transmission_visible_rows;
+  uint64_t transmission_instances;
+  uint32_t transmission_vbuffer_texture;
+  uint32_t transmission_depth_texture;
+  uint32_t transmission_enabled;
+  uint32_t transmission_reserved;
 } VkrVulkanTemporalResolveRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
@@ -423,6 +444,14 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanTransmissionRoot {
   uint32_t output_texture;
   uint32_t layer;
   uint32_t extent[2];
+  uint64_t previous_transforms;
+  uint32_t previous_transform_address_padding[2];
+  Mat4 current_view_projection;
+  Mat4 previous_view_projection;
+  uint32_t motion_texture;
+  uint32_t validity_texture;
+  uint32_t history_valid;
+  uint32_t previous_frame_index;
   uint32_t visible_capacity;
   uint32_t geometry_count;
   uint32_t material_count;
@@ -464,6 +493,15 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketIblProbe {
   Vec4 extents_weight;
   Vec4 intensity_box;
 } VkrVulkanPacketIblProbe;
+typedef struct VKR_SIMD_ALIGN VkrVulkanPacketTemporalDrawState {
+  uint64_t previous_transforms;
+  uint32_t previous_transform_address_padding[2];
+  Mat4 current_view_projection;
+  Mat4 previous_view_projection;
+  uint32_t history_valid;
+  uint32_t previous_frame_index;
+  uint32_t reserved[2];
+} VkrVulkanPacketTemporalDrawState;
 
 /** Values shared by every indexed draw recorded for one pass. */
 typedef struct VKR_SIMD_ALIGN VkrVulkanPacketFrameRoot {
@@ -521,6 +559,7 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketFrameRoot {
   uint64_t ibl_probes;
   uint32_t ibl_probe_count;
   uint32_t ibl_probe_reserved;
+  uint64_t temporal_draw_state;
 } VkrVulkanPacketFrameRoot;
 
 /** The only record written per indexed packet draw. */
@@ -626,7 +665,7 @@ _Static_assert(offsetof(VkrVulkanResolveRoot, vertices) == 40u,
                "Deferred resolve-root vertex address ABI drift");
 _Static_assert(offsetof(VkrVulkanResolveRoot, view_projection) == 64u,
                "Deferred resolve-root matrix ABI drift");
-_Static_assert(sizeof(VkrVulkanTemporalResolveRoot) == 96u,
+_Static_assert(sizeof(VkrVulkanTemporalResolveRoot) == 128u,
                "Temporal resolve-root ABI size drift");
 _Static_assert(sizeof(VkrVulkanLightingRoot) == 128u,
                "Deferred lighting-root ABI size drift");
@@ -640,7 +679,7 @@ _Static_assert(sizeof(VkrVulkanSdsmState) == VKR_VULKAN_SDSM_STATE_SIZE,
                "Deferred SDSM-state ABI size drift");
 _Static_assert(sizeof(VkrVulkanPickingRoot) == 64u,
                "Deferred picking-root ABI size drift");
-_Static_assert(sizeof(VkrVulkanTransmissionRoot) == 256u,
+_Static_assert(sizeof(VkrVulkanTransmissionRoot) == 416u,
                "Deferred transmission-root ABI size drift");
 _Static_assert(offsetof(VkrVulkanTransmissionRoot, geometry_rows) == 24u,
                "Deferred transmission-root address ABI drift");
@@ -651,7 +690,7 @@ _Static_assert(sizeof(VkrVulkanTransmissionCoverageRoot) == 32u,
 _Static_assert(sizeof(VkrVulkanIblRoot) == 32u, "IBL-root ABI drift");
 _Static_assert(sizeof(VkrVulkanPacketShadowCascade) == 96u,
                "Packet shadow-cascade ABI size drift");
-_Static_assert(sizeof(VkrVulkanPacketFrameRoot) == 464u,
+_Static_assert(sizeof(VkrVulkanPacketFrameRoot) == 480u,
                "Packet frame-root ABI size drift");
 _Static_assert(offsetof(VkrVulkanPacketFrameRoot, shadow_cascade_count) == 400u,
                "Packet frame-root receiver block moved");

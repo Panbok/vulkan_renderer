@@ -288,13 +288,15 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
   return true_v;
 }
 
-vkr_internal id<MTLRenderPipelineState> vkr_metal_packet_create_pipeline(
+vkr_internal id<MTLRenderPipelineState>
+vkr_metal_packet_create_pipeline_with_targets(
     VkrMetalPacketRenderer *renderer, id<MTLLibrary> vertex_library,
     const char *vertex_name, id<MTLLibrary> fragment_library,
     const char *fragment_name, MTLPixelFormat color_format, bool8_t blend,
     VkrMetalPacketAbiRecordId vertex_abi,
     VkrMetalPacketAbiRecordId fragment_abi, bool8_t supports_icb,
-    NSString *label) API_AVAILABLE(macos(26.0)) {
+    bool8_t temporal_targets, bool8_t temporal_writes, NSString *label)
+    API_AVAILABLE(macos(26.0)) {
   MTL4LibraryFunctionDescriptor *vertex = [MTL4LibraryFunctionDescriptor new];
   vertex.library = vertex_library;
   vertex.name = [NSString stringWithUTF8String:vertex_name];
@@ -334,6 +336,17 @@ vkr_internal id<MTLRenderPipelineState> vkr_metal_packet_create_pipeline(
           MTLBlendFactorOneMinusSourceAlpha;
     }
   }
+  if (temporal_targets) {
+    descriptor.colorAttachments[1].pixelFormat = MTLPixelFormatRG32Uint;
+    descriptor.colorAttachments[2].pixelFormat = MTLPixelFormatRG16Float;
+    descriptor.colorAttachments[3].pixelFormat = MTLPixelFormatRG16Float;
+    const MTLColorWriteMask temporal_mask =
+        temporal_writes ? MTLColorWriteMaskRed | MTLColorWriteMaskGreen
+                        : MTLColorWriteMaskNone;
+    descriptor.colorAttachments[1].writeMask = temporal_mask;
+    descriptor.colorAttachments[2].writeMask = temporal_mask;
+    descriptor.colorAttachments[3].writeMask = temporal_mask;
+  }
   NSError *error = nil;
   id<MTLRenderPipelineState> pipeline = [renderer->compiler
       newRenderPipelineStateWithDescriptor:descriptor
@@ -353,6 +366,19 @@ vkr_internal id<MTLRenderPipelineState> vkr_metal_packet_create_pipeline(
   [fragment release];
   [vertex release];
   return pipeline;
+}
+
+vkr_internal id<MTLRenderPipelineState> vkr_metal_packet_create_pipeline(
+    VkrMetalPacketRenderer *renderer, id<MTLLibrary> vertex_library,
+    const char *vertex_name, id<MTLLibrary> fragment_library,
+    const char *fragment_name, MTLPixelFormat color_format, bool8_t blend,
+    VkrMetalPacketAbiRecordId vertex_abi,
+    VkrMetalPacketAbiRecordId fragment_abi, bool8_t supports_icb,
+    NSString *label) API_AVAILABLE(macos(26.0)) {
+  return vkr_metal_packet_create_pipeline_with_targets(
+      renderer, vertex_library, vertex_name, fragment_library, fragment_name,
+      color_format, blend, vertex_abi, fragment_abi, supports_icb, false_v,
+      false_v, label);
 }
 
 vkr_internal id<MTLComputePipelineState>
@@ -448,11 +474,12 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
     [renderer->transmission_vbuffer_pipeline release];
     renderer->transmission_vbuffer_pipeline = nil;
   }
-  renderer->blend_pipeline = vkr_metal_packet_create_pipeline(
-      renderer, slang, "vkr_metal_packet_vertex", fragment,
-      "vkr_metal_packet_opaque_fragment", MTLPixelFormatRGBA16Float, true_v,
-      VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_DRAW_ROOT,
-      false_v, @"VKR Metal packet alpha blend");
+  renderer->blend_pipeline = vkr_metal_packet_create_pipeline_with_targets(
+      renderer, slang, "vkr_metal_packet_temporal_vertex", fragment,
+      "vkr_metal_packet_temporal_blend_fragment", MTLPixelFormatRGBA16Float,
+      true_v, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+      VKR_METAL_PACKET_ABI_DRAW_ROOT, false_v, true_v, true_v,
+      @"VKR Metal packet alpha blend");
   renderer->overlay_pipeline = vkr_metal_packet_create_pipeline(
       renderer, slang, "vkr_metal_packet_vertex", fragment,
       "vkr_metal_packet_opaque_fragment",
@@ -470,11 +497,11 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       vkr_metal_packet_target_pixel_format(renderer), false_v,
       VKR_METAL_PACKET_ABI_RECORD_COUNT, VKR_METAL_PACKET_ABI_TONEMAP_ROOT,
       false_v, @"VKR Metal packet tonemap");
-  renderer->world_text_pipeline = vkr_metal_packet_create_pipeline(
+  renderer->world_text_pipeline = vkr_metal_packet_create_pipeline_with_targets(
       renderer, fragment, "vkr_metal_packet_text_vertex", fragment,
       "vkr_metal_packet_text_fragment", MTLPixelFormatRGBA16Float, true_v,
       VKR_METAL_PACKET_ABI_TEXT_ROOT, VKR_METAL_PACKET_ABI_TEXT_ROOT, false_v,
-      @"VKR Metal packet world text");
+      true_v, false_v, @"VKR Metal packet world text");
   renderer->ui_text_pipeline = vkr_metal_packet_create_pipeline(
       renderer, fragment, "vkr_metal_packet_text_vertex", fragment,
       "vkr_metal_packet_text_fragment",
@@ -1251,6 +1278,7 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
     renderer->target_kind = config->target_kind;
     renderer->srgb_output = config->srgb_output;
     renderer->convert_vulkan_clip_y = config->convert_vulkan_clip_y;
+    renderer->fxaa_enabled = config->fxaa_enabled;
     renderer->synchronous_validation_readback =
         config->synchronous_validation_readback;
     const uint64_t capture_storage_size = vkr_capture_ring_storage_requirement(

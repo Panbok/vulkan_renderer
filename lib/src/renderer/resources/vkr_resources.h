@@ -153,6 +153,9 @@ typedef struct VkrPbrProperties {
   /** World-space distance at which attenuation_color is reached; <=0 disables.
    */
   float32_t attenuation_distance;
+  /** Authored rejection strength for temporally changing transparent shading.
+   * Zero preserves stable accumulation; one rejects prior color completely. */
+  float32_t temporal_reactivity;
 } VkrPbrProperties;
 
 typedef struct VkrMaterialTexture {

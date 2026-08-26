@@ -2375,6 +2375,7 @@ vkr_internal bool8_t vkr_vk_asset_publish_material(
       .material_id = handle.id,
       .flags = material_flags,
       .alpha_mode = material_constants.alpha_mode,
+      .temporal_reactivity = Clamp(pbr.temporal_reactivity, 0.0f, 1.0f),
       .material_emissive = material_constants.emissive,
       .material_dielectric_specular = material_constants.dielectric_specular,
       .material_surface = material_constants.surface,

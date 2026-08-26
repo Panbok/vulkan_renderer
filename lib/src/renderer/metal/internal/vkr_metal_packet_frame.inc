@@ -111,6 +111,47 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
       .ibl_probe_count =
           packet->lighting ? packet->lighting->ibl_probe_count : 0,
   };
+  if (lighting_pass && !transmission_pass &&
+      instances_gpu == upload->world_instances_gpu) {
+    const uint32_t current_temporal_instance =
+        (uint32_t)(renderer->active_command_slot - renderer->command_slots);
+    uint64_t temporal_gpu = 0u;
+    VkrMetalPacketTemporalDrawState *temporal =
+        vkr_metal_packet_next_root(upload, sizeof(*temporal), &temporal_gpu);
+    if (!temporal)
+      return false_v;
+    *temporal = (VkrMetalPacketTemporalDrawState){
+        .previous_transforms =
+            vkr_metal_packet_graph_buffer_instance(
+                renderer, renderer->temporal_transform_history_handle,
+                renderer->selected_temporal_history_instance != UINT32_MAX
+                    ? renderer->selected_temporal_history_instance
+                    : current_temporal_instance)
+                ->resource.gpu_address,
+        .current_view_projection = vkr_metal_packet_clip_matrix(
+            renderer->convert_vulkan_clip_y,
+            packet->globals.temporal.current_view_projection),
+        .previous_view_projection =
+            renderer->selected_temporal_history_instance != UINT32_MAX
+                ? vkr_metal_packet_named_image_slot(renderer,
+                                                    "temporal_history_color")
+                      ->instances[renderer->selected_temporal_history_instance]
+                      .history_view_projection
+                : vkr_metal_packet_clip_matrix(
+                      renderer->convert_vulkan_clip_y,
+                      packet->globals.temporal.current_view_projection),
+        .history_valid =
+            renderer->selected_temporal_history_instance != UINT32_MAX,
+        .previous_frame_index =
+            renderer->selected_temporal_history_instance != UINT32_MAX
+                ? vkr_metal_packet_named_image_slot(renderer,
+                                                    "temporal_history_color")
+                      ->instances[renderer->selected_temporal_history_instance]
+                      .history_frame_index
+                : packet->frame.frame_index,
+    };
+    frame_root->temporal_draw_state = temporal_gpu;
+  }
   return true_v;
 }
 
@@ -304,7 +345,8 @@ vkr_internal bool8_t vkr_metal_packet_encode_tonemap(
       .source_texture_id = source.gpuResourceID._impl,
       .exposure =
           packet->globals.exposure > 0.0f ? packet->globals.exposure : 1.0f,
-      .reserved = {renderer->srgb_output ? 1u : 0u, 0u, 0u},
+      .reserved = {renderer->srgb_output ? 1u : 0u,
+                   renderer->fxaa_enabled ? 1u : 0u, 0u},
   };
   [renderer->argument_table setAddress:root_gpu atIndex:1];
   [encoder setViewport:(MTLViewport){0.0, 0.0, source.width, source.height, 0.0,
@@ -862,6 +904,17 @@ vkr_internal bool8_t vkr_metal_packet_encode_temporal_resolve(
       vkr_metal_packet_pass_buffer(renderer, pass, 6u);
   VkrMetalPacketGraphBufferInstance *instances =
       vkr_metal_packet_pass_buffer(renderer, pass, 7u);
+  id<MTLTexture> transmission_vbuffer =
+      vkr_metal_packet_pass_texture(renderer, pass, 12u);
+  id<MTLTexture> transmission_depth =
+      vkr_metal_packet_pass_texture(renderer, pass, 15u);
+  VkrMetalPacketGraphBufferInstance *transmission_visible =
+      vkr_metal_packet_pass_buffer(renderer, pass, 13u);
+  VkrMetalPacketGraphBufferInstance *transmission_instances =
+      vkr_metal_packet_pass_buffer(renderer, pass, 14u);
+  const bool8_t transmission_enabled =
+      transmission_vbuffer && transmission_depth && transmission_visible &&
+      transmission_instances;
   if (!scene || !pre_transmission || !motion || !validity || !depth ||
       !vbuffer || !output_color || !output_depth || !output_identity ||
       !output_primitive || !visible || !instances ||
@@ -931,6 +984,17 @@ vkr_internal bool8_t vkr_metal_packet_encode_temporal_resolve(
           history_valid &&
           MemCompare(&color_slot->instances[selected].history_view_projection,
                      &current_history_view_projection, sizeof(Mat4)) == 0,
+      .transmission_visible_rows =
+          transmission_enabled ? transmission_visible->resource.gpu_address
+                               : 0u,
+      .transmission_instances =
+          transmission_enabled ? transmission_instances->resource.gpu_address
+                               : 0u,
+      .transmission_vbuffer_texture_id =
+          transmission_enabled ? transmission_vbuffer.gpuResourceID._impl : 0u,
+      .transmission_depth_texture_id =
+          transmission_enabled ? transmission_depth.gpuResourceID._impl : 0u,
+      .transmission_enabled = transmission_enabled,
   };
   [renderer->argument_table setAddress:root_gpu atIndex:0u];
   [encoder setComputePipelineState:renderer->temporal_resolve_pipeline];
@@ -978,6 +1042,24 @@ vkr_internal bool8_t vkr_metal_packet_encode_transmission_shade(
                   pixel_capacity > UINT32_MAX ||
                   compact_layer >= VKR_METAL_PACKET_TRANSMISSION_LAYER_COUNT))
     return false_v;
+  const bool8_t temporal_outputs = compact_layer == 0u;
+  id<MTLTexture> motion =
+      temporal_outputs ? vkr_metal_packet_pass_texture(renderer, pass, 11u)
+                       : nil;
+  id<MTLTexture> validity =
+      temporal_outputs ? vkr_metal_packet_pass_texture(renderer, pass, 12u)
+                       : nil;
+  VkrMetalPacketGraphBufferInstance *temporal_transforms =
+      temporal_outputs ? vkr_metal_packet_pass_buffer(renderer, pass, 10u)
+                       : NULL;
+  if (temporal_outputs && (!motion || !validity || !temporal_transforms))
+    return false_v;
+  const uint32_t current_temporal_instance =
+      (uint32_t)(renderer->active_command_slot - renderer->command_slots);
+  const uint32_t previous_temporal_instance =
+      renderer->selected_temporal_history_instance != UINT32_MAX
+          ? renderer->selected_temporal_history_instance
+          : current_temporal_instance;
 
   const Mat4 view_projection = vkr_metal_packet_clip_matrix(
       renderer->convert_vulkan_clip_y,
@@ -1023,6 +1105,36 @@ vkr_internal bool8_t vkr_metal_packet_encode_transmission_shade(
       .pixel_capacity = (uint32_t)pixel_capacity,
       .compact_layer = compact_layer,
       .compact_enabled = compact ? 1u : 0u,
+      .motion_texture_id = temporal_outputs ? motion.gpuResourceID._impl : 0u,
+      .validity_texture_id =
+          temporal_outputs ? validity.gpuResourceID._impl : 0u,
+      .previous_transforms =
+          vkr_metal_packet_graph_buffer_instance(
+              renderer, renderer->temporal_transform_history_handle,
+              previous_temporal_instance)
+              ->resource.gpu_address,
+      .current_view_projection = vkr_metal_packet_clip_matrix(
+          renderer->convert_vulkan_clip_y,
+          packet->globals.temporal.current_view_projection),
+      .previous_view_projection =
+          renderer->selected_temporal_history_instance != UINT32_MAX
+              ? vkr_metal_packet_named_image_slot(renderer,
+                                                  "temporal_history_color")
+                    ->instances[renderer->selected_temporal_history_instance]
+                    .history_view_projection
+              : vkr_metal_packet_clip_matrix(
+                    renderer->convert_vulkan_clip_y,
+                    packet->globals.temporal.current_view_projection),
+      .history_valid =
+          renderer->selected_temporal_history_instance != UINT32_MAX,
+      .previous_frame_index =
+          renderer->selected_temporal_history_instance != UINT32_MAX
+              ? vkr_metal_packet_named_image_slot(renderer,
+                                                  "temporal_history_color")
+                    ->instances[renderer->selected_temporal_history_instance]
+                    .history_frame_index
+              : packet->frame.frame_index,
+      .temporal_outputs_enabled = temporal_outputs,
   };
   [renderer->argument_table setAddress:root_gpu atIndex:0u];
   [encoder setComputePipelineState:renderer->transmission_shade_pipeline];

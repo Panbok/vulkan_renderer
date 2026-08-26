@@ -61,7 +61,11 @@ function(vkr_add_vulkan_packet_shader output_name entry stage)
         "VKR_VULKAN_${macro_name}_SPV=\"${output}\"")
 endfunction()
 vkr_add_vulkan_packet_shader("packet.world.vert" world_vertex vertex)
+vkr_add_vulkan_packet_shader(
+    "packet.world.temporal.vert" world_temporal_vertex vertex)
 vkr_add_vulkan_packet_shader("packet.world.frag" world_fragment fragment)
+vkr_add_vulkan_packet_shader(
+    "packet.world.temporal.frag" world_temporal_fragment fragment)
 vkr_add_vulkan_packet_shader("packet.picking.frag" picking_fragment fragment)
 vkr_add_vulkan_packet_shader("packet.fullscreen.vert" fullscreen_vertex vertex)
 vkr_add_vulkan_packet_shader("packet.fullscreen.frag" fullscreen_fragment fragment)

@@ -306,6 +306,7 @@ vkr_internal void vkr_material_init_defaults(VkrMaterial *material,
   material->pbr.occlusion_strength = 1.0f;
   material->pbr.emissive_factor = vec3_new(0, 0, 0);
   material->pbr.dielectric_specular = vec3_new(0.04f, 0.04f, 0.04f);
+  material->pbr.temporal_reactivity = 0.0f;
   material->alpha_cutoff = 0.0f;
 
   for (uint32_t tex_slot = 0; tex_slot < VKR_TEXTURE_SLOT_COUNT; tex_slot++) {
@@ -1700,6 +1701,7 @@ vkr_internal bool8_t vkr_material_loader_parse_file(
   out_data->pbr.thickness_factor = 0.0f;
   out_data->pbr.attenuation_color = vec3_new(1, 1, 1);
   out_data->pbr.attenuation_distance = 0.0f;
+  out_data->pbr.temporal_reactivity = 0.0f;
   out_data->alpha_cutoff = 0.0f;
   out_data->alpha_cutoff_set = false_v;
   out_data->cutout_enabled = false_v;
@@ -1860,6 +1862,11 @@ vkr_internal bool8_t vkr_material_loader_parse_file(
     } else if (vkr_string8_equals_cstr_i(&key, "attenuation_distance")) {
       out_data->material_type = VKR_MATERIAL_TYPE_PBR;
       (void)string8_to_f32(&value, &out_data->pbr.attenuation_distance);
+    } else if (vkr_string8_equals_cstr_i(&key, "temporal_reactivity")) {
+      out_data->material_type = VKR_MATERIAL_TYPE_PBR;
+      float32_t reactivity = 0.0f;
+      if (string8_to_f32(&value, &reactivity))
+        out_data->pbr.temporal_reactivity = Clamp(reactivity, 0.0f, 1.0f);
     } else if (vkr_string8_equals_cstr_i(&key, "alpha_mode")) {
       VkrMaterialAlphaMode alpha_mode = VKR_MATERIAL_ALPHA_OPAQUE;
       if (vkr_material_parse_alpha_mode_value(value, &alpha_mode)) {

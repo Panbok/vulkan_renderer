@@ -155,6 +155,12 @@ struct VkrVkTemporalResolveRoot
     uint history_valid;
     uint render_mode;
     uint camera_stationary;
+    VkrGpuVisibleDrawRow *transmission_visible_rows;
+    VkrVulkanInstance *transmission_instances;
+    uint transmission_vbuffer_texture;
+    uint transmission_depth_texture;
+    uint transmission_enabled;
+    uint transmission_reserved;
 };
 
 struct VkrVkLightingRoot
@@ -237,6 +243,14 @@ struct VkrVkTransmissionRoot
     uint output_texture;
     uint layer;
     uint2 extent;
+    VkrTemporalTransform *previous_transforms;
+    uint2 previous_transform_address_padding;
+    float4x4 current_view_projection;
+    float4x4 previous_view_projection;
+    uint motion_texture;
+    uint validity_texture;
+    uint history_valid;
+    uint previous_frame_index;
     uint visible_capacity;
     uint geometry_count;
     uint material_count;
@@ -1197,6 +1211,35 @@ float vkr_vk_temporal_luminance(float3 color)
     return dot(color, float3(0.2126f, 0.7152f, 0.0722f));
 }
 
+bool vkr_vk_temporal_history_footprint_matches(
+    VkrVkTemporalResolveRoot *root, float2 history_uv, uint2 identity,
+    uint primitive, float expected_depth, bool check_depth)
+{
+    float2 history_texel = history_uv * float2(root.extent) - 0.5f;
+    int2 base = int2(floor(history_texel));
+    [unroll] for (int y = 0; y < 2; ++y)
+    {
+        [unroll] for (int x = 0; x < 2; ++x)
+        {
+            uint2 sample_pixel = uint2(clamp(base + int2(x, y), int2(0),
+                                             int2(root.extent) - 1));
+            uint2 previous_identity = g_storage_uint2_2d
+                [root.history_identity_texture][sample_pixel];
+            uint previous_primitive = g_storage_uint_2d
+                [root.history_primitive_texture][sample_pixel];
+            float previous_depth = g_storage_float2_2d
+                [root.history_depth_texture][sample_pixel]
+                    .x;
+            if (all(previous_identity == identity) &&
+                previous_primitive == primitive &&
+                (!check_depth ||
+                 abs(previous_depth - expected_depth) <= 0.005f))
+                return true;
+        }
+    }
+    return false;
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
@@ -1211,43 +1254,84 @@ void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
         g_textures[root.pre_transmission_texture].Load(int3(pixel, 0)).rgb;
     float2 motion = g_textures[root.motion_texture].Load(int3(pixel, 0)).xy;
     float2 validity = g_textures[root.validity_texture].Load(int3(pixel, 0)).xy;
-    float depth = g_depth_textures[root.depth_texture].Load(int3(pixel, 0));
+    float surface_depth =
+        g_depth_textures[root.depth_texture].Load(int3(pixel, 0));
     uint2 encoded = g_storage_uint2_2d[root.vbuffer_texture][pixel];
+    const uint overlay_bit = 0x80000000u;
+    const uint generation_mask = 0x7fffffffu;
+    const uint primitive_mask = 0x1ffffu;
+    bool blend_overlay = (encoded.x & overlay_bit) != 0u;
+    bool check_history_depth = !blend_overlay;
     uint2 identity = 0u;
     uint primitive = 0u;
-    if (encoded.x != 0u)
+    if (blend_overlay)
     {
-        VkrGpuVisibleDrawRow visible = root.visible_rows[encoded.x - 1u];
-        VkrVulkanInstance instance = root.instances[visible.instance_index];
-        identity =
-            uint2(instance.temporal_index + 1u, instance.temporal_generation);
-        primitive = (encoded.y & VKR_VK_PRIMITIVE_ID_MASK) + 1u;
+        uint generation = encoded.x & generation_mask;
+        if (encoded.y != 0u && generation != 0u)
+        {
+            identity = uint2((encoded.y >> 17u) + 1u, generation);
+            primitive = encoded.y & primitive_mask;
+        }
+    }
+    else
+    {
+        uint2 transmission_encoded =
+            root.transmission_enabled != 0u
+                ? g_storage_uint2_images[root.transmission_vbuffer_texture]
+                                        [uint3(pixel, 0u)]
+                : uint2(0u);
+        if (transmission_encoded.x != 0u)
+        {
+            VkrGpuVisibleDrawRow visible =
+                root.transmission_visible_rows[transmission_encoded.x - 1u];
+            VkrVulkanInstance instance =
+                root.transmission_instances[visible.instance_index];
+            identity =
+                uint2(instance.temporal_index + 1u,
+                      instance.temporal_generation);
+            primitive =
+                (transmission_encoded.y & VKR_VK_PRIMITIVE_ID_MASK) + 1u;
+            surface_depth = g_depth_array_textures
+                [root.transmission_depth_texture]
+                    .Load(int4(pixel, 0u, 0));
+        }
+        else if (encoded.x != 0u)
+        {
+            VkrGpuVisibleDrawRow visible = root.visible_rows[encoded.x - 1u];
+            VkrVulkanInstance instance = root.instances[visible.instance_index];
+            identity =
+                uint2(instance.temporal_index + 1u,
+                      instance.temporal_generation);
+            primitive = (encoded.y & VKR_VK_PRIMITIVE_ID_MASK) + 1u;
+        }
     }
 
     float current_luminance = vkr_vk_temporal_luminance(current.rgb);
     float pre_luminance = vkr_vk_temporal_luminance(pre_transmission);
-    float reactive = saturate(abs(current_luminance - pre_luminance) /
-                              max(max(current_luminance, pre_luminance), 0.05f));
+    float derived_reactive =
+        root.camera_stationary != 0u
+            ? 0.0f
+            : min(0.75f,
+                  saturate(abs(current_luminance - pre_luminance) /
+                           max(max(current_luminance, pre_luminance), 0.05f)));
+    float authored_reactive =
+        validity.x >= 2.0f ? saturate(validity.x - 2.0f) : 0.0f;
+    float reactive = max(derived_reactive, authored_reactive);
     float2 uv = (float2(pixel) + 0.5f) / float2(root.extent);
     float2 history_uv = uv + motion;
-    bool accepted = root.history_valid != 0u &&
-                    (validity.x > 0.5f || root.camera_stationary != 0u) &&
-                    all(history_uv >= 0.0f) && all(history_uv <= 1.0f);
+    bool accepted =
+        root.history_valid != 0u &&
+        !(blend_overlay && identity.x == 0u) &&
+        (validity.x > 0.5f || root.camera_stationary != 0u) &&
+        all(history_uv >= 0.0f) && all(history_uv <= 1.0f);
     float4 history = current;
     if (accepted)
     {
-        uint2 history_pixel =
-            min(uint2(history_uv * float2(root.extent)), root.extent - 1u);
-        uint2 previous_identity =
-            g_storage_uint2_2d[root.history_identity_texture][history_pixel];
-        uint previous_primitive =
-            g_storage_uint_2d[root.history_primitive_texture][history_pixel];
-        float previous_depth =
-            g_storage_float2_2d[root.history_depth_texture][history_pixel].x;
-        bool same_surface = all(previous_identity == identity) &&
-                            previous_primitive == primitive &&
-                            abs(previous_depth - validity.y) <= 0.005f;
-        accepted = root.camera_stationary != 0u || same_surface;
+        accepted =
+            root.camera_stationary != 0u ||
+            vkr_vk_temporal_history_footprint_matches(
+                root, history_uv, identity, primitive, validity.y,
+                check_history_depth);
         if (accepted)
             history = g_textures[root.history_color_texture].SampleLevel(
                 g_samplers[root.history_sampler], history_uv, 0.0f);
@@ -1290,7 +1374,7 @@ void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
 
     g_storage_2d[root.output_color_texture][pixel] = resolved;
     g_storage_float2_2d[root.output_depth_texture][pixel] =
-        float2(depth, 0.0f);
+        float2(surface_depth, 0.0f);
     g_storage_uint2_2d[root.output_identity_texture][pixel] = identity;
     g_storage_uint_2d[root.output_primitive_texture][pixel] = primitive;
 }
@@ -1405,6 +1489,11 @@ void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
         g_storage_2d[root.output_texture][thread_id.xy] = background;
         return;
     }
+    if (root.layer == 0u)
+    {
+        g_storage_float2_2d[root.motion_texture][thread_id.xy] = 0.0f;
+        g_storage_float2_2d[root.validity_texture][thread_id.xy] = 0.0f;
+    }
     VkrVkSurfaceSource source = {
         root.geometry_rows,    root.visible_rows,    root.instances,
         root.materials,        root.vertices,        root.indices,
@@ -1430,6 +1519,36 @@ void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
     }
     VkrVulkanPacketFrameRoot *frame = root.frame;
     VkrVulkanMaterial material = root.materials[surface.material_index];
+    if (root.layer == 0u && root.history_valid != 0u &&
+        (instance.temporal_flags & VKR_INSTANCE_TEMPORAL_OWNER) != 0u &&
+        instance.temporal_index < VKR_TEMPORAL_TRANSFORM_CAPACITY)
+    {
+        VkrTemporalTransform previous =
+            root.previous_transforms[instance.temporal_index];
+        if (previous.valid != 0u &&
+            previous.generation == instance.temporal_generation &&
+            previous.frame_index == root.previous_frame_index)
+        {
+            float4 current_clip = mul(
+                root.current_view_projection,
+                mul(instance.model, float4(surface.object_position, 1.0f)));
+            float4 previous_clip = mul(
+                root.previous_view_projection,
+                mul(previous.model, float4(surface.object_position, 1.0f)));
+            if (current_clip.w > 1e-6f && previous_clip.w > 1e-6f)
+            {
+                float2 current_uv =
+                    current_clip.xy / current_clip.w * 0.5f + 0.5f;
+                float2 previous_uv =
+                    previous_clip.xy / previous_clip.w * 0.5f + 0.5f;
+                g_storage_float2_2d[root.motion_texture][thread_id.xy] =
+                    previous_uv - current_uv;
+                g_storage_float2_2d[root.validity_texture][thread_id.xy] =
+                    float2(2.0f + saturate(material.temporal_reactivity),
+                           previous_clip.z / previous_clip.w);
+            }
+        }
+    }
     float depth = g_depth_array_textures[root.depth_texture].Load(
         int4(thread_id.xy, root.layer, 0));
     // See vkr_vk_deferred_sky: no Y flip when inverting the view-projection.

@@ -961,6 +961,21 @@ bool8_t vkr_vk_record_temporal_resolve(VkrVulkanRenderer *renderer,
     if (!vkr_vk_deferred_storage_index(renderer, pass, storage_bindings[i],
                                        &storage[i]))
       return false_v;
+  const bool8_t transmission_enabled =
+      vkr_rg_pass_find_image_use(&pass->desc, 12u, 0u) != NULL;
+  VkrVulkanGraphBufferInstance *transmission_visible =
+      transmission_enabled ? vkr_vk_deferred_buffer(renderer, pass, 13u) : NULL;
+  VkrVulkanGraphBufferInstance *transmission_instances =
+      transmission_enabled ? vkr_vk_deferred_buffer(renderer, pass, 14u) : NULL;
+  uint32_t transmission_vbuffer = 0u;
+  uint32_t transmission_depth = 0u;
+  if (transmission_enabled &&
+      (!transmission_visible || !transmission_instances ||
+       !vkr_vk_deferred_storage_index(renderer, pass, 12u,
+                                      &transmission_vbuffer) ||
+       !vkr_vk_deferred_sampled_index(renderer, pass, 15u,
+                                      &transmission_depth)))
+    return false_v;
 
   const bool8_t history_valid =
       slot->temporal_history_valid && slot->temporal_color_input &&
@@ -1002,6 +1017,13 @@ bool8_t vkr_vk_record_temporal_resolve(VkrVulkanRenderer *renderer,
           MemCompare(&slot->temporal_color_input->history_view_projection,
                      &packet->globals.temporal.current_view_projection,
                      sizeof(Mat4)) == 0,
+      .transmission_visible_rows =
+          transmission_visible ? transmission_visible->buffer.address : 0u,
+      .transmission_instances =
+          transmission_instances ? transmission_instances->buffer.address : 0u,
+      .transmission_vbuffer_texture = transmission_vbuffer,
+      .transmission_depth_texture = transmission_depth,
+      .transmission_enabled = transmission_enabled,
   };
   uint64_t root_address = 0u;
   if (!vkr_vk_deferred_push_root(renderer, command, &root, sizeof(root),
@@ -1161,6 +1183,18 @@ bool8_t vkr_vk_record_deferred_transmission(VkrVulkanRenderer *renderer,
   if (renderer->prepared_frame.shadow_cascade_count > 0u &&
       !vkr_vk_deferred_sampled_index(renderer, pass, 6u, &shadow_texture))
     return false_v;
+  const VkrRgImageUse *vbuffer_use =
+      vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+  const uint32_t layer = vbuffer_use && vbuffer_use->has_slice
+                             ? vbuffer_use->slice.base_layer
+                             : 0u;
+  uint32_t motion = 0u;
+  uint32_t validity = 0u;
+  if (layer == 0u &&
+      (!vkr_vk_deferred_buffer(renderer, pass, 10u) ||
+       !vkr_vk_deferred_storage_index(renderer, pass, 11u, &motion) ||
+       !vkr_vk_deferred_storage_index(renderer, pass, 12u, &validity)))
+    return false_v;
   const VkrRenderPacket *packet = renderer->graph->packet;
   const Mat4 view_projection = mat4_mul(
       packet->globals.temporal.jittered_projection, packet->globals.view);
@@ -1176,8 +1210,6 @@ bool8_t vkr_vk_record_deferred_transmission(VkrVulkanRenderer *renderer,
                                 slot->transmission_gpu_candidate_instances,
                                 view_projection, shadow_texture,
                                 VKR_VULKAN_SENTINEL_SLOT_INDEX, true_v, true_v);
-  const VkrRgImageUse *vbuffer_use =
-      vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
   const VkrVulkanTransmissionRoot root = {
       .visible_rows = visible->buffer.address,
       .materials = renderer->materials.address,
@@ -1189,14 +1221,29 @@ bool8_t vkr_vk_record_deferred_transmission(VkrVulkanRenderer *renderer,
       .frame = frame_address,
       .view_projection = view_projection,
       .inverse_view_projection = mat4_inverse(view_projection),
+      .previous_transforms =
+          (slot->temporal_history_valid ? slot->temporal_transform_input
+                                        : slot->temporal_transform_output)
+              ->buffer.address,
+      .current_view_projection =
+          packet->globals.temporal.current_view_projection,
+      .previous_view_projection =
+          slot->temporal_history_valid
+              ? slot->temporal_color_input->history_view_projection
+              : packet->globals.temporal.current_view_projection,
+      .motion_texture = motion,
+      .validity_texture = validity,
+      .history_valid = slot->temporal_history_valid,
+      .previous_frame_index =
+          slot->temporal_history_valid
+              ? slot->temporal_color_input->history_frame_index
+              : packet->frame.frame_index,
       .vbuffer_texture = vbuffer,
       .depth_texture = depth,
       .feedback_texture = feedback,
       .feedback_sampler = renderer->transmission_sampler_slot,
       .output_texture = output,
-      .layer = vbuffer_use && vbuffer_use->has_slice
-                   ? vbuffer_use->slice.base_layer
-                   : 0u,
+      .layer = layer,
       .extent = {renderer->prepared_frame.viewport_width,
                  renderer->prepared_frame.viewport_height},
       .visible_capacity = VKR_GPU_DRAW_CANDIDATE_CAPACITY,

@@ -1,5 +1,20 @@
-VkrVulkanVertexOutput packet_vertex_impl(uint vertex_id, uint instance_id,
-                                            float4x4 view_projection)
+struct VkrVulkanVertexData
+{
+    float4 position;
+    float2 uv;
+    float4 color;
+    float3 world_position;
+    float3 world_normal;
+    uint object_id;
+    float4 world_tangent;
+    float3 object_position;
+    uint temporal_index;
+    uint temporal_generation;
+    uint temporal_flags;
+};
+
+VkrVulkanVertexData packet_vertex_data(uint vertex_id, uint instance_id,
+                                       float4x4 view_projection)
 {
     VkrVulkanPacketDrawRoot* draw = g_push.root;
     VkrVulkanPacketFrameRoot* frame = draw.frame;
@@ -14,7 +29,7 @@ VkrVulkanVertexOutput packet_vertex_impl(uint vertex_id, uint instance_id,
     VkrVulkanInstance instance =
         frame.instances[visible.instance_index + instance_id];
     float4 world = mul(instance.model, float4(vertex.position, 1.0f));
-    VkrVulkanVertexOutput output;
+    VkrVulkanVertexData output;
     output.position = mul(view_projection, world);
     output.uv = vertex.texcoord;
     output.color = vertex.color;
@@ -25,5 +40,46 @@ VkrVulkanVertexOutput packet_vertex_impl(uint vertex_id, uint instance_id,
         normalize(mul(instance.model, float4(vertex.tangent.xyz, 0.0f)).xyz),
         vertex.tangent.w);
     output.object_id = instance.object_id;
+    output.object_position = vertex.position;
+    output.temporal_index = instance.temporal_index;
+    output.temporal_generation = instance.temporal_generation;
+    output.temporal_flags = instance.temporal_flags;
+    return output;
+}
+
+VkrVulkanVertexOutput packet_vertex_impl(uint vertex_id, uint instance_id,
+                                         float4x4 view_projection)
+{
+    VkrVulkanVertexData data =
+        packet_vertex_data(vertex_id, instance_id, view_projection);
+    VkrVulkanVertexOutput output;
+    output.position = data.position;
+    output.uv = data.uv;
+    output.color = data.color;
+    output.world_position = data.world_position;
+    output.world_normal = data.world_normal;
+    output.object_id = data.object_id;
+    output.world_tangent = data.world_tangent;
+    return output;
+}
+
+VkrVulkanTemporalVertexOutput
+packet_temporal_vertex_impl(uint vertex_id, uint instance_id,
+                            float4x4 view_projection)
+{
+    VkrVulkanVertexData data =
+        packet_vertex_data(vertex_id, instance_id, view_projection);
+    VkrVulkanTemporalVertexOutput output;
+    output.position = data.position;
+    output.uv = data.uv;
+    output.color = data.color;
+    output.world_position = data.world_position;
+    output.world_normal = data.world_normal;
+    output.object_id = data.object_id;
+    output.world_tangent = data.world_tangent;
+    output.object_position = data.object_position;
+    output.temporal_index = data.temporal_index;
+    output.temporal_generation = data.temporal_generation;
+    output.temporal_flags = data.temporal_flags;
     return output;
 }

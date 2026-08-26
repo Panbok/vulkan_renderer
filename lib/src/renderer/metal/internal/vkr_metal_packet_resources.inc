@@ -647,6 +647,8 @@ bool8_t vkr_metal_packet_renderer_create_material(
         .material_id = create_info->material_id,
         .flags = create_info->texture_flags,
         .alpha_mode = material_constants.alpha_mode,
+        .temporal_reactivity =
+            Clamp(create_info->pbr.temporal_reactivity, 0.0f, 1.0f),
         .material_emissive = material_constants.emissive,
         .material_dielectric_specular = material_constants.dielectric_specular,
         .material_surface = material_constants.surface,
@@ -803,6 +805,7 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
       .material_id = handle.id,
       .flags = flags,
       .alpha_mode = material_constants.alpha_mode,
+      .temporal_reactivity = Clamp(pbr.temporal_reactivity, 0.0f, 1.0f),
       .material_emissive = material_constants.emissive,
       .material_dielectric_specular = material_constants.dielectric_specular,
       .material_surface = material_constants.surface,
@@ -1779,8 +1782,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   if (root_count > renderer->max_draws)
     return false_v;
   uint64_t frame_root_count = 0;
-  if (packet->world) {
-    frame_root_count += packet->world->transparent_draw_count > 0;
+  if (packet->world && packet->world->transparent_draw_count > 0) {
+    // Blend encoding retains both its frame root and temporal draw state.
+    frame_root_count += 2u;
   }
   frame_root_count += packet->editor && packet->editor->draw_count > 0;
   frame_root_count += packet->ui && packet->ui->draw_count > 0;

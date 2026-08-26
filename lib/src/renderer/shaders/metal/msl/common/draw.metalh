@@ -45,7 +45,7 @@ struct VkrMetalPacketMaterial {
   uint material_id;
   uint flags;
   uint alpha_mode;
-  uint reserved;
+  float temporal_reactivity;
   float4 material_emissive;
   float4 material_dielectric_specular;
   float4 material_surface;
@@ -59,6 +59,16 @@ struct VkrMetalPacketIblProbe {
   float4 center_blend;
   float4 extents_weight;
   float4 intensity_box;
+};
+
+struct VkrMetalPacketTemporalDrawState {
+  device VkrTemporalTransform *previous_transforms;
+  uint2 previous_transform_address_padding;
+  float4x4 current_view_projection;
+  float4x4 previous_view_projection;
+  uint history_valid;
+  uint previous_frame_index;
+  uint2 reserved;
 };
 
 struct VkrMetalPacketFrameRoot {
@@ -115,6 +125,7 @@ struct VkrMetalPacketFrameRoot {
   device VkrMetalPacketIblProbe *ibl_probes;
   uint ibl_probe_count;
   uint ibl_probe_reserved;
+  constant VkrMetalPacketTemporalDrawState *temporal_draw_state;
 };
 
 struct VkrGpuGeometryRow {
@@ -236,6 +247,21 @@ struct VkrMetalPacketVertexOutput {
   uint visible_row_index [[user(TEXCOORD_5), flat]];
 };
 
+struct VkrMetalPacketTemporalVertexOutput {
+  float4 position [[position]];
+  float2 texcoord [[user(TEXCOORD)]];
+  float4 color [[user(COLOR)]];
+  uint object_id [[user(TEXCOORD_1), flat]];
+  float3 world_position [[user(TEXCOORD_2)]];
+  float3 world_normal [[user(TEXCOORD_3)]];
+  float4 world_tangent [[user(TEXCOORD_4)]];
+  uint visible_row_index [[user(TEXCOORD_5), flat]];
+  float3 object_position [[user(TEXCOORD_6)]];
+  uint temporal_index [[user(TEXCOORD_7), flat]];
+  uint temporal_generation [[user(TEXCOORD_8), flat]];
+  uint temporal_flags [[user(TEXCOORD_9), flat]];
+};
+
 static_assert(sizeof(VkrMetalPacketVertex) == 64,
               "VkrVertex3d Metal ABI must remain 64 bytes");
 static_assert(sizeof(VkrPackedStaticVertex) == 32,
@@ -246,8 +272,8 @@ static_assert(sizeof(VkrMetalPacketInstance) == 80,
               "VkrInstanceDataGPU Metal ABI must remain 80 bytes");
 static_assert(sizeof(VkrMetalPacketMaterial) == 176,
               "Metal material row ABI must remain 176 bytes");
-static_assert(sizeof(VkrMetalPacketFrameRoot) == 448,
-              "Metal packet frame root ABI must remain 448 bytes");
+static_assert(sizeof(VkrMetalPacketFrameRoot) == 464,
+              "Metal packet frame root ABI must remain 464 bytes");
 static_assert(sizeof(VkrMetalPacketDrawRoot) == 48,
               "Metal packet draw root ABI must remain 48 bytes");
 static_assert(sizeof(VkrMetalPacketIblProbe) == 64,
