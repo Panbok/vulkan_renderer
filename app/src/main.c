@@ -2089,7 +2089,7 @@ vkr_internal void application_init_ui_texts(Application *application) {
   }
   state->metrics_text_id = text_id;
 
-  // application_init_memory_text(application);
+  application_init_memory_text(application);
 }
 
 /**
@@ -2519,7 +2519,7 @@ void application_update(Application *application, float64_t delta) {
   }
 
   application_update_fps_text(application, delta);
-  // application_update_memory_text(application);
+  application_update_memory_text(application);
   application_update_world_text(application);
   application_update_picking(application);
   application_update_scene(application, delta);
