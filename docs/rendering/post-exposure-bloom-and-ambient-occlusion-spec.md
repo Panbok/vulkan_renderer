@@ -5,11 +5,11 @@ authority: design
 ---
 # Automatic exposure, bloom, and ambient occlusion
 
-**Document status:** Partial. Automatic-exposure phases E0-E3 have production
-Metal and Vulkan implementations. Metal runtime, capture, deterministic, and
-validation evidence passes; native Vulkan runtime validation remains pending.
-Bloom and GTAO have no production implementation. The architecture
-specification remains the status authority.
+**Document status:** Partial. Automatic-exposure phases E0-E3 and bloom phases
+B0-B1 have production Metal and Vulkan implementations. Metal runtime,
+capture, timing, and validation evidence passes for both features; native
+Vulkan runtime validation remains pending. GTAO has no production
+implementation. The architecture specification remains the status authority.
 
 **Scope:** Three separate renderer features. They share HDR and deferred inputs,
 but each adds graph resources and passes and each must land with its own
@@ -35,10 +35,12 @@ and adapts entirely on the GPU. Fullscreen tonemapping and editor composition
 consume the current resolve directly. Delayed completed readback supplies
 diagnostics, metrics, and canonical post-tonemap capture metadata.
 
-Bloom and screen-space AO do not ship. Material occlusion is stored in
-`gbuffer_albedo.a` and affects indirect diffuse plus the existing
-specular-occlusion approximation. Direct analytic lighting is not occluded by
-that term.
+Bloom ships as a packet-controlled, scene-linear threshold/downsample/reverse-
+upsample/combine chain on Metal and Vulkan. Production initialization enables
+it; deterministic harness cases default it off unless explicitly authored.
+Material occlusion is stored in `gbuffer_albedo.a` and affects indirect diffuse
+plus the existing specular-occlusion approximation. Direct analytic lighting
+is not occluded by that term.
 
 ## 3. Automatic exposure
 
@@ -152,9 +154,9 @@ measured target.
 The authored graph runs `Post.Exposure.Histogram` and
 `Post.Exposure.Resolve` after the mutually exclusive fullscreen/editor temporal
 resolve. One histogram pass meters `temporal_history_color`, the final composed
-HDR source before tonemapping or any future bloom pass. It clears and
-accumulates group-shared bins. Resolve then writes target EV, adapted EV, the
-linear multiplier, accepted count, retained-bin range, average log luminance,
+HDR scene before bloom composition and tonemapping. It clears and accumulates
+group-shared bins. Resolve then writes target EV, adapted EV, the linear
+multiplier, accepted count, retained-bin range, average log luminance,
 and reset reasons.
 
 Both backends select the newest completion-proven record from a graph-owned
@@ -232,6 +234,44 @@ branch's composed HDR resource and feed the branch's tonemap/composite.
 Capture bloom-only, pre-bloom HDR, combined HDR, and final color independently.
 Those views make threshold, chain seams, and exposure interaction diagnosable.
 
+### 4.4 Implemented bloom path
+
+Packet version 21 adds `bloom_enabled`, scene-linear `bloom_threshold`,
+`bloom_knee`, and `bloom_intensity`. The frontend validates enabled controls as
+finite and non-negative, lowers them into `VkrBloomFrame`, and preserves a
+zeroed packet as bloom-disabled. Production initialization enables the defaults
+`1.0`, `0.5`, and `0.05`; `VKR_BLOOM_DISABLED=1` is a persistent cold override.
+Harness cases remain disabled by default and require all three controls when
+enabling bloom.
+
+`VkrBloomConfig` bounds the cold topology to at most eight mips, a minimum mip
+extent, a finite R16 ceiling, and a selected 13-tap or 4-tap downsample filter.
+The production default uses six mips, minimum extent eight, clamp 32, and the
+13-tap filter. `vkr_bloom_mip_count()` derives the frame chain from the current
+viewport; an extent too small for two levels disables the graph slice rather
+than dispatching a one-level no-op.
+
+The authored graph creates half-resolution `bloom_chain` and `bloom_accum`
+pyramids plus full-resolution `bloom_combined`. `Post.Bloom.Prefilter` applies
+the shared sanitizer, 13-tap Karis reduction, and soft knee. Ascending
+downsample repeats reduce `bloom_chain`; a reverse repeat emits upsample passes
+deepest-first into the separate accumulation chain. The deepest executor binds
+the defined downsample mip instead of the unwritten accumulation mip. No pass
+reads and writes the same image subresource. `Post.Bloom.Combine` adds the
+resolved bloom to the original HDR source before exposure, and fullscreen and
+editor tonemap select that single combined resource.
+
+Metal and Vulkan use the same shared threshold, sanitizer, Karis weight, and
+GPU parameter ABI. Backend-native tap code supplies the same 13-tap/4-tap
+downsample and 9-tap upsample arithmetic. Both backends instantiate all
+pipelines at initialization and select the alternate downsample filter from
+the cold config, not as a runtime fallback.
+
+Direct captures expose `hdr_pre_bloom`, `bloom_prefilter`, `bloom_result`, and
+`hdr_combined`; `final_color` remains the post-tonemap output. Histogram
+metering still reads `temporal_history_color`, so bloom cannot feed back into
+automatic exposure.
+
 ## 5. GTAO
 
 ### 5.1 Name and boundary
@@ -301,8 +341,8 @@ debug channel and a reference comparison.
 | E1 | Histogram, percentile resolve, debug outputs | **Implemented.** CPU reference pins accepted samples, saturated bins, fractional percentile edges, resolved EV, adaptation, and empty-histogram hold; delayed state plus all 256 bins is observable |
 | E2 | Completion-safe adaptation history | **Implemented.** Metal and Vulkan use completion-proven graph history, submit-only publication, and reset-chain invalidation; the fixed-step static case repeats exactly |
 | E3 | Tonemap and capture integration | **Implemented.** Fullscreen and editor tonemap consume current GPU state, canonical capture records the completed multiplier, and manual output remains unchanged |
-| B0 | Bloom resource and repeat topology | Odd extents and reverse upsample dependencies compile with correct barriers |
-| B1 | Threshold, downsample, upsample, combine, debug captures | No seams, firefly propagation, or read/write overlap |
+| B0 | Bloom resource and repeat topology | **Implemented.** Odd extents, bounded mip counts, reverse upsample ordering, and the read-after-write subresource barrier are pinned by CPU graph tests |
+| B1 | Threshold, downsample, upsample, combine, debug captures | **Implemented.** Shared sanitizer/soft-knee references, separate chains, full-resolution combine, four direct HDR/bloom channels, Release execution, and focused Metal validation pass |
 | G0 | Current view-space depth pyramid and normal conversion | Depth/normal debug captures agree with reconstructed geometry |
 | G1 | GTAO evaluation and spatial denoise | Full-resolution reference passes motion and thin-occluder clips |
 | G2 | Indirect-diffuse integration | No direct-light attenuation or unintended specular double-darkening |
@@ -356,6 +396,37 @@ and `sha256:2e9de72a1c443896cee239d094104e0ccd1200bc25a3e64dee8f40a991db7a09`.
 The Release build compiles both backend implementations and shared shader/ABI
 tests pass. MoltenVK cannot execute VKR's descriptor-buffer Vulkan path, so a
 focused native Vulkan validation run remains an evidence gap.
+
+### 7.2 Bloom implementation evidence
+
+Local Apple M1 Pro evidence from 2026-08-27 is implementation evidence, not an
+accepted baseline or a cross-device performance result:
+
+- the bloom CPU reference, packet validation, odd-extent mip derivation, reverse
+  repeat ordering, and subresource barrier tests pass;
+- `./build_test.sh` reaches and passes the bloom and render-graph suites, then
+  stops at the pre-existing cooked-mesh tangent assertion in
+  `mesh_cooked_tests.c:166`;
+- one 801x601 Release offscreen snapshot resolves all five requested channels
+  from frame 58 / submit 119. `bloom_prefilter` and `bloom_result` are
+  non-degenerate, while `hdr_pre_bloom`, `hdr_combined`, and `final_color`
+  preserve the expected semantic order. The report digest is
+  `sha256:333b97da86b2e226c7a9528ff579888e80c70cb2034d4655a51acaea07151659`;
+- one Release Metal timestamp observation supplies 16 valid samples with zero
+  invalid samples for every bloom pass. Prefilter observed `0.033125 ms` p50,
+  combine `0.027167 ms` p50, downsample levels `0.005083-0.010792 ms` p50, and
+  upsample levels `0.005042-0.013667 ms` p50. This single dirty-tree process
+  proves execution and attribution only; report digest
+  `sha256:a2e11c78190cb2f8eaeef192485af399494ea10071eb74401837a238af9c33d8`;
+  and
+- one strictly serial Debug Metal API/GPU shader-validation profile completes
+  16 measured frames with valid samples for all 12 bloom passes and no
+  diagnostic beyond the two validation-enabled notices. Report digest
+  `sha256:b4f4db4d6e4ab6380d8ed8ad465fd02c2d377d402ce2a1cd539379b7afe8ef1e`.
+
+Native Vulkan validation, an authoritative matched bloom-on/off Release
+comparison, and explicit owner acceptance of any final-color baseline remain
+open. No cost or quality ranking is inferred from the local observations.
 
 ## 8. Primary references
 

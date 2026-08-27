@@ -7,8 +7,8 @@ authority: design
 # Image quality roadmap
 
 **Document status:** Active roadmap. Presentation, portable same-resolution
-TAA, and automatic exposure ship; the architecture status specification remains
-the authority.
+TAA, automatic exposure, and bloom ship; the architecture status specification
+remains the authority.
 
 **Scope:** Rendering work that changes displayed image quality, plus the D3D12
 evaluation that is intentionally kept out of the image-quality argument.
@@ -33,12 +33,12 @@ design remains a separate proposal with no production sample-count path.
 
 Next image-quality work should close inputs that still lack an authored signal:
 deformation and procedural vertex motion, particles, and dynamic material
-changes. Automatic exposure phases E0-E3 now ship as a post-temporal GPU
-metering, adaptation, and tonemap path. Deterministic cases still default to
-manual exposure; cases that test adaptation author their fallback, reset frame,
-fixed time step, and frame count. Exposure remains outside scene-linear temporal
-history, so it needs no history rescale. Any future pre-exposure domain must
-rescale or reset history explicitly.
+changes. Automatic exposure phases E0-E3 and bloom phases B0-B1 now ship.
+Bloom remains scene-linear and post-temporal: exposure meters the pre-bloom
+source, and the combined HDR result is exposed before tonemapping. Deterministic
+cases still default exposure to manual and bloom to disabled unless explicitly
+testing either feature. Any future pre-exposure domain must rescale or reset
+history explicitly.
 
 FSR frame generation is not part of this roadmap.
 
@@ -51,7 +51,7 @@ FSR frame generation is not part of this roadmap.
 | 3 | Temporal-input foundation | [Visibility-buffer anti-aliasing evaluation](visibility-buffer-msaa-spec.md) | Implemented for rigid opaque, transmission, and ordinary-blend geometry: jitter, own-surface motion, exact identity, authored material reactivity, reset rules, completion-safe history, and debug views ship. Deformation, procedural motion, particles, and dynamic material-change signals remain open. |
 | 4 | Automatic exposure | [Post, exposure, bloom, and ambient occlusion](post-exposure-bloom-and-ambient-occlusion-spec.md) | Implemented through E3. Packet version 20 carries mode, manual fallback, and EV compensation; two graph passes meter the post-temporal HDR source into a 256-bin histogram and resolve percentile-clipped, completion-safe adaptation. Fullscreen/editor tonemap consume current GPU state directly, delayed diagnostics expose the histogram, scalar metrics expose the EV decision, and canonical capture records the completed multiplier. Production initialization selects automatic exposure; manual remains the byte-identical path and the deterministic harness default. Metal runtime and validation evidence passes; native Vulkan validation remains pending. Exposure stays post-temporal; any future pre-exposure domain must rescale or reset history. |
 | 5 | Portable same-resolution TAA and post-TAA FXAA | [ADR-037](../architecture/adr/037-portable-same-resolution-temporal-antialiasing.md) | Implemented and validation-clean on Metal and Vulkan without an additional graph pass or full-resolution resource for transparent inputs. Broader motion fixtures, deformation/procedural/particle inputs, and final-color owner acceptance remain open. MSAA is not part of this slice. |
-| 6 | Bloom, then GTAO | [Post, exposure, bloom, and ambient occlusion](post-exposure-bloom-and-ambient-occlusion-spec.md) | Implement separately and measure separately. GTAO needs its own current-frame depth pyramid. |
+| 6 | Bloom, then GTAO | [Post, exposure, bloom, and ambient occlusion](post-exposure-bloom-and-ambient-occlusion-spec.md) | Bloom B0-B1 implemented on Metal and Vulkan: bounded odd-extent mip chains, reverse upsample dependencies, shared filtering arithmetic, scene-linear combine, and direct debug captures ship. Metal runtime, timing, and validation evidence passes; native Vulkan validation and authoritative matched performance remain open. GTAO is next and needs its own current-frame depth pyramid. |
 | 7 | D3D12 | [D3D12 backend evaluation](../architecture/d3d12-backend-evaluation.md) | Do not schedule for image quality. Revisit only for a concrete delivery, tooling, CI, or driver requirement. |
 
 Windows DPI and output transfer landed independently. A DPI change affects
@@ -88,8 +88,8 @@ until explicit owner review.
 
 ### 3.3 Portable same-resolution TAA ships
 
-Packet version 20 carries renderer-owned temporal identity, camera state, and
-the versioned exposure contract.
+Packet version 21 carries renderer-owned temporal identity, camera state,
+the versioned exposure contract, and bloom controls.
 `vkr_temporal_prepare()` derives the Halton jitter, jittered projection,
 current output-grid view-projection, reset reasons, and history-valid flag at
 the frontend boundary. Stable mesh and instance slots provide temporal indices
@@ -148,6 +148,31 @@ quantize dark materials, but no isolated VKR capture proves that it is visible
 after lighting and tonemapping. Keep it on the backlog until a channel capture
 and final-color comparison establish a visible defect. A format change adds
 bandwidth to every opaque pixel and needs measured evidence.
+
+### 3.5 Scene-linear bloom ships
+
+Packet version 21 carries explicit enable, threshold, knee, and intensity
+controls. Production enables defaults while deterministic harness cases remain
+disabled unless they author every control; `VKR_BLOOM_DISABLED=1` is a cold
+forced bypass.
+
+Both backends realize one authored graph slice after temporal resolve and after
+the pre-bloom exposure histogram input. A half-resolution prefilter feeds a
+bounded downsample chain. Reverse repeat expansion writes a separate
+deepest-first accumulation chain, then a full-resolution combine pass adds the
+resolved result to the original HDR source before exposure and tonemapping.
+Fullscreen and editor branches consume the same combined resource.
+
+The shared kernel pins the non-finite/firefly sanitizer, scene-linear soft knee,
+and Karis weight. Backend-native tap code supplies the selectable 13-tap/4-tap
+downsample and 9-tap upsample filters. Direct capture channels expose
+`hdr_pre_bloom`, `bloom_prefilter`, `bloom_result`, and `hdr_combined`.
+
+Focused CPU/graph tests, odd-extent Release execution, five-channel capture, and
+a strictly serial Metal API/GPU shader-validation profile pass. Native Vulkan
+validation, authoritative matched bloom-on/off performance, and owner acceptance
+of any changed final-color baseline remain open; no performance ranking is
+claimed.
 
 ## 4. AA direction
 
