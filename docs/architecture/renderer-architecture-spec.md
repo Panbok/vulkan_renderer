@@ -116,9 +116,10 @@ the acquired target and frame slot return to a valid state.
 
 ### 3.2 Packet-based submission
 
-`VkrRenderPacket` version 19 contains frame information, globals (including
-manual HDR exposure), and optional world, shadow, skybox, UI, editor, picking,
-text-update, and debug payloads.
+`VkrRenderPacket` version 20 contains frame information, globals (including
+the versioned exposure mode, manual multiplier, and EV compensation), and
+optional world, shadow, skybox, UI, editor, picking, text-update, and debug
+payloads.
 Important properties are implemented:
 
 - optional payload pointers control pass participation;
@@ -327,15 +328,28 @@ upload/write/read barriers cover the resources that remain outside graph
 authority.
 
 Fullscreen sky/world rendering targets graph-owned `hdr_scene_color` in
-RGBA16F. `VkrFrameGlobals.exposure` carries finite, non-negative manual
-exposure (default `0.30`) through packet validation to
-`Post.Tonemap.Fullscreen`; the pass applies it before an ACES-fitted curve into
-the sRGB present target. Editor viewport display and canonical RGBA16F
-scene-color capture apply the same exposure and curve. Scene environments use
-a tagged cubemap/equirect source with all-or-fallback activation, while local
-reflection probes remain cubemap-sourced. PBR materials use constant ambient
-only when IBL is disabled, avoiding two contributions for the same environment
-illumination.
+RGBA16F. Packet version 20 splits exposure into `exposure_mode`,
+`manual_exposure`, and `exposure_compensation_ev`, because one linear field
+cannot also carry a logarithmic bias without silently changing old callers.
+Packet validation now rejects a non-finite or non-positive `manual_exposure`, a
+non-finite compensation bias, and an unsupported mode, so the backends carry no
+substitution branch. `vkr_exposure_prepare()` derives the renderer-owned
+`VkrExposureFrame` at the frontend boundary and `vkr_exposure_commit()` publishes
+it only after a successful submit, mirroring the temporal contract; exposure
+reuses the discontinuities `vkr_temporal_prepare()` already derived rather than
+re-deriving them, and ignores projection change. Automatic mode meters the
+post-temporal pre-tonemap HDR source into a 256-bin log-luminance histogram,
+resolves a percentile-clipped target, and adapts through a completion-safe graph
+history ring. A reset invalidates older submitted records so none can cross the
+discontinuity while the reset result is in flight. Fullscreen and editor
+tonemapping read the current GPU state directly before the ACES-fitted curve;
+manual mode reads the validated multiplier and remains unchanged. Delayed
+readback publishes the completed state, full histogram, scalar metrics, and the
+multiplier used to canonicalize post-tonemap capture metadata. Scene
+environments use a tagged cubemap/equirect source with all-or-fallback
+activation, while local reflection probes remain cubemap-sourced. PBR materials
+use constant ambient only when IBL is disabled, avoiding two contributions for
+the same environment illumination.
 
 ### 3.8 Bistro material and spatial-lighting completion
 
@@ -476,12 +490,13 @@ unjittered temporal passthrough without changing graph topology.
 | Compute dispatch | Implemented; production Metal and Vulkan deferred kernels | Typed executors carry validated direct or indirect launch descriptors without per-frame name lookup. Metal P4/P8/P10/P12/P14 uses graph-declared classify, prefix, ICB encode, G-buffer resolve, deferred-lighting, fused-transmission, and HZB-reduction kernels. Vulkan P5/P9/P11/P13/P15 provides classify/prefix/encode, G-buffer, lighting, transmission, coverage, and HZB kernels plus indirect-count raster, with its opaque and transmission shading sharing the forward fragment shader's lighting helpers and surface reconstruction; P20 owner evidence is accepted |
 | GPU timing | Implemented with backend-specific scope | Vulkan retains per-pass query timing. Metal compute and graphics passes use precise encoder-scope timestamps with completion-owned query storage; transfer and zero-work scopes remain explicitly unsupported. Metal also publishes exact `gpu.submission` start-to-end latency from `MTL4CommitFeedback`. The harness associates both asynchronous result paths with their source frames and drains after the measured window |
 | Device-memory suballocation | Implemented | Vulkan uses keyed DEVICE, UPLOAD, and READBACK pools backed by `vkr_gpu_memory`; Metal uses the same range/submit cores through its placement adapter. Logical and physical totals, peaks, retirement, failure classes, and capacity lower into renderer metrics. |
-| Bindless resource model | Implemented | Metal 4 and Vulkan 1.4 use GPU-addressed buffers, backend-native texture/sampler rows, completion-gated publication/retirement, authored graph lowering, and shared memory/submit/slot/capture cores. Packet version 19 carries bounded GPU candidate streams, stable temporal identity, renderer-owned temporal transforms/jitter/reset state, shadow debug, timing requests, feature-local payloads, per-cascade receiver quality, and SDSM metadata. Each non-empty indexed pass publishes one backend frame root and each retained draw references reflected GPU tables. |
-| Deferred visibility-buffer migration | Implemented through P21 | Both backends execute one topology: bounded GPU candidate classification and indirect submission for camera/cascade views; opaque visibility, G-buffer resolve, HDR lighting, HZB, picking, four-layer transmission, and completion-gated diagnostics. P21 removed the selector, legacy graph branch, CPU world draw construction, fallback routes, and dual-path metrics/tests. Packet version 19 rejects invalid, zero-generation, or over-capacity input before recording and carries completion-safe publication generations plus stable temporal identity. |
+| Bindless resource model | Implemented | Metal 4 and Vulkan 1.4 use GPU-addressed buffers, backend-native texture/sampler rows, completion-gated publication/retirement, authored graph lowering, and shared memory/submit/slot/capture cores. Packet version 20 carries bounded GPU candidate streams, stable temporal identity, renderer-owned temporal transforms/jitter/reset state, the exposure contract, shadow debug, timing requests, feature-local payloads, per-cascade receiver quality, and SDSM metadata. Each non-empty indexed pass publishes one backend frame root and each retained draw references reflected GPU tables. |
+| Deferred visibility-buffer migration | Implemented through P21 | Both backends execute one topology: bounded GPU candidate classification and indirect submission for camera/cascade views; opaque visibility, G-buffer resolve, HDR lighting, HZB, picking, four-layer transmission, and completion-gated diagnostics. P21 removed the selector, legacy graph branch, CPU world draw construction, fallback routes, and dual-path metrics/tests. Packet version 20 rejects invalid, zero-generation, or over-capacity input before recording and carries completion-safe publication generations plus stable temporal identity. |
 | Portable temporal antialiasing | Implemented, partial evidence | Metal and Vulkan share one same-resolution resolve, rigid opaque/transmission/blend motion, exact visibility identity, backend-specific completion-safe history pools independent of command slots, reset policy, authored material reactivity, stable-transparency accumulation, bounded moving-camera composition reactivity, post-temporal manual exposure, debug modes, and one-sample passthrough fallback. Moving-camera color reconstruction applies the exact identity/primitive/depth mask to the bilinear history footprint instead of admitting rejected neighboring color. Visibility-buffer deferred shading now mirrors the forward path's bounded normal-footprint roughness filter; the owner confirms that this materially reduces fixed-camera shimmer. Native Apple validation passes, but final moving-camera interactive acceptance remains open; deformation/procedural motion, dynamic particle/material signals, and broader motion/disocclusion evidence also remain open. See ADR-037 |
 | Vulkan V1–V4 migration | Complete for RX 6700 XT | V1 characterization and V2's selected strategy are complete on macOS and Windows. V3 extracted the memory, submit-ring, and shared ABI cores alongside their production Vulkan callers and passes native window resize with reacquisition and retired-swapchain completion proof. V4 extracted the slot table, added completion-gated asset publication, and moved geometry, staging, images, startup buffers, and readback into keyed dynamic pools with complete logical/physical metrics. Prepared and writable initialization records before the next frame draw, staging retirement uses that submit value, publication dirty ranges flush once per backing buffer, and logical totals return to baseline. MoltenVK cannot execute the descriptor-buffer path. ADR-024's required cross-platform extraction witnesses now pass. |
 | Vulkan V5–V7 | Implemented; post-V7 target rerun passes | V5 lowers the authored graph to synchronization2/dynamic rendering and implements all packet pass/capture/timing categories. V6 completed selection, cache, lifecycle, metrics, and native RX 6700 XT validation. V7 removed the Vulkan 1.2 path, temporary selector, shaders/manifests, legacy frontend systems, interface/adaptor, and graph residue. CPU and Metal gates pass after deletion; fresh RX 6700 XT Debug/Release whole-graph, synchronization-validation, and GPU-assisted witnesses pass. |
-| HDR/tonemap/post chain | Implemented, initial | RGBA16F fullscreen/editor scene color, packet-carried manual exposure (default `0.30`), ACES-fitted tonemap, and output-space FXAA share the existing final draw before UI; `VKR_FXAA_DISABLED=1` is a cold diagnostic bypass. Temporal history remains scene-linear and exposure-independent because exposure is applied only after `Temporal.Resolve`. Exposure-equivalent canonical HDR capture remains upstream. Automatic exposure and additional post effects are absent |
+| HDR/tonemap/post chain | Implemented, initial | RGBA16F fullscreen/editor scene color, packet-selected manual or automatic exposure, ACES-fitted tonemap, and output-space FXAA share the existing final draw before UI; production initialization selects automatic exposure with `0.30` as its empty-histogram fallback and explicit manual multiplier, while `VKR_FXAA_DISABLED=1` is a cold diagnostic bypass. Temporal history remains scene-linear and exposure-independent because exposure is applied only after `Temporal.Resolve`. Exposure-equivalent canonical HDR capture remains upstream. Bloom and other additional post effects are absent |
+| Automatic exposure | Implemented through spec phase E3; native Vulkan validation pending | Packet version 20 carries `exposure_mode`, `manual_exposure`, and `exposure_compensation_ev`; the frontend derives and submit-commits a renderer-owned frame with bounded delta and shared discontinuities. One post-temporal histogram pass meters the current fullscreen or editor HDR result into 256 log-luminance bins, then resolve computes fractional-percentile target EV and completion-proven adaptation. Tonemapping consumes the current GPU state without CPU synchronization. Delayed completed readback exposes the state, all histogram bins, scalar metrics, and canonical-capture multiplier. Manual output is unchanged. Focused deterministic, snapshot, and Metal validation evidence passes; MoltenVK cannot run the descriptor-buffer Vulkan path, so native Vulkan validation remains open. See [post, exposure, bloom, and ambient occlusion](../rendering/post-exposure-bloom-and-ambient-occlusion-spec.md) |
 | Presentation DPI and output transfer | Implemented; visual evidence pending | Windows establishes Per-Monitor V2 before window creation, sizes non-client areas with monitor/window DPI, handles `WM_DPICHANGED`, and reports physical client pixels. Metal and Vulkan tonemap and blend linear RGB into sRGB window/offscreen attachments; Vulkan has no shader gamma encode, and retained UI/text colors decode authored sRGB once on the CPU. Replacement final-color goldens and mixed-DPI/translucent fixture evidence remain pending owner review. |
 | Shader hot reload | Absent | Build-time shader compilation only |
 
@@ -1041,11 +1056,12 @@ pin the 17-image/13-sampler contract, and exact Bistro validation replay
     `temporal_reactivity` in `[0,1]`, including at rest. Composition-derived
     reactivity remains a capped moving-camera fallback.
 
-    Manual exposure is already safe across discontinuities because it is
-    applied by `Post.Tonemap` after scene-linear `Temporal.Resolve` history.
-    Adding an exposure-step reset would discard valid HDR history. Automatic
-    exposure remains absent; any future pre-exposure design must add history
-    rescaling or reset where that domain is introduced.
+    Manual and automatic exposure are safe across temporal discontinuities
+    because both are applied by `Post.Tonemap` after scene-linear
+    `Temporal.Resolve` history. Automatic adaptation resets its own
+    completion-safe chain without discarding valid HDR temporal history. Any
+    future pre-exposure design must add history rescaling or reset where that
+    domain is introduced.
 
     Two matched 320x240, two-process, 120-frame dirty-tree Release timestamp-on
     observations measure `World.Blend.Fullscreen` at 0.03986 to 0.04654 ms mean
@@ -1119,7 +1135,7 @@ pin the 17-image/13-sampler contract, and exact Bistro validation replay
 
 ### P3 — Feature growth after measurement
 
-- automatic exposure, bloom, and post-processing beyond manual exposure plus
+- bloom and post-processing beyond automatic exposure, output-space FXAA, and
   the initial ACES tonemap;
 - real compute dispatch followed by GPU culling/compaction;
 - clustered/tiled light assignment and a storage-buffer light list;

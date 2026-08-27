@@ -6,8 +6,9 @@ authority: design
 
 # Image quality roadmap
 
-**Document status:** Active roadmap. Presentation and portable same-resolution
-TAA ship; the architecture status specification remains the authority.
+**Document status:** Active roadmap. Presentation, portable same-resolution
+TAA, and automatic exposure ship; the architecture status specification remains
+the authority.
 
 **Scope:** Rendering work that changes displayed image quality, plus the D3D12
 evaluation that is intentionally kept out of the image-quality argument.
@@ -32,9 +33,12 @@ design remains a separate proposal with no production sample-count path.
 
 Next image-quality work should close inputs that still lack an authored signal:
 deformation and procedural vertex motion, particles, and dynamic material
-changes. Automatic exposure remains separately ordered because deterministic
-cases still need manual exposure; if it introduces pre-exposure, it must rescale
-or reset temporal history at that new boundary.
+changes. Automatic exposure phases E0-E3 now ship as a post-temporal GPU
+metering, adaptation, and tonemap path. Deterministic cases still default to
+manual exposure; cases that test adaptation author their fallback, reset frame,
+fixed time step, and frame count. Exposure remains outside scene-linear temporal
+history, so it needs no history rescale. Any future pre-exposure domain must
+rescale or reset history explicitly.
 
 FSR frame generation is not part of this roadmap.
 
@@ -45,8 +49,8 @@ FSR frame generation is not part of this roadmap.
 | 1 | Windows DPI correctness | [Presentation DPI and transfer function](presentation-dpi-and-transfer-function-spec.md) | Implemented. Per-Monitor V2 and physical client pixels ship; mixed-DPI display evidence remains pending. |
 | 2 | One linear-to-sRGB presentation contract | Same document | Implemented. Both backends use linear shader output and blending into sRGB attachments; replacement final-color goldens await owner review. |
 | 3 | Temporal-input foundation | [Visibility-buffer anti-aliasing evaluation](visibility-buffer-msaa-spec.md) | Implemented for rigid opaque, transmission, and ordinary-blend geometry: jitter, own-surface motion, exact identity, authored material reactivity, reset rules, completion-safe history, and debug views ship. Deformation, procedural motion, particles, and dynamic material-change signals remain open. |
-| 4 | Automatic exposure | [Post, exposure, bloom, and ambient occlusion](post-exposure-bloom-and-ambient-occlusion-spec.md) | Implement after the presentation domain is fixed. Preserve manual exposure for deterministic cases. Current manual exposure is post-temporal and needs no reset; a future pre-exposure domain must rescale or reset history explicitly. |
-| 5 | Portable same-resolution TAA and post-TAA FXAA | [ADR-037](../architecture/adr/037-portable-same-resolution-temporal-antialiasing.md) | Implemented on Metal and Vulkan without an additional graph pass or full-resolution resource for transparent inputs. Native Apple runtime validation, broader motion fixtures, deformation/procedural/particle inputs, and final-color owner acceptance remain open. MSAA is not part of this slice. |
+| 4 | Automatic exposure | [Post, exposure, bloom, and ambient occlusion](post-exposure-bloom-and-ambient-occlusion-spec.md) | Implemented through E3. Packet version 20 carries mode, manual fallback, and EV compensation; two graph passes meter the post-temporal HDR source into a 256-bin histogram and resolve percentile-clipped, completion-safe adaptation. Fullscreen/editor tonemap consume current GPU state directly, delayed diagnostics expose the histogram, scalar metrics expose the EV decision, and canonical capture records the completed multiplier. Production initialization selects automatic exposure; manual remains the byte-identical path and the deterministic harness default. Metal runtime and validation evidence passes; native Vulkan validation remains pending. Exposure stays post-temporal; any future pre-exposure domain must rescale or reset history. |
+| 5 | Portable same-resolution TAA and post-TAA FXAA | [ADR-037](../architecture/adr/037-portable-same-resolution-temporal-antialiasing.md) | Implemented and validation-clean on Metal and Vulkan without an additional graph pass or full-resolution resource for transparent inputs. Broader motion fixtures, deformation/procedural/particle inputs, and final-color owner acceptance remain open. MSAA is not part of this slice. |
 | 6 | Bloom, then GTAO | [Post, exposure, bloom, and ambient occlusion](post-exposure-bloom-and-ambient-occlusion-spec.md) | Implement separately and measure separately. GTAO needs its own current-frame depth pyramid. |
 | 7 | D3D12 | [D3D12 backend evaluation](../architecture/d3d12-backend-evaluation.md) | Do not schedule for image quality. Revisit only for a concrete delivery, tooling, CI, or driver requirement. |
 
@@ -84,7 +88,8 @@ until explicit owner review.
 
 ### 3.3 Portable same-resolution TAA ships
 
-Packet version 19 carries renderer-owned temporal identity and camera state.
+Packet version 20 carries renderer-owned temporal identity, camera state, and
+the versioned exposure contract.
 `vkr_temporal_prepare()` derives the Halton jitter, jittered projection,
 current output-grid view-projection, reset reasons, and history-valid flag at
 the frontend boundary. Stable mesh and instance slots provide temporal indices
