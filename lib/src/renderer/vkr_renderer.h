@@ -850,6 +850,11 @@ typedef struct VkrGlobalMaterialState {
   VkrExposureMode exposure_mode;
   float32_t manual_exposure;
   float32_t exposure_compensation_ev;
+  /** Lowered verbatim into the packet's bloom controls; see VkrFrameGlobals. */
+  bool8_t bloom_enabled;
+  float32_t bloom_threshold;
+  float32_t bloom_knee;
+  float32_t bloom_intensity;
   VkrRenderMode render_mode;
 } VkrGlobalMaterialState;
 

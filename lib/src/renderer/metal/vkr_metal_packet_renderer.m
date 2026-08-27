@@ -369,6 +369,7 @@ struct VkrMetalPacketRenderer {
   VkrRenderGraph *graph;
   VkrRgExecutorRegistry executors;
   VkrExposureMeteringConfig exposure_metering;
+  VkrBloomConfig bloom_config;
   VkrMetalMemoryDevice *memory;
   VkrMetalMaterialTableDevice *materials;
   VkrCaptureRing capture_ring;
@@ -462,6 +463,13 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> exposure_clear_pipeline;
   id<MTLComputePipelineState> exposure_histogram_pipeline;
   id<MTLComputePipelineState> exposure_resolve_pipeline;
+  id<MTLComputePipelineState> bloom_prefilter_pipeline;
+  /* Both filters are resident; the cold configuration selects which one a
+     build measures. Neither is a fallback for the other. */
+  id<MTLComputePipelineState> bloom_downsample_tent13_pipeline;
+  id<MTLComputePipelineState> bloom_downsample_box4_pipeline;
+  id<MTLComputePipelineState> bloom_upsample_pipeline;
+  id<MTLComputePipelineState> bloom_combine_pipeline;
   id<MTLArgumentEncoder> gpu_draw_icb_argument_encoder;
   id<MTLDepthStencilState> depth_write_state;
   id<MTLDepthStencilState> depth_read_state;

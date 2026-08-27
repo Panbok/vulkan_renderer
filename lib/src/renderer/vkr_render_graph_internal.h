@@ -27,7 +27,7 @@ typedef struct VkrRgImage {
       imported_handle; /**< Backend handle when imported (single) */
   VkrRgImageAccessFlags imported_access; /**< Access at import for barriers */
   VkrTextureLayout imported_layout;      /**< Layout at import */
-  VkrTextureLayout final_layout; /**< Layout after last use (for export) */
+  VkrTextureLayout final_layout;         /**< Final layout of subresource 0 */
   VkrTextureOpaqueHandle
       *textures; /**< Allocated textures (one or per swapchain image) */
   uint32_t texture_count; /**< Number of textures */

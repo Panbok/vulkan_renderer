@@ -8,6 +8,7 @@
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/systems/vkr_lighting_system.h"
 #include "renderer/systems/vkr_shadow_system.h"
+#include "renderer/vkr_bloom.h"
 #include "renderer/vkr_buffer.h"
 #include "renderer/vkr_exposure.h"
 #include "renderer/vkr_gpu_abi.h"
@@ -15,7 +16,7 @@
 #include "renderer/vkr_temporal.h"
 
 /** Version constant for VkrRenderPacket.packet_version validation. */
-#define VKR_RENDER_PACKET_VERSION 20u
+#define VKR_RENDER_PACKET_VERSION 21u
 
 #define VKR_FRAME_IBL_PROBE_MAX 16u
 #define VKR_PREPARED_TEXT_DRAW_MAX 64u
@@ -80,12 +81,28 @@ typedef struct VkrFrameGlobals {
   float32_t exposure_compensation_ev;
   uint32_t render_mode;
   /**
+   * Bloom controls, added in packet 21. A zeroed block disables bloom, so a
+   * updated caller that leaves the new fields zeroed keeps byte-identical
+   * output: no bloom resource and no bloom pass is instantiated for the frame.
+   *
+   * The threshold is scene-linear, so exposure changes how strong the result
+   * looks without changing which scene values entered the chain. Chain length,
+   * firefly ceiling, and filter selection are cold configuration rather than
+   * packet fields; they describe the resource contract, not art direction.
+   */
+  bool8_t bloom_enabled;
+  float32_t bloom_threshold;
+  float32_t bloom_knee;
+  float32_t bloom_intensity;
+  /**
    * Renderer-owned temporal state. Callers leave this zeroed; the frontend
    * derives it after validation and commits it only after successful submit.
    */
   VkrTemporalFrame temporal;
   /** Renderer-owned exposure state, derived and committed the same way. */
   VkrExposureFrame exposure;
+  /** Renderer-owned bloom state, normalized from the fields above. */
+  VkrBloomFrame bloom;
 } VkrFrameGlobals;
 
 /** Backend-neutral frame lighting controls consumed by world shading. */

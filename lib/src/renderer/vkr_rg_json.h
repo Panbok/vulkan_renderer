@@ -28,6 +28,7 @@ typedef enum VkrRgJsonConditionKind {
   VKR_RG_JSON_CONDITION_EDITOR_DISABLED_TRANSMISSION_FULLSCREEN,
   VKR_RG_JSON_CONDITION_TRANSMISSION_FULLSCREEN_TIMING,
   VKR_RG_JSON_CONDITION_EXPOSURE_AUTOMATIC,
+  VKR_RG_JSON_CONDITION_BLOOM_ENABLED,
   /** True only on frames whose packet actually requests a pick. */
   VKR_RG_JSON_CONDITION_PICKING_PENDING,
   VKR_RG_JSON_CONDITION_PICKING_IDLE,
@@ -56,6 +57,14 @@ typedef struct VkrRgJsonRepeat {
   bool8_t enabled;               // Whether repeat is enabled.
   String8 count_source;          // Source of the repeat count.
   String8 condition_mask_source; // Optional bit mask indexed by repetition.
+  /**
+   * Emits the repetitions in descending index order. `${i}` and `${i+1}` keep
+   * meaning fine and coarse level, so a reverse chain reads what an ascending
+   * chain wrote without a second token vocabulary. Bloom upsampling is the case
+   * this exists for: it must run deepest-first, and HZB only ever proved the
+   * ascending direction.
+   */
+  bool8_t reverse;
 } VkrRgJsonRepeat;
 
 /**
@@ -99,6 +108,12 @@ typedef struct VkrRgJsonExtent {
   uint32_t width;           // The width of the extent.
   uint32_t height;          // The height of the extent.
   String8 size_source;      // The source of the size.
+  /**
+   * Divides the resolved window or viewport extent, never below one texel.
+   * Zero and one both mean full resolution. Bloom's chain starts at half the
+   * viewport, and a fixed extent could not follow a resize.
+   */
+  uint32_t divisor;
 } VkrRgJsonExtent;
 
 /**

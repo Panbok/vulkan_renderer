@@ -306,8 +306,8 @@ static void test_exposure_packet_validation(void) {
   assert(strcmp(validation.field_path,
                 "packet.globals.exposure_compensation_ev") == 0);
 
-  /* The version bump is the contract break: a caller still authoring the
-     pre-20 single multiplier must be rejected, not silently reinterpreted. */
+  /* Version 20 introduced the exposure contract; packet 21 adds bloom.
+     The validator still rejects every immediately preceding packet ABI. */
   packet.globals.exposure_compensation_ev = 0.0f;
   packet.packet_version = VKR_RENDER_PACKET_VERSION - 1u;
   assert(vkr_renderer_validate_packet(&packet, &validation) ==

@@ -42,6 +42,7 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
      "!transmission_compact_enabled",
      VKR_RG_JSON_CONDITION_TRANSMISSION_FULLSCREEN_TIMING},
     {"exposure_automatic", VKR_RG_JSON_CONDITION_EXPOSURE_AUTOMATIC},
+    {"bloom_enabled", VKR_RG_JSON_CONDITION_BLOOM_ENABLED},
     {"picking_pending", VKR_RG_JSON_CONDITION_PICKING_PENDING},
     {"!picking_pending", VKR_RG_JSON_CONDITION_PICKING_IDLE},
     {"picking_pending && transmission_pending",
@@ -140,6 +141,22 @@ vkr_internal bool8_t vkr_rg_json_parse_repeat(VkrRgJsonParseContext *ctx,
                              &out_repeat->condition_mask_source)) {
       return vkr_rg_json_error(ctx, field_path,
                                "repeat.condition_mask_source must be a string");
+    }
+  }
+
+  VkrJsonReader reverse_reader = repeat_obj;
+  if (vkr_json_find_field(&reverse_reader, "reverse")) {
+    /* Only a pass has an execution order for reversal to mean anything. On a
+       resource or a resource use it would silently do nothing, which is worse
+       than rejecting it. `allow_condition_mask` is exactly "this is a pass". */
+    if (!allow_condition_mask) {
+      return vkr_rg_json_error(ctx, field_path,
+                               "repeat.reverse is valid only on passes");
+    }
+    reverse_reader = repeat_obj;
+    if (!vkr_json_get_bool(&reverse_reader, "reverse", &out_repeat->reverse)) {
+      return vkr_rg_json_error(ctx, field_path,
+                               "repeat.reverse must be a bool");
     }
   }
 
@@ -282,6 +299,21 @@ vkr_internal bool8_t vkr_rg_json_parse_extent(VkrRgJsonParseContext *ctx,
       return vkr_rg_json_error(ctx, field_path,
                                "extent.size_source is required for square");
     }
+  }
+
+  VkrJsonReader divisor_reader = extent_obj;
+  if (vkr_json_find_field(&divisor_reader, "divisor")) {
+    if (out_extent->mode != VKR_RG_JSON_EXTENT_WINDOW &&
+        out_extent->mode != VKR_RG_JSON_EXTENT_VIEWPORT) {
+      return vkr_rg_json_error(
+          ctx, field_path,
+          "extent.divisor applies only to window and viewport extents");
+    }
+    divisor_reader = extent_obj;
+    int32_t divisor = 0;
+    if (!vkr_json_get_int(&divisor_reader, "divisor", &divisor) || divisor <= 0)
+      return vkr_rg_json_error(ctx, field_path, "extent.divisor must be > 0");
+    out_extent->divisor = (uint32_t)divisor;
   }
 
   return true_v;
@@ -1742,6 +1774,8 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
            !frame->transmission_compact_enabled;
   case VKR_RG_JSON_CONDITION_EXPOSURE_AUTOMATIC:
     return frame->exposure_automatic;
+  case VKR_RG_JSON_CONDITION_BLOOM_ENABLED:
+    return frame->bloom_enabled;
   case VKR_RG_JSON_CONDITION_PICKING_PENDING:
     return frame->picking_pending;
   case VKR_RG_JSON_CONDITION_PICKING_IDLE:
@@ -1780,6 +1814,17 @@ vkr_internal bool8_t vkr_rg_json_repeat_count(
     *out_count = frame->hzb_reduce_pass_count;
     return true_v;
   }
+  /* Both bloom chains are one step shorter than the chain itself: the prefilter
+     owns mip 0, and the deepest level has nothing above it to accumulate into.
+     They are separate sources because the two directions are separate authored
+     passes, and a shared name would hide which one a graph edit changed. */
+  if (vkr_string8_equals_cstr_i(&repeat->count_source,
+                                "bloom_downsample_pass_count") ||
+      vkr_string8_equals_cstr_i(&repeat->count_source,
+                                "bloom_upsample_pass_count")) {
+    *out_count = frame->bloom_mip_count > 0u ? frame->bloom_mip_count - 1u : 0u;
+    return true_v;
+  }
 
   log_error("RenderGraph JSON: unknown repeat source '%.*s'",
             (int)repeat->count_source.length, repeat->count_source.str);
@@ -1808,6 +1853,19 @@ vkr_internal bool8_t vkr_rg_json_repeat_iteration_enabled(
   return false_v;
 }
 
+/**
+ * @brief Applies an authored extent divisor.
+ *
+ * Zero and one both mean full resolution, so an unset divisor leaves the extent
+ * untouched, including the zero extent an un-resized target still reports. A
+ * genuinely divided extent floors and then clamps to one texel: an odd or very
+ * small viewport must still produce an allocatable image.
+ */
+vkr_internal uint32_t vkr_rg_json_divide_extent(uint32_t extent,
+                                                uint32_t divisor) {
+  return divisor > 1u ? ClampBot(extent / divisor, 1u) : extent;
+}
+
 vkr_internal bool8_t vkr_rg_json_resolve_extent(
     const VkrRgJsonExtent *extent, const VkrRenderGraphFrameInfo *frame,
     uint32_t *out_width, uint32_t *out_height) {
@@ -1827,12 +1885,16 @@ vkr_internal bool8_t vkr_rg_json_resolve_extent(
 
   switch (extent->mode) {
   case VKR_RG_JSON_EXTENT_WINDOW:
-    *out_width = frame->window_width;
-    *out_height = frame->window_height;
+    *out_width =
+        vkr_rg_json_divide_extent(frame->window_width, extent->divisor);
+    *out_height =
+        vkr_rg_json_divide_extent(frame->window_height, extent->divisor);
     return true_v;
   case VKR_RG_JSON_EXTENT_VIEWPORT:
-    *out_width = frame->viewport_width;
-    *out_height = frame->viewport_height;
+    *out_width =
+        vkr_rg_json_divide_extent(frame->viewport_width, extent->divisor);
+    *out_height =
+        vkr_rg_json_divide_extent(frame->viewport_height, extent->divisor);
     return true_v;
   case VKR_RG_JSON_EXTENT_FIXED:
     *out_width = extent->width;
@@ -2285,7 +2347,13 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
       return false_v;
     }
 
-    for (uint32_t r = 0; r < repeat_count; ++r) {
+    for (uint32_t iteration = 0; iteration < repeat_count; ++iteration) {
+      /* A reverse repeat emits the same indices in descending order, so `${i}`
+         and `${i+1}` keep meaning fine and coarse level while the passes
+         execute deepest-first. Mapping the index here is what keeps every use
+         below index-agnostic. */
+      const uint32_t r =
+          pass->repeat.reverse ? repeat_count - 1u - iteration : iteration;
       bool8_t repeat_enabled = true_v;
       if (!vkr_rg_json_repeat_iteration_enabled(&pass->repeat, frame, r,
                                                 &repeat_enabled))

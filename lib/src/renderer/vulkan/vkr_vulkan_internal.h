@@ -9,6 +9,7 @@
 #include "renderer/resources/loaders/mesh_loader.h"
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_texture_system.h"
+#include "renderer/vkr_bloom.h"
 #include "renderer/vkr_candidate_residency.h"
 #include "renderer/vkr_capture_ring.h"
 #include "renderer/vkr_gpu_abi.h"
@@ -133,6 +134,25 @@
 #define VKR_VULKAN_PACKET_EXPOSURE_RESOLVE_COMP_SPV                            \
   "packet.exposure_resolve.comp.spv"
 #endif
+#ifndef VKR_VULKAN_PACKET_BLOOM_PREFILTER_COMP_SPV
+#define VKR_VULKAN_PACKET_BLOOM_PREFILTER_COMP_SPV                             \
+  "packet.bloom_prefilter.comp.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_BLOOM_DOWNSAMPLE_TENT13_COMP_SPV
+#define VKR_VULKAN_PACKET_BLOOM_DOWNSAMPLE_TENT13_COMP_SPV                     \
+  "packet.bloom_downsample_tent13.comp.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_BLOOM_DOWNSAMPLE_BOX4_COMP_SPV
+#define VKR_VULKAN_PACKET_BLOOM_DOWNSAMPLE_BOX4_COMP_SPV                       \
+  "packet.bloom_downsample_box4.comp.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_BLOOM_UPSAMPLE_COMP_SPV
+#define VKR_VULKAN_PACKET_BLOOM_UPSAMPLE_COMP_SPV                              \
+  "packet.bloom_upsample.comp.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_BLOOM_COMBINE_COMP_SPV
+#define VKR_VULKAN_PACKET_BLOOM_COMBINE_COMP_SPV "packet.bloom_combine.comp.spv"
+#endif
 #ifndef VKR_VULKAN_PACKET_SDSM_REDUCE_COMP_SPV
 #define VKR_VULKAN_PACKET_SDSM_REDUCE_COMP_SPV "packet.sdsm_reduce.comp.spv"
 #endif
@@ -247,6 +267,16 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_EXPOSURE_CLEAR,
   VKR_VULKAN_DEFERRED_PIPELINE_EXPOSURE_HISTOGRAM,
   VKR_VULKAN_DEFERRED_PIPELINE_EXPOSURE_RESOLVE,
+  VKR_VULKAN_DEFERRED_PIPELINE_BLOOM_PREFILTER,
+  /**
+   * Both downsample filters are created. Which one a frame binds is cold
+   * configuration, so the comparison the design asks for is a config change
+   * rather than a rebuild, and neither is a fallback for the other.
+   */
+  VKR_VULKAN_DEFERRED_PIPELINE_BLOOM_DOWNSAMPLE_TENT13,
+  VKR_VULKAN_DEFERRED_PIPELINE_BLOOM_DOWNSAMPLE_BOX4,
+  VKR_VULKAN_DEFERRED_PIPELINE_BLOOM_UPSAMPLE,
+  VKR_VULKAN_DEFERRED_PIPELINE_BLOOM_COMBINE,
   VKR_VULKAN_DEFERRED_PIPELINE_COUNT,
 } VkrVulkanDeferredPipeline;
 
@@ -438,6 +468,25 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanExposureRoot {
   uint32_t reset_reasons;
   VkrExposureGpuMetering metering;
 } VkrVulkanExposureRoot;
+
+/** Mirrors VkrVkBloomRoot in shaders/vulkan/slang/post/bloom.slang. */
+typedef struct VKR_SIMD_ALIGN VkrVulkanBloomRoot {
+  uint32_t source_texture;
+  /**
+   * Coarser accumulation level, written for the upsample pass only. At the
+   * deepest step the accumulation level above has never been written, so the
+   * executor points this at the downsample chain instead. Selecting on the CPU
+   * is what keeps the kernel free of a bootstrap branch and keeps every
+   * sampled texel defined.
+   */
+  uint32_t coarse_texture;
+  uint32_t destination_texture;
+  uint32_t source_sampler;
+  /** Extent the tap offsets are expressed in; see the shader field comment. */
+  uint32_t filter_extent[2];
+  uint32_t destination_extent[2];
+  VkrBloomGpuParams params;
+} VkrVulkanBloomRoot;
 
 typedef struct VkrVulkanSdsmState {
   uint32_t min_device_z_bits;
@@ -714,6 +763,8 @@ _Static_assert(sizeof(VkrVulkanHzbRoot) == 48u,
                "Deferred HZB-root ABI size drift");
 _Static_assert(sizeof(VkrVulkanExposureRoot) == 112u,
                "Vulkan exposure root ABI size drift");
+_Static_assert(sizeof(VkrVulkanBloomRoot) == 64u,
+               "Vulkan bloom root ABI size drift");
 _Static_assert(sizeof(VkrVulkanSdsmRoot) == 32u,
                "Deferred SDSM-root ABI size drift");
 _Static_assert(sizeof(VkrVulkanSdsmState) == VKR_VULKAN_SDSM_STATE_SIZE,
@@ -1133,6 +1184,7 @@ struct VkrVulkanRenderer {
   VkrAllocator *allocator;
   VkrVulkanRendererConfig config;
   VkrExposureMeteringConfig exposure_metering;
+  VkrBloomConfig bloom_config;
   VkrDMemory publication_staging_memory;
   VkrDMemory capture_storage_memory;
   Arena *graph_frame_arena;
@@ -1400,6 +1452,18 @@ bool8_t vkr_vk_record_exposure_resolve(VkrVulkanRenderer *renderer,
 /** Publishes this frame's adaptation record once its submit value is known. */
 void vkr_vk_mark_exposure_submitted(VkrVulkanRenderer *renderer,
                                     uint64_t submit_value);
+bool8_t vkr_vk_record_bloom_prefilter(VkrVulkanRenderer *renderer,
+                                      VkCommandBuffer command,
+                                      const VkrRgPass *pass);
+bool8_t vkr_vk_record_bloom_downsample(VkrVulkanRenderer *renderer,
+                                       VkCommandBuffer command,
+                                       const VkrRgPass *pass);
+bool8_t vkr_vk_record_bloom_upsample(VkrVulkanRenderer *renderer,
+                                     VkCommandBuffer command,
+                                     const VkrRgPass *pass);
+bool8_t vkr_vk_record_bloom_combine(VkrVulkanRenderer *renderer,
+                                    VkCommandBuffer command,
+                                    const VkrRgPass *pass);
 bool8_t vkr_vk_record_deferred_sdsm(VkrVulkanRenderer *renderer,
                                     VkCommandBuffer command,
                                     const VkrRgPass *pass);
@@ -1425,6 +1489,7 @@ bool8_t vkr_vk_record_packet_draws(
     uint32_t draw_count, uint64_t instances, Mat4 view_projection,
     bool8_t alpha_cutout, uint32_t shadow_texture,
     uint32_t transmission_texture, bool8_t transmission_pass);
+
 bool8_t vkr_vk_record_packet_fullscreen(VkrVulkanRenderer *renderer,
                                         VkCommandBuffer command,
                                         VkrVulkanPacketPipeline pipeline,

@@ -682,6 +682,19 @@ typedef struct VkrRenderGraphFrameInfo {
    * rather than being executed and discarded.
    */
   bool8_t exposure_automatic;
+  /**
+   * True only for a frame that both requests bloom and has a viewport large
+   * enough for a chain. Gates both bloom images and every bloom pass, so a
+   * frame without bloom pays nothing for it.
+   */
+  bool8_t bloom_enabled;
+  /**
+   * Chain length, derived from the viewport and the cold bloom configuration.
+   * The downsample and upsample repeats are each one shorter than this: the
+   * prefilter produces mip 0, and the deepest level has nothing above it to
+   * accumulate into.
+   */
+  uint32_t bloom_mip_count;
   /** Metal P19 state; false only for the diagnostic full-screen rollback. */
   bool8_t transmission_compact_enabled;
   /** True when this frame requests backend pass timestamps. */

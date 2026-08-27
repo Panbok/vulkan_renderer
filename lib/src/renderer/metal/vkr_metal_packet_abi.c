@@ -273,6 +273,18 @@ vkr_global const VkrMetalPacketAbiField vkr_exposure_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketExposureRoot, metering, "metering", 48),
 };
 
+vkr_global const VkrMetalPacketAbiField vkr_bloom_root_fields[] = {
+    VKR_ABI_FIELD(VkrMetalPacketBloomRoot, source_texture_id, "source", 0),
+    VKR_ABI_FIELD(VkrMetalPacketBloomRoot, coarse_texture_id, "coarse", 8),
+    VKR_ABI_FIELD(VkrMetalPacketBloomRoot, destination_texture_id,
+                  "destination", 16),
+    VKR_ABI_FIELD(VkrMetalPacketBloomRoot, filter_extent, "filter_extent", 24),
+    VKR_ABI_FIELD(VkrMetalPacketBloomRoot, destination_extent,
+                  "destination_extent", 32),
+    VKR_ABI_FIELD(VkrMetalPacketBloomRoot, params, "params", 40),
+    VKR_ABI_FIELD(VkrMetalPacketBloomRoot, reserved, "reserved", 72),
+};
+
 vkr_global const VkrMetalPacketAbiField vkr_temporal_transform_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketTemporalTransformRoot, instances, "instances",
                   0),
@@ -666,6 +678,9 @@ vkr_global const VkrMetalPacketAbiRecord
         [VKR_METAL_PACKET_ABI_EXPOSURE_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketExposureRoot, "VkrMetalPacketExposureRoot", 112, 16,
             vkr_exposure_root_fields),
+        [VKR_METAL_PACKET_ABI_BLOOM_ROOT] =
+            VKR_ABI_RECORD(VkrMetalPacketBloomRoot, "VkrMetalPacketBloomRoot",
+                           80, 16, vkr_bloom_root_fields),
 };
 
 const VkrMetalPacketAbiRecord *

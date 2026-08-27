@@ -35,6 +35,8 @@
         "editor_enabled && transmission_pending && !transmission_compact_enabled",
         "!editor_enabled && transmission_pending && !transmission_compact_enabled",
         "transmission_pending && timing_enabled && !transmission_compact_enabled",
+        "exposure_automatic",
+        "bloom_enabled",
         "picking_pending",
         "!picking_pending",
         "picking_pending && transmission_pending",
@@ -54,7 +56,8 @@
       "required": ["count_source"],
       "properties": {
         "count_source": { "type": "string" },
-        "condition_mask_source": { "type": "string" }
+        "condition_mask_source": { "type": "string" },
+        "reverse": { "type": "boolean" }
       },
       "additionalProperties": false
     },
@@ -68,8 +71,19 @@
         },
         "width": { "type": "integer", "minimum": 1 },
         "height": { "type": "integer", "minimum": 1 },
-        "size_source": { "type": "string" }
+        "size_source": { "type": "string" },
+        "divisor": { "type": "integer", "minimum": 1 }
       },
+      "allOf": [
+        {
+          "if": { "required": ["divisor"] },
+          "then": {
+            "properties": {
+              "mode": { "enum": ["window", "viewport"] }
+            }
+          }
+        }
+      ],
       "additionalProperties": false
     },
     "resource": {

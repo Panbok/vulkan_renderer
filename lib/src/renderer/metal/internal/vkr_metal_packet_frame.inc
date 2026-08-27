@@ -326,14 +326,26 @@ vkr_internal bool8_t vkr_metal_packet_encode_text_draws(
   return true_v;
 }
 
+/** Resolves the texture behind one authored image use, honouring its mip. */
+vkr_internal id<MTLTexture>
+vkr_metal_packet_bloom_texture(VkrMetalPacketRenderer *renderer,
+                               const VkrRgImageUse *use)
+    API_AVAILABLE(macos(26.0)) {
+  if (!use)
+    return nil;
+  return use->has_slice ? vkr_metal_packet_mip_texture(renderer, use->image,
+                                                       use->slice.mip_level)
+                        : vkr_metal_packet_texture(renderer, use->image);
+}
+
 vkr_internal bool8_t vkr_metal_packet_encode_tonemap(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrRenderPacket *packet, id<MTL4RenderCommandEncoder> encoder,
     VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
-  const VkrRgImageUse *read = vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+  const VkrRgImageUse *read = vkr_rg_pass_find_image_use(&pass->desc, 2u, 0u);
   if (!read)
-    return false_v;
-  id<MTLTexture> source = vkr_metal_packet_texture(renderer, read->image);
+    read = vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+  id<MTLTexture> source = vkr_metal_packet_bloom_texture(renderer, read);
   if (!source)
     return false_v;
   uint64_t root_gpu = 0;
@@ -1524,6 +1536,100 @@ vkr_internal bool8_t vkr_metal_packet_encode_exposure_resolve(
   return true_v;
 }
 
+/**
+ * @brief Encodes one bloom chain step.
+ *
+ * Every level derives its own extents from the authored subresource rather than
+ * from a pass index, exactly as the HZB chain does. The chain length is then a
+ * graph decision alone, and an encoder cannot disagree with the graph about
+ * which mip it is writing.
+ *
+ * The upsample step additionally chooses its coarse source here: at the deepest
+ * level the accumulation chain above it has never been written, so binding 3
+ * (the downsample chain at the same depth) is used instead of binding 2.
+ * Selecting on the CPU is what keeps the kernel free of a bootstrap branch and
+ * keeps every sampled texel defined.
+ */
+vkr_internal bool8_t vkr_metal_packet_encode_bloom(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    const VkrRenderPacket *packet, id<MTL4ComputeCommandEncoder> encoder,
+    VkrMetalPacketFrameUpload *upload, VkrMetalPacketGraphExecutorKind kind)
+    API_AVAILABLE(macos(26.0)) {
+  const VkrRgImageUse *source_use =
+      vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+  const VkrRgImageUse *destination_use =
+      vkr_rg_pass_find_image_use(&pass->desc, 1u, 0u);
+  id<MTLTexture> source = vkr_metal_packet_bloom_texture(renderer, source_use);
+  id<MTLTexture> destination =
+      vkr_metal_packet_bloom_texture(renderer, destination_use);
+  if (!source || !destination || destination.width == 0u ||
+      destination.height == 0u || source.width == 0u || source.height == 0u ||
+      source.width > UINT32_MAX || source.height > UINT32_MAX ||
+      destination.width > UINT32_MAX || destination.height > UINT32_MAX)
+    return false_v;
+
+  id<MTLTexture> coarse = source;
+  const bool8_t upsample =
+      kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_UPSAMPLE;
+  const bool8_t combine = kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_COMBINE;
+  if (upsample || combine) {
+    uint32_t binding = 2u;
+    if (upsample) {
+      const uint32_t destination_mip =
+          destination_use->has_slice ? destination_use->slice.mip_level : 0u;
+      const bool8_t deepest =
+          destination_mip + 2u >= renderer->prepared_frame.bloom_mip_count;
+      binding = deepest ? 3u : 2u;
+    }
+    coarse = vkr_metal_packet_bloom_texture(
+        renderer, vkr_rg_pass_find_image_use(&pass->desc, binding, 0u));
+    if (!coarse || coarse.width == 0u || coarse.height == 0u ||
+        coarse.width > UINT32_MAX || coarse.height > UINT32_MAX)
+      return false_v;
+  }
+
+  id<MTLComputePipelineState> pipeline = renderer->bloom_prefilter_pipeline;
+  if (combine) {
+    pipeline = renderer->bloom_combine_pipeline;
+  } else if (upsample) {
+    pipeline = renderer->bloom_upsample_pipeline;
+  } else if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_DOWNSAMPLE) {
+    /* Both filters are resident; the cold configuration selects which one this
+       build measures. Neither is a fallback for the other. */
+    pipeline = renderer->bloom_config.filter == VKR_BLOOM_FILTER_BOX_4
+                   ? renderer->bloom_downsample_box4_pipeline
+                   : renderer->bloom_downsample_tent13_pipeline;
+  }
+  if (!pipeline)
+    return false_v;
+
+  uint64_t root_gpu = 0u;
+  VkrMetalPacketBloomRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  if (!root)
+    return false_v;
+  /* The tap offsets are relative to the filtered source: the reduction input
+     for the prefilter and downsample, the coarse level for the upsample. */
+  id<MTLTexture> filtered = upsample ? coarse : source;
+  *root = (VkrMetalPacketBloomRoot){
+      .source_texture_id = source.gpuResourceID._impl,
+      .coarse_texture_id = coarse.gpuResourceID._impl,
+      .destination_texture_id = destination.gpuResourceID._impl,
+      .filter_extent = {(uint32_t)filtered.width, (uint32_t)filtered.height},
+      .destination_extent = {(uint32_t)destination.width,
+                             (uint32_t)destination.height},
+      .params =
+          vkr_bloom_gpu_params(&renderer->bloom_config, &packet->globals.bloom),
+  };
+  [renderer->argument_table setAddress:root_gpu atIndex:0u];
+  [encoder setComputePipelineState:pipeline];
+  [encoder setArgumentTable:renderer->argument_table];
+  [encoder dispatchThreads:MTLSizeMake(destination.width, destination.height,
+                                       1u)
+      threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_metal_packet_encode_gpu_draws(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrRenderPacket *packet, id<MTL4RenderCommandEncoder> encoder,
@@ -1875,6 +1981,17 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   renderer->prepared_frame.editor_enabled = packet->frame.editor_enabled;
   renderer->prepared_frame.exposure_automatic =
       packet->globals.exposure.mode == VKR_EXPOSURE_MODE_AUTOMATIC;
+  /* A requested chain that the viewport is too small to hold is not bloom, so
+     the graph sees the same "no bloom" state it would for a frame that never
+     asked, rather than a one-mip chain nothing can upsample. */
+  renderer->prepared_frame.bloom_mip_count =
+      packet->globals.bloom.enabled
+          ? vkr_bloom_mip_count(&renderer->bloom_config,
+                                renderer->prepared_frame.viewport_width,
+                                renderer->prepared_frame.viewport_height)
+          : 0u;
+  renderer->prepared_frame.bloom_enabled =
+      renderer->prepared_frame.bloom_mip_count > 0u;
   renderer->prepared_frame.transmission_pending =
       packet->world && packet->world->transmission_gpu_candidate_count > 0u;
   renderer->prepared_frame.transmission_compact_enabled =
@@ -2271,6 +2388,21 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
       if (passed && vkr_metal_packet_graph_pass_is(
                         pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_RESOLVE))
         exposure_state = vkr_metal_packet_pass_buffer(renderer, pass, 1u);
+      /* All four bloom pass kinds share one encoder; only the pipeline and the
+         coarse-source selection differ, so the kind is carried in rather than
+         split into three near-identical call sites. */
+      for (uint32_t bloom_kind =
+               VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_PREFILTER;
+           passed &&
+           bloom_kind <= VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_COMBINE;
+           ++bloom_kind) {
+        if (!vkr_metal_packet_graph_pass_is(
+                pass, (VkrMetalPacketGraphExecutorKind)bloom_kind))
+          continue;
+        passed = vkr_metal_packet_encode_bloom(
+            renderer, pass, packet, encoder, &frame_upload,
+            (VkrMetalPacketGraphExecutorKind)bloom_kind);
+      }
       if (passed &&
           vkr_metal_packet_graph_pass_is(
               pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_SHADE))

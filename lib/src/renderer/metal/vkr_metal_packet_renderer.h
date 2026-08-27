@@ -3,6 +3,7 @@
 #include "renderer/metal/vkr_metal_material_table.h"
 #include "renderer/metal/vkr_metal_memory_device.h"
 #include "renderer/vkr_asset_publisher.h"
+#include "renderer/vkr_bloom.h"
 #include "renderer/vkr_buffer.h"
 #include "renderer/vkr_gpu_abi.h"
 #include "renderer/vkr_ibl_math.h"
@@ -38,6 +39,8 @@ typedef enum VkrMetalPacketTargetKind {
 /** Fixed capacities and authored graph used by the Metal packet renderer. */
 typedef struct VkrMetalPacketRendererConfig {
   VkrAllocator *allocator;
+  /** A zeroed record selects the production bloom defaults. */
+  VkrBloomConfig bloom;
   const char *graph_path;
   const char *slang_msl_path;
   const char *fragment_msl_path;

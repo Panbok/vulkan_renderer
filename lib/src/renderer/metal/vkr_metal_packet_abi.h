@@ -4,6 +4,7 @@
 #include "math/vec.h"
 #include "renderer/metal/vkr_metal_material_table.h"
 #include "renderer/systems/vkr_lighting_system.h"
+#include "renderer/vkr_bloom.h"
 #include "renderer/vkr_buffer.h"
 #include "renderer/vkr_exposure.h"
 #include "renderer/vkr_gpu_abi.h"
@@ -183,6 +184,28 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketExposureRoot {
 
 _Static_assert(sizeof(VkrMetalPacketExposureRoot) == 112,
                "Metal exposure root ABI must remain 112 bytes");
+
+/** Mirrors VkrMetalPacketBloomRoot in shaders/metal/msl/post/bloom.metal. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketBloomRoot {
+  uint64_t source_texture_id;
+  /**
+   * Coarser accumulation level, written for the upsample pass only. At the
+   * deepest step the accumulation level above has never been written, so the
+   * encoder points this at the downsample chain instead. Selecting on the CPU
+   * is what keeps the kernel free of a bootstrap branch and keeps every sampled
+   * texel defined.
+   */
+  uint64_t coarse_texture_id;
+  uint64_t destination_texture_id;
+  /** Extent the tap offsets are expressed in; see the shader field comment. */
+  uint32_t filter_extent[2];
+  uint32_t destination_extent[2];
+  VkrBloomGpuParams params;
+  uint32_t reserved[2];
+} VkrMetalPacketBloomRoot;
+
+_Static_assert(sizeof(VkrMetalPacketBloomRoot) == 80,
+               "Metal bloom root ABI must remain 80 bytes");
 
 typedef struct VkrMetalPacketSdsmState {
   uint32_t min_device_z_bits;
@@ -491,6 +514,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT,
   VKR_METAL_PACKET_ABI_SDSM_ROOT,
   VKR_METAL_PACKET_ABI_EXPOSURE_ROOT,
+  VKR_METAL_PACKET_ABI_BLOOM_ROOT,
   VKR_METAL_PACKET_ABI_RECORD_COUNT,
 } VkrMetalPacketAbiRecordId;
 

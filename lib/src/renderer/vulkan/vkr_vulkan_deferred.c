@@ -1310,6 +1310,143 @@ void vkr_vk_mark_exposure_submitted(VkrVulkanRenderer *renderer,
   slot->exposure_state_output->history_valid = true_v;
 }
 
+/**
+ * @brief Builds the root shared by all four bloom pass kinds.
+ *
+ * Every level derives its own extents from the authored subresource rather than
+ * from a pass index, exactly as the HZB chain does. The chain length is then a
+ * graph decision alone, and an executor cannot disagree with the graph about
+ * which mip it is writing.
+ */
+vkr_internal bool8_t vkr_vk_bloom_root(VkrVulkanRenderer *renderer,
+                                       const VkrRgPass *pass,
+                                       VkrVulkanBloomRoot *out_root) {
+  const VkrRgImageUse *source_use =
+      vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+  const VkrRgImageUse *destination_use =
+      vkr_rg_pass_find_image_use(&pass->desc, 1u, 0u);
+  VkrVulkanGraphImageInstance *source =
+      source_use ? vkr_vk_deferred_image(renderer, source_use->image) : NULL;
+  VkrVulkanGraphImageInstance *destination =
+      destination_use ? vkr_vk_deferred_image(renderer, destination_use->image)
+                      : NULL;
+  uint32_t source_index = 0u, destination_index = 0u;
+  if (!source || !destination ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 0u, &source_index) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 1u, &destination_index))
+    return false_v;
+
+  const uint32_t source_mip =
+      source_use->has_slice ? source_use->slice.mip_level : 0u;
+  const uint32_t destination_mip =
+      destination_use->has_slice ? destination_use->slice.mip_level : 0u;
+  const VkrRenderPacket *packet = renderer->graph->packet;
+  *out_root = (VkrVulkanBloomRoot){
+      .source_texture = source_index,
+      /* Overwritten by the upsample pass. Every other pass leaves it pointing
+         at its own source so the descriptor is always a live sampled view. */
+      .coarse_texture = source_index,
+      .destination_texture = destination_index,
+      .source_sampler = renderer->transmission_sampler_slot,
+      .filter_extent = {Max(1u, source->image.width >> source_mip),
+                        Max(1u, source->image.height >> source_mip)},
+      .destination_extent = {Max(1u,
+                                 destination->image.width >> destination_mip),
+                             Max(1u,
+                                 destination->image.height >> destination_mip)},
+      .params =
+          vkr_bloom_gpu_params(&renderer->bloom_config, &packet->globals.bloom),
+  };
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_vk_dispatch_bloom(VkrVulkanRenderer *renderer,
+                                           VkCommandBuffer command,
+                                           const VkrVulkanBloomRoot *root,
+                                           VkrVulkanDeferredPipeline pipeline) {
+  uint64_t root_address = 0u;
+  if (!vkr_vk_deferred_push_root(renderer, command, root, sizeof(*root),
+                                 _Alignof(VkrVulkanBloomRoot), &root_address))
+    return false_v;
+  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                    renderer->deferred_pipelines[pipeline]);
+  vkCmdDispatch(command, (root->destination_extent[0] + 7u) / 8u,
+                (root->destination_extent[1] + 7u) / 8u, 1u);
+  return true_v;
+}
+
+bool8_t vkr_vk_record_bloom_prefilter(VkrVulkanRenderer *renderer,
+                                      VkCommandBuffer command,
+                                      const VkrRgPass *pass) {
+  VkrVulkanBloomRoot root = {0};
+  if (!vkr_vk_bloom_root(renderer, pass, &root))
+    return false_v;
+  return vkr_vk_dispatch_bloom(renderer, command, &root,
+                               VKR_VULKAN_DEFERRED_PIPELINE_BLOOM_PREFILTER);
+}
+
+bool8_t vkr_vk_record_bloom_downsample(VkrVulkanRenderer *renderer,
+                                       VkCommandBuffer command,
+                                       const VkrRgPass *pass) {
+  VkrVulkanBloomRoot root = {0};
+  if (!vkr_vk_bloom_root(renderer, pass, &root))
+    return false_v;
+  /* Both filters are resident; the cold configuration selects which one this
+     build measures. Neither is a fallback for the other. */
+  return vkr_vk_dispatch_bloom(
+      renderer, command, &root,
+      renderer->bloom_config.filter == VKR_BLOOM_FILTER_BOX_4
+          ? VKR_VULKAN_DEFERRED_PIPELINE_BLOOM_DOWNSAMPLE_BOX4
+          : VKR_VULKAN_DEFERRED_PIPELINE_BLOOM_DOWNSAMPLE_TENT13);
+}
+
+bool8_t vkr_vk_record_bloom_upsample(VkrVulkanRenderer *renderer,
+                                     VkCommandBuffer command,
+                                     const VkrRgPass *pass) {
+  VkrVulkanBloomRoot root = {0};
+  if (!vkr_vk_bloom_root(renderer, pass, &root))
+    return false_v;
+
+  /* Binding 2 is the accumulation level above this one; binding 3 is the
+     downsample level at the same depth. They are the same extent and the same
+     content at the deepest step, because nothing has accumulated into the
+     accumulation chain yet. Choosing between them here rather than in the
+     kernel is what keeps every sampled texel defined without a bootstrap pass
+     or a shader branch. */
+  const VkrRgImageUse *destination_use =
+      vkr_rg_pass_find_image_use(&pass->desc, 1u, 0u);
+  const VkrRgImageUse *coarse_use =
+      vkr_rg_pass_find_image_use(&pass->desc, 2u, 0u);
+  VkrVulkanGraphImageInstance *coarse =
+      coarse_use ? vkr_vk_deferred_image(renderer, coarse_use->image) : NULL;
+  const uint32_t destination_mip = destination_use && destination_use->has_slice
+                                       ? destination_use->slice.mip_level
+                                       : 0u;
+  const bool8_t deepest =
+      destination_mip + 2u >= renderer->prepared_frame.bloom_mip_count;
+  if (!coarse || !vkr_vk_deferred_sampled_index(
+                     renderer, pass, deepest ? 3u : 2u, &root.coarse_texture))
+    return false_v;
+
+  const uint32_t coarse_mip =
+      coarse_use->has_slice ? coarse_use->slice.mip_level : 0u;
+  root.filter_extent[0] = Max(1u, coarse->image.width >> coarse_mip);
+  root.filter_extent[1] = Max(1u, coarse->image.height >> coarse_mip);
+  return vkr_vk_dispatch_bloom(renderer, command, &root,
+                               VKR_VULKAN_DEFERRED_PIPELINE_BLOOM_UPSAMPLE);
+}
+
+bool8_t vkr_vk_record_bloom_combine(VkrVulkanRenderer *renderer,
+                                    VkCommandBuffer command,
+                                    const VkrRgPass *pass) {
+  VkrVulkanBloomRoot root = {0};
+  if (!vkr_vk_bloom_root(renderer, pass, &root) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 2u, &root.coarse_texture))
+    return false_v;
+  return vkr_vk_dispatch_bloom(renderer, command, &root,
+                               VKR_VULKAN_DEFERRED_PIPELINE_BLOOM_COMBINE);
+}
+
 bool8_t vkr_vk_record_deferred_picking(VkrVulkanRenderer *renderer,
                                        VkCommandBuffer command,
                                        const VkrRgPass *pass) {

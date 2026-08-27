@@ -103,6 +103,7 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
   renderer->allocator = config->allocator;
   renderer->config = *config;
   renderer->exposure_metering = vkr_exposure_metering_config_normalize(NULL);
+  renderer->bloom_config = vkr_bloom_config_normalize(&config->bloom);
   renderer->capture_storage_size = vkr_capture_ring_storage_requirement(
       config->capture_ring_capacity, config->capture_max_batch_bytes);
   if (config->capture_ring_capacity > 0u) {
@@ -709,6 +710,17 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
     hzb_mip_count++;
   }
   renderer->prepared_frame.hzb_reduce_pass_count = hzb_mip_count - 1u;
+  /* A requested chain that the viewport is too small to hold is not bloom, so
+     the graph sees the same "no bloom" state it would for a manual frame rather
+     than a one-mip chain nothing can upsample. */
+  renderer->prepared_frame.bloom_mip_count =
+      packet->globals.bloom.enabled
+          ? vkr_bloom_mip_count(&renderer->bloom_config,
+                                renderer->prepared_frame.viewport_width,
+                                renderer->prepared_frame.viewport_height)
+          : 0u;
+  renderer->prepared_frame.bloom_enabled =
+      renderer->prepared_frame.bloom_mip_count > 0u;
   vkr_rg_begin_frame(renderer->graph, &renderer->prepared_frame);
   vkr_rg_set_packet(renderer->graph, packet);
   /* Installed before compilation, because seeding a retained subresource reads

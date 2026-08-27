@@ -1701,19 +1701,21 @@ vkr_internal bool8_t vkr_rg_generate_barriers(VkrRenderGraph *graph) {
     state->layout = barrier.dst_layout;
   }
 
-  // Exported images report subresource 0's layout. Layers left in differing
-  // layouts cannot be described by a single export layout, so warn rather than
-  // pick one silently.
+  // final_layout is the terminal state of subresource 0 for direct capture and
+  // explicit external export. Mixed terminal layouts are normal for internal
+  // mip and layer images; only a whole-image export loses that distinction.
   for (uint32_t i = 0; i < (uint32_t)graph->images.length; ++i) {
     VkrRgImage *image = vector_get_VkrRgImage(&graph->images, i);
     const VkrRgSubresourceState *states =
         &graph->subresource_states[graph->image_state_offsets[i]];
     image->final_layout = states[0].layout;
+    if (!image->exported)
+      continue;
 
     uint32_t count = vkr_rg_image_subresource_count(image);
     for (uint32_t s = 1; s < count; ++s) {
       if (states[s].layout != states[0].layout) {
-        log_warn("RenderGraph image '%.*s' ends the frame with mixed "
+        log_warn("Exported RenderGraph image '%.*s' ends the frame with mixed "
                  "subresource layouts; exporting subresource 0's layout",
                  (int)image->name.length, image->name.str);
         break;

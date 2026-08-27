@@ -61,6 +61,7 @@ vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
   case VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT:
   case VKR_METAL_PACKET_ABI_SDSM_ROOT:
   case VKR_METAL_PACKET_ABI_EXPOSURE_ROOT:
+  case VKR_METAL_PACKET_ABI_BLOOM_ROOT:
     return 0;
   default:
     return 1;
@@ -606,6 +607,31 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
           renderer, fragment, "vkr_metal_packet_exposure_resolve",
           VKR_METAL_PACKET_ABI_EXPOSURE_ROOT, false_v,
           @"VKR Metal packet exposure resolve");
+  renderer->bloom_prefilter_pipeline = vkr_metal_packet_create_compute_pipeline(
+      renderer, fragment, "vkr_metal_packet_bloom_prefilter",
+      VKR_METAL_PACKET_ABI_BLOOM_ROOT, false_v,
+      @"VKR Metal packet bloom prefilter");
+  /* Both downsample filters are created. Which one a frame binds is cold
+     configuration, so the comparison the design asks for is a config change
+     rather than a rebuild, and neither is a fallback for the other. */
+  renderer->bloom_downsample_tent13_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_bloom_downsample_tent13",
+          VKR_METAL_PACKET_ABI_BLOOM_ROOT, false_v,
+          @"VKR Metal packet bloom downsample tent13");
+  renderer->bloom_downsample_box4_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_bloom_downsample_box4",
+          VKR_METAL_PACKET_ABI_BLOOM_ROOT, false_v,
+          @"VKR Metal packet bloom downsample box4");
+  renderer->bloom_upsample_pipeline = vkr_metal_packet_create_compute_pipeline(
+      renderer, fragment, "vkr_metal_packet_bloom_upsample",
+      VKR_METAL_PACKET_ABI_BLOOM_ROOT, false_v,
+      @"VKR Metal packet bloom upsample");
+  renderer->bloom_combine_pipeline = vkr_metal_packet_create_compute_pipeline(
+      renderer, fragment, "vkr_metal_packet_bloom_combine",
+      VKR_METAL_PACKET_ABI_BLOOM_ROOT, false_v,
+      @"VKR Metal packet bloom combine");
   id<MTLFunction> encode_function =
       [fragment newFunctionWithName:@"vkr_metal_packet_gpu_draw_encode"];
   renderer->gpu_draw_icb_argument_encoder =
@@ -625,9 +651,13 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       !renderer->picking_resolve_pipeline || !renderer->hzb_build_pipeline ||
       !renderer->sdsm_reduce_pipeline || !renderer->exposure_clear_pipeline ||
       !renderer->exposure_histogram_pipeline ||
-      !renderer->exposure_resolve_pipeline || !renderer->gpu_shadow_pipeline ||
-      !renderer->gpu_shadow_opaque_pipeline || !renderer->vbuffer_pipeline ||
-      !renderer->vbuffer_opaque_pipeline ||
+      !renderer->exposure_resolve_pipeline ||
+      !renderer->bloom_prefilter_pipeline ||
+      !renderer->bloom_downsample_tent13_pipeline ||
+      !renderer->bloom_downsample_box4_pipeline ||
+      !renderer->bloom_upsample_pipeline || !renderer->bloom_combine_pipeline ||
+      !renderer->gpu_shadow_pipeline || !renderer->gpu_shadow_opaque_pipeline ||
+      !renderer->vbuffer_pipeline || !renderer->vbuffer_opaque_pipeline ||
       !renderer->transmission_vbuffer_pipeline ||
       !renderer->gpu_draw_icb_argument_encoder) {
     log_error("Metal deferred pipelines or indirect argument encoder are "
@@ -697,6 +727,13 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       {renderer->exposure_clear_pipeline, "exposure clear pipeline"},
       {renderer->exposure_histogram_pipeline, "exposure histogram pipeline"},
       {renderer->exposure_resolve_pipeline, "exposure resolve pipeline"},
+      {renderer->bloom_prefilter_pipeline, "bloom prefilter pipeline"},
+      {renderer->bloom_downsample_tent13_pipeline,
+       "bloom tent13 downsample pipeline"},
+      {renderer->bloom_downsample_box4_pipeline,
+       "bloom box4 downsample pipeline"},
+      {renderer->bloom_upsample_pipeline, "bloom upsample pipeline"},
+      {renderer->bloom_combine_pipeline, "bloom combine pipeline"},
       {renderer->depth_write_state, "depth-write state"},
       {renderer->depth_read_state, "depth-read state"},
       {renderer->argument_table, "argument table"},
@@ -1303,6 +1340,7 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
       return false_v;
     renderer->allocator = config->allocator;
     renderer->exposure_metering = vkr_exposure_metering_config_normalize(NULL);
+    renderer->bloom_config = vkr_bloom_config_normalize(&config->bloom);
     renderer->candidate_publication_generation = 1u;
     renderer->graph_frame_arena = arena_create(MB(8), KB(256));
     renderer->graph_frame_allocator =

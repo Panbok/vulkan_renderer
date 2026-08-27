@@ -1,0 +1,72 @@
+// Shared bloom threshold and reduction kernel. Consumed by both production
+// paths: the Vulkan Slang path includes this file, and the Metal path
+// concatenates it into the native MSL library ahead of post/bloom.metal.
+// Scalar math, `float`, `uint`, and brace initialization mean the same thing in
+// both languages, so only the sampling call differs, and that stays in the
+// backend-native entry points that include this one.
+//
+// This file must follow exposure_kernel.slangh in both the Slang include order
+// and the MSL concatenation list: the prefilter reuses that file's Rec. 709
+// luminance rather than restating the weights.
+//
+// `vkr_bloom.c` carries a CPU mirror of the sanitizer, the soft-knee curve, and
+// the Karis weight. That mirror is the only deterministic coverage this
+// arithmetic has, so the two must be changed together.
+
+#ifndef VKR_SHADER_BLOOM_KERNEL_SLANGH
+#define VKR_SHADER_BLOOM_KERNEL_SLANGH
+
+#define VKR_BLOOM_BRIGHTNESS_EPSILON 1e-4f
+
+struct VkrBloomParams
+{
+    float threshold;
+    float knee;
+    float knee_denominator;
+    float firefly_clamp;
+    float intensity;
+    float reserved0;
+    float reserved1;
+    float reserved2;
+};
+
+// `value > 0` is false for NaN and for -inf, and `min` bounds +inf, so one
+// comparison rejects every non-finite and negative component without an
+// intrinsic whose name or NaN behaviour differs between Slang and MSL.
+float vkr_bloom_sanitize_component(VkrBloomParams params, float value)
+{
+    return value > 0.0f ? min(value, params.firefly_clamp) : 0.0f;
+}
+
+// One non-finite texel would survive every reduction and contaminate the whole
+// chain, so it is replaced where it enters rather than guarded against at each
+// later level.
+float3 vkr_bloom_sanitize(VkrBloomParams params, float3 color)
+{
+    return float3(vkr_bloom_sanitize_component(params, color.r),
+                  vkr_bloom_sanitize_component(params, color.g),
+                  vkr_bloom_sanitize_component(params, color.b));
+}
+
+// Maximum component rather than luminance: thresholding on luminance dims a
+// saturated primary below its own brightness and desaturates the bloom.
+float3 vkr_bloom_soft_threshold(VkrBloomParams params, float3 color)
+{
+    float brightness = max(color.r, max(color.g, color.b));
+    float soft = clamp(brightness - params.threshold + params.knee, 0.0f,
+                       2.0f * params.knee);
+    float knee_contribution = soft * soft / params.knee_denominator;
+    float contribution = max(knee_contribution, brightness - params.threshold) /
+                         max(brightness, VKR_BLOOM_BRIGHTNESS_EPSILON);
+    return color * max(contribution, 0.0f);
+}
+
+// Weighting each tap by the reciprocal of its own brightness turns the box into
+// an average of perceived intensity, which is what keeps a single bright texel
+// from owning the reduction.
+float vkr_bloom_karis_weight(float3 color)
+{
+    return 1.0f / (1.0f + vkr_exposure_luminance(color));
+}
+
+#endif

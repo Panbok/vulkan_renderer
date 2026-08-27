@@ -1,6 +1,7 @@
 #pragma once
 
 #include "renderer/vkr_asset_publisher.h"
+#include "renderer/vkr_bloom.h"
 #include "renderer/vkr_gpu_abi.h"
 #include "renderer/vkr_gpu_memory.h"
 #include "renderer/vkr_gpu_slot_table.h"
@@ -22,6 +23,8 @@ typedef struct VkrVulkanRenderer VkrVulkanRenderer;
 
 typedef struct VkrVulkanRendererConfig {
   VkrAllocator *allocator;
+  /** A zeroed record selects the production bloom defaults. */
+  VkrBloomConfig bloom;
   const char *graph_path;
   VkrWindow *window;
   VkrPresentTargetKind target_kind;

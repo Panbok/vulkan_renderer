@@ -674,6 +674,112 @@ static void test_json_mip_chain_and_subresource_uses(void) {
   printf("  test_json_mip_chain_and_subresource_uses PASSED\n");
 }
 
+static void test_bloom_reverse_repeat_barriers(void) {
+  printf("  Running test_bloom_reverse_repeat_barriers...\n");
+  Arena *arena = arena_create(MB(2), MB(2));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+  const char *source =
+      "{\"version\":1,\"name\":\"reverse-bloom\",\"resources\":[{"
+      "\"name\":\"accum\",\"type\":\"image\",\"condition\":\"bloom_enabled\","
+      "\"extent\":{\"mode\":\"viewport\",\"divisor\":2},"
+      "\"format\":\"R16G16B16A16_SFLOAT\",\"mip_levels\":\"full_chain\","
+      "\"usage\":[\"STORAGE\",\"SAMPLED\"]}],\"passes\":[{"
+      "\"name\":\"seed\",\"type\":\"compute\",\"condition\":\"bloom_enabled\","
+      "\"flags\":[\"NO_CULL\"],\"writes\":[{\"image\":\"accum\","
+      "\"access\":\"STORAGE_WRITE\",\"binding\":1,\"subresource\":{"
+      "\"base_mip\":2,\"mip_count\":1}}],\"execute\":\"test.compute\"},{"
+      "\"name\":\"up.${i}\",\"type\":\"compute\","
+      "\"condition\":\"bloom_enabled\",\"repeat\":{\"count_source\":"
+      "\"bloom_upsample_pass_count\",\"reverse\":true},"
+      "\"flags\":[\"NO_CULL\"],\"reads\":[{\"image\":\"accum\","
+      "\"access\":\"SAMPLED\",\"binding\":0,\"subresource\":{"
+      "\"base_mip\":\"${i+1}\",\"mip_count\":1}}],\"writes\":[{"
+      "\"image\":\"accum\",\"access\":\"STORAGE_WRITE\",\"binding\":1,"
+      "\"subresource\":{\"base_mip\":\"${i}\",\"mip_count\":1}}],"
+      "\"execute\":\"test.compute\"}]}";
+  VkrRgJsonGraph json = {0};
+  assert(rg_barrier_test_load_json(&allocator, source, &json));
+  assert(json.passes.data[1].repeat.enabled);
+  assert(json.passes.data[1].repeat.reverse);
+
+  VkrRgExecutorRegistry registry = {0};
+  assert(vkr_rg_executor_registry_init(&registry, &allocator));
+  const VkrRgPassExecutor executor = {
+      .name = string8_lit("test.compute"),
+      .id = 1u,
+      .type = VKR_RG_PASS_TYPE_COMPUTE,
+      .execute = rg_barrier_test_execute,
+  };
+  assert(vkr_rg_executor_registry_register(&registry, &executor));
+  assert(vkr_rg_json_bind_executors(&json, &registry));
+
+  VkrRenderGraph *graph = vkr_rg_create(&allocator);
+  assert(graph);
+  const VkrRenderGraphFrameInfo frame = {
+      .target_width = 64u,
+      .target_height = 64u,
+      .viewport_width = 129u,
+      .viewport_height = 65u,
+      .bloom_enabled = true_v,
+      .bloom_mip_count = 3u,
+  };
+  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_build_from_json(graph, &json, &frame));
+  assert(graph->images.length == 1u);
+  assert(graph->images.data[0].desc.width == 64u);
+  assert(graph->images.data[0].desc.height == 32u);
+  assert(graph->passes.length == 3u);
+  assert(vkr_string8_equals_cstr(&graph->passes.data[0].desc.name, "seed"));
+  assert(vkr_string8_equals_cstr(&graph->passes.data[1].desc.name, "up.1"));
+  assert(vkr_string8_equals_cstr(&graph->passes.data[2].desc.name, "up.0"));
+
+  for (uint64_t pass_index = 1u; pass_index < graph->passes.length;
+       ++pass_index) {
+    const VkrRgPassDesc *pass = &graph->passes.data[pass_index].desc;
+    assert(pass->image_reads.length == 1u && pass->image_writes.length == 1u);
+    const VkrRgImageUse *read = &pass->image_reads.data[0];
+    const VkrRgImageUse *write = &pass->image_writes.data[0];
+    assert(read->image.id == write->image.id);
+    assert(read->slice.mip_level == write->slice.mip_level + 1u);
+  }
+
+  assert(vkr_rg_compile_schedule(graph));
+  const VkrRgPass *fine = &graph->passes.data[2];
+  bool8_t found_dependency = false_v;
+  for (uint64_t i = 0u; i < fine->pre_image_barriers.length; ++i) {
+    const VkrRgImageBarrier *barrier = &fine->pre_image_barriers.data[i];
+    if (barrier->range.base_mip != 1u)
+      continue;
+    assert(barrier->src_access == VKR_RG_IMAGE_ACCESS_STORAGE_WRITE);
+    assert(barrier->dst_access == VKR_RG_IMAGE_ACCESS_SAMPLED);
+    found_dependency = true_v;
+  }
+  assert(found_dependency);
+
+  const char *resource_reverse =
+      "{\"version\":1,\"name\":\"bad-resource-reverse\",\"resources\":[{"
+      "\"name\":\"image.${i}\",\"type\":\"image\",\"repeat\":{"
+      "\"count_source\":\"shadow_cascade_count\",\"reverse\":true},"
+      "\"extent\":{\"mode\":\"fixed\",\"width\":1,\"height\":1},"
+      "\"format\":\"R8_UNORM\",\"usage\":[\"SAMPLED\"]}],\"passes\":[]}";
+  VkrRgJsonGraph rejected = {0};
+  assert(!rg_barrier_test_load_json(&allocator, resource_reverse, &rejected));
+
+  const char *fixed_divisor =
+      "{\"version\":1,\"name\":\"bad-fixed-divisor\",\"resources\":[{"
+      "\"name\":\"image\",\"type\":\"image\",\"extent\":{\"mode\":\"fixed\","
+      "\"width\":1,\"height\":1,\"divisor\":2},\"format\":\"R8_UNORM\","
+      "\"usage\":[\"SAMPLED\"]}],\"passes\":[]}";
+  assert(!rg_barrier_test_load_json(&allocator, fixed_divisor, &rejected));
+
+  vkr_rg_destroy(graph);
+  vkr_rg_executor_registry_destroy(&registry);
+  vkr_rg_json_destroy(&json);
+  arena_destroy(arena);
+  printf("  test_bloom_reverse_repeat_barriers PASSED\n");
+}
+
 static void test_deferred_image_formats(void) {
   printf("  Running test_deferred_image_formats...\n");
   Arena *arena = arena_create(MB(1), MB(1));
@@ -2206,6 +2312,7 @@ bool32_t run_render_graph_barrier_tests() {
   test_typed_executor_and_direct_dispatch_contract();
   test_indirect_dispatch_dependency_contract();
   test_json_mip_chain_and_subresource_uses();
+  test_bloom_reverse_repeat_barriers();
   test_deferred_image_formats();
   test_frame_allocator_reclaims_authored_passes();
   test_main_graph_contract();

@@ -173,6 +173,7 @@ struct s_RendererFrontend {
   bool8_t temporal_enabled;
   VkrExposureState exposure_state;
   uint32_t exposure_reset_reasons;
+  bool8_t bloom_forced_disabled;
 
   // Meshes
   VkrMeshManager mesh_manager;

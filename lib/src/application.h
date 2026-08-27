@@ -1486,6 +1486,10 @@ void application_draw_frame(Application *application, float64_t delta) {
               .manual_exposure = application->renderer.globals.manual_exposure,
               .exposure_compensation_ev =
                   application->renderer.globals.exposure_compensation_ev,
+              .bloom_enabled = application->renderer.globals.bloom_enabled,
+              .bloom_threshold = application->renderer.globals.bloom_threshold,
+              .bloom_knee = application->renderer.globals.bloom_knee,
+              .bloom_intensity = application->renderer.globals.bloom_intensity,
               .render_mode =
                   (uint32_t)application->renderer.globals.render_mode,
           },

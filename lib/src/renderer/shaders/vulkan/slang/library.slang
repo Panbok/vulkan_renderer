@@ -1,6 +1,9 @@
 // The exposure kernel declares VkrExposureState, which the fullscreen utility
 // root points at, so it precedes the resource declarations.
 #include "../../shared/exposure_kernel.slangh"
+// The bloom kernel reuses the exposure kernel's Rec. 709 luminance for its
+// firefly weight, so it must follow it here and in the MSL concatenation list.
+#include "../../shared/bloom_kernel.slangh"
 #include "common/resources.slangh"
 #include "../../shared/shadow_kernel.slangh"
 #include "ibl/common.slangh"
@@ -13,5 +16,6 @@
 #include "picking/default.slang"
 #include "common/fullscreen.slang"
 #include "post/exposure.slang"
+#include "post/bloom.slang"
 #include "post/default.slang"
 #include "text/default.slang"

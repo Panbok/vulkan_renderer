@@ -918,10 +918,20 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   renderer->temporal_enabled = !vkr_renderer_env_enabled("VKR_TAA_DISABLED");
   renderer->exposure_state = (VkrExposureState){0};
   renderer->exposure_reset_reasons = 0u;
+  /* Production enables bloom, and the environment override exists for the same
+     reason `VKR_TAA_DISABLED` does: a matched capture of the same frame with
+     and without it must not require a rebuild. */
+  renderer->bloom_forced_disabled =
+      vkr_renderer_env_enabled("VKR_BLOOM_DISABLED");
+  const bool8_t bloom_enabled = !renderer->bloom_forced_disabled;
   renderer->globals = (VkrGlobalMaterialState){
       .ambient_color = vec4_new(0.1, 0.1, 0.1, 1.0),
       .exposure_mode = VKR_EXPOSURE_MODE_AUTOMATIC,
       .manual_exposure = VKR_DEFAULT_EXPOSURE,
+      .bloom_enabled = bloom_enabled,
+      .bloom_threshold = VKR_BLOOM_DEFAULT_THRESHOLD,
+      .bloom_knee = VKR_BLOOM_DEFAULT_KNEE,
+      .bloom_intensity = VKR_BLOOM_DEFAULT_INTENSITY,
       .render_mode = VKR_RENDER_MODE_DEFAULT,
   };
   renderer->frame_metrics = (VkrRendererFrameMetrics){0};
@@ -1136,6 +1146,13 @@ static void vkr_renderer_prepare_packet(RendererFrontend *rf,
   };
   prepared->packet.globals.exposure =
       vkr_exposure_prepare(&rf->exposure_state, &prepared->exposure_input);
+
+  /* Bloom carries no history, so it has no prepare/commit chain: the frame
+     block is a pure function of the validated packet fields. */
+  prepared->packet.globals.bloom = vkr_bloom_prepare(
+      packet->globals.bloom_enabled && !rf->bloom_forced_disabled,
+      packet->globals.bloom_threshold, packet->globals.bloom_knee,
+      packet->globals.bloom_intensity);
 
   const VkrTextUpdatesPayload *updates = packet->text_updates;
   if (updates) {
@@ -2547,6 +2564,27 @@ vkr_renderer_validate_packet(const VkrRenderPacket *packet,
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.exposure_compensation_ev",
                       "must be finite");
+
+  if (packet->globals.bloom_enabled > true_v)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.globals.bloom_enabled", "must be zero or one");
+  if (packet->globals.bloom_enabled &&
+      (!isfinite(packet->globals.bloom_threshold) ||
+       packet->globals.bloom_threshold < 0.0f))
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.globals.bloom_threshold",
+                      "must be finite and non-negative when bloom is enabled");
+  if (packet->globals.bloom_enabled && (!isfinite(packet->globals.bloom_knee) ||
+                                        packet->globals.bloom_knee < 0.0f))
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.globals.bloom_knee",
+                      "must be finite and non-negative when bloom is enabled");
+  if (packet->globals.bloom_enabled &&
+      (!isfinite(packet->globals.bloom_intensity) ||
+       packet->globals.bloom_intensity < 0.0f))
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.globals.bloom_intensity",
+                      "must be finite and non-negative when bloom is enabled");
 
   const VkrWorldPassPayload *world = packet->world;
   if (world) {

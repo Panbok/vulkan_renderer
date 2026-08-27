@@ -348,6 +348,35 @@
       "size": 32,
       "usage": ["STORAGE", "TRANSFER_SRC"],
       "flags": ["HISTORY"]
+    },
+    {
+      "name": "bloom_chain",
+      "type": "image",
+      "condition": "bloom_enabled",
+      "extent": { "mode": "viewport", "divisor": 2 },
+      "format": "R16G16B16A16_SFLOAT",
+      "mip_levels": "full_chain",
+      "usage": ["STORAGE", "SAMPLED", "TRANSFER_SRC"],
+      "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
+    },
+    {
+      "name": "bloom_accum",
+      "type": "image",
+      "condition": "bloom_enabled",
+      "extent": { "mode": "viewport", "divisor": 2 },
+      "format": "R16G16B16A16_SFLOAT",
+      "mip_levels": "full_chain",
+      "usage": ["STORAGE", "SAMPLED", "TRANSFER_SRC"],
+      "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
+    },
+    {
+      "name": "bloom_combined",
+      "type": "image",
+      "condition": "bloom_enabled",
+      "extent": { "mode": "viewport" },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": ["STORAGE", "SAMPLED", "TRANSFER_SRC"],
+      "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
     }
   ],
   "passes": [
@@ -1637,6 +1666,106 @@
       "execute": "pass.exposure.resolve"
     },
     {
+      "name": "Post.Bloom.Prefilter",
+      "type": "compute",
+      "condition": "bloom_enabled",
+      "flags": ["NO_CULL"],
+      "reads": [
+        { "image": "temporal_history_color", "access": "SAMPLED", "binding": 0 }
+      ],
+      "writes": [
+        {
+          "image": "bloom_chain",
+          "access": "STORAGE_WRITE",
+          "binding": 1,
+          "subresource": { "base_mip": 0, "mip_count": 1 }
+        }
+      ],
+      "execute": "pass.bloom.prefilter"
+    },
+    {
+      "name": "Post.Bloom.Downsample.${i}",
+      "type": "compute",
+      "condition": "bloom_enabled",
+      "repeat": { "count_source": "bloom_downsample_pass_count" },
+      "flags": ["NO_CULL"],
+      "reads": [
+        {
+          "image": "bloom_chain",
+          "access": "SAMPLED",
+          "binding": 0,
+          "subresource": { "base_mip": "${i}", "mip_count": 1 }
+        }
+      ],
+      "writes": [
+        {
+          "image": "bloom_chain",
+          "access": "STORAGE_WRITE",
+          "binding": 1,
+          "subresource": { "base_mip": "${i+1}", "mip_count": 1 }
+        }
+      ],
+      "execute": "pass.bloom.downsample"
+    },
+    {
+      "name": "Post.Bloom.Upsample.${i}",
+      "type": "compute",
+      "condition": "bloom_enabled",
+      "repeat": {
+        "count_source": "bloom_upsample_pass_count",
+        "reverse": true
+      },
+      "flags": ["NO_CULL"],
+      "reads": [
+        {
+          "image": "bloom_chain",
+          "access": "SAMPLED",
+          "binding": 0,
+          "subresource": { "base_mip": "${i}", "mip_count": 1 }
+        },
+        {
+          "image": "bloom_accum",
+          "access": "SAMPLED",
+          "binding": 2,
+          "subresource": { "base_mip": "${i+1}", "mip_count": 1 }
+        },
+        {
+          "image": "bloom_chain",
+          "access": "SAMPLED",
+          "binding": 3,
+          "subresource": { "base_mip": "${i+1}", "mip_count": 1 }
+        }
+      ],
+      "writes": [
+        {
+          "image": "bloom_accum",
+          "access": "STORAGE_WRITE",
+          "binding": 1,
+          "subresource": { "base_mip": "${i}", "mip_count": 1 }
+        }
+      ],
+      "execute": "pass.bloom.upsample"
+    },
+    {
+      "name": "Post.Bloom.Combine",
+      "type": "compute",
+      "condition": "bloom_enabled",
+      "flags": ["NO_CULL"],
+      "reads": [
+        { "image": "temporal_history_color", "access": "SAMPLED", "binding": 0 },
+        {
+          "image": "bloom_accum",
+          "access": "SAMPLED",
+          "binding": 2,
+          "subresource": { "base_mip": 0, "mip_count": 1 }
+        }
+      ],
+      "writes": [
+        { "image": "bloom_combined", "access": "STORAGE_WRITE", "binding": 1 }
+      ],
+      "execute": "pass.bloom.combine"
+    },
+    {
       "name": "Post.Tonemap.Fullscreen",
       "type": "graphics",
       "domain": "POST",
@@ -1648,7 +1777,14 @@
           "binding": 0,
           "array_index": 0
         },
-        { "buffer": "exposure_state", "access": "STORAGE_READ", "binding": 1, "when": "exposure_automatic" }
+        { "buffer": "exposure_state", "access": "STORAGE_READ", "binding": 1, "when": "exposure_automatic" },
+        {
+          "image": "bloom_combined",
+          "access": "SAMPLED",
+          "binding": 2,
+          "subresource": { "base_mip": 0, "mip_count": 1 },
+          "when": "bloom_enabled"
+        }
       ],
       "attachments": {
         "color": [
@@ -1674,7 +1810,14 @@
           "binding": 0,
           "array_index": 0
         },
-        { "buffer": "exposure_state", "access": "STORAGE_READ", "binding": 1, "when": "exposure_automatic" }
+        { "buffer": "exposure_state", "access": "STORAGE_READ", "binding": 1, "when": "exposure_automatic" },
+        {
+          "image": "bloom_combined",
+          "access": "SAMPLED",
+          "binding": 2,
+          "subresource": { "base_mip": 0, "mip_count": 1 },
+          "when": "bloom_enabled"
+        }
       ],
       "attachments": {
         "color": [

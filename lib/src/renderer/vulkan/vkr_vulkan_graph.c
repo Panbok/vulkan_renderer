@@ -37,6 +37,10 @@ typedef enum VkrVulkanGraphExecutorKind {
   VKR_VULKAN_GRAPH_EXECUTOR_WORLD_BLEND,
   VKR_VULKAN_GRAPH_EXECUTOR_EXPOSURE_HISTOGRAM,
   VKR_VULKAN_GRAPH_EXECUTOR_EXPOSURE_RESOLVE,
+  VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_PREFILTER,
+  VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_DOWNSAMPLE,
+  VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_UPSAMPLE,
+  VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_COMBINE,
   VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP,
   VKR_VULKAN_GRAPH_EXECUTOR_EDITOR,
   VKR_VULKAN_GRAPH_EXECUTOR_UI,
@@ -80,6 +84,10 @@ vkr_global const VkrVulkanGraphExecutorSpec s_vk_graph_executors[] = {
     {"pass.world.blend", VKR_RG_PASS_TYPE_GRAPHICS},
     {"pass.exposure.histogram", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.exposure.resolve", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.bloom.prefilter", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.bloom.downsample", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.bloom.upsample", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.bloom.combine", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.tonemap", VKR_RG_PASS_TYPE_GRAPHICS},
     {"pass.editor", VKR_RG_PASS_TYPE_GRAPHICS},
     {"pass.ui", VKR_RG_PASS_TYPE_GRAPHICS},
@@ -1029,6 +1037,20 @@ vkr_internal bool8_t vkr_vk_graph_sampled_index(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
+/**
+ * @brief Resolves the final HDR input shared by fullscreen and editor draws.
+ *
+ * Binding 2 exists only when bloom produced `bloom_combined`; otherwise the
+ * pre-bloom temporal result at binding 0 remains the source.
+ */
+vkr_internal bool8_t vkr_vk_graph_fullscreen_source(VkrVulkanRenderer *renderer,
+                                                    const VkrRgPass *pass,
+                                                    uint32_t *out_index) {
+  const uint32_t binding =
+      vkr_rg_pass_find_image_use(&pass->desc, 2u, 0u) ? 2u : 0u;
+  return vkr_vk_graph_sampled_index(renderer, pass, binding, out_index);
+}
+
 vkr_internal bool8_t vkr_vk_record_graphics_body(
     VkrVulkanRenderer *renderer, VkCommandBuffer command, const VkrRgPass *pass,
     VkrVulkanGraphExecutorKind kind) {
@@ -1114,7 +1136,7 @@ vkr_internal bool8_t vkr_vk_record_graphics_body(
     VkrVulkanGraphBufferInstance *exposure_state =
         exposure_use ? vkr_vk_graph_buffer(renderer, exposure_use->buffer)
                      : NULL;
-    if (!vkr_vk_graph_sampled_index(renderer, pass, 0u, &texture_index))
+    if (!vkr_vk_graph_fullscreen_source(renderer, pass, &texture_index))
       return false_v;
     if (!vkr_vk_record_packet_fullscreen(
             renderer, command, VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_FINAL,
@@ -1135,7 +1157,7 @@ vkr_internal bool8_t vkr_vk_record_graphics_body(
     VkrVulkanGraphBufferInstance *exposure_state =
         exposure_use ? vkr_vk_graph_buffer(renderer, exposure_use->buffer)
                      : NULL;
-    if (!vkr_vk_graph_sampled_index(renderer, pass, 0u, &texture_index)) {
+    if (!vkr_vk_graph_fullscreen_source(renderer, pass, &texture_index)) {
       log_error("Vulkan tonemap input has no sampled descriptor");
       return false_v;
     }
@@ -1372,6 +1394,14 @@ vkr_internal bool8_t vkr_vk_record_graph_pass(VkrVulkanRenderer *renderer,
     return vkr_vk_record_exposure_histogram(renderer, command, pass);
   case VKR_VULKAN_GRAPH_EXECUTOR_EXPOSURE_RESOLVE:
     return vkr_vk_record_exposure_resolve(renderer, command, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_PREFILTER:
+    return vkr_vk_record_bloom_prefilter(renderer, command, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_DOWNSAMPLE:
+    return vkr_vk_record_bloom_downsample(renderer, command, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_UPSAMPLE:
+    return vkr_vk_record_bloom_upsample(renderer, command, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_COMBINE:
+    return vkr_vk_record_bloom_combine(renderer, command, pass);
   case VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_SHADE:
     return vkr_vk_record_deferred_transmission(renderer, command, pass);
   case VKR_VULKAN_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_FULLSCREEN:

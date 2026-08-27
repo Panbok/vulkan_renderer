@@ -91,6 +91,11 @@ vkr_add_vulkan_packet_shader("packet.sdsm_reduce.comp" vk_sdsm_reduce compute)
 vkr_add_vulkan_packet_shader("packet.exposure_clear.comp" vk_exposure_clear compute)
 vkr_add_vulkan_packet_shader("packet.exposure_histogram.comp" vk_exposure_histogram compute)
 vkr_add_vulkan_packet_shader("packet.exposure_resolve.comp" vk_exposure_resolve compute)
+vkr_add_vulkan_packet_shader("packet.bloom_prefilter.comp" vk_bloom_prefilter compute)
+vkr_add_vulkan_packet_shader("packet.bloom_downsample_tent13.comp" vk_bloom_downsample_tent13 compute)
+vkr_add_vulkan_packet_shader("packet.bloom_downsample_box4.comp" vk_bloom_downsample_box4 compute)
+vkr_add_vulkan_packet_shader("packet.bloom_upsample.comp" vk_bloom_upsample compute)
+vkr_add_vulkan_packet_shader("packet.bloom_combine.comp" vk_bloom_combine compute)
 vkr_add_vulkan_packet_shader("packet.picking_resolve.comp" vk_picking_resolve compute)
 vkr_add_vulkan_packet_shader("packet.transmission_shade.comp" vk_transmission_shade compute)
 vkr_add_vulkan_packet_shader("packet.transmission_coverage.comp" vk_transmission_coverage compute)
@@ -242,6 +247,9 @@ if(APPLE)
     # declaration order there is.
     set(VKR_METAL_PACKET_MSL_SOURCES
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/exposure_kernel.slangh"
+        # The bloom kernel reuses the exposure kernel's Rec. 709 luminance, so
+        # it must follow it here for the same reason as below.
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/bloom_kernel.slangh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/common/draw.metalh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/world/lighting.metalh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/shadow_kernel.slangh"
@@ -255,6 +263,7 @@ if(APPLE)
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/ibl/specular_prefilter.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/text/default.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/exposure.metal"
+        "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/bloom.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/tonemap.metal")
     list(JOIN VKR_METAL_PACKET_MSL_SOURCES "|"
          VKR_METAL_PACKET_MSL_SOURCE_ARGUMENT)

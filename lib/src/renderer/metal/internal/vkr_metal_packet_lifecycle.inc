@@ -545,6 +545,11 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
     [renderer->picking_resolve_pipeline release];
     [renderer->hzb_build_pipeline release];
     [renderer->sdsm_reduce_pipeline release];
+    [renderer->bloom_combine_pipeline release];
+    [renderer->bloom_upsample_pipeline release];
+    [renderer->bloom_downsample_box4_pipeline release];
+    [renderer->bloom_downsample_tent13_pipeline release];
+    [renderer->bloom_prefilter_pipeline release];
     [renderer->exposure_resolve_pipeline release];
     [renderer->exposure_histogram_pipeline release];
     [renderer->exposure_clear_pipeline release];
