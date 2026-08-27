@@ -9,6 +9,7 @@
 #include "math/mat.h"
 #include "math/vkr_transform.h"
 #include "renderer/systems/vkr_camera.h"
+#include "renderer/vkr_exposure.h"
 
 /* Public packet-renderer contracts shared by the selected Metal and Vulkan
    implementations. Resource publication and frame submission are coarse
@@ -640,7 +641,8 @@ typedef struct VkrCaptureItemResult {
   uint64_t data_size;
   uint32_t mip;
   uint32_t layer;
-  /** Manual exposure used when canonicalizing an HDR color source. */
+  /** Exposure used when canonicalizing an HDR color source. Automatic-mode
+   * captures receive the completed GPU multiplier before collection. */
   float32_t display_exposure;
 } VkrCaptureItemResult;
 
@@ -844,7 +846,10 @@ typedef struct VkrGlobalMaterialState {
   Mat4 ui_view;
   Vec4 ambient_color;
   Vec3 view_position;
-  float32_t exposure;
+  /** Lowered verbatim into the packet's versioned exposure controls. */
+  VkrExposureMode exposure_mode;
+  float32_t manual_exposure;
+  float32_t exposure_compensation_ev;
   VkrRenderMode render_mode;
 } VkrGlobalMaterialState;
 
@@ -1279,6 +1284,17 @@ void vkr_renderer_resize(VkrRendererFrontendHandle renderer, uint32_t width,
                          uint32_t height);
 /** Invalidates temporal accumulation before the next submitted frame. */
 void vkr_renderer_invalidate_temporal_history(
+    VkrRendererFrontendHandle renderer);
+/**
+ * @brief Invalidates exposure adaptation before the next submitted frame.
+ *
+ * Separate from temporal invalidation because the two chains answer different
+ * questions: a lighting change the application knows about needs a fresh
+ * adaptation without discarding correct pixel history, and a reprojection cut
+ * does not necessarily mean the scene changed brightness. Resize, scene change,
+ * camera cut, and mode change already invalidate both without this call.
+ */
+void vkr_renderer_invalidate_exposure_history(
     VkrRendererFrontendHandle renderer);
 
 // --- END Frame Lifecycle & Rendering Commands ---

@@ -50,6 +50,11 @@ bool8_t vkr_capture_ring_submit(VkrCaptureRing *ring,
                                 VkrCaptureRequestId request_id,
                                 uint64_t submit_serial, const void *staging);
 
+/** Patches capture metadata from the completed automatic-exposure record. */
+bool8_t vkr_capture_ring_set_display_exposure(VkrCaptureRing *ring,
+                                              uint64_t submit_serial,
+                                              float32_t display_exposure);
+
 bool8_t vkr_capture_ring_fail(VkrCaptureRing *ring,
                               VkrCaptureRequestId request_id,
                               VkrRendererError error);

@@ -126,11 +126,12 @@ float4 fullscreen_fragment(VkrVulkanVertexOutput input) : SV_Target0
     uint sampler_index =
         NonUniformResourceIndex(root.transmission_sampler);
     bool tonemap = (g_push.flags & VKR_FULLSCREEN_TONEMAP) != 0u;
+    float exposure = root.exposure_state->exposure_multiplier;
     if ((g_push.flags & VKR_FULLSCREEN_FXAA) == 0u)
         return vkr_post_sample(texture_index, sampler_index, input.uv, tonemap,
-                               root.ibl_controls.x);
+                               exposure);
     uint2 extent;
     g_textures[texture_index].GetDimensions(extent.x, extent.y);
     return vkr_fxaa(texture_index, sampler_index, input.uv,
-                    1.0f / float2(extent), tonemap, root.ibl_controls.x);
+                    1.0f / float2(extent), tonemap, exposure);
 }

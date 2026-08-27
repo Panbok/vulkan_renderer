@@ -333,11 +333,13 @@ typedef struct VkrMetalPacketCommandSlot {
   bool8_t result_collected;
   const uint8_t *gpu_draw_diagnostics_readback;
   const uint8_t *sdsm_readback;
+  const uint8_t *exposure_readback;
   const uint8_t *transmission_coverage_readback;
   uint32_t shadow_cascade_count;
   uint32_t transmission_coverage_extent[2];
   bool8_t gpu_draw_diagnostics_requested;
   bool8_t sdsm_requested;
+  bool8_t exposure_requested;
   bool8_t transmission_coverage_requested;
   uint32_t gpu_draw_icb_residency_count;
   VkrCandidateResidencyState candidate_residency;
@@ -366,6 +368,7 @@ struct VkrMetalPacketRenderer {
   VkrRgJsonGraph json_graph;
   VkrRenderGraph *graph;
   VkrRgExecutorRegistry executors;
+  VkrExposureMeteringConfig exposure_metering;
   VkrMetalMemoryDevice *memory;
   VkrMetalMaterialTableDevice *materials;
   VkrCaptureRing capture_ring;
@@ -392,6 +395,7 @@ struct VkrMetalPacketRenderer {
   VkrRgBufferHandle gpu_candidate_instance_buffer_handle;
   VkrRgBufferHandle transmission_gpu_candidate_instance_buffer_handle;
   VkrRgBufferHandle temporal_transform_history_handle;
+  VkrRgBufferHandle exposure_state_handle;
   VkrMetalPacketMesh *meshes;
   VkrMetalPacketGeometryMegabuffer geometry_megabuffer;
   VkrMetalPacketSubmeshCreateInfo *submeshes;
@@ -455,6 +459,9 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> picking_resolve_pipeline;
   id<MTLComputePipelineState> hzb_build_pipeline;
   id<MTLComputePipelineState> sdsm_reduce_pipeline;
+  id<MTLComputePipelineState> exposure_clear_pipeline;
+  id<MTLComputePipelineState> exposure_histogram_pipeline;
+  id<MTLComputePipelineState> exposure_resolve_pipeline;
   id<MTLArgumentEncoder> gpu_draw_icb_argument_encoder;
   id<MTLDepthStencilState> depth_write_state;
   id<MTLDepthStencilState> depth_read_state;
@@ -470,6 +477,7 @@ struct VkrMetalPacketRenderer {
   Mat4 current_hzb_view_projection;
   uint32_t selected_hzb_history_instance;
   uint32_t selected_temporal_history_instance;
+  uint32_t selected_exposure_history_instance;
   /** Accumulated during this frame's packet lowering; copied into the result.
    */
   VkrPacketBuildMetrics packet_build;

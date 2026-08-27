@@ -119,6 +119,14 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId visibility_hzb_rejected;
   VkrMetricId visibility_transmission_hzb_rejected;
   VkrMetricId visibility_hzb_history_valid;
+  VkrMetricId exposure_accepted_texels;
+  VkrMetricId exposure_retained_low_bin;
+  VkrMetricId exposure_retained_high_bin;
+  VkrMetricId exposure_average_log_luminance;
+  VkrMetricId exposure_target_ev;
+  VkrMetricId exposure_adapted_ev;
+  VkrMetricId exposure_multiplier;
+  VkrMetricId exposure_reset_reasons;
   VkrMetricId geometry_megabuffer_vertex_capacity;
   VkrMetricId geometry_megabuffer_index_capacity;
   VkrMetricId geometry_megabuffer_vertex_live_bytes;

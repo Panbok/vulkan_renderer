@@ -208,6 +208,9 @@ struct VkrVulkanPacketUtilityRoot
     VkrVulkanIblProbe* ibl_probes;
     uint ibl_probe_count;
     uint ibl_probe_reserved;
+    // Always valid. Manual frames bind a frame-upload fallback record and
+    // automatic frames bind the graph resolve output.
+    VkrExposureState* exposure_state;
 };
 
 struct VkrVulkanPushConstants

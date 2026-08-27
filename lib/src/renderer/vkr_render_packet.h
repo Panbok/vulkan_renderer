@@ -9,15 +9,14 @@
 #include "renderer/systems/vkr_lighting_system.h"
 #include "renderer/systems/vkr_shadow_system.h"
 #include "renderer/vkr_buffer.h"
+#include "renderer/vkr_exposure.h"
 #include "renderer/vkr_gpu_abi.h"
 #include "renderer/vkr_renderer.h"
 #include "renderer/vkr_temporal.h"
 
 /** Version constant for VkrRenderPacket.packet_version validation. */
-#define VKR_RENDER_PACKET_VERSION 19u
+#define VKR_RENDER_PACKET_VERSION 20u
 
-/** Default manual camera exposure for HDR scene presentation. */
-#define VKR_DEFAULT_EXPOSURE 0.30f
 #define VKR_FRAME_IBL_PROBE_MAX 16u
 #define VKR_PREPARED_TEXT_DRAW_MAX 64u
 
@@ -69,13 +68,24 @@ typedef struct VkrFrameGlobals {
   Mat4 projection;
   Vec3 view_position;
   Vec4 ambient_color;
-  float32_t exposure;
+  /**
+   * Exposure controls, versioned as of packet 20. The pre-20 single `exposure`
+   * multiplier could not also carry a logarithmic bias, so the linear and
+   * logarithmic controls are separate fields and the mode selects which path
+   * consumes them. `manual_exposure` keeps the old field's meaning and default.
+   */
+  uint32_t exposure_mode;
+  float32_t manual_exposure;
+  /** Additive EV bias. Automatic mode only; manual mode ignores it. */
+  float32_t exposure_compensation_ev;
   uint32_t render_mode;
   /**
    * Renderer-owned temporal state. Callers leave this zeroed; the frontend
    * derives it after validation and commits it only after successful submit.
    */
   VkrTemporalFrame temporal;
+  /** Renderer-owned exposure state, derived and committed the same way. */
+  VkrExposureFrame exposure;
 } VkrFrameGlobals;
 
 /** Backend-neutral frame lighting controls consumed by world shading. */

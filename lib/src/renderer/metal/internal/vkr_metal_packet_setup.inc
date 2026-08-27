@@ -60,6 +60,7 @@ vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
   case VKR_METAL_PACKET_ABI_PICKING_RESOLVE_ROOT:
   case VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT:
   case VKR_METAL_PACKET_ABI_SDSM_ROOT:
+  case VKR_METAL_PACKET_ABI_EXPOSURE_ROOT:
     return 0;
   default:
     return 1;
@@ -591,6 +592,20 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
   renderer->sdsm_reduce_pipeline = vkr_metal_packet_create_compute_pipeline(
       renderer, fragment, "vkr_metal_packet_sdsm_reduce",
       VKR_METAL_PACKET_ABI_SDSM_ROOT, false_v, @"VKR Metal packet SDSM reduce");
+  renderer->exposure_clear_pipeline = vkr_metal_packet_create_compute_pipeline(
+      renderer, fragment, "vkr_metal_packet_exposure_clear",
+      VKR_METAL_PACKET_ABI_EXPOSURE_ROOT, false_v,
+      @"VKR Metal packet exposure histogram clear");
+  renderer->exposure_histogram_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_exposure_histogram",
+          VKR_METAL_PACKET_ABI_EXPOSURE_ROOT, false_v,
+          @"VKR Metal packet exposure histogram");
+  renderer->exposure_resolve_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_exposure_resolve",
+          VKR_METAL_PACKET_ABI_EXPOSURE_ROOT, false_v,
+          @"VKR Metal packet exposure resolve");
   id<MTLFunction> encode_function =
       [fragment newFunctionWithName:@"vkr_metal_packet_gpu_draw_encode"];
   renderer->gpu_draw_icb_argument_encoder =
@@ -608,7 +623,9 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       !renderer->transmission_compact_pipeline ||
       !renderer->transmission_compact_finalize_pipeline ||
       !renderer->picking_resolve_pipeline || !renderer->hzb_build_pipeline ||
-      !renderer->sdsm_reduce_pipeline || !renderer->gpu_shadow_pipeline ||
+      !renderer->sdsm_reduce_pipeline || !renderer->exposure_clear_pipeline ||
+      !renderer->exposure_histogram_pipeline ||
+      !renderer->exposure_resolve_pipeline || !renderer->gpu_shadow_pipeline ||
       !renderer->gpu_shadow_opaque_pipeline || !renderer->vbuffer_pipeline ||
       !renderer->vbuffer_opaque_pipeline ||
       !renderer->transmission_vbuffer_pipeline ||
@@ -677,6 +694,9 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       {renderer->picking_resolve_pipeline, "picking resolve pipeline"},
       {renderer->hzb_build_pipeline, "HZB build pipeline"},
       {renderer->sdsm_reduce_pipeline, "SDSM reduce pipeline"},
+      {renderer->exposure_clear_pipeline, "exposure clear pipeline"},
+      {renderer->exposure_histogram_pipeline, "exposure histogram pipeline"},
+      {renderer->exposure_resolve_pipeline, "exposure resolve pipeline"},
       {renderer->depth_write_state, "depth-write state"},
       {renderer->depth_read_state, "depth-read state"},
       {renderer->argument_table, "argument table"},
@@ -1282,6 +1302,7 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
     if (!renderer)
       return false_v;
     renderer->allocator = config->allocator;
+    renderer->exposure_metering = vkr_exposure_metering_config_normalize(NULL);
     renderer->candidate_publication_generation = 1u;
     renderer->graph_frame_arena = arena_create(MB(8), KB(256));
     renderer->graph_frame_allocator =

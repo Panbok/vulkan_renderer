@@ -190,6 +190,7 @@ typedef struct VkrMetalPacketResult {
   bool8_t hzb_history_valid;
   VkrShadowDepthRangeSample shadow_depth_range;
   bool8_t has_gpu_draw_diagnostics;
+  VkrExposureDebugSample exposure;
   uint32_t resize_count;
   uint8_t color[4];
   float32_t shadow_depth;

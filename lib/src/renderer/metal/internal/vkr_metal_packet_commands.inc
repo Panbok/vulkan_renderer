@@ -124,6 +124,21 @@ vkr_metal_packet_cache_slot_result(VkrMetalPacketRenderer *renderer,
   }
   if (slot->sdsm_requested && slot->sdsm_readback)
     vkr_metal_packet_decode_sdsm(&slot->pending_result, slot->sdsm_readback);
+  if (slot->exposure_requested && slot->exposure_readback) {
+    const uint8_t *readback = slot->exposure_readback;
+    MemCopy(&slot->pending_result.exposure.state, readback,
+            sizeof(slot->pending_result.exposure.state));
+    MemCopy(&slot->pending_result.exposure.histogram,
+            readback + sizeof(VkrExposureGpuState),
+            sizeof(slot->pending_result.exposure.histogram));
+    slot->pending_result.exposure.source_frame_index =
+        slot->pending_result.source_frame_index;
+    slot->pending_result.exposure.source_submit_value = slot->submit_value;
+    slot->pending_result.exposure.valid = true_v;
+    (void)vkr_capture_ring_set_display_exposure(
+        &renderer->capture_ring, slot->submit_value,
+        slot->pending_result.exposure.state.exposure_multiplier);
+  }
   if (slot->transmission_coverage_requested &&
       slot->transmission_coverage_readback) {
     const VkrMetalPacketTransmissionDiagnostics *diagnostics =
@@ -153,7 +168,7 @@ vkr_metal_packet_cache_slot_result(VkrMetalPacketRenderer *renderer,
 }
 
 vkr_internal void
-vkr_metal_packet_cache_ready_timings(VkrMetalPacketRenderer *renderer)
+vkr_metal_packet_collect_completed_results(VkrMetalPacketRenderer *renderer)
     API_AVAILABLE(macos(26.0)) {
   const uint64_t completed = renderer->completion.signaledValue;
   for (uint32_t i = 0; i < renderer->command_slot_count; ++i) {
@@ -202,12 +217,14 @@ vkr_internal bool8_t vkr_metal_packet_complete_command_slot(
   slot->gpu_draw_diagnostics_readback = NULL;
   slot->transmission_coverage_readback = NULL;
   slot->sdsm_readback = NULL;
+  slot->exposure_readback = NULL;
   slot->shadow_cascade_count = 0u;
   slot->transmission_coverage_extent[0] = 0u;
   slot->transmission_coverage_extent[1] = 0u;
   slot->gpu_draw_diagnostics_requested = false_v;
   slot->transmission_coverage_requested = false_v;
   slot->sdsm_requested = false_v;
+  slot->exposure_requested = false_v;
   slot->pending_result = (VkrMetalPacketResult){0};
   return true_v;
 }

@@ -332,6 +332,22 @@
       "format": "R32_UINT",
       "usage": ["STORAGE"],
       "flags": ["HISTORY", "RESIZABLE"]
+    },
+    {
+      "name": "exposure_histogram",
+      "type": "buffer",
+      "condition": "exposure_automatic",
+      "size": 1024,
+      "usage": ["STORAGE", "TRANSFER_SRC"],
+      "flags": ["PER_FRAME_SLOT"]
+    },
+    {
+      "name": "exposure_state",
+      "type": "buffer",
+      "condition": "exposure_automatic",
+      "size": 32,
+      "usage": ["STORAGE", "TRANSFER_SRC"],
+      "flags": ["HISTORY"]
     }
   ],
   "passes": [
@@ -1595,6 +1611,32 @@
       "execute": "pass.temporal.resolve"
     },
     {
+      "name": "Post.Exposure.Histogram",
+      "type": "compute",
+      "condition": "exposure_automatic",
+      "flags": ["NO_CULL"],
+      "reads": [
+        { "image": "temporal_history_color", "access": "STORAGE_READ", "binding": 0 }
+      ],
+      "writes": [
+        { "buffer": "exposure_histogram", "access": "STORAGE_READ_WRITE", "binding": 1 }
+      ],
+      "execute": "pass.exposure.histogram"
+    },
+    {
+      "name": "Post.Exposure.Resolve",
+      "type": "compute",
+      "condition": "exposure_automatic",
+      "flags": ["NO_CULL"],
+      "reads": [
+        { "buffer": "exposure_histogram", "access": "STORAGE_READ", "binding": 0 }
+      ],
+      "writes": [
+        { "buffer": "exposure_state", "access": "STORAGE_WRITE", "binding": 1 }
+      ],
+      "execute": "pass.exposure.resolve"
+    },
+    {
       "name": "Post.Tonemap.Fullscreen",
       "type": "graphics",
       "domain": "POST",
@@ -1605,7 +1647,8 @@
           "access": "SAMPLED",
           "binding": 0,
           "array_index": 0
-        }
+        },
+        { "buffer": "exposure_state", "access": "STORAGE_READ", "binding": 1, "when": "exposure_automatic" }
       ],
       "attachments": {
         "color": [
@@ -1630,7 +1673,8 @@
           "access": "SAMPLED",
           "binding": 0,
           "array_index": 0
-        }
+        },
+        { "buffer": "exposure_state", "access": "STORAGE_READ", "binding": 1, "when": "exposure_automatic" }
       ],
       "attachments": {
         "color": [

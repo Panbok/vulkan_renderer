@@ -88,6 +88,9 @@ vkr_add_vulkan_packet_shader("packet.deferred_lighting.comp" vk_deferred_lightin
 vkr_add_vulkan_packet_shader("packet.temporal_resolve.comp" vk_temporal_resolve compute)
 vkr_add_vulkan_packet_shader("packet.hzb_build.comp" vk_hzb_build compute)
 vkr_add_vulkan_packet_shader("packet.sdsm_reduce.comp" vk_sdsm_reduce compute)
+vkr_add_vulkan_packet_shader("packet.exposure_clear.comp" vk_exposure_clear compute)
+vkr_add_vulkan_packet_shader("packet.exposure_histogram.comp" vk_exposure_histogram compute)
+vkr_add_vulkan_packet_shader("packet.exposure_resolve.comp" vk_exposure_resolve compute)
 vkr_add_vulkan_packet_shader("packet.picking_resolve.comp" vk_picking_resolve compute)
 vkr_add_vulkan_packet_shader("packet.transmission_shade.comp" vk_transmission_shade compute)
 vkr_add_vulkan_packet_shader("packet.transmission_coverage.comp" vk_transmission_coverage compute)
@@ -238,6 +241,7 @@ if(APPLE)
     # library is concatenated, not include-resolved, so order is the only
     # declaration order there is.
     set(VKR_METAL_PACKET_MSL_SOURCES
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/exposure_kernel.slangh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/common/draw.metalh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/world/lighting.metalh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/shadow_kernel.slangh"
@@ -250,6 +254,7 @@ if(APPLE)
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/ibl/diffuse_convolution.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/ibl/specular_prefilter.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/text/default.metal"
+        "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/exposure.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/tonemap.metal")
     list(JOIN VKR_METAL_PACKET_MSL_SOURCES "|"
          VKR_METAL_PACKET_MSL_SOURCE_ARGUMENT)

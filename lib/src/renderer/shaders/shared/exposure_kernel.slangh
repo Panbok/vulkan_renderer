@@ -1,0 +1,135 @@
+// Shared automatic-exposure metering kernel. Consumed by both production
+// metering paths: the Vulkan Slang path includes this file, and the Metal path
+// concatenates it into the native MSL library ahead of post/exposure.metal.
+// Scalar math, `float`, `uint`, and brace initialization mean the same thing in
+// both languages; only the program-scope storage qualifier differs, so that is
+// the one thing selected here. Entry points, bindings, and buffer pointers stay
+// in the backend-native files that include this one.
+//
+// `vkr_exposure.c` carries a CPU mirror of every step below. That mirror is the
+// only deterministic coverage this arithmetic has, because the project has no
+// GPU compute-kernel test harness, so the two must be changed together.
+
+#if defined(__METAL_VERSION__)
+using namespace metal;
+#define VKR_EXPOSURE_CONST constant
+#else
+#define VKR_EXPOSURE_CONST static const
+#endif
+
+#define VKR_EXPOSURE_HISTOGRAM_BINS 256
+
+// Rec. 709 luminance. The metered image is scene-linear, so no transfer decode
+// belongs here.
+VKR_EXPOSURE_CONST float3 vkr_exposure_luminance_weights =
+    float3(0.2126f, 0.7152f, 0.0722f);
+
+struct VkrExposureMetering
+{
+    float min_log_luminance;
+    float log_luminance_range;
+    float inverse_log_luminance_range;
+    float min_luminance;
+    float low_percentile;
+    float high_percentile;
+    float log_middle_gray;
+    float min_ev;
+    float max_ev;
+    float brighten_rate_per_second;
+    float darken_rate_per_second;
+    float compensation_ev;
+    float delta_seconds;
+    float manual_ev;
+    uint bin_count;
+    uint history_valid;
+};
+
+struct VkrExposureState
+{
+    float exposure_multiplier;
+    float adapted_ev;
+    float target_ev;
+    float average_log_luminance;
+    float retained_low_bin;
+    float retained_high_bin;
+    uint accepted_texel_count;
+    uint reset_reasons;
+};
+
+float vkr_exposure_luminance(float3 color)
+{
+    return dot(color, vkr_exposure_luminance_weights);
+}
+
+// A texel is metered only when it carries a usable positive luminance. One
+// non-finite texel would otherwise poison a bin index, and a large letterbox or
+// cleared background would otherwise own the low percentile.
+bool vkr_exposure_luminance_accepted(VkrExposureMetering metering,
+                                     float luminance)
+{
+    return luminance > 0.0f && luminance >= metering.min_luminance &&
+           !isinf(luminance) && !isnan(luminance);
+}
+
+// Out-of-window luminance saturates into the edge bins instead of being
+// dropped, so a scene brighter than the configured window still pulls the
+// percentile result up rather than reporting the window back.
+uint vkr_exposure_bin_index(VkrExposureMetering metering, float luminance)
+{
+    float normalized = (log2(luminance) - metering.min_log_luminance) *
+                       metering.inverse_log_luminance_range;
+    float scaled = normalized * float(metering.bin_count);
+    if (!(scaled > 0.0f))
+        return 0u;
+    uint bin = uint(scaled);
+    return bin < metering.bin_count ? bin : metering.bin_count - 1u;
+}
+
+float vkr_exposure_bin_log_luminance(VkrExposureMetering metering, uint bin)
+{
+    return metering.min_log_luminance +
+           ((float(bin) + 0.5f) / float(metering.bin_count)) *
+               metering.log_luminance_range;
+}
+
+// The retained window is expressed in counts, not whole bins, and each bin
+// contributes the fraction of itself that falls inside it. A whole-bin test
+// would step the resolved EV every time a single texel crossed an edge.
+float vkr_exposure_retained(float prefix, float next, float low_count,
+                            float high_count)
+{
+    return clamp(next, low_count, high_count) -
+           clamp(prefix, low_count, high_count);
+}
+
+float vkr_exposure_target_ev(VkrExposureMetering metering, float weight,
+                             float average_log_luminance, float previous_ev)
+{
+    // Nothing retained means nothing was measured, so hold the previous
+    // decision rather than invent a target from an empty window.
+    if (!(weight > 0.0f))
+        return previous_ev;
+    return clamp(metering.log_middle_gray - average_log_luminance +
+                     metering.compensation_ev,
+                 metering.min_ev, metering.max_ev);
+}
+
+// An invalid chain has no previous decision to approach, so it snaps. Fading in
+// from an unrelated fallback would display a wrong exposure for the whole ramp.
+float vkr_exposure_adapt(VkrExposureMetering metering, float target_ev,
+                         float previous_ev)
+{
+    float rate = target_ev > previous_ev ? metering.brighten_rate_per_second
+                                         : metering.darken_rate_per_second;
+    float alpha = 1.0f - exp(-rate * metering.delta_seconds);
+    return metering.history_valid != 0u
+               ? previous_ev + (target_ev - previous_ev) * alpha
+               : target_ev;
+}
+
+float vkr_exposure_previous_ev(VkrExposureMetering metering,
+                               float previous_adapted_ev)
+{
+    return metering.history_valid != 0u ? previous_adapted_ev
+                                        : metering.manual_ev;
+}

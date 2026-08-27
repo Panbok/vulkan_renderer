@@ -384,6 +384,7 @@ static void test_shadow_raster_bias_packet_validation(void) {
   shadow.config_override = &bias;
   const VkrRenderPacket packet = {
       .packet_version = VKR_RENDER_PACKET_VERSION,
+      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE},
       .shadow = &shadow,
   };
   VkrValidationError validation = {0};
@@ -419,6 +420,7 @@ static void test_shadow_receiver_packet_validation(void) {
   VkrShadowPassPayload shadow = test_shadow_valid_payload();
   const VkrRenderPacket packet = {
       .packet_version = VKR_RENDER_PACKET_VERSION,
+      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE},
       .shadow = &shadow,
   };
   VkrValidationError validation = {0};

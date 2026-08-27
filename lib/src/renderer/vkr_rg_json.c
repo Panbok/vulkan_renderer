@@ -41,6 +41,7 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"transmission_pending && timing_enabled && "
      "!transmission_compact_enabled",
      VKR_RG_JSON_CONDITION_TRANSMISSION_FULLSCREEN_TIMING},
+    {"exposure_automatic", VKR_RG_JSON_CONDITION_EXPOSURE_AUTOMATIC},
     {"picking_pending", VKR_RG_JSON_CONDITION_PICKING_PENDING},
     {"!picking_pending", VKR_RG_JSON_CONDITION_PICKING_IDLE},
     {"picking_pending && transmission_pending",
@@ -1739,6 +1740,8 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
   case VKR_RG_JSON_CONDITION_TRANSMISSION_FULLSCREEN_TIMING:
     return frame->transmission_pending && frame->timing_enabled &&
            !frame->transmission_compact_enabled;
+  case VKR_RG_JSON_CONDITION_EXPOSURE_AUTOMATIC:
+    return frame->exposure_automatic;
   case VKR_RG_JSON_CONDITION_PICKING_PENDING:
     return frame->picking_pending;
   case VKR_RG_JSON_CONDITION_PICKING_IDLE:

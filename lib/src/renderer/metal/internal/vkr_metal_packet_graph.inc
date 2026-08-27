@@ -28,6 +28,8 @@ typedef enum VkrMetalPacketGraphExecutorKind {
   VKR_METAL_PACKET_GRAPH_EXECUTOR_GBUFFER_RESOLVE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_DEFERRED_LIGHTING,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_TEMPORAL_RESOLVE,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_HISTOGRAM,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_RESOLVE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_SHADE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_COVERAGE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_COMPACT,
@@ -70,6 +72,8 @@ vkr_global const VkrMetalPacketGraphExecutorSpec
         {"pass.gbuffer.resolve", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.lighting.deferred", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.temporal.resolve", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.exposure.histogram", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.exposure.resolve", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.transmission.shade", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.transmission.coverage", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.transmission.compact", VKR_RG_PASS_TYPE_COMPUTE},
@@ -777,6 +781,37 @@ vkr_metal_packet_select_temporal_history(VkrMetalPacketRenderer *renderer) {
   return true_v;
 }
 
+vkr_internal bool8_t
+vkr_metal_packet_select_exposure_history(VkrMetalPacketRenderer *renderer) {
+  renderer->selected_exposure_history_instance = UINT32_MAX;
+  const VkrRenderPacket *packet = renderer->graph->packet;
+  if (!packet || !renderer->prepared_frame.exposure_automatic ||
+      !packet->globals.exposure.history_valid)
+    return true_v;
+  if (!vkr_rg_buffer_handle_valid(renderer->exposure_state_handle))
+    return false_v;
+  VkrMetalPacketGraphBuffer *states =
+      &renderer->graph_buffers[renderer->exposure_state_handle.id - 1u];
+  const uint32_t current = renderer->history_output_index;
+  const uint64_t completed = renderer->completion.signaledValue;
+  uint64_t newest_producer = 0u;
+  for (uint32_t i = 0u; i < states->instance_count; ++i) {
+    VkrMetalPacketGraphBufferInstance *candidate =
+        vkr_metal_packet_graph_buffer_instance(
+            renderer, renderer->exposure_state_handle, i);
+    if (i == current || !candidate || !candidate->history_valid ||
+        candidate->history_producer_submit_value > completed ||
+        candidate->history_scene_generation != packet->frame.scene_generation)
+      continue;
+    if (renderer->selected_exposure_history_instance == UINT32_MAX ||
+        candidate->history_producer_submit_value > newest_producer) {
+      renderer->selected_exposure_history_instance = i;
+      newest_producer = candidate->history_producer_submit_value;
+    }
+  }
+  return true_v;
+}
+
 vkr_internal VkrMetalPacketGraphBufferInstance *
 vkr_metal_packet_graph_buffer(VkrMetalPacketRenderer *renderer,
                               VkrRgBufferHandle handle) {
@@ -834,6 +869,7 @@ vkr_metal_packet_realize_buffers(VkrMetalPacketRenderer *renderer) {
   renderer->transmission_gpu_candidate_instance_buffer_handle =
       VKR_RG_BUFFER_HANDLE_INVALID;
   renderer->temporal_transform_history_handle = VKR_RG_BUFFER_HANDLE_INVALID;
+  renderer->exposure_state_handle = VKR_RG_BUFFER_HANDLE_INVALID;
   for (uint64_t i = 0u; i < renderer->graph->buffers.length; ++i) {
     const VkrRgBuffer *buffer =
         vector_get_VkrRgBuffer(&renderer->graph->buffers, i);
@@ -853,6 +889,8 @@ vkr_metal_packet_realize_buffers(VkrMetalPacketRenderer *renderer) {
     else if (vkr_string8_equals_cstr(&buffer->name,
                                      "temporal_transform_history"))
       renderer->temporal_transform_history_handle = handle;
+    else if (vkr_string8_equals_cstr(&buffer->name, "exposure_state"))
+      renderer->exposure_state_handle = handle;
     if (buffer->imported ||
         (buffer->desc.flags & VKR_RG_RESOURCE_FLAG_EXTERNAL)) {
       log_error("Metal graph buffer '%.*s' cannot be external",
@@ -1100,6 +1138,43 @@ vkr_metal_packet_mark_temporal_submitted(VkrMetalPacketRenderer *renderer,
 }
 
 vkr_internal void
+vkr_metal_packet_mark_exposure_submitted(VkrMetalPacketRenderer *renderer,
+                                         uint64_t submit_value) {
+  const VkrRenderPacket *packet = renderer->graph->packet;
+  if (!packet || !renderer->prepared_frame.exposure_automatic ||
+      !vkr_rg_buffer_handle_valid(renderer->exposure_state_handle))
+    return;
+  VkrMetalPacketGraphBuffer *states =
+      &renderer->graph_buffers[renderer->exposure_state_handle.id - 1u];
+  if (packet->globals.exposure.reset_reasons) {
+    for (uint32_t i = 0u; i < states->instance_count; ++i) {
+      VkrMetalPacketGraphBufferInstance *instance =
+          vkr_metal_packet_graph_buffer_instance(
+              renderer, renderer->exposure_state_handle, i);
+      if (instance)
+        instance->history_valid = false_v;
+    }
+  }
+  VkrMetalPacketGraphBufferInstance *current =
+      vkr_metal_packet_graph_buffer_instance(renderer,
+                                             renderer->exposure_state_handle,
+                                             renderer->history_output_index);
+  if (current) {
+    current->history_producer_submit_value = submit_value;
+    current->history_frame_index = packet->frame.frame_index;
+    current->history_scene_generation = packet->frame.scene_generation;
+    current->history_valid = true_v;
+  }
+  VkrMetalPacketGraphBufferInstance *selected =
+      vkr_metal_packet_graph_buffer_instance(
+          renderer, renderer->exposure_state_handle,
+          renderer->selected_exposure_history_instance);
+  if (selected)
+    selected->last_use_submit_value =
+        MAX(selected->last_use_submit_value, submit_value);
+}
+
+vkr_internal void
 vkr_metal_packet_mark_graph_buffers_submitted(VkrMetalPacketRenderer *renderer,
                                               uint64_t submit_value) {
   for (uint64_t i = 0u; i < renderer->graph->buffers.length; ++i) {
@@ -1298,7 +1373,7 @@ vkr_internal bool8_t vkr_metal_packet_capture_plan(
                    .data_size = data_size,
                    .mip = 0,
                    .layer = source_slice,
-                   .display_exposure = packet->globals.exposure},
+                   .display_exposure = packet->globals.exposure.manual},
         .buffer_offset = offset,
         .source_slice = source_slice,
     };

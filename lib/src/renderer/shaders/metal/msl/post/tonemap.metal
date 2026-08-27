@@ -1,7 +1,9 @@
-struct VkrMetalPacketTonemapRoot {
+struct alignas(16) VkrMetalPacketTonemapRoot {
   texture2d<float, access::sample> source;
-  float exposure;
-  uint3 reserved;
+  uint2 reserved;
+  // Always valid. Manual frames bind a frame-upload fallback record and
+  // automatic frames bind the graph resolve output.
+  device const VkrExposureState *exposure_state;
 };
 
 static float3 vkr_metal_packet_aces_fitted(float3 color) {
@@ -144,11 +146,14 @@ fragment float4 vkr_metal_packet_tonemap_fragment(
   constexpr sampler source_sampler(coord::normalized, address::clamp_to_edge,
                                    filter::linear);
   float2 uv = (float2(pixel) + 0.5) / float2(extent);
+  float exposure = root->exposure_state->exposure_multiplier;
   if (root->reserved.y == 0u)
-    return vkr_metal_packet_post_sample(
-        root->source, source_sampler, uv, root->exposure,
-        root->reserved.x != 0u);
+    return vkr_metal_packet_post_sample(root->source, source_sampler, uv,
+                                        exposure, root->reserved.x != 0u);
   return vkr_metal_packet_fxaa(root->source, source_sampler, uv,
-                               1.0 / float2(extent), root->exposure,
+                               1.0 / float2(extent), exposure,
                                root->reserved.x != 0u);
 }
+
+static_assert(sizeof(VkrMetalPacketTonemapRoot) == 32,
+              "Tonemap root ABI must remain 32 bytes");

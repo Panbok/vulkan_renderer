@@ -452,6 +452,24 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(visibility_hzb_history_valid, "visibility.hzb.history_valid",
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(exposure_accepted_texels, "post.exposure.accepted_texels",
+                   VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_F64(exposure_retained_low_bin, "post.exposure.retained_low_bin",
+                   VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_F64(exposure_retained_high_bin,
+                   "post.exposure.retained_high_bin", VKR_METRIC_DOMAIN_FRAME,
+                   VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_F64(exposure_average_log_luminance,
+                   "post.exposure.average_log_luminance",
+                   VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_F64(exposure_target_ev, "post.exposure.target_ev",
+                   VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_F64(exposure_adapted_ev, "post.exposure.adapted_ev",
+                   VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_F64(exposure_multiplier, "post.exposure.multiplier",
+                   VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_UNIT_RATIO);
+  VKR_REGISTER_U64(exposure_reset_reasons, "post.exposure.reset_reasons",
+                   VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(geometry_megabuffer_vertex_capacity,
                    "geometry.megabuffer.vertex_capacity_bytes",
                    VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_BYTES);
@@ -1184,6 +1202,29 @@ void vkr_renderer_metrics_collect(
   vkr_metrics_gauge_set_u64(metrics, ids->FIELD, (uint64_t)(VALUE))
 #define VKR_SET_F64(FIELD, VALUE)                                              \
   vkr_metrics_gauge_set_f64(metrics, ids->FIELD, (float64_t)(VALUE))
+  const VkrExposureDebugSample *exposure = &context->frame_metrics->exposure;
+  if (exposure->valid) {
+    VKR_SET_U64(exposure_accepted_texels, exposure->state.accepted_texel_count);
+    VKR_SET_F64(exposure_retained_low_bin, exposure->state.retained_low_bin);
+    VKR_SET_F64(exposure_retained_high_bin, exposure->state.retained_high_bin);
+    VKR_SET_F64(exposure_average_log_luminance,
+                exposure->state.average_log_luminance);
+    VKR_SET_F64(exposure_target_ev, exposure->state.target_ev);
+    VKR_SET_F64(exposure_adapted_ev, exposure->state.adapted_ev);
+    VKR_SET_F64(exposure_multiplier, exposure->state.exposure_multiplier);
+    VKR_SET_U64(exposure_reset_reasons, exposure->state.reset_reasons);
+  } else {
+    const VkrMetricId exposure_ids[] = {
+        ids->exposure_accepted_texels,   ids->exposure_retained_low_bin,
+        ids->exposure_retained_high_bin, ids->exposure_average_log_luminance,
+        ids->exposure_target_ev,         ids->exposure_adapted_ev,
+        ids->exposure_multiplier,        ids->exposure_reset_reasons,
+    };
+    for (uint32_t i = 0u; i < ArrayCount(exposure_ids); ++i)
+      vkr_metrics_mark(metrics, exposure_ids[i],
+                       VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                       VKR_METRIC_REASON_NOT_SAMPLED);
+  }
   if (!metrics->config.submission_gpu_timings) {
     vkr_metrics_mark(metrics, ids->gpu_submission,
                      VKR_METRIC_AVAILABILITY_UNAVAILABLE,
@@ -1781,6 +1822,34 @@ vkr_renderer_metrics_read_frame(const VkrRendererMetrics *renderer_metrics,
                                    &avg_batch_size)) {
       world->avg_batch_size = (float32_t)avg_batch_size;
     }
+
+    VkrExposureDebugSample *exposure = &out_frame_metrics->exposure;
+    uint64_t exposure_count = 0u;
+    if (vkr_metrics_frame_read_u64(frame, ids->exposure_accepted_texels,
+                                   &exposure_count)) {
+      exposure->state.accepted_texel_count = (uint32_t)exposure_count;
+      exposure->valid = true_v;
+    }
+    float64_t exposure_value = 0.0;
+    if (vkr_metrics_frame_read_f64(frame, ids->exposure_retained_low_bin,
+                                   &exposure_value))
+      exposure->state.retained_low_bin = (float32_t)exposure_value;
+    if (vkr_metrics_frame_read_f64(frame, ids->exposure_retained_high_bin,
+                                   &exposure_value))
+      exposure->state.retained_high_bin = (float32_t)exposure_value;
+    if (vkr_metrics_frame_read_f64(frame, ids->exposure_average_log_luminance,
+                                   &exposure_value))
+      exposure->state.average_log_luminance = (float32_t)exposure_value;
+    if (vkr_metrics_frame_read_f64(frame, ids->exposure_target_ev,
+                                   &exposure_value))
+      exposure->state.target_ev = (float32_t)exposure_value;
+    if (vkr_metrics_frame_read_f64(frame, ids->exposure_adapted_ev,
+                                   &exposure_value))
+      exposure->state.adapted_ev = (float32_t)exposure_value;
+    if (vkr_metrics_frame_read_f64(frame, ids->exposure_multiplier,
+                                   &exposure_value))
+      exposure->state.exposure_multiplier = (float32_t)exposure_value;
+    VKR_READ_U32(exposure->state.reset_reasons, ids->exposure_reset_reasons);
 
     VkrShadowMetrics *shadow = &out_frame_metrics->shadow;
     for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {

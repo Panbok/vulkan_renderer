@@ -1265,8 +1265,8 @@ static void test_image_access_is_write(void) {
   printf("  test_image_access_is_write PASSED\n");
 }
 
-static void test_main_graph_declares_transmission_stages(void) {
-  printf("  Running test_main_graph_declares_transmission_stages...\n");
+static void test_main_graph_contract(void) {
+  printf("  Running test_main_graph_contract...\n");
   Arena *arena = arena_create(MB(2), MB(2));
   VkrAllocator allocator = {.ctx = arena};
   assert(vkr_allocator_arena(&allocator));
@@ -1536,6 +1536,68 @@ static void test_main_graph_declares_transmission_stages(void) {
          found_transmission_gpu_instances && found_stable_shadow_capacity &&
          found_temporal_transform_resource && found_temporal_color_resource);
 
+  bool8_t found_exposure_histogram_resource = false_v;
+  bool8_t found_exposure_state_resource = false_v;
+  for (uint64_t i = 0u; i < graph.resources.length; ++i) {
+    VkrRgJsonResource *resource =
+        vector_get_VkrRgJsonResource(&graph.resources, i);
+    if (!resource)
+      continue;
+    if (vkr_string8_equals_cstr(&resource->name, "exposure_histogram")) {
+      assert(resource->condition.kind ==
+             VKR_RG_JSON_CONDITION_EXPOSURE_AUTOMATIC);
+      assert(resource->buffer.size == sizeof(VkrExposureGpuHistogram));
+      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_PER_FRAME_SLOT) !=
+             0u);
+      found_exposure_histogram_resource = true_v;
+    } else if (vkr_string8_equals_cstr(&resource->name, "exposure_state")) {
+      assert(resource->condition.kind ==
+             VKR_RG_JSON_CONDITION_EXPOSURE_AUTOMATIC);
+      assert(resource->buffer.size == sizeof(VkrExposureGpuState));
+      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_HISTORY) != 0u);
+      found_exposure_state_resource = true_v;
+    }
+  }
+  assert(found_exposure_histogram_resource && found_exposure_state_resource);
+
+  uint64_t temporal_fullscreen_index = UINT64_MAX;
+  uint64_t temporal_editor_index = UINT64_MAX;
+  uint64_t exposure_histogram_index = UINT64_MAX;
+  uint64_t exposure_resolve_index = UINT64_MAX;
+  uint64_t tonemap_index = UINT64_MAX;
+  uint64_t editor_composite_index = UINT64_MAX;
+  for (uint64_t i = 0u; i < graph.passes.length; ++i) {
+    VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph.passes, i);
+    if (!pass)
+      continue;
+    if (vkr_string8_equals_cstr(&pass->name, "Temporal.Resolve.Fullscreen"))
+      temporal_fullscreen_index = i;
+    else if (vkr_string8_equals_cstr(&pass->name, "Temporal.Resolve.Editor"))
+      temporal_editor_index = i;
+    else if (vkr_string8_equals_cstr(&pass->name, "Post.Exposure.Histogram")) {
+      assert(pass->condition.kind == VKR_RG_JSON_CONDITION_EXPOSURE_AUTOMATIC);
+      assert(pass->reads.length == 1u && pass->writes.length == 1u);
+      assert(vkr_string8_equals_cstr(&pass->reads.data[0].name,
+                                     "temporal_history_color"));
+      assert(pass->reads.data[0].image_access ==
+             VKR_RG_JSON_IMAGE_ACCESS_STORAGE_READ);
+      assert(vkr_string8_equals_cstr(&pass->writes.data[0].name,
+                                     "exposure_histogram"));
+      exposure_histogram_index = i;
+    } else if (vkr_string8_equals_cstr(&pass->name, "Post.Exposure.Resolve")) {
+      assert(pass->condition.kind == VKR_RG_JSON_CONDITION_EXPOSURE_AUTOMATIC);
+      exposure_resolve_index = i;
+    } else if (vkr_string8_equals_cstr(&pass->name, "Post.Tonemap.Fullscreen"))
+      tonemap_index = i;
+    else if (vkr_string8_equals_cstr(&pass->name, "Editor.Composite"))
+      editor_composite_index = i;
+  }
+  assert(temporal_fullscreen_index < exposure_histogram_index);
+  assert(temporal_editor_index < exposure_histogram_index);
+  assert(exposure_histogram_index < exposure_resolve_index);
+  assert(exposure_resolve_index < tonemap_index);
+  assert(exposure_resolve_index < editor_composite_index);
+
   bool8_t found_hzb_reduce = false_v;
   bool8_t found_sdsm_reduce = false_v;
   bool8_t found_temporal_transform = false_v;
@@ -1621,7 +1683,7 @@ static void test_main_graph_declares_transmission_stages(void) {
 
   vkr_rg_json_destroy(&graph);
   arena_destroy(arena);
-  printf("  test_main_graph_declares_transmission_stages PASSED\n");
+  printf("  test_main_graph_contract PASSED\n");
 }
 
 static void test_main_graph_fits_runtime_pass_capacity(void) {
@@ -2146,7 +2208,7 @@ bool32_t run_render_graph_barrier_tests() {
   test_json_mip_chain_and_subresource_uses();
   test_deferred_image_formats();
   test_frame_allocator_reclaims_authored_passes();
-  test_main_graph_declares_transmission_stages();
+  test_main_graph_contract();
   test_main_graph_fits_runtime_pass_capacity();
   test_subresource_range_resolve();
   test_same_layout_write_then_read_emits_barrier();

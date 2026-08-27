@@ -121,6 +121,18 @@
 #ifndef VKR_VULKAN_PACKET_HZB_BUILD_COMP_SPV
 #define VKR_VULKAN_PACKET_HZB_BUILD_COMP_SPV "packet.hzb_build.comp.spv"
 #endif
+#ifndef VKR_VULKAN_PACKET_EXPOSURE_CLEAR_COMP_SPV
+#define VKR_VULKAN_PACKET_EXPOSURE_CLEAR_COMP_SPV                              \
+  "packet.exposure_clear.comp.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_EXPOSURE_HISTOGRAM_COMP_SPV
+#define VKR_VULKAN_PACKET_EXPOSURE_HISTOGRAM_COMP_SPV                          \
+  "packet.exposure_histogram.comp.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_EXPOSURE_RESOLVE_COMP_SPV
+#define VKR_VULKAN_PACKET_EXPOSURE_RESOLVE_COMP_SPV                            \
+  "packet.exposure_resolve.comp.spv"
+#endif
 #ifndef VKR_VULKAN_PACKET_SDSM_REDUCE_COMP_SPV
 #define VKR_VULKAN_PACKET_SDSM_REDUCE_COMP_SPV "packet.sdsm_reduce.comp.spv"
 #endif
@@ -166,8 +178,12 @@ enum {
   VKR_VULKAN_READBACK_SDSM_STATE_OFFSET =
       VKR_VULKAN_READBACK_TRANSMISSION_STATE_OFFSET +
       sizeof(VkrGpuTransmissionDiagnostics),
-  VKR_VULKAN_READBACK_SIZE =
+  VKR_VULKAN_READBACK_EXPOSURE_STATE_OFFSET =
       VKR_VULKAN_READBACK_SDSM_STATE_OFFSET + VKR_VULKAN_SDSM_STATE_SIZE,
+  VKR_VULKAN_READBACK_EXPOSURE_HISTOGRAM_OFFSET =
+      VKR_VULKAN_READBACK_EXPOSURE_STATE_OFFSET + sizeof(VkrExposureGpuState),
+  VKR_VULKAN_READBACK_SIZE = VKR_VULKAN_READBACK_EXPOSURE_HISTOGRAM_OFFSET +
+                             sizeof(VkrExposureGpuHistogram),
 };
 
 typedef enum VkrVulkanPacketPipeline {
@@ -228,6 +244,9 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_PICKING,
   VKR_VULKAN_DEFERRED_PIPELINE_TRANSMISSION,
   VKR_VULKAN_DEFERRED_PIPELINE_TRANSMISSION_COVERAGE,
+  VKR_VULKAN_DEFERRED_PIPELINE_EXPOSURE_CLEAR,
+  VKR_VULKAN_DEFERRED_PIPELINE_EXPOSURE_HISTOGRAM,
+  VKR_VULKAN_DEFERRED_PIPELINE_EXPOSURE_RESOLVE,
   VKR_VULKAN_DEFERRED_PIPELINE_COUNT,
 } VkrVulkanDeferredPipeline;
 
@@ -402,6 +421,23 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanSdsmRoot {
   uint32_t extent[2];
   uint32_t reserved[2];
 } VkrVulkanSdsmRoot;
+
+/** Mirrors VkrVkExposureRoot in shaders/vulkan/slang/post/exposure.slang. */
+typedef struct VKR_SIMD_ALIGN VkrVulkanExposureRoot {
+  uint64_t histogram;
+  uint64_t state;
+  /**
+   * Newest completed adaptation record, or the current output instance when no
+   * completed record exists. Always a real address: the resolve kernel reads it
+   * unconditionally and discards the value through `history_valid`, so a null
+   * here would be a dereference rather than a select.
+   */
+  uint64_t previous_state;
+  uint32_t source_texture;
+  uint32_t extent[2];
+  uint32_t reset_reasons;
+  VkrExposureGpuMetering metering;
+} VkrVulkanExposureRoot;
 
 typedef struct VkrVulkanSdsmState {
   uint32_t min_device_z_bits;
@@ -634,6 +670,9 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketUtilityRoot {
   uint64_t ibl_probes;
   uint32_t ibl_probe_count;
   uint32_t ibl_probe_reserved;
+  /** Always valid: graph state in automatic mode, frame-upload fallback in
+   * manual. */
+  uint64_t exposure_state;
 } VkrVulkanPacketUtilityRoot;
 
 _Static_assert(sizeof(VkrVertex3d) == 64u, "Shared vertex ABI drift");
@@ -673,6 +712,8 @@ _Static_assert(offsetof(VkrVulkanLightingRoot, inverse_view_projection) == 16u,
                "Deferred lighting-root matrix ABI drift");
 _Static_assert(sizeof(VkrVulkanHzbRoot) == 48u,
                "Deferred HZB-root ABI size drift");
+_Static_assert(sizeof(VkrVulkanExposureRoot) == 112u,
+               "Vulkan exposure root ABI size drift");
 _Static_assert(sizeof(VkrVulkanSdsmRoot) == 32u,
                "Deferred SDSM-root ABI size drift");
 _Static_assert(sizeof(VkrVulkanSdsmState) == VKR_VULKAN_SDSM_STATE_SIZE,
@@ -702,6 +743,8 @@ _Static_assert(sizeof(VkrVulkanPacketUtilityRoot) == 544u,
                "Packet utility-root ABI size drift");
 _Static_assert(offsetof(VkrVulkanPacketUtilityRoot, ibl_probes) == 520u,
                "Packet utility-root shadow block changed size");
+_Static_assert(offsetof(VkrVulkanPacketUtilityRoot, exposure_state) == 536u,
+               "Packet utility-root exposure block moved");
 
 typedef struct VkrVulkanAllocation {
   VkDeviceMemory memory;
@@ -844,7 +887,13 @@ typedef struct VkrVulkanFrameSlot {
   bool8_t transmission_coverage_requested;
   uint32_t transmission_coverage_extent[2];
   bool8_t sdsm_requested;
+  bool8_t exposure_requested;
   VkrVulkanGraphBufferInstance *sdsm_reduce_state;
+  /** Selected completed adaptation record and this frame's output instance. */
+  VkrVulkanGraphBufferInstance *exposure_histogram;
+  VkrVulkanGraphBuffer *exposure_state_history;
+  VkrVulkanGraphBufferInstance *exposure_state_input;
+  VkrVulkanGraphBufferInstance *exposure_state_output;
   VkrShadowDepthRangeSample shadow_depth_range;
   bool8_t acquired_window_image;
   bool8_t reacquired_presented_image;
@@ -1083,6 +1132,7 @@ typedef struct VkrVulkanRetiredMaterial {
 struct VkrVulkanRenderer {
   VkrAllocator *allocator;
   VkrVulkanRendererConfig config;
+  VkrExposureMeteringConfig exposure_metering;
   VkrDMemory publication_staging_memory;
   VkrDMemory capture_storage_memory;
   Arena *graph_frame_arena;
@@ -1341,6 +1391,15 @@ bool8_t vkr_vk_record_temporal_resolve(VkrVulkanRenderer *renderer,
 bool8_t vkr_vk_record_deferred_hzb(VkrVulkanRenderer *renderer,
                                    VkCommandBuffer command,
                                    const VkrRgPass *pass);
+bool8_t vkr_vk_record_exposure_histogram(VkrVulkanRenderer *renderer,
+                                         VkCommandBuffer command,
+                                         const VkrRgPass *pass);
+bool8_t vkr_vk_record_exposure_resolve(VkrVulkanRenderer *renderer,
+                                       VkCommandBuffer command,
+                                       const VkrRgPass *pass);
+/** Publishes this frame's adaptation record once its submit value is known. */
+void vkr_vk_mark_exposure_submitted(VkrVulkanRenderer *renderer,
+                                    uint64_t submit_value);
 bool8_t vkr_vk_record_deferred_sdsm(VkrVulkanRenderer *renderer,
                                     VkCommandBuffer command,
                                     const VkrRgPass *pass);
@@ -1369,7 +1428,9 @@ bool8_t vkr_vk_record_packet_draws(
 bool8_t vkr_vk_record_packet_fullscreen(VkrVulkanRenderer *renderer,
                                         VkCommandBuffer command,
                                         VkrVulkanPacketPipeline pipeline,
-                                        uint32_t texture_index, uint32_t flags);
+                                        uint32_t texture_index,
+                                        uint64_t exposure_state,
+                                        uint32_t flags);
 bool8_t vkr_vk_record_text_draws(VkrVulkanRenderer *renderer,
                                  VkCommandBuffer command,
                                  VkrVulkanPacketPipeline pipeline,

@@ -5,6 +5,7 @@
 #include "renderer/metal/vkr_metal_material_table.h"
 #include "renderer/systems/vkr_lighting_system.h"
 #include "renderer/vkr_buffer.h"
+#include "renderer/vkr_exposure.h"
 #include "renderer/vkr_gpu_abi.h"
 
 enum {
@@ -168,6 +169,20 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketSdsmRoot {
 
 _Static_assert(sizeof(VkrMetalPacketSdsmRoot) == 32,
                "Metal SDSM root ABI must remain 32 bytes");
+
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketExposureRoot {
+  uint64_t histogram;
+  uint64_t state;
+  uint64_t previous_state;
+  uint64_t source_texture_id;
+  uint32_t extent[2];
+  uint32_t reset_reasons;
+  uint32_t reserved;
+  VkrExposureGpuMetering metering;
+} VkrMetalPacketExposureRoot;
+
+_Static_assert(sizeof(VkrMetalPacketExposureRoot) == 112,
+               "Metal exposure root ABI must remain 112 bytes");
 
 typedef struct VkrMetalPacketSdsmState {
   uint32_t min_device_z_bits;
@@ -408,9 +423,8 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketShadowCascade {
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketTonemapRoot {
   uint64_t source_texture_id;
-  float32_t exposure;
-  uint32_t padding;
-  uint32_t reserved[3];
+  uint32_t reserved[2];
+  uint64_t exposure_state;
 } VkrMetalPacketTonemapRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketEquirectRoot {
@@ -476,6 +490,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_PICKING_RESOLVE_ROOT,
   VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT,
   VKR_METAL_PACKET_ABI_SDSM_ROOT,
+  VKR_METAL_PACKET_ABI_EXPOSURE_ROOT,
   VKR_METAL_PACKET_ABI_RECORD_COUNT,
 } VkrMetalPacketAbiRecordId;
 

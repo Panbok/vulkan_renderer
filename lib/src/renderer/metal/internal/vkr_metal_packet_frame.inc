@@ -339,15 +339,28 @@ vkr_internal bool8_t vkr_metal_packet_encode_tonemap(
   uint64_t root_gpu = 0;
   VkrMetalPacketTonemapRoot *root =
       vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
-  if (!root)
+  uint64_t manual_state_gpu = 0u;
+  VkrExposureGpuState *manual_state = vkr_metal_packet_next_root(
+      upload, sizeof(*manual_state), &manual_state_gpu);
+  if (!root || !manual_state)
     return false_v;
+  *manual_state = (VkrExposureGpuState){
+      .exposure_multiplier = packet->globals.exposure.manual,
+  };
   *root = (VkrMetalPacketTonemapRoot){
       .source_texture_id = source.gpuResourceID._impl,
-      .exposure =
-          packet->globals.exposure > 0.0f ? packet->globals.exposure : 1.0f,
       .reserved = {renderer->srgb_output ? 1u : 0u,
-                   renderer->fxaa_enabled ? 1u : 0u, 0u},
+                   renderer->fxaa_enabled ? 1u : 0u},
+      .exposure_state = manual_state_gpu,
   };
+  const VkrRgBufferUse *exposure_use =
+      vkr_rg_pass_find_buffer_use(&pass->desc, 1u, 0u);
+  VkrMetalPacketGraphBufferInstance *exposure_state =
+      exposure_use
+          ? vkr_metal_packet_graph_buffer(renderer, exposure_use->buffer)
+          : NULL;
+  if (exposure_state)
+    root->exposure_state = exposure_state->resource.gpu_address;
   [renderer->argument_table setAddress:root_gpu atIndex:1];
   [encoder setViewport:(MTLViewport){0.0, 0.0, source.width, source.height, 0.0,
                                      1.0}];
@@ -1432,6 +1445,85 @@ vkr_internal bool8_t vkr_metal_packet_encode_sdsm_reduce(
   return true_v;
 }
 
+vkr_internal bool8_t vkr_metal_packet_encode_exposure_histogram(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    const VkrRenderPacket *packet, id<MTL4ComputeCommandEncoder> encoder,
+    VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
+  id<MTLTexture> source = vkr_metal_packet_pass_texture(renderer, pass, 0u);
+  VkrMetalPacketGraphBufferInstance *histogram =
+      vkr_metal_packet_pass_buffer(renderer, pass, 1u);
+  if (!source || !histogram || !renderer->exposure_clear_pipeline ||
+      !renderer->exposure_histogram_pipeline || source.width == 0u ||
+      source.height == 0u || source.width > UINT32_MAX ||
+      source.height > UINT32_MAX)
+    return false_v;
+  uint64_t root_gpu = 0u;
+  VkrMetalPacketExposureRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  if (!root)
+    return false_v;
+  *root = (VkrMetalPacketExposureRoot){
+      .histogram = histogram->resource.gpu_address,
+      .source_texture_id = source.gpuResourceID._impl,
+      .extent = {(uint32_t)source.width, (uint32_t)source.height},
+      .reset_reasons = packet->globals.exposure.reset_reasons,
+      .metering = vkr_exposure_gpu_metering(&renderer->exposure_metering,
+                                            &packet->globals.exposure),
+  };
+  [renderer->argument_table setAddress:root_gpu atIndex:0u];
+  [encoder setComputePipelineState:renderer->exposure_clear_pipeline];
+  [encoder setArgumentTable:renderer->argument_table];
+  [encoder dispatchThreads:MTLSizeMake(VKR_EXPOSURE_HISTOGRAM_BIN_COUNT, 1u, 1u)
+      threadsPerThreadgroup:MTLSizeMake(VKR_EXPOSURE_HISTOGRAM_BIN_COUNT, 1u,
+                                        1u)];
+  [encoder barrierAfterEncoderStages:MTLStageDispatch
+                 beforeEncoderStages:MTLStageDispatch
+                   visibilityOptions:MTL4VisibilityOptionDevice];
+  [encoder setComputePipelineState:renderer->exposure_histogram_pipeline];
+  [encoder dispatchThreads:MTLSizeMake(source.width, source.height, 1u)
+      threadsPerThreadgroup:MTLSizeMake(16u, 16u, 1u)];
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_metal_packet_encode_exposure_resolve(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    const VkrRenderPacket *packet, id<MTL4ComputeCommandEncoder> encoder,
+    VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
+  VkrMetalPacketGraphBufferInstance *histogram =
+      vkr_metal_packet_pass_buffer(renderer, pass, 0u);
+  VkrMetalPacketGraphBufferInstance *output =
+      vkr_metal_packet_pass_buffer(renderer, pass, 1u);
+  VkrMetalPacketGraphBufferInstance *previous =
+      vkr_metal_packet_graph_buffer_instance(
+          renderer, renderer->exposure_state_handle,
+          renderer->selected_exposure_history_instance);
+  if (!histogram || !output || !renderer->exposure_resolve_pipeline)
+    return false_v;
+  uint64_t root_gpu = 0u;
+  VkrMetalPacketExposureRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  if (!root)
+    return false_v;
+  *root = (VkrMetalPacketExposureRoot){
+      .histogram = histogram->resource.gpu_address,
+      .state = output->resource.gpu_address,
+      .previous_state = previous ? previous->resource.gpu_address
+                                 : output->resource.gpu_address,
+      .reset_reasons = packet->globals.exposure.reset_reasons,
+      .metering = vkr_exposure_gpu_metering(&renderer->exposure_metering,
+                                            &packet->globals.exposure),
+  };
+  if (!previous)
+    root->metering.history_valid = 0u;
+  [renderer->argument_table setAddress:root_gpu atIndex:0u];
+  [encoder setComputePipelineState:renderer->exposure_resolve_pipeline];
+  [encoder setArgumentTable:renderer->argument_table];
+  [encoder dispatchThreads:MTLSizeMake(VKR_EXPOSURE_HISTOGRAM_BIN_COUNT, 1u, 1u)
+      threadsPerThreadgroup:MTLSizeMake(VKR_EXPOSURE_HISTOGRAM_BIN_COUNT, 1u,
+                                        1u)];
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_metal_packet_encode_gpu_draws(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrRenderPacket *packet, id<MTL4RenderCommandEncoder> encoder,
@@ -1781,6 +1873,8 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   renderer->prepared_frame.picking_pending =
       packet->picking && packet->picking->pending;
   renderer->prepared_frame.editor_enabled = packet->frame.editor_enabled;
+  renderer->prepared_frame.exposure_automatic =
+      packet->globals.exposure.mode == VKR_EXPOSURE_MODE_AUTOMATIC;
   renderer->prepared_frame.transmission_pending =
       packet->world && packet->world->transmission_gpu_candidate_count > 0u;
   renderer->prepared_frame.transmission_compact_enabled =
@@ -1792,6 +1886,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   renderer->prepared_frame.hzb_history_valid = false_v;
   renderer->selected_hzb_history_instance = UINT32_MAX;
   renderer->selected_temporal_history_instance = UINT32_MAX;
+  renderer->selected_exposure_history_instance = UINT32_MAX;
   renderer->current_hzb_view_projection = vkr_metal_packet_clip_matrix(
       renderer->convert_vulkan_clip_y,
       mat4_mul(packet->globals.projection, packet->globals.view));
@@ -1880,6 +1975,10 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     log_error("Metal packet stage failed: temporal history selection");
     goto graph_failure;
   }
+  if (!vkr_metal_packet_select_exposure_history(renderer)) {
+    log_error("Metal packet stage failed: exposure history selection");
+    goto graph_failure;
+  }
 
   const bool8_t picking = renderer->prepared_frame.picking_pending;
   VkrTextureHandle ibl_source = VKR_TEXTURE_HANDLE_INVALID;
@@ -1921,8 +2020,17 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   const uint64_t sdsm_readback_bytes = renderer->prepared_frame.sdsm_enabled
                                            ? sizeof(VkrMetalPacketSdsmState)
                                            : 0u;
+  const uint64_t exposure_readback_offset = vkr_metal_packet_align_up(
+      sdsm_readback_offset + sdsm_readback_bytes, 16u);
+  const uint64_t exposure_readback_bytes =
+      renderer->prepared_frame.exposure_automatic
+          ? sizeof(VkrExposureGpuState) + sizeof(VkrExposureGpuHistogram)
+          : 0u;
   const uint64_t readback_prefix_size =
-      deferred_diagnostics || transmission_coverage || sdsm_readback_bytes > 0u
+      exposure_readback_bytes > 0u
+          ? exposure_readback_offset + exposure_readback_bytes
+      : deferred_diagnostics || transmission_coverage ||
+              sdsm_readback_bytes > 0u
           ? sdsm_readback_offset + sdsm_readback_bytes
           : probe_size;
   VkrMetalPacketCapturePlan capture_plans[VKR_CAPTURE_MAX_ITEMS] = {0};
@@ -2041,6 +2149,8 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   VkrMetalPacketGraphBufferInstance *deferred_state = NULL;
   VkrMetalPacketGraphBufferInstance *transmission_deferred_state = NULL;
   VkrMetalPacketGraphBufferInstance *sdsm_reduce_state = NULL;
+  VkrMetalPacketGraphBufferInstance *exposure_histogram = NULL;
+  VkrMetalPacketGraphBufferInstance *exposure_state = NULL;
   for (uint64_t order = 0;
        passed && order < renderer->graph->execution_order.length; ++order) {
     const uint32_t *pass_index =
@@ -2147,6 +2257,22 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
             renderer, pass, packet, encoder, &frame_upload);
       if (passed &&
           vkr_metal_packet_graph_pass_is(
+              pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_HISTOGRAM))
+        passed = vkr_metal_packet_encode_exposure_histogram(
+            renderer, pass, packet, encoder, &frame_upload);
+      if (passed &&
+          vkr_metal_packet_graph_pass_is(
+              pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_HISTOGRAM))
+        exposure_histogram = vkr_metal_packet_pass_buffer(renderer, pass, 1u);
+      if (passed && vkr_metal_packet_graph_pass_is(
+                        pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_RESOLVE))
+        passed = vkr_metal_packet_encode_exposure_resolve(
+            renderer, pass, packet, encoder, &frame_upload);
+      if (passed && vkr_metal_packet_graph_pass_is(
+                        pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_RESOLVE))
+        exposure_state = vkr_metal_packet_pass_buffer(renderer, pass, 1u);
+      if (passed &&
+          vkr_metal_packet_graph_pass_is(
               pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_SHADE))
         passed = vkr_metal_packet_encode_transmission_shade(
             renderer, pass, packet, encoder, &frame_upload);
@@ -2221,8 +2347,9 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
             encoder, &ibl_capture_dependency, true_v);
         out_result->dependency_count++;
       }
-      if (passed && (capture_count > 0 || deferred_diagnostics ||
-                     transmission_coverage || sdsm_readback_bytes > 0u)) {
+      if (passed &&
+          (capture_count > 0 || deferred_diagnostics || transmission_coverage ||
+           sdsm_readback_bytes > 0u || exposure_readback_bytes > 0u)) {
         passed = vkr_metal_packet_encode_dependency(
             encoder, &batch_capture_dependency, true_v);
         out_result->dependency_count++;
@@ -2279,8 +2406,9 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
           capture_encoder, &ibl_capture_dependency, false_v);
       out_result->dependency_count++;
     }
-    if (passed && (capture_count > 0 || deferred_diagnostics ||
-                   transmission_coverage || sdsm_readback_bytes > 0u)) {
+    if (passed &&
+        (capture_count > 0 || deferred_diagnostics || transmission_coverage ||
+         sdsm_readback_bytes > 0u || exposure_readback_bytes > 0u)) {
       passed = vkr_metal_packet_encode_dependency(
           capture_encoder, &batch_capture_dependency, false_v);
       out_result->dependency_count++;
@@ -2385,6 +2513,27 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
                          size:sdsm_readback_bytes];
       }
     }
+    if (passed && exposure_readback_bytes > 0u) {
+      if (!exposure_histogram || !exposure_state) {
+        passed = false_v;
+      } else {
+        [capture_encoder
+               copyFromBuffer:(id<MTLBuffer>)
+                                  exposure_state->resource.metal_buffer
+                 sourceOffset:0u
+                     toBuffer:(id<MTLBuffer>)readback_object
+            destinationOffset:readback_slice.offset + exposure_readback_offset
+                         size:sizeof(VkrExposureGpuState)];
+        [capture_encoder
+               copyFromBuffer:(id<MTLBuffer>)
+                                  exposure_histogram->resource.metal_buffer
+                 sourceOffset:0u
+                     toBuffer:(id<MTLBuffer>)readback_object
+            destinationOffset:readback_slice.offset + exposure_readback_offset +
+                              sizeof(VkrExposureGpuState)
+                         size:sizeof(VkrExposureGpuHistogram)];
+      }
+    }
     for (uint32_t i = 0; passed && i < capture_count; ++i) {
       const VkrMetalPacketCapturePlan *plan = &capture_plans[i];
       [capture_encoder
@@ -2426,6 +2575,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   vkr_metal_packet_mark_graph_images_submitted(renderer, submit_value);
   vkr_metal_packet_mark_hzb_history_submitted(renderer, submit_value);
   vkr_metal_packet_mark_temporal_submitted(renderer, submit_value);
+  vkr_metal_packet_mark_exposure_submitted(renderer, submit_value);
   vkr_metal_packet_mark_graph_buffers_submitted(renderer, submit_value);
   VkrMetalPacketCommandSlot *command_slot = renderer->active_command_slot;
   command_slot->submit_value = submit_value;
@@ -2446,6 +2596,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
           : VKR_RENDERER_IMPL_GPU_TIMING_REASON_DISABLED;
   command_slot->gpu_draw_diagnostics_requested = deferred_diagnostics;
   command_slot->sdsm_requested = sdsm_readback_bytes > 0u;
+  command_slot->exposure_requested = exposure_readback_bytes > 0u;
   command_slot->shadow_cascade_count =
       renderer->prepared_frame.shadow_cascade_count;
   if (deferred_diagnostics) {
@@ -2455,6 +2606,10 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   command_slot->sdsm_readback =
       sdsm_readback_bytes > 0u
           ? (const uint8_t *)readback.cpu_address + sdsm_readback_offset
+          : NULL;
+  command_slot->exposure_readback =
+      exposure_readback_bytes > 0u
+          ? (const uint8_t *)readback.cpu_address + exposure_readback_offset
           : NULL;
   command_slot->transmission_coverage_requested = transmission_coverage;
   if (renderer->prepared_frame.transmission_pending) {
@@ -2552,6 +2707,14 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
       vkr_metal_packet_finish_frame(renderer, true_v, true_v);
       return false_v;
     }
+    if (exposure_readback_bytes > 0u) {
+      VkrExposureGpuState state = {0};
+      MemCopy(&state,
+              (const uint8_t *)readback.cpu_address + exposure_readback_offset,
+              sizeof(state));
+      (void)vkr_capture_ring_set_display_exposure(
+          &renderer->capture_ring, submit_value, state.exposure_multiplier);
+    }
     vkr_capture_ring_collect(&renderer->capture_ring,
                              renderer->completion.signaledValue);
     if (transmission_coverage) {
@@ -2637,7 +2800,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   out_result->packet_build = renderer->packet_build;
   out_result->hzb_history_valid = renderer->prepared_frame.hzb_history_valid;
   out_result->resize_count = renderer->resize_count;
-  out_result->pipeline_count = 27u;
+  out_result->pipeline_count = 30u;
   out_result->pipeline_archive_warm = renderer->pipeline_archive_warm;
   out_result->pipeline_archive_written = renderer->pipeline_archive_written;
   if (deferred_diagnostics) {

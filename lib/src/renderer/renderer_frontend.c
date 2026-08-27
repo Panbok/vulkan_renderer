@@ -90,6 +90,7 @@ vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
       .hzb_history_valid = source->hzb_history_valid,
       .shadow_depth_range = source->shadow_depth_range,
       .has_gpu_draw_diagnostics = source->has_gpu_draw_diagnostics,
+      .exposure = source->exposure,
       .transmission_coverage_valid = source->has_transmission_coverage,
       .capture = source->capture,
       .materials =
@@ -915,9 +916,12 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   renderer->temporal_state = (VkrTemporalState){0};
   renderer->temporal_reset_reasons = 0u;
   renderer->temporal_enabled = !vkr_renderer_env_enabled("VKR_TAA_DISABLED");
+  renderer->exposure_state = (VkrExposureState){0};
+  renderer->exposure_reset_reasons = 0u;
   renderer->globals = (VkrGlobalMaterialState){
       .ambient_color = vec4_new(0.1, 0.1, 0.1, 1.0),
-      .exposure = VKR_DEFAULT_EXPOSURE,
+      .exposure_mode = VKR_EXPOSURE_MODE_AUTOMATIC,
+      .manual_exposure = VKR_DEFAULT_EXPOSURE,
       .render_mode = VKR_RENDER_MODE_DEFAULT,
   };
   renderer->frame_metrics = (VkrRendererFrameMetrics){0};
@@ -1092,6 +1096,7 @@ typedef struct VkrRendererPreparedPacket {
   VkrPreparedTextDraw world_text_draws[VKR_PREPARED_TEXT_DRAW_MAX];
   VkrPreparedTextDraw ui_text_draws[VKR_PREPARED_TEXT_DRAW_MAX];
   VkrTemporalFrameInput temporal_input;
+  VkrExposureFrameInput exposure_input;
 } VkrRendererPreparedPacket;
 
 static void vkr_renderer_prepare_packet(RendererFrontend *rf,
@@ -1118,6 +1123,19 @@ static void vkr_renderer_prepare_packet(RendererFrontend *rf,
   };
   prepared->packet.globals.temporal =
       vkr_temporal_prepare(&rf->temporal_state, &prepared->temporal_input);
+
+  /* Exposure reuses the discontinuities temporal already derived at this same
+     boundary rather than re-deriving them from the same inputs. */
+  prepared->exposure_input = (VkrExposureFrameInput){
+      .mode = packet->globals.exposure_mode,
+      .manual_exposure = packet->globals.manual_exposure,
+      .compensation_ev = packet->globals.exposure_compensation_ev,
+      .delta_time = packet->frame.delta_time,
+      .temporal_reset_reasons = prepared->packet.globals.temporal.reset_reasons,
+      .explicit_reset_reasons = rf->exposure_reset_reasons,
+  };
+  prepared->packet.globals.exposure =
+      vkr_exposure_prepare(&rf->exposure_state, &prepared->exposure_input);
 
   const VkrTextUpdatesPayload *updates = packet->text_updates;
   if (updates) {
@@ -1187,6 +1205,8 @@ renderer_impl_vulkan_submit_packet(void *state, const VkrRenderPacket *packet,
   }
   vkr_temporal_commit(&rf->temporal_state, &prepared.temporal_input);
   rf->temporal_reset_reasons = 0u;
+  vkr_exposure_commit(&rf->exposure_state, &prepared.exposure_input);
+  rf->exposure_reset_reasons = 0u;
   if (packet->picking && packet->picking->pending &&
       rf->picking.state == VKR_PICKING_STATE_RENDER_PENDING)
     rf->picking.state = VKR_PICKING_STATE_READBACK_PENDING;
@@ -1223,6 +1243,7 @@ renderer_impl_vulkan_submit_packet(void *state, const VkrRenderPacket *packet,
   rf->frame_metrics.packet_build = result.packet_build;
   const VkrRendererImplSubmitResult *observed = &rf->timing_result;
   rf->frame_metrics.world.hzb_history_valid = observed->hzb_history_valid;
+  rf->frame_metrics.exposure = observed->exposure;
   if (observed->has_gpu_draw_diagnostics) {
     rf->frame_metrics.world.opaque_draws = observed->gpu_visible_count;
     rf->frame_metrics.world.transmission_draws =
@@ -2374,6 +2395,8 @@ renderer_impl_metal_submit_packet(void *state, const VkrRenderPacket *packet,
   }
   vkr_temporal_commit(&rf->temporal_state, &prepared.temporal_input);
   rf->temporal_reset_reasons = 0u;
+  vkr_exposure_commit(&rf->exposure_state, &prepared.exposure_input);
+  rf->exposure_reset_reasons = 0u;
   VkrRendererImplSubmitResult current_result = {0};
   vkr_renderer_impl_lower_metal_result(&result, &current_result);
   current_result.source_frame_index = packet->frame.frame_index;
@@ -2399,6 +2422,7 @@ renderer_impl_metal_submit_packet(void *state, const VkrRenderPacket *packet,
      while `observed` may still describe an older completed frame. */
   rf->frame_metrics.packet_build = result.packet_build;
   rf->frame_metrics.world.hzb_history_valid = observed->hzb_history_valid;
+  rf->frame_metrics.exposure = observed->exposure;
   if (observed->has_gpu_draw_diagnostics) {
     rf->frame_metrics.world.opaque_draws = observed->gpu_visible_count;
     rf->frame_metrics.world.transmission_draws =
@@ -2506,6 +2530,23 @@ vkr_renderer_validate_packet(const VkrRenderPacket *packet,
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_INCOMPATIBLE_SIGNATURE,
                       "packet.packet_version",
                       "does not match VKR_RENDER_PACKET_VERSION");
+
+  /* Tonemapping multiplies by the manual value and the metering passes raise
+     two to the compensation bias with no recovery branch, so both are proven
+     here instead. */
+  if (packet->globals.exposure_mode >= VKR_EXPOSURE_MODE_COUNT)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.globals.exposure_mode",
+                      "must be a supported VkrExposureMode");
+  if (!isfinite(packet->globals.manual_exposure) ||
+      packet->globals.manual_exposure <= 0.0f)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.globals.manual_exposure",
+                      "must be finite and greater than zero");
+  if (!isfinite(packet->globals.exposure_compensation_ev))
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.globals.exposure_compensation_ev",
+                      "must be finite");
 
   const VkrWorldPassPayload *world = packet->world;
   if (world) {
@@ -2832,6 +2873,13 @@ void vkr_renderer_invalidate_temporal_history(
       VKR_TEMPORAL_RESET_EXPLICIT;
 }
 
+void vkr_renderer_invalidate_exposure_history(
+    VkrRendererFrontendHandle renderer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  ((RendererFrontend *)renderer)->exposure_reset_reasons |=
+      VKR_TEMPORAL_RESET_EXPLICIT;
+}
+
 static VkrRendererError renderer_impl_metal_cancel_frame(void *state) {
   RendererFrontend *renderer = state;
 #if defined(PLATFORM_APPLE)
@@ -2916,6 +2964,7 @@ static bool8_t renderer_impl_vulkan_poll_submit_result(
       .hzb_history_valid = source.hzb_history_valid,
       .shadow_depth_range = source.shadow_depth_range,
       .has_gpu_draw_diagnostics = source.has_gpu_draw_diagnostics,
+      .exposure = source.exposure,
       .pass_timing_count = source.pass_timing_count,
   };
   MemCopy(out_result->gpu_bucket_counts, source.gpu_bucket_counts,

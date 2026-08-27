@@ -18,6 +18,7 @@ static void test_packet_pre_recording_rejection(void) {
   };
   VkrRenderPacket packet = {
       .packet_version = VKR_RENDER_PACKET_VERSION,
+      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE},
       .world = &world,
   };
   assert(vkr_renderer_validate_packet(&packet, &validation) ==
@@ -100,6 +101,7 @@ static void test_packet_independent_transmission_stream(void) {
   };
   const VkrRenderPacket packet = {
       .packet_version = VKR_RENDER_PACKET_VERSION,
+      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE},
       .world = &world,
   };
   VkrValidationError validation = {0};
@@ -112,6 +114,7 @@ static void test_packet_borrowed_array_validation(void) {
   VkrWorldPassPayload world = {.instance_count = 1u};
   VkrRenderPacket packet = {
       .packet_version = VKR_RENDER_PACKET_VERSION,
+      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE},
       .world = &world,
   };
   assert(vkr_renderer_validate_packet(&packet, &validation) ==
@@ -152,6 +155,7 @@ static void test_packet_text_geometry_validation(void) {
   VkrWorldPassPayload world = {.text_draws = &text, .text_draw_count = 1u};
   const VkrRenderPacket packet = {
       .packet_version = VKR_RENDER_PACKET_VERSION,
+      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE},
       .world = &world,
   };
   assert(vkr_renderer_validate_packet(&packet, &validation) ==

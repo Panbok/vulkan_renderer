@@ -9,6 +9,7 @@ vkr_metal_packet_renderer_capture_poll(VkrMetalPacketRenderer *renderer,
     return VKR_CAPTURE_STATUS_NOT_FOUND;
   }
   if (@available(macOS 26.0, *)) {
+    vkr_metal_packet_collect_completed_results(renderer);
     return vkr_capture_ring_poll(&renderer->capture_ring, request_id,
                                  renderer->completion.signaledValue,
                                  out_result);
@@ -28,7 +29,7 @@ bool8_t vkr_metal_packet_renderer_pass_timings_poll(
     return false_v;
   if (!@available(macOS 26.0, *))
     return false_v;
-  vkr_metal_packet_cache_ready_timings(renderer);
+  vkr_metal_packet_collect_completed_results(renderer);
   const VkrMetalPacketResult *result =
       vkr_metal_packet_find_completed_timing(renderer, submit_value);
   if (!result || result->pass_timing_count == 0 ||
@@ -48,7 +49,7 @@ bool8_t vkr_metal_packet_renderer_submit_result_poll_next(
   *out_result = (VkrMetalPacketResult){0};
   if (!@available(macOS 26.0, *))
     return false_v;
-  vkr_metal_packet_cache_ready_timings(renderer);
+  vkr_metal_packet_collect_completed_results(renderer);
   const VkrMetalPacketResult *next = NULL;
   for (uint32_t i = 0; i < VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY; ++i) {
     const VkrMetalPacketResult *candidate =
@@ -544,6 +545,9 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
     [renderer->picking_resolve_pipeline release];
     [renderer->hzb_build_pipeline release];
     [renderer->sdsm_reduce_pipeline release];
+    [renderer->exposure_resolve_pipeline release];
+    [renderer->exposure_histogram_pipeline release];
+    [renderer->exposure_clear_pipeline release];
     [renderer->gpu_draw_prefix_pipeline release];
     [renderer->gpu_draw_classify_pipeline release];
     [renderer->vbuffer_pipeline release];

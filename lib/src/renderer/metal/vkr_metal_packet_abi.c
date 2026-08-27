@@ -154,8 +154,9 @@ vkr_global const VkrMetalPacketAbiField vkr_shadow_cascade_fields[] = {
 
 vkr_global const VkrMetalPacketAbiField vkr_tonemap_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketTonemapRoot, source_texture_id, "source", 0),
-    VKR_ABI_FIELD(VkrMetalPacketTonemapRoot, exposure, "exposure", 8),
-    VKR_ABI_FIELD(VkrMetalPacketTonemapRoot, reserved, "reserved", 16),
+    VKR_ABI_FIELD(VkrMetalPacketTonemapRoot, reserved, "reserved", 8),
+    VKR_ABI_FIELD(VkrMetalPacketTonemapRoot, exposure_state, "exposure_state",
+                  16),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_equirect_root_fields[] = {
@@ -257,6 +258,19 @@ vkr_global const VkrMetalPacketAbiField vkr_sdsm_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketSdsmRoot, vbuffer_texture_id, "vbuffer", 8),
     VKR_ABI_FIELD(VkrMetalPacketSdsmRoot, reduce_state, "reduce_state", 16),
     VKR_ABI_FIELD(VkrMetalPacketSdsmRoot, extent, "extent", 24),
+};
+
+vkr_global const VkrMetalPacketAbiField vkr_exposure_root_fields[] = {
+    VKR_ABI_FIELD(VkrMetalPacketExposureRoot, histogram, "histogram", 0),
+    VKR_ABI_FIELD(VkrMetalPacketExposureRoot, state, "state", 8),
+    VKR_ABI_FIELD(VkrMetalPacketExposureRoot, previous_state, "previous_state",
+                  16),
+    VKR_ABI_FIELD(VkrMetalPacketExposureRoot, source_texture_id, "source", 24),
+    VKR_ABI_FIELD(VkrMetalPacketExposureRoot, extent, "extent", 32),
+    VKR_ABI_FIELD(VkrMetalPacketExposureRoot, reset_reasons, "reset_reasons",
+                  40),
+    VKR_ABI_FIELD(VkrMetalPacketExposureRoot, reserved, "reserved", 44),
+    VKR_ABI_FIELD(VkrMetalPacketExposureRoot, metering, "metering", 48),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_temporal_transform_root_fields[] = {
@@ -649,6 +663,9 @@ vkr_global const VkrMetalPacketAbiRecord
         [VKR_METAL_PACKET_ABI_SDSM_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketSdsmRoot, "VkrMetalPacketSdsmRoot", 32,
                            16, vkr_sdsm_root_fields),
+        [VKR_METAL_PACKET_ABI_EXPOSURE_ROOT] = VKR_ABI_RECORD(
+            VkrMetalPacketExposureRoot, "VkrMetalPacketExposureRoot", 112, 16,
+            vkr_exposure_root_fields),
 };
 
 const VkrMetalPacketAbiRecord *

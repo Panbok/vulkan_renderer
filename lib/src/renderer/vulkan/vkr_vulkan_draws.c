@@ -825,19 +825,27 @@ bool8_t vkr_vk_record_packet_fullscreen(VkrVulkanRenderer *renderer,
                                         VkCommandBuffer command,
                                         VkrVulkanPacketPipeline pipeline,
                                         uint32_t texture_index,
+                                        uint64_t exposure_state,
                                         uint32_t flags) {
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   uint64_t root_address = 0u;
   VkrVulkanPacketUtilityRoot *root =
       vkr_vk_packet_utility_root(slot, &root_address);
-  if (!root)
+  uint64_t manual_state_address = 0u;
+  VkrExposureGpuState *manual_state = vkr_vk_frame_upload_allocate(
+      slot, sizeof(*manual_state), _Alignof(VkrExposureGpuState),
+      &manual_state_address, NULL);
+  if (!root || !manual_state)
     return false_v;
+  *manual_state = (VkrExposureGpuState){
+      .exposure_multiplier = renderer->graph->packet->globals.exposure.manual,
+  };
   root->materials = renderer->materials.address;
   root->transmission_texture = texture_index;
   root->transmission_sampler =
       renderer->config.fxaa_enabled ? renderer->transmission_sampler_slot : 0u;
-  root->ibl_controls.x = renderer->graph->packet->globals.exposure;
+  root->exposure_state = exposure_state ? exposure_state : manual_state_address;
   const VkrVulkanPushConstants push = {
       .root = root_address,
       .material_index = 0u,

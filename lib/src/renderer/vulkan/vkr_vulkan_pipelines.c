@@ -693,6 +693,9 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
           VKR_VULKAN_PACKET_PICKING_RESOLVE_COMP_SPV,
           VKR_VULKAN_PACKET_TRANSMISSION_SHADE_COMP_SPV,
           VKR_VULKAN_PACKET_TRANSMISSION_COVERAGE_COMP_SPV,
+          VKR_VULKAN_PACKET_EXPOSURE_CLEAR_COMP_SPV,
+          VKR_VULKAN_PACKET_EXPOSURE_HISTOGRAM_COMP_SPV,
+          VKR_VULKAN_PACKET_EXPOSURE_RESOLVE_COMP_SPV,
       };
   vkr_local_persist const char
       *const entries[VKR_VULKAN_DEFERRED_PIPELINE_COUNT] = {
@@ -702,6 +705,8 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
           "vk_temporal_resolve",   "vk_hzb_build",
           "vk_sdsm_reduce",        "vk_picking_resolve",
           "vk_transmission_shade", "vk_transmission_coverage",
+          "vk_exposure_clear",     "vk_exposure_histogram",
+          "vk_exposure_resolve",
       };
   for (uint32_t i = 0u; i < VKR_VULKAN_DEFERRED_PIPELINE_COUNT; ++i) {
     if (!vkr_vk_create_shader_module(renderer, paths[i],

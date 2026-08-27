@@ -1481,7 +1481,11 @@ void application_draw_frame(Application *application, float64_t delta) {
               .projection = application->renderer.globals.projection,
               .view_position = application->renderer.globals.view_position,
               .ambient_color = application->renderer.globals.ambient_color,
-              .exposure = application->renderer.globals.exposure,
+              .exposure_mode =
+                  (uint32_t)application->renderer.globals.exposure_mode,
+              .manual_exposure = application->renderer.globals.manual_exposure,
+              .exposure_compensation_ev =
+                  application->renderer.globals.exposure_compensation_ev,
               .render_mode =
                   (uint32_t)application->renderer.globals.render_mode,
           },

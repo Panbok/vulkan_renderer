@@ -193,11 +193,15 @@ bool8_t vkr_vk_record_deferred_readback(VkrVulkanRenderer *renderer,
   if (!opaque ||
       (renderer->prepared_frame.transmission_pending && !transmission))
     return false_v;
-  VkBufferMemoryBarrier2 barriers[3] = {0};
+  VkBufferMemoryBarrier2 barriers[5] = {0};
   uint32_t barrier_count = 0u;
   VkrVulkanGraphBufferInstance *sources[] = {
-      opaque, transmission,
-      slot->sdsm_requested ? slot->sdsm_reduce_state : NULL};
+      opaque,
+      transmission,
+      slot->sdsm_requested ? slot->sdsm_reduce_state : NULL,
+      slot->exposure_requested ? slot->exposure_histogram : NULL,
+      slot->exposure_requested ? slot->exposure_state_output : NULL,
+  };
   for (uint32_t i = 0u; i < ArrayCount(sources); ++i) {
     if (!sources[i])
       continue;
@@ -264,6 +268,22 @@ bool8_t vkr_vk_record_deferred_readback(VkrVulkanRenderer *renderer,
     };
     vkCmdCopyBuffer(command, slot->sdsm_reduce_state->buffer.handle,
                     slot->readback.handle, 1u, &sdsm_copy);
+  }
+  if (slot->exposure_requested) {
+    if (!slot->exposure_histogram || !slot->exposure_state_output)
+      return false_v;
+    const VkBufferCopy exposure_state_copy = {
+        .dstOffset = VKR_VULKAN_READBACK_EXPOSURE_STATE_OFFSET,
+        .size = sizeof(VkrExposureGpuState),
+    };
+    vkCmdCopyBuffer(command, slot->exposure_state_output->buffer.handle,
+                    slot->readback.handle, 1u, &exposure_state_copy);
+    const VkBufferCopy exposure_histogram_copy = {
+        .dstOffset = VKR_VULKAN_READBACK_EXPOSURE_HISTOGRAM_OFFSET,
+        .size = sizeof(VkrExposureGpuHistogram),
+    };
+    vkCmdCopyBuffer(command, slot->exposure_histogram->buffer.handle,
+                    slot->readback.handle, 1u, &exposure_histogram_copy);
   }
   return true_v;
 }
@@ -1114,6 +1134,180 @@ bool8_t vkr_vk_record_deferred_sdsm(VkrVulkanRenderer *renderer,
   vkCmdDispatch(command, (root.extent[0] + 7u) / 8u, (root.extent[1] + 7u) / 8u,
                 1u);
   return true_v;
+}
+
+/**
+ * @brief Builds the metering root shared by both exposure passes.
+ *
+ * The two passes agree on one root so the metering constants the histogram
+ * binned with are the same ones the resolve reduces with. Deriving them twice
+ * would let a mid-frame configuration change split a frame's decision.
+ */
+vkr_internal bool8_t vkr_vk_exposure_root(VkrVulkanRenderer *renderer,
+                                          const VkrRgPass *pass,
+                                          uint32_t histogram_binding,
+                                          VkrVulkanExposureRoot *out_root) {
+  VkrVulkanGraphBufferInstance *histogram =
+      vkr_vk_deferred_buffer(renderer, pass, histogram_binding);
+  if (!histogram)
+    return false_v;
+  const VkrRenderPacket *packet = renderer->graph->packet;
+  *out_root = (VkrVulkanExposureRoot){
+      .histogram = histogram->buffer.address,
+      .reset_reasons = packet->globals.exposure.reset_reasons,
+      .metering = vkr_exposure_gpu_metering(&renderer->exposure_metering,
+                                            &packet->globals.exposure),
+  };
+  return true_v;
+}
+
+bool8_t vkr_vk_record_exposure_histogram(VkrVulkanRenderer *renderer,
+                                         VkCommandBuffer command,
+                                         const VkrRgPass *pass) {
+  const VkrRgImageUse *source_use =
+      vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+  VkrVulkanGraphImageInstance *source =
+      source_use ? vkr_vk_deferred_image(renderer, source_use->image) : NULL;
+  VkrVulkanExposureRoot root = {0};
+  uint32_t source_index = 0u;
+  if (!source || !vkr_vk_exposure_root(renderer, pass, 1u, &root) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 0u, &source_index))
+    return false_v;
+  renderer->frame_slots[renderer->active_frame_slot].exposure_histogram =
+      vkr_vk_deferred_buffer(renderer, pass, 1u);
+  root.source_texture = source_index;
+  root.extent[0] = source->image.width;
+  root.extent[1] = source->image.height;
+
+  uint64_t root_address = 0u;
+  if (!vkr_vk_deferred_push_root(renderer, command, &root, sizeof(root),
+                                 _Alignof(VkrVulkanExposureRoot),
+                                 &root_address))
+    return false_v;
+  /* The bounded histogram is cleared and filled inside one pass, so the first
+     use of a frame slot does not depend on device memory arriving zeroed. */
+  vkCmdBindPipeline(
+      command, VK_PIPELINE_BIND_POINT_COMPUTE,
+      renderer
+          ->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_EXPOSURE_CLEAR]);
+  vkCmdDispatch(command, 1u, 1u, 1u);
+  const VkMemoryBarrier2 barrier = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+      .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+      .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+      .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+      .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                       VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+  };
+  const VkDependencyInfo dependency = {
+      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+      .memoryBarrierCount = 1u,
+      .pMemoryBarriers = &barrier,
+  };
+  vkCmdPipelineBarrier2(command, &dependency);
+  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                    renderer->deferred_pipelines
+                        [VKR_VULKAN_DEFERRED_PIPELINE_EXPOSURE_HISTOGRAM]);
+  vkCmdDispatch(command, (root.extent[0] + 15u) / 16u,
+                (root.extent[1] + 15u) / 16u, 1u);
+  return true_v;
+}
+
+bool8_t vkr_vk_record_exposure_resolve(VkrVulkanRenderer *renderer,
+                                       VkCommandBuffer command,
+                                       const VkrRgPass *pass) {
+  const VkrRgBufferUse *state_use =
+      vkr_rg_pass_find_buffer_use(&pass->desc, 1u, 0u);
+  VkrVulkanGraphBufferInstance *output =
+      state_use ? vkr_vk_graph_buffer(renderer, state_use->buffer) : NULL;
+  VkrVulkanExposureRoot root = {0};
+  if (!output || !vkr_vk_exposure_root(renderer, pass, 0u, &root))
+    return false_v;
+
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  slot->exposure_state_output = output;
+
+  /* Newest completed record, chosen the same way temporal reconstruction picks
+     its history: a record the GPU has not finished writing is not history. */
+  VkrVulkanGraphBuffer *states =
+      &renderer->graph_buffers[state_use->buffer.id - 1u];
+  slot->exposure_state_history = states;
+  VkrVulkanGraphBufferInstance *previous = NULL;
+  if (renderer->graph->packet->globals.exposure.history_valid) {
+    for (uint32_t i = 0u; i < states->instance_count; ++i) {
+      VkrVulkanGraphBufferInstance *candidate = &states->instances[i];
+      if (candidate == output || !candidate->history_valid ||
+          candidate->history_producer_submit_value >
+              renderer->completed_value ||
+          candidate->history_scene_generation !=
+              renderer->graph->packet->frame.scene_generation)
+        continue;
+      if (!previous || candidate->history_producer_submit_value >
+                           previous->history_producer_submit_value)
+        previous = candidate;
+    }
+  }
+  if (previous) {
+    slot->exposure_state_input = previous;
+    const VkBufferMemoryBarrier2 barrier = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = previous->buffer.handle,
+        .size = VK_WHOLE_SIZE,
+    };
+    const VkDependencyInfo dependency = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .bufferMemoryBarrierCount = 1u,
+        .pBufferMemoryBarriers = &barrier,
+    };
+    vkCmdPipelineBarrier2(command, &dependency);
+  } else {
+    /* No completed record. The kernel still reads this address and discards the
+       value through `history_valid`, so it points at the output instance rather
+       than at nothing. */
+    root.metering.history_valid = 0u;
+  }
+  root.state = output->buffer.address;
+  root.previous_state =
+      previous ? previous->buffer.address : output->buffer.address;
+
+  uint64_t root_address = 0u;
+  if (!vkr_vk_deferred_push_root(renderer, command, &root, sizeof(root),
+                                 _Alignof(VkrVulkanExposureRoot),
+                                 &root_address))
+    return false_v;
+  vkCmdBindPipeline(
+      command, VK_PIPELINE_BIND_POINT_COMPUTE,
+      renderer
+          ->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_EXPOSURE_RESOLVE]);
+  vkCmdDispatch(command, 1u, 1u, 1u);
+  return true_v;
+}
+
+void vkr_vk_mark_exposure_submitted(VkrVulkanRenderer *renderer,
+                                    uint64_t submit_value) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  if (slot->exposure_state_input)
+    slot->exposure_state_input->last_use_submit_value = submit_value;
+  if (!slot->exposure_state_output)
+    return;
+  const VkrRenderPacket *packet = renderer->graph->packet;
+  if (packet->globals.exposure.reset_reasons && slot->exposure_state_history) {
+    for (uint32_t i = 0u; i < slot->exposure_state_history->instance_count; ++i)
+      slot->exposure_state_history->instances[i].history_valid = false_v;
+  }
+  slot->exposure_state_output->history_producer_submit_value = submit_value;
+  slot->exposure_state_output->history_frame_index = packet->frame.frame_index;
+  slot->exposure_state_output->history_scene_generation =
+      packet->frame.scene_generation;
+  slot->exposure_state_output->history_valid = true_v;
 }
 
 bool8_t vkr_vk_record_deferred_picking(VkrVulkanRenderer *renderer,

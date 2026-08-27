@@ -110,6 +110,7 @@ typedef struct VkrRendererFrameMetrics {
   bool8_t gpu_submission_valid;
   uint64_t backend_present_ns;
   bool8_t backend_present_valid;
+  VkrExposureDebugSample exposure;
 } VkrRendererFrameMetrics;
 
 /** Validates the packet's backend-neutral pre-recording contract. */
@@ -170,6 +171,8 @@ struct s_RendererFrontend {
   VkrTemporalState temporal_state;
   uint32_t temporal_reset_reasons;
   bool8_t temporal_enabled;
+  VkrExposureState exposure_state;
+  uint32_t exposure_reset_reasons;
 
   // Meshes
   VkrMeshManager mesh_manager;

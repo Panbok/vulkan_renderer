@@ -102,6 +102,7 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
   MemZero(renderer, sizeof(*renderer));
   renderer->allocator = config->allocator;
   renderer->config = *config;
+  renderer->exposure_metering = vkr_exposure_metering_config_normalize(NULL);
   renderer->capture_storage_size = vkr_capture_ring_storage_requirement(
       config->capture_ring_capacity, config->capture_max_batch_bytes);
   if (config->capture_ring_capacity > 0u) {
@@ -684,6 +685,8 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
                                    packet->debug->enable_timing &&
                                    packet->debug->capture_pass_timestamps;
   renderer->prepared_frame.editor_enabled = packet->frame.editor_enabled;
+  renderer->prepared_frame.exposure_automatic =
+      packet->globals.exposure.mode == VKR_EXPOSURE_MODE_AUTOMATIC;
   renderer->prepared_frame.picking_pending =
       packet->picking && packet->picking->pending;
   renderer->prepared_frame.transmission_pending =
@@ -766,6 +769,7 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
   slot->timing_requested = timing_requested;
   slot->timing_collected = !slot->timing_requested;
   slot->sdsm_requested = renderer->prepared_frame.sdsm_enabled;
+  slot->exposure_requested = renderer->prepared_frame.exposure_automatic;
   slot->shadow_depth_range = (VkrShadowDepthRangeSample){0};
   slot->transmission_coverage_requested =
       renderer->prepared_frame.transmission_pending &&
@@ -876,6 +880,7 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
   vkr_rg_commit_retained_state(renderer->graph);
   vkr_vk_mark_hzb_submitted(renderer, signal_value);
   vkr_vk_mark_temporal_submitted(renderer, signal_value);
+  vkr_vk_mark_exposure_submitted(renderer, signal_value);
   vkr_vk_mark_graph_images_submitted(renderer, signal_value);
   vkr_vk_mark_graph_buffers_submitted(renderer, signal_value);
   slot->retire_value = signal_value;
@@ -1082,6 +1087,17 @@ bool8_t vkr_vulkan_renderer_poll_result(VkrVulkanRenderer *renderer,
       .has_transmission_coverage = best->transmission_coverage_requested,
   };
   vkr_vk_decode_sdsm_result(best, color, &out_result->shadow_depth_range);
+  if (best->exposure_requested) {
+    MemCopy(&out_result->exposure.state,
+            color + VKR_VULKAN_READBACK_EXPOSURE_STATE_OFFSET,
+            sizeof(out_result->exposure.state));
+    MemCopy(&out_result->exposure.histogram,
+            color + VKR_VULKAN_READBACK_EXPOSURE_HISTOGRAM_OFFSET,
+            sizeof(out_result->exposure.histogram));
+    out_result->exposure.source_frame_index = best->source_frame_index;
+    out_result->exposure.source_submit_value = best->retire_value;
+    out_result->exposure.valid = true_v;
+  }
   MemCopy(out_result->gpu_bucket_counts, opaque[0].bucket_counts,
           sizeof(out_result->gpu_bucket_counts));
   MemCopy(out_result->transmission_gpu_bucket_counts,

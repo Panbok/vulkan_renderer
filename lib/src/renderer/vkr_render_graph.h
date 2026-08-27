@@ -676,6 +676,12 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t hzb_reduce_pass_count;
   /** True when the packet contains transmissive world work. */
   bool8_t transmission_pending;
+  /**
+   * True only for an automatic-exposure packet. Manual frames must not pay for
+   * metering, so both exposure passes and both exposure buffers are gated here
+   * rather than being executed and discarded.
+   */
+  bool8_t exposure_automatic;
   /** Metal P19 state; false only for the diagnostic full-screen rollback. */
   bool8_t transmission_compact_enabled;
   /** True when this frame requests backend pass timestamps. */

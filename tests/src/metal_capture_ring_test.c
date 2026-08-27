@@ -37,6 +37,8 @@ static void test_capture_pending_ready_release(void) {
   assert(vkr_capture_ring_reserve(&ring, &request, plans, 17) ==
          VKR_RENDERER_ERROR_NONE);
   assert(vkr_capture_ring_submit(&ring, request.request_id, 5, staging));
+  assert(!vkr_capture_ring_set_display_exposure(&ring, 5, 0.0f));
+  assert(vkr_capture_ring_set_display_exposure(&ring, 5, 2.0f));
 
   VkrCapturePollResult poll = {0};
   assert(vkr_capture_ring_poll(&ring, request.request_id, 4, &poll) ==
@@ -47,7 +49,9 @@ static void test_capture_pending_ready_release(void) {
          VKR_CAPTURE_STATUS_READY);
   assert(poll.item_count == 2 && poll.items &&
          MemCompare(poll.items[0].data, staging, 4) == 0 &&
-         MemCompare(poll.items[1].data, staging + 256, 8) == 0);
+         MemCompare(poll.items[1].data, staging + 256, 8) == 0 &&
+         poll.items[0].display_exposure == 2.0f &&
+         poll.items[1].display_exposure == 2.0f);
   MemZero(staging, sizeof(staging));
   assert(((const uint8_t *)poll.items[0].data)[0] == 10 &&
          ((const uint8_t *)poll.items[1].data)[0] == 20);

@@ -95,7 +95,7 @@ bool8_t vkr_vk_plan_capture(VkrVulkanRenderer *renderer,
                    .data_size = data_size,
                    .mip = 0u,
                    .layer = source_layer,
-                   .display_exposure = packet->globals.exposure},
+                   .display_exposure = packet->globals.exposure.manual},
         .buffer_offset = offset,
     };
     string_format(slot->capture_plans[i].result.producer_resource,
@@ -211,10 +211,24 @@ bool8_t vkr_vk_collect_captures(VkrVulkanRenderer *renderer,
   for (uint32_t i = 0; i < VKR_VULKAN_FRAME_SLOT_COUNT; ++i) {
     VkrVulkanFrameSlot *slot = &renderer->frame_slots[i];
     if (slot->capture_request_id && slot->retire_value &&
-        slot->retire_value <= completed_value &&
-        !vkr_vk_invalidate(renderer, &slot->capture_readback.allocation, 0u,
-                           renderer->config.capture_max_batch_bytes)) {
-      return false_v;
+        slot->retire_value <= completed_value) {
+      if (!vkr_vk_invalidate(renderer, &slot->capture_readback.allocation, 0u,
+                             renderer->config.capture_max_batch_bytes))
+        return false_v;
+      if (slot->exposure_requested) {
+        if (!vkr_vk_invalidate(renderer, &slot->readback.allocation,
+                               VKR_VULKAN_READBACK_EXPOSURE_STATE_OFFSET,
+                               sizeof(VkrExposureGpuState)))
+          return false_v;
+        VkrExposureGpuState state = {0};
+        MemCopy(&state,
+                (const uint8_t *)slot->readback.allocation.mapped +
+                    VKR_VULKAN_READBACK_EXPOSURE_STATE_OFFSET,
+                sizeof(state));
+        (void)vkr_capture_ring_set_display_exposure(&renderer->capture_ring,
+                                                    slot->retire_value,
+                                                    state.exposure_multiplier);
+      }
     }
   }
   vkr_capture_ring_collect(&renderer->capture_ring, completed_value);
