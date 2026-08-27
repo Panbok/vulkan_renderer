@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-26
+updated: 2026-08-27
 authority: spec
 ---
 # VKR Renderer — Architecture and Status Specification
@@ -17,8 +17,9 @@ once; `vulkan` unambiguously names the sole Vulkan implementation. The
 complete CPU suite and surviving macOS Metal evidence pass after retirement.
 Fresh native Windows Debug and Release builds, focused offscreen TAA capture,
 and Vulkan synchronization validation pass on the target RX 6700 XT. Metal host
-ABI checks pass on Windows; native Apple TAA shader and runtime validation
-remain open. MoltenVK still cannot execute the descriptor-buffer path.
+ABI checks pass on Windows; native Apple M1 Pro TAA startup, Metal API/GPU
+shader validation, and cold/warm production archive gates pass. MoltenVK still
+cannot execute the descriptor-buffer path.
 **Scope:** Renderer architecture, implemented features, CPU/GPU memory, data
 transfer, synchronization, known issues, and recommended direction.
 **Audience:** Contributors and reviewers.
@@ -410,6 +411,14 @@ than aliasing. Blend footprint validation omits current transparent depth
 because the reused resources have no spare channel; exact identity and primitive
 matching remain required.
 
+History output ownership is independent of command-slot ownership on both
+backends. Metal realizes every graph `HISTORY` image and buffer with `N + 2`
+instances for `N` command slots, then chooses the least-recently-used instance
+whose producer and last reader have completed. Temporal and HZB inputs may be
+different completed instances and are excluded from the current output. This
+keeps the temporal chain continuous without a CPU/GPU wait when both readers
+remain live across submitted frames.
+
 Moving cameras validate surface identity against all four metadata texels in the
 bilinear history-color footprint; opaque and transmission also validate device
 depth. Stationary cameras admit coverage transitions under a 3x3 neighborhood
@@ -417,8 +426,12 @@ clamp so silhouettes, background samples, and stable composed transparency
 accumulate instead of cycling with the jitter sequence. PBR materials author
 `temporal_reactivity` in `[0,1]`; transparent validity carries it into resolve,
 where it remains active at rest. During camera motion, the existing
-transmission/blend luminance fallback is still capped at `0.75`. Both paths reuse
-existing passes and full-resolution resources.
+transmission/blend luminance fallback is still capped at `0.75`. Accepted
+pixels below `0.01` pixel of surface motion use `0.99` history retention only
+while the camera is stationary; camera or surface motion keeps the responsive
+`0.9` retention and motion attenuation. This removes the visible eight-phase
+EMA residual without weakening history rejection. Both paths reuse existing
+passes and full-resolution resources.
 
 Manual exposure is a post-temporal display transform: `Temporal.Resolve` stores
 scene-linear HDR history and `Post.Tonemap` applies exposure afterward. Manual
@@ -465,7 +478,7 @@ unjittered temporal passthrough without changing graph topology.
 | Device-memory suballocation | Implemented | Vulkan uses keyed DEVICE, UPLOAD, and READBACK pools backed by `vkr_gpu_memory`; Metal uses the same range/submit cores through its placement adapter. Logical and physical totals, peaks, retirement, failure classes, and capacity lower into renderer metrics. |
 | Bindless resource model | Implemented | Metal 4 and Vulkan 1.4 use GPU-addressed buffers, backend-native texture/sampler rows, completion-gated publication/retirement, authored graph lowering, and shared memory/submit/slot/capture cores. Packet version 19 carries bounded GPU candidate streams, stable temporal identity, renderer-owned temporal transforms/jitter/reset state, shadow debug, timing requests, feature-local payloads, per-cascade receiver quality, and SDSM metadata. Each non-empty indexed pass publishes one backend frame root and each retained draw references reflected GPU tables. |
 | Deferred visibility-buffer migration | Implemented through P21 | Both backends execute one topology: bounded GPU candidate classification and indirect submission for camera/cascade views; opaque visibility, G-buffer resolve, HDR lighting, HZB, picking, four-layer transmission, and completion-gated diagnostics. P21 removed the selector, legacy graph branch, CPU world draw construction, fallback routes, and dual-path metrics/tests. Packet version 19 rejects invalid, zero-generation, or over-capacity input before recording and carries completion-safe publication generations plus stable temporal identity. |
-| Portable temporal antialiasing | Implemented, partial evidence | Metal and Vulkan share one same-resolution resolve, rigid opaque/transmission/blend motion, exact visibility identity, completion-safe history, reset policy, authored material reactivity, stable-transparency accumulation, bounded moving-camera composition reactivity, post-temporal manual exposure, debug modes, and one-sample passthrough fallback. Native Apple validation, deformation/procedural motion, dynamic particle/material signals, broader motion/disocclusion evidence, and final-color owner acceptance remain open. See ADR-037 |
+| Portable temporal antialiasing | Implemented, partial evidence | Metal and Vulkan share one same-resolution resolve, rigid opaque/transmission/blend motion, exact visibility identity, backend-specific completion-safe history pools independent of command slots, reset policy, authored material reactivity, stable-transparency accumulation, bounded moving-camera composition reactivity, post-temporal manual exposure, debug modes, and one-sample passthrough fallback. Moving-camera color reconstruction applies the exact identity/primitive/depth mask to the bilinear history footprint instead of admitting rejected neighboring color. Visibility-buffer deferred shading now mirrors the forward path's bounded normal-footprint roughness filter; the owner confirms that this materially reduces fixed-camera shimmer. Native Apple validation passes, but final moving-camera interactive acceptance remains open; deformation/procedural motion, dynamic particle/material signals, and broader motion/disocclusion evidence also remain open. See ADR-037 |
 | Vulkan V1–V4 migration | Complete for RX 6700 XT | V1 characterization and V2's selected strategy are complete on macOS and Windows. V3 extracted the memory, submit-ring, and shared ABI cores alongside their production Vulkan callers and passes native window resize with reacquisition and retired-swapchain completion proof. V4 extracted the slot table, added completion-gated asset publication, and moved geometry, staging, images, startup buffers, and readback into keyed dynamic pools with complete logical/physical metrics. Prepared and writable initialization records before the next frame draw, staging retirement uses that submit value, publication dirty ranges flush once per backing buffer, and logical totals return to baseline. MoltenVK cannot execute the descriptor-buffer path. ADR-024's required cross-platform extraction witnesses now pass. |
 | Vulkan V5–V7 | Implemented; post-V7 target rerun passes | V5 lowers the authored graph to synchronization2/dynamic rendering and implements all packet pass/capture/timing categories. V6 completed selection, cache, lifecycle, metrics, and native RX 6700 XT validation. V7 removed the Vulkan 1.2 path, temporary selector, shaders/manifests, legacy frontend systems, interface/adaptor, and graph residue. CPU and Metal gates pass after deletion; fresh RX 6700 XT Debug/Release whole-graph, synchronization-validation, and GPU-assisted witnesses pass. |
 | HDR/tonemap/post chain | Implemented, initial | RGBA16F fullscreen/editor scene color, packet-carried manual exposure (default `0.30`), ACES-fitted tonemap, and output-space FXAA share the existing final draw before UI; `VKR_FXAA_DISABLED=1` is a cold diagnostic bypass. Temporal history remains scene-linear and exposure-independent because exposure is applied only after `Temporal.Resolve`. Exposure-equivalent canonical HDR capture remains upstream. Automatic exposure and additional post effects are absent |
@@ -1043,10 +1056,12 @@ pin the 17-image/13-sampler contract, and exact Bistro validation replay
     blend; the CPU/shader suite and focused Vulkan synchronization validation
     pass.
 
-    Skinned deformation, procedural vertex motion, particles, dynamic
-    material-change signals, native Apple shader/runtime validation, broad
-    animation/disocclusion clips, changed final-color owner acceptance, and
-    authoritative clean-tree Release timing remain open. See
+    An exclusive Apple M1 Pro Metal API/GPU shader-validation run executes both
+    temporal passes for all six measured frames with all 11 state-matrix
+    assertions passing and no Metal diagnostic. Skinned deformation,
+    procedural vertex motion, particles, dynamic material-change signals,
+    broad animation/disocclusion clips, changed final-color owner acceptance,
+    and authoritative clean-tree Release timing remain open. See
     [ADR-037](adr/037-portable-same-resolution-temporal-antialiasing.md) and the
     [image-quality roadmap](../rendering/image-quality-roadmap.md).
 
@@ -1192,6 +1207,8 @@ following checks were rerun:
 | Bistro golden baselines | The tracked legacy Vulkan generation `sha256:c3596ff14cdf206d0be4138840957925bd18353dd5d8eab339bfdec575df3564`, committed before V7, remains the historical cross-backend visual reference; it is not post-retirement implementation evidence. Metal generation `sha256:3db4f4d2294e5fdbc3618e64c4b2baf03bf66051dee0c4ff452e341d20cae51d` remains immutable but historical. Corrected bindless Bistro/text output was visually accepted on 2026-08-11, but its local proposals/generations were removed at the owner's request and are not retained authorities. |
 | Metal visual-parity correction | Corrected fourteen-view Metal snapshot `20260807T194321.543Z-0040dc` was compared directly with the accepted Vulkan generation: normalized per-view final-color MAE is `0.00662–0.03607` (mean `0.02060`), and the formerly divergent exterior-sky view drops from `0.1569` to `0.01153`. A matched channel audit found near-exact unlit (`0.00007`) and material-parameter (`0.00104`) output, isolating the remaining difference to normals/lighting rather than stretched texture coordinates. The production text fixture is byte-identical across backends and three isolated Metal runs are deterministic. Transmission routing emits both fixture draws. Hidden-window report `20260807T202738.082Z-01208a` completed two passing 34-frame Metal children with empty stderr; its aggregate is unavailable only because the generic profile requires immediate presentation while Metal reports FIFO and the short warmup was unstable. These are local/dirty correctness observations; no baseline was mutated or performance claim made. |
 | Bindless Metal root-ABI closure | Apple M1 Pro / Metal 4 builds, host regressions, and native nested pipeline reflection pass after correcting minimum-alignment validation and Slang `uint3` padding. Release offscreen text report `20260812T163826.676Z-01310f` captures exact final color `sha256:019ba7752b653ea77dc8fce8e4125b042f67794d1978aa12044ed4c5b44ad3a6` and picking IDs `sha256:ed47dbf1b5e6ade6820370e0313b257c3067d667dd277a1d0033c4d204a26388`; focused Debug report `20260812T163901.620Z-0136ab` reproduces both bytes with Metal API and GPU/shader validation enabled and no diagnostic beyond the enablement notices. These local/dirty runs close ABI and correctness scope only; they are not a baseline or performance result. |
+| Native Metal TAA closure | Apple M1 Pro / Metal 4 Debug and Release builds pass after correcting the temporal root's native scalar-array layout and assigning the alpha-blend temporal vertex root to reflected buffer 1 without fragment-only material requirements. A bounded ordinary launch enters the frame loop and exits cleanly. The exclusive Metal API/GPU shader-validation state-matrix run executes `Temporal.TransformHistory` and `Temporal.Resolve.Fullscreen` for all six measured frames, passes all 11 assertions, and emits no Metal diagnostic; report digest `sha256:5f5c4e0b7422c9f8c66775cd94f5295fe9a302071de31939a0dc79181382d15c`. The follow-up completion-safe `N + 2` history pool passes a single-process moving-camera dual-validation snapshot (`sha256:8ae74c51813b2b40beffbdb032c6020dc9b56bbddb29ea22b20746a10fb09a1f`). Its four-replay Bistro diagnostic (`sha256:ae59f34f5296d7d918a9c8c58114ffade7cfd96ec134064fa9cec79adb420191`) is retained only as history-lifetime evidence: the owner confirmed it did not change the visible jitter, so its independent-replay energy metric is rejected as visual acceptance. Cold/warm Release launches both use the same 1,660,656-byte explicit archive. The native CPU runner remains blocked before its late Metal group by the reproducible untouched mesh-tangent assertion recorded in ADR-037. This is correctness evidence, not baseline, performance, or visual-acceptance evidence. |
+| TAA stabilization follow-up | A fixed-camera Bistro channel split shows raw deferred emissive is stable and temporal history is accepted at every pixel. The visibility-buffer deferred path instead lacked the normal-footprint roughness filter already used by forward shading. Metal and Vulkan now derive bounded two-axis normal variance from same-visible-draw neighbors before analytic and environment specular evaluation; the owner confirms that the filter materially reduces shimmer. A `0.375` coefficient, a punctual roughness floor, per-light angular widening, and inverse-square specular attenuation were rejected or removed because they lacked causal owner evidence. The accepted stationary path uses `0.99` retention only below `0.01` pixel of surface motion. Moving-camera history color now excludes metadata-rejected bilinear texels and renormalizes partial footprints. Debug/Release builds and focused Metal API/GPU shader validation pass (`sha256:a4cda1da5c8b0be57521aeb75a1dda0d3817c078a195f2b3caa2c33abe125bbc`); final moving-camera owner acceptance remains open. |
 | Vulkan V1–V4 migration | Complete on the RX 6700 XT. V4 uses keyed DEVICE/UPLOAD/READBACK buffer/image pools, maintenance4 pre-creation requirements, dedicated-hint handling, persistent host mapping, device-local staged geometry, and complete logical/physical metric projection. Native window/reacquisition synchronization, GPU-assisted validation, exact readback, submit-value staging retirement, balanced retirement/collection, and logical totals returning to baseline are implemented. macOS builds the shared code and passes the CPU contract but cannot execute the descriptor-buffer backend. ADR-024's cross-platform extraction witnesses are complete. |
 | Vulkan V5–V7 | V5/V6 native Windows evidence covers the authored synchronization2/dynamic-rendering graph, analytical IBL, shared capture, timestamps, cache, lifecycle, metrics, and validation. V7 removed the legacy renderer and migration surface. Post-V7 CPU and Metal gates pass. On 2026-08-12, Debug and Release offscreen text-graph reports each passed two repetitions with three images and nine pass rows; focused offscreen/windowed synchronization and GPU-assisted validation also passed on the RX 6700 XT. These are correctness witnesses, not performance evidence. |
 | `vkr_frustum` production references | Application world-payload construction creates camera and cascade frustums and classifies submeshes against them |

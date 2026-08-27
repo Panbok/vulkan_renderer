@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-26
+updated: 2026-08-27
 authority: design
 ---
 
@@ -101,11 +101,20 @@ Both backends lower the same graph contract:
   and depth;
 - `Temporal.Resolve` reads the newest completed history and writes color,
   depth, identity, and primitive history;
+- Metal realizes each graph `HISTORY` resource with `N + 2` instances for `N`
+  command slots and chooses a completion-safe output independently of the
+  command slot. Temporal and HZB inputs may remain distinct without restarting
+  accumulation or introducing a CPU/GPU wait;
 - moving-camera history searches the four metadata texels corresponding to the
   bilinear history-color footprint. Opaque and transmission require exact
   identity, primitive, bounds, and depth; blend requires exact identity,
-  primitive, and bounds. A stationary camera permits clamped coverage
-  accumulation;
+  primitive, and bounds. Rejected texels cannot contribute history color: partial
+  footprints use masked, renormalized bilinear reconstruction, while fully valid
+  footprints keep hardware bilinear sampling. A stationary camera permits
+  clamped coverage accumulation;
+- accepted stationary-camera pixels below `0.01` pixel of surface motion use
+  `0.99` history retention to suppress the eight-phase EMA residual. Camera or
+  surface motion retains the responsive `0.9` path;
 - PBR `temporal_reactivity` remains active at rest, while moving-camera
   composition reactivity is capped at `0.75`;
 - manual exposure remains post-temporal, so scene-linear history is
@@ -120,12 +129,12 @@ Both backends lower the same graph contract:
 inputs through the harness.
 
 The remaining temporal gaps are deformation and procedural vertex motion,
-particles, and dynamic material-change signals. Native Metal runtime evidence
-and broader animation/disocclusion acceptance also remain open. MSAA remains
-unimplemented: no authored sample-count field, Vulkan graph realization rejects
-counts other than one, backend graphics pipelines use one sample, and production
-shader, picking, HZB, SDSM, transmission, blend, and capture paths assume
-one-sample images.
+particles, dynamic material-change signals, and broader
+animation/disocclusion acceptance. Native Apple M1 Pro Metal API/GPU shader
+validation passes. MSAA remains unimplemented: no authored sample-count field,
+Vulkan graph realization rejects counts other than one, backend graphics
+pipelines use one sample, and production shader, picking, HZB, SDSM,
+transmission, blend, and capture paths assume one-sample images.
 
 ### 3.4 Eight-bit linear albedo remains a separate risk
 
@@ -198,16 +207,39 @@ ADR-037 accepts the portable TAA architecture. Current evidence records:
    three 120-frame observations before and after measure +0.03364 ms mean in
    `Temporal.Resolve.Fullscreen` and +0.07904 ms mean in
    `Post.Tonemap.Fullscreen` at 1600x1200;
-4. a synchronization-validation-clean RX 6700 XT run; and
-5. direct local visual improvement on transparent surfaces, bright emissive
+4. a synchronization-validation-clean RX 6700 XT run;
+5. an exclusive native Apple M1 Pro Metal API/GPU shader-validation run in
+   which both temporal passes execute for all six measured frames and all 11
+   state-matrix assertions pass, report digest
+   `sha256:5f5c4e0b7422c9f8c66775cd94f5295fe9a302071de31939a0dc79181382d15c`;
+   and
+6. direct local visual improvement on transparent surfaces, bright emissive
    silhouettes, foliage, lamps, railings, chairs, and table edges without broad
    whole-frame blur. A far pendant crop's adjacent-luma mean-square edge energy
-   is 36.6% below the FXAA bypass.
+   is 36.6% below the FXAA bypass; and
+7. a Release Metal Bistro history-ownership diagnostic after decoupling history
+   from command slots, report digest
+   `sha256:ae59f34f5296d7d918a9c8c58114ffade7cfd96ec134064fa9cec79adb420191`.
+   Its four independent replays cannot establish interactive temporal
+   stability, and the owner subsequently confirmed that the visible jitter was
+   unchanged. It is retained only as history-lifetime evidence; and
+8. a follow-up channel split at the reported fixed Bistro view. Raw deferred
+   emissive is bit-identical across the selected jitter phases and every pixel
+   accepts history. The visibility-buffer deferred path instead lacked the
+   normal-footprint roughness filter already used by forward shading. Metal and
+   Vulkan now apply that filter before analytic and environment specular
+   lighting, and the owner confirms that it materially reduces the artifact.
+   Later coefficient, punctual roughness, angular-variance, and inverse-square
+   attenuation experiments did not establish a causal improvement and are not
+   retained. The accepted stationary `0.99` path makes the fixed camera nearly
+   stable. The moving path now masks rejected bilinear history-color texels and
+   renormalizes partial footprints. Debug/Release builds and focused Metal
+   API/GPU shader validation pass; moving-camera owner acceptance remains open.
 
-Still required: native M1 Pro shader/runtime validation, deformation,
-disocclusion, moving-transparency and animation fixtures, authoritative
-clean-tree performance evidence, and explicit owner acceptance of changed
-final-color goldens. The implementation remains partial until those gates pass.
+Still required: deformation, disocclusion, moving-transparency and animation
+fixtures, authoritative clean-tree performance evidence, and explicit owner
+acceptance of changed final-color goldens. The implementation remains partial
+until those gates pass.
 
 ## 7. Primary references
 

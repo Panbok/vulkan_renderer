@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-26
+updated: 2026-08-27
 authority: adr
 ---
 
@@ -11,8 +11,8 @@ authority: adr
 **Accepted (partial).** Metal and Vulkan share one same-resolution TAA contract
 and resolve algorithm. Vulkan CPU, shader, offscreen capture, and focused
 synchronization-validation evidence passes on the RX 6700 XT. Metal host ABI
-validation passes on Windows; native Apple shader and runtime validation remain
-open.
+validation passes on Windows, and native Metal API/GPU shader validation passes
+on the Apple M1 Pro.
 
 This decision does not adopt or prototype multisampling. Visibility-buffer MSAA
 remains absent.
@@ -54,17 +54,29 @@ Use one portable, same-resolution TAA resolve on both selected implementations:
 - moving-camera history searches all four texels in the bilinear history-color
   footprint. Opaque and transmission require exact temporal identity, primitive,
   reprojected device depth, and image bounds; blend requires the exact identity,
-  primitive, and bounds available from its overlay. A stationary camera admits
-  coverage transitions so subpixel silhouettes can accumulate;
+  primitive, and bounds available from its overlay. History color is reconstructed
+  only from matching texels, with bilinear weights renormalized after rejected
+  surfaces are removed; a fully matching footprint retains the hardware bilinear
+  path. A stationary camera admits coverage transitions so subpixel silhouettes
+  can accumulate;
 - a 3x3 current-color clamp bounds accepted history, including the stationary
   coverage path. PBR materials author `temporal_reactivity` in `[0,1]`;
   transparent validity carries it into resolve, where it remains active at
   rest. During camera motion, luminance divergence still provides a fallback
   reactive value capped at `0.75`;
+- accepted pixels with a stationary camera and less than `0.01` pixel of
+  surface motion retain `0.99` of history before reactivity. Other pixels keep
+  the responsive `0.9` retention and motion attenuation. This suppresses the
+  periodic residual of the eight-phase jitter sequence without applying the
+  slow path to moving geometry;
 - history color, depth, identity, primitive, and transform resources use the
   graph `HISTORY` instance domain. Only a completed producer may be read, and
   the Vulkan implementation selects a completion-safe output independently of
-  the active frame slot;
+  the active frame slot. Metal gives every `HISTORY` resource `N + 2`
+  instances for `N` command slots and selects the least-recently-used completed
+  instance across all declared history images and buffers. The temporal and
+  HZB readers may select different completed producers without coupling the
+  next output to a command slot or adding a CPU/GPU wait;
 - the existing final tonemap/composite draw applies edge-selective FXAA with a
   cardinal-neighborhood subpixel blend in tonemapped linear output space; UI
   and screen text compose afterward;
@@ -91,13 +103,17 @@ object identity; they do not author backend history resources.
   full-resolution history image types. Vulkan uses five physical instances of
   each `HISTORY` image or buffer: with three frame slots, two queued frames can
   retain distinct input and output instances while the recording frame still
-  needs one safe output.
+  needs one safe output. Metal uses `N + 2` instances: the `N - 1` submitted
+  command slots, one completed temporal input, and one completed HZB input can
+  occupy `N + 1` distinct instances while the recording frame still needs a
+  completion-safe output. The current two-slot Metal configuration therefore
+  uses four instances instead of two.
 - Static and rigid geometry have exact rejection inputs. Transmission and
   ordinary blend now use their own rigid motion instead of opaque-background
   motion. Moving-camera rejection validates the complete bilinear history
-  footprint rather than one integer metadata texel. Stationary-camera coverage
-  transitions rely on the neighborhood clamp instead of identity and depth
-  rejection.
+  footprint rather than one integer metadata texel, and the accepted metadata
+  mask also filters the color gather. Stationary-camera coverage transitions rely
+  on the neighborhood clamp instead of identity and depth rejection.
 - Skinned deformation, procedural vertex motion, particles, and dynamic
   material-change signals still lack explicit motion/reactive producers.
 - Sky pixels can accumulate while the camera is stationary. They reject during
@@ -105,6 +121,9 @@ object identity; they do not author backend history resources.
 - Authored material reactivity is independent of camera motion. The
   composition-derived luminance path remains only a conservative
   moving-camera fallback.
+- Stationary zero-motion pixels converge more slowly after a source-color
+  change. Moving geometry, camera motion, authored reactivity, and normal
+  history rejection retain the responsive path.
 - Manual exposure discontinuities are safe by ordering, not by a reset:
   completion-protected history remains scene-linear HDR.
 - FXAA consumes directional and cardinal-neighborhood samples in the existing
@@ -130,13 +149,19 @@ Not considered by this implementation. It requires a separate multisample
 resource, edge shading, transparency, picking, HZB, capture, and pipeline
 project and does not address shader or specular temporal shimmer.
 
-### One retained history image or frame-slot output
+### One retained history image or command-slot output
 
 Rejected. A writable retained image can be reused before the GPU completes its
 last reader. Mapping Vulkan output directly to one of three active frame slots
 also fails when two queued frames retain distinct history inputs and outputs.
 The five-instance Vulkan `HISTORY` ring is the minimum completion-safe bound:
 `2N - 1` instances for `N = 3` frame slots.
+
+The same rejection applies to Metal, but its bounded submission model has a
+different minimum. `N - 1` in-flight outputs plus distinct completed temporal
+and HZB inputs can occupy `N + 1` instances. A new output therefore requires
+`N + 2`; tying the output to the active command-slot index intermittently found
+every alternative still in use and restarted temporal accumulation.
 
 ## Evidence
 
@@ -270,14 +295,73 @@ The transparent-input follow-up adds:
   warm report `20260826T162634.357Z-00280c`, digest
   `sha256:03251df14acdc3c3805babc64525b7afaeabccebde0743ee963a4ed4848a6afe`.
 
-Native Apple shader/runtime validation, deformation/procedural/particle motion,
-dynamic material-change signals, broader animation/disocclusion clips, and
-owner acceptance of changed final-color baselines remain open.
+Native Apple evidence on 2026-08-26 adds:
+
+- `./build.sh Debug` and `./build.sh Release` pass after correcting the native
+  temporal root layout and the alpha-blend vertex-root binding contract.
+- `MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1
+  build_debug/tools/vkr_harness profile --case
+  tools/cases/local/p20_metal_state_matrix_validation.case.json --profile
+  tools/profiles/local-metal-dual-validation-serial.json` passes one exclusive
+  Apple M1 Pro repetition. `Temporal.TransformHistory` and
+  `Temporal.Resolve.Fullscreen` each execute for all six measured frames, all
+  11 state-matrix assertions pass, and the validation log contains no Metal
+  diagnostic beyond the two enablement notices. Report digest:
+  `sha256:5f5c4e0b7422c9f8c66775cd94f5295fe9a302071de31939a0dc79181382d15c`.
+  This local dirty-tree diagnostic is correctness evidence, not performance or
+  baseline evidence.
+- Cold and warm Release application launches against one fresh explicit
+  `VKR_PIPELINE_CACHE_PATH` both exit cleanly with the same non-empty
+  1,660,656-byte Metal archive.
+- The native `./build_test.sh` build completes, but the runner does not reach
+  the late Metal host-ABI group: it reproducibly stops first in the untouched
+  `test_tangent_generation_repairs_parallel_accumulation` mesh test. The native
+  pipeline-reflection gate above covers the repaired Metal ABI directly, while
+  the complete Windows CPU/shader suite remains the host-contract evidence.
+
+The 2026-08-27 stabilization follow-up adds:
+
+- Metal decouples every graph `HISTORY` image and buffer from command-slot
+  ownership. An `N + 2` pool chooses the least-recently-used completion-safe
+  output, while temporal and HZB readers independently choose their newest
+  completed producers. Debug and Release builds pass. A focused single-process
+  moving-camera snapshot passes Metal API and GPU/shader validation, digest
+  `sha256:8ae74c51813b2b40beffbdb032c6020dc9b56bbddb29ea22b20746a10fb09a1f`.
+  The owner confirmed that this lifetime fix did not change the reported visual
+  jitter, so its independent-replay capture remains correctness evidence only.
+- A fixed-camera channel split shows stable deferred emissive and full history
+  acceptance. The missing input was the normal-footprint roughness filter used
+  by forward shading. Metal and Vulkan now apply the same bounded two-axis
+  normal variance before deferred analytic and environment specular lighting.
+  The owner confirms that this materially reduces the shimmer. A larger
+  coefficient and a punctual roughness floor produced no visible change and
+  were reverted. Per-light angular widening and inverse-square specular
+  attenuation were removed during final review because no causal owner evidence
+  justified their broader lighting changes or per-pixel cost.
+- Accepted stationary pixels below `0.01` pixel of surface motion now retain
+  `0.99` history; the owner reports that this makes the fixed-camera result
+  nearly stable. Moving-camera source review found that metadata admitted one
+  matching texel while ordinary bilinear color still included rejected
+  neighbors. The moving path now filters color with the exact
+  identity/primitive/depth mask and renormalizes partial bilinear weights.
+  Fully valid footprints and the stationary path retain hardware bilinear
+  sampling.
+- Final Debug and Release builds pass. A focused single-process Metal API/GPU
+  shader-validation snapshot passes without a diagnostic, digest
+  `sha256:a4cda1da5c8b0be57521aeb75a1dda0d3817c078a195f2b3caa2c33abe125bbc`.
+  Cold and warm launches reuse one non-empty 1,684,736-byte archive. A matched
+  local moving-camera observation records `Temporal.Resolve.Fullscreen` at
+  1.3505 ms mean and 1.4261 ms p95 before, versus 1.3840 ms and 1.4441 ms after.
+  The dirty worktree makes this a bounded local cost observation, not a
+  performance result. Interactive moving-camera owner acceptance remains open.
+
+Deformation/procedural/particle motion, dynamic material-change signals,
+broader animation/disocclusion clips, and owner acceptance of changed
+final-color baselines remain open.
 
 ## Revisit when
 
-Revisit the resolve algorithm when internal render scaling is required, authored
-reactive inputs cover animated materials and particles, native Metal validation
-exposes a portability defect, or matched Release GPU evidence shows that a
-vendor temporal implementation provides materially better quality or cost
-without splitting the frontend contract.
+Revisit the resolve algorithm when internal render scaling is required,
+authored reactive inputs cover animated materials and particles, or matched
+Release GPU evidence shows that a vendor temporal implementation provides
+materially better quality or cost without splitting the frontend contract.

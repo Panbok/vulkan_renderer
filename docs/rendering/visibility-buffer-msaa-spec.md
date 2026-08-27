@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-26
+updated: 2026-08-27
 authority: design
 ---
 # Visibility-buffer anti-aliasing evaluation
@@ -147,9 +147,19 @@ one algorithm and packet contract. The resolve consumes current scene-linear
 HDR color, own-surface rigid motion, validity, device depth, exact temporal
 index/generation and primitive identity, authored material reactivity, and a
 bounded moving-camera composition fallback. Moving-camera validation searches
-the four metadata texels in the bilinear history-color footprint. The resolve
-reads the newest completed history and writes a completion-safe successor;
-manual exposure and output-space FXAA remain in the final draw after it.
+the four metadata texels in the bilinear history-color footprint. The resulting
+validity mask also filters history color, so a rejected neighboring surface
+cannot enter through hardware bilinear interpolation; partial footprints
+renormalize the surviving bilinear weights. The resolve reads the newest
+completed history and writes a completion-safe successor; manual exposure and
+output-space FXAA remain in the final draw after it.
+
+TAA does not relax history rejection to hide unstable specular input. Deferred
+shading first widens roughness from the same-draw screen-space normal footprint.
+Metal and Vulkan apply that confirmed filter consistently. Later punctual
+roughness, angular-variance, and inverse-square attenuation experiments were
+removed because they did not establish a causal visual improvement. Interactive
+moving-camera owner acceptance remains open.
 
 FSR 3.1 and MetalFX remain possible future consumers of the same foundation,
 not dependencies. FSR 3.1 officially supports DX12 and Vulkan; Metal is not an
@@ -290,7 +300,7 @@ of the accepted TAA implementation. A hybrid mode is not planned.
 | --- | --- | --- | --- |
 | T0 | Implemented | Previous-transform, jitter, reset, extent, depth, scene-linear history-domain, and reactivity contract | Focused temporal contract tests cover sequences, reset reasons, cuts, and disabled mode |
 | T1 | Implemented, partial evidence | Motion-vector and history debug views | Static capture shows valid zero motion; slow motion shows nonzero camera motion and accepted history; transmission and ordinary-blend fixtures show their own rigid motion; deformation remains open |
-| T2 | Implemented, partial evidence | Completion-safe history, portable resolve, and final-draw FXAA | CPU/shader gates, Vulkan capture, and focused synchronization validation pass; native Metal validation remains open |
+| T2 | Implemented | Completion-safe history, portable resolve, and final-draw FXAA | CPU/shader gates, Vulkan capture/synchronization validation, and exclusive native Apple M1 Pro Metal API/GPU shader validation pass |
 | T3 | Not scheduled | FSR 3.1 Vulkan prototype | Native AA runs with valid vectors and nonempty masks; no frame generation |
 | T4 | Not scheduled | MetalFX Metal prototype at a supported scale | Same input contract, correct sign/unit conversion, explicit algorithm difference |
 | M0 | Unstarted | One-sample-preserving graph, image, pipeline, descriptor, and capture plumbing | One-sample outputs remain byte-identical |
@@ -298,7 +308,7 @@ of the accepted TAA implementation. A hybrid mode is not planned.
 | M2 | Unstarted | Interior path plus fused edge shading | Sample-weighted color is correct for geometry and background edges |
 | M3 | Unstarted | Cutout alpha-to-coverage | Foliage motion clips accepted on both backends |
 | M4 | Unstarted | Picking, SDSM, HZB, transmission, blend, and capture contract | Whole graph is correct or limitations are explicitly rejected |
-| A0 | Partial | Matched quality and Release comparison | Owner acceptance, native Metal validation, and broader quality/performance evidence remain open |
+| A0 | Partial | Matched quality and Release comparison | Owner acceptance and broader quality/performance evidence remain open |
 
 Each runtime slice needs the CPU suite, relevant focused tests, backend
 validation, and matched Release evidence for any cost claim. ADR-037 records

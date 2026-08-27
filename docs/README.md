@@ -133,7 +133,7 @@ owning document status in the same change.
 | [034](architecture/adr/034-offline-cooked-font-artifacts.md) | proposed | Replace untracked font-generator outputs and runtime metric conversion with a validated versioned offline-cooked artifact; no production implementation exists |
 | [035](architecture/adr/035-canonical-mtsdf-screen-pixel-range-shading.md) | proposed | Adopt canonical derivative-based MTSDF range reconstruction and evidence-gate VKR's alpha minification fallback; no production implementation exists |
 | [036](architecture/adr/036-dpi-derived-ui-text-scale.md) | proposed | Replace the Windows-only design-extent text transform with per-window OS content scale applied before layout; no production implementation exists |
-| [037](architecture/adr/037-portable-same-resolution-temporal-antialiasing.md) | partial | Portable same-resolution TAA with shared Metal/Vulkan resolve, completion-safe history, stable output-grid reprojection, rigid transparent motion, stationary transparency accumulation, bounded moving-camera composition reactivity, and output-space FXAA in the existing final draw; native Apple validation, deformation/procedural/particle motion, broader motion evidence, and owner acceptance remain open |
+| [037](architecture/adr/037-portable-same-resolution-temporal-antialiasing.md) | partial | Portable same-resolution TAA with shared Metal/Vulkan resolve, completion-safe history, stable output-grid reprojection, rigid transparent motion, stationary transparency accumulation, bounded moving-camera composition reactivity, output-space FXAA in the existing final draw, and native Apple validation; deformation/procedural/particle motion, broader motion evidence, and owner acceptance remain open |
 
 ## Rendering
 
