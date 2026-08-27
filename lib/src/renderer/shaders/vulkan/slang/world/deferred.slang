@@ -1102,6 +1102,29 @@ float3 vkr_vk_deferred_sky(VkrVkLightingRoot *root, uint2 pixel)
         .rgb;
 }
 
+float vkr_vk_deferred_filter_roughness(VkrVkLightingRoot *root, uint2 pixel,
+                                       uint visible_index, float3 normal,
+                                       float roughness)
+{
+    uint2 limit = root.extent - 1u;
+    uint2 pixel_x = min(pixel + uint2(1u, 0u), limit);
+    uint2 pixel_y = min(pixel + uint2(0u, 1u), limit);
+    uint visible_x = g_storage_uint2_2d[root.vbuffer_texture][pixel_x].x;
+    uint visible_y = g_storage_uint2_2d[root.vbuffer_texture][pixel_y].x;
+    float3 normal_x = vkr_vk_octahedral_decode(
+        g_storage_float2_2d[root.normal_texture][pixel_x]);
+    float3 normal_y = vkr_vk_octahedral_decode(
+        g_storage_float2_2d[root.normal_texture][pixel_y]);
+    float same_x = visible_x == visible_index ? 1.0f : 0.0f;
+    float same_y = visible_y == visible_index ? 1.0f : 0.0f;
+    float3 normal_dx = (normal_x - normal) * same_x;
+    float3 normal_dy = (normal_y - normal) * same_y;
+    float normal_variance =
+        0.25f * (dot(normal_dx, normal_dx) + dot(normal_dy, normal_dy));
+    return sqrt(saturate(
+        roughness * roughness + min(normal_variance, 0.25f)));
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
@@ -1137,12 +1160,6 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
             float4(normal * 0.5f + 0.5f, 1.0f);
         return;
     }
-    if (frame.render_mode == 6u)
-    {
-        g_storage_2d[root.scene_texture][thread_id.xy] =
-            float4(seed.a, roughness, max(f0.x, max(f0.y, f0.z)), 1.0f);
-        return;
-    }
     float depth =
         g_depth_textures[root.depth_texture].Load(int3(thread_id.xy, 0));
     // See vkr_vk_deferred_sky: no Y flip when inverting the view-projection.
@@ -1150,6 +1167,14 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
         (float2(thread_id.xy) + 0.5f) / float2(root.extent) * 2.0f - 1.0f;
     float3 world = vkr_vk_deferred_homogeneous(
         mul(root.inverse_view_projection, float4(ndc_xy, depth, 1.0f)));
+    roughness = vkr_vk_deferred_filter_roughness(
+        root, thread_id.xy, encoded.x, normal, roughness);
+    if (frame.render_mode == 6u)
+    {
+        g_storage_2d[root.scene_texture][thread_id.xy] =
+            float4(seed.a, roughness, max(f0.x, max(f0.y, f0.z)), 1.0f);
+        return;
+    }
     if (frame.shadow_debug_mode != 0u)
     {
         VkrVulkanShadowDebugSample shadow_sample =
@@ -1211,12 +1236,19 @@ float vkr_vk_temporal_luminance(float3 color)
     return dot(color, float3(0.2126f, 0.7152f, 0.0722f));
 }
 
-bool vkr_vk_temporal_history_footprint_matches(
+struct VkrVkTemporalHistorySample
+{
+    float4 color;
+    bool accepted;
+};
+
+VkrVkTemporalHistorySample vkr_vk_temporal_history_sample(
     VkrVkTemporalResolveRoot *root, float2 history_uv, uint2 identity,
     uint primitive, float expected_depth, bool check_depth)
 {
     float2 history_texel = history_uv * float2(root.extent) - 0.5f;
     int2 base = int2(floor(history_texel));
+    uint match_mask = 0u;
     [unroll] for (int y = 0; y < 2; ++y)
     {
         [unroll] for (int x = 0; x < 2; ++x)
@@ -1230,14 +1262,52 @@ bool vkr_vk_temporal_history_footprint_matches(
             float previous_depth = g_storage_float2_2d
                 [root.history_depth_texture][sample_pixel]
                     .x;
-            if (all(previous_identity == identity) &&
+            bool matches =
+                all(previous_identity == identity) &&
                 previous_primitive == primitive &&
                 (!check_depth ||
-                 abs(previous_depth - expected_depth) <= 0.005f))
-                return true;
+                 abs(previous_depth - expected_depth) <= 0.005f);
+            uint bit = 1u << uint(y * 2 + x);
+            match_mask |= matches ? bit : 0u;
         }
     }
-    return false;
+    VkrVkTemporalHistorySample result;
+    result.color = 0.0f;
+    result.accepted = match_mask != 0u;
+    if (!result.accepted)
+        return result;
+    if (match_mask == 0xfu)
+    {
+        result.color = g_textures[root.history_color_texture].SampleLevel(
+            g_samplers[root.history_sampler], history_uv, 0.0f);
+        return result;
+    }
+
+    float2 history_fraction = frac(history_texel);
+    float weight_sum = 0.0f;
+    [unroll] for (int y = 0; y < 2; ++y)
+    {
+        [unroll] for (int x = 0; x < 2; ++x)
+        {
+            uint bit = 1u << uint(y * 2 + x);
+            if ((match_mask & bit) == 0u)
+                continue;
+            uint2 sample_pixel = uint2(clamp(base + int2(x, y), int2(0),
+                                             int2(root.extent) - 1));
+            float weight_x =
+                x == 0 ? 1.0f - history_fraction.x : history_fraction.x;
+            float weight_y =
+                y == 0 ? 1.0f - history_fraction.y : history_fraction.y;
+            float weight = weight_x * weight_y;
+            result.color +=
+                g_textures[root.history_color_texture]
+                    .Load(int3(sample_pixel, 0)) * weight;
+            weight_sum += weight;
+        }
+    }
+    result.accepted = weight_sum > 1e-5f;
+    result.color = result.accepted ? result.color / weight_sum : 0.0f;
+    return result;
 }
 
 [shader("compute")]
@@ -1327,14 +1397,18 @@ void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
     float4 history = current;
     if (accepted)
     {
-        accepted =
-            root.camera_stationary != 0u ||
-            vkr_vk_temporal_history_footprint_matches(
-                root, history_uv, identity, primitive, validity.y,
-                check_history_depth);
-        if (accepted)
+        if (root.camera_stationary != 0u)
             history = g_textures[root.history_color_texture].SampleLevel(
                 g_samplers[root.history_sampler], history_uv, 0.0f);
+        else
+        {
+            VkrVkTemporalHistorySample sample =
+                vkr_vk_temporal_history_sample(
+                    root, history_uv, identity, primitive, validity.y,
+                    check_history_depth);
+            accepted = sample.accepted;
+            history = accepted ? sample.color : current;
+        }
     }
 
     if (accepted)
@@ -1359,8 +1433,15 @@ void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
         history.rgb = clamp(history.rgb, neighborhood_min, neighborhood_max);
     }
     float motion_pixels = length(motion * float2(root.extent));
+    bool stationary_surface =
+        root.camera_stationary != 0u && motion_pixels < 0.01f;
+    // A fixed 0.9 EMA preserves a visible periodic residual from the
+    // eight-phase jitter sequence. Once both the camera and surface are
+    // stationary, retain enough history to make that residual sub-perceptual.
+    // Moving surfaces keep the responsive path even when the camera is still.
+    float history_retention = stationary_surface ? 0.99f : 0.9f;
     float history_weight = accepted
-                               ? 0.9f * (1.0f - reactive) *
+                               ? history_retention * (1.0f - reactive) *
                                      saturate(1.0f - motion_pixels / 128.0f)
                                : 0.0f;
     float4 resolved =

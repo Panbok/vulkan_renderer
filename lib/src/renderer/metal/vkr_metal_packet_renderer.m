@@ -415,6 +415,8 @@ struct VkrMetalPacketRenderer {
   VkrMetalPacketCommitFeedbackRecord *commit_feedback_records;
   VkrMetalPacketCommandSlot *active_command_slot;
   uint32_t command_slot_count;
+  uint32_t history_instance_count;
+  uint32_t history_output_index;
   uint32_t next_command_slot;
   uint32_t next_completed_timing;
   uint32_t next_commit_feedback;
@@ -577,7 +579,7 @@ VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_graph_buffers_bytes,
 VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_graph_buffer_instances_bytes,
                              graph_buffer_instances,
                              (uint64_t)renderer->max_images *
-                                 renderer->command_slot_count)
+                                 renderer->history_instance_count)
 VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_meshes_bytes, meshes,
                              renderer->max_meshes)
 VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_submeshes_bytes, submeshes,
@@ -606,7 +608,7 @@ VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_commit_feedback_bytes,
 VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_retired_image_views_bytes,
                              retired_image_views,
                              (uint64_t)renderer->max_images *
-                                 renderer->command_slot_count)
+                                 renderer->history_instance_count * 2u)
 
 #undef VKR_METAL_PACKET_ARRAY_BYTES
 

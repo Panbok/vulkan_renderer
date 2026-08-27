@@ -401,8 +401,11 @@ vkr_global const VkrMetalPacketAbiField vkr_temporal_resolve_root_fields[] = {
                   transmission_depth_texture_id, "transmission_depth", 176),
     VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, transmission_enabled,
                   "transmission_enabled", 184),
+    VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot,
+                  transmission_alignment_padding,
+                  "transmission_alignment_padding", 188),
     VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, transmission_reserved,
-                  "transmission_reserved", 188),
+                  "transmission_reserved", 192),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_transmission_shade_root_fields[] = {
@@ -569,6 +572,9 @@ vkr_global const VkrMetalPacketAbiRecord
             VKR_ABI_RECORD(VkrMetalMaterialGpuRow, "VkrMetalPacketMaterial",
                            176, 16, vkr_material_fields),
         [VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT] = VKR_ABI_RECORD(
+            VkrMetalPacketVertexDrawRoot, "VkrMetalPacketDrawRoot", 48, 16,
+            vkr_vertex_draw_root_fields),
+        [VKR_METAL_PACKET_ABI_TEMPORAL_VERTEX_DRAW_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketVertexDrawRoot, "VkrMetalPacketDrawRoot", 48, 16,
             vkr_vertex_draw_root_fields),
         [VKR_METAL_PACKET_ABI_DRAW_ROOT] =

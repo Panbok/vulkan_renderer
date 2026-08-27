@@ -760,6 +760,27 @@ static float3 vkr_metal_packet_deferred_world_position(
   return world.xyz / max(abs(world.w), 1e-7) * sign(world.w);
 }
 
+static float vkr_metal_packet_deferred_filter_roughness(
+    constant VkrMetalPacketDeferredLightingRoot &root, uint2 pixel,
+    uint visible_index, float3 normal, float roughness) {
+  uint2 limit = root.extent - 1u;
+  uint2 pixel_x = min(pixel + uint2(1u, 0u), limit);
+  uint2 pixel_y = min(pixel + uint2(0u, 1u), limit);
+  uint visible_x = root.vbuffer.read(pixel_x).x;
+  uint visible_y = root.vbuffer.read(pixel_y).x;
+  float3 normal_x =
+      vkr_metal_packet_octahedral_decode(root.normal.read(pixel_x).xy);
+  float3 normal_y =
+      vkr_metal_packet_octahedral_decode(root.normal.read(pixel_y).xy);
+  float same_x = select(0.0, 1.0, visible_x == visible_index);
+  float same_y = select(0.0, 1.0, visible_y == visible_index);
+  float3 normal_dx = (normal_x - normal) * same_x;
+  float3 normal_dy = (normal_y - normal) * same_y;
+  float normal_variance =
+      0.25 * (dot(normal_dx, normal_dx) + dot(normal_dy, normal_dy));
+  return sqrt(saturate(roughness * roughness + min(normal_variance, 0.25)));
+}
+
 static float3
 vkr_metal_packet_deferred_sky(constant VkrMetalPacketDeferredLightingRoot &root,
                               uint2 pixel) {
@@ -780,7 +801,8 @@ kernel void vkr_metal_packet_deferred_lighting(
     uint2 pixel [[thread_position_in_grid]]) {
   if (any(pixel >= root.extent))
     return;
-  if (root.vbuffer.read(pixel).x == 0u) {
+  uint visible_index = root.vbuffer.read(pixel).x;
+  if (visible_index == 0u) {
     root.hdr.write(float4(vkr_metal_packet_deferred_sky(root, pixel), 1.0),
                    pixel);
     return;
@@ -804,13 +826,15 @@ kernel void vkr_metal_packet_deferred_lighting(
     root.hdr.write(float4(normal * 0.5 + 0.5, 1.0), pixel);
     return;
   }
+  float3 world_position = vkr_metal_packet_deferred_world_position(
+      root, pixel, root.depth.read(pixel).x);
+  roughness = vkr_metal_packet_deferred_filter_roughness(
+      root, pixel, visible_index, normal, roughness);
   if (frame->render_mode == 6u) {
     root.hdr.write(
         float4(hdr_seed.a, roughness, max(f0.x, max(f0.y, f0.z)), 1.0), pixel);
     return;
   }
-  float3 world_position = vkr_metal_packet_deferred_world_position(
-      root, pixel, root.depth.read(pixel).x);
   if (frame->shadow_debug_mode != 0u) {
     VkrMetalPacketShadowSample shadow_sample =
         vkr_metal_packet_directional_shadow_sample(frame, world_position, normal);
@@ -980,7 +1004,7 @@ kernel void vkr_metal_packet_deferred_lighting(
   root.hdr.write(float4(color, 1.0), pixel);
 }
 
-struct VkrMetalPacketTemporalResolveRoot {
+struct alignas(16) VkrMetalPacketTemporalResolveRoot {
   device VkrGpuVisibleDrawRow *visible_rows;
   device VkrMetalPacketInstance *instances;
   texture2d<float, access::read> scene;
@@ -990,9 +1014,9 @@ struct VkrMetalPacketTemporalResolveRoot {
   texture2d<float, access::read> depth;
   texture2d<uint, access::read> vbuffer;
   texture2d<float, access::sample> history_color;
-  texture2d<float, access::read> history_depth;
-  texture2d<uint, access::read> history_identity;
-  texture2d<uint, access::read> history_primitive;
+  texture2d<float, access::sample> history_depth;
+  texture2d<uint, access::sample> history_identity;
+  texture2d<uint, access::sample> history_primitive;
   texture2d<float, access::write> output_color;
   texture2d<float, access::write> output_depth;
   texture2d<uint, access::write> output_identity;
@@ -1006,32 +1030,81 @@ struct VkrMetalPacketTemporalResolveRoot {
   texture2d<uint, access::read> transmission_vbuffer;
   texture2d<float, access::read> transmission_depth;
   uint transmission_enabled;
-  uint3 transmission_reserved;
+  uint transmission_alignment_padding;
+  uint transmission_reserved[2];
 };
 
 static float vkr_metal_packet_temporal_luminance(float3 color) {
   return dot(color, float3(0.2126, 0.7152, 0.0722));
 }
 
-static bool vkr_metal_packet_temporal_history_footprint_matches(
+struct VkrMetalPacketTemporalHistorySample {
+  float4 color;
+  bool accepted;
+};
+
+static VkrMetalPacketTemporalHistorySample
+vkr_metal_packet_temporal_history_sample(
     constant VkrMetalPacketTemporalResolveRoot &root, float2 history_uv,
     uint2 identity, uint primitive, float expected_depth, bool check_depth) {
   float2 history_texel = history_uv * float2(root.extent) - 0.5;
   int2 base = int2(floor(history_texel));
+  constexpr sampler metadata_sampler(coord::normalized,
+                                     address::clamp_to_edge, filter::nearest);
+  uint4 identity_x =
+      root.history_identity.gather(metadata_sampler, history_uv, int2(0),
+                                   component::x);
+  uint4 identity_y =
+      root.history_identity.gather(metadata_sampler, history_uv, int2(0),
+                                   component::y);
+  uint4 primitives = root.history_primitive.gather(
+      metadata_sampler, history_uv, int2(0), component::x);
+  float4 depths = root.history_depth.gather(
+      metadata_sampler, history_uv, int2(0), component::x);
+  bool4 matches =
+      (identity_x == identity.x) & (identity_y == identity.y) &
+      (primitives == primitive) &
+      select(bool4(true), abs(depths - expected_depth) <= 0.005, check_depth);
+  constexpr sampler linear_sampler(coord::normalized, address::clamp_to_edge,
+                                   filter::linear);
+  if (all(matches))
+    return {root.history_color.sample(linear_sampler, history_uv), true};
+  if (!any(matches))
+    return {float4(0.0), false};
+
+  constexpr sampler nearest_sampler(coord::normalized, address::clamp_to_edge,
+                                    filter::nearest);
+  float2 history_fraction = fract(history_texel);
+  float4 color = 0.0;
+  float weight_sum = 0.0;
   for (int y = 0; y < 2; ++y) {
     for (int x = 0; x < 2; ++x) {
       uint2 sample_pixel =
           uint2(clamp(base + int2(x, y), int2(0), int2(root.extent) - 1));
-      uint2 previous_identity = root.history_identity.read(sample_pixel).xy;
-      uint previous_primitive = root.history_primitive.read(sample_pixel).x;
-      float previous_depth = root.history_depth.read(sample_pixel).x;
-      if (all(previous_identity == identity) &&
-          previous_primitive == primitive &&
-          (!check_depth || abs(previous_depth - expected_depth) <= 0.005))
-        return true;
+      float2 sample_uv =
+          (float2(sample_pixel) + 0.5) / float2(root.extent);
+      uint2 previous_identity =
+          root.history_identity.sample(metadata_sampler, sample_uv).xy;
+      uint previous_primitive =
+          root.history_primitive.sample(metadata_sampler, sample_uv).x;
+      float previous_depth =
+          root.history_depth.sample(metadata_sampler, sample_uv).x;
+      bool matches = all(previous_identity == identity) &&
+                     previous_primitive == primitive &&
+                     (!check_depth ||
+                      abs(previous_depth - expected_depth) <= 0.005);
+      if (!matches)
+        continue;
+      float weight_x = x == 0 ? 1.0 - history_fraction.x : history_fraction.x;
+      float weight_y = y == 0 ? 1.0 - history_fraction.y : history_fraction.y;
+      float weight = weight_x * weight_y;
+      color += root.history_color.sample(nearest_sampler, sample_uv) * weight;
+      weight_sum += weight;
     }
   }
-  return false;
+  return weight_sum > 1e-5
+             ? VkrMetalPacketTemporalHistorySample{color / weight_sum, true}
+             : VkrMetalPacketTemporalHistorySample{float4(0.0), false};
 }
 
 kernel void vkr_metal_packet_temporal_resolve(
@@ -1100,15 +1173,17 @@ kernel void vkr_metal_packet_temporal_resolve(
       all(history_uv >= 0.0) && all(history_uv <= 1.0);
   float4 history = current;
   if (accepted) {
-    accepted =
-        root.camera_stationary != 0u ||
-        vkr_metal_packet_temporal_history_footprint_matches(
-            root, history_uv, identity, primitive, validity.y,
-            check_history_depth);
-    if (accepted) {
+    if (root.camera_stationary != 0u) {
       constexpr sampler history_sampler(coord::normalized,
                                         address::clamp_to_edge, filter::linear);
       history = root.history_color.sample(history_sampler, history_uv);
+    } else {
+      VkrMetalPacketTemporalHistorySample sample =
+          vkr_metal_packet_temporal_history_sample(
+              root, history_uv, identity, primitive, validity.y,
+              check_history_depth);
+      accepted = sample.accepted;
+      history = accepted ? sample.color : current;
     }
   }
 
@@ -1127,8 +1202,16 @@ kernel void vkr_metal_packet_temporal_resolve(
     history.rgb = clamp(history.rgb, neighborhood_min, neighborhood_max);
   }
   float motion_pixels = length(motion * float2(root.extent));
+  bool stationary_surface =
+      root.camera_stationary != 0u && motion_pixels < 0.01;
+  /* A fixed 0.9 EMA preserves a visible periodic residual from the eight-phase
+     jitter sequence. Once both the camera and surface are stationary, retain
+     enough history to make that residual sub-perceptual. Moving surfaces keep
+     the responsive path even when the camera itself is still. */
+  float history_retention = stationary_surface ? 0.99 : 0.9;
   float history_weight =
-      accepted ? 0.9 * (1.0 - reactive) * saturate(1.0 - motion_pixels / 128.0)
+      accepted ? history_retention * (1.0 - reactive) *
+                     saturate(1.0 - motion_pixels / 128.0)
                : 0.0;
   float4 resolved =
       float4(mix(current.rgb, history.rgb, history_weight), current.a);

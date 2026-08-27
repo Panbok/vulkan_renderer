@@ -122,12 +122,14 @@ vkr_internal bool8_t vkr_metal_packet_validate_nested_abi(
     member = [root_type memberByName:slang_name];
   }
   MTLPointerType *pointer = member ? member.pointerType : nil;
-  return member && pointer &&
-                 vkr_metal_packet_validate_abi_type(
-                     pipeline_label, pointer.elementStructType,
-                     pointer.dataSize, pointer.alignment, record_id)
-             ? true_v
-             : false_v;
+  if (!member || !pointer) {
+    log_error("Metal nested ABI type missing for %s/%s",
+              pipeline_label.UTF8String, member_name);
+    return false_v;
+  }
+  return vkr_metal_packet_validate_abi_type(
+      pipeline_label, pointer.elementStructType, pointer.dataSize,
+      pointer.alignment, record_id);
 }
 
 vkr_internal bool8_t vkr_metal_packet_validate_nested_gpu_abi(
@@ -204,7 +206,8 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
     return false_v;
   }
   if (record_id == VKR_METAL_PACKET_ABI_DRAW_ROOT ||
-      record_id == VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT) {
+      record_id == VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT ||
+      record_id == VKR_METAL_PACKET_ABI_TEMPORAL_VERTEX_DRAW_ROOT) {
     if (!vkr_metal_packet_validate_nested_gpu_abi(
             pipeline_label, root.bufferStructType, "geometry_rows",
             VKR_GPU_ABI_GEOMETRY_ROW) ||
@@ -477,7 +480,7 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
   renderer->blend_pipeline = vkr_metal_packet_create_pipeline_with_targets(
       renderer, slang, "vkr_metal_packet_temporal_vertex", fragment,
       "vkr_metal_packet_temporal_blend_fragment", MTLPixelFormatRGBA16Float,
-      true_v, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+      true_v, VKR_METAL_PACKET_ABI_TEMPORAL_VERTEX_DRAW_ROOT,
       VKR_METAL_PACKET_ABI_DRAW_ROOT, false_v, true_v, true_v,
       @"VKR Metal packet alpha blend");
   renderer->overlay_pipeline = vkr_metal_packet_create_pipeline(
@@ -1214,8 +1217,8 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
       config->capture_ring_capacity == 0 ||
       config->capture_ring_capacity > VKR_CAPTURE_RING_CAPACITY_MAX ||
       config->capture_max_batch_bytes == 0 ||
-      config->frame_slot_count > UINT32_MAX / 4u ||
-      config->frame_slot_count > VKR_METAL_PACKET_GRAPH_INSTANCE_MAX ||
+      config->frame_slot_count > UINT32_MAX - 2u ||
+      config->frame_slot_count + 2u > VKR_METAL_PACKET_GRAPH_INSTANCE_MAX ||
       config->upload_ring_size % ((uint64_t)config->frame_slot_count * 4u) !=
           0 ||
       config->readback_ring_size % ((uint64_t)config->frame_slot_count * 4u) !=
@@ -1235,12 +1238,16 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
       (config->target_kind == VKR_METAL_PACKET_TARGET_WINDOW &&
        !config->metal_layer))
     return false_v;
-  /* A replacement is created before the current generation retires. With
-     three command slots, one still-in-flight instance from the preceding
-     generation can also survive until that slot is reacquired. */
-  const uint64_t graph_instances_per_resource =
+  /* A replacement is created before the current generation retires. Capacity
+     therefore covers both generations of the larger command- or
+     history-instance domain. */
+  const uint64_t command_instances_per_resource =
       2u * config->frame_slot_count +
       (config->frame_slot_count > 2u ? config->frame_slot_count - 2u : 0u);
+  const uint64_t history_instances_per_resource =
+      2u * (config->frame_slot_count + 2u);
+  const uint64_t graph_instances_per_resource =
+      MAX(command_instances_per_resource, history_instances_per_resource);
   const uint64_t graph_allocation_capacity =
       (uint64_t)config->max_images * graph_instances_per_resource * 2u;
   const uint64_t memory_record_capacity =
@@ -1273,6 +1280,10 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
     renderer->max_draws = config->max_draws;
     renderer->max_instances = config->max_instances;
     renderer->command_slot_count = config->frame_slot_count;
+    /* At most N-1 command slots remain in flight. Their distinct outputs plus
+       one shared temporal input and one shared HZB input can occupy N+1
+       instances, so one additional output must remain completion-safe. */
+    renderer->history_instance_count = config->frame_slot_count + 2u;
     renderer->upload_slot_size =
         config->upload_ring_size / config->frame_slot_count;
     renderer->target_kind = config->target_kind;

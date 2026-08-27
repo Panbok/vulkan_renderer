@@ -297,7 +297,7 @@ bool8_t vkr_metal_packet_renderer_drain(
     VkrMetalPacketGraphBuffer *slot = &renderer->graph_buffers[i];
     VkrMetalPacketGraphBufferInstance *instances =
         &renderer->graph_buffer_instances[(uint64_t)i *
-                                          renderer->command_slot_count];
+                                          renderer->history_instance_count];
     if (slot->live && !vkr_metal_packet_retire_graph_buffer_instances(
                           renderer, instances, slot->instance_count))
       return false_v;

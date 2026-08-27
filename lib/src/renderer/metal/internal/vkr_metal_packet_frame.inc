@@ -1864,12 +1864,16 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     log_error("Metal packet stage failed: image realization");
     goto graph_failure;
   }
-  if (!vkr_metal_packet_select_hzb_history(renderer)) {
-    log_error("Metal packet stage failed: HZB history selection");
-    goto graph_failure;
-  }
   if (!vkr_metal_packet_realize_buffers(renderer)) {
     log_error("Metal packet stage failed: buffer realization");
+    goto graph_failure;
+  }
+  if (!vkr_metal_packet_select_history_output(renderer)) {
+    log_error("Metal packet stage failed: history output selection");
+    goto graph_failure;
+  }
+  if (!vkr_metal_packet_select_hzb_history(renderer)) {
+    log_error("Metal packet stage failed: HZB history selection");
     goto graph_failure;
   }
   if (!vkr_metal_packet_select_temporal_history(renderer)) {

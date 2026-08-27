@@ -251,7 +251,8 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketTemporalResolveRoot {
   uint64_t transmission_vbuffer_texture_id;
   uint64_t transmission_depth_texture_id;
   uint32_t transmission_enabled;
-  uint32_t transmission_reserved[3];
+  uint32_t transmission_alignment_padding;
+  uint32_t transmission_reserved[2];
 } VkrMetalPacketTemporalResolveRoot;
 
 _Static_assert(sizeof(VkrMetalPacketTemporalResolveRoot) == 208,
@@ -453,6 +454,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_MATERIAL,
   VKR_METAL_PACKET_ABI_TEXT_VERTEX,
   VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+  VKR_METAL_PACKET_ABI_TEMPORAL_VERTEX_DRAW_ROOT,
   VKR_METAL_PACKET_ABI_DRAW_ROOT,
   VKR_METAL_PACKET_ABI_FRAME_ROOT,
   VKR_METAL_PACKET_ABI_IBL_PROBE,
