@@ -737,6 +737,7 @@ struct VkrMetalPacketDeferredLightingRoot {
   texture2d<float, access::read> normal;
   texture2d<float, access::read_write> hdr;
   texturecube<float, access::sample> sky;
+  texture2d<float, access::sample> gtao_visibility;
   float4x4 inverse_view_projection;
   uint2 extent;
   uint sky_enabled;
@@ -837,7 +838,8 @@ kernel void vkr_metal_packet_deferred_lighting(
   }
   if (frame->shadow_debug_mode != 0u) {
     VkrMetalPacketShadowSample shadow_sample =
-        vkr_metal_packet_directional_shadow_sample(frame, world_position, normal);
+        vkr_metal_packet_directional_shadow_sample(frame, world_position,
+                                                   normal);
     root.hdr.write(float4(vkr_metal_packet_shadow_debug_color(
                               frame->shadow_debug_mode, shadow_sample),
                           1.0),
@@ -851,7 +853,8 @@ kernel void vkr_metal_packet_deferred_lighting(
 
   if (frame->directional_direction_enabled.w > 0.5) {
     VkrMetalPacketShadowSample shadow_sample =
-        vkr_metal_packet_directional_shadow_sample(frame, world_position, normal);
+        vkr_metal_packet_directional_shadow_sample(frame, world_position,
+                                                   normal);
     VkrMetalPacketDirectResult direct = vkr_metal_packet_direct_deferred(
         normal, view, normalize(-frame->directional_direction_enabled.xyz),
         frame->directional_color_intensity.rgb *
@@ -932,6 +935,12 @@ kernel void vkr_metal_packet_deferred_lighting(
     return;
   }
 
+  constexpr sampler gtao_sampler(coord::normalized, address::clamp_to_edge,
+                                 filter::nearest);
+  float2 gtao_uv = (float2(pixel) + 0.5) / float2(root.extent);
+  float gtao_visibility =
+      root.gtao_visibility.sample(gtao_sampler, gtao_uv).x;
+  float diffuse_ao = ao * gtao_visibility;
   float3 color = analytic_diffuse + analytic_specular;
   if ((frame->flags & 2u) != 0u) {
     constexpr sampler environment_sampler(coord::normalized,
@@ -982,23 +991,24 @@ kernel void vkr_metal_packet_deferred_lighting(
                         level(roughness *
                               float(max(frame->prefilter_mip_count, 1u) - 1u)))
                 .rgb;
-        diffuse += (1.0 - fresnel) * probe_irradiance * diffuse_albedo * ao *
-                   probe.intensity_box.x * probe.intensity_box.y * weight;
+        diffuse += (1.0 - fresnel) * probe_irradiance * diffuse_albedo *
+                   diffuse_ao * probe.intensity_box.x * probe.intensity_box.y *
+                   weight;
         specular += probe_prefiltered * (fresnel * brdf.x + f90 * brdf.y) *
                     specular_visibility * probe.intensity_box.x *
                     probe.intensity_box.z * weight;
       }
     }
     float global_weight = max(1.0 - min(local_weight_sum, 1.0), 0.0);
-    diffuse += (1.0 - fresnel) * global_irradiance * diffuse_albedo * ao *
-               global_weight;
+    diffuse += (1.0 - fresnel) * global_irradiance * diffuse_albedo *
+               diffuse_ao * global_weight;
     specular += global_prefiltered * (fresnel * brdf.x + f90 * brdf.y) *
                 specular_visibility * global_weight;
     color +=
         (diffuse * frame->ibl_controls.y + specular * frame->ibl_controls.z) *
         frame->ibl_controls.x;
   } else {
-    color += frame->ambient_color.rgb * diffuse_albedo * ao;
+    color += frame->ambient_color.rgb * diffuse_albedo * diffuse_ao;
   }
   color += hdr_seed.rgb;
   root.hdr.write(float4(color, 1.0), pixel);
@@ -1049,18 +1059,16 @@ vkr_metal_packet_temporal_history_sample(
     uint2 identity, uint primitive, float expected_depth, bool check_depth) {
   float2 history_texel = history_uv * float2(root.extent) - 0.5;
   int2 base = int2(floor(history_texel));
-  constexpr sampler metadata_sampler(coord::normalized,
-                                     address::clamp_to_edge, filter::nearest);
-  uint4 identity_x =
-      root.history_identity.gather(metadata_sampler, history_uv, int2(0),
-                                   component::x);
-  uint4 identity_y =
-      root.history_identity.gather(metadata_sampler, history_uv, int2(0),
-                                   component::y);
-  uint4 primitives = root.history_primitive.gather(
-      metadata_sampler, history_uv, int2(0), component::x);
-  float4 depths = root.history_depth.gather(
-      metadata_sampler, history_uv, int2(0), component::x);
+  constexpr sampler metadata_sampler(coord::normalized, address::clamp_to_edge,
+                                     filter::nearest);
+  uint4 identity_x = root.history_identity.gather(metadata_sampler, history_uv,
+                                                  int2(0), component::x);
+  uint4 identity_y = root.history_identity.gather(metadata_sampler, history_uv,
+                                                  int2(0), component::y);
+  uint4 primitives = root.history_primitive.gather(metadata_sampler, history_uv,
+                                                   int2(0), component::x);
+  float4 depths = root.history_depth.gather(metadata_sampler, history_uv,
+                                            int2(0), component::x);
   bool4 matches =
       (identity_x == identity.x) & (identity_y == identity.y) &
       (primitives == primitive) &
@@ -1081,18 +1089,17 @@ vkr_metal_packet_temporal_history_sample(
     for (int x = 0; x < 2; ++x) {
       uint2 sample_pixel =
           uint2(clamp(base + int2(x, y), int2(0), int2(root.extent) - 1));
-      float2 sample_uv =
-          (float2(sample_pixel) + 0.5) / float2(root.extent);
+      float2 sample_uv = (float2(sample_pixel) + 0.5) / float2(root.extent);
       uint2 previous_identity =
           root.history_identity.sample(metadata_sampler, sample_uv).xy;
       uint previous_primitive =
           root.history_primitive.sample(metadata_sampler, sample_uv).x;
       float previous_depth =
           root.history_depth.sample(metadata_sampler, sample_uv).x;
-      bool matches = all(previous_identity == identity) &&
-                     previous_primitive == primitive &&
-                     (!check_depth ||
-                      abs(previous_depth - expected_depth) <= 0.005);
+      bool matches =
+          all(previous_identity == identity) &&
+          previous_primitive == primitive &&
+          (!check_depth || abs(previous_depth - expected_depth) <= 0.005);
       if (!matches)
         continue;
       float weight_x = x == 0 ? 1.0 - history_fraction.x : history_fraction.x;
@@ -1132,9 +1139,9 @@ kernel void vkr_metal_packet_temporal_resolve(
       primitive = encoded.y & primitive_mask;
     }
   } else {
-    uint2 transmission_encoded =
-        root.transmission_enabled != 0u ? root.transmission_vbuffer.read(pixel).xy
-                                        : uint2(0u);
+    uint2 transmission_encoded = root.transmission_enabled != 0u
+                                     ? root.transmission_vbuffer.read(pixel).xy
+                                     : uint2(0u);
     if (transmission_encoded.x != 0u) {
       const device VkrGpuVisibleDrawRow &visible =
           root.transmission_visible_rows[transmission_encoded.x - 1u];
@@ -1160,17 +1167,18 @@ kernel void vkr_metal_packet_temporal_resolve(
   float derived_reactive =
       root.camera_stationary != 0u
           ? 0.0
-          : min(0.75, saturate(abs(current_luminance - pre_luminance) /
-                               max(max(current_luminance, pre_luminance), 0.05)));
+          : min(0.75,
+                saturate(abs(current_luminance - pre_luminance) /
+                         max(max(current_luminance, pre_luminance), 0.05)));
   float authored_reactive =
       validity.x >= 2.0 ? saturate(validity.x - 2.0) : 0.0;
   float reactive = max(derived_reactive, authored_reactive);
   float2 uv = (float2(pixel) + 0.5) / float2(root.extent);
   float2 history_uv = uv + motion;
-  bool accepted =
-      root.history_valid != 0u && !(blend_overlay && identity.x == 0u) &&
-      (validity.x > 0.5 || root.camera_stationary != 0u) &&
-      all(history_uv >= 0.0) && all(history_uv <= 1.0);
+  bool accepted = root.history_valid != 0u &&
+                  !(blend_overlay && identity.x == 0u) &&
+                  (validity.x > 0.5 || root.camera_stationary != 0u) &&
+                  all(history_uv >= 0.0) && all(history_uv <= 1.0);
   float4 history = current;
   if (accepted) {
     if (root.camera_stationary != 0u) {
@@ -1179,9 +1187,9 @@ kernel void vkr_metal_packet_temporal_resolve(
       history = root.history_color.sample(history_sampler, history_uv);
     } else {
       VkrMetalPacketTemporalHistorySample sample =
-          vkr_metal_packet_temporal_history_sample(
-              root, history_uv, identity, primitive, validity.y,
-              check_history_depth);
+          vkr_metal_packet_temporal_history_sample(root, history_uv, identity,
+                                                   primitive, validity.y,
+                                                   check_history_depth);
       accepted = sample.accepted;
       history = accepted ? sample.color : current;
     }
@@ -1209,10 +1217,9 @@ kernel void vkr_metal_packet_temporal_resolve(
      enough history to make that residual sub-perceptual. Moving surfaces keep
      the responsive path even when the camera itself is still. */
   float history_retention = stationary_surface ? 0.99 : 0.9;
-  float history_weight =
-      accepted ? history_retention * (1.0 - reactive) *
-                     saturate(1.0 - motion_pixels / 128.0)
-               : 0.0;
+  float history_weight = accepted ? history_retention * (1.0 - reactive) *
+                                        saturate(1.0 - motion_pixels / 128.0)
+                                  : 0.0;
   float4 resolved =
       float4(mix(current.rgb, history.rgb, history_weight), current.a);
   if (root.render_mode == 7u)
@@ -1464,10 +1471,9 @@ static bool vkr_metal_packet_resolve_transmission_surface(
     emissive *= material.emissive_texture
                     .sample(material.emissive_sampler, texcoord, gradients)
                     .rgb;
-  float3 object_position =
-      vertices[0].position * barycentric.x +
-      vertices[1].position * barycentric.y +
-      vertices[2].position * barycentric.z;
+  float3 object_position = vertices[0].position * barycentric.x +
+                           vertices[1].position * barycentric.y +
+                           vertices[2].position * barycentric.z;
   surface = {base,
              normal,
              metallic,
@@ -1653,8 +1659,7 @@ static float3 vkr_metal_packet_transmission_lighting(
 
 static void vkr_metal_packet_write_transmission_temporal(
     constant VkrMetalPacketTransmissionShadeRoot &root,
-    const thread VkrMetalPacketTransmissionSurface &surface,
-    uint2 pixel) {
+    const thread VkrMetalPacketTransmissionSurface &surface, uint2 pixel) {
   if (root.temporal_outputs_enabled == 0u)
     return;
   float2 motion = 0.0;
@@ -1683,10 +1688,9 @@ static void vkr_metal_packet_write_transmission_temporal(
         float2 previous_uv =
             float2(previous_ndc.x * 0.5 + 0.5, 0.5 - previous_ndc.y * 0.5);
         motion = previous_uv - current_uv;
-        validity =
-            float2(2.0 + saturate(root.materials[surface.material_index]
-                                      .temporal_reactivity),
-                   previous_clip.z / previous_clip.w);
+        validity = float2(2.0 + saturate(root.materials[surface.material_index]
+                                             .temporal_reactivity),
+                          previous_clip.z / previous_clip.w);
       }
     }
   }
@@ -1910,9 +1914,10 @@ struct VkrMetalPacketSdsmRoot {
   uint2 extent;
 };
 
-kernel void vkr_metal_packet_sdsm_reduce(
-    constant VkrMetalPacketSdsmRoot &root [[buffer(0)]],
-    uint2 pixel [[thread_position_in_grid]]) {
+kernel void vkr_metal_packet_sdsm_reduce(constant VkrMetalPacketSdsmRoot &root
+                                         [[buffer(0)]],
+                                         uint2 pixel
+                                         [[thread_position_in_grid]]) {
   bool occupied = all(pixel < root.extent) && root.vbuffer.read(pixel).x != 0u;
   float depth = occupied ? root.depth.read(pixel).x : 0.0f;
   uint occupied_in_simd = simd_sum(occupied ? 1u : 0u);
@@ -1938,8 +1943,8 @@ static_assert(sizeof(VkrMetalPacketGBufferResolveRoot) == 352,
               "G-buffer resolve root ABI must remain 352 bytes");
 static_assert(sizeof(VkrMetalPacketTemporalResolveRoot) == 208,
               "Temporal-resolve root ABI must remain 208 bytes");
-static_assert(sizeof(VkrMetalPacketDeferredLightingRoot) == 144,
-              "Deferred-lighting root ABI must remain 144 bytes");
+static_assert(sizeof(VkrMetalPacketDeferredLightingRoot) == 160,
+              "Deferred-lighting root ABI must remain 160 bytes");
 static_assert(sizeof(VkrMetalPacketTransmissionShadeRoot) == 448,
               "Transmission-shade root ABI must remain 448 bytes");
 static_assert(sizeof(VkrMetalPacketTransmissionCoverageRoot) == 32,

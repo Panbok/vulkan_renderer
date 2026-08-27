@@ -390,6 +390,7 @@
         "subsystem_mask",
         "editor",
         "text_fixture",
+        "taa_enabled",
         "renderer_backend",
         "cascades",
         "pcf_samples",
@@ -397,6 +398,17 @@
         "shadow_sdsm",
         "shadow_split_lambda",
         "shadow_map_size",
+        "exposure_mode",
+        "manual_exposure",
+        "exposure_compensation_ev",
+        "exposure_reset_frame",
+        "bloom_enabled",
+        "bloom_threshold",
+        "bloom_knee",
+        "bloom_intensity",
+        "gtao_enabled",
+        "gtao_radius",
+        "gtao_power",
         "cache",
         "camera_script_version",
         "gpu_timing",
@@ -406,6 +418,15 @@
       ],
       "properties": {
         "resolution": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "resize_round_trip": {
           "type": "array",
           "items": {
             "type": "integer",
@@ -472,6 +493,9 @@
         "text_fixture": {
           "type": "boolean"
         },
+        "taa_enabled": {
+          "type": "boolean"
+        },
         "renderer_backend": {
           "enum": ["external", "vulkan", "metal"]
         },
@@ -499,6 +523,47 @@
           "type": "integer",
           "enum": [1024, 2048, 4096]
         },
+        "exposure_mode": {
+          "enum": ["manual", "automatic"]
+        },
+        "manual_exposure": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "exposure_compensation_ev": {
+          "type": "number"
+        },
+        "exposure_reset_frame": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bloom_enabled": {
+          "type": "boolean"
+        },
+        "bloom_threshold": {
+          "type": "number",
+          "minimum": 0
+        },
+        "bloom_knee": {
+          "type": "number",
+          "minimum": 0
+        },
+        "bloom_intensity": {
+          "type": "number",
+          "minimum": 0
+        },
+        "gtao_enabled": {
+          "type": "boolean"
+        },
+        "gtao_radius": {
+          "type": "number",
+          "minimum": 0.0001,
+          "maximum": 10000
+        },
+        "gtao_power": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
         "cache": {
           "enum": [
             "isolated_cold",
@@ -507,7 +572,7 @@
           ]
         },
         "camera_script_version": {
-          "const": 1
+          "const": 2
         },
         "gpu_timing": {
           "type": "boolean"

@@ -185,6 +185,8 @@ bool8_t vkr_harness_case_fingerprints_with_scene_digest(
       case_manifest->renderer.bloom_threshold,
       case_manifest->renderer.bloom_knee,
       case_manifest->renderer.bloom_intensity);
+  ADD("renderer.gtao", "%u,%.9g,%.9g", case_manifest->renderer.gtao_enabled,
+      case_manifest->renderer.gtao_radius, case_manifest->renderer.gtao_power);
   ADD("renderer.shadow_debug_mode", "%u",
       case_manifest->renderer.shadow_debug_mode);
   ADD("target", "%s,%s,%u", vkr_harness_target_name(case_manifest->target),

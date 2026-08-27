@@ -13,6 +13,7 @@
 #include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_platform.h"
 #include "renderer/vkr_bloom.h"
+#include "renderer/vkr_gtao.h"
 #include "renderer/vkr_renderer.h"
 
 #define VKR_HARNESS_SCHEMA_VERSION 1u
@@ -250,6 +251,10 @@ typedef struct VkrHarnessRendererConfig {
   float32_t bloom_threshold;
   float32_t bloom_knee;
   float32_t bloom_intensity;
+  /** GTAO is opt-in and must carry its complete deterministic control tuple. */
+  bool8_t gtao_enabled;
+  float32_t gtao_radius;
+  float32_t gtao_power;
   uint32_t shadow_debug_mode;
 } VkrHarnessRendererConfig;
 

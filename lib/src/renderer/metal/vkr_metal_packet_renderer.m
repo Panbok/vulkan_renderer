@@ -370,6 +370,8 @@ struct VkrMetalPacketRenderer {
   VkrRgExecutorRegistry executors;
   VkrExposureMeteringConfig exposure_metering;
   VkrBloomConfig bloom_config;
+  VkrGtaoConfig gtao_config;
+  VkrGtaoGpuParams gtao_params;
   VkrMetalMemoryDevice *memory;
   VkrMetalMaterialTableDevice *materials;
   VkrCaptureRing capture_ring;
@@ -452,6 +454,10 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> temporal_transform_pipeline;
   id<MTLComputePipelineState> gbuffer_resolve_pipeline;
   id<MTLComputePipelineState> deferred_lighting_pipeline;
+  id<MTLComputePipelineState> gtao_depth_prefilter_pipeline;
+  id<MTLComputePipelineState> gtao_depth_mip_pipeline;
+  id<MTLComputePipelineState> gtao_evaluate_pipeline;
+  id<MTLComputePipelineState> gtao_denoise_pipeline;
   id<MTLComputePipelineState> temporal_resolve_pipeline;
   id<MTLComputePipelineState> transmission_shade_pipeline;
   id<MTLComputePipelineState> transmission_coverage_pipeline;
@@ -520,6 +526,9 @@ struct VkrMetalPacketRenderer {
   uint64_t ibl_last_use_submit_value;
   bool8_t ibl_live;
   bool8_t ibl_ready;
+  VkrMetalTextureResource gtao_white_visibility;
+  uint64_t gtao_white_last_use_submit_value;
+  bool8_t gtao_white_live;
   bool8_t synchronous_validation_readback;
 };
 

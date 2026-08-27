@@ -324,6 +324,110 @@ vkr_vk_validate_packet_root_abi(VkrVulkanRenderer *renderer) {
   return valid;
 }
 
+typedef struct VkrVulkanReflectedField {
+  const char *name;
+  uint32_t offset;
+} VkrVulkanReflectedField;
+
+#define VKR_VULKAN_REFLECTED_FIELD(type, member)                               \
+  {#member, (uint32_t)offsetof(type, member)}
+
+vkr_internal bool8_t
+vkr_vk_validate_gtao_root_abi(VkrVulkanRenderer *renderer) {
+  FilePath shader_path =
+      file_path_create(VKR_VULKAN_PACKET_GTAO_EVALUATE_COMP_SPV,
+                       renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  if (file_load_spirv_shader(&shader_path, renderer->allocator, &bytes,
+                             &size) != FILE_ERROR_NONE ||
+      size == 0u)
+    return false_v;
+  SpvReflectShaderModule module;
+  MemZero(&module, sizeof(module));
+  const SpvReflectResult created =
+      spvReflectCreateShaderModule((size_t)size, bytes, &module);
+  vkr_allocator_free(renderer->allocator, bytes, size,
+                     VKR_ALLOCATOR_MEMORY_TAG_FILE);
+  if (created != SPV_REFLECT_RESULT_SUCCESS)
+    return false_v;
+
+  uint32_t count = 0u;
+  SpvReflectBlockVariable *blocks[1] = {0};
+  bool8_t valid = spvReflectEnumerateEntryPointPushConstantBlocks(
+                      &module, "vk_gtao_evaluate", &count, NULL) ==
+                      SPV_REFLECT_RESULT_SUCCESS &&
+                  count == 1u &&
+                  spvReflectEnumerateEntryPointPushConstantBlocks(
+                      &module, "vk_gtao_evaluate", &count, blocks) ==
+                      SPV_REFLECT_RESULT_SUCCESS;
+  valid &= blocks[0] && blocks[0]->size == sizeof(VkrVulkanPushConstants);
+  SpvReflectBlockVariable *root =
+      valid ? vkr_vk_reflect_member(blocks[0], "root") : NULL;
+  SpvReflectBlockVariable *params = NULL;
+  static const VkrVulkanReflectedField root_fields[] = {
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanGtaoRoot, params),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanGtaoRoot, source_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanGtaoRoot, vbuffer_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanGtaoRoot, normal_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanGtaoRoot, destination_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanGtaoRoot, edges_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanGtaoRoot, point_sampler),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanGtaoRoot, source_extent),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanGtaoRoot, destination_extent),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanGtaoRoot, reserved),
+  };
+  static const VkrVulkanReflectedField param_fields[] = {
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, view),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, viewport_width),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, viewport_height),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, depth_mip_count),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, reserved_u32_0),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, viewport_pixel_size_x),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, viewport_pixel_size_y),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, projection_m22),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, projection_m23),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, projection_m32),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, projection_m33),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, projection_m00),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, projection_m11),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, projection_m02),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, projection_m12),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, projection_m03),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, projection_m13),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, effect_radius),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, radius_multiplier),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, falloff_range),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, falloff_mul),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, falloff_add),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, depth_mip_falloff_mul),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, sample_distribution_power),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, final_value_power),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, depth_mip_sampling_offset),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, denoise_blur_beta),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, reserved_float0),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, reserved_float1),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, slice_count),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, steps_per_slice),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, noise_index),
+      VKR_VULKAN_REFLECTED_FIELD(VkrGtaoGpuParams, reserved0),
+  };
+  for (uint32_t i = 0u; i < ArrayCount(root_fields); ++i) {
+    SpvReflectBlockVariable **out_member = i == 0u ? &params : NULL;
+    valid &= vkr_vk_reflect_member_offset(root, root_fields[i].name,
+                                          root_fields[i].offset, out_member);
+  }
+  for (uint32_t i = 0u; i < ArrayCount(param_fields); ++i)
+    valid &= vkr_vk_reflect_member_offset(params, param_fields[i].name,
+                                          param_fields[i].offset, NULL);
+  valid &= vkr_vk_reflected_struct_size(root) == sizeof(VkrVulkanGtaoRoot);
+  valid &= vkr_vk_reflected_struct_size(params) == sizeof(VkrGtaoGpuParams);
+  spvReflectDestroyShaderModule(&module);
+  return valid;
+}
+
+#undef VKR_VULKAN_REFLECTED_FIELD
+
 vkr_internal bool8_t vkr_vk_create_shader_module(VkrVulkanRenderer *renderer,
                                                  const char *path,
                                                  VkShaderModule *out_module) {
@@ -349,7 +453,8 @@ vkr_internal bool8_t vkr_vk_create_shader_module(VkrVulkanRenderer *renderer,
 }
 
 bool8_t vkr_vk_create_pipelines(VkrVulkanRenderer *renderer) {
-  if (!vkr_vk_validate_packet_root_abi(renderer)) {
+  if (!vkr_vk_validate_packet_root_abi(renderer) ||
+      !vkr_vk_validate_gtao_root_abi(renderer)) {
     return false_v;
   }
   const VkrVulkanDescriptorLayout *resource_layout =
@@ -701,6 +806,10 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
           VKR_VULKAN_PACKET_BLOOM_DOWNSAMPLE_BOX4_COMP_SPV,
           VKR_VULKAN_PACKET_BLOOM_UPSAMPLE_COMP_SPV,
           VKR_VULKAN_PACKET_BLOOM_COMBINE_COMP_SPV,
+          VKR_VULKAN_PACKET_GTAO_DEPTH_PREFILTER_COMP_SPV,
+          VKR_VULKAN_PACKET_GTAO_DEPTH_MIP_COMP_SPV,
+          VKR_VULKAN_PACKET_GTAO_EVALUATE_COMP_SPV,
+          VKR_VULKAN_PACKET_GTAO_DENOISE_COMP_SPV,
       };
   vkr_local_persist const char
       *const entries[VKR_VULKAN_DEFERRED_PIPELINE_COUNT] = {
@@ -724,6 +833,10 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
           "vk_bloom_downsample_box4",
           "vk_bloom_upsample",
           "vk_bloom_combine",
+          "vk_gtao_depth_prefilter",
+          "vk_gtao_depth_mip",
+          "vk_gtao_evaluate",
+          "vk_gtao_denoise",
       };
   for (uint32_t i = 0u; i < VKR_VULKAN_DEFERRED_PIPELINE_COUNT; ++i) {
     if (!vkr_vk_create_shader_module(renderer, paths[i],

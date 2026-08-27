@@ -1490,6 +1490,9 @@ void application_draw_frame(Application *application, float64_t delta) {
               .bloom_threshold = application->renderer.globals.bloom_threshold,
               .bloom_knee = application->renderer.globals.bloom_knee,
               .bloom_intensity = application->renderer.globals.bloom_intensity,
+              .gtao_enabled = application->renderer.globals.gtao_enabled,
+              .gtao_radius = application->renderer.globals.gtao_radius,
+              .gtao_power = application->renderer.globals.gtao_power,
               .render_mode =
                   (uint32_t)application->renderer.globals.render_mode,
           },

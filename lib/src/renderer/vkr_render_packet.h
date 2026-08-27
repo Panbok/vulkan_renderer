@@ -12,11 +12,12 @@
 #include "renderer/vkr_buffer.h"
 #include "renderer/vkr_exposure.h"
 #include "renderer/vkr_gpu_abi.h"
+#include "renderer/vkr_gtao.h"
 #include "renderer/vkr_renderer.h"
 #include "renderer/vkr_temporal.h"
 
 /** Version constant for VkrRenderPacket.packet_version validation. */
-#define VKR_RENDER_PACKET_VERSION 21u
+#define VKR_RENDER_PACKET_VERSION 22u
 
 #define VKR_FRAME_IBL_PROBE_MAX 16u
 #define VKR_PREPARED_TEXT_DRAW_MAX 64u
@@ -95,6 +96,14 @@ typedef struct VkrFrameGlobals {
   float32_t bloom_knee;
   float32_t bloom_intensity;
   /**
+   * GTAO controls, added in packet 22. A zeroed block disables the dedicated
+   * current-frame depth pyramid and AO passes. Radius is expressed in positive
+   * view-space units; power shapes the final ambient visibility.
+   */
+  bool8_t gtao_enabled;
+  float32_t gtao_radius;
+  float32_t gtao_power;
+  /**
    * Renderer-owned temporal state. Callers leave this zeroed; the frontend
    * derives it after validation and commits it only after successful submit.
    */
@@ -103,6 +112,8 @@ typedef struct VkrFrameGlobals {
   VkrExposureFrame exposure;
   /** Renderer-owned bloom state, normalized from the fields above. */
   VkrBloomFrame bloom;
+  /** Renderer-owned GTAO state, normalized from the fields above. */
+  VkrGtaoFrame gtao;
 } VkrFrameGlobals;
 
 /** Backend-neutral frame lighting controls consumed by world shading. */

@@ -238,6 +238,16 @@ bool8_t vkr_metal_packet_renderer_drain(
   vkr_capture_ring_collect(&renderer->capture_ring,
                            renderer->completion.signaledValue);
 
+  if (renderer->gtao_white_live) {
+    if (vkr_metal_memory_device_retire(
+            renderer->memory, renderer->gtao_white_visibility.handle,
+            renderer->gtao_white_last_use_submit_value) !=
+        VKR_METAL_MEMORY_STATUS_OK)
+      return false_v;
+    renderer->gtao_white_live = false_v;
+    renderer->gtao_white_visibility = (VkrMetalTextureResource){0};
+  }
+
   if (renderer->ibl_live) {
     if (vkr_metal_memory_device_retire(renderer->memory,
                                        renderer->ibl_irradiance.handle,
@@ -536,6 +546,10 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
     [renderer->gpu_draw_encode_pipeline release];
     [renderer->temporal_transform_pipeline release];
     [renderer->gbuffer_resolve_pipeline release];
+    [renderer->gtao_denoise_pipeline release];
+    [renderer->gtao_evaluate_pipeline release];
+    [renderer->gtao_depth_mip_pipeline release];
+    [renderer->gtao_depth_prefilter_pipeline release];
     [renderer->deferred_lighting_pipeline release];
     [renderer->temporal_resolve_pipeline release];
     [renderer->transmission_shade_pipeline release];

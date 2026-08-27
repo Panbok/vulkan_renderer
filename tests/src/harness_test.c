@@ -6,6 +6,7 @@
 
 #include <assert.h>
 #include <math.h>
+#include <stb_image.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -133,6 +134,9 @@ static void test_harness_case_parser(void) {
   assert(parsed.renderer.bloom_threshold == VKR_BLOOM_DEFAULT_THRESHOLD);
   assert(parsed.renderer.bloom_knee == VKR_BLOOM_DEFAULT_KNEE);
   assert(parsed.renderer.bloom_intensity == VKR_BLOOM_DEFAULT_INTENSITY);
+  assert(!parsed.renderer.gtao_enabled);
+  assert(parsed.renderer.gtao_radius == VKR_GTAO_DEFAULT_RADIUS);
+  assert(parsed.renderer.gtao_power == VKR_GTAO_DEFAULT_POWER);
   assert(harness_parse_case("windowed_hidden", "immediate", static_camera,
                             ",\"resize_round_trip\":[80,72]", &parsed));
   assert(parsed.resize_round_trip && parsed.resize_width == 80u &&
@@ -156,7 +160,8 @@ static void test_harness_case_parser(void) {
       "\"manual_exposure\":0.25,\"exposure_compensation_ev\":1.0,"
       "\"exposure_reset_frame\":1,\"bloom_enabled\":true,"
       "\"bloom_threshold\":1.25,\"bloom_knee\":0.4,"
-      "\"bloom_intensity\":0.08},"
+      "\"bloom_intensity\":0.08,\"gtao_enabled\":true,"
+      "\"gtao_radius\":0.5,\"gtao_power\":2.2},"
       "\"camera\":{\"mode\":\"static\",\"position\":[1,2,3],\"yaw\":10,"
       "\"pitch\":-5}}";
   VkrHarnessError backend_error = {0};
@@ -177,6 +182,9 @@ static void test_harness_case_parser(void) {
   assert(parsed.renderer.bloom_threshold == 1.25f);
   assert(parsed.renderer.bloom_knee == 0.4f);
   assert(parsed.renderer.bloom_intensity == 0.08f);
+  assert(parsed.renderer.gtao_enabled);
+  assert(parsed.renderer.gtao_radius == 0.5f);
+  assert(parsed.renderer.gtao_power == 2.2f);
   VkrRendererBackendType resolved_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
   assert(vkr_harness_renderer_backend_resolve(&parsed.renderer, NULL,
                                               &resolved_backend));
@@ -261,6 +269,56 @@ static void test_harness_case_parser(void) {
   MemCopy(bloom_threshold, "-1.0", strlen("-1.0"));
   assert(!vkr_harness_case_parse(disabled_invalid_bloom,
                                  strlen(disabled_invalid_bloom), "memory",
+                                 &parsed, &backend_error));
+  char missing_enabled_gtao_controls[2048];
+  snprintf(missing_enabled_gtao_controls, sizeof(missing_enabled_gtao_controls),
+           "%s", metal_case);
+  char *gtao_controls = strstr(missing_enabled_gtao_controls,
+                               ",\"gtao_radius\":0.5,\"gtao_power\":2.2");
+  assert(gtao_controls);
+  memmove(gtao_controls,
+          gtao_controls + strlen(",\"gtao_radius\":0.5,\"gtao_power\":2.2"),
+          strlen(gtao_controls +
+                 strlen(",\"gtao_radius\":0.5,\"gtao_power\":2.2")) +
+              1u);
+  assert(!vkr_harness_case_parse(missing_enabled_gtao_controls,
+                                 strlen(missing_enabled_gtao_controls),
+                                 "memory", &parsed, &backend_error));
+  char disabled_invalid_gtao[2048];
+  char missing_enabled_gtao_power[2048];
+  snprintf(missing_enabled_gtao_power, sizeof(missing_enabled_gtao_power), "%s",
+           metal_case);
+  char *gtao_power = strstr(missing_enabled_gtao_power, ",\"gtao_power\":2.2");
+  assert(gtao_power);
+  memmove(gtao_power, gtao_power + strlen(",\"gtao_power\":2.2"),
+          strlen(gtao_power + strlen(",\"gtao_power\":2.2")) + 1u);
+  assert(!vkr_harness_case_parse(missing_enabled_gtao_power,
+                                 strlen(missing_enabled_gtao_power), "memory",
+                                 &parsed, &backend_error));
+  snprintf(disabled_invalid_gtao, sizeof(disabled_invalid_gtao), "%s",
+           metal_case);
+  char *gtao_enabled = strstr(disabled_invalid_gtao, "\"gtao_enabled\":true");
+  assert(gtao_enabled);
+  gtao_enabled += strlen("\"gtao_enabled\":");
+  memmove(gtao_enabled + strlen("false"), gtao_enabled + strlen("true"),
+          strlen(gtao_enabled + strlen("true")) + 1u);
+  MemCopy(gtao_enabled, "false", strlen("false"));
+  char *gtao_radius = strstr(disabled_invalid_gtao, "\"gtao_radius\":0.5");
+  assert(gtao_radius);
+  gtao_radius += strlen("\"gtao_radius\":");
+  MemCopy(gtao_radius, "0.0", strlen("0.0"));
+  assert(!vkr_harness_case_parse(disabled_invalid_gtao,
+                                 strlen(disabled_invalid_gtao), "memory",
+                                 &parsed, &backend_error));
+  char excessive_gtao_radius[2048];
+  snprintf(excessive_gtao_radius, sizeof(excessive_gtao_radius), "%s",
+           metal_case);
+  gtao_radius = strstr(excessive_gtao_radius, "\"gtao_radius\":0.5");
+  assert(gtao_radius);
+  gtao_radius += strlen("\"gtao_radius\":");
+  MemCopy(gtao_radius, "1e9", strlen("1e9"));
+  assert(!vkr_harness_case_parse(excessive_gtao_radius,
+                                 strlen(excessive_gtao_radius), "memory",
                                  &parsed, &backend_error));
   assert(!harness_parse_case(
       "windowed_hidden", "immediate",
@@ -458,6 +516,17 @@ static void test_harness_fingerprints(void) {
   case_manifest.renderer.bloom_threshold = VKR_BLOOM_DEFAULT_THRESHOLD;
   case_manifest.renderer.bloom_knee = VKR_BLOOM_DEFAULT_KNEE;
   case_manifest.renderer.bloom_intensity = VKR_BLOOM_DEFAULT_INTENSITY;
+  case_manifest.renderer.gtao_enabled = true_v;
+  case_manifest.renderer.gtao_radius = 0.5f;
+  case_manifest.renderer.gtao_power = 2.2f;
+  assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
+                                       &case_manifest, &profile,
+                                       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
+                                       environment, workload, policy, &error));
+  assert(strcmp(original_workload, workload) != 0);
+  case_manifest.renderer.gtao_enabled = false_v;
+  case_manifest.renderer.gtao_radius = VKR_GTAO_DEFAULT_RADIUS;
+  case_manifest.renderer.gtao_power = VKR_GTAO_DEFAULT_POWER;
   case_manifest.renderer.text_fixture = true_v;
   assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
                                        &case_manifest, &profile,
@@ -913,6 +982,9 @@ static void test_harness_report_shape(void) {
   report.case_manifest.renderer.bloom_threshold = 1.25f;
   report.case_manifest.renderer.bloom_knee = 0.4f;
   report.case_manifest.renderer.bloom_intensity = 0.08f;
+  report.case_manifest.renderer.gtao_enabled = true_v;
+  report.case_manifest.renderer.gtao_radius = 0.5f;
+  report.case_manifest.renderer.gtao_power = 2.2f;
   snprintf(report.case_manifest.manifest_sha256,
            sizeof(report.case_manifest.manifest_sha256),
            "sha256:"
@@ -960,6 +1032,9 @@ static void test_harness_report_shape(void) {
   assert(strstr(json, "\"bloom_threshold\":1.25") != NULL);
   assert(strstr(json, "\"bloom_knee\":0.4") != NULL);
   assert(strstr(json, "\"bloom_intensity\":") != NULL);
+  assert(strstr(json, "\"gtao_enabled\":true") != NULL);
+  assert(strstr(json, "\"gtao_radius\":0.5") != NULL);
+  assert(strstr(json, "\"gtao_power\":") != NULL);
   VkrHarnessJsonDocument document = {0};
   assert(vkr_harness_json_parse(&document, json, (uint64_t)length, &error));
   static const char *const fields[] = {"schema_version",
@@ -1052,6 +1127,259 @@ static void test_harness_platform_process_primitives(void) {
   printf("  test_harness_platform_process_primitives PASSED\n");
 }
 
+typedef struct VkrHarnessRendererConfigV3Fixture {
+  bool8_t editor;
+  bool8_t skybox;
+  bool8_t text_fixture;
+  bool8_t taa_enabled;
+  bool8_t shadow_pcf_early_out;
+  bool8_t shadow_sdsm;
+  char backend[16];
+  char shadow_preset[32];
+  uint32_t shadow_cascades;
+  uint32_t shadow_pcf_samples;
+  uint32_t shadow_map_size;
+  float32_t shadow_split_lambda;
+  char render_mode[24];
+  char exposure_mode[16];
+  float32_t manual_exposure;
+  float32_t exposure_compensation_ev;
+  uint32_t exposure_reset_frame;
+  bool8_t bloom_enabled;
+  float32_t bloom_threshold;
+  float32_t bloom_knee;
+  float32_t bloom_intensity;
+  uint32_t shadow_debug_mode;
+} VkrHarnessRendererConfigV3Fixture;
+
+typedef struct VkrHarnessCaseV3Fixture {
+  uint32_t schema_version;
+  char manifest_path[VKR_HARNESS_PATH_MAX];
+  char manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char id[VKR_HARNESS_ID_MAX];
+  char suite[64];
+  char description[VKR_HARNESS_TEXT_MAX];
+  char scene[VKR_HARNESS_PATH_MAX];
+  uint64_t seed;
+  uint32_t width;
+  uint32_t height;
+  bool8_t resize_round_trip;
+  uint32_t resize_width;
+  uint32_t resize_height;
+  VkrHarnessBootProfile boot;
+  VkrHarnessTarget target;
+  VkrHarnessPresentMode present;
+  uint32_t target_image_count;
+  VkrHarnessCacheMode cache;
+  float64_t fixed_delta_seconds;
+  uint32_t warmup_frames;
+  uint32_t measure_frames;
+  uint32_t repetitions;
+  uint32_t repetition_timeout_ms;
+  uint32_t asset_ready_timeout_ms;
+  VkrHarnessRendererConfigV3Fixture renderer;
+  VkrHarnessCamera camera;
+  VkrHarnessCapture captures[VKR_HARNESS_MAX_CAPTURES];
+  uint32_t capture_count;
+  VkrHarnessAssertion assertions[VKR_HARNESS_MAX_ASSERTIONS];
+  uint32_t assertion_count;
+  VkrHarnessCompareConfig compare;
+} VkrHarnessCaseV3Fixture;
+
+typedef struct VkrHarnessProfileV2Fixture {
+  uint32_t schema_version;
+  char manifest_path[VKR_HARNESS_PATH_MAX];
+  char manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char id[VKR_HARNESS_ID_MAX];
+  char description[VKR_HARNESS_TEXT_MAX];
+  bool8_t authoritative;
+  bool8_t allow_dirty;
+  VkrHarnessTarget target;
+  VkrHarnessPresentMode required_present;
+  bool8_t require_actual_present;
+  bool8_t gpu_timing;
+  bool8_t event_subjects;
+  uint32_t minimum_repetitions;
+  uint32_t warmup_stability_window;
+  float64_t warmup_max_drift_ratio;
+  bool8_t require_warmup_stability;
+  bool8_t require_exclusive_gpu_lane;
+  char required_os[64];
+  char required_cpu[128];
+  char required_gpu[128];
+  char required_driver[128];
+  uint32_t required_gpu_vendor_id;
+  uint32_t required_gpu_device_id;
+  char required_power_mode[32];
+  char required_thermal_state[32];
+  int32_t required_process_priority;
+  bool8_t has_required_process_priority;
+  char required_metrics[VKR_HARNESS_MAX_REQUIRED_METRICS][128];
+  uint32_t required_metric_count;
+} VkrHarnessProfileV2Fixture;
+
+typedef struct VkrHarnessCaptureSummaryHeaderV2Fixture {
+  uint8_t magic[8];
+  uint32_t version;
+  uint32_t capture_count;
+  uint32_t artifact_count;
+  uint32_t tool;
+  uint32_t exit_code;
+  bool8_t authoritative;
+  bool8_t profile_compatible;
+  uint8_t reserved[2];
+  char status[24];
+  char case_id[VKR_HARNESS_ID_MAX];
+  char case_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char profile_id[VKR_HARNESS_ID_MAX];
+  char profile_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char environment_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char workload_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char policy_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  VkrHarnessCaseV3Fixture case_manifest;
+  VkrHarnessProfileV2Fixture profile;
+  VkrHarnessProvenance provenance;
+} VkrHarnessCaptureSummaryHeaderV2Fixture;
+
+typedef struct VkrHarnessCaptureSummaryHeaderV3Fixture {
+  uint8_t magic[8];
+  uint32_t version;
+  uint32_t capture_count;
+  uint32_t artifact_count;
+  uint32_t tool;
+  uint32_t exit_code;
+  bool8_t authoritative;
+  bool8_t profile_compatible;
+  uint8_t reserved[2];
+  char status[24];
+  char case_id[VKR_HARNESS_ID_MAX];
+  char case_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char profile_id[VKR_HARNESS_ID_MAX];
+  char profile_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char environment_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char workload_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char policy_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  VkrHarnessCaseV3Fixture case_manifest;
+  VkrHarnessProfile profile;
+  VkrHarnessProvenance provenance;
+} VkrHarnessCaptureSummaryHeaderV3Fixture;
+
+static void test_harness_capture_summary_v2_v3_compatibility(void) {
+  printf("  Running test_harness_capture_summary_v2_v3_compatibility...\n");
+#if !defined(_WIN32)
+  char directory[] = "/tmp/vkr-capture-summary-legacy-XXXXXX";
+  assert(mkdtemp(directory));
+  char legacy_path[VKR_HARNESS_PATH_MAX];
+  char legacy_v2_path[VKR_HARNESS_PATH_MAX];
+  char current_path[VKR_HARNESS_PATH_MAX];
+  snprintf(legacy_path, sizeof(legacy_path), "%s/legacy.bin", directory);
+  snprintf(legacy_v2_path, sizeof(legacy_v2_path), "%s/legacy-v2.bin",
+           directory);
+  snprintf(current_path, sizeof(current_path), "%s/current.bin", directory);
+  VkrHarnessCaptureSummaryHeaderV3Fixture *legacy = calloc(1u, sizeof(*legacy));
+  assert(legacy);
+  const uint8_t magic[8] = {'V', 'K', 'R', 'C', 'A', 'P', '0', '1'};
+  MemCopy(legacy->magic, magic, sizeof(magic));
+  legacy->version = 3u;
+  legacy->tool = VKR_HARNESS_TOOL_SNAPSHOT;
+  legacy->exit_code = VKR_HARNESS_EXIT_PASS;
+  legacy->profile_compatible = true_v;
+  snprintf(legacy->status, sizeof(legacy->status), "pass");
+  snprintf(legacy->case_id, sizeof(legacy->case_id), "smoke.legacy.v3");
+  snprintf(legacy->case_manifest.id, sizeof(legacy->case_manifest.id),
+           "smoke.legacy.v3");
+  legacy->case_manifest.width = 801u;
+  legacy->case_manifest.height = 601u;
+  legacy->case_manifest.renderer.bloom_enabled = true_v;
+  legacy->case_manifest.renderer.bloom_threshold = 1.25f;
+  legacy->case_manifest.renderer.bloom_knee = 0.4f;
+  legacy->case_manifest.renderer.bloom_intensity = 0.08f;
+  legacy->case_manifest.renderer.shadow_debug_mode = 2u;
+  legacy->case_manifest.camera.far_plane = 321.0f;
+  legacy->case_manifest.compare.max_pixel_delta = 0.125;
+  snprintf(legacy->profile.id, sizeof(legacy->profile.id), "local.legacy.v3");
+  VkrHarnessError error = {0};
+  assert(
+      vkr_harness_atomic_write(legacy_path, legacy, sizeof(*legacy), &error));
+  VkrHarnessCaptureSummaryHeaderV2Fixture *legacy_v2 =
+      calloc(1u, sizeof(*legacy_v2));
+  assert(legacy_v2);
+  MemCopy(legacy_v2->magic, magic, sizeof(magic));
+  legacy_v2->version = 2u;
+  legacy_v2->tool = VKR_HARNESS_TOOL_SNAPSHOT;
+  legacy_v2->exit_code = VKR_HARNESS_EXIT_PASS;
+  legacy_v2->profile_compatible = true_v;
+  snprintf(legacy_v2->status, sizeof(legacy_v2->status), "pass");
+  snprintf(legacy_v2->case_id, sizeof(legacy_v2->case_id), "smoke.legacy.v2");
+  legacy_v2->case_manifest = legacy->case_manifest;
+  snprintf(legacy_v2->case_manifest.id, sizeof(legacy_v2->case_manifest.id),
+           "smoke.legacy.v2");
+  snprintf(legacy_v2->profile.id, sizeof(legacy_v2->profile.id),
+           "local.legacy.v2");
+  assert(vkr_harness_atomic_write(legacy_v2_path, legacy_v2, sizeof(*legacy_v2),
+                                  &error));
+
+  Arena *arena = arena_create(MB(2), MB(2));
+  assert(arena);
+  VkrHarnessCaptureSummary summary = {0};
+  assert(vkr_harness_capture_summary_read(legacy_path, arena, &summary));
+  assert(strcmp(summary.case_manifest.id, "smoke.legacy.v3") == 0);
+  assert(summary.case_manifest.width == 801u &&
+         summary.case_manifest.height == 601u);
+  assert(summary.case_manifest.renderer.bloom_enabled);
+  assert(summary.case_manifest.renderer.bloom_threshold == 1.25f);
+  assert(summary.case_manifest.renderer.shadow_debug_mode == 2u);
+  assert(!summary.case_manifest.renderer.gtao_enabled);
+  assert(summary.case_manifest.renderer.gtao_radius == VKR_GTAO_DEFAULT_RADIUS);
+  assert(summary.case_manifest.renderer.gtao_power == VKR_GTAO_DEFAULT_POWER);
+  assert(summary.case_manifest.camera.far_plane == 321.0f);
+  assert(summary.case_manifest.compare.max_pixel_delta == 0.125);
+  assert(strcmp(summary.profile.id, "local.legacy.v3") == 0);
+  assert(vkr_harness_capture_summary_read(legacy_v2_path, arena, &summary));
+  assert(strcmp(summary.case_manifest.id, "smoke.legacy.v2") == 0);
+  assert(summary.case_manifest.renderer.bloom_enabled);
+  assert(!summary.case_manifest.renderer.gtao_enabled);
+  assert(summary.case_manifest.renderer.gtao_radius == VKR_GTAO_DEFAULT_RADIUS);
+  assert(summary.case_manifest.renderer.gtao_power == VKR_GTAO_DEFAULT_POWER);
+  assert(summary.case_manifest.camera.far_plane == 321.0f);
+  assert(summary.case_manifest.compare.max_pixel_delta == 0.125);
+  assert(strcmp(summary.profile.id, "local.legacy.v2") == 0);
+  assert(strcmp(summary.profile.warmup_stability_metric, "cpu.render_submit") ==
+         0);
+
+  VkrHarnessReport report = {.tool = VKR_HARNESS_TOOL_SNAPSHOT};
+  assert(vkr_harness_report_init_storage(&report, arena, 1u, 0u));
+  report.capture_count = 1u;
+  report.case_manifest.renderer.gtao_enabled = true_v;
+  report.case_manifest.renderer.gtao_radius = 0.75f;
+  report.case_manifest.renderer.gtao_power = 1.5f;
+  assert(
+      vkr_harness_capture_summary_write(current_path, &report, arena, &error));
+  uint8_t *current_bytes = NULL;
+  uint64_t current_size = 0u;
+  assert(vkr_harness_read_file(current_path, arena, &current_bytes,
+                               &current_size));
+  uint32_t current_version = 0u;
+  assert(current_size >= 12u);
+  MemCopy(&current_version, current_bytes + 8u, sizeof(current_version));
+  assert(current_version == 4u);
+  assert(vkr_harness_capture_summary_read(current_path, arena, &summary));
+  assert(summary.capture_count == 1u);
+  assert(summary.case_manifest.renderer.gtao_enabled);
+  assert(summary.case_manifest.renderer.gtao_radius == 0.75f);
+  assert(summary.case_manifest.renderer.gtao_power == 1.5f);
+
+  free(legacy);
+  free(legacy_v2);
+  assert(unlink(legacy_path) == 0);
+  assert(unlink(legacy_v2_path) == 0);
+  assert(unlink(current_path) == 0);
+  assert(rmdir(directory) == 0);
+  arena_destroy(arena);
+#endif
+  printf("  test_harness_capture_summary_v2_v3_compatibility PASSED\n");
+}
+
 static void harness_test_write_f32_le(uint8_t bytes[4], float32_t value) {
   uint32_t bits = 0u;
   memcpy(&bits, &value, sizeof(bits));
@@ -1063,7 +1391,7 @@ static void harness_test_write_f32_le(uint8_t bytes[4], float32_t value) {
 
 static void test_harness_capture_catalog_and_converters(void) {
   printf("  Running test_harness_capture_catalog_and_converters...\n");
-  assert(vkr_renderer_capture_channel_count() == 21u);
+  assert(vkr_renderer_capture_channel_count() == 24u);
   assert(vkr_renderer_capture_channel_from_name("missing") ==
          VKR_CAPTURE_CHANNEL_INVALID);
   const VkrCaptureChannelId final_color =
@@ -1082,6 +1410,14 @@ static void test_harness_capture_catalog_and_converters(void) {
       vkr_renderer_capture_channel_from_name("bloom_result");
   const VkrCaptureChannelId hdr_combined =
       vkr_renderer_capture_channel_from_name("hdr_combined");
+  const VkrCaptureChannelId gtao_view_depth =
+      vkr_renderer_capture_channel_from_name("gtao_view_depth");
+  const VkrCaptureChannelId gtao_visibility =
+      vkr_renderer_capture_channel_from_name("gtao_visibility");
+  const VkrCaptureChannelId gtao_raw =
+      vkr_renderer_capture_channel_from_name("gtao_raw");
+  const VkrCaptureChannelId gbuffer_normal =
+      vkr_renderer_capture_channel_from_name("gbuffer_normal");
   assert(final_color != VKR_CAPTURE_CHANNEL_INVALID);
   assert(depth != VKR_CAPTURE_CHANNEL_INVALID);
   assert(picking != VKR_CAPTURE_CHANNEL_INVALID);
@@ -1090,6 +1426,10 @@ static void test_harness_capture_catalog_and_converters(void) {
   assert(bloom_prefilter != VKR_CAPTURE_CHANNEL_INVALID);
   assert(bloom_result != VKR_CAPTURE_CHANNEL_INVALID);
   assert(hdr_combined != VKR_CAPTURE_CHANNEL_INVALID);
+  assert(gtao_view_depth != VKR_CAPTURE_CHANNEL_INVALID);
+  assert(gtao_visibility != VKR_CAPTURE_CHANNEL_INVALID);
+  assert(gtao_raw != VKR_CAPTURE_CHANNEL_INVALID);
+  assert(gbuffer_normal != VKR_CAPTURE_CHANNEL_INVALID);
 
 #if !defined(_WIN32)
   char first_dir[] = "/tmp/vkr-capture-first-XXXXXX";
@@ -1115,6 +1455,10 @@ static void test_harness_capture_catalog_and_converters(void) {
   const uint16_t depth_bottom_left[] = {65535u, 32768u, 0u, 0u,
                                         0u,     16384u, 0u, 0u};
   const uint32_t picking_bottom_left[] = {3u, 4u, 0u, 1u, 2u, 0u};
+  const uint16_t gtao_depth_bottom_left[] = {0x3800u, 0x4000u, 0u,
+                                             0x4400u, 0x4800u, 0u};
+  const uint8_t gtao_visibility_bottom_left[] = {0u,   64u,  99u, 99u,
+                                                 128u, 255u, 99u, 99u};
   VkrCaptureItemResult items[] = {
       {.channel = final_color,
        .width = 2u,
@@ -1144,6 +1488,25 @@ static void test_harness_capture_catalog_and_converters(void) {
        .origin = VKR_CAPTURE_ORIGIN_BOTTOM_LEFT,
        .data = (const uint8_t *)picking_bottom_left,
        .data_size = sizeof(picking_bottom_left)},
+      {.channel = gtao_view_depth,
+       .width = 2u,
+       .height = 2u,
+       .row_pitch = 6u,
+       .format = VKR_TEXTURE_FORMAT_R16_SFLOAT,
+       .value_kind = VKR_CAPTURE_VALUE_DEPTH,
+       .origin = VKR_CAPTURE_ORIGIN_BOTTOM_LEFT,
+       .data = (const uint8_t *)gtao_depth_bottom_left,
+       .data_size = sizeof(gtao_depth_bottom_left)},
+      {.channel = gtao_visibility,
+       .width = 2u,
+       .height = 2u,
+       .row_pitch = 4u,
+       .format = VKR_TEXTURE_FORMAT_R8_UNORM,
+       .value_kind = VKR_CAPTURE_VALUE_COLOR,
+       .color_space = VKR_CAPTURE_COLOR_SPACE_LINEAR,
+       .origin = VKR_CAPTURE_ORIGIN_BOTTOM_LEFT,
+       .data = gtao_visibility_bottom_left,
+       .data_size = sizeof(gtao_visibility_bottom_left)},
   };
   const VkrCapturePollResult poll = {
       .status = VKR_CAPTURE_STATUS_READY,
@@ -1152,7 +1515,8 @@ static void test_harness_capture_catalog_and_converters(void) {
       .source_frame_index = 7u,
       .submit_serial = 9u,
   };
-  const char logical_channels[][64] = {"final_color", "depth", "picking_ids"};
+  const char logical_channels[][64] = {"final_color", "depth", "picking_ids",
+                                       "gtao_view_depth", "gtao_visibility"};
   VkrHarnessError error = {0};
   assert(vkr_harness_capture_publish(first_dir, 1u, &poll, logical_channels,
                                      ArrayCount(logical_channels), &arenas,
@@ -1160,7 +1524,7 @@ static void test_harness_capture_catalog_and_converters(void) {
   assert(vkr_harness_capture_publish(second_dir, 1u, &poll, logical_channels,
                                      ArrayCount(logical_channels), &arenas,
                                      second, &error));
-  assert(first->capture_count == 3u && second->capture_count == 3u);
+  assert(first->capture_count == 5u && second->capture_count == 5u);
   for (uint32_t i = 0; i < first->capture_count; ++i) {
     assert(strcmp(first->captures[i].data_sha256,
                   second->captures[i].data_sha256) == 0);
@@ -1181,6 +1545,53 @@ static void test_harness_capture_catalog_and_converters(void) {
   harness_test_write_f32_le(expected + 8u, 1.0f);
   harness_test_write_f32_le(expected + 12u, 32768.0f / 65535.0f);
   assert(memcmp(raw, expected, sizeof(expected)) == 0);
+  assert(strcmp(first->captures[3].source_format, "R16_SFLOAT") == 0);
+  assert(strcmp(first->captures[4].source_format, "R8_UNORM") == 0);
+  assert(strcmp(first->captures[3].canonical_encoding, "R32_FLOAT_LE") == 0);
+  assert(strcmp(first->captures[4].canonical_encoding, "RGBA8_UNORM_PNG") == 0);
+  snprintf(raw_path, sizeof(raw_path), "%s/%s", first_dir,
+           first->captures[3].data_path);
+  assert(vkr_harness_read_file(raw_path, transient, &raw, &raw_size));
+  assert(raw_size == 16u);
+  harness_test_write_f32_le(expected + 0u, 4.0f);
+  harness_test_write_f32_le(expected + 4u, 8.0f);
+  harness_test_write_f32_le(expected + 8u, 0.5f);
+  harness_test_write_f32_le(expected + 12u, 2.0f);
+  assert(memcmp(raw, expected, sizeof(expected)) == 0);
+  uint8_t *encoded = NULL;
+  uint64_t encoded_size = 0u;
+  int32_t png_width = 0;
+  int32_t png_height = 0;
+  int32_t png_channels = 0;
+  snprintf(raw_path, sizeof(raw_path), "%s/%s", first_dir,
+           first->captures[3].preview_path);
+  assert(vkr_harness_read_file(raw_path, transient, &encoded, &encoded_size));
+  uint8_t *depth_rgba =
+      stbi_load_from_memory(encoded, (int32_t)encoded_size, &png_width,
+                            &png_height, &png_channels, 4);
+  const uint8_t expected_depth_rgba[] = {119u, 119u, 119u, 255u, 255u, 255u,
+                                         255u, 255u, 0u,   0u,   0u,   255u,
+                                         51u,  51u,  51u,  255u};
+  assert(depth_rgba && png_width == 2 && png_height == 2);
+  assert(memcmp(depth_rgba, expected_depth_rgba, sizeof(expected_depth_rgba)) ==
+         0);
+  stbi_image_free(depth_rgba);
+  snprintf(raw_path, sizeof(raw_path), "%s/%s", first_dir,
+           first->captures[4].data_path);
+  assert(vkr_harness_read_file(raw_path, transient, &encoded, &encoded_size));
+  png_width = 0;
+  png_height = 0;
+  png_channels = 0;
+  uint8_t *visibility_rgba =
+      stbi_load_from_memory(encoded, (int32_t)encoded_size, &png_width,
+                            &png_height, &png_channels, 4);
+  const uint8_t expected_visibility_rgba[] = {
+      128u, 128u, 128u, 255u, 255u, 255u, 255u, 255u,
+      0u,   0u,   0u,   255u, 64u,  64u,  64u,  255u};
+  assert(visibility_rgba && png_width == 2 && png_height == 2);
+  assert(memcmp(visibility_rgba, expected_visibility_rgba,
+                sizeof(expected_visibility_rgba)) == 0);
+  stbi_image_free(visibility_rgba);
 
   VkrHarnessReport *reports[] = {first, second};
   const char *roots[] = {first_dir, second_dir};
@@ -1211,9 +1622,13 @@ static void test_harness_capture_replays(void) {
   VkrHarnessCase case_manifest = {.capture_count = 1u};
   VkrHarnessCapture *capture = &case_manifest.captures[0];
   capture->at_frame = 2u;
-  capture->channel_count = 7u;
+  capture->channel_count = 11u;
   const char *channels[] = {"final_color",
                             "depth",
+                            "gbuffer_normal",
+                            "gtao_view_depth",
+                            "gtao_raw",
+                            "gtao_visibility",
                             "normals",
                             "unlit",
                             "temporal_motion",
@@ -1230,7 +1645,11 @@ static void test_harness_capture_replays(void) {
       &case_manifest, replays, ArrayCount(replays), &replay_count, &error));
   assert(replay_count == 6u);
   assert(strcmp(replays[0].mode, "direct") == 0 &&
-         replays[0].channel_count == 2u);
+         replays[0].channel_count == 6u);
+  assert(strcmp(replays[0].direct_channels[2], "gbuffer_normal") == 0);
+  assert(strcmp(replays[0].direct_channels[3], "gtao_view_depth") == 0);
+  assert(strcmp(replays[0].direct_channels[4], "gtao_raw") == 0);
+  assert(strcmp(replays[0].direct_channels[5], "gtao_visibility") == 0);
   assert(strcmp(replays[1].mode, "normals") == 0 &&
          replays[1].render_mode == VKR_RENDER_MODE_NORMAL);
   assert(strcmp(replays[2].mode, "unlit") == 0 &&
@@ -1467,6 +1886,7 @@ bool32_t run_harness_tests(void) {
   test_harness_report_shape();
   test_harness_safe_paths();
   test_harness_platform_process_primitives();
+  test_harness_capture_summary_v2_v3_compatibility();
   test_harness_capture_catalog_and_converters();
   test_harness_capture_replays();
   test_harness_comparison_algorithms();

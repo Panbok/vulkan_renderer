@@ -153,6 +153,20 @@
 #ifndef VKR_VULKAN_PACKET_BLOOM_COMBINE_COMP_SPV
 #define VKR_VULKAN_PACKET_BLOOM_COMBINE_COMP_SPV "packet.bloom_combine.comp.spv"
 #endif
+#ifndef VKR_VULKAN_PACKET_GTAO_DEPTH_PREFILTER_COMP_SPV
+#define VKR_VULKAN_PACKET_GTAO_DEPTH_PREFILTER_COMP_SPV                        \
+  "packet.gtao_depth_prefilter.comp.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_GTAO_DEPTH_MIP_COMP_SPV
+#define VKR_VULKAN_PACKET_GTAO_DEPTH_MIP_COMP_SPV                              \
+  "packet.gtao_depth_mip.comp.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_GTAO_EVALUATE_COMP_SPV
+#define VKR_VULKAN_PACKET_GTAO_EVALUATE_COMP_SPV "packet.gtao_evaluate.comp.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_GTAO_DENOISE_COMP_SPV
+#define VKR_VULKAN_PACKET_GTAO_DENOISE_COMP_SPV "packet.gtao_denoise.comp.spv"
+#endif
 #ifndef VKR_VULKAN_PACKET_SDSM_REDUCE_COMP_SPV
 #define VKR_VULKAN_PACKET_SDSM_REDUCE_COMP_SPV "packet.sdsm_reduce.comp.spv"
 #endif
@@ -171,11 +185,11 @@
 
 enum {
   /**
-   * Slot zero of every descriptor heap holds a valid sentinel descriptor — a
-   * 1x1 opaque-white image, a flat normal, a default sampler — so a material
-   * that omits a texture still resolves to something legal instead of an
-   * undefined descriptor. Anything that means "no specific resource" must name
-   * this rather than writing a bare 0.
+   * Slot zero of every descriptor heap holds a valid sentinel descriptor: a
+   * 1x1 opaque-white image or the default point-clamp sampler. A missing
+   * optional resource therefore remains legal and branch-free in shader code.
+   * Anything that means "no specific resource" must name this rather than
+   * writing a bare 0.
    */
   VKR_VULKAN_SENTINEL_SLOT_INDEX = 0,
   VKR_VULKAN_SENTINEL_UPLOAD_SIZE = 4,
@@ -277,6 +291,10 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_BLOOM_DOWNSAMPLE_BOX4,
   VKR_VULKAN_DEFERRED_PIPELINE_BLOOM_UPSAMPLE,
   VKR_VULKAN_DEFERRED_PIPELINE_BLOOM_COMBINE,
+  VKR_VULKAN_DEFERRED_PIPELINE_GTAO_DEPTH_PREFILTER,
+  VKR_VULKAN_DEFERRED_PIPELINE_GTAO_DEPTH_MIP,
+  VKR_VULKAN_DEFERRED_PIPELINE_GTAO_EVALUATE,
+  VKR_VULKAN_DEFERRED_PIPELINE_GTAO_DENOISE,
   VKR_VULKAN_DEFERRED_PIPELINE_COUNT,
 } VkrVulkanDeferredPipeline;
 
@@ -433,7 +451,7 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
   uint32_t sky_texture;
   uint32_t sky_sampler;
   uint32_t sky_enabled;
-  uint32_t reserved_sky;
+  uint32_t gtao_visibility_texture;
 } VkrVulkanLightingRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanHzbRoot {
@@ -487,6 +505,20 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanBloomRoot {
   uint32_t destination_extent[2];
   VkrBloomGpuParams params;
 } VkrVulkanBloomRoot;
+
+/** Mirrors VkrVkGtaoRoot in shaders/vulkan/slang/post/gtao.slang. */
+typedef struct VKR_SIMD_ALIGN VkrVulkanGtaoRoot {
+  VkrGtaoGpuParams params;
+  uint32_t source_texture;
+  uint32_t vbuffer_texture;
+  uint32_t normal_texture;
+  uint32_t destination_texture;
+  uint32_t edges_texture;
+  uint32_t point_sampler;
+  uint32_t source_extent[2];
+  uint32_t destination_extent[2];
+  uint32_t reserved[2];
+} VkrVulkanGtaoRoot;
 
 typedef struct VkrVulkanSdsmState {
   uint32_t min_device_z_bits;
@@ -765,6 +797,30 @@ _Static_assert(sizeof(VkrVulkanExposureRoot) == 112u,
                "Vulkan exposure root ABI size drift");
 _Static_assert(sizeof(VkrVulkanBloomRoot) == 64u,
                "Vulkan bloom root ABI size drift");
+_Static_assert(sizeof(VkrVulkanGtaoRoot) == 240u,
+               "Vulkan GTAO root ABI size drift");
+_Static_assert(offsetof(VkrVulkanGtaoRoot, params) == 0u,
+               "Vulkan GTAO parameter ABI offset drift");
+_Static_assert(offsetof(VkrGtaoGpuParams, projection_m22) == 88u,
+               "GTAO projection m22 ABI offset drift");
+_Static_assert(offsetof(VkrGtaoGpuParams, projection_m32) == 96u,
+               "GTAO projection m32 ABI offset drift");
+_Static_assert(offsetof(VkrGtaoGpuParams, projection_m00) == 104u,
+               "GTAO projection m00 ABI offset drift");
+_Static_assert(offsetof(VkrGtaoGpuParams, projection_m02) == 112u,
+               "GTAO projection m02 ABI offset drift");
+_Static_assert(offsetof(VkrGtaoGpuParams, effect_radius) == 128u,
+               "GTAO radius ABI offset drift");
+_Static_assert(offsetof(VkrGtaoGpuParams, final_value_power) == 156u,
+               "GTAO final power ABI offset drift");
+_Static_assert(offsetof(VkrGtaoGpuParams, slice_count) == 176u,
+               "GTAO quality ABI offset drift");
+_Static_assert(offsetof(VkrVulkanGtaoRoot, source_texture) == 192u,
+               "Vulkan GTAO resource ABI offset drift");
+_Static_assert(offsetof(VkrVulkanGtaoRoot, source_extent) == 216u,
+               "Vulkan GTAO extent ABI offset drift");
+_Static_assert(offsetof(VkrVulkanGtaoRoot, reserved) == 232u,
+               "Vulkan GTAO root tail ABI offset drift");
 _Static_assert(sizeof(VkrVulkanSdsmRoot) == 32u,
                "Deferred SDSM-root ABI size drift");
 _Static_assert(sizeof(VkrVulkanSdsmState) == VKR_VULKAN_SDSM_STATE_SIZE,
@@ -1185,6 +1241,8 @@ struct VkrVulkanRenderer {
   VkrVulkanRendererConfig config;
   VkrExposureMeteringConfig exposure_metering;
   VkrBloomConfig bloom_config;
+  VkrGtaoConfig gtao_config;
+  VkrGtaoGpuParams gtao_params;
   VkrDMemory publication_staging_memory;
   VkrDMemory capture_storage_memory;
   Arena *graph_frame_arena;
@@ -1464,6 +1522,18 @@ bool8_t vkr_vk_record_bloom_upsample(VkrVulkanRenderer *renderer,
 bool8_t vkr_vk_record_bloom_combine(VkrVulkanRenderer *renderer,
                                     VkCommandBuffer command,
                                     const VkrRgPass *pass);
+bool8_t vkr_vk_record_gtao_depth_prefilter(VkrVulkanRenderer *renderer,
+                                           VkCommandBuffer command,
+                                           const VkrRgPass *pass);
+bool8_t vkr_vk_record_gtao_depth_mip(VkrVulkanRenderer *renderer,
+                                     VkCommandBuffer command,
+                                     const VkrRgPass *pass);
+bool8_t vkr_vk_record_gtao_evaluate(VkrVulkanRenderer *renderer,
+                                    VkCommandBuffer command,
+                                    const VkrRgPass *pass);
+bool8_t vkr_vk_record_gtao_denoise(VkrVulkanRenderer *renderer,
+                                   VkCommandBuffer command,
+                                   const VkrRgPass *pass);
 bool8_t vkr_vk_record_deferred_sdsm(VkrVulkanRenderer *renderer,
                                     VkCommandBuffer command,
                                     const VkrRgPass *pass);

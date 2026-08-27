@@ -174,6 +174,7 @@ struct s_RendererFrontend {
   VkrExposureState exposure_state;
   uint32_t exposure_reset_reasons;
   bool8_t bloom_forced_disabled;
+  bool8_t gtao_forced_disabled;
 
   // Meshes
   VkrMeshManager mesh_manager;

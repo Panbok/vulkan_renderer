@@ -671,7 +671,7 @@ renderer_impl_metal_initialize(void *state, VkrWindow *window, uint32_t width,
           !vkr_renderer_env_enabled("VKR_TRANSMISSION_COMPACT_DISABLED"),
       .hzb_enabled = !vkr_renderer_env_enabled("VKR_HZB_DISABLED"),
       .max_images = 128,
-      .max_passes = 64,
+      .max_passes = VKR_RENDERER_IMPL_MAX_GRAPH_PASSES,
       .max_material_rows = 8192,
       .max_meshes = 16384,
       .max_submeshes_per_mesh = 512,
@@ -767,7 +767,7 @@ renderer_impl_vulkan_initialize(void *state, VkrWindow *window, uint32_t width,
       .max_pending_texture_upload_bytes = MB(256),
       .max_graph_images = 128u,
       .max_graph_buffers = 128u,
-      .max_graph_passes = 64u,
+      .max_graph_passes = VKR_RENDERER_IMPL_MAX_GRAPH_PASSES,
       .fxaa_enabled = !vkr_renderer_env_enabled("VKR_FXAA_DISABLED"),
       .hzb_enabled = !vkr_renderer_env_enabled("VKR_HZB_DISABLED"),
 #if !defined(NDEBUG)
@@ -924,6 +924,9 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   renderer->bloom_forced_disabled =
       vkr_renderer_env_enabled("VKR_BLOOM_DISABLED");
   const bool8_t bloom_enabled = !renderer->bloom_forced_disabled;
+  renderer->gtao_forced_disabled =
+      vkr_renderer_env_enabled("VKR_GTAO_DISABLED");
+  const bool8_t gtao_enabled = !renderer->gtao_forced_disabled;
   renderer->globals = (VkrGlobalMaterialState){
       .ambient_color = vec4_new(0.1, 0.1, 0.1, 1.0),
       .exposure_mode = VKR_EXPOSURE_MODE_AUTOMATIC,
@@ -932,6 +935,9 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
       .bloom_threshold = VKR_BLOOM_DEFAULT_THRESHOLD,
       .bloom_knee = VKR_BLOOM_DEFAULT_KNEE,
       .bloom_intensity = VKR_BLOOM_DEFAULT_INTENSITY,
+      .gtao_enabled = gtao_enabled,
+      .gtao_radius = VKR_GTAO_DEFAULT_RADIUS,
+      .gtao_power = VKR_GTAO_DEFAULT_POWER,
       .render_mode = VKR_RENDER_MODE_DEFAULT,
   };
   renderer->frame_metrics = (VkrRendererFrameMetrics){0};
@@ -1153,6 +1159,11 @@ static void vkr_renderer_prepare_packet(RendererFrontend *rf,
       packet->globals.bloom_enabled && !rf->bloom_forced_disabled,
       packet->globals.bloom_threshold, packet->globals.bloom_knee,
       packet->globals.bloom_intensity);
+  /* GTAO is current-frame spatial state: like bloom, it has no prepare/commit
+     history chain. */
+  prepared->packet.globals.gtao = vkr_gtao_prepare(
+      packet->globals.gtao_enabled && !rf->gtao_forced_disabled,
+      packet->globals.gtao_radius, packet->globals.gtao_power);
 
   const VkrTextUpdatesPayload *updates = packet->text_updates;
   if (updates) {
@@ -2585,6 +2596,22 @@ vkr_renderer_validate_packet(const VkrRenderPacket *packet,
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.bloom_intensity",
                       "must be finite and non-negative when bloom is enabled");
+
+  if (packet->globals.gtao_enabled > true_v)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.globals.gtao_enabled", "must be zero or one");
+  if (packet->globals.gtao_enabled &&
+      (!isfinite(packet->globals.gtao_radius) ||
+       packet->globals.gtao_radius < VKR_GTAO_RADIUS_MIN ||
+       packet->globals.gtao_radius > VKR_GTAO_RADIUS_MAX))
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.globals.gtao_radius",
+                      "must be finite and within the supported GTAO range");
+  if (packet->globals.gtao_enabled && (!isfinite(packet->globals.gtao_power) ||
+                                       packet->globals.gtao_power <= 0.0f))
+    VKR_REJECT_PACKET(
+        VKR_RENDERER_ERROR_UNSUPPORTED_INPUT, "packet.globals.gtao_power",
+        "must be finite and greater than zero when GTAO is enabled");
 
   const VkrWorldPassPayload *world = packet->world;
   if (world) {

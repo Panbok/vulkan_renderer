@@ -95,6 +95,10 @@ vkr_add_vulkan_packet_shader("packet.bloom_prefilter.comp" vk_bloom_prefilter co
 vkr_add_vulkan_packet_shader("packet.bloom_downsample_tent13.comp" vk_bloom_downsample_tent13 compute)
 vkr_add_vulkan_packet_shader("packet.bloom_downsample_box4.comp" vk_bloom_downsample_box4 compute)
 vkr_add_vulkan_packet_shader("packet.bloom_upsample.comp" vk_bloom_upsample compute)
+vkr_add_vulkan_packet_shader("packet.gtao_depth_prefilter.comp" vk_gtao_depth_prefilter compute)
+vkr_add_vulkan_packet_shader("packet.gtao_depth_mip.comp" vk_gtao_depth_mip compute)
+vkr_add_vulkan_packet_shader("packet.gtao_evaluate.comp" vk_gtao_evaluate compute)
+vkr_add_vulkan_packet_shader("packet.gtao_denoise.comp" vk_gtao_denoise compute)
 vkr_add_vulkan_packet_shader("packet.bloom_combine.comp" vk_bloom_combine compute)
 vkr_add_vulkan_packet_shader("packet.picking_resolve.comp" vk_picking_resolve compute)
 vkr_add_vulkan_packet_shader("packet.transmission_shade.comp" vk_transmission_shade compute)
@@ -250,6 +254,7 @@ if(APPLE)
         # The bloom kernel reuses the exposure kernel's Rec. 709 luminance, so
         # it must follow it here for the same reason as below.
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/bloom_kernel.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/gtao_kernel.slangh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/common/draw.metalh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/world/lighting.metalh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/shadow_kernel.slangh"
@@ -264,6 +269,7 @@ if(APPLE)
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/text/default.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/exposure.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/bloom.metal"
+        "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/gtao.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/tonemap.metal")
     list(JOIN VKR_METAL_PACKET_MSL_SOURCES "|"
          VKR_METAL_PACKET_MSL_SOURCE_ARGUMENT)

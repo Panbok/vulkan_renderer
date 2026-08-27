@@ -37,6 +37,7 @@
         "transmission_pending && timing_enabled && !transmission_compact_enabled",
         "exposure_automatic",
         "bloom_enabled",
+        "gtao_enabled",
         "picking_pending",
         "!picking_pending",
         "picking_pending && transmission_pending",

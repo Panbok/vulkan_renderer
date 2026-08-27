@@ -466,6 +466,12 @@ bool8_t vkr_harness_report_write(const char *path,
       vkr_harness_json_emit_f64(
           writer, "bloom_intensity",
           report->case_manifest.renderer.bloom_intensity) &&
+      vkr_harness_json_emit_bool(writer, "gtao_enabled",
+                                 report->case_manifest.renderer.gtao_enabled) &&
+      vkr_harness_json_emit_f64(writer, "gtao_radius",
+                                report->case_manifest.renderer.gtao_radius) &&
+      vkr_harness_json_emit_f64(writer, "gtao_power",
+                                report->case_manifest.renderer.gtao_power) &&
       vkr_harness_json_emit_string(
           writer, "cache",
           vkr_harness_cache_name(report->case_manifest.cache)) &&

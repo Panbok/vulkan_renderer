@@ -9,6 +9,7 @@
  */
 #include "vkr_harness_runtime.h"
 
+#include <float.h>
 #include <stb_image_write.h>
 
 typedef struct VkrHarnessPngBuffer {
@@ -53,6 +54,75 @@ typedef struct VkrHarnessProfileV2 {
   uint32_t required_metric_count;
 } VkrHarnessProfileV2;
 
+/* Versions 2 and 3 embedded this case layout before GTAO became authored
+ * harness state. Keep it private and byte-exact; stored summaries are an ABI.
+ */
+typedef struct VkrHarnessRendererConfigV3 {
+  bool8_t editor;
+  bool8_t skybox;
+  bool8_t text_fixture;
+  bool8_t taa_enabled;
+  bool8_t shadow_pcf_early_out;
+  bool8_t shadow_sdsm;
+  char backend[16];
+  char shadow_preset[32];
+  uint32_t shadow_cascades;
+  uint32_t shadow_pcf_samples;
+  uint32_t shadow_map_size;
+  float32_t shadow_split_lambda;
+  char render_mode[24];
+  char exposure_mode[16];
+  float32_t manual_exposure;
+  float32_t exposure_compensation_ev;
+  uint32_t exposure_reset_frame;
+  bool8_t bloom_enabled;
+  float32_t bloom_threshold;
+  float32_t bloom_knee;
+  float32_t bloom_intensity;
+  uint32_t shadow_debug_mode;
+} VkrHarnessRendererConfigV3;
+
+typedef struct VkrHarnessCaseV3 {
+  uint32_t schema_version;
+  char manifest_path[VKR_HARNESS_PATH_MAX];
+  char manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char id[VKR_HARNESS_ID_MAX];
+  char suite[64];
+  char description[VKR_HARNESS_TEXT_MAX];
+  char scene[VKR_HARNESS_PATH_MAX];
+  uint64_t seed;
+  uint32_t width;
+  uint32_t height;
+  bool8_t resize_round_trip;
+  uint32_t resize_width;
+  uint32_t resize_height;
+  VkrHarnessBootProfile boot;
+  VkrHarnessTarget target;
+  VkrHarnessPresentMode present;
+  uint32_t target_image_count;
+  VkrHarnessCacheMode cache;
+  float64_t fixed_delta_seconds;
+  uint32_t warmup_frames;
+  uint32_t measure_frames;
+  uint32_t repetitions;
+  uint32_t repetition_timeout_ms;
+  uint32_t asset_ready_timeout_ms;
+  VkrHarnessRendererConfigV3 renderer;
+  VkrHarnessCamera camera;
+  VkrHarnessCapture captures[VKR_HARNESS_MAX_CAPTURES];
+  uint32_t capture_count;
+  VkrHarnessAssertion assertions[VKR_HARNESS_MAX_ASSERTIONS];
+  uint32_t assertion_count;
+  VkrHarnessCompareConfig compare;
+} VkrHarnessCaseV3;
+
+_Static_assert(offsetof(VkrHarnessCaseV3, renderer) ==
+                   offsetof(VkrHarnessCase, renderer),
+               "Legacy case prefix drift");
+_Static_assert(offsetof(VkrHarnessRendererConfigV3, shadow_debug_mode) ==
+                   offsetof(VkrHarnessRendererConfig, gtao_enabled),
+               "Legacy renderer prefix drift");
+
 typedef struct VkrHarnessCaptureSummaryHeaderV2 {
   uint8_t magic[8];
   uint32_t version;
@@ -71,12 +141,35 @@ typedef struct VkrHarnessCaptureSummaryHeaderV2 {
   char environment_fingerprint[VKR_HARNESS_DIGEST_MAX];
   char workload_fingerprint[VKR_HARNESS_DIGEST_MAX];
   char policy_fingerprint[VKR_HARNESS_DIGEST_MAX];
-  VkrHarnessCase case_manifest;
+  VkrHarnessCaseV3 case_manifest;
   VkrHarnessProfileV2 profile;
   VkrHarnessProvenance provenance;
 } VkrHarnessCaptureSummaryHeaderV2;
 
-typedef struct VkrHarnessCaptureSummaryHeader {
+typedef struct VkrHarnessCaptureSummaryHeaderV3 {
+  uint8_t magic[8];
+  uint32_t version;
+  uint32_t capture_count;
+  uint32_t artifact_count;
+  uint32_t tool;
+  uint32_t exit_code;
+  bool8_t authoritative;
+  bool8_t profile_compatible;
+  uint8_t reserved[2];
+  char status[24];
+  char case_id[VKR_HARNESS_ID_MAX];
+  char case_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char profile_id[VKR_HARNESS_ID_MAX];
+  char profile_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char environment_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char workload_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char policy_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  VkrHarnessCaseV3 case_manifest;
+  VkrHarnessProfile profile;
+  VkrHarnessProvenance provenance;
+} VkrHarnessCaptureSummaryHeaderV3;
+
+typedef struct VkrHarnessCaptureSummaryHeaderV4 {
   uint8_t magic[8];
   uint32_t version;
   uint32_t capture_count;
@@ -97,7 +190,15 @@ typedef struct VkrHarnessCaptureSummaryHeader {
   VkrHarnessCase case_manifest;
   VkrHarnessProfile profile;
   VkrHarnessProvenance provenance;
-} VkrHarnessCaptureSummaryHeader;
+} VkrHarnessCaptureSummaryHeaderV4;
+
+_Static_assert(offsetof(VkrHarnessCaptureSummaryHeaderV2, case_manifest) ==
+                       offsetof(VkrHarnessCaptureSummaryHeaderV3,
+                                case_manifest) &&
+                   offsetof(VkrHarnessCaptureSummaryHeaderV3, case_manifest) ==
+                       offsetof(VkrHarnessCaptureSummaryHeaderV4,
+                                case_manifest),
+               "Capture summary common prefix drift");
 
 static const uint8_t s_capture_summary_magic[8] = {'V', 'K', 'R', 'C',
                                                    'A', 'P', '0', '1'};
@@ -154,6 +255,26 @@ static void vkr_harness_profile_from_v2(const VkrHarnessProfileV2 *source,
   destination->required_metric_count = source->required_metric_count;
 }
 
+static void vkr_harness_case_from_v3(const VkrHarnessCaseV3 *source,
+                                     VkrHarnessCase *destination) {
+  MemZero(destination, sizeof(*destination));
+  MemCopy(destination, source, offsetof(VkrHarnessCaseV3, renderer));
+  MemCopy(&destination->renderer, &source->renderer,
+          offsetof(VkrHarnessRendererConfigV3, shadow_debug_mode));
+  destination->renderer.gtao_enabled = false_v;
+  destination->renderer.gtao_radius = VKR_GTAO_DEFAULT_RADIUS;
+  destination->renderer.gtao_power = VKR_GTAO_DEFAULT_POWER;
+  destination->renderer.shadow_debug_mode = source->renderer.shadow_debug_mode;
+  destination->camera = source->camera;
+  MemCopy(destination->captures, source->captures,
+          sizeof(destination->captures));
+  destination->capture_count = source->capture_count;
+  MemCopy(destination->assertions, source->assertions,
+          sizeof(destination->assertions));
+  destination->assertion_count = source->assertion_count;
+  destination->compare = source->compare;
+}
+
 static void vkr_harness_png_write(void *context, void *data, int size) {
   VkrHarnessPngBuffer *buffer = context;
   if (!buffer || size < 0 ||
@@ -177,8 +298,12 @@ static const char *vkr_harness_capture_format_name(VkrTextureFormat format) {
     return "B8G8R8A8_UNORM";
   case VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB:
     return "B8G8R8A8_SRGB";
+  case VKR_TEXTURE_FORMAT_R8_UNORM:
+    return "R8_UNORM";
   case VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT:
     return "R16G16B16A16_SFLOAT";
+  case VKR_TEXTURE_FORMAT_R16_SFLOAT:
+    return "R16_SFLOAT";
   case VKR_TEXTURE_FORMAT_D32_SFLOAT:
     return "D32_SFLOAT";
   case VKR_TEXTURE_FORMAT_D16_UNORM:
@@ -297,10 +422,19 @@ static void vkr_harness_capture_color_rgba(const VkrCaptureItemResult *item,
                        item->format == VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB;
   const bool8_t hdr = item->format == VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT;
   const bool8_t oct_normal = item->format == VKR_TEXTURE_FORMAT_R16G16_SNORM;
+  const bool8_t grayscale = item->format == VKR_TEXTURE_FORMAT_R8_UNORM;
   for (uint32_t y = 0; y < item->height; ++y) {
     const uint8_t *source = vkr_harness_capture_row(item, y);
     uint8_t *target = rgba + (uint64_t)y * item->width * 4u;
     for (uint32_t x = 0; x < item->width; ++x) {
+      if (grayscale) {
+        const uint8_t value = source[x];
+        target[x * 4u + 0u] = value;
+        target[x * 4u + 1u] = value;
+        target[x * 4u + 2u] = value;
+        target[x * 4u + 3u] = 255u;
+        continue;
+      }
       if (oct_normal) {
         const uint8_t *texel = source + (uint64_t)x * 4u;
         const int16_t encoded_x =
@@ -358,16 +492,21 @@ static void vkr_harness_capture_color_rgba(const VkrCaptureItemResult *item,
 }
 
 /**
- * One texel of a depth source as a normalized device depth value. The two
- * accepted source formats are the only ones capture initialization permits, so
- * this is the single place either encoding is interpreted.
+ * One texel of a depth source as a floating-point depth value. The accepted
+ * source formats are the only ones capture initialization permits, so this is
+ * the single place each encoding is interpreted.
  */
 static float32_t vkr_harness_capture_depth_at(const VkrCaptureItemResult *item,
                                               const uint8_t *row, uint32_t x) {
-  return item->format == VKR_TEXTURE_FORMAT_D16_UNORM
-             ? (float32_t)vkr_harness_capture_read_u16(row + (uint64_t)x * 2u) /
-                   65535.0f
-             : vkr_harness_capture_read_f32(row + (uint64_t)x * 4u);
+  if (item->format == VKR_TEXTURE_FORMAT_D16_UNORM) {
+    return (float32_t)vkr_harness_capture_read_u16(row + (uint64_t)x * 2u) /
+           65535.0f;
+  }
+  if (item->format == VKR_TEXTURE_FORMAT_R16_SFLOAT) {
+    return vkr_harness_capture_half_to_float(
+        vkr_harness_capture_read_u16(row + (uint64_t)x * 2u));
+  }
+  return vkr_harness_capture_read_f32(row + (uint64_t)x * 4u);
 }
 
 /**
@@ -378,8 +517,10 @@ static float32_t vkr_harness_capture_depth_at(const VkrCaptureItemResult *item,
 static void vkr_harness_capture_depth_preview(const VkrCaptureItemResult *item,
                                               uint8_t *rgba, float32_t *out_min,
                                               float32_t *out_max) {
-  float32_t min_value = 1.0f;
-  float32_t max_value = 0.0f;
+  const bool8_t view_depth = item->format == VKR_TEXTURE_FORMAT_R16_SFLOAT;
+  float32_t min_value = view_depth ? FLT_MAX : 1.0f;
+  float32_t max_value = view_depth ? -FLT_MAX : 0.0f;
+  bool8_t observed_value = false_v;
   for (uint32_t y = 0; y < item->height; ++y) {
     const uint8_t *row = vkr_harness_capture_row(item, y);
     for (uint32_t x = 0; x < item->width; ++x) {
@@ -388,8 +529,13 @@ static void vkr_harness_capture_depth_preview(const VkrCaptureItemResult *item,
       if (depth == depth) {
         min_value = Min(min_value, depth);
         max_value = Max(max_value, depth);
+        observed_value = true_v;
       }
     }
+  }
+  if (view_depth && !observed_value) {
+    min_value = 0.0f;
+    max_value = 0.0f;
   }
   const float32_t range = max_value > min_value ? max_value - min_value : 1.0f;
   for (uint32_t y = 0; y < item->height; ++y) {
@@ -449,8 +595,8 @@ static void vkr_harness_capture_uint_preview(const VkrCaptureItemResult *item,
 /**
  * Writes the tightly packed little-endian 32-bit payload that comparison
  * actually reads: depth becomes float bits, identifiers keep their exact
- * value. `D16_UNORM` is widened here so one canonical encoding covers both
- * depth sources.
+ * value. `D16_UNORM` and `R16_SFLOAT` are widened here so one canonical
+ * encoding covers every depth source.
  */
 static void vkr_harness_capture_canonical_u32(const VkrCaptureItemResult *item,
                                               uint32_t component,
@@ -464,7 +610,8 @@ static void vkr_harness_capture_canonical_u32(const VkrCaptureItemResult *item,
     uint8_t *target = tight + (uint64_t)y * item->width * 4u;
     for (uint32_t x = 0; x < item->width; ++x) {
       uint32_t canonical;
-      if (depth && item->format == VKR_TEXTURE_FORMAT_D16_UNORM) {
+      if (depth && (item->format == VKR_TEXTURE_FORMAT_D16_UNORM ||
+                    item->format == VKR_TEXTURE_FORMAT_R16_SFLOAT)) {
         const float32_t value = vkr_harness_capture_depth_at(item, source, x);
         MemCopy(&canonical, &value, sizeof(canonical));
       } else {
@@ -725,7 +872,7 @@ bool8_t vkr_harness_capture_summary_write(const char *path,
   const uint64_t artifact_bytes =
       (uint64_t)report->artifact_count * sizeof(VkrHarnessArtifact);
   const uint64_t size =
-      sizeof(VkrHarnessCaptureSummaryHeader) + capture_bytes + artifact_bytes;
+      sizeof(VkrHarnessCaptureSummaryHeaderV4) + capture_bytes + artifact_bytes;
   Scratch scratch = scratch_create(transient);
   uint8_t *bytes = arena_alloc(transient, size, ARENA_MEMORY_TAG_ARRAY);
   if (!bytes) {
@@ -733,10 +880,10 @@ bool8_t vkr_harness_capture_summary_write(const char *path,
     return false_v;
   }
   MemZero(bytes, size);
-  VkrHarnessCaptureSummaryHeader *header =
-      (VkrHarnessCaptureSummaryHeader *)bytes;
+  VkrHarnessCaptureSummaryHeaderV4 *header =
+      (VkrHarnessCaptureSummaryHeaderV4 *)bytes;
   MemCopy(header->magic, s_capture_summary_magic, sizeof(header->magic));
-  header->version = 3u;
+  header->version = 4u;
   header->capture_count = report->capture_count;
   header->artifact_count = report->artifact_count;
   header->tool = (uint32_t)report->tool;
@@ -786,23 +933,25 @@ vkr_harness_capture_summary_read(const char *path, Arena *arena,
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
   if (!vkr_harness_read_file(path, arena, &bytes, &size) ||
-      size < sizeof(VkrHarnessCaptureSummaryHeaderV2)) {
+      size < offsetof(VkrHarnessCaptureSummaryHeaderV2, case_manifest)) {
     return false_v;
   }
   const VkrHarnessCaptureSummaryHeaderV2 *common =
       (const VkrHarnessCaptureSummaryHeaderV2 *)bytes;
   if (MemCompare(common->magic, s_capture_summary_magic,
                  sizeof(common->magic)) != 0 ||
-      (common->version != 2u && common->version != 3u) ||
+      (common->version != 2u && common->version != 3u &&
+       common->version != 4u) ||
       common->tool > VKR_HARNESS_TOOL_COMPARE ||
       common->exit_code > VKR_HARNESS_EXIT_ERROR ||
       common->capture_count > VKR_HARNESS_MAX_CAPTURE_RESULTS ||
       common->artifact_count > VKR_HARNESS_MAX_ARTIFACTS) {
     return false_v;
   }
-  const uint64_t header_size = common->version == 2u
-                                   ? sizeof(VkrHarnessCaptureSummaryHeaderV2)
-                                   : sizeof(VkrHarnessCaptureSummaryHeader);
+  const uint64_t header_size =
+      common->version == 2u   ? sizeof(VkrHarnessCaptureSummaryHeaderV2)
+      : common->version == 3u ? sizeof(VkrHarnessCaptureSummaryHeaderV3)
+                              : sizeof(VkrHarnessCaptureSummaryHeaderV4);
   const uint64_t capture_bytes =
       (uint64_t)common->capture_count * sizeof(VkrHarnessCaptureResult);
   const uint64_t artifact_bytes =
@@ -837,13 +986,22 @@ vkr_harness_capture_summary_read(const char *path, Arena *arena,
   string_format(out_summary->policy_fingerprint,
                 sizeof(out_summary->policy_fingerprint), "%s",
                 common->policy_fingerprint);
-  out_summary->case_manifest = common->case_manifest;
   if (common->version == 2u) {
+    vkr_harness_case_from_v3(&common->case_manifest,
+                             &out_summary->case_manifest);
     vkr_harness_profile_from_v2(&common->profile, &out_summary->profile);
     out_summary->provenance = common->provenance;
+  } else if (common->version == 3u) {
+    const VkrHarnessCaptureSummaryHeaderV3 *header =
+        (const VkrHarnessCaptureSummaryHeaderV3 *)bytes;
+    vkr_harness_case_from_v3(&header->case_manifest,
+                             &out_summary->case_manifest);
+    out_summary->profile = header->profile;
+    out_summary->provenance = header->provenance;
   } else {
-    const VkrHarnessCaptureSummaryHeader *header =
-        (const VkrHarnessCaptureSummaryHeader *)bytes;
+    const VkrHarnessCaptureSummaryHeaderV4 *header =
+        (const VkrHarnessCaptureSummaryHeaderV4 *)bytes;
+    out_summary->case_manifest = header->case_manifest;
     out_summary->profile = header->profile;
     out_summary->provenance = header->provenance;
   }

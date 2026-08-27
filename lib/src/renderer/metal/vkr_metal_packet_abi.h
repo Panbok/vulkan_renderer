@@ -8,6 +8,7 @@
 #include "renderer/vkr_buffer.h"
 #include "renderer/vkr_exposure.h"
 #include "renderer/vkr_gpu_abi.h"
+#include "renderer/vkr_gtao.h"
 
 enum {
   VKR_METAL_PACKET_ROOT_ALIGNMENT = 256,
@@ -161,6 +162,48 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketHzbBuildRoot {
 _Static_assert(sizeof(VkrMetalPacketHzbBuildRoot) == 48,
                "Metal HZB build root ABI must remain 48 bytes");
 
+/** Explicit-subresource GTAO depth prefilter/reduction root. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketGtaoDepthRoot {
+  VkrGtaoGpuParams params;
+  uint64_t source_texture_id;
+  uint64_t destination_texture_id;
+  uint32_t source_extent[2];
+  uint32_t destination_extent[2];
+} VkrMetalPacketGtaoDepthRoot;
+
+_Static_assert(sizeof(VkrMetalPacketGtaoDepthRoot) == 224,
+               "Metal GTAO depth root ABI must remain 224 bytes");
+
+/** Full-resolution GTAO horizon evaluation resources. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketGtaoEvaluateRoot {
+  VkrGtaoGpuParams params;
+  uint64_t vbuffer_texture_id;
+  uint64_t view_depth_texture_id;
+  uint64_t normal_texture_id;
+  uint64_t destination_texture_id;
+  uint64_t edges_texture_id;
+  uint32_t source_extent[2];
+  uint32_t destination_extent[2];
+  uint32_t reserved[2];
+} VkrMetalPacketGtaoEvaluateRoot;
+
+_Static_assert(sizeof(VkrMetalPacketGtaoEvaluateRoot) == 256,
+               "Metal GTAO evaluate root ABI must remain 256 bytes");
+
+/** Full-resolution edge-aware GTAO spatial denoise resources. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketGtaoDenoiseRoot {
+  VkrGtaoGpuParams params;
+  uint64_t source_texture_id;
+  uint64_t edges_texture_id;
+  uint64_t destination_texture_id;
+  uint32_t source_extent[2];
+  uint32_t destination_extent[2];
+  uint32_t reserved[2];
+} VkrMetalPacketGtaoDenoiseRoot;
+
+_Static_assert(sizeof(VkrMetalPacketGtaoDenoiseRoot) == 240,
+               "Metal GTAO denoise root ABI must remain 240 bytes");
+
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketSdsmRoot {
   uint64_t depth_texture_id;
   uint64_t vbuffer_texture_id;
@@ -306,14 +349,15 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketDeferredLightingRoot {
   uint64_t normal_texture_id;
   uint64_t hdr_texture_id;
   uint64_t sky_texture_id;
+  uint64_t gtao_visibility_texture_id;
   Mat4 inverse_view_projection;
   uint32_t extent[2];
   uint32_t sky_enabled;
   uint32_t reserved;
 } VkrMetalPacketDeferredLightingRoot;
 
-_Static_assert(sizeof(VkrMetalPacketDeferredLightingRoot) == 144,
-               "Metal deferred-lighting root ABI must remain 144 bytes");
+_Static_assert(sizeof(VkrMetalPacketDeferredLightingRoot) == 160,
+               "Metal deferred-lighting root ABI must remain 160 bytes");
 
 /** Per-dispatch frontmost transmission visibility resolve and shading. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketTransmissionShadeRoot {
@@ -505,6 +549,10 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_TRANSMISSION_PEEL_ROOT,
   VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT,
   VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT,
+  VKR_METAL_PACKET_ABI_GTAO_PARAMS,
+  VKR_METAL_PACKET_ABI_GTAO_DEPTH_ROOT,
+  VKR_METAL_PACKET_ABI_GTAO_EVALUATE_ROOT,
+  VKR_METAL_PACKET_ABI_GTAO_DENOISE_ROOT,
   VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT,
   VKR_METAL_PACKET_ABI_TEMPORAL_RESOLVE_ROOT,
   VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT,

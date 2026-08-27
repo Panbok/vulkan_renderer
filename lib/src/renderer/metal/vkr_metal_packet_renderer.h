@@ -6,6 +6,7 @@
 #include "renderer/vkr_bloom.h"
 #include "renderer/vkr_buffer.h"
 #include "renderer/vkr_gpu_abi.h"
+#include "renderer/vkr_gtao.h"
 #include "renderer/vkr_ibl_math.h"
 #include "renderer/vkr_render_graph.h"
 #include "renderer/vkr_render_packet.h"
@@ -41,6 +42,8 @@ typedef struct VkrMetalPacketRendererConfig {
   VkrAllocator *allocator;
   /** A zeroed record selects the production bloom defaults. */
   VkrBloomConfig bloom;
+  /** A zeroed record selects the production GTAO defaults. */
+  VkrGtaoConfig gtao;
   const char *graph_path;
   const char *slang_msl_path;
   const char *fragment_msl_path;
@@ -137,7 +140,7 @@ typedef struct VkrMetalPacketHdrEnvironmentCreateInfo {
 
 enum {
   VKR_METAL_PACKET_TIMING_NAME_CAPACITY = 64,
-  VKR_METAL_PACKET_MAX_PASS_TIMINGS = 64,
+  VKR_METAL_PACKET_MAX_PASS_TIMINGS = VKR_RENDERER_IMPL_MAX_PASS_TIMINGS,
 };
 
 /** Completed Metal timestamp interval for one authored graph pass. */

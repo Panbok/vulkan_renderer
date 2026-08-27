@@ -695,6 +695,13 @@ typedef struct VkrRenderGraphFrameInfo {
    * accumulate into.
    */
   uint32_t bloom_mip_count;
+  /**
+   * True only when the packet requests GTAO and the viewport has a usable
+   * current-frame depth chain. Gates every GTAO image and pass.
+   */
+  bool8_t gtao_enabled;
+  /** Current-frame AO depth levels, including full-resolution mip zero. */
+  uint32_t gtao_depth_mip_count;
   /** Metal P19 state; false only for the diagnostic full-screen rollback. */
   bool8_t transmission_compact_enabled;
   /** True when this frame requests backend pass timestamps. */

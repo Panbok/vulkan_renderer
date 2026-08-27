@@ -328,8 +328,8 @@ vkr_internal bool8_t vkr_metal_packet_encode_text_draws(
 
 /** Resolves the texture behind one authored image use, honouring its mip. */
 vkr_internal id<MTLTexture>
-vkr_metal_packet_bloom_texture(VkrMetalPacketRenderer *renderer,
-                               const VkrRgImageUse *use)
+vkr_metal_packet_subresource_texture(VkrMetalPacketRenderer *renderer,
+                                     const VkrRgImageUse *use)
     API_AVAILABLE(macos(26.0)) {
   if (!use)
     return nil;
@@ -345,7 +345,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_tonemap(
   const VkrRgImageUse *read = vkr_rg_pass_find_image_use(&pass->desc, 2u, 0u);
   if (!read)
     read = vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
-  id<MTLTexture> source = vkr_metal_packet_bloom_texture(renderer, read);
+  id<MTLTexture> source = vkr_metal_packet_subresource_texture(renderer, read);
   if (!source)
     return false_v;
   uint64_t root_gpu = 0;
@@ -839,6 +839,135 @@ vkr_internal bool8_t vkr_metal_packet_encode_gbuffer_resolve(
   return true_v;
 }
 
+vkr_internal bool8_t vkr_metal_packet_encode_gtao(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    id<MTL4ComputeCommandEncoder> encoder, VkrMetalPacketFrameUpload *upload,
+    VkrMetalPacketGraphExecutorKind kind) API_AVAILABLE(macos(26.0)) {
+  if (!renderer || !pass || !encoder || !upload ||
+      !renderer->prepared_frame.gtao_enabled)
+    return false_v;
+
+  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_DEPTH_PREFILTER ||
+      kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_DEPTH_MIP) {
+    const VkrRgImageUse *source_use =
+        vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+    const VkrRgImageUse *destination_use =
+        vkr_rg_pass_find_image_use(&pass->desc, 1u, 0u);
+    id<MTLTexture> source =
+        vkr_metal_packet_subresource_texture(renderer, source_use);
+    id<MTLTexture> destination =
+        vkr_metal_packet_subresource_texture(renderer, destination_use);
+    id<MTLComputePipelineState> pipeline =
+        kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_DEPTH_PREFILTER
+            ? renderer->gtao_depth_prefilter_pipeline
+            : renderer->gtao_depth_mip_pipeline;
+    if (!source || !destination || !pipeline || source.width == 0u ||
+        source.height == 0u || destination.width == 0u ||
+        destination.height == 0u || source.width > UINT32_MAX ||
+        source.height > UINT32_MAX || destination.width > UINT32_MAX ||
+        destination.height > UINT32_MAX)
+      return false_v;
+
+    uint64_t root_gpu = 0u;
+    VkrMetalPacketGtaoDepthRoot *root =
+        vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+    if (!root)
+      return false_v;
+    *root = (VkrMetalPacketGtaoDepthRoot){
+        .params = renderer->gtao_params,
+        .source_texture_id = source.gpuResourceID._impl,
+        .destination_texture_id = destination.gpuResourceID._impl,
+        .source_extent = {(uint32_t)source.width, (uint32_t)source.height},
+        .destination_extent = {(uint32_t)destination.width,
+                               (uint32_t)destination.height},
+    };
+    [renderer->argument_table setAddress:root_gpu atIndex:0u];
+    [encoder setComputePipelineState:pipeline];
+    [encoder setArgumentTable:renderer->argument_table];
+    [encoder dispatchThreads:MTLSizeMake(destination.width, destination.height,
+                                         1u)
+        threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
+    return true_v;
+  }
+
+  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_EVALUATE) {
+    id<MTLTexture> vbuffer = vkr_metal_packet_pass_texture(renderer, pass, 0u);
+    id<MTLTexture> view_depth =
+        vkr_metal_packet_pass_texture(renderer, pass, 1u);
+    id<MTLTexture> normal = vkr_metal_packet_pass_texture(renderer, pass, 2u);
+    id<MTLTexture> destination =
+        vkr_metal_packet_pass_texture(renderer, pass, 3u);
+    id<MTLTexture> edges = vkr_metal_packet_pass_texture(renderer, pass, 4u);
+    if (!vbuffer || !view_depth || !normal || !destination || !edges ||
+        !renderer->gtao_evaluate_pipeline || view_depth.width == 0u ||
+        view_depth.height == 0u || destination.width == 0u ||
+        destination.height == 0u || view_depth.width > UINT32_MAX ||
+        view_depth.height > UINT32_MAX || destination.width > UINT32_MAX ||
+        destination.height > UINT32_MAX)
+      return false_v;
+
+    uint64_t root_gpu = 0u;
+    VkrMetalPacketGtaoEvaluateRoot *root =
+        vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+    if (!root)
+      return false_v;
+    *root = (VkrMetalPacketGtaoEvaluateRoot){
+        .params = renderer->gtao_params,
+        .vbuffer_texture_id = vbuffer.gpuResourceID._impl,
+        .view_depth_texture_id = view_depth.gpuResourceID._impl,
+        .normal_texture_id = normal.gpuResourceID._impl,
+        .destination_texture_id = destination.gpuResourceID._impl,
+        .edges_texture_id = edges.gpuResourceID._impl,
+        .source_extent = {(uint32_t)view_depth.width,
+                          (uint32_t)view_depth.height},
+        .destination_extent = {(uint32_t)destination.width,
+                               (uint32_t)destination.height},
+    };
+    [renderer->argument_table setAddress:root_gpu atIndex:0u];
+    [encoder setComputePipelineState:renderer->gtao_evaluate_pipeline];
+    [encoder setArgumentTable:renderer->argument_table];
+    [encoder dispatchThreads:MTLSizeMake(destination.width, destination.height,
+                                         1u)
+        threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
+    return true_v;
+  }
+
+  if (kind != VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_DENOISE)
+    return false_v;
+  id<MTLTexture> source = vkr_metal_packet_pass_texture(renderer, pass, 0u);
+  id<MTLTexture> edges = vkr_metal_packet_pass_texture(renderer, pass, 1u);
+  id<MTLTexture> destination =
+      vkr_metal_packet_pass_texture(renderer, pass, 2u);
+  if (!source || !edges || !destination || !renderer->gtao_denoise_pipeline ||
+      source.width == 0u || source.height == 0u || destination.width == 0u ||
+      destination.height == 0u || source.width > UINT32_MAX ||
+      source.height > UINT32_MAX || destination.width > UINT32_MAX ||
+      destination.height > UINT32_MAX)
+    return false_v;
+
+  uint64_t root_gpu = 0u;
+  VkrMetalPacketGtaoDenoiseRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  if (!root)
+    return false_v;
+  *root = (VkrMetalPacketGtaoDenoiseRoot){
+      .params = renderer->gtao_params,
+      .source_texture_id = source.gpuResourceID._impl,
+      .edges_texture_id = edges.gpuResourceID._impl,
+      .destination_texture_id = destination.gpuResourceID._impl,
+      .source_extent = {(uint32_t)source.width, (uint32_t)source.height},
+      .destination_extent = {(uint32_t)destination.width,
+                             (uint32_t)destination.height},
+  };
+  [renderer->argument_table setAddress:root_gpu atIndex:0u];
+  [encoder setComputePipelineState:renderer->gtao_denoise_pipeline];
+  [encoder setArgumentTable:renderer->argument_table];
+  [encoder dispatchThreads:MTLSizeMake(destination.width, destination.height,
+                                       1u)
+      threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_metal_packet_encode_deferred_lighting(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrRenderPacket *packet, id<MTL4ComputeCommandEncoder> encoder,
@@ -852,9 +981,14 @@ vkr_internal bool8_t vkr_metal_packet_encode_deferred_lighting(
   id<MTLTexture> specular = vkr_metal_packet_pass_texture(renderer, pass, 3u);
   id<MTLTexture> normal = vkr_metal_packet_pass_texture(renderer, pass, 4u);
   id<MTLTexture> hdr = vkr_metal_packet_pass_texture(renderer, pass, 6u);
+  id<MTLTexture> gtao_visibility =
+      renderer->prepared_frame.gtao_enabled
+          ? vkr_metal_packet_pass_texture(renderer, pass, 7u)
+          : (id<MTLTexture>)renderer->gtao_white_visibility.metal_texture;
   if (!vbuffer || !depth || !albedo || !specular || !normal || !hdr ||
-      vbuffer.width == 0u || vbuffer.height == 0u ||
-      vbuffer.width > UINT32_MAX || vbuffer.height > UINT32_MAX)
+      !gtao_visibility || !renderer->gtao_white_live || vbuffer.width == 0u ||
+      vbuffer.height == 0u || vbuffer.width > UINT32_MAX ||
+      vbuffer.height > UINT32_MAX)
     return false_v;
   VkrMetalPacketTexture *sky =
       packet->skybox
@@ -889,6 +1023,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_deferred_lighting(
       .normal_texture_id = normal.gpuResourceID._impl,
       .hdr_texture_id = hdr.gpuResourceID._impl,
       .sky_texture_id = sky ? sky->resource.resource_id : 0u,
+      .gtao_visibility_texture_id = gtao_visibility.gpuResourceID._impl,
       .inverse_view_projection = mat4_inverse(view_projection),
       .extent = {(uint32_t)vbuffer.width, (uint32_t)vbuffer.height},
       .sky_enabled = sky ? 1u : 0u,
@@ -903,6 +1038,8 @@ vkr_internal bool8_t vkr_metal_packet_encode_deferred_lighting(
     renderer->ibl_last_use_submit_value = pending_submit;
   if (sky)
     sky->last_use_submit_value = pending_submit;
+  if (!renderer->prepared_frame.gtao_enabled)
+    renderer->gtao_white_last_use_submit_value = pending_submit;
   return true_v;
 }
 
@@ -1559,9 +1696,10 @@ vkr_internal bool8_t vkr_metal_packet_encode_bloom(
       vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
   const VkrRgImageUse *destination_use =
       vkr_rg_pass_find_image_use(&pass->desc, 1u, 0u);
-  id<MTLTexture> source = vkr_metal_packet_bloom_texture(renderer, source_use);
+  id<MTLTexture> source =
+      vkr_metal_packet_subresource_texture(renderer, source_use);
   id<MTLTexture> destination =
-      vkr_metal_packet_bloom_texture(renderer, destination_use);
+      vkr_metal_packet_subresource_texture(renderer, destination_use);
   if (!source || !destination || destination.width == 0u ||
       destination.height == 0u || source.width == 0u || source.height == 0u ||
       source.width > UINT32_MAX || source.height > UINT32_MAX ||
@@ -1581,7 +1719,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_bloom(
           destination_mip + 2u >= renderer->prepared_frame.bloom_mip_count;
       binding = deepest ? 3u : 2u;
     }
-    coarse = vkr_metal_packet_bloom_texture(
+    coarse = vkr_metal_packet_subresource_texture(
         renderer, vkr_rg_pass_find_image_use(&pass->desc, binding, 0u));
     if (!coarse || coarse.width == 0u || coarse.height == 0u ||
         coarse.width > UINT32_MAX || coarse.height > UINT32_MAX)
@@ -1992,6 +2130,24 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
           : 0u;
   renderer->prepared_frame.bloom_enabled =
       renderer->prepared_frame.bloom_mip_count > 0u;
+  renderer->prepared_frame.gtao_depth_mip_count =
+      packet->globals.gtao.enabled
+          ? vkr_gtao_depth_mip_count(&renderer->gtao_config,
+                                     renderer->prepared_frame.viewport_width,
+                                     renderer->prepared_frame.viewport_height)
+          : 0u;
+  renderer->prepared_frame.gtao_enabled =
+      renderer->prepared_frame.gtao_depth_mip_count > 0u;
+  renderer->gtao_params =
+      renderer->prepared_frame.gtao_enabled
+          ? vkr_gtao_gpu_params(&renderer->gtao_config, &packet->globals.gtao,
+                                packet->globals.view,
+                                packet->globals.temporal.jittered_projection,
+                                renderer->prepared_frame.viewport_width,
+                                renderer->prepared_frame.viewport_height,
+                                packet->frame.frame_index,
+                                packet->globals.temporal.enabled)
+          : (VkrGtaoGpuParams){0};
   renderer->prepared_frame.transmission_pending =
       packet->world && packet->world->transmission_gpu_candidate_count > 0u;
   renderer->prepared_frame.transmission_compact_enabled =
@@ -2363,6 +2519,17 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
                         pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_GBUFFER_RESOLVE))
         passed = vkr_metal_packet_encode_gbuffer_resolve(
             renderer, pass, packet, encoder, &frame_upload);
+      for (uint32_t gtao_kind =
+               VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_DEPTH_PREFILTER;
+           passed && gtao_kind <= VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_DENOISE;
+           ++gtao_kind) {
+        if (!vkr_metal_packet_graph_pass_is(
+                pass, (VkrMetalPacketGraphExecutorKind)gtao_kind))
+          continue;
+        passed = vkr_metal_packet_encode_gtao(
+            renderer, pass, encoder, &frame_upload,
+            (VkrMetalPacketGraphExecutorKind)gtao_kind);
+      }
       if (passed &&
           vkr_metal_packet_graph_pass_is(
               pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_DEFERRED_LIGHTING))
@@ -2932,7 +3099,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   out_result->packet_build = renderer->packet_build;
   out_result->hzb_history_valid = renderer->prepared_frame.hzb_history_valid;
   out_result->resize_count = renderer->resize_count;
-  out_result->pipeline_count = 30u;
+  out_result->pipeline_count = 34u;
   out_result->pipeline_archive_warm = renderer->pipeline_archive_warm;
   out_result->pipeline_archive_written = renderer->pipeline_archive_written;
   if (deferred_diagnostics) {

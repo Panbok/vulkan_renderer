@@ -960,6 +960,11 @@ vkr_harness_child_apply_renderer(Application *application,
   application->renderer.globals.bloom_knee = case_manifest->renderer.bloom_knee;
   application->renderer.globals.bloom_intensity =
       case_manifest->renderer.bloom_intensity;
+  application->renderer.globals.gtao_enabled =
+      case_manifest->renderer.gtao_enabled;
+  application->renderer.globals.gtao_radius =
+      case_manifest->renderer.gtao_radius;
+  application->renderer.globals.gtao_power = case_manifest->renderer.gtao_power;
   /* Determinism rule 3: the harness camera receives an explicit extent and
      lens; it never reads window size or input state. */
   VkrCamera *camera =

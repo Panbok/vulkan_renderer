@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "id": "smoke.gtao.motion_thin",
+  "suite": "smoke",
+  "description": "Odd-extent fixed-step GTAO fixture that moves across thin opaque geometry and captures raw and denoised visibility at both ends of the motion.",
+  "scene": "assets/scenes/fixtures/deferred_state_matrix.scene.json",
+  "seed": 17,
+  "resolution": [801, 601],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": { "warmup": 2, "measure": 9 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "taa_enabled": false,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 3,
+    "render_mode": "default",
+    "exposure_mode": "manual",
+    "manual_exposure": 0.3,
+    "exposure_compensation_ev": 0.0,
+    "bloom_enabled": false,
+    "gtao_enabled": true,
+    "gtao_radius": 0.5,
+    "gtao_power": 2.2
+  },
+  "camera": {
+    "mode": "keyframes",
+    "speed": "medium",
+    "interpolation": "linear",
+    "vertical_fov_degrees": 55,
+    "near_plane": 0.1,
+    "far_plane": 100,
+    "keys": [
+      { "t": 0.033333334, "position": [-0.8, 1.5, 6.0], "yaw": -90, "pitch": 0 },
+      { "t": 0.166666670, "position": [0.8, 1.5, 6.0], "yaw": -90, "pitch": 0 }
+    ]
+  },
+  "captures": [
+    {
+      "at_frame": 0,
+      "channels": ["gtao_view_depth", "gbuffer_normal", "gtao_raw", "gtao_visibility"]
+    },
+    {
+      "at_frame": 8,
+      "channels": ["gtao_view_depth", "gbuffer_normal", "gtao_raw", "gtao_visibility", "final_color"]
+    }
+  ],
+  "assertions": []
+}

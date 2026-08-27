@@ -41,6 +41,10 @@ typedef enum VkrVulkanGraphExecutorKind {
   VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_DOWNSAMPLE,
   VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_UPSAMPLE,
   VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_COMBINE,
+  VKR_VULKAN_GRAPH_EXECUTOR_GTAO_DEPTH_PREFILTER,
+  VKR_VULKAN_GRAPH_EXECUTOR_GTAO_DEPTH_MIP,
+  VKR_VULKAN_GRAPH_EXECUTOR_GTAO_EVALUATE,
+  VKR_VULKAN_GRAPH_EXECUTOR_GTAO_DENOISE,
   VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP,
   VKR_VULKAN_GRAPH_EXECUTOR_EDITOR,
   VKR_VULKAN_GRAPH_EXECUTOR_UI,
@@ -88,6 +92,10 @@ vkr_global const VkrVulkanGraphExecutorSpec s_vk_graph_executors[] = {
     {"pass.bloom.downsample", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.bloom.upsample", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.bloom.combine", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.gtao.depth_prefilter", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.gtao.depth_mip", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.gtao.evaluate", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.gtao.denoise", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.tonemap", VKR_RG_PASS_TYPE_GRAPHICS},
     {"pass.editor", VKR_RG_PASS_TYPE_GRAPHICS},
     {"pass.ui", VKR_RG_PASS_TYPE_GRAPHICS},
@@ -1402,6 +1410,14 @@ vkr_internal bool8_t vkr_vk_record_graph_pass(VkrVulkanRenderer *renderer,
     return vkr_vk_record_bloom_upsample(renderer, command, pass);
   case VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_COMBINE:
     return vkr_vk_record_bloom_combine(renderer, command, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_GTAO_DEPTH_PREFILTER:
+    return vkr_vk_record_gtao_depth_prefilter(renderer, command, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_GTAO_DEPTH_MIP:
+    return vkr_vk_record_gtao_depth_mip(renderer, command, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_GTAO_EVALUATE:
+    return vkr_vk_record_gtao_evaluate(renderer, command, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_GTAO_DENOISE:
+    return vkr_vk_record_gtao_denoise(renderer, command, pass);
   case VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_SHADE:
     return vkr_vk_record_deferred_transmission(renderer, command, pass);
   case VKR_VULKAN_GRAPH_EXECUTOR_COPY_PRE_TRANSMISSION_FULLSCREEN:

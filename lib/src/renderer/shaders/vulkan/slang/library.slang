@@ -4,6 +4,7 @@
 // The bloom kernel reuses the exposure kernel's Rec. 709 luminance for its
 // firefly weight, so it must follow it here and in the MSL concatenation list.
 #include "../../shared/bloom_kernel.slangh"
+#include "../../shared/gtao_kernel.slangh"
 #include "common/resources.slangh"
 #include "../../shared/shadow_kernel.slangh"
 #include "ibl/common.slangh"
@@ -17,5 +18,6 @@
 #include "common/fullscreen.slang"
 #include "post/exposure.slang"
 #include "post/bloom.slang"
+#include "post/gtao.slang"
 #include "post/default.slang"
 #include "text/default.slang"

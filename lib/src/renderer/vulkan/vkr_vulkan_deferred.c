@@ -901,6 +901,10 @@ bool8_t vkr_vk_record_deferred_lighting(VkrVulkanRenderer *renderer,
   if (renderer->prepared_frame.shadow_cascade_count > 0u &&
       !vkr_vk_deferred_sampled_index(renderer, pass, 5u, &shadow_texture))
     return false_v;
+  uint32_t gtao_visibility = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  if (vkr_rg_pass_find_image_use(&pass->desc, 7u, 0u) &&
+      !vkr_vk_deferred_sampled_index(renderer, pass, 7u, &gtao_visibility))
+    return false_v;
   /* A cubemap still publishing its initial upload is not sampled this frame;
      the fallback colour matches the authored forward skybox clear. */
   uint32_t sky_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
@@ -944,6 +948,7 @@ bool8_t vkr_vk_record_deferred_lighting(VkrVulkanRenderer *renderer,
       .sky_texture = sky_texture,
       .sky_sampler = sky_sampler,
       .sky_enabled = sky_enabled,
+      .gtao_visibility_texture = gtao_visibility,
   };
   uint64_t root_address = 0u;
   if (!vkr_vk_deferred_push_root(renderer, command, &root, sizeof(root),
@@ -1445,6 +1450,112 @@ bool8_t vkr_vk_record_bloom_combine(VkrVulkanRenderer *renderer,
     return false_v;
   return vkr_vk_dispatch_bloom(renderer, command, &root,
                                VKR_VULKAN_DEFERRED_PIPELINE_BLOOM_COMBINE);
+}
+
+vkr_internal bool8_t vkr_vk_gtao_root(VkrVulkanRenderer *renderer,
+                                      const VkrRgPass *pass,
+                                      uint32_t source_binding,
+                                      uint32_t destination_binding,
+                                      VkrVulkanGtaoRoot *out_root) {
+  const VkrRgImageUse *source_use =
+      vkr_rg_pass_find_image_use(&pass->desc, source_binding, 0u);
+  const VkrRgImageUse *destination_use =
+      vkr_rg_pass_find_image_use(&pass->desc, destination_binding, 0u);
+  VkrVulkanGraphImageInstance *source =
+      source_use ? vkr_vk_deferred_image(renderer, source_use->image) : NULL;
+  VkrVulkanGraphImageInstance *destination =
+      destination_use ? vkr_vk_deferred_image(renderer, destination_use->image)
+                      : NULL;
+  uint32_t source_texture = 0u, destination_texture = 0u;
+  if (!source || !destination ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, source_binding,
+                                     &source_texture) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, destination_binding,
+                                     &destination_texture))
+    return false_v;
+
+  const uint32_t source_mip =
+      source_use->has_slice ? source_use->slice.mip_level : 0u;
+  const uint32_t destination_mip =
+      destination_use->has_slice ? destination_use->slice.mip_level : 0u;
+  *out_root = (VkrVulkanGtaoRoot){
+      .params = renderer->gtao_params,
+      .source_texture = source_texture,
+      .vbuffer_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX,
+      .normal_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX,
+      .destination_texture = destination_texture,
+      .edges_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX,
+      .point_sampler = VKR_VULKAN_SENTINEL_SLOT_INDEX,
+      .source_extent = {Max(1u, source->image.width >> source_mip),
+                        Max(1u, source->image.height >> source_mip)},
+      .destination_extent = {Max(1u,
+                                 destination->image.width >> destination_mip),
+                             Max(1u,
+                                 destination->image.height >> destination_mip)},
+  };
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_vk_dispatch_gtao(VkrVulkanRenderer *renderer,
+                                          VkCommandBuffer command,
+                                          const VkrVulkanGtaoRoot *root,
+                                          VkrVulkanDeferredPipeline pipeline) {
+  uint64_t root_address = 0u;
+  if (!vkr_vk_deferred_push_root(renderer, command, root, sizeof(*root),
+                                 _Alignof(VkrVulkanGtaoRoot), &root_address))
+    return false_v;
+  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                    renderer->deferred_pipelines[pipeline]);
+  vkCmdDispatch(command, (root->destination_extent[0] + 7u) / 8u,
+                (root->destination_extent[1] + 7u) / 8u, 1u);
+  return true_v;
+}
+
+bool8_t vkr_vk_record_gtao_depth_prefilter(VkrVulkanRenderer *renderer,
+                                           VkCommandBuffer command,
+                                           const VkrRgPass *pass) {
+  VkrVulkanGtaoRoot root = {0};
+  if (!vkr_vk_gtao_root(renderer, pass, 0u, 1u, &root))
+    return false_v;
+  return vkr_vk_dispatch_gtao(
+      renderer, command, &root,
+      VKR_VULKAN_DEFERRED_PIPELINE_GTAO_DEPTH_PREFILTER);
+}
+
+bool8_t vkr_vk_record_gtao_depth_mip(VkrVulkanRenderer *renderer,
+                                     VkCommandBuffer command,
+                                     const VkrRgPass *pass) {
+  VkrVulkanGtaoRoot root = {0};
+  if (!vkr_vk_gtao_root(renderer, pass, 0u, 1u, &root))
+    return false_v;
+  return vkr_vk_dispatch_gtao(renderer, command, &root,
+                              VKR_VULKAN_DEFERRED_PIPELINE_GTAO_DEPTH_MIP);
+}
+
+bool8_t vkr_vk_record_gtao_evaluate(VkrVulkanRenderer *renderer,
+                                    VkCommandBuffer command,
+                                    const VkrRgPass *pass) {
+  VkrVulkanGtaoRoot root = {0};
+  if (!vkr_vk_gtao_root(renderer, pass, 1u, 3u, &root) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 0u,
+                                     &root.vbuffer_texture) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 2u,
+                                     &root.normal_texture) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 4u, &root.edges_texture))
+    return false_v;
+  return vkr_vk_dispatch_gtao(renderer, command, &root,
+                              VKR_VULKAN_DEFERRED_PIPELINE_GTAO_EVALUATE);
+}
+
+bool8_t vkr_vk_record_gtao_denoise(VkrVulkanRenderer *renderer,
+                                   VkCommandBuffer command,
+                                   const VkrRgPass *pass) {
+  VkrVulkanGtaoRoot root = {0};
+  if (!vkr_vk_gtao_root(renderer, pass, 0u, 2u, &root) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &root.edges_texture))
+    return false_v;
+  return vkr_vk_dispatch_gtao(renderer, command, &root,
+                              VKR_VULKAN_DEFERRED_PIPELINE_GTAO_DENOISE);
 }
 
 bool8_t vkr_vk_record_deferred_picking(VkrVulkanRenderer *renderer,

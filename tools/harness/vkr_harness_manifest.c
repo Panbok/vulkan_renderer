@@ -2,6 +2,8 @@
 
 #include "renderer/systems/vkr_shadow_system.h"
 
+#include <float.h>
+
 #define VKR_HARNESS_MANIFEST_MAX_BYTES MB(1)
 
 static bool8_t vkr_harness_manifest_field(const VkrHarnessJsonDocument *doc,
@@ -452,7 +454,10 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
                                         "bloom_enabled",
                                         "bloom_threshold",
                                         "bloom_knee",
-                                        "bloom_intensity"};
+                                        "bloom_intensity",
+                                        "gtao_enabled",
+                                        "gtao_radius",
+                                        "gtao_power"};
   static const char *const required[] = {"editor", "skybox", "shadow_preset",
                                          "shadow_cascades"};
   if (!vkr_harness_json_object_validate(
@@ -469,6 +474,9 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
   renderer->bloom_threshold = VKR_BLOOM_DEFAULT_THRESHOLD;
   renderer->bloom_knee = VKR_BLOOM_DEFAULT_KNEE;
   renderer->bloom_intensity = VKR_BLOOM_DEFAULT_INTENSITY;
+  renderer->gtao_enabled = false_v;
+  renderer->gtao_radius = VKR_GTAO_DEFAULT_RADIUS;
+  renderer->gtao_power = VKR_GTAO_DEFAULT_POWER;
   uint64_t cascades = 0;
   uint64_t exposure_reset_frame = UINT32_MAX;
   float64_t manual_exposure = renderer->manual_exposure;
@@ -476,11 +484,15 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
   float64_t bloom_threshold = renderer->bloom_threshold;
   float64_t bloom_knee = renderer->bloom_knee;
   float64_t bloom_intensity = renderer->bloom_intensity;
+  float64_t gtao_radius = renderer->gtao_radius;
+  float64_t gtao_power = renderer->gtao_power;
   int32_t manual_exposure_token = -1;
   int32_t exposure_reset_token = -1;
   int32_t bloom_threshold_token = -1;
   int32_t bloom_knee_token = -1;
   int32_t bloom_intensity_token = -1;
+  int32_t gtao_radius_token = -1;
+  int32_t gtao_power_token = -1;
   if (!vkr_harness_manifest_bool(doc, token, "editor", true_v,
                                  &renderer->editor, error) ||
       !vkr_harness_manifest_bool(doc, token, "skybox", true_v,
@@ -526,7 +538,17 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
       !vkr_harness_manifest_field(doc, token, "bloom_intensity", false_v,
                                   &bloom_intensity_token, error) ||
       !vkr_harness_manifest_f64(doc, token, "bloom_intensity", false_v,
-                                &bloom_intensity, error)) {
+                                &bloom_intensity, error) ||
+      !vkr_harness_manifest_bool(doc, token, "gtao_enabled", false_v,
+                                 &renderer->gtao_enabled, error) ||
+      !vkr_harness_manifest_field(doc, token, "gtao_radius", false_v,
+                                  &gtao_radius_token, error) ||
+      !vkr_harness_manifest_f64(doc, token, "gtao_radius", false_v,
+                                &gtao_radius, error) ||
+      !vkr_harness_manifest_field(doc, token, "gtao_power", false_v,
+                                  &gtao_power_token, error) ||
+      !vkr_harness_manifest_f64(doc, token, "gtao_power", false_v, &gtao_power,
+                                error)) {
     return false_v;
   }
   renderer->shadow_cascades = (uint32_t)cascades;
@@ -558,23 +580,34 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
           : exposure_reset_token < 0;
   const bool8_t bloom_values_valid =
       isfinite(bloom_threshold) && bloom_threshold >= 0.0 &&
-      isfinite(bloom_knee) && bloom_knee >= 0.0 && isfinite(bloom_intensity) &&
-      bloom_intensity >= 0.0;
+      bloom_threshold <= FLT_MAX && isfinite(bloom_knee) && bloom_knee >= 0.0 &&
+      bloom_knee <= FLT_MAX && isfinite(bloom_intensity) &&
+      bloom_intensity >= 0.0 && bloom_intensity <= FLT_MAX;
   const bool8_t bloom_controls_present = bloom_threshold_token >= 0 &&
                                          bloom_knee_token >= 0 &&
                                          bloom_intensity_token >= 0;
   const bool8_t bloom_controls_valid =
       bloom_values_valid &&
       (!renderer->bloom_enabled || bloom_controls_present);
+  const bool8_t gtao_values_valid =
+      isfinite(gtao_radius) && gtao_radius >= VKR_GTAO_RADIUS_MIN &&
+      gtao_radius <= VKR_GTAO_RADIUS_MAX && isfinite(gtao_power) &&
+      gtao_power > 0.0 && gtao_power <= FLT_MAX;
+  const bool8_t gtao_controls_present =
+      gtao_radius_token >= 0 && gtao_power_token >= 0;
+  const bool8_t gtao_controls_valid =
+      gtao_values_valid && (!renderer->gtao_enabled || gtao_controls_present);
   if (!preset_valid || !mode_valid || !backend_valid || cascades < 1u ||
       cascades > 8u || !exposure_mode_valid || !automatic_controls_valid ||
-      !bloom_controls_valid || !isfinite(manual_exposure) ||
-      manual_exposure <= 0.0 || !isfinite(exposure_compensation_ev) ||
-      exposure_reset_frame > UINT32_MAX) {
+      !bloom_controls_valid || !gtao_controls_valid ||
+      !isfinite(manual_exposure) || manual_exposure <= 0.0 ||
+      manual_exposure > FLT_MAX || !isfinite(exposure_compensation_ev) ||
+      exposure_compensation_ev < -FLT_MAX ||
+      exposure_compensation_ev > FLT_MAX || exposure_reset_frame > UINT32_MAX) {
     vkr_harness_error_set(
         error, "renderer.config", "$.renderer",
         "Renderer backend, preset, render/exposure mode, "
-        "exposure/bloom controls, or cascade count is invalid");
+        "exposure/bloom/GTAO controls, or cascade count is invalid");
     return false_v;
   }
   renderer->manual_exposure = (float32_t)manual_exposure;
@@ -583,6 +616,8 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
   renderer->bloom_threshold = (float32_t)bloom_threshold;
   renderer->bloom_knee = (float32_t)bloom_knee;
   renderer->bloom_intensity = (float32_t)bloom_intensity;
+  renderer->gtao_radius = (float32_t)gtao_radius;
+  renderer->gtao_power = (float32_t)gtao_power;
 
   /* Resolve optional fields from the preset before parsing them. Reports and
      fingerprints describe the effective workload, not whether the JSON

@@ -5,6 +5,7 @@
 #include "renderer/vkr_gpu_abi.h"
 #include "renderer/vkr_gpu_memory.h"
 #include "renderer/vkr_gpu_slot_table.h"
+#include "renderer/vkr_gtao.h"
 #include "renderer/vkr_ibl_math.h"
 #include "renderer/vkr_render_graph.h"
 #include "renderer/vkr_render_packet.h"
@@ -25,6 +26,8 @@ typedef struct VkrVulkanRendererConfig {
   VkrAllocator *allocator;
   /** A zeroed record selects the production bloom defaults. */
   VkrBloomConfig bloom;
+  /** A zeroed record selects the production GTAO defaults. */
+  VkrGtaoConfig gtao;
   const char *graph_path;
   VkrWindow *window;
   VkrPresentTargetKind target_kind;

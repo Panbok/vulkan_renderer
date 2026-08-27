@@ -1,0 +1,227 @@
+// SPDX-License-Identifier: MIT
+// VKR-native scalar/vector math derived from Intel XeGTAO 1.30.
+// Copyright (C) 2016-2021 Intel Corporation.
+//
+// This file contains no resources, sampling calls, address spaces, or entry
+// points. Vulkan includes it as Slang and Metal concatenates it ahead of its
+// native kernels. `vkr_gtao.c` mirrors depth conversion and mip filtering.
+
+#ifndef VKR_SHADER_GTAO_KERNEL_SLANGH
+#define VKR_SHADER_GTAO_KERNEL_SLANGH
+
+#define VKR_GTAO_PI 3.14159265358979323846f
+#define VKR_GTAO_HALF_PI 1.57079632679489661923f
+#define VKR_GTAO_HILBERT_WIDTH 64u
+#define VKR_GTAO_VIEW_DEPTH_MAX 65504.0f
+
+struct VkrGtaoParams
+{
+    float4x4 view;
+
+    uint viewport_width;
+    uint viewport_height;
+    uint depth_mip_count;
+    uint reserved_u32_0;
+
+    float viewport_pixel_size_x;
+    float viewport_pixel_size_y;
+    float projection_m22;
+    float projection_m23;
+
+    float projection_m32;
+    float projection_m33;
+    float projection_m00;
+    float projection_m11;
+
+    float projection_m02;
+    float projection_m12;
+    float projection_m03;
+    float projection_m13;
+
+    float effect_radius;
+    float radius_multiplier;
+    float falloff_range;
+    float falloff_mul;
+
+    float falloff_add;
+    float depth_mip_falloff_mul;
+    float sample_distribution_power;
+    float final_value_power;
+
+    float depth_mip_sampling_offset;
+    float denoise_blur_beta;
+    float reserved_float0;
+    float reserved_float1;
+
+    uint slice_count;
+    uint steps_per_slice;
+    uint noise_index;
+    uint reserved0;
+};
+
+float vkr_gtao_linearize_depth(VkrGtaoParams params, float device_depth)
+{
+    float numerator =
+        device_depth * params.projection_m33 - params.projection_m23;
+    float denominator =
+        device_depth * params.projection_m32 - params.projection_m22;
+    return min(numerator / denominator, VKR_GTAO_VIEW_DEPTH_MAX);
+}
+
+// Returns canonical renderer view space: top-left screen Y is reconstructed
+// through the Y-inverted projection and camera forward remains -Z.
+float3 vkr_gtao_view_position(VkrGtaoParams params, float2 screen_position,
+                              float view_depth)
+{
+    float view_z = -view_depth;
+    float clip_w =
+        params.projection_m32 * view_z + params.projection_m33;
+    float2 ndc = screen_position * 2.0f - 1.0f;
+    float view_x =
+        (ndc.x * clip_w - params.projection_m02 * view_z -
+         params.projection_m03) /
+        params.projection_m00;
+    float view_y =
+        (ndc.y * clip_w - params.projection_m12 * view_z -
+         params.projection_m13) /
+        params.projection_m11;
+    return float3(view_x, view_y, view_z);
+}
+
+float vkr_gtao_pixel_view_size(VkrGtaoParams params, float2 screen_position,
+                               float view_depth)
+{
+    float3 center =
+        vkr_gtao_view_position(params, screen_position, view_depth);
+    float3 next_y = vkr_gtao_view_position(
+        params,
+        screen_position + float2(0.0f, params.viewport_pixel_size_y),
+        view_depth);
+    return max(length(next_y - center), 1e-6f);
+}
+
+float vkr_gtao_depth_mip_filter(VkrGtaoParams params, float d0, float d1,
+                                float d2, float d3)
+{
+    float farthest = max(max(d0, d1), max(d2, d3));
+    float4 weights = clamp(
+        (farthest - float4(d0, d1, d2, d3)) *
+                params.depth_mip_falloff_mul +
+            params.falloff_add,
+        0.0f, 1.0f);
+    return dot(weights, float4(d0, d1, d2, d3)) /
+           dot(weights, float4(1.0f));
+}
+
+float4 vkr_gtao_calculate_edges(float center_depth, float left_depth,
+                                float right_depth, float top_depth,
+                                float bottom_depth)
+{
+    float4 edges = float4(left_depth, right_depth, top_depth, bottom_depth) -
+                   center_depth;
+    float slope_lr = (edges.y - edges.x) * 0.5f;
+    float slope_tb = (edges.w - edges.z) * 0.5f;
+    float4 adjusted =
+        edges + float4(slope_lr, -slope_lr, slope_tb, -slope_tb);
+    edges = min(abs(edges), abs(adjusted));
+    return clamp(1.25f - edges / (center_depth * 0.011f), 0.0f, 1.0f);
+}
+
+float vkr_gtao_pack_edges(float4 edges)
+{
+    float4 quantized = round(clamp(edges, 0.0f, 1.0f) * 2.9f);
+    return dot(quantized,
+               float4(64.0f / 255.0f, 16.0f / 255.0f,
+                      4.0f / 255.0f, 1.0f / 255.0f));
+}
+
+float4 vkr_gtao_unpack_edges(float packed_edges)
+{
+    uint packed = uint(packed_edges * 255.0f + 0.5f);
+    return float4(float((packed >> 6u) & 3u),
+                  float((packed >> 4u) & 3u),
+                  float((packed >> 2u) & 3u), float(packed & 3u)) /
+           3.0f;
+}
+
+uint vkr_gtao_hilbert_index(uint2 position)
+{
+    uint index = 0u;
+    for (uint level = VKR_GTAO_HILBERT_WIDTH / 2u; level > 0u;
+         level /= 2u)
+    {
+        uint region_x = (position.x & level) != 0u ? 1u : 0u;
+        uint region_y = (position.y & level) != 0u ? 1u : 0u;
+        index += level * level * ((3u * region_x) ^ region_y);
+        if (region_y == 0u)
+        {
+            if (region_x != 0u)
+            {
+                position.x = VKR_GTAO_HILBERT_WIDTH - 1u - position.x;
+                position.y = VKR_GTAO_HILBERT_WIDTH - 1u - position.y;
+            }
+            uint temporary = position.x;
+            position.x = position.y;
+            position.y = temporary;
+        }
+    }
+    return index;
+}
+
+float2 vkr_gtao_spatiotemporal_noise(uint2 pixel, uint noise_index)
+{
+    uint index = vkr_gtao_hilbert_index(
+        uint2(pixel.x % VKR_GTAO_HILBERT_WIDTH,
+              pixel.y % VKR_GTAO_HILBERT_WIDTH));
+    index += 288u * (noise_index % 64u);
+    float2 sequence =
+        0.5f + float(index) *
+                   float2(0.75487766624669276005f, 0.56984029099805326591f);
+    return sequence - floor(sequence);
+}
+
+float vkr_gtao_sample_distance(VkrGtaoParams params, float step,
+                               float step_noise)
+{
+    float normalized =
+        (step + step_noise) / float(params.steps_per_slice);
+    return pow(normalized, params.sample_distribution_power);
+}
+
+float vkr_gtao_falloff_weight(VkrGtaoParams params, float view_distance)
+{
+    return clamp(view_distance * params.falloff_mul + params.falloff_add,
+                 0.0f, 1.0f);
+}
+
+float vkr_gtao_integrate_slice(float projected_normal_length, float cos_normal,
+                               float normal_angle, float horizon_cos0,
+                               float horizon_cos1)
+{
+    float h0 = -acos(clamp(horizon_cos1, -1.0f, 1.0f));
+    float h1 = acos(clamp(horizon_cos0, -1.0f, 1.0f));
+    float arc0 = (cos_normal + 2.0f * h0 * sin(normal_angle) -
+                  cos(2.0f * h0 - normal_angle)) *
+                 0.25f;
+    float arc1 = (cos_normal + 2.0f * h1 * sin(normal_angle) -
+                  cos(2.0f * h1 - normal_angle)) *
+                 0.25f;
+    return projected_normal_length * (arc0 + arc1);
+}
+
+float vkr_gtao_finalize_visibility(VkrGtaoParams params, float visibility)
+{
+    visibility = clamp(visibility / float(params.slice_count), 0.0f, 1.0f);
+    return max(0.03f, pow(visibility, params.final_value_power));
+}
+
+float vkr_gtao_diagonal_edge_weight(float center_edge0,
+                                    float neighbor_edge0,
+                                    float center_edge1,
+                                    float neighbor_edge1)
+{
+    return 0.425f *
+           (center_edge0 * neighbor_edge0 + center_edge1 * neighbor_edge1);
+}
+
+#endif

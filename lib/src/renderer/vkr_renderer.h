@@ -855,6 +855,10 @@ typedef struct VkrGlobalMaterialState {
   float32_t bloom_threshold;
   float32_t bloom_knee;
   float32_t bloom_intensity;
+  /** Lowered verbatim into the packet's GTAO controls; see VkrFrameGlobals. */
+  bool8_t gtao_enabled;
+  float32_t gtao_radius;
+  float32_t gtao_power;
   VkrRenderMode render_mode;
 } VkrGlobalMaterialState;
 

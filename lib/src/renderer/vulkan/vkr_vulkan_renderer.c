@@ -104,6 +104,7 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
   renderer->config = *config;
   renderer->exposure_metering = vkr_exposure_metering_config_normalize(NULL);
   renderer->bloom_config = vkr_bloom_config_normalize(&config->bloom);
+  renderer->gtao_config = vkr_gtao_config_normalize(&config->gtao);
   renderer->capture_storage_size = vkr_capture_ring_storage_requirement(
       config->capture_ring_capacity, config->capture_max_batch_bytes);
   if (config->capture_ring_capacity > 0u) {
@@ -131,7 +132,7 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
   if (!renderer->config.max_graph_buffers)
     renderer->config.max_graph_buffers = 128u;
   if (!renderer->config.max_graph_passes)
-    renderer->config.max_graph_passes = 64u;
+    renderer->config.max_graph_passes = VKR_RENDERER_IMPL_MAX_GRAPH_PASSES;
   if (vkr_gpu_submit_ring_create(
           &renderer->command_ring, VKR_VULKAN_FRAME_SLOT_COUNT,
           VKR_VULKAN_FRAME_SLOT_COUNT, renderer->command_ring_slots,
@@ -721,6 +722,24 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
           : 0u;
   renderer->prepared_frame.bloom_enabled =
       renderer->prepared_frame.bloom_mip_count > 0u;
+  renderer->prepared_frame.gtao_depth_mip_count =
+      packet->globals.gtao.enabled
+          ? vkr_gtao_depth_mip_count(&renderer->gtao_config,
+                                     renderer->prepared_frame.viewport_width,
+                                     renderer->prepared_frame.viewport_height)
+          : 0u;
+  renderer->prepared_frame.gtao_enabled =
+      renderer->prepared_frame.gtao_depth_mip_count > 0u;
+  renderer->gtao_params =
+      renderer->prepared_frame.gtao_enabled
+          ? vkr_gtao_gpu_params(&renderer->gtao_config, &packet->globals.gtao,
+                                packet->globals.view,
+                                packet->globals.temporal.jittered_projection,
+                                renderer->prepared_frame.viewport_width,
+                                renderer->prepared_frame.viewport_height,
+                                packet->frame.frame_index,
+                                packet->globals.temporal.enabled)
+          : (VkrGtaoGpuParams){0};
   vkr_rg_begin_frame(renderer->graph, &renderer->prepared_frame);
   vkr_rg_set_packet(renderer->graph, packet);
   /* Installed before compilation, because seeding a retained subresource reads

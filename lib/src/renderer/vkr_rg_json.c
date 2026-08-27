@@ -43,6 +43,7 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
      VKR_RG_JSON_CONDITION_TRANSMISSION_FULLSCREEN_TIMING},
     {"exposure_automatic", VKR_RG_JSON_CONDITION_EXPOSURE_AUTOMATIC},
     {"bloom_enabled", VKR_RG_JSON_CONDITION_BLOOM_ENABLED},
+    {"gtao_enabled", VKR_RG_JSON_CONDITION_GTAO_ENABLED},
     {"picking_pending", VKR_RG_JSON_CONDITION_PICKING_PENDING},
     {"!picking_pending", VKR_RG_JSON_CONDITION_PICKING_IDLE},
     {"picking_pending && transmission_pending",
@@ -1776,6 +1777,8 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->exposure_automatic;
   case VKR_RG_JSON_CONDITION_BLOOM_ENABLED:
     return frame->bloom_enabled;
+  case VKR_RG_JSON_CONDITION_GTAO_ENABLED:
+    return frame->gtao_enabled;
   case VKR_RG_JSON_CONDITION_PICKING_PENDING:
     return frame->picking_pending;
   case VKR_RG_JSON_CONDITION_PICKING_IDLE:
@@ -1823,6 +1826,13 @@ vkr_internal bool8_t vkr_rg_json_repeat_count(
       vkr_string8_equals_cstr_i(&repeat->count_source,
                                 "bloom_upsample_pass_count")) {
     *out_count = frame->bloom_mip_count > 0u ? frame->bloom_mip_count - 1u : 0u;
+    return true_v;
+  }
+  if (vkr_string8_equals_cstr_i(&repeat->count_source,
+                                "gtao_depth_mip_pass_count")) {
+    *out_count = frame->gtao_depth_mip_count > 0u
+                     ? frame->gtao_depth_mip_count - 1u
+                     : 0u;
     return true_v;
   }
 

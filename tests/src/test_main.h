@@ -15,6 +15,7 @@
 #include "filesystem_test.h"
 #include "freelist_test.h"
 #include "gltf_importer_tests.h"
+#include "gtao_test.h"
 #include "harness_test.h"
 #include "hashtable_test.h"
 #include "ibl_math_tests.h"

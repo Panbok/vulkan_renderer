@@ -178,7 +178,7 @@ struct VkrVkLightingRoot
     uint sky_texture;
     uint sky_sampler;
     uint sky_enabled;
-    uint reserved_sky;
+    uint gtao_visibility_texture;
 };
 
 struct VkrVkHzbRoot
@@ -1216,16 +1216,29 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
         g_storage_2d[root.scene_texture][thread_id.xy] = float4(debug, 1.0f);
         return;
     }
+    float2 gtao_uv =
+        (float2(thread_id.xy) + 0.5f) / float2(root.extent);
+    float gtao_visibility =
+        g_textures[root.gtao_visibility_texture]
+            .SampleLevel(g_samplers[0], gtao_uv, 0.0f)
+            .r;
     float3 color = analytic_diffuse + analytic_specular;
     if ((frame.flags & 2u) != 0u)
     {
-        color += packet_environment(frame, world, normal, normal, view,
-                                    diffuse_albedo, 0.0f, roughness, ao,
-                                    directional_shadow, f0);
+        VkrVulkanEnvironmentResult environment = packet_environment_terms(
+            frame, world, normal, normal, view, diffuse_albedo, 0.0f,
+            roughness, ao, f0);
+        float sun_visible_diffuse_scale =
+            1.0f + saturate(directional_shadow) *
+                       max(frame.directional_color_intensity.w, 0.0f);
+        color += environment.diffuse * sun_visible_diffuse_scale *
+                     gtao_visibility +
+                 environment.specular;
     }
     else
     {
-        color += frame.ambient_color.rgb * diffuse_albedo * ao;
+        color +=
+            frame.ambient_color.rgb * diffuse_albedo * ao * gtao_visibility;
     }
     color += seed.rgb;
     g_storage_2d[root.scene_texture][thread_id.xy] = float4(color, 1.0f);

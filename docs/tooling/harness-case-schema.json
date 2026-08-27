@@ -219,7 +219,7 @@
         "render_mode": {
           "type": "string",
           "description": "Global shading mode for measured frames. Auxiliary debug captures execute as replay runs and do not change this value.",
-          "enum": ["default", "lighting", "normal", "unlit", "direct_diffuse", "direct_specular", "material_params"],
+          "enum": ["default", "lighting", "normal", "unlit", "direct_diffuse", "direct_specular", "material_params", "temporal_motion", "temporal_history"],
           "default": "default"
         },
         "exposure_mode": {
@@ -266,6 +266,24 @@
           "description": "Non-negative bloom weight applied before exposure.",
           "minimum": 0,
           "default": 0.05
+        },
+        "gtao_enabled": {
+          "type": "boolean",
+          "description": "Enables the GTAO ambient-visibility pass. Omission keeps deterministic harness cases GTAO-free.",
+          "default": false
+        },
+        "gtao_radius": {
+          "type": "number",
+          "description": "World-space GTAO sampling radius in the supported finite range.",
+          "minimum": 0.0001,
+          "maximum": 10000,
+          "default": 0.5
+        },
+        "gtao_power": {
+          "type": "number",
+          "description": "Positive GTAO visibility shaping exponent.",
+          "exclusiveMinimum": 0,
+          "default": 2.2
         }
       },
       "additionalProperties": false,
@@ -285,6 +303,15 @@
           },
           "then": {
             "required": ["bloom_threshold", "bloom_knee", "bloom_intensity"]
+          }
+        },
+        {
+          "if": {
+            "properties": { "gtao_enabled": { "const": true } },
+            "required": ["gtao_enabled"]
+          },
+          "then": {
+            "required": ["gtao_radius", "gtao_power"]
           }
         }
       ]
@@ -434,7 +461,7 @@
 
     "channel": {
       "type": "string",
-      "description": "Capture channel. final_color/scene_color/depth/shadow_cascade_N/picking_ids read a real graph image. normals, unlit, lighting, and the shadow_debug_* channels are re-renders of a settled frame with a different renderer global; this renderer is forward and has no normals attachment.",
+      "description": "Capture channel. Direct channels read a real graph image; logical debug channels re-render a settled frame with a different renderer global.",
       "enum": [
         "final_color",
         "scene_color",
@@ -443,14 +470,31 @@
         "shadow_cascade_1",
         "shadow_cascade_2",
         "shadow_cascade_3",
-        "shadow_cascade_4",
-        "shadow_cascade_5",
-        "shadow_cascade_6",
-        "shadow_cascade_7",
         "picking_ids",
+        "visibility_ids",
+        "visibility_primitives",
+        "gbuffer_diffuse",
+        "gbuffer_specular",
+        "gbuffer_normal",
+        "gtao_view_depth",
+        "gtao_raw",
+        "gtao_visibility",
+        "deferred_emissive",
+        "resolve_barycentric_lod",
+        "transmission_visibility_ids",
+        "transmission_visibility_primitives",
+        "hdr_pre_bloom",
+        "bloom_prefilter",
+        "bloom_result",
+        "hdr_combined",
         "normals",
         "unlit",
         "lighting",
+        "direct_diffuse",
+        "direct_specular",
+        "material_params",
+        "temporal_motion",
+        "temporal_history",
         "shadow_debug_cascades",
         "shadow_debug_factor",
         "shadow_debug_depth"

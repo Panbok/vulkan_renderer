@@ -1,5 +1,6 @@
 #include "render_graph_barrier_test.h"
 #include "renderer/vkr_render_packet.h"
+#include "renderer/vkr_renderer_impl.h"
 #include "renderer/vkr_rg_json.h"
 
 /**
@@ -1399,18 +1400,24 @@ static void test_main_graph_contract(void) {
              hdr_seed->image_access == VKR_RG_JSON_IMAGE_ACCESS_STORAGE_WRITE);
     } else if (found == 2u) {
       assert(pass->type == VKR_RG_JSON_PASS_COMPUTE);
-      assert(pass->reads.length == 7u && pass->writes.length == 1u);
+      assert(pass->reads.length == 8u && pass->writes.length == 1u);
       VkrRgJsonResourceUse *hdr_read =
           vector_get_VkrRgJsonResourceUse(&pass->reads, 6u);
+      VkrRgJsonResourceUse *gtao =
+          vector_get_VkrRgJsonResourceUse(&pass->reads, 7u);
       VkrRgJsonResourceUse *hdr_write =
           vector_get_VkrRgJsonResourceUse(&pass->writes, 0u);
       assert(
-          hdr_read && hdr_write && hdr_read->binding.is_set &&
-          hdr_write->binding.is_set && hdr_read->binding.value == 6u &&
+          hdr_read && gtao && hdr_write && hdr_read->binding.is_set &&
+          gtao->binding.is_set && hdr_write->binding.is_set &&
+          hdr_read->binding.value == 6u && gtao->binding.value == 7u &&
           hdr_write->binding.value == 6u &&
           vkr_string8_equals_cstr(&hdr_read->name, "hdr_pre_transmission") &&
+          vkr_string8_equals_cstr(&gtao->name, "gtao_visibility") &&
           vkr_string8_equals_cstr(&hdr_write->name, "hdr_pre_transmission") &&
+          gtao->condition.kind == VKR_RG_JSON_CONDITION_GTAO_ENABLED &&
           hdr_read->image_access == VKR_RG_JSON_IMAGE_ACCESS_STORAGE_READ &&
+          gtao->image_access == VKR_RG_JSON_IMAGE_ACCESS_SAMPLED &&
           hdr_write->image_access == VKR_RG_JSON_IMAGE_ACCESS_STORAGE_WRITE);
     }
     found++;
@@ -1582,6 +1589,10 @@ static void test_main_graph_contract(void) {
   bool8_t found_transmission_gpu_instances = false_v;
   bool8_t found_temporal_transform_resource = false_v;
   bool8_t found_temporal_color_resource = false_v;
+  bool8_t found_gtao_view_depth = false_v;
+  bool8_t found_gtao_raw = false_v;
+  bool8_t found_gtao_edges = false_v;
+  bool8_t found_gtao_visibility = false_v;
   for (uint64_t i = 0u; i < graph.resources.length; ++i) {
     VkrRgJsonResource *resource =
         vector_get_VkrRgJsonResource(&graph.resources, i);
@@ -1625,6 +1636,23 @@ static void test_main_graph_contract(void) {
       assert(resource->image.format == VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT);
       assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_HISTORY) != 0u);
       found_temporal_color_resource = true_v;
+    } else if (vkr_string8_equals_cstr(&resource->name, "gtao_view_depth")) {
+      assert(resource->condition.kind == VKR_RG_JSON_CONDITION_GTAO_ENABLED);
+      assert(resource->image.format == VKR_TEXTURE_FORMAT_R16_SFLOAT);
+      assert(resource->image.mip_levels_full);
+      found_gtao_view_depth = true_v;
+    } else if (vkr_string8_equals_cstr(&resource->name, "gtao_raw")) {
+      assert(resource->condition.kind == VKR_RG_JSON_CONDITION_GTAO_ENABLED);
+      assert(resource->image.format == VKR_TEXTURE_FORMAT_R8_UNORM);
+      found_gtao_raw = true_v;
+    } else if (vkr_string8_equals_cstr(&resource->name, "gtao_edges")) {
+      assert(resource->condition.kind == VKR_RG_JSON_CONDITION_GTAO_ENABLED);
+      assert(resource->image.format == VKR_TEXTURE_FORMAT_R8_UNORM);
+      found_gtao_edges = true_v;
+    } else if (vkr_string8_equals_cstr(&resource->name, "gtao_visibility")) {
+      assert(resource->condition.kind == VKR_RG_JSON_CONDITION_GTAO_ENABLED);
+      assert(resource->image.format == VKR_TEXTURE_FORMAT_R8_UNORM);
+      found_gtao_visibility = true_v;
     } else if (vkr_string8_equals_cstr(&resource->name, "shadow_map")) {
       assert(vkr_string8_equals_cstr(&resource->image.layers_source,
                                      "shadow_map_layer_count"));
@@ -1640,7 +1668,9 @@ static void test_main_graph_contract(void) {
   }
   assert(found_hzb_resource && found_sdsm_resource && found_gpu_instances &&
          found_transmission_gpu_instances && found_stable_shadow_capacity &&
-         found_temporal_transform_resource && found_temporal_color_resource);
+         found_temporal_transform_resource && found_temporal_color_resource &&
+         found_gtao_view_depth && found_gtao_raw && found_gtao_edges &&
+         found_gtao_visibility);
 
   bool8_t found_exposure_histogram_resource = false_v;
   bool8_t found_exposure_state_resource = false_v;
@@ -1708,6 +1738,10 @@ static void test_main_graph_contract(void) {
   bool8_t found_sdsm_reduce = false_v;
   bool8_t found_temporal_transform = false_v;
   bool8_t found_temporal_resolve = false_v;
+  bool8_t found_gtao_depth_prefilter = false_v;
+  bool8_t found_gtao_depth_mip = false_v;
+  bool8_t found_gtao_evaluate = false_v;
+  bool8_t found_gtao_denoise = false_v;
   for (uint64_t i = 0u; i < graph.passes.length; ++i) {
     VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph.passes, i);
     if (!pass)
@@ -1739,6 +1773,46 @@ static void test_main_graph_contract(void) {
       found_sdsm_reduce = true_v;
       continue;
     }
+    if (vkr_string8_equals_cstr(&pass->name, "AO.PrefilterDepth")) {
+      assert(pass->condition.kind == VKR_RG_JSON_CONDITION_GTAO_ENABLED);
+      assert(pass->reads.length == 1u && pass->writes.length == 1u);
+      assert(pass->reads.data[0].binding.value == 0u &&
+             pass->writes.data[0].binding.value == 1u);
+      found_gtao_depth_prefilter = true_v;
+      continue;
+    }
+    if (vkr_string8_equals_cstr(&pass->name, "AO.PrefilterDepth.${i}")) {
+      assert(pass->condition.kind == VKR_RG_JSON_CONDITION_GTAO_ENABLED);
+      assert(pass->repeat.enabled &&
+             vkr_string8_equals_cstr(&pass->repeat.count_source,
+                                     "gtao_depth_mip_pass_count"));
+      assert(vkr_string8_equals_cstr(&pass->reads.data[0].slice_base_mip.token,
+                                     "${i}"));
+      assert(vkr_string8_equals_cstr(&pass->writes.data[0].slice_base_mip.token,
+                                     "${i+1}"));
+      found_gtao_depth_mip = true_v;
+      continue;
+    }
+    if (vkr_string8_equals_cstr(&pass->name, "AO.Evaluate")) {
+      assert(pass->condition.kind == VKR_RG_JSON_CONDITION_GTAO_ENABLED);
+      assert(pass->reads.length == 3u && pass->writes.length == 2u);
+      assert(pass->reads.data[0].binding.value == 0u &&
+             pass->reads.data[1].binding.value == 1u &&
+             pass->reads.data[2].binding.value == 2u &&
+             pass->writes.data[0].binding.value == 3u &&
+             pass->writes.data[1].binding.value == 4u);
+      found_gtao_evaluate = true_v;
+      continue;
+    }
+    if (vkr_string8_equals_cstr(&pass->name, "AO.Denoise")) {
+      assert(pass->condition.kind == VKR_RG_JSON_CONDITION_GTAO_ENABLED);
+      assert(pass->reads.length == 2u && pass->writes.length == 1u);
+      assert(pass->reads.data[0].binding.value == 0u &&
+             pass->reads.data[1].binding.value == 1u &&
+             pass->writes.data[0].binding.value == 2u);
+      found_gtao_denoise = true_v;
+      continue;
+    }
     if (!vkr_string8_equals_cstr(&pass->name, "HZB.BuildMip.${i}"))
       continue;
     assert(pass->repeat.enabled &&
@@ -1755,7 +1829,8 @@ static void test_main_graph_contract(void) {
     found_hzb_reduce = true_v;
   }
   assert(found_hzb_reduce && found_sdsm_reduce && found_temporal_transform &&
-         found_temporal_resolve);
+         found_temporal_resolve && found_gtao_depth_prefilter &&
+         found_gtao_depth_mip && found_gtao_evaluate && found_gtao_denoise);
 
   const char *picking_deferred_ordered[] = {
       "Picking.DepthSeed.Opaque", "Picking.Resolve.Opaque", "Picking.Features",
@@ -1839,17 +1914,23 @@ static void test_main_graph_fits_runtime_pass_capacity(void) {
       .transmission_pending = true_v,
       .timing_enabled = true_v,
       .picking_pending = true_v,
+      .bloom_enabled = true_v,
+      .bloom_mip_count = 6u,
+      .gtao_enabled = true_v,
+      .gtao_depth_mip_count = 5u,
   };
   vkr_rg_begin_frame(runtime, &frame);
   assert(vkr_rg_build_from_json(runtime, &graph, &frame));
-  assert(runtime->passes.length <= 64u);
+  assert(runtime->passes.length > 64u);
+  assert(runtime->passes.length <= VKR_RENDERER_IMPL_MAX_GRAPH_PASSES);
   assert(vkr_rg_compile_schedule(runtime));
   vkr_rg_end_frame(runtime);
 
   frame.transmission_compact_enabled = true_v;
   vkr_rg_begin_frame(runtime, &frame);
   assert(vkr_rg_build_from_json(runtime, &graph, &frame));
-  assert(runtime->passes.length <= 64u);
+  assert(runtime->passes.length > 64u);
+  assert(runtime->passes.length <= VKR_RENDERER_IMPL_MAX_GRAPH_PASSES);
   assert(vkr_rg_compile_schedule(runtime));
   vkr_rg_end_frame(runtime);
 

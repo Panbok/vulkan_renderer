@@ -285,6 +285,96 @@ vkr_global const VkrMetalPacketAbiField vkr_bloom_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketBloomRoot, reserved, "reserved", 72),
 };
 
+vkr_global const VkrMetalPacketAbiField vkr_gtao_params_fields[] = {
+    VKR_ABI_FIELD(VkrGtaoGpuParams, view, "view", 0),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, viewport_width, "viewport_width", 64),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, viewport_height, "viewport_height", 68),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, depth_mip_count, "depth_mip_count", 72),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, reserved_u32_0, "reserved_u32_0", 76),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, viewport_pixel_size_x,
+                  "viewport_pixel_size_x", 80),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, viewport_pixel_size_y,
+                  "viewport_pixel_size_y", 84),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, projection_m22, "projection_m22", 88),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, projection_m23, "projection_m23", 92),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, projection_m32, "projection_m32", 96),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, projection_m33, "projection_m33", 100),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, projection_m00, "projection_m00", 104),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, projection_m11, "projection_m11", 108),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, projection_m02, "projection_m02", 112),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, projection_m12, "projection_m12", 116),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, projection_m03, "projection_m03", 120),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, projection_m13, "projection_m13", 124),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, effect_radius, "effect_radius", 128),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, radius_multiplier, "radius_multiplier",
+                  132),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, falloff_range, "falloff_range", 136),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, falloff_mul, "falloff_mul", 140),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, falloff_add, "falloff_add", 144),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, depth_mip_falloff_mul,
+                  "depth_mip_falloff_mul", 148),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, sample_distribution_power,
+                  "sample_distribution_power", 152),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, final_value_power, "final_value_power",
+                  156),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, depth_mip_sampling_offset,
+                  "depth_mip_sampling_offset", 160),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, denoise_blur_beta, "denoise_blur_beta",
+                  164),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, reserved_float0, "reserved_float0", 168),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, reserved_float1, "reserved_float1", 172),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, slice_count, "slice_count", 176),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, steps_per_slice, "steps_per_slice", 180),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, noise_index, "noise_index", 184),
+    VKR_ABI_FIELD(VkrGtaoGpuParams, reserved0, "reserved0", 188),
+};
+
+vkr_global const VkrMetalPacketAbiField vkr_gtao_depth_root_fields[] = {
+    VKR_ABI_FIELD(VkrMetalPacketGtaoDepthRoot, params, "params", 0),
+    VKR_ABI_FIELD(VkrMetalPacketGtaoDepthRoot, source_texture_id, "source",
+                  192),
+    VKR_ABI_FIELD(VkrMetalPacketGtaoDepthRoot, destination_texture_id,
+                  "destination", 200),
+    VKR_ABI_FIELD(VkrMetalPacketGtaoDepthRoot, source_extent, "source_extent",
+                  208),
+    VKR_ABI_FIELD(VkrMetalPacketGtaoDepthRoot, destination_extent,
+                  "destination_extent", 216),
+};
+
+vkr_global const VkrMetalPacketAbiField vkr_gtao_evaluate_root_fields[] = {
+    VKR_ABI_FIELD(VkrMetalPacketGtaoEvaluateRoot, params, "params", 0),
+    VKR_ABI_FIELD(VkrMetalPacketGtaoEvaluateRoot, vbuffer_texture_id, "vbuffer",
+                  192),
+    VKR_ABI_FIELD(VkrMetalPacketGtaoEvaluateRoot, view_depth_texture_id,
+                  "view_depth", 200),
+    VKR_ABI_FIELD(VkrMetalPacketGtaoEvaluateRoot, normal_texture_id, "normal",
+                  208),
+    VKR_ABI_FIELD(VkrMetalPacketGtaoEvaluateRoot, destination_texture_id,
+                  "destination", 216),
+    VKR_ABI_FIELD(VkrMetalPacketGtaoEvaluateRoot, edges_texture_id, "edges",
+                  224),
+    VKR_ABI_FIELD(VkrMetalPacketGtaoEvaluateRoot, source_extent,
+                  "source_extent", 232),
+    VKR_ABI_FIELD(VkrMetalPacketGtaoEvaluateRoot, destination_extent,
+                  "destination_extent", 240),
+    VKR_ABI_FIELD(VkrMetalPacketGtaoEvaluateRoot, reserved, "reserved", 248),
+};
+
+vkr_global const VkrMetalPacketAbiField vkr_gtao_denoise_root_fields[] = {
+    VKR_ABI_FIELD(VkrMetalPacketGtaoDenoiseRoot, params, "params", 0),
+    VKR_ABI_FIELD(VkrMetalPacketGtaoDenoiseRoot, source_texture_id, "source",
+                  192),
+    VKR_ABI_FIELD(VkrMetalPacketGtaoDenoiseRoot, edges_texture_id, "edges",
+                  200),
+    VKR_ABI_FIELD(VkrMetalPacketGtaoDenoiseRoot, destination_texture_id,
+                  "destination", 208),
+    VKR_ABI_FIELD(VkrMetalPacketGtaoDenoiseRoot, source_extent, "source_extent",
+                  216),
+    VKR_ABI_FIELD(VkrMetalPacketGtaoDenoiseRoot, destination_extent,
+                  "destination_extent", 224),
+    VKR_ABI_FIELD(VkrMetalPacketGtaoDenoiseRoot, reserved, "reserved", 232),
+};
+
 vkr_global const VkrMetalPacketAbiField vkr_temporal_transform_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketTemporalTransformRoot, instances, "instances",
                   0),
@@ -369,13 +459,15 @@ vkr_global const VkrMetalPacketAbiField vkr_deferred_lighting_root_fields[] = {
                   48),
     VKR_ABI_FIELD(VkrMetalPacketDeferredLightingRoot, sky_texture_id, "sky",
                   56),
+    VKR_ABI_FIELD(VkrMetalPacketDeferredLightingRoot,
+                  gtao_visibility_texture_id, "gtao_visibility", 64),
     VKR_ABI_FIELD(VkrMetalPacketDeferredLightingRoot, inverse_view_projection,
-                  "inverse_view_projection", 64),
-    VKR_ABI_FIELD(VkrMetalPacketDeferredLightingRoot, extent, "extent", 128),
+                  "inverse_view_projection", 80),
+    VKR_ABI_FIELD(VkrMetalPacketDeferredLightingRoot, extent, "extent", 144),
     VKR_ABI_FIELD(VkrMetalPacketDeferredLightingRoot, sky_enabled,
-                  "sky_enabled", 136),
+                  "sky_enabled", 152),
     VKR_ABI_FIELD(VkrMetalPacketDeferredLightingRoot, reserved, "reserved",
-                  140),
+                  156),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_temporal_resolve_root_fields[] = {
@@ -645,9 +737,20 @@ vkr_global const VkrMetalPacketAbiRecord
             VKR_ABI_RECORD(VkrMetalPacketGBufferResolveRoot,
                            "VkrMetalPacketGBufferResolveRoot", 352, 16,
                            vkr_gbuffer_resolve_root_fields),
+        [VKR_METAL_PACKET_ABI_GTAO_PARAMS] = VKR_ABI_RECORD(
+            VkrGtaoGpuParams, "VkrGtaoParams", 192, 16, vkr_gtao_params_fields),
+        [VKR_METAL_PACKET_ABI_GTAO_DEPTH_ROOT] = VKR_ABI_RECORD(
+            VkrMetalPacketGtaoDepthRoot, "VkrMetalPacketGtaoDepthRoot", 224, 16,
+            vkr_gtao_depth_root_fields),
+        [VKR_METAL_PACKET_ABI_GTAO_EVALUATE_ROOT] = VKR_ABI_RECORD(
+            VkrMetalPacketGtaoEvaluateRoot, "VkrMetalPacketGtaoEvaluateRoot",
+            256, 16, vkr_gtao_evaluate_root_fields),
+        [VKR_METAL_PACKET_ABI_GTAO_DENOISE_ROOT] = VKR_ABI_RECORD(
+            VkrMetalPacketGtaoDenoiseRoot, "VkrMetalPacketGtaoDenoiseRoot", 240,
+            16, vkr_gtao_denoise_root_fields),
         [VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketDeferredLightingRoot,
-                           "VkrMetalPacketDeferredLightingRoot", 144, 16,
+                           "VkrMetalPacketDeferredLightingRoot", 160, 16,
                            vkr_deferred_lighting_root_fields),
         [VKR_METAL_PACKET_ABI_TEMPORAL_RESOLVE_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketTemporalResolveRoot,

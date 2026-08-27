@@ -263,6 +263,43 @@
       "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
     },
     {
+      "name": "gtao_view_depth",
+      "type": "image",
+      "condition": "gtao_enabled",
+      "extent": { "mode": "viewport" },
+      "format": "R16_SFLOAT",
+      "mip_levels": "full_chain",
+      "usage": ["STORAGE", "SAMPLED", "TRANSFER_SRC"],
+      "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
+    },
+    {
+      "name": "gtao_raw",
+      "type": "image",
+      "condition": "gtao_enabled",
+      "extent": { "mode": "viewport" },
+      "format": "R8_UNORM",
+      "usage": ["STORAGE", "SAMPLED", "TRANSFER_SRC"],
+      "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
+    },
+    {
+      "name": "gtao_edges",
+      "type": "image",
+      "condition": "gtao_enabled",
+      "extent": { "mode": "viewport" },
+      "format": "R8_UNORM",
+      "usage": ["STORAGE", "SAMPLED"],
+      "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
+    },
+    {
+      "name": "gtao_visibility",
+      "type": "image",
+      "condition": "gtao_enabled",
+      "extent": { "mode": "viewport" },
+      "format": "R8_UNORM",
+      "usage": ["STORAGE", "SAMPLED", "TRANSFER_SRC"],
+      "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
+    },
+    {
       "name": "deferred_emissive_seed",
       "type": "image",
       "extent": { "mode": "viewport" },
@@ -821,6 +858,78 @@
       "execute": "pass.gbuffer.resolve"
     },
     {
+      "name": "AO.PrefilterDepth",
+      "type": "compute",
+      "condition": "gtao_enabled",
+      "flags": ["NO_CULL"],
+      "reads": [
+        { "image": "opaque_vbuffer_depth", "access": "SAMPLED", "binding": 0 }
+      ],
+      "writes": [
+        {
+          "image": "gtao_view_depth",
+          "access": "STORAGE_WRITE",
+          "binding": 1,
+          "subresource": { "base_mip": 0, "mip_count": 1 }
+        }
+      ],
+      "execute": "pass.gtao.depth_prefilter"
+    },
+    {
+      "name": "AO.PrefilterDepth.${i}",
+      "type": "compute",
+      "condition": "gtao_enabled",
+      "repeat": { "count_source": "gtao_depth_mip_pass_count" },
+      "flags": ["NO_CULL"],
+      "reads": [
+        {
+          "image": "gtao_view_depth",
+          "access": "SAMPLED",
+          "binding": 0,
+          "subresource": { "base_mip": "${i}", "mip_count": 1 }
+        }
+      ],
+      "writes": [
+        {
+          "image": "gtao_view_depth",
+          "access": "STORAGE_WRITE",
+          "binding": 1,
+          "subresource": { "base_mip": "${i+1}", "mip_count": 1 }
+        }
+      ],
+      "execute": "pass.gtao.depth_mip"
+    },
+    {
+      "name": "AO.Evaluate",
+      "type": "compute",
+      "condition": "gtao_enabled",
+      "flags": ["NO_CULL"],
+      "reads": [
+        { "image": "opaque_vbuffer", "access": "STORAGE_READ", "binding": 0 },
+        { "image": "gtao_view_depth", "access": "SAMPLED", "binding": 1 },
+        { "image": "gbuffer_normal", "access": "STORAGE_READ", "binding": 2 }
+      ],
+      "writes": [
+        { "image": "gtao_raw", "access": "STORAGE_WRITE", "binding": 3 },
+        { "image": "gtao_edges", "access": "STORAGE_WRITE", "binding": 4 }
+      ],
+      "execute": "pass.gtao.evaluate"
+    },
+    {
+      "name": "AO.Denoise",
+      "type": "compute",
+      "condition": "gtao_enabled",
+      "flags": ["NO_CULL"],
+      "reads": [
+        { "image": "gtao_raw", "access": "SAMPLED", "binding": 0 },
+        { "image": "gtao_edges", "access": "SAMPLED", "binding": 1 }
+      ],
+      "writes": [
+        { "image": "gtao_visibility", "access": "STORAGE_WRITE", "binding": 2 }
+      ],
+      "execute": "pass.gtao.denoise"
+    },
+    {
       "name": "Lighting.Deferred.Fullscreen",
       "type": "compute",
       "condition": "!editor_enabled",
@@ -837,7 +946,13 @@
           "binding": 5,
           "when": "shadow_cascades_active"
         },
-        { "image": "hdr_pre_transmission", "access": "STORAGE_READ", "binding": 6 }
+        { "image": "hdr_pre_transmission", "access": "STORAGE_READ", "binding": 6 },
+        {
+          "image": "gtao_visibility",
+          "access": "SAMPLED",
+          "binding": 7,
+          "when": "gtao_enabled"
+        }
       ],
       "writes": [
         { "image": "hdr_pre_transmission", "access": "STORAGE_WRITE", "binding": 6 }
@@ -861,7 +976,13 @@
           "binding": 5,
           "when": "shadow_cascades_active"
         },
-        { "image": "scene_pre_transmission", "access": "STORAGE_READ", "binding": 6 }
+        { "image": "scene_pre_transmission", "access": "STORAGE_READ", "binding": 6 },
+        {
+          "image": "gtao_visibility",
+          "access": "SAMPLED",
+          "binding": 7,
+          "when": "gtao_enabled"
+        }
       ],
       "writes": [
         { "image": "scene_pre_transmission", "access": "STORAGE_WRITE", "binding": 6 }

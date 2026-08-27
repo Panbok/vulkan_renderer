@@ -749,7 +749,7 @@ void vkr_vk_destroy_frame_slots(VkrVulkanRenderer *renderer) {
 
 vkr_internal bool8_t vkr_vk_write_upload_data(VkrVulkanRenderer *renderer) {
   uint8_t *mapped = renderer->upload.allocation.mapped;
-  const uint8_t sentinel_pixel[] = {37u, 91u, 173u, 255u};
+  const uint8_t sentinel_pixel[] = {255u, 255u, 255u, 255u};
   MemCopy(mapped, sentinel_pixel, sizeof(sentinel_pixel));
   return vkr_vk_flush(renderer, &renderer->upload.allocation, 0u,
                       sizeof(sentinel_pixel));
@@ -796,7 +796,7 @@ bool8_t vkr_vk_create_resources(VkrVulkanRenderer *renderer) {
       .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
       .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
       .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-      .maxLod = 0.0f,
+      .maxLod = VK_LOD_CLAMP_NONE,
   };
   if (vkCreateSampler(vkr_vk_renderer_device(renderer), &sampler_info, NULL,
                       &renderer->sentinel_sampler) != VK_SUCCESS) {
