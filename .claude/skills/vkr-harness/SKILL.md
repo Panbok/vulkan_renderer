@@ -61,9 +61,10 @@ thresholds, and comparison result; read `auxiliary_runs[]` to audit each child
 report and its effective fingerprints. Replay-child timings are auxiliary and
 never primary performance evidence.
 
-Shipped direct channels are `final_color`, editor-only `scene_color`, `depth`,
-`shadow_cascade_0` through `_3`, and `picking_ids`. Logical auxiliary channels
-are `normals`, `unlit`, `lighting`, `shadow_debug_cascades`,
+Shipped direct channels include `final_color`, editor-only `scene_color`,
+`depth`, `shadow_cascade_0` through `_3`, `picking_ids`, `hdr_pre_bloom`,
+`bloom_prefilter`, `bloom_result`, and `hdr_combined`. Logical auxiliary
+channels are `normals`, `unlit`, `lighting`, `shadow_debug_cascades`,
 `shadow_debug_factor`, `shadow_debug_depth`, `temporal_motion`, and
 `temporal_history`. Channels sharing one render
 mode and checkpoint share a replay; distinct debug modes do not. Final-color

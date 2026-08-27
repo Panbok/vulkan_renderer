@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "id": "smoke.bloom.static",
+  "suite": "smoke",
+  "description": "Odd-extent fixed-step bloom fixture with explicit scene-linear controls, temporal passthrough, manual exposure, and independent prefilter, resolved bloom, pre-bloom HDR, combined HDR, and final-color captures.",
+  "scene": "assets/scenes/fixtures/local_ibl_broad_mesh.scene.json",
+  "seed": 11,
+  "resolution": [801, 601],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": { "warmup": 24, "measure": 16 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "taa_enabled": false,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 3,
+    "render_mode": "default",
+    "exposure_mode": "manual",
+    "manual_exposure": 0.3,
+    "exposure_compensation_ev": 0.0,
+    "bloom_enabled": true,
+    "bloom_threshold": 0.02,
+    "bloom_knee": 0.01,
+    "bloom_intensity": 0.1
+  },
+  "camera": {
+    "mode": "static",
+    "position": [0, 1.2, 6.0],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 55,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "captures": [
+    {
+      "at_frame": 12,
+      "channels": [
+        "hdr_pre_bloom",
+        "bloom_prefilter",
+        "bloom_result",
+        "hdr_combined",
+        "final_color"
+      ]
+    }
+  ],
+  "assertions": []
+}

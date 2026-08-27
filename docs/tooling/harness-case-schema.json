@@ -243,6 +243,29 @@
           "type": "integer",
           "description": "Required for automatic cases. Zero-based measure-relative frame before which adaptation history is explicitly reset.",
           "minimum": 0
+        },
+        "bloom_enabled": {
+          "type": "boolean",
+          "description": "Enables the scene-linear bloom chain. Omission keeps deterministic harness cases bloom-free.",
+          "default": false
+        },
+        "bloom_threshold": {
+          "type": "number",
+          "description": "Non-negative scene-linear bloom threshold.",
+          "minimum": 0,
+          "default": 1
+        },
+        "bloom_knee": {
+          "type": "number",
+          "description": "Non-negative scene-linear soft-knee width.",
+          "minimum": 0,
+          "default": 0.5
+        },
+        "bloom_intensity": {
+          "type": "number",
+          "description": "Non-negative bloom weight applied before exposure.",
+          "minimum": 0,
+          "default": 0.05
         }
       },
       "additionalProperties": false,
@@ -254,6 +277,15 @@
           },
           "then": { "required": ["manual_exposure", "exposure_reset_frame"] },
           "else": { "not": { "required": ["exposure_reset_frame"] } }
+        },
+        {
+          "if": {
+            "properties": { "bloom_enabled": { "const": true } },
+            "required": ["bloom_enabled"]
+          },
+          "then": {
+            "required": ["bloom_threshold", "bloom_knee", "bloom_intensity"]
+          }
         }
       ]
     },

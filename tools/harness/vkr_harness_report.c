@@ -455,6 +455,17 @@ bool8_t vkr_harness_report_write(const char *path,
       vkr_harness_json_emit_u64(
           writer, "exposure_reset_frame",
           report->case_manifest.renderer.exposure_reset_frame) &&
+      vkr_harness_json_emit_bool(
+          writer, "bloom_enabled",
+          report->case_manifest.renderer.bloom_enabled) &&
+      vkr_harness_json_emit_f64(
+          writer, "bloom_threshold",
+          report->case_manifest.renderer.bloom_threshold) &&
+      vkr_harness_json_emit_f64(writer, "bloom_knee",
+                                report->case_manifest.renderer.bloom_knee) &&
+      vkr_harness_json_emit_f64(
+          writer, "bloom_intensity",
+          report->case_manifest.renderer.bloom_intensity) &&
       vkr_harness_json_emit_string(
           writer, "cache",
           vkr_harness_cache_name(report->case_manifest.cache)) &&

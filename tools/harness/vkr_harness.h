@@ -12,6 +12,7 @@
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_platform.h"
+#include "renderer/vkr_bloom.h"
 #include "renderer/vkr_renderer.h"
 
 #define VKR_HARNESS_SCHEMA_VERSION 1u
@@ -243,6 +244,12 @@ typedef struct VkrHarnessRendererConfig {
   float32_t exposure_compensation_ev;
   /** Measure-relative frame that explicitly resets automatic adaptation. */
   uint32_t exposure_reset_frame;
+  /** Bloom is opt-in for deterministic cases; production defaults do not leak
+   * into a harness workload. */
+  bool8_t bloom_enabled;
+  float32_t bloom_threshold;
+  float32_t bloom_knee;
+  float32_t bloom_intensity;
   uint32_t shadow_debug_mode;
 } VkrHarnessRendererConfig;
 

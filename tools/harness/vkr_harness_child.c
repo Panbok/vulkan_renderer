@@ -953,6 +953,13 @@ vkr_harness_child_apply_renderer(Application *application,
       case_manifest->renderer.manual_exposure;
   application->renderer.globals.exposure_compensation_ev =
       case_manifest->renderer.exposure_compensation_ev;
+  application->renderer.globals.bloom_enabled =
+      case_manifest->renderer.bloom_enabled;
+  application->renderer.globals.bloom_threshold =
+      case_manifest->renderer.bloom_threshold;
+  application->renderer.globals.bloom_knee = case_manifest->renderer.bloom_knee;
+  application->renderer.globals.bloom_intensity =
+      case_manifest->renderer.bloom_intensity;
   /* Determinism rule 3: the harness camera receives an explicit extent and
      lens; it never reads window size or input state. */
   VkrCamera *camera =

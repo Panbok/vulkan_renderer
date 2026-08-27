@@ -180,6 +180,11 @@ bool8_t vkr_harness_case_fingerprints_with_scene_digest(
       case_manifest->renderer.manual_exposure,
       case_manifest->renderer.exposure_compensation_ev,
       case_manifest->renderer.exposure_reset_frame);
+  ADD("renderer.bloom", "%u,%.9g,%.9g,%.9g",
+      case_manifest->renderer.bloom_enabled,
+      case_manifest->renderer.bloom_threshold,
+      case_manifest->renderer.bloom_knee,
+      case_manifest->renderer.bloom_intensity);
   ADD("renderer.shadow_debug_mode", "%u",
       case_manifest->renderer.shadow_debug_mode);
   ADD("target", "%s,%s,%u", vkr_harness_target_name(case_manifest->target),

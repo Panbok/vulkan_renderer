@@ -129,6 +129,10 @@ static void test_harness_case_parser(void) {
   assert(parsed.renderer.manual_exposure == VKR_DEFAULT_EXPOSURE);
   assert(parsed.renderer.exposure_compensation_ev == 0.0f);
   assert(parsed.renderer.exposure_reset_frame == UINT32_MAX);
+  assert(!parsed.renderer.bloom_enabled);
+  assert(parsed.renderer.bloom_threshold == VKR_BLOOM_DEFAULT_THRESHOLD);
+  assert(parsed.renderer.bloom_knee == VKR_BLOOM_DEFAULT_KNEE);
+  assert(parsed.renderer.bloom_intensity == VKR_BLOOM_DEFAULT_INTENSITY);
   assert(harness_parse_case("windowed_hidden", "immediate", static_camera,
                             ",\"resize_round_trip\":[80,72]", &parsed));
   assert(parsed.resize_round_trip && parsed.resize_width == 80u &&
@@ -150,7 +154,9 @@ static void test_harness_case_parser(void) {
       "\"shadow_map_size\":4096,\"shadow_pcf_early_out\":false,"
       "\"shadow_sdsm\":true,\"exposure_mode\":\"automatic\","
       "\"manual_exposure\":0.25,\"exposure_compensation_ev\":1.0,"
-      "\"exposure_reset_frame\":1},"
+      "\"exposure_reset_frame\":1,\"bloom_enabled\":true,"
+      "\"bloom_threshold\":1.25,\"bloom_knee\":0.4,"
+      "\"bloom_intensity\":0.08},"
       "\"camera\":{\"mode\":\"static\",\"position\":[1,2,3],\"yaw\":10,"
       "\"pitch\":-5}}";
   VkrHarnessError backend_error = {0};
@@ -167,6 +173,10 @@ static void test_harness_case_parser(void) {
   assert(parsed.renderer.manual_exposure == 0.25f);
   assert(parsed.renderer.exposure_compensation_ev == 1.0f);
   assert(parsed.renderer.exposure_reset_frame == 1u);
+  assert(parsed.renderer.bloom_enabled);
+  assert(parsed.renderer.bloom_threshold == 1.25f);
+  assert(parsed.renderer.bloom_knee == 0.4f);
+  assert(parsed.renderer.bloom_intensity == 0.08f);
   VkrRendererBackendType resolved_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
   assert(vkr_harness_renderer_backend_resolve(&parsed.renderer, NULL,
                                               &resolved_backend));
@@ -234,6 +244,24 @@ static void test_harness_case_parser(void) {
           strlen(automatic_mode + strlen("automatic")) + 1u);
   assert(!vkr_harness_case_parse(manual_with_reset, strlen(manual_with_reset),
                                  "memory", &parsed, &backend_error));
+  char disabled_invalid_bloom[2048];
+  snprintf(disabled_invalid_bloom, sizeof(disabled_invalid_bloom), "%s",
+           metal_case);
+  char *bloom_enabled =
+      strstr(disabled_invalid_bloom, "\"bloom_enabled\":true");
+  assert(bloom_enabled);
+  bloom_enabled += strlen("\"bloom_enabled\":");
+  memmove(bloom_enabled + strlen("false"), bloom_enabled + strlen("true"),
+          strlen(bloom_enabled + strlen("true")) + 1u);
+  MemCopy(bloom_enabled, "false", strlen("false"));
+  char *bloom_threshold =
+      strstr(disabled_invalid_bloom, "\"bloom_threshold\":1.25");
+  assert(bloom_threshold);
+  bloom_threshold += strlen("\"bloom_threshold\":");
+  MemCopy(bloom_threshold, "-1.0", strlen("-1.0"));
+  assert(!vkr_harness_case_parse(disabled_invalid_bloom,
+                                 strlen(disabled_invalid_bloom), "memory",
+                                 &parsed, &backend_error));
   assert(!harness_parse_case(
       "windowed_hidden", "immediate",
       "{\"mode\":\"keyframes\",\"keys\":[{\"t\":1,\"position\":[0,0,0],"
@@ -417,6 +445,19 @@ static void test_harness_fingerprints(void) {
   case_manifest.renderer.manual_exposure = VKR_DEFAULT_EXPOSURE;
   case_manifest.renderer.exposure_compensation_ev = 0.0f;
   case_manifest.renderer.exposure_reset_frame = UINT32_MAX;
+  case_manifest.renderer.bloom_enabled = true_v;
+  case_manifest.renderer.bloom_threshold = 1.25f;
+  case_manifest.renderer.bloom_knee = 0.4f;
+  case_manifest.renderer.bloom_intensity = 0.08f;
+  assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
+                                       &case_manifest, &profile,
+                                       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
+                                       environment, workload, policy, &error));
+  assert(strcmp(original_workload, workload) != 0);
+  case_manifest.renderer.bloom_enabled = false_v;
+  case_manifest.renderer.bloom_threshold = VKR_BLOOM_DEFAULT_THRESHOLD;
+  case_manifest.renderer.bloom_knee = VKR_BLOOM_DEFAULT_KNEE;
+  case_manifest.renderer.bloom_intensity = VKR_BLOOM_DEFAULT_INTENSITY;
   case_manifest.renderer.text_fixture = true_v;
   assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
                                        &case_manifest, &profile,
@@ -868,6 +909,10 @@ static void test_harness_report_shape(void) {
   report.case_manifest.renderer.manual_exposure = 0.25f;
   report.case_manifest.renderer.exposure_compensation_ev = 1.0f;
   report.case_manifest.renderer.exposure_reset_frame = 1u;
+  report.case_manifest.renderer.bloom_enabled = true_v;
+  report.case_manifest.renderer.bloom_threshold = 1.25f;
+  report.case_manifest.renderer.bloom_knee = 0.4f;
+  report.case_manifest.renderer.bloom_intensity = 0.08f;
   snprintf(report.case_manifest.manifest_sha256,
            sizeof(report.case_manifest.manifest_sha256),
            "sha256:"
@@ -896,8 +941,9 @@ static void test_harness_report_shape(void) {
   assert(file && fseek(file, 0, SEEK_END) == 0);
   const long length = ftell(file);
   assert(length > 0 && fseek(file, 0, SEEK_SET) == 0);
-  char *json = malloc((size_t)length);
+  char *json = malloc((size_t)length + 1u);
   assert(json && fread(json, 1u, (size_t)length, file) == (size_t)length);
+  json[length] = '\0';
   fclose(file);
   assert(strstr(json, "\"subsystem_mask\":\"0x0000000000001234\"") != NULL);
   assert(strstr(json, "\"world_renderer\":\"deferred\"") != NULL);
@@ -910,6 +956,10 @@ static void test_harness_report_shape(void) {
   assert(strstr(json, "\"manual_exposure\":0.25") != NULL);
   assert(strstr(json, "\"exposure_compensation_ev\":1") != NULL);
   assert(strstr(json, "\"exposure_reset_frame\":1") != NULL);
+  assert(strstr(json, "\"bloom_enabled\":true") != NULL);
+  assert(strstr(json, "\"bloom_threshold\":1.25") != NULL);
+  assert(strstr(json, "\"bloom_knee\":0.4") != NULL);
+  assert(strstr(json, "\"bloom_intensity\":") != NULL);
   VkrHarnessJsonDocument document = {0};
   assert(vkr_harness_json_parse(&document, json, (uint64_t)length, &error));
   static const char *const fields[] = {"schema_version",
@@ -1013,7 +1063,7 @@ static void harness_test_write_f32_le(uint8_t bytes[4], float32_t value) {
 
 static void test_harness_capture_catalog_and_converters(void) {
   printf("  Running test_harness_capture_catalog_and_converters...\n");
-  assert(vkr_renderer_capture_channel_count() == 17u);
+  assert(vkr_renderer_capture_channel_count() == 21u);
   assert(vkr_renderer_capture_channel_from_name("missing") ==
          VKR_CAPTURE_CHANNEL_INVALID);
   const VkrCaptureChannelId final_color =
@@ -1024,10 +1074,22 @@ static void test_harness_capture_catalog_and_converters(void) {
       vkr_renderer_capture_channel_from_name("picking_ids");
   const VkrCaptureChannelId transmission_visibility =
       vkr_renderer_capture_channel_from_name("transmission_visibility_ids");
+  const VkrCaptureChannelId hdr_pre_bloom =
+      vkr_renderer_capture_channel_from_name("hdr_pre_bloom");
+  const VkrCaptureChannelId bloom_prefilter =
+      vkr_renderer_capture_channel_from_name("bloom_prefilter");
+  const VkrCaptureChannelId bloom_result =
+      vkr_renderer_capture_channel_from_name("bloom_result");
+  const VkrCaptureChannelId hdr_combined =
+      vkr_renderer_capture_channel_from_name("hdr_combined");
   assert(final_color != VKR_CAPTURE_CHANNEL_INVALID);
   assert(depth != VKR_CAPTURE_CHANNEL_INVALID);
   assert(picking != VKR_CAPTURE_CHANNEL_INVALID);
   assert(transmission_visibility != VKR_CAPTURE_CHANNEL_INVALID);
+  assert(hdr_pre_bloom != VKR_CAPTURE_CHANNEL_INVALID);
+  assert(bloom_prefilter != VKR_CAPTURE_CHANNEL_INVALID);
+  assert(bloom_result != VKR_CAPTURE_CHANNEL_INVALID);
+  assert(hdr_combined != VKR_CAPTURE_CHANNEL_INVALID);
 
 #if !defined(_WIN32)
   char first_dir[] = "/tmp/vkr-capture-first-XXXXXX";

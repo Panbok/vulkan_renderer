@@ -448,7 +448,11 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
                                         "exposure_mode",
                                         "manual_exposure",
                                         "exposure_compensation_ev",
-                                        "exposure_reset_frame"};
+                                        "exposure_reset_frame",
+                                        "bloom_enabled",
+                                        "bloom_threshold",
+                                        "bloom_knee",
+                                        "bloom_intensity"};
   static const char *const required[] = {"editor", "skybox", "shadow_preset",
                                          "shadow_cascades"};
   if (!vkr_harness_json_object_validate(
@@ -461,12 +465,22 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
   renderer->taa_enabled = true_v;
   renderer->manual_exposure = VKR_DEFAULT_EXPOSURE;
   renderer->exposure_reset_frame = UINT32_MAX;
+  renderer->bloom_enabled = false_v;
+  renderer->bloom_threshold = VKR_BLOOM_DEFAULT_THRESHOLD;
+  renderer->bloom_knee = VKR_BLOOM_DEFAULT_KNEE;
+  renderer->bloom_intensity = VKR_BLOOM_DEFAULT_INTENSITY;
   uint64_t cascades = 0;
   uint64_t exposure_reset_frame = UINT32_MAX;
   float64_t manual_exposure = renderer->manual_exposure;
   float64_t exposure_compensation_ev = 0.0;
+  float64_t bloom_threshold = renderer->bloom_threshold;
+  float64_t bloom_knee = renderer->bloom_knee;
+  float64_t bloom_intensity = renderer->bloom_intensity;
   int32_t manual_exposure_token = -1;
   int32_t exposure_reset_token = -1;
+  int32_t bloom_threshold_token = -1;
+  int32_t bloom_knee_token = -1;
+  int32_t bloom_intensity_token = -1;
   if (!vkr_harness_manifest_bool(doc, token, "editor", true_v,
                                  &renderer->editor, error) ||
       !vkr_harness_manifest_bool(doc, token, "skybox", true_v,
@@ -498,7 +512,21 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
       !vkr_harness_manifest_field(doc, token, "exposure_reset_frame", false_v,
                                   &exposure_reset_token, error) ||
       !vkr_harness_manifest_u64(doc, token, "exposure_reset_frame", false_v,
-                                &exposure_reset_frame, error)) {
+                                &exposure_reset_frame, error) ||
+      !vkr_harness_manifest_bool(doc, token, "bloom_enabled", false_v,
+                                 &renderer->bloom_enabled, error) ||
+      !vkr_harness_manifest_field(doc, token, "bloom_threshold", false_v,
+                                  &bloom_threshold_token, error) ||
+      !vkr_harness_manifest_f64(doc, token, "bloom_threshold", false_v,
+                                &bloom_threshold, error) ||
+      !vkr_harness_manifest_field(doc, token, "bloom_knee", false_v,
+                                  &bloom_knee_token, error) ||
+      !vkr_harness_manifest_f64(doc, token, "bloom_knee", false_v, &bloom_knee,
+                                error) ||
+      !vkr_harness_manifest_field(doc, token, "bloom_intensity", false_v,
+                                  &bloom_intensity_token, error) ||
+      !vkr_harness_manifest_f64(doc, token, "bloom_intensity", false_v,
+                                &bloom_intensity, error)) {
     return false_v;
   }
   renderer->shadow_cascades = (uint32_t)cascades;
@@ -528,19 +556,33 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
       automatic_exposure
           ? manual_exposure_token >= 0 && exposure_reset_token >= 0
           : exposure_reset_token < 0;
+  const bool8_t bloom_values_valid =
+      isfinite(bloom_threshold) && bloom_threshold >= 0.0 &&
+      isfinite(bloom_knee) && bloom_knee >= 0.0 && isfinite(bloom_intensity) &&
+      bloom_intensity >= 0.0;
+  const bool8_t bloom_controls_present = bloom_threshold_token >= 0 &&
+                                         bloom_knee_token >= 0 &&
+                                         bloom_intensity_token >= 0;
+  const bool8_t bloom_controls_valid =
+      bloom_values_valid &&
+      (!renderer->bloom_enabled || bloom_controls_present);
   if (!preset_valid || !mode_valid || !backend_valid || cascades < 1u ||
       cascades > 8u || !exposure_mode_valid || !automatic_controls_valid ||
-      !isfinite(manual_exposure) || manual_exposure <= 0.0 ||
-      !isfinite(exposure_compensation_ev) ||
+      !bloom_controls_valid || !isfinite(manual_exposure) ||
+      manual_exposure <= 0.0 || !isfinite(exposure_compensation_ev) ||
       exposure_reset_frame > UINT32_MAX) {
-    vkr_harness_error_set(error, "renderer.config", "$.renderer",
-                          "Renderer backend, preset, render/exposure mode, "
-                          "exposure controls, or cascade count is invalid");
+    vkr_harness_error_set(
+        error, "renderer.config", "$.renderer",
+        "Renderer backend, preset, render/exposure mode, "
+        "exposure/bloom controls, or cascade count is invalid");
     return false_v;
   }
   renderer->manual_exposure = (float32_t)manual_exposure;
   renderer->exposure_compensation_ev = (float32_t)exposure_compensation_ev;
   renderer->exposure_reset_frame = (uint32_t)exposure_reset_frame;
+  renderer->bloom_threshold = (float32_t)bloom_threshold;
+  renderer->bloom_knee = (float32_t)bloom_knee;
+  renderer->bloom_intensity = (float32_t)bloom_intensity;
 
   /* Resolve optional fields from the preset before parsing them. Reports and
      fingerprints describe the effective workload, not whether the JSON
