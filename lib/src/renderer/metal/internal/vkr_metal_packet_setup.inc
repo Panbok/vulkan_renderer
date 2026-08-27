@@ -640,36 +640,55 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
   [table release];
   if (!renderer->argument_table)
     vkr_metal_packet_print_error("argument_table", error);
-  return renderer->blend_pipeline && renderer->overlay_pipeline &&
-                 renderer->picking_pipeline && renderer->tonemap_pipeline &&
-                 renderer->world_text_pipeline && renderer->ui_text_pipeline &&
-                 renderer->picking_text_pipeline &&
-                 renderer->ibl_equirect_pipeline &&
-                 renderer->ibl_irradiance_pipeline &&
-                 renderer->ibl_prefilter_pipeline &&
-                 renderer->gpu_shadow_pipeline &&
-                 renderer->gpu_shadow_opaque_pipeline &&
-                 renderer->vbuffer_pipeline &&
-                 renderer->vbuffer_opaque_pipeline &&
-                 renderer->transmission_vbuffer_pipeline &&
-                 renderer->gpu_draw_classify_pipeline &&
-                 renderer->gpu_draw_prefix_pipeline &&
-                 renderer->gpu_draw_encode_pipeline &&
-                 renderer->temporal_transform_pipeline &&
-                 renderer->gbuffer_resolve_pipeline &&
-                 renderer->deferred_lighting_pipeline &&
-                 renderer->temporal_resolve_pipeline &&
-                 renderer->transmission_shade_pipeline &&
-                 renderer->transmission_coverage_pipeline &&
-                 renderer->transmission_compact_pipeline &&
-                 renderer->transmission_compact_finalize_pipeline &&
-                 renderer->picking_resolve_pipeline &&
-                 renderer->hzb_build_pipeline &&
-                 renderer->sdsm_reduce_pipeline &&
-                 renderer->depth_write_state && renderer->depth_read_state &&
-                 renderer->argument_table
-             ? true_v
-             : false_v;
+  const struct {
+    id object;
+    const char *label;
+  } required[] = {
+      {renderer->blend_pipeline, "alpha blend pipeline"},
+      {renderer->overlay_pipeline, "overlay pipeline"},
+      {renderer->picking_pipeline, "picking pipeline"},
+      {renderer->tonemap_pipeline, "tonemap pipeline"},
+      {renderer->world_text_pipeline, "world text pipeline"},
+      {renderer->ui_text_pipeline, "UI text pipeline"},
+      {renderer->picking_text_pipeline, "picking text pipeline"},
+      {renderer->ibl_equirect_pipeline, "IBL equirect pipeline"},
+      {renderer->ibl_irradiance_pipeline, "IBL irradiance pipeline"},
+      {renderer->ibl_prefilter_pipeline, "IBL prefilter pipeline"},
+      {renderer->gpu_shadow_pipeline, "GPU shadow pipeline"},
+      {renderer->gpu_shadow_opaque_pipeline, "opaque GPU shadow pipeline"},
+      {renderer->vbuffer_pipeline, "visibility-buffer pipeline"},
+      {renderer->vbuffer_opaque_pipeline, "opaque visibility-buffer pipeline"},
+      {renderer->transmission_vbuffer_pipeline,
+       "transmission visibility-buffer pipeline"},
+      {renderer->gpu_draw_classify_pipeline, "draw classify pipeline"},
+      {renderer->gpu_draw_prefix_pipeline, "draw prefix pipeline"},
+      {renderer->gpu_draw_encode_pipeline, "draw encode pipeline"},
+      {renderer->temporal_transform_pipeline, "temporal transform pipeline"},
+      {renderer->gbuffer_resolve_pipeline, "G-buffer resolve pipeline"},
+      {renderer->deferred_lighting_pipeline, "deferred lighting pipeline"},
+      {renderer->temporal_resolve_pipeline, "temporal resolve pipeline"},
+      {renderer->transmission_shade_pipeline, "transmission shade pipeline"},
+      {renderer->transmission_coverage_pipeline,
+       "transmission coverage pipeline"},
+      {renderer->transmission_compact_pipeline,
+       "transmission compact pipeline"},
+      {renderer->transmission_compact_finalize_pipeline,
+       "transmission compact finalize pipeline"},
+      {renderer->picking_resolve_pipeline, "picking resolve pipeline"},
+      {renderer->hzb_build_pipeline, "HZB build pipeline"},
+      {renderer->sdsm_reduce_pipeline, "SDSM reduce pipeline"},
+      {renderer->depth_write_state, "depth-write state"},
+      {renderer->depth_read_state, "depth-read state"},
+      {renderer->argument_table, "argument table"},
+  };
+  for (uint32_t i = 0u; i < ArrayCount(required); ++i) {
+    if (!required[i].object) {
+      log_error("Metal renderer startup object unavailable: %s",
+                required[i].label);
+      return false_v;
+    }
+  }
+  return true_v;
 }
 
 vkr_internal bool8_t vkr_metal_packet_create_gpu_draw_icbs(
