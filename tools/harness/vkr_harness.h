@@ -226,6 +226,8 @@ typedef struct VkrHarnessRendererConfig {
   bool8_t editor;
   bool8_t skybox;
   bool8_t text_fixture;
+  /** Whether temporal reconstruction and camera jitter are enabled. */
+  bool8_t taa_enabled;
   bool8_t shadow_pcf_early_out;
   bool8_t shadow_sdsm;
   char backend[16];
@@ -236,6 +238,11 @@ typedef struct VkrHarnessRendererConfig {
   uint32_t shadow_map_size;
   float32_t shadow_split_lambda;
   char render_mode[24];
+  char exposure_mode[16];
+  float32_t manual_exposure;
+  float32_t exposure_compensation_ev;
+  /** Measure-relative frame that explicitly resets automatic adaptation. */
+  uint32_t exposure_reset_frame;
   uint32_t shadow_debug_mode;
 } VkrHarnessRendererConfig;
 

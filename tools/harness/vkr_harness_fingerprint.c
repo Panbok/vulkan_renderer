@@ -161,6 +161,7 @@ bool8_t vkr_harness_case_fingerprints_with_scene_digest(
   ADD("renderer.editor", "%u", case_manifest->renderer.editor);
   ADD("renderer.skybox", "%u", case_manifest->renderer.skybox);
   ADD("renderer.text_fixture", "%u", case_manifest->renderer.text_fixture);
+  ADD("renderer.taa_enabled", "%u", case_manifest->renderer.taa_enabled);
   ADD("renderer.backend", "%s",
       case_manifest->renderer.backend[0] ? case_manifest->renderer.backend
                                          : "external");
@@ -174,6 +175,11 @@ bool8_t vkr_harness_case_fingerprints_with_scene_digest(
       case_manifest->renderer.shadow_pcf_early_out,
       case_manifest->renderer.shadow_sdsm);
   ADD("renderer.render_mode", "%s", case_manifest->renderer.render_mode);
+  ADD("renderer.exposure", "%s,%.9g,%.9g,%u",
+      case_manifest->renderer.exposure_mode,
+      case_manifest->renderer.manual_exposure,
+      case_manifest->renderer.exposure_compensation_ev,
+      case_manifest->renderer.exposure_reset_frame);
   ADD("renderer.shadow_debug_mode", "%u",
       case_manifest->renderer.shadow_debug_mode);
   ADD("target", "%s,%s,%u", vkr_harness_target_name(case_manifest->target),

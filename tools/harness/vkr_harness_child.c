@@ -31,6 +31,7 @@ typedef struct VkrHarnessChildContext {
   uint32_t pass_catalog_stable_frames;
   /** Set once bootstrap/allocation frames are discarded and sampling begins. */
   bool8_t phase_started;
+  bool8_t exposure_reset_applied;
   uint64_t phase_first_frame_index;
   uint64_t submission_timing_cursor;
   uint32_t submission_metric_index;
@@ -484,6 +485,10 @@ static bool8_t vkr_harness_child_activate_scene(Application *application) {
     vkr_harness_child_fail(application, "scene.null");
     return false_v;
   }
+  application->renderer.scene_generation =
+      application->renderer.scene_generation == UINT64_MAX
+          ? 1u
+          : application->renderer.scene_generation + 1u;
   vkr_scene_handle_full_sync(child->scene_resource.as.scene,
                              &application->renderer);
   child->scene_first_frame_index = application->renderer.frame_number + 1u;
@@ -709,6 +714,14 @@ void application_update(Application *application, float64_t delta) {
   if (!vkr_harness_child_resize_round_trip(application)) {
     return;
   }
+  if (!child->exposure_reset_applied &&
+      child->case_manifest->renderer.exposure_reset_frame != UINT32_MAX &&
+      child->completed_frames ==
+          child->case_manifest->warmup_frames +
+              child->case_manifest->renderer.exposure_reset_frame) {
+    vkr_renderer_invalidate_exposure_history(&application->renderer);
+    child->exposure_reset_applied = true_v;
+  }
   if (child->capture_index >= 0 && !child->capture_requested &&
       child->completed_frames ==
           child->case_manifest->warmup_frames +
@@ -931,6 +944,15 @@ vkr_harness_child_apply_renderer(Application *application,
   }
   application->renderer.shadow_debug_mode =
       case_manifest->renderer.shadow_debug_mode;
+  application->renderer.temporal_enabled = case_manifest->renderer.taa_enabled;
+  application->renderer.globals.exposure_mode =
+      string_equals(case_manifest->renderer.exposure_mode, "automatic")
+          ? VKR_EXPOSURE_MODE_AUTOMATIC
+          : VKR_EXPOSURE_MODE_MANUAL;
+  application->renderer.globals.manual_exposure =
+      case_manifest->renderer.manual_exposure;
+  application->renderer.globals.exposure_compensation_ev =
+      case_manifest->renderer.exposure_compensation_ev;
   /* Determinism rule 3: the harness camera receives an explicit extent and
      lens; it never reads window size or input state. */
   VkrCamera *camera =

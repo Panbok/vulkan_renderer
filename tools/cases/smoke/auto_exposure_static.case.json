@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "id": "smoke.auto_exposure.static",
+  "suite": "smoke",
+  "description": "Fixed-step automatic-exposure fixture over one static draw, with TAA disabled to isolate post-temporal passthrough, an authored fallback, an explicit measured-frame reset, bounded frame count, and a post-reset canonical final-color capture.",
+  "scene": "assets/scenes/fixtures/local_ibl_broad_mesh.scene.json",
+  "seed": 11,
+  "resolution": [640, 480],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 2,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": { "warmup": 8, "measure": 16 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "taa_enabled": false,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 3,
+    "render_mode": "default",
+    "exposure_mode": "automatic",
+    "manual_exposure": 0.3,
+    "exposure_compensation_ev": 0.0,
+    "exposure_reset_frame": 4
+  },
+  "camera": {
+    "mode": "static",
+    "position": [0, 1.2, 6.0],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 55,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "captures": [
+    {
+      "at_frame": 12,
+      "channels": ["final_color"]
+    }
+  ],
+  "assertions": [
+    { "metric": "post.exposure.accepted_texels", "stat": "min", "min": 1 },
+    { "metric": "post.exposure.multiplier", "stat": "min", "min": 0.000001 },
+    { "metric": "post.exposure.reset_reasons", "stat": "max", "min": 128 }
+  ]
+}

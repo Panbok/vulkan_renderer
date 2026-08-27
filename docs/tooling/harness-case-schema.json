@@ -173,6 +173,11 @@
           "description": "Creates deterministic system-font, bitmap, and MTSDF UI text before scene activation.",
           "default": false
         },
+        "taa_enabled": {
+          "type": "boolean",
+          "description": "Enables temporal reconstruction and camera jitter. Disable it when a case must isolate a post-temporal feature from temporal-history and jitter phase.",
+          "default": true
+        },
         "backend": {
           "type": "string",
           "description": "Optional renderer pin. When present, VKR_HARNESS_RENDERER_BACKEND may confirm but cannot override it.",
@@ -216,9 +221,41 @@
           "description": "Global shading mode for measured frames. Auxiliary debug captures execute as replay runs and do not change this value.",
           "enum": ["default", "lighting", "normal", "unlit", "direct_diffuse", "direct_specular", "material_params"],
           "default": "default"
+        },
+        "exposure_mode": {
+          "type": "string",
+          "description": "Exposure policy. Automatic cases must also author the manual fallback and a measure-relative deterministic reset point.",
+          "enum": ["manual", "automatic"],
+          "default": "manual"
+        },
+        "manual_exposure": {
+          "type": "number",
+          "description": "Positive linear multiplier in manual mode and the empty-histogram fallback in automatic mode.",
+          "exclusiveMinimum": 0,
+          "default": 0.3
+        },
+        "exposure_compensation_ev": {
+          "type": "number",
+          "description": "EV compensation applied to automatic exposure.",
+          "default": 0
+        },
+        "exposure_reset_frame": {
+          "type": "integer",
+          "description": "Required for automatic cases. Zero-based measure-relative frame before which adaptation history is explicitly reset.",
+          "minimum": 0
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "exposure_mode": { "const": "automatic" } },
+            "required": ["exposure_mode"]
+          },
+          "then": { "required": ["manual_exposure", "exposure_reset_frame"] },
+          "else": { "not": { "required": ["exposure_reset_frame"] } }
+        }
+      ]
     },
 
     "camera": {

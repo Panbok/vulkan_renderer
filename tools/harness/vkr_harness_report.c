@@ -421,6 +421,8 @@ bool8_t vkr_harness_report_write(const char *path,
                                  report->case_manifest.renderer.editor) &&
       vkr_harness_json_emit_bool(writer, "text_fixture",
                                  report->case_manifest.renderer.text_fixture) &&
+      vkr_harness_json_emit_bool(writer, "taa_enabled",
+                                 report->case_manifest.renderer.taa_enabled) &&
       vkr_harness_json_emit_string(writer, "renderer_backend",
                                    report->case_manifest.renderer.backend[0]
                                        ? report->case_manifest.renderer.backend
@@ -441,6 +443,18 @@ bool8_t vkr_harness_report_write(const char *path,
       vkr_harness_json_emit_u64(
           writer, "shadow_map_size",
           report->case_manifest.renderer.shadow_map_size) &&
+      vkr_harness_json_emit_string(
+          writer, "exposure_mode",
+          report->case_manifest.renderer.exposure_mode) &&
+      vkr_harness_json_emit_f64(
+          writer, "manual_exposure",
+          report->case_manifest.renderer.manual_exposure) &&
+      vkr_harness_json_emit_f64(
+          writer, "exposure_compensation_ev",
+          report->case_manifest.renderer.exposure_compensation_ev) &&
+      vkr_harness_json_emit_u64(
+          writer, "exposure_reset_frame",
+          report->case_manifest.renderer.exposure_reset_frame) &&
       vkr_harness_json_emit_string(
           writer, "cache",
           vkr_harness_cache_name(report->case_manifest.cache)) &&

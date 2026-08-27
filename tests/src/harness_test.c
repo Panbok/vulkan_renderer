@@ -118,12 +118,17 @@ static void test_harness_case_parser(void) {
   assert(parsed.target == VKR_HARNESS_TARGET_OFFSCREEN);
   assert(parsed.target_image_count == 3u);
   assert(!parsed.renderer.text_fixture);
+  assert(parsed.renderer.taa_enabled);
   assert(parsed.renderer.backend[0] == '\0');
   assert(parsed.renderer.shadow_pcf_samples == 16u);
   assert(parsed.renderer.shadow_pcf_early_out);
   assert(!parsed.renderer.shadow_sdsm);
   assert(parsed.renderer.shadow_split_lambda == 0.80f);
   assert(parsed.renderer.shadow_map_size == 2048u);
+  assert(strcmp(parsed.renderer.exposure_mode, "manual") == 0);
+  assert(parsed.renderer.manual_exposure == VKR_DEFAULT_EXPOSURE);
+  assert(parsed.renderer.exposure_compensation_ev == 0.0f);
+  assert(parsed.renderer.exposure_reset_frame == UINT32_MAX);
   assert(harness_parse_case("windowed_hidden", "immediate", static_camera,
                             ",\"resize_round_trip\":[80,72]", &parsed));
   assert(parsed.resize_round_trip && parsed.resize_width == 80u &&
@@ -138,22 +143,30 @@ static void test_harness_case_parser(void) {
       "\"resolution\":[64,64],\"boot\":\"full\",\"target\":\"offscreen\","
       "\"present\":\"none\",\"cache\":\"isolated_cold\",\"fixed_delta\":0.016,"
       "\"frames\":{\"measure\":3},\"renderer\":{\"editor\":false,"
-      "\"skybox\":true,\"text_fixture\":true,\"backend\":\"metal\","
+      "\"skybox\":true,\"text_fixture\":true,\"taa_enabled\":false,"
+      "\"backend\":\"metal\","
       "\"shadow_preset\":\"default\",\"shadow_cascades\":4,"
       "\"shadow_pcf_samples\":4,\"shadow_split_lambda\":0.25,"
       "\"shadow_map_size\":4096,\"shadow_pcf_early_out\":false,"
-      "\"shadow_sdsm\":true},"
+      "\"shadow_sdsm\":true,\"exposure_mode\":\"automatic\","
+      "\"manual_exposure\":0.25,\"exposure_compensation_ev\":1.0,"
+      "\"exposure_reset_frame\":1},"
       "\"camera\":{\"mode\":\"static\",\"position\":[1,2,3],\"yaw\":10,"
       "\"pitch\":-5}}";
   VkrHarnessError backend_error = {0};
   assert(vkr_harness_case_parse(metal_case, strlen(metal_case), "memory",
                                 &parsed, &backend_error));
   assert(strcmp(parsed.renderer.backend, "metal") == 0);
+  assert(!parsed.renderer.taa_enabled);
   assert(parsed.renderer.shadow_pcf_samples == 4u);
   assert(!parsed.renderer.shadow_pcf_early_out);
   assert(parsed.renderer.shadow_sdsm);
   assert(parsed.renderer.shadow_split_lambda == 0.25f);
   assert(parsed.renderer.shadow_map_size == 4096u);
+  assert(strcmp(parsed.renderer.exposure_mode, "automatic") == 0);
+  assert(parsed.renderer.manual_exposure == 0.25f);
+  assert(parsed.renderer.exposure_compensation_ev == 1.0f);
+  assert(parsed.renderer.exposure_reset_frame == 1u);
   VkrRendererBackendType resolved_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
   assert(vkr_harness_renderer_backend_resolve(&parsed.renderer, NULL,
                                               &resolved_backend));
@@ -200,6 +213,26 @@ static void test_harness_case_parser(void) {
   assert(map_size_value);
   memcpy(map_size_value, "4095", 4u);
   assert(!vkr_harness_case_parse(invalid_map_size, strlen(invalid_map_size),
+                                 "memory", &parsed, &backend_error));
+  char invalid_exposure_reset[2048];
+  snprintf(invalid_exposure_reset, sizeof(invalid_exposure_reset), "%s",
+           metal_case);
+  char *reset_value =
+      strstr(invalid_exposure_reset, "\"exposure_reset_frame\":1");
+  assert(reset_value);
+  reset_value[strlen("\"exposure_reset_frame\":")] = '3';
+  assert(!vkr_harness_case_parse(invalid_exposure_reset,
+                                 strlen(invalid_exposure_reset), "memory",
+                                 &parsed, &backend_error));
+  char manual_with_reset[2048];
+  snprintf(manual_with_reset, sizeof(manual_with_reset), "%s", metal_case);
+  char *automatic_mode = strstr(manual_with_reset, "automatic");
+  assert(automatic_mode);
+  MemCopy(automatic_mode, "manual", strlen("manual"));
+  memmove(automatic_mode + strlen("manual"),
+          automatic_mode + strlen("automatic"),
+          strlen(automatic_mode + strlen("automatic")) + 1u);
+  assert(!vkr_harness_case_parse(manual_with_reset, strlen(manual_with_reset),
                                  "memory", &parsed, &backend_error));
   assert(!harness_parse_case(
       "windowed_hidden", "immediate",
@@ -371,6 +404,19 @@ static void test_harness_fingerprints(void) {
   assert(strcmp(default_policy, policy) == 0);
   char original_workload[VKR_HARNESS_DIGEST_MAX];
   snprintf(original_workload, sizeof(original_workload), "%s", workload);
+  string_copy(case_manifest.renderer.exposure_mode, "automatic");
+  case_manifest.renderer.manual_exposure = 0.25f;
+  case_manifest.renderer.exposure_compensation_ev = 1.0f;
+  case_manifest.renderer.exposure_reset_frame = 1u;
+  assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
+                                       &case_manifest, &profile,
+                                       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
+                                       environment, workload, policy, &error));
+  assert(strcmp(original_workload, workload) != 0);
+  string_copy(case_manifest.renderer.exposure_mode, "manual");
+  case_manifest.renderer.manual_exposure = VKR_DEFAULT_EXPOSURE;
+  case_manifest.renderer.exposure_compensation_ev = 0.0f;
+  case_manifest.renderer.exposure_reset_frame = UINT32_MAX;
   case_manifest.renderer.text_fixture = true_v;
   assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
                                        &case_manifest, &profile,
@@ -383,6 +429,13 @@ static void test_harness_fingerprints(void) {
                                        VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
                                        environment, workload, policy, &error));
   assert(strcmp(original_workload, workload) == 0);
+  case_manifest.renderer.taa_enabled = false_v;
+  assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
+                                       &case_manifest, &profile,
+                                       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
+                                       environment, workload, policy, &error));
+  assert(strcmp(original_workload, workload) != 0);
+  case_manifest.renderer.taa_enabled = true_v;
   case_manifest.renderer.shadow_pcf_early_out = false_v;
   assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
                                        &case_manifest, &profile,
@@ -809,6 +862,12 @@ static void test_harness_report_shape(void) {
   report.case_manifest.renderer.shadow_sdsm = true_v;
   report.case_manifest.renderer.shadow_split_lambda = 0.25f;
   report.case_manifest.renderer.shadow_map_size = 4096u;
+  report.case_manifest.renderer.taa_enabled = false_v;
+  snprintf(report.case_manifest.renderer.exposure_mode,
+           sizeof(report.case_manifest.renderer.exposure_mode), "automatic");
+  report.case_manifest.renderer.manual_exposure = 0.25f;
+  report.case_manifest.renderer.exposure_compensation_ev = 1.0f;
+  report.case_manifest.renderer.exposure_reset_frame = 1u;
   snprintf(report.case_manifest.manifest_sha256,
            sizeof(report.case_manifest.manifest_sha256),
            "sha256:"
@@ -846,6 +905,11 @@ static void test_harness_report_shape(void) {
   assert(strstr(json, "\"shadow_sdsm\":true") != NULL);
   assert(strstr(json, "\"shadow_split_lambda\":0.25") != NULL);
   assert(strstr(json, "\"shadow_map_size\":4096") != NULL);
+  assert(strstr(json, "\"taa_enabled\":false") != NULL);
+  assert(strstr(json, "\"exposure_mode\":\"automatic\"") != NULL);
+  assert(strstr(json, "\"manual_exposure\":0.25") != NULL);
+  assert(strstr(json, "\"exposure_compensation_ev\":1") != NULL);
+  assert(strstr(json, "\"exposure_reset_frame\":1") != NULL);
   VkrHarnessJsonDocument document = {0};
   assert(vkr_harness_json_parse(&document, json, (uint64_t)length, &error));
   static const char *const fields[] = {"schema_version",

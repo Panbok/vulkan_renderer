@@ -435,6 +435,7 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
   static const char *const allowed[] = {"editor",
                                         "skybox",
                                         "text_fixture",
+                                        "taa_enabled",
                                         "backend",
                                         "shadow_preset",
                                         "shadow_cascades",
@@ -443,7 +444,11 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
                                         "shadow_map_size",
                                         "shadow_pcf_early_out",
                                         "shadow_sdsm",
-                                        "render_mode"};
+                                        "render_mode",
+                                        "exposure_mode",
+                                        "manual_exposure",
+                                        "exposure_compensation_ev",
+                                        "exposure_reset_frame"};
   static const char *const required[] = {"editor", "skybox", "shadow_preset",
                                          "shadow_cascades"};
   if (!vkr_harness_json_object_validate(
@@ -452,13 +457,24 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
     return false_v;
   }
   string_copy(renderer->render_mode, "default");
+  string_copy(renderer->exposure_mode, "manual");
+  renderer->taa_enabled = true_v;
+  renderer->manual_exposure = VKR_DEFAULT_EXPOSURE;
+  renderer->exposure_reset_frame = UINT32_MAX;
   uint64_t cascades = 0;
+  uint64_t exposure_reset_frame = UINT32_MAX;
+  float64_t manual_exposure = renderer->manual_exposure;
+  float64_t exposure_compensation_ev = 0.0;
+  int32_t manual_exposure_token = -1;
+  int32_t exposure_reset_token = -1;
   if (!vkr_harness_manifest_bool(doc, token, "editor", true_v,
                                  &renderer->editor, error) ||
       !vkr_harness_manifest_bool(doc, token, "skybox", true_v,
                                  &renderer->skybox, error) ||
       !vkr_harness_manifest_bool(doc, token, "text_fixture", false_v,
                                  &renderer->text_fixture, error) ||
+      !vkr_harness_manifest_bool(doc, token, "taa_enabled", false_v,
+                                 &renderer->taa_enabled, error) ||
       !vkr_harness_manifest_string(doc, token, "backend", false_v,
                                    renderer->backend, sizeof(renderer->backend),
                                    error) ||
@@ -469,7 +485,20 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
                                 &cascades, error) ||
       !vkr_harness_manifest_string(doc, token, "render_mode", false_v,
                                    renderer->render_mode,
-                                   sizeof(renderer->render_mode), error)) {
+                                   sizeof(renderer->render_mode), error) ||
+      !vkr_harness_manifest_string(doc, token, "exposure_mode", false_v,
+                                   renderer->exposure_mode,
+                                   sizeof(renderer->exposure_mode), error) ||
+      !vkr_harness_manifest_field(doc, token, "manual_exposure", false_v,
+                                  &manual_exposure_token, error) ||
+      !vkr_harness_manifest_f64(doc, token, "manual_exposure", false_v,
+                                &manual_exposure, error) ||
+      !vkr_harness_manifest_f64(doc, token, "exposure_compensation_ev", false_v,
+                                &exposure_compensation_ev, error) ||
+      !vkr_harness_manifest_field(doc, token, "exposure_reset_frame", false_v,
+                                  &exposure_reset_token, error) ||
+      !vkr_harness_manifest_u64(doc, token, "exposure_reset_frame", false_v,
+                                &exposure_reset_frame, error)) {
     return false_v;
   }
   renderer->shadow_cascades = (uint32_t)cascades;
@@ -490,13 +519,28 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
   const bool8_t backend_valid = renderer->backend[0] == '\0' ||
                                 string_equals(renderer->backend, "vulkan") ||
                                 string_equals(renderer->backend, "metal");
+  const bool8_t exposure_mode_valid =
+      string_equals(renderer->exposure_mode, "manual") ||
+      string_equals(renderer->exposure_mode, "automatic");
+  const bool8_t automatic_exposure =
+      string_equals(renderer->exposure_mode, "automatic");
+  const bool8_t automatic_controls_valid =
+      automatic_exposure
+          ? manual_exposure_token >= 0 && exposure_reset_token >= 0
+          : exposure_reset_token < 0;
   if (!preset_valid || !mode_valid || !backend_valid || cascades < 1u ||
-      cascades > 8u) {
+      cascades > 8u || !exposure_mode_valid || !automatic_controls_valid ||
+      !isfinite(manual_exposure) || manual_exposure <= 0.0 ||
+      !isfinite(exposure_compensation_ev) ||
+      exposure_reset_frame > UINT32_MAX) {
     vkr_harness_error_set(error, "renderer.config", "$.renderer",
-                          "Renderer backend, preset, mode, or cascade count "
-                          "is invalid");
+                          "Renderer backend, preset, render/exposure mode, "
+                          "exposure controls, or cascade count is invalid");
     return false_v;
   }
+  renderer->manual_exposure = (float32_t)manual_exposure;
+  renderer->exposure_compensation_ev = (float32_t)exposure_compensation_ev;
+  renderer->exposure_reset_frame = (uint32_t)exposure_reset_frame;
 
   /* Resolve optional fields from the preset before parsing them. Reports and
      fingerprints describe the effective workload, not whether the JSON
@@ -952,6 +996,14 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
       !vkr_harness_manifest_field(&doc, 0, "assertions", false_v, &assertions,
                                   out_error) ||
       !vkr_harness_parse_assertions(&doc, assertions, out_case, out_error)) {
+    return false_v;
+  }
+  if (out_case->renderer.exposure_reset_frame != UINT32_MAX &&
+      out_case->renderer.exposure_reset_frame >= out_case->measure_frames) {
+    vkr_harness_error_set(out_error, "renderer.exposure_reset_frame",
+                          "$.renderer.exposure_reset_frame",
+                          "Exposure reset frame must be inside the measured "
+                          "frame range");
     return false_v;
   }
   vkr_harness_sha256_bytes(json, json_length, out_case->manifest_sha256);
