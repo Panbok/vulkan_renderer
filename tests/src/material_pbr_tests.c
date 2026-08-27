@@ -814,6 +814,72 @@ static void test_material_batch_load_honors_parsed_name_over_stem(
   printf("  test_material_batch_load_honors_parsed_name_over_stem PASSED\n");
 }
 
+static void test_async_emissive_texture_uses_black_pending_fallback(
+    MaterialPbrTestContext *ctx) {
+  printf(
+      "  Running test_async_emissive_texture_uses_black_pending_fallback...\n");
+
+  const char *material_path =
+      "tests/tmp/material_pbr/async_emissive_pending.mt";
+  char absolute_path[1024] = {0};
+  snprintf(absolute_path, sizeof(absolute_path), "%s%s", PROJECT_SOURCE_DIR,
+           material_path);
+  material_pbr_test_remove_file(material_path);
+  assert(material_pbr_test_write_text_file(
+             absolute_path,
+             "type=pbr\n"
+             "emissive_factor=10.0,10.0,7.0\n"
+             "emissive_texture=assets/textures/objects/props/bistro/"
+             "paris_ceiling_lamp_01/paris_ceiling_lamp_01_emi.png\n") ==
+         true_v);
+
+  String8 path = string8_create_from_cstr((const uint8_t *)material_path,
+                                          string_length(material_path));
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(&ctx->temp_allocator);
+  assert(vkr_allocator_scope_is_valid(&scope));
+
+  void *payload = NULL;
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  assert(ctx->material_loader.prepare_async(&ctx->material_loader, path,
+                                            &ctx->temp_allocator, &payload,
+                                            &error) == true_v);
+  assert(payload != NULL);
+  assert(error == VKR_RENDERER_ERROR_NONE);
+
+  const uint32_t stream_count_before =
+      ctx->material_system.texture_stream_count;
+  VkrResourceHandleInfo handle_info = {0};
+  assert(ctx->material_loader.finalize_async(&ctx->material_loader, path,
+                                             payload, &handle_info,
+                                             &error) == true_v);
+  ctx->material_loader.release_async_payload(&ctx->material_loader, payload);
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_UNKNOWN);
+
+  VkrMaterial *material = vkr_material_system_get_by_handle(
+      &ctx->material_system, handle_info.as.material);
+  assert(material != NULL);
+  const VkrMaterialTexture emissive =
+      material->textures[VKR_TEXTURE_SLOT_EMISSION];
+  const VkrTextureHandle black =
+      vkr_texture_system_get_default_emissive_handle(&ctx->texture_system);
+  assert(emissive.enabled == true_v);
+  assert(emissive.handle.id == black.id);
+  assert(emissive.handle.generation == black.generation);
+
+  assert(ctx->material_system.texture_stream_count == stream_count_before + 1u);
+  const VkrMaterialTextureStream *stream =
+      &ctx->material_system.texture_streams[stream_count_before];
+  assert(stream->material.id == handle_info.as.material.id);
+  assert(stream->slot == VKR_TEXTURE_SLOT_EMISSION);
+  assert(stream->state == VKR_MATERIAL_TEXTURE_RESIDENCY_QUEUED);
+
+  material_pbr_test_unload_material(ctx, &handle_info, material_path);
+  assert(ctx->material_system.texture_stream_count == stream_count_before);
+  material_pbr_test_remove_file(material_path);
+
+  printf("  test_async_emissive_texture_uses_black_pending_fallback PASSED\n");
+}
+
 static void
 test_material_texture_stream_queue_is_bounded(MaterialPbrTestContext *ctx) {
   VkrMaterialSystem *system = &ctx->material_system;
@@ -885,13 +951,13 @@ test_material_texture_residency_evicts_to_budget(MaterialPbrTestContext *ctx) {
 
   VkrMaterial *loaded = vkr_material_system_get_by_handle(system, material);
   assert(loaded != NULL);
-  loaded->textures[VKR_TEXTURE_SLOT_DIFFUSE] = (VkrMaterialTexture){
+  loaded->textures[VKR_TEXTURE_SLOT_EMISSION] = (VkrMaterialTexture){
       .handle = texture,
-      .slot = VKR_TEXTURE_SLOT_DIFFUSE,
+      .slot = VKR_TEXTURE_SLOT_EMISSION,
       .enabled = true_v,
   };
   assert(vkr_material_system_stream_texture(system, material,
-                                            VKR_TEXTURE_SLOT_DIFFUSE,
+                                            VKR_TEXTURE_SLOT_EMISSION,
                                             "textures/evicted.vkt") == true_v);
   VkrMaterialTextureStream *stream =
       &system->texture_streams[system->texture_stream_count - 1u];
@@ -911,9 +977,13 @@ test_material_texture_residency_evicts_to_budget(MaterialPbrTestContext *ctx) {
   assert(system->texture_stream_resident_bytes == 0u);
   assert(system->texture_stream_evicted_count == 1u);
   assert(system->texture_stream_evicted_total >= 1u);
-  assert(
-      loaded->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle.id ==
-      vkr_texture_system_get_default_diffuse_handle(&ctx->texture_system).id);
+  const VkrMaterialTexture evicted =
+      loaded->textures[VKR_TEXTURE_SLOT_EMISSION];
+  const VkrTextureHandle black = vkr_texture_system_get_default_emissive_handle(
+      &ctx->texture_system);
+  assert(evicted.enabled == true_v);
+  assert(evicted.handle.id == black.id);
+  assert(evicted.handle.generation == black.generation);
 
   vkr_material_system_begin_texture_residency_frame(system);
   vkr_material_system_touch_texture_residency(system, material);
@@ -1165,6 +1235,7 @@ bool32_t run_material_pbr_tests(void) {
   test_material_texture_intent_query_normalization(&context);
   test_material_texture_intent_override_is_deterministic(&context);
   test_material_batch_load_honors_parsed_name_over_stem(&context);
+  test_async_emissive_texture_uses_black_pending_fallback(&context);
   test_material_texture_stream_queue_is_bounded(&context);
   test_material_texture_residency_evicts_to_budget(&context);
   test_shared_texture_eviction_tracks_unique_bytes(&context);

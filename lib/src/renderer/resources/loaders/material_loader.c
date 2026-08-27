@@ -1277,6 +1277,15 @@ vkr_internal bool8_t vkr_material_loader_finalize_async(
   dst->name = stable_name;
   dst->shader_name = stable_shader;
 
+  for (uint32_t i = 0; i < VKR_TEXTURE_SLOT_COUNT; ++i) {
+    const VkrMaterialAsyncDependency *dependency =
+        &async_payload->dependencies[i];
+    if (dependency->requested && dependency->resolved_path[0] != '\0') {
+      dst->textures[dependency->slot] =
+          vkr_material_system_get_default_texture(system, dependency->slot);
+    }
+  }
+
   VkrMaterialEntry new_entry = {
       .id = slot,
       .ref_count = 0,

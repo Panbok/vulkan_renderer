@@ -255,9 +255,11 @@ static void vkr_material_system_remove_texture_stream(VkrMaterialSystem *system,
           sizeof(system->texture_streams[last]));
 }
 
-static VkrMaterialTexture
-vkr_material_system_default_texture(VkrMaterialSystem *system,
-                                    VkrTextureSlot slot) {
+VkrMaterialTexture
+vkr_material_system_get_default_texture(VkrMaterialSystem *system,
+                                        VkrTextureSlot slot) {
+  assert_log(system != NULL, "Material system is NULL");
+  assert_log(system->texture_system != NULL, "Texture system is NULL");
   VkrMaterialTexture texture = {.slot = slot};
   switch (slot) {
   case VKR_TEXTURE_SLOT_DIFFUSE:
@@ -274,6 +276,11 @@ vkr_material_system_default_texture(VkrMaterialSystem *system,
   case VKR_TEXTURE_SLOT_SPECULAR:
     texture.handle =
         vkr_texture_system_get_default_specular_handle(system->texture_system);
+    texture.enabled = true_v;
+    break;
+  case VKR_TEXTURE_SLOT_EMISSION:
+    texture.handle =
+        vkr_texture_system_get_default_emissive_handle(system->texture_system);
     texture.enabled = true_v;
     break;
   default:
@@ -353,7 +360,7 @@ vkr_material_system_evict_texture_stream(VkrMaterialSystem *system,
   if (material &&
       !vkr_material_system_replace_stream_texture(
           system, stream,
-          vkr_material_system_default_texture(system, stream->slot))) {
+          vkr_material_system_get_default_texture(system, stream->slot))) {
     return false_v;
   }
   const bool8_t last_resident_user =

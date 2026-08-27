@@ -181,6 +181,11 @@ void vkr_material_system_set_texture_residency_budget(VkrMaterialSystem *system,
 void vkr_material_system_set_automatic_texture_residency_budget(
     VkrMaterialSystem *system, uint64_t budget_bytes);
 
+/** Returns the neutral fallback representation for one texture slot. */
+VkrMaterialTexture
+vkr_material_system_get_default_texture(VkrMaterialSystem *system,
+                                        VkrTextureSlot slot);
+
 // =============================================================================
 // Material Management
 // =============================================================================
