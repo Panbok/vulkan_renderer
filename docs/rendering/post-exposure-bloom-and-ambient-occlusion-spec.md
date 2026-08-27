@@ -5,11 +5,11 @@ authority: design
 ---
 # Automatic exposure, bloom, and ambient occlusion
 
-**Document status:** Partial. Automatic-exposure phases E0-E3 and bloom phases
-B0-B1 have production Metal and Vulkan implementations. Metal runtime,
-capture, timing, and validation evidence passes for both features; native
-Vulkan runtime validation remains pending. GTAO has no production
-implementation. The architecture specification remains the status authority.
+**Document status:** Implemented through automatic-exposure phases E0-E3, bloom
+phases B0-B1, and GTAO phases G0-G2 on Metal and Vulkan. Metal runtime,
+capture, timing, and validation evidence passes for all three features; native
+Vulkan runtime validation remains pending. The architecture specification
+remains the status authority.
 
 **Scope:** Three separate renderer features. They share HDR and deferred inputs,
 but each adds graph resources and passes and each must land with its own
@@ -41,6 +41,15 @@ it; deterministic harness cases default it off unless explicitly authored.
 Material occlusion is stored in `gbuffer_albedo.a` and affects indirect diffuse
 plus the existing specular-occlusion approximation. Direct analytic lighting
 is not occluded by that term.
+
+GTAO ships as a packet-controlled, full-resolution ambient-visibility path on
+Metal and Vulkan. Production initialization enables it; deterministic harness
+cases default it off unless they explicitly author enable, radius, and power.
+Its dedicated current-frame view-depth pyramid, raw visibility, edge data, and
+denoised visibility are graph resources. Deferred lighting multiplies only
+indirect diffuse by the final GTAO visibility. Material occlusion continues to
+own the existing specular-occlusion approximation, and direct analytic lighting
+is unchanged.
 
 ## 3. Automatic exposure
 
@@ -333,6 +342,56 @@ can over-darken contact regions.
 If specular occlusion needs GTAO, add it as a later isolated mode with a visible
 debug channel and a reference comparison.
 
+### 5.5 Implemented GTAO path
+
+Packet version 22 adds `gtao_enabled`, `gtao_radius`, and `gtao_power`. The
+frontend validates enabled controls at the cold packet boundary: radius must be
+finite and within `[0.0001, 10000]`, and power must be finite and positive. It
+derives one `VkrGtaoFrame` and preserves a zeroed packet as GTAO-disabled.
+Production initialization enables the XeGTAO-derived defaults, while
+`VKR_GTAO_DISABLED=1` is a cold forced bypass. Harness cases remain disabled by
+default and must author all three controls when enabling GTAO.
+
+`VkrGtaoConfig` fixes the first quality tier to five view-depth mips, three
+horizon slices, three steps per slice, full-resolution evaluation, and one
+edge-aware 3x3 denoise. Radius is `0.5`, power is `2.2`, radius multiplier is
+`1.457`, falloff range is `0.615`, sample distribution power is `2.0`, depth
+mip sampling offset is `3.3`, and denoise blur beta is `1.2`. Shared C and
+shader helpers pin exact reconstruction for canonical jittered perspective and
+orthographic projections, the depth-aware mip filter, edge packing, spatial
+noise, falloff, horizon integration, and final visibility. Positive R16 view
+distance clamps to the finite half-float ceiling `65504`.
+
+The authored graph creates full-resolution `gtao_view_depth` as `R16_SFLOAT`
+with a full image mip chain and uses at most its first five levels, plus
+full-resolution `gtao_raw`, `gtao_edges`, and `gtao_visibility` as `R8_UNORM`.
+`AO.PrefilterDepth` converts current normal-Z device depth to positive view
+distance. Ascending
+`AO.PrefilterDepth.${i}` repeats build each following AO-specific mip without
+reading `hzb_history`. `AO.Evaluate` rotates the current G-buffer world normal
+into view space and writes raw visibility and packed directional edges.
+`AO.Denoise` writes the final single-channel visibility. Odd extents clamp
+source coordinates at every mip and dispatch boundary.
+
+Metal and Vulkan cold-create all four mandatory compute pipelines and validate
+the same 192-byte parameter ABI. Metal binds graph mip views through GPU
+resource IDs; Vulkan binds the corresponding sampled/storage indices and
+device-address root. Both deferred-lighting variants receive a conditional
+sampled input at binding 7. Disabled frames bind a cold-created 1x1 white Metal
+texture or the Vulkan sampled-image sentinel, so the shader contains no feature
+branch.
+The sample occurs only after diagnostic and background early returns. The
+result multiplies `material_ao * gtao_visibility` for indirect diffuse only;
+direct punctual/directional terms and the material-only specular-occlusion
+approximation remain unchanged.
+
+Direct captures expose `gtao_view_depth`, `gbuffer_normal`, `gtao_raw`, and
+`gtao_visibility`; `final_color` remains the post-tonemap result. R16 depth
+canonicalizes to `R32_FLOAT_LE`; R8 visibility canonicalizes to grayscale
+`RGBA8_UNORM_PNG`, including padded source-row handling. Bent normals,
+multi-bounce compensation, temporal accumulation, GI, half-resolution
+evaluation, and GTAO-driven specular occlusion remain outside G0-G2.
+
 ## 6. Phases
 
 | Phase | Work | Gate |
@@ -343,9 +402,9 @@ debug channel and a reference comparison.
 | E3 | Tonemap and capture integration | **Implemented.** Fullscreen and editor tonemap consume current GPU state, canonical capture records the completed multiplier, and manual output remains unchanged |
 | B0 | Bloom resource and repeat topology | **Implemented.** Odd extents, bounded mip counts, reverse upsample ordering, and the read-after-write subresource barrier are pinned by CPU graph tests |
 | B1 | Threshold, downsample, upsample, combine, debug captures | **Implemented.** Shared sanitizer/soft-knee references, separate chains, full-resolution combine, four direct HDR/bloom channels, Release execution, and focused Metal validation pass |
-| G0 | Current view-space depth pyramid and normal conversion | Depth/normal debug captures agree with reconstructed geometry |
-| G1 | GTAO evaluation and spatial denoise | Full-resolution reference passes motion and thin-occluder clips |
-| G2 | Indirect-diffuse integration | No direct-light attenuation or unintended specular double-darkening |
+| G0 | Current view-space depth pyramid and normal conversion | **Implemented.** Shared reconstruction/mip references, odd-extent graph tests, R16 depth capture, and current G-buffer-normal capture pass; no HZB history is sampled |
+| G1 | GTAO evaluation and spatial denoise | **Implemented.** Full-resolution 3-slice × 3-step evaluation and one edge-aware 3x3 denoise pass produce nondegenerate R8 captures; keyframed motion over 0.22-unit-thick geometry retains thin silhouettes |
+| G2 | Indirect-diffuse integration | **Implemented.** Both deferred shaders consume a branchless white fallback and multiply only indirect diffuse; direct analytic and material-only specular-occlusion terms are unchanged |
 
 Run and report E, B, and G as separate matched Release comparisons. A combined
 profile cannot attribute cost.
@@ -427,6 +486,54 @@ accepted baseline or a cross-device performance result:
 Native Vulkan validation, an authoritative matched bloom-on/off Release
 comparison, and explicit owner acceptance of any final-color baseline remain
 open. No cost or quality ranking is inferred from the local observations.
+
+### 7.3 GTAO implementation evidence
+
+Local Apple M1 Pro evidence from 2026-08-27 is implementation evidence, not an
+accepted baseline or a cross-device performance result:
+
+- the GTAO defaults, normalization, mip derivation, bounded-radius derivation,
+  jittered-perspective and orthographic projection round trips, R16 clamp,
+  depth filter, noise/192-byte ABI, packet validation, graph repeat/80-pass
+  capacity, capture conversion, harness fingerprint/replay, and summary v2-v4
+  compatibility tests pass;
+- `./build_test.sh` reaches and passes the GTAO, harness, render-graph, and
+  Vulkan contract suites, then stops at the pre-existing cooked-mesh tangent
+  assertion in `mesh_cooked_tests.c:166`;
+- two isolated-cold 801x601 Release snapshots produce identical canonical
+  payload digests for `gtao_view_depth`, `gbuffer_normal`, `gtao_raw`,
+  `gtao_visibility`, and `final_color`. View depth is finite over
+  `7.875-100`; raw visibility spans byte values `153-255` with 103 distinct
+  values, and denoised visibility spans `159-255` with 97 distinct values.
+  Report digests are
+  `sha256:05e70839c580663195038c71cd548e84ccf90dc387e5031c2b990cce7f1ebe8d`
+  and
+  `sha256:33dc268a27416052697855567af24f3a94bc9559e4218c248485470642633a50`;
+- a keyframed Release case captures distinct current depth, normals, raw AO,
+  and denoised visibility at both ends of camera motion over 0.22-unit-thick
+  geometry. Raw and denoised visibility span `8-255` at both checkpoints, and
+  visual inspection retains the thin silhouettes without cross-edge blur.
+  Report digest:
+  `sha256:cc1301b87b1bcbb898639ff415aeb3d998e201b14734a33578864ab5426de956`;
+- one Release Metal timestamp observation supplies 16 valid samples for each
+  of the seven instantiated GTAO passes. The observed combined mean is
+  `0.260182 ms`; evaluate is `0.144932 ms` mean / `0.395917 ms` p95 and
+  denoise is `0.076188 ms` mean / `0.076958 ms` p95. This local dirty-tree
+  process proves execution and attribution only. Report digest:
+  `sha256:6ee1fdbd9d0b9f889b07fdf250e536e12de9672bfcc7bf49bb8d18a3e15d3e94`;
+  and
+- one strictly serial Debug hidden-window snapshot with Metal API and GPU shader
+  validation enabled completes all five captures. Its log confirms both
+  validation modes and contains no other diagnostic. Report digest:
+  `sha256:5ddc90bab54a41d4519ded88afb8ea5eda71d548e8b2d34235325da0f0241478`.
+
+The Release isolated-cold snapshots cover mandatory pipeline creation. Two
+final isolated-warm attempts complete both startup children, but their
+aggregates are rejected for unrelated nondeterministic work-volume rows and
+are not counted as passed gates. Native Vulkan validation, an authoritative
+matched GTAO-on/off Release comparison, and explicit owner acceptance of any
+final-color baseline remain open. No cost or quality ranking is inferred from
+the local observations.
 
 ## 8. Primary references
 

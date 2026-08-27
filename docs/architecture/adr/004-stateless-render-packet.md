@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-24
+updated: 2026-08-27
 authority: adr
 ---
 # ADR-004: Versioned Render-Packet Submission
@@ -21,9 +21,9 @@ requested work.
 ## Decision
 
 Submit optional typed pass payloads through one versioned `VkrRenderPacket`.
-Packet version 18 includes frame data, globals, world/shadow/skybox/UI/editor/
-picking payloads, text updates, debug controls, and candidate publication
-generations.
+Packet version 22 includes frame data, exposure, bloom, and GTAO globals,
+world/shadow/skybox/UI/editor/picking payloads, text updates, debug controls,
+and candidate publication generations.
 
 Implemented contract:
 
@@ -32,7 +32,7 @@ Implemented contract:
   structured `VkrValidationError` field path;
 - packet memory is caller-owned and must remain valid until submit returns;
 - draw items use renderer handles and instance ranges rather than Vulkan state;
-- pass executors obtain typed payloads through the graph context.
+- pass executors obtain typed payloads through the graph context;
 - world candidates are one borrowed static-first array with nonzero
   static/dynamic/publication generations; selected implementations lower it into
   completion-protected per-slot candidate/instance buffers;

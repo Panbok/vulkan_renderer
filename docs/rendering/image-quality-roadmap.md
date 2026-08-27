@@ -7,8 +7,8 @@ authority: design
 # Image quality roadmap
 
 **Document status:** Active roadmap. Presentation, portable same-resolution
-TAA, automatic exposure, and bloom ship; the architecture status specification
-remains the authority.
+TAA, automatic exposure, bloom, and GTAO G0-G2 ship; the architecture status
+specification remains the authority.
 
 **Scope:** Rendering work that changes displayed image quality, plus the D3D12
 evaluation that is intentionally kept out of the image-quality argument.
@@ -33,12 +33,13 @@ design remains a separate proposal with no production sample-count path.
 
 Next image-quality work should close inputs that still lack an authored signal:
 deformation and procedural vertex motion, particles, and dynamic material
-changes. Automatic exposure phases E0-E3 and bloom phases B0-B1 now ship.
-Bloom remains scene-linear and post-temporal: exposure meters the pre-bloom
-source, and the combined HDR result is exposed before tonemapping. Deterministic
-cases still default exposure to manual and bloom to disabled unless explicitly
-testing either feature. Any future pre-exposure domain must rescale or reset
-history explicitly.
+changes. Automatic exposure phases E0-E3, bloom phases B0-B1, and GTAO phases
+G0-G2 now ship. Bloom remains scene-linear and post-temporal: exposure meters
+the pre-bloom source, and the combined HDR result is exposed before
+tonemapping. GTAO uses a dedicated current-frame view-depth pyramid and
+attenuates indirect diffuse only. Deterministic cases still default exposure to
+manual and bloom and GTAO to disabled unless explicitly testing the feature.
+Any future pre-exposure domain must rescale or reset history explicitly.
 
 FSR frame generation is not part of this roadmap.
 
@@ -51,7 +52,7 @@ FSR frame generation is not part of this roadmap.
 | 3 | Temporal-input foundation | [Visibility-buffer anti-aliasing evaluation](visibility-buffer-msaa-spec.md) | Implemented for rigid opaque, transmission, and ordinary-blend geometry: jitter, own-surface motion, exact identity, authored material reactivity, reset rules, completion-safe history, and debug views ship. Deformation, procedural motion, particles, and dynamic material-change signals remain open. |
 | 4 | Automatic exposure | [Post, exposure, bloom, and ambient occlusion](post-exposure-bloom-and-ambient-occlusion-spec.md) | Implemented through E3. Packet version 20 carries mode, manual fallback, and EV compensation; two graph passes meter the post-temporal HDR source into a 256-bin histogram and resolve percentile-clipped, completion-safe adaptation. Fullscreen/editor tonemap consume current GPU state directly, delayed diagnostics expose the histogram, scalar metrics expose the EV decision, and canonical capture records the completed multiplier. Production initialization selects automatic exposure; manual remains the byte-identical path and the deterministic harness default. Metal runtime and validation evidence passes; native Vulkan validation remains pending. Exposure stays post-temporal; any future pre-exposure domain must rescale or reset history. |
 | 5 | Portable same-resolution TAA and post-TAA FXAA | [ADR-037](../architecture/adr/037-portable-same-resolution-temporal-antialiasing.md) | Implemented and validation-clean on Metal and Vulkan without an additional graph pass or full-resolution resource for transparent inputs. Broader motion fixtures, deformation/procedural/particle inputs, and final-color owner acceptance remain open. MSAA is not part of this slice. |
-| 6 | Bloom, then GTAO | [Post, exposure, bloom, and ambient occlusion](post-exposure-bloom-and-ambient-occlusion-spec.md) | Bloom B0-B1 implemented on Metal and Vulkan: bounded odd-extent mip chains, reverse upsample dependencies, shared filtering arithmetic, scene-linear combine, and direct debug captures ship. Metal runtime, timing, and validation evidence passes; native Vulkan validation and authoritative matched performance remain open. GTAO is next and needs its own current-frame depth pyramid. |
+| 6 | Bloom, then GTAO | [Post, exposure, bloom, and ambient occlusion](post-exposure-bloom-and-ambient-occlusion-spec.md) | Implemented through Bloom B0-B1 and GTAO G0-G2 on Metal and Vulkan. Bloom uses bounded odd-extent downsample/reverse-upsample chains and scene-linear pre-exposure combine. GTAO uses a dedicated current-frame R16 view-depth pyramid, full-resolution three-slice, three-step horizon evaluation, edge-aware denoise, branchless white fallback, and indirect-diffuse-only lighting. Direct captures expose both pipelines. Metal Release runtime/timing and focused API/GPU validation pass; native Vulkan validation, authoritative matched performance, and final-color owner acceptance remain open. |
 | 7 | D3D12 | [D3D12 backend evaluation](../architecture/d3d12-backend-evaluation.md) | Do not schedule for image quality. Revisit only for a concrete delivery, tooling, CI, or driver requirement. |
 
 Windows DPI and output transfer landed independently. A DPI change affects
@@ -88,8 +89,8 @@ until explicit owner review.
 
 ### 3.3 Portable same-resolution TAA ships
 
-Packet version 21 carries renderer-owned temporal identity, camera state,
-the versioned exposure contract, and bloom controls.
+Packet version 22 carries renderer-owned temporal identity, camera state,
+the versioned exposure contract, bloom controls, and GTAO controls.
 `vkr_temporal_prepare()` derives the Halton jitter, jittered projection,
 current output-grid view-projection, reset reasons, and history-valid flag at
 the frontend boundary. Stable mesh and instance slots provide temporal indices
@@ -173,6 +174,36 @@ a strictly serial Metal API/GPU shader-validation profile pass. Native Vulkan
 validation, authoritative matched bloom-on/off performance, and owner acceptance
 of any changed final-color baseline remain open; no performance ranking is
 claimed.
+
+### 3.6 Full-resolution GTAO ships
+
+Packet version 22 carries explicit enable, radius, and power controls.
+Production enables the XeGTAO-derived defaults while deterministic harness
+cases remain disabled unless they author every control;
+`VKR_GTAO_DISABLED=1` is a cold forced bypass.
+
+Both backends realize the same authored current-frame graph slice before
+deferred lighting: one full-resolution `R16_SFLOAT` positive view-depth image
+whose first five levels are AO inputs, one full-resolution horizon-evaluation
+pass writing `R8_UNORM` raw visibility and directional edges, and one
+edge-aware 3x3 denoise writing the final `R8_UNORM` visibility. Evaluation uses
+three slices and three steps per slice. It rotates the current G-buffer world
+normal into view space and never samples the completion-delayed HZB.
+
+Deferred lighting receives a white fallback when GTAO is disabled, so the
+shader contains no feature branch. GTAO multiplies only indirect diffuse after
+material AO. Direct analytic light and the existing material-only
+specular-occlusion approximation remain unchanged. Direct captures expose view
+depth, G-buffer normal, raw AO, denoised visibility, and final color.
+
+Focused CPU/graph/harness tests, two byte-identical isolated-cold Release
+snapshots, a keyframed thin-occluder snapshot, per-pass Metal timing
+attribution, and one strictly serial Metal API/GPU shader-validation snapshot
+pass. Two final isolated-warm children also complete startup, but their
+aggregate is rejected for unrelated work-volume mismatch and is not counted as
+a passed gate. Native Vulkan validation, an authoritative matched GTAO-on/off
+profile, and owner acceptance of any final-color baseline remain open; no
+performance ranking is claimed.
 
 ## 4. AA direction
 
