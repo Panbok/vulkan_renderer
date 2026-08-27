@@ -76,6 +76,7 @@ typedef struct VkrTextureSystem {
   VkrTextureHandle default_diffuse_texture;  // white diffuse fallback
   VkrTextureHandle default_normal_texture;   // flat normal fallback
   VkrTextureHandle default_specular_texture; // flat specular fallback
+  VkrTextureHandle default_emissive_texture; // black emissive fallback
 
   VkrJobSystem *job_system;                      // For async texture loading
   struct VkrTextureCacheWriteGuard *cache_guard; // Internal cache write guard
@@ -342,6 +343,15 @@ vkr_texture_system_get_default_normal_handle(VkrTextureSystem *system);
  */
 VkrTextureHandle
 vkr_texture_system_get_default_specular_handle(VkrTextureSystem *system);
+
+/**
+ * @brief Gets a handle to the default black emissive map.
+ *
+ * Used while an authored emissive map is unavailable so its factor does not
+ * illuminate the entire material surface.
+ */
+VkrTextureHandle
+vkr_texture_system_get_default_emissive_handle(VkrTextureSystem *system);
 
 // =============================================================================
 // Helpers (used by loaders with direct system access)
