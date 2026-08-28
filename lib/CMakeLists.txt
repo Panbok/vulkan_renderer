@@ -138,6 +138,11 @@ set(KTX_FEATURE_VK_UPLOAD OFF CACHE BOOL "Disable KTX Vulkan upload path in rend
 set(_VKR_BUILD_SHARED_LIBS_PREV "${BUILD_SHARED_LIBS}")
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build KTX dependencies statically." FORCE)
 add_subdirectory("${VKR_KTX_SOFTWARE_DIR}" "${CMAKE_BINARY_DIR}/vendor/ktx-software" EXCLUDE_FROM_ALL)
+if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    # Clang can select MSVC STL vector-algorithm helpers newer than the
+    # installed runtime import library. Keep vendored BasisU self-contained.
+    target_compile_definitions(ktx PRIVATE _USE_STD_VECTOR_ALGORITHMS=0)
+endif()
 set(BUILD_SHARED_LIBS "${_VKR_BUILD_SHARED_LIBS_PREV}" CACHE BOOL "Restore shared library default after KTX setup." FORCE)
 
 # meshoptimizer geometry codecs and offline range optimization.
