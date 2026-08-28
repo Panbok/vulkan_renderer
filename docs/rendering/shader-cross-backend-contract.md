@@ -1,16 +1,17 @@
 ---
 status: partial
-updated: 2026-08-28
+updated: 2026-08-29
 authority: design
 ---
 
 # Shader cross-backend contract
 
-**Reviewed parity state: ALIGNED.** Every entry in this initial ledger has a
-Metal and a Vulkan production source, a host or reflection witness where an ABI
-is involved, and runtime evidence from both backends. Shader contracts not
-listed here are **unreviewed**, not implicitly aligned. The document is
-`partial` because this is deliberately not a complete shader inventory.
+**Reviewed parity state: UNALIGNED.** The ledger accounts for every source under
+`shaders/shared/` and `shaders/vulkan/` as of 2026-08-29. The original normal,
+exposure, bloom, and GTAO contracts remain aligned. The newly inventoried
+contracts are unaligned where production sources differ or where ABI and
+matched native runtime evidence are incomplete. The document remains `partial`
+until those gates close.
 
 This is the durable record of values that must agree across VKR's selected
 backends. Code remains implementation authority. When code and this document
@@ -54,12 +55,52 @@ changing an acceptance envelope requires new evidence and owner review.
 | Automatic exposure | `shaders/shared/exposure_kernel.slangh` | `metal/msl/post/exposure.metal` | `vulkan/slang/post/exposure.slang` | **ALIGNED** |
 | Bloom | `shaders/shared/exposure_kernel.slangh`, then `shaders/shared/bloom_kernel.slangh` | `metal/msl/post/bloom.metal` | `vulkan/slang/post/bloom.slang` | **ALIGNED** |
 | GTAO | `shaders/shared/gtao_kernel.slangh` | `metal/msl/post/gtao.metal` | `vulkan/slang/post/gtao.slang` | **ALIGNED** |
+| Packed geometry and GPU draw compaction | `shaders/shared/gpu_draw.slangh` for both Slang libraries | Native deferred/ICB path mirrors the records and decode in `metal/msl/common/draw.metalh` and compacts in `metal/msl/world/gpu_draws.metal` | `vulkan/slang/common/resources.slangh`, `common/vertex.slangh`, and `world/deferred.slang` | **UNALIGNED**: overflow policy differs and the native MSL mirror is not shared source |
+| Cascaded-shadow receiver | `shaders/shared/shadow_kernel.slangh` | `metal/msl/shadow/sampling.metalh`, used by forward and deferred paths | `vulkan/slang/world/default.slang`, reused by `world/deferred.slang` | **UNALIGNED**: sources agree, but the current matched native snapshot gate is missing |
+| IBL baking and sampling | None | `metal/msl/ibl/*.metal*`, `metal/msl/world/lighting.metalh` | `vulkan/slang/ibl/*.slang*`, `vulkan/slang/world/default.slang` | **UNALIGNED**: no direct bake-output snapshot pair or compiled-root reflection pair |
+| Visibility, deferred resolve, lighting, temporal resolve, transmission, and picking | Packed rows and normal decode above | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang`, `vulkan/slang/picking/default.slang` | **UNALIGNED**: source parity is broad, but draw overflow differs and matched runtime/ABI gates remain open |
+| Tonemap and FXAA | Exposure state above | `metal/msl/post/tonemap.metal` | `vulkan/slang/post/default.slang`, `post/tonemap.slangh` | **UNALIGNED**: the tonemap-disabled path differs |
+| Text color and picking | None | `metal/msl/text/default.metal` | `vulkan/slang/text/default.slang` | **UNALIGNED**: sources agree semantically, but no matched native snapshot pair is recorded |
 
 Paths in this document are relative to `lib/src/renderer/`. Vulkan includes the
 shared headers through Slang. The Metal library concatenates the same headers
-before its native MSL sources.
+before its native MSL sources. `gpu_draw.slangh` is the exception: it is
+compiled into the Metal Slang library, while the native Metal deferred library
+keeps a second MSL definition and decode. That mirror is a parity obligation,
+not shared ownership.
 
-## 3. Verified shader data layouts
+### 2.1 Requested source inventory
+
+This table makes the audit boundary explicit. An aggregation or declaration
+file is covered by the contract sections that consume it; it is not a separate
+algorithm.
+
+| Source | Contract recorded here |
+| --- | --- |
+| `shaders/shared/README.md` | Shared-source ownership and the native-MSL GPU-row exception in section 2 |
+| `shaders/shared/normal_map_kernel.slangh` | Normal decode in section 4.1 |
+| `shaders/shared/exposure_kernel.slangh` | Exposure in section 4.2 |
+| `shaders/shared/bloom_kernel.slangh` | Bloom in section 4.3 |
+| `shaders/shared/gtao_kernel.slangh` | GTAO in section 4.4 |
+| `shaders/shared/gpu_draw.slangh` | Packed geometry and draw rows in sections 3.3 and 4.5 |
+| `shaders/shared/shadow_kernel.slangh` | Progressive Poisson table in section 4.6 |
+| `shaders/vulkan/slang/library.slang` | Aggregates every Vulkan source below plus the shared headers |
+| `shaders/vulkan/slang/common/resources.slangh` | Bindless resource topology and packet/GPU records in section 3.3 |
+| `shaders/vulkan/slang/common/vertex.slangh` | Packed/static vertex fetch in section 4.5 |
+| `shaders/vulkan/slang/common/fullscreen.slang` | Fullscreen triangle in section 4.9 |
+| `shaders/vulkan/slang/ibl/common.slangh` | Hammersley, cube-face, and GGX helpers in section 4.7 |
+| `shaders/vulkan/slang/ibl/default.slang` | IBL bake kernels in section 4.7 |
+| `shaders/vulkan/slang/picking/default.slang` | Forward object-ID output in section 4.8 |
+| `shaders/vulkan/slang/post/exposure.slang` | Exposure dispatches in section 4.2 |
+| `shaders/vulkan/slang/post/bloom.slang` | Bloom dispatches in section 4.3 |
+| `shaders/vulkan/slang/post/gtao.slang` | GTAO dispatches in section 4.4 |
+| `shaders/vulkan/slang/post/tonemap.slangh` | ACES fit in section 4.9 |
+| `shaders/vulkan/slang/post/default.slang` | Exposure application, FXAA, and fullscreen output in section 4.9 |
+| `shaders/vulkan/slang/text/default.slang` | Bitmap/MTSDF text and text picking in section 4.10 |
+| `shaders/vulkan/slang/world/default.slang` | Forward PBR, shadows, IBL, and temporal blend in sections 4.6-4.8 |
+| `shaders/vulkan/slang/world/deferred.slang` | GPU draws, visibility, resolve, lighting, temporal, HZB/SDSM, transmission, and picking in sections 4.5-4.8 |
+
+## 3. Shader data layouts
 
 All offsets and sizes are bytes. `float` and `uint` below are 32-bit. The
 4-byte scalar sequences have no implicit vector padding. Native roots use
@@ -100,7 +141,50 @@ compile-time assertions in `vulkan/vkr_vulkan_internal.h`. Exposure and bloom
 parameter sizes are compile-time assertions in `vkr_exposure.h` and
 `vkr_bloom.h` and are exercised by both backend snapshots.
 
-## 4. Verified algorithms and values
+### 3.3 Packed rows and Vulkan roots — UNALIGNED
+
+The shared packed records have these host contracts:
+
+| Record | Size | Alignment | Important offsets |
+| --- | ---: | ---: | --- |
+| `VkrPackedStaticVertex` | 32 | 4 | `words[8]` at `0` |
+| `VkrGpuGeometryDecodeRecord` | 32 | 4 | position bias `0`, flags `12`, position scale `16` |
+| `VkrGpuGeometryRow` | 48 | 8 | vertex/index addresses `0/8`, first vertex/index `16/20`, layout `28`, generation `32`, decode address `40` |
+| `VkrGpuCandidateDrawRow` | 48 | 16 | geometry/material/instance `0/4/8`, index range `12/16`, vertex offset `20`, bucket/flags `24/28`, sphere `32` |
+| `VkrGpuVisibleDrawRow` | 32 | 4 | the first eight candidate fields at offsets `0..28` |
+
+`vkr_gpu_abi.c` validates every listed host offset. Vulkan pipeline creation
+reflects packed vertices, geometry rows, visible rows, the 144-byte material
+row, the 48-byte draw root, and selected fields plus the 480-byte extent of the
+frame root. It does not reflect the candidate row or every deferred compute
+root. Metal's native reflection covers its own roots, but the native deferred
+library declares the packed records independently of `gpu_draw.slangh`.
+
+All Vulkan shaders share a 16-byte push constant containing the root device
+address at `0`, material index at `8`, and flags at `12`. Sampled texture aliases
+share set 0 binding 0, sampler and comparison-sampler aliases share set 0
+binding 1, and storage-image aliases share set 1 binding 0. The host pins the
+following Vulkan root sizes, but only the packet and GTAO roots have the
+field-level SPIR-V reflection described above:
+
+| Root | Bytes | Root | Bytes |
+| --- | ---: | --- | ---: |
+| cull | 176 | raster | 48 |
+| temporal transform | 32 | G-buffer resolve | 352 |
+| temporal resolve | 128 | deferred lighting | 128 |
+| HZB | 48 | SDSM | 32 |
+| picking | 64 | transmission shade | 416 |
+| transmission coverage | 32 | IBL bake | 32 |
+| packet frame | 480 | packet draw | 48 |
+| packet utility | 544 |  |  |
+
+This contract is **UNALIGNED** until the native MSL duplicate is either derived
+from the shared declaration or guarded by equivalent field-level reflection,
+and the candidate and deferred roots receive compiled-shader witnesses on both
+backends. Existing static assertions prevent host-only size drift but do not
+prove the compiled layouts.
+
+## 4. Algorithms and values
 
 ### 4.1 Tangent-space normal decode — ALIGNED
 
@@ -175,6 +259,142 @@ mip filter, edge packing, Hilbert noise, sample distribution, falloff, horizon
 integration, final visibility, and diagonal denoise weight. GTAO multiplies
 indirect diffuse only.
 
+### 4.5 Packed vertices and GPU draw compaction — UNALIGNED
+
+The packed static vertex is eight 32-bit words. Position XYZ are UNORM16 values
+in words 0 and 1, with `position_bias + unorm * position_scale` reconstruction.
+The remaining high half of word 1 stores tangent sign bit 0. Normal and tangent
+are octahedral SNORM16 pairs in words 2 and 3; UV is two IEEE floats in words 4
+and 5; color is RGBA8 in word 6. Word 7 is reserved. Both implementations use
+the same fold-and-normalize octahedral decode and map tangent bit 0 to `-1`, or
+to `+1` when clear.
+
+GPU draw classification and encoding use `64x1` groups; the four-bucket prefix
+uses `1x1`. The cold packet boundary limits candidates and visible rows to
+262,144. The state buckets are opaque back-face culling, opaque double-sided,
+cutout back-face culling, and cutout double-sided.
+
+The overflow rule is not aligned:
+
+- Vulkan assigns each bucket a fixed 65,536-command quarter partition. Prefix
+  clamps each bucket independently, preserves the other buckets, and counts the
+  dropped rows.
+- Metal allows any four-bucket distribution whose total is at most 262,144. If
+  the total exceeds that capacity, it sets all four execution counts to zero;
+  the whole view is suppressed.
+
+This difference is invisible in ordinary under-capacity scenes. Closing it
+requires one common overflow rule and a fixture that covers both a single
+bucket above 65,536 with total work below 262,144 and total work above 262,144.
+The same fixture must assert emitted ranges, visible rows, indirect commands,
+and overflow counts on both native backends.
+
+### 4.6 Cascaded-shadow receiver — UNALIGNED
+
+Both production receivers compile the same 64-point progressive Poisson table.
+The supported packet tap counts are prefixes of 1, 4, 9, 16, or 32 points. The
+receiver rotates the prefix by a stable light-space texel-cell hash:
+`(uint(x) * 73856093) ^ (uint(y) * 19349663)`, reduced to 1,024 angles. The cell
+is `floor(origin_texels - uv * map_size)`; changing the subtraction to addition
+would make the pattern swim when a cascade re-anchors.
+
+Biases and radius are authored in texels. Normal offset moves the world-space
+receiver before projection. Constant plus slope bias is converted by the
+selected cascade's texel size and depth span before comparison. Every tap uses
+hardware comparison sampling. For 16 or more requested taps, the optional
+uniform-region path probes the first nine and evaluates the remainder only for
+a penumbra. Cascades cross-fade across the final configured fraction of their
+span and the last cascade fades to unshadowed across the configured distance
+range.
+
+The shared table and both receiver sources agree. The state remains
+**UNALIGNED** because the current shadow-debug snapshot does not contain a
+non-background receiver, and no same-case Release Metal/Vulkan comparison is
+recorded. The missing gate is a scene with visible lit, shadowed, penumbra,
+cascade-blend, and distance-fade regions, captured on both native backends for
+tap counts 1, 9, 16 with early-out on and off, and 32.
+
+### 4.7 IBL bake and sampling — UNALIGNED
+
+All bake kernels dispatch `8x8x6`. Equirectangular conversion uses the same
+cube-face orientation and longitude/latitude mapping. Diffuse irradiance uses a
+Hammersley cosine-hemisphere integral with 128 production samples. Specular
+prefilter uses 256 Hammersley GGX samples, PDF-derived sample solid angle, cube
+texel solid angle, and mip LOD; roughness at or below `0.001` forces mip 0.
+Forward and deferred lighting use the same analytic environment BRDF, local
+probe box projection and weighting, and global-probe remainder.
+
+The math agrees for the production nonzero sample counts. A cold-boundary
+precondition is material: a zero irradiance sample count produces one sample on
+Vulkan but zero on Metal. The host currently submits 128 and the prefilter
+count is 256 on both sides. The state remains **UNALIGNED** until the nonzero
+precondition is encoded identically, the Vulkan 32-byte bake root has compiled
+field-level reflection, and direct equirect, irradiance, and every prefilter-mip
+output has a matched Release snapshot pair.
+
+### 4.8 World, deferred, temporal, and picking paths — UNALIGNED
+
+The forward and deferred paths implement the same material model: GGX
+distribution and visibility, Schlick Fresnel with
+`F90 = saturate(max(F0) * 25)`, roughness clamped to `[0.04, 1]`, at most 128
+masked point lights, cascaded directional shadowing, local/global IBL, emissive,
+and the packet transmission controls. Normal decode is the aligned contract in
+section 4.1.
+
+The Vulkan visibility buffer stores `(visible_index + 1, primitive_id |
+front_face_bit)`, reserving bit 31 for front-facing state and bits 0-30 for the
+primitive. Metal stores `(visible_index + 1, primitive_id)` and reconstructs
+face sign from the homogeneous projected triangle orientation. These native
+representations are allowed to differ; the semantic contract is the same
+normal orientation and primitive identity at resolve. G-buffer resolve,
+deferred lighting, TAA, HZB, SDSM, picking, transmission shade, and transmission
+coverage dispatch `8x8`, except SDSM's wave reduction is still `8x8` and
+picking resolve is `1x1`. HZB stores the maximum of each clamped 2x2 footprint,
+and SDSM reduces occupied visibility pixels to min/max device depth and count.
+
+Temporal resolve matches source-for-source on these fixed values: history
+depth tolerance `0.005`, partial bilinear acceptance threshold `1e-5`, maximum
+derived reactivity `0.75`, luminance denominator floor `0.05`, stationary
+surface threshold `0.01` pixel, history retention `0.99` stationary or `0.9`
+moving, and motion attenuation over 128 pixels. Accepted history is clamped to
+the current 3x3 color neighborhood. Picking chooses the selected transmission
+layer when present, otherwise opaque visibility, then returns the instance
+object ID.
+
+The state remains **UNALIGNED** because the compaction mismatch in section 4.5
+feeds every downstream path, most compute roots lack bilateral compiled
+reflection, and no one same-case Release comparison currently spans visibility,
+G-buffer, lighting, temporal history, transmission, and picking on both native
+backends.
+
+### 4.9 Fullscreen output, ACES, and FXAA — UNALIGNED
+
+Both backends use a three-vertex fullscreen triangle. The ACES fit constants
+are `(2.51, 0.03, 2.43, 0.59, 0.14)`. FXAA uses square-root Rec. 709 luminance,
+edge threshold `max(0.0312, luma_max * 0.125)`, direction reduction factor
+`0.03125` with floor `0.0078125`, maximum span 8 pixels, and subpixel strength
+`0.75`. Those enabled paths agree.
+
+The tonemap-disabled path differs. Metal still multiplies by exposure, clamps
+negative values, and clamps the result to `[0, 1]`; Vulkan returns the sampled
+source RGB unchanged. This contract is **UNALIGNED** until one behavior is
+selected and a fixture captures tonemap on/off crossed with FXAA on/off on both
+backends.
+
+### 4.10 Text color and picking — UNALIGNED
+
+Bitmap text uses atlas alpha. MTSDF text uses the median of RGB minus `0.5`,
+then derivative width `max(fwidth(distance), 1e-6)` and a saturated `+0.5`
+coverage reconstruction. Color output preserves glyph RGB and multiplies glyph
+alpha by coverage. Picking discards coverage at or below `0.01` and otherwise
+returns the draw object ID. Screen-space clip conversion differs in Y between
+the native APIs to produce the same top-left UI convention.
+
+The audited sources agree, and the Vulkan text fixture visibly exercises
+system, bitmap, and MTSDF text plus picking. The state remains **UNALIGNED**
+until the same fixture is captured on Metal and compared with a documented
+color and coverage envelope.
+
 ## 5. Cross-backend runtime witnesses
 
 All rows are Release snapshots with validation layers disabled. These are
@@ -198,6 +418,34 @@ pin the shared math. `build_test.bat` passed on Windows after the fixes recorded
 above. The authoritative evidence chain and reproduction context remain in
 [Windows Vulkan post-effect parity investigation](windows-vulkan-post-effect-parity-investigation.md)
 and [Post-exposure, bloom, and ambient-occlusion spec](post-exposure-bloom-and-ambient-occlusion-spec.md).
+
+### 5.1 2026-08-29 Vulkan audit snapshots
+
+These one-sided checks used the Release Windows Vulkan binary on an AMD Radeon
+RX 6700 XT with driver 26.6.3, Clang 20.1.0, and validation layers disabled.
+The source revision was `2596af4f876942347ed5d776b0aa56dbf475e597`; the
+binary digest was
+`sha256:a60aa03a595a0c6a39464c5c5f5af1128bfb82787213ef95eabaff7c5faccd49`.
+
+| Case and configuration | Report digest | What the snapshot establishes |
+| --- | --- | --- |
+| `local.p20.vulkan.state_matrix`, 640x480 offscreen deferred, frames 32-36 | `sha256:cc57039d55793d75aca538f2a36ea986f54cb5c4fb6c368b1e6446094c71afd6` | Pass; the colored state-matrix geometry is visible. Thirteen distinct captures cover final/scene color, opaque and transmission visibility IDs/primitives, diffuse/specular/normal/emissive G-buffer data, barycentric LOD, depth, and picking. |
+| `smoke.sponza.snapshot_debug`, 160x120 hidden-window deferred, frame 1 | `sha256:2efcfe34fd44e54bca6d10ee864f2325a1003ce946af4656970e61f34635e600` | Harness pass and six captures, but visual inspection found only sky/background in the shadow debug views. It does not prove receiver, cascade, or PCF execution. |
+| `smoke.text.rendering.snapshot`, 960x540 offscreen automation, frame 1 | `sha256:1d3c6170b3db32f07d57e89ba0cdd221eaa7f6aee0572202d92547b1483c87e9` | Pass; visible system, bitmap, and MTSDF text are non-degenerate. Final color is `sha256:a24fdcef033d033d9f5c9540f4fb57c32a6805fdbe6cd48a6e69305dab0bd952`; picking IDs are `sha256:ebc8eb20d2027f9145306c2a6e0621dec642f5bd93d02efc725e06ef4262472b`. |
+
+All three reports are explicitly non-authoritative because the selected
+profiles are local-only and no baseline was supplied. The state-matrix report's
+metric assertions are `incomplete`, not passed measurements. These reports are
+therefore Vulkan execution witnesses only; they do not advance any newly
+inventoried contract to **ALIGNED**.
+
+Reproduction commands:
+
+```sh
+build_release/tools/vkr_harness snapshot --case tools/cases/local/p20_vulkan_state_matrix.case.json --profile tools/profiles/local-offscreen.json
+build_release/tools/vkr_harness snapshot --case tools/cases/smoke/sponza_snapshot_debug.case.json --profile tools/profiles/local-windowed.json
+build_release/tools/vkr_harness snapshot --case tools/cases/smoke/text_rendering_snapshot.case.json --profile tools/profiles/local-offscreen.json
+```
 
 ## 6. Maintenance rule
 
