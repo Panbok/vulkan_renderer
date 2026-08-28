@@ -1109,8 +1109,9 @@ typedef struct VkrRendererUploadWaitStats {
  * than committed memory when resources share pooled blocks. Owners are never
  * inferred from memory types.
  *
- * `heap_usage_bytes`/`heap_budget_bytes` are populated only when the backend
- * can query driver residency data; `heap_usage_valid` reports availability.
+ * Heap size is physical capacity, usage is occupied placement or residency,
+ * and budget is the backend's pressure ceiling. `heap_usage_valid` reports
+ * whether usage and budget are available and comparable.
  */
 typedef struct VkrDeviceMemoryStats {
   uint64_t live_allocation_count;

@@ -1618,13 +1618,12 @@ renderer_impl_metal_device_memory_stats(void *state,
   }
   if (metrics.suballocations.free_bytes > metrics.suballocations.heap_size)
     return false_v;
-  const uint64_t placement_budget = metrics.suballocations.heap_size;
+  const uint64_t placement_capacity = metrics.suballocations.heap_size;
   const uint64_t driver_budget = metrics.driver_recommended_working_set_size;
   const uint64_t effective_budget =
-      vkr_metal_memory_effective_budget(placement_budget, driver_budget);
-  const uint64_t effective_free = vkr_metal_memory_effective_free_bytes(
-      metrics.suballocations.free_bytes, metrics.driver_current_allocated_size,
-      driver_budget);
+      vkr_metal_memory_effective_budget(placement_capacity, driver_budget);
+  const uint64_t placement_usage =
+      placement_capacity - metrics.suballocations.free_bytes;
   out_stats->live_allocation_count = metrics.native_heap_size > 0 ? 1u : 0u;
   out_stats->peak_allocation_count = out_stats->live_allocation_count;
   out_stats->total_allocation_count = out_stats->live_allocation_count;
@@ -1637,9 +1636,8 @@ renderer_impl_metal_device_memory_stats(void *state,
   out_stats->live_count_by_type[0] = out_stats->live_allocation_count;
   out_stats->heap_index_by_type[0] = 0;
   out_stats->heap_count = 1;
-  out_stats->heap_size_bytes[0] = placement_budget;
-  out_stats->heap_usage_bytes[0] =
-      effective_budget - Min(effective_free, effective_budget);
+  out_stats->heap_size_bytes[0] = placement_capacity;
+  out_stats->heap_usage_bytes[0] = placement_usage;
   out_stats->heap_budget_bytes[0] = effective_budget;
   out_stats->pending_texture_upload_bytes =
       metrics.pending_texture_upload_bytes;

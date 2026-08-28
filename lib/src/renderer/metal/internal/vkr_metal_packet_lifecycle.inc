@@ -450,11 +450,11 @@ vkr_internal bool8_t vkr_metal_packet_texture_upload_available_adapter(
       metrics.suballocations.free_bytes > metrics.suballocations.heap_size) {
     return false_v;
   }
-  const uint64_t placement_budget = metrics.suballocations.heap_size;
+  const uint64_t placement_capacity = metrics.suballocations.heap_size;
   const uint64_t budget = vkr_metal_memory_effective_budget(
-      placement_budget, metrics.driver_recommended_working_set_size);
+      placement_capacity, metrics.driver_recommended_working_set_size);
   const uint64_t effective_free = vkr_metal_memory_effective_free_bytes(
-      metrics.suballocations.free_bytes, metrics.driver_current_allocated_size,
+      placement_capacity, metrics.suballocations.free_bytes,
       metrics.driver_recommended_working_set_size);
   VkrMetalMemoryMetrics effective = metrics.suballocations;
   effective.heap_size = budget;

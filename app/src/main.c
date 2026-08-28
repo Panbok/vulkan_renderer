@@ -520,9 +520,8 @@ vkr_internal void application_log_device_memory_stats(Application *application,
                application_bytes_to_mb(stats.heap_usage_bytes[i]),
                application_bytes_to_mb(stats.heap_budget_bytes[i]));
     } else {
-      log_info("GPU_MEM   heap=%u size=%.3fMB (usage unavailable: no "
-               "VK_EXT_memory_budget)",
-               i, application_bytes_to_mb(stats.heap_size_bytes[i]));
+      log_info("GPU_MEM   heap=%u size=%.3fMB (usage unavailable)", i,
+               application_bytes_to_mb(stats.heap_size_bytes[i]));
     }
   }
 }
