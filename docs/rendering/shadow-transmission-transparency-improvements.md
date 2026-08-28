@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-21
+updated: 2026-08-28
 authority: design
 ---
 
@@ -263,9 +263,11 @@ being rewritten to ordinary alpha blend.
 - A thin-surface fallback with `kTransmissionThinSurfaceMinAlpha = 0.35` for
   materials with no volume extension.
 
-The shipped shader follows this model: exit-point reprojection, roughness LOD,
-Beer-Lambert attenuation, and a thin-surface fallback are confined to the
-dedicated transmission pass.
+This remains the quality target, not the shipped model. The current shader has
+Beer-Lambert attenuation but still uses a fixed screen-UV offset, LOD 0, and no
+minimum-opacity thin-surface policy. It also has material-input, lobe-partition,
+and backend-parity defects. The source audit and implementation gates are in
+[transmission-shading-correctness-spec.md](transmission-shading-correctness-spec.md).
 
 ### 2.2 The feedback-copy strategy, and its cost
 
