@@ -1,21 +1,20 @@
 ---
-status: partial
+status: investigation
 updated: 2026-08-28
 authority: investigation
 ---
 
 # Windows Vulkan post-effect parity investigation
 
-**Conclusion.** The reported Windows/Vulkan image regression had two independent
-backend defects. The black ground and crushed indirect lighting came from the
-**tangent-space normal-map decode**: every shader read
-`normal_texture.xyz * 2 - 1` and took
-the sampled blue channel as tangent-space Z. The `VKR_TEXTURE_CLASS_NORMAL_RG`
-transcode ladder in `vkr_texture_select_transcode_target_format()` selects
-**BC5** on a discrete GPU and **ASTC 4x4** on an Apple-class device. BC5 is a
-two-channel format, so Vulkan samples return `b = 0` and the decode yields
-`z = -1` — the shading normal is pushed through the surface. ASTC is
-four-channel, so Apple keeps the authored Z and the same code is correct there.
+**Conclusion.** The reported Windows/Vulkan image regression had three defects.
+The first two were a shader decode that consumed an absent blue channel from
+two-channel normal formats and an exposure histogram descriptor-index mismatch.
+The residual `0.830 EV` gap came from the packed normal data itself. BasisU's
+BC5 and EAC RG11 transcoders source their second output channel from source
+alpha, while the packer stored tangent-space Y in green and left alpha opaque.
+Metal's ASTC target retained green. Vulkan's BC5 target therefore received
+`(R, 1)` instead of `(R, G)`. The filename classifier also missed Bistro's
+`ddna` normal maps and Sponza's `ddn` maps.
 
 GTAO then amplifies the wrong normal into the visible artifact: a ground pixel
 whose view-space normal points away from the reconstructed hemisphere
@@ -32,25 +31,31 @@ binds the source texture object directly and did not have this failure mode.
 The graph now declares the input as `SAMPLED`, and the Vulkan executor supplies
 the matching sampled-image index.
 
-That correction closes the descriptor-driven temporal instability, not the
-separate adaptation-policy or absolute-HDR issues. The original exponential
+That correction closes the descriptor-driven temporal instability. The original exponential
 interpolation violated the configured EV-per-second contract and could brighten
 too quickly after a large luminance change; both backends now advance by a
-bounded linear EV step. A matched native Metal run also proves that Vulkan's
-shared exposure resolve is responding to a darker pre-bloom input rather than a
-bloom difference. The remaining input mismatch is still a parity blocker.
+bounded linear EV step.
 
 The fix now ships through one shared Metal/Vulkan shader helper:
 `vkr_normal_map_decode()` reconstructs positive tangent-space Z from XY after
 normal strength and green-channel convention are applied. Vulkan forward,
 Vulkan deferred/transmission, Metal forward, and Metal
 deferred/transmission all call it. The exact Bistro camera now renders lit
-ground with GTAO enabled on the RX 6700 XT.
+ground with GTAO enabled on the RX 6700 XT. The packer mirrors source green into
+alpha for `normal-rg` content before mip generation and records the representation
+version in `vkr.pack_settings`, which forces stale normal packs to rebuild.
+
+Matched 1600x1200 Release captures close the absolute-HDR question. With GTAO
+enabled, Metal and Vulkan meter average log luminance `-3.309451` and
+`-3.308282`; their resolved exposure differs by `0.001169 EV`. With GTAO
+disabled, they meter `-3.118539` and `-3.115359`; the difference is `0.003181
+EV`. The GTAO attenuation differs by only `0.002012 EV`. Bloom is downstream of
+metering and was never the source of the excess brightness.
 
 **Scope.** Windows 10 Pro 19045, AMD Radeon RX 6700 XT, driver 26.6.3,
 Clang 20.1.0, Release and Debug, plus the owner's Apple M1 Pro Metal Release
 capture. The original Windows investigation was based on tree `a517999`; the
-follow-up uses the fixes through `cac3c7e` plus the changes described below.
+follow-up uses the fixes through `d4205ca` plus the changes described below.
 This is local implementation evidence, not an authoritative cross-device
 performance comparison. The Metal implementation evidence is also summarized in
 [post-exposure-bloom-and-ambient-occlusion-spec.md](post-exposure-bloom-and-ambient-occlusion-spec.md)
@@ -401,15 +406,16 @@ result. This is visual evidence of an absolute mismatch, not proof of which
 backend owns it: the screenshots do not contain Metal histogram/HDR data and
 were not produced by the current harness workload.
 
-The matched native Metal run is now available. Report
+The first matched native Metal run, report
 `sha256:d9b3ed168b50250d9600aab4e88772c89c3a3b24895c936ac6ca29c1aecdd5f6`
 holds 1,919,880 accepted texels, average log luminance `-3.309451`, target and
 adapted EV `+0.835520`, and multiplier `1.784500` over all 60 samples. The
-post-fix Vulkan report
+pre-pack-correction Vulkan report
 `sha256:e32f6f67c453133c503e4fb2c2276a8d0a77028c7c166926719c915c4ef242f7`
 holds 1,915,909 accepted texels, `-4.139783`, `+1.665852`, and `3.173010`.
-Both are static and stable. Vulkan meters about `0.830 EV` less scene luminance,
-and the common resolve consequently adds about `0.830 EV` more exposure.
+Both were static and stable. Vulkan metered about `0.830 EV` less scene
+luminance, and the common resolve consequently added about `0.830 EV` more
+exposure.
 
 The graph-to-shader audit still finds no backend-only bloom, exposure, or
 tonemap binding difference. Both backends meter `temporal_history_color`, apply
@@ -417,15 +423,11 @@ the current exposure state to the selected pre-bloom or combined HDR source,
 and use the same metering, bloom, and ACES arithmetic. The remaining divergence
 is upstream of exposure.
 
-A Vulkan GTAO-off control, report
+A pre-pack-correction Vulkan GTAO-off control, report
 `sha256:56ea12c564f3cee34de999265fc4bc255939ae4e0690a4584fb54a9e965f0c2a`,
 resolves average log luminance `-3.450421`, target EV `+0.976490`, and multiplier
-`1.967672`. That partitions the Vulkan frame but cannot by itself indict GTAO:
-the Metal GTAO-off level is not yet known. The paired
-`local.mac.bistro.exposure_parity.gtao_off` and
-`local.win.bistro.mac_reference.gtao_off` cases are the next acceptance gate.
-The GTAO-on cases now additionally capture view depth, raw visibility, denoised
-visibility, and exact normals.
+`1.967672`. The matched Metal control and corrected Vulkan reruns in §3.2
+complete that partition.
 
 One backend-only lighting term was found and removed while tracing the owner's
 view-dependent surface brightness report. Vulkan forward and deferred shading
@@ -436,6 +438,41 @@ shadow. Its removal changes the exact static camera by only about `0.003 EV`, so
 it is a real structural correction but not the absolute-HDR root cause. Do not
 apply a Vulkan-only exposure compensation or shared metering retune before the
 matched GTAO split.
+
+### 3.2 Packed normal channels owned the residual HDR gap
+
+The matched Metal GTAO-off control partitions the former `0.830 EV` difference.
+Before the pack correction, GTAO attenuated Vulkan by `0.689362 EV` and Metal by
+`0.190912 EV`; `0.331881 EV` remained upstream. This was not an exposure or
+bloom difference. The same exposure shaders were reacting to different
+pre-bloom lighting.
+
+The vendored BasisU transcode contract explains both parts. `cTFBC5_RG` and
+`cTFETC2_EAC_RG11` write their second destination channel from source alpha. VKR's
+RGBA8 normal sources carried tangent-space XY in red and green, with opaque
+alpha. ASTC retained red and green on Metal, while BC5 produced red and opaque
+alpha on the RX 6700 XT. Positive-Z reconstruction could not recover the lost Y
+component. The packer now mirrors green into alpha before generating normal-map
+mips. Its cold filename classifier and the runtime fallback both recognize
+`normal`, `_n.`, `norm`, `ddn`, and `bump` names. A normal-only
+`basis_rg=source-ra-v1` pack identity invalidates stale derived files without
+repacking unrelated textures.
+
+The final matched captures are:
+
+| GTAO | Backend | Report digest | Average log luminance | EV | Multiplier |
+| --- | --- | --- | ---: | ---: | ---: |
+| on | Metal M1 Pro | `sha256:66737ad0e780cb142756fb687f7b1e4a5a1d0f3683b156dcbc246b5de2f748e2` | `-3.309451` | `+0.835520` | `1.784500` |
+| on | Vulkan RX 6700 XT | `sha256:dd4dd35397fb2b83d73e571c43d44a7a3431068c4a2fd2695d2e7b31e2c23a72` | `-3.308282` | `+0.834351` | `1.783055` |
+| off | Metal M1 Pro | `sha256:87ef98262d33a9e6c9db87a78a779c4579ece6fd2e7402003a545479ccfdad50` | `-3.118539` | `+0.644608` | `1.563315` |
+| off | Vulkan RX 6700 XT | `sha256:3e497612b394ead71cbb876c669cec7db4ae44230db8db0eab3a5ce50ce235b1` | `-3.115359` | `+0.641427` | `1.559872` |
+
+The GTAO-on depth masks differ at only three of 1,920,000 pixels. Across the
+1,919,654 common foreground pixels, decoded `RG16_SNORM_LE` G-buffer normals
+have mean dot `0.999080`, component MAE `0.007001`, and `0.0273%` negative
+dots. Mean raw and denoised visibility differ by `0.000411` and `0.000406`.
+Those small differences are consistent with BC5 versus ASTC compression and do
+not produce a material exposure difference.
 
 The Bistro source assets and generated material cache are local derived assets.
 Before the native Metal case, prepare the exact cooked mesh, generated
@@ -481,7 +518,8 @@ fallback content and invalidate a Metal/Vulkan workload comparison.
    creation. This is not image-quality evidence and needs a harness/loader
    follow-up if two children in one parent are required.
 8. **Done:** the exact-camera native Metal exposure case proves both static
-   kernels are stable and localizes the `0.830 EV` difference to pre-bloom HDR.
+   kernels are stable and localizes the former `0.830 EV` difference to
+   pre-bloom HDR.
 9. **Done:** adaptation now advances by at most the configured EV/s times frame
    delta on both CPU and GPU, instead of treating EV/s as an exponential
    response coefficient. A focused Debug automatic-exposure snapshot passes
@@ -489,12 +527,14 @@ fallback content and invalidate a Metal/Vulkan workload comparison.
    `sha256:b069c666f4c0bea6e9ccb9f8b640a72881e05224437d2aff47d5e1796243e6d2`.
 10. **Done:** Vulkan-only directional-shadow scaling of diffuse IBL was removed
     from forward and deferred shading.
-11. **Still open and a parity blocker:** run the matched Metal GTAO-off case and
-   compare it with the Vulkan control, then compare the new GTAO depth/raw/final
-   and normal captures. Also distinguish `prepare_frame` terminal,
-   zero-extent, and out-of-date results; audit the large graph image residency;
-   collect authoritative matched performance;
-   obtain owner acceptance before replacing any final-color baseline.
+11. **Done:** the packer preserves tangent-space Y across BasisU BC5/EAC
+    transcodes, recognizes the scene's `ddna`, `ddn`, and `bump` normal names,
+    and forces stale normal packs to rebuild. Matched GTAO-on/off exposure,
+    depth, normal, and visibility evidence closes the Metal/Vulkan parity gap.
+12. **Still open, outside this parity fix:** distinguish `prepare_frame`
+    terminal, zero-extent, and out-of-date results; audit the large graph image
+    residency; collect authoritative matched performance; obtain owner
+    acceptance before replacing any final-color baseline.
 
 ## 5. References
 

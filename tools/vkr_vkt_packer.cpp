@@ -8,6 +8,8 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
+#include "vkr_vkt_pack_contract.h"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -391,12 +393,8 @@ bool contains_any_token(const std::string &value,
 
 TextureClass infer_texture_class(const fs::path &path) {
   const std::string name = to_lower_ascii(path.filename().string());
-  static const std::array<const char *, 3> kNormalTokens = {"normal", "_n.",
-                                                            "norm"};
-  for (const char *token : kNormalTokens) {
-    if (name.find(token) != std::string::npos) {
-      return TextureClass::kNormalRg;
-    }
+  if (vkr_vkt_filename_is_normal_rg(name.data(), name.size())) {
+    return TextureClass::kNormalRg;
   }
 
   static const std::array<const char *, 14> kDataTokens = {
@@ -598,6 +596,9 @@ std::string pack_settings_identity(TextureClass texture_class,
            << ";class=" << texture_class_metadata_value(texture_class)
            << ";uastc=" << uastc_level_to_string(config.uastc_level)
            << ";mips=rgba8-box-v1;flip=vertical";
+  if (texture_class == TextureClass::kNormalRg) {
+    settings << ";basis_rg=source-ra-v1";
+  }
   return settings.str();
 }
 
@@ -740,8 +741,12 @@ bool pack_texture_set_to_vkt(const std::vector<fs::path> &source_paths,
     source.path = path;
     source.width = static_cast<uint32_t>(source_width);
     source.height = static_cast<uint32_t>(source_height);
-    source.levels = build_mip_chain_rgba8(loaded, source.width, source.height);
     source.alpha = analyze_alpha(loaded, source.width, source.height);
+    if (texture_class == TextureClass::kNormalRg) {
+      vkr_vkt_prepare_normal_rg_for_basis(
+          loaded, static_cast<size_t>(source.width) * source.height);
+    }
+    source.levels = build_mip_chain_rgba8(loaded, source.width, source.height);
     stbi_image_free(loaded);
     if (sources.empty()) {
       width = source.width;

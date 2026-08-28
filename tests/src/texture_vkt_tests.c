@@ -1,5 +1,6 @@
 #include "texture_vkt_tests.h"
 #include "renderer/systems/vkr_texture_transcode_cache.h"
+#include "vkr_vkt_pack_contract.h"
 
 #include <math.h>
 
@@ -166,6 +167,28 @@ static void test_normal_rg_decode_contract(void) {
   printf("  test_normal_rg_decode_contract PASSED\n");
 }
 
+static void test_normal_rg_basis_channel_contract(void) {
+  printf("  Running test_normal_rg_basis_channel_contract...\n");
+
+  assert(vkr_vkt_filename_is_normal_rg("surface_ddna.png", 16u));
+  assert(vkr_vkt_filename_is_normal_rg("surface_ddn.tga", 15u));
+  assert(vkr_vkt_filename_is_normal_rg("Surface_Bump.PNG", 16u));
+  assert(vkr_vkt_filename_is_normal_rg("surface_Normal.png", 18u));
+  assert(!vkr_vkt_filename_is_normal_rg("surface_base.png", 16u));
+
+  uint8_t pixels[] = {
+      10u, 20u, 30u, 40u, 50u, 60u, 70u, 80u,
+  };
+  vkr_vkt_prepare_normal_rg_for_basis(pixels, 2u);
+
+  assert(pixels[0] == 10u && pixels[1] == 20u && pixels[2] == 30u &&
+         pixels[3] == 20u);
+  assert(pixels[4] == 50u && pixels[5] == 60u && pixels[6] == 70u &&
+         pixels[7] == 60u);
+
+  printf("  test_normal_rg_basis_channel_contract PASSED\n");
+}
+
 /**
  * The selector and the transcode mapper are separate switches that must agree.
  * They silently disagreed for one capability combination, so pin the invariant
@@ -330,6 +353,7 @@ bool32_t run_texture_vkt_tests() {
   test_texture_query_colorspace_policy();
   test_texture_transcode_target_policy();
   test_normal_rg_decode_contract();
+  test_normal_rg_basis_channel_contract();
   test_transcode_target_always_transcodable();
   test_persistent_transcode_cache_contract();
 

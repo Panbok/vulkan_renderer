@@ -545,7 +545,8 @@ vkr_internal VkrTextureClass vkr_texture_class_from_filename_heuristic(
   }
 
   const String8 normal_tokens[] = {string8_lit("normal"), string8_lit("_n."),
-                                   string8_lit("norm")};
+                                   string8_lit("norm"), string8_lit("ddn"),
+                                   string8_lit("bump")};
   if (vkr_texture_name_contains_any_ci(base_path, normal_tokens,
                                        ArrayCount(normal_tokens))) {
     return VKR_TEXTURE_CLASS_NORMAL_RG;

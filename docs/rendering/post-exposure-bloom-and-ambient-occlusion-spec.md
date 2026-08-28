@@ -616,35 +616,42 @@ Vulkan validation messages; report digest
 Full causation, fixes, and remaining parity work are in
 [Windows Vulkan post-effect parity investigation](windows-vulkan-post-effect-parity-investigation.md).
 
-Owner review after that closure found an unresolved absolute-exposure mismatch
-at darker Bistro cameras. A native M1 Pro run of
-`local.mac.bistro.exposure_parity`, report digest
-`sha256:d9b3ed168b50250d9600aab4e88772c89c3a3b24895c936ac6ca29c1aecdd5f6`,
-finally supplies the exact-camera witness. Across 60 static samples Metal holds
-average log luminance `-3.309451`, target/adapted EV `+0.835520`, and multiplier
-`1.784500`. The matched RX 6700 XT run after the adaptation correction, report
-digest `sha256:e32f6f67c453133c503e4fb2c2276a8d0a77028c7c166926719c915c4ef242f7`,
-holds `-4.139783`, `+1.665852`, and `3.173010`. Both kernels are stable; Vulkan's
-pre-bloom input is about `0.830 EV` darker, so the shared resolve correctly adds
-about `0.830 EV` more exposure. Bloom is downstream of metering and remains
-excluded as the source.
+Owner review after that closure found an absolute-exposure mismatch at darker
+Bistro cameras. The first matched M1 Pro and RX 6700 XT pair measured a `0.830
+EV` pre-bloom difference. Both exposure kernels were stable, and bloom was
+downstream of metering, so neither system owned the input mismatch.
 
 The comparison also removed a Vulkan-only diffuse-IBL term that multiplied
 environment diffuse by `1 + directional_visibility * directional_intensity`.
 Metal has no such term, and tying environment light to the camera-visible sun
-shadow made surface brightness view dependent. Removing it changes this static
-camera by only about `0.003 EV`, so it restores structural lighting parity but
-does not explain the absolute HDR gap.
+shadow made surface brightness view dependent. Removing it changed the static
+camera by only about `0.003 EV`. This restores structural lighting parity but
+did not explain the old absolute-HDR gap.
 
-The remaining split requires matched GTAO-off Metal and Vulkan runs. The Vulkan
-control resolves `-3.450421` average log luminance and `+0.976490 EV`; without a
-Metal GTAO-off control, that number cannot distinguish an AO-output difference
-from an upstream lighting difference. The symmetric
-`local.mac.bistro.exposure_parity.gtao_off` and
-`local.win.bistro.mac_reference.gtao_off` cases now provide that gate. The
-GTAO-on pair also captures view depth, raw/final visibility, and exact G-buffer
-normals. No backend-only exposure compensation or shared metering retune is
-justified until the matched split is complete.
+The completed GTAO-on/off split traced the remaining gap to normal-map packing.
+BasisU's BC5 and EAC RG11 targets source their second output channel from source
+alpha. VKR had stored tangent-space Y in green and opaque alpha, so Vulkan BC5
+received `(R, 1)` while Metal ASTC retained `(R, G)`. The packer now mirrors
+green into alpha for `normal-rg` content before mip generation, recognizes the
+scene's `ddna`, `ddn`, and `bump` names, and versions that representation in the
+pack identity so stale normal assets rebuild.
+
+The final 1600x1200 Release evidence is:
+
+| GTAO | Backend | Report digest | Average log luminance | EV | Multiplier |
+| --- | --- | --- | ---: | ---: | ---: |
+| on | Metal M1 Pro | `sha256:66737ad0e780cb142756fb687f7b1e4a5a1d0f3683b156dcbc246b5de2f748e2` | `-3.309451` | `+0.835520` | `1.784500` |
+| on | Vulkan RX 6700 XT | `sha256:dd4dd35397fb2b83d73e571c43d44a7a3431068c4a2fd2695d2e7b31e2c23a72` | `-3.308282` | `+0.834351` | `1.783055` |
+| off | Metal M1 Pro | `sha256:87ef98262d33a9e6c9db87a78a779c4579ece6fd2e7402003a545479ccfdad50` | `-3.118539` | `+0.644608` | `1.563315` |
+| off | Vulkan RX 6700 XT | `sha256:3e497612b394ead71cbb876c669cec7db4ae44230db8db0eab3a5ce50ce235b1` | `-3.115359` | `+0.641427` | `1.559872` |
+
+The GTAO-on exposure difference is `0.001169 EV`; GTAO-off differs by
+`0.003181 EV`; and the GTAO attenuation differs by `0.002012 EV`. Common
+foreground normals have mean dot `0.999080` and component MAE `0.007001`.
+Mean raw and denoised GTAO visibility differ by `0.000411` and `0.000406`.
+These captures close the absolute Metal/Vulkan exposure and GTAO parity gap for
+the owner camera. They do not authorize a new final-color baseline or support a
+cross-device performance comparison.
 
 ## 8. Primary references
 

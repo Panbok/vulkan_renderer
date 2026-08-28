@@ -32,5 +32,7 @@ endif()
 
 # Include directories
 target_include_directories(vulkan_renderer_tester
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src # For test headers (e.g., arena_test.h)
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src # For test headers (e.g., arena_test.h)
+        ${CMAKE_SOURCE_DIR}/tools
 )

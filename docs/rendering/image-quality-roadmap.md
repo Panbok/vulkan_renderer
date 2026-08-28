@@ -10,21 +10,19 @@ authority: design
 TAA, automatic exposure, bloom, and GTAO G0-G2 ship; the architecture status
 specification remains the authority.
 
-**Windows Vulkan structural closure (2026-08-28); absolute HDR parity is
-open.** The apparent black-ground GTAO regression was a
-two-channel normal-map decode defect outside this roadmap. Automatic exposure
-also supplied a storage-image descriptor index to Vulkan's sampled-image array,
-causing the histogram to meter unrelated images as history instances rotated.
-The shared Metal/Vulkan decoder now reconstructs positive tangent-space Z, the
-exposure graph and executor use one sampled-image contract, and the harness
-waits for renderer asset publications before measuring its smoke fixtures.
-Windows exposure, bloom, GTAO, Bistro, and rotated deferred structural evidence
-passes. A matched M1 Pro run proves both static exposure kernels are stable but
-Vulkan meters about `0.830 EV` less pre-bloom luminance and therefore resolves
-about `0.830 EV` more exposure. Bloom-off isolation excludes bloom. The shared
-adaptation path now enforces its 3/1 EV-per-second bounds, and a Vulkan-only
-directional-shadow multiplier on diffuse IBL has been removed. A matched
-GTAO-off Metal/Vulkan split is now the blocking parity gate.
+**Windows Vulkan post-effect parity closed (2026-08-28).** The black-ground
+regression combined a two-channel normal decode error with a packed-data error.
+BasisU BC5/EAC sourced normal Y from alpha, but VKR stored it only in green and
+left alpha opaque. Automatic exposure also supplied a storage-image descriptor
+index to Vulkan's sampled-image array, causing the histogram to meter unrelated
+images as history instances rotated. The shared decoder reconstructs positive
+tangent-space Z, normal packs now mirror green into alpha, and the exposure
+graph uses one sampled-image contract. Matched M1 Pro and RX 6700 XT GTAO-on
+exposure differs by `0.001169 EV`; GTAO-off differs by `0.003181 EV`; common
+foreground normals have mean dot `0.999080`. Bloom was downstream of metering
+and did not cause the excess brightness. The adaptation path enforces its 3/1
+EV-per-second bounds, and the Vulkan-only directional-shadow multiplier on
+diffuse IBL is gone.
 See [Windows Vulkan post-effect parity investigation](windows-vulkan-post-effect-parity-investigation.md).
 
 **Scope:** Rendering work that changes displayed image quality, plus the D3D12
@@ -67,9 +65,9 @@ FSR frame generation is not part of this roadmap.
 | 1 | Windows DPI correctness | [Presentation DPI and transfer function](presentation-dpi-and-transfer-function-spec.md) | Implemented. Per-Monitor V2 and physical client pixels ship; mixed-DPI display evidence remains pending. |
 | 2 | One linear-to-sRGB presentation contract | Same document | Implemented. Both backends use linear shader output and blending into sRGB attachments; replacement final-color goldens await owner review. |
 | 3 | Temporal-input foundation | [Visibility-buffer anti-aliasing evaluation](visibility-buffer-msaa-spec.md) | Implemented for rigid opaque, transmission, and ordinary-blend geometry: jitter, own-surface motion, exact identity, authored material reactivity, reset rules, completion-safe history, and debug views ship. Deformation, procedural motion, particles, and dynamic material-change signals remain open. |
-| 4 | Automatic exposure | [Post, exposure, bloom, and ambient occlusion](post-exposure-bloom-and-ambient-occlusion-spec.md) | Implemented through E3, absolute cross-backend acceptance open. Packet version 20 carries mode, manual fallback, and EV compensation; two graph passes meter the post-temporal HDR source into a 256-bin histogram and resolve percentile-clipped, completion-safe adaptation. Valid history advances by a bounded linear step of at most 3 EV/s toward a brighter display or 1 EV/s toward a darker display; invalid history snaps to target. Fullscreen/editor tonemap consume current GPU state directly, delayed diagnostics expose the histogram, scalar metrics expose the EV decision, and canonical capture records the completed multiplier. Production initialization selects automatic exposure; manual remains the byte-identical path and the deterministic harness default. Matched static Metal and Vulkan traces are stable, but Vulkan's pre-bloom input is about 0.830 EV darker at the exact Bistro camera. Bloom is excluded; matched GTAO-off runs are the next partition. Exposure stays post-temporal; any future pre-exposure domain must rescale or reset history. |
+| 4 | Automatic exposure | [Post, exposure, bloom, and ambient occlusion](post-exposure-bloom-and-ambient-occlusion-spec.md) | Implemented through E3 with matched Metal/Vulkan Bistro acceptance. Packet version 20 carries mode, manual fallback, and EV compensation; two graph passes meter the post-temporal HDR source into a 256-bin histogram and resolve percentile-clipped, completion-safe adaptation. Valid history advances by a bounded linear step of at most 3 EV/s toward a brighter display or 1 EV/s toward a darker display; invalid history snaps to target. Fullscreen/editor tonemap consume current GPU state directly, delayed diagnostics expose the histogram, scalar metrics expose the EV decision, and canonical capture records the completed multiplier. Production initialization selects automatic exposure; manual remains the byte-identical path and the deterministic harness default. Matched static traces differ by at most `0.003181 EV` at the exact Bistro camera. Exposure stays post-temporal; any future pre-exposure domain must rescale or reset history. |
 | 5 | Portable same-resolution TAA and post-TAA FXAA | [ADR-037](../architecture/adr/037-portable-same-resolution-temporal-antialiasing.md) | Implemented and validation-clean on Metal and Vulkan without an additional graph pass or full-resolution resource for transparent inputs. Broader motion fixtures, deformation/procedural/particle inputs, and final-color owner acceptance remain open. MSAA is not part of this slice. |
-| 6 | Bloom, then GTAO | [Post, exposure, bloom, and ambient occlusion](post-exposure-bloom-and-ambient-occlusion-spec.md) | Implemented through Bloom B0-B1 and GTAO G0-G2 on Metal and Vulkan. Bloom uses bounded odd-extent downsample/reverse-upsample chains and scene-linear pre-exposure combine. GTAO uses a dedicated current-frame R16 view-depth pyramid, full-resolution three-slice, three-step horizon evaluation, edge-aware denoise, branchless white fallback, and indirect-diffuse-only lighting. Direct captures expose both pipelines. Structural Release and focused validation evidence passes, but matched GTAO-off HDR and GTAO-on depth/normal/visibility comparison is required before absolute Metal/Vulkan parity or final-color owner acceptance. |
+| 6 | Bloom, then GTAO | [Post, exposure, bloom, and ambient occlusion](post-exposure-bloom-and-ambient-occlusion-spec.md) | Implemented through Bloom B0-B1 and GTAO G0-G2 on Metal and Vulkan. Bloom uses bounded odd-extent downsample/reverse-upsample chains and scene-linear pre-exposure combine. GTAO uses a dedicated current-frame R16 view-depth pyramid, full-resolution three-slice, three-step horizon evaluation, edge-aware denoise, branchless white fallback, and indirect-diffuse-only lighting. Direct captures expose both pipelines. Matched GTAO-on/off HDR, depth, normal, and visibility evidence closes the absolute Metal/Vulkan parity gap. Final-color baseline publication and authoritative matched performance remain owner decisions. |
 | 7 | D3D12 | [D3D12 backend evaluation](../architecture/d3d12-backend-evaluation.md) | Do not schedule for image quality. Revisit only for a concrete delivery, tooling, CI, or driver requirement. |
 
 Windows DPI and output transfer landed independently. A DPI change affects
