@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "id": "local.mac.bistro.exposure_parity",
+  "suite": "local",
+  "description": "Native Metal automatic-exposure parity witness at the supplied Bistro reference camera.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 20,
+  "resolution": [1600, 1200],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 900000,
+  "asset_ready_timeout_ms": 600000,
+  "frames": {
+    "warmup": 120,
+    "measure": 60
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "text_fixture": false,
+    "backend": "metal",
+    "taa_enabled": false,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default",
+    "exposure_mode": "automatic",
+    "manual_exposure": 0.3,
+    "exposure_compensation_ev": 0.0,
+    "bloom_enabled": true,
+    "gtao_enabled": true,
+    "gtao_radius": 0.5,
+    "gtao_power": 2.2,
+    "exposure_reset_frame": 4,
+    "bloom_threshold": 1.0,
+    "bloom_knee": 0.5,
+    "bloom_intensity": 0.05
+  },
+  "camera": {
+    "mode": "static",
+    "position": [-23.3232861, 6.61774349, 7.47025967],
+    "yaw": 383.674103,
+    "pitch": -17.4118462,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500
+  },
+  "captures": [
+    {
+      "at_frame": 40,
+      "channels": [
+        "hdr_pre_bloom",
+        "bloom_result",
+        "hdr_combined",
+        "final_color"
+      ]
+    }
+  ],
+  "assertions": [
+    { "metric": "draw.world.opaque_draws", "stat": "min", "min": 1 },
+    { "metric": "packet.publication_omitted_candidates", "stat": "max", "max": 0 },
+    { "metric": "post.exposure.accepted_texels", "stat": "min", "min": 1800000 },
+    { "metric": "post.exposure.multiplier", "stat": "min", "min": 0.01 },
+    { "metric": "post.exposure.multiplier", "stat": "max", "max": 8.0 }
+  ]
+}
