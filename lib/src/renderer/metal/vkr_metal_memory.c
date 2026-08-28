@@ -92,7 +92,9 @@ bool8_t vkr_metal_submit_ring_total_size(uint64_t required_slot_size,
   if (!required_slot_size || !minimum_slot_size || !slot_count ||
       !out_total_size)
     return false_v;
-  const uint64_t slot_size = MAX(required_slot_size, minimum_slot_size);
+  const uint64_t slot_size = required_slot_size > minimum_slot_size
+                                 ? required_slot_size
+                                 : minimum_slot_size;
   if (slot_size > UINT64_MAX / slot_count)
     return false_v;
   *out_total_size = slot_size * slot_count;
