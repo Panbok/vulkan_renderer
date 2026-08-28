@@ -261,9 +261,16 @@ static void test_exposure_histogram_reference(void) {
                              ? metering.brighten_rate_per_second
                              : metering.darken_rate_per_second;
   const float32_t expected_adapted =
-      previous.adapted_ev + (expected_target - previous.adapted_ev) *
-                                (1.0f - expf(-rate * metering.delta_seconds));
+      previous.adapted_ev + Clamp(expected_target - previous.adapted_ev,
+                                  -rate * metering.delta_seconds,
+                                  rate * metering.delta_seconds);
   assert(fabsf(adapted.adapted_ev - expected_adapted) < 1e-6f);
+  assert(fabsf(adapted.adapted_ev - (-0.7f)) < 1e-6f);
+
+  const VkrExposureGpuState bright_previous = {.adapted_ev = 2.0f};
+  const VkrExposureGpuState darkened =
+      vkr_exposure_resolve(&metering, &histogram, &bright_previous);
+  assert(fabsf(darkened.adapted_ev - 1.9f) < 1e-6f);
 
   const VkrExposureGpuHistogram empty = {0};
   const VkrExposureGpuState held =

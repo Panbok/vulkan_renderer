@@ -32,12 +32,13 @@ binds the source texture object directly and did not have this failure mode.
 The graph now declares the input as `SAMPLED`, and the Vulkan executor supplies
 the matching sampled-image index.
 
-That correction closes the temporal instability, not absolute visual parity.
-Owner review at a darker Bistro camera found that Vulkan stably resolves a
-large positive exposure and produces a frame brighter than the supplied Metal
-reference. Bloom isolation proves that the broad brightness is exposure-driven;
-the exact native Metal HDR and exposure decision remain the required parity
-witness.
+That correction closes the descriptor-driven temporal instability, not the
+separate adaptation-policy or absolute-HDR issues. The original exponential
+interpolation violated the configured EV-per-second contract and could brighten
+too quickly after a large luminance change; both backends now advance by a
+bounded linear EV step. A matched native Metal run also proves that Vulkan's
+shared exposure resolve is responding to a darker pre-bloom input rather than a
+bloom difference. The remaining input mismatch is still a parity blocker.
 
 The fix now ships through one shared Metal/Vulkan shader helper:
 `vkr_normal_map_decode()` reconstructs positive tangent-space Z from XY after
@@ -47,10 +48,11 @@ deferred/transmission all call it. The exact Bistro camera now renders lit
 ground with GTAO enabled on the RX 6700 XT.
 
 **Scope.** Windows 10 Pro 19045, AMD Radeon RX 6700 XT, driver 26.6.3,
-Clang 20.1.0, Release and Debug, based on tree `a517999` with the fixes in this
-change. One device and one native backend. No new Metal run was available on
-Windows; Metal source parity is enforced by the shared decoder and the Metal
-side's retained native evidence is quoted from
+Clang 20.1.0, Release and Debug, plus the owner's Apple M1 Pro Metal Release
+capture. The original Windows investigation was based on tree `a517999`; the
+follow-up uses the fixes through `cac3c7e` plus the changes described below.
+This is local implementation evidence, not an authoritative cross-device
+performance comparison. The Metal implementation evidence is also summarized in
 [post-exposure-bloom-and-ambient-occlusion-spec.md](post-exposure-bloom-and-ambient-occlusion-spec.md)
 §7.
 
@@ -368,10 +370,9 @@ With §2.1 and §2.5 corrected, on `local.win.bistro.production` (120 samples):
 | `post.exposure.adapted_ev` | -0.1612923 | -0.1612925 | -0.1612923 |
 | `post.exposure.multiplier` | 0.8942237 | 0.8942236 | 0.8942237 |
 
-The histogram, resolve, and adaptation are now temporally stable on this fixed
-Vulkan workload. A matched native Metal trace is still required to compare
-absolute EV and image appearance across machines, but it is no longer needed
-to explain the former Vulkan oscillation.
+The histogram, resolve, and adaptation are temporally stable on this fixed
+Vulkan workload. The later matched Metal trace in §3.1 supplies the absolute
+comparison; neither static trace reproduces the former Vulkan oscillation.
 
 Bloom and GTAO both execute and produce non-degenerate output on Bistro. No
 per-pass GPU timing was collected; nothing here supports a cost claim.
@@ -400,15 +401,41 @@ result. This is visual evidence of an absolute mismatch, not proof of which
 backend owns it: the screenshots do not contain Metal histogram/HDR data and
 were not produced by the current harness workload.
 
-The graph-to-shader audit finds no remaining backend-only bloom, exposure, or
+The matched native Metal run is now available. Report
+`sha256:d9b3ed168b50250d9600aab4e88772c89c3a3b24895c936ac6ca29c1aecdd5f6`
+holds 1,919,880 accepted texels, average log luminance `-3.309451`, target and
+adapted EV `+0.835520`, and multiplier `1.784500` over all 60 samples. The
+post-fix Vulkan report
+`sha256:e32f6f67c453133c503e4fb2c2276a8d0a77028c7c166926719c915c4ef242f7`
+holds 1,915,909 accepted texels, `-4.139783`, `+1.665852`, and `3.173010`.
+Both are static and stable. Vulkan meters about `0.830 EV` less scene luminance,
+and the common resolve consequently adds about `0.830 EV` more exposure.
+
+The graph-to-shader audit still finds no backend-only bloom, exposure, or
 tonemap binding difference. Both backends meter `temporal_history_color`, apply
 the current exposure state to the selected pre-bloom or combined HDR source,
-and use the same metering, bloom, and ACES arithmetic. Run
-`local.mac.bistro.exposure_parity` natively on Metal and compare its
-`hdr_pre_bloom`, exposure metrics, and final color with
-`local.win.bistro.mac_reference`. Do not apply a Vulkan-only exposure
-compensation or shared metering retune until that split identifies whether the
-HDR input or exposure application diverges.
+and use the same metering, bloom, and ACES arithmetic. The remaining divergence
+is upstream of exposure.
+
+A Vulkan GTAO-off control, report
+`sha256:56ea12c564f3cee34de999265fc4bc255939ae4e0690a4584fb54a9e965f0c2a`,
+resolves average log luminance `-3.450421`, target EV `+0.976490`, and multiplier
+`1.967672`. That partitions the Vulkan frame but cannot by itself indict GTAO:
+the Metal GTAO-off level is not yet known. The paired
+`local.mac.bistro.exposure_parity.gtao_off` and
+`local.win.bistro.mac_reference.gtao_off` cases are the next acceptance gate.
+The GTAO-on cases now additionally capture view depth, raw visibility, denoised
+visibility, and exact normals.
+
+One backend-only lighting term was found and removed while tracing the owner's
+view-dependent surface brightness report. Vulkan forward and deferred shading
+multiplied diffuse IBL by
+`1 + directional_visibility * directional_intensity`; Metal does not. This
+made an environment contribution depend on the view's sampled directional
+shadow. Its removal changes the exact static camera by only about `0.003 EV`, so
+it is a real structural correction but not the absolute-HDR root cause. Do not
+apply a Vulkan-only exposure compensation or shared metering retune before the
+matched GTAO split.
 
 The Bistro source assets and generated material cache are local derived assets.
 Before the native Metal case, prepare the exact cooked mesh, generated
@@ -453,10 +480,18 @@ fallback content and invalidate a Metal/Vulkan workload comparison.
    Vulkan loader startup after Galaxy overlay layer discovery, before renderer
    creation. This is not image-quality evidence and needs a harness/loader
    follow-up if two children in one parent are required.
-8. **Still open and a parity blocker:** run the exact-camera native Metal
-   exposure case and compare pre-bloom HDR distribution, resolved multiplier,
-   and final color. Owner review shows that stable Vulkan exposure is not yet
-   accepted absolute parity. Also distinguish `prepare_frame` terminal,
+8. **Done:** the exact-camera native Metal exposure case proves both static
+   kernels are stable and localizes the `0.830 EV` difference to pre-bloom HDR.
+9. **Done:** adaptation now advances by at most the configured EV/s times frame
+   delta on both CPU and GPU, instead of treating EV/s as an exponential
+   response coefficient. A focused Debug automatic-exposure snapshot passes
+   synchronization validation with no diagnostic, report digest
+   `sha256:b069c666f4c0bea6e9ccb9f8b640a72881e05224437d2aff47d5e1796243e6d2`.
+10. **Done:** Vulkan-only directional-shadow scaling of diffuse IBL was removed
+    from forward and deferred shading.
+11. **Still open and a parity blocker:** run the matched Metal GTAO-off case and
+   compare it with the Vulkan control, then compare the new GTAO depth/raw/final
+   and normal captures. Also distinguish `prepare_frame` terminal,
    zero-extent, and out-of-date results; audit the large graph image residency;
    collect authoritative matched performance;
    obtain owner acceptance before replacing any final-color baseline.

@@ -121,9 +121,10 @@ float vkr_exposure_adapt(VkrExposureMetering metering, float target_ev,
 {
     float rate = target_ev > previous_ev ? metering.brighten_rate_per_second
                                          : metering.darken_rate_per_second;
-    float alpha = 1.0f - exp(-rate * metering.delta_seconds);
+    float maximum_step = rate * metering.delta_seconds;
     return metering.history_valid != 0u
-               ? previous_ev + (target_ev - previous_ev) * alpha
+               ? previous_ev +
+                     clamp(target_ev - previous_ev, -maximum_step, maximum_step)
                : target_ev;
 }
 

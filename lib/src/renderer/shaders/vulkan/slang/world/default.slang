@@ -577,18 +577,12 @@ packet_environment_terms(VkrVulkanPacketFrameRoot *frame, float3 world_position,
 float3 packet_environment(VkrVulkanPacketFrameRoot *frame,
                           float3 world_position, float3 normal,
                           float3 horizon_normal, float3 view, float3 albedo,
-                          float metallic, float roughness, float ao,
-                          float directional_visibility, float3 f0)
+                          float metallic, float roughness, float ao, float3 f0)
 {
     VkrVulkanEnvironmentResult result =
         packet_environment_terms(frame, world_position, normal, horizon_normal,
                                  view, albedo, metallic, roughness, ao, f0);
-    // Keep the authored IBL floor in shadow, then add its sun-visible diffuse
-    // share through the existing CSM result. Specular IBL remains unchanged.
-    float sun_visible_diffuse_scale =
-        1.0f + saturate(directional_visibility) *
-                   max(frame.directional_color_intensity.w, 0.0f);
-    return result.diffuse * sun_visible_diffuse_scale + result.specular;
+    return result.diffuse + result.specular;
 }
 
 float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing)
@@ -698,7 +692,7 @@ float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing)
     {
         color += packet_environment(frame, input.world_position, normal,
                                     geometric_normal, view, base.rgb, metallic,
-                                    roughness, ao, directional_shadow, f0);
+                                    roughness, ao, f0);
     }
     else
     {

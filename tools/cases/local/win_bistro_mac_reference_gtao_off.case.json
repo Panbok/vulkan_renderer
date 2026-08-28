@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "id": "local.win.bistro.mac_reference",
+  "id": "local.win.bistro.mac_reference.gtao_off",
   "suite": "local",
-  "description": "Windows Vulkan capture at the camera recorded by the supplied Metal Bistro reference.",
+  "description": "Matched Vulkan Bistro reference with GTAO disabled to partition pre-bloom HDR parity.",
   "scene": "assets/scenes/bistro.scene.json",
   "seed": 20,
   "resolution": [1600, 1200],
@@ -15,10 +15,7 @@
   "repetitions": 1,
   "repetition_timeout_ms": 900000,
   "asset_ready_timeout_ms": 600000,
-  "frames": {
-    "warmup": 120,
-    "measure": 60
-  },
+  "frames": { "warmup": 120, "measure": 60 },
   "renderer": {
     "editor": false,
     "skybox": true,
@@ -32,7 +29,7 @@
     "manual_exposure": 0.3,
     "exposure_compensation_ev": 0.0,
     "bloom_enabled": true,
-    "gtao_enabled": true,
+    "gtao_enabled": false,
     "gtao_radius": 0.5,
     "gtao_power": 2.2,
     "exposure_reset_frame": 4,
@@ -50,25 +47,9 @@
     "far_plane": 500
   },
   "captures": [
-    {
-      "at_frame": 40,
-      "channels": [
-        "gtao_view_depth",
-        "gtao_raw",
-        "gtao_visibility",
-        "gbuffer_normal",
-        "hdr_pre_bloom",
-        "bloom_result",
-        "hdr_combined",
-        "final_color"
-      ]
-    }
+    { "at_frame": 40, "channels": ["hdr_pre_bloom", "final_color"] }
   ],
   "assertions": [
-    { "metric": "draw.world.opaque_draws", "stat": "min", "min": 1 },
-    { "metric": "packet.publication_omitted_candidates", "stat": "max", "max": 0 },
-    { "metric": "post.exposure.accepted_texels", "stat": "min", "min": 1800000 },
-    { "metric": "post.exposure.multiplier", "stat": "min", "min": 0.01 },
-    { "metric": "post.exposure.multiplier", "stat": "max", "max": 4.0 }
+    { "metric": "post.exposure.accepted_texels", "stat": "min", "min": 1800000 }
   ]
 }

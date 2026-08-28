@@ -1222,11 +1222,7 @@ void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
         VkrVulkanEnvironmentResult environment = packet_environment_terms(
             frame, world, normal, normal, view, diffuse_albedo, 0.0f,
             roughness, ao, f0);
-        float sun_visible_diffuse_scale =
-            1.0f + saturate(directional_shadow) *
-                       max(frame.directional_color_intensity.w, 0.0f);
-        color += environment.diffuse * sun_visible_diffuse_scale *
-                     gtao_visibility +
+        color += environment.diffuse * gtao_visibility +
                  environment.specular;
     }
     else

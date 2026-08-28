@@ -83,8 +83,11 @@ typedef struct VkrExposureMeteringConfig {
   float32_t min_ev;
   float32_t max_ev;
   /**
-   * Adaptation rates, named for the direction the displayed image moves:
-   * `brighten` applies when the target exposure is above the adapted exposure.
+   * Maximum EV change per second, named for the direction the displayed
+   * image
+   * moves: `brighten` applies when the target exposure is above the
+   * adapted
+   * exposure.
    */
   float32_t brighten_rate_per_second;
   float32_t darken_rate_per_second;

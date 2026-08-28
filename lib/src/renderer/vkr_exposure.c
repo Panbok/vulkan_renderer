@@ -209,10 +209,12 @@ vkr_exposure_resolve(const VkrExposureGpuMetering *metering,
   const float32_t rate = target_ev > previous_ev
                              ? metering->brighten_rate_per_second
                              : metering->darken_rate_per_second;
-  const float32_t alpha = 1.0f - expf(-rate * metering->delta_seconds);
+  const float32_t delta_ev = target_ev - previous_ev;
+  const float32_t maximum_step = rate * metering->delta_seconds;
   const float32_t adapted_ev =
-      metering->history_valid ? previous_ev + (target_ev - previous_ev) * alpha
-                              : target_ev;
+      metering->history_valid
+          ? previous_ev + Clamp(delta_ev, -maximum_step, maximum_step)
+          : target_ev;
 
   return (VkrExposureGpuState){
       .exposure_multiplier = exp2f(adapted_ev),

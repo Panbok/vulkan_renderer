@@ -53,6 +53,10 @@
     {
       "at_frame": 40,
       "channels": [
+        "gtao_view_depth",
+        "gtao_raw",
+        "gtao_visibility",
+        "gbuffer_normal",
         "hdr_pre_bloom",
         "bloom_result",
         "hdr_combined",

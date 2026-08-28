@@ -12,11 +12,14 @@ Bistro, cold/warm deferred, and focused Debug validation evidence now passes;
 matched authoritative performance and final-color owner acceptance remain
 open. The architecture specification remains the status authority.
 
-**Windows Vulkan closure (2026-08-28).** The apparent GTAO regression was a
-two-channel normal-map decode defect outside E, B, and G. One shared shader
+**Windows Vulkan follow-up (2026-08-28).** The apparent black-ground GTAO
+regression was a two-channel normal-map decode defect outside E, B, and G. One
+shared shader
 decoder now reconstructs positive tangent-space Z for Metal and Vulkan. The
 harness also waits for renderer asset publications, so its smoke fixtures are
-no longer empty on Windows. See §7.4 and
+no longer empty on Windows. A later matched Metal run proves static exposure is
+stable on both backends but leaves absolute pre-bloom HDR parity open. Exposure
+adaptation now obeys its authored EV-per-second limits. See §7.4 and
 [Windows Vulkan post-effect parity investigation](windows-vulkan-post-effect-parity-investigation.md).
 
 **Scope:** Three separate renderer features. They share HDR and deferred inputs,
@@ -113,9 +116,14 @@ path. Use a completion-safe history ring:
 4. invalidate the chain on resize, scene change, camera cut, mode change, or a
    discontinuity declared by the application.
 
-The adaptation equation must use a bounded frame delta and separate brighten
-and darken rates. Define which direction each rate applies to. A skipped frame
-must not publish state that the GPU never wrote.
+The adaptation equation uses a bounded frame delta and separate brighten and
+darken rates. Each rate is a maximum EV change per second:
+
+`adapted = previous + clamp(target - previous, -darken_rate * dt, brighten_rate * dt)`
+
+This is a constant-rate bound, not an exponential response coefficient. Define
+which direction each rate applies to. A skipped frame must not publish state
+that the GPU never wrote.
 
 ### 3.4 Determinism
 
@@ -165,8 +173,12 @@ maps to middle gray `0.18`, clamps target EV to `[-8, 8]`, and adapts at 3 EV/s
 toward a brighter display and 1 EV/s toward a darker display. The shared
 CPU/Slang kernel uses fractional percentile-bin weights, saturates
 out-of-range valid luminance into the edge bins, holds the previous decision
-for an empty histogram, and snaps an invalid history chain directly to the
-measured target.
+for an empty histogram, advances valid history by at most the selected rate
+times the bounded frame delta, and snaps an invalid history chain directly to
+the measured target. The former exponential interpolation treated those values
+as response coefficients and could move far more than 3 EV/s after a large
+luminance change; it violated the public unit contract and caused the reported
+bright pop when moving between dark and bright areas.
 
 The authored graph runs `Post.Exposure.Histogram` and
 `Post.Exposure.Resolve` after the mutually exclusive fullscreen/editor temporal
@@ -605,16 +617,34 @@ Full causation, fixes, and remaining parity work are in
 [Windows Vulkan post-effect parity investigation](windows-vulkan-post-effect-parity-investigation.md).
 
 Owner review after that closure found an unresolved absolute-exposure mismatch
-at darker Bistro cameras. Vulkan is temporally stable but converges to
-`2.987x` at the reported Windows camera and `3.166x` at the supplied
-Metal-reference camera. Disabling bloom preserves the pre-bloom HDR digest and
-the exposure decision, proving that bloom adds local halos but does not own the
-global brightness. Metal and Vulkan source bindings and shader arithmetic match
-statically. The remaining E3 acceptance gate is a current native Metal run of
-`local.mac.bistro.exposure_parity`, compared with the Vulkan
-`local.win.bistro.mac_reference` case. No backend-only compensation or shared
-metering retune is justified until that run separates HDR-input divergence from
-exposure-application divergence.
+at darker Bistro cameras. A native M1 Pro run of
+`local.mac.bistro.exposure_parity`, report digest
+`sha256:d9b3ed168b50250d9600aab4e88772c89c3a3b24895c936ac6ca29c1aecdd5f6`,
+finally supplies the exact-camera witness. Across 60 static samples Metal holds
+average log luminance `-3.309451`, target/adapted EV `+0.835520`, and multiplier
+`1.784500`. The matched RX 6700 XT run after the adaptation correction, report
+digest `sha256:e32f6f67c453133c503e4fb2c2276a8d0a77028c7c166926719c915c4ef242f7`,
+holds `-4.139783`, `+1.665852`, and `3.173010`. Both kernels are stable; Vulkan's
+pre-bloom input is about `0.830 EV` darker, so the shared resolve correctly adds
+about `0.830 EV` more exposure. Bloom is downstream of metering and remains
+excluded as the source.
+
+The comparison also removed a Vulkan-only diffuse-IBL term that multiplied
+environment diffuse by `1 + directional_visibility * directional_intensity`.
+Metal has no such term, and tying environment light to the camera-visible sun
+shadow made surface brightness view dependent. Removing it changes this static
+camera by only about `0.003 EV`, so it restores structural lighting parity but
+does not explain the absolute HDR gap.
+
+The remaining split requires matched GTAO-off Metal and Vulkan runs. The Vulkan
+control resolves `-3.450421` average log luminance and `+0.976490 EV`; without a
+Metal GTAO-off control, that number cannot distinguish an AO-output difference
+from an upstream lighting difference. The symmetric
+`local.mac.bistro.exposure_parity.gtao_off` and
+`local.win.bistro.mac_reference.gtao_off` cases now provide that gate. The
+GTAO-on pair also captures view depth, raw/final visibility, and exact G-buffer
+normals. No backend-only exposure compensation or shared metering retune is
+justified until the matched split is complete.
 
 ## 8. Primary references
 
