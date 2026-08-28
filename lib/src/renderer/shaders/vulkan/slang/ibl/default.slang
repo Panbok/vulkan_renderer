@@ -23,6 +23,7 @@ void ibl_equirect(uint3 position : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void ibl_irradiance(uint3 position : SV_DispatchThreadID)
 {
+    static const uint sample_count = 128u;
     VkrVulkanIblRoot* root = (VkrVulkanIblRoot*)g_push.root;
     if (position.x >= root.target_size || position.y >= root.target_size ||
         position.z >= 6u)
@@ -30,10 +31,9 @@ void ibl_irradiance(uint3 position : SV_DispatchThreadID)
     float2 uv = (float2(position.xy) + 0.5f) / float(root.target_size);
     float3 normal = normalize(cube_direction(position.z, uv));
     float3 irradiance = 0.0f;
-    uint count = max(root.sample_count, 1u);
-    for (uint i = 0u; i < count; ++i)
+    for (uint i = 0u; i < sample_count; ++i)
     {
-        float2 xi = hammersley(i, count);
+        float2 xi = hammersley(i, sample_count);
         float phi = 2.0f * vkr_pi * xi.x;
         float cos_theta = sqrt(1.0f - xi.y);
         float sin_theta = sqrt(xi.y);
@@ -44,13 +44,14 @@ void ibl_irradiance(uint3 position : SV_DispatchThreadID)
             g_samplers[root.source_sampler], direction, 0.0f).rgb;
     }
     g_storage_images[root.target_texture][position] =
-        float4(irradiance / float(count), 1.0f);
+        float4(irradiance / float(sample_count), 1.0f);
 }
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void ibl_prefilter(uint3 position : SV_DispatchThreadID)
 {
+    static const uint sample_count = 256u;
     VkrVulkanIblRoot* root = (VkrVulkanIblRoot*)g_push.root;
     if (position.x >= root.target_size || position.y >= root.target_size ||
         position.z >= 6u)
@@ -60,10 +61,9 @@ void ibl_prefilter(uint3 position : SV_DispatchThreadID)
     float3 view = normal;
     float3 color = 0.0f;
     float total_weight = 0.0f;
-    uint count = max(root.sample_count, 1u);
-    for (uint i = 0u; i < count; ++i)
+    for (uint i = 0u; i < sample_count; ++i)
     {
-        float3 half_vector = importance_ggx(hammersley(i, count), normal,
+        float3 half_vector = importance_ggx(hammersley(i, sample_count), normal,
                                             root.roughness);
         float3 light = normalize(2.0f * dot(view, half_vector) * half_vector -
                                  view);
@@ -74,7 +74,8 @@ void ibl_prefilter(uint3 position : SV_DispatchThreadID)
         float vo_h = max(dot(view, half_vector), 1e-6f);
         float pdf = distribution_ggx(no_h, root.roughness) * no_h /
                     max(4.0f * vo_h, 1e-6f);
-        float sample_solid_angle = 1.0f / (float(count) * max(pdf, 1e-6f));
+        float sample_solid_angle =
+            1.0f / (float(sample_count) * max(pdf, 1e-6f));
         float texel_solid_angle = 4.0f * vkr_pi /
             max(6.0f * float(root.source_face_size * root.source_face_size),
                 1.0f);

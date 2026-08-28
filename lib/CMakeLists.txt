@@ -102,6 +102,8 @@ vkr_add_vulkan_packet_shader("packet.gtao_denoise.comp" vk_gtao_denoise compute)
 vkr_add_vulkan_packet_shader("packet.bloom_combine.comp" vk_bloom_combine compute)
 vkr_add_vulkan_packet_shader("packet.picking_resolve.comp" vk_picking_resolve compute)
 vkr_add_vulkan_packet_shader("packet.transmission_shade.comp" vk_transmission_shade compute)
+vkr_add_vulkan_packet_shader("packet.transmission_compact.comp" vk_transmission_compact compute)
+vkr_add_vulkan_packet_shader("packet.transmission_compact_finalize.comp" vk_transmission_compact_finalize compute)
 vkr_add_vulkan_packet_shader("packet.transmission_coverage.comp" vk_transmission_coverage compute)
 add_custom_target(vkr_vulkan_packet_shaders DEPENDS
     ${VKR_VULKAN_PACKET_SHADER_OUTPUTS})

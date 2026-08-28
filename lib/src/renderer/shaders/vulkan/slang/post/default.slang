@@ -6,9 +6,8 @@ float4 vkr_post_sample(uint texture_index, uint sampler_index, float2 uv,
 {
     float4 source = g_textures[texture_index].SampleLevel(
         g_samplers[sampler_index], uv, 0.0f);
-    if (tonemap)
-        source.rgb =
-            vkr_aces_fitted(max(source.rgb * exposure, 0.0f));
+    source.rgb = max(source.rgb * exposure, 0.0f);
+    source.rgb = tonemap ? vkr_aces_fitted(source.rgb) : saturate(source.rgb);
     return source;
 }
 

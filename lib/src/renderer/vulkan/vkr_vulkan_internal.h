@@ -178,6 +178,14 @@
 #define VKR_VULKAN_PACKET_TRANSMISSION_SHADE_COMP_SPV                          \
   "packet.transmission_shade.comp.spv"
 #endif
+#ifndef VKR_VULKAN_PACKET_TRANSMISSION_COMPACT_COMP_SPV
+#define VKR_VULKAN_PACKET_TRANSMISSION_COMPACT_COMP_SPV                        \
+  "packet.transmission_compact.comp.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_TRANSMISSION_COMPACT_FINALIZE_COMP_SPV
+#define VKR_VULKAN_PACKET_TRANSMISSION_COMPACT_FINALIZE_COMP_SPV               \
+  "packet.transmission_compact_finalize.comp.spv"
+#endif
 #ifndef VKR_VULKAN_PACKET_TRANSMISSION_COVERAGE_COMP_SPV
 #define VKR_VULKAN_PACKET_TRANSMISSION_COVERAGE_COMP_SPV                       \
   "packet.transmission_coverage.comp.spv"
@@ -277,6 +285,8 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_SDSM,
   VKR_VULKAN_DEFERRED_PIPELINE_PICKING,
   VKR_VULKAN_DEFERRED_PIPELINE_TRANSMISSION,
+  VKR_VULKAN_DEFERRED_PIPELINE_TRANSMISSION_COMPACT,
+  VKR_VULKAN_DEFERRED_PIPELINE_TRANSMISSION_COMPACT_FINALIZE,
   VKR_VULKAN_DEFERRED_PIPELINE_TRANSMISSION_COVERAGE,
   VKR_VULKAN_DEFERRED_PIPELINE_EXPOSURE_CLEAR,
   VKR_VULKAN_DEFERRED_PIPELINE_EXPOSURE_HISTOGRAM,
@@ -550,6 +560,8 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanTransmissionRoot {
   uint64_t vertices;
   uint64_t indices;
   uint64_t compaction_state;
+  uint64_t pixel_list;
+  uint64_t compact_counts;
   uint64_t frame;
   uint32_t frame_address_padding[2];
   Mat4 view_projection;
@@ -573,7 +585,25 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanTransmissionRoot {
   uint32_t geometry_count;
   uint32_t material_count;
   uint32_t instance_count;
+  uint32_t pixel_capacity;
+  uint32_t compact_layer;
+  uint32_t compact_enabled;
+  uint32_t reserved;
 } VkrVulkanTransmissionRoot;
+
+typedef struct VKR_SIMD_ALIGN VkrVulkanTransmissionCompactRoot {
+  uint64_t pixel_list;
+  uint64_t covered_pixels;
+  uint64_t overflow_counts;
+  uint64_t indirect_arguments;
+  uint32_t vbuffer_texture;
+  uint32_t source_texture;
+  uint32_t destination_texture;
+  uint32_t extent[2];
+  uint32_t layer;
+  uint32_t capacity;
+  uint32_t reserved[5];
+} VkrVulkanTransmissionCompactRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanTransmissionCoverageRoot {
   uint64_t covered_pixels;
@@ -827,12 +857,14 @@ _Static_assert(sizeof(VkrVulkanSdsmState) == VKR_VULKAN_SDSM_STATE_SIZE,
                "Deferred SDSM-state ABI size drift");
 _Static_assert(sizeof(VkrVulkanPickingRoot) == 64u,
                "Deferred picking-root ABI size drift");
-_Static_assert(sizeof(VkrVulkanTransmissionRoot) == 416u,
+_Static_assert(sizeof(VkrVulkanTransmissionRoot) == 448u,
                "Deferred transmission-root ABI size drift");
 _Static_assert(offsetof(VkrVulkanTransmissionRoot, geometry_rows) == 24u,
                "Deferred transmission-root address ABI drift");
-_Static_assert(offsetof(VkrVulkanTransmissionRoot, view_projection) == 80u,
+_Static_assert(offsetof(VkrVulkanTransmissionRoot, view_projection) == 96u,
                "Deferred transmission-root matrix ABI drift");
+_Static_assert(sizeof(VkrVulkanTransmissionCompactRoot) == 80u,
+               "Deferred transmission-compact root ABI size drift");
 _Static_assert(sizeof(VkrVulkanTransmissionCoverageRoot) == 32u,
                "Deferred transmission-coverage root ABI drift");
 _Static_assert(sizeof(VkrVulkanIblRoot) == 32u, "IBL-root ABI drift");
@@ -1543,6 +1575,9 @@ bool8_t vkr_vk_record_deferred_picking(VkrVulkanRenderer *renderer,
 bool8_t vkr_vk_record_deferred_transmission(VkrVulkanRenderer *renderer,
                                             VkCommandBuffer command,
                                             const VkrRgPass *pass);
+bool8_t vkr_vk_record_deferred_transmission_compact(VkrVulkanRenderer *renderer,
+                                                    VkCommandBuffer command,
+                                                    const VkrRgPass *pass);
 bool8_t
 vkr_vk_record_deferred_transmission_coverage(VkrVulkanRenderer *renderer,
                                              VkCommandBuffer command,

@@ -1431,7 +1431,7 @@ vkr_internal bool8_t vkr_vk_record_graph_pass(VkrVulkanRenderer *renderer,
     return vkr_vk_record_deferred_transmission_coverage(renderer, command,
                                                         pass);
   case VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_COMPACT:
-    return true_v;
+    return vkr_vk_record_deferred_transmission_compact(renderer, command, pass);
   case VKR_VULKAN_GRAPH_EXECUTOR_PICKING_READBACK:
     // The one-pixel copy is recorded after capture selection in record_draw().
     return true_v;

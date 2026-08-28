@@ -14,7 +14,7 @@
   "repetitions": 1,
   "repetition_timeout_ms": 120000,
   "asset_ready_timeout_ms": 60000,
-  "frames": { "warmup": 2, "measure": 6 },
+  "frames": { "warmup": 30, "measure": 6 },
   "renderer": {
     "editor": false,
     "skybox": true,

@@ -76,6 +76,8 @@ typedef struct VkrVulkanRendererConfig {
   bool8_t fxaa_enabled;
   /** Previous-frame HZB occlusion is independent from frustum culling. */
   bool8_t hzb_enabled;
+  /** Bounded transmission scan plus indirect sparse shading. */
+  bool8_t transmission_compact_enabled;
   bool8_t enable_validation;
   bool8_t enable_synchronization_validation;
   bool8_t enable_gpu_assisted;
@@ -98,6 +100,7 @@ typedef struct VkrVulkanResult {
   uint32_t transmission_gpu_bucket_counts[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
   uint32_t transmission_gpu_overflow_count;
   uint32_t transmission_gpu_occlusion_culled_count;
+  uint32_t transmission_compact_overflow_count;
   uint32_t transmission_covered_pixels[VKR_GPU_TRANSMISSION_LAYER_COUNT];
   uint32_t transmission_coverage_extent[2];
   uint32_t shadow_gpu_visible_count[VKR_SHADOW_CASCADE_COUNT_MAX];

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-24
+updated: 2026-08-29
 authority: spec
 ---
 
@@ -8,7 +8,7 @@ authority: spec
 
 The P0-P3 graph, lifetime, format, shared-ABI, and megabuffer foundations are
 implemented on both backends. Metal P4, P6, P8, P10, P12, P14, P16, P17, P18,
-and the P19 transmission-compaction path now ship in the accepted
+and the measured P19 transmission-compaction path ship in the accepted
 P20 default topology: GPU frustum/HZB culling and four-bucket ICB
 submission, opaque and transmission visibility buffers, compute material
 resolve and deferred lighting, four-layer depth-peeled transmission shading, a
@@ -31,7 +31,8 @@ separate transmission debug composite for the P20 visual threshold. P20 was
 owner-accepted on both backends on 2026-08-20 without promoting a snapshot
 baseline. P21 is implemented: the renderer now exposes one world topology,
 with no runtime selector or legacy whole-frame fallback.
-P19 now provides the default Metal `Transmission.Compact` path. Each layer uses
+P19 now provides the default `Transmission.Compact` path on both backends,
+selected from the existing Metal measurements. Each layer uses
 one 8×8 scan to copy its background, compact final visibility winners into a
 viewport-sized bounded pixel list, accumulate count/overflow, and invoke the
 one-thread indirect-argument finalizer in the same compute encoder after an
@@ -40,7 +41,7 @@ dispatch consumes the list. One list and one argument buffer are reused
 serially across layers in each completion slot. This consolidation reduces the
 compact chain from twelve graph passes to eight. Completion-gated coverage and
 overflow metrics remain available, and `VKR_TRANSMISSION_COMPACT_DISABLED=1`
-selects the retained full-screen Metal diagnostic path. World and editor
+selects the retained full-screen diagnostic path. Metal world and editor
 captures are byte-identical to full-screen controls; the complete CPU suite,
 serial API-plus-shader validation, and isolated cold/warm cache runs pass. A
 matched local dirty-tree Release observation reports 3.204 ms of
@@ -553,7 +554,7 @@ GPU timing showed that sparse coverage made the full-screen dispatch material,
 so P19 adds a `Transmission.Compact` scan of each final
 transmission vbuffer. It produces a bounded pixel list, count, overflow, and
 indirect dispatch arguments while copying the layer background in the same
-viewport traversal. On Metal, the scan encoder invokes the one-thread finalizer
+viewport traversal. Each backend invokes the one-thread finalizer
 after an explicit dispatch-to-dispatch device-visible barrier; the finalizer is
 not a separate graph pass. The buffers follow the same capacity,
 `INDIRECT_READ`, and completion rules as draw arguments. Raster fragments do
@@ -880,15 +881,16 @@ fully published scene.
 Vulkan records each `pass.transmission.coverage` node with an 8×8 reduction and
 publishes the four counters through the existing completion-gated frame-slot
 readback. The shared authored diagnostics record remains 112 bytes: the first
-80 bytes are draw compaction, the next 16 are layer coverage, and Metal P19 owns
-the final 16-byte compact-overflow tail. Focused Release profile
+80 bytes are draw compaction, the next 16 are layer coverage, and the final 16
+are per-layer compact overflow. Focused Release profile
 `20260820T111913.226Z-000673` reports stable 15,100 / 7,572 / 0 / 0 covered
 pixels at 640×480 across 66 samples, with valid timestamps for all four coverage
 passes and zero invalid resolve or overflow. Debug synchronization-validation
 profile `20260820T112108.929Z-000040` passes two repetitions without a VUID,
-validation error, device loss, renderer error, or fatal marker. P19's
-`Transmission.Compact` remains Metal-only by ADR-028. Its conditional compact
-nodes are unrealized on Vulkan, which retains the full-screen shade chain.
+validation error, device loss, renderer error, or fatal marker. Vulkan now
+lowers the conditional P19 compact nodes, roots, barriers, and indirect shade
+dispatch. That source/ABI alignment still needs a native Windows execution and
+validation witness; this macOS change makes no Vulkan performance claim.
 
 Windows Vulkan P20 stabilization is implemented and accepted as part of the
 cross-backend P20 boundary. The shared typed whole-packet eligibility
@@ -980,8 +982,8 @@ both `MTL_DEBUG_LAYER=1` and `MTL_SHADER_VALIDATION=1` and no validator
 diagnostic. Metal validation children must remain strictly serial; the earlier
 watchdog incidents still prohibit broad or parallel validation suites.
 
-The P19 Metal slice adds explicit bounded transmission-pixel compaction by
-default. `VKR_TRANSMISSION_COMPACT_DISABLED=1` is the focused diagnostic
+The P19 slice adds explicit bounded transmission-pixel compaction by default on
+both backends. `VKR_TRANSMISSION_COMPACT_DISABLED=1` is the focused diagnostic
 rollback. A viewport-sized packed
 `uint32_t` coordinate list and 12-byte indirect-argument buffer are allocated
 only when selected and reused serially for layers 3 through 0 in each completion
@@ -990,8 +992,8 @@ background copy into its 8×8 visibility scan, reserves the list once per
 threadgroup, bounds every write, and records overflow per layer. The same
 compute encoder then inserts a dispatch-to-dispatch device-visible barrier and
 invokes a one-thread finalize kernel to write 64-thread indirect group counts;
-sparse shade consumes the list. The full-screen path remains the explicit Metal
-diagnostic rollback and the Vulkan production path. The harness waits
+sparse shade consumes the list. The full-screen path remains the explicit
+diagnostic rollback. The harness waits
 until a completion result built from the active scene before freezing its pass
 catalog, and normal Metal frames retain bounded diagnostics with their owning
 command slot, so coverage and overflow publish without a synchronous wait.
@@ -1387,7 +1389,7 @@ suite. The CPU suite alone is never evidence of legal GPU use.
 | Multi-view culling regresses shadow submission cost | P17 matched Release profiles, per-view candidate/command counts | Retain CPU cascade submission and accept the §11.1 amendment; do not enter P21 on an unaccepted result |
 | HZB produces any false-negative omission | Visibility-reference comparison on motion/invalidation cases | Disable HZB and retain frustum-only GPU culling |
 | Material resolve plus G-buffer loses to forward shading | Complete P8–P11 GPU/frame evidence | Try a measured fused visibility-shading variant or keep the legacy forward renderer; do not enter P20/P21 |
-| Full-screen sparse transmission dispatch is material | Coverage, overflow, pass timing, and owner frame wall | Metal defaults to the measured compact-list path; retain the full-screen diagnostic rollback and re-evaluate on regressions or materially denser coverage |
+| Full-screen sparse transmission dispatch is material | Coverage, overflow, pass timing, and owner frame wall | Both backends default to the compact-list path selected from Metal measurements; retain the full-screen diagnostic rollback and re-evaluate on regressions or materially denser coverage |
 | In-flight memory exceeds the target budget | Graph resource stats including multiplicity/history | Reduce formats/history or stop; “20 B/pixel” is not a budget defense |
 
 Classic rasterized G-buffer deferred remains the simpler fallback if analytic
@@ -1418,6 +1420,7 @@ measurement, including the doubled geometry work, supports it.
 | `docs/README.md`, ADR index, this specification, and ADR-028 | Keep status and purpose aligned with shipped phases; P21 must explicitly record that the legacy forward renderer was deleted |
 
 The architecture spec remains the shipping-status authority. This spec and
-ADR-028 are implemented after P21. The P19 Metal compact path is default-on
-after its eight-pass consolidation; the full-screen diagnostic rollback and
-Vulkan production branch preserve the same bounded four-layer topology.
+ADR-028 are implemented after P21. The P19 compact path is default-on for both
+backends after its eight-pass consolidation; the full-screen diagnostic
+rollback preserves the same bounded four-layer topology. Metal owns the
+measured selection evidence; native Vulkan compact acceptance remains open.

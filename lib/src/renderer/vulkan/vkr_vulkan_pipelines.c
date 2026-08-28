@@ -332,6 +332,129 @@ typedef struct VkrVulkanReflectedField {
 #define VKR_VULKAN_REFLECTED_FIELD(type, member)                               \
   {#member, (uint32_t)offsetof(type, member)}
 
+vkr_internal bool8_t vkr_vk_validate_root_abi(
+    VkrVulkanRenderer *renderer, const char *shader, const char *entry,
+    const VkrVulkanReflectedField *fields, uint32_t field_count,
+    uint32_t expected_size) {
+  FilePath shader_path =
+      file_path_create(shader, renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  if (file_load_spirv_shader(&shader_path, renderer->allocator, &bytes,
+                             &size) != FILE_ERROR_NONE ||
+      size == 0u)
+    return false_v;
+  SpvReflectShaderModule module;
+  MemZero(&module, sizeof(module));
+  const SpvReflectResult created =
+      spvReflectCreateShaderModule((size_t)size, bytes, &module);
+  vkr_allocator_free(renderer->allocator, bytes, size,
+                     VKR_ALLOCATOR_MEMORY_TAG_FILE);
+  if (created != SPV_REFLECT_RESULT_SUCCESS)
+    return false_v;
+
+  uint32_t count = 0u;
+  SpvReflectBlockVariable *blocks[1] = {0};
+  bool8_t valid =
+      spvReflectEnumerateEntryPointPushConstantBlocks(
+          &module, entry, &count, NULL) == SPV_REFLECT_RESULT_SUCCESS &&
+      count == 1u &&
+      spvReflectEnumerateEntryPointPushConstantBlocks(
+          &module, entry, &count, blocks) == SPV_REFLECT_RESULT_SUCCESS;
+  valid &= blocks[0] && blocks[0]->size == sizeof(VkrVulkanPushConstants);
+  SpvReflectBlockVariable *root =
+      valid ? vkr_vk_reflect_member(blocks[0], "root") : NULL;
+  for (uint32_t i = 0u; i < field_count; ++i)
+    valid &= vkr_vk_reflect_member_offset(root, fields[i].name,
+                                          fields[i].offset, NULL);
+  valid &= vkr_vk_reflected_struct_size(root) == expected_size;
+  spvReflectDestroyShaderModule(&module);
+  return valid;
+}
+
+vkr_internal bool8_t
+vkr_vk_validate_transmission_root_abi(VkrVulkanRenderer *renderer) {
+  static const VkrVulkanReflectedField shade_fields[] = {
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, visible_rows),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, materials),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, reserved_address),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, geometry_rows),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, instances),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, vertices),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, indices),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, compaction_state),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, pixel_list),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, compact_counts),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, frame),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot,
+                                 frame_address_padding),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, view_projection),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot,
+                                 inverse_view_projection),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, vbuffer_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, depth_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, feedback_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, feedback_sampler),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, output_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, layer),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, extent),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot,
+                                 previous_transforms),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot,
+                                 previous_transform_address_padding),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot,
+                                 current_view_projection),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot,
+                                 previous_view_projection),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, motion_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, validity_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, history_valid),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot,
+                                 previous_frame_index),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, visible_capacity),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, geometry_count),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, material_count),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, instance_count),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, pixel_capacity),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, compact_layer),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, compact_enabled),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, reserved),
+  };
+  static const VkrVulkanReflectedField compact_fields[] = {
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionCompactRoot, pixel_list),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionCompactRoot,
+                                 covered_pixels),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionCompactRoot,
+                                 overflow_counts),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionCompactRoot,
+                                 indirect_arguments),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionCompactRoot,
+                                 vbuffer_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionCompactRoot,
+                                 source_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionCompactRoot,
+                                 destination_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionCompactRoot, extent),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionCompactRoot, layer),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionCompactRoot, capacity),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionCompactRoot, reserved),
+  };
+  return vkr_vk_validate_root_abi(
+             renderer, VKR_VULKAN_PACKET_TRANSMISSION_SHADE_COMP_SPV,
+             "vk_transmission_shade", shade_fields, ArrayCount(shade_fields),
+             sizeof(VkrVulkanTransmissionRoot)) &&
+         vkr_vk_validate_root_abi(
+             renderer, VKR_VULKAN_PACKET_TRANSMISSION_COMPACT_COMP_SPV,
+             "vk_transmission_compact", compact_fields,
+             ArrayCount(compact_fields),
+             sizeof(VkrVulkanTransmissionCompactRoot)) &&
+         vkr_vk_validate_root_abi(
+             renderer, VKR_VULKAN_PACKET_TRANSMISSION_COMPACT_FINALIZE_COMP_SPV,
+             "vk_transmission_compact_finalize", compact_fields,
+             ArrayCount(compact_fields),
+             sizeof(VkrVulkanTransmissionCompactRoot));
+}
+
 vkr_internal bool8_t
 vkr_vk_validate_gtao_root_abi(VkrVulkanRenderer *renderer) {
   FilePath shader_path =
@@ -454,7 +577,8 @@ vkr_internal bool8_t vkr_vk_create_shader_module(VkrVulkanRenderer *renderer,
 
 bool8_t vkr_vk_create_pipelines(VkrVulkanRenderer *renderer) {
   if (!vkr_vk_validate_packet_root_abi(renderer) ||
-      !vkr_vk_validate_gtao_root_abi(renderer)) {
+      !vkr_vk_validate_gtao_root_abi(renderer) ||
+      !vkr_vk_validate_transmission_root_abi(renderer)) {
     return false_v;
   }
   const VkrVulkanDescriptorLayout *resource_layout =
@@ -797,6 +921,8 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
           VKR_VULKAN_PACKET_SDSM_REDUCE_COMP_SPV,
           VKR_VULKAN_PACKET_PICKING_RESOLVE_COMP_SPV,
           VKR_VULKAN_PACKET_TRANSMISSION_SHADE_COMP_SPV,
+          VKR_VULKAN_PACKET_TRANSMISSION_COMPACT_COMP_SPV,
+          VKR_VULKAN_PACKET_TRANSMISSION_COMPACT_FINALIZE_COMP_SPV,
           VKR_VULKAN_PACKET_TRANSMISSION_COVERAGE_COMP_SPV,
           VKR_VULKAN_PACKET_EXPOSURE_CLEAR_COMP_SPV,
           VKR_VULKAN_PACKET_EXPOSURE_HISTOGRAM_COMP_SPV,
@@ -824,6 +950,8 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
           "vk_sdsm_reduce",
           "vk_picking_resolve",
           "vk_transmission_shade",
+          "vk_transmission_compact",
+          "vk_transmission_compact_finalize",
           "vk_transmission_coverage",
           "vk_exposure_clear",
           "vk_exposure_histogram",

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-24
+updated: 2026-08-29
 authority: adr
 ---
 
@@ -61,10 +61,14 @@ work versus 6.095 ms for the full-screen branch, and a timestamp-off frame-wall
 mean of 20.279 ms versus a contemporaneous 20.943 ms full-screen control. These
 runs remain non-authoritative because they are local, dirty, and warmup-
 unstable; the decision is a measured local default selection, not a portable
-speed claim. `VKR_TRANSMISSION_COMPACT_DISABLED=1` retains a focused Metal
-diagnostic rollback. No Vulkan P19 implementation is accepted. P21 was
-authorized and implemented on 2026-08-20. Metal validation processes must
-remain strictly serial.
+speed claim. Vulkan now lowers the same authored eight-pass scan/finalize and
+indirect-shade branch, including bounded counts and overflow, while preserving
+the API-native descriptor and synchronization model. This is source and ABI
+alignment, not portable performance evidence: native Windows Vulkan execution
+and validation remain pending. `VKR_TRANSMISSION_COMPACT_DISABLED=1` retains a
+focused full-screen diagnostic rollback on both backends. P21 was authorized
+and implemented on 2026-08-20. Metal validation processes must remain strictly
+serial.
 
 The native Windows Vulkan P21 gate ran on 2026-08-21 and passed after one
 repair. P21's deletion had collapsed the Vulkan candidate-packing tail into a
@@ -190,11 +194,12 @@ The editor path uses the equivalent
 **Use a fused, initially full-screen transmission resolve.** A separate
 visibility buffer retains only the nearest transmissive surface after a
 declared opaque-depth seed. The compute pass exits on empty pixels. Pixel-list
-compaction remains implementation-owned. The Metal P19 path uses an explicit
+compaction remains implementation-owned. The P19 path uses an explicit
 scan producer with bounded list/count/overflow/dispatch buffers, fuses the
 required background copy and indirect-argument finalization into that scan,
-and makes sparse indirect shading the Metal default. The full-screen resolve is
-retained only as a focused diagnostic rollback; Vulkan continues to use it.
+and makes sparse indirect shading the default on both backends. Metal remains
+the measured decision authority; Vulkan's native runtime acceptance is still
+open. The full-screen resolve is retained only as a focused diagnostic rollback.
 
 **Decide single-layer transmission fidelity before building on it, and resolve
 a rejection with bounded depth peeling rather than a retained forward path.**

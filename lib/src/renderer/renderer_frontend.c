@@ -770,6 +770,8 @@ renderer_impl_vulkan_initialize(void *state, VkrWindow *window, uint32_t width,
       .max_graph_passes = VKR_RENDERER_IMPL_MAX_GRAPH_PASSES,
       .fxaa_enabled = !vkr_renderer_env_enabled("VKR_FXAA_DISABLED"),
       .hzb_enabled = !vkr_renderer_env_enabled("VKR_HZB_DISABLED"),
+      .transmission_compact_enabled =
+          !vkr_renderer_env_enabled("VKR_TRANSMISSION_COMPACT_DISABLED"),
 #if !defined(NDEBUG)
       .enable_validation = true_v,
 #endif
@@ -3053,6 +3055,8 @@ static bool8_t renderer_impl_vulkan_poll_submit_result(
       .transmission_gpu_overflow_count = source.transmission_gpu_overflow_count,
       .transmission_gpu_occlusion_culled_count =
           source.transmission_gpu_occlusion_culled_count,
+      .transmission_compact_overflow_count =
+          source.transmission_compact_overflow_count,
       .transmission_coverage_valid = source.has_transmission_coverage,
       .hzb_history_valid = source.hzb_history_valid,
       .shadow_depth_range = source.shadow_depth_range,

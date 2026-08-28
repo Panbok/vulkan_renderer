@@ -237,24 +237,22 @@ vkr_metal_packet_gpu_draw_prefix(constant VkrMetalPacketGpuDrawRoot &root
   device VkrGpuDrawCompactionState &state = root.compaction_state[view_index];
   uint command_base =
       (view_index % root.icb_view_group_size) * root.visible_capacity;
+  uint bucket_capacity = root.visible_capacity / 4u;
   uint visible_count = 0u;
+  uint overflow_count = 0u;
   for (uint bucket = 0u; bucket < 4u; ++bucket) {
     uint bucket_count = atomic_load_explicit(&state.bucket_counts[bucket],
                                              memory_order_relaxed);
+    uint written_count = min(bucket_count, bucket_capacity);
     state.execution_ranges[bucket] =
-        uint2(command_base + visible_count, bucket_count);
-    visible_count += bucket_count;
+        uint2(command_base + visible_count, written_count);
+    visible_count += written_count;
+    overflow_count += bucket_count - written_count;
     atomic_store_explicit(&state.bucket_cursors[bucket], 0u,
                           memory_order_relaxed);
   }
   state.visible_count = visible_count;
-  const bool overflow = visible_count > root.visible_capacity;
-  if (overflow) {
-    for (uint bucket = 0u; bucket < 4u; ++bucket)
-      state.execution_ranges[bucket].y = 0u;
-  }
-  atomic_store_explicit(&state.overflow_count,
-                        overflow ? visible_count - root.visible_capacity : 0u,
+  atomic_store_explicit(&state.overflow_count, overflow_count,
                         memory_order_relaxed);
 }
 
@@ -275,14 +273,13 @@ kernel void vkr_metal_packet_gpu_draw_encode(
   uint bucket = classification - 1u;
   uint local_index = atomic_fetch_add_explicit(&state.bucket_cursors[bucket],
                                                1u, memory_order_relaxed);
+  uint bucket_capacity = root.visible_capacity / 4u;
+  if (local_index >= bucket_capacity)
+    return;
   uint command_base =
       (view_index % root.icb_view_group_size) * root.visible_capacity;
   uint visible_index =
       state.execution_ranges[bucket].x - command_base + local_index;
-  if (visible_index >= root.visible_capacity) {
-    atomic_fetch_add_explicit(&state.overflow_count, 1u, memory_order_relaxed);
-    return;
-  }
 
   const device VkrGpuCandidateDrawRow &candidate = root.candidates[index];
   root.visible_rows[view_base + visible_index] = {

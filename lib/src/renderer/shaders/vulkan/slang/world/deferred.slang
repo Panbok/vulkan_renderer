@@ -232,6 +232,8 @@ struct VkrVkTransmissionRoot
     VkrPackedStaticVertex *vertices;
     uint *indices;
     VkrVkDrawState *compaction_state;
+    uint *pixel_list;
+    uint *compact_counts;
     VkrVulkanPacketFrameRoot *frame;
     uint2 frame_address_padding;
     float4x4 view_projection;
@@ -255,6 +257,25 @@ struct VkrVkTransmissionRoot
     uint geometry_count;
     uint material_count;
     uint instance_count;
+    uint pixel_capacity;
+    uint compact_layer;
+    uint compact_enabled;
+    uint reserved;
+};
+
+struct VkrVkTransmissionCompactRoot
+{
+    uint *pixel_list;
+    uint *covered_pixels;
+    uint *overflow_counts;
+    uint *indirect_arguments;
+    uint vbuffer_texture;
+    uint source_texture;
+    uint destination_texture;
+    uint2 extent;
+    uint layer;
+    uint capacity;
+    uint reserved[5];
 };
 
 struct VkrVkTransmissionCoverageRoot
@@ -322,6 +343,11 @@ struct VkrVkTransmissionCoveragePush
     VkrVkTransmissionCoverageRoot *root;
     uint2 reserved;
 };
+struct VkrVkTransmissionCompactPush
+{
+    VkrVkTransmissionCompactRoot *root;
+    uint2 reserved;
+};
 
 [[vk::push_constant]] ConstantBuffer<VkrVkCullPush> g_cull_push;
 [[vk::push_constant]] ConstantBuffer<VkrVkRasterPush> g_raster_push;
@@ -337,6 +363,8 @@ struct VkrVkTransmissionCoveragePush
 [[vk::push_constant]] ConstantBuffer<VkrVkTransmissionPush> g_transmission_push;
 [[vk::push_constant]] ConstantBuffer<VkrVkTransmissionCoveragePush>
     g_transmission_coverage_push;
+[[vk::push_constant]] ConstantBuffer<VkrVkTransmissionCompactPush>
+    g_transmission_compact_push;
 
 static VkrVkCullRoot *vkr_vk_cull_root() { return g_cull_push.root; }
 
@@ -426,11 +454,10 @@ static bool vkr_vk_candidate_occluded(VkrVkCullRoot *root,
 void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
 {
     VkrVkCullRoot *root = vkr_vk_cull_root();
-    uint total = root.candidate_count * root.view_count;
-    if (thread_id.x >= total)
+    uint candidate_index = thread_id.x;
+    uint view_index = thread_id.y;
+    if (candidate_index >= root.candidate_count || view_index >= root.view_count)
         return;
-    uint view_index = thread_id.x / root.candidate_count;
-    uint candidate_index = thread_id.x - view_index * root.candidate_count;
     VkrGpuCandidateDrawRow candidate = root.candidates[candidate_index];
     uint required_flags = view_index == 0u ? root.camera_required_flags
                                            : root.shadow_required_flags;
@@ -473,7 +500,7 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
 }
 
 [shader("compute")]
-[numthreads(1, 1, 1)]
+[numthreads(5, 1, 1)]
 void vk_gpu_draw_prefix(uint3 thread_id : SV_DispatchThreadID)
 {
     VkrVkCullRoot *root = vkr_vk_cull_root();
@@ -501,11 +528,10 @@ void vk_gpu_draw_prefix(uint3 thread_id : SV_DispatchThreadID)
 void vk_gpu_draw_encode(uint3 thread_id : SV_DispatchThreadID)
 {
     VkrVkCullRoot *root = vkr_vk_cull_root();
-    uint total = root.candidate_count * root.view_count;
-    if (thread_id.x >= total)
+    uint candidate_index = thread_id.x;
+    uint view_index = thread_id.y;
+    if (candidate_index >= root.candidate_count || view_index >= root.view_count)
         return;
-    uint view_index = thread_id.x / root.candidate_count;
-    uint candidate_index = thread_id.x - view_index * root.candidate_count;
     uint classification_index =
         view_index * root.candidate_capacity + candidate_index;
     uint bucket = root.classifications[classification_index];
@@ -1498,7 +1524,7 @@ void vk_hzb_build(uint3 thread_id : SV_DispatchThreadID)
         float4(maximum, 0.0f, 0.0f, 0.0f);
 }
 [shader("compute")]
-[numthreads(8, 8, 1)]
+[numthreads(16, 16, 1)]
 void vk_sdsm_reduce(uint3 thread_id : SV_DispatchThreadID)
 {
     VkrVkSdsmRoot *root = g_sdsm_push.root;
@@ -1556,27 +1582,106 @@ void vk_picking_resolve(uint3 thread_id : SV_DispatchThreadID)
     g_storage_uint_2d[root.output_texture][root.pixel] = identifier;
 }
 
+// The 8x8 group can contain at most 64 subgroups. Do not assume a native
+// subgroup width: Vulkan only guarantees the device-reported width at runtime.
+groupshared uint g_transmission_compact_wave_totals[64];
+groupshared uint g_transmission_compact_group_base;
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_transmission_compact(uint3 thread_id : SV_DispatchThreadID,
+                             uint group_index : SV_GroupIndex)
+{
+    VkrVkTransmissionCompactRoot *root = g_transmission_compact_push.root;
+    bool in_extent = all(thread_id.xy < root.extent);
+    if (in_extent)
+        g_storage_2d[root.destination_texture][thread_id.xy] =
+            g_storage_2d[root.source_texture][thread_id.xy];
+    bool covered = in_extent &&
+        g_storage_uint2_images[root.vbuffer_texture]
+                              [uint3(thread_id.xy, root.layer)].x != 0u;
+    uint wave_size = WaveGetLaneCount();
+    uint wave_index = group_index / wave_size;
+    uint wave_count = (64u + wave_size - 1u) / wave_size;
+    uint lane_offset = WavePrefixCountBits(covered);
+    uint wave_total = WaveActiveCountBits(covered);
+    if (WaveIsFirstLane())
+        g_transmission_compact_wave_totals[wave_index] = wave_total;
+    GroupMemoryBarrierWithGroupSync();
+
+    uint wave_base = 0u;
+    for (uint i = 0u; i < wave_index; ++i)
+        wave_base += g_transmission_compact_wave_totals[i];
+    if (group_index == 0u)
+    {
+        uint group_total = 0u;
+        for (uint i = 0u; i < wave_count; ++i)
+            group_total += g_transmission_compact_wave_totals[i];
+        InterlockedAdd(root.covered_pixels[root.layer], group_total,
+                       g_transmission_compact_group_base);
+        uint writable = g_transmission_compact_group_base < root.capacity
+            ? min(group_total,
+                  root.capacity - g_transmission_compact_group_base)
+            : 0u;
+        if (writable < group_total)
+        {
+            uint ignored;
+            InterlockedAdd(root.overflow_counts[root.layer],
+                           group_total - writable, ignored);
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (covered)
+    {
+        uint destination =
+            g_transmission_compact_group_base + wave_base + lane_offset;
+        if (destination < root.capacity)
+            root.pixel_list[destination] =
+                (thread_id.y << 16u) | thread_id.x;
+    }
+}
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void vk_transmission_compact_finalize(uint3 thread_id : SV_DispatchThreadID)
+{
+    VkrVkTransmissionCompactRoot *root = g_transmission_compact_push.root;
+    uint count = min(root.covered_pixels[root.layer], root.capacity);
+    root.indirect_arguments[0] = (count + 63u) / 64u;
+    root.indirect_arguments[1] = 1u;
+    root.indirect_arguments[2] = 1u;
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
 {
     VkrVkTransmissionRoot *root = g_transmission_push.root;
-    if (any(thread_id.xy >= root.extent))
+    uint2 pixel = thread_id.xy;
+    if (root.compact_enabled != 0u)
+    {
+        if (root.compact_layer >= 4u || thread_id.x >=
+            min(root.compact_counts[root.compact_layer], root.pixel_capacity))
+            return;
+        uint packed = root.pixel_list[thread_id.x];
+        pixel = uint2(packed & 0xffffu, packed >> 16u);
+    }
+    if (any(pixel >= root.extent))
         return;
-    float2 screen_uv = (float2(thread_id.xy) + 0.5f) / float2(root.extent);
+    float2 screen_uv = (float2(pixel) + 0.5f) / float2(root.extent);
     float4 background = g_textures[root.feedback_texture].SampleLevel(
         g_samplers[root.feedback_sampler], screen_uv, 0.0f);
     uint2 encoded = g_storage_uint2_images[root.vbuffer_texture]
-                                          [uint3(thread_id.xy, root.layer)];
+                                          [uint3(pixel, root.layer)];
     if (encoded.x == 0u)
     {
-        g_storage_2d[root.output_texture][thread_id.xy] = background;
+        g_storage_2d[root.output_texture][pixel] = background;
         return;
     }
     if (root.layer == 0u)
     {
-        g_storage_float2_2d[root.motion_texture][thread_id.xy] = 0.0f;
-        g_storage_float2_2d[root.validity_texture][thread_id.xy] = 0.0f;
+        g_storage_float2_2d[root.motion_texture][pixel] = 0.0f;
+        g_storage_float2_2d[root.validity_texture][pixel] = 0.0f;
     }
     VkrVkSurfaceSource source = {
         root.geometry_rows,    root.visible_rows,    root.instances,
@@ -1586,9 +1691,9 @@ void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
         root.instance_count,
     };
     VkrVkSurface surface;
-    if (!vkr_vk_resolve_surface(source, encoded, thread_id.xy, surface))
+    if (!vkr_vk_resolve_surface(source, encoded, pixel, surface))
     {
-        g_storage_2d[root.output_texture][thread_id.xy] = background;
+        g_storage_2d[root.output_texture][pixel] = background;
         return;
     }
     VkrVulkanInstance instance = source.instances[surface.instance_index];
@@ -1598,7 +1703,7 @@ void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
             mul(instance.model, float4(surface.object_tangent.xyz, 0.0f)).xyz,
             surface))
     {
-        g_storage_2d[root.output_texture][thread_id.xy] = background;
+        g_storage_2d[root.output_texture][pixel] = background;
         return;
     }
     VkrVulkanPacketFrameRoot *frame = root.frame;
@@ -1625,16 +1730,16 @@ void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
                     current_clip.xy / current_clip.w * 0.5f + 0.5f;
                 float2 previous_uv =
                     previous_clip.xy / previous_clip.w * 0.5f + 0.5f;
-                g_storage_float2_2d[root.motion_texture][thread_id.xy] =
+                g_storage_float2_2d[root.motion_texture][pixel] =
                     previous_uv - current_uv;
-                g_storage_float2_2d[root.validity_texture][thread_id.xy] =
+                g_storage_float2_2d[root.validity_texture][pixel] =
                     float2(2.0f + saturate(material.temporal_reactivity),
                            previous_clip.z / previous_clip.w);
             }
         }
     }
     float depth = g_depth_array_textures[root.depth_texture].Load(
-        int4(thread_id.xy, root.layer, 0));
+        int4(pixel, root.layer, 0));
     // See vkr_vk_deferred_sky: no Y flip when inverting the view-projection.
     float2 ndc_xy = screen_uv * 2.0f - 1.0f;
     float3 world = vkr_vk_deferred_homogeneous(
@@ -1753,7 +1858,7 @@ void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
             color = diffuse + specular + surface.emissive;
         }
     }
-    g_storage_2d[root.output_texture][thread_id.xy] = float4(color, 1.0f);
+    g_storage_2d[root.output_texture][pixel] = float4(color, 1.0f);
 }
 
 groupshared uint g_transmission_group_coverage;

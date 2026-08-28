@@ -693,7 +693,9 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
       packet->picking && packet->picking->pending;
   renderer->prepared_frame.transmission_pending =
       packet->world && packet->world->transmission_gpu_candidate_count > 0u;
-  renderer->prepared_frame.transmission_compact_enabled = false_v;
+  renderer->prepared_frame.transmission_compact_enabled =
+      renderer->config.transmission_compact_enabled &&
+      renderer->prepared_frame.transmission_pending;
   renderer->prepared_frame.timing_enabled = timing_requested;
   renderer->prepared_frame.sdsm_enabled =
       packet->shadow && packet->shadow->sdsm_enabled;
@@ -804,8 +806,8 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
   slot->shadow_depth_range = (VkrShadowDepthRangeSample){0};
   slot->transmission_coverage_requested =
       renderer->prepared_frame.transmission_pending &&
-      renderer->prepared_frame.timing_enabled &&
-      !renderer->prepared_frame.transmission_compact_enabled;
+      (renderer->prepared_frame.transmission_compact_enabled ||
+       renderer->prepared_frame.timing_enabled);
   slot->transmission_coverage_extent[0] =
       renderer->prepared_frame.viewport_width;
   slot->transmission_coverage_extent[1] =
@@ -1141,6 +1143,9 @@ bool8_t vkr_vulkan_renderer_poll_result(VkrVulkanRenderer *renderer,
     MemCopy(out_result->transmission_coverage_extent,
             best->transmission_coverage_extent,
             sizeof(out_result->transmission_coverage_extent));
+    for (uint32_t layer = 0u; layer < VKR_GPU_TRANSMISSION_LAYER_COUNT; ++layer)
+      out_result->transmission_compact_overflow_count +=
+          transmission_diagnostics->compact_overflow[layer];
   }
   for (uint32_t cascade = 0u; cascade < VKR_SHADOW_CASCADE_COUNT_MAX;
        ++cascade) {
