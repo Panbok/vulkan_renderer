@@ -1385,15 +1385,12 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
   if (!config || !out_renderer || !config->allocator || !config->graph_path ||
       !config->slang_msl_path || !config->fragment_msl_path ||
       config->heap_size == 0 || config->upload_ring_size == 0 ||
-      config->readback_ring_size == 0 || config->frame_slot_count == 0 ||
-      config->capture_ring_capacity == 0 ||
+      config->frame_slot_count == 0 || config->capture_ring_capacity == 0 ||
       config->capture_ring_capacity > VKR_CAPTURE_RING_CAPACITY_MAX ||
       config->capture_max_batch_bytes == 0 ||
       config->frame_slot_count > UINT32_MAX - 2u ||
       config->frame_slot_count + 2u > VKR_METAL_PACKET_GRAPH_INSTANCE_MAX ||
       config->upload_ring_size % ((uint64_t)config->frame_slot_count * 4u) !=
-          0 ||
-      config->readback_ring_size % ((uint64_t)config->frame_slot_count * 4u) !=
           0 ||
       config->max_images == 0 || config->max_passes == 0 ||
       config->max_passes > VKR_METAL_PACKET_MAX_PASS_TIMINGS ||
@@ -1409,6 +1406,22 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
       config->target_kind > VKR_METAL_PACKET_TARGET_WINDOW ||
       (config->target_kind == VKR_METAL_PACKET_TARGET_WINDOW &&
        !config->metal_layer))
+    return false_v;
+  const VkrMetalPacketReadbackLayout maximum_readback =
+      vkr_metal_packet_readback_layout(true_v, true_v, true_v, true_v, true_v,
+                                       true_v, VKR_SHADOW_CASCADE_COUNT_MAX);
+  const uint64_t readback_prefix_size = vkr_metal_packet_align_up(
+      maximum_readback.prefix_size, VKR_CAPTURE_BUFFER_ALIGNMENT);
+  if (config->capture_max_batch_bytes > UINT64_MAX - 3u)
+    return false_v;
+  const uint64_t aligned_capture_size =
+      vkr_metal_packet_align_up(config->capture_max_batch_bytes, 4u);
+  if (aligned_capture_size > UINT64_MAX - readback_prefix_size)
+    return false_v;
+  uint64_t readback_ring_size = 0u;
+  if (!vkr_metal_submit_ring_total_size(
+          readback_prefix_size + aligned_capture_size, MB(48),
+          config->frame_slot_count, &readback_ring_size))
     return false_v;
   /* A replacement is created before the current generation retires. Capacity
      therefore covers both generations of the larger command- or
@@ -1663,7 +1676,7 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
                      .allocator = renderer->allocator,
                      .heap_size = config->heap_size,
                      .upload_ring_size = config->upload_ring_size,
-                     .readback_ring_size = config->readback_ring_size,
+                     .readback_ring_size = readback_ring_size,
                      .ring_slot_count = config->frame_slot_count,
                      .max_allocations = (uint32_t)memory_record_capacity,
                      .max_retirements = (uint32_t)memory_record_capacity,

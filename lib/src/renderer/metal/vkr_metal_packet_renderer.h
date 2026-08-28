@@ -56,7 +56,6 @@ typedef struct VkrMetalPacketRendererConfig {
   VkrPresentMode requested_present_mode;
   uint64_t heap_size;
   uint64_t upload_ring_size;
-  uint64_t readback_ring_size;
   uint32_t frame_slot_count;
   /** Request-owned capture results retained until explicit release. */
   uint32_t capture_ring_capacity;

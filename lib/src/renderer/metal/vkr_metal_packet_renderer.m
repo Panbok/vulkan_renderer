@@ -296,6 +296,64 @@ typedef struct VkrMetalPacketCapturePlan {
   uint32_t source_slice;
 } VkrMetalPacketCapturePlan;
 
+typedef struct VkrMetalPacketReadbackLayout {
+  uint64_t ibl;
+  uint64_t ibl_prefilter;
+  uint64_t deferred_diagnostics;
+  uint64_t deferred_diagnostics_size;
+  uint64_t transmission_diagnostics;
+  uint64_t sdsm;
+  uint64_t sdsm_size;
+  uint64_t exposure;
+  uint64_t exposure_size;
+  uint64_t prefix_size;
+} VkrMetalPacketReadbackLayout;
+
+vkr_internal VkrMetalPacketReadbackLayout vkr_metal_packet_readback_layout(
+    bool8_t picking, bool8_t ibl, bool8_t deferred_diagnostics,
+    bool8_t transmission_diagnostics, bool8_t sdsm, bool8_t exposure,
+    uint32_t shadow_cascade_count) {
+  const uint64_t ibl_offset = picking ? 16u : 8u;
+  const uint64_t ibl_prefilter_offset = ibl_offset + 8u;
+  const uint64_t probe_size =
+      ibl ? ibl_prefilter_offset + VKR_IBL_PREFILTER_MIP_COUNT * 8u
+          : ibl_offset;
+  const uint64_t deferred_offset = vkr_metal_packet_align_up(probe_size, 16u);
+  const uint64_t deferred_bytes = deferred_diagnostics
+                                      ? (uint64_t)(1u + shadow_cascade_count) *
+                                            sizeof(VkrGpuDrawCompactionState)
+                                      : 0u;
+  const uint64_t transmission_offset = deferred_offset + deferred_bytes;
+  const uint64_t transmission_bytes =
+      deferred_diagnostics && transmission_diagnostics
+          ? sizeof(VkrMetalPacketTransmissionDiagnostics)
+          : 0u;
+  const uint64_t sdsm_offset = transmission_offset + transmission_bytes;
+  const uint64_t sdsm_bytes = sdsm ? sizeof(VkrMetalPacketSdsmState) : 0u;
+  const uint64_t exposure_offset =
+      vkr_metal_packet_align_up(sdsm_offset + sdsm_bytes, 16u);
+  const uint64_t exposure_bytes =
+      exposure ? sizeof(VkrExposureGpuState) + sizeof(VkrExposureGpuHistogram)
+               : 0u;
+  const uint64_t prefix_size =
+      exposure_bytes > 0u ? exposure_offset + exposure_bytes
+      : deferred_diagnostics || transmission_diagnostics || sdsm_bytes > 0u
+          ? sdsm_offset + sdsm_bytes
+          : probe_size;
+  return (VkrMetalPacketReadbackLayout){
+      .ibl = ibl_offset,
+      .ibl_prefilter = ibl_prefilter_offset,
+      .deferred_diagnostics = deferred_offset,
+      .deferred_diagnostics_size = deferred_bytes,
+      .transmission_diagnostics = transmission_offset,
+      .sdsm = sdsm_offset,
+      .sdsm_size = sdsm_bytes,
+      .exposure = exposure_offset,
+      .exposure_size = exposure_bytes,
+      .prefix_size = prefix_size,
+  };
+}
+
 /**
  * Commit feedback outlives the command slot that produced it. The render
  * thread owns acquisition and recycling; Metal's serial callback queue only

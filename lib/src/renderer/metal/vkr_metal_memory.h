@@ -82,6 +82,10 @@ typedef VkrGpuRingSlice VkrMetalRingSlice;
 typedef VkrGpuAddressPair VkrMetalAddressPair;
 
 uint64_t vkr_metal_submit_ring_storage_requirement(uint32_t slot_count);
+bool8_t vkr_metal_submit_ring_total_size(uint64_t required_slot_size,
+                                         uint64_t minimum_slot_size,
+                                         uint32_t slot_count,
+                                         uint64_t *out_total_size);
 VkrMetalMemoryStatus vkr_metal_submit_ring_create(VkrMetalSubmitRing *ring,
                                                   uint64_t total_size,
                                                   uint32_t slot_count,

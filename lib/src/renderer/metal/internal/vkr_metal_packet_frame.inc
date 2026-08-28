@@ -2263,11 +2263,6 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   const bool8_t submission_timing_requested =
       packet->debug && packet->debug->enable_timing &&
       packet->debug->capture_submission_timing;
-  const uint64_t ibl_capture_offset = picking ? 16 : 8;
-  const uint64_t ibl_prefilter_capture_offset = ibl_capture_offset + 8;
-  const uint64_t probe_size =
-      ibl ? ibl_prefilter_capture_offset + VKR_IBL_PREFILTER_MIP_COUNT * 8u
-          : ibl_capture_offset;
   const bool8_t deferred_diagnostics = packet->world != NULL;
   const bool8_t synchronous_deferred_validation =
       renderer->synchronous_validation_readback && deferred_diagnostics;
@@ -2275,44 +2270,20 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
       renderer->prepared_frame.transmission_pending &&
       (pass_timing_requested ||
        renderer->prepared_frame.transmission_compact_enabled);
-  const uint64_t deferred_diagnostics_offset =
-      vkr_metal_packet_align_up(probe_size, 16u);
-  const uint64_t deferred_diagnostics_bytes =
-      deferred_diagnostics
-          ? (uint64_t)(1u + renderer->prepared_frame.shadow_cascade_count) *
-                sizeof(VkrGpuDrawCompactionState)
-          : 0u;
-  const uint64_t transmission_diagnostics_offset =
-      deferred_diagnostics_offset + deferred_diagnostics_bytes;
-  const uint64_t transmission_readback_bytes =
-      deferred_diagnostics && renderer->prepared_frame.transmission_pending
-          ? sizeof(VkrMetalPacketTransmissionDiagnostics)
-          : 0u;
-  const uint64_t sdsm_readback_offset =
-      transmission_diagnostics_offset + transmission_readback_bytes;
-  const uint64_t sdsm_readback_bytes = renderer->prepared_frame.sdsm_enabled
-                                           ? sizeof(VkrMetalPacketSdsmState)
-                                           : 0u;
-  const uint64_t exposure_readback_offset = vkr_metal_packet_align_up(
-      sdsm_readback_offset + sdsm_readback_bytes, 16u);
-  const uint64_t exposure_readback_bytes =
-      renderer->prepared_frame.exposure_automatic
-          ? sizeof(VkrExposureGpuState) + sizeof(VkrExposureGpuHistogram)
-          : 0u;
-  const uint64_t readback_prefix_size =
-      exposure_readback_bytes > 0u
-          ? exposure_readback_offset + exposure_readback_bytes
-      : deferred_diagnostics || transmission_coverage ||
-              sdsm_readback_bytes > 0u
-          ? sdsm_readback_offset + sdsm_readback_bytes
-          : probe_size;
+  const VkrMetalPacketReadbackLayout readback_layout =
+      vkr_metal_packet_readback_layout(
+          picking, ibl, deferred_diagnostics,
+          renderer->prepared_frame.transmission_pending,
+          renderer->prepared_frame.sdsm_enabled,
+          renderer->prepared_frame.exposure_automatic,
+          renderer->prepared_frame.shadow_cascade_count);
   VkrMetalPacketCapturePlan capture_plans[VKR_CAPTURE_MAX_ITEMS] = {0};
   VkrCaptureBackendItemPlan capture_ring_plans[VKR_CAPTURE_MAX_ITEMS] = {0};
   uint32_t capture_count = 0;
-  uint64_t capture_size = readback_prefix_size;
-  if (!vkr_metal_packet_capture_plan(renderer, packet, readback_prefix_size,
-                                     capture_plans, &capture_count,
-                                     &capture_size)) {
+  uint64_t capture_size = readback_layout.prefix_size;
+  if (!vkr_metal_packet_capture_plan(renderer, packet,
+                                     readback_layout.prefix_size, capture_plans,
+                                     &capture_count, &capture_size)) {
     log_error("Metal packet stage failed: capture plan");
     vkr_metal_packet_finish_frame(renderer, true_v, false_v);
     return false_v;
@@ -2355,17 +2326,24 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   VkrMetalRingSlice readback_slice = {0};
   VkrMetalAddressPair readback = {0};
   void *readback_object = NULL;
-  if (vkr_metal_memory_device_acquire_ring(
+  const VkrMetalMemoryStatus readback_status =
+      vkr_metal_memory_device_acquire_ring(
           renderer->memory, VKR_METAL_RING_KIND_READBACK, capture_size,
           renderer->completion.signaledValue, &readback_slice, &readback,
-          &readback_object) != VKR_METAL_MEMORY_STATUS_OK) {
-    log_error("Metal packet stage failed: readback ring (%llu bytes)",
+          &readback_object);
+  if (readback_status != VKR_METAL_MEMORY_STATUS_OK) {
+    const VkrRendererError readback_error =
+        readback_status == VKR_METAL_MEMORY_STATUS_RING_BUSY
+            ? VKR_RENDERER_ERROR_CAPTURE_BUSY
+            : VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    log_error("Metal packet stage failed: readback ring %s (%llu bytes)",
+              vkr_metal_memory_status_string(readback_status),
               (unsigned long long)capture_size);
     vkr_metal_packet_rollback_gpu_draw_resource_preparation(renderer, packet);
     vkr_metal_memory_device_cancel_ring(
         renderer->memory, VKR_METAL_RING_KIND_UPLOAD, frame_upload.slice);
     vkr_metal_packet_capture_fail_reserved(renderer, capture_request,
-                                           VKR_RENDERER_ERROR_CAPTURE_BUSY);
+                                           readback_error);
     vkr_metal_packet_finish_frame(renderer, true_v, false_v);
     return false_v;
   }
@@ -2646,9 +2624,9 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
             encoder, &ibl_capture_dependency, true_v);
         out_result->dependency_count++;
       }
-      if (passed &&
-          (capture_count > 0 || deferred_diagnostics || transmission_coverage ||
-           sdsm_readback_bytes > 0u || exposure_readback_bytes > 0u)) {
+      if (passed && (capture_count > 0 || deferred_diagnostics ||
+                     transmission_coverage || readback_layout.sdsm_size > 0u ||
+                     readback_layout.exposure_size > 0u)) {
         passed = vkr_metal_packet_encode_dependency(
             encoder, &batch_capture_dependency, true_v);
         out_result->dependency_count++;
@@ -2705,9 +2683,9 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
           capture_encoder, &ibl_capture_dependency, false_v);
       out_result->dependency_count++;
     }
-    if (passed &&
-        (capture_count > 0 || deferred_diagnostics || transmission_coverage ||
-         sdsm_readback_bytes > 0u || exposure_readback_bytes > 0u)) {
+    if (passed && (capture_count > 0 || deferred_diagnostics ||
+                   transmission_coverage || readback_layout.sdsm_size > 0u ||
+                   readback_layout.exposure_size > 0u)) {
       passed = vkr_metal_packet_encode_dependency(
           capture_encoder, &batch_capture_dependency, false_v);
       out_result->dependency_count++;
@@ -2749,7 +2727,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
                       sourceOrigin:MTLOriginMake(0, 0, 0)
                         sourceSize:MTLSizeMake(1, 1, 1)
                           toBuffer:(id<MTLBuffer>)readback_object
-                 destinationOffset:readback_slice.offset + ibl_capture_offset
+                 destinationOffset:readback_slice.offset + readback_layout.ibl
             destinationBytesPerRow:8
           destinationBytesPerImage:8
                            options:MTLBlitOptionNone];
@@ -2763,7 +2741,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
                           sourceSize:MTLSizeMake(1, 1, 1)
                             toBuffer:(id<MTLBuffer>)readback_object
                    destinationOffset:readback_slice.offset +
-                                     ibl_prefilter_capture_offset + mip * 8u
+                                     readback_layout.ibl_prefilter + mip * 8u
               destinationBytesPerRow:8
             destinationBytesPerImage:8
                              options:MTLBlitOptionNone];
@@ -2780,8 +2758,8 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
                    sourceOffset:0u
                        toBuffer:(id<MTLBuffer>)readback_object
               destinationOffset:readback_slice.offset +
-                                deferred_diagnostics_offset
-                           size:deferred_diagnostics_bytes];
+                                readback_layout.deferred_diagnostics
+                           size:readback_layout.deferred_diagnostics_size];
         }
       }
       if (passed && renderer->prepared_frame.transmission_pending) {
@@ -2794,12 +2772,12 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
                    sourceOffset:0u
                        toBuffer:(id<MTLBuffer>)readback_object
               destinationOffset:readback_slice.offset +
-                                transmission_diagnostics_offset
+                                readback_layout.transmission_diagnostics
                            size:sizeof(VkrMetalPacketTransmissionDiagnostics)];
         }
       }
     }
-    if (passed && sdsm_readback_bytes > 0u) {
+    if (passed && readback_layout.sdsm_size > 0u) {
       if (!sdsm_reduce_state) {
         passed = false_v;
       } else {
@@ -2808,11 +2786,11 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
                                   sdsm_reduce_state->resource.metal_buffer
                  sourceOffset:0u
                      toBuffer:(id<MTLBuffer>)readback_object
-            destinationOffset:readback_slice.offset + sdsm_readback_offset
-                         size:sdsm_readback_bytes];
+            destinationOffset:readback_slice.offset + readback_layout.sdsm
+                         size:readback_layout.sdsm_size];
       }
     }
-    if (passed && exposure_readback_bytes > 0u) {
+    if (passed && readback_layout.exposure_size > 0u) {
       if (!exposure_histogram || !exposure_state) {
         passed = false_v;
       } else {
@@ -2821,14 +2799,14 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
                                   exposure_state->resource.metal_buffer
                  sourceOffset:0u
                      toBuffer:(id<MTLBuffer>)readback_object
-            destinationOffset:readback_slice.offset + exposure_readback_offset
+            destinationOffset:readback_slice.offset + readback_layout.exposure
                          size:sizeof(VkrExposureGpuState)];
         [capture_encoder
                copyFromBuffer:(id<MTLBuffer>)
                                   exposure_histogram->resource.metal_buffer
                  sourceOffset:0u
                      toBuffer:(id<MTLBuffer>)readback_object
-            destinationOffset:readback_slice.offset + exposure_readback_offset +
+            destinationOffset:readback_slice.offset + readback_layout.exposure +
                               sizeof(VkrExposureGpuState)
                          size:sizeof(VkrExposureGpuHistogram)];
       }
@@ -2894,26 +2872,28 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
                  : VKR_RENDERER_IMPL_GPU_TIMING_REASON_FEEDBACK_UNAVAILABLE)
           : VKR_RENDERER_IMPL_GPU_TIMING_REASON_DISABLED;
   command_slot->gpu_draw_diagnostics_requested = deferred_diagnostics;
-  command_slot->sdsm_requested = sdsm_readback_bytes > 0u;
-  command_slot->exposure_requested = exposure_readback_bytes > 0u;
+  command_slot->sdsm_requested = readback_layout.sdsm_size > 0u;
+  command_slot->exposure_requested = readback_layout.exposure_size > 0u;
   command_slot->shadow_cascade_count =
       renderer->prepared_frame.shadow_cascade_count;
   if (deferred_diagnostics) {
     command_slot->gpu_draw_diagnostics_readback =
-        (const uint8_t *)readback.cpu_address + deferred_diagnostics_offset;
+        (const uint8_t *)readback.cpu_address +
+        readback_layout.deferred_diagnostics;
   }
   command_slot->sdsm_readback =
-      sdsm_readback_bytes > 0u
-          ? (const uint8_t *)readback.cpu_address + sdsm_readback_offset
+      readback_layout.sdsm_size > 0u
+          ? (const uint8_t *)readback.cpu_address + readback_layout.sdsm
           : NULL;
   command_slot->exposure_readback =
-      exposure_readback_bytes > 0u
-          ? (const uint8_t *)readback.cpu_address + exposure_readback_offset
+      readback_layout.exposure_size > 0u
+          ? (const uint8_t *)readback.cpu_address + readback_layout.exposure
           : NULL;
   command_slot->transmission_coverage_requested = transmission_coverage;
   if (renderer->prepared_frame.transmission_pending) {
     command_slot->transmission_coverage_readback =
-        (const uint8_t *)readback.cpu_address + transmission_diagnostics_offset;
+        (const uint8_t *)readback.cpu_address +
+        readback_layout.transmission_diagnostics;
   }
   if (transmission_coverage) {
     command_slot->transmission_coverage_extent[0] =
@@ -2926,7 +2906,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     [renderer->queue waitForDrawable:renderer->drawable];
   out_result->submit_value = submit_value;
   out_result->source_frame_index = packet->frame.frame_index;
-  if (sdsm_readback_bytes > 0u) {
+  if (readback_layout.sdsm_size > 0u) {
     const float32_t a = packet->globals.projection.elements[10];
     const float32_t b = packet->globals.projection.elements[14];
     out_result->shadow_depth_range = (VkrShadowDepthRangeSample){
@@ -3006,10 +2986,10 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
       vkr_metal_packet_finish_frame(renderer, true_v, true_v);
       return false_v;
     }
-    if (exposure_readback_bytes > 0u) {
+    if (readback_layout.exposure_size > 0u) {
       VkrExposureGpuState state = {0};
       MemCopy(&state,
-              (const uint8_t *)readback.cpu_address + exposure_readback_offset,
+              (const uint8_t *)readback.cpu_address + readback_layout.exposure,
               sizeof(state));
       (void)vkr_capture_ring_set_display_exposure(
           &renderer->capture_ring, submit_value, state.exposure_multiplier);
@@ -3019,7 +2999,8 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     if (transmission_coverage) {
       VkrMetalPacketTransmissionDiagnostics transmission_diagnostics = {0};
       MemCopy(&transmission_diagnostics,
-              (uint8_t *)readback.cpu_address + transmission_diagnostics_offset,
+              (uint8_t *)readback.cpu_address +
+                  readback_layout.transmission_diagnostics,
               sizeof(transmission_diagnostics));
       MemCopy(out_result->transmission_covered_pixels,
               transmission_diagnostics.covered_pixels,
@@ -3049,11 +3030,11 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     }
     if (ibl) {
       vkr_metal_packet_decode_half4((uint8_t *)readback.cpu_address +
-                                        ibl_capture_offset,
+                                        readback_layout.ibl,
                                     out_result->ibl_color);
       for (uint32_t mip = 0; mip < VKR_IBL_PREFILTER_MIP_COUNT; ++mip) {
         vkr_metal_packet_decode_half4((uint8_t *)readback.cpu_address +
-                                          ibl_prefilter_capture_offset +
+                                          readback_layout.ibl_prefilter +
                                           mip * 8u,
                                       out_result->ibl_prefilter[mip]);
       }
@@ -3069,11 +3050,12 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
           renderer->transmission_gpu_draw_count;
       vkr_metal_packet_decode_gpu_draw_diagnostics(
           out_result,
-          (const uint8_t *)readback.cpu_address + deferred_diagnostics_offset,
+          (const uint8_t *)readback.cpu_address +
+              readback_layout.deferred_diagnostics,
           renderer->prepared_frame.shadow_cascade_count,
           renderer->prepared_frame.transmission_pending
               ? (const uint8_t *)readback.cpu_address +
-                    transmission_diagnostics_offset
+                    readback_layout.transmission_diagnostics
               : NULL);
       out_result->hzb_history_valid =
           renderer->prepared_frame.hzb_history_valid;

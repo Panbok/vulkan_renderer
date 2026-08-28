@@ -85,6 +85,20 @@ uint64_t vkr_metal_submit_ring_storage_requirement(uint32_t slot_count) {
   return vkr_gpu_submit_ring_storage_requirement(slot_count);
 }
 
+bool8_t vkr_metal_submit_ring_total_size(uint64_t required_slot_size,
+                                         uint64_t minimum_slot_size,
+                                         uint32_t slot_count,
+                                         uint64_t *out_total_size) {
+  if (!required_slot_size || !minimum_slot_size || !slot_count ||
+      !out_total_size)
+    return false_v;
+  const uint64_t slot_size = MAX(required_slot_size, minimum_slot_size);
+  if (slot_size > UINT64_MAX / slot_count)
+    return false_v;
+  *out_total_size = slot_size * slot_count;
+  return true_v;
+}
+
 VkrMetalMemoryStatus vkr_metal_submit_ring_create(VkrMetalSubmitRing *ring,
                                                   uint64_t total_size,
                                                   uint32_t slot_count,

@@ -2,6 +2,7 @@
 
 #include "renderer/metal/internal/vkr_metal_packet_waits.h"
 #include "renderer/metal/vkr_metal_memory.h"
+#include "renderer/vkr_renderer.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -227,6 +228,38 @@ static void test_metal_submit_ring_reuse(void) {
   printf("  test_metal_submit_ring_reuse PASSED\n");
 }
 
+static void test_metal_submit_ring_capacity_sizing(void) {
+  printf("  Running test_metal_submit_ring_capacity_sizing...\n");
+  uint64_t total_size = 0u;
+  assert(vkr_metal_submit_ring_total_size(MB(32) + 1792u, MB(48), 2u,
+                                          &total_size));
+  assert(total_size == MB(96));
+
+  const uint64_t capture_batch_capacity =
+      8u * 1600u * 1200u * VKR_CAPTURE_MAX_BYTES_PER_PIXEL;
+  assert(capture_batch_capacity == 122880000u);
+  assert(vkr_metal_submit_ring_total_size(capture_batch_capacity + 1792u,
+                                          MB(48), 2u, &total_size));
+  assert(total_size == 245763584u);
+
+  VkrMetalSubmitRingSlot slots[2] = {0};
+  VkrMetalSubmitRing ring = {0};
+  assert(vkr_metal_submit_ring_create(&ring, total_size, ArrayCount(slots),
+                                      slots, sizeof(slots)) ==
+         VKR_METAL_MEMORY_STATUS_OK);
+  VkrMetalRingSlice slice = {0};
+  assert(vkr_metal_submit_ring_acquire(&ring, 58216192u, 0u, &slice) ==
+         VKR_METAL_MEMORY_STATUS_OK);
+  assert(slice.size == 58216192u);
+  vkr_metal_submit_ring_cancel(&ring, slice);
+
+  assert(
+      !vkr_metal_submit_ring_total_size(UINT64_MAX, MB(48), 2u, &total_size));
+  assert(!vkr_metal_submit_ring_total_size(1u, MB(48), 0u, &total_size));
+  assert(!vkr_metal_submit_ring_total_size(1u, MB(48), 2u, NULL));
+  printf("  test_metal_submit_ring_capacity_sizing PASSED\n");
+}
+
 static void test_metal_packet_wait_counter_reset(void) {
   printf("  Running test_metal_packet_wait_counter_reset...\n");
   VkrMetalPacketWaitCounters counters = {0};
@@ -308,6 +341,7 @@ bool32_t run_metal_memory_tests(void) {
   test_metal_memory_failure_classification();
   test_metal_memory_failed_allocation_returns_handle();
   test_metal_submit_ring_reuse();
+  test_metal_submit_ring_capacity_sizing();
   test_metal_packet_wait_counter_reset();
   printf("Metal memory tests PASSED\n");
   return true_v;
