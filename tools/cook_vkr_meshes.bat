@@ -1,5 +1,5 @@
 @echo off
-setlocal EnableExtensions
+setlocal EnableExtensions EnableDelayedExpansion
 
 cd /d "%~dp0\.."
 set "REPO_ROOT=%CD%"
@@ -45,6 +45,9 @@ if not exist "%SOURCE%" (
     echo Mesh cook step skipped missing source: %SOURCE% 1>&2
     exit /b 0
 )
+for %%F in ("%SOURCE%") do set "SOURCE_ABSOLUTE=%%~fF"
+set "REPOSITORY_SOURCE=!SOURCE_ABSOLUTE:%REPO_ROOT%\=!"
+if /i not "!REPOSITORY_SOURCE!"=="!SOURCE_ABSOLUTE!" set "SOURCE=!REPOSITORY_SOURCE!"
 for %%F in ("%SOURCE%") do set "OUTPUT=%%~dpnF.vkb"
 echo Cooking %SOURCE% ^> %OUTPUT%
 "%VKR_MESH_COOKER_BIN%" --input "%SOURCE%" --output "%OUTPUT%"

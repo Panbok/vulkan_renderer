@@ -246,9 +246,25 @@ static uint64_t gltf_test_hash_source_path(const char *source_path) {
     return GLTF_TEST_FNV1A64_OFFSET_BASIS;
   }
 
+  const unsigned char *start = (const unsigned char *)source_path;
+  while (start[0] == '.' && (start[1] == '/' || start[1] == '\\')) {
+    start += 2;
+  }
+  for (const unsigned char *p = start; *p; ++p) {
+    const bool8_t segment_start = p == start || p[-1] == '/' || p[-1] == '\\';
+    if (segment_start && ((strncmp((const char *)p, "assets/", 7) == 0) ||
+                          (strncmp((const char *)p, "assets\\", 7) == 0) ||
+                          (strncmp((const char *)p, "tests/", 6) == 0) ||
+                          (strncmp((const char *)p, "tests\\", 6) == 0))) {
+      start = p;
+      break;
+    }
+  }
+
   uint64_t hash = GLTF_TEST_FNV1A64_OFFSET_BASIS;
-  for (const unsigned char *p = (const unsigned char *)source_path; *p; ++p) {
-    hash ^= (uint64_t)(*p);
+  for (const unsigned char *p = start; *p; ++p) {
+    const unsigned char byte = *p == '\\' ? '/' : *p;
+    hash ^= (uint64_t)byte;
     hash *= GLTF_TEST_FNV1A64_PRIME;
   }
 
@@ -1557,6 +1573,19 @@ static void test_gltf_import_material_ids_are_unique_per_source(void) {
                                                  stem_b, 0) == true_v);
   assert(string8_equalsi(&capture_a.first_material_path,
                          &capture_b.first_material_path) == false_v);
+
+  char relative_path_a[256];
+  snprintf(relative_path_a, sizeof(relative_path_a),
+           "tests/tmp/gltf_importer/%s.gltf", stem_a);
+  VkrRendererError relative_error = VKR_RENDERER_ERROR_NONE;
+  GltfImporterTestCapture relative_capture = {.allocator = &allocator};
+  VkrMeshLoaderGltfParseInfo relative_parse_info =
+      gltf_test_make_parse_info(&allocator, &scratch_allocator, relative_path_a,
+                                &relative_error, &relative_capture);
+  assert(vkr_mesh_loader_gltf_parse(&relative_parse_info) == true_v);
+  assert(relative_error == VKR_RENDERER_ERROR_NONE);
+  assert(string8_equalsi(&capture_a.first_material_path,
+                         &relative_capture.first_material_path) == true_v);
 
   char mt_path_a[1024] = {0};
   char mt_relative_path_a[256] = {0};

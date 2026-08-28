@@ -59,9 +59,36 @@ vkr_mesh_loader_gltf_hash_source_path(String8 source_path) {
     return VKR_FNV1A64_OFFSET_BASIS;
   }
 
+  uint64_t start = 0;
+  while (start + 1 < source_path.length && source_path.str[start] == '.' &&
+         (source_path.str[start + 1] == '/' ||
+          source_path.str[start + 1] == '\\')) {
+    start += 2;
+  }
+  for (uint64_t i = start; i < source_path.length; ++i) {
+    const bool8_t segment_start = i == start || source_path.str[i - 1] == '/' ||
+                                  source_path.str[i - 1] == '\\';
+    if (!segment_start) {
+      continue;
+    }
+    const uint64_t remaining = source_path.length - i;
+    const bool8_t assets =
+        remaining > 7 && MemCompare(source_path.str + i, "assets", 6) == 0 &&
+        (source_path.str[i + 6] == '/' || source_path.str[i + 6] == '\\');
+    const bool8_t tests =
+        remaining > 6 && MemCompare(source_path.str + i, "tests", 5) == 0 &&
+        (source_path.str[i + 5] == '/' || source_path.str[i + 5] == '\\');
+    if (assets || tests) {
+      start = i;
+      break;
+    }
+  }
+
   uint64_t hash = VKR_FNV1A64_OFFSET_BASIS;
-  for (uint64_t i = 0; i < source_path.length; ++i) {
-    hash ^= (uint64_t)source_path.str[i];
+  for (uint64_t i = start; i < source_path.length; ++i) {
+    const uint8_t byte =
+        source_path.str[i] == '\\' ? (uint8_t)'/' : source_path.str[i];
+    hash ^= (uint64_t)byte;
     hash *= VKR_FNV1A64_PRIME;
   }
 

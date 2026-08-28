@@ -265,17 +265,17 @@ static bool8_t vkr_harness_scene_manifest_add_reference(
 #if defined(PLATFORM_WINDOWS)
         vkr_harness_error_set(
             out_error, "scene_manifest.missing", "$.scene",
-            "Generated material dependency for '%s' is missing. Query "
-            "parameters are ignored. Rebuild derived assets with "
+            "Generated dependency '%s' is missing (query ignored). Rebuild "
+            "with "
             "'tools\\cook_vkr_meshes.bat %s'",
-            generated_source, generated_source);
+            reference, generated_source);
 #else
         vkr_harness_error_set(
             out_error, "scene_manifest.missing", "$.scene",
-            "Generated material dependency for '%s' is missing. Query "
-            "parameters are ignored. Rebuild derived assets with "
+            "Generated dependency '%s' is missing (query ignored). Rebuild "
+            "with "
             "'./tools/cook_vkr_meshes.sh %s'",
-            generated_source, generated_source);
+            reference, generated_source);
 #endif
       } else {
         vkr_harness_error_set(
@@ -372,7 +372,7 @@ vkr_harness_scene_manifest_hash_missing(const char *resolved_root, Arena *arena,
                                         VkrHarnessError *out_error) {
   uint32_t *indices = arena_alloc(
       arena, sizeof(*indices) * manifest->asset_count, ARENA_MEMORY_TAG_ARRAY);
-  char(*paths)[VKR_HARNESS_PATH_MAX] = arena_alloc(
+  char (*paths)[VKR_HARNESS_PATH_MAX] = arena_alloc(
       arena, sizeof(*paths) * manifest->asset_count, ARENA_MEMORY_TAG_ARRAY);
   if (!indices || !paths) {
     return false_v;

@@ -74,6 +74,10 @@ Production scene manifests reference `.vkb`. `tools/cook_vkr_meshes.sh` and
 `tools/cook_vkr_meshes.bat` build the cooker, regenerate selected or default
 mesh artifacts, then run the shared texture packer once so glTF-generated
 material derivatives have `.vkt` siblings before the command succeeds.
+Repository assets are passed to the cooker from the repository root with
+normalized repository-relative identity. Generated material IDs therefore do
+not depend on the checkout directory, host platform, or whether the caller
+spelled the input as an absolute path.
 Authoring dependency identity remains recorded in the artifact but is not a
 runtime dependency. Normal renderer builds still do not cook meshes; they do run
 the shared incremental texture packer after successful compilation.
