@@ -1529,6 +1529,8 @@ bool32_t run_resource_async_state_tests(void) {
                                  &scene_ctx);
 
   vkr_job_system_shutdown(&job_system);
+  vkr_resource_system_shutdown();
+  assert(vkr_resource_system_get_job_system() == NULL);
   arena_destroy(arena);
 
   printf("--- Resource Async State tests completed. ---\n");

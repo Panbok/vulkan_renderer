@@ -349,48 +349,102 @@ vkr_material_system_resident_texture_users(const VkrMaterialSystem *system,
 }
 
 static bool8_t
-vkr_material_system_evict_texture_stream(VkrMaterialSystem *system,
-                                         VkrMaterialTextureStream *stream) {
-  if (!system || !stream ||
-      stream->state != VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT) {
+vkr_material_system_evict_resident_texture(VkrMaterialSystem *system,
+                                           VkrTextureHandle texture) {
+  if (!system || texture.id == 0u) {
     return false_v;
   }
-  VkrMaterial *material =
-      vkr_material_system_get_by_handle(system, stream->material);
-  if (material &&
-      !vkr_material_system_replace_stream_texture(
-          system, stream,
-          vkr_material_system_get_default_texture(system, stream->slot))) {
-    return false_v;
-  }
-  const bool8_t last_resident_user =
-      vkr_material_system_resident_texture_users(
-          system, stream->resident_texture) == 1u;
-  if (!vkr_texture_system_release_by_handle(system->texture_system,
-                                            stream->resident_texture)) {
-    vkr_texture_system_add_ref_by_handle(system->texture_system,
-                                         stream->resident_texture);
-    if (material) {
-      (void)vkr_material_system_replace_stream_texture(
-          system, stream,
-          (VkrMaterialTexture){
-              .handle = stream->resident_texture,
-              .slot = stream->slot,
-              .enabled = true_v,
-          });
+
+  uint32_t stream_count = 0u;
+  uint64_t resident_bytes = 0u;
+  for (uint32_t i = 0u; i < system->texture_stream_count; ++i) {
+    VkrMaterialTextureStream *stream = &system->texture_streams[i];
+    if (stream->state != VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT ||
+        !vkr_material_system_texture_handle_equal(stream->resident_texture,
+                                                  texture)) {
+      continue;
     }
+    if (!vkr_material_system_get_by_handle(system, stream->material)) {
+      return false_v;
+    }
+    resident_bytes = stream->resident_bytes;
+    stream_count++;
+  }
+  if (stream_count == 0u) {
     return false_v;
   }
-  if (last_resident_user) {
-    system->texture_stream_resident_bytes -= stream->resident_bytes;
+  const uint32_t ref_count = vkr_texture_system_get_ref_count_by_handle(
+      system->texture_system, texture);
+  if (ref_count < stream_count) {
+    return false_v;
   }
-  system->texture_stream_resident_count--;
-  system->texture_stream_evicted_count++;
-  system->texture_stream_evicted_total++;
-  stream->state = VKR_MATERIAL_TEXTURE_RESIDENCY_EVICTED;
-  stream->resident_texture = VKR_TEXTURE_HANDLE_INVALID;
-  stream->resident_bytes = 0u;
+
+  uint32_t replaced_count = 0u;
+  uint32_t release_attempts = 0u;
+  for (uint32_t i = 0u; i < system->texture_stream_count; ++i) {
+    VkrMaterialTextureStream *stream = &system->texture_streams[i];
+    if (stream->state != VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT ||
+        !vkr_material_system_texture_handle_equal(stream->resident_texture,
+                                                  texture)) {
+      continue;
+    }
+    if (!vkr_material_system_replace_stream_texture(
+            system, stream,
+            vkr_material_system_get_default_texture(system, stream->slot))) {
+      goto rollback;
+    }
+    replaced_count++;
+  }
+
+  for (uint32_t i = 0u; i < stream_count; ++i) {
+    if (!vkr_texture_system_get_by_handle(system->texture_system, texture)) {
+      break;
+    }
+    release_attempts++;
+    if (!vkr_texture_system_release_by_handle(system->texture_system,
+                                              texture)) {
+      for (uint32_t restore = 0u; restore < release_attempts; ++restore) {
+        vkr_texture_system_add_ref_by_handle(system->texture_system, texture);
+      }
+      goto rollback;
+    }
+  }
+
+  for (uint32_t i = 0u; i < system->texture_stream_count; ++i) {
+    VkrMaterialTextureStream *stream = &system->texture_streams[i];
+    if (stream->state != VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT ||
+        !vkr_material_system_texture_handle_equal(stream->resident_texture,
+                                                  texture)) {
+      continue;
+    }
+    stream->state = VKR_MATERIAL_TEXTURE_RESIDENCY_EVICTED;
+    stream->resident_texture = VKR_TEXTURE_HANDLE_INVALID;
+    stream->resident_bytes = 0u;
+  }
+  system->texture_stream_resident_bytes -= resident_bytes;
+  system->texture_stream_resident_count -= stream_count;
+  system->texture_stream_evicted_count += stream_count;
+  system->texture_stream_evicted_total += stream_count;
   return true_v;
+
+rollback:
+  for (uint32_t i = 0u, restored = 0u;
+       i < system->texture_stream_count && restored < replaced_count; ++i) {
+    VkrMaterialTextureStream *stream = &system->texture_streams[i];
+    if (stream->state != VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT ||
+        !vkr_material_system_texture_handle_equal(stream->resident_texture,
+                                                  texture)) {
+      continue;
+    }
+    (void)vkr_material_system_replace_stream_texture(system, stream,
+                                                     (VkrMaterialTexture){
+                                                         .handle = texture,
+                                                         .slot = stream->slot,
+                                                         .enabled = true_v,
+                                                     });
+    restored++;
+  }
+  return false_v;
 }
 
 static bool8_t
@@ -426,8 +480,8 @@ vkr_material_system_evict_to_fit(VkrMaterialSystem *system,
       }
     }
     if (candidate == VKR_INVALID_ID ||
-        !vkr_material_system_evict_texture_stream(
-            system, &system->texture_streams[candidate])) {
+        !vkr_material_system_evict_resident_texture(
+            system, system->texture_streams[candidate].resident_texture)) {
       return false_v;
     }
   }
@@ -544,6 +598,22 @@ void vkr_material_system_set_automatic_texture_residency_budget(
   if (system && !system->texture_stream_budget_user_configured) {
     system->texture_stream_budget_bytes = budget_bytes;
   }
+}
+
+VkrMaterialTextureStreamStats
+vkr_material_system_get_texture_stream_stats(const VkrMaterialSystem *system) {
+  if (!system) {
+    return (VkrMaterialTextureStreamStats){0};
+  }
+  return (VkrMaterialTextureStreamStats){
+      .stream_count = system->texture_stream_count,
+      .pending_count = system->texture_stream_queued_count +
+                       system->texture_stream_active_count,
+      .in_flight_count = system->texture_stream_active_count,
+      .resident_count = system->texture_stream_resident_count,
+      .evicted_count = system->texture_stream_evicted_count,
+      .failed_total = system->texture_stream_failed_total,
+  };
 }
 
 void vkr_material_system_pump_texture_streams(VkrMaterialSystem *system,

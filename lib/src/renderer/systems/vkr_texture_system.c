@@ -1816,6 +1816,27 @@ void vkr_texture_system_add_ref_by_handle(VkrTextureSystem *system,
   }
 }
 
+uint32_t vkr_texture_system_get_ref_count_by_handle(VkrTextureSystem *system,
+                                                    VkrTextureHandle handle) {
+  if (!system || handle.id == 0u || handle.generation == VKR_INVALID_ID) {
+    return 0u;
+  }
+
+  const uint32_t texture_index = handle.id - 1u;
+  if (!system->texture_keys_by_index ||
+      texture_index >= system->textures.length ||
+      system->textures.data[texture_index].description.generation !=
+          handle.generation) {
+    return 0u;
+  }
+
+  const char *key = system->texture_keys_by_index[texture_index];
+  const VkrTextureEntry *entry =
+      key ? vkr_hash_table_get_VkrTextureEntry(&system->texture_map, key)
+          : NULL;
+  return entry ? entry->ref_count : 0u;
+}
+
 bool8_t vkr_texture_system_release_by_handle(VkrTextureSystem *system,
                                              VkrTextureHandle handle) {
   assert_log(system != NULL, "System is NULL");
@@ -3330,6 +3351,21 @@ bool8_t vkr_texture_system_finalize_prepared_load(
       prepared->upload_region_count == 0 || prepared->upload_data_size == 0) {
     *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
+  }
+
+  VkrTextureEntry *existing_entry = vkr_hash_table_get_VkrTextureEntry(
+      &system->texture_map, (const char *)name.str);
+  if (existing_entry) {
+    /* The async request is not an owner. Its consumer retains this canonical
+       handle after resolving the request. */
+    VkrTexture *existing_texture =
+        &system->textures.data[existing_entry->index];
+    *out_handle = (VkrTextureHandle){
+        .id = existing_texture->description.id,
+        .generation = existing_texture->description.generation,
+    };
+    *out_error = VKR_RENDERER_ERROR_NONE;
+    return true_v;
   }
 
   const VkrAssetPublisher *publisher = system->asset_publisher;

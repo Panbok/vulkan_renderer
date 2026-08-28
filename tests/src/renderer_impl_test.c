@@ -105,6 +105,14 @@ static void test_texture_pressure_budget_hysteresis(void) {
   assert(active == true_v);
   assert(budget == 200u);
 
+  stats.heap_usage_bytes[0] = 850u;
+  stats.pending_texture_upload_bytes = 50u;
+  assert(vkr_renderer_texture_pressure_budget(&stats, false_v, &budget,
+                                              &active) == true_v);
+  assert(active == true_v);
+  assert(budget == 250u);
+  stats.pending_texture_upload_bytes = 0u;
+
   stats.heap_usage_bytes[0] = 800u;
   assert(vkr_renderer_texture_pressure_budget(&stats, true_v, &budget,
                                               &active) == false_v);

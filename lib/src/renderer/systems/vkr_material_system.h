@@ -72,6 +72,15 @@ typedef struct VkrMaterialTextureStream {
   uint64_t resident_bytes;
 } VkrMaterialTextureStream;
 
+typedef struct VkrMaterialTextureStreamStats {
+  uint32_t stream_count;
+  uint32_t pending_count;
+  uint32_t in_flight_count;
+  uint32_t resident_count;
+  uint32_t evicted_count;
+  uint64_t failed_total;
+} VkrMaterialTextureStreamStats;
+
 typedef struct VkrMaterialSystem {
   // Internal arenas owned by the material system
   Arena *arena;             // persistent allocations (materials, names, maps)
@@ -166,6 +175,10 @@ void vkr_material_system_pump_texture_streams(VkrMaterialSystem *system,
 /** Cancels and releases every pending streamed texture for a material. */
 void vkr_material_system_cancel_texture_streams(VkrMaterialSystem *system,
                                                 VkrMaterialHandle material);
+
+/** Returns one coherent render-thread snapshot of texture-stream progress. */
+VkrMaterialTextureStreamStats
+vkr_material_system_get_texture_stream_stats(const VkrMaterialSystem *system);
 
 /** Starts one material-usage epoch before packet collection. */
 void vkr_material_system_begin_texture_residency_frame(

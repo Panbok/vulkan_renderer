@@ -59,6 +59,7 @@ typedef struct VkrMetalMemoryDeviceMetrics {
   uint64_t native_heap_peak_allocated_size;
   uint64_t driver_current_allocated_size;
   uint64_t driver_recommended_working_set_size;
+  uint64_t pending_texture_upload_bytes;
   uint64_t residency_allocation_count;
   uint64_t native_live_resources;
   uint64_t native_resources_released;

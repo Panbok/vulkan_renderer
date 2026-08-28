@@ -5,6 +5,7 @@
 #include "math/vec.h"
 #include "memory/vkr_arena_allocator.h"
 #include "memory/vkr_dmemory_allocator.h"
+#include "renderer/metal/vkr_metal_memory.h"
 #include "renderer/metal/vkr_metal_packet_renderer.h"
 #include "renderer/resources/loaders/material_loader.h"
 #include "renderer/resources/loaders/scene_loader.h"
@@ -1019,6 +1020,11 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
   // Ensure GPU idle before tearing down
   vkr_renderer_wait_idle(rf);
 
+  /* Application shutdown joins async workers before renderer teardown. Return
+     outstanding registry-owned payloads while their loader systems and
+     allocators are still alive. */
+  vkr_resource_system_quiesce();
+
   // Shutdown picking system if initialized
   if (rf->picking.initialized) {
     vkr_picking_shutdown(rf, &rf->picking);
@@ -1063,6 +1069,10 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
   if (rf->texture_system.arena) {
     vkr_texture_system_shutdown(&rf->texture_system);
   }
+
+  /* Font, material, and texture teardown uses loader metadata from the
+     registry. Destroy it only after those dependent systems are gone. */
+  vkr_resource_system_shutdown();
 
   if (rf->impl.ops && rf->impl.ops->destroy) {
     rf->impl.ops->destroy(rf->impl.state);
@@ -1598,11 +1608,23 @@ renderer_impl_metal_device_memory_stats(void *state,
                                         VkrDeviceMemoryStats *out_stats) {
 #if defined(PLATFORM_APPLE)
   RendererFrontend *renderer = state;
+  if (!renderer || !renderer->metal_renderer || !out_stats)
+    return false_v;
+  MemZero(out_stats, sizeof(*out_stats));
   VkrMetalMemoryDeviceMetrics metrics = {0};
   if (!vkr_metal_packet_renderer_get_memory_metrics(renderer->metal_renderer,
                                                     &metrics)) {
     return false_v;
   }
+  if (metrics.suballocations.free_bytes > metrics.suballocations.heap_size)
+    return false_v;
+  const uint64_t placement_budget = metrics.suballocations.heap_size;
+  const uint64_t driver_budget = metrics.driver_recommended_working_set_size;
+  const uint64_t effective_budget =
+      vkr_metal_memory_effective_budget(placement_budget, driver_budget);
+  const uint64_t effective_free = vkr_metal_memory_effective_free_bytes(
+      metrics.suballocations.free_bytes, metrics.driver_current_allocated_size,
+      driver_budget);
   out_stats->live_allocation_count = metrics.native_heap_size > 0 ? 1u : 0u;
   out_stats->peak_allocation_count = out_stats->live_allocation_count;
   out_stats->total_allocation_count = out_stats->live_allocation_count;
@@ -1615,10 +1637,13 @@ renderer_impl_metal_device_memory_stats(void *state,
   out_stats->live_count_by_type[0] = out_stats->live_allocation_count;
   out_stats->heap_index_by_type[0] = 0;
   out_stats->heap_count = 1;
-  out_stats->heap_size_bytes[0] = metrics.native_heap_size;
-  out_stats->heap_usage_bytes[0] = metrics.native_heap_used_size;
-  out_stats->heap_budget_bytes[0] = metrics.driver_recommended_working_set_size;
-  out_stats->heap_usage_valid = metrics.driver_recommended_working_set_size > 0;
+  out_stats->heap_size_bytes[0] = placement_budget;
+  out_stats->heap_usage_bytes[0] =
+      effective_budget - Min(effective_free, effective_budget);
+  out_stats->heap_budget_bytes[0] = effective_budget;
+  out_stats->pending_texture_upload_bytes =
+      metrics.pending_texture_upload_bytes;
+  out_stats->heap_usage_valid = effective_budget > 0u;
   return true_v;
 #else
   (void)state;
@@ -2208,7 +2233,11 @@ bool8_t vkr_renderer_texture_pressure_budget(const VkrDeviceMemoryStats *stats,
   if (budget == 0u) {
     return false_v;
   }
-  if (usage >= budget - budget / 10u) {
+  const uint64_t projected_usage =
+      stats->pending_texture_upload_bytes > budget - Min(usage, budget)
+          ? budget
+          : usage + stats->pending_texture_upload_bytes;
+  if (projected_usage >= budget - budget / 10u) {
     const uint64_t texture_bytes =
         stats->owners[VKR_GPU_ALLOCATION_OWNER_TEXTURE].live_bytes;
     const uint64_t non_texture_bytes =
@@ -2239,6 +2268,8 @@ static void renderer_frontend_update_texture_pressure(RendererFrontend *rf) {
   if (!rf->impl.ops->get_device_memory_stats(rf->impl.state, &stats)) {
     return;
   }
+  stats.owners[VKR_GPU_ALLOCATION_OWNER_TEXTURE].live_bytes =
+      rf->material_system.texture_stream_resident_bytes;
   uint64_t texture_budget = 0u;
   bool8_t pressure_active = rf->texture_pressure_active;
   if (vkr_renderer_texture_pressure_budget(&stats, rf->texture_pressure_active,

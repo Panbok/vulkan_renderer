@@ -383,6 +383,7 @@ bool8_t vkr_metal_packet_renderer_begin_texture_upload_batch(
   if (!renderer || renderer->frame_prepared ||
       renderer->texture_upload_batch.enabled)
     return false_v;
+  renderer->pending_texture_upload_bytes = 0u;
   renderer->texture_upload_batch.enabled = true_v;
   return true_v;
 }

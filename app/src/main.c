@@ -1440,10 +1440,15 @@ application_try_activate_scene_resource(Application *application) {
     float64_t elapsed =
         application_consume_scene_load_elapsed_seconds(application);
     if (elapsed >= 0.0) {
+      const VkrMaterialTextureStreamStats texture_stats =
+          vkr_material_system_get_texture_stream_stats(
+              &application->renderer.material_system);
       vkr_renderer_metrics_set_scene_boot_ns(
           &application->renderer_metrics, (uint64_t)(elapsed * 1000000000.0));
-      log_info("SCENE_LOAD_TIME result=ready seconds=%.3f ms=%.1f", elapsed,
-               elapsed * 1000.0);
+      log_info("SCENE_LOAD_TIME result=ready seconds=%.3f ms=%.1f "
+               "texture_pending=%u texture_resident=%u",
+               elapsed, elapsed * 1000.0, texture_stats.pending_count,
+               texture_stats.resident_count);
     }
     log_info("Activated scene '%s' after async load",
              string8_cstr(&scene_path));

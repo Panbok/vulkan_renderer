@@ -71,6 +71,31 @@ static void test_metal_memory_alignment_and_balance(void) {
   printf("  test_metal_memory_alignment_and_balance PASSED\n");
 }
 
+static void test_metal_memory_reserved_capacity_admission(void) {
+  printf("  Running test_metal_memory_reserved_capacity_admission...\n");
+  const VkrMetalMemoryMetrics metrics = {
+      .heap_size = 1000u,
+      .free_bytes = 200u,
+      .largest_free_range = 150u,
+  };
+  assert(vkr_metal_memory_effective_budget(1000u, 0u) == 1000u);
+  assert(vkr_metal_memory_effective_budget(1000u, 1200u) == 1000u);
+  assert(vkr_metal_memory_effective_budget(1000u, 750u) == 750u);
+  assert(vkr_metal_memory_effective_free_bytes(200u, 900u, 1200u) == 200u);
+  assert(vkr_metal_memory_effective_free_bytes(200u, 1050u, 1200u) == 150u);
+  assert(vkr_metal_memory_effective_free_bytes(200u, 1200u, 1200u) == 0u);
+  assert(vkr_metal_memory_effective_free_bytes(200u, 1300u, 1200u) == 0u);
+  assert(vkr_metal_memory_effective_free_bytes(200u, 1300u, 0u) == 200u);
+  assert(vkr_metal_memory_can_allocate_before_reserve(&metrics, 100u, 100u));
+  assert(!vkr_metal_memory_can_allocate_before_reserve(&metrics, 101u, 100u));
+  assert(!vkr_metal_memory_can_allocate_before_reserve(&metrics, 200u, 100u));
+  assert(!vkr_metal_memory_can_allocate_before_reserve(&metrics, 151u, 0u));
+  assert(!vkr_metal_memory_can_allocate_before_reserve(&metrics, 1u, 201u));
+  assert(!vkr_metal_memory_can_allocate_before_reserve(&metrics, 1u, 200u));
+  assert(!vkr_metal_memory_can_allocate_before_reserve(&metrics, 0u, 100u));
+  printf("  test_metal_memory_reserved_capacity_admission PASSED\n");
+}
+
 typedef struct RetirementTrace {
   uint32_t indices[4];
   uint32_t count;
@@ -278,6 +303,7 @@ static void test_metal_memory_failed_allocation_returns_handle(void) {
 bool32_t run_metal_memory_tests(void) {
   printf("Running Metal memory tests...\n");
   test_metal_memory_alignment_and_balance();
+  test_metal_memory_reserved_capacity_admission();
   test_metal_memory_stale_handle_and_submit_order();
   test_metal_memory_failure_classification();
   test_metal_memory_failed_allocation_returns_handle();

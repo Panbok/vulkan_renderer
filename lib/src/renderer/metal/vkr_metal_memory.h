@@ -62,6 +62,14 @@ vkr_metal_memory_collect(VkrMetalMemoryCore *memory,
 void vkr_metal_memory_record_native_failure(VkrMetalMemoryCore *memory);
 void vkr_metal_memory_get_metrics(VkrMetalMemoryCore *memory,
                                   VkrMetalMemoryMetrics *out_metrics);
+uint64_t vkr_metal_memory_effective_budget(uint64_t placement_budget,
+                                           uint64_t driver_budget);
+uint64_t vkr_metal_memory_effective_free_bytes(uint64_t placement_free_bytes,
+                                               uint64_t driver_usage,
+                                               uint64_t driver_budget);
+bool8_t vkr_metal_memory_can_allocate_before_reserve(
+    const VkrMetalMemoryMetrics *metrics, uint64_t requested_size,
+    uint64_t reserve_size);
 
 typedef VkrGpuSubmitRingSlot VkrMetalSubmitRingSlot;
 typedef VkrGpuSubmitRing VkrMetalSubmitRing;

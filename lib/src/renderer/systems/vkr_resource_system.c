@@ -1014,6 +1014,55 @@ bool8_t vkr_resource_system_init(
   return true_v;
 }
 
+void vkr_resource_system_quiesce(void) {
+  VkrResourceSystem *system = vkr_resource_system;
+  if (!system) {
+    return;
+  }
+
+  VkrResourceAsyncCompletion completion = {0};
+  while (vkr_resource_system_completion_dequeue_locked(system, &completion)) {
+    if (completion.loaded) {
+      vkr_resource_system_unload_sync_internal(&completion.loaded_info,
+                                               completion.path);
+    }
+    if (completion.has_async_payload) {
+      vkr_resource_system_release_async_payload(completion.loader_id,
+                                                completion.async_payload);
+    }
+    vkr_resource_system_completion_release_path(system, &completion);
+    vkr_resource_system_completion_reset(&completion);
+  }
+
+  for (uint32_t i = 0u; i < system->request_capacity; ++i) {
+    VkrResourceAsyncRequest *request = &system->requests[i];
+    if (!request->in_use) {
+      continue;
+    }
+    if (request->loaded_info.type != VKR_RESOURCE_TYPE_UNKNOWN) {
+      vkr_resource_system_unload_sync_internal(&request->loaded_info,
+                                               request->path);
+    }
+    const uint32_t payload_loader_id = request->loader_id;
+    void *payload = request->async_payload;
+    request->async_payload = NULL;
+    vkr_resource_system_request_release_locked(system, (int32_t)i, NULL, NULL);
+    if (payload) {
+      vkr_resource_system_release_async_payload(payload_loader_id, payload);
+    }
+  }
+}
+
+void vkr_resource_system_shutdown(void) {
+  VkrResourceSystem *system = vkr_resource_system;
+  if (!system) {
+    return;
+  }
+
+  vkr_resource_system_quiesce();
+  vkr_resource_system_init_cleanup(system);
+}
+
 bool8_t vkr_resource_system_register_loader(void *resource_system,
                                             VkrResourceLoader loader) {
   assert_log(vkr_resource_system != NULL, "Resource system is NULL");

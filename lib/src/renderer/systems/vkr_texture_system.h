@@ -257,6 +257,12 @@ void vkr_texture_system_add_ref_by_handle(VkrTextureSystem *system,
                                           VkrTextureHandle handle);
 
 /**
+ * @brief Returns the retained CPU owner count for a texture handle.
+ */
+uint32_t vkr_texture_system_get_ref_count_by_handle(VkrTextureSystem *system,
+                                                    VkrTextureHandle handle);
+
+/**
  * @brief Releases a texture by handle
  * @param system The texture system to release the texture from
  * @param handle The handle of the texture to release

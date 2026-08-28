@@ -144,6 +144,8 @@ bool8_t vkr_metal_packet_renderer_get_memory_metrics(
   if (!renderer || !out_metrics)
     return false_v;
   vkr_metal_memory_device_get_metrics(renderer->memory, out_metrics);
+  out_metrics->pending_texture_upload_bytes =
+      renderer->pending_texture_upload_bytes;
   return true_v;
 }
 
@@ -440,7 +442,34 @@ vkr_internal bool8_t vkr_metal_packet_publications_idle_adapter(void *state) {
 
 vkr_internal bool8_t vkr_metal_packet_texture_upload_available_adapter(
     void *state, uint64_t upload_bytes) {
-  return state != NULL && upload_bytes != 0u;
+  VkrMetalPacketRenderer *renderer = state;
+  VkrMetalMemoryDeviceMetrics metrics = {0};
+  if (!renderer || upload_bytes == 0u ||
+      !vkr_metal_packet_renderer_get_memory_metrics(renderer, &metrics) ||
+      metrics.suballocations.heap_size == 0u ||
+      metrics.suballocations.free_bytes > metrics.suballocations.heap_size) {
+    return false_v;
+  }
+  const uint64_t placement_budget = metrics.suballocations.heap_size;
+  const uint64_t budget = vkr_metal_memory_effective_budget(
+      placement_budget, metrics.driver_recommended_working_set_size);
+  const uint64_t effective_free = vkr_metal_memory_effective_free_bytes(
+      metrics.suballocations.free_bytes, metrics.driver_current_allocated_size,
+      metrics.driver_recommended_working_set_size);
+  VkrMetalMemoryMetrics effective = metrics.suballocations;
+  effective.heap_size = budget;
+  effective.free_bytes = Min(effective_free, budget);
+  effective.largest_free_range =
+      Min(effective.largest_free_range, effective.free_bytes);
+  const uint64_t reserve = budget / 10u;
+
+  if (vkr_metal_memory_can_allocate_before_reserve(&effective, upload_bytes,
+                                                   reserve)) {
+    return true_v;
+  }
+  renderer->pending_texture_upload_bytes =
+      Max(renderer->pending_texture_upload_bytes, upload_bytes);
+  return false_v;
 }
 
 void vkr_metal_packet_renderer_get_asset_publisher(

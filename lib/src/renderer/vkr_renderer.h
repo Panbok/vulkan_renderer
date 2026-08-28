@@ -1139,6 +1139,8 @@ typedef struct VkrDeviceMemoryStats {
   uint64_t heap_size_bytes[VKR_DEVICE_MEMORY_HEAP_MAX];
   uint64_t heap_usage_bytes[VKR_DEVICE_MEMORY_HEAP_MAX];
   uint64_t heap_budget_bytes[VKR_DEVICE_MEMORY_HEAP_MAX];
+  /** Largest upload currently blocked by the backend's heap reserve. */
+  uint64_t pending_texture_upload_bytes;
   bool8_t heap_usage_valid;
 } VkrDeviceMemoryStats;
 

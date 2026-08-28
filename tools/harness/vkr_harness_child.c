@@ -20,7 +20,7 @@ typedef struct VkrHarnessChildContext {
   const VkrHarnessArenas *arenas;
   VkrResourceHandleInfo scene_resource;
   float64_t load_started;
-  /** The scene closure is resident and installed on the renderer frontend. */
+  /** The scene resource is resident and installed on the renderer frontend. */
   bool8_t scene_active;
   /** First renderer frame whose packet was built from the active scene. */
   uint64_t scene_first_frame_index;
@@ -443,8 +443,8 @@ static void vkr_harness_child_drain_events(Application *application) {
 }
 
 /**
- * Determinism rule 1: nothing is measured until the requested scene reaches a
- * successful terminal state.
+ * Determinism rule 1: nothing is measured until the requested scene resource
+ * reaches a successful terminal state and its material texture streams settle.
  */
 static bool8_t vkr_harness_child_activate_scene(Application *application) {
   VkrHarnessChildContext *child = g_harness_child;
@@ -494,6 +494,24 @@ static bool8_t vkr_harness_child_activate_scene(Application *application) {
   child->scene_first_frame_index = application->renderer.frame_number + 1u;
   child->scene_active = true_v;
   return true_v;
+}
+
+static bool8_t
+vkr_harness_child_texture_streams_ready(Application *application) {
+  VkrHarnessChildContext *child = g_harness_child;
+  const VkrMaterialTextureStreamStats stats =
+      vkr_material_system_get_texture_stream_stats(
+          &application->renderer.material_system);
+  if (stats.pending_count == 0u) {
+    return true_v;
+  }
+
+  const float64_t elapsed =
+      vkr_platform_get_absolute_time() - child->load_started;
+  if (elapsed * 1000.0 > child->case_manifest->asset_ready_timeout_ms) {
+    vkr_harness_child_fail(application, "scene.texture_ready_timeout");
+  }
+  return false_v;
 }
 
 /**
@@ -700,7 +718,11 @@ void application_update(Application *application, float64_t delta) {
   if (!child->scene_active) {
     if (!vkr_harness_child_activate_scene(application))
       return;
-  } else if (!child->pass_catalog_ready) {
+  }
+  if (!vkr_harness_child_texture_streams_ready(application)) {
+    return;
+  }
+  if (!child->pass_catalog_ready) {
     if (!vkr_harness_child_prepare_pass_catalog(application))
       return;
   } else if (!child->phase_started) {

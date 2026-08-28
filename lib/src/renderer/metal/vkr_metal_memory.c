@@ -56,6 +56,32 @@ void vkr_metal_memory_get_metrics(VkrMetalMemoryCore *memory,
   vkr_gpu_memory_get_metrics(memory, out_metrics);
 }
 
+uint64_t vkr_metal_memory_effective_budget(uint64_t placement_budget,
+                                           uint64_t driver_budget) {
+  return driver_budget > 0u && driver_budget < placement_budget
+             ? driver_budget
+             : placement_budget;
+}
+
+uint64_t vkr_metal_memory_effective_free_bytes(uint64_t placement_free_bytes,
+                                               uint64_t driver_usage,
+                                               uint64_t driver_budget) {
+  if (driver_budget == 0u)
+    return placement_free_bytes;
+  const uint64_t driver_free =
+      driver_usage < driver_budget ? driver_budget - driver_usage : 0u;
+  return Min(placement_free_bytes, driver_free);
+}
+
+bool8_t vkr_metal_memory_can_allocate_before_reserve(
+    const VkrMetalMemoryMetrics *metrics, uint64_t requested_size,
+    uint64_t reserve_size) {
+  return metrics && requested_size > 0u &&
+         reserve_size <= metrics->free_bytes &&
+         requested_size <= metrics->free_bytes - reserve_size &&
+         requested_size <= metrics->largest_free_range;
+}
+
 uint64_t vkr_metal_submit_ring_storage_requirement(uint32_t slot_count) {
   return vkr_gpu_submit_ring_storage_requirement(slot_count);
 }

@@ -206,6 +206,25 @@ bool8_t vkr_resource_system_init(
     const VkrRendererMetricsProducerConfig *metrics_producers);
 
 /**
+ * @brief Returns outstanding async resources while registered loaders remain
+ * alive.
+ *
+ * The caller must first join every worker that can publish a completion. The
+ * registry remains initialized so renderer subsystems can continue using its
+ * loader metadata during their own teardown.
+ */
+void vkr_resource_system_quiesce(void);
+
+/**
+ * @brief Destroys the quiesced resource registry.
+ *
+ * Call after renderer subsystems have released resources through their
+ * registered loaders. The function also quiesces a directly-owned registry,
+ * which keeps focused tests and standalone users on one safe shutdown call.
+ */
+void vkr_resource_system_shutdown(void);
+
+/**
  * @brief Registers a resource loader
  * @param resource_system Loader-specific resource system implementation (can be
  * NULL)

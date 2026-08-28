@@ -432,6 +432,7 @@ struct VkrMetalPacketRenderer {
   id<MTL4CommandAllocator> command_allocator;
   id<MTL4CommandBuffer> command_buffer;
   VkrMetalPacketTextureUploadBatch texture_upload_batch;
+  uint64_t pending_texture_upload_bytes;
   uint64_t timestamp_frequency;
   id<MTLRenderPipelineState> gpu_shadow_pipeline;
   id<MTLRenderPipelineState> gpu_shadow_opaque_pipeline;
