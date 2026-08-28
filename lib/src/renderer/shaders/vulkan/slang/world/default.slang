@@ -610,13 +610,11 @@ float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing)
     {
         uint texture_index = NonUniformResourceIndex(material.normal_texture);
         uint sampler_index = NonUniformResourceIndex(material.normal_sampler);
-        float3 sampled = g_textures[texture_index]
-                                 .Sample(g_samplers[sampler_index], input.uv)
-                                 .xyz *
-                             2.0f -
-                         1.0f;
-        sampled.xy *= material.material_surface.z;
-        sampled.y = -sampled.y;
+        float3 sampled = vkr_normal_map_decode(
+            g_textures[texture_index]
+                .Sample(g_samplers[sampler_index], input.uv)
+                .xyz,
+            material.material_surface.z);
         float3 tangent = normalize(input.world_tangent.xyz);
         tangent = normalize(tangent - dot(tangent, normal) * normal);
         float3 bitangent = cross(normal, tangent) * input.world_tangent.w;

@@ -901,16 +901,13 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
                             c.tangent * perspective.z;
     if ((material.flags & 1u) != 0u)
     {
-        surface.tangent_normal =
+        surface.tangent_normal = vkr_normal_map_decode(
             g_textures[NonUniformResourceIndex(material.normal_texture)]
-                    .SampleGrad(g_samplers[NonUniformResourceIndex(
-                                    material.normal_sampler)],
-                                uv, uv_dx, uv_dy)
-                    .xyz *
-                2.0f -
-            1.0f;
-        surface.tangent_normal.xy *= material.material_surface.z;
-        surface.tangent_normal.y = -surface.tangent_normal.y;
+                .SampleGrad(g_samplers[NonUniformResourceIndex(
+                                material.normal_sampler)],
+                            uv, uv_dx, uv_dy)
+                .xyz,
+            material.material_surface.z);
         surface.normal_mapped = 1u;
     }
     float3 emissive = material.material_emissive.rgb;
@@ -1006,13 +1003,10 @@ void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
         return;
     }
     VkrVulkanInstance instance = source.instances[surface.instance_index];
-    // Opaque and transmission own different fixed matrix operations. Matched
-    // retained-raster captures require this opaque OpMatrixTimesVector form;
-    // keeping it at the entry call site avoids a per-pixel convention selector.
     if (!vkr_vk_finish_surface_normal(
             source,
-            mul(float4(surface.object_normal, 0.0f), instance.model).xyz,
-            mul(float4(surface.object_tangent.xyz, 0.0f), instance.model).xyz,
+            mul(instance.model, float4(surface.object_normal, 0.0f)).xyz,
+            mul(instance.model, float4(surface.object_tangent.xyz, 0.0f)).xyz,
             surface))
     {
         vkr_vk_resolve_defaults(root, thread_id.xy, -1.0f);

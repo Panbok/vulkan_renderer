@@ -217,3 +217,25 @@ bool8_t vkr_vk_record_ibl_bakes(VkrVulkanRenderer *renderer,
   }
   return true_v;
 }
+
+void vkr_vk_discard_ibl_bakes(VkrVulkanRenderer *renderer) {
+  for (uint32_t i = 0u; i < renderer->pending_ibl_bake_count; ++i) {
+    const VkrVulkanPendingIblBake *job = &renderer->pending_ibl_bakes[i];
+    const VkrTextureHandle handles[] = {job->equirect, job->source,
+                                        job->irradiance, job->prefilter};
+    for (uint32_t handle_index = job->convert_equirect ? 0u : 1u;
+         handle_index < ArrayCount(handles); ++handle_index) {
+      VkrVulkanPublishedTexture *texture =
+          vkr_vk_texture_publication(renderer, handles[handle_index]);
+      if (!texture || !texture->ibl_reference_count) {
+        log_error("Vulkan discarded IBL bake lost texture %u:%u ownership",
+                  handles[handle_index].id, handles[handle_index].generation);
+        continue;
+      }
+      texture->ibl_reference_count--;
+    }
+    MemZero(&renderer->pending_ibl_bakes[i],
+            sizeof(renderer->pending_ibl_bakes[i]));
+  }
+  renderer->pending_ibl_bake_count = 0u;
+}

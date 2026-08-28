@@ -1,0 +1,11 @@
+// Shared tangent-space normal decode for all production material paths.
+// NORMAL_RG textures may transcode to BC5 or EAC RG11, whose sampled blue
+// channel is zero. Reconstructing the positive hemisphere from XY keeps those
+// formats equivalent to widened RGBA targets on both backends.
+float3 vkr_normal_map_decode(float3 encoded, float strength)
+{
+    float2 xy = encoded.xy * 2.0f - 1.0f;
+    xy *= strength;
+    xy.y = -xy.y;
+    return float3(xy, sqrt(saturate(1.0f - dot(xy, xy))));
+}

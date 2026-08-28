@@ -1716,7 +1716,7 @@ static void test_main_graph_contract(void) {
       assert(vkr_string8_equals_cstr(&pass->reads.data[0].name,
                                      "temporal_history_color"));
       assert(pass->reads.data[0].image_access ==
-             VKR_RG_JSON_IMAGE_ACCESS_STORAGE_READ);
+             VKR_RG_JSON_IMAGE_ACCESS_SAMPLED);
       assert(vkr_string8_equals_cstr(&pass->writes.data[0].name,
                                      "exposure_histogram"));
       exposure_histogram_index = i;

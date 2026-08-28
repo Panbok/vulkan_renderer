@@ -1176,7 +1176,7 @@ bool8_t vkr_vk_record_exposure_histogram(VkrVulkanRenderer *renderer,
   VkrVulkanExposureRoot root = {0};
   uint32_t source_index = 0u;
   if (!source || !vkr_vk_exposure_root(renderer, pass, 1u, &root) ||
-      !vkr_vk_deferred_storage_index(renderer, pass, 0u, &source_index))
+      !vkr_vk_deferred_sampled_index(renderer, pass, 0u, &source_index))
     return false_v;
   renderer->frame_slots[renderer->active_frame_slot].exposure_histogram =
       vkr_vk_deferred_buffer(renderer, pass, 1u);

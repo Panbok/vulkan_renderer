@@ -1,15 +1,23 @@
 ---
 status: partial
-updated: 2026-08-27
+updated: 2026-08-28
 authority: design
 ---
 # Automatic exposure, bloom, and ambient occlusion
 
 **Document status:** Implemented through automatic-exposure phases E0-E3, bloom
 phases B0-B1, and GTAO phases G0-G2 on Metal and Vulkan. Metal runtime,
-capture, timing, and validation evidence passes for all three features; native
-Vulkan runtime validation remains pending. The architecture specification
-remains the status authority.
+capture, timing, and validation evidence passes. Windows Vulkan Release smoke,
+Bistro, cold/warm deferred, and focused Debug validation evidence now passes;
+matched authoritative performance and final-color owner acceptance remain
+open. The architecture specification remains the status authority.
+
+**Windows Vulkan closure (2026-08-28).** The apparent GTAO regression was a
+two-channel normal-map decode defect outside E, B, and G. One shared shader
+decoder now reconstructs positive tangent-space Z for Metal and Vulkan. The
+harness also waits for renderer asset publications, so its smoke fixtures are
+no longer empty on Windows. See §7.4 and
+[Windows Vulkan post-effect parity investigation](windows-vulkan-post-effect-parity-investigation.md).
 
 **Scope:** Three separate renderer features. They share HDR and deferred inputs,
 but each adds graph resources and passes and each must land with its own
@@ -530,10 +538,83 @@ accepted baseline or a cross-device performance result:
 The Release isolated-cold snapshots cover mandatory pipeline creation. Two
 final isolated-warm attempts complete both startup children, but their
 aggregates are rejected for unrelated nondeterministic work-volume rows and
-are not counted as passed gates. Native Vulkan validation, an authoritative
-matched GTAO-on/off Release comparison, and explicit owner acceptance of any
-final-color baseline remain open. No cost or quality ranking is inferred from
-the local observations.
+are not counted as passed gates. Native Vulkan validation is recorded in
+§7.4. An authoritative matched GTAO-on/off Release comparison and explicit
+owner acceptance of any final-color baseline remain open. No cost or quality
+ranking is inferred from the local observations.
+
+### 7.4 Windows Vulkan closure
+
+Local RX 6700 XT evidence from 2026-08-28. Windows 10 Pro 19045, driver
+26.6.3, Clang 20.1.0, Release and Debug, based on tree `a517999` with this
+change. These are local dirty-tree correctness diagnostics, not authoritative
+performance or baseline evidence.
+
+The harness readiness gate now includes the selected renderer's asset
+publisher. Every smoke case also asserts at least one opaque draw and zero
+publication omissions. The final Release reports are:
+
+| Case | Report digest | Decisive evidence |
+| --- | --- | --- |
+| `smoke.auto_exposure.static` | `sha256:db0a996e7cb720f9065763cddb67fff9720d5f90f01ba6d857119f1031a734c9` | Non-empty histogram; multiplier and EV adaptation execute |
+| `smoke.bloom.static` | `sha256:3af307a224ca770abe8a9efd2e81b8d6e1411a4acdbcf780299f606604a4c260` | Prefilter, result, combined HDR, and final color have distinct digests |
+| `smoke.gtao.static` | `sha256:eb62020e3e91fc37a3e14b5291edc3af81dcd0faa0aeb8ade0f39296cbadd0d8` | Nonuniform view depth, raw AO, denoised visibility, and final color |
+| `smoke.gtao.motion_thin` | `sha256:6c0902aa7155b1f1349388517e818d96bcff177652b7b53e7c4e69c318016ed6` | Both motion checkpoints populate the AO chain |
+
+The exact owner-camera Bistro GTAO report
+`sha256:8b0d223cdbc7f25e2f2c1ae5517af5c00727537f31bcaf3e532cace20f96e9e3`
+shows lit ground, a positive-hemisphere G-buffer normal field, ordinary contact
+occlusion, one or more opaque draws, and zero publication omissions. The full
+automatic-exposure, bloom, and GTAO production case also passes its
+non-vacuity assertions. That evidence did not prove temporal exposure
+stability: its old assertions only required one accepted texel and a positive
+multiplier.
+
+The fixed-step production trace exposed a Vulkan descriptor-index mismatch.
+`Post.Exposure.Histogram` declared its source as `STORAGE_READ`, the Vulkan
+executor supplied a storage-image index, and the shader used that number in
+the sampled-image array. The two arrays have independent indices, so history
+rotation intermittently selected unrelated sampled images. Metal binds the
+texture object directly and was unaffected. Before the fix, the static camera
+ranged from 35 to 480,000 accepted texels, target EV -8 to 0.1454, and
+multiplier 0.00390625 to 1.1060. Report digest:
+`sha256:aeea1298b6baa9fcffe88d57734a75d29d705410c1cdd3de9f1e892091ad0d36`.
+
+The graph now declares the history source as `SAMPLED`, and Vulkan supplies
+the matching sampled-image index. The identical two-repetition Release trace
+holds exactly 479,910 accepted texels across all 120 measured frames; target EV
+varies by less than `4.77e-7` and multiplier by less than `1.20e-7`. Report
+digest:
+`sha256:7f5d3524b7a02e5c4248e260795074b4b432edac8f501f1a16a2cabe85789f59`.
+The main-graph CPU test pins sampled access, and the production case now bounds
+accepted texels, target EV, and multiplier over the entire static trace.
+
+Two independent focused Debug synchronization-validation children pass with no
+Vulkan diagnostic and with zero deferred resolve errors or indirect overflows;
+report digests
+`sha256:0c34cf08fec72b3e660989de10c441fe28016719afbe8b43ba0cb86496838d97`
+and
+`sha256:fc037520645a577fca23378df4df10d95ddbdc0de4d22914176ebe9d455f9303`.
+The stock two-child Windows diagnostic remains incomplete because its second
+process stops during Vulkan loader startup after third-party Galaxy overlay
+layer discovery, before renderer creation. An isolated Debug Bistro profile
+with implicit overlay layers disabled passes one complete repetition with zero
+Vulkan validation messages; report digest
+`sha256:b0cf4ee52a50ebbd5dc8114f7d662d4042a574863a32db63d273d40c116b5bf1`.
+Full causation, fixes, and remaining parity work are in
+[Windows Vulkan post-effect parity investigation](windows-vulkan-post-effect-parity-investigation.md).
+
+Owner review after that closure found an unresolved absolute-exposure mismatch
+at darker Bistro cameras. Vulkan is temporally stable but converges to
+`2.987x` at the reported Windows camera and `3.166x` at the supplied
+Metal-reference camera. Disabling bloom preserves the pre-bloom HDR digest and
+the exposure decision, proving that bloom adds local halos but does not own the
+global brightness. Metal and Vulkan source bindings and shader arithmetic match
+statically. The remaining E3 acceptance gate is a current native Metal run of
+`local.mac.bistro.exposure_parity`, compared with the Vulkan
+`local.win.bistro.mac_reference` case. No backend-only compensation or shared
+metering retune is justified until that run separates HDR-input divergence from
+exposure-application divergence.
 
 ## 8. Primary references
 

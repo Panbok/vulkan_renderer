@@ -19,13 +19,10 @@ static float4 vkr_metal_packet_shade(
   float3 geometric_normal = normalize(input.world_normal) * face_sign;
   float3 normal = geometric_normal;
   if ((material.flags & 1u) != 0u) {
-    float3 sampled =
+    float3 sampled = vkr_normal_map_decode(
         material.normal_texture.sample(material.normal_sampler, input.texcoord)
-                .xyz *
-            2.0 -
-        1.0;
-    sampled.xy *= material.material_surface.z;
-    sampled.y = -sampled.y;
+            .xyz,
+        material.material_surface.z);
     float3 tangent = normalize(input.world_tangent.xyz);
     tangent = normalize(tangent - dot(tangent, normal) * normal);
     float3 bitangent =

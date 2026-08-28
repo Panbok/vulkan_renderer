@@ -1766,7 +1766,7 @@
       "condition": "exposure_automatic",
       "flags": ["NO_CULL"],
       "reads": [
-        { "image": "temporal_history_color", "access": "STORAGE_READ", "binding": 0 }
+        { "image": "temporal_history_color", "access": "SAMPLED", "binding": 0 }
       ],
       "writes": [
         { "buffer": "exposure_histogram", "access": "STORAGE_READ_WRITE", "binding": 1 }

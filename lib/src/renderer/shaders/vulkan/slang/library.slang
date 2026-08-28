@@ -5,6 +5,7 @@
 // firefly weight, so it must follow it here and in the MSL concatenation list.
 #include "../../shared/bloom_kernel.slangh"
 #include "../../shared/gtao_kernel.slangh"
+#include "../../shared/normal_map_kernel.slangh"
 #include "common/resources.slangh"
 #include "../../shared/shadow_kernel.slangh"
 #include "ibl/common.slangh"

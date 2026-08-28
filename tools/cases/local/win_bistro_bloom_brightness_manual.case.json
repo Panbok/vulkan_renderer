@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "id": "local.win.bistro.bloom_brightness_manual",
+  "suite": "local",
+  "description": "Windows Vulkan manual-exposure control at the owner camera with bloom and GTAO enabled.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 20,
+  "resolution": [800, 600],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 900000,
+  "asset_ready_timeout_ms": 600000,
+  "frames": {
+    "warmup": 120,
+    "measure": 60
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "text_fixture": false,
+    "backend": "vulkan",
+    "taa_enabled": false,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default",
+    "exposure_mode": "manual",
+    "manual_exposure": 0.3,
+    "exposure_compensation_ev": 0.0,
+    "bloom_enabled": true,
+    "gtao_enabled": true,
+    "gtao_radius": 0.5,
+    "gtao_power": 2.2,
+    "bloom_threshold": 1.0,
+    "bloom_knee": 0.5,
+    "bloom_intensity": 0.05
+  },
+  "camera": {
+    "mode": "static",
+    "position": [-23.6858349, 7.45912027, 8.57657433],
+    "yaw": 23.0096149,
+    "pitch": -19.4072094,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500
+  },
+  "captures": [
+    {
+      "at_frame": 40,
+      "channels": [
+        "hdr_pre_bloom",
+        "bloom_result",
+        "hdr_combined",
+        "final_color"
+      ]
+    }
+  ],
+  "assertions": [
+    { "metric": "draw.world.opaque_draws", "stat": "min", "min": 1 },
+    { "metric": "packet.publication_omitted_candidates", "stat": "max", "max": 0 }
+  ]
+}

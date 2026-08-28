@@ -71,6 +71,33 @@ static int32_t vkr_harness_scene_asset_compare(const void *a, const void *b) {
   return string_compare(lhs->path, rhs->path);
 }
 
+static bool8_t vkr_harness_scene_generated_material_source(
+    const char *owner, char out_source[VKR_HARNESS_PATH_MAX]) {
+  static const char forward_prefix[] = "assets/materials/";
+  static const char native_prefix[] = "assets\\materials\\";
+  const uint32_t prefix_length = (uint32_t)sizeof(forward_prefix) - 1u;
+  if (!string_n_equals(owner, forward_prefix, prefix_length) &&
+      !string_n_equals(owner, native_prefix, prefix_length)) {
+    return false_v;
+  }
+
+  const char *stem = owner + prefix_length;
+  const char *separator = stem;
+  while (*separator && *separator != '/' && *separator != '\\') {
+    separator++;
+  }
+  static const char generated_prefix[] = "gltf_mat_";
+  if (separator == stem || !*separator ||
+      !string_n_equals(separator + 1u, generated_prefix,
+                       sizeof(generated_prefix) - 1u)) {
+    return false_v;
+  }
+
+  return string_format(out_source, VKR_HARNESS_PATH_MAX,
+                       "assets/models/%.*s.gltf", (int32_t)(separator - stem),
+                       stem) > 0;
+}
+
 static bool8_t vkr_harness_scene_manifest_resolve(
     const char *resolved_root, const char *owner_relative,
     const char *reference, char out_relative[VKR_HARNESS_PATH_MAX],
@@ -232,10 +259,31 @@ static bool8_t vkr_harness_scene_manifest_add_reference(
   if (!vkr_harness_scene_manifest_resolve(resolved_root, owner, reference,
                                           relative, absolute)) {
     if (required) {
-      vkr_harness_error_set(out_error, "scene_manifest.missing", "$.scene",
-                            "Dependency '%s' referenced by '%s' is missing or "
-                            "escapes the repository",
-                            reference, owner);
+      char generated_source[VKR_HARNESS_PATH_MAX];
+      if (vkr_harness_scene_generated_material_source(owner,
+                                                      generated_source)) {
+#if defined(PLATFORM_WINDOWS)
+        vkr_harness_error_set(
+            out_error, "scene_manifest.missing", "$.scene",
+            "Generated material dependency for '%s' is missing. Query "
+            "parameters are ignored. Rebuild derived assets with "
+            "'tools\\cook_vkr_meshes.bat %s'",
+            generated_source, generated_source);
+#else
+        vkr_harness_error_set(
+            out_error, "scene_manifest.missing", "$.scene",
+            "Generated material dependency for '%s' is missing. Query "
+            "parameters are ignored. Rebuild derived assets with "
+            "'./tools/cook_vkr_meshes.sh %s'",
+            generated_source, generated_source);
+#endif
+      } else {
+        vkr_harness_error_set(
+            out_error, "scene_manifest.missing", "$.scene",
+            "Dependency '%s' referenced by '%s' is missing or escapes the "
+            "repository",
+            reference, owner);
+      }
       return false_v;
     }
     return true_v;

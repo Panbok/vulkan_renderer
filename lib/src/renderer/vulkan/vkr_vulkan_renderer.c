@@ -1578,6 +1578,7 @@ void vkr_vulkan_renderer_destroy(VkrVulkanRenderer *renderer) {
     vkr_vulkan_renderer_wait_idle(renderer);
     if (renderer->config.target_kind != VKR_PRESENT_TARGET_OFFSCREEN)
       (void)vkDeviceWaitIdle(device);
+    vkr_vk_discard_ibl_bakes(renderer);
     vkr_vk_discard_buffer_initializations(renderer);
     vkr_vk_discard_texture_initializations(renderer);
     vkr_vk_drain_asset_publications(renderer);

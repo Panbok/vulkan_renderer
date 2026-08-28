@@ -2,10 +2,11 @@
  * @file vkr_harness_capture.c
  * @brief Canonicalizes a ready capture batch into comparable artifacts.
  *
- * Comparison always reads the canonical payload, never the preview: color
- * becomes a top-left RGBA8 PNG, depth and identifier channels become tightly
- * packed little-endian 32-bit data beside a PNG a reviewer can look at. Each
- * row is published with a sidecar describing exactly how it was produced.
+ * Comparison always reads the canonical payload, never the preview. Display
+ * color becomes a top-left RGBA8 PNG. Packed normals, depth, and identifier
+ * channels retain a tightly packed little-endian payload beside a PNG a
+ * reviewer can inspect. Each row is published with a sidecar describing
+ * exactly how it was produced.
  */
 #include "vkr_harness_runtime.h"
 
@@ -594,9 +595,9 @@ static void vkr_harness_capture_uint_preview(const VkrCaptureItemResult *item,
 
 /**
  * Writes the tightly packed little-endian 32-bit payload that comparison
- * actually reads: depth becomes float bits, identifiers keep their exact
- * value. `D16_UNORM` and `R16_SFLOAT` are widened here so one canonical
- * encoding covers every depth source.
+ * actually reads. Packed R16G16 normals and identifiers keep their exact bits;
+ * depth becomes float bits. `D16_UNORM` and `R16_SFLOAT` are widened here so
+ * one canonical encoding covers every depth source.
  */
 static void vkr_harness_capture_canonical_u32(const VkrCaptureItemResult *item,
                                               uint32_t component,
@@ -778,9 +779,11 @@ bool8_t vkr_harness_capture_publish(
                             "Capture item %u cannot be published", i);
       return false_v;
     }
-    /* Color is its own canonical payload, so its PNG is both data and preview
-       and no separate raw file exists. */
-    const bool8_t color = item->value_kind == VKR_CAPTURE_VALUE_COLOR;
+    /* Packed G-buffer normals need their exact signed components for parity
+       comparisons; their decoded PNG remains a reviewer preview. */
+    const bool8_t png_canonical =
+        item->value_kind == VKR_CAPTURE_VALUE_COLOR &&
+        item->format != VKR_TEXTURE_FORMAT_R16G16_SNORM;
     char stem[160];
     char png_path[VKR_HARNESS_PATH_MAX];
     char data_path[VKR_HARNESS_PATH_MAX];
@@ -791,20 +794,20 @@ bool8_t vkr_harness_capture_publish(
     string_format(metadata_path, sizeof(metadata_path), "%s/%s.json",
                   capture_dir, stem);
     string_format(data_path, sizeof(data_path),
-                  color ? "%s/%s.png" : "%s/%s.raw", capture_dir, stem);
+                  png_canonical ? "%s/%s.png" : "%s/%s.raw", capture_dir, stem);
 
     Scratch scratch = scratch_create(arenas->transient);
     const uint64_t pixel_bytes = (uint64_t)item->width * item->height * 4u;
     uint8_t *rgba =
         arena_alloc(arenas->transient, pixel_bytes, ARENA_MEMORY_TAG_ARRAY);
-    uint8_t *tight = color ? rgba
-                           : arena_alloc(arenas->transient, pixel_bytes,
-                                         ARENA_MEMORY_TAG_ARRAY);
+    uint8_t *tight = png_canonical ? rgba
+                                   : arena_alloc(arenas->transient, pixel_bytes,
+                                                 ARENA_MEMORY_TAG_ARRAY);
     float32_t preview_min = 0.0f;
     float32_t preview_max = 1.0f;
     bool8_t ok = rgba != NULL && tight != NULL;
     if (ok) {
-      if (color) {
+      if (item->value_kind == VKR_CAPTURE_VALUE_COLOR) {
         vkr_harness_capture_color_rgba(item, rgba);
       } else if (item->value_kind == VKR_CAPTURE_VALUE_DEPTH) {
         vkr_harness_capture_depth_preview(item, rgba, &preview_min,
@@ -815,7 +818,7 @@ bool8_t vkr_harness_capture_publish(
     }
 
     VkrHarnessCaptureResult *capture = &report->captures[report->capture_count];
-    if (ok && !color) {
+    if (ok && !png_canonical) {
       vkr_harness_capture_canonical_u32(item, uint_component, uint_mask, tight);
       ok = vkr_harness_atomic_write(data_path, tight, pixel_bytes, error);
     }
@@ -823,7 +826,7 @@ bool8_t vkr_harness_capture_publish(
                                              item->height, arenas, error);
     if (ok) {
       vkr_harness_capture_describe(capture, item, channel, logical_channel,
-                                   poll, checkpoint_frame, stem, color);
+                                   poll, checkpoint_frame, stem, png_canonical);
       /* Digests of the payloads must exist before the sidecar quotes them. */
       ok = vkr_harness_sha256_file(data_path, capture->data_sha256) &&
            vkr_harness_sha256_file(png_path, capture->preview_sha256) &&
@@ -832,12 +835,14 @@ bool8_t vkr_harness_capture_publish(
                                               preview_min, preview_max) &&
            vkr_harness_sha256_file(metadata_path, capture->metadata_sha256) &&
            vkr_harness_report_add_artifact(
-               report, color ? "capture.color" : "capture.raw",
+               report, png_canonical ? "capture.color" : "capture.raw",
                capture->data_path,
-               color ? "image/png" : "application/octet-stream", data_path) &&
-           (color || vkr_harness_report_add_artifact(report, "capture.preview",
-                                                     capture->preview_path,
-                                                     "image/png", png_path)) &&
+               png_canonical ? "image/png" : "application/octet-stream",
+               data_path) &&
+           (png_canonical ||
+            vkr_harness_report_add_artifact(report, "capture.preview",
+                                            capture->preview_path, "image/png",
+                                            png_path)) &&
            vkr_harness_report_add_artifact(report, "capture.metadata",
                                            capture->metadata_path,
                                            "application/json", metadata_path);

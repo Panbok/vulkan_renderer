@@ -745,12 +745,24 @@ static void test_harness_scene_manifest_tracks_transitive_content(void) {
       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u, environment, workload_after, policy,
       &error));
   assert(strcmp(workload_before, workload_after) != 0);
+
+  assert(remove(generated_texture_path) == 0);
+  Arena *missing_arena = arena_create(MB(8), MB(4));
+  assert(missing_arena);
+  MemZero(&error, sizeof(error));
+  VkrHarnessSceneManifest missing = {0};
+  assert(!vkr_harness_scene_manifest_build(
+      root, "assets/scenes/test.scene.json", missing_arena, &missing, &error));
+  assert(string_equals(error.code, "scene_manifest.missing"));
+  assert(strstr(error.message,
+                "./tools/cook_vkr_meshes.sh assets/models/test.gltf"));
+  assert(strstr(error.message, "Query parameters are ignored"));
+  arena_destroy(missing_arena);
   arena_destroy(first_arena);
   arena_destroy(second_arena);
 
   assert(remove(manifest_path) == 0);
   assert(remove(generated_packed_path) == 0);
-  assert(remove(generated_texture_path) == 0);
   assert(remove(texture_path) == 0);
   assert(remove(generated_material_path) == 0);
   assert(remove(material_path) == 0);
@@ -1430,6 +1442,12 @@ static void test_harness_capture_catalog_and_converters(void) {
   assert(gtao_visibility != VKR_CAPTURE_CHANNEL_INVALID);
   assert(gtao_raw != VKR_CAPTURE_CHANNEL_INVALID);
   assert(gbuffer_normal != VKR_CAPTURE_CHANNEL_INVALID);
+  const VkrCaptureChannelDescription *gbuffer_normal_description =
+      vkr_renderer_capture_channel_get(gbuffer_normal);
+  assert(gbuffer_normal_description);
+  assert(gbuffer_normal_description->version == 2u);
+  assert(strcmp(gbuffer_normal_description->canonical_encoding,
+                "RG16_SNORM_LE") == 0);
 
 #if !defined(_WIN32)
   char first_dir[] = "/tmp/vkr-capture-first-XXXXXX";
@@ -1457,6 +1475,10 @@ static void test_harness_capture_catalog_and_converters(void) {
   const uint32_t picking_bottom_left[] = {3u, 4u, 0u, 1u, 2u, 0u};
   const uint16_t gtao_depth_bottom_left[] = {0x3800u, 0x4000u, 0u,
                                              0x4400u, 0x4800u, 0u};
+  const uint16_t normal_bottom_left[] = {
+      0x8000u, 0x0000u, 0x7fffu, 0xc000u, 0u, 0u,
+      0x0000u, 0x7fffu, 0x4000u, 0x8000u, 0u, 0u,
+  };
   const uint8_t gtao_visibility_bottom_left[] = {0u,   64u,  99u, 99u,
                                                  128u, 255u, 99u, 99u};
   VkrCaptureItemResult items[] = {
@@ -1497,6 +1519,16 @@ static void test_harness_capture_catalog_and_converters(void) {
        .origin = VKR_CAPTURE_ORIGIN_BOTTOM_LEFT,
        .data = (const uint8_t *)gtao_depth_bottom_left,
        .data_size = sizeof(gtao_depth_bottom_left)},
+      {.channel = gbuffer_normal,
+       .width = 2u,
+       .height = 2u,
+       .row_pitch = 12u,
+       .format = VKR_TEXTURE_FORMAT_R16G16_SNORM,
+       .value_kind = VKR_CAPTURE_VALUE_COLOR,
+       .color_space = VKR_CAPTURE_COLOR_SPACE_LINEAR,
+       .origin = VKR_CAPTURE_ORIGIN_BOTTOM_LEFT,
+       .data = (const uint8_t *)normal_bottom_left,
+       .data_size = sizeof(normal_bottom_left)},
       {.channel = gtao_visibility,
        .width = 2u,
        .height = 2u,
@@ -1515,8 +1547,9 @@ static void test_harness_capture_catalog_and_converters(void) {
       .source_frame_index = 7u,
       .submit_serial = 9u,
   };
-  const char logical_channels[][64] = {"final_color", "depth", "picking_ids",
-                                       "gtao_view_depth", "gtao_visibility"};
+  const char logical_channels[][64] = {"final_color",    "depth",
+                                       "picking_ids",    "gtao_view_depth",
+                                       "gbuffer_normal", "gtao_visibility"};
   VkrHarnessError error = {0};
   assert(vkr_harness_capture_publish(first_dir, 1u, &poll, logical_channels,
                                      ArrayCount(logical_channels), &arenas,
@@ -1524,7 +1557,7 @@ static void test_harness_capture_catalog_and_converters(void) {
   assert(vkr_harness_capture_publish(second_dir, 1u, &poll, logical_channels,
                                      ArrayCount(logical_channels), &arenas,
                                      second, &error));
-  assert(first->capture_count == 5u && second->capture_count == 5u);
+  assert(first->capture_count == 6u && second->capture_count == 6u);
   for (uint32_t i = 0; i < first->capture_count; ++i) {
     assert(strcmp(first->captures[i].data_sha256,
                   second->captures[i].data_sha256) == 0);
@@ -1546,9 +1579,11 @@ static void test_harness_capture_catalog_and_converters(void) {
   harness_test_write_f32_le(expected + 12u, 32768.0f / 65535.0f);
   assert(memcmp(raw, expected, sizeof(expected)) == 0);
   assert(strcmp(first->captures[3].source_format, "R16_SFLOAT") == 0);
-  assert(strcmp(first->captures[4].source_format, "R8_UNORM") == 0);
+  assert(strcmp(first->captures[4].source_format, "R16G16_SNORM") == 0);
+  assert(strcmp(first->captures[5].source_format, "R8_UNORM") == 0);
   assert(strcmp(first->captures[3].canonical_encoding, "R32_FLOAT_LE") == 0);
-  assert(strcmp(first->captures[4].canonical_encoding, "RGBA8_UNORM_PNG") == 0);
+  assert(strcmp(first->captures[4].canonical_encoding, "RG16_SNORM_LE") == 0);
+  assert(strcmp(first->captures[5].canonical_encoding, "RGBA8_UNORM_PNG") == 0);
   snprintf(raw_path, sizeof(raw_path), "%s/%s", first_dir,
            first->captures[3].data_path);
   assert(vkr_harness_read_file(raw_path, transient, &raw, &raw_size));
@@ -1578,6 +1613,14 @@ static void test_harness_capture_catalog_and_converters(void) {
   stbi_image_free(depth_rgba);
   snprintf(raw_path, sizeof(raw_path), "%s/%s", first_dir,
            first->captures[4].data_path);
+  assert(vkr_harness_read_file(raw_path, transient, &raw, &raw_size));
+  const uint16_t expected_normal[] = {
+      0x0000u, 0x7fffu, 0x4000u, 0x8000u, 0x8000u, 0x0000u, 0x7fffu, 0xc000u,
+  };
+  assert(raw_size == sizeof(expected_normal));
+  assert(memcmp(raw, expected_normal, sizeof(expected_normal)) == 0);
+  snprintf(raw_path, sizeof(raw_path), "%s/%s", first_dir,
+           first->captures[5].data_path);
   assert(vkr_harness_read_file(raw_path, transient, &encoded, &encoded_size));
   png_width = 0;
   png_height = 0;

@@ -53,5 +53,8 @@
       "channels": ["gtao_view_depth", "gbuffer_normal", "gtao_raw", "gtao_visibility", "final_color"]
     }
   ],
-  "assertions": []
+  "assertions": [
+    { "metric": "draw.world.opaque_draws", "stat": "min", "min": 1 },
+    { "metric": "packet.publication_omitted_candidates", "stat": "max", "max": 0 }
+  ]
 }

@@ -642,14 +642,11 @@ vkr_metal_packet_gbuffer_resolve(constant VkrMetalPacketGBufferResolveRoot &root
   }
   float3 normal = normalize(transformed_normal) * face_sign;
   if ((material.flags & 1u) != 0u) {
-    float3 sampled =
+    float3 sampled = vkr_normal_map_decode(
         material.normal_texture
-                .sample(material.normal_sampler, texcoord, gradients)
-                .xyz *
-            2.0 -
-        1.0;
-    sampled.xy *= material.material_surface.z;
-    sampled.y = -sampled.y;
+            .sample(material.normal_sampler, texcoord, gradients)
+            .xyz,
+        material.material_surface.z);
     float3 tangent = (instance.model * float4(object_tangent.xyz, 0.0)).xyz;
     if (!vkr_metal_packet_finite_nonzero(sampled) ||
         !vkr_metal_packet_finite_nonzero(tangent)) {
@@ -1431,14 +1428,11 @@ static bool vkr_metal_packet_resolve_transmission_surface(
   }
   float3 normal = normalize(transformed_normal) * face_sign;
   if ((material.flags & 1u) != 0u) {
-    float3 sampled =
+    float3 sampled = vkr_normal_map_decode(
         material.normal_texture
-                .sample(material.normal_sampler, texcoord, gradients)
-                .xyz *
-            2.0 -
-        1.0;
-    sampled.xy *= material.material_surface.z;
-    sampled.y = -sampled.y;
+            .sample(material.normal_sampler, texcoord, gradients)
+            .xyz,
+        material.material_surface.z);
     float3 tangent = (instance.model * float4(object_tangent.xyz, 0.0)).xyz;
     if (!vkr_metal_packet_finite_nonzero(sampled) ||
         !vkr_metal_packet_finite_nonzero(tangent)) {

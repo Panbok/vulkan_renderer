@@ -52,5 +52,8 @@
       ]
     }
   ],
-  "assertions": []
+  "assertions": [
+    { "metric": "draw.world.opaque_draws", "stat": "min", "min": 1 },
+    { "metric": "packet.publication_omitted_candidates", "stat": "max", "max": 0 }
+  ]
 }

@@ -1553,6 +1553,7 @@ void vkr_vk_mark_temporal_submitted(VkrVulkanRenderer *renderer,
                                     uint64_t submit_value);
 bool8_t vkr_vk_record_ibl_bakes(VkrVulkanRenderer *renderer,
                                 VkCommandBuffer command);
+void vkr_vk_discard_ibl_bakes(VkrVulkanRenderer *renderer);
 bool8_t vkr_vk_record_packet_draws(
     VkrVulkanRenderer *renderer, VkCommandBuffer command,
     VkrVulkanPacketPipeline pipeline, const VkrDrawItem *draws,

@@ -444,7 +444,8 @@ static void vkr_harness_child_drain_events(Application *application) {
 
 /**
  * Determinism rule 1: nothing is measured until the requested scene resource
- * reaches a successful terminal state and its material texture streams settle.
+ * reaches a successful terminal state, its material texture streams settle,
+ * and the selected backend has ordered every accepted publication.
  */
 static bool8_t vkr_harness_child_activate_scene(Application *application) {
   VkrHarnessChildContext *child = g_harness_child;
@@ -510,6 +511,23 @@ vkr_harness_child_texture_streams_ready(Application *application) {
       vkr_platform_get_absolute_time() - child->load_started;
   if (elapsed * 1000.0 > child->case_manifest->asset_ready_timeout_ms) {
     vkr_harness_child_fail(application, "scene.texture_ready_timeout");
+  }
+  return false_v;
+}
+
+static bool8_t
+vkr_harness_child_renderer_publications_ready(Application *application) {
+  VkrHarnessChildContext *child = g_harness_child;
+  const VkrAssetPublisher *publisher = &application->renderer.asset_publisher;
+  if (publisher->publications_idle &&
+      publisher->publications_idle(publisher->state)) {
+    return true_v;
+  }
+
+  const float64_t elapsed =
+      vkr_platform_get_absolute_time() - child->load_started;
+  if (elapsed * 1000.0 > child->case_manifest->asset_ready_timeout_ms) {
+    vkr_harness_child_fail(application, "scene.renderer_publication_timeout");
   }
   return false_v;
 }
@@ -720,6 +738,9 @@ void application_update(Application *application, float64_t delta) {
       return;
   }
   if (!vkr_harness_child_texture_streams_ready(application)) {
+    return;
+  }
+  if (!vkr_harness_child_renderer_publications_ready(application)) {
     return;
   }
   if (!child->pass_catalog_ready) {
