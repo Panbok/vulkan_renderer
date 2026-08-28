@@ -64,12 +64,17 @@ enumerated.
 | Multi-step research, diagnosis, implementation, subagent delegation, task notes | `.codex/skills/vkr-task-workflow/SKILL.md` |
 | Named renderer agents, root-only Sol routing, cold subagent context, delegation order | `.codex/skills/vkr-agent-team/SKILL.md` |
 | Renderer architecture, refactors, backend/graph/pass changes, hot paths, API design | `.codex/skills/vkr-renderer-design/SKILL.md` |
+| Shader code, shader ABI/layouts, resource bindings, algorithms, and Metal/Vulkan parity | `.codex/skills/vkr-shaders/SKILL.md` |
 | Auditing for LOC reduction, file-by-file compression plans, consolidation passes | `.codex/skills/compress-codebase/SKILL.md` |
 | Frame-time or hitch investigation, optimization, benchmarks, any speed claim | `.codex/skills/vkr-performance/SKILL.md` |
 | Structured renderer cases, profiles, reports, and deterministic repetitions | `.codex/skills/vkr-harness/SKILL.md` |
 | Allocator choice, ownership, lifetime, hash keys, scene reload growth, leaks | `.codex/skills/vkr-memory/SKILL.md` |
 | Deciding on and running tests, validation layers, pipeline-cache and backend matrices | `.codex/skills/vkr-validation/SKILL.md` |
 | Writing or updating docs and ADRs, marking a proposal shipped, archiving | `.codex/skills/vkr-docs/SKILL.md` |
+
+`vkr-shaders` is mandatory whenever work touches shader source or a
+shader-visible host contract. It owns the cross-backend parity ledger and keeps
+one-sided findings marked unaligned until both native evidence gates pass.
 
 `vkr-renderer-design` carries the compression, N+1, and hot-path rules in
 `PRINCIPLES.md`, this repository's real backend seams and its currently-known
