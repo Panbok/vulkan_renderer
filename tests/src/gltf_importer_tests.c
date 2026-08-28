@@ -6,6 +6,7 @@
 #include "renderer/resources/loaders/mesh_loader_gltf.h"
 #include "renderer/resources/loaders/vkr_gltf_material_conversion.h"
 #include "renderer/resources/loaders/vkr_meshoptimizer_bridge.h"
+#include "renderer/vkr_color_transfer.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -1187,8 +1188,12 @@ static void test_gltf_import_prepares_spec_gloss_textures(void) {
   snprintf(bin_path, sizeof(bin_path), "%stests/tmp/gltf_importer/%s.bin",
            PROJECT_SOURCE_DIR, stem);
   char mt_path[1024] = {0};
+  char mt_path_1[1024] = {0};
   gltf_test_make_material_paths(stem, gltf_path, 0, mt_path, sizeof(mt_path),
                                 NULL, 0, NULL, 0);
+  gltf_test_make_material_paths(stem, gltf_path, 1, mt_path_1,
+                                sizeof(mt_path_1), NULL, 0, NULL, 0);
+  gltf_test_remove_file(mt_path_1);
 
   gltf_test_write_basic_triangle_bin(bin_path);
 
@@ -1205,8 +1210,13 @@ static void test_gltf_import_prepares_spec_gloss_textures(void) {
            "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorFactor\":["
            "0.1,0.1,0.1,1.0],\"metallicFactor\":0.9,\"roughnessFactor\":0.9},"
            "\"extensions\":{\"KHR_materials_pbrSpecularGlossiness\":{"
-           "\"diffuseFactor\":[1.0,1.0,1.0,1.0],"
-           "\"specularFactor\":[1.0,1.0,1.0],\"glossinessFactor\":1.0,"
+           "\"diffuseFactor\":[1.0,1.0,1.0,0.5],"
+           "\"specularFactor\":[1.0,1.0,1.0],\"glossinessFactor\":0.5,"
+           "\"diffuseTexture\":{\"index\":0},"
+           "\"specularGlossinessTexture\":{\"index\":1}}}},{"
+           "\"extensions\":{\"KHR_materials_pbrSpecularGlossiness\":{"
+           "\"diffuseFactor\":[1.0,1.0,1.0,0.5],"
+           "\"specularFactor\":[1.0,1.0,1.0],\"glossinessFactor\":0.5,"
            "\"diffuseTexture\":{\"index\":0},"
            "\"specularGlossinessTexture\":{\"index\":1}}}}],"
            "\"textures\":[{\"source\":0},{\"source\":1}],"
@@ -1243,86 +1253,208 @@ static void test_gltf_import_prepares_spec_gloss_textures(void) {
          true_v);
   assert(gltf_test_vector_contains_path(&dependency_paths,
                                         spec_gloss_request) == true_v);
-  assert(generated_asset_paths.length == 3u);
+  assert(generated_asset_paths.length == 0u);
 
   const uint64_t source_hash = gltf_test_hash_source_path(gltf_path);
   char generated_dir[1024];
-  char generated_base_path[1024];
-  char generated_mr_path[1024];
-  char generated_specular_path[1024];
   snprintf(generated_dir, sizeof(generated_dir),
-           "%sassets/textures/generated/gltf_sg2_%016llx", PROJECT_SOURCE_DIR,
+           "%sassets/textures/generated/gltf_sg3_%016llx", PROJECT_SOURCE_DIR,
            (unsigned long long)source_hash);
-  snprintf(generated_base_path, sizeof(generated_base_path),
-           "%s/material_0_basecolor.png", generated_dir);
-  snprintf(generated_mr_path, sizeof(generated_mr_path),
-           "%s/material_0_metalrough.png", generated_dir);
-  snprintf(generated_specular_path, sizeof(generated_specular_path),
-           "%s/material_0_dielectric_specular_v1.png", generated_dir);
-  assert(gltf_test_file_exists(generated_base_path) == true_v);
-  assert(gltf_test_file_exists(generated_mr_path) == true_v);
-  assert(gltf_test_file_exists(generated_specular_path) == true_v);
 
   String8 contents = {0};
   assert(gltf_test_read_file_text(&allocator, mt_path, &contents) == true_v);
-  assert(strstr((const char *)contents.str,
-                "base_color=1.000000,1.000000,1.000000,1.000000") != NULL);
-  assert(strstr((const char *)contents.str, "metallic=1.000000") != NULL);
-  assert(strstr((const char *)contents.str, "roughness=1.000000") != NULL);
-  assert(strstr((const char *)contents.str,
+  char expected_base_factor[256];
+  snprintf(expected_base_factor, sizeof(expected_base_factor),
+           "base_color=%f,%f,%f,%f",
+           vkr_srgb_to_linear((float32_t)diffuse_texel[0] / 255.0f),
+           vkr_srgb_to_linear((float32_t)diffuse_texel[1] / 255.0f),
+           vkr_srgb_to_linear((float32_t)diffuse_texel[2] / 255.0f),
+           64.0f / 255.0f);
+  char expected_roughness_factor[64];
+  snprintf(expected_roughness_factor, sizeof(expected_roughness_factor),
+           "roughness=%f", 160.0f / 255.0f);
+  assert(strstr((const char *)contents.str, expected_base_factor) != NULL);
+  assert(strstr((const char *)contents.str, "metallic=0.000000") != NULL);
+  assert(strstr((const char *)contents.str, expected_roughness_factor) != NULL);
+  assert(strstr((const char *)contents.str, "base_color_texture=") == NULL);
+  assert(strstr((const char *)contents.str, "metallic_roughness_texture=") ==
+         NULL);
+  assert(strstr((const char *)contents.str, "specular_texture=") == NULL);
+
+  const uint8_t diffuse_alpha_texels[8] = {188u, 124u, 64u, 64u,
+                                           188u, 124u, 64u, 255u};
+  const uint8_t spec_gloss_uniform_texels[8] = {56u, 56u, 56u, 191u,
+                                                56u, 56u, 56u, 191u};
+  assert(stbi_write_png(diffuse_path, 2, 1, 4, diffuse_alpha_texels, 8) != 0);
+  assert(stbi_write_png(spec_gloss_path, 2, 1, 4, spec_gloss_uniform_texels,
+                        8) != 0);
+  vector_clear_String8(&generated_asset_paths);
+  assert(vkr_mesh_loader_gltf_generate_materials(&parse_info) == true_v);
+  assert(generated_asset_paths.length == 1u);
+  String8 mixed_base = *vector_get_String8(&generated_asset_paths, 0u);
+  assert(string8_contains_cstr(&mixed_base, "/basecolor_") == true_v);
+  String8 mixed_contents = {0};
+  assert(gltf_test_read_file_text(&allocator, mt_path, &mixed_contents) ==
+         true_v);
+  assert(strstr((const char *)mixed_contents.str,
                 "base_color_texture=assets/textures/generated/") != NULL);
-  assert(strstr((const char *)contents.str,
+  assert(strstr((const char *)mixed_contents.str,
+                "metallic_roughness_texture=") == NULL);
+  assert(strstr((const char *)mixed_contents.str, expected_roughness_factor) !=
+         NULL);
+  char mixed_base_path[1024];
+  snprintf(mixed_base_path, sizeof(mixed_base_path), "%s%.*s",
+           PROJECT_SOURCE_DIR, (int32_t)mixed_base.length, mixed_base.str);
+  assert(gltf_test_file_exists(mixed_base_path) == true_v);
+  gltf_test_remove_file(mixed_base_path);
+
+  const uint8_t diffuse_uniform_texels[8] = {188u, 124u, 64u, 128u,
+                                             188u, 124u, 64u, 128u};
+  const uint8_t spec_gloss_alpha_texels[8] = {56u, 56u, 56u, 191u,
+                                              56u, 56u, 56u, 64u};
+  assert(stbi_write_png(diffuse_path, 2, 1, 4, diffuse_uniform_texels, 8) != 0);
+  assert(stbi_write_png(spec_gloss_path, 2, 1, 4, spec_gloss_alpha_texels, 8) !=
+         0);
+  vector_clear_String8(&generated_asset_paths);
+  assert(vkr_mesh_loader_gltf_generate_materials(&parse_info) == true_v);
+  assert(generated_asset_paths.length == 1u);
+  String8 mixed_mr = *vector_get_String8(&generated_asset_paths, 0u);
+  assert(string8_contains_cstr(&mixed_mr, "/metalrough_") == true_v);
+  mixed_contents = (String8){0};
+  assert(gltf_test_read_file_text(&allocator, mt_path, &mixed_contents) ==
+         true_v);
+  assert(strstr((const char *)mixed_contents.str, "base_color_texture=") ==
+         NULL);
+  assert(strstr((const char *)mixed_contents.str,
                 "metallic_roughness_texture=assets/textures/generated/") !=
          NULL);
-  assert(strstr((const char *)contents.str,
-                "specular_texture=assets/textures/generated/") != NULL);
+  assert(strstr((const char *)mixed_contents.str, expected_base_factor) !=
+         NULL);
+  char mixed_mr_path[1024];
+  snprintf(mixed_mr_path, sizeof(mixed_mr_path), "%s%.*s", PROJECT_SOURCE_DIR,
+           (int32_t)mixed_mr.length, mixed_mr.str);
+  assert(gltf_test_file_exists(mixed_mr_path) == true_v);
+  gltf_test_remove_file(mixed_mr_path);
+
+  const uint8_t diffuse_texels[8] = {188u, 124u, 64u,  128u,
+                                     80u,  96u,  112u, 255u};
+  const uint8_t spec_gloss_texels[8] = {56u,  56u,  56u,  191u,
+                                        180u, 160u, 140u, 64u};
+  assert(stbi_write_png(diffuse_path, 2, 1, 4, diffuse_texels, 8) != 0);
+  assert(stbi_write_png(spec_gloss_path, 2, 1, 4, spec_gloss_texels, 8) != 0);
+
+  vector_clear_String8(&generated_asset_paths);
+  assert(vkr_mesh_loader_gltf_generate_materials(&parse_info) == true_v);
+  assert(generated_asset_paths.length == 2u);
+
+  String8 generated_base = {0};
+  String8 generated_mr = {0};
+  for (uint64_t i = 0; i < generated_asset_paths.length; ++i) {
+    String8 *path = vector_get_String8(&generated_asset_paths, i);
+    if (path && string8_contains_cstr(path, "/basecolor_")) {
+      generated_base = *path;
+    } else if (path && string8_contains_cstr(path, "/metalrough_")) {
+      generated_mr = *path;
+    }
+  }
+  assert(generated_base.str != NULL);
+  assert(generated_mr.str != NULL);
+
+  char generated_base_path[1024];
+  char generated_mr_path[1024];
+  snprintf(generated_base_path, sizeof(generated_base_path), "%s%.*s",
+           PROJECT_SOURCE_DIR, (int32_t)generated_base.length,
+           generated_base.str);
+  snprintf(generated_mr_path, sizeof(generated_mr_path), "%s%.*s",
+           PROJECT_SOURCE_DIR, (int32_t)generated_mr.length, generated_mr.str);
+  assert(gltf_test_file_exists(generated_base_path) == true_v);
+  assert(gltf_test_file_exists(generated_mr_path) == true_v);
+
+  String8 material_0 = {0};
+  String8 material_1 = {0};
+  assert(gltf_test_read_file_text(&allocator, mt_path, &material_0) == true_v);
+  assert(gltf_test_read_file_text(&allocator, mt_path_1, &material_1) ==
+         true_v);
+  char expected_base_texture[1200];
+  char expected_mr_texture[1200];
+  snprintf(expected_base_texture, sizeof(expected_base_texture),
+           "base_color_texture=%.*s?cs=srgb&tc=color_srgb",
+           (int32_t)generated_base.length, generated_base.str);
+  snprintf(expected_mr_texture, sizeof(expected_mr_texture),
+           "metallic_roughness_texture=%.*s?tc=data_mask",
+           (int32_t)generated_mr.length, generated_mr.str);
+  assert(strstr((const char *)material_0.str, expected_base_texture) != NULL);
+  assert(strstr((const char *)material_1.str, expected_base_texture) != NULL);
+  assert(strstr((const char *)material_0.str, expected_mr_texture) != NULL);
+  assert(strstr((const char *)material_1.str, expected_mr_texture) != NULL);
+  assert(strstr((const char *)material_0.str, "specular_texture=") == NULL);
+  assert(strstr((const char *)material_1.str, "specular_texture=") == NULL);
 
   int width = 0, height = 0, channels = 0;
   uint8_t *prepared_base =
       gltf_test_load_png_rgba(generated_base_path, &width, &height, &channels);
-  assert(prepared_base != NULL && width == 1 && height == 1);
+  assert(prepared_base != NULL && width == 2 && height == 1);
   assert(abs((int)prepared_base[0] - 188) <= 1);
   assert(abs((int)prepared_base[1] - 124) <= 1);
   assert(abs((int)prepared_base[2] - 64) <= 1);
-  assert(prepared_base[3] == 128u);
+  assert(prepared_base[3] == 64u);
+  assert(MemCompare(prepared_base, prepared_base + 4, 4u) != 0);
   stbi_image_free(prepared_base);
 
   uint8_t *prepared_mr =
       gltf_test_load_png_rgba(generated_mr_path, &width, &height, &channels);
-  assert(prepared_mr != NULL && width == 1 && height == 1);
+  assert(prepared_mr != NULL && width == 2 && height == 1);
   assert(prepared_mr[0] == 255u);
-  assert(abs((int)prepared_mr[1] - 64) <= 1);
+  assert(abs((int)prepared_mr[1] - 160) <= 1);
   assert(prepared_mr[2] == 0u);
   assert(prepared_mr[3] == 255u);
+  assert(MemCompare(prepared_mr, prepared_mr + 4, 4u) != 0);
   stbi_image_free(prepared_mr);
-
-  uint8_t *prepared_specular = gltf_test_load_png_rgba(
-      generated_specular_path, &width, &height, &channels);
-  assert(prepared_specular != NULL && width == 1 && height == 1);
-  assert(abs((int)prepared_specular[0] - 10) <= 1);
-  assert(abs((int)prepared_specular[1] - 10) <= 1);
-  assert(abs((int)prepared_specular[2] - 10) <= 1);
-  assert(prepared_specular[3] == 255u);
-  stbi_image_free(prepared_specular);
 
   vector_clear_String8(&generated_asset_paths);
   assert(vkr_mesh_loader_gltf_generate_materials(&parse_info) == true_v);
-  assert(generated_asset_paths.length == 3u);
+  assert(generated_asset_paths.length == 2u);
+  assert(gltf_test_vector_contains_path(&generated_asset_paths,
+                                        (const char *)generated_base.str) ==
+         true_v);
+  assert(gltf_test_vector_contains_path(
+             &generated_asset_paths, (const char *)generated_mr.str) == true_v);
   assert(gltf_test_file_exists(generated_base_path) == true_v);
   assert(gltf_test_file_exists(generated_mr_path) == true_v);
-  assert(gltf_test_file_exists(generated_specular_path) == true_v);
+
+  gltf_test_remove_file(generated_base_path);
+  gltf_test_remove_file(generated_mr_path);
+  char generated_mr_temp_path[1024];
+  snprintf(generated_mr_temp_path, sizeof(generated_mr_temp_path), "%s.tmp",
+           generated_mr_path);
+  assert(gltf_test_make_dir(generated_mr_temp_path) == true_v);
+  vector_clear_String8(&generated_asset_paths);
+  error = VKR_RENDERER_ERROR_NONE;
+  assert(vkr_mesh_loader_gltf_generate_materials(&parse_info) == false_v);
+  assert(error == VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED);
+  assert(generated_asset_paths.length == 0u);
+  assert(gltf_test_file_exists(generated_base_path) == false_v);
+  assert(gltf_test_file_exists(generated_mr_path) == false_v);
+  gltf_test_remove_dir(generated_mr_temp_path);
+
+  error = VKR_RENDERER_ERROR_NONE;
+  assert(vkr_mesh_loader_gltf_generate_materials(&parse_info) == true_v);
+  assert(error == VKR_RENDERER_ERROR_NONE);
+  assert(generated_asset_paths.length == 2u);
+  assert(gltf_test_file_exists(generated_base_path) == true_v);
+  assert(gltf_test_file_exists(generated_mr_path) == true_v);
 
   arena_destroy(scratch_arena);
   arena_destroy(arena);
   gltf_test_remove_file(generated_base_path);
   gltf_test_remove_file(generated_mr_path);
-  gltf_test_remove_file(generated_specular_path);
   gltf_test_remove_dir(generated_dir);
   gltf_test_remove_file(diffuse_path);
   gltf_test_remove_file(spec_gloss_path);
   gltf_test_remove_dir(nested_texture_dir);
   gltf_test_remove_dir(texture_dir);
   gltf_test_remove_source_files(stem);
+  gltf_test_remove_file(mt_path_1);
   gltf_test_remove_generated_material(stem);
 
   printf("  test_gltf_import_prepares_spec_gloss_textures PASSED\n");

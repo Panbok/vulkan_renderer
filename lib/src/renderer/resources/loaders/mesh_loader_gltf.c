@@ -14,7 +14,7 @@
 
 #define VKR_FNV1A64_OFFSET_BASIS 0xcbf29ce484222325ull
 #define VKR_FNV1A64_PRIME 0x100000001b3ull
-#define VKR_GLTF_SPEC_GLOSS_CACHE_VERSION 2u
+#define VKR_GLTF_SPEC_GLOSS_CACHE_VERSION 3u
 #define VKR_GLTF_LINEAR_TO_SRGB_LUT_MAX 4096u
 
 vkr_internal void
@@ -65,6 +65,17 @@ vkr_mesh_loader_gltf_hash_source_path(String8 source_path) {
     hash *= VKR_FNV1A64_PRIME;
   }
 
+  return hash;
+}
+
+vkr_internal uint64_t vkr_mesh_loader_gltf_hash_bytes(uint64_t hash,
+                                                      const void *data,
+                                                      uint64_t size) {
+  const uint8_t *bytes = (const uint8_t *)data;
+  for (uint64_t i = 0; i < size; ++i) {
+    hash ^= (uint64_t)bytes[i];
+    hash *= VKR_FNV1A64_PRIME;
+  }
   return hash;
 }
 
@@ -335,7 +346,6 @@ typedef struct VkrMeshLoaderGltfDecodedImage {
   uint8_t *pixels;
   int32_t width;
   int32_t height;
-  uint64_t source_last_modified;
 } VkrMeshLoaderGltfDecodedImage;
 
 typedef struct VkrMeshLoaderGltfPngBuffer {
@@ -353,58 +363,12 @@ typedef struct VkrMeshLoaderGltfPreparedSpecGloss {
   Vec3 dielectric_specular_factor;
   String8 base_color_texture;
   String8 metallic_roughness_texture;
-  String8 dielectric_specular_texture;
 } VkrMeshLoaderGltfPreparedSpecGloss;
-
-vkr_internal bool8_t vkr_mesh_loader_gltf_path_stats(VkrAllocator *allocator,
-                                                     String8 path,
-                                                     FileStats *out_stats) {
-  if (!allocator || !path.str || path.length == 0 || !out_stats) {
-    return false_v;
-  }
-  String8 cstr = string8_create_formatted(allocator, "%.*s",
-                                          (int32_t)path.length, path.str);
-  const FilePathType type = vkr_mesh_loader_gltf_path_is_absolute(path)
-                                ? FILE_PATH_TYPE_ABSOLUTE
-                                : FILE_PATH_TYPE_RELATIVE;
-  FilePath file_path =
-      file_path_create((const char *)cstr.str, allocator, type);
-  return file_stats(&file_path, out_stats) == FILE_ERROR_NONE;
-}
-
-vkr_internal bool8_t vkr_mesh_loader_gltf_texture_source_mtime(
-    const VkrMeshLoaderGltfParseInfo *info, const cgltf_texture_view *view,
-    uint64_t *out_last_modified) {
-  if (!info || !out_last_modified) {
-    return false_v;
-  }
-  *out_last_modified = 0;
-  if (!view || !view->texture || !view->texture->image) {
-    return true_v;
-  }
-  const cgltf_image *image = view->texture->image;
-  if (!image->uri || image->buffer_view) {
-    return false_v;
-  }
-  String8 uri = string8_create_from_cstr((const uint8_t *)image->uri,
-                                         string_length(image->uri));
-  bool8_t found = false_v;
-  String8 existing_path = {0};
-  (void)vkr_mesh_loader_gltf_resolve_relative_texture_uri(
-      info, uri, &found, &existing_path, false_v);
-  FileStats stats = {0};
-  if (!found || !vkr_mesh_loader_gltf_path_stats(info->scratch_allocator,
-                                                 existing_path, &stats)) {
-    return false_v;
-  }
-  *out_last_modified = stats.last_modified;
-  return true_v;
-}
 
 vkr_internal void vkr_mesh_loader_gltf_publish_prepared_spec_gloss(
     const VkrMeshLoaderGltfParseInfo *info, String8 base_path,
-    String8 metal_rough_path, String8 dielectric_specular_path,
-    bool8_t has_dielectric_specular_texture, Vec3 dielectric_specular_factor,
+    String8 metal_rough_path, Vec4 base_color_factor, float32_t metallic_factor,
+    float32_t roughness_factor, Vec3 dielectric_specular_factor,
     VkrMeshLoaderGltfPreparedSpecGloss *out_prepared) {
   if (info->out_generated_asset_paths) {
     vkr_mesh_loader_gltf_push_unique_path(info->out_generated_asset_paths,
@@ -412,25 +376,15 @@ vkr_internal void vkr_mesh_loader_gltf_publish_prepared_spec_gloss(
     vkr_mesh_loader_gltf_push_unique_path(info->out_generated_asset_paths,
                                           metal_rough_path,
                                           info->load_allocator);
-    if (has_dielectric_specular_texture) {
-      vkr_mesh_loader_gltf_push_unique_path(info->out_generated_asset_paths,
-                                            dielectric_specular_path,
-                                            info->load_allocator);
-    }
   }
-  out_prepared->base_color_factor = vec4_one();
-  out_prepared->metallic_factor = 1.0f;
-  out_prepared->roughness_factor = 1.0f;
+  out_prepared->base_color_factor = base_color_factor;
+  out_prepared->metallic_factor = metallic_factor;
+  out_prepared->roughness_factor = roughness_factor;
   out_prepared->dielectric_specular_factor = dielectric_specular_factor;
   out_prepared->base_color_texture = vkr_mesh_loader_gltf_append_query(
       info->load_allocator, base_path, "cs=srgb&tc=color_srgb");
   out_prepared->metallic_roughness_texture = vkr_mesh_loader_gltf_append_query(
       info->load_allocator, metal_rough_path, "tc=data_mask");
-  out_prepared->dielectric_specular_texture =
-      has_dielectric_specular_texture
-          ? vkr_mesh_loader_gltf_append_query(
-                info->load_allocator, dielectric_specular_path, "tc=data_mask")
-          : (String8){0};
 }
 
 vkr_internal void vkr_mesh_loader_gltf_png_write(void *context, void *data,
@@ -517,6 +471,64 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_png_atomic(
   return true_v;
 }
 
+vkr_internal bool8_t vkr_mesh_loader_gltf_pixels_are_uniform(
+    const uint8_t *pixels, uint64_t pixel_count) {
+  if (!pixels || pixel_count == 0) {
+    return false_v;
+  }
+  for (uint64_t i = 1; i < pixel_count; ++i) {
+    if (MemCompare(pixels, pixels + i * 4u, 4u) != 0) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+vkr_internal String8 vkr_mesh_loader_gltf_make_content_texture_path(
+    VkrAllocator *allocator, String8 output_dir, const char *semantic,
+    const uint8_t *pixels, int32_t width, int32_t height) {
+  const uint64_t byte_count = (uint64_t)width * (uint64_t)height * 4u;
+  const uint64_t content_hash = vkr_mesh_loader_gltf_hash_bytes(
+      VKR_FNV1A64_OFFSET_BASIS, pixels, byte_count);
+  return string8_create_formatted(allocator, "%.*s/%s_%dx%d_%016llx.png",
+                                  (int32_t)output_dir.length, output_dir.str,
+                                  semantic, width, height,
+                                  (unsigned long long)content_hash);
+}
+
+vkr_internal bool8_t vkr_mesh_loader_gltf_publish_content_texture(
+    const VkrMeshLoaderGltfParseInfo *info, String8 path, const uint8_t *pixels,
+    int32_t width, int32_t height, bool8_t *out_created) {
+  *out_created = false_v;
+  if (vkr_mesh_loader_gltf_path_exists(info->scratch_allocator, path)) {
+    return true_v;
+  }
+  if (!vkr_mesh_loader_gltf_write_png_atomic(info, path, pixels, width,
+                                             height)) {
+    return false_v;
+  }
+  *out_created = true_v;
+  return true_v;
+}
+
+vkr_internal void vkr_mesh_loader_gltf_remove_content_texture(
+    const VkrMeshLoaderGltfParseInfo *info, String8 path) {
+  if (!info || !path.str || path.length == 0u) {
+    return;
+  }
+  String8 cstr = string8_create_formatted(info->scratch_allocator, "%.*s",
+                                          (int32_t)path.length, path.str);
+  const FilePathType type = vkr_mesh_loader_gltf_path_is_absolute(path)
+                                ? FILE_PATH_TYPE_ABSOLUTE
+                                : FILE_PATH_TYPE_RELATIVE;
+  FilePath file =
+      file_path_create((const char *)cstr.str, info->scratch_allocator, type);
+  if (file_remove(&file) != FILE_ERROR_NONE) {
+    log_warn("MeshLoader(glTF): failed to roll back prepared texture '%.*s'",
+             (int32_t)path.length, path.str);
+  }
+}
+
 vkr_internal bool8_t vkr_mesh_loader_gltf_decode_texture_view(
     const VkrMeshLoaderGltfParseInfo *info, const cgltf_texture_view *view,
     VkrMeshLoaderGltfDecodedImage *out_image) {
@@ -564,12 +576,6 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_decode_texture_view(
                           : FILE_PATH_TYPE_RELATIVE;
   FilePath path = file_path_create((const char *)existing_path.str,
                                    info->scratch_allocator, type);
-  FileStats source_stats = {0};
-  if (file_stats(&path, &source_stats) != FILE_ERROR_NONE) {
-    vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_FILE_NOT_FOUND);
-    return false_v;
-  }
-  out_image->source_last_modified = source_stats.last_modified;
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
   bitset8_set(&mode, FILE_MODE_BINARY);
@@ -708,111 +714,9 @@ vkr_internal Vec4 vkr_mesh_loader_gltf_sample_image(
       top.z + (bottom.z - top.z) * ty, top.w + (bottom.w - top.w) * ty);
 }
 
-vkr_internal bool8_t vkr_mesh_loader_gltf_prepare_missing_dielectric_specular(
-    const VkrMeshLoaderGltfParseInfo *info,
-    const cgltf_texture_view *spec_gloss_view, Vec3 specular_factor,
-    String8 metal_rough_path, String8 dielectric_specular_path) {
-  if (!info || !spec_gloss_view || !metal_rough_path.str ||
-      !dielectric_specular_path.str) {
-    return false_v;
-  }
-
-  VkrMeshLoaderGltfDecodedImage spec_gloss = {0};
-  if (!vkr_mesh_loader_gltf_decode_texture_view(info, spec_gloss_view,
-                                                &spec_gloss)) {
-    return false_v;
-  }
-
-  VkrMeshLoaderGltfDecodedImage metal_rough = {0};
-  const FilePathType path_type =
-      vkr_mesh_loader_gltf_path_is_absolute(metal_rough_path)
-          ? FILE_PATH_TYPE_ABSOLUTE
-          : FILE_PATH_TYPE_RELATIVE;
-  FilePath path = file_path_create((const char *)metal_rough_path.str,
-                                   info->scratch_allocator, path_type);
-  FileMode mode = bitset8_create();
-  bitset8_set(&mode, FILE_MODE_READ);
-  bitset8_set(&mode, FILE_MODE_BINARY);
-  FileHandle file = {0};
-  uint8_t *encoded = NULL;
-  uint64_t encoded_size = 0;
-  const bool8_t read_ok =
-      file_open(&path, mode, &file) == FILE_ERROR_NONE &&
-      file_read_all(&file, info->scratch_allocator, &encoded, &encoded_size) ==
-          FILE_ERROR_NONE &&
-      encoded && encoded_size > 0 && encoded_size <= INT32_MAX;
-  if (file.handle) {
-    file_close(&file);
-  }
-  int32_t channels = 0;
-  stbi_set_flip_vertically_on_load_thread(0);
-  if (read_ok) {
-    metal_rough.pixels = stbi_load_from_memory(
-        encoded, (int32_t)encoded_size, &metal_rough.width, &metal_rough.height,
-        &channels, 4);
-  }
-  if (!metal_rough.pixels || metal_rough.width <= 0 ||
-      metal_rough.height <= 0) {
-    stbi_image_free(spec_gloss.pixels);
-    log_error("MeshLoader(glTF): failed to decode cached metal-rough texture "
-              "'%.*s'",
-              (int32_t)metal_rough_path.length, metal_rough_path.str);
-    return false_v;
-  }
-
-  const uint64_t pixel_count =
-      (uint64_t)metal_rough.width * (uint64_t)metal_rough.height;
-  if (pixel_count == 0 || pixel_count > UINT64_MAX / 4u) {
-    stbi_image_free(metal_rough.pixels);
-    stbi_image_free(spec_gloss.pixels);
-    return false_v;
-  }
-  uint8_t *pixels =
-      (uint8_t *)vkr_allocator_alloc(info->scratch_allocator, pixel_count * 4u,
-                                     VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
-  if (!pixels) {
-    stbi_image_free(metal_rough.pixels);
-    stbi_image_free(spec_gloss.pixels);
-    vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
-    return false_v;
-  }
-
-  float32_t srgb_to_linear_lut[256];
-  for (uint32_t i = 0; i < 256u; ++i) {
-    srgb_to_linear_lut[i] = vkr_srgb_to_linear((float32_t)i / 255.0f);
-  }
-  for (int32_t y = 0; y < metal_rough.height; ++y) {
-    for (int32_t x = 0; x < metal_rough.width; ++x) {
-      const uint64_t i =
-          (uint64_t)y * (uint64_t)metal_rough.width + (uint64_t)x;
-      const float32_t u = ((float32_t)x + 0.5f) / (float32_t)metal_rough.width;
-      const float32_t v = ((float32_t)y + 0.5f) / (float32_t)metal_rough.height;
-      const Vec4 sampled = vkr_mesh_loader_gltf_sample_image(
-          &spec_gloss, spec_gloss_view, u, v, true_v, srgb_to_linear_lut);
-      const bool8_t dielectric = metal_rough.pixels[i * 4u + 2u] == 0u;
-      uint8_t *out = pixels + i * 4u;
-      out[0] = vkr_mesh_loader_gltf_unorm8(
-          dielectric ? sampled.x * specular_factor.x : 0.04f);
-      out[1] = vkr_mesh_loader_gltf_unorm8(
-          dielectric ? sampled.y * specular_factor.y : 0.04f);
-      out[2] = vkr_mesh_loader_gltf_unorm8(
-          dielectric ? sampled.z * specular_factor.z : 0.04f);
-      out[3] = 255u;
-    }
-  }
-
-  const bool8_t ok = vkr_mesh_loader_gltf_write_png_atomic(
-      info, dielectric_specular_path, pixels, metal_rough.width,
-      metal_rough.height);
-  stbi_image_free(metal_rough.pixels);
-  stbi_image_free(spec_gloss.pixels);
-  return ok;
-}
-
 vkr_internal bool8_t vkr_mesh_loader_gltf_prepare_spec_gloss_inner(
     const VkrMeshLoaderGltfParseInfo *info, const cgltf_material *material,
-    uint64_t source_hash, uint32_t material_index,
-    VkrMeshLoaderGltfPreparedSpecGloss *out_prepared) {
+    uint64_t source_hash, VkrMeshLoaderGltfPreparedSpecGloss *out_prepared) {
   if (!info || !material || !out_prepared ||
       !material->has_pbr_specular_glossiness) {
     return false_v;
@@ -860,70 +764,6 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_prepare_spec_gloss_inner(
   String8 output_dir = string8_create_formatted(
       info->load_allocator, "assets/textures/generated/gltf_sg%u_%016llx",
       VKR_GLTF_SPEC_GLOSS_CACHE_VERSION, (unsigned long long)source_hash);
-  String8 base_path = string8_create_formatted(
-      info->load_allocator, "%.*s/material_%u_basecolor.png",
-      (int32_t)output_dir.length, output_dir.str, material_index);
-  String8 metal_rough_path = string8_create_formatted(
-      info->load_allocator, "%.*s/material_%u_metalrough.png",
-      (int32_t)output_dir.length, output_dir.str, material_index);
-  String8 dielectric_specular_path = string8_create_formatted(
-      info->load_allocator, "%.*s/material_%u_dielectric_specular_v1.png",
-      (int32_t)output_dir.length, output_dir.str, material_index);
-
-  FileStats gltf_stats = {0};
-  FileStats base_stats = {0};
-  FileStats metal_rough_stats = {0};
-  FileStats dielectric_specular_stats = {0};
-  uint64_t diffuse_last_modified = 0;
-  uint64_t spec_gloss_last_modified = 0;
-  const bool8_t source_stats_ok =
-      vkr_mesh_loader_gltf_path_stats(info->scratch_allocator,
-                                      info->source_path, &gltf_stats) &&
-      vkr_mesh_loader_gltf_texture_source_mtime(info, diffuse_view,
-                                                &diffuse_last_modified) &&
-      vkr_mesh_loader_gltf_texture_source_mtime(info, spec_gloss_view,
-                                                &spec_gloss_last_modified);
-  const uint64_t newest_source =
-      Max(gltf_stats.last_modified,
-          Max(diffuse_last_modified, spec_gloss_last_modified));
-  const bool8_t base_current =
-      source_stats_ok &&
-      vkr_mesh_loader_gltf_path_stats(info->scratch_allocator, base_path,
-                                      &base_stats) &&
-      base_stats.last_modified >= newest_source;
-  const bool8_t metal_rough_current =
-      source_stats_ok &&
-      vkr_mesh_loader_gltf_path_stats(info->scratch_allocator, metal_rough_path,
-                                      &metal_rough_stats) &&
-      metal_rough_stats.last_modified >= newest_source;
-  const bool8_t dielectric_specular_current =
-      !has_spec_gloss_texture ||
-      (source_stats_ok &&
-       vkr_mesh_loader_gltf_path_stats(info->scratch_allocator,
-                                       dielectric_specular_path,
-                                       &dielectric_specular_stats) &&
-       dielectric_specular_stats.last_modified >= newest_source);
-  const bool8_t generated_current =
-      base_current && metal_rough_current && dielectric_specular_current;
-  if (generated_current) {
-    vkr_mesh_loader_gltf_publish_prepared_spec_gloss(
-        info, base_path, metal_rough_path, dielectric_specular_path,
-        has_spec_gloss_texture, factor_converted.dielectric_specular,
-        out_prepared);
-    return true_v;
-  }
-  if (base_current && metal_rough_current && has_spec_gloss_texture &&
-      !dielectric_specular_current) {
-    if (!vkr_mesh_loader_gltf_prepare_missing_dielectric_specular(
-            info, spec_gloss_view, factor_sample.specular, metal_rough_path,
-            dielectric_specular_path)) {
-      return false_v;
-    }
-    vkr_mesh_loader_gltf_publish_prepared_spec_gloss(
-        info, base_path, metal_rough_path, dielectric_specular_path, true_v,
-        factor_converted.dielectric_specular, out_prepared);
-    return true_v;
-  }
 
   VkrMeshLoaderGltfDecodedImage diffuse = {0};
   VkrMeshLoaderGltfDecodedImage spec_gloss = {0};
@@ -960,14 +800,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_prepare_spec_gloss_inner(
   uint8_t *metal_rough_pixels =
       (uint8_t *)vkr_allocator_alloc(info->scratch_allocator, pixel_count * 4u,
                                      VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
-  uint8_t *dielectric_specular_pixels =
-      has_spec_gloss_texture
-          ? (uint8_t *)vkr_allocator_alloc(info->scratch_allocator,
-                                           pixel_count * 4u,
-                                           VKR_ALLOCATOR_MEMORY_TAG_TEXTURE)
-          : NULL;
-  if (!base_pixels || !metal_rough_pixels ||
-      (has_spec_gloss_texture && !dielectric_specular_pixels)) {
+  if (!base_pixels || !metal_rough_pixels) {
     if (diffuse.pixels) {
       stbi_image_free(diffuse.pixels);
     }
@@ -1044,55 +877,77 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_prepare_spec_gloss_inner(
       metal_rough[1] = vkr_mesh_loader_gltf_unorm8(converted.roughness);
       metal_rough[2] = vkr_mesh_loader_gltf_unorm8(converted.metallic);
       metal_rough[3] = 255u;
-
-      if (dielectric_specular_pixels) {
-        uint8_t *dielectric_specular = dielectric_specular_pixels + i * 4u;
-        dielectric_specular[0] =
-            vkr_mesh_loader_gltf_unorm8(converted.dielectric_specular.x);
-        dielectric_specular[1] =
-            vkr_mesh_loader_gltf_unorm8(converted.dielectric_specular.y);
-        dielectric_specular[2] =
-            vkr_mesh_loader_gltf_unorm8(converted.dielectric_specular.z);
-        dielectric_specular[3] = 255u;
-      }
     }
   }
 
-  FilePath output_dir_path =
-      file_path_create((const char *)output_dir.str, info->load_allocator,
-                       FILE_PATH_TYPE_RELATIVE);
-  bool8_t ok =
-      file_ensure_directory(info->load_allocator, &output_dir_path.path);
-  if (ok) {
-    ok = vkr_mesh_loader_gltf_write_png_atomic(info, base_path, base_pixels,
-                                               width, height) &&
-         vkr_mesh_loader_gltf_write_png_atomic(
-             info, metal_rough_path, metal_rough_pixels, width, height);
-    if (ok && dielectric_specular_pixels) {
-      ok = vkr_mesh_loader_gltf_write_png_atomic(info, dielectric_specular_path,
-                                                 dielectric_specular_pixels,
-                                                 width, height);
-    }
+  const bool8_t base_uniform =
+      vkr_mesh_loader_gltf_pixels_are_uniform(base_pixels, pixel_count);
+  const bool8_t metal_rough_uniform =
+      vkr_mesh_loader_gltf_pixels_are_uniform(metal_rough_pixels, pixel_count);
+  const Vec4 base_factor =
+      base_uniform
+          ? vec4_new(vkr_srgb_to_linear((float32_t)base_pixels[0] / 255.0f),
+                     vkr_srgb_to_linear((float32_t)base_pixels[1] / 255.0f),
+                     vkr_srgb_to_linear((float32_t)base_pixels[2] / 255.0f),
+                     (float32_t)base_pixels[3] / 255.0f)
+          : vec4_one();
+  const float32_t roughness_factor =
+      metal_rough_uniform ? (float32_t)metal_rough_pixels[1] / 255.0f : 1.0f;
+  const float32_t metallic_factor =
+      metal_rough_uniform ? (float32_t)metal_rough_pixels[2] / 255.0f : 1.0f;
+  const String8 base_path =
+      base_uniform ? (String8){0}
+                   : vkr_mesh_loader_gltf_make_content_texture_path(
+                         info->load_allocator, output_dir, "basecolor",
+                         base_pixels, width, height);
+  const String8 metal_rough_path =
+      metal_rough_uniform ? (String8){0}
+                          : vkr_mesh_loader_gltf_make_content_texture_path(
+                                info->load_allocator, output_dir, "metalrough",
+                                metal_rough_pixels, width, height);
+
+  bool8_t ok = true_v;
+  bool8_t base_created = false_v;
+  bool8_t metal_rough_created = false_v;
+  if (!base_uniform || !metal_rough_uniform) {
+    FilePath output_dir_path =
+        file_path_create((const char *)output_dir.str, info->load_allocator,
+                         FILE_PATH_TYPE_RELATIVE);
+    ok = file_ensure_directory(info->load_allocator, &output_dir_path.path);
+  }
+  if (ok && !base_uniform) {
+    ok = vkr_mesh_loader_gltf_publish_content_texture(
+        info, base_path, base_pixels, width, height, &base_created);
+  }
+  if (ok && !metal_rough_uniform) {
+    ok = vkr_mesh_loader_gltf_publish_content_texture(
+        info, metal_rough_path, metal_rough_pixels, width, height,
+        &metal_rough_created);
   }
 
   stbi_image_free(diffuse.pixels);
   stbi_image_free(spec_gloss.pixels);
   if (!ok) {
-    vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_FILE_NOT_FOUND);
+    if (metal_rough_created) {
+      vkr_mesh_loader_gltf_remove_content_texture(info, metal_rough_path);
+    }
+    if (base_created) {
+      vkr_mesh_loader_gltf_remove_content_texture(info, base_path);
+    }
+    vkr_mesh_loader_gltf_set_error(info,
+                                   VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED);
     return false_v;
   }
 
   vkr_mesh_loader_gltf_publish_prepared_spec_gloss(
-      info, base_path, metal_rough_path, dielectric_specular_path,
-      has_spec_gloss_texture, factor_converted.dielectric_specular,
-      out_prepared);
+      info, base_path, metal_rough_path, base_factor, metallic_factor,
+      roughness_factor, factor_converted.dielectric_specular, out_prepared);
   return true_v;
 }
 
 vkr_internal bool8_t vkr_mesh_loader_gltf_prepare_spec_gloss(
     const VkrMeshLoaderGltfParseInfo *info, const cgltf_material *material,
-    uint64_t source_hash, uint32_t material_index,
-    VkrMeshLoaderGltfPreparedSpecGloss *out_prepared) {
+    uint64_t source_hash, VkrMeshLoaderGltfPreparedSpecGloss *out_prepared) {
   if (!info || !info->scratch_allocator) {
     return false_v;
   }
@@ -1102,7 +957,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_prepare_spec_gloss(
     return false_v;
   }
   const bool8_t result = vkr_mesh_loader_gltf_prepare_spec_gloss_inner(
-      info, material, source_hash, material_index, out_prepared);
+      info, material, source_hash, out_prepared);
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
   return result;
 }
@@ -1232,7 +1087,6 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
   VkrMeshLoaderGltfPreparedSpecGloss prepared_spec_gloss = {0};
   if (material->has_pbr_specular_glossiness) {
     if (!vkr_mesh_loader_gltf_prepare_spec_gloss(info, material, source_hash,
-                                                 material_index,
                                                  &prepared_spec_gloss)) {
       file_close(&file);
       (void)file_remove(&temp_file_path);
@@ -1289,7 +1143,6 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
 
   String8 base_color_texture = {0};
   String8 metallic_roughness_texture = {0};
-  String8 dielectric_specular_texture = {0};
   String8 occlusion_texture = {0};
   String8 normal_texture = {0};
   String8 emissive_texture = {0};
@@ -1299,8 +1152,6 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
   if (material->has_pbr_specular_glossiness) {
     base_color_texture = prepared_spec_gloss.base_color_texture;
     metallic_roughness_texture = prepared_spec_gloss.metallic_roughness_texture;
-    dielectric_specular_texture =
-        prepared_spec_gloss.dielectric_specular_texture;
   }
 
   if ((!material->has_pbr_specular_glossiness &&
@@ -1389,9 +1240,6 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
         {.key = "metallic_roughness_texture",
          .value = metallic_roughness_texture,
          .prefix_literal = NULL},
-        {.key = "specular_texture",
-         .value = dielectric_specular_texture,
-         .prefix_literal = "specular_colorspace=linear"},
         {.key = "occlusion_texture",
          .value = occlusion_texture,
          .prefix_literal = NULL},
