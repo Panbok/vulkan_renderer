@@ -62,8 +62,12 @@ to run and interpret structured snapshots. For a parity claim, require:
   alone.
 
 Record the case, configuration, backend/device, report digest, measured values,
-and comparison in the shader contract. Transcribe the result, then delete
-regenerable artifact trees created by the task.
+and comparison in the shader contract. When the two native runs happen on
+different machines, the first machine must publish its snapshot through the
+guarded baseline workflow before deleting its run tree. The second machine
+pulls that accepted generation and runs the same backend-neutral case with
+`snapshot --cross-backend`. Delete only the local run trees after the portable
+witness or final comparison exists.
 
 ## Finish the shader change
 

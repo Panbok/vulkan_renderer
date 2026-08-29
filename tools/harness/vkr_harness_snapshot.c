@@ -163,7 +163,8 @@ static bool8_t vkr_harness_snapshot_merge_summary(
 
 int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
                              const char *case_path, const char *profile_path,
-                             const char *artifact_root_override) {
+                             const char *artifact_root_override,
+                             bool8_t cross_backend) {
   VkrHarnessError error = {0};
   const char *artifact_root_relative =
       artifact_root_override && artifact_root_override[0]
@@ -405,40 +406,53 @@ int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
       } else {
         vkr_harness_report_mark_incomplete(&report, "baseline.load_failed");
       }
-    } else if (!string_equals(report.environment_fingerprint,
-                              baseline.environment_fingerprint) ||
-               !string_equals(report.workload_fingerprint,
-                              baseline.workload_fingerprint) ||
-               !string_equals(report.policy_fingerprint,
-                              baseline.policy_fingerprint)) {
-      vkr_harness_report_set_status(&report, "missing_baseline",
-                                    VKR_HARNESS_EXIT_MISSING_BASELINE);
-      vkr_harness_report_add_incompatibility(&report,
-                                             "baseline.fingerprint_mismatch");
     } else {
-      /* Decoded images and diff buffers are scoped to their own arena so a
-         wide capture set does not grow the arena the report tables alias. */
-      Arena *comparison_transient = arena_create();
-      VkrHarnessArenas comparison_arenas = {.persistent = summary_arena,
-                                            .transient = comparison_transient};
-      const VkrHarnessExitCode comparison =
-          comparison_transient
-              ? vkr_harness_compare_capture_sets(
-                    run_root, baseline_root, report.captures,
-                    report.capture_count, baseline.captures,
-                    baseline.capture_count, &comparison_arenas, &error)
-              : VKR_HARNESS_EXIT_ERROR;
-      arena_destroy(comparison_transient);
-      if (comparison == VKR_HARNESS_EXIT_FAIL) {
-        vkr_harness_report_set_status(&report, "fail", comparison);
-      } else if (comparison == VKR_HARNESS_EXIT_MISSING_BASELINE) {
-        vkr_harness_report_set_status(&report, "missing_baseline", comparison);
-        vkr_harness_report_add_incompatibility(&report,
-                                               "baseline.capture_incompatible");
-      } else if (comparison == VKR_HARNESS_EXIT_ERROR) {
-        vkr_harness_report_mark_incomplete(&report, "baseline.compare_failed");
+      VkrHarnessCaptureSummary actual = {
+          .case_manifest = report.case_manifest,
+          .provenance = report.provenance,
+      };
+      string_format(actual.environment_fingerprint,
+                    sizeof(actual.environment_fingerprint), "%s",
+                    report.environment_fingerprint);
+      string_format(actual.workload_fingerprint,
+                    sizeof(actual.workload_fingerprint), "%s",
+                    report.workload_fingerprint);
+      string_format(actual.policy_fingerprint,
+                    sizeof(actual.policy_fingerprint), "%s",
+                    report.policy_fingerprint);
+      const char *incompatibility = vkr_harness_baseline_incompatibility(
+          &actual, &baseline, cross_backend);
+      if (incompatibility) {
+        vkr_harness_report_set_status(&report, "missing_baseline",
+                                      VKR_HARNESS_EXIT_MISSING_BASELINE);
+        vkr_harness_report_add_incompatibility(&report, incompatibility);
+      } else {
+        /* Decoded images and diff buffers are scoped to their own arena so a
+           wide capture set does not grow the arena the report tables alias. */
+        Arena *comparison_transient = arena_create();
+        VkrHarnessArenas comparison_arenas = {
+            .persistent = summary_arena, .transient = comparison_transient};
+        const VkrHarnessExitCode comparison =
+            comparison_transient
+                ? vkr_harness_compare_capture_sets(
+                      run_root, baseline_root, report.captures,
+                      report.capture_count, baseline.captures,
+                      baseline.capture_count, &comparison_arenas, &error)
+                : VKR_HARNESS_EXIT_ERROR;
+        arena_destroy(comparison_transient);
+        if (comparison == VKR_HARNESS_EXIT_FAIL) {
+          vkr_harness_report_set_status(&report, "fail", comparison);
+        } else if (comparison == VKR_HARNESS_EXIT_MISSING_BASELINE) {
+          vkr_harness_report_set_status(&report, "missing_baseline",
+                                        comparison);
+          vkr_harness_report_add_incompatibility(
+              &report, "baseline.capture_incompatible");
+        } else if (comparison == VKR_HARNESS_EXIT_ERROR) {
+          vkr_harness_report_mark_incomplete(&report,
+                                             "baseline.compare_failed");
+        }
+        vkr_harness_compare_publish_diffs(&report, run_root);
       }
-      vkr_harness_compare_publish_diffs(&report, run_root);
     }
   }
   char aggregate_summary[VKR_HARNESS_PATH_MAX];

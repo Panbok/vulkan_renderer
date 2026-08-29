@@ -70,20 +70,30 @@ Evidence retained in this change:
   `sha256:a5b95003b45846451508acb29b481e6bd013945daa69b6075c8737b7aac1c64a`;
   the passing local report digest is
   `sha256:b38e590ac8358d6ac61462109ae014bd59c6e6578374355b40950cea1f0d18c7`.
-  This is a one-backend determinism witness, not a matched Metal/Vulkan pair;
+  The same clean Release case on an Apple M1 Pro / Metal 4 GPU passes with
+  report digest
+  `sha256:cad23bf6046f06f601670f78e60d1a1734da3190306c556e0f6aa1cdf4d642f7`.
+  Its three captures are byte-identical at
+  `sha256:183eed0d3d791e410cbfa00876aa80556aecf4135480dc538f2f705e5c0c78b1`;
+  each has 114,572 non-black pixels, 8 distinct RGBA values, and 111,384 pixels
+  at the dominant foreground value `(152, 157, 165, 255)`. The Metal and Vulkan
+  payload digests differ, and the Vulkan PNG or numeric pixel statistics were
+  not retained. The configured `2/255` maximum delta, `0.1/255` mean error, and
+  `0.001` failed-pixel ratio therefore remain unevaluated;
 - clean Release `sh_ibl_probe_sweep_16_sh_l2` profile: five stable 300-frame
   repetitions, exactly 16 packed probes throughout, authoritative report digest
   `sha256:9d13f1159a8c813bb1c4865725d1e05fceea23156aa6538053058867ef1a9589`;
   deferred-lighting GPU time was 1.15275 ms p50, 1.14742 ms mean, and 0.20832 ms
   standard deviation across 1,500 samples.
 
-Still open: deterministic GPU repetition of the CPU projection fixtures,
-matched native `indirect_diffuse` captures, owner review of the café probe and
-clamp/energy diagnostics, submitted-frame reload/lifetime stress, the remaining
-0/1/4-probe performance cases, and a valid comparative performance result.
-macOS builds the Vulkan sources but cannot run this repository's
-descriptor-buffer backend; the Vulkan evidence above does not substitute for a
-fresh native Metal capture.
+Still open: deterministic GPU repetition of the CPU projection fixtures, a
+retained numeric comparison of the native `indirect_diffuse` payloads, owner
+review of the café probe and clamp/energy diagnostics, submitted-frame
+reload/lifetime stress, the remaining 0/1/4-probe performance cases, and a
+valid comparative performance result. macOS builds the Vulkan sources but
+cannot run this repository's descriptor-buffer backend. The two native capture
+reports establish deterministic execution, but digest inequality alone cannot
+evaluate the authored image tolerances.
 
 ## Scope
 

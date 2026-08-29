@@ -207,7 +207,36 @@ void vkr_harness_compare_publish_diffs(VkrHarnessReport *report,
   }
 }
 
-int vkr_harness_compare_run(const char *repo_root, const char *run_path) {
+const char *
+vkr_harness_baseline_incompatibility(const VkrHarnessCaptureSummary *actual,
+                                     const VkrHarnessCaptureSummary *baseline,
+                                     bool8_t cross_backend) {
+  if (!actual || !baseline ||
+      !string_equals(actual->workload_fingerprint,
+                     baseline->workload_fingerprint) ||
+      !string_equals(actual->policy_fingerprint,
+                     baseline->policy_fingerprint)) {
+    return "baseline.fingerprint_mismatch";
+  }
+  if (!cross_backend) {
+    return string_equals(actual->environment_fingerprint,
+                         baseline->environment_fingerprint)
+               ? NULL
+               : "baseline.fingerprint_mismatch";
+  }
+  if (actual->case_manifest.renderer.backend[0] ||
+      baseline->case_manifest.renderer.backend[0]) {
+    return "baseline.cross_backend_case_pinned";
+  }
+  if (string_equals(actual->environment_fingerprint,
+                    baseline->environment_fingerprint)) {
+    return "baseline.cross_backend_same_environment";
+  }
+  return NULL;
+}
+
+int vkr_harness_compare_run(const char *repo_root, const char *run_path,
+                            bool8_t cross_backend) {
   if (!repo_root || !run_path || !vkr_harness_path_is_safe_relative(run_path)) {
     return VKR_HARNESS_EXIT_INVALID;
   }
@@ -298,24 +327,22 @@ int vkr_harness_compare_run(const char *repo_root, const char *run_path) {
     vkr_harness_report_set_status(&report, "missing_baseline",
                                   VKR_HARNESS_EXIT_MISSING_BASELINE);
     vkr_harness_report_add_authority_reason(&report, "baseline.missing");
-  } else if (!string_equals(source.environment_fingerprint,
-                            baseline.environment_fingerprint) ||
-             !string_equals(source.workload_fingerprint,
-                            baseline.workload_fingerprint) ||
-             !string_equals(source.policy_fingerprint,
-                            baseline.policy_fingerprint)) {
-    vkr_harness_report_set_status(&report, "missing_baseline",
-                                  VKR_HARNESS_EXIT_MISSING_BASELINE);
-    vkr_harness_report_add_incompatibility(&report,
-                                           "baseline.fingerprint_mismatch");
   } else {
-    VkrHarnessArenas arenas = {.persistent = arena, .transient = transient};
-    const VkrHarnessExitCode comparison = vkr_harness_compare_capture_sets(
-        compare_root, baseline_root, report.captures, report.capture_count,
-        baseline.captures, baseline.capture_count, &arenas, &error);
-    vkr_harness_report_set_status(
-        &report, vkr_harness_exit_code_name(comparison), comparison);
-    vkr_harness_compare_publish_diffs(&report, compare_root);
+    const char *incompatibility =
+        vkr_harness_baseline_incompatibility(&source, &baseline, cross_backend);
+    if (incompatibility) {
+      vkr_harness_report_set_status(&report, "missing_baseline",
+                                    VKR_HARNESS_EXIT_MISSING_BASELINE);
+      vkr_harness_report_add_incompatibility(&report, incompatibility);
+    } else {
+      VkrHarnessArenas arenas = {.persistent = arena, .transient = transient};
+      const VkrHarnessExitCode comparison = vkr_harness_compare_capture_sets(
+          compare_root, baseline_root, report.captures, report.capture_count,
+          baseline.captures, baseline.capture_count, &arenas, &error);
+      vkr_harness_report_set_status(
+          &report, vkr_harness_exit_code_name(comparison), comparison);
+      vkr_harness_compare_publish_diffs(&report, compare_root);
+    }
   }
   char report_path[VKR_HARNESS_PATH_MAX];
   char digest[VKR_HARNESS_DIGEST_MAX];

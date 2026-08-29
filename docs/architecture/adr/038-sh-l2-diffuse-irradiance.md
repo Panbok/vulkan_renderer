@@ -26,13 +26,15 @@ Metal pipeline-archive launches, and an authoritative final-path 16-probe
 profile. The corrected Vulkan implementation also passes two focused native API
 plus synchronization-validation repetitions, compiled SPIR-V reflection of the
 48-byte projection root, cold plus warm Release pipeline-cache launches, and a
-three-frame deterministic visible `indirect_diffuse` capture. The capture is
-Vulkan-only, and the 16-probe profile has no comparable cubemap control.
-Deterministic GPU repetition of the CPU projection fixtures, a matched native
-Metal/Vulkan capture, café-probe owner review, reload/lifetime stress, the
-remaining SH scaling cases, and a valid comparative performance result remain
-open. Source presence and these one-sided witnesses do not make this ADR
-Accepted.
+three-frame deterministic visible `indirect_diffuse` capture. The same clean
+Release case now produces three deterministic visible captures on Metal. Their
+payload digests differ, and the Vulkan payload or numeric pixel statistics were
+not retained, so the configured image tolerances have not been evaluated. The
+16-probe profile also has no comparable cubemap control. Deterministic GPU
+repetition of the CPU projection fixtures, the retained cross-backend pixel
+comparison, café-probe owner review, reload/lifetime stress, the remaining SH
+scaling cases, and a valid comparative performance result remain open. Source
+presence and these execution witnesses do not make this ADR Accepted.
 
 ## Context
 

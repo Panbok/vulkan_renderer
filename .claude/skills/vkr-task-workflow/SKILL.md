@@ -197,9 +197,10 @@ continuation step and truthful state.
 If the task moved a feature's status or the rationale behind a decision, that
 belongs in `docs/` in the same change — `vkr-docs` owns the mechanics.
 
-Leave the disk as you found it. Every measurement, gate, snapshot, and
-diagnostic run this task produced has its numbers transcribed by now, so delete
-the run trees and traces it created — `vkr-harness` owns what is safe to purge.
+Leave the disk as you found it. Every run this task produced has either had its
+result transcribed or, when another machine must consume its captures, been
+published through the portable witness workflow. Delete the remaining run
+trees and traces; `vkr-harness` owns what is safe to purge.
 
 Give the user an outcome-first summary naming every gate that passed, failed, or
 was not run.

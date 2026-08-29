@@ -100,7 +100,8 @@ int main(int argc, char **argv) {
       return VKR_HARNESS_EXIT_ERROR;
     }
     const int result = vkr_harness_compare_run(
-        repo_root, vkr_harness_option(argc, argv, "--run"));
+        repo_root, vkr_harness_option(argc, argv, "--run"),
+        vkr_harness_flag(argc, argv, "--cross-backend"));
     vkr_platform_shutdown();
     return result;
   }
@@ -146,8 +147,10 @@ int main(int argc, char **argv) {
       autotest_command ? vkr_harness_autotest_run(executable, repo_root,
                                                   case_path, profile_path)
       : snapshot_command
-          ? vkr_harness_snapshot_run(executable, repo_root, case_path,
-                                     profile_path, artifact_root_override)
+          ? vkr_harness_snapshot_run(
+                executable, repo_root, case_path, profile_path,
+                artifact_root_override,
+                vkr_harness_flag(argc, argv, "--cross-backend"))
           : vkr_harness_profile_run(executable, repo_root, case_path,
                                     profile_path, artifact_root_override);
   vkr_platform_shutdown();

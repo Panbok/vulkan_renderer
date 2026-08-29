@@ -1772,6 +1772,53 @@ static void test_harness_comparison_algorithms(void) {
   printf("  test_harness_comparison_algorithms PASSED\n");
 }
 
+static void test_harness_cross_backend_baseline_compatibility(void) {
+  printf("  Running test_harness_cross_backend_baseline_compatibility...\n");
+  VkrHarnessCaptureSummary actual = {0};
+  VkrHarnessCaptureSummary baseline = {0};
+  snprintf(actual.environment_fingerprint,
+           sizeof(actual.environment_fingerprint), "environment-metal");
+  snprintf(baseline.environment_fingerprint,
+           sizeof(baseline.environment_fingerprint), "environment-vulkan");
+  snprintf(actual.workload_fingerprint, sizeof(actual.workload_fingerprint),
+           "workload");
+  snprintf(baseline.workload_fingerprint, sizeof(baseline.workload_fingerprint),
+           "workload");
+  snprintf(actual.policy_fingerprint, sizeof(actual.policy_fingerprint),
+           "policy");
+  snprintf(baseline.policy_fingerprint, sizeof(baseline.policy_fingerprint),
+           "policy");
+
+  assert(
+      strcmp(vkr_harness_baseline_incompatibility(&actual, &baseline, false_v),
+             "baseline.fingerprint_mismatch") == 0);
+  assert(vkr_harness_baseline_incompatibility(&actual, &baseline, true_v) ==
+         NULL);
+
+  snprintf(baseline.workload_fingerprint, sizeof(baseline.workload_fingerprint),
+           "different-workload");
+  assert(
+      strcmp(vkr_harness_baseline_incompatibility(&actual, &baseline, true_v),
+             "baseline.fingerprint_mismatch") == 0);
+  snprintf(baseline.workload_fingerprint, sizeof(baseline.workload_fingerprint),
+           "workload");
+
+  snprintf(baseline.case_manifest.renderer.backend,
+           sizeof(baseline.case_manifest.renderer.backend), "vulkan");
+  assert(
+      strcmp(vkr_harness_baseline_incompatibility(&actual, &baseline, true_v),
+             "baseline.cross_backend_case_pinned") == 0);
+  baseline.case_manifest.renderer.backend[0] = '\0';
+
+  snprintf(baseline.environment_fingerprint,
+           sizeof(baseline.environment_fingerprint), "%s",
+           actual.environment_fingerprint);
+  assert(
+      strcmp(vkr_harness_baseline_incompatibility(&actual, &baseline, true_v),
+             "baseline.cross_backend_same_environment") == 0);
+  printf("  test_harness_cross_backend_baseline_compatibility PASSED\n");
+}
+
 #if !defined(_WIN32)
 static bool8_t harness_remove_tree(const char *path) {
   struct stat status;
@@ -1865,7 +1912,7 @@ static void test_harness_guarded_baseline_accept(void) {
   snprintf(capture->source_format, sizeof(capture->source_format), "rgba8");
   snprintf(capture->canonical_encoding, sizeof(capture->canonical_encoding),
            "rgba8");
-  snprintf(capture->value_kind, sizeof(capture->value_kind), "color");
+  snprintf(capture->value_kind, sizeof(capture->value_kind), "id");
   snprintf(capture->color_space, sizeof(capture->color_space), "srgb");
   snprintf(capture->origin, sizeof(capture->origin), "top_left");
   snprintf(capture->data_path, sizeof(capture->data_path),
@@ -1921,6 +1968,26 @@ static void test_harness_guarded_baseline_accept(void) {
                                       generation_root, &accepted, &error));
   assert(accepted.capture_count == 1u &&
          strcmp(accepted.captures[0].data_sha256, capture->data_sha256) == 0);
+  Arena *compare_arena = arena_create();
+  assert(compare_arena);
+  VkrHarnessCaptureResult actual = accepted.captures[0];
+  VkrHarnessArenas compare_arenas = {
+      .persistent = load_arena,
+      .transient = compare_arena,
+  };
+  assert(vkr_harness_compare_capture_sets(
+             source, generation_root, &actual, 1u, accepted.captures, 1u,
+             &compare_arenas, &error) == VKR_HARNESS_EXIT_PASS);
+  char accepted_raw[VKR_HARNESS_PATH_MAX];
+  snprintf(accepted_raw, sizeof(accepted_raw), "%s/captures/frame.raw",
+           generation_root);
+  const uint8_t tampered[] = {9u, 9u, 9u, 9u};
+  assert(vkr_harness_atomic_write(accepted_raw, tampered, sizeof(tampered),
+                                  &error));
+  assert(vkr_harness_compare_capture_sets(
+             source, generation_root, &actual, 1u, accepted.captures, 1u,
+             &compare_arenas, &error) == VKR_HARNESS_EXIT_ERROR);
+  arena_destroy(compare_arena);
   arena_destroy(load_arena);
   arena_destroy(arena);
   assert(harness_remove_tree(root));
@@ -1950,6 +2017,7 @@ bool32_t run_harness_tests(void) {
   test_harness_capture_catalog_and_converters();
   test_harness_capture_replays();
   test_harness_comparison_algorithms();
+  test_harness_cross_backend_baseline_compatibility();
   test_harness_guarded_baseline_accept();
   printf("--- Harness tests completed. ---\n");
   return true;

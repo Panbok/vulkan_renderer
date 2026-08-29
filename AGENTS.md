@@ -205,13 +205,14 @@ claim, or skill rule moves. Start documentation discovery at `docs/README.md`.
 Task notes under `.scratch/` are local and untracked; move anything that must
 survive into `docs/`.
 
-**A retained artifact tree is not a record.** Measurement, testing, snapshot,
-and diagnostic runs write regenerable output — `build/_artifacts/`, Instruments
-traces, exported XML, scratch captures — and nothing prunes it. Carry the
-result out as documented numbers, report digests, and the command that
-reproduces them, then delete the tree in the same turn that produced it.
-Leaving gigabytes behind is a defect; see `vkr-harness` for what is safe to
-purge.
+**A retained run tree is not a record.** Measurement, testing, snapshot, and
+diagnostic runs write regenerable output under `build/_artifacts/`, and nothing
+prunes it. Carry single-machine results out as documented numbers, report
+digests, and reproducing commands. For a capture that another machine must
+consume, first publish the guarded, tracked baseline generation defined by
+`vkr-harness`; it retains the verified canonical payloads and metadata. Then
+delete the local run tree. Leaving gigabytes behind is a defect, and deleting a
+cross-machine payload before publication is also a defect.
 
 ## Commits and PRs
 

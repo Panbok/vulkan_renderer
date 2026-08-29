@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-21
+updated: 2026-08-29
 authority: spec
 ---
 # Renderer Metrics Module and Automation Harness
@@ -1242,6 +1242,33 @@ This is evidence integrity and time-of-check/time-of-use protection, not a
 second product-scale approval service. Manual copying into baseline roots is
 unsupported.
 
+### 8.1 Cross-machine parity witnesses
+
+The baseline generation is the transport for a correctness comparison split
+across machines. The first machine publishes its completed snapshot with the
+same guarded proposal and acceptance commands. It commits and pushes
+`current.json` plus the immutable generation before deleting the source run.
+The retained generation contains:
+
+- the aggregate `report.json` and `capture-summary.bin`;
+- every canonical color PNG or raw depth/ID payload;
+- every capture metadata document;
+- every child capture report and any preview that differs from canonical data.
+
+The second machine pulls that generation and runs the same case and profile
+with `snapshot --cross-backend`. `compare --cross-backend --run <snapshot>`
+applies the same rule to an existing run. Cross-backend mode requires equal
+workload and policy fingerprints, an unpinned `renderer.backend` in both case
+summaries, and different environment fingerprints. It deliberately ignores the
+environment mismatch because the environment is what the comparison varies.
+The default mode remains strict and requires all three fingerprints to match.
+
+The comparison still requires compatible capture versions, frames, channels,
+dimensions, layers, canonical encodings, value kinds, color spaces, and
+origins. It verifies both payload digests before decoding, then applies the
+thresholds authored by the second run's case. A report digest without the
+canonical payload cannot serve as a later parity reference.
+
 ## 9. Phasing
 
 | Phase | Deliverable | Touches |
@@ -1328,10 +1355,11 @@ verification record, and the relevant ADR status in the same change.
 - **Report evolution.** Version 1 readers reject unknown major versions. Add a
   version only with a second real shape; do not build migration machinery in
   advance.
-- **Cross-machine baselines.** Visual baselines are profile-scoped
-  (`local-macos-mvk`) because GPU, driver, and OS all affect output. Whether a
-  shared CI profile is achievable remains unanswered and depends on native
-  Vulkan/cross-vendor evidence plus an explicitly pinned CI profile.
+- **Shared golden baselines.** Ordinary visual baselines remain
+  environment-scoped because GPU, driver, and OS affect output. The explicit
+  cross-backend mode compares a backend-neutral case against a tracked portable
+  generation without treating that generation as a shared performance or CI
+  golden image.
 - **Surface-free native-Vulkan coverage.** VKR's surface-free instance/device
   selection, queue policy, formats, recreation, and validation behavior are
   verified on the local Apple M1 Pro/MoltenVK stack. Native Vulkan and

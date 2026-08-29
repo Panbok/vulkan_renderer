@@ -174,7 +174,8 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
                             const char *artifact_root_override);
 int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
                              const char *case_path, const char *profile_path,
-                             const char *artifact_root_override);
+                             const char *artifact_root_override,
+                             bool8_t cross_backend);
 int vkr_harness_autotest_run(const char *executable, const char *repo_root,
                              const char *case_path, const char *profile_path);
 bool8_t vkr_harness_capture_publish(
@@ -201,7 +202,8 @@ int vkr_harness_baseline_propose(const char *repo_root, const char *from_run,
                                  const char *actor, const char *reason);
 int vkr_harness_baseline_accept(const char *repo_root, const char *plan_path,
                                 const char *confirmation);
-int vkr_harness_compare_run(const char *repo_root, const char *run_path);
+int vkr_harness_compare_run(const char *repo_root, const char *run_path,
+                            bool8_t cross_backend);
 
 typedef struct VkrHarnessCaptureSummary {
   VkrHarnessTool tool;
@@ -224,6 +226,17 @@ typedef struct VkrHarnessCaptureSummary {
   const VkrHarnessArtifact *artifacts;
   uint32_t artifact_count;
 } VkrHarnessCaptureSummary;
+
+/**
+ * Returns NULL when an accepted baseline may be compared with a snapshot.
+ * Cross-backend mode drops only environment identity. It still requires the
+ * same workload and policy, a backend-neutral case, and a different recorded
+ * environment.
+ */
+const char *
+vkr_harness_baseline_incompatibility(const VkrHarnessCaptureSummary *actual,
+                                     const VkrHarnessCaptureSummary *baseline,
+                                     bool8_t cross_backend);
 
 bool8_t vkr_harness_baseline_current(const char *repo_root,
                                      const char *profile_id,

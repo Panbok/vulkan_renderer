@@ -80,6 +80,11 @@ build/tools/vkr_harness autotest \
 
 build/tools/vkr_harness compare \
   --run build/_artifacts/snapshot/<run-id>
+
+build/tools/vkr_harness snapshot \
+  --case tools/cases/smoke/<backend-neutral-case>.case.json \
+  --profile tools/profiles/local-offscreen.json \
+  --cross-backend
 ```
 
 `autotest` runs capture-free primary repetitions and snapshot replays as
@@ -89,6 +94,14 @@ assertions. `compare` verifies the source summary and artifact digests before
 reading the accepted baseline. Missing or fingerprint-incompatible baselines
 return exit `4`; threshold failures return exit `1`; internal/incomplete
 comparison returns exit `5`.
+
+`--cross-backend` is the explicit cross-machine parity mode. It reads the
+accepted generation for the same profile and case, allows its environment
+fingerprint to differ, and still requires identical workload and policy
+fingerprints. Both case manifests must leave `renderer.backend` unpinned, and
+the recorded environments must differ. The flag works on `snapshot` for an
+inline verdict or on `compare --run` for a completed second-machine snapshot.
+It does not change golden-baseline compatibility for ordinary commands.
 
 ## Interpret evidence
 
@@ -132,17 +145,19 @@ tree is gitignored and fully regenerable from its case and profile, so it is
 working material, not evidence. Snapshot runs dominate: a single capture suite
 reaches gigabytes, and left alone the directory fills the disk.
 
-Transcribe first, then delete. What survives a run is the report path, its
-SHA-256, the metric values with their spread, and the exact command — carried
-into the task note, doc, or PR body. The digest still identifies the run after
-the tree is gone, and the command regenerates it.
+Choose the evidence lifetime before deleting. A single-machine observation is
+transcribed into a task note, doc, or PR body with its report digest, values,
+spread, and exact command. A run that must be consumed on another machine is
+first promoted through the guarded baseline workflow below. Its accepted
+generation retains `report.json`, `capture-summary.bin`, canonical capture
+data, capture metadata, child capture reports, and any distinct previews.
 
 ```sh
 du -sh build/_artifacts/*/                      # find the weight
 rm -rf build/_artifacts/{snapshot,profile,compare,autotest}
 ```
 
-Two things are not regenerable and stay out of the purge. Accepted baselines
+Two things stay out of the purge. Accepted baselines
 live in tracked `tools/baselines/` as self-contained content-addressed
 generations that never source from `build/_artifacts/`, so purging cannot
 endanger them. A **pending** `baseline propose` under
@@ -150,6 +165,12 @@ endanger them. A **pending** `baseline propose` under
 the snapshot run it came from, so deleting that snapshot makes the proposal
 permanently unacceptable. Accept or abandon a pending proposal before purging
 the snapshot it references.
+
+For a bilateral gate split across machines, the first machine is not finished
+until the accepted generation and `current.json` are committed and pushed. The
+second machine pulls that tracked witness, runs the same backend-neutral case
+with `--cross-backend`, records the comparison report and values, then retires
+its local run tree. No session or `build/_artifacts` directory crosses machines.
 
 ## Baseline safety
 

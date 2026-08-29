@@ -36,6 +36,31 @@ previous generation, accepted generation, and acceptance timestamp in
 `current.json`. Ordinary `profile`, `snapshot`, `autotest`, and `compare`
 commands never mutate this directory.
 
+## Cross-machine parity
+
+An accepted generation is also the portable witness for a backend-neutral
+Metal/Vulkan comparison. The first machine runs the snapshot, proposes and
+accepts the reviewed generation, then commits and pushes both `current.json`
+and the generation directory. The second machine pulls those files and runs:
+
+```sh
+build_release/tools/vkr_harness snapshot \
+  --case tools/cases/smoke/<backend-neutral-case>.case.json \
+  --profile tools/profiles/local-offscreen.json \
+  --cross-backend
+```
+
+The generation retains the source `report.json`, `capture-summary.bin`, every
+canonical capture, its metadata, child capture reports, and distinct previews.
+The comparison verifies each payload digest before decoding it. Cross-backend
+mode requires the same workload and policy fingerprints, an unpinned
+`renderer.backend`, and a different environment fingerprint. Ordinary snapshot
+and compare commands still require all three fingerprints to match.
+
+Do not delete the first machine's snapshot while its proposal is pending. Once
+acceptance has copied and rehashed every listed file, the tracked generation no
+longer depends on `build/_artifacts` and the run tree may be removed.
+
 ## Current Bistro authorities
 
 The accepted tree intentionally retains exactly two Bistro roots, each with one
@@ -46,5 +71,5 @@ bitmap, and MTSDF text:
 - `local.offscreen/smoke.bistro.metal.text.snapshot` — Metal 4
 
 The case manifests pin their backend and reject a conflicting environment
-request. Cross-backend image differences are diagnostic; each root is compared
-only with later runs of the same backend.
+request. They cannot be used with `--cross-backend`; each root is compared only
+with later runs of the same backend.
