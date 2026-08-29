@@ -72,14 +72,16 @@ Evidence retained in this change:
   `sha256:b38e590ac8358d6ac61462109ae014bd59c6e6578374355b40950cea1f0d18c7`.
   The same clean Release case on an Apple M1 Pro / Metal 4 GPU passes with
   report digest
-  `sha256:cad23bf6046f06f601670f78e60d1a1734da3190306c556e0f6aa1cdf4d642f7`.
+  `sha256:6e8431ecff0626fedb99104236941f0f4546fa0fef7a6ab1cf07c47a0eaa6451`.
   Its three captures are byte-identical at
   `sha256:183eed0d3d791e410cbfa00876aa80556aecf4135480dc538f2f705e5c0c78b1`;
   each has 114,572 non-black pixels, 8 distinct RGBA values, and 111,384 pixels
   at the dominant foreground value `(152, 157, 165, 255)`. The Metal and Vulkan
-  payload digests differ, and the Vulkan PNG or numeric pixel statistics were
-  not retained. The configured `2/255` maximum delta, `0.1/255` mean error, and
-  `0.001` failed-pixel ratio therefore remain unevaluated;
+  payload digests differ. The Metal payload is retained in portable generation
+  `sha256:7492b6406ad11123e0cb5f0f943f5c74bd908e3f72b13750c1a8fd1196f6e726`.
+  The historical Vulkan PNG was not retained, so the configured `2/255`
+  maximum delta, `0.1/255` mean error, and `0.001` failed-pixel ratio remain
+  unevaluated until the next Windows cross-backend snapshot;
 - clean Release `sh_ibl_probe_sweep_16_sh_l2` profile: five stable 300-frame
   repetitions, exactly 16 packed probes throughout, authoritative report digest
   `sha256:9d13f1159a8c813bb1c4865725d1e05fceea23156aa6538053058867ef1a9589`;

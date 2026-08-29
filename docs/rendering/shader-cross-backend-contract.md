@@ -60,7 +60,7 @@ changing an acceptance envelope requires new evidence and owner review.
 | Cascaded-shadow receiver | `shaders/shared/shadow_kernel.slangh` | `metal/msl/shadow/sampling.metalh`, used by forward and deferred paths | `vulkan/slang/world/default.slang`, reused by `world/deferred.slang` | **UNALIGNED**: sources agree, but the current matched native snapshot gate is missing |
 | IBL baking and sampling | SH diffuse math below; other bake math is backend-local | `metal/msl/ibl/*.metal*`, `metal/msl/world/lighting.metalh` | `vulkan/slang/ibl/*.slang*`, `vulkan/slang/world/default.slang` | **UNALIGNED**: focused native validation now passes on Metal and Vulkan, but no matched direct bake-output snapshot pair covers equirect conversion, SH diffuse response, and every prefilter mip |
 | L2 diffuse coefficients (ADR-038) | `shaders/shared/sh_l2_kernel.slangh`, included by the Vulkan Slang library and concatenated into the MSL library | `metal/msl/ibl/sh_projection.metal` `vkr_metal_packet_ibl_sh`; final `sh_coefficients` and slot fields in `metal/msl/common/draw.metalh`; evaluation in `metal/msl/world/gpu_draws.metal` | `vulkan/slang/ibl/default.slang` `ibl_sh`; exact texel loads use a lazily-published 2D-array alias; `VkrVulkanIblShRoot` plus final `sh_coefficients` and slot fields in `vulkan/slang/common/resources.slangh`; evaluation in `vulkan/slang/world/default.slang` | **UNALIGNED**: both production sources implement the same projection/evaluation contract; both 48-byte roots have compiled-shader reflection witnesses; focused native validation executes one packed probe on both backends; and the same Release case produces three deterministic visible captures on each backend. Missing: GPU repetition of the CPU projection fixtures and a retained numeric Metal/Vulkan payload comparison |
-| Indirect-diffuse capture channel (ADR-038 §3.1) | None | `metal/msl/world/gpu_draws.metal`, deferred lighting and transmission lighting | `vulkan/slang/world/deferred.slang`, `vk_deferred_lighting` and `vk_transmission_shade` | **UNALIGNED**: both production sources implement render mode 9 with the same rule (environment diffuse only, black background, GTAO excluded, no direct/specular/emissive/ambient fallback), and both native backends pass the same deterministic case. The payload digests differ, but the Vulkan payload or numeric comparison was not retained, so the configured image tolerances have not been evaluated |
+| Indirect-diffuse capture channel (ADR-038 §3.1) | None | `metal/msl/world/gpu_draws.metal`, deferred lighting and transmission lighting | `vulkan/slang/world/deferred.slang`, `vk_deferred_lighting` and `vk_transmission_shade` | **UNALIGNED**: both production sources implement render mode 9 with the same rule (environment diffuse only, black background, GTAO excluded, no direct/specular/emissive/ambient fallback), and both native backends pass the same deterministic case. The Metal payload is retained as portable generation `sha256:7492b6406ad11123e0cb5f0f943f5c74bd908e3f72b13750c1a8fd1196f6e726`; the next Windows run must produce the cross-backend tolerance report |
 | Visibility, deferred resolve, lighting, temporal resolve, transmission, and picking | Packed rows and normal decode above | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang`, `vulkan/slang/picking/default.slang` | **UNALIGNED**: source algorithms and dispatch semantics now agree, including compact transmission, but matched native runtime and remaining ABI gates are open |
 | Tonemap and FXAA | Exposure state above | `metal/msl/post/tonemap.metal` | `vulkan/slang/post/default.slang`, `post/tonemap.slangh` | **UNALIGNED**: source behavior now agrees; the crossed tonemap/FXAA native fixture is missing |
 | Text color and picking | None | `metal/msl/text/default.metal` | `vulkan/slang/text/default.slang` | **UNALIGNED**: sources agree semantically, but no matched native snapshot pair is recorded |
@@ -540,7 +540,7 @@ correctness witnesses, not performance comparisons or accepted golden images.
 | Normal decode, exposure, GTAO on | M1 Pro, `mac_bistro_exposure_parity`, `sha256:66737ad0e780cb142756fb687f7b1e4a5a1d0f3683b156dcbc246b5de2f748e2` | RX 6700 XT, matched Bistro case, `sha256:dd4dd35397fb2b83d73e571c43d44a7a3431068c4a2fd2695d2e7b31e2c23a72` | average log luminance `-3.309451` / `-3.308282`; EV `+0.835520` / `+0.834351`; multiplier `1.784500` / `1.783055` |
 | Exposure, GTAO off | M1 Pro, `mac_bistro_exposure_parity_gtao_off`, `sha256:87ef98262d33a9e6c9db87a78a779c4579ece6fd2e7402003a545479ccfdad50` | RX 6700 XT, matched Bistro case, `sha256:3e497612b394ead71cbb876c669cec7db4ae44230db8db0eab3a5ce50ce235b1` | average log luminance `-3.118539` / `-3.115359`; EV `+0.644608` / `+0.641427`; multiplier `1.563315` / `1.559872` |
 | Bloom execution | M1 Pro, `smoke.bloom.static`, `sha256:333b97da86b2e226c7a9528ff579888e80c70cb2034d4655a51acaea07151659` | RX 6700 XT, `smoke.bloom.static`, `sha256:3af307a224ca770abe8a9efd2e81b8d6e1411a4acdbcf780299f606604a4c260` | Metal's prefilter/result are non-degenerate; Vulkan's prefilter, result, combined HDR, and final color have distinct digests |
-| L2 indirect diffuse | M1 Pro / Metal 4, `smoke.sh_ibl.single_probe.snapshot`, `sha256:cad23bf6046f06f601670f78e60d1a1734da3190306c556e0f6aa1cdf4d642f7` | RX 6700 XT / Vulkan 1.4, same case, `sha256:b38e590ac8358d6ac61462109ae014bd59c6e6578374355b40950cea1f0d18c7` | Each backend packs one probe and produces three internally byte-identical `640x480` RGBA8 captures. Metal data is `sha256:183eed0d3d791e410cbfa00876aa80556aecf4135480dc538f2f705e5c0c78b1`; Vulkan data is `sha256:a5b95003b45846451508acb29b481e6bd013945daa69b6075c8737b7aac1c64a`. Metal has 114,572 non-black pixels and 8 RGBA values. The payloads differ, and no numeric cross-backend comparison is retained |
+| L2 indirect diffuse | M1 Pro / Metal 4, `smoke.sh_ibl.single_probe.snapshot`, `sha256:6e8431ecff0626fedb99104236941f0f4546fa0fef7a6ab1cf07c47a0eaa6451`; portable generation `sha256:7492b6406ad11123e0cb5f0f943f5c74bd908e3f72b13750c1a8fd1196f6e726` | RX 6700 XT / Vulkan 1.4, same case, `sha256:b38e590ac8358d6ac61462109ae014bd59c6e6578374355b40950cea1f0d18c7` | Each backend packs one probe and produces three internally byte-identical `640x480` RGBA8 captures. Metal data is `sha256:183eed0d3d791e410cbfa00876aa80556aecf4135480dc538f2f705e5c0c78b1`; historical Vulkan data is `sha256:a5b95003b45846451508acb29b481e6bd013945daa69b6075c8737b7aac1c64a`. Metal has 114,572 non-black pixels and 8 RGBA values. Windows can now pull the Metal payload; the numeric cross-backend comparison remains pending |
 
 For the GTAO-on pair, only 3 of 1,920,000 depth-mask pixels differ. Across
 1,919,654 common foreground pixels, decoded normals have mean dot `0.999080`,
@@ -689,12 +689,15 @@ The backend-neutral snapshot case
 byte-identical visible Vulkan captures with data digest
 `sha256:a5b95003b45846451508acb29b481e6bd013945daa69b6075c8737b7aac1c64a`.
 The same clean Release case on an Apple M1 Pro / Metal 4 GPU passes as report
-`sha256:cad23bf6046f06f601670f78e60d1a1734da3190306c556e0f6aa1cdf4d642f7`.
+`sha256:6e8431ecff0626fedb99104236941f0f4546fa0fef7a6ab1cf07c47a0eaa6451`.
 It packs one probe and produces three byte-identical visible captures with data
 digest
 `sha256:183eed0d3d791e410cbfa00876aa80556aecf4135480dc538f2f705e5c0c78b1`.
 The Metal image has 114,572 non-black pixels, 8 distinct RGBA values, and a
 dominant foreground value of `(152, 157, 165, 255)` across 111,384 pixels.
+The full Metal capture set is retained as accepted generation
+`sha256:7492b6406ad11123e0cb5f0f943f5c74bd908e3f72b13750c1a8fd1196f6e726`
+under `tools/baselines/local.offscreen/smoke.sh_ibl.single_probe.snapshot/`.
 
 The two payload digests differ. The Windows record did not retain the Vulkan
 PNG or numeric pixel statistics, so the case's configured limits of `2/255`
@@ -703,10 +706,8 @@ ratio have not been evaluated. Both SH rows remain **UNALIGNED** until that
 payload comparison is retained. GPU repetition of the CPU projection fixtures
 also remains open for the coefficient row.
 
-Future bilateral snapshots do not require a shared harness session. The first
-machine promotes the backend-neutral snapshot into the guarded tracked baseline
-generation and pushes it before deleting `build/_artifacts`. The second machine
-pulls that generation and runs:
+The Metal side is now published and does not require a shared harness session.
+The Windows machine pulls that generation and runs:
 
 ```sh
 build_release/tools/vkr_harness snapshot \
