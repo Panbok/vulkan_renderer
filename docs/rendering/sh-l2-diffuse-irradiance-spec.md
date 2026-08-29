@@ -53,12 +53,18 @@ Evidence retained in this change:
   `sha256:13d8ab1fe4b2a2533fc5f72130ba9115a30bffef7b0914fb424aca8f73ed3e41`;
 - normal Debug application cold and warm launches against one fresh explicit
   Metal pipeline archive: both exit 0; archive size 2,128,224 bytes.
+- clean Release `sh_ibl_probe_sweep_16_sh_l2` profile: five stable 300-frame
+  repetitions, exactly 16 packed probes throughout, authoritative report digest
+  `sha256:9d13f1159a8c813bb1c4865725d1e05fceea23156aa6538053058867ef1a9589`;
+  deferred-lighting GPU time was 1.15275 ms p50, 1.14742 ms mean, and 0.20832 ms
+  standard deviation across 1,500 samples.
 
 Still open: native Vulkan validation, deterministic GPU repetition of the CPU
 projection fixtures, matched native `indirect_diffuse` captures, owner review of
 the café probe and clamp/energy diagnostics, submitted-frame reload/lifetime
-stress, and authoritative Release performance evidence. macOS builds the Vulkan
-sources but cannot run this repository's descriptor-buffer backend.
+stress, the remaining 0/1/4-probe performance cases, and a valid comparative
+performance result. macOS builds the Vulkan sources but cannot run this
+repository's descriptor-buffer backend.
 
 ## Scope
 
@@ -524,6 +530,25 @@ retirement. A future acceptance record must not present the four final-path
 cases as an A/B comparison. It may either restore the historical cubemap path on
 a temporary measurement branch or explicitly accept memory/code reduction with
 no measured speed claim.
+
+The final 16-probe case was recorded on the clean `a3bcf8c` Release tree with:
+
+```sh
+build_release/tools/vkr_harness profile \
+  --case tools/cases/performance/sh_ibl_probe_sweep_16_sh_l2.case.json \
+  --profile tools/profiles/performance-windowed-gpu.json
+```
+
+All five 300-frame repetitions passed with stable warmup, exclusive GPU-lane
+ownership, complete requested GPU timestamps, and exactly 16 packed probes.
+The authoritative report digest is
+`sha256:9d13f1159a8c813bb1c4865725d1e05fceea23156aa6538053058867ef1a9589`.
+Across 1,500 samples, `Lighting.Deferred.Fullscreen` GPU time was 1.15275 ms p50,
+1.14742 ms mean, and 0.20832 ms standard deviation; `frame.wall` was 8.59658 ms
+p50 and 8.32950 ms mean. `IBL.Bake` GPU timing was unavailable for this Metal
+timestamp scope. This is an authoritative characterization of one final-path
+load, not a speed comparison; the 0/1/4-probe cases and a comparable historical
+control remain open.
 
 The factual final resource state is:
 

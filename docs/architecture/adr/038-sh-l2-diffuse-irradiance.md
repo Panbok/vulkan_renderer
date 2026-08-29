@@ -23,12 +23,13 @@ GGX specular prefilter. Its diffuse-cubemap portion is now historical.
 The 2026-08-29 implementation gates passed the 551-test CPU suite, Debug and
 Release builds, a broad exclusive Metal API/GPU validation run, a focused
 single-probe SH projection/evaluation validation run, and fresh cold plus warm
-Metal pipeline-archive launches. This Mac cannot execute the
-descriptor-buffer Vulkan backend. Native Vulkan validation, deterministic GPU
-fixture repetition, matched native indirect-diffuse captures, café-probe owner
-review, reload/lifetime stress, and authoritative Release performance evidence
-remain open. Source presence and the Metal diagnostic do not make this ADR
-Accepted.
+Metal pipeline-archive launches. A clean authoritative Release profile also
+characterizes the final 16-probe SH path, but it has no comparable cubemap
+control. This Mac cannot execute the descriptor-buffer Vulkan backend. Native
+Vulkan validation, deterministic GPU fixture repetition, matched native
+indirect-diffuse captures, café-probe owner review, reload/lifetime stress, the
+remaining SH scaling cases, and a valid comparative performance result remain
+open. Source presence and these Metal witnesses do not make this ADR Accepted.
 
 ## Context
 
@@ -188,7 +189,11 @@ retained before the cubemap path was removed. The remaining 0, 1, 4, and 16
 probe SH cases can characterize the final path but cannot reconstruct a valid
 same-binary A/B result. Acceptance must either supply comparable evidence from a
 temporary measurement branch or explicitly narrow the rationale to memory and
-code reduction without a speed claim.
+code reduction without a speed claim. The clean final-path 16-probe profile
+passed five stable 300-frame repetitions and measured deferred-lighting GPU time
+at 1.15275 ms p50 across 1,500 samples
+(`sha256:9d13f1159a8c813bb1c4865725d1e05fceea23156aa6538053058867ef1a9589`);
+this single load point is a characterization, not a comparison.
 
 ## Alternatives Considered
 
