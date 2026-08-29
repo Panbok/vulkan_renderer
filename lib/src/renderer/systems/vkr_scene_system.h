@@ -257,6 +257,9 @@ typedef struct VkrSceneReflectionProbe {
   float32_t intensity;
   float32_t diffuse_intensity;
   float32_t specular_intensity;
+  /** Authored L2 deringing exponent (ADR-038 §2.4). Zero is the identity
+      window. Validated at scene load; never interpreted during lighting. */
+  float32_t sh_deringing;
   uint32_t source_mip_count;
   bool8_t uses_scene_environment_source;
   VkrTextureHandle source_cubemap;
@@ -282,6 +285,9 @@ typedef struct VkrSceneEnvironment {
   float32_t intensity;
   float32_t diffuse_intensity;
   float32_t specular_intensity;
+  /** Authored L2 deringing exponent (ADR-038 §2.4). Zero is the identity
+      window. Validated at scene load; never interpreted during lighting. */
+  float32_t sh_deringing;
 
   VkrTextureHandle delivery_equirect;
   VkrTextureHandle source_cubemap;

@@ -925,6 +925,12 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
                                  signal_value) != VKR_GPU_SUBMIT_RING_STATUS_OK)
     return vkr_vk_fail_after_submit(renderer,
                                     "the command ring lost its acquired slice");
+  /* Every slot this packet named is now readable by `signal_value`, so it must
+     be registered before any retirement decision below can pick a serial. */
+  for (uint32_t i = 0u; i < slot->sh_referenced_slot_count; ++i) {
+    vkr_ibl_sh_pool_reference(&renderer->sh_pool, slot->sh_referenced_slots[i],
+                              signal_value);
+  }
   uint32_t pending_ibl_write = 0u;
   const uint32_t pending_ibl_count = renderer->pending_ibl_bake_count;
   for (uint32_t i = 0u; i < pending_ibl_count; ++i) {
@@ -934,6 +940,37 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
         renderer->pending_ibl_bakes[pending_ibl_write] = *job;
       pending_ibl_write++;
       continue;
+    }
+    /* Submission succeeded, so the candidate slot becomes this source's
+       published coefficients and the previous generation retires against its
+       own last reader. */
+    if (job->sh_slot != VKR_SH_SLOT_BLACK) {
+      /* This submission both wrote the slot and may have read it, so it counts
+         as a reader before any retirement decision. */
+      vkr_ibl_sh_pool_reference(&renderer->sh_pool, job->sh_slot, signal_value);
+      VkrVulkanPublishedTexture *sh_source =
+          vkr_vk_texture_publication(renderer, job->source);
+      if (sh_source &&
+          vkr_ibl_sh_pool_publish(&renderer->sh_pool, job->sh_slot) ==
+              VKR_SH_POOL_STATUS_OK) {
+        if (sh_source->ibl_sh_slot != VKR_SH_SLOT_BLACK) {
+          (void)vkr_ibl_sh_pool_retire(&renderer->sh_pool,
+                                       sh_source->ibl_sh_slot);
+        }
+        sh_source->ibl_sh_slot = job->sh_slot;
+        /* Probe lowering reaches the slot through the probe's irradiance
+           handle while both representations coexist, because the version-22
+           probe record cannot carry it. SH3 removes this mirror. */
+        VkrVulkanPublishedTexture *sh_irradiance =
+            vkr_vk_texture_publication(renderer, job->irradiance);
+        if (sh_irradiance) {
+          sh_irradiance->ibl_sh_slot = job->sh_slot;
+        }
+      } else {
+        /* The bake was submitted, so the slot follows normal retirement even
+           though publication failed; the GPU already accepted the write. */
+        (void)vkr_ibl_sh_pool_retire(&renderer->sh_pool, job->sh_slot);
+      }
     }
     const VkrTextureHandle handles[] = {job->equirect, job->source,
                                         job->irradiance, job->prefilter};
@@ -1209,6 +1246,9 @@ bool8_t vkr_vulkan_renderer_wait_idle(VkrVulkanRenderer *renderer) {
   vkr_vk_collect_retired_targets(renderer, renderer->completed_value);
   vkr_vk_collect_retired_window_targets(renderer, renderer->completed_value);
   vkr_vk_collect_asset_publications(renderer, renderer->completed_value);
+  /* Retired coefficient slots return to the pool only once their greatest
+     reader serial is proven complete -- no assumed frame lag. */
+  (void)vkr_ibl_sh_pool_collect(&renderer->sh_pool, renderer->completed_value);
   return true_v;
 }
 
@@ -1678,6 +1718,9 @@ void vkr_vulkan_renderer_destroy(VkrVulkanRenderer *renderer) {
     *mega = (VkrVulkanGeometryMegabuffer){0};
     vkr_vk_destroy_image(renderer, &renderer->sentinel_image);
     vkr_vk_destroy_buffer(renderer, &renderer->materials);
+    /* The pool has renderer lifetime and is released only here, after the
+       renderer's normal device teardown has drained outstanding readers. */
+    vkr_vk_destroy_buffer(renderer, &renderer->sh_coefficients);
     vkr_vk_destroy_buffer(renderer, &renderer->upload);
     vkr_vk_destroy_buffer(renderer, &renderer->sampler_descriptors);
     vkr_vk_destroy_buffer(renderer, &renderer->resource_descriptors);

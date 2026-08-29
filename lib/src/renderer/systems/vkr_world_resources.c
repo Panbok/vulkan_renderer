@@ -335,11 +335,11 @@ vkr_internal bool8_t vkr_world_resources_prepare_published_environment(
           ? rf->asset_publisher.bake_hdr_environment(
                 rf->asset_publisher.state, environment->delivery_equirect,
                 environment->source_cubemap, environment->irradiance_cubemap,
-                environment->prefilter_cubemap)
+                environment->prefilter_cubemap, environment->sh_deringing)
           : rf->asset_publisher.bake_ibl_cubemap(
                 rf->asset_publisher.state, environment->source_cubemap,
-                environment->irradiance_cubemap,
-                environment->prefilter_cubemap);
+                environment->irradiance_cubemap, environment->prefilter_cubemap,
+                environment->sh_deringing);
   if (!baked) {
     goto failed;
   }
@@ -473,7 +473,8 @@ bool8_t vkr_world_resources_prepare_scene_reflection_probes(
             &probe->prefilter_cubemap) ||
         !rf->asset_publisher.bake_ibl_cubemap(
             rf->asset_publisher.state, probe->source_cubemap,
-            probe->irradiance_cubemap, probe->prefilter_cubemap)) {
+            probe->irradiance_cubemap, probe->prefilter_cubemap,
+            probe->sh_deringing)) {
       vkr_world_resources_fail_reflection_probe(rf, probe);
       all_prepared = false_v;
       continue;

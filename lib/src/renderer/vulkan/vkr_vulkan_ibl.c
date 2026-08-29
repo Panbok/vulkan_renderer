@@ -155,8 +155,125 @@ vkr_vk_record_ibl_source_mips(VkCommandBuffer command,
   }
 }
 
+/**
+ * Establishes the black sentinel once per renderer. Every slot starts zeroed,
+ * so a slot referenced before its projection lands reads black rather than
+ * stale bytes.
+ */
+vkr_internal void vkr_vk_record_sh_clear(VkrVulkanRenderer *renderer,
+                                         VkCommandBuffer command) {
+  if (renderer->sh_coefficients_cleared) {
+    return;
+  }
+  vkCmdFillBuffer(command, renderer->sh_coefficients.handle, 0u,
+                  (VkDeviceSize)VKR_SH_BUFFER_BYTES, 0u);
+  const VkBufferMemoryBarrier2 barrier = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+      .srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT,
+      .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+      .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+      .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                       VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .buffer = renderer->sh_coefficients.handle,
+      .offset = 0u,
+      .size = (VkDeviceSize)VKR_SH_BUFFER_BYTES,
+  };
+  const VkDependencyInfo dependency = {
+      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+      .bufferMemoryBarrierCount = 1u,
+      .pBufferMemoryBarriers = &barrier,
+  };
+  vkCmdPipelineBarrier2(command, &dependency);
+  renderer->sh_coefficients_cleared = true_v;
+}
+
+/**
+ * Projects one source cubemap into the reserved slot. Returns false without
+ * consuming the slot when the source cannot supply the selected mip, so the
+ * caller can abandon the reservation and keep its prior publication.
+ */
+vkr_internal bool8_t vkr_vk_record_ibl_sh_projection(
+    VkrVulkanRenderer *renderer, VkCommandBuffer command,
+    const VkrVulkanPublishedTexture *source, uint32_t slot,
+    float32_t deringing) {
+  uint32_t projection_mip = 0u;
+  uint32_t projection_extent = 0u;
+  if (!vkr_ibl_sh_projection_mip(source->image.width, source->image.mip_levels,
+                                 &projection_mip, &projection_extent) ||
+      projection_mip >= source->storage_slot_count ||
+      slot >= VKR_SH_SLOT_CAPACITY) {
+    return false_v;
+  }
+
+  VkrVulkanFrameSlot *frame_slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  uint64_t root_address = 0u;
+  VkrVulkanIblShRoot *root = vkr_vk_frame_upload_allocate(
+      frame_slot, sizeof(*root), _Alignof(VkrVulkanIblShRoot), &root_address,
+      NULL);
+  if (!root) {
+    return false_v;
+  }
+  *root = (VkrVulkanIblShRoot){
+      .destination = renderer->sh_coefficients.address +
+                     (uint64_t)slot * VKR_SH_SLOT_BYTES,
+      .source_storage_texture = source->storage_slots[projection_mip].index,
+      .source_face_size = projection_extent,
+      // The CPU owns pow(sinc_pi(l/3), sh_deringing) so the kernel carries no
+      // pow() and both sides cannot drift.
+      .window_band_0 = vkr_ibl_sh_window_factor(0u, deringing),
+      .window_band_1 = vkr_ibl_sh_window_factor(1u, deringing),
+      .window_band_2 = vkr_ibl_sh_window_factor(2u, deringing),
+  };
+
+  const VkrVulkanPushConstants push = {.root = root_address};
+  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                    renderer->ibl_pipelines[VKR_VULKAN_IBL_PIPELINE_SH]);
+  vkCmdPushConstants(command, renderer->pipeline_layout,
+                     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT |
+                         VK_SHADER_STAGE_COMPUTE_BIT,
+                     0u, sizeof(push), &push);
+  // One workgroup per destination slot; the kernel's fixed reduction is what
+  // makes the result deterministic, so this must stay a single group.
+  vkCmdDispatch(command, 1u, 1u, 1u);
+  return true_v;
+}
+
+/**
+ * Carries projection writes to every later lighting read. A frame may consume
+ * the slot it just baked, so this barrier must precede lighting in the same
+ * command stream; the pool separately proves GPU completion before reuse.
+ */
+vkr_internal void vkr_vk_record_sh_visibility(VkrVulkanRenderer *renderer,
+                                              VkCommandBuffer command) {
+  const VkBufferMemoryBarrier2 barrier = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+      .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+      .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+      .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+      .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .buffer = renderer->sh_coefficients.handle,
+      .offset = 0u,
+      .size = (VkDeviceSize)VKR_SH_BUFFER_BYTES,
+  };
+  const VkDependencyInfo dependency = {
+      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+      .bufferMemoryBarrierCount = 1u,
+      .pBufferMemoryBarriers = &barrier,
+  };
+  vkCmdPipelineBarrier2(command, &dependency);
+}
+
 bool8_t vkr_vk_record_ibl_bakes(VkrVulkanRenderer *renderer,
                                 VkCommandBuffer command) {
+  vkr_vk_record_sh_clear(renderer, command);
+  bool8_t projected_any = false_v;
   for (uint32_t i = 0u; i < renderer->pending_ibl_bake_count; ++i) {
     VkrVulkanPendingIblBake *job = &renderer->pending_ibl_bakes[i];
     job->recorded = false_v;
@@ -189,6 +306,30 @@ bool8_t vkr_vk_record_ibl_bakes(VkrVulkanRenderer *renderer,
                                     VKR_VULKAN_IBL_PIPELINE_IRRADIANCE, source,
                                     irradiance, 0u, 128u, 0.0f))
       return false_v;
+
+    /* L2 projection runs beside the cubemap bake while both representations
+       are live. Exhaustion and projection failure are cold-path errors: the
+       logical source keeps its prior publication, or black. */
+    job->sh_slot = VKR_SH_SLOT_BLACK;
+    uint32_t candidate_slot = VKR_SH_SLOT_BLACK;
+    if (vkr_ibl_sh_pool_reserve(&renderer->sh_pool, &candidate_slot) ==
+        VKR_SH_POOL_STATUS_OK) {
+      if (vkr_vk_record_ibl_sh_projection(renderer, command, source,
+                                          candidate_slot, job->sh_deringing) &&
+          vkr_ibl_sh_pool_mark_recorded(&renderer->sh_pool, candidate_slot) ==
+              VKR_SH_POOL_STATUS_OK) {
+        job->sh_slot = candidate_slot;
+        projected_any = true_v;
+      } else {
+        (void)vkr_ibl_sh_pool_abandon(&renderer->sh_pool, candidate_slot);
+        log_warn("Vulkan SH projection could not record for texture %u:%u",
+                 job->source.id, job->source.generation);
+      }
+    } else {
+      log_error("Vulkan SH coefficient pool exhausted; texture %u:%u keeps its "
+                "previous coefficients",
+                job->source.id, job->source.generation);
+    }
     vkr_vk_cmd_ibl_image_barrier(
         command, irradiance->image.handle, 0u, irradiance->image.array_layers,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -215,12 +356,22 @@ bool8_t vkr_vk_record_ibl_bakes(VkrVulkanRenderer *renderer,
     }
     job->recorded = true_v;
   }
+  /* A frame may consume the slot it just baked, so projection writes must be
+     visible to lighting inside this same command stream. */
+  if (projected_any) {
+    vkr_vk_record_sh_visibility(renderer, command);
+  }
   return true_v;
 }
 
 void vkr_vk_discard_ibl_bakes(VkrVulkanRenderer *renderer) {
   for (uint32_t i = 0u; i < renderer->pending_ibl_bake_count; ++i) {
     const VkrVulkanPendingIblBake *job = &renderer->pending_ibl_bakes[i];
+    /* Nothing was submitted, so no reader can exist and the candidate returns
+       to the pool immediately rather than through retirement. */
+    if (job->sh_slot != VKR_SH_SLOT_BLACK) {
+      (void)vkr_ibl_sh_pool_abandon(&renderer->sh_pool, job->sh_slot);
+    }
     const VkrTextureHandle handles[] = {job->equirect, job->source,
                                         job->irradiance, job->prefilter};
     for (uint32_t handle_index = job->convert_equirect ? 0u : 1u;

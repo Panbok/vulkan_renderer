@@ -108,6 +108,18 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
   slot->prefilter_texture = 0u;
   slot->prefilter_sampler = 0u;
   slot->ibl_ready = false_v;
+  slot->sh_ab_table = 0u;
+  slot->sh_referenced_slot_count = 0u;
+
+  /* Temporary dual-representation table (ADR-038 §1.6). Allocated up front so
+     the probe loop can fill it by packed ordinal, and left pointing at the
+     black sentinel for every entry the loop does not reach. */
+  VkrShAbTable *sh_table = vkr_vk_frame_upload_allocate(
+      slot, sizeof(*sh_table), 16u, &slot->sh_ab_table, NULL);
+  if (!sh_table)
+    return false_v;
+  MemZero(sh_table, sizeof(*sh_table));
+  sh_table->sh_coefficients = renderer->sh_coefficients.address;
 
   const VkrFrameLighting *lighting = packet->lighting;
   if (lighting && lighting->point_light_count) {
@@ -176,6 +188,9 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
                                     &slot->prefilter_texture,
                                     &slot->prefilter_sampler)) {
       slot->ibl_ready = true_v;
+      sh_table->global_slot = source->ibl_sh_slot;
+      slot->sh_referenced_slots[slot->sh_referenced_slot_count++] =
+          source->ibl_sh_slot;
     }
   }
 
@@ -205,11 +220,22 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
                                        &packed.prefilter_texture,
                                        &packed.prefilter_sampler))
         continue;
+      /* Keyed by packed ordinal, in the same loop that skips unavailable
+         probes, so a sparse scene list cannot select the wrong coefficients.
+         The irradiance publication carries the slot only while both
+         representations coexist; SH3 puts it in the probe record itself. */
+      const VkrVulkanPublishedTexture *probe_irradiance =
+          vkr_vk_texture_publication(renderer, probe->irradiance);
+      const uint32_t probe_slot =
+          probe_irradiance ? probe_irradiance->ibl_sh_slot : VKR_SH_SLOT_BLACK;
+      sh_table->probe_slots[slot->ibl_probe_count] = probe_slot;
+      slot->sh_referenced_slots[slot->sh_referenced_slot_count++] = probe_slot;
       probes[slot->ibl_probe_count++] = packed;
     }
     if (!slot->ibl_probe_count)
       slot->ibl_probes = 0u;
   }
+  sh_table->probe_count = slot->ibl_probe_count;
   return true_v;
 }
 
@@ -553,6 +579,11 @@ void vkr_vk_fill_packet_frame_root(
   root->irradiance_sampler = slot->irradiance_sampler;
   root->prefilter_texture = slot->prefilter_texture;
   root->prefilter_sampler = slot->prefilter_sampler;
+  /* Temporary: the retired BRDF slot pair carries the 64-bit VkrShAbTable
+     address while both diffuse representations are live (ADR-038 §1.6). SH3
+     replaces this region with the coefficient address and global slot. */
+  root->reserved_brdf_texture = (uint32_t)(slot->sh_ab_table & 0xffffffffu);
+  root->reserved_brdf_sampler = (uint32_t)(slot->sh_ab_table >> 32u);
   root->shadow_texture = shadow_texture;
   root->shadow_sampler = VKR_VULKAN_SENTINEL_SLOT_INDEX;
   root->shadow_comparison_sampler = renderer->shadow_comparison_sampler_slot;

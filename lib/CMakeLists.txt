@@ -75,6 +75,11 @@ vkr_add_vulkan_packet_shader("packet.text_picking.frag" text_picking_fragment fr
 vkr_add_vulkan_packet_shader("packet.ibl_equirect.comp" ibl_equirect compute)
 vkr_add_vulkan_packet_shader("packet.ibl_irradiance.comp" ibl_irradiance compute)
 vkr_add_vulkan_packet_shader("packet.ibl_prefilter.comp" ibl_prefilter compute)
+vkr_add_vulkan_packet_shader("packet.ibl_sh.comp" ibl_sh compute)
+vkr_add_vulkan_packet_shader("packet.deferred_lighting_sh.comp"
+                             vk_deferred_lighting_sh compute)
+vkr_add_vulkan_packet_shader("packet.transmission_shade_sh.comp"
+                             vk_transmission_shade_sh compute)
 vkr_add_vulkan_packet_shader("packet.gpu_draw_classify.comp" vk_gpu_draw_classify compute)
 vkr_add_vulkan_packet_shader("packet.gpu_draw_prefix.comp" vk_gpu_draw_prefix compute)
 vkr_add_vulkan_packet_shader("packet.gpu_draw_encode.comp" vk_gpu_draw_encode compute)

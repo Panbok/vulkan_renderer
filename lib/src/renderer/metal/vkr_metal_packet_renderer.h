@@ -282,11 +282,12 @@ bool8_t vkr_metal_packet_renderer_update_texture_sampler(
     const VkrTextureDescription *description);
 bool8_t vkr_metal_packet_renderer_bake_ibl_cubemap(
     VkrMetalPacketRenderer *renderer, VkrTextureHandle source,
-    VkrTextureHandle irradiance, VkrTextureHandle prefilter);
+    VkrTextureHandle irradiance, VkrTextureHandle prefilter,
+    float32_t sh_deringing);
 bool8_t vkr_metal_packet_renderer_bake_hdr_environment(
     VkrMetalPacketRenderer *renderer, VkrTextureHandle equirect,
     VkrTextureHandle source, VkrTextureHandle irradiance,
-    VkrTextureHandle prefilter);
+    VkrTextureHandle prefilter, float32_t sh_deringing);
 bool8_t vkr_metal_packet_renderer_create_hdr_environment(
     VkrMetalPacketRenderer *renderer,
     const VkrMetalPacketHdrEnvironmentCreateInfo *create_info,

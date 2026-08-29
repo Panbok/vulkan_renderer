@@ -499,11 +499,23 @@ struct VkrVulkanEnvironmentResult
     float3 specular;
 };
 
+// Temporary dual-representation access (ADR-038 §1.6). The retired BRDF slot
+// pair carries the side-table address while both representations are live.
+VkrShAbTable *packet_sh_table(VkrVulkanPacketFrameRoot *frame)
+{
+    uint64_t address = (uint64_t(frame.reserved_brdf_sampler) << 32) |
+                       uint64_t(frame.reserved_brdf_texture);
+    return (VkrShAbTable *)address;
+}
+
+// `use_sh` is a literal at every call site, so each deferred-lighting pipeline
+// variant specializes it away. No representation branch survives per pixel or
+// per probe.
 VkrVulkanEnvironmentResult
 packet_environment_terms(VkrVulkanPacketFrameRoot *frame, float3 world_position,
                          float3 normal, float3 horizon_normal, float3 view,
                          float3 albedo, float metallic, float roughness,
-                         float ao, float3 f0)
+                         float ao, float3 f0, bool use_sh)
 {
     float no_v = max(dot(normal, view), 0.0f);
     float3 reflection = reflect(-view, normal);
@@ -511,10 +523,18 @@ packet_environment_terms(VkrVulkanPacketFrameRoot *frame, float3 world_position,
     float3 kd = (1.0f - fresnel) * (1.0f - metallic);
     // Frame-root indices are uniform. Each local-probe loop iteration also
     // visits one shared table row across the active lanes.
+    // The normal-derived SH operands are computed once inside
+    // vkr_sh_l2_evaluate and reused for the global source and every probe.
+    // Formed unconditionally: it is two scalar ops, and the cubemap variant
+    // never reads it, so specialization removes it entirely.
+    VkrShAbTable *sh_table = packet_sh_table(frame);
     float3 global_irradiance =
-        g_cube_textures[frame.irradiance_texture]
-            .SampleLevel(g_samplers[frame.irradiance_sampler], normal, 0.0f)
-            .rgb;
+        use_sh ? vkr_sh_l2_evaluate(sh_table.coefficients[sh_table.global_slot],
+                                    normal)
+               : g_cube_textures[frame.irradiance_texture]
+                     .SampleLevel(g_samplers[frame.irradiance_sampler], normal,
+                                  0.0f)
+                     .rgb;
     float3 global_prefiltered =
         g_cube_textures[frame.prefilter_texture]
             .SampleLevel(g_samplers[frame.prefilter_sampler], reflection,
@@ -549,9 +569,13 @@ packet_environment_terms(VkrVulkanPacketFrameRoot *frame, float3 world_position,
                                      max(probe.extents_weight.xyz, 0.0f))
                 : reflection;
         float3 probe_irradiance =
-            g_cube_textures[probe.irradiance_texture]
-                .SampleLevel(g_samplers[probe.irradiance_sampler], normal, 0.0f)
-                .rgb;
+            use_sh
+                ? vkr_sh_l2_evaluate(
+                      sh_table.coefficients[sh_table.probe_slots[i]], normal)
+                : g_cube_textures[probe.irradiance_texture]
+                      .SampleLevel(g_samplers[probe.irradiance_sampler], normal,
+                                   0.0f)
+                      .rgb;
         float3 probe_prefiltered =
             g_cube_textures[probe.prefilter_texture]
                 .SampleLevel(
@@ -579,9 +603,12 @@ float3 packet_environment(VkrVulkanPacketFrameRoot *frame,
                           float3 horizon_normal, float3 view, float3 albedo,
                           float metallic, float roughness, float ao, float3 f0)
 {
-    VkrVulkanEnvironmentResult result =
-        packet_environment_terms(frame, world_position, normal, horizon_normal,
-                                 view, albedo, metallic, roughness, ao, f0);
+    // The forward path keeps the cubemap representation while both are live;
+    // the deferred topology is the one under measurement. SH3 makes this
+    // unconditional along with everything else.
+    VkrVulkanEnvironmentResult result = packet_environment_terms(
+        frame, world_position, normal, horizon_normal, view, albedo, metallic,
+        roughness, ao, f0, false);
     return result.diffuse + result.specular;
 }
 

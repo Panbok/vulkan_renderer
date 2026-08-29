@@ -58,6 +58,11 @@ static const VkrHarnessCaptureChannelDescription s_channels[] = {
      VKR_RENDER_MODE_TEMPORAL_MOTION, 0u},
     {"temporal_history", "final_color", "temporal_history",
      VKR_RENDER_MODE_TEMPORAL_HISTORY, 0u},
+    /* Environment diffuse only; the channel that compares diffuse-irradiance
+       representations (ADR-038). Bloom and temporal accumulation are resolved
+       off for this mode at the packet boundary. */
+    {"indirect_diffuse", "final_color", "indirect_diffuse",
+     VKR_RENDER_MODE_INDIRECT_DIFFUSE, 0u},
     {"shadow_debug_cascades", "final_color", "shadow_debug_cascades",
      VKR_RENDER_MODE_DEFAULT, 1u},
     {"shadow_debug_factor", "final_color", "shadow_debug_factor",

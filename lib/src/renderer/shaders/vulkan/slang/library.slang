@@ -6,6 +6,9 @@
 #include "../../shared/bloom_kernel.slangh"
 #include "../../shared/gtao_kernel.slangh"
 #include "../../shared/normal_map_kernel.slangh"
+// VkrShL2Packed is referenced by the IBL projection kernel and by deferred
+// lighting, so it precedes both the resource declarations and their consumers.
+#include "../../shared/sh_l2_kernel.slangh"
 #include "common/resources.slangh"
 #include "../../shared/shadow_kernel.slangh"
 #include "ibl/common.slangh"

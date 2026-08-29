@@ -17,6 +17,7 @@
 #include "renderer/vkr_gpu_slot_table.h"
 #include "renderer/vkr_gpu_submit_ring.h"
 #include "renderer/vkr_ibl_math.h"
+#include "renderer/vkr_ibl_sh_pool.h"
 #include "renderer/vkr_packet_constants.h"
 #include "renderer/vkr_render_graph_internal.h"
 #include "renderer/vkr_rg_json.h"
@@ -76,6 +77,17 @@
 #endif
 #ifndef VKR_VULKAN_PACKET_IBL_PREFILTER_COMP_SPV
 #define VKR_VULKAN_PACKET_IBL_PREFILTER_COMP_SPV "packet.ibl_prefilter.comp.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_IBL_SH_COMP_SPV
+#define VKR_VULKAN_PACKET_IBL_SH_COMP_SPV "packet.ibl_sh.comp.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_DEFERRED_LIGHTING_SH_COMP_SPV
+#define VKR_VULKAN_PACKET_DEFERRED_LIGHTING_SH_COMP_SPV                        \
+  "packet.deferred_lighting_sh.comp.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_TRANSMISSION_SHADE_SH_COMP_SPV
+#define VKR_VULKAN_PACKET_TRANSMISSION_SHADE_SH_COMP_SPV                       \
+  "packet.transmission_shade_sh.comp.spv"
 #endif
 #ifndef VKR_VULKAN_PACKET_VISIBILITY_VERT_SPV
 #define VKR_VULKAN_PACKET_VISIBILITY_VERT_SPV "packet.visibility.vert.spv"
@@ -270,6 +282,9 @@ typedef enum VkrVulkanIblPipeline {
   VKR_VULKAN_IBL_PIPELINE_EQUIRECT = 0,
   VKR_VULKAN_IBL_PIPELINE_IRRADIANCE,
   VKR_VULKAN_IBL_PIPELINE_PREFILTER,
+  /** L2 coefficient projection (ADR-038). Coexists with IRRADIANCE until the
+      cubemap diffuse path retires in SH3. */
+  VKR_VULKAN_IBL_PIPELINE_SH,
   VKR_VULKAN_IBL_PIPELINE_COUNT,
 } VkrVulkanIblPipeline;
 
@@ -305,6 +320,14 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_GTAO_DEPTH_MIP,
   VKR_VULKAN_DEFERRED_PIPELINE_GTAO_EVALUATE,
   VKR_VULKAN_DEFERRED_PIPELINE_GTAO_DENOISE,
+  /**
+   * Temporary SH diffuse variants (ADR-038 §1.6). Both representations are
+   * created so the A/B comparison is a cold configuration change rather than a
+   * rebuild; neither is a fallback for the other. SH3 removes these and folds
+   * SH into the base entry points.
+   */
+  VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_SH,
+  VKR_VULKAN_DEFERRED_PIPELINE_TRANSMISSION_SH,
   VKR_VULKAN_DEFERRED_PIPELINE_COUNT,
 } VkrVulkanDeferredPipeline;
 
@@ -623,6 +646,25 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanIblRoot {
   uint32_t source_mip_count;
   float32_t roughness;
 } VkrVulkanIblRoot;
+
+/**
+ * Root for the L2 coefficient projection dispatch (ADR-038 §2).
+ *
+ * `source_storage_texture` is the storage-image slot of the selected source mip
+ * so the kernel loads exact texels rather than filtering, and `destination` is
+ * the device address of the single 112-byte slot this dispatch writes. The
+ * three window scalars are the already-evaluated deringing factors: the CPU
+ * owns `pow(sinc_pi(l/3), sh_deringing)` so the kernel carries no pow().
+ */
+typedef struct VKR_SIMD_ALIGN VkrVulkanIblShRoot {
+  uint64_t destination;
+  uint32_t source_storage_texture;
+  uint32_t source_face_size;
+  float32_t window_band_0;
+  float32_t window_band_1;
+  float32_t window_band_2;
+  uint32_t reserved;
+} VkrVulkanIblShRoot;
 
 /** Mirrors VkrShadowCascadePacketData; see vkr_render_packet.h for units. */
 typedef struct VKR_SIMD_ALIGN VkrVulkanPacketShadowCascade {
@@ -1070,6 +1112,13 @@ typedef struct VkrVulkanFrameSlot {
   uint32_t prefilter_texture;
   uint32_t prefilter_sampler;
   bool8_t ibl_ready;
+  /** Address of this frame's temporary VkrShAbTable, or zero. Removed by SH3
+      together with the dual-representation stage. */
+  uint64_t sh_ab_table;
+  /** Slots this frame's packet references, registered against its submit
+      serial once submission succeeds. */
+  uint32_t sh_referenced_slots[VKR_FRAME_IBL_PROBE_MAX + 1u];
+  uint32_t sh_referenced_slot_count;
   uint32_t picking_x;
   uint32_t picking_y;
   bool8_t picking_readback_pending;
@@ -1120,6 +1169,10 @@ typedef struct VkrVulkanPublishedTexture {
   VkrTextureHandle handle;
   VkrTextureHandle ibl_irradiance;
   VkrTextureHandle ibl_prefilter;
+  /** Published L2 coefficient slot projected from this source cubemap, or
+      VKR_SH_SLOT_BLACK before the first successful projection (ADR-038). Kept
+      beside the diffuse cubemap handle while both representations are live. */
+  uint32_t ibl_sh_slot;
   VkrVulkanImage image;
   VkrGpuSlotHandle sampled_slot;
   VkImageView storage_views[VKR_VULKAN_TEXTURE_MIP_MAX];
@@ -1142,6 +1195,12 @@ typedef struct VkrVulkanPendingIblBake {
   VkrTextureHandle prefilter;
   bool8_t convert_equirect;
   bool8_t recorded;
+  /** Candidate coefficient slot this bake projects into, or VKR_SH_SLOT_BLACK
+      when no slot could be reserved. Committed only after a successful submit;
+      abandoned if recording or submission fails. */
+  uint32_t sh_slot;
+  /** Authored deringing exponent, validated and normalized at scene load. */
+  float32_t sh_deringing;
 } VkrVulkanPendingIblBake;
 
 typedef struct VkrVulkanPublishedSampler {
@@ -1361,6 +1420,16 @@ struct VkrVulkanRenderer {
   VkrVulkanDirtyRange material_dirty;
   VkrVulkanBuffer upload;
   VkrVulkanBuffer materials;
+  /** L2 diffuse coefficient slots (ADR-038). Renderer lifetime: the pool
+      survives scene reload, and scene reset only retires publications. */
+  VkrVulkanBuffer sh_coefficients;
+  VkrShSlotPool sh_pool;
+  /** Cold: resolved once at renderer creation and read only while recording a
+      pass, never per pixel or per probe. Removed by SH3. */
+  VkrShRepresentation sh_representation;
+  /** Cleared to zero once, so slot 0 is a valid black sentinel and any slot
+      referenced before projection reads black rather than stale bytes. */
+  bool8_t sh_coefficients_cleared;
   VkrVulkanImage sentinel_image;
   VkSampler sentinel_sampler;
   // Linear clamp sampler for immutable transmission feedback. Its permanent

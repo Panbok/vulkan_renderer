@@ -984,6 +984,10 @@ vkr_harness_child_apply_renderer(Application *application,
                            "temporal_history")) {
     application->renderer.globals.render_mode =
         VKR_RENDER_MODE_TEMPORAL_HISTORY;
+  } else if (string_equals(case_manifest->renderer.render_mode,
+                           "indirect_diffuse")) {
+    application->renderer.globals.render_mode =
+        VKR_RENDER_MODE_INDIRECT_DIFFUSE;
   }
   application->renderer.shadow_debug_mode =
       case_manifest->renderer.shadow_debug_mode;
@@ -1361,6 +1365,8 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
             ? "temporal_motion"
         : replay.render_mode == VKR_RENDER_MODE_TEMPORAL_HISTORY
             ? "temporal_history"
+        : replay.render_mode == VKR_RENDER_MODE_INDIRECT_DIFFUSE
+            ? "indirect_diffuse"
             : "default";
     string_format(case_manifest.renderer.render_mode,
                   sizeof(case_manifest.renderer.render_mode), "%s",

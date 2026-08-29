@@ -36,13 +36,17 @@ typedef struct VkrAssetPublisher {
                                       const VkrTextureDescription *description);
   bool8_t (*update_texture_sampler)(void *state, VkrTextureHandle handle,
                                     const VkrTextureDescription *description);
+  /* `sh_deringing` is the authored L2 window exponent, already validated at
+     scene load (ADR-038 §1.4). Zero is the identity window. */
   bool8_t (*bake_ibl_cubemap)(void *state, VkrTextureHandle source,
                               VkrTextureHandle irradiance,
-                              VkrTextureHandle prefilter);
+                              VkrTextureHandle prefilter,
+                              float32_t sh_deringing);
   bool8_t (*bake_hdr_environment)(void *state, VkrTextureHandle equirect,
                                   VkrTextureHandle source,
                                   VkrTextureHandle irradiance,
-                                  VkrTextureHandle prefilter);
+                                  VkrTextureHandle prefilter,
+                                  float32_t sh_deringing);
   bool8_t (*unpublish_texture)(void *state, VkrTextureHandle handle);
   bool8_t (*publish_material)(void *state, VkrMaterialHandle handle,
                               const struct VkrMaterial *material);

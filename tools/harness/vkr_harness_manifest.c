@@ -565,7 +565,8 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
       string_equals(renderer->render_mode, "direct_specular") ||
       string_equals(renderer->render_mode, "material_params") ||
       string_equals(renderer->render_mode, "temporal_motion") ||
-      string_equals(renderer->render_mode, "temporal_history");
+      string_equals(renderer->render_mode, "temporal_history") ||
+      string_equals(renderer->render_mode, "indirect_diffuse");
   const bool8_t backend_valid = renderer->backend[0] == '\0' ||
                                 string_equals(renderer->backend, "vulkan") ||
                                 string_equals(renderer->backend, "metal");

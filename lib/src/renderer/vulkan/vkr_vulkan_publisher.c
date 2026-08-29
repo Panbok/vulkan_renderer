@@ -2452,7 +2452,8 @@ vkr_internal bool8_t vkr_vk_queue_ibl_bake(VkrVulkanRenderer *renderer,
                                            VkrTextureHandle source,
                                            VkrTextureHandle irradiance,
                                            VkrTextureHandle prefilter,
-                                           bool8_t convert_equirect) {
+                                           bool8_t convert_equirect,
+                                           float32_t sh_deringing) {
   if (!renderer ||
       renderer->pending_ibl_bake_count >= VKR_VULKAN_PENDING_IBL_BAKE_MAX)
     return false_v;
@@ -2499,6 +2500,7 @@ vkr_internal bool8_t vkr_vk_queue_ibl_bake(VkrVulkanRenderer *renderer,
           .irradiance = irradiance,
           .prefilter = prefilter,
           .convert_equirect = convert_equirect,
+          .sh_deringing = sh_deringing,
       };
   return true_v;
 }
@@ -2506,16 +2508,18 @@ vkr_internal bool8_t vkr_vk_queue_ibl_bake(VkrVulkanRenderer *renderer,
 vkr_internal bool8_t vkr_vk_asset_bake_ibl_cubemap(void *state,
                                                    VkrTextureHandle source,
                                                    VkrTextureHandle irradiance,
-                                                   VkrTextureHandle prefilter) {
+                                                   VkrTextureHandle prefilter,
+                                                   float32_t sh_deringing) {
   return vkr_vk_queue_ibl_bake(state, VKR_TEXTURE_HANDLE_INVALID, source,
-                               irradiance, prefilter, false_v);
+                               irradiance, prefilter, false_v, sh_deringing);
 }
 
 vkr_internal bool8_t vkr_vk_asset_bake_hdr_environment(
     void *state, VkrTextureHandle equirect, VkrTextureHandle source,
-    VkrTextureHandle irradiance, VkrTextureHandle prefilter) {
+    VkrTextureHandle irradiance, VkrTextureHandle prefilter,
+    float32_t sh_deringing) {
   return vkr_vk_queue_ibl_bake(state, equirect, source, irradiance, prefilter,
-                               true_v);
+                               true_v, sh_deringing);
 }
 
 vkr_internal bool8_t vkr_vk_asset_publications_idle(void *state) {

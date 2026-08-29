@@ -406,16 +406,17 @@ vkr_internal bool8_t vkr_metal_packet_update_texture_sampler_adapter(
 
 vkr_internal bool8_t vkr_metal_packet_bake_ibl_cubemap_adapter(
     void *state, VkrTextureHandle source, VkrTextureHandle irradiance,
-    VkrTextureHandle prefilter) {
-  return vkr_metal_packet_renderer_bake_ibl_cubemap(state, source, irradiance,
-                                                    prefilter);
+    VkrTextureHandle prefilter, float32_t sh_deringing) {
+  return vkr_metal_packet_renderer_bake_ibl_cubemap(
+      state, source, irradiance, prefilter, sh_deringing);
 }
 
 vkr_internal bool8_t vkr_metal_packet_bake_hdr_environment_adapter(
     void *state, VkrTextureHandle equirect, VkrTextureHandle source,
-    VkrTextureHandle irradiance, VkrTextureHandle prefilter) {
-  return vkr_metal_packet_renderer_bake_hdr_environment(state, equirect, source,
-                                                        irradiance, prefilter);
+    VkrTextureHandle irradiance, VkrTextureHandle prefilter,
+    float32_t sh_deringing) {
+  return vkr_metal_packet_renderer_bake_hdr_environment(
+      state, equirect, source, irradiance, prefilter, sh_deringing);
 }
 
 vkr_internal bool8_t vkr_metal_packet_unpublish_texture_adapter(

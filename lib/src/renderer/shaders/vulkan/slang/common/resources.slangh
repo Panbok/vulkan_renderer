@@ -232,6 +232,31 @@ struct VkrVulkanIblRoot
     float roughness;
 };
 
+/**
+ * Mirrors VkrShAbTable in vkr_ibl_sh_pool.h. Temporary: reached through the
+ * retired BRDF root slot pair while both diffuse representations are live, and
+ * removed by SH3 (ADR-038 §1.6).
+ */
+struct VkrShAbTable
+{
+    VkrShL2Packed *coefficients;
+    uint global_slot;
+    uint probe_count;
+    uint probe_slots[16];
+};
+
+/** Mirrors VkrVulkanIblShRoot in vkr_vulkan_internal.h. */
+struct VkrVulkanIblShRoot
+{
+    uint64_t destination;
+    uint source_storage_texture;
+    uint source_face_size;
+    float window_band_0;
+    float window_band_1;
+    float window_band_2;
+    uint reserved;
+};
+
 struct VkrVulkanVertexOutput
 {
     float4 position : SV_Position;

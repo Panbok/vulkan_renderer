@@ -1,0 +1,95 @@
+// Shared second-order spherical-harmonic diffuse response (ADR-038).
+//
+// The stored signal is the shader-facing response D(n) = E(n) / pi, not raw
+// irradiance: projection already folded the normalized clamped-cosine transfer
+// factors K0 = 1, K1 = 2/3, K2 = 1/4 into the coefficients. Shading multiplies
+// the result straight into diffuse albedo with no further /pi, exactly as the
+// cubemap path did.
+//
+// `lib/src/renderer/vkr_ibl_math.h` is the authority for basis ordering, signs,
+// and packing; this file mirrors it and the axis-direction tests in
+// `tests/src/ibl_math_tests.c` are normative for both.
+
+// Real L2 basis normalization constants, in basis order.
+#define VKR_SH_K0 0.28209479177387814f /* 0.5 * sqrt(1/pi)  */
+#define VKR_SH_K1 0.48860251190291992f /* 0.5 * sqrt(3/pi)  */
+#define VKR_SH_K2 1.09254843059207907f /* 0.5 * sqrt(15/pi) */
+#define VKR_SH_K3 0.31539156525252005f /* 0.25 * sqrt(5/pi) */
+#define VKR_SH_K4 0.54627421529603953f /* 0.25 * sqrt(15/pi) */
+
+/**
+ * Sloan shader-optimized packing: seven float4 values, 112 bytes.
+ *   v[0..2] linear term per channel, dotted with float4(n, 1)
+ *   v[3..5] quadratic term per channel, dotted with n.xyzz * n.yzzx
+ *   v[6]    rgb residual scaled by n.x*n.x - n.y*n.y; w is zero padding
+ */
+struct VkrShL2Packed
+{
+    float4 v[7];
+};
+
+/**
+ * Reconstructs the diffuse response for a unit normal.
+ *
+ * The component-wise max is the ADR-038 non-negativity policy: L2 truncation
+ * rings and can reconstruct negative values. It is a policy, not a conservation
+ * proof -- deleting the negative lobe adds integrated response, which the CPU
+ * clamp diagnostics measure.
+ */
+float3 vkr_sh_l2_evaluate(VkrShL2Packed coefficients, float3 n)
+{
+    float4 linear_operand = float4(n.x, n.y, n.z, 1.0f);
+    float4 quadratic_operand =
+        float4(n.x * n.y, n.y * n.z, n.z * n.z, n.z * n.x);
+    float residual = n.x * n.x - n.y * n.y;
+    float3 result;
+    result.x = dot(coefficients.v[0], linear_operand) +
+               dot(coefficients.v[3], quadratic_operand) +
+               coefficients.v[6].x * residual;
+    result.y = dot(coefficients.v[1], linear_operand) +
+               dot(coefficients.v[4], quadratic_operand) +
+               coefficients.v[6].y * residual;
+    result.z = dot(coefficients.v[2], linear_operand) +
+               dot(coefficients.v[5], quadratic_operand) +
+               coefficients.v[6].z * residual;
+    return max(result, float3(0.0f, 0.0f, 0.0f));
+}
+
+/** The nine real L2 basis values for one direction, in the stored order. */
+struct VkrShL2Basis
+{
+    float y[9];
+};
+
+/** Returned by value rather than through an out-array so the one source
+ *  compiles unchanged as Slang and as MSL, which disagree on array parameter
+ *  address spaces. */
+VkrShL2Basis vkr_sh_l2_basis(float3 n)
+{
+    VkrShL2Basis basis;
+    basis.y[0] = VKR_SH_K0;
+    basis.y[1] = VKR_SH_K1 * n.y;
+    basis.y[2] = VKR_SH_K1 * n.z;
+    basis.y[3] = VKR_SH_K1 * n.x;
+    basis.y[4] = VKR_SH_K2 * n.x * n.y;
+    basis.y[5] = VKR_SH_K2 * n.y * n.z;
+    basis.y[6] = VKR_SH_K3 * (3.0f * n.z * n.z - 1.0f);
+    basis.y[7] = VKR_SH_K2 * n.x * n.z;
+    basis.y[8] = VKR_SH_K4 * (n.x * n.x - n.y * n.y);
+    return basis;
+}
+
+/**
+ * Exact solid angle of the cube-face region [s0, s1] x [t0, t1] in the [-1, 1]
+ * face parameterization. Summing every texel of every face yields 4pi. Uniform
+ * weights or a center-point density approximation do not; see ADR-038 §2.2.
+ */
+float vkr_sh_cube_texel_solid_angle(float s0, float s1, float t0, float t1)
+{
+    // atan2(x*y, sqrt(x*x + y*y + 1)) is the standard area element.
+    float a00 = atan2(s0 * t0, sqrt(s0 * s0 + t0 * t0 + 1.0f));
+    float a01 = atan2(s0 * t1, sqrt(s0 * s0 + t1 * t1 + 1.0f));
+    float a10 = atan2(s1 * t0, sqrt(s1 * s1 + t0 * t0 + 1.0f));
+    float a11 = atan2(s1 * t1, sqrt(s1 * s1 + t1 * t1 + 1.0f));
+    return a00 - a01 - a10 + a11;
+}

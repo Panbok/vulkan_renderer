@@ -1136,6 +1136,11 @@ static void vkr_renderer_prepare_packet(RendererFrontend *rf,
   const uint32_t temporal_height = packet->frame.viewport_height
                                        ? packet->frame.viewport_height
                                        : packet->frame.window_height;
+  /* The indirect-diffuse capture channel must contain the environment diffuse
+     term and nothing else, so its two frame-coupled post stages are resolved
+     off here at the cold boundary rather than branched on per pixel. */
+  const bool8_t indirect_diffuse_only =
+      packet->globals.render_mode == VKR_RENDER_MODE_INDIRECT_DIFFUSE;
   prepared->temporal_input = (VkrTemporalFrameInput){
       .view = packet->globals.view,
       .projection = packet->globals.projection,
@@ -1146,7 +1151,7 @@ static void vkr_renderer_prepare_packet(RendererFrontend *rf,
       .height = temporal_height,
       .render_mode = packet->globals.render_mode,
       .explicit_reset_reasons = rf->temporal_reset_reasons,
-      .enabled = rf->temporal_enabled,
+      .enabled = rf->temporal_enabled && !indirect_diffuse_only,
   };
   prepared->packet.globals.temporal =
       vkr_temporal_prepare(&rf->temporal_state, &prepared->temporal_input);
@@ -1167,7 +1172,8 @@ static void vkr_renderer_prepare_packet(RendererFrontend *rf,
   /* Bloom carries no history, so it has no prepare/commit chain: the frame
      block is a pure function of the validated packet fields. */
   prepared->packet.globals.bloom = vkr_bloom_prepare(
-      packet->globals.bloom_enabled && !rf->bloom_forced_disabled,
+      packet->globals.bloom_enabled && !rf->bloom_forced_disabled &&
+          !indirect_diffuse_only,
       packet->globals.bloom_threshold, packet->globals.bloom_knee,
       packet->globals.bloom_intensity);
   /* GTAO is current-frame spatial state: like bloom, it has no prepare/commit

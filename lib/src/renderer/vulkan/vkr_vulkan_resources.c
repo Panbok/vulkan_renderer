@@ -479,6 +479,35 @@ bool8_t vkr_vk_create_buffer(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
+/**
+ * The coefficient pool is device-local: projection writes it from compute and
+ * lighting reads it from compute and fragment, so it never needs host mapping.
+ * TRANSFER_DST carries the one-time clear that establishes the black sentinel.
+ */
+vkr_internal bool8_t
+vkr_vk_create_sh_coefficients(VkrVulkanRenderer *renderer) {
+  vkr_ibl_sh_pool_init(&renderer->sh_pool);
+  renderer->sh_coefficients_cleared = false_v;
+  /* Cold representation selector for the A/B comparison, resolved once here so
+     a matched capture of the same frame in either representation needs no
+     rebuild -- the same reason VKR_TAA_DISABLED exists. Removed by SH3. */
+  const char *representation = getenv("VKR_IBL_DIFFUSE_REPRESENTATION");
+  renderer->sh_representation =
+      representation && string_equals(representation, "sh_l2")
+          ? VKR_SH_REPRESENTATION_SH_L2
+          : VKR_SH_REPRESENTATION_CUBEMAP;
+  log_info("IBL diffuse representation: %s",
+           renderer->sh_representation == VKR_SH_REPRESENTATION_SH_L2
+               ? "sh_l2"
+               : "cubemap");
+  return vkr_vk_create_buffer(
+      renderer, VKR_VULKAN_MEMORY_CLASS_DEVICE, VKR_GPU_ALLOCATION_OWNER_SHADER,
+      (VkDeviceSize)VKR_SH_BUFFER_BYTES,
+      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+      &renderer->sh_coefficients);
+}
+
 vkr_internal bool8_t vkr_vk_create_upload_buffers(VkrVulkanRenderer *renderer) {
   if (!vkr_gpu_abi_validate_host()) {
     log_error("Vulkan shared host ABI validation failed");
@@ -509,7 +538,8 @@ vkr_internal bool8_t vkr_vk_create_upload_buffers(VkrVulkanRenderer *renderer) {
              VKR_GPU_ALLOCATION_OWNER_SHADER,
              (VkDeviceSize)renderer->config.material_slot_capacity *
                  sizeof(VkrVulkanMaterialGpuRow),
-             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, &renderer->materials);
+             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, &renderer->materials) &&
+         vkr_vk_create_sh_coefficients(renderer);
 }
 
 void vkr_vk_destroy_image(VkrVulkanRenderer *renderer, VkrVulkanImage *image) {

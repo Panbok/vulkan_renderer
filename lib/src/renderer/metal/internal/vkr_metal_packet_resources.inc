@@ -1165,7 +1165,8 @@ vkr_internal bool8_t vkr_metal_packet_validate_ibl_textures(
 
 bool8_t vkr_metal_packet_renderer_bake_ibl_cubemap(
     VkrMetalPacketRenderer *renderer, VkrTextureHandle source_handle,
-    VkrTextureHandle irradiance_handle, VkrTextureHandle prefilter_handle) {
+    VkrTextureHandle irradiance_handle, VkrTextureHandle prefilter_handle,
+    float32_t sh_deringing) {
   if (!renderer || renderer->frame_prepared) {
     return false_v;
   }
@@ -1251,7 +1252,7 @@ bool8_t vkr_metal_packet_renderer_bake_ibl_cubemap(
 bool8_t vkr_metal_packet_renderer_bake_hdr_environment(
     VkrMetalPacketRenderer *renderer, VkrTextureHandle equirect_handle,
     VkrTextureHandle source_handle, VkrTextureHandle irradiance_handle,
-    VkrTextureHandle prefilter_handle) {
+    VkrTextureHandle prefilter_handle, float32_t sh_deringing) {
   if (!renderer || renderer->frame_prepared) {
     return false_v;
   }
@@ -1314,7 +1315,8 @@ bool8_t vkr_metal_packet_renderer_bake_hdr_environment(
   equirect->last_use_submit_value = renderer->submit_value;
   source->last_use_submit_value = renderer->submit_value;
   return vkr_metal_packet_renderer_bake_ibl_cubemap(
-      renderer, source_handle, irradiance_handle, prefilter_handle);
+      renderer, source_handle, irradiance_handle, prefilter_handle,
+      sh_deringing);
 }
 
 bool8_t vkr_metal_packet_renderer_create_cubemap(

@@ -798,8 +798,13 @@ kernel void vkr_metal_packet_deferred_lighting(
     return;
   uint visible_index = root.vbuffer.read(pixel).x;
   if (visible_index == 0u) {
-    root.hdr.write(float4(vkr_metal_packet_deferred_sky(root, pixel), 1.0),
-                   pixel);
+    // The indirect-diffuse channel carries only surface environment response,
+    // so background sky must not contaminate its comparison. Mirrors
+    // vk_deferred_lighting.
+    float3 background = root.frame->render_mode == 9u
+                            ? float3(0.0)
+                            : vkr_metal_packet_deferred_sky(root, pixel);
+    root.hdr.write(float4(background, 1.0), pixel);
     return;
   }
 
@@ -934,7 +939,10 @@ kernel void vkr_metal_packet_deferred_lighting(
   float2 gtao_uv = (float2(pixel) + 0.5) / float2(root.extent);
   float gtao_visibility =
       root.gtao_visibility.sample(gtao_sampler, gtao_uv).x;
-  float diffuse_ao = ao * gtao_visibility;
+  // Mode 9 compares the diffuse representation, not the occlusion layered on
+  // top of it, so it drops the GTAO factor. vk_deferred_lighting reaches the
+  // same value by applying gtao_visibility outside the environment helper.
+  float diffuse_ao = frame->render_mode == 9u ? ao : ao * gtao_visibility;
   float3 color = analytic_diffuse + analytic_specular;
   if ((frame->flags & 2u) != 0u) {
     constexpr sampler environment_sampler(coord::normalized,
@@ -998,10 +1006,24 @@ kernel void vkr_metal_packet_deferred_lighting(
                diffuse_ao * global_weight;
     specular += global_prefiltered * (fresnel * brdf.x + f90 * brdf.y) *
                 specular_visibility * global_weight;
+    // Mode 9 isolates the environment diffuse term: no direct light, no
+    // specular IBL, and no emissive seed.
+    if (frame->render_mode == 9u) {
+      root.hdr.write(
+          float4(diffuse * frame->ibl_controls.y * frame->ibl_controls.x, 1.0),
+          pixel);
+      return;
+    }
     color +=
         (diffuse * frame->ibl_controls.y + specular * frame->ibl_controls.z) *
         frame->ibl_controls.x;
   } else {
+    // Without an environment the channel has nothing to report, and the
+    // constant-ambient fallback must not stand in for one.
+    if (frame->render_mode == 9u) {
+      root.hdr.write(float4(0.0, 0.0, 0.0, 1.0), pixel);
+      return;
+    }
     color += frame->ambient_color.rgb * diffuse_albedo * diffuse_ao;
   }
   color += hdr_seed.rgb;
@@ -1639,10 +1661,16 @@ static float3 vkr_metal_packet_transmission_lighting(
                global_weight;
     specular += global_prefiltered * (fresnel * brdf.x + f90 * brdf.y) *
                 specular_visibility * global_weight;
+    // Mode 9 reports the same environment diffuse term the opaque path does, so
+    // a transmissive surface does not read as black in the comparison channel.
+    if (frame->render_mode == 9u)
+      return diffuse * frame->ibl_controls.y * frame->ibl_controls.x;
     color +=
         (diffuse * frame->ibl_controls.y + specular * frame->ibl_controls.z) *
         frame->ibl_controls.x;
   } else {
+    if (frame->render_mode == 9u)
+      return float3(0.0);
     color += frame->ambient_color.rgb * surface.base.rgb * surface.occlusion;
   }
   return color + surface.emissive;

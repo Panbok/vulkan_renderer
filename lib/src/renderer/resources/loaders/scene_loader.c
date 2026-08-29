@@ -68,6 +68,7 @@ typedef struct SceneEnvironmentImport {
   float32_t intensity;
   float32_t diffuse_intensity;
   float32_t specular_intensity;
+  float32_t sh_deringing;
 } SceneEnvironmentImport;
 
 typedef struct SceneReflectionProbeImport {
@@ -78,6 +79,7 @@ typedef struct SceneReflectionProbeImport {
   float32_t intensity;
   float32_t diffuse_intensity;
   float32_t specular_intensity;
+  float32_t sh_deringing;
   bool8_t has_cubemap;
   String8 cubemap_base_path;
   String8 cubemap_extension;
@@ -715,6 +717,7 @@ vkr_internal SceneEnvironmentImport scene_environment_import_defaults(void) {
       .intensity = 1.0f,
       .diffuse_intensity = 1.0f,
       .specular_intensity = 1.0f,
+      .sh_deringing = 0.0f,
   };
 }
 
@@ -751,6 +754,16 @@ scene_loader_parse_environment_import(String8 json) {
                                     &result.diffuse_intensity);
   (void)scene_json_read_float_field(&environment_object, "specular_intensity",
                                     &result.specular_intensity);
+  /* Validated and normalized here so lighting never interprets an authored
+     value (ADR-038 §1.4). A bad value is a load-time error naming its path. */
+  if (scene_json_read_float_field(&environment_object, "sh_deringing",
+                                  &result.sh_deringing) &&
+      !(isfinite(result.sh_deringing) && result.sh_deringing >= 0.0f)) {
+    log_error("Scene loader: $.environment.sh_deringing must be finite and "
+              "greater than or equal to zero");
+    result.valid = false_v;
+    return result;
+  }
 
   if (!result.enabled) {
     return result;
@@ -815,6 +828,7 @@ scene_reflection_probe_import_defaults(void) {
       .intensity = 1.0f,
       .diffuse_intensity = 1.0f,
       .specular_intensity = 1.0f,
+      .sh_deringing = 0.0f,
       .has_cubemap = false_v,
       .cubemap_base_path = {0},
       .cubemap_extension = {0},
@@ -886,6 +900,14 @@ vkr_internal uint32_t scene_loader_parse_reflection_probe_imports(
                                       &import.diffuse_intensity);
     (void)scene_json_read_float_field(&probe_object, "specular_intensity",
                                       &import.specular_intensity);
+    if (scene_json_read_float_field(&probe_object, "sh_deringing",
+                                    &import.sh_deringing) &&
+        !(isfinite(import.sh_deringing) && import.sh_deringing >= 0.0f)) {
+      log_error("Scene loader: $.reflection_probes[%u].sh_deringing must be "
+                "finite and greater than or equal to zero",
+                input_index);
+      return false_v;
+    }
 
     bool8_t has_center =
         scene_json_read_vec3_field(&probe_object, "center", &import.center);
@@ -999,6 +1021,7 @@ vkr_internal void scene_loader_apply_environment_import(
   scene->environment.diffuse_intensity = environment_import->diffuse_intensity;
   scene->environment.specular_intensity =
       environment_import->specular_intensity;
+  scene->environment.sh_deringing = environment_import->sh_deringing;
   scene->environment.enabled = environment_import->enabled;
   scene->environment.source_kind = environment_import->source_kind;
 
@@ -1191,6 +1214,7 @@ vkr_internal void scene_loader_apply_reflection_probe_imports(
         .intensity = import->intensity,
         .diffuse_intensity = import->diffuse_intensity,
         .specular_intensity = import->specular_intensity,
+        .sh_deringing = import->sh_deringing,
         .source_mip_count = 1u,
         .uses_scene_environment_source = false_v,
         .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
@@ -1229,6 +1253,16 @@ vkr_internal void scene_loader_apply_reflection_probe_imports(
                                                source_cubemap);
           probe.source_mip_count = scene->environment.source_mip_count;
           probe.uses_scene_environment_source = true_v;
+          /* An aliasing probe shares the environment's published coefficients
+             and inherits its window; it must not carry a conflicting one
+             (ADR-038 §1.4). */
+          if (probe.sh_deringing != 0.0f) {
+            log_warn("Scene loader: $.reflection_probes[%u].sh_deringing is "
+                     "ignored because the probe aliases the scene environment "
+                     "source and inherits its window",
+                     i);
+            probe.sh_deringing = scene->environment.sh_deringing;
+          }
           source_valid = true_v;
         } else {
           log_warn(
