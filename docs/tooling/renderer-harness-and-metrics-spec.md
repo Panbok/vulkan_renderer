@@ -731,6 +731,8 @@ keep authoritative profiling on the ordinary usage flags.
 | `deferred_emissive`, `resolve_barycentric_lod` | Metal P8 resolve targets | direct diagnostic capture |
 | `normals` | `final_color` at `VKR_RENDER_MODE_NORMAL` | **re-render, not an attachment** |
 | `unlit`, `lighting` | `final_color` at `UNLIT` / `LIGHTING` | re-render |
+| `direct_diffuse`, `direct_specular`, `material_params` | `final_color` at the corresponding diagnostic mode | re-render |
+| `indirect_diffuse` | `final_color` at `VKR_RENDER_MODE_INDIRECT_DIFFUSE`; environment diffuse only, with GTAO and temporal accumulation excluded | re-render |
 | `shadow_debug_cascades`, `_factor`, `_depth` | `shadow_debug_mode` 1–3 | re-render |
 
 The first five rows can share one direct-capture replay; debug-mode rows require
@@ -1054,6 +1056,7 @@ leaves an incomplete run directory, never a plausible partial report.
     "editor": false,
     "cascades": 4,
     "pcf_samples": 16,
+    "ibl_probe_limit": 4294967295,
     "cache": "isolated_warm",
     "camera_script_version": 1,
     "gpu_timing": false,

@@ -219,7 +219,7 @@
         "render_mode": {
           "type": "string",
           "description": "Global shading mode for measured frames. Auxiliary debug captures execute as replay runs and do not change this value.",
-          "enum": ["default", "lighting", "normal", "unlit", "direct_diffuse", "direct_specular", "material_params", "temporal_motion", "temporal_history"],
+          "enum": ["default", "lighting", "normal", "unlit", "direct_diffuse", "direct_specular", "material_params", "temporal_motion", "temporal_history", "indirect_diffuse"],
           "default": "default"
         },
         "exposure_mode": {
@@ -284,6 +284,12 @@
           "description": "Positive GTAO visibility shaping exponent.",
           "exclusiveMinimum": 0,
           "default": 2.2
+        },
+        "ibl_probe_limit": {
+          "type": "integer",
+          "description": "Cold-boundary cap on packed local IBL probes. Omission uses the renderer maximum.",
+          "minimum": 0,
+          "maximum": 16
         }
       },
       "additionalProperties": false,
@@ -491,6 +497,7 @@
         "unlit",
         "lighting",
         "direct_diffuse",
+        "indirect_diffuse",
         "direct_specular",
         "material_params",
         "temporal_motion",

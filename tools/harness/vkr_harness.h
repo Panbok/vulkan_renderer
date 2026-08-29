@@ -256,12 +256,9 @@ typedef struct VkrHarnessRendererConfig {
   float32_t gtao_radius;
   float32_t gtao_power;
   uint32_t shadow_debug_mode;
-  /** ADR-038 A/B controls. Both are cold: they are resolved before command
-      recording and are declared independent variables of the comparison, so
-      they are emitted in effective_config and the workload fingerprint.
-      `ibl_probe_limit` of UINT32_MAX means "do not clamp". */
+  /** Cold probe-count control used by the SH scaling fixture. UINT32_MAX means
+      "do not clamp". */
   uint32_t ibl_probe_limit;
-  char ibl_diffuse_representation[16];
 } VkrHarnessRendererConfig;
 
 typedef struct VkrHarnessCompareConfig {

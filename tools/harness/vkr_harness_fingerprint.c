@@ -189,12 +189,10 @@ bool8_t vkr_harness_case_fingerprints_with_scene_digest(
       case_manifest->renderer.gtao_radius, case_manifest->renderer.gtao_power);
   ADD("renderer.shadow_debug_mode", "%u",
       case_manifest->renderer.shadow_debug_mode);
-  /* Declared independent variables of the ADR-038 comparison, so the tool
-     reports their fingerprint difference rather than rejecting the pair. */
+  /* The SH scaling fixture declares packed probe count as an independent
+     workload variable. */
   ADD("renderer.ibl_probe_limit", "%u",
       case_manifest->renderer.ibl_probe_limit);
-  ADD("renderer.ibl_diffuse_representation", "%s",
-      case_manifest->renderer.ibl_diffuse_representation);
   ADD("target", "%s,%s,%u", vkr_harness_target_name(case_manifest->target),
       vkr_harness_present_name(case_manifest->present),
       case_manifest->target_image_count);

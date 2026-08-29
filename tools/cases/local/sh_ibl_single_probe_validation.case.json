@@ -1,48 +1,38 @@
 {
   "schema_version": 1,
-  "id": "performance.sh_ibl_probe_sweep.1.sh_l2",
-  "suite": "performance",
-  "description": "ADR-038 SH deferred-lighting scaling fixture with 1 packed probe.",
+  "id": "local.sh_ibl.single_probe_validation",
+  "suite": "local",
+  "description": "Focused serial Metal validation of SH projection and indirect-diffuse evaluation with one packed local probe.",
   "scene": "assets/scenes/ibl_probe_sweep.scene.json",
-  "seed": 1,
-  "resolution": [
-    1280,
-    720
-  ],
+  "seed": 38,
+  "resolution": [320, 240],
   "boot": "full",
   "target": "windowed_hidden",
-  "present": "immediate",
-  "cache": "isolated_warm",
+  "present": "fifo",
+  "cache": "isolated_cold",
   "fixed_delta": 0.016666667,
-  "repetitions": 5,
+  "repetitions": 1,
   "repetition_timeout_ms": 120000,
   "asset_ready_timeout_ms": 60000,
   "frames": {
-    "warmup": 120,
-    "measure": 300
+    "warmup": 30,
+    "measure": 6
   },
   "renderer": {
     "editor": false,
     "skybox": true,
     "taa_enabled": false,
-    "shadow_preset": "default",
+    "backend": "metal",
+    "shadow_preset": "balanced",
     "shadow_cascades": 4,
-    "render_mode": "default",
+    "render_mode": "indirect_diffuse",
     "ibl_probe_limit": 1
   },
   "camera": {
-    "mode": "orbit",
-    "speed": "medium",
-    "center": [
-      0,
-      1.2,
-      -2.0
-    ],
-    "radius": 3.0,
-    "height": 1.2,
-    "revolutions": 1.0,
-    "duration_seconds": 7,
-    "start_angle_degrees": 0,
+    "mode": "static",
+    "position": [3.0, 2.4, -2.0],
+    "yaw": -180,
+    "pitch": -15,
     "vertical_fov_degrees": 70,
     "near_plane": 0.1,
     "far_plane": 500

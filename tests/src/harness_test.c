@@ -137,6 +137,7 @@ static void test_harness_case_parser(void) {
   assert(!parsed.renderer.gtao_enabled);
   assert(parsed.renderer.gtao_radius == VKR_GTAO_DEFAULT_RADIUS);
   assert(parsed.renderer.gtao_power == VKR_GTAO_DEFAULT_POWER);
+  assert(parsed.renderer.ibl_probe_limit == UINT32_MAX);
   assert(harness_parse_case("windowed_hidden", "immediate", static_camera,
                             ",\"resize_round_trip\":[80,72]", &parsed));
   assert(parsed.resize_round_trip && parsed.resize_width == 80u &&
@@ -161,7 +162,8 @@ static void test_harness_case_parser(void) {
       "\"exposure_reset_frame\":1,\"bloom_enabled\":true,"
       "\"bloom_threshold\":1.25,\"bloom_knee\":0.4,"
       "\"bloom_intensity\":0.08,\"gtao_enabled\":true,"
-      "\"gtao_radius\":0.5,\"gtao_power\":2.2},"
+      "\"gtao_radius\":0.5,\"gtao_power\":2.2,"
+      "\"render_mode\":\"indirect_diffuse\",\"ibl_probe_limit\":1},"
       "\"camera\":{\"mode\":\"static\",\"position\":[1,2,3],\"yaw\":10,"
       "\"pitch\":-5}}";
   VkrHarnessError backend_error = {0};
@@ -185,6 +187,8 @@ static void test_harness_case_parser(void) {
   assert(parsed.renderer.gtao_enabled);
   assert(parsed.renderer.gtao_radius == 0.5f);
   assert(parsed.renderer.gtao_power == 2.2f);
+  assert(strcmp(parsed.renderer.render_mode, "indirect_diffuse") == 0);
+  assert(parsed.renderer.ibl_probe_limit == 1u);
   VkrRendererBackendType resolved_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
   assert(vkr_harness_renderer_backend_resolve(&parsed.renderer, NULL,
                                               &resolved_backend));
@@ -232,6 +236,19 @@ static void test_harness_case_parser(void) {
   memcpy(map_size_value, "4095", 4u);
   assert(!vkr_harness_case_parse(invalid_map_size, strlen(invalid_map_size),
                                  "memory", &parsed, &backend_error));
+  char invalid_ibl_probe_limit[2048];
+  snprintf(invalid_ibl_probe_limit, sizeof(invalid_ibl_probe_limit), "%s",
+           metal_case);
+  char *ibl_probe_limit =
+      strstr(invalid_ibl_probe_limit, "\"ibl_probe_limit\":1");
+  assert(ibl_probe_limit);
+  ibl_probe_limit += strlen("\"ibl_probe_limit\":");
+  memmove(ibl_probe_limit + 2u, ibl_probe_limit + 1u,
+          strlen(ibl_probe_limit + 1u) + 1u);
+  MemCopy(ibl_probe_limit, "17", 2u);
+  assert(!vkr_harness_case_parse(invalid_ibl_probe_limit,
+                                 strlen(invalid_ibl_probe_limit), "memory",
+                                 &parsed, &backend_error));
   char invalid_exposure_reset[2048];
   snprintf(invalid_exposure_reset, sizeof(invalid_exposure_reset), "%s",
            metal_case);
@@ -998,6 +1015,7 @@ static void test_harness_report_shape(void) {
   report.case_manifest.renderer.gtao_enabled = true_v;
   report.case_manifest.renderer.gtao_radius = 0.5f;
   report.case_manifest.renderer.gtao_power = 2.2f;
+  report.case_manifest.renderer.ibl_probe_limit = 1u;
   snprintf(report.case_manifest.manifest_sha256,
            sizeof(report.case_manifest.manifest_sha256),
            "sha256:"
@@ -1048,6 +1066,7 @@ static void test_harness_report_shape(void) {
   assert(strstr(json, "\"gtao_enabled\":true") != NULL);
   assert(strstr(json, "\"gtao_radius\":0.5") != NULL);
   assert(strstr(json, "\"gtao_power\":") != NULL);
+  assert(strstr(json, "\"ibl_probe_limit\":1") != NULL);
   VkrHarnessJsonDocument document = {0};
   assert(vkr_harness_json_parse(&document, json, (uint64_t)length, &error));
   static const char *const fields[] = {"schema_version",
@@ -1666,18 +1685,13 @@ static void test_harness_capture_replays(void) {
   VkrHarnessCase case_manifest = {.capture_count = 1u};
   VkrHarnessCapture *capture = &case_manifest.captures[0];
   capture->at_frame = 2u;
-  capture->channel_count = 11u;
-  const char *channels[] = {"final_color",
-                            "depth",
-                            "gbuffer_normal",
-                            "gtao_view_depth",
-                            "gtao_raw",
-                            "gtao_visibility",
-                            "normals",
-                            "unlit",
-                            "temporal_motion",
-                            "temporal_history",
-                            "shadow_debug_factor"};
+  capture->channel_count = 12u;
+  const char *channels[] = {"final_color",      "depth",
+                            "gbuffer_normal",   "gtao_view_depth",
+                            "gtao_raw",         "gtao_visibility",
+                            "normals",          "unlit",
+                            "temporal_motion",  "temporal_history",
+                            "indirect_diffuse", "shadow_debug_factor"};
   for (uint32_t i = 0; i < ArrayCount(channels); ++i) {
     snprintf(capture->channels[i], sizeof(capture->channels[i]), "%s",
              channels[i]);
@@ -1687,7 +1701,7 @@ static void test_harness_capture_replays(void) {
   VkrHarnessError error = {0};
   assert(vkr_harness_capture_replays_build(
       &case_manifest, replays, ArrayCount(replays), &replay_count, &error));
-  assert(replay_count == 6u);
+  assert(replay_count == 7u);
   assert(strcmp(replays[0].mode, "direct") == 0 &&
          replays[0].channel_count == 6u);
   assert(strcmp(replays[0].direct_channels[2], "gbuffer_normal") == 0);
@@ -1702,8 +1716,10 @@ static void test_harness_capture_replays(void) {
          replays[3].render_mode == VKR_RENDER_MODE_TEMPORAL_MOTION);
   assert(strcmp(replays[4].mode, "temporal_history") == 0 &&
          replays[4].render_mode == VKR_RENDER_MODE_TEMPORAL_HISTORY);
-  assert(strcmp(replays[5].mode, "shadow_debug_factor") == 0 &&
-         replays[5].shadow_debug_mode == 2u);
+  assert(strcmp(replays[5].mode, "indirect_diffuse") == 0 &&
+         replays[5].render_mode == VKR_RENDER_MODE_INDIRECT_DIFFUSE);
+  assert(strcmp(replays[6].mode, "shadow_debug_factor") == 0 &&
+         replays[6].shadow_debug_mode == 2u);
   VkrHarnessCaptureReplay found = {0};
   assert(vkr_harness_capture_replay_find(&case_manifest, 0u, "normals", &found,
                                          &error));

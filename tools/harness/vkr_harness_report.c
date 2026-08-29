@@ -476,9 +476,6 @@ bool8_t vkr_harness_report_write(const char *path,
           writer, "ibl_probe_limit",
           report->case_manifest.renderer.ibl_probe_limit) &&
       vkr_harness_json_emit_string(
-          writer, "ibl_diffuse_representation",
-          report->case_manifest.renderer.ibl_diffuse_representation) &&
-      vkr_harness_json_emit_string(
           writer, "cache",
           vkr_harness_cache_name(report->case_manifest.cache)) &&
       vkr_harness_json_emit_u64(writer, "camera_script_version",

@@ -1,6 +1,7 @@
 #include "vkr_harness_json.h"
 
 #include "renderer/systems/vkr_shadow_system.h"
+#include "renderer/vkr_render_packet.h"
 
 #include <float.h>
 
@@ -458,8 +459,7 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
                                         "gtao_enabled",
                                         "gtao_radius",
                                         "gtao_power",
-                                        "ibl_probe_limit",
-                                        "ibl_diffuse_representation"};
+                                        "ibl_probe_limit"};
   static const char *const required[] = {"editor", "skybox", "shadow_preset",
                                          "shadow_cascades"};
   if (!vkr_harness_json_object_validate(
@@ -482,7 +482,6 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
   /* Unset means "do not clamp", so an existing case keeps every packed probe
      and its workload fingerprint is unchanged by these controls existing. */
   renderer->ibl_probe_limit = UINT32_MAX;
-  string_copy(renderer->ibl_diffuse_representation, "cubemap");
   uint64_t ibl_probe_limit = UINT32_MAX;
   uint64_t cascades = 0;
   uint64_t exposure_reset_frame = UINT32_MAX;
@@ -500,6 +499,7 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
   int32_t bloom_intensity_token = -1;
   int32_t gtao_radius_token = -1;
   int32_t gtao_power_token = -1;
+  int32_t ibl_probe_limit_token = -1;
   if (!vkr_harness_manifest_bool(doc, token, "editor", true_v,
                                  &renderer->editor, error) ||
       !vkr_harness_manifest_bool(doc, token, "skybox", true_v,
@@ -556,20 +556,15 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
                                   &gtao_power_token, error) ||
       !vkr_harness_manifest_f64(doc, token, "gtao_power", false_v, &gtao_power,
                                 error) ||
+      !vkr_harness_manifest_field(doc, token, "ibl_probe_limit", false_v,
+                                  &ibl_probe_limit_token, error) ||
       !vkr_harness_manifest_u64(doc, token, "ibl_probe_limit", false_v,
-                                &ibl_probe_limit, error) ||
-      !vkr_harness_manifest_string(
-          doc, token, "ibl_diffuse_representation", false_v,
-          renderer->ibl_diffuse_representation,
-          sizeof(renderer->ibl_diffuse_representation), error)) {
+                                &ibl_probe_limit, error)) {
     return false_v;
   }
   renderer->shadow_cascades = (uint32_t)cascades;
   renderer->ibl_probe_limit =
       ibl_probe_limit > UINT32_MAX ? UINT32_MAX : (uint32_t)ibl_probe_limit;
-  const bool8_t representation_valid =
-      string_equals(renderer->ibl_diffuse_representation, "cubemap") ||
-      string_equals(renderer->ibl_diffuse_representation, "sh_l2");
   const bool8_t preset_valid =
       string_equals(renderer->shadow_preset, "default") ||
       string_equals(renderer->shadow_preset, "balanced") ||
@@ -616,18 +611,20 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
       gtao_radius_token >= 0 && gtao_power_token >= 0;
   const bool8_t gtao_controls_valid =
       gtao_values_valid && (!renderer->gtao_enabled || gtao_controls_present);
-  if (!preset_valid || !mode_valid || !backend_valid || !representation_valid ||
-      cascades < 1u || cascades > 8u || !exposure_mode_valid ||
-      !automatic_controls_valid || !bloom_controls_valid ||
-      !gtao_controls_valid || !isfinite(manual_exposure) ||
-      manual_exposure <= 0.0 || manual_exposure > FLT_MAX ||
-      !isfinite(exposure_compensation_ev) ||
+  if (!preset_valid || !mode_valid || !backend_valid || cascades < 1u ||
+      cascades > 8u || !exposure_mode_valid || !automatic_controls_valid ||
+      !bloom_controls_valid || !gtao_controls_valid ||
+      (ibl_probe_limit_token >= 0 &&
+       ibl_probe_limit > VKR_FRAME_IBL_PROBE_MAX) ||
+      !isfinite(manual_exposure) || manual_exposure <= 0.0 ||
+      manual_exposure > FLT_MAX || !isfinite(exposure_compensation_ev) ||
       exposure_compensation_ev < -FLT_MAX ||
       exposure_compensation_ev > FLT_MAX || exposure_reset_frame > UINT32_MAX) {
     vkr_harness_error_set(
         error, "renderer.config", "$.renderer",
         "Renderer backend, preset, render/exposure mode, "
-        "exposure/bloom/GTAO controls, or cascade count is invalid");
+        "exposure/bloom/GTAO controls, probe limit, or cascade count is "
+        "invalid");
     return false_v;
   }
   renderer->manual_exposure = (float32_t)manual_exposure;

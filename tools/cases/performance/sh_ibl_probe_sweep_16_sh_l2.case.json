@@ -2,7 +2,7 @@
   "schema_version": 1,
   "id": "performance.sh_ibl_probe_sweep.16.sh_l2",
   "suite": "performance",
-  "description": "ADR-038 deferred-lighting diffuse comparison: 16 packed probes, sh_l2 representation. Representation and probe count are the declared independent variables; all other workload fields match the paired case.",
+  "description": "ADR-038 SH deferred-lighting scaling fixture with 16 packed probes.",
   "scene": "assets/scenes/ibl_probe_sweep.scene.json",
   "seed": 1,
   "resolution": [
@@ -28,8 +28,7 @@
     "shadow_preset": "default",
     "shadow_cascades": 4,
     "render_mode": "default",
-    "ibl_probe_limit": 16,
-    "ibl_diffuse_representation": "sh_l2"
+    "ibl_probe_limit": 16
   },
   "camera": {
     "mode": "orbit",

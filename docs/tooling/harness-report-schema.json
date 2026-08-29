@@ -409,6 +409,7 @@
         "gtao_enabled",
         "gtao_radius",
         "gtao_power",
+        "ibl_probe_limit",
         "cache",
         "camera_script_version",
         "gpu_timing",
@@ -563,6 +564,11 @@
         "gtao_power": {
           "type": "number",
           "exclusiveMinimum": 0
+        },
+        "ibl_probe_limit": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
         },
         "cache": {
           "enum": [
