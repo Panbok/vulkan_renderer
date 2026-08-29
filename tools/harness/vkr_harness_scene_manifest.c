@@ -372,7 +372,7 @@ vkr_harness_scene_manifest_hash_missing(const char *resolved_root, Arena *arena,
                                         VkrHarnessError *out_error) {
   uint32_t *indices = arena_alloc(
       arena, sizeof(*indices) * manifest->asset_count, ARENA_MEMORY_TAG_ARRAY);
-  char (*paths)[VKR_HARNESS_PATH_MAX] = arena_alloc(
+  char(*paths)[VKR_HARNESS_PATH_MAX] = arena_alloc(
       arena, sizeof(*paths) * manifest->asset_count, ARENA_MEMORY_TAG_ARRAY);
   if (!indices || !paths) {
     return false_v;
@@ -638,10 +638,15 @@ bool8_t vkr_harness_scene_manifest_build(const char *repo_root,
         continue;
       }
       uint64_t end = i;
+      // '=' separates a material key from its value, but it also appears inside
+      // a sampler query. Once the token enters a query it runs to the real
+      // delimiter, so the retained reference keeps the whole '?cs=srgb'.
+      bool8_t in_query = false_v;
       while (end < parse_size && parse_bytes[end] != ' ' &&
              parse_bytes[end] != '\t' && parse_bytes[end] != '\r' &&
-             parse_bytes[end] != '\n' && parse_bytes[end] != '=' &&
-             parse_bytes[end] != ',' && parse_bytes[end] != '"') {
+             parse_bytes[end] != '\n' && parse_bytes[end] != ',' &&
+             parse_bytes[end] != '"' && (in_query || parse_bytes[end] != '=')) {
+        in_query = in_query || parse_bytes[end] == '?';
         end++;
       }
       if (end > i && end - i < VKR_HARNESS_PATH_MAX) {

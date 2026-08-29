@@ -539,8 +539,14 @@ vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_sqrt_f32x4(VKR_SIMD_F32X4 v) {
 
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_rsqrt_f32x4(VKR_SIMD_F32X4 v) {
   VKR_SIMD_F32X4 result;
+  // vrsqrteq_f32 is only an eight-bit estimate, so each Newton-Raphson step
+  // roughly doubles the correct bits. One step stops near sixteen bits, which
+  // leaves vec3_normalize() short of unit length by about 6e-6 relative --
+  // large enough to fail a 1e-5 unit-length check. Two steps reach float
+  // precision.
   result.neon = vrsqrteq_f32(v.neon);
-  // One Newton-Raphson iteration for better precision
+  result.neon = vmulq_f32(
+      result.neon, vrsqrtsq_f32(vmulq_f32(v.neon, result.neon), result.neon));
   result.neon = vmulq_f32(
       result.neon, vrsqrtsq_f32(vmulq_f32(v.neon, result.neon), result.neon));
   return result;
@@ -838,8 +844,9 @@ vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_sqrt_f32x4(VKR_SIMD_F32X4 v) {
 
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_rsqrt_f32x4(VKR_SIMD_F32X4 v) {
   VKR_SIMD_F32X4 result;
-  // One Newton-Raphson step brings the hardware estimate to float precision
-  // and matches the NEON path's refinement.
+  // _mm_rsqrt_ps starts at twelve bits, so a single Newton-Raphson step already
+  // reaches float precision. The NEON path needs two steps from its weaker
+  // eight-bit estimate to land in the same place.
   const __m128 estimate = _mm_rsqrt_ps(v.sse);
   const __m128 half = _mm_set1_ps(0.5f);
   const __m128 three_halves = _mm_set1_ps(1.5f);

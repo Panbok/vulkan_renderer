@@ -756,8 +756,7 @@ static void test_harness_scene_manifest_tracks_transitive_content(void) {
   assert(string_equals(error.code, "scene_manifest.missing"));
   assert(strstr(error.message,
                 "./tools/cook_vkr_meshes.sh assets/models/test.gltf"));
-  assert(strstr(error.message,
-                "assets/textures/generated/test/material_0.png?cs=srgb"));
+  assert(strstr(error.message, "assets/textures/generated/test.png?cs=srgb"));
   assert(strstr(error.message, "query ignored"));
   arena_destroy(missing_arena);
   arena_destroy(first_arena);
