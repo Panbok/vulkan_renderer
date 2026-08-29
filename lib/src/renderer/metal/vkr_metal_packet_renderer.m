@@ -581,6 +581,7 @@ struct VkrMetalPacketRenderer {
   VkrMetalPacketTargetKind target_kind;
   VkrPresentMode actual_present_mode;
   bool8_t srgb_output;
+  bool8_t tonemap_enabled;
   bool8_t deferred_candidate_drop_logged;
   bool8_t convert_vulkan_clip_y;
   bool8_t fxaa_enabled;

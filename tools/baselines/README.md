@@ -68,8 +68,9 @@ longer depends on `build/_artifacts` and the run tree may be removed.
   `sha256:7492b6406ad11123e0cb5f0f943f5c74bd908e3f72b13750c1a8fd1196f6e726`,
   source report
   `sha256:6e8431ecff0626fedb99104236941f0f4546fa0fef7a6ab1cf07c47a0eaa6451`.
-  A Windows Vulkan checkout completes this pair with the backend-neutral SH
-  case and `--cross-backend`.
+  A Windows Vulkan checkout completed the pair with the backend-neutral SH
+  case and `--cross-backend`; all three comparisons pass in report
+  `sha256:549304f5a5d769943853ef46d70a281795c773ca358ff35d6bf69866790c7f32`.
 
 ## Current Bistro authorities
 

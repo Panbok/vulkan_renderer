@@ -332,10 +332,11 @@ typedef struct VkrVulkanReflectedField {
 #define VKR_VULKAN_REFLECTED_FIELD(type, member)                               \
   {#member, (uint32_t)offsetof(type, member)}
 
-vkr_internal bool8_t vkr_vk_validate_root_abi(
+vkr_internal bool8_t vkr_vk_validate_root_abi_with_gpu_record(
     VkrVulkanRenderer *renderer, const char *shader, const char *entry,
     const VkrVulkanReflectedField *fields, uint32_t field_count,
-    uint32_t expected_size) {
+    uint32_t expected_size, const char *gpu_field,
+    VkrGpuAbiRecordId gpu_record_id) {
   FilePath shader_path =
       file_path_create(shader, renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
   uint8_t *bytes = NULL;
@@ -364,12 +365,29 @@ vkr_internal bool8_t vkr_vk_validate_root_abi(
   valid &= blocks[0] && blocks[0]->size == sizeof(VkrVulkanPushConstants);
   SpvReflectBlockVariable *root =
       valid ? vkr_vk_reflect_member(blocks[0], "root") : NULL;
-  for (uint32_t i = 0u; i < field_count; ++i)
+  SpvReflectBlockVariable *gpu_record = NULL;
+  for (uint32_t i = 0u; i < field_count; ++i) {
+    SpvReflectBlockVariable **out_member =
+        gpu_field && string_equals(fields[i].name, gpu_field) ? &gpu_record
+                                                              : NULL;
     valid &= vkr_vk_reflect_member_offset(root, fields[i].name,
-                                          fields[i].offset, NULL);
-  valid &= vkr_vk_reflected_struct_size(root) == expected_size;
+                                          fields[i].offset, out_member);
+  }
+  if (gpu_field)
+    valid &= vkr_vk_validate_reflected_gpu_abi(gpu_record, gpu_record_id);
+  valid &= AlignPow2(vkr_vk_reflected_struct_size(root), MaxAlign()) ==
+           expected_size;
   spvReflectDestroyShaderModule(&module);
   return valid;
+}
+
+vkr_internal bool8_t vkr_vk_validate_root_abi(
+    VkrVulkanRenderer *renderer, const char *shader, const char *entry,
+    const VkrVulkanReflectedField *fields, uint32_t field_count,
+    uint32_t expected_size) {
+  return vkr_vk_validate_root_abi_with_gpu_record(
+      renderer, shader, entry, fields, field_count, expected_size, NULL,
+      VKR_GPU_ABI_RECORD_COUNT);
 }
 
 vkr_internal bool8_t
@@ -562,9 +580,199 @@ vkr_vk_validate_ibl_sh_root_abi(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanIblShRoot, window_band_2),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanIblShRoot, reserved),
   };
-  return vkr_vk_validate_root_abi(
-      renderer, VKR_VULKAN_PACKET_IBL_SH_COMP_SPV, "ibl_sh", fields,
-      ArrayCount(fields), sizeof(VkrVulkanIblShRoot));
+  return vkr_vk_validate_root_abi(renderer, VKR_VULKAN_PACKET_IBL_SH_COMP_SPV,
+                                  "ibl_sh", fields, ArrayCount(fields),
+                                  sizeof(VkrVulkanIblShRoot));
+}
+
+vkr_internal bool8_t
+vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
+  static const VkrVulkanReflectedField cull_fields[] = {
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, candidates),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, classifications),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, visible),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, states),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, commands),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, instances),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, view_projections),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, frustum_planes),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, candidate_count),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, view_count),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, candidate_capacity),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, command_partition_capacity),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, hzb_textures),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, hzb_mip_count),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, hzb_extent),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, hzb_enabled),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, hzb_depth_epsilon),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, camera_required_flags),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, shadow_required_flags),
+  };
+  static const VkrVulkanReflectedField resolve_fields[] = {
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, geometry_rows),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, visible_rows),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, reserved_address),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, instances),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, materials),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, vertices),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, indices),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, compaction_state),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, view_projection),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, current_view_projection),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot,
+                                 previous_view_projection),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, previous_transforms),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, vbuffer_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, albedo_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, specular_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, normal_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, emissive_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, debug_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, scene_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, motion_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, validity_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, extent),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, visible_capacity),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, geometry_count),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, material_count),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, instance_count),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, render_mode),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, history_valid),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, previous_frame_index),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, reserved_tail),
+  };
+  static const VkrVulkanReflectedField temporal_resolve_fields[] = {
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot, visible_rows),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot, instances),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot, scene_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot,
+                                 pre_transmission_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot, motion_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot,
+                                 validity_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot, depth_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot, vbuffer_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot,
+                                 history_color_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot,
+                                 history_depth_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot,
+                                 history_identity_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot,
+                                 history_primitive_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot,
+                                 output_color_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot,
+                                 output_depth_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot,
+                                 output_identity_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot,
+                                 output_primitive_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot, history_sampler),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot, extent),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot, history_valid),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot, render_mode),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot,
+                                 camera_stationary),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot,
+                                 transmission_visible_rows),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot,
+                                 transmission_instances),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot,
+                                 transmission_vbuffer_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot,
+                                 transmission_depth_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot,
+                                 transmission_enabled),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTemporalResolveRoot,
+                                 transmission_reserved),
+  };
+  static const VkrVulkanReflectedField lighting_fields[] = {
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, frame),
+      {"frame_address_padding",
+       (uint32_t)offsetof(VkrVulkanLightingRoot, frame_padding)},
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot,
+                                 inverse_view_projection),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, vbuffer_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, depth_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, albedo_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, specular_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, normal_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, scene_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, extent),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sky_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sky_sampler),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sky_enabled),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot,
+                                 gtao_visibility_texture),
+  };
+  static const VkrVulkanReflectedField picking_fields[] = {
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPickingRoot, opaque_visible),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPickingRoot, transmission_visible),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPickingRoot, opaque_instances),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPickingRoot, transmission_instances),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPickingRoot, opaque_vbuffer),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPickingRoot, transmission_vbuffer),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPickingRoot, output_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPickingRoot, pixel),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPickingRoot, transmission_layer),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPickingRoot, use_transmission),
+  };
+  static const VkrVulkanReflectedField hzb_fields[] = {
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanHzbRoot, source_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanHzbRoot, destination_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanHzbRoot, source_extent),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanHzbRoot, destination_extent),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanHzbRoot, source_is_depth),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanHzbRoot, reserved),
+  };
+  static const VkrVulkanReflectedField sdsm_fields[] = {
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSdsmRoot, reduce_state),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSdsmRoot, depth_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSdsmRoot, vbuffer_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSdsmRoot, extent),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSdsmRoot, reserved),
+  };
+  bool8_t valid = true_v;
+  static const char *const cull_shaders[] = {
+      VKR_VULKAN_PACKET_GPU_DRAW_CLASSIFY_COMP_SPV,
+      VKR_VULKAN_PACKET_GPU_DRAW_PREFIX_COMP_SPV,
+      VKR_VULKAN_PACKET_GPU_DRAW_ENCODE_COMP_SPV,
+  };
+  static const char *const cull_entries[] = {
+      "vk_gpu_draw_classify",
+      "vk_gpu_draw_prefix",
+      "vk_gpu_draw_encode",
+  };
+  for (uint32_t i = 0u; i < ArrayCount(cull_shaders); ++i)
+    valid &= vkr_vk_validate_root_abi_with_gpu_record(
+        renderer, cull_shaders[i], cull_entries[i], cull_fields,
+        ArrayCount(cull_fields), sizeof(VkrVulkanCullRoot), "candidates",
+        VKR_GPU_ABI_CANDIDATE_DRAW_ROW);
+  valid &= vkr_vk_validate_root_abi(
+      renderer, VKR_VULKAN_PACKET_GBUFFER_RESOLVE_COMP_SPV,
+      "vk_gbuffer_resolve", resolve_fields, ArrayCount(resolve_fields),
+      sizeof(VkrVulkanResolveRoot));
+  valid &= vkr_vk_validate_root_abi(
+      renderer, VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV,
+      "vk_deferred_lighting", lighting_fields, ArrayCount(lighting_fields),
+      sizeof(VkrVulkanLightingRoot));
+  valid &= vkr_vk_validate_root_abi(
+      renderer, VKR_VULKAN_PACKET_TEMPORAL_RESOLVE_COMP_SPV,
+      "vk_temporal_resolve", temporal_resolve_fields,
+      ArrayCount(temporal_resolve_fields),
+      sizeof(VkrVulkanTemporalResolveRoot));
+  valid &= vkr_vk_validate_root_abi(
+      renderer, VKR_VULKAN_PACKET_PICKING_RESOLVE_COMP_SPV,
+      "vk_picking_resolve", picking_fields, ArrayCount(picking_fields),
+      sizeof(VkrVulkanPickingRoot));
+  valid &= vkr_vk_validate_root_abi(
+      renderer, VKR_VULKAN_PACKET_HZB_BUILD_COMP_SPV, "vk_hzb_build",
+      hzb_fields, ArrayCount(hzb_fields), sizeof(VkrVulkanHzbRoot));
+  valid &= vkr_vk_validate_root_abi(
+      renderer, VKR_VULKAN_PACKET_SDSM_REDUCE_COMP_SPV, "vk_sdsm_reduce",
+      sdsm_fields, ArrayCount(sdsm_fields), sizeof(VkrVulkanSdsmRoot));
+  return valid;
 }
 
 #undef VKR_VULKAN_REFLECTED_FIELD
@@ -597,7 +805,8 @@ bool8_t vkr_vk_create_pipelines(VkrVulkanRenderer *renderer) {
   if (!vkr_vk_validate_packet_root_abi(renderer) ||
       !vkr_vk_validate_gtao_root_abi(renderer) ||
       !vkr_vk_validate_ibl_sh_root_abi(renderer) ||
-      !vkr_vk_validate_transmission_root_abi(renderer)) {
+      !vkr_vk_validate_transmission_root_abi(renderer) ||
+      !vkr_vk_validate_deferred_root_abi(renderer)) {
     return false_v;
   }
   const VkrVulkanDescriptorLayout *resource_layout =

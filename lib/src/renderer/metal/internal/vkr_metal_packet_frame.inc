@@ -373,7 +373,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_tonemap(
   };
   *root = (VkrMetalPacketTonemapRoot){
       .source_texture_id = source.gpuResourceID._impl,
-      .reserved = {renderer->srgb_output ? 1u : 0u,
+      .reserved = {renderer->tonemap_enabled ? 1u : 0u,
                    renderer->fxaa_enabled ? 1u : 0u},
       .exposure_state = manual_state_gpu,
   };

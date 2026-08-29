@@ -1479,6 +1479,7 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
         config->upload_ring_size / config->frame_slot_count;
     renderer->target_kind = config->target_kind;
     renderer->srgb_output = config->srgb_output;
+    renderer->tonemap_enabled = config->tonemap_enabled;
     renderer->convert_vulkan_clip_y = config->convert_vulkan_clip_y;
     renderer->fxaa_enabled = config->fxaa_enabled;
     renderer->synchronous_validation_readback =

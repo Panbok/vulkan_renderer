@@ -1631,16 +1631,17 @@ bool8_t vkr_vk_record_deferred_transmission(VkrVulkanRenderer *renderer,
       !vkr_vk_deferred_sampled_index(renderer, pass, 4u, &feedback) ||
       !vkr_vk_deferred_storage_index(renderer, pass, 5u, &output))
     return false_v;
+  const bool8_t compact = pixel_list && indirect_arguments;
   uint32_t shadow_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
   if (renderer->prepared_frame.shadow_cascade_count > 0u &&
-      !vkr_vk_deferred_sampled_index(renderer, pass, 6u, &shadow_texture))
+      !vkr_vk_deferred_sampled_index(renderer, pass, compact ? 8u : 6u,
+                                     &shadow_texture))
     return false_v;
   const VkrRgImageUse *vbuffer_use =
       vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
   const uint32_t layer = vbuffer_use && vbuffer_use->has_slice
                              ? vbuffer_use->slice.base_layer
                              : 0u;
-  const bool8_t compact = pixel_list && indirect_arguments;
   const uint64_t pixel_capacity =
       compact ? pixel_list->buffer.size / sizeof(uint32_t) : 0u;
   if ((pixel_list != NULL) != (indirect_arguments != NULL) ||

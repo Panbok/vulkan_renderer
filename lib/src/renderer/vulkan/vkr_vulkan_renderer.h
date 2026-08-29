@@ -72,6 +72,8 @@ typedef struct VkrVulkanRendererConfig {
   uint32_t max_graph_images;
   uint32_t max_graph_buffers;
   uint32_t max_graph_passes;
+  /** Applies ACES in the fullscreen post stage. */
+  bool8_t tonemap_enabled;
   /** Post-TAA spatial cleanup in the final fullscreen draw. */
   bool8_t fxaa_enabled;
   /** Previous-frame HZB occlusion is independent from frustum culling. */

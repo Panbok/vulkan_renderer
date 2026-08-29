@@ -6,7 +6,8 @@ static int vkr_harness_snapshot_spawn(
     const char *executable, const char *repo_root, const char *case_path,
     const char *profile_path, const char *run_dir, uint32_t capture_index,
     const char *replay_mode, const char *cache_path, uint32_t timeout_ms,
-    bool8_t prewarm, const char *scene_content_digest) {
+    bool8_t prewarm, const char *scene_content_digest,
+    const VkrHarnessRendererConfig *renderer) {
   char stdout_path[VKR_HARNESS_PATH_MAX];
   char stderr_path[VKR_HARNESS_PATH_MAX];
   char index[16];
@@ -38,10 +39,16 @@ static int vkr_harness_snapshot_spawn(
   char asset_cache_path[VKR_HARNESS_PATH_MAX];
   string_format(asset_cache_path, sizeof(asset_cache_path),
                 "%s/build/_asset_cache", repo_root);
-  VkrPlatformEnvironmentVariable environment[2] = {
+  const VkrPlatformEnvironmentVariable environment_defaults[] = {
       {.name = "VKR_ASSET_CACHE_ROOT", .value = asset_cache_path},
+      {.name = "VKR_TONEMAP_DISABLED",
+       .value = renderer->tonemap_enabled ? "0" : "1"},
+      {.name = "VKR_FXAA_DISABLED",
+       .value = renderer->fxaa_enabled ? "0" : "1"},
   };
-  uint32_t environment_count = 1u;
+  VkrPlatformEnvironmentVariable environment[4] = {0};
+  MemCopy(environment, environment_defaults, sizeof(environment_defaults));
+  uint32_t environment_count = ArrayCount(environment_defaults);
   if (cache_path && cache_path[0]) {
     environment[environment_count++] = (VkrPlatformEnvironmentVariable){
         .name = "VKR_PIPELINE_CACHE_PATH", .value = cache_path};
@@ -307,14 +314,16 @@ int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
               executable, repo_root, case_path, profile_path, prewarm_dir,
               replay->capture_index, replay->mode, cache_path,
               case_manifest.repetition_timeout_ms, true_v,
-              scene_manifest.sha256) != VKR_HARNESS_EXIT_PASS) {
+              scene_manifest.sha256,
+              &case_manifest.renderer) != VKR_HARNESS_EXIT_PASS) {
         break;
       }
     }
     const int child_exit = vkr_harness_snapshot_spawn(
         executable, repo_root, case_path, profile_path, child_dir,
         replay->capture_index, replay->mode, cache_path,
-        case_manifest.repetition_timeout_ms, false_v, scene_manifest.sha256);
+        case_manifest.repetition_timeout_ms, false_v, scene_manifest.sha256,
+        &case_manifest.renderer);
     VkrHarnessRunReference *reference =
         &report.auxiliary_runs[report.auxiliary_run_count++];
     reference->index = i;

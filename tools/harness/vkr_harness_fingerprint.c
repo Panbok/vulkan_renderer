@@ -162,6 +162,12 @@ bool8_t vkr_harness_case_fingerprints_with_scene_digest(
   ADD("renderer.skybox", "%u", case_manifest->renderer.skybox);
   ADD("renderer.text_fixture", "%u", case_manifest->renderer.text_fixture);
   ADD("renderer.taa_enabled", "%u", case_manifest->renderer.taa_enabled);
+  /* Preserve fingerprints for manifests authored before these default-on
+     controls existed. Only non-default state changes the workload identity. */
+  if (!case_manifest->renderer.tonemap_enabled)
+    ADD("renderer.tonemap_enabled", "%u", 0u);
+  if (!case_manifest->renderer.fxaa_enabled)
+    ADD("renderer.fxaa_enabled", "%u", 0u);
   ADD("renderer.backend", "%s",
       case_manifest->renderer.backend[0] ? case_manifest->renderer.backend
                                          : "external");

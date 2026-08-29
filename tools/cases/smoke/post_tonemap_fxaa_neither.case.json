@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "id": "smoke.post_tonemap_fxaa.neither",
+  "suite": "smoke",
+  "description": "Deterministic HDR post fixture with tonemap and FXAA disabled.",
+  "scene": "assets/scenes/fixtures/local_ibl_broad_mesh.scene.json",
+  "seed": 11,
+  "resolution": [801, 601],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": { "warmup": 24, "measure": 16 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "taa_enabled": false,
+    "tonemap_enabled": false,
+    "fxaa_enabled": false,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 3,
+    "render_mode": "default",
+    "exposure_mode": "manual",
+    "manual_exposure": 0.3,
+    "exposure_compensation_ev": 0.0,
+    "bloom_enabled": false
+  },
+  "camera": {
+    "mode": "static",
+    "position": [0, 1.2, 6.0],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 55,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "captures": [
+    {
+      "at_frame": 12,
+      "channels": ["hdr_pre_bloom", "final_color"]
+    }
+  ]
+}

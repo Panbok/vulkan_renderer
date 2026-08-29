@@ -665,6 +665,7 @@ renderer_impl_metal_initialize(void *state, VkrWindow *window, uint32_t width,
       .synchronous_validation_readback =
           vkr_renderer_env_enabled("VKR_METAL_SYNCHRONOUS_VALIDATION"),
       .srgb_output = true_v,
+      .tonemap_enabled = !vkr_renderer_env_enabled("VKR_TONEMAP_DISABLED"),
       .convert_vulkan_clip_y = true_v,
       .fxaa_enabled = !vkr_renderer_env_enabled("VKR_FXAA_DISABLED"),
       .transmission_compact_enabled =
@@ -768,6 +769,7 @@ renderer_impl_vulkan_initialize(void *state, VkrWindow *window, uint32_t width,
       .max_graph_images = 128u,
       .max_graph_buffers = 128u,
       .max_graph_passes = VKR_RENDERER_IMPL_MAX_GRAPH_PASSES,
+      .tonemap_enabled = !vkr_renderer_env_enabled("VKR_TONEMAP_DISABLED"),
       .fxaa_enabled = !vkr_renderer_env_enabled("VKR_FXAA_DISABLED"),
       .hzb_enabled = !vkr_renderer_env_enabled("VKR_HZB_DISABLED"),
       .transmission_compact_enabled =

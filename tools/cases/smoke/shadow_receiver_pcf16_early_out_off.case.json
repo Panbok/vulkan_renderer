@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "smoke.shadow.receiver.pcf16_early_out_off",
+  "suite": "smoke",
+  "description": "Backend-neutral shadow receiver fixture using all sixteen PCF taps with the uniform-region early out disabled.",
+  "scene": "assets/scenes/fixtures/shadow_receiver.scene.json",
+  "seed": 46,
+  "resolution": [640, 480],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 180000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": { "warmup": 30, "measure": 3 },
+  "renderer": { "editor": false, "skybox": false, "taa_enabled": false, "exposure_mode": "manual", "manual_exposure": 0.3, "shadow_preset": "balanced", "shadow_cascades": 4, "shadow_pcf_samples": 16, "shadow_pcf_early_out": false, "render_mode": "default" },
+  "camera": { "mode": "static", "position": [0, 7, 12], "yaw": -90, "pitch": -12, "vertical_fov_degrees": 62, "near_plane": 0.1, "far_plane": 100 },
+  "captures": [
+    { "at_frame": 1, "channels": ["final_color", "shadow_cascade_0", "shadow_cascade_1", "shadow_cascade_2", "shadow_cascade_3", "shadow_debug_cascades", "shadow_debug_factor", "shadow_debug_depth"] }
+  ],
+  "assertions": [
+    { "metric": "draw.shadow.cascade0.indirect_commands", "stat": "min", "min": 1 },
+    { "metric": "draw.shadow.cascade1.indirect_commands", "stat": "min", "min": 1 },
+    { "metric": "draw.shadow.cascade2.indirect_commands", "stat": "min", "min": 1 },
+    { "metric": "draw.shadow.cascade3.indirect_commands", "stat": "min", "min": 1 }
+  ]
+}

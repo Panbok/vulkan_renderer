@@ -257,8 +257,12 @@ typedef struct VkrHarnessRendererConfig {
   float32_t gtao_power;
   uint32_t shadow_debug_mode;
   /** Cold probe-count control used by the SH scaling fixture. UINT32_MAX means
-      "do not clamp". */
+   * "do not clamp". */
   uint32_t ibl_probe_limit;
+  /** Whether the fullscreen ACES tonemap stage is enabled. */
+  bool8_t tonemap_enabled;
+  /** Whether the fullscreen FXAA stage is enabled. */
+  bool8_t fxaa_enabled;
 } VkrHarnessRendererConfig;
 
 typedef struct VkrHarnessCompareConfig {

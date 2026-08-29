@@ -234,8 +234,22 @@ static bool8_t
 vkr_harness_scene_manifest_enqueue(VkrHarnessSceneManifest *manifest,
                                    const char *relative,
                                    VkrHarnessError *out_error) {
+  char canonical[VKR_HARNESS_PATH_MAX];
+  uint32_t length = 0u;
+  while (relative[length]) {
+    if (length + 1u >= sizeof(canonical)) {
+      vkr_harness_error_set(out_error, "scene_manifest.path_limit", "$.scene",
+                            "Scene dependency path exceeds %u bytes",
+                            VKR_HARNESS_PATH_MAX - 1u);
+      return false_v;
+    }
+    canonical[length] = relative[length] == '\\' ? '/' : relative[length];
+    length++;
+  }
+  canonical[length] = '\0';
+
   for (uint32_t i = 0; i < manifest->asset_count; ++i) {
-    if (string_equals(manifest->assets[i].path, relative)) {
+    if (string_equals(manifest->assets[i].path, canonical)) {
       return true_v;
     }
   }
@@ -246,7 +260,7 @@ vkr_harness_scene_manifest_enqueue(VkrHarnessSceneManifest *manifest,
     return false_v;
   }
   string_format(manifest->assets[manifest->asset_count++].path,
-                VKR_HARNESS_PATH_MAX, "%s", relative);
+                VKR_HARNESS_PATH_MAX, "%s", canonical);
   return true_v;
 }
 

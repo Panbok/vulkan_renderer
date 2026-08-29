@@ -1149,7 +1149,8 @@ vkr_internal bool8_t vkr_vk_record_graphics_body(
     if (!vkr_vk_record_packet_fullscreen(
             renderer, command, VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_FINAL,
             texture_index, exposure_state ? exposure_state->buffer.address : 0u,
-            VKR_VULKAN_FULLSCREEN_TONEMAP))
+            renderer->config.tonemap_enabled ? VKR_VULKAN_FULLSCREEN_TONEMAP
+                                             : 0u))
       return false_v;
     return !packet->editor ||
            vkr_vk_record_packet_draws(
@@ -1172,7 +1173,7 @@ vkr_internal bool8_t vkr_vk_record_graphics_body(
     const bool8_t recorded = vkr_vk_record_packet_fullscreen(
         renderer, command, VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_FINAL,
         texture_index, exposure_state ? exposure_state->buffer.address : 0u,
-        VKR_VULKAN_FULLSCREEN_TONEMAP);
+        renderer->config.tonemap_enabled ? VKR_VULKAN_FULLSCREEN_TONEMAP : 0u);
     if (!recorded)
       log_error("Vulkan tonemap root allocation failed at %llu/%u bytes",
                 (unsigned long long)slot->frame_upload_cursor,

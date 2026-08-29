@@ -423,6 +423,11 @@ bool8_t vkr_harness_report_write(const char *path,
                                  report->case_manifest.renderer.text_fixture) &&
       vkr_harness_json_emit_bool(writer, "taa_enabled",
                                  report->case_manifest.renderer.taa_enabled) &&
+      vkr_harness_json_emit_bool(
+          writer, "tonemap_enabled",
+          report->case_manifest.renderer.tonemap_enabled) &&
+      vkr_harness_json_emit_bool(writer, "fxaa_enabled",
+                                 report->case_manifest.renderer.fxaa_enabled) &&
       vkr_harness_json_emit_string(writer, "renderer_backend",
                                    report->case_manifest.renderer.backend[0]
                                        ? report->case_manifest.renderer.backend

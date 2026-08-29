@@ -439,6 +439,8 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
                                         "skybox",
                                         "text_fixture",
                                         "taa_enabled",
+                                        "tonemap_enabled",
+                                        "fxaa_enabled",
                                         "backend",
                                         "shadow_preset",
                                         "shadow_cascades",
@@ -470,6 +472,8 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
   string_copy(renderer->render_mode, "default");
   string_copy(renderer->exposure_mode, "manual");
   renderer->taa_enabled = true_v;
+  renderer->tonemap_enabled = true_v;
+  renderer->fxaa_enabled = true_v;
   renderer->manual_exposure = VKR_DEFAULT_EXPOSURE;
   renderer->exposure_reset_frame = UINT32_MAX;
   renderer->bloom_enabled = false_v;
@@ -508,6 +512,10 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
                                  &renderer->text_fixture, error) ||
       !vkr_harness_manifest_bool(doc, token, "taa_enabled", false_v,
                                  &renderer->taa_enabled, error) ||
+      !vkr_harness_manifest_bool(doc, token, "tonemap_enabled", false_v,
+                                 &renderer->tonemap_enabled, error) ||
+      !vkr_harness_manifest_bool(doc, token, "fxaa_enabled", false_v,
+                                 &renderer->fxaa_enabled, error) ||
       !vkr_harness_manifest_string(doc, token, "backend", false_v,
                                    renderer->backend, sizeof(renderer->backend),
                                    error) ||

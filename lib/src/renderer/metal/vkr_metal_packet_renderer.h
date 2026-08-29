@@ -63,8 +63,11 @@ typedef struct VkrMetalPacketRendererConfig {
   /** Focused evidence only; production submission leaves readback asynchronous.
    */
   bool8_t synchronous_validation_readback;
-  /** Production output applies ACES and writes an sRGB present target. */
+  /** Production output writes an sRGB present target. */
   bool8_t srgb_output;
+  /** Applies ACES in the fullscreen post stage independently of target format.
+   */
+  bool8_t tonemap_enabled;
   /** Converts the shared Vulkan-oriented clip-Y matrices for Metal raster. */
   bool8_t convert_vulkan_clip_y;
   /** Post-TAA spatial cleanup in the final fullscreen draw. */

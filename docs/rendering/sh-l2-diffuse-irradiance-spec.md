@@ -79,23 +79,23 @@ Evidence retained in this change:
   at the dominant foreground value `(152, 157, 165, 255)`. The Metal and Vulkan
   payload digests differ. The Metal payload is retained in portable generation
   `sha256:7492b6406ad11123e0cb5f0f943f5c74bd908e3f72b13750c1a8fd1196f6e726`.
-  The historical Vulkan PNG was not retained, so the configured `2/255`
-  maximum delta, `0.1/255` mean error, and `0.001` failed-pixel ratio remain
-  unevaluated until the next Windows cross-backend snapshot;
+  A fresh RX 6700 XT Vulkan run compared all three captures with that payload.
+  Every 1,228,800-value comparison passes with MAE
+  `5.080678104575146e-06`, maximum absolute delta `1/255`, zero failed pixels,
+  and failed-pixel ratio `0`, within the configured `2/255`, `0.1/255`, and
+  `0.001` limits. Cross-backend report digest
+  `sha256:549304f5a5d769943853ef46d70a281795c773ca358ff35d6bf69866790c7f32`;
 - clean Release `sh_ibl_probe_sweep_16_sh_l2` profile: five stable 300-frame
   repetitions, exactly 16 packed probes throughout, authoritative report digest
   `sha256:9d13f1159a8c813bb1c4865725d1e05fceea23156aa6538053058867ef1a9589`;
   deferred-lighting GPU time was 1.15275 ms p50, 1.14742 ms mean, and 0.20832 ms
   standard deviation across 1,500 samples.
 
-Still open: deterministic GPU repetition of the CPU projection fixtures, a
-retained numeric comparison of the native `indirect_diffuse` payloads, owner
+Still open: deterministic GPU repetition of the CPU projection fixtures, owner
 review of the café probe and clamp/energy diagnostics, submitted-frame
 reload/lifetime stress, the remaining 0/1/4-probe performance cases, and a
 valid comparative performance result. macOS builds the Vulkan sources but
-cannot run this repository's descriptor-buffer backend. The two native capture
-reports establish deterministic execution, but digest inequality alone cannot
-evaluate the authored image tolerances.
+cannot run this repository's descriptor-buffer backend.
 
 ## Scope
 

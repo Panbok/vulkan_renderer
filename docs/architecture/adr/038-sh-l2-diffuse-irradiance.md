@@ -31,13 +31,15 @@ Release case now produces three deterministic visible captures on Metal, report
 `sha256:6e8431ecff0626fedb99104236941f0f4546fa0fef7a6ab1cf07c47a0eaa6451`.
 The Metal payload is retained as portable generation
 `sha256:7492b6406ad11123e0cb5f0f943f5c74bd908e3f72b13750c1a8fd1196f6e726`.
-Their historical payload digests differ; the next Windows snapshot must apply
-the configured image tolerances against the retained Metal generation. The
-16-probe profile also has no comparable cubemap control. Deterministic GPU
-repetition of the CPU projection fixtures, the retained cross-backend pixel
-comparison, café-probe owner review, reload/lifetime stress, the remaining SH
-scaling cases, and a valid comparative performance result remain open. Source
-presence and these execution witnesses do not make this ADR Accepted.
+A fresh RX 6700 XT Vulkan run compares all three captures with that generation.
+Each passes with MAE `5.080678104575146e-06`, maximum absolute delta `1/255`,
+zero failed pixels, and failed-pixel ratio `0`; report
+`sha256:549304f5a5d769943853ef46d70a281795c773ca358ff35d6bf69866790c7f32`.
+The 16-probe profile still has no comparable cubemap control. Deterministic GPU
+repetition of the CPU projection fixtures, café-probe owner review,
+reload/lifetime stress, the remaining SH scaling cases, and a valid comparative
+performance result remain open. Source presence and these execution witnesses
+do not make this ADR Accepted.
 
 ## Context
 

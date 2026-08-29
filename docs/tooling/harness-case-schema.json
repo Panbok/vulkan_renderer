@@ -178,6 +178,16 @@
           "description": "Enables temporal reconstruction and camera jitter. Disable it when a case must isolate a post-temporal feature from temporal-history and jitter phase.",
           "default": true
         },
+        "tonemap_enabled": {
+          "type": "boolean",
+          "description": "Enables the fullscreen ACES tonemap stage. Omission preserves the production default.",
+          "default": true
+        },
+        "fxaa_enabled": {
+          "type": "boolean",
+          "description": "Enables the fullscreen FXAA stage. Omission preserves the production default.",
+          "default": true
+        },
         "backend": {
           "type": "string",
           "description": "Optional renderer pin. When present, VKR_HARNESS_RENDERER_BACKEND may confirm but cannot override it.",
