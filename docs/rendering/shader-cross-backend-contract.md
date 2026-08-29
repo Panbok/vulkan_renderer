@@ -58,8 +58,8 @@ changing an acceptance envelope requires new evidence and owner review.
 | GTAO | `shaders/shared/gtao_kernel.slangh` | `metal/msl/post/gtao.metal` | `vulkan/slang/post/gtao.slang` | **ALIGNED** |
 | Packed geometry and GPU draw compaction | `shaders/shared/gpu_draw.slangh` for both Slang libraries | Native deferred/ICB path mirrors the records and decode in `metal/msl/common/draw.metalh` and compacts in `metal/msl/world/gpu_draws.metal` | `vulkan/slang/common/resources.slangh`, `common/vertex.slangh`, and `world/deferred.slang` | **UNALIGNED**: source overflow and dispatch semantics now agree, but the native MSL mirror is not shared source and the matched overflow fixture is missing |
 | Cascaded-shadow receiver | `shaders/shared/shadow_kernel.slangh` | `metal/msl/shadow/sampling.metalh`, used by forward and deferred paths | `vulkan/slang/world/default.slang`, reused by `world/deferred.slang` | **UNALIGNED**: sources agree, but the current matched native snapshot gate is missing |
-| IBL baking and sampling | None | `metal/msl/ibl/*.metal*`, `metal/msl/world/lighting.metalh` | `vulkan/slang/ibl/*.slang*`, `vulkan/slang/world/default.slang` | **UNALIGNED**: no direct bake-output snapshot pair or compiled-root reflection pair |
-| L2 diffuse coefficients (ADR-038) | `shaders/shared/sh_l2_kernel.slangh`, included by the Vulkan Slang library and concatenated into the MSL library | `metal/msl/ibl/sh_projection.metal` `vkr_metal_packet_ibl_sh`; evaluation and the `VkrShAbTable` mirror in `metal/msl/common/draw.metalh` and `metal/msl/world/gpu_draws.metal` | `vulkan/slang/ibl/default.slang` `ibl_sh`; `VkrVulkanIblShRoot` and `VkrShAbTable` in `vulkan/slang/common/resources.slangh`; evaluation in `vulkan/slang/world/default.slang` | **UNALIGNED**: both production sources implement the same projection and evaluation, and the Metal root passes compiled-shader reflection (`VkrMetalPacketShProjectRoot`, 48 bytes, fields at 0/8/16/20/24/28/32/40). Missing: deterministic GPU repetition of the SH0 fixtures on either backend, the Vulkan validation-layer run, and any matched native capture pair |
+| IBL baking and sampling | SH diffuse math below; other bake math is backend-local | `metal/msl/ibl/*.metal*`, `metal/msl/world/lighting.metalh` | `vulkan/slang/ibl/*.slang*`, `vulkan/slang/world/default.slang` | **UNALIGNED**: the final Metal path passes a focused API/GPU shader-validation run, but no matched direct bake-output snapshot pair or current native Vulkan validation witness exists |
+| L2 diffuse coefficients (ADR-038) | `shaders/shared/sh_l2_kernel.slangh`, included by the Vulkan Slang library and concatenated into the MSL library | `metal/msl/ibl/sh_projection.metal` `vkr_metal_packet_ibl_sh`; final `sh_coefficients` and slot fields in `metal/msl/common/draw.metalh`; evaluation in `metal/msl/world/gpu_draws.metal` | `vulkan/slang/ibl/default.slang` `ibl_sh`; `VkrVulkanIblShRoot` plus final `sh_coefficients` and slot fields in `vulkan/slang/common/resources.slangh`; evaluation in `vulkan/slang/world/default.slang` | **UNALIGNED**: both production sources implement the same final projection/evaluation contract, the Metal 48-byte projection root passes compiled-shader reflection, and focused Metal API/GPU validation executes one packed probe through projection and indirect-diffuse evaluation. Missing: deterministic GPU repetition of the CPU fixtures, native Vulkan validation, and any matched native capture pair |
 | Indirect-diffuse capture channel (ADR-038 §3.1) | None | `metal/msl/world/gpu_draws.metal`, deferred lighting and transmission lighting | `vulkan/slang/world/deferred.slang`, `vk_deferred_lighting` and `vk_transmission_shade` | **UNALIGNED**: both production sources implement render mode 9 with the same rule (environment diffuse only, black background, GTAO excluded, no direct/specular/emissive/ambient fallback), but no matched native `indirect_diffuse` capture pair has been run |
 | Visibility, deferred resolve, lighting, temporal resolve, transmission, and picking | Packed rows and normal decode above | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang`, `vulkan/slang/picking/default.slang` | **UNALIGNED**: source algorithms and dispatch semantics now agree, including compact transmission, but matched native runtime and remaining ABI gates are open |
 | Tonemap and FXAA | Exposure state above | `metal/msl/post/tonemap.metal` | `vulkan/slang/post/default.slang`, `post/tonemap.slangh` | **UNALIGNED**: source behavior now agrees; the crossed tonemap/FXAA native fixture is missing |
@@ -118,7 +118,7 @@ and implementation files. `metal/slang/library.slang` is compiled separately.
 | Lighting and shadow sampling | `metal/msl/world/lighting.metalh`, `metal/msl/shadow/sampling.metalh`; shared progressive PCF comes from `shaders/shared/shadow_kernel.slangh` | `vulkan/slang/world/default.slang` and the same shared shadow kernel | **UNALIGNED**: source counterpart exists; matched native snapshots for the current source are missing |
 | GPU draw generation, visibility, resolve, deferred lighting, temporal history, transmission, picking, HZB, and SDSM | `metal/msl/world/gpu_draws.metal`; 18 entry points from `vkr_metal_packet_vbuffer_fragment` through `vkr_metal_packet_sdsm_reduce` | `vulkan/slang/world/deferred.slang` | **UNALIGNED**: source and dispatch semantics now agree; matched Vulkan runtime evidence remains missing |
 | Forward world shading and temporal MRT output | `metal/msl/world/default.metal`; `vkr_metal_packet_opaque_fragment`, `vkr_metal_packet_temporal_blend_fragment` | `vulkan/slang/world/default.slang` | **UNALIGNED**: source counterpart exists; matched Vulkan runtime gate missing |
-| IBL baking | `metal/msl/ibl/common.metalh` plus three IBL `.metal` files; equirect, irradiance, and prefilter entry points | `vulkan/slang/ibl/default.slang` | **UNALIGNED**: source counterpart exists; matched IBL snapshots and native validation missing |
+| IBL baking | `metal/msl/ibl/common.metalh` plus equirect, SH projection, and prefilter `.metal` entry points | `vulkan/slang/ibl/default.slang` | **UNALIGNED**: source counterpart exists and focused Metal validation passes; matched IBL snapshots and current native Vulkan validation are missing |
 | Text and text picking | `metal/msl/text/default.metal`; vertex, color-fragment, and picking-fragment entry points | `vulkan/slang/text/default.slang` | **UNALIGNED**: source counterpart exists; matched text snapshots and native validation missing |
 | Tonemap and FXAA | `metal/msl/post/tonemap.metal`; fullscreen vertex and tonemap fragment | `vulkan/slang/post/default.slang` and `post/tonemap.slangh` | **UNALIGNED**: enabled and disabled source behavior agrees; matched final-color evidence is missing |
 | Exposure, bloom, and GTAO | the three files listed in the original topology table; 12 compute entry points | the three Vulkan post-effect files listed above | **ALIGNED** |
@@ -258,7 +258,7 @@ records reached through draw and frame pointers.
 | --- | --- |
 | Geometry and scene rows | vertex `64`; instance `80`; material `176`; text vertex `32`; IBL probe `64`; shadow cascade `96` |
 | Draw roots | vertex draw `48`; temporal vertex draw `48`; draw `48`; frame `464` |
-| Presentation and bake roots | tonemap `32`; equirect `32`; irradiance `32`; prefilter `32`; text `176` |
+| Presentation and bake roots | tonemap `32`; equirect `32`; SH projection `48`; prefilter `32`; text `176` |
 | Visibility roots | GPU draw `192`; transmission peel `16`; temporal transform `32`; G-buffer resolve `352` |
 | Shared post-effect records | GTAO params `192`; GTAO depth `224`; GTAO evaluate `256`; GTAO denoise `240`; exposure `112`; bloom `80` |
 | Lighting, temporal, and transmission roots | deferred lighting `160`; temporal resolve `208`; transmission shade `448`; transmission coverage `32`; transmission compact `80` |
@@ -420,20 +420,21 @@ tap counts 1, 9, 16 with early-out on and off, and 32.
 
 ### 4.7 IBL bake and sampling — UNALIGNED
 
-All bake kernels dispatch `8x8x6`. Equirectangular conversion uses the same
-cube-face orientation and longitude/latitude mapping. Diffuse irradiance uses a
-Hammersley cosine-hemisphere integral with 128 production samples. Specular
-prefilter uses 256 Hammersley GGX samples, PDF-derived sample solid angle, cube
-texel solid angle, and mip LOD; roughness at or below `0.001` forces mip 0.
-Forward and deferred lighting use the same analytic environment BRDF, local
-probe box projection and weighting, and global-probe remainder.
+Equirectangular conversion and specular prefilter dispatch `8x8x6` and use the
+same cube-face orientation and longitude/latitude mapping. Specular prefilter
+uses 256 Hammersley GGX samples, PDF-derived sample solid angle, cube texel solid
+angle, and mip LOD; roughness at or below `0.001` forces mip 0. Diffuse response
+instead dispatches one 64-thread workgroup that projects the selected cube mip
+into nine normalized L2 coefficients, packs seven `float4` values, and publishes
+a completion-safe slot. Forward and deferred lighting use the same analytic
+environment BRDF, local-probe box weighting, and global-probe remainder; box
+projection remains specular-only.
 
-Both production shaders now encode irradiance 128 and prefilter 256 as compile-
-time counts; the retained root count field is ABI-compatible padding for the
-current kernels and zero input cannot alter either loop. The state remains
-**UNALIGNED** until the Vulkan 32-byte bake root has compiled field-level
-reflection and direct equirect, irradiance, and every prefilter-mip output has a
-matched Release snapshot pair.
+The SH projection root is 48 bytes on both host contracts. Metal compiled-root
+reflection and focused API/GPU shader validation pass. The state remains
+**UNALIGNED** until native Vulkan validates its sampled-source root and matched
+Release captures cover direct equirect conversion, SH diffuse response, and
+every prefilter mip.
 
 ### 4.8 World, deferred, temporal, and picking paths — UNALIGNED
 

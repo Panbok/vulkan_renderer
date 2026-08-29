@@ -62,7 +62,7 @@ Considered → Revisit When**.
 | [ADR-035](035-canonical-mtsdf-screen-pixel-range-shading.md) | Canonical MTSDF screen-pixel range with minification fallback | Proposed |
 | [ADR-036](036-dpi-derived-ui-text-scale.md) | DPI-derived UI text scale | Proposed |
 | [ADR-037](037-portable-same-resolution-temporal-antialiasing.md) | Portable same-resolution temporal antialiasing | Accepted (partial); shared Metal/Vulkan resolve, rigid transparent motion, bounded composition reactivity, output-space FXAA, and native Apple validation ship, while deformation/procedural/particle motion and broader quality evidence remain open |
-| [ADR-038](038-sh-l2-diffuse-irradiance.md) | Second-order spherical-harmonic normalized diffuse response replacing the baked irradiance cubemap | Proposed; preserves the current `E/pi` shading convention and revises the diffuse half of ADR-016 while cubemaps remain for source, skybox, and specular prefilter. No production implementation exists |
+| [ADR-038](038-sh-l2-diffuse-irradiance.md) | Second-order spherical-harmonic normalized diffuse response replacing the baked irradiance cubemap | Partial; final packet-version-23 Metal/Vulkan implementation is present and preserves the `E/pi` convention while cubemaps remain for source, skybox, and specular prefilter. Native Vulkan, matched quality, lifetime-stress, and authoritative performance acceptance evidence remains open |
 
 ## Relationship to the Specification
 

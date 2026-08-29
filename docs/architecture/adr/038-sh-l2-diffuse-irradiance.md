@@ -1,6 +1,6 @@
 ---
-status: proposed
-updated: 2026-08-28
+status: partial
+updated: 2026-08-29
 authority: adr
 ---
 
@@ -8,21 +8,32 @@ authority: adr
 
 ## Status
 
-**Proposed.** No production code or production call site exists. The staged
-implementation and evidence gates are defined in
+**Implemented, acceptance pending.** The final packet-version-23 SH ABI,
+projection and evaluation paths, completion-safe coefficient pool, source
+aliasing, authored deringing, and diffuse-cubemap retirement are present on
+Metal and Vulkan. The retained acceptance gates are defined in
 [sh-l2-diffuse-irradiance-spec.md](../../rendering/sh-l2-diffuse-irradiance-spec.md).
 
-This proposal revises only the diffuse half of
+This decision revises only the diffuse half of
 [ADR-016](016-hdr-environment-format.md). It does not supersede that decision.
-ADR-016 remains the accepted current state until this proposal is implemented
-and accepted. Its equirectangular delivery, load-time cube conversion, and
-`TextureCube` runtime sampling remain in force for the skybox draw, environment
-source, and GGX specular prefilter.
+ADR-016's equirectangular delivery, load-time cube conversion, and `TextureCube`
+runtime sampling remain in force for the skybox draw, environment source, and
+GGX specular prefilter. Its diffuse-cubemap portion is now historical.
+
+The 2026-08-29 implementation gates passed the 551-test CPU suite, Debug and
+Release builds, a broad exclusive Metal API/GPU validation run, a focused
+single-probe SH projection/evaluation validation run, and fresh cold plus warm
+Metal pipeline-archive launches. This Mac cannot execute the
+descriptor-buffer Vulkan backend. Native Vulkan validation, deterministic GPU
+fixture repetition, matched native indirect-diffuse captures, café-probe owner
+review, reload/lifetime stress, and authoritative Release performance evidence
+remain open. Source presence and the Metal diagnostic do not make this ADR
+Accepted.
 
 ## Context
 
-The renderer stores the shader-facing diffuse environment response as a 64²
-RGBA16F cubemap per environment and per local reflection probe. The
+Before this decision, the renderer stored the shader-facing diffuse environment
+response as a 64² RGBA16F cubemap per environment and per local reflection probe. The
 `ibl_irradiance` compute kernel
 (`shaders/vulkan/slang/ibl/default.slang`, mirrored by
 `shaders/metal/msl/ibl/diffuse_convolution.metal`) averages cosine-weighted
@@ -94,13 +105,13 @@ Six constraints define the implementation.
    read. Exhaustion is an explicit cold-path error and must not introduce a
    successful-frame wait.
 
-4. **Keep the final probe descriptor 64 bytes.** The final Vulkan and Metal
+4. **Keep the final probe descriptor 64 bytes.** The Vulkan and Metal
    packet probe records replace their eight-byte irradiance reference at offset
    0 with an SH slot index and reserved `uint`. Fields from offset 8 onward do
-   not move. Dual-representation A/B stages use a temporary side table keyed by
-   packed packet probe ordinal, because a final probe row cannot carry both
-   representations at once. Separate deferred-lighting pipeline variants keep
-   representation selection out of the per-pixel and per-probe paths.
+   not move. The completed ABI has no representation selector or per-pixel
+   representation branch. The temporary dual-representation stages used a side
+   table keyed by packed packet probe ordinal and separate lighting pipelines;
+   both were removed with cubemap retirement.
 
 5. **Project a bounded, filtered source deterministically.** The pass reduces
    the mip whose face extent is at most 32, clamped to the last available mip,
@@ -124,7 +135,7 @@ therefore occupies 4,144 bytes, including the black sentinel.
 
 ## Consequences
 
-**Removed after the evidence gates pass.** The 64² diffuse response cubemap and
+**Removed by the final implementation.** The 64² diffuse response cubemap and
 its allocation per environment and per probe (196,608 bytes each, up to about
 3.3 MB at full probe occupancy); the `ibl_irradiance` and Metal
 `diffuse_convolution` kernels and their pipelines; `VKR_IBL_IRRADIANCE_SIZE`;
@@ -136,8 +147,9 @@ its reference count reaches zero, and Metal uses a constexpr sampler.
 **Added.** One fixed-capacity SH slot pool with renderer lifetime; projection
 and evaluation kernels for both backends; shared CPU/GPU arithmetic and unit
 tests in `vkr_ibl_math.c`; completion-gated slot publication and retirement; a
-temporary A/B side table; an indirect-diffuse capture channel; and an authored
-deringing scalar.
+final slot-based packet ABI; an indirect-diffuse capture channel; and an
+authored deringing scalar. The temporary A/B side table existed only during the
+dual-representation stages and is not part of the final ABI.
 
 **Packet ABI.** The final retirement stage advances
 `VKR_RENDER_PACKET_VERSION` from 22 to 23. Each backend replaces its 16-byte
@@ -162,19 +174,21 @@ constant-ambient fallback. A failed projection does not publish its candidate
 slot. Pool exhaustion reports an error at the cold bake/publication boundary;
 it does not wait inside a successful frame or expose partial coefficients.
 
-**Quality risk requires owner acceptance.** L2 cannot reproduce a small bright
-emitter with a hard terminator. The Bistro café probe is the in-tree risk case:
-an authored indoor cubemap dominated by a doorway. Its diffuse response can be
-softer than the current cubemap result. A dedicated indirect-diffuse A/B capture
-of this probe, including clamp and energy diagnostics, must be accepted before
-the cubemap path is removed.
+**Quality risk still requires owner acceptance.** L2 cannot reproduce a small
+bright emitter with a hard terminator. The Bistro café probe is the in-tree risk
+case: an authored indoor cubemap dominated by a doorway. Its diffuse response can be
+softer than the preceding cubemap result. A dedicated indirect-diffuse A/B capture
+of this probe, including clamp and energy diagnostics, is still required before
+this ADR can become Accepted. The implementation retired the cubemap path before
+that evidence was retained; that sequencing gap is recorded rather than hidden.
 
 **No performance result is asserted.** The texture-fetch argument is a
-mechanism. The spec requires matched Release deferred-lighting timestamps with
-0, 1, 4, and 16 probes while both representations still exist in one binary.
-The performance gate therefore runs before retirement. If results do not
-separate, the accepted record must call the timing neutral and remove any
-unsupported speed rationale.
+mechanism. The required matched Release deferred-lighting comparison was not
+retained before the cubemap path was removed. The remaining 0, 1, 4, and 16
+probe SH cases can characterize the final path but cannot reconstruct a valid
+same-binary A/B result. Acceptance must either supply comparable evidence from a
+temporary measurement branch or explicitly narrow the rationale to memory and
+code reduction without a speed claim.
 
 ## Alternatives Considered
 

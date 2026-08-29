@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-26
+updated: 2026-08-29
 authority: design
 ---
 
@@ -8,16 +8,19 @@ authority: design
 
 Implementation specification for
 [ADR-016](../architecture/adr/016-hdr-environment-format.md)
-(equirectangular delivery, cubemap runtime) and for investigation items §4, §5,
-and §7 of
+(equirectangular delivery plus source, skybox, and specular cubemaps) and for
+investigation items §4, §5, and §7 of
 [bistro-baseline-shading-investigation.md](bistro-baseline-shading-investigation.md).
 
 Implemented on 2026-08-03, seam-corrected and lighting-calibrated on
 2026-08-04. The renderer now
 decodes Radiance HDR through a worker-safe prepared-load path, converts a 2:1
-source to a full-mip cubemap, bakes half-float irradiance,
-specular prefilter, and BRDF products, and presents through an RGBA16F scene
-target plus an ACES-fitted tonemap. The Bistro scene selects the licensed 4K
+source to a full-mip cubemap, bakes a half-float specular prefilter, and presents
+through an RGBA16F scene target plus an ACES-fitted tonemap. Diffuse lighting
+now uses the normalized L2 SH contract in
+[ADR-038](../architecture/adr/038-sh-l2-diffuse-irradiance.md), and the split-sum
+BRDF term is evaluated analytically rather than sampled from a LUT. The Bistro
+scene selects the licensed 4K
 Citrus Orchard asset through `environment.equirect`; its license is recorded in
 [`citrus_orchard_puresky_4k.hdr.license.md`](../../assets/textures/citrus_orchard_puresky_4k.hdr.license.md);
 other scenes may select a different equirect or an authored cubemap.
@@ -25,11 +28,12 @@ other scenes may select a different equirect or an authored cubemap.
 Asynchronous scene loads run the prepared decoder on resource workers. The
 renderer owns no built-in environment filename and performs no independent
 startup decode. After one scene environment bake succeeds, world resources
-retain its source, irradiance, and prefilter handles as the fallback without a
-second decode or bake.
+retain its source and prefilter handles plus published SH slot as the fallback
+without a second decode or bake.
 
 The remaining architectural gap is unchanged: `IBL.Bake` records prepared
-graphics work whose persistent resources are not declared to the render graph.
+backend-private GPU work whose persistent resources are not declared to the
+render graph.
 Those resources therefore retain explicit access-carrying barriers. Validation
 is clean on Apple M1 Pro/MoltenVK; native Vulkan and other format/queue layouts
 remain unverified rather than implicitly claimed.
@@ -41,7 +45,7 @@ In scope:
 - one required half-float working format for HDR environment and IBL data;
 - float Radiance `.hdr` decode and half-float upload;
 - equirectangular-to-cubemap conversion with a complete source mip chain;
-- half-float irradiance, specular prefilter, and BRDF LUT storage;
+- half-float environment source and specular-prefilter storage;
 - corrected PDF/solid-angle source-mip selection during specular prefiltering;
 - scene schema and runtime state for alternative cubemap/equirect sources; and
 - ownership, synchronization, failure, validation, and measurement contracts;
@@ -54,8 +58,6 @@ In scope:
 
 Out of scope, tracked elsewhere:
 
-- SH L2 irradiance (investigation §5a), which changes the storage model after
-  this work;
 - automatic exposure and camera adaptation; and
 - BC6H/KTX2 HDR delivery, probe atlases, and offline environment baking.
 
@@ -78,7 +80,8 @@ writable cubemaps, and per-face render targets while a frame was being encoded.
 The implemented path moves format selection, pipeline/render-pass creation,
 image allocation, and face/mip target creation to initialization or resource
 finalization. Finalization records non-blocking transitions into the active
-frame; the `IBL.Bake` executor only binds prepared state and draws.
+frame; the `IBL.Bake` executor binds prepared state and records the required
+conversion, prefilter, and SH projection work.
 
 Other non-negotiable constraints:
 
@@ -115,12 +118,12 @@ Add one initial format to `VkrTextureFormat` in
 
 | Enum | Vulkan format | Initial uses |
 |---|---|---|
-| `VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT` | `VK_FORMAT_R16G16B16A16_SFLOAT` | Equirect upload, environment cubemap, irradiance, prefilter, BRDF LUT |
+| `VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT` | `VK_FORMAT_R16G16B16A16_SFLOAT` | Equirect upload, environment cubemap, prefilter, HDR scene color |
 
-Do not add `R16G16_SFLOAT` or `B10G11R11_UFLOAT_PACK32` in this phase. The
-BRDF LUT and 64² irradiance map are too small for those variants to recover
-meaningful memory, while a different attachment format requires a compatible
-render pass and pipeline. One RGBA16F path removes that state combination.
+This historical phase used one RGBA16F path for every IBL product. The later SH
+diffuse and analytic split-sum BRDF changes removed the diffuse cubemap and BRDF
+LUT; the format remains current for the source, specular prefilter, and HDR scene
+color.
 Packed float and BC6H remain measured follow-ups.
 
 ### Format metadata and lowering
@@ -183,29 +186,25 @@ because every initial bake output uses the same format.
 cold/warm production cache run, and a validation-layer run that creates,
 attaches, samples, and destroys the half-float resources.
 
-## Phase 2 — Widen IBL storage and replace the 8-bit LUT
+## Phase 2 — Historical diffuse storage and LUT activation
 
 `vkr_world_resources_create_writable_cube_texture()` in
 `lib/src/renderer/systems/vkr_world_resources.c` now takes an explicit format.
-The 64² irradiance cubemap and 256² full-mip specular prefilter pass RGBA16F and
-validate that format against the prebuilt render-pass signature before
-recording.
+The implementation originally widened both the 64² irradiance cubemap and 256²
+full-mip specular prefilter to RGBA16F. ADR-038 has since retired the irradiance
+cubemap; the prefilter remains RGBA16F.
 
-`assets/textures/ibl_brdf_lut.png` is a 128×128, 8-bit colormapped PNG. The PBR
-shader consumes only `.rg`, but the general texture loader expands it to an
-RGBA8 texture. Replace it with a one-time graphics bake into a persistent
-128×128 RGBA16F target; `.rg` carries the DFG terms and `.ba` are unused. Do not
-describe this as a compute pass: real compute dispatch is not exercised in the
-current renderer. Its shader, shadercfg, render target, and pipeline are
-prebuilt through the same RGBA16F-compatible IBL render pass.
+The original activation replaced `assets/textures/ibl_brdf_lut.png` with a
+one-time 128×128 RGBA16F graphics bake. That product is also retired: production
+shaders now evaluate the split-sum environment BRDF analytically, with no BRDF
+texture, bake pipeline, handle, or packet field.
 
 Approximate device memory for this initial policy is:
 
 | Resource | Approximate size |
 |---|---:|
-| 64² RGBA16F irradiance cube | 0.19 MiB |
 | 256² RGBA16F prefilter cube with full mips | 4.0 MiB |
-| 128² RGBA16F BRDF LUT | 0.125 MiB |
+| SH coefficient pool (37 × 112 bytes) | 0.004 MiB |
 
 Changing storage precision is expected to reduce quantization bands, but
 “banding is gone” is a validation result, not a design guarantee. Compare the
@@ -321,12 +320,12 @@ frontend code. The equirect shader reflects `Texture2D`, while convolution
 shaders reflect `TextureCube`; their prebuilt pipeline layouts own that
 difference. The recorder only sets the job's named source binding.
 
-Equirect→cube is a third prepared job. It runs before diffuse and specular
-convolution in `IBL.Bake`. Preserve explicit barriers for:
+Equirect→cube runs before SH projection and specular convolution in `IBL.Bake`.
+Preserve explicit barriers for:
 
 1. equirect upload transfer-write → fragment sampled read;
 2. environment-cube color writes → convolution/skybox sampled reads; and
-3. irradiance/prefilter color writes → material sampled reads.
+3. SH buffer writes and prefilter color writes → material shader reads.
 
 Each barrier covers the initialized mip/layer range. The graph cannot infer
 these hazards while the resources remain undeclared.
@@ -450,11 +449,11 @@ NONE → SOURCE_LOADING → CUBE_PENDING → CONVOLUTION_PENDING → READY
 
 Legacy cubemaps enter at `CONVOLUTION_PENDING`. Equirect sources own a temporary
 2D delivery handle while `CUBE_PENDING`; successful conversion produces the
-scene-owned persistent `source_cubemap`, then convolution produces the
-scene-owned irradiance and prefilter handles. The source cubemap remains for the
-skybox and future convolution. The temporary equirect is retired after proven
-GPU completion and reloaded on an explicit rebake. Scene reset/unload releases
-every handle on every partial state.
+scene-owned persistent `source_cubemap`, then IBL work publishes an SH slot and
+the scene-owned prefilter handle. The source cubemap remains for the skybox and
+future projection/prefilter work. The temporary equirect is retired after proven
+GPU completion and reloaded on an explicit rebake. Scene reset/unload retires
+the SH slot and releases every handle on every partial state.
 
 Local reflection probes remain cubemap-sourced in this implementation.
 
@@ -482,7 +481,7 @@ environment tuning.
 | Phase | Observable checkpoint |
 |---|---|
 | 1 — Format/capabilities | Mapping and byte-size tests pass; exact RGBA16F image combinations create, attach, sample, and destroy under validation |
-| 2 — Storage/LUT | Same-view Bistro comparison records the quantization change; no format/signature errors; load→unload returns handle counts |
+| 2 — Historical storage/LUT | The original RGBA16F products passed their activation gate. Diffuse now uses ADR-038 SH slots and the BRDF term is analytic |
 | 3 — Float decode | A licensed or generated `.hdr` fixture preserves known finite values; vertical orientation, clamp warning, cache bypass, and cleanup tests pass |
 | 4 — Prefilter LOD | Source mips are initialized; numeric PDF/LOD tests pass; roughness sweep shows bounded bright-source artifacts |
 | 5 — Conversion/schema | Dedicated HDR scene produces correctly oriented, seam-safe cubemap mips; fallback/partial-failure paths are clean; the authored production environment switches only through the active tonemap path |
@@ -514,7 +513,7 @@ Run two normal application processes against one fresh explicit pipeline-cache
 path for every new shader or compatible pipeline signature: the first must
 initialize and save, and the second must load and save. Run Vulkan validation
 layers through source upload,
-full-mip conversion, both convolutions, BRDF bake, skybox/material sampling,
+full-mip conversion, SH projection, specular convolution, skybox/material sampling,
 failure cleanup, scene reload, and shutdown. A green CPU suite does not cover
 descriptor types, attachment formats, barriers, subresource ranges, or deferred
 destruction.

@@ -1,6 +1,6 @@
 ---
-status: proposed
-updated: 2026-08-28
+status: partial
+updated: 2026-08-29
 authority: design
 ---
 
@@ -11,13 +11,54 @@ Implementation specification for
 baked 64² diffuse-response cubemap with second-order spherical-harmonic
 coefficients evaluated in deferred lighting.
 
-**No production code exists.** This document is a plan. Its measurements and
-captures are future gates, not completed evidence.
+**The final production implementation exists; acceptance evidence is partial.**
+Packet version 23 carries SH slots, both selected backends project and evaluate
+the shared L2 contract, and the diffuse-cubemap representation and temporary A/B
+ABI are retired. Measurements and captures explicitly marked open below are
+future gates, not completed evidence.
 
-The current representation and rationale are documented by
+The preceding cubemap representation and its rationale are documented by
 [hdr-environment-ibl-spec.md](hdr-environment-ibl-spec.md) and
 [ADR-016](../architecture/adr/016-hdr-environment-format.md). ADR-016 remains
-the accepted state until this proposal is implemented and accepted.
+authoritative for equirectangular delivery, source cubemaps, skybox sampling,
+and specular prefiltering; its diffuse-cubemap portion is historical.
+
+## Implementation status
+
+Implemented on 2026-08-29:
+
+- shared CPU/GPU projection, packing, windowing, and evaluation math;
+- a 37-slot, 4,144-byte renderer-owned coefficient pool with an immutable black
+  sentinel and completion-gated publication, reader tracking, retirement, and
+  reuse;
+- selected-mip deterministic projection and final deferred-lighting evaluation
+  on Metal and Vulkan;
+- scene `sh_deringing`, environment-source aliasing, and final packet-version-23
+  frame/probe records;
+- the `indirect_diffuse` capture mode and four final-path probe-count fixtures;
+- retirement of diffuse cubemap allocation, baking, descriptors, handles,
+  shaders, pipelines, representation selection, and temporary A/B records.
+
+Evidence retained in this change:
+
+- `./build_test.sh`: exit 0, 551 tests;
+- `./build.sh Debug` and `./build_release.sh`: exit 0, including both shader
+  libraries;
+- one exclusive Metal API/GPU shader-validation state-matrix run: exit 0, all
+  11 assertions passed, no validation diagnostic, report digest
+  `sha256:101be997281ecc0c81cf66984ceb2cf8c0ae0e132ae90ec0bcf7068fd7c6ded0`;
+- focused `local.sh_ibl.single_probe_validation` under the same exclusive Metal
+  validation profile: exit 0, exactly one packed probe in all six measured
+  frames, no validation diagnostic, report digest
+  `sha256:13d8ab1fe4b2a2533fc5f72130ba9115a30bffef7b0914fb424aca8f73ed3e41`;
+- normal Debug application cold and warm launches against one fresh explicit
+  Metal pipeline archive: both exit 0; archive size 2,128,224 bytes.
+
+Still open: native Vulkan validation, deterministic GPU repetition of the CPU
+projection fixtures, matched native `indirect_diffuse` captures, owner review of
+the café probe and clamp/energy diagnostics, submitted-frame reload/lifetime
+stress, and authoritative Release performance evidence. macOS builds the Vulkan
+sources but cannot run this repository's descriptor-buffer backend.
 
 ## Scope
 
@@ -27,9 +68,11 @@ In scope:
 - a renderer-owned, completion-safe SH coefficient pool;
 - one deterministic projection kernel per backend;
 - explicit windowing and non-negativity policies;
-- a temporary dual-representation ABI and the final packet ABI migration;
+- the historical temporary dual-representation ABI and the final packet ABI
+  migration;
 - an indirect-diffuse replay capture for quality comparison;
-- retirement of diffuse cubemap resources after quality and performance gates;
+- retirement of diffuse cubemap resources, with the actual pre-evidence
+  sequencing gap recorded below;
 - cold/warm cache, scene-reload, and backend validation evidence.
 
 Out of scope:
@@ -196,11 +239,11 @@ onward retain their current offsets. `VkrFrameIblProbe` replaces its irradiance
 texture handle with `uint32_t sh_slot`; packet validation requires
 `sh_slot < VKR_SH_SLOT_CAPACITY` before hot-path lowering.
 
-### 1.6 Temporary dual-representation ABI
+### 1.6 Historical temporary dual-representation ABI
 
-SH1 and SH2 must keep the current version-22 root and probe records intact so a
+SH1 and SH2 kept the version-22 root and probe records intact so a
 single binary can render either representation. The retired BRDF root padding
-temporarily stores an address to this 16-byte-aligned, per-frame table:
+temporarily stored an address to this 16-byte-aligned, per-frame table:
 
 ```c
 typedef struct VkrShAbTable {
@@ -211,21 +254,24 @@ typedef struct VkrShAbTable {
 } VkrShAbTable; /* 80 bytes */
 ```
 
-Vulkan interprets `reserved_brdf_texture` and `reserved_brdf_sampler` together
-as the 64-bit table address. Metal uses `reserved_brdf_lut`. The table lives in
-completion-safe per-frame upload storage. Unused probe entries are slot 0.
+Vulkan interpreted `reserved_brdf_texture` and `reserved_brdf_sampler` together
+as the 64-bit table address. Metal used `reserved_brdf_lut`. The table lived in
+completion-safe per-frame upload storage. Unused probe entries were slot 0.
 
 `probe_slots[i]` maps to packed packet probe ordinal `i`, not scene probe index.
 It is filled in the same loop that skips unavailable probes and constructs
 `VkrFrameIblProbe[]`. `probe_count` must equal the packed packet count. This
 prevents a sparse scene-probe list from selecting the wrong coefficients.
 
-The A/B build contains separate cubemap and SH deferred-lighting pipeline
+The A/B build contained separate cubemap and SH deferred-lighting pipeline
 variants. A cold representation setting selects the variant while recording the
 pass. The SH variant reads `VkrShAbTable`; the cubemap variant reads the existing
 probe fields. No representation branch executes per pixel or per probe. The SH
 variant and its extra pointer load are removed or made unconditional with the
 final ABI.
+
+No `VkrShAbTable`, cubemap pipeline variant, or representation selector remains
+in the final implementation.
 
 ## 2. Projection and evaluation
 
@@ -315,22 +361,26 @@ configuration participate in the workload fingerprint. The Bistro outdoor
 environment and café-probe A/B cases capture this channel with identical camera,
 exposure, resolution, scene state, and representation-independent settings.
 
-### 3.2 Representation control
+### 3.2 Historical representation control
 
-The temporary `cubemap` versus `sh_l2` selector is a cold frame/case setting
-that chooses one deferred-lighting pipeline variant before command recording.
-It is recorded in harness effective configuration and the policy fingerprint.
-No per-probe or per-pixel representation branch is allowed.
+The temporary `cubemap` versus `sh_l2` selector was a cold frame/case setting
+that chose one deferred-lighting pipeline variant before command recording.
+It was recorded in harness effective configuration and the policy fingerprint.
+No per-probe or per-pixel representation branch was allowed.
 
-Performance comparison treats representation and requested probe count as
-declared independent variables. The comparison tool reports their expected
-fingerprint differences and rejects differences in device, driver, binary,
-scene, resolution, camera, target, present mode, timing policy, or other
+The planned performance comparison treated representation and requested probe
+count as declared independent variables. The comparison tool would report their
+expected fingerprint differences and reject differences in device, driver,
+binary, scene, resolution, camera, target, present mode, timing policy, or other
 workload fields.
 
-## 4. Staged work
+## 4. Staged work and current result
 
-### SH0: shared arithmetic and reference
+SH0 through SH3 are implemented. Their original gates remain below because the
+code advanced through retirement before every evidence gate was retained. That
+does not retroactively turn an unrun gate into a pass.
+
+### SH0 historical plan: shared arithmetic and reference
 
 Add L2 basis evaluation, normalized transfer factors, optimized packing,
 windowing, exact texel solid angle, source-mip derivation, and a full-resolution
@@ -355,7 +405,7 @@ Tests cover:
 Gate: `./build_test.sh`. Do not choose the selected-mip tolerance before the
 reference comparison is recorded.
 
-### SH1: Vulkan dual representation
+### SH1 historical plan: Vulkan dual representation
 
 Add the coefficient pool, completion-gated lifecycle, temporary A/B table,
 `ibl_sh` projection kernel, and a Vulkan SH deferred-lighting pipeline variant.
@@ -379,7 +429,7 @@ Gates:
 
 A rejected café result or a lifetime failure blocks SH2 and SH3.
 
-### SH2: Metal parity and performance evidence
+### SH2 historical plan: Metal parity and performance evidence
 
 Mirror projection, evaluation, pool ownership, temporary A/B table, and
 indirect-diffuse mode on Metal. A probe sourced from the scene environment uses
@@ -403,9 +453,11 @@ SH2 gates:
 
 All SH2 evidence runs while cubemap and SH paths coexist in the same binary.
 
-### SH3: final ABI and cubemap retirement
+### SH3 historical plan: final ABI and cubemap retirement
 
-Only after every SH1 and SH2 gate passes:
+The plan required every SH1 and SH2 gate to pass before this stage. The code now
+contains the following final state even though the open evidence listed above
+still prevents acceptance:
 
 - advance `VKR_RENDER_PACKET_VERSION` to 23;
 - apply the final frame-root, probe-record, public packet, shader, and Metal
@@ -431,8 +483,9 @@ Final gates:
   completion, with no exhaustion or monotonically growing retired count;
 - documentation updates in §6.
 
-SH3 does not rerun a cubemap-versus-SH performance comparison because the
-cubemap path is gone. The authoritative comparison is the accepted SH2 record.
+SH3 cannot rerun a cubemap-versus-SH performance comparison because the cubemap
+path is gone. The plan expected an accepted SH2 comparison, but no such retained
+record exists; §5 defines the honest recovery choices.
 
 ## 5. Performance evidence
 
@@ -441,22 +494,22 @@ The claim under test is limited to the deferred-lighting pass: replacing up to
 pass's GPU time. Bake time and total frame time are reported for context, not as
 the claimed result.
 
-SH2 adds one dedicated scene fixture,
+The final tree contains one dedicated scene fixture,
 `assets/scenes/ibl_probe_sweep.scene.json`, with 16 overlapping local probes and
 a camera path that keeps the measured pixels inside all selected volumes. A
 cold harness control `ibl_probe_limit` packs exactly 0, 1, 4, or 16 probes from
-that fixture. Cases under `tools/cases/performance/` cover the eight combinations
-using the name pattern
-`sh_ibl_probe_sweep_{0,1,4,16}_{cubemap,sh_l2}.case.json`:
+that fixture. Cases under `tools/cases/performance/` cover the four final SH
+loads using the name pattern
+`sh_ibl_probe_sweep_{0,1,4,16}_sh_l2.case.json`:
 
 | Variable | Values |
 |---|---|
 | `ibl_probe_limit` | `0`, `1`, `4`, `16` |
-| `ibl_diffuse_representation` | `cubemap`, `sh_l2` |
 
-Both controls are emitted in `effective_config`, fingerprints, and the report.
-The fixture asserts the packed probe count so an unavailable texture cannot
-silently reduce work.
+The control is emitted in `effective_config`, fingerprints, and the report. The
+fixture asserts the packed probe count so an unavailable prefilter cannot
+silently reduce work. The cubemap cases and representation selector were
+retired; these four cases characterize scaling of the final SH path only.
 
 Run each case with
 `tools/profiles/performance-windowed-gpu.json` in a normal Release build, using
@@ -466,13 +519,17 @@ must be enabled and authoritative. Compare the deferred-lighting pass `gpu_ms`
 distribution at each probe count and report p50, dispersion, and paired delta.
 Do not substitute frame time or infer a result from fetch counts.
 
-Also report these factual resource deltas by probe count:
+The planned same-binary cubemap/SH comparison was not retained before
+retirement. A future acceptance record must not present the four final-path
+cases as an A/B comparison. It may either restore the historical cubemap path on
+a temporary measurement branch or explicitly accept memory/code reduction with
+no measured speed claim.
 
-- diffuse cubemap bytes retained by the A/B build;
-- coefficient-pool bytes;
-- bindless sampled-texture references used by each representation; and
-- canonical sampler reference-count outcome, without claiming one sampler per
-  cubemap.
+The factual final resource state is:
+
+- no diffuse cubemap allocation or bindless sampled-texture reference;
+- one 4,144-byte coefficient pool; and
+- source cubemap, skybox, GGX prefilter, and their sampler ownership unchanged.
 
 If the 16-probe timing does not separate beyond noise, record the result as
 neutral. Memory and code reduction can still justify acceptance, but ADR-038
@@ -484,10 +541,13 @@ artifact tree in the same turn.
 
 ## 6. Completion
 
-When SH3 ships, update in the same change:
+The implementation and status updates are present, but completion remains
+partial until the open evidence in the implementation-status section is
+retained. When that evidence closes, update in the same change:
 
 1. this document's status, date, evidence commands, and accepted tolerances;
-2. ADR-038 to Accepted, including the measured quality and performance outcome;
+2. ADR-038 to Accepted, including the measured quality outcome and an honest
+   performance result or explicitly neutral performance wording;
 3. `renderer-architecture-spec.md` §3.7, §4, and any affected §8 issue;
 4. `docs/README.md` and `docs/architecture/adr/README.md`;
 5. [ADR-016](../architecture/adr/016-hdr-environment-format.md), clearly

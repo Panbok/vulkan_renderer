@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-04
+updated: 2026-08-29
 authority: adr
 ---
 
@@ -10,6 +10,13 @@ authority: adr
 
 **Accepted** — implemented on 2026-08-03. Implementation spec and evidence:
 [hdr-environment-ibl-spec.md](../../rendering/hdr-environment-ibl-spec.md).
+
+**2026-08-29 amendment:** ADR-038 replaced only the shader-facing diffuse
+response cubemap with normalized L2 SH coefficients. The equirectangular
+delivery, load-time source cubemap, skybox sampling, and GGX specular prefilter
+decisions below remain current. References to diffuse convolution and universal
+runtime cubemap sampling describe the implementation accepted in 2026-08-03 and
+are historical for diffuse lighting.
 
 ## Context
 
@@ -43,8 +50,9 @@ cubemap once at load. Sample cubemaps at runtime.**
 
 Environment assets are authored and committed as a single equirectangular
 `.hdr`. A bake pass projects it to a cubemap before any other IBL stage runs.
-The skybox draw, the diffuse convolution, and the specular prefilter all
-continue to consume `TextureCube`.
+The skybox draw and specular prefilter consume `TextureCube`. The original
+implementation also used one for diffuse convolution; ADR-038 now projects a
+selected source-cubemap mip into GPU-resident SH coefficients instead.
 
 Rationale, in order of weight:
 
@@ -63,12 +71,9 @@ Rationale, in order of weight:
 3. **Pole pinching.** All `u` converge at `θ = 0` and `θ = π`, producing a
    pinwheel artifact directly overhead — visible in any scene where the camera
    can look up.
-4. **The conversion is not avoidable by choosing equirect.**
-   `ibl/diffuse_convolution.slang` and `ibl/specular_prefilter.slang` both
-   declare `TextureCube<float4> source_cubemap` and are driven per-face by
-   `vkr_world_resources_bake_cubemap()`. Sampling equirect at runtime means
-   rewriting both bake shaders as well — the conversion moves, it does not
-   disappear.
+4. **The conversion is not avoidable by choosing equirect.** The skybox,
+   specular prefilter, and current SH projection all consume a source cubemap.
+   Sampling equirect at runtime would move rather than remove conversion work.
 5. **Baking sidesteps the seam entirely.** The conversion pass samples with an
    explicit LOD, so the derivative-driven mip selection that causes the seam
    never runs.
@@ -82,9 +87,10 @@ to it plus one small fragment shader.
 
 ## Consequences
 
-- **All runtime environment sampling is cubemap.** Any future probe or
-  environment feature inherits this. A format that is not projectable to a
-  cubemap is out of scope without revisiting this ADR.
+- **Runtime directional environment sources are cubemaps.** Skybox and specular
+  lighting sample them directly; diffuse lighting projects them into SH under
+  ADR-038. A source format that is not projectable to a cubemap is out of scope
+  without revisiting this ADR.
 - **Six-face LDR loading stays** for backward compatibility with existing scenes
   and the `skybox_*.jpg` asset. `environment.cubemap` and `environment.equirect`
   are alternative scene keys.

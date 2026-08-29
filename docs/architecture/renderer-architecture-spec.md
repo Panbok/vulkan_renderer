@@ -311,20 +311,19 @@ combinations. World resources retain the first successfully prepared scene
 environment as a fallback; before one exists, environment failure disables the
 skybox and IBL.
 
-The runtime projects the source into a 1024², eleven-mip RGBA16F cubemap, then
-bakes a 64² irradiance cubemap, a 256² full-mip GGX prefilter, and a 128² BRDF
-LUT in RGBA16F. Source conversion uses explicit LOD 0 with wrapped equirect U,
-and all three cube bakes reconstruct the Vulkan `+X/-X/+Y/-Y/+Z/-Z` direction
-from fullscreen UV through one shared mapping. Face and roughness/mip controls
-are push constants so each recorded draw retains its own values until GPU
-execution. The prefilter selects source mips from the GGX light-direction PDF
-and texel solid angle. Pipelines, compatible render passes, images, and
-face/mip targets are prepared before the executor records. Each conversion or
-convolution acquires one immutable source descriptor state; releasing it is
-tagged to the frame submit serial so a later probe bake cannot update or recycle
-descriptors already referenced by the command buffer. Explicit
-upload/write/read barriers cover the resources that remain outside graph
-authority.
+The runtime projects the source into a 1024², eleven-mip RGBA16F cubemap, bakes
+a 256² full-mip GGX prefilter, and deterministically projects the greatest
+source mip no larger than 32² into normalized second-order SH
+diffuse coefficients. One renderer-owned 4,144-byte buffer holds 37 packed
+112-byte slots: slot 0 is an immutable black sentinel and 36 reusable slots are
+published and retired only against proven queue completion. Packet version 23
+carries the coefficient-buffer address plus global/probe slot indices. A probe
+using the scene environment source aliases its slot and prefilter; it does not
+project a duplicate generation. Source conversion uses explicit LOD 0 with
+wrapped equirect U, while the prefilter selects source mips from the GGX
+light-direction PDF and texel solid angle. Explicit upload/write/read barriers
+cover the IBL resources that remain outside graph authority. The split-sum
+environment BRDF is evaluated analytically; no BRDF LUT remains.
 
 Fullscreen sky/world rendering targets graph-owned `hdr_scene_color` in
 RGBA16F. Packet version 20 splits exposure into `exposure_mode`,
@@ -388,11 +387,11 @@ membership, and global lights. Color and intensity remain separate until the
 shader applies intensity once. World draws select at most two local reflection
 probes by bounding-sphere/AABB overlap; the shader computes per-fragment box
 weights, normalizes overlaps, and assigns the remainder to the global
-environment. Scene-environment probes retain the already-baked scene
-irradiance/prefilter maps rather than duplicating them. Specular IBL applies
-normal-footprint roughness filtering, specular AO, and geometric-horizon
-rejection. Bistro's café volume uses an authored indoor cubemap for diffuse
-irradiance rather than reusing the outdoor scene environment; its probe
+environment. Scene-environment probes alias the already-published scene SH slot
+and retain the scene prefilter rather than duplicating either bake. Specular IBL
+applies normal-footprint roughness filtering, specular AO, and geometric-horizon
+rejection. Bistro's café volume projects an authored indoor cubemap into its own
+diffuse SH slot rather than reusing the outdoor scene environment; its probe
 specular intensity is zero because no indoor reflection capture is authored.
 Diffuse irradiance samples the surface normal directly, while box projection is
 restricted to specular reflection rays.
@@ -475,7 +474,7 @@ unjittered temporal passthrough without changing graph topology.
 | Renderer automation harness | Implemented | Strict cases/profiles, isolated repetitions, authoritative evidence policy, aggregation, captures, comparison, autotest, baselines, and windowed/offscreen targets. Profile/snapshot parents full-content hash one transitive scene manifest, hash already-read parseable files without a second read, fan remaining files across at most eight workers, pass one digest to children, reject fingerprint drift, and verify the manifest before publication. Autotest references its primary manifest rather than rebuilding it. |
 | Cascaded shadow maps | Implemented, partial quality | Four-cascade default with fit hysteresis and backend-neutral raster-bias lowering; cutout casters use the alpha-tested path, and opt-in scene-bounds Z fit clips caster bounds against each final cascade XY rectangle. Static/dynamic caster generations feed committed per-target-image retained history; P2 retains packed static candidate/instance rows per completion-protected graph slot and copies only dynamic or invalidated static ranges. Publication generation changes revalidate every slot. Guard-contained static cascades omit their authored graph passes, while dynamic overlap, incomplete publication, invalid retained contents, or signature drift fail closed. P0 CPU scopes and P3B reuse/force counters ship on both backends. P5 adds a bounded lowest-margin proactive-refresh scheduler and defaults its budget to zero. P4 was declined after its Metal predictor deferred zero candidates across 600 moving-camera frames, preserving the exact-gated one-phase topology. P6 implements graph-declared occupied-depth SDSM on Metal and Vulkan with completion-gated asynchronous feedback, source metadata, smoothing/fallback metrics, and a harness opt-in; fixed splits remain the default because the matched local Metal control measured +1.310 ms/frame of combined reduction and realized cascade work. Native RX 6700 XT synchronization validation covers active Vulkan feedback at three target images; no Vulkan timing claim is made. Receiver quality (P7) ships: a rotated Poisson PCF kernel through a comparison sampler at 1/4/9/16/32 taps from one shared progressive table, a case-selectable nine-tap uniform-region early out at 16 taps or more, texel-denominated constant/slope/normal-offset bias converted through each cascade's own texel size and fitted depth span, cascade cross-fade, and max-distance fade. Reused cascades publish the fit they were rendered with. Metal tap, early-out, split-lambda, and map-size experiments retained the current defaults; the shadow rewrite spec records their aggregates and evidence limits. Shadow distance remains a separate quality experiment |
 | PBR materials | Implemented, evolving | Metallic-roughness and texture slots plus prepared, cached specular-glossiness lowering with retained dielectric F0/F90 response; transmission adds IOR, volume, attenuation, and scene-color refraction while clearcoat and sheen remain absent |
-| IBL | Implemented, partial integration | HDR/cubemap sources, prepared RGBA16F bakes, global environment, and two fragment-weighted local probes per draw ship; bake work remains undeclared to the graph and explicitly barriered |
+| IBL | Implemented, partial integration/evidence | HDR/cubemap sources, prepared RGBA16F specular bakes, normalized L2 diffuse coefficients in a completion-safe slot pool, global environment, and two fragment-weighted local probes per draw ship. Bake work remains undeclared to the graph and explicitly barriered; ADR-038's native Vulkan, matched quality, lifetime-stress, and authoritative performance gates remain open |
 | glTF and scene loading | Implemented | CPU async pipeline; nested texture URIs and sidecars resolve without flattening; `EXT_meshopt_compression` buffer views decode before accessor reads; UVs lower once to VKR convention; point, spot, and directional punctual lights import through the scene transform into a stable 128-light table with a fragment-local 384-cell bitmask grid. Cooked mesh entities may name `mesh.gltf_light_source` explicitly so geometry remains `.vkb` while scene-level light metadata comes from glTF. Required mesh dependency or GPU-publication failures fail the scene request instead of activating a meshless scene; frame-path uploads measured non-blocking |
 | Offline mesh cooking and packed geometry | Implemented | `vkr_mesh_cooker` uses pinned meshoptimizer v1.2 to atomically emit deterministic version-14 `.vkb` artifacts with per-range cache/fetch optimization, 32-byte packed static vertices, explicit quantization budgets, SHA-256 dependency/settings provenance, and CRC32 metadata/stream checksums. Worker decode performs no authoring-source I/O; mandatory runtime optimization applies to every OBJ/glTF/GLB source load. Production cook scripts/references, lifecycle stress coverage, byte/locality metrics, and branchless Metal/Vulkan packed publication ship. Indices remain 32-bit pending an explicitly partitioned draw/resolve ABI and matched evidence. |
 | Transmission | Implemented, bounded deferred paths; Vulkan compact validation pending | Graph-declared opaque, HDR feedback-copy, transmission, and ordinary-blend stages. Both backends peel and composite four ordered transmissive surfaces and default to the eight-pass compact-scan/indirect-shade P19 path, with completion-gated per-layer coverage and overflow reporting. `VKR_TRANSMISSION_COMPACT_DISABLED=1` selects the focused full-screen diagnostic rollback on either backend. Metal owns the measured default decision; the Vulkan lowering has compile/reflection evidence but still needs a native Windows runtime and validation gate. No portable speed claim, order-independent path, or unbounded deep compositing is claimed |
@@ -655,6 +654,14 @@ Current priorities after V7 are:
    is not renderer startup and remains separate tooling work.
 3. Establish matched Release evidence before making any performance claim about
    the two surviving implementations or the V7 deletion.
+3a. Complete ADR-038's retained acceptance evidence. The final SH L2 diffuse
+   implementation and packet version 23 ship on both source backends, and the
+   CPU/build plus focused Metal diagnostic gates pass. Native Vulkan validation,
+   deterministic GPU projection-fixture repetition, matched native
+   `indirect_diffuse` captures, café-probe owner review, submitted-frame
+   reload/lifetime stress, and an honest Release performance record remain open.
+   The cubemap A/B path was retired before a same-binary performance result was
+   retained, so final SH scaling cases alone cannot support a speed claim.
 3b. **Metal compute and graphics pass timing is repaired; transfer timing is
    explicitly unsupported.** Both timestamps were historically written with
    `[MTL4CommandBuffer writeTimestampIntoHeap:atIndex:]`, outside the encoder.
@@ -841,15 +848,16 @@ required gate — see §10.
 
 ### ~~P0 — Descriptor sampler-limit compatibility~~ Resolved 2026-08-05
 
-PBR still exposes 17 independently bound sampled images, but reflection and
-the shader manifest now separate image slots from sampler slots. Irradiance
-probe B/C share probe A's sampler, as do prefilter probe B/C, because those
-generated maps have identical filtering/addressing semantics. Authored material
-textures retain their independent sampler state. The resulting fragment layout
-uses 13 samplers, below the Apple M1 Pro / MoltenVK limit of 16. Reflection tests
-pin the 17-image/13-sampler contract, and exact Bistro validation replay
+At the time of this fix, PBR exposed 17 independently bound sampled images.
+Reflection and the shader manifest separated image slots from sampler slots;
+the three irradiance probes shared one sampler, as did the three prefilter
+probes. The resulting fragment layout used 13 samplers, below the Apple M1 Pro
+/ MoltenVK limit of 16. Reflection tests pinned that historical
+17-image/13-sampler contract, and exact Bistro validation replay
 `20260805T101216.174Z-00c0d6` contains no
 `VUID-VkPipelineLayoutCreateInfo-descriptorType-03016` diagnostic.
+ADR-038 later removed the diffuse irradiance textures and their sampler uses;
+source, skybox, and specular-prefilter cubemaps remain.
 
 ### P1 — Architectural completion
 
@@ -1214,6 +1222,7 @@ following checks were rerun:
 | Renderer harness phase 5 | CPU suite and Debug build passed; six logical Sponza debug channels replayed independently with distinct canonical digests and clean validation logs. Canonical color/depth/ID comparison, diff reporting, aggregate summary transport, primary-plus-snapshot autotest separation, no-mutation proposals, digest confirmation, immutable generations, and atomic current-pointer publication are implemented. The real baseline tree was not mutated; successful acceptance was verified under an isolated temporary repository root. Exact artifacts and limitations are recorded in [phase-5 verification](../tooling/renderer-harness-phase5-verification.md) |
 | Renderer harness phase 6 | CPU suite and Debug build passed; the five-case backend matrix passed. Surface-free two- and three-image offscreen targets completed explicit recreation and validation-clean Sponza runs. A three-image windowed counterpart exercised swapchain recreation; all 80 deterministic work metrics matched across targets, and canonical final-color/depth digests were byte-identical. Exact artifacts and local MoltenVK limitations are recorded in [phase-6 verification](../tooling/renderer-harness-phase6-verification.md) |
 | HDR environment/IBL deterministic and build gates | `./build_test.sh`, `./build.sh Debug`, `./build_release.sh`, the now-retired pipeline-cache wrapper, and all five multithreaded-backend matrix configurations passed at the time; focused tests cover RGBA16F metadata/lowering, binary16 boundaries, HDR orientation/aspect/cache bypass/cleanup, scene source alternatives, cube derivation/direction mapping, and GGX source LOD |
+| SH L2 diffuse implementation | On 2026-08-29, `./build_test.sh` passed 551 tests and both Debug and Release builds compiled the application and shader libraries. One exclusive Apple M1 Pro / Metal 4 Debug state-matrix run with Metal API and GPU/shader validation enabled passed all 11 assertions and emitted no validation diagnostic (`sha256:101be997281ecc0c81cf66984ceb2cf8c0ae0e132ae90ec0bcf7068fd7c6ded0`). A focused run of `local.sh_ibl.single_probe_validation` under the same profile packed exactly one probe for all six measured frames and emitted no validation diagnostic (`sha256:13d8ab1fe4b2a2533fc5f72130ba9115a30bffef7b0914fb424aca8f73ed3e41`). Normal Debug cold and warm application launches against one fresh explicit Metal pipeline archive both exited 0; archive size was 2,128,224 bytes. These are implementation/Metal correctness witnesses, not Vulkan, quality, lifetime-stress, baseline, or performance acceptance evidence. |
 | HDR validation snapshot | Debug Apple M1 Pro/MoltenVK, offscreen 640×480 with two images and validation enabled: full HDR upload/conversion/convolution/BRDF/skybox/world/tonemap/capture/shutdown path passed with no VUID/error/fatal diagnostics; `scene_color` captured `R16G16B16A16_SFLOAT`; both local probes reached ready. Report `20260803T205636.755Z-01405b`, digest `sha256:09b1ab3b0cd8349eb1f2f05ea982f61cb7215cf053351eee063e6de21b2b191e` |
 | HDR cubemap seam correction | Debug Apple M1 Pro/MoltenVK, offscreen 960×720 with two images and validation enabled: the camera points exactly through the `+X/+Y/+Z` cube corner, and the final Citrus Orchard capture is continuous across all three faces with no VUID/error/fatal diagnostics. CPU tests cover all 12 shared edges and all 8 corners. Report `20260803T214124.246Z-0172b1`, digest `sha256:a5f0c7a3fff4d14d2287da68a9a4515dc02587afaa67fde22d0ab10a532b1afb` |
 | HDR Release boot observation | Five Release repetitions at 2560×1440, hidden immediate-present window, three images, isolated warm cache: all passed with exact GPU totals and zero upload fence/queue/device-idle waits. Non-authoritative because the local profile permits dirty provenance and warmup was unstable; GPU timing was disabled, so this is not a speed result. Report `20260803T205253.704Z-013cad`, digest `sha256:00db04dd1bec14efb4df09674315de961fb82e8c6ce88ebaff0c7c50fa39d455` |
