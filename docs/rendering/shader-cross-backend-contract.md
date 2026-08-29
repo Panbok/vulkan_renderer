@@ -1,18 +1,18 @@
 ---
 status: partial
-updated: 2026-08-29
+updated: 2026-08-30
 authority: design
 ---
 
 # Shader cross-backend contract
 
 **Reviewed parity state: UNALIGNED.** The ledger accounts for every source under
-`shaders/shared/`, `shaders/metal/`, and `shaders/vulkan/` as of 2026-08-29.
-The original normal, exposure, bloom, and GTAO contracts remain **ALIGNED**.
-The newly inventoried contracts are **UNALIGNED** where production sources or
-dispatch rules differ, where compiled ABI witnesses are incomplete, or where
-matched native runtime evidence is missing. The document remains `partial`
-until those gates close.
+`shaders/shared/`, `shaders/metal/`, and `shaders/vulkan/` as of 2026-08-30.
+Normal decode, exposure, bloom, GTAO, native ABI reflection, and the
+indirect-diffuse capture channel are **ALIGNED**. The broader rows remain
+**UNALIGNED** where matched payload comparisons or focused fixtures are absent,
+or where current native values disagree. The document remains `partial` until
+those gates close.
 
 This is the durable record of values that must agree across VKR's selected
 backends. Code remains implementation authority. When code and this document
@@ -56,14 +56,14 @@ changing an acceptance envelope requires new evidence and owner review.
 | Automatic exposure | `shaders/shared/exposure_kernel.slangh` | `metal/msl/post/exposure.metal` | `vulkan/slang/post/exposure.slang` | **ALIGNED** |
 | Bloom | `shaders/shared/exposure_kernel.slangh`, then `shaders/shared/bloom_kernel.slangh` | `metal/msl/post/bloom.metal` | `vulkan/slang/post/bloom.slang` | **ALIGNED** |
 | GTAO | `shaders/shared/gtao_kernel.slangh` | `metal/msl/post/gtao.metal` | `vulkan/slang/post/gtao.slang` | **ALIGNED** |
-| Packed geometry and GPU draw compaction | `shaders/shared/gpu_draw.slangh` for both Slang libraries | Native deferred/ICB path mirrors the records and decode in `metal/msl/common/draw.metalh` and compacts in `metal/msl/world/gpu_draws.metal` | `vulkan/slang/common/resources.slangh`, `common/vertex.slangh`, and `world/deferred.slang` | **UNALIGNED**: source overflow and dispatch semantics agree, both native reflection gates cover the packed records and compute roots, and the normalized Vulkan runtime passes. Missing: the same Release case on Metal and a matched deliberate-overflow fixture |
-| Cascaded-shadow receiver | `shaders/shared/shadow_kernel.slangh` | `metal/msl/shadow/sampling.metalh`, used by forward and deferred paths | `vulkan/slang/world/default.slang`, reused by `world/deferred.slang` | **UNALIGNED**: sources agree and the Vulkan 1/9/16/32 plus 16-tap early-out-off matrix passes with a fixed shadow-map payload. Missing: the same five Release cases on Metal and crossed comparisons |
-| IBL baking and sampling | SH diffuse math below; other bake math is backend-local | `metal/msl/ibl/*.metal*`, `metal/msl/world/lighting.metalh` | `vulkan/slang/ibl/*.slang*`, `vulkan/slang/world/default.slang` | **UNALIGNED**: focused native validation now passes on Metal and Vulkan, but no matched direct bake-output snapshot pair covers equirect conversion, SH diffuse response, and every prefilter mip |
+| Packed geometry and GPU draw compaction | `shaders/shared/gpu_draw.slangh` for both Slang libraries | Native deferred/ICB path mirrors the records and decode in `metal/msl/common/draw.metalh` and compacts in `metal/msl/world/gpu_draws.metal` | `vulkan/slang/common/resources.slangh`, `common/vertex.slangh`, and `world/deferred.slang` | **UNALIGNED**: source overflow and dispatch semantics agree, both native reflection gates cover the packed records and compute roots, and the normalized Release case passes on both backends. Current per-layer transmission counts disagree, no crossed payload comparison exists, and the deliberate-overflow fixture is still missing |
+| Cascaded-shadow receiver | `shaders/shared/shadow_kernel.slangh` | `metal/msl/shadow/sampling.metalh`, used by forward and deferred paths | `vulkan/slang/world/default.slang`, reused by `world/deferred.slang` | **UNALIGNED**: sources agree and the five-case 1/9/16/32 plus 16-tap early-out-off matrix passes on both backends with a fixed native shadow map. Missing: crossed payload comparisons plus cascade-blend and distance-fade coverage |
+| IBL baking and sampling | SH diffuse math below; other bake math is backend-local | `metal/msl/ibl/*.metal*`, `metal/msl/world/lighting.metalh` | `vulkan/slang/ibl/*.slang*`, `vulkan/slang/world/default.slang` | **UNALIGNED**: focused native validation passes on Metal and Vulkan, and current HDR render-path snapshots are non-degenerate on both. No matched direct bake-output snapshot pair covers equirect conversion, SH diffuse response, and every prefilter mip |
 | L2 diffuse coefficients (ADR-038) | `shaders/shared/sh_l2_kernel.slangh`, included by the Vulkan Slang library and concatenated into the MSL library | `metal/msl/ibl/sh_projection.metal` `vkr_metal_packet_ibl_sh`; final `sh_coefficients` and slot fields in `metal/msl/common/draw.metalh`; evaluation in `metal/msl/world/gpu_draws.metal` | `vulkan/slang/ibl/default.slang` `ibl_sh`; exact texel loads use a lazily-published 2D-array alias; `VkrVulkanIblShRoot` plus final `sh_coefficients` and slot fields in `vulkan/slang/common/resources.slangh`; evaluation in `vulkan/slang/world/default.slang` | **UNALIGNED**: both production sources implement the same projection/evaluation contract; both 48-byte roots have compiled-shader reflection witnesses; focused native validation executes one packed probe on both backends; and the retained numeric Metal/Vulkan payload comparison passes. Missing: GPU repetition of the CPU projection fixtures |
 | Indirect-diffuse capture channel (ADR-038 §3.1) | None | `metal/msl/world/gpu_draws.metal`, deferred lighting and transmission lighting | `vulkan/slang/world/deferred.slang`, `vk_deferred_lighting` and `vk_transmission_shade` | **ALIGNED**: both production sources implement render mode 9 with the same rule (environment diffuse only, black background, GTAO excluded, no direct/specular/emissive/ambient fallback). Three current Vulkan captures compare against retained Metal generation `sha256:7492b6406ad11123e0cb5f0f943f5c74bd908e3f72b13750c1a8fd1196f6e726` with MAE `5.080678104575146e-06`, maximum absolute delta `1/255`, and zero failed pixels; current report `sha256:330b26beef84ffd6f83c6e1182e6510ab9756c8307f99ec38c5fd246f5524e5b` |
-| Visibility, deferred resolve, lighting, temporal resolve, transmission, and picking | Packed rows and normal decode above | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang`, `vulkan/slang/picking/default.slang` | **UNALIGNED**: source algorithms, dispatch semantics, and native ABI gates agree. The normalized Vulkan Release and validation runs pass, including four-layer compact transmission. Missing: the identical Release case on Metal and its crossed comparison |
-| Tonemap and FXAA | Exposure state above | `metal/msl/post/tonemap.metal` | `vulkan/slang/post/default.slang`, `post/tonemap.slangh` | **UNALIGNED**: source behavior agrees and four authored Vulkan on/off combinations pass. Missing: the same four Metal captures and crossed comparisons |
-| Text color and picking | None | `metal/msl/text/default.metal` | `vulkan/slang/text/default.slang` | **UNALIGNED**: sources agree and the current Vulkan fixture renders non-degenerate color and picking output. Missing: the same Release case on Metal and its crossed comparison |
+| Visibility, deferred resolve, lighting, temporal resolve, transmission, and picking | Packed rows and normal decode above | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang`, `vulkan/slang/picking/default.slang` | **UNALIGNED**: source algorithms, dispatch semantics, native ABI gates, and focused validation pass on both backends. The normalized Release case also passes bilaterally, but Metal reports `17970/17970/17970/17970` covered pixels while Vulkan reports `17970/10706/3040/2895`; no crossed capture comparison exists |
+| Tonemap and FXAA | Exposure state above | `metal/msl/post/tonemap.metal` | `vulkan/slang/post/default.slang`, `post/tonemap.slangh` | **UNALIGNED**: source behavior agrees and all four authored on/off combinations pass on both backends from the same byte-identical HDR input. Missing: crossed final-color comparisons against the authored limits |
+| Text color and picking | None | `metal/msl/text/default.metal` | `vulkan/slang/text/default.slang` | **UNALIGNED**: sources agree and the same fixture renders non-degenerate color and picking output on both backends. The native picking payload digests differ; a crossed color, coverage, and ID comparison is missing |
 
 Paths in this document are relative to `lib/src/renderer/`. Vulkan includes the
 shared headers through Slang. The Metal library concatenates the same headers
@@ -113,15 +113,15 @@ and implementation files. `metal/slang/library.slang` is compiled separately.
 
 | Domain | Metal files and entry points | Vulkan counterpart | Review state |
 | --- | --- | --- | --- |
-| Packed geometry and draw vertices | `metal/slang/common/draw.slangh`, `metal/slang/world/default.slang`, and `metal/slang/picking/world.slang`; `vkr_metal_packet_vertex`, `vkr_metal_packet_temporal_vertex`, `vkr_metal_packet_picking_fragment` | `vulkan/slang/common/resources.slangh`, `common/vertex.slangh`, `world/default.slang`, and `picking/default.slang` | **UNALIGNED**: source counterpart and Vulkan runtime witness exist; the normalized same-case Metal comparison remains missing |
+| Packed geometry and draw vertices | `metal/slang/common/draw.slangh`, `metal/slang/world/default.slang`, and `metal/slang/picking/world.slang`; `vkr_metal_packet_vertex`, `vkr_metal_packet_temporal_vertex`, `vkr_metal_packet_picking_fragment` | `vulkan/slang/common/resources.slangh`, `common/vertex.slangh`, `world/default.slang`, and `picking/default.slang` | **UNALIGNED**: source counterparts and normalized native executions exist; a crossed same-case comparison and deliberate-overflow fixture remain missing |
 | Native draw/resource declarations | `metal/msl/common/draw.metalh`; no entry point; this native MSL path mirrors rather than includes `shaders/shared/gpu_draw.slangh` | Vulkan resource and vertex headers above include the shared Slang records | **ALIGNED ABI**: native declarations remain independent, but Metal reflection and Vulkan SPIR-V reflection validate their semantic records and roots before use |
-| Fullscreen triangle | `metal/msl/common/fullscreen.metalh`; helper only | `vulkan/slang/common/fullscreen.slang` | **UNALIGNED**: source counterpart and Vulkan runtime witnesses exist; matched Metal output remains missing for the newly reviewed rows |
-| Lighting and shadow sampling | `metal/msl/world/lighting.metalh`, `metal/msl/shadow/sampling.metalh`; shared progressive PCF comes from `shaders/shared/shadow_kernel.slangh` | `vulkan/slang/world/default.slang` and the same shared shadow kernel | **UNALIGNED**: source counterpart exists; matched native snapshots for the current source are missing |
-| GPU draw generation, visibility, resolve, deferred lighting, temporal history, transmission, picking, HZB, and SDSM | `metal/msl/world/gpu_draws.metal`; 18 entry points from `vkr_metal_packet_vbuffer_fragment` through `vkr_metal_packet_sdsm_reduce` | `vulkan/slang/world/deferred.slang` | **UNALIGNED**: source and dispatch semantics agree; normalized Vulkan Release and validation witnesses pass; identical Metal Release output remains missing |
-| Forward world shading and temporal MRT output | `metal/msl/world/default.metal`; `vkr_metal_packet_opaque_fragment`, `vkr_metal_packet_temporal_blend_fragment` | `vulkan/slang/world/default.slang` | **UNALIGNED**: source counterpart and Vulkan runtime witnesses exist; matched Metal output remains missing for the new normalized cases |
-| IBL baking | `metal/msl/ibl/common.metalh` plus equirect, SH projection, and prefilter `.metal` entry points | `vulkan/slang/ibl/default.slang` | **UNALIGNED**: source counterparts and focused native validation pass on both backends; matched IBL snapshots are missing |
-| Text and text picking | `metal/msl/text/default.metal`; vertex, color-fragment, and picking-fragment entry points | `vulkan/slang/text/default.slang` | **UNALIGNED**: source counterpart and Vulkan color/picking witness exist; matched Metal text snapshot remains missing |
-| Tonemap and FXAA | `metal/msl/post/tonemap.metal`; fullscreen vertex and tonemap fragment | `vulkan/slang/post/default.slang` and `post/tonemap.slangh` | **UNALIGNED**: enabled and disabled source behavior agrees and the four-state Vulkan matrix passes; matched Metal final-color evidence is missing |
+| Fullscreen triangle | `metal/msl/common/fullscreen.metalh`; helper only | `vulkan/slang/common/fullscreen.slang` | **UNALIGNED**: source counterpart and bilateral runtime witnesses exist; the newly reviewed final-color payloads have not been compared |
+| Lighting and shadow sampling | `metal/msl/world/lighting.metalh`, `metal/msl/shadow/sampling.metalh`; shared progressive PCF comes from `shaders/shared/shadow_kernel.slangh` | `vulkan/slang/world/default.slang` and the same shared shadow kernel | **UNALIGNED**: source counterpart and bilateral five-case native snapshots exist; crossed receiver payloads, cascade blend, and distance fade remain missing |
+| GPU draw generation, visibility, resolve, deferred lighting, temporal history, transmission, picking, HZB, and SDSM | `metal/msl/world/gpu_draws.metal`; 18 entry points from `vkr_metal_packet_vbuffer_fragment` through `vkr_metal_packet_sdsm_reduce` | `vulkan/slang/world/deferred.slang` | **UNALIGNED**: source and dispatch semantics plus focused native validation pass; normalized Release execution is bilateral, but transmission layer counts disagree and capture comparison remains missing |
+| Forward world shading and temporal MRT output | `metal/msl/world/default.metal`; `vkr_metal_packet_opaque_fragment`, `vkr_metal_packet_temporal_blend_fragment` | `vulkan/slang/world/default.slang` | **UNALIGNED**: source counterparts and normalized native executions exist; crossed output comparison remains missing |
+| IBL baking | `metal/msl/ibl/common.metalh` plus equirect, SH projection, and prefilter `.metal` entry points | `vulkan/slang/ibl/default.slang` | **UNALIGNED**: source counterparts and focused native validation pass on both backends; current HDR render-path snapshots pass, but direct matched bake snapshots are missing |
+| Text and text picking | `metal/msl/text/default.metal`; vertex, color-fragment, and picking-fragment entry points | `vulkan/slang/text/default.slang` | **UNALIGNED**: source counterparts and bilateral text snapshots exist; native picking payload digests differ and no crossed comparison has evaluated them |
+| Tonemap and FXAA | `metal/msl/post/tonemap.metal`; fullscreen vertex and tonemap fragment | `vulkan/slang/post/default.slang` and `post/tonemap.slangh` | **UNALIGNED**: enabled and disabled source behavior agrees, and the four-state matrix passes bilaterally from one identical HDR input; crossed final-color comparisons remain missing |
 | Exposure, bloom, and GTAO | the three files listed in the original topology table; 12 compute entry points | the three Vulkan post-effect files listed above | **ALIGNED** |
 
 The broad `gpu_draws.metal` row contains four visibility fragments and fourteen
@@ -146,21 +146,22 @@ The host transposes draw matrices only for the Slang-to-Metal vertex path throug
 
 | Work | Metal dispatch | Vulkan dispatch | State |
 | --- | --- | --- | --- |
-| GPU classify and encode | two-dimensional grid `candidate_count x view_count`; `64x1x1` threadgroups | two-dimensional grid `candidate_count x view_count`; `64x1x1` shader groups | source-aligned; normalized Vulkan runtime passes; matched overflow and Metal gates remain |
-| GPU prefix | one grid thread per view; one threadgroup whose width is `view_count` | one `5x1x1` group for the normal five-view contract; a second group preserves Vulkan's existing nine-view capacity | source-aligned; normalized Vulkan runtime passes; matched Metal gate remains |
-| Temporal transform | one thread per instance; `64x1x1` | one thread per instance; `64x1x1` | source-aligned; normalized Vulkan runtime passes; matched Metal gate remains |
-| G-buffer, deferred lighting, temporal resolve, HZB, transmission shade/coverage, bloom, and GTAO | extent grid; `8x8x1` | extent grid; `8x8x1` | source-aligned where both entry points exist; normalized Vulkan runtime passes; matched Metal gate remains for newly reviewed rows |
-| Transmission compaction | extent grid at `8x8x1`, then one `1x1x1` finalize dispatch that writes indirect threadgroups for a `64x1x1` compact shade dispatch | the same scan/finalize/indirect shape with Vulkan-native storage descriptors and barriers | source/dispatch aligned; Vulkan Release and synchronization-validation gates pass; matched Metal Release gate remains |
-| Picking resolve | one `1x1x1` dispatch | one `1x1x1` dispatch | source-aligned; normalized Vulkan runtime passes; matched Metal gate remains |
+| GPU classify and encode | two-dimensional grid `candidate_count x view_count`; `64x1x1` threadgroups | two-dimensional grid `candidate_count x view_count`; `64x1x1` shader groups | source-aligned; normalized native runtimes pass; matched overflow fixture remains |
+| GPU prefix | one grid thread per view; one threadgroup whose width is `view_count` | one `5x1x1` group for the normal five-view contract; a second group preserves Vulkan's existing nine-view capacity | source-aligned; normalized native runtimes pass; deliberate-overflow fixture remains |
+| Temporal transform | one thread per instance; `64x1x1` | one thread per instance; `64x1x1` | source-aligned; normalized native runtimes pass; crossed payload comparison remains |
+| G-buffer, deferred lighting, temporal resolve, HZB, transmission shade/coverage, bloom, and GTAO | extent grid; `8x8x1` | extent grid; `8x8x1` | source-aligned where both entry points exist; normalized native runtimes pass; transmission coverage values disagree |
+| Transmission compaction | extent grid at `8x8x1`, then one `1x1x1` finalize dispatch that writes indirect threadgroups for a `64x1x1` compact shade dispatch | the same scan/finalize/indirect shape with Vulkan-native storage descriptors and barriers | source/dispatch aligned; both focused validation gates pass, but current per-layer coverage counts disagree |
+| Picking resolve | one `1x1x1` dispatch | one `1x1x1` dispatch | source-aligned; normalized native runtimes pass; current native payload digests differ and need crossed comparison |
 | SDSM reduction | extent grid; `16x16x1` | extent grid; `16x16x1` | source-aligned; matched runtime gate missing |
 | IBL bake | cube extent by six faces; `8x8x1` | cube extent by six faces; `8x8x1` | source-aligned; runtime gate missing |
 
 The historical `p20_metal_state_matrix` and `p20_vulkan_state_matrix` cases
 cannot close these rows because their authored states differ. The backend-neutral
 `smoke.deferred.state_matrix.snapshot` case now supplies identical scene state,
-capture frames, channels, and assertions. Vulkan passes it; closure requires the
-same case on Metal, matching workload and policy fingerprints, crossed capture
-comparisons, and the separate focused Metal validation run.
+capture frames, channels, and assertions. Both backends and both focused native
+validation gates pass. Closure still requires a crossed payload comparison, a
+deliberate-overflow fixture, and resolution of the transmission-layer count
+disagreement recorded in sections 4.8 and 5.4.
 
 ## 3. Shader data layouts
 
@@ -245,9 +246,10 @@ roots have the field-level SPIR-V reflection described above:
 
 The ABI portion is **ALIGNED**: the independent native MSL declaration is
 guarded by field-level reflection, and Vulkan now checks the candidate record
-and every listed deferred compute root from compiled SPIR-V. The broader packed-
-geometry row remains **UNALIGNED** only for the matched Release/overflow runtime
-gates described in sections 4.5 and 5.4.
+and every listed deferred compute root from compiled SPIR-V. The ABI gate is
+closed. The broader packed-geometry row remains **UNALIGNED** for the deliberate-
+overflow fixture, crossed Release comparison, and transmission-layer finding
+described in sections 4.5, 4.8, and 5.4.
 
 ### 3.4 Complete Metal reflection manifest
 
@@ -415,13 +417,17 @@ span and the last cascade fades to unshadowed across the configured distance
 range.
 
 The shared table and both receiver sources agree. The bounded
-`shadow_receiver` scene now contains visible lit, shadowed, and penumbra regions.
-Five Vulkan snapshots cover 1, 9, 16, and 32 taps plus 16 taps with the uniform-
-region early out disabled; the shadow-map digest remains fixed while the shadow-
-factor and final-color digests change for every authored state. The state remains
-**UNALIGNED** until the same five cases run on Metal and the native payloads are
-compared. Cascade-blend and distance-fade coverage also remain outside this
-focused receiver matrix.
+`shadow_receiver` scene contains visible lit, shadowed, and penumbra regions.
+Five Release snapshots on each backend cover 1, 9, 16, and 32 taps plus 16 taps
+with the uniform-region early out disabled. Each native shadow map stays fixed
+while the shadow-factor and final-color digests change for every authored
+state. Metal's cascade-0 digest is
+`sha256:d239441aabfe2b5cc30e46e3194a30d6694820660bb57b4b45edffa9b3f8a398`;
+Vulkan's is
+`sha256:1430b7f64030052bfd14aa85d49f81e60e0e5adff0595e6c0fe5414b0752c37a`.
+The state remains **UNALIGNED** until crossed comparisons evaluate the receiver
+payloads. Cascade blend and distance fade also remain outside this focused
+matrix.
 
 ### 4.7 IBL bake and sampling — UNALIGNED
 
@@ -441,8 +447,14 @@ SH entry with a typed projection-root pointer, reflects every field and the
 48-byte extent, and passes two native API plus synchronization-validation
 repetitions. Exact projection reads use a lazily-published `Texture2DArray` view
 of the source cubemap; the filtered cube view remains unchanged for skybox and
-specular work. The state remains **UNALIGNED** until matched Release captures
-cover direct equirect conversion, SH diffuse response, and every prefilter mip.
+specular work. Current Release HDR render-path snapshots are non-degenerate on
+both native backends. The Metal report is
+`sha256:4cf4a6aa239b1e33507927aa43e837edb5ca2db86cd665d5eb0bc21f0dac618f`;
+the Vulkan report is
+`sha256:63988db941507a42b62ac1b8fed6ec307a10de9ff34af6ea9a3afafef7d9a089`.
+They exercise the sampled result, not the direct bake products. The state
+remains **UNALIGNED** until matched Release captures cover equirect conversion,
+SH diffuse response, and every prefilter mip.
 
 ### 4.8 World, deferred, temporal, and picking paths — UNALIGNED
 
@@ -494,15 +506,23 @@ same traversal, reserves the viewport-sized list once per threadgroup, bounds
 every write, and records per-layer overflow. Metal uses native resource
 references and encoder barriers; Vulkan uses bindless storage indices,
 buffer-device addresses, synchronization2 graph barriers, and
-`vkCmdDispatchIndirect`. The source contract is aligned. The normalized Vulkan
-Release run exercises all four coverage layers, compact scan/finalize, indirect
-shading, and picking; a two-repetition synchronization-validation run passes
-without a VUID or hazard.
+`vkCmdDispatchIndirect`. The source contract is aligned. The normalized Release
+case exercises all four coverage layers, compact scan/finalize, indirect
+shading, and picking on both backends. Metal report
+`sha256:c370fa5509cbbed16ba700f21fb33cdd1ff5c5e499b5fe9ffe243191e83b86eb`
+and Vulkan report
+`sha256:6d0205d3a354848b8a5a17a3fbe5a12ef7f9d132d457ad5a90028f10b3c3fc1d`
+agree on opaque buckets `2/1/1/1`, transmission buckets `1/5/1/1`, and zero
+draw, compact, resolve, publication, and shadow overflow. They disagree on the
+coverage-layer minima. Metal reports `17970/17970/17970/17970`; Vulkan reports
+`17970/10706/3040/2895`. Both focused native validation runs pass without a
+validation or synchronization diagnostic, so this is a runtime semantic
+finding, not an implied validation failure.
 
-The state remains **UNALIGNED** because no one same-case Release comparison yet
-spans visibility, G-buffer, lighting, temporal history, transmission, and
-picking on both native backends. The compiled-root and native Vulkan execution
-gates are closed.
+The state remains **UNALIGNED** until the layer-count difference is resolved
+and one crossed Release comparison spans visibility, G-buffer, lighting,
+temporal history, transmission, and picking. The compiled-root and bilateral
+native execution gates are closed.
 
 ### 4.9 Fullscreen output, ACES, and FXAA — UNALIGNED
 
@@ -515,9 +535,12 @@ FXAA. Those enabled paths agree with Vulkan's fullscreen flags.
 
 The tonemap-disabled path matches Metal on both backends: multiply by exposure,
 clamp negative values, then clamp the result to `[0, 1]`. Four backend-neutral
-cases now cross tonemap on/off with FXAA on/off, and all four pass on Vulkan with
-one fixed HDR input and four distinct final outputs. This contract remains
-**UNALIGNED** until those cases run on Metal and the final payloads are compared.
+cases cross tonemap on/off with FXAA on/off, and all four pass on both backends.
+Every run starts from the byte-identical HDR input
+`sha256:7a691b08cc91b3bd4e8b87e87ed37b2af05b87f55bc15eebfea61fc680a16116`
+and produces four distinct native final outputs. This contract remains
+**UNALIGNED** until crossed final-color comparisons evaluate the authored
+maximum-delta, mean-error, and failed-pixel limits.
 
 ### 4.10 Text color and picking — UNALIGNED
 
@@ -530,10 +553,21 @@ below `0.01` and otherwise returns the draw object ID. Screen-space clip
 conversion differs in Y between the native APIs to produce the same top-left UI
 convention.
 
-The audited sources agree, and the Vulkan text fixture visibly exercises
-system, bitmap, and MTSDF text plus picking. The state remains **UNALIGNED**
-until the same fixture is captured on Metal and compared with a documented
-color and coverage envelope.
+The audited sources agree. The same Release fixture visibly exercises system,
+bitmap, UI MTSDF, and world MTSDF text plus picking on both backends. Metal
+report `sha256:ae31212817546ad4a47e3753174a283bc96b1b7a7f641ded5b977194e15801ce`
+produces final-color digest
+`sha256:7ce12e1724df9037b6735ff61cbcb9216e1afaf9e781a9733ecf28509fb91b62`
+and picking digest
+`sha256:6d646162b03d58abc081b59e02c2b60bcc2883e9e6b6636ba37a325d7aafa186`.
+Vulkan report
+`sha256:1a7de51d4d077808869c8689c86700661e04f7503087d34654a88b6b5a1949e7`
+produces final-color digest
+`sha256:9566e77427690003479c810cefa7c87b7077049d57768368c83a9808f45ed237`
+and picking digest
+`sha256:ebc8eb20d2027f9145306c2a6e0621dec642f5bd93d02efc725e06ef4262472b`.
+The state remains **UNALIGNED** until crossed comparisons evaluate color,
+coverage, and object IDs with documented limits.
 
 ## 5. Cross-backend runtime witnesses
 
@@ -679,58 +713,29 @@ witnesses, not accepted baselines or performance evidence.
 | SH/IBL focused validation | `local.sh_ibl.single_probe_vulkan_validation`, report `sha256:e18f00b4b3602409e5707555ec0b0ca4a5ec5b5d8683be53e296f31ad791320e` | Two serial repetitions pass, one probe is packed in every measured frame, and validation logs contain no VUID or synchronization hazard |
 | Indirect-diffuse cross-backend comparison | Current `smoke.sh_ibl.single_probe.snapshot`, report `sha256:330b26beef84ffd6f83c6e1182e6510ab9756c8307f99ec38c5fd246f5524e5b` against retained Metal generation `sha256:7492b6406ad11123e0cb5f0f943f5c74bd908e3f72b13750c1a8fd1196f6e726` | All three comparisons pass with workload fingerprint `sha256:5ba3455d443ec125efdda609be5febbe750dbdfde49a852c80409fedad69b0dc`, MAE `5.080678104575146e-06`, maximum delta `1/255`, and zero failed values or pixels |
 
-The four post cases and five shadow cases are backend-neutral. The normalized
-deferred and text cases are also ready for identical Metal Release execution.
-No accepted baseline pointer was changed.
+The four post cases, five shadow cases, normalized deferred case, and text case
+are backend-neutral. No accepted baseline pointer changed in this Windows pass.
 
-### 5.4 Gates that keep the new rows unaligned
+### 5.4 Current Metal closure pass
 
-The state-matrix rows now use one normalized backend-neutral case. Run it on
-Metal, publish its guarded payload only after owner acceptance, then compare the
-fresh Vulkan execution against that generation:
+The 2026-08-30 Metal pass used the clean Release binary at
+`2f42e21e4240f4cc4e23c4eb450f5de8b8a64082` on an Apple M1 Pro / Apple Metal 4
+GPU with both validation variables unset. The separate Debug gate enabled Metal
+API and GPU shader validation in exactly one renderer process.
 
-```sh
-build_release/tools/vkr_harness snapshot \
-  --case tools/cases/smoke/deferred_state_matrix_snapshot.case.json \
-  --profile tools/profiles/local-offscreen.json
-build_release/tools/vkr_harness.exe snapshot \
-  --case tools/cases/smoke/deferred_state_matrix_snapshot.case.json \
-  --profile tools/profiles/local-offscreen.json \
-  --cross-backend
-```
+| Contract | Current Metal witness | Recorded result |
+| --- | --- | --- |
+| Deferred, packed rows, and four-layer compact transmission | `smoke.deferred.state_matrix.snapshot`, report `sha256:c370fa5509cbbed16ba700f21fb33cdd1ff5c5e499b5fe9ffe243191e83b86eb` | Nine capture children pass. Opaque buckets are `2/1/1/1`; transmission buckets are `1/5/1/1`; draw, compact, resolve, publication, and shadow-overflow counts are zero. Coverage-layer minima are `17970/17970/17970/17970`, which disagrees with Vulkan's `17970/10706/3040/2895` |
+| Focused Metal validation | `local.p20.metal.state_matrix.validation`, report `sha256:f4255516d35516a66719787c7a7c09d930d09edc39c7c430669d80745984edc2` | All 11 assertions pass with both validators enabled; no validation error, hazard, or fatal diagnostic occurs. The local diagnostic reports warmup instability and supplies no performance evidence |
+| Cascaded-shadow receiver | Five `smoke.shadow.receiver.*` reports: `sha256:a49e9f56ac7eb6633b46d1916e4369841035ec6386c5985b33595f6199d94bf7`, `sha256:64256412e311c339f831fb4cc481cbb4f23ff21c8c600e3ce4cbc867722cc1a8`, `sha256:cb7813baa459f13fb6ac3903dfe282d20e23c2273c3910defbda2f955f133f7a`, `sha256:697e9046c421b6e3a711a2833a92b317ab3d825e28418271006d2c9a9b635807`, and `sha256:a5d1b26213bd04c2b137e3f2647b383bea2c56447c2a262e9b7931c985e0db0c` | PCF 1/9/16/32 and 16-tap early-out-off all pass. Cascade 0 stays `sha256:d239441aabfe2b5cc30e46e3194a30d6694820660bb57b4b45edffa9b3f8a398`; every shadow-factor and final-color digest differs |
+| Tonemap/FXAA authored matrix | Four `smoke.post.tonemap_fxaa.*` reports: `sha256:e891075a3e8c982e81f8eb51541bbf4b35961f3e75ddd526af800832f16637d3`, `sha256:361d6f2f1c3bc67b28beccb6bc4eed81d4a34d41fb7c91e7a48e34d3af9b8f4e`, `sha256:8fc82d911b5ef7294d3890df2534b608960d1f4df622f1c6bc292593cfb61c2d`, and `sha256:fb4594ba66507b18a06cda1c1a1980c5b279975d0436eb4d5f54db51c0564c46` | All four pass from the exact Vulkan HDR digest `sha256:7a691b08cc91b3bd4e8b87e87ed37b2af05b87f55bc15eebfea61fc680a16116` and produce four distinct final outputs |
+| Text color and picking | `smoke.text.rendering.snapshot`, report `sha256:ae31212817546ad4a47e3753174a283bc96b1b7a7f641ded5b977194e15801ce` | System, bitmap, UI MTSDF, and world MTSDF text are visible; final color is `sha256:7ce12e1724df9037b6735ff61cbcb9216e1afaf9e781a9733ecf28509fb91b62`; picking is `sha256:6d646162b03d58abc081b59e02c2b60bcc2883e9e6b6636ba37a325d7aafa186` |
+| HDR/IBL execution | `smoke.hdr.environment.snapshot`, report `sha256:4cf4a6aa239b1e33507927aa43e837edb5ca2db86cd665d5eb0bc21f0dac618f` | Pass; non-degenerate final `sha256:dee0ce491e5137e131856deeb8ce1585590e675ab09a637be9fc08f0f273f5a6`, scene-linear HDR `sha256:3c9206136e78418096d3f71195fe100b4c0ed41156f0aa26d300a6061c659265`, and depth `sha256:bb0274040b0507a17189885edc60635b7766054b85b98acc983f958d12750c11` are produced |
 
-The remaining backend-neutral Metal Release matrix is exactly:
-
-```sh
-for case in \
-  post_tonemap_fxaa_both.case.json \
-  post_tonemap_fxaa_fxaa.case.json \
-  post_tonemap_fxaa_tonemap.case.json \
-  post_tonemap_fxaa_neither.case.json \
-  shadow_receiver_pcf1.case.json \
-  shadow_receiver_pcf9.case.json \
-  shadow_receiver_pcf16.case.json \
-  shadow_receiver_pcf16_early_out_off.case.json \
-  shadow_receiver_pcf32.case.json \
-  text_rendering_snapshot.case.json
-do
-  build_release/tools/vkr_harness snapshot \
-    --case "tools/cases/smoke/$case" \
-    --profile tools/profiles/local-offscreen.json
-done
-```
-
-After owner-approved publication of each Metal payload, run the same case on
-Windows with `--cross-backend`. Do not accept or move a baseline pointer merely
-to make a comparison pass.
-
-The existing HDR/IBL render-path case also needs its current Metal report:
-
-```sh
-build_release/tools/vkr_harness snapshot \
-  --case tools/cases/smoke/hdr_environment_snapshot.case.json \
-  --profile tools/profiles/local-offscreen.json
-```
+These runs close the missing Metal execution and validation gates. They do not
+replace crossed comparisons because the Windows commit retained report and data
+digests, not the canonical payloads needed to evaluate the authored envelopes.
+No accepted baseline pointer changed in this Metal pass.
 
 The focused Vulkan SH witness uses
 `tools/cases/local/sh_ibl_single_probe_vulkan_validation.case.json` with the
@@ -785,8 +790,9 @@ generation and passes as report
 `sha256:330b26beef84ffd6f83c6e1182e6510ab9756c8307f99ec38c5fd246f5524e5b`.
 No pointer was changed here.
 
-All newly reviewed render-state rows also require the focused native validation
-pair. Metal must run alone:
+### 5.5 Gates that keep the remaining rows unaligned
+
+The focused native validation pair is complete. Metal ran alone as required:
 
 ```sh
 VKR_HZB_DISABLED=1 MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 \
@@ -799,12 +805,19 @@ build_debug/tools/vkr_harness.exe profile \
 ```
 
 Each closure record must carry both report digests and the actual comparison
-values. Vulkan compact/finalize source, ABI, Release execution, and focused
-validation now pass. That row cannot become **ALIGNED** until Metal runs the
-normalized Release case and its captures are compared. The shadow, post, and
-text rows likewise need their backend-neutral cases executed on Metal; direct
-IBL bake and SH coefficient rows additionally need the capture support described
-in sections 4.7 and 5.4.
+values. Source, compiled ABI, Release execution, and focused validation now pass
+bilaterally for the normalized deferred case. That row cannot become
+**ALIGNED** until the transmission-layer count difference is resolved, a
+deliberate-overflow fixture passes on both backends, and crossed captures meet
+their authored limits.
+
+Shadow, post, and text also have bilateral native execution reports but still
+need guarded payload publication and crossed comparisons. The first machine
+must publish through `baseline propose` and owner-approved `baseline accept`;
+the second runs the same case with `--cross-backend`. Do not accept or move a
+baseline pointer merely to make a comparison pass. Direct IBL bake still needs
+the capture support described in section 4.7. GPU repetition of the CPU SH
+projection fixtures remains the specific coefficient gate.
 
 ## 6. Maintenance rule
 
