@@ -209,6 +209,17 @@ struct s_RendererFrontend {
   // 0=off, 1=cascades, 2=shadow factor, 3=shadow map depth.
   uint32_t shadow_debug_mode;
 
+  /* Cold ADR-038 A/B control: clamps how many scene reflection probes the
+     application packs into a frame, so the deferred-lighting comparison can
+     hold probe count as a declared independent variable. UINT32_MAX does not
+     clamp. */
+  uint32_t ibl_probe_limit;
+
+  /* Probes the last accepted packet actually packed, published as
+     lighting.ibl.probes_packed so a performance case can assert the work it
+     believes it is measuring. */
+  uint32_t ibl_probes_packed;
+
   // Window size tracking and thread safety for resize events
   uint32_t last_window_width;
   uint32_t last_window_height;

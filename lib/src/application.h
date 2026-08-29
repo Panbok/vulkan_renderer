@@ -1411,9 +1411,13 @@ void application_draw_frame(Application *application, float64_t delta) {
           : NULL;
   VkrFrameIblProbe frame_ibl_probes[VKR_FRAME_IBL_PROBE_MAX] = {0};
   uint32_t frame_ibl_probe_count = 0;
+  /* Cold ADR-038 control: the fixture asserts the packed count, so an
+     unavailable probe texture cannot silently reduce the measured work. */
+  const uint32_t frame_ibl_probe_cap =
+      Min(application->renderer.ibl_probe_limit, VKR_FRAME_IBL_PROBE_MAX);
   if (active_scene) {
     for (uint32_t i = 0; i < active_scene->reflection_probe_count &&
-                         frame_ibl_probe_count < VKR_FRAME_IBL_PROBE_MAX;
+                         frame_ibl_probe_count < frame_ibl_probe_cap;
          ++i) {
       const VkrSceneReflectionProbe *probe =
           &active_scene->reflection_probes[i];

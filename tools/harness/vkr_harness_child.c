@@ -991,6 +991,8 @@ vkr_harness_child_apply_renderer(Application *application,
   }
   application->renderer.shadow_debug_mode =
       case_manifest->renderer.shadow_debug_mode;
+  application->renderer.ibl_probe_limit =
+      case_manifest->renderer.ibl_probe_limit;
   application->renderer.temporal_enabled = case_manifest->renderer.taa_enabled;
   application->renderer.globals.exposure_mode =
       string_equals(case_manifest->renderer.exposure_mode, "automatic")
@@ -1479,6 +1481,11 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
     exit_code = VKR_HARNESS_EXIT_INVALID;
     goto cleanup;
   }
+  /* The diffuse representation selects a deferred-lighting pipeline variant,
+     so it must be resolved before the renderer creates its pipelines. Both
+     backends read it once at creation (ADR-038 §3.2). */
+  setenv("VKR_IBL_DIFFUSE_REPRESENTATION",
+         case_manifest.renderer.ibl_diffuse_representation, 1);
   ApplicationConfig config = vkr_harness_child_application_config(
       &case_manifest, &profile, &subsystem_plan, capture_max_batch_bytes,
       renderer_backend);

@@ -1190,7 +1190,9 @@ bool8_t vkr_metal_packet_renderer_bake_ibl_cubemap(
       (id<MTLTexture>)prefilter->resource.metal_texture;
   const uint32_t prefilter_mip_count =
       (uint32_t)prefilter_texture.mipmapLevelCount;
-  const uint64_t root_count = 1u + prefilter_mip_count;
+  /* One extra root cell for the L2 projection, which runs beside the cubemap
+     bake while both representations are live (ADR-038). */
+  const uint64_t root_count = 2u + prefilter_mip_count;
   const uint64_t root_bytes = root_count * VKR_METAL_PACKET_ROOT_ALIGNMENT;
   VkrMetalRingSlice slice = {0};
   VkrMetalAddressPair upload = {0};
@@ -1241,11 +1243,77 @@ bool8_t vkr_metal_packet_renderer_bake_ibl_cubemap(
         threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
   }
 
-  if (!vkr_metal_packet_submit_upload(renderer, encoder, slice))
+  /* Exhaustion and projection failure are cold-path errors: the logical source
+     keeps its prior publication, or black. */
+  uint32_t sh_slot = VKR_SH_SLOT_BLACK;
+  uint32_t projection_mip = 0u;
+  uint32_t projection_extent = 0u;
+  if (vkr_ibl_sh_projection_mip((uint32_t)source_texture.width,
+                                (uint32_t)source_texture.mipmapLevelCount,
+                                &projection_mip, &projection_extent)) {
+    if (vkr_ibl_sh_pool_reserve(&renderer->sh_pool, &sh_slot) ==
+        VKR_SH_POOL_STATUS_OK) {
+      const uint64_t sh_root_offset =
+          (uint64_t)(prefilter_mip_count + 1u) * VKR_METAL_PACKET_ROOT_ALIGNMENT;
+      VkrMetalPacketShProjectRoot *sh_root =
+          (VkrMetalPacketShProjectRoot *)((uint8_t *)upload.cpu_address +
+                                          sh_root_offset);
+      *sh_root = (VkrMetalPacketShProjectRoot){
+          .source_texture_id = source->resource.resource_id,
+          .destination = renderer->sh_coefficients.gpuAddress +
+                         (uint64_t)sh_slot * VKR_SH_SLOT_BYTES,
+          .source_face_size = projection_extent,
+          .source_mip = projection_mip,
+          /* The CPU owns pow(sinc_pi(l/3), sh_deringing) so the kernel carries
+             no pow() and both sides cannot drift. */
+          .window_band_0 = vkr_ibl_sh_window_factor(0u, sh_deringing),
+          .window_band_1 = vkr_ibl_sh_window_factor(1u, sh_deringing),
+          .window_band_2 = vkr_ibl_sh_window_factor(2u, sh_deringing),
+      };
+      [renderer->argument_table setAddress:upload.gpu_address + sh_root_offset
+                                   atIndex:0];
+      [encoder setComputePipelineState:renderer->ibl_sh_pipeline];
+      [encoder setArgumentTable:renderer->argument_table];
+      /* One workgroup per destination slot; the kernel's fixed reduction is
+         what makes the result deterministic, so this must stay a single
+         group. */
+      [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+      (void)vkr_ibl_sh_pool_mark_recorded(&renderer->sh_pool, sh_slot);
+    } else {
+      log_error("Metal SH coefficient pool exhausted; source keeps its "
+                "previous coefficients");
+    }
+  }
+
+  if (!vkr_metal_packet_submit_upload(renderer, encoder, slice)) {
+    /* Nothing was submitted, so the candidate returns to the pool immediately
+       rather than through retirement. */
+    if (sh_slot != VKR_SH_SLOT_BLACK)
+      (void)vkr_ibl_sh_pool_abandon(&renderer->sh_pool, sh_slot);
     return false_v;
+  }
   source->last_use_submit_value = renderer->submit_value;
   irradiance->last_use_submit_value = renderer->submit_value;
   prefilter->last_use_submit_value = renderer->submit_value;
+  /* Submission succeeded, so the candidate becomes this source's published
+     coefficients and the previous generation retires against its own last
+     reader. */
+  if (sh_slot != VKR_SH_SLOT_BLACK) {
+    vkr_ibl_sh_pool_reference(&renderer->sh_pool, sh_slot,
+                              renderer->submit_value);
+    if (vkr_ibl_sh_pool_publish(&renderer->sh_pool, sh_slot) ==
+        VKR_SH_POOL_STATUS_OK) {
+      if (source->ibl_sh_slot != VKR_SH_SLOT_BLACK)
+        (void)vkr_ibl_sh_pool_retire(&renderer->sh_pool, source->ibl_sh_slot);
+      source->ibl_sh_slot = sh_slot;
+      /* Probe lowering reaches the slot through the probe's irradiance handle
+         while both representations coexist. SH3 removes this mirror. */
+      irradiance->ibl_sh_slot = sh_slot;
+    } else {
+      (void)vkr_ibl_sh_pool_retire(&renderer->sh_pool, sh_slot);
+    }
+  }
   return true_v;
 }
 
@@ -1851,8 +1919,14 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
                                   renderer->gpu_draw_icb_view_group_size - 1u) /
                                      renderer->gpu_draw_icb_view_group_size
                                : 0u;
+  /* Temporary dual-representation table (ADR-038 §1.6), always allocated so
+     the probe loop can fill it by packed ordinal. */
+  const uint64_t sh_ab_table_offset = vkr_metal_packet_align_up(
+      ibl_probes_offset + ibl_probes_bytes, AlignOf(VkrShAbTable));
+  const uint64_t sh_ab_table_bytes = sizeof(VkrShAbTable);
   const uint64_t gpu_draw_views_offset = vkr_metal_packet_align_up(
-      ibl_probes_offset + ibl_probes_bytes, AlignOf(VkrMetalPacketGpuDrawView));
+      sh_ab_table_offset + sh_ab_table_bytes,
+      AlignOf(VkrMetalPacketGpuDrawView));
   const uint64_t gpu_draw_views_bytes =
       (uint64_t)gpu_draw_view_count * sizeof(VkrMetalPacketGpuDrawView);
   const uint64_t transmission_gpu_draw_view_offset =
@@ -2216,6 +2290,22 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     upload->shadow_cascades_gpu = gpu + shadow_cascades_offset;
     upload->shadow_texture_id = shadow_texture.gpuResourceID._impl;
   }
+  VkrShAbTable *sh_table = (VkrShAbTable *)(cpu + sh_ab_table_offset);
+  MemZero(sh_table, sizeof(*sh_table));
+  sh_table->sh_coefficients = renderer->sh_coefficients.gpuAddress;
+  /* Resolved from the packet's environment source, exactly as Vulkan resolves
+     it, so a probe that aliases the scene environment shares this publication
+     instead of projecting a duplicate. */
+  VkrTextureHandle sh_global_source = VKR_TEXTURE_HANDLE_INVALID;
+  if (vkr_metal_packet_ibl_source(packet, &sh_global_source)) {
+    const VkrMetalPacketTexture *sh_global =
+        vkr_metal_packet_resolve_texture(renderer, sh_global_source);
+    renderer->ibl_sh_slot =
+        sh_global ? sh_global->ibl_sh_slot : VKR_SH_SLOT_BLACK;
+  }
+  sh_table->global_slot = renderer->ibl_sh_slot;
+  sh_table->probe_count = ibl_probe_count;
+  upload->sh_ab_table_gpu = gpu + sh_ab_table_offset;
   if (ibl_probe_count > 0) {
     VkrMetalPacketIblProbe *packed =
         (VkrMetalPacketIblProbe *)(cpu + ibl_probes_offset);
@@ -2238,6 +2328,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
                             probe->specular_intensity,
                             probe->box_projection_enabled ? 1.0f : 0.0f},
       };
+      /* Keyed by packed ordinal. The irradiance publication carries the slot
+         only while both representations coexist; SH3 puts it in the probe
+         record itself. */
+      sh_table->probe_slots[i] = irradiance->ibl_sh_slot;
       const uint64_t pending_submit = renderer->submit_value + 1u;
       irradiance->last_use_submit_value = pending_submit;
       prefilter->last_use_submit_value = pending_submit;

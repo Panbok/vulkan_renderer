@@ -71,6 +71,19 @@ struct VkrMetalPacketTemporalDrawState {
   uint2 reserved;
 };
 
+/**
+ * Temporary dual-representation side table (ADR-038 §1.6). The retired
+ * BRDF-LUT root slot carries its address while both diffuse representations
+ * are live. `probe_slots[i]` is keyed by packed packet probe ordinal.
+ * Removed by SH3 together with the representation selector.
+ */
+struct VkrShAbTable {
+  device VkrShL2Packed *coefficients;
+  uint global_slot;
+  uint probe_count;
+  uint probe_slots[16];
+};
+
 struct VkrMetalPacketFrameRoot {
   device VkrMetalPacketInstance *instances;
   uint2 instance_address_padding;
@@ -78,9 +91,11 @@ struct VkrMetalPacketFrameRoot {
   device VkrMetalPacketMaterial *materials;
   texturecube<float, access::sample> irradiance;
   texturecube<float, access::sample> prefilter;
-  // Retired: the environment BRDF is analytic on both backends. Kept as
-  // explicit padding so every downstream offset is unchanged.
-  ulong reserved_brdf_lut;
+  // Retired BRDF-LUT slot, temporarily reinterpreted as the SH side-table
+  // address while both diffuse representations are live (ADR-038 §1.6). The
+  // cubemap variant never dereferences it. Same width as the ulong it
+  // replaces, so every downstream offset is unchanged.
+  device VkrShAbTable *reserved_brdf_lut;
   float4 view_position;
   uint prefilter_mip_count;
   uint flags;

@@ -85,6 +85,7 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId world_indirect_calls_issued;
   VkrMetricId world_avg_batch_size;
   VkrMetricId world_max_batch_size;
+  VkrMetricId lighting_ibl_probes_packed;
   VkrMetricId lighting_point_selected;
   VkrMetricId lighting_point_dropped;
   VkrMetricId lighting_point_grid_cells;

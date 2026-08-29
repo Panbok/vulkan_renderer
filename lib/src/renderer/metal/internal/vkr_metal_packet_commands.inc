@@ -177,6 +177,9 @@ vkr_metal_packet_collect_completed_results(VkrMetalPacketRenderer *renderer)
       vkr_metal_packet_cache_slot_result(renderer, slot);
   }
   vkr_metal_packet_harvest_commit_feedback(renderer);
+  /* Retired coefficient slots return to the pool only once their greatest
+     reader serial is proven complete -- no assumed frame lag. */
+  (void)vkr_ibl_sh_pool_collect(&renderer->sh_pool, completed);
 }
 
 vkr_internal const VkrMetalPacketResult *

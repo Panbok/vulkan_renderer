@@ -509,6 +509,26 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketIrradianceRoot {
   uint32_t reserved[2];
 } VkrMetalPacketIrradianceRoot;
 
+/** Mirrors VkrMetalPacketShProjectRoot in metal/msl/ibl/sh_projection.metal.
+    `destination` is the device address of the single 112-byte slot this
+    dispatch writes; the window scalars are already-evaluated deringing
+    factors, so the kernel carries no pow(). */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketShProjectRoot {
+  uint64_t source_texture_id;
+  uint64_t destination;
+  uint32_t source_face_size;
+  uint32_t source_mip;
+  float32_t window_band_0;
+  float32_t window_band_1;
+  float32_t window_band_2;
+  /* The shader's uint2 reserved is eight-byte aligned, so it lands at 40. */
+  uint32_t reserved_padding;
+  uint32_t reserved[2];
+} VkrMetalPacketShProjectRoot;
+
+_Static_assert(sizeof(VkrMetalPacketShProjectRoot) == 48,
+               "Metal SH projection root must remain 48 bytes");
+
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketPrefilterRoot {
   uint64_t source_texture_id;
   uint64_t target_texture_id;
@@ -544,6 +564,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_EQUIRECT_ROOT,
   VKR_METAL_PACKET_ABI_IRRADIANCE_ROOT,
   VKR_METAL_PACKET_ABI_PREFILTER_ROOT,
+  VKR_METAL_PACKET_ABI_SH_PROJECT_ROOT,
   VKR_METAL_PACKET_ABI_TEXT_ROOT,
   VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT,
   VKR_METAL_PACKET_ABI_TRANSMISSION_PEEL_ROOT,

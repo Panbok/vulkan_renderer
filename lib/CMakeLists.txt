@@ -268,6 +268,10 @@ if(APPLE)
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/bloom_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/gtao_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/normal_map_kernel.slangh"
+        # VkrShL2Packed and its evaluation are referenced by the deferred
+        # lighting path and by the IBL projection kernel, so the shared header
+        # precedes both.
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/sh_l2_kernel.slangh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/common/draw.metalh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/world/lighting.metalh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/shadow_kernel.slangh"
@@ -278,6 +282,7 @@ if(APPLE)
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/ibl/common.metalh"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/ibl/equirect_to_cube.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/ibl/diffuse_convolution.metal"
+        "${VKR_METAL_PACKET_MSL_SHADER_DIR}/ibl/sh_projection.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/ibl/specular_prefilter.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/text/default.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/exposure.metal"

@@ -49,6 +49,7 @@ vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
   case VKR_METAL_PACKET_ABI_EQUIRECT_ROOT:
   case VKR_METAL_PACKET_ABI_IRRADIANCE_ROOT:
   case VKR_METAL_PACKET_ABI_PREFILTER_ROOT:
+  case VKR_METAL_PACKET_ABI_SH_PROJECT_ROOT:
   case VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT:
   case VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT:
   case VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT:
@@ -556,6 +557,35 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       renderer, fragment, "vkr_metal_packet_ibl_prefilter",
       VKR_METAL_PACKET_ABI_PREFILTER_ROOT, false_v,
       @"VKR Metal packet IBL prefilter");
+  renderer->ibl_sh_pipeline = vkr_metal_packet_create_compute_pipeline(
+      renderer, fragment, "vkr_metal_packet_ibl_sh",
+      VKR_METAL_PACKET_ABI_SH_PROJECT_ROOT, false_v,
+      @"VKR Metal packet IBL SH projection");
+  /* Shared rather than private so the 4 KB pool can be zeroed here without a
+     blit: slot 0 must be a valid black sentinel from the first frame, and any
+     slot referenced before its projection lands must read black rather than
+     stale bytes. On unified memory this costs nothing for a buffer this small
+     that lighting reads through the cache. */
+  vkr_ibl_sh_pool_init(&renderer->sh_pool);
+  renderer->sh_coefficients =
+      [renderer->device newBufferWithLength:VKR_SH_BUFFER_BYTES
+                                    options:MTLResourceStorageModeShared];
+  renderer->sh_coefficients.label = @"VKR Metal SH coefficients";
+  if (renderer->sh_coefficients) {
+    MemZero(renderer->sh_coefficients.contents, VKR_SH_BUFFER_BYTES);
+  }
+  /* Cold representation selector for the A/B comparison, resolved once so a
+     matched capture of the same frame in either representation needs no
+     rebuild. Removed by SH3. */
+  const char *sh_representation = getenv("VKR_IBL_DIFFUSE_REPRESENTATION");
+  renderer->sh_representation =
+      sh_representation && string_equals(sh_representation, "sh_l2")
+          ? VKR_SH_REPRESENTATION_SH_L2
+          : VKR_SH_REPRESENTATION_CUBEMAP;
+  log_info("IBL diffuse representation: %s",
+           renderer->sh_representation == VKR_SH_REPRESENTATION_SH_L2
+               ? "sh_l2"
+               : "cubemap");
   renderer->gpu_draw_classify_pipeline =
       vkr_metal_packet_create_compute_pipeline(
           renderer, fragment, "vkr_metal_packet_gpu_draw_classify",
@@ -600,6 +630,11 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
           renderer, fragment, "vkr_metal_packet_deferred_lighting",
           VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT, false_v,
           @"VKR Metal packet deferred lighting");
+  renderer->deferred_lighting_sh_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_deferred_lighting_sh",
+          VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT, false_v,
+          @"VKR Metal packet deferred lighting SH");
   renderer->temporal_resolve_pipeline =
       vkr_metal_packet_create_compute_pipeline(
           renderer, fragment, "vkr_metal_packet_temporal_resolve",
@@ -610,6 +645,11 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
           renderer, fragment, "vkr_metal_packet_transmission_shade",
           VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT, false_v,
           @"VKR Metal packet transmission shade");
+  renderer->transmission_shade_sh_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_transmission_shade_sh",
+          VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT, false_v,
+          @"VKR Metal packet transmission shade SH");
   renderer->transmission_coverage_pipeline =
       vkr_metal_packet_create_compute_pipeline(
           renderer, fragment, "vkr_metal_packet_transmission_coverage",
@@ -689,6 +729,9 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       !renderer->gtao_depth_mip_pipeline || !renderer->gtao_evaluate_pipeline ||
       !renderer->gtao_denoise_pipeline ||
       !renderer->deferred_lighting_pipeline ||
+      !renderer->deferred_lighting_sh_pipeline ||
+      !renderer->sh_coefficients || renderer->sh_coefficients.gpuAddress == 0 ||
+      !renderer->transmission_shade_sh_pipeline || !renderer->ibl_sh_pipeline ||
       !renderer->temporal_resolve_pipeline ||
       !renderer->transmission_shade_pipeline ||
       !renderer->transmission_coverage_pipeline ||
@@ -747,6 +790,7 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       {renderer->ibl_equirect_pipeline, "IBL equirect pipeline"},
       {renderer->ibl_irradiance_pipeline, "IBL irradiance pipeline"},
       {renderer->ibl_prefilter_pipeline, "IBL prefilter pipeline"},
+      {renderer->ibl_sh_pipeline, "IBL SH projection pipeline"},
       {renderer->gpu_shadow_pipeline, "GPU shadow pipeline"},
       {renderer->gpu_shadow_opaque_pipeline, "opaque GPU shadow pipeline"},
       {renderer->vbuffer_pipeline, "visibility-buffer pipeline"},

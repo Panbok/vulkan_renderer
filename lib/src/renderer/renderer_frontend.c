@@ -942,6 +942,7 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
       .gtao_power = VKR_GTAO_DEFAULT_POWER,
       .render_mode = VKR_RENDER_MODE_DEFAULT,
   };
+  renderer->ibl_probe_limit = UINT32_MAX;
   renderer->frame_metrics = (VkrRendererFrameMetrics){0};
   renderer->boot_metrics = (VkrRendererBootMetrics){0};
   renderer->subsystem_plan = (VkrSubsystemPlan){0};
@@ -1141,6 +1142,8 @@ static void vkr_renderer_prepare_packet(RendererFrontend *rf,
      off here at the cold boundary rather than branched on per pixel. */
   const bool8_t indirect_diffuse_only =
       packet->globals.render_mode == VKR_RENDER_MODE_INDIRECT_DIFFUSE;
+  rf->ibl_probes_packed =
+      packet->lighting ? packet->lighting->ibl_probe_count : 0u;
   prepared->temporal_input = (VkrTemporalFrameInput){
       .view = packet->globals.view,
       .projection = packet->globals.projection,

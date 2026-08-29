@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "id": "performance.sh_ibl_probe_sweep.1.sh_l2",
+  "suite": "performance",
+  "description": "ADR-038 deferred-lighting diffuse comparison: 1 packed probes, sh_l2 representation. Representation and probe count are the declared independent variables; all other workload fields match the paired case.",
+  "scene": "assets/scenes/ibl_probe_sweep.scene.json",
+  "seed": 1,
+  "resolution": [
+    1280,
+    720
+  ],
+  "boot": "full",
+  "target": "windowed_hidden",
+  "present": "immediate",
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 5,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": {
+    "warmup": 120,
+    "measure": 300
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "taa_enabled": false,
+    "shadow_preset": "default",
+    "shadow_cascades": 4,
+    "render_mode": "default",
+    "ibl_probe_limit": 1,
+    "ibl_diffuse_representation": "sh_l2"
+  },
+  "camera": {
+    "mode": "orbit",
+    "speed": "medium",
+    "center": [
+      0,
+      1.2,
+      -2.0
+    ],
+    "radius": 3.0,
+    "height": 1.2,
+    "revolutions": 1.0,
+    "duration_seconds": 7,
+    "start_angle_degrees": 0,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.1,
+    "far_plane": 500
+  },
+  "assertions": [
+    {
+      "metric": "lighting.ibl.probes_packed",
+      "stat": "min",
+      "min": 1
+    },
+    {
+      "metric": "lighting.ibl.probes_packed",
+      "stat": "max",
+      "max": 1
+    }
+  ]
+}

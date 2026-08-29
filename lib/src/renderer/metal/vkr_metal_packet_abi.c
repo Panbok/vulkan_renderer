@@ -186,6 +186,21 @@ vkr_global const VkrMetalPacketAbiField vkr_prefilter_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketPrefilterRoot, target_mip, "target_mip", 28),
 };
 
+vkr_global const VkrMetalPacketAbiField vkr_sh_project_root_fields[] = {
+    VKR_ABI_FIELD(VkrMetalPacketShProjectRoot, source_texture_id, "source", 0),
+    VKR_ABI_FIELD(VkrMetalPacketShProjectRoot, destination, "destination", 8),
+    VKR_ABI_FIELD(VkrMetalPacketShProjectRoot, source_face_size,
+                  "source_face_size", 16),
+    VKR_ABI_FIELD(VkrMetalPacketShProjectRoot, source_mip, "source_mip", 20),
+    VKR_ABI_FIELD(VkrMetalPacketShProjectRoot, window_band_0, "window_band_0",
+                  24),
+    VKR_ABI_FIELD(VkrMetalPacketShProjectRoot, window_band_1, "window_band_1",
+                  28),
+    VKR_ABI_FIELD(VkrMetalPacketShProjectRoot, window_band_2, "window_band_2",
+                  32),
+    VKR_ABI_FIELD(VkrMetalPacketShProjectRoot, reserved, "reserved", 40),
+};
+
 vkr_global const VkrMetalPacketAbiField vkr_text_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketTextRoot, vertices, "vertices", 0),
     VKR_ABI_FIELD(VkrMetalPacketTextRoot, atlas_texture_id, "atlas", 8),
@@ -719,6 +734,9 @@ vkr_global const VkrMetalPacketAbiRecord
         [VKR_METAL_PACKET_ABI_PREFILTER_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketPrefilterRoot, "VkrMetalPacketPrefilterRoot", 32, 16,
             vkr_prefilter_root_fields),
+        [VKR_METAL_PACKET_ABI_SH_PROJECT_ROOT] = VKR_ABI_RECORD(
+            VkrMetalPacketShProjectRoot, "VkrMetalPacketShProjectRoot", 48, 16,
+            vkr_sh_project_root_fields),
         [VKR_METAL_PACKET_ABI_TEXT_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketTextRoot, "VkrMetalPacketTextRoot",
                            176, 16, vkr_text_root_fields),

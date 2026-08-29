@@ -25,6 +25,7 @@
 #include "renderer/vkr_candidate_residency.h"
 #include "renderer/vkr_capture_ring.h"
 #include "renderer/vkr_ibl_math.h"
+#include "renderer/vkr_ibl_sh_pool.h"
 #include "renderer/vkr_packet_constants.h"
 #include "renderer/vkr_render_graph_internal.h"
 #include "renderer/vkr_renderer_metrics.h"
@@ -224,6 +225,11 @@ typedef struct VkrMetalPacketTexture {
   uint64_t sampler_resource_id;
   uint32_t generation;
   uint64_t last_use_submit_value;
+  /** Published L2 coefficient slot projected from this source cubemap, or
+      VKR_SH_SLOT_BLACK before the first successful projection (ADR-038). Also
+      mirrored onto the irradiance texture while both representations coexist,
+      because the version-22 probe record cannot carry it. */
+  uint32_t ibl_sh_slot;
   bool8_t live;
 } VkrMetalPacketTexture;
 
@@ -281,6 +287,8 @@ typedef struct VkrMetalPacketFrameUpload {
   uint64_t shadow_texture_id;
   uint64_t transmission_texture_id;
   uint64_t ibl_probes_gpu;
+  /** Address of this frame's temporary VkrShAbTable. Removed by SH3. */
+  uint64_t sh_ab_table_gpu;
   VkrMetalPacketTextUpload *text_uploads;
   uint32_t world_text_count;
   uint32_t ui_text_count;
@@ -507,12 +515,17 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> ibl_irradiance_pipeline;
   id<MTLComputePipelineState> ibl_equirect_pipeline;
   id<MTLComputePipelineState> ibl_prefilter_pipeline;
+  id<MTLComputePipelineState> ibl_sh_pipeline;
   id<MTLComputePipelineState> gpu_draw_classify_pipeline;
   id<MTLComputePipelineState> gpu_draw_prefix_pipeline;
   id<MTLComputePipelineState> gpu_draw_encode_pipeline;
   id<MTLComputePipelineState> temporal_transform_pipeline;
   id<MTLComputePipelineState> gbuffer_resolve_pipeline;
   id<MTLComputePipelineState> deferred_lighting_pipeline;
+  /* Temporary SH diffuse variants (ADR-038 §1.6). Both representations exist
+     so the A/B comparison is a cold configuration change, not a rebuild. */
+  id<MTLComputePipelineState> deferred_lighting_sh_pipeline;
+  id<MTLComputePipelineState> transmission_shade_sh_pipeline;
   id<MTLComputePipelineState> gtao_depth_prefilter_pipeline;
   id<MTLComputePipelineState> gtao_depth_mip_pipeline;
   id<MTLComputePipelineState> gtao_evaluate_pipeline;
@@ -539,6 +552,13 @@ struct VkrMetalPacketRenderer {
   id<MTLDepthStencilState> depth_write_state;
   id<MTLDepthStencilState> depth_read_state;
   id<MTL4ArgumentTable> argument_table;
+  /* L2 diffuse coefficient slots (ADR-038). Renderer lifetime: the pool
+     survives scene reload, and scene reset only retires publications. */
+  id<MTLBuffer> sh_coefficients;
+  VkrShSlotPool sh_pool;
+  /* Cold: resolved once at renderer creation and read only while encoding a
+     pass, never per pixel or per probe. Removed by SH3. */
+  VkrShRepresentation sh_representation;
   CAMetalLayer *layer;
   id<CAMetalDrawable> drawable;
   VkrRenderGraphFrameInfo prepared_frame;
@@ -581,6 +601,8 @@ struct VkrMetalPacketRenderer {
   bool8_t pipeline_archive_written;
   VkrMetalTextureResource ibl_irradiance;
   VkrMetalTextureResource ibl_prefilter;
+  /** Published coefficient slot for the active global environment source. */
+  uint32_t ibl_sh_slot;
   VkrTextureHandle ibl_source;
   uint64_t ibl_last_use_submit_value;
   bool8_t ibl_live;

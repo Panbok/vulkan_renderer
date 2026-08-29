@@ -64,6 +64,9 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
           vkr_metal_material_table_device_gpu_address(renderer->materials),
       .irradiance_texture_id = renderer->ibl_irradiance.resource_id,
       .prefilter_texture_id = renderer->ibl_prefilter.resource_id,
+      /* Temporary: the retired BRDF-LUT slot carries the VkrShAbTable address
+         while both diffuse representations are live (ADR-038 §1.6). */
+      .reserved_brdf_lut = upload->sh_ab_table_gpu,
       .view_position = frame_constants.view_position,
       .prefilter_mip_count = frame_constants.prefilter_mip_count,
       .flags = *out_frame_flags,
@@ -1029,7 +1032,12 @@ vkr_internal bool8_t vkr_metal_packet_encode_deferred_lighting(
       .sky_enabled = sky ? 1u : 0u,
   };
   [renderer->argument_table setAddress:root_gpu atIndex:0u];
-  [encoder setComputePipelineState:renderer->deferred_lighting_pipeline];
+  /* The representation is chosen once here, while encoding, so no branch
+     reaches the per-pixel or per-probe path (ADR-038 §1.6). */
+  [encoder setComputePipelineState:
+               renderer->sh_representation == VKR_SH_REPRESENTATION_SH_L2
+                   ? renderer->deferred_lighting_sh_pipeline
+                   : renderer->deferred_lighting_pipeline];
   [encoder setArgumentTable:renderer->argument_table];
   [encoder dispatchThreads:MTLSizeMake(vbuffer.width, vbuffer.height, 1u)
       threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
@@ -1299,7 +1307,10 @@ vkr_internal bool8_t vkr_metal_packet_encode_transmission_shade(
       .temporal_outputs_enabled = temporal_outputs,
   };
   [renderer->argument_table setAddress:root_gpu atIndex:0u];
-  [encoder setComputePipelineState:renderer->transmission_shade_pipeline];
+  [encoder setComputePipelineState:
+               renderer->sh_representation == VKR_SH_REPRESENTATION_SH_L2
+                   ? renderer->transmission_shade_sh_pipeline
+                   : renderer->transmission_shade_pipeline];
   [encoder setArgumentTable:renderer->argument_table];
   if (compact) {
     const VkrRgBufferUse *indirect_use = vkr_rg_pass_find_buffer_use(
