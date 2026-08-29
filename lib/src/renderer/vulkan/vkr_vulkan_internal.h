@@ -628,11 +628,18 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanIblRoot {
 /**
  * Root for the L2 coefficient projection dispatch (ADR-038 §2).
  *
- * `source_texture` and `source_sampler` address the published source cubemap;
- * the kernel samples the selected mip at exact texel centers. `destination` is
- * the device address of the single 112-byte slot this dispatch writes. The
- * three window scalars are the already-evaluated deringing factors: the CPU
- * owns `pow(sinc_pi(l/3), sh_deringing)` so the kernel carries no pow().
+ * `source_texture` addresses the source cubemap's lazily-published 2D-array
+ *
+ * view; the kernel loads the selected mip by exact integer face/texel
+ *
+ * coordinates. `source_sampler` remains in the stable 48-byte root but is not
+
+ * * consulted by this projection. `destination` is the device address of the
+ *
+ * single 112-byte slot this dispatch writes. The three window scalars are
+ *
+ * the already-evaluated deringing factors: the CPU owns `pow(sinc_pi(l/3),
+ * sh_deringing)` so the kernel carries no pow().
  */
 typedef struct VKR_SIMD_ALIGN VkrVulkanIblShRoot {
   uint64_t destination;
@@ -643,7 +650,7 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanIblShRoot {
   float32_t window_band_0;
   float32_t window_band_1;
   float32_t window_band_2;
-  uint32_t reserved;
+  uint32_t reserved[3];
 } VkrVulkanIblShRoot;
 
 /** Mirrors VkrShadowCascadePacketData; see vkr_render_packet.h for units. */
@@ -893,6 +900,14 @@ _Static_assert(sizeof(VkrVulkanTransmissionCoverageRoot) == 32u,
                "Deferred transmission-coverage root ABI drift");
 _Static_assert(sizeof(VkrVulkanIblRoot) == 32u, "IBL-root ABI drift");
 _Static_assert(sizeof(VkrVulkanIblShRoot) == 48u, "IBL SH-root ABI drift");
+_Static_assert(offsetof(VkrVulkanIblShRoot, destination) == 0u,
+               "IBL SH-root destination ABI drift");
+_Static_assert(offsetof(VkrVulkanIblShRoot, source_texture) == 8u,
+               "IBL SH-root source ABI drift");
+_Static_assert(offsetof(VkrVulkanIblShRoot, source_face_size) == 16u,
+               "IBL SH-root extent ABI drift");
+_Static_assert(offsetof(VkrVulkanIblShRoot, window_band_0) == 24u,
+               "IBL SH-root window ABI drift");
 _Static_assert(sizeof(VkrVulkanPacketShadowCascade) == 96u,
                "Packet shadow-cascade ABI size drift");
 _Static_assert(sizeof(VkrVulkanPacketIblProbe) == 64u,
@@ -1169,6 +1184,14 @@ typedef struct VkrVulkanPublishedTexture {
   uint32_t ibl_sh_slot;
   VkrVulkanImage image;
   VkrGpuSlotHandle sampled_slot;
+  /**
+   * Lazily-published 2D-array alias used only by exact SH cubemap texel
+   * loads.
+   * The ordinary sampled slot remains a cube view for filtered IBL
+   * sampling.
+   */
+  VkImageView ibl_sh_texel_view;
+  VkrGpuSlotHandle ibl_sh_texel_slot;
   VkImageView storage_views[VKR_VULKAN_TEXTURE_MIP_MAX];
   VkrGpuSlotHandle storage_slots[VKR_VULKAN_TEXTURE_MIP_MAX];
   uint32_t sampler_record_index;

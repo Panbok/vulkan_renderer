@@ -549,6 +549,24 @@ vkr_vk_validate_gtao_root_abi(VkrVulkanRenderer *renderer) {
   return valid;
 }
 
+vkr_internal bool8_t
+vkr_vk_validate_ibl_sh_root_abi(VkrVulkanRenderer *renderer) {
+  static const VkrVulkanReflectedField fields[] = {
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanIblShRoot, destination),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanIblShRoot, source_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanIblShRoot, source_sampler),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanIblShRoot, source_face_size),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanIblShRoot, source_mip),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanIblShRoot, window_band_0),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanIblShRoot, window_band_1),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanIblShRoot, window_band_2),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanIblShRoot, reserved),
+  };
+  return vkr_vk_validate_root_abi(
+      renderer, VKR_VULKAN_PACKET_IBL_SH_COMP_SPV, "ibl_sh", fields,
+      ArrayCount(fields), sizeof(VkrVulkanIblShRoot));
+}
+
 #undef VKR_VULKAN_REFLECTED_FIELD
 
 vkr_internal bool8_t vkr_vk_create_shader_module(VkrVulkanRenderer *renderer,
@@ -578,6 +596,7 @@ vkr_internal bool8_t vkr_vk_create_shader_module(VkrVulkanRenderer *renderer,
 bool8_t vkr_vk_create_pipelines(VkrVulkanRenderer *renderer) {
   if (!vkr_vk_validate_packet_root_abi(renderer) ||
       !vkr_vk_validate_gtao_root_abi(renderer) ||
+      !vkr_vk_validate_ibl_sh_root_abi(renderer) ||
       !vkr_vk_validate_transmission_root_abi(renderer)) {
     return false_v;
   }

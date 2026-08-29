@@ -58,9 +58,9 @@ changing an acceptance envelope requires new evidence and owner review.
 | GTAO | `shaders/shared/gtao_kernel.slangh` | `metal/msl/post/gtao.metal` | `vulkan/slang/post/gtao.slang` | **ALIGNED** |
 | Packed geometry and GPU draw compaction | `shaders/shared/gpu_draw.slangh` for both Slang libraries | Native deferred/ICB path mirrors the records and decode in `metal/msl/common/draw.metalh` and compacts in `metal/msl/world/gpu_draws.metal` | `vulkan/slang/common/resources.slangh`, `common/vertex.slangh`, and `world/deferred.slang` | **UNALIGNED**: source overflow and dispatch semantics now agree, but the native MSL mirror is not shared source and the matched overflow fixture is missing |
 | Cascaded-shadow receiver | `shaders/shared/shadow_kernel.slangh` | `metal/msl/shadow/sampling.metalh`, used by forward and deferred paths | `vulkan/slang/world/default.slang`, reused by `world/deferred.slang` | **UNALIGNED**: sources agree, but the current matched native snapshot gate is missing |
-| IBL baking and sampling | SH diffuse math below; other bake math is backend-local | `metal/msl/ibl/*.metal*`, `metal/msl/world/lighting.metalh` | `vulkan/slang/ibl/*.slang*`, `vulkan/slang/world/default.slang` | **UNALIGNED**: the final Metal path passes a focused API/GPU shader-validation run, but no matched direct bake-output snapshot pair or current native Vulkan validation witness exists |
-| L2 diffuse coefficients (ADR-038) | `shaders/shared/sh_l2_kernel.slangh`, included by the Vulkan Slang library and concatenated into the MSL library | `metal/msl/ibl/sh_projection.metal` `vkr_metal_packet_ibl_sh`; final `sh_coefficients` and slot fields in `metal/msl/common/draw.metalh`; evaluation in `metal/msl/world/gpu_draws.metal` | `vulkan/slang/ibl/default.slang` `ibl_sh`; `VkrVulkanIblShRoot` plus final `sh_coefficients` and slot fields in `vulkan/slang/common/resources.slangh`; evaluation in `vulkan/slang/world/default.slang` | **UNALIGNED**: both production sources implement the same final projection/evaluation contract, the Metal 48-byte projection root passes compiled-shader reflection, and focused Metal API/GPU validation executes one packed probe through projection and indirect-diffuse evaluation. Missing: deterministic GPU repetition of the CPU fixtures, native Vulkan validation, and any matched native capture pair |
-| Indirect-diffuse capture channel (ADR-038 §3.1) | None | `metal/msl/world/gpu_draws.metal`, deferred lighting and transmission lighting | `vulkan/slang/world/deferred.slang`, `vk_deferred_lighting` and `vk_transmission_shade` | **UNALIGNED**: both production sources implement render mode 9 with the same rule (environment diffuse only, black background, GTAO excluded, no direct/specular/emissive/ambient fallback), but no matched native `indirect_diffuse` capture pair has been run |
+| IBL baking and sampling | SH diffuse math below; other bake math is backend-local | `metal/msl/ibl/*.metal*`, `metal/msl/world/lighting.metalh` | `vulkan/slang/ibl/*.slang*`, `vulkan/slang/world/default.slang` | **UNALIGNED**: focused native validation now passes on Metal and Vulkan, but no matched direct bake-output snapshot pair covers equirect conversion, SH diffuse response, and every prefilter mip |
+| L2 diffuse coefficients (ADR-038) | `shaders/shared/sh_l2_kernel.slangh`, included by the Vulkan Slang library and concatenated into the MSL library | `metal/msl/ibl/sh_projection.metal` `vkr_metal_packet_ibl_sh`; final `sh_coefficients` and slot fields in `metal/msl/common/draw.metalh`; evaluation in `metal/msl/world/gpu_draws.metal` | `vulkan/slang/ibl/default.slang` `ibl_sh`; exact texel loads use a lazily-published 2D-array alias; `VkrVulkanIblShRoot` plus final `sh_coefficients` and slot fields in `vulkan/slang/common/resources.slangh`; evaluation in `vulkan/slang/world/default.slang` | **UNALIGNED**: both production sources implement the same final projection/evaluation contract; both 48-byte roots have compiled-shader reflection witnesses; and focused native validation executes one packed probe through projection and indirect-diffuse evaluation on both backends. Vulkan additionally has a deterministic three-frame visible capture. Missing: GPU repetition of the CPU projection fixtures and a matched native Metal/Vulkan capture pair |
+| Indirect-diffuse capture channel (ADR-038 §3.1) | None | `metal/msl/world/gpu_draws.metal`, deferred lighting and transmission lighting | `vulkan/slang/world/deferred.slang`, `vk_deferred_lighting` and `vk_transmission_shade` | **UNALIGNED**: both production sources implement render mode 9 with the same rule (environment diffuse only, black background, GTAO excluded, no direct/specular/emissive/ambient fallback); Vulkan's backend-neutral case yields three byte-identical visible captures, but the matching native Metal report is absent |
 | Visibility, deferred resolve, lighting, temporal resolve, transmission, and picking | Packed rows and normal decode above | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang`, `vulkan/slang/picking/default.slang` | **UNALIGNED**: source algorithms and dispatch semantics now agree, including compact transmission, but matched native runtime and remaining ABI gates are open |
 | Tonemap and FXAA | Exposure state above | `metal/msl/post/tonemap.metal` | `vulkan/slang/post/default.slang`, `post/tonemap.slangh` | **UNALIGNED**: source behavior now agrees; the crossed tonemap/FXAA native fixture is missing |
 | Text color and picking | None | `metal/msl/text/default.metal` | `vulkan/slang/text/default.slang` | **UNALIGNED**: sources agree semantically, but no matched native snapshot pair is recorded |
@@ -118,7 +118,7 @@ and implementation files. `metal/slang/library.slang` is compiled separately.
 | Lighting and shadow sampling | `metal/msl/world/lighting.metalh`, `metal/msl/shadow/sampling.metalh`; shared progressive PCF comes from `shaders/shared/shadow_kernel.slangh` | `vulkan/slang/world/default.slang` and the same shared shadow kernel | **UNALIGNED**: source counterpart exists; matched native snapshots for the current source are missing |
 | GPU draw generation, visibility, resolve, deferred lighting, temporal history, transmission, picking, HZB, and SDSM | `metal/msl/world/gpu_draws.metal`; 18 entry points from `vkr_metal_packet_vbuffer_fragment` through `vkr_metal_packet_sdsm_reduce` | `vulkan/slang/world/deferred.slang` | **UNALIGNED**: source and dispatch semantics now agree; matched Vulkan runtime evidence remains missing |
 | Forward world shading and temporal MRT output | `metal/msl/world/default.metal`; `vkr_metal_packet_opaque_fragment`, `vkr_metal_packet_temporal_blend_fragment` | `vulkan/slang/world/default.slang` | **UNALIGNED**: source counterpart exists; matched Vulkan runtime gate missing |
-| IBL baking | `metal/msl/ibl/common.metalh` plus equirect, SH projection, and prefilter `.metal` entry points | `vulkan/slang/ibl/default.slang` | **UNALIGNED**: source counterpart exists and focused Metal validation passes; matched IBL snapshots and current native Vulkan validation are missing |
+| IBL baking | `metal/msl/ibl/common.metalh` plus equirect, SH projection, and prefilter `.metal` entry points | `vulkan/slang/ibl/default.slang` | **UNALIGNED**: source counterparts and focused native validation pass on both backends; matched IBL snapshots are missing |
 | Text and text picking | `metal/msl/text/default.metal`; vertex, color-fragment, and picking-fragment entry points | `vulkan/slang/text/default.slang` | **UNALIGNED**: source counterpart exists; matched text snapshots and native validation missing |
 | Tonemap and FXAA | `metal/msl/post/tonemap.metal`; fullscreen vertex and tonemap fragment | `vulkan/slang/post/default.slang` and `post/tonemap.slangh` | **UNALIGNED**: enabled and disabled source behavior agrees; matched final-color evidence is missing |
 | Exposure, bloom, and GTAO | the three files listed in the original topology table; 12 compute entry points | the three Vulkan post-effect files listed above | **ALIGNED** |
@@ -217,8 +217,9 @@ The shared packed records have these host contracts:
 `vkr_gpu_abi.c` validates every listed host offset. Vulkan pipeline creation
 reflects packed vertices, geometry rows, visible rows, the 144-byte material
 row, the 48-byte draw root, selected fields plus the 480-byte extent of the
-frame root, and every field of the transmission shade and compact roots. It
-does not reflect the candidate row or every other deferred compute root.
+frame root, every field of the 48-byte SH projection root, and every field of
+the transmission shade and compact roots. It does not reflect the candidate row
+or every other deferred compute root.
 Metal's native reflection covers its own roots, but the native deferred
 library declares the packed records independently of `gpu_draw.slangh`.
 
@@ -226,8 +227,8 @@ All Vulkan shaders share a 16-byte push constant containing the root device
 address at `0`, material index at `8`, and flags at `12`. Sampled texture aliases
 share set 0 binding 0, sampler and comparison-sampler aliases share set 0
 binding 1, and storage-image aliases share set 1 binding 0. The host pins the
-following Vulkan root sizes, but only the packet and GTAO roots have the
-field-level SPIR-V reflection described above:
+following Vulkan root sizes; the packet, GTAO, SH projection, and transmission
+roots have the field-level SPIR-V reflection described above:
 
 | Root | Bytes | Root | Bytes |
 | --- | ---: | --- | ---: |
@@ -237,8 +238,9 @@ field-level SPIR-V reflection described above:
 | HZB | 48 | SDSM | 32 |
 | picking | 64 | transmission shade | 448 |
 | transmission compact | 80 | transmission coverage | 32 |
-| IBL bake | 32 | packet frame | 480 |
-| packet draw | 48 | packet utility | 544 |
+| IBL bake | 32 | IBL SH projection | 48 |
+| packet frame | 480 | packet draw | 48 |
+| packet utility | 544 | — | — |
 
 This contract is **UNALIGNED** until the native MSL duplicate is either derived
 from the shared declaration or guarded by equivalent field-level reflection,
@@ -431,10 +433,13 @@ environment BRDF, local-probe box weighting, and global-probe remainder; box
 projection remains specular-only.
 
 The SH projection root is 48 bytes on both host contracts. Metal compiled-root
-reflection and focused API/GPU shader validation pass. The state remains
-**UNALIGNED** until native Vulkan validates its sampled-source root and matched
-Release captures cover direct equirect conversion, SH diffuse response, and
-every prefilter mip.
+reflection and focused API/GPU shader validation pass. Vulkan now compiles the
+SH entry with a typed projection-root pointer, reflects every field and the
+48-byte extent, and passes two native API plus synchronization-validation
+repetitions. Exact projection reads use a lazily-published `Texture2DArray` view
+of the source cubemap; the filtered cube view remains unchanged for skybox and
+specular work. The state remains **UNALIGNED** until matched Release captures
+cover direct equirect conversion, SH diffuse response, and every prefilter mip.
 
 ### 4.8 World, deferred, temporal, and picking paths — UNALIGNED
 
@@ -672,6 +677,17 @@ build_release/tools/vkr_harness snapshot \
   --case tools/cases/smoke/text_rendering_snapshot.case.json \
   --profile tools/profiles/local-offscreen.json
 ```
+
+The focused Vulkan SH witness uses
+`tools/cases/local/sh_ibl_single_probe_vulkan_validation.case.json` with the
+validation-windowed profile. Two repetitions pass with report digest
+`sha256:72302ea31066819c54e36e488302467a4609c1cd9b75ac0c8d327ee070d1b815`.
+The backend-neutral snapshot case
+`tools/cases/smoke/sh_ibl_single_probe_snapshot.case.json` produces three
+byte-identical visible Vulkan captures with data digest
+`sha256:a5b95003b45846451508acb29b481e6bd013945daa69b6075c8737b7aac1c64a`.
+These close the Vulkan-native SH root/dispatch gate only; the matching native
+Metal snapshot remains required before either SH row can become **ALIGNED**.
 
 All newly reviewed render-state rows also require the focused native validation
 pair. Metal must run alone:

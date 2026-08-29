@@ -3,7 +3,7 @@
   "id": "performance.sh_ibl_probe_sweep.16.sh_l2",
   "suite": "performance",
   "description": "ADR-038 SH deferred-lighting scaling fixture with 16 packed probes.",
-  "scene": "assets/scenes/ibl_probe_sweep.scene.json",
+  "scene": "assets/scenes/fixtures/ibl_probe_sweep.scene.json",
   "seed": 1,
   "resolution": [
     1280,

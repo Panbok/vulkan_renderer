@@ -1,0 +1,40 @@
+{
+  "version": 2,
+  "environment": {
+    "enabled": true,
+    "intensity": 2.0,
+    "diffuse_intensity": 1.0,
+    "specular_intensity": 0.0,
+    "equirect": "assets/textures/citrus_orchard_puresky_4k.hdr"
+  },
+  "reflection_probes": [
+    { "enabled": true, "center": [0.0, 1.2, -3.0], "extents": [5.0, 2.5, 4.0], "blend_distance": 1.0, "intensity": 1.0, "diffuse_intensity": 1.0, "specular_intensity": 0.0, "cubemap": { "base_path": "assets/textures/skybox", "extension": "jpg" } },
+    { "enabled": true, "center": [0.0, 1.2, -3.0], "extents": [5.0, 2.5, 4.0], "blend_distance": 1.0, "intensity": 1.0, "diffuse_intensity": 0.95, "specular_intensity": 0.0, "cubemap": { "base_path": "assets/textures/skybox", "extension": "jpg" } },
+    { "enabled": true, "center": [0.0, 1.2, -3.0], "extents": [5.0, 2.5, 4.0], "blend_distance": 1.0, "intensity": 1.0, "diffuse_intensity": 0.90, "specular_intensity": 0.0, "cubemap": { "base_path": "assets/textures/skybox", "extension": "jpg" } },
+    { "enabled": true, "center": [0.0, 1.2, -3.0], "extents": [5.0, 2.5, 4.0], "blend_distance": 1.0, "intensity": 1.0, "diffuse_intensity": 0.85, "specular_intensity": 0.0, "cubemap": { "base_path": "assets/textures/skybox", "extension": "jpg" } },
+    { "enabled": true, "center": [0.0, 1.2, -3.0], "extents": [5.0, 2.5, 4.0], "blend_distance": 1.0, "intensity": 1.0, "diffuse_intensity": 0.80, "specular_intensity": 0.0, "cubemap": { "base_path": "assets/textures/skybox", "extension": "jpg" } },
+    { "enabled": true, "center": [0.0, 1.2, -3.0], "extents": [5.0, 2.5, 4.0], "blend_distance": 1.0, "intensity": 1.0, "diffuse_intensity": 0.75, "specular_intensity": 0.0, "cubemap": { "base_path": "assets/textures/skybox", "extension": "jpg" } },
+    { "enabled": true, "center": [0.0, 1.2, -3.0], "extents": [5.0, 2.5, 4.0], "blend_distance": 1.0, "intensity": 1.0, "diffuse_intensity": 0.70, "specular_intensity": 0.0, "cubemap": { "base_path": "assets/textures/skybox", "extension": "jpg" } },
+    { "enabled": true, "center": [0.0, 1.2, -3.0], "extents": [5.0, 2.5, 4.0], "blend_distance": 1.0, "intensity": 1.0, "diffuse_intensity": 0.65, "specular_intensity": 0.0, "cubemap": { "base_path": "assets/textures/skybox", "extension": "jpg" } },
+    { "enabled": true, "center": [0.0, 1.2, -3.0], "extents": [5.0, 2.5, 4.0], "blend_distance": 1.0, "intensity": 1.0, "diffuse_intensity": 0.60, "specular_intensity": 0.0, "cubemap": { "base_path": "assets/textures/skybox", "extension": "jpg" } },
+    { "enabled": true, "center": [0.0, 1.2, -3.0], "extents": [5.0, 2.5, 4.0], "blend_distance": 1.0, "intensity": 1.0, "diffuse_intensity": 0.55, "specular_intensity": 0.0, "cubemap": { "base_path": "assets/textures/skybox", "extension": "jpg" } },
+    { "enabled": true, "center": [0.0, 1.2, -3.0], "extents": [5.0, 2.5, 4.0], "blend_distance": 1.0, "intensity": 1.0, "diffuse_intensity": 0.50, "specular_intensity": 0.0, "cubemap": { "base_path": "assets/textures/skybox", "extension": "jpg" } },
+    { "enabled": true, "center": [0.0, 1.2, -3.0], "extents": [5.0, 2.5, 4.0], "blend_distance": 1.0, "intensity": 1.0, "diffuse_intensity": 0.45, "specular_intensity": 0.0, "cubemap": { "base_path": "assets/textures/skybox", "extension": "jpg" } },
+    { "enabled": true, "center": [0.0, 1.2, -3.0], "extents": [5.0, 2.5, 4.0], "blend_distance": 1.0, "intensity": 1.0, "diffuse_intensity": 0.40, "specular_intensity": 0.0, "cubemap": { "base_path": "assets/textures/skybox", "extension": "jpg" } },
+    { "enabled": true, "center": [0.0, 1.2, -3.0], "extents": [5.0, 2.5, 4.0], "blend_distance": 1.0, "intensity": 1.0, "diffuse_intensity": 0.35, "specular_intensity": 0.0, "cubemap": { "base_path": "assets/textures/skybox", "extension": "jpg" } },
+    { "enabled": true, "center": [0.0, 1.2, -3.0], "extents": [5.0, 2.5, 4.0], "blend_distance": 1.0, "intensity": 1.0, "diffuse_intensity": 0.30, "specular_intensity": 0.0, "cubemap": { "base_path": "assets/textures/skybox", "extension": "jpg" } },
+    { "enabled": true, "center": [0.0, 1.2, -3.0], "extents": [5.0, 2.5, 4.0], "blend_distance": 1.0, "intensity": 1.0, "diffuse_intensity": 0.25, "specular_intensity": 0.0, "cubemap": { "base_path": "assets/textures/skybox", "extension": "jpg" } }
+  ],
+  "entities": [
+    {
+      "name": "ProbeSweepSurface",
+      "parent": null,
+      "transform": { "pos": [0.0, 1.2, -3.0], "rot": [0.0, 0.0, 0.0, 1.0], "scale": [1.0, 1.0, 1.0] },
+      "shape": {
+        "type": "cube",
+        "dimensions": [8.0, 2.4, 6.0],
+        "material": { "name": "local_ibl_surface", "path": "tests/fixtures/rendering/local_ibl_surface.mt" }
+      }
+    }
+  ]
+}

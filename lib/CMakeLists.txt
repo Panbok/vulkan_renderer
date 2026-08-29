@@ -45,6 +45,7 @@ function(vkr_add_vulkan_packet_shader output_name entry stage)
                 # Shader-audit setting. -O3 produced byte-identical modules for
                 # the current entry points.
                 -O2
+                ${ARGN}
                 -entry "${entry}"
                 -stage "${stage}"
                 "${VKR_VULKAN_PACKET_SHADER_SOURCE}"
@@ -74,7 +75,8 @@ vkr_add_vulkan_packet_shader("packet.text.frag" text_fragment fragment)
 vkr_add_vulkan_packet_shader("packet.text_picking.frag" text_picking_fragment fragment)
 vkr_add_vulkan_packet_shader("packet.ibl_equirect.comp" ibl_equirect compute)
 vkr_add_vulkan_packet_shader("packet.ibl_prefilter.comp" ibl_prefilter compute)
-vkr_add_vulkan_packet_shader("packet.ibl_sh.comp" ibl_sh compute)
+vkr_add_vulkan_packet_shader(
+    "packet.ibl_sh.comp" ibl_sh compute -DVKR_VULKAN_IBL_SH_ROOT=1)
 vkr_add_vulkan_packet_shader("packet.gpu_draw_classify.comp" vk_gpu_draw_classify compute)
 vkr_add_vulkan_packet_shader("packet.gpu_draw_prefix.comp" vk_gpu_draw_prefix compute)
 vkr_add_vulkan_packet_shader("packet.gpu_draw_encode.comp" vk_gpu_draw_encode compute)

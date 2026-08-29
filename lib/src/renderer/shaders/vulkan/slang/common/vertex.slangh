@@ -16,7 +16,7 @@ struct VkrVulkanVertexData
 VkrVulkanVertexData packet_vertex_data(uint vertex_id, uint instance_id,
                                        float4x4 view_projection)
 {
-    VkrVulkanPacketDrawRoot* draw = g_push.root;
+    VkrVulkanPacketDrawRoot* draw = vkr_vulkan_packet_draw_root();
     VkrVulkanPacketFrameRoot* frame = draw.frame;
     VkrGpuVisibleDrawRow visible = draw.visible_rows[draw.visible_row_index];
     VkrGpuGeometryRow geometry = draw.geometry_rows[visible.geometry_index];

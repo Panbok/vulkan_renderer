@@ -112,6 +112,9 @@ typedef struct VkrShL2Packed {
   float32_t v[VKR_SH_PACKED_VECTOR_COUNT][4];
 } VkrShL2Packed;
 
+_Static_assert(sizeof(VkrShL2Packed) == VKR_SH_SLOT_BYTES,
+               "SH packed-slot ABI drift");
+
 /** Reports what the shader-side max(D, 0) policy changes for a slot. */
 typedef struct VkrShL2ClampDiagnostics {
   uint32_t sample_count;

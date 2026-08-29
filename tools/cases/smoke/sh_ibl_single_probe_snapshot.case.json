@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "id": "smoke.sh_ibl.single_probe.snapshot",
+  "suite": "smoke",
+  "description": "Deterministic indirect-diffuse capture of one packed local SH probe, runnable unchanged on Metal and Vulkan.",
+  "scene": "assets/scenes/fixtures/ibl_probe_sweep.scene.json",
+  "seed": 38,
+  "resolution": [640, 480],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 2,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": { "warmup": 30, "measure": 3 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "taa_enabled": false,
+    "exposure_mode": "manual",
+    "manual_exposure": 1.0,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default",
+    "ibl_probe_limit": 1
+  },
+  "camera": {
+    "mode": "static",
+    "position": [0.0, 1.2, 6.0],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 55,
+    "near_plane": 0.1,
+    "far_plane": 500
+  },
+  "captures": [
+    { "at_frame": 0, "channels": ["indirect_diffuse"] },
+    { "at_frame": 1, "channels": ["indirect_diffuse"] },
+    { "at_frame": 2, "channels": ["indirect_diffuse"] }
+  ],
+  "assertions": [
+    { "metric": "lighting.ibl.probes_packed", "stat": "min", "min": 1 },
+    { "metric": "lighting.ibl.probes_packed", "stat": "max", "max": 1 }
+  ]
+}

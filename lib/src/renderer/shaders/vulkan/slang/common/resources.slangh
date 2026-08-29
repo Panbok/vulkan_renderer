@@ -210,13 +210,6 @@ struct VkrVulkanPacketUtilityRoot
     VkrExposureState* exposure_state;
 };
 
-struct VkrVulkanPushConstants
-{
-    VkrVulkanPacketDrawRoot* root;
-    uint material_index;
-    uint flags;
-};
-
 struct VkrVulkanIblRoot
 {
     uint source_texture;
@@ -240,7 +233,22 @@ struct VkrVulkanIblShRoot
     float window_band_0;
     float window_band_1;
     float window_band_2;
-    uint reserved;
+    uint3 reserved;
+};
+
+#ifndef VKR_VULKAN_IBL_SH_ROOT
+#define VKR_VULKAN_IBL_SH_ROOT 0
+#endif
+
+struct VkrVulkanPushConstants
+{
+#if VKR_VULKAN_IBL_SH_ROOT
+    VkrVulkanIblShRoot* root;
+#else
+    VkrVulkanPacketDrawRoot* root;
+#endif
+    uint material_index;
+    uint flags;
 };
 
 struct VkrVulkanVertexOutput
@@ -304,5 +312,10 @@ struct VkrVulkanTextOutput
 [[vk::binding(1, 0)]] RWTexture2DArray<float4> g_storage_images[];
 [[vk::binding(1, 0)]] RWTexture2DArray<uint2> g_storage_uint2_images[];
 [[vk::push_constant]] ConstantBuffer<VkrVulkanPushConstants> g_push;
+
+VkrVulkanPacketDrawRoot* vkr_vulkan_packet_draw_root()
+{
+    return (VkrVulkanPacketDrawRoot*)g_push.root;
+}
 
 static const float vkr_pi = 3.14159265359f;

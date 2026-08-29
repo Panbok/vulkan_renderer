@@ -44,6 +44,11 @@ Evidence retained in this change:
 - `./build_test.sh`: exit 0, 551 tests;
 - `./build.sh Debug` and `./build_release.sh`: exit 0, including both shader
   libraries;
+- Vulkan projects through a lazily published `Texture2DArray` view of the
+  source cubemap, so integer face/texel/mip loads match Metal `read()` and the
+  CPU reference without emitting invalid cube-image `OpImageFetch`. Pipeline
+  creation reflects every field and the 48-byte extent of
+  `VkrVulkanIblShRoot` from the compiled SH entry point;
 - one exclusive Metal API/GPU shader-validation state-matrix run: exit 0, all
   11 assertions passed, no validation diagnostic, report digest
   `sha256:101be997281ecc0c81cf66984ceb2cf8c0ae0e132ae90ec0bcf7068fd7c6ded0`;
@@ -53,18 +58,32 @@ Evidence retained in this change:
   `sha256:13d8ab1fe4b2a2533fc5f72130ba9115a30bffef7b0914fb424aca8f73ed3e41`;
 - normal Debug application cold and warm launches against one fresh explicit
   Metal pipeline archive: both exit 0; archive size 2,128,224 bytes.
+- focused RX 6700 XT Vulkan API plus synchronization validation: two complete
+  repetitions, exactly one packed probe in every measured frame, no
+  VUID/error/fatal diagnostics, report digest
+  `sha256:72302ea31066819c54e36e488302467a4609c1cd9b75ac0c8d327ee070d1b815`;
+- normal Release Vulkan cold and warm launches against one fresh explicit
+  pipeline cache: both exit 0; the cache is 342,484 bytes and remains
+  `sha256:60b58bb30b41e216b8f4142fc51bff3a53b46f80ab965cda19d9e56b7825c26c`;
+- one backend-neutral Release `indirect_diffuse` case on Vulkan captures three
+  visible 640x480 frames with identical data digest
+  `sha256:a5b95003b45846451508acb29b481e6bd013945daa69b6075c8737b7aac1c64a`;
+  the passing local report digest is
+  `sha256:b38e590ac8358d6ac61462109ae014bd59c6e6578374355b40950cea1f0d18c7`.
+  This is a one-backend determinism witness, not a matched Metal/Vulkan pair;
 - clean Release `sh_ibl_probe_sweep_16_sh_l2` profile: five stable 300-frame
   repetitions, exactly 16 packed probes throughout, authoritative report digest
   `sha256:9d13f1159a8c813bb1c4865725d1e05fceea23156aa6538053058867ef1a9589`;
   deferred-lighting GPU time was 1.15275 ms p50, 1.14742 ms mean, and 0.20832 ms
   standard deviation across 1,500 samples.
 
-Still open: native Vulkan validation, deterministic GPU repetition of the CPU
-projection fixtures, matched native `indirect_diffuse` captures, owner review of
-the café probe and clamp/energy diagnostics, submitted-frame reload/lifetime
-stress, the remaining 0/1/4-probe performance cases, and a valid comparative
-performance result. macOS builds the Vulkan sources but cannot run this
-repository's descriptor-buffer backend.
+Still open: deterministic GPU repetition of the CPU projection fixtures,
+matched native `indirect_diffuse` captures, owner review of the café probe and
+clamp/energy diagnostics, submitted-frame reload/lifetime stress, the remaining
+0/1/4-probe performance cases, and a valid comparative performance result.
+macOS builds the Vulkan sources but cannot run this repository's
+descriptor-buffer backend; the Vulkan evidence above does not substitute for a
+fresh native Metal capture.
 
 ## Scope
 
@@ -215,6 +234,14 @@ The scene environment and independent probe records replace
 prefilter texture ownership is unchanged. Retained fallback ownership remains
 explicit in `vkr_world_resources.c`.
 
+Vulkan retains the ordinary cube view for skybox and filtered prefilter
+sampling. When a cubemap first becomes an SH source, the publisher lazily
+creates a sampled 2D-array alias over the same six layers and publishes its
+descriptor with the source image's current read layout. The SH kernel uses that
+alias for exact integer loads. The alias descriptor and view retire with the
+source texture after its last submit serial; non-SH cubemaps acquire no extra
+descriptor.
+
 ### 1.5 Final packet ABI
 
 Only SH3 advances `VKR_RENDER_PACKET_VERSION` from 22 to 23.
@@ -311,6 +338,10 @@ forces mip 0.
 
 After radiance projection, multiply coefficients by the normalized band factors
 from §1.1 and by the window factor from §2.4, then pack the seven vectors.
+Both production kernels fetch the selected mip at exact integer face/texel
+coordinates. Metal uses `texturecube::read` and Vulkan uses `Texture2DArray.Load`
+through the publication alias from §1.4; filtered directional sampling is not
+part of projection.
 
 ### 2.3 Dispatch
 
@@ -501,7 +532,7 @@ pass's GPU time. Bake time and total frame time are reported for context, not as
 the claimed result.
 
 The final tree contains one dedicated scene fixture,
-`assets/scenes/ibl_probe_sweep.scene.json`, with 16 overlapping local probes and
+`assets/scenes/fixtures/ibl_probe_sweep.scene.json`, with 16 overlapping local probes and
 a camera path that keeps the measured pixels inside all selected volumes. A
 cold harness control `ibl_probe_limit` packs exactly 0, 1, 4, or 16 probes from
 that fixture. Cases under `tools/cases/performance/` cover the four final SH

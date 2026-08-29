@@ -20,16 +20,19 @@ ADR-016's equirectangular delivery, load-time cube conversion, and `TextureCube`
 runtime sampling remain in force for the skybox draw, environment source, and
 GGX specular prefilter. Its diffuse-cubemap portion is now historical.
 
-The 2026-08-29 implementation gates passed the 551-test CPU suite, Debug and
-Release builds, a broad exclusive Metal API/GPU validation run, a focused
-single-probe SH projection/evaluation validation run, and fresh cold plus warm
-Metal pipeline-archive launches. A clean authoritative Release profile also
-characterizes the final 16-probe SH path, but it has no comparable cubemap
-control. This Mac cannot execute the descriptor-buffer Vulkan backend. Native
-Vulkan validation, deterministic GPU fixture repetition, matched native
-indirect-diffuse captures, café-probe owner review, reload/lifetime stress, the
+The 2026-08-29 implementation gates passed the full CPU suite, Debug and
+Release builds, broad and focused Metal API/GPU validation, fresh cold plus warm
+Metal pipeline-archive launches, and an authoritative final-path 16-probe
+profile. The corrected Vulkan implementation also passes two focused native API
+plus synchronization-validation repetitions, compiled SPIR-V reflection of the
+48-byte projection root, cold plus warm Release pipeline-cache launches, and a
+three-frame deterministic visible `indirect_diffuse` capture. The capture is
+Vulkan-only, and the 16-probe profile has no comparable cubemap control.
+Deterministic GPU repetition of the CPU projection fixtures, a matched native
+Metal/Vulkan capture, café-probe owner review, reload/lifetime stress, the
 remaining SH scaling cases, and a valid comparative performance result remain
-open. Source presence and these Metal witnesses do not make this ADR Accepted.
+open. Source presence and these one-sided witnesses do not make this ADR
+Accepted.
 
 ## Context
 
@@ -122,6 +125,13 @@ Six constraints define the implementation.
    solid-angle-preserving filter. The implementation must compare the selected
    mip against a full-resolution reference before this approximation is
    accepted.
+
+   Projection fetches the selected mip at exact integer face/texel coordinates.
+   Metal uses `texturecube::read`. Vulkan lazily publishes a sampled
+   2D-array alias of the source cubemap and uses `Texture2DArray.Load`; its
+   ordinary cube descriptor remains available for filtered skybox and specular
+   sampling. The alias view and descriptor share the source texture's
+   completion-gated lifetime.
 
 6. **Make non-negativity and deringing explicit quality policies.** L2
    truncation can ring and produce negative reconstructed values. Evaluation

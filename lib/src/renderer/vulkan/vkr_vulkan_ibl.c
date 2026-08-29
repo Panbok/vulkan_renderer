@@ -228,7 +228,7 @@ vkr_internal bool8_t vkr_vk_record_ibl_sh_projection(
   *root = (VkrVulkanIblShRoot){
       .destination = renderer->sh_coefficients.address +
                      (uint64_t)slot * VKR_SH_SLOT_BYTES,
-      .source_texture = source->sampled_slot.index,
+      .source_texture = source->ibl_sh_texel_slot.index,
       .source_sampler = sampler->slot.index,
       .source_face_size = projection_extent,
       .source_mip = projection_mip,

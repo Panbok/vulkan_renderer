@@ -2,8 +2,9 @@
 VkrVulkanVertexOutput world_vertex(uint vertex_id : SV_VertexID,
                                    uint instance_id : SV_InstanceID)
 {
+    VkrVulkanPacketDrawRoot* draw = vkr_vulkan_packet_draw_root();
     return packet_vertex_impl(vertex_id, instance_id,
-                              g_push.root.frame.view_projection);
+                              draw.frame.view_projection);
 }
 
 [shader("vertex")]
@@ -11,16 +12,18 @@ VkrVulkanTemporalVertexOutput
 world_temporal_vertex(uint vertex_id : SV_VertexID,
                       uint instance_id : SV_InstanceID)
 {
+    VkrVulkanPacketDrawRoot* draw = vkr_vulkan_packet_draw_root();
     return packet_temporal_vertex_impl(vertex_id, instance_id,
-                                       g_push.root.frame.view_projection);
+                                       draw.frame.view_projection);
 }
 
 float4 packet_base_color(VkrVulkanVertexOutput input)
 {
+    VkrVulkanPacketDrawRoot* draw = vkr_vulkan_packet_draw_root();
     VkrGpuVisibleDrawRow visible =
-        g_push.root.visible_rows[g_push.root.visible_row_index];
+        draw.visible_rows[draw.visible_row_index];
     VkrVulkanMaterial material =
-        g_push.root.frame.materials[visible.material_index];
+        draw.frame.materials[visible.material_index];
     uint texture_index = NonUniformResourceIndex(material.base_color_texture);
     uint sampler_index = NonUniformResourceIndex(material.base_color_sampler);
     return g_textures[texture_index].Sample(g_samplers[sampler_index],
@@ -585,7 +588,7 @@ float3 packet_environment(VkrVulkanPacketFrameRoot *frame,
 
 float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing)
 {
-    VkrVulkanPacketDrawRoot *draw = g_push.root;
+    VkrVulkanPacketDrawRoot *draw = vkr_vulkan_packet_draw_root();
     VkrVulkanPacketFrameRoot *frame = draw.frame;
     VkrGpuVisibleDrawRow visible = draw.visible_rows[draw.visible_row_index];
     VkrVulkanMaterial material = frame.materials[visible.material_index];
@@ -792,8 +795,9 @@ world_temporal_fragment(VkrVulkanTemporalVertexOutput input,
     output.motion = 0.0f;
     output.validity = 0.0f;
 
+    VkrVulkanPacketDrawRoot *draw = vkr_vulkan_packet_draw_root();
     VkrVulkanPacketTemporalDrawState *temporal =
-        g_push.root.frame.temporal_draw_state;
+        draw.frame.temporal_draw_state;
     if (identity_valid && temporal.history_valid != 0u)
     {
         VkrTemporalTransform previous =
@@ -815,9 +819,9 @@ world_temporal_fragment(VkrVulkanTemporalVertexOutput input,
                 float2 previous_uv =
                     previous_clip.xy / previous_clip.w * 0.5f + 0.5f;
                 VkrGpuVisibleDrawRow visible =
-                    g_push.root.visible_rows[g_push.root.visible_row_index];
+                    draw.visible_rows[draw.visible_row_index];
                 float reactivity = saturate(
-                    g_push.root.frame.materials[visible.material_index]
+                    draw.frame.materials[visible.material_index]
                         .temporal_reactivity);
                 output.motion = previous_uv - current_uv;
                 output.validity =

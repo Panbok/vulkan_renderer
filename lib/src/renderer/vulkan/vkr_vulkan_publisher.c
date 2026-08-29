@@ -1353,6 +1353,46 @@ vkr_vk_destroy_texture_storage_views(VkrVulkanRenderer *renderer,
   texture->storage_slot_count = 0u;
 }
 
+vkr_internal void
+vkr_vk_destroy_ibl_sh_texel_view(VkrVulkanRenderer *renderer,
+                                 VkrVulkanPublishedTexture *texture) {
+  if (texture->ibl_sh_texel_view)
+    vkDestroyImageView(vkr_vk_renderer_device(renderer),
+                       texture->ibl_sh_texel_view, NULL);
+  texture->ibl_sh_texel_view = VK_NULL_HANDLE;
+}
+
+vkr_internal bool8_t vkr_vk_publish_ibl_sh_texel_view(
+    VkrVulkanRenderer *renderer, VkrVulkanPublishedTexture *texture) {
+  if (texture->ibl_sh_texel_slot.generation)
+    return true_v;
+  const VkImageViewCreateInfo view_info = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+      .image = texture->image.handle,
+      .viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY,
+      .format = texture->image.format,
+      .subresourceRange =
+          {
+              .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+              .baseMipLevel = 0u,
+              .levelCount = texture->image.mip_levels,
+              .baseArrayLayer = 0u,
+              .layerCount = texture->image.array_layers,
+          },
+  };
+  if (vkCreateImageView(vkr_vk_renderer_device(renderer), &view_info, NULL,
+                        &texture->ibl_sh_texel_view) != VK_SUCCESS)
+    return false_v;
+  const VkImageLayout layout = texture->storage_slot_count
+                                   ? VK_IMAGE_LAYOUT_GENERAL
+                                   : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  if (vkr_vk_publish_sampled_view(renderer, texture->ibl_sh_texel_view, layout,
+                                  &texture->ibl_sh_texel_slot))
+    return true_v;
+  vkr_vk_destroy_ibl_sh_texel_view(renderer, texture);
+  return false_v;
+}
+
 vkr_internal bool8_t vkr_vk_retire_unreferenced_texture(
     VkrVulkanRenderer *renderer, VkrVulkanPublishedTexture *texture,
     uint64_t completed) {
@@ -1375,6 +1415,10 @@ vkr_internal bool8_t vkr_vk_retire_unreferenced_texture(
   if (vkr_gpu_slot_table_can_retire(renderer->sampled_image_slots,
                                     texture->sampled_slot) !=
           VKR_GPU_SLOT_STATUS_OK ||
+      (texture->ibl_sh_texel_slot.generation &&
+       vkr_gpu_slot_table_can_retire(renderer->sampled_image_slots,
+                                     texture->ibl_sh_texel_slot) !=
+           VKR_GPU_SLOT_STATUS_OK) ||
       !storage_can_retire ||
       (sampler->reference_count == 1u &&
        vkr_gpu_slot_table_can_retire(renderer->sampler_slots, sampler->slot) !=
@@ -1388,6 +1432,11 @@ vkr_internal bool8_t vkr_vk_retire_unreferenced_texture(
                                 texture->sampled_slot,
                                 completed) != VKR_GPU_SLOT_STATUS_OK)
     return false_v;
+  if (texture->ibl_sh_texel_slot.generation &&
+      vkr_gpu_slot_table_retire(renderer->sampled_image_slots,
+                                texture->ibl_sh_texel_slot,
+                                completed) != VKR_GPU_SLOT_STATUS_OK)
+    log_fatal("Vulkan lost a validated SH texel-view retirement");
   for (uint32_t i = 0u; i < texture->storage_slot_count; ++i) {
     if (vkr_gpu_slot_table_retire(renderer->storage_image_slots,
                                   texture->storage_slots[i],
@@ -1407,6 +1456,7 @@ vkr_internal bool8_t vkr_vk_retire_unreferenced_texture(
   if (!vkr_vk_retire_allocation(renderer, &texture->image.allocation,
                                 completed))
     log_fatal("Vulkan failed to retire completed texture memory");
+  vkr_vk_destroy_ibl_sh_texel_view(renderer, texture);
   vkr_vk_destroy_texture_storage_views(renderer, texture);
   vkr_vk_destroy_image(renderer, &texture->image);
   if (texture->ibl_sh_slot != VKR_SH_SLOT_BLACK &&
@@ -2485,6 +2535,12 @@ vkr_internal bool8_t vkr_vk_queue_ibl_bake(VkrVulkanRenderer *renderer,
         source_texture->storage_slot_count !=
             source_texture->image.mip_levels)))
     return false_v;
+  if (!vkr_vk_publish_ibl_sh_texel_view(renderer, source_texture)) {
+    log_error("Vulkan could not publish the exact-texel SH view for cubemap "
+              "%u:%u",
+              source.id, source.generation);
+    return false_v;
+  }
   VkrVulkanPublishedTexture *referenced[] = {equirect_texture, source_texture,
                                              prefilter_texture};
   for (uint32_t i = convert_equirect ? 0u : 1u; i < ArrayCount(referenced); ++i)

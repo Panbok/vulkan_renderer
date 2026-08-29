@@ -16,7 +16,10 @@ response cubemap with normalized L2 SH coefficients. The equirectangular
 delivery, load-time source cubemap, skybox sampling, and GGX specular prefilter
 decisions below remain current. References to diffuse convolution and universal
 runtime cubemap sampling describe the implementation accepted in 2026-08-03 and
-are historical for diffuse lighting.
+are historical for diffuse lighting. Vulkan keeps the ordinary cube view for
+those retained filtered uses and lazily publishes a sampled 2D-array alias when
+ADR-038 projection needs exact integer face/texel loads; both views share the
+same source image and completion-gated lifetime.
 
 ## Context
 

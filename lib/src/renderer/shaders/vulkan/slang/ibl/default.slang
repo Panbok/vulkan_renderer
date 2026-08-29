@@ -60,11 +60,11 @@ void ibl_sh(uint3 group_thread : SV_GroupThreadID)
 
         float2 uv = (float2(float(x), float(y)) + 0.5f) / float(extent);
         float3 direction = normalize(cube_direction(face, uv));
-        // Both point and linear filtering return the addressed texel at its
-        // exact center. Using the sampled publication keeps imported cubemaps
-        // eligible; only writable bake targets own storage-image views.
-        float3 radiance = g_cube_textures[root.source_texture].SampleLevel(
-            g_samplers[root.source_sampler], direction, root.source_mip).rgb;
+        // Exact integer texel fetch at the selected face and mip, matching the
+        // CPU reference and Metal read(). Sampling through a cube direction
+        // can invoke filtering and seam handling even at a nominal center.
+        float3 radiance = g_array_textures[root.source_texture].Load(
+            int4(int(x), int(y), int(face), int(root.source_mip))).rgb;
 
         VkrShL2Basis basis = vkr_sh_l2_basis(direction);
         accumulated_weight += solid_angle;

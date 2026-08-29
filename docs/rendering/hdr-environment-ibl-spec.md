@@ -35,8 +35,11 @@ The remaining architectural gap is unchanged: `IBL.Bake` records prepared
 backend-private GPU work whose persistent resources are not declared to the
 render graph.
 Those resources therefore retain explicit access-carrying barriers. Validation
-is clean on Apple M1 Pro/MoltenVK; native Vulkan and other format/queue layouts
-remain unverified rather than implicitly claimed.
+is clean on Apple M1 Pro/MoltenVK. The ADR-038 SH projection/evaluation slice
+also passes focused native Vulkan API plus synchronization validation on an RX
+6700 XT, but direct equirect conversion, every prefilter mip, scene reload, and
+other format/queue layouts remain unverified on native Vulkan rather than
+implicitly claimed.
 
 ## Scope
 
@@ -518,8 +521,9 @@ failure cleanup, scene reload, and shutdown. A green CPU suite does not cover
 descriptor types, attachment formats, barriers, subresource ranges, or deferred
 destruction.
 
-Record the actual GPU/driver, target kind and image count. MoltenVK alone leaves
-native Vulkan and other format/queue layouts unverified.
+Record the actual GPU/driver, target kind and image count. The focused native
+Vulkan SH witness does not close the broader upload, conversion, prefilter,
+reload, or format/queue-layout matrix.
 
 ### Harness and baseline safety
 
