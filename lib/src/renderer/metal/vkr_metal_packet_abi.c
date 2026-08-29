@@ -69,10 +69,13 @@ vkr_global const VkrMetalPacketAbiField vkr_frame_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, view_projection, "view_projection",
                   16),
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, materials, "materials", 80),
-    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, irradiance_texture_id, "irradiance",
-                  88),
+    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, sh_coefficients_address,
+                  "sh_coefficients", 88),
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, prefilter_texture_id, "prefilter",
                   96),
+    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, sh_global_slot, "sh_global_slot",
+                  104),
+    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, sh_reserved, "sh_reserved", 108),
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, view_position, "view_position", 112),
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, prefilter_mip_count,
                   "prefilter_mip_count", 128),
@@ -135,8 +138,8 @@ vkr_global const VkrMetalPacketAbiField vkr_frame_root_fields[] = {
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_ibl_probe_fields[] = {
-    VKR_ABI_FIELD(VkrMetalPacketIblProbe, irradiance_texture_id, "irradiance",
-                  0),
+    VKR_ABI_FIELD(VkrMetalPacketIblProbe, sh_slot, "sh_slot", 0),
+    VKR_ABI_FIELD(VkrMetalPacketIblProbe, sh_reserved, "sh_reserved", 4),
     VKR_ABI_FIELD(VkrMetalPacketIblProbe, prefilter_texture_id, "prefilter", 8),
     VKR_ABI_FIELD(VkrMetalPacketIblProbe, center_blend, "center_blend", 16),
     VKR_ABI_FIELD(VkrMetalPacketIblProbe, extents_weight, "extents_weight", 32),
@@ -164,15 +167,6 @@ vkr_global const VkrMetalPacketAbiField vkr_equirect_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketEquirectRoot, target_texture_id, "target", 8),
     VKR_ABI_FIELD(VkrMetalPacketEquirectRoot, target_size, "target_size", 16),
     VKR_ABI_FIELD(VkrMetalPacketEquirectRoot, reserved, "reserved_0", 20),
-};
-
-vkr_global const VkrMetalPacketAbiField vkr_irradiance_root_fields[] = {
-    VKR_ABI_FIELD(VkrMetalPacketIrradianceRoot, source_texture_id, "source", 0),
-    VKR_ABI_FIELD(VkrMetalPacketIrradianceRoot, target_texture_id, "target", 8),
-    VKR_ABI_FIELD(VkrMetalPacketIrradianceRoot, sample_count, "sample_count",
-                  16),
-    VKR_ABI_FIELD(VkrMetalPacketIrradianceRoot, target_size, "target_size", 20),
-    VKR_ABI_FIELD(VkrMetalPacketIrradianceRoot, reserved, "reserved", 24),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_prefilter_root_fields[] = {
@@ -728,9 +722,6 @@ vkr_global const VkrMetalPacketAbiRecord
         [VKR_METAL_PACKET_ABI_EQUIRECT_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketEquirectRoot, "VkrMetalPacketEquirectRoot", 32, 16,
             vkr_equirect_root_fields),
-        [VKR_METAL_PACKET_ABI_IRRADIANCE_ROOT] = VKR_ABI_RECORD(
-            VkrMetalPacketIrradianceRoot, "VkrMetalPacketIrradianceRoot", 32,
-            16, vkr_irradiance_root_fields),
         [VKR_METAL_PACKET_ABI_PREFILTER_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketPrefilterRoot, "VkrMetalPacketPrefilterRoot", 32, 16,
             vkr_prefilter_root_fields),

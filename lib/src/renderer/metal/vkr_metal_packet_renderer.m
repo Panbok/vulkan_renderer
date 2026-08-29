@@ -226,9 +226,7 @@ typedef struct VkrMetalPacketTexture {
   uint32_t generation;
   uint64_t last_use_submit_value;
   /** Published L2 coefficient slot projected from this source cubemap, or
-      VKR_SH_SLOT_BLACK before the first successful projection (ADR-038). Also
-      mirrored onto the irradiance texture while both representations coexist,
-      because the version-22 probe record cannot carry it. */
+      VKR_SH_SLOT_BLACK before the first successful projection (ADR-038). */
   uint32_t ibl_sh_slot;
   bool8_t live;
 } VkrMetalPacketTexture;
@@ -287,8 +285,11 @@ typedef struct VkrMetalPacketFrameUpload {
   uint64_t shadow_texture_id;
   uint64_t transmission_texture_id;
   uint64_t ibl_probes_gpu;
-  /** Address of this frame's temporary VkrShAbTable. Removed by SH3. */
-  uint64_t sh_ab_table_gpu;
+  /** Submission-local SH publication. Nonzero only after projection recording
+      succeeds; cancellation returns it to the pool and restores the prior
+      global slot. */
+  uint32_t ibl_sh_candidate_slot;
+  uint32_t ibl_sh_previous_slot;
   VkrMetalPacketTextUpload *text_uploads;
   uint32_t world_text_count;
   uint32_t ui_text_count;
@@ -305,7 +306,6 @@ typedef struct VkrMetalPacketCapturePlan {
 } VkrMetalPacketCapturePlan;
 
 typedef struct VkrMetalPacketReadbackLayout {
-  uint64_t ibl;
   uint64_t ibl_prefilter;
   uint64_t deferred_diagnostics;
   uint64_t deferred_diagnostics_size;
@@ -321,11 +321,10 @@ vkr_internal VkrMetalPacketReadbackLayout vkr_metal_packet_readback_layout(
     bool8_t picking, bool8_t ibl, bool8_t deferred_diagnostics,
     bool8_t transmission_diagnostics, bool8_t sdsm, bool8_t exposure,
     uint32_t shadow_cascade_count) {
-  const uint64_t ibl_offset = picking ? 16u : 8u;
-  const uint64_t ibl_prefilter_offset = ibl_offset + 8u;
+  const uint64_t ibl_prefilter_offset = picking ? 16u : 8u;
   const uint64_t probe_size =
       ibl ? ibl_prefilter_offset + VKR_IBL_PREFILTER_MIP_COUNT * 8u
-          : ibl_offset;
+          : ibl_prefilter_offset;
   const uint64_t deferred_offset = vkr_metal_packet_align_up(probe_size, 16u);
   const uint64_t deferred_bytes = deferred_diagnostics
                                       ? (uint64_t)(1u + shadow_cascade_count) *
@@ -349,7 +348,6 @@ vkr_internal VkrMetalPacketReadbackLayout vkr_metal_packet_readback_layout(
           ? sdsm_offset + sdsm_bytes
           : probe_size;
   return (VkrMetalPacketReadbackLayout){
-      .ibl = ibl_offset,
       .ibl_prefilter = ibl_prefilter_offset,
       .deferred_diagnostics = deferred_offset,
       .deferred_diagnostics_size = deferred_bytes,
@@ -512,7 +510,6 @@ struct VkrMetalPacketRenderer {
   id<MTLRenderPipelineState> world_text_pipeline;
   id<MTLRenderPipelineState> ui_text_pipeline;
   id<MTLRenderPipelineState> picking_text_pipeline;
-  id<MTLComputePipelineState> ibl_irradiance_pipeline;
   id<MTLComputePipelineState> ibl_equirect_pipeline;
   id<MTLComputePipelineState> ibl_prefilter_pipeline;
   id<MTLComputePipelineState> ibl_sh_pipeline;
@@ -522,10 +519,6 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> temporal_transform_pipeline;
   id<MTLComputePipelineState> gbuffer_resolve_pipeline;
   id<MTLComputePipelineState> deferred_lighting_pipeline;
-  /* Temporary SH diffuse variants (ADR-038 §1.6). Both representations exist
-     so the A/B comparison is a cold configuration change, not a rebuild. */
-  id<MTLComputePipelineState> deferred_lighting_sh_pipeline;
-  id<MTLComputePipelineState> transmission_shade_sh_pipeline;
   id<MTLComputePipelineState> gtao_depth_prefilter_pipeline;
   id<MTLComputePipelineState> gtao_depth_mip_pipeline;
   id<MTLComputePipelineState> gtao_evaluate_pipeline;
@@ -556,9 +549,6 @@ struct VkrMetalPacketRenderer {
      survives scene reload, and scene reset only retires publications. */
   id<MTLBuffer> sh_coefficients;
   VkrShSlotPool sh_pool;
-  /* Cold: resolved once at renderer creation and read only while encoding a
-     pass, never per pixel or per probe. Removed by SH3. */
-  VkrShRepresentation sh_representation;
   CAMetalLayer *layer;
   id<CAMetalDrawable> drawable;
   VkrRenderGraphFrameInfo prepared_frame;
@@ -599,7 +589,6 @@ struct VkrMetalPacketRenderer {
   bool8_t frame_prepared;
   bool8_t pipeline_archive_warm;
   bool8_t pipeline_archive_written;
-  VkrMetalTextureResource ibl_irradiance;
   VkrMetalTextureResource ibl_prefilter;
   /** Published coefficient slot for the active global environment source. */
   uint32_t ibl_sh_slot;

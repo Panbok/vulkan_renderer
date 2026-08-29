@@ -37,11 +37,13 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketFrameRoot {
   uint32_t instance_address_padding[2];
   Mat4 view_projection;
   uint64_t materials;
-  uint64_t irradiance_texture_id;
+  /** ADR-038 final layout: the retired diffuse-cubemap reference became the
+      coefficient buffer address, and the retired BRDF-LUT slot became the
+      global slot plus reserved word. Later offsets are unchanged. */
+  uint64_t sh_coefficients_address;
   uint64_t prefilter_texture_id;
-  /* Retired BRDF-LUT slot. The environment BRDF is analytic on both
-     backends; this stays as named padding so no downstream offset moves. */
-  uint64_t reserved_brdf_lut;
+  uint32_t sh_global_slot;
+  uint32_t sh_reserved;
   Vec4 view_position;
   uint32_t prefilter_mip_count;
   uint32_t flags;
@@ -474,7 +476,11 @@ _Static_assert(sizeof(VkrMetalPacketTableDrawUpload) <=
                "Table draw upload must fit one root-ring cell");
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketIblProbe {
-  uint64_t irradiance_texture_id;
+  /** ADR-038 final layout: offset 0 carries the coefficient slot, offset 4 is
+      reserved, and every field from offset 8 onward keeps its previous offset.
+   */
+  uint32_t sh_slot;
+  uint32_t sh_reserved;
   uint64_t prefilter_texture_id;
   Vec4 center_blend;
   Vec4 extents_weight;
@@ -500,14 +506,6 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketEquirectRoot {
   uint32_t target_size;
   uint32_t reserved[3];
 } VkrMetalPacketEquirectRoot;
-
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketIrradianceRoot {
-  uint64_t source_texture_id;
-  uint64_t target_texture_id;
-  uint32_t sample_count;
-  uint32_t target_size;
-  uint32_t reserved[2];
-} VkrMetalPacketIrradianceRoot;
 
 /** Mirrors VkrMetalPacketShProjectRoot in metal/msl/ibl/sh_projection.metal.
     `destination` is the device address of the single 112-byte slot this
@@ -562,7 +560,6 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_SHADOW_CASCADE,
   VKR_METAL_PACKET_ABI_TONEMAP_ROOT,
   VKR_METAL_PACKET_ABI_EQUIRECT_ROOT,
-  VKR_METAL_PACKET_ABI_IRRADIANCE_ROOT,
   VKR_METAL_PACKET_ABI_PREFILTER_ROOT,
   VKR_METAL_PACKET_ABI_SH_PROJECT_ROOT,
   VKR_METAL_PACKET_ABI_TEXT_ROOT,

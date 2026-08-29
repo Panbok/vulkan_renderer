@@ -874,13 +874,11 @@ vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
 vkr_internal bool8_t vkr_vk_create_ibl_pipelines(VkrVulkanRenderer *renderer) {
   vkr_local_persist const char *const paths[VKR_VULKAN_IBL_PIPELINE_COUNT] = {
       VKR_VULKAN_PACKET_IBL_EQUIRECT_COMP_SPV,
-      VKR_VULKAN_PACKET_IBL_IRRADIANCE_COMP_SPV,
       VKR_VULKAN_PACKET_IBL_PREFILTER_COMP_SPV,
       VKR_VULKAN_PACKET_IBL_SH_COMP_SPV,
   };
   vkr_local_persist const char *const entries[VKR_VULKAN_IBL_PIPELINE_COUNT] = {
       "ibl_equirect",
-      "ibl_irradiance",
       "ibl_prefilter",
       "ibl_sh",
   };
@@ -938,8 +936,6 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
           VKR_VULKAN_PACKET_GTAO_DEPTH_MIP_COMP_SPV,
           VKR_VULKAN_PACKET_GTAO_EVALUATE_COMP_SPV,
           VKR_VULKAN_PACKET_GTAO_DENOISE_COMP_SPV,
-          VKR_VULKAN_PACKET_DEFERRED_LIGHTING_SH_COMP_SPV,
-          VKR_VULKAN_PACKET_TRANSMISSION_SHADE_SH_COMP_SPV,
       };
   vkr_local_persist const char
       *const entries[VKR_VULKAN_DEFERRED_PIPELINE_COUNT] = {
@@ -969,8 +965,6 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
           "vk_gtao_depth_mip",
           "vk_gtao_evaluate",
           "vk_gtao_denoise",
-          "vk_deferred_lighting_sh",
-          "vk_transmission_shade_sh",
       };
   for (uint32_t i = 0u; i < VKR_VULKAN_DEFERRED_PIPELINE_COUNT; ++i) {
     if (!vkr_vk_create_shader_module(renderer, paths[i],

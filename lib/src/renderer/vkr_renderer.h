@@ -840,8 +840,8 @@ typedef enum VkrRenderMode {
    * Environment diffuse only: global and probe weights and diffuse intensities
    * contribute, while direct light, specular IBL, emissive, the
    * constant-ambient fallback, bloom, and temporal accumulation do not. This is
-   * the channel that compares diffuse-irradiance representations (ADR-038);
-   * mode 4 returns before environment evaluation and cannot.
+   * the channel that isolates the SH diffuse response (ADR-038); mode 4 returns
+   * before environment evaluation and cannot.
    */
   VKR_RENDER_MODE_INDIRECT_DIFFUSE = 9,
   VKR_RENDER_MODE_COUNT,

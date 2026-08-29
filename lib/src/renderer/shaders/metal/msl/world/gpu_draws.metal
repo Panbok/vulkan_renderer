@@ -791,12 +791,9 @@ vkr_metal_packet_deferred_sky(constant VkrMetalPacketDeferredLightingRoot &root,
   return root.sky.sample(sky_sampler, direction).rgb;
 }
 
-// `use_sh` arrives as a literal from each entry point below, so every variant
-// specializes the diffuse representation away at compile time. ADR-038 forbids
-// a representation branch in the per-pixel or per-probe path.
-static void vkr_metal_packet_deferred_lighting_impl(
-    constant VkrMetalPacketDeferredLightingRoot &root, uint2 pixel,
-    bool use_sh) {
+kernel void vkr_metal_packet_deferred_lighting(
+    constant VkrMetalPacketDeferredLightingRoot &root [[buffer(0)]],
+    uint2 pixel [[thread_position_in_grid]]) {
   if (any(pixel >= root.extent))
     return;
   uint visible_index = root.vbuffer.read(pixel).x;
@@ -942,9 +939,9 @@ static void vkr_metal_packet_deferred_lighting_impl(
   float2 gtao_uv = (float2(pixel) + 0.5) / float2(root.extent);
   float gtao_visibility =
       root.gtao_visibility.sample(gtao_sampler, gtao_uv).x;
-  // Mode 9 compares the diffuse representation, not the occlusion layered on
-  // top of it, so it drops the GTAO factor. vk_deferred_lighting reaches the
-  // same value by applying gtao_visibility outside the environment helper.
+  // Mode 9 isolates diffuse IBL from the occlusion layered on top, so it drops
+  // the GTAO factor. vk_deferred_lighting reaches the same value by applying
+  // gtao_visibility outside the environment helper.
   float diffuse_ao = frame->render_mode == 9u ? ao : ao * gtao_visibility;
   float3 color = analytic_diffuse + analytic_specular;
   if ((frame->flags & 2u) != 0u) {
@@ -953,13 +950,9 @@ static void vkr_metal_packet_deferred_lighting_impl(
                                           filter::linear, mip_filter::linear);
     float3 reflection = reflect(-view, normal);
     float3 fresnel = vkr_metal_packet_fresnel_roughness(no_v, f0, roughness);
-    // The normal-derived SH operands are computed once inside
-    // vkr_sh_l2_evaluate and reused for the global source and every probe.
-    const device VkrShAbTable *sh_table = frame->reserved_brdf_lut;
-    float3 global_irradiance =
-        use_sh ? vkr_sh_l2_evaluate(sh_table->coefficients[sh_table->global_slot],
-                                    normal)
-               : frame->irradiance.sample(environment_sampler, normal).rgb;
+    VkrShL2Evaluation sh_evaluation = vkr_sh_l2_prepare_evaluation(normal);
+    float3 global_irradiance = vkr_sh_l2_evaluate(
+        frame->sh_coefficients[frame->sh_global_slot], sh_evaluation);
     float3 global_prefiltered =
         frame->prefilter
             .sample(environment_sampler, reflection,
@@ -994,10 +987,8 @@ static void vkr_metal_packet_deferred_lighting_impl(
                       max(probe.extents_weight.xyz, 0.0))
                 : reflection;
         float3 probe_irradiance =
-            use_sh ? vkr_sh_l2_evaluate(
-                         sh_table->coefficients[sh_table->probe_slots[i]],
-                         normal)
-                   : probe.irradiance.sample(environment_sampler, normal).rgb;
+            vkr_sh_l2_evaluate(frame->sh_coefficients[probe.sh_slot],
+                               sh_evaluation);
         float3 probe_prefiltered =
             probe.prefilter
                 .sample(environment_sampler, probe_reflection,
@@ -1039,19 +1030,6 @@ static void vkr_metal_packet_deferred_lighting_impl(
   }
   color += hdr_seed.rgb;
   root.hdr.write(float4(color, 1.0), pixel);
-}
-
-kernel void vkr_metal_packet_deferred_lighting(
-    constant VkrMetalPacketDeferredLightingRoot &root [[buffer(0)]],
-    uint2 pixel [[thread_position_in_grid]]) {
-  vkr_metal_packet_deferred_lighting_impl(root, pixel, false);
-}
-
-/** Temporary SH variant; SH3 folds it back into the single entry point. */
-kernel void vkr_metal_packet_deferred_lighting_sh(
-    constant VkrMetalPacketDeferredLightingRoot &root [[buffer(0)]],
-    uint2 pixel [[thread_position_in_grid]]) {
-  vkr_metal_packet_deferred_lighting_impl(root, pixel, true);
 }
 
 struct alignas(16) VkrMetalPacketTemporalResolveRoot {
@@ -1528,7 +1506,7 @@ static float3 vkr_metal_packet_transmission_lighting(
     constant VkrMetalPacketFrameRoot *frame,
     const device VkrMetalPacketMaterial &material,
     thread const VkrMetalPacketTransmissionSurface &surface,
-    float3 world_position, bool use_sh) {
+    float3 world_position) {
   float3 f0 = mix(saturate(material.material_dielectric_specular.rgb),
                   surface.base.rgb, surface.metallic);
   if (frame->render_mode == 2u)
@@ -1628,13 +1606,10 @@ static float3 vkr_metal_packet_transmission_lighting(
     float3 fresnel =
         vkr_metal_packet_fresnel_roughness(no_v, f0, surface.roughness);
     float3 kd = (1.0 - fresnel) * (1.0 - surface.metallic);
-    const device VkrShAbTable *sh_table = frame->reserved_brdf_lut;
-    float3 global_irradiance =
-        use_sh ? vkr_sh_l2_evaluate(
-                     sh_table->coefficients[sh_table->global_slot],
-                     surface.normal)
-               : frame->irradiance.sample(environment_sampler, surface.normal)
-                     .rgb;
+    VkrShL2Evaluation sh_evaluation =
+        vkr_sh_l2_prepare_evaluation(surface.normal);
+    float3 global_irradiance = vkr_sh_l2_evaluate(
+        frame->sh_coefficients[frame->sh_global_slot], sh_evaluation);
     float3 global_prefiltered =
         frame->prefilter
             .sample(environment_sampler, reflection,
@@ -1669,13 +1644,8 @@ static float3 vkr_metal_packet_transmission_lighting(
                       reflection, world_position, probe.center_blend.xyz,
                       max(probe.extents_weight.xyz, 0.0))
                 : reflection;
-        float3 probe_irradiance =
-            use_sh ? vkr_sh_l2_evaluate(
-                         sh_table->coefficients[sh_table->probe_slots[i]],
-                         surface.normal)
-                   : probe.irradiance
-                         .sample(environment_sampler, surface.normal)
-                         .rgb;
+        float3 probe_irradiance = vkr_sh_l2_evaluate(
+            frame->sh_coefficients[probe.sh_slot], sh_evaluation);
         float3 probe_prefiltered =
             probe.prefilter
                 .sample(environment_sampler, probe_reflection,
@@ -1751,9 +1721,9 @@ static void vkr_metal_packet_write_transmission_temporal(
   root.validity.write(float4(validity, 0.0, 0.0), pixel);
 }
 
-static void vkr_metal_packet_transmission_shade_impl(
-    constant VkrMetalPacketTransmissionShadeRoot &root, uint3 grid_position,
-    bool use_sh) {
+kernel void vkr_metal_packet_transmission_shade(
+    constant VkrMetalPacketTransmissionShadeRoot &root [[buffer(0)]],
+    uint3 grid_position [[thread_position_in_grid]]) {
   uint2 pixel = grid_position.xy;
   if (root.compact_enabled != 0u) {
     if (root.compact_layer >= 4u || root.pixel_list == nullptr ||
@@ -1794,7 +1764,7 @@ static void vkr_metal_packet_transmission_shade_impl(
   float safe_world_w = copysign(max(abs(world_h.w), 1e-7), world_h.w);
   float3 world_position = world_h.xyz / safe_world_w;
   float3 color = vkr_metal_packet_transmission_lighting(
-      frame, material, surface, world_position, use_sh);
+      frame, material, surface, world_position);
   if (frame->render_mode == 0u && frame->shadow_debug_mode == 0u &&
       material.material_alpha.y > 0.0) {
     float3 view = normalize(frame->view_position.xyz - world_position);
@@ -1892,19 +1862,6 @@ kernel void vkr_metal_packet_transmission_compact_finalize(
   root.indirect_arguments[0] = (count + 63u) / 64u;
   root.indirect_arguments[1] = 1u;
   root.indirect_arguments[2] = 1u;
-}
-
-kernel void vkr_metal_packet_transmission_shade(
-    constant VkrMetalPacketTransmissionShadeRoot &root [[buffer(0)]],
-    uint3 grid_position [[thread_position_in_grid]]) {
-  vkr_metal_packet_transmission_shade_impl(root, grid_position, false);
-}
-
-/** Temporary SH variant; SH3 folds it back into the single entry point. */
-kernel void vkr_metal_packet_transmission_shade_sh(
-    constant VkrMetalPacketTransmissionShadeRoot &root [[buffer(0)]],
-    uint3 grid_position [[thread_position_in_grid]]) {
-  vkr_metal_packet_transmission_shade_impl(root, grid_position, true);
 }
 
 kernel void vkr_metal_packet_transmission_coverage(

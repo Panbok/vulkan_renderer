@@ -39,14 +39,16 @@ typedef struct VkrAssetPublisher {
   /* `sh_deringing` is the authored L2 window exponent, already validated at
      scene load (ADR-038 §1.4). Zero is the identity window. */
   bool8_t (*bake_ibl_cubemap)(void *state, VkrTextureHandle source,
-                              VkrTextureHandle irradiance,
                               VkrTextureHandle prefilter,
                               float32_t sh_deringing);
   bool8_t (*bake_hdr_environment)(void *state, VkrTextureHandle equirect,
                                   VkrTextureHandle source,
-                                  VkrTextureHandle irradiance,
                                   VkrTextureHandle prefilter,
                                   float32_t sh_deringing);
+  /* Published L2 coefficient slot for a source cubemap, or VKR_SH_SLOT_BLACK
+     when it has none yet. Cold: the scene resolves it once per frame while
+     packing probes (ADR-038). */
+  uint32_t (*ibl_sh_slot)(void *state, VkrTextureHandle source);
   bool8_t (*unpublish_texture)(void *state, VkrTextureHandle handle);
   bool8_t (*publish_material)(void *state, VkrMaterialHandle handle,
                               const struct VkrMaterial *material);

@@ -162,7 +162,10 @@ vkr_vk_record_ibl_source_mips(VkCommandBuffer command,
  */
 vkr_internal void vkr_vk_record_sh_clear(VkrVulkanRenderer *renderer,
                                          VkCommandBuffer command) {
-  if (renderer->sh_coefficients_cleared) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  if (renderer->sh_coefficients_cleared ||
+      slot->sh_coefficients_clear_recorded) {
     return;
   }
   vkCmdFillBuffer(command, renderer->sh_coefficients.handle, 0u,
@@ -187,7 +190,7 @@ vkr_internal void vkr_vk_record_sh_clear(VkrVulkanRenderer *renderer,
       .pBufferMemoryBarriers = &barrier,
   };
   vkCmdPipelineBarrier2(command, &dependency);
-  renderer->sh_coefficients_cleared = true_v;
+  slot->sh_coefficients_clear_recorded = true_v;
 }
 
 /**
@@ -203,8 +206,13 @@ vkr_internal bool8_t vkr_vk_record_ibl_sh_projection(
   uint32_t projection_extent = 0u;
   if (!vkr_ibl_sh_projection_mip(source->image.width, source->image.mip_levels,
                                  &projection_mip, &projection_extent) ||
-      projection_mip >= source->storage_slot_count ||
+      source->sampler_record_index >= renderer->config.sampler_capacity ||
       slot >= VKR_SH_SLOT_CAPACITY) {
+    return false_v;
+  }
+  const VkrVulkanPublishedSampler *sampler =
+      &renderer->published_samplers[source->sampler_record_index];
+  if (!sampler->live) {
     return false_v;
   }
 
@@ -220,8 +228,10 @@ vkr_internal bool8_t vkr_vk_record_ibl_sh_projection(
   *root = (VkrVulkanIblShRoot){
       .destination = renderer->sh_coefficients.address +
                      (uint64_t)slot * VKR_SH_SLOT_BYTES,
-      .source_storage_texture = source->storage_slots[projection_mip].index,
+      .source_texture = source->sampled_slot.index,
+      .source_sampler = sampler->slot.index,
       .source_face_size = projection_extent,
+      .source_mip = projection_mip,
       // The CPU owns pow(sinc_pi(l/3), sh_deringing) so the kernel carries no
       // pow() and both sides cannot drift.
       .window_band_0 = vkr_ibl_sh_window_factor(0u, deringing),
@@ -279,16 +289,13 @@ bool8_t vkr_vk_record_ibl_bakes(VkrVulkanRenderer *renderer,
     job->recorded = false_v;
     VkrVulkanPublishedTexture *source =
         vkr_vk_texture_publication(renderer, job->source);
-    VkrVulkanPublishedTexture *irradiance =
-        vkr_vk_texture_publication(renderer, job->irradiance);
     VkrVulkanPublishedTexture *prefilter =
         vkr_vk_texture_publication(renderer, job->prefilter);
     VkrVulkanPublishedTexture *equirect =
         job->convert_equirect
             ? vkr_vk_texture_publication(renderer, job->equirect)
             : NULL;
-    if (!source || !irradiance || !prefilter ||
-        (job->convert_equirect && !equirect))
+    if (!source || !prefilter || (job->convert_equirect && !equirect))
       return false_v;
     const VkrVulkanPublishedTexture *input =
         job->convert_equirect ? equirect : source;
@@ -302,14 +309,8 @@ bool8_t vkr_vk_record_ibl_bakes(VkrVulkanRenderer *renderer,
         return false_v;
       vkr_vk_record_ibl_source_mips(command, source);
     }
-    if (!vkr_vk_record_ibl_dispatch(renderer, command,
-                                    VKR_VULKAN_IBL_PIPELINE_IRRADIANCE, source,
-                                    irradiance, 0u, 128u, 0.0f))
-      return false_v;
-
-    /* L2 projection runs beside the cubemap bake while both representations
-       are live. Exhaustion and projection failure are cold-path errors: the
-       logical source keeps its prior publication, or black. */
+    /* Exhaustion and projection failure are cold-path errors: the logical
+       source keeps its prior publication, or black. */
     job->sh_slot = VKR_SH_SLOT_BLACK;
     uint32_t candidate_slot = VKR_SH_SLOT_BLACK;
     if (vkr_ibl_sh_pool_reserve(&renderer->sh_pool, &candidate_slot) ==
@@ -330,13 +331,6 @@ bool8_t vkr_vk_record_ibl_bakes(VkrVulkanRenderer *renderer,
                 "previous coefficients",
                 job->source.id, job->source.generation);
     }
-    vkr_vk_cmd_ibl_image_barrier(
-        command, irradiance->image.handle, 0u, irradiance->image.array_layers,
-        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_GENERAL,
-        VK_IMAGE_LAYOUT_GENERAL);
     for (uint32_t mip = 0u; mip < prefilter->image.mip_levels; ++mip) {
       const float32_t roughness =
           prefilter->image.mip_levels > 1u
@@ -365,15 +359,11 @@ bool8_t vkr_vk_record_ibl_bakes(VkrVulkanRenderer *renderer,
 }
 
 void vkr_vk_discard_ibl_bakes(VkrVulkanRenderer *renderer) {
+  vkr_vk_abandon_ibl_bake_recordings(renderer);
   for (uint32_t i = 0u; i < renderer->pending_ibl_bake_count; ++i) {
     const VkrVulkanPendingIblBake *job = &renderer->pending_ibl_bakes[i];
-    /* Nothing was submitted, so no reader can exist and the candidate returns
-       to the pool immediately rather than through retirement. */
-    if (job->sh_slot != VKR_SH_SLOT_BLACK) {
-      (void)vkr_ibl_sh_pool_abandon(&renderer->sh_pool, job->sh_slot);
-    }
     const VkrTextureHandle handles[] = {job->equirect, job->source,
-                                        job->irradiance, job->prefilter};
+                                        job->prefilter};
     for (uint32_t handle_index = job->convert_equirect ? 0u : 1u;
          handle_index < ArrayCount(handles); ++handle_index) {
       VkrVulkanPublishedTexture *texture =
@@ -389,4 +379,19 @@ void vkr_vk_discard_ibl_bakes(VkrVulkanRenderer *renderer) {
             sizeof(renderer->pending_ibl_bakes[i]));
   }
   renderer->pending_ibl_bake_count = 0u;
+}
+
+void vkr_vk_abandon_ibl_bake_recordings(VkrVulkanRenderer *renderer) {
+  for (uint32_t i = 0u; i < renderer->pending_ibl_bake_count; ++i) {
+    VkrVulkanPendingIblBake *job = &renderer->pending_ibl_bakes[i];
+    /* Frame cancellation proves the command buffer carrying this write was not
+       submitted. Keep the queued bake and its texture ownership, but return
+       the candidate so the retry does not leak one pool slot per cancellation.
+     */
+    if (job->sh_slot != VKR_SH_SLOT_BLACK) {
+      (void)vkr_ibl_sh_pool_abandon(&renderer->sh_pool, job->sh_slot);
+      job->sh_slot = VKR_SH_SLOT_BLACK;
+    }
+    job->recorded = false_v;
+  }
 }

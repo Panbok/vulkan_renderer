@@ -13,18 +13,22 @@
 #include "renderer/vkr_exposure.h"
 #include "renderer/vkr_gpu_abi.h"
 #include "renderer/vkr_gtao.h"
+#include "renderer/vkr_ibl_math.h"
 #include "renderer/vkr_renderer.h"
 #include "renderer/vkr_temporal.h"
 
 /** Version constant for VkrRenderPacket.packet_version validation. */
-#define VKR_RENDER_PACKET_VERSION 22u
+#define VKR_RENDER_PACKET_VERSION 23u
 
 #define VKR_FRAME_IBL_PROBE_MAX 16u
 #define VKR_PREPARED_TEXT_DRAW_MAX 64u
 
 /** Frame-local reflection probe descriptor lowered by the selected renderer. */
 typedef struct VkrFrameIblProbe {
-  VkrTextureHandle irradiance;
+  /** Published L2 diffuse coefficient slot (ADR-038). Resolve it from the
+      probe's source cubemap with vkr_renderer_ibl_sh_slot(); slot 0 is the
+      valid black sentinel. Must be less than VKR_SH_SLOT_CAPACITY. */
+  uint32_t sh_slot;
   VkrTextureHandle prefilter;
   Vec3 center;
   Vec3 extents;

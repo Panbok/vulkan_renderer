@@ -977,10 +977,6 @@ vkr_internal void scene_loader_reset_scene_environment(VkrScene *scene,
       vkr_texture_system_release_by_handle(
           &rf->texture_system, scene->environment.prefilter_cubemap);
     }
-    if (scene->environment.irradiance_cubemap.id != 0) {
-      vkr_texture_system_release_by_handle(
-          &rf->texture_system, scene->environment.irradiance_cubemap);
-    }
     if (scene->environment.source_cubemap.id != 0) {
       vkr_texture_system_release_by_handle(&rf->texture_system,
                                            scene->environment.source_cubemap);
@@ -999,7 +995,6 @@ vkr_internal void scene_loader_reset_scene_environment(VkrScene *scene,
                             .specular_intensity = 1.0f,
                             .delivery_equirect = VKR_TEXTURE_HANDLE_INVALID,
                             .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
-                            .irradiance_cubemap = VKR_TEXTURE_HANDLE_INVALID,
                             .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
                             .bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE};
 }
@@ -1145,10 +1140,6 @@ scene_loader_reset_scene_reflection_probes(VkrScene *scene,
         vkr_texture_system_release_by_handle(&rf->texture_system,
                                              probe->prefilter_cubemap);
       }
-      if (probe->irradiance_cubemap.id != 0) {
-        vkr_texture_system_release_by_handle(&rf->texture_system,
-                                             probe->irradiance_cubemap);
-      }
       if (probe->source_cubemap.id != 0) {
         vkr_texture_system_release_by_handle(&rf->texture_system,
                                              probe->source_cubemap);
@@ -1169,7 +1160,6 @@ scene_loader_reset_scene_reflection_probes(VkrScene *scene,
         .source_mip_count = 1u,
         .uses_scene_environment_source = false_v,
         .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
-        .irradiance_cubemap = VKR_TEXTURE_HANDLE_INVALID,
         .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
         .bake_state = VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_NONE,
     };
@@ -1218,7 +1208,6 @@ vkr_internal void scene_loader_apply_reflection_probe_imports(
         .source_mip_count = 1u,
         .uses_scene_environment_source = false_v,
         .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
-        .irradiance_cubemap = VKR_TEXTURE_HANDLE_INVALID,
         .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
         .bake_state = VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_NONE,
     };

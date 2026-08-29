@@ -23,14 +23,6 @@
  * All of these are cold-path calls made from the render thread.
  */
 
-#define VKR_SH_SLOT_BLACK 0u
-/** Retained fallback environment, active scene environment, and every probe. */
-#define VKR_SH_LOGICAL_MAX (2u + VKR_SCENE_REFLECTION_PROBE_MAX)
-#define VKR_SH_GENERATION_COUNT 2u
-#define VKR_SH_REUSABLE_SLOTS (VKR_SH_LOGICAL_MAX * VKR_SH_GENERATION_COUNT)
-#define VKR_SH_SLOT_CAPACITY (VKR_SH_REUSABLE_SLOTS + 1u)
-#define VKR_SH_BUFFER_BYTES (VKR_SH_SLOT_CAPACITY * VKR_SH_SLOT_BYTES)
-
 typedef enum VkrShSlotState {
   /** Reusable and owned by nobody. */
   VKR_SH_SLOT_STATE_FREE = 0,
@@ -121,32 +113,3 @@ uint32_t vkr_ibl_sh_pool_collect(VkrShSlotPool *pool,
 
 void vkr_ibl_sh_pool_get_metrics(const VkrShSlotPool *pool,
                                  VkrShPoolMetrics *out_metrics);
-
-/**
- * Temporary dual-representation side table (ADR-038 §1.6).
- *
- * SH1 and SH2 keep the version-22 frame root and probe records byte-identical
- * so one binary can render either representation, so the coefficient slots
- * cannot live in the probe record yet. The retired BRDF root padding carries
- * this table's address instead.
- *
- * `probe_slots[i]` is keyed by **packed packet probe ordinal**, not scene probe
- * index: it is filled in the same loop that skips unavailable probes and builds
- * the backend probe array, so a sparse scene probe list cannot select the wrong
- * coefficients. `probe_count` must equal the packed count.
- *
- * This entire type is removed by SH3 along with the representation selector.
- */
-typedef struct VkrShAbTable {
-  uint64_t sh_coefficients;
-  uint32_t global_slot;
-  uint32_t probe_count;
-  uint32_t probe_slots[VKR_FRAME_IBL_PROBE_MAX];
-} VkrShAbTable;
-
-/** Which diffuse representation the deferred-lighting pass evaluates. Cold:
-    selected once while recording, never branched per pixel or per probe. */
-typedef enum VkrShRepresentation {
-  VKR_SH_REPRESENTATION_CUBEMAP = 0,
-  VKR_SH_REPRESENTATION_SH_L2 = 1,
-} VkrShRepresentation;

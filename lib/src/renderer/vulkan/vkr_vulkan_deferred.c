@@ -961,14 +961,9 @@ bool8_t vkr_vk_record_deferred_lighting(VkrVulkanRenderer *renderer,
                                  _Alignof(VkrVulkanLightingRoot),
                                  &root_address))
     return false_v;
-  /* The representation is chosen once here, while recording, so no branch
-     reaches the per-pixel or per-probe path (ADR-038 §1.6). */
-  const VkrVulkanDeferredPipeline lighting_pipeline =
-      renderer->sh_representation == VKR_SH_REPRESENTATION_SH_L2
-          ? VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_SH
-          : VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING;
-  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
-                    renderer->deferred_pipelines[lighting_pipeline]);
+  vkCmdBindPipeline(
+      command, VK_PIPELINE_BIND_POINT_COMPUTE,
+      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING]);
   vkCmdDispatch(command, (root.extent[0] + 7u) / 8u, (root.extent[1] + 7u) / 8u,
                 1u);
   return true_v;
@@ -1734,12 +1729,9 @@ bool8_t vkr_vk_record_deferred_transmission(VkrVulkanRenderer *renderer,
                                  _Alignof(VkrVulkanTransmissionRoot),
                                  &root_address))
     return false_v;
-  const VkrVulkanDeferredPipeline transmission_pipeline =
-      renderer->sh_representation == VKR_SH_REPRESENTATION_SH_L2
-          ? VKR_VULKAN_DEFERRED_PIPELINE_TRANSMISSION_SH
-          : VKR_VULKAN_DEFERRED_PIPELINE_TRANSMISSION;
-  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
-                    renderer->deferred_pipelines[transmission_pipeline]);
+  vkCmdBindPipeline(
+      command, VK_PIPELINE_BIND_POINT_COMPUTE,
+      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_TRANSMISSION]);
   if (compact)
     vkCmdDispatchIndirect(command, indirect_arguments->buffer.handle,
                           pass->desc.dispatch.indirect_offset);

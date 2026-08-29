@@ -82,7 +82,6 @@ static void test_scene_loader_missing_environment_succeeds(void) {
   assert(ctx.scene.environment.enabled == false_v);
   assert(ctx.scene.environment.bake_state == VKR_SCENE_ENV_BAKE_STATE_NONE);
   assert(ctx.scene.environment.source_cubemap.id == 0u);
-  assert(ctx.scene.environment.irradiance_cubemap.id == 0u);
   assert(ctx.scene.environment.prefilter_cubemap.id == 0u);
 
   scene_loader_test_context_shutdown(&ctx);
@@ -109,7 +108,6 @@ static void test_scene_loader_invalid_environment_preserves_scene_load(void) {
   assert(ctx.scene.environment.enabled == false_v);
   assert(fabsf(ctx.scene.environment.intensity - 2.5f) < 0.001f);
   assert(ctx.scene.environment.source_cubemap.id == 0u);
-  assert(ctx.scene.environment.irradiance_cubemap.id == 0u);
   assert(ctx.scene.environment.prefilter_cubemap.id == 0u);
   assert(ctx.scene.environment.bake_state == VKR_SCENE_ENV_BAKE_STATE_NONE);
 
@@ -167,7 +165,6 @@ static void test_scene_loader_env_cubemap_load_failure_falls_back(void) {
   assert(result.entity_count == 0u);
   assert(ctx.scene.environment.enabled == false_v);
   assert(ctx.scene.environment.source_cubemap.id == 0u);
-  assert(ctx.scene.environment.irradiance_cubemap.id == 0u);
   assert(ctx.scene.environment.prefilter_cubemap.id == 0u);
   assert(ctx.scene.environment.bake_state == VKR_SCENE_ENV_BAKE_STATE_FAILED);
 

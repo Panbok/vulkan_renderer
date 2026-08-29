@@ -424,6 +424,8 @@ vkr_internal bool8_t vkr_vk_present_cancelled_frame(VkrVulkanRenderer *renderer,
 void vkr_vulkan_renderer_cancel_frame(VkrVulkanRenderer *renderer) {
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
+  vkr_vk_abandon_ibl_bake_recordings(renderer);
+  slot->sh_coefficients_clear_recorded = false_v;
   const bool8_t submitted = slot->acquired_window_image
                                 ? vkr_vk_present_cancelled_frame(renderer, slot)
                                 : false_v;

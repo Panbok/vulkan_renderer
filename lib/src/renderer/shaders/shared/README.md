@@ -13,9 +13,8 @@ RG11 sources.
 
 `sh_l2_kernel.slangh` owns the L2 diffuse basis, packing, evaluation, and exact
 cubemap texel solid angle for ADR-038, mirroring `renderer/vkr_ibl_math.h`. It
-is currently included only by the Vulkan Slang library: the Metal SH path is
-SH2 work, so the file is deliberately absent from the MSL concatenation list
-until then. Adding it there is part of that stage, not a separate cleanup.
+is included by the Vulkan Slang library and concatenated into the native Metal
+library, so both production backends compile the same math.
 
 Backend ABI records, resource bindings, entry points, and helpers written in a
 backend-native language stay under `../metal/` or `../vulkan/`. A helper moves

@@ -3,9 +3,7 @@
 #include "defines.h"
 
 /** Shipping IBL target contract shared by every renderer implementation. */
-#define VKR_IBL_IRRADIANCE_SIZE 64u
 #define VKR_IBL_PREFILTER_SIZE 256u
-#define VKR_IBL_BRDF_SIZE 128u
 #define VKR_IBL_PREFILTER_MIP_COUNT 9u
 
 typedef struct VkrIblUv {
@@ -90,6 +88,19 @@ float32_t vkr_ibl_prefilter_source_lod(float32_t no_h, float32_t vo_h,
 #define VKR_SH_SLOT_BYTES (VKR_SH_PACKED_VECTOR_COUNT * 4u * 4u)
 /** Greatest projection face extent; §2.1 of the implementation spec. */
 #define VKR_SH_PROJECTION_MAX_FACE_SIZE 32u
+
+/*
+ * Coefficient slot-pool capacity. These live here rather than beside the pool
+ * so the packet header can bound-check a slot without depending on the pool.
+ * vkr_ibl_sh_pool.c static-asserts them against the scene probe maximum.
+ */
+#define VKR_SH_SLOT_BLACK 0u
+/** Retained fallback environment, active scene environment, and every probe. */
+#define VKR_SH_LOGICAL_MAX 18u
+#define VKR_SH_GENERATION_COUNT 2u
+#define VKR_SH_REUSABLE_SLOTS (VKR_SH_LOGICAL_MAX * VKR_SH_GENERATION_COUNT)
+#define VKR_SH_SLOT_CAPACITY (VKR_SH_REUSABLE_SLOTS + 1u)
+#define VKR_SH_BUFFER_BYTES (VKR_SH_SLOT_CAPACITY * VKR_SH_SLOT_BYTES)
 
 /** Nine real L2 coefficients per colour channel, in basis order. */
 typedef struct VkrShL2Rgb {

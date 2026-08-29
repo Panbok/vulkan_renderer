@@ -20,9 +20,7 @@
 #include "renderer/vkr_render_packet.h"
 
 #define VKR_WORLD_RESOURCES_MAX_TEXTS 16
-#define VKR_WORLD_RESOURCES_IBL_IRRADIANCE_SIZE VKR_IBL_IRRADIANCE_SIZE
 #define VKR_WORLD_RESOURCES_IBL_PREFILTER_SIZE VKR_IBL_PREFILTER_SIZE
-#define VKR_WORLD_RESOURCES_IBL_BRDF_SIZE VKR_IBL_BRDF_SIZE
 #define VKR_WORLD_RESOURCES_IBL_RENDERPASS_NAME                                \
   "Renderpass.Builtin.IBL.Convolution"
 
@@ -101,7 +99,8 @@ vkr_internal bool8_t
 vkr_world_resources_has_retained_ibl_publisher(const RendererFrontend *rf) {
   return rf && rf->asset_publisher.publish_writable_texture &&
          rf->asset_publisher.bake_ibl_cubemap &&
-         rf->asset_publisher.bake_hdr_environment;
+         rf->asset_publisher.bake_hdr_environment &&
+         rf->asset_publisher.ibl_sh_slot;
 }
 
 vkr_internal uint32_t vkr_world_resources_calculate_mip_count(uint32_t size) {
@@ -200,9 +199,7 @@ bool8_t vkr_world_resources_init(RendererFrontend *rf,
   }
   MemZero(resources, sizeof(*resources));
   resources->ibl_fallback_source_cubemap = VKR_TEXTURE_HANDLE_INVALID;
-  resources->ibl_fallback_irradiance_cubemap = VKR_TEXTURE_HANDLE_INVALID;
   resources->ibl_fallback_prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID;
-  resources->ibl_active_irradiance_cubemap = VKR_TEXTURE_HANDLE_INVALID;
   resources->ibl_active_prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID;
   resources->ibl_active_intensity = 1.0f;
   resources->ibl_active_diffuse_intensity = 1.0f;
@@ -238,8 +235,6 @@ vkr_world_resources_fail_scene_environment(RendererFrontend *rf,
   vkr_world_resources_release_texture(&rf->texture_system,
                                       &environment->prefilter_cubemap);
   vkr_world_resources_release_texture(&rf->texture_system,
-                                      &environment->irradiance_cubemap);
-  vkr_world_resources_release_texture(&rf->texture_system,
                                       &environment->source_cubemap);
   vkr_world_resources_release_texture(&rf->texture_system,
                                       &environment->delivery_equirect);
@@ -256,11 +251,8 @@ vkr_internal void vkr_world_resources_retain_first_scene_environment_as_default(
   vkr_texture_system_add_ref_by_handle(&rf->texture_system,
                                        environment->source_cubemap);
   vkr_texture_system_add_ref_by_handle(&rf->texture_system,
-                                       environment->irradiance_cubemap);
-  vkr_texture_system_add_ref_by_handle(&rf->texture_system,
                                        environment->prefilter_cubemap);
   resources->ibl_fallback_source_cubemap = environment->source_cubemap;
-  resources->ibl_fallback_irradiance_cubemap = environment->irradiance_cubemap;
   resources->ibl_fallback_prefilter_cubemap = environment->prefilter_cubemap;
   resources->ibl_default_ready = true_v;
 }
@@ -297,19 +289,13 @@ vkr_internal bool8_t vkr_world_resources_prepare_published_environment(
   }
 
   char source_name_storage[128];
-  char irradiance_name_storage[128];
   char prefilter_name_storage[128];
   snprintf(source_name_storage, sizeof(source_name_storage),
            "__ibl.scene.%p.source", (void *)scene);
-  snprintf(irradiance_name_storage, sizeof(irradiance_name_storage),
-           "__ibl.scene.%p.irradiance", (void *)scene);
   snprintf(prefilter_name_storage, sizeof(prefilter_name_storage),
            "__ibl.scene.%p.prefilter", (void *)scene);
   const String8 source_name = string8_create_from_cstr(
       (const uint8_t *)source_name_storage, string_length(source_name_storage));
-  const String8 irradiance_name =
-      string8_create_from_cstr((const uint8_t *)irradiance_name_storage,
-                               string_length(irradiance_name_storage));
   const String8 prefilter_name =
       string8_create_from_cstr((const uint8_t *)prefilter_name_storage,
                                string_length(prefilter_name_storage));
@@ -319,10 +305,6 @@ vkr_internal bool8_t vkr_world_resources_prepare_published_environment(
            rf, source_name, environment->source_face_size, true_v,
            VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
            &environment->source_cubemap)) ||
-      !vkr_world_resources_create_writable_cube_texture(
-          rf, irradiance_name, VKR_WORLD_RESOURCES_IBL_IRRADIANCE_SIZE, false_v,
-          VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
-          &environment->irradiance_cubemap) ||
       !vkr_world_resources_create_writable_cube_texture(
           rf, prefilter_name, VKR_WORLD_RESOURCES_IBL_PREFILTER_SIZE, true_v,
           VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
@@ -334,12 +316,11 @@ vkr_internal bool8_t vkr_world_resources_prepare_published_environment(
       environment->source_kind == VKR_SCENE_ENV_SOURCE_EQUIRECT
           ? rf->asset_publisher.bake_hdr_environment(
                 rf->asset_publisher.state, environment->delivery_equirect,
-                environment->source_cubemap, environment->irradiance_cubemap,
-                environment->prefilter_cubemap, environment->sh_deringing)
+                environment->source_cubemap, environment->prefilter_cubemap,
+                environment->sh_deringing)
           : rf->asset_publisher.bake_ibl_cubemap(
                 rf->asset_publisher.state, environment->source_cubemap,
-                environment->irradiance_cubemap, environment->prefilter_cubemap,
-                environment->sh_deringing);
+                environment->prefilter_cubemap, environment->sh_deringing);
   if (!baked) {
     goto failed;
   }
@@ -390,8 +371,6 @@ vkr_world_resources_fail_reflection_probe(RendererFrontend *rf,
   }
 
   vkr_world_resources_release_texture(&rf->texture_system,
-                                      &probe->irradiance_cubemap);
-  vkr_world_resources_release_texture(&rf->texture_system,
                                       &probe->prefilter_cubemap);
   vkr_world_resources_release_texture(&rf->texture_system,
                                       &probe->source_cubemap);
@@ -403,19 +382,13 @@ vkr_internal bool8_t vkr_world_resources_retain_environment_probe_maps(
   if (!rf || !scene || !probe ||
       scene->environment.bake_state != VKR_SCENE_ENV_BAKE_STATE_READY ||
       !vkr_world_resources_texture_is_valid(
-          &rf->texture_system, scene->environment.irradiance_cubemap,
-          VKR_TEXTURE_TYPE_CUBE_MAP) ||
-      !vkr_world_resources_texture_is_valid(
           &rf->texture_system, scene->environment.prefilter_cubemap,
           VKR_TEXTURE_TYPE_CUBE_MAP)) {
     return false_v;
   }
 
   vkr_texture_system_add_ref_by_handle(&rf->texture_system,
-                                       scene->environment.irradiance_cubemap);
-  vkr_texture_system_add_ref_by_handle(&rf->texture_system,
                                        scene->environment.prefilter_cubemap);
-  probe->irradiance_cubemap = scene->environment.irradiance_cubemap;
   probe->prefilter_cubemap = scene->environment.prefilter_cubemap;
   probe->bake_state = VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_READY;
   return true_v;
@@ -451,30 +424,19 @@ bool8_t vkr_world_resources_prepare_scene_reflection_probes(
       continue;
     }
 
-    char irradiance_name_storage[160];
     char prefilter_name_storage[160];
-    snprintf(irradiance_name_storage, sizeof(irradiance_name_storage),
-             "__ibl.scene.%p.probe.%u.irradiance", (void *)scene, i);
     snprintf(prefilter_name_storage, sizeof(prefilter_name_storage),
              "__ibl.scene.%p.probe.%u.prefilter", (void *)scene, i);
-    String8 irradiance_name =
-        string8_create_from_cstr((const uint8_t *)irradiance_name_storage,
-                                 string_length(irradiance_name_storage));
     String8 prefilter_name =
         string8_create_from_cstr((const uint8_t *)prefilter_name_storage,
                                  string_length(prefilter_name_storage));
     if (!vkr_world_resources_create_writable_cube_texture(
-            rf, irradiance_name, VKR_WORLD_RESOURCES_IBL_IRRADIANCE_SIZE,
-            false_v, VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
-            &probe->irradiance_cubemap) ||
-        !vkr_world_resources_create_writable_cube_texture(
             rf, prefilter_name, VKR_WORLD_RESOURCES_IBL_PREFILTER_SIZE, true_v,
             VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
             &probe->prefilter_cubemap) ||
         !rf->asset_publisher.bake_ibl_cubemap(
             rf->asset_publisher.state, probe->source_cubemap,
-            probe->irradiance_cubemap, probe->prefilter_cubemap,
-            probe->sh_deringing)) {
+            probe->prefilter_cubemap, probe->sh_deringing)) {
       vkr_world_resources_fail_reflection_probe(rf, probe);
       all_prepared = false_v;
       continue;
@@ -532,7 +494,6 @@ bool8_t vkr_world_resources_probe_intersects_sphere(Vec3 center, Vec3 extents,
 vkr_internal VkrWorldIblProbeSlot vkr_world_resources_fallback_probe_slot(
     RendererFrontend *rf, VkrWorldResources *resources) {
   VkrWorldIblProbeSlot slot = {
-      .irradiance_map = NULL,
       .prefilter_map = NULL,
       .center = {0},
       .extents = {0},
@@ -548,17 +509,9 @@ vkr_internal VkrWorldIblProbeSlot vkr_world_resources_fallback_probe_slot(
     return slot;
   }
 
-  slot.irradiance_map = vkr_world_resources_resolve_backend_texture(
-      &rf->texture_system, resources->ibl_active_irradiance_cubemap,
-      VKR_TEXTURE_TYPE_CUBE_MAP);
   slot.prefilter_map = vkr_world_resources_resolve_backend_texture(
       &rf->texture_system, resources->ibl_active_prefilter_cubemap,
       VKR_TEXTURE_TYPE_CUBE_MAP);
-  if (!slot.irradiance_map) {
-    slot.irradiance_map = vkr_world_resources_resolve_backend_texture(
-        &rf->texture_system, resources->ibl_fallback_irradiance_cubemap,
-        VKR_TEXTURE_TYPE_CUBE_MAP);
-  }
   if (!slot.prefilter_map) {
     slot.prefilter_map = vkr_world_resources_resolve_backend_texture(
         &rf->texture_system, resources->ibl_fallback_prefilter_cubemap,
@@ -612,15 +565,11 @@ void vkr_world_resources_select_probe_slots_for_bounds(
         continue;
       }
 
-      VkrTextureOpaqueHandle irradiance =
-          vkr_world_resources_resolve_backend_texture(
-              &rf->texture_system, probe->irradiance_cubemap,
-              VKR_TEXTURE_TYPE_CUBE_MAP);
       VkrTextureOpaqueHandle prefilter =
           vkr_world_resources_resolve_backend_texture(
               &rf->texture_system, probe->prefilter_cubemap,
               VKR_TEXTURE_TYPE_CUBE_MAP);
-      if (!irradiance || !prefilter) {
+      if (!prefilter) {
         continue;
       }
 
@@ -652,9 +601,6 @@ void vkr_world_resources_select_probe_slots_for_bounds(
     const VkrSceneReflectionProbe *probe =
         &scene->reflection_probes[best_probe_index[slot_index]];
     out_slots[slot_index] = (VkrWorldIblProbeSlot){
-        .irradiance_map = vkr_world_resources_resolve_backend_texture(
-            &rf->texture_system, probe->irradiance_cubemap,
-            VKR_TEXTURE_TYPE_CUBE_MAP),
         .prefilter_map = vkr_world_resources_resolve_backend_texture(
             &rf->texture_system, probe->prefilter_cubemap,
             VKR_TEXTURE_TYPE_CUBE_MAP),
@@ -678,7 +624,6 @@ void vkr_world_resources_set_active_ibl_from_scene_or_default(
 
   if (!resources->ibl_default_ready) {
     resources->ibl_active_enabled = false_v;
-    resources->ibl_active_irradiance_cubemap = VKR_TEXTURE_HANDLE_INVALID;
     resources->ibl_active_prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID;
     return;
   }
@@ -686,16 +631,11 @@ void vkr_world_resources_set_active_ibl_from_scene_or_default(
   bool8_t use_scene_ibl =
       scene && scene->environment.enabled &&
       scene->environment.bake_state == VKR_SCENE_ENV_BAKE_STATE_READY &&
-      vkr_world_resources_texture_is_valid(
-          &rf->texture_system, scene->environment.irradiance_cubemap,
-          VKR_TEXTURE_TYPE_CUBE_MAP) &&
       vkr_world_resources_texture_is_valid(&rf->texture_system,
                                            scene->environment.prefilter_cubemap,
                                            VKR_TEXTURE_TYPE_CUBE_MAP);
 
   if (use_scene_ibl) {
-    resources->ibl_active_irradiance_cubemap =
-        scene->environment.irradiance_cubemap;
     resources->ibl_active_prefilter_cubemap =
         scene->environment.prefilter_cubemap;
     resources->ibl_active_enabled = true_v;
@@ -707,8 +647,6 @@ void vkr_world_resources_set_active_ibl_from_scene_or_default(
     return;
   }
 
-  resources->ibl_active_irradiance_cubemap =
-      resources->ibl_fallback_irradiance_cubemap;
   resources->ibl_active_prefilter_cubemap =
       resources->ibl_fallback_prefilter_cubemap;
   resources->ibl_active_enabled = true_v;
@@ -732,8 +670,6 @@ void vkr_world_resources_shutdown(RendererFrontend *rf,
 
   vkr_world_resources_release_texture(
       &rf->texture_system, &resources->ibl_fallback_prefilter_cubemap);
-  vkr_world_resources_release_texture(
-      &rf->texture_system, &resources->ibl_fallback_irradiance_cubemap);
   vkr_world_resources_release_texture(&rf->texture_system,
                                       &resources->ibl_fallback_source_cubemap);
   MemZero(resources, sizeof(*resources));

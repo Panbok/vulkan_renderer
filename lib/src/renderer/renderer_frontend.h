@@ -209,10 +209,8 @@ struct s_RendererFrontend {
   // 0=off, 1=cascades, 2=shadow factor, 3=shadow map depth.
   uint32_t shadow_debug_mode;
 
-  /* Cold ADR-038 A/B control: clamps how many scene reflection probes the
-     application packs into a frame, so the deferred-lighting comparison can
-     hold probe count as a declared independent variable. UINT32_MAX does not
-     clamp. */
+  /* Cold ADR-038 scaling control: clamps how many scene reflection probes the
+     application packs into a frame. UINT32_MAX does not clamp. */
   uint32_t ibl_probe_limit;
 
   /* Probes the last accepted packet actually packed, published as
@@ -241,3 +239,14 @@ bool8_t vkr_renderer_texture_pressure_budget(const VkrDeviceMemoryStats *stats,
                                              bool8_t *out_pressure_active);
 
 typedef struct s_RendererFrontend RendererFrontend;
+
+/**
+ * Published L2 diffuse coefficient slot for a source cubemap, or
+ * VKR_SH_SLOT_BLACK when it has none yet (ADR-038). Cold: resolve it once per
+ * frame while packing probes, never per draw.
+ *
+ * Declared here rather than in vkr_renderer.h because VkrTextureHandle's own
+ * header already includes that one.
+ */
+uint32_t vkr_renderer_ibl_sh_slot(VkrRendererFrontendHandle renderer,
+                                  VkrTextureHandle source);

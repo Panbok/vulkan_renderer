@@ -201,7 +201,7 @@ typedef struct ScenePointLight {
  * @brief Runtime status of scene environment IBL bake products.
  *
  * `PENDING` means a source cubemap is loaded and bake work is still required.
- * `READY` means irradiance/prefilter handles are valid for rendering.
+ * `READY` means the coefficient slot and prefilter handle are valid.
  * `FAILED` keeps rendering alive by forcing fallback IBL selection.
  */
 typedef enum VkrSceneEnvironmentBakeState {
@@ -224,7 +224,7 @@ typedef enum VkrSceneEnvironmentSourceKind {
  *
  * `PENDING` means a source cubemap is available and convolution bake has not
  * completed yet.
- * `READY` means irradiance/prefilter cubemaps are valid and selectable.
+ * `READY` means the coefficient slot and prefilter cubemap are selectable.
  * `FAILED` keeps rendering alive by falling back to scene/global IBL maps.
  */
 typedef enum VkrSceneReflectionProbeBakeState {
@@ -244,8 +244,9 @@ typedef enum VkrSceneReflectionProbeBakeState {
  * with linear falloff.
  *
  * Ownership:
- * - `source_cubemap`, `irradiance_cubemap`, `prefilter_cubemap` are scene
- *   handles released by scene reset/shutdown paths.
+ * - `source_cubemap` and `prefilter_cubemap` are scene handles released by
+ *   scene reset/shutdown paths. The diffuse response is L2 coefficients owned
+ *   by the renderer's slot pool, not a scene-owned cubemap (ADR-038).
  * - Prepared targets exist only until bake recording completes. Their backend
  *   objects retire after the submit serial that protects the recorded work.
  */
@@ -263,7 +264,6 @@ typedef struct VkrSceneReflectionProbe {
   uint32_t source_mip_count;
   bool8_t uses_scene_environment_source;
   VkrTextureHandle source_cubemap;
-  VkrTextureHandle irradiance_cubemap;
   VkrTextureHandle prefilter_cubemap;
   VkrSceneReflectionProbeBakeState bake_state;
 } VkrSceneReflectionProbe;
@@ -272,8 +272,9 @@ typedef struct VkrSceneReflectionProbe {
  * @brief Scene-owned environment IBL resources and controls.
  *
  * Ownership:
- * - `source_cubemap`, `irradiance_cubemap`, `prefilter_cubemap` are retained
- *   by the scene and released by scene shutdown/reload paths.
+ * - `source_cubemap` and `prefilter_cubemap` are retained by the scene and
+ *   released by scene shutdown/reload paths. The diffuse response is L2
+ *   coefficients owned by the renderer's slot pool (ADR-038).
  * - Bake products are scene-owned writable cubemaps generated at runtime and
  *   released with normal texture-system handle symmetry.
  * - Prepared targets exist only until bake recording completes. Their backend
@@ -291,7 +292,6 @@ typedef struct VkrSceneEnvironment {
 
   VkrTextureHandle delivery_equirect;
   VkrTextureHandle source_cubemap;
-  VkrTextureHandle irradiance_cubemap;
   VkrTextureHandle prefilter_cubemap;
 
   uint32_t source_face_size;

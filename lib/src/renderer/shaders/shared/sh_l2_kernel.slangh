@@ -28,6 +28,24 @@ struct VkrShL2Packed
     float4 v[7];
 };
 
+/** Normal-derived operands shared by every SH source evaluated at one pixel. */
+struct VkrShL2Evaluation
+{
+    float4 linear_operand;
+    float4 quadratic_operand;
+    float residual;
+};
+
+VkrShL2Evaluation vkr_sh_l2_prepare_evaluation(float3 n)
+{
+    VkrShL2Evaluation evaluation;
+    evaluation.linear_operand = float4(n.x, n.y, n.z, 1.0f);
+    evaluation.quadratic_operand =
+        float4(n.x * n.y, n.y * n.z, n.z * n.z, n.z * n.x);
+    evaluation.residual = n.x * n.x - n.y * n.y;
+    return evaluation;
+}
+
 /**
  * Reconstructs the diffuse response for a unit normal.
  *
@@ -36,22 +54,19 @@ struct VkrShL2Packed
  * proof -- deleting the negative lobe adds integrated response, which the CPU
  * clamp diagnostics measure.
  */
-float3 vkr_sh_l2_evaluate(VkrShL2Packed coefficients, float3 n)
+float3 vkr_sh_l2_evaluate(VkrShL2Packed coefficients,
+                          VkrShL2Evaluation evaluation)
 {
-    float4 linear_operand = float4(n.x, n.y, n.z, 1.0f);
-    float4 quadratic_operand =
-        float4(n.x * n.y, n.y * n.z, n.z * n.z, n.z * n.x);
-    float residual = n.x * n.x - n.y * n.y;
     float3 result;
-    result.x = dot(coefficients.v[0], linear_operand) +
-               dot(coefficients.v[3], quadratic_operand) +
-               coefficients.v[6].x * residual;
-    result.y = dot(coefficients.v[1], linear_operand) +
-               dot(coefficients.v[4], quadratic_operand) +
-               coefficients.v[6].y * residual;
-    result.z = dot(coefficients.v[2], linear_operand) +
-               dot(coefficients.v[5], quadratic_operand) +
-               coefficients.v[6].z * residual;
+    result.x = dot(coefficients.v[0], evaluation.linear_operand) +
+               dot(coefficients.v[3], evaluation.quadratic_operand) +
+               coefficients.v[6].x * evaluation.residual;
+    result.y = dot(coefficients.v[1], evaluation.linear_operand) +
+               dot(coefficients.v[4], evaluation.quadratic_operand) +
+               coefficients.v[6].y * evaluation.residual;
+    result.z = dot(coefficients.v[2], evaluation.linear_operand) +
+               dot(coefficients.v[5], evaluation.quadratic_operand) +
+               coefficients.v[6].z * evaluation.residual;
     return max(result, float3(0.0f, 0.0f, 0.0f));
 }
 

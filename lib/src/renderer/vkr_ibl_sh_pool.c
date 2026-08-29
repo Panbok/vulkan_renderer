@@ -4,7 +4,7 @@ _Static_assert(VKR_SH_SLOT_BYTES == 112u,
                "SH slot must stay seven float4 vectors");
 _Static_assert(VKR_SH_BUFFER_BYTES == 4144u,
                "SH coefficient buffer must stay 37 slots of 112 bytes");
-_Static_assert(VKR_SH_LOGICAL_MAX == 18u,
+_Static_assert(VKR_SH_LOGICAL_MAX == 2u + VKR_SCENE_REFLECTION_PROBE_MAX,
                "SH logical maximum is the fallback, the scene environment, and "
                "every reflection probe");
 

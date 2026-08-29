@@ -43,6 +43,17 @@ vkr_metal_packet_resolve_texture(VkrMetalPacketRenderer *renderer,
                                                                    : NULL;
 }
 
+vkr_internal void
+vkr_metal_packet_abandon_ibl_sh_candidate(VkrMetalPacketRenderer *renderer,
+                                          VkrMetalPacketFrameUpload *upload) {
+  if (upload->ibl_sh_candidate_slot == VKR_SH_SLOT_BLACK)
+    return;
+  (void)vkr_ibl_sh_pool_abandon(&renderer->sh_pool,
+                                upload->ibl_sh_candidate_slot);
+  renderer->ibl_sh_slot = upload->ibl_sh_previous_slot;
+  upload->ibl_sh_candidate_slot = VKR_SH_SLOT_BLACK;
+}
+
 vkr_internal bool8_t vkr_metal_packet_create_frame_root(
     VkrMetalPacketRenderer *renderer, const VkrRenderPacket *packet,
     VkrMetalPacketFrameUpload *upload, uint64_t instances_gpu,
@@ -62,11 +73,9 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
       .view_projection = vkr_metal_packet_slang_draw_matrix(view_projection),
       .materials =
           vkr_metal_material_table_device_gpu_address(renderer->materials),
-      .irradiance_texture_id = renderer->ibl_irradiance.resource_id,
+      .sh_coefficients_address = renderer->sh_coefficients.gpuAddress,
       .prefilter_texture_id = renderer->ibl_prefilter.resource_id,
-      /* Temporary: the retired BRDF-LUT slot carries the VkrShAbTable address
-         while both diffuse representations are live (ADR-038 §1.6). */
-      .reserved_brdf_lut = upload->sh_ab_table_gpu,
+      .sh_global_slot = renderer->ibl_sh_slot,
       .view_position = frame_constants.view_position,
       .prefilter_mip_count = frame_constants.prefilter_mip_count,
       .flags = *out_frame_flags,
@@ -403,24 +412,6 @@ vkr_internal bool8_t vkr_metal_packet_encode_ibl(
       (id<MTLTexture>)source->resource.metal_texture;
 
   uint64_t root_gpu = 0;
-  VkrMetalPacketIrradianceRoot *irradiance_root =
-      vkr_metal_packet_next_root(upload, sizeof(*irradiance_root), &root_gpu);
-  if (!irradiance_root)
-    return false_v;
-  *irradiance_root = (VkrMetalPacketIrradianceRoot){
-      .source_texture_id = source->resource.resource_id,
-      .target_texture_id = renderer->ibl_irradiance.resource_id,
-      .sample_count = 128,
-      .target_size = VKR_IBL_IRRADIANCE_SIZE,
-  };
-  [renderer->argument_table setAddress:root_gpu atIndex:0];
-  [encoder setComputePipelineState:renderer->ibl_irradiance_pipeline];
-  [encoder setArgumentTable:renderer->argument_table];
-  [encoder dispatchThreads:MTLSizeMake(VKR_IBL_IRRADIANCE_SIZE,
-                                       VKR_IBL_IRRADIANCE_SIZE, 6)
-      threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
-  result->ibl_dispatch_count++;
-
   for (uint32_t mip = 0; mip < VKR_IBL_PREFILTER_MIP_COUNT; ++mip) {
     VkrMetalPacketPrefilterRoot *prefilter_root =
         vkr_metal_packet_next_root(upload, sizeof(*prefilter_root), &root_gpu);
@@ -442,6 +433,63 @@ vkr_internal bool8_t vkr_metal_packet_encode_ibl(
     [encoder dispatchThreads:MTLSizeMake(mip_size, mip_size, 6)
         threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
     result->ibl_dispatch_count++;
+  }
+
+  /* Asset-published scene sources already own coefficients. The packet path
+     projects only a skybox-only source that reaches submission without that
+     cold publication step. */
+  if (source->ibl_sh_slot == VKR_SH_SLOT_BLACK) {
+    uint32_t projection_mip = 0u;
+    uint32_t projection_extent = 0u;
+    if (!vkr_ibl_sh_projection_mip((uint32_t)source_texture.width,
+                                   (uint32_t)source_texture.mipmapLevelCount,
+                                   &projection_mip, &projection_extent)) {
+      log_error("Metal packet IBL source cannot supply an SH projection mip; "
+                "the previous coefficients remain published");
+    } else {
+      uint32_t candidate_slot = VKR_SH_SLOT_BLACK;
+      if (vkr_ibl_sh_pool_reserve(&renderer->sh_pool, &candidate_slot) !=
+          VKR_SH_POOL_STATUS_OK) {
+        log_error("Metal SH coefficient pool exhausted; the previous "
+                  "coefficients remain published");
+      } else {
+        VkrMetalPacketShProjectRoot *sh_root =
+            vkr_metal_packet_next_root(upload, sizeof(*sh_root), &root_gpu);
+        if (!sh_root) {
+          (void)vkr_ibl_sh_pool_abandon(&renderer->sh_pool, candidate_slot);
+          return false_v;
+        }
+        *sh_root = (VkrMetalPacketShProjectRoot){
+            .source_texture_id = source->resource.resource_id,
+            .destination = renderer->sh_coefficients.gpuAddress +
+                           (uint64_t)candidate_slot * VKR_SH_SLOT_BYTES,
+            .source_face_size = projection_extent,
+            .source_mip = projection_mip,
+            /* Packet-only IBL sources carry no scene authoring metadata, so
+               the contract default is the identity window. */
+            .window_band_0 = 1.0f,
+            .window_band_1 = 1.0f,
+            .window_band_2 = 1.0f,
+        };
+        [renderer->argument_table setAddress:root_gpu atIndex:0];
+        [encoder setComputePipelineState:renderer->ibl_sh_pipeline];
+        [encoder setArgumentTable:renderer->argument_table];
+        [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+        [encoder barrierAfterEncoderStages:MTLStageDispatch
+                       beforeEncoderStages:(MTLStages)(MTLStageDispatch |
+                                                       MTLStageFragment)
+                         visibilityOptions:MTL4VisibilityOptionDevice];
+        if (vkr_ibl_sh_pool_mark_recorded(&renderer->sh_pool, candidate_slot) !=
+            VKR_SH_POOL_STATUS_OK) {
+          (void)vkr_ibl_sh_pool_abandon(&renderer->sh_pool, candidate_slot);
+          return false_v;
+        }
+        upload->ibl_sh_previous_slot = renderer->ibl_sh_slot;
+        upload->ibl_sh_candidate_slot = candidate_slot;
+        renderer->ibl_sh_slot = candidate_slot;
+      }
+    }
   }
 
   const uint64_t pending_submit = renderer->submit_value + 1;
@@ -1032,12 +1080,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_deferred_lighting(
       .sky_enabled = sky ? 1u : 0u,
   };
   [renderer->argument_table setAddress:root_gpu atIndex:0u];
-  /* The representation is chosen once here, while encoding, so no branch
-     reaches the per-pixel or per-probe path (ADR-038 §1.6). */
-  [encoder setComputePipelineState:
-               renderer->sh_representation == VKR_SH_REPRESENTATION_SH_L2
-                   ? renderer->deferred_lighting_sh_pipeline
-                   : renderer->deferred_lighting_pipeline];
+  [encoder setComputePipelineState:renderer->deferred_lighting_pipeline];
   [encoder setArgumentTable:renderer->argument_table];
   [encoder dispatchThreads:MTLSizeMake(vbuffer.width, vbuffer.height, 1u)
       threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
@@ -1307,10 +1350,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_transmission_shade(
       .temporal_outputs_enabled = temporal_outputs,
   };
   [renderer->argument_table setAddress:root_gpu atIndex:0u];
-  [encoder setComputePipelineState:
-               renderer->sh_representation == VKR_SH_REPRESENTATION_SH_L2
-                   ? renderer->transmission_shade_sh_pipeline
-                   : renderer->transmission_shade_pipeline];
+  [encoder setComputePipelineState:renderer->transmission_shade_pipeline];
   [encoder setArgumentTable:renderer->argument_table];
   if (compact) {
     const VkrRgBufferUse *indirect_use = vkr_rg_pass_find_buffer_use(
@@ -2730,18 +2770,6 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
                                options:MTLBlitOptionNone];
     }
     if (passed && ibl) {
-      [capture_encoder
-                   copyFromTexture:(id<MTLTexture>)
-                                       renderer->ibl_irradiance.metal_texture
-                       sourceSlice:0
-                       sourceLevel:0
-                      sourceOrigin:MTLOriginMake(0, 0, 0)
-                        sourceSize:MTLSizeMake(1, 1, 1)
-                          toBuffer:(id<MTLBuffer>)readback_object
-                 destinationOffset:readback_slice.offset + readback_layout.ibl
-            destinationBytesPerRow:8
-          destinationBytesPerImage:8
-                           options:MTLBlitOptionNone];
       for (uint32_t mip = 0; mip < VKR_IBL_PREFILTER_MIP_COUNT; ++mip) {
         [capture_encoder
                      copyFromTexture:(id<MTLTexture>)
@@ -2849,6 +2877,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
       log_error("Metal packet stage failed: final capture encoding");
     }
     vkr_metal_packet_rollback_gpu_draw_resource_preparation(renderer, packet);
+    vkr_metal_packet_abandon_ibl_sh_candidate(renderer, &frame_upload);
     vkr_metal_memory_device_cancel_ring(
         renderer->memory, VKR_METAL_RING_KIND_READBACK, readback_slice);
     vkr_metal_memory_device_cancel_ring(
@@ -2860,6 +2889,17 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   }
 
   const uint64_t submit_value = ++renderer->submit_value;
+  vkr_ibl_sh_pool_reference(&renderer->sh_pool,
+                            frame_upload.ibl_sh_candidate_slot, submit_value);
+  if (packet->lighting && packet->lighting->ibl_enabled) {
+    vkr_ibl_sh_pool_reference(&renderer->sh_pool, renderer->ibl_sh_slot,
+                              submit_value);
+    for (uint32_t i = 0u; i < packet->lighting->ibl_probe_count; ++i) {
+      vkr_ibl_sh_pool_reference(&renderer->sh_pool,
+                                packet->lighting->ibl_probes[i].sh_slot,
+                                submit_value);
+    }
+  }
   vkr_metal_packet_mark_graph_images_submitted(renderer, submit_value);
   vkr_metal_packet_mark_hzb_history_submitted(renderer, submit_value);
   vkr_metal_packet_mark_temporal_submitted(renderer, submit_value);
@@ -2951,6 +2991,23 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
      ADR-029 rollback: a cancelled frame commits nothing and the previous
      contents stay authoritative. */
   vkr_rg_commit_retained_state(renderer->graph);
+  if (frame_upload.ibl_sh_candidate_slot != VKR_SH_SLOT_BLACK) {
+    VkrMetalPacketTexture *sh_source =
+        vkr_metal_packet_resolve_texture(renderer, ibl_source);
+    if (sh_source &&
+        vkr_ibl_sh_pool_publish(&renderer->sh_pool,
+                                frame_upload.ibl_sh_candidate_slot) ==
+            VKR_SH_POOL_STATUS_OK) {
+      if (sh_source->ibl_sh_slot != VKR_SH_SLOT_BLACK)
+        (void)vkr_ibl_sh_pool_retire(&renderer->sh_pool,
+                                     sh_source->ibl_sh_slot);
+      sh_source->ibl_sh_slot = frame_upload.ibl_sh_candidate_slot;
+    } else {
+      (void)vkr_ibl_sh_pool_retire(&renderer->sh_pool,
+                                   frame_upload.ibl_sh_candidate_slot);
+      renderer->ibl_sh_slot = frame_upload.ibl_sh_previous_slot;
+    }
+  }
   if (renderer->drawable) {
     [renderer->queue signalDrawable:renderer->drawable];
     [renderer->drawable present];
@@ -3040,19 +3097,14 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
       out_result->has_picking_id = true_v;
     }
     if (ibl) {
-      vkr_metal_packet_decode_half4((uint8_t *)readback.cpu_address +
-                                        readback_layout.ibl,
-                                    out_result->ibl_color);
       for (uint32_t mip = 0; mip < VKR_IBL_PREFILTER_MIP_COUNT; ++mip) {
         vkr_metal_packet_decode_half4((uint8_t *)readback.cpu_address +
                                           readback_layout.ibl_prefilter +
                                           mip * 8u,
                                       out_result->ibl_prefilter[mip]);
       }
-      out_result->ibl_irradiance_size = VKR_IBL_IRRADIANCE_SIZE;
       out_result->ibl_prefilter_size = VKR_IBL_PREFILTER_SIZE;
       out_result->ibl_prefilter_mip_count = VKR_IBL_PREFILTER_MIP_COUNT;
-      out_result->has_ibl_color = true_v;
       out_result->has_ibl_convolution = true_v;
     }
     if (synchronous_deferred_validation) {

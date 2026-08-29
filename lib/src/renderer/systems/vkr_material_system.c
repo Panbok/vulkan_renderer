@@ -811,7 +811,6 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
   system->ibl_specular_intensity = 1.0f;
   for (uint32_t i = 0; i < 3u; ++i) {
     system->ibl_probe_slots[i] = (VkrMaterialIblProbeSlot){
-        .irradiance_map = NULL,
         .prefilter_map = NULL,
         .center = {0},
         .extents = {0},
@@ -1261,14 +1260,12 @@ void vkr_material_system_set_shadow_map(VkrMaterialSystem *system,
 }
 
 void vkr_material_system_set_ibl_maps(VkrMaterialSystem *system,
-                                      VkrTextureOpaqueHandle irradiance_map,
                                       VkrTextureOpaqueHandle prefilter_map,
                                       bool8_t enabled, float32_t intensity,
                                       float32_t diffuse_intensity,
                                       float32_t specular_intensity) {
   assert_log(system != NULL, "System is NULL");
 
-  system->ibl_irradiance_map = irradiance_map;
   system->ibl_prefilter_map = prefilter_map;
   system->ibl_enabled = enabled ? true_v : false_v;
   system->ibl_intensity = intensity;
@@ -1283,7 +1280,6 @@ void vkr_material_system_set_ibl_probe_slots(
   if (!slots) {
     for (uint32_t i = 0; i < 3u; ++i) {
       system->ibl_probe_slots[i] = (VkrMaterialIblProbeSlot){
-          .irradiance_map = NULL,
           .prefilter_map = NULL,
           .center = {0},
           .extents = {0},

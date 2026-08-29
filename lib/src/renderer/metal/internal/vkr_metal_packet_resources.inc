@@ -1129,35 +1129,26 @@ bool8_t vkr_metal_packet_renderer_update_texture_sampler(
 }
 
 vkr_internal bool8_t vkr_metal_packet_validate_ibl_textures(
-    const VkrMetalPacketTexture *source,
-    const VkrMetalPacketTexture *irradiance,
-    const VkrMetalPacketTexture *prefilter) API_AVAILABLE(macos(26.0)) {
-  if (!source || !irradiance || !prefilter || source == irradiance ||
-      source == prefilter || irradiance == prefilter) {
+    const VkrMetalPacketTexture *source, const VkrMetalPacketTexture *prefilter)
+    API_AVAILABLE(macos(26.0)) {
+  if (!source || !prefilter || source == prefilter) {
     return false_v;
   }
 
   id<MTLTexture> source_texture =
       (id<MTLTexture>)source->resource.metal_texture;
-  id<MTLTexture> irradiance_texture =
-      (id<MTLTexture>)irradiance->resource.metal_texture;
   id<MTLTexture> prefilter_texture =
       (id<MTLTexture>)prefilter->resource.metal_texture;
-  return source_texture && irradiance_texture && prefilter_texture &&
+  return source_texture && prefilter_texture &&
          source_texture.textureType == MTLTextureTypeCube &&
-         irradiance_texture.textureType == MTLTextureTypeCube &&
          prefilter_texture.textureType == MTLTextureTypeCube &&
          source_texture.width == source_texture.height &&
-         irradiance_texture.width == irradiance_texture.height &&
          prefilter_texture.width == prefilter_texture.height &&
-         irradiance_texture.pixelFormat == MTLPixelFormatRGBA16Float &&
          prefilter_texture.pixelFormat == MTLPixelFormatRGBA16Float &&
          (source_texture.usage & MTLTextureUsageShaderRead) != 0 &&
-         (irradiance_texture.usage & MTLTextureUsageShaderWrite) != 0 &&
          (prefilter_texture.usage & MTLTextureUsageShaderWrite) != 0 &&
          source_texture.mipmapLevelCount > 0 &&
          source_texture.mipmapLevelCount <= VKR_METAL_PACKET_MAX_TEXTURE_MIPS &&
-         irradiance_texture.mipmapLevelCount == 1 &&
          prefilter_texture.mipmapLevelCount > 0 &&
          prefilter_texture.mipmapLevelCount <=
              VKR_METAL_PACKET_MAX_TEXTURE_MIPS;
@@ -1165,8 +1156,7 @@ vkr_internal bool8_t vkr_metal_packet_validate_ibl_textures(
 
 bool8_t vkr_metal_packet_renderer_bake_ibl_cubemap(
     VkrMetalPacketRenderer *renderer, VkrTextureHandle source_handle,
-    VkrTextureHandle irradiance_handle, VkrTextureHandle prefilter_handle,
-    float32_t sh_deringing) {
+    VkrTextureHandle prefilter_handle, float32_t sh_deringing) {
   if (!renderer || renderer->frame_prepared) {
     return false_v;
   }
@@ -1175,24 +1165,18 @@ bool8_t vkr_metal_packet_renderer_bake_ibl_cubemap(
   }
   VkrMetalPacketTexture *source =
       vkr_metal_packet_resolve_texture(renderer, source_handle);
-  VkrMetalPacketTexture *irradiance =
-      vkr_metal_packet_resolve_texture(renderer, irradiance_handle);
   VkrMetalPacketTexture *prefilter =
       vkr_metal_packet_resolve_texture(renderer, prefilter_handle);
-  if (!vkr_metal_packet_validate_ibl_textures(source, irradiance, prefilter))
+  if (!vkr_metal_packet_validate_ibl_textures(source, prefilter))
     return false_v;
 
   id<MTLTexture> source_texture =
       (id<MTLTexture>)source->resource.metal_texture;
-  id<MTLTexture> irradiance_texture =
-      (id<MTLTexture>)irradiance->resource.metal_texture;
   id<MTLTexture> prefilter_texture =
       (id<MTLTexture>)prefilter->resource.metal_texture;
   const uint32_t prefilter_mip_count =
       (uint32_t)prefilter_texture.mipmapLevelCount;
-  /* One extra root cell for the L2 projection, which runs beside the cubemap
-     bake while both representations are live (ADR-038). */
-  const uint64_t root_count = 2u + prefilter_mip_count;
+  const uint64_t root_count = 1u + prefilter_mip_count;
   const uint64_t root_bytes = root_count * VKR_METAL_PACKET_ROOT_ALIGNMENT;
   VkrMetalRingSlice slice = {0};
   VkrMetalAddressPair upload = {0};
@@ -1203,23 +1187,9 @@ bool8_t vkr_metal_packet_renderer_bake_ibl_cubemap(
     return false_v;
   }
 
-  VkrMetalPacketIrradianceRoot *irradiance_root = upload.cpu_address;
-  *irradiance_root = (VkrMetalPacketIrradianceRoot){
-      .source_texture_id = source->resource.resource_id,
-      .target_texture_id = irradiance->resource.resource_id,
-      .sample_count = 128u,
-      .target_size = (uint32_t)irradiance_texture.width,
-  };
-  [renderer->argument_table setAddress:upload.gpu_address atIndex:0];
-  [encoder setComputePipelineState:renderer->ibl_irradiance_pipeline];
-  [encoder setArgumentTable:renderer->argument_table];
-  [encoder dispatchThreads:MTLSizeMake(irradiance_texture.width,
-                                       irradiance_texture.height, 6)
-      threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
-
   for (uint32_t mip = 0; mip < prefilter_mip_count; ++mip) {
     const uint64_t root_offset =
-        (uint64_t)(mip + 1u) * VKR_METAL_PACKET_ROOT_ALIGNMENT;
+        (uint64_t)mip * VKR_METAL_PACKET_ROOT_ALIGNMENT;
     VkrMetalPacketPrefilterRoot *prefilter_root =
         (VkrMetalPacketPrefilterRoot *)((uint8_t *)upload.cpu_address +
                                         root_offset);
@@ -1254,7 +1224,7 @@ bool8_t vkr_metal_packet_renderer_bake_ibl_cubemap(
     if (vkr_ibl_sh_pool_reserve(&renderer->sh_pool, &sh_slot) ==
         VKR_SH_POOL_STATUS_OK) {
       const uint64_t sh_root_offset =
-          (uint64_t)(prefilter_mip_count + 1u) * VKR_METAL_PACKET_ROOT_ALIGNMENT;
+          (uint64_t)prefilter_mip_count * VKR_METAL_PACKET_ROOT_ALIGNMENT;
       VkrMetalPacketShProjectRoot *sh_root =
           (VkrMetalPacketShProjectRoot *)((uint8_t *)upload.cpu_address +
                                           sh_root_offset);
@@ -1294,7 +1264,6 @@ bool8_t vkr_metal_packet_renderer_bake_ibl_cubemap(
     return false_v;
   }
   source->last_use_submit_value = renderer->submit_value;
-  irradiance->last_use_submit_value = renderer->submit_value;
   prefilter->last_use_submit_value = renderer->submit_value;
   /* Submission succeeded, so the candidate becomes this source's published
      coefficients and the previous generation retires against its own last
@@ -1307,9 +1276,6 @@ bool8_t vkr_metal_packet_renderer_bake_ibl_cubemap(
       if (source->ibl_sh_slot != VKR_SH_SLOT_BLACK)
         (void)vkr_ibl_sh_pool_retire(&renderer->sh_pool, source->ibl_sh_slot);
       source->ibl_sh_slot = sh_slot;
-      /* Probe lowering reaches the slot through the probe's irradiance handle
-         while both representations coexist. SH3 removes this mirror. */
-      irradiance->ibl_sh_slot = sh_slot;
     } else {
       (void)vkr_ibl_sh_pool_retire(&renderer->sh_pool, sh_slot);
     }
@@ -1319,8 +1285,8 @@ bool8_t vkr_metal_packet_renderer_bake_ibl_cubemap(
 
 bool8_t vkr_metal_packet_renderer_bake_hdr_environment(
     VkrMetalPacketRenderer *renderer, VkrTextureHandle equirect_handle,
-    VkrTextureHandle source_handle, VkrTextureHandle irradiance_handle,
-    VkrTextureHandle prefilter_handle, float32_t sh_deringing) {
+    VkrTextureHandle source_handle, VkrTextureHandle prefilter_handle,
+    float32_t sh_deringing) {
   if (!renderer || renderer->frame_prepared) {
     return false_v;
   }
@@ -1331,13 +1297,10 @@ bool8_t vkr_metal_packet_renderer_bake_hdr_environment(
       vkr_metal_packet_resolve_texture(renderer, equirect_handle);
   VkrMetalPacketTexture *source =
       vkr_metal_packet_resolve_texture(renderer, source_handle);
-  VkrMetalPacketTexture *irradiance =
-      vkr_metal_packet_resolve_texture(renderer, irradiance_handle);
   VkrMetalPacketTexture *prefilter =
       vkr_metal_packet_resolve_texture(renderer, prefilter_handle);
-  if (!equirect || equirect == source || equirect == irradiance ||
-      equirect == prefilter ||
-      !vkr_metal_packet_validate_ibl_textures(source, irradiance, prefilter)) {
+  if (!equirect || equirect == source || equirect == prefilter ||
+      !vkr_metal_packet_validate_ibl_textures(source, prefilter)) {
     return false_v;
   }
   id<MTLTexture> equirect_texture =
@@ -1383,8 +1346,7 @@ bool8_t vkr_metal_packet_renderer_bake_hdr_environment(
   equirect->last_use_submit_value = renderer->submit_value;
   source->last_use_submit_value = renderer->submit_value;
   return vkr_metal_packet_renderer_bake_ibl_cubemap(
-      renderer, source_handle, irradiance_handle, prefilter_handle,
-      sh_deringing);
+      renderer, source_handle, prefilter_handle, sh_deringing);
 }
 
 bool8_t vkr_metal_packet_renderer_create_cubemap(
@@ -1581,6 +1543,12 @@ vkr_metal_packet_renderer_destroy_texture(VkrMetalPacketRenderer *renderer,
       renderer->ibl_source.generation == handle.generation) {
     renderer->ibl_ready = false_v;
     renderer->ibl_source = VKR_TEXTURE_HANDLE_INVALID;
+  }
+  if (slot->ibl_sh_slot != VKR_SH_SLOT_BLACK &&
+      vkr_ibl_sh_pool_retire(&renderer->sh_pool, slot->ibl_sh_slot) !=
+          VKR_SH_POOL_STATUS_OK) {
+    log_fatal("Metal lost the SH publication owned by texture %u:%u", handle.id,
+              handle.generation);
   }
   const uint32_t next_generation =
       slot->generation == UINT32_MAX ? 1u : slot->generation + 1u;
@@ -1811,7 +1779,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     return false_v;
   uint64_t root_count = 1;
   if (vkr_metal_packet_ibl_needs_bake(renderer, packet))
-    root_count += 2 + VKR_IBL_PREFILTER_MIP_COUNT;
+    root_count += 1 + VKR_IBL_PREFILTER_MIP_COUNT;
   if (packet->world)
     root_count += packet->world->transparent_draw_count + world_text_count;
   {
@@ -1919,14 +1887,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
                                   renderer->gpu_draw_icb_view_group_size - 1u) /
                                      renderer->gpu_draw_icb_view_group_size
                                : 0u;
-  /* Temporary dual-representation table (ADR-038 §1.6), always allocated so
-     the probe loop can fill it by packed ordinal. */
-  const uint64_t sh_ab_table_offset = vkr_metal_packet_align_up(
-      ibl_probes_offset + ibl_probes_bytes, AlignOf(VkrShAbTable));
-  const uint64_t sh_ab_table_bytes = sizeof(VkrShAbTable);
   const uint64_t gpu_draw_views_offset = vkr_metal_packet_align_up(
-      sh_ab_table_offset + sh_ab_table_bytes,
-      AlignOf(VkrMetalPacketGpuDrawView));
+      ibl_probes_offset + ibl_probes_bytes, AlignOf(VkrMetalPacketGpuDrawView));
   const uint64_t gpu_draw_views_bytes =
       (uint64_t)gpu_draw_view_count * sizeof(VkrMetalPacketGpuDrawView);
   const uint64_t transmission_gpu_draw_view_offset =
@@ -2290,12 +2252,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     upload->shadow_cascades_gpu = gpu + shadow_cascades_offset;
     upload->shadow_texture_id = shadow_texture.gpuResourceID._impl;
   }
-  VkrShAbTable *sh_table = (VkrShAbTable *)(cpu + sh_ab_table_offset);
-  MemZero(sh_table, sizeof(*sh_table));
-  sh_table->sh_coefficients = renderer->sh_coefficients.gpuAddress;
-  /* Resolved from the packet's environment source, exactly as Vulkan resolves
-     it, so a probe that aliases the scene environment shares this publication
-     instead of projecting a duplicate. */
+  /* Resolved from the packet's environment source, so a probe that aliases the
+     scene environment shares this publication instead of projecting a
+     duplicate. */
   VkrTextureHandle sh_global_source = VKR_TEXTURE_HANDLE_INVALID;
   if (vkr_metal_packet_ibl_source(packet, &sh_global_source)) {
     const VkrMetalPacketTexture *sh_global =
@@ -2303,22 +2262,17 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     renderer->ibl_sh_slot =
         sh_global ? sh_global->ibl_sh_slot : VKR_SH_SLOT_BLACK;
   }
-  sh_table->global_slot = renderer->ibl_sh_slot;
-  sh_table->probe_count = ibl_probe_count;
-  upload->sh_ab_table_gpu = gpu + sh_ab_table_offset;
   if (ibl_probe_count > 0) {
     VkrMetalPacketIblProbe *packed =
         (VkrMetalPacketIblProbe *)(cpu + ibl_probes_offset);
     for (uint32_t i = 0; i < ibl_probe_count; ++i) {
       const VkrFrameIblProbe *probe = &packet->lighting->ibl_probes[i];
-      VkrMetalPacketTexture *irradiance =
-          vkr_metal_packet_resolve_texture(renderer, probe->irradiance);
       VkrMetalPacketTexture *prefilter =
           vkr_metal_packet_resolve_texture(renderer, probe->prefilter);
-      if (!irradiance || !prefilter)
+      if (!prefilter)
         return false_v;
       packed[i] = (VkrMetalPacketIblProbe){
-          .irradiance_texture_id = irradiance->resource.resource_id,
+          .sh_slot = probe->sh_slot,
           .prefilter_texture_id = prefilter->resource.resource_id,
           .center_blend = {probe->center.x, probe->center.y, probe->center.z,
                            probe->blend_distance},
@@ -2328,12 +2282,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
                             probe->specular_intensity,
                             probe->box_projection_enabled ? 1.0f : 0.0f},
       };
-      /* Keyed by packed ordinal. The irradiance publication carries the slot
-         only while both representations coexist; SH3 puts it in the probe
-         record itself. */
-      sh_table->probe_slots[i] = irradiance->ibl_sh_slot;
       const uint64_t pending_submit = renderer->submit_value + 1u;
-      irradiance->last_use_submit_value = pending_submit;
       prefilter->last_use_submit_value = pending_submit;
     }
     upload->ibl_probes_gpu = gpu + ibl_probes_offset;

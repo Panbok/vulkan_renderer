@@ -1423,14 +1423,13 @@ void application_draw_frame(Application *application, float64_t delta) {
           &active_scene->reflection_probes[i];
       if (!probe->enabled ||
           probe->bake_state != VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_READY ||
-          probe->irradiance_cubemap.id == 0 ||
-          probe->irradiance_cubemap.generation == VKR_INVALID_ID ||
           probe->prefilter_cubemap.id == 0 ||
           probe->prefilter_cubemap.generation == VKR_INVALID_ID) {
         continue;
       }
       frame_ibl_probes[frame_ibl_probe_count++] = (VkrFrameIblProbe){
-          .irradiance = probe->irradiance_cubemap,
+          .sh_slot = vkr_renderer_ibl_sh_slot(&application->renderer,
+                                              probe->source_cubemap),
           .prefilter = probe->prefilter_cubemap,
           .center = probe->center,
           .extents = probe->extents,

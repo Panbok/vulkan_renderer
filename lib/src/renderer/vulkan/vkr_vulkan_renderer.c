@@ -348,6 +348,7 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
     return false_v;
   renderer->active_frame_slot = slot_index;
   renderer->frame_active = true_v;
+  slot->sh_coefficients_clear_recorded = false_v;
   slot->source_frame_index = source_frame_index;
   slot->acquired_window_image = false_v;
   slot->reacquired_presented_image = false_v;
@@ -890,6 +891,8 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
                      &submit_info, VK_NULL_HANDLE);
   if (submit_result != VK_SUCCESS) {
     log_error("Vulkan queue submission failed (result=%d)", (int)submit_result);
+    vkr_vk_abandon_ibl_bake_recordings(renderer);
+    slot->sh_coefficients_clear_recorded = false_v;
     if (slot->capture_request_id)
       (void)vkr_capture_ring_fail(&renderer->capture_ring,
                                   slot->capture_request_id,
@@ -902,6 +905,10 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
     return false_v;
   }
   renderer->submit_value = signal_value;
+  if (slot->sh_coefficients_clear_recorded) {
+    renderer->sh_coefficients_cleared = true_v;
+    slot->sh_coefficients_clear_recorded = false_v;
+  }
   if (slot->candidate_residency_pending) {
     slot->candidate_residency = slot->pending_candidate_residency;
     slot->candidate_residency_pending = false_v;
@@ -958,14 +965,6 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
                                        sh_source->ibl_sh_slot);
         }
         sh_source->ibl_sh_slot = job->sh_slot;
-        /* Probe lowering reaches the slot through the probe's irradiance
-           handle while both representations coexist, because the version-22
-           probe record cannot carry it. SH3 removes this mirror. */
-        VkrVulkanPublishedTexture *sh_irradiance =
-            vkr_vk_texture_publication(renderer, job->irradiance);
-        if (sh_irradiance) {
-          sh_irradiance->ibl_sh_slot = job->sh_slot;
-        }
       } else {
         /* The bake was submitted, so the slot follows normal retirement even
            though publication failed; the GPU already accepted the write. */
@@ -973,7 +972,7 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
       }
     }
     const VkrTextureHandle handles[] = {job->equirect, job->source,
-                                        job->irradiance, job->prefilter};
+                                        job->prefilter};
     for (uint32_t handle_index = job->convert_equirect ? 0u : 1u;
          handle_index < ArrayCount(handles); ++handle_index) {
       VkrVulkanPublishedTexture *texture =

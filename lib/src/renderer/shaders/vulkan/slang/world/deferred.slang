@@ -1145,10 +1145,9 @@ float vkr_vk_deferred_filter_roughness(VkrVkLightingRoot *root, uint2 pixel,
         roughness * roughness + min(normal_variance, 0.25f)));
 }
 
-// `use_sh` arrives as a literal from each entry point below, so every variant
-// specializes the diffuse representation away at compile time. ADR-038 forbids
-// a representation branch in the per-pixel or per-probe path.
-void vk_deferred_lighting_impl(uint3 thread_id, bool use_sh)
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
 {
     VkrVkLightingRoot *root = g_lighting_push.root;
     if (any(thread_id.xy >= root.extent))
@@ -1253,11 +1252,11 @@ void vk_deferred_lighting_impl(uint3 thread_id, bool use_sh)
     {
         VkrVulkanEnvironmentResult environment = packet_environment_terms(
             frame, world, normal, normal, view, diffuse_albedo, 0.0f, roughness,
-            ao, f0, use_sh);
+            ao, f0);
         // Mode 9 isolates the environment diffuse term: no direct light, no
         // specular IBL, no emissive seed, and no ambient fallback. The GTAO
-        // multiply is dropped too, so the channel compares the representation
-        // rather than the occlusion applied on top of it.
+        // multiply is dropped too, so the channel isolates diffuse IBL rather
+        // than the occlusion applied on top of it.
         if (frame.render_mode == 9u)
         {
             g_storage_2d[root.scene_texture][thread_id.xy] =
@@ -1282,21 +1281,6 @@ void vk_deferred_lighting_impl(uint3 thread_id, bool use_sh)
     }
     color += seed.rgb;
     g_storage_2d[root.scene_texture][thread_id.xy] = float4(color, 1.0f);
-}
-
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID)
-{
-    vk_deferred_lighting_impl(thread_id, false);
-}
-
-/** Temporary SH variant; SH3 folds it back into the single entry point. */
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void vk_deferred_lighting_sh(uint3 thread_id : SV_DispatchThreadID)
-{
-    vk_deferred_lighting_impl(thread_id, true);
 }
 
 float vkr_vk_temporal_luminance(float3 color)
@@ -1691,10 +1675,9 @@ void vk_transmission_compact_finalize(uint3 thread_id : SV_DispatchThreadID)
     root.indirect_arguments[2] = 1u;
 }
 
-// Specialized per representation for the same reason as
-// vk_deferred_lighting_impl, so transmissive surfaces report the same diffuse
-// representation the opaque path does during the A/B comparison.
-void vk_transmission_shade_impl(uint3 thread_id, bool use_sh)
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
 {
     VkrVkTransmissionRoot *root = g_transmission_push.root;
     uint2 pixel = thread_id.xy;
@@ -1887,7 +1870,7 @@ void vk_transmission_shade_impl(uint3 thread_id, bool use_sh)
                 color = packet_environment_terms(
                             frame, world, surface.normal, surface.normal, view,
                             surface.base.rgb, surface.metallic,
-                            surface.roughness, surface.occlusion, f0, use_sh)
+                            surface.roughness, surface.occlusion, f0)
                             .diffuse;
             }
         }
@@ -1901,7 +1884,7 @@ void vk_transmission_shade_impl(uint3 thread_id, bool use_sh)
                     packet_environment_terms(
                         frame, world, surface.normal, surface.normal, view,
                         surface.base.rgb, surface.metallic, surface.roughness,
-                        surface.occlusion, f0, use_sh);
+                        surface.occlusion, f0);
                 diffuse += environment.diffuse;
                 specular += environment.specular;
             }
@@ -1914,21 +1897,6 @@ void vk_transmission_shade_impl(uint3 thread_id, bool use_sh)
         }
     }
     g_storage_2d[root.output_texture][pixel] = float4(color, 1.0f);
-}
-
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
-{
-    vk_transmission_shade_impl(thread_id, false);
-}
-
-/** Temporary SH variant; SH3 folds it back into the single entry point. */
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void vk_transmission_shade_sh(uint3 thread_id : SV_DispatchThreadID)
-{
-    vk_transmission_shade_impl(thread_id, true);
 }
 
 groupshared uint g_transmission_group_coverage;

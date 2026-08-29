@@ -148,8 +148,9 @@ static float4 vkr_metal_packet_shade(
     float3 reflection = reflect(-view, normal);
     float3 fresnel = vkr_metal_packet_fresnel_roughness(no_v, f0, roughness);
     float3 kd = (1.0 - fresnel) * (1.0 - metallic);
-    float3 global_irradiance =
-        frame->irradiance.sample(environment_sampler, normal).rgb;
+    VkrShL2Evaluation sh_evaluation = vkr_sh_l2_prepare_evaluation(normal);
+    float3 global_irradiance = vkr_sh_l2_evaluate(
+        frame->sh_coefficients[frame->sh_global_slot], sh_evaluation);
     float3 global_prefiltered =
         frame->prefilter
             .sample(environment_sampler, reflection,
@@ -186,7 +187,8 @@ static float4 vkr_metal_packet_shade(
                       max(probe.extents_weight.xyz, 0.0))
                 : reflection;
         float3 probe_irradiance =
-            probe.irradiance.sample(environment_sampler, normal).rgb;
+            vkr_sh_l2_evaluate(frame->sh_coefficients[probe.sh_slot],
+                               sh_evaluation);
         float3 probe_prefiltered =
             probe.prefilter
                 .sample(environment_sampler, probe_reflection,

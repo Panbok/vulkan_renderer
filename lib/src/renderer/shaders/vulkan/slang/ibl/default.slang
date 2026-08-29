@@ -19,34 +19,6 @@ void ibl_equirect(uint3 position : SV_DispatchThreadID)
             g_samplers[root.source_sampler], environment_uv, 0.0f);
 }
 
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void ibl_irradiance(uint3 position : SV_DispatchThreadID)
-{
-    static const uint sample_count = 128u;
-    VkrVulkanIblRoot* root = (VkrVulkanIblRoot*)g_push.root;
-    if (position.x >= root.target_size || position.y >= root.target_size ||
-        position.z >= 6u)
-        return;
-    float2 uv = (float2(position.xy) + 0.5f) / float(root.target_size);
-    float3 normal = normalize(cube_direction(position.z, uv));
-    float3 irradiance = 0.0f;
-    for (uint i = 0u; i < sample_count; ++i)
-    {
-        float2 xi = hammersley(i, sample_count);
-        float phi = 2.0f * vkr_pi * xi.x;
-        float cos_theta = sqrt(1.0f - xi.y);
-        float sin_theta = sqrt(xi.y);
-        float3 direction = tangent_sample(
-            normal, float3(cos(phi) * sin_theta, sin(phi) * sin_theta,
-                           cos_theta));
-        irradiance += g_cube_textures[root.source_texture].SampleLevel(
-            g_samplers[root.source_sampler], direction, 0.0f).rgb;
-    }
-    g_storage_images[root.target_texture][position] =
-        float4(irradiance / float(sample_count), 1.0f);
-}
-
 // One workgroup per destination slot. A fixed lane assignment and a fixed
 // reduction order make repetitions bit-deterministic without floating-point
 // atomics; the bounded source mip limits the work, but determinism comes from
@@ -88,11 +60,11 @@ void ibl_sh(uint3 group_thread : SV_GroupThreadID)
 
         float2 uv = (float2(float(x), float(y)) + 0.5f) / float(extent);
         float3 direction = normalize(cube_direction(face, uv));
-        // Exact texel load through the selected mip's storage view: a sampled
-        // fetch would filter and would not reproduce the CPU reference.
-        float3 radiance =
-            g_storage_images[root.source_storage_texture][uint3(x, y, face)]
-                .rgb;
+        // Both point and linear filtering return the addressed texel at its
+        // exact center. Using the sampled publication keeps imported cubemaps
+        // eligible; only writable bake targets own storage-image views.
+        float3 radiance = g_cube_textures[root.source_texture].SampleLevel(
+            g_samplers[root.source_sampler], direction, root.source_mip).rgb;
 
         VkrShL2Basis basis = vkr_sh_l2_basis(direction);
         accumulated_weight += solid_angle;

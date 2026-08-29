@@ -1409,6 +1409,12 @@ vkr_internal bool8_t vkr_vk_retire_unreferenced_texture(
     log_fatal("Vulkan failed to retire completed texture memory");
   vkr_vk_destroy_texture_storage_views(renderer, texture);
   vkr_vk_destroy_image(renderer, &texture->image);
+  if (texture->ibl_sh_slot != VKR_SH_SLOT_BLACK &&
+      vkr_ibl_sh_pool_retire(&renderer->sh_pool, texture->ibl_sh_slot) !=
+          VKR_SH_POOL_STATUS_OK) {
+    log_fatal("Vulkan lost the SH publication owned by texture %u:%u",
+              texture->handle.id, texture->handle.generation);
+  }
   MemZero(texture, sizeof(*texture));
   return true_v;
 }
@@ -2450,7 +2456,6 @@ bool8_t vkr_vk_asset_unpublish_material(void *state, VkrMaterialHandle handle) {
 vkr_internal bool8_t vkr_vk_queue_ibl_bake(VkrVulkanRenderer *renderer,
                                            VkrTextureHandle equirect,
                                            VkrTextureHandle source,
-                                           VkrTextureHandle irradiance,
                                            VkrTextureHandle prefilter,
                                            bool8_t convert_equirect,
                                            float32_t sh_deringing) {
@@ -2459,26 +2464,19 @@ vkr_internal bool8_t vkr_vk_queue_ibl_bake(VkrVulkanRenderer *renderer,
     return false_v;
   VkrVulkanPublishedTexture *source_texture =
       vkr_vk_published_texture(renderer, source, NULL);
-  VkrVulkanPublishedTexture *irradiance_texture =
-      vkr_vk_published_texture(renderer, irradiance, NULL);
   VkrVulkanPublishedTexture *prefilter_texture =
       vkr_vk_published_texture(renderer, prefilter, NULL);
   VkrVulkanPublishedTexture *equirect_texture =
       convert_equirect ? vkr_vk_published_texture(renderer, equirect, NULL)
                        : NULL;
-  if (!source_texture || !irradiance_texture || !prefilter_texture ||
+  if (!source_texture || !prefilter_texture ||
       (convert_equirect && !equirect_texture) ||
       source_texture->image.array_layers != 6u ||
-      irradiance_texture->image.array_layers != 6u ||
       prefilter_texture->image.array_layers != 6u ||
       source_texture->image.width != source_texture->image.height ||
-      irradiance_texture->image.width != irradiance_texture->image.height ||
       prefilter_texture->image.width != prefilter_texture->image.height ||
-      irradiance_texture->image.mip_levels != 1u ||
       prefilter_texture->storage_slot_count !=
           prefilter_texture->image.mip_levels ||
-      irradiance_texture->storage_slot_count != 1u ||
-      irradiance_texture->image.format != VK_FORMAT_R16G16B16A16_SFLOAT ||
       prefilter_texture->image.format != VK_FORMAT_R16G16B16A16_SFLOAT ||
       (convert_equirect &&
        (source_texture->image.format != VK_FORMAT_R16G16B16A16_SFLOAT ||
@@ -2487,17 +2485,15 @@ vkr_internal bool8_t vkr_vk_queue_ibl_bake(VkrVulkanRenderer *renderer,
         source_texture->storage_slot_count !=
             source_texture->image.mip_levels)))
     return false_v;
-  VkrVulkanPublishedTexture *referenced[] = {
-      equirect_texture, source_texture, irradiance_texture, prefilter_texture};
+  VkrVulkanPublishedTexture *referenced[] = {equirect_texture, source_texture,
+                                             prefilter_texture};
   for (uint32_t i = convert_equirect ? 0u : 1u; i < ArrayCount(referenced); ++i)
     referenced[i]->ibl_reference_count++;
-  source_texture->ibl_irradiance = irradiance;
   source_texture->ibl_prefilter = prefilter;
   renderer->pending_ibl_bakes[renderer->pending_ibl_bake_count++] =
       (VkrVulkanPendingIblBake){
           .equirect = equirect,
           .source = source,
-          .irradiance = irradiance,
           .prefilter = prefilter,
           .convert_equirect = convert_equirect,
           .sh_deringing = sh_deringing,
@@ -2505,21 +2501,26 @@ vkr_internal bool8_t vkr_vk_queue_ibl_bake(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
+vkr_internal uint32_t vkr_vk_asset_ibl_sh_slot(void *state,
+                                               VkrTextureHandle source) {
+  const VkrVulkanPublishedTexture *texture =
+      vkr_vk_texture_publication(state, source);
+  return texture ? texture->ibl_sh_slot : VKR_SH_SLOT_BLACK;
+}
+
 vkr_internal bool8_t vkr_vk_asset_bake_ibl_cubemap(void *state,
                                                    VkrTextureHandle source,
-                                                   VkrTextureHandle irradiance,
                                                    VkrTextureHandle prefilter,
                                                    float32_t sh_deringing) {
   return vkr_vk_queue_ibl_bake(state, VKR_TEXTURE_HANDLE_INVALID, source,
-                               irradiance, prefilter, false_v, sh_deringing);
+                               prefilter, false_v, sh_deringing);
 }
 
 vkr_internal bool8_t vkr_vk_asset_bake_hdr_environment(
     void *state, VkrTextureHandle equirect, VkrTextureHandle source,
-    VkrTextureHandle irradiance, VkrTextureHandle prefilter,
-    float32_t sh_deringing) {
-  return vkr_vk_queue_ibl_bake(state, equirect, source, irradiance, prefilter,
-                               true_v, sh_deringing);
+    VkrTextureHandle prefilter, float32_t sh_deringing) {
+  return vkr_vk_queue_ibl_bake(state, equirect, source, prefilter, true_v,
+                               sh_deringing);
 }
 
 vkr_internal bool8_t vkr_vk_asset_publications_idle(void *state) {
@@ -2559,6 +2560,7 @@ void vkr_vulkan_renderer_get_asset_publisher(VkrVulkanRenderer *renderer,
                                   vkr_vk_asset_bake_ibl_cubemap,
                               .bake_hdr_environment =
                                   vkr_vk_asset_bake_hdr_environment,
+                              .ibl_sh_slot = vkr_vk_asset_ibl_sh_slot,
                              .unpublish_texture =
                                  vkr_vk_asset_unpublish_texture,
                              .publish_material =

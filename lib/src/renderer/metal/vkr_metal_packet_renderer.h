@@ -202,10 +202,7 @@ typedef struct VkrMetalPacketResult {
   bool8_t has_shadow_depth;
   uint32_t picking_id;
   bool8_t has_picking_id;
-  float32_t ibl_color[4];
-  bool8_t has_ibl_color;
   float32_t ibl_prefilter[VKR_IBL_PREFILTER_MIP_COUNT][4];
-  uint32_t ibl_irradiance_size;
   uint32_t ibl_prefilter_size;
   uint32_t ibl_prefilter_mip_count;
   bool8_t has_ibl_convolution;
@@ -282,12 +279,11 @@ bool8_t vkr_metal_packet_renderer_update_texture_sampler(
     const VkrTextureDescription *description);
 bool8_t vkr_metal_packet_renderer_bake_ibl_cubemap(
     VkrMetalPacketRenderer *renderer, VkrTextureHandle source,
-    VkrTextureHandle irradiance, VkrTextureHandle prefilter,
-    float32_t sh_deringing);
+    VkrTextureHandle prefilter, float32_t sh_deringing);
 bool8_t vkr_metal_packet_renderer_bake_hdr_environment(
     VkrMetalPacketRenderer *renderer, VkrTextureHandle equirect,
-    VkrTextureHandle source, VkrTextureHandle irradiance,
-    VkrTextureHandle prefilter, float32_t sh_deringing);
+    VkrTextureHandle source, VkrTextureHandle prefilter,
+    float32_t sh_deringing);
 bool8_t vkr_metal_packet_renderer_create_hdr_environment(
     VkrMetalPacketRenderer *renderer,
     const VkrMetalPacketHdrEnvironmentCreateInfo *create_info,

@@ -71,23 +71,11 @@
 #ifndef VKR_VULKAN_PACKET_IBL_EQUIRECT_COMP_SPV
 #define VKR_VULKAN_PACKET_IBL_EQUIRECT_COMP_SPV "packet.ibl_equirect.comp.spv"
 #endif
-#ifndef VKR_VULKAN_PACKET_IBL_IRRADIANCE_COMP_SPV
-#define VKR_VULKAN_PACKET_IBL_IRRADIANCE_COMP_SPV                              \
-  "packet.ibl_irradiance.comp.spv"
-#endif
 #ifndef VKR_VULKAN_PACKET_IBL_PREFILTER_COMP_SPV
 #define VKR_VULKAN_PACKET_IBL_PREFILTER_COMP_SPV "packet.ibl_prefilter.comp.spv"
 #endif
 #ifndef VKR_VULKAN_PACKET_IBL_SH_COMP_SPV
 #define VKR_VULKAN_PACKET_IBL_SH_COMP_SPV "packet.ibl_sh.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_DEFERRED_LIGHTING_SH_COMP_SPV
-#define VKR_VULKAN_PACKET_DEFERRED_LIGHTING_SH_COMP_SPV                        \
-  "packet.deferred_lighting_sh.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_TRANSMISSION_SHADE_SH_COMP_SPV
-#define VKR_VULKAN_PACKET_TRANSMISSION_SHADE_SH_COMP_SPV                       \
-  "packet.transmission_shade_sh.comp.spv"
 #endif
 #ifndef VKR_VULKAN_PACKET_VISIBILITY_VERT_SPV
 #define VKR_VULKAN_PACKET_VISIBILITY_VERT_SPV "packet.visibility.vert.spv"
@@ -280,10 +268,8 @@ typedef enum VkrVulkanPacketShader {
 
 typedef enum VkrVulkanIblPipeline {
   VKR_VULKAN_IBL_PIPELINE_EQUIRECT = 0,
-  VKR_VULKAN_IBL_PIPELINE_IRRADIANCE,
   VKR_VULKAN_IBL_PIPELINE_PREFILTER,
-  /** L2 coefficient projection (ADR-038). Coexists with IRRADIANCE until the
-      cubemap diffuse path retires in SH3. */
+  /** L2 coefficient projection (ADR-038). */
   VKR_VULKAN_IBL_PIPELINE_SH,
   VKR_VULKAN_IBL_PIPELINE_COUNT,
 } VkrVulkanIblPipeline;
@@ -320,14 +306,6 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_GTAO_DEPTH_MIP,
   VKR_VULKAN_DEFERRED_PIPELINE_GTAO_EVALUATE,
   VKR_VULKAN_DEFERRED_PIPELINE_GTAO_DENOISE,
-  /**
-   * Temporary SH diffuse variants (ADR-038 §1.6). Both representations are
-   * created so the A/B comparison is a cold configuration change rather than a
-   * rebuild; neither is a fallback for the other. SH3 removes these and folds
-   * SH into the base entry points.
-   */
-  VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_SH,
-  VKR_VULKAN_DEFERRED_PIPELINE_TRANSMISSION_SH,
   VKR_VULKAN_DEFERRED_PIPELINE_COUNT,
 } VkrVulkanDeferredPipeline;
 
@@ -650,16 +628,18 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanIblRoot {
 /**
  * Root for the L2 coefficient projection dispatch (ADR-038 §2).
  *
- * `source_storage_texture` is the storage-image slot of the selected source mip
- * so the kernel loads exact texels rather than filtering, and `destination` is
+ * `source_texture` and `source_sampler` address the published source cubemap;
+ * the kernel samples the selected mip at exact texel centers. `destination` is
  * the device address of the single 112-byte slot this dispatch writes. The
  * three window scalars are the already-evaluated deringing factors: the CPU
  * owns `pow(sinc_pi(l/3), sh_deringing)` so the kernel carries no pow().
  */
 typedef struct VKR_SIMD_ALIGN VkrVulkanIblShRoot {
   uint64_t destination;
-  uint32_t source_storage_texture;
+  uint32_t source_texture;
+  uint32_t source_sampler;
   uint32_t source_face_size;
+  uint32_t source_mip;
   float32_t window_band_0;
   float32_t window_band_1;
   float32_t window_band_2;
@@ -674,8 +654,11 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketShadowCascade {
 } VkrVulkanPacketShadowCascade;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanPacketIblProbe {
-  uint32_t irradiance_texture;
-  uint32_t irradiance_sampler;
+  /** ADR-038 final layout: offset 0 carries the coefficient slot, offset 4 is
+      reserved, and every field from offset 8 onward keeps its previous offset.
+   */
+  uint32_t sh_slot;
+  uint32_t sh_reserved;
   uint32_t prefilter_texture;
   uint32_t prefilter_sampler;
   Vec4 center_blend;
@@ -698,14 +681,14 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketFrameRoot {
   uint32_t instance_address_padding[2];
   Mat4 view_projection;
   uint64_t materials;
-  uint32_t irradiance_texture;
-  uint32_t irradiance_sampler;
+  /** ADR-038 final layout: the retired diffuse-cubemap pair became the
+      coefficient buffer address, and the retired BRDF pair became the global
+      slot plus reserved word. Later offsets are unchanged. */
+  uint64_t sh_coefficients;
   uint32_t prefilter_texture;
   uint32_t prefilter_sampler;
-  /* Retired BRDF-LUT slot pair. The environment BRDF is analytic in
-     packet.slang; these stay as named padding so no downstream offset moves. */
-  uint32_t reserved_brdf_texture;
-  uint32_t reserved_brdf_sampler;
+  uint32_t sh_global_slot;
+  uint32_t sh_reserved;
   uint32_t shadow_texture;
   uint32_t shadow_sampler;
   uint32_t transmission_texture;
@@ -769,12 +752,11 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketUtilityRoot {
   uint64_t instances;
   Mat4 view_projection;
   uint64_t materials;
-  uint32_t irradiance_texture;
-  uint32_t irradiance_sampler;
+  uint64_t sh_coefficients;
   uint32_t prefilter_texture;
   uint32_t prefilter_sampler;
-  uint32_t reserved_brdf_texture;
-  uint32_t reserved_brdf_sampler;
+  uint32_t sh_global_slot;
+  uint32_t sh_reserved;
   uint32_t shadow_texture;
   uint32_t shadow_sampler;
   uint32_t transmission_texture;
@@ -910,10 +892,21 @@ _Static_assert(sizeof(VkrVulkanTransmissionCompactRoot) == 80u,
 _Static_assert(sizeof(VkrVulkanTransmissionCoverageRoot) == 32u,
                "Deferred transmission-coverage root ABI drift");
 _Static_assert(sizeof(VkrVulkanIblRoot) == 32u, "IBL-root ABI drift");
+_Static_assert(sizeof(VkrVulkanIblShRoot) == 48u, "IBL SH-root ABI drift");
 _Static_assert(sizeof(VkrVulkanPacketShadowCascade) == 96u,
                "Packet shadow-cascade ABI size drift");
+_Static_assert(sizeof(VkrVulkanPacketIblProbe) == 64u,
+               "Packet IBL-probe ABI size drift");
+_Static_assert(offsetof(VkrVulkanPacketIblProbe, sh_slot) == 0u,
+               "Packet IBL-probe SH-slot ABI offset drift");
+_Static_assert(offsetof(VkrVulkanPacketIblProbe, prefilter_texture) == 8u,
+               "Packet IBL-probe prefilter ABI offset drift");
 _Static_assert(sizeof(VkrVulkanPacketFrameRoot) == 480u,
                "Packet frame-root ABI size drift");
+_Static_assert(offsetof(VkrVulkanPacketFrameRoot, sh_coefficients) == 88u,
+               "Packet frame-root SH-buffer ABI offset drift");
+_Static_assert(offsetof(VkrVulkanPacketFrameRoot, sh_global_slot) == 104u,
+               "Packet frame-root SH-slot ABI offset drift");
 _Static_assert(offsetof(VkrVulkanPacketFrameRoot, shadow_cascade_count) == 400u,
                "Packet frame-root receiver block moved");
 _Static_assert(offsetof(VkrVulkanPacketFrameRoot, ibl_probes) == 448u,
@@ -922,6 +915,10 @@ _Static_assert(sizeof(VkrVulkanPacketDrawRoot) == 48u,
                "Packet draw-root ABI size drift");
 _Static_assert(sizeof(VkrVulkanPacketUtilityRoot) == 544u,
                "Packet utility-root ABI size drift");
+_Static_assert(offsetof(VkrVulkanPacketUtilityRoot, sh_coefficients) == 88u,
+               "Packet utility-root SH-buffer ABI offset drift");
+_Static_assert(offsetof(VkrVulkanPacketUtilityRoot, sh_global_slot) == 104u,
+               "Packet utility-root SH-slot ABI offset drift");
 _Static_assert(offsetof(VkrVulkanPacketUtilityRoot, ibl_probes) == 520u,
                "Packet utility-root shadow block changed size");
 _Static_assert(offsetof(VkrVulkanPacketUtilityRoot, exposure_state) == 536u,
@@ -1107,14 +1104,13 @@ typedef struct VkrVulkanFrameSlot {
   uint64_t shadow_cascades;
   uint64_t ibl_probes;
   uint32_t ibl_probe_count;
-  uint32_t irradiance_texture;
-  uint32_t irradiance_sampler;
   uint32_t prefilter_texture;
   uint32_t prefilter_sampler;
+  uint32_t sh_global_slot;
   bool8_t ibl_ready;
-  /** Address of this frame's temporary VkrShAbTable, or zero. Removed by SH3
-      together with the dual-representation stage. */
-  uint64_t sh_ab_table;
+  /** True only while this slot's command buffer contains the one-time SH
+      sentinel clear. The renderer-wide state commits after queue submission. */
+  bool8_t sh_coefficients_clear_recorded;
   /** Slots this frame's packet references, registered against its submit
       serial once submission succeeds. */
   uint32_t sh_referenced_slots[VKR_FRAME_IBL_PROBE_MAX + 1u];
@@ -1167,11 +1163,9 @@ typedef struct VkrVulkanRetiredWindowTarget {
 
 typedef struct VkrVulkanPublishedTexture {
   VkrTextureHandle handle;
-  VkrTextureHandle ibl_irradiance;
   VkrTextureHandle ibl_prefilter;
   /** Published L2 coefficient slot projected from this source cubemap, or
-      VKR_SH_SLOT_BLACK before the first successful projection (ADR-038). Kept
-      beside the diffuse cubemap handle while both representations are live. */
+      VKR_SH_SLOT_BLACK before the first successful projection (ADR-038). */
   uint32_t ibl_sh_slot;
   VkrVulkanImage image;
   VkrGpuSlotHandle sampled_slot;
@@ -1191,7 +1185,6 @@ typedef struct VkrVulkanPublishedTexture {
 typedef struct VkrVulkanPendingIblBake {
   VkrTextureHandle equirect;
   VkrTextureHandle source;
-  VkrTextureHandle irradiance;
   VkrTextureHandle prefilter;
   bool8_t convert_equirect;
   bool8_t recorded;
@@ -1424,9 +1417,6 @@ struct VkrVulkanRenderer {
       survives scene reload, and scene reset only retires publications. */
   VkrVulkanBuffer sh_coefficients;
   VkrShSlotPool sh_pool;
-  /** Cold: resolved once at renderer creation and read only while recording a
-      pass, never per pixel or per probe. Removed by SH3. */
-  VkrShRepresentation sh_representation;
   /** Cleared to zero once, so slot 0 is a valid black sentinel and any slot
       referenced before projection reads black rather than stale bytes. */
   bool8_t sh_coefficients_cleared;
@@ -1657,6 +1647,7 @@ void vkr_vk_mark_temporal_submitted(VkrVulkanRenderer *renderer,
                                     uint64_t submit_value);
 bool8_t vkr_vk_record_ibl_bakes(VkrVulkanRenderer *renderer,
                                 VkCommandBuffer command);
+void vkr_vk_abandon_ibl_bake_recordings(VkrVulkanRenderer *renderer);
 void vkr_vk_discard_ibl_bakes(VkrVulkanRenderer *renderer);
 bool8_t vkr_vk_record_packet_draws(
     VkrVulkanRenderer *renderer, VkCommandBuffer command,

@@ -47,7 +47,6 @@ vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
   switch (record_id) {
   case VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT:
   case VKR_METAL_PACKET_ABI_EQUIRECT_ROOT:
-  case VKR_METAL_PACKET_ABI_IRRADIANCE_ROOT:
   case VKR_METAL_PACKET_ABI_PREFILTER_ROOT:
   case VKR_METAL_PACKET_ABI_SH_PROJECT_ROOT:
   case VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT:
@@ -549,10 +548,6 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       renderer, fragment, "vkr_metal_packet_ibl_equirect",
       VKR_METAL_PACKET_ABI_EQUIRECT_ROOT, false_v,
       @"VKR Metal packet IBL equirect to cube");
-  renderer->ibl_irradiance_pipeline = vkr_metal_packet_create_compute_pipeline(
-      renderer, fragment, "vkr_metal_packet_ibl_irradiance",
-      VKR_METAL_PACKET_ABI_IRRADIANCE_ROOT, false_v,
-      @"VKR Metal packet IBL irradiance");
   renderer->ibl_prefilter_pipeline = vkr_metal_packet_create_compute_pipeline(
       renderer, fragment, "vkr_metal_packet_ibl_prefilter",
       VKR_METAL_PACKET_ABI_PREFILTER_ROOT, false_v,
@@ -574,18 +569,6 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
   if (renderer->sh_coefficients) {
     MemZero(renderer->sh_coefficients.contents, VKR_SH_BUFFER_BYTES);
   }
-  /* Cold representation selector for the A/B comparison, resolved once so a
-     matched capture of the same frame in either representation needs no
-     rebuild. Removed by SH3. */
-  const char *sh_representation = getenv("VKR_IBL_DIFFUSE_REPRESENTATION");
-  renderer->sh_representation =
-      sh_representation && string_equals(sh_representation, "sh_l2")
-          ? VKR_SH_REPRESENTATION_SH_L2
-          : VKR_SH_REPRESENTATION_CUBEMAP;
-  log_info("IBL diffuse representation: %s",
-           renderer->sh_representation == VKR_SH_REPRESENTATION_SH_L2
-               ? "sh_l2"
-               : "cubemap");
   renderer->gpu_draw_classify_pipeline =
       vkr_metal_packet_create_compute_pipeline(
           renderer, fragment, "vkr_metal_packet_gpu_draw_classify",
@@ -630,11 +613,6 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
           renderer, fragment, "vkr_metal_packet_deferred_lighting",
           VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT, false_v,
           @"VKR Metal packet deferred lighting");
-  renderer->deferred_lighting_sh_pipeline =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment, "vkr_metal_packet_deferred_lighting_sh",
-          VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT, false_v,
-          @"VKR Metal packet deferred lighting SH");
   renderer->temporal_resolve_pipeline =
       vkr_metal_packet_create_compute_pipeline(
           renderer, fragment, "vkr_metal_packet_temporal_resolve",
@@ -645,11 +623,6 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
           renderer, fragment, "vkr_metal_packet_transmission_shade",
           VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT, false_v,
           @"VKR Metal packet transmission shade");
-  renderer->transmission_shade_sh_pipeline =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment, "vkr_metal_packet_transmission_shade_sh",
-          VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT, false_v,
-          @"VKR Metal packet transmission shade SH");
   renderer->transmission_coverage_pipeline =
       vkr_metal_packet_create_compute_pipeline(
           renderer, fragment, "vkr_metal_packet_transmission_coverage",
@@ -728,10 +701,8 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       !renderer->gtao_depth_prefilter_pipeline ||
       !renderer->gtao_depth_mip_pipeline || !renderer->gtao_evaluate_pipeline ||
       !renderer->gtao_denoise_pipeline ||
-      !renderer->deferred_lighting_pipeline ||
-      !renderer->deferred_lighting_sh_pipeline ||
-      !renderer->sh_coefficients || renderer->sh_coefficients.gpuAddress == 0 ||
-      !renderer->transmission_shade_sh_pipeline || !renderer->ibl_sh_pipeline ||
+      !renderer->deferred_lighting_pipeline || !renderer->sh_coefficients ||
+      renderer->sh_coefficients.gpuAddress == 0 || !renderer->ibl_sh_pipeline ||
       !renderer->temporal_resolve_pipeline ||
       !renderer->transmission_shade_pipeline ||
       !renderer->transmission_coverage_pipeline ||
@@ -788,7 +759,6 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       {renderer->ui_text_pipeline, "UI text pipeline"},
       {renderer->picking_text_pipeline, "picking text pipeline"},
       {renderer->ibl_equirect_pipeline, "IBL equirect pipeline"},
-      {renderer->ibl_irradiance_pipeline, "IBL irradiance pipeline"},
       {renderer->ibl_prefilter_pipeline, "IBL prefilter pipeline"},
       {renderer->ibl_sh_pipeline, "IBL SH projection pipeline"},
       {renderer->gpu_shadow_pipeline, "GPU shadow pipeline"},
@@ -1029,31 +999,20 @@ vkr_internal bool8_t vkr_metal_packet_create_ibl_targets(
   MTLTextureDescriptor *cube = [MTLTextureDescriptor new];
   cube.textureType = MTLTextureTypeCube;
   cube.pixelFormat = MTLPixelFormatRGBA16Float;
-  cube.width = VKR_IBL_IRRADIANCE_SIZE;
-  cube.height = VKR_IBL_IRRADIANCE_SIZE;
-  cube.mipmapLevelCount = 1;
-  cube.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
-  const bool8_t passed =
-      vkr_metal_memory_device_create_texture(renderer->memory, cube,
-                                             &renderer->ibl_irradiance) ==
-      VKR_METAL_MEMORY_STATUS_OK;
   cube.width = VKR_IBL_PREFILTER_SIZE;
   cube.height = VKR_IBL_PREFILTER_SIZE;
   cube.mipmapLevelCount = VKR_IBL_PREFILTER_MIP_COUNT;
+  cube.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
   const bool8_t targets_passed =
-      passed && vkr_metal_memory_device_create_texture(
-                    renderer->memory, cube, &renderer->ibl_prefilter) ==
-                    VKR_METAL_MEMORY_STATUS_OK;
+      vkr_metal_memory_device_create_texture(renderer->memory, cube,
+                                             &renderer->ibl_prefilter) ==
+      VKR_METAL_MEMORY_STATUS_OK;
   [cube release];
   if (!targets_passed) {
-    if (renderer->ibl_irradiance.metal_texture)
-      (void)vkr_metal_memory_device_retire(renderer->memory,
-                                           renderer->ibl_irradiance.handle, 0);
     if (renderer->ibl_prefilter.metal_texture)
       (void)vkr_metal_memory_device_retire(renderer->memory,
                                            renderer->ibl_prefilter.handle, 0);
     (void)vkr_metal_memory_device_collect(renderer->memory, 0, NULL);
-    renderer->ibl_irradiance = (VkrMetalTextureResource){0};
     renderer->ibl_prefilter = (VkrMetalTextureResource){0};
     return false_v;
   }

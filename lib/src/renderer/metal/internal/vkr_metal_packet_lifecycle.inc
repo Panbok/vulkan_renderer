@@ -251,16 +251,11 @@ bool8_t vkr_metal_packet_renderer_drain(
   }
 
   if (renderer->ibl_live) {
-    if (vkr_metal_memory_device_retire(renderer->memory,
-                                       renderer->ibl_irradiance.handle,
-                                       renderer->ibl_last_use_submit_value) !=
-            VKR_METAL_MEMORY_STATUS_OK ||
-        vkr_metal_memory_device_retire(
+    if (vkr_metal_memory_device_retire(
             renderer->memory, renderer->ibl_prefilter.handle,
             renderer->ibl_last_use_submit_value) != VKR_METAL_MEMORY_STATUS_OK)
       return false_v;
     renderer->ibl_live = false_v;
-    renderer->ibl_irradiance = (VkrMetalTextureResource){0};
     renderer->ibl_prefilter = (VkrMetalTextureResource){0};
   }
 
@@ -404,19 +399,25 @@ vkr_internal bool8_t vkr_metal_packet_update_texture_sampler_adapter(
                                                           description);
 }
 
+vkr_internal uint32_t
+vkr_metal_packet_ibl_sh_slot_adapter(void *state, VkrTextureHandle source) {
+  const VkrMetalPacketTexture *texture =
+      vkr_metal_packet_resolve_texture(state, source);
+  return texture ? texture->ibl_sh_slot : VKR_SH_SLOT_BLACK;
+}
+
 vkr_internal bool8_t vkr_metal_packet_bake_ibl_cubemap_adapter(
-    void *state, VkrTextureHandle source, VkrTextureHandle irradiance,
-    VkrTextureHandle prefilter, float32_t sh_deringing) {
-  return vkr_metal_packet_renderer_bake_ibl_cubemap(
-      state, source, irradiance, prefilter, sh_deringing);
+    void *state, VkrTextureHandle source, VkrTextureHandle prefilter,
+    float32_t sh_deringing) {
+  return vkr_metal_packet_renderer_bake_ibl_cubemap(state, source, prefilter,
+                                                    sh_deringing);
 }
 
 vkr_internal bool8_t vkr_metal_packet_bake_hdr_environment_adapter(
     void *state, VkrTextureHandle equirect, VkrTextureHandle source,
-    VkrTextureHandle irradiance, VkrTextureHandle prefilter,
-    float32_t sh_deringing) {
+    VkrTextureHandle prefilter, float32_t sh_deringing) {
   return vkr_metal_packet_renderer_bake_hdr_environment(
-      state, equirect, source, irradiance, prefilter, sh_deringing);
+      state, equirect, source, prefilter, sh_deringing);
 }
 
 vkr_internal bool8_t vkr_metal_packet_unpublish_texture_adapter(
@@ -506,6 +507,8 @@ void vkr_metal_packet_renderer_get_asset_publisher(
                                  vkr_metal_packet_bake_ibl_cubemap_adapter,
                              .bake_hdr_environment =
                                  vkr_metal_packet_bake_hdr_environment_adapter,
+                             .ibl_sh_slot =
+                                 vkr_metal_packet_ibl_sh_slot_adapter,
                              .unpublish_texture =
                                  vkr_metal_packet_unpublish_texture_adapter,
                              .publish_material =
@@ -572,7 +575,6 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
     [renderer->tonemap_pipeline release];
     [renderer->ibl_equirect_pipeline release];
     [renderer->ibl_prefilter_pipeline release];
-    [renderer->ibl_irradiance_pipeline release];
     [renderer->ibl_sh_pipeline release];
     /* The pool has renderer lifetime and is released only here, after normal
        device teardown has drained outstanding readers. */
@@ -585,8 +587,6 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
     [renderer->gtao_depth_mip_pipeline release];
     [renderer->gtao_depth_prefilter_pipeline release];
     [renderer->deferred_lighting_pipeline release];
-    [renderer->deferred_lighting_sh_pipeline release];
-    [renderer->transmission_shade_sh_pipeline release];
     [renderer->temporal_resolve_pipeline release];
     [renderer->transmission_shade_pipeline release];
     [renderer->transmission_coverage_pipeline release];

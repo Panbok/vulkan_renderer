@@ -54,7 +54,10 @@ struct VkrMetalPacketMaterial {
 };
 
 struct VkrMetalPacketIblProbe {
-  texturecube<float, access::sample> irradiance;
+  // ADR-038 final layout: offset 0 carries the coefficient slot, offset 4 is
+  // reserved, and every field from offset 8 onward keeps its previous offset.
+  uint sh_slot;
+  uint sh_reserved;
   texturecube<float, access::sample> prefilter;
   float4 center_blend;
   float4 extents_weight;
@@ -71,31 +74,18 @@ struct VkrMetalPacketTemporalDrawState {
   uint2 reserved;
 };
 
-/**
- * Temporary dual-representation side table (ADR-038 §1.6). The retired
- * BRDF-LUT root slot carries its address while both diffuse representations
- * are live. `probe_slots[i]` is keyed by packed packet probe ordinal.
- * Removed by SH3 together with the representation selector.
- */
-struct VkrShAbTable {
-  device VkrShL2Packed *coefficients;
-  uint global_slot;
-  uint probe_count;
-  uint probe_slots[16];
-};
-
 struct VkrMetalPacketFrameRoot {
   device VkrMetalPacketInstance *instances;
   uint2 instance_address_padding;
   float4x4 view_projection;
   device VkrMetalPacketMaterial *materials;
-  texturecube<float, access::sample> irradiance;
+  // ADR-038 final layout: the retired diffuse-cubemap reference became the
+  // coefficient buffer, and the retired BRDF-LUT slot became the global slot
+  // plus reserved word. Later offsets are unchanged.
+  device VkrShL2Packed *sh_coefficients;
   texturecube<float, access::sample> prefilter;
-  // Retired BRDF-LUT slot, temporarily reinterpreted as the SH side-table
-  // address while both diffuse representations are live (ADR-038 §1.6). The
-  // cubemap variant never dereferences it. Same width as the ulong it
-  // replaces, so every downstream offset is unchanged.
-  device VkrShAbTable *reserved_brdf_lut;
+  uint sh_global_slot;
+  uint sh_reserved;
   float4 view_position;
   uint prefilter_mip_count;
   uint flags;

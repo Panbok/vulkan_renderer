@@ -178,7 +178,6 @@ scene_reset_reflection_probe_runtime(VkrSceneReflectionProbe *probe) {
       .source_mip_count = 1u,
       .uses_scene_environment_source = false_v,
       .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
-      .irradiance_cubemap = VKR_TEXTURE_HANDLE_INVALID,
       .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
       .bake_state = VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_NONE,
   };
@@ -1055,7 +1054,6 @@ bool8_t vkr_scene_init(VkrScene *scene, VkrAllocator *alloc, uint16_t world_id,
       .specular_intensity = 1.0f,
       .delivery_equirect = VKR_TEXTURE_HANDLE_INVALID,
       .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
-      .irradiance_cubemap = VKR_TEXTURE_HANDLE_INVALID,
       .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
       .bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE,
   };
@@ -1183,8 +1181,6 @@ void vkr_scene_shutdown(VkrScene *scene, struct s_RendererFrontend *rf) {
     scene_release_owned_texture_handle((RendererFrontend *)rf,
                                        &scene->environment.prefilter_cubemap);
     scene_release_owned_texture_handle((RendererFrontend *)rf,
-                                       &scene->environment.irradiance_cubemap);
-    scene_release_owned_texture_handle((RendererFrontend *)rf,
                                        &scene->environment.source_cubemap);
     scene_release_owned_texture_handle((RendererFrontend *)rf,
                                        &scene->environment.delivery_equirect);
@@ -1192,8 +1188,6 @@ void vkr_scene_shutdown(VkrScene *scene, struct s_RendererFrontend *rf) {
       VkrSceneReflectionProbe *probe = &scene->reflection_probes[i];
       scene_release_owned_texture_handle((RendererFrontend *)rf,
                                          &probe->prefilter_cubemap);
-      scene_release_owned_texture_handle((RendererFrontend *)rf,
-                                         &probe->irradiance_cubemap);
       scene_release_owned_texture_handle((RendererFrontend *)rf,
                                          &probe->source_cubemap);
       scene_reset_reflection_probe_runtime(probe);

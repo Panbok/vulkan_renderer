@@ -2884,6 +2884,14 @@ vkr_renderer_validate_packet(const VkrRenderPacket *packet,
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.lighting.ibl_probes",
                         "must contain every declared probe");
+    /* Bound-checked here, at the cold boundary, so hot-path lowering can index
+       the coefficient pool without a guard (ADR-038 §1.5). */
+    for (uint32_t i = 0u; i < lighting->ibl_probe_count; ++i) {
+      if (lighting->ibl_probes[i].sh_slot >= VKR_SH_SLOT_CAPACITY)
+        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                          "packet.lighting.ibl_probes[].sh_slot",
+                          "exceeds the coefficient pool capacity");
+    }
   }
 
   const VkrTextUpdatesPayload *updates = packet->text_updates;
@@ -2968,6 +2976,15 @@ void vkr_renderer_resize(VkrRendererFrontendHandle renderer, uint32_t width,
   vkr_shadow_system_invalidate_fit_history(&rf->shadow_system);
   rf->timing_result.shadow_depth_range = (VkrShadowDepthRangeSample){0};
   rf->temporal_reset_reasons |= VKR_TEMPORAL_RESET_EXPLICIT;
+}
+
+uint32_t vkr_renderer_ibl_sh_slot(VkrRendererFrontendHandle renderer,
+                                  VkrTextureHandle source) {
+  RendererFrontend *rf = (RendererFrontend *)renderer;
+  if (!rf || !rf->asset_publisher.ibl_sh_slot) {
+    return VKR_SH_SLOT_BLACK;
+  }
+  return rf->asset_publisher.ibl_sh_slot(rf->asset_publisher.state, source);
 }
 
 void vkr_renderer_invalidate_temporal_history(

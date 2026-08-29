@@ -19,7 +19,6 @@ typedef struct VkrScene VkrScene;
 typedef struct VkrPreparedTextDraw VkrPreparedTextDraw;
 
 typedef struct VkrWorldIblProbeSlot {
-  VkrTextureOpaqueHandle irradiance_map;
   VkrTextureOpaqueHandle prefilter_map;
   Vec3 center;
   Vec3 extents;
@@ -62,10 +61,8 @@ typedef struct VkrWorldResources {
   Array_VkrWorldTextSlot text_slots; /**< Allocated 3D text slots */
 
   VkrTextureHandle ibl_fallback_source_cubemap;
-  VkrTextureHandle ibl_fallback_irradiance_cubemap;
   VkrTextureHandle ibl_fallback_prefilter_cubemap;
 
-  VkrTextureHandle ibl_active_irradiance_cubemap;
   VkrTextureHandle ibl_active_prefilter_cubemap;
   bool8_t ibl_active_enabled;
   float32_t ibl_active_intensity;

@@ -24,7 +24,6 @@ typedef struct VkrMaterialSystemConfig {
 } VkrMaterialSystemConfig;
 
 typedef struct VkrMaterialIblProbeSlot {
-  VkrTextureOpaqueHandle irradiance_map;
   VkrTextureOpaqueHandle prefilter_map;
   Vec3 center;
   Vec3 extents;
@@ -123,7 +122,6 @@ typedef struct VkrMaterialSystem {
   bool8_t shadow_maps_enabled;
 
   // IBL bindings for PBR world materials (updated per frame).
-  VkrTextureOpaqueHandle ibl_irradiance_map;
   VkrTextureOpaqueHandle ibl_prefilter_map;
   bool8_t ibl_enabled;
   float32_t ibl_intensity;
@@ -295,7 +293,6 @@ void vkr_material_system_set_shadow_map(VkrMaterialSystem *system,
  * bound for descriptor validity while disabling IBL contribution in shader.
  */
 void vkr_material_system_set_ibl_maps(VkrMaterialSystem *system,
-                                      VkrTextureOpaqueHandle irradiance_map,
                                       VkrTextureOpaqueHandle prefilter_map,
                                       bool8_t enabled, float32_t intensity,
                                       float32_t diffuse_intensity,

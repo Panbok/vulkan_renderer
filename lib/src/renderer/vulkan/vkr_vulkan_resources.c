@@ -488,18 +488,6 @@ vkr_internal bool8_t
 vkr_vk_create_sh_coefficients(VkrVulkanRenderer *renderer) {
   vkr_ibl_sh_pool_init(&renderer->sh_pool);
   renderer->sh_coefficients_cleared = false_v;
-  /* Cold representation selector for the A/B comparison, resolved once here so
-     a matched capture of the same frame in either representation needs no
-     rebuild -- the same reason VKR_TAA_DISABLED exists. Removed by SH3. */
-  const char *representation = getenv("VKR_IBL_DIFFUSE_REPRESENTATION");
-  renderer->sh_representation =
-      representation && string_equals(representation, "sh_l2")
-          ? VKR_SH_REPRESENTATION_SH_L2
-          : VKR_SH_REPRESENTATION_CUBEMAP;
-  log_info("IBL diffuse representation: %s",
-           renderer->sh_representation == VKR_SH_REPRESENTATION_SH_L2
-               ? "sh_l2"
-               : "cubemap");
   return vkr_vk_create_buffer(
       renderer, VKR_VULKAN_MEMORY_CLASS_DEVICE, VKR_GPU_ALLOCATION_OWNER_SHADER,
       (VkDeviceSize)VKR_SH_BUFFER_BYTES,

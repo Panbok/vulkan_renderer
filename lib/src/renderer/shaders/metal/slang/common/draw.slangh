@@ -29,7 +29,10 @@ struct VkrMetalPacketShadowCascade
 
 struct VkrMetalPacketIblProbe
 {
-    TextureCube<float4> irradiance;
+    // ADR-038 final layout: offsets 0 and 4 carry the coefficient slot; every
+    // field from offset 8 onward keeps its previous offset.
+    uint sh_slot;
+    uint sh_reserved;
     TextureCube<float4> prefilter;
     float4 center_blend;
     float4 extents_weight;
@@ -62,10 +65,11 @@ struct VkrMetalPacketFrameRoot
     uint2 instance_address_padding;
     column_major float4x4 view_projection;
     uint64_t materials;
-    TextureCube<float4> irradiance;
+    // ADR-038 final layout; see draw.metalh.
+    uint64_t sh_coefficients;
     TextureCube<float4> prefilter;
-    // Retired; see draw.metalh. Explicit padding, not a resource.
-    uint64_t reserved_brdf_lut;
+    uint sh_global_slot;
+    uint sh_reserved;
     float4 view_position;
     uint prefilter_mip_count;
     uint flags;
