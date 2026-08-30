@@ -58,6 +58,224 @@
             "mesh": {
               "path": "assets/models/bistro-lights.vkb",
               "gltf_light_source": "assets/models/bistro-lights.gltf",
+              "gltf_light_overrides": [
+                {
+                  "node": "LMBR_000018b_bulb_0",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [64.0, 64.0, 0.0] }
+                },
+                {
+                  "node": "LMBR_000018b_bulb_1",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [-13.0, 64.0, 5.5] }
+                },
+                {
+                  "node": "LMBR_000018b_bulb_2",
+                  "influence_bounds": { "min": [-64.0, -64.0, 14.0], "max": [64.0, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_000018b_bulb_5",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [64.0, 64.0, 0.0] }
+                },
+                {
+                  "node": "LMBR_000019c_Paris_StringLights_01_Yellow_Color_6",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [-13.0, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_000019a_Paris_StringLights_01_Pink_Color_7",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [-13.0, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_0000197_Paris_StringLights_01_Red_Color_8",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [-13.0, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_0000199_Paris_StringLights_01_Green_Color_9",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [-13.0, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_000019b_Paris_StringLights_01_Orange_Color_10",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [-13.0, 64.0, 12.0] }
+                },
+                {
+                  "node": "LMBR_0000198_Paris_StringLights_01_Blue_Color_11",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [-13.0, 64.0, 12.0] }
+                },
+                {
+                  "node": "LMBR_000019b_Paris_StringLights_01_Orange_Color_12",
+                  "influence_bounds": { "min": [-64.0, -64.0, 18.0], "max": [64.0, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_0000198_Paris_StringLights_01_Blue_Color_13",
+                  "influence_bounds": { "min": [-64.0, -64.0, 18.0], "max": [64.0, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_0000197_Paris_StringLights_01_Red_Color_14",
+                  "influence_bounds": { "min": [-64.0, -64.0, 18.0], "max": [64.0, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_0000199_Paris_StringLights_01_Green_Color_15",
+                  "influence_bounds": { "min": [-64.0, -64.0, 18.0], "max": [64.0, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_000019c_Paris_StringLights_01_Yellow_Color_20",
+                  "influence_bounds": { "min": [-64.0, -64.0, 13.0], "max": [-10.5, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_000019a_Paris_StringLights_01_Pink_Color_21",
+                  "influence_bounds": { "min": [-64.0, -64.0, 13.0], "max": [-10.5, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_0000197_Paris_StringLights_01_Red_Color_22",
+                  "influence_bounds": { "min": [-64.0, -64.0, 13.0], "max": [-10.5, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_0000199_Paris_StringLights_01_Green_Color_23",
+                  "influence_bounds": { "min": [-64.0, -64.0, 13.0], "max": [-10.5, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_000019b_Paris_StringLights_01_Orange_Color_24",
+                  "influence_bounds": { "min": [-64.0, -64.0, 13.0], "max": [-10.5, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_0000198_Paris_StringLights_01_Blue_Color_25",
+                  "influence_bounds": { "min": [-64.0, -64.0, 13.0], "max": [-10.5, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_000018b_bulb_26",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [-13.0, 64.0, 9.0] }
+                },
+                {
+                  "node": "LMBR_0000199_Paris_StringLights_01_Green_Color_31",
+                  "influence_bounds": { "min": [-64.0, -64.0, 16.0], "max": [-10.5, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_000019a_Paris_StringLights_01_Pink_Color_32",
+                  "influence_bounds": { "min": [-64.0, -64.0, 16.0], "max": [-10.5, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_000019b_Paris_StringLights_01_Orange_Color_33",
+                  "influence_bounds": { "min": [-64.0, -64.0, 16.0], "max": [-10.5, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_0000197_Paris_StringLights_01_Red_Color_34",
+                  "influence_bounds": { "min": [-64.0, -64.0, 16.0], "max": [-10.5, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_0000198_Paris_StringLights_01_Blue_Color_35",
+                  "influence_bounds": { "min": [-64.0, -64.0, 16.0], "max": [-10.5, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_000019c_Paris_StringLights_01_Yellow_Color_36",
+                  "influence_bounds": { "min": [-64.0, -64.0, 13.5], "max": [64.0, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_0000199_Paris_StringLights_01_Green_Color_37",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [-10.5, 64.0, 5.5] }
+                },
+                {
+                  "node": "LMBR_000019c_Paris_StringLights_01_Yellow_Color_38",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [-10.5, 64.0, 5.5] }
+                },
+                {
+                  "node": "LMBR_0000197_Paris_StringLights_01_Red_Color_39",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [-10.5, 64.0, 5.5] }
+                },
+                {
+                  "node": "LMBR_0000198_Paris_StringLights_01_Blue_Color_40",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [-10.5, 64.0, 5.5] }
+                },
+                {
+                  "node": "LMBR_000019a_Paris_StringLights_01_Pink_Color_41",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [-10.5, 64.0, 5.5] }
+                },
+                {
+                  "node": "LMBR_000018b_bulb_42",
+                  "influence_bounds": { "min": [-64.0, -64.0, 16.0], "max": [64.0, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_000018b_bulb_43",
+                  "influence_bounds": { "min": [-64.0, -64.0, 13.0], "max": [-10.5, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_000018b_bulb_48",
+                  "influence_bounds": { "min": [-64.0, -64.0, 16.0], "max": [64.0, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_000018b_bulb_51",
+                  "influence_bounds": { "min": [-64.0, -64.0, 13.0], "max": [-10.5, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_000018b_bulb_52",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [-6.25, 64.0, 2.0] }
+                },
+                {
+                  "node": "LMBR_000019c_Paris_StringLights_01_Yellow_Color_55",
+                  "influence_bounds": { "min": [-64.0, -64.0, 16.0], "max": [64.0, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_0000197_Paris_StringLights_01_Red_Color_56",
+                  "influence_bounds": { "min": [-64.0, -64.0, 16.0], "max": [64.0, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_0000198_Paris_StringLights_01_Blue_Color_57",
+                  "influence_bounds": { "min": [-64.0, -64.0, 16.0], "max": [64.0, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_000019a_Paris_StringLights_01_Pink_Color_58",
+                  "influence_bounds": { "min": [-64.0, -64.0, 16.0], "max": [64.0, 64.0, 64.0] }
+                },
+                {
+                  "node": "LMBR_000019b_Paris_StringLights_01_Orange_Color_59",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [64.0, 64.0, 0.0] }
+                },
+                {
+                  "node": "LMBR_0000198_Paris_StringLights_01_Blue_Color_60",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [64.0, 64.0, 0.0] }
+                },
+                {
+                  "node": "LMBR_0000197_Paris_StringLights_01_Red_Color_61",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [64.0, 64.0, 0.0] }
+                },
+                {
+                  "node": "LMBR_0000199_Paris_StringLights_01_Green_Color_62",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [64.0, 64.0, 0.0] }
+                },
+                {
+                  "node": "LMBR_000019c_Paris_StringLights_01_Yellow_Color_63",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [64.0, 64.0, 0.0] }
+                },
+                {
+                  "node": "LMBR_000018b_bulb_64",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [64.0, 64.0, 0.0] }
+                },
+                {
+                  "node": "LMBR_0000199_Paris_StringLights_01_Green_Color_65",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [-8.5, 64.0, 7.25] }
+                },
+                {
+                  "node": "LMBR_000019a_Paris_StringLights_01_Pink_Color_66",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [-8.5, 64.0, 7.25] }
+                },
+                {
+                  "node": "LMBR_000019b_Paris_StringLights_01_Orange_Color_67",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [-8.5, 64.0, 7.25] }
+                },
+                {
+                  "node": "LMBR_0000197_Paris_StringLights_01_Red_Color_68",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [-8.5, 64.0, 7.25] }
+                },
+                {
+                  "node": "LMBR_0000198_Paris_StringLights_01_Blue_Color_69",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [-8.5, 64.0, 7.25] }
+                },
+                {
+                  "node": "LMBR_000019c_Paris_StringLights_01_Yellow_Color_70",
+                  "influence_bounds": { "min": [-64.0, -64.0, -64.0], "max": [-8.5, 64.0, 7.25] }
+                },
+                {
+                  "node": "LMBR_000018b_bulb_71",
+                  "influence_bounds": { "min": [-64.0, -64.0, 15.0], "max": [64.0, 64.0, 64.0] }
+                }
+              ],
               "pipeline_domain": "world"
             }
         }
