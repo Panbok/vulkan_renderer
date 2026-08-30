@@ -174,9 +174,28 @@ A strictly serial post-correction Metal API/GPU shader-validation snapshot is
 clean apart from the two expected validation-enabled notices
 (`sha256:f347ae9e7ecf84b2915fac729959f4449cb7974c45c634eb97933545408a2210`).
 
-The Vulkan source, reflection, and CPU gates pass, but native Vulkan validation
-and crossed image comparison remain **UNALIGNED** because this implementation
-session ran on macOS.
+The follow-up native Vulkan pass found one host/Slang ABI defect before pipeline
+creation: adding the transmission-material address and opaque-pyramid scalars
+left an eight-byte shader padding field in front of a host-aligned `Mat4`. The
+host inserted another eight bytes implicitly, so SPIR-V placed
+`view_projection` at byte 104 while the host expected byte 112. The corrected
+464-byte root makes all 16 padding bytes explicit on both sides. Startup
+reflection now covers all six shade variants, all three compact variants, the
+material extension, and the 32-byte coverage root.
+
+On the RX 6700 XT with driver 26.6.3, the full CPU suite plus fresh Debug and
+Release shader builds pass. Normal Release cold and warm launches both exit 0
+against one explicit 603,572-byte pipeline cache. The analytic Release snapshot
+passes all five replays with seven draws, exact `65,372/65,045/0/0` production
+layer coverage, zero overflow or resolve-invalid counts, and report
+`sha256:32eb77a2c0e53d151fafaa55ecaa0ad15e89cf1dda934db1d438f5c47e6549df`.
+The Debug state-matrix synchronization-validation profile passes two serial
+repetitions and all 18 assertions with layer minima
+`4,486/2,664/746/721`, no VUID, validation error, or synchronization hazard,
+and report
+`sha256:393dee3d19cab3544df1d149ec37e12b329064786d7722bad625bd1704f64ee7`.
+The source and native Vulkan gates now pass. Crossed image comparison remains
+**UNALIGNED** because no accepted Metal generation covers this exact snapshot.
 
 ## Pre-implementation audit (historical)
 

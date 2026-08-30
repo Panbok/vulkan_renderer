@@ -519,6 +519,15 @@ vkr_vk_validate_transmission_root_abi(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionCompactRoot, capacity),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionCompactRoot, reserved),
   };
+  static const VkrVulkanReflectedField coverage_fields[] = {
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionCoverageRoot,
+                                 covered_pixels),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionCoverageRoot,
+                                 vbuffer_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionCoverageRoot, layer),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionCoverageRoot, extent),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionCoverageRoot, reserved),
+  };
   return vkr_vk_validate_transmission_material_abi(renderer) &&
          vkr_vk_validate_root_abi(
              renderer, VKR_VULKAN_PACKET_TRANSMISSION_SHADE_COMP_SPV,
@@ -563,7 +572,12 @@ vkr_vk_validate_transmission_root_abi(VkrVulkanRenderer *renderer) {
              renderer, VKR_VULKAN_PACKET_TRANSMISSION_COMPACT_FINALIZE_COMP_SPV,
              "vk_transmission_compact_finalize", compact_fields,
              ArrayCount(compact_fields),
-             sizeof(VkrVulkanTransmissionCompactRoot));
+             sizeof(VkrVulkanTransmissionCompactRoot)) &&
+         vkr_vk_validate_root_abi(
+             renderer, VKR_VULKAN_PACKET_TRANSMISSION_COVERAGE_COMP_SPV,
+             "vk_transmission_coverage", coverage_fields,
+             ArrayCount(coverage_fields),
+             sizeof(VkrVulkanTransmissionCoverageRoot));
 }
 
 vkr_internal bool8_t

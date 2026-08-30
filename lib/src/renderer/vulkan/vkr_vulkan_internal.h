@@ -609,7 +609,7 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanTransmissionRoot {
   uint64_t pixel_list;
   uint64_t compact_counts;
   uint64_t frame;
-  uint32_t frame_address_padding[2];
+  uint32_t frame_address_padding[4];
   Mat4 view_projection;
   Mat4 inverse_view_projection;
   uint32_t vbuffer_texture;

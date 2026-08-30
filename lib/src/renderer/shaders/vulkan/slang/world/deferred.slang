@@ -236,7 +236,7 @@ struct VkrVkTransmissionRoot
     uint *pixel_list;
     uint *compact_counts;
     VkrVulkanPacketFrameRoot *frame;
-    uint2 frame_address_padding;
+    uint4 frame_address_padding;
     float4x4 view_projection;
     float4x4 inverse_view_projection;
     uint vbuffer_texture;
