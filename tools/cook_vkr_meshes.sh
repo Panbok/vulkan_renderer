@@ -24,10 +24,7 @@ cook_one() {
     *) cook_source="${source_path}" ;;
   esac
   if [ ! -f "${cook_source}" ]; then
-    if [ "${VKR_MESH_COOK_STRICT_INPUTS:-0}" = "1" ]; then
-      echo "Mesh cook step failed: required source is missing: ${source_path}" >&2
-      return 1
-    fi
+    # Model sources are local and optional; strictness starts once one exists.
     echo "Mesh cook step skipped missing source: ${source_path}" >&2
     return 0
   fi

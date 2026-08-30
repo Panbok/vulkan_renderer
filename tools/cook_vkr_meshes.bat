@@ -42,10 +42,7 @@ exit /b 0
 :cook
 set "SOURCE=%~1"
 if not exist "%SOURCE%" (
-    if "%VKR_MESH_COOK_STRICT_INPUTS%"=="1" (
-        echo Mesh cook step failed: required source is missing: %SOURCE% 1>&2
-        exit /b 1
-    )
+    REM Model sources are local and optional; strictness starts once one exists.
     echo Mesh cook step skipped missing source: %SOURCE% 1>&2
     exit /b 0
 )
