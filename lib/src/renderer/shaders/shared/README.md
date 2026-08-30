@@ -11,6 +11,12 @@ the shared source and is tracked in
 used by every Metal and Vulkan material path, including two-channel BC5 and EAC
 RG11 sources.
 
+`point_light.slangh` owns the six-vector punctual-light GPU row and the
+inclusive world-space influence-bounds test compiled by both Slang libraries.
+Metal's native deferred library mirrors that row and test in
+`../metal/msl/common/draw.metalh`; the ABI and behavioral mirror are tracked in
+`docs/rendering/shader-cross-backend-contract.md`.
+
 `sh_l2_kernel.slangh` owns the L2 diffuse basis, packing, evaluation, and exact
 cubemap texel solid angle for ADR-038, mirroring `renderer/vkr_ibl_math.h`. It
 is included by the Vulkan Slang library and concatenated into the native Metal

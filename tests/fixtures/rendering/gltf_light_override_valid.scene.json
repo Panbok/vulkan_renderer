@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "entities": [
+    {
+      "mesh": {
+        "path": "assets/models/missing.vkb",
+        "gltf_light_source": "tests/fixtures/rendering/punctual_lights.gltf",
+        "gltf_light_overrides": [
+          {
+            "node": "PointNode",
+            "influence_bounds": {
+              "min": [
+                -2,
+                -2,
+                -2
+              ],
+              "max": [
+                2,
+                2,
+                2
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -81,6 +81,22 @@ struct VkrMetalPacketTemporalDrawState {
   uint2 reserved;
 };
 
+struct VkrGpuPointLightRow {
+  float4 p0;
+  float4 p1;
+  float4 p2;
+  float4 p3;
+  float4 p4;
+  float4 p5;
+};
+
+inline bool vkr_gpu_point_light_contains(float3 world_position,
+                                         float3 influence_min,
+                                         float3 influence_max) {
+  return all(world_position >= influence_min) &&
+         all(world_position <= influence_max);
+}
+
 struct VkrMetalPacketFrameRoot {
   device VkrMetalPacketInstance *instances;
   uint2 instance_address_padding;
@@ -106,7 +122,7 @@ struct VkrMetalPacketFrameRoot {
   uint shadow_debug_mode;
   uint reserved_2;
   uint reserved_3;
-  device float4 *point_light_data;
+  device VkrGpuPointLightRow *point_light_data;
   device uint4 *point_light_masks;
   float4 point_light_grid_origin_cell_size;
   uint4 point_light_grid_dimensions_count;
@@ -284,6 +300,8 @@ struct VkrMetalPacketTemporalVertexOutput {
 
 static_assert(sizeof(VkrMetalPacketVertex) == 64,
               "VkrVertex3d Metal ABI must remain 64 bytes");
+static_assert(sizeof(VkrGpuPointLightRow) == 96,
+              "Point-light row Metal ABI must remain 96 bytes");
 static_assert(sizeof(VkrPackedStaticVertex) == 32,
               "Packed static vertex ABI must remain 32 bytes");
 static_assert(sizeof(VkrGpuGeometryDecodeRecord) == 32,

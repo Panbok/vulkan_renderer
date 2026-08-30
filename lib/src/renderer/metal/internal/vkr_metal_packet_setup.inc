@@ -245,6 +245,9 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
     MTLStructType *frame_type =
         vkr_metal_packet_nested_struct(root.bufferStructType, "frame");
     if (!frame_type ||
+        !vkr_metal_packet_validate_nested_gpu_abi(
+            pipeline_label, frame_type, "point_light_data",
+            VKR_GPU_ABI_POINT_LIGHT_ROW) ||
         !vkr_metal_packet_validate_nested_abi(pipeline_label, frame_type,
                                               "instances",
                                               VKR_METAL_PACKET_ABI_INSTANCE) ||
@@ -316,6 +319,19 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
                                              root.bufferStructType, "instances",
                                              VKR_METAL_PACKET_ABI_INSTANCE)))
     return false_v;
+  if (record_id == VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT ||
+      record_id == VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT) {
+    MTLStructType *frame_type =
+        vkr_metal_packet_nested_struct(root.bufferStructType, "frame");
+    if (!frame_type ||
+        !vkr_metal_packet_validate_nested_abi(
+            pipeline_label, root.bufferStructType, "frame",
+            VKR_METAL_PACKET_ABI_FRAME_ROOT) ||
+        !vkr_metal_packet_validate_nested_gpu_abi(pipeline_label, frame_type,
+                                                  "point_light_data",
+                                                  VKR_GPU_ABI_POINT_LIGHT_ROW))
+      return false_v;
+  }
   return true_v;
 }
 

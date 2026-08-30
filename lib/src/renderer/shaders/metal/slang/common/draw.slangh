@@ -1,3 +1,5 @@
+#include "../../../shared/point_light.slangh"
+
 struct VkrMetalPacketVertex
 {
     float position_x;
@@ -84,7 +86,7 @@ struct VkrMetalPacketFrameRoot
     uint shadow_debug_mode;
     uint reserved_1_0;
     uint reserved_1_1;
-    StructuredBuffer<float4> point_light_data;
+    StructuredBuffer<VkrGpuPointLightRow> point_light_data;
     StructuredBuffer<uint4> point_light_masks;
     float4 point_light_grid_origin_cell_size;
     uint4 point_light_grid_dimensions_count;

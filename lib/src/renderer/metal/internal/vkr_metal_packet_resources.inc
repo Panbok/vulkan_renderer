@@ -1914,9 +1914,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
       point_light_count > 0 ? packet->lighting->point_light_grid->cell_count
                             : 0;
   const uint64_t point_light_offset =
-      vkr_metal_packet_align_up(instance_bytes, AlignOf(Vec4));
+      vkr_metal_packet_align_up(instance_bytes, AlignOf(VkrGpuPointLightRow));
   const uint64_t point_light_bytes =
-      (uint64_t)point_light_count * 4u * sizeof(Vec4);
+      (uint64_t)point_light_count * sizeof(VkrGpuPointLightRow);
   const uint64_t point_light_masks_offset = vkr_metal_packet_align_up(
       point_light_offset + point_light_bytes, AlignOf(VkrPointLightMask));
   const uint64_t point_light_masks_bytes =
@@ -2263,24 +2263,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
         sizeof(VkrGpuCandidateDrawRow);
   }
   if (point_light_count > 0) {
-    Vec4 *packed = (Vec4 *)(cpu + point_light_offset);
-    for (uint32_t i = 0; i < point_light_count; ++i) {
-      const VkrPointLight *light = &packet->lighting->point_lights[i];
-      packed[i * 4u + 0u] =
-          (Vec4){light->position.x, light->position.y, light->position.z,
-                 light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT
-                     ? cosf(light->inner_cone_angle)
-                     : light->constant};
-      packed[i * 4u + 1u] =
-          (Vec4){light->color.x, light->color.y, light->color.z,
-                 light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT
-                     ? cosf(light->outer_cone_angle)
-                     : light->linear};
-      packed[i * 4u + 2u] = (Vec4){light->intensity, light->quadratic,
-                                   light->range, (float32_t)light->kind};
-      packed[i * 4u + 3u] = (Vec4){light->direction.x, light->direction.y,
-                                   light->direction.z, 0.0f};
-    }
+    VkrGpuPointLightRow *packed =
+        (VkrGpuPointLightRow *)(cpu + point_light_offset);
+    for (uint32_t i = 0; i < point_light_count; ++i)
+      vkr_lighting_system_pack_point_light(&packet->lighting->point_lights[i],
+                                           &packed[i]);
     upload->point_light_data_gpu = gpu + point_light_offset;
     if (point_light_masks_bytes > 0) {
       MemCopy(cpu + point_light_masks_offset,

@@ -97,11 +97,16 @@ static float4 vkr_metal_packet_shade(
       uint light_index = word * 32u + bit;
       if (light_index >= point_count)
         continue;
-      float4 p0 = frame->point_light_data[light_index * 4u + 0u];
-      float4 p1 = frame->point_light_data[light_index * 4u + 1u];
-      float4 p2 = frame->point_light_data[light_index * 4u + 2u];
-      float4 p3 = frame->point_light_data[light_index * 4u + 3u];
+      const device VkrGpuPointLightRow &light =
+          frame->point_light_data[light_index];
+      float4 p0 = light.p0;
+      float4 p1 = light.p1;
+      float4 p2 = light.p2;
+      float4 p3 = light.p3;
       if ((point_mask[word] & (1u << bit)) == 0u)
+        continue;
+      if (!vkr_gpu_point_light_contains(input.world_position, light.p4.xyz,
+                                        light.p5.xyz))
         continue;
       uint kind = uint(p2.w + 0.5);
       float3 to_light = p0.xyz - input.world_position;

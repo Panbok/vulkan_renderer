@@ -3,6 +3,26 @@
 #include "math/mat.h"
 #include "math/vkr_quat.h"
 
+void vkr_lighting_system_pack_point_light(const VkrPointLight *light,
+                                          VkrGpuPointLightRow *row) {
+  row->p0 = (Vec4){light->position.x, light->position.y, light->position.z,
+                   light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT
+                       ? cosf(light->inner_cone_angle)
+                       : light->constant};
+  row->p1 = (Vec4){light->color.x, light->color.y, light->color.z,
+                   light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT
+                       ? cosf(light->outer_cone_angle)
+                       : light->linear};
+  row->p2 = (Vec4){light->intensity, light->quadratic, light->range,
+                   (float32_t)light->kind};
+  row->p3 =
+      (Vec4){light->direction.x, light->direction.y, light->direction.z, 0.0f};
+  row->p4 = (Vec4){light->influence_min.x, light->influence_min.y,
+                   light->influence_min.z, 0.0f};
+  row->p5 = (Vec4){light->influence_max.x, light->influence_max.y,
+                   light->influence_max.z, 0.0f};
+}
+
 // ============================================================================
 // Internal Types
 // ============================================================================
@@ -123,15 +143,67 @@ vkr_internal bool8_t point_light_intersects_grid_cell(
       cell_min.y + grid->cell_size,
       cell_min.z + grid->cell_size,
   };
-  const Vec3 closest = {
-      Clamp(light->position.x, cell_min.x, cell_max.x),
-      Clamp(light->position.y, cell_min.y, cell_max.y),
-      Clamp(light->position.z, cell_min.z, cell_max.z),
-  };
-  const Vec3 delta = vec3_sub(light->position, closest);
-  const float32_t range_squared = light->range * light->range;
-  const float32_t conservative_epsilon = Max(range_squared * 1e-6f, 1e-5f);
-  return vec3_length_squared(delta) <= range_squared + conservative_epsilon;
+  if (light->kind != VKR_POINT_LIGHT_KIND_POLYNOMIAL && light->range > 0.0f) {
+    const Vec3 closest = {
+        Clamp(light->position.x, cell_min.x, cell_max.x),
+        Clamp(light->position.y, cell_min.y, cell_max.y),
+        Clamp(light->position.z, cell_min.z, cell_max.z),
+    };
+    const Vec3 delta = vec3_sub(light->position, closest);
+    const float32_t range_squared = light->range * light->range;
+    const float32_t conservative_epsilon = Max(range_squared * 1e-6f, 1e-5f);
+    if (vec3_length_squared(delta) > range_squared + conservative_epsilon) {
+      return false_v;
+    }
+  }
+
+  return light->influence_max.x >= cell_min.x &&
+         light->influence_min.x <= cell_max.x &&
+         light->influence_max.y >= cell_min.y &&
+         light->influence_min.y <= cell_max.y &&
+         light->influence_max.z >= cell_min.z &&
+         light->influence_min.z <= cell_max.z;
+}
+
+vkr_internal bool8_t point_light_is_bounded(const VkrPointLight *light) {
+  return light->influence_min.x != -VKR_FLOAT_MAX ||
+         light->influence_min.y != -VKR_FLOAT_MAX ||
+         light->influence_min.z != -VKR_FLOAT_MAX ||
+         light->influence_max.x != VKR_FLOAT_MAX ||
+         light->influence_max.y != VKR_FLOAT_MAX ||
+         light->influence_max.z != VKR_FLOAT_MAX;
+}
+
+vkr_internal bool8_t point_light_grid_bounds(const VkrPointLight *light,
+                                             Vec3 *out_min, Vec3 *out_max) {
+  const bool8_t bounded = point_light_is_bounded(light);
+  if (light->kind != VKR_POINT_LIGHT_KIND_POLYNOMIAL && light->range > 0.0f) {
+    const Vec3 sphere_min = vec3_new(light->position.x - light->range,
+                                     light->position.y - light->range,
+                                     light->position.z - light->range);
+    const Vec3 sphere_max = vec3_new(light->position.x + light->range,
+                                     light->position.y + light->range,
+                                     light->position.z + light->range);
+    if (!bounded) {
+      *out_min = sphere_min;
+      *out_max = sphere_max;
+      return true_v;
+    }
+    *out_min = vec3_new(Max(sphere_min.x, light->influence_min.x),
+                        Max(sphere_min.y, light->influence_min.y),
+                        Max(sphere_min.z, light->influence_min.z));
+    *out_max = vec3_new(Min(sphere_max.x, light->influence_max.x),
+                        Min(sphere_max.y, light->influence_max.y),
+                        Min(sphere_max.z, light->influence_max.z));
+    return out_min->x <= out_max->x && out_min->y <= out_max->y &&
+           out_min->z <= out_max->z;
+  }
+  if (!bounded) {
+    return false_v;
+  }
+  *out_min = light->influence_min;
+  *out_max = light->influence_max;
+  return true_v;
 }
 
 // ============================================================================
@@ -220,6 +292,14 @@ vkr_internal void sync_point_lights_cb(const VkrArchetype *arch,
     uint32_t render_id = vkr_scene_get_render_id(scene, entities[i]);
     const Vec3 direction =
         vkr_quat_rotate_vec3(transforms[i].rotation, lights[i].direction_local);
+    const Vec3 influence_min =
+        lights[i].has_influence_bounds
+            ? lights[i].influence_min
+            : vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
+    const Vec3 influence_max =
+        lights[i].has_influence_bounds
+            ? lights[i].influence_max
+            : vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);
     point_light_insert_stable(
         ctx, (VkrPointLight){
                  .position = world_position,
@@ -232,6 +312,8 @@ vkr_internal void sync_point_lights_cb(const VkrArchetype *arch,
                  .direction = direction,
                  .inner_cone_angle = lights[i].inner_cone_angle,
                  .outer_cone_angle = lights[i].outer_cone_angle,
+                 .influence_min = influence_min,
+                 .influence_max = influence_max,
                  .kind = lights[i].kind,
                  .render_id = render_id,
              });
@@ -324,18 +406,22 @@ void vkr_lighting_system_build_point_light_grid(VkrLightingSystem *system) {
   uint32_t finite_count = 0u;
   for (uint32_t i = 0; i < system->point_light_count; ++i) {
     const VkrPointLight *light = &system->point_lights[i];
-    if (light->kind == VKR_POINT_LIGHT_KIND_POLYNOMIAL ||
-        light->range <= 0.0f) {
-      point_light_mask_add(&grid->global_mask, i);
+    Vec3 light_min = {0};
+    Vec3 light_max = {0};
+    if (!point_light_grid_bounds(light, &light_min, &light_max)) {
+      if (!point_light_is_bounded(light) &&
+          (light->kind == VKR_POINT_LIGHT_KIND_POLYNOMIAL ||
+           light->range <= 0.0f)) {
+        point_light_mask_add(&grid->global_mask, i);
+      }
       continue;
     }
-    const float32_t range = light->range;
-    bounds_min.x = Min(bounds_min.x, light->position.x - range);
-    bounds_min.y = Min(bounds_min.y, light->position.y - range);
-    bounds_min.z = Min(bounds_min.z, light->position.z - range);
-    bounds_max.x = Max(bounds_max.x, light->position.x + range);
-    bounds_max.y = Max(bounds_max.y, light->position.y + range);
-    bounds_max.z = Max(bounds_max.z, light->position.z + range);
+    bounds_min.x = Min(bounds_min.x, light_min.x);
+    bounds_min.y = Min(bounds_min.y, light_min.y);
+    bounds_min.z = Min(bounds_min.z, light_min.z);
+    bounds_max.x = Max(bounds_max.x, light_max.x);
+    bounds_max.y = Max(bounds_max.y, light_max.y);
+    bounds_max.z = Max(bounds_max.z, light_max.z);
     finite_count++;
   }
 
@@ -389,25 +475,20 @@ void vkr_lighting_system_build_point_light_grid(VkrLightingSystem *system) {
 
   for (uint32_t i = 0; i < system->point_light_count; ++i) {
     const VkrPointLight *light = &system->point_lights[i];
-    if (light->kind == VKR_POINT_LIGHT_KIND_POLYNOMIAL ||
-        light->range <= 0.0f) {
+    Vec3 light_min = {0};
+    Vec3 light_max = {0};
+    if (!point_light_grid_bounds(light, &light_min, &light_max)) {
       continue;
     }
     int32_t min_cell[3] = {
-        (int32_t)floorf((light->position.x - light->range - grid->origin.x) /
-                        grid->cell_size),
-        (int32_t)floorf((light->position.y - light->range - grid->origin.y) /
-                        grid->cell_size),
-        (int32_t)floorf((light->position.z - light->range - grid->origin.z) /
-                        grid->cell_size),
+        (int32_t)floorf((light_min.x - grid->origin.x) / grid->cell_size),
+        (int32_t)floorf((light_min.y - grid->origin.y) / grid->cell_size),
+        (int32_t)floorf((light_min.z - grid->origin.z) / grid->cell_size),
     };
     int32_t max_cell[3] = {
-        (int32_t)floorf((light->position.x + light->range - grid->origin.x) /
-                        grid->cell_size),
-        (int32_t)floorf((light->position.y + light->range - grid->origin.y) /
-                        grid->cell_size),
-        (int32_t)floorf((light->position.z + light->range - grid->origin.z) /
-                        grid->cell_size),
+        (int32_t)floorf((light_max.x - grid->origin.x) / grid->cell_size),
+        (int32_t)floorf((light_max.y - grid->origin.y) / grid->cell_size),
+        (int32_t)floorf((light_max.z - grid->origin.z) / grid->cell_size),
     };
     for (uint32_t axis = 0u; axis < 3u; ++axis) {
       min_cell[axis] =

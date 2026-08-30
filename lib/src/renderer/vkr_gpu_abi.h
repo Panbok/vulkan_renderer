@@ -161,6 +161,16 @@ typedef struct VkrGpuVisibleDrawRow {
   uint32_t state_flags;
 } VkrGpuVisibleDrawRow;
 
+/** Shared punctual-light row. p0-p3 retain the existing light semantics. */
+typedef struct VkrGpuPointLightRow {
+  Vec4 p0;
+  Vec4 p1;
+  Vec4 p2;
+  Vec4 p3;
+  Vec4 p4;
+  Vec4 p5;
+} VkrGpuPointLightRow;
+
 /** GPU-written compacted work volume and four-bucket prefix state. */
 typedef struct VkrGpuDrawCompactionState {
   uint32_t execution_ranges[VKR_WORLD_DRAW_STATE_BUCKET_COUNT][2];
@@ -184,6 +194,10 @@ _Static_assert(sizeof(VkrGpuCandidateDrawRow) == 48u,
                "VkrGpuCandidateDrawRow ABI drift");
 _Static_assert(sizeof(VkrGpuVisibleDrawRow) == 32u,
                "VkrGpuVisibleDrawRow ABI drift");
+_Static_assert(sizeof(VkrGpuPointLightRow) == 96u,
+               "VkrGpuPointLightRow ABI drift");
+_Static_assert(_Alignof(VkrGpuPointLightRow) == 16u,
+               "VkrGpuPointLightRow alignment drift");
 _Static_assert(sizeof(VkrGpuDrawCompactionState) == 80u,
                "VkrGpuDrawCompactionState ABI drift");
 _Static_assert(sizeof(VkrGpuTransmissionDiagnostics) == 116u,
@@ -203,6 +217,7 @@ typedef enum VkrGpuAbiRecordId {
   VKR_GPU_ABI_GEOMETRY_ROW,
   VKR_GPU_ABI_CANDIDATE_DRAW_ROW,
   VKR_GPU_ABI_VISIBLE_DRAW_ROW,
+  VKR_GPU_ABI_POINT_LIGHT_ROW,
   VKR_GPU_ABI_RECORD_COUNT,
 } VkrGpuAbiRecordId;
 

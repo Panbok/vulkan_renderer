@@ -41,6 +41,8 @@ typedef struct VkrSceneGltfPunctualLightImport {
   float32_t range;
   float32_t inner_cone_angle;
   float32_t outer_cone_angle;
+  Vec3 influence_min;
+  Vec3 influence_max;
   VkrSceneGltfPunctualLightType type;
 } VkrSceneGltfPunctualLightImport;
 

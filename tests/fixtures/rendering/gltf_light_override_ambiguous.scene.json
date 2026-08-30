@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "entities": [
+    {
+      "mesh": {
+        "path": "assets/models/missing.vkb",
+        "gltf_light_source": "tests/fixtures/rendering/punctual_lights_duplicate_node.gltf",
+        "gltf_light_overrides": [
+          {
+            "node": "DuplicateNode",
+            "influence_bounds": {
+              "min": [
+                -2,
+                -2,
+                -2
+              ],
+              "max": [
+                2,
+                2,
+                2
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

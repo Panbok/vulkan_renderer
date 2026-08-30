@@ -94,6 +94,9 @@ typedef struct SceneEntityImport {
   bool8_t has_mesh;
   String8 mesh_path;
   String8 gltf_light_source;
+  String8 gltf_light_overrides;
+  bool8_t has_gltf_light_overrides;
+  bool8_t gltf_light_overrides_invalid;
   String8 shader_override;
   VkrPipelineDomain pipeline_domain;
   /** False marks the caster DYNAMIC; scene meshes are static by default. */
@@ -108,12 +111,20 @@ typedef struct SceneEntityImport {
   SceneDirectionalLightImport directional_light;
 } SceneEntityImport;
 
+typedef struct SceneGltfLightOverride {
+  String8 node;
+  Vec3 influence_min;
+  Vec3 influence_max;
+  uint32_t match_count;
+} SceneGltfLightOverride;
+
 #define SCENE_ASYNC_ENTITY_CHUNK 64u
 #define SCENE_ASYNC_RELATION_CHUNK 128u
 #define SCENE_ASYNC_COMPONENT_CHUNK 16u
 #define SCENE_ASYNC_MESH_CHUNK 8u
 #define SCENE_GLTF_PATH_MAX 1024u
 #define SCENE_GLTF_PUNCTUAL_LIGHT_MAX 256u
+#define SCENE_GLTF_LIGHT_OVERRIDE_MAX 256u
 
 typedef enum SceneAsyncFinalizeStage {
   SCENE_ASYNC_STAGE_CREATE_ENTITIES = 0,
@@ -306,10 +317,18 @@ vkr_internal bool8_t scene_loader_apply_gltf_punctual_light(
         .direction_local = import->direction,
         .inner_cone_angle = import->inner_cone_angle,
         .outer_cone_angle = import->outer_cone_angle,
+        .influence_min = import->influence_min,
+        .influence_max = import->influence_max,
         .kind = import->type == VKR_SCENE_GLTF_LIGHT_SPOT
                     ? VKR_POINT_LIGHT_KIND_GLTF_SPOT
                     : VKR_POINT_LIGHT_KIND_GLTF_POINT,
         .enabled = true_v,
+        .has_influence_bounds = import->influence_min.x != -VKR_FLOAT_MAX ||
+                                import->influence_min.y != -VKR_FLOAT_MAX ||
+                                import->influence_min.z != -VKR_FLOAT_MAX ||
+                                import->influence_max.x != VKR_FLOAT_MAX ||
+                                import->influence_max.y != VKR_FLOAT_MAX ||
+                                import->influence_max.z != VKR_FLOAT_MAX,
     };
     if (!vkr_scene_set_point_light(scene, entity, &light)) {
       *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
@@ -373,6 +392,70 @@ vkr_internal bool8_t scene_json_parse_vec3(VkrJsonReader *reader,
   }
   *out_value = vec3_new(values[0], values[1], values[2]);
   return true_v;
+}
+
+vkr_internal bool8_t scene_json_capture_composite(VkrJsonReader *reader,
+                                                  String8 *out_value) {
+  if (!reader || !out_value) {
+    return false_v;
+  }
+  vkr_json_skip_whitespace(reader);
+  const uint64_t start = reader->pos;
+  if (start >= reader->length) {
+    return false_v;
+  }
+
+  if (reader->data[start] != '{' && reader->data[start] != '[')
+    return false_v;
+
+  uint8_t delimiters[64] = {0};
+  uint32_t delimiter_count = 0u;
+  bool8_t quoted = false_v;
+  bool8_t escaped = false_v;
+  while (reader->pos < reader->length) {
+    const uint8_t c = reader->data[reader->pos++];
+    if (quoted) {
+      if (escaped) {
+        escaped = false_v;
+      } else if (c == '\\') {
+        escaped = true_v;
+      } else if (c == '"') {
+        quoted = false_v;
+      }
+      continue;
+    }
+    if (c == '"') {
+      quoted = true_v;
+      continue;
+    }
+    if (c == '{') {
+      if (delimiter_count == ArrayCount(delimiters)) {
+        return false_v;
+      }
+      delimiters[delimiter_count++] = '}';
+    } else if (c == '[') {
+      if (delimiter_count == ArrayCount(delimiters)) {
+        return false_v;
+      }
+      delimiters[delimiter_count++] = ']';
+    } else if (c == '}') {
+      if (delimiter_count == 0u || delimiters[delimiter_count - 1u] != c) {
+        return false_v;
+      }
+      delimiter_count--;
+    } else if (c == ']') {
+      if (delimiter_count == 0u || delimiters[delimiter_count - 1u] != c) {
+        return false_v;
+      }
+      delimiter_count--;
+    }
+    if (delimiter_count == 0u) {
+      *out_value = (String8){.str = (uint8_t *)(reader->data + start),
+                             .length = reader->pos - start};
+      return true_v;
+    }
+  }
+  return false_v;
 }
 
 vkr_internal bool8_t scene_json_parse_quat(VkrJsonReader *reader,
@@ -573,8 +656,109 @@ vkr_internal Mat4 scene_loader_entity_import_world_matrix(
   return world;
 }
 
-bool8_t vkr_scene_loader_read_gltf_punctual_lights(
+vkr_internal bool8_t scene_json_string_equals_cstr(String8 value,
+                                                   const char *text) {
+  const uint64_t length = text ? string_length(text) : 0u;
+  return value.str && value.length == length &&
+         MemCompare(value.str, text, length) == 0;
+}
+
+vkr_internal bool8_t scene_loader_parse_gltf_light_overrides(
+    String8 json, SceneGltfLightOverride *out_overrides, uint32_t capacity,
+    uint32_t *out_count) {
+  if (!json.str || !out_overrides || capacity == 0u || !out_count) {
+    return false_v;
+  }
+  *out_count = 0u;
+
+  VkrJsonReader reader = vkr_json_reader_from_string(json);
+  vkr_json_skip_whitespace(&reader);
+  if (reader.pos >= reader.length || reader.data[reader.pos++] != '[') {
+    return false_v;
+  }
+
+  vkr_json_skip_whitespace(&reader);
+  if (reader.pos < reader.length && reader.data[reader.pos] == ']') {
+    reader.pos++;
+    vkr_json_skip_whitespace(&reader);
+    return reader.pos == reader.length;
+  }
+
+  for (;;) {
+    if (*out_count >= capacity) {
+      return false_v;
+    }
+
+    String8 entry_span = {0};
+    if (!scene_json_capture_composite(&reader, &entry_span) ||
+        entry_span.str[0] != '{') {
+      return false_v;
+    }
+    VkrJsonReader entry_reader =
+        vkr_json_reader_create(entry_span.str, entry_span.length);
+
+    SceneGltfLightOverride *override = &out_overrides[*out_count];
+    if (!scene_json_read_string_field(&entry_reader, "node", &override->node) ||
+        override->node.length == 0u) {
+      return false_v;
+    }
+    for (uint32_t i = 0u; i < *out_count; ++i) {
+      if (string8_equals(&out_overrides[i].node, &override->node)) {
+        return false_v;
+      }
+    }
+
+    VkrJsonReader bounds_reader = entry_reader;
+    String8 bounds_span = {0};
+    if (!vkr_json_find_field(&bounds_reader, "influence_bounds") ||
+        !scene_json_capture_composite(&bounds_reader, &bounds_span) ||
+        bounds_span.str[0] != '{') {
+      return false_v;
+    }
+    VkrJsonReader bounds_object =
+        vkr_json_reader_create(bounds_span.str, bounds_span.length);
+    if (!scene_json_read_vec3_field(&bounds_object, "min",
+                                    &override->influence_min) ||
+        !scene_json_read_vec3_field(&bounds_object, "max",
+                                    &override->influence_max) ||
+        !isfinite(override->influence_min.x) ||
+        !isfinite(override->influence_min.y) ||
+        !isfinite(override->influence_min.z) ||
+        !isfinite(override->influence_max.x) ||
+        !isfinite(override->influence_max.y) ||
+        !isfinite(override->influence_max.z) ||
+        override->influence_min.x > override->influence_max.x ||
+        override->influence_min.y > override->influence_max.y ||
+        override->influence_min.z > override->influence_max.z) {
+      return false_v;
+    }
+    override->match_count = 0u;
+    (*out_count)++;
+
+    vkr_json_skip_whitespace(&reader);
+    if (reader.pos >= reader.length) {
+      return false_v;
+    }
+    if (reader.data[reader.pos] == ']') {
+      reader.pos++;
+      break;
+    }
+    if (reader.data[reader.pos++] != ',') {
+      return false_v;
+    }
+    vkr_json_skip_whitespace(&reader);
+    if (reader.pos >= reader.length || reader.data[reader.pos] == ']') {
+      return false_v;
+    }
+  }
+
+  vkr_json_skip_whitespace(&reader);
+  return reader.pos == reader.length;
+}
+
+vkr_internal bool8_t scene_loader_read_gltf_punctual_lights(
     String8 path, Mat4 scene_world, uint32_t scene_entity_index,
+    SceneGltfLightOverride *overrides, uint32_t override_count,
     VkrSceneGltfPunctualLightImport *out_lights, uint32_t capacity,
     uint32_t *out_count) {
   if (!path.str || path.length == 0u || path.length >= SCENE_GLTF_PATH_MAX ||
@@ -592,13 +776,11 @@ bool8_t vkr_scene_loader_read_gltf_punctual_lights(
     return false_v;
   }
 
-  for (uint32_t node_index = 0;
-       node_index < data->nodes_count && *out_count < capacity; ++node_index) {
+  for (uint32_t node_index = 0; node_index < data->nodes_count; ++node_index) {
     const cgltf_node *node = &data->nodes[node_index];
     if (!node->light) {
       continue;
     }
-
     VkrSceneGltfPunctualLightType type;
     switch (node->light->type) {
     case cgltf_light_type_directional:
@@ -612,6 +794,28 @@ bool8_t vkr_scene_loader_read_gltf_punctual_lights(
       break;
     default:
       continue;
+    }
+
+    if (*out_count >= capacity) {
+      if (override_count > 0u) {
+        cgltf_free(data);
+        return false_v;
+      }
+      break;
+    }
+
+    SceneGltfLightOverride *matched_override = NULL;
+    for (uint32_t override_index = 0u; override_index < override_count;
+         ++override_index) {
+      SceneGltfLightOverride *override = &overrides[override_index];
+      if (scene_json_string_equals_cstr(override->node, node->name)) {
+        override->match_count++;
+        matched_override = override;
+      }
+    }
+    if (matched_override && type == VKR_SCENE_GLTF_LIGHT_DIRECTIONAL) {
+      cgltf_free(data);
+      return false_v;
     }
 
     cgltf_float gltf_values[16];
@@ -635,6 +839,14 @@ bool8_t vkr_scene_loader_read_gltf_punctual_lights(
         .range = (float32_t)node->light->range,
         .inner_cone_angle = (float32_t)node->light->spot_inner_cone_angle,
         .outer_cone_angle = (float32_t)node->light->spot_outer_cone_angle,
+        .influence_min =
+            matched_override
+                ? matched_override->influence_min
+                : vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX),
+        .influence_max =
+            matched_override
+                ? matched_override->influence_max
+                : vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX),
         .type = type,
     };
     snprintf(out->name, sizeof(out->name), "gltf.%u.%s", scene_entity_index,
@@ -642,8 +854,25 @@ bool8_t vkr_scene_loader_read_gltf_punctual_lights(
              : node->light->name ? node->light->name
                                  : "light");
   }
+
+  for (uint32_t override_index = 0u; override_index < override_count;
+       ++override_index) {
+    if (overrides[override_index].match_count != 1u) {
+      cgltf_free(data);
+      return false_v;
+    }
+  }
   cgltf_free(data);
   return true_v;
+}
+
+bool8_t vkr_scene_loader_read_gltf_punctual_lights(
+    String8 path, Mat4 scene_world, uint32_t scene_entity_index,
+    VkrSceneGltfPunctualLightImport *out_lights, uint32_t capacity,
+    uint32_t *out_count) {
+  return scene_loader_read_gltf_punctual_lights(
+      path, scene_world, scene_entity_index, NULL, 0u, out_lights, capacity,
+      out_count);
 }
 
 vkr_internal bool8_t
@@ -656,17 +885,48 @@ scene_loader_collect_gltf_punctual_lights(VkrSceneLoaderAsyncPayload *payload) {
        ++entity_index) {
     const SceneEntityImport *entity = &payload->imports[entity_index];
     if (!entity->has_mesh) {
+      if (entity->has_gltf_light_overrides) {
+        log_error("Scene loader: glTF light overrides require a mesh path");
+        return false_v;
+      }
       continue;
     }
     const bool8_t explicit_light_source =
         entity->gltf_light_source.str && entity->gltf_light_source.length > 0u;
+    if (entity->has_gltf_light_overrides &&
+        (entity->gltf_light_overrides_invalid || !explicit_light_source)) {
+      log_error("Scene loader: glTF light overrides require a valid explicit "
+                "glTF light source");
+      return false_v;
+    }
+
+    SceneGltfLightOverride overrides[SCENE_GLTF_LIGHT_OVERRIDE_MAX];
+    uint32_t override_count = 0u;
+    if (entity->has_gltf_light_overrides &&
+        !scene_loader_parse_gltf_light_overrides(
+            entity->gltf_light_overrides, overrides, ArrayCount(overrides),
+            &override_count)) {
+      log_error("Scene loader: invalid glTF light overrides for entity %u",
+                entity_index);
+      return false_v;
+    }
+
     const String8 light_source =
         explicit_light_source ? entity->gltf_light_source : entity->mesh_path;
     if (!light_source.str || light_source.length < 4u) {
+      if (entity->has_gltf_light_overrides) {
+        log_error("Scene loader: glTF light overrides require a glTF source");
+        return false_v;
+      }
       continue;
     }
     if (!scene_string8_ends_with_cstr_i(light_source, ".gltf") &&
         !scene_string8_ends_with_cstr_i(light_source, ".glb")) {
+      if (entity->has_gltf_light_overrides) {
+        log_error("Scene loader: glTF light override source must end in .gltf "
+                  "or .glb");
+        return false_v;
+      }
       continue;
     }
 
@@ -680,8 +940,8 @@ scene_loader_collect_gltf_punctual_lights(VkrSceneLoaderAsyncPayload *payload) {
       break;
     }
     uint32_t imported_count = 0u;
-    if (!vkr_scene_loader_read_gltf_punctual_lights(
-            light_source, scene_world, entity_index,
+    if (!scene_loader_read_gltf_punctual_lights(
+            light_source, scene_world, entity_index, overrides, override_count,
             payload->gltf_punctual_lights + payload->gltf_punctual_light_count,
             remaining, &imported_count)) {
       if (explicit_light_source) {
@@ -1401,6 +1661,15 @@ vkr_internal void scene_json_parse_mesh(const VkrJsonReader *entity_reader,
     out_entity->gltf_light_source = gltf_light_source;
   }
 
+  VkrJsonReader overrides_reader = mesh_obj;
+  if (vkr_json_find_field(&overrides_reader, "gltf_light_overrides")) {
+    out_entity->has_gltf_light_overrides = true_v;
+    if (!scene_json_capture_composite(&overrides_reader,
+                                      &out_entity->gltf_light_overrides)) {
+      out_entity->gltf_light_overrides_invalid = true_v;
+    }
+  }
+
   String8 domain_str = {0};
   if (scene_json_read_string_field(&mesh_obj, "pipeline_domain", &domain_str)) {
     bool8_t valid = false_v;
@@ -2043,8 +2312,11 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene, struct s_RendererFrontend *rf,
         .direction_local = light_import->direction_local,
         .inner_cone_angle = light_import->inner_cone_angle,
         .outer_cone_angle = light_import->outer_cone_angle,
+        .influence_min = {0},
+        .influence_max = {0},
         .kind = light_import->kind,
         .enabled = light_import->enabled,
+        .has_influence_bounds = false_v,
     };
 
     if (!vkr_scene_set_point_light(scene, entity, &light)) {
@@ -2423,8 +2695,11 @@ vkr_internal bool8_t scene_loader_apply_component_for_entity(
         .direction_local = light_import->direction_local,
         .inner_cone_angle = light_import->inner_cone_angle,
         .outer_cone_angle = light_import->outer_cone_angle,
+        .influence_min = {0},
+        .influence_max = {0},
         .kind = light_import->kind,
         .enabled = light_import->enabled,
+        .has_influence_bounds = false_v,
     };
 
     if (!vkr_scene_set_point_light(scene, entity, &light)) {
@@ -2721,7 +2996,6 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
     *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
-
   payload->environment_import =
       scene_loader_parse_environment_import(json_copy);
   const bool8_t direct_cubemap =

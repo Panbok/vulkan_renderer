@@ -3,6 +3,7 @@
 #include "defines.h"
 #include "math/vec.h"
 #include "renderer/systems/vkr_scene_system.h"
+#include "renderer/vkr_gpu_abi.h"
 
 #define VKR_MAX_SCENE_POINT_LIGHTS 128u
 #define VKR_POINT_LIGHT_GRID_MASK_WORDS 4u
@@ -24,9 +25,15 @@ typedef struct VkrPointLight {
   Vec3 direction;
   float32_t inner_cone_angle;
   float32_t outer_cone_angle;
+  Vec3 influence_min;
+  Vec3 influence_max;
   VkrPointLightKind kind;
   uint32_t render_id;
 } VkrPointLight;
+
+/** Packs one canonical point light into the shared six-Vec4 GPU row. */
+void vkr_lighting_system_pack_point_light(const VkrPointLight *light,
+                                          VkrGpuPointLightRow *row);
 
 /** Raw 128-bit light membership. Its bytes are uploaded through a float4
  * uniform and recovered with asuint() in Slang to stay within the existing

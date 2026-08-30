@@ -1657,6 +1657,16 @@ bool8_t vkr_scene_set_point_light(VkrScene *scene, VkrEntityId entity,
   if (!scene || !scene->world || !light)
     return false_v;
 
+  if (light->has_influence_bounds &&
+      (!isfinite(light->influence_min.x) || !isfinite(light->influence_min.y) ||
+       !isfinite(light->influence_min.z) || !isfinite(light->influence_max.x) ||
+       !isfinite(light->influence_max.y) || !isfinite(light->influence_max.z) ||
+       light->influence_min.x > light->influence_max.x ||
+       light->influence_min.y > light->influence_max.y ||
+       light->influence_min.z > light->influence_max.z)) {
+    return false_v;
+  }
+
   // Ensure render ID for picking
   uint32_t prev_render_id = vkr_scene_get_render_id(scene, entity);
   if (!vkr_scene_ensure_render_id(scene, entity, NULL)) {

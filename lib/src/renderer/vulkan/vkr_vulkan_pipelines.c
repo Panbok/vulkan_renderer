@@ -221,6 +221,7 @@ vkr_vk_validate_packet_root_abi(VkrVulkanRenderer *renderer) {
     SpvReflectBlockVariable *vertices = NULL;
     SpvReflectBlockVariable *frame = NULL;
     SpvReflectBlockVariable *materials = NULL;
+    SpvReflectBlockVariable *point_light_data = NULL;
     valid &= vkr_vk_reflect_member_offset(
         root, "geometry_rows", offsetof(VkrVulkanPacketDrawRoot, geometry_rows),
         &geometry_rows);
@@ -263,6 +264,10 @@ vkr_vk_validate_packet_root_abi(VkrVulkanRenderer *renderer) {
         frame, "shadow_debug_mode",
         offsetof(VkrVulkanPacketFrameRoot, shadow_debug_mode), NULL);
     valid &= vkr_vk_reflect_member_offset(
+        frame, "point_light_data",
+        offsetof(VkrVulkanPacketFrameRoot, point_light_data),
+        &point_light_data);
+    valid &= vkr_vk_reflect_member_offset(
         frame, "point_light_grid_origin_cell_size",
         offsetof(VkrVulkanPacketFrameRoot, point_light_grid_origin_cell_size),
         NULL);
@@ -295,6 +300,8 @@ vkr_vk_validate_packet_root_abi(VkrVulkanRenderer *renderer) {
                                                VKR_GPU_ABI_GEOMETRY_ROW);
     valid &= vkr_vk_validate_reflected_gpu_abi(visible_rows,
                                                VKR_GPU_ABI_VISIBLE_DRAW_ROW);
+    valid &= vkr_vk_validate_reflected_gpu_abi(point_light_data,
+                                               VKR_GPU_ABI_POINT_LIGHT_ROW);
     valid &= vkr_vk_reflect_member_offset(
         materials, "base_color_texture",
         offsetof(VkrVulkanMaterialGpuRow, base_color_texture), NULL);

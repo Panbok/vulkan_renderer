@@ -112,28 +112,15 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
   const VkrFrameLighting *lighting = packet->lighting;
   if (lighting && lighting->point_light_count) {
     const uint64_t light_bytes =
-        (uint64_t)lighting->point_light_count * 4u * sizeof(Vec4);
-    Vec4 *packed = vkr_vk_frame_upload_allocate(
-        slot, light_bytes, _Alignof(Vec4), &slot->point_light_data, NULL);
+        (uint64_t)lighting->point_light_count * sizeof(VkrGpuPointLightRow);
+    VkrGpuPointLightRow *packed = vkr_vk_frame_upload_allocate(
+        slot, light_bytes, _Alignof(VkrGpuPointLightRow),
+        &slot->point_light_data, NULL);
     if (!packed)
       return false_v;
-    for (uint32_t i = 0u; i < lighting->point_light_count; ++i) {
-      const VkrPointLight *light = &lighting->point_lights[i];
-      packed[i * 4u + 0u] =
-          (Vec4){light->position.x, light->position.y, light->position.z,
-                 light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT
-                     ? cosf(light->inner_cone_angle)
-                     : light->constant};
-      packed[i * 4u + 1u] =
-          (Vec4){light->color.x, light->color.y, light->color.z,
-                 light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT
-                     ? cosf(light->outer_cone_angle)
-                     : light->linear};
-      packed[i * 4u + 2u] = (Vec4){light->intensity, light->quadratic,
-                                   light->range, (float32_t)light->kind};
-      packed[i * 4u + 3u] = (Vec4){light->direction.x, light->direction.y,
-                                   light->direction.z, 0.0f};
-    }
+    for (uint32_t i = 0u; i < lighting->point_light_count; ++i)
+      vkr_lighting_system_pack_point_light(&lighting->point_lights[i],
+                                           &packed[i]);
     const uint64_t mask_bytes =
         (uint64_t)lighting->point_light_grid->cell_count *
         sizeof(VkrPointLightMask);
