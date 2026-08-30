@@ -1,6 +1,6 @@
 ---
 status: accepted
-updated: 2026-08-25
+updated: 2026-08-30
 authority: adr
 ---
 
@@ -55,20 +55,25 @@ commits only final packed data to the result arena. There is no configuration
 or environment-variable bypass. Source loads never write `.vkb`, and cooked
 requests never rerun runtime optimization.
 
-Version-14 `.vkb` preserves importer deduplication and tangent generation,
+Version-15 `.vkb` preserves importer deduplication and tangent generation,
 optimizes cache and vertex-fetch order per material range, quantizes into the
 ADR-031 static geometry ABI, and meshoptimizer-encodes packed vertices and
 `uint32_t` indices. It records codec/library and layout versions, SHA-256
 dependency/settings identity, aligned stream directories, encoded and decoded
 sizes, optimized bounds, material/range metadata, quantization budgets and
-observed maxima, and CRC32 metadata/stream checksums.
+observed maxima, one range-local position decode record per directory entry,
+and CRC32 metadata/stream checksums. Range-local quantization prevents a large
+merged scene AABB from collapsing physically separated close surfaces.
 
 The loader validates bounded metadata, metadata/stream checksums, codec headers,
-quantization maxima, decoded packed bounds, and local indices before
+quantization maxima, every range decode, decoded packed bounds, local indices,
+and decode indices before
 publication. Dependency paths, sizes, and SHA-256 data remain embedded build
 provenance covered by the metadata checksum; runtime decode performs no
-authoring-source I/O. Version-12 and version-13 artifacts are stale;
-`vkr_mesh_cooker` is the sole version-14 writer.
+authoring-source I/O. Version-12 through version-14 artifacts are stale;
+`vkr_mesh_cooker` is the sole version-15 writer. Loader results own the
+contiguous decode array in their result arena; backend publication copies it
+into the completion-protected geometry megabuffer before that arena may retire.
 
 Production scene manifests reference `.vkb`. `tools/cook_vkr_meshes.sh` and
 `tools/cook_vkr_meshes.bat` build the cooker, regenerate selected or default
@@ -107,7 +112,7 @@ filters. `KHR_meshopt_compression` is rejected rather than misinterpreted.
 - Retaining `.vkb` preserves the existing loader extension and type-only batch
   routing; creating a second `VKR_RESOURCE_TYPE_MESH` loader is still unsafe.
 - Codec compression reduces cooked artifact storage; ADR-031 packing separately
-  halves static vertex upload and residency bytes. Version 14 is a source-free
+  halves static vertex upload and residency bytes. Version 15 is a source-free
   runtime geometry contract: freshness is decided by the offline cook step,
   while runtime validates the self-contained artifact. Indices remain 32-bit.
 - `.vkb` is the persistent geometry cache and live resource requests deduplicate

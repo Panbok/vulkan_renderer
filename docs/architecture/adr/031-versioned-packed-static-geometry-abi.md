@@ -1,6 +1,6 @@
 ---
 status: accepted
-updated: 2026-08-25
+updated: 2026-08-30
 authority: adr
 ---
 
@@ -45,8 +45,9 @@ place. The implemented record is eight 32-bit words, or 32 bytes:
 | 6 | color as RGBA8 UNORM |
 | 7 | reserved, zero |
 
-Position decode uses a per-publication scale and bias in a persistent 32-byte
-GPU decode record. `VkrGpuGeometryRow.decode_address` references that record;
+Position decode uses a range-local scale and bias in a persistent array of
+32-byte GPU decode records. `VkrGpuGeometryRow.decode_address` references the
+array and compacted draw rows carry the range's decode index;
 the row also records `VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1` and a 32-byte
 stride. C, Slang, native MSL, Metal reflection, and Vulkan reflection share one
 ABI definition and validation contract.
@@ -79,13 +80,13 @@ relying on loader input size or backend conversion.
 - GPU uploads and vertex residency decrease only because the complete
   artifact-to-shader vertical slice ships; the reduction is not attributed to
   the meshoptimizer codec alone.
-- Shader decode adds arithmetic and one publication-level metadata fetch.
+- Shader decode adds arithmetic and one range-level metadata fetch.
   Release frame-time evidence remains backend- and workload-specific.
 - The vertex stream falls from 64 to 32 bytes, a 50% reduction. With three
   32-bit indices per vertex, total raw geometry falls from 76 to 44 bytes per
   vertex-equivalent, a 42.1% reduction before megabuffer alignment and
   fragmentation. This is storage arithmetic, not a frame-time claim.
-- Quantization budgets are part of version-14 `.vkb`: position relative error,
+- Quantization budgets are part of version-15 `.vkb`: position relative error,
   normal/tangent angular error, UV absolute error, color error, tangent sign,
   and degenerate position ranges are validated before publication.
 - The layout tag and decode record keep the ABI version explicit without

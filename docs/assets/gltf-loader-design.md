@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-03
+updated: 2026-08-30
 authority: design
 ---
 # glTF Loader Design (Revised)
@@ -113,6 +113,35 @@ typedef struct VkrMeshParseOutput {
 ### Node Transforms
 
 To match current mesh asset shape (single transformed mesh payload), v1 flattens node transforms into vertex data during parse. Hierarchy is not preserved in runtime structures yet.
+
+### Geometric decal clearance
+
+Geometric decals use an explicit material-level `extras` field:
+
+```json
+"extras": {
+  "vkr_decal_normal_offset_meters": 0.002
+}
+```
+
+The value is a finite number in `(0, 0.1]` meters. A tagged primitive must
+provide finite, non-degenerate `NORMAL` data; malformed values and invalid
+normals fail the source load. Material names, texture paths, and alpha modes
+never imply decal behavior.
+
+The importer first transforms the position into world space and transforms the
+normal with the inverse-transpose matrix. It normalizes that normal, then adds
+`world_normal * vkr_decal_normal_offset_meters` to the world position. This
+keeps the authored clearance in meters under uniform or non-uniform node scale.
+Authors must orient decal normals away from the receiving surface and choose a
+clearance large enough to exceed source overlap and the configured packing
+error budget.
+
+The offset is baked before deduplication, bounds generation, and packed
+quantization. A cooked `.vkb` therefore contains the displaced geometry and
+does not retain or evaluate decal metadata at runtime. Materials without the
+field preserve the ordinary import path exactly. This is a geometric-overlay
+contract, not a projected-decal system, depth bias, or draw-order override.
 
 ### Coordinate System
 

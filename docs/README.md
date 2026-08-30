@@ -126,7 +126,7 @@ owning document status in the same change.
 | [027](architecture/adr/027-immediate-mode-grid-ui.md) | proposed | Immediate-mode UI over a retained cache, grid-only layout, batched scissored draw list with evidence-gated tile caching, and a composited offscreen editor viewport |
 | [028](architecture/adr/028-gpu-driven-deferred-visibility-buffer.md) | implemented through P21 | GPU-driven deferred visibility buffer; both backends use one GPU-submitted topology with opaque/deferred shading, HZB, picking, four-layer transmission, and completion-gated layer coverage. The legacy world renderer is retired; both backends lower the Metal-measured eight-pass P19 compact path with a diagnostic full-screen rollback, while native Vulkan compact validation remains pending |
 | [029](architecture/adr/029-retained-graph-resources.md) | partial | Retained graph-owned contents with per-instance, per-subresource content validity, seeded from the last successfully submitted state and committed only on proven submit. Prerequisite for directional cascade reuse; distinct from the `HISTORY` ring and from `PERSISTENT`, which only suppresses a diagnostic |
-| [030](architecture/adr/030-offline-mesh-optimization-and-cooking.md) | accepted | Version-14 meshoptimizer-backed `.vkb` cooking, worker validation/decode, mandatory runtime source optimization, production conversion tooling, lifecycle/byte/locality metrics, and `EXT_meshopt_compression` input decode |
+| [030](architecture/adr/030-offline-mesh-optimization-and-cooking.md) | accepted | Version-15 range-local meshoptimizer-backed `.vkb` cooking, worker validation/decode, mandatory runtime source optimization, production conversion tooling, lifecycle/byte/locality metrics, and `EXT_meshopt_compression` input decode |
 | [031](architecture/adr/031-versioned-packed-static-geometry-abi.md) | accepted | Implemented 32-byte static geometry ABI shared by Metal and Vulkan; float32 UVs replace the rejected 24-byte float16-UV candidate |
 | [032](architecture/adr/032-two-phase-confirmed-visibility.md) | investigation | Declined for the measured workload after the predictor deferred zero candidates. The exact-gated one-phase path remains; revisit only for a materially different candidate population |
 | [033](architecture/adr/033-occupied-depth-sdsm-feedback.md) | partial | Metal implements opt-in occupied-depth feedback with completion and source-projection metadata. Fixed splits remain the measured default; Vulkan lowering is open |
@@ -172,14 +172,14 @@ owning document status in the same change.
 
 | Document | Status | Purpose |
 |---|---|---|
-| [gltf-loader-design.md](assets/gltf-loader-design.md) | partial | glTF import ships; nested texture resolution, UV orientation, and partial legacy material conversion are documented |
+| [gltf-loader-design.md](assets/gltf-loader-design.md) | partial | glTF import ships with explicit geometric-decal clearance, nested texture resolution, UV orientation, and partial legacy material conversion |
 | [texture-compression-policy/SPEC.md](assets/texture-compression-policy/SPEC.md) | implemented | Capability-driven `.vkt` policy with transcodable `NORMAL_RG` fallbacks |
 | [texture-compression-vkt-ktx2-uastc-spec.md](assets/texture-compression-vkt-ktx2-uastc-spec.md) | implemented | KTX2/UASTC `.vkt`, capability-driven transcode, compressed upload, and persistent target-transcode cache |
 | [texture-compression-vkt-ktx2-uastc-implementation-tracker.md](assets/texture-compression-vkt-ktx2-uastc-implementation-tracker.md) | implemented | Completed implementation tracker, including normal-map fallback hardening |
 | [parallel-asset-loading.md](assets/parallel-asset-loading.md) | partial | Async CPU prep; parallel upload needs an unsafe opt-in |
 | [async-gpu-transfer-queue.md](assets/async-gpu-transfer-queue.md) | proposed | Independent-submit end state; in-frame uploads are deferred, out-of-frame uploads still wait |
 | [resource_loading_analysis.md](assets/resource_loading_analysis.md) | proposed | Resource loading analysis |
-| [meshoptimizer-geometry-pipeline-spec.md](assets/meshoptimizer-geometry-pipeline-spec.md) | implemented | Version-14 cooked geometry, mandatory source optimization, packed Metal/Vulkan ABI, observability, production assets, and glTF meshopt interop |
+| [meshoptimizer-geometry-pipeline-spec.md](assets/meshoptimizer-geometry-pipeline-spec.md) | implemented | Version-15 range-local cooked geometry, mandatory source optimization, packed Metal/Vulkan ABI, observability, production assets, and glTF meshopt interop |
 | [static-scene-batching-spec.md](assets/static-scene-batching-spec.md) | proposed | Static batching; the `VkrDrawBatcher` it targeted was deleted by ADR-028 P21 |
 
 ## Mesh, instancing, and performance

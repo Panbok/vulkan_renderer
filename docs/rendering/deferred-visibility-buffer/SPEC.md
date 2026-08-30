@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-29
+updated: 2026-08-30
 authority: spec
 ---
 
@@ -246,9 +246,9 @@ tables are:
 
 | Struct | Contents and ownership |
 |---|---|
-| `VkrGpuGeometryRow` | Megabuffer vertex address/base, global index base, vertex layout/stride, and publication generation; immutable for that generation |
+| `VkrGpuGeometryRow` | Megabuffer vertex and range-decode addresses, global index base, vertex layout/stride, and publication generation; immutable for that generation |
 | `VkrGpuCandidateDrawRow` | Source instance × submesh draw data and conservative bounds; populated in a per-frame-slot bounded array |
-| `VkrGpuVisibleDrawRow` | Compact geometry/material/instance/index-range/flags row; GPU-written and valid through submit completion |
+| `VkrGpuVisibleDrawRow` | Compact geometry/material/instance/index-range/decode/state row; GPU-written and valid through submit completion |
 
 The frontend or packet build produces one candidate row for each prospective
 instance × submesh draw:
@@ -259,13 +259,14 @@ instance × submesh draw:
 | `material_index` | Immutable material-table row |
 | `instance_index` | Model/object row |
 | `first_index`, `index_count`, `vertex_offset` | Global u32 index-buffer draw range |
-| `state_bucket` | Opaque/cutout and single-/double-sided pipeline bucket |
+| `decode_index` | Range-local position-decode record for raster and resolve |
+| `state_flags` | Opaque/cutout and single-/double-sided bucket in bits 0-1; candidate flags in the remaining bits |
 | `local_bounding_sphere` | Conservative submesh bound; culling transforms its center and scales radius by the maximum model-basis length |
 
 `Cull.Draws` consumes the bounded candidate array and writes compacted
 `VkrGpuVisibleDrawRow` records containing the geometry, material, instance,
-index range, and flags needed by both raster and resolve. Bounds need not be
-copied to the visible row.
+index range, decode index, and state needed by both raster and resolve. Bounds
+need not be copied to the visible row.
 
 #### Multi-view culling
 
