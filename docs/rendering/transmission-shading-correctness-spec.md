@@ -1,19 +1,15 @@
 ---
-status: proposed
-updated: 2026-08-28
+status: implemented
+updated: 2026-08-30
 authority: design
 ---
 
 # Transmission shading correctness spec
 
-Implementation plan for the transmissive-surface shading defects visible as
-opaque or white glass in Bistro. The existing four-layer peel, graph-owned
-feedback chain, and transmission draw classification ship today. The corrective
-work in T0 through T5 does not.
-
-This source audit proves several material-input and shading-equation defects. It
-does not prove which one dominates the reported pixels. T0 must isolate the
-terms before an implementation claims a root cause or a fix.
+Implemented correction for the transmissive-surface shading defects visible as
+opaque or white glass in Bistro. The four-layer ordered peel remains the
+production bound; T0 through T5 now ship, including the capture-only fifth-peel
+diagnostic used to retain that bound.
 
 Prior state and rationale:
 [ADR-018](../architecture/adr/018-graph-declared-transmission-feedback.md),
@@ -42,14 +38,160 @@ Keep four layers until a focused fifth-layer diagnostic proves that the bound,
 rather than the surface equation, causes an unacceptable image. Changing the
 accepted bound requires an ADR-028 amendment and matched Release timing.
 
-## Correction to prior documentation
+## Implementation result
+
+- T0 adds the analytic and four Bistro cases, direct lobe replays, linear
+  pre/post-transmission captures, and distinct transmission overflow,
+  resolve-invalid, and per-layer coverage metrics.
+- T1 uses one portable composition contract on Metal and Vulkan:
+  `R + (1 - T)D + T(1 - M)(1 - F_rgb)B_tinted + E`.
+- T2 publishes and samples transmission and thickness textures through
+  `32/16`-byte Metal/Vulkan extensions at the same slot index as the restored
+  `176/144`-byte base rows. Both segments share one allocation, publication,
+  replacement, and completion-gated retirement operation.
+- T3 reprojects a refracted exit point using resolved thickness, instance scale,
+  a shared safe-`w` projection helper, each backend's viewport convention, and
+  refracted Beer path length. Zero thickness samples the original pixel.
+- T4 retains ordered full-resolution composition and samples a graph-declared,
+  immutable six-level opaque-color pyramid for positive roughness. Roughness
+  zero samples the ordered chain at LOD 0; any positive resolved material/ORM
+  roughness selects the opaque pyramid at a continuous, IOR-adjusted LOD. The
+  separate `0.04` BRDF floor does not affect this source choice. The rejected
+  exact per-layer pyramid spike added 18 passes and `0.905292 ms` mean frame
+  wall (`+27.45%`) in the matched local fixture.
+- T5 adds an explicit cold-case fifth peel and coverage channel. The layered
+  fixture measured 70,118 fifth-surface pixels; the four Bistro cameras measured
+  30,766, 64,269, 83,849, and 40,425. Corrected four-layer images retain the
+  scene background without a bound-specific unacceptable artifact, so ADR-028
+  is unchanged and ordinary frames instantiate no diagnostic resources or
+  passes.
+- The owner-reported Bistro front-door camera exposed two post-T5 production
+  defects. `LMBR_000009e_Glass` combined positive transmission with omitted
+  metallic/roughness factors, which glTF otherwise defaults to `1/1`; the
+  importer now lowers that common glass form to dielectric/smooth only when the
+  factors and metallic-roughness texture are absent, while explicit `1/1`
+  remains `1/1`. Metal's transmission ICB also had buffer inheritance disabled,
+  so the fragment peel root bound on the parent encoder never reached indirect
+  draws. Transmission now uses a dedicated inherited-buffer ICB and production
+  encode kernel; ordinary opaque and shadow ICBs retain their existing contract.
+- Transmissive materials route exclusively through the deferred peel stream.
+  The unreachable forward-shader transmission fallback and its frame flag are
+  removed so there is one production surface equation.
+- The exact 1600x1200 owner camera now preserves menu text and lighting through
+  both panes. Layer coverage decreases `63,695 -> 2,033 -> 771 -> 652 -> 164`,
+  every layer has a distinct visibility hash, and overflow/resolve-invalid
+  counts remain zero. The two 80x120 pane regions have luma ranges `49..210`
+  and `42..212` and normalized RGB entropy of at least `0.697`, replacing the
+  nearly uniform pale fill with a bounded spatial-variation witness.
+
+The final five-run Metal profiles measured `3.161408 ms` mean frame wall for
+the frosted fixture, `0.639933 ms` summed transmission shading, and `0.050092
+ms` for all five pyramid kernels. A focused serial Metal API/GPU validation run
+passed with report
+`sha256:1f8bdaa03463cb42d568e138114f506449d6675373bf76fef867e8fcee30fe40`.
+The correctness implementation is complete. Against the single-observation T0
+analytic checkpoint, the repeated T2 result raised frame-wall mean by `6.91%`
+and summed production transmission shading by `15.94%`; the final T0-T5 result
+was `26.30%` and `20.30%` higher respectively. The baseline is too narrow for a
+speed claim, but both measured deltas exceeded the original provisional `5%`
+limit. That miss drove a measured redesign which restores the base-row stride
+and partitions compact pixels into thin factor-only and extended ranges without
+adding a graph pass or dispatch. The thin compile-time path does not read the
+extension, sample optional textures, or evaluate thickness/attenuation work.
+Two final post-prune five-run profiles measured `0.273592-0.279767 ms` compact
+and `0.808542-0.809458 ms` shade GPU means, with `4.003775-4.269375 ms`
+frame-wall means. The original limit remains a historical redesign target; the
+owner-approved current acceptance ceiling is defined below.
+
+The follow-on production shader family removes cold diagnostic and per-layer
+temporal decisions from the ordinary path. Metal and Vulkan now precreate a
+diagnostic shade pipeline, a default-production temporal pipeline for layer 0,
+and a default-production non-temporal pipeline for layers 1 through 3, for both
+the compact and fullscreen launch shapes. Diagnostic replays retain the general
+pipeline. The production variants compile with render-mode and shadow-debug
+logic disabled; the non-temporal variants also compile without temporal motion,
+validity, or transform work. Host selection uses normalized frame state and
+layer only; it creates no pipeline and performs no cache lookup in the pass.
+
+A historical five-run M1 Pro Release profile reported exactly 65,372 pixels in
+every layer. That invariant is now known to be a Metal peel failure: the ICB
+did not inherit the previous-depth root, so all four passes replayed layer 0.
+Its `0.742233 ms` shader-family result and the later `0.711450/0.714017 ms`
+results remain useful optimization history, but they are not correctness-valid
+performance gates. The 464-byte roots remain shared: specialization removes
+unused shader loads, while splitting the uploaded roots would save only 528
+CPU-upload bytes per frame and has no measured GPU mechanism. A root split is
+therefore not retained without evidence that it changes generated code or
+timing.
+
+The retained production family now also specializes the lighting lobe at the
+resolved pixel value. When `T == 1`, both production shaders evaluate the
+specular-only direct, punctual, and environment paths and omit diffuse BRDF, SH,
+and ambient work that the composition equation multiplies by zero. Diagnostic
+shaders always retain the full lobe path, and every `T < 1` pixel is unchanged.
+This adds no compact stream, pass, dispatch, root field, material field, or
+lifetime boundary.
+
+After the peel correction, two matched five-run M1 Pro Release observations
+measure summed shade means of `0.397800 ms` and `0.396558 ms`. Their paired
+compact means are `0.274700/0.268167 ms`; frame-wall mean/p50/p95 is
+`3.686141/3.640916/3.879791 ms` and `3.757358/3.765624/4.031708 ms`.
+Every repetition retains seven draws, exact layer coverage
+`65,372/65,371/0/0`, valid timestamps, and zero overflow or resolve-invalid
+counts. The lower shade cost is a consequence of correct work elimination in
+empty deeper peels, not a portable shader-speed claim.
+
+### Current performance ceiling
+
+The corrected current local summed transmission-shade GPU-mean ceiling is
+`0.400 ms`. The gate is deliberately scoped to the Apple M1 Pro Metal result
+that established it:
+
+- Release configuration with Metal API and shader validation disabled;
+- `tools/cases/smoke/transmission_analytic_snapshot.case.json` under
+  `tools/profiles/local-offscreen-gpu-repeated.json`;
+- five independent repetitions with valid GPU timestamps;
+- seven draws and exact `65,372/65,371/0/0` compact pixels in layers 0..3; and
+- zero overflow and resolve-invalid observations.
+
+Both corrected five-run results pass: `0.397800 ms` and `0.396558 ms`. The
+higher observation leaves `0.002200 ms` (`0.55%`) of margin. A matched result
+above `0.400 ms`, changed work volume, or invalid diagnostics does not pass.
+The former `0.715 ms` ceiling is superseded because it measured four copies of
+the front layer; `0.691556 ms` remains only the earlier provisional redesign
+target. Compact and frame-wall time remain observations rather than ceilings,
+and this local Metal gate makes no Vulkan or other-device performance claim.
+
+The retained shader passes the compact analytic snapshot
+`sha256:299401b8a4a3c9733eaf3d2d2d8fe3691d2d8c79a907a86dafed14b99efe47e8`,
+fullscreen rollback
+`sha256:b6897500bce9ee0c95560f24600f4d8a9db15946caecba2ef8f1fc386e9f14a4`,
+diagnostic state matrix
+`sha256:6f1a1a87e141192e60c6806c52a4c128430244ab19e996d476768d6b9dfee385`,
+and isolated-warm cache profile
+`sha256:cf6800d452104eb827cadf04b7f0ecf38630815f81be3e8596e58f8701233b41`.
+A strictly serial post-correction Metal API/GPU shader-validation snapshot is
+clean apart from the two expected validation-enabled notices
+(`sha256:f347ae9e7ecf84b2915fac729959f4449cb7974c45c634eb97933545408a2210`).
+
+The Vulkan source, reflection, and CPU gates pass, but native Vulkan validation
+and crossed image comparison remain **UNALIGNED** because this implementation
+session ran on macOS.
+
+## Pre-implementation audit (historical)
+
+The remaining defect descriptions and staged requirements record the audited
+baseline that this implementation replaced. They are retained to explain the
+tests and decisions; they are not current implementation status.
+
+## Correction to prior documentation at the audited baseline
 
 [shadow-transmission-transparency-improvements.md](shadow-transmission-transparency-improvements.md)
 §2.1 says the shipped shader follows a reference formulation with exit-point
 reprojection, roughness LOD, Beer-Lambert attenuation, and a thin-surface
-fallback. Current code supports only one item in that list.
+fallback. The audited source supported only one item in that list.
 
-| Prior claim | Current implementation |
+| Prior claim | Audited baseline implementation |
 |---|---|
 | Exit-point reprojection | Absent. Both backends apply `refracted.xy / max(abs(refracted.z), 0.25) * thickness * 0.02` as a screen-UV offset. |
 | Roughness LOD | Absent. Vulkan samples LOD 0. Metal uses a sampler without mip filtering. The pre-transmission and feedback images have one mip. |
@@ -60,7 +202,7 @@ That earlier document remains `partial` because it also records implemented
 work. Its claim of shipped transmission parity is superseded by this source
 audit.
 
-## Current source contract
+## Audited baseline source contract
 
 `main()` in `app/src/main.c` selects Metal by default outside Windows and Vulkan
 on Windows. The two production shading functions are
@@ -122,13 +264,17 @@ helper layout may differ, but these boundary cases are requirements:
 
 ### Bistro material facts
 
-Eighteen of 254 files under `assets/materials/bistro/` author a positive
-transmission factor. Their factors range from `0.66` to `0.95`. All 18 use
-`alpha_mode=opaque`, zero thickness, and zero attenuation distance. Seventeen
-are non-metallic with authored roughness zero. One material authors
-`metallic=1`, `roughness=1`, and `transmission_factor=0.9`; Khronos correctly
-ignores transmission for that row. Fifteen base colors are white, two are pale
-blue, and one is warm tinted.
+Eighteen Bistro materials author a positive transmission factor. Their factors
+range from `0.66` to `0.95`; all use opaque alpha, zero thickness, and zero
+attenuation distance. The owner-reported front-door panes are menu-sign mesh
+236 with material 98, `LMBR_000009e_Glass`, not the building-glass rows 53/54.
+Its source authors `transmissionFactor=0.9` but omits the metallic-roughness
+block. Literal glTF defaults therefore produced metallic 1 and roughness 1,
+which suppressed the transmitted lobe and selected the coarsest feedback mip.
+The compatibility lowering described above treats this omitted-factor glass
+form as metallic 0 and roughness 0; explicitly authored factors retain their
+values. Fifteen positive-transmission base colors are white, two are pale blue,
+and one is warm tinted.
 
 The on-screen HUD does not print `transmission_draws`. Subtracting its opaque
 and transparent counts from total world draws can suggest the transmission
@@ -376,15 +522,35 @@ change.
   conformance requirement.
 - Per-draw feedback refresh. The accepted graph composites one surface per
   pixel per peel layer.
-- Bistro material authoring changes. T2 through T4 use dedicated fixtures.
+- Broad Bistro material retuning. The focused omitted-factor compatibility rule
+  for positive-transmission glass is part of the owner-reported correction.
 - Changes to TAA, GTAO, exposure, or ordinary blend.
 
 ## Owner decisions
 
-1. Before T1, set numeric HDR comparison thresholds and a Release regression
-   budget for the analytic and Bistro cases.
-2. At T2, choose common-row expansion or a transmission-only material table
-   from measured opaque-path cost and lifetime complexity.
-3. At T4, choose exact per-layer pyramids, the documented opaque-pyramid
-   approximation, or defer frosted transmission.
-4. At T5, amend ADR-028 only if fifth-layer evidence justifies a larger bound.
+1. Numeric captures use maximum delta `2/255`, mean absolute error `0.1/255`,
+   and failed-pixel ratio `0.001`; integer visibility remains exact. The local
+   Release regression budget was 5% for matched frame wall and summed
+   transmission-pass GPU time.
+2. T2 uses one same-slot extension segment rather than expanding the common
+   immutable row. The split adds no publication or lifetime domain. A two-range
+   compact partition removes extension, optional-texture, and volume work from
+   the thin factor-only shader path without adding a graph pass or dispatch.
+3. T4 accepts the immutable opaque pyramid. The exact ordered candidate missed
+   the frame budget and visibly accumulated deeper-layer tint into shallower
+   rough blur.
+4. T5 retains four production layers. The fifth-peel diagnostic remains
+   graph-declared and case-only; ADR-028 needs no amendment.
+5. Default shading uses precreated production temporal/non-temporal shader
+   variants. Diagnostic capture state selects the general shader. Keep the
+   proven common roots until a focused generated-code or timing comparison
+   demonstrates a benefit from splitting them.
+6. The former `0.715 ms` ceiling is invalid because Metal replayed the front
+   surface into every peel. The corrected M1 Pro Metal ceiling is `0.400 ms`
+   summed transmission-shade GPU mean under the exact five-run analytic profile
+   and `65,372/65,371/0/0` layer work-volume constraint. No frame-wall, Vulkan,
+   or portable-device ceiling follows from this decision.
+7. A positive-transmission glTF material with omitted metallic/roughness
+   factors and no metallic-roughness texture imports as dielectric/smooth.
+   Explicit factors always win. Metal transmission draws use an inherited-
+   buffer ICB so the parent-bound draw and peel roots reach every indirect draw.
