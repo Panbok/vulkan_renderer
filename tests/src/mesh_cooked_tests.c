@@ -12,13 +12,15 @@
 #include <math.h>
 #include <stdlib.h>
 #define TEST_HEADER_SIZE 272u
-#define TEST_RANGE_SIZE 168u
+#define TEST_RANGE_SIZE 200u
 #define TEST_STREAM_OFFSET_FIELD 80u
 #define TEST_HEADER_CRC_FIELD 184u
 #define TEST_METADATA_CRC_FIELD 188u
+#define TEST_HEADER_DECODE_BIAS_X_FIELD 192u
 #define TEST_VERTEX_STREAM_OFFSET_FIELD 48u
 #define TEST_VERTEX_CRC_FIELD 72u
 #define TEST_CENTER_X_FIELD 104u
+#define TEST_DECODE_FLAGS_FIELD 180u
 
 static uint32_t test_crc32(const uint8_t *data, uint64_t size) {
   uint32_t crc = 0xffffffffu;
@@ -128,6 +130,19 @@ static void test_packed_geometry_validation_contract(void) {
   invalid_decode = decode;
   invalid_decode.position_scale[0] = INFINITY;
   assert(!vkr_packed_geometry_decode_is_valid(&invalid_decode));
+
+  vertices[0].normal = (VkrPackedVec3){2.0f, 0.0f, 0.0f};
+  vertices[0].tangent = vec4_new(2.0f, 0.0f, 0.0f, 1.0f);
+  assert(vkr_packed_geometry_pack(
+      vertices, ArrayCount(vertices), vec3_new(0.0f, 0.0f, 0.0f),
+      vec3_new(1.0f, 1.0f, 0.0f), &budgets, packed, &decode, &metrics));
+  VkrVertex3d repaired = {0};
+  vkr_packed_geometry_unpack(&packed[0], 1u, &decode, &repaired);
+  const Vec3 repaired_tangent =
+      vec3_new(repaired.tangent.x, repaired.tangent.y, repaired.tangent.z);
+  assert(vec3_length_squared(repaired_tangent) > 0.99f);
+  assert(fabsf(vec3_dot(vkr_vertex_unpack_vec3(repaired.normal),
+                        repaired_tangent)) < 1.0e-3f);
 
   vertices[0].tangent.w = 0.0f;
   assert(!vkr_packed_geometry_pack(
@@ -288,13 +303,26 @@ static void test_mesh_cooked_round_trip_and_malformed_boundaries(void) {
   assert(decoded.mesh_buffer.vertex_layout ==
          VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1);
   assert(decoded.mesh_buffer.vertex_size == sizeof(VkrPackedStaticVertex));
-  VkrVertex3d decoded_vertices[6] = {0};
-  vkr_packed_geometry_unpack(decoded.mesh_buffer.vertices, 6u,
-                             &decoded.mesh_buffer.decode, decoded_vertices);
+  assert(decoded.mesh_buffer.decode_count == 2u);
+  assert(decoded.mesh_buffer.decodes != NULL);
+  assert(decoded.ranges.data[0].decode_index == 0u);
+  assert(decoded.ranges.data[1].decode_index == 1u);
+  assert(decoded.mesh_buffer.decodes[0].position_bias[0] !=
+         decoded.mesh_buffer.decodes[1].position_bias[0]);
   const uint32_t *decoded_indices = decoded.mesh_buffer.indices;
-  for (uint32_t i = 0; i < 6; ++i) {
-    assert(decoded_indices[i] < decoded.mesh_buffer.vertex_count);
-    assert(test_contains_position(decoded_vertices, 6, vertices[i].position));
+  for (uint32_t range_index = 0; range_index < 2u; ++range_index) {
+    const VkrMeshLoaderSubmeshRange *range = &decoded.ranges.data[range_index];
+    for (uint32_t i = 0; i < range->index_count; ++i) {
+      const uint32_t vertex_index = decoded_indices[range->first_index + i];
+      assert(vertex_index < decoded.mesh_buffer.vertex_count);
+      VkrVertex3d unpacked = {0};
+      vkr_packed_geometry_unpack(
+          (const VkrPackedStaticVertex *)decoded.mesh_buffer.vertices +
+              vertex_index,
+          1u, &decoded.mesh_buffer.decodes[range->decode_index], &unpacked);
+      assert(test_contains_position(vertices + range_index * 3u, 3u,
+                                    unpacked.position));
+    }
   }
 
   static const char loader_artifact_path[] = "build/vkr_mesh_cooked_loader.vkb";
@@ -334,7 +362,8 @@ static void test_mesh_cooked_round_trip_and_malformed_boundaries(void) {
          VKR_MESH_PREPARATION_COOKED);
   assert(handle.as.mesh->load_metrics.cooked_bytes == loader_artifact_size);
   assert(handle.as.mesh->load_metrics.decoded_bytes ==
-         3u * sizeof(VkrPackedStaticVertex) + 3u * sizeof(uint32_t));
+         3u * sizeof(VkrPackedStaticVertex) + 3u * sizeof(uint32_t) +
+             sizeof(VkrGpuGeometryDecodeRecord));
   assert(handle.as.mesh->load_metrics.vertices_transformed_before > 0);
   assert(handle.as.mesh->load_metrics.vertices_transformed_after ==
          handle.as.mesh->load_metrics.vertices_transformed_before);
@@ -419,6 +448,20 @@ static void test_mesh_cooked_round_trip_and_malformed_boundaries(void) {
                                  &decoded));
 
   MemCopy(mutated, first, first_size);
+  test_write_f32(mutated + TEST_HEADER_DECODE_BIAS_X_FIELD, 0.25f);
+  test_refresh_integrity(mutated);
+  assert(!vkr_mesh_cooked_decode(&result, &scratch, mutated, first_size,
+                                 &decoded));
+
+  MemCopy(mutated, first, first_size);
+  test_write_le32(mutated + TEST_HEADER_SIZE + TEST_RANGE_SIZE +
+                      TEST_DECODE_FLAGS_FIELD,
+                  0u);
+  test_refresh_integrity(mutated);
+  assert(!vkr_mesh_cooked_decode(&result, &scratch, mutated, first_size,
+                                 &decoded));
+
+  MemCopy(mutated, first, first_size);
   test_write_f32(mutated + TEST_HEADER_SIZE + TEST_CENTER_X_FIELD, 0.25f);
   test_refresh_integrity(mutated);
   assert(!vkr_mesh_cooked_decode(&result, &scratch, mutated, first_size,
@@ -475,13 +518,15 @@ static int test_centroid_compare(const void *lhs, const void *rhs) {
 }
 
 static VkrPackedVec3
-test_mesh_result_position(const VkrMeshLoaderResult *result, uint32_t index) {
+test_mesh_result_position(const VkrMeshLoaderResult *result, uint32_t index,
+                          uint32_t decode_index) {
   if (result->mesh_buffer.vertex_layout ==
       VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1) {
     VkrVertex3d unpacked = {0};
     const VkrPackedStaticVertex *vertices = result->mesh_buffer.vertices;
     vkr_packed_geometry_unpack(&vertices[index], 1u,
-                               &result->mesh_buffer.decode, &unpacked);
+                               &result->mesh_buffer.decodes[decode_index],
+                               &unpacked);
     return unpacked.position;
   }
   const VkrVertex3d *vertices = result->mesh_buffer.vertices;
@@ -500,12 +545,12 @@ test_collect_triangle_centroids(const VkrMeshLoaderResult *result,
     const VkrMeshLoaderSubmeshRange *range =
         &result->submeshes.data[range_index];
     for (uint32_t i = 0; i < range->index_count; i += 3u) {
-      const VkrPackedVec3 a =
-          test_mesh_result_position(result, indices[range->first_index + i]);
+      const VkrPackedVec3 a = test_mesh_result_position(
+          result, indices[range->first_index + i], range->decode_index);
       const VkrPackedVec3 b = test_mesh_result_position(
-          result, indices[range->first_index + i + 1u]);
+          result, indices[range->first_index + i + 1u], range->decode_index);
       const VkrPackedVec3 c = test_mesh_result_position(
-          result, indices[range->first_index + i + 2u]);
+          result, indices[range->first_index + i + 2u], range->decode_index);
       out_centroids[triangle++] = (TestTriangleCentroid){
           .x = a.x + b.x + c.x,
           .y = a.y + b.y + c.y,

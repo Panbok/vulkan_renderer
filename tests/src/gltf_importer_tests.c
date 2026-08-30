@@ -422,6 +422,28 @@ static void gltf_test_write_basic_triangle_bin(const char *path) {
   assert(ok == true_v);
 }
 
+static void gltf_test_write_triangle_with_normals_bin(const char *path,
+                                                      Vec3 normal) {
+  const float32_t positions[9] = {
+      0.0f, 0.0f, 0.0f, //
+      1.0f, 0.0f, 0.0f, //
+      0.0f, 1.0f, 0.0f, //
+  };
+  const float32_t normals[9] = {
+      normal.x, normal.y, normal.z, //
+      normal.x, normal.y, normal.z, //
+      normal.x, normal.y, normal.z, //
+  };
+  const uint16_t indices[3] = {0u, 1u, 2u};
+
+  uint8_t bytes[78] = {0};
+  MemCopy(bytes, positions, sizeof(positions));
+  MemCopy(bytes + sizeof(positions), normals, sizeof(normals));
+  MemCopy(bytes + sizeof(positions) + sizeof(normals), indices,
+          sizeof(indices));
+  assert(gltf_test_write_file_bytes(path, bytes, sizeof(bytes)) == true_v);
+}
+
 static VkrMeshLoaderGltfParseInfo gltf_test_make_parse_info(
     VkrAllocator *allocator, VkrAllocator *scratch_allocator,
     const char *source_path_cstr, VkrRendererError *out_error,
@@ -441,6 +463,95 @@ static VkrMeshLoaderGltfParseInfo gltf_test_make_parse_info(
       .on_primitive = gltf_test_capture_primitive,
       .user_data = capture,
   };
+}
+
+typedef struct GltfDecalCaseResult {
+  bool8_t parsed;
+  VkrRendererError error;
+  uint32_t primitive_count;
+  uint32_t position_count;
+  Vec3 positions[3];
+} GltfDecalCaseResult;
+
+static GltfDecalCaseResult
+gltf_test_run_decal_case(const char *stem, const Vec3 *normal,
+                         const char *offset_json_value) {
+  gltf_test_ensure_dirs();
+  gltf_test_remove_source_files(stem);
+  gltf_test_remove_generated_material(stem);
+
+  char gltf_path[1024] = {0};
+  char bin_path[1024] = {0};
+  snprintf(gltf_path, sizeof(gltf_path), "%stests/tmp/gltf_importer/%s.gltf",
+           PROJECT_SOURCE_DIR, stem);
+  snprintf(bin_path, sizeof(bin_path), "%stests/tmp/gltf_importer/%s.bin",
+           PROJECT_SOURCE_DIR, stem);
+  if (normal)
+    gltf_test_write_triangle_with_normals_bin(bin_path, *normal);
+  else
+    gltf_test_write_basic_triangle_bin(bin_path);
+
+  const bool8_t has_normal = normal != NULL;
+  const char *normal_attribute = has_normal ? ",\"NORMAL\":1" : "";
+  const char *normal_view =
+      has_normal ? ",{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36}" : "";
+  const char *normal_accessor =
+      has_normal ? ",{\"bufferView\":1,\"componentType\":5126,\"count\":3,"
+                   "\"type\":\"VEC3\"}"
+                 : "";
+  const uint32_t index_accessor = has_normal ? 2u : 1u;
+  const uint32_t index_offset = has_normal ? 72u : 36u;
+  const uint32_t buffer_size = has_normal ? 78u : 42u;
+  char extras[128] = {0};
+  if (offset_json_value) {
+    snprintf(extras, sizeof(extras),
+             ",\"extras\":{\"vkr_decal_normal_offset_meters\":%s}",
+             offset_json_value);
+  }
+
+  char gltf_json[4096] = {0};
+  snprintf(gltf_json, sizeof(gltf_json),
+           "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,"
+           "\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0,"
+           "\"translation\":[10,20,30],\"scale\":[2,3,4]}],"
+           "\"meshes\":[{\"primitives\":[{\"attributes\":{"
+           "\"POSITION\":0%s},\"indices\":%u,\"material\":0}]}],"
+           "\"materials\":[{\"name\":\"test_decal\"%s}],"
+           "\"buffers\":[{\"uri\":\"%s.bin\",\"byteLength\":%u}],"
+           "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,"
+           "\"byteLength\":36}%s,{\"buffer\":0,\"byteOffset\":%u,"
+           "\"byteLength\":6}],\"accessors\":[{\"bufferView\":0,"
+           "\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"}%s,{"
+           "\"bufferView\":%u,\"componentType\":5123,\"count\":3,"
+           "\"type\":\"SCALAR\"}]}",
+           normal_attribute, index_accessor, extras, stem, buffer_size,
+           normal_view, index_offset, normal_accessor, index_accessor);
+  assert(gltf_test_write_file_text(gltf_path, gltf_json) == true_v);
+
+  Arena *arena = arena_create(MB(2), MB(1));
+  Arena *scratch_arena = arena_create(MB(2), MB(1));
+  VkrAllocator allocator = {.ctx = arena};
+  VkrAllocator scratch = {.ctx = scratch_arena};
+  assert(vkr_allocator_arena(&allocator));
+  assert(vkr_allocator_arena(&scratch));
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  GltfImporterTestCapture capture = {.allocator = &allocator};
+  VkrMeshLoaderGltfParseInfo parse_info = gltf_test_make_parse_info(
+      &allocator, &scratch, gltf_path, &error, &capture);
+  const bool8_t parsed = vkr_mesh_loader_gltf_parse(&parse_info);
+  GltfDecalCaseResult result = {
+      .parsed = parsed,
+      .error = error,
+      .primitive_count = capture.primitive_count,
+      .position_count = capture.first_position_count,
+  };
+  MemCopy(result.positions, capture.first_positions, sizeof(result.positions));
+
+  arena_destroy(scratch_arena);
+  arena_destroy(arena);
+  gltf_test_remove_source_files(stem);
+  gltf_test_remove_generated_material(stem);
+  return result;
 }
 
 static void test_gltf_import_basic_and_deterministic_mt(void) {
@@ -561,6 +672,62 @@ static void test_gltf_import_basic_and_deterministic_mt(void) {
   gltf_test_remove_generated_material(stem);
 
   printf("  test_gltf_import_basic_and_deterministic_mt PASSED\n");
+}
+
+static void test_gltf_import_applies_world_space_decal_offset(void) {
+  printf("  Running test_gltf_import_applies_world_space_decal_offset...\n");
+
+  const Vec3 normal = vec3_new(1.0f, 1.0f, 0.0f);
+  for (uint32_t case_index = 0; case_index < 2u; ++case_index) {
+    const GltfDecalCaseResult result = gltf_test_run_decal_case(
+        case_index == 0u ? "gltf_import_decal_offset"
+                         : "gltf_import_decal_untagged",
+        &normal, case_index == 0u ? "0.002" : NULL);
+    assert(result.parsed == true_v);
+    assert(result.error == VKR_RENDERER_ERROR_NONE);
+    assert(result.position_count == 3u);
+    const Vec3 transformed_normal =
+        vec3_normalize(vec3_new(0.5f, 1.0f / 3.0f, 0.0f));
+    const Vec3 offset =
+        case_index == 0u ? vec3_scale(transformed_normal, 0.002f) : vec3_zero();
+    assert(fabsf(result.positions[0].x - (10.0f + offset.x)) < 1e-5f);
+    assert(fabsf(result.positions[0].y - (20.0f + offset.y)) < 1e-5f);
+    assert(fabsf(result.positions[0].z - 30.0f) < 1e-5f);
+    assert(fabsf(result.positions[1].x - (12.0f + offset.x)) < 1e-5f);
+    assert(fabsf(result.positions[2].y - (23.0f + offset.y)) < 1e-5f);
+  }
+
+  printf("  test_gltf_import_applies_world_space_decal_offset PASSED\n");
+}
+
+static void test_gltf_import_rejects_invalid_decal_offset(void) {
+  printf("  Running test_gltf_import_rejects_invalid_decal_offset...\n");
+
+  const GltfDecalCaseResult result =
+      gltf_test_run_decal_case("gltf_import_decal_invalid", NULL, "\"2mm\"");
+  assert(result.parsed == false_v);
+  assert(result.error == VKR_RENDERER_ERROR_INVALID_PARAMETER);
+  assert(result.primitive_count == 0u);
+  printf("  test_gltf_import_rejects_invalid_decal_offset PASSED\n");
+}
+
+static void test_gltf_import_rejects_decal_without_valid_normal(void) {
+  printf("  Running test_gltf_import_rejects_decal_without_valid_normal...\n");
+
+  const Vec3 zero_normal = vec3_zero();
+  const GltfDecalCaseResult cases[] = {
+      gltf_test_run_decal_case("gltf_import_decal_missing_normal", NULL,
+                               "0.002"),
+      gltf_test_run_decal_case("gltf_import_decal_zero_normal", &zero_normal,
+                               "0.002"),
+  };
+  for (uint32_t i = 0; i < ArrayCount(cases); ++i) {
+    assert(cases[i].parsed == false_v);
+    assert(cases[i].error == VKR_RENDERER_ERROR_INVALID_PARAMETER);
+    assert(cases[i].primitive_count == 0u);
+  }
+
+  printf("  test_gltf_import_rejects_decal_without_valid_normal PASSED\n");
 }
 
 static void test_gltf_import_converts_texture_coordinates(void) {
@@ -1748,6 +1915,9 @@ bool32_t run_gltf_importer_tests(void) {
   printf("--- Starting glTF Importer Tests ---\n");
 
   test_gltf_import_basic_and_deterministic_mt();
+  test_gltf_import_applies_world_space_decal_offset();
+  test_gltf_import_rejects_invalid_decal_offset();
+  test_gltf_import_rejects_decal_without_valid_normal();
   test_gltf_import_converts_texture_coordinates();
   test_gltf_import_fails_without_position();
   test_gltf_import_rejects_data_uri_images();

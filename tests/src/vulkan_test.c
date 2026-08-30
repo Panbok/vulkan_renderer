@@ -337,6 +337,13 @@ static void test_shared_gpu_memory_and_abi_contracts(void) {
          48u);
   assert(vkr_gpu_abi_record(VKR_GPU_ABI_VISIBLE_DRAW_ROW)->expected_size ==
          32u);
+  const uint32_t candidate_flags = 0x5u;
+  const uint32_t packed_draw_state = vkr_gpu_draw_state_flags(
+      VKR_WORLD_DRAW_STATE_CUTOUT_DOUBLE_SIDED, candidate_flags);
+  assert((packed_draw_state & VKR_GPU_DRAW_STATE_BUCKET_MASK) ==
+         VKR_WORLD_DRAW_STATE_CUTOUT_DOUBLE_SIDED);
+  assert((packed_draw_state >> VKR_GPU_DRAW_STATE_BUCKET_BITS) ==
+         candidate_flags);
   assert(sizeof(VkrGpuDrawCompactionState) == 80u);
   assert(sizeof(VkrGpuTransmissionDiagnostics) == 116u);
   assert(offsetof(VkrGpuTransmissionDiagnostics, covered_pixels) == 80u);
