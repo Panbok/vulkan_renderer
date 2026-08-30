@@ -92,13 +92,13 @@ material-name heuristic, polygon offset, or per-draw branch. The exact authoring
 field and validation rules are specified in
 [gltf-loader-design.md](gltf-loader-design.md#geometric-decal-clearance).
 For externally distributed models, tracked `<source>.vkr.json` files carry the
-same explicit material values and enter the cooked dependency hash. Application
-build wrappers recook the production Bistro and New Sponza runtime meshes with
-the just-built cooker before texture packing, on both POSIX and Windows. This
-prevents a clean checkout from silently retaining a valid but pre-sidecar v15
-artifact. Those application build calls use strict inputs: a missing production
-source or tracked import sidecar fails the build instead of preserving a stale
-cooked mesh.
+same explicit material values and enter the cooked dependency hash. Mesh
+regeneration is explicit: run `tools/cook_vkr_meshes.sh` or
+`tools/cook_vkr_meshes.bat` after changing a source model or sidecar.
+Application build wrappers never recook `.vkb` artifacts; they run only the
+texture packer after compilation. Standalone cooks skip absent local model
+sources. With `VKR_MESH_COOK_STRICT_INPUTS=1`, every present source must have
+its tracked import sidecar.
 
 ### GPU representation
 

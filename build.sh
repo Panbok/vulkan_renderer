@@ -35,13 +35,5 @@ esac
 
   BUILD_TARGETS="vulkan_renderer vkr_harness vkr_mesh_cooker"
   cmake --build "./${BUILD_DIR}" --target $BUILD_TARGETS --config "${BUILD_TYPE}"
-  VKR_MESH_COOKER_BIN="$(pwd)/${BUILD_DIR}/tools/vkr_mesh_cooker"
-  if [ ! -x "${VKR_MESH_COOKER_BIN}" ]; then
-    VKR_MESH_COOKER_BIN="$(pwd)/${BUILD_DIR}/tools/${BUILD_TYPE}/vkr_mesh_cooker"
-  fi
-  VKR_MESH_COOKER_BIN="${VKR_MESH_COOKER_BIN}" \
-    VKR_MESH_COOK_STRICT_INPUTS=1 \
-    ./tools/cook_vkr_meshes.sh \
-    assets/models/New_Sponza_001.gltf \
-    assets/models/bistro-lights.gltf
+  ./tools/pack_vkt_textures.sh
 )

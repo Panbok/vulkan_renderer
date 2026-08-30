@@ -60,11 +60,8 @@ if errorlevel 1 goto :vkr_cmake_configure_failed
 echo Building vulkan_renderer (%BUILD_TYPE%)
 cmake --build ".\%BUILD_DIR%" --target vulkan_renderer vkr_harness vkr_mesh_cooker --config %BUILD_TYPE%
 if errorlevel 1 goto :vkr_build_failed
-set "VKR_MESH_COOKER_BIN=%REPO_ROOT%\%BUILD_DIR%\tools\vkr_mesh_cooker.exe"
-if not exist "%VKR_MESH_COOKER_BIN%" set "VKR_MESH_COOKER_BIN=%REPO_ROOT%\%BUILD_DIR%\tools\%BUILD_TYPE%\vkr_mesh_cooker.exe"
-set "VKR_MESH_COOK_STRICT_INPUTS=1"
-call "%REPO_ROOT%\tools\cook_vkr_meshes.bat" "assets\models\New_Sponza_001.gltf" "assets\models\bistro-lights.gltf"
-if errorlevel 1 goto :vkr_mesh_cook_failed
+call "%REPO_ROOT%\tools\pack_vkt_textures.bat"
+if errorlevel 1 goto :vkr_texture_pack_failed
 
 echo Build completed successfully!
 endlocal
@@ -78,6 +75,6 @@ exit /b 1
 echo Build failed.
 exit /b 1
 
-:vkr_mesh_cook_failed
-echo Mesh cooking or texture packing failed.
+:vkr_texture_pack_failed
+echo Texture packing failed.
 exit /b 1
