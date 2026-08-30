@@ -19,6 +19,12 @@
 #define VKR_GLTF_SPEC_GLOSS_CACHE_VERSION 3u
 #define VKR_GLTF_LINEAR_TO_SRGB_LUT_MAX 4096u
 #define VKR_GLTF_DECAL_NORMAL_OFFSET_MAX_METERS 0.1
+#define VKR_GLTF_IMPORT_SIDECAR_VERSION 1
+
+typedef struct VkrMeshLoaderGltfDecalOverrides {
+  float32_t *offsets;
+  uint32_t count;
+} VkrMeshLoaderGltfDecalOverrides;
 
 vkr_internal void
 vkr_mesh_loader_gltf_set_error(const VkrMeshLoaderGltfParseInfo *info,
@@ -1448,9 +1454,9 @@ vkr_internal Vec3 vkr_mesh_loader_gltf_transform_direction(Mat4 normal_matrix,
 
 vkr_internal bool8_t vkr_mesh_loader_gltf_decal_normal_offset(
     const VkrMeshLoaderGltfParseInfo *info, const cgltf_material *material,
-    float32_t *out_offset_meters) {
+    float32_t sidecar_offset_meters, float32_t *out_offset_meters) {
   assert_log(out_offset_meters != NULL, "Out decal offset is NULL");
-  *out_offset_meters = 0.0f;
+  *out_offset_meters = sidecar_offset_meters;
   if (!material || !material->extras.data) {
     return true_v;
   }
@@ -1479,10 +1485,146 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_decal_normal_offset(
   return true_v;
 }
 
+vkr_internal bool8_t vkr_mesh_loader_gltf_read_decal_overrides(
+    const VkrMeshLoaderGltfParseInfo *info, const cgltf_data *data,
+    VkrMeshLoaderGltfDecalOverrides *out_overrides) {
+  assert_log(out_overrides != NULL, "Out decal overrides are NULL");
+  *out_overrides = (VkrMeshLoaderGltfDecalOverrides){0};
+
+  String8 sidecar_path = string8_create_formatted(
+      info->scratch_allocator, "%.*s.vkr.json",
+      (int32_t)info->source_path.length, info->source_path.str);
+  if (!vkr_mesh_loader_gltf_path_exists(info->scratch_allocator,
+                                        sidecar_path)) {
+    return true_v;
+  }
+
+  FilePathType type = vkr_mesh_loader_gltf_path_is_absolute(sidecar_path)
+                          ? FILE_PATH_TYPE_ABSOLUTE
+                          : FILE_PATH_TYPE_RELATIVE;
+  FilePath path = file_path_create((const char *)sidecar_path.str,
+                                   info->scratch_allocator, type);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  bitset8_set(&mode, FILE_MODE_BINARY);
+  FileHandle file = {0};
+  if (file_open(&path, mode, &file) != FILE_ERROR_NONE) {
+    log_error("MeshLoader(glTF): failed to open import sidecar '%.*s'",
+              (int32_t)sidecar_path.length, sidecar_path.str);
+    vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_FILE_NOT_FOUND);
+    return false_v;
+  }
+
+  uint8_t *bytes = NULL;
+  uint64_t byte_count = 0;
+  FileError read_error =
+      file_read_all(&file, info->scratch_allocator, &bytes, &byte_count);
+  file_close(&file);
+  if (read_error != FILE_ERROR_NONE || !bytes || byte_count == 0) {
+    log_error("MeshLoader(glTF): failed to read import sidecar '%.*s'",
+              (int32_t)sidecar_path.length, sidecar_path.str);
+    vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_FILE_NOT_FOUND);
+    return false_v;
+  }
+
+  VkrJsonReader reader = vkr_json_reader_create(bytes, byte_count);
+  int32_t schema_version = 0;
+  if (!vkr_json_get_int(&reader, "schema_version", &schema_version) ||
+      schema_version != VKR_GLTF_IMPORT_SIDECAR_VERSION ||
+      !vkr_json_find_array(&reader, "materials")) {
+    log_error("MeshLoader(glTF): invalid import sidecar '%.*s'",
+              (int32_t)sidecar_path.length, sidecar_path.str);
+    vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_INVALID_PARAMETER);
+    return false_v;
+  }
+
+  float32_t *offsets = NULL;
+  if (data->materials_count > 0) {
+    offsets = (float32_t *)vkr_allocator_alloc(info->scratch_allocator,
+                                               (uint64_t)data->materials_count *
+                                                   sizeof(float32_t),
+                                               VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!offsets) {
+      vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
+      return false_v;
+    }
+    MemZero(offsets, (uint64_t)data->materials_count * sizeof(float32_t));
+  }
+
+  while (vkr_json_next_array_element(&reader)) {
+    VkrJsonReader entry = {0};
+    String8 material_name = {0};
+    float64_t offset_meters = 0.0;
+    if (!vkr_json_enter_object(&reader, &entry) ||
+        !vkr_json_get_string(&entry, "name", &material_name) ||
+        material_name.length == 0 ||
+        !vkr_json_get_double(&entry, "vkr_decal_normal_offset_meters",
+                             &offset_meters) ||
+        !isfinite(offset_meters) || offset_meters <= 0.0 ||
+        offset_meters > VKR_GLTF_DECAL_NORMAL_OFFSET_MAX_METERS) {
+      log_error("MeshLoader(glTF): invalid material entry in import sidecar "
+                "'%.*s'",
+                (int32_t)sidecar_path.length, sidecar_path.str);
+      vkr_mesh_loader_gltf_set_error(info,
+                                     VKR_RENDERER_ERROR_INVALID_PARAMETER);
+      return false_v;
+    }
+
+    uint32_t matches = 0;
+    for (uint32_t i = 0; i < (uint32_t)data->materials_count; ++i) {
+      const cgltf_material *material = &data->materials[i];
+      if (!material->name ||
+          string_length(material->name) != material_name.length ||
+          MemCompare(material->name, material_name.str, material_name.length) !=
+              0) {
+        continue;
+      }
+      if (offsets[i] > 0.0f) {
+        log_error("MeshLoader(glTF): duplicate material '%.*s' in import "
+                  "sidecar '%.*s'",
+                  (int32_t)material_name.length, material_name.str,
+                  (int32_t)sidecar_path.length, sidecar_path.str);
+        vkr_mesh_loader_gltf_set_error(info,
+                                       VKR_RENDERER_ERROR_INVALID_PARAMETER);
+        return false_v;
+      }
+      offsets[i] = (float32_t)offset_meters;
+      matches++;
+    }
+    if (matches == 0) {
+      log_error("MeshLoader(glTF): import sidecar '%.*s' names unknown "
+                "material '%.*s'",
+                (int32_t)sidecar_path.length, sidecar_path.str,
+                (int32_t)material_name.length, material_name.str);
+      vkr_mesh_loader_gltf_set_error(info,
+                                     VKR_RENDERER_ERROR_INVALID_PARAMETER);
+      return false_v;
+    }
+  }
+  vkr_json_skip_whitespace(&reader);
+  if (reader.pos >= reader.length || reader.data[reader.pos] != ']') {
+    log_error("MeshLoader(glTF): malformed materials array in import sidecar "
+              "'%.*s'",
+              (int32_t)sidecar_path.length, sidecar_path.str);
+    vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_INVALID_PARAMETER);
+    return false_v;
+  }
+
+  if (info->out_dependency_paths) {
+    vkr_mesh_loader_gltf_push_unique_path(info->out_dependency_paths,
+                                          sidecar_path, info->load_allocator);
+  }
+  out_overrides->offsets = offsets;
+  out_overrides->count = (uint32_t)data->materials_count;
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
     const VkrMeshLoaderGltfParseInfo *info, const cgltf_data *data,
     const cgltf_primitive *primitive, Mat4 world, Mat4 normal_matrix,
-    const String8 *material_paths, uint32_t *in_out_primitive_count) {
+    const String8 *material_paths,
+    const VkrMeshLoaderGltfDecalOverrides *decal_overrides,
+    uint32_t *in_out_primitive_count) {
   if (!info || !data || !primitive || !in_out_primitive_count) {
     return false_v;
   }
@@ -1516,7 +1658,15 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
       cgltf_find_accessor(primitive, cgltf_attribute_type_color, 0);
 
   float32_t decal_normal_offset_meters = 0.0f;
+  float32_t sidecar_offset_meters = 0.0f;
+  if (primitive->material && decal_overrides && decal_overrides->offsets) {
+    cgltf_size material_index = cgltf_material_index(data, primitive->material);
+    if (material_index < decal_overrides->count) {
+      sidecar_offset_meters = decal_overrides->offsets[material_index];
+    }
+  }
   if (!vkr_mesh_loader_gltf_decal_normal_offset(info, primitive->material,
+                                                sidecar_offset_meters,
                                                 &decal_normal_offset_meters)) {
     return false_v;
   }
@@ -1673,6 +1823,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
 vkr_internal bool8_t vkr_mesh_loader_gltf_emit_node(
     const VkrMeshLoaderGltfParseInfo *info, const cgltf_data *data,
     const cgltf_node *node, const String8 *material_paths,
+    const VkrMeshLoaderGltfDecalOverrides *decal_overrides,
     uint32_t *in_out_primitive_count) {
   if (!info || !data || !node || !in_out_primitive_count) {
     return false_v;
@@ -1689,7 +1840,8 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_node(
          ++primitive_index) {
       if (!vkr_mesh_loader_gltf_emit_primitive(
               info, data, &node->mesh->primitives[primitive_index], world,
-              normal_matrix, material_paths, in_out_primitive_count)) {
+              normal_matrix, material_paths, decal_overrides,
+              in_out_primitive_count)) {
         return false_v;
       }
     }
@@ -1697,7 +1849,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_node(
 
   for (uint32_t i = 0; i < (uint32_t)node->children_count; ++i) {
     if (!vkr_mesh_loader_gltf_emit_node(info, data, node->children[i],
-                                        material_paths,
+                                        material_paths, decal_overrides,
                                         in_out_primitive_count)) {
       return false_v;
     }
@@ -1874,6 +2026,13 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_run_parse(
 
     vkr_mesh_loader_gltf_collect_dependencies(info, data);
 
+    VkrMeshLoaderGltfDecalOverrides decal_overrides = {0};
+    if (!vkr_mesh_loader_gltf_read_decal_overrides(info, data,
+                                                   &decal_overrides)) {
+      ok = false_v;
+      break;
+    }
+
     String8 *material_paths = NULL;
     if (data->materials_count > 0) {
       material_paths = (String8 *)vkr_allocator_alloc(
@@ -1904,7 +2063,8 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_run_parse(
     if (scene) {
       for (uint32_t i = 0; i < (uint32_t)scene->nodes_count; ++i) {
         if (!vkr_mesh_loader_gltf_emit_node(info, data, scene->nodes[i],
-                                            material_paths, &primitive_count)) {
+                                            material_paths, &decal_overrides,
+                                            &primitive_count)) {
           ok = false_v;
           break;
         }
@@ -1916,6 +2076,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_run_parse(
           continue;
         }
         if (!vkr_mesh_loader_gltf_emit_node(info, data, node, material_paths,
+                                            &decal_overrides,
                                             &primitive_count)) {
           ok = false_v;
           break;

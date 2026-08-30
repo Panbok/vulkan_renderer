@@ -91,6 +91,14 @@ quantization. Cooked decode and both GPU backends need no decal metadata,
 material-name heuristic, polygon offset, or per-draw branch. The exact authoring
 field and validation rules are specified in
 [gltf-loader-design.md](gltf-loader-design.md#geometric-decal-clearance).
+For externally distributed models, tracked `<source>.vkr.json` files carry the
+same explicit material values and enter the cooked dependency hash. Application
+build wrappers recook the production Bistro and New Sponza runtime meshes with
+the just-built cooker before texture packing, on both POSIX and Windows. This
+prevents a clean checkout from silently retaining a valid but pre-sidecar v15
+artifact. Those application build calls use strict inputs: a missing production
+source or tracked import sidecar fails the build instead of preserving a stale
+cooked mesh.
 
 ### GPU representation
 

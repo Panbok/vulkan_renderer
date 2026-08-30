@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "materials": [
+    {
+      "name": "LMBR_000005f_Decals",
+      "vkr_decal_normal_offset_meters": 0.002
+    },
+    {
+      "name": "LMBR_0000060_Decal_Bottomdirt",
+      "vkr_decal_normal_offset_meters": 0.002
+    },
+    {
+      "name": "LMBR_0000061_Decal_Crack",
+      "vkr_decal_normal_offset_meters": 0.002
+    },
+    {
+      "name": "LMBR_0000037_edge_decals",
+      "vkr_decal_normal_offset_meters": 0.002
+    },
+    {
+      "name": "LMBR_00000cb_glass_ornament",
+      "vkr_decal_normal_offset_meters": 0.002
+    },
+    {
+      "name": "LMBR_00000ed_Paris_LiquorBottle_01_Labels",
+      "vkr_decal_normal_offset_meters": 0.001
+    },
+    {
+      "name": "LMBR_0000107_Details",
+      "vkr_decal_normal_offset_meters": 0.0005
+    }
+  ]
+}

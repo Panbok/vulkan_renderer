@@ -129,6 +129,28 @@ provide finite, non-degenerate `NORMAL` data; malformed values and invalid
 normals fail the source load. Material names, texture paths, and alpha modes
 never imply decal behavior.
 
+Ignored or externally distributed source models may provide the same data in a
+tracked `<source>.vkr.json` sidecar:
+
+```json
+{
+  "schema_version": 1,
+  "materials": [
+    {
+      "name": "dirt_decal",
+      "vkr_decal_normal_offset_meters": 0.002
+    }
+  ]
+}
+```
+
+The importer matches sidecar entries against exact glTF material names. It
+rejects an unsupported schema version, malformed or duplicate entries, unknown
+material names, and the same invalid numeric range as embedded metadata. An
+embedded material value takes precedence over its matching sidecar value. The
+sidecar is a source dependency in cooked provenance, so changing it changes the
+cooked content hash. It is never consulted when loading the resulting `.vkb`.
+
 The importer first transforms the position into world space and transforms the
 normal with the inverse-transpose matrix. It normalizes that normal, then adds
 `world_normal * vkr_decal_normal_offset_meters` to the world position. This
@@ -140,8 +162,9 @@ error budget.
 The offset is baked before deduplication, bounds generation, and packed
 quantization. A cooked `.vkb` therefore contains the displaced geometry and
 does not retain or evaluate decal metadata at runtime. Materials without the
-field preserve the ordinary import path exactly. This is a geometric-overlay
-contract, not a projected-decal system, depth bias, or draw-order override.
+field or a matching sidecar entry preserve the ordinary import path exactly.
+This is a geometric-overlay contract, not a projected-decal system, depth bias,
+or draw-order override.
 
 ### Coordinate System
 

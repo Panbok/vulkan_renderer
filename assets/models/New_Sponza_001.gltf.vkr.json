@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "materials": [
+    {
+      "name": "dirt_decal",
+      "vkr_decal_normal_offset_meters": 0.002
+    }
+  ]
+}

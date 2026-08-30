@@ -30,9 +30,12 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-call "%~dp0tools\pack_vkt_textures.bat"
+set "VKR_MESH_COOKER_BIN=%CD%\build_release_info\tools\vkr_mesh_cooker.exe"
+if not exist "%VKR_MESH_COOKER_BIN%" set "VKR_MESH_COOKER_BIN=%CD%\build_release_info\tools\RelWithDebInfo\vkr_mesh_cooker.exe"
+set "VKR_MESH_COOK_STRICT_INPUTS=1"
+call "%~dp0tools\cook_vkr_meshes.bat" "assets\models\New_Sponza_001.gltf" "assets\models\bistro-lights.gltf"
 if %errorlevel% neq 0 (
-    echo Texture packing failed.
+    echo Mesh cooking or texture packing failed.
     exit /b 1
 )
 

@@ -17,7 +17,8 @@ assets/textures/*
 !assets/textures/citrus_orchard_puresky_4k.hdr
 !assets/textures/citrus_orchard_puresky_4k.hdr.license.md
 !assets/textures/bistro_indoor_probe_*.png
-assets/models
+assets/models/*
+!assets/models/*.vkr.json
 assets/meters
 assets/materials
 assets/scenes/*

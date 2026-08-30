@@ -42,8 +42,16 @@ exit /b 0
 :cook
 set "SOURCE=%~1"
 if not exist "%SOURCE%" (
+    if "%VKR_MESH_COOK_STRICT_INPUTS%"=="1" (
+        echo Mesh cook step failed: required source is missing: %SOURCE% 1>&2
+        exit /b 1
+    )
     echo Mesh cook step skipped missing source: %SOURCE% 1>&2
     exit /b 0
+)
+if "%VKR_MESH_COOK_STRICT_INPUTS%"=="1" if not exist "%SOURCE%.vkr.json" (
+    echo Mesh cook step failed: required import sidecar is missing: %SOURCE%.vkr.json 1>&2
+    exit /b 1
 )
 for %%F in ("%SOURCE%") do set "SOURCE_ABSOLUTE=%%~fF"
 set "REPOSITORY_SOURCE=!SOURCE_ABSOLUTE:%REPO_ROOT%\=!"
