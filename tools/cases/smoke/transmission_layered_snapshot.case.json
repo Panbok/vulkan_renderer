@@ -2,7 +2,7 @@
   "schema_version": 1,
   "id": "smoke.transmission.layered.snapshot",
   "suite": "smoke",
-  "description": "Graph-declared HDR feedback through two opaque-alpha transmissive layers.",
+  "description": "Four-layer production feedback plus a capture-gated fifth-surface diagnostic through three closed transmissive panes.",
   "scene": "assets/scenes/fixtures/layered_glass.scene.json",
   "seed": 7,
   "resolution": [960, 720],
@@ -21,6 +21,7 @@
     "skybox": true,
     "shadow_preset": "balanced",
     "shadow_cascades": 4,
+    "transmission_depth_diagnostic_enabled": true,
     "render_mode": "default"
   },
   "camera": {
@@ -36,6 +37,17 @@
     ]
   },
   "captures": [
-    { "at_frame": 0, "channels": ["final_color", "scene_color"] }
+    { "at_frame": 0, "channels": ["final_color", "scene_color", "transmission_visibility_ids_layer_4"] }
+  ],
+  "assertions": [
+    { "metric": "draw.world.transmission_draws", "stat": "min", "min": 3 },
+    { "metric": "visibility.transmission.covered_pixels.layer_0", "stat": "min", "min": 1 },
+    { "metric": "visibility.transmission.covered_pixels.layer_1", "stat": "min", "min": 1 },
+    { "metric": "visibility.transmission.covered_pixels.layer_2", "stat": "min", "min": 1 },
+    { "metric": "visibility.transmission.covered_pixels.layer_3", "stat": "min", "min": 1 },
+    { "metric": "visibility.transmission.covered_pixels.layer_4", "stat": "min", "min": 1 },
+    { "metric": "visibility.transmission.gpu_visible.overflow", "stat": "max", "max": 0 },
+    { "metric": "visibility.transmission.compact_pixels.overflow", "stat": "max", "max": 0 },
+    { "metric": "visibility.transmission.resolve_invalid", "stat": "max", "max": 0 }
   ]
 }

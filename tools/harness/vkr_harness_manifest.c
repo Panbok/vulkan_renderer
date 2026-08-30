@@ -441,6 +441,7 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
                                         "taa_enabled",
                                         "tonemap_enabled",
                                         "fxaa_enabled",
+                                        "transmission_depth_diagnostic_enabled",
                                         "backend",
                                         "shadow_preset",
                                         "shadow_cascades",
@@ -516,6 +517,9 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
                                  &renderer->tonemap_enabled, error) ||
       !vkr_harness_manifest_bool(doc, token, "fxaa_enabled", false_v,
                                  &renderer->fxaa_enabled, error) ||
+      !vkr_harness_manifest_bool(
+          doc, token, "transmission_depth_diagnostic_enabled", false_v,
+          &renderer->transmission_depth_diagnostic_enabled, error) ||
       !vkr_harness_manifest_string(doc, token, "backend", false_v,
                                    renderer->backend, sizeof(renderer->backend),
                                    error) ||

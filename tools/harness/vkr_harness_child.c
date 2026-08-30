@@ -991,6 +991,8 @@ vkr_harness_child_apply_renderer(Application *application,
   }
   application->renderer.shadow_debug_mode =
       case_manifest->renderer.shadow_debug_mode;
+  application->renderer.transmission_depth_diagnostic_enabled =
+      case_manifest->renderer.transmission_depth_diagnostic_enabled;
   application->renderer.ibl_probe_limit =
       case_manifest->renderer.ibl_probe_limit;
   application->renderer.temporal_enabled = case_manifest->renderer.taa_enabled;

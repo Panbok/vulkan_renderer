@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "smoke.transmission.bistro.bar_glassware",
+  "suite": "smoke",
+  "description": "Transmission term-isolation observation of dense Bistro bar glassware near the peel bound.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 35,
+  "resolution": [1280, 720],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 300000,
+  "asset_ready_timeout_ms": 180000,
+  "frames": { "warmup": 256, "measure": 1 },
+  "renderer": { "editor": false, "skybox": true, "taa_enabled": false, "exposure_mode": "manual", "manual_exposure": 0.3, "shadow_preset": "balanced", "shadow_cascades": 4, "transmission_depth_diagnostic_enabled": true, "render_mode": "default" },
+  "camera": { "mode": "static", "position": [-5.03, 2.24, 9.73], "yaw": -20.34, "pitch": -7.77, "vertical_fov_degrees": 70, "near_plane": 0.1, "far_plane": 500 },
+  "compare": { "max_pixel_delta": 0.0078431373, "max_mean_absolute_error": 0.0003921569, "max_failed_pixel_ratio": 0.001, "emit_diff": true },
+  "captures": [
+    { "at_frame": 0, "channels": ["final_color", "unlit", "lighting", "direct_diffuse", "direct_specular", "transmission_visibility_ids", "transmission_visibility_primitives", "transmission_visibility_ids_layer_4"] }
+  ],
+  "assertions": [
+    { "metric": "draw.world.transmission_draws", "stat": "min", "min": 1 },
+    { "metric": "visibility.transmission.gpu_visible.count", "stat": "min", "min": 1 },
+    { "metric": "visibility.transmission.covered_pixels.layer_0", "stat": "min", "min": 1 },
+    { "metric": "visibility.transmission.gpu_visible.overflow", "stat": "max", "max": 0 },
+    { "metric": "visibility.transmission.compact_pixels.overflow", "stat": "max", "max": 0 },
+    { "metric": "visibility.transmission.resolve_invalid", "stat": "max", "max": 0 }
+  ]
+}

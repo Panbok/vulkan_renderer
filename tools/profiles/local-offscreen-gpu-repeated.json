@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "local.offscreen_gpu.repeated",
+  "description": "Non-authoritative repeated offscreen GPU timing for dirty-worktree iteration.",
+  "authoritative": false,
+  "dirty_policy": "allow",
+  "environment": {
+    "target": "offscreen",
+    "required_present": "none",
+    "require_actual_present": false
+  },
+  "instrumentation": {
+    "gpu_timing": true,
+    "event_subjects": false
+  },
+  "execution": {
+    "minimum_repetitions": 5,
+    "warmup_stability_window": 30,
+    "warmup_stability_metric": "visibility.transmission.covered_pixels.layer_0",
+    "warmup_max_drift_ratio": 0.0,
+    "require_warmup_stability": true,
+    "exclusive_gpu_lane": true
+  },
+  "required_metrics": [
+    "frame.wall",
+    "cpu.render_prepare",
+    "cpu.render_submit",
+    "draw.world.calls_issued",
+    "visibility.transmission.covered_pixels.layer_0"
+  ]
+}

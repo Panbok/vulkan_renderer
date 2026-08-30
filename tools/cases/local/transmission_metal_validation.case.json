@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "id": "local.transmission.metal_validation",
+  "suite": "local",
+  "description": "Single-process Metal API and shader validation witness for production transmission.",
+  "scene": "assets/scenes/fixtures/transmission_analytic.scene.json",
+  "seed": 31,
+  "resolution": [960, 540],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 180000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": { "warmup": 2, "measure": 1 },
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "backend": "metal",
+    "taa_enabled": false,
+    "exposure_mode": "manual",
+    "manual_exposure": 0.3,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [0, 1.45, 5.5],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 58,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "captures": [
+    { "at_frame": 0, "channels": ["final_color"] }
+  ],
+  "assertions": [
+    { "metric": "visibility.transmission.gpu_candidates.count", "stat": "min", "min": 7 },
+    { "metric": "visibility.transmission.gpu_candidates.count", "stat": "max", "max": 7 },
+    { "metric": "visibility.transmission.gpu_visible.overflow", "stat": "max", "max": 0 },
+    { "metric": "visibility.transmission.compact_pixels.overflow", "stat": "max", "max": 0 },
+    { "metric": "visibility.transmission.resolve_invalid", "stat": "max", "max": 0 }
+  ]
+}

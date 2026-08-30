@@ -263,6 +263,8 @@ typedef struct VkrHarnessRendererConfig {
   bool8_t tonemap_enabled;
   /** Whether the fullscreen FXAA stage is enabled. */
   bool8_t fxaa_enabled;
+  /** Enables the capture-only fifth transmission peel on every case frame. */
+  bool8_t transmission_depth_diagnostic_enabled;
 } VkrHarnessRendererConfig;
 
 typedef struct VkrHarnessCompareConfig {

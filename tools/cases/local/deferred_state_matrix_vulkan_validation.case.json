@@ -51,6 +51,7 @@
     { "metric": "visibility.gpu_visible.overflow", "stat": "max", "max": 0 },
     { "metric": "visibility.transmission.gpu_visible.overflow", "stat": "max", "max": 0 },
     { "metric": "visibility.transmission.compact_pixels.overflow", "stat": "max", "max": 0 },
+    { "metric": "visibility.transmission.resolve_invalid", "stat": "max", "max": 0 },
     { "metric": "visibility.gbuffer.resolve_invalid", "stat": "max", "max": 0 },
     { "metric": "geometry.megabuffer.rejected_publications_total", "stat": "max", "max": 0 }
   ]

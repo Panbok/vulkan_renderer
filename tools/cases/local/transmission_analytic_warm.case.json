@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "id": "local.transmission.analytic.warm",
+  "suite": "local",
+  "description": "Warm pipeline-cache witness for the production transmission shader and graph.",
+  "scene": "assets/scenes/fixtures/transmission_analytic.scene.json",
+  "seed": 31,
+  "resolution": [960, 540],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 180000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": { "warmup": 32, "measure": 1 },
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "taa_enabled": false,
+    "exposure_mode": "manual",
+    "manual_exposure": 0.3,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [0, 1.45, 5.5],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 58,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "assertions": [
+    { "metric": "draw.world.transmission_draws", "stat": "min", "min": 7 },
+    { "metric": "draw.world.transmission_draws", "stat": "max", "max": 7 },
+    { "metric": "visibility.transmission.gpu_visible.count", "stat": "min", "min": 7 },
+    { "metric": "visibility.transmission.gpu_visible.overflow", "stat": "max", "max": 0 },
+    { "metric": "visibility.transmission.compact_pixels.overflow", "stat": "max", "max": 0 },
+    { "metric": "visibility.transmission.resolve_invalid", "stat": "max", "max": 0 }
+  ]
+}

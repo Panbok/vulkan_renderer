@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "smoke.transmission.bistro.exterior_door",
+  "suite": "smoke",
+  "description": "Owner-reported Bistro front-door pane reproduction with linear pre/post-transmission and material diagnostics.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 32,
+  "resolution": [1600, 1200],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 300000,
+  "asset_ready_timeout_ms": 180000,
+  "frames": { "warmup": 256, "measure": 1 },
+  "renderer": { "editor": false, "skybox": true, "taa_enabled": true, "exposure_mode": "automatic", "manual_exposure": 0.3, "exposure_compensation_ev": 0.0, "exposure_reset_frame": 4294967295, "shadow_preset": "balanced", "shadow_cascades": 4, "transmission_depth_diagnostic_enabled": true, "render_mode": "default" },
+  "camera": { "mode": "static", "position": [-15.5690918, 2.34184408, 12.7591], "yaw": -23.1002293, "pitch": -11.106061, "vertical_fov_degrees": 70, "near_plane": 0.100000001, "far_plane": 500 },
+  "compare": { "max_pixel_delta": 0.0078431373, "max_mean_absolute_error": 0.0003921569, "max_failed_pixel_ratio": 0.001, "emit_diff": true },
+  "captures": [
+    { "at_frame": 0, "channels": ["final_color", "material_params", "transmission_visibility_ids", "transmission_visibility_ids_layer_4", "hdr_pre_transmission", "hdr_post_transmission"] }
+  ],
+  "assertions": [
+    { "metric": "draw.world.transmission_draws", "stat": "min", "min": 1 },
+    { "metric": "visibility.transmission.gpu_visible.count", "stat": "min", "min": 1 },
+    { "metric": "visibility.transmission.covered_pixels.layer_0", "stat": "min", "min": 1 },
+    { "metric": "visibility.transmission.gpu_visible.overflow", "stat": "max", "max": 0 },
+    { "metric": "visibility.transmission.compact_pixels.overflow", "stat": "max", "max": 0 },
+    { "metric": "visibility.transmission.resolve_invalid", "stat": "max", "max": 0 }
+  ]
+}
