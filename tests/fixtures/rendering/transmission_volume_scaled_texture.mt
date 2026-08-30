@@ -1,0 +1,15 @@
+name=transmission_volume_scaled_texture
+type=pbr
+base_color=1.0,1.0,1.0,1.0
+metallic=0.0
+roughness=0.05
+transmission_factor=1.0
+ior=1.5
+thickness_factor=0.35
+thickness_texture=assets/textures/defaultwhite.jpg
+attenuation_color=0.72,0.9,1.0
+attenuation_distance=1.5
+alpha_mode=opaque
+double_sided=true
+shader=shader.pbr.world
+pipeline=world

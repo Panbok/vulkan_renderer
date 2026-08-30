@@ -53,6 +53,7 @@
 #include "texture_vkt_tests.h"
 #include "threads_test.h"
 #include "transform_test.h"
+#include "transmission_test.h"
 #include "vec_test.h"
 #include "vector_test.h"
 #include "visibility_test.h"

@@ -138,17 +138,16 @@ static void test_packet_frame_flags(void) {
   VkrFrameLighting lighting = {.ibl_enabled = true_v};
   VkrRenderPacket packet = {.lighting = &lighting};
 
-  assert(vkr_packet_derive_frame_flags(&packet, true_v, true_v, false_v) ==
+  assert(vkr_packet_derive_frame_flags(&packet, true_v, true_v) ==
          (VKR_PACKET_FRAME_FLAG_LIGHTING | VKR_PACKET_FRAME_FLAG_IBL));
-  assert(vkr_packet_derive_frame_flags(&packet, true_v, false_v, true_v) ==
-         (VKR_PACKET_FRAME_FLAG_LIGHTING | VKR_PACKET_FRAME_FLAG_TRANSMISSION));
-  assert(vkr_packet_derive_frame_flags(&packet, false_v, true_v, false_v) ==
-         0u);
-  lighting.ibl_enabled = false_v;
-  assert(vkr_packet_derive_frame_flags(&packet, true_v, true_v, false_v) ==
+  assert(vkr_packet_derive_frame_flags(&packet, true_v, false_v) ==
          VKR_PACKET_FRAME_FLAG_LIGHTING);
-  assert(vkr_packet_derive_frame_flags(NULL, true_v, true_v, true_v) ==
-         (VKR_PACKET_FRAME_FLAG_LIGHTING | VKR_PACKET_FRAME_FLAG_TRANSMISSION));
+  assert(vkr_packet_derive_frame_flags(&packet, false_v, true_v) == 0u);
+  lighting.ibl_enabled = false_v;
+  assert(vkr_packet_derive_frame_flags(&packet, true_v, true_v) ==
+         VKR_PACKET_FRAME_FLAG_LIGHTING);
+  assert(vkr_packet_derive_frame_flags(NULL, true_v, true_v) ==
+         VKR_PACKET_FRAME_FLAG_LIGHTING);
   printf("  test_packet_frame_flags PASSED\n");
 }
 

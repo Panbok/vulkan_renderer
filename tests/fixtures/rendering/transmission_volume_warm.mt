@@ -1,0 +1,9 @@
+name=transmission_volume_warm
+type=pbr
+base_color=1.0,0.12,0.02,1.0
+metallic=0.0
+roughness=1.0
+emissive_factor=1.0,0.12,0.02
+alpha_mode=opaque
+shader=shader.pbr.world
+pipeline=world

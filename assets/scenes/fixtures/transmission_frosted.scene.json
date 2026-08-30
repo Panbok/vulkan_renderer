@@ -1,0 +1,98 @@
+{
+  "version": 2,
+  "entities": [
+    {
+      "name": "Root",
+      "parent": null,
+      "transform": { "pos": [0, 0, 0], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] }
+    },
+    {
+      "name": "CoolBackdrop",
+      "parent": 0,
+      "transform": { "pos": [0, 1.4, -3.0], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "shape": {
+        "type": "cube",
+        "dimensions": [8.0, 3.6, 0.25],
+        "material": { "name": "transmission_analytic_background", "path": "tests/fixtures/rendering/transmission_analytic_background.mt" }
+      }
+    },
+    {
+      "name": "WarmStripe0",
+      "parent": 0,
+      "transform": { "pos": [-3.2, 1.4, -2.75], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "shape": { "type": "cube", "dimensions": [0.18, 3.5, 0.2], "material": { "name": "transmission_volume_warm", "path": "tests/fixtures/rendering/transmission_volume_warm.mt" } }
+    },
+    {
+      "name": "WarmStripe1",
+      "parent": 0,
+      "transform": { "pos": [-2.4, 1.4, -2.75], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "shape": { "type": "cube", "dimensions": [0.18, 3.5, 0.2], "material": { "name": "transmission_volume_warm", "path": "tests/fixtures/rendering/transmission_volume_warm.mt" } }
+    },
+    {
+      "name": "WarmStripe2",
+      "parent": 0,
+      "transform": { "pos": [-1.6, 1.4, -2.75], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "shape": { "type": "cube", "dimensions": [0.18, 3.5, 0.2], "material": { "name": "transmission_volume_warm", "path": "tests/fixtures/rendering/transmission_volume_warm.mt" } }
+    },
+    {
+      "name": "WarmStripe3",
+      "parent": 0,
+      "transform": { "pos": [-0.8, 1.4, -2.75], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "shape": { "type": "cube", "dimensions": [0.18, 3.5, 0.2], "material": { "name": "transmission_volume_warm", "path": "tests/fixtures/rendering/transmission_volume_warm.mt" } }
+    },
+    {
+      "name": "WarmStripe4",
+      "parent": 0,
+      "transform": { "pos": [0.0, 1.4, -2.75], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "shape": { "type": "cube", "dimensions": [0.18, 3.5, 0.2], "material": { "name": "transmission_volume_warm", "path": "tests/fixtures/rendering/transmission_volume_warm.mt" } }
+    },
+    {
+      "name": "WarmStripe5",
+      "parent": 0,
+      "transform": { "pos": [0.8, 1.4, -2.75], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "shape": { "type": "cube", "dimensions": [0.18, 3.5, 0.2], "material": { "name": "transmission_volume_warm", "path": "tests/fixtures/rendering/transmission_volume_warm.mt" } }
+    },
+    {
+      "name": "WarmStripe6",
+      "parent": 0,
+      "transform": { "pos": [1.6, 1.4, -2.75], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "shape": { "type": "cube", "dimensions": [0.18, 3.5, 0.2], "material": { "name": "transmission_volume_warm", "path": "tests/fixtures/rendering/transmission_volume_warm.mt" } }
+    },
+    {
+      "name": "WarmStripe7",
+      "parent": 0,
+      "transform": { "pos": [2.4, 1.4, -2.75], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "shape": { "type": "cube", "dimensions": [0.18, 3.5, 0.2], "material": { "name": "transmission_volume_warm", "path": "tests/fixtures/rendering/transmission_volume_warm.mt" } }
+    },
+    {
+      "name": "WarmStripe8",
+      "parent": 0,
+      "transform": { "pos": [3.2, 1.4, -2.75], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "shape": { "type": "cube", "dimensions": [0.18, 3.5, 0.2], "material": { "name": "transmission_volume_warm", "path": "tests/fixtures/rendering/transmission_volume_warm.mt" } }
+    },
+    {
+      "name": "Smooth",
+      "parent": 0,
+      "transform": { "pos": [-2.4, 1.4, -0.65], "rot": [0, 0.20, 0, 0.979796], "scale": [1, 1, 1] },
+      "shape": { "type": "cube", "dimensions": [1.25, 2.5, 0.14], "material": { "name": "transmission_frosted_smooth", "path": "tests/fixtures/rendering/transmission_frosted_smooth.mt" } }
+    },
+    {
+      "name": "LowRoughnessLowIor",
+      "parent": 0,
+      "transform": { "pos": [-0.8, 1.4, -0.65], "rot": [0, 0.20, 0, 0.979796], "scale": [1, 1, 1] },
+      "shape": { "type": "cube", "dimensions": [1.25, 2.5, 0.14], "material": { "name": "transmission_frosted_low", "path": "tests/fixtures/rendering/transmission_frosted_low.mt" } }
+    },
+    {
+      "name": "MediumRoughness",
+      "parent": 0,
+      "transform": { "pos": [0.8, 1.4, -0.65], "rot": [0, 0.20, 0, 0.979796], "scale": [1, 1, 1] },
+      "shape": { "type": "cube", "dimensions": [1.25, 2.5, 0.14], "material": { "name": "transmission_frosted_medium", "path": "tests/fixtures/rendering/transmission_frosted_medium.mt" } }
+    },
+    {
+      "name": "HighRoughnessHighIor",
+      "parent": 0,
+      "transform": { "pos": [2.4, 1.4, -0.65], "rot": [0, 0.20, 0, 0.979796], "scale": [1, 1, 1] },
+      "shape": { "type": "cube", "dimensions": [1.25, 2.5, 0.14], "material": { "name": "transmission_frosted_high", "path": "tests/fixtures/rendering/transmission_frosted_high.mt" } }
+    }
+  ]
+}

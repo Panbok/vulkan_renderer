@@ -55,6 +55,19 @@
           "path": "tests/fixtures/rendering/layered_glass_blue.mt"
         }
       }
+    },
+    {
+      "name": "ThirdLayer",
+      "parent": 0,
+      "transform": { "pos": [0.0, 1.3, -2.6], "rot": [0, 0.05, 0, 0.9987492], "scale": [1, 1, 1] },
+      "shape": {
+        "type": "cube",
+        "dimensions": [2.7, 2.4, 0.16],
+        "material": {
+          "name": "layered_glass_amber",
+          "path": "tests/fixtures/rendering/layered_glass_amber.mt"
+        }
+      }
     }
   ]
 }

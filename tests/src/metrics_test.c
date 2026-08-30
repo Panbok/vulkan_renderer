@@ -613,7 +613,7 @@ static void test_renderer_owner_metric_catalog(void) {
   MetricsFixture fixture = metrics_fixture_create();
   VkrRendererMetrics renderer_metrics = {0};
   assert(vkr_renderer_metrics_register(&renderer_metrics, fixture.metrics));
-  for (uint32_t layer = 0u; layer < 4u; ++layer) {
+  for (uint32_t layer = 0u; layer < 5u; ++layer) {
     assert(renderer_metrics.ids.visibility_transmission_covered_pixels[layer] !=
            VKR_METRIC_ID_INVALID);
   }
@@ -624,6 +624,8 @@ static void test_renderer_owner_metric_catalog(void) {
   assert(
       renderer_metrics.ids.visibility_transmission_pixel_compaction_overflow !=
       VKR_METRIC_ID_INVALID);
+  assert(renderer_metrics.ids.visibility_transmission_gpu_resolve_invalid !=
+         VKR_METRIC_ID_INVALID);
   assert(
       renderer_metrics.ids.visibility_transmission_gpu_bucket_opaque_single !=
       VKR_METRIC_ID_INVALID);

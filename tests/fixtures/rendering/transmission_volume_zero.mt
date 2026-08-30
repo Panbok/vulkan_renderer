@@ -1,0 +1,12 @@
+name=transmission_volume_zero
+type=pbr
+base_color=1.0,1.0,1.0,1.0
+metallic=0.0
+roughness=0.05
+transmission_factor=1.0
+ior=1.5
+thickness_factor=0.0
+alpha_mode=opaque
+double_sided=true
+shader=shader.pbr.world
+pipeline=world

@@ -1,0 +1,14 @@
+name=transmission_volume_high_ior
+type=pbr
+base_color=1.0,1.0,1.0,1.0
+metallic=0.0
+roughness=0.05
+transmission_factor=1.0
+ior=1.8
+thickness_factor=0.35
+attenuation_color=1.0,0.88,0.72
+attenuation_distance=1.5
+alpha_mode=opaque
+double_sided=true
+shader=shader.pbr.world
+pipeline=world

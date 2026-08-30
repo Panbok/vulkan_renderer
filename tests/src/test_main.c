@@ -82,6 +82,8 @@ int main(int argc, char **argv) {
   printf("\n"); // Add spacing
   all_passed &= run_packet_constants_tests();
   printf("\n"); // Add spacing
+  all_passed &= run_transmission_tests();
+  printf("\n"); // Add spacing
   all_passed &= run_temporal_tests();
   printf("\n"); // Add spacing
   all_passed &= run_exposure_tests();

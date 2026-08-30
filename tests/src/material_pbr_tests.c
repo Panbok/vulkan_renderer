@@ -576,13 +576,19 @@ static void test_material_transmission_is_independent_of_alpha(
   assert(material != NULL);
   assert(vkr_material_system_material_alpha_mode(
              &ctx->material_system, material) == VKR_MATERIAL_ALPHA_OPAQUE);
-  assert(vkr_material_system_material_is_transmissive(&ctx->material_system,
-                                                      material) == true_v);
+  assert(vkr_material_system_material_is_transmissive(material) == true_v);
   assert(fabsf(material->pbr.transmission_factor - 0.75f) < 0.0001f);
   assert(fabsf(material->pbr.ior - 1.33f) < 0.0001f);
   assert(fabsf(material->pbr.thickness_factor - 0.40f) < 0.0001f);
   assert(fabsf(material->pbr.attenuation_color.x - 0.8f) < 0.0001f);
   assert(fabsf(material->pbr.attenuation_distance - 2.5f) < 0.0001f);
+
+  material->pbr.transmission_factor = 0.0f;
+  material->textures[VKR_TEXTURE_SLOT_TRANSMISSION].enabled = true_v;
+  assert(vkr_material_system_material_is_transmissive(material) == false_v);
+  material->pbr.transmission_factor = 0.75f;
+  material->textures[VKR_TEXTURE_SLOT_TRANSMISSION].enabled = false_v;
+  assert(vkr_material_system_material_is_transmissive(material) == true_v);
 
   material_pbr_test_unload_material(ctx, &handle_info, material_path);
   material_pbr_test_remove_file(material_path);

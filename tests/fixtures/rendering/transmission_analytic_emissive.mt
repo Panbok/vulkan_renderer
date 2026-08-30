@@ -1,0 +1,12 @@
+name=transmission_analytic_emissive
+type=pbr
+base_color=0.8,0.2,0.1,1.0
+metallic=0.0
+roughness=0.2
+emissive_factor=1.5,0.1,0.05
+transmission_factor=0.5
+ior=1.5
+alpha_mode=opaque
+double_sided=true
+shader=shader.pbr.world
+pipeline=world

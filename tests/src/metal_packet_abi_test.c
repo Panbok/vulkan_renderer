@@ -30,6 +30,14 @@ static void test_metal_packet_host_abi_manifest(void) {
                0);
     }
   }
+  const VkrMetalPacketAbiRecord *material =
+      vkr_metal_packet_abi_record(VKR_METAL_PACKET_ABI_MATERIAL);
+  assert(material && material->expected_size == 176u &&
+         material->field_count == 18u);
+  const VkrMetalPacketAbiRecord *transmission_material =
+      vkr_metal_packet_abi_record(VKR_METAL_PACKET_ABI_TRANSMISSION_MATERIAL);
+  assert(transmission_material && transmission_material->expected_size == 32u &&
+         transmission_material->field_count == 4u);
   assert(!vkr_metal_packet_abi_record(VKR_METAL_PACKET_ABI_RECORD_COUNT));
   printf("  test_metal_packet_host_abi_manifest PASSED\n");
 }
@@ -72,15 +80,17 @@ static void test_metal_packet_shader_minimum_alignment(void) {
 static void test_metal_packet_transmission_coverage_abi(void) {
   printf("  Running test_metal_packet_transmission_coverage_abi...\n");
   assert(sizeof(VkrGpuDrawCompactionState) == 80u);
-  assert(sizeof(VkrMetalPacketTransmissionDiagnostics) == 112u);
+  assert(sizeof(VkrMetalPacketTransmissionDiagnostics) == 116u);
   assert(offsetof(VkrMetalPacketTransmissionDiagnostics, covered_pixels) ==
          sizeof(VkrGpuDrawCompactionState));
+  assert(offsetof(VkrMetalPacketTransmissionDiagnostics, compact_overflow) ==
+         100u);
   const VkrMetalPacketAbiRecord *record = vkr_metal_packet_abi_record(
       VKR_METAL_PACKET_ABI_TRANSMISSION_COVERAGE_ROOT);
   assert(record && record->expected_size == 32u && record->field_count == 5u);
   record = vkr_metal_packet_abi_record(
       VKR_METAL_PACKET_ABI_TRANSMISSION_COMPACT_ROOT);
-  assert(record && record->expected_size == 80u && record->field_count == 11u);
+  assert(record && record->expected_size == 96u && record->field_count == 13u);
   printf("  test_metal_packet_transmission_coverage_abi PASSED\n");
 }
 

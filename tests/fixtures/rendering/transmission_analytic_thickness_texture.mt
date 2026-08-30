@@ -1,0 +1,15 @@
+name=transmission_analytic_thickness_texture
+type=pbr
+base_color=1.0,0.72,0.35,1.0
+metallic=0.0
+roughness=0.2
+transmission_factor=1.0
+thickness_factor=0.8
+thickness_texture=assets/textures/defaultwhite.jpg
+attenuation_color=1.0,0.3,0.08
+attenuation_distance=1.0
+ior=1.5
+alpha_mode=opaque
+double_sided=true
+shader=shader.pbr.world
+pipeline=world

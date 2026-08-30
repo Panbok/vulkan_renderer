@@ -232,7 +232,13 @@ static void test_transmission_compact_conditions_and_viewport_buffer(void) {
       "\"STORAGE\"],\"flags\":[\"PER_FRAME_SLOT\"]}],\"passes\":[{"
       "\"name\":\"compact\",\"type\":\"compute\",\"condition\":"
       "\"transmission_compact_enabled\",\"flags\":[\"NO_CULL\"],"
-      "\"execute\":\"test.compute\"},{\"name\":\"compact-editor\","
+      "\"execute\":\"test.compute\"},{\"name\":\"transmission-editor\","
+      "\"type\":\"compute\",\"condition\":"
+      "\"editor_enabled && transmission_pending\",\"flags\":["
+      "\"NO_CULL\"],\"execute\":\"test.compute\"},{\"name\":"
+      "\"transmission-fullscreen\",\"type\":\"compute\",\"condition\":"
+      "\"!editor_enabled && transmission_pending\",\"flags\":["
+      "\"NO_CULL\"],\"execute\":\"test.compute\"},{\"name\":\"compact-editor\","
       "\"type\":\"compute\",\"condition\":"
       "\"editor_enabled && transmission_compact_enabled\",\"flags\":["
       "\"NO_CULL\"],\"execute\":\"test.compute\"},{\"name\":"
@@ -259,14 +265,18 @@ static void test_transmission_compact_conditions_and_viewport_buffer(void) {
   assert(json.passes.data[0].condition.kind ==
          VKR_RG_JSON_CONDITION_TRANSMISSION_COMPACT_ENABLED);
   assert(json.passes.data[1].condition.kind ==
-         VKR_RG_JSON_CONDITION_EDITOR_ENABLED_TRANSMISSION_COMPACT);
+         VKR_RG_JSON_CONDITION_EDITOR_ENABLED_TRANSMISSION);
   assert(json.passes.data[2].condition.kind ==
-         VKR_RG_JSON_CONDITION_EDITOR_DISABLED_TRANSMISSION_COMPACT);
+         VKR_RG_JSON_CONDITION_EDITOR_DISABLED_TRANSMISSION);
   assert(json.passes.data[3].condition.kind ==
-         VKR_RG_JSON_CONDITION_EDITOR_ENABLED_TRANSMISSION_FULLSCREEN);
+         VKR_RG_JSON_CONDITION_EDITOR_ENABLED_TRANSMISSION_COMPACT);
   assert(json.passes.data[4].condition.kind ==
-         VKR_RG_JSON_CONDITION_EDITOR_DISABLED_TRANSMISSION_FULLSCREEN);
+         VKR_RG_JSON_CONDITION_EDITOR_DISABLED_TRANSMISSION_COMPACT);
   assert(json.passes.data[5].condition.kind ==
+         VKR_RG_JSON_CONDITION_EDITOR_ENABLED_TRANSMISSION_FULLSCREEN);
+  assert(json.passes.data[6].condition.kind ==
+         VKR_RG_JSON_CONDITION_EDITOR_DISABLED_TRANSMISSION_FULLSCREEN);
+  assert(json.passes.data[7].condition.kind ==
          VKR_RG_JSON_CONDITION_TRANSMISSION_FULLSCREEN_TIMING);
 
   VkrRgExecutorRegistry registry = {0};
@@ -292,7 +302,7 @@ static void test_transmission_compact_conditions_and_viewport_buffer(void) {
   assert(vkr_rg_build_from_json(graph, &json, &frame));
   assert(graph->buffers.length == 1u);
   assert(graph->buffers.data[0].desc.size == 320u * 200u * 4u);
-  assert(graph->passes.length == 2u);
+  assert(graph->passes.length == 3u);
 
   frame.viewport_width = UINT32_MAX;
   frame.viewport_height = UINT32_MAX;
@@ -1463,18 +1473,29 @@ static void test_main_graph_contract(void) {
   assert(found == ArrayCount(transmission_deferred_ordered));
 
   uint32_t transmission_coverage_passes = 0u;
+  bool8_t found_transmission_depth_diagnostic = false_v;
   for (uint64_t i = 0u; i < graph.passes.length; ++i) {
     VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph.passes, i);
     if (!pass ||
         !vkr_string8_starts_with(&pass->name, "Transmission.Coverage."))
       continue;
+    if (vkr_string8_equals_cstr(&pass->name,
+                                "Transmission.Coverage.Diagnostic.4")) {
+      assert(pass->condition.kind ==
+             VKR_RG_JSON_CONDITION_TRANSMISSION_DEPTH_DIAGNOSTIC);
+      assert(pass->type == VKR_RG_JSON_PASS_COMPUTE &&
+             pass->reads.length == 2u && pass->writes.length == 0u);
+      found_transmission_depth_diagnostic = true_v;
+      continue;
+    }
     assert(pass->condition.kind ==
            VKR_RG_JSON_CONDITION_TRANSMISSION_FULLSCREEN_TIMING);
     assert(pass->type == VKR_RG_JSON_PASS_COMPUTE && pass->reads.length == 2u &&
            pass->writes.length == 0u);
     transmission_coverage_passes++;
   }
-  assert(transmission_coverage_passes == 4u);
+  assert(transmission_coverage_passes == 4u &&
+         found_transmission_depth_diagnostic);
 
   uint32_t transmission_compact_passes = 0u;
   uint32_t transmission_compact_finalize_passes = 0u;
@@ -1494,7 +1515,7 @@ static void test_main_graph_contract(void) {
                  VKR_RG_JSON_CONDITION_EDITOR_DISABLED_TRANSMISSION_COMPACT ||
              pass->condition.kind ==
                  VKR_RG_JSON_CONDITION_EDITOR_ENABLED_TRANSMISSION_COMPACT);
-      assert(pass->reads.length == 2u && pass->writes.length == 4u);
+      assert(pass->reads.length == 3u && pass->writes.length == 4u);
       assert(!pass->writes.data[2].is_image &&
              pass->writes.data[2].binding.value == 3u &&
              pass->writes.data[2].buffer_access ==
@@ -1512,6 +1533,7 @@ static void test_main_graph_contract(void) {
   assert(transmission_compact_shade_passes == 8u);
 
   uint32_t layered_resource_count = 0u;
+  uint32_t diagnostic_layered_resource_count = 0u;
   bool8_t found_transmission_feedback = false_v;
   bool8_t found_transmission_compact_pixels = false_v;
   for (uint64_t i = 0u; i < graph.resources.length; ++i) {
@@ -1527,6 +1549,14 @@ static void test_main_graph_contract(void) {
       assert(resource->image.layers_is_set && resource->image.layers == 4u);
       layered_resource_count++;
     } else if (vkr_string8_equals_cstr(&resource->name,
+                                       "transmission_diagnostic_vbuffer") ||
+               vkr_string8_equals_cstr(&resource->name,
+                                       "transmission_diagnostic_depth")) {
+      assert(resource->condition.kind ==
+             VKR_RG_JSON_CONDITION_TRANSMISSION_DEPTH_DIAGNOSTIC);
+      assert(resource->image.layers_is_set && resource->image.layers == 5u);
+      diagnostic_layered_resource_count++;
+    } else if (vkr_string8_equals_cstr(&resource->name,
                                        "transmission_feedback")) {
       assert(resource->condition.kind ==
              VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING);
@@ -1537,12 +1567,13 @@ static void test_main_graph_contract(void) {
              VKR_RG_JSON_CONDITION_TRANSMISSION_COMPACT_ENABLED);
       assert(resource->buffer.size_mode ==
              VKR_RG_JSON_BUFFER_SIZE_VIEWPORT_PIXELS);
-      assert(resource->buffer.bytes_per_pixel == sizeof(uint32_t));
+      assert(resource->buffer.bytes_per_pixel == 2u * sizeof(uint32_t));
       found_transmission_compact_pixels = true_v;
     }
   }
-  assert(layered_resource_count == 2u && found_transmission_feedback &&
-         found_transmission_compact_pixels);
+  assert(layered_resource_count == 2u &&
+         diagnostic_layered_resource_count == 2u &&
+         found_transmission_feedback && found_transmission_compact_pixels);
 
   const char *multi_view_ordered[] = {"Cull.Classify", "Cull.Prefix",
                                       "Cull.Encode", "Shadow.Cascade.${i}"};
@@ -1910,6 +1941,7 @@ static void test_main_graph_fits_runtime_pass_capacity(void) {
       .shadow_cascade_count = 4u,
       .shadow_cascade_render_mask = 0xfu,
       .hzb_reduce_pass_count = 11u,
+      .transmission_rough_mip_pass_count = 5u,
       .sdsm_enabled = true_v,
       .transmission_pending = true_v,
       .timing_enabled = true_v,
@@ -1930,6 +1962,30 @@ static void test_main_graph_fits_runtime_pass_capacity(void) {
   vkr_rg_begin_frame(runtime, &frame);
   assert(vkr_rg_build_from_json(runtime, &graph, &frame));
   assert(runtime->passes.length > 64u);
+  assert(runtime->passes.length <= VKR_RENDERER_IMPL_MAX_GRAPH_PASSES);
+  assert(vkr_rg_compile_schedule(runtime));
+  vkr_rg_end_frame(runtime);
+
+  frame = (VkrRenderGraphFrameInfo){
+      .target_width = 960u,
+      .target_height = 540u,
+      .window_width = 960u,
+      .window_height = 540u,
+      .viewport_width = 960u,
+      .viewport_height = 540u,
+      .target_color_format = VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB,
+      .target_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
+      .shadow_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
+      .shadow_map_size = 2048u,
+      .shadow_map_layer_count = 4u,
+      .hzb_reduce_pass_count = 9u,
+      .transmission_rough_mip_pass_count = 5u,
+      .transmission_pending = true_v,
+      .transmission_depth_diagnostic_enabled = true_v,
+      .transmission_compact_enabled = true_v,
+  };
+  vkr_rg_begin_frame(runtime, &frame);
+  assert(vkr_rg_build_from_json(runtime, &graph, &frame));
   assert(runtime->passes.length <= VKR_RENDERER_IMPL_MAX_GRAPH_PASSES);
   assert(vkr_rg_compile_schedule(runtime));
   vkr_rg_end_frame(runtime);

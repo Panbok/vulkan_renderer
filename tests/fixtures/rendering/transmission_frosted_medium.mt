@@ -1,0 +1,14 @@
+name=transmission_frosted_medium
+type=pbr
+base_color=1.0,1.0,1.0,1.0
+metallic=0.0
+roughness=0.5
+transmission_factor=1.0
+ior=1.5
+thickness_factor=0.2
+attenuation_color=0.96,0.98,1.0
+attenuation_distance=4.0
+alpha_mode=opaque
+double_sided=true
+shader=shader.pbr.world
+pipeline=world

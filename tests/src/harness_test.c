@@ -137,6 +137,7 @@ static void test_harness_case_parser(void) {
   assert(!parsed.renderer.gtao_enabled);
   assert(parsed.renderer.gtao_radius == VKR_GTAO_DEFAULT_RADIUS);
   assert(parsed.renderer.gtao_power == VKR_GTAO_DEFAULT_POWER);
+  assert(!parsed.renderer.transmission_depth_diagnostic_enabled);
   assert(parsed.renderer.ibl_probe_limit == UINT32_MAX);
   assert(harness_parse_case("windowed_hidden", "immediate", static_camera,
                             ",\"resize_round_trip\":[80,72]", &parsed));
@@ -163,6 +164,7 @@ static void test_harness_case_parser(void) {
       "\"bloom_threshold\":1.25,\"bloom_knee\":0.4,"
       "\"bloom_intensity\":0.08,\"gtao_enabled\":true,"
       "\"gtao_radius\":0.5,\"gtao_power\":2.2,"
+      "\"transmission_depth_diagnostic_enabled\":true,"
       "\"render_mode\":\"indirect_diffuse\",\"ibl_probe_limit\":1},"
       "\"camera\":{\"mode\":\"static\",\"position\":[1,2,3],\"yaw\":10,"
       "\"pitch\":-5}}";
@@ -187,6 +189,7 @@ static void test_harness_case_parser(void) {
   assert(parsed.renderer.gtao_enabled);
   assert(parsed.renderer.gtao_radius == 0.5f);
   assert(parsed.renderer.gtao_power == 2.2f);
+  assert(parsed.renderer.transmission_depth_diagnostic_enabled);
   assert(strcmp(parsed.renderer.render_mode, "indirect_diffuse") == 0);
   assert(parsed.renderer.ibl_probe_limit == 1u);
   VkrRendererBackendType resolved_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
@@ -1423,7 +1426,7 @@ static void harness_test_write_f32_le(uint8_t bytes[4], float32_t value) {
 
 static void test_harness_capture_catalog_and_converters(void) {
   printf("  Running test_harness_capture_catalog_and_converters...\n");
-  assert(vkr_renderer_capture_channel_count() == 24u);
+  assert(vkr_renderer_capture_channel_count() == 30u);
   assert(vkr_renderer_capture_channel_from_name("missing") ==
          VKR_CAPTURE_CHANNEL_INVALID);
   const VkrCaptureChannelId final_color =
@@ -1434,6 +1437,18 @@ static void test_harness_capture_catalog_and_converters(void) {
       vkr_renderer_capture_channel_from_name("picking_ids");
   const VkrCaptureChannelId transmission_visibility =
       vkr_renderer_capture_channel_from_name("transmission_visibility_ids");
+  const VkrCaptureChannelId transmission_visibility_layer_1 =
+      vkr_renderer_capture_channel_from_name(
+          "transmission_visibility_ids_layer_1");
+  const VkrCaptureChannelId transmission_visibility_layer_2 =
+      vkr_renderer_capture_channel_from_name(
+          "transmission_visibility_ids_layer_2");
+  const VkrCaptureChannelId transmission_visibility_layer_3 =
+      vkr_renderer_capture_channel_from_name(
+          "transmission_visibility_ids_layer_3");
+  const VkrCaptureChannelId transmission_visibility_layer_4 =
+      vkr_renderer_capture_channel_from_name(
+          "transmission_visibility_ids_layer_4");
   const VkrCaptureChannelId hdr_pre_bloom =
       vkr_renderer_capture_channel_from_name("hdr_pre_bloom");
   const VkrCaptureChannelId bloom_prefilter =
@@ -1442,6 +1457,10 @@ static void test_harness_capture_catalog_and_converters(void) {
       vkr_renderer_capture_channel_from_name("bloom_result");
   const VkrCaptureChannelId hdr_combined =
       vkr_renderer_capture_channel_from_name("hdr_combined");
+  const VkrCaptureChannelId hdr_pre_transmission =
+      vkr_renderer_capture_channel_from_name("hdr_pre_transmission");
+  const VkrCaptureChannelId hdr_post_transmission =
+      vkr_renderer_capture_channel_from_name("hdr_post_transmission");
   const VkrCaptureChannelId gtao_view_depth =
       vkr_renderer_capture_channel_from_name("gtao_view_depth");
   const VkrCaptureChannelId gtao_visibility =
@@ -1454,10 +1473,26 @@ static void test_harness_capture_catalog_and_converters(void) {
   assert(depth != VKR_CAPTURE_CHANNEL_INVALID);
   assert(picking != VKR_CAPTURE_CHANNEL_INVALID);
   assert(transmission_visibility != VKR_CAPTURE_CHANNEL_INVALID);
+  assert(transmission_visibility_layer_1 != VKR_CAPTURE_CHANNEL_INVALID);
+  assert(transmission_visibility_layer_2 != VKR_CAPTURE_CHANNEL_INVALID);
+  assert(transmission_visibility_layer_3 != VKR_CAPTURE_CHANNEL_INVALID);
+  assert(transmission_visibility_layer_4 != VKR_CAPTURE_CHANNEL_INVALID);
+  assert(vkr_harness_capture_channel_description(
+      "transmission_visibility_ids_layer_4"));
+  const VkrCaptureItemRequest diagnostic_item = {
+      .channel = transmission_visibility_layer_4};
+  const VkrCaptureBatchRequest diagnostic_request = {
+      .request_id = 1u, .items = &diagnostic_item, .item_count = 1u};
+  assert(vkr_renderer_capture_request_contains(
+      &diagnostic_request, "transmission_visibility_ids_layer_4"));
+  assert(!vkr_renderer_capture_request_contains(&diagnostic_request,
+                                                "final_color"));
   assert(hdr_pre_bloom != VKR_CAPTURE_CHANNEL_INVALID);
   assert(bloom_prefilter != VKR_CAPTURE_CHANNEL_INVALID);
   assert(bloom_result != VKR_CAPTURE_CHANNEL_INVALID);
   assert(hdr_combined != VKR_CAPTURE_CHANNEL_INVALID);
+  assert(hdr_pre_transmission != VKR_CAPTURE_CHANNEL_INVALID);
+  assert(hdr_post_transmission != VKR_CAPTURE_CHANNEL_INVALID);
   assert(gtao_view_depth != VKR_CAPTURE_CHANNEL_INVALID);
   assert(gtao_visibility != VKR_CAPTURE_CHANNEL_INVALID);
   assert(gtao_raw != VKR_CAPTURE_CHANNEL_INVALID);
@@ -1468,6 +1503,19 @@ static void test_harness_capture_catalog_and_converters(void) {
   assert(gbuffer_normal_description->version == 2u);
   assert(strcmp(gbuffer_normal_description->canonical_encoding,
                 "RG16_SNORM_LE") == 0);
+  const VkrCaptureChannelDescription *hdr_pre_transmission_description =
+      vkr_renderer_capture_channel_get(hdr_pre_transmission);
+  const VkrCaptureChannelDescription *hdr_post_transmission_description =
+      vkr_renderer_capture_channel_get(hdr_post_transmission);
+  assert(hdr_pre_transmission_description && hdr_post_transmission_description);
+  assert(hdr_pre_transmission_description->color_space ==
+         VKR_CAPTURE_COLOR_SPACE_LINEAR);
+  assert(hdr_post_transmission_description->color_space ==
+         VKR_CAPTURE_COLOR_SPACE_LINEAR);
+  assert(strcmp(hdr_pre_transmission_description->canonical_encoding,
+                "RGBA16_FLOAT_LE") == 0);
+  assert(strcmp(hdr_post_transmission_description->canonical_encoding,
+                "RGBA16_FLOAT_LE") == 0);
 
 #if !defined(_WIN32)
   char first_dir[] = "/tmp/vkr-capture-first-XXXXXX";

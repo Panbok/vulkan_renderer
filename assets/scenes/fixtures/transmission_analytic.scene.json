@@ -1,0 +1,114 @@
+{
+  "version": 2,
+  "entities": [
+    {
+      "name": "Root",
+      "parent": null,
+      "transform": { "pos": [0, 0, 0], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] }
+    },
+    {
+      "name": "Sun",
+      "parent": 0,
+      "transform": { "pos": [0, 5, 3], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "directional_light": {
+        "enabled": true,
+        "color": [1.0, 1.0, 1.0],
+        "intensity": 3.0,
+        "direction_local": [-0.35, -0.7, -0.55]
+      }
+    },
+    {
+      "name": "ConstantBackground",
+      "parent": 0,
+      "transform": { "pos": [0, 1.35, -3.0], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "shape": {
+        "type": "cube",
+        "dimensions": [8.0, 4.2, 0.3],
+        "material": {
+          "name": "transmission_analytic_background",
+          "path": "tests/fixtures/rendering/transmission_analytic_background.mt"
+        }
+      }
+    },
+    {
+      "name": "WhiteT0",
+      "parent": 0,
+      "transform": { "pos": [-2.7, 2.15, -0.6], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "shape": {
+        "type": "cube",
+        "dimensions": [1.15, 1.15, 0.16],
+        "material": { "name": "transmission_analytic_t0", "path": "tests/fixtures/rendering/transmission_analytic_t0.mt" }
+      }
+    },
+    {
+      "name": "WhiteT05",
+      "parent": 0,
+      "transform": { "pos": [-0.9, 2.15, -0.6], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "shape": {
+        "type": "cube",
+        "dimensions": [1.15, 1.15, 0.16],
+        "material": { "name": "transmission_analytic_t05", "path": "tests/fixtures/rendering/transmission_analytic_t05.mt" }
+      }
+    },
+    {
+      "name": "ColoredT1",
+      "parent": 0,
+      "transform": { "pos": [0.9, 2.15, -0.6], "rot": [0, 0.17, 0, 0.985444], "scale": [1, 1, 1] },
+      "shape": {
+        "type": "cube",
+        "dimensions": [1.15, 1.15, 0.16],
+        "material": { "name": "transmission_analytic_t1_color", "path": "tests/fixtures/rendering/transmission_analytic_t1_color.mt" }
+      }
+    },
+    {
+      "name": "MetalT1",
+      "parent": 0,
+      "transform": { "pos": [2.7, 2.15, -0.6], "rot": [0, -0.17, 0, 0.985444], "scale": [1, 1, 1] },
+      "shape": {
+        "type": "cube",
+        "dimensions": [1.15, 1.15, 0.16],
+        "material": { "name": "transmission_analytic_metal", "path": "tests/fixtures/rendering/transmission_analytic_metal.mt" }
+      }
+    },
+    {
+      "name": "EmissiveT05",
+      "parent": 0,
+      "transform": { "pos": [-2.7, 0.75, -0.6], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "shape": {
+        "type": "cube",
+        "dimensions": [1.15, 1.15, 0.16],
+        "material": { "name": "transmission_analytic_emissive", "path": "tests/fixtures/rendering/transmission_analytic_emissive.mt" }
+      }
+    },
+    {
+      "name": "TransmissionTextureOnly",
+      "parent": 0,
+      "transform": { "pos": [-0.9, 0.75, -0.6], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "shape": {
+        "type": "cube",
+        "dimensions": [1.15, 1.15, 0.16],
+        "material": { "name": "transmission_analytic_texture", "path": "tests/fixtures/rendering/transmission_analytic_texture.mt" }
+      }
+    },
+    {
+      "name": "ThicknessTextureOnly",
+      "parent": 0,
+      "transform": { "pos": [0.9, 0.75, -0.6], "rot": [0, 0, 0, 1], "scale": [1.4, 0.75, 1.8] },
+      "shape": {
+        "type": "cube",
+        "dimensions": [1.15, 1.15, 0.16],
+        "material": { "name": "transmission_analytic_thickness_texture", "path": "tests/fixtures/rendering/transmission_analytic_thickness_texture.mt" }
+      }
+    },
+    {
+      "name": "BackFaceView",
+      "parent": 0,
+      "transform": { "pos": [2.7, 0.75, 0.1], "rot": [0, 1, 0, 0], "scale": [-1, 1, 1] },
+      "shape": {
+        "type": "cube",
+        "dimensions": [1.15, 1.15, 0.16],
+        "material": { "name": "transmission_analytic_t1_color", "path": "tests/fixtures/rendering/transmission_analytic_t1_color.mt" }
+      }
+    }
+  ]
+}

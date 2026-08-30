@@ -1051,6 +1051,9 @@ static void test_gltf_import_preserves_transmission_volume(void) {
   char mt_path[1024] = {0};
   gltf_test_make_material_paths(stem, gltf_path, 0, mt_path, sizeof(mt_path),
                                 NULL, 0, NULL, 0);
+  char explicit_mt_path[1024] = {0};
+  gltf_test_make_material_paths(stem, gltf_path, 1, explicit_mt_path,
+                                sizeof(explicit_mt_path), NULL, 0, NULL, 0);
 
   const char *json =
       "{\"asset\":{\"version\":\"2.0\"},"
@@ -1061,7 +1064,10 @@ static void test_gltf_import_preserves_transmission_volume(void) {
       "\"KHR_materials_ior\":{\"ior\":1.33},"
       "\"KHR_materials_volume\":{\"thicknessFactor\":0.4,"
       "\"attenuationColor\":[0.8,0.6,0.4],"
-      "\"attenuationDistance\":2.5}}}]}";
+      "\"attenuationDistance\":2.5}}},{"
+      "\"pbrMetallicRoughness\":{\"metallicFactor\":1.0,"
+      "\"roughnessFactor\":1.0},\"extensions\":{"
+      "\"KHR_materials_transmission\":{\"transmissionFactor\":0.75}}}]}";
   assert(gltf_test_write_file_text(gltf_path, json) == true_v);
 
   Arena *arena = arena_create(MB(2), MB(2));
@@ -1081,14 +1087,25 @@ static void test_gltf_import_preserves_transmission_volume(void) {
   assert(gltf_test_read_file_text(&allocator, mt_path, &contents) == true_v);
   const char *text = (const char *)contents.str;
   assert(strstr(text, "alpha_mode=opaque") != NULL);
+  assert(strstr(text, "metallic=0.000000") != NULL);
+  assert(strstr(text, "roughness=0.000000") != NULL);
   assert(strstr(text, "transmission_factor=0.750000") != NULL);
   assert(strstr(text, "ior=1.330000") != NULL);
   assert(strstr(text, "thickness_factor=0.400000") != NULL);
   assert(strstr(text, "attenuation_color=0.800000,0.600000,0.400000") != NULL);
   assert(strstr(text, "attenuation_distance=2.500000") != NULL);
 
+  String8 explicit_contents = {0};
+  assert(gltf_test_read_file_text(&allocator, explicit_mt_path,
+                                  &explicit_contents) == true_v);
+  const char *explicit_text = (const char *)explicit_contents.str;
+  assert(strstr(explicit_text, "metallic=1.000000") != NULL);
+  assert(strstr(explicit_text, "roughness=1.000000") != NULL);
+  assert(strstr(explicit_text, "transmission_factor=0.750000") != NULL);
+
   arena_destroy(scratch_arena);
   arena_destroy(arena);
+  gltf_test_remove_file(explicit_mt_path);
   gltf_test_remove_source_files(stem);
   gltf_test_remove_generated_material(stem);
   printf("  test_gltf_import_preserves_transmission_volume PASSED\n");
