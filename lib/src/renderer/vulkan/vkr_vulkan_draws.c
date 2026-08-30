@@ -483,8 +483,9 @@ vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
         .first_index = geometry->gpu_row.first_index + submesh->first_index,
         .index_count = submesh->index_count,
         .vertex_offset = submesh->vertex_offset,
-        .state_bucket = candidate->state_bucket,
-        .flags = candidate->flags,
+        .decode_index = submesh->decode_index,
+        .state_flags =
+            vkr_gpu_draw_state_flags(candidate->state_bucket, candidate->flags),
         .local_bounding_sphere = candidate->local_bounding_sphere,
     };
     instances[packed_count] = candidate->instance;
@@ -707,7 +708,9 @@ bool8_t vkr_vk_record_packet_draws(VkrVulkanRenderer *renderer,
                     geometry->gpu_row.first_index + range->first_index,
                 .index_count = range->index_count,
                 .vertex_offset = range->vertex_offset,
-                .flags = alpha_cutout ? 1u : 0u,
+                .decode_index = range->decode_index,
+                .state_flags =
+                    vkr_gpu_draw_state_flags(0u, alpha_cutout ? 1u : 0u),
             },
     };
     const VkrVulkanPushConstants push = {

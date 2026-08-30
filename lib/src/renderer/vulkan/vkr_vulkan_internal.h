@@ -1357,6 +1357,7 @@ typedef struct VkrVulkanSubmeshRange {
   uint32_t first_index;
   uint32_t index_count;
   int32_t vertex_offset;
+  uint32_t decode_index;
 } VkrVulkanSubmeshRange;
 
 typedef struct VkrVulkanPublishedGeometry {
@@ -1366,6 +1367,7 @@ typedef struct VkrVulkanPublishedGeometry {
   VkrGpuGeometryRow gpu_row;
   uint32_t vertex_count;
   uint32_t index_count;
+  uint32_t decode_count;
   VkIndexType index_type;
   VkrVulkanSubmeshRange *submeshes;
   uint64_t submeshes_size;

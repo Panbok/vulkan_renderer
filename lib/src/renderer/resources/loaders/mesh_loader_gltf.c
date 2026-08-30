@@ -4,11 +4,13 @@
 #include "renderer/vkr_color_transfer.h"
 
 #include <cgltf.h>
+#include <math.h>
 #include <stb_image.h>
 #include <stb_image_write.h>
 
 #include "containers/str.h"
 #include "core/logger.h"
+#include "core/vkr_json.h"
 #include "filesystem/filesystem.h"
 #include "math/mat.h"
 
@@ -16,6 +18,7 @@
 #define VKR_FNV1A64_PRIME 0x100000001b3ull
 #define VKR_GLTF_SPEC_GLOSS_CACHE_VERSION 3u
 #define VKR_GLTF_LINEAR_TO_SRGB_LUT_MAX 4096u
+#define VKR_GLTF_DECAL_NORMAL_OFFSET_MAX_METERS 0.1
 
 vkr_internal void
 vkr_mesh_loader_gltf_set_error(const VkrMeshLoaderGltfParseInfo *info,
@@ -1420,17 +1423,60 @@ vkr_internal Vec3 vkr_mesh_loader_gltf_transform_position(Mat4 world,
   return vec3_new(p.x, p.y, p.z);
 }
 
-vkr_internal Vec3 vkr_mesh_loader_gltf_transform_direction(Mat4 normal_matrix,
-                                                           Vec3 direction,
-                                                           Vec3 fallback) {
+vkr_internal bool8_t vkr_mesh_loader_gltf_transform_unit_direction(
+    Mat4 normal_matrix, Vec3 direction, Vec3 *out_direction) {
+  assert_log(out_direction != NULL, "Out transformed direction is NULL");
   Vec4 d = mat4_mul_vec4(normal_matrix,
                          vec4_new(direction.x, direction.y, direction.z, 0.0f));
   Vec3 value = vec3_new(d.x, d.y, d.z);
   float32_t len_sq = vec3_length_squared(value);
-  if (len_sq <= VKR_FLOAT_EPSILON * VKR_FLOAT_EPSILON) {
-    return fallback;
+  if (!isfinite(len_sq) || len_sq <= VKR_FLOAT_EPSILON * VKR_FLOAT_EPSILON)
+    return false_v;
+  *out_direction = vec3_normalize(value);
+  return true_v;
+}
+
+vkr_internal Vec3 vkr_mesh_loader_gltf_transform_direction(Mat4 normal_matrix,
+                                                           Vec3 direction,
+                                                           Vec3 fallback) {
+  Vec3 transformed = vec3_zero();
+  return vkr_mesh_loader_gltf_transform_unit_direction(normal_matrix, direction,
+                                                       &transformed)
+             ? transformed
+             : fallback;
+}
+
+vkr_internal bool8_t vkr_mesh_loader_gltf_decal_normal_offset(
+    const VkrMeshLoaderGltfParseInfo *info, const cgltf_material *material,
+    float32_t *out_offset_meters) {
+  assert_log(out_offset_meters != NULL, "Out decal offset is NULL");
+  *out_offset_meters = 0.0f;
+  if (!material || !material->extras.data) {
+    return true_v;
   }
-  return vec3_normalize(value);
+
+  String8 extras =
+      string8_create_from_cstr((const uint8_t *)material->extras.data,
+                               string_length(material->extras.data));
+  VkrJsonReader reader = vkr_json_reader_from_string(extras);
+  if (!vkr_json_find_field(&reader, "vkr_decal_normal_offset_meters")) {
+    return true_v;
+  }
+
+  float64_t offset_meters = 0.0;
+  if (!vkr_json_parse_double(&reader, &offset_meters) ||
+      !isfinite(offset_meters) || offset_meters <= 0.0 ||
+      offset_meters > VKR_GLTF_DECAL_NORMAL_OFFSET_MAX_METERS) {
+    log_error("MeshLoader(glTF): material '%s' has invalid "
+              "vkr_decal_normal_offset_meters; expected (0, %.3f] meters",
+              material->name ? material->name : "<unnamed>",
+              VKR_GLTF_DECAL_NORMAL_OFFSET_MAX_METERS);
+    vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_INVALID_PARAMETER);
+    return false_v;
+  }
+
+  *out_offset_meters = (float32_t)offset_meters;
+  return true_v;
 }
 
 vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
@@ -1468,6 +1514,20 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
       cgltf_find_accessor(primitive, cgltf_attribute_type_texcoord, 0);
   const cgltf_accessor *color_accessor =
       cgltf_find_accessor(primitive, cgltf_attribute_type_color, 0);
+
+  float32_t decal_normal_offset_meters = 0.0f;
+  if (!vkr_mesh_loader_gltf_decal_normal_offset(info, primitive->material,
+                                                &decal_normal_offset_meters)) {
+    return false_v;
+  }
+  if (decal_normal_offset_meters > 0.0f && !normal_accessor) {
+    log_error("MeshLoader(glTF): decal material '%s' requires NORMAL data",
+              primitive->material && primitive->material->name
+                  ? primitive->material->name
+                  : "<unnamed>");
+    vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_INVALID_PARAMETER);
+    return false_v;
+  }
 
   const cgltf_size pos_count = position_accessor->count;
   const cgltf_size idx_count =
@@ -1528,8 +1588,22 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
 
     Vec3 world_position =
         vkr_mesh_loader_gltf_transform_position(world, position);
-    Vec3 world_normal = vkr_mesh_loader_gltf_transform_direction(
-        normal_matrix, normal, vec3_new(0.0f, 1.0f, 0.0f));
+    Vec3 world_normal = vec3_zero();
+    const bool8_t normal_valid = vkr_mesh_loader_gltf_transform_unit_direction(
+        normal_matrix, normal, &world_normal);
+    if (!normal_valid && decal_normal_offset_meters > 0.0f) {
+      log_error("MeshLoader(glTF): decal material '%s' has a degenerate NORMAL",
+                primitive->material && primitive->material->name
+                    ? primitive->material->name
+                    : "<unnamed>");
+      vkr_mesh_loader_gltf_set_error(info,
+                                     VKR_RENDERER_ERROR_INVALID_PARAMETER);
+      return false_v;
+    }
+    if (!normal_valid)
+      world_normal = vec3_new(0.0f, 1.0f, 0.0f);
+    world_position = vec3_add(
+        world_position, vec3_scale(world_normal, decal_normal_offset_meters));
     Vec3 world_tangent = vkr_mesh_loader_gltf_transform_direction(
         normal_matrix, vec3_new(tangent.x, tangent.y, tangent.z),
         vec3_new(1.0f, 0.0f, 0.0f));

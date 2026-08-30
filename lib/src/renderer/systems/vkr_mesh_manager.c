@@ -1623,7 +1623,8 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
         cfg.vertex_count = mesh_result->mesh_buffer.vertex_count;
         cfg.vertices = mesh_result->mesh_buffer.vertices;
         cfg.vertex_layout = mesh_result->mesh_buffer.vertex_layout;
-        cfg.decode = mesh_result->mesh_buffer.decode;
+        cfg.decodes = mesh_result->mesh_buffer.decodes;
+        cfg.decode_count = mesh_result->mesh_buffer.decode_count;
         cfg.index_size = mesh_result->mesh_buffer.index_size;
         cfg.index_count = mesh_result->mesh_buffer.index_count;
         cfg.indices = mesh_result->mesh_buffer.indices;
@@ -2776,7 +2777,8 @@ vkr_internal bool8_t vkr_mesh_manager_build_asset_from_mesh_result(
         cfg.vertex_count = mesh_result->mesh_buffer.vertex_count;
         cfg.vertices = mesh_result->mesh_buffer.vertices;
         cfg.vertex_layout = mesh_result->mesh_buffer.vertex_layout;
-        cfg.decode = mesh_result->mesh_buffer.decode;
+        cfg.decodes = mesh_result->mesh_buffer.decodes;
+        cfg.decode_count = mesh_result->mesh_buffer.decode_count;
         cfg.index_size = mesh_result->mesh_buffer.index_size;
         cfg.index_count = mesh_result->mesh_buffer.index_count;
         cfg.indices = mesh_result->mesh_buffer.indices;
@@ -3101,7 +3103,8 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_asset_from_handle_info(
         cfg.vertex_count = mesh_result->mesh_buffer.vertex_count;
         cfg.vertices = mesh_result->mesh_buffer.vertices;
         cfg.vertex_layout = mesh_result->mesh_buffer.vertex_layout;
-        cfg.decode = mesh_result->mesh_buffer.decode;
+        cfg.decodes = mesh_result->mesh_buffer.decodes;
+        cfg.decode_count = mesh_result->mesh_buffer.decode_count;
         cfg.index_size = mesh_result->mesh_buffer.index_size;
         cfg.index_count = mesh_result->mesh_buffer.index_count;
         cfg.indices = mesh_result->mesh_buffer.indices;

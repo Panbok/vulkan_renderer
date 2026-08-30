@@ -10,7 +10,7 @@
 
 #define VKR_MESH_COOKED_HEADER_SIZE 272u
 #define VKR_MESH_COOKED_DEPENDENCY_SIZE 64u
-#define VKR_MESH_COOKED_RANGE_SIZE 168u
+#define VKR_MESH_COOKED_RANGE_SIZE 200u
 #define VKR_MESH_COOKED_MAX_RANGES 1048576u
 #define VKR_MESH_COOKED_MAX_DEPENDENCIES 65536u
 #define VKR_MESH_COOKED_MAX_STRING_LENGTH 65535u
@@ -61,6 +61,7 @@ typedef struct VkrMeshCookedRangeBuild {
   uint32_t vertex_crc;
   uint32_t index_crc;
   VkrGeometryQuantizationMetrics quantization;
+  VkrGpuGeometryDecodeRecord decode;
   Vec3 center;
   Vec3 min_extents;
   Vec3 max_extents;
@@ -93,6 +94,7 @@ typedef struct VkrMeshCookedRangeView {
   Vec3 min_extents;
   Vec3 max_extents;
   VkrGeometryQuantizationMetrics quantization;
+  VkrGpuGeometryDecodeRecord decode;
 } VkrMeshCookedRangeView;
 
 static uint32_t vkr_mesh_cooked_rotr32(uint32_t value, uint32_t amount) {
@@ -672,19 +674,10 @@ bool8_t vkr_mesh_cooked_encode(VkrAllocator *scratch_allocator,
   const VkrVertex3d *source_vertices =
       (const VkrVertex3d *)info->mesh_buffer.vertices;
   const uint32_t *source_indices = (const uint32_t *)info->mesh_buffer.indices;
-  Vec3 geometry_min = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);
-  Vec3 geometry_max = vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
   for (uint32_t i = 0; i < info->mesh_buffer.vertex_count; ++i) {
     if (!vkr_mesh_cooked_vertex_is_finite(&source_vertices[i])) {
       return false_v;
     }
-    const Vec3 position = vkr_vertex_unpack_vec3(source_vertices[i].position);
-    geometry_min.x = Min(geometry_min.x, position.x);
-    geometry_min.y = Min(geometry_min.y, position.y);
-    geometry_min.z = Min(geometry_min.z, position.z);
-    geometry_max.x = Max(geometry_max.x, position.x);
-    geometry_max.y = Max(geometry_max.y, position.y);
-    geometry_max.z = Max(geometry_max.z, position.z);
   }
   VkrGpuGeometryDecodeRecord geometry_decode = {0};
   VkrGeometryQuantizationMetrics quantization_max = {0};
@@ -762,8 +755,8 @@ bool8_t vkr_mesh_cooked_encode(VkrAllocator *scratch_allocator,
       return false_v;
     }
     if (!vkr_packed_geometry_pack(
-            optimized_vertices, (uint32_t)optimized_vertex_count, geometry_min,
-            geometry_max, &info->budgets, packed_vertices, &range_decode,
+            optimized_vertices, (uint32_t)optimized_vertex_count, optimized_min,
+            optimized_max, &info->budgets, packed_vertices, &range_decode,
             &range_quantization)) {
       log_error("MeshCooked: range %u exceeds quantization budgets "
                 "(position=%g normal=%g tangent=%g uv=%g color=%g)",
@@ -773,11 +766,8 @@ bool8_t vkr_mesh_cooked_encode(VkrAllocator *scratch_allocator,
                 range_quantization.uv_max, range_quantization.color_max);
       return false_v;
     }
-    if (i == 0) {
+    if (i == 0)
       geometry_decode = range_decode;
-    } else if (!vkr_mesh_cooked_decode_equal(&geometry_decode, &range_decode)) {
-      return false_v;
-    }
     quantization_max.position_max =
         Max(quantization_max.position_max, range_quantization.position_max);
     quantization_max.normal_degrees_max =
@@ -831,6 +821,7 @@ bool8_t vkr_mesh_cooked_encode(VkrAllocator *scratch_allocator,
             vkr_mesh_cooked_crc32(encoded_vertices, vertex_encoded_size),
         .index_crc = vkr_mesh_cooked_crc32(encoded_indices, index_encoded_size),
         .quantization = range_quantization,
+        .decode = range_decode,
         .center = optimized_center,
         .min_extents = optimized_min,
         .max_extents = optimized_max,
@@ -1016,6 +1007,14 @@ bool8_t vkr_mesh_cooked_encode(VkrAllocator *scratch_allocator,
     ok = ok &&
          vkr_mesh_cooked_writer_f32(&writer, range->quantization.color_max);
     ok = ok && vkr_mesh_cooked_writer_u32(&writer, 0u);
+    for (uint32_t axis = 0; axis < 3u; ++axis)
+      ok = ok && vkr_mesh_cooked_writer_f32(&writer,
+                                            range->decode.position_bias[axis]);
+    ok = ok && vkr_mesh_cooked_writer_u32(&writer, range->decode.flags);
+    for (uint32_t axis = 0; axis < 3u; ++axis)
+      ok = ok && vkr_mesh_cooked_writer_f32(&writer,
+                                            range->decode.position_scale[axis]);
+    ok = ok && vkr_mesh_cooked_writer_u32(&writer, range->decode.reserved);
   }
   if (!ok || writer.offset != dependency_offset) {
     return false_v;
@@ -1200,11 +1199,6 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
       directory_offset != VKR_MESH_COOKED_HEADER_SIZE) {
     return false_v;
   }
-  const float32_t sx = geometry_decode.position_scale[0];
-  const float32_t sy = geometry_decode.position_scale[1];
-  const float32_t sz = geometry_decode.position_scale[2];
-  const float32_t position_budget =
-      Max(hypotf(hypotf(sx, sy), sz) * budgets.position_relative, 1.0e-7f);
   if (!isfinite(budgets.position_relative) ||
       !isfinite(budgets.normal_degrees) || !isfinite(budgets.tangent_degrees) ||
       !isfinite(budgets.uv_absolute) || !isfinite(budgets.color_absolute) ||
@@ -1212,14 +1206,12 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
       !isfinite(quantization.normal_degrees_max) ||
       !isfinite(quantization.tangent_degrees_max) ||
       !isfinite(quantization.uv_max) || !isfinite(quantization.color_max) ||
-      !isfinite(position_budget) || budgets.position_relative <= 0.0f ||
-      budgets.normal_degrees <= 0.0f || budgets.tangent_degrees <= 0.0f ||
-      budgets.uv_absolute <= 0.0f || budgets.color_absolute <= 0.0f ||
-      quantization.position_max < 0.0f ||
+      budgets.position_relative <= 0.0f || budgets.normal_degrees <= 0.0f ||
+      budgets.tangent_degrees <= 0.0f || budgets.uv_absolute <= 0.0f ||
+      budgets.color_absolute <= 0.0f || quantization.position_max < 0.0f ||
       quantization.normal_degrees_max < 0.0f ||
       quantization.tangent_degrees_max < 0.0f || quantization.uv_max < 0.0f ||
       quantization.color_max < 0.0f ||
-      quantization.position_max > position_budget ||
       quantization.normal_degrees_max > budgets.normal_degrees ||
       quantization.tangent_degrees_max > budgets.tangent_degrees ||
       quantization.uv_max > budgets.uv_absolute ||
@@ -1359,22 +1351,44 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
         !vkr_mesh_cooked_reader_u32(&reader, &quantization_reserved)) {
       return false_v;
     }
+    for (uint32_t axis = 0; axis < 3u; ++axis)
+      ok = ok && vkr_mesh_cooked_reader_f32(&reader,
+                                            &range->decode.position_bias[axis]);
+    ok = ok && vkr_mesh_cooked_reader_u32(&reader, &range->decode.flags);
+    for (uint32_t axis = 0; axis < 3u; ++axis)
+      ok = ok && vkr_mesh_cooked_reader_f32(
+                     &reader, &range->decode.position_scale[axis]);
+    ok = ok && vkr_mesh_cooked_reader_u32(&reader, &range->decode.reserved);
+    if (!ok) {
+      return false_v;
+    }
     range->pipeline_domain = (VkrPipelineDomain)pipeline_domain;
     uint64_t expected_vertex_bytes = 0;
     uint64_t expected_index_bytes = 0;
     uint64_t vertex_stream_end = 0;
     uint64_t index_stream_end = 0;
-    if (range->range_id != i || range->first_index != accumulated_indices ||
+    const float32_t range_sx = range->decode.position_scale[0];
+    const float32_t range_sy = range->decode.position_scale[1];
+    const float32_t range_sz = range->decode.position_scale[2];
+    const float32_t range_position_budget =
+        Max(hypotf(hypotf(range_sx, range_sy), range_sz) *
+                budgets.position_relative,
+            1.0e-7f);
+    if ((i == 0u &&
+         !vkr_mesh_cooked_decode_equal(&geometry_decode, &range->decode)) ||
+        range->range_id != i || range->first_index != accumulated_indices ||
         range->index_count == 0 || range->index_count % 3u != 0 ||
         range->vertex_count == 0 || range->vertex_offset != 0 ||
         pipeline_domain >= VKR_PIPELINE_DOMAIN_COUNT || range_reserved != 0 ||
         quantization_reserved != 0 ||
+        !vkr_packed_geometry_decode_is_valid(&range->decode) ||
+        !isfinite(range_position_budget) ||
         !isfinite(range->quantization.position_max) ||
         !isfinite(range->quantization.normal_degrees_max) ||
         !isfinite(range->quantization.tangent_degrees_max) ||
         !isfinite(range->quantization.uv_max) ||
         !isfinite(range->quantization.color_max) ||
-        range->quantization.position_max > position_budget ||
+        range->quantization.position_max > range_position_budget ||
         range->quantization.normal_degrees_max > budgets.normal_degrees ||
         range->quantization.tangent_degrees_max > budgets.tangent_degrees ||
         range->quantization.uv_max > budgets.uv_absolute ||
@@ -1476,7 +1490,11 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
                                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   Array_VkrMeshLoaderSubmeshRange output_ranges =
       array_create_VkrMeshLoaderSubmeshRange(result_allocator, range_count);
-  if (!vertices || !indices || !output_ranges.data) {
+  VkrGpuGeometryDecodeRecord *decodes = vkr_allocator_alloc(
+      result_allocator,
+      (uint64_t)range_count * sizeof(VkrGpuGeometryDecodeRecord),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!vertices || !indices || !output_ranges.data || !decodes) {
     return false_v;
   }
 
@@ -1493,8 +1511,8 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
                                    data + range->index_stream_offset,
                                    range->index_encoded_size) != 0 ||
         !vkr_mesh_cooked_validate_packed_range_vertices(
-            range_vertices, range->vertex_count, &geometry_decode,
-            range->center, range->min_extents, range->max_extents,
+            range_vertices, range->vertex_count, &range->decode, range->center,
+            range->min_extents, range->max_extents,
             range->quantization.position_max)) {
       return false_v;
     }
@@ -1509,6 +1527,7 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
         .first_index = range->first_index,
         .index_count = range->index_count,
         .vertex_offset = 0,
+        .decode_index = i,
         .center = range->center,
         .min_extents = range->min_extents,
         .max_extents = range->max_extents,
@@ -1520,6 +1539,7 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
         .material_handle = VKR_MATERIAL_HANDLE_INVALID,
     };
     array_set_VkrMeshLoaderSubmeshRange(&output_ranges, i, output_range);
+    decodes[i] = range->decode;
     vertex_base += range->vertex_count;
   }
 
@@ -1531,13 +1551,16 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
       .index_count = total_index_count,
       .indices = indices,
       .vertex_layout = VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1,
-      .decode = geometry_decode,
+      .decodes = decodes,
+      .decode_count = range_count,
       .quantization = quantization,
   };
   out_decoded->ranges = output_ranges;
   out_decoded->source_bytes = source_bytes;
   out_decoded->cooked_bytes = size;
-  out_decoded->decoded_bytes = vertex_bytes + index_bytes;
+  out_decoded->decoded_bytes =
+      vertex_bytes + index_bytes +
+      (uint64_t)range_count * sizeof(VkrGpuGeometryDecodeRecord);
   return true_v;
 }
 

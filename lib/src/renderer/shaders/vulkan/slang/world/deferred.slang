@@ -390,7 +390,8 @@ static bool vkr_vk_candidate_occluded(VkrVkCullRoot *root,
                                       VkrGpuCandidateDrawRow candidate)
 {
     if (root.hzb_enabled == 0u || root.hzb_mip_count == 0u ||
-        any(root.hzb_extent == 0u) || (candidate.flags & 1u) == 0u)
+        any(root.hzb_extent == 0u) ||
+        (vkr_gpu_draw_candidate_flags(candidate.state_flags) & 1u) == 0u)
         return false;
     VkrVulkanInstance instance = root.instances[candidate.instance_index];
     float3 center =
@@ -464,8 +465,9 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
     VkrGpuCandidateDrawRow candidate = root.candidates[candidate_index];
     uint required_flags = view_index == 0u ? root.camera_required_flags
                                            : root.shadow_required_flags;
-    if (candidate.state_bucket >= VKR_VK_DRAW_BUCKET_COUNT ||
-        (candidate.flags & required_flags) != required_flags)
+    uint candidate_flags = vkr_gpu_draw_candidate_flags(candidate.state_flags);
+    uint bucket = vkr_gpu_draw_state_bucket(candidate.state_flags);
+    if ((candidate_flags & required_flags) != required_flags)
     {
         root.classifications[view_index * root.candidate_capacity +
                              candidate_index] = 0xffffffffu;
@@ -482,7 +484,7 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
     uint classification_index =
         view_index * root.candidate_capacity + candidate_index;
     float4 world_sphere = float4(world_center.xyz, world_radius);
-    if ((candidate.flags & 1u) != 0u &&
+    if ((candidate_flags & 1u) != 0u &&
         !vkr_vk_sphere_visible(root, world_sphere, view_index))
     {
         root.classifications[classification_index] = 0xffffffffu;
@@ -496,7 +498,6 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
                        ignored);
         return;
     }
-    uint bucket = min(candidate.state_bucket, VKR_VK_DRAW_BUCKET_COUNT - 1u);
     root.classifications[classification_index] = bucket;
     uint ignored;
     InterlockedAdd(root.states[view_index].bucket_counts[bucket], 1u, ignored);
@@ -557,8 +558,8 @@ void vk_gpu_draw_encode(uint3 thread_id : SV_DispatchThreadID)
     visible.first_index = candidate.first_index;
     visible.index_count = candidate.index_count;
     visible.vertex_offset = candidate.vertex_offset;
-    visible.state_bucket = bucket;
-    visible.flags = candidate.flags;
+    visible.decode_index = candidate.decode_index;
+    visible.state_flags = candidate.state_flags;
     root.visible[view_index * root.candidate_capacity + visible_index] =
         visible;
     uint argument_index = (view_index * VKR_VK_DRAW_BUCKET_COUNT + bucket) *
@@ -607,7 +608,7 @@ VkrVkVisibilityOutput vk_visibility_vertex(uint vertex_id : SV_VertexID,
     VkrVkGeometryRow geometry = root.geometry_rows[visible.geometry_index];
     VkrGpuDecodedVertex vertex = vkr_decode_packed_vertex(
         geometry.vertices[geometry.first_vertex + vertex_id],
-        geometry.decode[0]);
+        geometry.decode[visible.decode_index]);
     VkrVulkanInstance instance = root.frame.instances[visible.instance_index];
     VkrVkVisibilityOutput output;
     output.position = mul(root.frame.view_projection,
@@ -871,7 +872,7 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
              visible.vertex_offset;
     int ic = int(source.indices[visible.first_index + triangle + 2u]) +
              visible.vertex_offset;
-    VkrGpuGeometryDecodeRecord decode = geometry.decode[0];
+    VkrGpuGeometryDecodeRecord decode = geometry.decode[visible.decode_index];
     VkrGpuDecodedVertex a = vkr_decode_packed_vertex(
         source.vertices[geometry.first_vertex + uint(ia)], decode);
     VkrGpuDecodedVertex b = vkr_decode_packed_vertex(

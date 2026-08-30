@@ -389,10 +389,17 @@ vkr_internal bool8_t vkr_geometry_prepare_packed_config(
     VkrGeometryConfig *out_config) {
   *out_config = *source;
   if (source->vertex_layout == VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1) {
-    return source->vertex_size == sizeof(VkrPackedStaticVertex) &&
-           source->index_size == sizeof(uint32_t) &&
-           vkr_packed_geometry_vertices_are_valid(
-               source->vertices, source->vertex_count, &source->decode);
+    if (source->vertex_size != sizeof(VkrPackedStaticVertex) ||
+        source->index_size != sizeof(uint32_t) || !source->decodes ||
+        source->decode_count == 0 ||
+        !vkr_packed_geometry_vertices_are_valid(
+            source->vertices, source->vertex_count, &source->decodes[0]))
+      return false_v;
+    for (uint32_t i = 1; i < source->decode_count; ++i) {
+      if (!vkr_packed_geometry_decode_is_valid(&source->decodes[i]))
+        return false_v;
+    }
+    return true_v;
   }
   if ((source->vertex_size != sizeof(VkrVertex3d) &&
        source->vertex_size != sizeof(VkrVertex2d)) ||
@@ -452,14 +459,19 @@ vkr_internal bool8_t vkr_geometry_prepare_packed_config(
   const VkrGeometryQuantizationBudgets budgets =
       vkr_packed_geometry_default_budgets();
   VkrGeometryQuantizationMetrics quantization = {0};
+  VkrGpuGeometryDecodeRecord *decode = vkr_allocator_alloc(
+      &system->allocator, sizeof(*decode), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!decode)
+    return false_v;
   if (!vkr_packed_geometry_pack(vertices, source->vertex_count, min, max,
-                                &budgets, packed, &out_config->decode,
-                                &quantization)) {
+                                &budgets, packed, decode, &quantization)) {
     return false_v;
   }
   out_config->vertex_size = sizeof(VkrPackedStaticVertex);
   out_config->vertices = packed;
   out_config->vertex_layout = VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1;
+  out_config->decodes = decode;
+  out_config->decode_count = 1u;
   out_config->index_size = sizeof(uint32_t);
   out_config->indices = indices ? indices : source->indices;
   return true_v;

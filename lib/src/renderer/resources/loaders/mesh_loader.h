@@ -41,7 +41,9 @@ typedef struct VkrMeshLoaderBuffer {
   uint32_t index_count;
   void *indices;
   VkrGpuVertexLayout vertex_layout;
-  VkrGpuGeometryDecodeRecord decode;
+  /** Arena-owned contiguous decode records indexed by submesh.decode_index. */
+  VkrGpuGeometryDecodeRecord *decodes;
+  uint32_t decode_count;
   VkrGeometryQuantizationMetrics quantization;
 } VkrMeshLoaderBuffer;
 
@@ -55,6 +57,7 @@ typedef struct VkrMeshLoaderSubmeshRange {
   uint32_t first_index;
   uint32_t index_count;
   int32_t vertex_offset;
+  uint32_t decode_index;
   Vec3 center;
   Vec3 min_extents;
   Vec3 max_extents;

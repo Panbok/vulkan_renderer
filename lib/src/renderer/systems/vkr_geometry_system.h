@@ -37,7 +37,9 @@ typedef struct VkrGeometryConfig {
   /** @brief Pointer to index data. */
   const void *indices;
   VkrGpuVertexLayout vertex_layout;
-  VkrGpuGeometryDecodeRecord decode;
+  /** Borrowed decode array copied by the backend during publication. */
+  const VkrGpuGeometryDecodeRecord *decodes;
+  uint32_t decode_count;
 
   Vec3 center;
   Vec3 min_extents;

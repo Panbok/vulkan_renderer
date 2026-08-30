@@ -1724,14 +1724,21 @@ vkr_internal bool8_t vkr_vk_asset_publish_geometry_internal(
           renderer->retired_staging_buffer_capacity - 3u ||
       geometry->vertex_layout != VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1 ||
       geometry->vertex_size != sizeof(VkrPackedStaticVertex) ||
-      geometry->decode.flags != VKR_GPU_GEOMETRY_DECODE_STATIC_V1 ||
+      !geometry->decodes || geometry->decode_count == 0 ||
+      (uint64_t)geometry->decode_count >
+          UINT64_MAX / sizeof(VkrGpuGeometryDecodeRecord) ||
       geometry->index_size != sizeof(uint32_t))
     return false_v;
+  for (uint32_t i = 0; i < geometry->decode_count; ++i) {
+    if (!vkr_packed_geometry_decode_is_valid(&geometry->decodes[i]))
+      return false_v;
+  }
   for (uint32_t i = 0; i < submesh_count; ++i) {
     if (!submeshes[i].index_count ||
         submeshes[i].first_index > geometry->index_count ||
         submeshes[i].index_count >
-            geometry->index_count - submeshes[i].first_index)
+            geometry->index_count - submeshes[i].first_index ||
+        submeshes[i].decode_index >= geometry->decode_count)
       return false_v;
   }
   VkrVulkanPublishedGeometry *record =
@@ -1743,6 +1750,7 @@ vkr_internal bool8_t vkr_vk_asset_publish_geometry_internal(
     if (record->handle.generation != handle.generation ||
         record->vertex_count != geometry->vertex_count ||
         record->index_count != geometry->index_count ||
+        record->decode_count != geometry->decode_count ||
         record->index_type != index_type) {
       log_error("Vulkan geometry %u:%u conflicts with %u:%u", handle.id,
                 handle.generation, record->handle.id,
@@ -1766,6 +1774,7 @@ vkr_internal bool8_t vkr_vk_asset_publish_geometry_internal(
           .first_index = submeshes[i].first_index,
           .index_count = submeshes[i].index_count,
           .vertex_offset = submeshes[i].vertex_offset,
+          .decode_index = submeshes[i].decode_index,
       };
     }
     record->submesh_count = submesh_count;
@@ -1781,7 +1790,8 @@ vkr_internal bool8_t vkr_vk_asset_publish_geometry_internal(
   }
   const uint64_t vertex_size =
       (uint64_t)sizeof(VkrPackedStaticVertex) * geometry->vertex_count;
-  const uint64_t decode_size = sizeof(VkrGpuGeometryDecodeRecord);
+  const uint64_t decode_size =
+      (uint64_t)geometry->decode_count * sizeof(VkrGpuGeometryDecodeRecord);
   const uint64_t index_size =
       (uint64_t)sizeof(uint32_t) * geometry->index_count;
   VkrVulkanGeometryMegabuffer *mega = &renderer->geometry_megabuffer;
@@ -1816,6 +1826,7 @@ vkr_internal bool8_t vkr_vk_asset_publish_geometry_internal(
       .indices = mega->indices,
       .vertex_count = geometry->vertex_count,
       .index_count = geometry->index_count,
+      .decode_count = geometry->decode_count,
       .index_type = index_type,
       .submeshes_size = submeshes_size,
       .submesh_count = submesh_count,
@@ -1830,6 +1841,7 @@ vkr_internal bool8_t vkr_vk_asset_publish_geometry_internal(
         .first_index = submeshes[i].first_index,
         .index_count = submeshes[i].index_count,
         .vertex_offset = submeshes[i].vertex_offset,
+        .decode_index = submeshes[i].decode_index,
     };
   }
   VkrVulkanPendingBufferInitialization initializations[3] = {0};
@@ -1842,7 +1854,7 @@ vkr_internal bool8_t vkr_vk_asset_publish_geometry_internal(
           VK_ACCESS_2_SHADER_STORAGE_READ_BIT, handle.id - 1u,
           &initializations[0]) &&
       vkr_vk_prepare_published_upload(
-          renderer, &geometry->decode, decode_size, &mega->vertices,
+          renderer, geometry->decodes, decode_size, &mega->vertices,
           decode_offset,
           VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
               VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -1918,6 +1930,7 @@ vkr_internal bool8_t vkr_vk_asset_publish_geometry(
     return false_v;
   const VkrMeshLoaderSubmeshRange submesh = {
       .index_count = geometry->index_count,
+      .decode_index = 0u,
   };
   return vkr_vk_asset_publish_geometry_internal(state, handle, geometry,
                                                 &submesh, 1u);
@@ -2213,7 +2226,7 @@ vkr_internal bool8_t vkr_vk_asset_publish_loaded_mesh(
       mesh->mesh_buffer.vertex_size != sizeof(VkrPackedStaticVertex) ||
       mesh->mesh_buffer.vertex_layout !=
           VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1 ||
-      mesh->mesh_buffer.decode.flags != VKR_GPU_GEOMETRY_DECODE_STATIC_V1 ||
+      !mesh->mesh_buffer.decodes || mesh->mesh_buffer.decode_count == 0 ||
       mesh->mesh_buffer.index_size != sizeof(uint32_t))
     return false_v;
   for (uint64_t i = 0; i < mesh->submeshes.length; ++i) {
@@ -2228,7 +2241,8 @@ vkr_internal bool8_t vkr_vk_asset_publish_loaded_mesh(
       .vertex_count = mesh->mesh_buffer.vertex_count,
       .vertices = mesh->mesh_buffer.vertices,
       .vertex_layout = mesh->mesh_buffer.vertex_layout,
-      .decode = mesh->mesh_buffer.decode,
+      .decodes = mesh->mesh_buffer.decodes,
+      .decode_count = mesh->mesh_buffer.decode_count,
       .index_size = mesh->mesh_buffer.index_size,
       .index_count = mesh->mesh_buffer.index_count,
       .indices = mesh->mesh_buffer.indices,
@@ -2267,7 +2281,7 @@ bool8_t vkr_vk_asset_unpublish_geometry(void *state, VkrGeometryHandle handle) {
   mega->index_live_bytes -= Min(mega->index_live_bytes, index_bytes);
   mega->decode_metadata_live_bytes -=
       Min(mega->decode_metadata_live_bytes,
-          (uint64_t)sizeof(VkrGpuGeometryDecodeRecord));
+          (uint64_t)record->decode_count * sizeof(VkrGpuGeometryDecodeRecord));
   record->live = false_v;
   record->pending_retire = true_v;
   record->last_use_submit_value =

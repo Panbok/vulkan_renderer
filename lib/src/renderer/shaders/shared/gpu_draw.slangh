@@ -81,8 +81,8 @@ struct VkrGpuCandidateDrawRow
     uint first_index;
     uint index_count;
     int vertex_offset;
-    uint state_bucket;
-    uint flags;
+    uint decode_index;
+    uint state_flags;
     float4 local_bounding_sphere;
 };
 
@@ -94,6 +94,16 @@ struct VkrGpuVisibleDrawRow
     uint first_index;
     uint index_count;
     int vertex_offset;
-    uint state_bucket;
-    uint flags;
+    uint decode_index;
+    uint state_flags;
 };
+
+uint vkr_gpu_draw_state_bucket(uint state_flags)
+{
+    return state_flags & 3u;
+}
+
+uint vkr_gpu_draw_candidate_flags(uint state_flags)
+{
+    return state_flags >> 2u;
+}

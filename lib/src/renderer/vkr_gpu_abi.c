@@ -95,8 +95,8 @@ vkr_global const VkrGpuAbiField vkr_gpu_candidate_draw_row_fields[] = {
     VKR_GPU_ABI_FIELD(VkrGpuCandidateDrawRow, index_count, "index_count", 16),
     VKR_GPU_ABI_FIELD(VkrGpuCandidateDrawRow, vertex_offset, "vertex_offset",
                       20),
-    VKR_GPU_ABI_FIELD(VkrGpuCandidateDrawRow, state_bucket, "state_bucket", 24),
-    VKR_GPU_ABI_FIELD(VkrGpuCandidateDrawRow, flags, "flags", 28),
+    VKR_GPU_ABI_FIELD(VkrGpuCandidateDrawRow, decode_index, "decode_index", 24),
+    VKR_GPU_ABI_FIELD(VkrGpuCandidateDrawRow, state_flags, "state_flags", 28),
     VKR_GPU_ABI_FIELD(VkrGpuCandidateDrawRow, local_bounding_sphere,
                       "local_bounding_sphere", 32),
 };
@@ -111,8 +111,8 @@ vkr_global const VkrGpuAbiField vkr_gpu_visible_draw_row_fields[] = {
     VKR_GPU_ABI_FIELD(VkrGpuVisibleDrawRow, first_index, "first_index", 12),
     VKR_GPU_ABI_FIELD(VkrGpuVisibleDrawRow, index_count, "index_count", 16),
     VKR_GPU_ABI_FIELD(VkrGpuVisibleDrawRow, vertex_offset, "vertex_offset", 20),
-    VKR_GPU_ABI_FIELD(VkrGpuVisibleDrawRow, state_bucket, "state_bucket", 24),
-    VKR_GPU_ABI_FIELD(VkrGpuVisibleDrawRow, flags, "flags", 28),
+    VKR_GPU_ABI_FIELD(VkrGpuVisibleDrawRow, decode_index, "decode_index", 24),
+    VKR_GPU_ABI_FIELD(VkrGpuVisibleDrawRow, state_flags, "state_flags", 28),
 };
 
 vkr_global const VkrGpuAbiRecord

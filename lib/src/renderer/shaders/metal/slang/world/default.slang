@@ -28,7 +28,8 @@ vkr_metal_packet_vertex_data(uint vertex_id, uint instance_id,
     VkrGpuGeometryDecodeRecord* decode =
         (VkrGpuGeometryDecodeRecord*)geometry.decode_address;
     VkrGpuDecodedVertex vertex = vkr_decode_packed_vertex(
-        vertices[geometry.first_vertex + vertex_id], decode[0]);
+        vertices[geometry.first_vertex + vertex_id],
+        decode[visible.decode_index]);
     VkrMetalPacketInstance instance =
         frame.instances[visible.instance_index + (gpu_draw ? 0u : instance_id)];
     VkrMetalPacketVertexData output;

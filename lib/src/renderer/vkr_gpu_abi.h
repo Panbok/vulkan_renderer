@@ -28,6 +28,19 @@ typedef enum VkrWorldDrawStateBucket {
   VKR_WORLD_DRAW_STATE_BUCKET_COUNT,
 } VkrWorldDrawStateBucket;
 
+#define VKR_GPU_DRAW_STATE_BUCKET_BITS 2u
+#define VKR_GPU_DRAW_STATE_BUCKET_MASK 0x3u
+
+_Static_assert(VKR_WORLD_DRAW_STATE_BUCKET_COUNT ==
+                   VKR_GPU_DRAW_STATE_BUCKET_MASK + 1u,
+               "Packed draw state requires exactly four buckets");
+
+static INLINE uint32_t vkr_gpu_draw_state_flags(uint32_t state_bucket,
+                                                uint32_t flags) {
+  return (flags << VKR_GPU_DRAW_STATE_BUCKET_BITS) |
+         (state_bucket & VKR_GPU_DRAW_STATE_BUCKET_MASK);
+}
+
 typedef struct VkrGeometryMegabufferMetrics {
   uint64_t vertex_capacity_bytes;
   uint64_t index_capacity_bytes;
@@ -131,8 +144,8 @@ typedef struct VkrGpuCandidateDrawRow {
   uint32_t first_index;
   uint32_t index_count;
   int32_t vertex_offset;
-  uint32_t state_bucket;
-  uint32_t flags;
+  uint32_t decode_index;
+  uint32_t state_flags;
   Vec4 local_bounding_sphere;
 } VkrGpuCandidateDrawRow;
 
@@ -144,8 +157,8 @@ typedef struct VkrGpuVisibleDrawRow {
   uint32_t first_index;
   uint32_t index_count;
   int32_t vertex_offset;
-  uint32_t state_bucket;
-  uint32_t flags;
+  uint32_t decode_index;
+  uint32_t state_flags;
 } VkrGpuVisibleDrawRow;
 
 /** GPU-written compacted work volume and four-bucket prefix state. */

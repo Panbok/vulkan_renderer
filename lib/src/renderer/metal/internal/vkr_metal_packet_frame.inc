@@ -66,8 +66,8 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
     return false_v;
   const VkrPacketFrameConstants frame_constants =
       vkr_packet_derive_frame_constants(packet, target_width, target_height);
-  *out_frame_flags = vkr_packet_derive_frame_flags(
-      packet, lighting_pass, renderer->ibl_ready);
+  *out_frame_flags =
+      vkr_packet_derive_frame_flags(packet, lighting_pass, renderer->ibl_ready);
   *frame_root = (VkrMetalPacketFrameRoot){
       .instances = instances_gpu,
       .view_projection = vkr_metal_packet_slang_draw_matrix(view_projection),
@@ -250,6 +250,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_draws(
                 .first_index = mesh->gpu_row.first_index + submesh->first_index,
                 .index_count = submesh->index_count,
                 .vertex_offset = submesh->vertex_offset,
+                .decode_index = submesh->decode_index,
             },
     };
     [renderer->argument_table setAddress:root_gpu atIndex:0];

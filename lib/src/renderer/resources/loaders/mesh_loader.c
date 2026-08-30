@@ -350,9 +350,13 @@ vkr_internal bool8_t vkr_mesh_loader_commit_merged_buffer(
       result_allocator, packed_vertex_bytes, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   uint32_t *indices = vkr_allocator_alloc(result_allocator, index_bytes,
                                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrGpuGeometryDecodeRecord *decodes = vkr_allocator_alloc(
+      result_allocator,
+      (uint64_t)range_count * sizeof(VkrGpuGeometryDecodeRecord),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   Array_VkrMeshLoaderSubmeshRange ranges =
       array_create_VkrMeshLoaderSubmeshRange(result_allocator, range_count);
-  if (!working_vertices || !vertices || !indices || !ranges.data) {
+  if (!working_vertices || !vertices || !indices || !decodes || !ranges.data) {
     log_error("MeshLoader: failed to allocate optimized mesh (%u vertices, %u "
               "indices, %u ranges)",
               source->vertex_count, source->index_count, range_count);
@@ -440,40 +444,66 @@ vkr_internal bool8_t vkr_mesh_loader_commit_merged_buffer(
   }
   output_vertex_count = output_vertex_cursor;
 
-  Vec3 geometry_min = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);
-  Vec3 geometry_max = vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
-  for (uint32_t i = 0; i < source->vertex_count; ++i) {
-    const Vec3 position = vkr_vertex_unpack_vec3(source_vertices[i].position);
-    geometry_min.x = Min(geometry_min.x, position.x);
-    geometry_min.y = Min(geometry_min.y, position.y);
-    geometry_min.z = Min(geometry_min.z, position.z);
-    geometry_max.x = Max(geometry_max.x, position.x);
-    geometry_max.y = Max(geometry_max.y, position.y);
-    geometry_max.z = Max(geometry_max.z, position.z);
-  }
   const VkrGeometryQuantizationBudgets budgets =
       vkr_packed_geometry_default_budgets();
-  VkrGpuGeometryDecodeRecord decode = {0};
   VkrGeometryQuantizationMetrics quantization = {0};
-  if (!vkr_packed_geometry_pack(working_vertices, output_vertex_count,
-                                geometry_min, geometry_max, &budgets, vertices,
-                                &decode, &quantization)) {
-    log_error("MeshLoader: failed to quantize %u optimized vertices",
-              output_vertex_count);
-    return false_v;
-  }
-
+  uint32_t packed_vertex_cursor = 0;
   for (uint32_t i = 0; i < range_count; ++i) {
     const VkrMeshLoaderSubmeshRange *source_range =
         &state->merged_submeshes.data[i];
+    uint32_t min_vertex = UINT32_MAX;
+    uint32_t max_vertex = 0;
+    for (uint32_t j = 0; j < source_range->index_count; ++j) {
+      const uint32_t index = indices[source_range->first_index + j];
+      min_vertex = Min(min_vertex, index);
+      max_vertex = Max(max_vertex, index);
+    }
+    if (min_vertex != packed_vertex_cursor || max_vertex >= output_vertex_count)
+      return false_v;
+    const uint32_t range_vertex_count = max_vertex - min_vertex + 1u;
+    Vec3 range_min = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);
+    Vec3 range_max = vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
+    for (uint32_t j = 0; j < range_vertex_count; ++j) {
+      const Vec3 position =
+          vkr_vertex_unpack_vec3(working_vertices[min_vertex + j].position);
+      range_min.x = Min(range_min.x, position.x);
+      range_min.y = Min(range_min.y, position.y);
+      range_min.z = Min(range_min.z, position.z);
+      range_max.x = Max(range_max.x, position.x);
+      range_max.y = Max(range_max.y, position.y);
+      range_max.z = Max(range_max.z, position.z);
+    }
+    VkrGeometryQuantizationMetrics range_quantization = {0};
+    if (!vkr_packed_geometry_pack(working_vertices + min_vertex,
+                                  range_vertex_count, range_min, range_max,
+                                  &budgets, vertices + min_vertex, &decodes[i],
+                                  &range_quantization)) {
+      log_error("MeshLoader: failed to quantize range %u (%u vertices)", i,
+                range_vertex_count);
+      return false_v;
+    }
+    quantization.position_max =
+        Max(quantization.position_max, range_quantization.position_max);
+    quantization.normal_degrees_max = Max(
+        quantization.normal_degrees_max, range_quantization.normal_degrees_max);
+    quantization.tangent_degrees_max =
+        Max(quantization.tangent_degrees_max,
+            range_quantization.tangent_degrees_max);
+    quantization.uv_max = Max(quantization.uv_max, range_quantization.uv_max);
+    quantization.color_max =
+        Max(quantization.color_max, range_quantization.color_max);
     VkrMeshLoaderSubmeshRange range = *source_range;
+    range.decode_index = i;
     range.material_name =
         string8_duplicate(result_allocator, &source_range->material_name);
     range.shader_override =
         string8_duplicate(result_allocator, &source_range->shader_override);
     range.material_handle = VKR_MATERIAL_HANDLE_INVALID;
     array_set_VkrMeshLoaderSubmeshRange(&ranges, i, range);
+    packed_vertex_cursor += range_vertex_count;
   }
+  if (packed_vertex_cursor != output_vertex_count)
+    return false_v;
   *out_buffer = (VkrMeshLoaderBuffer){
       .vertex_size = sizeof(VkrPackedStaticVertex),
       .vertex_count = output_vertex_count,
@@ -482,7 +512,8 @@ vkr_internal bool8_t vkr_mesh_loader_commit_merged_buffer(
       .index_count = source->index_count,
       .indices = indices,
       .vertex_layout = VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1,
-      .decode = decode,
+      .decodes = decodes,
+      .decode_count = range_count,
       .quantization = quantization,
   };
   *out_ranges = ranges;
@@ -1587,7 +1618,9 @@ bool8_t vkr_mesh_cook_source(String8 source_path, String8 output_path,
     out_stats->decoded_bytes =
         (uint64_t)state.merged_buffer.vertex_count *
             sizeof(VkrPackedStaticVertex) +
-        (uint64_t)state.merged_buffer.index_count * sizeof(uint32_t);
+        (uint64_t)state.merged_buffer.index_count * sizeof(uint32_t) +
+        (uint64_t)state.merged_submeshes.length *
+            sizeof(VkrGpuGeometryDecodeRecord);
     out_stats->vertex_count = state.merged_buffer.vertex_count;
     out_stats->index_count = state.merged_buffer.index_count;
     out_stats->range_count = (uint32_t)state.merged_submeshes.length;
@@ -1724,7 +1757,8 @@ vkr_internal bool8_t vkr_mesh_load_job_run_inner(
   }
   const uint64_t decoded_bytes =
       (uint64_t)result_buffer.vertex_count * result_buffer.vertex_size +
-      (uint64_t)result_buffer.index_count * result_buffer.index_size;
+      (uint64_t)result_buffer.index_count * result_buffer.index_size +
+      (uint64_t)result_buffer.decode_count * sizeof(VkrGpuGeometryDecodeRecord);
   load_metrics.decoded_bytes = decoded_bytes;
   load_metrics.upload_bytes = decoded_bytes;
   load_metrics.vertex_count = result_buffer.vertex_count;

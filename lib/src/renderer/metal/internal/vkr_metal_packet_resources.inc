@@ -246,7 +246,9 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
       (create_info->submesh_count > 0 && !create_info->submeshes) ||
       (uint64_t)create_info->vertex_count >
           UINT64_MAX / sizeof(VkrPackedStaticVertex) ||
-      create_info->decode.flags != VKR_GPU_GEOMETRY_DECODE_STATIC_V1 ||
+      !create_info->decodes || create_info->decode_count == 0 ||
+      (uint64_t)create_info->decode_count >
+          UINT64_MAX / sizeof(VkrGpuGeometryDecodeRecord) ||
       (uint64_t)create_info->index_count > UINT64_MAX / sizeof(uint32_t)) {
     log_error("Metal geometry publication rejected before upload "
               "(frame_prepared=%u handle=%u:%u vertices=%u indices=%u)",
@@ -256,13 +258,21 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
               create_info ? create_info->index_count : 0u);
     return false_v;
   }
+  for (uint32_t decode_index = 0; decode_index < create_info->decode_count;
+       ++decode_index) {
+    if (!vkr_packed_geometry_decode_is_valid(
+            &create_info->decodes[decode_index]))
+      return false_v;
+  }
   for (uint32_t submesh_index = 0; submesh_index < create_info->submesh_count;
        ++submesh_index) {
     const VkrMetalPacketSubmeshCreateInfo *submesh =
         &create_info->submeshes[submesh_index];
     if (submesh->index_count == 0 ||
         submesh->first_index > create_info->index_count ||
-        submesh->index_count > create_info->index_count - submesh->first_index)
+        submesh->index_count >
+            create_info->index_count - submesh->first_index ||
+        submesh->decode_index >= create_info->decode_count)
       return false_v;
     for (uint32_t index = 0; index < submesh->index_count; ++index) {
       const int64_t vertex =
@@ -284,7 +294,8 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
     const uint32_t generation = slot->generation;
     const uint64_t vertex_bytes =
         (uint64_t)create_info->vertex_count * sizeof(VkrPackedStaticVertex);
-    const uint64_t decode_bytes = sizeof(VkrGpuGeometryDecodeRecord);
+    const uint64_t decode_bytes = (uint64_t)create_info->decode_count *
+                                  sizeof(VkrGpuGeometryDecodeRecord);
     const uint64_t index_bytes =
         (uint64_t)create_info->index_count * sizeof(uint32_t);
     VkrMetalPacketGeometryMegabuffer *mega = &renderer->geometry_megabuffer;
@@ -322,7 +333,7 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
     const bool8_t decode_uploaded =
         vertices_uploaded &&
         vkr_metal_packet_upload_buffer_chunks_at(
-            renderer, &create_info->decode, decode_bytes,
+            renderer, create_info->decodes, decode_bytes,
             (id<MTLBuffer>)mega->vertices.metal_buffer, decode_offset);
     const bool8_t indices_uploaded =
         decode_uploaded &&
@@ -350,6 +361,7 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
     }
     slot->vertex_count = create_info->vertex_count;
     slot->index_count = create_info->index_count;
+    slot->decode_count = create_info->decode_count;
     slot->gpu_row = (VkrGpuGeometryRow){
         .vertex_address = mega->vertices.gpu_address,
         .index_address = mega->indices.gpu_address,
@@ -371,6 +383,7 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
     } else {
       submeshes[0] = (VkrMetalPacketSubmeshCreateInfo){
           .index_count = create_info->index_count,
+          .decode_index = 0u,
       };
       slot->submesh_count = 1;
     }
@@ -413,8 +426,8 @@ bool8_t vkr_metal_packet_renderer_create_loaded_mesh(
       loader_result->mesh_buffer.vertex_size != sizeof(VkrPackedStaticVertex) ||
       loader_result->mesh_buffer.vertex_layout !=
           VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1 ||
-      loader_result->mesh_buffer.decode.flags !=
-          VKR_GPU_GEOMETRY_DECODE_STATIC_V1 ||
+      !loader_result->mesh_buffer.decodes ||
+      loader_result->mesh_buffer.decode_count == 0 ||
       loader_result->mesh_buffer.index_size != sizeof(uint32_t) ||
       loader_result->submeshes.length == 0 ||
       loader_result->submeshes.length > renderer->max_submeshes_per_mesh ||
@@ -428,6 +441,7 @@ bool8_t vkr_metal_packet_renderer_create_loaded_mesh(
         .first_index = range->first_index,
         .index_count = range->index_count,
         .vertex_offset = range->vertex_offset,
+        .decode_index = range->decode_index,
     };
   }
   return vkr_metal_packet_renderer_create_mesh(
@@ -435,7 +449,8 @@ bool8_t vkr_metal_packet_renderer_create_loaded_mesh(
       &(VkrMetalPacketMeshCreateInfo){
           .vertices = loader_result->mesh_buffer.vertices,
           .vertex_count = loader_result->mesh_buffer.vertex_count,
-          .decode = loader_result->mesh_buffer.decode,
+          .decodes = loader_result->mesh_buffer.decodes,
+          .decode_count = loader_result->mesh_buffer.decode_count,
           .indices = loader_result->mesh_buffer.indices,
           .index_count = loader_result->mesh_buffer.index_count,
           .submeshes = submeshes,
@@ -451,8 +466,8 @@ bool8_t vkr_metal_packet_renderer_publish_loaded_mesh(
       loader_result->mesh_buffer.vertex_size != sizeof(VkrPackedStaticVertex) ||
       loader_result->mesh_buffer.vertex_layout !=
           VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1 ||
-      loader_result->mesh_buffer.decode.flags !=
-          VKR_GPU_GEOMETRY_DECODE_STATIC_V1 ||
+      !loader_result->mesh_buffer.decodes ||
+      loader_result->mesh_buffer.decode_count == 0 ||
       loader_result->mesh_buffer.index_size != sizeof(uint32_t) ||
       handle.id == 0 || handle.id > renderer->max_meshes ||
       loader_result->submeshes.length == 0 ||
@@ -467,19 +482,22 @@ bool8_t vkr_metal_packet_renderer_publish_loaded_mesh(
         .first_index = range->first_index,
         .index_count = range->index_count,
         .vertex_offset = range->vertex_offset,
+        .decode_index = range->decode_index,
     };
   }
   VkrMetalPacketMesh *existing = &renderer->meshes[handle.id - 1];
   if (existing->live) {
     if (existing->generation != handle.generation ||
         existing->vertex_count != loader_result->mesh_buffer.vertex_count ||
-        existing->index_count != loader_result->mesh_buffer.index_count)
+        existing->index_count != loader_result->mesh_buffer.index_count ||
+        existing->decode_count != loader_result->mesh_buffer.decode_count)
       return false_v;
     for (uint32_t i = 0; i < loader_result->submeshes.length; ++i) {
       const VkrMetalPacketSubmeshCreateInfo *submesh = &submeshes[i];
       if (submesh->index_count == 0 ||
           submesh->first_index > existing->index_count ||
-          submesh->index_count > existing->index_count - submesh->first_index)
+          submesh->index_count > existing->index_count - submesh->first_index ||
+          submesh->decode_index >= loader_result->mesh_buffer.decode_count)
         return false_v;
     }
     VkrMetalPacketSubmeshCreateInfo *destination =
@@ -500,7 +518,8 @@ bool8_t vkr_metal_packet_renderer_publish_loaded_mesh(
              &(VkrMetalPacketMeshCreateInfo){
                  .vertices = loader_result->mesh_buffer.vertices,
                  .vertex_count = loader_result->mesh_buffer.vertex_count,
-                 .decode = loader_result->mesh_buffer.decode,
+                 .decodes = loader_result->mesh_buffer.decodes,
+                 .decode_count = loader_result->mesh_buffer.decode_count,
                  .indices = loader_result->mesh_buffer.indices,
                  .index_count = loader_result->mesh_buffer.index_count,
                  .submeshes = submeshes,
@@ -516,7 +535,7 @@ bool8_t vkr_metal_packet_renderer_publish_geometry(
   if (!renderer || !geometry || !geometry->vertices || !geometry->indices ||
       geometry->vertex_layout != VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1 ||
       geometry->vertex_size != sizeof(VkrPackedStaticVertex) ||
-      geometry->decode.flags != VKR_GPU_GEOMETRY_DECODE_STATIC_V1 ||
+      !geometry->decodes || geometry->decode_count == 0 ||
       geometry->index_size != sizeof(uint32_t) || geometry->vertex_count == 0 ||
       geometry->index_count == 0)
     return false_v;
@@ -528,7 +547,8 @@ bool8_t vkr_metal_packet_renderer_publish_geometry(
              &(VkrMetalPacketMeshCreateInfo){
                  .vertices = geometry->vertices,
                  .vertex_count = geometry->vertex_count,
-                 .decode = geometry->decode,
+                 .decodes = geometry->decodes,
+                 .decode_count = geometry->decode_count,
                  .indices = geometry->indices,
                  .index_count = geometry->index_count,
              },
@@ -552,7 +572,7 @@ bool8_t vkr_metal_packet_renderer_destroy_mesh(VkrMetalPacketRenderer *renderer,
   mega->index_live_bytes -= Min(mega->index_live_bytes, index_bytes);
   mega->decode_metadata_live_bytes -=
       Min(mega->decode_metadata_live_bytes,
-          (uint64_t)sizeof(VkrGpuGeometryDecodeRecord));
+          (uint64_t)slot->decode_count * sizeof(VkrGpuGeometryDecodeRecord));
   slot->live = false_v;
   slot->generation =
       slot->generation == UINT32_MAX ? 1u : slot->generation + 1u;
@@ -1711,8 +1731,9 @@ vkr_internal bool8_t vkr_metal_packet_pack_gpu_draw_stream(
         .first_index = mesh->gpu_row.first_index + submesh->first_index,
         .index_count = submesh->index_count,
         .vertex_offset = submesh->vertex_offset,
-        .state_bucket = source->state_bucket,
-        .flags = source->flags,
+        .decode_index = submesh->decode_index,
+        .state_flags =
+            vkr_gpu_draw_state_flags(source->state_bucket, source->flags),
         .local_bounding_sphere = source->local_bounding_sphere,
     };
     packed_count++;

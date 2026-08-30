@@ -164,6 +164,7 @@ typedef struct VkrMetalPacketMesh {
   uint32_t vertex_count;
   uint32_t index_count;
   uint32_t submesh_count;
+  uint32_t decode_count;
   uint32_t generation;
   uint64_t last_use_submit_value;
   bool8_t live;

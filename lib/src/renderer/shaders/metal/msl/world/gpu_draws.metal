@@ -124,7 +124,7 @@ static bool vkr_metal_packet_candidate_in_frustum(
     constant VkrMetalPacketGpuDrawRoot &root,
     constant VkrMetalPacketGpuDrawView &view,
     const device VkrGpuCandidateDrawRow &candidate) {
-  if ((candidate.flags & 1u) == 0u)
+  if ((vkr_gpu_draw_candidate_flags(candidate.state_flags) & 1u) == 0u)
     return true;
   const device VkrMetalPacketInstance &instance =
       root.instances[candidate.instance_index];
@@ -146,7 +146,8 @@ static bool vkr_metal_packet_candidate_occluded(
     constant VkrMetalPacketGpuDrawRoot &root,
     const device VkrGpuCandidateDrawRow &candidate) {
   if (root.hzb_enabled == 0u || root.hzb_mip_count == 0u ||
-      any(root.hzb_extent == 0u) || (candidate.flags & 1u) == 0u)
+      any(root.hzb_extent == 0u) ||
+      (vkr_gpu_draw_candidate_flags(candidate.state_flags) & 1u) == 0u)
     return false;
   const device VkrMetalPacketInstance &instance =
       root.instances[candidate.instance_index];
@@ -208,8 +209,9 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
   const constant VkrMetalPacketGpuDrawView &view = root.views[view_index];
   const device VkrGpuCandidateDrawRow &candidate = root.candidates[index];
   uint classification_index = view_index * root.visible_capacity + index;
-  if (candidate.state_bucket >= 4u ||
-      (candidate.flags & view.required_candidate_flags) !=
+  uint candidate_flags = vkr_gpu_draw_candidate_flags(candidate.state_flags);
+  uint bucket = vkr_gpu_draw_state_bucket(candidate.state_flags);
+  if ((candidate_flags & view.required_candidate_flags) !=
           view.required_candidate_flags ||
       !vkr_metal_packet_candidate_in_frustum(root, view, candidate)) {
     root.classifications[classification_index] = 0u;
@@ -223,8 +225,8 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
                               memory_order_relaxed);
     return;
   }
-  root.classifications[classification_index] = candidate.state_bucket + 1u;
-  atomic_fetch_add_explicit(&state.bucket_counts[candidate.state_bucket], 1u,
+  root.classifications[classification_index] = bucket + 1u;
+  atomic_fetch_add_explicit(&state.bucket_counts[bucket], 1u,
                             memory_order_relaxed);
 }
 
@@ -287,7 +289,7 @@ vkr_metal_packet_gpu_draw_encode_impl(constant VkrMetalPacketGpuDrawRoot &root,
       candidate.geometry_index, candidate.material_index,
       candidate.instance_index, candidate.first_index,
       candidate.index_count,    candidate.vertex_offset,
-      candidate.state_bucket,   candidate.flags};
+      candidate.decode_index,   candidate.state_flags};
   const device VkrGpuGeometryRow &geometry =
       root.geometry_rows[candidate.geometry_index];
   device uint *indices = reinterpret_cast<device uint *>(
@@ -562,8 +564,8 @@ vkr_metal_packet_gbuffer_resolve(constant VkrMetalPacketGBufferResolveRoot &root
       reinterpret_cast<device const VkrPackedStaticVertex *>(
           geometry.vertex_address);
   device const VkrGpuGeometryDecodeRecord &decode =
-      *reinterpret_cast<device const VkrGpuGeometryDecodeRecord *>(
-          geometry.decode_address);
+      reinterpret_cast<device const VkrGpuGeometryDecodeRecord *>(
+          geometry.decode_address)[visible.decode_index];
   const device VkrMetalPacketInstance &instance =
       root.instances[visible.instance_index];
   for (uint corner = 0u; corner < 3u; ++corner) {
@@ -1379,8 +1381,8 @@ static bool vkr_metal_packet_resolve_transmission_surface(
       reinterpret_cast<device const VkrPackedStaticVertex *>(
           geometry.vertex_address);
   device const VkrGpuGeometryDecodeRecord &decode =
-      *reinterpret_cast<device const VkrGpuGeometryDecodeRecord *>(
-          geometry.decode_address);
+      reinterpret_cast<device const VkrGpuGeometryDecodeRecord *>(
+          geometry.decode_address)[visible.decode_index];
   VkrGpuDecodedVertex vertices[3];
   float4 clip[3];
   const device VkrMetalPacketInstance &instance =

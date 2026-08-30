@@ -48,6 +48,17 @@ static Vec3 vkr_packed_normalize(Vec3 value) {
   return vec3_scale(value, inverse_length);
 }
 
+static Vec3 vkr_packed_resolve_tangent(Vec3 normal, Vec3 tangent) {
+  normal = vkr_packed_normalize(normal);
+  tangent = vec3_sub(tangent, vec3_scale(normal, vec3_dot(normal, tangent)));
+  if (vec3_length_squared(tangent) <= 1.0e-20f) {
+    tangent = fabsf(normal.x) > 0.9f ? vec3_new(0.0f, 1.0f, 0.0f)
+                                     : vec3_new(1.0f, 0.0f, 0.0f);
+    tangent = vec3_sub(tangent, vec3_scale(normal, vec3_dot(normal, tangent)));
+  }
+  return vkr_packed_normalize(tangent);
+}
+
 static uint32_t vkr_packed_oct_encode(Vec3 value) {
   value = vkr_packed_normalize(value);
   const float32_t denominator =
@@ -108,8 +119,6 @@ static bool8_t vkr_packed_source_vertex_is_valid(const VkrVertex3d *vertex) {
       vec3_new(vertex->tangent.x, vertex->tangent.y, vertex->tangent.z);
   const float32_t normal_length_squared =
       normal.x * normal.x + normal.y * normal.y + normal.z * normal.z;
-  const float32_t tangent_length_squared =
-      tangent.x * tangent.x + tangent.y * tangent.y + tangent.z * tangent.z;
   return isfinite(vertex->position.x) && isfinite(vertex->position.y) &&
          isfinite(vertex->position.z) && isfinite(normal.x) &&
          isfinite(normal.y) && isfinite(normal.z) &&
@@ -118,8 +127,7 @@ static bool8_t vkr_packed_source_vertex_is_valid(const VkrVertex3d *vertex) {
          isfinite(vertex->colour.z) && isfinite(vertex->colour.w) &&
          isfinite(tangent.x) && isfinite(tangent.y) && isfinite(tangent.z) &&
          isfinite(vertex->tangent.w) && isfinite(normal_length_squared) &&
-         isfinite(tangent_length_squared) && normal_length_squared > 1.0e-20f &&
-         tangent_length_squared > 1.0e-20f &&
+         normal_length_squared > 1.0e-20f &&
          fabsf(fabsf(vertex->tangent.w) - 1.0f) <= 1.0e-6f;
 }
 
@@ -241,8 +249,9 @@ bool8_t vkr_packed_geometry_pack(const VkrVertex3d *source,
       return false_v;
     }
     const Vec3 normal = vkr_vertex_unpack_vec3(source[i].normal);
-    const Vec3 tangent =
-        vec3_new(source[i].tangent.x, source[i].tangent.y, source[i].tangent.z);
+    const Vec3 tangent = vkr_packed_resolve_tangent(
+        normal, vec3_new(source[i].tangent.x, source[i].tangent.y,
+                         source[i].tangent.z));
     const float32_t nx =
         scale.x > 0.0f ? (position.x - min_extents.x) / scale.x : 0.0f;
     const float32_t ny =
@@ -287,8 +296,10 @@ bool8_t vkr_packed_geometry_pack(const VkrVertex3d *source,
     out_metrics->tangent_degrees_max = Max(
         out_metrics->tangent_degrees_max,
         vkr_packed_angle_degrees(
-            vec3_new(source[i].tangent.x, source[i].tangent.y,
-                     source[i].tangent.z),
+            vkr_packed_resolve_tangent(vkr_vertex_unpack_vec3(source[i].normal),
+                                       vec3_new(source[i].tangent.x,
+                                                source[i].tangent.y,
+                                                source[i].tangent.z)),
             vec3_new(decoded.tangent.x, decoded.tangent.y, decoded.tangent.z)));
     out_metrics->uv_max =
         Max(out_metrics->uv_max,

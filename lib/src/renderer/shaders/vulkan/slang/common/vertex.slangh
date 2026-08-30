@@ -25,7 +25,8 @@ VkrVulkanVertexData packet_vertex_data(uint vertex_id, uint instance_id,
     VkrGpuGeometryDecodeRecord* decode =
         (VkrGpuGeometryDecodeRecord*)geometry.decode_address;
     VkrGpuDecodedVertex vertex = vkr_decode_packed_vertex(
-        vertices[geometry.first_vertex + vertex_id], decode[0]);
+        vertices[geometry.first_vertex + vertex_id],
+        decode[visible.decode_index]);
     VkrVulkanInstance instance =
         frame.instances[visible.instance_index + instance_id];
     float4 world = mul(instance.model, float4(vertex.position, 1.0f));

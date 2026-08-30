@@ -91,12 +91,14 @@ typedef struct VkrMetalPacketSubmeshCreateInfo {
   uint32_t first_index;
   uint32_t index_count;
   int32_t vertex_offset;
+  uint32_t decode_index;
 } VkrMetalPacketSubmeshCreateInfo;
 
 typedef struct VkrMetalPacketMeshCreateInfo {
   const VkrPackedStaticVertex *vertices;
   uint32_t vertex_count;
-  VkrGpuGeometryDecodeRecord decode;
+  const VkrGpuGeometryDecodeRecord *decodes;
+  uint32_t decode_count;
   const uint32_t *indices;
   uint32_t index_count;
   const VkrMetalPacketSubmeshCreateInfo *submeshes;
