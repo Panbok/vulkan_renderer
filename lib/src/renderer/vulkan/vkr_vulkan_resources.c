@@ -229,10 +229,12 @@ bool8_t vkr_vk_flush_publication_ranges(VkrVulkanRenderer *renderer) {
       &renderer->resource_descriptor_dirty,
       &renderer->sampler_descriptor_dirty,
       &renderer->material_dirty,
+      &renderer->transmission_material_dirty,
   };
   VkrVulkanBuffer *buffers[] = {
       &renderer->resource_descriptors,
       &renderer->sampler_descriptors,
+      &renderer->materials,
       &renderer->materials,
   };
   for (uint32_t i = 0; i < ArrayCount(ranges); ++i) {
@@ -505,6 +507,9 @@ vkr_internal bool8_t vkr_vk_create_upload_buffers(VkrVulkanRenderer *renderer) {
       vkr_vulkan_device_resource_layout(renderer->device);
   const VkrVulkanDescriptorLayout *sampler_layout =
       vkr_vulkan_device_sampler_layout(renderer->device);
+  renderer->transmission_material_offset =
+      (VkDeviceSize)renderer->config.material_slot_capacity *
+      sizeof(VkrVulkanMaterialGpuRow);
   return vkr_vk_create_buffer(
              renderer, VKR_VULKAN_MEMORY_CLASS_UPLOAD,
              VKR_GPU_ALLOCATION_OWNER_SHADER, resource_layout->size,
@@ -524,8 +529,9 @@ vkr_internal bool8_t vkr_vk_create_upload_buffers(VkrVulkanRenderer *renderer) {
          vkr_vk_create_buffer(
              renderer, VKR_VULKAN_MEMORY_CLASS_UPLOAD,
              VKR_GPU_ALLOCATION_OWNER_SHADER,
-             (VkDeviceSize)renderer->config.material_slot_capacity *
-                 sizeof(VkrVulkanMaterialGpuRow),
+             renderer->transmission_material_offset +
+                 (VkDeviceSize)renderer->config.material_slot_capacity *
+                     sizeof(VkrVulkanTransmissionMaterialGpuRow),
              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, &renderer->materials) &&
          vkr_vk_create_sh_coefficients(renderer);
 }
@@ -824,6 +830,7 @@ bool8_t vkr_vk_create_resources(VkrVulkanRenderer *renderer) {
   VkSamplerCreateInfo transmission_info = sampler_info;
   transmission_info.magFilter = VK_FILTER_LINEAR;
   transmission_info.minFilter = VK_FILTER_LINEAR;
+  transmission_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
   if (vkCreateSampler(vkr_vk_renderer_device(renderer), &transmission_info,
                       NULL, &renderer->transmission_sampler) != VK_SUCCESS) {
     log_error("Vulkan failed to create the transmission feedback sampler");
@@ -1131,26 +1138,39 @@ bool8_t vkr_vk_publish_sentinel_descriptors(VkrVulkanRenderer *renderer) {
       storage_handle.index != 0u) {
     return false_v;
   }
-  const VkrVulkanMaterialGpuRow material = {
-      .tint = {1.0f, 1.0f, 1.0f, 1.0f},
-      .base_color_texture = sampled_handle.index,
-      .normal_texture = sampled_handle.index,
-      .orm_texture = sampled_handle.index,
-      .emissive_texture = sampled_handle.index,
-      .base_color_sampler = sampler_handle.index,
-      .normal_sampler = sampler_handle.index,
-      .orm_sampler = sampler_handle.index,
-      .emissive_sampler = sampler_handle.index,
-      .material_id = 0xffad5b25u,
-      .material_surface = {0.0f, 1.0f, 1.0f, 1.0f},
-      .material_alpha = {0.5f, 0.0f, 1.5f, 0.0f},
-      .material_attenuation_color = {1.0f, 1.0f, 1.0f, 0.0f},
+  const VkrVulkanMaterialPublishedRow material = {
+      .material =
+          {
+              .tint = {1.0f, 1.0f, 1.0f, 1.0f},
+              .base_color_texture = sampled_handle.index,
+              .normal_texture = sampled_handle.index,
+              .orm_texture = sampled_handle.index,
+              .emissive_texture = sampled_handle.index,
+              .base_color_sampler = sampler_handle.index,
+              .normal_sampler = sampler_handle.index,
+              .orm_sampler = sampler_handle.index,
+              .emissive_sampler = sampler_handle.index,
+              .material_id = 0xffad5b25u,
+              .material_surface = {0.0f, 1.0f, 1.0f, 1.0f},
+              .material_alpha = {0.5f, 0.0f, 1.5f, 0.0f},
+              .material_attenuation_color = {1.0f, 1.0f, 1.0f, 0.0f},
+          },
+      .transmission =
+          {
+              .transmission_texture = sampled_handle.index,
+              .thickness_texture = sampled_handle.index,
+              .transmission_sampler = sampler_handle.index,
+              .thickness_sampler = sampler_handle.index,
+          },
   };
-  if (vkr_gpu_slot_table_publish(renderer->material_slots, &material,
+  if (vkr_gpu_slot_table_publish(renderer->material_slots, &material.material,
                                  &material_handle) != VKR_GPU_SLOT_STATUS_OK ||
       material_handle.index != 0u) {
     return false_v;
   }
+  MemCopy((uint8_t *)renderer->materials.allocation.mapped +
+              renderer->transmission_material_offset,
+          &material.transmission, sizeof(material.transmission));
   return vkr_vk_mark_dirty(&renderer->resource_descriptor_dirty,
                            &renderer->resource_descriptors,
                            resource_layout->sampled_image_offset,
@@ -1165,5 +1185,9 @@ bool8_t vkr_vk_publish_sentinel_descriptors(VkrVulkanRenderer *renderer) {
                            sampler_layout->sampler_offset,
                            properties->samplerDescriptorSize * 3u) &&
          vkr_vk_mark_dirty(&renderer->material_dirty, &renderer->materials, 0u,
-                           sizeof(material));
+                           sizeof(material.material)) &&
+         vkr_vk_mark_dirty(&renderer->transmission_material_dirty,
+                           &renderer->materials,
+                           renderer->transmission_material_offset,
+                           sizeof(material.transmission));
 }

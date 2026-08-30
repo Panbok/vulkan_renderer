@@ -70,6 +70,7 @@ typedef struct VkrWorldBatchMetrics {
   uint32_t transmission_gpu_visible_count;
   uint32_t transmission_gpu_bucket_counts[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
   uint32_t transmission_gpu_compaction_overflow_count;
+  uint32_t transmission_gpu_resolve_invalid_count;
   uint32_t transmission_gpu_occlusion_culled_count;
   uint32_t transmission_pixel_compaction_overflow_count;
   bool8_t hzb_history_valid;
@@ -208,6 +209,9 @@ struct s_RendererFrontend {
   // Debug visualization mode for CSM sampling in the world shader:
   // 0=off, 1=cascades, 2=shadow factor, 3=shadow map depth.
   uint32_t shadow_debug_mode;
+
+  /** Cold harness/debug control; production leaves the fifth peel disabled. */
+  bool8_t transmission_depth_diagnostic_enabled;
 
   /* Cold ADR-038 scaling control: clamps how many scene reflection probes the
      application packs into a frame. UINT32_MAX does not clamp. */

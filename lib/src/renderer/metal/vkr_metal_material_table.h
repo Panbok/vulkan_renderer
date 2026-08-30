@@ -21,8 +21,8 @@ typedef struct VkrMetalMaterialHandle {
   uint32_t generation;
 } VkrMetalMaterialHandle;
 
-// This is the host ABI of the Slang/Metal material row. Texture fields contain
-// the 64-bit payload of MTLResourceID, not CPU handles or heap offsets.
+// This is the host ABI of the common Slang/Metal material row. Texture fields
+// contain the 64-bit payload of MTLResourceID, not CPU handles or heap offsets.
 typedef struct VKR_SIMD_ALIGN VkrMetalMaterialGpuRow {
   float32_t tint[4];
   uint64_t base_color_texture_id;
@@ -43,6 +43,20 @@ typedef struct VKR_SIMD_ALIGN VkrMetalMaterialGpuRow {
   Vec4 material_alpha;
   Vec4 material_attenuation_color;
 } VkrMetalMaterialGpuRow;
+
+// Cold transmission-only resource identifiers are segmented from the common
+// row. Both arrays use the same immutable slot index and retirement domain.
+typedef struct VKR_SIMD_ALIGN VkrMetalTransmissionMaterialGpuRow {
+  uint64_t transmission_texture_id;
+  uint64_t thickness_texture_id;
+  uint64_t transmission_sampler_id;
+  uint64_t thickness_sampler_id;
+} VkrMetalTransmissionMaterialGpuRow;
+
+typedef struct VkrMetalMaterialPublishedRow {
+  VkrMetalMaterialGpuRow material;
+  VkrMetalTransmissionMaterialGpuRow transmission;
+} VkrMetalMaterialPublishedRow;
 
 typedef struct VkrMetalMaterialTableConfig {
   uint32_t max_rows;
@@ -108,13 +122,13 @@ VkrMetalMaterialStatus vkr_metal_material_table_device_create(
 
 VkrMetalMaterialStatus
 vkr_metal_material_table_device_publish(VkrMetalMaterialTableDevice *table,
-                                        const VkrMetalMaterialGpuRow *row,
+                                        const VkrMetalMaterialPublishedRow *row,
                                         VkrMetalMaterialHandle *out_handle);
 
 VkrMetalMaterialStatus vkr_metal_material_table_device_replace(
     VkrMetalMaterialTableDevice *table, VkrMetalMaterialHandle old_handle,
-    const VkrMetalMaterialGpuRow *new_row, uint64_t old_last_use_submit_value,
-    VkrMetalMaterialHandle *out_new_handle);
+    const VkrMetalMaterialPublishedRow *new_row,
+    uint64_t old_last_use_submit_value, VkrMetalMaterialHandle *out_new_handle);
 
 VkrMetalMaterialStatus
 vkr_metal_material_table_device_retire(VkrMetalMaterialTableDevice *table,
@@ -133,6 +147,9 @@ vkr_metal_material_table_device_collect(VkrMetalMaterialTableDevice *table,
 
 uint64_t
 vkr_metal_material_table_device_gpu_address(VkrMetalMaterialTableDevice *table);
+
+uint64_t vkr_metal_material_table_device_transmission_gpu_address(
+    VkrMetalMaterialTableDevice *table);
 
 void *
 vkr_metal_material_table_device_buffer(VkrMetalMaterialTableDevice *table);

@@ -10,7 +10,6 @@
 typedef enum VkrPacketFrameFlag {
   VKR_PACKET_FRAME_FLAG_LIGHTING = 1u << 0u,
   VKR_PACKET_FRAME_FLAG_IBL = 1u << 1u,
-  VKR_PACKET_FRAME_FLAG_TRANSMISSION = 1u << 2u,
 } VkrPacketFrameFlag;
 
 /** Values constant across every draw in a pass. */
@@ -62,11 +61,10 @@ vkr_packet_derive_frame_constants(const VkrRenderPacket *packet,
                                   uint32_t target_width,
                                   uint32_t target_height);
 
-/** Derives the shared lighting, IBL, and transmission pass flags. */
+/** Derives the shared lighting and IBL flags. */
 uint32_t vkr_packet_derive_frame_flags(const VkrRenderPacket *packet,
                                        bool8_t lighting_pass,
-                                       bool8_t ibl_resources_ready,
-                                       bool8_t transmission_pass);
+                                       bool8_t ibl_resources_ready);
 
 /** Publication-time lowering into an immutable backend GPU material row. */
 VkrPacketMaterialConstants

@@ -225,8 +225,9 @@ struct VkrVkTransmissionRoot
 {
     VkrGpuVisibleDrawRow *visible_rows;
     VkrVulkanMaterial *materials;
-    // Offset 16 stays free of physical-buffer addresses; see the resolve root.
-    uint2 reserved_address;
+    VkrVulkanTransmissionMaterial *transmission_materials;
+    uint opaque_texture;
+    uint opaque_mip_count;
     VkrVkGeometryRow *geometry_rows;
     VkrVulkanInstance *instances;
     VkrPackedStaticVertex *vertices;
@@ -269,6 +270,8 @@ struct VkrVkTransmissionCompactRoot
     uint *covered_pixels;
     uint *overflow_counts;
     uint *indirect_arguments;
+    VkrGpuVisibleDrawRow *visible_rows;
+    VkrVulkanMaterial *materials;
     uint vbuffer_texture;
     uint source_texture;
     uint destination_texture;
@@ -832,8 +835,12 @@ struct VkrVkSurface
     float face_sign;
     float metallic;
     float roughness;
+    float feedback_roughness;
     float occlusion;
     float selected_lod;
+    float2 uv;
+    float2 uv_dx;
+    float2 uv_dy;
     uint material_index;
     uint instance_index;
     uint normal_mapped;
@@ -903,7 +910,8 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
                         uv, uv_dx, uv_dy) *
         material.tint * color;
     float metallic = saturate(material.material_surface.x);
-    float roughness = clamp(material.material_surface.y, 0.04f, 1.0f);
+    float feedback_roughness = saturate(material.material_surface.y);
+    float roughness = clamp(feedback_roughness, 0.04f, 1.0f);
     float ao = saturate(material.material_surface.w);
     if ((material.flags & 2u) != 0u)
     {
@@ -914,7 +922,8 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
                     uv, uv_dx, uv_dy)
                 .rgb;
         ao *= orm.r;
-        roughness = clamp(roughness * orm.g, 0.04f, 1.0f);
+        feedback_roughness = saturate(feedback_roughness * orm.g);
+        roughness = clamp(feedback_roughness, 0.04f, 1.0f);
         metallic = saturate(metallic * orm.b);
     }
     float3 object_normal = a.normal * perspective.x + b.normal * perspective.y +
@@ -958,8 +967,12 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
     surface.barycentric = perspective;
     surface.metallic = metallic;
     surface.roughness = roughness;
+    surface.feedback_roughness = feedback_roughness;
     surface.occlusion = ao;
     surface.selected_lod = max(log2(max(footprint, 1e-8f)), 0.0f);
+    surface.uv = uv;
+    surface.uv_dx = uv_dx;
+    surface.uv_dy = uv_dy;
     surface.material_index = visible.material_index;
     surface.instance_index = visible.instance_index;
     surface.face_sign =
@@ -1607,8 +1620,18 @@ void vk_picking_resolve(uint3 thread_id : SV_DispatchThreadID)
 
 // The 8x8 group can contain at most 64 subgroups. Do not assume a native
 // subgroup width: Vulkan only guarantees the device-reported width at runtime.
-groupshared uint g_transmission_compact_wave_totals[64];
-groupshared uint g_transmission_compact_group_base;
+groupshared uint g_transmission_compact_thin_wave_totals[64];
+groupshared uint g_transmission_compact_extended_wave_totals[64];
+groupshared uint g_transmission_compact_group_bases[2];
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void vk_transmission_compact_clear(uint3 thread_id : SV_DispatchThreadID)
+{
+    VkrVkTransmissionCompactRoot *root = g_transmission_compact_push.root;
+    root.indirect_arguments[6] = 0u;
+    root.indirect_arguments[7] = 0u;
+}
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
@@ -1623,43 +1646,86 @@ void vk_transmission_compact(uint3 thread_id : SV_DispatchThreadID,
     bool covered = in_extent &&
         g_storage_uint2_images[root.vbuffer_texture]
                               [uint3(thread_id.xy, root.layer)].x != 0u;
+    uint partition = 0u;
+    if (covered)
+    {
+        uint visible_index =
+            g_storage_uint2_images[root.vbuffer_texture]
+                                  [uint3(thread_id.xy, root.layer)].x - 1u;
+        uint material_index = root.visible_rows[visible_index].material_index;
+        VkrVulkanMaterial material = root.materials[material_index];
+        bool extended = (material.flags & 8u) != 0u ||
+                        material.material_alpha.w > 0.0f;
+        partition = extended ? 1u : 0u;
+    }
     uint wave_size = WaveGetLaneCount();
     uint wave_index = group_index / wave_size;
     uint wave_count = (64u + wave_size - 1u) / wave_size;
-    uint lane_offset = WavePrefixCountBits(covered);
-    uint wave_total = WaveActiveCountBits(covered);
+    bool thin_covered = covered && partition == 0u;
+    bool extended_covered = covered && partition == 1u;
+    uint thin_lane_offset = WavePrefixCountBits(thin_covered);
+    uint extended_lane_offset = WavePrefixCountBits(extended_covered);
+    uint thin_wave_total = WaveActiveCountBits(thin_covered);
+    uint extended_wave_total = WaveActiveCountBits(extended_covered);
     if (WaveIsFirstLane())
-        g_transmission_compact_wave_totals[wave_index] = wave_total;
+    {
+        g_transmission_compact_thin_wave_totals[wave_index] =
+            thin_wave_total;
+        g_transmission_compact_extended_wave_totals[wave_index] =
+            extended_wave_total;
+    }
     GroupMemoryBarrierWithGroupSync();
 
-    uint wave_base = 0u;
+    uint thin_wave_base = 0u;
+    uint extended_wave_base = 0u;
     for (uint i = 0u; i < wave_index; ++i)
-        wave_base += g_transmission_compact_wave_totals[i];
+    {
+        thin_wave_base += g_transmission_compact_thin_wave_totals[i];
+        extended_wave_base += g_transmission_compact_extended_wave_totals[i];
+    }
     if (group_index == 0u)
     {
-        uint group_total = 0u;
+        uint thin_total = 0u;
+        uint extended_total = 0u;
         for (uint i = 0u; i < wave_count; ++i)
-            group_total += g_transmission_compact_wave_totals[i];
-        InterlockedAdd(root.covered_pixels[root.layer], group_total,
-                       g_transmission_compact_group_base);
-        uint writable = g_transmission_compact_group_base < root.capacity
-            ? min(group_total,
-                  root.capacity - g_transmission_compact_group_base)
-            : 0u;
-        if (writable < group_total)
         {
-            uint ignored;
-            InterlockedAdd(root.overflow_counts[root.layer],
-                           group_total - writable, ignored);
+            thin_total += g_transmission_compact_thin_wave_totals[i];
+            extended_total += g_transmission_compact_extended_wave_totals[i];
+        }
+        uint ignored;
+        InterlockedAdd(root.indirect_arguments[6], thin_total,
+                       g_transmission_compact_group_bases[0]);
+        InterlockedAdd(root.indirect_arguments[7], extended_total,
+                       g_transmission_compact_group_bases[1]);
+        uint thin_writable =
+            g_transmission_compact_group_bases[0] < root.capacity
+            ? min(thin_total,
+                  root.capacity - g_transmission_compact_group_bases[0])
+            : 0u;
+        uint extended_writable =
+            g_transmission_compact_group_bases[1] < root.capacity
+            ? min(extended_total,
+                  root.capacity - g_transmission_compact_group_bases[1])
+            : 0u;
+        uint overflow = thin_total - thin_writable + extended_total -
+                        extended_writable;
+        InterlockedAdd(root.covered_pixels[root.layer],
+                       thin_total + extended_total, ignored);
+        if (overflow != 0u)
+        {
+            InterlockedAdd(root.overflow_counts[root.layer], overflow, ignored);
         }
     }
     GroupMemoryBarrierWithGroupSync();
     if (covered)
     {
-        uint destination =
-            g_transmission_compact_group_base + wave_base + lane_offset;
+        uint destination = g_transmission_compact_group_bases[partition] +
+                           (partition == 0u ? thin_wave_base
+                                            : extended_wave_base) +
+                           (partition == 0u ? thin_lane_offset
+                                            : extended_lane_offset);
         if (destination < root.capacity)
-            root.pixel_list[destination] =
+            root.pixel_list[partition * root.capacity + destination] =
                 (thread_id.y << 16u) | thread_id.x;
     }
 }
@@ -1669,24 +1735,29 @@ void vk_transmission_compact(uint3 thread_id : SV_DispatchThreadID,
 void vk_transmission_compact_finalize(uint3 thread_id : SV_DispatchThreadID)
 {
     VkrVkTransmissionCompactRoot *root = g_transmission_compact_push.root;
-    uint count = min(root.covered_pixels[root.layer], root.capacity);
-    root.indirect_arguments[0] = (count + 63u) / 64u;
+    uint total = 0u;
+    for (uint partition = 0u; partition < 2u; ++partition)
+        total += min(root.indirect_arguments[6u + partition], root.capacity);
+    root.indirect_arguments[0] = (total + 63u) / 64u;
     root.indirect_arguments[1] = 1u;
     root.indirect_arguments[2] = 1u;
 }
 
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
+void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
+                                    bool textured_enabled,
+                                    bool volume_enabled,
+                                    bool diagnostic_enabled,
+                                    uint temporal_mode)
 {
     VkrVkTransmissionRoot *root = g_transmission_push.root;
     uint2 pixel = thread_id.xy;
     if (root.compact_enabled != 0u)
     {
         if (root.compact_layer >= 4u || thread_id.x >=
-            min(root.compact_counts[root.compact_layer], root.pixel_capacity))
+            min(root.compact_counts[partition], root.pixel_capacity))
             return;
-        uint packed = root.pixel_list[thread_id.x];
+        uint packed =
+            root.pixel_list[partition * root.pixel_capacity + thread_id.x];
         pixel = uint2(packed & 0xffffu, packed >> 16u);
     }
     if (any(pixel >= root.extent))
@@ -1701,7 +1772,9 @@ void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
         g_storage_2d[root.output_texture][pixel] = background;
         return;
     }
-    if (root.layer == 0u)
+    bool temporal_outputs = temporal_mode == 1u ||
+        (temporal_mode == 2u && root.layer == 0u);
+    if (temporal_outputs)
     {
         g_storage_float2_2d[root.motion_texture][pixel] = 0.0f;
         g_storage_float2_2d[root.validity_texture][pixel] = 0.0f;
@@ -1731,7 +1804,7 @@ void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
     }
     VkrVulkanPacketFrameRoot *frame = root.frame;
     VkrVulkanMaterial material = root.materials[surface.material_index];
-    if (root.layer == 0u && root.history_valid != 0u &&
+    if (temporal_outputs && root.history_valid != 0u &&
         (instance.temporal_flags & VKR_INSTANCE_TEMPORAL_OWNER) != 0u &&
         instance.temporal_index < VKR_TEMPORAL_TRANSFORM_CAPACITY)
     {
@@ -1770,62 +1843,50 @@ void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
     float3 f0 = lerp(saturate(material.material_dielectric_specular.rgb),
                      surface.base.rgb, surface.metallic);
     float3 view = normalize(frame.view_position.xyz - world);
-    float no_v = saturate(abs(dot(surface.normal, view)));
+    float no_v = saturate(dot(surface.normal, view));
+    bool composition_enabled = !diagnostic_enabled ||
+        (frame.render_mode == 0u && frame.shadow_debug_mode == 0u);
+    float transmission = saturate(material.material_alpha.y);
+    if (composition_enabled && textured_enabled &&
+        (material.flags & 8u) != 0u)
+    {
+        VkrVulkanTransmissionMaterial transmission_material =
+            root.transmission_materials[surface.material_index];
+        transmission *=
+            g_textures[NonUniformResourceIndex(
+                           transmission_material.transmission_texture)]
+                .SampleGrad(g_samplers[NonUniformResourceIndex(
+                                transmission_material.transmission_sampler)],
+                            surface.uv, surface.uv_dx, surface.uv_dy)
+                .r;
+    }
+    transmission = saturate(transmission);
+    // The composition contract multiplies diffuse by zero at resolved T == 1.
+    // Diagnostics retain the general lobe so term replays remain observable.
+    bool diffuse_enabled = diagnostic_enabled || transmission < 1.0f;
     float3 color;
     // Transmissive surfaces keep their unfolded base colour and metallic
     // factor, so the shared helpers take the same arguments the forward
     // fragment shader passes rather than the G-buffer's folded albedo.
-    if (frame.render_mode == 2u)
+    if (diagnostic_enabled && frame.render_mode == 2u)
     {
         color = surface.normal * 0.5f + 0.5f;
     }
-    else if (frame.render_mode == 3u)
+    else if (diagnostic_enabled && frame.render_mode == 3u)
     {
         color = surface.base.rgb + surface.emissive;
     }
-    else if (frame.render_mode == 6u)
+    else if (diagnostic_enabled && frame.render_mode == 6u)
     {
         color = float3(surface.metallic, surface.roughness,
                        max(f0.x, max(f0.y, f0.z)));
     }
-    else if (frame.shadow_debug_mode != 0u)
+    else if (diagnostic_enabled && frame.shadow_debug_mode != 0u)
     {
         VkrVulkanShadowDebugSample shadow_sample =
             packet_directional_shadow_debug(frame, world, surface.normal);
         color =
             packet_shadow_debug_color(frame.shadow_debug_mode, shadow_sample);
-    }
-    else if (frame.render_mode == 0u && material.material_alpha.y > 0.0f)
-    {
-        // Thin dielectric transmission keeps an unlit surface veil for the
-        // non-transmitted share. Lighting this veil as opaque glass produces an
-        // HDR specular spike that hides the authored feedback.
-        float thickness = max(material.material_alpha.w, 0.0f);
-        float3 view_normal =
-            normalize(mul(frame.view, float4(surface.normal, 0.0f)).xyz);
-        float3 refracted = refract(float3(0.0f, 0.0f, -1.0f), view_normal,
-                                   1.0f / max(material.material_alpha.z, 1.0f));
-        float2 offset =
-            refracted.xy / max(abs(refracted.z), 0.25f) * thickness * 0.02f;
-        float3 transmitted =
-            g_textures[root.feedback_texture]
-                .SampleLevel(g_samplers[root.feedback_sampler],
-                             clamp(screen_uv + offset, 0.0f, 1.0f), 0.0f)
-                .rgb;
-        if (material.material_attenuation_color.w > 1e-4f && thickness > 0.0f)
-        {
-            transmitted *=
-                pow(clamp(material.material_attenuation_color.rgb, 1e-4f, 1.0f),
-                    thickness / material.material_attenuation_color.w);
-        }
-        float transmission =
-            saturate(material.material_alpha.y) * (1.0f - surface.metallic);
-        float3 fresnel = packet_fresnel(no_v, f0);
-        float transmitted_weight =
-            transmission * (1.0f - max(fresnel.x, max(fresnel.y, fresnel.z)));
-        float surface_weight = 1.0f - transmitted_weight;
-        color = surface.base.rgb * surface_weight +
-                transmitted * transmitted_weight + surface.emissive;
     }
     else
     {
@@ -1836,22 +1897,41 @@ void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
         {
             directional_shadow =
                 packet_directional_shadow(frame, world, surface.normal);
-            VkrVulkanDirectResult direct = packet_direct(
-                surface.normal, view,
-                normalize(-frame.directional_direction_enabled.xyz),
-                frame.directional_color_intensity.rgb *
-                    frame.directional_color_intensity.w * directional_shadow,
-                surface.base.rgb, surface.metallic, surface.roughness, f0);
-            analytic_diffuse = direct.diffuse;
-            analytic_specular = direct.specular;
+            float3 light =
+                normalize(-frame.directional_direction_enabled.xyz);
+            float3 radiance = frame.directional_color_intensity.rgb *
+                frame.directional_color_intensity.w * directional_shadow;
+            if (diffuse_enabled)
+            {
+                VkrVulkanDirectResult direct = packet_direct(
+                    surface.normal, view, light, radiance, surface.base.rgb,
+                    surface.metallic, surface.roughness, f0);
+                analytic_diffuse = direct.diffuse;
+                analytic_specular = direct.specular;
+            }
+            else
+            {
+                analytic_specular = packet_direct_specular(
+                    surface.normal, view, light, radiance, surface.roughness,
+                    f0);
+            }
         }
-        VkrVulkanDirectResult punctual = packet_punctual(
-            frame, world, surface.normal, view, surface.base.rgb,
-            surface.metallic, surface.roughness, f0);
-        analytic_diffuse += punctual.diffuse;
-        analytic_specular += punctual.specular;
-        if (frame.render_mode == 1u || frame.render_mode == 4u ||
-            frame.render_mode == 5u)
+        if (diffuse_enabled)
+        {
+            VkrVulkanDirectResult punctual = packet_punctual(
+                frame, world, surface.normal, view, surface.base.rgb,
+                surface.metallic, surface.roughness, f0);
+            analytic_diffuse += punctual.diffuse;
+            analytic_specular += punctual.specular;
+        }
+        else
+        {
+            analytic_specular += packet_punctual_specular(
+                frame, world, surface.normal, view, surface.roughness, f0);
+        }
+        if (diagnostic_enabled &&
+            (frame.render_mode == 1u || frame.render_mode == 4u ||
+             frame.render_mode == 5u))
         {
             color = frame.render_mode == 4u
                         ? analytic_diffuse
@@ -1859,7 +1939,7 @@ void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
                                ? analytic_specular
                                : analytic_diffuse + analytic_specular);
         }
-        else if (frame.render_mode == 9u)
+        else if (diagnostic_enabled && frame.render_mode == 9u)
         {
             // Mode 9 on the transmission path reports the same environment
             // diffuse term the opaque path does, so a transmissive surface does
@@ -1880,23 +1960,161 @@ void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
             float3 specular = analytic_specular;
             if ((frame.flags & 2u) != 0u)
             {
-                VkrVulkanEnvironmentResult environment =
-                    packet_environment_terms(
+                if (diffuse_enabled)
+                {
+                    VkrVulkanEnvironmentResult environment =
+                        packet_environment_terms(
+                            frame, world, surface.normal, surface.normal, view,
+                            surface.base.rgb, surface.metallic,
+                            surface.roughness, surface.occlusion, f0);
+                    diffuse += environment.diffuse;
+                    specular += environment.specular;
+                }
+                else
+                {
+                    specular += packet_environment_specular(
                         frame, world, surface.normal, surface.normal, view,
-                        surface.base.rgb, surface.metallic, surface.roughness,
-                        surface.occlusion, f0);
-                diffuse += environment.diffuse;
-                specular += environment.specular;
+                        surface.roughness, surface.occlusion, f0);
+                }
             }
-            else
+            else if (diffuse_enabled)
             {
                 diffuse += frame.ambient_color.rgb * surface.base.rgb *
                            surface.occlusion;
             }
-            color = diffuse + specular + surface.emissive;
+            float thickness = volume_enabled
+                ? max(material.material_alpha.w, 0.0f)
+                : 0.0f;
+            if (volume_enabled && textured_enabled &&
+                (material.flags & 16u) != 0u)
+            {
+                VkrVulkanTransmissionMaterial transmission_material =
+                    root.transmission_materials[surface.material_index];
+                thickness *=
+                    g_textures[NonUniformResourceIndex(
+                                   transmission_material.thickness_texture)]
+                        .SampleGrad(g_samplers[NonUniformResourceIndex(
+                                        transmission_material.thickness_sampler)],
+                                    surface.uv, surface.uv_dx, surface.uv_dy)
+                        .g;
+            }
+            thickness = max(thickness, 0.0f);
+            float2 sample_uv = screen_uv;
+            float path_length = 0.0f;
+            if (volume_enabled)
+            {
+                VkrTransmissionExit exit = vkr_transmission_exit_point(
+                    world, frame.view_position.xyz, surface.normal,
+                    mul(instance.model,
+                        float4(1.0f, 0.0f, 0.0f, 0.0f)).xyz,
+                    mul(instance.model,
+                        float4(0.0f, 1.0f, 0.0f, 0.0f)).xyz,
+                    mul(instance.model,
+                        float4(0.0f, 0.0f, 1.0f, 0.0f)).xyz,
+                    material.material_alpha.z, thickness);
+                float4 exit_clip = mul(root.view_projection,
+                                       float4(exit.position, 1.0f));
+                sample_uv = clamp(
+                    vkr_transmission_project_uv(exit_clip, 1.0f), 0.0f, 1.0f);
+                path_length = exit.path_length;
+            }
+            float3 ordered =
+                g_textures[root.feedback_texture]
+                    .SampleLevel(g_samplers[root.feedback_sampler], sample_uv,
+                                 0.0f)
+                    .rgb;
+            float rough_lod = vkr_transmission_rough_lod(
+                surface.feedback_roughness, material.material_alpha.z,
+                root.opaque_mip_count);
+            float3 rough =
+                g_textures[root.opaque_texture]
+                    .SampleLevel(g_samplers[root.feedback_sampler], sample_uv,
+                                 rough_lod)
+                    .rgb;
+            float3 transmitted = lerp(
+                ordered, rough,
+                vkr_transmission_feedback_blend(surface.feedback_roughness));
+            if (volume_enabled &&
+                material.material_attenuation_color.w > 1e-4f)
+            {
+                transmitted *= pow(
+                    clamp(material.material_attenuation_color.rgb, 1e-4f, 1.0f),
+                    path_length / material.material_attenuation_color.w);
+            }
+            VkrTransmissionLobes lobes = {
+                diffuse, specular, surface.emissive
+            };
+            color = vkr_transmission_compose(
+                lobes, transmitted, surface.base.rgb,
+                packet_fresnel(no_v, f0), transmission, surface.metallic);
         }
     }
     g_storage_2d[root.output_texture][pixel] = float4(color, 1.0f);
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_transmission_shade(uint3 thread_id : SV_DispatchThreadID)
+{
+    vkr_vk_transmission_shade_impl(thread_id, 0u, true, true, true, 2u);
+}
+
+void vkr_vk_transmission_shade_partitioned_impl(uint3 thread_id,
+                                                bool diagnostic_enabled,
+                                                uint temporal_mode)
+{
+    VkrVkTransmissionRoot *root = g_transmission_push.root;
+    uint compact_index = thread_id.x;
+    uint thin_factor_count = min(root.compact_counts[0], root.pixel_capacity);
+    if (compact_index < thin_factor_count)
+    {
+        vkr_vk_transmission_shade_impl(thread_id, 0u, false, false,
+                                       diagnostic_enabled, temporal_mode);
+        return;
+    }
+    compact_index -= thin_factor_count;
+    vkr_vk_transmission_shade_impl(uint3(compact_index, 0u, 0u), 1u,
+                                   true, true, diagnostic_enabled,
+                                   temporal_mode);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void vk_transmission_shade_partitioned(uint3 thread_id : SV_DispatchThreadID)
+{
+    vkr_vk_transmission_shade_partitioned_impl(thread_id, true, 2u);
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_transmission_shade_production(
+    uint3 thread_id : SV_DispatchThreadID)
+{
+    vkr_vk_transmission_shade_impl(thread_id, 0u, true, true, false, 0u);
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_transmission_shade_production_temporal(
+    uint3 thread_id : SV_DispatchThreadID)
+{
+    vkr_vk_transmission_shade_impl(thread_id, 0u, true, true, false, 1u);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void vk_transmission_shade_partitioned_production(
+    uint3 thread_id : SV_DispatchThreadID)
+{
+    vkr_vk_transmission_shade_partitioned_impl(thread_id, false, 0u);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void vk_transmission_shade_partitioned_production_temporal(
+    uint3 thread_id : SV_DispatchThreadID)
+{
+    vkr_vk_transmission_shade_partitioned_impl(thread_id, false, 1u);
 }
 
 groupshared uint g_transmission_group_coverage;

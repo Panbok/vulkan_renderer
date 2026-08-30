@@ -543,8 +543,7 @@ void vkr_vk_fill_packet_frame_root(
     VkrVulkanRenderer *renderer, VkrVulkanPacketFrameRoot *root,
     const VkrVulkanFrameSlot *slot, const VkrPacketFrameConstants *frame,
     uint64_t instances, Mat4 view_projection, uint32_t shadow_texture,
-    uint32_t transmission_texture, bool8_t lighting_pass,
-    bool8_t transmission_pass) {
+    uint32_t transmission_texture, bool8_t lighting_pass) {
   root->instances = instances;
   root->view_projection = view_projection;
   root->materials = renderer->materials.address;
@@ -557,9 +556,8 @@ void vkr_vk_fill_packet_frame_root(
   root->shadow_comparison_sampler = renderer->shadow_comparison_sampler_slot;
   root->transmission_texture = transmission_texture;
   root->transmission_sampler = VKR_VULKAN_SENTINEL_SLOT_INDEX;
-  root->flags =
-      vkr_packet_derive_frame_flags(renderer->graph->packet, lighting_pass,
-                                    slot->ibl_ready, transmission_pass);
+  root->flags = vkr_packet_derive_frame_flags(renderer->graph->packet,
+                                              lighting_pass, slot->ibl_ready);
   root->point_light_data = slot->point_light_data;
   root->point_light_masks = slot->point_light_masks;
   root->shadow_cascades = slot->shadow_cascades;
@@ -599,12 +597,14 @@ void vkr_vk_fill_packet_frame_root(
       frame->shadow_receiver.pcf_uniform_early_out;
 }
 
-bool8_t vkr_vk_record_packet_draws(
-    VkrVulkanRenderer *renderer, VkCommandBuffer command,
-    VkrVulkanPacketPipeline pipeline, const VkrDrawItem *draws,
-    uint32_t draw_count, uint64_t instances, Mat4 view_projection,
-    bool8_t alpha_cutout, uint32_t shadow_texture,
-    uint32_t transmission_texture, bool8_t transmission_pass) {
+bool8_t vkr_vk_record_packet_draws(VkrVulkanRenderer *renderer,
+                                   VkCommandBuffer command,
+                                   VkrVulkanPacketPipeline pipeline,
+                                   const VkrDrawItem *draws,
+                                   uint32_t draw_count, uint64_t instances,
+                                   Mat4 view_projection, bool8_t alpha_cutout,
+                                   uint32_t shadow_texture,
+                                   uint32_t transmission_texture) {
   if (draw_count == 0u)
     return true_v;
   VkrVulkanFrameSlot *slot =
@@ -623,9 +623,9 @@ bool8_t vkr_vk_record_packet_draws(
       vkr_vk_packet_frame_root(slot, &frame_root_address);
   if (!frame_root)
     return false_v;
-  vkr_vk_fill_packet_frame_root(
-      renderer, frame_root, slot, &frame, instances, view_projection,
-      shadow_texture, transmission_texture, lighting_pass, transmission_pass);
+  vkr_vk_fill_packet_frame_root(renderer, frame_root, slot, &frame, instances,
+                                view_projection, shadow_texture,
+                                transmission_texture, lighting_pass);
   if (lighting_pass) {
     uint64_t temporal_address = 0u;
     VkrVulkanPacketTemporalDrawState *temporal = vkr_vk_frame_upload_allocate(

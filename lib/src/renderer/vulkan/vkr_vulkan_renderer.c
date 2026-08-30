@@ -694,6 +694,11 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
       packet->picking && packet->picking->pending;
   renderer->prepared_frame.transmission_pending =
       packet->world && packet->world->transmission_gpu_candidate_count > 0u;
+  renderer->prepared_frame.transmission_depth_diagnostic_enabled =
+      renderer->prepared_frame.transmission_pending && packet->debug &&
+      (packet->debug->transmission_depth_diagnostic_enabled ||
+       vkr_renderer_capture_request_contains(
+           packet->debug->capture, "transmission_visibility_ids_layer_4"));
   renderer->prepared_frame.transmission_compact_enabled =
       renderer->config.transmission_compact_enabled &&
       renderer->prepared_frame.transmission_pending;
@@ -714,6 +719,8 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
     hzb_mip_count++;
   }
   renderer->prepared_frame.hzb_reduce_pass_count = hzb_mip_count - 1u;
+  renderer->prepared_frame.transmission_rough_mip_pass_count =
+      Min(hzb_mip_count, 6u) - 1u;
   /* A requested chain that the viewport is too small to hold is not bloom, so
      the graph sees the same "no bloom" state it would for a manual frame rather
      than a one-mip chain nothing can upsample. */
@@ -808,7 +815,8 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
   slot->transmission_coverage_requested =
       renderer->prepared_frame.transmission_pending &&
       (renderer->prepared_frame.transmission_compact_enabled ||
-       renderer->prepared_frame.timing_enabled);
+       renderer->prepared_frame.timing_enabled ||
+       renderer->prepared_frame.transmission_depth_diagnostic_enabled);
   slot->transmission_coverage_extent[0] =
       renderer->prepared_frame.viewport_width;
   slot->transmission_coverage_extent[1] =
@@ -1143,6 +1151,8 @@ bool8_t vkr_vulkan_renderer_poll_result(VkrVulkanRenderer *renderer,
       .gpu_occlusion_culled_count = opaque[0].occlusion_culled_count,
       .transmission_gpu_visible_count = transmission->visible_count,
       .transmission_gpu_overflow_count = transmission->overflow_count,
+      .transmission_gpu_resolve_invalid_count =
+          transmission->resolve_invalid_count,
       .transmission_gpu_occlusion_culled_count =
           transmission->occlusion_culled_count,
       .image_index = best->image_index,

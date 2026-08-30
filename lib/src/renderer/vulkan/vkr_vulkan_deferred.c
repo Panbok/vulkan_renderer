@@ -725,12 +725,12 @@ bool8_t vkr_vk_record_deferred_raster(VkrVulkanRenderer *renderer,
       vkr_vk_packet_frame_root(slot, &frame_address);
   if (!frame_root)
     return false_v;
-  vkr_vk_fill_packet_frame_root(
-      renderer, frame_root, slot, &frame,
-      transmission ? slot->transmission_gpu_candidate_instances
-                   : slot->gpu_candidate_instances,
-      view_projection, VKR_VULKAN_SENTINEL_SLOT_INDEX,
-      VKR_VULKAN_SENTINEL_SLOT_INDEX, false_v, transmission);
+  vkr_vk_fill_packet_frame_root(renderer, frame_root, slot, &frame,
+                                transmission
+                                    ? slot->transmission_gpu_candidate_instances
+                                    : slot->gpu_candidate_instances,
+                                view_projection, VKR_VULKAN_SENTINEL_SLOT_INDEX,
+                                VKR_VULKAN_SENTINEL_SLOT_INDEX, false_v);
   VkrVulkanRasterRoot root = {
       .geometry_rows = slot->gpu_geometry_rows,
       .visible_rows = visible->buffer.address,
@@ -936,10 +936,9 @@ bool8_t vkr_vk_record_deferred_lighting(VkrVulkanRenderer *renderer,
       vkr_vk_packet_frame_root(slot, &frame_address);
   if (!frame_root)
     return false_v;
-  vkr_vk_fill_packet_frame_root(renderer, frame_root, slot, &frame,
-                                slot->gpu_candidate_instances, view_projection,
-                                shadow_texture, VKR_VULKAN_SENTINEL_SLOT_INDEX,
-                                true_v, false_v);
+  vkr_vk_fill_packet_frame_root(
+      renderer, frame_root, slot, &frame, slot->gpu_candidate_instances,
+      view_projection, shadow_texture, VKR_VULKAN_SENTINEL_SLOT_INDEX, true_v);
   const VkrVulkanLightingRoot root = {
       .frame = frame_address,
       .inverse_view_projection = mat4_inverse(view_projection),
@@ -1411,6 +1410,17 @@ bool8_t vkr_vk_record_bloom_downsample(VkrVulkanRenderer *renderer,
           : VKR_VULKAN_DEFERRED_PIPELINE_BLOOM_DOWNSAMPLE_TENT13);
 }
 
+bool8_t vkr_vk_record_transmission_downsample(VkrVulkanRenderer *renderer,
+                                              VkCommandBuffer command,
+                                              const VkrRgPass *pass) {
+  VkrVulkanBloomRoot root = {0};
+  if (!vkr_vk_bloom_root(renderer, pass, &root))
+    return false_v;
+  return vkr_vk_dispatch_bloom(
+      renderer, command, &root,
+      VKR_VULKAN_DEFERRED_PIPELINE_BLOOM_DOWNSAMPLE_BOX4);
+}
+
 bool8_t vkr_vk_record_bloom_upsample(VkrVulkanRenderer *renderer,
                                      VkCommandBuffer command,
                                      const VkrRgPass *pass) {
@@ -1624,11 +1634,17 @@ bool8_t vkr_vk_record_deferred_transmission(VkrVulkanRenderer *renderer,
       vkr_vk_deferred_buffer(renderer, pass, 6u);
   VkrVulkanGraphBufferInstance *indirect_arguments =
       vkr_vk_deferred_buffer(renderer, pass, 7u);
-  uint32_t vbuffer = 0u, depth = 0u, feedback = 0u, output = 0u;
+  uint32_t vbuffer = 0u, depth = 0u, feedback = 0u, opaque = 0u, output = 0u;
+  const VkrRgImageUse *opaque_use =
+      vkr_rg_pass_find_image_use(&pass->desc, 13u, 0u);
+  VkrVulkanGraphImageInstance *opaque_pyramid =
+      opaque_use ? vkr_vk_deferred_image(renderer, opaque_use->image) : NULL;
   if (!visible || !state ||
       !vkr_vk_deferred_storage_index(renderer, pass, 0u, &vbuffer) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &depth) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 4u, &feedback) ||
+      !opaque_pyramid ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 13u, &opaque) ||
       !vkr_vk_deferred_storage_index(renderer, pass, 5u, &output))
     return false_v;
   const bool8_t compact = pixel_list && indirect_arguments;
@@ -1643,16 +1659,16 @@ bool8_t vkr_vk_record_deferred_transmission(VkrVulkanRenderer *renderer,
                              ? vbuffer_use->slice.base_layer
                              : 0u;
   const uint64_t pixel_capacity =
-      compact ? pixel_list->buffer.size / sizeof(uint32_t) : 0u;
+      compact ? pixel_list->buffer.size / (2u * sizeof(uint32_t)) : 0u;
   if ((pixel_list != NULL) != (indirect_arguments != NULL) ||
       (compact &&
        (pass->desc.dispatch.kind != VKR_RG_DISPATCH_INDIRECT ||
-        pixel_list->buffer.size % sizeof(uint32_t) != 0u ||
+        pixel_list->buffer.size % (2u * sizeof(uint32_t)) != 0u ||
         pixel_capacity != (uint64_t)renderer->prepared_frame.viewport_width *
                               renderer->prepared_frame.viewport_height ||
         pixel_capacity > UINT32_MAX ||
         layer >= VKR_GPU_TRANSMISSION_LAYER_COUNT ||
-        indirect_arguments->buffer.size < sizeof(VkDispatchIndirectCommand))))
+        indirect_arguments->buffer.size < 8u * sizeof(uint32_t))))
     return false_v;
   uint32_t motion = 0u;
   uint32_t validity = 0u;
@@ -1675,10 +1691,12 @@ bool8_t vkr_vk_record_deferred_transmission(VkrVulkanRenderer *renderer,
   vkr_vk_fill_packet_frame_root(renderer, frame_root, slot, &frame,
                                 slot->transmission_gpu_candidate_instances,
                                 view_projection, shadow_texture,
-                                VKR_VULKAN_SENTINEL_SLOT_INDEX, true_v, true_v);
+                                VKR_VULKAN_SENTINEL_SLOT_INDEX, true_v);
   const VkrVulkanTransmissionRoot root = {
       .visible_rows = visible->buffer.address,
       .materials = renderer->materials.address,
+      .transmission_materials =
+          renderer->materials.address + renderer->transmission_material_offset,
       .geometry_rows = slot->gpu_geometry_rows,
       .instances = slot->transmission_gpu_candidate_instances,
       .vertices = renderer->geometry_megabuffer.vertices.address,
@@ -1686,10 +1704,12 @@ bool8_t vkr_vk_record_deferred_transmission(VkrVulkanRenderer *renderer,
       .compaction_state = state->buffer.address,
       .pixel_list = compact ? pixel_list->buffer.address : 0u,
       .compact_counts =
-          compact ? state->buffer.address +
-                        offsetof(VkrGpuTransmissionDiagnostics, covered_pixels)
+          compact ? indirect_arguments->buffer.address + 6u * sizeof(uint32_t)
                   : 0u,
       .frame = frame_address,
+      .opaque_texture = opaque,
+      .opaque_mip_count =
+          renderer->prepared_frame.transmission_rough_mip_pass_count + 1u,
       .view_projection = view_projection,
       .inverse_view_projection = mat4_inverse(view_projection),
       .previous_transforms =
@@ -1730,15 +1750,31 @@ bool8_t vkr_vk_record_deferred_transmission(VkrVulkanRenderer *renderer,
                                  _Alignof(VkrVulkanTransmissionRoot),
                                  &root_address))
     return false_v;
-  vkCmdBindPipeline(
-      command, VK_PIPELINE_BIND_POINT_COMPUTE,
-      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_TRANSMISSION]);
-  if (compact)
+  const bool8_t diagnostic =
+      frame.render_mode != 0u || frame.shadow_debug_mode != 0u;
+  if (compact) {
+    const VkrVulkanDeferredPipeline pipeline =
+        diagnostic
+            ? VKR_VULKAN_DEFERRED_PIPELINE_TRANSMISSION_PARTITIONED
+            : (layer == 0u
+                   ? VKR_VULKAN_DEFERRED_PIPELINE_TRANSMISSION_PARTITIONED_PRODUCTION_TEMPORAL
+                   : VKR_VULKAN_DEFERRED_PIPELINE_TRANSMISSION_PARTITIONED_PRODUCTION);
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                      renderer->deferred_pipelines[pipeline]);
     vkCmdDispatchIndirect(command, indirect_arguments->buffer.handle,
                           pass->desc.dispatch.indirect_offset);
-  else
+  } else {
+    const VkrVulkanDeferredPipeline pipeline =
+        diagnostic
+            ? VKR_VULKAN_DEFERRED_PIPELINE_TRANSMISSION
+            : (layer == 0u
+                   ? VKR_VULKAN_DEFERRED_PIPELINE_TRANSMISSION_PRODUCTION_TEMPORAL
+                   : VKR_VULKAN_DEFERRED_PIPELINE_TRANSMISSION_PRODUCTION);
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                      renderer->deferred_pipelines[pipeline]);
     vkCmdDispatch(command, (root.extent[0] + 7u) / 8u,
                   (root.extent[1] + 7u) / 8u, 1u);
+  }
   return true_v;
 }
 
@@ -1751,6 +1787,8 @@ bool8_t vkr_vk_record_deferred_transmission_compact(VkrVulkanRenderer *renderer,
       vkr_vk_deferred_buffer(renderer, pass, 2u);
   VkrVulkanGraphBufferInstance *indirect_arguments =
       vkr_vk_deferred_buffer(renderer, pass, 3u);
+  VkrVulkanGraphBufferInstance *visible =
+      vkr_vk_deferred_buffer(renderer, pass, 6u);
   uint32_t vbuffer = 0u, source = 0u, destination = 0u;
   const VkrRgImageUse *vbuffer_use =
       vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
@@ -1760,16 +1798,18 @@ bool8_t vkr_vk_record_deferred_transmission_compact(VkrVulkanRenderer *renderer,
   const uint32_t width = renderer->prepared_frame.viewport_width;
   const uint32_t height = renderer->prepared_frame.viewport_height;
   const uint64_t capacity =
-      pixel_list ? pixel_list->buffer.size / sizeof(uint32_t) : 0u;
-  if (!pixel_list || !state || !indirect_arguments || !vbuffer_use ||
+      pixel_list ? pixel_list->buffer.size / (2u * sizeof(uint32_t)) : 0u;
+  if (!pixel_list || !state || !indirect_arguments || !visible ||
+      !vbuffer_use ||
       !vkr_vk_deferred_storage_index(renderer, pass, 0u, &vbuffer) ||
       !vkr_vk_deferred_storage_index(renderer, pass, 4u, &source) ||
       !vkr_vk_deferred_storage_index(renderer, pass, 5u, &destination) ||
       width == 0u || height == 0u || width > UINT16_MAX ||
-      height > UINT16_MAX || pixel_list->buffer.size % sizeof(uint32_t) != 0u ||
+      height > UINT16_MAX ||
+      pixel_list->buffer.size % (2u * sizeof(uint32_t)) != 0u ||
       capacity != (uint64_t)width * height || capacity > UINT32_MAX ||
       layer >= VKR_GPU_TRANSMISSION_LAYER_COUNT ||
-      indirect_arguments->buffer.size < sizeof(VkDispatchIndirectCommand))
+      indirect_arguments->buffer.size < 8u * sizeof(uint32_t))
     return false_v;
   const VkrVulkanTransmissionCompactRoot root = {
       .pixel_list = pixel_list->buffer.address,
@@ -1779,6 +1819,8 @@ bool8_t vkr_vk_record_deferred_transmission_compact(VkrVulkanRenderer *renderer,
           state->buffer.address +
           offsetof(VkrGpuTransmissionDiagnostics, compact_overflow),
       .indirect_arguments = indirect_arguments->buffer.address,
+      .visible_rows = visible->buffer.address,
+      .materials = renderer->materials.address,
       .vbuffer_texture = vbuffer,
       .source_texture = source,
       .destination_texture = destination,
@@ -1791,22 +1833,29 @@ bool8_t vkr_vk_record_deferred_transmission_compact(VkrVulkanRenderer *renderer,
                                  _Alignof(VkrVulkanTransmissionCompactRoot),
                                  &root_address))
     return false_v;
-  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
-                    renderer->deferred_pipelines
-                        [VKR_VULKAN_DEFERRED_PIPELINE_TRANSMISSION_COMPACT]);
-  vkCmdDispatch(command, (width + 7u) / 8u, (height + 7u) / 8u, 1u);
+  vkCmdBindPipeline(
+      command, VK_PIPELINE_BIND_POINT_COMPUTE,
+      renderer->deferred_pipelines
+          [VKR_VULKAN_DEFERRED_PIPELINE_TRANSMISSION_COMPACT_CLEAR]);
+  vkCmdDispatch(command, 1u, 1u, 1u);
   const VkMemoryBarrier2 barrier = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
       .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
       .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
       .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-      .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+      .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                       VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
   };
   const VkDependencyInfo dependency = {
       .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
       .memoryBarrierCount = 1u,
       .pMemoryBarriers = &barrier,
   };
+  vkCmdPipelineBarrier2(command, &dependency);
+  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                    renderer->deferred_pipelines
+                        [VKR_VULKAN_DEFERRED_PIPELINE_TRANSMISSION_COMPACT]);
+  vkCmdDispatch(command, (width + 7u) / 8u, (height + 7u) / 8u, 1u);
   vkCmdPipelineBarrier2(command, &dependency);
   vkCmdBindPipeline(
       command, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -1825,14 +1874,18 @@ vkr_vk_record_deferred_transmission_coverage(VkrVulkanRenderer *renderer,
   uint32_t vbuffer = 0u;
   const VkrRgImageUse *vbuffer_use =
       vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+  const uint32_t layer = vbuffer_use && vbuffer_use->has_slice
+                             ? vbuffer_use->slice.base_layer
+                             : 0u;
   if (!state || !vbuffer_use ||
-      !vkr_vk_deferred_storage_index(renderer, pass, 0u, &vbuffer))
+      !vkr_vk_deferred_storage_index(renderer, pass, 0u, &vbuffer) ||
+      layer >= VKR_GPU_TRANSMISSION_DIAGNOSTIC_LAYER_COUNT)
     return false_v;
   const VkrVulkanTransmissionCoverageRoot root = {
       .covered_pixels = state->buffer.address +
                         offsetof(VkrGpuTransmissionDiagnostics, covered_pixels),
       .vbuffer_texture = vbuffer,
-      .layer = vbuffer_use->has_slice ? vbuffer_use->slice.base_layer : 0u,
+      .layer = layer,
       .extent = {renderer->prepared_frame.viewport_width,
                  renderer->prepared_frame.viewport_height},
   };

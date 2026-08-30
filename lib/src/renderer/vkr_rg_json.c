@@ -27,8 +27,14 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"sdsm_enabled", VKR_RG_JSON_CONDITION_SDSM_ENABLED},
     {"transmission_pending", VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING},
     {"!transmission_pending", VKR_RG_JSON_CONDITION_TRANSMISSION_IDLE},
+    {"transmission_depth_diagnostic_enabled",
+     VKR_RG_JSON_CONDITION_TRANSMISSION_DEPTH_DIAGNOSTIC},
     {"transmission_compact_enabled",
      VKR_RG_JSON_CONDITION_TRANSMISSION_COMPACT_ENABLED},
+    {"editor_enabled && transmission_pending",
+     VKR_RG_JSON_CONDITION_EDITOR_ENABLED_TRANSMISSION},
+    {"!editor_enabled && transmission_pending",
+     VKR_RG_JSON_CONDITION_EDITOR_DISABLED_TRANSMISSION},
     {"editor_enabled && transmission_compact_enabled",
      VKR_RG_JSON_CONDITION_EDITOR_ENABLED_TRANSMISSION_COMPACT},
     {"!editor_enabled && transmission_compact_enabled",
@@ -1758,8 +1764,14 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->transmission_pending;
   case VKR_RG_JSON_CONDITION_TRANSMISSION_IDLE:
     return !frame->transmission_pending;
+  case VKR_RG_JSON_CONDITION_TRANSMISSION_DEPTH_DIAGNOSTIC:
+    return frame->transmission_depth_diagnostic_enabled;
   case VKR_RG_JSON_CONDITION_TRANSMISSION_COMPACT_ENABLED:
     return frame->transmission_compact_enabled;
+  case VKR_RG_JSON_CONDITION_EDITOR_ENABLED_TRANSMISSION:
+    return frame->editor_enabled && frame->transmission_pending;
+  case VKR_RG_JSON_CONDITION_EDITOR_DISABLED_TRANSMISSION:
+    return !frame->editor_enabled && frame->transmission_pending;
   case VKR_RG_JSON_CONDITION_EDITOR_ENABLED_TRANSMISSION_COMPACT:
     return frame->editor_enabled && frame->transmission_compact_enabled;
   case VKR_RG_JSON_CONDITION_EDITOR_DISABLED_TRANSMISSION_COMPACT:
@@ -1815,6 +1827,11 @@ vkr_internal bool8_t vkr_rg_json_repeat_count(
   if (vkr_string8_equals_cstr_i(&repeat->count_source,
                                 "hzb_reduce_pass_count")) {
     *out_count = frame->hzb_reduce_pass_count;
+    return true_v;
+  }
+  if (vkr_string8_equals_cstr_i(&repeat->count_source,
+                                "transmission_rough_mip_pass_count")) {
+    *out_count = frame->transmission_rough_mip_pass_count;
     return true_v;
   }
   /* Both bloom chains are one step shorter than the chain itself: the prefilter

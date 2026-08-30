@@ -1,0 +1,91 @@
+// Shared linear-radiance transmission composition. Vulkan includes this file
+// and Metal concatenates it before the native world shader. The CPU reference
+// in renderer/vkr_transmission.c must change with this kernel.
+
+#ifndef VKR_SHADER_TRANSMISSION_KERNEL_SLANGH
+#define VKR_SHADER_TRANSMISSION_KERNEL_SLANGH
+
+struct VkrTransmissionLobes
+{
+    float3 diffuse;
+    float3 specular;
+    float3 emissive;
+};
+
+struct VkrTransmissionExit
+{
+    float3 position;
+    float3 direction;
+    float path_length;
+};
+
+float vkr_transmission_directional_scale(float3 direction,
+                                         float3 axis_x,
+                                         float3 axis_y,
+                                         float3 axis_z)
+{
+    float scale_x = max(length(axis_x), 1e-6f);
+    float scale_y = max(length(axis_y), 1e-6f);
+    float scale_z = max(length(axis_z), 1e-6f);
+    float3 local_direction =
+        float3(dot(direction, axis_x / scale_x) / scale_x,
+               dot(direction, axis_y / scale_y) / scale_y,
+               dot(direction, axis_z / scale_z) / scale_z);
+    return 1.0f / max(length(local_direction), 1e-6f);
+}
+
+VkrTransmissionExit vkr_transmission_exit_point(float3 world_position,
+                                                float3 camera_position,
+                                                float3 oriented_normal,
+                                                float3 axis_x,
+                                                float3 axis_y,
+                                                float3 axis_z,
+                                                float ior,
+                                                float thickness)
+{
+    float3 incident = normalize(world_position - camera_position);
+    float3 direction = refract(incident, oriented_normal,
+                               1.0f / max(ior, 1.0f));
+    float path_length = max(thickness, 0.0f) *
+                        vkr_transmission_directional_scale(
+                            direction, axis_x, axis_y, axis_z);
+    VkrTransmissionExit result = {
+        world_position + direction * path_length, direction, path_length
+    };
+    return result;
+}
+
+float2 vkr_transmission_project_uv(float4 clip, float y_sign)
+{
+    float safe_w = copysign(max(abs(clip.w), 1e-7f), clip.w);
+    float2 ndc = clip.xy / safe_w;
+    return float2(ndc.x, ndc.y * y_sign) * 0.5f + 0.5f;
+}
+
+float vkr_transmission_rough_lod(float roughness, float ior, uint mip_count)
+{
+    float max_lod = float(max(mip_count, 1u) - 1u);
+    float ior_scale = clamp(max(ior, 1.0f) / 1.5f, 0.0f, 1.0f);
+    return clamp(saturate(roughness) * ior_scale * max_lod, 0.0f, max_lod);
+}
+
+float vkr_transmission_feedback_blend(float roughness)
+{
+    return ceil(saturate(roughness));
+}
+
+float3 vkr_transmission_compose(VkrTransmissionLobes lobes,
+                                float3 background,
+                                float3 base_color,
+                                float3 fresnel,
+                                float transmission,
+                                float metallic)
+{
+    float resolved_transmission = saturate(transmission);
+    float dielectric = 1.0f - saturate(metallic);
+    float3 transmitted = background * base_color * (1.0f - saturate(fresnel));
+    return lobes.specular + (1.0f - resolved_transmission) * lobes.diffuse +
+           resolved_transmission * dielectric * transmitted + lobes.emissive;
+}
+
+#endif

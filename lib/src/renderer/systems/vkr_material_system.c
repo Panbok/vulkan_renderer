@@ -82,22 +82,11 @@ vkr_material_system_material_uses_cutout(const VkrMaterialSystem *system,
 }
 
 bool8_t
-vkr_material_system_material_is_transmissive(const VkrMaterialSystem *system,
-                                             const VkrMaterial *material) {
-  if (material->material_type != VKR_MATERIAL_TYPE_PBR) {
-    return false_v;
-  }
-  if (material->pbr.transmission_factor > 0.0f) {
-    return true_v;
-  }
-  const VkrMaterialTexture *texture =
-      &material->textures[VKR_TEXTURE_SLOT_TRANSMISSION];
-  if (!texture->enabled || texture->handle.id == 0) {
-    return false_v;
-  }
-  VkrTexture *resolved =
-      vkr_texture_system_get_by_handle(system->texture_system, texture->handle);
-  return resolved && resolved->handle ? true_v : false_v;
+vkr_material_system_material_is_transmissive(const VkrMaterial *material) {
+  return material->material_type == VKR_MATERIAL_TYPE_PBR &&
+                 material->pbr.transmission_factor > 0.0f
+             ? true_v
+             : false_v;
 }
 
 float32_t

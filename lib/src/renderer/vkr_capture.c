@@ -20,6 +20,10 @@ enum {
   VKR_CAPTURE_CHANNEL_RESOLVE_BARYCENTRIC_LOD,
   VKR_CAPTURE_CHANNEL_TRANSMISSION_VISIBILITY_IDS,
   VKR_CAPTURE_CHANNEL_TRANSMISSION_VISIBILITY_PRIMITIVES,
+  VKR_CAPTURE_CHANNEL_TRANSMISSION_VISIBILITY_IDS_LAYER_1,
+  VKR_CAPTURE_CHANNEL_TRANSMISSION_VISIBILITY_IDS_LAYER_2,
+  VKR_CAPTURE_CHANNEL_TRANSMISSION_VISIBILITY_IDS_LAYER_3,
+  VKR_CAPTURE_CHANNEL_TRANSMISSION_VISIBILITY_IDS_LAYER_4,
   VKR_CAPTURE_CHANNEL_HDR_PRE_BLOOM,
   VKR_CAPTURE_CHANNEL_BLOOM_PREFILTER,
   VKR_CAPTURE_CHANNEL_BLOOM_RESULT,
@@ -27,6 +31,8 @@ enum {
   VKR_CAPTURE_CHANNEL_GTAO_RAW,
   VKR_CAPTURE_CHANNEL_GTAO_VISIBILITY,
   VKR_CAPTURE_CHANNEL_HDR_COMBINED,
+  VKR_CAPTURE_CHANNEL_HDR_PRE_TRANSMISSION,
+  VKR_CAPTURE_CHANNEL_HDR_POST_TRANSMISSION,
 };
 
 static const VkrCaptureChannelDescription s_capture_channels[] = {
@@ -88,6 +94,22 @@ static const VkrCaptureChannelDescription s_capture_channels[] = {
      "transmission_visibility_primitives", "transmission_vbuffer",
      VKR_RENDERER_SUBSYSTEM_COUNT, VKR_CAPTURE_ASPECT_COLOR,
      VKR_CAPTURE_VALUE_UINT, VKR_CAPTURE_COLOR_SPACE_NONE, "R32_UINT_LE", 1},
+    {VKR_CAPTURE_CHANNEL_TRANSMISSION_VISIBILITY_IDS_LAYER_1,
+     "transmission_visibility_ids_layer_1", "transmission_vbuffer",
+     VKR_RENDERER_SUBSYSTEM_COUNT, VKR_CAPTURE_ASPECT_COLOR,
+     VKR_CAPTURE_VALUE_UINT, VKR_CAPTURE_COLOR_SPACE_NONE, "R32_UINT_LE", 1},
+    {VKR_CAPTURE_CHANNEL_TRANSMISSION_VISIBILITY_IDS_LAYER_2,
+     "transmission_visibility_ids_layer_2", "transmission_vbuffer",
+     VKR_RENDERER_SUBSYSTEM_COUNT, VKR_CAPTURE_ASPECT_COLOR,
+     VKR_CAPTURE_VALUE_UINT, VKR_CAPTURE_COLOR_SPACE_NONE, "R32_UINT_LE", 1},
+    {VKR_CAPTURE_CHANNEL_TRANSMISSION_VISIBILITY_IDS_LAYER_3,
+     "transmission_visibility_ids_layer_3", "transmission_vbuffer",
+     VKR_RENDERER_SUBSYSTEM_COUNT, VKR_CAPTURE_ASPECT_COLOR,
+     VKR_CAPTURE_VALUE_UINT, VKR_CAPTURE_COLOR_SPACE_NONE, "R32_UINT_LE", 1},
+    {VKR_CAPTURE_CHANNEL_TRANSMISSION_VISIBILITY_IDS_LAYER_4,
+     "transmission_visibility_ids_layer_4", "transmission_diagnostic_vbuffer",
+     VKR_RENDERER_SUBSYSTEM_COUNT, VKR_CAPTURE_ASPECT_COLOR,
+     VKR_CAPTURE_VALUE_UINT, VKR_CAPTURE_COLOR_SPACE_NONE, "R32_UINT_LE", 1},
     {VKR_CAPTURE_CHANNEL_HDR_PRE_BLOOM, "hdr_pre_bloom",
      "temporal_history_color", VKR_RENDERER_SUBSYSTEM_COUNT,
      VKR_CAPTURE_ASPECT_COLOR, VKR_CAPTURE_VALUE_COLOR,
@@ -113,6 +135,14 @@ static const VkrCaptureChannelDescription s_capture_channels[] = {
      1},
     {VKR_CAPTURE_CHANNEL_HDR_COMBINED, "hdr_combined", "bloom_combined",
      VKR_RENDERER_SUBSYSTEM_COUNT, VKR_CAPTURE_ASPECT_COLOR,
+     VKR_CAPTURE_VALUE_COLOR, VKR_CAPTURE_COLOR_SPACE_LINEAR, "RGBA16_FLOAT_LE",
+     1},
+    {VKR_CAPTURE_CHANNEL_HDR_PRE_TRANSMISSION, "hdr_pre_transmission",
+     "hdr_pre_transmission", VKR_RENDERER_SUBSYSTEM_COUNT,
+     VKR_CAPTURE_ASPECT_COLOR, VKR_CAPTURE_VALUE_COLOR,
+     VKR_CAPTURE_COLOR_SPACE_LINEAR, "RGBA16_FLOAT_LE", 1},
+    {VKR_CAPTURE_CHANNEL_HDR_POST_TRANSMISSION, "hdr_post_transmission",
+     "hdr_scene_color", VKR_RENDERER_SUBSYSTEM_COUNT, VKR_CAPTURE_ASPECT_COLOR,
      VKR_CAPTURE_VALUE_COLOR, VKR_CAPTURE_COLOR_SPACE_LINEAR, "RGBA16_FLOAT_LE",
      1},
 };
@@ -142,6 +172,22 @@ VkrCaptureChannelId vkr_renderer_capture_channel_from_name(const char *name) {
     }
   }
   return VKR_CAPTURE_CHANNEL_INVALID;
+}
+
+bool8_t
+vkr_renderer_capture_request_contains(const VkrCaptureBatchRequest *request,
+                                      const char *channel_name) {
+  if (!request || !request->items || !channel_name)
+    return false_v;
+  const VkrCaptureChannelId channel =
+      vkr_renderer_capture_channel_from_name(channel_name);
+  if (channel == VKR_CAPTURE_CHANNEL_INVALID)
+    return false_v;
+  for (uint32_t i = 0u; i < request->item_count; ++i) {
+    if (request->items[i].channel == channel)
+      return true_v;
+  }
+  return false_v;
 }
 
 VkrCaptureStatus vkr_renderer_capture_poll(VkrRendererFrontendHandle renderer,

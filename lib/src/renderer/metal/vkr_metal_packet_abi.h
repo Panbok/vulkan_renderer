@@ -14,6 +14,7 @@ enum {
   VKR_METAL_PACKET_ROOT_ALIGNMENT = 256,
   VKR_METAL_PACKET_DRAW_ROOT_STRIDE = 512,
   VKR_METAL_PACKET_TRANSMISSION_LAYER_COUNT = 4,
+  VKR_METAL_PACKET_TRANSMISSION_DIAGNOSTIC_LAYER_COUNT = 5,
 };
 
 /** Converts VKR's column-major matrix for Slang's row-vector MSL lowering. */
@@ -368,6 +369,7 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketTransmissionShadeRoot {
   uint64_t geometry_rows;
   uint64_t instances;
   uint64_t materials;
+  uint64_t transmission_materials;
   uint64_t compaction_state;
   uint64_t pixel_list;
   uint64_t compact_counts;
@@ -385,7 +387,8 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketTransmissionShadeRoot {
   uint32_t pixel_capacity;
   uint32_t compact_layer;
   uint32_t compact_enabled;
-  uint32_t reserved[3];
+  uint32_t opaque_mip_count;
+  uint64_t opaque_texture_id;
   uint64_t motion_texture_id;
   uint64_t validity_texture_id;
   uint64_t previous_transforms;
@@ -397,13 +400,13 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketTransmissionShadeRoot {
   uint32_t temporal_outputs_enabled;
   uint32_t temporal_reserved;
 } VkrMetalPacketTransmissionShadeRoot;
-_Static_assert(sizeof(VkrMetalPacketTransmissionShadeRoot) == 448,
-               "Metal transmission-shade root ABI must remain 448 bytes");
+_Static_assert(sizeof(VkrMetalPacketTransmissionShadeRoot) == 464,
+               "Metal transmission-shade root ABI must remain 464 bytes");
 
 typedef VkrGpuTransmissionDiagnostics VkrMetalPacketTransmissionDiagnostics;
 
-_Static_assert(sizeof(VkrMetalPacketTransmissionDiagnostics) == 112,
-               "Metal transmission diagnostics ABI must remain 112 bytes");
+_Static_assert(sizeof(VkrMetalPacketTransmissionDiagnostics) == 116,
+               "Metal transmission diagnostics ABI must remain 116 bytes");
 _Static_assert(offsetof(VkrMetalPacketTransmissionDiagnostics,
                         covered_pixels) == sizeof(VkrGpuDrawCompactionState),
                "Metal transmission coverage must follow compaction state");
@@ -415,6 +418,8 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketTransmissionCompactRoot {
   uint64_t covered_pixels;
   uint64_t overflow_counts;
   uint64_t indirect_arguments;
+  uint64_t visible_rows;
+  uint64_t materials;
   uint64_t source_texture_id;
   uint64_t destination_texture_id;
   uint32_t extent[2];
@@ -423,8 +428,8 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketTransmissionCompactRoot {
   uint32_t reserved[2];
 } VkrMetalPacketTransmissionCompactRoot;
 
-_Static_assert(sizeof(VkrMetalPacketTransmissionCompactRoot) == 80,
-               "Metal transmission-compact root ABI must remain 80 bytes");
+_Static_assert(sizeof(VkrMetalPacketTransmissionCompactRoot) == 96,
+               "Metal transmission-compact root ABI must remain 96 bytes");
 
 /** Timing-only scan of one transmission visibility layer. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketTransmissionCoverageRoot {
@@ -551,6 +556,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_VERTEX = 0,
   VKR_METAL_PACKET_ABI_INSTANCE,
   VKR_METAL_PACKET_ABI_MATERIAL,
+  VKR_METAL_PACKET_ABI_TRANSMISSION_MATERIAL,
   VKR_METAL_PACKET_ABI_TEXT_VERTEX,
   VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
   VKR_METAL_PACKET_ABI_TEMPORAL_VERTEX_DRAW_ROOT,

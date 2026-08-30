@@ -113,8 +113,9 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId visibility_transmission_gpu_bucket_cutout_single;
   VkrMetricId visibility_transmission_gpu_bucket_cutout_double;
   VkrMetricId visibility_transmission_gpu_compaction_overflow;
+  VkrMetricId visibility_transmission_gpu_resolve_invalid;
   VkrMetricId visibility_transmission_pixel_compaction_overflow;
-  VkrMetricId visibility_transmission_covered_pixels[4];
+  VkrMetricId visibility_transmission_covered_pixels[5];
   VkrMetricId visibility_transmission_coverage_extent_width;
   VkrMetricId visibility_transmission_coverage_extent_height;
   VkrMetricId visibility_hzb_rejected;

@@ -38,6 +38,7 @@ typedef enum VkrMetalPacketGraphExecutorKind {
   VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_DOWNSAMPLE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_UPSAMPLE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_COMBINE,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_DOWNSAMPLE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_SHADE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_COVERAGE,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_COMPACT,
@@ -90,6 +91,7 @@ vkr_global const VkrMetalPacketGraphExecutorSpec
         {"pass.bloom.downsample", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.bloom.upsample", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.bloom.combine", VKR_RG_PASS_TYPE_COMPUTE},
+        {"pass.transmission.downsample", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.transmission.shade", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.transmission.coverage", VKR_RG_PASS_TYPE_COMPUTE},
         {"pass.transmission.compact", VKR_RG_PASS_TYPE_COMPUTE},
@@ -1337,6 +1339,24 @@ vkr_internal bool8_t vkr_metal_packet_capture_plan(
     uint32_t source_slice = 0;
     if (string_equals(channel->name, "scene_color"))
       source_name = "temporal_history_color";
+    else if (string_equals(channel->name, "hdr_pre_transmission") &&
+             packet->frame.editor_enabled)
+      source_name = "scene_pre_transmission";
+    else if (string_equals(channel->name, "hdr_post_transmission") &&
+             packet->frame.editor_enabled)
+      source_name = "scene_color";
+    else if (string_equals(channel->name,
+                           "transmission_visibility_ids_layer_1"))
+      source_slice = 1u;
+    else if (string_equals(channel->name,
+                           "transmission_visibility_ids_layer_2"))
+      source_slice = 2u;
+    else if (string_equals(channel->name,
+                           "transmission_visibility_ids_layer_3"))
+      source_slice = 3u;
+    else if (string_equals(channel->name,
+                           "transmission_visibility_ids_layer_4"))
+      source_slice = 4u;
     else if (string_equals(channel->name, "depth"))
       // The deferred topology writes depth only in the visibility raster, so
       // both editor and fullscreen capture read the same image. The retired
@@ -1435,6 +1455,8 @@ vkr_internal void vkr_metal_packet_decode_gpu_draw_diagnostics(
             sizeof(result->transmission_gpu_bucket_counts));
     result->transmission_gpu_overflow_count =
         transmission->compaction.overflow_count;
+    result->transmission_gpu_resolve_invalid_count =
+        transmission->compaction.resolve_invalid_count;
     result->transmission_gpu_occlusion_culled_count =
         transmission->compaction.occlusion_culled_count;
   }

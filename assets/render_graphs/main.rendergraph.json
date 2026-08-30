@@ -156,7 +156,7 @@
       "name": "transmission_gpu_draw_compaction_state",
       "type": "buffer",
       "condition": "transmission_pending",
-      "size": 112,
+      "size": 116,
       "usage": ["STORAGE", "INDIRECT", "TRANSFER_SRC", "TRANSFER_DST"],
       "flags": ["PER_FRAME_SLOT"]
     },
@@ -172,7 +172,7 @@
       "name": "transmission_compact_pixels",
       "type": "buffer",
       "condition": "transmission_compact_enabled",
-      "size": { "mode": "viewport_pixels", "bytes_per_pixel": 4 },
+      "size": { "mode": "viewport_pixels", "bytes_per_pixel": 8 },
       "usage": ["STORAGE"],
       "flags": ["PER_FRAME_SLOT"]
     },
@@ -180,7 +180,7 @@
       "name": "transmission_compact_arguments",
       "type": "buffer",
       "condition": "transmission_compact_enabled",
-      "size": 12,
+      "size": 32,
       "usage": ["STORAGE", "INDIRECT"],
       "flags": ["PER_FRAME_SLOT"]
     },
@@ -230,12 +230,42 @@
       "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
     },
     {
+      "name": "transmission_diagnostic_vbuffer",
+      "type": "image",
+      "condition": "transmission_depth_diagnostic_enabled",
+      "extent": { "mode": "viewport" },
+      "layers": 5,
+      "format": "R32G32_UINT",
+      "usage": ["COLOR_ATTACHMENT", "STORAGE", "TRANSFER_SRC"],
+      "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
+    },
+    {
+      "name": "transmission_diagnostic_depth",
+      "type": "image",
+      "condition": "transmission_depth_diagnostic_enabled",
+      "extent": { "mode": "viewport" },
+      "layers": 5,
+      "format": "SWAPCHAIN_DEPTH",
+      "usage": ["DEPTH_STENCIL_ATTACHMENT", "TRANSFER_DST"],
+      "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
+    },
+    {
       "name": "transmission_feedback",
       "type": "image",
       "condition": "transmission_pending",
       "extent": { "mode": "viewport" },
       "format": "R16G16B16A16_SFLOAT",
       "usage": ["SAMPLED", "STORAGE"],
+      "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
+    },
+    {
+      "name": "transmission_opaque_pyramid",
+      "type": "image",
+      "condition": "transmission_pending",
+      "extent": { "mode": "viewport" },
+      "format": "R16G16B16A16_SFLOAT",
+      "mip_levels": 6,
+      "usage": ["SAMPLED", "STORAGE", "TRANSFER_SRC", "TRANSFER_DST"],
       "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
     },
     {
@@ -702,6 +732,18 @@
       "execute": "pass.transmission.depth_seed"
     },
     {
+      "name": "Transmission.DepthSeed.Diagnostic.4",
+      "type": "transfer",
+      "condition": "transmission_depth_diagnostic_enabled",
+      "flags": ["NO_CULL"],
+      "reads": [{ "image": "opaque_vbuffer_depth", "access": "TRANSFER_SRC", "binding": 0 }],
+      "writes": [{
+        "image": "transmission_diagnostic_depth", "access": "TRANSFER_DST", "binding": 1,
+        "subresource": { "base_layer": 4, "layer_count": 1 }
+      }],
+      "execute": "pass.transmission.depth_seed"
+    },
+    {
       "name": "VBuffer.Transmission.0",
       "type": "graphics",
       "domain": "WORLD_TRANSPARENT",
@@ -805,6 +847,35 @@
         "depth": {
           "image": "transmission_vbuffer_depth", "load": "LOAD", "store": "STORE",
           "slice": { "base_layer": 3, "layer_count": 1 }
+        }
+      },
+      "execute": "pass.vbuffer.transmission"
+    },
+    {
+      "name": "VBuffer.Transmission.Diagnostic.4",
+      "type": "graphics",
+      "domain": "WORLD_TRANSPARENT",
+      "condition": "transmission_depth_diagnostic_enabled",
+      "flags": ["NO_CULL"],
+      "reads": [
+        { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 1 },
+        { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
+        { "buffer": "transmission_gpu_draw_compaction_state", "access": "INDIRECT_READ", "binding": 2 },
+        { "buffer": "transmission_gpu_draw_arguments", "access": "INDIRECT_READ", "binding": 4 },
+        {
+          "image": "transmission_vbuffer_depth", "access": "SAMPLED", "binding": 3,
+          "subresource": { "base_layer": 3, "layer_count": 1 }
+        }
+      ],
+      "attachments": {
+        "color": [{
+          "image": "transmission_diagnostic_vbuffer", "load": "CLEAR", "store": "STORE",
+          "clear": { "color": [0, 0, 0, 0] },
+          "slice": { "base_layer": 4, "layer_count": 1 }
+        }],
+        "depth": {
+          "image": "transmission_diagnostic_depth", "load": "LOAD", "store": "STORE",
+          "slice": { "base_layer": 4, "layer_count": 1 }
         }
       },
       "execute": "pass.vbuffer.transmission"
@@ -990,6 +1061,46 @@
       "execute": "pass.lighting.deferred"
     },
     {
+      "name": "Transmission.OpaquePyramid.Copy.Fullscreen",
+      "type": "transfer",
+      "condition": "!editor_enabled && transmission_pending",
+      "flags": ["NO_CULL"],
+      "reads": [
+        { "image": "hdr_pre_transmission", "access": "TRANSFER_SRC", "binding": 0 }
+      ],
+      "writes": [
+        { "image": "transmission_opaque_pyramid", "access": "TRANSFER_DST", "binding": 1, "subresource": { "base_mip": 0, "mip_count": 1 } }
+      ],
+      "execute": "pass.copy.pre_transmission.fullscreen"
+    },
+    {
+      "name": "Transmission.OpaquePyramid.Copy.Editor",
+      "type": "transfer",
+      "condition": "editor_enabled && transmission_pending",
+      "flags": ["NO_CULL"],
+      "reads": [
+        { "image": "scene_pre_transmission", "access": "TRANSFER_SRC", "binding": 0 }
+      ],
+      "writes": [
+        { "image": "transmission_opaque_pyramid", "access": "TRANSFER_DST", "binding": 1, "subresource": { "base_mip": 0, "mip_count": 1 } }
+      ],
+      "execute": "pass.copy.pre_transmission.editor"
+    },
+    {
+      "name": "Transmission.OpaquePyramid.Downsample.${i}",
+      "type": "compute",
+      "condition": "transmission_pending",
+      "repeat": { "count_source": "transmission_rough_mip_pass_count" },
+      "flags": ["NO_CULL"],
+      "reads": [
+        { "image": "transmission_opaque_pyramid", "access": "SAMPLED", "binding": 0, "subresource": { "base_mip": "${i}", "mip_count": 1 } }
+      ],
+      "writes": [
+        { "image": "transmission_opaque_pyramid", "access": "STORAGE_WRITE", "binding": 1, "subresource": { "base_mip": "${i+1}", "mip_count": 1 } }
+      ],
+      "execute": "pass.transmission.downsample"
+    },
+    {
       "name": "World.FeedbackCopy.Fullscreen",
       "type": "transfer",
       "condition": "!editor_enabled",
@@ -1020,6 +1131,7 @@
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 3, "layer_count": 1 } },
+        { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 6 },
         { "image": "hdr_pre_transmission", "access": "STORAGE_READ", "binding": 4 }
       ],
       "writes": [
@@ -1037,6 +1149,7 @@
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 3, "layer_count": 1 } },
+        { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 6 },
         { "image": "scene_pre_transmission", "access": "STORAGE_READ", "binding": 4 }
       ],
       "writes": [
@@ -1059,6 +1172,7 @@
         { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
         { "image": "hdr_pre_transmission", "access": "SAMPLED", "binding": 4 },
+        { "image": "transmission_opaque_pyramid", "access": "SAMPLED", "binding": 13 },
         { "buffer": "transmission_compact_pixels", "access": "STORAGE_READ", "binding": 6 },
         { "buffer": "transmission_compact_arguments", "access": "INDIRECT_READ", "binding": 7 },
         { "image": "shadow_map", "access": "SAMPLED", "binding": 8, "when": "shadow_cascades_active" }
@@ -1079,6 +1193,7 @@
         { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
         { "image": "scene_pre_transmission", "access": "SAMPLED", "binding": 4 },
+        { "image": "transmission_opaque_pyramid", "access": "SAMPLED", "binding": 13 },
         { "buffer": "transmission_compact_pixels", "access": "STORAGE_READ", "binding": 6 },
         { "buffer": "transmission_compact_arguments", "access": "INDIRECT_READ", "binding": 7 },
         { "image": "shadow_map", "access": "SAMPLED", "binding": 8, "when": "shadow_cascades_active" }
@@ -1094,6 +1209,7 @@
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 2, "layer_count": 1 } },
+        { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 6 },
         { "image": "transmission_feedback", "access": "STORAGE_READ", "binding": 4 }
       ],
       "writes": [
@@ -1111,6 +1227,7 @@
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 2, "layer_count": 1 } },
+        { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 6 },
         { "image": "transmission_feedback", "access": "STORAGE_READ", "binding": 4 }
       ],
       "writes": [
@@ -1133,6 +1250,7 @@
         { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
         { "image": "transmission_feedback", "access": "SAMPLED", "binding": 4 },
+        { "image": "transmission_opaque_pyramid", "access": "SAMPLED", "binding": 13 },
         { "buffer": "transmission_compact_pixels", "access": "STORAGE_READ", "binding": 6 },
         { "buffer": "transmission_compact_arguments", "access": "INDIRECT_READ", "binding": 7 },
         { "image": "shadow_map", "access": "SAMPLED", "binding": 8, "when": "shadow_cascades_active" }
@@ -1153,6 +1271,7 @@
         { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
         { "image": "transmission_feedback", "access": "SAMPLED", "binding": 4 },
+        { "image": "transmission_opaque_pyramid", "access": "SAMPLED", "binding": 13 },
         { "buffer": "transmission_compact_pixels", "access": "STORAGE_READ", "binding": 6 },
         { "buffer": "transmission_compact_arguments", "access": "INDIRECT_READ", "binding": 7 },
         { "image": "shadow_map", "access": "SAMPLED", "binding": 8, "when": "shadow_cascades_active" }
@@ -1168,6 +1287,7 @@
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 1, "layer_count": 1 } },
+        { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 6 },
         { "image": "hdr_scene_color", "access": "STORAGE_READ", "binding": 4 }
       ],
       "writes": [
@@ -1185,6 +1305,7 @@
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 1, "layer_count": 1 } },
+        { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 6 },
         { "image": "scene_color", "access": "STORAGE_READ", "binding": 4 }
       ],
       "writes": [
@@ -1207,6 +1328,7 @@
         { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
         { "image": "hdr_scene_color", "access": "SAMPLED", "binding": 4 },
+        { "image": "transmission_opaque_pyramid", "access": "SAMPLED", "binding": 13 },
         { "buffer": "transmission_compact_pixels", "access": "STORAGE_READ", "binding": 6 },
         { "buffer": "transmission_compact_arguments", "access": "INDIRECT_READ", "binding": 7 },
         { "image": "shadow_map", "access": "SAMPLED", "binding": 8, "when": "shadow_cascades_active" }
@@ -1227,6 +1349,7 @@
         { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
         { "image": "scene_color", "access": "SAMPLED", "binding": 4 },
+        { "image": "transmission_opaque_pyramid", "access": "SAMPLED", "binding": 13 },
         { "buffer": "transmission_compact_pixels", "access": "STORAGE_READ", "binding": 6 },
         { "buffer": "transmission_compact_arguments", "access": "INDIRECT_READ", "binding": 7 },
         { "image": "shadow_map", "access": "SAMPLED", "binding": 8, "when": "shadow_cascades_active" }
@@ -1242,6 +1365,7 @@
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 0, "layer_count": 1 } },
+        { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 6 },
         { "image": "transmission_feedback", "access": "STORAGE_READ", "binding": 4 }
       ],
       "writes": [
@@ -1259,6 +1383,7 @@
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 0, "layer_count": 1 } },
+        { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 6 },
         { "image": "transmission_feedback", "access": "STORAGE_READ", "binding": 4 }
       ],
       "writes": [
@@ -1281,6 +1406,7 @@
         { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
         { "image": "transmission_feedback", "access": "SAMPLED", "binding": 4 },
+        { "image": "transmission_opaque_pyramid", "access": "SAMPLED", "binding": 13 },
         { "buffer": "transmission_compact_pixels", "access": "STORAGE_READ", "binding": 6 },
         { "buffer": "transmission_compact_arguments", "access": "INDIRECT_READ", "binding": 7 },
         { "buffer": "temporal_transform_history", "access": "STORAGE_READ", "binding": 10 },
@@ -1306,6 +1432,7 @@
         { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
         { "image": "transmission_feedback", "access": "SAMPLED", "binding": 4 },
+        { "image": "transmission_opaque_pyramid", "access": "SAMPLED", "binding": 13 },
         { "buffer": "transmission_compact_pixels", "access": "STORAGE_READ", "binding": 6 },
         { "buffer": "transmission_compact_arguments", "access": "INDIRECT_READ", "binding": 7 },
         { "buffer": "temporal_transform_history", "access": "STORAGE_READ", "binding": 10 },
@@ -1330,7 +1457,8 @@
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 2 },
         { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
-        { "image": "hdr_pre_transmission", "access": "SAMPLED", "binding": 4 }
+        { "image": "hdr_pre_transmission", "access": "SAMPLED", "binding": 4 },
+        { "image": "transmission_opaque_pyramid", "access": "SAMPLED", "binding": 13 }
 ,
         {
           "image": "shadow_map",
@@ -1353,7 +1481,8 @@
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 2 },
         { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
-        { "image": "transmission_feedback", "access": "SAMPLED", "binding": 4 }
+        { "image": "transmission_feedback", "access": "SAMPLED", "binding": 4 },
+        { "image": "transmission_opaque_pyramid", "access": "SAMPLED", "binding": 13 }
 ,
         {
           "image": "shadow_map",
@@ -1376,7 +1505,8 @@
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 2 },
         { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
-        { "image": "hdr_scene_color", "access": "SAMPLED", "binding": 4 }
+        { "image": "hdr_scene_color", "access": "SAMPLED", "binding": 4 },
+        { "image": "transmission_opaque_pyramid", "access": "SAMPLED", "binding": 13 }
 ,
         {
           "image": "shadow_map",
@@ -1400,6 +1530,7 @@
         { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
         { "image": "transmission_feedback", "access": "SAMPLED", "binding": 4 },
+        { "image": "transmission_opaque_pyramid", "access": "SAMPLED", "binding": 13 },
         { "buffer": "temporal_transform_history", "access": "STORAGE_READ", "binding": 10 },
         {
           "image": "shadow_map",
@@ -1426,7 +1557,8 @@
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 2 },
         { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
-        { "image": "scene_pre_transmission", "access": "SAMPLED", "binding": 4 }
+        { "image": "scene_pre_transmission", "access": "SAMPLED", "binding": 4 },
+        { "image": "transmission_opaque_pyramid", "access": "SAMPLED", "binding": 13 }
 ,
         {
           "image": "shadow_map",
@@ -1449,7 +1581,8 @@
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 2 },
         { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
-        { "image": "transmission_feedback", "access": "SAMPLED", "binding": 4 }
+        { "image": "transmission_feedback", "access": "SAMPLED", "binding": 4 },
+        { "image": "transmission_opaque_pyramid", "access": "SAMPLED", "binding": 13 }
 ,
         {
           "image": "shadow_map",
@@ -1472,7 +1605,8 @@
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 2 },
         { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
-        { "image": "scene_color", "access": "SAMPLED", "binding": 4 }
+        { "image": "scene_color", "access": "SAMPLED", "binding": 4 },
+        { "image": "transmission_opaque_pyramid", "access": "SAMPLED", "binding": 13 }
 ,
         {
           "image": "shadow_map",
@@ -1496,6 +1630,7 @@
         { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 3 },
         { "image": "transmission_feedback", "access": "SAMPLED", "binding": 4 },
+        { "image": "transmission_opaque_pyramid", "access": "SAMPLED", "binding": 13 },
         { "buffer": "temporal_transform_history", "access": "STORAGE_READ", "binding": 10 },
         {
           "image": "shadow_map",
@@ -1551,6 +1686,17 @@
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 3, "layer_count": 1 } },
+        { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 1 }
+      ],
+      "execute": "pass.transmission.coverage"
+    },
+    {
+      "name": "Transmission.Coverage.Diagnostic.4",
+      "type": "compute",
+      "condition": "transmission_depth_diagnostic_enabled",
+      "flags": ["NO_CULL"],
+      "reads": [
+        { "image": "transmission_diagnostic_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 4, "layer_count": 1 } },
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 1 }
       ],
       "execute": "pass.transmission.coverage"

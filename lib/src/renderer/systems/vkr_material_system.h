@@ -359,10 +359,9 @@ bool8_t
 vkr_material_system_material_uses_cutout(const VkrMaterialSystem *system,
                                          const VkrMaterial *material);
 
-/** True when transmission factor or a transmission texture contributes. */
+/** True when the scalar transmission factor selects the transmission path. */
 bool8_t
-vkr_material_system_material_is_transmissive(const VkrMaterialSystem *system,
-                                             const VkrMaterial *material);
+vkr_material_system_material_is_transmissive(const VkrMaterial *material);
 
 /**
  * @brief Returns the effective alpha cutoff for cutout materials.

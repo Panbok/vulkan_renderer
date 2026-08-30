@@ -434,7 +434,9 @@ typedef struct cgltf_pbr_metallic_roughness {
   cgltf_texture_view metallic_roughness_texture;
 
   cgltf_float base_color_factor[4];
+  cgltf_bool has_metallic_factor;
   cgltf_float metallic_factor;
+  cgltf_bool has_roughness_factor;
   cgltf_float roughness_factor;
 } cgltf_pbr_metallic_roughness;
 
@@ -3964,11 +3966,13 @@ static int cgltf_parse_json_pbr_metallic_roughness(
 
     if (cgltf_json_strcmp(tokens + i, json_chunk, "metallicFactor") == 0) {
       ++i;
+      out_pbr->has_metallic_factor = 1;
       out_pbr->metallic_factor = cgltf_json_to_float(tokens + i, json_chunk);
       ++i;
     } else if (cgltf_json_strcmp(tokens + i, json_chunk, "roughnessFactor") ==
                0) {
       ++i;
+      out_pbr->has_roughness_factor = 1;
       out_pbr->roughness_factor = cgltf_json_to_float(tokens + i, json_chunk);
       ++i;
     } else if (cgltf_json_strcmp(tokens + i, json_chunk, "baseColorFactor") ==

@@ -190,8 +190,8 @@ typedef struct VkrMetalPacketGeometryMegabuffer {
 } VkrMetalPacketGeometryMegabuffer;
 
 typedef struct VkrMetalPacketMaterial {
-  VkrMetalTextureResource textures[4];
-  VkrTextureHandle texture_handles[4];
+  VkrMetalTextureResource textures[6];
+  VkrTextureHandle texture_handles[6];
   VkrMetalMaterialHandle row;
   VkrPbrProperties pbr;
   VkrMaterialAlphaMode alpha_mode;
@@ -267,6 +267,7 @@ typedef struct VkrMetalPacketFrameUpload {
   uint64_t gpu_draw_geometry_rows_gpu;
   uint64_t gpu_draw_views_gpu;
   uint64_t transmission_gpu_draw_view_gpu;
+  uint64_t transmission_gpu_draw_root_gpu;
   uint64_t gpu_draw_icb_argument_gpu;
   uint64_t gpu_draw_icb_argument_stride;
   VkrMetalPacketCandidateCopyRange gpu_draw_candidate_copies[2];
@@ -516,6 +517,7 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> gpu_draw_classify_pipeline;
   id<MTLComputePipelineState> gpu_draw_prefix_pipeline;
   id<MTLComputePipelineState> gpu_draw_encode_pipeline;
+  id<MTLComputePipelineState> gpu_draw_encode_inherited_pipeline;
   id<MTLComputePipelineState> temporal_transform_pipeline;
   id<MTLComputePipelineState> gbuffer_resolve_pipeline;
   id<MTLComputePipelineState> deferred_lighting_pipeline;
@@ -525,7 +527,15 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> gtao_denoise_pipeline;
   id<MTLComputePipelineState> temporal_resolve_pipeline;
   id<MTLComputePipelineState> transmission_shade_pipeline;
+  id<MTLComputePipelineState> transmission_shade_partitioned_pipeline;
+  id<MTLComputePipelineState> transmission_shade_production_pipeline;
+  id<MTLComputePipelineState> transmission_shade_production_temporal_pipeline;
+  id<MTLComputePipelineState>
+      transmission_shade_partitioned_production_pipeline;
+  id<MTLComputePipelineState>
+      transmission_shade_partitioned_production_temporal_pipeline;
   id<MTLComputePipelineState> transmission_coverage_pipeline;
+  id<MTLComputePipelineState> transmission_compact_clear_pipeline;
   id<MTLComputePipelineState> transmission_compact_pipeline;
   id<MTLComputePipelineState> transmission_compact_finalize_pipeline;
   id<MTLComputePipelineState> picking_resolve_pipeline;
@@ -725,6 +735,45 @@ VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_retired_image_views_bytes,
 VkrPresentMode
 vkr_metal_packet_renderer_present_mode(const VkrMetalPacketRenderer *renderer) {
   return renderer ? renderer->actual_present_mode : VKR_PRESENT_MODE_DEFAULT;
+}
+
+bool8_t vkr_metal_packet_renderer_graph_resource_stats(
+    const VkrMetalPacketRenderer *renderer,
+    VkrRenderGraphResourceStats *out_stats) {
+  if (!renderer || !out_stats)
+    return false_v;
+  MemZero(out_stats, sizeof(*out_stats));
+  for (uint32_t i = 0u; i < renderer->max_images; ++i) {
+    const VkrMetalPacketImage *image = &renderer->images[i];
+    if (!image->live || image->external)
+      continue;
+    VkrTextureFormatInfo format = {0};
+    if (!vkr_texture_format_get_info(image->desc.format, &format) ||
+        format.block_width != 1u || format.block_height != 1u)
+      continue;
+    uint64_t texels = 0u;
+    for (uint32_t mip = 0u; mip < Max(image->desc.mip_levels, 1u); ++mip) {
+      texels += (uint64_t)Max(image->desc.width >> mip, 1u) *
+                Max(image->desc.height >> mip, 1u);
+    }
+    const uint64_t bytes_per_image = texels * Max(image->desc.layers, 1u) *
+                                     Max(image->desc.samples, 1u) *
+                                     format.bytes_per_block;
+    out_stats->live_image_textures += image->instance_count;
+    out_stats->live_image_bytes += bytes_per_image * image->instance_count;
+  }
+  for (uint32_t i = 0u; i < renderer->max_images; ++i) {
+    const VkrMetalPacketGraphBuffer *buffer = &renderer->graph_buffers[i];
+    if (!buffer->live)
+      continue;
+    out_stats->live_buffers += buffer->instance_count;
+    out_stats->live_buffer_bytes += buffer->desc.size * buffer->instance_count;
+  }
+  out_stats->peak_image_textures = out_stats->live_image_textures;
+  out_stats->peak_image_bytes = out_stats->live_image_bytes;
+  out_stats->peak_buffers = out_stats->live_buffers;
+  out_stats->peak_buffer_bytes = out_stats->live_buffer_bytes;
+  return true_v;
 }
 
 #endif

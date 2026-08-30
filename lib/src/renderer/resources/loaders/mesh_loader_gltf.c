@@ -1146,6 +1146,11 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
       material->has_transmission
           ? (float32_t)material->transmission.transmission_factor
           : 0.0f;
+  if (transmission_factor > 0.0f && !material->has_pbr_specular_glossiness &&
+      !pbr->metallic_roughness_texture.texture) {
+    metallic = pbr->has_metallic_factor ? metallic : 0.0f;
+    roughness = pbr->has_roughness_factor ? roughness : 0.0f;
+  }
   const float32_t ior = material->has_ior ? (float32_t)material->ior.ior : 1.5f;
   const float32_t thickness_factor =
       material->has_volume ? (float32_t)material->volume.thickness_factor

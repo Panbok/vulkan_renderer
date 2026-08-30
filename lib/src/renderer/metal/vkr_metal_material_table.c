@@ -12,6 +12,11 @@ _Static_assert(offsetof(VkrMetalMaterialGpuRow, material_id) == 80,
                "Metal material identifier offset changed");
 _Static_assert(offsetof(VkrMetalMaterialGpuRow, material_emissive) == 96,
                "Metal material parameter offset changed");
+_Static_assert(sizeof(VkrMetalTransmissionMaterialGpuRow) == 32,
+               "Metal transmission material row ABI must remain 32 bytes");
+_Static_assert(offsetof(VkrMetalTransmissionMaterialGpuRow,
+                        transmission_sampler_id) == 16,
+               "Metal transmission material sampler offset changed");
 
 vkr_internal VkrMetalMaterialStatus
 vkr_metal_material_status(VkrGpuSlotStatus status) {

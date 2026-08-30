@@ -12,6 +12,7 @@ struct VkrMetalMaterialTableDevice {
   /** Owns this struct and core_storage; retained for the sized frees. */
   VkrAllocator *allocator;
   uint64_t core_storage_size;
+  uint64_t transmission_offset;
   VkrMetalMaterialTableCore *core;
 };
 
@@ -40,8 +41,11 @@ VkrMetalMaterialStatus vkr_metal_material_table_device_create(
       return VKR_METAL_MATERIAL_STATUS_NATIVE_ALLOCATION_FAILED;
     table->allocator = allocator;
     table->device = [(id<MTLDevice>)metal_device retain];
-    const uint64_t buffer_size =
+    table->transmission_offset =
         (uint64_t)config->max_rows * sizeof(VkrMetalMaterialGpuRow);
+    const uint64_t buffer_size =
+        table->transmission_offset +
+        (uint64_t)config->max_rows * sizeof(VkrMetalTransmissionMaterialGpuRow);
     const uint64_t storage_size =
         vkr_metal_material_table_storage_requirement(config);
     table->core_storage_size = storage_size;
@@ -84,20 +88,40 @@ VkrMetalMaterialStatus vkr_metal_material_table_device_create(
 
 VkrMetalMaterialStatus
 vkr_metal_material_table_device_publish(VkrMetalMaterialTableDevice *table,
-                                        const VkrMetalMaterialGpuRow *row,
+                                        const VkrMetalMaterialPublishedRow *row,
                                         VkrMetalMaterialHandle *out_handle) {
-  return table ? vkr_metal_material_table_publish(table->core, row, out_handle)
-               : VKR_METAL_MATERIAL_STATUS_INVALID_ARGUMENT;
+  if (!table || !row || !out_handle)
+    return VKR_METAL_MATERIAL_STATUS_INVALID_ARGUMENT;
+  const VkrMetalMaterialStatus status =
+      vkr_metal_material_table_publish(table->core, &row->material, out_handle);
+  if (status == VKR_METAL_MATERIAL_STATUS_OK) {
+    VkrMetalTransmissionMaterialGpuRow *transmission =
+        (VkrMetalTransmissionMaterialGpuRow *)((uint8_t *)
+                                                   table->buffer.contents +
+                                               table->transmission_offset);
+    transmission[out_handle->index] = row->transmission;
+  }
+  return status;
 }
 
 VkrMetalMaterialStatus vkr_metal_material_table_device_replace(
     VkrMetalMaterialTableDevice *table, VkrMetalMaterialHandle old_handle,
-    const VkrMetalMaterialGpuRow *new_row, uint64_t old_last_use_submit_value,
+    const VkrMetalMaterialPublishedRow *new_row,
+    uint64_t old_last_use_submit_value,
     VkrMetalMaterialHandle *out_new_handle) {
-  return table ? vkr_metal_material_table_replace(
-                     table->core, old_handle, new_row,
-                     old_last_use_submit_value, out_new_handle)
-               : VKR_METAL_MATERIAL_STATUS_INVALID_ARGUMENT;
+  if (!table || !new_row || !out_new_handle)
+    return VKR_METAL_MATERIAL_STATUS_INVALID_ARGUMENT;
+  const VkrMetalMaterialStatus status = vkr_metal_material_table_replace(
+      table->core, old_handle, &new_row->material, old_last_use_submit_value,
+      out_new_handle);
+  if (status == VKR_METAL_MATERIAL_STATUS_OK) {
+    VkrMetalTransmissionMaterialGpuRow *transmission =
+        (VkrMetalTransmissionMaterialGpuRow *)((uint8_t *)
+                                                   table->buffer.contents +
+                                               table->transmission_offset);
+    transmission[out_new_handle->index] = new_row->transmission;
+  }
+  return status;
 }
 
 VkrMetalMaterialStatus
@@ -130,6 +154,11 @@ vkr_metal_material_table_device_collect(VkrMetalMaterialTableDevice *table,
 uint64_t vkr_metal_material_table_device_gpu_address(
     VkrMetalMaterialTableDevice *table) {
   return table ? table->buffer.gpuAddress : 0;
+}
+
+uint64_t vkr_metal_material_table_device_transmission_gpu_address(
+    VkrMetalMaterialTableDevice *table) {
+  return table ? table->buffer.gpuAddress + table->transmission_offset : 0;
 }
 
 void *

@@ -50,6 +50,14 @@ struct VkrVulkanMaterial
     float4 material_attenuation_color;
 };
 
+struct VkrVulkanTransmissionMaterial
+{
+    uint transmission_texture;
+    uint thickness_texture;
+    uint transmission_sampler;
+    uint thickness_sampler;
+};
+
 struct VkrVulkanShadowCascade
 {
     float4x4 light_view_projection;

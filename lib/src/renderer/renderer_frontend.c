@@ -84,6 +84,8 @@ vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
       .transmission_gpu_visible_count = source->transmission_gpu_visible_count,
       .transmission_gpu_overflow_count =
           source->transmission_gpu_overflow_count,
+      .transmission_gpu_resolve_invalid_count =
+          source->transmission_gpu_resolve_invalid_count,
       .transmission_gpu_occlusion_culled_count =
           source->transmission_gpu_occlusion_culled_count,
       .transmission_compact_overflow_count =
@@ -1319,6 +1321,8 @@ renderer_impl_vulkan_submit_packet(void *state, const VkrRenderPacket *packet,
             sizeof(rf->frame_metrics.world.transmission_gpu_bucket_counts));
     rf->frame_metrics.world.transmission_gpu_compaction_overflow_count =
         observed->transmission_gpu_overflow_count;
+    rf->frame_metrics.world.transmission_gpu_resolve_invalid_count =
+        observed->transmission_gpu_resolve_invalid_count;
     rf->frame_metrics.world.transmission_gpu_occlusion_culled_count =
         observed->transmission_gpu_occlusion_culled_count;
     rf->frame_metrics.world.gpu_diagnostics_valid = true_v;
@@ -2517,6 +2521,8 @@ renderer_impl_metal_submit_packet(void *state, const VkrRenderPacket *packet,
             sizeof(rf->frame_metrics.world.transmission_gpu_bucket_counts));
     rf->frame_metrics.world.transmission_gpu_compaction_overflow_count =
         observed->transmission_gpu_overflow_count;
+    rf->frame_metrics.world.transmission_gpu_resolve_invalid_count =
+        observed->transmission_gpu_resolve_invalid_count;
     rf->frame_metrics.world.transmission_gpu_occlusion_culled_count =
         observed->transmission_gpu_occlusion_culled_count;
     rf->frame_metrics.world.transmission_pixel_compaction_overflow_count =
@@ -3081,6 +3087,8 @@ static bool8_t renderer_impl_vulkan_poll_submit_result(
       .gpu_occlusion_culled_count = source.gpu_occlusion_culled_count,
       .transmission_gpu_visible_count = source.transmission_gpu_visible_count,
       .transmission_gpu_overflow_count = source.transmission_gpu_overflow_count,
+      .transmission_gpu_resolve_invalid_count =
+          source.transmission_gpu_resolve_invalid_count,
       .transmission_gpu_occlusion_culled_count =
           source.transmission_gpu_occlusion_culled_count,
       .transmission_compact_overflow_count =

@@ -219,32 +219,6 @@ static float4 vkr_metal_packet_shade(
   if (frame->render_mode == 5u)
     return float4(analytic_specular, 1.0);
   color += emissive;
-  if ((frame->flags & 4u) != 0u && material.material_alpha.y > 0.0) {
-    float transmission = saturate(material.material_alpha.y);
-    float thickness = max(material.material_alpha.w, 0.0);
-    float3 view_normal = normalize((frame->view * float4(normal, 0.0)).xyz);
-    float3 refracted = refract(float3(0.0, 0.0, -1.0), view_normal,
-                               1.0 / max(material.material_alpha.z, 1.0));
-    float2 screen_uv = input.position.xy *
-                       float2(frame->ibl_controls.w, frame->ambient_color.w);
-    float2 offset =
-        refracted.xy / max(abs(refracted.z), 0.25) * thickness * 0.02;
-    constexpr sampler transmission_sampler(
-        coord::normalized, address::clamp_to_edge, filter::linear);
-    float3 transmitted =
-        frame->transmission_source
-            .sample(transmission_sampler, clamp(screen_uv + offset, 0.0, 1.0))
-            .rgb;
-    if (material.material_attenuation_color.w > 1e-4 && thickness > 0.0) {
-      transmitted *=
-          pow(clamp(material.material_attenuation_color.rgb, 1e-4, 1.0),
-              thickness / material.material_attenuation_color.w);
-    }
-    float3 fresnel = vkr_metal_packet_fresnel(no_v, f0);
-    float weight = transmission * (1.0 - metallic) *
-                   (1.0 - max(fresnel.x, max(fresnel.y, fresnel.z)));
-    color = mix(color, transmitted, saturate(weight));
-  }
   return float4(color, material.alpha_mode == 0u ? 1.0 : base.a);
 }
 

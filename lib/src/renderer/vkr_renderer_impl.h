@@ -227,6 +227,7 @@ typedef struct VkrRendererImplSubmitResult {
   uint32_t transmission_gpu_visible_count;
   uint32_t transmission_gpu_bucket_counts[VKR_RENDERER_IMPL_DRAW_BUCKET_COUNT];
   uint32_t transmission_gpu_overflow_count;
+  uint32_t transmission_gpu_resolve_invalid_count;
   uint32_t transmission_gpu_occlusion_culled_count;
   uint32_t transmission_compact_overflow_count;
   uint32_t shadow_gpu_visible_count[VKR_RENDERER_IMPL_SHADOW_CASCADE_COUNT];
@@ -237,7 +238,7 @@ typedef struct VkrRendererImplSubmitResult {
   VkrShadowDepthRangeSample shadow_depth_range;
   bool8_t has_gpu_draw_diagnostics;
   VkrExposureDebugSample exposure;
-  uint32_t transmission_covered_pixels[4];
+  uint32_t transmission_covered_pixels[5];
   uint32_t transmission_coverage_extent[2];
   bool8_t transmission_coverage_valid;
   VkrCapturePollResult capture;

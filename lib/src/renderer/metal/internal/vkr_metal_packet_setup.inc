@@ -582,6 +582,11 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       renderer, fragment, "vkr_metal_packet_gpu_draw_encode",
       VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT, true_v,
       @"VKR Metal packet GPU draw encode");
+  renderer->gpu_draw_encode_inherited_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_gpu_draw_encode_inherited",
+          VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT, true_v,
+          @"VKR Metal packet inherited GPU draw encode");
   renderer->temporal_transform_pipeline =
       vkr_metal_packet_create_compute_pipeline(
           renderer, fragment, "vkr_metal_packet_temporal_transform",
@@ -623,6 +628,35 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
           renderer, fragment, "vkr_metal_packet_transmission_shade",
           VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT, false_v,
           @"VKR Metal packet transmission shade");
+  renderer->transmission_shade_partitioned_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_transmission_shade_partitioned",
+          VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT, false_v,
+          @"VKR Metal packet partitioned transmission shade");
+  renderer->transmission_shade_production_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_transmission_shade_production",
+          VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT, false_v,
+          @"VKR Metal packet production transmission shade");
+  renderer->transmission_shade_production_temporal_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment,
+          "vkr_metal_packet_transmission_shade_production_temporal",
+          VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT, false_v,
+          @"VKR Metal packet temporal production transmission shade");
+  renderer->transmission_shade_partitioned_production_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment,
+          "vkr_metal_packet_transmission_shade_partitioned_production",
+          VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT, false_v,
+          @"VKR Metal packet partitioned production transmission shade");
+  renderer->transmission_shade_partitioned_production_temporal_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment,
+          "vkr_metal_packet_transmission_shade_partitioned_production_temporal",
+          VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT, false_v,
+          @"VKR Metal packet temporal partitioned production transmission "
+           "shade");
   renderer->transmission_coverage_pipeline =
       vkr_metal_packet_create_compute_pipeline(
           renderer, fragment, "vkr_metal_packet_transmission_coverage",
@@ -633,6 +667,11 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
           renderer, fragment, "vkr_metal_packet_transmission_compact",
           VKR_METAL_PACKET_ABI_TRANSMISSION_COMPACT_ROOT, false_v,
           @"VKR Metal packet transmission compact");
+  renderer->transmission_compact_clear_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_transmission_compact_clear",
+          VKR_METAL_PACKET_ABI_TRANSMISSION_COMPACT_ROOT, false_v,
+          @"VKR Metal packet transmission compact clear");
   renderer->transmission_compact_finalize_pipeline =
       vkr_metal_packet_create_compute_pipeline(
           renderer, fragment, "vkr_metal_packet_transmission_compact_finalize",
@@ -696,6 +735,7 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
   if (!renderer->gpu_draw_classify_pipeline ||
       !renderer->gpu_draw_prefix_pipeline ||
       !renderer->gpu_draw_encode_pipeline ||
+      !renderer->gpu_draw_encode_inherited_pipeline ||
       !renderer->temporal_transform_pipeline ||
       !renderer->gbuffer_resolve_pipeline ||
       !renderer->gtao_depth_prefilter_pipeline ||
@@ -705,7 +745,13 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       renderer->sh_coefficients.gpuAddress == 0 || !renderer->ibl_sh_pipeline ||
       !renderer->temporal_resolve_pipeline ||
       !renderer->transmission_shade_pipeline ||
+      !renderer->transmission_shade_partitioned_pipeline ||
+      !renderer->transmission_shade_production_pipeline ||
+      !renderer->transmission_shade_production_temporal_pipeline ||
+      !renderer->transmission_shade_partitioned_production_pipeline ||
+      !renderer->transmission_shade_partitioned_production_temporal_pipeline ||
       !renderer->transmission_coverage_pipeline ||
+      !renderer->transmission_compact_clear_pipeline ||
       !renderer->transmission_compact_pipeline ||
       !renderer->transmission_compact_finalize_pipeline ||
       !renderer->picking_resolve_pipeline || !renderer->hzb_build_pipeline ||
@@ -770,6 +816,8 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       {renderer->gpu_draw_classify_pipeline, "draw classify pipeline"},
       {renderer->gpu_draw_prefix_pipeline, "draw prefix pipeline"},
       {renderer->gpu_draw_encode_pipeline, "draw encode pipeline"},
+      {renderer->gpu_draw_encode_inherited_pipeline,
+       "inherited draw encode pipeline"},
       {renderer->temporal_transform_pipeline, "temporal transform pipeline"},
       {renderer->gbuffer_resolve_pipeline, "G-buffer resolve pipeline"},
       {renderer->gtao_depth_prefilter_pipeline,
@@ -780,10 +828,22 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       {renderer->deferred_lighting_pipeline, "deferred lighting pipeline"},
       {renderer->temporal_resolve_pipeline, "temporal resolve pipeline"},
       {renderer->transmission_shade_pipeline, "transmission shade pipeline"},
+      {renderer->transmission_shade_partitioned_pipeline,
+       "partitioned transmission shade pipeline"},
+      {renderer->transmission_shade_production_pipeline,
+       "production transmission shade pipeline"},
+      {renderer->transmission_shade_production_temporal_pipeline,
+       "temporal production transmission shade pipeline"},
+      {renderer->transmission_shade_partitioned_production_pipeline,
+       "partitioned production transmission shade pipeline"},
+      {renderer->transmission_shade_partitioned_production_temporal_pipeline,
+       "temporal partitioned production transmission shade pipeline"},
       {renderer->transmission_coverage_pipeline,
        "transmission coverage pipeline"},
       {renderer->transmission_compact_pipeline,
        "transmission compact pipeline"},
+      {renderer->transmission_compact_clear_pipeline,
+       "transmission compact clear pipeline"},
       {renderer->transmission_compact_finalize_pipeline,
        "transmission compact finalize pipeline"},
       {renderer->picking_resolve_pipeline, "picking resolve pipeline"},
@@ -838,6 +898,11 @@ vkr_internal bool8_t vkr_metal_packet_create_gpu_draw_icbs(
   descriptor.inheritCullMode = YES;
   descriptor.maxVertexBufferBindCount = 1u;
   descriptor.maxFragmentBufferBindCount = 3u;
+  MTLIndirectCommandBufferDescriptor *transmission_descriptor =
+      [descriptor copy];
+  transmission_descriptor.inheritBuffers = YES;
+  transmission_descriptor.maxVertexBufferBindCount = 0u;
+  transmission_descriptor.maxFragmentBufferBindCount = 0u;
   MTLResidencySetDescriptor *residency_descriptor =
       [MTLResidencySetDescriptor new];
   residency_descriptor.label = @"VKR Metal GPU draw indirect commands";
@@ -876,7 +941,7 @@ vkr_internal bool8_t vkr_metal_packet_create_gpu_draw_icbs(
       [residency addAllocation:icb];
       if (group == 0u) {
         id<MTLIndirectCommandBuffer> transmission_icb = [renderer->device
-            newIndirectCommandBufferWithDescriptor:descriptor
+            newIndirectCommandBufferWithDescriptor:transmission_descriptor
                                    maxCommandCount:
                                        VKR_GPU_DRAW_CANDIDATE_CAPACITY
                                            options:
@@ -894,6 +959,7 @@ vkr_internal bool8_t vkr_metal_packet_create_gpu_draw_icbs(
     }
   }
   [descriptor release];
+  [transmission_descriptor release];
   [residency_descriptor release];
   if (!passed) {
     log_error("Metal deferred indirect command buffer capacity is "

@@ -1087,27 +1087,47 @@ vkr_internal bool8_t vkr_vk_publish_sampler(VkrVulkanRenderer *renderer,
 }
 
 vkr_internal bool8_t vkr_vk_publish_material_gpu_row(
-    VkrVulkanRenderer *renderer, const VkrVulkanMaterialGpuRow *row,
+    VkrVulkanRenderer *renderer, const VkrVulkanMaterialPublishedRow *row,
     VkrGpuSlotHandle *out_handle) {
-  if (vkr_gpu_slot_table_publish(renderer->material_slots, row, out_handle) !=
-      VKR_GPU_SLOT_STATUS_OK)
+  if (vkr_gpu_slot_table_publish(renderer->material_slots, &row->material,
+                                 out_handle) != VKR_GPU_SLOT_STATUS_OK)
     return false_v;
+  const VkDeviceSize transmission_offset =
+      renderer->transmission_material_offset +
+      (VkDeviceSize)out_handle->index * sizeof(row->transmission);
+  MemCopy((uint8_t *)renderer->materials.allocation.mapped +
+              transmission_offset,
+          &row->transmission, sizeof(row->transmission));
   return vkr_vk_mark_dirty(&renderer->material_dirty, &renderer->materials,
-                           (VkDeviceSize)out_handle->index * sizeof(*row),
-                           sizeof(*row));
+                           (VkDeviceSize)out_handle->index *
+                               sizeof(row->material),
+                           sizeof(row->material)) &&
+         vkr_vk_mark_dirty(&renderer->transmission_material_dirty,
+                           &renderer->materials, transmission_offset,
+                           sizeof(row->transmission));
 }
 
 vkr_internal bool8_t vkr_vk_replace_material_gpu_row(
     VkrVulkanRenderer *renderer, VkrGpuSlotHandle old_handle,
-    const VkrVulkanMaterialGpuRow *row, uint64_t old_last_use_submit_value,
-    VkrGpuSlotHandle *out_handle) {
-  if (vkr_gpu_slot_table_replace(renderer->material_slots, old_handle, row,
-                                 old_last_use_submit_value,
+    const VkrVulkanMaterialPublishedRow *row,
+    uint64_t old_last_use_submit_value, VkrGpuSlotHandle *out_handle) {
+  if (vkr_gpu_slot_table_replace(renderer->material_slots, old_handle,
+                                 &row->material, old_last_use_submit_value,
                                  out_handle) != VKR_GPU_SLOT_STATUS_OK)
     return false_v;
+  const VkDeviceSize transmission_offset =
+      renderer->transmission_material_offset +
+      (VkDeviceSize)out_handle->index * sizeof(row->transmission);
+  MemCopy((uint8_t *)renderer->materials.allocation.mapped +
+              transmission_offset,
+          &row->transmission, sizeof(row->transmission));
   return vkr_vk_mark_dirty(&renderer->material_dirty, &renderer->materials,
-                           (VkDeviceSize)out_handle->index * sizeof(*row),
-                           sizeof(*row));
+                           (VkDeviceSize)out_handle->index *
+                               sizeof(row->material),
+                           sizeof(row->material)) &&
+         vkr_vk_mark_dirty(&renderer->transmission_material_dirty,
+                           &renderer->materials, transmission_offset,
+                           sizeof(row->transmission));
 }
 
 vkr_internal bool8_t vkr_vk_publish_material_row(VkrVulkanRenderer *renderer,
@@ -1126,23 +1146,33 @@ vkr_internal bool8_t vkr_vk_publish_material_row(VkrVulkanRenderer *renderer,
   const VkrPacketMaterialConstants material =
       vkr_packet_derive_material_constants(&pbr, 0.5f,
                                            VKR_MATERIAL_ALPHA_OPAQUE);
-  const VkrVulkanMaterialGpuRow row = {
-      .tint = {1.0f, 1.0f, 1.0f, 1.0f},
-      .base_color_texture = texture_index,
-      .normal_texture = texture_index,
-      .orm_texture = texture_index,
-      .emissive_texture = texture_index,
-      .base_color_sampler = sampler_index,
-      .normal_sampler = sampler_index,
-      .orm_sampler = sampler_index,
-      .emissive_sampler = sampler_index,
-      .material_id = material_id,
-      .alpha_mode = material.alpha_mode,
-      .material_emissive = material.emissive,
-      .material_dielectric_specular = material.dielectric_specular,
-      .material_surface = material.surface,
-      .material_alpha = material.alpha,
-      .material_attenuation_color = material.attenuation_color,
+  const VkrVulkanMaterialPublishedRow row = {
+      .material =
+          {
+              .tint = {1.0f, 1.0f, 1.0f, 1.0f},
+              .base_color_texture = texture_index,
+              .normal_texture = texture_index,
+              .orm_texture = texture_index,
+              .emissive_texture = texture_index,
+              .base_color_sampler = sampler_index,
+              .normal_sampler = sampler_index,
+              .orm_sampler = sampler_index,
+              .emissive_sampler = sampler_index,
+              .material_id = material_id,
+              .alpha_mode = material.alpha_mode,
+              .material_emissive = material.emissive,
+              .material_dielectric_specular = material.dielectric_specular,
+              .material_surface = material.surface,
+              .material_alpha = material.alpha,
+              .material_attenuation_color = material.attenuation_color,
+          },
+      .transmission =
+          {
+              .transmission_texture = texture_index,
+              .thickness_texture = texture_index,
+              .transmission_sampler = sampler_index,
+              .thickness_sampler = sampler_index,
+          },
   };
   return vkr_vk_publish_material_gpu_row(renderer, &row, out_handle);
 }
@@ -1506,7 +1536,9 @@ void vkr_vk_collect_asset_publications(VkrVulkanRenderer *renderer,
     VkrVulkanRetiredMaterial *retired = &renderer->retired_materials[i];
     if (!retired->occupied || retired->retire_value > completed)
       continue;
-    for (uint32_t texture_slot = 0; texture_slot < 4u; ++texture_slot) {
+    for (uint32_t texture_slot = 0;
+         texture_slot < ArrayCount(retired->texture_record_indices);
+         ++texture_slot) {
       if (retired->texture_record_indices[texture_slot] == UINT32_MAX)
         continue;
       VkrVulkanPublishedTexture *texture =
@@ -2053,21 +2085,27 @@ vkr_internal bool8_t vkr_vk_asset_publish_writable_texture(
   return true_v;
 }
 
-vkr_internal void vkr_vk_material_row_set_sampler(VkrVulkanMaterialGpuRow *row,
-                                                  uint32_t texture_slot,
-                                                  uint32_t sampler_index) {
+vkr_internal void
+vkr_vk_material_row_set_sampler(VkrVulkanMaterialPublishedRow *row,
+                                uint32_t texture_slot, uint32_t sampler_index) {
   switch (texture_slot) {
   case 0u:
-    row->base_color_sampler = sampler_index;
+    row->material.base_color_sampler = sampler_index;
     break;
   case 1u:
-    row->normal_sampler = sampler_index;
+    row->material.normal_sampler = sampler_index;
     break;
   case 2u:
-    row->orm_sampler = sampler_index;
+    row->material.orm_sampler = sampler_index;
+    break;
+  case 3u:
+    row->material.emissive_sampler = sampler_index;
+    break;
+  case 4u:
+    row->transmission.transmission_sampler = sampler_index;
     break;
   default:
-    row->emissive_sampler = sampler_index;
+    row->transmission.thickness_sampler = sampler_index;
     break;
   }
 }
@@ -2097,7 +2135,9 @@ vkr_vk_asset_update_texture_sampler(void *state, VkrTextureHandle handle,
         &renderer->published_materials[i];
     if (!material->live)
       continue;
-    for (uint32_t texture_slot = 0; texture_slot < 4u; ++texture_slot) {
+    for (uint32_t texture_slot = 0;
+         texture_slot < ArrayCount(material->texture_record_indices);
+         ++texture_slot) {
       if (material->texture_record_indices[texture_slot] ==
           texture_record_index) {
         dependent_material_count++;
@@ -2128,9 +2168,11 @@ vkr_vk_asset_update_texture_sampler(void *state, VkrTextureHandle handle,
     VkrVulkanPublishedMaterial *material = &renderer->published_materials[i];
     if (!material->live)
       continue;
-    VkrVulkanMaterialGpuRow replacement_row = material->row;
+    VkrVulkanMaterialPublishedRow replacement_row = material->row;
     bool8_t dependent = false_v;
-    for (uint32_t texture_slot = 0; texture_slot < 4u; ++texture_slot) {
+    for (uint32_t texture_slot = 0;
+         texture_slot < ArrayCount(material->texture_record_indices);
+         ++texture_slot) {
       if (material->texture_record_indices[texture_slot] !=
           texture_record_index)
         continue;
@@ -2376,16 +2418,19 @@ vkr_internal bool8_t vkr_vk_asset_publish_material(
   if (record->live && !retirement)
     return false_v;
 
-  vkr_local_persist const VkrTextureSlot row_slots[4] = {
+  vkr_local_persist const VkrTextureSlot row_slots[6] = {
       VKR_TEXTURE_SLOT_DIFFUSE,
       VKR_TEXTURE_SLOT_NORMAL,
       VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS,
       VKR_TEXTURE_SLOT_EMISSION,
+      VKR_TEXTURE_SLOT_TRANSMISSION,
+      VKR_TEXTURE_SLOT_THICKNESS,
   };
-  uint32_t texture_indices[4] = {0};
-  uint32_t sampler_indices[4] = {0};
-  uint32_t texture_record_indices[4] = {UINT32_MAX, UINT32_MAX, UINT32_MAX,
-                                        UINT32_MAX};
+  uint32_t texture_indices[6] = {0};
+  uint32_t sampler_indices[6] = {0};
+  uint32_t texture_record_indices[6] = {
+      UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX,
+  };
   uint32_t material_flags = 0u;
   for (uint32_t i = 0; i < ArrayCount(row_slots); ++i) {
     const VkrMaterialTexture *source = &material->textures[row_slots[i]];
@@ -2407,6 +2452,10 @@ vkr_internal bool8_t vkr_vk_asset_publish_material(
     material_flags |= VKR_VULKAN_MATERIAL_TEXTURE_ORM;
   if (material->textures[VKR_TEXTURE_SLOT_EMISSION].enabled)
     material_flags |= VKR_VULKAN_MATERIAL_TEXTURE_EMISSIVE;
+  if (material->textures[VKR_TEXTURE_SLOT_TRANSMISSION].enabled)
+    material_flags |= VKR_VULKAN_MATERIAL_TEXTURE_TRANSMISSION;
+  if (material->textures[VKR_TEXTURE_SLOT_THICKNESS].enabled)
+    material_flags |= VKR_VULKAN_MATERIAL_TEXTURE_THICKNESS;
   const Vec4 tint = material->material_type == VKR_MATERIAL_TYPE_PBR
                         ? material->pbr.base_color
                         : material->phong.diffuse_color;
@@ -2418,25 +2467,37 @@ vkr_internal bool8_t vkr_vk_asset_publish_material(
   const VkrPacketMaterialConstants material_constants =
       vkr_packet_derive_material_constants(&pbr, material->alpha_cutoff,
                                            material->alpha_mode);
-  const VkrVulkanMaterialGpuRow row = {
-      .tint = {tint.x, tint.y, tint.z, tint.w},
-      .base_color_texture = texture_indices[0],
-      .normal_texture = texture_indices[1],
-      .orm_texture = texture_indices[2],
-      .emissive_texture = texture_indices[3],
-      .base_color_sampler = sampler_indices[0],
-      .normal_sampler = sampler_indices[1],
-      .orm_sampler = sampler_indices[2],
-      .emissive_sampler = sampler_indices[3],
-      .material_id = handle.id,
-      .flags = material_flags,
-      .alpha_mode = material_constants.alpha_mode,
-      .temporal_reactivity = Clamp(pbr.temporal_reactivity, 0.0f, 1.0f),
-      .material_emissive = material_constants.emissive,
-      .material_dielectric_specular = material_constants.dielectric_specular,
-      .material_surface = material_constants.surface,
-      .material_alpha = material_constants.alpha,
-      .material_attenuation_color = material_constants.attenuation_color,
+  const VkrVulkanMaterialPublishedRow row = {
+      .material =
+          {
+              .tint = {tint.x, tint.y, tint.z, tint.w},
+              .base_color_texture = texture_indices[0],
+              .normal_texture = texture_indices[1],
+              .orm_texture = texture_indices[2],
+              .emissive_texture = texture_indices[3],
+              .base_color_sampler = sampler_indices[0],
+              .normal_sampler = sampler_indices[1],
+              .orm_sampler = sampler_indices[2],
+              .emissive_sampler = sampler_indices[3],
+              .material_id = handle.id,
+              .flags = material_flags,
+              .alpha_mode = material_constants.alpha_mode,
+              .temporal_reactivity = Clamp(pbr.temporal_reactivity, 0.0f, 1.0f),
+              .material_emissive = material_constants.emissive,
+              .material_dielectric_specular =
+                  material_constants.dielectric_specular,
+              .material_surface = material_constants.surface,
+              .material_alpha = material_constants.alpha,
+              .material_attenuation_color =
+                  material_constants.attenuation_color,
+          },
+      .transmission =
+          {
+              .transmission_texture = texture_indices[4],
+              .thickness_texture = texture_indices[5],
+              .transmission_sampler = sampler_indices[4],
+              .thickness_sampler = sampler_indices[5],
+          },
   };
   VkrGpuSlotHandle new_slot = {0};
   const bool8_t row_published =
@@ -2446,7 +2507,7 @@ vkr_internal bool8_t vkr_vk_asset_publish_material(
           : vkr_vk_publish_material_gpu_row(renderer, &row, &new_slot);
   if (!row_published)
     return false_v;
-  for (uint32_t i = 0; i < 4u; ++i) {
+  for (uint32_t i = 0; i < ArrayCount(texture_record_indices); ++i) {
     if (texture_record_indices[i] != UINT32_MAX)
       renderer->published_textures[texture_record_indices[i]]
           .material_reference_count++;

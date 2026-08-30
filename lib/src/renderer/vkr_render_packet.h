@@ -397,6 +397,9 @@ typedef struct VkrGpuDebugPayload {
   bool8_t enable_timing;
   bool8_t capture_pass_timestamps;
   bool8_t capture_submission_timing;
+  /** Enables the graph-declared fifth transmission peel for focused evidence.
+   */
+  bool8_t transmission_depth_diagnostic_enabled;
   /** 0=off, 1=cascade index, 2=shadow factor, 3=sampled map depth. */
   uint32_t shadow_debug_mode;
   /** Optional batch reserved and copied by this frame. Borrowed for submit. */

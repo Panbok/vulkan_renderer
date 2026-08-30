@@ -88,6 +88,23 @@ VkrVulkanDirectResult packet_direct(float3 normal, float3 view, float3 light,
     return result;
 }
 
+float3 packet_direct_specular(float3 normal, float3 view, float3 light,
+                              float3 radiance, float roughness, float3 f0)
+{
+    float3 half_vector = normalize(view + light);
+    float no_l = max(dot(normal, light), 0.0f);
+    float no_v = max(dot(normal, view), 0.0f);
+    float3 fresnel = packet_fresnel(max(dot(half_vector, view), 0.0f), f0);
+    float distribution =
+        distribution_ggx(max(dot(normal, half_vector), 0.0f), roughness);
+    float geometry = packet_geometry_schlick(no_v, roughness) *
+                     packet_geometry_schlick(no_l, roughness);
+    float3 specular =
+        distribution * geometry * fresnel / max(4.0f * no_v * no_l, 1e-6f);
+    float3 scale = radiance * no_l;
+    return specular * scale;
+}
+
 float packet_specular_ao(float ao, float no_v, float roughness)
 {
     return saturate(pow(no_v + ao, exp2(-16.0f * roughness - 1.0f)) - 1.0f +
@@ -493,6 +510,72 @@ VkrVulkanDirectResult packet_punctual(VkrVulkanPacketFrameRoot *frame,
     return result;
 }
 
+float3 packet_punctual_specular(VkrVulkanPacketFrameRoot *frame,
+                                float3 world_position, float3 normal,
+                                float3 view, float roughness, float3 f0)
+{
+    float3 result = 0.0f;
+    uint4 point_mask = packet_point_light_mask(frame, world_position);
+    uint point_count = min(frame.point_light_count, 128u);
+    for (uint word = 0u; word < 4u; ++word)
+    {
+        uint remaining = WaveActiveBitOr(point_mask[word]);
+        while (remaining != 0u)
+        {
+            uint bit = uint(firstbitlow(remaining));
+            remaining &= remaining - 1u;
+            uint light_index = word * 32u + bit;
+            if (light_index >= point_count)
+                continue;
+            float4 p0 = frame.point_light_data[light_index * 4u + 0u];
+            float4 p1 = frame.point_light_data[light_index * 4u + 1u];
+            float4 p2 = frame.point_light_data[light_index * 4u + 2u];
+            float4 p3 = frame.point_light_data[light_index * 4u + 3u];
+            if ((point_mask[word] & (1u << bit)) == 0u)
+                continue;
+            uint kind = uint(p2.w + 0.5f);
+            float3 to_light = p0.xyz - world_position;
+            float distance_squared = dot(to_light, to_light);
+            if (kind != 0u && p2.z > 0.0f && distance_squared >= p2.z * p2.z)
+                continue;
+            float distance = sqrt(distance_squared);
+            float3 light_direction =
+                distance > 1e-6f ? to_light / distance : float3(0.0f);
+            float attenuation = 0.0f;
+            if (kind == 0u)
+            {
+                attenuation = 1.0f / max(max(p0.w, 1.0f) + p1.w * distance +
+                                             p2.y * distance_squared,
+                                         1e-6f);
+            }
+            else
+            {
+                float range_attenuation = 1.0f;
+                if (p2.z > 0.0f)
+                {
+                    float ratio = distance / p2.z;
+                    range_attenuation =
+                        saturate(1.0f - ratio * ratio * ratio * ratio);
+                    range_attenuation *= range_attenuation;
+                }
+                attenuation = range_attenuation / max(distance_squared, 1e-4f);
+                if (kind == 2u)
+                {
+                    float cone = dot(-light_direction, normalize(p3.xyz));
+                    float cone_attenuation = smoothstep(p1.w, p0.w, cone);
+                    if (cone_attenuation <= 0.0f)
+                        continue;
+                    attenuation *= cone_attenuation;
+                }
+            }
+            result += packet_direct_specular(
+                normal, view, light_direction, p1.rgb * p2.x * attenuation,
+                roughness, f0);
+        }
+    }
+    return result;
+}
+
 // Global environment plus weighted local probes. `horizon_normal` is the
 // geometric normal where one survives; the deferred G-buffer keeps only the
 // shading normal and passes it for both.
@@ -573,6 +656,62 @@ packet_environment_terms(VkrVulkanPacketFrameRoot *frame, float3 world_position,
     result.diffuse = diffuse * frame.ibl_controls.y * frame.ibl_controls.x;
     result.specular = specular * frame.ibl_controls.z * frame.ibl_controls.x;
     return result;
+}
+
+float3 packet_environment_specular(VkrVulkanPacketFrameRoot *frame,
+                                   float3 world_position, float3 normal,
+                                   float3 horizon_normal, float3 view,
+                                   float roughness, float ao, float3 f0)
+{
+    float no_v = max(dot(normal, view), 0.0f);
+    float3 reflection = reflect(-view, normal);
+    float3 fresnel = packet_fresnel_roughness(no_v, f0, roughness);
+    float3 global_prefiltered =
+        g_cube_textures[frame.prefilter_texture]
+            .SampleLevel(g_samplers[frame.prefilter_sampler], reflection,
+                         roughness *
+                             float(max(frame.prefilter_mip_count, 1u) - 1u))
+            .rgb;
+    float2 brdf = packet_brdf_approximation(no_v, roughness);
+    float f90 = saturate(max(f0.x, max(f0.y, f0.z)) * 25.0f);
+    float horizon = saturate(1.0f + dot(reflection, horizon_normal));
+    float specular_visibility =
+        horizon * horizon * packet_specular_ao(ao, no_v, roughness);
+    float3 specular = 0.0f;
+    float local_weight_sum = 0.0f;
+    uint probe_count = min(frame.ibl_probe_count, 16u);
+    for (uint i = 0u; i < probe_count; ++i)
+        local_weight_sum +=
+            packet_probe_influence(frame.ibl_probes[i], world_position);
+    float weight_scale =
+        local_weight_sum > 1.0f ? 1.0f / local_weight_sum : 1.0f;
+    for (uint i = 0u; i < probe_count; ++i)
+    {
+        VkrVulkanIblProbe probe = frame.ibl_probes[i];
+        float weight =
+            packet_probe_influence(probe, world_position) * weight_scale;
+        if (weight <= 1e-6f)
+            continue;
+        float3 probe_reflection =
+            probe.intensity_box.w > 0.5f
+                ? packet_box_project(reflection, world_position,
+                                     probe.center_blend.xyz,
+                                     max(probe.extents_weight.xyz, 0.0f))
+                : reflection;
+        float3 probe_prefiltered =
+            g_cube_textures[probe.prefilter_texture]
+                .SampleLevel(
+                    g_samplers[probe.prefilter_sampler], probe_reflection,
+                    roughness * float(max(frame.prefilter_mip_count, 1u) - 1u))
+                .rgb;
+        specular += probe_prefiltered * (fresnel * brdf.x + f90 * brdf.y) *
+                    specular_visibility * probe.intensity_box.x *
+                    probe.intensity_box.z * weight;
+    }
+    float global_weight = max(1.0f - min(local_weight_sum, 1.0f), 0.0f);
+    specular += global_prefiltered * (fresnel * brdf.x + f90 * brdf.y) *
+                specular_visibility * global_weight;
+    return specular * frame.ibl_controls.z * frame.ibl_controls.x;
 }
 
 float3 packet_environment(VkrVulkanPacketFrameRoot *frame,
@@ -707,38 +846,6 @@ float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing)
         return float4(analytic_specular, 1.0f);
     color += emissive;
 
-    if ((frame.flags & 4u) != 0u && material.material_alpha.y > 0.0f)
-    {
-        float transmission = saturate(material.material_alpha.y);
-        float thickness = max(material.material_alpha.w, 0.0f);
-        float3 view_normal =
-            normalize(mul(frame.view, float4(normal, 0.0f)).xyz);
-        float3 refracted = refract(float3(0.0f, 0.0f, -1.0f), view_normal,
-                                   1.0f / max(material.material_alpha.z, 1.0f));
-        float2 screen_uv = input.position.xy *
-                           float2(frame.ibl_controls.w, frame.ambient_color.w);
-        float2 offset =
-            refracted.xy / max(abs(refracted.z), 0.25f) * thickness * 0.02f;
-        uint texture_index =
-            NonUniformResourceIndex(frame.transmission_texture);
-        uint sampler_index =
-            NonUniformResourceIndex(frame.transmission_sampler);
-        float3 transmitted =
-            g_textures[texture_index]
-                .SampleLevel(g_samplers[sampler_index],
-                             clamp(screen_uv + offset, 0.0f, 1.0f), 0.0f)
-                .rgb;
-        if (material.material_attenuation_color.w > 1e-4f && thickness > 0.0f)
-        {
-            transmitted *=
-                pow(clamp(material.material_attenuation_color.rgb, 1e-4f, 1.0f),
-                    thickness / material.material_attenuation_color.w);
-        }
-        float3 fresnel = packet_fresnel(no_v, f0);
-        float weight = transmission * (1.0f - metallic) *
-                       (1.0f - max(fresnel.x, max(fresnel.y, fresnel.z)));
-        color = lerp(color, transmitted, saturate(weight));
-    }
     return float4(color, material.alpha_mode == 0u ? 1.0f : base.a);
 }
 

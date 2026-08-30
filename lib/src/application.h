@@ -564,10 +564,9 @@ vkr_internal VkrDrawAlphaRouting application_material_alpha_routing(
       vkr_material_system_material_alpha_mode(&rf->material_system, material));
 }
 
-vkr_internal bool8_t application_material_is_transmissive(
-    RendererFrontend *rf, VkrMaterial *material) {
-  return vkr_material_system_material_is_transmissive(&rf->material_system,
-                                                      material);
+vkr_internal bool8_t
+application_material_is_transmissive(VkrMaterial *material) {
+  return vkr_material_system_material_is_transmissive(material);
 }
 
 vkr_internal float32_t application_transparent_depth(Mat4 view, Mat4 model,
@@ -862,7 +861,7 @@ vkr_internal bool8_t application_build_world_payload(
       const VkrDrawAlphaRouting alpha =
           application_material_alpha_routing(rf, material);
       const bool8_t transmissive =
-          application_material_is_transmissive(rf, material);
+          application_material_is_transmissive(material);
       stats.objects_tested++;
       stats.objects_without_bounds += mesh->bounds_valid ? 0u : 1u;
       gpu_camera_opaque_candidate_count +=
@@ -902,7 +901,7 @@ vkr_internal bool8_t application_build_world_payload(
       const VkrDrawAlphaRouting alpha =
           application_material_alpha_routing(rf, material);
       const bool8_t transmissive =
-          application_material_is_transmissive(rf, material);
+          application_material_is_transmissive(material);
       stats.objects_tested++;
       stats.objects_without_bounds += instance->bounds_valid ? 0u : 1u;
       gpu_camera_opaque_candidate_count +=
@@ -1013,7 +1012,7 @@ vkr_internal bool8_t application_build_world_payload(
         const VkrDrawAlphaRouting alpha =
             application_material_alpha_routing(rf, material);
         const bool8_t transmissive =
-            application_material_is_transmissive(rf, material);
+            application_material_is_transmissive(material);
         const ApplicationWorldSource source = {
             .mesh = {.id = mesh_slot + 1u, .generation = 0u},
             .geometry = submesh->geometry,
@@ -1064,7 +1063,7 @@ vkr_internal bool8_t application_build_world_payload(
         const VkrDrawAlphaRouting alpha =
             application_material_alpha_routing(rf, material);
         const bool8_t transmissive =
-            application_material_is_transmissive(rf, material);
+            application_material_is_transmissive(material);
         const ApplicationWorldSource source = {
             .mesh = {.id = instance_slot + 1u,
                      .generation = instance->generation},
@@ -1401,11 +1400,14 @@ void application_draw_frame(Application *application, float64_t delta) {
       .enable_timing = gpu_timing,
       .capture_pass_timestamps = pass_gpu_timing,
       .capture_submission_timing = submission_gpu_timing,
+      .transmission_depth_diagnostic_enabled =
+          application->renderer.transmission_depth_diagnostic_enabled,
       .shadow_debug_mode = application->renderer.shadow_debug_mode,
       .capture = application->capture_request,
   };
   const VkrGpuDebugPayload *debug_ptr =
       (gpu_timing || application->capture_request ||
+       application->renderer.transmission_depth_diagnostic_enabled ||
        application->renderer.shadow_debug_mode != 0u)
           ? &debug_payload
           : NULL;

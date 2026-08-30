@@ -391,11 +391,70 @@ vkr_internal bool8_t vkr_vk_validate_root_abi(
 }
 
 vkr_internal bool8_t
+vkr_vk_validate_transmission_material_abi(VkrVulkanRenderer *renderer) {
+  FilePath shader_path =
+      file_path_create(VKR_VULKAN_PACKET_TRANSMISSION_SHADE_COMP_SPV,
+                       renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  if (file_load_spirv_shader(&shader_path, renderer->allocator, &bytes,
+                             &size) != FILE_ERROR_NONE ||
+      size == 0u)
+    return false_v;
+  SpvReflectShaderModule module;
+  MemZero(&module, sizeof(module));
+  const SpvReflectResult created =
+      spvReflectCreateShaderModule((size_t)size, bytes, &module);
+  vkr_allocator_free(renderer->allocator, bytes, size,
+                     VKR_ALLOCATOR_MEMORY_TAG_FILE);
+  if (created != SPV_REFLECT_RESULT_SUCCESS)
+    return false_v;
+
+  uint32_t count = 0u;
+  SpvReflectBlockVariable *blocks[1] = {0};
+  bool8_t valid = spvReflectEnumerateEntryPointPushConstantBlocks(
+                      &module, "vk_transmission_shade", &count, NULL) ==
+                      SPV_REFLECT_RESULT_SUCCESS &&
+                  count == 1u &&
+                  spvReflectEnumerateEntryPointPushConstantBlocks(
+                      &module, "vk_transmission_shade", &count, blocks) ==
+                      SPV_REFLECT_RESULT_SUCCESS;
+  SpvReflectBlockVariable *root =
+      valid ? vkr_vk_reflect_member(blocks[0], "root") : NULL;
+  SpvReflectBlockVariable *transmission = NULL;
+  valid &= vkr_vk_reflect_member_offset(
+      root, "transmission_materials",
+      offsetof(VkrVulkanTransmissionRoot, transmission_materials),
+      &transmission);
+  valid &= transmission && vkr_vk_reflected_struct_size(transmission) ==
+                               sizeof(VkrVulkanTransmissionMaterialGpuRow);
+  valid &= vkr_vk_reflect_member_offset(
+      transmission, "transmission_texture",
+      offsetof(VkrVulkanTransmissionMaterialGpuRow, transmission_texture),
+      NULL);
+  valid &= vkr_vk_reflect_member_offset(
+      transmission, "thickness_texture",
+      offsetof(VkrVulkanTransmissionMaterialGpuRow, thickness_texture), NULL);
+  valid &= vkr_vk_reflect_member_offset(
+      transmission, "transmission_sampler",
+      offsetof(VkrVulkanTransmissionMaterialGpuRow, transmission_sampler),
+      NULL);
+  valid &= vkr_vk_reflect_member_offset(
+      transmission, "thickness_sampler",
+      offsetof(VkrVulkanTransmissionMaterialGpuRow, thickness_sampler), NULL);
+  spvReflectDestroyShaderModule(&module);
+  return valid;
+}
+
+vkr_internal bool8_t
 vkr_vk_validate_transmission_root_abi(VkrVulkanRenderer *renderer) {
   static const VkrVulkanReflectedField shade_fields[] = {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, visible_rows),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, materials),
-      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, reserved_address),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot,
+                                 transmission_materials),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, opaque_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, opaque_mip_count),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, geometry_rows),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, instances),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionRoot, vertices),
@@ -447,6 +506,9 @@ vkr_vk_validate_transmission_root_abi(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionCompactRoot,
                                  indirect_arguments),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionCompactRoot,
+                                 visible_rows),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionCompactRoot, materials),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionCompactRoot,
                                  vbuffer_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionCompactRoot,
                                  source_texture),
@@ -457,10 +519,41 @@ vkr_vk_validate_transmission_root_abi(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionCompactRoot, capacity),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTransmissionCompactRoot, reserved),
   };
-  return vkr_vk_validate_root_abi(
+  return vkr_vk_validate_transmission_material_abi(renderer) &&
+         vkr_vk_validate_root_abi(
              renderer, VKR_VULKAN_PACKET_TRANSMISSION_SHADE_COMP_SPV,
              "vk_transmission_shade", shade_fields, ArrayCount(shade_fields),
              sizeof(VkrVulkanTransmissionRoot)) &&
+         vkr_vk_validate_root_abi(
+             renderer,
+             VKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_COMP_SPV,
+             "vk_transmission_shade_partitioned", shade_fields,
+             ArrayCount(shade_fields), sizeof(VkrVulkanTransmissionRoot)) &&
+         vkr_vk_validate_root_abi(
+             renderer, VKR_VULKAN_PACKET_TRANSMISSION_SHADE_PRODUCTION_COMP_SPV,
+             "vk_transmission_shade_production", shade_fields,
+             ArrayCount(shade_fields), sizeof(VkrVulkanTransmissionRoot)) &&
+         vkr_vk_validate_root_abi(
+             renderer,
+             VKR_VULKAN_PACKET_TRANSMISSION_SHADE_PRODUCTION_TEMPORAL_COMP_SPV,
+             "vk_transmission_shade_production_temporal", shade_fields,
+             ArrayCount(shade_fields), sizeof(VkrVulkanTransmissionRoot)) &&
+         vkr_vk_validate_root_abi(
+             renderer,
+             VKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_PRODUCTION_COMP_SPV,
+             "vk_transmission_shade_partitioned_production", shade_fields,
+             ArrayCount(shade_fields), sizeof(VkrVulkanTransmissionRoot)) &&
+         vkr_vk_validate_root_abi(
+             renderer,
+             VKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_PRODUCTION_TEMPORAL_COMP_SPV,
+             "vk_transmission_shade_partitioned_production_temporal",
+             shade_fields, ArrayCount(shade_fields),
+             sizeof(VkrVulkanTransmissionRoot)) &&
+         vkr_vk_validate_root_abi(
+             renderer, VKR_VULKAN_PACKET_TRANSMISSION_COMPACT_CLEAR_COMP_SPV,
+             "vk_transmission_compact_clear", compact_fields,
+             ArrayCount(compact_fields),
+             sizeof(VkrVulkanTransmissionCompactRoot)) &&
          vkr_vk_validate_root_abi(
              renderer, VKR_VULKAN_PACKET_TRANSMISSION_COMPACT_COMP_SPV,
              "vk_transmission_compact", compact_fields,
@@ -1136,35 +1229,40 @@ vkr_internal bool8_t vkr_vk_create_ibl_pipelines(VkrVulkanRenderer *renderer) {
 
 vkr_internal bool8_t
 vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
-  vkr_local_persist const char
-      *const paths[VKR_VULKAN_DEFERRED_PIPELINE_COUNT] = {
-          VKR_VULKAN_PACKET_GPU_DRAW_CLASSIFY_COMP_SPV,
-          VKR_VULKAN_PACKET_GPU_DRAW_PREFIX_COMP_SPV,
-          VKR_VULKAN_PACKET_GPU_DRAW_ENCODE_COMP_SPV,
-          VKR_VULKAN_PACKET_TEMPORAL_TRANSFORM_COMP_SPV,
-          VKR_VULKAN_PACKET_GBUFFER_RESOLVE_COMP_SPV,
-          VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV,
-          VKR_VULKAN_PACKET_TEMPORAL_RESOLVE_COMP_SPV,
-          VKR_VULKAN_PACKET_HZB_BUILD_COMP_SPV,
-          VKR_VULKAN_PACKET_SDSM_REDUCE_COMP_SPV,
-          VKR_VULKAN_PACKET_PICKING_RESOLVE_COMP_SPV,
-          VKR_VULKAN_PACKET_TRANSMISSION_SHADE_COMP_SPV,
-          VKR_VULKAN_PACKET_TRANSMISSION_COMPACT_COMP_SPV,
-          VKR_VULKAN_PACKET_TRANSMISSION_COMPACT_FINALIZE_COMP_SPV,
-          VKR_VULKAN_PACKET_TRANSMISSION_COVERAGE_COMP_SPV,
-          VKR_VULKAN_PACKET_EXPOSURE_CLEAR_COMP_SPV,
-          VKR_VULKAN_PACKET_EXPOSURE_HISTOGRAM_COMP_SPV,
-          VKR_VULKAN_PACKET_EXPOSURE_RESOLVE_COMP_SPV,
-          VKR_VULKAN_PACKET_BLOOM_PREFILTER_COMP_SPV,
-          VKR_VULKAN_PACKET_BLOOM_DOWNSAMPLE_TENT13_COMP_SPV,
-          VKR_VULKAN_PACKET_BLOOM_DOWNSAMPLE_BOX4_COMP_SPV,
-          VKR_VULKAN_PACKET_BLOOM_UPSAMPLE_COMP_SPV,
-          VKR_VULKAN_PACKET_BLOOM_COMBINE_COMP_SPV,
-          VKR_VULKAN_PACKET_GTAO_DEPTH_PREFILTER_COMP_SPV,
-          VKR_VULKAN_PACKET_GTAO_DEPTH_MIP_COMP_SPV,
-          VKR_VULKAN_PACKET_GTAO_EVALUATE_COMP_SPV,
-          VKR_VULKAN_PACKET_GTAO_DENOISE_COMP_SPV,
-      };
+  vkr_local_persist const char *const paths[VKR_VULKAN_DEFERRED_PIPELINE_COUNT] = {
+      VKR_VULKAN_PACKET_GPU_DRAW_CLASSIFY_COMP_SPV,
+      VKR_VULKAN_PACKET_GPU_DRAW_PREFIX_COMP_SPV,
+      VKR_VULKAN_PACKET_GPU_DRAW_ENCODE_COMP_SPV,
+      VKR_VULKAN_PACKET_TEMPORAL_TRANSFORM_COMP_SPV,
+      VKR_VULKAN_PACKET_GBUFFER_RESOLVE_COMP_SPV,
+      VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV,
+      VKR_VULKAN_PACKET_TEMPORAL_RESOLVE_COMP_SPV,
+      VKR_VULKAN_PACKET_HZB_BUILD_COMP_SPV,
+      VKR_VULKAN_PACKET_SDSM_REDUCE_COMP_SPV,
+      VKR_VULKAN_PACKET_PICKING_RESOLVE_COMP_SPV,
+      VKR_VULKAN_PACKET_TRANSMISSION_SHADE_COMP_SPV,
+      VKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_COMP_SPV,
+      VKR_VULKAN_PACKET_TRANSMISSION_SHADE_PRODUCTION_COMP_SPV,
+      VKR_VULKAN_PACKET_TRANSMISSION_SHADE_PRODUCTION_TEMPORAL_COMP_SPV,
+      VKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_PRODUCTION_COMP_SPV,
+      VKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_PRODUCTION_TEMPORAL_COMP_SPV,
+      VKR_VULKAN_PACKET_TRANSMISSION_COMPACT_CLEAR_COMP_SPV,
+      VKR_VULKAN_PACKET_TRANSMISSION_COMPACT_COMP_SPV,
+      VKR_VULKAN_PACKET_TRANSMISSION_COMPACT_FINALIZE_COMP_SPV,
+      VKR_VULKAN_PACKET_TRANSMISSION_COVERAGE_COMP_SPV,
+      VKR_VULKAN_PACKET_EXPOSURE_CLEAR_COMP_SPV,
+      VKR_VULKAN_PACKET_EXPOSURE_HISTOGRAM_COMP_SPV,
+      VKR_VULKAN_PACKET_EXPOSURE_RESOLVE_COMP_SPV,
+      VKR_VULKAN_PACKET_BLOOM_PREFILTER_COMP_SPV,
+      VKR_VULKAN_PACKET_BLOOM_DOWNSAMPLE_TENT13_COMP_SPV,
+      VKR_VULKAN_PACKET_BLOOM_DOWNSAMPLE_BOX4_COMP_SPV,
+      VKR_VULKAN_PACKET_BLOOM_UPSAMPLE_COMP_SPV,
+      VKR_VULKAN_PACKET_BLOOM_COMBINE_COMP_SPV,
+      VKR_VULKAN_PACKET_GTAO_DEPTH_PREFILTER_COMP_SPV,
+      VKR_VULKAN_PACKET_GTAO_DEPTH_MIP_COMP_SPV,
+      VKR_VULKAN_PACKET_GTAO_EVALUATE_COMP_SPV,
+      VKR_VULKAN_PACKET_GTAO_DENOISE_COMP_SPV,
+  };
   vkr_local_persist const char
       *const entries[VKR_VULKAN_DEFERRED_PIPELINE_COUNT] = {
           "vk_gpu_draw_classify",
@@ -1178,6 +1276,12 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
           "vk_sdsm_reduce",
           "vk_picking_resolve",
           "vk_transmission_shade",
+          "vk_transmission_shade_partitioned",
+          "vk_transmission_shade_production",
+          "vk_transmission_shade_production_temporal",
+          "vk_transmission_shade_partitioned_production",
+          "vk_transmission_shade_partitioned_production_temporal",
+          "vk_transmission_compact_clear",
           "vk_transmission_compact",
           "vk_transmission_compact_finalize",
           "vk_transmission_coverage",

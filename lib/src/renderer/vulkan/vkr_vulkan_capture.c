@@ -12,6 +12,24 @@ vkr_internal bool8_t vkr_vk_capture_source(
   uint32_t layer = 0u;
   if (string_equals(channel->name, "scene_color")) {
     name = "temporal_history_color";
+  } else if (string_equals(channel->name, "hdr_pre_transmission") &&
+             packet->frame.editor_enabled) {
+    name = "scene_pre_transmission";
+  } else if (string_equals(channel->name, "hdr_post_transmission") &&
+             packet->frame.editor_enabled) {
+    name = "scene_color";
+  } else if (string_equals(channel->name,
+                           "transmission_visibility_ids_layer_1")) {
+    layer = 1u;
+  } else if (string_equals(channel->name,
+                           "transmission_visibility_ids_layer_2")) {
+    layer = 2u;
+  } else if (string_equals(channel->name,
+                           "transmission_visibility_ids_layer_3")) {
+    layer = 3u;
+  } else if (string_equals(channel->name,
+                           "transmission_visibility_ids_layer_4")) {
+    layer = 4u;
   } else if (string_equals(channel->name, "depth")) {
     name = "opaque_vbuffer_depth";
   } else if (string_n_equals(channel->name, "shadow_cascade_", 15u)) {

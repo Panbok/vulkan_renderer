@@ -635,27 +635,39 @@ bool8_t vkr_metal_packet_renderer_create_material(
         vkr_packet_derive_material_constants(&create_info->pbr,
                                              create_info->alpha_cutoff,
                                              create_info->alpha_mode);
-    VkrMetalMaterialGpuRow row = {
-        .base_color_texture_id = slot->textures[0].resource_id,
-        .normal_texture_id = slot->textures[1].resource_id,
-        .orm_texture_id = slot->textures[2].resource_id,
-        .emissive_texture_id = slot->textures[3].resource_id,
-        .base_color_sampler_id = material_sampler_id,
-        .normal_sampler_id = material_sampler_id,
-        .orm_sampler_id = material_sampler_id,
-        .emissive_sampler_id = material_sampler_id,
-        .material_id = create_info->material_id,
-        .flags = create_info->texture_flags,
-        .alpha_mode = material_constants.alpha_mode,
-        .temporal_reactivity =
-            Clamp(create_info->pbr.temporal_reactivity, 0.0f, 1.0f),
-        .material_emissive = material_constants.emissive,
-        .material_dielectric_specular = material_constants.dielectric_specular,
-        .material_surface = material_constants.surface,
-        .material_alpha = material_constants.alpha,
-        .material_attenuation_color = material_constants.attenuation_color,
+    VkrMetalMaterialPublishedRow row = {
+        .material =
+            {
+                .base_color_texture_id = slot->textures[0].resource_id,
+                .normal_texture_id = slot->textures[1].resource_id,
+                .orm_texture_id = slot->textures[2].resource_id,
+                .emissive_texture_id = slot->textures[3].resource_id,
+                .base_color_sampler_id = material_sampler_id,
+                .normal_sampler_id = material_sampler_id,
+                .orm_sampler_id = material_sampler_id,
+                .emissive_sampler_id = material_sampler_id,
+                .material_id = create_info->material_id,
+                .flags = create_info->texture_flags,
+                .alpha_mode = material_constants.alpha_mode,
+                .temporal_reactivity =
+                    Clamp(create_info->pbr.temporal_reactivity, 0.0f, 1.0f),
+                .material_emissive = material_constants.emissive,
+                .material_dielectric_specular =
+                    material_constants.dielectric_specular,
+                .material_surface = material_constants.surface,
+                .material_alpha = material_constants.alpha,
+                .material_attenuation_color =
+                    material_constants.attenuation_color,
+            },
+        .transmission =
+            {
+                .transmission_texture_id = slot->textures[4].resource_id,
+                .thickness_texture_id = slot->textures[5].resource_id,
+                .transmission_sampler_id = material_sampler_id,
+                .thickness_sampler_id = material_sampler_id,
+            },
     };
-    MemCopy(row.tint, create_info->tint, sizeof(row.tint));
+    MemCopy(row.material.tint, create_info->tint, sizeof(row.material.tint));
     const VkrMetalMaterialStatus publish_status =
         vkr_metal_material_table_device_publish(renderer->materials, &row,
                                                 &slot->row);
@@ -751,7 +763,7 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
   VkrMetalPacketMaterial *slot = &renderer->packet_materials[handle.id - 1];
   if (slot->live)
     return false_v;
-  VkrTextureSlot source_slots[4] = {
+  VkrTextureSlot source_slots[6] = {
       VKR_TEXTURE_SLOT_DIFFUSE,
       material->textures[VKR_TEXTURE_SLOT_NORMAL].enabled
           ? VKR_TEXTURE_SLOT_NORMAL
@@ -764,8 +776,14 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
       material->textures[VKR_TEXTURE_SLOT_EMISSION].enabled
           ? VKR_TEXTURE_SLOT_EMISSION
           : VKR_TEXTURE_SLOT_DIFFUSE,
+      material->textures[VKR_TEXTURE_SLOT_TRANSMISSION].enabled
+          ? VKR_TEXTURE_SLOT_TRANSMISSION
+          : VKR_TEXTURE_SLOT_DIFFUSE,
+      material->textures[VKR_TEXTURE_SLOT_THICKNESS].enabled
+          ? VKR_TEXTURE_SLOT_THICKNESS
+          : VKR_TEXTURE_SLOT_DIFFUSE,
   };
-  VkrMetalPacketTexture *textures[4] = {0};
+  VkrMetalPacketTexture *textures[6] = {0};
   for (uint32_t i = 0; i < ArrayCount(source_slots); ++i) {
     const VkrMaterialTexture *source = &material->textures[source_slots[i]];
     if (source->handle.id == 0 ||
@@ -782,6 +800,10 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
     flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_ORM;
   if (material->textures[VKR_TEXTURE_SLOT_EMISSION].enabled)
     flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_EMISSIVE;
+  if (material->textures[VKR_TEXTURE_SLOT_TRANSMISSION].enabled)
+    flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_TRANSMISSION;
+  if (material->textures[VKR_TEXTURE_SLOT_THICKNESS].enabled)
+    flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_THICKNESS;
   const Vec4 tint = material->material_type == VKR_MATERIAL_TYPE_PBR
                         ? material->pbr.base_color
                         : material->phong.diffuse_color;
@@ -793,27 +815,39 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
   const VkrPacketMaterialConstants material_constants =
       vkr_packet_derive_material_constants(&pbr, material->alpha_cutoff,
                                            material->alpha_mode);
-  VkrMetalMaterialGpuRow row = {
-      .base_color_texture_id = textures[0]->resource.resource_id,
-      .normal_texture_id = textures[1]->resource.resource_id,
-      .orm_texture_id = textures[2]->resource.resource_id,
-      .emissive_texture_id = textures[3]->resource.resource_id,
-      .base_color_sampler_id = textures[0]->sampler_resource_id,
-      .normal_sampler_id = textures[1]->sampler_resource_id,
-      .orm_sampler_id = textures[2]->sampler_resource_id,
-      .emissive_sampler_id = textures[3]->sampler_resource_id,
-      .material_id = handle.id,
-      .flags = flags,
-      .alpha_mode = material_constants.alpha_mode,
-      .temporal_reactivity = Clamp(pbr.temporal_reactivity, 0.0f, 1.0f),
-      .material_emissive = material_constants.emissive,
-      .material_dielectric_specular = material_constants.dielectric_specular,
-      .material_surface = material_constants.surface,
-      .material_alpha = material_constants.alpha,
-      .material_attenuation_color = material_constants.attenuation_color,
+  VkrMetalMaterialPublishedRow row = {
+      .material =
+          {
+              .base_color_texture_id = textures[0]->resource.resource_id,
+              .normal_texture_id = textures[1]->resource.resource_id,
+              .orm_texture_id = textures[2]->resource.resource_id,
+              .emissive_texture_id = textures[3]->resource.resource_id,
+              .base_color_sampler_id = textures[0]->sampler_resource_id,
+              .normal_sampler_id = textures[1]->sampler_resource_id,
+              .orm_sampler_id = textures[2]->sampler_resource_id,
+              .emissive_sampler_id = textures[3]->sampler_resource_id,
+              .material_id = handle.id,
+              .flags = flags,
+              .alpha_mode = material_constants.alpha_mode,
+              .temporal_reactivity = Clamp(pbr.temporal_reactivity, 0.0f, 1.0f),
+              .material_emissive = material_constants.emissive,
+              .material_dielectric_specular =
+                  material_constants.dielectric_specular,
+              .material_surface = material_constants.surface,
+              .material_alpha = material_constants.alpha,
+              .material_attenuation_color =
+                  material_constants.attenuation_color,
+          },
+      .transmission =
+          {
+              .transmission_texture_id = textures[4]->resource.resource_id,
+              .thickness_texture_id = textures[5]->resource.resource_id,
+              .transmission_sampler_id = textures[4]->sampler_resource_id,
+              .thickness_sampler_id = textures[5]->sampler_resource_id,
+          },
   };
   const float32_t tint_values[4] = {tint.x, tint.y, tint.z, tint.w};
-  MemCopy(row.tint, tint_values, sizeof(row.tint));
+  MemCopy(row.material.tint, tint_values, sizeof(row.material.tint));
   if (vkr_metal_material_table_device_publish(renderer->materials, &row,
                                               &slot->row) !=
           VKR_METAL_MATERIAL_STATUS_OK ||

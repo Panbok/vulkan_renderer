@@ -108,6 +108,8 @@ typedef enum VkrMetalPacketMaterialTextureFlag {
   VKR_METAL_PACKET_MATERIAL_TEXTURE_NORMAL = 1u << 0u,
   VKR_METAL_PACKET_MATERIAL_TEXTURE_ORM = 1u << 1u,
   VKR_METAL_PACKET_MATERIAL_TEXTURE_EMISSIVE = 1u << 2u,
+  VKR_METAL_PACKET_MATERIAL_TEXTURE_TRANSMISSION = 1u << 3u,
+  VKR_METAL_PACKET_MATERIAL_TEXTURE_THICKNESS = 1u << 4u,
 } VkrMetalPacketMaterialTextureFlag;
 
 typedef struct VkrMetalPacketRgba8TextureCreateInfo {
@@ -118,7 +120,7 @@ typedef struct VkrMetalPacketRgba8TextureCreateInfo {
 
 typedef struct VkrMetalPacketMaterialCreateInfo {
   float32_t tint[4];
-  VkrMetalPacketRgba8TextureCreateInfo textures[4];
+  VkrMetalPacketRgba8TextureCreateInfo textures[6];
   uint32_t material_id;
   uint32_t texture_flags;
   VkrPbrProperties pbr;
@@ -186,9 +188,11 @@ typedef struct VkrMetalPacketResult {
   uint32_t transmission_gpu_visible_count;
   uint32_t transmission_gpu_bucket_counts[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
   uint32_t transmission_gpu_overflow_count;
+  uint32_t transmission_gpu_resolve_invalid_count;
   uint32_t transmission_gpu_occlusion_culled_count;
   uint32_t transmission_compact_overflow_count;
-  uint32_t transmission_covered_pixels[4];
+  uint32_t
+      transmission_covered_pixels[VKR_GPU_TRANSMISSION_DIAGNOSTIC_LAYER_COUNT];
   uint32_t transmission_coverage_extent[2];
   bool8_t has_transmission_coverage;
   uint32_t shadow_gpu_visible_count[VKR_SHADOW_CASCADE_COUNT_MAX];
@@ -349,6 +353,9 @@ uint64_t vkr_metal_packet_renderer_completed_value(
 /** Returns the presentation mode actually applied to the Metal target. */
 VkrPresentMode
 vkr_metal_packet_renderer_present_mode(const VkrMetalPacketRenderer *renderer);
+bool8_t vkr_metal_packet_renderer_graph_resource_stats(
+    const VkrMetalPacketRenderer *renderer,
+    VkrRenderGraphResourceStats *out_stats);
 bool8_t vkr_metal_packet_renderer_get_memory_metrics(
     const VkrMetalPacketRenderer *renderer,
     VkrMetalMemoryDeviceMetrics *out_metrics);

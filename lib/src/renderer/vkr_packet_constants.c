@@ -70,16 +70,13 @@ vkr_packet_derive_frame_constants(const VkrRenderPacket *packet,
 
 uint32_t vkr_packet_derive_frame_flags(const VkrRenderPacket *packet,
                                        bool8_t lighting_pass,
-                                       bool8_t ibl_resources_ready,
-                                       bool8_t transmission_pass) {
+                                       bool8_t ibl_resources_ready) {
   uint32_t flags = 0u;
   if (lighting_pass)
     flags |= VKR_PACKET_FRAME_FLAG_LIGHTING;
   if (lighting_pass && ibl_resources_ready && packet && packet->lighting &&
       packet->lighting->ibl_enabled)
     flags |= VKR_PACKET_FRAME_FLAG_IBL;
-  if (transmission_pass)
-    flags |= VKR_PACKET_FRAME_FLAG_TRANSMISSION;
   return flags;
 }
 

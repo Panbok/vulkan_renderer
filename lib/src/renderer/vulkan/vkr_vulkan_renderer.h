@@ -101,9 +101,11 @@ typedef struct VkrVulkanResult {
   uint32_t transmission_gpu_visible_count;
   uint32_t transmission_gpu_bucket_counts[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
   uint32_t transmission_gpu_overflow_count;
+  uint32_t transmission_gpu_resolve_invalid_count;
   uint32_t transmission_gpu_occlusion_culled_count;
   uint32_t transmission_compact_overflow_count;
-  uint32_t transmission_covered_pixels[VKR_GPU_TRANSMISSION_LAYER_COUNT];
+  uint32_t
+      transmission_covered_pixels[VKR_GPU_TRANSMISSION_DIAGNOSTIC_LAYER_COUNT];
   uint32_t transmission_coverage_extent[2];
   uint32_t shadow_gpu_visible_count[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t shadow_gpu_bucket_counts[VKR_SHADOW_CASCADE_COUNT_MAX]

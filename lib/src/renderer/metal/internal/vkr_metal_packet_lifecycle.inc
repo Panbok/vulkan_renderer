@@ -580,6 +580,7 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
        device teardown has drained outstanding readers. */
     [renderer->sh_coefficients release];
     [renderer->gpu_draw_encode_pipeline release];
+    [renderer->gpu_draw_encode_inherited_pipeline release];
     [renderer->temporal_transform_pipeline release];
     [renderer->gbuffer_resolve_pipeline release];
     [renderer->gtao_denoise_pipeline release];
@@ -589,7 +590,14 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
     [renderer->deferred_lighting_pipeline release];
     [renderer->temporal_resolve_pipeline release];
     [renderer->transmission_shade_pipeline release];
+    [renderer->transmission_shade_partitioned_pipeline release];
+    [renderer->transmission_shade_production_pipeline release];
+    [renderer->transmission_shade_production_temporal_pipeline release];
+    [renderer->transmission_shade_partitioned_production_pipeline release];
+    [renderer->transmission_shade_partitioned_production_temporal_pipeline
+            release];
     [renderer->transmission_coverage_pipeline release];
+    [renderer->transmission_compact_clear_pipeline release];
     [renderer->transmission_compact_pipeline release];
     [renderer->transmission_compact_finalize_pipeline release];
     [renderer->picking_resolve_pipeline release];

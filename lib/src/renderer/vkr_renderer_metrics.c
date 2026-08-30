@@ -5,6 +5,9 @@
 #include "renderer/vkr_render_graph.h"
 #include "renderer/vkr_renderer.h"
 #include "renderer/vulkan/vkr_vulkan_renderer.h"
+#if defined(PLATFORM_APPLE)
+#include "renderer/metal/vkr_metal_packet_renderer.h"
+#endif
 
 vkr_internal bool8_t vkr_renderer_metric_register_full(
     VkrMetrics *metrics, const char *name, VkrMetricDomain domain,
@@ -425,14 +428,18 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
   VKR_REGISTER_U64(visibility_transmission_gpu_compaction_overflow,
                    "visibility.transmission.gpu_visible.overflow",
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(visibility_transmission_gpu_resolve_invalid,
+                   "visibility.transmission.resolve_invalid",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(visibility_transmission_pixel_compaction_overflow,
                    "visibility.transmission.compact_pixels.overflow",
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
-  const char *transmission_coverage_names[4] = {
+  const char *transmission_coverage_names[5] = {
       "visibility.transmission.covered_pixels.layer_0",
       "visibility.transmission.covered_pixels.layer_1",
       "visibility.transmission.covered_pixels.layer_2",
       "visibility.transmission.covered_pixels.layer_3",
+      "visibility.transmission.covered_pixels.layer_4",
   };
   for (uint32_t layer = 0u; layer < ArrayCount(transmission_coverage_names);
        ++layer) {
@@ -1395,6 +1402,8 @@ void vkr_renderer_metrics_collect(
                 world->transmission_gpu_bucket_counts[3]);
     VKR_SET_U64(visibility_transmission_gpu_compaction_overflow,
                 world->transmission_gpu_compaction_overflow_count);
+    VKR_SET_U64(visibility_transmission_gpu_resolve_invalid,
+                world->transmission_gpu_resolve_invalid_count);
     VKR_SET_U64(visibility_transmission_pixel_compaction_overflow,
                 world->transmission_pixel_compaction_overflow_count);
     VKR_SET_U64(visibility_hzb_rejected, world->gpu_occlusion_culled_count);
@@ -1415,6 +1424,7 @@ void vkr_renderer_metrics_collect(
         ids->visibility_transmission_gpu_bucket_cutout_single,
         ids->visibility_transmission_gpu_bucket_cutout_double,
         ids->visibility_transmission_gpu_compaction_overflow,
+        ids->visibility_transmission_gpu_resolve_invalid,
         ids->visibility_transmission_pixel_compaction_overflow,
         ids->visibility_hzb_rejected,
         ids->visibility_transmission_hzb_rejected,
@@ -1586,9 +1596,16 @@ void vkr_renderer_metrics_collect(
   VKR_SET_F64(shadow_sdsm_linear_far, shadow->sdsm_linear_far);
 
   VkrRenderGraphResourceStats rg = {0};
-  const bool8_t rg_stats_valid =
-      renderer->impl.kind == VKR_RENDERER_IMPL_VULKAN &&
-      vkr_vulkan_renderer_graph_resource_stats(renderer->vulkan_renderer, &rg);
+  bool8_t rg_stats_valid = false_v;
+  if (renderer->impl.kind == VKR_RENDERER_IMPL_VULKAN) {
+    rg_stats_valid = vkr_vulkan_renderer_graph_resource_stats(
+        renderer->vulkan_renderer, &rg);
+#if defined(PLATFORM_APPLE)
+  } else if (renderer->impl.kind == VKR_RENDERER_IMPL_METAL) {
+    rg_stats_valid = vkr_metal_packet_renderer_graph_resource_stats(
+        renderer->metal_renderer, &rg);
+#endif
+  }
   if (rg_stats_valid) {
     VKR_SET_U64(rg_live_images, rg.live_image_textures);
     VKR_SET_U64(rg_peak_images, rg.peak_image_textures);

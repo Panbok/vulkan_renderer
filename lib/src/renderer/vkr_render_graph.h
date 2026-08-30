@@ -674,8 +674,12 @@ typedef struct VkrRenderGraphFrameInfo {
   bool8_t sdsm_enabled;
   /** Number of graph-authored reductions after the HZB base mip. */
   uint32_t hzb_reduce_pass_count;
+  /** Bounded rough-transmission reductions after the opaque base mip. */
+  uint32_t transmission_rough_mip_pass_count;
   /** True when the packet contains transmissive world work. */
   bool8_t transmission_pending;
+  /** True only when a focused capture requests the post-layer-3 peel. */
+  bool8_t transmission_depth_diagnostic_enabled;
   /**
    * True only for an automatic-exposure packet. Manual frames must not pay for
    * metering, so both exposure passes and both exposure buffers are gated here

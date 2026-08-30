@@ -62,6 +62,24 @@ vkr_metal_packet_direct(float3 normal, float3 view, float3 light,
   return {kd * albedo / vkr_metal_packet_pbr_pi * scale, specular * scale};
 }
 
+float3 vkr_metal_packet_direct_specular(float3 normal, float3 view,
+                                        float3 light, float3 radiance,
+                                        float roughness, float3 f0) {
+  float3 half_vector = normalize(view + light);
+  float no_l = max(dot(normal, light), 0.0);
+  float no_v = max(dot(normal, view), 0.0);
+  float3 fresnel =
+      vkr_metal_packet_fresnel(max(dot(half_vector, view), 0.0), f0);
+  float distribution =
+      vkr_metal_packet_distribution(normal, half_vector, roughness);
+  float geometry = vkr_metal_packet_pbr_geometry_schlick(no_v, roughness) *
+                   vkr_metal_packet_pbr_geometry_schlick(no_l, roughness);
+  float3 specular =
+      distribution * geometry * fresnel / max(4.0 * no_v * no_l, 1e-6);
+  float3 scale = radiance * no_l;
+  return specular * scale;
+}
+
 VkrMetalPacketDirectResult
 vkr_metal_packet_direct_deferred(float3 normal, float3 view, float3 light,
                                  float3 radiance, float3 diffuse_albedo,

@@ -14,7 +14,10 @@ typedef enum VkrInstanceTemporalFlag {
 } VkrInstanceTemporalFlag;
 #define VKR_GPU_GEOMETRY_DECODE_STATIC_V1 1u
 
-enum { VKR_GPU_TRANSMISSION_LAYER_COUNT = 4 };
+enum {
+  VKR_GPU_TRANSMISSION_LAYER_COUNT = 4,
+  VKR_GPU_TRANSMISSION_DIAGNOSTIC_LAYER_COUNT = 5,
+};
 
 /** Opaque/cutout pipeline state classes used by GPU draw compaction. */
 typedef enum VkrWorldDrawStateBucket {
@@ -159,7 +162,7 @@ typedef struct VkrGpuDrawCompactionState {
 /** GPU-written diagnostics stored in the authored transmission state buffer. */
 typedef struct VkrGpuTransmissionDiagnostics {
   VkrGpuDrawCompactionState compaction;
-  uint32_t covered_pixels[VKR_GPU_TRANSMISSION_LAYER_COUNT];
+  uint32_t covered_pixels[VKR_GPU_TRANSMISSION_DIAGNOSTIC_LAYER_COUNT];
   uint32_t compact_overflow[VKR_GPU_TRANSMISSION_LAYER_COUNT];
 } VkrGpuTransmissionDiagnostics;
 
@@ -170,10 +173,13 @@ _Static_assert(sizeof(VkrGpuVisibleDrawRow) == 32u,
                "VkrGpuVisibleDrawRow ABI drift");
 _Static_assert(sizeof(VkrGpuDrawCompactionState) == 80u,
                "VkrGpuDrawCompactionState ABI drift");
-_Static_assert(sizeof(VkrGpuTransmissionDiagnostics) == 112u,
+_Static_assert(sizeof(VkrGpuTransmissionDiagnostics) == 116u,
                "VkrGpuTransmissionDiagnostics ABI drift");
 _Static_assert(offsetof(VkrGpuTransmissionDiagnostics, covered_pixels) == 80u,
                "Transmission coverage ABI drift");
+_Static_assert(offsetof(VkrGpuTransmissionDiagnostics, compact_overflow) ==
+                   100u,
+               "Transmission compact-overflow ABI drift");
 
 typedef enum VkrGpuAbiRecordId {
   VKR_GPU_ABI_VERTEX = 0,

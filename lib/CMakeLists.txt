@@ -104,6 +104,12 @@ vkr_add_vulkan_packet_shader("packet.gtao_denoise.comp" vk_gtao_denoise compute)
 vkr_add_vulkan_packet_shader("packet.bloom_combine.comp" vk_bloom_combine compute)
 vkr_add_vulkan_packet_shader("packet.picking_resolve.comp" vk_picking_resolve compute)
 vkr_add_vulkan_packet_shader("packet.transmission_shade.comp" vk_transmission_shade compute)
+vkr_add_vulkan_packet_shader("packet.transmission_shade_partitioned.comp" vk_transmission_shade_partitioned compute)
+vkr_add_vulkan_packet_shader("packet.transmission_shade_production.comp" vk_transmission_shade_production compute)
+vkr_add_vulkan_packet_shader("packet.transmission_shade_production_temporal.comp" vk_transmission_shade_production_temporal compute)
+vkr_add_vulkan_packet_shader("packet.transmission_shade_partitioned_production.comp" vk_transmission_shade_partitioned_production compute)
+vkr_add_vulkan_packet_shader("packet.transmission_shade_partitioned_production_temporal.comp" vk_transmission_shade_partitioned_production_temporal compute)
+vkr_add_vulkan_packet_shader("packet.transmission_compact_clear.comp" vk_transmission_compact_clear compute)
 vkr_add_vulkan_packet_shader("packet.transmission_compact.comp" vk_transmission_compact compute)
 vkr_add_vulkan_packet_shader("packet.transmission_compact_finalize.comp" vk_transmission_compact_finalize compute)
 vkr_add_vulkan_packet_shader("packet.transmission_coverage.comp" vk_transmission_coverage compute)
@@ -265,6 +271,7 @@ if(APPLE)
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/bloom_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/gtao_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/normal_map_kernel.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/transmission_kernel.slangh"
         # VkrShL2Packed and its evaluation are referenced by the deferred
         # lighting path and by the IBL projection kernel, so the shared header
         # precedes both.

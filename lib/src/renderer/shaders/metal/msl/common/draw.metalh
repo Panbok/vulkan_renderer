@@ -53,6 +53,13 @@ struct VkrMetalPacketMaterial {
   float4 material_attenuation_color;
 };
 
+struct VkrMetalPacketTransmissionMaterial {
+  texture2d<float, access::sample> transmission_texture;
+  texture2d<float, access::sample> thickness_texture;
+  sampler transmission_sampler;
+  sampler thickness_sampler;
+};
+
 struct VkrMetalPacketIblProbe {
   // ADR-038 final layout: offset 0 carries the coefficient slot, offset 4 is
   // reserved, and every field from offset 8 onward keeps its previous offset.
@@ -277,6 +284,8 @@ static_assert(sizeof(VkrMetalPacketInstance) == 80,
               "VkrInstanceDataGPU Metal ABI must remain 80 bytes");
 static_assert(sizeof(VkrMetalPacketMaterial) == 176,
               "Metal material row ABI must remain 176 bytes");
+static_assert(sizeof(VkrMetalPacketTransmissionMaterial) == 32,
+              "Metal transmission material row ABI must remain 32 bytes");
 static_assert(sizeof(VkrMetalPacketFrameRoot) == 464,
               "Metal packet frame root ABI must remain 464 bytes");
 static_assert(sizeof(VkrMetalPacketDrawRoot) == 48,

@@ -1294,6 +1294,9 @@ uint32_t vkr_renderer_capture_channel_count(void);
 const VkrCaptureChannelDescription *
 vkr_renderer_capture_channel_get(uint32_t index);
 VkrCaptureChannelId vkr_renderer_capture_channel_from_name(const char *name);
+bool8_t
+vkr_renderer_capture_request_contains(const VkrCaptureBatchRequest *request,
+                                      const char *channel_name);
 VkrCaptureStatus vkr_renderer_capture_poll(VkrRendererFrontendHandle renderer,
                                            VkrCaptureRequestId request_id,
                                            VkrCapturePollResult *out_result);

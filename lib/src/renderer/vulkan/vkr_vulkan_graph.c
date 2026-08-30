@@ -41,6 +41,7 @@ typedef enum VkrVulkanGraphExecutorKind {
   VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_DOWNSAMPLE,
   VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_UPSAMPLE,
   VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_COMBINE,
+  VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_DOWNSAMPLE,
   VKR_VULKAN_GRAPH_EXECUTOR_GTAO_DEPTH_PREFILTER,
   VKR_VULKAN_GRAPH_EXECUTOR_GTAO_DEPTH_MIP,
   VKR_VULKAN_GRAPH_EXECUTOR_GTAO_EVALUATE,
@@ -92,6 +93,7 @@ vkr_global const VkrVulkanGraphExecutorSpec s_vk_graph_executors[] = {
     {"pass.bloom.downsample", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.bloom.upsample", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.bloom.combine", VKR_RG_PASS_TYPE_COMPUTE},
+    {"pass.transmission.downsample", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.gtao.depth_prefilter", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.gtao.depth_mip", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.gtao.evaluate", VKR_RG_PASS_TYPE_COMPUTE},
@@ -1097,7 +1099,7 @@ vkr_internal bool8_t vkr_vk_record_graphics_body(
     return vkr_vk_record_packet_draws(
                renderer, command, VKR_VULKAN_PACKET_PIPELINE_PICKING,
                picking_draws, picking_draw_count, slot->world_instances,
-               view_projection, false_v, 0u, 0u, false_v) &&
+               view_projection, false_v, 0u, 0u) &&
            (!packet->world ||
             vkr_vk_record_text_draws(
                 renderer, command, VKR_VULKAN_PACKET_PIPELINE_PICKING_TEXT,
@@ -1130,7 +1132,7 @@ vkr_internal bool8_t vkr_vk_record_graphics_body(
                renderer, command, VKR_VULKAN_PACKET_PIPELINE_WORLD_BLEND,
                packet->world->transparent_draws,
                packet->world->transparent_draw_count, slot->world_instances,
-               view_projection, false_v, shadow_texture, 0u, false_v) &&
+               view_projection, false_v, shadow_texture, 0u) &&
            vkr_vk_record_text_draws(
                renderer, command, VKR_VULKAN_PACKET_PIPELINE_WORLD_TEXT,
                packet->world->text_draws, packet->world->text_draw_count,
@@ -1156,8 +1158,7 @@ vkr_internal bool8_t vkr_vk_record_graphics_body(
            vkr_vk_record_packet_draws(
                renderer, command, VKR_VULKAN_PACKET_PIPELINE_UI,
                packet->editor->draws, packet->editor->draw_count,
-               slot->editor_instances, mat4_identity(), false_v, 0u, 0u,
-               false_v);
+               slot->editor_instances, mat4_identity(), false_v, 0u, 0u);
   }
   case VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP: {
     uint32_t texture_index = 0u;
@@ -1186,7 +1187,7 @@ vkr_internal bool8_t vkr_vk_record_graphics_body(
     return vkr_vk_record_packet_draws(
                renderer, command, VKR_VULKAN_PACKET_PIPELINE_UI,
                packet->ui->draws, packet->ui->draw_count, slot->ui_instances,
-               mat4_identity(), false_v, 0u, 0u, false_v) &&
+               mat4_identity(), false_v, 0u, 0u) &&
            vkr_vk_record_text_draws(
                renderer, command, VKR_VULKAN_PACKET_PIPELINE_UI_TEXT,
                packet->ui->text_draws, packet->ui->text_draw_count,
@@ -1411,6 +1412,8 @@ vkr_internal bool8_t vkr_vk_record_graph_pass(VkrVulkanRenderer *renderer,
     return vkr_vk_record_bloom_upsample(renderer, command, pass);
   case VKR_VULKAN_GRAPH_EXECUTOR_BLOOM_COMBINE:
     return vkr_vk_record_bloom_combine(renderer, command, pass);
+  case VKR_VULKAN_GRAPH_EXECUTOR_TRANSMISSION_DOWNSAMPLE:
+    return vkr_vk_record_transmission_downsample(renderer, command, pass);
   case VKR_VULKAN_GRAPH_EXECUTOR_GTAO_DEPTH_PREFILTER:
     return vkr_vk_record_gtao_depth_prefilter(renderer, command, pass);
   case VKR_VULKAN_GRAPH_EXECUTOR_GTAO_DEPTH_MIP:
