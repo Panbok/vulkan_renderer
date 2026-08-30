@@ -1,6 +1,6 @@
 ---
 status: investigation
-updated: 2026-08-05
+updated: 2026-08-31
 authority: investigation
 ---
 
@@ -107,7 +107,7 @@ not this investigation.
 | Specular-glossiness material conversion | Implemented | Prepared, cached repack into base-color/metallic-roughness plus uniform or optional per-texel dielectric F0; F90 is derived from retained F0; [ADR-017](../architecture/adr/017-prepared-specular-glossiness-lowering.md) |
 | `KHR_materials_transmission` | Implemented | Separate graph feedback and transmission stages; [ADR-018](../architecture/adr/018-graph-declared-transmission-feedback.md) |
 | `KHR_lights_punctual` | Implemented | Point, spot, and directional import into a stable 128-light scene table; a bounded 384-cell world grid carries complete 128-bit masks to fragment-local exact rejection, with table/grid metrics |
-| Localized indoor IBL | Implemented for Bistro | Two local probes selected per draw, fragment AABB weights, and global remainder. The café volume uses an authored indoor diffuse cubemap; local specular is zero until an indoor reflection capture exists; [ADR-019](../architecture/adr/019-bounded-forward-spatial-lighting.md) |
+| Localized indoor IBL | Implemented for Bistro | Up to 16 ready probes are packed for the frame, with fragment AABB weights and a global remainder. One coherent café volume uses the authored indoor diffuse cubemap; local specular is zero until an indoor reflection capture exists. A fourth owner camera rejected three tightly tiled volumes because their transitions crossed visible floors and ceilings. The evidence and remaining diffuse-visibility limit are documented in the [indoor light-leak investigation](bistro-indoor-light-leak-investigation.md); [ADR-019](../architecture/adr/019-bounded-forward-spatial-lighting.md) |
 | Scene-content provenance | Implemented | Sorted transitive manifest includes prepared glTF material files, generated textures, and present packed siblings; its digest participates in the workload fingerprint and is published as a report artifact |
 | Accepted Bistro baselines | Backend-pinned fourteen-view post-correction goldens with deterministic text; prior rejected proposals remain invalid | Legacy Vulkan generation `sha256:c3596ff14cdf206d0be4138840957925bd18353dd5d8eab339bfdec575df3564` and Metal generation `sha256:3db4f4d2294e5fdbc3618e64c4b2baf03bf66051dee0c4ff452e341d20cae51d`; fresh explicit compares pass all fourteen rows |
 

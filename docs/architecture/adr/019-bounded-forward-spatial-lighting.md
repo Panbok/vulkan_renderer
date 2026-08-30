@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-05
+updated: 2026-08-31
 authority: adr
 ---
 
@@ -8,8 +8,11 @@ authority: adr
 
 ## Status
 
-**Accepted** — implemented on 2026-08-04 and amended on 2026-08-05 after
-owner-camera evidence invalidated receiver-level light lists.
+**Accepted** — implemented on 2026-08-04, amended on 2026-08-05 after
+owner-camera evidence invalidated receiver-level light lists, and amended on
+2026-08-30 with authored room containment for punctual lights. Later same-day
+evidence rejected tightly tiled diffuse-probe boxes whose transitions crossed
+visible receivers.
 
 ## Context
 
@@ -51,6 +54,23 @@ a fixed-capacity, camera-independent 3D world grid from that table:
 - the fragment maps its world position to one cell, iterates only set bits, and
   addresses the stable scene table.
 
+An imported point or spot light may additionally carry one validated
+world-space influence AABB resolved from an exact glTF node name in the owning
+scene mesh's `gltf_light_overrides`. Missing bounds canonicalize to finite
+`[-VKR_FLOAT_MAX,+VKR_FLOAT_MAX]` values. Grid construction intersects a finite
+glTF range sphere with the AABB; bounded polynomial and range-less lights use
+the AABB directly. Every Metal and Vulkan forward, deferred, and transmission
+loop then applies the inclusive exact AABB test before distance, cone, square
+root, or BRDF work.
+
+The GPU row grows from four to six `float4` values (64 to 96 bytes). Its first
+four vectors retain their prior semantics; vectors four and five carry the
+canonical minimum and maximum. Host assertions plus Metal and Vulkan compiled
+reflection validate the shared record. The bound is authored containment, not
+geometry visibility: it prevents a light assigned outside a room from crossing
+that room's partition, but objects inside one volume do not cast punctual
+shadows.
+
 The grid and masks are rebuilt during scene-light synchronization with fixed
 storage. No allocation, descriptor mutation, lock, string lookup, or logging is
 added to draw or fragment submission. The masks occupy `float4` uniform slots
@@ -62,17 +82,28 @@ The GPU instance record remains 80 bytes for ABI stability, with those tail
 words reserved and zeroed. Metrics report scene-table selected/dropped counts
 and grid cells, references, maximum lights per cell, and global lights.
 
-For image-based lighting, each draw still binds two bounded local probes plus
-the global environment. The shader evaluates authored AABB/blend influence per
-fragment, normalizes local weights, and gives the remainder to the global map.
+For image-based lighting, the frame packet carries up to 16 ready bounded local
+probes plus the global environment. The shader evaluates authored AABB/blend
+influence per fragment, normalizes local weights, and gives the remainder to
+the global map. Current packet construction packs ready scene probes globally
+for the frame; the older draw-bounds selector is not the packet authority.
 Probe resources retain scene/world-resource ownership, and scene-environment
 probes share ready irradiance/prefilter maps instead of rebaking them.
+Probe AABBs are blending supports, not visibility volumes. Their transition
+regions must not cross visible receivers as a substitute for room topology.
+Bistro therefore retains one coherent indoor probe; its rejected three-box
+subdivision produced world-axis-aligned floor and ceiling bands in the isolated
+indirect-diffuse channel.
 
 ## Consequences
 
 - Broad or disconnected submeshes no longer decide light membership for all of
   their fragments. Camera movement alone cannot toggle a stationary fragment's
   mask.
+- Room or zone membership can now be authored without changing the stable
+  table, grid capacity, render graph, or per-draw packet shape. Malformed,
+  duplicate, ambiguous, unknown, directional, non-finite, and inverted glTF
+  overrides fail scene preparation instead of silently becoming unbounded.
 - Bistro retains all 72 lights with zero scene-table drops. The corrected grid
   exposes the lamps that receiver-level selection had discarded.
 - The grid is bounded to 384 cells, but cell size grows instead of dropping
@@ -81,16 +112,23 @@ probes share ready irradiance/prefilter maps instead of rebaking them.
 - The reflected PBR global block is 15,488 bytes, within the 16 KiB Vulkan
   baseline range. The grid adds 6 KiB of fixed mask storage rather than an
   unbounded or per-frame GPU allocation.
-- The Bistro grid uses 363 cells, 1,635 finite references, and at most 47
-  candidates in one cell. A matched local/dirty Release observation measured
-  World Opaque p50 at 93.243 ms after exact early rejection versus 109.528 ms
-  before that optimization. Those two runs share workload/environment/policy
-  fingerprints; the older receiver-list run does not share the workload
-  fingerprint, so its 93.272 ms p50 is observational context only.
+- With the 54 Bistro influence bounds, the grid uses 363 cells, 1,458 finite
+  references, and at most 33 candidates in one cell, down from 1,635 and 47.
+  Local Release observations were non-authoritative because warmup was
+  unstable, repetition work volume differed, provenance was dirty, and GPU
+  timing was disabled. The counts are structural work-volume evidence, not a
+  speed claim.
 - The instance ABI stays 80 bytes, but its last 12 bytes are reserved rather
   than carrying light indices.
-- Only two local probe volumes can influence one draw. Extra overlapping probes
-  still require a measured descriptor/storage design.
+- At most 16 ready local probes are frame-packed, and every packed probe is
+  considered per fragment. A future draw-level shortlist requires measured
+  evidence and must not reintroduce broad-receiver selection errors.
+- Diffuse probe bounds cannot represent wall occlusion. Geometry-aware diffuse
+  containment requires a visibility-carrying GI representation rather than
+  tightly tiled AABBs.
+- Punctual influence bounds do not provide arbitrary opaque visibility within
+  a zone. Lights that require furniture or same-room wall shadows need a
+  separately budgeted, retained punctual-shadow design.
 
 ## Alternatives Considered
 
@@ -114,4 +152,6 @@ scalability option.
 - The measured fragment cost of coarse cells justifies GPU-built clusters or a
   storage-buffer light list.
 - Dynamic lights make per-frame CPU grid construction material to frame time.
-- More than two overlapping local probes per draw are required.
+- More than 16 frame-packed local probes are required, or their measured
+  per-fragment cost justifies a spatial shortlist that preserves fragment-local
+  correctness.

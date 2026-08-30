@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-30
+updated: 2026-08-31
 authority: spec
 ---
 # VKR Renderer — Architecture and Status Specification
@@ -116,7 +116,7 @@ the acquired target and frame slot return to a valid state.
 
 ### 3.2 Packet-based submission
 
-`VkrRenderPacket` version 23 contains frame information, globals (including
+`VkrRenderPacket` version 24 contains frame information, globals (including
 exposure, bloom, and GTAO controls), and optional world, shadow, skybox, UI,
 editor, picking, text-update, and debug payloads.
 Important properties are implemented:
@@ -317,7 +317,8 @@ source mip no larger than 32² into normalized second-order SH
 diffuse coefficients. One renderer-owned 4,144-byte buffer holds 37 packed
 112-byte slots: slot 0 is an immutable black sentinel and 36 reusable slots are
 published and retired only against proven queue completion. Packet version 23
-carries the coefficient-buffer address plus global/probe slot indices. A probe
+introduced the coefficient-buffer address plus global/probe slot indices;
+current version 24 retains them and adds bounded punctual-light rows. A probe
 using the scene environment source aliases its slot and prefilter; it does not
 project a duplicate generation. Source conversion uses explicit LOD 0 with
 wrapped equirect U, while the prefilter selects source mips from the GGX
@@ -374,33 +375,43 @@ normal orientation before refraction.
 glTF punctual point, spot, and directional lights lower through the scene
 loader. A stable, camera-independent scene table retains up to 128 point/spot
 lights. A fixed 384-cell adaptive world grid stores one full 128-bit membership
-mask per cell; finite range spheres populate it conservatively and unbounded
-legacy lights use a global mask. Each fragment indexes the grid from world
-position, iterates set bits, rejects zero range/cone contribution before BRDF
-work, then applies exact glTF attenuation. The grid grows its cell size rather
-than discarding references, so
-broad material-merged submeshes do not impose a secondary light cap. The
+mask per cell. Finite range spheres populate it conservatively; optional
+world-space influence AABBs clip that broad phase, while unbounded legacy
+lights use a global mask. Each fragment indexes the grid from world position,
+iterates set bits, applies the exact inclusive AABB test, rejects zero
+range/cone contribution before BRDF work, then applies exact glTF attenuation.
+The same ordering ships in Metal and Vulkan forward, deferred, and transmission
+paths. The shared GPU row is six `float4` values (96 bytes): the original four
+vectors retain their semantics and the final two carry canonical minimum and
+maximum bounds. The grid grows its cell size rather than discarding references,
+so broad material-merged submeshes do not impose a secondary light cap. The
 80-byte instance ABI remains stable and reuses its final three words for
 temporal index, generation, and owner flags. Metrics
 distinguish scene-table overflow and report grid cells, references, peak local
 membership, and global lights. Color and intensity remain separate until the
-shader applies intensity once. World draws select at most two local reflection
-probes by bounding-sphere/AABB overlap; the shader computes per-fragment box
-weights, normalizes overlaps, and assigns the remainder to the global
-environment. Scene-environment probes alias the already-published scene SH slot
-and retain the scene prefilter rather than duplicating either bake. Specular IBL
-applies normal-footprint roughness filtering, specular AO, and geometric-horizon
-rejection. Bistro's café volume projects an authored indoor cubemap into its own
-diffuse SH slot rather than reusing the outdoor scene environment; its probe
-specular intensity is zero because no indoor reflection capture is authored.
+shader applies intensity once. The frame packs up to 16 ready local reflection
+probes; the shader computes per-fragment box weights, normalizes overlaps, and
+assigns the remainder to the global environment. Scene-environment probes alias
+the already-published scene SH slot and retain the scene prefilter rather than
+duplicating either bake. Specular IBL applies normal-footprint roughness
+filtering, specular AO, and geometric-horizon rejection. Bistro's one coherent
+café volume projects an authored indoor cubemap into its diffuse SH slot rather
+than reusing the outdoor scene environment; probe specular intensity is zero
+because no indoor reflection capture is authored. A fourth owner camera
+rejected three tightly tiled probe volumes because their transitions crossed
+visible floors and ceilings. Probe bounds are blend supports, not wall
+visibility.
 Diffuse irradiance samples the surface normal directly, while box projection is
 restricted to specular reflection rays.
 
 Cooked geometry's source-free boundary does not absorb scene-level glTF light
 metadata. `mesh.gltf_light_source` is a separate required scene dependency:
 failure to open or parse an explicitly authored path fails the scene request.
-Bistro therefore loads geometry from `bistro-lights.vkb` and imports its 72
-point-light instances from `bistro-lights.gltf` before activation.
+Bistro therefore loads geometry from `bistro-lights.vkb`, imports its 72
+point-light instances from `bistro-lights.gltf`, and applies 54 exact-node
+`mesh.gltf_light_overrides` before activation. Override bounds are already in
+world space; malformed, duplicate, ambiguous, unknown, directional,
+non-finite, or inverted entries fail scene preparation.
 
 ### 3.9 Portable temporal antialiasing
 
@@ -473,9 +484,10 @@ unjittered temporal passthrough without changing graph topology.
 | Metrics registry and snapshot export | Implemented | Bounded typed slots, MPSC cold-event ring, triple-buffered snapshots, renderer catalog/validity, explicit GPU allocation-owner aggregates, metrics-backed HUD, atomic `--metrics-json`, and harness aggregation |
 | Renderer automation harness | Implemented | Strict cases/profiles, isolated repetitions, authoritative evidence policy, aggregation, captures, comparison, autotest, baselines, and windowed/offscreen targets. Profile/snapshot parents full-content hash one transitive scene manifest, hash already-read parseable files without a second read, fan remaining files across at most eight workers, pass one digest to children, reject fingerprint drift, and verify the manifest before publication. Autotest references its primary manifest rather than rebuilding it. |
 | Cascaded shadow maps | Implemented, partial quality | Four-cascade default with fit hysteresis and backend-neutral raster-bias lowering; cutout casters use the alpha-tested path, and opt-in scene-bounds Z fit clips caster bounds against each final cascade XY rectangle. Static/dynamic caster generations feed committed per-target-image retained history; P2 retains packed static candidate/instance rows per completion-protected graph slot and copies only dynamic or invalidated static ranges. Publication generation changes revalidate every slot. Guard-contained static cascades omit their authored graph passes, while dynamic overlap, incomplete publication, invalid retained contents, or signature drift fail closed. P0 CPU scopes and P3B reuse/force counters ship on both backends. P5 adds a bounded lowest-margin proactive-refresh scheduler and defaults its budget to zero. P4 was declined after its Metal predictor deferred zero candidates across 600 moving-camera frames, preserving the exact-gated one-phase topology. P6 implements graph-declared occupied-depth SDSM on Metal and Vulkan with completion-gated asynchronous feedback, source metadata, smoothing/fallback metrics, and a harness opt-in; fixed splits remain the default because the matched local Metal control measured +1.310 ms/frame of combined reduction and realized cascade work. Native RX 6700 XT synchronization validation covers active Vulkan feedback at three target images; no Vulkan timing claim is made. Receiver quality (P7) ships: a rotated Poisson PCF kernel through a comparison sampler at 1/4/9/16/32 taps from one shared progressive table, a case-selectable nine-tap uniform-region early out at 16 taps or more, texel-denominated constant/slope/normal-offset bias converted through each cascade's own texel size and fitted depth span, cascade cross-fade, and max-distance fade. Reused cascades publish the fit they were rendered with. Metal tap, early-out, split-lambda, and map-size experiments retained the current defaults; the shadow rewrite spec records their aggregates and evidence limits. Shadow distance remains a separate quality experiment |
+| Punctual lighting and visibility | Implemented membership and authored zone containment; arbitrary local occlusion absent | Point and spot lights use a stable 128-light table, a conservative 384-cell fragment-local bitmask grid, optional exact world-space influence AABBs, and exact range/cone rejection. CPU broad-phase clipping and Metal/Vulkan forward, deferred, and transmission shaders share the containment contract. Bistro authors 54 exterior-light bounds and retains one coherent indoor diffuse probe; a fourth owner camera rejected three tightly tiled probe boxes because their blend boundaries were visible. Influence and probe bounds are not geometry visibility: only the directional term samples CSM, so furniture and same-zone walls do not cast punctual shadows and diffuse wall occlusion remains absent. Evidence and the separate retained punctual-shadow follow-up are documented in [the indoor light-leak investigation](../rendering/bistro-indoor-light-leak-investigation.md) |
 | PBR materials | Implemented, evolving | Metallic-roughness and texture slots plus prepared, cached specular-glossiness lowering with retained dielectric F0/F90 response; transmission adds IOR, volume, attenuation, and scene-color refraction while clearcoat and sheen remain absent |
-| IBL | Implemented, partial integration/evidence | HDR/cubemap sources, prepared RGBA16F specular bakes, normalized L2 diffuse coefficients in a completion-safe slot pool, global environment, and two fragment-weighted local probes per draw ship. Vulkan projects exact texels through a lazily-published 2D-array source alias. Compiled-root reflection, focused native validation, deterministic same-case execution, and the retained cross-backend pixel comparison pass. Bake work remains undeclared to the graph and explicitly barriered; ADR-038's matched quality, lifetime-stress, deterministic GPU-reference, and authoritative performance gates remain open |
-| glTF and scene loading | Implemented | CPU async pipeline; nested texture URIs and sidecars resolve without flattening; `EXT_meshopt_compression` buffer views decode before accessor reads; UVs lower once to VKR convention; geometric decals tagged through embedded extras or tracked per-source sidecars bake validated meter-denominated world-normal clearance before packing, while untagged geometry is unchanged; point, spot, and directional punctual lights import through the scene transform into a stable 128-light table with a fragment-local 384-cell bitmask grid. Cooked mesh entities may name `mesh.gltf_light_source` explicitly so geometry remains `.vkb` while scene-level light metadata comes from glTF. Required mesh dependency or GPU-publication failures fail the scene request instead of activating a meshless scene; frame-path uploads measured non-blocking |
+| IBL | Implemented, partial integration/evidence | HDR/cubemap sources, prepared RGBA16F specular bakes, normalized L2 diffuse coefficients in a completion-safe slot pool, a global environment, and up to 16 frame-packed local probes with fragment AABB weights ship. Current packet construction packs ready scene probes globally for the frame rather than using the older draw-bounds selector. Vulkan projects exact texels through a lazily-published 2D-array source alias. Compiled-root reflection, focused native validation, deterministic same-case execution, and the retained cross-backend pixel comparison pass. Bake work remains undeclared to the graph and explicitly barriered; ADR-038's matched quality, lifetime-stress, deterministic GPU-reference, and authoritative performance gates remain open |
+| glTF and scene loading | Implemented | CPU async pipeline; nested texture URIs and sidecars resolve without flattening; `EXT_meshopt_compression` buffer views decode before accessor reads; UVs lower once to VKR convention; geometric decals tagged through embedded extras or tracked per-source sidecars bake validated meter-denominated world-normal clearance before packing, while untagged geometry is unchanged; point, spot, and directional punctual lights import through the scene transform into a stable 128-light table with a fragment-local 384-cell bitmask grid. Cooked mesh entities may name `mesh.gltf_light_source` explicitly so geometry remains `.vkb` while scene-level light metadata comes from glTF. Optional `mesh.gltf_light_overrides` resolve exact node names to validated world-space point/spot influence AABBs; malformed, duplicate, ambiguous, unknown, directional, non-finite, and inverted overrides fail preparation. Required mesh dependency or GPU-publication failures fail the scene request instead of activating a meshless scene; frame-path uploads measured non-blocking |
 | Offline mesh cooking and packed geometry | Implemented | `vkr_mesh_cooker` uses pinned meshoptimizer v1.2 to atomically emit deterministic version-15 `.vkb` artifacts with per-range cache/fetch optimization and position quantization, 32-byte packed static vertices, one 32-byte decode record per range, explicit quantization budgets, SHA-256 dependency/settings provenance, and CRC32 metadata/stream checksums. Candidate/visible rows carry a range decode index without growing their 48/32-byte ABIs, and every Metal/Vulkan raster and resolve path consumes it. Worker decode performs no authoring-source I/O; mandatory runtime optimization applies to every OBJ/glTF/GLB source load. Production cook scripts/references, lifecycle stress coverage, byte/locality metrics, and branchless Metal/Vulkan packed publication ship. Indices remain 32-bit pending an explicitly partitioned draw/resolve ABI and matched evidence. |
 | Transmission | Implemented, bounded deferred paths; corrected local Metal ceiling accepted, native Vulkan rerun pending | Graph-declared opaque feedback, four ordered peels, compact partition/shade, ordinary blend, and a case-only fifth-peel diagnostic ship on both backends. The shared contract preserves reflection/emissive, removes diffuse by resolved transmission, retains RGB Fresnel/base tint, excludes metallic transmission, resolves texture products, reprojects volume exit points, and samples a bounded immutable roughness pyramid. Same-slot transmission extensions share base-row publication and completion-gated lifetime. Diagnostic, production-temporal layer-0, and production-nontemporal layer-1-3 pipeline families are precreated for compact and fullscreen launches. Positive-transmission glTF glass with omitted metallic/roughness factors and no metallic-roughness texture lowers to dielectric/smooth while explicit factors remain authoritative. Metal transmission uses a dedicated inherited-buffer ICB so draw and previous-depth peel roots reach indirect draws; ordinary opaque/shadow ICBs are unchanged. The exact owner Bistro camera preserves pane detail and records distinct visibility layers with coverage `63,695/2,033/771/652/164`, zero overflow, and zero resolve-invalid. Two corrected M1 Pro five-run profiles retain exact analytic coverage `65,372/65,371/0/0` and measure `0.397800/0.396558 ms` summed shade means, within the current `0.400 ms` local ceiling. The former `0.715 ms` ceiling is invalid because it measured a repeated front layer. CPU/reference, shader reflection, Release snapshots/profiles, and focused Metal validation pass. Native Vulkan validation and crossed pixels remain open, so no portable speed or image-parity claim is made |
 | KTX2/UASTC textures | Implemented | BC7/BC5, ASTC, ETC2, EAC RG11, and RGBA32 paths; 2D arrays, cubemaps, and cubemap arrays lower to native Metal/Vulkan view types, while a Metal compute diagnostic samples nonzero array/cube-array indices. Runtime resolution is strict KTX2 by default; explicit test/development flags retain source/legacy coverage, and the packer replaces legacy outputs regardless of timestamp. Material streaming admits eight requests, defaults to uncapped full residency, automatically applies a 90/80/75% heap-budget pressure hysteresis every 60 frames, honors explicit overrides, uniquely accounts shared textures, and completion-retires only last references. Metal batches up to 64 copies into one 32 MiB upload command; Vulkan records into its active frame command buffer. |
@@ -488,8 +500,8 @@ unjittered temporal passthrough without changing graph topology.
 | Compute dispatch | Implemented; production Metal and Vulkan deferred kernels | Typed executors carry validated direct or indirect launch descriptors without per-frame name lookup. Metal P4/P8/P10/P12/P14 plus GTAO uses graph-declared classify, prefix, ICB encode, G-buffer resolve, GTAO depth/evaluate/denoise, deferred-lighting, fused-transmission, and HZB-reduction kernels. Vulkan P5/P9/P11/P13/P15 plus GTAO provides classify/prefix/encode, G-buffer, GTAO depth/evaluate/denoise, lighting, transmission, coverage, and HZB kernels plus indirect-count raster, with its opaque and transmission shading sharing the forward fragment shader's lighting helpers and surface reconstruction; P20 owner evidence is accepted |
 | GPU timing | Implemented with backend-specific scope | Vulkan retains per-pass query timing. Metal compute and graphics passes use precise encoder-scope timestamps with completion-owned query storage; transfer and zero-work scopes remain explicitly unsupported. Metal also publishes exact `gpu.submission` start-to-end latency from `MTL4CommitFeedback`. The harness associates both asynchronous result paths with their source frames and drains after the measured window |
 | Device-memory suballocation | Implemented | Vulkan uses keyed DEVICE, UPLOAD, and READBACK pools backed by `vkr_gpu_memory`; Metal uses the same range/submit cores through its placement adapter. Logical and physical totals, peaks, retirement, failure classes, and capacity lower into renderer metrics. |
-| Bindless resource model | Implemented | Metal 4 and Vulkan 1.4 use GPU-addressed buffers, backend-native texture/sampler rows, completion-gated publication/retirement, authored graph lowering, and shared memory/submit/slot/capture cores. Packet version 23 carries bounded GPU candidate streams, stable temporal identity, renderer-owned temporal transforms/jitter/reset state, the exposure contract, scene-linear bloom and GTAO controls, shadow debug, timing requests, feature-local payloads, per-cascade receiver quality, SDSM metadata, and final SH coefficient slots. Each non-empty indexed pass publishes one backend frame root and each retained draw references reflected GPU tables. |
-| Deferred visibility-buffer migration | Implemented through P21 | Both backends execute one topology: bounded GPU candidate classification and indirect submission for camera/cascade views; opaque visibility, G-buffer resolve, GTAO, HDR lighting, HZB, picking, four-layer transmission, and completion-gated diagnostics. P21 removed the selector, legacy graph branch, CPU world draw construction, fallback routes, and dual-path metrics/tests. Current packet version 23 rejects invalid, zero-generation, or over-capacity input before recording and carries completion-safe publication generations, stable temporal identity, and final SH slots. |
+| Bindless resource model | Implemented | Metal 4 and Vulkan 1.4 use GPU-addressed buffers, backend-native texture/sampler rows, completion-gated publication/retirement, authored graph lowering, and shared memory/submit/slot/capture cores. Packet version 24 carries bounded GPU candidate streams, stable temporal identity, renderer-owned temporal transforms/jitter/reset state, the exposure contract, scene-linear bloom and GTAO controls, shadow debug, timing requests, feature-local payloads, per-cascade receiver quality, SDSM metadata, final SH coefficient slots, and 96-byte bounded punctual-light rows. Each non-empty indexed pass publishes one backend frame root and each retained draw references reflected GPU tables. |
+| Deferred visibility-buffer migration | Implemented through P21 | Both backends execute one topology: bounded GPU candidate classification and indirect submission for camera/cascade views; opaque visibility, G-buffer resolve, GTAO, HDR lighting, HZB, picking, four-layer transmission, and completion-gated diagnostics. P21 removed the selector, legacy graph branch, CPU world draw construction, fallback routes, and dual-path metrics/tests. Current packet version 24 rejects invalid, zero-generation, or over-capacity input before recording and carries completion-safe publication generations, stable temporal identity, final SH slots, and bounded punctual-light rows. |
 | Portable temporal antialiasing | Implemented, partial evidence | Metal and Vulkan share one same-resolution resolve, rigid opaque/transmission/blend motion, exact visibility identity, backend-specific completion-safe history pools independent of command slots, reset policy, authored material reactivity, stable-transparency accumulation, bounded moving-camera composition reactivity, post-temporal manual exposure, debug modes, and one-sample passthrough fallback. Moving-camera color reconstruction applies the exact identity/primitive/depth mask to the bilinear history footprint instead of admitting rejected neighboring color. Visibility-buffer deferred shading now mirrors the forward path's bounded normal-footprint roughness filter; the owner confirms that this materially reduces fixed-camera shimmer. Native Apple validation passes, but final moving-camera interactive acceptance remains open; deformation/procedural motion, dynamic particle/material signals, and broader motion/disocclusion evidence also remain open. See ADR-037 |
 | Vulkan V1–V4 migration | Complete for RX 6700 XT | V1 characterization and V2's selected strategy are complete on macOS and Windows. V3 extracted the memory, submit-ring, and shared ABI cores alongside their production Vulkan callers and passes native window resize with reacquisition and retired-swapchain completion proof. V4 extracted the slot table, added completion-gated asset publication, and moved geometry, staging, images, startup buffers, and readback into keyed dynamic pools with complete logical/physical metrics. Prepared and writable initialization records before the next frame draw, staging retirement uses that submit value, publication dirty ranges flush once per backing buffer, and logical totals return to baseline. MoltenVK cannot execute the descriptor-buffer path. ADR-024's required cross-platform extraction witnesses now pass. |
 | Vulkan V5–V7 | Implemented; post-V7 target rerun passes | V5 lowers the authored graph to synchronization2/dynamic rendering and implements all packet pass/capture/timing categories. V6 completed selection, cache, lifecycle, metrics, and native RX 6700 XT validation. V7 removed the Vulkan 1.2 path, temporary selector, shaders/manifests, legacy frontend systems, interface/adaptor, and graph residue. CPU and Metal gates pass after deletion; fresh RX 6700 XT Debug/Release whole-graph, synchronization-validation, and GPU-assisted witnesses pass. |
@@ -655,7 +667,8 @@ Current priorities after V7 are:
 3. Establish matched Release evidence before making any performance claim about
    the two surviving implementations or the V7 deletion.
 3a. Complete ADR-038's retained acceptance evidence. The final SH L2 diffuse
-   implementation and packet version 23 ship on both source backends, and the
+   implementation entered with packet version 23, remains in current version
+   24 on both source backends, and the
    CPU/build plus focused Metal and Vulkan diagnostic gates pass. The same
    Release `indirect_diffuse` case produces three deterministic visible
    captures on each backend. The clean Metal payload is retained as portable
@@ -736,6 +749,23 @@ Current priorities after V7 are:
    `sha256:1a515b85b2713c799aa4c5d1f98a9d30eaea374c3d78b2189088da9843d4e9ba`
    and the `MTL_DEBUG_LAYER=1` report digest was
    `sha256:4a729855a07b6bdcb3815a20ee094faeb010c07e2ca6d8744cccd28c9ce755c9`.
+3c. ~~Add bounded indoor-light containment before treating punctual lighting as
+   opaque-visibility complete.~~ **Stage A implemented; geometric Stage B
+   remains open.** Packet version 24 carries canonical influence bounds in a
+   reflected 96-byte light row. CPU grid construction clips finite membership,
+   and Metal/Vulkan forward, deferred, and transmission paths apply the same
+   exact fragment AABB test. Bistro now authors 54 exact-node exterior-light
+   bounds and retains one coherent indoor diffuse probe. A fourth owner camera
+   rejected an intermediate three-box probe subdivision because its AABB
+   transitions appeared on visible floors and ceilings. All four owner-camera
+   five-channel Release cases pass with 72 lights selected, zero drops, one
+   probe, zero invalid resolves, 1,458 grid references, and at most 33 lights
+   per cell; focused Metal API/GPU validation is clean. Native Vulkan validation
+   and crossed pixels remain evidence gaps. General within-zone occlusion still
+   requires a separately budgeted, completion-safe punctual-shadow tier, while
+   geometry-aware diffuse occlusion requires a visibility-carrying GI
+   representation; influence and probe bounds are not shadows. Full evidence
+   is in the [Bistro indoor light-leak investigation](../rendering/bistro-indoor-light-leak-investigation.md).
 4. Establish a direct same-surface temporal texture-attachment oracle. The
    reported Vulkan-only inversion/swimming defect was a visibility-resolve
    framebuffer-to-NDC Y mismatch: the positive-height Vulkan viewport and
