@@ -1,15 +1,17 @@
 ---
 status: partial
-updated: 2026-08-25
+updated: 2026-08-31
 authority: design
 ---
 # Presentation DPI and transfer-function specification
 
-**Document status:** Implemented through C3. Mixed-DPI/display fixture evidence
-and owner acceptance of replacement final-color goldens remain pending.
+**Document status:** Implemented through C3 and Metal render-scale phases R1-R2.
+Mixed-DPI/display fixture evidence, owner acceptance of replacement final-color
+goldens and MetalFX moving quality, Vulkan scaling, and editor integration
+remain pending.
 
-**Scope:** Two independent presentation defects and the boundary for a later
-internal render-scale feature.
+**Scope:** Two independent presentation defects plus the Metal internal
+render-scale boundary accepted by ADR-039.
 
 ## 1. Decision
 
@@ -20,6 +22,9 @@ evidence requirements.
 Do not implement render scale by changing the physical window size returned by
 `vkr_window_get_pixel_size()`. Internal render extent and output extent are
 different facts and need different fields.
+
+Metal now implements that separation. Scale `1.0` remains the default. Vulkan
+and the unfinished editor viewport reject non-unit scale.
 
 ## 2. Windows DPI correctness
 
@@ -171,26 +176,47 @@ post-tonemap capture.
    validation.
 5. Regenerate final-color goldens only after explicit owner review.
 
-## 4. Internal render scale is a later feature
+## 4. Metal internal render scale
 
-Render scale needs at least two extents:
+Render scale uses two extents:
 
 - output extent, fixed by the physical window or harness target; and
 - internal scene extent, derived from output extent and a validated scale.
 
-The graph must render scene, visibility, depth, G-buffer, lighting, transmission,
-bloom, and AO at the internal extent. A composite or upscaler writes the output
-extent. UI and text should normally remain at output resolution. Picking needs
-an explicit output-to-internal coordinate mapping.
+Metal renders scene, visibility, depth, G-buffer, lighting, transmission, AO,
+HZB, and temporal inputs at the internal extent. Spatial mode keeps temporal,
+exposure, and bloom internal, then the existing tonemap draw linearly samples
+HDR into the output extent and applies FXAA in output pixels. MetalFX mode
+stages color, depth, and motion into native-sized inputs with an active internal
+content rectangle, reconstructs native scene-linear HDR, and runs exposure,
+bloom, and tonemap at native resolution. UI and text remain at output
+resolution in both modes. Fullscreen picking maps output pixels to internal
+pixels.
+
+MetalFX motion targets the exact immediately preceding scaler encode, not the
+portable resolver's newest completed history image. The transform address,
+view-projection matrix, and source frame come from one retained instance. A
+missing predecessor resets history; an in-flight producer is ordered with the
+existing Metal shared event without a CPU wait.
 
 Scaling the value returned by `vkr_window_get_pixel_size()` would lie about the
 present target, resize swapchain resources unnecessarily, lower UI resolution,
 and contaminate fixed-extent harness cases. Do not do it.
 
-Implement render scale with the temporal-input and upscaler work in
-[the AA evaluation](visibility-buffer-msaa-spec.md). Until an upscaler exists,
-scale 1.0 remains the only accepted production setting. Supersampling above 1.0
-can be a diagnostic if resource bounds are checked before realization.
+`render_scale` is immutable, finite, and in `(0,1]`; zero in an application
+configuration selects `1.0`. The internal extent rounds the scaled physical
+extent to the nearest integer and clamps each axis to at least one pixel. Metal
+accepts the mode only for the fullscreen topology. The editor already owns an
+independent panel scale and coordinate mapping, so a non-unit global scale with
+`editor_enabled` is rejected until that topology is complete. Vulkan rejects
+all non-unit values.
+
+Spatial reconstruction remains the default. MetalFX temporal reconstruction is
+an explicit Metal-only strategy and may use completion-driven dynamic scale.
+The harness records output extent, renderer-reported scene extent, scale,
+upscaler, dynamic policy, and observed transition range as separate effective
+values. See [ADR-039](../architecture/adr/039-metal-internal-render-scale.md)
+and [ADR-040](../architecture/adr/040-metalfx-temporal-dynamic-resolution.md).
 
 ## 5. Phases
 
@@ -202,6 +228,8 @@ can be a diagnostic if resource bounds are checked before realization.
 | C2 | sRGB Vulkan window/offscreen targets and removal of shader gamma | Implemented | Window/offscreen sRGB reports and validation pass; matched dark ramp pending |
 | C3 | Linear UI/text blending on both backends | Implemented | Validation-clean sRGB text capture passes; matched cross-backend translucent fixtures pending |
 | C4 | Final-color golden review | Pending owner review | No baseline mutated |
+| R1 | Metal internal scene scale with native output/UI | Implemented | Scale-0.4 Bistro clears the local 75 FPS p95 target; clean authoritative rerun and owner quality acceptance remain pending |
+| R2 | MetalFX temporal reconstruction and completion-driven dynamic scale | Implemented; acceptance partial | Exact previous-encode motion removes the reproduced whole-scene camera warp in a fixed-scale Bistro diagnostic. A post-correction child averages 11.734 ms with 14.143 ms p95 at scales 0.40-0.45; its parent is incomplete because two repetitions register different shadow-pass catalogs. Solid 75 FPS, broader moving-image acceptance, and Metal validation remain open |
 
 ## 6. Primary references
 

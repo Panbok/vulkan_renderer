@@ -1,13 +1,14 @@
 ---
 status: partial
-updated: 2026-08-27
+updated: 2026-08-31
 authority: design
 ---
 # Visibility-buffer anti-aliasing evaluation
 
 **Document status:** Partial. The portable TAA path described by T0-T2 is
-implemented on Metal and Vulkan under ADR-037. FSR, MetalFX, and every MSAA
-phase remain unimplemented.
+implemented on Metal and Vulkan under ADR-037. The Metal-only MetalFX temporal
+consumer in T4 is implemented under ADR-040. FSR and every MSAA phase remain
+unimplemented.
 
 **Scope:** The shipped temporal foundation and portable TAA decision, plus the
 retained 2x/4x visibility-buffer MSAA evaluation.
@@ -17,17 +18,19 @@ and [the deferred visibility-buffer specification](deferred-visibility-buffer/SP
 
 ## 1. Recommendation
 
-Retain the implemented portable same-resolution TAA path as the production
+Retain the implemented portable same-resolution TAA path as the default shared
 temporal consumer. It uses one backend-neutral contract and preserves
-one-sample rendering as the `VKR_TAA_DISABLED=1` fallback. FSR and MetalFX are
-not prerequisites for this implementation.
+one-sample rendering as the `VKR_TAA_DISABLED=1` fallback. Metal may instead
+select ADR-040's MetalFX temporal reconstruction for native output from a fixed
+or dynamic internal extent. FSR is not a prerequisite for either path.
 
 Rigid previous transforms, Halton jitter, exact temporal identity, own-surface
 motion for opaque, transmission, and ordinary blend, authored material
-reactivity, reset reasons, completion-safe history, and motion/history debug
-views now ship. Manual exposure stays after scene-linear temporal history and
-needs no reset. Deformation and procedural vertex motion, particles, and
-dynamic material-change signals remain open.
+reactivity, reset reasons, portable completion-safe history, MetalFX exact
+previous-encode history, and motion/history debug views now ship. Manual
+exposure stays after scene-linear temporal history and needs no reset.
+Deformation and procedural vertex motion, particles, and dynamic
+material-change signals remain open.
 
 Do not implement MSAA as part of the TAA work. The design below remains a
 separate control proposal. A visibility buffer avoids a fully multisampled
@@ -161,11 +164,11 @@ roughness, angular-variance, and inverse-square attenuation experiments were
 removed because they did not establish a causal visual improvement. Interactive
 moving-camera owner acceptance remains open.
 
-FSR 3.1 and MetalFX remain possible future consumers of the same foundation,
-not dependencies. FSR 3.1 officially supports DX12 and Vulkan; Metal is not an
-official target. MetalFX temporal scaling is Apple-specific and does not
-promise cross-backend algorithm identity. Neither integration is scheduled by
-this decision.
+FSR 3.1 remains a possible future consumer of the same foundation, not a
+dependency. FSR 3.1 officially supports DX12 and Vulkan; Metal is not an
+official target. ADR-040 now selects MetalFX temporal scaling as an optional
+Apple-specific consumer. It intentionally does not promise cross-backend
+algorithm identity.
 
 ## 4. Visibility-buffer MSAA control
 
@@ -285,10 +288,11 @@ is the fallback, subject to sample-position and performance evidence.
 
 ## 5. Decision
 
-ADR-037 accepts portable same-resolution TAA as the production path and
+ADR-037 accepts portable same-resolution TAA as the default shared path and
 one-sample passthrough as its fallback. The choice prioritizes subpixel and
 specular stability, exact visibility identity, and a shared Metal/Vulkan
-algorithm.
+algorithm. ADR-040 separately accepts MetalFX temporal reconstruction and
+completion-driven dynamic resolution as an explicit Metal-only strategy.
 
 MSAA remains an unimplemented comparison proposal. It may be reconsidered for a
 concrete editor, capture, or history-free quality requirement, but is not part
@@ -302,7 +306,7 @@ of the accepted TAA implementation. A hybrid mode is not planned.
 | T1 | Implemented, partial evidence | Motion-vector and history debug views | Static capture shows valid zero motion; slow motion shows nonzero camera motion and accepted history; transmission and ordinary-blend fixtures show their own rigid motion; deformation remains open |
 | T2 | Implemented | Completion-safe history, portable resolve, and final-draw FXAA | CPU/shader gates, Vulkan capture/synchronization validation, and exclusive native Apple M1 Pro Metal API/GPU shader validation pass |
 | T3 | Not scheduled | FSR 3.1 Vulkan prototype | Native AA runs with valid vectors and nonempty masks; no frame generation |
-| T4 | Not scheduled | MetalFX Metal prototype at a supported scale | Same input contract, correct sign/unit conversion, explicit algorithm difference |
+| T4 | Implemented; quality and validation-wrapper acceptance pending | MetalFX temporal reconstruction at fixed or dynamic supported scales | Motion uses the exact preceding scaler frame, with GPU event ordering for an in-flight transform and reset on a missing predecessor. The focused moving-camera warp is corrected; broader moving quality and solid 75 FPS remain open, and Apple's Metal 4 validation wrappers currently abort inside MetalFX |
 | M0 | Unstarted | One-sample-preserving graph, image, pipeline, descriptor, and capture plumbing | One-sample outputs remain byte-identical |
 | M1 | Unstarted | 2x/4x opaque visibility plus edge classifier | Per-sample ID/depth debug capture and measured edge fraction |
 | M2 | Unstarted | Interior path plus fused edge shading | Sample-weighted color is correct for geometry and background edges |
@@ -312,7 +316,8 @@ of the accepted TAA implementation. A hybrid mode is not planned.
 
 Each runtime slice needs the CPU suite, relevant focused tests, backend
 validation, and matched Release evidence for any cost claim. ADR-037 records
-the portable TAA decision and its current evidence.
+the portable TAA decision. ADR-040 records the MetalFX decision, its local
+Release evidence, and the current Apple validation-wrapper blocker.
 
 ## 7. Primary references
 

@@ -7,7 +7,9 @@ authority: spec
 
 **Document status:** Reviewed against the completed V7 working tree, the
 accepted Metal and Windows Vulkan deferred P20 boundary, P21 retirement, and
-the portable same-resolution TAA implementation accepted by ADR-037.
+the portable same-resolution TAA implementation accepted by ADR-037. ADR-040's
+MetalFX temporal and completion-driven dynamic-resolution path is implemented
+as an explicit Metal-only strategy.
 Metal 4 Stages 0–5 and Vulkan V0–V6 are implemented. ADR-026 V7 is
 complete under explicit owner authorization: Vulkan 1.2, its descriptor-set
 shaders and manifests, the legacy-only frontend resource model, the
@@ -442,6 +444,15 @@ different completed instances and are excluded from the current output. This
 keeps the temporal chain continuous without a CPU/GPU wait when both readers
 remain live across submitted frames.
 
+ADR-040's MetalFX consumer is the explicit history-selection exception. Its
+private history advances on every scaler encode, so motion must target the
+exact immediately preceding scaler frame rather than the portable resolver's
+newest completed image. Metal sources the previous transform address,
+view-projection matrix, and frame index from one matching retained instance. If
+that predecessor is absent, Metal resets the scaler. If its transform producer
+is still in flight, the current submission waits on the existing shared event
+and retains the instance through the consuming submit; no CPU wait is added.
+
 Moving cameras validate surface identity against all four metadata texels in the
 bilinear history-color footprint; opaque and transmission also validate device
 depth. Stationary cameras admit coverage transitions under a 3x3 neighborhood
@@ -491,7 +502,7 @@ unjittered temporal passthrough without changing graph topology.
 | Offline mesh cooking and packed geometry | Implemented | `vkr_mesh_cooker` uses pinned meshoptimizer v1.2 to atomically emit deterministic version-15 `.vkb` artifacts with per-range cache/fetch optimization and position quantization, 32-byte packed static vertices, one 32-byte decode record per range, explicit quantization budgets, SHA-256 dependency/settings provenance, and CRC32 metadata/stream checksums. Candidate/visible rows carry a range decode index without growing their 48/32-byte ABIs, and every Metal/Vulkan raster and resolve path consumes it. Worker decode performs no authoring-source I/O; mandatory runtime optimization applies to every OBJ/glTF/GLB source load. Production cook scripts/references, lifecycle stress coverage, byte/locality metrics, and branchless Metal/Vulkan packed publication ship. Indices remain 32-bit pending an explicitly partitioned draw/resolve ABI and matched evidence. |
 | Transmission | Implemented, bounded deferred paths; corrected local Metal ceiling accepted, native Vulkan rerun pending | Graph-declared opaque feedback, four ordered peels, compact partition/shade, ordinary blend, and a case-only fifth-peel diagnostic ship on both backends. The shared contract preserves reflection/emissive, removes diffuse by resolved transmission, retains RGB Fresnel/base tint, excludes metallic transmission, resolves texture products, reprojects volume exit points, and samples a bounded immutable roughness pyramid. Same-slot transmission extensions share base-row publication and completion-gated lifetime. Diagnostic, production-temporal layer-0, and production-nontemporal layer-1-3 pipeline families are precreated for compact and fullscreen launches. Positive-transmission glTF glass with omitted metallic/roughness factors and no metallic-roughness texture lowers to dielectric/smooth while explicit factors remain authoritative. Metal transmission uses a dedicated inherited-buffer ICB so draw and previous-depth peel roots reach indirect draws; ordinary opaque/shadow ICBs are unchanged. The exact owner Bistro camera preserves pane detail and records distinct visibility layers with coverage `63,695/2,033/771/652/164`, zero overflow, and zero resolve-invalid. Two corrected M1 Pro five-run profiles retain exact analytic coverage `65,372/65,371/0/0` and measure `0.397800/0.396558 ms` summed shade means, within the current `0.400 ms` local ceiling. The former `0.715 ms` ceiling is invalid because it measured a repeated front layer. CPU/reference, shader reflection, Release snapshots/profiles, and focused Metal validation pass. Native Vulkan validation and crossed pixels remain open, so no portable speed or image-parity claim is made |
 | KTX2/UASTC textures | Implemented | BC7/BC5, ASTC, ETC2, EAC RG11, and RGBA32 paths; 2D arrays, cubemaps, and cubemap arrays lower to native Metal/Vulkan view types, while a Metal compute diagnostic samples nonzero array/cube-array indices. Runtime resolution is strict KTX2 by default; explicit test/development flags retain source/legacy coverage, and the packer replaces legacy outputs regardless of timestamp. Material streaming admits eight requests, defaults to uncapped full residency, automatically applies a 90/80/75% heap-budget pressure hysteresis every 60 frames, honors explicit overrides, uniquely accounts shared textures, and completion-retires only last references. Metal batches up to 64 copies into one 32 MiB upload command; Vulkan records into its active frame command buffer. |
-| Editor viewport and picking | Partial | Picking is fully declared in the render graph and runs; readback is usually deferred but ring wrap can block. Both packet implementations copy `editor_enabled` into the graph frame, so the authored editor branch is reachable. Both implementations still pin viewport extent to window size; a true offscreen editor viewport remains absent. See §8 P1 item 15 |
+| Editor viewport and picking | Partial | Picking is fully declared in the render graph and runs; readback is usually deferred but ring wrap can block. Both packet implementations copy `editor_enabled` into the graph frame, so the authored editor branch is reachable. Vulkan still pins viewport extent to window size. Metal can derive an editor-off viewport from ADR-039's global scene scale, but does not consume the editor packet's independent viewport extent; non-unit global scale therefore rejects editor packets. A true offscreen editor viewport remains absent. See §8 P1 item 15 |
 | UI system | Absent | `VkrUiSystem` is 16 corner-anchored text slots. No rectangle primitive, layout engine, hit testing, clipping, or UI input model. `VkrUiPassPayload.draws` is plumbed end to end but always submitted empty. Design in [ui-architecture-spec.md](../ui/ui-architecture-spec.md), rationale in [ADR-027](adr/027-immediate-mode-grid-ui.md); both are `proposed` |
 | Text | Implemented; resolution scaling defective | Bitmap, MTSDF, system-font, UI and world text paths publish packet-native resources. Windows UI text applies `min(width/800, height/600)` through each retained text transform, so layout is solved before the output scale and cannot reflow in rendered dimensions; `app/src/main.c` also authors different sizes for Windows and macOS. The shipping overlays use a 128-pixel system-font raster with one mip, producing 8.9x to 1.1x minification across the documented extent range. The MTSDF path quantizes em metrics at one size, truncates fractional atlas bounds, uploads an incorrect range no shader reads, and selects an sRGB, lossy block-compressed, mipmapped atlas sidecar. See §8 P1 item 16, [text-resolution-independence-and-font-cooking-spec.md](../text/text-resolution-independence-and-font-cooking-spec.md), and ADR-034/035/036 (all Proposed). |
 | CPU frustum culling | Feature-local only | Ordinary alpha blend remains conservatively camera-culled and back-to-front sorted. Opaque, cutout, transmission, and shadow visibility are GPU-classified from candidate streams |
@@ -510,6 +521,8 @@ unjittered temporal passthrough without changing graph topology.
 | Bloom | Implemented through spec phases B0-B1; authoritative performance pending | Packet version 21 adds explicit enable, scene-linear threshold, soft knee, and intensity. One authored Metal/Vulkan graph slice prefilters into a bounded half-resolution mip chain, downsamples forward, reverse-expands a separate deepest-first accumulation chain, combines into a full-resolution HDR resource before exposure, and feeds the same fullscreen/editor tonemap path. Shared CPU/GPU arithmetic sanitizes non-finite/firefly input and pins the knee/Karis contract. Four direct HDR/bloom capture channels, odd-extent/reverse-barrier tests, Release execution/timestamp observations, focused Metal API/GPU shader validation, and RX 6700 XT synchronization validation pass. No cross-device cost or quality ranking is claimed. |
 | GTAO | Implemented through spec phases G0-G2; matched Metal/Vulkan parity, authoritative performance pending | Packet version 22 adds explicit enable, radius, and power. One authored Metal/Vulkan graph slice converts current depth into the first five levels of a full-resolution R16 positive view-depth chain, evaluates a 3-slice × 3-step horizon reference into separate R8 raw visibility and edge data, and performs one edge-aware 3x3 denoise into final R8 visibility. Deferred lighting receives a branchless white fallback and multiplies only indirect diffuse after material AO; direct analytic and material-only specular-occlusion terms remain unchanged. Structural snapshots and focused validation pass. At the exact Bistro camera, matched GTAO-on/off captures differ by `0.002012 EV` in attenuation, common foreground normals have mean dot `0.999080`, and raw/final visibility means differ by less than `0.000411`. |
 | Presentation DPI and output transfer | Implemented; visual evidence pending | Windows establishes Per-Monitor V2 before window creation, sizes non-client areas with monitor/window DPI, handles `WM_DPICHANGED`, and reports physical client pixels. Metal and Vulkan tonemap and blend linear RGB into sRGB window/offscreen attachments; Vulkan has no shader gamma encode, and retained UI/text colors decode authored sRGB once on the CPU. Replacement final-color goldens and mixed-DPI/translucent fixture evidence remain pending owner review. |
+| Metal internal render scale | Implemented as an explicit quality mode; authoritative performance pending | Immutable scale in `(0,1]` keeps the physical Metal target and UI/text at output resolution while viewport-domain scene, deferred, temporal, bloom, GTAO, and transmission work use a rounded internal extent. Tonemap linearly samples the internal HDR source at the native target and applies FXAA in output pixels; fullscreen picking maps into the internal domain. Vulkan and editor packets reject non-unit scale. The harness records output extent, renderer-reported scene extent, and scale separately. The M1 Pro scale-0.4 Bistro orbit clears 75 FPS at p95 in five local dirty-tree children, but authority and owner quality acceptance remain open. See ADR-039. |
+| MetalFX temporal upscaling and dynamic resolution | Implemented and enabled by the macOS sample application; validation-wrapper and quality acceptance pending | `VKR_UPSCALE_MODE_METALFX_TEMPORAL` stages internal scene-linear HDR, non-reversed depth, and normalized current-to-previous motion into native-sized private inputs, passes jitter and active content extent to one Metal 4 temporal scaler, and writes native HDR before exposure/bloom/tonemap. Motion targets the exact preceding scaler encode; a shared-event GPU dependency orders an in-flight transform producer, and a missing predecessor resets history. An allocation-free controller consumes completed commit-feedback intervals, ignores stale-tier samples, selects 0.05 tiers plus an exact lower endpoint, and resets temporal state on every transition. The macOS sample starts at scale 0.8 with bounds `[0.334, 1.0]` and a 13.333333 ms target; Vulkan and zero-initialized renderer API callers retain spatial reconstruction. The harness fingerprints the policy and reports observed scale/extents/transitions. A post-correction dirty-tree M1 Pro child averages 11.734 ms with 14.143 ms p95 at scales 0.40-0.45. Its five-run parent is incomplete because a shadow pass was registered in only one of the first two repetitions, so the observation supplies no solid 75 FPS claim. Apple's current Metal 4 API and GPU-validation wrappers both abort inside MetalFX, so native validation-disabled execution and captures are the available gates. See ADR-040 and §8 P1 item 18. |
 | Shader hot reload | Absent | Build-time shader compilation only |
 
 ---
@@ -1043,11 +1056,14 @@ source, skybox, and specular-prefilter cubemaps remain.
     still patches only picking, transmission, and shadow conditions, so its
     editor condition remains false and `UI.Fullscreen` always builds.
 
-    `prepared_frame.viewport_width/height` has the same defect from the other
-    direction: both backends initialize it to the window size in `prepare_frame`
-    and never update it from `packet.frame.viewport_*`, so
-    `extent:{mode:viewport}` is indistinguishable from `extent:{mode:window}`.
-    The packet's viewport values reach shader constants only.
+    `prepared_frame.viewport_width/height` remains disconnected from the
+    editor packet. Vulkan initializes it to the window size. Metal initializes
+    it to ADR-039's global editor-off scene extent, which equals the window at
+    scale `1.0`, and overwrites packet viewport dimensions only in that global
+    scale mode. It still never realizes the editor panel's independent
+    `packet.frame.viewport_*` extent. Non-unit global scale therefore rejects
+    editor packets rather than mixing panel camera and picking coordinates with
+    a different graph extent.
 
     Fixing both is phase P0 of
     [ui-architecture-spec.md](../ui/ui-architecture-spec.md) and a prerequisite
@@ -1130,6 +1146,19 @@ source, skybox, and specular-prefilter cubemaps remain.
     and authoritative clean-tree Release timing remain open. See
     [ADR-037](adr/037-portable-same-resolution-temporal-antialiasing.md) and the
     [image-quality roadmap](../rendering/image-quality-roadmap.md).
+
+18. **Apple's Metal 4 validation wrappers cannot currently execute MetalFX
+    temporal scaling.** A minimal correctly configured `MTL4FXTemporalScaler`
+    and the production pass both abort under `MTL_DEBUG_LAYER=1` inside
+    `Metal4FXTemporalScalingEffectV4.mm` because
+    `_outputTextureBarrierStages` is not set. With GPU/shader validation, the
+    framework sends `globalTraceObjectID` to
+    `MTL4GPUDebugComputeCommandEncoder`, which does not implement that selector.
+    Normal Metal 4 Release execution, dynamic tier changes, and native captures
+    pass. VKR does not set private framework properties, and the public fence is
+    not used as a debug-wrapper workaround. Re-run one serialized focused
+    process after an OS/Xcode update; until then, do not describe MetalFX as
+    API- or shader-validation clean. See ADR-040.
 
 ### P2 — Throughput
 

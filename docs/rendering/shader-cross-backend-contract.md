@@ -64,6 +64,7 @@ changing an acceptance envelope requires new evidence and owner review.
 | L2 diffuse coefficients (ADR-038) | `shaders/shared/sh_l2_kernel.slangh`, included by the Vulkan Slang library and concatenated into the MSL library | `metal/msl/ibl/sh_projection.metal` `vkr_metal_packet_ibl_sh`; final `sh_coefficients` and slot fields in `metal/msl/common/draw.metalh`; evaluation in `metal/msl/world/gpu_draws.metal` | `vulkan/slang/ibl/default.slang` `ibl_sh`; exact texel loads use a lazily-published 2D-array alias; `VkrVulkanIblShRoot` plus final `sh_coefficients` and slot fields in `vulkan/slang/common/resources.slangh`; evaluation in `vulkan/slang/world/default.slang` | **UNALIGNED**: both production sources implement the same projection/evaluation contract; both 48-byte roots have compiled-shader reflection witnesses; focused native validation executes one packed probe on both backends; and the retained numeric Metal/Vulkan payload comparison passes. Missing: GPU repetition of the CPU projection fixtures |
 | Indirect-diffuse capture channel (ADR-038 §3.1) | None | `metal/msl/world/gpu_draws.metal`, deferred lighting and transmission lighting | `vulkan/slang/world/deferred.slang`, `vk_deferred_lighting` and `vk_transmission_shade` | **ALIGNED**: both production sources implement render mode 9 with the same rule (environment diffuse only, black background, GTAO excluded, no direct/specular/emissive/ambient fallback). Three current Vulkan captures compare against retained Metal generation `sha256:7492b6406ad11123e0cb5f0f943f5c74bd908e3f72b13750c1a8fd1196f6e726` with MAE `5.080678104575146e-06`, maximum absolute delta `1/255`, and zero failed pixels; current report `sha256:330b26beef84ffd6f83c6e1182e6510ab9756c8307f99ec38c5fd246f5524e5b` |
 | Visibility, deferred resolve, lighting, temporal resolve, transmission, and picking | Packed rows, range decode, and normal decode above | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang`, `vulkan/slang/picking/default.slang` | **UNALIGNED**: raster and reconstruction use the compacted visible row's `decode_index` on both source paths, while the prior source algorithms and dispatch semantics remain aligned. Local ABI gates pass; native Windows validation and a crossed same-revision capture comparison remain required |
+| Temporal reconstruction consumer | Shared rigid-motion, validity, depth, jitter, and reset producers above | Portable `vkr_metal_packet_temporal_resolve` or ADR-040's Apple MetalFX temporal scaler, selected before graph realization | Portable `vk_temporal_resolve`; no Vulkan temporal upscaler | **UNALIGNED**: MetalFX intentionally has no Vulkan algorithm counterpart. Its input contract uses normalized `previous_uv - current_uv`, active-content pixel scaling, separate jitter, non-reversed depth, and the exact preceding scaler frame. Metal orders an in-flight previous transform with a GPU shared-event dependency and resets when that predecessor is missing. Native MetalFX Release execution and capture pass, but Apple's Metal 4 API and GPU-validation wrappers abort inside the framework. Portable TAA remains the bilateral consumer |
 | Tonemap and FXAA | Exposure state above | `metal/msl/post/tonemap.metal` | `vulkan/slang/post/default.slang`, `post/tonemap.slangh` | **UNALIGNED**: source behavior agrees and all four authored on/off combinations pass on both backends from the same byte-identical HDR input. Missing: crossed final-color comparisons against the authored limits |
 | Text color and picking | None | `metal/msl/text/default.metal` | `vulkan/slang/text/default.slang` | **UNALIGNED**: sources agree and the same fixture renders non-degenerate color and picking output on both backends. The native picking payload digests differ; a crossed color, coverage, and ID comparison is missing |
 
@@ -146,6 +147,11 @@ tonemap bind at index 1. The transmission peel root binds at index 2. Reflection
 also walks nested draw, frame, geometry, visible-row, and packed-vertex records.
 The host transposes draw matrices only for the Slang-to-Metal vertex path through
 `vkr_metal_packet_slang_draw_matrix()`.
+
+The 32-byte Metal tonemap root keeps its size while using bytes 24-31 for
+`output_extent`. Scale `1.0` binds matching source and output extents. A
+non-unit Metal scale binds the physical target extent there while the source
+texture remains at the internal scene extent.
 
 | Work | Metal dispatch | Vulkan dispatch | State |
 | --- | --- | --- | --- |
@@ -491,9 +497,11 @@ normal orientation and primitive identity at resolve. Metal's opaque visibility
 fragment uses early fragment tests; cutout samples base alpha before writing;
 transmission peel rejects depth at or in front of the previous layer plus its
 epsilon. Metal G-buffer resolve reconstructs perspective-correct barycentrics
-in homogeneous clip space, derives texture gradients, decodes the packed
-vertex, and writes albedo, specular, octahedral normal, emissive/debug, motion,
-and validity outputs.
+in homogeneous clip space. It now derives center weights plus analytical X/Y
+gradients from one solve, matching Vulkan's derivative form with the required
+negative Metal framebuffer-Y conversion. It then decodes the packed vertex and
+writes albedo, specular, octahedral normal, emissive/debug, motion, and validity
+outputs.
 
 G-buffer resolve, deferred lighting, TAA, HZB, transmission shade, and
 transmission coverage dispatch `8x8` on both backends. Picking resolve is
@@ -551,6 +559,13 @@ edge threshold `max(0.0312, luma_max * 0.125)`, direction reduction factor
 `0.75`. In the Metal root, `reserved.x` enables ACES and `reserved.y` enables
 FXAA. Those enabled paths agree with Vulkan's fullscreen flags.
 
+At scale `1.0`, both backends sample one source pixel domain and FXAA steps in
+that domain. ADR-039 adds a Metal-only non-unit mode: the fragment derives UV
+from the root's physical `output_extent`, linearly samples the smaller HDR
+source, and keeps FXAA offsets in output pixels. Vulkan has no non-unit mode and
+rejects that configuration. This algorithm difference is explicit and does not
+advance the row beyond **UNALIGNED**.
+
 The tonemap-disabled path matches Metal on both backends: multiply by exposure,
 clamp negative values, then clamp the result to `[0, 1]`. Four backend-neutral
 cases cross tonemap on/off with FXAA on/off, and all four pass on both backends.
@@ -586,6 +601,45 @@ and picking digest
 `sha256:ebc8eb20d2027f9145306c2a6e0621dec642f5bd93d02efc725e06ef4262472b`.
 The state remains **UNALIGNED** until crossed comparisons evaluate color,
 coverage, and object IDs with documented limits.
+
+### 4.11 MetalFX temporal consumer — UNALIGNED
+
+ADR-040 reuses the existing temporal producers without changing their
+shader-visible ABI. `temporal_motion` stores `previous_uv - current_uv` from
+unjittered current and previous transforms. MetalFX expects the displacement
+from the current pixel to its previous-frame location, so the host sets
+`motionVectorScaleX/Y` to the active internal width/height. An object that moved
+right and down therefore supplies negative pixel displacement, matching the
+framework contract. Current Halton jitter is supplied separately through
+`jitterOffsetX/Y`; the motion vectors do not include it.
+
+The graph copies internal scene-linear `hdr_scene_color`, D32 device depth, and
+RG16F motion into native-sized private textures. `inputContentWidth/Height`
+select the active upper-left rectangle, `depthReversed` is false, and `reset`
+is true for any VKR temporal reset or invalid history. MetalFX writes
+native-resolution RGBA16F scene-linear HDR before automatic exposure, bloom,
+and tonemap. It owns its internal temporal history; VKR owns scaler lifetime,
+target-resize idle proof, graph-resource retirement, and transform history.
+
+MetalFX does not use the portable resolver's newest GPU-completed history
+policy. Its private history advances on each encode, so VKR selects the retained
+transform whose frame index exactly precedes the current scaler frame. The
+previous transform address, view-projection matrix, and source frame all come
+from that one instance. A missing exact predecessor resets MetalFX. Because the
+retained transform buffer is untracked and its producer may still be in flight,
+the queue waits on the producer's shared-event value before committing the
+consumer and retains the instance until the consuming submit completes. This
+orders GPU work without blocking the CPU.
+
+The MetalFX output has no Vulkan algorithm identity, so this row stays
+**UNALIGNED** even when both backends' shared producers are correct. The native
+2560x1440 Bistro capture from an 855x481 input passes with report
+`sha256:771443f42165c0b3f12c844888c80091c9d1f0cdd7d4a8e7382e3cfc420a09a8`.
+Metal API validation currently aborts inside Apple's MetalFX implementation
+because `_outputTextureBarrierStages` is unset; GPU/shader validation aborts
+when the framework sends `globalTraceObjectID` to a debug encoder that does not
+implement it. These are framework blockers, not validation passes. No private
+property or fence workaround is part of the renderer.
 
 ## 5. Cross-backend runtime witnesses
 
@@ -745,6 +799,13 @@ API and GPU shader validation in exactly one renderer process.
 | --- | --- | --- |
 | Deferred, packed rows, and four-layer compact transmission | `smoke.deferred.state_matrix.snapshot`, report `sha256:c370fa5509cbbed16ba700f21fb33cdd1ff5c5e499b5fe9ffe243191e83b86eb` | Nine capture children pass. Opaque buckets are `2/1/1/1`; transmission buckets are `1/5/1/1`; draw, compact, resolve, publication, and shadow-overflow counts are zero. Coverage-layer minima are `17970/17970/17970/17970`, which disagrees with Vulkan's `17970/10706/3040/2895` |
 | Focused Metal validation | `local.p20.metal.state_matrix.validation`, report `sha256:f4255516d35516a66719787c7a7c09d930d09edc39c7c430669d80745984edc2` | All 11 assertions pass with both validators enabled; no validation error, hazard, or fatal diagnostic occurs. The local diagnostic reports warmup instability and supplies no performance evidence |
+| Metal scale-0.4 Bistro performance mode | Five-process production orbit report `sha256:3a513d7118ced135611c91afe02c61d9787c22c675f4daa4f74bbe13a70e6940`; timestamp-on report `sha256:eb2be3217543ad3792ed7b0e8c5ce544b1a683a0a8c9b196f0bab813f0df3ba7` | Physical output is 2560x1440 and renderer-reported scene extent is 1024x576. Aggregate p95 is 11.931 ms with all correctness assertions passing. Both reports are local dirty-tree observations, and the main report also records warmup and work-volume authority failures. No portable speed or final-color parity claim is made |
+| Metal scale-0.4 focused validation | One-process report `sha256:3421ff468abf21de59570bb4dc7c4ea3d7b04292a09277cbd445ff8ec1219afc` | Debug output is 640x480 and renderer-reported scene extent is 256x192. Metal API and GPU shader validation are both enabled; the run and all three correctness assertions pass with no validator, sanitizer, or fatal diagnostic. This is diagnostic evidence, not timing evidence |
+| MetalFX dynamic Bistro performance before exact history ordering | Five-process production orbit report `sha256:fad5793a029f8e3af7db2cb01b2d8b9d862493c25bdbbc503bce599caa7c0363` | Physical output is 2560x1440; all measured frames use 855x481 input at scale 0.334 after 12 controller transitions. Aggregate frame-wall p95 is 12.704 ms across 1,500 frames, but one child reaches 13.595 ms and misses the 13.333 ms target. This predates the exact-predecessor correction and no longer measures the current implementation |
+| MetalFX moving-camera history correction | Before report `sha256:a35a6399299bc00733160341d6b7920ed9f012dff356b3c2e1ec1d049b7e58d0`; after report `sha256:82251bcbd3cba720145d1addfe9b7c19445e78af19e55595d92ad2e207a0af44`; no-history reference `sha256:c881cad9f0185508e531d2df0809fe91ec066929645e136f9f41f702b56a5e48` | The fixed-scale 1920x1080 orbit reconstructs from 960x540. Manual review of frames 4-6 shows that exact preceding-frame motion matches the spatial reference and removes the duplicated facade, spatial gaps, and displaced bright region. These are dirty-tree local diagnostics with no accepted baseline; broader sky, deformation, and disocclusion review remains open |
+| MetalFX post-correction timing observation | Incomplete five-run report `sha256:056aa1d0c7e691cc16ee56f4ddf1c9e84f889a5d746f58b119aa4d91c2cc1cd6`; completed child `sha256:304fca73a005b2b5ac28453c5d060fc0f19de2271fa7dcdd3062838cc5c39589` | One 300-frame child averages 11.734 ms with 14.143 ms p95 while scale ranges from 0.40 to 0.45. The parent stops when `Shadow.Cascade.1` appears in one pass catalog but not the other. This is non-authoritative gross-regression evidence and does not establish solid 75 FPS |
+| MetalFX native-output capture | Snapshot report `sha256:771443f42165c0b3f12c844888c80091c9d1f0cdd7d4a8e7382e3cfc420a09a8` | Final output is 2560x1440 from 855x481 active content; final-color digest is `sha256:cc01f02817d955cb54a0d152077052da27975e864313731759f04736caa2f397`. This is structural execution evidence, not an accepted baseline |
+| MetalFX validation-wrapper blocker | GPU-validation report `sha256:84880fc372c31c49eb7d93aa7dfb1515bd0e1b9936a8844a27f178389da9dd02`; current serialized API-only report `sha256:8191ce4cfaf63061acd834bedecb51cdfec7ec7e24c95798b71f6f659d5206b7` | Apple's GPU debug wrapper raises `-[MTL4GPUDebugComputeCommandEncoder globalTraceObjectID]: unrecognized selector`; API validation asserts `_outputTextureBarrierStages not set` inside MetalFX before measurement. Neither result validates VKR, and normal Release execution remains the only available MetalFX native gate on this OS/SDK |
 | Cascaded-shadow receiver | Five `smoke.shadow.receiver.*` reports: `sha256:a49e9f56ac7eb6633b46d1916e4369841035ec6386c5985b33595f6199d94bf7`, `sha256:64256412e311c339f831fb4cc481cbb4f23ff21c8c600e3ce4cbc867722cc1a8`, `sha256:cb7813baa459f13fb6ac3903dfe282d20e23c2273c3910defbda2f955f133f7a`, `sha256:697e9046c421b6e3a711a2833a92b317ab3d825e28418271006d2c9a9b635807`, and `sha256:a5d1b26213bd04c2b137e3f2647b383bea2c56447c2a262e9b7931c985e0db0c` | PCF 1/9/16/32 and 16-tap early-out-off all pass. Cascade 0 stays `sha256:d239441aabfe2b5cc30e46e3194a30d6694820660bb57b4b45edffa9b3f8a398`; every shadow-factor and final-color digest differs |
 | Tonemap/FXAA authored matrix | Four `smoke.post.tonemap_fxaa.*` reports: `sha256:e891075a3e8c982e81f8eb51541bbf4b35961f3e75ddd526af800832f16637d3`, `sha256:361d6f2f1c3bc67b28beccb6bc4eed81d4a34d41fb7c91e7a48e34d3af9b8f4e`, `sha256:8fc82d911b5ef7294d3890df2534b608960d1f4df622f1c6bc292593cfb61c2d`, and `sha256:fb4594ba66507b18a06cda1c1a1980c5b279975d0436eb4d5f54db51c0564c46` | All four pass from the exact Vulkan HDR digest `sha256:7a691b08cc91b3bd4e8b87e87ed37b2af05b87f55bc15eebfea61fc680a16116` and produce four distinct final outputs |
 | Text color and picking | `smoke.text.rendering.snapshot`, report `sha256:ae31212817546ad4a47e3753174a283bc96b1b7a7f641ded5b977194e15801ce` | System, bitmap, UI MTSDF, and world MTSDF text are visible; final color is `sha256:7ce12e1724df9037b6735ff61cbcb9216e1afaf9e781a9733ecf28509fb91b62`; picking is `sha256:6d646162b03d58abc081b59e02c2b60bcc2883e9e6b6636ba37a325d7aafa186` |
