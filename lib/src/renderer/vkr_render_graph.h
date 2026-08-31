@@ -667,7 +667,10 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t window_height;   /**< Window height */
   uint32_t viewport_width;  /**< Viewport width */
   uint32_t viewport_height; /**< Viewport height */
-  bool8_t editor_enabled;   /**< Whether editor is enabled */
+  float32_t render_scale;   /**< Scene extent relative to the target. */
+  /** True only for the MetalFX temporal reconstruction topology. */
+  bool8_t metalfx_enabled;
+  bool8_t editor_enabled; /**< Whether editor is enabled */
   /** True only when a completion-protected HZB history generation is valid. */
   bool8_t hzb_history_valid;
   /** Metal P6 occupied-depth feedback is enabled for this packet. */

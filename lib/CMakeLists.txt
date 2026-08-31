@@ -332,9 +332,16 @@ if(APPLE)
     find_library(COCOA_LIBRARY Cocoa)
     find_library(FOUNDATION_LIBRARY Foundation)
     find_library(METAL_LIBRARY Metal)
+    find_library(METALFX_LIBRARY MetalFX)
     find_library(QUARTZCORE_LIBRARY QuartzCore)
     find_library(GAMECONTROLLER_LIBRARY GameController)
-    target_link_libraries(renderer_lib PRIVATE ${COCOA_LIBRARY} ${FOUNDATION_LIBRARY} ${METAL_LIBRARY} ${QUARTZCORE_LIBRARY} ${GAMECONTROLLER_LIBRARY})
+    target_link_libraries(renderer_lib PRIVATE
+        ${COCOA_LIBRARY}
+        ${FOUNDATION_LIBRARY}
+        ${METAL_LIBRARY}
+        ${METALFX_LIBRARY}
+        ${QUARTZCORE_LIBRARY}
+        ${GAMECONTROLLER_LIBRARY})
 elseif(WIN32)
     target_compile_definitions(renderer_lib PRIVATE PLATFORM_WINDOWS=1)
     target_link_libraries(renderer_lib PRIVATE user32.lib winmm.lib Xinput.lib)

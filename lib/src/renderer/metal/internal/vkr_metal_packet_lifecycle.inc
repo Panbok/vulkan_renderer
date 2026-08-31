@@ -116,6 +116,24 @@ bool8_t vkr_metal_packet_renderer_wait_idle(VkrMetalPacketRenderer *renderer) {
 }
 
 bool8_t
+vkr_metal_packet_renderer_resize_metalfx(VkrMetalPacketRenderer *renderer,
+                                         uint32_t width, uint32_t height) {
+  if (!renderer || width == 0u || height == 0u || renderer->frame_prepared ||
+      renderer->active_command_slot)
+    return false_v;
+  if (!renderer->metalfx_enabled || (renderer->metalfx_output_width == width &&
+                                     renderer->metalfx_output_height == height))
+    return true_v;
+  if (@available(macOS 26.0, *)) {
+    if (renderer->completion.signaledValue < renderer->submit_value)
+      return false_v;
+    return vkr_metal_packet_create_metalfx_temporal_scaler(renderer, width,
+                                                           height);
+  }
+  return false_v;
+}
+
+bool8_t
 vkr_metal_packet_renderer_cancel_frame(VkrMetalPacketRenderer *renderer) {
   if (@available(macOS 26.0, *)) {
     vkr_metal_packet_finish_frame(renderer, false_v, false_v);
@@ -621,6 +639,7 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
     [renderer->blend_pipeline release];
     [renderer->overlay_pipeline release];
     [renderer->picking_pipeline release];
+    [renderer->metalfx_temporal_scaler release];
     [renderer->compiler release];
     [renderer->compiler_options release];
     [renderer->pipeline_archive release];

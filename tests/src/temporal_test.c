@@ -1,5 +1,6 @@
 #include "temporal_test.h"
 
+#include "renderer/vkr_dynamic_resolution.h"
 #include "renderer/vkr_temporal.h"
 
 #include <assert.h>
@@ -110,12 +111,124 @@ static void test_temporal_rotation_cut(void) {
   printf("  test_temporal_rotation_cut PASSED\n");
 }
 
+static void test_dynamic_resolution_config(void) {
+  printf("  Running test_dynamic_resolution_config...\n");
+  VkrDynamicResolutionConfig normalized = {0};
+  float32_t initial_scale = 0.0f;
+  assert(vkr_dynamic_resolution_config_normalize(
+      &(VkrDynamicResolutionConfig){.enabled = true_v}, 0.73f, &normalized,
+      &initial_scale));
+  assert(temporal_near(normalized.min_scale, 0.5f));
+  assert(temporal_near(normalized.max_scale, 1.0f));
+  assert(temporal_near(normalized.target_frame_ms, 1000.0f / 75.0f));
+  assert(temporal_near(initial_scale, 0.75f));
+
+  assert(vkr_dynamic_resolution_config_normalize(
+      &(VkrDynamicResolutionConfig){.min_scale = 0.334f,
+                                    .max_scale = 1.0f,
+                                    .target_frame_ms = 13.0f,
+                                    .enabled = true_v},
+      0.34f, &normalized, &initial_scale));
+  assert(temporal_near(normalized.min_scale, 0.334f));
+  assert(temporal_near(initial_scale, 0.334f));
+
+  assert(!vkr_dynamic_resolution_config_normalize(
+      &(VkrDynamicResolutionConfig){.min_scale = 0.99f,
+                                    .max_scale = 0.99f,
+                                    .target_frame_ms = 13.0f,
+                                    .enabled = true_v},
+      1.0f, &normalized, &initial_scale));
+  assert(!vkr_dynamic_resolution_config_normalize(
+      &(VkrDynamicResolutionConfig){.min_scale = 0.5f,
+                                    .max_scale = 1.0f,
+                                    .target_frame_ms = NAN,
+                                    .enabled = true_v},
+      1.0f, &normalized, &initial_scale));
+  assert(!vkr_dynamic_resolution_config_normalize(
+      &(VkrDynamicResolutionConfig){.min_scale = 0.5f,
+                                    .max_scale = 1.0f,
+                                    .target_frame_ms = 2.0e13f,
+                                    .enabled = true_v},
+      1.0f, &normalized, &initial_scale));
+
+  assert(vkr_dynamic_resolution_config_normalize(
+      &(VkrDynamicResolutionConfig){0}, 0.4f, &normalized, &initial_scale));
+  assert(!normalized.enabled && temporal_near(initial_scale, 0.4f));
+  printf("  test_dynamic_resolution_config PASSED\n");
+}
+
+static void test_dynamic_resolution_hysteresis(void) {
+  printf("  Running test_dynamic_resolution_hysteresis...\n");
+  const VkrDynamicResolutionConfig config = {
+      .min_scale = 0.5f,
+      .max_scale = 1.0f,
+      .target_frame_ms = 1000.0f / 75.0f,
+      .enabled = true_v,
+  };
+  VkrDynamicResolutionState state = {0};
+  vkr_dynamic_resolution_init(&state, &config, 1.0f);
+  float32_t next_scale = 0.0f;
+
+  assert(
+      !vkr_dynamic_resolution_update(&state, 1u, 20000000u, 1.0f, &next_scale));
+  assert(
+      !vkr_dynamic_resolution_update(&state, 2u, 20000000u, 1.0f, &next_scale));
+  assert(
+      vkr_dynamic_resolution_update(&state, 3u, 20000000u, 1.0f, &next_scale));
+  assert(temporal_near(next_scale, 0.95f));
+  assert(state.transition_count == 1u);
+
+  assert(
+      !vkr_dynamic_resolution_update(&state, 4u, 5000000u, 1.0f, &next_scale));
+  assert(state.last_submit_value == 3u);
+  assert(
+      !vkr_dynamic_resolution_update(&state, 4u, 5000000u, 0.95f, &next_scale));
+  assert(
+      !vkr_dynamic_resolution_update(&state, 4u, 5000000u, 0.95f, &next_scale));
+
+  for (uint64_t submit = 5u; submit <= 33u; ++submit)
+    assert(!vkr_dynamic_resolution_update(&state, submit, 5000000u, 0.95f,
+                                          &next_scale));
+  for (uint64_t submit = 34u; submit < 78u; ++submit)
+    assert(!vkr_dynamic_resolution_update(&state, submit, 5000000u, 0.95f,
+                                          &next_scale));
+  assert(
+      vkr_dynamic_resolution_update(&state, 78u, 5000000u, 0.95f, &next_scale));
+  assert(temporal_near(next_scale, 1.0f));
+  assert(state.transition_count == 2u);
+
+  VkrDynamicResolutionState stable = {0};
+  vkr_dynamic_resolution_init(&stable, &config, 0.75f);
+  for (uint64_t submit = 1u; submit <= 100u; ++submit)
+    assert(!vkr_dynamic_resolution_update(&stable, submit, 12000000u, 0.75f,
+                                          &next_scale));
+  assert(stable.transition_count == 0u);
+
+  const VkrDynamicResolutionConfig endpoint_config = {
+      .min_scale = 0.334f,
+      .max_scale = 1.0f,
+      .target_frame_ms = 1000.0f / 75.0f,
+      .enabled = true_v,
+  };
+  VkrDynamicResolutionState endpoint = {0};
+  vkr_dynamic_resolution_init(&endpoint, &endpoint_config, 0.35f);
+  for (uint64_t submit = 1u; submit < 3u; ++submit)
+    assert(!vkr_dynamic_resolution_update(&endpoint, submit, 20000000u, 0.35f,
+                                          &next_scale));
+  assert(vkr_dynamic_resolution_update(&endpoint, 3u, 20000000u, 0.35f,
+                                       &next_scale));
+  assert(temporal_near(next_scale, 0.334f));
+  printf("  test_dynamic_resolution_hysteresis PASSED\n");
+}
+
 bool32_t run_temporal_tests(void) {
   printf("Running temporal tests...\n");
   test_temporal_jitter_and_commit();
   test_temporal_reset_reasons();
   test_temporal_sequence_repeats();
   test_temporal_rotation_cut();
+  test_dynamic_resolution_config();
+  test_dynamic_resolution_hysteresis();
   printf("Temporal tests PASSED\n");
   return true_v;
 }

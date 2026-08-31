@@ -24,6 +24,7 @@
 #include "renderer/systems/vkr_texture_system.h"
 #include "renderer/systems/vkr_ui_system.h"
 #include "renderer/systems/vkr_world_resources.h"
+#include "renderer/vkr_dynamic_resolution.h"
 #include "renderer/vkr_gpu_abi.h"
 #include "renderer/vkr_render_graph.h"
 #include "renderer/vkr_renderer.h"
@@ -129,6 +130,13 @@ struct s_RendererFrontend {
 
   VkrWindow *window;
   VkrPresentTargetConfig present_target;
+  /** Validated cold scene-resolution scale and its current pixel extent. */
+  float32_t render_scale;
+  VkrUpscaleMode upscale_mode;
+  VkrDynamicResolutionConfig dynamic_resolution_config;
+  VkrDynamicResolutionState dynamic_resolution_state;
+  uint32_t render_width;
+  uint32_t render_height;
   EventManager *event_manager;
   VkrRendererBackendType backend_type;
   VkrRendererImpl impl;

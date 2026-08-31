@@ -50,6 +50,11 @@ typedef struct VkrMetalPacketRendererConfig {
   /** Optional Metal 4 archive path used for cold capture and warm lookup. */
   const char *pipeline_archive_path;
   VkrMetalPacketTargetKind target_kind;
+  uint32_t target_width;
+  uint32_t target_height;
+  float32_t render_scale;
+  VkrUpscaleMode upscale_mode;
+  VkrDynamicResolutionConfig dynamic_resolution;
   /** Borrowed CAMetalLayer pointer; required only for WINDOW. */
   void *metal_layer;
   /** Requested window presentation policy; offscreen targets ignore it. */
@@ -164,6 +169,9 @@ typedef struct VkrMetalPacketResult {
   uint64_t submit_value;
   uint64_t source_frame_index;
   uint64_t gpu_submission_ns;
+  float32_t source_render_scale;
+  uint32_t source_render_width;
+  uint32_t source_render_height;
   VkrRendererImplGpuTimingReason gpu_submission_unavailable_reason;
   bool8_t gpu_submission_valid;
   uint32_t executed_pass_count;
@@ -341,13 +349,17 @@ bool8_t vkr_metal_packet_renderer_pass_timings_poll(
     VkrMetalPacketPassTiming *out_timings, uint32_t capacity,
     uint32_t *out_count);
 
-/** Copies the newest completed timing result after `after_submit_value`. */
+/** Copies the oldest retained completion after `after_submit_value`. */
 bool8_t vkr_metal_packet_renderer_submit_result_poll_next(
     VkrMetalPacketRenderer *renderer, uint64_t after_submit_value,
     VkrMetalPacketResult *out_result);
 
 /** Waits for submitted work without retiring live assets. */
 bool8_t vkr_metal_packet_renderer_wait_idle(VkrMetalPacketRenderer *renderer);
+/** Rebuilds the cold MetalFX scaler after the caller proves GPU idle. */
+bool8_t
+vkr_metal_packet_renderer_resize_metalfx(VkrMetalPacketRenderer *renderer,
+                                         uint32_t width, uint32_t height);
 uint64_t
 vkr_metal_packet_renderer_submit_value(const VkrMetalPacketRenderer *renderer);
 uint64_t vkr_metal_packet_renderer_completed_value(

@@ -72,6 +72,10 @@ typedef struct VkrRendererMetricsPassTable {
 #define VKR_RENDERER_IMPL_MEMORY_METRIC_MAX 96u
 
 typedef struct VkrRendererMetricIds {
+  VkrMetricId frame_render_scale;
+  VkrMetricId frame_render_width;
+  VkrMetricId frame_render_height;
+  VkrMetricId frame_dynamic_resolution_transitions;
   VkrMetricId world_draws_collected;
   VkrMetricId world_opaque_draws;
   VkrMetricId world_transmission_draws;

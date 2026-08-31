@@ -132,6 +132,13 @@ typedef struct ApplicationConfig {
   VkrRendererBackendType renderer_backend;
   VkrPresentTargetConfig present_target;
   VkrPresentMode requested_present_mode;
+  /** Internal scene resolution relative to the physical present target.
+   * Zero selects 1.0. Metal currently supports values in (0, 1]. */
+  float32_t render_scale;
+  /** Cold reconstruction path; zero preserves spatial sampling. */
+  VkrUpscaleMode upscale_mode;
+  /** Completion-driven policy; valid only for MetalFX temporal mode. */
+  VkrDynamicResolutionConfig dynamic_resolution;
   bool8_t capture_enabled;
   uint32_t capture_ring_capacity;
   uint64_t capture_max_batch_bytes;
@@ -446,6 +453,9 @@ bool8_t application_create(Application *application,
       .application_name = "vulkan_renderer",
       .present_target = config->present_target,
       .requested_present_mode = config->requested_present_mode,
+      .render_scale = config->render_scale,
+      .upscale_mode = config->upscale_mode,
+      .dynamic_resolution = config->dynamic_resolution,
       .capture_enabled = config->capture_enabled,
       .capture_ring_capacity = config->capture_ring_capacity,
       .capture_max_batch_bytes = config->capture_max_batch_bytes,

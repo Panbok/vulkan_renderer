@@ -37,6 +37,28 @@ typedef enum VkrRendererBackendType {
   VKR_RENDERER_BACKEND_TYPE_COUNT
 } VkrRendererBackendType;
 
+/** Scene-resolution reconstruction selected once at renderer initialization. */
+typedef enum VkrUpscaleMode {
+  /** Existing normalized linear sampling in the final fullscreen pass. */
+  VKR_UPSCALE_MODE_SPATIAL = 0,
+  /** MetalFX temporal reconstruction into native-resolution HDR. */
+  VKR_UPSCALE_MODE_METALFX_TEMPORAL,
+  VKR_UPSCALE_MODE_COUNT,
+} VkrUpscaleMode;
+
+/**
+ * Completion-feedback policy for bounded scene-resolution changes.
+ *
+ * Zeroed fields select the production defaults when `enabled` is true:
+ * 0.5 minimum scale, 1.0 maximum scale, and a 75 FPS GPU-work budget.
+ */
+typedef struct VkrDynamicResolutionConfig {
+  float32_t min_scale;
+  float32_t max_scale;
+  float32_t target_frame_ms;
+  bool8_t enabled;
+} VkrDynamicResolutionConfig;
+
 typedef enum VkrRendererError {
   VKR_RENDERER_ERROR_NONE = 0,
   VKR_RENDERER_ERROR_UNKNOWN,
@@ -440,6 +462,9 @@ typedef struct VkrDeviceInformation {
   uint32_t actual_target_image_count;
   uint32_t actual_target_width;
   uint32_t actual_target_height;
+  /** Scene-rendering extent after any backend-owned internal scale. */
+  uint32_t actual_render_width;
+  uint32_t actual_render_height;
   VkrSurfaceColorFormat actual_color_format;
   VkrSurfaceDepthFormat actual_depth_format;
   VkrSurfaceColorSpace actual_color_space;
@@ -1046,6 +1071,13 @@ typedef struct VkrRendererBackendConfig {
   VkrRendererBootMetrics *boot_metrics;
   VkrPresentTargetConfig present_target;
   VkrPresentMode requested_present_mode;
+  /** Internal scene resolution relative to the physical target. Zero selects
+   * 1.0. Values below 1.0 keep tonemap and UI at the target extent. */
+  float32_t render_scale;
+  /** Reconstruction path. Zero-initialized preserves spatial sampling. */
+  VkrUpscaleMode upscale_mode;
+  /** Valid only with VKR_UPSCALE_MODE_METALFX_TEMPORAL on Metal. */
+  VkrDynamicResolutionConfig dynamic_resolution;
   bool8_t capture_enabled;
   /** Diagnostic-only API validation. Never part of a performance profile. */
   bool8_t validation_enabled;

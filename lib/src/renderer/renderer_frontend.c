@@ -17,6 +17,7 @@
 #include "renderer/systems/vkr_ui_system.h"
 #include "renderer/systems/vkr_world_resources.h"
 #include "renderer/vkr_capture.h"
+#include "renderer/vkr_dynamic_resolution.h"
 #include "renderer/vkr_ibl_math.h"
 #include "renderer/vkr_render_packet.h"
 #include "renderer/vkr_renderer.h"
@@ -30,6 +31,22 @@ static bool8_t vkr_renderer_env_enabled(const char *name) {
   const char *value = name ? getenv(name) : NULL;
   return value && value[0] != '\0' && strcmp(value, "0") != 0 ? true_v
                                                               : false_v;
+}
+
+static uint32_t vkr_renderer_scaled_extent(uint32_t extent,
+                                           float32_t render_scale) {
+  return ClampBot((uint32_t)((float64_t)extent * (float64_t)render_scale + 0.5),
+                  1u);
+}
+
+static uint32_t vkr_renderer_scaled_pixel(uint32_t pixel,
+                                          uint32_t source_extent,
+                                          uint32_t target_extent) {
+  if (source_extent <= 1u || target_extent <= 1u)
+    return 0u;
+  return Min((uint32_t)((uint64_t)Min(pixel, source_extent - 1u) *
+                        (target_extent - 1u) / (source_extent - 1u)),
+             target_extent - 1u);
 }
 
 static VkrMetricReason
@@ -68,6 +85,9 @@ vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
       .submit_value = source->submit_value,
       .source_frame_index = source->source_frame_index,
       .gpu_submission_ns = source->gpu_submission_ns,
+      .source_render_scale = source->source_render_scale,
+      .source_render_width = source->source_render_width,
+      .source_render_height = source->source_render_height,
       .gpu_submission_unavailable_reason =
           source->gpu_submission_unavailable_reason,
       .gpu_submission_valid = source->gpu_submission_valid,
@@ -333,6 +353,8 @@ renderer_impl_metal_submit_packet(void *state, const VkrRenderPacket *packet,
                                   VkrRendererFrameMetrics *out_metrics,
                                   VkrValidationError *out_validation_error);
 static VkrRendererError renderer_impl_metal_cancel_frame(void *state);
+static void renderer_impl_metal_resize(void *state, uint32_t width,
+                                       uint32_t height);
 static void renderer_impl_no_resize(void *state, uint32_t width,
                                     uint32_t height);
 static VkrRendererError renderer_impl_metal_present_target_recreate(
@@ -367,7 +389,7 @@ static const VkrRendererImplOps renderer_impl_metal_ops = {
     .prepare_frame = renderer_impl_metal_prepare_frame,
     .submit_packet = renderer_impl_metal_submit_packet,
     .cancel_frame = renderer_impl_metal_cancel_frame,
-    .resize = renderer_impl_no_resize,
+    .resize = renderer_impl_metal_resize,
     .present_target_recreate = renderer_impl_metal_present_target_recreate,
     .frame_in_flight_index = renderer_impl_metal_frame_in_flight_index,
     .capture_poll = renderer_impl_metal_capture_poll,
@@ -626,8 +648,6 @@ renderer_impl_metal_initialize(void *state, VkrWindow *window, uint32_t width,
                                VkrDeviceRequirements *device_requirements,
                                const VkrRendererBackendConfig *backend_config,
                                VkrRendererError *out_error) {
-  (void)width;
-  (void)height;
   (void)device_requirements;
   RendererFrontend *renderer = state;
 #if defined(PLATFORM_APPLE)
@@ -657,6 +677,11 @@ renderer_impl_metal_initialize(void *state, VkrWindow *window, uint32_t width,
           renderer->present_target.kind == VKR_PRESENT_TARGET_OFFSCREEN
               ? VKR_METAL_PACKET_TARGET_OFFSCREEN
               : VKR_METAL_PACKET_TARGET_WINDOW,
+      .target_width = width,
+      .target_height = height,
+      .render_scale = renderer->render_scale,
+      .upscale_mode = renderer->upscale_mode,
+      .dynamic_resolution = renderer->dynamic_resolution_config,
       .metal_layer = window ? vkr_window_get_metal_layer(window) : NULL,
       .requested_present_mode = backend_config->requested_present_mode,
       .heap_size = placement_heap_size,
@@ -822,6 +847,52 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   VkrPresentTargetConfig requested_target = backend_config
                                                 ? backend_config->present_target
                                                 : (VkrPresentTargetConfig){0};
+  float32_t requested_render_scale =
+      backend_config && backend_config->render_scale != 0.0f
+          ? backend_config->render_scale
+          : 1.0f;
+  const VkrUpscaleMode requested_upscale_mode =
+      backend_config ? backend_config->upscale_mode : VKR_UPSCALE_MODE_SPATIAL;
+  VkrDynamicResolutionConfig requested_dynamic_resolution =
+      backend_config ? backend_config->dynamic_resolution
+                     : (VkrDynamicResolutionConfig){0};
+  if (!isfinite(requested_render_scale) || requested_render_scale <= 0.0f ||
+      requested_render_scale > 1.0f) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    log_error("Renderer render scale must be finite and in (0, 1]");
+    return false_v;
+  }
+  if (backend_type != VKR_RENDERER_BACKEND_TYPE_METAL &&
+      requested_render_scale != 1.0f) {
+    *out_error = VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
+    log_error("Internal render scale is currently supported only by Metal");
+    return false_v;
+  }
+  if (requested_upscale_mode < VKR_UPSCALE_MODE_SPATIAL ||
+      requested_upscale_mode >= VKR_UPSCALE_MODE_COUNT) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    log_error("Renderer upscale mode is invalid");
+    return false_v;
+  }
+  if (requested_upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL &&
+      backend_type != VKR_RENDERER_BACKEND_TYPE_METAL) {
+    *out_error = VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
+    log_error("MetalFX temporal upscaling requires the Metal backend");
+    return false_v;
+  }
+  if (requested_dynamic_resolution.enabled &&
+      requested_upscale_mode != VKR_UPSCALE_MODE_METALFX_TEMPORAL) {
+    *out_error = VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
+    log_error("Dynamic resolution requires MetalFX temporal upscaling");
+    return false_v;
+  }
+  if (!vkr_dynamic_resolution_config_normalize(
+          &requested_dynamic_resolution, requested_render_scale,
+          &requested_dynamic_resolution, &requested_render_scale)) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    log_error("Dynamic-resolution scale bounds or frame budget are invalid");
+    return false_v;
+  }
   if (requested_target.kind == VKR_PRESENT_TARGET_OFFSCREEN) {
     if (requested_target.width == 0 || requested_target.height == 0 ||
         requested_target.image_count == 0) {
@@ -887,6 +958,12 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   renderer->impl.state = renderer;
   renderer->window = window;
   renderer->present_target = requested_target;
+  renderer->render_scale = requested_render_scale;
+  renderer->upscale_mode = requested_upscale_mode;
+  renderer->dynamic_resolution_config = requested_dynamic_resolution;
+  vkr_dynamic_resolution_init(&renderer->dynamic_resolution_state,
+                              &requested_dynamic_resolution,
+                              requested_render_scale);
   renderer->event_manager = event_manager;
   renderer->frame_active = false;
   renderer->metal_renderer = NULL;
@@ -921,7 +998,9 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   renderer->camera_controller = (VkrCameraController){0};
   renderer->temporal_state = (VkrTemporalState){0};
   renderer->temporal_reset_reasons = 0u;
-  renderer->temporal_enabled = !vkr_renderer_env_enabled("VKR_TAA_DISABLED");
+  renderer->temporal_enabled =
+      requested_upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL ||
+      !vkr_renderer_env_enabled("VKR_TAA_DISABLED");
   renderer->exposure_state = (VkrExposureState){0};
   renderer->exposure_reset_reasons = 0u;
   /* Production enables bloom, and the environment override exists for the same
@@ -990,6 +1069,10 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
                                    : vkr_window_get_pixel_size(window);
   renderer->last_window_width = initial.width;
   renderer->last_window_height = initial.height;
+  renderer->render_width =
+      vkr_renderer_scaled_extent(initial.width, renderer->render_scale);
+  renderer->render_height =
+      vkr_renderer_scaled_extent(initial.height, renderer->render_scale);
   if (renderer->window) {
     renderer->window->width = initial.width;
     renderer->window->height = initial.height;
@@ -1001,10 +1084,16 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
       .application_name = "vulkan_renderer",
       .boot_metrics = &renderer->boot_metrics,
       .present_target = requested_target,
+      .render_scale = requested_render_scale,
+      .upscale_mode = requested_upscale_mode,
+      .dynamic_resolution = requested_dynamic_resolution,
   };
   if (backend_config) {
     resolved_backend_config = *backend_config;
     resolved_backend_config.boot_metrics = &renderer->boot_metrics;
+    resolved_backend_config.render_scale = requested_render_scale;
+    resolved_backend_config.upscale_mode = requested_upscale_mode;
+    resolved_backend_config.dynamic_resolution = requested_dynamic_resolution;
   }
   const VkrRendererBackendConfig *backend_cfg = &resolved_backend_config;
   if (!renderer->impl.ops || !renderer->impl.ops->initialize ||
@@ -1135,12 +1224,19 @@ static void vkr_renderer_prepare_packet(RendererFrontend *rf,
                                         const VkrRenderPacket *packet,
                                         VkrRendererPreparedPacket *prepared) {
   prepared->packet = *packet;
-  const uint32_t temporal_width = packet->frame.viewport_width
+  const bool8_t scaled = rf->render_scale != 1.0f;
+  const uint32_t temporal_width = scaled ? rf->render_width
+                                  : packet->frame.viewport_width
                                       ? packet->frame.viewport_width
                                       : packet->frame.window_width;
-  const uint32_t temporal_height = packet->frame.viewport_height
+  const uint32_t temporal_height = scaled ? rf->render_height
+                                   : packet->frame.viewport_height
                                        ? packet->frame.viewport_height
                                        : packet->frame.window_height;
+  if (scaled) {
+    prepared->packet.frame.viewport_width = temporal_width;
+    prepared->packet.frame.viewport_height = temporal_height;
+  }
   /* The indirect-diffuse capture channel must contain the environment diffuse
      term and nothing else, so its two frame-coupled post stages are resolved
      off here at the cold boundary rather than branched on per pixel. */
@@ -1415,6 +1511,8 @@ static void renderer_impl_metal_get_device_information(
           renderer->impl.caps.present_target_image_count,
       .actual_target_width = renderer->last_window_width,
       .actual_target_height = renderer->last_window_height,
+      .actual_render_width = renderer->render_width,
+      .actual_render_height = renderer->render_height,
       .actual_color_format =
           renderer->present_target.kind == VKR_PRESENT_TARGET_OFFSCREEN
               ? VKR_SURFACE_COLOR_FORMAT_RGBA8_SRGB
@@ -1517,6 +1615,8 @@ static void renderer_impl_vulkan_get_device_information(
       .actual_target_image_count = renderer->present_target.image_count,
       .actual_target_width = renderer->last_window_width,
       .actual_target_height = renderer->last_window_height,
+      .actual_render_width = renderer->last_window_width,
+      .actual_render_height = renderer->last_window_height,
       .actual_color_format = color_format,
       .actual_depth_format = depth_format,
       .actual_color_space = color_space,
@@ -1801,6 +1901,19 @@ static void renderer_impl_no_resize(void *state, uint32_t width,
   (void)height;
 }
 
+static void renderer_impl_metal_resize(void *state, uint32_t width,
+                                       uint32_t height) {
+  RendererFrontend *renderer = state;
+  if (!renderer ||
+      renderer->upscale_mode != VKR_UPSCALE_MODE_METALFX_TEMPORAL ||
+      width == 0u || height == 0u)
+    return;
+  if (renderer_impl_metal_wait_idle(state) != VKR_RENDERER_ERROR_NONE ||
+      !vkr_metal_packet_renderer_resize_metalfx(renderer->metal_renderer, width,
+                                                height))
+    log_error("MetalFX temporal scaler resize failed for %ux%u", width, height);
+}
+
 static VkrRendererError renderer_impl_metal_present_target_recreate(
     void *state, uint32_t width, uint32_t height, uint32_t image_count) {
   (void)image_count;
@@ -1813,6 +1926,9 @@ static VkrRendererError renderer_impl_metal_present_target_recreate(
   renderer->present_target.height = height;
   renderer->present_target.image_count =
       renderer->impl.caps.present_target_image_count;
+  if (!vkr_metal_packet_renderer_resize_metalfx(renderer->metal_renderer, width,
+                                                height))
+    return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
   return VKR_RENDERER_ERROR_NONE;
 }
 
@@ -2328,6 +2444,24 @@ renderer_impl_metal_prepare_frame(void *state, VkrFrameSetup *out_setup) {
     rf->last_window_width = pixels.width;
     rf->last_window_height = pixels.height;
   }
+  rf->timing_completed_ready = renderer_impl_metal_poll_submit_result(
+      rf, rf->timing_last_completed_submit_value, &rf->timing_result);
+  if (rf->timing_completed_ready) {
+    rf->timing_last_completed_submit_value = rf->timing_result.submit_value;
+    float32_t next_scale = rf->render_scale;
+    if (rf->timing_result.gpu_submission_valid &&
+        vkr_dynamic_resolution_update(
+            &rf->dynamic_resolution_state, rf->timing_result.submit_value,
+            rf->timing_result.gpu_submission_ns,
+            rf->timing_result.source_render_scale, &next_scale)) {
+      rf->render_scale = next_scale;
+      rf->temporal_reset_reasons |= VKR_TEMPORAL_RESET_EXPLICIT;
+    }
+  }
+  rf->render_width =
+      vkr_renderer_scaled_extent(rf->last_window_width, rf->render_scale);
+  rf->render_height =
+      vkr_renderer_scaled_extent(rf->last_window_height, rf->render_scale);
   rf->frame_active = true_v;
   if (!renderer_frontend_pump_assets(rf)) {
     rf->frame_active = false_v;
@@ -2341,8 +2475,10 @@ renderer_impl_metal_prepare_frame(void *state, VkrFrameSetup *out_setup) {
       .target_height = rf->last_window_height,
       .window_width = rf->last_window_width,
       .window_height = rf->last_window_height,
-      .viewport_width = rf->last_window_width,
-      .viewport_height = rf->last_window_height,
+      .viewport_width = rf->render_width,
+      .viewport_height = rf->render_height,
+      .render_scale = rf->render_scale,
+      .metalfx_enabled = rf->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL,
       .picking_pending = false_v,
       .target_color_format = rf->impl.caps.present_color_format,
       .target_depth_format = rf->impl.caps.present_depth_format,
@@ -2371,11 +2507,6 @@ renderer_impl_metal_prepare_frame(void *state, VkrFrameSetup *out_setup) {
   }
   frame.image_index =
       vkr_metal_packet_renderer_frame_image_index(rf->metal_renderer);
-  rf->timing_completed_ready = renderer_impl_metal_poll_submit_result(
-      rf, rf->timing_last_completed_submit_value, &rf->timing_result);
-  if (rf->timing_completed_ready) {
-    rf->timing_last_completed_submit_value = rf->timing_result.submit_value;
-  }
   rf->frame_number++;
   MemZero(&rf->frame_metrics, sizeof(rf->frame_metrics));
   *out_setup = (VkrFrameSetup){
@@ -2452,10 +2583,35 @@ renderer_impl_metal_submit_packet(void *state, const VkrRenderPacket *packet,
         out_validation_error, VKR_RENDERER_ERROR_FRAME_IN_PROGRESS, "frame",
         "frame is not active; call vkr_renderer_prepare_frame first");
   }
+  if ((rf->render_scale != 1.0f ||
+       rf->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL) &&
+      packet->frame.editor_enabled) {
+    const VkrRendererError cancel_error = renderer_impl_metal_cancel_frame(rf);
+    if (cancel_error != VKR_RENDERER_ERROR_NONE) {
+      return vkr_renderer_validation_fail(
+          out_validation_error, cancel_error, "frame",
+          "failed to cancel the active frame after editor reconstruction "
+          "rejection");
+    }
+    return vkr_renderer_validation_fail(
+        out_validation_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+        "packet.frame.editor_enabled",
+        "scaled or MetalFX reconstruction does not support the editor "
+        "viewport");
+  }
 
 #if defined(PLATFORM_APPLE)
   VkrRendererPreparedPacket prepared;
   vkr_renderer_prepare_packet(rf, packet, &prepared);
+  VkrPickingPassPayload scaled_picking = {0};
+  if (rf->render_scale != 1.0f && prepared.packet.picking) {
+    scaled_picking = *prepared.packet.picking;
+    scaled_picking.x = vkr_renderer_scaled_pixel(
+        scaled_picking.x, packet->frame.window_width, rf->render_width);
+    scaled_picking.y = vkr_renderer_scaled_pixel(
+        scaled_picking.y, packet->frame.window_height, rf->render_height);
+    prepared.packet.picking = &scaled_picking;
+  }
 
   VkrMetalPacketResult result = {0};
   const bool8_t submitted = vkr_metal_packet_renderer_submit_packet(
@@ -2954,8 +3110,6 @@ vkr_renderer_submit_packet(VkrRendererFrontendHandle renderer,
 void vkr_renderer_resize(VkrRendererFrontendHandle renderer, uint32_t width,
                          uint32_t height) {
   assert_log(renderer != NULL, "Renderer is NULL");
-
-  // log_debug("Resizing renderer to %d %d", width, height);
 
   RendererFrontend *rf = (RendererFrontend *)renderer;
 

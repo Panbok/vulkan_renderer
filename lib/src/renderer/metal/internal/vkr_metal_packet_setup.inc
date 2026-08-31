@@ -1464,6 +1464,99 @@ vkr_internal bool8_t vkr_metal_packet_convert_equirect(
   return vkr_metal_packet_submit_upload(renderer, encoder, slice);
 }
 
+vkr_internal bool8_t vkr_metal_packet_create_metalfx_temporal_scaler(
+    VkrMetalPacketRenderer *renderer, uint32_t output_width,
+    uint32_t output_height) API_AVAILABLE(macos(26.0)) {
+  if (!renderer || !renderer->metalfx_enabled)
+    return true_v;
+  if (!renderer->device || !renderer->compiler || output_width == 0u ||
+      output_height == 0u ||
+      ![MTLFXTemporalScalerDescriptor supportsDevice:renderer->device] ||
+      ![MTLFXTemporalScalerDescriptor supportsMetal4FX:renderer->device]) {
+    log_error("MetalFX temporal scaling is unavailable on the selected GPU");
+    return false_v;
+  }
+  const float supported_min = [MTLFXTemporalScalerDescriptor
+      supportedInputContentMinScaleForDevice:renderer->device];
+  const float supported_max = [MTLFXTemporalScalerDescriptor
+      supportedInputContentMaxScaleForDevice:renderer->device];
+  const uint32_t widest_content =
+      MAX((uint32_t)((float64_t)output_width *
+                         (float64_t)renderer->metalfx_max_render_scale +
+                     0.5),
+          1u);
+  const uint32_t tallest_content =
+      MAX((uint32_t)((float64_t)output_height *
+                         (float64_t)renderer->metalfx_max_render_scale +
+                     0.5),
+          1u);
+  const uint32_t narrowest_content =
+      MAX((uint32_t)((float64_t)output_width *
+                         (float64_t)renderer->metalfx_min_render_scale +
+                     0.5),
+          1u);
+  const uint32_t shortest_content =
+      MAX((uint32_t)((float64_t)output_height *
+                         (float64_t)renderer->metalfx_min_render_scale +
+                     0.5),
+          1u);
+  const float requested_min_factor =
+      MIN((float)output_width / (float)widest_content,
+          (float)output_height / (float)tallest_content);
+  const float requested_max_factor =
+      MAX((float)output_width / (float)narrowest_content,
+          (float)output_height / (float)shortest_content);
+  if (!isfinite(supported_min) || !isfinite(supported_max) ||
+      !isfinite(requested_min_factor) || !isfinite(requested_max_factor) ||
+      requested_min_factor + 1e-5f < supported_min ||
+      requested_max_factor - 1e-5f > supported_max ||
+      requested_min_factor > requested_max_factor) {
+    log_error("MetalFX temporal render-scale range [%.3f, %.3f] requires "
+              "upscaling factors [%.3f, %.3f], outside the device range "
+              "[%.3f, %.3f]",
+              renderer->metalfx_min_render_scale,
+              renderer->metalfx_max_render_scale, requested_min_factor,
+              requested_max_factor, supported_min, supported_max);
+    return false_v;
+  }
+
+  MTLFXTemporalScalerDescriptor *descriptor =
+      [MTLFXTemporalScalerDescriptor new];
+  descriptor.colorTextureFormat = MTLPixelFormatRGBA16Float;
+  descriptor.depthTextureFormat = MTLPixelFormatDepth32Float;
+  descriptor.motionTextureFormat = MTLPixelFormatRG16Float;
+  descriptor.outputTextureFormat = MTLPixelFormatRGBA16Float;
+  descriptor.inputWidth = output_width;
+  descriptor.inputHeight = output_height;
+  descriptor.outputWidth = output_width;
+  descriptor.outputHeight = output_height;
+  descriptor.autoExposureEnabled = YES;
+  descriptor.requiresSynchronousInitialization = YES;
+  descriptor.inputContentPropertiesEnabled = YES;
+  descriptor.inputContentMinScale = requested_min_factor;
+  descriptor.inputContentMaxScale = requested_max_factor;
+  descriptor.reactiveMaskTextureEnabled = NO;
+  id<MTL4FXTemporalScaler> scaler =
+      [descriptor newTemporalScalerWithDevice:renderer->device
+                                     compiler:renderer->compiler];
+  [descriptor release];
+  if (!scaler) {
+    log_error("MetalFX temporal scaler creation failed for %ux%u", output_width,
+              output_height);
+    return false_v;
+  }
+  [renderer->metalfx_temporal_scaler release];
+  renderer->metalfx_temporal_scaler = scaler;
+  renderer->metalfx_output_width = output_width;
+  renderer->metalfx_output_height = output_height;
+  log_info("MetalFX temporal scaler: %ux%u, render scale [%.2f, %.2f], "
+           "upscaling factor [%.2f, %.2f]",
+           output_width, output_height, renderer->metalfx_min_render_scale,
+           renderer->metalfx_max_render_scale, requested_min_factor,
+           requested_max_factor);
+  return true_v;
+}
+
 bool8_t
 vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
                                  VkrMetalPacketRenderer **out_renderer) {
@@ -1489,6 +1582,11 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
               VKR_METAL_PACKET_ROOT_ALIGNMENT !=
           0 ||
       config->target_kind > VKR_METAL_PACKET_TARGET_WINDOW ||
+      config->upscale_mode >= VKR_UPSCALE_MODE_COUNT ||
+      (config->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL &&
+       (config->target_width == 0u || config->target_height == 0u ||
+        !isfinite(config->render_scale) || config->render_scale <= 0.0f ||
+        config->render_scale > 1.0f)) ||
       (config->target_kind == VKR_METAL_PACKET_TARGET_WINDOW &&
        !config->metal_layer))
     return false_v;
@@ -1562,6 +1660,18 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
     renderer->target_kind = config->target_kind;
     renderer->srgb_output = config->srgb_output;
     renderer->tonemap_enabled = config->tonemap_enabled;
+    renderer->metalfx_enabled =
+        config->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL;
+    renderer->metalfx_dynamic_resolution_enabled =
+        renderer->metalfx_enabled && config->dynamic_resolution.enabled;
+    renderer->metalfx_min_render_scale =
+        config->dynamic_resolution.enabled
+            ? config->dynamic_resolution.min_scale
+            : config->render_scale;
+    renderer->metalfx_max_render_scale =
+        config->dynamic_resolution.enabled
+            ? config->dynamic_resolution.max_scale
+            : config->render_scale;
     renderer->convert_vulkan_clip_y = config->convert_vulkan_clip_y;
     renderer->fxaa_enabled = config->fxaa_enabled;
     renderer->synchronous_validation_readback =
@@ -1733,6 +1843,8 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
         [renderer->device supportsFamily:MTLGPUFamilyMetal4] &&
         vkr_metal_packet_create_compiler(renderer,
                                          config->pipeline_archive_path) &&
+        vkr_metal_packet_create_metalfx_temporal_scaler(
+            renderer, config->target_width, config->target_height) &&
         renderer->queue && renderer->completion && commit_feedback_created &&
         renderer->timestamp_frequency > 0u;
     if (config->target_kind == VKR_METAL_PACKET_TARGET_WINDOW) {

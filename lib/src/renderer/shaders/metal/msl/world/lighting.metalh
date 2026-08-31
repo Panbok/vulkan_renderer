@@ -17,8 +17,8 @@ float3 vkr_metal_packet_fresnel_roughness(float cosine, float3 f0,
                                           float roughness) {
   float f90 = saturate(max(f0.x, max(f0.y, f0.z)) * 25.0);
   float3 rough_f90 = f90 * (1.0 - roughness);
-  return f0 + (max(rough_f90, f0) - f0) *
-                  vkr_metal_packet_schlick_weight(cosine);
+  return f0 +
+         (max(rough_f90, f0) - f0) * vkr_metal_packet_schlick_weight(cosine);
 }
 
 float vkr_metal_packet_pbr_geometry_schlick(float no_x, float roughness) {
@@ -83,16 +83,16 @@ float3 vkr_metal_packet_direct_specular(float3 normal, float3 view,
 VkrMetalPacketDirectResult
 vkr_metal_packet_direct_deferred(float3 normal, float3 view, float3 light,
                                  float3 radiance, float3 diffuse_albedo,
-                                 float roughness, float3 f0) {
+                                 float roughness, float3 f0, float no_v,
+                                 float geometry_view) {
   float3 half_vector = normalize(view + light);
   float no_l = max(dot(normal, light), 0.0);
-  float no_v = max(dot(normal, view), 0.0);
   float3 fresnel =
       vkr_metal_packet_fresnel(max(dot(half_vector, view), 0.0), f0);
   float distribution =
       vkr_metal_packet_distribution(normal, half_vector, roughness);
-  float geometry = vkr_metal_packet_pbr_geometry_schlick(no_v, roughness) *
-                   vkr_metal_packet_pbr_geometry_schlick(no_l, roughness);
+  float geometry =
+      geometry_view * vkr_metal_packet_pbr_geometry_schlick(no_l, roughness);
   float3 specular =
       distribution * geometry * fresnel / max(4.0 * no_v * no_l, 1e-6);
   float3 scale = radiance * no_l;

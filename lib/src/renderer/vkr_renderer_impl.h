@@ -211,6 +211,9 @@ typedef struct VkrRendererImplSubmitResult {
   uint64_t submit_value;
   uint64_t source_frame_index;
   uint64_t gpu_submission_ns;
+  float32_t source_render_scale;
+  uint32_t source_render_width;
+  uint32_t source_render_height;
   VkrRendererImplGpuTimingReason gpu_submission_unavailable_reason;
   bool8_t gpu_submission_valid;
   uint32_t executed_pass_count;

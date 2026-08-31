@@ -320,6 +320,15 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
   renderer_metrics->previous.impl_memory_interval_contiguous = true_v;
   VkrRendererMetricIds *ids = &renderer_metrics->ids;
 
+  VKR_REGISTER_F64(frame_render_scale, "frame.render_scale",
+                   VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_UNIT_RATIO);
+  VKR_REGISTER_U64(frame_render_width, "frame.render_width",
+                   VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(frame_render_height, "frame.render_height",
+                   VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(frame_dynamic_resolution_transitions,
+                   "frame.dynamic_resolution_transitions",
+                   VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64_REQUIRED(world_draws_collected, "draw.world.draws_collected",
                             VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64_REQUIRED(world_opaque_draws, "draw.world.opaque_draws",
@@ -1212,6 +1221,11 @@ void vkr_renderer_metrics_collect(
   vkr_metrics_gauge_set_u64(metrics, ids->FIELD, (uint64_t)(VALUE))
 #define VKR_SET_F64(FIELD, VALUE)                                              \
   vkr_metrics_gauge_set_f64(metrics, ids->FIELD, (float64_t)(VALUE))
+  VKR_SET_F64(frame_render_scale, renderer->render_scale);
+  VKR_SET_U64(frame_render_width, renderer->render_width);
+  VKR_SET_U64(frame_render_height, renderer->render_height);
+  VKR_SET_U64(frame_dynamic_resolution_transitions,
+              renderer->dynamic_resolution_state.transition_count);
   const VkrExposureDebugSample *exposure = &context->frame_metrics->exposure;
   if (exposure->valid) {
     VKR_SET_U64(exposure_accepted_texels, exposure->state.accepted_texel_count);

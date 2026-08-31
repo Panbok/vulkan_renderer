@@ -171,6 +171,8 @@ vkr_global const VkrMetalPacketAbiField vkr_tonemap_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketTonemapRoot, reserved, "reserved", 8),
     VKR_ABI_FIELD(VkrMetalPacketTonemapRoot, exposure_state, "exposure_state",
                   16),
+    VKR_ABI_FIELD(VkrMetalPacketTonemapRoot, output_extent, "output_extent",
+                  24),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_equirect_root_fields[] = {

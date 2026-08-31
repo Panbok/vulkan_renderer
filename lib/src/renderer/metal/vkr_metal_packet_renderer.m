@@ -4,6 +4,7 @@
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#import <MetalFX/MetalFX.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <simd/simd.h>
 
@@ -31,6 +32,7 @@
 #include "renderer/vkr_renderer_metrics.h"
 #include "renderer/vkr_rg_json.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -144,6 +146,9 @@ typedef struct VkrMetalPacketGraphBufferInstance {
   VkrMetalBufferResource resource;
   uint64_t last_use_submit_value;
   uint64_t history_producer_submit_value;
+  Mat4 history_view_projection;
+  uint32_t history_width;
+  uint32_t history_height;
   uint64_t history_frame_index;
   uint64_t history_scene_generation;
   bool8_t history_valid;
@@ -478,6 +483,11 @@ struct VkrMetalPacketRenderer {
   VkrMetalPacketPassLabel *pass_labels;
   id<MTLDevice> device;
   id<MTL4Compiler> compiler;
+  id<MTL4FXTemporalScaler> metalfx_temporal_scaler;
+  uint32_t metalfx_output_width;
+  uint32_t metalfx_output_height;
+  float32_t metalfx_min_render_scale;
+  float32_t metalfx_max_render_scale;
   id<MTL4PipelineDataSetSerializer> pipeline_serializer;
   id<MTL4Archive> pipeline_archive;
   MTL4CompilerTaskOptions *compiler_options;
@@ -593,6 +603,8 @@ struct VkrMetalPacketRenderer {
   VkrPresentMode actual_present_mode;
   bool8_t srgb_output;
   bool8_t tonemap_enabled;
+  bool8_t metalfx_enabled;
+  bool8_t metalfx_dynamic_resolution_enabled;
   bool8_t deferred_candidate_drop_logged;
   bool8_t convert_vulkan_clip_y;
   bool8_t fxaa_enabled;

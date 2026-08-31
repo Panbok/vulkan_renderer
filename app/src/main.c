@@ -2768,6 +2768,16 @@ int main(int argc, char **argv) {
   config.app_arena_size = MB(1);
   config.target_frame_rate = 0;
   config.renderer_backend = renderer_backend;
+  if (renderer_backend == VKR_RENDERER_BACKEND_TYPE_METAL) {
+    config.render_scale = 0.8f;
+    config.upscale_mode = VKR_UPSCALE_MODE_METALFX_TEMPORAL;
+    config.dynamic_resolution = (VkrDynamicResolutionConfig){
+        .min_scale = 0.334f,
+        .max_scale = 1.0f,
+        .target_frame_ms = 1000.0f / 75.0f,
+        .enabled = true_v,
+    };
+  }
   config.metrics_config = (VkrMetricsConfig){
       .pass_gpu_timings = rg_gpu_timing_enabled,
       .submission_gpu_timings = submission_gpu_timing_enabled,

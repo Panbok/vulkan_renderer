@@ -457,7 +457,9 @@ static void vkr_metal_packet_resolve_defaults(
 }
 
 static bool vkr_metal_packet_perspective_barycentrics(
-    float2 point, thread const float4 (&clip)[3], thread float3 &barycentrics) {
+    float2 point, thread const float4 (&clip)[3], uint2 extent,
+    thread float3 &barycentrics, thread float3 &barycentric_dx,
+    thread float3 &barycentric_dy) {
   /* Solve the two homogeneous screen-point constraints plus sum(lambda)=1.
      Unlike divide-by-w affine reconstruction, this remains defined when an
      original triangle crosses the eye plane and Metal rasterizes its clipped
@@ -468,7 +470,10 @@ static bool vkr_metal_packet_perspective_barycentrics(
   float3 vertical =
       float3(clip[0].y - point.y * clip[0].w, clip[1].y - point.y * clip[1].w,
              clip[2].y - point.y * clip[2].w);
+  float3 clip_w = float3(clip[0].w, clip[1].w, clip[2].w);
   float3 weights = cross(horizontal, vertical);
+  float3 weights_dx = cross(-clip_w, vertical);
+  float3 weights_dy = cross(horizontal, -clip_w);
   /* A zero-area or edge-on triangle is legitimate mesh content, so these two
      magnitude guards stay. Finiteness follows from finite vertex positions and
      a finite view-projection, so the tests they were paired with are implied.
@@ -477,10 +482,17 @@ static bool vkr_metal_packet_perspective_barycentrics(
   if (scale <= 1e-12)
     return false;
   weights /= scale;
+  weights_dx /= scale;
+  weights_dy /= scale;
   float normalization = weights.x + weights.y + weights.z;
   if (abs(normalization) <= 1e-8)
     return false;
   barycentrics = weights / normalization;
+  barycentric_dx = (weights_dx - barycentrics * dot(weights_dx, float3(1.0))) /
+                   normalization * (2.0 / float(extent.x));
+  /* Metal maps increasing framebuffer Y to decreasing NDC Y. */
+  barycentric_dy = (weights_dy - barycentrics * dot(weights_dy, float3(1.0))) /
+                   normalization * (-2.0 / float(extent.y));
   return true;
 }
 
@@ -589,14 +601,8 @@ vkr_metal_packet_gbuffer_resolve(constant VkrMetalPacketGBufferResolveRoot &root
   float3 barycentric_dx;
   float3 barycentric_dy;
   if (!vkr_metal_packet_perspective_barycentrics(
-          vkr_metal_packet_resolve_ndc(center, root.extent), clip,
-          barycentric) ||
-      !vkr_metal_packet_perspective_barycentrics(
-          vkr_metal_packet_resolve_ndc(center + float2(1.0, 0.0), root.extent),
-          clip, barycentric_dx) ||
-      !vkr_metal_packet_perspective_barycentrics(
-          vkr_metal_packet_resolve_ndc(center + float2(0.0, 1.0), root.extent),
-          clip, barycentric_dy)) {
+          vkr_metal_packet_resolve_ndc(center, root.extent), clip, root.extent,
+          barycentric, barycentric_dx, barycentric_dy)) {
     atomic_fetch_add_explicit(&root.compaction_state->resolve_invalid_count, 1u,
                               memory_order_relaxed);
     vkr_metal_packet_resolve_defaults(root, pixel, -1.0);
@@ -607,12 +613,10 @@ vkr_metal_packet_gbuffer_resolve(constant VkrMetalPacketGBufferResolveRoot &root
                   vertices[2].texcoord};
   float2 texcoord =
       uv[0] * barycentric.x + uv[1] * barycentric.y + uv[2] * barycentric.z;
-  float2 texcoord_dx = uv[0] * barycentric_dx.x + uv[1] * barycentric_dx.y +
-                       uv[2] * barycentric_dx.z;
-  float2 texcoord_dy = uv[0] * barycentric_dy.x + uv[1] * barycentric_dy.y +
-                       uv[2] * barycentric_dy.z;
-  float2 gradient_x = texcoord_dx - texcoord;
-  float2 gradient_y = texcoord_dy - texcoord;
+  float2 gradient_x = uv[0] * barycentric_dx.x + uv[1] * barycentric_dx.y +
+                      uv[2] * barycentric_dx.z;
+  float2 gradient_y = uv[0] * barycentric_dy.x + uv[1] * barycentric_dy.y +
+                      uv[2] * barycentric_dy.z;
   /* Finite barycentrics and finite mesh texcoords give finite results here;
      the degenerate-triangle guard in the barycentric solve is what actually
      rejects this pixel. */
@@ -866,6 +870,7 @@ kernel void vkr_metal_packet_deferred_lighting(
   }
   float3 view = normalize(frame->view_position.xyz - world_position);
   float no_v = max(dot(normal, view), 0.0);
+  float geometry_view = vkr_metal_packet_pbr_geometry_schlick(no_v, roughness);
   float3 analytic_diffuse = 0.0;
   float3 analytic_specular = 0.0;
 
@@ -877,7 +882,7 @@ kernel void vkr_metal_packet_deferred_lighting(
         normal, view, normalize(-frame->directional_direction_enabled.xyz),
         frame->directional_color_intensity.rgb *
             frame->directional_color_intensity.w * shadow_sample.factor,
-        diffuse_albedo, roughness, f0);
+        diffuse_albedo, roughness, f0, no_v, geometry_view);
     analytic_diffuse = direct.diffuse;
     analytic_specular = direct.specular;
   }
@@ -940,7 +945,7 @@ kernel void vkr_metal_packet_deferred_lighting(
       }
       VkrMetalPacketDirectResult direct = vkr_metal_packet_direct_deferred(
           normal, view, light_direction, p1.rgb * p2.x * attenuation,
-          diffuse_albedo, roughness, f0);
+          diffuse_albedo, roughness, f0, no_v, geometry_view);
       analytic_diffuse += direct.diffuse;
       analytic_specular += direct.specular;
     }
@@ -1412,14 +1417,8 @@ static bool vkr_metal_packet_resolve_transmission_surface(
   float3 barycentric_dx;
   float3 barycentric_dy;
   if (!vkr_metal_packet_perspective_barycentrics(
-          vkr_metal_packet_resolve_ndc(center, root.extent), clip,
-          barycentric) ||
-      !vkr_metal_packet_perspective_barycentrics(
-          vkr_metal_packet_resolve_ndc(center + float2(1.0, 0.0), root.extent),
-          clip, barycentric_dx) ||
-      !vkr_metal_packet_perspective_barycentrics(
-          vkr_metal_packet_resolve_ndc(center + float2(0.0, 1.0), root.extent),
-          clip, barycentric_dy)) {
+          vkr_metal_packet_resolve_ndc(center, root.extent), clip, root.extent,
+          barycentric, barycentric_dx, barycentric_dy)) {
     atomic_fetch_add_explicit(&root.compaction_state->resolve_invalid_count, 1u,
                               memory_order_relaxed);
     return false;
@@ -1429,12 +1428,10 @@ static bool vkr_metal_packet_resolve_transmission_surface(
                   vertices[2].texcoord};
   float2 texcoord =
       uv[0] * barycentric.x + uv[1] * barycentric.y + uv[2] * barycentric.z;
-  float2 texcoord_dx = uv[0] * barycentric_dx.x + uv[1] * barycentric_dx.y +
-                       uv[2] * barycentric_dx.z;
-  float2 texcoord_dy = uv[0] * barycentric_dy.x + uv[1] * barycentric_dy.y +
-                       uv[2] * barycentric_dy.z;
-  float2 gradient_x = texcoord_dx - texcoord;
-  float2 gradient_y = texcoord_dy - texcoord;
+  float2 gradient_x = uv[0] * barycentric_dx.x + uv[1] * barycentric_dx.y +
+                      uv[2] * barycentric_dx.z;
+  float2 gradient_y = uv[0] * barycentric_dy.x + uv[1] * barycentric_dy.y +
+                      uv[2] * barycentric_dy.z;
   if (!all(isfinite(texcoord)) || !all(isfinite(gradient_x)) ||
       !all(isfinite(gradient_y))) {
     atomic_fetch_add_explicit(&root.compaction_state->resolve_invalid_count, 1u,
@@ -1901,9 +1898,9 @@ static void vkr_metal_packet_transmission_shade_impl(
                                            filter::linear, mip_filter::linear);
     float3 ordered =
         root.source.sample(transmission_sampler, sample_uv, level(0.0)).rgb;
-    float rough_lod = vkr_transmission_rough_lod(
-        surface.feedback_roughness, material.material_alpha.z,
-        root.opaque_mip_count);
+    float rough_lod = vkr_transmission_rough_lod(surface.feedback_roughness,
+                                                 material.material_alpha.z,
+                                                 root.opaque_mip_count);
     float3 rough =
         root.opaque_pyramid
             .sample(transmission_sampler, sample_uv, level(rough_lod))

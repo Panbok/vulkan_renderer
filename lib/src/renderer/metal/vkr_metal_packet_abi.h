@@ -503,6 +503,7 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketTonemapRoot {
   uint64_t source_texture_id;
   uint32_t reserved[2];
   uint64_t exposure_state;
+  uint32_t output_extent[2];
 } VkrMetalPacketTonemapRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketEquirectRoot {

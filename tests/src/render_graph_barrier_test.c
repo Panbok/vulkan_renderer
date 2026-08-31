@@ -1620,6 +1620,10 @@ static void test_main_graph_contract(void) {
   bool8_t found_transmission_gpu_instances = false_v;
   bool8_t found_temporal_transform_resource = false_v;
   bool8_t found_temporal_color_resource = false_v;
+  bool8_t found_metalfx_color_input = false_v;
+  bool8_t found_metalfx_depth_input = false_v;
+  bool8_t found_metalfx_motion_input = false_v;
+  bool8_t found_metalfx_output = false_v;
   bool8_t found_gtao_view_depth = false_v;
   bool8_t found_gtao_raw = false_v;
   bool8_t found_gtao_edges = false_v;
@@ -1664,9 +1668,42 @@ static void test_main_graph_contract(void) {
       found_temporal_transform_resource = true_v;
     } else if (vkr_string8_equals_cstr(&resource->name,
                                        "temporal_history_color")) {
+      assert(resource->condition.kind ==
+             VKR_RG_JSON_CONDITION_METALFX_DISABLED);
       assert(resource->image.format == VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT);
       assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_HISTORY) != 0u);
       found_temporal_color_resource = true_v;
+    } else if (vkr_string8_equals_cstr(&resource->name,
+                                       "metalfx_color_input")) {
+      assert(resource->condition.kind == VKR_RG_JSON_CONDITION_METALFX_ENABLED);
+      assert(resource->image.format == VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT);
+      assert((resource->image.usage.set & VKR_TEXTURE_USAGE_TRANSFER_DST) !=
+             0u);
+      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_PER_IMAGE) != 0u);
+      found_metalfx_color_input = true_v;
+    } else if (vkr_string8_equals_cstr(&resource->name,
+                                       "metalfx_depth_input")) {
+      assert(resource->condition.kind == VKR_RG_JSON_CONDITION_METALFX_ENABLED);
+      assert(resource->image.format == VKR_TEXTURE_FORMAT_D32_SFLOAT);
+      assert((resource->image.usage.set & VKR_TEXTURE_USAGE_TRANSFER_DST) !=
+             0u);
+      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_PER_IMAGE) != 0u);
+      found_metalfx_depth_input = true_v;
+    } else if (vkr_string8_equals_cstr(&resource->name,
+                                       "metalfx_motion_input")) {
+      assert(resource->condition.kind == VKR_RG_JSON_CONDITION_METALFX_ENABLED);
+      assert(resource->image.format == VKR_TEXTURE_FORMAT_R16G16_SFLOAT);
+      assert((resource->image.usage.set & VKR_TEXTURE_USAGE_TRANSFER_DST) !=
+             0u);
+      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_PER_IMAGE) != 0u);
+      found_metalfx_motion_input = true_v;
+    } else if (vkr_string8_equals_cstr(&resource->name,
+                                       "metalfx_output_color")) {
+      assert(resource->condition.kind == VKR_RG_JSON_CONDITION_METALFX_ENABLED);
+      assert(resource->image.format == VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT);
+      assert((resource->image.usage.set & VKR_TEXTURE_USAGE_STORAGE) != 0u);
+      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_PER_IMAGE) != 0u);
+      found_metalfx_output = true_v;
     } else if (vkr_string8_equals_cstr(&resource->name, "gtao_view_depth")) {
       assert(resource->condition.kind == VKR_RG_JSON_CONDITION_GTAO_ENABLED);
       assert(resource->image.format == VKR_TEXTURE_FORMAT_R16_SFLOAT);
@@ -1700,6 +1737,8 @@ static void test_main_graph_contract(void) {
   assert(found_hzb_resource && found_sdsm_resource && found_gpu_instances &&
          found_transmission_gpu_instances && found_stable_shadow_capacity &&
          found_temporal_transform_resource && found_temporal_color_resource &&
+         found_metalfx_color_input && found_metalfx_depth_input &&
+         found_metalfx_motion_input && found_metalfx_output &&
          found_gtao_view_depth && found_gtao_raw && found_gtao_edges &&
          found_gtao_visibility);
 
@@ -1729,6 +1768,8 @@ static void test_main_graph_contract(void) {
 
   uint64_t temporal_fullscreen_index = UINT64_MAX;
   uint64_t temporal_editor_index = UINT64_MAX;
+  uint64_t metalfx_stage_index = UINT64_MAX;
+  uint64_t metalfx_upscale_index = UINT64_MAX;
   uint64_t exposure_histogram_index = UINT64_MAX;
   uint64_t exposure_resolve_index = UINT64_MAX;
   uint64_t tonemap_index = UINT64_MAX;
@@ -1741,13 +1782,43 @@ static void test_main_graph_contract(void) {
       temporal_fullscreen_index = i;
     else if (vkr_string8_equals_cstr(&pass->name, "Temporal.Resolve.Editor"))
       temporal_editor_index = i;
-    else if (vkr_string8_equals_cstr(&pass->name, "Post.Exposure.Histogram")) {
+    else if (vkr_string8_equals_cstr(&pass->name, "MetalFX.StageInputs")) {
+      assert(pass->type == VKR_RG_JSON_PASS_TRANSFER);
+      assert(pass->condition.kind == VKR_RG_JSON_CONDITION_METALFX_ENABLED);
+      assert(pass->reads.length == 3u && pass->writes.length == 3u);
+      for (uint32_t binding = 0u; binding < 3u; ++binding) {
+        assert(pass->reads.data[binding].binding.value == binding);
+        assert(pass->reads.data[binding].image_access ==
+               VKR_RG_JSON_IMAGE_ACCESS_TRANSFER_SRC);
+        assert(pass->writes.data[binding].binding.value == binding + 3u);
+        assert(pass->writes.data[binding].image_access ==
+               VKR_RG_JSON_IMAGE_ACCESS_TRANSFER_DST);
+      }
+      assert(vkr_string8_equals_cstr(&pass->execute, "pass.metalfx.stage"));
+      metalfx_stage_index = i;
+    } else if (vkr_string8_equals_cstr(&pass->name,
+                                       "MetalFX.TemporalUpscale")) {
+      assert(pass->type == VKR_RG_JSON_PASS_COMPUTE);
+      assert(pass->condition.kind == VKR_RG_JSON_CONDITION_METALFX_ENABLED);
+      assert(pass->reads.length == 3u && pass->writes.length == 1u);
+      assert(vkr_string8_equals_cstr(&pass->execute, "pass.metalfx.temporal"));
+      metalfx_upscale_index = i;
+    } else if (vkr_string8_equals_cstr(&pass->name,
+                                       "Post.Exposure.Histogram")) {
       assert(pass->condition.kind == VKR_RG_JSON_CONDITION_EXPOSURE_AUTOMATIC);
-      assert(pass->reads.length == 1u && pass->writes.length == 1u);
+      assert(pass->reads.length == 2u && pass->writes.length == 1u);
       assert(vkr_string8_equals_cstr(&pass->reads.data[0].name,
                                      "temporal_history_color"));
       assert(pass->reads.data[0].image_access ==
              VKR_RG_JSON_IMAGE_ACCESS_SAMPLED);
+      assert(pass->reads.data[0].condition.kind ==
+             VKR_RG_JSON_CONDITION_METALFX_DISABLED);
+      assert(vkr_string8_equals_cstr(&pass->reads.data[1].name,
+                                     "metalfx_output_color"));
+      assert(pass->reads.data[1].image_access ==
+             VKR_RG_JSON_IMAGE_ACCESS_SAMPLED);
+      assert(pass->reads.data[1].condition.kind ==
+             VKR_RG_JSON_CONDITION_METALFX_ENABLED);
       assert(vkr_string8_equals_cstr(&pass->writes.data[0].name,
                                      "exposure_histogram"));
       exposure_histogram_index = i;
@@ -1761,6 +1832,8 @@ static void test_main_graph_contract(void) {
   }
   assert(temporal_fullscreen_index < exposure_histogram_index);
   assert(temporal_editor_index < exposure_histogram_index);
+  assert(metalfx_stage_index < metalfx_upscale_index);
+  assert(metalfx_upscale_index < exposure_histogram_index);
   assert(exposure_histogram_index < exposure_resolve_index);
   assert(exposure_resolve_index < tonemap_index);
   assert(exposure_resolve_index < editor_composite_index);
