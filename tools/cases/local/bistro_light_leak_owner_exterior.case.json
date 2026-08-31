@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "id": "local.bistro.light_leak.owner_exterior",
+  "suite": "local",
+  "description": "Owner-overlay Bistro exterior view that exposed the rejected punctual-light AABB experiment.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 1,
+  "resolution": [1600, 1200],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": { "warmup": 2, "measure": 1 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "backend": "metal",
+    "taa_enabled": false,
+    "exposure_mode": "manual",
+    "manual_exposure": 0.3,
+    "bloom_enabled": false,
+    "gtao_enabled": false,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [-26.88, 5.04, 8.86],
+    "yaw": 1.50,
+    "pitch": -9.23,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.1,
+    "far_plane": 500
+  },
+  "captures": [
+    { "at_frame": 0, "channels": ["final_color", "unlit", "direct_diffuse", "direct_specular", "indirect_diffuse"] }
+  ],
+  "assertions": [
+    { "metric": "lighting.point.selected", "stat": "min", "min": 72 },
+    { "metric": "lighting.point.dropped", "stat": "max", "max": 0 },
+    { "metric": "visibility.gbuffer.resolve_invalid", "stat": "max", "max": 0 }
+  ]
+}
