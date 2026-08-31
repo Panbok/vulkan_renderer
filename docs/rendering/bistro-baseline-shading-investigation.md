@@ -95,6 +95,15 @@ The current status authority is
 [renderer-architecture-spec.md](../architecture/renderer-architecture-spec.md),
 not this investigation.
 
+On 2026-08-31, a later punctual influence-AABB experiment was also rejected.
+It exposed hard colored box planes outside Bistro without solving the indoor
+indirect contribution. The current scene instead calibrates the six colored
+string-light definitions to 5 m during cold import and reduces the coherent
+indoor probe's diffuse intensity to 1.0. The source glTF and cooked mesh remain
+unchanged. The diagnosis, rollback evidence, and remaining general visibility
+limit are recorded in the
+[indoor light-leak investigation](bistro-indoor-light-leak-investigation.md).
+
 | Area | Status on 2026-08-05 | Authority / evidence |
 |---|---|---|
 | Bistro directional sun | Implemented at authored intensity `0.75` | Current scene plus architecture spec §3.7 |
@@ -108,6 +117,7 @@ not this investigation.
 | `KHR_materials_transmission` | Implemented | Separate graph feedback and transmission stages; [ADR-018](../architecture/adr/018-graph-declared-transmission-feedback.md) |
 | `KHR_lights_punctual` | Implemented | Point, spot, and directional import into a stable 128-light scene table; a bounded 384-cell world grid carries complete 128-bit masks to fragment-local exact rejection, with table/grid metrics |
 | Localized indoor IBL | Implemented for Bistro | Up to 16 ready probes are packed for the frame, with fragment AABB weights and a global remainder. One coherent café volume uses the authored indoor diffuse cubemap; local specular is zero until an indoor reflection capture exists. A fourth owner camera rejected three tightly tiled volumes because their transitions crossed visible floors and ceilings. The evidence and remaining diffuse-visibility limit are documented in the [indoor light-leak investigation](bistro-indoor-light-leak-investigation.md); [ADR-019](../architecture/adr/019-bounded-forward-spatial-lighting.md) |
+| Bistro decorative-light calibration | Implemented, local visual acceptance pending | Six exact glTF light-definition names receive a 5 m finite range during cold scene preparation; the source glTF remains at 7.5 m and the renderer keeps its ordinary 64-byte punctual row. The failed hard influence-AABB path is removed |
 | Scene-content provenance | Implemented | Sorted transitive manifest includes prepared glTF material files, generated textures, and present packed siblings; its digest participates in the workload fingerprint and is published as a report artifact |
 | Accepted Bistro baselines | Backend-pinned fourteen-view post-correction goldens with deterministic text; prior rejected proposals remain invalid | Legacy Vulkan generation `sha256:c3596ff14cdf206d0be4138840957925bd18353dd5d8eab339bfdec575df3564` and Metal generation `sha256:3db4f4d2294e5fdbc3618e64c4b2baf03bf66051dee0c4ff452e341d20cae51d`; fresh explicit compares pass all fourteen rows |
 

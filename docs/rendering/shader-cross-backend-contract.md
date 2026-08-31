@@ -58,7 +58,7 @@ changing an acceptance envelope requires new evidence and owner review.
 | GTAO | `shaders/shared/gtao_kernel.slangh` | `metal/msl/post/gtao.metal` | `vulkan/slang/post/gtao.slang` | **ALIGNED** |
 | Transmission surface, volume, roughness, and production specialization | `shaders/shared/transmission_kernel.slangh` | `metal/msl/world/gpu_draws.metal`; paired diagnostic, production-temporal, and production-nontemporal entry points for compact and fullscreen launches; production `T == 1` pixels use specular-only direct/punctual/environment helpers; transmission ICB commands inherit parent-bound draw and peel roots | `vulkan/slang/world/deferred.slang`; the same paired entry-point family and resolved-pixel lobe selection | **UNALIGNED**: sources and host mirrors implement the same lobe partition, texture products, safe-`w` exit projection, Beer path, bounded rough LOD, compile-time specializations, and production diffuse omission at `T == 1`. Resolved material/ORM roughness zero samples ordered feedback; any positive value samples the immutable opaque pyramid at continuous IOR-adjusted LOD. The independent `0.04` BRDF floor does not alter feedback selection. Transmissive materials route only through the deferred peel stream, so both unreachable forward fallbacks are removed. Metal's missing peel-root inheritance is corrected, exact Bistro layers now diverge, CPU/reference and compiled ABI gates pass, and two corrected M1 Pro profiles pass the `0.400 ms` local ceiling. Native Vulkan startup reflection, Release execution, and synchronization validation now pass on the RX 6700 XT. Crossed HDR captures are still required |
 | Packed geometry and GPU draw compaction | `shaders/shared/gpu_draw.slangh` for both Slang libraries | Native deferred/ICB path mirrors range-indexed decode records in `metal/msl/common/draw.metalh` and compacts in `metal/msl/world/gpu_draws.metal` | `vulkan/slang/common/resources.slangh`, `common/vertex.slangh`, and `world/deferred.slang` | **UNALIGNED**: v15 source and cooked paths publish one decode per range; candidate/visible rows retain their sizes and select the same range record in both source trees. Local shader compilation and reflection pass, but native Windows validation, a same-revision crossed payload comparison, and the deliberate-overflow fixture remain missing |
-| Punctual-light row and authored containment | `shaders/shared/point_light.slangh` for both Slang libraries | `metal/msl/common/draw.metalh` mirrors the row; forward, deferred, and transmission loops are in `metal/msl/world/default.metal` and `gpu_draws.metal` | `vulkan/slang/common/resources.slangh` plus the shared row; forward, deferred, and transmission use `vulkan/slang/world/default.slang` | **UNALIGNED**: source algorithms and the 96-byte host row agree, local Metal/Vulkan shader compilation passes, and Metal/Vulkan reflection code validates all six vectors. A focused Metal API/GPU validation run executes the final Bistro row with the corrected single-probe scene and passes all assertions (`sha256:a7d062b9e1dc29696feed236f909398d6d40cc0c68187ea0ac5d81519d009486`). Native Vulkan validation and crossed exact-camera pixels remain required |
+| Punctual-light data and evaluation | `shaders/shared/point_light.slangh` for both Slang libraries | `metal/msl/common/draw.metalh` mirrors the four-vector row; forward, deferred, and transmission loops are in `metal/msl/world/default.metal` and `gpu_draws.metal` | `vulkan/slang/common/resources.slangh` plus the shared row; forward, deferred, and transmission use `vulkan/slang/world/default.slang` | **UNALIGNED**: both source paths read the same 64-byte position/cone, color/cone-or-linear, intensity/attenuation/range/kind, and direction layout, then apply the same exact range, cone, attenuation, and BRDF ordering. Host assertions plus Metal and Vulkan compiled reflection validate all four vectors. A focused Bistro replay passes under Metal API and GPU validation (`sha256:c4b43bbd921a4eaf419a92dd3e52ea99fd3ede5e2fd0cbd0638f6a6bc70a662e`). Native Vulkan validation and crossed exact-camera pixels remain required |
 | Cascaded-shadow receiver | `shaders/shared/shadow_kernel.slangh` | `metal/msl/shadow/sampling.metalh`, used by forward and deferred paths | `vulkan/slang/world/default.slang`, reused by `world/deferred.slang` | **UNALIGNED**: sources agree and the five-case 1/9/16/32 plus 16-tap early-out-off matrix passes on both backends with a fixed native shadow map. Missing: crossed payload comparisons plus cascade-blend and distance-fade coverage |
 | IBL baking and sampling | SH diffuse math below; other bake math is backend-local | `metal/msl/ibl/*.metal*`, `metal/msl/world/lighting.metalh` | `vulkan/slang/ibl/*.slang*`, `vulkan/slang/world/default.slang` | **UNALIGNED**: focused native validation passes on Metal and Vulkan, and current HDR render-path snapshots are non-degenerate on both. No matched direct bake-output snapshot pair covers equirect conversion, SH diffuse response, and every prefilter mip |
 | L2 diffuse coefficients (ADR-038) | `shaders/shared/sh_l2_kernel.slangh`, included by the Vulkan Slang library and concatenated into the MSL library | `metal/msl/ibl/sh_projection.metal` `vkr_metal_packet_ibl_sh`; final `sh_coefficients` and slot fields in `metal/msl/common/draw.metalh`; evaluation in `metal/msl/world/gpu_draws.metal` | `vulkan/slang/ibl/default.slang` `ibl_sh`; exact texel loads use a lazily-published 2D-array alias; `VkrVulkanIblShRoot` plus final `sh_coefficients` and slot fields in `vulkan/slang/common/resources.slangh`; evaluation in `vulkan/slang/world/default.slang` | **UNALIGNED**: both production sources implement the same projection/evaluation contract; both 48-byte roots have compiled-shader reflection witnesses; focused native validation executes one packed probe on both backends; and the retained numeric Metal/Vulkan payload comparison passes. Missing: GPU repetition of the CPU projection fixtures |
@@ -90,7 +90,7 @@ algorithm.
 | `shaders/shared/gtao_kernel.slangh` | GTAO in section 4.4 |
 | `shaders/shared/sh_l2_kernel.slangh` | SH basis, packing, evaluation, and exact cubemap texel solid angle in section 4.7 |
 | `shaders/shared/gpu_draw.slangh` | Packed geometry and draw rows in sections 3.3 and 4.5 |
-| `shaders/shared/point_light.slangh` | Six-vector punctual-light row and inclusive world-AABB containment in sections 3.3 and 4.8 |
+| `shaders/shared/point_light.slangh` | Four-vector punctual-light row in sections 3.3 and 4.8 |
 | `shaders/shared/shadow_kernel.slangh` | Progressive Poisson table in section 4.6 |
 | `shaders/vulkan/slang/library.slang` | Aggregates every Vulkan source below plus the shared headers |
 | `shaders/vulkan/slang/common/resources.slangh` | Bindless resource topology and packet/GPU records in section 3.3 |
@@ -224,16 +224,16 @@ The shared packed records have these host contracts:
 | `VkrGpuGeometryRow` | 48 | 8 | vertex/index addresses `0/8`, first vertex/index `16/20`, layout `28`, generation `32`, decode address `40` |
 | `VkrGpuCandidateDrawRow` | 48 | 16 | geometry/material/instance `0/4/8`, index range `12/16`, vertex offset `20`, decode index/state flags `24/28`, sphere `32` |
 | `VkrGpuVisibleDrawRow` | 32 | 4 | geometry through state flags at offsets `0..28`, including decode index `24` |
-| `VkrGpuPointLightRow` | 96 | 16 | legacy vectors `p0..p3` at `0/16/32/48`, influence minimum `p4` at `64`, influence maximum `p5` at `80` |
+| `VkrGpuPointLightRow` | 64 | 16 | position/cone `p0` at `0`, color/cone-or-linear `p1` at `16`, intensity/attenuation/range/kind `p2` at `32`, direction `p3` at `48` |
 
 `vkr_gpu_abi.c` validates every listed host offset. Vulkan pipeline creation
 reflects packed vertices, geometry, candidate, visible, and punctual-light
-rows, the 144-byte material row, packet draw/frame roots, the 48-byte SH projection root, both
-transmission roots, and the complete cull, G-buffer resolve, deferred-lighting,
-temporal-resolve, picking, HZB, and SDSM roots. Metal reflects its native roots
-and the nested records they reach. The native deferred library still declares
-the packed records independently of `gpu_draw.slangh`, so reflection is the
-required drift guard.
+rows, the 144-byte material row, packet draw/frame roots, the 48-byte SH
+projection root, both transmission roots, and the complete cull, G-buffer
+resolve, deferred-lighting, temporal-resolve, picking, HZB, and SDSM roots.
+Metal reflects its native roots and the nested records they reach. The native
+deferred library still declares the packed records independently of the shared
+Slang headers, so reflection is the required drift guard.
 
 All Vulkan shaders share a 16-byte push constant containing the root device
 address at `0`, material index at `8`, and flags at `12`. Sampled texture aliases
@@ -477,16 +477,14 @@ masked point lights, cascaded directional shadowing, local/global IBL, emissive,
 and the packet transmission controls. Normal decode is the aligned contract in
 section 4.1.
 
-Each punctual row contains six `float4` values. `p0..p3` retain position/cone,
-color/cone-or-linear, intensity/quadratic/range/kind, and direction semantics.
-`p4.xyz` and `p5.xyz` are canonical world-space influence minimum and maximum.
-Every Metal and Vulkan forward, deferred, and transmission loop first rejects
-lanes outside the inclusive AABB, then performs the existing exact range, cone,
-attenuation, and BRDF work. Unbounded lights use finite
-`[-VKR_FLOAT_MAX,+VKR_FLOAT_MAX]` values, so the shader has no optional-bound
-representation. This row is source-aligned but remains **UNALIGNED** for runtime
-evidence until native Vulkan reflection/validation and crossed pixels pass; the
-focused Metal API/GPU validation gate is clean.
+Each punctual light occupies four `float4` values: position/cone,
+color/cone-or-linear, intensity/quadratic/range/kind, and direction. Every
+Metal and Vulkan forward, deferred, and transmission loop performs the same
+exact range, cone, attenuation, and BRDF work. Finite scene-import range
+calibration arrives as ordinary row data; the shader has no override or
+containment case. This contract remains **UNALIGNED** for runtime evidence until
+native Vulkan validation and crossed pixels pass; the focused Metal API/GPU
+validation gate is clean.
 
 The Vulkan visibility buffer stores `(visible_index + 1, primitive_id |
 front_face_bit)`, reserving bit 31 for front-facing state and bits 0-30 for the
