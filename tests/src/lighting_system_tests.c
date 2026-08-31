@@ -12,8 +12,6 @@ static VkrPointLight make_gltf_point(uint32_t render_id, Vec3 position,
       .direction = vec3_new(0.0f, 0.0f, -1.0f),
       .inner_cone_angle = 0.0f,
       .outer_cone_angle = 0.785398163f,
-      .influence_min = vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX),
-      .influence_max = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX),
       .kind = VKR_POINT_LIGHT_KIND_GLTF_POINT,
       .render_id = render_id,
   };
@@ -113,8 +111,6 @@ static bool32_t test_unbounded_point_lights_are_global(void) {
       .intensity = 1.0f,
       .constant = 1.0f,
       .quadratic = 1.0f,
-      .influence_min = vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX),
-      .influence_max = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX),
       .kind = VKR_POINT_LIGHT_KIND_POLYNOMIAL,
       .render_id = 1u,
   };
@@ -149,65 +145,9 @@ static bool32_t test_point_light_grid_build_is_deterministic(void) {
   return true_v;
 }
 
-static bool32_t test_bounded_light_grid_clips_sphere_and_aabb(void) {
-  printf("  Running test_bounded_light_grid_clips_sphere_and_aabb...\n");
-  VkrLightingSystem system = {0};
-  system.point_light_count = 1u;
-  system.point_lights[0] = make_gltf_point(1u, vec3_zero(), 5.0f);
-  system.point_lights[0].influence_min = vec3_new(-1.0f, -1.0f, -1.0f);
-  system.point_lights[0].influence_max = vec3_new(1.0f, 1.0f, 1.0f);
-  vkr_lighting_system_build_point_light_grid(&system);
-
-  VkrPointLightMask mask = vkr_lighting_system_point_light_mask_at(
-      &system, vec3_new(1.0f, 0.0f, 0.0f));
-  assert(vkr_lighting_system_point_light_mask_contains(&mask, 0u));
-  mask = vkr_lighting_system_point_light_mask_at(&system,
-                                                 vec3_new(3.01f, 0.0f, 0.0f));
-  assert(!vkr_lighting_system_point_light_mask_contains(&mask, 0u));
-  printf("  test_bounded_light_grid_clips_sphere_and_aabb PASSED\n");
-  return true_v;
-}
-
-static bool32_t test_bounded_polynomial_light_is_local(void) {
-  printf("  Running test_bounded_polynomial_light_is_local...\n");
-  VkrLightingSystem system = {0};
-  system.point_light_count = 1u;
-  system.point_lights[0] = (VkrPointLight){
-      .position = vec3_zero(),
-      .range = 0.0f,
-      .influence_min = vec3_new(-2.0f, -2.0f, -2.0f),
-      .influence_max = vec3_new(2.0f, 2.0f, 2.0f),
-      .kind = VKR_POINT_LIGHT_KIND_POLYNOMIAL,
-  };
-  vkr_lighting_system_build_point_light_grid(&system);
-  assert(system.point_light_grid.global_light_count == 0u);
-  VkrPointLightMask mask = vkr_lighting_system_point_light_mask_at(
-      &system, vec3_new(1.0f, 0.0f, 0.0f));
-  assert(vkr_lighting_system_point_light_mask_contains(&mask, 0u));
-  mask = vkr_lighting_system_point_light_mask_at(&system,
-                                                 vec3_new(3.0f, 0.0f, 0.0f));
-  assert(!vkr_lighting_system_point_light_mask_contains(&mask, 0u));
-  printf("  test_bounded_polynomial_light_is_local PASSED\n");
-  return true_v;
-}
-
-static bool32_t test_bounded_empty_intersection_has_no_cells(void) {
-  printf("  Running test_bounded_empty_intersection_has_no_cells...\n");
-  VkrLightingSystem system = {0};
-  system.point_light_count = 1u;
-  system.point_lights[0] = make_gltf_point(1u, vec3_zero(), 1.0f);
-  system.point_lights[0].influence_min = vec3_new(3.0f, 3.0f, 3.0f);
-  system.point_lights[0].influence_max = vec3_new(4.0f, 4.0f, 4.0f);
-  vkr_lighting_system_build_point_light_grid(&system);
-  assert(system.point_light_grid.global_light_count == 0u);
-  assert(system.point_light_grid.reference_count == 0u);
-  printf("  test_bounded_empty_intersection_has_no_cells PASSED\n");
-  return true_v;
-}
-
 static bool32_t test_point_light_gpu_row_packing(void) {
   printf("  Running test_point_light_gpu_row_packing...\n");
-  const VkrPointLight light = {
+  VkrPointLight light = {
       .position = vec3_new(1.0f, 2.0f, 3.0f),
       .color = vec3_new(4.0f, 5.0f, 6.0f),
       .intensity = 7.0f,
@@ -216,8 +156,6 @@ static bool32_t test_point_light_gpu_row_packing(void) {
       .quadratic = 10.0f,
       .range = 11.0f,
       .direction = vec3_new(12.0f, 13.0f, 14.0f),
-      .influence_min = vec3_new(-1.0f, -2.0f, -3.0f),
-      .influence_max = vec3_new(15.0f, 16.0f, 17.0f),
       .kind = VKR_POINT_LIGHT_KIND_GLTF_POINT,
   };
   VkrGpuPointLightRow row = {0};
@@ -225,13 +163,19 @@ static bool32_t test_point_light_gpu_row_packing(void) {
   assert(row.p0.x == 1.0f && row.p0.w == 8.0f);
   assert(row.p1.z == 6.0f && row.p1.w == 9.0f);
   assert(row.p2.x == 7.0f && row.p2.y == 10.0f && row.p2.z == 11.0f);
-  assert(row.p3.x == 12.0f && row.p3.z == 14.0f);
-  assert(row.p4.x == -1.0f && row.p4.z == -3.0f);
-  assert(row.p5.x == 15.0f && row.p5.z == 17.0f);
+  assert(row.p3.x == 12.0f && row.p3.z == 14.0f && row.p3.w == 0.0f);
+
+  light.kind = VKR_POINT_LIGHT_KIND_GLTF_SPOT;
+  light.inner_cone_angle = 0.25f;
+  light.outer_cone_angle = 0.75f;
+  vkr_lighting_system_pack_point_light(&light, &row);
+  assert(fabsf(row.p0.w - cosf(light.inner_cone_angle)) < 0.000001f);
+  assert(fabsf(row.p1.w - cosf(light.outer_cone_angle)) < 0.000001f);
+
   const VkrGpuAbiRecord *record =
       vkr_gpu_abi_record(VKR_GPU_ABI_POINT_LIGHT_ROW);
-  assert(record && record->expected_size == 96u &&
-         record->expected_alignment == 16u && record->field_count == 6u);
+  assert(record && record->expected_size == 64u &&
+         record->expected_alignment == 16u && record->field_count == 4u);
   printf("  test_point_light_gpu_row_packing PASSED\n");
   return true_v;
 }
@@ -245,9 +189,6 @@ bool32_t run_lighting_system_tests(void) {
   passed &= test_point_light_grid_represents_full_scene_capacity();
   passed &= test_unbounded_point_lights_are_global();
   passed &= test_point_light_grid_build_is_deterministic();
-  passed &= test_bounded_light_grid_clips_sphere_and_aabb();
-  passed &= test_bounded_polynomial_light_is_local();
-  passed &= test_bounded_empty_intersection_has_no_cells();
   passed &= test_point_light_gpu_row_packing();
   printf("--- Lighting System tests completed. ---\n");
   return passed;

@@ -25,13 +25,11 @@ typedef struct VkrPointLight {
   Vec3 direction;
   float32_t inner_cone_angle;
   float32_t outer_cone_angle;
-  Vec3 influence_min;
-  Vec3 influence_max;
   VkrPointLightKind kind;
   uint32_t render_id;
 } VkrPointLight;
 
-/** Packs one canonical point light into the shared six-Vec4 GPU row. */
+/** Packs one canonical point light into the shared four-Vec4 GPU row. */
 void vkr_lighting_system_pack_point_light(const VkrPointLight *light,
                                           VkrGpuPointLightRow *row);
 

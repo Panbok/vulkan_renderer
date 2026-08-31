@@ -5,14 +5,10 @@
       "mesh": {
         "path": "assets/models/missing.vkb",
         "gltf_light_source": "tests/fixtures/rendering/punctual_lights.gltf",
-        "gltf_light_overrides": [
+        "gltf_light_range_overrides": [
           {
-            "node": "PointNode",
-            "influence_bounds": [
-              -2,
-              -2,
-              -2
-            ]
+            "light": "PointFixture",
+            "range": 5.0
           }
         ]
       }

@@ -466,9 +466,6 @@ VkrVulkanDirectResult packet_punctual(VkrVulkanPacketFrameRoot *frame,
             float4 p3 = light.p3;
             if ((point_mask[word] & (1u << bit)) == 0u)
                 continue;
-            if (!vkr_gpu_point_light_contains(world_position, light.p4.xyz,
-                                              light.p5.xyz))
-                continue;
             uint kind = uint(p2.w + 0.5f);
             float3 to_light = p0.xyz - world_position;
             float distance_squared = dot(to_light, to_light);
@@ -537,9 +534,6 @@ float3 packet_punctual_specular(VkrVulkanPacketFrameRoot *frame,
             float4 p2 = light.p2;
             float4 p3 = light.p3;
             if ((point_mask[word] & (1u << bit)) == 0u)
-                continue;
-            if (!vkr_gpu_point_light_contains(world_position, light.p4.xyz,
-                                              light.p5.xyz))
                 continue;
             uint kind = uint(p2.w + 0.5f);
             float3 to_light = p0.xyz - world_position;

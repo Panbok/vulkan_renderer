@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "entities": [
+    {
+      "mesh": {
+        "path": "assets/models/missing.vkb",
+        "gltf_light_source": "tests/fixtures/rendering/punctual_lights.gltf",
+        "gltf_light_range_overrides": [
+          {
+            "light": "PointFixture",
+            "range": 5.0
+          },
+          {
+            "light": "PointFixture",
+            "range": 4.0
+          }
+        ]
+      }
+    }
+  ]
+}

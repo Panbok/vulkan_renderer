@@ -161,14 +161,12 @@ typedef struct VkrGpuVisibleDrawRow {
   uint32_t state_flags;
 } VkrGpuVisibleDrawRow;
 
-/** Shared punctual-light row. p0-p3 retain the existing light semantics. */
+/** Shared packed punctual-light row. */
 typedef struct VkrGpuPointLightRow {
   Vec4 p0;
   Vec4 p1;
   Vec4 p2;
   Vec4 p3;
-  Vec4 p4;
-  Vec4 p5;
 } VkrGpuPointLightRow;
 
 /** GPU-written compacted work volume and four-bucket prefix state. */
@@ -194,7 +192,7 @@ _Static_assert(sizeof(VkrGpuCandidateDrawRow) == 48u,
                "VkrGpuCandidateDrawRow ABI drift");
 _Static_assert(sizeof(VkrGpuVisibleDrawRow) == 32u,
                "VkrGpuVisibleDrawRow ABI drift");
-_Static_assert(sizeof(VkrGpuPointLightRow) == 96u,
+_Static_assert(sizeof(VkrGpuPointLightRow) == 64u,
                "VkrGpuPointLightRow ABI drift");
 _Static_assert(_Alignof(VkrGpuPointLightRow) == 16u,
                "VkrGpuPointLightRow alignment drift");

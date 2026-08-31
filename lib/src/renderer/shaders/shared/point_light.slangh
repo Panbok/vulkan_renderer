@@ -4,14 +4,4 @@ struct VkrGpuPointLightRow
     float4 p1;
     float4 p2;
     float4 p3;
-    float4 p4;
-    float4 p5;
 };
-
-bool vkr_gpu_point_light_contains(float3 world_position,
-                                  float3 influence_min,
-                                  float3 influence_max)
-{
-    return all(world_position >= influence_min) &&
-           all(world_position <= influence_max);
-}

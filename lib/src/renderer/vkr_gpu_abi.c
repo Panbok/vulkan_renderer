@@ -120,8 +120,6 @@ vkr_global const VkrGpuAbiField vkr_gpu_point_light_row_fields[] = {
     VKR_GPU_ABI_FIELD(VkrGpuPointLightRow, p1, "p1", 16),
     VKR_GPU_ABI_FIELD(VkrGpuPointLightRow, p2, "p2", 32),
     VKR_GPU_ABI_FIELD(VkrGpuPointLightRow, p3, "p3", 48),
-    VKR_GPU_ABI_FIELD(VkrGpuPointLightRow, p4, "p4", 64),
-    VKR_GPU_ABI_FIELD(VkrGpuPointLightRow, p5, "p5", 80),
 };
 
 vkr_global const VkrGpuAbiRecord
@@ -150,7 +148,7 @@ vkr_global const VkrGpuAbiRecord
             VKR_GPU_ABI_RECORD(VkrGpuVisibleDrawRow, "VkrGpuVisibleDrawRow", 32,
                                4, vkr_gpu_visible_draw_row_fields),
         [VKR_GPU_ABI_POINT_LIGHT_ROW] =
-            VKR_GPU_ABI_RECORD(VkrGpuPointLightRow, "VkrGpuPointLightRow", 96,
+            VKR_GPU_ABI_RECORD(VkrGpuPointLightRow, "VkrGpuPointLightRow", 64,
                                16, vkr_gpu_point_light_row_fields),
 };
 

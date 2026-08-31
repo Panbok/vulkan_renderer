@@ -189,15 +189,12 @@ typedef struct ScenePointLight {
   float32_t constant;  // Attenuation constant term (usually 1.0)
   float32_t linear;    // Attenuation linear term
   float32_t quadratic; // Attenuation quadratic term
-  float32_t range;     // Zero means unbounded when no influence bounds exist.
+  float32_t range;     // Zero means unbounded.
   Vec3 direction_local;
   float32_t inner_cone_angle;
   float32_t outer_cone_angle;
-  Vec3 influence_min;
-  Vec3 influence_max;
   VkrPointLightKind kind;
-  bool8_t enabled;              // Whether this light is active
-  bool8_t has_influence_bounds; // False keeps legacy unbounded behavior
+  bool8_t enabled; // Whether this light is active
 } ScenePointLight;
 
 /**

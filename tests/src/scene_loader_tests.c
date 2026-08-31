@@ -394,12 +394,6 @@ static void test_scene_loader_imports_gltf_punctual_lights(void) {
 
   assert(lights[0].type == VKR_SCENE_GLTF_LIGHT_POINT);
   assert(strcmp(lights[0].name, "gltf.7.PointNode") == 0);
-  assert(lights[0].influence_min.x == -VKR_FLOAT_MAX &&
-         lights[0].influence_min.y == -VKR_FLOAT_MAX &&
-         lights[0].influence_min.z == -VKR_FLOAT_MAX);
-  assert(lights[0].influence_max.x == VKR_FLOAT_MAX &&
-         lights[0].influence_max.y == VKR_FLOAT_MAX &&
-         lights[0].influence_max.z == VKR_FLOAT_MAX);
   assert(fabsf(lights[0].position.x - 11.0f) < 0.0001f);
   assert(fabsf(lights[0].position.y - 2.0f) < 0.0001f);
   assert(fabsf(lights[0].position.z - 3.0f) < 0.0001f);
@@ -454,7 +448,7 @@ static void test_scene_loader_async_light_source_contract(void) {
   assert(payload == NULL);
 
   const char *valid_path =
-      "tests/fixtures/rendering/gltf_light_override_valid.scene.json";
+      "tests/fixtures/rendering/gltf_light_range_override_valid.scene.json";
   payload = NULL;
   error = VKR_RENDERER_ERROR_NONE;
   assert(
@@ -462,18 +456,23 @@ static void test_scene_loader_async_light_source_contract(void) {
                            string8_create_from_cstr((const uint8_t *)valid_path,
                                                     string_length(valid_path)),
                            &ctx.allocator, &payload, &error));
-  assert(error == VKR_RENDERER_ERROR_NONE && payload != NULL);
+  assert(error == VKR_RENDERER_ERROR_NONE);
+  assert(payload != NULL);
   loader.release_async_payload(&loader, payload);
 
   const char *invalid_paths[] = {
-      "tests/fixtures/rendering/gltf_light_override_duplicate.scene.json",
-      "tests/fixtures/rendering/gltf_light_override_unknown.scene.json",
-      "tests/fixtures/rendering/gltf_light_override_inverted.scene.json",
-      "tests/fixtures/rendering/gltf_light_override_nonfinite.scene.json",
-      "tests/fixtures/rendering/gltf_light_override_malformed.scene.json",
-      "tests/fixtures/rendering/gltf_light_override_missing_mesh.scene.json",
-      "tests/fixtures/rendering/gltf_light_override_directional.scene.json",
-      "tests/fixtures/rendering/gltf_light_override_ambiguous.scene.json",
+      "tests/fixtures/rendering/"
+      "gltf_light_range_override_ambiguous.scene.json",
+      "tests/fixtures/rendering/gltf_light_range_override_duplicate.scene.json",
+      "tests/fixtures/rendering/gltf_light_range_override_unknown.scene.json",
+      "tests/fixtures/rendering/"
+      "gltf_light_range_override_directional.scene.json",
+      "tests/fixtures/rendering/"
+      "gltf_light_range_override_nonpositive.scene.json",
+      "tests/fixtures/rendering/gltf_light_range_override_nonfinite.scene.json",
+      "tests/fixtures/rendering/gltf_light_range_override_malformed.scene.json",
+      "tests/fixtures/rendering/"
+      "gltf_light_range_override_missing_source.scene.json",
   };
   for (uint32_t i = 0u; i < ArrayCount(invalid_paths); ++i) {
     payload = NULL;
@@ -482,7 +481,8 @@ static void test_scene_loader_async_light_source_contract(void) {
         (const uint8_t *)invalid_paths[i], string_length(invalid_paths[i]));
     assert(
         !loader.prepare_async(&loader, path, &ctx.allocator, &payload, &error));
-    assert(error == VKR_RENDERER_ERROR_INVALID_PARAMETER && payload == NULL);
+    assert(error == VKR_RENDERER_ERROR_INVALID_PARAMETER);
+    assert(payload == NULL);
   }
 
   vkr_resource_system_shutdown();

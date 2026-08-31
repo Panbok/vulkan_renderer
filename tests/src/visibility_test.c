@@ -141,10 +141,7 @@ static void test_packet_borrowed_array_validation(void) {
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.lighting.point_lights") == 0);
 
-  VkrPointLight light = {
-      .influence_min = {-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX},
-      .influence_max = {VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX},
-  };
+  VkrPointLight light = {0};
   VkrPointLightGrid grid = {0};
   lighting.point_lights = &light;
   lighting.point_light_grid = &grid;

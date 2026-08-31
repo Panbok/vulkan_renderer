@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "entities": [
+    {
+      "mesh": {
+        "path": "assets/models/missing.vkb",
+        "gltf_light_range_overrides": [
+          {
+            "light": "PointFixture",
+            "range": 5.0
+          }
+        ]
+      }
+    }
+  ]
+}

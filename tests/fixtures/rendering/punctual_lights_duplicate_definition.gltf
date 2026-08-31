@@ -1,0 +1,18 @@
+{
+  "asset": { "version": "2.0" },
+  "extensionsUsed": ["KHR_lights_punctual"],
+  "extensions": {
+    "KHR_lights_punctual": {
+      "lights": [
+        { "name": "RepeatedFixture", "type": "point", "intensity": 1.0, "range": 8.0 },
+        { "name": "RepeatedFixture", "type": "spot", "intensity": 1.0, "range": 8.0 }
+      ]
+    }
+  },
+  "scene": 0,
+  "scenes": [{ "nodes": [0, 1] }],
+  "nodes": [
+    { "name": "FirstNode", "extensions": { "KHR_lights_punctual": { "light": 0 } } },
+    { "name": "SecondNode", "extensions": { "KHR_lights_punctual": { "light": 1 } } }
+  ]
+}

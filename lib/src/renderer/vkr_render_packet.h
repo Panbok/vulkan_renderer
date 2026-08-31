@@ -18,7 +18,7 @@
 #include "renderer/vkr_temporal.h"
 
 /** Version constant for VkrRenderPacket.packet_version validation. */
-#define VKR_RENDER_PACKET_VERSION 24u
+#define VKR_RENDER_PACKET_VERSION 25u
 
 #define VKR_FRAME_IBL_PROBE_MAX 16u
 #define VKR_PREPARED_TEXT_DRAW_MAX 64u
