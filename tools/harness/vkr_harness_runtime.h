@@ -45,6 +45,8 @@ typedef struct VkrHarnessSampleFileHeader {
   uint32_t actual_image_count;
   uint32_t actual_width;
   uint32_t actual_height;
+  uint32_t actual_render_width;
+  uint32_t actual_render_height;
   uint32_t gpu_vendor_id;
   uint32_t gpu_device_id;
   uint32_t flags;

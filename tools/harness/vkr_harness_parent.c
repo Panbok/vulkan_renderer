@@ -287,6 +287,10 @@ vkr_harness_run_is_compatible(const VkrHarnessSampleSet *first,
              first->header.actual_image_count &&
          candidate->header.actual_width == first->header.actual_width &&
          candidate->header.actual_height == first->header.actual_height &&
+         candidate->header.actual_render_width ==
+             first->header.actual_render_width &&
+         candidate->header.actual_render_height ==
+             first->header.actual_render_height &&
          string_equals(candidate->header.color_format,
                        first->header.color_format) &&
          string_equals(candidate->header.depth_format,
@@ -836,6 +840,10 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
     }
     if (run == 0u) {
       vkr_harness_adopt_run_provenance(&report.provenance, &runs[0].header);
+      report.case_manifest.renderer.render_width =
+          runs[0].header.actual_render_width;
+      report.case_manifest.renderer.render_height =
+          runs[0].header.actual_render_height;
       report.subsystem_mask = runs[0].header.subsystem_mask;
     }
     string_format(reference->status, sizeof(reference->status), "pass");

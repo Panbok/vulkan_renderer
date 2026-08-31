@@ -290,6 +290,64 @@ bool8_t vkr_harness_report_write(const char *path,
   VkrJsonWriter *writer = &file_writer.writer;
   char subsystem_mask[VKR_HARNESS_SUBSYSTEM_MASK_MAX];
   vkr_harness_format_subsystem_mask(subsystem_mask, report->subsystem_mask);
+  const uint32_t target_width = report->provenance.actual_target_width
+                                    ? report->provenance.actual_target_width
+                                    : report->case_manifest.width;
+  const uint32_t target_height = report->provenance.actual_target_height
+                                     ? report->provenance.actual_target_height
+                                     : report->case_manifest.height;
+  const float64_t render_scale =
+      report->case_manifest.renderer.render_scale > 0.0f
+          ? report->case_manifest.renderer.render_scale
+          : 1.0;
+  const uint32_t render_width =
+      report->case_manifest.renderer.render_width
+          ? report->case_manifest.renderer.render_width
+          : ClampBot((uint32_t)((float64_t)target_width * render_scale + 0.5),
+                     1u);
+  const uint32_t render_height =
+      report->case_manifest.renderer.render_height
+          ? report->case_manifest.renderer.render_height
+          : ClampBot((uint32_t)((float64_t)target_height * render_scale + 0.5),
+                     1u);
+  const char *upscaler = report->case_manifest.renderer.upscaler[0]
+                             ? report->case_manifest.renderer.upscaler
+                             : "spatial";
+  const VkrHarnessMetricResult *observed_scale =
+      vkr_harness_report_find_metric(report, "frame.render_scale");
+  const VkrHarnessMetricResult *observed_width =
+      vkr_harness_report_find_metric(report, "frame.render_width");
+  const VkrHarnessMetricResult *observed_height =
+      vkr_harness_report_find_metric(report, "frame.render_height");
+  const VkrHarnessMetricResult *observed_transitions =
+      vkr_harness_report_find_metric(report,
+                                     "frame.dynamic_resolution_transitions");
+  const bool8_t scale_observed =
+      observed_scale && observed_scale->statistics.sample_count > 0u;
+  const bool8_t width_observed =
+      observed_width && observed_width->statistics.sample_count > 0u;
+  const bool8_t height_observed =
+      observed_height && observed_height->statistics.sample_count > 0u;
+  const bool8_t transitions_observed =
+      observed_transitions &&
+      observed_transitions->statistics.sample_count > 0u;
+  const float64_t observed_scale_min =
+      scale_observed ? observed_scale->statistics.min : render_scale;
+  const float64_t observed_scale_max =
+      scale_observed ? observed_scale->statistics.max : render_scale;
+  const uint64_t observed_width_min =
+      width_observed ? (uint64_t)observed_width->statistics.min : render_width;
+  const uint64_t observed_width_max =
+      width_observed ? (uint64_t)observed_width->statistics.max : render_width;
+  const uint64_t observed_height_min =
+      height_observed ? (uint64_t)observed_height->statistics.min
+                      : render_height;
+  const uint64_t observed_height_max =
+      height_observed ? (uint64_t)observed_height->statistics.max
+                      : render_height;
+  const uint64_t observed_transition_count =
+      transitions_observed ? (uint64_t)observed_transitions->statistics.max
+                           : 0u;
   bool8_t ok =
       vkr_json_writer_begin_object(writer) &&
       vkr_harness_json_emit_u64(writer, "schema_version",
@@ -382,12 +440,13 @@ bool8_t vkr_harness_report_write(const char *path,
       vkr_json_writer_begin_object(writer) &&
       vkr_harness_json_emit_name(writer, "resolution") &&
       vkr_json_writer_begin_array(writer) &&
-      vkr_json_writer_u64(writer, report->provenance.actual_target_width
-                                      ? report->provenance.actual_target_width
-                                      : report->case_manifest.width) &&
-      vkr_json_writer_u64(writer, report->provenance.actual_target_height
-                                      ? report->provenance.actual_target_height
-                                      : report->case_manifest.height) &&
+      vkr_json_writer_u64(writer, target_width) &&
+      vkr_json_writer_u64(writer, target_height) &&
+      vkr_json_writer_end_array(writer) &&
+      vkr_harness_json_emit_name(writer, "render_resolution") &&
+      vkr_json_writer_begin_array(writer) &&
+      vkr_json_writer_u64(writer, render_width) &&
+      vkr_json_writer_u64(writer, render_height) &&
       vkr_json_writer_end_array(writer) &&
       (!report->case_manifest.resize_round_trip ||
        (vkr_harness_json_emit_name(writer, "resize_round_trip") &&
@@ -480,6 +539,42 @@ bool8_t vkr_harness_report_write(const char *path,
       vkr_harness_json_emit_u64(
           writer, "ibl_probe_limit",
           report->case_manifest.renderer.ibl_probe_limit) &&
+      vkr_harness_json_emit_f64(writer, "render_scale",
+                                report->case_manifest.renderer.render_scale) &&
+      vkr_harness_json_emit_string(writer, "upscaler", upscaler) &&
+      vkr_harness_json_emit_bool(
+          writer, "dynamic_resolution",
+          report->case_manifest.renderer.dynamic_resolution) &&
+      (!report->case_manifest.renderer.dynamic_resolution ||
+       (vkr_harness_json_emit_f64(
+            writer, "dynamic_resolution_min_scale",
+            report->case_manifest.renderer.dynamic_resolution_min_scale) &&
+        vkr_harness_json_emit_f64(
+            writer, "dynamic_resolution_max_scale",
+            report->case_manifest.renderer.dynamic_resolution_max_scale) &&
+        vkr_harness_json_emit_f64(writer, "dynamic_resolution_target_frame_ms",
+                                  report->case_manifest.renderer
+                                      .dynamic_resolution_target_frame_ms) &&
+        vkr_harness_json_emit_name(writer, "dynamic_resolution_observed") &&
+        vkr_json_writer_begin_object(writer) &&
+        vkr_harness_json_emit_name(writer, "scale_range") &&
+        vkr_json_writer_begin_array(writer) &&
+        vkr_json_writer_f64(writer, observed_scale_min) &&
+        vkr_json_writer_f64(writer, observed_scale_max) &&
+        vkr_json_writer_end_array(writer) &&
+        vkr_harness_json_emit_name(writer, "width_range") &&
+        vkr_json_writer_begin_array(writer) &&
+        vkr_json_writer_u64(writer, observed_width_min) &&
+        vkr_json_writer_u64(writer, observed_width_max) &&
+        vkr_json_writer_end_array(writer) &&
+        vkr_harness_json_emit_name(writer, "height_range") &&
+        vkr_json_writer_begin_array(writer) &&
+        vkr_json_writer_u64(writer, observed_height_min) &&
+        vkr_json_writer_u64(writer, observed_height_max) &&
+        vkr_json_writer_end_array(writer) &&
+        vkr_harness_json_emit_u64(writer, "max_transition_count",
+                                  observed_transition_count) &&
+        vkr_json_writer_end_object(writer))) &&
       vkr_harness_json_emit_string(
           writer, "cache",
           vkr_harness_cache_name(report->case_manifest.cache)) &&

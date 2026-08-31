@@ -3,6 +3,9 @@
 bool8_t vkr_harness_metric_is_current_frame_work(const char *name) {
   if (!name)
     return false_v;
+  if (string_n_equals(name, "frame.render_", sizeof("frame.render_") - 1u) ||
+      string_equals(name, "frame.dynamic_resolution_transitions"))
+    return true_v;
   if (string_equals(name, "instance_buffer.overflows"))
     return true_v;
   if (string_n_equals(name, "visibility.objects_",

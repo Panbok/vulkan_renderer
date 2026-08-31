@@ -1,6 +1,7 @@
 #include "vkr_harness_json.h"
 
 #include "renderer/systems/vkr_shadow_system.h"
+#include "renderer/vkr_dynamic_resolution.h"
 #include "renderer/vkr_render_packet.h"
 
 #include <float.h>
@@ -442,6 +443,12 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
                                         "tonemap_enabled",
                                         "fxaa_enabled",
                                         "transmission_depth_diagnostic_enabled",
+                                        "render_scale",
+                                        "upscaler",
+                                        "dynamic_resolution",
+                                        "dynamic_resolution_min_scale",
+                                        "dynamic_resolution_max_scale",
+                                        "dynamic_resolution_target_frame_ms",
                                         "backend",
                                         "shadow_preset",
                                         "shadow_cascades",
@@ -472,6 +479,7 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
   }
   string_copy(renderer->render_mode, "default");
   string_copy(renderer->exposure_mode, "manual");
+  string_copy(renderer->upscaler, "spatial");
   renderer->taa_enabled = true_v;
   renderer->tonemap_enabled = true_v;
   renderer->fxaa_enabled = true_v;
@@ -484,6 +492,7 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
   renderer->gtao_enabled = false_v;
   renderer->gtao_radius = VKR_GTAO_DEFAULT_RADIUS;
   renderer->gtao_power = VKR_GTAO_DEFAULT_POWER;
+  renderer->render_scale = 1.0f;
   /* Unset means "do not clamp", so an existing case keeps every packed probe
      and its workload fingerprint is unchanged by these controls existing. */
   renderer->ibl_probe_limit = UINT32_MAX;
@@ -497,6 +506,13 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
   float64_t bloom_intensity = renderer->bloom_intensity;
   float64_t gtao_radius = renderer->gtao_radius;
   float64_t gtao_power = renderer->gtao_power;
+  float64_t render_scale = renderer->render_scale;
+  float64_t dynamic_resolution_min_scale =
+      VKR_DYNAMIC_RESOLUTION_DEFAULT_MIN_SCALE;
+  float64_t dynamic_resolution_max_scale =
+      VKR_DYNAMIC_RESOLUTION_DEFAULT_MAX_SCALE;
+  float64_t dynamic_resolution_target_frame_ms =
+      VKR_DYNAMIC_RESOLUTION_DEFAULT_TARGET_FRAME_MS;
   int32_t manual_exposure_token = -1;
   int32_t exposure_reset_token = -1;
   int32_t bloom_threshold_token = -1;
@@ -520,6 +536,22 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
       !vkr_harness_manifest_bool(
           doc, token, "transmission_depth_diagnostic_enabled", false_v,
           &renderer->transmission_depth_diagnostic_enabled, error) ||
+      !vkr_harness_manifest_f64(doc, token, "render_scale", false_v,
+                                &render_scale, error) ||
+      !vkr_harness_manifest_string(doc, token, "upscaler", false_v,
+                                   renderer->upscaler,
+                                   sizeof(renderer->upscaler), error) ||
+      !vkr_harness_manifest_bool(doc, token, "dynamic_resolution", false_v,
+                                 &renderer->dynamic_resolution, error) ||
+      !vkr_harness_manifest_f64(doc, token, "dynamic_resolution_min_scale",
+                                false_v, &dynamic_resolution_min_scale,
+                                error) ||
+      !vkr_harness_manifest_f64(doc, token, "dynamic_resolution_max_scale",
+                                false_v, &dynamic_resolution_max_scale,
+                                error) ||
+      !vkr_harness_manifest_f64(doc, token,
+                                "dynamic_resolution_target_frame_ms", false_v,
+                                &dynamic_resolution_target_frame_ms, error) ||
       !vkr_harness_manifest_string(doc, token, "backend", false_v,
                                    renderer->backend, sizeof(renderer->backend),
                                    error) ||
@@ -595,6 +627,9 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
   const bool8_t backend_valid = renderer->backend[0] == '\0' ||
                                 string_equals(renderer->backend, "vulkan") ||
                                 string_equals(renderer->backend, "metal");
+  const bool8_t upscaler_valid =
+      string_equals(renderer->upscaler, "spatial") ||
+      string_equals(renderer->upscaler, "metalfx_temporal");
   const bool8_t exposure_mode_valid =
       string_equals(renderer->exposure_mode, "manual") ||
       string_equals(renderer->exposure_mode, "automatic");
@@ -623,9 +658,10 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
       gtao_radius_token >= 0 && gtao_power_token >= 0;
   const bool8_t gtao_controls_valid =
       gtao_values_valid && (!renderer->gtao_enabled || gtao_controls_present);
-  if (!preset_valid || !mode_valid || !backend_valid || cascades < 1u ||
-      cascades > 8u || !exposure_mode_valid || !automatic_controls_valid ||
-      !bloom_controls_valid || !gtao_controls_valid ||
+  if (!preset_valid || !mode_valid || !backend_valid || !upscaler_valid ||
+      cascades < 1u || cascades > 8u || !exposure_mode_valid ||
+      !automatic_controls_valid || !bloom_controls_valid ||
+      !gtao_controls_valid ||
       (ibl_probe_limit_token >= 0 &&
        ibl_probe_limit > VKR_FRAME_IBL_PROBE_MAX) ||
       !isfinite(manual_exposure) || manual_exposure <= 0.0 ||
@@ -647,6 +683,54 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
   renderer->bloom_intensity = (float32_t)bloom_intensity;
   renderer->gtao_radius = (float32_t)gtao_radius;
   renderer->gtao_power = (float32_t)gtao_power;
+  if (!isfinite(render_scale) || render_scale <= 0.0 || render_scale > 1.0) {
+    vkr_harness_error_set(
+        error, "renderer.render_scale", "$.renderer.render_scale",
+        "Render scale must be finite, greater than 0, and at most 1");
+    return false_v;
+  }
+  renderer->render_scale = (float32_t)render_scale;
+  if (renderer->render_scale != 1.0f && renderer->editor) {
+    vkr_harness_error_set(
+        error, "renderer.render_scale", "$.renderer.render_scale",
+        "Non-unit render scale does not support the editor viewport");
+    return false_v;
+  }
+  const bool8_t metalfx_temporal =
+      string_equals(renderer->upscaler, "metalfx_temporal");
+  if ((metalfx_temporal && (!string_equals(renderer->backend, "metal") ||
+                            renderer->editor || !renderer->taa_enabled)) ||
+      (renderer->dynamic_resolution && !metalfx_temporal)) {
+    vkr_harness_error_set(
+        error, "renderer.upscaler", "$.renderer.upscaler",
+        "MetalFX temporal requires the pinned Metal backend, temporal jitter, "
+        "and a non-editor target; dynamic resolution requires MetalFX");
+    return false_v;
+  }
+  if (metalfx_temporal)
+    renderer->fxaa_enabled = false_v;
+  if (renderer->dynamic_resolution) {
+    VkrDynamicResolutionConfig dynamic_config = {
+        .min_scale = (float32_t)dynamic_resolution_min_scale,
+        .max_scale = (float32_t)dynamic_resolution_max_scale,
+        .target_frame_ms = (float32_t)dynamic_resolution_target_frame_ms,
+        .enabled = true_v,
+    };
+    float32_t initial_scale = renderer->render_scale;
+    if (!vkr_dynamic_resolution_config_normalize(
+            &dynamic_config, initial_scale, &dynamic_config, &initial_scale)) {
+      vkr_harness_error_set(
+          error, "renderer.dynamic_resolution", "$.renderer",
+          "Dynamic-resolution bounds, target frame time, or initial scale are "
+          "invalid");
+      return false_v;
+    }
+    renderer->render_scale = initial_scale;
+    renderer->dynamic_resolution_min_scale = dynamic_config.min_scale;
+    renderer->dynamic_resolution_max_scale = dynamic_config.max_scale;
+    renderer->dynamic_resolution_target_frame_ms =
+        dynamic_config.target_frame_ms;
+  }
 
   /* Resolve optional fields from the preset before parsing them. Reports and
      fingerprints describe the effective workload, not whether the JSON

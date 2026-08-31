@@ -912,6 +912,19 @@ static ApplicationConfig vkr_harness_child_application_config(
           },
       .requested_present_mode =
           vkr_harness_present_to_renderer(case_manifest->present),
+      .render_scale = case_manifest->renderer.render_scale,
+      .upscale_mode =
+          string_equals(case_manifest->renderer.upscaler, "metalfx_temporal")
+              ? VKR_UPSCALE_MODE_METALFX_TEMPORAL
+              : VKR_UPSCALE_MODE_SPATIAL,
+      .dynamic_resolution =
+          {
+              .min_scale = case_manifest->renderer.dynamic_resolution_min_scale,
+              .max_scale = case_manifest->renderer.dynamic_resolution_max_scale,
+              .target_frame_ms =
+                  case_manifest->renderer.dynamic_resolution_target_frame_ms,
+              .enabled = case_manifest->renderer.dynamic_resolution,
+          },
       .capture_enabled = capture_max_batch_bytes > 0u,
       .capture_ring_capacity = 3u,
       .capture_max_batch_bytes = capture_max_batch_bytes,
@@ -1096,7 +1109,7 @@ vkr_harness_child_create_text_fixture(Application *application,
 
 static void
 vkr_harness_child_device_provenance(Application *application,
-                                    const VkrHarnessCase *case_manifest,
+                                    VkrHarnessCase *case_manifest,
                                     VkrHarnessProvenance *provenance) {
   Arena *device_arena = arena_create(KB(16), KB(16));
   if (!device_arena) {
@@ -1125,6 +1138,8 @@ vkr_harness_child_device_provenance(Application *application,
   provenance->actual_target_image_count = device.actual_target_image_count;
   provenance->actual_target_width = device.actual_target_width;
   provenance->actual_target_height = device.actual_target_height;
+  case_manifest->renderer.render_width = device.actual_render_width;
+  case_manifest->renderer.render_height = device.actual_render_height;
   string_format(provenance->color_format, sizeof(provenance->color_format),
                 "%s",
                 vkr_harness_surface_format_name(device.actual_color_format));
@@ -1306,6 +1321,8 @@ static VkrHarnessSampleFileHeader vkr_harness_child_sample_header(
       .actual_image_count = provenance->actual_target_image_count,
       .actual_width = provenance->actual_target_width,
       .actual_height = provenance->actual_target_height,
+      .actual_render_width = case_manifest->renderer.render_width,
+      .actual_render_height = case_manifest->renderer.render_height,
       .gpu_vendor_id = provenance->gpu_vendor_id,
       .gpu_device_id = provenance->gpu_device_id,
       .flags = (uint32_t)((warmup_stable ? VKR_HARNESS_SAMPLE_FLAG_WARMUP_STABLE

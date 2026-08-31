@@ -193,6 +193,23 @@ bool8_t vkr_harness_case_fingerprints_with_scene_digest(
       case_manifest->renderer.bloom_intensity);
   ADD("renderer.gtao", "%u,%.9g,%.9g", case_manifest->renderer.gtao_enabled,
       case_manifest->renderer.gtao_radius, case_manifest->renderer.gtao_power);
+  /* Preserve workload identities for manifests authored before render-scale
+     support. Non-default scale remains a distinct deterministic workload. */
+  if (case_manifest->renderer.render_scale != 1.0f) {
+    ADD("renderer.render_scale", "%.9g", case_manifest->renderer.render_scale);
+  }
+  const char *upscaler = case_manifest->renderer.upscaler[0]
+                             ? case_manifest->renderer.upscaler
+                             : "spatial";
+  if (!string_equals(upscaler, "spatial")) {
+    ADD("renderer.upscaler", "%s", upscaler);
+  }
+  if (case_manifest->renderer.dynamic_resolution) {
+    ADD("renderer.dynamic_resolution", "%.9g,%.9g,%.9g",
+        case_manifest->renderer.dynamic_resolution_min_scale,
+        case_manifest->renderer.dynamic_resolution_max_scale,
+        case_manifest->renderer.dynamic_resolution_target_frame_ms);
+  }
   ADD("renderer.shadow_debug_mode", "%u",
       case_manifest->renderer.shadow_debug_mode);
   /* The SH scaling fixture declares packed probe count as an independent

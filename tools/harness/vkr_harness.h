@@ -265,6 +265,19 @@ typedef struct VkrHarnessRendererConfig {
   bool8_t fxaa_enabled;
   /** Enables the capture-only fifth transmission peel on every case frame. */
   bool8_t transmission_depth_diagnostic_enabled;
+  /** Internal renderer resolution relative to the present target. */
+  float32_t render_scale;
+  /** Renderer-reported scene extent. Output-only; manifests cannot author it.
+   */
+  uint32_t render_width;
+  uint32_t render_height;
+  /** Reconstruction implementation: `spatial` or `metalfx_temporal`. */
+  char upscaler[24];
+  /** Completion-driven MetalFX resolution policy. */
+  bool8_t dynamic_resolution;
+  float32_t dynamic_resolution_min_scale;
+  float32_t dynamic_resolution_max_scale;
+  float32_t dynamic_resolution_target_frame_ms;
 } VkrHarnessRendererConfig;
 
 typedef struct VkrHarnessCompareConfig {
