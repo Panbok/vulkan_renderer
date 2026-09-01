@@ -1779,9 +1779,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
       packet->world ? packet->world->instance_count : 0;
   const uint32_t shadow_count = 0u;
   const uint32_t picking_count = 0u;
-  const uint32_t editor_count =
-      packet->editor ? packet->editor->instance_count : 0;
-  const uint32_t ui_count = packet->ui ? packet->ui->instance_count : 0;
+  const VkrPreparedUiDrawList *ui_draw_list =
+      packet->ui ? &packet->ui->draw_list : NULL;
+  const uint32_t ui_batch_count = ui_draw_list ? ui_draw_list->batch_count : 0u;
   const VkrWorldPassPayload *world = packet->world;
   const uint32_t source_gpu_draw_count =
       world ? world->gpu_candidate_count : 0u;
@@ -1822,12 +1822,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   renderer->transmission_gpu_draw_count = 0u;
   const uint32_t world_text_count =
       packet->world ? packet->world->text_draw_count : 0;
-  const uint32_t ui_text_count = packet->ui ? packet->ui->text_draw_count : 0;
-  if ((uint64_t)world_text_count + ui_text_count > renderer->max_draws)
+  if (world_text_count > renderer->max_draws)
     return false_v;
-  const uint64_t retained_instance_count = (uint64_t)world_count +
-                                           shadow_count + picking_count +
-                                           editor_count + ui_count;
+  const uint64_t retained_instance_count =
+      (uint64_t)world_count + shadow_count + picking_count;
   if (retained_instance_count > renderer->max_instances ||
       source_gpu_draw_count > renderer->max_instances ||
       source_transmission_gpu_draw_count > renderer->max_instances)
@@ -1859,10 +1857,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   root_count += renderer->prepared_frame.shadow_cascade_count;
   if (packet->picking && packet->picking->pending)
     root_count += 1u;
-  if (packet->editor)
-    root_count += packet->editor->draw_count;
-  if (packet->ui)
-    root_count += packet->ui->draw_count + ui_text_count;
+  root_count += ui_batch_count;
   /*
    * Pass encoders allocate at most one ordinary root each. Keep that authored
    * graph contribution explicit instead of relying on the fixed estimates
@@ -1879,8 +1874,6 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     // Blend encoding retains both its frame root and temporal draw state.
     frame_root_count += 2u;
   }
-  frame_root_count += packet->editor && packet->editor->draw_count > 0;
-  frame_root_count += packet->ui && packet->ui->draw_count > 0;
   if (frame_root_count > UINT32_MAX - root_count)
     return false_v;
   root_count += frame_root_count;
@@ -1891,11 +1884,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
       (uint64_t)shadow_count * sizeof(VkrInstanceDataGPU);
   const uint64_t picking_bytes =
       (uint64_t)picking_count * sizeof(VkrInstanceDataGPU);
-  const uint64_t editor_bytes =
-      (uint64_t)editor_count * sizeof(VkrInstanceDataGPU);
-  const uint64_t ui_bytes = (uint64_t)ui_count * sizeof(VkrInstanceDataGPU);
   const uint64_t retained_instance_bytes =
-      world_bytes + shadow_bytes + picking_bytes + editor_bytes + ui_bytes;
+      world_bytes + shadow_bytes + picking_bytes;
   const uint64_t gpu_draw_instances_offset = vkr_metal_packet_align_up(
       retained_instance_bytes, AlignOf(VkrInstanceDataGPU));
   const uint64_t gpu_draw_instances_bytes =
@@ -2024,32 +2014,42 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
           : 0u;
   uint64_t text_geometry_end = transmission_gpu_draw_icb_argument_offset +
                                transmission_gpu_draw_icb_argument_bytes;
-  const VkrPreparedTextDraw *text_domains[] = {
-      packet->world ? packet->world->text_draws : NULL,
-      packet->ui ? packet->ui->text_draws : NULL,
-  };
-  const uint32_t text_domain_counts[] = {world_text_count, ui_text_count};
-  for (uint32_t domain = 0; domain < ArrayCount(text_domains); ++domain) {
-    for (uint32_t i = 0; i < text_domain_counts[domain]; ++i) {
-      const VkrPreparedTextDraw *draw = &text_domains[domain][i];
-      const uint64_t vertex_bytes =
-          (uint64_t)draw->vertex_count * sizeof(VkrTextVertex);
-      const uint64_t index_bytes =
-          (uint64_t)draw->index_count * sizeof(uint32_t);
-      text_geometry_end =
-          vkr_metal_packet_align_up(text_geometry_end, AlignOf(VkrTextVertex));
-      if (text_geometry_end > UINT64_MAX - vertex_bytes)
-        return false_v;
-      text_geometry_end += vertex_bytes;
-      text_geometry_end =
-          vkr_metal_packet_align_up(text_geometry_end, AlignOf(uint32_t));
-      if (text_geometry_end > UINT64_MAX - index_bytes)
-        return false_v;
-      text_geometry_end += index_bytes;
-    }
+  for (uint32_t i = 0; i < world_text_count; ++i) {
+    const VkrPreparedTextDraw *draw = &packet->world->text_draws[i];
+    const uint64_t vertex_bytes =
+        (uint64_t)draw->vertex_count * sizeof(VkrTextVertex);
+    const uint64_t index_bytes = (uint64_t)draw->index_count * sizeof(uint32_t);
+    text_geometry_end =
+        vkr_metal_packet_align_up(text_geometry_end, AlignOf(VkrTextVertex));
+    if (text_geometry_end > UINT64_MAX - vertex_bytes)
+      return false_v;
+    text_geometry_end += vertex_bytes;
+    text_geometry_end =
+        vkr_metal_packet_align_up(text_geometry_end, AlignOf(uint32_t));
+    if (text_geometry_end > UINT64_MAX - index_bytes)
+      return false_v;
+    text_geometry_end += index_bytes;
   }
+
+  uint64_t ui_geometry_end = text_geometry_end;
+  const uint64_t ui_vertex_bytes =
+      ui_draw_list ? (uint64_t)ui_draw_list->vertex_count * sizeof(VkrUiVertex)
+                   : 0u;
+  const uint64_t ui_index_bytes =
+      ui_draw_list ? (uint64_t)ui_draw_list->index_count * sizeof(uint32_t)
+                   : 0u;
+  ui_geometry_end =
+      vkr_metal_packet_align_up(ui_geometry_end, AlignOf(VkrUiVertex));
+  if (ui_geometry_end > UINT64_MAX - ui_vertex_bytes)
+    return false_v;
+  ui_geometry_end += ui_vertex_bytes;
+  ui_geometry_end =
+      vkr_metal_packet_align_up(ui_geometry_end, AlignOf(uint32_t));
+  if (ui_geometry_end > UINT64_MAX - ui_index_bytes)
+    return false_v;
+  ui_geometry_end += ui_index_bytes;
   const uint64_t root_offset = vkr_metal_packet_align_up(
-      text_geometry_end, VKR_METAL_PACKET_ROOT_ALIGNMENT);
+      ui_geometry_end, VKR_METAL_PACKET_ROOT_ALIGNMENT);
   if (root_count >
       (UINT64_MAX - root_offset) / VKR_METAL_PACKET_DRAW_ROOT_STRIDE)
     return false_v;
@@ -2088,17 +2088,6 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     upload->world_instances_gpu = gpu;
   }
   if (picking_bytes > 0) {
-  }
-  if (editor_bytes > 0) {
-    const uint64_t offset = world_bytes + shadow_bytes + picking_bytes;
-    MemCopy(cpu + offset, packet->editor->instances, editor_bytes);
-    upload->editor_instances_gpu = gpu + offset;
-  }
-  if (ui_bytes > 0) {
-    const uint64_t offset =
-        world_bytes + shadow_bytes + picking_bytes + editor_bytes;
-    MemCopy(cpu + offset, packet->ui->instances, ui_bytes);
-    upload->ui_instances_gpu = gpu + offset;
   }
   if (source_gpu_draw_count > 0u || source_transmission_gpu_draw_count > 0u) {
     VkrInstanceDataGPU *gpu_instances =
@@ -2360,26 +2349,36 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   uint64_t text_offset = transmission_gpu_draw_icb_argument_offset +
                          transmission_gpu_draw_icb_argument_bytes;
   uint32_t text_upload_index = 0;
-  for (uint32_t domain = 0; domain < ArrayCount(text_domains); ++domain) {
-    for (uint32_t i = 0; i < text_domain_counts[domain]; ++i) {
-      const VkrPreparedTextDraw *draw = &text_domains[domain][i];
-      VkrMetalPacketTextUpload *text_upload =
-          &renderer->text_uploads[text_upload_index++];
-      const uint64_t vertex_bytes =
-          (uint64_t)draw->vertex_count * sizeof(VkrTextVertex);
-      const uint64_t index_bytes =
-          (uint64_t)draw->index_count * sizeof(uint32_t);
-      text_offset =
-          vkr_metal_packet_align_up(text_offset, AlignOf(VkrTextVertex));
-      MemCopy(cpu + text_offset, draw->vertices, vertex_bytes);
-      text_upload->vertices_gpu = gpu + text_offset;
-      text_offset += vertex_bytes;
-      text_offset = vkr_metal_packet_align_up(text_offset, AlignOf(uint32_t));
-      MemCopy(cpu + text_offset, draw->indices, index_bytes);
-      text_upload->indices_gpu = gpu + text_offset;
-      text_upload->indices_length = index_bytes;
-      text_offset += index_bytes;
-    }
+  for (uint32_t i = 0; i < world_text_count; ++i) {
+    const VkrPreparedTextDraw *draw = &packet->world->text_draws[i];
+    VkrMetalPacketTextUpload *text_upload =
+        &renderer->text_uploads[text_upload_index++];
+    const uint64_t vertex_bytes =
+        (uint64_t)draw->vertex_count * sizeof(VkrTextVertex);
+    const uint64_t index_bytes = (uint64_t)draw->index_count * sizeof(uint32_t);
+    text_offset =
+        vkr_metal_packet_align_up(text_offset, AlignOf(VkrTextVertex));
+    MemCopy(cpu + text_offset, draw->vertices, vertex_bytes);
+    text_upload->vertices_gpu = gpu + text_offset;
+    text_offset += vertex_bytes;
+    text_offset = vkr_metal_packet_align_up(text_offset, AlignOf(uint32_t));
+    MemCopy(cpu + text_offset, draw->indices, index_bytes);
+    text_upload->indices_gpu = gpu + text_offset;
+    text_upload->indices_length = index_bytes;
+    text_offset += index_bytes;
+  }
+  if (ui_vertex_bytes > 0u) {
+    text_offset = vkr_metal_packet_align_up(text_offset, AlignOf(VkrUiVertex));
+    MemCopy(cpu + text_offset, ui_draw_list->vertices, ui_vertex_bytes);
+    upload->ui_vertices_gpu = gpu + text_offset;
+    text_offset += ui_vertex_bytes;
+  }
+  if (ui_index_bytes > 0u) {
+    text_offset = vkr_metal_packet_align_up(text_offset, AlignOf(uint32_t));
+    MemCopy(cpu + text_offset, ui_draw_list->indices, ui_index_bytes);
+    upload->ui_indices_gpu = gpu + text_offset;
+    upload->ui_indices_length = ui_index_bytes;
+    text_offset += ui_index_bytes;
   }
   if (packet->world && packet->world->transmission_gpu_candidate_count > 0) {
     id<MTLTexture> transmission_texture = vkr_metal_packet_named_texture(
@@ -2393,7 +2392,6 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   upload->root_gpu = gpu + root_offset;
   upload->text_uploads = renderer->text_uploads;
   upload->world_text_count = world_text_count;
-  upload->ui_text_count = ui_text_count;
   upload->root_capacity = (uint32_t)root_count;
   return true_v;
 }

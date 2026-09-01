@@ -688,6 +688,12 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
                                    packet->debug->enable_timing &&
                                    packet->debug->capture_pass_timestamps;
   renderer->prepared_frame.editor_enabled = packet->frame.editor_enabled;
+  renderer->prepared_frame.viewport_width =
+      packet->frame.viewport_width ? packet->frame.viewport_width
+                                   : renderer->prepared_frame.target_width;
+  renderer->prepared_frame.viewport_height =
+      packet->frame.viewport_height ? packet->frame.viewport_height
+                                    : renderer->prepared_frame.target_height;
   renderer->prepared_frame.exposure_automatic =
       packet->globals.exposure.mode == VKR_EXPOSURE_MODE_AUTOMATIC;
   renderer->prepared_frame.picking_pending =

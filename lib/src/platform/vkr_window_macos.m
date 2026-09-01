@@ -361,6 +361,27 @@ static bool8_t cursor_in_content_area(PlatformState *state);
 }
 
 - (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
+  (void)replacementRange;
+  NSString *committed = [string isKindOfClass:[NSAttributedString class]]
+                            ? [(NSAttributedString *)string string]
+                            : (NSString *)string;
+  const NSUInteger length = [committed length];
+  for (NSUInteger i = 0u; i < length; ++i) {
+    const unichar first = [committed characterAtIndex:i];
+    if (first >= 0xd800u && first <= 0xdbffu && i + 1u < length) {
+      const unichar second = [committed characterAtIndex:i + 1u];
+      if (second >= 0xdc00u && second <= 0xdfffu) {
+        const uint32_t codepoint = 0x10000u +
+                                   (((uint32_t)first - 0xd800u) << 10u) +
+                                   ((uint32_t)second - 0xdc00u);
+        (void)input_process_char(platform_state->input_state, codepoint);
+        ++i;
+      }
+      continue;
+    }
+    if (first < 0xdc00u || first > 0xdfffu)
+      (void)input_process_char(platform_state->input_state, (uint32_t)first);
+  }
 }
 
 - (void)setMarkedText:(id)string

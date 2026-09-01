@@ -553,6 +553,21 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketTextRoot {
   uint32_t reserved[2];
 } VkrMetalPacketTextRoot;
 
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketUiRoot {
+  uint64_t vertices;
+  uint64_t texture_id;
+  /** target width/height followed by the normalized MTSDF unit range. */
+  Vec4 target_unit_range;
+  Vec2 rect_extent;
+  uint32_t mode;
+  uint32_t flags;
+  /** top-left, top-right, bottom-right, bottom-left. */
+  Vec4 corner_radii;
+} VkrMetalPacketUiRoot;
+
+_Static_assert(sizeof(VkrMetalPacketUiRoot) == 64u,
+               "Metal UI root must remain 64 bytes");
+
 typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_VERTEX = 0,
   VKR_METAL_PACKET_ABI_INSTANCE,
@@ -570,6 +585,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_PREFILTER_ROOT,
   VKR_METAL_PACKET_ABI_SH_PROJECT_ROOT,
   VKR_METAL_PACKET_ABI_TEXT_ROOT,
+  VKR_METAL_PACKET_ABI_UI_ROOT,
   VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT,
   VKR_METAL_PACKET_ABI_TRANSMISSION_PEEL_ROOT,
   VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT,

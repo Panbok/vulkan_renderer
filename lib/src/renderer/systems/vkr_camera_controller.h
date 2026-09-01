@@ -69,6 +69,7 @@ void vkr_camera_controller_rotate(VkrCameraController *controller,
  * @brief Applies queued movement/rotation to the camera.
  * @param controller Controller to update
  * @param delta_time Time since last frame
+ * @param input_blocked Clear queued input without applying it to the camera
  */
 void vkr_camera_controller_update(VkrCameraController *controller,
-                                  float64_t delta_time);
+                                  float64_t delta_time, bool8_t input_blocked);

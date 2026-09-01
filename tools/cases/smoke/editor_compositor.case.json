@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "id": "smoke.editor_compositor",
+  "suite": "smoke",
+  "description": "Single-channel editor compositor validation fixture.",
+  "scene": "assets/scenes/sponza.scene.json",
+  "seed": 1,
+  "resolution": [320, 240],
+  "boot": "full",
+  "target": "windowed_hidden",
+  "present": "immediate",
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 60000,
+  "asset_ready_timeout_ms": 30000,
+  "frames": { "warmup": 2, "measure": 3 },
+  "renderer": {
+    "editor": true,
+    "skybox": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [-1.5, 0, 17],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.1,
+    "far_plane": 500
+  },
+  "captures": [
+    {
+      "at_frame": 1,
+      "channels": ["final_color"]
+    }
+  ]
+}

@@ -15,6 +15,7 @@
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_scene_system.h"
 #include "renderer/systems/vkr_shadow_system.h"
+#include "renderer/systems/vkr_ui_system.h"
 
 #define VKR_HARNESS_MAX_CAPTURE_BATCH_BYTES GB(1)
 
@@ -126,6 +127,7 @@ typedef struct VkrHarnessChildContext {
   bool8_t resize_outbound_observed;
   bool8_t resize_restore_requested;
   bool8_t resize_round_trip_complete;
+  bool8_t text_fixture;
   uint32_t resize_outbound_pixel_width;
   uint32_t resize_outbound_pixel_height;
   uint32_t resize_restore_pixel_width;
@@ -715,12 +717,81 @@ vkr_harness_child_compact_pass_samples(VkrHarnessChildContext *child) {
   return true_v;
 }
 
+static void vkr_harness_child_build_ui(Application *application,
+                                       VkrHarnessChildContext *child,
+                                       float64_t delta) {
+  if (!child->text_fixture)
+    return;
+  const VkrUiTrack columns[] = {
+      {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
+  };
+  const VkrUiTrack rows[] = {
+      {.value = 80.0f, .unit = VKR_UI_TRACK_PX},
+      {.value = 80.0f, .unit = VKR_UI_TRACK_PX},
+      {.unit = VKR_UI_TRACK_AUTO},
+      {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
+  };
+  VkrUiPanelConfig root = vkr_ui_panel_config_default();
+  root.columns = columns;
+  root.column_count = ArrayCount(columns);
+  root.rows = rows;
+  root.row_count = ArrayCount(rows);
+  root.style.padding_pt = (VkrUiEdges){32.0f, 32.0f, 32.0f, 32.0f};
+  if (!vkr_ui_begin(&application->renderer, &application->renderer.ui_system,
+                    &application->window.input_state, false_v, delta, &root))
+    return;
+
+  const struct {
+    String8 id;
+    String8 content;
+    VkrFontHandle font;
+    Vec4 color;
+    float32_t size;
+  } fixtures[] = {
+      {.id = string8_lit("fixture.system"),
+       .content = string8_lit("SYSTEM | Aa Bb 0123456789 !?"),
+       .font = application->renderer.font_system.default_system_font_handle,
+       .color = {0.20f, 0.85f, 1.00f, 1.00f},
+       .size = 32.0f},
+      {.id = string8_lit("fixture.bitmap"),
+       .content = string8_lit("BITMAP | PIXEL 0123456789"),
+       .font = application->renderer.font_system.default_bitmap_font_handle,
+       .color = {1.00f, 0.35f, 0.60f, 1.00f},
+       .size = 42.0f},
+      {.id = string8_lit("fixture.mtsdf"),
+       .content = string8_lit("MTSDF | Smooth Aa 0123456789"),
+       .font = application->renderer.font_system.default_mtsdf_font_handle,
+       .color = {1.00f, 0.85f, 0.20f, 1.00f},
+       .size = 48.0f},
+  };
+  for (uint32_t i = 0u; i < ArrayCount(fixtures); ++i) {
+    VkrUiWidgetConfig label = vkr_ui_widget_config_default();
+    label.placement = (VkrUiPlacement){
+        .column = 0u,
+        .row = i,
+        .column_span = 1u,
+        .row_span = 1u,
+        .justify = VKR_UI_ALIGN_START,
+        .align = VKR_UI_ALIGN_START,
+    };
+    label.style.font_size_pt = fixtures[i].size;
+    label.style.text_color = fixtures[i].color;
+    label.text.font = fixtures[i].font;
+    label.text.font_size = fixtures[i].size;
+    label.text.uv_inset_px = 0.5f;
+    vkr_ui_label(&application->renderer.ui_system, fixtures[i].id,
+                 fixtures[i].content, &label);
+  }
+  (void)vkr_ui_end(&application->renderer.ui_system);
+}
+
 void application_update(Application *application, float64_t delta) {
   VkrHarnessChildContext *child = g_harness_child;
   if (!child) {
     application_close(application);
     return;
   }
+  vkr_harness_child_build_ui(application, child, delta);
   vkr_harness_child_drain_events(application);
   /* A failed renderer frame cannot contribute valid timing or snapshot
      evidence. Abort on the following update instead of repeatedly hitting the
@@ -1095,69 +1166,6 @@ vkr_harness_child_apply_renderer(Application *application,
       camera, case_manifest->camera.vertical_fov_degrees,
       case_manifest->camera.near_plane, case_manifest->camera.far_plane,
       case_manifest->width, case_manifest->height);
-}
-
-/**
- * Creates a fixed text workload before scene activation. The case flag owns
- * whether this exists; all content, fonts, colors, and positions are constants
- * so backend selection is the only run-to-run variable.
- */
-static bool8_t
-vkr_harness_child_create_text_fixture(Application *application,
-                                      const VkrHarnessCase *case_manifest) {
-  if (!case_manifest->renderer.text_fixture) {
-    return true_v;
-  }
-  if (!application->renderer.ui_system.initialized) {
-    return false_v;
-  }
-
-  typedef struct VkrHarnessUiTextFixture {
-    String8 content;
-    VkrFontHandle font;
-    Vec4 color;
-    float32_t size;
-    Vec2 padding;
-  } VkrHarnessUiTextFixture;
-  const float32_t system_fixture_size = 32.0f;
-  const VkrHarnessUiTextFixture fixtures[] = {
-      {.content = string8_lit("SYSTEM | Aa Bb 0123456789 !?"),
-       .font = application->renderer.font_system.default_system_font_handle,
-       .color = {0.20f, 0.85f, 1.00f, 1.00f},
-       .size = system_fixture_size,
-       .padding = {32.0f, 32.0f}},
-      {.content = string8_lit("BITMAP | PIXEL 0123456789"),
-       .font = application->renderer.font_system.default_bitmap_font_handle,
-       .color = {1.00f, 0.35f, 0.60f, 1.00f},
-       .size = 42.0f,
-       .padding = {32.0f, 112.0f}},
-      {.content = string8_lit("MTSDF | Smooth Aa 0123456789"),
-       .font = application->renderer.font_system.default_mtsdf_font_handle,
-       .color = {1.00f, 0.85f, 0.20f, 1.00f},
-       .size = 48.0f,
-       .padding = {32.0f, 192.0f}},
-  };
-  for (uint32_t i = 0; i < ArrayCount(fixtures); ++i) {
-    VkrUiTextConfig config = VKR_UI_TEXT_CONFIG_DEFAULT;
-    config.font = fixtures[i].font;
-    config.color = fixtures[i].color;
-    config.font_size = fixtures[i].size;
-    config.uv_inset_px = 0.5f;
-    const VkrUiTextCreateData payload = {
-        .text_id = VKR_INVALID_ID,
-        .content = fixtures[i].content,
-        .config = &config,
-        .anchor = VKR_UI_TEXT_ANCHOR_TOP_LEFT,
-        .padding = fixtures[i].padding,
-    };
-    uint32_t text_id = VKR_INVALID_ID;
-    if (!vkr_renderer_create_ui_text(&application->renderer, &payload,
-                                     &text_id) ||
-        text_id == VKR_INVALID_ID) {
-      return false_v;
-    }
-  }
-  return true_v;
 }
 
 static void
@@ -1615,8 +1623,10 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
     case_manifest.content_scale =
         vkr_window_get_content_scale(&application.window).value;
   }
-  if (!vkr_harness_child_create_text_fixture(&application, &case_manifest)) {
-    vkr_harness_stderr("Unable to create the deterministic text fixture\n");
+  if (case_manifest.renderer.text_fixture &&
+      !application.renderer.ui_system.initialized) {
+    vkr_harness_stderr(
+        "The deterministic text fixture requires the UI subsystem\n");
     exit_code = VKR_HARNESS_EXIT_INVALID;
     goto cleanup;
   }
@@ -1690,6 +1700,7 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
       .availability = availability,
       .submission_metric_index = submission_metric_index,
       .submission_gpu_timing = profile.submission_gpu_timing,
+      .text_fixture = case_manifest.renderer.text_fixture,
       .capture_index = capture_index,
       .run_dir = run_dir,
   };

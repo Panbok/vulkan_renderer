@@ -779,7 +779,7 @@ uint32_t vkr_world_resources_prepare_text_draws(RendererFrontend *rf,
     if (!slot->active || !vkr_text_3d_prepare_geometry(text) ||
         text->index_count == 0)
       continue;
-    if (count == capacity) {
+    if (out_draws && count == capacity) {
       log_error("World text packet capacity exceeded (%u)", capacity);
       break;
     }
@@ -803,20 +803,23 @@ uint32_t vkr_world_resources_prepare_text_draws(RendererFrontend *rf,
                                      text->world_height / text->texture_height,
                                      1.0f)));
     }
-    out_draws[count++] = (VkrPreparedTextDraw){
-        .vertices = text->vertices,
-        .vertex_count = text->vertex_count,
-        .indices = text->indices,
-        .index_count = text->index_count,
-        .max_index = text->vertex_count - 1u,
-        .atlas = font->atlas,
-        .model = model,
-        .unit_range = unit_range,
-        .font_mode = font_mode,
-        .object_id =
-            vkr_picking_encode_id(VKR_PICKING_ID_KIND_WORLD_TEXT, (uint32_t)i),
-        .revision = text->geometry_revision,
-    };
+    if (out_draws) {
+      out_draws[count] = (VkrPreparedTextDraw){
+          .vertices = text->vertices,
+          .vertex_count = text->vertex_count,
+          .indices = text->indices,
+          .index_count = text->index_count,
+          .max_index = text->vertex_count - 1u,
+          .atlas = font->atlas,
+          .model = model,
+          .unit_range = unit_range,
+          .font_mode = font_mode,
+          .object_id = vkr_picking_encode_id(VKR_PICKING_ID_KIND_WORLD_TEXT,
+                                             (uint32_t)i),
+          .revision = text->geometry_revision,
+      };
+    }
+    count++;
   }
   return count;
 }

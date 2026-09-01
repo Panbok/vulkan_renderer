@@ -334,6 +334,84 @@ vkr_internal bool8_t vkr_metal_packet_encode_text_draws(
   return true_v;
 }
 
+vkr_internal bool8_t vkr_metal_packet_encode_ui_draw_list(
+    VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
+    const VkrPreparedUiDrawList *draw_list, uint32_t target_width,
+    uint32_t target_height, VkrMetalPacketFrameUpload *upload,
+    VkrMetalPacketResult *result) API_AVAILABLE(macos(26.0)) {
+  if (draw_list->batch_count == 0u)
+    return true_v;
+  if (upload->ui_vertices_gpu == 0u || upload->ui_indices_gpu == 0u ||
+      upload->ui_indices_length == 0u)
+    return false_v;
+
+  [encoder setViewport:(MTLViewport){0.0, 0.0, target_width, target_height, 0.0,
+                                     1.0}];
+  [encoder setCullMode:MTLCullModeNone];
+  [encoder setDepthStencilState:nil];
+  id<MTLRenderPipelineState> bound_pipeline = nil;
+  for (uint32_t i = 0u; i < draw_list->batch_count; ++i) {
+    const VkrUiDrawBatch *batch = &draw_list->batches[i];
+    id<MTLRenderPipelineState> pipeline =
+        batch->mode == VKR_UI_DRAW_MODE_ROUNDED_RECT
+            ? renderer->ui_rect_pipeline
+            : renderer->ui_pipeline;
+    if (pipeline != bound_pipeline) {
+      [encoder setRenderPipelineState:pipeline];
+      bound_pipeline = pipeline;
+    }
+
+    VkrMetalPacketTexture *texture = NULL;
+    if (batch->texture.id != 0u) {
+      texture = vkr_metal_packet_resolve_texture(
+          renderer,
+          (VkrTextureHandle){.id = batch->texture.id,
+                             .generation = batch->texture.generation});
+      if (!texture)
+        continue;
+    }
+
+    uint64_t root_gpu = 0u;
+    VkrMetalPacketUiRoot *root =
+        vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+    if (!root)
+      return false_v;
+    *root = (VkrMetalPacketUiRoot){
+        .vertices = upload->ui_vertices_gpu,
+        .texture_id = texture ? texture->resource.resource_id : 0u,
+        .target_unit_range = {(float32_t)target_width, (float32_t)target_height,
+                              batch->sdf_unit_range.x, batch->sdf_unit_range.y},
+        .rect_extent = batch->rect_extent_px,
+        .mode = batch->mode,
+        .flags = texture ? 1u : 0u,
+        .corner_radii = batch->corner_radius_px,
+    };
+    [encoder setScissorRect:(MTLScissorRect){
+                                (NSUInteger)batch->scissor_rect_px.x,
+                                (NSUInteger)batch->scissor_rect_px.y,
+                                (NSUInteger)batch->scissor_rect_px.width,
+                                (NSUInteger)batch->scissor_rect_px.height}];
+    [renderer->argument_table setAddress:root_gpu atIndex:1u];
+    [encoder setArgumentTable:renderer->argument_table
+                     atStages:MTLRenderStageVertex | MTLRenderStageFragment];
+    const uint64_t index_offset =
+        (uint64_t)batch->first_index * sizeof(uint32_t);
+    [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
+                        indexCount:batch->index_count
+                         indexType:MTLIndexTypeUInt32
+                       indexBuffer:upload->ui_indices_gpu + index_offset
+                 indexBufferLength:upload->ui_indices_length - index_offset
+                     instanceCount:1u
+                        baseVertex:0
+                      baseInstance:0u];
+    if (texture)
+      texture->last_use_submit_value = renderer->submit_value + 1u;
+    result->ui_draw_count++;
+    result->indexed_draw_count++;
+  }
+  return true_v;
+}
+
 /** Resolves the texture behind one authored image use, honouring its mip. */
 vkr_internal id<MTLTexture>
 vkr_metal_packet_subresource_texture(VkrMetalPacketRenderer *renderer,
@@ -349,7 +427,9 @@ vkr_metal_packet_subresource_texture(VkrMetalPacketRenderer *renderer,
 vkr_internal bool8_t vkr_metal_packet_encode_tonemap(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrRenderPacket *packet, id<MTL4RenderCommandEncoder> encoder,
-    VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
+    VkrMetalPacketFrameUpload *upload, uint32_t target_width,
+    uint32_t target_height, const VkrEditorPassPayload *editor)
+    API_AVAILABLE(macos(26.0)) {
   const VkrRgImageUse *read = vkr_rg_pass_find_image_use(&pass->desc, 2u, 0u);
   if (!read)
     read = vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
@@ -367,14 +447,19 @@ vkr_internal bool8_t vkr_metal_packet_encode_tonemap(
   *manual_state = (VkrExposureGpuState){
       .exposure_multiplier = packet->globals.exposure.manual,
   };
+  const uint32_t output_x = editor ? (uint32_t)editor->image_rect_px.x : 0u;
+  const uint32_t output_y = editor ? (uint32_t)editor->image_rect_px.y : 0u;
+  const uint32_t output_width =
+      editor ? (uint32_t)editor->image_rect_px.z : target_width;
+  const uint32_t output_height =
+      editor ? (uint32_t)editor->image_rect_px.w : target_height;
   *root = (VkrMetalPacketTonemapRoot){
       .source_texture_id = source.gpuResourceID._impl,
       .reserved = {renderer->tonemap_enabled ? 1u : 0u,
                    renderer->fxaa_enabled && !renderer->metalfx_enabled ? 1u
                                                                         : 0u},
       .exposure_state = manual_state_gpu,
-      .output_extent = {renderer->prepared_frame.target_width,
-                        renderer->prepared_frame.target_height},
+      .output_extent = {output_width, output_height},
   };
   const VkrRgBufferUse *exposure_use =
       vkr_rg_pass_find_buffer_use(&pass->desc, 1u, 0u);
@@ -385,9 +470,10 @@ vkr_internal bool8_t vkr_metal_packet_encode_tonemap(
   if (exposure_state)
     root->exposure_state = exposure_state->resource.gpu_address;
   [renderer->argument_table setAddress:root_gpu atIndex:1];
-  [encoder setViewport:(MTLViewport){
-                           0.0, 0.0, renderer->prepared_frame.target_width,
-                           renderer->prepared_frame.target_height, 0.0, 1.0}];
+  [encoder setViewport:(MTLViewport){output_x, output_y, output_width,
+                                     output_height, 0.0, 1.0}];
+  [encoder setScissorRect:(MTLScissorRect){output_x, output_y, output_width,
+                                           output_height}];
   [encoder setRenderPipelineState:renderer->tonemap_pipeline];
   [encoder setArgumentTable:renderer->argument_table
                    atStages:MTLRenderStageFragment];
@@ -2105,45 +2191,22 @@ vkr_internal bool8_t vkr_metal_packet_encode_pass_body(
             (uint32_t)target.height, view_projection, false_v, upload,
             &picking_text_draw_count, result))
       return false_v;
-    return !packet->ui ||
-           vkr_metal_packet_encode_text_draws(
-               renderer, encoder, renderer->picking_text_pipeline,
-               renderer->depth_write_state, packet->ui->text_draws,
-               packet->ui->text_draw_count, upload->world_text_count,
-               (uint32_t)target.width, (uint32_t)target.height, mat4_identity(),
-               true_v, upload, &picking_text_draw_count, result);
+    return true_v;
   }
   if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_TONEMAP)
     return vkr_metal_packet_encode_tonemap(renderer, pass, packet, encoder,
-                                           upload);
-  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR) {
-    if (!vkr_metal_packet_encode_tonemap(renderer, pass, packet, encoder,
-                                         upload))
-      return false_v;
-    if (!packet->editor)
-      return true_v;
-    return vkr_metal_packet_encode_draws(
-        renderer, encoder, renderer->overlay_pipeline, nil,
-        packet->editor->draws, packet->editor->draw_count,
-        upload->editor_instances_gpu, (uint32_t)target.width,
-        (uint32_t)target.height, mat4_identity(), packet, false_v, false_v,
-        upload, &result->editor_draw_count, result);
-  }
+                                           upload, (uint32_t)target.width,
+                                           (uint32_t)target.height, NULL);
+  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR)
+    return vkr_metal_packet_encode_tonemap(
+        renderer, pass, packet, encoder, upload, (uint32_t)target.width,
+        (uint32_t)target.height, packet->editor);
   if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_UI) {
     if (!packet->ui)
       return true_v;
-    if (!vkr_metal_packet_encode_draws(
-            renderer, encoder, renderer->overlay_pipeline, nil,
-            packet->ui->draws, packet->ui->draw_count, upload->ui_instances_gpu,
-            (uint32_t)target.width, (uint32_t)target.height, mat4_identity(),
-            packet, false_v, false_v, upload, &result->ui_draw_count, result))
-      return false_v;
-    return vkr_metal_packet_encode_text_draws(
-        renderer, encoder, renderer->ui_text_pipeline, nil,
-        packet->ui->text_draws, packet->ui->text_draw_count,
-        upload->world_text_count, (uint32_t)target.width,
-        (uint32_t)target.height, mat4_identity(), true_v, upload,
-        &result->text_draw_count, result);
+    return vkr_metal_packet_encode_ui_draw_list(
+        renderer, encoder, &packet->ui->draw_list, (uint32_t)target.width,
+        (uint32_t)target.height, upload, result);
   }
   return true_v;
 }
@@ -2238,15 +2301,22 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     return false_v;
   }
 
+  /* prepare_frame acquires the present target before the packet exists. Patch
+     packet-derived graph conditions and viewport here, immediately before
+     graph build. */
+  renderer->prepared_frame.picking_pending =
+      packet->picking && packet->picking->pending;
+  renderer->prepared_frame.editor_enabled = packet->frame.editor_enabled;
+  renderer->prepared_frame.viewport_width =
+      packet->frame.viewport_width ? packet->frame.viewport_width
+                                   : renderer->prepared_frame.target_width;
+  renderer->prepared_frame.viewport_height =
+      packet->frame.viewport_height ? packet->frame.viewport_height
+                                    : renderer->prepared_frame.target_height;
   *out_result = (VkrMetalPacketResult){0};
   out_result->source_render_scale = renderer->prepared_frame.render_scale;
   out_result->source_render_width = renderer->prepared_frame.viewport_width;
   out_result->source_render_height = renderer->prepared_frame.viewport_height;
-  /* prepare_frame acquires the present target before the packet exists. Patch
-     packet-derived graph conditions here, immediately before graph build. */
-  renderer->prepared_frame.picking_pending =
-      packet->picking && packet->picking->pending;
-  renderer->prepared_frame.editor_enabled = packet->frame.editor_enabled;
   renderer->prepared_frame.exposure_automatic =
       packet->globals.exposure.mode == VKR_EXPOSURE_MODE_AUTOMATIC;
   /* A requested chain that the viewport is too small to hold is not bloom, so
@@ -2452,7 +2522,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   if (!vkr_metal_packet_prepare_upload(renderer, packet, &frame_upload)) {
     log_error("Metal packet stage failed: frame upload (world=%u ui=%u)",
               packet->world ? packet->world->instance_count : 0,
-              packet->ui ? packet->ui->instance_count : 0);
+              packet->ui ? packet->ui->draw_list.vertex_count : 0);
     vkr_metal_packet_rollback_gpu_draw_resource_preparation(renderer, packet);
     if (frame_upload.acquired)
       vkr_metal_memory_device_cancel_ring(

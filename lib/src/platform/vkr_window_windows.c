@@ -31,6 +31,7 @@ typedef struct PlatformState {
   // Window state
   uint32_t window_width;
   uint32_t window_height;
+  uint16_t pending_high_surrogate;
 } PlatformState;
 
 // Forward declarations
@@ -78,6 +79,7 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
   state->owner = window;
   state->window_width = width;
   state->window_height = height;
+  state->pending_high_surrogate = 0u;
 
   // Initialize mouse capture state
   state->cursor_hidden = false_v;
@@ -491,6 +493,26 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
     Keys key = translate_keycode((uint32_t)wparam);
     if (key != KEY_MAX_KEYS) {
       input_process_key(state->input_state, key, false_v);
+    }
+    return FALSE;
+  }
+
+  case WM_CHAR: {
+    const uint16_t code_unit = (uint16_t)wparam;
+    if (code_unit >= 0xd800u && code_unit <= 0xdbffu) {
+      state->pending_high_surrogate = code_unit;
+    } else if (code_unit >= 0xdc00u && code_unit <= 0xdfffu) {
+      if (state->pending_high_surrogate != 0u) {
+        const uint32_t codepoint =
+            0x10000u +
+            (((uint32_t)state->pending_high_surrogate - 0xd800u) << 10u) +
+            ((uint32_t)code_unit - 0xdc00u);
+        (void)input_process_char(state->input_state, codepoint);
+      }
+      state->pending_high_surrogate = 0u;
+    } else {
+      state->pending_high_surrogate = 0u;
+      (void)input_process_char(state->input_state, code_unit);
     }
     return FALSE;
   }

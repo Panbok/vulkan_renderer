@@ -587,7 +587,7 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
     [renderer->gpu_draw_icb_argument_encoder release];
     [renderer->depth_read_state release];
     [renderer->depth_write_state release];
-    [renderer->ui_text_pipeline release];
+    [renderer->ui_rect_pipeline release];
     [renderer->world_text_pipeline release];
     [renderer->picking_text_pipeline release];
     [renderer->tonemap_pipeline release];
@@ -637,7 +637,7 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
     [renderer->gpu_shadow_opaque_pipeline release];
     [renderer->vbuffer_opaque_pipeline release];
     [renderer->blend_pipeline release];
-    [renderer->overlay_pipeline release];
+    [renderer->ui_pipeline release];
     [renderer->picking_pipeline release];
     [renderer->metalfx_temporal_scaler release];
     [renderer->compiler release];

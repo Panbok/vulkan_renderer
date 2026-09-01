@@ -134,6 +134,8 @@ vkr_metal_packet_tonemap_vertex(uint vertex_id [[vertex_id]]) {
                                float2(-1.0, 3.0)};
   VkrMetalPacketTonemapOutput output;
   output.position = float4(positions[vertex_id], 0.0, 1.0);
+  output.texcoord = float2(positions[vertex_id].x * 0.5 + 0.5,
+                           0.5 - positions[vertex_id].y * 0.5);
   return output;
 }
 
@@ -142,7 +144,7 @@ fragment float4 vkr_metal_packet_tonemap_fragment(
     constant VkrMetalPacketTonemapRoot *root [[buffer(1)]]) {
   constexpr sampler source_sampler(coord::normalized, address::clamp_to_edge,
                                    filter::linear);
-  float2 uv = input.position.xy / float2(root->output_extent);
+  float2 uv = input.texcoord;
   float exposure = root->exposure_state->exposure_multiplier;
   if (root->reserved.y == 0u)
     return vkr_metal_packet_post_sample(root->source, source_sampler, uv,

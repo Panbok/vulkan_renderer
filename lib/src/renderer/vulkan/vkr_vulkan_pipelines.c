@@ -975,6 +975,10 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline(
                   ? "world_temporal_vertex"
               : vertex_shader == VKR_VULKAN_PACKET_SHADER_TEXT_VERTEX
                   ? "text_vertex"
+              : vertex_shader == VKR_VULKAN_PACKET_SHADER_UI_VERTEX
+                  ? "ui_vertex"
+              : vertex_shader == VKR_VULKAN_PACKET_SHADER_UI_RECT_VERTEX
+                  ? "ui_rect_vertex"
               : vertex_shader == VKR_VULKAN_PACKET_SHADER_VISIBILITY_VERTEX
                   ? "vk_visibility_vertex"
                   : "fullscreen_vertex",
@@ -998,6 +1002,10 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline(
               : fragment_shader ==
                       VKR_VULKAN_PACKET_SHADER_TEXT_PICKING_FRAGMENT
                   ? "text_picking_fragment"
+              : fragment_shader == VKR_VULKAN_PACKET_SHADER_UI_FRAGMENT
+                  ? "ui_fragment"
+              : fragment_shader == VKR_VULKAN_PACKET_SHADER_UI_RECT_FRAGMENT
+                  ? "ui_rect_fragment"
               : fragment_shader == VKR_VULKAN_PACKET_SHADER_VISIBILITY_FRAGMENT
                   ? "vk_visibility_fragment"
               : fragment_shader ==
@@ -1140,6 +1148,10 @@ vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_PACKET_TEXT_VERT_SPV,
       VKR_VULKAN_PACKET_TEXT_FRAG_SPV,
       VKR_VULKAN_PACKET_TEXT_PICKING_FRAG_SPV,
+      VKR_VULKAN_PACKET_UI_VERT_SPV,
+      VKR_VULKAN_PACKET_UI_FRAG_SPV,
+      VKR_VULKAN_PACKET_UI_RECT_VERT_SPV,
+      VKR_VULKAN_PACKET_UI_RECT_FRAG_SPV,
       VKR_VULKAN_PACKET_VISIBILITY_VERT_SPV,
       VKR_VULKAN_PACKET_VISIBILITY_FRAG_SPV,
       VKR_VULKAN_PACKET_VISIBILITY_OPAQUE_FRAG_SPV,
@@ -1169,8 +1181,8 @@ vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
              false_v, false_v) &&
          vkr_vk_create_packet_pipeline(
              renderer, VKR_VULKAN_PACKET_PIPELINE_UI,
-             VKR_VULKAN_PACKET_SHADER_WORLD_VERTEX,
-             VKR_VULKAN_PACKET_SHADER_WORLD_FRAGMENT, VK_FORMAT_R8G8B8A8_SRGB,
+             VKR_VULKAN_PACKET_SHADER_UI_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_UI_FRAGMENT, VK_FORMAT_R8G8B8A8_SRGB,
              VK_FORMAT_UNDEFINED, false_v, false_v, true_v, false_v) &&
          vkr_vk_create_packet_pipeline(
              renderer, VKR_VULKAN_PACKET_PIPELINE_WORLD_TEXT,
@@ -1184,9 +1196,9 @@ vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
              VKR_VULKAN_PACKET_SHADER_TEXT_PICKING_FRAGMENT, VK_FORMAT_R32_UINT,
              VK_FORMAT_D32_SFLOAT, true_v, true_v, false_v, false_v) &&
          vkr_vk_create_packet_pipeline(
-             renderer, VKR_VULKAN_PACKET_PIPELINE_UI_TEXT,
-             VKR_VULKAN_PACKET_SHADER_TEXT_VERTEX,
-             VKR_VULKAN_PACKET_SHADER_TEXT_FRAGMENT, VK_FORMAT_R8G8B8A8_SRGB,
+             renderer, VKR_VULKAN_PACKET_PIPELINE_UI_RECT,
+             VKR_VULKAN_PACKET_SHADER_UI_RECT_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_UI_RECT_FRAGMENT, VK_FORMAT_R8G8B8A8_SRGB,
              VK_FORMAT_UNDEFINED, false_v, false_v, true_v, false_v) &&
          vkr_vk_create_packet_pipeline(
              renderer, VKR_VULKAN_PACKET_PIPELINE_VISIBILITY,

@@ -76,6 +76,29 @@ vkr_internal bool8_t vkr_vk_upload_instances(
   return true_v;
 }
 
+vkr_internal bool8_t vkr_vk_upload_ui_draw_list(
+    VkrVulkanFrameSlot *slot, const VkrPreparedUiDrawList *draw_list) {
+  slot->ui_vertices = 0u;
+  slot->ui_index_offset = 0u;
+  slot->ui_index_size = 0u;
+  if (draw_list->vertex_count == 0u)
+    return true_v;
+  const uint64_t vertex_bytes =
+      (uint64_t)draw_list->vertex_count * sizeof(VkrUiVertex);
+  const uint64_t index_bytes =
+      (uint64_t)draw_list->index_count * sizeof(uint32_t);
+  void *vertices = vkr_vk_frame_upload_allocate(
+      slot, vertex_bytes, _Alignof(VkrUiVertex), &slot->ui_vertices, NULL);
+  void *indices = vkr_vk_frame_upload_allocate(
+      slot, index_bytes, _Alignof(uint32_t), NULL, &slot->ui_index_offset);
+  if (!vertices || !indices)
+    return false_v;
+  MemCopy(vertices, draw_list->vertices, vertex_bytes);
+  MemCopy(indices, draw_list->indices, index_bytes);
+  slot->ui_index_size = index_bytes;
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_vk_resolve_sampled_pair(VkrVulkanRenderer *renderer,
                                                  VkrTextureHandle handle,
                                                  uint32_t *out_texture,
@@ -235,8 +258,9 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
   slot->frame_upload_cursor = 0u;
   slot->frame_upload_exhaustions = 0u;
   slot->world_instances = 0u;
-  slot->ui_instances = 0u;
-  slot->editor_instances = 0u;
+  slot->ui_vertices = 0u;
+  slot->ui_index_offset = 0u;
+  slot->ui_index_size = 0u;
   slot->gpu_candidate_instances = 0u;
   slot->transmission_gpu_candidate_instances = 0u;
   slot->gpu_geometry_rows = 0u;
@@ -258,13 +282,7 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
       (!packet->world || vkr_vk_upload_instances(slot, packet->world->instances,
                                                  packet->world->instance_count,
                                                  &slot->world_instances)) &&
-      (!packet->ui || vkr_vk_upload_instances(slot, packet->ui->instances,
-                                              packet->ui->instance_count,
-                                              &slot->ui_instances)) &&
-      (!packet->editor ||
-       vkr_vk_upload_instances(slot, packet->editor->instances,
-                               packet->editor->instance_count,
-                               &slot->editor_instances));
+      (!packet->ui || vkr_vk_upload_ui_draw_list(slot, &packet->ui->draw_list));
   if (!common_uploads)
     return false_v;
 
@@ -585,25 +603,19 @@ void vkr_vk_fill_packet_frame_root(
       frame->shadow_receiver.pcf_uniform_early_out;
 }
 
-bool8_t vkr_vk_record_packet_draws(VkrVulkanRenderer *renderer,
-                                   VkCommandBuffer command,
-                                   VkrVulkanPacketPipeline pipeline,
-                                   const VkrDrawItem *draws,
-                                   uint32_t draw_count, uint64_t instances,
-                                   Mat4 view_projection, bool8_t alpha_cutout,
-                                   uint32_t shadow_texture,
-                                   uint32_t transmission_texture) {
+bool8_t vkr_vk_record_packet_draws(
+    VkrVulkanRenderer *renderer, VkCommandBuffer command,
+    VkrVulkanPacketPipeline pipeline, const VkrDrawItem *draws,
+    uint32_t draw_count, uint64_t instances, Mat4 view_projection,
+    uint32_t target_width, uint32_t target_height, bool8_t alpha_cutout,
+    uint32_t shadow_texture, uint32_t transmission_texture) {
   if (draw_count == 0u)
     return true_v;
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   const VkrRenderPacket *packet = renderer->graph->packet;
-  const VkrPacketFrameConstants frame = vkr_packet_derive_frame_constants(
-      packet,
-      packet->frame.viewport_width ? packet->frame.viewport_width
-                                   : packet->frame.window_width,
-      packet->frame.viewport_height ? packet->frame.viewport_height
-                                    : packet->frame.window_height);
+  const VkrPacketFrameConstants frame =
+      vkr_packet_derive_frame_constants(packet, target_width, target_height);
   const bool8_t lighting_pass =
       pipeline == VKR_VULKAN_PACKET_PIPELINE_WORLD_BLEND;
   uint64_t frame_root_address = 0u;
@@ -811,12 +823,95 @@ bool8_t vkr_vk_record_text_draws(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
+bool8_t vkr_vk_record_ui_draw_list(VkrVulkanRenderer *renderer,
+                                   VkCommandBuffer command,
+                                   const VkrPreparedUiDrawList *draw_list,
+                                   uint32_t target_width,
+                                   uint32_t target_height) {
+  if (draw_list->batch_count == 0u)
+    return true_v;
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  if (slot->ui_vertices == 0u || slot->ui_index_size == 0u)
+    return false_v;
+
+  const VkViewport viewport = {
+      .width = (float32_t)target_width,
+      .height = (float32_t)target_height,
+      .maxDepth = 1.0f,
+  };
+  vkCmdSetViewport(command, 0u, 1u, &viewport);
+  vkCmdSetCullMode(command, VK_CULL_MODE_NONE);
+  vkCmdBindIndexBuffer2(command, slot->frame_upload.handle,
+                        slot->ui_index_offset, slot->ui_index_size,
+                        VK_INDEX_TYPE_UINT32);
+
+  VkrVulkanPacketPipeline bound_pipeline = VKR_VULKAN_PACKET_PIPELINE_COUNT;
+  for (uint32_t i = 0u; i < draw_list->batch_count; ++i) {
+    const VkrUiDrawBatch *batch = &draw_list->batches[i];
+    const VkrVulkanPacketPipeline pipeline =
+        batch->mode == VKR_UI_DRAW_MODE_ROUNDED_RECT
+            ? VKR_VULKAN_PACKET_PIPELINE_UI_RECT
+            : VKR_VULKAN_PACKET_PIPELINE_UI;
+    if (pipeline != bound_pipeline) {
+      vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        renderer->packet_pipelines[pipeline]);
+      bound_pipeline = pipeline;
+    }
+
+    uint32_t texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+    uint32_t sampler = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+    const bool8_t textured = batch->texture.id != 0u;
+    if (textured &&
+        !vkr_vk_resolve_sampled_pair(
+            renderer,
+            (VkrTextureHandle){batch->texture.id, batch->texture.generation},
+            &texture, &sampler))
+      continue;
+
+    uint64_t root_address = 0u;
+    VkrVulkanUiRoot *root = vkr_vk_frame_upload_allocate(
+        slot, sizeof(*root), _Alignof(VkrVulkanUiRoot), &root_address, NULL);
+    if (!root)
+      return false_v;
+    *root = (VkrVulkanUiRoot){
+        .vertices = slot->ui_vertices,
+        .texture = texture,
+        .sampler = sampler,
+        .target_unit_range = {(float32_t)target_width, (float32_t)target_height,
+                              batch->sdf_unit_range.x, batch->sdf_unit_range.y},
+        .rect_extent = batch->rect_extent_px,
+        .mode = batch->mode,
+        .flags = textured ? 1u : 0u,
+        .corner_radii = batch->corner_radius_px,
+    };
+    const VkRect2D scissor = {
+        .offset = {(int32_t)batch->scissor_rect_px.x,
+                   (int32_t)batch->scissor_rect_px.y},
+        .extent = {(uint32_t)batch->scissor_rect_px.width,
+                   (uint32_t)batch->scissor_rect_px.height},
+    };
+    vkCmdSetScissor(command, 0u, 1u, &scissor);
+    const VkrVulkanPushConstants push = {.root = root_address};
+    vkCmdPushConstants(command, renderer->pipeline_layout,
+                       VK_SHADER_STAGE_VERTEX_BIT |
+                           VK_SHADER_STAGE_FRAGMENT_BIT |
+                           VK_SHADER_STAGE_COMPUTE_BIT,
+                       0u, sizeof(push), &push);
+    vkCmdDrawIndexed(command, batch->index_count, 1u, batch->first_index, 0,
+                     0u);
+    slot->indexed_draw_count++;
+  }
+  return true_v;
+}
+
 bool8_t vkr_vk_record_packet_fullscreen(VkrVulkanRenderer *renderer,
                                         VkCommandBuffer command,
                                         VkrVulkanPacketPipeline pipeline,
                                         uint32_t texture_index,
-                                        uint64_t exposure_state,
-                                        uint32_t flags) {
+                                        uint64_t exposure_state, uint32_t flags,
+                                        uint32_t output_width,
+                                        uint32_t output_height) {
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   uint64_t root_address = 0u;
@@ -836,6 +931,8 @@ bool8_t vkr_vk_record_packet_fullscreen(VkrVulkanRenderer *renderer,
   root->transmission_sampler =
       renderer->config.fxaa_enabled ? renderer->transmission_sampler_slot : 0u;
   root->exposure_state = exposure_state ? exposure_state : manual_state_address;
+  root->point_light_grid_origin_cell_size =
+      (Vec4){(float32_t)output_width, (float32_t)output_height, 0.0f, 0.0f};
   const VkrVulkanPushConstants push = {
       .root = root_address,
       .material_index = 0u,

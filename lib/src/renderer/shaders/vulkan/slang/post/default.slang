@@ -129,8 +129,7 @@ float4 fullscreen_fragment(VkrVulkanVertexOutput input) : SV_Target0
     if ((g_push.flags & VKR_FULLSCREEN_FXAA) == 0u)
         return vkr_post_sample(texture_index, sampler_index, input.uv, tonemap,
                                exposure);
-    uint2 extent;
-    g_textures[texture_index].GetDimensions(extent.x, extent.y);
+    uint2 extent = uint2(root.point_light_grid_origin_cell_size.xy);
     return vkr_fxaa(texture_index, sampler_index, input.uv,
                     1.0f / float2(extent), tonemap, exposure);
 }

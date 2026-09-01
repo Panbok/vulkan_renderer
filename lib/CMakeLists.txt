@@ -73,6 +73,10 @@ vkr_add_vulkan_packet_shader("packet.fullscreen.frag" fullscreen_fragment fragme
 vkr_add_vulkan_packet_shader("packet.text.vert" text_vertex vertex)
 vkr_add_vulkan_packet_shader("packet.text.frag" text_fragment fragment)
 vkr_add_vulkan_packet_shader("packet.text_picking.frag" text_picking_fragment fragment)
+vkr_add_vulkan_packet_shader("packet.ui.vert" ui_vertex vertex)
+vkr_add_vulkan_packet_shader("packet.ui.frag" ui_fragment fragment)
+vkr_add_vulkan_packet_shader("packet.ui_rect.vert" ui_rect_vertex vertex)
+vkr_add_vulkan_packet_shader("packet.ui_rect.frag" ui_rect_fragment fragment)
 vkr_add_vulkan_packet_shader("packet.ibl_equirect.comp" ibl_equirect compute)
 vkr_add_vulkan_packet_shader("packet.ibl_prefilter.comp" ibl_prefilter compute)
 vkr_add_vulkan_packet_shader(
@@ -288,6 +292,7 @@ if(APPLE)
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/ibl/sh_projection.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/ibl/specular_prefilter.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/text/default.metal"
+        "${VKR_METAL_PACKET_MSL_SHADER_DIR}/ui/default.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/exposure.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/bloom.metal"
         "${VKR_METAL_PACKET_MSL_SHADER_DIR}/post/gtao.metal"

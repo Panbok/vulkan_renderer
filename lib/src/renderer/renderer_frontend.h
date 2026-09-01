@@ -12,7 +12,6 @@
 #include "renderer/resources/loaders/system_font_loader.h"
 #include "renderer/systems/vkr_camera.h"
 #include "renderer/systems/vkr_camera_controller.h"
-#include "renderer/systems/vkr_editor_viewport.h"
 #include "renderer/systems/vkr_font_system.h"
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_gizmo_system.h"
@@ -28,6 +27,7 @@
 #include "renderer/vkr_dynamic_resolution.h"
 #include "renderer/vkr_gpu_abi.h"
 #include "renderer/vkr_render_graph.h"
+#include "renderer/vkr_render_packet.h"
 #include "renderer/vkr_renderer.h"
 #include "renderer/vkr_renderer_impl.h"
 #include "renderer/vkr_temporal.h"
@@ -165,7 +165,6 @@ struct s_RendererFrontend {
   VkrGizmoSystem gizmo_system;
   VkrLightingSystem lighting_system;
   VkrShadowSystem shadow_system;
-  VkrEditorViewportResources editor_viewport;
   VkrWorldResources world_resources;
   VkrUiSystem ui_system;
   VkrSkyboxSystem skybox_system;

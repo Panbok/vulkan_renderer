@@ -26,3 +26,4 @@
 #include "post/gtao.slang"
 #include "post/default.slang"
 #include "text/default.slang"
+#include "ui/default.slang"

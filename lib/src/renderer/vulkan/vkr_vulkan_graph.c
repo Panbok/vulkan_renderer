@@ -1063,7 +1063,8 @@ vkr_internal bool8_t vkr_vk_graph_fullscreen_source(VkrVulkanRenderer *renderer,
 
 vkr_internal bool8_t vkr_vk_record_graphics_body(
     VkrVulkanRenderer *renderer, VkCommandBuffer command, const VkrRgPass *pass,
-    VkrVulkanGraphExecutorKind kind) {
+    VkrVulkanGraphExecutorKind kind, uint32_t target_width,
+    uint32_t target_height) {
   const VkrRenderPacket *packet = renderer->graph->packet;
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
@@ -1099,19 +1100,12 @@ vkr_internal bool8_t vkr_vk_record_graphics_body(
     return vkr_vk_record_packet_draws(
                renderer, command, VKR_VULKAN_PACKET_PIPELINE_PICKING,
                picking_draws, picking_draw_count, slot->world_instances,
-               view_projection, false_v, 0u, 0u) &&
+               view_projection, target_width, target_height, false_v, 0u, 0u) &&
            (!packet->world ||
             vkr_vk_record_text_draws(
                 renderer, command, VKR_VULKAN_PACKET_PIPELINE_PICKING_TEXT,
                 packet->world->text_draws, packet->world->text_draw_count,
-                view_projection, renderer->config.width,
-                renderer->config.height, false_v)) &&
-           (!packet->ui ||
-            vkr_vk_record_text_draws(
-                renderer, command, VKR_VULKAN_PACKET_PIPELINE_PICKING_TEXT,
-                packet->ui->text_draws, packet->ui->text_draw_count,
-                mat4_identity(), renderer->config.width,
-                renderer->config.height, true_v));
+                view_projection, target_width, target_height, false_v));
   }
   case VKR_VULKAN_GRAPH_EXECUTOR_VBUFFER_OPAQUE:
     return vkr_vk_record_deferred_raster(renderer, command, pass, false_v,
@@ -1132,12 +1126,12 @@ vkr_internal bool8_t vkr_vk_record_graphics_body(
                renderer, command, VKR_VULKAN_PACKET_PIPELINE_WORLD_BLEND,
                packet->world->transparent_draws,
                packet->world->transparent_draw_count, slot->world_instances,
-               view_projection, false_v, shadow_texture, 0u) &&
+               view_projection, target_width, target_height, false_v,
+               shadow_texture, 0u) &&
            vkr_vk_record_text_draws(
                renderer, command, VKR_VULKAN_PACKET_PIPELINE_WORLD_TEXT,
                packet->world->text_draws, packet->world->text_draw_count,
-               view_projection, renderer->config.width, renderer->config.height,
-               false_v);
+               view_projection, target_width, target_height, false_v);
   }
   case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR: {
     uint32_t texture_index = 0u;
@@ -1148,17 +1142,29 @@ vkr_internal bool8_t vkr_vk_record_graphics_body(
                      : NULL;
     if (!vkr_vk_graph_fullscreen_source(renderer, pass, &texture_index))
       return false_v;
+    const Vec4 image_rect = packet->editor->image_rect_px;
+    const VkViewport editor_viewport = {
+        .x = image_rect.x,
+        .y = image_rect.y,
+        .width = image_rect.z,
+        .height = image_rect.w,
+        .minDepth = 0.0f,
+        .maxDepth = 1.0f,
+    };
+    const VkRect2D editor_scissor = {
+        .offset = {(int32_t)image_rect.x, (int32_t)image_rect.y},
+        .extent = {(uint32_t)image_rect.z, (uint32_t)image_rect.w},
+    };
+    vkCmdSetViewport(command, 0u, 1u, &editor_viewport);
+    vkCmdSetScissor(command, 0u, 1u, &editor_scissor);
     if (!vkr_vk_record_packet_fullscreen(
             renderer, command, VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_FINAL,
             texture_index, exposure_state ? exposure_state->buffer.address : 0u,
             renderer->config.tonemap_enabled ? VKR_VULKAN_FULLSCREEN_TONEMAP
-                                             : 0u))
+                                             : 0u,
+            (uint32_t)image_rect.z, (uint32_t)image_rect.w))
       return false_v;
-    return !packet->editor ||
-           vkr_vk_record_packet_draws(
-               renderer, command, VKR_VULKAN_PACKET_PIPELINE_UI,
-               packet->editor->draws, packet->editor->draw_count,
-               slot->editor_instances, mat4_identity(), false_v, 0u, 0u);
+    return true_v;
   }
   case VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP: {
     uint32_t texture_index = 0u;
@@ -1174,7 +1180,8 @@ vkr_internal bool8_t vkr_vk_record_graphics_body(
     const bool8_t recorded = vkr_vk_record_packet_fullscreen(
         renderer, command, VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_FINAL,
         texture_index, exposure_state ? exposure_state->buffer.address : 0u,
-        renderer->config.tonemap_enabled ? VKR_VULKAN_FULLSCREEN_TONEMAP : 0u);
+        renderer->config.tonemap_enabled ? VKR_VULKAN_FULLSCREEN_TONEMAP : 0u,
+        target_width, target_height);
     if (!recorded)
       log_error("Vulkan tonemap root allocation failed at %llu/%u bytes",
                 (unsigned long long)slot->frame_upload_cursor,
@@ -1184,15 +1191,8 @@ vkr_internal bool8_t vkr_vk_record_graphics_body(
   case VKR_VULKAN_GRAPH_EXECUTOR_UI: {
     if (!packet->ui)
       return true_v;
-    return vkr_vk_record_packet_draws(
-               renderer, command, VKR_VULKAN_PACKET_PIPELINE_UI,
-               packet->ui->draws, packet->ui->draw_count, slot->ui_instances,
-               mat4_identity(), false_v, 0u, 0u) &&
-           vkr_vk_record_text_draws(
-               renderer, command, VKR_VULKAN_PACKET_PIPELINE_UI_TEXT,
-               packet->ui->text_draws, packet->ui->text_draw_count,
-               mat4_identity(), renderer->config.width, renderer->config.height,
-               true_v);
+    return vkr_vk_record_ui_draw_list(renderer, command, &packet->ui->draw_list,
+                                      target_width, target_height);
   }
   default:
     return false_v;
@@ -1281,7 +1281,8 @@ vkr_internal bool8_t vkr_vk_record_graph_graphics_pass(
   vkCmdSetViewport(command, 0u, 1u, &viewport);
   vkCmdSetScissor(command, 0u, 1u, &scissor);
   vkCmdSetCullMode(command, VK_CULL_MODE_NONE);
-  if (!vkr_vk_record_graphics_body(renderer, command, pass, kind)) {
+  if (!vkr_vk_record_graphics_body(renderer, command, pass, kind, width,
+                                   height)) {
     vkCmdEndRendering(command);
     return false_v;
   }

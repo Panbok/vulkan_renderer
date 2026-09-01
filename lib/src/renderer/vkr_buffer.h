@@ -5,6 +5,7 @@
 #include "containers/array.h"
 #include "defines.h"
 #include "math/vec.h"
+#include "renderer/vkr_gpu_abi.h"
 #include "renderer/vkr_renderer.h"
 
 // =============================================================================
@@ -66,12 +67,3 @@ typedef struct VkrVertex2d {
   Vec2 position; /**< 2D position (screen or UI space). */
   Vec2 texcoord; /**< Texture coordinate (UV). */
 } VkrVertex2d;
-
-/**
- * @brief Represents a single vertex in 2D space for text rendering.
- */
-typedef struct VkrTextVertex {
-  Vec2 position; /**< Screen position. */
-  Vec2 texcoord; /**< Atlas UV. */
-  Vec4 color;    /**< Linear RGB and linear alpha for attachment blending. */
-} VkrTextVertex;

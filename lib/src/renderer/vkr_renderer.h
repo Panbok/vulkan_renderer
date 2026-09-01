@@ -875,8 +875,6 @@ typedef enum VkrRenderMode {
 typedef struct VkrGlobalMaterialState {
   Mat4 projection;
   Mat4 view;
-  Mat4 ui_projection;
-  Mat4 ui_view;
   Vec4 ambient_color;
   Vec3 view_position;
   /** Lowered verbatim into the packet's versioned exposure controls. */
@@ -898,21 +896,6 @@ typedef struct VkrGlobalMaterialState {
 // =============================================================================
 // Text
 // =============================================================================
-typedef enum VkrUiTextAnchor {
-  VKR_UI_TEXT_ANCHOR_TOP_LEFT = 0,
-  VKR_UI_TEXT_ANCHOR_TOP_RIGHT,
-  VKR_UI_TEXT_ANCHOR_BOTTOM_LEFT,
-  VKR_UI_TEXT_ANCHOR_BOTTOM_RIGHT,
-} VkrUiTextAnchor;
-
-typedef struct VkrUiTextCreateData {
-  uint32_t text_id;
-  String8 content;
-  const VkrUiTextConfig *config; // Optional; NULL uses defaults
-  VkrUiTextAnchor anchor;
-  Vec2 padding;
-} VkrUiTextCreateData;
-
 typedef struct VkrWorldTextCreateData {
   uint32_t text_id;
   String8 content;
@@ -1259,12 +1242,7 @@ bool8_t vkr_renderer_get_device_memory_stats(VkrRendererFrontendHandle renderer,
                                              VkrDeviceMemoryStats *out_stats);
 // --- END Utility ---
 
-// Text creation/destruction (persistent resources)
-bool8_t vkr_renderer_create_ui_text(VkrRendererFrontendHandle renderer,
-                                    const VkrUiTextCreateData *payload,
-                                    uint32_t *out_text_id);
-bool8_t vkr_renderer_destroy_ui_text(VkrRendererFrontendHandle renderer,
-                                     uint32_t text_id);
+// Text creation/destruction (persistent world resources)
 bool8_t vkr_renderer_create_world_text(VkrRendererFrontendHandle renderer,
                                        const VkrWorldTextCreateData *payload);
 bool8_t vkr_renderer_destroy_world_text(VkrRendererFrontendHandle renderer,

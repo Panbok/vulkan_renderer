@@ -1,6 +1,7 @@
 #pragma once
 
 #include "containers/str.h"
+#include "core/ui/vkr_ui_draw.h"
 #include "defines.h"
 #include "math/mat.h"
 #include "math/vec.h"
@@ -18,10 +19,14 @@
 #include "renderer/vkr_temporal.h"
 
 /** Version constant for VkrRenderPacket.packet_version validation. */
-#define VKR_RENDER_PACKET_VERSION 25u
+#define VKR_RENDER_PACKET_VERSION 27u
 
 #define VKR_FRAME_IBL_PROBE_MAX 16u
-#define VKR_PREPARED_TEXT_DRAW_MAX 64u
+
+/** Cold-boundary limits for the frame-local retained UI stream. */
+#define VKR_UI_VERTEX_CAPACITY 65536u
+#define VKR_UI_INDEX_CAPACITY 98304u
+#define VKR_UI_BATCH_CAPACITY 4096u
 
 /** Frame-local reflection probe descriptor lowered by the selected renderer. */
 typedef struct VkrFrameIblProbe {
@@ -207,6 +212,22 @@ typedef struct VkrPreparedTextDraw {
 } VkrPreparedTextDraw;
 
 /**
+ * @brief One frame-local UI geometry stream split into ordered scissor batches.
+ *
+ * All arrays are borrowed until packet submission returns. Vertices use the
+ * shared 32-byte UI/text GPU record, while batches retain Y-down attachment
+ * scissors for direct lowering by both native APIs.
+ */
+typedef struct VkrPreparedUiDrawList {
+  const VkrUiVertex *vertices;
+  uint32_t vertex_count;
+  const uint32_t *indices;
+  uint32_t index_count;
+  const VkrUiDrawBatch *batches;
+  uint32_t batch_count;
+} VkrPreparedUiDrawList;
+
+/**
  * @brief Payload for GPU-driven world stages and retained ordinary blend.
  */
 typedef struct VkrWorldPassPayload {
@@ -332,12 +353,7 @@ typedef struct VkrShadowPassPayload {
  * @brief Payload for the UI pass.
  */
 typedef struct VkrUiPassPayload {
-  const VkrDrawItem *draws;
-  uint32_t draw_count;
-  const VkrInstanceDataGPU *instances;
-  uint32_t instance_count;
-  const VkrPreparedTextDraw *text_draws;
-  uint32_t text_draw_count;
+  VkrPreparedUiDrawList draw_list;
 } VkrUiPassPayload;
 
 /**
@@ -352,10 +368,9 @@ typedef struct VkrSkyboxPassPayload {
  * @brief Payload for the editor pass.
  */
 typedef struct VkrEditorPassPayload {
-  const VkrDrawItem *draws;
-  uint32_t draw_count;
-  const VkrInstanceDataGPU *instances;
-  uint32_t instance_count;
+  /** Scene destination in Y-down swapchain pixels: (x, y, width, height).
+      Components are finite integral values validated at packet submission. */
+  Vec4 image_rect_px;
 } VkrEditorPassPayload;
 
 /**
@@ -380,14 +395,10 @@ typedef struct VkrTextUpdate {
   const VkrTransform *transform;
 } VkrTextUpdate;
 
-/**
- * @brief Text update payload for world and UI text systems.
- */
+/** @brief Frame-local updates for retained world-space text. */
 typedef struct VkrTextUpdatesPayload {
   const VkrTextUpdate *world_text_updates;
   uint32_t world_text_update_count;
-  const VkrTextUpdate *ui_text_updates;
-  uint32_t ui_text_update_count;
 } VkrTextUpdatesPayload;
 
 /**

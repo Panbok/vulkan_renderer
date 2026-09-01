@@ -503,6 +503,34 @@ static void test_input_update_state_copy() {
   printf("  test_input_update_state_copy PASSED\n");
 }
 
+static void test_input_character_queue() {
+  printf("  Running test_input_character_queue...\n");
+  InputState input_state = {0};
+  assert(input_process_char(&input_state, 'A'));
+  assert(input_process_char(&input_state, 0x00e9u));
+  assert(input_process_char(&input_state, 0x1f642u));
+  assert(!input_process_char(&input_state, 0xd800u));
+  assert(!input_process_char(&input_state, 0x110000u));
+
+  uint32_t count = 0u;
+  const uint32_t *characters = input_get_characters(&input_state, &count);
+  assert(count == 3u);
+  assert(characters[0] == 'A');
+  assert(characters[1] == 0x00e9u);
+  assert(characters[2] == 0x1f642u);
+
+  for (uint32_t i = count; i < VKR_INPUT_CHARACTER_CAPACITY; ++i)
+    assert(input_process_char(&input_state, (uint32_t)('a' + i % 26u)));
+  assert(!input_process_char(&input_state, 'Z'));
+  assert(input_get_dropped_character_count(&input_state) == 1u);
+
+  input_update(&input_state);
+  (void)input_get_characters(&input_state, &count);
+  assert(count == 0u);
+  assert(input_get_dropped_character_count(&input_state) == 0u);
+  printf("  test_input_character_queue PASSED\n");
+}
+
 bool32_t run_input_tests() {
   printf("--- Running Input System tests... ---\n");
   test_input_init();
@@ -512,6 +540,7 @@ bool32_t run_input_tests() {
   test_input_mouse_move();
   test_input_mouse_wheel();
   test_input_update_state_copy();
+  test_input_character_queue();
   printf("--- Input System tests completed. ---\n");
   return true;
 }

@@ -527,12 +527,12 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       true_v, VKR_METAL_PACKET_ABI_TEMPORAL_VERTEX_DRAW_ROOT,
       VKR_METAL_PACKET_ABI_DRAW_ROOT, false_v, true_v, true_v,
       @"VKR Metal packet alpha blend");
-  renderer->overlay_pipeline = vkr_metal_packet_create_pipeline(
-      renderer, slang, "vkr_metal_packet_vertex", fragment,
-      "vkr_metal_packet_opaque_fragment",
+  renderer->ui_pipeline = vkr_metal_packet_create_pipeline(
+      renderer, fragment, "vkr_metal_packet_ui_vertex", fragment,
+      "vkr_metal_packet_ui_fragment",
       vkr_metal_packet_target_pixel_format(renderer), true_v,
-      VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_DRAW_ROOT,
-      false_v, @"VKR Metal packet UI/editor overlay");
+      VKR_METAL_PACKET_ABI_UI_ROOT, VKR_METAL_PACKET_ABI_UI_ROOT, false_v,
+      @"VKR Metal packet UI stream");
   renderer->picking_pipeline = vkr_metal_packet_create_pipeline(
       renderer, slang, "vkr_metal_packet_vertex", slang,
       "vkr_metal_packet_picking_fragment", MTLPixelFormatR32Uint, false_v,
@@ -549,12 +549,12 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       "vkr_metal_packet_text_fragment", MTLPixelFormatRGBA16Float, true_v,
       VKR_METAL_PACKET_ABI_TEXT_ROOT, VKR_METAL_PACKET_ABI_TEXT_ROOT, false_v,
       true_v, false_v, @"VKR Metal packet world text");
-  renderer->ui_text_pipeline = vkr_metal_packet_create_pipeline(
-      renderer, fragment, "vkr_metal_packet_text_vertex", fragment,
-      "vkr_metal_packet_text_fragment",
+  renderer->ui_rect_pipeline = vkr_metal_packet_create_pipeline(
+      renderer, fragment, "vkr_metal_packet_ui_rect_vertex", fragment,
+      "vkr_metal_packet_ui_rect_fragment",
       vkr_metal_packet_target_pixel_format(renderer), true_v,
-      VKR_METAL_PACKET_ABI_TEXT_ROOT, VKR_METAL_PACKET_ABI_TEXT_ROOT, false_v,
-      @"VKR Metal packet UI text");
+      VKR_METAL_PACKET_ABI_UI_ROOT, VKR_METAL_PACKET_ABI_UI_ROOT, false_v,
+      @"VKR Metal packet rounded UI rectangles");
   renderer->picking_text_pipeline = vkr_metal_packet_create_pipeline(
       renderer, fragment, "vkr_metal_packet_text_vertex", fragment,
       "vkr_metal_packet_text_picking_fragment", MTLPixelFormatR32Uint, false_v,
@@ -814,11 +814,11 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
     const char *label;
   } required[] = {
       {renderer->blend_pipeline, "alpha blend pipeline"},
-      {renderer->overlay_pipeline, "overlay pipeline"},
+      {renderer->ui_pipeline, "UI stream pipeline"},
       {renderer->picking_pipeline, "picking pipeline"},
       {renderer->tonemap_pipeline, "tonemap pipeline"},
       {renderer->world_text_pipeline, "world text pipeline"},
-      {renderer->ui_text_pipeline, "UI text pipeline"},
+      {renderer->ui_rect_pipeline, "UI rounded-rect pipeline"},
       {renderer->picking_text_pipeline, "picking text pipeline"},
       {renderer->ibl_equirect_pipeline, "IBL equirect pipeline"},
       {renderer->ibl_prefilter_pipeline, "IBL prefilter pipeline"},

@@ -537,11 +537,7 @@ static const VkrSubsystemMask
             VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_RESOURCES) |
             VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_GEOMETRY) |
             VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_TEXTURES),
-        [VKR_RENDERER_SUBSYSTEM_EDITOR] =
-            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_RESOURCES) |
-            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_GEOMETRY) |
-            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_MATERIALS) |
-            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_MESHES),
+        [VKR_RENDERER_SUBSYSTEM_EDITOR] = 0u,
         [VKR_RENDERER_SUBSYSTEM_GIZMO] =
             VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_GEOMETRY) |
             VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_MATERIALS) |
@@ -613,11 +609,12 @@ bool8_t vkr_renderer_subsystem_plan_includes(const VkrSubsystemPlan *plan,
 /**
  * Narrows the plan to what actually came up.
  *
- * Editor, gizmo, and picking retain non-fatal startup behavior; picking is also
- * skipped on a zero-extent window. UI and skybox failures abort initialization
- * before this point. The reported mask is comparison identity: leaving an
- * absent unit set would make two runs that rendered different work compare as
- * the same observation.
+ * Gizmo and picking retain non-fatal startup behavior; picking is also skipped
+ * on a zero-extent window. UI and skybox failures abort initialization before
+ * this point. The editor compositor has no retained resources and is therefore
+ * ready whenever its plan bit is present. The reported mask is comparison
+ * identity: leaving an absent unit set would make two runs that rendered
+ * different work compare as the same observation.
  */
 static void renderer_frontend_narrow_plan_to_initialized(RendererFrontend *rf) {
   const struct {
@@ -626,7 +623,6 @@ static void renderer_frontend_narrow_plan_to_initialized(RendererFrontend *rf) {
   } observed[] = {
       {VKR_RENDERER_SUBSYSTEM_UI, rf->ui_system.initialized},
       {VKR_RENDERER_SUBSYSTEM_SKYBOX, rf->skybox_system.initialized},
-      {VKR_RENDERER_SUBSYSTEM_EDITOR, rf->editor_viewport.initialized},
       {VKR_RENDERER_SUBSYSTEM_GIZMO, rf->gizmo_system.initialized},
       {VKR_RENDERER_SUBSYSTEM_PICKING, rf->picking.initialized},
   };
@@ -1125,10 +1121,6 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
     vkr_picking_shutdown(rf, &rf->picking);
   }
 
-  if (rf->editor_viewport.initialized) {
-    vkr_editor_viewport_shutdown(rf, &rf->editor_viewport);
-  }
-
   if (rf->ui_system.initialized) {
     vkr_ui_system_shutdown(rf, &rf->ui_system);
   }
@@ -1214,11 +1206,29 @@ typedef struct VkrRendererPreparedPacket {
   VkrRenderPacket packet;
   VkrWorldPassPayload world;
   VkrUiPassPayload ui;
-  VkrPreparedTextDraw world_text_draws[VKR_PREPARED_TEXT_DRAW_MAX];
-  VkrPreparedTextDraw ui_text_draws[VKR_PREPARED_TEXT_DRAW_MAX];
   VkrTemporalFrameInput temporal_input;
   VkrExposureFrameInput exposure_input;
 } VkrRendererPreparedPacket;
+
+static VkrPreparedTextDraw *
+vkr_renderer_prepare_world_text_draws(RendererFrontend *rf,
+                                      uint32_t *out_count) {
+  *out_count = vkr_world_resources_prepare_text_draws(rf, &rf->world_resources,
+                                                      NULL, 0u);
+  if (*out_count == 0u)
+    return NULL;
+  VkrPreparedTextDraw *draws =
+      vkr_allocator_alloc(&rf->scratch_allocator,
+                          (uint64_t)*out_count * sizeof(VkrPreparedTextDraw),
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!draws) {
+    *out_count = 0u;
+    return NULL;
+  }
+  *out_count = vkr_world_resources_prepare_text_draws(rf, &rf->world_resources,
+                                                      draws, *out_count);
+  return *out_count > 0u ? draws : NULL;
+}
 
 static void vkr_renderer_prepare_packet(RendererFrontend *rf,
                                         const VkrRenderPacket *packet,
@@ -1297,34 +1307,27 @@ static void vkr_renderer_prepare_packet(RendererFrontend *rf,
               rf, &rf->world_resources, update->text_id, update->transform);
       }
     }
-    if (rf->ui_system.initialized) {
-      for (uint32_t i = 0u; i < updates->ui_text_update_count; ++i) {
-        const VkrTextUpdate *update = &updates->ui_text_updates[i];
-        vkr_ui_system_text_update(rf, &rf->ui_system, update->text_id,
-                                  update->content);
-      }
-    }
   }
 
   if (rf->world_resources.initialized) {
     prepared->world = packet->world ? *packet->world : (VkrWorldPassPayload){0};
-    const uint32_t text_draw_count = vkr_world_resources_prepare_text_draws(
-        rf, &rf->world_resources, prepared->world_text_draws,
-        VKR_PREPARED_TEXT_DRAW_MAX);
+    uint32_t text_draw_count = 0u;
+    VkrPreparedTextDraw *text_draws =
+        vkr_renderer_prepare_world_text_draws(rf, &text_draw_count);
     if (text_draw_count) {
-      prepared->world.text_draws = prepared->world_text_draws;
+      prepared->world.text_draws = text_draws;
       prepared->world.text_draw_count = text_draw_count;
     }
     prepared->packet.world = &prepared->world;
   }
   if (rf->ui_system.initialized) {
     prepared->ui = packet->ui ? *packet->ui : (VkrUiPassPayload){0};
-    const uint32_t text_draw_count = vkr_ui_system_prepare_text_draws(
-        &rf->ui_system, prepared->ui_text_draws, VKR_PREPARED_TEXT_DRAW_MAX);
-    if (text_draw_count) {
-      prepared->ui.text_draws = prepared->ui_text_draws;
-      prepared->ui.text_draw_count = text_draw_count;
-    }
+    VkrPreparedUiDrawList draw_list = {0};
+    if (vkr_ui_system_prepare_draw_list(
+            &rf->ui_system, &rf->scratch_allocator, packet->frame.window_width,
+            packet->frame.window_height, &draw_list) &&
+        draw_list.batch_count > 0u)
+      prepared->ui.draw_list = draw_list;
     prepared->packet.ui = &prepared->ui;
   }
 }
@@ -2155,33 +2158,6 @@ bool8_t vkr_renderer_get_device_memory_stats(VkrRendererFrontendHandle renderer,
                                                      out_stats);
 }
 
-bool8_t vkr_renderer_create_ui_text(VkrRendererFrontendHandle renderer,
-                                    const VkrUiTextCreateData *payload,
-                                    uint32_t *out_text_id) {
-  if (!renderer || !payload) {
-    return false_v;
-  }
-
-  RendererFrontend *rf = (RendererFrontend *)renderer;
-  if (!rf->ui_system.initialized) {
-    return false_v;
-  }
-  return vkr_ui_system_text_create(rf, &rf->ui_system, payload, out_text_id);
-}
-
-bool8_t vkr_renderer_destroy_ui_text(VkrRendererFrontendHandle renderer,
-                                     uint32_t text_id) {
-  if (!renderer) {
-    return false_v;
-  }
-
-  RendererFrontend *rf = (RendererFrontend *)renderer;
-  if (!rf->ui_system.initialized) {
-    return false_v;
-  }
-  return vkr_ui_system_text_destroy(rf, &rf->ui_system, text_id);
-}
-
 bool8_t vkr_renderer_create_world_text(VkrRendererFrontendHandle renderer,
                                        const VkrWorldTextCreateData *payload) {
   if (!renderer || !payload) {
@@ -2338,6 +2314,128 @@ static VkrRendererError vkr_renderer_validate_text_draws(
           out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT, field,
           "contains incomplete or out-of-range indexed geometry");
   }
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+static bool8_t vkr_renderer_ui_vec4_finite(Vec4 value) {
+  return isfinite(value.x) && isfinite(value.y) && isfinite(value.z) &&
+         isfinite(value.w);
+}
+
+static VkrRendererError vkr_renderer_validate_ui_draw_list(
+    const VkrPreparedUiDrawList *list, uint32_t target_width,
+    uint32_t target_height, VkrValidationError *out_error) {
+  VkrRendererError error = vkr_renderer_validate_packet_array(
+      list->vertices, list->vertex_count, VKR_UI_VERTEX_CAPACITY,
+      "packet.ui.draw_list.vertices", "packet.ui.draw_list.vertex_count",
+      out_error);
+  if (error != VKR_RENDERER_ERROR_NONE)
+    return error;
+  error = vkr_renderer_validate_packet_array(
+      list->indices, list->index_count, VKR_UI_INDEX_CAPACITY,
+      "packet.ui.draw_list.indices", "packet.ui.draw_list.index_count",
+      out_error);
+  if (error != VKR_RENDERER_ERROR_NONE)
+    return error;
+  error = vkr_renderer_validate_packet_array(
+      list->batches, list->batch_count, VKR_UI_BATCH_CAPACITY,
+      "packet.ui.draw_list.batches", "packet.ui.draw_list.batch_count",
+      out_error);
+  if (error != VKR_RENDERER_ERROR_NONE)
+    return error;
+  const bool8_t empty = list->vertex_count == 0u && list->index_count == 0u &&
+                        list->batch_count == 0u;
+  if (empty)
+    return VKR_RENDERER_ERROR_NONE;
+  if (list->vertex_count == 0u || list->index_count == 0u ||
+      list->batch_count == 0u)
+    return vkr_renderer_validation_fail(
+        out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT, "packet.ui.draw_list",
+        "must contain complete indexed geometry");
+
+  for (uint32_t i = 0u; i < list->vertex_count; ++i) {
+    const VkrUiVertex *vertex = &list->vertices[i];
+    if (!isfinite(vertex->position.x) || !isfinite(vertex->position.y) ||
+        !isfinite(vertex->texcoord.x) || !isfinite(vertex->texcoord.y) ||
+        !vkr_renderer_ui_vec4_finite(vertex->color))
+      return vkr_renderer_validation_fail(
+          out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+          "packet.ui.draw_list.vertices", "contains a non-finite vertex");
+  }
+  for (uint32_t i = 0u; i < list->index_count; ++i) {
+    if (list->indices[i] >= list->vertex_count)
+      return vkr_renderer_validation_fail(
+          out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+          "packet.ui.draw_list.indices", "contains an out-of-range index");
+  }
+
+  uint32_t expected_first_index = 0u;
+  for (uint32_t i = 0u; i < list->batch_count; ++i) {
+    const VkrUiDrawBatch *batch = &list->batches[i];
+    if (batch->first_index != expected_first_index ||
+        batch->index_count == 0u || batch->index_count % 3u != 0u ||
+        batch->index_count > list->index_count - batch->first_index)
+      return vkr_renderer_validation_fail(
+          out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+          "packet.ui.draw_list.batches",
+          "contains a non-contiguous or out-of-range index span");
+    expected_first_index += batch->index_count;
+
+    const VkrUiRect scissor = batch->scissor_rect_px;
+    if (!vkr_ui_rect_has_area(scissor) || truncf(scissor.x) != scissor.x ||
+        truncf(scissor.y) != scissor.y ||
+        truncf(scissor.width) != scissor.width ||
+        truncf(scissor.height) != scissor.height || scissor.x < 0.0f ||
+        scissor.y < 0.0f ||
+        scissor.x + scissor.width > (float32_t)target_width ||
+        scissor.y + scissor.height > (float32_t)target_height)
+      return vkr_renderer_validation_fail(
+          out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+          "packet.ui.draw_list.batches.scissor_rect_px",
+          "must contain integral bounds within the UI attachment");
+    if (batch->mode >= VKR_UI_DRAW_MODE_COUNT ||
+        !isfinite(batch->screen_px_range) ||
+        !isfinite(batch->sdf_unit_range.x) ||
+        !isfinite(batch->sdf_unit_range.y) ||
+        !isfinite(batch->rect_extent_px.x) ||
+        !isfinite(batch->rect_extent_px.y) ||
+        !vkr_renderer_ui_vec4_finite(batch->corner_radius_px))
+      return vkr_renderer_validation_fail(
+          out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+          "packet.ui.draw_list.batches", "contains non-finite root data");
+    if ((batch->mode == VKR_UI_DRAW_MODE_MTSDF_TEXT ||
+         batch->mode == VKR_UI_DRAW_MODE_BITMAP_TEXT) &&
+        batch->texture.id == 0u)
+      return vkr_renderer_validation_fail(
+          out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+          "packet.ui.draw_list.batches.texture",
+          "text batches require an atlas texture");
+    if (batch->texture.id != 0u && batch->texture.generation == VKR_INVALID_ID)
+      return vkr_renderer_validation_fail(
+          out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+          "packet.ui.draw_list.batches.texture",
+          "contains an invalid texture generation");
+    if (batch->mode == VKR_UI_DRAW_MODE_MTSDF_TEXT &&
+        (batch->screen_px_range <= 0.0f || batch->sdf_unit_range.x <= 0.0f ||
+         batch->sdf_unit_range.y <= 0.0f))
+      return vkr_renderer_validation_fail(
+          out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+          "packet.ui.draw_list.batches.sdf_unit_range",
+          "MTSDF batches require positive range data");
+    if (batch->mode == VKR_UI_DRAW_MODE_ROUNDED_RECT &&
+        (batch->texture.id != 0u || batch->rect_extent_px.x <= 0.0f ||
+         batch->rect_extent_px.y <= 0.0f || batch->corner_radius_px.x < 0.0f ||
+         batch->corner_radius_px.y < 0.0f || batch->corner_radius_px.z < 0.0f ||
+         batch->corner_radius_px.w < 0.0f))
+      return vkr_renderer_validation_fail(
+          out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+          "packet.ui.draw_list.batches",
+          "rounded rectangles require untextured positive root geometry");
+  }
+  if (expected_first_index != list->index_count)
+    return vkr_renderer_validation_fail(
+        out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+        "packet.ui.draw_list.batches", "must cover the complete index stream");
   return VKR_RENDERER_ERROR_NONE;
 }
 
@@ -2979,48 +3077,41 @@ vkr_renderer_validate_packet(const VkrRenderPacket *packet,
 
   const VkrUiPassPayload *ui = packet->ui;
   if (ui) {
-    VkrRendererError error = vkr_renderer_validate_packet_array(
-        ui->instances, ui->instance_count, VKR_INSTANCE_BUFFER_MAX_INSTANCES,
-        "packet.ui.instances", "packet.ui.instance_count",
+    VkrRendererError error = vkr_renderer_validate_ui_draw_list(
+        &ui->draw_list, packet->frame.window_width, packet->frame.window_height,
         out_validation_error);
-    if (error != VKR_RENDERER_ERROR_NONE)
-      return error;
-    error = vkr_renderer_validate_packet_array(
-        ui->draws, ui->draw_count, VKR_INSTANCE_BUFFER_MAX_INSTANCES,
-        "packet.ui.draws", "packet.ui.draw_count", out_validation_error);
-    if (error != VKR_RENDERER_ERROR_NONE)
-      return error;
-    error = vkr_renderer_validate_draw_ranges(
-        ui->draws, ui->draw_count, ui->instance_count, "packet.ui.draws",
-        out_validation_error);
-    if (error != VKR_RENDERER_ERROR_NONE)
-      return error;
-    error = vkr_renderer_validate_text_draws(
-        ui->text_draws, ui->text_draw_count, "packet.ui.text_draws",
-        "packet.ui.text_draw_count", out_validation_error);
     if (error != VKR_RENDERER_ERROR_NONE)
       return error;
   }
 
   const VkrEditorPassPayload *editor = packet->editor;
+  if (packet->frame.editor_enabled > true_v)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.frame.editor_enabled", "must be zero or one");
+  if ((editor != NULL) != (packet->frame.editor_enabled != false_v))
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT, "packet.editor",
+                      "presence must match packet.frame.editor_enabled");
   if (editor) {
-    VkrRendererError error = vkr_renderer_validate_packet_array(
-        editor->instances, editor->instance_count,
-        VKR_INSTANCE_BUFFER_MAX_INSTANCES, "packet.editor.instances",
-        "packet.editor.instance_count", out_validation_error);
-    if (error != VKR_RENDERER_ERROR_NONE)
-      return error;
-    error = vkr_renderer_validate_packet_array(
-        editor->draws, editor->draw_count, VKR_INSTANCE_BUFFER_MAX_INSTANCES,
-        "packet.editor.draws", "packet.editor.draw_count",
-        out_validation_error);
-    if (error != VKR_RENDERER_ERROR_NONE)
-      return error;
-    error = vkr_renderer_validate_draw_ranges(
-        editor->draws, editor->draw_count, editor->instance_count,
-        "packet.editor.draws", out_validation_error);
-    if (error != VKR_RENDERER_ERROR_NONE)
-      return error;
+    const Vec4 rect = editor->image_rect_px;
+    if (!isfinite(rect.x) || !isfinite(rect.y) || !isfinite(rect.z) ||
+        !isfinite(rect.w) || rect.x < 0.0f || rect.y < 0.0f || rect.z <= 0.0f ||
+        rect.w <= 0.0f || truncf(rect.x) != rect.x ||
+        truncf(rect.y) != rect.y || truncf(rect.z) != rect.z ||
+        truncf(rect.w) != rect.w)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.editor.image_rect_px",
+                        "must contain finite integral pixel bounds");
+    if (packet->frame.window_width == 0u || packet->frame.window_height == 0u ||
+        rect.x + rect.z > (float32_t)packet->frame.window_width ||
+        rect.y + rect.w > (float32_t)packet->frame.window_height)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.editor.image_rect_px",
+                        "must fit within the packet window extent");
+    if (packet->frame.viewport_width == 0u ||
+        packet->frame.viewport_height == 0u)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.frame.viewport_width",
+                        "editor frames require an explicit viewport extent");
   }
 
   const VkrFrameLighting *lighting = packet->lighting;
@@ -3062,10 +3153,6 @@ vkr_renderer_validate_packet(const VkrRenderPacket *packet,
     if (updates->world_text_update_count > 0u && !updates->world_text_updates)
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.text_updates.world_text_updates",
-                        "must contain every declared update");
-    if (updates->ui_text_update_count > 0u && !updates->ui_text_updates)
-      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                        "packet.text_updates.ui_text_updates",
                         "must contain every declared update");
   }
 
@@ -3457,11 +3544,6 @@ vkr_internal bool8_t renderer_frontend_initialize_packet_systems(
   if (vkr_renderer_subsystem_plan_includes(&rf->subsystem_plan,
                                            VKR_RENDERER_SUBSYSTEM_SKYBOX) &&
       !vkr_skybox_system_init(rf, &rf->skybox_system)) {
-    return false_v;
-  }
-  if (vkr_renderer_subsystem_plan_includes(&rf->subsystem_plan,
-                                           VKR_RENDERER_SUBSYSTEM_EDITOR) &&
-      !vkr_editor_viewport_init(rf, &rf->editor_viewport)) {
     return false_v;
   }
   if (vkr_renderer_subsystem_plan_includes(&rf->subsystem_plan,

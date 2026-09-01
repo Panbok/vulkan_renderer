@@ -20,6 +20,7 @@
 #include "renderer/systems/vkr_picking_system.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_scene_system.h"
+#include "renderer/systems/vkr_ui_system.h"
 #include "renderer/vkr_renderer.h"
 #include <stdio.h>
 
@@ -77,6 +78,13 @@ typedef struct GizmoDragState {
   uint32_t pick_height;
 } GizmoDragState;
 
+#define VKR_APPLICATION_UI_TEXT_CAPACITY 32768u
+
+typedef struct ApplicationUiText {
+  uint8_t data[VKR_APPLICATION_UI_TEXT_CAPACITY];
+  uint32_t length;
+} ApplicationUiText;
+
 typedef struct State {
   InputState *input_state;
 
@@ -90,10 +98,10 @@ typedef struct State {
 
   EventManager *event_manager; // For dispatching events
 
-  uint32_t fps_text_id;
-  uint32_t left_text_id;
-  uint32_t memory_text_id;
-  uint32_t metrics_text_id;
+  ApplicationUiText fps_text;
+  ApplicationUiText left_text;
+  ApplicationUiText memory_text;
+  ApplicationUiText metrics_text;
   VkrClock fps_update_clock;
   VkrClock memory_update_clock;
   float64_t fps_accumulated_time;
@@ -105,7 +113,7 @@ typedef struct State {
   VkrClock world_text_update_clock;
 
   // Picking demo state
-  uint32_t picked_object_text_id;
+  ApplicationUiText picked_object_text;
   uint32_t last_picked_object_id;
   VkrEntityId selected_entity;
   bool8_t has_selection;
@@ -649,32 +657,22 @@ application_consume_scene_load_elapsed_seconds(Application *application) {
   return elapsed;
 }
 
-vkr_internal void application_queue_ui_text_update(Application *application,
-                                                   uint32_t text_id,
-                                                   String8 content) {
-  if (!application || text_id == VKR_INVALID_ID) {
+vkr_internal void application_ui_text_set(ApplicationUiText *destination,
+                                          String8 content) {
+  if (!destination || (!content.str && content.length > 0u)) {
     return;
   }
+  const uint32_t length =
+      (uint32_t)Min(content.length, VKR_APPLICATION_UI_TEXT_CAPACITY - 1u);
+  if (length > 0u)
+    MemCopy(destination->data, content.str, length);
+  destination->data[length] = 0u;
+  destination->length = length;
+}
 
-  for (uint32_t i = 0; i < application->ui_text_update_count; ++i) {
-    ApplicationTextUpdate *slot = &application->ui_text_updates[i];
-    if (slot->text_id == text_id) {
-      slot->content = content;
-      return;
-    }
-  }
-
-  if (application->ui_text_update_count >= VKR_MAX_PENDING_TEXT_UPDATES) {
-    log_warn("UI text update queue full; dropping text %u", text_id);
-    return;
-  }
-
-  application->ui_text_updates[application->ui_text_update_count++] =
-      (ApplicationTextUpdate){
-          .text_id = text_id,
-          .content = content,
-          .has_transform = false_v,
-      };
+vkr_internal String8 application_ui_text_view(const ApplicationUiText *text) {
+  return text ? (String8){.str = (uint8_t *)text->data, .length = text->length}
+              : (String8){0};
 }
 
 vkr_internal void
@@ -740,14 +738,14 @@ vkr_internal VkrViewportHitInfo application_get_viewport_hit_info(
   }
 
   if (application->editor_viewport.enabled &&
-      application->renderer.editor_viewport.initialized) {
+      vkr_renderer_subsystem_plan_includes(
+          &application->renderer.subsystem_plan,
+          VKR_RENDERER_SUBSYSTEM_EDITOR)) {
     VkrViewportMapping mapping = {0};
     VkrWindowPixelSize window_size =
         vkr_window_get_pixel_size(&application->window);
-    if (vkr_editor_viewport_compute_mapping(
-            window_size.width, window_size.height,
-            application->editor_viewport.fit_mode,
-            application->editor_viewport.render_scale, &mapping)) {
+    if (application_editor_viewport_mapping(application, window_size.width,
+                                            window_size.height, &mapping)) {
       info.target_width = mapping.target_width;
       info.target_height = mapping.target_height;
       if (vkr_viewport_mapping_window_to_target_pixel(
@@ -1568,33 +1566,10 @@ vkr_internal void application_init_memory_text(Application *application) {
     return;
   }
 
-  state->memory_text_id = VKR_INVALID_ID;
-
   state->memory_update_clock = vkr_clock_create();
   vkr_clock_start(&state->memory_update_clock);
-
-  VkrUiTextConfig text_config = VKR_UI_TEXT_CONFIG_DEFAULT;
-  text_config.font =
-      application->renderer.font_system.default_mtsdf_font_handle;
-  text_config.font_size = 18.0f;
-  text_config.color = (Vec4){1.0f, 1.0f, 1.0f, 1.0f};
-
-  VkrUiTextCreateData payload = {
-      .text_id = state->memory_text_id,
-      .content = string8_lit("Memory metrics: pending"),
-      .config = &text_config,
-      .anchor = VKR_UI_TEXT_ANCHOR_BOTTOM_RIGHT,
-      .padding = (Vec2){10.0f, 10.0f},
-  };
-
-  uint32_t text_id = VKR_INVALID_ID;
-  if (!vkr_renderer_create_ui_text(&application->renderer, &payload,
-                                   &text_id) ||
-      text_id == VKR_INVALID_ID) {
-    log_error("Failed to create memory UI text");
-    return;
-  }
-  state->memory_text_id = text_id;
+  application_ui_text_set(&state->memory_text,
+                          string8_lit("Memory metrics: pending"));
 }
 
 vkr_internal void application_update_memory_text(Application *application) {
@@ -1709,9 +1684,8 @@ vkr_internal void application_update_memory_text(Application *application) {
   if (!content)
     return;
   MemCopy(content, formatted, content_length + 1u);
-  application_queue_ui_text_update(
-      application, state->memory_text_id,
-      (String8){.str = content, .length = content_length});
+  application_ui_text_set(&state->memory_text,
+                          (String8){.str = content, .length = content_length});
 }
 
 /** Logs a paste-ready static camera block for a harness snapshot case. */
@@ -1845,7 +1819,8 @@ vkr_internal void application_handle_input(Application *application,
     application_log_camera_snapshot(application);
   }
 
-  if (input_is_key_down(input_state, KEY_TAB) &&
+  if (!application->ui_capture.keyboard &&
+      input_is_key_down(input_state, KEY_TAB) &&
       input_was_key_up(input_state, KEY_TAB)) {
     bool8_t should_capture =
         !vkr_window_is_mouse_captured(&application->window);
@@ -1868,7 +1843,8 @@ vkr_internal void application_handle_input(Application *application,
     }
   }
 
-  if (!vkr_window_is_mouse_captured(&application->window)) {
+  if (!vkr_window_is_mouse_captured(&application->window) ||
+      application->ui_capture.mouse || application->ui_capture.keyboard) {
     return;
   }
 
@@ -2046,8 +2022,7 @@ vkr_internal void application_update_fps_text(Application *application,
         frame_alloc, "FPS: %.1f\nFrametime: %.2f ms", state->current_fps,
         state->current_frametime * 1000.0);
     if (fps_text.length > 0) {
-      application_queue_ui_text_update(application, state->fps_text_id,
-                                       fps_text);
+      application_ui_text_set(&state->fps_text, fps_text);
 
       String8 left_text = string8_create_formatted(
           frame_alloc,
@@ -2059,11 +2034,10 @@ vkr_internal void application_update_fps_text(Application *application,
           application_ibl_validation_mode_label(state->ibl_validation_mode),
           state->ibl_validation_scalar);
       if (left_text.length > 0) {
-        application_queue_ui_text_update(application, state->left_text_id,
-                                         left_text);
+        application_ui_text_set(&state->left_text, left_text);
       }
 
-      if (state->metrics_text_id != VKR_INVALID_ID) {
+      {
         float64_t rg_image_live_mb = 0.0;
         float64_t rg_image_peak_mb = 0.0;
         float64_t rg_buffer_live_mb = 0.0;
@@ -2144,8 +2118,7 @@ vkr_internal void application_update_fps_text(Application *application,
           }
         }
         if (metrics_text.length > 0) {
-          application_queue_ui_text_update(application, state->metrics_text_id,
-                                           metrics_text);
+          application_ui_text_set(&state->metrics_text, metrics_text);
         }
       }
     }
@@ -2163,52 +2136,14 @@ vkr_internal void application_init_ui_texts(Application *application) {
     return;
   }
 
-  state->fps_text_id = VKR_INVALID_ID;
-  state->left_text_id = VKR_INVALID_ID;
-  state->metrics_text_id = VKR_INVALID_ID;
-
-  VkrUiTextConfig text_config = VKR_UI_TEXT_CONFIG_DEFAULT;
-  text_config.font =
-      application->renderer.font_system.default_mtsdf_font_handle;
-  text_config.font_size = 18.0f;
-  text_config.color = (Vec4){1.0f, 1.0f, 1.0f, 1.0f};
-
-  VkrUiTextCreateData fps_payload = {
-      .text_id = VKR_INVALID_ID,
-      .content = string8_lit("FPS: 0.0\nFrametime: 0.0"),
-      .config = &text_config,
-      .anchor = VKR_UI_TEXT_ANCHOR_TOP_RIGHT,
-      .padding = vec2_new(VKR_UI_TEXT_PADDING, VKR_UI_TEXT_PADDING),
-  };
-
-  uint32_t text_id = VKR_INVALID_ID;
-  if (!vkr_renderer_create_ui_text(&application->renderer, &fps_payload,
-                                   &text_id) ||
-      text_id == VKR_INVALID_ID) {
-    log_error("Failed to create FPS UI text");
-    return;
-  }
-  state->fps_text_id = text_id;
-
-  VkrUiTextCreateData left_payload = {
-      .text_id = VKR_INVALID_ID,
-      .content = string8_lit(
+  application_ui_text_set(&state->fps_text,
+                          string8_lit("FPS: 0.0\nFrametime: 0.0"));
+  application_ui_text_set(
+      &state->left_text,
+      string8_lit(
           "Camera: {x: 0.0, y: 0.0, z: 0.0}\nCamera rotation: {yaw: 0.0, "
           "pitch: 0.0, roll: 0.0}\nPress Tab for free mode\nIBL mode: "
-          "Scene IBL (x1.00)\nF8 cycle mode, F9/F10 intensity"),
-      .config = &text_config,
-      .anchor = VKR_UI_TEXT_ANCHOR_TOP_LEFT,
-      .padding = vec2_new(VKR_UI_TEXT_PADDING, VKR_UI_TEXT_PADDING),
-  };
-
-  text_id = VKR_INVALID_ID;
-  if (!vkr_renderer_create_ui_text(&application->renderer, &left_payload,
-                                   &text_id) ||
-      text_id == VKR_INVALID_ID) {
-    log_error("Failed to create left UI text");
-    return;
-  }
-  state->left_text_id = text_id;
+          "Scene IBL (x1.00)\nF8 cycle mode, F9/F10 intensity"));
 
   state->fps_update_clock = vkr_clock_create();
   vkr_clock_start(&state->fps_update_clock);
@@ -2217,43 +2152,11 @@ vkr_internal void application_init_ui_texts(Application *application) {
   state->current_fps = 0.0;
   state->current_frametime = 0.0;
 
-  // Create picked object text (bottom-left corner)
-  VkrUiTextCreateData picked_payload = {
-      .text_id = VKR_INVALID_ID,
-      .content = string8_lit("Picked: none"),
-      .config = &text_config,
-      .anchor = VKR_UI_TEXT_ANCHOR_BOTTOM_LEFT,
-      .padding = vec2_new(VKR_UI_TEXT_PADDING, VKR_UI_TEXT_PADDING),
-  };
-
-  text_id = VKR_INVALID_ID;
-  if (!vkr_renderer_create_ui_text(&application->renderer, &picked_payload,
-                                   &text_id) ||
-      text_id == VKR_INVALID_ID) {
-    log_error("Failed to create picked object UI text");
-    return;
-  }
-  state->picked_object_text_id = text_id;
+  application_ui_text_set(&state->picked_object_text,
+                          string8_lit("Picked: none"));
   state->last_picked_object_id = 0;
-
-  float32_t metrics_padding_y =
-      VKR_UI_TEXT_PADDING + text_config.font_size * 2.5f;
-  VkrUiTextCreateData metrics_payload = {
-      .text_id = VKR_INVALID_ID,
-      .content = string8_lit("World batches: 0\nShadow: 0"),
-      .config = &text_config,
-      .anchor = VKR_UI_TEXT_ANCHOR_BOTTOM_LEFT,
-      .padding = vec2_new(VKR_UI_TEXT_PADDING, metrics_padding_y),
-  };
-
-  text_id = VKR_INVALID_ID;
-  if (!vkr_renderer_create_ui_text(&application->renderer, &metrics_payload,
-                                   &text_id) ||
-      text_id == VKR_INVALID_ID) {
-    log_error("Failed to create metrics UI text");
-    return;
-  }
-  state->metrics_text_id = text_id;
+  application_ui_text_set(&state->metrics_text,
+                          string8_lit("World batches: 0\nShadow: 0"));
 
   application_init_memory_text(application);
 }
@@ -2331,6 +2234,15 @@ vkr_internal void application_update_picking(Application *application) {
 
   VkrPickingContext *picking = &application->renderer.picking;
   if (!picking->initialized) {
+    return;
+  }
+
+  if (application->ui_capture.mouse && !state->gizmo_drag.active) {
+    if (vkr_picking_is_pending(picking))
+      vkr_picking_cancel(picking);
+    state->gizmo_hover_pending = false_v;
+    state->gizmo_drag.pending_pick = false_v;
+    state->gizmo_drag.pending_select = false_v;
     return;
   }
 
@@ -2491,8 +2403,7 @@ vkr_internal void application_update_picking(Application *application) {
     if (picked_text.length > 0 &&
         result.object_id != state->last_picked_object_id) {
       state->last_picked_object_id = result.object_id;
-      application_queue_ui_text_update(
-          application, state->picked_object_text_id, picked_text);
+      application_ui_text_set(&state->picked_object_text, picked_text);
     }
 
     state->gizmo_drag.pending_select = false_v;
@@ -2651,10 +2562,304 @@ vkr_internal void application_poll_upload_wait_stats(Application *application) {
   }
 }
 
+vkr_internal void application_build_dock_ui_node(Application *application,
+                                                 uint32_t node_index,
+                                                 VkrUiPlacement placement) {
+  VkrUiSystem *ui = &application->renderer.ui_system;
+  VkrUiDockTree *dock = &application->editor_viewport.dock;
+  if (node_index >= dock->node_high_water || !dock->nodes[node_index].used)
+    return;
+  VkrUiDockNode *node = &dock->nodes[node_index];
+  if (!vkr_ui_push_id_u64(ui, node_index))
+    return;
+  if (node->kind == VKR_UI_DOCK_NODE_SPLIT) {
+    const VkrUiTrack split_tracks[] = {
+        {.value = node->as.split.ratio, .unit = VKR_UI_TRACK_FR},
+        {.value = 1.0f - node->as.split.ratio, .unit = VKR_UI_TRACK_FR},
+    };
+    const VkrUiTrack one_track = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+    VkrUiPanelConfig panel = vkr_ui_panel_config_default();
+    panel.placement = placement;
+    panel.style.gap_pt = 8.0f;
+    if (node->as.split.axis == VKR_UI_DOCK_SPLIT_X) {
+      panel.columns = split_tracks;
+      panel.column_count = ArrayCount(split_tracks);
+      panel.rows = &one_track;
+      panel.row_count = 1u;
+    } else {
+      panel.columns = &one_track;
+      panel.column_count = 1u;
+      panel.rows = split_tracks;
+      panel.row_count = ArrayCount(split_tracks);
+    }
+    if (vkr_ui_panel_begin(ui, string8_lit("dock.split"), &panel)) {
+      VkrUiPlacement first = VKR_UI_PLACEMENT_DEFAULT;
+      first.column = 0u;
+      first.row = 0u;
+      VkrUiPlacement second = first;
+      if (node->as.split.axis == VKR_UI_DOCK_SPLIT_X)
+        second.column = 1u;
+      else
+        second.row = 1u;
+      application_build_dock_ui_node(application, node->as.split.first, first);
+      application_build_dock_ui_node(application, node->as.split.second,
+                                     second);
+      (void)vkr_ui_panel_end(ui);
+    }
+    (void)vkr_ui_pop_id(ui);
+    return;
+  }
+
+  VkrUiDockPanelKind active_kind =
+      node->as.leaf.tabs[node->as.leaf.active_tab].panel_kind;
+  const VkrUiTrack rows[] = {
+      {.value = 28.0f, .unit = VKR_UI_TRACK_PX},
+      {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
+  };
+  const VkrUiTrack one_track = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  VkrUiPanelConfig leaf = vkr_ui_panel_config_default();
+  leaf.placement = placement;
+  leaf.columns = &one_track;
+  leaf.column_count = 1u;
+  leaf.rows = rows;
+  leaf.row_count = ArrayCount(rows);
+  leaf.clip_children = true_v;
+  if (vkr_ui_panel_begin(ui, string8_lit("dock.leaf"), &leaf)) {
+    VkrUiTrack tab_tracks[VKR_UI_DOCK_TAB_CAPACITY] = {0};
+    for (uint32_t i = 0u; i < node->as.leaf.tab_count; ++i)
+      tab_tracks[i] = (VkrUiTrack){.unit = VKR_UI_TRACK_AUTO};
+    VkrUiPanelConfig tab_bar = vkr_ui_panel_config_default();
+    tab_bar.placement = (VkrUiPlacement){
+        .column = 0u,
+        .row = 0u,
+        .column_span = 1u,
+        .row_span = 1u,
+        .justify = VKR_UI_ALIGN_STRETCH,
+        .align = VKR_UI_ALIGN_STRETCH,
+    };
+    tab_bar.columns = tab_tracks;
+    tab_bar.column_count = node->as.leaf.tab_count;
+    tab_bar.rows = &one_track;
+    tab_bar.row_count = 1u;
+    tab_bar.style.gap_pt = 2.0f;
+    tab_bar.style.background_color = (Vec4){0.075f, 0.085f, 0.105f, 1.0f};
+    if (vkr_ui_panel_begin(ui, string8_lit("tabs"), &tab_bar)) {
+      for (uint32_t tab = 0u; tab < node->as.leaf.tab_count; ++tab) {
+        const VkrUiDockTab *dock_tab = &node->as.leaf.tabs[tab];
+        if (!vkr_ui_push_id_u64(ui, dock_tab->id))
+          continue;
+        VkrUiWidgetConfig button = vkr_ui_widget_config_default();
+        button.placement = (VkrUiPlacement){
+            .column = tab,
+            .row = 0u,
+            .column_span = 1u,
+            .row_span = 1u,
+            .justify = VKR_UI_ALIGN_STRETCH,
+            .align = VKR_UI_ALIGN_STRETCH,
+        };
+        button.style.font_size_pt = 12.0f;
+        button.style.padding_pt = (VkrUiEdges){3.0f, 8.0f, 3.0f, 8.0f};
+        button.style.background_color =
+            tab == node->as.leaf.active_tab
+                ? (Vec4){0.16f, 0.18f, 0.22f, 1.0f}
+                : (Vec4){0.095f, 0.105f, 0.125f, 1.0f};
+        if (vkr_ui_button(ui, string8_lit("tab"),
+                          vkr_ui_dock_panel_label(dock_tab->panel_kind),
+                          &button)) {
+          node->as.leaf.active_tab = tab;
+          dock->revision++;
+        }
+        (void)vkr_ui_pop_id(ui);
+      }
+      (void)vkr_ui_panel_end(ui);
+    }
+    active_kind = node->as.leaf.tabs[node->as.leaf.active_tab].panel_kind;
+    if (active_kind != VKR_UI_DOCK_PANEL_SCENE_VIEWPORT) {
+      VkrUiPanelConfig content_panel = vkr_ui_panel_config_default();
+      content_panel.placement = (VkrUiPlacement){
+          .column = 0u,
+          .row = 1u,
+          .column_span = 1u,
+          .row_span = 1u,
+          .justify = VKR_UI_ALIGN_STRETCH,
+          .align = VKR_UI_ALIGN_STRETCH,
+      };
+      content_panel.style.background_color =
+          (Vec4){0.045f, 0.052f, 0.065f, 1.0f};
+      VkrUiWidgetConfig content = vkr_ui_widget_config_default();
+      content.placement.justify = VKR_UI_ALIGN_START;
+      content.placement.align = VKR_UI_ALIGN_START;
+      content.placement.margin_pt = (VkrUiEdges){12.0f, 0.0f, 0.0f, 12.0f};
+      content.style.font_size_pt = 14.0f;
+      if (vkr_ui_panel_begin(ui, string8_lit("content.panel"),
+                             &content_panel)) {
+        vkr_ui_label(ui, string8_lit("content"),
+                     vkr_ui_dock_panel_label(active_kind), &content);
+        (void)vkr_ui_panel_end(ui);
+      }
+    }
+    (void)vkr_ui_panel_end(ui);
+  }
+  (void)vkr_ui_pop_id(ui);
+}
+
+vkr_internal void application_update_ui(Application *application,
+                                        float64_t delta) {
+  if (!application || !state || !state->input_state ||
+      !application->renderer.ui_system.initialized) {
+    return;
+  }
+
+  const VkrUiTrack root_columns[] = {
+      {.unit = VKR_UI_TRACK_AUTO},
+      {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
+      {.unit = VKR_UI_TRACK_AUTO},
+  };
+  const VkrUiTrack root_rows[] = {
+      {.unit = VKR_UI_TRACK_AUTO},
+      {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
+      {.unit = VKR_UI_TRACK_AUTO},
+  };
+  VkrUiPanelConfig root = vkr_ui_panel_config_default();
+  root.columns = root_columns;
+  root.column_count = ArrayCount(root_columns);
+  root.rows = root_rows;
+  root.row_count = ArrayCount(root_rows);
+  if (!vkr_ui_begin(&application->renderer, &application->renderer.ui_system,
+                    state->input_state,
+                    vkr_window_is_mouse_captured(&application->window), delta,
+                    &root)) {
+    application->ui_capture = (VkrUiInputCapture){0};
+    return;
+  }
+
+  application->editor_viewport.dock_capture = (VkrUiDockInputCapture){0};
+  if (application->editor_viewport.enabled) {
+    VkrViewportMapping mapping = {0};
+    if (application_editor_viewport_mapping(
+            application, application->renderer.ui_system.target_width,
+            application->renderer.ui_system.target_height, &mapping)) {
+      application->editor_viewport.dock_capture = vkr_ui_dock_update_input(
+          &application->editor_viewport.dock, state->input_state,
+          vkr_window_is_mouse_captured(&application->window));
+    }
+    VkrUiPlacement dock_placement = {
+        .column = 0u,
+        .row = 0u,
+        .column_span = 3u,
+        .row_span = 3u,
+        .justify = VKR_UI_ALIGN_STRETCH,
+        .align = VKR_UI_ALIGN_STRETCH,
+    };
+    application_build_dock_ui_node(
+        application, application->editor_viewport.dock.root, dock_placement);
+  }
+
+  const VkrUiTrack auto_track = {.unit = VKR_UI_TRACK_AUTO};
+  VkrUiWidgetConfig label = vkr_ui_widget_config_default();
+  label.style.font_size_pt = 18.0f;
+  label.text.font = application->renderer.font_system.default_mtsdf_font_handle;
+  label.text.font_size = 18.0f;
+
+  VkrUiPanelConfig panel = vkr_ui_panel_config_default();
+  panel.columns = &auto_track;
+  panel.column_count = 1u;
+  panel.rows = &auto_track;
+  panel.row_count = 1u;
+  panel.placement = (VkrUiPlacement){
+      .column = 0u,
+      .row = 0u,
+      .column_span = 1u,
+      .row_span = 1u,
+      .justify = VKR_UI_ALIGN_START,
+      .align = VKR_UI_ALIGN_START,
+      .margin_pt = {VKR_UI_TEXT_PADDING, 0.0f, 0.0f, VKR_UI_TEXT_PADDING},
+  };
+  if (vkr_ui_panel_begin(&application->renderer.ui_system,
+                         string8_lit("hud.top_left"), &panel)) {
+    vkr_ui_label(&application->renderer.ui_system, string8_lit("camera"),
+                 application_ui_text_view(&state->left_text), &label);
+    (void)vkr_ui_panel_end(&application->renderer.ui_system);
+  }
+
+  panel.placement.column = 2u;
+  panel.placement.justify = VKR_UI_ALIGN_END;
+  panel.placement.margin_pt =
+      (VkrUiEdges){VKR_UI_TEXT_PADDING, VKR_UI_TEXT_PADDING, 0.0f, 0.0f};
+  if (vkr_ui_panel_begin(&application->renderer.ui_system,
+                         string8_lit("hud.top_right"), &panel)) {
+    vkr_ui_label(&application->renderer.ui_system, string8_lit("fps"),
+                 application_ui_text_view(&state->fps_text), &label);
+    (void)vkr_ui_panel_end(&application->renderer.ui_system);
+  }
+
+  const VkrUiTrack bottom_left_rows[] = {
+      {.unit = VKR_UI_TRACK_AUTO},
+      {.unit = VKR_UI_TRACK_AUTO},
+  };
+  panel.rows = bottom_left_rows;
+  panel.row_count = ArrayCount(bottom_left_rows);
+  panel.style.gap_pt = 6.0f;
+  panel.placement = (VkrUiPlacement){
+      .column = 0u,
+      .row = 2u,
+      .column_span = 1u,
+      .row_span = 1u,
+      .justify = VKR_UI_ALIGN_START,
+      .align = VKR_UI_ALIGN_END,
+      .margin_pt = {0.0f, 0.0f, VKR_UI_TEXT_PADDING, VKR_UI_TEXT_PADDING},
+  };
+  if (vkr_ui_panel_begin(&application->renderer.ui_system,
+                         string8_lit("hud.bottom_left"), &panel)) {
+    VkrUiWidgetConfig metrics = label;
+    metrics.placement = (VkrUiPlacement){
+        .column = 0u,
+        .row = 0u,
+        .column_span = 1u,
+        .row_span = 1u,
+        .justify = VKR_UI_ALIGN_START,
+        .align = VKR_UI_ALIGN_START,
+    };
+    vkr_ui_label(&application->renderer.ui_system, string8_lit("metrics"),
+                 application_ui_text_view(&state->metrics_text), &metrics);
+    VkrUiWidgetConfig picked = label;
+    picked.placement = metrics.placement;
+    picked.placement.row = 1u;
+    vkr_ui_label(&application->renderer.ui_system, string8_lit("picked"),
+                 application_ui_text_view(&state->picked_object_text), &picked);
+    (void)vkr_ui_panel_end(&application->renderer.ui_system);
+  }
+
+  panel.rows = &auto_track;
+  panel.row_count = 1u;
+  panel.style.gap_pt = 0.0f;
+  panel.placement = (VkrUiPlacement){
+      .column = 2u,
+      .row = 2u,
+      .column_span = 1u,
+      .row_span = 1u,
+      .justify = VKR_UI_ALIGN_END,
+      .align = VKR_UI_ALIGN_END,
+      .margin_pt = {0.0f, 10.0f, 10.0f, 0.0f},
+  };
+  if (vkr_ui_panel_begin(&application->renderer.ui_system,
+                         string8_lit("hud.bottom_right"), &panel)) {
+    vkr_ui_label(&application->renderer.ui_system, string8_lit("memory"),
+                 application_ui_text_view(&state->memory_text), &label);
+    (void)vkr_ui_panel_end(&application->renderer.ui_system);
+  }
+
+  application->ui_capture = vkr_ui_end(&application->renderer.ui_system);
+  application->ui_capture.mouse |=
+      application->editor_viewport.dock_capture.mouse;
+}
+
 void application_update(Application *application, float64_t delta) {
+  application_update_ui(application, delta);
   application_handle_input(application, delta);
 
-  if (input_is_key_up(state->input_state, KEY_Q) &&
+  if (!application->ui_capture.keyboard &&
+      input_is_key_up(state->input_state, KEY_Q) &&
       input_was_key_down(state->input_state, KEY_Q)) {
     application->renderer.globals.render_mode =
         (VkrRenderMode)(((uint32_t)application->renderer.globals.render_mode +
@@ -2663,7 +2868,8 @@ void application_update(Application *application, float64_t delta) {
     log_debug("RENDER MODE: %d", application->renderer.globals.render_mode);
   }
 
-  if (input_is_key_up(state->input_state, KEY_E) &&
+  if (!application->ui_capture.keyboard &&
+      input_is_key_up(state->input_state, KEY_E) &&
       input_was_key_down(state->input_state, KEY_E)) {
     application->renderer.shadow_debug_mode =
         (application->renderer.shadow_debug_mode + 1u) % 14u;
@@ -2697,6 +2903,7 @@ void application_update(Application *application, float64_t delta) {
 int main(int argc, char **argv) {
   int exit_code = 0;
   const char *metrics_json_path = NULL;
+  const char *editor_layout_path = getenv("VKR_EDITOR_LAYOUT_PATH");
 #if defined(_WIN32)
   VkrRendererBackendType renderer_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
 #else
@@ -2772,6 +2979,16 @@ int main(int argc, char **argv) {
     fprintf(stderr, "Application creation failed\n");
     return 1;
   }
+  if (editor_layout_path && editor_layout_path[0] != '\0') {
+    const String8 path = string8_create_from_cstr(
+        (const uint8_t *)editor_layout_path, string_length(editor_layout_path));
+    if (vkr_ui_dock_load_file(&application.editor_viewport.dock, path)) {
+      log_info("Loaded editor layout from '%s'", editor_layout_path);
+    } else {
+      log_warn("Using the default editor layout; '%s' could not be loaded",
+               editor_layout_path);
+    }
+  }
 
   // Baseline before any scene loads: the renderer's own resident allocations.
   application_log_device_memory_stats(&application, "startup");
@@ -2785,9 +3002,6 @@ int main(int argc, char **argv) {
   state->app_arena = application.app_arena;
   state->event_arena = application.event_manager.arena;
   state->event_manager = &application.event_manager;
-  state->fps_text_id = VKR_INVALID_ID;
-  state->left_text_id = VKR_INVALID_ID;
-  state->metrics_text_id = VKR_INVALID_ID;
   state->fps_update_clock = vkr_clock_create();
   state->memory_update_clock = vkr_clock_create();
   state->fps_accumulated_time = 0.0;
@@ -2799,7 +3013,6 @@ int main(int argc, char **argv) {
   state->free_camera_use_gamepad = false_v;
   state->free_camera_wheel_initialized = false_v;
   state->free_camera_prev_wheel_delta = 0;
-  state->picked_object_text_id = VKR_INVALID_ID;
   state->last_picked_object_id = 0;
   state->selected_entity = VKR_ENTITY_ID_INVALID;
   state->has_selection = false_v;
@@ -2988,6 +3201,16 @@ int main(int argc, char **argv) {
 
   arena_destroy(state->stats_arena);
   state->stats_arena = NULL;
+
+  if (editor_layout_path && editor_layout_path[0] != '\0') {
+    const String8 path = string8_create_from_cstr(
+        (const uint8_t *)editor_layout_path, string_length(editor_layout_path));
+    if (!vkr_ui_dock_save_file(&application.editor_viewport.dock, path)) {
+      log_error("Failed to save editor layout to '%s'", editor_layout_path);
+      if (exit_code == 0)
+        exit_code = 6;
+    }
+  }
 
   application_shutdown(&application);
 

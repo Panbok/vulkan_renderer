@@ -68,6 +68,18 @@
 #ifndef VKR_VULKAN_PACKET_TEXT_PICKING_FRAG_SPV
 #define VKR_VULKAN_PACKET_TEXT_PICKING_FRAG_SPV "packet.text_picking.frag.spv"
 #endif
+#ifndef VKR_VULKAN_PACKET_UI_VERT_SPV
+#define VKR_VULKAN_PACKET_UI_VERT_SPV "packet.ui.vert.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_UI_FRAG_SPV
+#define VKR_VULKAN_PACKET_UI_FRAG_SPV "packet.ui.frag.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_UI_RECT_VERT_SPV
+#define VKR_VULKAN_PACKET_UI_RECT_VERT_SPV "packet.ui_rect.vert.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_UI_RECT_FRAG_SPV
+#define VKR_VULKAN_PACKET_UI_RECT_FRAG_SPV "packet.ui_rect.frag.spv"
+#endif
 #ifndef VKR_VULKAN_PACKET_IBL_EQUIRECT_COMP_SPV
 #define VKR_VULKAN_PACKET_IBL_EQUIRECT_COMP_SPV "packet.ibl_equirect.comp.spv"
 #endif
@@ -259,7 +271,7 @@ typedef enum VkrVulkanPacketPipeline {
   VKR_VULKAN_PACKET_PIPELINE_UI,
   VKR_VULKAN_PACKET_PIPELINE_WORLD_TEXT,
   VKR_VULKAN_PACKET_PIPELINE_PICKING_TEXT,
-  VKR_VULKAN_PACKET_PIPELINE_UI_TEXT,
+  VKR_VULKAN_PACKET_PIPELINE_UI_RECT,
   VKR_VULKAN_PACKET_PIPELINE_VISIBILITY,
   VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_OPAQUE,
   VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_SHADOW,
@@ -283,6 +295,10 @@ typedef enum VkrVulkanPacketShader {
   VKR_VULKAN_PACKET_SHADER_TEXT_VERTEX,
   VKR_VULKAN_PACKET_SHADER_TEXT_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_TEXT_PICKING_FRAGMENT,
+  VKR_VULKAN_PACKET_SHADER_UI_VERTEX,
+  VKR_VULKAN_PACKET_SHADER_UI_FRAGMENT,
+  VKR_VULKAN_PACKET_SHADER_UI_RECT_VERTEX,
+  VKR_VULKAN_PACKET_SHADER_UI_RECT_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_VISIBILITY_VERTEX,
   VKR_VULKAN_PACKET_SHADER_VISIBILITY_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_VISIBILITY_OPAQUE_FRAGMENT,
@@ -799,6 +815,20 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketDrawRoot {
   uint32_t reserved[2];
 } VkrVulkanPacketDrawRoot;
 
+/** Compact per-batch root for the retained UI stream. */
+typedef struct VKR_SIMD_ALIGN VkrVulkanUiRoot {
+  uint64_t vertices;
+  uint32_t texture;
+  uint32_t sampler;
+  /** target width/height followed by the normalized MTSDF unit range. */
+  Vec4 target_unit_range;
+  Vec2 rect_extent;
+  uint32_t mode;
+  uint32_t flags;
+  /** top-left, top-right, bottom-right, bottom-left. */
+  Vec4 corner_radii;
+} VkrVulkanUiRoot;
+
 /** Non-world utility shaders retain a single-draw root because their model,
  * text controls, or source texture genuinely vary with that draw. */
 typedef struct VKR_SIMD_ALIGN VkrVulkanPacketUtilityRoot {
@@ -865,6 +895,12 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketUtilityRoot {
 } VkrVulkanPacketUtilityRoot;
 
 _Static_assert(sizeof(VkrVertex3d) == 64u, "Shared vertex ABI drift");
+_Static_assert(sizeof(VkrVulkanUiRoot) == 64u,
+               "Vulkan UI root must remain 64 bytes");
+_Static_assert(offsetof(VkrVulkanUiRoot, target_unit_range) == 16u,
+               "Vulkan UI root target offset drift");
+_Static_assert(offsetof(VkrVulkanUiRoot, corner_radii) == 48u,
+               "Vulkan UI root radius offset drift");
 _Static_assert(sizeof(VkrVulkanMaterialGpuRow) == 144u,
                "Vulkan material row ABI drift");
 _Static_assert(offsetof(VkrVulkanMaterialGpuRow, base_color_texture) == 16u,
@@ -1147,8 +1183,9 @@ typedef struct VkrVulkanFrameSlot {
    *  rejected for want of upload bytes, not for a malformed packet. */
   uint32_t frame_upload_exhaustions;
   uint64_t world_instances;
-  uint64_t ui_instances;
-  uint64_t editor_instances;
+  uint64_t ui_vertices;
+  uint64_t ui_index_offset;
+  uint64_t ui_index_size;
   uint64_t gpu_candidate_instances;
   uint64_t transmission_gpu_candidate_instances;
   uint64_t gpu_geometry_rows;
@@ -1730,21 +1767,20 @@ bool8_t vkr_vk_record_ibl_bakes(VkrVulkanRenderer *renderer,
                                 VkCommandBuffer command);
 void vkr_vk_abandon_ibl_bake_recordings(VkrVulkanRenderer *renderer);
 void vkr_vk_discard_ibl_bakes(VkrVulkanRenderer *renderer);
-bool8_t vkr_vk_record_packet_draws(VkrVulkanRenderer *renderer,
-                                   VkCommandBuffer command,
-                                   VkrVulkanPacketPipeline pipeline,
-                                   const VkrDrawItem *draws,
-                                   uint32_t draw_count, uint64_t instances,
-                                   Mat4 view_projection, bool8_t alpha_cutout,
-                                   uint32_t shadow_texture,
-                                   uint32_t transmission_texture);
+bool8_t vkr_vk_record_packet_draws(
+    VkrVulkanRenderer *renderer, VkCommandBuffer command,
+    VkrVulkanPacketPipeline pipeline, const VkrDrawItem *draws,
+    uint32_t draw_count, uint64_t instances, Mat4 view_projection,
+    uint32_t target_width, uint32_t target_height, bool8_t alpha_cutout,
+    uint32_t shadow_texture, uint32_t transmission_texture);
 
 bool8_t vkr_vk_record_packet_fullscreen(VkrVulkanRenderer *renderer,
                                         VkCommandBuffer command,
                                         VkrVulkanPacketPipeline pipeline,
                                         uint32_t texture_index,
-                                        uint64_t exposure_state,
-                                        uint32_t flags);
+                                        uint64_t exposure_state, uint32_t flags,
+                                        uint32_t output_width,
+                                        uint32_t output_height);
 bool8_t vkr_vk_record_text_draws(VkrVulkanRenderer *renderer,
                                  VkCommandBuffer command,
                                  VkrVulkanPacketPipeline pipeline,
@@ -1752,6 +1788,11 @@ bool8_t vkr_vk_record_text_draws(VkrVulkanRenderer *renderer,
                                  uint32_t draw_count, Mat4 view_projection,
                                  uint32_t target_width, uint32_t target_height,
                                  bool8_t ui_domain);
+bool8_t vkr_vk_record_ui_draw_list(VkrVulkanRenderer *renderer,
+                                   VkCommandBuffer command,
+                                   const VkrPreparedUiDrawList *draw_list,
+                                   uint32_t target_width,
+                                   uint32_t target_height);
 bool8_t vkr_vk_recreate_window_target(VkrVulkanRenderer *renderer,
                                       uint32_t width, uint32_t height,
                                       uint32_t image_count);

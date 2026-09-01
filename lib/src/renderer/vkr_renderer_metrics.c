@@ -329,6 +329,12 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
   VKR_REGISTER_U64(frame_dynamic_resolution_transitions,
                    "frame.dynamic_resolution_transitions",
                    VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_F64(ui_dirty_tile_ratio, "ui.dirty_tile_ratio",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_RATIO);
+  VKR_REGISTER_U64(ui_dirty_tiles, "ui.dirty_tiles", VKR_METRIC_DOMAIN_DRAW,
+                   VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(ui_tile_count, "ui.tile_count", VKR_METRIC_DOMAIN_DRAW,
+                   VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64_REQUIRED(world_draws_collected, "draw.world.draws_collected",
                             VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64_REQUIRED(world_opaque_draws, "draw.world.opaque_draws",
@@ -1226,6 +1232,9 @@ void vkr_renderer_metrics_collect(
   VKR_SET_U64(frame_render_height, renderer->render_height);
   VKR_SET_U64(frame_dynamic_resolution_transitions,
               renderer->dynamic_resolution_state.transition_count);
+  VKR_SET_F64(ui_dirty_tile_ratio, renderer->ui_system.dirty_tile_ratio);
+  VKR_SET_U64(ui_dirty_tiles, renderer->ui_system.dirty_tile_count);
+  VKR_SET_U64(ui_tile_count, renderer->ui_system.tile_count);
   const VkrExposureDebugSample *exposure = &context->frame_metrics->exposure;
   if (exposure->valid) {
     VKR_SET_U64(exposure_accepted_texels, exposure->state.accepted_texel_count);

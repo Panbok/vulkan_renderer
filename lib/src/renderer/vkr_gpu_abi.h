@@ -1,7 +1,11 @@
 #pragma once
 
+#include "core/ui/vkr_ui_vertex.h"
 #include "defines.h"
 #include "math/mat.h"
+
+/** Shared UI/world-text vertex record consumed by both native backends. */
+typedef VkrUiVertex VkrTextVertex;
 
 /** Maximum packet instance records accepted per frame. */
 #define VKR_INSTANCE_BUFFER_MAX_INSTANCES 65536

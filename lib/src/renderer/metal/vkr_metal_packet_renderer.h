@@ -184,7 +184,6 @@ typedef struct VkrMetalPacketResult {
   uint32_t opaque_draw_count;
   uint32_t transmission_draw_count;
   uint32_t blend_draw_count;
-  uint32_t editor_draw_count;
   uint32_t ui_draw_count;
   uint32_t text_draw_count;
   uint32_t ibl_dispatch_count;

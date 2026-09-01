@@ -76,6 +76,9 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId frame_render_width;
   VkrMetricId frame_render_height;
   VkrMetricId frame_dynamic_resolution_transitions;
+  VkrMetricId ui_dirty_tile_ratio;
+  VkrMetricId ui_dirty_tiles;
+  VkrMetricId ui_tile_count;
   VkrMetricId world_draws_collected;
   VkrMetricId world_opaque_draws;
   VkrMetricId world_transmission_draws;

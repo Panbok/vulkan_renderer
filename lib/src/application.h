@@ -48,6 +48,7 @@
 #include "containers/bitset.h"
 #include "core/event.h"
 #include "core/logger.h"
+#include "core/ui/vkr_ui_dock.h"
 #include "core/vkr_clock.h"
 #include "core/vkr_gamepad.h"
 #include "core/vkr_job_system.h"
@@ -78,6 +79,8 @@ typedef struct ApplicationEditorViewport {
   float32_t render_scale;
   uint32_t last_target_width;
   uint32_t last_target_height;
+  VkrUiDockTree dock;
+  VkrUiDockInputCapture dock_capture;
 } ApplicationEditorViewport;
 
 /**
@@ -203,12 +206,11 @@ typedef struct Application {
 
   VkrJobSystem job_system; /**< Engine-wide job system. */
 
-  ApplicationTextUpdate ui_text_updates[VKR_MAX_PENDING_TEXT_UPDATES];
-  uint32_t ui_text_update_count;
   ApplicationTextUpdate world_text_updates[VKR_MAX_PENDING_TEXT_UPDATES];
   uint32_t world_text_update_count;
 
   ApplicationEditorViewport editor_viewport;
+  VkrUiInputCapture ui_capture;
   const VkrCaptureBatchRequest *capture_request;
   VkrRendererError last_renderer_error;
   /* GPU timing policy is owned by `metrics->config`. */
@@ -388,6 +390,7 @@ bool8_t application_create(Application *application,
       .last_target_width = 0,
       .last_target_height = 0,
   };
+  vkr_ui_dock_default_editor_layout(&application->editor_viewport.dock);
   application->app_flags = bitset8_create();
 
   ArenaFlags app_arena_flags = bitset8_create();
@@ -1129,6 +1132,34 @@ vkr_internal bool8_t application_build_world_payload(
   return true_v;
 }
 
+vkr_internal bool8_t application_editor_viewport_mapping(
+    Application *application, uint32_t window_width, uint32_t window_height,
+    VkrViewportMapping *out_mapping) {
+  if (!application || !out_mapping || window_width == 0u || window_height == 0u)
+    return false_v;
+  float32_t content_scale = 1.0f;
+  if (application_is_windowed(application)) {
+    const VkrWindowContentScale scale =
+        vkr_window_get_content_scale(&application->window);
+    if (isfinite(scale.value) && scale.value > 0.0f)
+      content_scale = scale.value;
+  }
+  VkrUiDockTree *dock = &application->editor_viewport.dock;
+  if (!vkr_ui_dock_layout(dock,
+                          (VkrUiRect){0.0f, 0.0f, (float32_t)window_width,
+                                      (float32_t)window_height},
+                          8.0f * content_scale, 28.0f * content_scale))
+    return false_v;
+  VkrUiRect panel = {0};
+  if (!vkr_ui_dock_find_panel(dock, VKR_UI_DOCK_PANEL_SCENE_VIEWPORT, NULL,
+                              &panel))
+    return false_v;
+  return vkr_editor_viewport_mapping_from_panel_rect(
+      (Vec4){panel.x, panel.y, panel.width, panel.height},
+      application->editor_viewport.fit_mode,
+      application->editor_viewport.render_scale, out_mapping);
+}
+
 /**
  * @brief Draws a frame using the renderer.
  * This function is called once per frame from within the main application
@@ -1278,24 +1309,21 @@ void application_draw_frame(Application *application, float64_t delta) {
     picking_payload.y = application->renderer.picking.requested_y;
   }
 
-  bool8_t editor_enabled = application->editor_viewport.enabled &&
-                           application->renderer.editor_viewport.initialized;
+  bool8_t editor_enabled =
+      application->editor_viewport.enabled &&
+      vkr_renderer_subsystem_plan_includes(
+          &application->renderer.subsystem_plan, VKR_RENDERER_SUBSYSTEM_EDITOR);
   bool8_t has_editor = false_v;
   uint32_t viewport_width = 0;
   uint32_t viewport_height = 0;
   VkrViewportMapping editor_mapping = {0};
-  VkrDrawItem editor_draws[1] = {0};
-  VkrInstanceDataGPU editor_instances[1] = {0};
   VkrEditorPassPayload editor_payload = {0};
 
   if (editor_enabled) {
-    if (vkr_editor_viewport_compute_mapping(
-            setup.window_width, setup.window_height,
-            application->editor_viewport.fit_mode,
-            application->editor_viewport.render_scale, &editor_mapping) &&
-        vkr_editor_viewport_build_payload(
-            &application->renderer.editor_viewport, &editor_mapping,
-            editor_draws, editor_instances, &editor_payload)) {
+    if (application_editor_viewport_mapping(application, setup.window_width,
+                                            setup.window_height,
+                                            &editor_mapping) &&
+        vkr_editor_viewport_build_payload(&editor_mapping, &editor_payload)) {
       viewport_width = editor_mapping.target_width;
       viewport_height = editor_mapping.target_height;
       has_editor = true_v;
@@ -1358,7 +1386,6 @@ void application_draw_frame(Application *application, float64_t delta) {
   }
 
   VkrTextUpdate world_text_updates[VKR_MAX_PENDING_TEXT_UPDATES];
-  VkrTextUpdate ui_text_updates[VKR_MAX_PENDING_TEXT_UPDATES];
   VkrTextUpdatesPayload text_updates_payload = {0};
   bool8_t has_text_updates = false_v;
 
@@ -1377,24 +1404,6 @@ void application_draw_frame(Application *application, float64_t delta) {
     }
     text_updates_payload.world_text_updates = world_text_updates;
     text_updates_payload.world_text_update_count = count;
-    has_text_updates = true_v;
-  }
-
-  if (application->ui_text_update_count > 0) {
-    uint32_t count = application->ui_text_update_count;
-    if (count > VKR_MAX_PENDING_TEXT_UPDATES) {
-      count = VKR_MAX_PENDING_TEXT_UPDATES;
-    }
-    for (uint32_t i = 0; i < count; ++i) {
-      ApplicationTextUpdate *pending = &application->ui_text_updates[i];
-      ui_text_updates[i] = (VkrTextUpdate){
-          .text_id = pending->text_id,
-          .content = pending->content,
-          .transform = NULL,
-      };
-    }
-    text_updates_payload.ui_text_updates = ui_text_updates;
-    text_updates_payload.ui_text_update_count = count;
     has_text_updates = true_v;
   }
 
@@ -1671,7 +1680,6 @@ void application_start(Application *application) {
     if (vkr_allocator_supports_scopes(frame_alloc)) {
       frame_scope = vkr_allocator_begin_scope(frame_alloc);
     }
-    application->ui_text_update_count = 0;
     application->world_text_update_count = 0;
 
     VKR_METRICS_SCOPE_NS(application->metrics, application->metric_ids.update) {
@@ -1704,8 +1712,9 @@ void application_start(Application *application) {
     }
 
     if (camera && !application->config->disable_camera_controller) {
-      vkr_camera_controller_update(&application->renderer.camera_controller,
-                                   delta);
+      vkr_camera_controller_update(
+          &application->renderer.camera_controller, delta,
+          application->ui_capture.mouse || application->ui_capture.keyboard);
     }
 
     vkr_camera_registry_update_all(camera_system);

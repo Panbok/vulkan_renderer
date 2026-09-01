@@ -50,6 +50,8 @@ void input_update(InputState *input_state) {
           sizeof(ButtonsState));
   MemCopy(&input_state->previous_axes, &input_state->current_axes,
           sizeof(GamepadAxes));
+  input_state->character_count = 0u;
+  input_state->dropped_character_count = 0u;
 }
 
 bool8_t input_is_key_down(InputState *input_state, Keys key) {
@@ -122,6 +124,29 @@ void input_process_key(InputState *input_state, Keys key, bool8_t pressed) {
     };
     event_manager_dispatch(input_state->event_manager, event);
   }
+}
+
+bool8_t input_process_char(InputState *input_state, uint32_t codepoint) {
+  if (!input_state || codepoint > 0x10ffffu ||
+      (codepoint >= 0xd800u && codepoint <= 0xdfffu))
+    return false_v;
+  if (input_state->character_count == VKR_INPUT_CHARACTER_CAPACITY) {
+    input_state->dropped_character_count++;
+    return false_v;
+  }
+  input_state->characters[input_state->character_count++] = codepoint;
+  return true_v;
+}
+
+const uint32_t *input_get_characters(const InputState *input_state,
+                                     uint32_t *out_count) {
+  if (out_count)
+    *out_count = input_state ? input_state->character_count : 0u;
+  return input_state ? input_state->characters : NULL;
+}
+
+uint32_t input_get_dropped_character_count(const InputState *input_state) {
+  return input_state ? input_state->dropped_character_count : 0u;
 }
 
 void input_process_button(InputState *input_state, Buttons button,

@@ -302,6 +302,25 @@ struct VkrVulkanTextOutput
     nointerpolation uint object_id : TEXCOORD1;
 };
 
+struct VkrVulkanUiRoot
+{
+    uint64_t vertices;
+    uint texture_index;
+    uint sampler_index;
+    float4 target_unit_range;
+    float2 rect_extent;
+    uint mode;
+    uint flags;
+    float4 corner_radii;
+};
+
+struct VkrVulkanUiOutput
+{
+    float4 position : SV_Position;
+    float2 uv : TEXCOORD0;
+    float4 color : COLOR0;
+};
+
 [[vk::binding(0, 0)]] Texture2D<float4> g_textures[];
 [[vk::binding(0, 0)]] Texture2D<float> g_depth_textures[];
 [[vk::binding(0, 0)]] Texture2D<uint2> g_uint2_textures[];

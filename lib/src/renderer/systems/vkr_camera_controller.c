@@ -43,13 +43,13 @@ void vkr_camera_controller_rotate(VkrCameraController *controller,
 }
 
 void vkr_camera_controller_update(VkrCameraController *controller,
-                                  float64_t delta_time) {
+                                  float64_t delta_time, bool8_t input_blocked) {
   assert_log(controller != NULL, "Camera controller is NULL");
   assert_log(controller->camera != NULL, "Camera is NULL");
 
   VkrCamera *camera = controller->camera;
   float32_t frame_delta = (float32_t)delta_time;
-  if (frame_delta <= 0.0f) {
+  if (frame_delta <= 0.0f || input_blocked) {
     controller->frame_move_forward = 0.0f;
     controller->frame_move_right = 0.0f;
     controller->frame_move_world_up = 0.0f;

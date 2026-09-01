@@ -267,8 +267,9 @@ typedef struct VkrMetalPacketFrameUpload {
   uint8_t *root_cpu;
   uint64_t root_gpu;
   uint64_t world_instances_gpu;
-  uint64_t editor_instances_gpu;
-  uint64_t ui_instances_gpu;
+  uint64_t ui_vertices_gpu;
+  uint64_t ui_indices_gpu;
+  uint64_t ui_indices_length;
   uint64_t gpu_draw_instances_gpu;
   uint64_t gpu_draw_geometry_rows_gpu;
   uint64_t gpu_draw_views_gpu;
@@ -299,7 +300,6 @@ typedef struct VkrMetalPacketFrameUpload {
   uint32_t ibl_sh_previous_slot;
   VkrMetalPacketTextUpload *text_uploads;
   uint32_t world_text_count;
-  uint32_t ui_text_count;
   uint32_t root_capacity;
   uint32_t root_cursor;
   bool8_t acquired;
@@ -516,11 +516,11 @@ struct VkrMetalPacketRenderer {
   id<MTLRenderPipelineState> vbuffer_pipeline;
   id<MTLRenderPipelineState> transmission_vbuffer_pipeline;
   id<MTLRenderPipelineState> blend_pipeline;
-  id<MTLRenderPipelineState> overlay_pipeline;
+  id<MTLRenderPipelineState> ui_pipeline;
   id<MTLRenderPipelineState> picking_pipeline;
   id<MTLRenderPipelineState> tonemap_pipeline;
   id<MTLRenderPipelineState> world_text_pipeline;
-  id<MTLRenderPipelineState> ui_text_pipeline;
+  id<MTLRenderPipelineState> ui_rect_pipeline;
   id<MTLRenderPipelineState> picking_text_pipeline;
   id<MTLComputePipelineState> ibl_equirect_pipeline;
   id<MTLComputePipelineState> ibl_prefilter_pipeline;

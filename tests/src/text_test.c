@@ -314,6 +314,9 @@ static void test_cooked_font_init(TestCookedFont *fixture) {
       .descent = 6,
       .atlas_size_x = 4,
       .atlas_size_y = 4,
+      .atlas = {.id = 9u, .generation = 3u},
+      .sdf_distance_range = 4.0f,
+      .mtsdf_unit_range = {1.0f, 1.0f},
       .page_count = 1u,
       .glyphs_by_id = {.length = ArrayCount(fixture->glyphs),
                        .data = fixture->glyphs},
@@ -546,6 +549,7 @@ static void test_ui_system_scale_revision_and_offsets(void) {
   test_cooked_font_init(&fixture);
   RendererFrontend renderer = {0};
   renderer.allocator = allocator;
+  renderer.scratch_allocator = allocator;
   renderer.last_window_width = 200u;
   renderer.last_window_height = 100u;
   renderer.font_system.fonts =
@@ -556,50 +560,133 @@ static void test_ui_system_scale_revision_and_offsets(void) {
   assert(vkr_ui_system_init(&renderer, &system));
   vkr_ui_system_set_offscreen_size(&renderer, &system, true_v, 200u, 100u);
 
-  VkrUiTextConfig config = VKR_UI_TEXT_CONFIG_DEFAULT;
-  config.font_size = 10.0f;
-  VkrUiTextCreateData payload = {
-      .text_id = VKR_INVALID_ID,
-      .content = string8_lit("A"),
-      .config = &config,
-      .anchor = VKR_UI_TEXT_ANCHOR_BOTTOM_LEFT,
-      .padding = vec2_new(3.0f, 4.0f),
-  };
-  uint32_t text_id = VKR_INVALID_ID;
-  assert(vkr_ui_system_text_create(&renderer, &system, &payload, &text_id));
-  VkrUiTextSlot *slot = &system.text_slots.data[text_id];
-  assert(vkr_ui_text_prepare_geometry(&slot->text));
-
+  InputState input = {0};
   const float32_t scales[] = {1.25f, 1.5f, 2.0f, 1.0f};
   for (uint32_t i = 0; i < ArrayCount(scales); ++i) {
-    const uint32_t geometry_revision = slot->text.geometry.revision;
     vkr_ui_system_set_offscreen_content_scale(&renderer, &system, scales[i]);
+    VkrAllocatorScope scope = vkr_allocator_begin_scope(&allocator);
+    assert(vkr_allocator_scope_is_valid(&scope));
+    assert(vkr_ui_begin(&renderer, &system, &input, false_v, 1.0 / 60.0, NULL));
+    VkrUiWidgetConfig label = vkr_ui_widget_config_default();
+    label.placement.justify = VKR_UI_ALIGN_START;
+    label.placement.align = VKR_UI_ALIGN_START;
+    label.placement.margin_pt = (VkrUiEdges){4.0f, 0.0f, 0.0f, 3.0f};
+    label.style.font_size_pt = 10.0f;
+    label.text.font = (VkrFontHandle){.id = fixture.font.id,
+                                      .generation = fixture.font.generation};
+    label.text.font_size = 10.0f;
+    vkr_ui_label(&system, string8_lit("scaled-label"), string8_lit("A"),
+                 &label);
+    (void)vkr_ui_end(&system);
+    VkrPreparedUiDrawList draw_list = {0};
+    assert(vkr_ui_system_prepare_draw_list(&system, &allocator, 200u, 100u,
+                                           &draw_list));
+    assert(draw_list.vertex_count == 4u);
     assert(system.content_scale_revision ==
            system.offscreen_content_scale_revision);
-    assert(slot->text.buffers_dirty);
-    assert(vkr_ui_text_prepare_geometry(&slot->text));
-    assert(slot->text.geometry.revision == geometry_revision + 1u);
-    assert_f32_eq(slot->text.bounds.size.x, 6.0f * scales[i], 0.0001f,
-                  "system scaled font size");
-    assert_f32_eq(slot->text.transform.position.x, 3.0f * scales[i], 0.0001f,
-                  "scaled slot x offset");
-    assert_f32_eq(slot->text.transform.position.y, 4.0f * scales[i], 0.0001f,
-                  "scaled slot y offset");
-    assert_f32_eq(slot->text.transform.scale.x, 1.0f, 0.0f,
-                  "content scale absent from transform x");
-    assert_f32_eq(slot->text.transform.scale.y, 1.0f, 0.0f,
-                  "content scale absent from transform y");
+    float32_t min_x = draw_list.vertices[0].position.x;
+    float32_t max_x = min_x;
+    for (uint32_t vertex = 1u; vertex < draw_list.vertex_count; ++vertex) {
+      min_x = Min(min_x, draw_list.vertices[vertex].position.x);
+      max_x = Max(max_x, draw_list.vertices[vertex].position.x);
+    }
+    assert_f32_eq(min_x, 3.0f * scales[i], 0.0001f, "scaled grid x offset");
+    assert_f32_eq(max_x - min_x, 5.0f * scales[i], 0.0001f,
+                  "scaled glyph width");
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
 
-  const uint32_t geometry_revision = slot->text.geometry.revision;
   vkr_ui_system_resize(&renderer, &system, 320u, 180u);
-  assert(!slot->text.layout_dirty && !slot->text.buffers_dirty);
-  assert(slot->text.geometry.revision == geometry_revision);
-  assert_f32_eq(system.text_content_scale, 1.0f, 0.0f,
+  assert_f32_eq(system.content_scale, 1.0f, 0.0f,
                 "extent resize preserves density");
   vkr_ui_system_shutdown(&renderer, &system);
   teardown_suite();
   printf("  test_ui_system_scale_revision_and_offsets PASSED\n");
+}
+
+static bool8_t test_ui_text_field_frame(RendererFrontend *renderer,
+                                        VkrUiSystem *system, InputState *input,
+                                        VkrUiTextEditBuffer *buffer,
+                                        float64_t delta,
+                                        VkrUiInputCapture *out_capture) {
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(&allocator);
+  assert(vkr_allocator_scope_is_valid(&scope));
+  assert(vkr_ui_begin(renderer, system, input, false_v, delta, NULL));
+  const bool8_t changed =
+      vkr_ui_text_field(system, string8_lit("edit"), buffer, NULL);
+  *out_capture = vkr_ui_end(system);
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  return changed;
+}
+
+static void test_ui_text_field_character_input_and_repeat(void) {
+  printf("  Running test_ui_text_field_character_input_and_repeat...\n");
+  setup_suite();
+  TestCookedFont fixture;
+  test_cooked_font_init(&fixture);
+  RendererFrontend renderer = {0};
+  renderer.allocator = allocator;
+  renderer.scratch_allocator = allocator;
+  renderer.last_window_width = 200u;
+  renderer.last_window_height = 100u;
+  renderer.font_system.fonts =
+      (Array_VkrFont){.length = 1u, .data = &fixture.font};
+  renderer.font_system.default_mtsdf_font_handle = (VkrFontHandle){
+      .id = fixture.font.id, .generation = fixture.font.generation};
+  VkrUiSystem system = {0};
+  assert(vkr_ui_system_init(&renderer, &system));
+  vkr_ui_system_set_offscreen_size(&renderer, &system, true_v, 200u, 100u);
+
+  uint8_t bytes[32];
+  MemSet(bytes, 0xcc, sizeof(bytes));
+  VkrUiTextEditBuffer edit = {.data = bytes, .capacity = sizeof(bytes)};
+  EventManager event_manager = {0};
+  event_manager_create(&event_manager);
+  InputState input = input_init(&event_manager);
+  VkrUiInputCapture capture = {0};
+  assert(!test_ui_text_field_frame(&renderer, &system, &input, &edit,
+                                   1.0 / 60.0, &capture));
+
+  input_process_mouse_move(&input, 10, 10);
+  input_process_button(&input, BUTTON_LEFT, true_v);
+  assert(input_process_char(&input, 'A'));
+  assert(input_process_char(&input, 0x00e9u));
+  assert(test_ui_text_field_frame(&renderer, &system, &input, &edit, 1.0 / 60.0,
+                                  &capture));
+  assert(capture.keyboard && capture.text);
+  assert(edit.length == 3u);
+  assert(MemCompare(edit.data, "A\xc3\xa9", 3u) == 0);
+  assert(edit.data[edit.length] == 0u);
+
+  input_update(&input);
+  input_process_button(&input, BUTTON_LEFT, false_v);
+  input_process_key(&input, KEY_BACKSPACE, true_v);
+  assert(test_ui_text_field_frame(&renderer, &system, &input, &edit, 1.0 / 60.0,
+                                  &capture));
+  assert(edit.length == 1u && edit.data[0] == 'A');
+
+  input_update(&input);
+  assert(!test_ui_text_field_frame(&renderer, &system, &input, &edit, 0.39,
+                                   &capture));
+  input_update(&input);
+  assert(test_ui_text_field_frame(&renderer, &system, &input, &edit, 0.02,
+                                  &capture));
+  assert(edit.length == 0u && edit.data[0] == 0u);
+
+  input_update(&input);
+  input_process_key(&input, KEY_BACKSPACE, false_v);
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(&allocator);
+  assert(vkr_allocator_scope_is_valid(&scope));
+  assert(vkr_ui_begin(&renderer, &system, &input, false_v, 1.0 / 60.0, NULL));
+  capture = vkr_ui_end(&system);
+  assert(!capture.keyboard && !capture.text);
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+
+  input_shutdown(&input);
+  event_manager_destroy(&event_manager);
+  vkr_ui_system_shutdown(&renderer, &system);
+  teardown_suite();
+  printf("  test_ui_text_field_character_input_and_repeat PASSED\n");
 }
 
 bool32_t run_text_tests(void) {
@@ -621,6 +708,7 @@ bool32_t run_text_tests(void) {
   test_window_content_scale_snapshot();
   test_ui_text_content_scale_contract();
   test_ui_system_scale_revision_and_offsets();
+  test_ui_text_field_character_input_and_repeat();
 
   return true_v;
 }

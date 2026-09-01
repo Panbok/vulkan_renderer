@@ -340,6 +340,8 @@ typedef struct GamepadAxes {
   float right_y;
 } GamepadAxes;
 
+#define VKR_INPUT_CHARACTER_CAPACITY 64u
+
 // TODO(v2): Multi-device input design
 // Currently, all raw input devices contributing to a window (mouse, keyboard,
 // any connected gamepads) are merged into a single `InputState` owned by the
@@ -361,6 +363,9 @@ typedef struct InputState {
   ButtonsState current_buttons;
   GamepadAxes previous_axes;
   GamepadAxes current_axes;
+  uint32_t characters[VKR_INPUT_CHARACTER_CAPACITY];
+  uint32_t character_count;
+  uint32_t dropped_character_count;
   bool32_t is_initialized;
 } InputState;
 
@@ -455,6 +460,16 @@ bool8_t input_key_just_released(const InputState *input_state, Keys key);
  * @param pressed `true` if the key was pressed, `false` if it was released.
  */
 void input_process_key(InputState *input_state, Keys key, bool8_t pressed);
+
+/** Queues one committed Unicode scalar for the current frame. */
+bool8_t input_process_char(InputState *input_state, uint32_t codepoint);
+
+/** Returns the ordered committed-character queue for the current frame. */
+const uint32_t *input_get_characters(const InputState *input_state,
+                                     uint32_t *out_count);
+
+/** Returns characters dropped after the fixed per-frame queue filled. */
+uint32_t input_get_dropped_character_count(const InputState *input_state);
 
 /**
  * @brief Checks if a specific mouse button is currently held down.

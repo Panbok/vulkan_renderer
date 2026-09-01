@@ -174,6 +174,60 @@ static void test_packet_text_geometry_validation(void) {
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
 }
 
+static void test_packet_ui_stream_validation(void) {
+  VkrUiVertex vertices[4] = {
+      {.position = {0.0f, 0.0f}},
+      {.position = {10.0f, 0.0f}},
+      {.position = {10.0f, 10.0f}},
+      {.position = {0.0f, 10.0f}},
+  };
+  uint32_t indices[6] = {0u, 1u, 2u, 2u, 3u, 0u};
+  VkrUiDrawBatch batch = {
+      .index_count = ArrayCount(indices),
+      .scissor_rect_px = {0.0f, 0.0f, 100.0f, 50.0f},
+      .mode = VKR_UI_DRAW_MODE_QUAD,
+  };
+  VkrUiPassPayload ui = {
+      .draw_list =
+          {
+              .vertices = vertices,
+              .vertex_count = ArrayCount(vertices),
+              .indices = indices,
+              .index_count = ArrayCount(indices),
+              .batches = &batch,
+              .batch_count = 1u,
+          },
+  };
+  VkrRenderPacket packet = {
+      .packet_version = VKR_RENDER_PACKET_VERSION,
+      .frame = {.window_width = 100u, .window_height = 50u},
+      .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE},
+      .ui = &ui,
+  };
+  VkrValidationError validation = {0};
+  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+         VKR_RENDERER_ERROR_NONE);
+
+  indices[5] = 4u;
+  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+         VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
+  assert(strcmp(validation.field_path, "packet.ui.draw_list.indices") == 0);
+  indices[5] = 0u;
+
+  batch.scissor_rect_px.width = 101.0f;
+  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+         VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
+  assert(strcmp(validation.field_path,
+                "packet.ui.draw_list.batches.scissor_rect_px") == 0);
+  batch.scissor_rect_px.width = 100.0f;
+
+  batch.mode = VKR_UI_DRAW_MODE_MTSDF_TEXT;
+  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+         VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
+  assert(strcmp(validation.field_path, "packet.ui.draw_list.batches.texture") ==
+         0);
+}
+
 static VkrRendererError test_packet_cancel_success(void *state) {
   RendererFrontend *renderer = state;
   renderer->frame_active = false_v;
@@ -339,6 +393,7 @@ bool32_t run_visibility_tests(void) {
   test_packet_independent_transmission_stream();
   test_packet_borrowed_array_validation();
   test_packet_text_geometry_validation();
+  test_packet_ui_stream_validation();
   test_packet_rejection_preserves_cancel_failure();
   test_alpha_routing();
   test_gpu_state_buckets();
