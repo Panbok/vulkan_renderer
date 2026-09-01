@@ -33,7 +33,12 @@ esac
   echo "Using build directory: ${BUILD_DIR}"
   cmake -S . -B "${BUILD_DIR}" -U CMAKE_TOOLCHAIN_FILE -DCMAKE_BUILD_TYPE:STRING="${BUILD_TYPE}" -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE ${GENERATOR} ${COMPILERS}
 
-  BUILD_TARGETS="vulkan_renderer vkr_harness vkr_mesh_cooker"
+  BUILD_TARGETS="vulkan_renderer vkr_harness vkr_mesh_cooker vkr_font_cooker"
   cmake --build "./${BUILD_DIR}" --target $BUILD_TARGETS --config "${BUILD_TYPE}"
+  FONT_COOKER_BIN="./${BUILD_DIR}/tools/vkr_font_cooker"
+  if [ ! -x "${FONT_COOKER_BIN}" ]; then
+    FONT_COOKER_BIN="./${BUILD_DIR}/tools/${BUILD_TYPE}/vkr_font_cooker"
+  fi
+  VKR_FONT_COOKER_BIN="${FONT_COOKER_BIN}" ./tools/cook_vkr_fonts.sh
   ./tools/pack_vkt_textures.sh
 )

@@ -11,6 +11,7 @@ build_min_size_rel
 build_test
 build_lib
 build_vkt_packer
+build_font_cooker
 build_novcpkg
 # Runtime textures stay local except for explicitly committed source assets.
 assets/textures/*
@@ -20,6 +21,7 @@ assets/textures/*
 assets/models/*
 !assets/models/*.vkr.json
 assets/meters
+assets/fonts/*.vkfa
 assets/materials
 assets/scenes/*
 !assets/scenes/bistro.scene.json

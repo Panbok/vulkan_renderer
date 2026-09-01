@@ -13,9 +13,9 @@ static bool8_t vkr_harness_scene_path_below(const char *root,
 
 static bool8_t vkr_harness_scene_asset_extension(const char *path) {
   static const char *extensions[] = {
-      ".json", ".gltf", ".glb",     ".bin", ".obj", ".mtl", ".mt",
-      ".png",  ".jpg",  ".jpeg",    ".bmp", ".tga", ".hdr", ".ktx",
-      ".ktx2", ".vkt",  ".fontcfg", ".ttf", ".ttc", ".fnt", ".vkf",
+      ".json",    ".gltf", ".glb", ".bin", ".obj", ".mtl",  ".mt",   ".png",
+      ".jpg",     ".jpeg", ".bmp", ".tga", ".hdr", ".ktx",  ".ktx2", ".vkt",
+      ".fontcfg", ".ttf",  ".ttc", ".fnt", ".vkf", ".vkfa",
   };
   uint64_t length = 0u;
   while (path[length] && path[length] != '?' && path[length] != '#') {

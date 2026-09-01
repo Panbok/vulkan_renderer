@@ -95,13 +95,33 @@ bool8_t vkr_harness_case_fingerprints_with_scene_digest(
       !string_n_equals(scene_content_digest, "sha256:", 7u) ||
       string_length(scene_content_digest) != VKR_HARNESS_DIGEST_MAX - 1u ||
       !out_environment || !out_workload || !out_policy ||
-      environment_field_count > VKR_HARNESS_MAX_FINGERPRINT_FIELDS) {
+      environment_field_count > VKR_HARNESS_MAX_FINGERPRINT_FIELDS ||
+      (environment_field_count > 0u && !environment_fields)) {
     vkr_harness_error_set(out_error, "fingerprint.input", "$.comparison",
                           "Fingerprint inputs are invalid");
     return false_v;
   }
-  if (!vkr_harness_fingerprint(environment_fields, environment_field_count,
-                               out_environment, out_error)) {
+  VkrHarnessFingerprintField
+      effective_environment[VKR_HARNESS_MAX_FINGERPRINT_FIELDS];
+  const VkrHarnessFingerprintField *environment = environment_fields;
+  uint32_t environment_count = environment_field_count;
+  if (case_manifest->target != VKR_HARNESS_TARGET_OFFSCREEN) {
+    if (environment_field_count > 0u)
+      MemCopy(effective_environment, environment_fields,
+              sizeof(*effective_environment) * environment_field_count);
+    if (!vkr_harness_add_field(effective_environment, &environment_count,
+                               "window.content_scale", "%.9g",
+                               case_manifest->content_scale)) {
+      vkr_harness_error_set(
+          out_error, "fingerprint.field_limit", "$.comparison",
+          "Effective environment exceeds the fingerprint field count or "
+          "field capacity");
+      return false_v;
+    }
+    environment = effective_environment;
+  }
+  if (!vkr_harness_fingerprint(environment, environment_count, out_environment,
+                               out_error)) {
     return false_v;
   }
 
@@ -151,6 +171,9 @@ bool8_t vkr_harness_case_fingerprints_with_scene_digest(
   ADD("case.frames", "%u,%u", case_manifest->warmup_frames,
       case_manifest->measure_frames);
   ADD("case.resolution", "%u,%u", case_manifest->width, case_manifest->height);
+  if (case_manifest->target == VKR_HARNESS_TARGET_OFFSCREEN) {
+    ADD("case.content_scale", "%.9g", case_manifest->content_scale);
+  }
   if (case_manifest->resize_round_trip) {
     ADD("case.resize_round_trip", "%u,%u", case_manifest->resize_width,
         case_manifest->resize_height);

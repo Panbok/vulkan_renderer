@@ -45,9 +45,69 @@ if %errorlevel% neq 0 (
 )
 
 rem Build only the test target
-cmake --build ./build_test --target vulkan_renderer_tester --config Debug
+cmake --build ./build_test --target vulkan_renderer_tester vkr_font_cooker --config Debug
 if %errorlevel% neq 0 (
     echo CMake build failed for vulkan_renderer_tester.
+    popd
+    exit /b 1
+)
+
+set "FONT_COOKER_BIN=%CD%\build_test\tools\vkr_font_cooker.exe"
+if not exist "!FONT_COOKER_BIN!" set "FONT_COOKER_BIN=%CD%\build_test\tools\Debug\vkr_font_cooker.exe"
+"!FONT_COOKER_BIN!" --identity-self-test
+if errorlevel 1 (
+    echo Font cooker identity self-test failed.
+    popd
+    exit /b 1
+)
+set "FONT_COOK_TEST_DIR=%TEMP%\vkr_font_cooker_!RANDOM!_!RANDOM!"
+mkdir "!FONT_COOK_TEST_DIR!"
+if errorlevel 1 (
+    echo Unable to create font cooker test directory.
+    popd
+    exit /b 1
+)
+"!FONT_COOKER_BIN!" --config assets\fonts\UbuntuMono-cooked.fontcfg --output "!FONT_COOK_TEST_DIR!\first.vkfa" --force
+if errorlevel 1 (
+    rmdir /s /q "!FONT_COOK_TEST_DIR!"
+    echo First deterministic font cook failed.
+    popd
+    exit /b 1
+)
+"!FONT_COOKER_BIN!" --config assets\fonts\UbuntuMono-cooked.fontcfg --output "!FONT_COOK_TEST_DIR!\second.vkfa" --force
+if errorlevel 1 (
+    rmdir /s /q "!FONT_COOK_TEST_DIR!"
+    echo Second deterministic font cook failed.
+    popd
+    exit /b 1
+)
+fc /b "!FONT_COOK_TEST_DIR!\first.vkfa" "!FONT_COOK_TEST_DIR!\second.vkfa" >nul
+if errorlevel 1 (
+    rmdir /s /q "!FONT_COOK_TEST_DIR!"
+    echo Font cooker produced non-deterministic artifacts.
+    popd
+    exit /b 1
+)
+"!FONT_COOKER_BIN!" --config assets\fonts\UbuntuMono-cooked.fontcfg --output "!FONT_COOK_TEST_DIR!\second.vkfa" > "!FONT_COOK_TEST_DIR!\skip.txt"
+if errorlevel 1 (
+    rmdir /s /q "!FONT_COOK_TEST_DIR!"
+    echo Font cooker unchanged-artifact probe failed.
+    popd
+    exit /b 1
+)
+type "!FONT_COOK_TEST_DIR!\skip.txt"
+findstr /B /C:"status=skipped " "!FONT_COOK_TEST_DIR!\skip.txt" >nul
+if errorlevel 1 (
+    rmdir /s /q "!FONT_COOK_TEST_DIR!"
+    echo Font cooker did not skip an unchanged artifact.
+    popd
+    exit /b 1
+)
+rmdir /s /q "!FONT_COOK_TEST_DIR!"
+set "VKR_FONT_COOKER_BIN=!FONT_COOKER_BIN!"
+call "%~dp0tools\cook_vkr_fonts.bat"
+if errorlevel 1 (
+    echo Font cooking failed.
     popd
     exit /b 1
 )

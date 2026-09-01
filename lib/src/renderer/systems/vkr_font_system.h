@@ -56,6 +56,7 @@ typedef struct VkrFontConfig {
   String8 faces[VKR_FONT_CONFIG_MAX_FACES]; // Face aliases
   uint32_t face_count;                      // Number of faces
   uint32_t size;                            // System font size override
+  bool8_t cooked_mtsdf;                     // Uses the single-file .vkfa loader
   bool8_t is_valid;                         // Parsing success flag
 } VkrFontConfig;
 

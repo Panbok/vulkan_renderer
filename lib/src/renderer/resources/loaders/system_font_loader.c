@@ -468,31 +468,6 @@ vkr_internal bool8_t vkr_system_font_build_result(
     out_font->atlas_pages.data[0] = atlas;
   }
 
-  uint64_t pixel_count =
-      (uint64_t)state->atlas_width * (uint64_t)state->atlas_height;
-  uint64_t rgba_size = pixel_count * VKR_TEXTURE_RGBA_CHANNELS;
-  uint8_t *cpu_rgba = vkr_allocator_alloc(state->load_allocator, rgba_size,
-                                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  if (cpu_rgba) {
-    for (uint32_t y = 0; y < state->atlas_height; ++y) {
-      uint32_t src_row = y * state->atlas_width;
-      uint32_t dst_row = (state->atlas_height - 1 - y) * state->atlas_width;
-      for (uint32_t x = 0; x < state->atlas_width; ++x) {
-        uint8_t alpha = state->atlas_bitmap[src_row + x];
-        uint64_t idx = ((uint64_t)dst_row + x) * VKR_TEXTURE_RGBA_CHANNELS;
-        cpu_rgba[idx + 0] = 255;
-        cpu_rgba[idx + 1] = 255;
-        cpu_rgba[idx + 2] = 255;
-        cpu_rgba[idx + 3] = alpha;
-      }
-    }
-    out_font->atlas_cpu_data = cpu_rgba;
-    out_font->atlas_cpu_size = rgba_size;
-    out_font->atlas_cpu_channels = VKR_TEXTURE_RGBA_CHANNELS;
-  } else {
-    log_warn("SystemFontLoader: failed to allocate CPU atlas copy");
-  }
-
   return true_v;
 }
 

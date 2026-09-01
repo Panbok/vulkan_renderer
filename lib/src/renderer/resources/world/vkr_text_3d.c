@@ -11,54 +11,6 @@
 #define VKR_TEXT_3D_VERTEX_GROWTH_COUNT 64
 #define VKR_TEXT_3D_INDEX_GROWTH_COUNT 96
 
-vkr_internal bool8_t vkr_text_3d_codepoint_key(char *buffer,
-                                               uint64_t buffer_size,
-                                               uint32_t codepoint) {
-  if (buffer == NULL || buffer_size == 0) {
-    return false_v;
-  }
-
-  int32_t written = snprintf(buffer, buffer_size, "%u", codepoint);
-  if (written <= 0 || (uint64_t)written >= buffer_size) {
-    buffer[0] = '\0';
-    return false_v;
-  }
-
-  return true_v;
-}
-
-vkr_internal const VkrFontGlyph *vkr_text_3d_find_glyph(const VkrFont *font,
-                                                        uint32_t codepoint,
-                                                        uint32_t *out_index) {
-  if (font == NULL || font->glyphs.data == NULL) {
-    return NULL;
-  }
-
-  if (font->glyph_indices.entries != NULL && font->glyph_indices.size > 0) {
-    char key[16];
-    if (vkr_text_3d_codepoint_key(key, sizeof(key), codepoint)) {
-      uint32_t *index = vkr_hash_table_get_uint32_t(&font->glyph_indices, key);
-      if (index && *index < font->glyphs.length) {
-        if (out_index) {
-          *out_index = *index;
-        }
-        return &font->glyphs.data[*index];
-      }
-    }
-  }
-
-  for (uint64_t i = 0; i < font->glyphs.length; ++i) {
-    if (font->glyphs.data[i].codepoint == codepoint) {
-      if (out_index) {
-        *out_index = (uint32_t)i;
-      }
-      return &font->glyphs.data[i];
-    }
-  }
-
-  return NULL;
-}
-
 vkr_internal String8 vkr_text_3d_copy_text(VkrAllocator *allocator,
                                            String8 text) {
   if (!allocator || !text.str || text.length == 0) {
@@ -98,9 +50,14 @@ vkr_internal void vkr_text_3d_compute_layout(VkrText3D *text_3d,
 
   text_3d->bounds.size = text_3d->layout.bounds;
 
-  float32_t scale = font_size / (float32_t)font->size;
-  text_3d->bounds.ascent = (float32_t)font->ascent * scale;
-  text_3d->bounds.descent = (float32_t)font->descent * scale;
+  if (font->glyphs_by_id.data != NULL) {
+    text_3d->bounds.ascent = font->em_ascender * font_size;
+    text_3d->bounds.descent = -font->em_descender * font_size;
+  } else {
+    const float32_t scale = font_size / (float32_t)font->size;
+    text_3d->bounds.ascent = (float32_t)font->ascent * scale;
+    text_3d->bounds.descent = (float32_t)font->descent * scale;
+  }
 
   text_3d->layout_dirty = false_v;
 }
@@ -124,39 +81,59 @@ typedef struct VkrText3DContentBounds {
 } VkrText3DContentBounds;
 
 vkr_internal VkrText3DGlyphQuad vkr_text_3d_compute_glyph_quad(
-    const VkrFont *font, const VkrFontGlyph *font_glyph, uint32_t glyph_index,
-    const VkrTextGlyph *layout_glyph, float32_t scale, float32_t font_size,
-    float32_t line_top, float32_t layout_bottom) {
+    const VkrFont *font, const VkrTextGlyph *layout_glyph, float32_t scale,
+    float32_t font_size, float32_t layout_bottom) {
   VkrText3DGlyphQuad result = {0};
-  if (!font || !font_glyph || !layout_glyph) {
+  if (!font || !layout_glyph || layout_glyph->glyph_index == VKR_INVALID_ID) {
     return result;
   }
 
-  float32_t glyph_w = (float32_t)font_glyph->width * scale;
-  float32_t glyph_h = (float32_t)font_glyph->height * scale;
-
-  if (font->type == VKR_FONT_TYPE_MTSDF && font->mtsdf_glyphs.data &&
-      glyph_index < font->mtsdf_glyphs.length) {
-    const VkrMtsdfGlyph *mtsdf_glyph = &font->mtsdf_glyphs.data[glyph_index];
-    if (mtsdf_glyph->has_geometry) {
+  float32_t glyph_w = 0.0f;
+  float32_t glyph_h = 0.0f;
+  float32_t x0 = 0.0f;
+  float32_t y0_raw = 0.0f;
+  if (font->glyphs_by_id.data != NULL) {
+    if (layout_glyph->glyph_index >= font->glyphs_by_id.length) {
+      return result;
+    }
+    const VkrFontGlyphId *glyph =
+        &font->glyphs_by_id.data[layout_glyph->glyph_index];
+    if (!glyph->has_geometry) {
+      return result;
+    }
+    glyph_w = (glyph->plane_right - glyph->plane_left) * font_size;
+    glyph_h = (glyph->plane_top - glyph->plane_bottom) * font_size;
+    x0 = layout_glyph->position.x + glyph->plane_left * font_size;
+    y0_raw = layout_glyph->position.y - glyph->plane_top * font_size;
+  } else {
+    if (layout_glyph->glyph_index >= font->glyphs.length) {
+      return result;
+    }
+    const VkrFontGlyph *font_glyph =
+        &font->glyphs.data[layout_glyph->glyph_index];
+    glyph_w = (float32_t)font_glyph->width * scale;
+    glyph_h = (float32_t)font_glyph->height * scale;
+    if (font->type == VKR_FONT_TYPE_MTSDF && font->mtsdf_glyphs.data &&
+        layout_glyph->glyph_index < font->mtsdf_glyphs.length) {
+      const VkrMtsdfGlyph *mtsdf_glyph =
+          &font->mtsdf_glyphs.data[layout_glyph->glyph_index];
+      if (!mtsdf_glyph->has_geometry) {
+        return result;
+      }
       glyph_w =
           (mtsdf_glyph->plane_right - mtsdf_glyph->plane_left) * font_size;
       glyph_h =
           (mtsdf_glyph->plane_top - mtsdf_glyph->plane_bottom) * font_size;
-    } else {
-      // This happens for e.g. whitespace in some MTSDF exports.
-      glyph_w = 0.0f;
-      glyph_h = 0.0f;
     }
+    x0 = layout_glyph->position.x + (float32_t)font_glyph->x_offset * scale;
+    const float32_t line_top = layout_glyph->position.y - font->ascent * scale;
+    y0_raw = line_top + (float32_t)font_glyph->y_offset * scale;
   }
 
   if (glyph_w <= 0.0f || glyph_h <= 0.0f) {
     return result;
   }
 
-  float32_t x0 =
-      layout_glyph->position.x + (float32_t)font_glyph->x_offset * scale;
-  float32_t y0_raw = line_top + (float32_t)font_glyph->y_offset * scale;
   float32_t x1 = x0 + glyph_w;
   float32_t y1_raw = y0_raw + glyph_h;
 
@@ -184,17 +161,8 @@ vkr_internal VkrText3DContentBounds vkr_text_3d_compute_content_bounds(
 
   for (uint32_t i = 0; i < glyph_count; ++i) {
     const VkrTextGlyph *layout_glyph = &text_3d->layout.glyphs.data[i];
-    uint32_t glyph_index = 0;
-    const VkrFontGlyph *font_glyph =
-        vkr_text_3d_find_glyph(font, layout_glyph->codepoint, &glyph_index);
-    if (!font_glyph) {
-      continue;
-    }
-
-    float32_t line_top = layout_glyph->position.y - text_3d->bounds.ascent;
     VkrText3DGlyphQuad quad = vkr_text_3d_compute_glyph_quad(
-        font, font_glyph, glyph_index, layout_glyph, scale, font_size, line_top,
-        layout_bottom);
+        font, layout_glyph, scale, font_size, layout_bottom);
     if (!quad.valid) {
       continue;
     }
@@ -274,20 +242,14 @@ vkr_internal void vkr_text_3d_generate_vertices(
   uint32_t vertex_idx = 0;
   uint32_t index_idx = 0;
   Vec4 color = text_3d->linear_color;
+  const bool8_t exact_mtsdf_bounds = font->type == VKR_FONT_TYPE_MTSDF;
+  const float32_t inset_px =
+      vkr_text_uv_inset(text_3d->uv_inset_px, exact_mtsdf_bounds);
 
   for (uint32_t i = 0; i < glyph_count; ++i) {
     const VkrTextGlyph *layout_glyph = &text_3d->layout.glyphs.data[i];
-    uint32_t glyph_index = 0;
-    const VkrFontGlyph *font_glyph =
-        vkr_text_3d_find_glyph(font, layout_glyph->codepoint, &glyph_index);
-    if (!font_glyph) {
-      continue;
-    }
-
-    float32_t line_top = layout_glyph->position.y - text_3d->bounds.ascent;
     VkrText3DGlyphQuad quad = vkr_text_3d_compute_glyph_quad(
-        font, font_glyph, glyph_index, layout_glyph, scale, font_size, line_top,
-        layout_bottom);
+        font, layout_glyph, scale, font_size, layout_bottom);
     if (!quad.valid) {
       continue;
     }
@@ -297,23 +259,50 @@ vkr_internal void vkr_text_3d_generate_vertices(
     float32_t y0 = quad.y0 + offset_y;
     float32_t y1 = quad.y1 + offset_y;
 
-    float32_t u0_raw = (float32_t)font_glyph->x * inv_atlas_w;
-    float32_t u1_raw =
-        (float32_t)(font_glyph->x + font_glyph->width) * inv_atlas_w;
-    float32_t v0_raw =
-        1.0f - (float32_t)(font_glyph->y + font_glyph->height) * inv_atlas_h;
-    float32_t v1_raw = 1.0f - (float32_t)font_glyph->y * inv_atlas_h;
-
-    float32_t inset_px = text_3d->uv_inset_px;
-    if (inset_px < 0.0f) {
-      inset_px = 0.0f;
+    float32_t u0_raw = 0.0f;
+    float32_t u1_raw = 0.0f;
+    float32_t v0_raw = 0.0f;
+    float32_t v1_raw = 0.0f;
+    float32_t atlas_glyph_w = 0.0f;
+    float32_t atlas_glyph_h = 0.0f;
+    if (font->glyphs_by_id.data != NULL) {
+      const VkrFontGlyphId *glyph =
+          &font->glyphs_by_id.data[layout_glyph->glyph_index];
+      u0_raw = glyph->uv_left;
+      u1_raw = glyph->uv_right;
+      v0_raw = glyph->uv_bottom;
+      v1_raw = glyph->uv_top;
+      atlas_glyph_w = (u1_raw - u0_raw) / inv_atlas_w;
+      atlas_glyph_h = (v1_raw - v0_raw) / inv_atlas_h;
+    } else {
+      const VkrFontGlyph *font_glyph =
+          &font->glyphs.data[layout_glyph->glyph_index];
+      u0_raw = (float32_t)font_glyph->x * inv_atlas_w;
+      u1_raw = (float32_t)(font_glyph->x + font_glyph->width) * inv_atlas_w;
+      v0_raw =
+          1.0f - (float32_t)(font_glyph->y + font_glyph->height) * inv_atlas_h;
+      v1_raw = 1.0f - (float32_t)font_glyph->y * inv_atlas_h;
+      atlas_glyph_w = (float32_t)font_glyph->width;
+      atlas_glyph_h = (float32_t)font_glyph->height;
+      if (font->type == VKR_FONT_TYPE_MTSDF && font->mtsdf_glyphs.data &&
+          layout_glyph->glyph_index < font->mtsdf_glyphs.length) {
+        const VkrMtsdfGlyph *mtsdf_glyph =
+            &font->mtsdf_glyphs.data[layout_glyph->glyph_index];
+        u0_raw = mtsdf_glyph->uv_left;
+        u1_raw = mtsdf_glyph->uv_right;
+        v0_raw = mtsdf_glyph->uv_bottom;
+        v1_raw = mtsdf_glyph->uv_top;
+        atlas_glyph_w = mtsdf_glyph->atlas_right - mtsdf_glyph->atlas_left;
+        atlas_glyph_h = mtsdf_glyph->atlas_top - mtsdf_glyph->atlas_bottom;
+      }
     }
+
     float32_t u_inset = inset_px * inv_atlas_w;
     float32_t v_inset = inset_px * inv_atlas_h;
-    if (font_glyph->width <= 1) {
+    if (atlas_glyph_w <= 1.0f) {
       u_inset = 0.0f;
     }
-    if (font_glyph->height <= 1) {
+    if (atlas_glyph_h <= 1.0f) {
       v_inset = 0.0f;
     }
 
@@ -369,6 +358,11 @@ vkr_internal bool8_t vkr_text_3d_generate_geometry(VkrText3D *text_3d,
   assert_log(text_3d != NULL, "Text3D instance is NULL");
   assert_log(font != NULL, "Font is NULL");
 
+  if (text_3d->layout.glyphs.length > UINT32_MAX) {
+    log_error("World text glyph count exceeds the supported range: %llu",
+              text_3d->layout.glyphs.length);
+    return false_v;
+  }
   uint32_t glyph_count = (uint32_t)text_3d->layout.glyphs.length;
   if (glyph_count == 0) {
     text_3d->quad_count = 0;
@@ -379,12 +373,19 @@ vkr_internal bool8_t vkr_text_3d_generate_geometry(VkrText3D *text_3d,
     return true_v;
   }
 
+  if (glyph_count > UINT32_MAX / VKR_TEXT_3D_QUAD_COUNT ||
+      glyph_count > UINT32_MAX / VKR_TEXT_3D_INDEX_COUNT) {
+    log_error("World text glyph count is too large for shaped geometry: %u",
+              glyph_count);
+    return false_v;
+  }
   uint32_t required_vertex_count = glyph_count * VKR_TEXT_3D_QUAD_COUNT;
   uint32_t required_index_count = glyph_count * VKR_TEXT_3D_INDEX_COUNT;
 
   if (required_vertex_count > text_3d->vertex_capacity) {
-    const uint32_t capacity =
-        required_vertex_count + VKR_TEXT_3D_VERTEX_GROWTH_COUNT;
+    const uint32_t growth = Min(VKR_TEXT_3D_VERTEX_GROWTH_COUNT,
+                                UINT32_MAX - required_vertex_count);
+    const uint32_t capacity = required_vertex_count + growth;
     VkrTextVertex *vertices = vkr_allocator_realloc(
         text_3d->allocator, text_3d->vertices,
         (uint64_t)text_3d->vertex_capacity * sizeof(VkrTextVertex),
@@ -396,8 +397,9 @@ vkr_internal bool8_t vkr_text_3d_generate_geometry(VkrText3D *text_3d,
     text_3d->vertex_capacity = capacity;
   }
   if (required_index_count > text_3d->index_capacity) {
-    const uint32_t capacity =
-        required_index_count + VKR_TEXT_3D_INDEX_GROWTH_COUNT;
+    const uint32_t growth =
+        Min(VKR_TEXT_3D_INDEX_GROWTH_COUNT, UINT32_MAX - required_index_count);
+    const uint32_t capacity = required_index_count + growth;
     uint32_t *indices = vkr_allocator_realloc(
         text_3d->allocator, text_3d->indices,
         (uint64_t)text_3d->index_capacity * sizeof(uint32_t),

@@ -726,7 +726,7 @@ void vkr_scene_release_instance(VkrScene *scene,
 typedef struct VkrSceneText3DConfig {
   String8 text;            // Text content (passed through to world resources)
   VkrFontHandle font;      // Font handle (or invalid for default)
-  float32_t font_size;     // Font size in points (0 = font's native)
+  float32_t font_size;     // Text-target pixels per em (0 = font default)
   Vec4 color;              // Text color RGBA
   uint32_t texture_width;  // Texture width (0 = auto)
   uint32_t texture_height; // Texture height (0 = auto)

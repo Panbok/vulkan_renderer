@@ -63,6 +63,8 @@ int main(int argc, char **argv) {
   printf("\n"); // Add spacing
   all_passed &= run_text_tests();
   printf("\n"); // Add spacing
+  all_passed &= run_font_cooked_tests();
+  printf("\n"); // Add spacing
   all_passed &= run_texture_format_tests();
   printf("\n"); // Add spacing
   all_passed &= run_texture_hdr_tests();

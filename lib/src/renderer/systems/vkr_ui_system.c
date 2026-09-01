@@ -14,12 +14,9 @@
 #include "renderer/systems/vkr_picking_ids.h"
 #include "renderer/vkr_render_packet.h"
 
-#define VKR_UI_SYSTEM_MAX_TEXTS 16
+#include <math.h>
 
-enum {
-  VKR_UI_DESIGN_WIDTH = 800u,
-  VKR_UI_DESIGN_HEIGHT = 600u,
-};
+#define VKR_UI_SYSTEM_MAX_TEXTS 16
 
 vkr_internal bool8_t vkr_ui_system_get_layout_size(RendererFrontend *rf,
                                                    VkrUiSystem *system,
@@ -49,25 +46,46 @@ vkr_internal bool8_t vkr_ui_system_get_layout_size(RendererFrontend *rf,
   return true_v;
 }
 
-vkr_internal float32_t vkr_ui_system_text_content_scale(uint32_t width,
-                                                        uint32_t height) {
-  if (!width || !height) {
-    return 1.0f;
+vkr_internal VkrWindowContentScale
+vkr_ui_system_get_content_scale(RendererFrontend *rf, VkrUiSystem *system) {
+  if (system->offscreen_enabled) {
+    return (VkrWindowContentScale){
+        .value = system->offscreen_content_scale,
+        .revision = system->offscreen_content_scale_revision,
+    };
   }
-  return Min((float32_t)width / (float32_t)VKR_UI_DESIGN_WIDTH,
-             (float32_t)height / (float32_t)VKR_UI_DESIGN_HEIGHT);
+  if (rf->window) {
+    return vkr_window_get_content_scale(rf->window);
+  }
+  return (VkrWindowContentScale){.value = 1.0f, .revision = 1u};
 }
 
-vkr_internal void vkr_ui_system_update_text_content_scale(VkrUiSystem *system,
-                                                          uint32_t width,
-                                                          uint32_t height) {
-#if defined(PLATFORM_WINDOWS)
-  system->text_content_scale = vkr_ui_system_text_content_scale(width, height);
-#else
-  (void)width;
-  (void)height;
-  system->text_content_scale = 1.0f;
-#endif
+vkr_internal bool8_t vkr_ui_system_update_text_content_scale(
+    VkrUiSystem *system, VkrWindowContentScale snapshot) {
+  if (!isfinite(snapshot.value) || snapshot.value <= 0.0f) {
+    snapshot = (VkrWindowContentScale){.value = 1.0f, .revision = 0u};
+  }
+  if (system->text_content_scale == snapshot.value &&
+      system->content_scale_revision == snapshot.revision) {
+    return false_v;
+  }
+
+  const bool8_t value_changed = system->text_content_scale != snapshot.value;
+  system->text_content_scale = snapshot.value;
+  system->content_scale_revision = snapshot.revision;
+  for (uint64_t i = 0; i < system->text_slots.length; ++i) {
+    VkrUiTextSlot *slot = &system->text_slots.data[i];
+    if (!slot->active) {
+      continue;
+    }
+    if (value_changed) {
+      vkr_ui_text_set_content_scale(&slot->text, snapshot.value);
+    } else {
+      slot->text.layout_dirty = true_v;
+      slot->text.buffers_dirty = true_v;
+    }
+  }
+  return true_v;
 }
 
 vkr_internal void vkr_ui_system_position_slot(VkrUiTextSlot *slot,
@@ -89,13 +107,17 @@ vkr_internal void vkr_ui_system_refresh_layout(RendererFrontend *rf,
     return;
   }
 
-  if (layout_width == prev_width && layout_height == prev_height) {
+  const VkrWindowContentScale content_scale =
+      vkr_ui_system_get_content_scale(rf, system);
+  const bool8_t scale_changed =
+      vkr_ui_system_update_text_content_scale(system, content_scale);
+  if (layout_width == prev_width && layout_height == prev_height &&
+      !scale_changed) {
     return;
   }
 
   system->screen_width = layout_width;
   system->screen_height = layout_height;
-  vkr_ui_system_update_text_content_scale(system, layout_width, layout_height);
 
   for (uint64_t i = 0; i < system->text_slots.length; ++i) {
     VkrUiTextSlot *slot = &system->text_slots.data[i];
@@ -115,30 +137,30 @@ vkr_internal void vkr_ui_system_position_slot(VkrUiTextSlot *slot,
   }
 
   VkrTextBounds bounds = vkr_ui_text_get_bounds(&slot->text);
-  const float32_t scaled_width = bounds.size.x * content_scale;
-  const float32_t scaled_height = bounds.size.y * content_scale;
-  float32_t x = slot->padding.x;
-  float32_t y = slot->padding.y;
+  const float32_t scaled_width = bounds.size.x;
+  const float32_t scaled_height = bounds.size.y;
+  const Vec2 device_padding = vec2_scale(slot->padding, content_scale);
+  float32_t x = device_padding.x;
+  float32_t y = device_padding.y;
 
   switch (slot->anchor) {
   case VKR_UI_TEXT_ANCHOR_TOP_RIGHT:
-    x = (float32_t)width - scaled_width - slot->padding.x;
-    y = (float32_t)height - scaled_height - slot->padding.y;
+    x = (float32_t)width - scaled_width - device_padding.x;
+    y = (float32_t)height - scaled_height - device_padding.y;
     break;
   case VKR_UI_TEXT_ANCHOR_BOTTOM_LEFT:
     break;
   case VKR_UI_TEXT_ANCHOR_BOTTOM_RIGHT:
-    x = (float32_t)width - scaled_width - slot->padding.x;
+    x = (float32_t)width - scaled_width - device_padding.x;
     break;
   case VKR_UI_TEXT_ANCHOR_TOP_LEFT:
   default:
-    y = (float32_t)height - scaled_height - slot->padding.y;
+    y = (float32_t)height - scaled_height - device_padding.y;
     break;
   }
 
   vkr_transform_set_position(&slot->text.transform, vec3_new(x, y, 0.0f));
-  vkr_transform_set_scale(&slot->text.transform,
-                          vec3_new(content_scale, content_scale, 1.0f));
+  vkr_transform_set_scale(&slot->text.transform, vec3_one());
 }
 
 vkr_internal bool8_t vkr_ui_system_ensure_slot(VkrUiSystem *system,
@@ -203,8 +225,12 @@ bool8_t vkr_ui_system_init(RendererFrontend *rf, VkrUiSystem *system) {
           sizeof(VkrUiTextSlot) * (uint64_t)system->text_slots.length);
   system->screen_width = rf->last_window_width;
   system->screen_height = rf->last_window_height;
-  vkr_ui_system_update_text_content_scale(system, system->screen_width,
-                                          system->screen_height);
+  system->offscreen_content_scale = 1.0f;
+  system->offscreen_content_scale_revision = 1u;
+  const VkrWindowContentScale content_scale =
+      vkr_ui_system_get_content_scale(rf, system);
+  system->text_content_scale = content_scale.value;
+  system->content_scale_revision = content_scale.revision;
   system->initialized = true_v;
   return true_v;
 }
@@ -246,7 +272,8 @@ void vkr_ui_system_resize(RendererFrontend *rf, VkrUiSystem *system,
 
   system->screen_width = layout_width;
   system->screen_height = layout_height;
-  vkr_ui_system_update_text_content_scale(system, layout_width, layout_height);
+  (void)vkr_ui_system_update_text_content_scale(
+      system, vkr_ui_system_get_content_scale(rf, system));
 
   for (uint64_t i = 0; i < system->text_slots.length; ++i) {
     VkrUiTextSlot *slot = &system->text_slots.data[i];
@@ -268,6 +295,24 @@ void vkr_ui_system_set_offscreen_size(RendererFrontend *rf, VkrUiSystem *system,
   system->offscreen_enabled = enabled;
   system->offscreen_width = width;
   system->offscreen_height = height;
+  vkr_ui_system_refresh_layout(rf, system);
+}
+
+void vkr_ui_system_set_offscreen_content_scale(RendererFrontend *rf,
+                                               VkrUiSystem *system,
+                                               float32_t content_scale) {
+  if (!rf || !system || !isfinite(content_scale) || content_scale <= 0.0f ||
+      system->offscreen_content_scale == content_scale) {
+    return;
+  }
+  system->offscreen_content_scale = content_scale;
+  system->offscreen_content_scale_revision++;
+  if (system->offscreen_content_scale_revision == 0u) {
+    system->offscreen_content_scale_revision = 1u;
+  }
+  if (system->offscreen_enabled) {
+    vkr_ui_system_refresh_layout(rf, system);
+  }
 }
 
 bool8_t vkr_ui_system_text_create(RendererFrontend *rf, VkrUiSystem *system,
@@ -306,6 +351,7 @@ bool8_t vkr_ui_system_text_create(RendererFrontend *rf, VkrUiSystem *system,
   slot->active = true_v;
   slot->anchor = payload->anchor;
   slot->padding = payload->padding;
+  vkr_ui_text_set_content_scale(&slot->text, system->text_content_scale);
 
   uint32_t layout_width = 0;
   uint32_t layout_height = 0;
@@ -363,11 +409,9 @@ bool8_t vkr_ui_system_text_destroy(RendererFrontend *rf, VkrUiSystem *system,
   return true_v;
 }
 
-uint32_t vkr_ui_system_prepare_text_draws(RendererFrontend *rf,
-                                          VkrUiSystem *system,
+uint32_t vkr_ui_system_prepare_text_draws(VkrUiSystem *system,
                                           VkrPreparedTextDraw *out_draws,
                                           uint32_t capacity) {
-  vkr_ui_system_refresh_layout(rf, system);
   uint32_t count = 0;
   for (uint64_t i = 0; i < system->text_slots.length; ++i) {
     VkrUiTextSlot *slot = &system->text_slots.data[i];
@@ -382,16 +426,11 @@ uint32_t vkr_ui_system_prepare_text_draws(RendererFrontend *rf,
     if (!font || font->atlas.id == 0 ||
         font->atlas.generation == VKR_INVALID_ID)
       continue;
-    float32_t screen_px_range = 0.0f;
+    Vec2 unit_range = {0};
     uint32_t font_mode = 0;
-    if (font->type == VKR_FONT_TYPE_MTSDF && font->em_size > 0.0f) {
-      float32_t render_size =
-          (slot->text.config.font_size > 0.0f ? slot->text.config.font_size
-                                              : (float32_t)font->size) *
-          system->text_content_scale;
+    if (font->type == VKR_FONT_TYPE_MTSDF) {
       font_mode = 1;
-      screen_px_range = Clamp(
-          font->sdf_distance_range * (render_size / font->em_size), 1.0f, 4.0f);
+      unit_range = font->mtsdf_unit_range;
     }
     out_draws[count++] = (VkrPreparedTextDraw){
         .vertices = slot->text.geometry.vertices,
@@ -401,7 +440,7 @@ uint32_t vkr_ui_system_prepare_text_draws(RendererFrontend *rf,
         .max_index = slot->text.geometry.vertex_count - 1u,
         .atlas = font->atlas,
         .model = vkr_transform_get_world(&slot->text.transform),
-        .screen_px_range = screen_px_range,
+        .unit_range = unit_range,
         .font_mode = font_mode,
         .object_id =
             vkr_picking_encode_id(VKR_PICKING_ID_KIND_UI_TEXT, (uint32_t)i),

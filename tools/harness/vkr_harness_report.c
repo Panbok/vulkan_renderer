@@ -300,6 +300,9 @@ bool8_t vkr_harness_report_write(const char *path,
       report->case_manifest.renderer.render_scale > 0.0f
           ? report->case_manifest.renderer.render_scale
           : 1.0;
+  const float64_t content_scale = report->case_manifest.content_scale > 0.0f
+                                      ? report->case_manifest.content_scale
+                                      : 1.0;
   const uint32_t render_width =
       report->case_manifest.renderer.render_width
           ? report->case_manifest.renderer.render_width
@@ -448,6 +451,7 @@ bool8_t vkr_harness_report_write(const char *path,
       vkr_json_writer_u64(writer, render_width) &&
       vkr_json_writer_u64(writer, render_height) &&
       vkr_json_writer_end_array(writer) &&
+      vkr_harness_json_emit_f64(writer, "content_scale", content_scale) &&
       (!report->case_manifest.resize_round_trip ||
        (vkr_harness_json_emit_name(writer, "resize_round_trip") &&
         vkr_json_writer_begin_array(writer) &&

@@ -790,14 +790,11 @@ uint32_t vkr_world_resources_prepare_text_draws(RendererFrontend *rf,
     if (!font || font->atlas.id == 0 ||
         font->atlas.generation == VKR_INVALID_ID)
       continue;
-    float32_t screen_px_range = 0.0f;
+    Vec2 unit_range = {0};
     uint32_t font_mode = 0;
-    if (font->type == VKR_FONT_TYPE_MTSDF && font->em_size > 0.0f) {
-      const float32_t render_size =
-          text->font_size > 0.0f ? text->font_size : (float32_t)font->size;
+    if (font->type == VKR_FONT_TYPE_MTSDF) {
       font_mode = 1;
-      screen_px_range = Clamp(
-          font->sdf_distance_range * (render_size / font->em_size), 1.0f, 4.0f);
+      unit_range = font->mtsdf_unit_range;
     }
     Mat4 model = vkr_transform_get_world(&text->transform);
     if (text->texture_width > 0 && text->texture_height > 0) {
@@ -814,7 +811,7 @@ uint32_t vkr_world_resources_prepare_text_draws(RendererFrontend *rf,
         .max_index = text->vertex_count - 1u,
         .atlas = font->atlas,
         .model = model,
-        .screen_px_range = screen_px_range,
+        .unit_range = unit_range,
         .font_mode = font_mode,
         .object_id =
             vkr_picking_encode_id(VKR_PICKING_ID_KIND_WORLD_TEXT, (uint32_t)i),

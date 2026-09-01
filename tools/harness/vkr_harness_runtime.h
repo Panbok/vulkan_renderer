@@ -13,8 +13,8 @@
 
 #include "vkr_harness.h"
 
-/** Bumped with VKR_HARNESS_SCHEMA_VERSION; a parent rejects any other magic. */
-#define VKR_HARNESS_SAMPLE_MAGIC "VKRSMP1"
+/** Bumped whenever the raw parent/child sample-header layout changes. */
+#define VKR_HARNESS_SAMPLE_MAGIC "VKRSMP2"
 
 /** Repository-relative root every `profile` run directory is created under. */
 #define VKR_HARNESS_ARTIFACT_ROOT "build/_artifacts/profile"
@@ -47,6 +47,7 @@ typedef struct VkrHarnessSampleFileHeader {
   uint32_t actual_height;
   uint32_t actual_render_width;
   uint32_t actual_render_height;
+  float32_t actual_content_scale;
   uint32_t gpu_vendor_id;
   uint32_t gpu_device_id;
   uint32_t flags;

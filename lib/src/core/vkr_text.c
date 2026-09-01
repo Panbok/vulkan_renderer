@@ -4,6 +4,8 @@
 #include "defines.h"
 #include "memory/vkr_allocator.h"
 
+#include <math.h>
+
 #define VKR_TEXT_DEFAULT_FONT_SIZE 16.0f
 
 /////////////////////
@@ -183,6 +185,24 @@ bool8_t vkr_string8_is_valid_utf8(const String8 *str) {
   return true_v;
 }
 
+Vec2 vkr_text_mtsdf_unit_range(float32_t distance_range, uint32_t atlas_width,
+                               uint32_t atlas_height) {
+  assert_log(isfinite(distance_range) && distance_range > 0.0f,
+             "MTSDF distance range must be finite and positive");
+  assert_log(atlas_width > 0 && atlas_height > 0,
+             "MTSDF atlas extent must be nonzero");
+  return vec2_new(distance_range / (float32_t)atlas_width,
+                  distance_range / (float32_t)atlas_height);
+}
+
+float32_t vkr_text_uv_inset(float32_t configured_inset_px,
+                            bool8_t preserve_exact_bounds) {
+  if (preserve_exact_bounds || configured_inset_px <= 0.0f) {
+    return 0.0f;
+  }
+  return configured_inset_px;
+}
+
 /////////////////////
 // Helpers
 /////////////////////
@@ -214,6 +234,9 @@ vkr_internal float32_t vkr_text_font_scale_for_size(const VkrFont *font,
                                                     float32_t font_size) {
   if (font == NULL) {
     return 1.0f;
+  }
+  if (font->glyphs_by_id.data != NULL && font->codepoint_map.data != NULL) {
+    return font_size;
   }
   float32_t base_size = (float32_t)font->size;
   if (base_size <= 0.0f || font_size <= 0.0f) {
@@ -248,6 +271,24 @@ vkr_internal void vkr_text_compute_metrics(const VkrTextStyle *style,
   }
 
   const VkrFont *font = style->font_data;
+  if (font->glyphs_by_id.data != NULL && font->codepoint_map.data != NULL) {
+    const float32_t ascent = font->em_ascender * font_scale;
+    const float32_t descent = -font->em_descender * font_scale;
+    const float32_t metrics_height = font->em_line_height * font_scale;
+    if (out_ascent) {
+      *out_ascent = ascent;
+    }
+    if (out_descent) {
+      *out_descent = descent;
+    }
+    if (out_line_gap) {
+      *out_line_gap = metrics_height - ascent - descent;
+    }
+    if (out_metrics_height) {
+      *out_metrics_height = metrics_height;
+    }
+    return;
+  }
   float32_t base_ascent = (float32_t)font->ascent;
   float32_t base_descent = (float32_t)font->descent;
   float32_t base_line_height = (float32_t)font->line_height;
@@ -307,8 +348,18 @@ vkr_internal bool8_t vkr_text_codepoint_key(char *buffer, uint64_t buffer_size,
   return true_v;
 }
 
-vkr_internal const VkrFontGlyph *vkr_text_font_find_glyph(const VkrFont *font,
-                                                          uint32_t codepoint) {
+typedef struct VkrTextResolvedGlyph {
+  uint32_t glyph_id;
+  uint32_t glyph_index;
+  float32_t advance;
+  uint8_t page_id;
+  bool8_t cooked;
+  bool8_t valid;
+} VkrTextResolvedGlyph;
+
+vkr_internal const VkrFontGlyph *
+vkr_text_font_find_legacy_glyph(const VkrFont *font, uint32_t codepoint,
+                                uint32_t *out_index) {
   if (font == NULL || font->glyphs.data == NULL) {
     return NULL;
   }
@@ -317,12 +368,18 @@ vkr_internal const VkrFontGlyph *vkr_text_font_find_glyph(const VkrFont *font,
     if (vkr_text_codepoint_key(key, sizeof(key), codepoint)) {
       uint32_t *index = vkr_hash_table_get_uint32_t(&font->glyph_indices, key);
       if (index && *index < font->glyphs.length) {
+        if (out_index) {
+          *out_index = *index;
+        }
         return &font->glyphs.data[*index];
       }
     }
   }
   for (uint64_t i = 0; i < font->glyphs.length; ++i) {
     if (font->glyphs.data[i].codepoint == codepoint) {
+      if (out_index) {
+        *out_index = (uint32_t)i;
+      }
       return &font->glyphs.data[i];
     }
   }
@@ -334,11 +391,75 @@ vkr_internal INLINE uint64_t vkr_text_kerning_pair_key(uint32_t codepoint_0,
   return ((uint64_t)codepoint_0 << 32u) | (uint64_t)codepoint_1;
 }
 
-vkr_internal int32_t vkr_text_font_get_kerning(const VkrFont *font,
-                                               uint32_t prev_codepoint,
-                                               uint32_t codepoint) {
+vkr_internal const VkrFontCodepointMapEntry *
+vkr_text_font_find_cooked_mapping(const VkrFont *font, uint32_t codepoint) {
+  uint64_t first = 0u;
+  uint64_t count = font->codepoint_map.length;
+  while (count != 0u) {
+    const uint64_t step = count / 2u;
+    const uint64_t index = first + step;
+    const VkrFontCodepointMapEntry *candidate =
+        &font->codepoint_map.data[index];
+    if (candidate->codepoint < codepoint) {
+      first = index + 1u;
+      count -= step + 1u;
+    } else if (candidate->codepoint > codepoint) {
+      count = step;
+    } else {
+      return candidate;
+    }
+  }
+  return NULL;
+}
+
+vkr_internal VkrTextResolvedGlyph
+vkr_text_font_resolve_glyph(const VkrFont *font, float32_t font_size,
+                            float32_t font_scale, uint32_t codepoint) {
+  VkrTextResolvedGlyph resolved = {
+      .glyph_index = VKR_INVALID_ID,
+      .advance = VKR_TEXT_DEFAULT_GLYPH_WIDTH(font_size),
+  };
+  if (font == NULL) {
+    return resolved;
+  }
+  if (codepoint == '\t') {
+    resolved.advance = font->tab_x_advance * font_scale;
+    return resolved;
+  }
+  if (font->glyphs_by_id.data != NULL && font->codepoint_map.data != NULL) {
+    const VkrFontCodepointMapEntry *mapping =
+        vkr_text_font_find_cooked_mapping(font, codepoint);
+    const uint32_t glyph_index =
+        mapping ? mapping->glyph_index : font->fallback_glyph_index;
+    if (glyph_index >= font->glyphs_by_id.length) {
+      return resolved;
+    }
+    const VkrFontGlyphId *glyph = &font->glyphs_by_id.data[glyph_index];
+    resolved.glyph_id = glyph->glyph_id;
+    resolved.glyph_index = glyph_index;
+    resolved.advance = glyph->advance * font_scale;
+    resolved.page_id = (uint8_t)glyph->page_index;
+    resolved.cooked = true_v;
+    resolved.valid = true_v;
+    return resolved;
+  }
+  uint32_t glyph_index = 0u;
+  const VkrFontGlyph *glyph =
+      vkr_text_font_find_legacy_glyph(font, codepoint, &glyph_index);
+  if (glyph != NULL) {
+    resolved.glyph_index = glyph_index;
+    resolved.advance = (float32_t)glyph->x_advance * font_scale;
+    resolved.page_id = glyph->page_id;
+    resolved.valid = true_v;
+  }
+  return resolved;
+}
+
+vkr_internal float32_t vkr_text_font_get_legacy_kerning(const VkrFont *font,
+                                                        uint32_t prev_codepoint,
+                                                        uint32_t codepoint) {
   if (font == NULL || font->kernings.data == NULL) {
-    return 0;
+    return 0.0f;
   }
 
   const uint64_t target = vkr_text_kerning_pair_key(prev_codepoint, codepoint);
@@ -361,70 +482,51 @@ vkr_internal int32_t vkr_text_font_get_kerning(const VkrFont *font,
     const VkrFontKerning *kerning = &font->kernings.data[lo];
     if (kerning->codepoint_0 == prev_codepoint &&
         kerning->codepoint_1 == codepoint) {
-      return (int32_t)kerning->amount;
+      return (float32_t)kerning->amount;
     }
   }
 
-  return 0;
+  return 0.0f;
 }
 
-vkr_internal float32_t vkr_text_glyph_base_advance(const VkrTextStyle *style,
-                                                   float32_t font_size,
-                                                   float32_t font_scale,
-                                                   uint32_t codepoint) {
-  const VkrFont *font = style->font_data;
-  if (font == NULL) {
-    return VKR_TEXT_DEFAULT_GLYPH_WIDTH(font_size);
-  }
-
-  if (codepoint == '\t') {
-    return font->tab_x_advance * font_scale;
-  }
-
-  const VkrFontGlyph *glyph = vkr_text_font_find_glyph(font, codepoint);
-  if (glyph != NULL) {
-    return (float32_t)glyph->x_advance * font_scale;
-  }
-
-  return VKR_TEXT_DEFAULT_GLYPH_WIDTH(font_size);
-}
-
-vkr_internal void
-vkr_text_glyph_metrics(const VkrTextStyle *style, float32_t font_size,
-                       float32_t font_scale, uint32_t codepoint,
-                       float32_t *out_advance, uint8_t *out_page_id) {
-  assert_log(style != NULL, "Style is NULL");
-
-  if (out_advance) {
-    *out_advance = VKR_TEXT_DEFAULT_GLYPH_WIDTH(font_size);
-  }
-  if (out_page_id) {
-    *out_page_id = 0;
-  }
-
-  const VkrFont *font = style->font_data;
-  if (font == NULL) {
-    return;
-  }
-
-  if (codepoint == '\t') {
-    if (out_advance) {
-      *out_advance = font->tab_x_advance * font_scale;
+vkr_internal float32_t vkr_text_font_get_cooked_kerning(
+    const VkrFont *font, uint32_t left_glyph_id, uint32_t right_glyph_id) {
+  const uint64_t target =
+      vkr_text_kerning_pair_key(left_glyph_id, right_glyph_id);
+  uint64_t first = 0u;
+  uint64_t count = font->glyph_kernings.length;
+  while (count != 0u) {
+    const uint64_t step = count / 2u;
+    const uint64_t index = first + step;
+    const VkrFontGlyphKerning *candidate = &font->glyph_kernings.data[index];
+    const uint64_t key = vkr_text_kerning_pair_key(candidate->left_glyph_id,
+                                                   candidate->right_glyph_id);
+    if (key < target) {
+      first = index + 1u;
+      count -= step + 1u;
+    } else if (key > target) {
+      count = step;
+    } else {
+      return candidate->amount;
     }
-    return;
   }
+  return 0.0f;
+}
 
-  const VkrFontGlyph *glyph = vkr_text_font_find_glyph(font, codepoint);
-  if (glyph == NULL) {
-    return;
+vkr_internal float32_t vkr_text_font_get_kerning(
+    const VkrFont *font, uint32_t prev_codepoint, uint32_t codepoint,
+    const VkrTextResolvedGlyph *previous, const VkrTextResolvedGlyph *current,
+    float32_t font_scale) {
+  if (font == NULL || !previous->valid || !current->valid) {
+    return 0.0f;
   }
-
-  if (out_advance) {
-    *out_advance = (float32_t)glyph->x_advance * font_scale;
+  if (current->cooked) {
+    return vkr_text_font_get_cooked_kerning(font, previous->glyph_id,
+                                            current->glyph_id) *
+           font_scale;
   }
-  if (out_page_id) {
-    *out_page_id = glyph->page_id;
-  }
+  return vkr_text_font_get_legacy_kerning(font, prev_codepoint, codepoint) *
+         font_scale;
 }
 
 /////////////////////
@@ -571,11 +673,12 @@ vkr_internal VkrTextBounds vkr_text_measure_internal(const VkrText *text,
       style.line_height <= 0.0f ? 1.0f : style.line_height;
   float32_t line_height = metrics_height * line_height_multiplier;
 
-  float32_t current_width = 0.0f;
-  float32_t max_line_width = 0.0f;
+  float64_t current_width = 0.0;
+  float64_t max_line_width = 0.0;
   uint32_t line_count = 1;
   bool8_t has_prev = false_v;
   uint32_t prev_codepoint = 0;
+  VkrTextResolvedGlyph previous = {0};
 
   VkrCodepointIter iter = vkr_codepoint_iter_begin(&text->content);
   while (vkr_codepoint_iter_has_next(&iter)) {
@@ -586,44 +689,48 @@ vkr_internal VkrTextBounds vkr_text_measure_internal(const VkrText *text,
 
     if (cp.value == '\n') {
       max_line_width = Max(max_line_width, current_width);
-      current_width = 0.0f;
+      current_width = 0.0;
       line_count++;
       has_prev = false_v;
+      previous = (VkrTextResolvedGlyph){0};
       continue;
     }
 
-    float32_t glyph_width =
-        vkr_text_glyph_base_advance(&style, font_size, font_scale, cp.value);
+    const VkrTextResolvedGlyph current =
+        vkr_text_font_resolve_glyph(font, font_size, font_scale, cp.value);
+    float64_t glyph_width = (float64_t)current.advance;
     if (style.letter_spacing != 0.0f) {
       glyph_width += style.letter_spacing;
     }
 
-    float32_t kern = 0.0f;
+    float64_t kern = 0.0;
     if (has_prev && font != NULL) {
-      kern =
-          (float32_t)vkr_text_font_get_kerning(font, prev_codepoint, cp.value) *
-          font_scale;
+      kern = vkr_text_font_get_kerning(font, prev_codepoint, cp.value,
+                                       &previous, &current, font_scale);
     }
-    float32_t total_advance = glyph_width + kern;
+    float64_t total_advance = glyph_width + kern;
 
-    if (word_wrap && max_width > 0.0f && current_width > 0.0f &&
-        current_width + total_advance > max_width) {
+    if (word_wrap && max_width > 0.0f && current_width > 0.0 &&
+        current_width + total_advance > (float64_t)max_width) {
       max_line_width = Max(max_line_width, current_width);
-      current_width = 0.0f;
+      current_width = 0.0;
       line_count++;
       kern = 0.0f;
       total_advance = glyph_width;
       has_prev = false_v;
+      previous = (VkrTextResolvedGlyph){0};
     }
 
     current_width += total_advance;
     prev_codepoint = cp.value;
+    previous = current;
     has_prev = true_v;
   }
 
   max_line_width = Max(max_line_width, current_width);
 
-  bounds.size = vec2_new(max_line_width, line_height * (float32_t)line_count);
+  bounds.size =
+      vec2_new((float32_t)max_line_width, line_height * (float32_t)line_count);
   bounds.ascent = ascent * line_height_multiplier;
   bounds.descent = descent * line_height_multiplier;
   return bounds;
@@ -653,28 +760,30 @@ VkrTextLayoutOptions vkr_text_layout_options_default(void) {
   return opts;
 }
 
-vkr_internal float32_t vkr_text_align_offset(float32_t line_width,
-                                             float32_t max_line_width,
+vkr_internal float64_t vkr_text_align_offset(float64_t line_width,
+                                             float64_t max_line_width,
                                              VkrTextAlign align) {
-  float32_t available = Max(0.0f, max_line_width - line_width);
+  float64_t available = Max(0.0, max_line_width - line_width);
   switch (align) {
   case VKR_TEXT_ALIGN_CENTER:
-    return available * 0.5f;
+    return available * 0.5;
   case VKR_TEXT_ALIGN_RIGHT:
     return available;
   case VKR_TEXT_ALIGN_JUSTIFY:
     // Placeholder: proper justify requires extra spacing logic
   case VKR_TEXT_ALIGN_LEFT:
   default:
-    return 0.0f;
+    return 0.0;
   }
 }
 
 typedef struct VkrTextGlyphPlacement {
   uint32_t codepoint;
+  uint32_t glyph_id;
+  uint32_t glyph_index;
   uint32_t line_index;
-  float32_t x_in_line;
-  float32_t advance;
+  float64_t x_in_line;
+  float64_t advance;
   uint8_t page_id;
 } VkrTextGlyphPlacement;
 Vector(VkrTextGlyphPlacement);
@@ -704,17 +813,18 @@ VkrTextLayout vkr_text_layout_compute(VkrAllocator *allocator,
   float32_t line_height = metrics_height * line_height_multiplier;
 
   uint32_t line_count = 1;
-  float32_t max_line_width = 0.0f;
-  float32_t current_width = 0.0f;
+  float64_t max_line_width = 0.0;
+  float64_t current_width = 0.0;
   uint32_t line_index = 0;
   bool8_t has_prev = false_v;
   uint32_t prev_codepoint = 0;
+  VkrTextResolvedGlyph previous = {0};
 
-  Vector_float32_t line_widths = {0};
+  Vector_float64_t line_widths = {0};
   Vector_VkrTextGlyphPlacement placements = {0};
   bool8_t collect_positions = allocator != NULL;
   if (collect_positions) {
-    line_widths = vector_create_float32_t_with_capacity(allocator, 8);
+    line_widths = vector_create_float64_t_with_capacity(allocator, 8);
     uint64_t glyph_capacity = text->content.length;
     if (glyph_capacity < 8) {
       glyph_capacity = 8;
@@ -732,50 +842,52 @@ VkrTextLayout vkr_text_layout_compute(VkrAllocator *allocator,
 
     if (cp.value == '\n') {
       if (collect_positions) {
-        vector_push_float32_t(&line_widths, current_width);
+        vector_push_float64_t(&line_widths, current_width);
       }
       max_line_width = Max(max_line_width, current_width);
-      current_width = 0.0f;
+      current_width = 0.0;
       line_index++;
       line_count++;
       has_prev = false_v;
+      previous = (VkrTextResolvedGlyph){0};
       if (opts.clip && opts.max_height > 0.0f &&
-          (float32_t)line_count * line_height > opts.max_height) {
+          (float64_t)line_count * (float64_t)line_height >
+              (float64_t)opts.max_height) {
         break;
       }
       continue;
     }
 
-    float32_t glyph_width = 0.0f;
-    uint8_t page_id = 0;
-    vkr_text_glyph_metrics(&style, font_size, font_scale, cp.value,
-                           &glyph_width, &page_id);
+    const VkrTextResolvedGlyph current =
+        vkr_text_font_resolve_glyph(font, font_size, font_scale, cp.value);
+    float64_t glyph_width = (float64_t)current.advance;
     if (style.letter_spacing != 0.0f) {
       glyph_width += style.letter_spacing;
     }
 
-    float32_t kern = 0.0f;
+    float64_t kern = 0.0;
     if (has_prev && font != NULL) {
-      kern =
-          (float32_t)vkr_text_font_get_kerning(font, prev_codepoint, cp.value) *
-          font_scale;
+      kern = vkr_text_font_get_kerning(font, prev_codepoint, cp.value,
+                                       &previous, &current, font_scale);
     }
-    float32_t total_advance = glyph_width + kern;
+    float64_t total_advance = glyph_width + kern;
 
-    if (opts.word_wrap && opts.max_width > 0.0f && current_width > 0.0f &&
-        current_width + total_advance > opts.max_width) {
+    if (opts.word_wrap && opts.max_width > 0.0f && current_width > 0.0 &&
+        current_width + total_advance > (float64_t)opts.max_width) {
       if (collect_positions) {
-        vector_push_float32_t(&line_widths, current_width);
+        vector_push_float64_t(&line_widths, current_width);
       }
       max_line_width = Max(max_line_width, current_width);
-      current_width = 0.0f;
+      current_width = 0.0;
       line_index++;
       line_count++;
       kern = 0.0f;
       total_advance = glyph_width;
       has_prev = false_v;
+      previous = (VkrTextResolvedGlyph){0};
       if (opts.clip && opts.max_height > 0.0f &&
-          (float32_t)line_count * line_height > opts.max_height) {
+          (float64_t)line_count * (float64_t)line_height >
+              (float64_t)opts.max_height) {
         break;
       }
     }
@@ -784,29 +896,32 @@ VkrTextLayout vkr_text_layout_compute(VkrAllocator *allocator,
       vector_push_VkrTextGlyphPlacement(&placements,
                                         (VkrTextGlyphPlacement){
                                             .codepoint = cp.value,
+                                            .glyph_id = current.glyph_id,
+                                            .glyph_index = current.glyph_index,
                                             .line_index = line_index,
                                             .x_in_line = current_width + kern,
                                             .advance = total_advance,
-                                            .page_id = page_id,
+                                            .page_id = current.page_id,
                                         });
     }
 
     current_width += total_advance;
     prev_codepoint = cp.value;
+    previous = current;
     has_prev = true_v;
   }
 
   if (collect_positions) {
-    vector_push_float32_t(&line_widths, current_width);
+    vector_push_float64_t(&line_widths, current_width);
   }
   max_line_width = Max(max_line_width, current_width);
 
-  float32_t total_height = line_height * (float32_t)line_count;
-  float32_t origin_y = 0.0f;
+  const float64_t total_height = (float64_t)line_height * (float64_t)line_count;
+  float64_t origin_y = 0.0;
 
   switch (opts.anchor.vertical) {
   case VKR_TEXT_BASELINE_MIDDLE:
-    origin_y = -(total_height * 0.5f);
+    origin_y = -(total_height * 0.5);
     break;
   case VKR_TEXT_BASELINE_BOTTOM:
     origin_y = -total_height;
@@ -816,19 +931,20 @@ VkrTextLayout vkr_text_layout_compute(VkrAllocator *allocator,
     break;
   case VKR_TEXT_BASELINE_TOP:
   default:
-    origin_y = 0.0f;
+    origin_y = 0.0;
     break;
   }
 
-  float32_t first_baseline = origin_y + ascent * line_height_multiplier;
-  layout.baseline = vec2_new(0.0f, first_baseline);
-  layout.bounds = vec2_new(max_line_width, total_height);
+  const float64_t first_baseline =
+      origin_y + (float64_t)ascent * (float64_t)line_height_multiplier;
+  layout.baseline = vec2_new(0.0f, (float32_t)first_baseline);
+  layout.bounds = vec2_new((float32_t)max_line_width, (float32_t)total_height);
   layout.line_count = line_count;
   layout.allocator = allocator;
 
   if (!collect_positions || placements.length == 0) {
     if (collect_positions) {
-      vector_destroy_float32_t(&line_widths);
+      vector_destroy_float64_t(&line_widths);
       vector_destroy_VkrTextGlyphPlacement(&placements);
     }
     return layout;
@@ -841,28 +957,31 @@ VkrTextLayout vkr_text_layout_compute(VkrAllocator *allocator,
     const VkrTextGlyphPlacement *p =
         vector_get_VkrTextGlyphPlacement(&placements, (uint64_t)i);
 
-    float32_t line_width = 0.0f;
+    float64_t line_width = 0.0;
     if (p->line_index < line_widths.length) {
-      line_width = *vector_get_float32_t(&line_widths, p->line_index);
+      line_width = *vector_get_float64_t(&line_widths, p->line_index);
     }
-    float32_t align_offset = vkr_text_align_offset(line_width, max_line_width,
-                                                   opts.anchor.horizontal);
-    float32_t baseline_y =
-        first_baseline + (float32_t)p->line_index * line_height;
+    const float64_t align_offset = vkr_text_align_offset(
+        line_width, max_line_width, opts.anchor.horizontal);
+    const float64_t baseline_y =
+        first_baseline + (float64_t)p->line_index * (float64_t)line_height;
 
     array_set_VkrTextGlyph(
         &glyphs, (uint64_t)i,
         (VkrTextGlyph){
             .codepoint = p->codepoint,
-            .position = vec2_new(align_offset + p->x_in_line, baseline_y),
-            .advance = p->advance,
+            .glyph_id = p->glyph_id,
+            .glyph_index = p->glyph_index,
+            .position = vec2_new((float32_t)(align_offset + p->x_in_line),
+                                 (float32_t)baseline_y),
+            .advance = (float32_t)p->advance,
             .page_id = p->page_id,
         });
   }
 
   layout.glyphs = glyphs;
 
-  vector_destroy_float32_t(&line_widths);
+  vector_destroy_float64_t(&line_widths);
   vector_destroy_VkrTextGlyphPlacement(&placements);
 
   return layout;

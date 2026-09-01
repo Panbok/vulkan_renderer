@@ -58,8 +58,13 @@ cmake -S . -B "%BUILD_DIR%" -U CMAKE_TOOLCHAIN_FILE -DCMAKE_BUILD_TYPE:STRING=%B
 if errorlevel 1 goto :vkr_cmake_configure_failed
 
 echo Building vulkan_renderer (%BUILD_TYPE%)
-cmake --build ".\%BUILD_DIR%" --target vulkan_renderer vkr_harness vkr_mesh_cooker --config %BUILD_TYPE%
+cmake --build ".\%BUILD_DIR%" --target vulkan_renderer vkr_harness vkr_mesh_cooker vkr_font_cooker --config %BUILD_TYPE%
 if errorlevel 1 goto :vkr_build_failed
+set "FONT_COOKER_BIN=%BUILD_DIR%\tools\vkr_font_cooker.exe"
+if not exist "!FONT_COOKER_BIN!" set "FONT_COOKER_BIN=%BUILD_DIR%\tools\%BUILD_TYPE%\vkr_font_cooker.exe"
+set "VKR_FONT_COOKER_BIN=!FONT_COOKER_BIN!"
+call "%REPO_ROOT%\tools\cook_vkr_fonts.bat"
+if errorlevel 1 goto :vkr_font_cook_failed
 call "%REPO_ROOT%\tools\pack_vkt_textures.bat"
 if errorlevel 1 goto :vkr_texture_pack_failed
 
@@ -77,4 +82,8 @@ exit /b 1
 
 :vkr_texture_pack_failed
 echo Texture packing failed.
+exit /b 1
+
+:vkr_font_cook_failed
+echo Font cooking failed.
 exit /b 1

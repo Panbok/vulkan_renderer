@@ -8,58 +8,12 @@
 #include "renderer/systems/vkr_font_system.h"
 #include "renderer/vkr_color_transfer.h"
 
+#include <math.h>
+
 #define VKR_UI_TEXT_QUAD_COUNT 4
 #define VKR_UI_TEXT_INDEX_COUNT 6
 #define VKR_UI_TEXT_VERTEX_GROWTH_COUNT 64
 #define VKR_UI_TEXT_INDEX_GROWTH_COUNT 96
-
-vkr_internal bool8_t vkr_ui_text_codepoint_key(char *buffer,
-                                               uint64_t buffer_size,
-                                               uint32_t codepoint) {
-  if (buffer == NULL || buffer_size == 0) {
-    return false_v;
-  }
-
-  int32_t written = snprintf(buffer, buffer_size, "%u", codepoint);
-  if (written <= 0 || (uint64_t)written >= buffer_size) {
-    buffer[0] = '\0';
-    return false_v;
-  }
-
-  return true_v;
-}
-
-vkr_internal const VkrFontGlyph *vkr_ui_text_find_glyph(const VkrFont *font,
-                                                        uint32_t codepoint,
-                                                        uint32_t *out_index) {
-  if (font == NULL || font->glyphs.data == NULL) {
-    return NULL;
-  }
-
-  if (font->glyph_indices.entries != NULL && font->glyph_indices.size > 0) {
-    char key[16];
-    if (vkr_ui_text_codepoint_key(key, sizeof(key), codepoint)) {
-      uint32_t *index = vkr_hash_table_get_uint32_t(&font->glyph_indices, key);
-      if (index && *index < font->glyphs.length) {
-        if (out_index) {
-          *out_index = *index;
-        }
-        return &font->glyphs.data[*index];
-      }
-    }
-  }
-
-  for (uint64_t i = 0; i < font->glyphs.length; ++i) {
-    if (font->glyphs.data[i].codepoint == codepoint) {
-      if (out_index) {
-        *out_index = (uint32_t)i;
-      }
-      return &font->glyphs.data[i];
-    }
-  }
-
-  return NULL;
-}
 
 vkr_internal String8 vkr_ui_text_copy_content(VkrAllocator *allocator,
                                               String8 content) {
@@ -68,6 +22,26 @@ vkr_internal String8 vkr_ui_text_copy_content(VkrAllocator *allocator,
   }
 
   return string8_duplicate(allocator, &content);
+}
+
+vkr_internal VkrFont *vkr_ui_text_resolve_font(VkrFontSystem *font_system,
+                                               VkrFontHandle handle) {
+  VkrFont *font = vkr_font_system_get_by_handle(font_system, handle);
+  if (!font) {
+    font = vkr_font_system_get_default_mtsdf_font(font_system);
+  }
+  if (!font) {
+    font = vkr_font_system_get_default_bitmap_font(font_system);
+  }
+  return font;
+}
+
+vkr_internal float32_t vkr_ui_text_device_font_size(const VkrUiText *text) {
+  float32_t authored_size = text->config.font_size;
+  if (authored_size <= 0.0f) {
+    authored_size = (float32_t)text->resolved_font->size;
+  }
+  return authored_size * text->content_scale;
 }
 
 vkr_internal void vkr_ui_text_compute_layout(VkrUiText *text) {
@@ -86,25 +60,35 @@ vkr_internal void vkr_ui_text_compute_layout(VkrUiText *text) {
     return;
   }
 
-  float32_t font_size = text->config.font_size;
-  if (font_size <= 0.0f) {
-    font_size = (float32_t)text->resolved_font->size;
-  }
+  const float32_t font_size = vkr_ui_text_device_font_size(text);
 
   VkrTextStyle style =
       vkr_text_style_new(text->config.font, font_size, text->config.color);
-  style.letter_spacing = text->config.letter_spacing;
+  style.letter_spacing = text->config.letter_spacing * text->content_scale;
   style = vkr_text_style_with_font_data(&style, text->resolved_font);
 
   VkrText text_for_layout = vkr_text_from_view(text->content, &style);
-  text->layout = vkr_text_layout_compute(text->allocator, &text_for_layout,
-                                         &text->config.layout);
+  VkrTextLayoutOptions layout = text->config.layout;
+  if (layout.max_width > 0.0f) {
+    layout.max_width *= text->content_scale;
+  }
+  if (layout.max_height > 0.0f) {
+    layout.max_height *= text->content_scale;
+  }
+  text->layout =
+      vkr_text_layout_compute(text->allocator, &text_for_layout, &layout);
 
   text->bounds.size = text->layout.bounds;
 
-  float32_t scale = font_size / (float32_t)text->resolved_font->size;
-  text->bounds.ascent = (float32_t)text->resolved_font->ascent * scale;
-  text->bounds.descent = (float32_t)text->resolved_font->descent * scale;
+  const bool8_t cooked = text->resolved_font->glyphs_by_id.data != NULL;
+  if (cooked) {
+    text->bounds.ascent = text->resolved_font->em_ascender * font_size;
+    text->bounds.descent = -text->resolved_font->em_descender * font_size;
+  } else {
+    const float32_t scale = font_size / (float32_t)text->resolved_font->size;
+    text->bounds.ascent = (float32_t)text->resolved_font->ascent * scale;
+    text->bounds.descent = (float32_t)text->resolved_font->descent * scale;
+  }
 
   text->layout_dirty = false_v;
 }
@@ -143,8 +127,9 @@ vkr_internal bool8_t vkr_ui_text_generate_geometry(VkrUiText *text) {
   uint32_t required_index_count = glyph_count * VKR_UI_TEXT_INDEX_COUNT;
 
   if (required_vertex_count > text->geometry.vertex_capacity) {
-    const uint32_t capacity =
-        required_vertex_count + VKR_UI_TEXT_VERTEX_GROWTH_COUNT;
+    const uint32_t growth = Min(VKR_UI_TEXT_VERTEX_GROWTH_COUNT,
+                                UINT32_MAX - required_vertex_count);
+    const uint32_t capacity = required_vertex_count + growth;
     VkrTextVertex *vertices = vkr_allocator_realloc(
         text->allocator, text->geometry.vertices,
         (uint64_t)text->geometry.vertex_capacity * sizeof(VkrTextVertex),
@@ -156,8 +141,9 @@ vkr_internal bool8_t vkr_ui_text_generate_geometry(VkrUiText *text) {
     text->geometry.vertex_capacity = capacity;
   }
   if (required_index_count > text->geometry.index_capacity) {
-    const uint32_t capacity =
-        required_index_count + VKR_UI_TEXT_INDEX_GROWTH_COUNT;
+    const uint32_t growth =
+        Min(VKR_UI_TEXT_INDEX_GROWTH_COUNT, UINT32_MAX - required_index_count);
+    const uint32_t capacity = required_index_count + growth;
     uint32_t *indices = vkr_allocator_realloc(
         text->allocator, text->geometry.indices,
         (uint64_t)text->geometry.index_capacity * sizeof(uint32_t),
@@ -178,48 +164,73 @@ vkr_internal bool8_t vkr_ui_text_generate_geometry(VkrUiText *text) {
   float32_t inv_atlas_w = 1.0f / atlas_w;
   float32_t inv_atlas_h = 1.0f / atlas_h;
 
-  float32_t font_size = text->config.font_size;
-  if (font_size <= 0.0f) {
-    font_size = (float32_t)text->resolved_font->size;
-  }
-  float32_t scale = font_size / (float32_t)text->resolved_font->size;
+  const float32_t font_size = vkr_ui_text_device_font_size(text);
+  const bool8_t cooked = text->resolved_font->glyphs_by_id.data != NULL;
+  const float32_t scale =
+      cooked ? font_size : font_size / (float32_t)text->resolved_font->size;
 
   uint32_t vertex_idx = 0;
   uint32_t index_idx = 0;
   Vec4 color = text->linear_color;
+  const bool8_t exact_mtsdf_bounds =
+      text->resolved_font->type == VKR_FONT_TYPE_MTSDF;
+  const float32_t inset_px =
+      vkr_text_uv_inset(text->config.uv_inset_px, exact_mtsdf_bounds);
   // Flip layout Y (top-down) into UI screen space without changing winding.
   float32_t layout_bottom =
       (text->layout.baseline.y - text->bounds.ascent) + text->bounds.size.y;
 
   for (uint32_t i = 0; i < glyph_count; i++) {
     VkrTextGlyph *layout_glyph = &text->layout.glyphs.data[i];
-    uint32_t glyph_index = 0;
-    const VkrFontGlyph *font_glyph = vkr_ui_text_find_glyph(
-        text->resolved_font, layout_glyph->codepoint, &glyph_index);
-    if (!font_glyph) {
+    if (layout_glyph->glyph_index == VKR_INVALID_ID) {
       continue;
     }
-
-    float32_t x0 =
-        layout_glyph->position.x + (float32_t)font_glyph->x_offset * scale;
-    float32_t line_top = layout_glyph->position.y - text->bounds.ascent;
-    float32_t y0 = line_top + (float32_t)font_glyph->y_offset * scale;
-    float32_t glyph_w = (float32_t)font_glyph->width * scale;
-    float32_t glyph_h = (float32_t)font_glyph->height * scale;
-
-    if (text->resolved_font->type == VKR_FONT_TYPE_MTSDF &&
-        text->resolved_font->mtsdf_glyphs.data &&
-        glyph_index < text->resolved_font->mtsdf_glyphs.length) {
-      const VkrMtsdfGlyph *mtsdf_glyph =
-          &text->resolved_font->mtsdf_glyphs.data[glyph_index];
-      if (mtsdf_glyph->has_geometry) {
+    const VkrFontGlyph *font_glyph = NULL;
+    const VkrFontGlyphId *cooked_glyph = NULL;
+    const VkrMtsdfGlyph *mtsdf_glyph = NULL;
+    float32_t x0 = 0.0f;
+    float32_t y0 = 0.0f;
+    float32_t glyph_w = 0.0f;
+    float32_t glyph_h = 0.0f;
+    if (cooked) {
+      if (layout_glyph->glyph_index >=
+          text->resolved_font->glyphs_by_id.length) {
+        continue;
+      }
+      cooked_glyph =
+          &text->resolved_font->glyphs_by_id.data[layout_glyph->glyph_index];
+      if (!cooked_glyph->has_geometry) {
+        continue;
+      }
+      x0 = layout_glyph->position.x + cooked_glyph->plane_left * font_size;
+      y0 = layout_glyph->position.y - cooked_glyph->plane_top * font_size;
+      glyph_w =
+          (cooked_glyph->plane_right - cooked_glyph->plane_left) * font_size;
+      glyph_h =
+          (cooked_glyph->plane_top - cooked_glyph->plane_bottom) * font_size;
+    } else {
+      if (layout_glyph->glyph_index >= text->resolved_font->glyphs.length) {
+        continue;
+      }
+      font_glyph = &text->resolved_font->glyphs.data[layout_glyph->glyph_index];
+      x0 = layout_glyph->position.x + (float32_t)font_glyph->x_offset * scale;
+      const float32_t line_top = layout_glyph->position.y - text->bounds.ascent;
+      y0 = line_top + (float32_t)font_glyph->y_offset * scale;
+      glyph_w = (float32_t)font_glyph->width * scale;
+      glyph_h = (float32_t)font_glyph->height * scale;
+      if (text->resolved_font->type == VKR_FONT_TYPE_MTSDF &&
+          text->resolved_font->mtsdf_glyphs.data &&
+          layout_glyph->glyph_index <
+              text->resolved_font->mtsdf_glyphs.length) {
+        mtsdf_glyph =
+            &text->resolved_font->mtsdf_glyphs.data[layout_glyph->glyph_index];
+        if (!mtsdf_glyph->has_geometry) {
+          continue;
+        }
         glyph_w =
             (mtsdf_glyph->plane_right - mtsdf_glyph->plane_left) * font_size;
         glyph_h =
             (mtsdf_glyph->plane_top - mtsdf_glyph->plane_bottom) * font_size;
-      } else {
-        glyph_w = 0.0f;
-        glyph_h = 0.0f;
       }
     }
 
@@ -228,23 +239,42 @@ vkr_internal bool8_t vkr_ui_text_generate_geometry(VkrUiText *text) {
     float32_t top_y = layout_bottom - y1;
     float32_t bottom_y = layout_bottom - y0;
 
-    float32_t u0_raw = (float32_t)font_glyph->x * inv_atlas_w;
-    float32_t u1_raw =
-        (float32_t)(font_glyph->x + font_glyph->width) * inv_atlas_w;
-    float32_t v0_raw =
-        1.0f - (float32_t)(font_glyph->y + font_glyph->height) * inv_atlas_h;
-    float32_t v1_raw = 1.0f - (float32_t)font_glyph->y * inv_atlas_h;
-
-    float32_t inset_px = text->config.uv_inset_px;
-    if (inset_px < 0.0f) {
-      inset_px = 0.0f;
+    float32_t u0_raw = 0.0f;
+    float32_t u1_raw = 0.0f;
+    float32_t v0_raw = 0.0f;
+    float32_t v1_raw = 0.0f;
+    float32_t atlas_glyph_w = 0.0f;
+    float32_t atlas_glyph_h = 0.0f;
+    if (cooked_glyph) {
+      u0_raw = cooked_glyph->uv_left;
+      u1_raw = cooked_glyph->uv_right;
+      v0_raw = cooked_glyph->uv_bottom;
+      v1_raw = cooked_glyph->uv_top;
+      atlas_glyph_w = (u1_raw - u0_raw) * atlas_w;
+      atlas_glyph_h = (v1_raw - v0_raw) * atlas_h;
+    } else if (mtsdf_glyph) {
+      u0_raw = mtsdf_glyph->uv_left;
+      u1_raw = mtsdf_glyph->uv_right;
+      v0_raw = mtsdf_glyph->uv_bottom;
+      v1_raw = mtsdf_glyph->uv_top;
+      atlas_glyph_w = mtsdf_glyph->atlas_right - mtsdf_glyph->atlas_left;
+      atlas_glyph_h = mtsdf_glyph->atlas_top - mtsdf_glyph->atlas_bottom;
+    } else {
+      u0_raw = (float32_t)font_glyph->x * inv_atlas_w;
+      u1_raw = (float32_t)(font_glyph->x + font_glyph->width) * inv_atlas_w;
+      v0_raw =
+          1.0f - (float32_t)(font_glyph->y + font_glyph->height) * inv_atlas_h;
+      v1_raw = 1.0f - (float32_t)font_glyph->y * inv_atlas_h;
+      atlas_glyph_w = (float32_t)font_glyph->width;
+      atlas_glyph_h = (float32_t)font_glyph->height;
     }
+
     float32_t u_inset = inset_px * inv_atlas_w;
     float32_t v_inset = inset_px * inv_atlas_h;
-    if (font_glyph->width <= 1) {
+    if (atlas_glyph_w <= 1.0f) {
       u_inset = 0.0f;
     }
-    if (font_glyph->height <= 1) {
+    if (atlas_glyph_h <= 1.0f) {
       v_inset = 0.0f;
     }
 
@@ -325,19 +355,14 @@ bool8_t vkr_ui_text_create(VkrAllocator *allocator, VkrFontSystem *font_system,
   out_text->allocator = allocator;
   out_text->content = vkr_ui_text_copy_content(allocator, content);
   out_text->config = config ? *config : VKR_UI_TEXT_CONFIG_DEFAULT;
+  out_text->content_scale = 1.0f;
   out_text->linear_color = vkr_srgb_color_to_linear(out_text->config.color);
   out_text->transform = vkr_transform_identity();
   out_text->layout_dirty = true_v;
   out_text->buffers_dirty = true_v;
 
-  if (out_text->config.font.id != 0) {
-    out_text->resolved_font =
-        vkr_font_system_get_by_handle(font_system, out_text->config.font);
-  }
-  if (!out_text->resolved_font) {
-    out_text->resolved_font =
-        vkr_font_system_get_default_bitmap_font(font_system);
-  }
+  out_text->resolved_font =
+      vkr_ui_text_resolve_font(font_system, out_text->config.font);
 
   if (!out_text->resolved_font) {
     log_error("No font available for UI text");
@@ -423,14 +448,8 @@ void vkr_ui_text_set_config(VkrUiText *text, const VkrUiTextConfig *config) {
   text->linear_color = vkr_srgb_color_to_linear(config->color);
 
   if (font_changed) {
-    if (config->font.id != 0) {
-      text->resolved_font =
-          vkr_font_system_get_by_handle(text->font_system, config->font);
-    }
-    if (!text->resolved_font) {
-      text->resolved_font =
-          vkr_font_system_get_default_bitmap_font(text->font_system);
-    }
+    text->resolved_font =
+        vkr_ui_text_resolve_font(text->font_system, config->font);
     text->layout_dirty = true_v;
     text->buffers_dirty = true_v;
   } else if (layout_changed) {
@@ -439,6 +458,16 @@ void vkr_ui_text_set_config(VkrUiText *text, const VkrUiTextConfig *config) {
   } else if (color_changed) {
     text->buffers_dirty = true_v;
   }
+}
+
+void vkr_ui_text_set_content_scale(VkrUiText *text, float32_t content_scale) {
+  if (!text || !isfinite(content_scale) || content_scale <= 0.0f ||
+      text->content_scale == content_scale) {
+    return;
+  }
+  text->content_scale = content_scale;
+  text->layout_dirty = true_v;
+  text->buffers_dirty = true_v;
 }
 
 void vkr_ui_text_set_position(VkrUiText *text, Vec2 position) {

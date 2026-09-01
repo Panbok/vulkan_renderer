@@ -102,6 +102,42 @@ static void test_texture_query_colorspace_policy(void) {
   printf("  test_texture_query_colorspace_policy PASSED\n");
 }
 
+static void test_texture_source_only_bypasses_strict_vkt_policy(void) {
+  printf("  Running test_texture_source_only_bypasses_strict_vkt_policy...\n");
+
+  Arena *arena = arena_create(MB(8), MB(8));
+  assert(arena != NULL);
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+
+  VkrTextureSystem system = {0};
+  system.strict_vkt_only_mode = true_v;
+  system.allow_source_fallback = false_v;
+
+  VkrTexturePreparedLoad prepared = {0};
+  VkrRendererError error = VKR_RENDERER_ERROR_UNKNOWN;
+  assert(vkr_texture_system_prepare_load_from_file(
+      &system,
+      string8_lit("assets/fonts/Ubuntu-2d.png?cs=linear&tc=data_mask&source="
+                  "only"),
+      VKR_TEXTURE_RGBA_CHANNELS, &allocator, &prepared, &error));
+  assert(error == VKR_RENDERER_ERROR_NONE);
+  assert(prepared.description.width == 1024u);
+  assert(prepared.description.height == 1024u);
+  assert(prepared.description.channels == VKR_TEXTURE_RGBA_CHANNELS);
+  assert(prepared.description.format == VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM);
+  assert(prepared.description.mip_levels == 1u);
+  assert(prepared.description.array_layers == 1u);
+  assert(prepared.upload_mip_levels == 1u);
+  assert(prepared.upload_array_layers == 1u);
+  assert(prepared.upload_region_count == 1u);
+  assert(!prepared.upload_is_compressed);
+  vkr_texture_system_release_prepared_load(&prepared);
+
+  arena_destroy(arena);
+  printf("  test_texture_source_only_bypasses_strict_vkt_policy PASSED\n");
+}
+
 static void test_texture_transcode_target_policy(void) {
   printf("  Running test_texture_transcode_target_policy...\n");
 
@@ -351,6 +387,7 @@ bool32_t run_texture_vkt_tests() {
   test_texture_resolution_candidates_for_direct_vkt();
   test_texture_vkt_container_detection();
   test_texture_query_colorspace_policy();
+  test_texture_source_only_bypasses_strict_vkt_policy();
   test_texture_transcode_target_policy();
   test_normal_rg_decode_contract();
   test_normal_rg_basis_channel_contract();

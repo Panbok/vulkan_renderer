@@ -214,6 +214,11 @@ FileError file_open(const FilePath *path, FileMode mode,
   bool8_t has_append = bitset8_is_set(&mode, FILE_MODE_APPEND);
   bool8_t has_create = bitset8_is_set(&mode, FILE_MODE_CREATE);
   bool8_t has_truncate = bitset8_is_set(&mode, FILE_MODE_TRUNCATE);
+  bool8_t has_exclusive = bitset8_is_set(&mode, FILE_MODE_EXCLUSIVE);
+
+  if (has_exclusive && (!has_create || has_truncate || has_append)) {
+    return FILE_ERROR_INVALID_MODE;
+  }
 
   if (has_read && has_write)
     flags |= O_RDWR;
@@ -230,6 +235,8 @@ FileError file_open(const FilePath *path, FileMode mode,
 
   if (implies_create)
     flags |= O_CREAT;
+  if (has_exclusive)
+    flags |= O_EXCL;
   if (implies_truncate)
     flags |= O_TRUNC;
   if (has_append)
@@ -237,6 +244,8 @@ FileError file_open(const FilePath *path, FileMode mode,
 
   int fd = open((char *)path->path.str, flags, access_mode);
   if (fd == -1) {
+    if (errno == EEXIST)
+      return FILE_ERROR_ALREADY_EXISTS;
     log_error("Failed to open file '%s': %s", path->path.str, strerror(errno));
     return FILE_ERROR_OPEN_FAILED;
   }

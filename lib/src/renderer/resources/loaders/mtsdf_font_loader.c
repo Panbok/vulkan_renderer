@@ -12,6 +12,8 @@
 #include "core/vkr_text.h"
 #include "renderer/vkr_renderer.h"
 
+#include <math.h>
+
 typedef struct VkrMtsdfFontRequest {
   String8 file_path;
   String8 query;
@@ -102,71 +104,6 @@ vkr_internal void vkr_mtsdf_font_copy_face(VkrFont *font, String8 face_name) {
   font->face[copy_len] = '\0';
 }
 
-vkr_internal void vkr_mtsdf_font_load_atlas_cpu_data(String8 atlas_path,
-                                                     VkrAllocator *temp_alloc,
-                                                     VkrAllocator *result_alloc,
-                                                     VkrFont *font) {
-  if (!atlas_path.str || !temp_alloc || !result_alloc || !font) {
-    return;
-  }
-
-  FilePath fp = file_path_create((const char *)atlas_path.str, temp_alloc,
-                                 FILE_PATH_TYPE_RELATIVE);
-  FileMode mode = bitset8_create();
-  bitset8_set(&mode, FILE_MODE_READ);
-  bitset8_set(&mode, FILE_MODE_BINARY);
-
-  FileHandle fh = {0};
-  FileError ferr = file_open(&fp, mode, &fh);
-  if (ferr != FILE_ERROR_NONE) {
-    log_warn("MtsdfFontLoader: failed to open atlas '%s' for CPU copy",
-             string8_cstr(&atlas_path));
-    return;
-  }
-
-  uint8_t *file_data = NULL;
-  uint64_t file_size = 0;
-  ferr = file_read_all(&fh, temp_alloc, &file_data, &file_size);
-  file_close(&fh);
-
-  if (ferr != FILE_ERROR_NONE || !file_data || file_size == 0) {
-    log_warn("MtsdfFontLoader: failed to read atlas '%s' for CPU copy",
-             string8_cstr(&atlas_path));
-    return;
-  }
-
-  stbi_set_flip_vertically_on_load_thread(0);
-
-  int32_t width = 0;
-  int32_t height = 0;
-  int32_t channels = 0;
-  uint8_t *pixels =
-      stbi_load_from_memory(file_data, (int32_t)file_size, &width, &height,
-                            &channels, VKR_TEXTURE_RGBA_CHANNELS);
-  if (!pixels) {
-    log_warn("MtsdfFontLoader: failed to decode atlas '%s' for CPU copy",
-             string8_cstr(&atlas_path));
-    return;
-  }
-
-  uint64_t size =
-      (uint64_t)width * (uint64_t)height * (uint64_t)VKR_TEXTURE_RGBA_CHANNELS;
-  uint8_t *copy =
-      vkr_allocator_alloc(result_alloc, size, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  if (!copy) {
-    stbi_image_free(pixels);
-    log_warn("MtsdfFontLoader: out of memory for CPU atlas copy");
-    return;
-  }
-
-  MemCopy(copy, pixels, (size_t)size);
-  stbi_image_free(pixels);
-
-  font->atlas_cpu_data = copy;
-  font->atlas_cpu_size = size;
-  font->atlas_cpu_channels = VKR_TEXTURE_RGBA_CHANNELS;
-}
-
 vkr_internal bool8_t vkr_mtsdf_parse_atlas(VkrJsonReader *reader,
                                            VkrMtsdfFontMetadata *metadata) {
   assert_log(reader != NULL, "Reader is NULL");
@@ -178,61 +115,84 @@ vkr_internal bool8_t vkr_mtsdf_parse_atlas(VkrJsonReader *reader,
     return false_v;
   }
 
-  vkr_json_skip_to(reader, '{');
-  uint64_t atlas_start = reader->pos;
-
-  reader->pos = atlas_start;
-  if (vkr_json_find_field(reader, "distanceRange")) {
-    vkr_json_parse_float(reader, &metadata->distance_range);
+  VkrJsonReader atlas_reader = {0};
+  if (!vkr_json_enter_object(reader, &atlas_reader)) {
+    log_error("MtsdfFontLoader: 'atlas' must be an object");
+    return false_v;
   }
 
-  reader->pos = atlas_start;
-  if (vkr_json_find_field(reader, "size")) {
-    vkr_json_parse_float(reader, &metadata->size);
-    if (metadata->size <= 0.0f) {
-      log_error("MtsdfFontLoader: invalid font size: %f", metadata->size);
-      return false_v;
-    }
+  String8 atlas_type = {0};
+  const String8 mtsdf_type = string8_lit("mtsdf");
+  atlas_reader.pos = 0;
+  if (!vkr_json_find_field(&atlas_reader, "type") ||
+      !vkr_json_parse_string(&atlas_reader, &atlas_type) ||
+      !string8_equalsi(&atlas_type, &mtsdf_type)) {
+    log_error("MtsdfFontLoader: atlas type must be 'mtsdf'");
+    return false_v;
   }
 
-  reader->pos = atlas_start;
-  if (vkr_json_find_field(reader, "width")) {
-    int32_t w = 0;
-    vkr_json_parse_int(reader, &w);
-    if (w <= 0) {
-      log_error("MtsdfFontLoader: invalid atlas width: %d", w);
-      return false_v;
-    }
-    metadata->atlas_width = (uint32_t)w;
+  atlas_reader.pos = 0;
+  if (!vkr_json_find_field(&atlas_reader, "distanceRange") ||
+      !vkr_json_parse_float(&atlas_reader, &metadata->distance_range) ||
+      !isfinite(metadata->distance_range) || metadata->distance_range <= 0.0f) {
+    log_error("MtsdfFontLoader: distanceRange must be finite and positive");
+    return false_v;
   }
 
-  reader->pos = atlas_start;
-  if (vkr_json_find_field(reader, "height")) {
-    int32_t h = 0;
-    vkr_json_parse_int(reader, &h);
-    if (h <= 0) {
-      log_error("MtsdfFontLoader: invalid atlas height: %d", h);
-      return false_v;
-    }
-    metadata->atlas_height = (uint32_t)h;
+  atlas_reader.pos = 0;
+  if (!vkr_json_find_field(&atlas_reader, "distanceRangeMiddle") ||
+      !vkr_json_parse_float(&atlas_reader, &metadata->distance_range_middle) ||
+      !isfinite(metadata->distance_range_middle) ||
+      metadata->distance_range_middle != 0.0f) {
+    log_error("MtsdfFontLoader: only symmetric distance ranges are supported");
+    return false_v;
   }
 
-  reader->pos = atlas_start;
-  if (vkr_json_find_field(reader, "emSize")) {
-    vkr_json_parse_float(reader, &metadata->em_size);
-    if (metadata->em_size <= 0.0f) {
-      log_error("MtsdfFontLoader: invalid em size: %f", metadata->em_size);
-      return false_v;
-    }
+  atlas_reader.pos = 0;
+  if (!vkr_json_find_field(&atlas_reader, "size") ||
+      !vkr_json_parse_float(&atlas_reader, &metadata->size) ||
+      !isfinite(metadata->size) || metadata->size <= 0.0f) {
+    log_error("MtsdfFontLoader: atlas size must be finite and positive");
+    return false_v;
   }
 
-  reader->pos = atlas_start;
-  if (vkr_json_find_field(reader, "yOrigin")) {
-    String8 origin = {0};
-    if (vkr_json_parse_string(reader, &origin)) {
-      String8 bottom = string8_lit("bottom");
-      metadata->y_origin_bottom = string8_equalsi(&origin, &bottom);
-    }
+  int32_t width = 0;
+  atlas_reader.pos = 0;
+  if (!vkr_json_find_field(&atlas_reader, "width") ||
+      !vkr_json_parse_int(&atlas_reader, &width) || width <= 0 ||
+      width > VKR_TEXTURE_MAX_DIMENSION) {
+    log_error("MtsdfFontLoader: invalid atlas width: %d", width);
+    return false_v;
+  }
+  metadata->atlas_width = (uint32_t)width;
+
+  int32_t height = 0;
+  atlas_reader.pos = 0;
+  if (!vkr_json_find_field(&atlas_reader, "height") ||
+      !vkr_json_parse_int(&atlas_reader, &height) || height <= 0 ||
+      height > VKR_TEXTURE_MAX_DIMENSION) {
+    log_error("MtsdfFontLoader: invalid atlas height: %d", height);
+    return false_v;
+  }
+  metadata->atlas_height = (uint32_t)height;
+
+  String8 origin = {0};
+  atlas_reader.pos = 0;
+  if (!vkr_json_find_field(&atlas_reader, "yOrigin") ||
+      !vkr_json_parse_string(&atlas_reader, &origin)) {
+    log_error("MtsdfFontLoader: atlas yOrigin is required");
+    return false_v;
+  }
+  const String8 bottom = string8_lit("bottom");
+  const String8 top = string8_lit("top");
+  if (string8_equalsi(&origin, &bottom)) {
+    metadata->y_origin_bottom = true_v;
+  } else if (string8_equalsi(&origin, &top)) {
+    metadata->y_origin_bottom = false_v;
+  } else {
+    log_error("MtsdfFontLoader: unsupported atlas yOrigin '%.*s'",
+              (int32_t)origin.length, origin.str);
+    return false_v;
   }
 
   return true_v;
@@ -249,32 +209,35 @@ vkr_internal bool8_t vkr_mtsdf_parse_metrics(VkrJsonReader *reader,
     return false_v;
   }
 
-  vkr_json_skip_to(reader, '{');
-  uint64_t metrics_start = reader->pos;
-
-  reader->pos = metrics_start;
-  if (vkr_json_find_field(reader, "lineHeight")) {
-    vkr_json_parse_float(reader, &metadata->line_height);
+  VkrJsonReader metrics_reader = {0};
+  if (!vkr_json_enter_object(reader, &metrics_reader)) {
+    log_error("MtsdfFontLoader: 'metrics' must be an object");
+    return false_v;
   }
 
-  reader->pos = metrics_start;
-  if (vkr_json_find_field(reader, "ascender")) {
-    vkr_json_parse_float(reader, &metadata->ascender);
+#define VKR_MTSDF_PARSE_METRIC(field_name, destination)                        \
+  metrics_reader.pos = 0;                                                      \
+  if (!vkr_json_find_field(&metrics_reader, field_name) ||                     \
+      !vkr_json_parse_float(&metrics_reader, destination) ||                   \
+      !isfinite(*(destination))) {                                             \
+    log_error("MtsdfFontLoader: invalid metric '%s'", field_name);             \
+    return false_v;                                                            \
   }
 
-  reader->pos = metrics_start;
-  if (vkr_json_find_field(reader, "descender")) {
-    vkr_json_parse_float(reader, &metadata->descender);
-  }
+  VKR_MTSDF_PARSE_METRIC("emSize", &metadata->em_size);
+  VKR_MTSDF_PARSE_METRIC("lineHeight", &metadata->line_height);
+  VKR_MTSDF_PARSE_METRIC("ascender", &metadata->ascender);
+  VKR_MTSDF_PARSE_METRIC("descender", &metadata->descender);
+  VKR_MTSDF_PARSE_METRIC("underlineY", &metadata->underline_y);
+  VKR_MTSDF_PARSE_METRIC("underlineThickness", &metadata->underline_thickness);
 
-  reader->pos = metrics_start;
-  if (vkr_json_find_field(reader, "underlineY")) {
-    vkr_json_parse_float(reader, &metadata->underline_y);
-  }
+#undef VKR_MTSDF_PARSE_METRIC
 
-  reader->pos = metrics_start;
-  if (vkr_json_find_field(reader, "underlineThickness")) {
-    vkr_json_parse_float(reader, &metadata->underline_thickness);
+  if (metadata->em_size <= 0.0f || metadata->line_height <= 0.0f ||
+      metadata->underline_thickness < 0.0f ||
+      metadata->ascender <= metadata->descender) {
+    log_error("MtsdfFontLoader: invalid normalized font metrics");
+    return false_v;
   }
 
   return true_v;
@@ -282,50 +245,55 @@ vkr_internal bool8_t vkr_mtsdf_parse_metrics(VkrJsonReader *reader,
 
 vkr_internal bool8_t vkr_mtsdf_parse_glyph_bounds(
     VkrJsonReader *reader, const char *bounds_name, float32_t *left,
-    float32_t *bottom, float32_t *right, float32_t *top) {
+    float32_t *bottom, float32_t *right, float32_t *top, bool8_t *out_present) {
   assert_log(reader != NULL, "Reader is NULL");
   assert_log(bounds_name != NULL, "Bounds name is NULL");
   assert_log(left != NULL, "Left is NULL");
   assert_log(bottom != NULL, "Bottom is NULL");
   assert_log(right != NULL, "Right is NULL");
   assert_log(top != NULL, "Top is NULL");
+  assert_log(out_present != NULL, "Out present is NULL");
+
+  *out_present = false_v;
 
   uint64_t saved_pos = reader->pos;
 
   if (!vkr_json_find_field(reader, bounds_name)) {
     reader->pos = saved_pos;
+    return true_v;
+  }
+
+  VkrJsonReader bounds_reader = {0};
+  if (!vkr_json_enter_object(reader, &bounds_reader)) {
+    log_error("MtsdfFontLoader: '%s' must be an object", bounds_name);
     return false_v;
   }
 
-  vkr_json_skip_to(reader, '{');
-  uint64_t bounds_start = reader->pos;
-
-  reader->pos = bounds_start;
-  if (vkr_json_find_field(reader, "left")) {
-    vkr_json_parse_float(reader, left);
+#define VKR_MTSDF_PARSE_BOUND(field_name, destination)                         \
+  bounds_reader.pos = 0;                                                       \
+  if (!vkr_json_find_field(&bounds_reader, field_name) ||                      \
+      !vkr_json_parse_float(&bounds_reader, destination) ||                    \
+      !isfinite(*(destination))) {                                             \
+    log_error("MtsdfFontLoader: invalid %s.%s", bounds_name, field_name);      \
+    return false_v;                                                            \
   }
 
-  reader->pos = bounds_start;
-  if (vkr_json_find_field(reader, "bottom")) {
-    vkr_json_parse_float(reader, bottom);
-  }
+  VKR_MTSDF_PARSE_BOUND("left", left);
+  VKR_MTSDF_PARSE_BOUND("bottom", bottom);
+  VKR_MTSDF_PARSE_BOUND("right", right);
+  VKR_MTSDF_PARSE_BOUND("top", top);
 
-  reader->pos = bounds_start;
-  if (vkr_json_find_field(reader, "right")) {
-    vkr_json_parse_float(reader, right);
-  }
+#undef VKR_MTSDF_PARSE_BOUND
 
-  reader->pos = bounds_start;
-  if (vkr_json_find_field(reader, "top")) {
-    vkr_json_parse_float(reader, top);
-  }
-
+  *out_present = true_v;
   return true_v;
 }
 
-vkr_internal bool8_t vkr_mtsdf_parse_glyphs(VkrJsonReader *reader,
-                                            Vector_VkrMtsdfGlyph *out_glyphs) {
+vkr_internal bool8_t vkr_mtsdf_parse_glyphs(
+    VkrJsonReader *reader, const VkrMtsdfFontMetadata *metadata,
+    Vector_VkrMtsdfGlyph *out_glyphs) {
   assert_log(reader != NULL, "Reader is NULL");
+  assert_log(metadata != NULL, "Metadata is NULL");
   assert_log(out_glyphs != NULL, "Out glyphs is NULL");
 
   reader->pos = 0;
@@ -356,20 +324,51 @@ vkr_internal bool8_t vkr_mtsdf_parse_glyphs(VkrJsonReader *reader,
 
     glyph_reader.pos = 0;
     if (vkr_json_find_field(&glyph_reader, "advance")) {
-      vkr_json_parse_float(&glyph_reader, &glyph.advance);
+      if (!vkr_json_parse_float(&glyph_reader, &glyph.advance) ||
+          !isfinite(glyph.advance) || glyph.advance < 0.0f) {
+        log_error("MtsdfFontLoader: invalid advance for U+%04X", glyph.unicode);
+        return false_v;
+      }
+    } else {
+      log_error("MtsdfFontLoader: missing advance for U+%04X", glyph.unicode);
+      return false_v;
     }
 
+    bool8_t has_plane_bounds = false_v;
     glyph_reader.pos = 0;
-    if (vkr_mtsdf_parse_glyph_bounds(&glyph_reader, "planeBounds",
-                                     &glyph.plane_left, &glyph.plane_bottom,
-                                     &glyph.plane_right, &glyph.plane_top)) {
-      glyph.has_geometry = true_v;
+    if (!vkr_mtsdf_parse_glyph_bounds(&glyph_reader, "planeBounds",
+                                      &glyph.plane_left, &glyph.plane_bottom,
+                                      &glyph.plane_right, &glyph.plane_top,
+                                      &has_plane_bounds))
+      return false_v;
+
+    bool8_t has_atlas_bounds = false_v;
+    glyph_reader.pos = 0;
+    if (!vkr_mtsdf_parse_glyph_bounds(&glyph_reader, "atlasBounds",
+                                      &glyph.atlas_left, &glyph.atlas_bottom,
+                                      &glyph.atlas_right, &glyph.atlas_top,
+                                      &has_atlas_bounds))
+      return false_v;
+
+    if (has_plane_bounds != has_atlas_bounds) {
+      log_error("MtsdfFontLoader: U+%04X must declare both planeBounds and "
+                "atlasBounds",
+                glyph.unicode);
+      return false_v;
     }
 
-    glyph_reader.pos = 0;
-    vkr_mtsdf_parse_glyph_bounds(&glyph_reader, "atlasBounds",
-                                 &glyph.atlas_left, &glyph.atlas_bottom,
-                                 &glyph.atlas_right, &glyph.atlas_top);
+    glyph.has_geometry = has_plane_bounds;
+    if (glyph.has_geometry &&
+        (!(glyph.plane_right > glyph.plane_left) ||
+         !(glyph.plane_top > glyph.plane_bottom) ||
+         !(glyph.atlas_right > glyph.atlas_left) ||
+         !(glyph.atlas_top > glyph.atlas_bottom) || glyph.atlas_left < 0.0f ||
+         glyph.atlas_bottom < 0.0f ||
+         glyph.atlas_right > (float32_t)metadata->atlas_width ||
+         glyph.atlas_top > (float32_t)metadata->atlas_height)) {
+      log_error("MtsdfFontLoader: invalid bounds for U+%04X", glyph.unicode);
+      return false_v;
+    }
 
     vector_push_VkrMtsdfGlyph(out_glyphs, glyph);
     if (out_glyphs->length >= VKR_MTSDF_FONT_MAX_GLYPHS) {
@@ -452,6 +451,16 @@ vkr_internal bool8_t vkr_mtsdf_build_font(VkrMtsdfFontMetadata *metadata,
       dst->x_offset = (int16_t)(src->plane_left * scale);
       float32_t y_offset = (-src->plane_top * scale) + ascent;
       dst->y_offset = (int16_t)(y_offset + (y_offset >= 0.0f ? 0.5f : -0.5f));
+
+      src->uv_left = atlas_left / (float32_t)metadata->atlas_width;
+      src->uv_right = atlas_right / (float32_t)metadata->atlas_width;
+      if (metadata->y_origin_bottom) {
+        src->uv_bottom = min_y / (float32_t)metadata->atlas_height;
+        src->uv_top = max_y / (float32_t)metadata->atlas_height;
+      } else {
+        src->uv_bottom = 1.0f - max_y / (float32_t)metadata->atlas_height;
+        src->uv_top = 1.0f - min_y / (float32_t)metadata->atlas_height;
+      }
     } else {
       dst->x = dst->y = dst->width = dst->height = 0;
       dst->x_offset = dst->y_offset = 0;
@@ -508,6 +517,8 @@ vkr_internal bool8_t vkr_mtsdf_build_font(VkrMtsdfFontMetadata *metadata,
 
   out_font->mtsdf_glyphs = metadata->glyphs;
   out_font->sdf_distance_range = metadata->distance_range;
+  out_font->mtsdf_unit_range = vkr_text_mtsdf_unit_range(
+      metadata->distance_range, metadata->atlas_width, metadata->atlas_height);
   out_font->em_size = metadata->em_size;
 
   return true_v;
@@ -647,7 +658,7 @@ vkr_internal bool8_t vkr_mtsdf_font_loader_load(
   }
 
   Vector_VkrMtsdfGlyph glyphs = vector_create_VkrMtsdfGlyph(temp_alloc);
-  if (!vkr_mtsdf_parse_glyphs(&reader, &glyphs)) {
+  if (!vkr_mtsdf_parse_glyphs(&reader, &metadata, &glyphs)) {
     *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     goto fail;
   }
@@ -661,12 +672,19 @@ vkr_internal bool8_t vkr_mtsdf_font_loader_load(
   MemCopy(metadata.glyphs.data, glyphs.data,
           glyphs.length * sizeof(VkrMtsdfGlyph));
 
+  String8 atlas_request = string8_create_formatted(
+      temp_alloc, "%.*s?cs=linear&tc=data_mask&source=only",
+      (int32_t)request.atlas_path.length, request.atlas_path.str);
+  if (!atlas_request.str) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    goto fail;
+  }
+
   VkrTextureHandle atlas = VKR_TEXTURE_HANDLE_INVALID;
   VkrResourceHandleInfo texture_info = {0};
   VkrRendererError tex_error = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_resource_system_load_sync(VKR_RESOURCE_TYPE_TEXTURE,
-                                     request.atlas_path, temp_alloc,
-                                     &texture_info, &tex_error)) {
+  if (!vkr_resource_system_load_sync(VKR_RESOURCE_TYPE_TEXTURE, atlas_request,
+                                     temp_alloc, &texture_info, &tex_error)) {
     String8 err = vkr_renderer_get_error_string(tex_error);
     log_error("MtsdfFontLoader: failed to load atlas '%s': %s",
               string8_cstr(&request.atlas_path), string8_cstr(&err));
@@ -681,26 +699,42 @@ vkr_internal bool8_t vkr_mtsdf_font_loader_load(
     goto fail_unload_atlas;
   }
 
-  if (context->texture_system) {
-    VkrRendererError sampler_err = vkr_texture_system_update_sampler(
-        context->texture_system, atlas, VKR_FILTER_LINEAR, VKR_FILTER_LINEAR,
-        VKR_MIP_FILTER_LINEAR, false_v, VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
-        VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
-        VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE);
-    if (sampler_err != VKR_RENDERER_ERROR_NONE) {
-      String8 err = vkr_renderer_get_error_string(sampler_err);
-      log_warn("MtsdfFontLoader: failed to update atlas sampler '%s': %s",
-               string8_cstr(&request.atlas_path), string8_cstr(&err));
-    }
+  VkrTexture *atlas_texture =
+      context->texture_system
+          ? vkr_texture_system_get_by_handle(context->texture_system, atlas)
+          : NULL;
+  if (!atlas_texture ||
+      atlas_texture->description.format != VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM ||
+      atlas_texture->description.channels != VKR_TEXTURE_RGBA_CHANNELS ||
+      atlas_texture->description.mip_levels != 1u ||
+      atlas_texture->description.array_layers != 1u ||
+      atlas_texture->description.type != VKR_TEXTURE_TYPE_2D ||
+      atlas_texture->description.width != metadata.atlas_width ||
+      atlas_texture->description.height != metadata.atlas_height) {
+    log_error("MtsdfFontLoader: atlas '%s' must resolve to a matching, linear "
+              "RGBA8, one-mip 2D texture",
+              string8_cstr(&request.atlas_path));
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    goto fail_unload_atlas;
+  }
+
+  VkrRendererError sampler_err = vkr_texture_system_update_sampler(
+      context->texture_system, atlas, VKR_FILTER_LINEAR, VKR_FILTER_LINEAR,
+      VKR_MIP_FILTER_NONE, false_v, VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+      VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+      VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE);
+  if (sampler_err != VKR_RENDERER_ERROR_NONE) {
+    String8 err = vkr_renderer_get_error_string(sampler_err);
+    log_error("MtsdfFontLoader: failed to configure atlas sampler '%s': %s",
+              string8_cstr(&request.atlas_path), string8_cstr(&err));
+    *out_error = sampler_err;
+    goto fail_unload_atlas;
   }
 
   float32_t target_size = request.size > 0
                               ? (float32_t)request.size
                               : (float32_t)VKR_MTSDF_FONT_DEFAULT_SIZE;
   String8 face_name = string8_get_stem(temp_alloc, request.file_path);
-  if (metadata.em_size <= 0.0f) {
-    metadata.em_size = target_size;
-  }
 
   if (!vkr_mtsdf_build_font(&metadata, &result->allocator, atlas, target_size,
                             face_name, &result->font)) {
@@ -708,12 +742,9 @@ vkr_internal bool8_t vkr_mtsdf_font_loader_load(
     goto fail_unload_atlas;
   }
 
-  vkr_mtsdf_font_load_atlas_cpu_data(request.atlas_path, temp_alloc,
-                                     &result->allocator, &result->font);
-
   result->metadata = metadata;
   result->atlas_texture_name =
-      string8_duplicate(&result->allocator, &request.atlas_path);
+      string8_duplicate(&result->allocator, &atlas_request);
   result->success = true_v;
   result->error = VKR_RENDERER_ERROR_NONE;
 
@@ -731,7 +762,7 @@ fail_unload_atlas: {
       .loader_id = VKR_INVALID_ID,
       .as.texture = atlas,
   };
-  vkr_resource_system_unload(&atlas_info, request.atlas_path);
+  vkr_resource_system_unload(&atlas_info, atlas_request);
 }
 
 fail:

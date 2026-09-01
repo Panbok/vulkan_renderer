@@ -4,3 +4,6 @@
 [submodule "vendor/meshoptimizer"]
 	path = vendor/meshoptimizer
 	url = https://github.com/zeux/meshoptimizer.git
+[submodule "vendor/msdf-atlas-gen"]
+	path = vendor/msdf-atlas-gen
+	url = https://github.com/Chlumsky/msdf-atlas-gen.git

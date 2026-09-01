@@ -3,7 +3,7 @@
   "harness_assets": [
     "assets/fonts/NotoSansCJK.fontcfg",
     "assets/fonts/UbuntuMono-bitmap.fontcfg",
-    "assets/fonts/UbuntuMono-2d.fontcfg"
+    "assets/fonts/UbuntuMono-cooked.fontcfg"
   ],
   "entities": [
     {

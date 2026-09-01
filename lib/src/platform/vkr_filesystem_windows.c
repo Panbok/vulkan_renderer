@@ -267,13 +267,20 @@ FileError file_open(const FilePath *path, FileMode mode,
   bool8_t has_append = bitset8_is_set(&mode, FILE_MODE_APPEND);
   bool8_t has_create = bitset8_is_set(&mode, FILE_MODE_CREATE);
   bool8_t has_truncate = bitset8_is_set(&mode, FILE_MODE_TRUNCATE);
+  bool8_t has_exclusive = bitset8_is_set(&mode, FILE_MODE_EXCLUSIVE);
+
+  if (has_exclusive && (!has_create || has_truncate || has_append)) {
+    return FILE_ERROR_INVALID_MODE;
+  }
 
   if (has_read)
     access |= GENERIC_READ;
   if (has_write)
     access |= GENERIC_WRITE;
 
-  if (has_create && has_truncate) {
+  if (has_exclusive) {
+    disposition = CREATE_NEW;
+  } else if (has_create && has_truncate) {
     disposition = CREATE_ALWAYS;
   } else if (has_write && has_truncate) {
     disposition = CREATE_ALWAYS; // Implicit Create on Truncate
@@ -291,7 +298,9 @@ FileError file_open(const FilePath *path, FileMode mode,
   HANDLE hFile = CreateFileA((char *)path->path.str, access, share, NULL,
                              disposition, flags, NULL);
   if (hFile == INVALID_HANDLE_VALUE) {
-    // Optional: log_error with GetLastError()
+    const DWORD error = GetLastError();
+    if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS)
+      return FILE_ERROR_ALREADY_EXISTS;
     return FILE_ERROR_OPEN_FAILED;
   }
 

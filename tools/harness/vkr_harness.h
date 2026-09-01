@@ -359,6 +359,8 @@ typedef struct VkrHarnessCase {
   VkrHarnessAssertion assertions[VKR_HARNESS_MAX_ASSERTIONS];
   uint32_t assertion_count;
   VkrHarnessCompareConfig compare;
+  /** Explicit offscreen logical-UI scale; effective OS scale for reports. */
+  float32_t content_scale;
 } VkrHarnessCase;
 
 typedef struct VkrHarnessProfile {

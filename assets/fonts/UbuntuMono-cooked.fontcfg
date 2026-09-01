@@ -1,0 +1,27 @@
+# Reproducible cooked MTSDF configuration. The source font remains available
+# for recooking and license inspection; runtime loading consumes only the
+# generated .vkfa artifact.
+type=cooked_mtsdf
+source=UbuntuMono-R.ttf
+file=UbuntuMono-cooked.vkfa
+face=Ubuntu Mono/Regular
+face_index=0
+size=32
+charset=U+0020-U+007E
+charset=U+00A0-U+00FF
+fallback=U+003F
+fallback_policy=reject
+field=mtsdf
+atlas_width=1024
+atlas_height=1024
+atlas_px_per_em=64
+distance_range=8
+inner_padding_px=0
+outer_padding_px=0
+edge_coloring=inktrap
+edge_angle_degrees=3
+edge_seed=1
+pixel_format=rgba8_unorm
+miter_limit=1
+scanline=true
+threads=1

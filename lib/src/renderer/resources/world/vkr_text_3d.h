@@ -9,7 +9,6 @@
 // 3D Text Types
 // =============================================================================
 
-#define VKR_TEXT_3D_MAX_LENGTH 1024
 #define VKR_TEXT_3D_DEFAULT_TEXTURE_SIZE 512
 
 /**
@@ -18,11 +17,12 @@
 typedef struct VkrText3DConfig {
   String8 text;            // Owned text content
   VkrFontHandle font;      // Font to use (or invalid for default)
-  float32_t font_size;     // Font size in points (0 = use font's native)
+  float32_t font_size;     // Text-target pixels per em (0 = font default)
   Vec4 color;              // Authored sRGB RGB and linear alpha.
   uint32_t texture_width;  // Texture width (0 = auto-size)
   uint32_t texture_height; // Texture height (0 = auto-size)
-  float32_t uv_inset_px; // Half-texel inset (in atlas pixels) to avoid bleeding
+  // Bitmap-only atlas bleed inset. MTSDF generator bounds remain exact.
+  float32_t uv_inset_px;
 } VkrText3DConfig;
 
 #define VKR_TEXT_3D_CONFIG_DEFAULT                                             \
@@ -43,7 +43,7 @@ typedef struct VkrText3D {
 
   String8 text;        // Owned text content
   VkrFontHandle font;  // Font to use (or invalid for default)
-  float32_t font_size; // Font size in points (0 = use font's native)
+  float32_t font_size; // Text-target pixels per em (0 = font default)
   Vec4 color;          // Authored sRGB RGB and linear alpha.
   Vec4 linear_color;   // Retained linear RGB and linear alpha.
 
@@ -68,7 +68,8 @@ typedef struct VkrText3D {
   VkrTransform transform; // Position/rotation/scale
   float32_t world_width;  // Width in world units
   float32_t world_height; // Height in world units
-  float32_t uv_inset_px; // Half-texel inset (in atlas pixels) to avoid bleeding
+  // Bitmap-only atlas bleed inset. MTSDF generator bounds remain exact.
+  float32_t uv_inset_px;
 
   bool8_t initialized; // Initialized flag
 } VkrText3D;

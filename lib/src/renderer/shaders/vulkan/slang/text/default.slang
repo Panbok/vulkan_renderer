@@ -36,9 +36,16 @@ float text_alpha(VkrVulkanTextOutput input)
         g_textures[texture_index].Sample(g_samplers[sampler_index], input.uv);
     if (root.material_flags == 0u)
         return atlas.a;
+    float2 dx = ddx(input.uv);
+    float2 dy = ddy(input.uv);
+    float2 gradient_squared =
+        max(dx * dx + dy * dy, float2(1e-12f, 1e-12f));
+    float2 screen_tex_size = rsqrt(gradient_squared);
+    float range =
+        max(0.5f * dot(root.material_alpha.xy, screen_tex_size), 1.0f);
     float distance = max(min(atlas.r, atlas.g),
                          min(max(atlas.r, atlas.g), atlas.b)) - 0.5f;
-    return saturate(distance / max(fwidth(distance), 1e-6f) + 0.5f);
+    return saturate(range * distance + 0.5f);
 }
 
 [shader("fragment")]

@@ -6,6 +6,7 @@
 #include "memory/arena.h"
 #include "memory/vkr_dmemory.h"
 #include "renderer/resources/loaders/bitmap_font_loader.h"
+#include "renderer/resources/loaders/cooked_font_loader.h"
 #include "renderer/resources/loaders/mesh_loader.h"
 #include "renderer/resources/loaders/mtsdf_font_loader.h"
 #include "renderer/resources/loaders/system_font_loader.h"

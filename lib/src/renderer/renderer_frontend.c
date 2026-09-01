@@ -1320,8 +1320,7 @@ static void vkr_renderer_prepare_packet(RendererFrontend *rf,
   if (rf->ui_system.initialized) {
     prepared->ui = packet->ui ? *packet->ui : (VkrUiPassPayload){0};
     const uint32_t text_draw_count = vkr_ui_system_prepare_text_draws(
-        rf, &rf->ui_system, prepared->ui_text_draws,
-        VKR_PREPARED_TEXT_DRAW_MAX);
+        &rf->ui_system, prepared->ui_text_draws, VKR_PREPARED_TEXT_DRAW_MAX);
     if (text_draw_count) {
       prepared->ui.text_draws = prepared->ui_text_draws;
       prepared->ui.text_draw_count = text_draw_count;
@@ -3431,6 +3430,9 @@ vkr_internal bool8_t renderer_frontend_initialize_packet_systems(
   vkr_resource_system_register_loader(
       (void *)&rf->mtsdf_font_loader,
       vkr_mtsdf_font_loader_create(&rf->mtsdf_font_loader));
+  vkr_resource_system_register_loader(
+      (void *)&rf->mtsdf_font_loader,
+      vkr_cooked_font_loader_create(&rf->mtsdf_font_loader));
   vkr_resource_system_register_loader((void *)rf, vkr_scene_loader_create());
 
   VkrFontSystemConfig font_config = {

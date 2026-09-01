@@ -214,6 +214,7 @@ typedef struct VkrTextureRequest {
   VkrTextureClass texture_class;
   bool8_t has_explicit_colorspace;
   bool8_t has_explicit_class;
+  bool8_t source_only;
 } VkrTextureRequest;
 
 typedef struct VkrTextureQueryColorScanResult {
@@ -500,6 +501,23 @@ vkr_internal bool8_t vkr_texture_scan_query_class(String8 query,
   return has_explicit;
 }
 
+vkr_internal bool8_t vkr_texture_scan_query_source_only(String8 query) {
+  const String8 source_key = string8_lit("source");
+  const String8 only_value = string8_lit("only");
+  bool8_t source_only = false_v;
+
+  uint64_t cursor = 0;
+  String8 key = {0};
+  String8 value = {0};
+  while (vkr_texture_query_next_pair(query, &cursor, &key, &value)) {
+    if (string8_equalsi(&key, &source_key)) {
+      source_only = string8_equalsi(&value, &only_value);
+    }
+  }
+
+  return source_only;
+}
+
 vkr_internal bool8_t vkr_texture_contains_token_ci(String8 name,
                                                    String8 token) {
   if (!name.str || !token.str || token.length == 0 ||
@@ -572,8 +590,8 @@ vkr_internal VkrTextureClass vkr_texture_class_from_filename_heuristic(
 
 /**
  * @brief Parse a texture request into a base path and desired color space.
- * @note Consumes `cs` (colorspace) and `tc`/`class` (texture class) query
- * parameters.
+ * @note Consumes `cs` (colorspace), `tc`/`class` (texture class), and
+ * `source=only` (bypass every `.vkt` candidate) query parameters.
  * @note Unknown `cs` values log once and default to linear.
  */
 vkr_internal VkrTextureRequest vkr_texture_parse_request(String8 name) {
@@ -618,6 +636,7 @@ vkr_internal VkrTextureRequest vkr_texture_parse_request(String8 name) {
       .texture_class = texture_class,
       .has_explicit_colorspace = scan.has_explicit,
       .has_explicit_class = has_explicit_class,
+      .source_only = vkr_texture_scan_query_source_only(query),
   };
 }
 
@@ -2047,6 +2066,7 @@ typedef struct VkrTextureDecodeResult {
  * input
  * @param has_explicit_class Whether texture class came from explicit query
  * input
+ * @param source_only Whether every packed sidecar must be bypassed
  * @param system The texture system owning the cache guard
  * @param result The result of the texture decoding
  */
@@ -2058,6 +2078,7 @@ typedef struct VkrTextureDecodeJobPayload {
   VkrTextureClass texture_class;
   bool8_t has_explicit_colorspace;
   bool8_t has_explicit_class;
+  bool8_t source_only;
   VkrTextureSystem *system;
 
   VkrTextureDecodeResult *result;
@@ -2960,6 +2981,17 @@ vkr_internal bool8_t vkr_texture_decode_job_run(VkrJobContext *ctx,
         false_v, NULL, result);
   }
 
+  if (job->source_only) {
+    if (!source_path.str ||
+        !vkr_texture_path_exists(scratch_allocator, source_path)) {
+      result->error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+      return false_v;
+    }
+    return vkr_texture_decode_from_source_image(
+        scratch_allocator, job->system, source_path, job->flip_vertical,
+        (String8){0}, false_v, NULL, result);
+  }
+
   const bool8_t has_direct_vkt =
       direct_vkt.str && vkr_texture_path_exists(scratch_allocator, direct_vkt);
   const bool8_t has_sidecar_vkt =
@@ -3174,6 +3206,7 @@ bool8_t vkr_texture_system_prepare_load_from_file(
       .texture_class = request.texture_class,
       .has_explicit_colorspace = request.has_explicit_colorspace,
       .has_explicit_class = request.has_explicit_class,
+      .source_only = request.source_only,
       .system = system,
       .result = &decode_result,
   };

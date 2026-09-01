@@ -789,7 +789,8 @@ bool8_t vkr_vk_record_text_draws(VkrVulkanRenderer *renderer,
     root->view = draw->model;
     root->transmission_texture = atlas->sampled_slot.index;
     root->transmission_sampler = sampler->slot.index;
-    root->material_alpha.x = draw->screen_px_range;
+    root->material_alpha.x = draw->unit_range.x;
+    root->material_alpha.y = draw->unit_range.y;
     root->material_flags = draw->font_mode;
     root->first_instance = draw->object_id;
     root->flags = ui_domain ? 1u : 0u;

@@ -1,5 +1,7 @@
 #include "vkr_harness_runtime.h"
 
+#include <math.h>
+
 typedef struct VkrHarnessSampleLayout {
   uint64_t value_count;
   uint64_t pass_value_count;
@@ -115,6 +117,8 @@ bool8_t vkr_harness_samples_read(const char *path,
       header.metric_count > VKR_METRICS_MAX_SLOTS ||
       header.pass_count > VKR_METRICS_MAX_SLOTS ||
       header.event_count > VKR_HARNESS_MAX_EVENTS ||
+      !isfinite(header.actual_content_scale) ||
+      header.actual_content_scale <= 0.0f ||
       header.warmup_frames != case_manifest->warmup_frames ||
       header.measure_frames != case_manifest->measure_frames) {
     return false_v;

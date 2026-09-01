@@ -17,10 +17,11 @@ typedef struct VkrUiTextConfig {
   VkrFontHandle font; // Font to use (or invalid for default)
   /** Authored sRGB RGB and linear alpha. */
   Vec4 color;
-  float32_t font_size;         // Font size in points (0 = use font's native)
-  float32_t letter_spacing;    // Extra spacing between glyphs
+  float32_t font_size;      // Authored logical units per em (0 = font default)
+  float32_t letter_spacing; // Extra authored logical units between glyphs
   VkrTextLayoutOptions layout; // Word wrap, max dimensions, anchor
-  float32_t uv_inset_px; // Half-texel inset (in atlas pixels) to avoid bleeding
+  // Bitmap-only atlas bleed inset. MTSDF generator bounds remain exact.
+  float32_t uv_inset_px;
 } VkrUiTextConfig;
 
 /**
@@ -65,8 +66,9 @@ typedef struct VkrUiText {
   // Content & config
   String8 content; // Owned text content
   VkrUiTextConfig config;
-  Vec4 linear_color;      // Retained decode of config.color.
-  VkrTransform transform; // Position/rotation/scale
+  float32_t content_scale; // Authored logical units to device pixels
+  Vec4 linear_color;       // Retained decode of config.color.
+  VkrTransform transform;  // Position/rotation/scale
 
   // Computed state
   VkrTextLayout layout;   // Computed glyph positions
@@ -117,8 +119,12 @@ bool8_t vkr_ui_text_set_content(VkrUiText *text, String8 content);
  */
 void vkr_ui_text_set_config(VkrUiText *text, const VkrUiTextConfig *config);
 
+/** Applies logical-to-device scale before the next layout and geometry build.
+ */
+void vkr_ui_text_set_content_scale(VkrUiText *text, float32_t content_scale);
+
 /**
- * @brief Sets the text position.
+ * @brief Sets the text position in device pixels.
  */
 void vkr_ui_text_set_position(VkrUiText *text, Vec2 position);
 

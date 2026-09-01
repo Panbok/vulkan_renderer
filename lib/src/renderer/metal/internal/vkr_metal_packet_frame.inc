@@ -311,10 +311,10 @@ vkr_internal bool8_t vkr_metal_packet_encode_text_draws(
         .atlas_texture_id = atlas->resource.resource_id,
         .model = draw->model,
         .view_projection = view_projection,
-        .controls = {draw->screen_px_range, (float32_t)draw->font_mode,
+        .controls = {draw->unit_range.x, draw->unit_range.y,
                      (float32_t)target_width, (float32_t)target_height},
         .object_id = draw->object_id,
-        .flags = ui_domain ? 1u : 0u,
+        .flags = (ui_domain ? 1u : 0u) | (draw->font_mode != 0u ? 2u : 0u),
     };
     [renderer->argument_table setAddress:root_gpu atIndex:1];
     [encoder setArgumentTable:renderer->argument_table

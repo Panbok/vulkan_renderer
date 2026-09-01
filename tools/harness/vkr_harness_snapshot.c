@@ -1,5 +1,7 @@
 #include "vkr_harness_runtime.h"
 
+#include <math.h>
+
 #define VKR_HARNESS_SNAPSHOT_ARTIFACT_ROOT "build/_artifacts/snapshot"
 
 static int vkr_harness_snapshot_spawn(
@@ -289,6 +291,7 @@ int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
     arena_destroy(summary_arena);
     return VKR_HARNESS_EXIT_ERROR;
   }
+  bool8_t replay_scale_compatible = true_v;
   for (uint32_t i = 0; i < replay_count; ++i) {
     const VkrHarnessCaptureReplay *replay = &replays[i];
     char child_relative[VKR_HARNESS_PATH_MAX];
@@ -340,8 +343,20 @@ int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
     if (child_exit != VKR_HARNESS_EXIT_PASS ||
         !vkr_harness_sha256_file(child_report, reference->sha256) ||
         !vkr_harness_capture_summary_read(child_summary, summary_arena,
-                                          &summary) ||
-        !vkr_harness_snapshot_merge_summary(&report, child_relative, child_dir,
+                                          &summary)) {
+      scratch_destroy(summary_scratch, ARENA_MEMORY_TAG_ARRAY);
+      break;
+    }
+    if (!isfinite(summary.case_manifest.content_scale) ||
+        summary.case_manifest.content_scale <= 0.0f ||
+        (report.completed_repetitions > 0u &&
+         summary.case_manifest.content_scale !=
+             report.case_manifest.content_scale)) {
+      replay_scale_compatible = false_v;
+      scratch_destroy(summary_scratch, ARENA_MEMORY_TAG_ARRAY);
+      break;
+    }
+    if (!vkr_harness_snapshot_merge_summary(&report, child_relative, child_dir,
                                             &summary) ||
         !vkr_harness_report_add_artifact(&report, "capture.auxiliary_report",
                                          reference->report, "application/json",
@@ -359,6 +374,7 @@ int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
                   sizeof(reference->policy_fingerprint), "%s",
                   summary.policy_fingerprint);
     if (report.completed_repetitions == 0u) {
+      report.case_manifest.content_scale = summary.case_manifest.content_scale;
       string_format(report.provenance.gpu, sizeof(report.provenance.gpu), "%s",
                     summary.provenance.gpu);
       string_format(report.provenance.driver, sizeof(report.provenance.driver),
@@ -393,16 +409,38 @@ int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
   VkrHarnessFingerprintField environment[VKR_HARNESS_ENVIRONMENT_FIELD_COUNT];
   const uint32_t environment_count =
       vkr_harness_environment_fields(&report.provenance, false_v, environment);
-  (void)vkr_harness_case_fingerprints_with_scene_digest(
-      VKR_HARNESS_TOOL_SNAPSHOT, &case_manifest, &profile,
-      report.subsystem_mask, environment, environment_count,
-      scene_manifest.sha256, report.environment_fingerprint,
-      report.workload_fingerprint, report.policy_fingerprint, &error);
+  VkrHarnessCase effective_case = case_manifest;
+  effective_case.target_image_count =
+      report.provenance.actual_target_image_count;
+  effective_case.content_scale = report.case_manifest.content_scale;
+  bool8_t comparison_compatible =
+      vkr_harness_case_fingerprints_with_scene_digest(
+          VKR_HARNESS_TOOL_SNAPSHOT, &effective_case, &profile,
+          report.subsystem_mask, environment, environment_count,
+          scene_manifest.sha256, report.environment_fingerprint,
+          report.workload_fingerprint, report.policy_fingerprint, &error);
+  for (uint32_t i = 0u;
+       comparison_compatible && i < report.completed_repetitions; ++i) {
+    const VkrHarnessRunReference *reference = &report.auxiliary_runs[i];
+    comparison_compatible =
+        string_equals(reference->environment_fingerprint,
+                      report.environment_fingerprint) &&
+        string_equals(reference->workload_fingerprint,
+                      report.workload_fingerprint) &&
+        string_equals(reference->policy_fingerprint, report.policy_fingerprint);
+  }
   vkr_harness_timestamp_utc(report.provenance.ended_at);
-  const bool8_t complete = report.completed_repetitions == replay_count;
+  const bool8_t complete =
+      report.completed_repetitions == replay_count && comparison_compatible;
   vkr_harness_report_set_status(&report, complete ? "pass" : "incomplete",
                                 complete ? VKR_HARNESS_EXIT_PASS
                                          : VKR_HARNESS_EXIT_ERROR);
+  if (!comparison_compatible)
+    vkr_harness_report_mark_incomplete(&report,
+                                       "comparison.child_fingerprint_mismatch");
+  if (!replay_scale_compatible)
+    vkr_harness_report_mark_incomplete(&report,
+                                       "comparison.content_scale_mismatch");
   if (complete) {
     char baseline_root[VKR_HARNESS_PATH_MAX];
     VkrHarnessCaptureSummary baseline = {0};

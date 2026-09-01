@@ -13,6 +13,7 @@
 #include "event_test.h"
 #include "exposure_test.h"
 #include "filesystem_test.h"
+#include "font_cooked_tests.h"
 #include "freelist_test.h"
 #include "gltf_importer_tests.h"
 #include "gtao_test.h"

@@ -1,4 +1,5 @@
 #include "core/vkr_window.h"
+#include "platform/vkr_window_internal.h"
 
 #if defined(PLATFORM_WINDOWS)
 
@@ -8,6 +9,7 @@ typedef struct PlatformState {
   bool8_t quit_flagged;
   EventManager *event_manager;
   InputState *input_state;
+  VkrWindow *owner;
 
   // Mouse capture state
   bool8_t cursor_hidden;
@@ -58,6 +60,7 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
   window->height = height;
   window->event_manager = event_manager;
   window->input_state = input_init(event_manager);
+  vkr_window_content_scale_init(window);
 
   PlatformState *state = (PlatformState *)malloc(sizeof(PlatformState));
   if (!state) {
@@ -72,6 +75,7 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
   state->quit_flagged = false_v;
   state->event_manager = event_manager;
   state->input_state = &window->input_state;
+  state->owner = window;
   state->window_width = width;
   state->window_height = height;
 
@@ -130,6 +134,15 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
     window->platform_state = NULL;
     return false_v;
   }
+  const UINT initial_dpi = GetDpiForWindow(state->window);
+  if (!initial_dpi) {
+    log_error("Failed to query initial native window DPI");
+    DestroyWindow(state->window);
+    free(state);
+    window->platform_state = NULL;
+    return false_v;
+  }
+  vkr_window_content_scale_publish(window, (float32_t)initial_dpi / 96.0f);
   if (!vkr_window_resize(window, width, height)) {
     DestroyWindow(state->window);
     free(state);
@@ -428,6 +441,10 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
   }
 
   case WM_DPICHANGED: {
+    const UINT dpi = LOWORD(wparam);
+    if (dpi > 0u) {
+      vkr_window_content_scale_publish(state->owner, (float32_t)dpi / 96.0f);
+    }
     const RECT *suggested = (const RECT *)lparam;
     if (!SetWindowPos(hwnd, NULL, suggested->left, suggested->top,
                       suggested->right - suggested->left,

@@ -11,9 +11,66 @@
 
 #include "application.h"
 #include "renderer/resources/ui/vkr_ui_text.h"
+#include "renderer/resources/vkr_resources.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_scene_system.h"
 #include "renderer/systems/vkr_shadow_system.h"
+
+#define VKR_HARNESS_MAX_CAPTURE_BATCH_BYTES GB(1)
+
+static bool8_t vkr_harness_u64_add(uint64_t a, uint64_t b, uint64_t *out) {
+  if (!out || a > UINT64_MAX - b)
+    return false_v;
+  *out = a + b;
+  return true_v;
+}
+
+static bool8_t vkr_harness_u64_mul(uint64_t a, uint64_t b, uint64_t *out) {
+  if (!out || (a != 0u && b > UINT64_MAX / a))
+    return false_v;
+  *out = a * b;
+  return true_v;
+}
+
+static bool8_t vkr_harness_u64_align(uint64_t value, uint64_t alignment,
+                                     uint64_t *out) {
+  if (!out || alignment == 0u || (alignment & (alignment - 1u)) != 0u)
+    return false_v;
+  const uint64_t mask = alignment - 1u;
+  if (value > UINT64_MAX - mask)
+    return false_v;
+  *out = (value + mask) & ~mask;
+  return true_v;
+}
+
+/**
+ * Returns the backend-independent upper bound for one capture item. Metal
+ * requires a 256-byte readback row pitch; Vulkan is tightly packed, so this is
+ * conservative there. Batch items retain the frontend's published alignment.
+ */
+static bool8_t vkr_harness_capture_budget_item(uint64_t width, uint64_t height,
+                                               uint64_t *batch_bytes) {
+  uint64_t row_bytes = 0u;
+  uint64_t row_pitch = 0u;
+  uint64_t image_bytes = 0u;
+  uint64_t item_offset = 0u;
+  uint64_t total = 0u;
+  if (!batch_bytes || width == 0u || height == 0u ||
+      width > VKR_TEXTURE_MAX_DIMENSION || height > VKR_TEXTURE_MAX_DIMENSION ||
+      !vkr_harness_u64_mul(width, VKR_CAPTURE_MAX_BYTES_PER_PIXEL,
+                           &row_bytes) ||
+      !vkr_harness_u64_align(row_bytes, VKR_CAPTURE_BUFFER_ALIGNMENT,
+                             &row_pitch) ||
+      !vkr_harness_u64_mul(row_pitch, height, &image_bytes) ||
+      !vkr_harness_u64_align(*batch_bytes, VKR_CAPTURE_BUFFER_ALIGNMENT,
+                             &item_offset) ||
+      !vkr_harness_u64_add(item_offset, image_bytes, &total) ||
+      total > VKR_HARNESS_MAX_CAPTURE_BATCH_BYTES) {
+    return false_v;
+  }
+  *batch_bytes = total;
+  return true_v;
+}
 
 typedef struct VkrHarnessChildContext {
   const VkrHarnessCase *case_manifest;
@@ -1062,11 +1119,7 @@ vkr_harness_child_create_text_fixture(Application *application,
     float32_t size;
     Vec2 padding;
   } VkrHarnessUiTextFixture;
-#if defined(_WIN32)
   const float32_t system_fixture_size = 32.0f;
-#else
-  const float32_t system_fixture_size = 40.0f;
-#endif
   const VkrHarnessUiTextFixture fixtures[] = {
       {.content = string8_lit("SYSTEM | Aa Bb 0123456789 !?"),
        .font = application->renderer.font_system.default_system_font_handle,
@@ -1323,6 +1376,7 @@ static VkrHarnessSampleFileHeader vkr_harness_child_sample_header(
       .actual_height = provenance->actual_target_height,
       .actual_render_width = case_manifest->renderer.render_width,
       .actual_render_height = case_manifest->renderer.render_height,
+      .actual_content_scale = case_manifest->content_scale,
       .gpu_vendor_id = provenance->gpu_vendor_id,
       .gpu_device_id = provenance->gpu_device_id,
       .flags = (uint32_t)((warmup_stable ? VKR_HARNESS_SAMPLE_FLAG_WARMUP_STABLE
@@ -1473,21 +1527,31 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
       const bool8_t shadow =
           string_n_equals(description->name, "shadow_cascade_", 15u);
       /* Case resolution is authored in logical window units on macOS while
-         Vulkan captures drawable pixels. Budget a 2x backing scale before
-         backend creation; the ring remains fixed once execution begins. */
+         Vulkan captures drawable pixels. Budget the largest authored extent
+         and a 2x backing scale before backend creation; the ring remains
+         fixed once execution begins. */
       const uint64_t backing_scale =
           case_manifest.target == VKR_HARNESS_TARGET_WINDOWED_HIDDEN ? 2u : 1u;
-      const uint64_t width =
-          shadow ? shadow_size : (uint64_t)case_manifest.width * backing_scale;
-      const uint64_t height =
-          shadow ? shadow_size : (uint64_t)case_manifest.height * backing_scale;
-      /* Mirrors the frontend's published batch layout so the ring is never
-         sized under what a reservation will ask for. */
-      capture_max_batch_bytes =
-          (capture_max_batch_bytes + VKR_CAPTURE_BUFFER_ALIGNMENT - 1u) &
-          ~((uint64_t)VKR_CAPTURE_BUFFER_ALIGNMENT - 1u);
-      capture_max_batch_bytes +=
-          width * height * VKR_CAPTURE_MAX_BYTES_PER_PIXEL;
+      const uint64_t authored_width =
+          case_manifest.resize_round_trip
+              ? Max(case_manifest.width, case_manifest.resize_width)
+              : case_manifest.width;
+      const uint64_t authored_height =
+          case_manifest.resize_round_trip
+              ? Max(case_manifest.height, case_manifest.resize_height)
+              : case_manifest.height;
+      uint64_t width = shadow ? shadow_size : 0u;
+      uint64_t height = shadow ? shadow_size : 0u;
+      if ((!shadow &&
+           (!vkr_harness_u64_mul(authored_width, backing_scale, &width) ||
+            !vkr_harness_u64_mul(authored_height, backing_scale, &height))) ||
+          !vkr_harness_capture_budget_item(width, height,
+                                           &capture_max_batch_bytes)) {
+        vkr_harness_stderr(
+            "Capture batch extent or storage requirement is unsupported\n");
+        exit_code = VKR_HARNESS_EXIT_INVALID;
+        goto cleanup;
+      }
     }
   }
   VkrRendererBackendType renderer_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
@@ -1537,6 +1601,19 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
     vkr_harness_stderr("Unable to recreate the offscreen present target\n");
     exit_code = VKR_HARNESS_EXIT_UNAVAILABLE;
     goto cleanup;
+  }
+  if (case_manifest.target == VKR_HARNESS_TARGET_OFFSCREEN) {
+    if (application.renderer.ui_system.initialized) {
+      vkr_ui_system_set_offscreen_content_scale(&application.renderer,
+                                                &application.renderer.ui_system,
+                                                case_manifest.content_scale);
+      vkr_ui_system_set_offscreen_size(
+          &application.renderer, &application.renderer.ui_system, true_v,
+          case_manifest.width, case_manifest.height);
+    }
+  } else {
+    case_manifest.content_scale =
+        vkr_window_get_content_scale(&application.window).value;
   }
   if (!vkr_harness_child_create_text_fixture(&application, &case_manifest)) {
     vkr_harness_stderr("Unable to create the deterministic text fixture\n");

@@ -96,6 +96,21 @@ uint64_t vkr_string8_codepoint_count(const String8 *str);
  */
 bool8_t vkr_string8_is_valid_utf8(const String8 *str);
 
+/**
+ * @brief Converts an MTSDF texel distance range into normalized atlas units.
+ * @note Callers validate the positive finite range and nonzero page extent at
+ * the cold font-loading boundary.
+ */
+Vec2 vkr_text_mtsdf_unit_range(float32_t distance_range, uint32_t atlas_width,
+                               uint32_t atlas_height);
+
+/**
+ * Resolves an authored bitmap bleed inset at the geometry rebuild boundary.
+ * Distance-field bounds are generator coordinates and must remain exact.
+ */
+float32_t vkr_text_uv_inset(float32_t configured_inset_px,
+                            bool8_t preserve_exact_bounds);
+
 /////////////////////
 // Text styling
 /////////////////////
@@ -104,8 +119,8 @@ bool8_t vkr_string8_is_valid_utf8(const String8 *str);
  * @brief A text style configuration.
  * @param font The font handle.
  * @param font_data Optional pointer to resolved font data (bitmap/system).
- * @param font_size The font size in points (for scaling from font's native
- * size).
+ * @param font_size Layout units per em. UI supplies device pixels after its
+ * content-scale conversion.
  * @param color The text color.
  * @param line_height The line height multiplier (1.0 = use font's native line
  * height).
@@ -114,10 +129,10 @@ bool8_t vkr_string8_is_valid_utf8(const String8 *str);
 typedef struct VkrTextStyle {
   VkrFontHandle font;       // Font resource handle (id + generation)
   const VkrFont *font_data; // Optional resolved font data
-  float32_t font_size;      // Font size in points
+  float32_t font_size;      // Layout units per em
   Vec4 color;               // RGBA text color
   float32_t line_height;    // Line height multiplier (1.0 = normal)
-  float32_t letter_spacing; // Extra spacing between glyphs (pixels)
+  float32_t letter_spacing; // Extra layout units between glyphs
 } VkrTextStyle;
 
 /**
@@ -322,10 +337,12 @@ VkrTextBounds vkr_text_measure_wrapped(const VkrText *text,
  * @param page_id The atlas page id of the glyph.
  */
 typedef struct VkrTextGlyph {
-  uint32_t codepoint; // Unicode codepoint
-  Vec2 position;      // Baseline position for this glyph
-  float32_t advance;  // Advance used during layout
-  uint8_t page_id;    // Atlas page id for this glyph
+  uint32_t codepoint;   // Unicode codepoint
+  uint32_t glyph_id;    // Cooked glyph ID, or zero for legacy/default glyphs
+  uint32_t glyph_index; // Resolved cooked or legacy glyph-array index
+  Vec2 position;        // Baseline position for this glyph
+  float32_t advance;    // Advance used during layout
+  uint8_t page_id;      // Atlas page id for this glyph
 } VkrTextGlyph;
 Array(VkrTextGlyph);
 

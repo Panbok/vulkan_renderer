@@ -291,6 +291,8 @@ vkr_harness_run_is_compatible(const VkrHarnessSampleSet *first,
              first->header.actual_render_width &&
          candidate->header.actual_render_height ==
              first->header.actual_render_height &&
+         candidate->header.actual_content_scale ==
+             first->header.actual_content_scale &&
          string_equals(candidate->header.color_format,
                        first->header.color_format) &&
          string_equals(candidate->header.depth_format,
@@ -844,6 +846,7 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
           runs[0].header.actual_render_width;
       report.case_manifest.renderer.render_height =
           runs[0].header.actual_render_height;
+      report.case_manifest.content_scale = runs[0].header.actual_content_scale;
       report.subsystem_mask = runs[0].header.subsystem_mask;
     }
     string_format(reference->status, sizeof(reference->status), "pass");
@@ -869,6 +872,7 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
   VkrHarnessCase effective_case = case_manifest;
   effective_case.target_image_count =
       report.provenance.actual_target_image_count;
+  effective_case.content_scale = report.case_manifest.content_scale;
   if (!vkr_harness_case_fingerprints_with_scene_digest(
           VKR_HARNESS_TOOL_PROFILE, &effective_case, &profile,
           report.subsystem_mask, environment, environment_count,

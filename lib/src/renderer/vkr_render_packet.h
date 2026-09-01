@@ -200,7 +200,7 @@ typedef struct VkrPreparedTextDraw {
   uint32_t max_index;
   VkrTextureHandle atlas;
   Mat4 model;
-  float32_t screen_px_range;
+  Vec2 unit_range;
   uint32_t font_mode;
   uint32_t object_id;
   uint32_t revision;

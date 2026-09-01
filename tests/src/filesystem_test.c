@@ -417,6 +417,14 @@ vkr_internal void test_file_portable_publication_primitives(void) {
   assert(file_sync(&file) == FILE_ERROR_NONE);
   file_close(&file);
 
+  FileMode exclusive_mode = bitset8_create();
+  bitset8_set(&exclusive_mode, FILE_MODE_WRITE);
+  bitset8_set(&exclusive_mode, FILE_MODE_CREATE);
+  bitset8_set(&exclusive_mode, FILE_MODE_EXCLUSIVE);
+  assert(file_open(&source, exclusive_mode, &file) ==
+         FILE_ERROR_ALREADY_EXISTS);
+  assert(!file.handle);
+
   char resolved[1024];
   char resolved_directory[1024];
   assert(file_path_resolve(&source, resolved, sizeof(resolved)) ==

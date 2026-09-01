@@ -26,7 +26,7 @@ typedef struct VkrUiTextSlot {
   VkrUiText text;         /**< Text resource and GPU state */
   bool8_t active;         /**< Slot is in use and should be rendered */
   VkrUiTextAnchor anchor; /**< Corner anchor for positioning (e.g. top-left) */
-  Vec2 padding;           /**< Offset from the anchor in pixels */
+  Vec2 padding;           /**< Authored logical offset from the anchor */
 } VkrUiTextSlot;
 Array(VkrUiTextSlot);
 
@@ -43,7 +43,10 @@ typedef struct VkrUiSystem {
   bool8_t offscreen_enabled;    /**< Use offscreen dimensions for layout */
   uint32_t screen_width;        /**< Last layout width used */
   uint32_t screen_height;       /**< Last layout height used */
-  float32_t text_content_scale; /**< Windows 800x600 design-extent scale */
+  float32_t text_content_scale; /**< Logical UI units to device pixels */
+  uint32_t content_scale_revision;   /**< Last consumed source revision */
+  float32_t offscreen_content_scale; /**< Explicit offscreen scale */
+  uint32_t offscreen_content_scale_revision;
 
   Array_VkrUiTextSlot text_slots; /**< Allocated text slots */
   bool8_t initialized;            /**< System has been initialized */
@@ -93,6 +96,17 @@ void vkr_ui_system_set_offscreen_size(struct s_RendererFrontend *rf,
                                       uint32_t width, uint32_t height);
 
 /**
+ * @brief Sets the explicit logical-to-device scale for offscreen UI.
+ *
+ * Offscreen scale defaults to `1.0`. A changed value advances the offscreen
+ * scale revision and invalidates active text layout when offscreen sizing is
+ * enabled.
+ */
+void vkr_ui_system_set_offscreen_content_scale(struct s_RendererFrontend *rf,
+                                               VkrUiSystem *system,
+                                               float32_t content_scale);
+
+/**
  * @brief Create or replace a UI text slot.
  *
  * Uses payload->text_id when provided to target a specific slot; otherwise
@@ -133,7 +147,6 @@ bool8_t vkr_ui_system_text_destroy(struct s_RendererFrontend *rf,
                                    VkrUiSystem *system, uint32_t text_id);
 
 /** Builds packet-ready UI text descriptors without issuing GPU commands. */
-uint32_t vkr_ui_system_prepare_text_draws(struct s_RendererFrontend *rf,
-                                          VkrUiSystem *system,
+uint32_t vkr_ui_system_prepare_text_draws(VkrUiSystem *system,
                                           VkrPreparedTextDraw *out_draws,
                                           uint32_t capacity);

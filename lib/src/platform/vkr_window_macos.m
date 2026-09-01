@@ -1,4 +1,5 @@
 #include "core/vkr_window.h"
+#include "platform/vkr_window_internal.h"
 
 #if defined(PLATFORM_APPLE)
 #import <Cocoa/Cocoa.h>
@@ -18,6 +19,7 @@ typedef struct PlatformState {
   bool8_t quit_flagged;
   EventManager *event_manager;
   InputState *input_state;
+  VkrWindow *owner;
 
   // Mouse capture state
   bool8_t cursor_hidden;
@@ -69,6 +71,8 @@ static bool8_t cursor_in_content_area(PlatformState *state);
 }
 
 - (void)windowDidResize:(NSNotification *)notification {
+  const CGFloat backingScale = [state->window backingScaleFactor];
+  vkr_window_content_scale_publish(state->owner, (float32_t)backingScale);
   const NSRect contentRect = [state->view frame];
   const NSRect framebufferRect = [state->view convertRectToBacking:contentRect];
 
@@ -89,6 +93,25 @@ static bool8_t cursor_in_content_area(PlatformState *state);
   }
 }
 
+- (void)windowDidChangeBackingProperties:(NSNotification *)notification {
+  (void)notification;
+  const CGFloat backingScale = [state->window backingScaleFactor];
+  vkr_window_content_scale_publish(state->owner, (float32_t)backingScale);
+  [state->layer setContentsScale:backingScale];
+
+  const NSRect contentRect = [state->view frame];
+  const NSRect framebufferRect = [state->view convertRectToBacking:contentRect];
+  [state->layer setDrawableSize:framebufferRect.size];
+
+  VkrWindowResizeEventData resize_data = {
+      .width = (uint32_t)framebufferRect.size.width,
+      .height = (uint32_t)framebufferRect.size.height};
+  Event event = {.type = EVENT_TYPE_WINDOW_RESIZE,
+                 .data = &resize_data,
+                 .data_size = sizeof(VkrWindowResizeEventData)};
+  event_manager_dispatch(state->event_manager, event);
+}
+
 - (void)windowDidMiniaturize:(NSNotification *)notification {
   VkrWindowResizeEventData resize_data = {.width = 0, .height = 0};
   Event event = {.type = EVENT_TYPE_WINDOW_RESIZE,
@@ -100,6 +123,8 @@ static bool8_t cursor_in_content_area(PlatformState *state);
 }
 
 - (void)windowDidDeminiaturize:(NSNotification *)notification {
+  const CGFloat backingScale = [state->window backingScaleFactor];
+  vkr_window_content_scale_publish(state->owner, (float32_t)backingScale);
   const NSRect contentRect = [state->view frame];
   const NSRect framebufferRect = [state->view convertRectToBacking:contentRect];
 
@@ -433,6 +458,7 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
   window->height = height;
   window->event_manager = event_manager;
   window->input_state = input_init(event_manager);
+  vkr_window_content_scale_init(window);
 
   PlatformState *state = (PlatformState *)malloc(sizeof(PlatformState));
   if (!state) {
@@ -449,6 +475,7 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
   state->quit_flagged = false_v;
   state->event_manager = event_manager;
   state->input_state = &window->input_state;
+  state->owner = window;
 
   // Initialize mouse capture state
   state->cursor_hidden = false_v;
@@ -505,7 +532,8 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
     }
 
     // Configure for Retina displays - use full physical pixel resolution
-    CGFloat backingScale = [[state->window screen] backingScaleFactor];
+    CGFloat backingScale = [state->window backingScaleFactor];
+    vkr_window_content_scale_publish(window, (float32_t)backingScale);
     [state->layer setContentsScale:backingScale];
 
     // View creation

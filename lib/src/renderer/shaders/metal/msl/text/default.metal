@@ -30,13 +30,19 @@ float vkr_metal_packet_text_alpha(VkrMetalPacketTextOutput input,
   constexpr sampler atlas_sampler(coord::normalized, address::clamp_to_edge,
                                   filter::linear);
   float4 atlas_sample = root->atlas.sample(atlas_sampler, input.texcoord);
-  if (root->controls.y <= 0.5)
+  if ((root->flags & 2u) == 0u)
     return atlas_sample.a;
+  float2 dx = dfdx(input.texcoord);
+  float2 dy = dfdy(input.texcoord);
+  float2 gradient_squared =
+      max(dx * dx + dy * dy, float2(1e-12, 1e-12));
+  float2 screen_tex_size = rsqrt(gradient_squared);
+  float range = max(0.5 * dot(root->controls.xy, screen_tex_size), 1.0);
   float signed_distance =
       max(min(atlas_sample.r, atlas_sample.g),
           min(max(atlas_sample.r, atlas_sample.g), atlas_sample.b)) -
       0.5;
-  return saturate(signed_distance / max(fwidth(signed_distance), 1e-6) + 0.5);
+  return saturate(range * signed_distance + 0.5);
 }
 
 vertex VkrMetalPacketTextOutput vkr_metal_packet_text_vertex(

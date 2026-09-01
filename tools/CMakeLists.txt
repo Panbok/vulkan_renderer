@@ -89,6 +89,95 @@ add_executable(vkr_mesh_cooker
 vkr_require_declared_c_functions(vkr_mesh_cooker)
 target_link_libraries(vkr_mesh_cooker PRIVATE renderer_lib)
 
+set(VKR_MSDF_ATLAS_DIR "${CMAKE_SOURCE_DIR}/vendor/msdf-atlas-gen")
+set(VKR_MSDF_ATLAS_COMMIT
+    "2ede254314a2512252a225fa6c975948d6af559a")
+set(VKR_MSDFGEN_COMMIT
+    "1874bcf7d9624ccc85b4bc9a85d78116f690f35b")
+if(NOT EXISTS "${VKR_MSDF_ATLAS_DIR}/CMakeLists.txt" OR
+   NOT EXISTS "${VKR_MSDF_ATLAS_DIR}/msdfgen/CMakeLists.txt")
+    message(FATAL_ERROR
+        "vendor/msdf-atlas-gen is missing. Run: git submodule update --init --recursive")
+endif()
+
+function(vkr_require_clean_pinned_checkout label directory expected_commit)
+    execute_process(
+        COMMAND git -C "${directory}" rev-parse HEAD
+        OUTPUT_VARIABLE actual_commit
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE git_result
+        ERROR_QUIET)
+    execute_process(
+        COMMAND git -C "${directory}" status --porcelain=v1
+                --untracked-files=all
+        OUTPUT_VARIABLE dirty_status
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE status_result
+        ERROR_QUIET)
+    if(NOT git_result EQUAL 0 OR NOT status_result EQUAL 0 OR
+       NOT actual_commit STREQUAL expected_commit OR NOT dirty_status STREQUAL "")
+        message(FATAL_ERROR
+            "${label} must be clean and pinned to ${expected_commit}. "
+            "Run: git submodule update --init --recursive")
+    endif()
+endfunction()
+
+vkr_require_clean_pinned_checkout(
+    "vendor/msdf-atlas-gen" "${VKR_MSDF_ATLAS_DIR}"
+    "${VKR_MSDF_ATLAS_COMMIT}")
+vkr_require_clean_pinned_checkout(
+    "vendor/msdf-atlas-gen/msdfgen" "${VKR_MSDF_ATLAS_DIR}/msdfgen"
+    "${VKR_MSDFGEN_COMMIT}")
+
+set(MSDF_ATLAS_BUILD_STANDALONE OFF CACHE BOOL "" FORCE)
+set(MSDF_ATLAS_USE_VCPKG OFF CACHE BOOL "" FORCE)
+set(MSDF_ATLAS_USE_SKIA OFF CACHE BOOL "" FORCE)
+set(MSDF_ATLAS_NO_ARTERY_FONT ON CACHE BOOL "" FORCE)
+set(MSDF_ATLAS_INSTALL OFF CACHE BOOL "" FORCE)
+set(MSDF_ATLAS_DYNAMIC_RUNTIME OFF CACHE BOOL "" FORCE)
+set(MSDFGEN_BUILD_STANDALONE OFF CACHE BOOL "" FORCE)
+set(MSDFGEN_USE_VCPKG OFF CACHE BOOL "" FORCE)
+set(MSDFGEN_USE_SKIA OFF CACHE BOOL "" FORCE)
+set(MSDFGEN_USE_OPENMP OFF CACHE BOOL "" FORCE)
+set(MSDFGEN_DISABLE_SVG ON CACHE BOOL "" FORCE)
+set(MSDFGEN_DISABLE_PNG ON CACHE BOOL "" FORCE)
+set(MSDFGEN_INSTALL OFF CACHE BOOL "" FORCE)
+find_package(Freetype REQUIRED)
+set(VKR_TOOLS_BUILD_SHARED_LIBS_WAS_DEFINED FALSE)
+if(DEFINED BUILD_SHARED_LIBS)
+    set(VKR_TOOLS_BUILD_SHARED_LIBS_WAS_DEFINED TRUE)
+    set(VKR_TOOLS_BUILD_SHARED_LIBS_SAVED "${BUILD_SHARED_LIBS}")
+endif()
+set(BUILD_SHARED_LIBS OFF)
+add_subdirectory("${VKR_MSDF_ATLAS_DIR}" "${CMAKE_BINARY_DIR}/msdf-atlas-gen"
+                 EXCLUDE_FROM_ALL)
+if(VKR_TOOLS_BUILD_SHARED_LIBS_WAS_DEFINED)
+    set(BUILD_SHARED_LIBS "${VKR_TOOLS_BUILD_SHARED_LIBS_SAVED}")
+else()
+    unset(BUILD_SHARED_LIBS)
+endif()
+unset(VKR_TOOLS_BUILD_SHARED_LIBS_WAS_DEFINED)
+unset(VKR_TOOLS_BUILD_SHARED_LIBS_SAVED)
+
+add_executable(vkr_font_cooker
+    vkr_font_cooker.cpp
+)
+target_compile_features(vkr_font_cooker PRIVATE cxx_std_17)
+target_compile_definitions(vkr_font_cooker PRIVATE
+    VKR_FONT_COOKER_MSDF_ATLAS_COMMIT="${VKR_MSDF_ATLAS_COMMIT}"
+    VKR_FONT_COOKER_MSDFGEN_COMMIT="${VKR_MSDFGEN_COMMIT}")
+target_include_directories(vkr_font_cooker PRIVATE
+    ${CMAKE_SOURCE_DIR}/lib/src
+    ${VKR_MSDF_ATLAS_DIR}
+    ${VKR_MSDF_ATLAS_DIR}/msdfgen
+    ${FREETYPE_INCLUDE_DIRS}
+)
+target_link_libraries(vkr_font_cooker PRIVATE
+    renderer_lib
+    msdf-atlas-gen::msdf-atlas-gen
+    Freetype::Freetype
+)
+
 if(APPLE)
     add_executable(vkr_metal_timestamp_diagnostic
         metal/vkr_metal_timestamp_diagnostic.m

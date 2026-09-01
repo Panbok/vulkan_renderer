@@ -38,6 +38,7 @@
 
 #include "core/event.h"
 #include "core/input.h"
+#include "core/vkr_atomic.h"
 #include "math/vkr_math.h"
 #include "platform/vkr_platform.h"
 #include "vkr_pch.h"
@@ -61,6 +62,9 @@ typedef struct VkrWindow {
   int32_t y;   /**< Initial y-coordinate of the window's top-left corner. */
   uint32_t width;  /**< Initial width of the window's client area. */
   uint32_t height; /**< Initial height of the window's client area. */
+  /** Atomic `{revision, IEEE-754 scale bits}` snapshot published by the
+   * platform boundary. Consumers must use vkr_window_get_content_scale(). */
+  VkrAtomicUint64 content_scale_state;
   /** Create the native window without activating or showing it. */
   bool8_t hidden;
 } VkrWindow;
@@ -69,6 +73,12 @@ typedef struct VkrWindowPixelSize {
   uint32_t width;
   uint32_t height;
 } VkrWindowPixelSize;
+
+/** Logical authored-UI units to device pixels, plus its change revision. */
+typedef struct VkrWindowContentScale {
+  float32_t value;
+  uint32_t revision;
+} VkrWindowContentScale;
 
 /**
  * @brief Data for window resize event (EVENT_TYPE_WINDOW_RESIZE).
@@ -139,6 +149,15 @@ bool8_t vkr_window_update(VkrWindow *window);
  * @return Physical output pixels, including the platform backing scale.
  */
 VkrWindowPixelSize vkr_window_get_pixel_size(VkrWindow *window);
+
+/**
+ * @brief Gets one coherent content-scale snapshot.
+ *
+ * Windows publishes `GetDpiForWindow() / 96`; macOS publishes the window
+ * backing scale. The value is finite and positive. A revision changes only
+ * when the value changes, including a display transition without a resize.
+ */
+VkrWindowContentScale vkr_window_get_content_scale(const VkrWindow *window);
 
 /**
  * @brief Resizes the native window's client area.

@@ -20,20 +20,29 @@
 static const char *HARNESS_CASE_FORMAT =
     "{\"schema_version\":1,\"id\":\"smoke.test.static\",\"suite\":\"smoke\","
     "\"scene\":\"assets/scenes/default.scene.json\",\"seed\":1,"
-    "\"resolution\":[64,64],\"boot\":\"full\",\"target\":\"%s\","
+    "\"resolution\":[%u,%u],\"boot\":\"full\",\"target\":\"%s\","
     "\"present\":\"%s\",\"cache\":\"isolated_cold\",\"fixed_delta\":0.016,"
     "\"frames\":{\"measure\":3},\"renderer\":{\"editor\":false,"
     "\"skybox\":true,\"shadow_preset\":\"default\",\"shadow_cascades\":4},"
     "\"camera\":%s%s}";
 
+static bool8_t harness_parse_case_extent(uint32_t width, uint32_t height,
+                                         const char *target,
+                                         const char *present,
+                                         const char *camera, const char *tail,
+                                         VkrHarnessCase *out_case) {
+  char json[8192];
+  snprintf(json, sizeof(json), HARNESS_CASE_FORMAT, width, height, target,
+           present, camera, tail ? tail : "");
+  VkrHarnessError error = {0};
+  return vkr_harness_case_parse(json, strlen(json), "memory", out_case, &error);
+}
+
 static bool8_t harness_parse_case(const char *target, const char *present,
                                   const char *camera, const char *tail,
                                   VkrHarnessCase *out_case) {
-  char json[8192];
-  snprintf(json, sizeof(json), HARNESS_CASE_FORMAT, target, present, camera,
-           tail ? tail : "");
-  VkrHarnessError error = {0};
-  return vkr_harness_case_parse(json, strlen(json), "memory", out_case, &error);
+  return harness_parse_case_extent(64u, 64u, target, present, camera, tail,
+                                   out_case);
 }
 
 static void test_harness_hash_and_statistics(void) {
@@ -122,6 +131,7 @@ static void test_harness_case_parser(void) {
   assert(harness_parse_case("offscreen", "none", static_camera, "", &parsed));
   assert(parsed.target == VKR_HARNESS_TARGET_OFFSCREEN);
   assert(parsed.target_image_count == 3u);
+  assert(parsed.content_scale == 1.0f);
   assert(!parsed.renderer.text_fixture);
   assert(parsed.renderer.taa_enabled);
   assert(parsed.renderer.backend[0] == '\0');
@@ -148,6 +158,21 @@ static void test_harness_case_parser(void) {
   assert(parsed.renderer.render_height == 0u);
   assert(strcmp(parsed.renderer.upscaler, "spatial") == 0);
   assert(!parsed.renderer.dynamic_resolution);
+  assert(harness_parse_case("offscreen", "none", static_camera,
+                            ",\"content_scale\":1.5", &parsed));
+  assert(parsed.content_scale == 1.5f);
+  assert(!harness_parse_case("windowed_hidden", "immediate", static_camera,
+                             ",\"content_scale\":1.5", &parsed));
+  assert(!harness_parse_case("offscreen", "none", static_camera,
+                             ",\"content_scale\":0", &parsed));
+  assert(!harness_parse_case("offscreen", "none", static_camera,
+                             ",\"content_scale\":8.1", &parsed));
+  assert(!harness_parse_case("offscreen", "none", static_camera,
+                             ",\"content_scale\":1e-50", &parsed));
+  assert(!harness_parse_case_extent(16385u, 64u, "offscreen", "none",
+                                    static_camera, "", &parsed));
+  assert(!harness_parse_case_extent(64u, 16385u, "offscreen", "none",
+                                    static_camera, "", &parsed));
   assert(harness_parse_case("windowed_hidden", "immediate", static_camera,
                             ",\"resize_round_trip\":[80,72]", &parsed));
   assert(parsed.resize_round_trip && parsed.resize_width == 80u &&
@@ -559,6 +584,9 @@ static void test_harness_fingerprints(void) {
     printf("  fingerprint error %s: %s\n", error.code, error.message);
   }
   assert(fingerprinted);
+  char original_environment[VKR_HARNESS_DIGEST_MAX];
+  snprintf(original_environment, sizeof(original_environment), "%s",
+           environment);
   char default_policy[VKR_HARNESS_DIGEST_MAX];
   snprintf(default_policy, sizeof(default_policy), "%s", policy);
   snprintf(profile.warmup_stability_metric,
@@ -704,6 +732,30 @@ static void test_harness_fingerprints(void) {
                                        VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
                                        environment, workload, policy, &error));
   assert(strcmp(original_workload, workload) == 0);
+  VkrHarnessCase window_scaled_case = case_manifest;
+  window_scaled_case.content_scale = 2.0f;
+  char scaled_window_environment[VKR_HARNESS_DIGEST_MAX];
+  assert(vkr_harness_case_fingerprints(
+      ".", VKR_HARNESS_TOOL_PROFILE, &window_scaled_case, &profile,
+      VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u, scaled_window_environment, workload,
+      policy, &error));
+  assert(strcmp(original_environment, scaled_window_environment) != 0);
+  assert(strcmp(original_workload, workload) == 0);
+  VkrHarnessCase offscreen_case = case_manifest;
+  offscreen_case.target = VKR_HARNESS_TARGET_OFFSCREEN;
+  offscreen_case.present = VKR_HARNESS_PRESENT_NONE;
+  offscreen_case.content_scale = 1.0f;
+  char scale_one_workload[VKR_HARNESS_DIGEST_MAX];
+  assert(vkr_harness_case_fingerprints(
+      ".", VKR_HARNESS_TOOL_PROFILE, &offscreen_case, &profile,
+      VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u, environment, scale_one_workload,
+      policy, &error));
+  offscreen_case.content_scale = 1.5f;
+  assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
+                                       &offscreen_case, &profile,
+                                       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
+                                       environment, workload, policy, &error));
+  assert(strcmp(scale_one_workload, workload) != 0);
   snprintf(case_manifest.description, sizeof(case_manifest.description),
            "provenance-only edit");
   snprintf(case_manifest.manifest_sha256, sizeof(case_manifest.manifest_sha256),
@@ -1124,6 +1176,7 @@ static void test_harness_report_shape(void) {
   report.case_manifest.renderer.dynamic_resolution_max_scale = 0.8f;
   report.case_manifest.renderer.dynamic_resolution_target_frame_ms =
       1000.0f / 75.0f;
+  report.case_manifest.content_scale = 1.25f;
   VkrHarnessMetricResult resolution_metrics[] = {
       {.name = "frame.render_scale",
        .unit = "ratio",
@@ -1195,6 +1248,7 @@ static void test_harness_report_shape(void) {
   assert(strstr(json, "\"render_resolution\":[320,180]") != NULL);
   assert(strstr(json, "\"upscaler\":\"metalfx_temporal\"") != NULL);
   assert(strstr(json, "\"dynamic_resolution\":true") != NULL);
+  assert(strstr(json, "\"content_scale\":1.25") != NULL);
   assert(strstr(json, "\"scale_range\":[") != NULL);
   assert(strstr(json, "\"width_range\":[352,448]") != NULL);
   assert(strstr(json, "\"height_range\":[198,252]") != NULL);
@@ -1207,7 +1261,14 @@ static void test_harness_report_shape(void) {
       &document, effective_config, "dynamic_resolution_observed", NULL);
   const int32_t scale_range =
       vkr_harness_json_object_get(&document, observed, "scale_range", NULL);
-  assert(effective_config >= 0 && observed >= 0 && scale_range >= 0);
+  const int32_t content_scale = vkr_harness_json_object_get(
+      &document, effective_config, "content_scale", NULL);
+  assert(effective_config >= 0 && observed >= 0 && scale_range >= 0 &&
+         content_scale >= 0);
+  float64_t reported_content_scale = 0.0;
+  assert(vkr_harness_json_f64(&document, content_scale, &reported_content_scale,
+                              "effective_config.content_scale", &error));
+  assert(reported_content_scale == 1.25);
   float64_t observed_min = 0.0;
   float64_t observed_max = 0.0;
   const int32_t observed_max_token =
@@ -1641,6 +1702,7 @@ static void test_harness_capture_summary_legacy_compatibility(void) {
   assert(summary.case_manifest.renderer.gtao_radius == VKR_GTAO_DEFAULT_RADIUS);
   assert(summary.case_manifest.renderer.gtao_power == VKR_GTAO_DEFAULT_POWER);
   assert(summary.case_manifest.renderer.render_scale == 1.0f);
+  assert(summary.case_manifest.content_scale == 1.0f);
   assert(summary.case_manifest.camera.far_plane == 321.0f);
   assert(summary.case_manifest.compare.max_pixel_delta == 0.125);
   assert(strcmp(summary.profile.id, "local.legacy.v3") == 0);
@@ -1651,6 +1713,7 @@ static void test_harness_capture_summary_legacy_compatibility(void) {
   assert(summary.case_manifest.renderer.gtao_radius == VKR_GTAO_DEFAULT_RADIUS);
   assert(summary.case_manifest.renderer.gtao_power == VKR_GTAO_DEFAULT_POWER);
   assert(summary.case_manifest.renderer.render_scale == 1.0f);
+  assert(summary.case_manifest.content_scale == 1.0f);
   assert(summary.case_manifest.camera.far_plane == 321.0f);
   assert(summary.case_manifest.compare.max_pixel_delta == 0.125);
   assert(strcmp(summary.profile.id, "local.legacy.v2") == 0);
@@ -1670,6 +1733,7 @@ static void test_harness_capture_summary_legacy_compatibility(void) {
   assert(summary.case_manifest.renderer.fxaa_enabled);
   assert(summary.case_manifest.renderer.transmission_depth_diagnostic_enabled);
   assert(summary.case_manifest.renderer.render_scale == 1.0f);
+  assert(summary.case_manifest.content_scale == 1.0f);
   assert(summary.case_manifest.renderer.render_width == 0u);
   assert(summary.case_manifest.renderer.render_height == 0u);
   assert(summary.case_manifest.camera.far_plane == 654.0f);
@@ -1690,6 +1754,7 @@ static void test_harness_capture_summary_legacy_compatibility(void) {
   report.case_manifest.renderer.dynamic_resolution_max_scale = 0.8f;
   report.case_manifest.renderer.dynamic_resolution_target_frame_ms =
       1000.0f / 75.0f;
+  report.case_manifest.content_scale = 1.25f;
   assert(
       vkr_harness_capture_summary_write(current_path, &report, arena, &error));
   uint8_t *current_bytes = NULL;
@@ -1699,7 +1764,7 @@ static void test_harness_capture_summary_legacy_compatibility(void) {
   uint32_t current_version = 0u;
   assert(current_size >= 12u);
   MemCopy(&current_version, current_bytes + 8u, sizeof(current_version));
-  assert(current_version == 5u);
+  assert(current_version == 6u);
   assert(vkr_harness_capture_summary_read(current_path, arena, &summary));
   assert(summary.capture_count == 1u);
   assert(summary.case_manifest.renderer.gtao_enabled);
@@ -1713,6 +1778,7 @@ static void test_harness_capture_summary_legacy_compatibility(void) {
   assert(summary.case_manifest.renderer.dynamic_resolution);
   assert(summary.case_manifest.renderer.dynamic_resolution_min_scale == 0.5f);
   assert(summary.case_manifest.renderer.dynamic_resolution_max_scale == 0.8f);
+  assert(summary.case_manifest.content_scale == 1.25f);
 
   free(legacy);
   free(legacy_v2);

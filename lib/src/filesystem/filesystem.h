@@ -39,6 +39,7 @@
  * - `FILE_MODE_TRUNCATE`: Truncate file to zero length if it exists
  * - `FILE_MODE_CREATE`: Create file if it doesn't exist (implicit with
  * write/append)
+ * - `FILE_MODE_EXCLUSIVE`: With `CREATE`, fail if the path already exists
  *
  * Predefined Combinations:
  * - `FILE_MODE_READ_WRITE`: Read and write access
@@ -144,6 +145,8 @@ typedef enum FileModeFlags {
       1 << 5, /**< Open in binary mode (no text transformations) */
   FILE_MODE_TEXT =
       1 << 6, /**< Open in text mode (platform-specific line ending handling) */
+  FILE_MODE_EXCLUSIVE =
+      1 << 7, /**< With CREATE, fail if the destination already exists */
 
   /* Convenience combinations */
   FILE_MODE_READ_WRITE =

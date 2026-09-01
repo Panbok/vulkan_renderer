@@ -5,10 +5,10 @@ project(renderer_lib)
 find_program(VKR_SLANGC_EXECUTABLE NAMES slangc REQUIRED)
 
 if(APPLE)
-file(GLOB_RECURSE LIB_SOURCES src/*.c src/*.h src/*.m)
+file(GLOB_RECURSE LIB_SOURCES CONFIGURE_DEPENDS src/*.c src/*.h src/*.m)
 enable_language(C OBJC)
 elseif(WIN32)
-file(GLOB_RECURSE LIB_SOURCES src/*.c src/*.h)
+file(GLOB_RECURSE LIB_SOURCES CONFIGURE_DEPENDS src/*.c src/*.h)
 endif()
 list(APPEND LIB_SOURCES ${CMAKE_SOURCE_DIR}/vendor/spirv_reflect.c)
 

@@ -492,6 +492,7 @@ Vector(VkrFontKerning);
  * @brief MTSDF glyph data (normalized coordinates).
  */
 typedef struct VkrMtsdfGlyph {
+  uint32_t glyph_id; // Stable artifact glyph identifier.
   uint32_t unicode;
   float32_t advance; // Normalized advance
 
@@ -507,10 +508,49 @@ typedef struct VkrMtsdfGlyph {
   float32_t atlas_right;
   float32_t atlas_top;
 
+  // Normalized sampling bounds after applying the authored Y convention.
+  float32_t uv_left;
+  float32_t uv_bottom;
+  float32_t uv_right;
+  float32_t uv_top;
+
   bool8_t has_geometry; // false for space-like glyphs
 } VkrMtsdfGlyph;
 Array(VkrMtsdfGlyph);
 Vector(VkrMtsdfGlyph);
+
+/** A unique cooked glyph record retained in artifact glyph-ID order. */
+typedef struct VkrFontGlyphId {
+  uint32_t glyph_id;
+  uint32_t page_index;
+  bool8_t has_geometry;
+  float32_t advance;
+  float32_t plane_left;
+  float32_t plane_bottom;
+  float32_t plane_right;
+  float32_t plane_top;
+  float32_t uv_left;
+  float32_t uv_bottom;
+  float32_t uv_right;
+  float32_t uv_top;
+} VkrFontGlyphId;
+Array(VkrFontGlyphId);
+
+/** Sorted integer map from a Unicode codepoint to an artifact glyph ID. */
+typedef struct VkrFontCodepointMapEntry {
+  uint32_t codepoint;
+  uint32_t glyph_id;
+  uint32_t glyph_index; // Derived index into glyphs_by_id.
+} VkrFontCodepointMapEntry;
+Array(VkrFontCodepointMapEntry);
+
+/** Kerning retained in the cooked artifact's glyph-ID domain. */
+typedef struct VkrFontGlyphKerning {
+  uint32_t left_glyph_id;
+  uint32_t right_glyph_id;
+  float32_t amount;
+} VkrFontGlyphKerning;
+Array(VkrFontGlyphKerning);
 
 /**
  * @brief A font type.
@@ -551,16 +591,24 @@ typedef struct VkrFont {
   uint32_t page_count;  // Number of texture pages.
   VkrTextureHandle atlas;              // Page 0 atlas handle.
   Array_VkrTextureHandle atlas_pages;  // Page handles, indexed by page id.
-  uint8_t *atlas_cpu_data;             // Optional CPU copy of atlas pixels.
-  uint64_t atlas_cpu_size;             // Size of atlas_cpu_data in bytes.
-  uint32_t atlas_cpu_channels;         // Channel count for atlas_cpu_data.
   VkrHashTable_uint32_t glyph_indices; // Codepoint -> glyph index lookup.
   Array_VkrFontGlyph glyphs;           // The font glyphs.
   Array_VkrFontKerning kernings;       // The font kernings.
   float32_t tab_x_advance;             // The tab x advance.
   Array_VkrMtsdfGlyph mtsdf_glyphs;    // MTSDF glyph metadata (if any).
-  float32_t sdf_distance_range;        // MTSDF distance range for shader.
-  float32_t em_size;                   // MTSDF EM size used for atlas.
+  Array_VkrFontGlyphId glyphs_by_id;   // Unique cooked glyph records.
+  Array_VkrFontCodepointMapEntry codepoint_map; // Sorted codepoint map.
+  Array_VkrFontGlyphKerning glyph_kernings;     // Glyph-ID kerning records.
+  uint32_t fallback_glyph_id;    // Cooked fallback glyph identifier.
+  uint32_t fallback_glyph_index; // Derived index into glyphs_by_id.
+  float32_t em_line_height;
+  float32_t em_ascender;
+  float32_t em_descender;
+  float32_t em_underline_y;
+  float32_t em_underline_thickness;
+  float32_t sdf_distance_range; // MTSDF distance range for shader.
+  Vec2 mtsdf_unit_range;        // Distance range in normalized UVs.
+  float32_t em_size;            // MTSDF EM size used for atlas.
 } VkrFont;
 Array(VkrFont);
 

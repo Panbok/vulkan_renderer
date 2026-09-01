@@ -1575,16 +1575,8 @@ vkr_internal void application_init_memory_text(Application *application) {
 
   VkrUiTextConfig text_config = VKR_UI_TEXT_CONFIG_DEFAULT;
   text_config.font =
-      application->renderer.font_system.default_system_font_handle;
-#if defined(_WIN32)
+      application->renderer.font_system.default_mtsdf_font_handle;
   text_config.font_size = 18.0f;
-#else
-  VkrFont *font = vkr_font_system_get_default_system_font(
-      &application->renderer.font_system);
-  if (font) {
-    text_config.font_size = (float32_t)font->size * 1.5f;
-  }
-#endif
   text_config.color = (Vec4){1.0f, 1.0f, 1.0f, 1.0f};
 
   VkrUiTextCreateData payload = {
@@ -2177,16 +2169,8 @@ vkr_internal void application_init_ui_texts(Application *application) {
 
   VkrUiTextConfig text_config = VKR_UI_TEXT_CONFIG_DEFAULT;
   text_config.font =
-      application->renderer.font_system.default_system_font_handle;
-#if defined(_WIN32)
+      application->renderer.font_system.default_mtsdf_font_handle;
   text_config.font_size = 18.0f;
-#else
-  VkrFont *font = vkr_font_system_get_default_system_font(
-      &application->renderer.font_system);
-  if (font) {
-    text_config.font_size = (float32_t)font->size * 2.0f;
-  }
-#endif
   text_config.color = (Vec4){1.0f, 1.0f, 1.0f, 1.0f};
 
   VkrUiTextCreateData fps_payload = {
@@ -2275,22 +2259,11 @@ vkr_internal void application_init_ui_texts(Application *application) {
 }
 
 /**
- * @brief Initialize world content: load fonts needed by scene text3d.
+ * @brief Initialize world content state.
  */
 vkr_internal void application_init_world_content(Application *application) {
   if (!application || !state) {
     return;
-  }
-
-  // Load the 3D font used by scene text entities
-  String8 text_font_name = string8_lit("UbuntuMono-3d");
-  String8 text_font_cfg = string8_lit("assets/fonts/UbuntuMono-3d.fontcfg");
-  VkrRendererError font_err = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_font_system_load_from_file(&application->renderer.font_system,
-                                      text_font_name, text_font_cfg,
-                                      &font_err)) {
-    String8 err = vkr_renderer_get_error_string(font_err);
-    log_error("Failed to load 3D font: %s", string8_cstr(&err));
   }
 
   // Initialize the world text update clock (for scene text updates)

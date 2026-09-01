@@ -128,7 +128,7 @@
       },
       "text3d": {
         "text": "00:00:00",
-        "font": "UbuntuMono-3d",
+        "font": "UbuntuMono-mtsdf",
         "font_size": 64.0,
         "color": [1.0, 0.95, 0.85, 1.0],
         "texture_width": 1024,

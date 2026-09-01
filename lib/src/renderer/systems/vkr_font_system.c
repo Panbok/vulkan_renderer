@@ -6,6 +6,7 @@
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
 #include "renderer/resources/loaders/bitmap_font_loader.h"
+#include "renderer/resources/loaders/cooked_font_loader.h"
 #include "renderer/resources/loaders/mtsdf_font_loader.h"
 #include "renderer/resources/loaders/system_font_loader.h"
 #include "renderer/systems/vkr_resource_system.h"
@@ -67,11 +68,15 @@ vkr_internal String8 vkr_font_config_trim(VkrAllocator *allocator,
  * @brief Parses the font type from a string value.
  */
 vkr_internal bool8_t vkr_font_config_parse_type(const String8 *value,
-                                                VkrFontType *out_type) {
+                                                VkrFontType *out_type,
+                                                bool8_t *out_cooked) {
   if (!value || !value->str || !out_type) {
     return false_v;
   }
 
+  if (out_cooked) {
+    *out_cooked = false_v;
+  }
   String8 bitmap_str = string8_lit("bitmap");
   String8 system_str = string8_lit("system");
   String8 mtsdf_str = string8_lit("mtsdf");
@@ -88,6 +93,15 @@ vkr_internal bool8_t vkr_font_config_parse_type(const String8 *value,
 
   if (string8_equalsi(value, &mtsdf_str)) {
     *out_type = VKR_FONT_TYPE_MTSDF;
+    return true_v;
+  }
+
+  String8 cooked_mtsdf_str = string8_lit("cooked_mtsdf");
+  if (string8_equalsi(value, &cooked_mtsdf_str)) {
+    *out_type = VKR_FONT_TYPE_MTSDF;
+    if (out_cooked) {
+      *out_cooked = true_v;
+    }
     return true_v;
   }
 
@@ -213,7 +227,8 @@ vkr_internal VkrFontConfig vkr_font_config_parse(String8 fontcfg_path,
       String8 resolved = file_path_join(allocator, config_dir, value);
       config.atlas = resolved;
     } else if (string8_equalsi(&key, &key_type)) {
-      if (vkr_font_config_parse_type(&value, &config.type)) {
+      if (vkr_font_config_parse_type(&value, &config.type,
+                                     &config.cooked_mtsdf)) {
         has_type = true_v;
       } else {
         log_error("Font config: unknown type '%.*s'", (int32_t)value.length,
@@ -242,7 +257,42 @@ vkr_internal VkrFontConfig vkr_font_config_parse(String8 fontcfg_path,
         config.size = (uint32_t)size_val;
       }
     } else {
-      log_warn("Font config: unknown key '%.*s'", (int32_t)key.length, key.str);
+      static const char *const cooker_only_keys[] = {
+          "source",
+          "face_index",
+          "charset",
+          "charset_file",
+          "axis",
+          "field",
+          "atlas_width",
+          "atlas_height",
+          "atlas_px_per_em",
+          "distance_range",
+          "inner_padding_px",
+          "outer_padding_px",
+          "edge_coloring",
+          "edge_angle_degrees",
+          "edge_seed",
+          "fallback",
+          "fallback_policy",
+          "pixel_format",
+          "miter_limit",
+          "scanline",
+          "threads",
+      };
+      bool8_t cooker_only = false_v;
+      for (uint32_t i = 0;
+           i < sizeof(cooker_only_keys) / sizeof(cooker_only_keys[0]); ++i) {
+        String8 cooker_key = string8_lit(cooker_only_keys[i]);
+        if (string8_equalsi(&key, &cooker_key)) {
+          cooker_only = true_v;
+          break;
+        }
+      }
+      if (!cooker_only) {
+        log_warn("Font config: unknown key '%.*s'", (int32_t)key.length,
+                 key.str);
+      }
     }
 
     vkr_allocator_end_scope(&line_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
@@ -262,7 +312,7 @@ vkr_internal VkrFontConfig vkr_font_config_parse(String8 fontcfg_path,
     return config;
   }
 
-  if (config.type == VKR_FONT_TYPE_MTSDF &&
+  if (config.type == VKR_FONT_TYPE_MTSDF && !config.cooked_mtsdf &&
       (!config.atlas.str || config.atlas.length == 0)) {
     log_error("Font config: 'atlas' required for mtsdf type in '%.*s'",
               (int32_t)fontcfg_path.length, fontcfg_path.str);
@@ -553,8 +603,9 @@ bool8_t vkr_font_system_init(VkrFontSystem *system,
 
   MemZero(system, sizeof(*system));
 
-  uint32_t max_fonts =
-      config->max_system_font_count + config->max_bitmap_font_count;
+  uint32_t max_fonts = config->max_system_font_count +
+                       config->max_bitmap_font_count +
+                       config->max_mtsdf_font_count;
   if (max_fonts == 0) {
     log_error("Font system max font count must be greater than 0");
     *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
@@ -673,7 +724,7 @@ bool8_t vkr_font_system_init(VkrFontSystem *system,
 
   String8 font_mtsdf_name = string8_lit("UbuntuMono-mtsdf");
   String8 fontcfg_mtsdf_path =
-      string8_lit("assets/fonts/UbuntuMono-2d.fontcfg");
+      string8_lit("assets/fonts/UbuntuMono-cooked.fontcfg");
   if (!vkr_font_system_load_from_file(system, font_mtsdf_name,
                                       fontcfg_mtsdf_path, &font_load_error)) {
     String8 err_str = vkr_renderer_get_error_string(font_load_error);
@@ -1017,7 +1068,7 @@ bool8_t vkr_font_system_load_from_file(VkrFontSystem *system, String8 name,
   }
 
   String8 load_name = config.file;
-  if (config.type == VKR_FONT_TYPE_MTSDF) {
+  if (config.type == VKR_FONT_TYPE_MTSDF && !config.cooked_mtsdf) {
     if (!config.atlas.str || config.atlas.length == 0) {
       log_error("Font config: missing atlas for mtsdf '%.*s'",
                 (int32_t)fontcfg_path.length, fontcfg_path.str);
@@ -1031,6 +1082,11 @@ bool8_t vkr_font_system_load_from_file(VkrFontSystem *system, String8 name,
         &system->temp_allocator, "%.*s?atlas=%.*s&size=%u",
         (int32_t)config.file.length, config.file.str,
         (int32_t)config.atlas.length, config.atlas.str, size);
+  } else if (config.type == VKR_FONT_TYPE_MTSDF && config.cooked_mtsdf) {
+    uint32_t size = config.size > 0 ? config.size : VKR_MTSDF_FONT_DEFAULT_SIZE;
+    load_name = string8_create_formatted(
+        &system->temp_allocator, "%.*s?size=%u", (int32_t)config.file.length,
+        config.file.str, size);
   }
 
   VkrResourceHandleInfo handle_info = {0};
@@ -1060,12 +1116,22 @@ bool8_t vkr_font_system_load_from_file(VkrFontSystem *system, String8 name,
       loaded_font = &result->font;
     }
   } else if (config.type == VKR_FONT_TYPE_MTSDF) {
-    VkrMtsdfFontLoaderResult *result =
-        (VkrMtsdfFontLoaderResult *)handle_info.as.custom;
-    if (result) {
-      result_success = result->success;
-      result_error = result->error;
-      loaded_font = &result->font;
+    if (config.cooked_mtsdf) {
+      VkrCookedFontLoaderResult *result =
+          (VkrCookedFontLoaderResult *)handle_info.as.custom;
+      if (result) {
+        result_success = result->success;
+        result_error = result->error;
+        loaded_font = &result->font;
+      }
+    } else {
+      VkrMtsdfFontLoaderResult *result =
+          (VkrMtsdfFontLoaderResult *)handle_info.as.custom;
+      if (result) {
+        result_success = result->success;
+        result_error = result->error;
+        loaded_font = &result->font;
+      }
     }
   }
 
@@ -1212,11 +1278,28 @@ bool8_t vkr_font_system_validate_glyphs(VkrFontSystem *system,
     return false_v;
   }
 
+  bool8_t has_space = false_v;
+  if (font->glyphs_by_id.data && font->codepoint_map.data) {
+    if (font->glyphs_by_id.length == 0 || font->codepoint_map.length == 0 ||
+        font->fallback_glyph_index >= font->glyphs_by_id.length) {
+      return false_v;
+    }
+    for (uint64_t i = 0; i < font->codepoint_map.length; ++i) {
+      if (font->codepoint_map.data[i].glyph_index >=
+          font->glyphs_by_id.length) {
+        return false_v;
+      }
+      if (font->codepoint_map.data[i].codepoint == 32u) {
+        has_space = true_v;
+      }
+    }
+    return has_space;
+  }
+
   if (!font->glyphs.data || font->glyphs.length == 0) {
     return false_v;
   }
 
-  bool8_t has_space = false_v;
   for (uint64_t i = 0; i < font->glyphs.length; i++) {
     if (font->glyphs.data[i].codepoint == 32) {
       has_space = true_v;

@@ -1,10 +1,12 @@
 #include "vkr_harness_json.h"
 
+#include "renderer/resources/vkr_resources.h"
 #include "renderer/systems/vkr_shadow_system.h"
 #include "renderer/vkr_dynamic_resolution.h"
 #include "renderer/vkr_render_packet.h"
 
 #include <float.h>
+#include <math.h>
 
 #define VKR_HARNESS_MANIFEST_MAX_BYTES MB(1)
 
@@ -951,6 +953,7 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
                                         "scene",
                                         "seed",
                                         "resolution",
+                                        "content_scale",
                                         "resize_round_trip",
                                         "boot",
                                         "target",
@@ -983,6 +986,7 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
       .asset_ready_timeout_ms = 30000u,
       .warmup_frames = 120u,
       .compare = vkr_harness_compare_defaults(),
+      .content_scale = 1.0f,
   };
   string_format(out_case->manifest_path, sizeof(out_case->manifest_path), "%s",
                 manifest_path ? manifest_path : "<memory>");
@@ -992,6 +996,8 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
   uint64_t repetitions = out_case->repetitions;
   uint64_t repetition_timeout = out_case->repetition_timeout_ms;
   uint64_t asset_timeout = out_case->asset_ready_timeout_ms;
+  float64_t content_scale = out_case->content_scale;
+  int32_t content_scale_token = -1;
   char boot[16];
   char target[32];
   char present[16];
@@ -1029,7 +1035,12 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
       !vkr_harness_manifest_u64(&doc, 0, "repetition_timeout_ms", false_v,
                                 &repetition_timeout, out_error) ||
       !vkr_harness_manifest_u64(&doc, 0, "asset_ready_timeout_ms", false_v,
-                                &asset_timeout, out_error)) {
+                                &asset_timeout, out_error) ||
+      !vkr_harness_manifest_field(&doc, 0, "content_scale", false_v,
+                                  &content_scale_token, out_error) ||
+      (content_scale_token >= 0 &&
+       !vkr_harness_json_f64(&doc, content_scale_token, &content_scale,
+                             "$.content_scale", out_error))) {
     return false_v;
   }
   out_case->schema_version = (uint32_t)schema;
@@ -1037,6 +1048,7 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
   out_case->repetitions = (uint32_t)repetitions;
   out_case->repetition_timeout_ms = (uint32_t)repetition_timeout;
   out_case->asset_ready_timeout_ms = (uint32_t)asset_timeout;
+  const float32_t narrowed_content_scale = (float32_t)content_scale;
   if (schema != VKR_HARNESS_SCHEMA_VERSION ||
       !vkr_harness_manifest_id_valid(out_case->id) ||
       !vkr_harness_manifest_component_valid(out_case->suite) ||
@@ -1049,7 +1061,9 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
       target_images < 1u || target_images > 8u || repetitions == 0u ||
       repetitions > VKR_HARNESS_MAX_RUNS || repetition_timeout == 0u ||
       repetition_timeout > UINT32_MAX || asset_timeout == 0u ||
-      asset_timeout > UINT32_MAX ||
+      asset_timeout > UINT32_MAX || !isfinite(content_scale) ||
+      content_scale <= 0.0 || content_scale > 8.0 ||
+      !isfinite(narrowed_content_scale) || narrowed_content_scale <= 0.0f ||
       (!string_equals(boot, "full") && !string_equals(boot, "automation")) ||
       !vkr_harness_parse_target(target, &out_case->target) ||
       !vkr_harness_parse_present(present, &out_case->present)) {
@@ -1058,6 +1072,7 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
         "Case identity, path, enum, timing, or count is invalid");
     return false_v;
   }
+  out_case->content_scale = narrowed_content_scale;
   out_case->boot = string_equals(boot, "full") ? VKR_HARNESS_BOOT_FULL
                                                : VKR_HARNESS_BOOT_AUTOMATION;
   if (string_equals(cache, "isolated_cold")) {
@@ -1076,6 +1091,14 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
     vkr_harness_error_set(
         out_error, "case.target_present", "$",
         "Offscreen requires present=none; windowed requires a present mode");
+    return false_v;
+  }
+  if (content_scale_token >= 0 &&
+      out_case->target != VKR_HARNESS_TARGET_OFFSCREEN) {
+    vkr_harness_error_set(
+        out_error, "case.content_scale", "$.content_scale",
+        "Only offscreen cases may override content scale; windowed cases use "
+        "the OS-reported scale");
     return false_v;
   }
   if (out_case->target != VKR_HARNESS_TARGET_OFFSCREEN &&
@@ -1106,7 +1129,8 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
                             out_error) ||
       !vkr_harness_json_u64(&doc, vkr_harness_json_next(&doc, dimension),
                             &height, "$.resolution[1]", out_error) ||
-      width == 0 || height == 0 || width > UINT32_MAX || height > UINT32_MAX) {
+      width == 0 || height == 0 || width > VKR_TEXTURE_MAX_DIMENSION ||
+      height > VKR_TEXTURE_MAX_DIMENSION) {
     return false_v;
   }
   out_case->width = (uint32_t)width;
@@ -1153,7 +1177,8 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
             &doc, vkr_harness_json_next(&doc, resize_width_token),
             &resize_height, "$.resize_round_trip[1]", out_error) ||
         resize_width == 0u || resize_height == 0u ||
-        resize_width > UINT32_MAX || resize_height > UINT32_MAX ||
+        resize_width > VKR_TEXTURE_MAX_DIMENSION ||
+        resize_height > VKR_TEXTURE_MAX_DIMENSION ||
         (resize_width == width && resize_height == height) ||
         out_case->target != VKR_HARNESS_TARGET_WINDOWED_HIDDEN ||
         out_case->warmup_frames < 3u) {
