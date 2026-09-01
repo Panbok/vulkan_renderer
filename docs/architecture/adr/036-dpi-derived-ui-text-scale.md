@@ -1,6 +1,6 @@
 ---
-status: proposed
-updated: 2026-08-26
+status: partial
+updated: 2026-09-01
 authority: adr
 ---
 
@@ -8,7 +8,18 @@ authority: adr
 
 ## Status
 
-Proposed. No production code implements this decision.
+**Accepted (partial).** Windows publishes `GetDpiForWindow() / 96`, macOS
+publishes the window backing scale, and offscreen execution uses an explicit
+finite positive scale defaulting to `1.0`. The window snapshot includes a
+revision. UI consumes it only at resize/offscreen configuration boundaries,
+scales every authored layout dimension before layout, and keeps the retained
+text transform at unit scale.
+
+Pure tests cover 1×, 1.25×, 1.5×, and 2× plus scale-only and extent-only
+invalidation. Offscreen reports preserve 1×, and local macOS downsized and
+maximized-class witnesses preserve the observed 2× scale in aggregate reports.
+A real mixed-scale display transition and native Windows execution are not
+available on the current host, so those acceptance gates remain open.
 
 ## Context
 
@@ -74,7 +85,9 @@ pixel extent is unchanged; an extent change does not imply a scale change.
 
 Harness reports record the effective content scale. Offscreen reports use the
 configured value, so a fixed offscreen baseline does not vary with the machine
-running it.
+running it. Authored offscreen scale participates in the workload fingerprint.
+Observed window scale participates in the environment fingerprint, and a
+snapshot is incomplete if its child repetitions report different scales.
 
 ### Application point and unit contract
 

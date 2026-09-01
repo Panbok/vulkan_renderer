@@ -26,6 +26,14 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 \
   ./build_run.sh Debug --renderer metal
 ```
 
+The macOS sample application explicitly uses fixed-scale spatial
+reconstruction with portable TAA while either validator is enabled. The
+installed Metal 4 validation wrappers do not implement a selector that
+MetalFX temporal encoding calls, so an explicit MetalFX request is rejected at
+renderer initialization instead of entering a framework exception. This
+diagnostic path validates the portable renderer, not native MetalFX; run
+MetalFX correctness checks separately with both validation variables unset.
+
 **Warning:** these diagnostics can tank frame rate, especially shader
 validation. In one local, non-authoritative Debug observation, enabling both
 dropped the renderer from roughly 30–40 FPS to 6–7 FPS. Debug timings are not
@@ -130,13 +138,13 @@ owning document status in the same change.
 | [031](architecture/adr/031-versioned-packed-static-geometry-abi.md) | accepted | Implemented 32-byte static geometry ABI shared by Metal and Vulkan; float32 UVs replace the rejected 24-byte float16-UV candidate |
 | [032](architecture/adr/032-two-phase-confirmed-visibility.md) | investigation | Declined for the measured workload after the predictor deferred zero candidates. The exact-gated one-phase path remains; revisit only for a materially different candidate population |
 | [033](architecture/adr/033-occupied-depth-sdsm-feedback.md) | partial | Metal implements opt-in occupied-depth feedback with completion and source-projection metadata. Fixed splits remain the measured default; Vulkan lowering is open |
-| [034](architecture/adr/034-offline-cooked-font-artifacts.md) | proposed | Replace untracked font-generator outputs and runtime metric conversion with a validated versioned offline-cooked artifact; no production implementation exists |
-| [035](architecture/adr/035-canonical-mtsdf-screen-pixel-range-shading.md) | proposed | Adopt canonical derivative-based MTSDF range reconstruction and evidence-gate VKR's alpha minification fallback; no production implementation exists |
-| [036](architecture/adr/036-dpi-derived-ui-text-scale.md) | proposed | Replace the Windows-only design-extent text transform with per-window OS content scale applied before layout; no production implementation exists |
+| [034](architecture/adr/034-offline-cooked-font-artifacts.md) | partial | VKFA v1 cooker/loader, pinned nested generator commits, licensed Ubuntu Mono recipe, float em records, direct glyph lookup, and default UI migration ship; native Windows/Vulkan acceptance and legacy JSON rollback retirement remain open |
+| [035](architecture/adr/035-canonical-mtsdf-screen-pixel-range-shading.md) | partial | Both backends compile the canonical derivative-based MTSDF contract over linear single-mip atlases; native Vulkan evidence and the optional alpha-fallback A/B remain open |
+| [036](architecture/adr/036-dpi-derived-ui-text-scale.md) | partial | Windows/macOS/offscreen content-scale snapshots drive pre-layout UI dimensions with no transform double-scale; native Windows and real mixed-display transition evidence remain open |
 | [037](architecture/adr/037-portable-same-resolution-temporal-antialiasing.md) | partial | Portable same-resolution TAA with shared Metal/Vulkan resolve, completion-safe history, stable output-grid reprojection, rigid transparent motion, stationary transparency accumulation, bounded moving-camera composition reactivity, output-space FXAA in the existing final draw, and native Apple validation; deformation/procedural/particle motion, broader motion evidence, and owner acceptance remain open |
 | [038](architecture/adr/038-sh-l2-diffuse-irradiance.md) | partial | Final packet-version-23 Metal/Vulkan implementation replaces the baked diffuse cubemap with GPU-resident second-order SH coefficients for `E/pi` in completion-safe slots; source, skybox, and specular-prefilter cubemaps remain. Focused native validation, compiled-root reflection, deterministic same-case execution, and the retained numeric payload comparison pass; matched quality, deterministic GPU-reference, lifetime-stress, and authoritative performance acceptance evidence remain open |
 | [039](architecture/adr/039-metal-internal-render-scale.md) | implemented | Metal internal scene scale keeps native output and UI resolution, folds a linear spatial upscale into tonemap, maps fullscreen picking, records the renderer-reported scene extent, and rejects non-unit scale on Vulkan and the unfinished editor topology |
-| [040](architecture/adr/040-metalfx-temporal-dynamic-resolution.md) | implemented | MetalFX temporal reconstruction writes native scene-linear HDR from a bounded internal content rectangle, reprojects to the exact preceding scaler frame with GPU event ordering, and selects scale tiers from completed GPU intervals |
+| [040](architecture/adr/040-metalfx-temporal-dynamic-resolution.md) | implemented | MetalFX temporal reconstruction writes native scene-linear HDR from a bounded internal content rectangle, reprojects to the exact preceding scaler frame with GPU event ordering, synchronizes untracked inputs through the public scaler fence, and selects scale tiers from completed GPU intervals. Metal validation uses an explicit portable diagnostic path because Apple's wrappers remain incompatible with native MetalFX encoding |
 
 ## Rendering
 
@@ -254,7 +262,7 @@ Working rules for allocator choice and lifetime:
 | [system-font-loader-design.md](text/system-font-loader-design.md) | partial | System-font loader ships; planned snippets/checklist remain |
 | [multi-variant-system-font-plan.md](text/multi-variant-system-font-plan.md) | partial | Multi-variant loading ships; pre-implementation baseline remains |
 | [ui-text-implementation-design.md](text/ui-text-implementation-design.md) | partial | UI text ships; historical examples/checklist remain |
-| [text-resolution-independence-and-font-cooking-spec.md](text/text-resolution-independence-and-font-cooking-spec.md) | proposed | Evidence-driven plan for offline font cooking, canonical MTSDF shading, and DPI-derived UI text layout; no production implementation exists |
+| [text-resolution-independence-and-font-cooking-spec.md](text/text-resolution-independence-and-font-cooking-spec.md) | partial | F0-F3 core ships: deterministic VKFA cooking/loading, float em layout, canonical derivative MTSDF shading, and DPI-derived pre-layout scaling; native Windows/Vulkan, mixed-display, and optional alpha-policy evidence remain open |
 
 ## UI
 

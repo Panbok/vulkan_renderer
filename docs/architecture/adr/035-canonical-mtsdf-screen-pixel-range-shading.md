@@ -1,14 +1,26 @@
 ---
-status: proposed
-updated: 2026-08-26
+status: partial
+updated: 2026-09-01
 authority: adr
 ---
 
-# ADR-035: Canonical MTSDF screen-pixel range with minification fallback
+# ADR-035: Canonical MTSDF screen-pixel range with evidence-gated fallback
 
 ## Status
 
-Proposed. No production code implements this decision.
+**Accepted (partial).** Both production backends now receive a two-component
+atlas `unit_range` and implement the same component-wise UV-derivative
+reconstruction. UI color, world color, and picking use that shared coverage
+contract. Loose transition atlases live outside generic texture inputs and are
+validated as linear, uncompressed, one-mip RGBA8 with clamp-to-edge sampling;
+stale `.vkt` sidecars are removed.
+
+Production deliberately uses pure canonical RGB MSDF. The candidate alpha-SDF
+blend is not accepted because matched pure-MSDF, pure-SDF, and blend captures
+have not been compared on both native backends. Release shader compilation and
+single-process native Metal API/GPU validation pass. Native Vulkan execution is
+unavailable on the current macOS build, so the shader parity ledger remains
+UNALIGNED and this ADR remains partial.
 
 ## Context
 

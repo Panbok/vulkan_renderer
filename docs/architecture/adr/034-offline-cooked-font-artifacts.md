@@ -1,6 +1,6 @@
 ---
-status: proposed
-updated: 2026-08-26
+status: partial
+updated: 2026-09-01
 authority: adr
 ---
 
@@ -8,7 +8,20 @@ authority: adr
 
 ## Status
 
-Proposed. No production code implements this decision.
+**Accepted (partial).** VKR now pins msdf-atlas-gen v1.4 and msdfgen v1.13 by
+exact nested gitlinks, builds the project-owned `vkr_font_cooker`, serializes
+and validates VKFA v1, embeds one linear single-mip RGBA8 MTSDF page, and loads
+the cooked artifact through the C11 resource boundary. Ubuntu Mono Regular,
+its UFL 1.0 licence, the explicit U+0020–U+00FF recipe, and the fallback policy
+are tracked; generated `.vkfa` output remains ignored and reproducible.
+
+The cooked face is the default scalable UI font. Runtime records retain float
+em metrics, integer codepoint-to-glyph-ID lookup, and glyph-ID-pair kerning;
+temporary decode storage expires after GPU publication. Bitmap and system
+raster paths retain real fixture callers. The JSON-plus-PNG MTSDF loader is a
+bounded rollback until native Vulkan acceptance closes. POSIX integration
+passes locally; the checked-in Windows integration still needs a native run.
+Detailed evidence and remaining gates live in the owning text specification.
 
 ## Context
 

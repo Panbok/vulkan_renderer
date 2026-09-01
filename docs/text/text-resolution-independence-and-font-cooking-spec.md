@@ -1,13 +1,15 @@
 ---
-status: proposed
-updated: 2026-08-26
+status: partial
+updated: 2026-09-01
 authority: design
 ---
 
 # Text resolution independence and font cooking specification
 
-**Document status:** Proposed. The defects below describe current code and
-assets. The target design and stages are not implemented.
+**Document status:** Accepted and implemented through the F3 core. The defect
+inventory below is the pre-implementation baseline. Native Vulkan/Windows,
+mixed-display transition, cross-backend comparison, and alpha-fallback A/B
+evidence remain open, so this document is not marked fully implemented.
 
 **Scope:** Establish the evidence for VKR's text scaling defects, define the
 runtime and offline target, and sequence the migration. Rationale for the three
@@ -22,6 +24,21 @@ Related documents:
 [font-system-design.md](font-system-design.md),
 [ui-text-implementation-design.md](ui-text-implementation-design.md), and
 [presentation-dpi-and-transfer-function-spec.md](../rendering/presentation-dpi-and-transfer-function-spec.md).
+
+## Implementation status
+
+| Stage | Status on 2026-09-01 | Remaining acceptance work |
+| --- | --- | --- |
+| F0 | Core implemented | The production shaders use pure canonical RGB MSDF. The optional alpha-SDF blend remains unaccepted until matched Metal/Vulkan A/B captures exist; native Vulkan execution is unavailable on the current host. |
+| F1 | Implemented | The POSIX path passes locally. The checked-in Windows wrapper and build integration still require a native Windows run. |
+| F2 | Core implemented | Cooked Ubuntu Mono is the default scalable UI face, and UI/world layout share float em metrics, integer lookup, and glyph-ID kerning. Fresh native Vulkan output and validation remain open. |
+| F3 | Core implemented | Windows and macOS publish OS content scale, offscreen cases author it explicitly, and UI applies it before layout. A real mixed-scale display transition and native Windows witness remain unavailable. |
+| F4 | Deferred by design | No authoritative profile identifies text geometry or upload work as a limiter. |
+
+The remaining items are evidence or optional-policy gates, not permission to
+restore the pre-F0 storage, shader, metric, lookup, or extent-derived scaling
+paths. The legacy JSON-plus-PNG MTSDF loader remains only as a bounded rollback
+until native Vulkan evidence closes.
 
 ---
 
@@ -505,6 +522,57 @@ Retained harness output is not the record. Carry commands, report digests, and
 numbers into the task record, then remove regenerable artifact trees in the
 same implementation turn.
 
+### 5.6 Implementation record — 2026-09-01
+
+- `./build_test.sh` passes under the default Debug ASan/UBSan configuration.
+  It includes exact VKFA golden bytes, exhaustive malformed-container
+  rejection, atomic-publication collision/retry coverage, production
+  charset/overlay coverage, float layout, derivative range, atlas request, and
+  content-scale tests. It also forces two independent production cooks,
+  byte-compares them, and verifies that the following normal cook skips. The
+  incremental pack step discovers 2,093 generic textures and neither discovers
+  nor recreates a font atlas sidecar.
+- `./build_release.sh` passes and compiles both production text shaders. The
+  cooker identity self-test covers source bytes, face index, charset, axes,
+  generator settings, cooker version, and both pinned generator commits.
+- Forced cooks from identical inputs produced byte-identical 4,205,472-byte
+  artifacts with SHA-256
+  `b13580443fd0eaa4ec8c229173eee73a109b9cfc48c4de080a135931f96c3279`.
+  A warm forced Release cook reported `cook_ms = 463` and
+  `format_temp_bytes = 4,205,878`; a normal follow-up cook skipped. The identity
+  is
+  `bb33e34134d874db1abdd8bfa5b8e49eda61357cf9536296f0fb30923a4f2fd4`;
+  Debug runtime decode scratch peaks at 4,216,309 bytes, and the 1024-square
+  RGBA8 page occupies 4,194,304 GPU bytes.
+- Two normal Release application launches against one fresh explicit pipeline
+  archive both exited successfully. The cold launch created a non-empty
+  4,044,208-byte Metal archive; the warm launch loaded the existing archive and
+  left the same size and SHA-256
+  `ff69ccef1c9ebe3e2380cabe0a8c68d80a20c37415353bc9533400e52a24cc78`.
+- The validation-disabled Metal offscreen text fixture passes with report
+  `sha256:c0f03d9ee1c4e44ac86669e044b8849879e7b0ff03fb326be4f18c411891f326`.
+  Its 960 by 540 final-color and picking captures were inspected, and its
+  effective configuration records `content_scale = 1.0`.
+- A strictly serial Metal API plus GPU/shader-validation run passes with report
+  `sha256:ecc6389a75c53836b05d04020efa31177fdcec0ea8fd443fe5818d1b94ee0bcc`.
+  The child log confirms both validators were enabled and contains no
+  validation error.
+- The maximized-class and downsized native resize witnesses pass with reports
+  `sha256:a9d7b4e82c6a10e198e926ba179ef47bd32d3b203cfc9f56d7bf6e8f076c2779`
+  and
+  `sha256:e41bde6b0ee4111e5e2171abdd0c2adb7e7614037758437dee6dacc4a52477a4`.
+  Both aggregate reports preserve the observed macOS content scale of `2.0`;
+  captures are 3200 by 1800 and 960 by 540 respectively and were inspected.
+- A Vulkan-pinned run under `VK_LAYER_KHRONOS_validation` is unavailable on
+  this macOS build before device creation. Report
+  `sha256:6b3ceb68d3e4b718afc12fbc0930f0abdbbf5c5f00527ccb7b7cfcc9dd242420`
+  records zero completed repetitions and the explicit unavailable-backend
+  error. It is not counted as Vulkan validation evidence.
+
+All harness reports above are local, dirty-tree, and baseline-free diagnostic
+or behavior evidence. No baseline was accepted, and the regenerable run trees
+were removed after these values were transcribed.
+
 ## 6. Comparison with `nuri`
 
 | Area | `nuri` evidence | VKR transfer | Caveat or rejection |
@@ -525,28 +593,27 @@ The transferable lesson is offline ownership of generator output and a float
 runtime contract. The comparison does not establish VKR's pixel format, alpha
 threshold, scale semantics, or performance result.
 
-## 7. Open questions
+## 7. Resolved decisions and remaining questions
 
-These questions must be answered by the named implementation stage, not by
-guessing in the runtime:
-
-1. **Production coverage and fallback (F1):** Which explicit ranges cover every
-   shipped UI and world string, and which licensed face supplies them? The
-   initial runtime is one page; full CJK is not implied.
-2. **Cook integration (F1):** Do root wrappers run the incremental cook, or do
-   production assets use an explicit preparation command? Both choices must
-   stage deterministically and fail visibly.
-3. **Alpha fallback (F0):** Does a blend improve small projected text over both
-   pure MSDF and pure SDF, and at what threshold on both backends?
-4. **Atlas precision (F1/F2):** Does RGBA16F show a visible benefit after the
-   current sampling defects are removed? If not, keep RGBA8.
-5. **Multi-page need (after F2):** Does any accepted coverage set exceed one
-   page? If so, choose draw partitioning or an array representation in a
-   separate design.
-6. **Legacy loaders (F3):** Which real callers still require bitmap or runtime
-   system-raster fonts after default UI migration?
-7. **Instancing (F4):** Does measured CPU text geometry or upload work limit a
-   representative Release case? If not, do not implement it.
+1. **Production coverage and fallback (resolved):** Ubuntu Mono Regular is
+   retained under the Ubuntu Font Licence 1.0. One 1024-square page covers
+   U+0020 through U+00FF, every shipped overlay string is checked in the CPU
+   suite, and U+003F is the fallback.
+2. **Cook integration (resolved):** Root Debug, Release, run, and test wrappers
+   invoke the incremental cooker after a successful compile and fail on cook
+   failure. Standalone POSIX and Windows wrappers remain available.
+3. **Alpha fallback (open):** No blend is accepted. Production uses pure
+   canonical RGB MSDF until matched pure-MSDF, pure-SDF, and candidate-blend
+   evidence exists on both native backends.
+4. **Atlas precision (resolved for v1):** RGBA8 remains the version-1 baseline.
+   RGBA16F requires new same-glyph visual and residency evidence.
+5. **Multi-page need (not demonstrated):** Current accepted coverage fits one
+   page. A larger coverage set must justify a separate draw-partition or array
+   design.
+6. **Legacy loaders (bounded):** Bitmap and system-raster fonts still have real
+   harness fixture callers. JSON-plus-PNG MTSDF remains a rollback path until
+   native Vulkan acceptance; write-only CPU atlas copies are removed.
+7. **Instancing (deferred):** No measured limiter justifies F4.
 
 Shaping, bidirectional layout, dynamic glyph generation, speculative
 design-extent scaling, and full CJK are not current open implementation tasks.

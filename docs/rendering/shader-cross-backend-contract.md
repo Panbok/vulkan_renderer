@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-31
+updated: 2026-09-01
 authority: design
 ---
 
@@ -66,7 +66,7 @@ changing an acceptance envelope requires new evidence and owner review.
 | Visibility, deferred resolve, lighting, temporal resolve, transmission, and picking | Packed rows, range decode, and normal decode above | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang`, `vulkan/slang/picking/default.slang` | **UNALIGNED**: raster and reconstruction use the compacted visible row's `decode_index` on both source paths, while the prior source algorithms and dispatch semantics remain aligned. Local ABI gates pass; native Windows validation and a crossed same-revision capture comparison remain required |
 | Temporal reconstruction consumer | Shared rigid-motion, validity, depth, jitter, and reset producers above | Portable `vkr_metal_packet_temporal_resolve` or ADR-040's Apple MetalFX temporal scaler, selected before graph realization | Portable `vk_temporal_resolve`; no Vulkan temporal upscaler | **UNALIGNED**: MetalFX intentionally has no Vulkan algorithm counterpart. Its input contract uses normalized `previous_uv - current_uv`, active-content pixel scaling, separate jitter, non-reversed depth, and the exact preceding scaler frame. Metal orders an in-flight previous transform with a GPU shared-event dependency and resets when that predecessor is missing. Native MetalFX Release execution and capture pass, but Apple's Metal 4 API and GPU-validation wrappers abort inside the framework. Portable TAA remains the bilateral consumer |
 | Tonemap and FXAA | Exposure state above | `metal/msl/post/tonemap.metal` | `vulkan/slang/post/default.slang`, `post/tonemap.slangh` | **UNALIGNED**: source behavior agrees and all four authored on/off combinations pass on both backends from the same byte-identical HDR input. Missing: crossed final-color comparisons against the authored limits |
-| Text color and picking | None | `metal/msl/text/default.metal` | `vulkan/slang/text/default.slang` | **UNALIGNED**: sources agree and the same fixture renders non-degenerate color and picking output on both backends. The native picking payload digests differ; a crossed color, coverage, and ID comparison is missing |
+| Text color and picking | None | `metal/msl/text/default.metal` | `vulkan/slang/text/default.slang` | **UNALIGNED**: sources, host payloads, and compiled ABI gates agree on canonical derivative MTSDF coverage. Fresh Metal color, picking, and focused API/GPU-validation witnesses pass. Native Vulkan is unavailable on the current host; a fresh Vulkan witness and crossed color, coverage, and ID comparison are missing |
 
 Paths in this document are relative to `lib/src/renderer/`. Vulkan includes the
 shared headers through Slang. The Metal library concatenates the same headers
@@ -124,7 +124,7 @@ and implementation files. `metal/slang/library.slang` is compiled separately.
 | GPU draw generation, visibility, resolve, deferred lighting, temporal history, transmission, picking, HZB, and SDSM | `metal/msl/world/gpu_draws.metal`; 23 entry points from `vkr_metal_packet_vbuffer_fragment` through `vkr_metal_packet_sdsm_reduce` | `vulkan/slang/world/deferred.slang` | **UNALIGNED**: source and dispatch semantics plus focused native validation pass; the transmission family has paired diagnostic, production-temporal, and production-nontemporal variants for both launch shapes. Normalized Release execution is bilateral, but transmission layer counts disagree and capture comparison remains missing |
 | Forward world shading and temporal MRT output | `metal/msl/world/default.metal`; `vkr_metal_packet_opaque_fragment`, `vkr_metal_packet_temporal_blend_fragment` | `vulkan/slang/world/default.slang` | **UNALIGNED**: source counterparts and normalized native executions exist; crossed output comparison remains missing |
 | IBL baking | `metal/msl/ibl/common.metalh` plus equirect, SH projection, and prefilter `.metal` entry points | `vulkan/slang/ibl/default.slang` | **UNALIGNED**: source counterparts and focused native validation pass on both backends; current HDR render-path snapshots pass, but direct matched bake snapshots are missing |
-| Text and text picking | `metal/msl/text/default.metal`; vertex, color-fragment, and picking-fragment entry points | `vulkan/slang/text/default.slang` | **UNALIGNED**: source counterparts and bilateral text snapshots exist; native picking payload digests differ and no crossed comparison has evaluated them |
+| Text and text picking | `metal/msl/text/default.metal`; vertex, color-fragment, and picking-fragment entry points | `vulkan/slang/text/default.slang` | **UNALIGNED**: source counterparts and compiled ABI gates agree. Current Metal text and picking output plus focused validation pass; fresh native Vulkan output and a crossed comparison remain missing |
 | Tonemap and FXAA | `metal/msl/post/tonemap.metal`; fullscreen vertex and tonemap fragment | `vulkan/slang/post/default.slang` and `post/tonemap.slangh` | **UNALIGNED**: enabled and disabled source behavior agrees, and the four-state matrix passes bilaterally from one identical HDR input; crossed final-color comparisons remain missing |
 | Exposure, bloom, and GTAO | the three files listed in the original topology table; 12 compute entry points | the three Vulkan post-effect files listed above | **ALIGNED** |
 
@@ -576,29 +576,33 @@ maximum-delta, mean-error, and failed-pixel limits.
 ### 4.10 Text color and picking — UNALIGNED
 
 Bitmap text uses atlas alpha. MTSDF text uses the median of RGB minus `0.5`,
-then derivative width `max(fwidth(distance), 1e-6)` and a saturated `+0.5`
-coverage reconstruction. Color output preserves glyph RGB and multiplies glyph
-alpha by coverage. Metal selects MTSDF when `controls.y > 0.5`; UI flag bit 0
-maps through the pixel extent in `controls.zw`. Picking discards coverage at or
-below `0.01` and otherwise returns the draw object ID. Screen-space clip
-conversion differs in Y between the native APIs to produce the same top-left UI
-convention.
+then derives the projected texel footprint from component-wise squared UV
+derivatives. Both backends clamp each squared-gradient component to `1e-12`,
+take its reciprocal square root, and reconstruct with
+`max(0.5 * dot(unit_range, screen_tex_size), 1.0)`. Color output preserves
+glyph RGB and multiplies glyph alpha by the saturated reconstructed coverage.
 
-The audited sources agree. The same Release fixture visibly exercises system,
-bitmap, UI MTSDF, and world MTSDF text plus picking on both backends. Metal
-report `sha256:ae31212817546ad4a47e3753174a283bc96b1b7a7f641ded5b977194e15801ce`
+Metal stores `unit_range` in `controls.xy`, the UI target extent in
+`controls.zw`, UI-domain selection in flag bit 0, and MTSDF selection in flag
+bit 1. Vulkan stores `unit_range` in `material_alpha.xy`, selects MTSDF through
+`material_flags`, and keeps the target extent in
+`point_light_grid_origin_cell_size.xy`. Picking uses the same coverage helper,
+discarding at or below `0.01`, and otherwise returns the draw object ID.
+Screen-space clip conversion differs in Y between the native APIs to produce
+the same top-left UI convention.
+
+The prior bilateral Release reports predate this reconstruction and no longer
+validate the current contract. Fresh Metal offscreen report
+`sha256:c0f03d9ee1c4e44ac86669e044b8849879e7b0ff03fb326be4f18c411891f326`
 produces final-color digest
-`sha256:7ce12e1724df9037b6735ff61cbcb9216e1afaf9e781a9733ecf28509fb91b62`
-and picking digest
-`sha256:6d646162b03d58abc081b59e02c2b60bcc2883e9e6b6636ba37a325d7aafa186`.
-Vulkan report
-`sha256:1a7de51d4d077808869c8689c86700661e04f7503087d34654a88b6b5a1949e7`
-produces final-color digest
-`sha256:9566e77427690003479c810cefa7c87b7077049d57768368c83a9808f45ed237`
-and picking digest
-`sha256:ebc8eb20d2027f9145306c2a6e0621dec642f5bd93d02efc725e06ef4262472b`.
-The state remains **UNALIGNED** until crossed comparisons evaluate color,
-coverage, and object IDs with documented limits.
+`sha256:e5cca2d98615b9889754dc24ef306297c63c4091581aee7faa7bd69e4f6f0cde`
+and picking-ID digest
+`sha256:64aabd715b2cfc62c26a975e73a9c39ea8b484c029f0265647e216239c93bd81`.
+Focused Metal API/GPU-validation report
+`sha256:ecc6389a75c53836b05d04020efa31177fdcec0ea8fd443fe5818d1b94ee0bcc`
+passes. Native Vulkan is unavailable on the current host, so the state remains
+**UNALIGNED** until a fresh Vulkan shader/validation witness and crossed color,
+coverage, and object-ID comparisons meet documented limits.
 
 ### 4.11 MetalFX temporal consumer — UNALIGNED
 
