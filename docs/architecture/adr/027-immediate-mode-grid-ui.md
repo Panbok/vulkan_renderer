@@ -1,47 +1,44 @@
 ---
-status: proposed
-updated: 2026-08-12
+status: accepted
+updated: 2026-09-01
 authority: adr
 ---
 # ADR-027: Immediate-mode grid UI with a composited editor viewport
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
-VKR has no UI system. `VkrUiSystem` is a fixed array of 16 text slots positioned
-by a four-way corner anchor; that switch statement is the entire layout engine.
-There is no rectangle primitive, no hit testing, no clipping, and no UI input
-model. Both an editor and in-game HUD are required, and the choice of layout
-model, update mode, and rendering strategy constrains every widget written
-afterwards — so it belongs in an ADR rather than in whichever file gets written
-first.
+At proposal time, VKR had no general UI system. `VkrUiSystem` was a fixed array
+of 16 corner-anchored text slots with no rectangle primitive, hit testing,
+clipping, or UI input model. Both an editor and in-game HUD were required, and
+the choice of layout model, update mode, and rendering strategy constrained
+every later widget.
 
-Four facts about the existing renderer shape the decision.
+Four facts about the renderer shaped the decision.
 
-**The editor topology is already authored, but not plumbed.** The JSON graph
+**The editor topology was authored, but not fully plumbed.** The JSON graph
 branches on `editor_enabled`: the scene renders offscreen into `scene_color` at
 `extent:{mode:viewport}`, `Editor.Composite` blits it into a panel rect, then
 `UI.Editor` draws over the swapchain. However
-`VkrRenderGraphFrameInfo.editor_enabled` is never assigned in either backend —
-both patch only `picking_pending` and `shadow_cascade_count` before
-`vkr_rg_begin_frame()`. The condition is therefore permanently false, and
-`scene_color`, `Editor.Composite`, and `UI.Editor` are never built.
-`viewport_width/height` is likewise pinned to window size.
+`VkrRenderGraphFrameInfo.editor_enabled` was not assigned in either backend;
+both patched only `picking_pending` and `shadow_cascade_count` before
+`vkr_rg_begin_frame()`. The condition was therefore permanently false, and
+`scene_color`, `Editor.Composite`, and `UI.Editor` were never built.
+`viewport_width/height` was likewise pinned to window size.
 
-**The GPU path is ahead of the CPU path.** `pass.ui` is registered in both
-backends and already draws screen-space text. The `draws` half of
-`VkrUiPassPayload` is plumbed end to end but the application always submits it
-empty.
+**The GPU path was ahead of the CPU path.** `pass.ui` was registered in both
+backends and could draw screen-space text, while the application submitted its
+general draw payload empty.
 
-**Two capabilities a UI needs are absent.** There is no scissor support anywhere —
-scissor is set once to the full render area, and Metal has no `setScissorRect`
-call in the tree at all. There is no input focus, capture, or arbitration layer;
+**Two required capabilities were absent.** Scissor was set once to the full
+render area, and Metal had no `setScissorRect` call. There was no input focus,
+capture, or arbitration layer;
 the camera controller, picking, and gizmo drag each poll `InputState` and
 hand-arbitrate with ad-hoc button checks.
 
-**The existing `docs/ui/` tree designs a different system** — a retained-mode
-element tree with a flexbox engine and no tiling — across roughly 4,700 lines,
+**The former `docs/ui/` tree designed a different system**: a retained-mode
+element tree with a flexbox engine and no tiling across roughly 4,700 lines,
 none of it implemented, with stale paths referencing the removed view/layer
 system. Leaving it in place would leave two competing designs on file.
 
@@ -55,8 +52,8 @@ authored topology and plumb it, rather than moving to translucent panels floatin
 over a full-window scene. The scene renders at viewport resolution, not window
 resolution, so editor chrome costs no scene fill; picking already maps window
 pixels to target pixels through `VkrViewportMapping`; and UI text stays crisp
-because it is never scaled with the scene image. Docking later replaces the
-hardcoded gutters with a dock tree that owns the panel rect.
+because it is never scaled with the scene image. A dock tree owns the panel
+rectangle.
 
 **2. An immediate-mode API over a retained internal cache.** Callers write
 per-frame widget calls. Behind them, a persistent table keyed by a stable hashed
@@ -72,28 +69,28 @@ cases that would otherwise justify a flex engine. No flex engine is written.
 
 **4. Rendering is one vertex stream per frame, split into scissored batches, with
 a tile grid and per-tile content hashing.** Vertices reuse the existing shared
-`VkrTextVertex` ABI record so no new vertex format enters reflection validation.
+`VkrUiVertex` ABI record, which world text aliases, so no second vertex format
+enters reflection validation.
 Tile hashing yields a damage set. The damage set's use for a cached `ui_color`
 target is gated behind measurement (see Consequences).
 
 ## Consequences
 
-**Packet contract.** Version 10 → 11. `VkrPreparedUiDrawList` replaces the
-per-draw borrowed-buffer shape; the 16-slot `VkrUiTextSlot` array,
-`VKR_PREPARED_TEXT_DRAW_MAX`, and `VkrTextUpdatesPayload` retire in the same
-bump so the version moves once.
+**Packet contract.** The implementation landed against a newer renderer. Version
+25 to 26 replaced the editor quad with one compositor rectangle; version 26 to
+27 introduced `VkrPreparedUiDrawList`. The 16-slot `VkrUiTextSlot` API and
+`VKR_PREPARED_TEXT_DRAW_MAX` retired, while `VkrTextUpdatesPayload` narrowed to
+world text.
 
-**New backend surface, written twice.** Per-batch scissor (new API surface on
-Metal, a dynamic-state call on Vulkan), one new vertex/fragment pair for rounded
-rects, and a small dedicated UI root. The rounded-rect pipeline is forced by the
-vertex stage: the SDF needs rect-local coordinates and `texcoord` is taken by the
-atlas, and `VkrTextVertex` cannot grow because world text shares it. Note that
-the Vulkan utility root is not reflection-validated while Metal's text root is,
-so these are two distinct ABI surfaces.
+**New backend surface, written twice.** Per-batch scissor, dedicated quad/text and
+rounded-rectangle pipeline pairs, and one semantic 64-byte UI root ship on Metal
+and Vulkan. `VkrUiVertex` is the canonical shared 32-byte record and world text
+aliases it. Metal validates the UI root field by field through native
+reflection; Vulkan pins its size and offsets alongside the shader declaration.
 
-**A per-draw defect is fixed rather than inherited.** The current utility-root
-helper zeroes 512 bytes per draw; at UI batch counts that is exactly the per-draw
-cost AGENTS.md classifies as a defect.
+**A per-draw defect is fixed rather than inherited.** UI batches allocate and
+initialize only the 64-byte UI root rather than zeroing the 512-byte Vulkan
+utility root.
 
 **Input arbitration changes the update order.** UI capture is computed first and
 read by everyone; nothing consumes events, since edge detection queries an
@@ -101,37 +98,24 @@ read by everyone; nothing consumes events, since edge detection queries an
 drag when the cursor crosses a panel, and the camera controller is told it is
 blocked rather than skipped so its smoothing does not snap.
 
-**Text fields are blocked on platform work.** There is no character-input path
-(`WM_CHAR` / `NSTextInputClient`) and no key repeat. IME is explicitly out of
-scope.
+**Text fields require committed character input.** A fixed 64-codepoint queue,
+Windows `WM_CHAR` surrogate lowering, macOS committed-text lowering, and
+platform-independent key repeat now ship. IME composition remains out of scope.
 
-**DPI must be handled up front.** Engine coordinates are backing pixels, and
-Windows has no DPI-awareness call, so style constants are authored in logical
-points and scaled at resolve time. Retrofitting this after widgets exist would
-touch every constant.
+**DPI is handled up front.** Engine coordinates are backing pixels. Style
+constants are authored in logical points and scaled once at resolve time from
+the platform or explicit offscreen content-scale snapshot.
 
-**The tile cache is designed in but gated on evidence.** Tile bins pay for
-themselves immediately in hit-test acceleration, batch grouping, and skipping the
-UI pass when nothing is dirty. The cached `ui_color` target is a separate,
-riskier step:
+**Tile hashing ships; the cached target does not.** Retained, reusable CPU-side
+64-pixel bins, ordered hashes, motion damage, and dirty metrics ship while the
+direct pass still redraws the complete stream. ADR-029 later supplied retained
+per-image graph state, but the prescribed early measurement found the direct UI
+pass at 0.017583 ms GPU p50 in a local static retained-UI workload. Adding persistent
+per-image storage and an unconditional full-screen composite was not justified,
+so the cached `ui_color` path and its A/B were declined. This local dirty-tree
+measurement is a scope gate, not a portable speed claim.
 
-- It is **incorrect on Vulkan as the graph stands**. The compiler re-seeds every
-  non-imported graph image to `UNDEFINED` each frame, so `LOAD` reads
-  potentially-discarded contents. Metal has no layouts and reuses the texture, so
-  the same code would look correct on macOS and be wrong on Windows. It requires
-  a `PRESERVE_ACROSS_FRAMES` flag with a per-instance initialized bit.
-- Metal does not implement `PER_IMAGE` at all.
-- Damage must accumulate **per swapchain image**, not per frame slot, because an
-  image's staleness is "since it was last acquired" and is not a fixed period.
-- It needs a per-frame-variable load op, which the JSON graph cannot express.
-- It adds an unconditional full-screen alpha blend whose cost is fixed while its
-  saving is proportional to the clean-tile fraction.
-
-The specification therefore requires one harness run against the current build
-before any of this is written, and a two-variant paired A/B before it ships. No
-claim about which path is faster appears in either document.
-
-**The tiled path selects by graph file, not by graph condition.**
+**Any future tiled path selects by graph file, not by graph condition.**
 `VkrRgJsonConditionKind` is closed and its parser hard-errors on unknown
 conditions, so a new condition would touch nine files and break older binaries
 reading newer graphs. A second authored graph file selected through the existing
@@ -139,9 +123,9 @@ reading newer graphs. A second authored graph file selected through the existing
 measurement.
 
 **Documentation.** `ui-system-overview.md`, `ui-layout-engine-design.md`, and
-`ui-element-primitives-design.md` are superseded and archived. The components and
-docking designs remain proposed under the new spec. The architecture spec's §4
-"Editor viewport and picking" row is corrected to `partial`.
+`ui-element-primitives-design.md` are superseded and archived. The UI
+specification is the status authority for the shipped direct path and the
+declined cached target.
 
 ## Alternatives Considered
 
@@ -183,15 +167,13 @@ by reflection on both backends. The parameters travel in the batch root instead.
 
 ## Revisit When
 
-- The dirty-tile ratio exported in P4 is not consistently low for a realistic
-  editor UI — in which case the cached `ui_color` target in §8.3 of the spec is
-  dropped and only the binning uses in §8.2 are kept.
-- The initial harness run shows `UI.Fullscreen` GPU time is already at the noise
-  floor, which retires the cached-target work before it is written.
+- A future workload and paired evidence show that a cached UI target overcomes
+  the direct pass's measured local 0.017583 ms GPU p50 plus the added composite
+  and retained-image costs.
 - Multiple OS windows become a requirement, which would invalidate the in-window
   docking assumption and reopen device selection, surface creation, and the
   graph's single present output.
 - Non-rectangular clipping becomes necessary, which would move clip state into
   the fragment shader and into the tile hash.
-- A second layout model is genuinely needed — for example if text flow or
+- A second layout model is genuinely needed, for example if text flow or
   baseline alignment across containers cannot be expressed as grid tracks.

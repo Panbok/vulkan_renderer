@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-08-12
+updated: 2026-09-01
 authority: design
 ---
 # UI Docking System Design
@@ -10,7 +10,11 @@ authoritative UI design; this document sits under it and covers phase P6. Per
 §9 of the spec, docking is in-window only, the dock tree owns the scene viewport
 panel rect via `vkr_editor_viewport_mapping_from_panel_rect()`, and dock splits
 are grid track lists rather than a separate splitter model. Rationale in
-[ADR-027](../architecture/adr/027-immediate-mode-grid-ui.md). No code exists.
+[ADR-027](../architecture/adr/027-immediate-mode-grid-ui.md). The bounded
+in-window split/tab tree, interaction, collapse, validation, scene-panel mapping,
+and atomic JSON persistence now ship in `core/ui/vkr_ui_dock.*`. This broader
+legacy design's floating windows, panel factories, retained handles, and removed
+view-state integration do not.
 
 **Legacy note:** This document uses historical `VkrViewEditorState` naming from
 the removed view/layer system. In the stateless renderer, editor UI is driven by

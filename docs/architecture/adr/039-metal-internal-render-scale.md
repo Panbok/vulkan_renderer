@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-31
+updated: 2026-09-01
 authority: adr
 ---
 
@@ -10,7 +10,7 @@ authority: adr
 
 **Accepted.** Metal supports an immutable internal scene scale in `(0, 1]`.
 Scale `1.0` remains the default. Vulkan rejects non-unit scale, and non-unit
-scale rejects the unfinished editor viewport topology.
+scale rejects editor compositor mode.
 
 This is an explicit quality and performance mode. It is not a native-resolution
 optimization, MetalFX integration, or temporal upscaler.
@@ -60,10 +60,10 @@ scene scale visible as a declared workload control.
    change resets its history through the existing extent rule. This decision
    does not describe the linear sample as temporal reconstruction.
 6. Fullscreen picking maps physical output coordinates to internal pixels with
-   the renderer's existing edge-to-edge convention. The editor already owns a
-   different panel mapping and remains incomplete, so the renderer cancels and
-   rejects an editor packet when scale is not `1.0`. The harness rejects the
-   same combination before launch.
+   the renderer's existing edge-to-edge convention. The editor owns a different
+   dock-panel mapping, and scaled editor composition is outside this decision,
+   so the renderer cancels and rejects an editor packet when scale is not
+   `1.0`. The harness rejects the same combination before launch.
 7. Harness manifests may author `renderer.render_scale`. A non-default value
    changes the workload fingerprint, reports include `resolution`,
    `render_resolution`, and `render_scale`, and capture-summary version 5 keeps

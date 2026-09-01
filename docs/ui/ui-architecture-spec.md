@@ -1,6 +1,6 @@
 ---
-status: proposed
-updated: 2026-08-21
+status: implemented
+updated: 2026-09-01
 authority: design
 ---
 # UI Architecture Specification
@@ -12,9 +12,13 @@ in-game UI. Supersedes [ui-system-overview.md](../archive/ui-system-overview.md)
 Rationale is recorded in
 [ADR-027](../architecture/adr/027-immediate-mode-grid-ui.md).
 
-`status: proposed` — no production code implements this document. The existing
-`VkrUiSystem` is a 16-slot corner-anchored text array and is not an
-implementation of anything below.
+`status: implemented` means the direct-rendering architecture in P0-P4, P6,
+and P7 ships. P5 was conditional, and the prescribed measurement retired it:
+the direct UI pass measured 0.0176 ms GPU p50 locally, while the cached path
+would add persistent per-image storage and an unconditional full-screen
+composite. Section 8 records that decision and its evidence limits.
+Native Vulkan runtime validation remains unavailable on the current macOS host,
+so shader parity stays `UNALIGNED` rather than being inferred from compilation.
 
 ## 1. Summary
 
@@ -32,56 +36,44 @@ Four decisions define the system:
 4. **Rendering** — one vertex stream per frame split into scissored batches, with
    a tile grid and per-tile content hashing that yields a damage set.
 
-Section 8 records the correctness hazards in the tile-cached rendering half and
-the measurement that must precede shipping it. Section 2 records a status defect
-that must be fixed before decision 1 has any implementation behind it.
+Section 8 records why tile binning ships but a persistent cached UI target does
+not. Section 2 records the completed editor-graph prerequisite.
 
-## 2. Prerequisite: the editor graph path is not plumbed
+## 2. Editor graph prerequisite
 
 `assets/render_graphs/main.rendergraph.json` declares the full editor topology,
 conditioned on `editor_enabled`: `scene_color`, `scene_depth` and
 `scene_pre_transmission` at `extent:{mode:viewport}`, the `Editor.Composite`
 pass, and `UI.Editor`.
 
-`VkrRenderGraphFrameInfo.editor_enabled` is **never assigned** in either backend.
-`vkr_vulkan_renderer_submit_packet()` and the Metal equivalent in
-`vkr_metal_packet_frame.inc` patch only `picking_pending` and
-`shadow_cascade_count` into `prepared_frame` before `vkr_rg_begin_frame()` — the
-Metal site under a comment reading "Patch packet-derived graph conditions here,
-immediately before graph build". `packet.frame.editor_enabled` reaches only
-capture-channel selection in `vkr_vulkan_capture.c` and
-`vkr_metal_packet_graph.inc`.
+P0 is complete. Both selected implementations copy `editor_enabled` and the
+packet viewport extent into `VkrRenderGraphFrameInfo` immediately before graph
+realization. Zero viewport dimensions retain the target-extent fallback. The
+editor branch therefore realizes its viewport-domain images and executes
+`Editor.Composite` followed by `UI.Editor`.
 
-Consequences, all derivable from the authored graph:
-
-- `scene_color`, `scene_depth`, `scene_pre_transmission` are never created.
-- `Editor.Composite` and `UI.Editor` are never built.
-- `UI.Fullscreen`, conditioned on `!editor_enabled`, always builds.
-- The editor snapshot case requests a `scene_color` capture channel that is not
-  in the built graph.
-
-`prepared_frame.viewport_width/height` is likewise initialized to the window
-size and never updated from `packet.frame.viewport_*`, so
-`extent:{mode:viewport}` resolves to window extent. The packet's viewport values
-reach only shader constants.
-
-Phase P0 below plumbs both. Until it lands, decision 1 is a design statement with
-no running code, and the architecture spec's §4 "Editor viewport and picking"
-row is qualified accordingly.
+The application derives one scene panel rectangle from the dock tree. That
+rectangle drives the viewport target extent, camera aspect, picking and gizmo
+coordinate mapping, and the compositor viewport/scissor. The obsolete retained
+editor mesh and material were removed, so there is no second representation of
+the destination rectangle. Fullscreen rendering keeps `UI.Fullscreen`.
 
 ## 3. Layering and ownership
 
 ```
 lib/src/core/ui/          pure CPU, no renderer dependencies, unit-testable
+  vkr_ui_types.h/.c       rectangles, edges, and texture references
   vkr_ui_id.h/.c          ID stack and stable hashed widget identity
   vkr_ui_grid.h/.c        grid track solver
-  vkr_ui_style.h          style and box model; constants in logical points
+  vkr_ui_style.h/.c       style and box model; constants in logical points
   vkr_ui_draw.h/.c        draw-command buffer to vertices/indices/batches
   vkr_ui_tile.h/.c        tile binning, per-tile hashing, damage set
+  vkr_ui_dock.h/.c        fixed-capacity dock tree and JSON persistence
 
 lib/src/renderer/systems/vkr_ui_system.c
-                          retained node arena; builds the packet payload from
-                          per-frame scratch; injected at submit time
+                          retained widget and tile-bin storage; builds the
+                          packet payload from per-frame scratch; injected at
+                          submit time
 ```
 
 The `core/ui/` split exists so the grid solver, ID stack, and tile hashing are
@@ -91,8 +83,8 @@ testable under `./build_test.sh` with no GPU and no renderer state.
 
 | Data | Allocator | Reason |
 |---|---|---|
-| Per-widget retained state, per-tile hashes, last-frame AABBs | `VkrDMemory` | Hash-table keys and individually-freed entries; must not live in an arena |
-| Per-frame vertices, indices, batches, tile bins | `renderer.scratch_allocator` | The main loop already opens a scope around the whole frame in `application.h`; nothing is freed individually |
+| Per-widget state, per-tile hashes, last-frame AABBs, reusable tile offsets and command indices | `VkrDMemory` | Entries are reclaimed individually, and clean-frame bins must remain valid across scratch-scope resets |
+| Per-frame vertices, indices, batches, command fingerprints, changed-frame bin workspaces, damage maps | `renderer.scratch_allocator` | The main loop already opens a scope around the whole frame in `application.h`; nothing is freed individually |
 
 Building the payload inside `submit_packet` from the scratch allocator yields
 exactly the "valid until submit returns" lifetime the packet contract requires.
@@ -163,32 +155,28 @@ that would not converge.
 
 Each subtree carries a build hash over its declared tracks, placement, style, and
 content identity. A subtree whose build hash *and* available size are unchanged
-from the previous frame reuses its resolved rects and is not re-measured. This is
-the primary payoff of the retained cache, and it is independent of the tile
-rendering in §8.
+from the previous frame reuses its resolved rects and skips top-down arrangement.
+Bottom-up measurement still folds cached leaf intrinsics through the container
+tree each frame; text shaping and geometry rebuilds remain dirty-bit gated. This
+reuse is independent of the tile rendering in §8.
 
 ### 5.4 Units and DPI
 
 **All style constants are authored in logical points** and multiplied by
-`content_scale` at resolve time. This is not deferrable:
-
-- Engine coordinates are backing pixels — macOS window code returns
-  `convertRectToBacking` results and scales mouse positions by
-  `layer.contentsScale`.
-- Windows has no `SetProcessDpiAwarenessContext` or `GetDpiForWindow` anywhere in
-  the tree, so at 150% scaling the process is DPI-virtualized.
-
-The existing hardcoded editor gutters in `vkr_editor_viewport.c` (`max(32, …)`,
-`max(220, …)`) are already effectively half-size on a Retina display, which is
-the concrete symptom. `content_scale` is added to `VkrWindow` and consumed by the
-UI context.
+`content_scale` at resolve time. The UI reuses ADR-036's existing atomic window
+snapshot rather than adding a competing scale source. macOS publishes backing
+scale; Windows enables Per-Monitor V2 awareness, publishes `GetDpiForWindow /
+96`, and updates it on `WM_DPICHANGED`; offscreen automation supplies an
+explicit scale. Engine layout, mouse, viewport, and scissor coordinates remain
+backing pixels.
 
 ## 6. Coordinate conventions
 
-Three conventions are in play and the spec fixes each one:
+Four conventions are in play and the implementation fixes each one:
 
 | Space | Convention |
 |---|---|
+| UI layout and draw commands | **Y-down**, origin top-left |
 | UI geometry (vertex positions) | **Y-up**, origin bottom-left |
 | Mouse input | **Y-down** backing pixels, origin top-left |
 | Scissor rectangles | **Y-down** attachment pixels (both Vulkan and Metal) |
@@ -197,9 +185,11 @@ UI geometry is Y-up because both existing text shaders already map `y = 0` to th
 bottom of the target — with opposite NDC signs, since the Vulkan and Metal clip
 conventions differ, which is why the two shaders look contradictory and are not.
 
-`VkrUiDrawBatch.scissor_rect_px` is defined as **Y-down attachment pixels**, and
-the frontend performs the single conversion `scissor.y = attachment_height -
-(rect.y + rect.h)` where the true attachment extent is known.
+`vkr_ui_draw_build()` performs the only Y conversion while expanding each
+Y-down command rectangle into Y-up vertices. `VkrUiDrawBatch.scissor_rect_px`
+stays in Y-down attachment pixels and is passed directly to both native APIs.
+This keeps layout, input, clips, and docking in one convention while preserving
+the shared text/UI vertex convention.
 
 `RendererFrontend.globals.ui_projection` and `ui_view` are written by
 `vkr_ui_system.c` with a Y-down orthographic matrix and are **read nowhere** —
@@ -210,21 +200,25 @@ second, contradictory convention.
 
 ### 7.1 Packet contract
 
-Packet version bumps 10 → 11. The per-draw borrowed-buffer shape is replaced by
-one list per frame:
+The implementation advanced the current packet from version 25 to 26 for the
+editor compositor rectangle, then from 26 to 27 for the UI stream. The old
+per-draw borrowed-buffer shape is replaced by one list per frame:
 
 ```c
 typedef struct VkrUiDrawBatch {
   uint32_t first_index;
   uint32_t index_count;
-  VkrTextureHandle texture;     /* id == 0 means untextured */
-  Vec4 scissor_rect_px;         /* Y-down attachment pixels */
-  uint32_t mode;                /* see below */
+  VkrUiTextureRef texture;      /* id == 0 means untextured */
+  VkrUiRect scissor_rect_px;    /* integral Y-down attachment pixels */
+  VkrUiDrawMode mode;           /* see below */
   float32_t screen_px_range;    /* MTSDF only */
+  Vec2 sdf_unit_range;          /* MTSDF only */
+  Vec2 rect_extent_px;          /* rounded rect only */
+  Vec4 corner_radius_px;        /* rounded rect only */
 } VkrUiDrawBatch;
 
 typedef struct VkrPreparedUiDrawList {
-  const VkrTextVertex *vertices; uint32_t vertex_count;
+  const VkrUiVertex *vertices; uint32_t vertex_count;
   const uint32_t *indices;       uint32_t index_count;
   const VkrUiDrawBatch *batches; uint32_t batch_count;
 } VkrPreparedUiDrawList;
@@ -233,8 +227,9 @@ typedef struct VkrPreparedUiDrawList {
 Modes: `0` solid or textured quad, `1` MTSDF text, `2` bitmap-alpha text,
 `3` rounded rect.
 
-Vertices reuse `VkrTextVertex { Vec2 position; Vec2 texcoord; Vec4 color; }` — a
-shared, static-asserted ABI record in `vkr_gpu_abi` that world text also uses.
+`VkrUiVertex { Vec2 position; Vec2 texcoord; Vec4 color; }` is the canonical
+shared, static-asserted 32-byte ABI record; `VkrTextVertex` aliases it for world
+text.
 **No vertex attributes are added**, because changing that record changes an ABI
 validated by reflection on both backends.
 
@@ -258,39 +253,27 @@ Deliberate omissions:
 
 Written twice — Vulkan and Metal.
 
-**Per-batch scissor.** Scissor is currently set once to the full render area.
-Vulkan already declares `VK_DYNAMIC_STATE_SCISSOR`, so this is one
-`vkCmdSetScissor` per batch. Metal has no `setScissorRect` call anywhere in the
-tree, so this is new API surface there rather than a parity change.
+**Per-batch scissor.** Vulkan issues one `vkCmdSetScissor` per batch through its
+existing dynamic state. Metal issues one `setScissorRect` per batch. Both use
+the integral CPU-intersected attachment rectangle.
 
 Nested clips are intersected on the CPU into a single rect per batch. **Clipping
 is rectangular**: a rounded panel clips its children square. Adding an SDF clip
 in the fragment shader is possible later but would also have to enter the tile
 hash, so it is out of scope here.
 
-**Pipelines.** Modes 0–2 reuse the existing `text_vertex`/`text_fragment` entry
-points, which already do screen-space projection and read vertices through a GPU
-pointer.
+**Pipelines.** Modes 0-2 use the dedicated `ui_vertex`/`ui_fragment` pair. Mode
+3 uses `ui_rect_vertex`/`ui_rect_fragment`. Both pairs consume the same vertex
+stream and dedicated 64-byte UI root; rounded-rectangle parameters travel in the
+batch root because the shared vertex record does not grow.
 
-Mode 3 requires **its own vertex/fragment pair** (`ui_rect_vertex` /
-`ui_rect_fragment`). The forcing constraint is the vertex stage, not blend state
-or formats: a rounded-rect SDF needs rect-local coordinates, and `texcoord` is
-already taken by the atlas. Since `VkrTextVertex` cannot grow, the parameters
-travel in the batch root.
+The untextured case branches on flag bit 0 before any texture access; textured
+quads multiply the sampled RGBA value.
 
-The untextured case must branch or bind a white texture — `text_alpha`
-unconditionally samples `g_textures[...]`.
-
-**Two ABI surfaces, not one.** The 512-byte Vulkan utility root is not
-reflection-validated and has ample unused fields. Metal's
-`VkrMetalPacketTextRoot` is a *different* 176-byte struct that **is**
-field-by-field reflection-validated, so growing it touches the header, the
-`.metal` source, the ABI field table, and a size assertion. Budget both.
-
-**A dedicated small UI root.** `vkr_vk_packet_utility_root()` allocates
-and zeroes 512 bytes per draw. Hundreds of UI batches × 512 B of `MemZero` per
-frame is precisely the per-draw cost AGENTS.md classifies as a defect. UI batches
-use a 32–64 byte root instead.
+**Two native ABI surfaces, one semantic root.** Vulkan and Metal each lower the
+same semantic 64-byte UI root. Vulkan validates its static size/offset contract;
+Metal also validates every field against native pipeline reflection. UI batches
+do not use the 512-byte Vulkan utility root or grow the 176-byte world-text root.
 
 **Frame-upload budget.** The per-slot upload arena is 16 MB and is shared with
 world and shadow instances, text geometry, and all roots; exhaustion rejects the
@@ -304,10 +287,17 @@ never by losing the frame.
 ### 8.1 Binning and hashing
 
 A fixed tile grid covers the UI target. Each draw command's clipped AABB is
-binned into every tile it overlaps, from per-frame scratch. Each tile receives an
-FNV-1a hash over its ordered command contents (type, geometry, colour, texture
-slot, clip). Comparing against the previous frame's hashes yields the dirty-tile
-damage set.
+binned into every tile it overlaps. Each command receives one FNV-1a
+fingerprint over its type, geometry, colour, texture slot, and clip. A tile hash
+folds those fingerprints in draw order. Comparing against the previous frame's
+hashes yields the dirty-tile damage set without rehashing a large command once
+for every tile it covers.
+
+Tile offsets and command indices live with the retained tile cache. When the
+ordered command stream and all old/current AABBs are unchanged, the system
+reuses those bins and returns a zeroed damage map. Changed frames rebuild the
+same ordered bins using scratch counts and command fingerprints, then retain the
+result for the next clean frame.
 
 Two correctness requirements a naive implementation misses:
 
@@ -318,60 +308,49 @@ Two correctness requirements a naive implementation misses:
    AABB is dilated by `screen_px_range` before binning, or tile seams show
    one-pixel artefacts.
 
-### 8.2 Uses that do not depend on a cached target
+### 8.2 Shipped use without a cached target
 
-Tile bins independently provide hit-test acceleration (candidate widgets under
-the cursor in one tile rather than a full tree walk), batch grouping, and the
-ability to skip the UI pass entirely when no tile is dirty. These are available
-from §8.1 alone and are not contingent on §8.3.
+P4 ships 64-pixel bins, deterministic ordered command hashes, old/current AABB
+damage, and MTSDF dilation. It exports `ui.dirty_tile_ratio`, `ui.dirty_tiles`,
+and `ui.tile_count`. Clean command streams reuse their retained bins; this is a
+CPU construction optimization, not pixel caching. The direct path still redraws
+the complete UI stream because the swapchain receives fresh scene output every
+frame. Batch coalescing remains an ordered-command operation, and hit testing
+remains against retained previous-frame widget rectangles. The bins are
+therefore an observability and future damage-selection structure, not a claim
+that clean swapchain pixels can be preserved.
 
-### 8.3 The cached target, and why it is gated
+### 8.3 The cached target was declined
 
 The full scheme renders UI into a persistent `ui_color` image with `LOAD`,
 scissored to the damage rects, then composites `ui_color` over the swapchain, so
 clean tiles keep their previous pixels.
 
-**As the graph stands this is incorrect on Vulkan.** `vkr_rg_compile.c` re-seeds
-every non-imported graph image to `UNDEFINED` at the start of each frame, so the
-pre-barrier is `UNDEFINED → COLOR_ATTACHMENT_OPTIMAL`, which the specification
-explicitly permits to discard contents; `LOAD_OP_LOAD` then reads garbage.
-`VKR_RG_RESOURCE_FLAG_TRANSIENT` describes the *allocation*, not the contents.
+The renderer gained `RETAINED` graph images and per-image realization under
+ADR-029 after this proposal was written. Those facilities supersede the proposed
+`PRESERVE_ACROSS_FRAMES` name and the old claim that Metal lacks `PER_IMAGE`.
+They make a correct cached target possible, but they do not make it free.
 
-Metal has no image layouts and reuses the same `MTLTexture`, so contents survive
-naturally. **The scheme would therefore look correct on macOS and be wrong on
-Windows** — the worst available failure mode, and the reason this section is
-explicit rather than left to implementation.
+If this decision is revisited, `ui_color` must still be `RETAINED | PER_IMAGE`,
+sized by target image count rather than frame-slot count. Damage must accumulate
+per acquired image because an image's staleness is not a fixed period:
+```
+accumulated[image_index] |= dirty_this_frame;
+render_damage = accumulated[image_index];
+accumulated[image_index] = 0;
+```
 
-Metal additionally does not implement `PER_IMAGE` at all: `realize_images`
-creates one `MTLTexture` per graph image regardless of the flag.
-
-Prerequisites before any `ui_color` work:
-
-1. A `PRESERVE_ACROSS_FRAMES` image flag seeded from the previously computed
-   `final_layout`, plus a **per-instance `initialized` bit** in the backend graph
-   image, so an instance that has not yet completed a frame forces full damage.
-2. `ui_color` is `PER_IMAGE`, sized by **target image count**, not by the three
-   frame slots. An image's staleness is "since that image was last acquired",
-   which under FIFO or MAILBOX is not a fixed period. Damage therefore
-   accumulates per image index in the CPU-side retained cache and assumes no
-   period:
-   ```
-   accumulated[image_index] |= dirty_this_frame;
-   render_damage = accumulated[image_index];
-   accumulated[image_index] = 0;
-   ```
-   This needs no graph change.
-3. Invalidation is driven from the frontend on resize and on any viewport-extent
-   change — all-damage for every instance, all tile hashes cleared — rather than
-   by detecting the graph's destroy/recreate.
-4. A **per-frame-variable load op**, which the JSON graph cannot express: `load`
-   is parsed statically. Full-damage frames want `CLEAR` (which sidesteps the
-   undefined-contents question entirely); partial-damage frames want `LOAD`.
-5. `PER_IMAGE` implemented on Metal, or the tile cache does not ship on Metal. A
-   single texture written while a prior frame reads it is a real hazard.
+Resize and viewport-extent changes would force full damage for every instance.
+The path would also need a per-frame-variable load operation: full-damage frames
+want `CLEAR`, while partial-damage frames want `LOAD`. The authored JSON load
+operation is static today.
 
 A single non-`PER_IMAGE` persistent `ui_color` is rejected outright: it is a
 write-after-read hazard against in-flight frames.
+
+No `ui_color`, second graph, damage-scissored pass, or composite was added. The
+measurement in §8.5 retired that work before it expanded the renderer lifetime
+surface.
 
 ### 8.4 Selecting the path without touching the condition enum
 
@@ -381,63 +360,46 @@ adding a condition touches the enum, parser, evaluator,
 `VkrRenderGraphFrameInfo`, both backend patch sites, the Metal frame-info
 initializer, the authored graph, and the graph barrier test.
 
-Instead, the tiled path ships as a **second authored graph file**,
-`assets/render_graphs/main.ui_tiled.rendergraph.json`, selected through the
-existing `graph_path` configuration (currently hardcoded at three literals in
-`renderer_frontend.c`). Each arm then owns distinct pass names, which makes the
-per-pass comparison in §8.5 unambiguous.
+If revisited, the tiled path must use a **second authored graph file** selected
+through the existing `graph_path` configuration. Each arm would then own
+distinct pass names, making a paired comparison unambiguous. No tiled graph file
+ships today.
 
 "Always run both passes with an empty damage set" is rejected: it pays the
 composite unconditionally, which is exactly the cost under test.
 
-### 8.5 Measurement
+### 8.5 Measurement and decision
 
-No claim about the speed of either path appears in this document. Per AGENTS.md
-an unmeasured performance claim is not a result. The order of work is prescribed.
+The first prescribed Sponza orbit had no UI commands, so it established only the
+empty-pass CPU cost. Its local dirty-tree report completed two repetitions and
+600 samples, but Metal did not support a GPU timestamp for the empty scope and
+warmup was unstable. Report digest:
+`sha256:ffde92678be256f9da26cd444d3584b2b2c3c8c81c2119970362cb39217f48c7`.
 
-**First, one run against the current build.** `sponza_orbit.case.json` under
-`performance-windowed-gpu.json`; read `UI.Fullscreen`'s `gpu_ms` p50 from
-`report.json` `passes[]` — not `summary.csv`, which emits metric rows only. If it
-is already at the noise floor, a scheme that adds an image, a pass, and an
-unconditional full-screen alpha blend cannot pay for itself, and §8.3 is dropped
-for the cost of one harness run.
+A corrected static retained-UI workload ran at 2560x1440 on an Apple M1 Pro /
+Metal 4 with the exclusive lane, two repetitions, 600 measured frames, and
+stable warmup. It covered 920 tiles and settled at zero dirty tiles after
+warmup. `UI.Fullscreen` measured 0.017583 ms GPU p50 and 0.019167 ms p95;
+the UI pass CPU scope measured 0.009208 ms p50; `cpu.render_submit` measured
+0.618791 ms p50. Report digest:
+`sha256:04adf82ffb49fec44e980ca338fb413566070de860c51c3be2b96f4e32083bd5`.
 
-**If it survives, the A/B.** A new `ui_editor_static.case.json` with a static
-camera so world cost is constant, in **two mandatory variants**: one where a
-large fraction of the UI changes per frame, one where only an FPS counter changes
-(≈1 dirty tile). One variant cannot settle this, because the composite is fixed
-cost while the saving is proportional to the clean fraction.
-
-| Arm | Metric |
-|---|---|
-| A (direct) | `UI.Fullscreen` `gpu_ms.p50` |
-| B (tiled) | `UI.Draw` + `UI.Composite` `gpu_ms.p50` |
-| Both | `cpu.render_submit` p50 — binning and hashing are CPU work paid every frame in the submit path |
-| Both | exported dirty-tile ratio, without which the result is uninterpretable |
-
-The two arms have different workload fingerprints by construction. That is an
-honest paired comparison of two renderer configurations, not a baseline
-comparison; equality of `draw.world.calls_issued` and `visibility.objects_tested`
-proves the scene workload matches. Five repetitions, exclusive lane. The tiled
-arm ships only on non-overlapping ranges across **all** repetitions in **both**
-variants. Overlapping ranges mean no measured difference, which for a scheme that
-adds an image, a pass, and a full-screen blend is a reason not to ship.
-
-A `renderer.ui_tile_cache` harness key touches the closed allowlist in
-`vkr_harness_manifest.c`, plus `vkr_harness.h`, `vkr_harness_child.c`,
-`vkr_harness_fingerprint.c`, and `vkr_harness_report.c`.
+The second report is non-authoritative because it uses a local profile and a
+dirty tree. It is still the prescribed early rejection gate: adding persistent
+per-image storage plus an unconditional full-screen blend to avoid a direct pass
+at 0.0176 ms is not justified. P5 was therefore dropped without implementing an
+A/B arm. This is a scope decision, not a portable speed claim.
 
 ## 9. Editor and docking
 
-`vkr_editor_viewport_compute_mapping()` splits into a pure
+`vkr_editor_viewport_compute_mapping()` is implemented on top of the pure
 `vkr_editor_viewport_mapping_from_panel_rect(panel_rect_px, fit_mode,
-render_scale, out_mapping)`, with the current hardcoded-gutter function retained
-as a default-layout convenience implemented on top of it.
+render_scale, out_mapping)` helper. The proportional default helper remains for
+focused fixtures; the application uses the dock-owned scene content rectangle.
 
-The dock tree then owns the panel rect. Because `scene_color` is
+The dock tree owns the panel rect. Because `scene_color` is
 `extent:{mode:viewport}` and `RESIZABLE`, dragging a split resizes the scene
-target once §2 is plumbed, and the camera re-aspects through the path already in
-`application.h`.
+target and the camera re-aspects through the frame packet.
 
 Docking is in-window: there is one window, one surface, one swapchain, and
 `RendererFrontend` holds a single `VkrWindow *`. OS-level floating panels are out
@@ -446,14 +408,18 @@ of scope.
 The dock tree is a binary split tree with tab groups at the leaves, serialized to
 JSON so layouts persist. The scene viewport is a leaf of kind
 `SCENE_VIEWPORT`, which is what makes it dockable like any other panel.
+The shipped representation is bounded to 31 nodes and 8 tabs per leaf. It
+supports tab activation, center/edge drops, split resizing, empty-leaf collapse,
+validation, a default editor layout, a 16 KiB JSON load bound, and atomic save.
+`VKR_EDITOR_LAYOUT_PATH` opts the application into load-at-start and
+save-at-shutdown; invalid input falls back to the default tree.
 
 ## 10. Input
 
 ### 10.1 Capture arbitration
 
-Input is polled from `InputState`; the event handlers subscribed in
-`application_create()` are effectively no-ops, and the camera controller,
-picking, and gizmo drag currently hand-arbitrate with ad-hoc button checks.
+Input is polled from `InputState`. The UI computes one capture record before
+camera, picking, gizmo, and application hotkey handling.
 
 `vkr_ui_end()` produces one record consumed by everyone:
 
@@ -464,7 +430,7 @@ typedef struct VkrUiInputCapture {
 } VkrUiInputCapture;
 ```
 
-`application_update_ui()` becomes the **first** statement of
+`application_update_ui()` is the **first** statement of
 `application_update()`, before `application_handle_input()`. Rules:
 
 - Picking early-returns on `capture.mouse && !gizmo_drag.active`. The second
@@ -487,15 +453,17 @@ typedef struct VkrUiInputCapture {
   is true, because macOS integrates unclamped virtual deltas in that mode and
   would otherwise produce phantom hovers.
 
-### 10.2 Missing platform capabilities
+### 10.2 Character input and repeat
 
-- **Character input does not exist.** `EVENT_TYPE_KEY_PRESS` carries a
-  virtual-key code; there is no `WM_CHAR` or `NSTextInputClient` path. Text
-  fields require `input_process_char(uint32_t codepoint)` plus platform hooks in
-  `vkr_window_windows.c` and `vkr_window_macos.m`.
-- **Key repeat does not exist.** `input_process_key` deduplicates on state
-  change, so a held key produces one event. Repeat timing is implemented in the
-  UI, platform-independently, rather than plumbed through the platform layer.
+- `InputState` owns a fixed 64-codepoint committed-character queue populated by
+  `input_process_char()`. It clears at the frame boundary and counts dropped
+  characters without allocating.
+- Windows lowers `WM_CHAR`, including UTF-16 surrogate pairs. macOS lowers
+  committed text from its `NSTextInputClient` implementation into Unicode
+  scalars.
+- Text fields insert UTF-8, replace selections, and support Backspace, Delete,
+  Left, Right, Home, and End. The platform-independent repeat policy waits 0.4 s
+  and repeats every 0.05 s.
 - **IME is out of scope.** Composition strings, candidate windows, and
   preedit rendering are a separate body of work and are not specified here.
 
@@ -505,23 +473,22 @@ Each phase is independently shippable with its own evidence gate. Per AGENTS.md,
 validation runs are never mixed into performance commands, and Metal shader
 validation stays confined to minimal focused reproductions.
 
-| Phase | Content | Gate |
+| Phase | Result | Evidence boundary |
 |---|---|---|
-| **P0** | Plumb `editor_enabled` and `viewport_*` from the packet into `VkrRenderGraphFrameInfo` in both backends (§2) | `./build_test.sh`; editor snapshot resolving `scene_color`; **Debug validation-layer run on both backends** — this enables three never-built passes and therefore a new barrier surface |
-| **P0b** | Use the real attachment extent for text and picking draws instead of the configured window size | Text snapshot digest unchanged in fullscreen; editor snapshot correct |
-| **P1** | `lib/src/core/ui/` — IDs, grid solver, style, draw-command buffer, content scale. Pure CPU, not wired up | `./build_test.sh` plus `tests/src/ui_layout_test.c` registered in `tests/CMakeLists.txt` and `test_main.c`; pins the `fr`+`minmax` iteration bound |
-| **P2** | Packet v11, single draw list, per-batch scissor, `ui_rect_*` shaders, dedicated UI root, both backends. Retires the 16-slot `VkrUiTextSlot` array and `VKR_PREPARED_TEXT_DRAW_MAX` in the same bump | `./build_test.sh`; text snapshot digest changes intentionally, plus a screenshot as AGENTS.md requires for UI changes; Debug validation both backends; record `UI.Fullscreen.gpu_ms` and `cpu.render_submit` as the baseline later phases must beat |
-| **P3** | Widgets — panel, label, button, checkbox, slider, scroll area, text field — and input capture arbitration (§10.1) | `./build_test.sh`, `tests/src/input_test.c` extension, interactive verification |
-| **P4** | Tile binning and hashing, CPU only. Still draws everything; exports the dirty-tile ratio | `./build_test.sh` plus a harness run showing hashing cost in `cpu.render_submit` and the observed ratio. **If the ratio is not consistently low for a realistic editor UI, stop here** |
-| **P5** | `PRESERVE_ACROSS_FRAMES`, Metal `PER_IMAGE`, `ui_color` + damage + composite behind the second graph file | The A/B of §8.5, plus a **mandatory** Vulkan validation run — the cross-frame layout carry is the likeliest source of validation errors in this plan |
-| **P6** | Docking — dock tree, drag and drop, tab groups, JSON layout persistence | Interactive verification, layout round-trip test |
-| **P7** | Character input and key repeat (§10.2) | `input_test.c`, interactive verification |
+| **P0** | Implemented in both backends: editor condition and viewport extent reach graph realization | CPU suite, editor `scene_color`/final capture, focused Metal validation. Native Vulkan runtime validation remains open |
+| **P0b** | Implemented: attachment extents drive screen-space roots, picking, and compositor placement | Fullscreen text and editor compositor Release captures |
+| **P1** | Implemented: IDs, grid, style, draw commands, shared vertex, and content scale | `ui_layout_test.c` covers track units, bounded `fr` iteration, placement, clipping, style, and truncation |
+| **P2** | Implemented in packet v27: one draw list, per-batch scissor, two UI pipelines, 64-byte native roots, exact scratch allocation, and retirement of the 16-slot UI text API | CPU suite, Debug/Release builds, Release text capture, and one-process Metal API/GPU validation. Vulkan compiles; native execution remains open |
+| **P3** | Implemented: panel, label, button, checkbox, slider, scroll area, text field, retained state, incremental layout, and capture arbitration | UI/text/input tests plus application integration |
+| **P4** | Implemented: CPU tile binning and hashing with dirty metrics; direct rendering remains complete-frame | Deterministic tile tests and the two local profiles in §8.5 |
+| **P5** | Declined by the prescribed early measurement; no cached target or second graph ships | §8.5. No speedup claim is made |
+| **P6** | Implemented: bounded dock tree, tab/split interaction, scene-panel mapping, validation, and atomic JSON persistence | Dock mutation, collapse, validation, mapping, and round-trip tests |
+| **P7** | Implemented: committed Unicode queue, Windows/macOS lowering, editing, and repeat | Input and text-field tests with the production event/input state |
 
 ### Note on the P2 retirement
 
-The two text-injection sites in `renderer_frontend.c` are byte-identical modulo
-`false_v` versus `0`; they collapse into one helper with a count-only mode
-(`out_draws == NULL` returns the required count) so the fixed
+The world-text injection sites in `renderer_frontend.c` use one helper with a
+count-only mode (`out_draws == NULL` returns the required count), so the retired
 `VKR_PREPARED_TEXT_DRAW_MAX` stack arrays become exact scratch allocations.
 
 The `text_draw_count == 0` fallback to `packet->world->text_draws` must be
@@ -529,21 +496,25 @@ preserved verbatim — it is what lets the harness text fixture inject draws
 through the packet. On allocation failure the count falls back to zero and the
 packet's own list, never a partial list.
 
-Because this is a pure refactor, it has a strict cheap proof: the text snapshot
-digest must be **byte-identical** before and after.
+The helper refactor preserves world-text payload semantics. The aggregate text
+snapshot changed intentionally because retained UI MTSDF text entered the same
+case, so its current digest is recorded as a new execution witness rather than
+claimed byte-identical to the pre-UI frame.
 
-`VkrUiTextSlot` retirement is itself a packet-contract change —
+`VkrUiTextSlot` retirement is itself a packet-contract change:
 `VKR_UI_SYSTEM_MAX_TEXTS`, the anchor/padding model, the
 `vkr_ui_system_text_create/update/destroy` API, `VkrTextUpdatesPayload`, the
 application's text ids, and the harness text fixture all move together — so it
-happens inside the same version bump rather than causing a second one.
+happened in packet v27. `VkrTextUpdatesPayload` now carries world-text updates
+only; retained UI widgets build their geometry directly.
 
-## 12. Open questions
+## 12. Deferred and revisit questions
 
 - Whether rounded-panel children should eventually clip to an SDF rather than a
   rectangle (§7.2), which would require the clip to enter the tile hash.
-- Whether scroll containers erode the tile-cache thesis enough to matter: a
-  scrolled panel dirties every tile it covers, and scrolling is a common editor
-  interaction. P4's exported ratio is what answers this.
-- Whether the `PRESERVE_ACROSS_FRAMES` flag generalizes usefully beyond
-  `ui_color`, or should stay a narrow capability.
+- Whether a future workload can justify reopening the cached-target decision.
+  It requires new evidence that overcomes the direct path's measured local
+  0.0176 ms GPU p50, not only a low dirty-tile ratio.
+- Native Vulkan runtime validation and a crossed same-revision UI/text capture
+  remain required before the new shader row can become `ALIGNED`.
+- IME composition, candidate windows, and preedit rendering remain out of scope.

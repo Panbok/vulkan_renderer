@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-08-12
+updated: 2026-09-01
 authority: design
 ---
 # UI Components Library Design
@@ -10,7 +10,10 @@ authoritative UI design; this document sits under it and covers phase P3
 (widgets). Its retained-element API shape predates the immediate-mode decision in
 [ADR-027](../architecture/adr/027-immediate-mode-grid-ui.md) and must be re-read
 against §4 and §7 of the spec — the component *inventory* and per-component
-behaviour remain useful, the create/destroy lifetimes do not. No code exists.
+behaviour remain useful, the create/destroy lifetimes do not. The immediate
+panel, label, button, checkbox, slider, scroll-area, and text-field subset now
+ships in `vkr_ui_system`; this document's retained handles, advanced component
+inventory, accessibility model, and proposed file layout do not.
 
 ## Document Purpose
 

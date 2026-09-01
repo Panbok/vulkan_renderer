@@ -51,7 +51,7 @@ Considered → Revisit When**.
 | [ADR-024](024-shared-bindless-gpu-cores.md) | Backend-neutral memory, submit-ring, ABI, slot-table, and capture-ring cores extracted with real Metal and Vulkan callers | Accepted |
 | [ADR-025](025-selected-renderer-implementation-strategy.md) | One selected renderer implementation strategy replacing the backend-type ladder | Accepted |
 | [ADR-026](026-vulkan-1-2-retirement.md) | Vulkan 1.2 retirement and bindless-only end state | Accepted |
-| [ADR-027](027-immediate-mode-grid-ui.md) | Immediate-mode grid UI with a composited editor viewport | Proposed |
+| [ADR-027](027-immediate-mode-grid-ui.md) | Immediate-mode grid UI with a composited editor viewport | Accepted; direct retained-cache UI and docking ship, while the measured cached-target variant is declined |
 | [ADR-028](028-gpu-driven-deferred-visibility-buffer.md) | GPU-driven deferred visibility-buffer rendering | Accepted and implemented through P21; the legacy world topology is retired, and both backends lower the Metal-measured eight-pass P19 compact path with a diagnostic full-screen rollback; native Vulkan compact validation remains pending |
 | [ADR-029](029-retained-graph-resources.md) | Retained graph resources with per-subresource content validity | Accepted (partial); load-bearing for Metal P3B cascade reuse, while the Vulkan path remains unexecuted and unvalidated at runtime |
 | [ADR-030](030-offline-mesh-optimization-and-cooking.md) | Offline mesh optimization and cooked geometry artifacts | Accepted; version-15 per-range packed cooker/load, mandatory runtime source optimization, observability, production conversion, lifecycle stress, and glTF meshopt decode ship |

@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-27
+updated: 2026-09-01
 authority: adr
 ---
 # ADR-004: Versioned Render-Packet Submission
@@ -21,9 +21,10 @@ requested work.
 ## Decision
 
 Submit optional typed pass payloads through one versioned `VkrRenderPacket`.
-Packet version 22 includes frame data, exposure, bloom, and GTAO globals,
-world/shadow/skybox/UI/editor/picking payloads, text updates, debug controls,
-and candidate publication generations.
+Packet version 27 contains frame data, exposure, bloom, and GTAO globals,
+world/shadow/skybox/UI/editor/picking payloads, world-text updates, debug
+controls, candidate publication generations, one editor compositor rectangle,
+and one bounded indexed UI stream with ordered scissor batches.
 
 Implemented contract:
 

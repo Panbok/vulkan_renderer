@@ -7,7 +7,7 @@ authority: design
 # Shader cross-backend contract
 
 **Reviewed parity state: UNALIGNED.** The ledger accounts for every source under
-`shaders/shared/`, `shaders/metal/`, and `shaders/vulkan/` as of 2026-08-31.
+`shaders/shared/`, `shaders/metal/`, and `shaders/vulkan/` as of 2026-09-01.
 Normal decode, exposure, bloom, GTAO, native ABI reflection, and the
 indirect-diffuse capture channel are **ALIGNED**. The broader rows remain
 **UNALIGNED** where matched payload comparisons or focused fixtures are absent,
@@ -66,7 +66,8 @@ changing an acceptance envelope requires new evidence and owner review.
 | Visibility, deferred resolve, lighting, temporal resolve, transmission, and picking | Packed rows, range decode, and normal decode above | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang`, `vulkan/slang/picking/default.slang` | **UNALIGNED**: raster and reconstruction use the compacted visible row's `decode_index` on both source paths, while the prior source algorithms and dispatch semantics remain aligned. Local ABI gates pass; native Windows validation and a crossed same-revision capture comparison remain required |
 | Temporal reconstruction consumer | Shared rigid-motion, validity, depth, jitter, and reset producers above | Portable `vkr_metal_packet_temporal_resolve` or ADR-040's Apple MetalFX temporal scaler, selected before graph realization | Portable `vk_temporal_resolve`; no Vulkan temporal upscaler | **UNALIGNED**: MetalFX intentionally has no Vulkan algorithm counterpart. Its input contract uses normalized `previous_uv - current_uv`, active-content pixel scaling, separate jitter, non-reversed depth, and the exact preceding scaler frame. Metal orders an in-flight previous transform with a GPU shared-event dependency and resets when that predecessor is missing. Native MetalFX Release execution and capture pass, but Apple's Metal 4 API and GPU-validation wrappers abort inside the framework. Portable TAA remains the bilateral consumer |
 | Tonemap and FXAA | Exposure state above | `metal/msl/post/tonemap.metal` | `vulkan/slang/post/default.slang`, `post/tonemap.slangh` | **UNALIGNED**: source behavior agrees and all four authored on/off combinations pass on both backends from the same byte-identical HDR input. Missing: crossed final-color comparisons against the authored limits |
-| Text color and picking | None | `metal/msl/text/default.metal` | `vulkan/slang/text/default.slang` | **UNALIGNED**: sources, host payloads, and compiled ABI gates agree on canonical derivative MTSDF coverage. Fresh Metal color, picking, and focused API/GPU-validation witnesses pass. Native Vulkan is unavailable on the current host; a fresh Vulkan witness and crossed color, coverage, and ID comparison are missing |
+| World text color and picking | None | `metal/msl/text/default.metal` | `vulkan/slang/text/default.slang` | **UNALIGNED**: sources, host payloads, and compiled ABI gates agree on canonical derivative MTSDF coverage. Fresh Metal color, picking, and focused API/GPU-validation witnesses pass. Native Vulkan is unavailable on the current host; a fresh Vulkan witness and crossed color, coverage, and ID comparison are missing |
+| Retained UI primitives and screen-space text | None | `metal/msl/ui/default.metal` | `vulkan/slang/ui/default.slang` | **UNALIGNED**: source algorithms and 64-byte native roots agree semantically, local shader compilation succeeds, and fresh Metal Release plus focused API/GPU-validation witnesses pass. Native Vulkan startup reflection, validation, execution, and a same-revision crossed color/coverage comparison are missing. The UI stream is intentionally omitted from picking |
 
 Paths in this document are relative to `lib/src/renderer/`. Vulkan includes the
 shared headers through Slang. The Metal library concatenates the same headers
@@ -105,12 +106,13 @@ algorithm.
 | `shaders/vulkan/slang/post/tonemap.slangh` | ACES fit in section 4.9 |
 | `shaders/vulkan/slang/post/default.slang` | Exposure application, FXAA, and fullscreen output in section 4.9 |
 | `shaders/vulkan/slang/text/default.slang` | Bitmap/MTSDF text and text picking in section 4.10 |
+| `shaders/vulkan/slang/ui/default.slang` | Retained UI quads, bitmap/MTSDF text, and rounded rectangles in section 4.10 |
 | `shaders/vulkan/slang/world/default.slang` | Forward PBR, shadows, IBL, and temporal blend in sections 4.6-4.8 |
 | `shaders/vulkan/slang/world/deferred.slang` | GPU draws, visibility, resolve, lighting, temporal, HZB/SDSM, transmission, and picking in sections 4.5-4.8 |
 
 ### 2.2 Metal production inventory
 
-The Metal tree has 19 production files and 48 distinct entry points: 45 native
+The Metal tree has 20 production files and 52 distinct entry points: 49 native
 MSL entry points and three Slang entry points compiled to Metal. `lib/CMakeLists.txt`
 builds the native library by concatenating shared math first, then Metal headers
 and implementation files. `metal/slang/library.slang` is compiled separately.
@@ -125,6 +127,7 @@ and implementation files. `metal/slang/library.slang` is compiled separately.
 | Forward world shading and temporal MRT output | `metal/msl/world/default.metal`; `vkr_metal_packet_opaque_fragment`, `vkr_metal_packet_temporal_blend_fragment` | `vulkan/slang/world/default.slang` | **UNALIGNED**: source counterparts and normalized native executions exist; crossed output comparison remains missing |
 | IBL baking | `metal/msl/ibl/common.metalh` plus equirect, SH projection, and prefilter `.metal` entry points | `vulkan/slang/ibl/default.slang` | **UNALIGNED**: source counterparts and focused native validation pass on both backends; current HDR render-path snapshots pass, but direct matched bake snapshots are missing |
 | Text and text picking | `metal/msl/text/default.metal`; vertex, color-fragment, and picking-fragment entry points | `vulkan/slang/text/default.slang` | **UNALIGNED**: source counterparts and compiled ABI gates agree. Current Metal text and picking output plus focused validation pass; fresh native Vulkan output and a crossed comparison remain missing |
+| Retained UI | `metal/msl/ui/default.metal`; shared UI vertex, color fragment, rounded-rectangle vertex, and rounded-rectangle fragment entry points | `vulkan/slang/ui/default.slang` | **UNALIGNED**: source semantics, vertex ABI, and 64-byte roots agree; local compilation and Metal reflection, Release execution, and focused validation pass. Native Vulkan startup reflection, validation, execution, and crossed output remain missing |
 | Tonemap and FXAA | `metal/msl/post/tonemap.metal`; fullscreen vertex and tonemap fragment | `vulkan/slang/post/default.slang` and `post/tonemap.slangh` | **UNALIGNED**: enabled and disabled source behavior agrees, and the four-state matrix passes bilaterally from one identical HDR input; crossed final-color comparisons remain missing |
 | Exposure, bloom, and GTAO | the three files listed in the original topology table; 12 compute entry points | the three Vulkan post-effect files listed above | **ALIGNED** |
 
@@ -142,7 +145,7 @@ semantic resources through buffer references and 32-bit bindless indices.
 
 Pipeline creation checks the relevant root against native Metal reflection
 before the pipeline can be used. Compute roots and the native visibility vertex
-root bind at buffer index 0. Slang draw roots, forward fragments, text, and
+root bind at buffer index 0. Slang draw roots, forward fragments, text, UI, and
 tonemap bind at index 1. The transmission peel root binds at index 2. Reflection
 also walks nested draw, frame, geometry, visible-row, and packed-vertex records.
 The host transposes draw matrices only for the Slang-to-Metal vertex path through
@@ -204,6 +207,7 @@ field and the total size against SPIR-V reflection at pipeline creation.
 | GTAO depth | `VkrMetalPacketGtaoDepthRoot`: 224 bytes, align 16; params at `0` | shared `VkrVkGtaoRoot` / `VkrVulkanGtaoRoot`: 240 bytes, align 16; params at `0` | source/destination plus extents | **ALIGNED** |
 | GTAO evaluate | `VkrMetalPacketGtaoEvaluateRoot`: 256 bytes, align 16; params at `0` | shared `VkrVkGtaoRoot` / `VkrVulkanGtaoRoot`: 240 bytes, align 16; resources begin at `192` | visibility/depth/normal inputs, destination, edges, extents, point-clamp sampling | **ALIGNED** |
 | GTAO denoise | `VkrMetalPacketGtaoDenoiseRoot`: 240 bytes, align 16; params at `0` | shared `VkrVkGtaoRoot` / `VkrVulkanGtaoRoot`: 240 bytes, align 16; resources begin at `192` | source, edges, destination, extents | **ALIGNED** |
+| Retained UI | `VkrMetalPacketUiRoot`: 64 bytes, align 16; resource references at `0/8` | `VkrVulkanUiRoot`: 64 bytes, align 16; address and bindless indices at `0/8/12` | vertices, optional texture/sampler, target extent and MTSDF unit range, rectangle extent, mode/flags, corner radii | **UNALIGNED**: static host layouts and Metal reflection pass; native Vulkan startup reflection and validation remain missing |
 
 Metal root sizes, alignments, and offsets are checked by
 `metal/vkr_metal_packet_abi.c` against native library reflection. Vulkan's GTAO
@@ -212,6 +216,9 @@ SPIR-V reflection; all Vulkan root sizes and selected boundary offsets are also
 compile-time assertions in `vulkan/vkr_vulkan_internal.h`. Exposure and bloom
 parameter sizes are compile-time assertions in `vkr_exposure.h` and
 `vkr_bloom.h` and are exercised by both backend snapshots.
+The UI root is compile-time asserted on both hosts and reflected by Metal
+pipeline creation. It remains **UNALIGNED** until native Vulkan startup reflects
+and executes the new pipeline.
 
 ### 3.3 Packed rows and backend-native roots — ALIGNED ABI
 
@@ -252,18 +259,21 @@ roots have the field-level SPIR-V reflection described above:
 | transmission compact | 80 | transmission coverage | 32 |
 | IBL bake | 32 | IBL SH projection | 48 |
 | packet frame | 480 | packet draw | 48 |
-| packet utility | 544 | — | — |
+| retained UI | 64 | packet utility | 544 |
 
-The ABI portion is **ALIGNED**: the independent native MSL declaration is
+The preexisting packed-geometry ABI portion is **ALIGNED**: the independent
+native MSL declaration is
 guarded by field-level reflection, and Vulkan now checks the candidate record
 and every listed deferred compute root from compiled SPIR-V. The ABI gate is
-closed. The broader packed-geometry row remains **UNALIGNED** for the deliberate-
-overflow fixture, crossed Release comparison, and transmission-layer finding
-described in sections 4.5, 4.8, and 5.4.
+closed. The new retained-UI root is listed for completeness but retains its
+separate **UNALIGNED** state from section 3.2. The broader packed-geometry row
+remains **UNALIGNED** for the deliberate-overflow fixture, crossed Release
+comparison, and transmission-layer finding described in sections 4.5, 4.8,
+and 5.4.
 
 ### 3.4 Complete Metal reflection manifest
 
-The Metal manifest has 34 reflected records. This table records their native
+The Metal manifest has 35 reflected records. This table records their native
 byte sizes; `metal/vkr_metal_packet_abi.c` remains the field-name and offset
 authority. Pipeline creation compares every manifest field offset, record size,
 and required alignment with native Metal reflection. It also checks nested
@@ -273,7 +283,7 @@ records reached through draw and frame pointers.
 | --- | --- |
 | Geometry and scene rows | vertex `64`; instance `80`; material base `176`; transmission extension `32`; text vertex `32`; IBL probe `64`; shadow cascade `96` |
 | Draw roots | vertex draw `48`; temporal vertex draw `48`; draw `48`; frame `464` |
-| Presentation and bake roots | tonemap `32`; equirect `32`; SH projection `48`; prefilter `32`; text `176` |
+| Presentation and bake roots | tonemap `32`; equirect `32`; SH projection `48`; prefilter `32`; text `176`; UI `64` |
 | Visibility roots | GPU draw `192`; transmission peel `16`; temporal transform `32`; G-buffer resolve `352` |
 | Shared post-effect records | GTAO params `192`; GTAO depth `224`; GTAO evaluate `256`; GTAO denoise `240`; exposure `112`; bloom `80` |
 | Lighting, temporal, and transmission roots | deferred lighting `160`; temporal resolve `208`; transmission shade `464`; transmission coverage `32`; transmission compact `96` |
@@ -573,36 +583,62 @@ and produces four distinct native final outputs. This contract remains
 **UNALIGNED** until crossed final-color comparisons evaluate the authored
 maximum-delta, mean-error, and failed-pixel limits.
 
-### 4.10 Text color and picking — UNALIGNED
+### 4.10 World text and retained UI — UNALIGNED
 
-Bitmap text uses atlas alpha. MTSDF text uses the median of RGB minus `0.5`,
-then derives the projected texel footprint from component-wise squared UV
-derivatives. Both backends clamp each squared-gradient component to `1e-12`,
-take its reciprocal square root, and reconstruct with
-`max(0.5 * dot(unit_range, screen_tex_size), 1.0)`. Color output preserves
-glyph RGB and multiplies glyph alpha by the saturated reconstructed coverage.
+World text keeps its existing bitmap/MTSDF color and picking path. Retained UI
+uses a dedicated screen-space path with the same canonical 32-byte vertex:
+two `float2` values for position and UV, followed by one `float4` color. Host
+`VkrUiVertex` and `VkrTextVertex` are aliases of that record. UI commands and
+scissors use top-left, Y-down pixel coordinates. The cold draw builder converts
+quad vertices to bottom-left, Y-up pixels once; Metal maps those pixels directly
+to clip space while Vulkan applies its native framebuffer-Y conversion. Both
+backends submit the original Y-down rectangle directly as the per-batch
+scissor.
 
-Metal stores `unit_range` in `controls.xy`, the UI target extent in
-`controls.zw`, UI-domain selection in flag bit 0, and MTSDF selection in flag
-bit 1. Vulkan stores `unit_range` in `material_alpha.xy`, selects MTSDF through
-`material_flags`, and keeps the target extent in
-`point_light_grid_origin_cell_size.xy`. Picking uses the same coverage helper,
-discarding at or below `0.01`, and otherwise returns the draw object ID.
-Screen-space clip conversion differs in Y between the native APIs to produce
-the same top-left UI convention.
+The UI mode contract is exact:
 
-The prior bilateral Release reports predate this reconstruction and no longer
-validate the current contract. Fresh Metal offscreen report
-`sha256:c0f03d9ee1c4e44ac86669e044b8849879e7b0ff03fb326be4f18c411891f326`
-produces final-color digest
-`sha256:e5cca2d98615b9889754dc24ef306297c63c4091581aee7faa7bd69e4f6f0cde`
-and picking-ID digest
-`sha256:64aabd715b2cfc62c26a975e73a9c39ea8b484c029f0265647e216239c93bd81`.
-Focused Metal API/GPU-validation report
-`sha256:ecc6389a75c53836b05d04020efa31177fdcec0ea8fd443fe5818d1b94ee0bcc`
-passes. Native Vulkan is unavailable on the current host, so the state remains
-**UNALIGNED** until a fresh Vulkan shader/validation witness and crossed color,
-coverage, and object-ID comparisons meet documented limits.
+- mode `0` draws an untextured color quad or multiplies by an optional RGBA
+  texture when flag bit 0 is set;
+- mode `1` draws MTSDF text;
+- mode `2` draws bitmap text from atlas alpha; and
+- mode `3` selects the dedicated rounded-rectangle pipeline.
+
+MTSDF text uses the median of RGB minus `0.5`, then derives the projected texel
+footprint from component-wise squared UV derivatives. Both backends clamp each
+squared-gradient component to `1e-12`, take its reciprocal square root, and
+reconstruct coverage with
+`max(0.5 * dot(unit_range, screen_tex_size), 1.0)`. Bitmap mode uses atlas
+alpha. Both modes preserve vertex RGB and multiply vertex alpha by coverage.
+The CPU `screen_px_range` value dilates tile damage; the normalized atlas unit
+range in the shader root owns the projected coverage calculation.
+
+Both UI roots are 64 bytes. Metal stores the vertex and texture references at
+`0/8`; Vulkan stores the vertex address at `0` and texture/sampler indices at
+`8/12`. Their common semantic fields are target extent plus MTSDF unit range at
+`16`, rectangle extent at `32`, mode and flags at `40/44`, and top-left,
+top-right, bottom-right, bottom-left radii at `48`. Rounded rectangles evaluate
+the same per-corner signed-distance field and use `max(fwidth(distance), 1e-4)`
+for antialiasing.
+
+World-text picking uses the same bitmap/MTSDF coverage helper, discards at or
+below `0.01`, and otherwise returns the draw object ID. The retained UI stream
+is intentionally absent from the picking attachment, so it cannot overwrite
+scene object IDs.
+
+The current Apple M1 Pro / Metal 4 Release offscreen report is
+`sha256:cc1417af216af5a742a8b63de1b09adb7f39d0e393bad360ba761e333ac773e4`.
+System, bitmap, retained-UI MTSDF, and world MTSDF text are visible. Its final
+color is
+`sha256:e4ed205d08fd028122d570198d0e8635089ca5288e4656713ab099f6d524ec88`
+and picking payload is
+`sha256:43246e798554b457c9c9fa7298cd416bde7d73d2fae76d12e5ee3c7f09522ab9`.
+A separate Debug run with Metal API and GPU shader validation enabled in one
+renderer process passes with report
+`sha256:2efdfb9418eb26d1e40e976dcd3f3c36e2bef111740354240b32e99aa09a2bd`.
+Native Vulkan is unavailable on the current host, so the row remains
+**UNALIGNED** until Vulkan startup reflection, focused validation, Release
+execution, and a same-revision crossed color, coverage, and world-text ID
+comparison pass.
 
 ### 4.11 MetalFX temporal consumer — UNALIGNED
 
@@ -947,6 +983,43 @@ the second runs the same case with `--cross-backend`. Do not accept or move a
 baseline pointer merely to make a comparison pass. Direct IBL bake still needs
 the capture support described in section 4.7. GPU repetition of the CPU SH
 projection fixtures remains the specific coefficient gate.
+
+The retained UI row is newer and currently one-sided. It must first pass native
+Vulkan startup reflection and focused synchronization validation, then the same
+backend-neutral text case can enter the guarded crossed-comparison flow. Its
+absence from picking is an invariant to preserve, not a missing capture.
+
+### 5.7 UI packet v27 local closure
+
+The 2026-09-01 local pass used the dirty packet-v27 implementation at source
+revision `ceeb3e1bca6d89c34cfd66e163689a1a80b1fa19` on an Apple M1 Pro / Apple
+Metal 4 GPU. The Release command was:
+
+```sh
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION \
+  build_release/tools/vkr_harness snapshot \
+  --case tools/cases/smoke/text_rendering_snapshot.case.json \
+  --profile tools/profiles/local-offscreen.json
+```
+
+Report
+`sha256:cc1417af216af5a742a8b63de1b09adb7f39d0e393bad360ba761e333ac773e4`
+passes and visually contains system, bitmap, retained-UI MTSDF, and world MTSDF
+text. Final color is
+`sha256:e4ed205d08fd028122d570198d0e8635089ca5288e4656713ab099f6d524ec88`;
+the unchanged UI-excluded picking capture is
+`sha256:43246e798554b457c9c9fa7298cd416bde7d73d2fae76d12e5ee3c7f09522ab9`.
+The report is correctly non-authoritative because the profile is local-only,
+the tree is dirty, and no accepted baseline exists.
+
+One separate Debug renderer process ran with `MTL_DEBUG_LAYER=1` and
+`MTL_SHADER_VALIDATION=1`. Report
+`sha256:2efdfb9418eb26d1e40e976dcd3f3c36e2bef111740354240b32e99aa09a2bd`
+passes with both validators enabled and no validation error, fault, or failure.
+This is diagnostic evidence only. The local build also compiles the Vulkan
+Slang entry points and static host layout assertions, but macOS supplies no
+native Vulkan descriptor-buffer runtime, so this pass cannot close the parity
+row.
 
 ## 6. Maintenance rule
 

@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-31
+updated: 2026-09-01
 authority: design
 ---
 # Presentation DPI and transfer-function specification
@@ -24,7 +24,7 @@ Do not implement render scale by changing the physical window size returned by
 different facts and need different fields.
 
 Metal now implements that separation. Scale `1.0` remains the default. Vulkan
-and the unfinished editor viewport reject non-unit scale.
+and editor compositor mode reject non-unit scale.
 
 ## 2. Windows DPI correctness
 
