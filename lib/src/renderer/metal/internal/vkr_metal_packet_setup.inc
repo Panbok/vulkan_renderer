@@ -1545,6 +1545,17 @@ vkr_internal bool8_t vkr_metal_packet_create_metalfx_temporal_scaler(
               output_height);
     return false_v;
   }
+  /* Graph textures use untracked placement-heap hazards. MetalFX owns its
+     internal encoders, so its public fence must carry that synchronization. */
+  id<MTLFence> fence = [renderer->device newFence];
+  if (!fence) {
+    [scaler release];
+    log_error("MetalFX temporal synchronization fence creation failed");
+    return false_v;
+  }
+  fence.label = @"VKR MetalFX temporal untracked-resource fence";
+  scaler.fence = fence;
+  [fence release];
   [renderer->metalfx_temporal_scaler release];
   renderer->metalfx_temporal_scaler = scaler;
   renderer->metalfx_output_width = output_width;

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-31
+updated: 2026-09-01
 authority: adr
 ---
 
@@ -61,8 +61,10 @@ hidden behind the existing TAA executor.
 4. Scaler creation queries the device's supported factor interval and covers
    the exact rounded input extents at both configured scale endpoints. Required
    formats, usage flags, and native extents are checked when graph images are
-   realized, not in the per-frame encode. A target resize first proves the GPU
-   idle, then replaces the scaler; scaler and graph resources are released only
+   realized, not in the per-frame encode. Graph textures are untracked heap
+   resources, so every scaler owns a public `MTLFence` through its `fence`
+   property. A target resize first proves the GPU idle, then replaces the
+   scaler and its retained fence; scaler and graph resources are released only
    after their normal completion-safe owners permit it.
 5. Dynamic resolution is allocation-free and completion-driven. Metal 4 commit
    feedback supplies GPU start/end intervals tagged with the scale that
@@ -85,6 +87,13 @@ hidden behind the existing TAA executor.
 8. The macOS sample application enables the same policy when it selects Metal:
    initial scale `0.8`, range `[0.334, 1.0]`, and target `13.333333 ms`.
    Selecting Vulkan leaves the zero-initialized spatial policy unchanged.
+9. Either Metal validation environment variable makes native MetalFX an
+   unsupported cold configuration on the installed wrappers. The renderer
+   rejects explicit MetalFX requests before command encoding, preserving
+   harness workload identity. The sample application instead selects the
+   existing fixed-scale spatial reconstruction and portable TAA path and logs
+   that diagnostic substitution. It does not report that path as MetalFX or
+   enable dynamic resolution.
 
 ## Consequences
 
@@ -121,16 +130,20 @@ hidden behind the existing TAA executor.
 - Both timing observations are non-authoritative because the implementation
   tree is dirty and the local profile is observational. No accepted baseline
   changed.
-- Metal API validation currently aborts inside Apple's MetalFX implementation
-  with `_outputTextureBarrierStages not set`. GPU/shader validation aborts in
-  the same framework because `MTL4GPUDebugComputeCommandEncoder` does not
-  respond to `globalTraceObjectID`. A serialized API-only run of the corrected
-  renderer reproduces the first failure before measurement with report
-  `sha256:8191ce4cfaf63061acd834bedecb51cdfec7ec7e24c95798b71f6f659d5206b7`.
-  Minimal MetalFX-only reproductions show the same failures. VKR does not write
-  private framework state or add an unsafe synchronization workaround. Normal
-  validation-disabled Metal 4 execution is the current native correctness gate
-  until Apple fixes the debug wrappers.
+- The original API-validation assertion, `_outputTextureBarrierStages not
+  set`, exposed a VKR contract violation: the graph supplied untracked heap
+  textures while leaving the scaler's public fence nil. Assigning a retained
+  `MTLFence` removes that assertion. Encoding then reaches a separate Apple
+  wrapper defect: MetalFX sends `globalTraceObjectID` to both
+  `MTL4DebugComputeCommandEncoder` and
+  `MTL4GPUDebugComputeCommandEncoder`, neither of which implements that
+  selector on macOS 26.5.2 with MetalFX 31.8. VKR does not use a private
+  selector or catch a partially encoded Objective-C exception. API-only,
+  GPU-only, and combined validation runs now complete through the explicitly
+  logged spatial/portable-TAA diagnostic path; an explicit MetalFX harness
+  child exits at initialization with `VKR_RENDERER_ERROR_UNSUPPORTED_INPUT`.
+  Validation-disabled Metal 4 execution remains the native MetalFX correctness
+  gate until Apple fixes the wrappers.
 - Dynamic resolution cannot recover beyond the device's maximum factor. The
   production Bistro path reaches its minimum tier, so additional 75 FPS margin
   requires measured renderer optimization or an explicit quality-policy change.
@@ -165,7 +178,8 @@ completion-safe replacement and retirement when their extent changes.
 
 ## Revisit when
 
-- Apple ships Metal 4 debug wrappers that can validate MetalFX temporal encode;
+- Apple ships Metal 4 debug wrappers that implement the selector used by
+  MetalFX temporal encode;
 - owner review establishes an accepted Bistro moving-image quality floor;
 - repeated clean-tree evidence needs more margin than the device's 3x factor
   permits; or
