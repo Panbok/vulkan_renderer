@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-01
+updated: 2026-09-02
 authority: adr
 ---
 
@@ -12,8 +12,10 @@ authority: adr
 strategy. It may run at a fixed internal scale or consume completed Metal GPU
 submission intervals to select a bounded dynamic scale. Spatial reconstruction
 from ADR-039 remains the zero-initialized renderer API default. The macOS sample
-application selects MetalFX with dynamic resolution by default; Vulkan has no
-MetalFX mode.
+application selects MetalFX with dynamic resolution for its direct scene-only
+and paneled editor modes. MetalFX reconstructs only Scene imagery; paneled UI,
+text, navigation, and floating windows remain native-resolution content drawn
+after the reconstructed Scene is composited. Vulkan has no MetalFX mode.
 
 ## Context
 
@@ -40,11 +42,14 @@ hidden behind the existing TAA executor.
    renderer initialization. MetalFX is rejected on non-Metal backends and on a
    device that does not support the Metal 4 MetalFX temporal scaler. There is no
    silent fallback that would change image quality or workload identity.
-2. The authored graph stages internal HDR color, depth, and motion into
-   native-sized private MetalFX input textures. `inputContentWidth` and
-   `inputContentHeight` delimit the active upper-left rectangle. MetalFX writes
-   native-resolution scene-linear HDR; exposure, bloom, tonemap, UI, and text
-   then run in the native output domain. The portable temporal resolve is
+2. The authored graph stages internal HDR color, depth, and motion into private
+   MetalFX input textures sized to the Scene presentation extent.
+   `inputContentWidth` and `inputContentHeight` delimit the active upper-left
+   rectangle. MetalFX writes reconstructed scene-linear HDR at that Scene
+   extent; exposure and bloom remain Scene-domain work. Direct mode tonemaps it
+   to the present target. Paneled mode tonemaps and composites it only into the
+   dock-owned Scene rectangle, then `UI.Editor` draws native-resolution panels,
+   text, navigation, and floating windows. The portable temporal resolve is
    omitted in this mode.
 3. Motion remains `previous_uv - current_uv` from unjittered transforms.
    Multiplying the normalized components by the active content width and height
@@ -60,12 +65,15 @@ hidden behind the existing TAA executor.
    disable the jitter needed by this consumer.
 4. Scaler creation queries the device's supported factor interval and covers
    the exact rounded input extents at both configured scale endpoints. Required
-   formats, usage flags, and native extents are checked when graph images are
-   realized, not in the per-frame encode. Graph textures are untracked heap
+   formats, usage flags, and Scene output extents are checked when graph images
+   are realized, not in the per-frame encode. Graph textures are untracked heap
    resources, so every scaler owns a public `MTLFence` through its `fence`
-   property. A target resize first proves the GPU idle, then replaces the
+   property. A Scene output resize first proves the GPU idle, then replaces the
    scaler and its retained fence; scaler and graph resources are released only
-   after their normal completion-safe owners permit it.
+   after their normal completion-safe owners permit it. Live dock drags retain
+   the previous Scene output and let the compositor stretch it, then resize the
+   scaler once when the gesture completes rather than waiting every motion
+   frame.
 5. Dynamic resolution is allocation-free and completion-driven. Metal 4 commit
    feedback supplies GPU start/end intervals tagged with the scale that
    produced them. Duplicate submissions and samples from an older tier are
@@ -84,9 +92,13 @@ hidden behind the existing TAA executor.
    four 2048-pixel shadow cascades, immediate presentation, and the production
    camera path. Its minimum `0.334` scale stays below the M1 Pro device's 3x
    maximum factor after integer extent rounding.
-8. The macOS sample application enables the same policy when it selects Metal:
-   initial scale `0.8`, range `[0.334, 1.0]`, and target `13.333333 ms`.
-   Selecting Vulkan leaves the zero-initialized spatial policy unchanged.
+8. The macOS sample application enables the same policy whenever it selects
+   Metal: initial scale `0.8`, range `[0.334, 1.0]`, and target
+   `13.333333 ms`. Scene-only mode reconstructs to the complete drawable.
+   Paneled mode reconstructs to the dock-owned Scene panel, composites that
+   texture into the native drawable, and then renders the editor UI without
+   passing it through MetalFX. Vulkan retains unit-scale spatial
+   reconstruction.
 9. Either Metal validation environment variable makes native MetalFX an
    unsupported cold configuration on the installed wrappers. The renderer
    rejects explicit MetalFX requests before command encoding, preserving
@@ -150,6 +162,10 @@ hidden behind the existing TAA executor.
 - MetalFX owns a temporal algorithm that Vulkan does not execute. Its parity
   ledger entry remains **UNALIGNED** by design; shared motion/depth producers
   remain bilateral obligations.
+- Paneled MetalFX has a dedicated fixed-scale smoke case that exercises the
+  native Scene-only scaler path and captures both the reconstructed Scene and
+  native editor composite. Authoritative performance and accepted moving-image
+  evidence remain open.
 
 ## Alternatives considered
 
@@ -159,10 +175,10 @@ Rejected. MetalFX is Apple-specific and cannot define Vulkan behavior. The
 portable same-resolution resolve remains the default shared consumer and a
 useful comparison path.
 
-### Scale the physical target or post-process chain
+### Scale the physical present target or editor UI
 
-Rejected. That would lower UI/text and final post resolution, change capture
-semantics, and undo ADR-039's output/scene separation.
+Rejected. That would lower UI/text resolution, change capture semantics, and
+undo ADR-039's present-target/Scene separation.
 
 ### Drive resolution from CPU frame time
 

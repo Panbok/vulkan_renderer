@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-01
+updated: 2026-09-02
 authority: design
 ---
 # UI Architecture Specification
@@ -24,17 +24,22 @@ so shader parity stays `UNALIGNED` rather than being inferred from compilation.
 
 Four decisions define the system:
 
-1. **Editor presentation** — the scene renders offscreen at viewport resolution
-   and is composited into a panel rect; editor chrome surrounds it. This is
-   already the shape of the authored render graph. It is *not* translucent
-   panels floating over a full-window scene.
+1. **Editor presentation** — the paneled editor renders the scene offscreen at
+   an internal extent, optionally reconstructs it with MetalFX to the
+   dock-owned panel extent, and composites it into that panel rect. The editor
+   UI remains at native drawable resolution and is drawn afterward. An opt-in
+   scene-only mode instead uses the complete drawable, omits dock chrome, and
+   keeps only navigation and floating overlays above the direct scene. The two
+   modes share the same UI and viewport-mapping systems.
 2. **Mode** — an immediate-mode API over a retained internal cache. Callers write
    per-frame widget calls; the system keeps persistent per-widget state keyed by
    a stable hashed identity.
 3. **Layout** — CSS-Grid-like track solving as the *single* layout model. No flex
    engine. A 1×N grid is a row stack; an N×1 grid is a column stack.
-4. **Rendering** — one vertex stream per frame split into scissored batches, with
-   a tile grid and per-tile content hashing that yields a damage set.
+4. **Rendering** — one scissored vertex stream whose CPU geometry is retained
+   while the complete visual tree is unchanged, with a tile grid and per-tile
+   content hashing that yields a damage set. The retained stream is still
+   uploaded and drawn into each fresh target every frame.
 
 Section 8 records why tile binning ships but a persistent cached UI target does
 not. Section 2 records the completed editor-graph prerequisite.
@@ -48,9 +53,11 @@ pass, and `UI.Editor`.
 
 P0 is complete. Both selected implementations copy `editor_enabled` and the
 packet viewport extent into `VkrRenderGraphFrameInfo` immediately before graph
-realization. Zero viewport dimensions retain the target-extent fallback. The
-editor branch therefore realizes its viewport-domain images and executes
-`Editor.Composite` followed by `UI.Editor`.
+realization. Metal additionally distinguishes the reconstructed Scene output
+extent from the native present target. The editor branch therefore realizes
+internal viewport-domain images, optionally reconstructs Scene color to the
+panel extent, and executes `Editor.Composite` followed by native-resolution
+`UI.Editor`.
 
 The application derives one scene panel rectangle from the dock tree. That
 rectangle drives the viewport target extent, camera aspect, picking and gizmo
@@ -71,9 +78,9 @@ lib/src/core/ui/          pure CPU, no renderer dependencies, unit-testable
   vkr_ui_dock.h/.c        fixed-capacity dock tree and JSON persistence
 
 lib/src/renderer/systems/vkr_ui_system.c
-                          retained widget and tile-bin storage; builds the
-                          packet payload from per-frame scratch; injected at
-                          submit time
+                          retained widget, tile-bin, and lowered draw storage;
+                          changed-tree work uses per-frame scratch; the result
+                          is injected at submit time
 ```
 
 The `core/ui/` split exists so the grid solver, ID stack, and tile hashing are
@@ -83,13 +90,15 @@ testable under `./build_test.sh` with no GPU and no renderer state.
 
 | Data | Allocator | Reason |
 |---|---|---|
-| Per-widget state, per-tile hashes, last-frame AABBs, reusable tile offsets and command indices | `VkrDMemory` | Entries are reclaimed individually, and clean-frame bins must remain valid across scratch-scope resets |
-| Per-frame vertices, indices, batches, command fingerprints, changed-frame bin workspaces, damage maps | `renderer.scratch_allocator` | The main loop already opens a scope around the whole frame in `application.h`; nothing is freed individually |
+| Per-widget state, per-tile hashes, last-frame AABBs, reusable tile offsets and command indices, fixed-capacity vertices/indices/batches | `VkrDMemory` | Entries are reclaimed individually, and clean-frame bins and draw geometry must remain valid across scratch-scope resets |
+| Per-frame nodes, changed-frame draw commands and command fingerprints, bin workspaces, damage maps | `renderer.scratch_allocator` | The main loop already opens a scope around the whole frame in `application.h`; nothing is freed individually |
 
-Building the payload inside `submit_packet` from the scratch allocator yields
-exactly the "valid until submit returns" lifetime the packet contract requires.
-`rf` is `&application->renderer`, so this is the same allocator the application
-scopes.
+`vkr_ui_system_prepare_draw_list()` returns views into fixed-capacity retained
+geometry. That storage dominates the packet's "valid until submit returns"
+lifetime and is overwritten only when a later changed tree is lowered. The
+backend copies it into its frame upload before submission returns. `rf` is
+`&application->renderer`; per-frame nodes and changed-tree work still use the
+same allocator the application scopes.
 
 ## 4. Mode — immediate API over a retained cache
 
@@ -151,14 +160,22 @@ Three passes, `O(n)` in nodes:
 than looping. Unit tests assert that bound explicitly, including a construction
 that would not converge.
 
-### 5.3 Incremental layout
+### 5.3 Incremental layout and complete-tree reuse
 
 Each subtree carries a build hash over its declared tracks, placement, style, and
 content identity. A subtree whose build hash *and* available size are unchanged
 from the previous frame reuses its resolved rects and skips top-down arrangement.
-Bottom-up measurement still folds cached leaf intrinsics through the container
-tree each frame; text shaping and geometry rebuilds remain dirty-bit gated. This
-reuse is independent of the tile rendering in §8.
+On a changed tree, bottom-up measurement folds cached leaf intrinsics through
+the container tree; text shaping and geometry rebuilds remain dirty-bit gated.
+
+Before that work, `vkr_ui_end()` hashes the complete visual tree: widget kind
+and identity, placement, resolved style, tracks, content bytes, text geometry
+and font/atlas identity, interactive state, clipping, focus, and children. When
+that hash and the target extent match the retained stream, the system skips
+measurement, arrangement, command emission, tile rebuilding, and draw
+lowering. It returns the retained vertices, indices, and batches instead. A
+content/state/style/scale/extent change invalidates this complete-tree reuse.
+This is CPU geometry caching, not the persistent pixel target declined in §8.3.
 
 ### 5.4 Units and DPI
 
@@ -312,13 +329,14 @@ Two correctness requirements a naive implementation misses:
 
 P4 ships 64-pixel bins, deterministic ordered command hashes, old/current AABB
 damage, and MTSDF dilation. It exports `ui.dirty_tile_ratio`, `ui.dirty_tiles`,
-and `ui.tile_count`. Clean command streams reuse their retained bins; this is a
-CPU construction optimization, not pixel caching. The direct path still redraws
-the complete UI stream because the swapchain receives fresh scene output every
-frame. Batch coalescing remains an ordered-command operation, and hit testing
-remains against retained previous-frame widget rectangles. The bins are
-therefore an observability and future damage-selection structure, not a claim
-that clean swapchain pixels can be preserved.
+and `ui.tile_count`. Clean visual trees reuse both their retained bins and their
+lowered vertex/index/batch stream; this is a CPU construction optimization, not
+pixel caching. The direct path still uploads and redraws the complete UI stream
+because the target receives fresh scene output every frame. Batch coalescing
+remains an ordered-command operation, and hit testing remains against retained
+previous-frame widget rectangles. The bins are therefore an observability and
+future damage-selection structure, not a claim that clean target pixels can be
+preserved.
 
 ### 8.3 The cached target was declined
 
@@ -394,12 +412,29 @@ A/B arm. This is a scope decision, not a portable speed claim.
 
 `vkr_editor_viewport_compute_mapping()` is implemented on top of the pure
 `vkr_editor_viewport_mapping_from_panel_rect(panel_rect_px, fit_mode,
-render_scale, out_mapping)` helper. The proportional default helper remains for
-focused fixtures; the application uses the dock-owned scene content rectangle.
+render_scale, out_mapping)` helper. Metal's renderer-owned scale path uses
+`vkr_editor_viewport_mapping_from_panel_rect_and_target()` so the dock-owned
+panel maps to the exact current internal Scene extent instead of applying a
+second scale. The proportional helper remains for focused fixtures and Vulkan.
 
 The dock tree owns the panel rect. Because `scene_color` is
-`extent:{mode:viewport}` and `RESIZABLE`, dragging a split resizes the scene
-target and the camera re-aspects through the frame packet.
+`extent:{mode:viewport}` and `RESIZABLE`, dragging a split changes the Scene
+presentation target and the camera re-aspects through the frame packet. MetalFX
+scaler recreation is deferred until a live split/tab gesture ends; during the
+gesture, the compositor stretches the previous reconstructed Scene output.
+
+`ApplicationEditorViewport.scene_only` is a cold focus and measurement mode.
+`--scene-only` or `VKR_EDITOR_SCENE_ONLY=1` makes the viewport mapping cover the
+complete drawable without mutating the retained dock tree; `--paneled`
+overrides the environment setting. The application omits dock construction and
+dock input in this mode but retains the top navigation, Camera/FPS overlay, and
+movable diagnostic windows. The frame uses the direct renderer topology and
+`UI.Fullscreen`. On Metal, both direct and paneled modes retain the same
+MetalFX/dynamic-resolution policy. Direct mode reconstructs the Scene to the
+complete drawable; paneled mode reconstructs only to the Scene panel and then
+executes `Editor.Composite` followed by native-resolution `UI.Editor`.
+`VKR_EDITOR_RENDER_SCALE` remains the Vulkan paneled-scene control; Metal uses
+the renderer-owned scale so picking is not double-scaled.
 
 Docking is in-window: there is one window, one surface, one swapchain, and
 `RendererFrontend` holds a single `VkrWindow *`. OS-level floating panels are out
@@ -479,10 +514,10 @@ validation stays confined to minimal focused reproductions.
 | **P0b** | Implemented: attachment extents drive screen-space roots, picking, and compositor placement | Fullscreen text and editor compositor Release captures |
 | **P1** | Implemented: IDs, grid, style, draw commands, shared vertex, and content scale | `ui_layout_test.c` covers track units, bounded `fr` iteration, placement, clipping, style, and truncation |
 | **P2** | Implemented in packet v27: one draw list, per-batch scissor, two UI pipelines, 64-byte native roots, exact scratch allocation, and retirement of the 16-slot UI text API | CPU suite, Debug/Release builds, Release text capture, and one-process Metal API/GPU validation. Vulkan compiles; native execution remains open |
-| **P3** | Implemented: panel, label, button, checkbox, slider, scroll area, text field, retained state, incremental layout, and capture arbitration | UI/text/input tests plus application integration |
+| **P3** | Implemented: panel, label, button, checkbox, slider, scroll area, text field, retained state, incremental layout, complete-tree CPU geometry reuse, and capture arbitration | UI/text/input tests, retained-geometry lifetime/invalidation coverage, plus application integration |
 | **P4** | Implemented: CPU tile binning and hashing with dirty metrics; direct rendering remains complete-frame | Deterministic tile tests and the two local profiles in §8.5 |
 | **P5** | Declined by the prescribed early measurement; no cached target or second graph ships | §8.5. No speedup claim is made |
-| **P6** | Implemented: bounded dock tree, tab/split interaction, scene-panel mapping, validation, and atomic JSON persistence | Dock mutation, collapse, validation, mapping, and round-trip tests |
+| **P6** | Implemented: bounded dock tree, tab/split interaction, scene-panel mapping, validation, atomic JSON persistence, and a non-mutating scene-only focus mode | Dock mutation, collapse, validation, mapping, round-trip tests, and native scene-only extent/capture evidence |
 | **P7** | Implemented: committed Unicode queue, Windows/macOS lowering, editing, and repeat | Input and text-field tests with the production event/input state |
 
 ### Note on the P2 retirement

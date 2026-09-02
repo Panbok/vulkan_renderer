@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-01
+updated: 2026-09-02
 authority: adr
 ---
 
@@ -9,8 +9,9 @@ authority: adr
 ## Status
 
 **Accepted.** Metal supports an immutable internal scene scale in `(0, 1]`.
-Scale `1.0` remains the default. Vulkan rejects non-unit scale, and non-unit
-scale rejects editor compositor mode.
+Scale `1.0` remains the default. Vulkan rejects non-unit scale. Metal applies
+the scale relative to the Scene presentation extent: the complete present
+target in direct mode or the dock-owned Scene panel in paneled editor mode.
 
 This is an explicit quality and performance mode. It is not a native-resolution
 optimization, MetalFX integration, or temporal upscaler.
@@ -42,28 +43,33 @@ scene scale visible as a declared workload control.
    `VkrRendererBackendConfig.render_scale` are immutable initialization
    controls. Zero selects `1.0`. The frontend accepts finite values in `(0, 1]`
    only, and accepts non-unit values only for Metal.
-2. The present target keeps its physical extent. Metal derives the scene extent
-   by rounding `output_extent * render_scale` to the nearest integer with a
-   minimum of one pixel. The harness records both extents from renderer device
-   information.
+2. The present target keeps its physical extent. Direct presentation uses that
+   extent as the Scene presentation extent; the paneled editor publishes its
+   dock-owned Scene panel extent separately. Metal derives the internal scene
+   extent by rounding `scene_output_extent * render_scale` to the nearest
+   integer with a minimum of one pixel. The harness records the present target,
+   internal Scene extent, and scale; paneled Scene output is also visible in the
+   graph realization and capture dimensions.
 3. Render-graph resources authored with `extent:{mode:viewport}` use the scene
    extent. The two fullscreen HDR resources that previously used `window` now
    use `viewport`, so visibility, depth, G-buffer, lighting, transmission,
    bloom, GTAO, exposure, HZB, and temporal work stay in one internal pixel
    domain.
-4. Metal `Post.Tonemap` keeps the physical target viewport. Its 32-byte root
-   carries `output_extent` at offset 24. The fragment maps output pixel centers
-   to normalized UV, linearly samples the internal HDR source, and applies FXAA
-   offsets in output pixels. This folds the spatial upscale into the existing
-   final draw. UI and text still compose at output resolution.
+4. Metal `Post.Tonemap` keeps the physical target viewport in direct mode. Its
+   32-byte root carries `output_extent` at offset 24. The fragment maps output
+   pixel centers to normalized UV, linearly samples the internal HDR source,
+   and applies FXAA offsets in output pixels. The editor compositor applies the
+   same reconstruction into the Scene panel rectangle. UI and text compose
+   afterward at native present-target resolution in either mode.
 5. TAA remains same-resolution inside the scene domain. A scale or extent
    change resets its history through the existing extent rule. This decision
    does not describe the linear sample as temporal reconstruction.
 6. Fullscreen picking maps physical output coordinates to internal pixels with
-   the renderer's existing edge-to-edge convention. The editor owns a different
-   dock-panel mapping, and scaled editor composition is outside this decision,
-   so the renderer cancels and rejects an editor packet when scale is not
-   `1.0`. The harness rejects the same combination before launch.
+   the renderer's existing edge-to-edge convention. The editor maps the
+   dock-owned panel rectangle directly into the current internal Scene extent,
+   so picking, camera aspect, gizmos, graph realization, and compositor
+   placement share one authoritative mapping. The harness accepts the same
+   paneled Metal configuration.
 7. Harness manifests may author `renderer.render_scale`. A non-default value
    changes the workload fingerprint, reports include `resolution`,
    `render_resolution`, and `render_scale`, and capture-summary version 5 keeps
@@ -73,8 +79,12 @@ scene scale visible as a declared workload control.
 
 - Scale `1.0` preserves the old target and scene dimensions, graph topology,
   and historical workload fingerprints.
-- Vulkan still realizes `viewport` at the window extent because it accepts only
-  scale `1.0`; the shared graph edit does not lower Vulkan resolution.
+- Vulkan still realizes `viewport` at the packet-authored Scene extent because
+  it accepts only scale `1.0`; the shared graph edit does not lower Vulkan
+  resolution.
+- Paneled Metal preserves three distinct extents: native present target/UI,
+  reconstructed Scene panel, and internal Scene render. Scaling never lowers
+  editor panels or text resolution.
 - The mode reduces scene detail. At the fixed Bistro camera, the final
   2560x1440 scale-0.4 image compared with the native image at SSIM `0.971152`
   and PSNR `38.960 dB`. This is a useful performance setting, not a visual
@@ -129,8 +139,6 @@ change capture dimensions, and conflict with the DPI contract.
 ## Revisit when
 
 - ADR-040's MetalFX strategy gains accepted moving-image quality evidence;
-- the editor viewport consumes packet-authored dimensions and has a correct
-  output-to-panel-to-scene picking chain;
 - Vulkan needs the same control and has a chosen upscale algorithm plus native
   validation; or
 - owner quality review rejects scale `0.4` for the Bistro target.
