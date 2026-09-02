@@ -23,13 +23,35 @@
 #include "renderer/systems/vkr_ui_system.h"
 #include "renderer/vkr_renderer.h"
 #include <stdio.h>
+#include <stdlib.h>
 
 #define VKR_FPS_UPDATE_INTERVAL 0.25
 #define VKR_MEMORY_UPDATE_INTERVAL 1.0
 #define VKR_FPS_DELTA_MIN 0.000001
 #define VKR_WORLD_TIME_UPDATE_INTERVAL 0.25
 #define VKR_UI_TEXT_PADDING 16.0f
+#define VKR_EDITOR_METRICS_MENU_X_PT 110.0f
+#define VKR_EDITOR_NAVIGATION_HEIGHT_PT 35.0f
 #define SCENE_PATH "assets/scenes/bistro.scene.json"
+
+typedef enum ApplicationEditorMenu {
+  APPLICATION_EDITOR_MENU_NONE = 0,
+  APPLICATION_EDITOR_MENU_METRICS,
+} ApplicationEditorMenu;
+
+typedef enum ApplicationEditorWindowKind {
+  APPLICATION_EDITOR_WINDOW_DRAWS = 0,
+  APPLICATION_EDITOR_WINDOW_MEMORY,
+  APPLICATION_EDITOR_WINDOW_HELP,
+  APPLICATION_EDITOR_WINDOW_COUNT,
+} ApplicationEditorWindowKind;
+
+typedef struct ApplicationEditorWindowState {
+  Vec2 position_pt;
+  Vec2 size_pt;
+  uint32_t z_order;
+  bool8_t visible;
+} ApplicationEditorWindowState;
 
 typedef struct FilterModeEntry {
   VkrFilter min_filter;
@@ -102,6 +124,8 @@ typedef struct State {
   ApplicationUiText left_text;
   ApplicationUiText memory_text;
   ApplicationUiText metrics_text;
+  ApplicationEditorMenu editor_menu;
+  ApplicationEditorWindowState editor_windows[APPLICATION_EDITOR_WINDOW_COUNT];
   VkrClock fps_update_clock;
   VkrClock memory_update_clock;
   float64_t fps_accumulated_time;
@@ -242,6 +266,20 @@ vkr_internal bool8_t application_env_flag(const char *name,
   default:
     return default_value;
   }
+}
+
+vkr_internal float32_t application_env_f32_range(const char *name,
+                                                 float32_t default_value,
+                                                 float32_t minimum,
+                                                 float32_t maximum) {
+  const char *value = name ? getenv(name) : NULL;
+  if (!value || value[0] == '\0')
+    return default_value;
+  char *end = NULL;
+  const float32_t parsed = strtof(value, &end);
+  if (end == value || *end != '\0' || !isfinite(parsed))
+    return default_value;
+  return vkr_clamp_f32(parsed, minimum, maximum);
 }
 
 vkr_internal const char *application_ibl_validation_mode_label(uint32_t mode) {
@@ -2027,12 +2065,9 @@ vkr_internal void application_update_fps_text(Application *application,
       String8 left_text = string8_create_formatted(
           frame_alloc,
           "Camera: {x: %.2f, y: %.2f, z: %.2f}\nCamera rotation: {yaw: %.2f, "
-          "pitch: %.2f}\nPress Tab for free mode\nIBL mode: %s (x%.2f)\n"
-          "F8 cycle mode, F9/F10 intensity\nG log camera snapshot",
+          "pitch: %.2f}",
           camera->position.x, camera->position.y, camera->position.z,
-          camera->yaw, camera->pitch,
-          application_ibl_validation_mode_label(state->ibl_validation_mode),
-          state->ibl_validation_scalar);
+          camera->yaw, camera->pitch);
       if (left_text.length > 0) {
         application_ui_text_set(&state->left_text, left_text);
       }
@@ -2142,8 +2177,7 @@ vkr_internal void application_init_ui_texts(Application *application) {
       &state->left_text,
       string8_lit(
           "Camera: {x: 0.0, y: 0.0, z: 0.0}\nCamera rotation: {yaw: 0.0, "
-          "pitch: 0.0, roll: 0.0}\nPress Tab for free mode\nIBL mode: "
-          "Scene IBL (x1.00)\nF8 cycle mode, F9/F10 intensity"));
+          "pitch: 0.0}"));
 
   state->fps_update_clock = vkr_clock_create();
   vkr_clock_start(&state->fps_update_clock);
@@ -2562,6 +2596,58 @@ vkr_internal void application_poll_upload_wait_stats(Application *application) {
   }
 }
 
+vkr_internal VkrUiStyle application_editor_glass_style(void) {
+  VkrUiStyle style = vkr_ui_style_default();
+  style.padding_pt = (VkrUiEdges){10.0f, 12.0f, 10.0f, 12.0f};
+  style.border_pt = (VkrUiEdges){1.0f, 1.0f, 1.0f, 1.0f};
+  style.corner_radius_pt = (Vec4){7.0f, 7.0f, 7.0f, 7.0f};
+  style.gap_pt = 7.0f;
+  style.background_color = (Vec4){0.035f, 0.045f, 0.065f, 0.78f};
+  style.border_color = (Vec4){0.32f, 0.40f, 0.52f, 0.42f};
+  style.text_color = (Vec4){0.88f, 0.91f, 0.96f, 1.0f};
+  return style;
+}
+
+vkr_internal VkrUiWidgetConfig application_editor_text_config(float32_t size_pt,
+                                                              Vec4 color) {
+  VkrUiWidgetConfig config = vkr_ui_widget_config_default();
+  config.placement.justify = VKR_UI_ALIGN_START;
+  config.placement.align = VKR_UI_ALIGN_START;
+  config.style.font_size_pt = size_pt;
+  config.style.text_color = color;
+  config.text.font_size = size_pt;
+  return config;
+}
+
+vkr_internal void
+application_build_editor_panel_content(Application *application,
+                                       VkrUiDockPanelKind panel_kind) {
+  VkrUiSystem *ui = &application->renderer.ui_system;
+  if (panel_kind == VKR_UI_DOCK_PANEL_SCENE_VIEWPORT ||
+      panel_kind == VKR_UI_DOCK_PANEL_TOOLBAR)
+    return;
+
+  VkrUiPanelConfig panel = vkr_ui_panel_config_default();
+  panel.placement = (VkrUiPlacement){
+      .column = 0u,
+      .row = 1u,
+      .column_span = 1u,
+      .row_span = 1u,
+      .justify = VKR_UI_ALIGN_STRETCH,
+      .align = VKR_UI_ALIGN_STRETCH,
+  };
+  panel.style.background_color = (Vec4){0.025f, 0.032f, 0.048f, 0.90f};
+  if (!vkr_ui_panel_begin(ui, string8_lit("editor.panel.content"), &panel))
+    return;
+
+  VkrUiWidgetConfig label =
+      application_editor_text_config(12.0f, (Vec4){0.52f, 0.58f, 0.68f, 1.0f});
+  label.placement.margin_pt = (VkrUiEdges){12.0f, 0.0f, 0.0f, 12.0f};
+  vkr_ui_label(ui, string8_lit("label"), vkr_ui_dock_panel_label(panel_kind),
+               &label);
+  (void)vkr_ui_panel_end(ui);
+}
+
 vkr_internal void application_build_dock_ui_node(Application *application,
                                                  uint32_t node_index,
                                                  VkrUiPlacement placement) {
@@ -2612,6 +2698,17 @@ vkr_internal void application_build_dock_ui_node(Application *application,
 
   VkrUiDockPanelKind active_kind =
       node->as.leaf.tabs[node->as.leaf.active_tab].panel_kind;
+  if (active_kind == VKR_UI_DOCK_PANEL_TOOLBAR) {
+    VkrUiPanelConfig toolbar_backdrop = vkr_ui_panel_config_default();
+    toolbar_backdrop.placement = placement;
+    toolbar_backdrop.style.background_color =
+        (Vec4){0.025f, 0.034f, 0.050f, 0.94f};
+    if (vkr_ui_panel_begin(ui, string8_lit("dock.toolbar.backdrop"),
+                           &toolbar_backdrop))
+      (void)vkr_ui_panel_end(ui);
+    (void)vkr_ui_pop_id(ui);
+    return;
+  }
   const VkrUiTrack rows[] = {
       {.value = 28.0f, .unit = VKR_UI_TRACK_PX},
       {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
@@ -2674,33 +2771,501 @@ vkr_internal void application_build_dock_ui_node(Application *application,
       (void)vkr_ui_panel_end(ui);
     }
     active_kind = node->as.leaf.tabs[node->as.leaf.active_tab].panel_kind;
-    if (active_kind != VKR_UI_DOCK_PANEL_SCENE_VIEWPORT) {
-      VkrUiPanelConfig content_panel = vkr_ui_panel_config_default();
-      content_panel.placement = (VkrUiPlacement){
-          .column = 0u,
-          .row = 1u,
-          .column_span = 1u,
-          .row_span = 1u,
-          .justify = VKR_UI_ALIGN_STRETCH,
-          .align = VKR_UI_ALIGN_STRETCH,
-      };
-      content_panel.style.background_color =
-          (Vec4){0.045f, 0.052f, 0.065f, 1.0f};
-      VkrUiWidgetConfig content = vkr_ui_widget_config_default();
-      content.placement.justify = VKR_UI_ALIGN_START;
-      content.placement.align = VKR_UI_ALIGN_START;
-      content.placement.margin_pt = (VkrUiEdges){12.0f, 0.0f, 0.0f, 12.0f};
-      content.style.font_size_pt = 14.0f;
-      if (vkr_ui_panel_begin(ui, string8_lit("content.panel"),
-                             &content_panel)) {
-        vkr_ui_label(ui, string8_lit("content"),
-                     vkr_ui_dock_panel_label(active_kind), &content);
-        (void)vkr_ui_panel_end(ui);
-      }
-    }
+    application_build_editor_panel_content(application, active_kind);
     (void)vkr_ui_panel_end(ui);
   }
   (void)vkr_ui_pop_id(ui);
+}
+
+vkr_internal bool8_t application_editor_menu_button(VkrUiSystem *ui, String8 id,
+                                                    String8 content,
+                                                    uint32_t column,
+                                                    bool8_t active) {
+  VkrUiWidgetConfig button = vkr_ui_widget_config_default();
+  button.placement = (VkrUiPlacement){
+      .column = column,
+      .row = 0u,
+      .column_span = 1u,
+      .row_span = 1u,
+      .justify = VKR_UI_ALIGN_STRETCH,
+      .align = VKR_UI_ALIGN_STRETCH,
+  };
+  button.style.padding_pt = (VkrUiEdges){5.0f, 10.0f, 5.0f, 10.0f};
+  button.style.corner_radius_pt = (Vec4){4.0f, 4.0f, 4.0f, 4.0f};
+  button.style.font_size_pt = 11.0f;
+  button.style.background_color = active ? (Vec4){0.12f, 0.30f, 0.46f, 0.82f}
+                                         : (Vec4){0.07f, 0.09f, 0.13f, 0.30f};
+  button.style.text_color = active ? (Vec4){0.82f, 0.94f, 1.0f, 1.0f}
+                                   : (Vec4){0.72f, 0.77f, 0.84f, 1.0f};
+  return vkr_ui_button(ui, id, content, &button);
+}
+
+vkr_internal void
+application_editor_window_raise(ApplicationEditorWindowKind kind) {
+  if (!state || kind >= APPLICATION_EDITOR_WINDOW_COUNT)
+    return;
+  ApplicationEditorWindowState *window = &state->editor_windows[kind];
+  const uint32_t old_z = window->z_order;
+  for (uint32_t i = 0u; i < APPLICATION_EDITOR_WINDOW_COUNT; ++i) {
+    if (state->editor_windows[i].z_order > old_z)
+      state->editor_windows[i].z_order--;
+  }
+  window->z_order = APPLICATION_EDITOR_WINDOW_COUNT;
+  window->visible = true_v;
+}
+
+vkr_internal void
+application_build_editor_navigation(Application *application) {
+  VkrUiSystem *ui = &application->renderer.ui_system;
+  const VkrUiTrack nav_columns[] = {
+      {.unit = VKR_UI_TRACK_AUTO}, {.unit = VKR_UI_TRACK_AUTO},
+      {.unit = VKR_UI_TRACK_AUTO}, {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
+      {.unit = VKR_UI_TRACK_AUTO},
+  };
+  const VkrUiTrack one_track = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  VkrUiPanelConfig bar = vkr_ui_panel_config_default();
+  bar.placement = (VkrUiPlacement){
+      .column = 0u,
+      .row = 0u,
+      .column_span = 1u,
+      .row_span = 1u,
+      .justify = VKR_UI_ALIGN_STRETCH,
+      .align = VKR_UI_ALIGN_START,
+  };
+  bar.columns = nav_columns;
+  bar.column_count = ArrayCount(nav_columns);
+  bar.rows = &one_track;
+  bar.row_count = 1u;
+  bar.style.padding_pt = (VkrUiEdges){5.0f, 10.0f, 5.0f, 10.0f};
+  bar.style.gap_pt = 3.0f;
+  bar.style.min_size_pt.y = 35.0f;
+  bar.style.max_size_pt.y = 35.0f;
+  bar.style.border_pt = (VkrUiEdges){0.0f, 0.0f, 1.0f, 0.0f};
+  bar.style.background_color = (Vec4){0.025f, 0.034f, 0.050f, 0.92f};
+  bar.style.border_color = (Vec4){0.28f, 0.42f, 0.56f, 0.52f};
+  if (!vkr_ui_panel_begin(ui, string8_lit("editor.navigation"), &bar))
+    return;
+
+  VkrUiWidgetConfig brand =
+      application_editor_text_config(12.0f, (Vec4){0.43f, 0.80f, 1.0f, 1.0f});
+  brand.placement = (VkrUiPlacement){
+      .column = 0u,
+      .row = 0u,
+      .column_span = 1u,
+      .row_span = 1u,
+      .justify = VKR_UI_ALIGN_START,
+      .align = VKR_UI_ALIGN_CENTER,
+      .margin_pt = {0.0f, 10.0f, 0.0f, 2.0f},
+  };
+  vkr_ui_label(ui, string8_lit("brand"), string8_lit("VKR / EDITOR"), &brand);
+
+  if (application_editor_menu_button(
+          ui, string8_lit("menu.metrics"), string8_lit("Metrics"), 1u,
+          state->editor_menu == APPLICATION_EDITOR_MENU_METRICS)) {
+    state->editor_menu = state->editor_menu == APPLICATION_EDITOR_MENU_METRICS
+                             ? APPLICATION_EDITOR_MENU_NONE
+                             : APPLICATION_EDITOR_MENU_METRICS;
+  }
+  if (application_editor_menu_button(
+          ui, string8_lit("menu.help"), string8_lit("Help"), 2u,
+          state->editor_windows[APPLICATION_EDITOR_WINDOW_HELP].visible)) {
+    application_editor_window_raise(APPLICATION_EDITOR_WINDOW_HELP);
+    state->editor_menu = APPLICATION_EDITOR_MENU_NONE;
+  }
+
+  VkrUiWidgetConfig status =
+      application_editor_text_config(10.0f, (Vec4){0.46f, 0.84f, 0.66f, 1.0f});
+  status.placement = (VkrUiPlacement){
+      .column = 4u,
+      .row = 0u,
+      .column_span = 1u,
+      .row_span = 1u,
+      .justify = VKR_UI_ALIGN_END,
+      .align = VKR_UI_ALIGN_CENTER,
+  };
+  vkr_ui_label(ui, string8_lit("status"), string8_lit("LIVE  /  EDIT MODE"),
+               &status);
+  (void)vkr_ui_panel_end(ui);
+}
+
+vkr_internal void
+application_build_editor_menu_popup(Application *application) {
+  if (state->editor_menu != APPLICATION_EDITOR_MENU_METRICS)
+    return;
+
+  VkrUiSystem *ui = &application->renderer.ui_system;
+  (void)vkr_ui_input_layer_set(ui, APPLICATION_EDITOR_WINDOW_COUNT + 1u);
+  const VkrUiTrack one_track = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  const VkrUiTrack rows[] = {
+      {.unit = VKR_UI_TRACK_AUTO},
+      {.unit = VKR_UI_TRACK_AUTO},
+      {.unit = VKR_UI_TRACK_AUTO},
+  };
+  VkrUiPanelConfig popup = vkr_ui_panel_config_default();
+  popup.placement = (VkrUiPlacement){
+      .column = 0u,
+      .row = 0u,
+      .column_span = 1u,
+      .row_span = 1u,
+      .justify = VKR_UI_ALIGN_START,
+      .align = VKR_UI_ALIGN_START,
+      .margin_pt = {VKR_EDITOR_NAVIGATION_HEIGHT_PT, 0.0f, 0.0f,
+                    VKR_EDITOR_METRICS_MENU_X_PT},
+  };
+  popup.columns = &one_track;
+  popup.column_count = 1u;
+  popup.rows = rows;
+  popup.row_count = ArrayCount(rows);
+  popup.style = application_editor_glass_style();
+  popup.style.min_size_pt = (Vec2){210.0f, 94.0f};
+  popup.style.max_size_pt = popup.style.min_size_pt;
+  popup.clip_children = true_v;
+  if (!vkr_ui_panel_begin(ui, string8_lit("editor.menu.popup"), &popup))
+    return;
+
+  VkrUiWidgetConfig heading =
+      application_editor_text_config(10.0f, (Vec4){0.43f, 0.80f, 1.0f, 1.0f});
+  heading.placement = (VkrUiPlacement){
+      .column = 0u,
+      .row = 0u,
+      .column_span = 1u,
+      .row_span = 1u,
+      .justify = VKR_UI_ALIGN_START,
+      .align = VKR_UI_ALIGN_START,
+  };
+
+  vkr_ui_label(ui, string8_lit("heading"), string8_lit("METRICS WINDOWS"),
+               &heading);
+  VkrUiWidgetConfig item =
+      application_editor_text_config(12.0f, (Vec4){0.80f, 0.84f, 0.90f, 1.0f});
+  item.style.padding_pt = (VkrUiEdges){4.0f, 3.0f, 4.0f, 3.0f};
+  item.placement = heading.placement;
+  item.placement.row = 1u;
+  ApplicationEditorWindowState *draws =
+      &state->editor_windows[APPLICATION_EDITOR_WINDOW_DRAWS];
+  if (vkr_ui_checkbox(ui, string8_lit("draws"), string8_lit("Draws"),
+                      &draws->visible, &item) &&
+      draws->visible)
+    application_editor_window_raise(APPLICATION_EDITOR_WINDOW_DRAWS);
+  item.placement.row = 2u;
+  ApplicationEditorWindowState *memory =
+      &state->editor_windows[APPLICATION_EDITOR_WINDOW_MEMORY];
+  if (vkr_ui_checkbox(ui, string8_lit("memory"), string8_lit("Memory"),
+                      &memory->visible, &item) &&
+      memory->visible)
+    application_editor_window_raise(APPLICATION_EDITOR_WINDOW_MEMORY);
+  (void)vkr_ui_panel_end(ui);
+}
+
+vkr_internal VkrUiRect application_editor_window_rect(
+    const VkrUiSystem *ui, const ApplicationEditorWindowState *window) {
+  const float32_t scale = ui->content_scale;
+  return (VkrUiRect){
+      .x = window->position_pt.x * scale,
+      .y = window->position_pt.y * scale,
+      .width = window->size_pt.x * scale,
+      .height = window->size_pt.y * scale,
+  };
+}
+
+vkr_internal VkrUiRect
+application_editor_menu_popup_rect(const VkrUiSystem *ui) {
+  return (VkrUiRect){
+      .x = VKR_EDITOR_METRICS_MENU_X_PT * ui->content_scale,
+      .y = VKR_EDITOR_NAVIGATION_HEIGHT_PT * ui->content_scale,
+      .width = 210.0f * ui->content_scale,
+      .height = 94.0f * ui->content_scale,
+  };
+}
+
+vkr_internal bool8_t application_editor_point_in_rect(int32_t x, int32_t y,
+                                                      VkrUiRect rect) {
+  return (float32_t)x >= rect.x && (float32_t)x < rect.x + rect.width &&
+         (float32_t)y >= rect.y && (float32_t)y < rect.y + rect.height;
+}
+
+vkr_internal void
+application_editor_window_clamp(VkrUiSystem *ui,
+                                ApplicationEditorWindowState *window) {
+  const float32_t width_pt = (float32_t)ui->target_width / ui->content_scale;
+  const float32_t height_pt = (float32_t)ui->target_height / ui->content_scale;
+  const float32_t visible_title_pt = 72.0f;
+  window->position_pt.x =
+      vkr_clamp_f32(window->position_pt.x, visible_title_pt - window->size_pt.x,
+                    vkr_max_f32(0.0f, width_pt - visible_title_pt));
+  window->position_pt.y = vkr_clamp_f32(window->position_pt.y, 35.0f,
+                                        vkr_max_f32(35.0f, height_pt - 28.0f));
+}
+
+vkr_internal void
+application_editor_register_input_layers(Application *application) {
+  VkrUiSystem *ui = &application->renderer.ui_system;
+  const bool8_t popup_contains_pointer =
+      state->editor_menu == APPLICATION_EDITOR_MENU_METRICS &&
+      application_editor_point_in_rect(ui->mouse_x, ui->mouse_y,
+                                       application_editor_menu_popup_rect(ui));
+  if (ui->mouse_pressed && !popup_contains_pointer) {
+    uint32_t top_z = 0u;
+    ApplicationEditorWindowKind top_kind = APPLICATION_EDITOR_WINDOW_COUNT;
+    for (uint32_t i = 0u; i < APPLICATION_EDITOR_WINDOW_COUNT; ++i) {
+      ApplicationEditorWindowState *window = &state->editor_windows[i];
+      application_editor_window_clamp(ui, window);
+      if (window->visible && window->z_order > top_z &&
+          application_editor_point_in_rect(
+              ui->mouse_x, ui->mouse_y,
+              application_editor_window_rect(ui, window))) {
+        top_z = window->z_order;
+        top_kind = (ApplicationEditorWindowKind)i;
+      }
+    }
+    if (top_kind < APPLICATION_EDITOR_WINDOW_COUNT)
+      application_editor_window_raise(top_kind);
+  }
+
+  for (uint32_t i = 0u; i < APPLICATION_EDITOR_WINDOW_COUNT; ++i) {
+    ApplicationEditorWindowState *window = &state->editor_windows[i];
+    application_editor_window_clamp(ui, window);
+    if (window->visible)
+      (void)vkr_ui_input_layer_register(
+          ui, window->z_order, application_editor_window_rect(ui, window));
+  }
+  if (state->editor_menu == APPLICATION_EDITOR_MENU_METRICS)
+    (void)vkr_ui_input_layer_register(ui, APPLICATION_EDITOR_WINDOW_COUNT + 1u,
+                                      application_editor_menu_popup_rect(ui));
+}
+
+vkr_internal void
+application_build_editor_camera_widget(Application *application,
+                                       const VkrViewportMapping *mapping) {
+  VkrUiSystem *ui = &application->renderer.ui_system;
+  const VkrUiTrack one_track = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  const VkrUiTrack rows[] = {
+      {.unit = VKR_UI_TRACK_AUTO},
+      {.unit = VKR_UI_TRACK_AUTO},
+      {.unit = VKR_UI_TRACK_AUTO},
+  };
+  const float32_t width_pt = 288.0f;
+  const float32_t height_pt = 98.0f;
+  const float32_t inset_px = 8.0f * ui->content_scale;
+  const float32_t top_inset_px =
+      (application->editor_viewport.scene_only ? 43.0f : 8.0f) *
+      ui->content_scale;
+  VkrUiPanelConfig panel = vkr_ui_panel_config_default();
+  panel.placement = (VkrUiPlacement){
+      .column = 0u,
+      .row = 0u,
+      .column_span = 1u,
+      .row_span = 1u,
+      .justify = VKR_UI_ALIGN_START,
+      .align = VKR_UI_ALIGN_START,
+      .margin_pt =
+          {
+              .top =
+                  (mapping->panel_rect_px.y + top_inset_px) / ui->content_scale,
+              .left = (mapping->panel_rect_px.x + mapping->panel_rect_px.z -
+                       width_pt * ui->content_scale - inset_px) /
+                      ui->content_scale,
+          },
+  };
+  panel.columns = &one_track;
+  panel.column_count = 1u;
+  panel.rows = rows;
+  panel.row_count = ArrayCount(rows);
+  panel.style = application_editor_glass_style();
+  panel.style.min_size_pt = (Vec2){width_pt, height_pt};
+  panel.style.max_size_pt = panel.style.min_size_pt;
+  panel.clip_children = true_v;
+  if (!vkr_ui_panel_begin(ui, string8_lit("editor.camera.performance"), &panel))
+    return;
+
+  VkrUiWidgetConfig title =
+      application_editor_text_config(9.0f, (Vec4){0.43f, 0.80f, 1.0f, 1.0f});
+  title.placement = (VkrUiPlacement){
+      .column = 0u,
+      .row = 0u,
+      .column_span = 1u,
+      .row_span = 1u,
+      .justify = VKR_UI_ALIGN_START,
+      .align = VKR_UI_ALIGN_START,
+  };
+  vkr_ui_label(ui, string8_lit("title"), string8_lit("VIEWPORT / LIVE"),
+               &title);
+  VkrUiWidgetConfig body =
+      application_editor_text_config(11.0f, (Vec4){0.86f, 0.89f, 0.94f, 1.0f});
+  body.placement = title.placement;
+  body.placement.row = 1u;
+  vkr_ui_label(ui, string8_lit("camera"),
+               application_ui_text_view(&state->left_text), &body);
+  body.placement.row = 2u;
+  body.style.text_color = (Vec4){0.54f, 0.88f, 0.72f, 1.0f};
+  vkr_ui_label(ui, string8_lit("performance"),
+               application_ui_text_view(&state->fps_text), &body);
+  (void)vkr_ui_panel_end(ui);
+}
+
+vkr_internal void
+application_build_editor_window(Application *application,
+                                ApplicationEditorWindowKind kind) {
+  VkrUiSystem *ui = &application->renderer.ui_system;
+  ApplicationEditorWindowState *window = &state->editor_windows[kind];
+  if (!window->visible)
+    return;
+
+  String8 title_text = {0};
+  String8 body_text = {0};
+  float32_t font_size_pt = 10.0f;
+  switch (kind) {
+  case APPLICATION_EDITOR_WINDOW_DRAWS:
+    title_text = string8_lit("DRAWS / RENDER GRAPH");
+    body_text = application_ui_text_view(&state->metrics_text);
+    break;
+  case APPLICATION_EDITOR_WINDOW_MEMORY:
+    title_text = string8_lit("MEMORY / LIVE");
+    body_text = application_ui_text_view(&state->memory_text);
+    break;
+  case APPLICATION_EDITOR_WINDOW_HELP:
+    title_text = string8_lit("EDITOR CONTROLS");
+    body_text = string8_lit("Tab  Toggle free camera     F8  Cycle IBL mode\n"
+                            "F9 / F10  IBL intensity     G   Camera snapshot\n"
+                            "Click a title bar to focus and drag a window.");
+    font_size_pt = 11.0f;
+    break;
+  default:
+    return;
+  }
+
+  application_editor_window_clamp(ui, window);
+  (void)vkr_ui_input_layer_set(ui, window->z_order);
+  (void)vkr_ui_push_id_u64(ui, kind);
+  const VkrUiTrack one_track = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  const VkrUiTrack rows[] = {
+      {.value = 28.0f, .unit = VKR_UI_TRACK_PX},
+      one_track,
+  };
+  VkrUiPanelConfig panel = vkr_ui_panel_config_default();
+  panel.placement = (VkrUiPlacement){
+      .column = 0u,
+      .row = 0u,
+      .column_span = 1u,
+      .row_span = 1u,
+      .justify = VKR_UI_ALIGN_START,
+      .align = VKR_UI_ALIGN_START,
+      .margin_pt =
+          {
+              .top = window->position_pt.y,
+              .left = window->position_pt.x,
+          },
+  };
+  panel.columns = &one_track;
+  panel.column_count = 1u;
+  panel.rows = rows;
+  panel.row_count = ArrayCount(rows);
+  panel.style = application_editor_glass_style();
+  panel.style.padding_pt = (VkrUiEdges){0};
+  panel.style.min_size_pt = window->size_pt;
+  panel.style.max_size_pt = window->size_pt;
+  panel.clip_children = true_v;
+  if (!vkr_ui_panel_begin(ui, string8_lit("window"), &panel)) {
+    (void)vkr_ui_pop_id(ui);
+    return;
+  }
+
+  const VkrUiTrack header_columns[] = {
+      one_track,
+      {.value = 30.0f, .unit = VKR_UI_TRACK_PX},
+  };
+  VkrUiPanelConfig header = vkr_ui_panel_config_default();
+  header.placement = (VkrUiPlacement){
+      .column = 0u,
+      .row = 0u,
+      .column_span = 1u,
+      .row_span = 1u,
+      .justify = VKR_UI_ALIGN_STRETCH,
+      .align = VKR_UI_ALIGN_STRETCH,
+  };
+  header.columns = header_columns;
+  header.column_count = ArrayCount(header_columns);
+  header.rows = &one_track;
+  header.row_count = 1u;
+  header.style.padding_pt = (VkrUiEdges){0};
+  header.style.border_pt = (VkrUiEdges){0.0f, 0.0f, 1.0f, 0.0f};
+  header.style.background_color = (Vec4){0.055f, 0.075f, 0.105f, 0.91f};
+  header.style.border_color = (Vec4){0.24f, 0.42f, 0.58f, 0.50f};
+  if (vkr_ui_panel_begin(ui, string8_lit("header"), &header)) {
+    VkrUiWidgetConfig drag = vkr_ui_widget_config_default();
+    drag.placement = (VkrUiPlacement){
+        .column = 0u,
+        .row = 0u,
+        .column_span = 1u,
+        .row_span = 1u,
+        .justify = VKR_UI_ALIGN_STRETCH,
+        .align = VKR_UI_ALIGN_STRETCH,
+    };
+    drag.style.padding_pt = (VkrUiEdges){5.0f, 10.0f, 5.0f, 10.0f};
+    drag.style.corner_radius_pt = (Vec4){0};
+    drag.style.background_color = (Vec4){0};
+    drag.style.text_color = (Vec4){0.43f, 0.80f, 1.0f, 1.0f};
+    drag.style.font_size_pt = 10.0f;
+    const VkrUiId drag_id =
+        vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("drag"));
+    (void)vkr_ui_button(ui, string8_lit("drag"), title_text, &drag);
+    if (ui->active_id == drag_id &&
+        input_is_button_down(state->input_state, BUTTON_LEFT)) {
+      int32_t dx = 0;
+      int32_t dy = 0;
+      input_get_mouse_delta(state->input_state, &dx, &dy);
+      window->position_pt.x += (float32_t)dx / ui->content_scale;
+      window->position_pt.y += (float32_t)dy / ui->content_scale;
+      application_editor_window_clamp(ui, window);
+    }
+
+    VkrUiWidgetConfig close = vkr_ui_widget_config_default();
+    close.placement = (VkrUiPlacement){
+        .column = 1u,
+        .row = 0u,
+        .column_span = 1u,
+        .row_span = 1u,
+        .justify = VKR_UI_ALIGN_STRETCH,
+        .align = VKR_UI_ALIGN_STRETCH,
+    };
+    close.style.padding_pt = (VkrUiEdges){0};
+    close.style.corner_radius_pt = (Vec4){0};
+    close.style.background_color = (Vec4){0.10f, 0.12f, 0.16f, 0.50f};
+    close.style.text_color = (Vec4){0.76f, 0.80f, 0.86f, 1.0f};
+    close.style.font_size_pt = 13.0f;
+    if (vkr_ui_button(ui, string8_lit("close"), string8_lit("x"), &close))
+      window->visible = false_v;
+    (void)vkr_ui_panel_end(ui);
+  }
+
+  VkrUiWidgetConfig body = application_editor_text_config(
+      font_size_pt, (Vec4){0.84f, 0.87f, 0.92f, 1.0f});
+  body.placement = (VkrUiPlacement){
+      .column = 0u,
+      .row = 1u,
+      .column_span = 1u,
+      .row_span = 1u,
+      .justify = VKR_UI_ALIGN_START,
+      .align = VKR_UI_ALIGN_START,
+      .margin_pt = {10.0f, 12.0f, 10.0f, 12.0f},
+  };
+  vkr_ui_label(ui, string8_lit("body"), body_text, &body);
+  (void)vkr_ui_panel_end(ui);
+  (void)vkr_ui_pop_id(ui);
+}
+
+vkr_internal void
+application_build_editor_floating_windows(Application *application) {
+  for (uint32_t z = 1u; z <= APPLICATION_EDITOR_WINDOW_COUNT; ++z) {
+    for (uint32_t i = 0u; i < APPLICATION_EDITOR_WINDOW_COUNT; ++i) {
+      if (state->editor_windows[i].visible &&
+          state->editor_windows[i].z_order == z) {
+        application_build_editor_window(application,
+                                        (ApplicationEditorWindowKind)i);
+        break;
+      }
+    }
+  }
 }
 
 vkr_internal void application_update_ui(Application *application,
@@ -2710,21 +3275,12 @@ vkr_internal void application_update_ui(Application *application,
     return;
   }
 
-  const VkrUiTrack root_columns[] = {
-      {.unit = VKR_UI_TRACK_AUTO},
-      {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
-      {.unit = VKR_UI_TRACK_AUTO},
-  };
-  const VkrUiTrack root_rows[] = {
-      {.unit = VKR_UI_TRACK_AUTO},
-      {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
-      {.unit = VKR_UI_TRACK_AUTO},
-  };
+  const VkrUiTrack root_track = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
   VkrUiPanelConfig root = vkr_ui_panel_config_default();
-  root.columns = root_columns;
-  root.column_count = ArrayCount(root_columns);
-  root.rows = root_rows;
-  root.row_count = ArrayCount(root_rows);
+  root.columns = &root_track;
+  root.column_count = 1u;
+  root.rows = &root_track;
+  root.row_count = 1u;
   if (!vkr_ui_begin(&application->renderer, &application->renderer.ui_system,
                     state->input_state,
                     vkr_window_is_mouse_captured(&application->window), delta,
@@ -2739,20 +3295,38 @@ vkr_internal void application_update_ui(Application *application,
     if (application_editor_viewport_mapping(
             application, application->renderer.ui_system.target_width,
             application->renderer.ui_system.target_height, &mapping)) {
-      application->editor_viewport.dock_capture = vkr_ui_dock_update_input(
-          &application->editor_viewport.dock, state->input_state,
-          vkr_window_is_mouse_captured(&application->window));
+      application_editor_register_input_layers(application);
+      if (!application->editor_viewport.scene_only) {
+        application->editor_viewport.dock_capture = vkr_ui_dock_update_input(
+            &application->editor_viewport.dock, state->input_state,
+            vkr_window_is_mouse_captured(&application->window) ||
+                application->renderer.ui_system.mouse_input_layer > 0u ||
+                application->renderer.ui_system.active_id != VKR_UI_ID_NONE);
+      }
     }
-    VkrUiPlacement dock_placement = {
-        .column = 0u,
-        .row = 0u,
-        .column_span = 3u,
-        .row_span = 3u,
-        .justify = VKR_UI_ALIGN_STRETCH,
-        .align = VKR_UI_ALIGN_STRETCH,
-    };
-    application_build_dock_ui_node(
-        application, application->editor_viewport.dock.root, dock_placement);
+    (void)vkr_ui_input_layer_set(&application->renderer.ui_system, 0u);
+    if (!application->editor_viewport.scene_only) {
+      VkrUiPlacement dock_placement = {
+          .column = 0u,
+          .row = 0u,
+          .column_span = 1u,
+          .row_span = 1u,
+          .justify = VKR_UI_ALIGN_STRETCH,
+          .align = VKR_UI_ALIGN_STRETCH,
+      };
+      application_build_dock_ui_node(
+          application, application->editor_viewport.dock.root, dock_placement);
+    }
+
+    application_build_editor_navigation(application);
+    if (mapping.target_width > 0u)
+      application_build_editor_camera_widget(application, &mapping);
+    application_build_editor_floating_windows(application);
+    application_build_editor_menu_popup(application);
+    application->ui_capture = vkr_ui_end(&application->renderer.ui_system);
+    application->ui_capture.mouse |=
+        application->editor_viewport.dock_capture.mouse;
+    return;
   }
 
   const VkrUiTrack auto_track = {.unit = VKR_UI_TRACK_AUTO};
@@ -2904,6 +3478,8 @@ int main(int argc, char **argv) {
   int exit_code = 0;
   const char *metrics_json_path = NULL;
   const char *editor_layout_path = getenv("VKR_EDITOR_LAYOUT_PATH");
+  bool8_t scene_only_requested =
+      application_env_flag("VKR_EDITOR_SCENE_ONLY", false_v);
 #if defined(_WIN32)
   VkrRendererBackendType renderer_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
 #else
@@ -2916,6 +3492,10 @@ int main(int argc, char **argv) {
         return 2;
       }
       metrics_json_path = argv[++i];
+    } else if (strcmp(argv[i], "--scene-only") == 0) {
+      scene_only_requested = true_v;
+    } else if (strcmp(argv[i], "--paneled") == 0) {
+      scene_only_requested = false_v;
     } else if (strcmp(argv[i], "--renderer") == 0) {
       if (i + 1 >= argc || argv[i + 1][0] == '\0') {
         fprintf(stderr, "--renderer requires 'vulkan' or 'metal'\n");
@@ -2938,9 +3518,12 @@ int main(int argc, char **argv) {
       application_env_flag("VKR_GPU_SUBMISSION_TIMING", false_v);
   const bool8_t metrics_event_subjects =
       application_env_flag("VKR_METRICS_EVENT_SUBJECTS", false_v);
+  const bool8_t metal_validation_enabled =
+      application_env_flag("MTL_DEBUG_LAYER", false_v) ||
+      application_env_flag("MTL_SHADER_VALIDATION", false_v);
 
   ApplicationConfig config = {0};
-  config.title = "Hello, World!";
+  config.title = "VKR Editor";
   config.x = 100;
   config.y = 100;
   config.width = 800;
@@ -2948,15 +3531,19 @@ int main(int argc, char **argv) {
   config.app_arena_size = MB(1);
   config.target_frame_rate = 0;
   config.renderer_backend = renderer_backend;
+  config.render_scale = 1.0f;
+  config.upscale_mode = VKR_UPSCALE_MODE_SPATIAL;
   if (renderer_backend == VKR_RENDERER_BACKEND_TYPE_METAL) {
     config.render_scale = 0.8f;
-    config.upscale_mode = VKR_UPSCALE_MODE_METALFX_TEMPORAL;
-    config.dynamic_resolution = (VkrDynamicResolutionConfig){
-        .min_scale = 0.334f,
-        .max_scale = 1.0f,
-        .target_frame_ms = 1000.0f / 75.0f,
-        .enabled = true_v,
-    };
+    if (!metal_validation_enabled) {
+      config.upscale_mode = VKR_UPSCALE_MODE_METALFX_TEMPORAL;
+      config.dynamic_resolution = (VkrDynamicResolutionConfig){
+          .min_scale = 0.334f,
+          .max_scale = 1.0f,
+          .target_frame_ms = 1000.0f / 75.0f,
+          .enabled = true_v,
+      };
+    }
   }
   config.metrics_config = (VkrMetricsConfig){
       .pass_gpu_timings = rg_gpu_timing_enabled,
@@ -2979,6 +3566,22 @@ int main(int argc, char **argv) {
     fprintf(stderr, "Application creation failed\n");
     return 1;
   }
+  if (metal_validation_enabled &&
+      renderer_backend == VKR_RENDERER_BACKEND_TYPE_METAL) {
+    log_info("Metal validation enabled; the Scene uses fixed-scale spatial "
+             "reconstruction instead of MetalFX");
+  }
+  application.editor_viewport.enabled = true_v;
+  application.editor_viewport.scene_only = scene_only_requested;
+  application.editor_viewport.render_scale =
+      scene_only_requested ||
+              renderer_backend == VKR_RENDERER_BACKEND_TYPE_METAL
+          ? 1.0f
+          : application_env_f32_range("VKR_EDITOR_RENDER_SCALE", 0.8f, 0.25f,
+                                      1.0f);
+  if (scene_only_requested)
+    log_info("Editor scene-only mode enabled at render scale %.3f",
+             application.editor_viewport.render_scale);
   if (editor_layout_path && editor_layout_path[0] != '\0') {
     const String8 path = string8_create_from_cstr(
         (const uint8_t *)editor_layout_path, string_length(editor_layout_path));
@@ -3008,6 +3611,28 @@ int main(int argc, char **argv) {
   state->fps_frame_count = 0;
   state->current_fps = 0.0;
   state->current_frametime = 0.0;
+  state->editor_menu = APPLICATION_EDITOR_MENU_NONE;
+  state->editor_windows[APPLICATION_EDITOR_WINDOW_DRAWS] =
+      (ApplicationEditorWindowState){
+          .position_pt = {235.0f, 340.0f},
+          .size_pt = {430.0f, 205.0f},
+          .z_order = 1u,
+          .visible = false_v,
+      };
+  state->editor_windows[APPLICATION_EDITOR_WINDOW_MEMORY] =
+      (ApplicationEditorWindowState){
+          .position_pt = {485.0f, 145.0f},
+          .size_pt = {300.0f, 390.0f},
+          .z_order = 2u,
+          .visible = false_v,
+      };
+  state->editor_windows[APPLICATION_EDITOR_WINDOW_HELP] =
+      (ApplicationEditorWindowState){
+          .position_pt = {280.0f, 105.0f},
+          .size_pt = {390.0f, 145.0f},
+          .z_order = 3u,
+          .visible = false_v,
+      };
   state->world_text_id = 0;
   state->world_text_update_clock = vkr_clock_create();
   state->free_camera_use_gamepad = false_v;

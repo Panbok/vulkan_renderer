@@ -99,6 +99,16 @@ typedef struct VkrUiSystem {
   VkrUiDrawCommand *frame_commands;
   uint32_t frame_command_count;
   uint32_t frame_command_capacity;
+  VkrUiVertex *cached_vertices;
+  uint32_t *cached_indices;
+  VkrUiDrawBatch *cached_batches;
+  uint32_t cached_vertex_count;
+  uint32_t cached_index_count;
+  uint32_t cached_batch_count;
+  uint64_t cached_draw_hash;
+  uint64_t frame_draw_hash;
+  uint32_t cached_target_width;
+  uint32_t cached_target_height;
   VkrUiTileCache tile_cache;
   VkrUiTileFrame tile_frame;
   float32_t dirty_tile_ratio;
@@ -121,6 +131,8 @@ typedef struct VkrUiSystem {
   VkrUiId active_id;
   VkrUiId focused_id;
   VkrUiId hot_id;
+  uint32_t input_layer;
+  uint32_t mouse_input_layer;
   VkrUiInputCapture capture;
   Keys repeat_key;
   float64_t repeat_elapsed;
@@ -133,6 +145,9 @@ typedef struct VkrUiSystem {
   uint32_t offscreen_content_scale_revision;
   uint32_t content_scale_revision;
   bool8_t frame_open;
+  bool8_t frame_draw_ready;
+  bool8_t frame_reuses_cached_draw_list;
+  bool8_t draw_cache_valid;
   bool8_t draw_capacity_warning_emitted;
   bool8_t tile_build_warning_emitted;
   bool8_t initialized;
@@ -161,6 +176,17 @@ bool8_t vkr_ui_push_id_label(VkrUiSystem *system, String8 label);
 bool8_t vkr_ui_push_id_u64(VkrUiSystem *system, uint64_t key);
 bool8_t vkr_ui_push_id_pointer(VkrUiSystem *system, const void *pointer);
 bool8_t vkr_ui_pop_id(VkrUiSystem *system);
+
+/**
+ * Register an input-occluding rectangle before building interactive widgets.
+ * The highest registered layer under the pointer receives interaction; layer
+ * zero is the ordinary UI behind popups and floating windows.
+ */
+bool8_t vkr_ui_input_layer_register(VkrUiSystem *system, uint32_t layer,
+                                    VkrUiRect rect_px);
+
+/** Select the layer assigned to subsequently built interactive widgets. */
+bool8_t vkr_ui_input_layer_set(VkrUiSystem *system, uint32_t layer);
 
 bool8_t vkr_ui_panel_begin(VkrUiSystem *system, String8 id_label,
                            const VkrUiPanelConfig *config);

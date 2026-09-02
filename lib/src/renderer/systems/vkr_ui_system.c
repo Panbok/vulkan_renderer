@@ -298,6 +298,43 @@ bool8_t vkr_ui_system_init(RendererFrontend *rf, VkrUiSystem *system) {
   }
   MemZero(system->retained_buckets, (uint64_t)system->retained_bucket_capacity *
                                         sizeof(*system->retained_buckets));
+  system->cached_vertices = vkr_allocator_alloc(
+      &system->retained_allocator,
+      (uint64_t)VKR_UI_VERTEX_CAPACITY * sizeof(*system->cached_vertices),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  system->cached_indices = vkr_allocator_alloc(
+      &system->retained_allocator,
+      (uint64_t)VKR_UI_INDEX_CAPACITY * sizeof(*system->cached_indices),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  system->cached_batches = vkr_allocator_alloc(
+      &system->retained_allocator,
+      (uint64_t)VKR_UI_BATCH_CAPACITY * sizeof(*system->cached_batches),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!system->cached_vertices || !system->cached_indices ||
+      !system->cached_batches) {
+    if (system->cached_vertices)
+      vkr_allocator_free(&system->retained_allocator, system->cached_vertices,
+                         (uint64_t)VKR_UI_VERTEX_CAPACITY *
+                             sizeof(*system->cached_vertices),
+                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (system->cached_indices)
+      vkr_allocator_free(&system->retained_allocator, system->cached_indices,
+                         (uint64_t)VKR_UI_INDEX_CAPACITY *
+                             sizeof(*system->cached_indices),
+                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (system->cached_batches)
+      vkr_allocator_free(&system->retained_allocator, system->cached_batches,
+                         (uint64_t)VKR_UI_BATCH_CAPACITY *
+                             sizeof(*system->cached_batches),
+                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    vkr_allocator_free(&system->retained_allocator, system->retained_buckets,
+                       (uint64_t)system->retained_bucket_capacity *
+                           sizeof(*system->retained_buckets),
+                       VKR_ALLOCATOR_MEMORY_TAG_HASH_TABLE);
+    vkr_dmemory_allocator_destroy(&system->retained_allocator);
+    MemZero(system, sizeof(*system));
+    return false_v;
+  }
   system->renderer = rf;
   system->offscreen_content_scale = 1.0f;
   system->offscreen_content_scale_revision = 1u;
@@ -322,6 +359,18 @@ void vkr_ui_system_shutdown(RendererFrontend *rf, VkrUiSystem *system) {
     vkr_allocator_free(&system->retained_allocator, state, sizeof(*state),
                        VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   }
+  vkr_allocator_free(&system->retained_allocator, system->cached_vertices,
+                     (uint64_t)VKR_UI_VERTEX_CAPACITY *
+                         sizeof(*system->cached_vertices),
+                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  vkr_allocator_free(&system->retained_allocator, system->cached_indices,
+                     (uint64_t)VKR_UI_INDEX_CAPACITY *
+                         sizeof(*system->cached_indices),
+                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  vkr_allocator_free(&system->retained_allocator, system->cached_batches,
+                     (uint64_t)VKR_UI_BATCH_CAPACITY *
+                         sizeof(*system->cached_batches),
+                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   vkr_allocator_free(&system->retained_allocator, system->retained_buckets,
                      (uint64_t)system->retained_bucket_capacity *
                          sizeof(*system->retained_buckets),
@@ -331,6 +380,7 @@ void vkr_ui_system_shutdown(RendererFrontend *rf, VkrUiSystem *system) {
 }
 
 static void vkr_ui_system_invalidate_layout(VkrUiSystem *system) {
+  system->draw_cache_valid = false_v;
   for (uint32_t i = 0u; i < system->retained_bucket_capacity; ++i) {
     VkrUiRetainedState *state = system->retained_buckets[i];
     if (state && state != VKR_UI_RETAINED_TOMBSTONE)
@@ -472,6 +522,7 @@ static bool8_t vkr_ui_interact(VkrUiSystem *system, VkrUiFrameNode *node,
                                bool8_t focusable) {
   VkrUiRetainedState *retained = node->retained;
   const bool8_t hovered = !system->mouse_captured &&
+                          system->input_layer == system->mouse_input_layer &&
                           vkr_ui_rect_has_area(retained->last_rect) &&
                           vkr_ui_point_in_rect(system->mouse_x, system->mouse_y,
                                                retained->last_rect);
@@ -544,10 +595,15 @@ bool8_t vkr_ui_begin(RendererFrontend *rf, VkrUiSystem *system,
   system->focus_claimed = false_v;
   system->focused_is_text = false_v;
   system->hot_id = VKR_UI_ID_NONE;
+  system->input_layer = 0u;
+  system->mouse_input_layer = 0u;
   system->capture = (VkrUiInputCapture){0};
   system->frame_commands = NULL;
   system->frame_command_count = 0u;
   system->frame_command_capacity = 0u;
+  system->frame_draw_hash = 0u;
+  system->frame_draw_ready = false_v;
+  system->frame_reuses_cached_draw_list = false_v;
   system->frame_index++;
   if (system->frame_index == 0u)
     system->frame_index = 1u;
@@ -608,6 +664,26 @@ bool8_t vkr_ui_push_id_pointer(VkrUiSystem *system, const void *pointer) {
 
 bool8_t vkr_ui_pop_id(VkrUiSystem *system) {
   return system && system->frame_open && vkr_ui_id_stack_pop(&system->id_stack);
+}
+
+bool8_t vkr_ui_input_layer_register(VkrUiSystem *system, uint32_t layer,
+                                    VkrUiRect rect_px) {
+  if (!system || !system->frame_open || layer == 0u ||
+      !vkr_ui_rect_has_area(rect_px))
+    return false_v;
+  if (vkr_ui_point_in_rect(system->mouse_x, system->mouse_y, rect_px) &&
+      layer > system->mouse_input_layer) {
+    system->mouse_input_layer = layer;
+    system->capture.mouse = true_v;
+  }
+  return true_v;
+}
+
+bool8_t vkr_ui_input_layer_set(VkrUiSystem *system, uint32_t layer) {
+  if (!system || !system->frame_open)
+    return false_v;
+  system->input_layer = layer;
+  return true_v;
 }
 
 bool8_t vkr_ui_panel_begin(VkrUiSystem *system, String8 id_label,
@@ -949,10 +1025,16 @@ static uint64_t vkr_ui_node_hash(VkrUiSystem *system, uint32_t node_index) {
   VkrUiFrameNode *node = &system->frame_nodes[node_index];
   uint64_t hash = vkr_ui_hash_bytes(UINT64_C(14695981039346656037), &node->kind,
                                     sizeof(node->kind));
+  hash = vkr_ui_hash_bytes(hash, &node->id, sizeof(node->id));
   hash = vkr_ui_hash_bytes(hash, &node->placement, sizeof(node->placement));
   hash = vkr_ui_hash_bytes(hash, &node->style, sizeof(node->style));
+  hash = vkr_ui_hash_bytes(hash, &node->intrinsic_size,
+                           sizeof(node->intrinsic_size));
   hash = vkr_ui_hash_bytes(hash, &system->content_scale,
                            sizeof(system->content_scale));
+  hash =
+      vkr_ui_hash_bytes(hash, &node->column_count, sizeof(node->column_count));
+  hash = vkr_ui_hash_bytes(hash, &node->row_count, sizeof(node->row_count));
   if (node->columns && node->column_count)
     hash = vkr_ui_hash_bytes(hash, node->columns,
                              (uint64_t)node->column_count *
@@ -962,8 +1044,42 @@ static uint64_t vkr_ui_node_hash(VkrUiSystem *system, uint32_t node_index) {
                              (uint64_t)node->row_count * sizeof(*node->rows));
   if (node->content.str && node->content.length)
     hash = vkr_ui_hash_bytes(hash, node->content.str, node->content.length);
+  if (node->retained->text_live) {
+    const VkrUiText *text = &node->retained->text;
+    hash = vkr_ui_hash_bytes(hash, &text->geometry.revision,
+                             sizeof(text->geometry.revision));
+    if (text->resolved_font) {
+      hash = vkr_ui_hash_bytes(hash, &text->resolved_font->id,
+                               sizeof(text->resolved_font->id));
+      hash = vkr_ui_hash_bytes(hash, &text->resolved_font->generation,
+                               sizeof(text->resolved_font->generation));
+      hash = vkr_ui_hash_bytes(hash, &text->resolved_font->type,
+                               sizeof(text->resolved_font->type));
+      hash = vkr_ui_hash_bytes(hash, &text->resolved_font->atlas,
+                               sizeof(text->resolved_font->atlas));
+      hash = vkr_ui_hash_bytes(hash, &text->resolved_font->sdf_distance_range,
+                               sizeof(text->resolved_font->sdf_distance_range));
+      hash = vkr_ui_hash_bytes(hash, &text->resolved_font->mtsdf_unit_range,
+                               sizeof(text->resolved_font->mtsdf_unit_range));
+      hash = vkr_ui_hash_bytes(hash, &text->resolved_font->em_size,
+                               sizeof(text->resolved_font->em_size));
+    }
+  }
   hash = vkr_ui_hash_bytes(hash, &node->retained->scroll_offset,
                            sizeof(node->retained->scroll_offset));
+  hash = vkr_ui_hash_bytes(hash, &node->retained->text_cursor,
+                           sizeof(node->retained->text_cursor));
+  hash = vkr_ui_hash_bytes(hash, &node->retained->text_selection,
+                           sizeof(node->retained->text_selection));
+  hash = vkr_ui_hash_bytes(hash, &node->slider_fraction,
+                           sizeof(node->slider_fraction));
+  hash = vkr_ui_hash_bytes(hash, &node->checked, sizeof(node->checked));
+  hash = vkr_ui_hash_bytes(hash, &node->hovered, sizeof(node->hovered));
+  hash = vkr_ui_hash_bytes(hash, &node->active, sizeof(node->active));
+  hash = vkr_ui_hash_bytes(hash, &node->clip_children,
+                           sizeof(node->clip_children));
+  const bool8_t focused = system->focused_id == node->id;
+  hash = vkr_ui_hash_bytes(hash, &focused, sizeof(focused));
   for (uint32_t child = node->first_child; child != VKR_UI_NODE_NONE;
        child = system->frame_nodes[child].next_sibling) {
     const uint64_t child_hash = vkr_ui_node_hash(system, child);
@@ -1552,11 +1668,24 @@ VkrUiInputCapture vkr_ui_end(VkrUiSystem *system) {
     system->active_id = VKR_UI_ID_NONE;
 
   VkrUiFrameNode *root = &system->frame_nodes[0];
+  const uint64_t draw_hash = vkr_ui_node_hash(system, 0u);
+  system->frame_draw_hash = draw_hash;
+  if (system->draw_cache_valid && system->cached_draw_hash == draw_hash &&
+      system->cached_target_width == system->target_width &&
+      system->cached_target_height == system->target_height) {
+    system->frame_reuses_cached_draw_list = true_v;
+    system->frame_draw_ready = true_v;
+    system->tile_frame = (VkrUiTileFrame){0};
+    system->dirty_tile_ratio = 0.0f;
+    system->dirty_tile_count = 0u;
+    system->tile_count = system->tile_cache.tile_count;
+    goto finish;
+  }
+  system->draw_cache_valid = false_v;
   if (!vkr_ui_container_intrinsic(system, root, &root->intrinsic_size)) {
     system->frame_open = false_v;
     return (VkrUiInputCapture){0};
   }
-  (void)vkr_ui_node_hash(system, 0u);
   const VkrUiRect target = {0.0f, 0.0f, (float32_t)system->target_width,
                             (float32_t)system->target_height};
   if (!vkr_ui_layout_node(system, 0u, target, target)) {
@@ -1585,6 +1714,8 @@ VkrUiInputCapture vkr_ui_end(VkrUiSystem *system) {
       }
     }
   }
+  system->frame_draw_ready =
+      command_capacity == 0u || system->frame_commands != NULL;
   if (!vkr_ui_build_tiles(system)) {
     system->dirty_tile_ratio = 1.0f;
     system->dirty_tile_count = 0u;
@@ -1595,6 +1726,7 @@ VkrUiInputCapture vkr_ui_end(VkrUiSystem *system) {
     }
   }
 
+finish:
   system->capture = (VkrUiInputCapture){
       .mouse = system->capture.mouse || system->active_id != VKR_UI_ID_NONE,
       .keyboard = system->focused_id != VKR_UI_ID_NONE,
@@ -1624,8 +1756,34 @@ bool8_t vkr_ui_system_prepare_draw_list(VkrUiSystem *system,
       target_height == 0u)
     return false_v;
   *out_draw_list = (VkrPreparedUiDrawList){0};
-  if (!system->frame_commands || system->frame_command_count == 0u)
+  if (!system->frame_draw_ready || target_width != system->target_width ||
+      target_height != system->target_height)
+    return false_v;
+  if (system->draw_cache_valid &&
+      system->cached_draw_hash == system->frame_draw_hash &&
+      system->cached_target_width == target_width &&
+      system->cached_target_height == target_height) {
+    *out_draw_list = (VkrPreparedUiDrawList){
+        .vertices = system->cached_vertices,
+        .vertex_count = system->cached_vertex_count,
+        .indices = system->cached_indices,
+        .index_count = system->cached_index_count,
+        .batches = system->cached_batches,
+        .batch_count = system->cached_batch_count,
+    };
     return true_v;
+  }
+
+  if (!system->frame_commands || system->frame_command_count == 0u) {
+    system->cached_vertex_count = 0u;
+    system->cached_index_count = 0u;
+    system->cached_batch_count = 0u;
+    system->cached_draw_hash = system->frame_draw_hash;
+    system->cached_target_width = target_width;
+    system->cached_target_height = target_height;
+    system->draw_cache_valid = true_v;
+    return true_v;
+  }
 
   VkrUiDrawCommand *commands = system->frame_commands;
   const uint32_t command_count = system->frame_command_count;
@@ -1633,22 +1791,7 @@ bool8_t vkr_ui_system_prepare_draw_list(VkrUiSystem *system,
   system->frame_commands = NULL;
   system->frame_command_count = 0u;
   system->frame_command_capacity = 0u;
-  const uint32_t vertex_capacity =
-      Min(command_count * 4u, VKR_UI_VERTEX_CAPACITY);
-  const uint32_t index_capacity =
-      Min(command_count * 6u, VKR_UI_INDEX_CAPACITY);
-  const uint32_t batch_capacity = Min(command_count, VKR_UI_BATCH_CAPACITY);
-  VkrUiVertex *vertices = vkr_allocator_alloc(
-      frame_allocator, (uint64_t)vertex_capacity * sizeof(*vertices),
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  uint32_t *indices = vkr_allocator_alloc(
-      frame_allocator, (uint64_t)index_capacity * sizeof(*indices),
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  VkrUiDrawBatch *batches = vkr_allocator_alloc(
-      frame_allocator, (uint64_t)batch_capacity * sizeof(*batches),
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  if (!vertices || !indices || !batches)
-    return false_v;
+  (void)frame_allocator;
   const VkrUiDrawBuffer buffer = {
       .commands = commands,
       .command_count = command_count,
@@ -1658,12 +1801,12 @@ bool8_t vkr_ui_system_prepare_draw_list(VkrUiSystem *system,
       .clip_count = 1u,
   };
   VkrUiDrawOutput output = {
-      .vertices = vertices,
-      .vertex_capacity = vertex_capacity,
-      .indices = indices,
-      .index_capacity = index_capacity,
-      .batches = batches,
-      .batch_capacity = batch_capacity,
+      .vertices = system->cached_vertices,
+      .vertex_capacity = VKR_UI_VERTEX_CAPACITY,
+      .indices = system->cached_indices,
+      .index_capacity = VKR_UI_INDEX_CAPACITY,
+      .batches = system->cached_batches,
+      .batch_capacity = VKR_UI_BATCH_CAPACITY,
   };
   const VkrUiDrawBuildResult result =
       vkr_ui_draw_build(&buffer, target_width, target_height, &output);
@@ -1674,13 +1817,20 @@ bool8_t vkr_ui_system_prepare_draw_list(VkrUiSystem *system,
     log_warn("UI geometry capacity reached; trailing content was dropped");
     system->draw_capacity_warning_emitted = true_v;
   }
+  system->cached_vertex_count = output.vertex_count;
+  system->cached_index_count = output.index_count;
+  system->cached_batch_count = output.batch_count;
+  system->cached_draw_hash = system->frame_draw_hash;
+  system->cached_target_width = target_width;
+  system->cached_target_height = target_height;
+  system->draw_cache_valid = true_v;
   *out_draw_list = (VkrPreparedUiDrawList){
-      .vertices = vertices,
-      .vertex_count = output.vertex_count,
-      .indices = indices,
-      .index_count = output.index_count,
-      .batches = batches,
-      .batch_count = output.batch_count,
+      .vertices = system->cached_vertices,
+      .vertex_count = system->cached_vertex_count,
+      .indices = system->cached_indices,
+      .index_count = system->cached_index_count,
+      .batches = system->cached_batches,
+      .batch_count = system->cached_batch_count,
   };
   return true_v;
 }

@@ -604,6 +604,108 @@ static void test_ui_system_scale_revision_and_offsets(void) {
   printf("  test_ui_system_scale_revision_and_offsets PASSED\n");
 }
 
+static void test_ui_system_reuses_unchanged_draw_geometry(void) {
+  printf("  Running test_ui_system_reuses_unchanged_draw_geometry...\n");
+  setup_suite();
+  TestCookedFont fixture;
+  test_cooked_font_init(&fixture);
+  RendererFrontend renderer = {0};
+  renderer.allocator = allocator;
+  renderer.scratch_allocator = allocator;
+  renderer.last_window_width = 200u;
+  renderer.last_window_height = 100u;
+  renderer.font_system.fonts =
+      (Array_VkrFont){.length = 1u, .data = &fixture.font};
+  renderer.font_system.default_mtsdf_font_handle = (VkrFontHandle){
+      .id = fixture.font.id, .generation = fixture.font.generation};
+  VkrUiSystem system = {0};
+  assert(vkr_ui_system_init(&renderer, &system));
+  vkr_ui_system_set_offscreen_size(&renderer, &system, true_v, 200u, 100u);
+
+  InputState input = {0};
+  const VkrUiVertex *cached_vertices = NULL;
+  uint64_t label_hash = 0u;
+  for (uint32_t frame = 0u; frame < 4u; ++frame) {
+    VkrAllocatorScope scope = vkr_allocator_begin_scope(&allocator);
+    assert(vkr_allocator_scope_is_valid(&scope));
+    assert(vkr_ui_begin(&renderer, &system, &input, true_v, 1.0 / 60.0, NULL));
+    vkr_ui_label(&system, string8_lit("cached-label"),
+                 frame < 2u ? string8_lit("A") : string8_lit("B"), NULL);
+    (void)vkr_ui_end(&system);
+    assert(system.frame_reuses_cached_draw_list ==
+           (frame == 1u || frame == 3u));
+
+    VkrPreparedUiDrawList draw_list = {0};
+    assert(vkr_ui_system_prepare_draw_list(&system, &allocator, 200u, 100u,
+                                           &draw_list));
+    assert(draw_list.vertex_count == 4u);
+    assert(draw_list.vertices == system.cached_vertices);
+    if (frame == 0u) {
+      cached_vertices = draw_list.vertices;
+      label_hash = system.cached_draw_hash;
+    } else {
+      assert(draw_list.vertices == cached_vertices);
+      if (frame == 1u)
+        assert(system.cached_draw_hash == label_hash);
+      if (frame == 2u)
+        assert(system.cached_draw_hash != label_hash);
+    }
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+
+  bool8_t checked = false_v;
+  uint64_t unchecked_hash = 0u;
+  for (uint32_t frame = 0u; frame < 3u; ++frame) {
+    if (frame == 2u)
+      checked = true_v;
+    VkrAllocatorScope scope = vkr_allocator_begin_scope(&allocator);
+    assert(vkr_allocator_scope_is_valid(&scope));
+    assert(vkr_ui_begin(&renderer, &system, &input, true_v, 1.0 / 60.0, NULL));
+    (void)vkr_ui_checkbox(&system, string8_lit("cached-checkbox"),
+                          string8_lit("Visible"), &checked, NULL);
+    (void)vkr_ui_end(&system);
+    assert(system.frame_reuses_cached_draw_list == (frame == 1u));
+    VkrPreparedUiDrawList draw_list = {0};
+    assert(vkr_ui_system_prepare_draw_list(&system, &allocator, 200u, 100u,
+                                           &draw_list));
+    if (frame == 0u)
+      unchecked_hash = system.cached_draw_hash;
+    if (frame == 2u) {
+      assert(system.cached_draw_hash != unchecked_hash);
+      assert(draw_list.vertex_count > 4u);
+    }
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+
+  vkr_ui_system_set_offscreen_size(&renderer, &system, true_v, 220u, 120u);
+  VkrAllocatorScope resize_scope = vkr_allocator_begin_scope(&allocator);
+  assert(vkr_allocator_scope_is_valid(&resize_scope));
+  assert(vkr_ui_begin(&renderer, &system, &input, true_v, 1.0 / 60.0, NULL));
+  vkr_ui_label(&system, string8_lit("cached-label"), string8_lit("B"), NULL);
+  (void)vkr_ui_end(&system);
+  assert(!system.frame_reuses_cached_draw_list);
+  VkrPreparedUiDrawList resized_draw_list = {0};
+  assert(vkr_ui_system_prepare_draw_list(&system, &allocator, 220u, 120u,
+                                         &resized_draw_list));
+  vkr_allocator_end_scope(&resize_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+
+  vkr_ui_system_set_offscreen_content_scale(&renderer, &system, 2.0f);
+  VkrAllocatorScope scale_scope = vkr_allocator_begin_scope(&allocator);
+  assert(vkr_allocator_scope_is_valid(&scale_scope));
+  assert(vkr_ui_begin(&renderer, &system, &input, true_v, 1.0 / 60.0, NULL));
+  vkr_ui_label(&system, string8_lit("cached-label"), string8_lit("B"), NULL);
+  (void)vkr_ui_end(&system);
+  assert(!system.frame_reuses_cached_draw_list);
+  VkrPreparedUiDrawList scaled_draw_list = {0};
+  assert(vkr_ui_system_prepare_draw_list(&system, &allocator, 220u, 120u,
+                                         &scaled_draw_list));
+  vkr_allocator_end_scope(&scale_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+
+  vkr_ui_system_shutdown(&renderer, &system);
+  teardown_suite();
+  printf("  test_ui_system_reuses_unchanged_draw_geometry PASSED\n");
+}
+
 static bool8_t test_ui_text_field_frame(RendererFrontend *renderer,
                                         VkrUiSystem *system, InputState *input,
                                         VkrUiTextEditBuffer *buffer,
@@ -689,6 +791,82 @@ static void test_ui_text_field_character_input_and_repeat(void) {
   printf("  test_ui_text_field_character_input_and_repeat PASSED\n");
 }
 
+static void test_ui_input_layer_blocks_click_through(void) {
+  printf("  Running test_ui_input_layer_blocks_click_through...\n");
+  setup_suite();
+  TestCookedFont fixture;
+  test_cooked_font_init(&fixture);
+  RendererFrontend renderer = {0};
+  renderer.allocator = allocator;
+  renderer.scratch_allocator = allocator;
+  renderer.last_window_width = 200u;
+  renderer.last_window_height = 100u;
+  renderer.font_system.fonts =
+      (Array_VkrFont){.length = 1u, .data = &fixture.font};
+  renderer.font_system.default_mtsdf_font_handle = (VkrFontHandle){
+      .id = fixture.font.id, .generation = fixture.font.generation};
+  VkrUiSystem system = {0};
+  assert(vkr_ui_system_init(&renderer, &system));
+  vkr_ui_system_set_offscreen_size(&renderer, &system, true_v, 200u, 100u);
+
+  EventManager event_manager = {0};
+  event_manager_create(&event_manager);
+  InputState input = input_init(&event_manager);
+  const VkrUiRect overlay_rect = {0.0f, 0.0f, 200.0f, 100.0f};
+  VkrUiWidgetConfig button = vkr_ui_widget_config_default();
+  button.placement = (VkrUiPlacement){
+      .column = 0u,
+      .row = 0u,
+      .column_span = 1u,
+      .row_span = 1u,
+      .justify = VKR_UI_ALIGN_STRETCH,
+      .align = VKR_UI_ALIGN_STRETCH,
+  };
+  VkrUiId overlay_id = VKR_UI_ID_NONE;
+  for (uint32_t frame = 0u; frame < 3u; ++frame) {
+    if (frame == 1u) {
+      input_process_mouse_move(&input, 10, 10);
+      input_process_button(&input, BUTTON_LEFT, true_v);
+    } else if (frame == 2u) {
+      input_update(&input);
+      input_process_button(&input, BUTTON_LEFT, false_v);
+    }
+    VkrAllocatorScope scope = vkr_allocator_begin_scope(&allocator);
+    assert(vkr_allocator_scope_is_valid(&scope));
+    assert(vkr_ui_begin(&renderer, &system, &input, false_v, 1.0 / 60.0, NULL));
+    assert(vkr_ui_input_layer_register(&system, 2u, overlay_rect));
+    assert(vkr_ui_input_layer_register(&system, 1u, overlay_rect));
+    assert(vkr_ui_input_layer_set(&system, 0u));
+    const bool8_t base_clicked = vkr_ui_button(&system, string8_lit("base"),
+                                               string8_lit("base"), &button);
+    assert(vkr_ui_input_layer_set(&system, 1u));
+    const bool8_t lower_clicked = vkr_ui_button(&system, string8_lit("lower"),
+                                                string8_lit("lower"), &button);
+    assert(vkr_ui_input_layer_set(&system, 2u));
+    overlay_id =
+        vkr_ui_id_stack_widget_label(&system.id_stack, string8_lit("overlay"));
+    const bool8_t overlay_clicked = vkr_ui_button(
+        &system, string8_lit("overlay"), string8_lit("overlay"), &button);
+    const VkrUiInputCapture capture = vkr_ui_end(&system);
+    assert(!base_clicked && !lower_clicked);
+    if (frame == 1u) {
+      assert(capture.active_id == overlay_id);
+      assert(capture.mouse);
+    }
+    if (frame == 2u)
+      assert(overlay_clicked);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (frame != 1u)
+      input_update(&input);
+  }
+
+  input_shutdown(&input);
+  event_manager_destroy(&event_manager);
+  vkr_ui_system_shutdown(&renderer, &system);
+  teardown_suite();
+  printf("  test_ui_input_layer_blocks_click_through PASSED\n");
+}
+
 bool32_t run_text_tests(void) {
   printf("--- Starting Text Tests ---\n");
 
@@ -708,7 +886,9 @@ bool32_t run_text_tests(void) {
   test_window_content_scale_snapshot();
   test_ui_text_content_scale_contract();
   test_ui_system_scale_revision_and_offsets();
+  test_ui_system_reuses_unchanged_draw_geometry();
   test_ui_text_field_character_input_and_repeat();
+  test_ui_input_layer_blocks_click_through();
 
   return true_v;
 }
