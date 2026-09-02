@@ -1054,8 +1054,8 @@ typedef struct VkrRendererBackendConfig {
   VkrRendererBootMetrics *boot_metrics;
   VkrPresentTargetConfig present_target;
   VkrPresentMode requested_present_mode;
-  /** Internal scene resolution relative to the physical target. Zero selects
-   * 1.0. Values below 1.0 keep tonemap and UI at the target extent. */
+  /** Internal Scene resolution relative to its presentation extent. Zero
+   * selects 1.0. Editor UI always remains at the physical target extent. */
   float32_t render_scale;
   /** Reconstruction path. Zero-initialized preserves spatial sampling. */
   VkrUpscaleMode upscale_mode;
@@ -1315,6 +1315,19 @@ bool8_t vkr_renderer_capture_release(VkrRendererFrontendHandle renderer,
 
 void vkr_renderer_resize(VkrRendererFrontendHandle renderer, uint32_t width,
                          uint32_t height);
+/**
+ * Sets the reconstructed Scene extent outside an active frame.
+ *
+ * This is distinct from the present-target extent: editor UI remains native
+ * to the present target while the Scene is reconstructed to this extent and
+ * then composited into its panel.
+ */
+VkrRendererError
+vkr_renderer_set_scene_output_extent(VkrRendererFrontendHandle renderer,
+                                     uint32_t width, uint32_t height);
+/** Restores Scene reconstruction to the current present-target extent. */
+VkrRendererError
+vkr_renderer_restore_scene_output_extent(VkrRendererFrontendHandle renderer);
 /** Invalidates temporal accumulation before the next submitted frame. */
 void vkr_renderer_invalidate_temporal_history(
     VkrRendererFrontendHandle renderer);

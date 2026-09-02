@@ -13,6 +13,11 @@ bool8_t vkr_editor_viewport_mapping_from_panel_rect(
     Vec4 panel_rect_px, VkrViewportFitMode fit_mode, float32_t render_scale,
     VkrViewportMapping *out_mapping);
 
+/** Resolve a panel mapping for an already-selected internal Scene extent. */
+bool8_t vkr_editor_viewport_mapping_from_panel_rect_and_target(
+    Vec4 panel_rect_px, VkrViewportFitMode fit_mode, uint32_t target_width,
+    uint32_t target_height, VkrViewportMapping *out_mapping);
+
 /**
  * @brief Compute the viewport mapping for the standard editor layout.
  *

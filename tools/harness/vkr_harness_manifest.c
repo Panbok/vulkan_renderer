@@ -692,21 +692,15 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
     return false_v;
   }
   renderer->render_scale = (float32_t)render_scale;
-  if (renderer->render_scale != 1.0f && renderer->editor) {
-    vkr_harness_error_set(
-        error, "renderer.render_scale", "$.renderer.render_scale",
-        "Non-unit render scale does not support the editor viewport");
-    return false_v;
-  }
   const bool8_t metalfx_temporal =
       string_equals(renderer->upscaler, "metalfx_temporal");
   if ((metalfx_temporal && (!string_equals(renderer->backend, "metal") ||
-                            renderer->editor || !renderer->taa_enabled)) ||
+                            !renderer->taa_enabled)) ||
       (renderer->dynamic_resolution && !metalfx_temporal)) {
     vkr_harness_error_set(
         error, "renderer.upscaler", "$.renderer.upscaler",
         "MetalFX temporal requires the pinned Metal backend, temporal jitter, "
-        "and a non-editor target; dynamic resolution requires MetalFX");
+        "and dynamic resolution requires MetalFX");
     return false_v;
   }
   if (metalfx_temporal)

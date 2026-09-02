@@ -75,6 +75,7 @@
  */
 typedef struct ApplicationEditorViewport {
   bool8_t enabled;
+  bool8_t scene_only;
   VkrViewportFitMode fit_mode;
   float32_t render_scale;
   uint32_t last_target_width;
@@ -135,8 +136,8 @@ typedef struct ApplicationConfig {
   VkrRendererBackendType renderer_backend;
   VkrPresentTargetConfig present_target;
   VkrPresentMode requested_present_mode;
-  /** Internal scene resolution relative to the physical present target.
-   * Zero selects 1.0. Metal currently supports values in (0, 1]. */
+  /** Internal Scene resolution relative to its presentation extent. Zero
+   * selects 1.0. Metal currently supports values in (0, 1]. */
   float32_t render_scale;
   /** Cold reconstruction path; zero preserves spatial sampling. */
   VkrUpscaleMode upscale_mode;
@@ -385,6 +386,7 @@ bool8_t application_create(Application *application,
   application->config = config;
   application->editor_viewport = (ApplicationEditorViewport){
       .enabled = false_v,
+      .scene_only = false_v,
       .fit_mode = VKR_VIEWPORT_FIT_STRETCH,
       .render_scale = 1.0f,
       .last_target_width = 0,
@@ -1132,32 +1134,92 @@ vkr_internal bool8_t application_build_world_payload(
   return true_v;
 }
 
+vkr_internal bool8_t application_editor_viewport_panel_rect(
+    Application *application, uint32_t window_width, uint32_t window_height,
+    Vec4 *out_panel_rect) {
+  if (!application || !out_panel_rect || window_width == 0u ||
+      window_height == 0u)
+    return false_v;
+  VkrUiRect panel = {0.0f, 0.0f, (float32_t)window_width,
+                     (float32_t)window_height};
+  if (!application->editor_viewport.scene_only) {
+    float32_t content_scale = 1.0f;
+    if (application_is_windowed(application)) {
+      const VkrWindowContentScale scale =
+          vkr_window_get_content_scale(&application->window);
+      if (isfinite(scale.value) && scale.value > 0.0f)
+        content_scale = scale.value;
+    }
+    VkrUiDockTree *dock = &application->editor_viewport.dock;
+    if (!vkr_ui_dock_layout(dock, panel, 8.0f * content_scale,
+                            28.0f * content_scale) ||
+        !vkr_ui_dock_find_panel(dock, VKR_UI_DOCK_PANEL_SCENE_VIEWPORT, NULL,
+                                &panel))
+      return false_v;
+  }
+  *out_panel_rect = (Vec4){panel.x, panel.y, panel.width, panel.height};
+  return true_v;
+}
+
 vkr_internal bool8_t application_editor_viewport_mapping(
     Application *application, uint32_t window_width, uint32_t window_height,
     VkrViewportMapping *out_mapping) {
-  if (!application || !out_mapping || window_width == 0u || window_height == 0u)
+  Vec4 panel = {0};
+  if (!out_mapping || !application_editor_viewport_panel_rect(
+                          application, window_width, window_height, &panel))
     return false_v;
-  float32_t content_scale = 1.0f;
-  if (application_is_windowed(application)) {
-    const VkrWindowContentScale scale =
-        vkr_window_get_content_scale(&application->window);
-    if (isfinite(scale.value) && scale.value > 0.0f)
-      content_scale = scale.value;
+  const bool8_t renderer_scaled_scene =
+      !application->editor_viewport.scene_only &&
+      application->renderer.backend_type == VKR_RENDERER_BACKEND_TYPE_METAL &&
+      (application->renderer.render_scale != 1.0f ||
+       application->renderer.upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL);
+  if (renderer_scaled_scene && application->renderer.render_width > 0u &&
+      application->renderer.render_height > 0u) {
+    return vkr_editor_viewport_mapping_from_panel_rect_and_target(
+        panel, application->editor_viewport.fit_mode,
+        application->renderer.render_width, application->renderer.render_height,
+        out_mapping);
   }
-  VkrUiDockTree *dock = &application->editor_viewport.dock;
-  if (!vkr_ui_dock_layout(dock,
-                          (VkrUiRect){0.0f, 0.0f, (float32_t)window_width,
-                                      (float32_t)window_height},
-                          8.0f * content_scale, 28.0f * content_scale))
-    return false_v;
-  VkrUiRect panel = {0};
-  if (!vkr_ui_dock_find_panel(dock, VKR_UI_DOCK_PANEL_SCENE_VIEWPORT, NULL,
-                              &panel))
-    return false_v;
   return vkr_editor_viewport_mapping_from_panel_rect(
-      (Vec4){panel.x, panel.y, panel.width, panel.height},
-      application->editor_viewport.fit_mode,
+      panel, application->editor_viewport.fit_mode,
       application->editor_viewport.render_scale, out_mapping);
+}
+
+vkr_internal VkrRendererError
+application_configure_editor_scene_output(Application *application) {
+  if (!application)
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  if (application->renderer.backend_type != VKR_RENDERER_BACKEND_TYPE_METAL ||
+      (application->renderer.render_scale == 1.0f &&
+       application->renderer.upscale_mode != VKR_UPSCALE_MODE_METALFX_TEMPORAL))
+    return VKR_RENDERER_ERROR_NONE;
+
+  const bool8_t paneled =
+      application->editor_viewport.enabled &&
+      !application->editor_viewport.scene_only &&
+      vkr_renderer_subsystem_plan_includes(
+          &application->renderer.subsystem_plan, VKR_RENDERER_SUBSYSTEM_EDITOR);
+  if (!paneled)
+    return vkr_renderer_restore_scene_output_extent(&application->renderer);
+
+  /* MetalFX scaler recreation waits for completion. Keep the previous Scene
+     output while a dock gesture is live, let the compositor stretch it, and
+     resize once when the gesture releases. */
+  if (application->renderer.scene_output_extent_overridden &&
+      (application->editor_viewport.dock_capture.resizing_split ||
+       application->editor_viewport.dock_capture.dragging_tab))
+    return VKR_RENDERER_ERROR_NONE;
+
+  const VkrWindowPixelSize pixels =
+      vkr_window_get_pixel_size(&application->window);
+  Vec4 panel = {0};
+  if (!application_editor_viewport_panel_rect(application, pixels.width,
+                                              pixels.height, &panel))
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  const uint32_t width = vkr_max_u32(1u, (uint32_t)vkr_round_f32(panel.z));
+  const uint32_t height = vkr_max_u32(1u, (uint32_t)vkr_round_f32(panel.w));
+  return vkr_renderer_set_scene_output_extent(&application->renderer, width,
+                                              height);
 }
 
 /**
@@ -1182,7 +1244,9 @@ void application_draw_frame(Application *application, float64_t delta) {
   VkrRendererError prepare_err = VKR_RENDERER_ERROR_NONE;
   VKR_METRICS_SCOPE_NS(application->metrics,
                        application->metric_ids.render_prepare) {
-    prepare_err = vkr_renderer_prepare_frame(&application->renderer, &setup);
+    prepare_err = application_configure_editor_scene_output(application);
+    if (prepare_err == VKR_RENDERER_ERROR_NONE)
+      prepare_err = vkr_renderer_prepare_frame(&application->renderer, &setup);
   }
   application->last_renderer_error = prepare_err;
   if (prepare_err != VKR_RENDERER_ERROR_NONE) {
@@ -1311,6 +1375,7 @@ void application_draw_frame(Application *application, float64_t delta) {
 
   bool8_t editor_enabled =
       application->editor_viewport.enabled &&
+      !application->editor_viewport.scene_only &&
       vkr_renderer_subsystem_plan_includes(
           &application->renderer.subsystem_plan, VKR_RENDERER_SUBSYSTEM_EDITOR);
   bool8_t has_editor = false_v;

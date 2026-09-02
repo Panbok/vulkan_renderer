@@ -2215,8 +2215,12 @@ bool8_t vkr_metal_packet_renderer_prepare_frame(
     VkrMetalPacketRenderer *renderer,
     const VkrRenderGraphFrameInfo *frame_info) {
   if (frame_info->target_width == 0 || frame_info->target_height == 0 ||
-      frame_info->viewport_width == 0 || frame_info->viewport_height == 0) {
-    log_error("Metal frame preparation rejected a zero target or viewport");
+      frame_info->scene_output_width == 0 ||
+      frame_info->scene_output_height == 0 || frame_info->viewport_width == 0 ||
+      frame_info->viewport_height == 0) {
+    log_error(
+        "Metal frame preparation rejected a zero target, Scene output, or "
+        "viewport");
     return false_v;
   }
   [renderer->drawable release];

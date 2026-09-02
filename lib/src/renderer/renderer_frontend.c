@@ -1065,10 +1065,13 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
                                    : vkr_window_get_pixel_size(window);
   renderer->last_window_width = initial.width;
   renderer->last_window_height = initial.height;
-  renderer->render_width =
-      vkr_renderer_scaled_extent(initial.width, renderer->render_scale);
-  renderer->render_height =
-      vkr_renderer_scaled_extent(initial.height, renderer->render_scale);
+  renderer->scene_output_width = initial.width;
+  renderer->scene_output_height = initial.height;
+  renderer->scene_output_extent_overridden = false_v;
+  renderer->render_width = vkr_renderer_scaled_extent(
+      renderer->scene_output_width, renderer->render_scale);
+  renderer->render_height = vkr_renderer_scaled_extent(
+      renderer->scene_output_height, renderer->render_scale);
   if (renderer->window) {
     renderer->window->width = initial.width;
     renderer->window->height = initial.height;
@@ -1910,6 +1913,8 @@ static void renderer_impl_metal_resize(void *state, uint32_t width,
       renderer->upscale_mode != VKR_UPSCALE_MODE_METALFX_TEMPORAL ||
       width == 0u || height == 0u)
     return;
+  if (renderer->scene_output_extent_overridden)
+    return;
   if (renderer_impl_metal_wait_idle(state) != VKR_RENDERER_ERROR_NONE ||
       !vkr_metal_packet_renderer_resize_metalfx(renderer->metal_renderer, width,
                                                 height))
@@ -1928,8 +1933,14 @@ static VkrRendererError renderer_impl_metal_present_target_recreate(
   renderer->present_target.height = height;
   renderer->present_target.image_count =
       renderer->impl.caps.present_target_image_count;
-  if (!vkr_metal_packet_renderer_resize_metalfx(renderer->metal_renderer, width,
-                                                height))
+  const uint32_t scene_width = renderer->scene_output_extent_overridden
+                                   ? renderer->scene_output_width
+                                   : width;
+  const uint32_t scene_height = renderer->scene_output_extent_overridden
+                                    ? renderer->scene_output_height
+                                    : height;
+  if (!vkr_metal_packet_renderer_resize_metalfx(renderer->metal_renderer,
+                                                scene_width, scene_height))
     return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
   return VKR_RENDERER_ERROR_NONE;
 }
@@ -2233,6 +2244,14 @@ vkr_renderer_present_target_recreate(VkrRendererFrontendHandle renderer,
   height = renderer->present_target.height;
   renderer->last_window_width = width;
   renderer->last_window_height = height;
+  if (!renderer->scene_output_extent_overridden) {
+    renderer->scene_output_width = width;
+    renderer->scene_output_height = height;
+  }
+  renderer->render_width = vkr_renderer_scaled_extent(
+      renderer->scene_output_width, renderer->render_scale);
+  renderer->render_height = vkr_renderer_scaled_extent(
+      renderer->scene_output_height, renderer->render_scale);
   if (renderer->ui_system.initialized) {
     vkr_ui_system_resize(renderer, &renderer->ui_system, width, height);
   }
@@ -2540,6 +2559,10 @@ renderer_impl_metal_prepare_frame(void *state, VkrFrameSetup *out_setup) {
     }
     rf->last_window_width = pixels.width;
     rf->last_window_height = pixels.height;
+    if (!rf->scene_output_extent_overridden) {
+      rf->scene_output_width = pixels.width;
+      rf->scene_output_height = pixels.height;
+    }
   }
   rf->timing_completed_ready = renderer_impl_metal_poll_submit_result(
       rf, rf->timing_last_completed_submit_value, &rf->timing_result);
@@ -2556,9 +2579,9 @@ renderer_impl_metal_prepare_frame(void *state, VkrFrameSetup *out_setup) {
     }
   }
   rf->render_width =
-      vkr_renderer_scaled_extent(rf->last_window_width, rf->render_scale);
+      vkr_renderer_scaled_extent(rf->scene_output_width, rf->render_scale);
   rf->render_height =
-      vkr_renderer_scaled_extent(rf->last_window_height, rf->render_scale);
+      vkr_renderer_scaled_extent(rf->scene_output_height, rf->render_scale);
   rf->frame_active = true_v;
   if (!renderer_frontend_pump_assets(rf)) {
     rf->frame_active = false_v;
@@ -2572,6 +2595,8 @@ renderer_impl_metal_prepare_frame(void *state, VkrFrameSetup *out_setup) {
       .target_height = rf->last_window_height,
       .window_width = rf->last_window_width,
       .window_height = rf->last_window_height,
+      .scene_output_width = rf->scene_output_width,
+      .scene_output_height = rf->scene_output_height,
       .viewport_width = rf->render_width,
       .viewport_height = rf->render_height,
       .render_scale = rf->render_scale,
@@ -2680,34 +2705,30 @@ renderer_impl_metal_submit_packet(void *state, const VkrRenderPacket *packet,
         out_validation_error, VKR_RENDERER_ERROR_FRAME_IN_PROGRESS, "frame",
         "frame is not active; call vkr_renderer_prepare_frame first");
   }
-  if ((rf->render_scale != 1.0f ||
-       rf->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL) &&
-      packet->frame.editor_enabled) {
-    const VkrRendererError cancel_error = renderer_impl_metal_cancel_frame(rf);
-    if (cancel_error != VKR_RENDERER_ERROR_NONE) {
-      return vkr_renderer_validation_fail(
-          out_validation_error, cancel_error, "frame",
-          "failed to cancel the active frame after editor reconstruction "
-          "rejection");
-    }
-    return vkr_renderer_validation_fail(
-        out_validation_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-        "packet.frame.editor_enabled",
-        "scaled or MetalFX reconstruction does not support the editor "
-        "viewport");
-  }
-
 #if defined(PLATFORM_APPLE)
   VkrRendererPreparedPacket prepared;
   vkr_renderer_prepare_packet(rf, packet, &prepared);
   VkrPickingPassPayload scaled_picking = {0};
-  if (rf->render_scale != 1.0f && prepared.packet.picking) {
+  if ((rf->render_scale != 1.0f ||
+       rf->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL) &&
+      prepared.packet.picking) {
     scaled_picking = *prepared.packet.picking;
-    scaled_picking.x = vkr_renderer_scaled_pixel(
-        scaled_picking.x, packet->frame.window_width, rf->render_width);
+    const uint32_t source_width = packet->frame.editor_enabled
+                                      ? rf->picking.width
+                                      : packet->frame.window_width;
+    const uint32_t source_height = packet->frame.editor_enabled
+                                       ? rf->picking.height
+                                       : packet->frame.window_height;
+    scaled_picking.x = vkr_renderer_scaled_pixel(scaled_picking.x, source_width,
+                                                 rf->render_width);
     scaled_picking.y = vkr_renderer_scaled_pixel(
-        scaled_picking.y, packet->frame.window_height, rf->render_height);
+        scaled_picking.y, source_height, rf->render_height);
     prepared.packet.picking = &scaled_picking;
+    if (packet->frame.editor_enabled) {
+      rf->picking.requested_x = scaled_picking.x;
+      rf->picking.requested_y = scaled_picking.y;
+      vkr_picking_resize(rf, &rf->picking, rf->render_width, rf->render_height);
+    }
   }
 
   VkrMetalPacketResult result = {0};
@@ -3210,6 +3231,14 @@ void vkr_renderer_resize(VkrRendererFrontendHandle renderer, uint32_t width,
   }
   rf->last_window_width = width;
   rf->last_window_height = height;
+  if (!rf->scene_output_extent_overridden) {
+    rf->scene_output_width = width;
+    rf->scene_output_height = height;
+  }
+  rf->render_width =
+      vkr_renderer_scaled_extent(rf->scene_output_width, rf->render_scale);
+  rf->render_height =
+      vkr_renderer_scaled_extent(rf->scene_output_height, rf->render_scale);
   if (rf->rf_mutex) {
     if (!vkr_mutex_unlock(rf->rf_mutex)) {
       log_error("Failed to unlock renderer mutex");
@@ -3224,6 +3253,61 @@ void vkr_renderer_resize(VkrRendererFrontendHandle renderer, uint32_t width,
   vkr_shadow_system_invalidate_fit_history(&rf->shadow_system);
   rf->timing_result.shadow_depth_range = (VkrShadowDepthRangeSample){0};
   rf->temporal_reset_reasons |= VKR_TEMPORAL_RESET_EXPLICIT;
+}
+
+static VkrRendererError
+renderer_frontend_configure_scene_output_extent(RendererFrontend *renderer,
+                                                uint32_t width, uint32_t height,
+                                                bool8_t overridden) {
+  if (!renderer || width == 0u || height == 0u)
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  if (renderer->frame_active)
+    return VKR_RENDERER_ERROR_FRAME_IN_PROGRESS;
+  if (renderer->backend_type != VKR_RENDERER_BACKEND_TYPE_METAL)
+    return VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+  if (renderer->scene_output_extent_overridden == overridden &&
+      renderer->scene_output_width == width &&
+      renderer->scene_output_height == height)
+    return VKR_RENDERER_ERROR_NONE;
+
+  if (renderer->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL &&
+      (renderer->scene_output_width != width ||
+       renderer->scene_output_height != height)) {
+    const VkrRendererError idle = vkr_renderer_wait_idle(renderer);
+    if (idle != VKR_RENDERER_ERROR_NONE)
+      return idle;
+    if (!vkr_metal_packet_renderer_resize_metalfx(renderer->metal_renderer,
+                                                  width, height))
+      return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+  }
+
+  renderer->scene_output_width = width;
+  renderer->scene_output_height = height;
+  renderer->scene_output_extent_overridden = overridden;
+  renderer->render_width =
+      vkr_renderer_scaled_extent(width, renderer->render_scale);
+  renderer->render_height =
+      vkr_renderer_scaled_extent(height, renderer->render_scale);
+  renderer->temporal_reset_reasons |= VKR_TEMPORAL_RESET_EXPLICIT;
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+VkrRendererError
+vkr_renderer_set_scene_output_extent(VkrRendererFrontendHandle renderer,
+                                     uint32_t width, uint32_t height) {
+  return renderer_frontend_configure_scene_output_extent(renderer, width,
+                                                         height, true_v);
+}
+
+VkrRendererError
+vkr_renderer_restore_scene_output_extent(VkrRendererFrontendHandle renderer) {
+  if (!renderer)
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  if (!renderer->scene_output_extent_overridden)
+    return VKR_RENDERER_ERROR_NONE;
+  return renderer_frontend_configure_scene_output_extent(
+      renderer, renderer->last_window_width, renderer->last_window_height,
+      false_v);
 }
 
 uint32_t vkr_renderer_ibl_sh_slot(VkrRendererFrontendHandle renderer,

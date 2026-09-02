@@ -658,16 +658,20 @@ typedef struct VkrRgPassBuilder {
  * Passed to vkr_rg_begin_frame; copied by the graph.
  */
 typedef struct VkrRenderGraphFrameInfo {
-  uint32_t frame_index;     /**< Current frame index */
-  uint32_t image_index;     /**< Present-target image index */
-  float64_t delta_time;     /**< Frame delta time */
-  uint32_t target_width;    /**< Present-target width */
-  uint32_t target_height;   /**< Present-target height */
-  uint32_t window_width;    /**< Window width */
-  uint32_t window_height;   /**< Window height */
+  uint32_t frame_index;   /**< Current frame index */
+  uint32_t image_index;   /**< Present-target image index */
+  float64_t delta_time;   /**< Frame delta time */
+  uint32_t target_width;  /**< Present-target width */
+  uint32_t target_height; /**< Present-target height */
+  uint32_t window_width;  /**< Window width */
+  uint32_t window_height; /**< Window height */
+  /** Scene presentation extent after reconstruction, before editor composite.
+   */
+  uint32_t scene_output_width;
+  uint32_t scene_output_height;
   uint32_t viewport_width;  /**< Viewport width */
   uint32_t viewport_height; /**< Viewport height */
-  float32_t render_scale;   /**< Scene extent relative to the target. */
+  float32_t render_scale;   /**< Internal Scene extent / Scene output extent. */
   /** True only for the MetalFX temporal reconstruction topology. */
   bool8_t metalfx_enabled;
   bool8_t editor_enabled; /**< Whether editor is enabled */

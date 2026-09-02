@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "id": "smoke.editor_metalfx",
+  "suite": "smoke",
+  "description": "Paneled Metal editor with Scene-only MetalFX reconstruction.",
+  "scene": "assets/scenes/sponza.scene.json",
+  "seed": 1,
+  "resolution": [640, 480],
+  "boot": "full",
+  "target": "windowed_hidden",
+  "present": "immediate",
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 60000,
+  "asset_ready_timeout_ms": 30000,
+  "frames": { "warmup": 2, "measure": 3 },
+  "renderer": {
+    "backend": "metal",
+    "render_scale": 0.8,
+    "upscaler": "metalfx_temporal",
+    "dynamic_resolution": false,
+    "editor": true,
+    "skybox": true,
+    "taa_enabled": true,
+    "fxaa_enabled": false,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [-1.5, 0, 17],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.1,
+    "far_plane": 500
+  },
+  "assertions": [
+    { "metric": "draw.world.calls_issued", "stat": "min", "min": 1 },
+    { "metric": "instance_buffer.overflows", "stat": "max", "max": 0 }
+  ],
+  "captures": [
+    {
+      "at_frame": 1,
+      "channels": ["final_color", "scene_color"]
+    }
+  ]
+}

@@ -68,7 +68,7 @@
       "properties": {
         "mode": {
           "type": "string",
-          "enum": ["window", "viewport", "fixed", "square"]
+          "enum": ["window", "scene_output", "viewport", "fixed", "square"]
         },
         "width": { "type": "integer", "minimum": 1 },
         "height": { "type": "integer", "minimum": 1 },
@@ -80,7 +80,7 @@
           "if": { "required": ["divisor"] },
           "then": {
             "properties": {
-              "mode": { "enum": ["window", "viewport"] }
+              "mode": { "enum": ["window", "scene_output", "viewport"] }
             }
           }
         }

@@ -136,6 +136,10 @@ struct s_RendererFrontend {
   VkrUpscaleMode upscale_mode;
   VkrDynamicResolutionConfig dynamic_resolution_config;
   VkrDynamicResolutionState dynamic_resolution_state;
+  /** Reconstructed Scene extent before native editor composition. */
+  uint32_t scene_output_width;
+  uint32_t scene_output_height;
+  bool8_t scene_output_extent_overridden;
   uint32_t render_width;
   uint32_t render_height;
   EventManager *event_manager;

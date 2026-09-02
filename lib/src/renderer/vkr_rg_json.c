@@ -52,6 +52,8 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"gtao_enabled", VKR_RG_JSON_CONDITION_GTAO_ENABLED},
     {"metalfx_enabled", VKR_RG_JSON_CONDITION_METALFX_ENABLED},
     {"!metalfx_enabled", VKR_RG_JSON_CONDITION_METALFX_DISABLED},
+    {"editor_enabled && !metalfx_enabled",
+     VKR_RG_JSON_CONDITION_EDITOR_ENABLED_METALFX_DISABLED},
     {"!editor_enabled && !metalfx_enabled",
      VKR_RG_JSON_CONDITION_EDITOR_DISABLED_METALFX_DISABLED},
     {"bloom_enabled && metalfx_enabled",
@@ -284,6 +286,8 @@ vkr_internal bool8_t vkr_rg_json_parse_extent(VkrRgJsonParseContext *ctx,
 
   if (vkr_string8_equals_cstr_i(&mode, "window")) {
     out_extent->mode = VKR_RG_JSON_EXTENT_WINDOW;
+  } else if (vkr_string8_equals_cstr_i(&mode, "scene_output")) {
+    out_extent->mode = VKR_RG_JSON_EXTENT_SCENE_OUTPUT;
   } else if (vkr_string8_equals_cstr_i(&mode, "viewport")) {
     out_extent->mode = VKR_RG_JSON_EXTENT_VIEWPORT;
   } else if (vkr_string8_equals_cstr_i(&mode, "fixed")) {
@@ -319,10 +323,12 @@ vkr_internal bool8_t vkr_rg_json_parse_extent(VkrRgJsonParseContext *ctx,
   VkrJsonReader divisor_reader = extent_obj;
   if (vkr_json_find_field(&divisor_reader, "divisor")) {
     if (out_extent->mode != VKR_RG_JSON_EXTENT_WINDOW &&
+        out_extent->mode != VKR_RG_JSON_EXTENT_SCENE_OUTPUT &&
         out_extent->mode != VKR_RG_JSON_EXTENT_VIEWPORT) {
       return vkr_rg_json_error(
           ctx, field_path,
-          "extent.divisor applies only to window and viewport extents");
+          "extent.divisor applies only to window, scene_output, and viewport "
+          "extents");
     }
     divisor_reader = extent_obj;
     int32_t divisor = 0;
@@ -1803,6 +1809,8 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->metalfx_enabled;
   case VKR_RG_JSON_CONDITION_METALFX_DISABLED:
     return !frame->metalfx_enabled;
+  case VKR_RG_JSON_CONDITION_EDITOR_ENABLED_METALFX_DISABLED:
+    return frame->editor_enabled && !frame->metalfx_enabled;
   case VKR_RG_JSON_CONDITION_EDITOR_DISABLED_METALFX_DISABLED:
     return !frame->editor_enabled && !frame->metalfx_enabled;
   case VKR_RG_JSON_CONDITION_BLOOM_METALFX_ENABLED:
@@ -1934,6 +1942,12 @@ vkr_internal bool8_t vkr_rg_json_resolve_extent(
         vkr_rg_json_divide_extent(frame->window_width, extent->divisor);
     *out_height =
         vkr_rg_json_divide_extent(frame->window_height, extent->divisor);
+    return true_v;
+  case VKR_RG_JSON_EXTENT_SCENE_OUTPUT:
+    *out_width =
+        vkr_rg_json_divide_extent(frame->scene_output_width, extent->divisor);
+    *out_height =
+        vkr_rg_json_divide_extent(frame->scene_output_height, extent->divisor);
     return true_v;
   case VKR_RG_JSON_EXTENT_VIEWPORT:
     *out_width =

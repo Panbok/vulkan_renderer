@@ -35,6 +35,7 @@ typedef enum VkrRgJsonConditionKind {
   VKR_RG_JSON_CONDITION_GTAO_ENABLED,
   VKR_RG_JSON_CONDITION_METALFX_ENABLED,
   VKR_RG_JSON_CONDITION_METALFX_DISABLED,
+  VKR_RG_JSON_CONDITION_EDITOR_ENABLED_METALFX_DISABLED,
   VKR_RG_JSON_CONDITION_EDITOR_DISABLED_METALFX_DISABLED,
   VKR_RG_JSON_CONDITION_BLOOM_METALFX_ENABLED,
   VKR_RG_JSON_CONDITION_BLOOM_METALFX_DISABLED,
@@ -102,10 +103,11 @@ typedef enum VkrRgJsonResourceFlags {
  */
 typedef enum VkrRgJsonExtentMode {
   VKR_RG_JSON_EXTENT_NONE = 0,
-  VKR_RG_JSON_EXTENT_WINDOW,   // The extent is the window size.
-  VKR_RG_JSON_EXTENT_VIEWPORT, // The extent is the viewport size.
-  VKR_RG_JSON_EXTENT_FIXED,    // The extent is a fixed size.
-  VKR_RG_JSON_EXTENT_SQUARE,   // The extent is a square size.
+  VKR_RG_JSON_EXTENT_WINDOW,       // The extent is the window size.
+  VKR_RG_JSON_EXTENT_SCENE_OUTPUT, // Reconstructed Scene presentation size.
+  VKR_RG_JSON_EXTENT_VIEWPORT,     // Internal Scene render size.
+  VKR_RG_JSON_EXTENT_FIXED,        // The extent is a fixed size.
+  VKR_RG_JSON_EXTENT_SQUARE,       // The extent is a square size.
 } VkrRgJsonExtentMode;
 
 /**
@@ -118,9 +120,9 @@ typedef struct VkrRgJsonExtent {
   uint32_t height;          // The height of the extent.
   String8 size_source;      // The source of the size.
   /**
-   * Divides the resolved window or viewport extent, never below one texel.
-   * Zero and one both mean full resolution. Bloom's chain starts at half the
-   * viewport, and a fixed extent could not follow a resize.
+   * Divides a resolved window, Scene output, or viewport extent, never below
+   * one texel. Zero and one both mean full resolution. Bloom's chain starts at
+   * half the viewport, and a fixed extent could not follow a resize.
    */
   uint32_t divisor;
 } VkrRgJsonExtent;

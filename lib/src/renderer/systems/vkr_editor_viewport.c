@@ -56,6 +56,20 @@ bool8_t vkr_editor_viewport_mapping_from_panel_rect(
       vkr_max_u32(1u, (uint32_t)vkr_round_f32(panel_w * clamped_scale));
   const uint32_t target_h =
       vkr_max_u32(1u, (uint32_t)vkr_round_f32(panel_h * clamped_scale));
+  return vkr_editor_viewport_mapping_from_panel_rect_and_target(
+      panel, fit_mode, target_w, target_h, out_mapping);
+}
+
+bool8_t vkr_editor_viewport_mapping_from_panel_rect_and_target(
+    Vec4 panel, VkrViewportFitMode fit_mode, uint32_t target_w,
+    uint32_t target_h, VkrViewportMapping *out_mapping) {
+  if (!out_mapping || !isfinite(panel.x) || !isfinite(panel.y) ||
+      !isfinite(panel.z) || !isfinite(panel.w) || panel.z <= 0.0f ||
+      panel.w <= 0.0f || fit_mode > VKR_VIEWPORT_FIT_CONTAIN ||
+      target_w == 0u || target_h == 0u)
+    return false_v;
+  const float32_t panel_w = vkr_max_f32(1.0f, panel.z);
+  const float32_t panel_h = vkr_max_f32(1.0f, panel.w);
   Vec4 image = panel;
 
   if (fit_mode == VKR_VIEWPORT_FIT_CONTAIN) {

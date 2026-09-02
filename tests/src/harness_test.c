@@ -218,8 +218,9 @@ static void test_harness_case_parser(void) {
   char *editor_value = strstr(editor_scale, "\"editor\":false");
   assert(editor_value);
   MemCopy(editor_value, "\"editor\":true ", 14u);
-  assert(!vkr_harness_case_parse(editor_scale, strlen(editor_scale), "memory",
-                                 &parsed, &backend_error));
+  assert(vkr_harness_case_parse(editor_scale, strlen(editor_scale), "memory",
+                                &parsed, &backend_error));
+  assert(parsed.renderer.editor && parsed.renderer.render_scale == 0.5f);
   assert(vkr_harness_case_parse(metal_case, strlen(metal_case), "memory",
                                 &parsed, &backend_error));
   assert(strcmp(parsed.renderer.exposure_mode, "automatic") == 0);
@@ -298,6 +299,15 @@ static void test_harness_case_parser(void) {
   assert(parsed.renderer.dynamic_resolution_min_scale == 0.55f);
   assert(parsed.renderer.dynamic_resolution_max_scale == 0.85f);
   assert(!parsed.renderer.fxaa_enabled);
+  char editor_metalfx[2048];
+  snprintf(editor_metalfx, sizeof(editor_metalfx), "%s", metalfx_case);
+  editor_value = strstr(editor_metalfx, "\"editor\":false");
+  assert(editor_value);
+  MemCopy(editor_value, "\"editor\":true ", 14u);
+  assert(vkr_harness_case_parse(editor_metalfx, strlen(editor_metalfx),
+                                "memory", &parsed, &backend_error));
+  assert(parsed.renderer.editor && parsed.renderer.dynamic_resolution &&
+         strcmp(parsed.renderer.upscaler, "metalfx_temporal") == 0);
   char invalid_dynamic_bounds[2048];
   snprintf(invalid_dynamic_bounds, sizeof(invalid_dynamic_bounds), "%s",
            metalfx_case);

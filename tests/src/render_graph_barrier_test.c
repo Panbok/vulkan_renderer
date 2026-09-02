@@ -1676,6 +1676,7 @@ static void test_main_graph_contract(void) {
     } else if (vkr_string8_equals_cstr(&resource->name,
                                        "metalfx_color_input")) {
       assert(resource->condition.kind == VKR_RG_JSON_CONDITION_METALFX_ENABLED);
+      assert(resource->image.extent.mode == VKR_RG_JSON_EXTENT_SCENE_OUTPUT);
       assert(resource->image.format == VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT);
       assert((resource->image.usage.set & VKR_TEXTURE_USAGE_TRANSFER_DST) !=
              0u);
@@ -1684,6 +1685,7 @@ static void test_main_graph_contract(void) {
     } else if (vkr_string8_equals_cstr(&resource->name,
                                        "metalfx_depth_input")) {
       assert(resource->condition.kind == VKR_RG_JSON_CONDITION_METALFX_ENABLED);
+      assert(resource->image.extent.mode == VKR_RG_JSON_EXTENT_SCENE_OUTPUT);
       assert(resource->image.format == VKR_TEXTURE_FORMAT_D32_SFLOAT);
       assert((resource->image.usage.set & VKR_TEXTURE_USAGE_TRANSFER_DST) !=
              0u);
@@ -1692,6 +1694,7 @@ static void test_main_graph_contract(void) {
     } else if (vkr_string8_equals_cstr(&resource->name,
                                        "metalfx_motion_input")) {
       assert(resource->condition.kind == VKR_RG_JSON_CONDITION_METALFX_ENABLED);
+      assert(resource->image.extent.mode == VKR_RG_JSON_EXTENT_SCENE_OUTPUT);
       assert(resource->image.format == VKR_TEXTURE_FORMAT_R16G16_SFLOAT);
       assert((resource->image.usage.set & VKR_TEXTURE_USAGE_TRANSFER_DST) !=
              0u);
@@ -1700,6 +1703,7 @@ static void test_main_graph_contract(void) {
     } else if (vkr_string8_equals_cstr(&resource->name,
                                        "metalfx_output_color")) {
       assert(resource->condition.kind == VKR_RG_JSON_CONDITION_METALFX_ENABLED);
+      assert(resource->image.extent.mode == VKR_RG_JSON_EXTENT_SCENE_OUTPUT);
       assert(resource->image.format == VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT);
       assert((resource->image.usage.set & VKR_TEXTURE_USAGE_STORAGE) != 0u);
       assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_PER_IMAGE) != 0u);
@@ -1774,22 +1778,33 @@ static void test_main_graph_contract(void) {
   uint64_t exposure_resolve_index = UINT64_MAX;
   uint64_t tonemap_index = UINT64_MAX;
   uint64_t editor_composite_index = UINT64_MAX;
+  uint64_t ui_editor_index = UINT64_MAX;
   for (uint64_t i = 0u; i < graph.passes.length; ++i) {
     VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph.passes, i);
     if (!pass)
       continue;
     if (vkr_string8_equals_cstr(&pass->name, "Temporal.Resolve.Fullscreen"))
       temporal_fullscreen_index = i;
-    else if (vkr_string8_equals_cstr(&pass->name, "Temporal.Resolve.Editor"))
+    else if (vkr_string8_equals_cstr(&pass->name, "Temporal.Resolve.Editor")) {
+      assert(pass->condition.kind ==
+             VKR_RG_JSON_CONDITION_EDITOR_ENABLED_METALFX_DISABLED);
       temporal_editor_index = i;
-    else if (vkr_string8_equals_cstr(&pass->name, "MetalFX.StageInputs")) {
+    } else if (vkr_string8_equals_cstr(&pass->name, "MetalFX.StageInputs")) {
       assert(pass->type == VKR_RG_JSON_PASS_TRANSFER);
       assert(pass->condition.kind == VKR_RG_JSON_CONDITION_METALFX_ENABLED);
-      assert(pass->reads.length == 3u && pass->writes.length == 3u);
-      for (uint32_t binding = 0u; binding < 3u; ++binding) {
-        assert(pass->reads.data[binding].binding.value == binding);
-        assert(pass->reads.data[binding].image_access ==
+      assert(pass->reads.length == 4u && pass->writes.length == 3u);
+      assert(pass->reads.data[0].binding.value == 0u &&
+             pass->reads.data[0].condition.kind ==
+                 VKR_RG_JSON_CONDITION_EDITOR_DISABLED);
+      assert(pass->reads.data[1].binding.value == 0u &&
+             pass->reads.data[1].condition.kind ==
+                 VKR_RG_JSON_CONDITION_EDITOR_ENABLED);
+      for (uint32_t read = 0u; read < 4u; ++read)
+        assert(pass->reads.data[read].image_access ==
                VKR_RG_JSON_IMAGE_ACCESS_TRANSFER_SRC);
+      assert(pass->reads.data[2].binding.value == 1u &&
+             pass->reads.data[3].binding.value == 2u);
+      for (uint32_t binding = 0u; binding < 3u; ++binding) {
         assert(pass->writes.data[binding].binding.value == binding + 3u);
         assert(pass->writes.data[binding].image_access ==
                VKR_RG_JSON_IMAGE_ACCESS_TRANSFER_DST);
@@ -1827,8 +1842,15 @@ static void test_main_graph_contract(void) {
       exposure_resolve_index = i;
     } else if (vkr_string8_equals_cstr(&pass->name, "Post.Tonemap.Fullscreen"))
       tonemap_index = i;
-    else if (vkr_string8_equals_cstr(&pass->name, "Editor.Composite"))
+    else if (vkr_string8_equals_cstr(&pass->name, "Editor.Composite")) {
+      assert(pass->reads.length == 5u);
+      assert(pass->reads.data[0].condition.kind ==
+             VKR_RG_JSON_CONDITION_METALFX_DISABLED);
+      assert(pass->reads.data[1].condition.kind ==
+             VKR_RG_JSON_CONDITION_METALFX_ENABLED);
       editor_composite_index = i;
+    } else if (vkr_string8_equals_cstr(&pass->name, "UI.Editor"))
+      ui_editor_index = i;
   }
   assert(temporal_fullscreen_index < exposure_histogram_index);
   assert(temporal_editor_index < exposure_histogram_index);
@@ -1837,6 +1859,7 @@ static void test_main_graph_contract(void) {
   assert(exposure_histogram_index < exposure_resolve_index);
   assert(exposure_resolve_index < tonemap_index);
   assert(exposure_resolve_index < editor_composite_index);
+  assert(editor_composite_index < ui_editor_index);
 
   bool8_t found_hzb_reduce = false_v;
   bool8_t found_sdsm_reduce = false_v;
@@ -1969,6 +1992,107 @@ static void test_main_graph_contract(void) {
   vkr_rg_json_destroy(&graph);
   arena_destroy(arena);
   printf("  test_main_graph_contract PASSED\n");
+}
+
+static void test_main_graph_editor_metalfx_topology(void) {
+  printf("  Running test_main_graph_editor_metalfx_topology...\n");
+  Arena *arena = arena_create(MB(16), MB(2));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+
+  VkrRgJsonGraph json = {0};
+  assert(vkr_rg_json_load_file(
+      &allocator, "assets/render_graphs/main.rendergraph.json", &json));
+  VkrRgExecutorRegistry registry = {0};
+  assert(vkr_rg_executor_registry_init(&registry, &allocator));
+  uint32_t executor_id = 1u;
+  for (uint64_t i = 0u; i < json.passes.length; ++i) {
+    VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&json.passes, i);
+    if (!pass || vkr_rg_executor_registry_find(&registry, pass->execute))
+      continue;
+    const VkrRgPassExecutor executor = {
+        .name = pass->execute,
+        .id = executor_id++,
+        .type = (VkrRgPassType)pass->type,
+        .execute = rg_barrier_test_execute,
+    };
+    assert(vkr_rg_executor_registry_register(&registry, &executor));
+  }
+  assert(vkr_rg_json_bind_executors(&json, &registry));
+
+  VkrRenderGraph *graph = vkr_rg_create(&allocator);
+  assert(graph);
+  const VkrRenderGraphFrameInfo frame = {
+      .target_width = 1000u,
+      .target_height = 800u,
+      .window_width = 1000u,
+      .window_height = 800u,
+      .scene_output_width = 600u,
+      .scene_output_height = 400u,
+      .viewport_width = 300u,
+      .viewport_height = 200u,
+      .render_scale = 0.5f,
+      .metalfx_enabled = true_v,
+      .editor_enabled = true_v,
+      .target_color_format = VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB,
+      .target_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
+      .shadow_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
+      .shadow_map_size = 2048u,
+      .shadow_map_layer_count = 4u,
+  };
+  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_build_from_json(graph, &json, &frame));
+
+  const VkrRgImageHandle scene =
+      vkr_rg_find_image(graph, string8_lit("scene_color"));
+  const VkrRgImageHandle output =
+      vkr_rg_find_image(graph, string8_lit("metalfx_output_color"));
+  assert(vkr_rg_image_handle_valid(scene));
+  assert(vkr_rg_image_handle_valid(output));
+  const VkrRgImage *scene_image = &graph->images.data[scene.id - 1u];
+  const VkrRgImage *output_image = &graph->images.data[output.id - 1u];
+  assert(scene_image->desc.width == 300u && scene_image->desc.height == 200u);
+  assert(output_image->desc.width == 600u && output_image->desc.height == 400u);
+
+  uint64_t stage_index = UINT64_MAX;
+  uint64_t upscale_index = UINT64_MAX;
+  uint64_t composite_index = UINT64_MAX;
+  uint64_t ui_index = UINT64_MAX;
+  for (uint64_t i = 0u; i < graph->passes.length; ++i) {
+    const VkrRgPass *pass = rg_barrier_test_pass(graph, (uint32_t)i);
+    assert(pass);
+    assert(
+        !vkr_string8_equals_cstr(&pass->desc.name, "Temporal.Resolve.Editor"));
+    assert(
+        !vkr_string8_equals_cstr(&pass->desc.name, "Post.Tonemap.Fullscreen"));
+    assert(!vkr_string8_equals_cstr(&pass->desc.name, "UI.Fullscreen"));
+    if (vkr_string8_equals_cstr(&pass->desc.name, "MetalFX.StageInputs")) {
+      const VkrRgImageUse *source =
+          vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+      assert(source && source->image.id == scene.id);
+      stage_index = i;
+    } else if (vkr_string8_equals_cstr(&pass->desc.name,
+                                       "MetalFX.TemporalUpscale")) {
+      upscale_index = i;
+    } else if (vkr_string8_equals_cstr(&pass->desc.name, "Editor.Composite")) {
+      const VkrRgImageUse *source =
+          vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+      assert(source && source->image.id == output.id);
+      composite_index = i;
+    } else if (vkr_string8_equals_cstr(&pass->desc.name, "UI.Editor")) {
+      ui_index = i;
+    }
+  }
+  assert(stage_index < upscale_index && upscale_index < composite_index &&
+         composite_index < ui_index);
+  assert(vkr_rg_compile_schedule(graph));
+  vkr_rg_end_frame(graph);
+
+  vkr_rg_destroy(graph);
+  vkr_rg_executor_registry_destroy(&registry);
+  vkr_rg_json_destroy(&json);
+  arena_destroy(arena);
+  printf("  test_main_graph_editor_metalfx_topology PASSED\n");
 }
 
 static void test_main_graph_fits_runtime_pass_capacity(void) {
@@ -2526,6 +2650,7 @@ bool32_t run_render_graph_barrier_tests() {
   test_deferred_image_formats();
   test_frame_allocator_reclaims_authored_passes();
   test_main_graph_contract();
+  test_main_graph_editor_metalfx_topology();
   test_main_graph_fits_runtime_pass_capacity();
   test_subresource_range_resolve();
   test_same_layout_write_then_read_emits_barrier();
