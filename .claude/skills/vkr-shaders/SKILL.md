@@ -1,78 +1,85 @@
 ---
 name: vkr-shaders
-description: Maintain Metal/Vulkan shader parity and the verified shader contract whenever work reads, reviews, diagnoses, or changes production shader code, shared shader math, shader entry points, resource bindings, dispatch shapes, shader-visible values, host-to-shader ABI structures, reflection, or pipeline layout. Use for every shader task, even when the requested change names only one backend.
+description: Specify and verify Metal/Vulkan shader semantics, efficiency, bindings, dispatch, reflection, and host ABI. Required for every production shader or shader-visible host-contract task, including one-backend requests.
 ---
 
-# VKR Shaders
+# VKR shaders
 
-## Start from the parity ledger
+## Locate the contract
 
-Read `docs/rendering/shader-cross-backend-contract.md` completely before acting
-on shader work. Locate the affected contract or create a narrowly scoped entry.
-Code is implementation authority; the ledger records what has been verified.
+Read the state definitions and affected rows in
+`docs/rendering/shader-cross-backend-contract.md`. Use its source inventory to
+find the shared helper, Metal entry/root, Vulkan entry/root, host lowering, and
+reflection. Inspect all affected counterparts before editing. A shared source
+file alone does not prove both production builds execute it.
 
-Inspect all four relevant surfaces before editing:
+Keep portable math shared when Slang and MSL support the same semantics. Keep
+address spaces, bindings, resource references, and native sampling operations
+backend-owned. Update host fields, shader fields, assertions, reflection, and
+any affected CPU oracle together when the ABI or algorithm changes.
 
-1. shared shader helpers and constants;
-2. the Metal production entry point and resource root;
-3. the Vulkan production entry point and resource root; and
-4. host lowering, CPU mirrors, static assertions, and runtime reflection.
+## Compatibility and efficiency
 
-Do this even when a bug is visible on only one backend. A shared file proves
-source reuse, not that both compiled backends include and execute it.
+Both backends must implement the portable feature's semantic contract, including
+units, coordinate conventions, ranges, edge behavior, and output meaning. Native
+root sizes may differ: Metal resource references and Vulkan bindless indices
+have different representations. Pin each native layout independently.
 
-## Preserve semantic and ABI parity
+Select data shape, workgroup size, resource access, and algorithm from the work
+actually executed. Avoid repeated loads, redundant math, excess live values,
+and unnecessary synchronization. Hoist draw/pass constants into their owning
+producer when that reduces measured cost. Reduce bandwidth and register pressure
+without weakening numerical precision or lifetime requirements.
 
-- Keep portable math in one shared helper when Slang and MSL semantics permit.
-- Keep entry points, address spaces, bindings, native handles, and API-specific
-  sampling in backend-owned files.
-- Treat Metal's 64-bit resource references and Vulkan's 32-bit bindless indices
-  as native representations. Require semantic field parity, not identical root
-  sizes.
-- Change the host structure, shader structure, field order, static assertions,
-  reflection records, and CPU mirror together when an ABI or algorithm moves.
-- Record types, byte sizes, alignments, offsets, constants, dispatch dimensions,
-  and algorithms exactly. Do not infer an undocumented value from convention.
+Validate shader inputs and select optional feature variants before dispatch
+where practical. Keep guards required by real work distribution, such as edge
+threads from rounded dispatches. Remove a guard only after data or dispatch
+shape proves its accesses valid. Do not replace divergent branches with more
+ALU or memory traffic without measuring the affected GPU path.
 
-## Apply the state rule immediately
+Backend-specific intrinsics, dispatch shapes, or algorithms need a concrete
+capability or measured performance reason and must preserve the portable
+contract. A change to supported behavior, quality, or compatibility is an
+architecture decision: ask the user immediately with the tradeoff and
+recommendation. ADR-039/040 already authorize Metal scene scaling and MetalFX;
+validate those modes separately from bilateral portable TAA parity.
 
-An entry is **ALIGNED** only after both production sources and both backend
-evidence gates pass. If either side differs or has not been run:
+## Verification loop
 
-1. mark the entry **UNALIGNED**;
-2. change the document-level parity state to **UNALIGNED**;
-3. name the missing backend, value, and exact validation gate; and
-4. leave it unaligned until the missing evidence exists.
+For a prose-only edit that changes no executable contract, check the statement
+against the owning code and review the diff. No shader build or GPU run is needed.
 
-Never hide a one-sided finding by omitting it, retaining an old aligned label,
-or treating a successful cross-compilation as runtime evidence. Unreviewed
-shader areas stay explicitly outside the reviewed ledger.
+Use `vkr-validation` to select native diagnostics and `vkr-harness` to execute the
+smallest non-degenerate case that exposes the changed output or invariant:
 
-## Require executable evidence
+1. Compile affected production shader paths and check host layouts plus compiled
+   reflection where ABI or bindings changed.
+2. Run the focused native diagnostic on each changed backend. Metal diagnostics
+   run serially in the minimal case; follow the validation skill's MetalFX limits.
+3. Run the same focused Release case on Metal and Vulkan with validation unset.
+   Compare numeric payloads or pixels against the contract's existing tolerance.
+   A screenshot alone does not prove parity. A CPU reference is useful only when
+   it independently exposes a named arithmetic failure; add one only when that
+   advantage is demonstrated.
+4. For an efficiency claim, use matched Release measurements through
+   `vkr-performance`. Compare work volume and quality as well as time. A different
+   resolution or visual algorithm cannot establish equivalent-work speedup.
+5. Iterate on failed assertions, diagnostics, and output differences. Record case,
+   configuration, devices, digest, compared values, and tolerance in the ledger.
 
-Use `vkr-validation` to choose the minimum correctness gates and `vkr-harness`
-to run and interpret structured snapshots. For a parity claim, require:
+When native runs happen on separate machines, use the guarded `vkr-harness`
+baseline publication and `snapshot --cross-backend` workflow. Preserve the first
+portable witness before deleting its local run tree.
 
-- deterministic CPU reference coverage for portable arithmetic where practical;
-- host size/offset assertions and compiled-shader reflection for ABI contracts;
-- focused validation-layer runs for each changed native backend;
-- the same focused Release case on Metal and Vulkan with validation disabled;
-  and
-- report digests plus real compared values and tolerances, not screenshots
-  alone.
+## Evidence state
 
-Record the case, configuration, backend/device, report digest, measured values,
-and comparison in the shader contract. When the two native runs happen on
-different machines, the first machine must publish its snapshot through the
-guarded baseline workflow before deleting its run tree. The second machine
-pulls that accepted generation and runs the same backend-neutral case with
-`snapshot --cross-backend`. Delete only the local run trees after the portable
-witness or final comparison exists.
+An affected entry becomes **UNALIGNED** when either implementation differs or
+required source, ABI, or native comparison evidence is missing. Update its row
+and document-level state in the same change. Name the missing side and exact
+gate when the gap appears; do not save a required decision for a closing list.
 
-## Finish the shader change
-
-Before calling shader work complete, confirm that both backends implement the
-same semantic contract, native ABI differences are documented, tests pin the
-shared math, runtime reports exercise non-degenerate data, and the parity ledger
-was updated in the same change. If only one backend could be validated, the
-implementation may be handed off, but its contract remains **UNALIGNED**.
+Mark **ALIGNED** only when the ledger's applicable bilateral gates pass.
+Cross-compilation is not native execution. An authorized backend-specific mode
+retains its documented exception and evidence state; do not claim algorithmic
+parity for MetalFX. If the other backend is unavailable, complete the available
+checks and report the implementation and parity evidence separately.

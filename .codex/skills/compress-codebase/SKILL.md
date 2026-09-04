@@ -1,103 +1,76 @@
 ---
 name: compress-codebase
-description: Maps every in-scope source file and executes evidence-driven semantic compression passes that remove redundant checks, branches, comments, wrappers, representations, and shallow abstractions while preserving behavior, ownership, and measured performance. Use when auditing the codebase for LOC reduction, creating a file-by-file compression plan, or implementing staged code-compression and consolidation passes.
+description: Audit source for redundant state, code, checks, and abstractions; map files and implement scoped compression passes.
 ---
 
-# Compress Codebase
+# Compress codebase
 
-## Contract
+Remove redundant representations and work. Preserve behavior, ownership,
+concurrency, GPU lifetime, and measured performance. Keep conventional C layout
+and format touched C code with `clang-format` using the repository
+`.clang-format` configuration. Formatting changes do not count as compression.
 
-Compress relationships and states, not formatting. Preserve observable behavior,
-public contracts, ownership, concurrency, lifetime, and measured hot-path
-performance. A smaller file is not success when total maintained code or concept
-count grows elsewhere.
+## Scope and evidence
 
-Keep the result conventionally formatted and easy to review. Preserve meaningful
-line breaks, indentation, and blank lines between distinct phases. Keep one
-logical statement per line; do not fold control flow, declarations, or multiple
-operations together to manufacture a lower LOC count. Run `clang-format` (LLVM
-base, `.clang-format`) on touched code.
+1. Use `vkr-task-workflow` for scope and local task state. Inspect the dirty tree.
+2. Choose the requested mode: map only, implement, or resume an existing map.
+   For resume, reconcile the map with the current tree before editing.
+3. Define included paths and exclusions. Record the commit and initial inventory.
+4. Name the behavior, ownership, lifetime, and performance invariants affected.
+   Use `vkr-validation` to choose the smallest evidence that checks those
+   invariants. A CPU suite is not a mandatory baseline. Add a unit test only
+   when a specific failure and its detection value justify it.
+5. Ask the user immediately if the surviving owner, public contract, allocator
+   lifetime, or backend behavior requires an unresolved architecture decision.
+   State the concrete choice and recommendation. Continue independent work.
 
-Map every file in scope before broad edits. Coverage means every original file
-has an explicit disposition, including files deliberately kept unchanged.
+## Map
 
-## Select the mode
-
-- **Map:** produce an exhaustive implementation handoff without editing source.
-- **Execute:** build or refresh the map, then implement it as verified vertical
-  slices. Never start a broad compression pass from aggregate LOC alone.
-- **Resume:** reconcile the existing ledger against the current tree before more
-  edits; do not silently skip or reinterpret mapped rows.
-
-## Establish evidence
-
-1. Read `AGENTS.md`, `docs/architecture/renderer-architecture-spec.md`, the
-   relevant ADRs, and the dirty working-tree state.
-2. Define scope and exclusions literally. Record commit, file count, physical
-   and nonblank LOC, generated code, comments, and branch/check proxies.
-3. Define behavioral, interface, ownership, concurrency, lifetime, and
-   performance invariants **before** proposing any deletion.
-4. Capture the smallest trustworthy baseline owned by each affected invariant:
-   `./build_test.sh` at minimum, plus a Release measurement when a hot path is
-   in scope.
-
-## Map every file
-
-Read [references/map-schema.md](references/map-schema.md). Run:
+Read [the ledger schema](references/map-schema.md) for a broad or resumable
+pass. A focused change can use a short file list in the task note. Replace
+`compression-audit` below with the current task slug.
 
 ```sh
 python3 .codex/skills/compress-codebase/scripts/inventory.py lib/src app/src \
-  --output .codex/skills/compress-codebase/ledger.tsv
+  --output .scratch/compression-audit/compression-before.tsv
 ```
 
-The script excludes `build*/`, `vendor/`, and `lib/src/vendor/` by default; pass
-`--exclude <glob>` to add more and `--include-excluded` to audit them anyway.
+The script inventories known source extensions, including `.metal`, `.metalh`,
+`.slang`, `.slangh`, and `.inc`.
+Explicit files are included regardless of extension. It excludes root `build*/`,
+`vendor/`, `lib/src/vendor/`, and generated SPIR-V by default. Use `--exclude`
+for additional repository-relative globs; `--include-excluded` removes only the
+default exclusions. Directory symlinks are not traversed. Counts are lexical
+proxies, not parsed code facts. Inspect callers before claiming dead code or
+repetition. Deduplication requires two uses with the same policy.
 
-Then inspect concrete callers and find at least two real examples before
-claiming repetition. Complete every ledger row and produce a narrative map that
-groups cross-file work into ordered vertical slices. Reconcile the inventory to
-100% — vendored, generated, and retained files still need an explicit scope
-decision.
+Every included file needs a disposition. Keep inventory data under
+`.scratch/<task-slug>/`; use the existing workflow note for decisions and the
+compression plan. Keep a durable architecture decision in `docs/` only when
+needed, following `vkr-docs`. Generate the final inventory at a new path so the
+baseline and completed ledger survive.
 
-## Choose compression
+## Implement
 
-Read [references/compression-rules.md](references/compression-rules.md). Prefer,
-in order: delete dead paths; merge duplicate facts into one owner; replace
-parallel fields and `switch` clusters with typed tables; replace broad state
-scans with state-specific worklists; collapse forwarding layers into deep
-concrete modules; lower canonical data once.
+Read [compression rules](references/compression-rules.md) when selecting edits.
+For each independently verifiable change:
 
-Do not introduce macros, generic frameworks, flag-driven mega-functions,
-compatibility aliases, or speculative seams to reduce local LOC. An abstraction
-needs two semantically identical concrete uses and must reduce total
-relationships.
+1. Name exact files, the representation being removed, its surviving owner,
+   required invariants, and the verification command.
+2. Migrate the fact end to end and delete the old representation and adapters.
+3. Validate external input at its boundary. Give internal hot paths normalized
+   records with no validation or assertion branches.
+4. Run the affected evidence, inspect the formatted diff, and recount the full
+   scope including new files. Repair regressions before continuing.
 
-## Execute vertical slices
+Use `vkr-renderer-design` for renderer changes, `vkr-memory` for allocation or
+lifetime changes, `vkr-shaders` for shaders or their host contracts, and
+`vkr-performance` for hot-path changes or speed claims. Shader changes preserve
+Metal/Vulkan behavior; backend-specific optimizations need measured evidence.
 
-1. Record the exact files, current LOC, repeated cases, surviving owner, checks
-   removed or retained, lifetime implications, expected net deletion, and
-   evidence owner.
-2. Migrate one source of truth end to end. Delete the superseded representation
-   and its adapters in the same slice when safe.
-3. Keep external and fallible validation at its boundary. Internal code consumes
-   caller-proven pointers, `String8` views, indices, or state-specific records.
-4. Run the cheapest complete affected gate, recount the whole scope, and record
-   both deleted and added lines. Moving code between files is not compression.
-5. Stop and repair any behavior, lifetime, visual, or measured performance
-   regression before starting the next slice.
-6. Review the formatted diff as code, not only as metrics. Reject any slice
-   whose LOC reduction depends on packed lines, collapsed blocks, or
-   harder-to-scan control flow.
+## Complete
 
-For `lib/src/renderer/` work, also use `vkr-renderer-design`. Add `vkr-memory`
-when allocator, ownership, or lifetime is in scope; `vkr-performance` for hot
-paths or speed claims; and `vkr-validation` when selecting or running evidence
-gates. Preserve packet payload ownership, graph declaration versus frame payload
-separation, acquire/release symmetry, and completion-gated resource identity.
-
-## Finish
-
-Re-inventory the final tree and reconcile every original and new file. Report
-file and LOC deltas, removed codepaths and checks, surviving authorities,
-validation results, exceptions, and unresolved risks. A map-only result must
-state clearly that no implementation or runtime validation was performed.
+Reconcile all original and new files. Report net LOC, removed representations,
+verification commands and results, and any unavailable evidence. A map-only
+result states that source and runtime behavior were not changed or validated.
+Architecture questions must be asked when discovered, not left in this report.

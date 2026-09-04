@@ -1,125 +1,77 @@
 ---
 name: vkr-renderer-design
-description: Applies VKR's renderer architecture, semantic-compression, N+1, hot-path, GPU-lifetime, and measured-performance rules. Use when reviewing or refactoring lib/src/renderer, changing the Vulkan backend, render-graph state, pass executors, packet contracts, resource ownership, command recording, renderer hot paths, or renderer-facing interfaces.
+description: Specify and review VKR renderer architecture, backend or graph changes, packet APIs, and hot paths. Apply to renderer refactors and resource or command ownership changes.
 ---
 
-# VKR Renderer Design
+# VKR renderer design
 
-## Guiding principle
+Performance is correctness. Preserve pixels, ownership, GPU completion, and the
+frame budget together. Use `vkr-performance` for timing claims.
 
-**Performance is correctness.** This is a renderer: a frame that misses its
-budget is a failed frame, and a per-draw heap allocation, blocking wait, string
-construction, or lock is a defect rather than a style preference.
+## Before editing
 
-The paired constraint is what keeps that honest: **a performance claim without
-same-configuration measurement is not a result.** Ownership, lifetime, and
-submission-completion invariants are what make a measurement mean anything —
-a faster frame that reuses a resource before the GPU is done with it has not
-measured anything. Never trade an invariant for a number.
+Follow the repository's architecture discovery order. Read the affected status
+and known-issue sections, then the owning ADR and concrete callers. State the
+changed contract and the invariants the patch must preserve.
 
-## Quick start
+If an unresolved choice changes ownership, backend compatibility, resource
+lifetime, public behavior, or an architectural boundary, ask the user immediately.
+Give the concrete tradeoff and recommendation in a short question. Continue
+independent work; do not implement the disputed choice or park it in a document.
+Routine choices within an accepted contract do not need another approval.
 
-1. Read `docs/architecture/renderer-architecture-spec.md` (status authority) and
-   the relevant ADRs in `docs/architecture/adr/`. Check §8 before "fixing"
-   anything — the known gaps are already prioritized there.
-2. Define the visual, behavioral, lifetime, and performance invariants you must
-   preserve, before editing.
-3. Baseline: `./build_test.sh`, plus a Release measurement via
-   `vkr-performance` when the change touches a hot path.
-4. Trace concrete call paths. Find at least two real examples before compressing.
-5. Refactor one vertical slice, run the cheapest sufficient gate, measure again.
+Load references only for their purpose:
 
-Read [PRINCIPLES.md](PRINCIPLES.md) for the Muratori/Fleury compression rules and
-the project N+1 test. Read [VULKAN_PATTERNS.md](VULKAN_PATTERNS.md) for this
-repository's real backend seams and its currently-known architectural gaps. Use
-[WORKFLOW.md](WORKFLOW.md) for comprehensive audits and migration sequencing.
+- [PRINCIPLES.md](PRINCIPLES.md) when changing a module interface or consolidating code.
+- [VULKAN_PATTERNS.md](VULKAN_PATTERNS.md) when changing backend, graph, or submission ownership.
+- [WORKFLOW.md](WORKFLOW.md) for an audit or migration spanning multiple slices.
+- `vkr-memory` for allocator selection and CPU/GPU lifetime changes.
+- `vkr-shaders` for shader source or a shader-visible host contract.
 
-## Core rules
+## C and hot paths
 
-- Compress observed repetition; never design reuse from zero or one example.
-- Preserve continuous granularity: a high-level helper must have a usable
-  lower-level equivalent so exceptional work does not require a rewrite.
-- Prefer a few deep modules with small interfaces and strong locality over many
-  shallow forwarding layers.
-- A seam needs real variation. One adapter is hypothetical; two are real.
-  `VkrRendererBackendInterface` has exactly one implementation — do not widen it
-  on the theory that a second backend might arrive.
-- Apply the N+1 test at module interfaces: adding one pass kind, resource state,
-  texture format, light kind, or material slot must extend a table, descriptor,
-  tagged record, or registration point without rewriting unrelated callers.
-- N+1 is **not** permission to generalize per-draw or per-dispatch hot loops.
-- Collapse equivalent cases into shared codepaths; make invalid states
-  unrepresentable with typed/tagged records where practical.
-- Use one authoritative representation per fact, and lower it once.
+Keep each operation near the data and lifetime it owns. Prefer direct C
+procedures, contiguous arrays, explicit bounds, and local `static` helpers.
+Choose SoA, indirection, specialization, or batching from actual access patterns;
+measure throughput claims. Keep one authoritative value and lower it once.
 
-## Hot-path rules
+Validate and normalize at creation, publication, packet validation, or graph
+compilation. Recording loops trust those producer guarantees. Per draw,
+instance, and dispatch, permit no validation, recovery, null-guard, or assertion
+branches. Partition optional work or provide valid sentinel records before the
+loop. Algorithmic choices still need a data and cost justification.
 
-Per draw, per dispatch, and per instance:
+Those loops also permit no heap allocation, arena growth or page commitment,
+blocking wait, mutex acquisition, string formatting, name lookup, handle
+acquire/release churn, or pipeline creation. Prepare capacity and pipeline state
+before recording. A bump into already committed capacity is permitted.
 
-- no heap allocation, no arena growth that is not a bump into pre-reserved space;
-- no blocking fence or semaphore wait;
-- no `String8` construction, formatting, or `snprintf`;
-- no handle acquire/release churn, no registry lookup by name;
-- no mutex acquisition;
-- no pipeline creation or descriptor-set allocation.
+GPU completion checks and required target/slot waits belong at frame preparation
+or lifecycle boundaries. Removing a wait requires another completion proof;
+removing the check alone is a lifetime bug.
 
-Prefer contiguous batches, SoA when measurement justifies it, and fixed-capacity
-arrays for GPU-bounded collections. `VkrInstanceBufferPool` (65,536 entries) and
-`VkrIndirectDrawSystem` (16,384 commands) are the existing fixed-capacity model;
-overflow is reported, not silent — keep it that way.
+## Graph and packet contracts
 
-Validate at creation, compile, and debug layers. In a proven hot loop use an
-assertion, not a recoverable check.
+The shared graph compiler owns declared dependencies, pass order, culling, and
+subresource state. Each selected backend realizes resources and records native
+commands. Declare frame resource accesses in the authored graph. Backend-owned
+uploads, IBL preparation, capture, and presentation outside that schedule retain
+explicit access and completion ownership.
 
-## Render graph and packet contracts
+`VkrRenderPacket` borrows arrays until `vkr_renderer_submit_packet()` returns.
+`prepare_frame` precedes submission and may already have acquired a target.
+Packet rejection and recording failure must cancel through the selected
+implementation, resolving acquired resources and recorded-but-unsubmitted uses.
 
-- The graph declares resources and accesses; `vkr_rg_compile.c` builds
-  dependencies, orders passes, culls, and plans barriers; `vkr_rg_execute.c`
-  runs them. Work that touches GPU state must be **declared**, not hidden inside
-  an executor.
-- `VkrRenderPacket` payload arrays are caller-owned and must stay alive until
-  `vkr_renderer_submit_packet()` returns. Passes read typed payloads from
-  `VkrRgPassContext`.
-- Submission is ordered and state-mutating: `vkr_renderer_prepare_frame()`
-  acquires the swapchain image before validation runs. Treat packet rejection as
-  a path with side effects, not a clean no-op.
-- `VKR_RG_RESOURCE_FLAG_TRANSIENT` means graph-owned and reusable, not
-  freed-per-frame. Resources survive realizations and are recreated when their
-  resolved description changes.
+Graph `TRANSIENT` resources are reusable across realizations. Recreate them when
+the resolved description changes; do not infer per-frame destruction or aliasing.
 
-## Resource and GPU lifetime
+## Verification
 
-- Every successful acquire has a matching release on **all** paths, including
-  early error exits. Prefer one cleanup path (`goto cleanup;`) over duplicated
-  teardown.
-- Logical destruction invalidates a handle immediately. Physical destruction and
-  slot reuse wait on proven GPU completion — a frame fence or submit serial, not
-  an assumed frame lag. Instance descriptor-state retirement already uses submit
-  serial; follow that model.
-- Descriptor indices, buffer ranges, and readback ring slots stay unavailable for
-  reuse until every recorded and submitted use is resolved.
-- Vulkan types stay behind `lib/src/renderer/vulkan/`. Public code depends on
-  opaque handles and `VkrTextureDescription`-style typed descriptions.
-- Treat file byte buffers (SPIR-V, glTF, KTX2) as temporary: allocate from a
-  scope and release after the Vulkan object is created. See `vkr-memory`.
-
-## Compression and cleanup
-
-Use `compress-codebase` for a systematic pass. For ordinary feature work:
-
-- extract a `static` helper in the `.c` file before promoting anything to a
-  header;
-- prefer `static inline` functions and data tables over macros;
-- use the rule of three — extract at 3+ occurrences, keep it direct at 1–2;
-- after every feature or fix, remove dead paths, unused variables, and defensive
-  checks that no longer guard a real case;
-- a comment is a semantic abstraction. If it restates the code, delete it; if it
-  records intent, ownership, ordering, or a Vulkan synchronization requirement,
-  keep it.
-
-## Validation
-
-`vkr-validation` owns the gates. Minimum for renderer-facing change:
-`./build_test.sh`, a Vulkan validation-layer run, and — for anything touching a
-hot path — a Release measurement per `vkr-performance`. The CPU test suite does
-not substitute for a validation-layer run.
+Choose the smallest evidence loop that exercises the changed invariant through
+`vkr-validation` and `vkr-harness`. Add a unit test only when an independent CPU
+oracle detects a named failure more directly than the renderer case. A CPU
+suite, shader compile, or source review alone cannot prove GPU correctness.
+Use matched Release measurements for hot-path changes. Report unavailable
+native evidence as unavailable; do not claim bilateral compatibility from one
+backend's run.

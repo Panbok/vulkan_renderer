@@ -1,22 +1,23 @@
 ---
 name: grilling
-description: Grill the user relentlessly about a plan, decision, or idea. Use when the user wants to stress-test their thinking, or uses any 'grill' trigger phrases.
+description: Stress-test a plan or decision when the user explicitly asks to be grilled or challenged.
 ---
 
-Interview the user relentlessly until you reach a shared understanding. Map this as a **design tree**: every decision branches into the decisions that hang off it.
+# Decision interview
 
-Work the tree in **rounds**. The **frontier** is every decision whose prerequisites are already settled: the questions you can ask _now_ without guessing at answers you haven't heard yet. Ask the whole frontier in one round: number each question and give your recommended answer. Then wait for the user's answers before the next round.
+Find the user's objective, constraints and unresolved choices. Inspect code,
+documents and tools for factual answers before asking the user for them.
 
-Each question should be formatted like so:
+Ask the highest-impact choice whose prerequisites are known. Include a short
+recommendation and the concrete tradeoff. Bundle independent questions only
+when their answers do not depend on each other. Wait for an answer before
+acting on that choice; continue independent investigation when useful.
 
-```
-❓ **Q1** - **<question title>**: <question body, might be multiple paragraphs, including multiple choices>
+After each answer, record the decision and examine the consequences it creates.
+Challenge conflicting constraints with evidence. Stop when choices affecting
+the requested outcome are settled or the user ends the interview. Summarize
+the agreed decisions briefly. Continue any implementation already authorized;
+an interview alone does not authorize implementation.
 
-➡️ <your recommended answer>
-```
-
-Each round the user answers reshapes the tree: settled decisions push the frontier outward and unblock questions that depended on them. Recompute the frontier and ask the next round. A question whose answer depends on another question still open in this round belongs to a _later_ round, not this one.
-
-Finding _facts_ is your job, never the user's. When a frontier question needs a fact from the environment (filesystem, tools, etc.), look it up before asking the dependent question. Ask the rest of the frontier while that prerequisite remains unsettled. The _decisions_ are the user's: put each to them and wait.
-
-The session is done when the frontier is empty: every branch of the design tree visited, nothing left silently assumed. Do not act on it until the user confirms you have reached a shared understanding.
+Ordinary implementation questions use `AGENTS.md`'s immediate architecture
+question rule and do not require this interview process.

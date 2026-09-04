@@ -1,32 +1,32 @@
 ---
 name: vkr-docs
-description: Conventions for writing and maintaining documentation and ADRs under docs/ so the tree stays accurate and agent-indexable. Use when adding a design document, writing or updating an ADR, marking a proposal as implemented, archiving a superseded document, or updating the docs index.
+description: Write or update docs, ADRs, implementation status, and documentation indexes.
 ---
 
-# VKR Documentation
+# VKR documentation
 
-`docs/` is committed agent and contributor context. Start discovery at
-`docs/README.md`.
+Start discovery at `docs/README.md`. Read only the documents needed for the
+current decision. `vkr-task-workflow` owns the single local note at
+`.scratch/<task-slug>.md` when the work needs one.
 
-The tree is large. It stays useful only if every document states what it is and
-the active and archived indexes cover their declared scope.
+## Authority and decisions
 
-## Authority order
+Code defines implemented behavior. `docs/architecture/renderer-architecture-spec.md`
+defines recorded status. ADRs define decision rationale. A proposal or an unused
+module does not establish shipped behavior; inspect production callers.
 
-1. **Code** is the implementation authority. If a document disagrees with the
-   code, the code is what runs.
-2. `docs/architecture/renderer-architecture-spec.md` is the **status** authority
-   — what is implemented, partial, or absent.
-3. `docs/architecture/adr/` is the **rationale** authority — why a decision was
-   made and what would cause it to be revisited.
-4. Everything else is a design document, a progress log, or an investigation,
-   and must say which.
+Ask the user as soon as an unresolved architecture choice affects the work.
+Give the concrete tradeoff and a recommendation. Do not replace a needed answer
+with a proposal document or defer questions to a final list.
 
-A design document's existence is **not** evidence that its feature ships.
+Record durable decisions that constrain future work in an ADR. Local reversible
+choices do not need one. Document ownership, allocator lifetime, synchronization,
+and backend behavior where those facts are not clear from the code. Performance
+claims require configuration, command, and measured results.
 
-## Required front-matter
+## Document metadata
 
-Every Markdown document under `docs/` except `README.md` files begins with:
+Every Markdown file under `docs/`, except `README.md`, begins with:
 
 ```yaml
 ---
@@ -36,91 +36,55 @@ authority: spec | adr | design | progress | investigation
 ---
 ```
 
-| `status` | Meaning |
+Select one value per field. `authority` identifies the kind of claim the document
+owns; it does not make a design claim override implementation evidence.
+
+| Status | Required evidence or content |
 |---|---|
-| `implemented` | Described behaviour matches current code |
-| `partial` | Implemented with a stated gap — name the gap in the document |
-| `proposed` | Design only; no production code, or no production call site |
-| `superseded` | Historical; must name what replaced it |
-| `investigation` | A diagnosis or postmortem, not a plan |
+| `implemented` | Current production code matches the description |
+| `partial` | Implemented behavior and its exact remaining gap |
+| `proposed` | Design without complete production integration |
+| `superseded` | Link to its replacement |
+| `investigation` | Diagnosis or postmortem with the conclusion at the top |
 
-Derive `status` from evidence, not intent. A module that exists and has tests
-but no production caller is `proposed`, not `implemented` — check for real call
-sites before claiming otherwise.
-
-`authority` records what kind of document this is, so an agent knows whether to
-trust it over a neighbour: `spec` and `adr` outrank `design`, which outranks
-`progress` and `investigation`.
-
-Non-Markdown artifacts such as JSON schemas do not receive YAML front-matter.
-List their status and purpose in the owning index. Remove editor/OS metadata
-such as `.DS_Store`; it is not documentation.
+Non-Markdown artifacts use the owning index for status and purpose. Remove
+editor and OS metadata from the docs tree.
 
 ## ADRs
 
-Write an ADR when a decision **constrains future work**. Purely local or
-trivially reversible decisions do not get one.
+Use the sections Status, Context, Decision, Consequences, Alternatives considered,
+and Revisit when. Use these ADR status labels:
 
-Format, in order: **Status → Context → Decision → Consequences → Alternatives
-Considered → Revisit When**.
+- `Accepted`: implemented decision in force.
+- `Accepted (partial)`: decision in force with an explicitly described integration gap.
+- `Proposed`: recommendation awaiting implementation or decision.
+- `Superseded by ADR-NNN`: replaced decision.
 
-ADR status values are narrower than document status:
+Number new ADRs sequentially as `NNN-kebab-title.md`. Preserve existing numbers
+and add the new row to `docs/architecture/adr/README.md` in the same change.
 
-- **Accepted** — in force and implemented.
-- **Accepted (partial)** — decided and implemented with a known unfinished
-  integration; state the gap in the ADR itself.
-- **Proposed** — recommended, not yet implemented.
-- **Superseded by ADR-NNN** — no longer in force.
+## Update and verify
 
-Number sequentially (`NNN-kebab-title.md`) and add a row to
-`docs/architecture/adr/README.md` in the same change. Never renumber an existing
-ADR; supersede it instead.
-
-## Writing rules
-
-- **Prefer stable symbol and path references over line numbers.** Line numbers
-  are a snapshot and rot silently. `vkr_rg_execute()` in `vkr_rg_execute.c`
-  survives a refactor; `vkr_rg_execute.c:412` does not.
-- Record ownership, lifetime, synchronization, error propagation, and measured
-  evidence for renderer decisions. Those are the facts that are expensive to
-  re-derive from code.
-- State what was measured and under which configuration. An unqualified
-  performance number in a design document will be quoted back as fact.
-- Name the gap. "Partial" without a stated boundary is worse than no status.
-- Do not restate code. A document that paraphrases a header adds a second thing
-  to maintain and no information.
-
-## Keeping the tree accurate
-
-**When a proposal ships**, update all three in the same change:
-
-1. the document's `status` and `updated` front-matter;
-2. `docs/architecture/renderer-architecture-spec.md` §4 feature table;
-3. `docs/README.md` index row.
-
-Also update the owning ADR's status if the decision moved from Proposed to
-Accepted.
-
-**When a document is superseded**, do not delete it. Set `status: superseded`,
-add a one-line pointer to its replacement, move it under `docs/archive/`, and
-update the index. History is cheap to keep and expensive to reconstruct.
-
-**When you finish an investigation**, set `status: investigation`, record the
-conclusion at the top rather than only in a trailing section, and archive it if
-the underlying issue is closed.
-
-## Index
-
-`docs/README.md` lists every active document and non-Markdown artifact with its
-path, status, and one-line purpose. `docs/archive/README.md` recursively owns
-the archive listing; a preserved legacy collection may be one indexed unit when
-its own historical index remains intact.
-
-Adding, moving, or archiving a document means editing the owning index in the
-same change. Verify links resolve:
+1. Write intent and non-obvious invariants. Reference stable symbols and paths;
+   avoid cached line numbers and prose that repeats headers or code.
+2. When a proposal ships, update its metadata, the architecture spec feature
+   table, the docs index, and the owning ADR status together.
+3. When superseded, add the replacement link, set `status: superseded`, move the
+   document to `docs/archive/`, and update links and indexes. Archive a completed
+   investigation when the underlying issue is closed.
+4. `docs/README.md` owns active documents and non-Markdown artifacts.
+   `docs/archive/README.md` owns the archive recursively. A legacy collection may
+   remain one indexed unit if its own historical index survives. Register each
+   added or moved artifact with path, status, and a one-line purpose.
+5. Check the changed documents and indexes with the command below. Inspect index
+   coverage separately. The checker validates local target existence; it does
+   not validate heading anchors, resolve reference labels, or contact websites.
 
 ```sh
-cd docs && for l in $(grep -oE '\]\([^)#][^)]*\)' README.md | tr -d '()]'); do
-  [ -e "$l" ] || echo "MISS $l"
-done
+python3 .codex/skills/vkr-docs/scripts/check_links.py \
+  docs/README.md docs/architecture/adr/README.md docs/archive/README.md
 ```
+
+Pass additional changed Markdown files, or `docs` to scan the full tree. The
+command exits nonzero for missing targets. For a docs-only change, these checks
+and a diff review are sufficient; renderer builds and unit tests add no evidence.

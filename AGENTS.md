@@ -1,184 +1,155 @@
-## Guiding principle
+# VKR agent contract
 
-**Performance is correctness.** This is a renderer. A frame that misses its
-budget is a failed frame, and a per-draw heap allocation, blocking wait, string
-construction, or lock is a defect — not a style preference.
+## Engineering priorities
 
-The counterweight that keeps this honest: **an unmeasured performance claim is
-not a result.** Ownership, lifetime, and GPU-completion invariants are what make
-a measurement mean anything; a faster frame that reuses a resource before the
-GPU is done with it has measured nothing. Never trade an invariant for a number.
+**Performance is correctness.** VKR is a C11 renderer with Metal 4 and Vulkan
+1.4 packet implementations. A missed frame budget is a defect. A speed claim
+requires matched Release measurements; preserving output, ownership and GPU
+completion is a prerequisite for comparing those measurements.
 
-**Branchless by construction.** Validate and normalize at cold boundaries, then
-trust internal data. Hot paths contain no validation, recovery, null-guard, or
-assertion branches. Shape or partition data, or compute cheap derived values, so
-optional cases disappear; never rely on the compiler to remove redundant guards.
+- Write simple C with explicit data flow, typed records and one owner per fact.
+  Prefer a local function or table over a forwarding layer, generic interface
+  or flag-driven helper. An abstraction needs concrete callers with the same
+  policy. Remove the replaced representation in the same change.
+- Validate and normalize at input, creation and state-transition boundaries.
+  Per-draw, per-element and command-emission loops consume proven data without
+  defensive validation, recovery, null guards or assertions. Partition optional
+  work before those loops. Preserve real capacity, generation and completion
+  proofs at their owning boundaries.
+- Keep heap allocation, string construction, locks, pipeline creation and
+  blocking waits out of per-draw work. Frame-slot reuse must still prove GPU
+  completion. Do not remove synchronization to improve a timing number.
+- Choose memory by lifetime and access pattern before writing the allocation.
+  Reuse owned capacity or bounded stack storage when the lifetime permits.
+  Use arenas for one bulk lifetime, DMemory for independently freed objects,
+  and pools for fixed-size churn. State the owner, release point, pointer
+  stability and GPU last use. Pre-size hot-path storage; measure growth and
+  retained memory. `vkr-memory` owns the concrete allocator rules.
+- Metal and Vulkan share portable rendering semantics, data contracts and
+  feature behavior. Backend-specific mechanisms or performance features need
+  an explicit capability boundary and measured justification. Preserve accepted
+  exceptions in the ADRs. `vkr-shaders` owns shader efficiency, ABI and native
+  parity evidence; a one-backend build never proves full compatibility.
 
-## Project
+## Architecture decisions
 
-Renderer and engine framework in C11 with selected Metal 4 and Vulkan 1.4
-bindless packet strategies.
+Before implementation, identify the owner, data lifetime, affected contract
+and smallest verification that can falsify the change. Follow the existing
+accepted architecture when it answers those questions.
 
-## Start here
+If a choice changes ownership, a public or shader contract, graph scheduling,
+resource lifetime, portability, or a quality/performance budget and the request
+or accepted design does not settle it, ask the user immediately. Give the
+concrete choice, your recommendation and its tradeoff in a few sentences.
+Pause only the dependent work. Resolve facts from code and tools yourself.
+Do not defer user decisions to a document footer, TODO list or final report.
+Record the answer after it is made; a design document cannot substitute for it.
 
-For any renderer task, read in this order:
+## Load only the needed context
 
-1. `docs/architecture/renderer-architecture-spec.md` — **status authority**.
-   §4 is the feature table, §8 is the prioritized known-issues list. Check §8
-   before "fixing" anything; most surprising behaviour is already logged there.
-2. `docs/architecture/adr/README.md` — **rationale authority**, 26 ADRs covering
-   the backend seam, render graph, packet API, reflection, allocators, GPU
-   memory, synchronization, ECS, Vulkan baseline, texture compression, and draw
-   submission, plus proposed present-target and metrics-registry seams.
-3. `docs/README.md` — complete index of the doc tree.
+For renderer changes or diagnosis, consult these in order, reading the relevant
+sections rather than the entire tree:
 
-Conflict rule: **code is the implementation authority**, the architecture spec
-is the status authority, and ADRs are the rationale authority. A design
-document's existence is not evidence that its feature ships.
+1. `docs/architecture/renderer-architecture-spec.md`: §4 feature status, current
+   priorities at the start of §8, and the affected subsystem section. The later
+   closed-work log in §8 is historical.
+2. `docs/architecture/adr/README.md`: find the ADRs that constrain this task and
+   read those decisions.
+3. `docs/README.md`: locate additional task-specific documents only as needed.
 
-## Skills
+Code defines current implementation, the architecture spec defines recorded
+status, and ADRs define accepted rationale. Investigate conflicts before editing;
+proposal text alone does not prove a feature exists. For tooling or prose-only
+work, inspect its owner directly without loading unrelated renderer documents.
 
-Skills live in `.codex/skills/` and are mirrored into `.claude/skills/` as
-tracked regular-file copies, so both agents read the same content. Editing a
-skill means writing both trees and leaving them byte-identical; `diff -rq
-.codex/skills .claude/skills` is the check. This is the only place they are
-enumerated.
+## Skills and task flow
 
-| Task | Skill |
-|---|---|
-| Multi-step research, diagnosis, implementation, task notes | `.codex/skills/vkr-task-workflow/SKILL.md` |
-| Renderer architecture, refactors, backend/graph/pass changes, hot paths, API design | `.codex/skills/vkr-renderer-design/SKILL.md` |
-| Shader code, shader ABI/layouts, resource bindings, algorithms, and Metal/Vulkan parity | `.codex/skills/vkr-shaders/SKILL.md` |
-| Auditing for LOC reduction, file-by-file compression plans, consolidation passes | `.codex/skills/compress-codebase/SKILL.md` |
-| Frame-time or hitch investigation, optimization, benchmarks, any speed claim | `.codex/skills/vkr-performance/SKILL.md` |
-| Structured renderer cases, profiles, reports, and deterministic repetitions | `.codex/skills/vkr-harness/SKILL.md` |
-| Allocator choice, ownership, lifetime, hash keys, scene reload growth, leaks | `.codex/skills/vkr-memory/SKILL.md` |
-| Deciding on and running tests, validation layers, pipeline-cache and backend matrices | `.codex/skills/vkr-validation/SKILL.md` |
-| Writing or updating docs and ADRs, marking a proposal shipped, archiving | `.codex/skills/vkr-docs/SKILL.md` |
+Skill paths below are relative to `.codex/skills/`. Load only matching skills
+and only the references needed for the current step. Apply `unslop` to writing.
 
-`vkr-shaders` is mandatory whenever work touches shader source or a
-shader-visible host contract. It owns the cross-backend parity ledger and keeps
-one-sided findings marked unaligned until both native evidence gates pass.
+| Task | Skill entry point |
+| --- | --- |
+| Multi-step investigation or implementation, delegation, resume | `vkr-task-workflow/SKILL.md` |
+| Renderer architecture, graph, backend, hot paths | `vkr-renderer-design/SKILL.md` |
+| Shader source or shader-visible host contract, either backend | `vkr-shaders/SKILL.md` |
+| Allocation, ownership, lifetime, reload or growth | `vkr-memory/SKILL.md` |
+| Optimization, timings or performance claims | `vkr-performance/SKILL.md` |
+| Harness cases, profiles, captures, reports or baselines | `vkr-harness/SKILL.md` |
+| Choosing or running verification | `vkr-validation/SKILL.md` |
+| File-by-file source compression | `compress-codebase/SKILL.md` |
+| Documents, ADRs or their indexes | `vkr-docs/SKILL.md` |
+| Skills or agent instructions | `writing-for-agents/SKILL.md` |
+| Requested decision stress test | `grilling/SKILL.md` |
+| Written responses and edited prose | `unslop/SKILL.md` |
 
-`vkr-renderer-design` carries the compression, N+1, and hot-path rules in
-`PRINCIPLES.md`, this repository's real backend seams and its currently-known
-gaps in `VULKAN_PATTERNS.md`, and audit sequencing in `WORKFLOW.md`.
+Answer focused questions directly. Multi-step work uses one compact local note
+in `.scratch/` with scope, decisions, evidence and next action. Use subagents
+for independent bounded work when parallel progress pays for the handoff;
+`vkr-task-workflow` owns model selection and write coordination. Do not create
+persistent agent roles or configuration merely to delegate a task.
 
-`vkr-task-workflow` is the entry point for multi-step work. Classify every
-request first: answer a focused question, a brief explanation, or a status check
-directly. It routes to the skills above rather than restating them, and owns
-task notes under `.scratch/`, which is local and untracked.
+## Verification loop
 
-## Build, test, validate
+1. Name the behavior, failure or cost being checked and select the smallest
+   existing tool/case that can reveal it. Verify the executable and options
+   exist before relying on a command from prose.
+2. Establish the relevant failing case or baseline, make the change, then rerun
+   that check. Read the report, capture or diagnostic, not just the exit code.
+3. Add a check only when a changed invariant remains uncovered. Stop when the
+   selected checks pass; rerun or broaden them only for a new edit, failure or
+   unresolved concern.
 
-```sh
-./build.sh [Debug|Release]            # build the renderer app
-./build_run.sh [Debug|Release]        # build and launch the renderer app
-./build_editor.sh [Debug|Release]     # build the editor
-./build_editor_run.sh [Debug|Release] # build and launch the editor
-./build_release.sh                    # optimized app -> build_release/app/vulkan_renderer
-build_release/tools/vkr_harness profile --case <case> --profile <profile>
-./build_test.sh                # build + run the CPU suite
-./build_test_batch.sh          # 50 runs; confirm or refute a flake
-build_release/tools/vkr_harness profile \
-  --case tools/cases/performance/sponza_orbit.case.json \
-  --profile tools/profiles/performance-windowed.json # Release performance evidence
-tools/pack_vkt_textures.sh                       # standalone/forced KTX2/UASTC packing
-# Windows: tools\pack_vkt_textures.bat
-```
+Unit tests are not a default deliverable. Add or run one only after naming the
+specific failure it detects, an independent expected result, and why a build,
+harness case or existing check is insufficient or more expensive. Tests that
+mirror implementation, mock the renderer into success or assert source wording
+provide no acceptance evidence. `vkr-validation` owns the selection rules.
 
-Build configurations use persistent, non-overlapping output trees. Every root
-build wrapper that invokes CMake compilation runs the platform texture packer
-after a successful compile and treats packing failure as build failure. Run and
-batch-test wrappers reuse their build result and never add a second pack pass.
-The packer uses the shared `build_vkt_packer` tree and skips content-identical
-`.vkt` outputs unless `VKR_VKT_PACK_FORCE=1` is set; the standalone wrappers
-remain available for forced or strict asset preparation.
+Use the repository build wrappers; they own shader compilation and asset cooking.
+`./build_release.sh` builds the Release app and `vkr_harness`.
+`./build.sh Debug` and `./build_editor.sh Release` select app/editor builds.
+`./build_test.sh` builds and runs the CPU suite only when justified;
+`./build_test_batch.sh` repeats it for a concrete intermittent failure.
+Core wrappers have `.bat` counterparts; POSIX execution does not validate them.
 
-Supported non-Windows Clang/GCC Debug configurations enable ASan and UBSan by
-default. Set `VKR_ENABLE_DEBUG_SANITIZERS=OFF` for an explicit diagnostic
-opt-out; `VKR_ENABLE_SANITIZERS=ON` retains the all-configuration opt-in used by
-sanitized Release-family builds. Windows Debug defaults to sanitizers off
-because Clang ASan is incompatible with the Debug CRT and MSVC does not provide
-the requested ASan+UBSan pair.
+Use normal Release with graphics validation variables unset for snapshots,
+baselines and performance. Debug, sanitizers and API/GPU validation diagnose a
+specific issue in a separate focused run. Metal validation is opt-in through
+`MTL_DEBUG_LAYER` and `MTL_SHADER_VALIDATION` before device creation. Run one
+Metal validation process at a time; never run a broad shader-validation capture
+suite. A prior broad run preceded a watchdog panic. CPU tests do not validate
+Vulkan API use, and Metal execution does not validate native Vulkan.
 
-Debug builds and graphics validation layers are diagnostic configurations, not
-baseline configurations. Use them only while reproducing or debugging a
-concrete issue, and use the smallest focused case that exercises that issue.
-Snapshot/baseline comparisons and performance runs must use the normal Release
-configuration with Metal and Vulkan validation environment variables unset.
-Run any required diagnostic validation separately; never mix it into a
-baseline or performance command.
+## C conventions
 
-Metal validation is opt-in on macOS, including in Debug builds. Set
-`MTL_DEBUG_LAYER=1` for API validation and `MTL_SHADER_VALIDATION=1` for
-shader/GPU validation; set both to enable both modes. The variables must be in
-the environment before the first Metal device is created.
+- C11; `bool8_t`, `bool32_t`, `uint32_t`, `float32_t`, `float64_t`.
+- `String8` carries a length and is not internally null-terminated.
+- `Array(T)` and `Vector(T)` use `.data`, `.count`, `.capacity`; growth may
+  invalidate borrowed pointers.
+- Use `MemSet`, `MemCopy`, `MemZero`, `MemCompare` from `defines.h`.
+- Names: `snake_case` functions/locals, `Vkr*` types, `vkr_*` public functions,
+  `s_` internal structs behind opaque handles.
+- Return `bool8_t` or an error enum. Use `goto cleanup;` for shared teardown
+  after partial initialization. Preserve fallible API error propagation.
+- Follow `.clang-format`. Comments explain ownership, units, ordering or
+  non-obvious synchronization; names and code express ordinary operations.
+- Production shaders include Slang and native Metal sources. Use the build
+  scripts to compile the affected production entry points.
 
-**Warning:** Metal validation can tank frame rate, especially shader
-validation. One local, non-authoritative Debug observation fell from roughly
-30–40 FPS to 6–7 FPS with both modes enabled. Debug timings are not performance
-evidence; never benchmark or make a performance claim from a run with either
-validation mode enabled. `build_run.sh` warns when it detects either nonzero
-variable. Never run Metal shader/GPU validation across a broad multi-capture or
-baseline suite: a validation-enabled 14-capture snapshot was immediately
-followed by a macOS watchdog kernel panic. This is correlation rather than a
-proven root cause. Run exactly one validation-enabled Metal renderer process at
-a time and keep shader validation to a minimal issue reproduction; never launch
-parallel Metal validation children.
+## Preserve context and evidence
 
-The core build/run/test and texture-packing wrappers have `.bat` equivalents.
-The backend-matrix utility is currently POSIX shell only; the C harness is
-cross-platform. Use the repository scripts rather than
-invoking `cmake` directly — they own shader compilation and asset copying.
+Preserve pre-existing work. Keep `.codex/skills/` and `.claude/skills/` as
+byte-identical regular-file copies, including scripts and metadata. Check with
+`diff -rq .codex/skills .claude/skills`. `CLAUDE.md` points here. Update affected
+status/rationale documents in the same change when their claims move.
 
-A green CPU suite is not evidence that Vulkan usage is correct. When debugging
-a concrete command-recording or resource-transition issue, use a separate,
-focused validation-layer run; do not turn baseline execution into an implicit
-validation run.
+Copy decisive results, exact commands and report digests out of regenerable
+run trees. For captures another machine must consume, follow `vkr-harness`'s
+guarded publication rules before deleting the only payload. Preserve a pending
+payload when publication needs a user decision, and ask immediately. Delete
+only this task's disposable runs and traces after recording their results.
 
-## Code conventions
-
-- C11. Custom scalars: `bool8_t`, `bool32_t`, `uint32_t`, `float32_t`,
-  `float64_t`. `String8` is length-prefixed and **not** null-terminated
-  internally.
-- `Array(T)` / `Vector(T)` macros generate `Array_T` with `.data`, `.count`,
-  `.capacity`.
-- Prefer `MemSet` / `MemCopy` / `MemZero` / `MemCompare` from `defines.h`.
-- Naming: `snake_case` functions and locals, `Vkr*` types, `vkr_*` public APIs,
-  `s_` prefix for internal structs behind opaque handles.
-- Errors: return `bool8_t` or an enum error code. Prefer one cleanup path
-  (`goto cleanup;`) over duplicated teardown.
-- Format with `clang-format` (LLVM base, `.clang-format`); `clang-tidy` is
-  configured via `.clangd`.
-- Document intent, invariants, ownership/lifetime, ordering, and non-obvious
-  Vulkan synchronization. Do not restate the code — prefer a better name over a
-  comment.
-- Shaders are Slang (`.slang` → `.spv`), compiled by the build scripts.
-
-## Agent context
-
-`AGENTS.md`, `CLAUDE.md`, `docs/`, `.codex/skills/`, and the
-`.claude/skills/` mirror are committed repository context. Keep them in the
-same change when an architectural decision, status claim, or skill rule moves.
-Start documentation discovery at `docs/README.md`.
-
-Task notes under `.scratch/` are local and untracked; move anything that must
-survive into `docs/`.
-
-**A retained run tree is not a record.** Measurement, testing, snapshot, and
-diagnostic runs write regenerable output under `build/_artifacts/`, and nothing
-prunes it. Carry single-machine results out as documented numbers, report
-digests, and reproducing commands. For a capture that another machine must
-consume, first publish the guarded, tracked baseline generation defined by
-`vkr-harness`; it retains the verified canonical payloads and metadata. Then
-delete the local run tree. Leaving gigabytes behind is a defect, and deleting a
-cross-machine payload before publication is also a defect.
-
-## Commits and PRs
-
-- Conventional Commits with scope: `feat(renderer): ...`, `fix(fonts): ...`,
-  `ref(renderer): ...`.
-- PRs: clear summary, the exact commands run, and linked issues.
-- For rendering or UI changes, include a screenshot or short clip and note any
-  shader or asset updates.
+Commits use a scoped Conventional Commit, such as `fix(renderer): ...`. PRs
+state the behavior change, exact verification commands and relevant issues.
+Rendering/UI changes include a screenshot or clip and identify shader/asset
+changes. Report unrun native checks as unavailable; never imply they passed.

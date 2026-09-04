@@ -1,141 +1,93 @@
 ---
 name: vkr-memory
-description: VKR allocator selection, scope discipline, ownership, and lifetime rules. Use when allocating or freeing anything, choosing between Arena/VkrDMemory/VkrPool, storing hash-table keys, handling scene load/unload or hot-reload paths, interpreting allocator statistics, or diagnosing memory growth, leaks, and use-after-free.
+description: Select VKR allocators and verify CPU/GPU ownership, borrowed views, retirement, and load/unload memory behavior. Use for allocation changes or memory diagnosis.
 ---
 
-# VKR Memory and Lifetime
+# VKR memory and lifetime
 
-This codebase uses arenas heavily. **Arenas keep a high-water mark and do not
-support per-allocation frees**, so anything created and destroyed repeatedly —
-scene load/unload, editor toggles, hot reload — must be designed with a
-lifetime-aware allocator or it will grow without bound.
+Choose allocation from the release event and access pattern before choosing an
+API. First consider bounded stack values or reuse of existing owned capacity.
+Allocate only when storage or lifetime requires it. State who owns the bytes,
+who borrows them, when the last consumer finishes, and how storage returns for
+reuse.
 
-`VkrAllocator` (`lib/src/memory/vkr_allocator.h`) is the common interface over
-three backends. Choosing the wrong one is the single most common source of
-growth in this project.
+## Allocator selection
 
-## Allocator choice by lifetime
+`lib/src/memory/vkr_allocator.h` exposes these CPU backends:
 
-| Backend | Lifetime model | Use for |
+| Lifetime and shape | Allocator | Release rule |
 |---|---|---|
-| `Arena` | Bump allocation, bulk reset or destroy | Data sharing one lifetime; scratch; long-lived caches with intentional growth |
-| `VkrDMemory` | Reserved/committed virtual memory with individual free | Registries, hash keys, reloadable objects, anything removed before shutdown |
-| `VkrPool` | Fixed-size slots | Homogeneous objects with churn |
+| Scratch or objects destroyed together | `Arena` | End the scope or destroy the owning arena |
+| Variable-size objects removed independently | `VkrDMemory` | Free each removed object with its original size/alignment contract |
+| Fixed-size objects with churn | `VkrPool` | Return each slot; size and alignment must fit the pool configuration |
 
-`VkrArenaPool` is a separate thread-safe pool of fixed-size chunks used to build
-asset-loader scratch arenas. It is **not** a fourth `VkrAllocator` backend.
+A scene arena is valid for scene-owned objects discarded together. An object
+removed independently while its arena remains live needs freeable storage.
+An arena cache needs an explicit bound and reclamation policy; intentional
+high-water retention is not permission for unbounded reload growth.
 
-Decision rule:
+`VkrArenaPool` supplies synchronized chunks for asset-loader arenas. It is not a
+fourth `VkrAllocator` backend. Allocator instances are not inherently thread-safe;
+prefer task-owned scratch and partitioned ownership. `_ts` operations use the
+caller's mutex and do not belong in per-draw work.
 
-- **Temporary / scratch** → allocate inside a scope
-  (`vkr_allocator_begin_scope()` / `vkr_allocator_end_scope()`) and always end
-  it, including on error paths.
-- **Needs per-item free** → `VkrDMemory` or `VkrPool`, freed on remove or
-  unload. If an item can be removed before shutdown, it must not come from an
-  arena.
-- **Long-lived cache** → arena-backed is fine *only* when the growth is
-  intentional (caching up to the maximum content ever used) and documented at
-  the system level.
+Reserve and commit hot-path capacity before recording. A cheap-looking arena
+push can still commit pages or allocate another block. Select layout and batch
+lifetime to avoid repeated allocation, copies, and pointer chasing.
 
-The interface also provides aligned operations, tagged local/global accounting,
-and `_ts` wrappers that synchronize through a caller-supplied mutex. **Allocator
-objects are not intrinsically thread-safe**; only the global counters are
-atomic.
+## Scope and accounting contract
 
-## Allocator statistics are not OS memory
+Use `vkr_allocator_begin_scope()` only on an allocator that supports scopes and
+check its returned scope at the cold boundary. The arena adapter implements
+scopes; the pool adapter does not, and the DMemory adapter provides no scope
+callbacks. Pair a valid scope with `vkr_allocator_end_scope(&scope, tag)` on every
+exit, in reverse nesting order. Use explicit frees for temporary DMemory/pool
+allocations. Do not let a scope rewind another task's live allocations.
 
-`vkr_allocator_print_global_statistics()` counts bytes reported *through*
-`VkrAllocator`. A bulk free — `arena_destroy()`, an arena reset, a
-`VkrArenaPool` chunk return — does **not** decrement the global tag counters,
-because no per-allocation `vkr_allocator_free()` ever happened.
+Allocator tag totals measure bytes reported through `VkrAllocator`, not process
+resident memory. Raw arena reset/destroy or chunk return bypasses that accounting.
+End the tracked scope for reusable scratch. Before final bulk backing-store
+destruction, call `vkr_allocator_release_global_accounting(&allocator)` once if
+individual frees did not reconcile it. That call marks accounting released; it
+is not a reset operation for a still-live allocator.
 
-So apparent growth in the global stats may be an accounting artifact rather than
-a leak. Before diagnosing a leak, confirm which it is.
+## Keys, views, and cleanup
 
-To keep global stats accurate when freeing in bulk, do one of:
+- Hash keys must remain stable for the entry's lifetime. Remove an entry before
+  freeing its owned key because removal still compares the stored key. Prefer
+  explicit ownership; use `vkr_dmemory_owns_ptr()` only for an existing mixed
+  literal/owned-key policy tied to that allocator.
+- `String8` is a length-prefixed, non-null-terminated view. Strings, array views,
+  and pointers into scratch expire at scope end. Container growth can invalidate
+  earlier pointers even while the allocator remains alive. Reserve before
+  publishing views, use stable storage, or store handles/offsets as appropriate.
+- Every successful acquisition needs a release on failure and cancellation as
+  well as success. Use one cleanup path for partial loads when it makes the
+  acquisition order explicit. Release only acquired resources, in dependency
+  order.
+- `VkrRenderPacket` arrays remain caller-owned until submission returns. That
+  CPU borrowing boundary does not retire GPU resources referenced by the packet.
 
-- end the scope that covered the allocations, or
-- call `vkr_allocator_release_global_accounting(&allocator)` **immediately
-  before** destroying the allocator's backing store.
+## GPU memory and completion
 
-The scene runtime already does this before destroying its scene arena. Follow
-that pattern.
+`VkrAllocator` manages CPU bytes. Selected backends own device allocations and
+use shared GPU memory, submit, slot, and capture cores. Vulkan uses keyed
+DEVICE/UPLOAD/READBACK pools plus dedicated paths; there is no VMA. Current
+Vulkan allocation calls pass null host-allocation callbacks, so allocator tag
+totals do not include all driver host memory.
 
-## Hash-table key ownership
+Invalidate logical handles on destruction. Reuse device memory, descriptors,
+material slots, staging ranges, and readback storage only after all recorded
+uses are cancelled or submitted and submitted uses complete. A frame count is
+not completion proof. Keep asynchronously borrowed upload bytes until the API
+or staging owner has finished consuming them. Synchronously consumed file bytes,
+such as SPIR-V passed to shader-module creation, can be released after that call.
 
-This is the most common real leak pattern in the codebase.
+## Evidence
 
-- Keys stored in a table must point to memory that stays stable for the entire
-  lifetime of the entry. A key pointing into an arena that is later reset is a
-  use-after-free waiting for the next probe.
-- If entries are removed on unload, allocate keys from a freeable allocator
-  (`VkrDMemory` or a pool) and free them when removing.
-- **Free the key after calling the table's remove function.** Removal probes
-  compare against the stored key pointer; freeing first can corrupt the probe.
-- Only free keys you own. Defaults may use string literals — guard with
-  `vkr_dmemory_owns_ptr()` before freeing.
-
-## Borrowed views
-
-`String8` is length-prefixed and **not** null-terminated internally. A `String8`,
-`Array(T)`/`Vector(T)` view, or raw pointer into arena memory dies when that
-arena is reset or destroyed — even though every value was valid when it was
-created.
-
-Before publishing a view that outlives the current call, use one proven policy:
-exact pre-reservation before any view is formed, fixed-capacity storage, or an
-owning arena whose scope dominates every consumer. Container growth reallocates,
-so a pointer taken before a push may dangle after it.
-
-`VkrRenderPacket` payload arrays are caller-owned and must stay alive until
-`vkr_renderer_submit_packet()` returns.
-
-## Acquire/release symmetry
-
-Every successful acquire has a matching release on **all** paths, including
-early error exits and partially-completed scene loads. Prefer one cleanup path
-(`goto cleanup;`) or an explicit cleanup helper in multi-step loaders over
-duplicated teardown at each return.
-
-This applies to renderer handles (`TextureHandle`, `BufferHandle`, pipelines,
-render targets), scopes, and pool slots alike.
-
-## Vulkan-specific guidance
-
-- Do not allocate per-scene CPU-side Vulkan objects — pipelines, shaders,
-  tracking arrays — from long-lived arenas if those objects are destroyed and
-  recreated per scene. Use a pool or `VkrDMemory`, or cache the pipelines across
-  scenes.
-- Treat SPIR-V, glTF, and KTX2 file byte buffers as temporary: allocate them
-  from a scope (or free explicitly) after `vkCreateShaderModule()` or the
-  corresponding upload completes.
-- GPU device memory is separate and is **not** managed by `VkrAllocator`. There
-  is no VMA. Legacy Vulkan calls `vkAllocateMemory` per image, buffer
-  create/resize, and readback buffer; a `VulkanBuffer` may use `VkrDMemory` only
-  for ranges within one deliberately shared buffer. Vulkan 1.4 instead
-  uses keyed DEVICE/UPLOAD/READBACK blocks backed by `vkr_gpu_memory`, segregates
-  buffers from images, and keeps required/preferred dedicated allocations on a
-  separately accounted path. Neither policy makes `VkrAllocator` the GPU
-  lifetime owner. See ADR-007 and ADR-024.
-- Vulkan host allocations (`VkAllocationCallbacks`) use a dedicated `VkrDMemory`
-  reservation plus a small refcounted command-scope arena, so driver host
-  allocations appear in the project's statistics. This is unrelated to device
-  memory.
-
-## Pre-merge checklist
-
-- Does any data outlive the current scope? If yes, it must not point into a
-  scratch arena or a temp scope.
-- Is every `arena_destroy()` or bulk reset paired with
-  `vkr_allocator_release_global_accounting()` where global stats must stay
-  accurate?
-- Do "created" counters match "destroyed/released" counters after a full
-  load → unload cycle — pipelines, instance states, materials, textures, meshes?
-- Are hash keys freed after removal, and only when owned?
-- Does every acquire have a release on the error path, not just the happy path?
-- Run a repeated load/unload cycle and confirm the tag totals return to their
-  starting values, or that any residual is explained.
-
-Repeated-load measurement and handle counters are the required validation. The
-policies above reduce reload growth; they do not by themselves prove a path is
-leak-free.
+For lifecycle changes, run a focused repeated load/unload or create/destroy case
+through `vkr-harness`. Compare live bytes and live handle/slot counts after GPU
+retirement drains. Separate those values from committed capacity and OS memory;
+state any bounded cache retention. Inspect partial-failure cleanup where the
+change affects it. Choose additional checks through `vkr-validation` only when
+they detect a named failure the lifecycle run cannot expose.

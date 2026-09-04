@@ -23,7 +23,11 @@ LANGUAGES = {
     ".hpp": "cpp-header",
     ".m": "objective-c",
     ".mm": "objective-cpp",
+    ".inc": "include",
+    ".metal": "metal",
+    ".metalh": "metal-header",
     ".slang": "slang",
+    ".slangh": "slang-header",
     ".glsl": "glsl",
     ".vert": "glsl",
     ".frag": "glsl",
@@ -44,8 +48,7 @@ HASH_COMMENTS = {"python", "shell", "cmake", "make"}
 DEFAULT_EXCLUDES = [
     ".git/",
     ".git/**",
-    "build/**",
-    "build_*/**",
+    "build*/**",
     "vendor/**",
     "lib/src/vendor/**",
     "assets/**/*.spv",
@@ -136,10 +139,12 @@ def collect_files(
             relative = candidate.relative_to(repo).as_posix()
             if excluded(relative, patterns):
                 continue
+            if not candidate.resolve().is_relative_to(repo):
+                raise SystemExit(f"scope symlink escapes repository: {relative}")
             language = language_for(candidate, extensions)
             if target.is_file() or language is not None:
                 files[relative] = candidate
-    return [(files[key], key) for key in sorted(files, key=str.casefold)]
+    return [(files[key], key) for key in sorted(files, key=lambda key: (key.casefold(), key))]
 
 
 def line_metrics(text: str, language: str) -> tuple[int, int, int, int, int]:
@@ -195,6 +200,7 @@ def row_for(path: Path, relative: str, language: str) -> dict[str, object]:
             "branch_tokens": branches,
             "assert_tokens": assertions,
             "bytes": len(data),
+            "status": "unreviewed",
         }
     )
     return row

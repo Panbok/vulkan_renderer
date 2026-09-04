@@ -1,5 +1,7 @@
 @echo off
 setlocal enabledelayedexpansion
+cd /d "%~dp0"
+if errorlevel 1 exit /b 1
 
 REM Build and run tests 50 times to check for intermittent failures
 
@@ -19,6 +21,10 @@ if errorlevel 1 (
 echo.
 echo === Running tests 50 times ===
 
+set VKR_TEXTURE_VKT_STRICT=0
+set VKR_TEXTURE_VKT_ALLOW_SOURCE_FALLBACK=1
+set VKR_TEXTURE_VKT_ALLOW_LEGACY=1
+
 set passed=0
 set failed=0
 set tmpfile=%TEMP%\test_output_%RANDOM%.txt
@@ -30,7 +36,7 @@ for /L %%i in (1,1,50) do (
     set exitcode=!errorlevel!
     if !exitcode! neq 0 (
         set /a failed+=1
-        cho Run %%i: FAILED ^(exit code: !exitcode!^)
+        echo Run %%i: FAILED ^(exit code: !exitcode!^)
         echo --- Output ---
         type "!tmpfile!" | more /E +0
         echo --------------

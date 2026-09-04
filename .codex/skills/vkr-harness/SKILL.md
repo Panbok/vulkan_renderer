@@ -1,253 +1,145 @@
 ---
 name: vkr-harness
-description: Run and interpret VKR's structured renderer automation harness. Use when executing a renderer case, selecting a harness profile, reading a harness report or summary.csv, checking deterministic repetitions, or deciding whether harness evidence is authoritative.
+description: Run renderer profiles, snapshots, comparisons, autotests, and baseline proposals; inspect reports and retire run artifacts.
 ---
 
-# VKR Harness
+# VKR harness
 
-Use `vkr_harness` for structured, repeatable renderer observations. Phases 2-6
-support the `profile` command with full or dependency-resolved automation boot
-and visible, hidden-window, or true offscreen targets. Phase 2b adds
-authoritative CPU and GPU-timestamp performance profiles and retires the old
-log-scraping benchmark;
-Phase 3 adds paired boot/residency profiles and actual effective subsystem
-masks. Phase 4 adds direct-channel `snapshot` replays with canonical color,
-depth, shadow-layer, and picking-ID artifacts. Phase 5 adds forward-render
-debug replays, canonical comparison and diff artifacts, separated `autotest`
-orchestration, and profile-scoped guarded baselines. Phase 6 adds a surface- and
-swapchain-free ordinary-image target with explicit image count/recreation and
-actual target extent/format provenance.
+## Select and run the observation
 
-## Run a profile
+1. State the invariant or measurement the run must establish. Select the
+   smallest case that exercises it and a profile with the required evidence
+   policy. Inspect the actual JSON files; do not infer settings from names.
+2. Build with `./build_release.sh` when the Release binary or assets need
+   updating. Use Debug only for a concrete diagnostic reproduction.
+3. Match case target/present settings to the profile. Cases own workload,
+   camera, warmup, cache policy, and captures. Profiles own instrumentation,
+   minimum repetitions, environment, stability, and authority requirements.
+4. Run once, inspect the report and child errors, fix the relevant failure,
+   then rerun the affected gate. Broaden coverage only when a changed invariant
+   or unexplained result requires it. Do not weaken an acceptance profile.
 
-```sh
-./build_release.sh
-./build_release/tools/vkr_harness profile \
-  --case tools/cases/smoke/sponza_static.case.json \
-  --profile tools/profiles/local-windowed.json
-```
-
-The final stdout line is one JSON object containing `status`, `exit_code`, the
-repository-relative aggregate report path, and its SHA-256 digest. Child logs,
-samples, per-repetition reports, the aggregate `report.json`, and long-form
-`summary.csv` live under `build/_artifacts/profile/<run-id>/`.
-
-Cases own the workload. Profiles own environment constraints, instrumentation,
-minimum independent repetitions, stability policy, and authority policy. Do
-not weaken a profile to make a run pass. Add a separate local profile for an
-investigative environment.
-
-Use `tools/profiles/local-offscreen.json` only with a case declaring
-`target=offscreen` and `present=none`. Reports expose the actual target kind,
-image count, drawable extent, color/depth formats, color space, and present
-mode in `effective_config`; never infer those values from the manifest. On
-Retina macOS, logical window points and the reported Vulkan drawable extent can
-differ.
-
-## Run a snapshot
+Small Release execution check, with no timing authority:
 
 ```sh
-./build.sh Debug
-build/tools/vkr_harness snapshot \
-  --case tools/cases/smoke/sponza_snapshot.case.json \
-  --profile tools/profiles/local-windowed.json
+env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS \
+  ./build_release/tools/vkr_harness profile \
+  --case tools/cases/smoke/sponza_offscreen.case.json \
+  --profile tools/profiles/local-offscreen.json
 ```
 
-Snapshot starts one isolated replay child per required replay configuration and preserves
-the case's fixed delta, seed, warmup, camera, and cache policy. Its output lives
-under `build/_artifacts/snapshot/<run-id>/`. Read `captures[]` for the resolved
-producer, canonical encoding, source frame/submit serial, paths, digests,
-thresholds, and comparison result; read `auxiliary_runs[]` to audit each child
-report and its effective fingerprints. Replay-child timings are auxiliary and
-never primary performance evidence.
+For ordinary snapshots and baselines, use Release with validation variables
+unset. For a focused diagnostic run, use `vkr-validation`. For timing claims,
+use `vkr-performance`. Native backend evidence remains backend-specific;
+`vkr-shaders` owns bilateral shader and ABI acceptance.
 
-Shipped direct channels include `final_color`, editor-only `scene_color`,
-`depth`, `shadow_cascade_0` through `_3`, `picking_ids`, `hdr_pre_bloom`,
-`bloom_prefilter`, `bloom_result`, and `hdr_combined`. Logical auxiliary
-channels are `normals`, `unlit`, `lighting`, `shadow_debug_cascades`,
-`shadow_debug_factor`, `shadow_debug_depth`, `temporal_motion`, and
-`temporal_history`. Channels sharing one render
-mode and checkpoint share a replay; distinct debug modes do not. Final-color
-availability is target capability dependent; unavailable means exit
-`3`, never a silent substitute.
+## Choose the command
 
-## Run combined autotest and comparison
+| Command | Use and output |
+|---|---|
+| `profile --case <case.json> --profile <profile.json>` | Isolated capture-free repetitions, aggregate metrics, child reports, `summary.csv` |
+| `snapshot --case <case.json> --profile <profile.json>` | Replay captures and comparison results; replay timings are auxiliary |
+| `autotest --case <case.json> --profile <profile.json>` | Separate nested primary-profile and snapshot reports |
+| `compare --run <snapshot-run-directory>` | Recheck completed snapshot digests and compare to its accepted baseline |
+| `baseline propose --from <snapshot-run-directory> --actor '<actor>' --reason '<reason>'` | Verify snapshot and write a reviewable promotion proposal |
+
+All commands use `./build_release/tools/vkr_harness`. Windows multi-config
+builds may place the executable under `build_release/tools/Release/`.
+The CLI with no command prints usage and exits `2`; it has no `--help` command.
+The final successful publication line names the report and its SHA-256 digest.
+Read stderr when invalid usage or an early failure produces no report.
+
+Concrete capture check:
 
 ```sh
-build/tools/vkr_harness autotest \
-  --case tools/cases/smoke/sponza_snapshot.case.json \
-  --profile tools/profiles/local-windowed.json
-
-build/tools/vkr_harness compare \
-  --run build/_artifacts/snapshot/<run-id>
-
-build/tools/vkr_harness snapshot \
-  --case tools/cases/smoke/<backend-neutral-case>.case.json \
-  --profile tools/profiles/local-offscreen.json \
-  --cross-backend
+./build_release/tools/vkr_harness snapshot \
+  --case tools/cases/smoke/sponza_offscreen_snapshot.case.json \
+  --profile tools/profiles/local-offscreen.json
 ```
 
-`autotest` runs capture-free primary repetitions and snapshot replays as
-separate nested reports. Its top-level report references both; it never merges
-capture-replay timings into primary metrics or image verdicts into timing
-assertions. `compare` verifies the source summary and artifact digests before
-reading the accepted baseline. Missing or fingerprint-incompatible baselines
-return exit `4`; threshold failures return exit `1`; internal/incomplete
-comparison returns exit `5`.
+Snapshots run isolated replay children. Channels with the same checkpoint and
+render mode share a replay. Inspect `captures[]` for producer, encoding,
+source frame/submit serial, paths, digests, thresholds, and comparison verdict;
+inspect `auxiliary_runs[]` for child reports and effective configurations.
+Unavailable captures return `3`; never substitute a different channel.
+Capture names and case fields come from
+`docs/tooling/harness-case-schema.json` and the runtime parser in
+`tools/harness/vkr_harness_manifest.c`.
 
-`--cross-backend` is the explicit cross-machine parity mode. It reads the
-accepted generation for the same profile and case, allows its environment
-fingerprint to differ, and still requires identical workload and policy
-fingerprints. Both case manifests must leave `renderer.backend` unpinned, and
-the recorded environments must differ. The flag works on `snapshot` for an
-inline verdict or on `compare --run` for a completed second-machine snapshot.
-It does not change golden-baseline compatibility for ordinary commands.
+## Interpret the report
 
-## Interpret evidence
+Check these fields before accepting an observation:
 
-Read these report fields before quoting a number:
+| Field | Required interpretation |
+|---|---|
+| `status`, `exit_code` | Execution and assertion verdict; a report file alone does not prove success |
+| `authoritative`, `authority_reasons` | Authority policy result; a passing local or dirty run cannot support an authoritative timing claim |
+| `comparison` | Environment, workload, and policy fingerprints; compare only compatible runs |
+| `effective_config` | Realized boot, subsystem mask, target image count, extent, formats, present mode, and feature settings |
+| `provenance` | Binary/build, GPU, and driver identity; `effective_config.renderer_backend=external` alone does not distinguish Metal from Vulkan |
+| `execution` | Independent repetition count and warmup stability |
+| `aggregate.metrics`, `aggregate.passes` | Valid samples, nearest-rank percentiles, population standard deviation |
+| `events`, artifact digests | Required-metric invalidity, overflow, publication drops, and artifact completeness |
 
-- `status` and `exit_code` say whether execution completed and assertions held.
-- `authoritative` and `authority_reasons` say whether the observation may be
-  used as evidence. A passing local or dirty run is still non-authoritative.
-- the three `comparison` fingerprints prove environment, workload, and policy
-  compatibility.
-- `effective_config.boot_profile` and `subsystem_mask` identify the actual boot
-  closure. The mask is a canonical 16-digit hexadecimal string, not a label.
-- `effective_config.target`, `target_image_count`, `resolution`, color/depth
-  formats, color space, and present mode are actual backend results. Offscreen
-  ordinary images report `present_mode=none` and may report an unknown WSI color
-  space because none exists.
-- `execution` proves isolated repetition count and warmup stability.
-- `aggregate.metrics` and `aggregate.passes` contain nearest-rank percentiles
-  and population standard deviation; unavailable GPU samples retain an
-  unavailable reason.
-- With `gpu_timing`, completeness means each pass row is timed, skipped, or
-  explicitly `unsupported_timestamp_scope`. Unsupported rows stay
-  statistically invalid and cannot support a duration claim.
-- `events`, required-metric invalid counts, snapshot-publication drops, and
-  artifact digests determine completeness.
+Logical window size can differ from drawable pixels. Offscreen targets use
+ordinary images and report `present_mode=none`; infer neither pixels nor WSI
+color space from the manifest.
 
-Work-volume rows must be bit-identical across repetitions. Timing is expected
-to vary and is reported with spread. Never call one process a performance
-result, and never compare reports whose required fingerprints differ.
+Require deterministic work-volume rows to match across repetitions. GPU pass
+coverage is complete only when each row is timed, skipped, or explicitly
+`unsupported_timestamp_scope`. Unsupported timestamps stay invalid and cannot
+support a duration claim. A shorter pass list or missing samples is not a win.
 
-Exit codes are: `0` completed observation/pass, `1` assertion failure, `2`
-invalid usage or manifest, `3` unavailable environment, `4` missing or
-incompatible profile/baseline, and `5` timeout, cancellation, internal error,
-or incomplete evidence.
+| Exit | Meaning |
+|---|---|
+| `0` | Completed observation or pass |
+| `1` | Assertion or comparison threshold failure |
+| `2` | Invalid usage or manifest |
+| `3` | Unavailable environment or required capability |
+| `4` | Incompatible case/profile or missing/incompatible baseline |
+| `5` | Timeout, cancellation, internal failure, or incomplete evidence |
 
-## Retire run artifacts
+If a profile requires warmup stability, the case warmup must cover its stability
+window. Pairing failure is exit `4`; use sufficient warmup, not a weaker gate.
+Profile JSON files under `tools/profiles/` define the current policy. Useful
+starting points are `local-offscreen.json`, `local-windowed.json`,
+`local-windowed-gpu.json`, and the `performance-*` profiles. A single-process
+local profile can reproduce a defect but cannot establish a speed claim.
 
-Every `profile`, `snapshot`, `autotest`, and `compare` invocation writes a new
-timestamped tree under `build/_artifacts/`, and nothing ever prunes it. The
-tree is gitignored and fully regenerable from its case and profile, so it is
-working material, not evidence. Snapshot runs dominate: a single capture suite
-reaches gigabytes, and left alone the directory fills the disk.
+## Baselines and cross-machine comparison
 
-Choose the evidence lifetime before deleting. A single-machine observation is
-transcribed into a task note, doc, or PR body with its report digest, values,
-spread, and exact command. A run that must be consumed on another machine is
-first promoted through the guarded baseline workflow below. Its accepted
-generation retains `report.json`, `capture-summary.bin`, canonical capture
-data, capture metadata, child capture reports, and any distinct previews.
+Ordinary commands do not mutate `tools/baselines/`. Baseline acceptance requires
+user authorization to promote the reviewed result. A request to investigate or
+fix pixels does not authorize replacing accepted evidence.
 
-```sh
-du -sh build/_artifacts/*/                      # find the weight
-rm -rf build/_artifacts/{snapshot,profile,compare,autotest}
-```
+Review the proposal's `plan.json` and `entries.ndjson`. When promotion is
+already authorized, run `baseline accept --plan <plan.json>
+--confirm-sha256 <exact-proposal-digest>`. Acceptance re-verifies prior/source
+digests, writes an immutable generation, and atomically updates `current.json`.
+Do not copy capture files into the baseline tree manually.
 
-Two things stay out of the purge. Accepted baselines
-live in tracked `tools/baselines/` as self-contained content-addressed
-generations that never source from `build/_artifacts/`, so purging cannot
-endanger them. A **pending** `baseline propose` under
-`build/_artifacts/baseline/` is the exception: it verifies against digests of
-the snapshot run it came from, so deleting that snapshot makes the proposal
-permanently unacceptable. Accept or abandon a pending proposal before purging
-the snapshot it references.
+For cross-machine shader parity:
 
-For a bilateral gate split across machines, the first machine is not finished
-until the accepted generation and `current.json` are committed and pushed. The
-second machine pulls that tracked witness, runs the same backend-neutral case
-with `--cross-backend`, records the comparison report and values, then retires
-its local run tree. No session or `build/_artifacts` directory crosses machines.
+1. Use the same backend-neutral case and profile on both machines. Leave
+   `renderer.backend` unpinned in both case manifests.
+2. Publish the first machine's captures through authorized baseline acceptance.
+   The tracked generation retains canonical captures, metadata, reports, and
+   previews. Commit and push it when repository publication is authorized.
+3. Pull that generation on the second machine. Use `snapshot ...
+   --cross-backend` or `compare --run <second-run> --cross-backend`.
+4. Require identical workload/policy fingerprints and distinct environments.
+   This mode permits the environment difference; ordinary baseline matching
+   does not. Record comparison values and limits before deleting local output.
 
-## Baseline safety
+## Retire only this task's output
 
-Ordinary `profile`, `snapshot`, `autotest`, and `compare` commands are
-read-only with respect to `tools/baselines/`. A safe proposal verifies a
-completed snapshot without mutation:
+Every run writes regenerable files under `build/_artifacts/`. Record the exact
+command, configuration, report digest, verdict, relevant values/spread, and
+coverage limits in the task note or requested deliverable. Then remove only
+this task's completed run directories and traces. Preserve other tasks' output.
 
-```sh
-build/tools/vkr_harness baseline propose \
-  --from build/_artifacts/snapshot/<run-id> \
-  --actor '<actor>' --reason '<reason>'
-```
-
-Review `plan.json` and `entries.ndjson`. Never run `baseline accept` unless the
-user explicitly requests baseline promotion. Acceptance requires the exact
-proposal digest, re-verifies the prior generation and every source digest,
-writes an immutable content-addressed generation, then atomically replaces
-`current.json`. Manual copying into `tools/baselines/` is unsupported.
-
-Use `vkr-validation` for CPU and Vulkan correctness gates and `vkr-performance`
-for repository performance claims.
-
-| Profile | Timestamps | Use |
-|---|---|---|
-| `local-windowed.json` | off | Observational; two repetitions, drift not enforced |
-| `local-offscreen.json` | off | Observational WSI-free correctness/work-volume evidence; two repetitions |
-| `local-windowed-gpu.json` | on | Observational per-pass GPU timing |
-| `performance-windowed.json` | off | Authoritative CPU and work-volume evidence |
-| `performance-windowed-gpu.json` | on | Authoritative per-pass timing availability evidence |
-| `local-windowed-boot.json` | off | Observational five-repetition boot, residency, and work equivalence |
-| `performance-windowed-boot.json` | off | Authoritative clean-tree boot/residency evidence |
-
-The authoritative profiles encode the repetition, warmup, exclusivity, and
-completeness policy; a parser rejects any authoritative profile declaring fewer
-than two independent repetitions. A dirty tree or any authority reason still
-makes their output non-authoritative. A timestamp-on run is a different
-comparison configuration from a timestamp-off run, so never compare the two.
-
-A case whose `frames.warmup` is smaller than the profile's
-`warmup_stability_window` cannot answer that profile's stability gate. The
-pairing is rejected up front with exit `4`; raise the case's warmup rather than
-narrowing the profile's window.
-
-| Case | Boot | Frames | Use |
-|---|---|---|---|
-| `smoke/sponza_static.case.json` | full | 30/60 | Fast functional smoke |
-| `performance/sponza_orbit.case.json` | full | 120/300 | Steady-state frame evidence |
-| `performance/sponza_orbit_automation.case.json` | automation | 120/300 | The same workload under automation boot; use it to observe automation steady state on its own, never as the other orbit case's comparand |
-| `performance/sponza_boot_full.case.json` | full | 120/60 | Paired boot/residency evidence |
-| `performance/sponza_boot_automation.case.json` | automation | 120/60 | Paired boot/residency evidence |
-| `smoke/sponza_snapshot.case.json` | automation | 2/3 | Direct final/depth/shadow/picking snapshot fixture |
-| `smoke/sponza_snapshot_editor.case.json` | automation | 2/3 | Editor scene-color/depth/picking snapshot fixture |
-| `smoke/sponza_snapshot_debug.case.json` | automation | 2/3 | Normals/unlit/lighting and three shadow-debug replay fixture |
-| `smoke/sponza_offscreen.case.json` | full | 2/3 | Three-image WSI-free work-volume and recreation fixture |
-| `smoke/sponza_offscreen_snapshot.case.json` | full | 2/3 | Two-image WSI-free final-color/depth capture and recreation fixture |
-| `smoke/sponza_windowed_equivalent.case.json` | full | 2/3 | Local hidden-window work-volume counterpart to the offscreen fixture |
-| `smoke/sponza_windowed_snapshot_equivalent.case.json` | full | 2/3 | Local hidden-window capture counterpart to the offscreen fixture |
-| `smoke/sponza_windowed_resize.case.json` | full | 3/3 | Hidden-window native resize round trip; requires the renderer to observe the alternate and restored pixel extents |
-
-## Compare full and automation boot
-
-Use the paired focused cases; do not change scene, camera, rendered features,
-frame window, or profile between commands:
-
-```sh
-./build_release/tools/vkr_harness profile \
-  --case tools/cases/performance/sponza_boot_full.case.json \
-  --profile tools/profiles/performance-windowed-boot.json
-
-./build_release/tools/vkr_harness profile \
-  --case tools/cases/performance/sponza_boot_automation.case.json \
-  --profile tools/profiles/performance-windowed-boot.json
-```
-
-Boot profile and subsystem mask intentionally make the workload fingerprints
-different. Treat this as a declared boot/residency comparison, not an ordinary
-frame-performance baseline comparison. Require every deterministic draw,
-command, visibility, and overflow row to be identical before interpreting
-`boot.*` or resident memory. Report both masks and
-`memory.gpu.live_totals_exact`; do not infer savings from subsystem count alone.
+Before deleting a snapshot needed on another machine, publish its accepted
+baseline generation. A pending `baseline propose` still depends on the source
+snapshot and its digests: accept or abandon that proposal before removing its
+source. Accepted tracked generations are self-contained and survive deletion
+of local run directories.

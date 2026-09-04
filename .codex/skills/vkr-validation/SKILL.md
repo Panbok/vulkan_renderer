@@ -1,150 +1,124 @@
 ---
 name: vkr-validation
-description: Test and validation gates for the VKR renderer. Use when deciding whether to add a unit test, running the test suite, hunting an intermittent failure, running Metal or Vulkan validation layers, validating the pipeline cache or the multithreaded backend matrix, or determining what evidence a change needs before it is done.
+description: Select evidence for a change, justify tests, diagnose intermittent failures, and run focused native validation or cache checks.
 ---
 
-# VKR Validation
+# VKR validation
 
-## Choose the cheapest gate that completely covers the invariant
+## Choose evidence for the changed invariant
 
-Running everything is slow and running nothing is worse. Pick by what you
-touched.
+Before running a gate, state what failure it can detect and what result passes.
+Use the smallest existing check that exercises that failure. Build success
+proves compilation; it does not prove pixels, lifetime, synchronization, or
+performance. A documentation-only edit needs structural checks, not a renderer
+launch. Use `vkr-harness` for repeatable renderer observations.
 
-| You changed | Minimum gate |
+| Changed invariant | Evidence to select |
 |---|---|
-| Math, containers, memory, ECS, JSON, string, filesystem | Focused test + `./build_test.sh` |
-| A renderer subsystem with CPU-observable behavior | `./build_test.sh` |
-| Anything that records Vulkan commands or touches resource state | `./build_test.sh` + Vulkan validation-layer run |
-| Anything that records Metal commands, uses Metal resources, or changes Metal shaders | `./build_test.sh` + one focused, strictly single-process Metal validation run |
-| Shaders, reflection, pipeline creation | Explicit cold/warm production cache run + validation-layer run |
-| Backend threading, command pools, queue use | `tools/validate_multithreaded_backend_matrix.sh` |
-| A hot path, batching, culling, upload path | All of the above + a Release measurement (`vkr-performance`) |
-| A test that failed once and then passed | `./build_test_batch.sh` |
+| CPU algorithm, format, allocator ownership | A justified deterministic test or suite under the rule below; otherwise the direct reproduction |
+| Renderer output or feature behavior | Small Release harness case and affected captures/assertions |
+| Native commands, resource transitions, GPU lifetime | Small reproduction under the affected backend's native validation; inspect diagnostics and execution result |
+| Shader math, bindings, dispatch, host ABI | `vkr-shaders` parity gates, including compiled contracts and affected native cases |
+| Pipeline cache persistence | Isolated cold/prewarm/warm execution with actual cache load/save evidence |
+| Threading, queues, slot reuse, target recreation | Case that exercises the changed state transition or lifetime, plus native synchronization validation |
+| Frame cost or memory efficiency claim | Correctness evidence above as applicable, then matched Release measurements from `vkr-performance` |
 
-## Commands
+A renderer change does not automatically require the CPU suite. There is no
+current `tools/validate_multithreaded_backend_matrix.sh`; choose cases from
+`tools/cases/` that exercise the affected behavior. Inspect their assertions
+before treating a filename as coverage. If the existing tooling cannot exercise
+the required invariant, identify the missing mechanism immediately and resolve
+that decision with the user before dependent implementation.
 
-```sh
-./build_test.sh          # build + run the CPU suite (build/tests/vulkan_renderer_tester)
-./build_test_batch.sh    # 50 consecutive runs; use to confirm or refute a flake
-tools/validate_multithreaded_backend_matrix.sh     # backend threading matrix
-tools/validate_multithreaded_backend_matrix.sh --smoke
-```
+## CPU tests
 
-`./build_test.sh` configures with `--fresh`, so it is a clean-configure gate,
-not an incremental one.
-
-For a pipeline-cache gate, run the normal application twice with the same fresh
-explicit `VKR_PIPELINE_CACHE_PATH` and a bounded auto-close. Require the first
-run to initialize empty and save a non-empty cache, the second to load that
-cache and save successfully, and both runs to complete without validation
-errors. Record the cache byte counts and target configuration. The retired
-`validate_pipeline_cache.sh` depended on legacy `pipeline.create` events and is
-not a current command.
-
-## The CPU suite does not replace a validation-layer run
-
-The test runner under `tests/src/` is predominantly CPU-side. It does not
-exercise:
-
-- multiple swapchain image counts (the frame-stream indexing gap in
-  `docs/architecture/renderer-architecture-spec.md` §7.4 only appears at four
-  images);
-- different queue-family layouts (separate transfer queue present or absent);
-- different GPUs and drivers;
-- resize and device-loss scenarios;
-- actual barrier and layout-transition correctness.
-
-For anything that records commands or transitions resources, run the app under
-the Vulkan validation layers and read the output. A green CPU suite is not
-evidence that the Vulkan usage is correct.
-
-## Metal validation is allowed, but strictly single-process
-
-Metal API and shader/GPU validation are valid Debug diagnostic gates. Set the
-variables before the process creates its first Metal device:
+Default to no unit-test work. Before adding or running a test or suite, name
+the concrete failure, an expected result independent of the implementation,
+and why a build, harness run, or existing check cannot detect it as directly
+or cheaply. Use a test only when it detects that failure deterministically
+at the responsible boundary. Pure algorithms, decoding, stale handles, and acquire/release
+contracts can qualify. A test that copies implementation logic or asserts a
+registration constant does not.
 
 ```sh
-MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 \
-  ./build_run.sh Debug --renderer metal
+./build_test.sh
+./build_test_batch.sh
 ```
 
-- `MTL_DEBUG_LAYER=1` enables Metal API validation.
-- `MTL_SHADER_VALIDATION=1` enables shader/GPU validation.
-- Either variable may be used independently; enabling both is valid for a
-  focused correctness run.
+`build_test.sh` freshly configures `build_test`, builds the CPU test runner and
+font cooker, checks deterministic font output and unchanged-output skipping,
+cooks required assets, packs textures, and runs the suite. The runner is
+`build_test/tests/vulkan_renderer_tester`; it currently ignores arguments and
+has no suite filter. Do not invent a focused-test CLI.
 
-**Hard safety rule:** only one validation-enabled process may create or use a
-Metal device at a time. Never overlap validation-enabled app launches, harness
-renderer children, repetitions, backend matrices, or capture workers. Wait for
-the active renderer process to exit before starting the next one. Concurrent
-validation-enabled Metal renderer processes have been followed by a macOS
-kernel panic, so treat parallel Metal validation as prohibited rather than as a
-performance or reliability tradeoff.
+`build_test_batch.sh` requires the configured `build_test` tree, rebuilds the
+test target, packs once, then aggregates 50 runs. Use it only to investigate a
+specific intermittent failure, not as routine confidence padding. A failure
+followed by a pass needs diagnosis; 50 passes cannot prove the defect absent.
+The `.bat` wrappers provide Windows equivalents.
 
-A non-rendering harness parent may supervise exactly one validation-enabled
-renderer child at a time; the safety count is the number of live processes that
-create or use a Metal device. Before a diagnostic launch, check that no prior
-renderer or harness child remains:
+If a new test is justified, follow the neighboring `tests/src/` file layout and
+register its suite in `test_main.c`. CMake discovers source files; it does not
+register the suite call. Keep inputs and expected results independent of
+scheduling, clock speed, and filesystem ordering.
+
+## Native diagnostics
+
+Use Debug only to reproduce a concrete problem. Supported non-Windows Debug
+builds enable ASan/UBSan by default. Run ordinary Release snapshots and
+performance separately with validation variables unset.
+
+On Windows, `build.bat Debug` enables Vulkan validation through the backend's
+Debug configuration, including synchronization checks. Run the smallest relevant
+case using `build_debug/tools/vkr_harness.exe` or its `Debug/` multi-config path.
+Require actual `VK_LAYER_KHRONOS_validation` initialization and inspect child
+stdout/stderr for validation errors. A native Vulkan run is unavailable on
+macOS in the current implementation; a Metal pass cannot close that gate.
+
+For Metal API validation, set `MTL_DEBUG_LAYER=1` before device creation. Add
+`MTL_SHADER_VALIDATION=1` only when shader/GPU diagnosis is needed. Check live
+processes first:
 
 ```sh
 pgrep -fl 'vkr_harness|vulkan_renderer'
 ```
 
-If the check reports a live renderer or an unresolved harness process, do not
-launch another validation run. Do not use Metal shader/GPU validation for broad
-multi-capture or baseline suites. Keep the case to the smallest reproduction.
+Wait for an existing renderer or coordinate with its owner before launching.
+Identify unknown harness processes; do not terminate another task's processes.
+Exactly one validation-enabled process may create/use a Metal device at a time.
+A harness parent can supervise one child; do not overlap renderers, repetitions,
+matrices, or capture workers. Broad validation capture suites are prohibited:
+a validation-enabled multi-capture run was followed by a macOS watchdog panic;
+the cause was not established.
 
-Validation-enabled timings are never performance evidence. Run baselines and
-performance profiles separately in the normal Release configuration with both
-Metal validation variables unset.
+For a layered-transmission issue, this existing bounded case is an example:
 
-## When to add a unit test
+```sh
+MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 \
+  ./build_debug/tools/vkr_harness profile \
+  --case tools/cases/local/p18_metal_dual_validation_serial.case.json \
+  --profile tools/profiles/local-metal-dual-validation-serial.json
+```
 
-Be deliberate. There are already 40+ test files under `tests/src/`; adding a
-weak one costs maintenance forever and proves little.
+Build first with `./build.sh Debug` if needed. The example has one repetition;
+select another minimal case when transmission does not exercise the issue.
+MetalFX can be unavailable under Apple's validation wrappers; report the actual
+configuration and do not treat a fallback run as MetalFX evidence.
 
-Add a test when it covers a **critical invariant completely and
-deterministically at the right seam**:
+## Pipeline cache check
 
-- pure algorithms — math, frustum, transform, string, JSON, bitset;
-- lifecycle and ownership contracts — acquire/release symmetry, allocator
-  accounting across a load/unload cycle;
-- handle generation and stale-use rejection;
-- schema and format decoding — glTF, KTX2/`.vkt`, texture format selection,
-  reflection-driven pipeline layout;
-- cache behaviour;
-- deterministic state machines — async resource state transitions, batching
-  decisions.
+Use a minimal harness case with `cache=isolated_warm`. The harness owns an
+isolated cache path and launches a prewarm child before measured children.
+Inspect logs and cache files: the fresh prewarm must save nonempty data; the
+next child must load that data and save successfully. Record byte counts,
+backend, configuration, and any validation errors. `cache=isolated_cold` alone
+cannot prove persistence across processes. Do not infer cache success merely
+from a passing profile or use the retired `validate_pipeline_cache.sh`.
 
-Do **not** add a test that merely mirrors implementation structure, restates a
-pass registration, or asserts on values a Vulkan run owns (pixels, timings,
-barrier emission). Those belong to a validation-layer run or a measurement.
+## Completion
 
-Before adding one, state why the failure it targets cannot be caught more
-directly by the existing suite, a validation-layer run, or a measurement.
-
-## Test conventions
-
-- Files live in `tests/src/` and are auto-included by CMake — no registration
-  edit needed.
-- Name them `*_test.c` / `*_test.h` or `*_tests.c` / `*_tests.h`, matching the
-  existing split.
-- Register the suite from `test_main.c` following the neighbouring entries.
-- Keep tests deterministic. A test that depends on timing, thread scheduling, or
-  filesystem ordering will become a flake, and a flake is worse than no test.
-
-## Intermittent failures
-
-A test that fails once is not noise until proven. Run `./build_test_batch.sh`
-(50 iterations) before dismissing it. If it reproduces at any rate, treat it as
-a real bug — the job system, event system, and async resource pump are all
-genuinely concurrent here, and an intermittent failure in any of them is a
-lifetime or synchronization defect, not test flakiness.
-
-## Reporting
-
-State what you ran, what passed, and what you did not run. If a gate was skipped
-because the environment could not support it (no second GPU, no separate
-transfer queue), say so explicitly rather than implying coverage.
-
-Never report a change as done on the strength of a build succeeding.
+Record exact commands, passing assertions, diagnostic findings, and unavailable
+coverage. Fix a failure before rerunning its affected check. Repeat or broaden
+checks only for new edits, failures, or an unresolved invariant. Native backend
+coverage, pixel equivalence, and performance authority are separate results.
+Retire this task's run output using `vkr-harness` after recording its evidence.

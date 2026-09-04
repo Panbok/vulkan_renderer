@@ -1,265 +1,103 @@
 ---
 name: vkr-performance
-description: The measured-performance workflow for the VKR renderer. Use when investigating frame-time or hitch regressions, optimizing a renderer hot path, adding or reading per-pass timings, recording a GPU trace for occupancy or limiter data, comparing before/after numbers, running a structured performance profile, or validating any claim that a change made the renderer faster or slower.
+description: Investigate frame cost or hitches, optimize renderer hot paths, inspect timings or GPU traces, and validate before/after performance claims.
 ---
 
-# VKR Performance
+# VKR performance
 
-## Why this skill exists
+Performance is correctness. Preserve ownership, lifetime, GPU completion,
+visible output, and required work while reducing measured cost.
 
-**Performance is correctness here.** A frame that misses its budget is a failed
-frame, and a per-draw allocation, blocking wait, string construction, or lock is
-a defect rather than a style preference.
+## Measurement loop
 
-That principle is only useful with its counterweight: **an unmeasured
-performance claim is not a result.** This skill defines what counts as evidence
-in this repository, which instruments exist, and what they do and do not prove.
+1. Name the expensive operation, expected metric, frame budget, and invariant
+   the change must preserve. Inspect current code and architecture spec §8
+   before treating a known limitation as a new defect.
+2. Run the smallest representative Release case. Use local observations to
+   locate cost; use authoritative matched runs to support a speed claim.
+3. Attribute the cost before changing code. CPU scopes locate host work;
+   valid pass timestamps locate GPU work. Read [GPU-TRACE.md](GPU-TRACE.md)
+   only when hardware counters or encoder attribution are needed.
+4. Change one attributable cause. Preserve the measured workload or state
+   the intentional change. Select correctness checks through `vkr-validation`.
+5. Rerun the same configuration. Compare valid samples and spread, work-volume
+   rows, and affected captures. Investigate an unexplained change before
+   claiming improvement. Stop when the stated gate passes; do not add broad
+   suites or speculative tests.
 
-This project has **no in-process profiler integration** — no Tracy, no frame
-markers beyond the graph's own timestamps. Structured performance evidence comes
-from `vkr_harness profile`; the former application `BENCHMARK_SUMMARY` log and
-grep/awk shell runner were retired after Phase-2b parity. Everything below is a
-real, present API, profile, or report field.
+## Commands and authority
 
-## Instruments that exist
-
-### Per-pass CPU and GPU time
-
-```c
-bool8_t vkr_rg_get_pass_timings(const VkrRenderGraph *graph,
-                                const VkrRgPassTiming **out_timings,
-                                uint32_t *out_count);
-```
-
-`VkrRgPassTiming` (`lib/src/renderer/vkr_render_graph.h`) carries `cpu_ms`,
-`gpu_ms`, and `gpu_valid`. **`gpu_ms` is meaningless unless `gpu_valid` is
-true**, and it reflects the *last completed frame*, not the current one —
-GPU results are buffered. Never report a `gpu_ms` without checking `gpu_valid`.
-
-The backend timestamp path is `vkr_renderer_rg_timing_begin_frame` /
-`_begin_pass` / `_end_pass` / `_get_results` (`vkr_renderer.h`). It requires
-device timestamp support; absence is an unavailable instrument, not a
-regression.
-
-### Why a pass is slow
-
-Pass timings say which pass costs; they never say why. Read
-[GPU-TRACE.md](GPU-TRACE.md) to record an Instruments GPU trace of a harness run
-from the CLI and read hardware limiters, occupancy, and bandwidth per pass —
-when a pass is the suspect and you need occupancy, a bound, or a shader-level
-cause. Both backends label their GPU work from the graph pass name, so a trace
-attributes to passes; keep new encoder creation sites labelled.
-
-### Frame work-volume metrics
-
-`VkrRendererFrameMetrics` is an **out-parameter of
-`vkr_renderer_submit_packet()`**, not a separate getter, and it counts *work*,
-not time:
-
-- `world` (`VkrWorldBatchMetrics`): `draws_collected`, `opaque_draws`,
-  `transparent_draws`, `opaque_batches`, `draws_issued`,
-  `draw_calls_issued`, `batches_created`, `draws_merged`,
-  `indirect_draws_issued`, `indirect_calls_issued`, `avg_batch_size`, and
-  `max_batch_size`.
-- `shadow` (`VkrShadowMetrics`): per-cascade opaque/alpha draw calls, set-1
-  descriptor binds, opaque/alpha batch counts, and opaque indirect-command and
-  indirect-call counts.
-
-These are deterministic submission metrics; they do not depend on GPU or
-driver. Hold logical work and captures constant while using them to prove that
-an API-submission change reduced calls, then confirm with timing.
-
-`draws_issued` counts logical indexed commands after CPU instancing;
-`draw_calls_issued` counts the actual direct or indirect Vulkan calls.
-`draws_merged` is derived from logical commands versus submitted binding-state
-batches; despite its name, it does not report the earlier CPU instancing merge.
-The indirect counters distinguish commands carried from MDI calls recorded.
-Inspect all four when evaluating batching: a lower API-call count alone does
-not prove that visibility, ordering, or logical work stayed equivalent.
-
-`VkrVisibilityStats` (`lib/src/renderer/vkr_visibility.h`) covers the extraction
-stage instead: tested/culled objects, missing bounds, opaque draws before/after
-CPU merging, merge opportunities/run length, and distinct geometry/material
-groups. Use those counters for culling or instancing claims, and pair them with
-the frame metrics and image validation so rejected or merged work does not hide
-a rendering change.
-
-### Upload stalls
-
-```c
-bool8_t vkr_renderer_get_and_reset_upload_wait_stats(
-    VkrRendererFrontendHandle renderer, VkrRendererUploadWaitStats *out_stats);
-```
-
-Uploads currently submit and wait on a fence (architecture spec §7.2), so this
-is the first place to look for a hitch during scene load or streaming. The call
-**resets** the counters — read it once per sample window, not in a loop.
-
-### Graph resource pressure
-
-`vkr_rg_get_resource_stats()` and `vkr_rg_log_resource_stats(graph, label)` —
-live and peak graph-owned resource counts and sizes. Rising peak across frames
-means the graph is recreating resources, which is a hitch source.
-
-### CPU memory
-
-`vkr_allocator_print_global_statistics()` — tagged local/global totals. Read
-`vkr-memory` before interpreting these; bulk `arena_destroy()` does not
-decrement global counters without
-`vkr_allocator_release_global_accounting()`, so apparent growth may be an
-accounting artifact rather than a leak.
-
-### Instance stream occupancy
-
-`VkrInstanceBufferPool` has a fixed 65,536-instance capacity and reports
-overflow. Occupancy near capacity, or any overflow report, is a signal — the
-pass drops work rather than growing.
-
-## Performance workflow
+Build with `./build_release.sh` when needed. Use `vkr-harness` to run and inspect:
 
 ```sh
-# CPU and work-volume evidence; timestamps are disabled.
-./build_release.sh
 ./build_release/tools/vkr_harness profile \
   --case tools/cases/performance/sponza_orbit.case.json \
   --profile tools/profiles/performance-windowed.json
 
-# Per-pass GPU evidence; timestamp-on is a distinct configuration.
 ./build_release/tools/vkr_harness profile \
   --case tools/cases/performance/sponza_orbit.case.json \
   --profile tools/profiles/performance-windowed-gpu.json
 ```
 
-The final stdout line identifies the aggregate `report.json` and its SHA-256.
-The same run root under `build/_artifacts/profile/` contains long-form
-`summary.csv`, every child report, raw samples, and stdout/stderr digests. The
-performance profiles require a clean tree, five independent child processes,
-stable warmup, actual IMMEDIATE presentation, an exclusive GPU lane, complete
-required metrics, and bit-identical work volume. The GPU profile additionally
-requires every executed pass CPU sample to have a matching valid GPU timestamp;
-unsupported or incomplete timestamps make the run incomplete rather than zero.
+Run with Metal and Vulkan validation variables unset. Debug, sanitizers,
+validation, GPU traces, and capture replays are diagnostic configurations.
+Their timings cannot establish normal Release performance.
 
-Use `tools/cases/smoke/sponza_static.case.json` with
-`tools/profiles/local-windowed.json` for a short integration observation. That
-profile is deliberately non-authoritative and cannot support a performance
-claim.
+Read the chosen profile JSON. The above profiles require five independent
+children, clean source, stable warmup, actual immediate presentation, exclusive
+GPU use, complete required metrics, and deterministic work volume. GPU timing
+adds instrumentation and requires complete pass availability accounting;
+`unsupported_timestamp_scope` is accounted for but supplies no duration.
 
-### Boot and resident-memory evidence
+A speed claim requires `status=pass`, `authoritative=true`, empty
+`authority_reasons`, and matching environment/workload/policy fingerprints.
+Match build/compiler, GPU/driver, resolution, assets, target/image count,
+presentation, editor/features, cache policy, and instrumentation. Compare
+GPU-timestamp-on with timestamp-on. FIFO can hide CPU savings behind refresh
+pacing; inspect the relevant CPU work scope as well as `frame.wall`.
 
-Phase 3 has a separate paired workflow:
+A dirty-tree or single-process observation may guide implementation. Label it
+non-authoritative and do not convert it into a claimed speedup. If a required
+environment or owner decision is missing, state that immediately; do not
+silently weaken the gate or leave an unresolved architecture decision at the
+end of a document.
 
-```sh
-./build_release/tools/vkr_harness profile \
-  --case tools/cases/performance/sponza_boot_full.case.json \
-  --profile tools/profiles/performance-windowed-boot.json
-./build_release/tools/vkr_harness profile \
-  --case tools/cases/performance/sponza_boot_automation.case.json \
-  --profile tools/profiles/performance-windowed-boot.json
-```
+## Instruments
 
-This is the one intentional exception to the ordinary matching-workload-
-fingerprint rule: boot profile and effective subsystem mask are the independent
-variables and therefore produce different workload fingerprints. All other
-case/profile inputs must match, and every deterministic work-volume row must be
-bit-identical. Compare `boot.*`, `memory.cpu.bytes.live`,
-`memory.gpu.bytes.live`, and `memory.gpu.live_totals_exact`; never present
-steady-state frame timing across the two masks as a like-for-like result.
+Use the current metric catalog in `lib/src/renderer/vkr_renderer_metrics.c`
+and actual report rows. Do not copy historical module/counter inventories into
+new work.
 
-Correctness is a separate gate — see `vkr-validation`. A faster frame that fails
-the validation layer is not an improvement.
-
-## Evidence policy
-
-**Release only.** Debug timings are not evidence. Debug builds carry different
-inlining, assertion, and validation-layer costs, and Debug-to-Debug comparison
-does not predict Release behavior.
-
-**Same configuration or the comparison is void.** Record and match all of:
-
-| Field | Why it matters |
+| Need | Instrument and limit |
 |---|---|
-| Build type and compiler | Inlining and assertion cost |
-| GPU and driver version | Everything |
-| Resolution | Fill-bound passes scale with it |
-| Scene / asset set | Draw count, material count, texture residency |
-| Swapchain image count | Frame-stream indexing behaves differently (see gap below) |
-| Present mode | FIFO caps at refresh rate and hides CPU wins |
-| Editor enabled | Changes graph topology — the editor composite is an alternative pass, not additive |
-| Cascade count | Changes the shadow repeat expansion |
+| CPU work or queue-slot waits | Harness CPU metrics; inspect scope definitions before interpreting duration |
+| GPU pass duration | `vkr_rg_get_pass_timings()` in `vkr_render_graph.h`; use `gpu_ms` only when `gpu_valid`, for a completed buffered frame |
+| Draw, visibility, overflow equivalence | Harness work-volume rows plus relevant captures; fewer calls alone does not prove equivalent work |
+| Upload stall attribution | Harness upload metrics; `vkr_renderer_get_and_reset_upload_wait_stats()` consumes counters, so do not read it in competition with the metrics collector |
+| Graph resource churn | `vkr_rg_get_resource_stats()`; a higher peak is a clue, not proof of recreation or a leak |
+| CPU/GPU resident memory | Harness memory rows and `memory.gpu.live_totals_exact`; use `vkr-memory` to distinguish allocator accounting from live ownership |
+| GPU limiter or occupancy | Instruments trace on Metal; counters suggest a cause and do not establish a speed claim |
 
-**Report what you did not measure.** State the report path/digest, instrument,
-sample window, independent repetition count, and variance. Require
-`status=pass`, `authoritative=true`, an empty `authority_reasons` array, and
-matching environment/workload/policy fingerprints before presenting a run as
-evidence. One process is an observation, not a result; authoritative profiles
-with fewer than two independent repetitions are rejected by the parser.
-
-**Present mode masks CPU improvements.** If the app is FIFO-locked at refresh
-rate, `cpu.frame` improvements will not show up in frame time. Measure the CPU
-submit path directly rather than concluding "no change".
-
-**Timestamps perturb.** Enabling per-pass GPU timestamps adds queries to the
-command stream. Compare timestamp-on against timestamp-on, never against a
-timestamp-off baseline.
-
-**A GPU trace explains, it does not prove.** Instruments perturbs the command
-stream and one recording is one process. Quote trace numbers as diagnosis and
-carry the claim on a `performance-windowed-gpu.json` run.
-
-**Transcribe, then purge.** The reporting template below *is* the artifact that
-survives; the run tree under `build/_artifacts/` and any Instruments trace are
-working material to delete once the numbers are written down. The digest still
-names the run and the command still regenerates it. See `vkr-harness` for what
-is safe to purge and the one pending-baseline exception.
-
-## Current throughput baseline
-
-The ranked P2 plan in `docs/architecture/renderer-architecture-spec.md` §8 and
-ADR-013 is shipped; ADR-013 is **Accepted (partial)** pending native Vulkan
-validation. Production payload construction performs conservative camera and
-union-of-cascades visibility classification. Opaque world work uses a complete
-instancing key, and the world/shadow passes use bounded MDI groups with direct
-fallback. `vkr_indirect_draw_alloc` is called by the shared pass submission
-path.
-
-The older `VkrDrawBatcher` module still has no production caller, but that is
-not evidence that batching is absent: P2 shipped through the visibility and
-pass-local batching paths. Before proposing another throughput layer, read
-ADR-013's implemented behavior and measure which current boundary dominates:
-
-1. **Visibility granularity.** Sponza's material-merged submeshes have poor
-   spatial locality, while San Miguel demonstrates useful CPU culling. Improve
-   content/bounds granularity only from representative measurements.
-2. **Instancing compatibility.** Local reflection-probe descriptor selection is
-   position-dependent and intentionally prevents unsafe merges. Preserve that
-   binding-context invariant or move the state into per-instance data first.
-3. **MDI group reach.** Multiple indirect commands share one call only while
-   pipeline, descriptors, and vertex/index buffers remain compatible.
-   Per-material descriptor sets and per-geometry buffers limit world grouping;
-   shared buffers or a material table may be prerequisites for a larger win.
-4. **Separate visibility domains.** Camera visibility cannot replace the union
-   of shadow-cascade visibility: off-camera objects may still cast visible
-   shadows.
-
-Known hitch sources before you go hunting for a new one: synchronous upload
-fence waits (§7.2), pipeline variant creation outside the prebuilt set, graph
-resource recreation on description change, and readback ring wrap blocking on a
-still-pending slot (§7.3).
+For full/automation boot comparison, use
+`tools/cases/performance/sponza_boot_full.case.json` and
+`tools/cases/performance/sponza_boot_automation.case.json` with
+`tools/profiles/performance-windowed-boot.json`. Boot and subsystem masks are
+intentional workload-fingerprint differences. Require all other inputs and
+deterministic work rows to match. Compare boot/residency metrics, record both
+masks and memory exactness, and do not present steady-state timing across those
+masks as an ordinary matched frame comparison.
 
 ## Reporting template
 
-```
-Change:        <what>
-Config:        Release / <GPU> / <driver> / <WxH> / <scene> / <N> swapchain images /
-               present <mode> / editor <on|off> / <N> cascades
-Instrument:    <vkr_harness profile/report metric or pass row | GPU trace counter | direct diagnostic API>
-Runs:          <N>, <window> frames each
-Before:        <metric> = <value> (spread <lo>–<hi>)
-After:         <metric> = <value> (spread <lo>–<hi>)
-Not measured:  <what this run does not cover>
-Invariants:    <what still proves lifetime/ownership/completion correctness>
-Evidence:      <report path + SHA-256; three comparison fingerprints>
+```text
+Change and invariant: <operation changed; ownership/completion/output preserved>
+Configuration: <Release, compiler, GPU/driver, scene, extent, target/image count,
+                present mode, features, cache, instrumentation>
+Evidence: <exact commands; report SHA-256; comparison fingerprints; authority>
+Samples: <independent children, warmup/measurement windows, validity>
+Before/after: <metric, values, spread, delta; relevant work and capture checks>
+Coverage: <measured scope and any unavailable gate>
 ```
 
-A report without the `Config` and `Not measured` lines is investigative
-evidence. It can guide the next step; it cannot support a claim.
+Transcribe results before removing this task's run directories and traces.
+`vkr-harness` owns cleanup and pending-baseline retention rules.

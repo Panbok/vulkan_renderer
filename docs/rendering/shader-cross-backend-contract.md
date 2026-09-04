@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-09-01
+updated: 2026-09-04
 authority: design
 ---
 
@@ -24,9 +24,10 @@ disagree, the code describes what ran and this document must become
 Each reviewed contract has one of two states:
 
 - **ALIGNED** — both production shader paths implement the recorded contract;
-  host layout and compiled-shader reflection are checked where applicable; CPU
-  reference tests pin deterministic math; and focused Release snapshots prove
-  that both compiled backends execute the path with real data.
+  host layout and compiled-shader reflection are checked where applicable; and
+  focused Release snapshots prove that both compiled backends execute the path
+  with real data. Require a CPU reference test only when an independent oracle
+  detects a named arithmetic failure more directly than the renderer case.
 - **UNALIGNED** — either backend differs, or source/layout/runtime evidence is
   missing on one side. The entry must name the missing side and gate. If any
   reviewed entry is unaligned, the document-level parity state is also

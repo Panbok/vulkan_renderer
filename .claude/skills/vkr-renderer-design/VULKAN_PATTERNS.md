@@ -1,136 +1,73 @@
-# Vulkan backend patterns for VKR
+# Backend and graph ownership
 
-This file records the real seams in `lib/src/renderer/` and the gaps that are
-already known and tracked. Read it before proposing a backend or graph change,
-so you extend the current design rather than rediscovering a logged issue.
+Use the architecture spec for current status and ADRs for rationale. This file
+identifies the contracts to inspect, rather than maintaining another issue list.
 
-Status authority is
-`docs/architecture/renderer-architecture-spec.md`. Rationale authority is
-`docs/architecture/adr/`.
+## Selected implementation
 
-## The seams that exist
+`renderer_frontend.c/h` selects one `VkrRendererImpl` at initialization. Metal
+runs on macOS; Vulkan runs natively on Windows. Frame preparation, packet
+submission, lifecycle, asset publication, capture, and metrics cross this coarse
+boundary. Native Vulkan types remain inside `lib/src/renderer/vulkan/`.
 
-### Selected implementation boundary — ADR-025, ADR-026
+ADR-025 and ADR-026 replaced the generic backend interface. Keep native command
+recording private; do not recreate the retired Vulkan 1.2 descriptor-set path
+or a function-pointer dispatch per draw.
 
-`renderer_frontend.c/h` owns scene-facing CPU systems and selects one coarse
-`VkrRendererImpl` strategy at initialization: Metal on macOS or Vulkan on
-Windows. A normal successful frame crosses the strategy seam through
-`prepare_frame` and `submit_packet`; lifecycle, asset-publication, capture,
-and metrics operations are also coarse strategy calls.
+## Shared graph and publication
 
-There is no Vulkan 1.2 adaptor, generic backend interface, view/layer system, or
-temporary `vulkan-bindless` selector. Vulkan types stay under
-`lib/src/renderer/vulkan/` and do not appear in public renderer
-headers. Do not recreate a command RHI or a second descriptor-set path.
+`assets/render_graphs/main.rendergraph.json` declares frame resources and passes.
+`vkr_rg_build_from_json()` realizes the current packet conditions and dimensions;
+`vkr_rg_compile_schedule()` computes shared ordering, culling, and dependencies.
+Metal and Vulkan realize API objects and lower those dependencies into native
+commands. Inspect `vkr_rg_compile.c` plus the affected backend's graph and
+recording code together.
 
-### Authored JSON render graph — ADR-002, ADR-003
+`VkrAssetPublisher` publishes generation-safe resources and immutable material
+rows. Preserve canonical descriptors with the owning record. Replacing a shared
+sampler republishes dependent material rows before its slot can retire.
 
-`assets/render_graphs/main.rendergraph.json` is parsed into a reusable authored
-model. Per frame, `vkr_rg_build_from_json()` realizes resources and passes for
-the current packet and dimensions, and `vkr_rg_compile_schedule()` produces
-the shared order, culling, conditions, and image dependencies.
+## Pipelines and resource indices
 
-The selected implementation owns graph resource realization and command
-recording. Metal encodes through its packet implementation; Vulkan
-lowers the shared dependency records to synchronization2 barriers and executes
-dynamic-rendering/transfer/compute pass categories. The graph owns semantic
-state, not API objects.
+Vulkan production shaders live in `shaders/vulkan/slang/` under the renderer.
+Its pipelines use descriptor buffers and reflected GPU ABI records. Descriptor
+byte offsets and strides derive from queried layout/device properties; shader
+records carry logical indices. Native roots remain backend-owned.
 
-### Packet submission — ADR-004
+Keep pipelines ready before recording their work. Capability selection happens
+at initialization using typed data. Use `vkr-shaders` for bindings, ABI, shader
+algorithms, and Metal/Vulkan comparison.
 
-`VkrRenderPacket` carries frame info, globals, and optional world, shadow,
-skybox, UI, editor, picking, text-update, capture, and debug payloads. Optional
-pointers control pass participation. Validation produces
-`VkrValidationError` with a field path. Payload arrays are caller-owned and
-must outlive submission.
+## Completion and reuse
 
-Describe this as packet-based, not stateless: `prepare_frame` is ordered before
-submission, while resource systems, published assets, graph realizations,
-pipeline caches, and metrics persist across frames.
+Vulkan uses a timeline semaphore and `VKR_VULKAN_FRAME_SLOT_COUNT` command slots.
+Acquire semaphores belong to frame slots; render-complete semaphores belong to
+swapchain images. A presented image's reacquisition is proven when a completed
+submit has consumed its next acquire semaphore. Optional present fences provide
+an additional per-image completion proof.
 
-### Asset-publication boundary
+`vkr_vulkan_renderer_prepare_frame()` can wait for a busy slot, image, or present
+fence. These waits enforce finite in-flight capacity. Measure them before
+changing scheduling; never replace completion with an assumed frame lag.
 
-Geometry, textures, samplers, materials, writable textures, and IBL work enter a
-selected implementation through `VkrAssetPublisher`. Handles are
-generation-safe. Physical resources and descriptor/material slots are retired
-only after the last proven submit value. Samplers are canonical and shared;
-replacing one republishes dependent material rows before retiring the old slot.
+Logical destruction invalidates handles immediately. Physical resources,
+descriptor/material slots, buffer ranges, and capture slots remain retained
+until every recorded use is cancelled or submitted and every submitted use is
+complete. Submission, cancellation, resize, and teardown must preserve that rule.
 
-### Vulkan pipelines and bindless ABI
+Vulkan uses keyed DEVICE/UPLOAD/READBACK pools with dedicated allocation paths.
+The shared `vkr_gpu_memory`, `vkr_gpu_slot_table`, `vkr_gpu_submit_ring`, and
+`vkr_capture_ring` cores supply allocation, slots, command ranges, and captures.
+Inspect their real Metal and Vulkan callers before changing a shared policy.
+Report capacity exhaustion at the owning boundary.
 
-Production Vulkan shaders are Slang sources under
-`lib/src/renderer/shaders/vulkan/slang/`. The packet graphics and IBL
-compute pipelines are prebuilt and share one descriptor-buffer pipeline layout.
-The host validates the shared GPU ABI and reflects the packet draw-root layout
-from production SPIR-V. The retired walking shader/pipeline and standalone
-V0/V3 executables are historical evidence only and no longer exist.
+Batch barriers and publication commits where their ordering permits. Label GPU
+passes with their graph names so timings and traces identify the work. Keep
+state, access masks, and subresource ranges explicit.
 
-Descriptor-buffer offsets and strides come from queried device properties and
-layout sizes. Shaders receive logical heap indices; descriptor byte strides
-never cross the shader ABI.
+## Coverage boundaries
 
-### Frame synchronization and presentation
-
-The Vulkan implementation uses a timeline semaphore for submit completion and a
-three-slot command ring. Acquire semaphores are frame-slot owned.
-Render-complete semaphores are swapchain-image owned. A reacquired presented
-image is reusable only after a completed submit has consumed its next acquire
-semaphore; optional swapchain-maintenance present fences provide a stronger
-per-image proof when supported.
-
-No blocking wait belongs in a successful frame. `vkDeviceWaitIdle` is confined
-to shutdown and exceptional target recreation/diagnostics where completion
-cannot otherwise be proven.
-
-### Memory, descriptors, and capture
-
-Vulkan uses keyed DEVICE, UPLOAD, and READBACK memory pools, with
-dedicated-allocation bypass when required. Descriptor and material slots use
-`vkr_gpu_slot_table`; command slices use `vkr_gpu_submit_ring`; asynchronous
-multi-channel capture uses `vkr_capture_ring`. All have fixed capacities,
-explicit overflow, and completion-gated reuse.
-
-## Known gaps — do not “discover” these
-
-Read §8 of the renderer architecture spec before changing one of these
-boundaries. Current high-value gaps include:
-
-- Linux platform support and native device/driver breadth remain absent.
-- Wider Vulkan validation coverage, fault injection, and long-running lifecycle
-  evidence remain thinner than the target Windows witness.
-- Device-memory defragmentation, eviction, budget telemetry, and transient graph
-  aliasing are not implemented.
-- Shader hot reload is not implemented.
-- `VkrDrawBatcher` remains unwired proposed API-neutral functionality;
-  production batching uses visibility and pass-local structures.
-- Performance claims still require matched clean Release harness evidence. The
-  V7 and artifact-cleanup observations are correctness evidence only.
-
-Do not treat a historical V0–V7 stage description as a current executable
-surface. The normal application, CPU suite, and structured harness are the
-supported evidence paths.
-
-## Adopt these invariants
-
-- Retain canonical descriptors with resource records; do not re-derive them.
-- Encode explicit access, stages, layouts, and subresource ranges.
-- Use fixed-capacity storage for GPU-limited collections; report overflow.
-- Batch barrier and publication-range commits.
-- Gate physical resource retirement and slot reuse on a proven submit value.
-- Keep pipelines immutable and prebuilt; no frame-time variant creation.
-- Label every command encoder and pass from its graph pass name; unlabelled GPU
-  work is anonymous in a profiler trace.
-- Keep capabilities immutable typed data, not a growing query interface.
-- Keep Vulkan types in `renderer/vulkan/`.
-- Preserve one coarse selected-implementation seam; do not add per-draw
-  function-pointer dispatch.
-
-## Do not copy from elsewhere
-
-- Per-draw virtual/function-pointer dispatch.
-- Owning strings or dynamic arrays inside hot descriptors.
-- Per-resource heap maps for common state tracking.
-- Inferring GPU completion from frame lag.
-- `void *` native escape hatches through public interfaces.
-- Compatibility shims for the deleted Vulkan 1.2 or standalone diagnostic
-  paths.
+Check architecture-spec §8 and §10 before selecting evidence. Linux support,
+other devices/drivers, separate queue families, and injected failure paths
+cannot be inferred from the existing Windows witness. Select only supported
+harness configurations; a nonexistent backend mode is not a missing test run.
