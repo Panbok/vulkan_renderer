@@ -1,7 +1,3 @@
-# AGENTS
-
-Single source of truth for both Claude and Codex. `CLAUDE.md` only points here.
-
 ## Guiding principle
 
 **Performance is correctness.** This is a renderer. A frame that misses its
@@ -22,17 +18,6 @@ optional cases disappear; never rely on the compiler to remove redundant guards.
 
 Renderer and engine framework in C11 with selected Metal 4 and Vulkan 1.4
 bindless packet strategies.
-The frontend (`lib/src/renderer/renderer_frontend.c`) owns the subsystems and
-selects one coarse `VkrRendererImpl` strategy at initialization. Vulkan types
-stay behind `lib/src/renderer/vulkan/`; the Vulkan 1.2 adaptor and
-generic backend interface were removed by ADR-026.
-Frame orchestration is a JSON-authored render graph
-(`assets/render_graphs/main.rendergraph.json`) realized and executed inside the
-selected implementation, driven by packet submission:
-`vkr_renderer_prepare_frame()` then `vkr_renderer_submit_packet()`.
-
-There is no view/layer system. `VkrViewSystem` and `VkrLayer` were removed; any
-document or comment describing them is historical.
 
 ## Start here
 
@@ -171,28 +156,6 @@ validation run.
   comment.
 - Shaders are Slang (`.slang` → `.spv`), compiled by the build scripts.
 
-## Logging
-
-`lib/src/core/logger.h` — `log_fatal`, `log_error`, `log_warn`, `log_info`,
-`log_debug`, `log_trace`.
-
-- `fatal` — the path will crash or abort.
-- `error` — a recoverable error returned to a caller that can handle it.
-- `warn` — unexpected but not critical to function.
-- `info` — user-relevant runtime information: device info, startup phases.
-- `debug` / `trace` — creation and initialization tracing, **non-hot paths
-  only**. Logging in a per-draw path is a performance defect.
-
-## Events
-
-`lib/src/core/event.c/h` is a thread-based event system used for cross-system
-communication. **Callbacks run on a separate thread**: any external data a
-callback references must be copied into event-owned storage or protected by
-synchronization primitives. See `lib/src/application.h` for usage.
-
-Prefer events for cross-system communication unless strictly synchronous
-communication is required.
-
 ## Agent context
 
 `AGENTS.md`, `CLAUDE.md`, `docs/`, `.codex/skills/`, and the
@@ -219,13 +182,3 @@ cross-machine payload before publication is also a defect.
 - PRs: clear summary, the exact commands run, and linked issues.
 - For rendering or UI changes, include a screenshot or short clip and note any
   shader or asset updates.
-
-## Configuration
-
-Required: CMake 3.27+, Vulkan SDK 1.4.357+, and Slang 2026.13.1+ (`slangc`).
-Older local toolchains fail on the current Vulkan headers and shader semantics.
-Export `VULKAN_SDK` so CMake resolves the required SDK: with it unset, a
-package-manager Vulkan earlier than 1.4.357 wins the search and the build fails
-on undeclared symbols in files that merely include a changed Vulkan header.
-Optional: set `VCPKG_ROOT` to use the vcpkg toolchain. Build scripts prefer
-Ninja and clang when available.
