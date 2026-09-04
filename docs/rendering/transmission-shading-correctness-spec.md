@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-30
+updated: 2026-09-04
 authority: design
 ---
 
@@ -223,8 +223,9 @@ audit.
 
 ## Audited baseline source contract
 
-`main()` in `app/src/main.c` selects Metal by default outside Windows and Vulkan
-on Windows. The two production shading functions are
+`vkr_sample_runtime_run()` in `runtime/src/vkr_sample_runtime.c` selects Metal
+by default outside Windows and Vulkan on Windows. The two production shading
+functions are
 `vkr_metal_packet_transmission_shade()` in
 `lib/src/renderer/shaders/metal/msl/world/gpu_draws.metal` and
 `vk_transmission_shade()` in

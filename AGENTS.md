@@ -91,9 +91,11 @@ evidence remain with `vkr-task-workflow`.
 ## Build, test, validate
 
 ```sh
-./build.sh [Debug|Release]     # Debug -> build_debug; Release -> build_release
-./build_run.sh [Debug|Release] # build and launch
-./build_release.sh             # optimized build -> build_release/app/vulkan_renderer
+./build.sh [Debug|Release]            # build the renderer app
+./build_run.sh [Debug|Release]        # build and launch the renderer app
+./build_editor.sh [Debug|Release]     # build the editor
+./build_editor_run.sh [Debug|Release] # build and launch the editor
+./build_release.sh                    # optimized app -> build_release/app/vulkan_renderer
 build_release/tools/vkr_harness profile --case <case> --profile <profile>
 ./build_test.sh                # build + run the CPU suite
 ./build_test_batch.sh          # 50 runs; confirm or refute a flake

@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-07-31
+updated: 2026-09-04
 authority: design
 ---
 # Scene System Extension: 3D Text and Primitive Shapes
@@ -526,14 +526,16 @@ for (uint32_t i = 0; i < scene->owned_shape_count; i++) {
 
 ## 8. Runtime Updates
 
-This section describes how scene-loaded text and shapes can be modified at runtime, following the existing patterns established for world text updates in `app/src/main.c`.
+This section describes how scene-loaded text and shapes can be modified at
+runtime, following the world-text update pattern in
+`runtime/src/vkr_sample_runtime.c`.
 
 ### 8.1 Existing World Text Update Pattern
 
 The current world text (clock display) demonstrates the update flow:
 
 ```c
-// app/src/main.c:817-852 - application_update_world_text()
+// runtime/src/vkr_sample_runtime.c - application_update_world_text()
 
 // 1. Check update interval
 if (!vkr_clock_interval_elapsed(&state->world_text_update_clock,
@@ -739,7 +741,7 @@ void vkr_scene_set_shape_color(VkrScene *scene, VkrEntityId entity, Vec4 color) 
 ### 8.8 Example: Updating Scene Text at Runtime
 
 ```c
-// app/src/main.c - Example usage pattern
+// runtime/src/vkr_sample_runtime.c - Example usage pattern
 
 vkr_internal void application_update_scene_text(Application *application,
                                                  float64_t delta_time) {
@@ -777,7 +779,7 @@ vkr_internal void application_update_scene_text(Application *application,
 ### 8.9 Example: Animating Scene Shapes
 
 ```c
-// app/src/main.c - Example usage pattern
+// runtime/src/vkr_sample_runtime.c - Example usage pattern
 
 vkr_internal void application_update_scene_shapes(Application *application,
                                                    float64_t delta_time) {

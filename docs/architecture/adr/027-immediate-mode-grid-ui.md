@@ -1,6 +1,6 @@
 ---
 status: accepted
-updated: 2026-09-01
+updated: 2026-09-02
 authority: adr
 ---
 # ADR-027: Immediate-mode grid UI with a composited editor viewport
@@ -105,6 +105,14 @@ platform-independent key repeat now ship. IME composition remains out of scope.
 **DPI is handled up front.** Engine coordinates are backing pixels. Style
 constants are authored in logical points and scaled once at resolve time from
 the platform or explicit offscreen content-scale snapshot.
+
+**The app and editor are separate executables.** Neither consumes source or
+include paths from the other. Both use a neutral sample runtime and select their
+own UI client at startup. `vulkan_renderer` uses direct presentation and owns an
+F6-toggleable debug overlay. `vkr_editor` owns the dock, navigation, floating
+windows, and editor viewport composition. The editor client has no operation
+that toggles editor mode at runtime; the cold `--scene-only` focus mode remains
+available at startup.
 
 **Tile hashing ships; the cached target does not.** Retained, reusable CPU-side
 64-pixel bins, ordered hashes, motion damage, and dirty metrics ship while the

@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-07-31
+updated: 2026-09-04
 authority: design
 ---
 # Scene System Design (ECS + Renderer Integration)
@@ -66,8 +66,9 @@ This document is written to be **LLM-consumable**: explicit file paths, data flo
 
 - Picking renders `object_id = render_id + 1`:
   - `lib/src/renderer/systems/vkr_picking_system.c` → `.object_id = mesh->render_id + 1`
-- App code maps picking results to entities via the scene runtime handle:
-  - `app/src/main.c` uses `vkr_scene_handle_entity_from_picking_id()`.
+- The sample runtime maps picking results to entities via the scene handle:
+  - `runtime/src/vkr_sample_runtime.c` uses
+    `vkr_scene_handle_entity_from_picking_id()`.
 
 ### 1.3 ECS exists and is used by the scene system
 
@@ -445,7 +446,9 @@ void vkr_scene_handle_sync(VkrSceneHandle handle, struct s_RendererFrontend *rf)
 
 Initial wiring (minimal invasive):
 
-- `app/src/main.c` calls `vkr_scene_handle_update_and_sync(scene_handle, &renderer, dt)` once per frame, before `vkr_renderer_draw_frame()`.
+- `runtime/src/vkr_sample_runtime.c` calls
+  `vkr_scene_handle_update_and_sync(scene_handle, &renderer, dt)` once per
+  frame, before packet submission.
 
 Later wiring option:
 
@@ -707,7 +710,7 @@ VkrEntityId vkr_scene_handle_entity_from_picking_id(VkrSceneHandle handle,
 - Public API is `VkrSceneHandle` + `vkr_scene_handle_*()`; the bridge is not
   exposed to callers.
 
-**Step 1.7:** Wire in `app/src/main.c` via resource system
+**Step 1.7:** Wire in `runtime/src/vkr_sample_runtime.c` via the resource system
 
 - Load the scene with `vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, ...)`
 - Call `vkr_scene_handle_update_and_sync()` once per frame
@@ -758,7 +761,7 @@ VkrEntityId vkr_scene_handle_entity_from_picking_id(VkrSceneHandle handle,
   - Set `mesh->model`
   - Update world bounds
   - Reset instance cache (`last_render_frame = 0`)
-- `app/src/main.c` - Wire scene system:
+- `runtime/src/vkr_sample_runtime.c` - Wire scene system:
   - Load/unload scene via `vkr_resource_system_load()` / `vkr_resource_system_unload()`
   - Tick scene via `vkr_scene_handle_update_and_sync()`
   - Map picking results via `vkr_scene_handle_entity_from_picking_id()`

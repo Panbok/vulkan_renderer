@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-07-31
+updated: 2026-09-04
 authority: design
 ---
 # Phase 4: Wave Effect Demo
@@ -370,7 +370,7 @@ void vkr_demo_tag_sponza_fabric(VkrMeshManager *mesh_manager,
 ### Setup in Main Application
 
 ```c
-// app/src/main.c or app/src/application.c
+// runtime/src/vkr_sample_runtime.c
 
 #include "renderer/systems/vkr_effect_system.h"
 #include "renderer/systems/effects/vkr_effect_wave.h"

@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-07-31
+updated: 2026-09-02
 authority: design
 ---
 # Editor Viewport, Off-Screen Rendering, and Pixel-Perfect 3D Object Picking
@@ -1107,8 +1107,8 @@ if (vkr_editor_viewport_compute_mapping(window_width, window_height, fit_mode,
 - UI render targets routed to offscreen viewport in editor mode
 
 **Runtime Features:**
-- Toggle between offscreen and swapchain rendering (F6 key)
-- Proper framebuffer cleanup during mode switching (no leaks)
+- Separate direct renderer app and paneled editor executables
+- Cold `--scene-only` editor focus mode without mutating the saved dock tree
 - Automatic resize handling for offscreen targets
 - Retina display support on macOS
 
@@ -1186,8 +1186,13 @@ if (vkr_editor_viewport_compute_mapping(window_width, window_height, fit_mode,
 - `assets/materials/default.viewport_display.mt` (NEW)
 
 **Application:**
-- `app/src/main.c` - F6 toggle for editor mode
-- `app/src/main.c` - Picking hover demo (updates UI text)
+- `runtime/src/vkr_sample_runtime.c` - Neutral camera, picking, scene, and packet runtime
+- `app/src/app_ui.c` - App-owned F6 debug UI composition
+- `app/src/debug_overlay.c` - App-owned debug widgets
+- `editor/src/editor_application.c` - Editor-owned runtime configuration and UI client
+- `editor/src/editor_ui.c` - Permanent editor composition coordinator
+- `editor/src/editor_dock.c` - Dock panel construction
+- `editor/src/editor_windows.c` - Navigation, menus, and floating windows
 
 ## 7. API Reference
 

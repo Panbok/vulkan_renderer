@@ -5,6 +5,23 @@ artifact is listed here. `archive/README.md` owns the recursive archive index;
 the legacy pre-render-graph collection is deliberately indexed as one preserved
 unit.
 
+## Application and editor builds
+
+The renderer app and editor are independent executable targets. Neither target
+compiles source from or links to the other application. Both use the neutral
+sample runtime under `runtime/` and `renderer_lib`. The app owns its F6-toggleable
+immediate-mode debug overlay. The editor defaults to its docked composition and
+retains the cold `--scene-only` focus mode.
+
+```sh
+./build_run.sh Debug --renderer metal
+./build_editor_run.sh Debug --renderer metal
+```
+
+Use `build.sh` or `build_editor.sh` when the target should compile without
+launching. The default single-configuration paths are
+`build_debug/app/vulkan_renderer` and `build_debug/editor/vkr_editor`.
+
 ## Optional Metal validation
 
 Debug builds and Metal validation are diagnostic configurations. Use them only
@@ -23,10 +40,10 @@ Enable either mode independently or both together before launching:
 
 ```sh
 MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 \
-  ./build_run.sh Debug --renderer metal
+  ./build_editor_run.sh Debug --renderer metal
 ```
 
-The macOS sample application explicitly uses fixed-scale spatial
+The macOS application runtime explicitly uses fixed-scale spatial
 reconstruction with portable TAA while either validator is enabled. The
 installed Metal 4 validation wrappers do not implement a selector that
 MetalFX temporal encoding calls, so an explicit MetalFX request is rejected at
@@ -38,7 +55,7 @@ MetalFX correctness checks separately with both validation variables unset.
 validation. In one local, non-authoritative Debug observation, enabling both
 dropped the renderer from roughly 30–40 FPS to 6–7 FPS. Debug timings are not
 performance evidence; never compare or profile performance with either mode
-enabled. `build_run.sh` prints a warning whenever it detects a nonzero
+enabled. Both run wrappers print a warning whenever they detect a nonzero
 validation variable. Do not run shader/GPU validation across a broad
 multi-capture or baseline suite: a validation-enabled 14-capture snapshot was
 immediately followed by a macOS watchdog kernel panic. A later bounded P18
@@ -52,8 +69,8 @@ to the smallest focused case.
 The Metal backend bypasses pipeline-archive lookup while shader validation is
 enabled because Apple's validator currently crashes in the Metal 4-to-3
 archive-conversion path. These runtime variables must be present before the
-process creates its first Metal device; when running
-`build_debug/app/vulkan_renderer` directly, set them in the calling environment.
+process creates its first Metal device; when running an app or editor binary
+directly, set them in the calling environment.
 
 ## Authority
 

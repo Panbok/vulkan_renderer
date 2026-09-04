@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-07-31
+updated: 2026-09-04
 authority: design
 ---
 # Editor Transform Gizmo Design Document
@@ -1048,7 +1048,7 @@ Optional future additions:
 | `lib/src/renderer/systems/vkr_geometry_system.h` | Add procedural gizmo shape APIs |
 | `lib/src/renderer/systems/vkr_geometry_system.c` | Implement procedural shapes |
 | `lib/src/renderer/passes/vkr_pass_editor.c` | Integrate gizmo rendering |
-| `app/src/main.c` | Wire up gizmo input and selection |
+| `runtime/src/vkr_sample_runtime.c` | Wire up gizmo input and selection |
 
 ---
 

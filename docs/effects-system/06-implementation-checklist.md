@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-07-31
+updated: 2026-09-04
 authority: design
 ---
 # Phase 6: Implementation Checklist
@@ -212,7 +212,7 @@ This document provides a step-by-step implementation checklist with file referen
 - [ ] `assets/shaders/effects/wave.slang`
 
 #### Files to Modify
-- [ ] `app/src/main.c` - Register wave effect, apply to scene
+- [ ] `runtime/src/vkr_sample_runtime.c` - Register wave effect, apply to scene
 - [ ] `lib/CMakeLists.txt` - Add effect source files
 - [ ] `build.sh` - Add wave shader compilation
 

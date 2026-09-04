@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-29
+updated: 2026-09-04
 authority: spec
 ---
 # Renderer Metrics Module and Automation Harness
@@ -421,10 +421,10 @@ values for it.
 
 ### 3.10 The HUD becomes a consumer
 
-`app/src/main.c` currently computes FPS, frame time, and memory strings itself on
-its own clocks, in parallel with everything above. Rewire it to read the
-published metrics frame. The harness copies each published frame into storage
-pre-sized from the manifest so percentiles and run reports require no renderer
+`runtime/src/vkr_sample_runtime.c` computes FPS, frame time, and memory strings
+on its own clocks. It reads the published metrics frame rather than querying
+backend state. The harness copies each published frame into storage pre-sized
+from the manifest, so percentiles and run reports require no renderer
 allocation.
 
 One source of truth, and the on-screen overlay becomes a continuous check that
@@ -1274,7 +1274,7 @@ canonical payload cannot serve as a later parity reference.
 | Phase | Deliverable | Touches |
 |---|---|---|
 | 0 | This document, ADR-014, ADR-015, and immediate factual repair of the live `vkr-performance` skill | `docs/`, `.codex/skills/vkr-performance/SKILL.md` |
-| 1 | **Implemented 2026-08-01.** Explicit `VkrMetrics` owner, core registry, renderer adapter, catalog/validity, JSON writer; HUD reads snapshots; `--metrics-json` dump | `lib/src/core/`, `lib/src/renderer/`, `application.h`, `app/src/main.c` |
+| 1 | **Implemented 2026-08-01.** Explicit `VkrMetrics` owner, core registry, renderer adapter, catalog/validity, JSON writer; HUD reads snapshots; `--metrics-json` dump | `lib/src/core/`, `lib/src/renderer/`, `application.h`, `runtime/src/vkr_sample_runtime.c` |
 | 1b | **Implemented 2026-08-01.** Explicit logical GPU allocation owners; tracker live/peak/lifetime totals; live/peak gauges and allocated/created interval counters; no inferred font/mesh categories | resource descriptions, Vulkan allocation tracker, renderer metrics adapter |
 | 2 | **Implemented 2026-08-01.** Shared harness runtime, strict case/profile parsers, case/profile/report schemas, three fingerprints, safe paths/atomic artifacts, camera scripting, isolated repetitions, `profile` | `tools/harness/`, `tools/cases/`, `tools/profiles/` |
 | 2b | **Implemented 2026-08-02.** Established structured metric/pass parity, added reviewed CPU and GPU-timestamp performance profiles plus a deterministic Sponza case, rejected one-process authoritative profiles, made requested GPU timing completeness-gated, retired the grep/awk script/app accumulator, and migrated `vkr-performance` | tooling and skills |
