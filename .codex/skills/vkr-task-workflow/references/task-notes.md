@@ -22,12 +22,11 @@ them.
 | --- | --- | --- |
 | State and checkpoint | `active`, `waiting`, or `complete`; created/updated dates; and one current next step. | A resumed agent can tell whether to continue and where. |
 | Objective and scope | The user's actual request, tier, in-scope paths/outcomes, and explicit exclusions. | A compacted context reconstructs intent from here, not from the diff. |
-| Workspace baseline | Repository root, branch, HEAD, pre-existing staged/unstaged/untracked paths, and write reservations. | Distinguishes user-owned work from task edits and exposes branch drift on resume. |
+| Workspace baseline | Repository root, branch, HEAD, pre-existing staged/unstaged/untracked paths, and in-scope paths. | Distinguishes user-owned work from task edits and exposes branch drift on resume. |
 | Acceptance criteria | Observable conditions that make the task done, and the evidence that will show each. Implementation tasks fill this **before** editing. | Criteria written after a green run are a description of what happened, not a test of it. |
 | Constraints and invariants | Applicable user constraints plus behavior, ownership, lifetime, concurrency, or hot-path invariants. Name the owning authority where one exists. | Preserves the conditions under which evidence is meaningful. |
 | Decisions | Each decision with the evidence that forced it, newest last. Supersede rather than delete. | Prevents relitigating a settled choice after compaction. |
 | Evidence ledger | See below. | Durable record of material actions and results, without shell-history noise. |
-| Delegation ledger | See below. | Bounds fan-out and records what the coordinator verified. |
 | Gates | Every selected gate as pending, passed, failed, unavailable, or inapplicable, with reason and residual risk. | Prevents an unrun gate from becoming an implied pass. |
 | Open questions | What is unresolved and what would resolve it. | Distinguishes "unknown" from "unchecked". |
 | Next step | The single next action, concrete enough to execute cold; `none` only when complete. | The first thing a resumed session executes. |
@@ -36,10 +35,10 @@ them.
 
 Capture the baseline before implementation edits. A dirty worktree is expected:
 record it and preserve it. Include staged, unstaged, and untracked paths, but do
-not paste unrelated diffs into the note. Mark in-scope write reservations and
-paths that must remain untouched.
+not paste unrelated diffs into the note. Mark in-scope paths and paths that must
+remain untouched.
 
-On resume, compare the recorded branch, HEAD, dirty paths, and reservations with
+On resume, compare the recorded branch, HEAD, dirty paths, and scope with
 the current tree. Record a dated checkpoint when they differ and explain how
 the drift was reconciled before replacing the working baseline.
 
@@ -63,22 +62,6 @@ Keep gate status in the Gates section even when its command also appears in the
 evidence ledger. Name an unavailable or inapplicable gate, give the concrete
 reason, and state the risk left uncovered. The relevant validation or format
 owner defines what each gate proves.
-
-## Delegation ledger
-
-Create one row when a subagent is launched and update it as its status changes:
-
-| Field | Required meaning |
-| --- | --- |
-| `agent` | Stable task name or identifier needed to wait, resume, or stop it. |
-| `status` | `running`, `returned`, `failed`, `cancelled`, or `transferred`. |
-| `scope / deliverable` | The bounded task and required return shape, as given. |
-| `write reservation / must-not-write` | Files it alone may edit and paths reserved to others. Use `read-only` when applicable. |
-| `returned / evidence` | Material conclusions, changed paths, commands/artifacts, and remaining uncertainty. |
-| `verified` | Evidence the coordinator checked and any high-risk conclusion independently re-derived. Unverified claims stay marked. |
-
-Record rejected delegation only when it was a material scheduling choice. Before
-handoff or completion, no row may remain `running` without an explicit transfer.
 
 ## Log policy
 
@@ -109,7 +92,7 @@ Updated: YYYY-MM-DD
 - Branch: <branch or detached>
 - HEAD: <commit>
 - Existing changes: <staged / unstaged / untracked paths, or clean>
-- Write reservations: <writer -> paths>
+- In-scope paths: <paths this task may edit>
 
 ## Acceptance criteria
 
@@ -127,11 +110,6 @@ Updated: YYYY-MM-DD
 
 | when | command / tool action | exit / status | artifact | decisive result |
 | --- | --- | --- | --- | --- |
-
-## Delegation ledger
-
-| agent | status | scope / deliverable | write reservation / must-not-write | returned / evidence | verified |
-| --- | --- | --- | --- | --- | --- |
 
 ## Gates
 
