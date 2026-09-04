@@ -2124,42 +2124,43 @@ static void test_main_graph_fits_runtime_pass_capacity(void) {
   VkrRenderGraph *runtime = vkr_rg_create(&allocator);
   assert(runtime);
   VkrRenderGraphFrameInfo frame = {
-      .target_width = 3840u,
-      .target_height = 2160u,
-      .window_width = 3840u,
-      .window_height = 2160u,
-      .viewport_width = 3840u,
-      .viewport_height = 2160u,
+      .target_width = VKR_TEXTURE_MAX_DIMENSION,
+      .target_height = VKR_TEXTURE_MAX_DIMENSION,
+      .window_width = VKR_TEXTURE_MAX_DIMENSION,
+      .window_height = VKR_TEXTURE_MAX_DIMENSION,
+      .viewport_width = VKR_TEXTURE_MAX_DIMENSION,
+      .viewport_height = VKR_TEXTURE_MAX_DIMENSION,
+      .metalfx_enabled = true_v,
       .target_color_format = VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB,
       .target_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
       .shadow_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
       .shadow_map_size = 2048u,
-      .shadow_map_layer_count = 4u,
-      .shadow_cascade_count = 4u,
-      .shadow_cascade_render_mask = 0xfu,
-      .hzb_reduce_pass_count = 11u,
+      .shadow_map_layer_count = VKR_SHADOW_CASCADE_COUNT_MAX,
+      .shadow_cascade_count = VKR_SHADOW_CASCADE_COUNT_MAX,
+      .shadow_cascade_render_mask = 0xffu,
+      .hzb_reduce_pass_count = 14u,
       .transmission_rough_mip_pass_count = 5u,
       .sdsm_enabled = true_v,
       .transmission_pending = true_v,
+      .transmission_depth_diagnostic_enabled = true_v,
+      .exposure_automatic = true_v,
       .timing_enabled = true_v,
       .picking_pending = true_v,
       .bloom_enabled = true_v,
-      .bloom_mip_count = 6u,
+      .bloom_mip_count = VKR_BLOOM_MAX_MIP_COUNT,
       .gtao_enabled = true_v,
-      .gtao_depth_mip_count = 5u,
+      .gtao_depth_mip_count = VKR_GTAO_MAX_DEPTH_MIP_COUNT,
   };
   vkr_rg_begin_frame(runtime, &frame);
   assert(vkr_rg_build_from_json(runtime, &graph, &frame));
-  assert(runtime->passes.length > 64u);
-  assert(runtime->passes.length <= VKR_RENDERER_IMPL_MAX_GRAPH_PASSES);
+  assert(runtime->passes.length == VKR_RENDERER_IMPL_MAX_GRAPH_PASSES);
   assert(vkr_rg_compile_schedule(runtime));
   vkr_rg_end_frame(runtime);
 
   frame.transmission_compact_enabled = true_v;
   vkr_rg_begin_frame(runtime, &frame);
   assert(vkr_rg_build_from_json(runtime, &graph, &frame));
-  assert(runtime->passes.length > 64u);
-  assert(runtime->passes.length <= VKR_RENDERER_IMPL_MAX_GRAPH_PASSES);
+  assert(runtime->passes.length == VKR_RENDERER_IMPL_MAX_GRAPH_PASSES);
   assert(vkr_rg_compile_schedule(runtime));
   vkr_rg_end_frame(runtime);
 
