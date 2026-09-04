@@ -5,6 +5,8 @@ setlocal EnableDelayedExpansion
 REM Optional arg1: BUILD_TYPE (Debug/Release/RelWithDebInfo/MinSizeRel)
 set "BUILD_TYPE=%~1"
 if "%BUILD_TYPE%"=="" set "BUILD_TYPE=Debug"
+if "%VKR_BUILD_TARGET%"=="" set "VKR_BUILD_TARGET=vulkan_renderer"
+if "%VKR_BUILD_LABEL%"=="" set "VKR_BUILD_LABEL=VKR app"
 
 set "BUILD_DIR="
 if /I "%BUILD_TYPE%"=="Debug" set "BUILD_DIR=build_debug"
@@ -57,8 +59,8 @@ if !errorlevel! EQU 0 if exist "C:\mingw64\usr\bin" set "PATH=C:\mingw64\usr\bin
 cmake -S . -B "%BUILD_DIR%" -U CMAKE_TOOLCHAIN_FILE -DCMAKE_BUILD_TYPE:STRING=%BUILD_TYPE% -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE %GENERATOR% %COMPILERS% %BASH_ARG%
 if errorlevel 1 goto :vkr_cmake_configure_failed
 
-echo Building vulkan_renderer (%BUILD_TYPE%)
-cmake --build ".\%BUILD_DIR%" --target vulkan_renderer vkr_harness vkr_mesh_cooker vkr_font_cooker --config %BUILD_TYPE%
+echo Building %VKR_BUILD_LABEL% (%BUILD_TYPE%)
+cmake --build ".\%BUILD_DIR%" --target %VKR_BUILD_TARGET% vkr_harness vkr_mesh_cooker vkr_font_cooker --config %BUILD_TYPE%
 if errorlevel 1 goto :vkr_build_failed
 set "FONT_COOKER_BIN=%BUILD_DIR%\tools\vkr_font_cooker.exe"
 if not exist "!FONT_COOKER_BIN!" set "FONT_COOKER_BIN=%BUILD_DIR%\tools\%BUILD_TYPE%\vkr_font_cooker.exe"

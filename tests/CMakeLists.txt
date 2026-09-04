@@ -8,6 +8,10 @@ file(GLOB_RECURSE TEST_SOURCES src/*.c src/*.h)
 
 # Create the test executable
 add_executable(vulkan_renderer_tester ${TEST_SOURCES})
+target_sources(vulkan_renderer_tester PRIVATE
+    "${CMAKE_SOURCE_DIR}/app/src/app_ui.c"
+    "${CMAKE_SOURCE_DIR}/app/src/debug_overlay.c"
+)
 vkr_require_declared_c_functions(vulkan_renderer_tester)
 
 if(CMAKE_GENERATOR MATCHES "Visual Studio")
@@ -34,5 +38,7 @@ endif()
 target_include_directories(vulkan_renderer_tester
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src # For test headers (e.g., arena_test.h)
+        ${CMAKE_SOURCE_DIR}/app/src
+        ${CMAKE_SOURCE_DIR}/runtime/src
         ${CMAKE_SOURCE_DIR}/tools
 )

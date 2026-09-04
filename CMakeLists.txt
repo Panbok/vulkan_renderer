@@ -90,5 +90,7 @@ unset(_VKR_SAN_FLAGS)
 # Add subdirectories for each component
 add_subdirectory(lib)
 add_subdirectory(tools)
+add_subdirectory(runtime)
 add_subdirectory(app)
+add_subdirectory(editor)
 add_subdirectory(tests)

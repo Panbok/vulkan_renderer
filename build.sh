@@ -3,6 +3,8 @@
 set -e # Exit early if any commands fail
 
 BUILD_TYPE="${1:-Debug}"
+VKR_BUILD_TARGET="${VKR_BUILD_TARGET:-vulkan_renderer}"
+VKR_BUILD_LABEL="${VKR_BUILD_LABEL:-VKR app}"
 
 case "${BUILD_TYPE}" in
   Debug) BUILD_DIR="build_debug" ;;
@@ -17,7 +19,7 @@ case "${BUILD_TYPE}" in
 esac
 
 (
-  echo "Building vulkan_renderer (${BUILD_TYPE})"
+  echo "Building ${VKR_BUILD_LABEL} (${BUILD_TYPE})"
   cd "$(dirname "$0")"
 
   GENERATOR=""
@@ -33,7 +35,7 @@ esac
   echo "Using build directory: ${BUILD_DIR}"
   cmake -S . -B "${BUILD_DIR}" -U CMAKE_TOOLCHAIN_FILE -DCMAKE_BUILD_TYPE:STRING="${BUILD_TYPE}" -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE ${GENERATOR} ${COMPILERS}
 
-  BUILD_TARGETS="vulkan_renderer vkr_harness vkr_mesh_cooker vkr_font_cooker"
+  BUILD_TARGETS="${VKR_BUILD_TARGET} vkr_harness vkr_mesh_cooker vkr_font_cooker"
   cmake --build "./${BUILD_DIR}" --target $BUILD_TARGETS --config "${BUILD_TYPE}"
   FONT_COOKER_BIN="./${BUILD_DIR}/tools/vkr_font_cooker"
   if [ ! -x "${FONT_COOKER_BIN}" ]; then

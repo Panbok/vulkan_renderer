@@ -7,6 +7,7 @@
 #include "bitset_test.h"
 #include "bloom_test.h"
 #include "clock_test.h"
+#include "debug_overlay_test.h"
 #include "dmemory_test.h"
 #include "editor_viewport_test.h"
 #include "entity_test.h"

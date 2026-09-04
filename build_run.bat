@@ -6,6 +6,9 @@ echo Starting build and run process...
 echo.
 
 set "SCRIPT_DIR=%~dp0"
+if "%VKR_RUN_SUBDIR%"=="" set "VKR_RUN_SUBDIR=app"
+if "%VKR_RUN_BINARY%"=="" set "VKR_RUN_BINARY=vulkan_renderer"
+if "%VKR_RUN_LABEL%"=="" set "VKR_RUN_LABEL=Vulkan Renderer"
 REM Windows quoting gotcha: a quoted path ending with '\' can escape the closing quote.
 REM Keep a version without the trailing slash for tools like Windows Terminal.
 set "SCRIPT_CWD=%SCRIPT_DIR%"
@@ -33,12 +36,12 @@ if %errorlevel% neq 0 (
 )
 
 echo.
-echo Build successful! Starting vulkan_renderer...
+echo Build successful! Starting %VKR_RUN_LABEL%...
 echo.
 
 REM Execute the vulkan_renderer with working directory set to repo root
-set "APP_EXE=%SCRIPT_DIR%%BUILD_DIR%\app\vulkan_renderer.exe"
-if not exist "%APP_EXE%" set "APP_EXE=%SCRIPT_DIR%%BUILD_DIR%\app\%BUILD_TYPE%\vulkan_renderer.exe"
+set "APP_EXE=%SCRIPT_DIR%%BUILD_DIR%\%VKR_RUN_SUBDIR%\%VKR_RUN_BINARY%.exe"
+if not exist "%APP_EXE%" set "APP_EXE=%SCRIPT_DIR%%BUILD_DIR%\%VKR_RUN_SUBDIR%\%BUILD_TYPE%\%VKR_RUN_BINARY%.exe"
 if not exist "%APP_EXE%" (
     echo Error: executable not found at "%APP_EXE%"
     exit /b 1
@@ -59,10 +62,10 @@ where wt >nul 2>&1
 if %errorlevel% equ 0 (
     REM Run the exe in a new Windows Terminal tab.
     REM Use `--` to stop wt option parsing before the command.
-    wt new-tab -d "%SCRIPT_CWD%" --title "Vulkan Renderer" -- "%APP_EXE%" %*
+    wt new-tab -d "%SCRIPT_CWD%" --title "%VKR_RUN_LABEL%" -- "%APP_EXE%" %2 %3 %4 %5 %6 %7 %8 %9
 ) else (
     pushd "%SCRIPT_CWD%"
-    "%APP_EXE%" %*
+    "%APP_EXE%" %2 %3 %4 %5 %6 %7 %8 %9
     popd
 )
 

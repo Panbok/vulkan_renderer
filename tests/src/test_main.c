@@ -15,6 +15,7 @@ static const VkrTestSuite VKR_TEST_SUITES[] = {
     run_threads_tests,
     run_job_system_tests,
     run_input_tests,
+    run_debug_overlay_tests,
     run_json_tests,
     run_json_writer_tests,
     run_harness_tests,
