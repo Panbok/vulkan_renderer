@@ -1752,6 +1752,7 @@ renderer_impl_metal_device_memory_stats(void *state,
   out_stats->live_bytes = metrics.native_heap_allocated_size;
   out_stats->peak_bytes = metrics.native_heap_peak_allocated_size;
   out_stats->live_totals_exact = true_v;
+  MemCopy(out_stats->owners, metrics.owners, sizeof(out_stats->owners));
   out_stats->memory_type_count = 1;
   out_stats->live_bytes_by_type[0] = out_stats->live_bytes;
   out_stats->live_count_by_type[0] = out_stats->live_allocation_count;

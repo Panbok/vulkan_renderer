@@ -145,12 +145,12 @@ vkr_internal bool8_t vkr_metal_packet_ensure_geometry_megabuffer(
 
   VkrMetalBufferResource vertices = {0};
   VkrMetalBufferResource indices = {0};
-  if (vkr_metal_memory_device_create_buffer(renderer->memory, vertex_capacity,
-                                            &vertices) !=
-          VKR_METAL_MEMORY_STATUS_OK ||
-      vkr_metal_memory_device_create_buffer(renderer->memory, index_capacity,
-                                            &indices) !=
-          VKR_METAL_MEMORY_STATUS_OK) {
+  if (vkr_metal_memory_device_create_buffer(
+          renderer->memory, vertex_capacity, VKR_GPU_ALLOCATION_OWNER_MESH,
+          &vertices) != VKR_METAL_MEMORY_STATUS_OK ||
+      vkr_metal_memory_device_create_buffer(
+          renderer->memory, index_capacity, VKR_GPU_ALLOCATION_OWNER_MESH,
+          &indices) != VKR_METAL_MEMORY_STATUS_OK) {
     if (vertices.metal_buffer)
       (void)vkr_metal_memory_device_retire(renderer->memory, vertices.handle,
                                            renderer->submit_value);
@@ -629,8 +629,8 @@ bool8_t vkr_metal_packet_renderer_create_material(
           (uint64_t)texture->width * texture->height * 4u;
       textures_created =
           vkr_metal_memory_device_create_texture(
-              renderer->memory, descriptor, &slot->textures[texture_index]) ==
-              VKR_METAL_MEMORY_STATUS_OK &&
+              renderer->memory, descriptor, VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+              &slot->textures[texture_index]) == VKR_METAL_MEMORY_STATUS_OK &&
           vkr_metal_packet_upload(
               renderer, texture->pixels, texture_size, nil, NULL, 0, nil,
               (id<MTLTexture>)slot->textures[texture_index].metal_texture,
@@ -923,9 +923,10 @@ bool8_t vkr_metal_packet_renderer_create_rgba8_texture(
     descriptor.height = create_info->height;
     descriptor.mipmapLevelCount = 1;
     descriptor.usage = MTLTextureUsageShaderRead;
-    const bool8_t created = vkr_metal_memory_device_create_texture(
-                                renderer->memory, descriptor,
-                                &slot->resource) == VKR_METAL_MEMORY_STATUS_OK;
+    const bool8_t created =
+        vkr_metal_memory_device_create_texture(
+            renderer->memory, descriptor, VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+            &slot->resource) == VKR_METAL_MEMORY_STATUS_OK;
     [descriptor release];
     const uint64_t byte_count =
         (uint64_t)create_info->width * create_info->height * 4u;
@@ -1017,9 +1018,10 @@ bool8_t vkr_metal_packet_renderer_publish_prepared_texture(
     descriptor.arrayLength = prepared->upload_array_layers / 6u;
   }
   descriptor.usage = MTLTextureUsageShaderRead;
-  const bool8_t created = vkr_metal_memory_device_create_texture(
-                              renderer->memory, descriptor, &slot->resource) ==
-                          VKR_METAL_MEMORY_STATUS_OK;
+  const bool8_t created =
+      vkr_metal_memory_device_create_texture(
+          renderer->memory, descriptor, prepared->description.allocation_owner,
+          &slot->resource) == VKR_METAL_MEMORY_STATUS_OK;
   [descriptor release];
   const VkrMetalPacketTextureUpload payload = {
       .data = prepared->upload_data,
@@ -1107,9 +1109,10 @@ bool8_t vkr_metal_packet_renderer_publish_writable_texture(
   descriptor.height = description->height;
   descriptor.mipmapLevelCount = mip_count;
   descriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
-  const bool8_t created = vkr_metal_memory_device_create_texture(
-                              renderer->memory, descriptor, &slot->resource) ==
-                          VKR_METAL_MEMORY_STATUS_OK;
+  const bool8_t created =
+      vkr_metal_memory_device_create_texture(
+          renderer->memory, descriptor, description->allocation_owner,
+          &slot->resource) == VKR_METAL_MEMORY_STATUS_OK;
   [descriptor release];
   id<MTLSamplerState> sampler =
       created ? vkr_metal_packet_sampler(renderer, description, mip_count)
@@ -1434,9 +1437,9 @@ bool8_t vkr_metal_packet_renderer_create_cubemap(
     descriptor.arrayLength = 1;
     descriptor.usage = MTLTextureUsageShaderRead;
     const bool8_t texture_created =
-        vkr_metal_memory_device_create_texture(renderer->memory, descriptor,
-                                               &slot->resource) ==
-        VKR_METAL_MEMORY_STATUS_OK;
+        vkr_metal_memory_device_create_texture(
+            renderer->memory, descriptor, VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+            &slot->resource) == VKR_METAL_MEMORY_STATUS_OK;
     [descriptor release];
     if (!texture_created ||
         !vkr_metal_packet_upload_cubemap(
@@ -1501,18 +1504,20 @@ bool8_t vkr_metal_packet_renderer_create_hdr_environment(
     descriptor.height = create_info->height;
     descriptor.mipmapLevelCount = 1;
     descriptor.usage = MTLTextureUsageShaderRead;
-    const bool8_t source_created = vkr_metal_memory_device_create_texture(
-                                       renderer->memory, descriptor, &source) ==
-                                   VKR_METAL_MEMORY_STATUS_OK;
+    const bool8_t source_created =
+        vkr_metal_memory_device_create_texture(
+            renderer->memory, descriptor, VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+            &source) == VKR_METAL_MEMORY_STATUS_OK;
     descriptor.textureType = MTLTextureTypeCube;
     descriptor.width = create_info->cube_extent;
     descriptor.height = create_info->cube_extent;
     descriptor.mipmapLevelCount = cube_mip_count;
     descriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
     const bool8_t cube_created =
-        source_created && vkr_metal_memory_device_create_texture(
-                              renderer->memory, descriptor, &slot->resource) ==
-                              VKR_METAL_MEMORY_STATUS_OK;
+        source_created &&
+        vkr_metal_memory_device_create_texture(
+            renderer->memory, descriptor, VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+            &slot->resource) == VKR_METAL_MEMORY_STATUS_OK;
     [descriptor release];
     const bool8_t converted =
         cube_created && vkr_metal_packet_convert_equirect(

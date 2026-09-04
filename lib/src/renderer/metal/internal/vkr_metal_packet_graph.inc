@@ -436,8 +436,12 @@ vkr_internal bool8_t vkr_metal_packet_create_image_instance(
   descriptor.sampleCount = image->desc.samples;
   descriptor.usage = vkr_metal_packet_texture_usage(image->desc.usage);
   VkrMetalTextureResource resource = {0};
+  const VkrGpuAllocationOwner owner =
+      image->imported && vkr_string8_equals_cstr(&image->name, "swapchain")
+          ? VKR_GPU_ALLOCATION_OWNER_SWAPCHAIN
+          : VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH;
   const VkrMetalMemoryStatus status = vkr_metal_memory_device_create_texture(
-      renderer->memory, descriptor, &resource);
+      renderer->memory, descriptor, owner, &resource);
   [descriptor release];
   if (status != VKR_METAL_MEMORY_STATUS_OK) {
     log_error("Metal graph image '%.*s' allocation failed: %s, format=%u "
@@ -1017,6 +1021,7 @@ vkr_metal_packet_realize_buffers(VkrMetalPacketRenderer *renderer) {
     for (uint32_t instance = 0u; instance < instance_count; ++instance) {
       const VkrMetalMemoryStatus status = vkr_metal_memory_device_create_buffer(
           renderer->memory, buffer->desc.size,
+          VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH,
           &replacement_instances[instance].resource);
       if (status != VKR_METAL_MEMORY_STATUS_OK) {
         log_error("Metal graph buffer '%.*s' instance %u allocation of %llu "

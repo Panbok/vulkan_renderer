@@ -1086,9 +1086,9 @@ vkr_internal bool8_t vkr_metal_packet_create_ibl_targets(
   cube.mipmapLevelCount = VKR_IBL_PREFILTER_MIP_COUNT;
   cube.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
   const bool8_t targets_passed =
-      vkr_metal_memory_device_create_texture(renderer->memory, cube,
-                                             &renderer->ibl_prefilter) ==
-      VKR_METAL_MEMORY_STATUS_OK;
+      vkr_metal_memory_device_create_texture(
+          renderer->memory, cube, VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+          &renderer->ibl_prefilter) == VKR_METAL_MEMORY_STATUS_OK;
   [cube release];
   if (!targets_passed) {
     if (renderer->ibl_prefilter.metal_texture)
@@ -1242,8 +1242,8 @@ vkr_internal bool8_t vkr_metal_packet_create_gtao_white_visibility(
   descriptor.usage = MTLTextureUsageShaderRead;
   const bool8_t created =
       vkr_metal_memory_device_create_texture(
-          renderer->memory, descriptor, &renderer->gtao_white_visibility) ==
-      VKR_METAL_MEMORY_STATUS_OK;
+          renderer->memory, descriptor, VKR_GPU_ALLOCATION_OWNER_SHADER,
+          &renderer->gtao_white_visibility) == VKR_METAL_MEMORY_STATUS_OK;
   [descriptor release];
   if (!created)
     return false_v;

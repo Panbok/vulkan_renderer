@@ -52,6 +52,7 @@ typedef struct VkrMetalTextureResource {
 
 typedef struct VkrMetalMemoryDeviceMetrics {
   VkrMetalMemoryMetrics suballocations;
+  VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT];
   uint64_t native_heap_size;
   uint64_t native_heap_used_size;
   uint64_t native_heap_allocated_size;
@@ -75,16 +76,14 @@ VkrMetalMemoryStatus
 vkr_metal_memory_device_create(const VkrMetalMemoryDeviceConfig *config,
                                VkrMetalMemoryDevice **out_device);
 
-VkrMetalMemoryStatus
-vkr_metal_memory_device_create_buffer(VkrMetalMemoryDevice *device,
-                                      uint64_t length,
-                                      VkrMetalBufferResource *out_buffer);
+VkrMetalMemoryStatus vkr_metal_memory_device_create_buffer(
+    VkrMetalMemoryDevice *device, uint64_t length, VkrGpuAllocationOwner owner,
+    VkrMetalBufferResource *out_buffer);
 
 // metal_texture_descriptor is a borrowed MTLTextureDescriptor pointer.
-VkrMetalMemoryStatus
-vkr_metal_memory_device_create_texture(VkrMetalMemoryDevice *device,
-                                       void *metal_texture_descriptor,
-                                       VkrMetalTextureResource *out_texture);
+VkrMetalMemoryStatus vkr_metal_memory_device_create_texture(
+    VkrMetalMemoryDevice *device, void *metal_texture_descriptor,
+    VkrGpuAllocationOwner owner, VkrMetalTextureResource *out_texture);
 
 VkrMetalMemoryStatus
 vkr_metal_memory_device_resolve_buffer(VkrMetalMemoryDevice *device,

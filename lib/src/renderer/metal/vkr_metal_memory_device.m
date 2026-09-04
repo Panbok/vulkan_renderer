@@ -12,6 +12,7 @@ struct VkrMetalMemoryDevice {
   id<MTLResidencySet> residency;
   id<MTLResource> *native_resources;
   uint64_t *logical_lengths;
+  VkrGpuAllocationOwner *logical_owners;
   void *core_storage;
   void *upload_ring_storage;
   void *readback_ring_storage;
@@ -21,6 +22,7 @@ struct VkrMetalMemoryDevice {
   uint64_t ring_storage_size;
   uint64_t native_resources_size;
   uint64_t logical_lengths_size;
+  uint64_t logical_owners_size;
   VkrMetalMemoryCore *core;
   VkrMetalSubmitRing upload_ring;
   VkrMetalSubmitRing readback_ring;
@@ -30,6 +32,7 @@ struct VkrMetalMemoryDevice {
   uint64_t native_live_resources;
   uint64_t native_resources_released;
   uint64_t native_heap_peak_allocated_size;
+  VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT];
 };
 
 vkr_internal void *vkr_metal_memory_device_alloc(VkrAllocator *allocator,
@@ -64,6 +67,7 @@ vkr_metal_memory_release_retired(void *context, uint32_t slot_index,
   vkr_metal_memory_release(resource);
   device->native_resources[slot_index] = nil;
   device->logical_lengths[slot_index] = 0;
+  device->logical_owners[slot_index] = VKR_GPU_ALLOCATION_OWNER_UNKNOWN;
   if (resource) {
     device->native_live_resources--;
     device->native_resources_released++;
@@ -73,7 +77,7 @@ vkr_metal_memory_release_retired(void *context, uint32_t slot_index,
 vkr_internal VkrMetalMemoryStatus vkr_metal_memory_abandon(
     VkrMetalMemoryDevice *device, VkrMetalAllocationHandle handle) {
   VkrMetalMemoryStatus status =
-      vkr_metal_memory_retire(device->core, handle, 0);
+      vkr_metal_memory_device_retire(device, handle, 0);
   if (status != VKR_METAL_MEMORY_STATUS_OK)
     return status;
   return vkr_metal_memory_collect(
@@ -121,6 +125,8 @@ vkr_metal_memory_device_create(const VkrMetalMemoryDeviceConfig *config,
         (uint64_t)config->max_allocations * sizeof(*memory->native_resources);
     memory->logical_lengths_size =
         (uint64_t)config->max_allocations * sizeof(*memory->logical_lengths);
+    memory->logical_owners_size =
+        (uint64_t)config->max_allocations * sizeof(*memory->logical_owners);
     memory->core_storage =
         vkr_metal_memory_device_alloc(config->allocator, core_storage_size);
     memory->upload_ring_storage =
@@ -131,9 +137,11 @@ vkr_metal_memory_device_create(const VkrMetalMemoryDeviceConfig *config,
         config->allocator, memory->native_resources_size);
     memory->logical_lengths = vkr_metal_memory_device_alloc(
         config->allocator, memory->logical_lengths_size);
+    memory->logical_owners = vkr_metal_memory_device_alloc(
+        config->allocator, memory->logical_owners_size);
     if (!memory->core_storage || !memory->upload_ring_storage ||
         !memory->readback_ring_storage || !memory->native_resources ||
-        !memory->logical_lengths ||
+        !memory->logical_lengths || !memory->logical_owners ||
         vkr_metal_memory_create(&core_config, memory->core_storage,
                                 core_storage_size,
                                 &memory->core) != VKR_METAL_MEMORY_STATUS_OK ||
@@ -195,16 +203,21 @@ vkr_metal_memory_device_create(const VkrMetalMemoryDeviceConfig *config,
     [memory->residency addAllocation:memory->readback_buffer];
     [memory->residency commit];
     [memory->residency requestResidency];
+    vkr_metal_memory_owner_record_allocate(memory->owners,
+                                           VKR_GPU_ALLOCATION_OWNER_STAGING,
+                                           config->upload_ring_size);
+    vkr_metal_memory_owner_record_allocate(memory->owners,
+                                           VKR_GPU_ALLOCATION_OWNER_READBACK,
+                                           config->readback_ring_size);
     *out_device = memory;
     return VKR_METAL_MEMORY_STATUS_OK;
   }
   return VKR_METAL_MEMORY_STATUS_NATIVE_ALLOCATION_FAILED;
 }
 
-VkrMetalMemoryStatus
-vkr_metal_memory_device_create_buffer(VkrMetalMemoryDevice *device,
-                                      uint64_t length,
-                                      VkrMetalBufferResource *out_buffer) {
+VkrMetalMemoryStatus vkr_metal_memory_device_create_buffer(
+    VkrMetalMemoryDevice *device, uint64_t length, VkrGpuAllocationOwner owner,
+    VkrMetalBufferResource *out_buffer) {
   if (!device || !out_buffer || length == 0)
     return VKR_METAL_MEMORY_STATUS_INVALID_ARGUMENT;
   const MTLResourceOptions options =
@@ -218,6 +231,11 @@ vkr_metal_memory_device_create_buffer(VkrMetalMemoryDevice *device,
       VKR_METAL_RESOURCE_KIND_BUFFER, &handle, &placement);
   if (status != VKR_METAL_MEMORY_STATUS_OK)
     return status;
+  const VkrGpuAllocationOwner normalized_owner =
+      vkr_gpu_allocation_owner_normalize(owner);
+  device->logical_owners[handle.index] = normalized_owner;
+  vkr_metal_memory_owner_record_allocate(device->owners, normalized_owner,
+                                         size_align.size);
   id<MTLBuffer> buffer =
       [device->heap newBufferWithLength:length
                                 options:options
@@ -236,10 +254,9 @@ vkr_metal_memory_device_create_buffer(VkrMetalMemoryDevice *device,
   return VKR_METAL_MEMORY_STATUS_OK;
 }
 
-VkrMetalMemoryStatus
-vkr_metal_memory_device_create_texture(VkrMetalMemoryDevice *device,
-                                       void *metal_texture_descriptor,
-                                       VkrMetalTextureResource *out_texture) {
+VkrMetalMemoryStatus vkr_metal_memory_device_create_texture(
+    VkrMetalMemoryDevice *device, void *metal_texture_descriptor,
+    VkrGpuAllocationOwner owner, VkrMetalTextureResource *out_texture) {
   if (!device || !metal_texture_descriptor || !out_texture)
     return VKR_METAL_MEMORY_STATUS_INVALID_ARGUMENT;
   MTLTextureDescriptor *descriptor =
@@ -257,6 +274,11 @@ vkr_metal_memory_device_create_texture(VkrMetalMemoryDevice *device,
     [descriptor release];
     return status;
   }
+  const VkrGpuAllocationOwner normalized_owner =
+      vkr_gpu_allocation_owner_normalize(owner);
+  device->logical_owners[handle.index] = normalized_owner;
+  vkr_metal_memory_owner_record_allocate(device->owners, normalized_owner,
+                                         size_align.size);
   id<MTLTexture> texture =
       [device->heap newTextureWithDescriptor:descriptor
                                       offset:placement.resource_offset];
@@ -321,7 +343,23 @@ vkr_metal_memory_device_retire(VkrMetalMemoryDevice *device,
                                uint64_t last_use_submit_value) {
   if (!device)
     return VKR_METAL_MEMORY_STATUS_INVALID_ARGUMENT;
-  return vkr_metal_memory_retire(device->core, handle, last_use_submit_value);
+  VkrMetalPlacement placement = {0};
+  VkrMetalMemoryStatus status =
+      vkr_metal_memory_resolve(device->core, handle, &placement);
+  if (status != VKR_METAL_MEMORY_STATUS_OK)
+    return status;
+  const VkrGpuAllocationOwner owner = device->logical_owners[handle.index];
+  const VkrGpuAllocationOwnerTotals *totals = &device->owners[owner];
+  if (!totals->live_allocation_count ||
+      totals->live_bytes < placement.resource_size)
+    return VKR_METAL_MEMORY_STATUS_INVALID_ARGUMENT;
+  status = vkr_metal_memory_retire(device->core, handle, last_use_submit_value);
+  if (status != VKR_METAL_MEMORY_STATUS_OK)
+    return status;
+  return vkr_metal_memory_owner_record_release(device->owners, owner,
+                                               placement.resource_size)
+             ? VKR_METAL_MEMORY_STATUS_OK
+             : VKR_METAL_MEMORY_STATUS_INVALID_ARGUMENT;
 }
 
 VkrMetalMemoryStatus
@@ -417,6 +455,7 @@ void vkr_metal_memory_device_get_metrics(
   }
   *out_metrics = (VkrMetalMemoryDeviceMetrics){0};
   vkr_metal_memory_get_metrics(device->core, &out_metrics->suballocations);
+  MemCopy(out_metrics->owners, device->owners, sizeof(out_metrics->owners));
   out_metrics->native_heap_size = device->heap.size;
   out_metrics->native_heap_used_size = device->heap.usedSize;
   out_metrics->native_heap_allocated_size = device->heap.currentAllocatedSize;
@@ -461,6 +500,8 @@ void vkr_metal_memory_device_destroy(VkrMetalMemoryDevice *device) {
     vkr_metal_memory_release(device->device);
   }
   VkrAllocator *allocator = device->allocator;
+  vkr_metal_memory_device_free(allocator, device->logical_owners,
+                               device->logical_owners_size);
   vkr_metal_memory_device_free(allocator, device->logical_lengths,
                                device->logical_lengths_size);
   vkr_metal_memory_device_free(allocator, device->native_resources,

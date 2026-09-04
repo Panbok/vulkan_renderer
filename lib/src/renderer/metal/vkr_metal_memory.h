@@ -2,6 +2,7 @@
 
 #include "renderer/vkr_gpu_memory.h"
 #include "renderer/vkr_gpu_submit_ring.h"
+#include "renderer/vkr_renderer.h"
 
 typedef VkrGpuMemoryCore VkrMetalMemoryCore;
 
@@ -75,6 +76,12 @@ uint64_t vkr_metal_memory_effective_free_bytes(uint64_t placement_capacity,
 bool8_t vkr_metal_memory_can_allocate_before_reserve(
     const VkrMetalMemoryMetrics *metrics, uint64_t requested_size,
     uint64_t reserve_size);
+void vkr_metal_memory_owner_record_allocate(
+    VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT],
+    VkrGpuAllocationOwner owner, uint64_t size);
+bool8_t vkr_metal_memory_owner_record_release(
+    VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT],
+    VkrGpuAllocationOwner owner, uint64_t size);
 
 typedef VkrGpuSubmitRingSlot VkrMetalSubmitRingSlot;
 typedef VkrGpuSubmitRing VkrMetalSubmitRing;
