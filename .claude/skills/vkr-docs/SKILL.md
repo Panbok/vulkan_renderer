@@ -1,90 +1,83 @@
 ---
 name: vkr-docs
-description: Write or update docs, ADRs, implementation status, and documentation indexes.
+description: Write or update current architecture, vocabulary, ADRs, proposals, and the documentation index.
 ---
 
 # VKR documentation
 
-Start discovery at `docs/README.md`. Read only the documents needed for the
-current decision. `vkr-task-workflow` owns the single local note at
-`.scratch/<task-slug>.md` when the work needs one.
+Start at `docs/INDEX.md`. Load only documents needed for the task.
+`vkr-task-workflow` owns the single local note for multi-step work.
 
-## Authority and decisions
+## Authority and structure
 
-Code defines implemented behavior. `docs/architecture/renderer-architecture-spec.md`
-defines recorded status. ADRs define decision rationale. A proposal or an unused
-module does not establish shipped behavior; inspect production callers.
+Code and production callers define implemented behavior. `docs/ARCHITECTURE.md`
+records the current architecture, ownership, capabilities, and known gaps.
+`docs/CONTEXT.md` defines project vocabulary; ADRs record decisions and rationale.
+A declaration, unused module, or proposal does not prove production integration.
 
-Ask the user as soon as an unresolved architecture choice affects the work.
-Give the concrete tradeoff and a recommendation. Do not replace a needed answer
-with a proposal document or defer questions to a final list.
+Keep `docs/` limited to:
 
-Record durable decisions that constrain future work in an ADR. Local reversible
-choices do not need one. Document ownership, allocator lifetime, synchronization,
-and backend behavior where those facts are not clear from the code. Performance
-claims require configuration, command, and measured results.
+- `CONTEXT.md`: terms used in code and documentation, with owner pointers.
+- `INDEX.md`: the single inventory of all retained documents and their purposes.
+- `ARCHITECTURE.md`: current system structure and behavior, without phase logs.
+- `adr/NNN-title.md`: concise decisions in force, including explicit partial
+  integration or deliberate rejection where it constrains future work.
+- `proposals/title.md`: unimplemented work, its current baseline, open choices,
+  and the evidence needed to accept it.
 
-## Document metadata
+Do not create archives, progress documents, subsystem indexes, or duplicate
+specifications. Remove obsolete documents after merging still-valid rationale
+into its current owner; Git preserves the old text. Preserve ADR numbers and
+never reuse a removed number. Use the next number above the repository's highest
+allocated number, checking history when necessary.
 
-Every Markdown file under `docs/`, except `README.md`, begins with:
+## Audit and write
+
+1. Inspect the owning code and production callers before assigning status.
+   Separate implemented behavior, integration gaps, and unavailable native
+   evidence. A source audit does not establish pixel parity or performance.
+2. Keep one owner per claim. Move future-only portions into a proposal; merge
+   repeated implemented constraints into the owning ADR. Do not retain old APIs,
+   retired commands, estimates presented as results, or historical stage tables.
+3. Record durable decisions with Status, Context, Decision, Consequences,
+   Alternatives considered, and Revisit when. Add stable code links sufficient
+   to check the contract. Keep operational procedures in their owning skills.
+4. Ask immediately when an unsettled architecture choice changes implementation,
+   following `AGENTS.md`. Existing user authorization remains sufficient for
+   in-scope edits; recording current code is not a new architecture decision.
+5. Update the architecture, glossary if terms changed, and `INDEX.md` together.
+   When a proposal ships, merge the accepted decision into an ADR and remove the
+   proposal or narrow it to its remaining unimplemented scope.
+
+Every document except `INDEX.md` begins with:
 
 ```yaml
 ---
-status: implemented | partial | proposed | superseded | investigation
+status: implemented | partial | proposed | declined
 updated: YYYY-MM-DD
-authority: spec | adr | design | progress | investigation
+authority: architecture | context | adr | proposal
 ---
 ```
 
-Select one value per field. `authority` identifies the kind of claim the document
-owns; it does not make a design claim override implementation evidence.
+Choose one value per field. `implemented` describes current production code;
+`partial` names its integration gap. An unrun platform check is an evidence limit,
+not proof that the feature is absent. Proposals use `status: proposed` and
+`authority: proposal`. ADR Status is Accepted, Accepted (partial), or Declined.
+Keep measured claims only with their configuration, exact command, result, and
+limits; never generalize an old backend's results to the current implementation.
 
-| Status | Required evidence or content |
-|---|---|
-| `implemented` | Current production code matches the description |
-| `partial` | Implemented behavior and its exact remaining gap |
-| `proposed` | Design without complete production integration |
-| `superseded` | Link to its replacement |
-| `investigation` | Diagnosis or postmortem with the conclusion at the top |
+## Verify
 
-Non-Markdown artifacts use the owning index for status and purpose. Remove
-editor and OS metadata from the docs tree.
-
-## ADRs
-
-Use the sections Status, Context, Decision, Consequences, Alternatives considered,
-and Revisit when. Use these ADR status labels:
-
-- `Accepted`: implemented decision in force.
-- `Accepted (partial)`: decision in force with an explicitly described integration gap.
-- `Proposed`: recommendation awaiting implementation or decision.
-- `Superseded by ADR-NNN`: replaced decision.
-
-Number new ADRs sequentially as `NNN-kebab-title.md`. Preserve existing numbers
-and add the new row to `docs/architecture/adr/README.md` in the same change.
-
-## Update and verify
-
-1. Write intent and non-obvious invariants. Reference stable symbols and paths;
-   avoid cached line numbers and prose that repeats headers or code.
-2. When a proposal ships, update its metadata, the architecture spec feature
-   table, the docs index, and the owning ADR status together.
-3. When superseded, add the replacement link, set `status: superseded`, move the
-   document to `docs/archive/`, and update links and indexes. Archive a completed
-   investigation when the underlying issue is closed.
-4. `docs/README.md` owns active documents and non-Markdown artifacts.
-   `docs/archive/README.md` owns the archive recursively. A legacy collection may
-   remain one indexed unit if its own historical index survives. Register each
-   added or moved artifact with path, status, and a one-line purpose.
-5. Check the changed documents and indexes with the command below. Inspect index
-   coverage separately. The checker validates local target existence; it does
-   not validate heading anchors, resolve reference labels, or contact websites.
+Run the local link checker, then inspect heading anchors, index coverage, code
+symbols, inline paths, and the diff. The checker checks file targets, not anchors
+or factual accuracy:
 
 ```sh
-python3 .codex/skills/vkr-docs/scripts/check_links.py \
-  docs/README.md docs/architecture/adr/README.md docs/archive/README.md
+python3 .codex/skills/vkr-docs/scripts/check_links.py docs AGENTS.md .codex/skills
 ```
 
-Pass additional changed Markdown files, or `docs` to scan the full tree. The
-command exits nonzero for missing targets. For a docs-only change, these checks
-and a diff review are sufficient; renderer builds and unit tests add no evidence.
+Search for references to every removed or moved path in tracked text, including
+agent instructions and source-adjacent READMEs. Keep `.claude/skills/` byte-identical
+to `.codex/skills/` and check with `diff -rq .codex/skills .claude/skills`.
+Documentation-only changes need these structural and source checks; renderer
+builds or CPU suites do not validate prose.

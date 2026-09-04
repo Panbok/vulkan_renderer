@@ -63,8 +63,9 @@ source frame/submit serial, paths, digests, thresholds, and comparison verdict;
 inspect `auxiliary_runs[]` for child reports and effective configurations.
 Unavailable captures return `3`; never substitute a different channel.
 Capture names and case fields come from
-`docs/tooling/harness-case-schema.json` and the runtime parser in
-`tools/harness/vkr_harness_manifest.c`.
+the runtime parser in `tools/harness/vkr_harness_manifest.c` and working
+examples under `tools/cases/`. Report fields are emitted by
+`tools/harness/vkr_harness_report.c`; ADR-051 records the evidence contract.
 
 ## Interpret the report
 

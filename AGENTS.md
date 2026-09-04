@@ -50,14 +50,13 @@ Record the answer after it is made; a design document cannot substitute for it.
 For renderer changes or diagnosis, consult these in order, reading the relevant
 sections rather than the entire tree:
 
-1. `docs/architecture/renderer-architecture-spec.md`: §4 feature status, current
-   priorities at the start of §8, and the affected subsystem section. The later
-   closed-work log in §8 is historical.
-2. `docs/architecture/adr/README.md`: find the ADRs that constrain this task and
-   read those decisions.
-3. `docs/README.md`: locate additional task-specific documents only as needed.
+1. `docs/ARCHITECTURE.md`: current frame flow, subsystem ownership, capability
+   boundaries, and known implementation gaps. Read only affected sections.
+2. `docs/INDEX.md`: find the ADRs that constrain this task and read those decisions.
+3. `docs/CONTEXT.md`: resolve unfamiliar project terms. `docs/proposals/` contains
+   future work and does not establish implemented behavior.
 
-Code defines current implementation, the architecture spec defines recorded
+Code defines current implementation, `docs/ARCHITECTURE.md` defines recorded
 status, and ADRs define accepted rationale. Investigate conflicts before editing;
 proposal text alone does not prove a feature exists. For tooling or prose-only
 work, inspect its owner directly without loading unrelated renderer documents.
@@ -141,7 +140,10 @@ Vulkan API use, and Metal execution does not validate native Vulkan.
 Preserve pre-existing work. Keep `.codex/skills/` and `.claude/skills/` as
 byte-identical regular-file copies, including scripts and metadata. Check with
 `diff -rq .codex/skills .claude/skills`. `CLAUDE.md` points here. Update affected
-status/rationale documents in the same change when their claims move.
+status/rationale documents in the same change when their claims move. Keep
+`docs/` limited to `CONTEXT.md`, `INDEX.md`, `ARCHITECTURE.md`, `adr/`, and
+`proposals/`. Merge superseded rationale into its current ADR and delete obsolete
+documents; Git preserves history. `docs/INDEX.md` indexes every retained document.
 
 Copy decisive results, exact commands and report digests out of regenerable
 run trees. For captures another machine must consume, follow `vkr-harness`'s

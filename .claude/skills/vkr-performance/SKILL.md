@@ -11,8 +11,8 @@ visible output, and required work while reducing measured cost.
 ## Measurement loop
 
 1. Name the expensive operation, expected metric, frame budget, and invariant
-   the change must preserve. Inspect current code and architecture spec §8
-   before treating a known limitation as a new defect.
+   the change must preserve. Inspect current code and the capability/gap sections in
+   `docs/ARCHITECTURE.md` before treating a known limitation as a new defect.
 2. Run the smallest representative Release case. Use local observations to
    locate cost; use authoritative matched runs to support a speed claim.
 3. Attribute the cost before changing code. CPU scopes locate host work;

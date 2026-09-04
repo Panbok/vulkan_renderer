@@ -8,7 +8,7 @@ description: Specify and verify Metal/Vulkan shader semantics, efficiency, bindi
 ## Locate the contract
 
 Read the state definitions and affected rows in
-`docs/rendering/shader-cross-backend-contract.md`. Use its source inventory to
+`docs/adr/044-shader-cross-backend-contract.md`. Use its source inventory to
 find the shared helper, Metal entry/root, Vulkan entry/root, host lowering, and
 reflection. Inspect all affected counterparts before editing. A shared source
 file alone does not prove both production builds execute it.

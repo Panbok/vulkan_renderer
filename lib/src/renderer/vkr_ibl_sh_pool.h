@@ -5,7 +5,7 @@
 #include "renderer/vkr_render_packet.h"
 
 /*
- * Bounded copy-on-write pool of L2 coefficient slots (ADR-038 §1.2, §1.3).
+ * Bounded copy-on-write pool of L2 coefficient slots (ADR-038).
  *
  * Slot 0 is an immutable zeroed black sentinel: it is never reserved,
  * rewritten, or retired, and it is the valid result for a source with no

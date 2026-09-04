@@ -689,7 +689,7 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanIblRoot {
 } VkrVulkanIblRoot;
 
 /**
- * Root for the L2 coefficient projection dispatch (ADR-038 §2).
+ * Root for the L2 coefficient projection dispatch (ADR-038).
  *
  * `source_texture` addresses the source cubemap's lazily-published 2D-array
  *

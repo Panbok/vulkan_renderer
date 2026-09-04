@@ -3161,7 +3161,7 @@ vkr_renderer_validate_packet(const VkrRenderPacket *packet,
                         "packet.lighting.ibl_probes",
                         "must contain every declared probe");
     /* Bound-checked here, at the cold boundary, so hot-path lowering can index
-       the coefficient pool without a guard (ADR-038 §1.5). */
+       the coefficient pool without a guard (ADR-038). */
     for (uint32_t i = 0u; i < lighting->ibl_probe_count; ++i) {
       if (lighting->ibl_probes[i].sh_slot >= VKR_SH_SLOT_CAPACITY)
         VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,

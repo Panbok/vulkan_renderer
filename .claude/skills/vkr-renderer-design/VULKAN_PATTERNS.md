@@ -10,7 +10,7 @@ runs on macOS; Vulkan runs natively on Windows. Frame preparation, packet
 submission, lifecycle, asset publication, capture, and metrics cross this coarse
 boundary. Native Vulkan types remain inside `lib/src/renderer/vulkan/`.
 
-ADR-025 and ADR-026 replaced the generic backend interface. Keep native command
+ADR-025 records replacement of the generic backend interface. Keep native command
 recording private; do not recreate the retired Vulkan 1.2 descriptor-set path
 or a function-pointer dispatch per draw.
 
@@ -55,7 +55,8 @@ descriptor/material slots, buffer ranges, and capture slots remain retained
 until every recorded use is cancelled or submitted and every submitted use is
 complete. Submission, cancellation, resize, and teardown must preserve that rule.
 
-Vulkan uses keyed DEVICE/UPLOAD/READBACK pools with dedicated allocation paths.
+Vulkan uses keyed DEVICE/UPLOAD/READBACK/STAGING pools with dedicated allocation
+paths.
 The shared `vkr_gpu_memory`, `vkr_gpu_slot_table`, `vkr_gpu_submit_ring`, and
 `vkr_capture_ring` cores supply allocation, slots, command ranges, and captures.
 Inspect their real Metal and Vulkan callers before changing a shared policy.
@@ -67,7 +68,8 @@ state, access masks, and subresource ranges explicit.
 
 ## Coverage boundaries
 
-Check architecture-spec §8 and §10 before selecting evidence. Linux support,
-other devices/drivers, separate queue families, and injected failure paths
+Check `docs/ARCHITECTURE.md` capability and evidence boundaries before selecting
+evidence. Linux support, other devices/drivers, separate queue families, and
+injected failure paths
 cannot be inferred from the existing Windows witness. Select only supported
 harness configurations; a nonexistent backend mode is not a missing test run.

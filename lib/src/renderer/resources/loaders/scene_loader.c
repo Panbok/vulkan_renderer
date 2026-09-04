@@ -992,7 +992,7 @@ scene_loader_parse_environment_import(String8 json) {
   (void)scene_json_read_float_field(&environment_object, "specular_intensity",
                                     &result.specular_intensity);
   /* Validated and normalized here so lighting never interprets an authored
-     value (ADR-038 §1.4). A bad value is a load-time error naming its path. */
+     value (ADR-038). A bad value is a load-time error naming its path. */
   if (scene_json_read_float_field(&environment_object, "sh_deringing",
                                   &result.sh_deringing) &&
       !(isfinite(result.sh_deringing) && result.sh_deringing >= 0.0f)) {
@@ -1481,7 +1481,7 @@ vkr_internal void scene_loader_apply_reflection_probe_imports(
           probe.uses_scene_environment_source = true_v;
           /* An aliasing probe shares the environment's published coefficients
              and inherits its window; it must not carry a conflicting one
-             (ADR-038 §1.4). */
+             (ADR-038). */
           if (probe.sh_deringing != 0.0f) {
             log_warn("Scene loader: $.reflection_probes[%u].sh_deringing is "
                      "ignored because the probe aliases the scene environment "
