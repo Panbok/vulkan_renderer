@@ -98,7 +98,10 @@ reference leaves. Loader/cooker decisions are in
 UI uses an immediate-mode API over a retained cache, grid layout and one bounded
 indexed/scissored stream. Text/font systems own glyph layout resources and
 cooked VKFA font loading; canonical derivative MTSDF coverage and DPI-derived
-pre-layout sizing are shared contracts. See [ADR-027](adr/027-immediate-mode-grid-ui.md)
+pre-layout sizing are shared contracts. MTSDF atlas sampling stays linear when
+scene-texture filtering changes. The app debug overlay has 11/13-device-pixel
+minimum title/body sizes; its authored 9/11-point sizing still governs at higher
+content scales. See [ADR-027](adr/027-immediate-mode-grid-ui.md)
 and [ADR-034](adr/034-offline-cooked-font-artifacts.md) through
 [ADR-036](adr/036-dpi-derived-ui-text-scale.md). Resource worker/finalize ownership
 is in [ADR-045](adr/045-resource-prepare-and-render-thread-finalize.md); stable

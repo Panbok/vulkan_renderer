@@ -1290,6 +1290,25 @@ application_update_gizmo_drag(Application *application,
   }
 }
 
+vkr_internal bool8_t application_is_mtsdf_atlas(
+    const VkrFontSystem *font_system, VkrTextureHandle texture) {
+  for (uint64_t i = 0u; i < font_system->fonts.length; ++i) {
+    const VkrFont *font = &font_system->fonts.data[i];
+    if (font->generation == VKR_INVALID_ID || font->type != VKR_FONT_TYPE_MTSDF)
+      continue;
+    if (font->atlas.id == texture.id &&
+        font->atlas.generation == texture.generation)
+      return true_v;
+    for (uint64_t page_index = 0u; page_index < font->atlas_pages.length;
+         ++page_index) {
+      const VkrTextureHandle page = font->atlas_pages.data[page_index];
+      if (page.id == texture.id && page.generation == texture.generation)
+        return true_v;
+    }
+  }
+  return false_v;
+}
+
 vkr_internal void application_apply_filter_mode(Application *application,
                                                 uint32_t mode_index) {
   if (!application || !state)
@@ -1316,6 +1335,9 @@ vkr_internal void application_apply_filter_mode(Application *application,
 
     VkrTextureHandle handle = {.id = tex->description.id,
                                .generation = tex->description.generation};
+    // MTSDF reconstruction requires linear atlas filtering in every mode.
+    if (application_is_mtsdf_atlas(&application->renderer.font_system, handle))
+      continue;
     VkrRendererError err = vkr_texture_system_update_sampler(
         texture_system, handle, entry.min_filter, entry.mag_filter,
         entry.mip_filter, anisotropy_enable, tex->description.u_repeat_mode,
@@ -2022,8 +2044,7 @@ vkr_internal void application_update_fps_text(Application *application,
 
       String8 left_text = string8_create_formatted(
           frame_alloc,
-          "Camera: {x: %.2f, y: %.2f, z: %.2f}\nCamera rotation: {yaw: %.2f, "
-          "pitch: %.2f}",
+          "Pos: x %.2f  y %.2f  z %.2f\nYaw %.2f  Pitch %.2f",
           camera->position.x, camera->position.y, camera->position.z,
           camera->yaw, camera->pitch);
       if (left_text.length > 0) {
@@ -2134,8 +2155,7 @@ vkr_internal void application_init_ui_texts(Application *application) {
   application_ui_text_set(
       &state->left_text,
       string8_lit(
-          "Camera: {x: 0.0, y: 0.0, z: 0.0}\nCamera rotation: {yaw: 0.0, "
-          "pitch: 0.0}"));
+          "Pos: x 0.0  y 0.0  z 0.0\nYaw 0.0  Pitch 0.0"));
 
   state->fps_update_clock = vkr_clock_create();
   vkr_clock_start(&state->fps_update_clock);

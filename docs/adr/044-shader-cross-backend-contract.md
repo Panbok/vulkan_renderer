@@ -75,7 +75,7 @@ Native lowering lives in [`metal/`](../../lib/src/renderer/metal) and
 | Exposure/bloom/GTAO | matching `shared/*_kernel.slangh` | `metal/msl/post/` | `vulkan/slang/post/` |
 | Temporal resolve | native visibility/identity helpers | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang` |
 | Tonemap/FXAA | shared exposure state | `metal/msl/post/tonemap.metal` | `vulkan/slang/post/default.slang`, `tonemap.slangh` |
-| Text/UI | native coverage implementations | `metal/msl/text/`, `ui/` | `vulkan/slang/text/`, `ui/` |
+| Text/UI (UNALIGNED: native comparison pending) | native coverage; fixed MTSDF atlas sampling | `metal/msl/text/`, `ui/` | `vulkan/slang/text/`, `ui/` |
 
 Metal also compiles `metal/slang/` support sources; native MSL geometry decode
 mirrors the shared Slang record. Consult [`shared/README.md`](../../lib/src/renderer/shaders/shared/README.md)

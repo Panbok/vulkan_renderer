@@ -12,8 +12,12 @@ static VkrUiStyle debug_overlay_panel_style(void) {
   return style;
 }
 
-static VkrUiWidgetConfig debug_overlay_text(float32_t size_pt, Vec4 color,
+static VkrUiWidgetConfig debug_overlay_text(const VkrUiSystem *ui,
+                                            float32_t size_pt,
+                                            float32_t min_size_px, Vec4 color,
                                             uint32_t row) {
+  // Keep the authored Retina size; give small text a device-pixel floor at 1x.
+  size_pt = Max(size_pt, min_size_px / ui->content_scale);
   VkrUiWidgetConfig config = vkr_ui_widget_config_default();
   config.placement = (VkrUiPlacement){
       .column = 0u,
@@ -57,11 +61,13 @@ static void debug_overlay_build_help(VkrUiSystem *ui) {
     return;
 
   VkrUiWidgetConfig title =
-      debug_overlay_text(9.0f, (Vec4){0.43f, 0.80f, 1.0f, 1.0f}, 0u);
+      debug_overlay_text(ui, 9.0f, 11.0f,
+                         (Vec4){0.43f, 0.80f, 1.0f, 1.0f}, 0u);
   vkr_ui_label(ui, string8_lit("title"), string8_lit("DEBUG / CONTROLS"),
                &title);
   VkrUiWidgetConfig body =
-      debug_overlay_text(11.0f, (Vec4){0.86f, 0.89f, 0.94f, 1.0f}, 1u);
+      debug_overlay_text(ui, 11.0f, 13.0f,
+                         (Vec4){0.86f, 0.89f, 0.94f, 1.0f}, 1u);
   vkr_ui_label(ui, string8_lit("body"),
                string8_lit("F6  Toggle debug UI       Tab  Toggle free camera\n"
                            "F4 / F5  Texture filter  F7   GPU pass timings\n"
@@ -95,16 +101,19 @@ static void debug_overlay_build_camera(VkrUiSystem *ui, String8 camera_text,
   panel.row_count = ArrayCount(rows);
   panel.style = debug_overlay_panel_style();
   panel.style.min_size_pt = (Vec2){288.0f, 98.0f};
+  panel.style.gap_pt = 6.0f;
   panel.style.max_size_pt = panel.style.min_size_pt;
   panel.clip_children = true_v;
   if (!vkr_ui_panel_begin(ui, string8_lit("debug.camera.performance"), &panel))
     return;
 
   VkrUiWidgetConfig title =
-      debug_overlay_text(9.0f, (Vec4){0.43f, 0.80f, 1.0f, 1.0f}, 0u);
+      debug_overlay_text(ui, 9.0f, 11.0f,
+                         (Vec4){0.43f, 0.80f, 1.0f, 1.0f}, 0u);
   vkr_ui_label(ui, string8_lit("title"), string8_lit("CAMERA / FPS"), &title);
   VkrUiWidgetConfig body =
-      debug_overlay_text(11.0f, (Vec4){0.86f, 0.89f, 0.94f, 1.0f}, 1u);
+      debug_overlay_text(ui, 11.0f, 13.0f,
+                         (Vec4){0.86f, 0.89f, 0.94f, 1.0f}, 1u);
   vkr_ui_label(ui, string8_lit("camera"), camera_text, &body);
   body.placement.row = 2u;
   body.style.text_color = (Vec4){0.54f, 0.88f, 0.72f, 1.0f};

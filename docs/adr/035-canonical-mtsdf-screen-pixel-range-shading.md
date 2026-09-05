@@ -24,6 +24,8 @@ blends the resulting coverage; the picking variants discard below their shared
 coverage threshold.
 
 The cooked MTSDF loader accepts only a linear, single-page RGBA8 MTSDF atlas.
+Its clamp-to-edge, linear, non-mipmapped sampling stays fixed when the sample's
+scene-texture filtering controls change.
 No alpha-SDF blend fallback is implemented.
 
 ## Consequences
