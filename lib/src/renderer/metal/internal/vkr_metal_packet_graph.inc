@@ -1261,6 +1261,8 @@ vkr_metal_packet_mark_exposure_submitted(VkrMetalPacketRenderer *renderer,
                                              renderer->exposure_state_handle,
                                              renderer->history_output_index);
   if (current) {
+    renderer->exposure_seconds += packet->globals.exposure.delta_seconds;
+    current->history_exposure_seconds = renderer->exposure_seconds;
     current->history_producer_submit_value = submit_value;
     current->history_frame_index = packet->frame.frame_index;
     current->history_scene_generation = packet->frame.scene_generation;

@@ -19,8 +19,14 @@ modify the lighting terms they physically approximate.
 
 Keep temporal history scene-linear. Meter the post-temporal HDR source with a
 256-bin log-luminance histogram and percentile exposure resolve. Renderer-owned
-frame delta/discontinuities control completion-safe EV history: valid adaptation
-is rate-bounded and invalid history snaps to target. Tonemap consumes GPU state
+frame delta/discontinuities control completion-safe EV history. Each native
+renderer advances an exposure clock only when an exposure output is submitted
+and stores that clock with the output. Adaptation uses elapsed exposure-clock
+time since the selected completed history, bounded by the shared hitch limit;
+it does not apply only one frame's delta to an older state. Invalid history snaps
+to target. Defaults lower exposure at 8 EV/s, raise it at 1 EV/s, and clamp the
+target to [-8,+4] EV. The rate names describe displayed-image brightness.
+Tonemap consumes GPU state
 without synchronous CPU readback; delayed completed samples expose diagnostics.
 Manual exposure remains an explicit alternative.
 Histogram dispatches use complete 16x16 threadgroups on both backends: all 256

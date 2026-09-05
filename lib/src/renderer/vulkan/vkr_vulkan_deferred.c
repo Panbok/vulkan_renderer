@@ -1260,6 +1260,9 @@ bool8_t vkr_vk_record_exposure_resolve(VkrVulkanRenderer *renderer,
   }
   if (previous) {
     slot->exposure_state_input = previous;
+    root.metering.delta_seconds = vkr_exposure_history_delta(
+        renderer->exposure_seconds + root.metering.delta_seconds,
+        previous->history_exposure_seconds);
     const VkBufferMemoryBarrier2 barrier = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
         .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -1313,6 +1316,9 @@ void vkr_vk_mark_exposure_submitted(VkrVulkanRenderer *renderer,
     for (uint32_t i = 0u; i < slot->exposure_state_history->instance_count; ++i)
       slot->exposure_state_history->instances[i].history_valid = false_v;
   }
+  renderer->exposure_seconds += packet->globals.exposure.delta_seconds;
+  slot->exposure_state_output->history_exposure_seconds =
+      renderer->exposure_seconds;
   slot->exposure_state_output->history_producer_submit_value = submit_value;
   slot->exposure_state_output->history_frame_index = packet->frame.frame_index;
   slot->exposure_state_output->history_scene_generation =

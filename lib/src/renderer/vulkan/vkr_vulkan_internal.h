@@ -1123,6 +1123,7 @@ typedef struct VkrVulkanGraphBufferInstance {
   uint64_t history_producer_submit_value;
   uint64_t history_frame_index;
   uint64_t history_scene_generation;
+  float64_t history_exposure_seconds;
   bool8_t history_valid;
 } VkrVulkanGraphBufferInstance;
 
@@ -1451,6 +1452,8 @@ struct VkrVulkanRenderer {
   VkrAllocator *allocator;
   VkrVulkanRendererConfig config;
   VkrExposureMeteringConfig exposure_metering;
+  /** Bounded simulation time of the last submitted automatic exposure. */
+  float64_t exposure_seconds;
   VkrBloomConfig bloom_config;
   VkrGtaoConfig gtao_config;
   VkrGtaoGpuParams gtao_params;

@@ -125,6 +125,21 @@ static void test_exposure_bounded_delta(void) {
   printf("  test_exposure_bounded_delta PASSED\n");
 }
 
+static void test_exposure_completed_history_elapsed_time(void) {
+  printf("  Running test_exposure_completed_history_elapsed_time...\n");
+  /* Three submitted frames lasting 10, 20, and 30 ms end at 10.06 s.
+     Their prior exposure records require 30, 50, and 60 ms respectively,
+     independent of which completed record the backend can safely select. */
+  assert(fabsf(vkr_exposure_history_delta(10.06, 10.03) - 0.03f) < 1e-7f);
+  assert(fabsf(vkr_exposure_history_delta(10.06, 10.01) - 0.05f) < 1e-7f);
+  assert(fabsf(vkr_exposure_history_delta(10.06, 10.00) - 0.06f) < 1e-7f);
+  assert(vkr_exposure_history_delta(10.06, 10.06) == 0.0f);
+  /* Accumulated history age must still respect the existing single-step cap. */
+  assert(vkr_exposure_history_delta(11.0, 10.0) ==
+         VKR_EXPOSURE_MAX_DELTA_SECONDS);
+  printf("  test_exposure_completed_history_elapsed_time PASSED\n");
+}
+
 static void test_exposure_metering_config_normalize(void) {
   printf("  Running test_exposure_metering_config_normalize...\n");
   const VkrExposureMeteringConfig defaults =
@@ -251,6 +266,7 @@ bool32_t run_exposure_tests(void) {
   test_exposure_automatic_history();
   test_exposure_reset_reasons();
   test_exposure_bounded_delta();
+  test_exposure_completed_history_elapsed_time();
   test_exposure_metering_config_normalize();
   test_exposure_packet_validation();
   printf("Exposure tests PASSED\n");

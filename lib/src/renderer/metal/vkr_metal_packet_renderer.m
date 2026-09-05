@@ -151,6 +151,7 @@ typedef struct VkrMetalPacketGraphBufferInstance {
   uint32_t history_height;
   uint64_t history_frame_index;
   uint64_t history_scene_generation;
+  float64_t history_exposure_seconds;
   bool8_t history_valid;
   bool8_t live;
 } VkrMetalPacketGraphBufferInstance;
@@ -452,6 +453,8 @@ struct VkrMetalPacketRenderer {
   VkrRenderGraph *graph;
   VkrRgExecutorRegistry executors;
   VkrExposureMeteringConfig exposure_metering;
+  /** Bounded simulation time of the last submitted automatic exposure. */
+  float64_t exposure_seconds;
   VkrBloomConfig bloom_config;
   VkrGtaoConfig gtao_config;
   VkrGtaoGpuParams gtao_params;

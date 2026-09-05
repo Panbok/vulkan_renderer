@@ -1837,7 +1837,11 @@ vkr_internal bool8_t vkr_metal_packet_encode_exposure_resolve(
       .metering = vkr_exposure_gpu_metering(&renderer->exposure_metering,
                                             &packet->globals.exposure),
   };
-  if (!previous)
+  if (previous)
+    root->metering.delta_seconds = vkr_exposure_history_delta(
+        renderer->exposure_seconds + root->metering.delta_seconds,
+        previous->history_exposure_seconds);
+  else
     root->metering.history_valid = 0u;
   [renderer->argument_table setAddress:root_gpu atIndex:0u];
   [encoder setComputePipelineState:renderer->exposure_resolve_pipeline];

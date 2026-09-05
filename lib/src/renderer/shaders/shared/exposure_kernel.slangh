@@ -5,10 +5,6 @@
 // both languages; only the program-scope storage qualifier differs, so that is
 // the one thing selected here. Entry points, bindings, and buffer pointers stay
 // in the backend-native files that include this one.
-//
-// `vkr_exposure.c` carries a CPU mirror of every step below. That mirror is the
-// only deterministic coverage this arithmetic has, because the project has no
-// GPU compute-kernel test harness, so the two must be changed together.
 
 #if defined(__METAL_VERSION__)
 using namespace metal;

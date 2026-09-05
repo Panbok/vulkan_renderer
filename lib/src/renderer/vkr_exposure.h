@@ -160,6 +160,7 @@ typedef struct VkrExposureGpuMetering {
   float32_t brighten_rate_per_second;
   float32_t darken_rate_per_second;
   float32_t compensation_ev;
+  /** Elapsed time since selected history, capped at the maximum step. */
   float32_t delta_seconds;
   /** log2 of the validated manual multiplier; invalid-chain fallback. */
   float32_t manual_ev;
@@ -210,6 +211,15 @@ typedef struct VkrExposureDebugSample {
 VkrExposureGpuMetering
 vkr_exposure_gpu_metering(const VkrExposureMeteringConfig *config,
                           const VkrExposureFrame *frame);
+
+/**
+ * Lowers elapsed simulation time from a completed exposure producer.
+ * Backends accumulate the frontend's bounded frame delta only on successful
+ * automatic-exposure submissions and retain that time with each output.
+ * Both times belong to that monotonic clock; current_seconds >= history_seconds.
+ */
+float32_t vkr_exposure_history_delta(float64_t current_seconds,
+                                      float64_t history_seconds);
 
 /** Production metering defaults, already normalized. */
 VkrExposureMeteringConfig vkr_exposure_metering_config_default(void);

@@ -24,9 +24,9 @@ VkrExposureMeteringConfig vkr_exposure_metering_config_default(void) {
       .high_percentile = 0.95f,
       .middle_gray = 0.18f,
       .min_ev = -8.0f,
-      .max_ev = 8.0f,
-      .brighten_rate_per_second = 3.0f,
-      .darken_rate_per_second = 1.0f,
+      .max_ev = 4.0f,
+      .brighten_rate_per_second = 1.0f,
+      .darken_rate_per_second = 8.0f,
       .min_luminance = 1e-4f,
   };
 }
@@ -123,6 +123,12 @@ vkr_exposure_gpu_metering(const VkrExposureMeteringConfig *config,
       .bin_count = VKR_EXPOSURE_HISTOGRAM_BIN_COUNT,
       .history_valid = frame->history_valid ? 1u : 0u,
   };
+}
+
+float32_t vkr_exposure_history_delta(float64_t current_seconds,
+                                      float64_t history_seconds) {
+  return (float32_t)Min(current_seconds - history_seconds,
+                       (float64_t)VKR_EXPOSURE_MAX_DELTA_SECONDS);
 }
 
 VkrExposureFrame vkr_exposure_prepare(const VkrExposureState *state,
