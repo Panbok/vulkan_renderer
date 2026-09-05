@@ -26,6 +26,10 @@ There is no CPU opaque/transmission/shadow draw fallback or legacy world selecto
 
 Opaque/cutout raster writes visibility identity and depth. Compute resolves
 geometry/material data into the G-buffer, evaluates GTAO, and shades HDR lighting.
+Depth-writing visibility, shadow and picking passes use strict less-than depth
+tests; depth-read-only blend and text accept equal depth. Culling sphere scale
+uses the longest transformed model axis. HZB reductions include an unpaired
+source row or column in the last destination texel's maximum.
 The graph also builds HZB history, handles visibility-based picking, and schedules
 ADR-018's four transmission peels. Compacted transmission shading retains a
 fullscreen diagnostic launch shape, not a second world renderer.

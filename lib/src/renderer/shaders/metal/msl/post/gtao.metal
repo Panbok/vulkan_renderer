@@ -1,6 +1,7 @@
 constexpr sampler vkr_metal_gtao_point_sampler(coord::normalized,
                                                address::clamp_to_edge,
-                                               filter::nearest);
+                                               filter::nearest,
+                                               mip_filter::nearest);
 
 struct alignas(16) VkrMetalPacketGtaoDepthRoot {
   VkrGtaoParams params;

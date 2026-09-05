@@ -23,6 +23,8 @@ frame delta/discontinuities control completion-safe EV history: valid adaptation
 is rate-bounded and invalid history snaps to target. Tonemap consumes GPU state
 without synchronous CPU readback; delayed completed samples expose diagnostics.
 Manual exposure remains an explicit alternative.
+Histogram dispatches use complete 16x16 threadgroups on both backends: all 256
+lanes initialize and merge bins, while edge lanes omit out-of-extent source reads.
 
 Bloom prefilters scene-linear HDR with threshold/soft knee into a bounded
 half-resolution chain, downsamples, accumulates deepest-first, and combines into
@@ -34,6 +36,7 @@ GTAO uses current-frame depth and normals before deferred lighting. A dedicated
 positive-view-depth R16 pyramid feeds full-resolution three-slice/three-step
 horizon evaluation, separate raw R8 visibility and edge data, and an edge-aware
 3x3 denoise. A white fallback disables the effect without per-light branching.
+Depth-pyramid horizon samples use nearest texel and nearest mip filtering.
 It multiplies indirect diffuse after material AO; direct and specular terms keep
 their separate policies. It is not reused HZB history or general wall visibility.
 

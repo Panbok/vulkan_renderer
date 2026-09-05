@@ -520,6 +520,42 @@ static void test_direct_draw_publication_admission(void) {
   printf("  test_direct_draw_publication_admission PASSED\n");
 }
 
+static void test_cancelled_asset_use_serials(void) {
+  printf("  Running test_cancelled_asset_use_serials...\n");
+  VkrVulkanPublishedGeometry geometry[] = {
+      {.last_use_submit_value = 0u},
+      {.last_use_submit_value = 5u},
+      {.last_use_submit_value = 7u},
+      {.last_use_submit_value = 8u},
+  };
+  VkrVulkanPublishedTexture textures[] = {
+      {.last_use_submit_value = 8u},
+      {.last_use_submit_value = 7u},
+      {.last_use_submit_value = 5u},
+      {.last_use_submit_value = 0u},
+  };
+  VkrVulkanRenderer renderer = {
+      .config = {.geometry_capacity = ArrayCount(geometry),
+                 .texture_capacity = ArrayCount(textures)},
+      .published_geometries = geometry,
+      .published_textures = textures,
+      .submit_value = 7u,
+      .completed_value = 5u,
+  };
+  vkr_vk_discard_unsubmitted_asset_uses(&renderer);
+  // Serial 8 was only recorded. Submitted serial 7 must still await completion.
+  assert(geometry[0].last_use_submit_value == 0u);
+  assert(geometry[1].last_use_submit_value == 5u);
+  assert(geometry[2].last_use_submit_value == 7u);
+  assert(geometry[3].last_use_submit_value == 7u);
+  assert(textures[0].last_use_submit_value == 7u);
+  assert(textures[1].last_use_submit_value == 7u);
+  assert(textures[2].last_use_submit_value == 5u);
+  assert(textures[3].last_use_submit_value == 0u);
+  assert(renderer.submit_value == 7u && renderer.completed_value == 5u);
+  printf("  test_cancelled_asset_use_serials PASSED\n");
+}
+
 static void test_shared_graph_metalfx_capability_boundary(void) {
   printf("  Running test_shared_graph_metalfx_capability_boundary...\n");
   // Exercise production binding and validation without creating a GPU device.
@@ -574,6 +610,7 @@ static void test_shared_graph_metalfx_capability_boundary(void) {
 bool32_t run_vulkan_tests(void) {
   printf("--- Running Vulkan tests... ---\n");
   test_shared_graph_metalfx_capability_boundary();
+  test_cancelled_asset_use_serials();
   test_direct_draw_publication_admission();
   test_present_result_classifier();
   test_reacquisition_completion_contract();

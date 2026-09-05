@@ -753,9 +753,10 @@ float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing)
             material.material_surface.z);
         float3 tangent = normalize(input.world_tangent.xyz);
         tangent = normalize(tangent - dot(tangent, normal) * normal);
-        float3 bitangent = cross(normal, tangent) * input.world_tangent.w;
-        float3x3 tangent_basis = float3x3(tangent, bitangent, normal);
-        normal = normalize(mul(tangent_basis, sampled));
+        float3 bitangent =
+            normalize(cross(normal, tangent)) * input.world_tangent.w;
+        normal = normalize(tangent * sampled.x + bitangent * sampled.y +
+                           normal * sampled.z);
     }
     if (frame.render_mode == 2u)
         return float4(normal * 0.5f + 0.5f, 1.0f);

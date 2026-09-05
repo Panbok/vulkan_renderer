@@ -1147,6 +1147,8 @@ vkr_vk_sampler_address_mode(VkrTextureRepeatMode mode) {
 vkr_internal bool8_t vkr_vk_create_published_sampler(
     VkrVulkanRenderer *renderer, const VkrTextureDescription *description,
     uint32_t mip_levels, VkSampler *out_sampler) {
+  const float32_t max_anisotropy =
+      vkr_vulkan_device_max_anisotropy(renderer->device);
   const VkSamplerCreateInfo info = {
       .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
       .magFilter = description->mag_filter == VKR_FILTER_LINEAR
@@ -1161,6 +1163,8 @@ vkr_internal bool8_t vkr_vk_create_published_sampler(
       .addressModeU = vkr_vk_sampler_address_mode(description->u_repeat_mode),
       .addressModeV = vkr_vk_sampler_address_mode(description->v_repeat_mode),
       .addressModeW = vkr_vk_sampler_address_mode(description->w_repeat_mode),
+      .anisotropyEnable = description->anisotropy_enable && max_anisotropy > 1.0f,
+      .maxAnisotropy = description->anisotropy_enable ? max_anisotropy : 1.0f,
       .maxLod = description->mip_filter == VKR_MIP_FILTER_NONE
                     ? 0.0f
                     : (float32_t)(mip_levels - 1u),
@@ -1181,6 +1185,7 @@ vkr_internal bool8_t vkr_vk_sampler_description_equal(
       b->mip_filter == VKR_MIP_FILTER_NONE ? 1u : b_mip_levels;
   return a->min_filter == b->min_filter && a->mag_filter == b->mag_filter &&
          a->mip_filter == b->mip_filter &&
+         !!a->anisotropy_enable == !!b->anisotropy_enable &&
          a->u_repeat_mode == b->u_repeat_mode &&
          a->v_repeat_mode == b->v_repeat_mode &&
          a->w_repeat_mode == b->w_repeat_mode &&

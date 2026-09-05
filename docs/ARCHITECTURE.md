@@ -163,6 +163,11 @@ with float32 UVs. Cooking and publication validate range quantization; there is
 no selectable 24-byte float16-UV mode. See
 [ADR-031](adr/031-versioned-packed-static-geometry-abi.md).
 
+Native depth-writing passes use strict less-than tests; blend/text depth reads
+accept equality. Both cull with transformed-axis sphere scale and retain odd
+source edges during HZB reduction. Transmission compaction uses native subgroup
+identity instead of assuming a workgroup invocation mapping.
+
 PBR materials use prepared metallic-roughness data with retained dielectric
 response from specular-glossiness conversion. Texture color/data interpretation
 is resolved during loading. Transmission preserves reflection/emission, replaces
@@ -209,6 +214,8 @@ Vulkan requires the explicit descriptor-buffer/device feature profile and reject
 unsupported devices; a Vulkan 1.4 version string alone is insufficient. There
 is no legacy descriptor-set fallback. See
 [ADR-023](adr/023-vulkan-1-4-bindless-capability-profile.md).
+Requested material anisotropy uses the enabled device feature and effective
+limit (up to 16); devices without it report a maximum of 1.
 
 Metal supports explicit internal scale and MetalFX temporal reconstruction.
 The sample selects dynamic MetalFX in direct and paneled modes; zero-initialized
@@ -272,6 +279,8 @@ These are limits of current code or retained acceptance, not scheduled promises:
 - Native source exists for both backends, but same-revision crossed transmission,
   visibility/packed geometry, punctual lighting, shadow-transition, tonemap,
   UI/text color/coverage/picking and mixed-DPI evidence remains incomplete.
+- Near-degenerate barycentric rejection and zero interpolated tangent handedness
+  still have different native edge policies, recorded in ADR-044.
 - SH needs deterministic GPU projection fixtures, local-probe quality review,
   submitted-frame lifetime stress and a valid comparative performance record.
 - Moving TAA/MetalFX quality, final-color baseline acceptance and authoritative

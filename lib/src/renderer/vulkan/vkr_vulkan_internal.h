@@ -1784,6 +1784,7 @@ void vkr_vk_mark_temporal_submitted(VkrVulkanRenderer *renderer,
 bool8_t vkr_vk_record_ibl_bakes(VkrVulkanRenderer *renderer,
                                 VkCommandBuffer command);
 void vkr_vk_abandon_ibl_bake_recordings(VkrVulkanRenderer *renderer);
+void vkr_vk_discard_unsubmitted_asset_uses(VkrVulkanRenderer *renderer);
 void vkr_vk_discard_ibl_bakes(VkrVulkanRenderer *renderer);
 bool8_t vkr_vk_record_packet_draws(
     VkrVulkanRenderer *renderer, VkCommandBuffer command,

@@ -421,11 +421,28 @@ vkr_internal bool8_t vkr_vk_present_cancelled_frame(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
+void vkr_vk_discard_unsubmitted_asset_uses(VkrVulkanRenderer *renderer) {
+  /* Recording marks the next submit value. Preserve every submitted use while
+     removing uses from commands that will never reach the queue. */
+  const uint64_t submitted = renderer->submit_value;
+  for (uint32_t i = 0u; i < renderer->config.geometry_capacity; ++i) {
+    VkrVulkanPublishedGeometry *geometry = &renderer->published_geometries[i];
+    if (geometry->last_use_submit_value > submitted)
+      geometry->last_use_submit_value = submitted;
+  }
+  for (uint32_t i = 0u; i < renderer->config.texture_capacity; ++i) {
+    VkrVulkanPublishedTexture *texture = &renderer->published_textures[i];
+    if (texture->last_use_submit_value > submitted)
+      texture->last_use_submit_value = submitted;
+  }
+}
+
 void vkr_vulkan_renderer_cancel_frame(VkrVulkanRenderer *renderer) {
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   vkr_vk_abandon_ibl_bake_recordings(renderer);
   slot->sh_coefficients_clear_recorded = false_v;
+  vkr_vk_discard_unsubmitted_asset_uses(renderer);
   const bool8_t submitted = slot->acquired_window_image
                                 ? vkr_vk_present_cancelled_frame(renderer, slot)
                                 : false_v;

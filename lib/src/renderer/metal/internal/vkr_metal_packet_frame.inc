@@ -1802,8 +1802,10 @@ vkr_internal bool8_t vkr_metal_packet_encode_exposure_histogram(
                  beforeEncoderStages:MTLStageDispatch
                    visibilityOptions:MTL4VisibilityOptionDevice];
   [encoder setComputePipelineState:renderer->exposure_histogram_pipeline];
-  [encoder dispatchThreads:MTLSizeMake(source.width, source.height, 1u)
-      threadsPerThreadgroup:MTLSizeMake(16u, 16u, 1u)];
+  // Every group needs all 256 lanes to initialize and merge its histogram bins.
+  [encoder dispatchThreadgroups:MTLSizeMake((source.width + 15u) / 16u,
+                                           (source.height + 15u) / 16u, 1u)
+          threadsPerThreadgroup:MTLSizeMake(16u, 16u, 1u)];
   return true_v;
 }
 

@@ -43,6 +43,10 @@ single native run cannot establish bilateral parity. MetalFX is an explicit
 backend-specific mode under ADR-040. Current missing native evidence is summarized
 in [ARCHITECTURE](../ARCHITECTURE.md).
 
+Current evidence state: **UNALIGNED** for every domain below. The production
+source audit covers their counterparts; same-revision bilateral native
+comparisons and runtime reflection checks remain incomplete.
+
 ## Consequences
 
 Portable contracts remain reviewable without pretending native roots are identical.
@@ -81,3 +85,20 @@ Metal also compiles `metal/slang/` support sources; native MSL geometry decode
 mirrors the shared Slang record. Consult [`shared/README.md`](../../lib/src/renderer/shaders/shared/README.md)
 and build scripts for the exact entry-point inventory. This record replaces
 former ADR-005's deleted reflection-driven frontend.
+
+## Portable edge contracts and remaining differences
+
+Material normals transform through the explicit tangent/bitangent/normal basis;
+Slang row constructors must not transpose that basis. Native model-matrix
+indexing must preserve transformed-axis culling bounds. Depth equality and odd
+HZB mip edges follow ADR-028. Vulkan transmission compaction uses native subgroup
+identity/count, independent of workgroup-local invocation numbering.
+
+Exposure requires complete histogram groups and GTAO requires mip-selecting
+depth sampling under ADR-042. Equirectangular HDR conversion wraps longitude
+and clamps latitude, preserving the prepared source texture's pole behavior.
+
+Two near-degenerate reconstruction policies still differ: Metal rejects
+barycentric normalization sums at `1e-8`, Vulkan at `1e-12`; interpolated tangent
+handedness exactly zero maps to zero on Metal and positive handedness on Vulkan.
+These need a shared edge-case oracle before changing their thresholds or output.

@@ -17,7 +17,9 @@ vkr_metal_packet_ibl_equirect(uint3 position [[thread_position_in_grid]],
   if (position.x >= root->target_size || position.y >= root->target_size ||
       position.z >= 6)
     return;
-  constexpr sampler environment_sampler(coord::normalized, address::repeat,
+  // Longitude wraps; clamping latitude keeps the opposite pole out of the filter.
+  constexpr sampler environment_sampler(coord::normalized, s_address::repeat,
+                                        t_address::clamp_to_edge,
                                         filter::linear);
   float2 face_uv = (float2(position.xy) + 0.5) / float(root->target_size);
   float3 direction =

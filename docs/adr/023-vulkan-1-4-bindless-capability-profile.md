@@ -33,6 +33,9 @@ native descriptor bytes. Unsupported devices fail initialization with capability
 diagnostics; there is no legacy descriptor-set renderer fallback.
 
 Swapchain maintenance is optional and supplies present fences when available.
+Sampler anisotropy is optional: enable the queried feature on the selected
+device, include it in sampler cache identity, and clamp requests to the lesser
+of 16 and the device limit. Report a maximum of 1 when unavailable.
 The baseline completion proof is described in ADR-009. Memory pooling and slot
 publication follow ADR-024. The removed Vulkan 1.2 backend is not a supported
 compatibility path; Linux is not enabled by current implementation selection.

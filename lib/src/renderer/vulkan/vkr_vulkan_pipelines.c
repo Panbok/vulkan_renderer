@@ -1045,7 +1045,8 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline(
       .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
       .depthTestEnable = depth_test,
       .depthWriteEnable = depth_write,
-      .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
+      .depthCompareOp =
+          depth_write ? VK_COMPARE_OP_LESS : VK_COMPARE_OP_LESS_OR_EQUAL,
   };
   const bool8_t temporal_targets =
       pipeline == VKR_VULKAN_PACKET_PIPELINE_WORLD_BLEND ||

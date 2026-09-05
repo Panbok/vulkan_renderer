@@ -108,6 +108,7 @@ bool8_t vkr_vulkan_device_present_fences_enabled(const VkrVulkanDevice *device);
 uint32_t vkr_vulkan_device_queue_family(const VkrVulkanDevice *device);
 const VkPhysicalDeviceProperties2 *
 vkr_vulkan_device_properties(const VkrVulkanDevice *device);
+float32_t vkr_vulkan_device_max_anisotropy(const VkrVulkanDevice *device);
 const VkPhysicalDeviceMemoryProperties *
 vkr_vulkan_device_memory_properties(const VkrVulkanDevice *device);
 const VkPhysicalDeviceDescriptorBufferPropertiesEXT *

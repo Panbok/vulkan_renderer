@@ -397,9 +397,10 @@ static bool vkr_vk_candidate_occluded(VkrVkCullRoot *root,
     float3 center =
         mul(instance.model, float4(candidate.local_bounding_sphere.xyz, 1.0f))
             .xyz;
-    float scale =
-        max(length(instance.model[0].xyz),
-            max(length(instance.model[1].xyz), length(instance.model[2].xyz)));
+    float3 scale_x = mul(instance.model, float4(1.0f, 0.0f, 0.0f, 0.0f)).xyz;
+    float3 scale_y = mul(instance.model, float4(0.0f, 1.0f, 0.0f, 0.0f)).xyz;
+    float3 scale_z = mul(instance.model, float4(0.0f, 0.0f, 1.0f, 0.0f)).xyz;
+    float scale = max(length(scale_x), max(length(scale_y), length(scale_z)));
     float radius = max(candidate.local_bounding_sphere.w * scale, 0.0f);
     float2 ndc_min = 1e30f;
     float2 ndc_max = -1e30f;
@@ -476,9 +477,9 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
     VkrVulkanInstance instance = root.instances[candidate.instance_index];
     float4 local = candidate.local_bounding_sphere;
     float4 world_center = mul(instance.model, float4(local.xyz, 1.0f));
-    float3 scale_x = instance.model[0].xyz;
-    float3 scale_y = instance.model[1].xyz;
-    float3 scale_z = instance.model[2].xyz;
+    float3 scale_x = mul(instance.model, float4(1.0f, 0.0f, 0.0f, 0.0f)).xyz;
+    float3 scale_y = mul(instance.model, float4(0.0f, 1.0f, 0.0f, 0.0f)).xyz;
+    float3 scale_z = mul(instance.model, float4(0.0f, 0.0f, 1.0f, 0.0f)).xyz;
     float world_radius =
         local.w * max(length(scale_x), max(length(scale_y), length(scale_z)));
     uint classification_index =
@@ -1541,15 +1542,19 @@ void vk_hzb_build(uint3 thread_id : SV_DispatchThreadID)
             float4(depth, 0.0f, 0.0f, 0.0f);
         return;
     }
-    uint2 source = thread_id.xy * 2u;
+    uint2 source_begin = thread_id.xy * 2u;
+    uint2 source_end = min(source_begin + 2u, root.source_extent);
+    // Floor-sized mips assign the unpaired source edge to the last texel.
+    if (thread_id.x + 1u == root.destination_extent.x)
+        source_end.x = root.source_extent.x;
+    if (thread_id.y + 1u == root.destination_extent.y)
+        source_end.y = root.source_extent.y;
     float maximum = 0.0f;
-    [unroll]
-    for (uint y = 0u; y < 2u; ++y)
+    for (uint y = source_begin.y; y < source_end.y; ++y)
     {
-        [unroll]
-        for (uint x = 0u; x < 2u; ++x)
+        for (uint x = source_begin.x; x < source_end.x; ++x)
         {
-            uint2 p = min(source + uint2(x, y), root.source_extent - 1u);
+            uint2 p = uint2(x, y);
             float value =
                 root.source_is_depth != 0u
                     ? g_depth_textures[root.source_texture].Load(int3(p, 0))
@@ -1659,9 +1664,8 @@ void vk_transmission_compact(uint3 thread_id : SV_DispatchThreadID,
                         material.material_alpha.w > 0.0f;
         partition = extended ? 1u : 0u;
     }
-    uint wave_size = WaveGetLaneCount();
-    uint wave_index = group_index / wave_size;
-    uint wave_count = (64u + wave_size - 1u) / wave_size;
+    uint wave_index = WaveGetWaveIndex();
+    uint wave_count = WaveGetNumWaves();
     bool thin_covered = covered && partition == 0u;
     bool extended_covered = covered && partition == 1u;
     uint thin_lane_offset = WavePrefixCountBits(thin_covered);

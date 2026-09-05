@@ -911,6 +911,7 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
   if (submit_result != VK_SUCCESS) {
     log_error("Vulkan queue submission failed (result=%d)", (int)submit_result);
     vkr_vk_abandon_ibl_bake_recordings(renderer);
+    vkr_vk_discard_unsubmitted_asset_uses(renderer);
     slot->sh_coefficients_clear_recorded = false_v;
     if (slot->capture_request_id)
       (void)vkr_capture_ring_fail(&renderer->capture_ring,
@@ -1599,10 +1600,7 @@ void vkr_vulkan_renderer_target_information(
   if (out_color_space)
     *out_color_space = VKR_SURFACE_COLOR_SPACE_SRGB_NONLINEAR;
   if (out_max_anisotropy) {
-    const VkPhysicalDeviceProperties2 *properties =
-        vkr_vulkan_device_properties(renderer->device);
-    *out_max_anisotropy =
-        properties ? properties->properties.limits.maxSamplerAnisotropy : 1.0f;
+    *out_max_anisotropy = vkr_vulkan_device_max_anisotropy(renderer->device);
   }
 }
 
