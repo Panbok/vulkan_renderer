@@ -479,6 +479,9 @@ typedef struct VkrShadowSystem {
   /** Bumped when enabled shadows are disabled; invalidates fit_history. */
   uint64_t enable_generation;
 
+  /** Submitted per-image contents also supply the newest compatible fit.
+   * Other physical images converge by rendering that descriptor before reuse;
+   * selecting its CPU metadata never proves another image's depth contents. */
   VkrShadowCascadeHistory cascade_history[VKR_SHADOW_TARGET_IMAGE_COUNT_MAX]
                                          [VKR_SHADOW_CASCADE_COUNT_MAX];
   VkrShadowPendingHistory pending_history;

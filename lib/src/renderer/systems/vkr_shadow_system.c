@@ -1300,6 +1300,37 @@ void vkr_shadow_system_commit_frame(VkrShadowSystem *system,
   *pending = (VkrShadowPendingHistory){0};
 }
 
+vkr_internal bool8_t vkr_shadow_submitted_signature_matches(
+    const VkrShadowCascadeHistory *history,
+    const VkrWorldPassPayload *candidates, uint64_t resource_generation,
+    uint64_t bias_signature, uint64_t light_signature) {
+  return history->last_submit_value != 0u && history->static_only_contents &&
+         history->static_generation ==
+             (candidates ? candidates->static_generation : 0u) &&
+         history->publication_generation ==
+             (candidates ? candidates->publication_generation : 0u) &&
+         history->caster_bounds_generation ==
+             (candidates ? candidates->caster_bounds_generation : 0u) &&
+         history->bias_signature == bias_signature &&
+         history->light_signature == light_signature &&
+         history->resource_generation == resource_generation;
+}
+
+vkr_internal bool8_t vkr_shadow_rendered_descriptor_equal(
+    const VkrShadowCascadeHistory *a, const VkrShadowCascadeHistory *b) {
+  return MemCompare(&a->rendered_view_projection, &b->rendered_view_projection,
+                     sizeof(Mat4)) == 0 &&
+         MemCompare(&a->rendered_light_view, &b->rendered_light_view,
+                     sizeof(Mat4)) == 0 &&
+         a->rendered_fit.center_x == b->rendered_fit.center_x &&
+         a->rendered_fit.center_y == b->rendered_fit.center_y &&
+         a->rendered_fit.extent == b->rendered_fit.extent &&
+         a->rendered_fit.min_z == b->rendered_fit.min_z &&
+         a->rendered_fit.max_z == b->rendered_fit.max_z &&
+         a->rendered_fit.world_units_per_texel ==
+             b->rendered_fit.world_units_per_texel;
+}
+
 void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
                                      uint32_t image_index,
                                      VkrRetainedShadowToken retained_token,
@@ -1326,12 +1357,37 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
       vkr_shadow_bias_signature(&system->config, shadow_depth_format);
 
   VkrShadowFit guarded_fits[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
-  bool8_t history_dynamic_overlap[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
+  const VkrShadowCascadeHistory *desired[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
+  bool8_t desired_dynamic_overlap[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
   bool8_t guarded_dynamic_overlap[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
+  float32_t remaining_margin[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
+  const bool8_t publication_pending =
+      candidates && candidates->publication_pending;
   for (uint32_t cascade = 0u; cascade < cascade_count; ++cascade) {
     guarded_fits[cascade] = vkr_shadow_guarded_fit(system, cascade);
     out_data->split_near[cascade] = system->cascade_splits[cascade];
     out_data->split_far[cascade] = system->cascades[cascade].split_far;
+    remaining_margin[cascade] = -1.0f;
+    if (publication_pending)
+      continue;
+    // Select a submitted CPU descriptor, not another image's depth contents.
+    // Stale physical images render this fit at their normal protected reuse.
+    for (uint32_t image = 0u; image < VKR_SHADOW_TARGET_IMAGE_COUNT_MAX; ++image) {
+      const VkrShadowCascadeHistory *history =
+          &system->cascade_history[image][cascade];
+      if ((desired[cascade] && history->last_submit_value <=
+                                   desired[cascade]->last_submit_value) ||
+          !vkr_shadow_submitted_signature_matches(
+              history, candidates, retained_token.resource_generation,
+              bias_signature, light_signature))
+        continue;
+      const float32_t margin = vkr_shadow_rendered_fit_margin(
+          history, &system->cascades[cascade]);
+      if (margin < 0.0f)
+        continue;
+      desired[cascade] = history;
+      remaining_margin[cascade] = margin;
+    }
   }
 
   const uint32_t shadow_count =
@@ -1354,13 +1410,12 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
       vkr_shadow_candidate_world_sphere(candidate, &center, &radius);
       for (uint32_t cascade = 0u; cascade < cascade_count; ++cascade) {
         out_data->dynamic_candidates_tested[cascade]++;
-        const VkrShadowCascadeHistory *history =
-            image_valid ? &system->cascade_history[image_index][cascade] : NULL;
-        if (history && history->last_submit_value != 0u &&
+        const VkrShadowCascadeHistory *history = desired[cascade];
+        if (history &&
             vkr_shadow_sphere_intersects_fit(center, radius,
                                              &history->rendered_light_view,
                                              &history->rendered_fit))
-          history_dynamic_overlap[cascade] = true_v;
+          desired_dynamic_overlap[cascade] = true_v;
         if (vkr_shadow_sphere_intersects_fit(
                 center, radius, &system->cascades[cascade].light_view,
                 &guarded_fits[cascade]))
@@ -1369,38 +1424,25 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
     }
   }
 
-  const bool8_t publication_pending =
-      candidates && candidates->publication_pending;
   VkrShadowPendingHistory *pending = &system->pending_history;
   pending->image_index = image_index;
 
   bool8_t reusable[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
   bool8_t proactive[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
-  float32_t remaining_margin[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
   for (uint32_t cascade = 0u; cascade < cascade_count; ++cascade) {
     const uint32_t bit = UINT32_C(1) << cascade;
     VkrShadowCascadeHistory *history =
         image_valid ? &system->cascade_history[image_index][cascade] : NULL;
-    const bool8_t signatures_match =
-        history && history->last_submit_value != 0u &&
-        history->static_only_contents &&
-        history->static_generation ==
-            (candidates ? candidates->static_generation : 0u) &&
-        history->publication_generation ==
-            (candidates ? candidates->publication_generation : 0u) &&
-        history->caster_bounds_generation ==
-            (candidates ? candidates->caster_bounds_generation : 0u) &&
-        history->bias_signature == bias_signature &&
-        history->light_signature == light_signature &&
-        history->resource_generation == retained_token.resource_generation;
-    remaining_margin[cascade] = signatures_match
-                                    ? vkr_shadow_rendered_fit_margin(
-                                          history, &system->cascades[cascade])
-                                    : -1.0f;
+    const bool8_t descriptor_matches =
+        history && desired[cascade] &&
+        vkr_shadow_submitted_signature_matches(
+            history, candidates, retained_token.resource_generation,
+            bias_signature, light_signature) &&
+        vkr_shadow_rendered_descriptor_equal(history, desired[cascade]);
     const bool8_t dynamic_forced =
-        dynamic_scan_failed || history_dynamic_overlap[cascade];
+        dynamic_scan_failed || desired_dynamic_overlap[cascade];
     reusable[cascade] = (retained_token.valid_layer_mask & bit) != 0u &&
-                        remaining_margin[cascade] >= 0.0f &&
+                        descriptor_matches && remaining_margin[cascade] >= 0.0f &&
                         !publication_pending && !dynamic_forced;
   }
 
@@ -1426,7 +1468,7 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
     VkrShadowCascadeHistory *history =
         image_valid ? &system->cascade_history[image_index][cascade] : NULL;
     const bool8_t dynamic_forced =
-        dynamic_scan_failed || history_dynamic_overlap[cascade];
+        dynamic_scan_failed || desired_dynamic_overlap[cascade];
 
     if (reusable[cascade] && !proactive[cascade]) {
       out_data->view_projection[cascade] = history->rendered_view_projection;
@@ -1442,18 +1484,28 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
     out_data->correctness_forced[cascade] = reusable[cascade] ? 0u : 1u;
     out_data->proactive_refreshed[cascade] = proactive[cascade] ? 1u : 0u;
     out_data->dynamic_forced[cascade] = dynamic_forced ? 1u : 0u;
-    out_data->view_projection[cascade] = vkr_shadow_view_projection_from_fit(
-        &system->cascades[cascade].light_view, &guarded_fits[cascade]);
-    vkr_shadow_publish_cascade_receiver(&system->cascades[cascade].light_view,
-                                        &guarded_fits[cascade], cascade,
-                                        out_data);
+    // Explicit proactive refresh still creates a fresh guarded fit. Ordinary
+    // convergence redraws adopt the selected submitted descriptor exactly.
+    const bool8_t adopt_submitted = desired[cascade] && !dynamic_forced &&
+                                   !publication_pending && !proactive[cascade];
+    const Mat4 light_view = adopt_submitted
+                               ? desired[cascade]->rendered_light_view
+                               : system->cascades[cascade].light_view;
+    const VkrShadowFit fit = adopt_submitted
+                                ? desired[cascade]->rendered_fit
+                                : guarded_fits[cascade];
+    out_data->view_projection[cascade] =
+        adopt_submitted ? desired[cascade]->rendered_view_projection
+                        : vkr_shadow_view_projection_from_fit(&light_view, &fit);
+    vkr_shadow_publish_cascade_receiver(&light_view, &fit, cascade, out_data);
 
     pending->cascade_mask |= bit;
     pending->cascades[cascade] = (VkrShadowCascadeHistory){
         .static_only_contents = !publication_pending && !dynamic_scan_failed &&
-                                !guarded_dynamic_overlap[cascade],
-        .rendered_fit = guarded_fits[cascade],
-        .rendered_light_view = system->cascades[cascade].light_view,
+                                !(adopt_submitted ? desired_dynamic_overlap[cascade]
+                                                  : guarded_dynamic_overlap[cascade]),
+        .rendered_fit = fit,
+        .rendered_light_view = light_view,
         .rendered_view_projection = out_data->view_projection[cascade],
         .static_generation = candidates ? candidates->static_generation : 0u,
         .publication_generation =

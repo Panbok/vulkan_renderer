@@ -26,13 +26,19 @@ Track static/dynamic caster and publication generations. Pack static candidate
 and instance rows per completion-protected slot; refresh on publication changes
 and copy dynamic ranges independently. Each physical target-image cascade keeps
 its submitted fit and signature. A guard-contained static cascade with valid
-retained content can omit its authored pass. Dynamic overlap, generation drift,
+retained content can omit its authored pass only when its actual submitted fit
+matches the common desired projection. The newest compatible submitted static
+fit containing the current cascade supplies that projection. Other physical
+images render into their own depth storage using the same descriptor when next
+acquired; selecting its CPU metadata never borrows another image's depth.
+Dynamic overlap, generation drift,
 invalid contents or incomplete publication forces rendering. Pending fits and
 content validity commit only after successful submit. Reused cascades publish
 the fit that actually produced their depth.
 
 The optional proactive refresh scheduler selects low-margin cascades within a
-bounded budget; the production budget is zero. ADR-033's SDSM is also opt-in.
+bounded budget; the production budget is zero. Converging stale image copies is
+a correctness refresh independent of that optional budget. ADR-033's SDSM is also opt-in.
 GPU camera/cascade classification remains ADR-028's one-phase topology.
 
 Receivers use shared progressive rotated Poisson comparison-PCF at 1/4/9/16/32
@@ -44,7 +50,12 @@ raster-bias lowering preserves those units. Cutout casters use alpha testing.
 ## Consequences
 
 Fit and content retention reduce repeated work only when every reuse condition
-holds. More aggressive fitting/bias/filter choices alter quality and must be
+holds. Independent per-image projections can remain different after camera
+movement, alternating shadow sampling and preventing checked temporal scene
+signatures from matching. Converging them can add up to one render per stale
+image/cascade for each adopted fit, spread across normal completion-safe image
+reuse. Once the images agree, static frames omit those passes again. No new GPU
+storage, copies or waits are required. More aggressive fitting/bias/filter choices alter quality and must be
 measured. Point/spot shadows and arbitrary light occlusion remain absent.
 
 ## Alternatives considered

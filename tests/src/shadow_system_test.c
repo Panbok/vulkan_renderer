@@ -940,6 +940,113 @@ static void test_proactive_refresh_is_bounded_to_reusable_cascades(void) {
   vkr_shadow_system_shutdown(&system, test_frontend());
 }
 
+static void test_retained_images_converge_without_publishing_cancelled_fit(void) {
+  VkrShadowSystem system = {0};
+  VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  config.cascade_count = 1u;
+  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+  VkrCamera camera = test_camera();
+  VkrWorldPassPayload payload = retained_static_payload();
+  prime_retained_history(&system, &camera, 0u, &payload);
+  const VkrShadowCascadeHistory original = system.cascade_history[0][0];
+
+  /* Seed three valid physical images. Image one was submitted later with
+     twice the XY coverage: halving clip xy is an independent projection of
+     that wider square about the same center, with unchanged depth. Both fits
+     contain the stopped camera, but their actual depth projections differ. */
+  VkrShadowCascadeHistory wider = original;
+  wider.rendered_fit.extent *= 2.0f;
+  wider.rendered_fit.world_units_per_texel *= 2.0f;
+  for (uint32_t column = 0u; column < 4u; ++column) {
+    wider.rendered_view_projection.elements[column * 4u] *= 0.5f;
+    wider.rendered_view_projection.elements[column * 4u + 1u] *= 0.5f;
+  }
+  wider.last_submit_value = 19u;
+  system.cascade_history[1][0] = wider;
+  system.cascade_history[2][0] = original;
+  /* A newer but incompatible publication cannot become the chosen fit. */
+  system.cascade_history[3][0] = original;
+  system.cascade_history[3][0].static_generation++;
+  system.cascade_history[3][0].last_submit_value = 100u;
+  const VkrRetainedShadowToken valid = {
+      .resource_generation = 3u, .valid_layer_mask = 1u};
+  VkrShadowFrameData frame = {0};
+
+  vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == 1u);
+  assert(MemCompare(&frame.view_projection[0], &wider.rendered_view_projection,
+                    sizeof(Mat4)) == 0);
+  assert(frame.world_units_per_texel[0] ==
+         wider.rendered_fit.world_units_per_texel);
+  assert(system.cascade_history[0][0].last_submit_value == 17u);
+  vkr_shadow_system_discard_frame(&system);
+  vkr_shadow_system_commit_frame(&system, 20u);
+  assert(MemCompare(&system.cascade_history[0][0].rendered_view_projection,
+                    &original.rendered_view_projection, sizeof(Mat4)) == 0);
+
+  /* At most one redraw per stale physical image; the first committed copy
+     becoming newest must not change the desired descriptor again. */
+  const uint32_t stale_images[] = {0u, 2u};
+  for (uint32_t i = 0u; i < ArrayCount(stale_images); ++i) {
+    vkr_shadow_system_resolve_frame(&system, stale_images[i], valid, &payload,
+                                    VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+    assert(frame.cascade_render_mask == 1u);
+    assert(MemCompare(&frame.view_projection[0], &wider.rendered_view_projection,
+                      sizeof(Mat4)) == 0);
+    vkr_shadow_system_commit_frame(&system, 20u + i);
+  }
+  for (uint32_t repeat = 0u; repeat < 2u; ++repeat)
+    for (uint32_t image = 0u; image < 3u; ++image) {
+      vkr_shadow_system_resolve_frame(&system, image, valid, &payload,
+                                      VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+      assert(frame.cascade_render_mask == 0u && frame.reused[0] == 1u);
+      assert(MemCompare(&frame.view_projection[0], &wider.rendered_view_projection,
+                        sizeof(Mat4)) == 0);
+      assert(!system.pending_history.active);
+    }
+
+  /* A caster can overlap only the chosen wider volume, outside this image's
+     old narrower fit. Test that desired-volume rejection owns convergence. */
+  system.cascade_history[0][0] = original;
+  const Vec4 light_position = {
+      wider.rendered_fit.center_x + original.rendered_fit.extent * 0.75f,
+      wider.rendered_fit.center_y,
+      (wider.rendered_fit.min_z + wider.rendered_fit.max_z) * 0.5f, 1.0f};
+  const Vec4 world_position = mat4_mul_vec4(
+      mat4_inverse_rigid(wider.rendered_light_view), light_position);
+  VkrWorldDrawCandidate dynamic = {
+      .instance = {.model = mat4_identity()},
+      .local_bounding_sphere = {world_position.x, world_position.y,
+                                world_position.z,
+                                original.rendered_fit.extent * 0.01f},
+      .flags = VKR_WORLD_DRAW_CANDIDATE_BOUNDS_VALID,
+  };
+  payload.gpu_candidates = &dynamic;
+  payload.gpu_shadow_candidate_count = 1u;
+  vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == 1u && frame.dynamic_forced[0] == 1u);
+  assert(system.pending_history.cascades[0].rendered_fit.extent <
+         wider.rendered_fit.extent);
+  vkr_shadow_system_discard_frame(&system);
+
+  payload.gpu_candidates = NULL;
+  payload.gpu_shadow_candidate_count = 0u;
+  payload.static_generation++;
+  /* No cached fit has this generation: image three's otherwise matching newer
+     row deliberately carries a different publication generation here. */
+  system.cascade_history[3][0].publication_generation++;
+  vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == 1u);
+  assert(system.pending_history.cascades[0].static_generation ==
+         payload.static_generation);
+  assert(system.pending_history.cascades[0].rendered_fit.extent <
+         wider.rendered_fit.extent);
+  vkr_shadow_system_shutdown(&system, test_frontend());
+}
+
 static void test_sdsm_uses_completed_occupied_depth_and_keeps_fixed_tail(void) {
   VkrShadowSystem system = {0};
   VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
@@ -1148,6 +1255,7 @@ bool32_t run_shadow_system_tests(void) {
   test_retained_history_signatures_and_invalidation_fail_closed();
   test_stale_dynamic_contents_render_once_after_caster_leaves();
   test_proactive_refresh_is_bounded_to_reusable_cascades();
+  test_retained_images_converge_without_publishing_cancelled_fit();
   test_sdsm_uses_completed_occupied_depth_and_keeps_fixed_tail();
   test_sdsm_cached_range_rejects_scene_and_projection_changes();
   test_reused_cascade_publishes_its_rendered_receiver_data();
