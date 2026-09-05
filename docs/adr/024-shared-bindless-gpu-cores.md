@@ -29,6 +29,21 @@ while retaining accounting. Metal uses placement heaps and upload/readback
 rings through the same range and submit contracts. There is no VMA, online
 defragmentation or graph transient aliasing.
 
+Vulkan frame slots separate directly read UPLOAD storage from copy-only candidate
+STAGING storage. Direct storage starts at 16 MiB per slot and retains the 75 MiB
+ceiling. Candidate staging grows on demand, bounded by the two candidate streams'
+88 MiB maximum. Packet preflight reserves both before publishing pointers or GPU
+addresses, after the slot's last submission completes. Capacity is retained until
+slot teardown; no draw or dispatch grows either buffer. This avoids reserving
+225 MiB of a discrete GPU's small mapped device-local heap at startup. A larger
+first workload can incur an allocation hitch.
+
+Dedicated Vulkan UPLOAD allocations still retry the next eligible ranked memory
+type on device-memory exhaustion. Large direct payloads can exceed the preferred
+heap even with the split. The buffer, mapping and completion owner stay unchanged;
+fallback host-memory reads can cost PCIe bandwidth. Other allocation errors remain
+fatal to creation.
+
 `VkrAssetPublisher` publishes immutable geometry, texture, sampler and material
 generations. Replacement publishes new state before retiring old state against
 last GPU use. Generation slots are not reusable merely because a CPU handle was

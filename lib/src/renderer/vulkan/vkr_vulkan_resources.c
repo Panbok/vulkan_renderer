@@ -409,7 +409,7 @@ bool8_t vkr_vk_create_buffer(VkrVulkanRenderer *renderer,
         .flags = has_address ? VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT : 0u,
         .pNext = &dedicated_info,
     };
-    const VkMemoryAllocateInfo allocate_info = {
+    VkMemoryAllocateInfo allocate_info = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .pNext =
             has_address ? (const void *)&flags : (const void *)&dedicated_info,
@@ -418,15 +418,43 @@ bool8_t vkr_vk_create_buffer(VkrVulkanRenderer *renderer,
     };
     allocation->memory_size = requirements.memoryRequirements.size;
     allocation->dedicated = true_v;
-    const VkResult allocate_result =
-        vkAllocateMemory(device, &allocate_info, NULL, &allocation->memory);
+    VkResult allocate_result;
+    uint32_t remaining_memory_types =
+        requirements.memoryRequirements.memoryTypeBits;
+    for (;;) {
+      VkDeviceMemory memory = VK_NULL_HANDLE;
+      allocate_result =
+          vkAllocateMemory(device, &allocate_info, NULL, &memory);
+      if (allocate_result == VK_SUCCESS) {
+        allocation->memory = memory;
+        if (remaining_memory_types !=
+            requirements.memoryRequirements.memoryTypeBits)
+          log_warn("Vulkan dedicated UPLOAD used fallback type %u (size=%llu)",
+                   allocation->memory_type_index,
+                   (unsigned long long)allocation->memory_size);
+        break;
+      }
+      vkr_vulkan_memory_pool_record_native_failure(renderer->memory_pool);
+      remaining_memory_types &= ~(1u << allocation->memory_type_index);
+      /* Large directly-read uploads can exhaust a discrete GPU's small BAR
+         heap. The UPLOAD ranking also accepts host memory; try that placement
+         at creation, retaining the same mapped buffer and completion owner. */
+      if (allocate_result != VK_ERROR_OUT_OF_DEVICE_MEMORY ||
+          memory_class != VKR_VULKAN_MEMORY_CLASS_UPLOAD ||
+          !vkr_vk_choose_memory_type(renderer, remaining_memory_types,
+                                     memory_class,
+                                     &allocation->memory_type_index,
+                                     &allocation->properties))
+        break;
+      allocate_info.memoryTypeIndex = allocation->memory_type_index;
+      allocation->pool_key.memory_type_index = allocation->memory_type_index;
+    }
     if (allocate_result != VK_SUCCESS) {
       log_error("Vulkan dedicated buffer allocation failed "
                 "(size=%llu, type=%u, class=%u, result=%d)",
                 (unsigned long long)allocation->memory_size,
                 allocation->memory_type_index, (uint32_t)memory_class,
                 (int)allocate_result);
-      vkr_vulkan_memory_pool_record_native_failure(renderer->memory_pool);
       vkr_vk_destroy_buffer(renderer, out_buffer);
       return false_v;
     }
@@ -703,6 +731,47 @@ bool8_t vkr_vk_create_image_ex(VkrVulkanRenderer *renderer, uint32_t width,
   return true_v;
 }
 
+bool8_t vkr_vk_reserve_frame_uploads(VkrVulkanRenderer *renderer,
+                                      VkrVulkanFrameSlot *slot,
+                                      uint64_t direct_bytes,
+                                      uint64_t candidate_bytes) {
+  // Called before packet packing, after this slot's last submission completed.
+  if (slot->retire_value > renderer->completed_value ||
+      candidate_bytes > VKR_VULKAN_CANDIDATE_UPLOAD_SIZE)
+    return false_v;
+  VkrVulkanBuffer *buffers[] = {&slot->frame_upload, &slot->candidate_upload};
+  const uint64_t required[] = {
+      Min(direct_bytes, (uint64_t)VKR_VULKAN_FRAME_UPLOAD_SIZE), candidate_bytes};
+  const uint64_t limits[] = {VKR_VULKAN_FRAME_UPLOAD_SIZE,
+                              VKR_VULKAN_CANDIDATE_UPLOAD_SIZE};
+  const VkrVulkanMemoryClass classes[] = {VKR_VULKAN_MEMORY_CLASS_UPLOAD,
+                                           VKR_VULKAN_MEMORY_CLASS_STAGING};
+  const VkBufferUsageFlags usages[] = {
+      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+          VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+      VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+  for (uint32_t i = 0u; i < ArrayCount(buffers); ++i) {
+    VkrVulkanBuffer *buffer = buffers[i];
+    if (required[i] <= buffer->size)
+      continue;
+    uint64_t capacity = buffer->size ? buffer->size : 1024u * 1024u;
+    while (capacity < required[i])
+      capacity = Min(capacity * 2u, limits[i]);
+    VkrVulkanBuffer replacement = {0};
+    if (!vkr_vk_create_buffer(renderer, classes[i],
+                              VKR_GPU_ALLOCATION_OWNER_STAGING, capacity,
+                              usages[i], &replacement)) {
+      log_error("Vulkan failed to grow frame %s storage to %llu bytes",
+                i == 0u ? "direct-upload" : "candidate-staging",
+                (unsigned long long)capacity);
+      return false_v;
+    }
+    vkr_vk_destroy_buffer(renderer, buffer);
+    *buffer = replacement;
+  }
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_vk_create_frame_slots(VkrVulkanRenderer *renderer) {
   VkDevice device = vkr_vk_renderer_device(renderer);
   const VkDeviceSize readback_size = VKR_VULKAN_READBACK_SIZE;
@@ -738,10 +807,9 @@ vkr_internal bool8_t vkr_vk_create_frame_slots(VkrVulkanRenderer *renderer) {
                               &slot->readback) ||
         !vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_UPLOAD,
                               VKR_GPU_ALLOCATION_OWNER_STAGING,
-                              VKR_VULKAN_FRAME_UPLOAD_SIZE,
+                              VKR_VULKAN_FRAME_UPLOAD_INITIAL_SIZE,
                               VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                                  VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                                  VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                  VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
                               &slot->frame_upload) ||
         (renderer->config.capture_ring_capacity > 0u &&
          !vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_READBACK,
@@ -760,6 +828,7 @@ void vkr_vk_destroy_frame_slots(VkrVulkanRenderer *renderer) {
   for (uint32_t i = 0; i < VKR_VULKAN_FRAME_SLOT_COUNT; ++i) {
     VkrVulkanFrameSlot *slot = &renderer->frame_slots[i];
     vkr_vk_destroy_buffer(renderer, &slot->frame_upload);
+    vkr_vk_destroy_buffer(renderer, &slot->candidate_upload);
     vkr_vk_destroy_buffer(renderer, &slot->capture_readback);
     vkr_vk_destroy_buffer(renderer, &slot->readback);
     if (slot->timestamp_pool)

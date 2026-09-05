@@ -1204,9 +1204,9 @@ vkr_internal bool8_t vkr_vk_record_graphics_body(
         renderer->config.tonemap_enabled ? VKR_VULKAN_FULLSCREEN_TONEMAP : 0u,
         target_width, target_height);
     if (!recorded)
-      log_error("Vulkan tonemap root allocation failed at %llu/%u bytes",
+      log_error("Vulkan tonemap root allocation failed at %llu/%llu bytes",
                 (unsigned long long)slot->frame_upload_cursor,
-                VKR_VULKAN_FRAME_UPLOAD_SIZE);
+                (unsigned long long)slot->frame_upload.size);
     return recorded;
   }
   case VKR_VULKAN_GRAPH_EXECUTOR_UI: {
@@ -1363,6 +1363,49 @@ vkr_internal bool8_t vkr_vk_record_graph_transfer_pass(
   };
   vkCmdCopyImage2(command, &copy);
   return true_v;
+}
+
+uint64_t vkr_vk_graph_upload_bound(VkrVulkanRenderer *renderer,
+                                     uint64_t direct_draw_bytes,
+                                     uint64_t text_bytes,
+                                     uint64_t ui_root_bytes) {
+  uint64_t bytes = 0u;
+  for (uint64_t order = 0u; order < renderer->graph->execution_order.length;
+       ++order) {
+    const uint32_t index = renderer->graph->execution_order.data[order];
+    const VkrRgPass *pass = &renderer->graph->passes.data[index];
+    VkrVulkanGraphExecutorKind kind;
+    if (!vkr_vk_graph_executor_kind(pass, &kind))
+      return VKR_VULKAN_FRAME_UPLOAD_SIZE;
+    // Non-IBL executors allocate at most one fixed root plus cull view/plane
+    // arrays (1616 bytes at nine views), or fullscreen/frame/temporal roots.
+    // Reserve alignment and root headroom separately from variable draw data.
+    bytes += 4096u;
+    switch (kind) {
+    case VKR_VULKAN_GRAPH_EXECUTOR_PICKING:
+      if (!renderer->graph->packet->picking ||
+          !renderer->graph->packet->picking->pending)
+        break;
+      bytes += direct_draw_bytes + text_bytes;
+      break;
+    case VKR_VULKAN_GRAPH_EXECUTOR_WORLD_BLEND:
+      bytes += direct_draw_bytes + text_bytes;
+      break;
+    case VKR_VULKAN_GRAPH_EXECUTOR_UI:
+      bytes += ui_root_bytes;
+      break;
+    case VKR_VULKAN_GRAPH_EXECUTOR_IBL_BAKE:
+      bytes += (uint64_t)renderer->pending_ibl_bake_count *
+               ((VKR_VULKAN_TEXTURE_MIP_MAX + 1u) * sizeof(VkrVulkanIblRoot) +
+                sizeof(VkrVulkanIblShRoot));
+      break;
+    default:
+      break;
+    }
+    if (bytes >= VKR_VULKAN_FRAME_UPLOAD_SIZE)
+      return VKR_VULKAN_FRAME_UPLOAD_SIZE;
+  }
+  return bytes;
 }
 
 vkr_internal bool8_t vkr_vk_record_graph_pass(VkrVulkanRenderer *renderer,

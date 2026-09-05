@@ -243,7 +243,13 @@ enum {
   VKR_VULKAN_GRAPH_LAYER_MAX = 16,
   VKR_VULKAN_TEXTURE_MIP_MAX = 16,
   VKR_VULKAN_PENDING_IBL_BAKE_MAX = 32,
+  /* Preserve the former shared-upload ceiling for direct reads. Copy-only
+     candidate rows now grow separately in STAGING memory at slot reuse. */
   VKR_VULKAN_FRAME_UPLOAD_SIZE = 75u * 1024u * 1024u,
+  VKR_VULKAN_FRAME_UPLOAD_INITIAL_SIZE = 16u * 1024u * 1024u,
+  VKR_VULKAN_CANDIDATE_UPLOAD_SIZE =
+      2u * VKR_GPU_DRAW_CANDIDATE_CAPACITY *
+      (sizeof(VkrGpuCandidateDrawRow) + sizeof(VkrPreparedInstanceGPU)),
 };
 
 enum {
@@ -1176,6 +1182,7 @@ typedef struct VkrVulkanFrameSlot {
   VkrVulkanBuffer readback;
   VkrVulkanBuffer capture_readback;
   VkrVulkanBuffer frame_upload;
+  VkrVulkanBuffer candidate_upload;
   VkrCaptureBackendItemPlan capture_plans[VKR_CAPTURE_MAX_ITEMS];
   VkrRgImageHandle capture_images[VKR_CAPTURE_MAX_ITEMS];
   VkrCaptureRequestId capture_request_id;
@@ -1202,6 +1209,7 @@ typedef struct VkrVulkanFrameSlot {
   bool8_t acquired_window_image;
   bool8_t reacquired_presented_image;
   uint64_t frame_upload_cursor;
+  uint64_t candidate_upload_cursor;
   VkrVulkanTemporalSceneState temporal_scene;
   /** Frame-upload allocation failures this frame. Non-zero means the frame was
    *  rejected for want of upload bytes, not for a malformed packet. */
@@ -1872,6 +1880,14 @@ void vkr_vk_pipeline_cache_shutdown(VkrVulkanRenderer *renderer);
 void *vkr_vk_frame_upload_allocate(VkrVulkanFrameSlot *slot, uint64_t size,
                                    uint64_t alignment, uint64_t *out_address,
                                    uint64_t *out_offset);
+bool8_t vkr_vk_reserve_frame_uploads(VkrVulkanRenderer *renderer,
+                                      VkrVulkanFrameSlot *slot,
+                                      uint64_t direct_bytes,
+                                      uint64_t candidate_bytes);
+uint64_t vkr_vk_graph_upload_bound(VkrVulkanRenderer *renderer,
+                                     uint64_t direct_draw_bytes,
+                                     uint64_t text_bytes,
+                                     uint64_t ui_root_bytes);
 void vkr_vk_cmd_image_barrier(VkCommandBuffer command_buffer, VkImage image,
                               VkPipelineStageFlags2 src_stage,
                               VkAccessFlags2 src_access,

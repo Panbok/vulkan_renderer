@@ -276,7 +276,9 @@ load, build or initialization errors. Partial application startup unwinds acquir
 owners, and failed text rebuilding preserves its previously published layout.
 
 Vulkan pools keyed device/upload/staging/readback blocks, with persistent mappings and
-required dedicated-allocation exceptions. Metal uses placement heaps and native
+required dedicated-allocation exceptions. Completion-protected Vulkan frame slots
+keep directly read uploads separate from copy-only candidate staging; both retain
+capacity grown during packet preflight. Metal uses placement heaps and native
 upload/readback adapters. Shared cores track logical ranges, generations, submit
 values and retirement; physical allocations remain native. No VMA, online
 defragmentation, GPU heap eviction or transient aliasing is implemented.

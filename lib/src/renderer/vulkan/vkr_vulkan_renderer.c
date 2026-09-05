@@ -685,7 +685,13 @@ vkr_internal bool8_t vkr_vk_record_draw(VkrVulkanRenderer *renderer,
               (unsigned long long)slot->frame_upload_cursor);
     return false_v;
   }
-
+  if (slot->candidate_upload_cursor &&
+      !vkr_vk_flush(renderer, &slot->candidate_upload.allocation, 0u,
+                    slot->candidate_upload_cursor)) {
+    log_error("Vulkan failed to flush %llu candidate-upload bytes",
+              (unsigned long long)slot->candidate_upload_cursor);
+    return false_v;
+  }
   if (vkEndCommandBuffer(command) != VK_SUCCESS) {
     log_error("Vulkan failed to end the frame command buffer");
     return false_v;

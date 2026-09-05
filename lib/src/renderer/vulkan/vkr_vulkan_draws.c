@@ -264,7 +264,63 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
                                       VkrVulkanFrameSlot *slot,
                                       const VkrRenderPacket *packet) {
   slot->frame_upload_cursor = 0u;
+  slot->candidate_upload_cursor = 0u;
   slot->frame_upload_exhaustions = 0u;
+  // Bound variable uploads before publishing any mapped pointer or GPU address.
+  // A capped conservative bound preserves the former 75 MiB direct-only limit.
+  uint64_t direct_bytes =
+      (uint64_t)renderer->config.geometry_capacity * sizeof(VkrGpuGeometryRow) +
+      256u; // Alignment between the fixed packet tables below.
+  uint64_t candidate_bytes = 0u;
+  uint64_t draw_bytes = 0u;
+  uint64_t text_bytes = 0u;
+  uint64_t ui_root_bytes = 0u;
+  if (packet->world) {
+    const VkrWorldPassPayload *world = packet->world;
+    direct_bytes +=
+        (uint64_t)world->instance_count * sizeof(VkrPreparedInstanceGPU) +
+        (uint64_t)world->transparent_draw_count *
+            sizeof(VkrVulkanPreparedDirectDraw);
+    draw_bytes = (uint64_t)world->transparent_draw_count *
+                 sizeof(VkrVulkanTableDrawUpload);
+    candidate_bytes =
+        ((uint64_t)world->gpu_candidate_count +
+         world->transmission_gpu_candidate_count) *
+        (sizeof(VkrGpuCandidateDrawRow) + sizeof(VkrPreparedInstanceGPU));
+    for (uint32_t i = 0u; i < world->text_draw_count; ++i) {
+      const VkrPreparedTextDraw *draw = &world->text_draws[i];
+      text_bytes += (uint64_t)draw->vertex_count * sizeof(*draw->vertices) +
+                    (uint64_t)draw->index_count * sizeof(*draw->indices) +
+                    sizeof(VkrVulkanPacketUtilityRoot) + 3u * 15u;
+      if (text_bytes >= VKR_VULKAN_FRAME_UPLOAD_SIZE) {
+        text_bytes = VKR_VULKAN_FRAME_UPLOAD_SIZE;
+        break;
+      }
+    }
+  }
+  if (packet->ui) {
+    const VkrPreparedUiDrawList *list = &packet->ui->draw_list;
+    direct_bytes += (uint64_t)list->vertex_count * sizeof(VkrUiVertex) +
+                     (uint64_t)list->index_count * sizeof(uint32_t);
+    ui_root_bytes = (uint64_t)list->batch_count * sizeof(VkrVulkanUiRoot);
+  }
+  if (packet->lighting) {
+    const VkrFrameLighting *lighting = packet->lighting;
+    direct_bytes +=
+        (uint64_t)lighting->point_light_count * sizeof(VkrGpuPointLightRow) +
+        (uint64_t)lighting->ibl_probe_count * sizeof(VkrVulkanPacketIblProbe);
+    if (lighting->point_light_count)
+      direct_bytes += (uint64_t)lighting->point_light_grid->cell_count *
+                       sizeof(VkrPointLightMask);
+  }
+  if (packet->shadow)
+    direct_bytes += (uint64_t)packet->shadow->cascade_count *
+                     sizeof(VkrVulkanPacketShadowCascade);
+  direct_bytes += vkr_vk_graph_upload_bound(renderer, draw_bytes, text_bytes,
+                                              ui_root_bytes);
+  if (!vkr_vk_reserve_frame_uploads(renderer, slot, direct_bytes,
+                                     candidate_bytes))
+    return false_v;
   slot->world_instances = 0u;
   slot->ui_vertices = 0u;
   slot->ui_index_offset = 0u;
@@ -501,14 +557,19 @@ vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
     return false_v;
   uint64_t candidate_source_offset = 0u;
   uint64_t instance_source_offset = 0u;
-  VkrGpuCandidateDrawRow *candidates = vkr_vk_frame_upload_allocate(
-      slot, (uint64_t)count * sizeof(*candidates),
-      _Alignof(VkrGpuCandidateDrawRow), NULL, &candidate_source_offset);
-  VkrPreparedInstanceGPU *instances = vkr_vk_frame_upload_allocate(
-      slot, (uint64_t)count * sizeof(*instances), _Alignof(VkrPreparedInstanceGPU),
-      NULL, &instance_source_offset);
-  if (!candidates || !instances)
-    return false_v;
+  // The completed-slot preflight reserved both candidate streams together.
+  // These rows are transfer sources only; shaders read the DEVICE graph copies.
+  candidate_source_offset = slot->candidate_upload_cursor;
+  instance_source_offset =
+      candidate_source_offset + (uint64_t)count * sizeof(VkrGpuCandidateDrawRow);
+  VkrGpuCandidateDrawRow *candidates = (VkrGpuCandidateDrawRow *)(
+      (uint8_t *)slot->candidate_upload.allocation.mapped +
+      candidate_source_offset);
+  VkrPreparedInstanceGPU *instances = (VkrPreparedInstanceGPU *)(
+      (uint8_t *)slot->candidate_upload.allocation.mapped +
+      instance_source_offset);
+  slot->candidate_upload_cursor =
+      instance_source_offset + (uint64_t)count * sizeof(*instances);
   uint32_t packed_count = 0u;
   uint32_t unpublished_geometry_count = 0u;
   uint32_t unpublished_material_count = 0u;

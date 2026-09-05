@@ -143,9 +143,9 @@ bool8_t vkr_vk_record_deferred_upload(VkrVulkanRenderer *renderer,
           .srcOffset = slot->transmission_gpu_instance_upload_offset,
           .size = (uint64_t)count * sizeof(VkrPreparedInstanceGPU),
       };
-      vkCmdCopyBuffer(command, slot->frame_upload.handle,
+      vkCmdCopyBuffer(command, slot->candidate_upload.handle,
                       candidates->buffer.handle, 1u, &candidate_copy);
-      vkCmdCopyBuffer(command, slot->frame_upload.handle,
+      vkCmdCopyBuffer(command, slot->candidate_upload.handle,
                       instances->buffer.handle, 1u, &instance_copy);
     }
   } else {
@@ -169,9 +169,9 @@ bool8_t vkr_vk_record_deferred_upload(VkrVulkanRenderer *renderer,
               (uint64_t)range->destination_first * sizeof(VkrPreparedInstanceGPU),
           .size = (uint64_t)range->count * sizeof(VkrPreparedInstanceGPU),
       };
-      vkCmdCopyBuffer(command, slot->frame_upload.handle,
+      vkCmdCopyBuffer(command, slot->candidate_upload.handle,
                       candidates->buffer.handle, 1u, &candidate_copy);
-      vkCmdCopyBuffer(command, slot->frame_upload.handle,
+      vkCmdCopyBuffer(command, slot->candidate_upload.handle,
                       instances->buffer.handle, 1u, &instance_copy);
     }
   }
