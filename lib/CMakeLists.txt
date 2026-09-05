@@ -274,6 +274,7 @@ if(APPLE)
         # it must follow it here for the same reason as below.
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/bloom_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/gtao_kernel.slangh"
+        "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/temporal_filter_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/ggx_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/normal_map_kernel.slangh"
         "${VKR_RENDERER_SHADER_SOURCE_DIR}/shared/transmission_kernel.slangh"

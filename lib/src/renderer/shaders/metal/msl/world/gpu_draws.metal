@@ -1,5 +1,3 @@
-#include "../../../shared/temporal_filter_kernel.slangh"
-
 struct VkrGpuDrawCompactionState {
   uint2 execution_ranges[4];
   atomic_uint bucket_counts[4];
@@ -2381,10 +2379,10 @@ static_assert(sizeof(VkrGpuDrawCompactionState) == 80,
               "GPU draw compaction state ABI must remain 80 bytes");
 static_assert(sizeof(VkrMetalPacketTemporalTransformRoot) == 32,
               "Temporal-transform root ABI must remain 32 bytes");
-static_assert(sizeof(VkrMetalPacketGBufferResolveRoot) == 352,
-              "G-buffer resolve root ABI must remain 352 bytes");
-static_assert(sizeof(VkrMetalPacketTemporalResolveRoot) == 208,
-              "Temporal-resolve root ABI must remain 208 bytes");
+static_assert(sizeof(VkrMetalPacketGBufferResolveRoot) == 416,
+              "G-buffer resolve root ABI must remain 416 bytes");
+static_assert(sizeof(VkrMetalPacketTemporalResolveRoot) == 224,
+              "Temporal-resolve root ABI must remain 224 bytes");
 static_assert(sizeof(VkrMetalPacketDeferredLightingRoot) == 160,
               "Deferred-lighting root ABI must remain 160 bytes");
 static_assert(sizeof(VkrMetalPacketTransmissionShadeRoot) == 464,
