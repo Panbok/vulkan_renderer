@@ -669,22 +669,10 @@ typedef struct ApplicationWorldEmitContext {
   VkrWorldDrawCandidate *transmission_gpu_candidates;
   VkrTransparentDrawCandidate *transparent_candidates;
   uint32_t source_index;
-  uint32_t gpu_index;
+  uint32_t static_gpu_index;
+  uint32_t dynamic_gpu_index;
   uint32_t transmission_index;
   uint32_t transparent_index;
-  /**
-   * Emission runs twice so the candidate stream comes out partitioned with
-   * static casters first, which is what cascade reuse tests against. Only
-   * sources whose mobility matches `gpu_mobility` are written to
-   * `gpu_candidates`; `source_index` still advances for every source in both
-   * passes, so the `transparent_visible` mapping stays keyed to encounter
-   * order rather than to emission order.
-   *
-   * The transmission and transparent streams are emitted in the first pass
-   * only, keeping their existing encounter order untouched.
-   */
-  VkrShadowCasterMobility gpu_mobility;
-  bool8_t emit_side_streams;
 } ApplicationWorldEmitContext;
 
 vkr_internal inline void
@@ -717,13 +705,15 @@ application_emit_world_source(ApplicationWorldEmitContext *context,
                : 0u) |
           VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER,
   };
-  if (source->shadow_mobility == context->gpu_mobility)
-    context->gpu_candidates[context->gpu_index++] = candidate;
-  if (context->emit_side_streams && source->transmissive)
+  const uint32_t gpu_index =
+      source->shadow_mobility == VKR_SHADOW_CASTER_MOBILITY_STATIC
+          ? context->static_gpu_index++
+          : context->dynamic_gpu_index++;
+  context->gpu_candidates[gpu_index] = candidate;
+  if (source->transmissive)
     context->transmission_gpu_candidates[context->transmission_index++] =
         candidate;
-  if (context->emit_side_streams && !source->transmissive &&
-      source->alpha.world_transparent &&
+  if (!source->transmissive && source->alpha.world_transparent &&
       context->transparent_visible[context->source_index]) {
     const float32_t depth = application_transparent_depth(
         context->view, source->model, source->center);
@@ -841,6 +831,7 @@ vkr_internal bool8_t application_build_world_payload(
   }
   VkrVisibilityStats stats = {0};
   uint64_t candidate_count_64 = 0u;
+  uint64_t static_candidate_count_64 = 0u;
   /* True when a visible caster exists that has not finished loading. Its
      geometry is absent from the candidate stream, so a cascade cannot be
      reused: the missing caster may belong inside the volume. */
@@ -858,7 +849,10 @@ vkr_internal bool8_t application_build_world_payload(
     VkrMesh *mesh = vkr_mesh_manager_get_mesh_by_live_index(&rf->mesh_manager,
                                                             i, &mesh_slot);
     if (mesh->visible && mesh->loading_state == VKR_MESH_LOADING_STATE_LOADED) {
-      candidate_count_64 += vkr_mesh_manager_submesh_count(mesh);
+      const uint32_t submesh_count = vkr_mesh_manager_submesh_count(mesh);
+      candidate_count_64 += submesh_count;
+      if (mesh->shadow_mobility == VKR_SHADOW_CASTER_MOBILITY_STATIC)
+        static_candidate_count_64 += submesh_count;
     } else if (mesh->visible) {
       publication_pending = true_v;
     }
@@ -875,6 +869,8 @@ vkr_internal bool8_t application_build_world_payload(
     VkrMeshAsset *asset =
         vkr_mesh_manager_get_live_asset(&rf->mesh_manager, instance->asset);
     candidate_count_64 += asset->submeshes.length;
+    if (instance->shadow_mobility == VKR_SHADOW_CASTER_MOBILITY_STATIC)
+      static_candidate_count_64 += asset->submeshes.length;
   }
 
   if (candidate_count_64 > VKR_GPU_DRAW_CANDIDATE_CAPACITY) {
@@ -888,6 +884,7 @@ vkr_internal bool8_t application_build_world_payload(
   }
 
   const uint32_t gpu_candidate_count = (uint32_t)candidate_count_64;
+  const uint32_t static_candidate_count = (uint32_t)static_candidate_count_64;
   uint8_t *transparent_visible = NULL;
   if (gpu_candidate_count > 0u) {
     transparent_visible = vkr_allocator_alloc(scratch, gpu_candidate_count,
@@ -1023,128 +1020,108 @@ vkr_internal bool8_t application_build_world_payload(
       .view = view,
       .transparent_visible = transparent_visible,
       .gpu_candidates = gpu_candidates,
+      .dynamic_gpu_index = static_candidate_count,
       .transmission_gpu_candidates = transmission_gpu_candidates,
       .transparent_candidates = transparent_candidates,
   };
 
-  /* Two emission passes so the candidate stream is partitioned with static
-     casters first, which is the layout cascade reuse compares against. Pass 0
-     also emits the transmission and transparent streams, so those keep their
-     original encounter order. `source_index` restarts each pass because it
-     indexes `transparent_visible`, which is keyed to encounter order. */
-  static const VkrShadowCasterMobility emit_order[] = {
-      VKR_SHADOW_CASTER_MOBILITY_STATIC,
-      VKR_SHADOW_CASTER_MOBILITY_DYNAMIC,
-  };
-  uint32_t static_candidate_count = 0u;
-  for (uint32_t pass = 0; pass < ArrayCount(emit_order); ++pass) {
-    emit.gpu_mobility = emit_order[pass];
-    emit.emit_side_streams = pass == 0u ? true_v : false_v;
-    emit.source_index = 0u;
-
-    for (uint32_t i = 0; i < mesh_count; ++i) {
-      uint32_t mesh_slot = 0;
-      VkrMesh *mesh = vkr_mesh_manager_get_mesh_by_live_index(&rf->mesh_manager,
-                                                              i, &mesh_slot);
-      if (!mesh->visible ||
-          mesh->loading_state != VKR_MESH_LOADING_STATE_LOADED)
-        continue;
-      const uint32_t object_id =
-          mesh->render_id ? vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE,
-                                                  mesh->render_id)
-                          : 0u;
-      const uint32_t submesh_count = vkr_mesh_manager_submesh_count(mesh);
-      for (uint32_t s = 0; s < submesh_count; ++s) {
-        VkrSubMesh *submesh =
-            vkr_mesh_manager_get_submesh(&rf->mesh_manager, mesh_slot, s);
-        VkrMaterial *material = application_get_material(rf, submesh->material);
-        const VkrMaterialHandle draw_material =
-            material ? (VkrMaterialHandle){.id = material->id,
-                                           .generation = material->generation}
-                     : submesh->material;
-        if (pass == 0u) {
-          vkr_material_system_touch_texture_residency(&rf->material_system,
-                                                      draw_material);
-        }
-        const VkrDrawAlphaRouting alpha =
-            application_material_alpha_routing(rf, material);
-        const bool8_t transmissive =
-            application_material_is_transmissive(material);
-        const ApplicationWorldSource source = {
-            .mesh = {.id = mesh_slot + 1u, .generation = 0u},
-            .geometry = submesh->geometry,
-            .material = draw_material,
-            .model = mesh->model,
-            .center = submesh->center,
-            .min_extents = submesh->min_extents,
-            .max_extents = submesh->max_extents,
-            .alpha = alpha,
-            .submesh_index = s,
-            .object_id = object_id,
-            .temporal_index = mesh_slot,
-            .temporal_generation = mesh->temporal_generation,
-            .bounds_valid = mesh->bounds_valid,
-            .transmissive = transmissive,
-            .double_sided = material ? material->double_sided : false_v,
-            .shadow_mobility = mesh->shadow_mobility,
-        };
-        application_emit_world_source(&emit, &source);
-      }
+  /* Counted spans keep static casters first while each partition and both
+     side streams retain source encounter order in this single traversal. */
+  for (uint32_t i = 0; i < mesh_count; ++i) {
+    uint32_t mesh_slot = 0;
+    VkrMesh *mesh = vkr_mesh_manager_get_mesh_by_live_index(&rf->mesh_manager,
+                                                            i, &mesh_slot);
+    if (!mesh->visible || mesh->loading_state != VKR_MESH_LOADING_STATE_LOADED)
+      continue;
+    const uint32_t object_id =
+        mesh->render_id
+            ? vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE, mesh->render_id)
+            : 0u;
+    const uint32_t submesh_count = vkr_mesh_manager_submesh_count(mesh);
+    for (uint32_t s = 0; s < submesh_count; ++s) {
+      VkrSubMesh *submesh =
+          vkr_mesh_manager_get_submesh(&rf->mesh_manager, mesh_slot, s);
+      VkrMaterial *material = application_get_material(rf, submesh->material);
+      const VkrMaterialHandle draw_material =
+          material ? (VkrMaterialHandle){.id = material->id,
+                                         .generation = material->generation}
+                   : submesh->material;
+      vkr_material_system_touch_texture_residency(&rf->material_system,
+                                                  draw_material);
+      const VkrDrawAlphaRouting alpha =
+          application_material_alpha_routing(rf, material);
+      const bool8_t transmissive =
+          application_material_is_transmissive(material);
+      const ApplicationWorldSource source = {
+          .mesh = {.id = mesh_slot + 1u, .generation = 0u},
+          .geometry = submesh->geometry,
+          .material = draw_material,
+          .model = mesh->model,
+          .center = submesh->center,
+          .min_extents = submesh->min_extents,
+          .max_extents = submesh->max_extents,
+          .alpha = alpha,
+          .submesh_index = s,
+          .object_id = object_id,
+          .temporal_index = mesh_slot,
+          .temporal_generation = mesh->temporal_generation,
+          .bounds_valid = mesh->bounds_valid,
+          .transmissive = transmissive,
+          .double_sided = material ? material->double_sided : false_v,
+          .shadow_mobility = mesh->shadow_mobility,
+      };
+      application_emit_world_source(&emit, &source);
     }
+  }
 
-    for (uint32_t i = 0; i < live_instance_count; ++i) {
-      uint32_t instance_slot = 0;
-      VkrMeshInstance *instance = vkr_mesh_manager_get_instance_by_live_index(
-          &rf->mesh_manager, i, &instance_slot);
-      if (!instance->visible ||
-          instance->loading_state != VKR_MESH_LOADING_STATE_LOADED)
-        continue;
-      VkrMeshAsset *asset =
-          vkr_mesh_manager_get_live_asset(&rf->mesh_manager, instance->asset);
-      const uint32_t object_id =
-          instance->render_id ? vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE,
-                                                      instance->render_id)
-                              : 0u;
-      const uint32_t submesh_count = (uint32_t)asset->submeshes.length;
-      for (uint32_t s = 0; s < submesh_count; ++s) {
-        VkrMeshAssetSubmesh *submesh = &asset->submeshes.data[s];
-        VkrMaterial *material = application_get_material(rf, submesh->material);
-        const VkrMaterialHandle draw_material =
-            material ? (VkrMaterialHandle){.id = material->id,
-                                           .generation = material->generation}
-                     : submesh->material;
-        if (pass == 0u) {
-          vkr_material_system_touch_texture_residency(&rf->material_system,
-                                                      draw_material);
-        }
-        const VkrDrawAlphaRouting alpha =
-            application_material_alpha_routing(rf, material);
-        const bool8_t transmissive =
-            application_material_is_transmissive(material);
-        const ApplicationWorldSource source = {
-            .mesh = {.id = instance_slot + 1u,
-                     .generation = instance->generation},
-            .geometry = submesh->geometry,
-            .material = draw_material,
-            .model = instance->model,
-            .center = submesh->center,
-            .min_extents = submesh->min_extents,
-            .max_extents = submesh->max_extents,
-            .alpha = alpha,
-            .submesh_index = s,
-            .object_id = object_id,
-            .temporal_index = temporal_instance_offset + instance_slot,
-            .temporal_generation = instance->generation,
-            .bounds_valid = instance->bounds_valid,
-            .transmissive = transmissive,
-            .double_sided = material ? material->double_sided : false_v,
-            .shadow_mobility = instance->shadow_mobility,
-        };
-        application_emit_world_source(&emit, &source);
-      }
+  for (uint32_t i = 0; i < live_instance_count; ++i) {
+    uint32_t instance_slot = 0;
+    VkrMeshInstance *instance = vkr_mesh_manager_get_instance_by_live_index(
+        &rf->mesh_manager, i, &instance_slot);
+    if (!instance->visible ||
+        instance->loading_state != VKR_MESH_LOADING_STATE_LOADED)
+      continue;
+    VkrMeshAsset *asset =
+        vkr_mesh_manager_get_live_asset(&rf->mesh_manager, instance->asset);
+    const uint32_t object_id =
+        instance->render_id ? vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE,
+                                                    instance->render_id)
+                            : 0u;
+    const uint32_t submesh_count = (uint32_t)asset->submeshes.length;
+    for (uint32_t s = 0; s < submesh_count; ++s) {
+      VkrMeshAssetSubmesh *submesh = &asset->submeshes.data[s];
+      VkrMaterial *material = application_get_material(rf, submesh->material);
+      const VkrMaterialHandle draw_material =
+          material ? (VkrMaterialHandle){.id = material->id,
+                                         .generation = material->generation}
+                   : submesh->material;
+      vkr_material_system_touch_texture_residency(&rf->material_system,
+                                                  draw_material);
+      const VkrDrawAlphaRouting alpha =
+          application_material_alpha_routing(rf, material);
+      const bool8_t transmissive =
+          application_material_is_transmissive(material);
+      const ApplicationWorldSource source = {
+          .mesh = {.id = instance_slot + 1u,
+                   .generation = instance->generation},
+          .geometry = submesh->geometry,
+          .material = draw_material,
+          .model = instance->model,
+          .center = submesh->center,
+          .min_extents = submesh->min_extents,
+          .max_extents = submesh->max_extents,
+          .alpha = alpha,
+          .submesh_index = s,
+          .object_id = object_id,
+          .temporal_index = temporal_instance_offset + instance_slot,
+          .temporal_generation = instance->generation,
+          .bounds_valid = instance->bounds_valid,
+          .transmissive = transmissive,
+          .double_sided = material ? material->double_sided : false_v,
+          .shadow_mobility = instance->shadow_mobility,
+      };
+      application_emit_world_source(&emit, &source);
     }
-    if (pass == 0u)
-      static_candidate_count = emit.gpu_index;
   }
 
   if (transparent_draw_count > 1u)

@@ -71,9 +71,10 @@ transforms, resource references, lights, environment/probes, text and render IDs
 application packet assembly scans mesh/instance/submesh records rather than
 reading ECS archetype arrays directly. This bridge duplicates some retained data.
 
-Extraction creates a static-first main candidate array, a transmission side
-stream and direct ordinary-blend draws. Counts and capacity are established
-before population. Stable identities and static/dynamic/publication generations
+Extraction counts static and total candidates before allocation, then fills
+disjoint static/dynamic spans in one source traversal. Transmission and direct
+ordinary-blend side streams retain source encounter order. Stable identities
+and static/dynamic/publication generations
 let backend slots preserve unchanged static rows. Conservative camera culling
 and back-to-front sorting apply to ordinary blend; opaque/cutout/transmission
 and shadow classification run on the GPU.
