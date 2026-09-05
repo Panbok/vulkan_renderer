@@ -22,7 +22,7 @@
  * Version 2 first held warmup at the initial pose. This value participates in
  * the workload fingerprint, preventing comparisons across replay behavior.
  */
-#define VKR_HARNESS_CAMERA_SCRIPT_VERSION 3u
+#define VKR_HARNESS_CAMERA_SCRIPT_VERSION 4u
 #define VKR_HARNESS_PATH_MAX 1024u
 /**
  * Paths recorded inside a report are relative to its run root, never absolute.

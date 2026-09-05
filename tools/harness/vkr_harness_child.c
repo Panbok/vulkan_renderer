@@ -17,8 +17,12 @@
 #include "renderer/systems/vkr_shadow_system.h"
 #include "renderer/systems/vkr_ui_system.h"
 #include "renderer/vkr_temporal.h"
+#include "renderer/vkr_gtao.h"
 
 #define VKR_HARNESS_MAX_CAPTURE_BATCH_BYTES GB(1)
+
+_Static_assert(VKR_GTAO_NOISE_SEQUENCE_LENGTH % VKR_TEMPORAL_SEQUENCE_LENGTH == 0u,
+               "Replay phase alignment must cover both temporal sequences");
 
 static bool8_t vkr_harness_u64_add(uint64_t a, uint64_t b, uint64_t *out) {
   if (!out || a > UINT64_MAX - b)
@@ -877,9 +881,9 @@ void application_update(Application *application, float64_t delta) {
     if (!vkr_harness_child_prepare_pass_catalog(application))
       return;
   } else if (!child->phase_started &&
-             next_frame % VKR_TEMPORAL_SEQUENCE_LENGTH == 0u) {
-    /* Bootstrap duration must not choose the jitter phase or history consumed
-       by the authored warmup, including cases with no warmup frames. */
+             next_frame % VKR_GTAO_NOISE_SEQUENCE_LENGTH == 0u) {
+    /* Bootstrap duration must not choose either the raster jitter or GTAO
+       noise phase consumed by authored warmup, including zero-warmup cases. */
     vkr_renderer_invalidate_temporal_history(&application->renderer);
     child->phase_started = true_v;
     child->phase_first_frame_index = next_frame;
@@ -1503,7 +1507,16 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
   bool8_t application_live = false_v;
   VkrSubsystemMask subsystem_mask = 0u;
   VkrHarnessChildContext child = {0};
-  Application application = {0};
+  /* The repetition owns this large record through shutdown and report
+     publication. Keeping it in the existing arena leaves room for nested
+     report work on the Windows executable's 1 MiB stack. */
+  Application *application = arena_alloc(
+      arenas.persistent, sizeof(*application), ARENA_MEMORY_TAG_STRUCT);
+  if (!application) {
+    vkr_harness_stderr("Unable to allocate the repetition application\n");
+    goto cleanup;
+  }
+  MemZero(application, sizeof(*application));
   /* Retained by the application for the lifetime of the run, so it must not be
      const-qualified nor go out of scope before shutdown. */
   uint64_t capture_max_batch_bytes = 0u;
@@ -1581,12 +1594,12 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
   ApplicationConfig config = vkr_harness_child_application_config(
       &case_manifest, &profile, &subsystem_plan, capture_max_batch_bytes,
       renderer_backend);
-  if (!application_create(&application, &config)) {
+  if (!application_create(application, &config)) {
     exit_code = VKR_HARNESS_EXIT_UNAVAILABLE;
     goto cleanup;
   }
   application_live = true_v;
-  subsystem_mask = vkr_renderer_get_subsystem_mask(&application.renderer);
+  subsystem_mask = vkr_renderer_get_subsystem_mask(&application->renderer);
   if (subsystem_mask != subsystem_plan.effective_mask) {
     char planned_text[VKR_HARNESS_SUBSYSTEM_MASK_MAX] = {0};
     char actual_text[VKR_HARNESS_SUBSYSTEM_MASK_MAX] = {0};
@@ -1599,7 +1612,7 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
     exit_code = VKR_HARNESS_EXIT_UNAVAILABLE;
     goto cleanup;
   }
-  if (!vkr_harness_child_apply_renderer(&application, &case_manifest)) {
+  if (!vkr_harness_child_apply_renderer(application, &case_manifest)) {
     vkr_harness_stderr("Unable to apply the case renderer configuration\n");
     exit_code = VKR_HARNESS_EXIT_INVALID;
     goto cleanup;
@@ -1610,34 +1623,34 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
      identity while still exercising teardown, arena reset, and sync rebuild. */
   if (case_manifest.target == VKR_HARNESS_TARGET_OFFSCREEN &&
       vkr_renderer_present_target_recreate(
-          &application.renderer, case_manifest.width, case_manifest.height,
+          &application->renderer, case_manifest.width, case_manifest.height,
           case_manifest.target_image_count) != VKR_RENDERER_ERROR_NONE) {
     vkr_harness_stderr("Unable to recreate the offscreen present target\n");
     exit_code = VKR_HARNESS_EXIT_UNAVAILABLE;
     goto cleanup;
   }
   if (case_manifest.target == VKR_HARNESS_TARGET_OFFSCREEN) {
-    if (application.renderer.ui_system.initialized) {
-      vkr_ui_system_set_offscreen_content_scale(&application.renderer,
-                                                &application.renderer.ui_system,
+    if (application->renderer.ui_system.initialized) {
+      vkr_ui_system_set_offscreen_content_scale(&application->renderer,
+                                                &application->renderer.ui_system,
                                                 case_manifest.content_scale);
       vkr_ui_system_set_offscreen_size(
-          &application.renderer, &application.renderer.ui_system, true_v,
+          &application->renderer, &application->renderer.ui_system, true_v,
           case_manifest.width, case_manifest.height);
     }
   } else {
     case_manifest.content_scale =
-        vkr_window_get_content_scale(&application.window).value;
+        vkr_window_get_content_scale(&application->window).value;
   }
   if (case_manifest.renderer.text_fixture &&
-      !application.renderer.ui_system.initialized) {
+      !application->renderer.ui_system.initialized) {
     vkr_harness_stderr(
         "The deterministic text fixture requires the UI subsystem\n");
     exit_code = VKR_HARNESS_EXIT_INVALID;
     goto cleanup;
   }
   for (uint32_t i = 0; i < profile.required_metric_count; ++i) {
-    if (!vkr_harness_catalog_has(application.metrics,
+    if (!vkr_harness_catalog_has(application->metrics,
                                  profile.required_metrics[i])) {
       vkr_harness_stderr("Required metric is not registered: %s\n",
                          profile.required_metrics[i]);
@@ -1648,7 +1661,7 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
 
   uint32_t metric_count = 0;
   const VkrMetricCatalogEntry *metric_catalog =
-      vkr_metrics_get_catalog(application.metrics, &metric_count);
+      vkr_metrics_get_catalog(application->metrics, &metric_count);
   const uint32_t total_frames =
       case_manifest.warmup_frames + case_manifest.measure_frames;
   const uint64_t value_count = (uint64_t)total_frames * metric_count;
@@ -1741,20 +1754,20 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
                                            string_length(case_manifest.scene));
   VkrRendererError load_error = VKR_RENDERER_ERROR_NONE;
   if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, scene,
-                                &application.renderer.scratch_allocator,
+                                &application->renderer.scratch_allocator,
                                 &child.scene_resource, &load_error)) {
     child.failed = true_v;
     string_format(child.failure, sizeof(child.failure), "scene.enqueue_failed");
   } else {
-    application_start(&application);
-    application_close(&application);
+    application_start(application);
+    application_close(application);
   }
-  vkr_harness_child_drain_events(&application);
+  vkr_harness_child_drain_events(application);
   if (child.failed) {
     vkr_harness_stderr("Repetition did not complete: %s\n", child.failure);
   }
 
-  vkr_harness_child_device_provenance(&application, &case_manifest,
+  vkr_harness_child_device_provenance(application, &case_manifest,
                                       &provenance);
   vkr_harness_timestamp_utc(provenance.ended_at);
   const bool8_t warmup_stable =
@@ -1765,7 +1778,7 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
       child.scene_resource.request_id != 0u || child.scene_resource.as.scene) {
     vkr_resource_system_unload(&child.scene_resource, scene);
   }
-  application_shutdown(&application);
+  application_shutdown(application);
   application_live = false_v;
   g_harness_child = NULL;
   if (prewarm) {
@@ -1857,7 +1870,7 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
 
 cleanup:
   if (application_live) {
-    application_shutdown(&application);
+    application_shutdown(application);
   }
   g_harness_child = NULL;
   arena_destroy(arenas.transient);

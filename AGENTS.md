@@ -89,6 +89,9 @@ persistent agent roles or configuration merely to delegate a task.
 
 ## Verification loop
 
+Use Bistro for scene-based performance and visual analysis. Do not use Sponza
+for analysis; small synthetic fixtures remain appropriate for isolated defects.
+
 1. Name the behavior, failure or cost being checked and select the smallest
    existing tool/case that can reveal it. Verify the executable and options
    exist before relying on a command from prose.

@@ -26,8 +26,10 @@ instrumentation, environment constraints, stability, and authority requirements.
 The parent launches isolated children and records effective configuration and
 build/device provenance alongside workload, policy, and environment fingerprints.
 The camera script is versioned: warmup holds its initial pose and measured frame
-zero starts the authored path. Version 3 starts warmup at phase zero of the
-renderer-owned jitter sequence and invalidates temporal history at that boundary.
+zero starts the authored path. Version 4 starts warmup at the common zero of the
+eight-phase raster jitter and 64-phase GTAO noise sequences, invalidating temporal
+history at that boundary. Aligning raster jitter alone left captures dependent
+on bootstrap duration through ambient-occlusion noise.
 Waiting for that phase remains bootstrap work; authored frame counts and GPU
 completion rules do not change. The workload fingerprint includes this version,
 so results from the previous replay behavior are incompatible.
@@ -37,6 +39,12 @@ produces canonical captures with metadata and digests, and compares compatible
 baselines. `autotest` keeps these two results separate. `compare` rechecks a
 completed snapshot. Offscreen cases use ordinary images without a window or
 swapchain; automation boot alone does not imply an offscreen target.
+
+The child owns its large application record in the repetition arena, releases
+application resources before publishing reports, and destroys the arena after
+publication. This keeps nested fingerprint/report calls within the Windows
+executable's default stack. The parent logs abnormal child exit codes alongside
+the child artifact directory.
 
 The child consumes pinned metrics snapshots, checks required sample validity,
 collects completed GPU timings by source serial, and records bounded events.

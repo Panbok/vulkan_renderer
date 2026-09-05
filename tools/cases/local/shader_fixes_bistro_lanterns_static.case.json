@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "id": "local.shader_fixes.bistro_lanterns_static",
+  "suite": "local",
+  "description": "Eight deterministic jitter phases of Bistro lanterns and windows; checkpoints use isolated replay children.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 20,
+  "resolution": [
+    800,
+    600
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 90000,
+  "frames": {
+    "warmup": 120,
+    "measure": 120
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "text_fixture": false,
+    "backend": "vulkan",
+    "taa_enabled": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default",
+    "exposure_mode": "manual",
+    "manual_exposure": 0.853,
+    "exposure_compensation_ev": 0.0,
+    "bloom_enabled": true,
+    "gtao_enabled": true,
+    "gtao_radius": 0.5,
+    "gtao_power": 2.2,
+    "bloom_threshold": 1.0,
+    "bloom_knee": 0.5,
+    "bloom_intensity": 0.05
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      10.0205421,
+      4.17517662,
+      27.8467007
+    ],
+    "yaw": 19.2320728,
+    "pitch": -3.26702642,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500
+  },
+  "captures": [
+    {
+      "channels": [
+        "final_color"
+      ],
+      "at_frame": 64
+    },
+    {
+      "channels": [
+        "final_color"
+      ],
+      "at_frame": 65
+    },
+    {
+      "channels": [
+        "final_color"
+      ],
+      "at_frame": 66
+    },
+    {
+      "channels": [
+        "final_color"
+      ],
+      "at_frame": 67
+    },
+    {
+      "channels": [
+        "final_color"
+      ],
+      "at_frame": 68
+    },
+    {
+      "channels": [
+        "final_color"
+      ],
+      "at_frame": 69
+    },
+    {
+      "channels": [
+        "final_color"
+      ],
+      "at_frame": 70
+    },
+    {
+      "channels": [
+        "final_color"
+      ],
+      "at_frame": 71
+    }
+  ],
+  "assertions": [
+    {
+      "stat": "min",
+      "min": 1,
+      "metric": "draw.world.opaque_draws"
+    },
+    {
+      "stat": "max",
+      "max": 0,
+      "metric": "packet.publication_omitted_candidates"
+    },
+    {
+      "stat": "max",
+      "max": 0,
+      "metric": "visibility.gbuffer.resolve_invalid"
+    },
+    {
+      "stat": "min",
+      "min": -8,
+      "metric": "post.exposure.target_ev"
+    },
+    {
+      "stat": "max",
+      "max": 4,
+      "metric": "post.exposure.target_ev"
+    }
+  ]
+}

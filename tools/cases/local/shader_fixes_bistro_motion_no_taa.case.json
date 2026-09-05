@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "id": "local.shader_fixes.bistro_motion_no_taa",
+  "suite": "local",
+  "description": "Unjittered Bistro sign reference to isolate temporal blur.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 20,
+  "resolution": [
+    800,
+    600
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 90000,
+  "frames": {
+    "warmup": 120,
+    "measure": 120
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "text_fixture": false,
+    "backend": "vulkan",
+    "taa_enabled": false,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default",
+    "exposure_mode": "automatic",
+    "manual_exposure": 0.3,
+    "exposure_compensation_ev": 0.0,
+    "bloom_enabled": true,
+    "gtao_enabled": true,
+    "gtao_radius": 0.5,
+    "gtao_power": 2.2,
+    "exposure_reset_frame": 4294967295,
+    "bloom_threshold": 1.0,
+    "bloom_knee": 0.5,
+    "bloom_intensity": 0.05
+  },
+  "camera": {
+    "interpolation": "linear",
+    "far_plane": 500,
+    "keys": [
+      {
+        "pitch": -58.19,
+        "t": 0,
+        "yaw": -77.15,
+        "position": [
+          -29.99,
+          13.32,
+          -10.12
+        ]
+      },
+      {
+        "pitch": -58.19,
+        "t": 1,
+        "yaw": -70.15,
+        "position": [
+          -29.99,
+          13.32,
+          -10.12
+        ]
+      }
+    ],
+    "near_plane": 0.1,
+    "mode": "keyframes",
+    "speed": "medium",
+    "vertical_fov_degrees": 70
+  },
+  "captures": [
+    {
+      "channels": [
+        "final_color"
+      ],
+      "at_frame": 30
+    }
+  ],
+  "assertions": [
+    {
+      "stat": "min",
+      "min": 1,
+      "metric": "draw.world.opaque_draws"
+    },
+    {
+      "stat": "max",
+      "max": 0,
+      "metric": "packet.publication_omitted_candidates"
+    },
+    {
+      "stat": "max",
+      "max": 0,
+      "metric": "visibility.gbuffer.resolve_invalid"
+    },
+    {
+      "stat": "min",
+      "min": -8,
+      "metric": "post.exposure.target_ev"
+    },
+    {
+      "stat": "max",
+      "max": 4,
+      "metric": "post.exposure.target_ev"
+    }
+  ]
+}

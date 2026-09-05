@@ -117,6 +117,9 @@ static int vkr_harness_spawn_child(const char *executable,
                        timeout_ms, stderr_path);
     return VKR_HARNESS_EXIT_ERROR;
   }
+  if (exit_code != VKR_HARNESS_EXIT_PASS)
+    vkr_harness_stderr("Child exited with %d (0x%08x); inspect '%s'\n",
+                       exit_code, (uint32_t)exit_code, run_dir);
   return exit_code;
 }
 

@@ -1,0 +1,147 @@
+{
+  "schema_version": 1,
+  "id": "local.shader_fixes.native_probe",
+  "suite": "local",
+  "description": "Bounded native shader-fix execution and CPU/GPU timing witness.",
+  "scene": "assets/scenes/fixtures/deferred_state_matrix.scene.json",
+  "seed": 20,
+  "resolution": [
+    640,
+    480
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 35000,
+  "asset_ready_timeout_ms": 20000,
+  "frames": {
+    "warmup": 64,
+    "measure": 40
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "backend": "vulkan",
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      0,
+      1.4,
+      6.0
+    ],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 58,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "captures": [
+    {
+      "channels": [
+        "final_color",
+        "gbuffer_normal"
+      ],
+      "at_frame": 32
+    }
+  ],
+  "assertions": [
+    {
+      "metric": "visibility.gpu_visible.bucket.opaque_single",
+      "stat": "min",
+      "min": 1
+    },
+    {
+      "metric": "visibility.gpu_visible.bucket.opaque_double",
+      "stat": "min",
+      "min": 1
+    },
+    {
+      "metric": "visibility.gpu_visible.bucket.cutout_single",
+      "stat": "min",
+      "min": 1
+    },
+    {
+      "metric": "visibility.gpu_visible.bucket.cutout_double",
+      "stat": "min",
+      "min": 1
+    },
+    {
+      "metric": "visibility.transmission.gpu_visible.bucket.opaque_single",
+      "stat": "min",
+      "min": 1
+    },
+    {
+      "metric": "visibility.transmission.gpu_visible.bucket.opaque_double",
+      "stat": "min",
+      "min": 1
+    },
+    {
+      "metric": "visibility.transmission.gpu_visible.bucket.cutout_single",
+      "stat": "min",
+      "min": 1
+    },
+    {
+      "metric": "visibility.transmission.gpu_visible.bucket.cutout_double",
+      "stat": "min",
+      "min": 1
+    },
+    {
+      "metric": "visibility.transmission.covered_pixels.layer_0",
+      "stat": "min",
+      "min": 1
+    },
+    {
+      "metric": "visibility.transmission.covered_pixels.layer_1",
+      "stat": "min",
+      "min": 1
+    },
+    {
+      "metric": "visibility.gpu_visible.overflow",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "visibility.transmission.gpu_visible.overflow",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "visibility.gbuffer.resolve_invalid",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "geometry.megabuffer.rejected_publications_total",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "draw.shadow.cascade0.indirect_overflow",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "draw.shadow.cascade1.indirect_overflow",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "draw.shadow.cascade2.indirect_overflow",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "draw.shadow.cascade3.indirect_overflow",
+      "stat": "max",
+      "max": 0
+    }
+  ]
+}
