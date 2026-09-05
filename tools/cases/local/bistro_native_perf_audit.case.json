@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "id": "local.bistro.native.perf_audit",
+  "suite": "local",
+  "description": "Bistro native-resolution fixed-work performance audit without temporal reconstruction.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 1,
+  "resolution": [
+    1280,
+    720
+  ],
+  "boot": "automation",
+  "target": "offscreen",
+  "present": "none",
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 2,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": {
+    "warmup": 120,
+    "measure": 180
+  },
+  "renderer": {
+    "backend": "metal",
+    "render_scale": 1.0,
+    "editor": false,
+    "skybox": true,
+    "taa_enabled": false,
+    "shadow_preset": "default",
+    "shadow_cascades": 4,
+    "render_mode": "default",
+    "exposure_mode": "automatic",
+    "manual_exposure": 0.3,
+    "exposure_compensation_ev": 0.0,
+    "exposure_reset_frame": 4294967295,
+    "bloom_enabled": true,
+    "bloom_threshold": 1.0,
+    "bloom_knee": 0.5,
+    "bloom_intensity": 0.05,
+    "gtao_enabled": true,
+    "gtao_radius": 0.5,
+    "gtao_power": 2.2,
+    "upscaler": "spatial",
+    "dynamic_resolution": false
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      -28.4774647,
+      4.60749865,
+      2.86034966
+    ],
+    "yaw": 228.125198,
+    "pitch": -3.32655358,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.1,
+    "far_plane": 500,
+    "speed": "medium"
+  },
+  "assertions": [
+    {
+      "metric": "draw.world.calls_issued",
+      "stat": "min",
+      "min": 1
+    },
+    {
+      "metric": "visibility.gpu_visible.overflow",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "visibility.transmission.gpu_visible.overflow",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "visibility.gbuffer.resolve_invalid",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "instance_buffer.overflows",
+      "stat": "max",
+      "max": 0
+    }
+  ],
+  "target_image_count": 3,
+  "captures": [
+    {
+      "at_frame": 179,
+      "channels": [
+        "final_color",
+        "depth"
+      ]
+    }
+  ]
+}

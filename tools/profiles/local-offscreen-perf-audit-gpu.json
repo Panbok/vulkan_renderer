@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "id": "local.offscreen.perf_audit",
+  "description": "Non-authoritative local profiling with complete per-pass GPU timing availability required.",
+  "authoritative": false,
+  "dirty_policy": "allow",
+  "environment": {
+    "target": "offscreen",
+    "required_present": "none",
+    "require_actual_present": false
+  },
+  "instrumentation": {
+    "gpu_timing": true,
+    "event_subjects": false
+  },
+  "execution": {
+    "minimum_repetitions": 2,
+    "warmup_stability_window": 20,
+    "warmup_max_drift_ratio": 0.15,
+    "require_warmup_stability": false,
+    "exclusive_gpu_lane": false
+  },
+  "required_metrics": [
+    "cpu.render_submit",
+    "draw.world.calls_issued"
+  ]
+}

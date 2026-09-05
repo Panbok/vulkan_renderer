@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "id": "local.metal.offscreen_validation_serial",
+  "description": "One exclusive non-authoritative Metal validation repetition.",
+  "authoritative": false,
+  "dirty_policy": "allow",
+  "environment": {
+    "target": "offscreen",
+    "required_present": "none",
+    "require_actual_present": false
+  },
+  "instrumentation": {
+    "gpu_timing": false,
+    "event_subjects": false
+  },
+  "execution": {
+    "minimum_repetitions": 1,
+    "warmup_stability_window": 2,
+    "warmup_max_drift_ratio": 0.15,
+    "require_warmup_stability": false,
+    "exclusive_gpu_lane": true
+  },
+  "required_metrics": [
+    "cpu.render_submit",
+    "draw.world.calls_issued"
+  ]
+}
