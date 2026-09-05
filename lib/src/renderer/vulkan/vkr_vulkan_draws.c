@@ -1,11 +1,42 @@
 #include "renderer/vulkan/vkr_vulkan_internal.h"
 
-
 typedef struct VkrVulkanTableDrawUpload {
   VkrVulkanPacketDrawRoot root;
   VkrGpuGeometryRow geometry;
   VkrGpuVisibleDrawRow visible;
 } VkrVulkanTableDrawUpload;
+
+/* CPU draw arguments share the acquired upload allocation with their root.
+ * Only the root prefix is shader-visible; rows expire with the frame slot. */
+typedef struct VkrVulkanPreparedTextDraw {
+  VkrVulkanPacketUtilityRoot root;
+  uint64_t index_offset;
+  uint64_t index_size;
+  uint32_t index_count;
+} VkrVulkanPreparedTextDraw;
+
+typedef struct VkrVulkanPreparedUiDraw {
+  VkrVulkanUiRoot root;
+  VkRect2D scissor;
+  VkrVulkanPacketPipeline pipeline;
+  uint32_t first_index;
+  uint32_t index_count;
+} VkrVulkanPreparedUiDraw;
+
+vkr_internal uint64_t vkr_vk_text_draw_upload_size(
+    const VkrPreparedTextDraw *draws, uint32_t draw_count) {
+  uint64_t size = (uint64_t)draw_count * sizeof(VkrVulkanPreparedTextDraw);
+  for (uint32_t i = 0u; i < draw_count; ++i) {
+    size +=
+        vkr_vk_align_up(
+            (uint64_t)draws[i].vertex_count * sizeof(*draws[i].vertices), 16u) +
+        vkr_vk_align_up(
+            (uint64_t)draws[i].index_count * sizeof(*draws[i].indices), 16u);
+    if (size > VKR_VULKAN_FRAME_UPLOAD_SIZE)
+      return VKR_VULKAN_FRAME_UPLOAD_SIZE + 1ull;
+  }
+  return size;
+}
 
 vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
     VkrVulkanRenderer *renderer, VkrVulkanFrameSlot *slot,
@@ -128,7 +159,7 @@ vkr_internal bool8_t vkr_vk_resolve_sampled_pair(VkrVulkanRenderer *renderer,
 
 vkr_internal bool8_t vkr_vk_upload_packet_tables(
     VkrVulkanRenderer *renderer, VkrVulkanFrameSlot *slot,
-    const VkrRenderPacket *packet) {
+    const VkrPreparedFrame *packet) {
   slot->point_light_data = 0u;
   slot->point_light_masks = 0u;
   slot->shadow_cascades = 0u;
@@ -140,7 +171,7 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
   slot->ibl_ready = false_v;
   slot->sh_referenced_slot_count = 0u;
 
-  const VkrFrameLighting *lighting = packet->lighting;
+  const VkrFrameLighting *lighting = packet->input.lighting;
   if (lighting && lighting->point_light_count) {
     const uint64_t light_bytes =
         (uint64_t)lighting->point_light_count * sizeof(VkrGpuPointLightRow);
@@ -165,16 +196,18 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
     }
   }
 
-  if (packet->shadow && packet->shadow->cascade_count) {
-    const uint64_t cascade_bytes = (uint64_t)packet->shadow->cascade_count *
-                                   sizeof(VkrVulkanPacketShadowCascade);
+  if (packet->input.shadow && packet->input.shadow->cascade_count) {
+    const uint64_t cascade_bytes =
+        (uint64_t)packet->input.shadow->cascade_count *
+        sizeof(VkrVulkanPacketShadowCascade);
     VkrVulkanPacketShadowCascade *cascades = vkr_vk_frame_upload_allocate(
         slot, cascade_bytes, _Alignof(VkrVulkanPacketShadowCascade),
         &slot->shadow_cascades, NULL);
     if (!cascades)
       return false_v;
-    for (uint32_t i = 0u; i < packet->shadow->cascade_count; ++i) {
-      const VkrShadowCascadePacketData *source = &packet->shadow->cascades[i];
+    for (uint32_t i = 0u; i < packet->input.shadow->cascade_count; ++i) {
+      const VkrShadowCascadePacketData *source =
+          &packet->input.shadow->cascades[i];
       cascades[i] = (VkrVulkanPacketShadowCascade){
           .light_view_projection = source->light_view_projection,
           .split_near_far_texel_depth = source->split_near_far_texel_depth,
@@ -262,7 +295,7 @@ vkr_internal bool8_t vkr_vk_candidate_graph_buffers(
 
 bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
                                       VkrVulkanFrameSlot *slot,
-                                      const VkrRenderPacket *packet) {
+                                      const VkrPreparedFrame *packet) {
   slot->frame_upload_cursor = 0u;
   slot->candidate_upload_cursor = 0u;
   slot->frame_upload_exhaustions = 0u;
@@ -275,8 +308,8 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
   uint64_t draw_bytes = 0u;
   uint64_t text_bytes = 0u;
   uint64_t ui_root_bytes = 0u;
-  if (packet->world) {
-    const VkrWorldPassPayload *world = packet->world;
+  if (packet->input.world) {
+    const VkrWorldPassPayload *world = packet->input.world;
     direct_bytes +=
         (uint64_t)world->instance_count * sizeof(VkrPreparedInstanceGPU) +
         (uint64_t)world->transparent_draw_count *
@@ -287,25 +320,18 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
         ((uint64_t)world->gpu_candidate_count +
          world->transmission_gpu_candidate_count) *
         (sizeof(VkrGpuCandidateDrawRow) + sizeof(VkrPreparedInstanceGPU));
-    for (uint32_t i = 0u; i < world->text_draw_count; ++i) {
-      const VkrPreparedTextDraw *draw = &world->text_draws[i];
-      text_bytes += (uint64_t)draw->vertex_count * sizeof(*draw->vertices) +
-                    (uint64_t)draw->index_count * sizeof(*draw->indices) +
-                    sizeof(VkrVulkanPacketUtilityRoot) + 3u * 15u;
-      if (text_bytes >= VKR_VULKAN_FRAME_UPLOAD_SIZE) {
-        text_bytes = VKR_VULKAN_FRAME_UPLOAD_SIZE;
-        break;
-      }
-    }
+    text_bytes =
+        vkr_vk_text_draw_upload_size(world->text_draws, world->text_draw_count);
   }
-  if (packet->ui) {
-    const VkrPreparedUiDrawList *list = &packet->ui->draw_list;
+  if (packet->input.ui) {
+    const VkrPreparedUiDrawList *list = &packet->input.ui->draw_list;
     direct_bytes += (uint64_t)list->vertex_count * sizeof(VkrUiVertex) +
-                     (uint64_t)list->index_count * sizeof(uint32_t);
-    ui_root_bytes = (uint64_t)list->batch_count * sizeof(VkrVulkanUiRoot);
+                    (uint64_t)list->index_count * sizeof(uint32_t);
+    ui_root_bytes =
+        (uint64_t)list->batch_count * sizeof(VkrVulkanPreparedUiDraw);
   }
-  if (packet->lighting) {
-    const VkrFrameLighting *lighting = packet->lighting;
+  if (packet->input.lighting) {
+    const VkrFrameLighting *lighting = packet->input.lighting;
     direct_bytes +=
         (uint64_t)lighting->point_light_count * sizeof(VkrGpuPointLightRow) +
         (uint64_t)lighting->ibl_probe_count * sizeof(VkrVulkanPacketIblProbe);
@@ -313,9 +339,9 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
       direct_bytes += (uint64_t)lighting->point_light_grid->cell_count *
                        sizeof(VkrPointLightMask);
   }
-  if (packet->shadow)
-    direct_bytes += (uint64_t)packet->shadow->cascade_count *
-                     sizeof(VkrVulkanPacketShadowCascade);
+  if (packet->input.shadow)
+    direct_bytes += (uint64_t)packet->input.shadow->cascade_count *
+                    sizeof(VkrVulkanPacketShadowCascade);
   direct_bytes += vkr_vk_graph_upload_bound(renderer, draw_bytes, text_bytes,
                                               ui_root_bytes);
   if (!vkr_vk_reserve_frame_uploads(renderer, slot, direct_bytes,
@@ -342,12 +368,14 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
   slot->blend_draw_count = 0u;
   slot->packet_build = (VkrPacketBuildMetrics){0};
   const bool8_t common_uploads =
-      vkr_vk_prepare_direct_draws(renderer, slot, packet->world) &&
+      vkr_vk_prepare_direct_draws(renderer, slot, packet->input.world) &&
       vkr_vk_upload_packet_tables(renderer, slot, packet) &&
-      (!packet->world || vkr_vk_upload_instances(slot, packet->world->instances,
-                                                 packet->world->instance_count,
-                                                 &slot->world_instances)) &&
-      (!packet->ui || vkr_vk_upload_ui_draw_list(slot, &packet->ui->draw_list));
+      (!packet->input.world ||
+       vkr_vk_upload_instances(slot, packet->input.world->instances,
+                               packet->input.world->instance_count,
+                               &slot->world_instances)) &&
+      (!packet->input.ui ||
+       vkr_vk_upload_ui_draw_list(slot, &packet->input.ui->draw_list));
   if (!common_uploads)
     return false_v;
 
@@ -377,7 +405,7 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
 #if VKR_METRICS_ENABLED
   const float64_t hash_start = vkr_platform_get_absolute_time();
 #endif
-  const VkrWorldPassPayload *world = packet->world;
+  const VkrWorldPassPayload *world = packet->input.world;
   slot->gpu_world_epoch = vkr_vk_candidate_epoch(world);
 #if VKR_METRICS_ENABLED
   slot->packet_build.candidate_hash_ns = vkr_metrics_elapsed_ns(hash_start);
@@ -718,18 +746,56 @@ void vkr_vk_fill_packet_frame_root(
       frame->shadow_receiver.pcf_uniform_early_out;
 }
 
-bool8_t
-vkr_vk_record_packet_draws(VkrVulkanRenderer *renderer, VkCommandBuffer command,
-                           VkrVulkanPacketPipeline pipeline, uint64_t instances,
-                           Mat4 view_projection, uint32_t target_width,
-                           uint32_t target_height, uint32_t shadow_texture,
-                           uint32_t transmission_texture) {
+vkr_internal void vkr_vk_record_prepared_direct_draws(
+    VkrVulkanRenderer *renderer, VkCommandBuffer command,
+    VkrVulkanPacketPipeline pipeline, uint64_t draw_roots_address,
+    bool8_t lighting_pass) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  const uint32_t draw_count = slot->direct_draw_count;
+  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    renderer->packet_pipelines[pipeline]);
+  for (uint32_t i = 0u; i < draw_count; ++i) {
+    const VkrVulkanPreparedDirectDraw *draw = &slot->direct_draws[i];
+    const VkrVulkanPublishedGeometry *geometry = draw->geometry;
+    const VkrVulkanPublishedMaterial *material = draw->material;
+    const VkrVulkanSubmeshRange *range = draw->range;
+    const uint64_t draw_root_address =
+        draw_roots_address + (uint64_t)i * sizeof(VkrVulkanTableDrawUpload);
+    const VkrVulkanPushConstants push = {
+        .root = draw_root_address,
+        .material_index = material->slot.index,
+        .flags = 0u,
+    };
+    const uint64_t geometry_index_offset =
+        (uint64_t)geometry->gpu_row.first_index * sizeof(uint32_t);
+    vkCmdBindIndexBuffer2(
+        command, geometry->indices.handle, geometry_index_offset,
+        geometry->indices.size - geometry_index_offset, geometry->index_type);
+    vkCmdPushConstants(command, renderer->pipeline_layout,
+                       VK_SHADER_STAGE_VERTEX_BIT |
+                           VK_SHADER_STAGE_FRAGMENT_BIT |
+                           VK_SHADER_STAGE_COMPUTE_BIT,
+                       0u, sizeof(push), &push);
+    vkCmdDrawIndexed(command, range->index_count, draw->instance_count,
+                     range->first_index, range->vertex_offset, 0u);
+  }
+  slot->indexed_draw_count += draw_count;
+  if (lighting_pass)
+    slot->blend_draw_count += draw_count;
+}
+
+bool8_t vkr_vk_prepare_packet_draws(
+    VkrVulkanRenderer *renderer, VkrVulkanPreparedWorldDraws *out,
+    VkrVulkanPacketPipeline pipeline, uint64_t instances, Mat4 view_projection,
+    uint32_t target_width, uint32_t target_height, uint32_t shadow_texture,
+    uint32_t transmission_texture) {
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   const uint32_t draw_count = slot->direct_draw_count;
   if (!draw_count)
     return true_v;
-  const VkrRenderPacket *packet = renderer->graph->packet;
+  const VkrPreparedFrame *packet = renderer->graph->packet;
   const VkrPacketFrameConstants frame =
       vkr_packet_derive_frame_constants(packet, target_width, target_height);
   const bool8_t lighting_pass =
@@ -754,17 +820,16 @@ vkr_vk_record_packet_draws(VkrVulkanRenderer *renderer, VkCommandBuffer command,
             (slot->temporal_history_valid ? slot->temporal_transform_input
                                           : slot->temporal_transform_output)
                 ->buffer.address,
-        .current_view_projection =
-            packet->globals.temporal.current_view_projection,
+        .current_view_projection = packet->temporal.current_view_projection,
         .previous_view_projection =
             slot->temporal_history_valid
                 ? slot->temporal_color_input->history_view_projection
-                : packet->globals.temporal.current_view_projection,
+                : packet->temporal.current_view_projection,
         .history_valid = slot->temporal_history_valid,
         .previous_frame_index =
             slot->temporal_history_valid
                 ? slot->temporal_color_input->history_frame_index
-                : packet->frame.frame_index,
+                : packet->input.frame.frame_index,
     };
     frame_root->temporal_draw_state = temporal_address;
   }
@@ -818,129 +883,111 @@ vkr_vk_record_packet_draws(VkrVulkanRenderer *renderer, VkCommandBuffer command,
             pending_submit;
     }
   }
-  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    renderer->packet_pipelines[pipeline]);
-  for (uint32_t i = 0u; i < draw_count; ++i) {
-    const VkrVulkanPreparedDirectDraw *draw = &slot->direct_draws[i];
-    const VkrVulkanPublishedGeometry *geometry = draw->geometry;
-    const VkrVulkanPublishedMaterial *material = draw->material;
-    const VkrVulkanSubmeshRange *range = draw->range;
-    const uint64_t draw_root_address =
-        draw_roots_address + (uint64_t)i * sizeof(*table_draws);
-    const VkrVulkanPushConstants push = {
-        .root = draw_root_address,
-        .material_index = material->slot.index,
-        .flags = 0u,
-    };
-    const uint64_t geometry_index_offset =
-        (uint64_t)geometry->gpu_row.first_index * sizeof(uint32_t);
-    vkCmdBindIndexBuffer2(
-        command, geometry->indices.handle, geometry_index_offset,
-        geometry->indices.size - geometry_index_offset, geometry->index_type);
-    vkCmdPushConstants(command, renderer->pipeline_layout,
-                       VK_SHADER_STAGE_VERTEX_BIT |
-                           VK_SHADER_STAGE_FRAGMENT_BIT |
-                           VK_SHADER_STAGE_COMPUTE_BIT,
-                       0u, sizeof(push), &push);
-    vkCmdDrawIndexed(command, range->index_count, draw->instance_count,
-                     range->first_index, range->vertex_offset, 0u);
-  }
-  slot->indexed_draw_count += draw_count;
-  if (lighting_pass)
-    slot->blend_draw_count += draw_count;
+  *out = (VkrVulkanPreparedWorldDraws){.pipeline = pipeline,
+                                       .roots_address = draw_roots_address,
+                                       .lighting = lighting_pass,
+                                       .enabled = true_v};
   return true_v;
 }
 
-bool8_t vkr_vk_record_text_draws(VkrVulkanRenderer *renderer,
-                                 VkCommandBuffer command,
-                                 VkrVulkanPacketPipeline pipeline,
-                                 const VkrPreparedTextDraw *draws,
-                                 uint32_t draw_count, Mat4 view_projection,
-                                 uint32_t target_width, uint32_t target_height,
-                                 bool8_t ui_domain) {
-  if (draw_count == 0u)
-    return true_v;
+vkr_internal void vkr_vk_record_prepared_text_draws(
+    VkrVulkanRenderer *renderer, VkCommandBuffer command,
+    VkrVulkanPacketPipeline pipeline, const VkrVulkanPreparedTextDraw *draws,
+    uint32_t draw_count, uint64_t roots_address) {
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     renderer->packet_pipelines[pipeline]);
   for (uint32_t i = 0u; i < draw_count; ++i) {
-    const VkrPreparedTextDraw *draw = &draws[i];
-    VkrVulkanPublishedTexture *atlas =
-        vkr_vk_published_texture(renderer, draw->atlas, NULL);
-    /* Retained text can become visible while its asynchronously loaded atlas
-
-     * is still crossing the asset-publisher seam. Omit that draw until the
-
-     * logical publication exists; a not-yet-ready atlas must not reject the
-
-     * otherwise coherent frame. If initialization is queued, its copy and
-
-     * transition are recorded before the graph in this same command buffer. */
-    if (!atlas || atlas->initialization_pending ||
-        atlas->sampler_record_index >= renderer->config.sampler_capacity)
-      continue;
-    VkrVulkanPublishedSampler *sampler =
-        &renderer->published_samplers[atlas->sampler_record_index];
-    if (!sampler->live)
-      continue;
-
-    const uint64_t vertex_bytes =
-        (uint64_t)draw->vertex_count * sizeof(*draw->vertices);
-    const uint64_t index_bytes =
-        (uint64_t)draw->index_count * sizeof(*draw->indices);
-    uint64_t vertex_address = 0u;
-    void *vertices = vkr_vk_frame_upload_allocate(
-        slot, vertex_bytes, _Alignof(VkrTextVertex), &vertex_address, NULL);
-    uint64_t index_offset = 0u;
-    void *indices = vkr_vk_frame_upload_allocate(
-        slot, index_bytes, _Alignof(uint32_t), NULL, &index_offset);
-    uint64_t root_address = 0u;
-    VkrVulkanPacketUtilityRoot *root =
-        vkr_vk_packet_utility_root(slot, &root_address);
-    if (!vertices || !indices || !root)
-      return false_v;
-    MemCopy(vertices, draw->vertices, vertex_bytes);
-    MemCopy(indices, draw->indices, index_bytes);
-    root->vertices = vertex_address;
-    root->view_projection = view_projection;
-    root->view = draw->model;
-    root->transmission_texture = atlas->sampled_slot.index;
-    root->transmission_sampler = sampler->slot.index;
-    root->material_alpha.x = draw->unit_range.x;
-    root->material_alpha.y = draw->unit_range.y;
-    root->material_flags = draw->font_mode;
-    root->first_instance = draw->object_id;
-    root->flags = ui_domain ? 1u : 0u;
-    root->point_light_grid_origin_cell_size =
-        (Vec4){(float32_t)target_width, (float32_t)target_height, 0.0f, 0.0f};
-    const VkrVulkanPushConstants push = {.root = root_address};
-    vkCmdBindIndexBuffer2(command, slot->frame_upload.handle, index_offset,
-                          index_bytes, VK_INDEX_TYPE_UINT32);
+    const VkrVulkanPreparedTextDraw *draw = &draws[i];
+    const VkrVulkanPushConstants push = {.root = roots_address +
+                                                 (uint64_t)i * sizeof(*draws)};
+    vkCmdBindIndexBuffer2(command, slot->frame_upload.handle,
+                          draw->index_offset, draw->index_size,
+                          VK_INDEX_TYPE_UINT32);
     vkCmdPushConstants(command, renderer->pipeline_layout,
                        VK_SHADER_STAGE_VERTEX_BIT |
                            VK_SHADER_STAGE_FRAGMENT_BIT |
                            VK_SHADER_STAGE_COMPUTE_BIT,
                        0u, sizeof(push), &push);
     vkCmdDrawIndexed(command, draw->index_count, 1u, 0u, 0, 0u);
-    atlas->last_use_submit_value = renderer->submit_value + 1u;
-    slot->indexed_draw_count++;
   }
-  return true_v;
+  slot->indexed_draw_count += draw_count;
 }
 
-bool8_t vkr_vk_record_ui_draw_list(VkrVulkanRenderer *renderer,
-                                   VkCommandBuffer command,
-                                   const VkrPreparedUiDrawList *draw_list,
-                                   uint32_t target_width,
-                                   uint32_t target_height) {
-  if (draw_list->batch_count == 0u)
+bool8_t vkr_vk_prepare_text_draws(VkrVulkanRenderer *renderer,
+                                  VkrVulkanPreparedText *out,
+                                  VkrVulkanPacketPipeline pipeline,
+                                  const VkrPreparedTextDraw *draws,
+                                  uint32_t draw_count, Mat4 view_projection,
+                                  uint32_t target_width, uint32_t target_height,
+                                  bool8_t ui_domain) {
+  if (draw_count == 0u)
     return true_v;
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
-  if (slot->ui_vertices == 0u || slot->ui_index_size == 0u)
+  uint64_t upload_address = 0u;
+  uint64_t upload_offset = 0u;
+  VkrVulkanPreparedTextDraw *prepared = vkr_vk_frame_upload_allocate(
+      slot, vkr_vk_text_draw_upload_size(draws, draw_count),
+      _Alignof(VkrVulkanPreparedTextDraw), &upload_address, &upload_offset);
+  if (!prepared)
     return false_v;
+  uint64_t cursor = (uint64_t)draw_count * sizeof(*prepared);
+  uint32_t prepared_count = 0u;
+  for (uint32_t i = 0u; i < draw_count; ++i) {
+    const VkrPreparedTextDraw *draw = &draws[i];
+    uint32_t texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+    uint32_t sampler = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+    /* An atlas still crossing publication omits its draw until it is ready.
+     * Compact that optional work before issuing any draw commands. */
+    if (!vkr_vk_resolve_sampled_pair(renderer, draw->atlas, &texture, &sampler))
+      continue;
+    const uint64_t vertex_bytes =
+        (uint64_t)draw->vertex_count * sizeof(*draw->vertices);
+    const uint64_t index_bytes =
+        (uint64_t)draw->index_count * sizeof(*draw->indices);
+    const uint64_t vertex_offset = cursor;
+    cursor += vkr_vk_align_up(vertex_bytes, 16u);
+    const uint64_t index_offset = cursor;
+    cursor += vkr_vk_align_up(index_bytes, 16u);
+    MemCopy((uint8_t *)prepared + vertex_offset, draw->vertices, vertex_bytes);
+    MemCopy((uint8_t *)prepared + index_offset, draw->indices, index_bytes);
+    prepared[prepared_count++] = (VkrVulkanPreparedTextDraw){
+        .root =
+            {
+                .vertices = upload_address + vertex_offset,
+                .view_projection = view_projection,
+                .view = draw->model,
+                .transmission_texture = texture,
+                .transmission_sampler = sampler,
+                .material_alpha = {draw->unit_range.x, draw->unit_range.y, 0.0f,
+                                   0.0f},
+                .material_flags = draw->font_mode,
+                .first_instance = draw->object_id,
+                .flags = ui_domain ? 1u : 0u,
+                .point_light_grid_origin_cell_size = {(float32_t)target_width,
+                                                      (float32_t)target_height,
+                                                      0.0f, 0.0f},
+            },
+        .index_offset = upload_offset + index_offset,
+        .index_size = index_bytes,
+        .index_count = draw->index_count,
+    };
+  }
+  *out = (VkrVulkanPreparedText){.pipeline = pipeline,
+                                 .draws = prepared,
+                                 .count = prepared_count,
+                                 .roots_address = upload_address};
+  return true_v;
+}
 
+vkr_internal void vkr_vk_record_prepared_ui_draws(
+    VkrVulkanRenderer *renderer, VkCommandBuffer command,
+    const VkrVulkanPreparedUiDraw *draws, uint32_t draw_count,
+    uint64_t roots_address, uint32_t target_width, uint32_t target_height) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
   const VkViewport viewport = {
       .width = (float32_t)target_width,
       .height = (float32_t)target_height,
@@ -951,20 +998,47 @@ bool8_t vkr_vk_record_ui_draw_list(VkrVulkanRenderer *renderer,
   vkCmdBindIndexBuffer2(command, slot->frame_upload.handle,
                         slot->ui_index_offset, slot->ui_index_size,
                         VK_INDEX_TYPE_UINT32);
-
   VkrVulkanPacketPipeline bound_pipeline = VKR_VULKAN_PACKET_PIPELINE_COUNT;
+  for (uint32_t i = 0u; i < draw_count; ++i) {
+    const VkrVulkanPreparedUiDraw *draw = &draws[i];
+    if (draw->pipeline != bound_pipeline) {
+      vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        renderer->packet_pipelines[draw->pipeline]);
+      bound_pipeline = draw->pipeline;
+    }
+    vkCmdSetScissor(command, 0u, 1u, &draw->scissor);
+    const VkrVulkanPushConstants push = {.root = roots_address +
+                                                 (uint64_t)i * sizeof(*draws)};
+    vkCmdPushConstants(command, renderer->pipeline_layout,
+                       VK_SHADER_STAGE_VERTEX_BIT |
+                           VK_SHADER_STAGE_FRAGMENT_BIT |
+                           VK_SHADER_STAGE_COMPUTE_BIT,
+                       0u, sizeof(push), &push);
+    vkCmdDrawIndexed(command, draw->index_count, 1u, draw->first_index, 0, 0u);
+  }
+  slot->indexed_draw_count += draw_count;
+}
+
+bool8_t vkr_vk_prepare_ui_draw_list(VkrVulkanRenderer *renderer,
+                                    VkrVulkanPreparedUi *out,
+                                    const VkrPreparedUiDrawList *draw_list,
+                                    uint32_t target_width,
+                                    uint32_t target_height) {
+  if (draw_list->batch_count == 0u)
+    return true_v;
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  if (slot->ui_vertices == 0u || slot->ui_index_size == 0u)
+    return false_v;
+  uint64_t roots_address = 0u;
+  VkrVulkanPreparedUiDraw *prepared = vkr_vk_frame_upload_allocate(
+      slot, (uint64_t)draw_list->batch_count * sizeof(*prepared),
+      _Alignof(VkrVulkanPreparedUiDraw), &roots_address, NULL);
+  if (!prepared)
+    return false_v;
+  uint32_t prepared_count = 0u;
   for (uint32_t i = 0u; i < draw_list->batch_count; ++i) {
     const VkrUiDrawBatch *batch = &draw_list->batches[i];
-    const VkrVulkanPacketPipeline pipeline =
-        batch->mode == VKR_UI_DRAW_MODE_ROUNDED_RECT
-            ? VKR_VULKAN_PACKET_PIPELINE_UI_RECT
-            : VKR_VULKAN_PACKET_PIPELINE_UI;
-    if (pipeline != bound_pipeline) {
-      vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                        renderer->packet_pipelines[pipeline]);
-      bound_pipeline = pipeline;
-    }
-
     uint32_t texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
     uint32_t sampler = VKR_VULKAN_SENTINEL_SLOT_INDEX;
     const bool8_t textured = batch->texture.id != 0u;
@@ -974,50 +1048,50 @@ bool8_t vkr_vk_record_ui_draw_list(VkrVulkanRenderer *renderer,
             (VkrTextureHandle){batch->texture.id, batch->texture.generation},
             &texture, &sampler))
       continue;
-
-    uint64_t root_address = 0u;
-    VkrVulkanUiRoot *root = vkr_vk_frame_upload_allocate(
-        slot, sizeof(*root), _Alignof(VkrVulkanUiRoot), &root_address, NULL);
-    if (!root)
-      return false_v;
-    *root = (VkrVulkanUiRoot){
-        .vertices = slot->ui_vertices,
-        .texture = texture,
-        .sampler = sampler,
-        .target_unit_range = {(float32_t)target_width, (float32_t)target_height,
-                              batch->sdf_unit_range.x, batch->sdf_unit_range.y},
-        .rect_extent = batch->rect_extent_px,
-        .mode = batch->mode,
-        .flags = textured ? 1u : 0u,
-        .corner_radii = batch->corner_radius_px,
+    prepared[prepared_count++] = (VkrVulkanPreparedUiDraw){
+        .root =
+            {
+                .vertices = slot->ui_vertices,
+                .texture = texture,
+                .sampler = sampler,
+                .target_unit_range = {(float32_t)target_width,
+                                      (float32_t)target_height,
+                                      batch->sdf_unit_range.x,
+                                      batch->sdf_unit_range.y},
+                .rect_extent = batch->rect_extent_px,
+                .mode = batch->mode,
+                .flags = textured ? 1u : 0u,
+                .corner_radii = batch->corner_radius_px,
+            },
+        .scissor =
+            {
+                .offset = {(int32_t)batch->scissor_rect_px.x,
+                           (int32_t)batch->scissor_rect_px.y},
+                .extent = {(uint32_t)batch->scissor_rect_px.width,
+                           (uint32_t)batch->scissor_rect_px.height},
+            },
+        .pipeline = batch->mode == VKR_UI_DRAW_MODE_ROUNDED_RECT
+                        ? VKR_VULKAN_PACKET_PIPELINE_UI_RECT
+                        : VKR_VULKAN_PACKET_PIPELINE_UI,
+        .first_index = batch->first_index,
+        .index_count = batch->index_count,
     };
-    const VkRect2D scissor = {
-        .offset = {(int32_t)batch->scissor_rect_px.x,
-                   (int32_t)batch->scissor_rect_px.y},
-        .extent = {(uint32_t)batch->scissor_rect_px.width,
-                   (uint32_t)batch->scissor_rect_px.height},
-    };
-    vkCmdSetScissor(command, 0u, 1u, &scissor);
-    const VkrVulkanPushConstants push = {.root = root_address};
-    vkCmdPushConstants(command, renderer->pipeline_layout,
-                       VK_SHADER_STAGE_VERTEX_BIT |
-                           VK_SHADER_STAGE_FRAGMENT_BIT |
-                           VK_SHADER_STAGE_COMPUTE_BIT,
-                       0u, sizeof(push), &push);
-    vkCmdDrawIndexed(command, batch->index_count, 1u, batch->first_index, 0,
-                     0u);
-    slot->indexed_draw_count++;
   }
+  *out = (VkrVulkanPreparedUi){.draws = prepared,
+                               .count = prepared_count,
+                               .roots_address = roots_address,
+                               .width = target_width,
+                               .height = target_height};
   return true_v;
 }
 
-bool8_t vkr_vk_record_packet_fullscreen(VkrVulkanRenderer *renderer,
-                                        VkCommandBuffer command,
-                                        VkrVulkanPacketPipeline pipeline,
-                                        uint32_t texture_index,
-                                        uint64_t exposure_state, uint32_t flags,
-                                        uint32_t output_width,
-                                        uint32_t output_height) {
+bool8_t vkr_vk_prepare_packet_fullscreen(VkrVulkanRenderer *renderer,
+                                         VkrVulkanPreparedFullscreen *out,
+                                         VkrVulkanPacketPipeline pipeline,
+                                         uint32_t texture_index,
+                                         uint64_t exposure_state,
+                                         uint32_t flags, uint32_t output_width,
+                                         uint32_t output_height) {
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   uint64_t root_address = 0u;
@@ -1030,7 +1104,7 @@ bool8_t vkr_vk_record_packet_fullscreen(VkrVulkanRenderer *renderer,
   if (!root || !manual_state)
     return false_v;
   *manual_state = (VkrExposureGpuState){
-      .exposure_multiplier = renderer->graph->packet->globals.exposure.manual,
+      .exposure_multiplier = renderer->graph->packet->exposure.manual,
   };
   root->materials = renderer->materials.address;
   root->transmission_texture = texture_index;
@@ -1046,12 +1120,39 @@ bool8_t vkr_vk_record_packet_fullscreen(VkrVulkanRenderer *renderer,
           flags |
           (renderer->config.fxaa_enabled ? VKR_VULKAN_FULLSCREEN_FXAA : 0u),
   };
+  *out = (VkrVulkanPreparedFullscreen){
+      .pipeline = renderer->packet_pipelines[pipeline], .push = push};
+  return true_v;
+}
+
+void vkr_vk_record_world_draws(VkrVulkanRenderer *renderer,
+                               VkCommandBuffer command,
+                               const VkrVulkanPreparedWorldDraws *draws) {
+  if (draws->enabled)
+    vkr_vk_record_prepared_direct_draws(renderer, command, draws->pipeline,
+                                        draws->roots_address, draws->lighting);
+}
+void vkr_vk_record_text(VkrVulkanRenderer *renderer, VkCommandBuffer command,
+                        const VkrVulkanPreparedText *text) {
+  if (text->count)
+    vkr_vk_record_prepared_text_draws(renderer, command, text->pipeline,
+                                      text->draws, text->count,
+                                      text->roots_address);
+}
+void vkr_vk_record_ui(VkrVulkanRenderer *renderer, VkCommandBuffer command,
+                      const VkrVulkanPreparedUi *ui) {
+  if (ui->count)
+    vkr_vk_record_prepared_ui_draws(renderer, command, ui->draws, ui->count,
+                                    ui->roots_address, ui->width, ui->height);
+}
+void vkr_vk_record_fullscreen(VkrVulkanRenderer *renderer,
+                              VkCommandBuffer command,
+                              const VkrVulkanPreparedFullscreen *fullscreen) {
   vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    renderer->packet_pipelines[pipeline]);
+                    fullscreen->pipeline);
   vkCmdPushConstants(command, renderer->pipeline_layout,
                      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT |
                          VK_SHADER_STAGE_COMPUTE_BIT,
-                     0u, sizeof(push), &push);
+                     0u, sizeof(fullscreen->push), &fullscreen->push);
   vkCmdDraw(command, 3u, 1u, 0u, 0u);
-  return true_v;
 }

@@ -2,7 +2,6 @@
 
 #include "containers/str.h"
 #include "memory/vkr_arena_allocator.h"
-#include "renderer/renderer_frontend.h"
 #include "renderer/resources/loaders/material_loader.h"
 #include "renderer/systems/vkr_material_system.h"
 #include "renderer/systems/vkr_texture_system.h"
@@ -35,7 +34,7 @@ typedef struct MaterialPbrMockPublisherState {
 } MaterialPbrMockPublisherState;
 
 typedef struct MaterialPbrTestContext {
-  RendererFrontend renderer;
+  Arena *arena;
   MaterialPbrMockPublisherState publisher_state;
   VkrAssetPublisher asset_publisher;
   VkrTextureSystem texture_system;
@@ -44,19 +43,6 @@ typedef struct MaterialPbrTestContext {
   Arena *temp_arena;
   VkrAllocator temp_allocator;
 } MaterialPbrTestContext;
-
-static void material_pbr_mock_get_device_information(
-    void *state, VkrDeviceInformation *device_information, Arena *temp_arena) {
-  (void)state;
-  (void)temp_arena;
-  assert(device_information != NULL);
-
-  MemZero(device_information, sizeof(*device_information));
-}
-
-static const VkrRendererImplOps material_pbr_impl_ops = {
-    .get_device_information = material_pbr_mock_get_device_information,
-};
 
 static bool8_t
 material_pbr_mock_texture_upload_available(void *publisher_state,
@@ -261,25 +247,13 @@ static void material_pbr_test_ensure_dirs(void) {
   assert(material_pbr_test_make_dir(pbr_tmp) == true_v);
 }
 
-static void material_pbr_test_init_renderer(MaterialPbrTestContext *ctx) {
+static void material_pbr_test_init_publisher(MaterialPbrTestContext *ctx) {
   assert(ctx != NULL);
 
   MemZero(ctx, sizeof(*ctx));
-  MemZero(&ctx->renderer, sizeof(ctx->renderer));
 
-  ctx->renderer.arena = arena_create(MB(8), MB(8));
-  assert(ctx->renderer.arena != NULL);
-  ctx->renderer.allocator = (VkrAllocator){.ctx = ctx->renderer.arena};
-  assert(vkr_allocator_arena(&ctx->renderer.allocator));
-
-  ctx->renderer.scratch_arena = arena_create(MB(8), MB(8));
-  assert(ctx->renderer.scratch_arena != NULL);
-  ctx->renderer.scratch_allocator =
-      (VkrAllocator){.ctx = ctx->renderer.scratch_arena};
-  assert(vkr_allocator_arena(&ctx->renderer.scratch_allocator));
-
-  ctx->renderer.impl.ops = &material_pbr_impl_ops;
-  ctx->renderer.impl.state = &ctx->publisher_state;
+  ctx->arena = arena_create(MB(8), MB(8));
+  assert(ctx->arena != NULL);
   ctx->publisher_state.texture_upload_available = true_v;
   ctx->asset_publisher = (VkrAssetPublisher){
       .state = &ctx->publisher_state,
@@ -292,34 +266,30 @@ static void material_pbr_test_init_renderer(MaterialPbrTestContext *ctx) {
   };
 }
 
-static void material_pbr_test_shutdown_renderer(MaterialPbrTestContext *ctx) {
+static void material_pbr_test_shutdown_publisher(MaterialPbrTestContext *ctx) {
   if (!ctx) {
     return;
   }
 
-  if (ctx->renderer.scratch_arena) {
-    arena_destroy(ctx->renderer.scratch_arena);
-    ctx->renderer.scratch_arena = NULL;
-  }
-
-  if (ctx->renderer.arena) {
-    arena_destroy(ctx->renderer.arena);
-    ctx->renderer.arena = NULL;
+  if (ctx->arena) {
+    arena_destroy(ctx->arena);
+    ctx->arena = NULL;
   }
 }
 
 static bool8_t material_pbr_test_init_context(MaterialPbrTestContext *ctx) {
   assert(ctx != NULL);
 
-  material_pbr_test_init_renderer(ctx);
+  material_pbr_test_init_publisher(ctx);
 
   VkrTextureSystemConfig texture_cfg = {
       .max_texture_count = 256,
       .asset_publisher = &ctx->asset_publisher,
   };
-  if (!vkr_texture_system_init(&ctx->renderer, &texture_cfg, NULL,
+  const VkrDeviceInformation device_info = {0};
+  if (!vkr_texture_system_init(&device_info, &texture_cfg, NULL,
                                &ctx->texture_system)) {
-    material_pbr_test_shutdown_renderer(ctx);
+    material_pbr_test_shutdown_publisher(ctx);
     return false_v;
   }
 
@@ -327,23 +297,22 @@ static bool8_t material_pbr_test_init_context(MaterialPbrTestContext *ctx) {
       .max_material_count = 128,
       .asset_publisher = &ctx->asset_publisher,
   };
-  if (!vkr_material_system_init(&ctx->material_system, ctx->renderer.arena,
+  if (!vkr_material_system_init(&ctx->material_system, ctx->arena,
                                 &ctx->texture_system, &material_cfg)) {
     vkr_texture_system_shutdown(&ctx->texture_system);
-    material_pbr_test_shutdown_renderer(ctx);
+    material_pbr_test_shutdown_publisher(ctx);
     return false_v;
   }
 
   ctx->material_loader = vkr_material_loader_create();
   ctx->material_loader.id = 1;
-  ctx->material_loader.renderer = &ctx->renderer;
   ctx->material_loader.resource_system = &ctx->material_system;
 
   ctx->temp_arena = arena_create(MB(8), MB(8));
   if (!ctx->temp_arena) {
     vkr_material_system_shutdown(&ctx->material_system);
     vkr_texture_system_shutdown(&ctx->texture_system);
-    material_pbr_test_shutdown_renderer(ctx);
+    material_pbr_test_shutdown_publisher(ctx);
     return false_v;
   }
 
@@ -353,7 +322,7 @@ static bool8_t material_pbr_test_init_context(MaterialPbrTestContext *ctx) {
     ctx->temp_arena = NULL;
     vkr_material_system_shutdown(&ctx->material_system);
     vkr_texture_system_shutdown(&ctx->texture_system);
-    material_pbr_test_shutdown_renderer(ctx);
+    material_pbr_test_shutdown_publisher(ctx);
     return false_v;
   }
 
@@ -373,7 +342,7 @@ static void material_pbr_test_shutdown_context(MaterialPbrTestContext *ctx) {
     ctx->temp_arena = NULL;
   }
 
-  material_pbr_test_shutdown_renderer(ctx);
+  material_pbr_test_shutdown_publisher(ctx);
 }
 
 static bool8_t material_pbr_test_load_material(

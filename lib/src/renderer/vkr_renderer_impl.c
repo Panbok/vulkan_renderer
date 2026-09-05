@@ -11,9 +11,6 @@
 static VkrRendererImplCapabilities
 vkr_renderer_impl_default_caps(VkrPresentTargetKind target_kind) {
   return (VkrRendererImplCapabilities){
-      .renderer_arena_size = MB(64),
-      .scratch_arena_size = MB(32),
-      .scratch_arena_block_size = MB(1),
       .frame_in_flight_count = 3u,
       .present_target_image_count = 3u,
       .present_target_kind = target_kind,
@@ -27,9 +24,8 @@ vkr_renderer_impl_default_caps(VkrPresentTargetKind target_kind) {
 
 bool8_t vkr_renderer_impl_select(VkrRendererBackendType backend_type,
                                  VkrPresentTargetKind target_kind,
-                                 const VkrRendererImplStrategies *strategies,
                                  VkrRendererImpl *out_impl) {
-  if (!strategies || !out_impl) {
+  if (!out_impl) {
     return false_v;
   }
 
@@ -38,7 +34,6 @@ bool8_t vkr_renderer_impl_select(VkrRendererBackendType backend_type,
   case VKR_RENDERER_BACKEND_TYPE_VULKAN:
     *out_impl = (VkrRendererImpl){
         .kind = VKR_RENDERER_IMPL_VULKAN,
-        .ops = strategies->vulkan,
         .caps = vkr_renderer_impl_default_caps(target_kind),
 #if defined(PLATFORM_WINDOWS)
         .initialization_supported = true_v,
@@ -51,7 +46,6 @@ bool8_t vkr_renderer_impl_select(VkrRendererBackendType backend_type,
   case VKR_RENDERER_BACKEND_TYPE_METAL:
     *out_impl = (VkrRendererImpl){
         .kind = VKR_RENDERER_IMPL_METAL,
-        .ops = strategies->metal,
         .caps = vkr_renderer_impl_default_caps(target_kind),
 #if defined(PLATFORM_APPLE)
         .initialization_supported = true_v,

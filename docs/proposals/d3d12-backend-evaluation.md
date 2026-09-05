@@ -9,13 +9,13 @@ authority: proposal
 D3D12 is not scheduled. The current renderer explicitly selects only Metal or
 Vulkan in [vkr_renderer_impl.c](../../lib/src/renderer/vkr_renderer_impl.c),
 and [vkr_renderer_impl.h](../../lib/src/renderer/vkr_renderer_impl.h) exposes
-only their implementation strategies. The frontend nevertheless demonstrates
-the coarse ownership boundary a third implementation would need to satisfy in
-[renderer_frontend.c](../../lib/src/renderer/renderer_frontend.c).
+only their implementation properties. Platform-selected typed functions define
+the native operation boundary a third implementation would need to satisfy in
+[vkr_renderer.c](../../lib/src/renderer/vkr_renderer.c).
 
 ## Current implementation baseline
 
-The reusable contracts are the authored graph, versioned packet, capture state,
+The reusable contracts are the authored graph, versioned frame input, capture state,
 GPU-memory and slot-table cores, and scene-facing systems. The backend-specific
 work remains substantial: D3D12 would own DXGI targets, command submission,
 completion fences, descriptor lifetime, graph lowering, pipeline and DXIL ABI

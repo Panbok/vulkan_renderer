@@ -15,12 +15,10 @@ bool8_t vkr_metal_dependency_lower(const VkrGpuDependency *dependency,
 #if defined(__OBJC__)
 #import <Metal/Metal.h>
 
-bool8_t
-vkr_metal_dependency_encode_producer(id<MTL4CommandEncoder> encoder,
-                                     const VkrMetalDependency *dependency);
-bool8_t
-vkr_metal_dependency_encode_consumer(id<MTL4CommandEncoder> encoder,
-                                     const VkrMetalDependency *dependency);
-bool8_t vkr_metal_dependency_encode_intra(id<MTL4CommandEncoder> encoder,
+void vkr_metal_dependency_encode_producer(id<MTL4CommandEncoder> encoder,
                                           const VkrMetalDependency *dependency);
+void vkr_metal_dependency_encode_consumer(id<MTL4CommandEncoder> encoder,
+                                          const VkrMetalDependency *dependency);
+void vkr_metal_dependency_encode_intra(id<MTL4CommandEncoder> encoder,
+                                       const VkrMetalDependency *dependency);
 #endif

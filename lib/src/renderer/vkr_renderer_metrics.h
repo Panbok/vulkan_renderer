@@ -9,7 +9,7 @@
 #pragma once
 
 #include "core/vkr_metrics.h"
-#include "renderer/renderer_frontend.h"
+#include "renderer/vkr_renderer_impl.h"
 #include "renderer/vkr_visibility.h"
 
 typedef enum VkrRendererAssetMetricSource {
@@ -338,8 +338,17 @@ typedef struct VkrRendererMetrics {
   uint32_t impl_memory_metric_count;
 } VkrRendererMetrics;
 
+struct VkrRenderAssets;
+typedef struct VkrRenderGraphResourceStats VkrRenderGraphResourceStats;
+typedef struct VkrRendererFrameMetrics VkrRendererFrameMetrics;
+typedef struct VkrUiSystem VkrUiSystem;
+typedef struct VkrLightingSystem VkrLightingSystem;
+
 typedef struct VkrRendererMetricsCollectContext {
-  VkrRendererFrontendHandle renderer;
+  const struct VkrRenderAssets *assets;
+  const VkrUiSystem *ui;
+  const VkrLightingSystem *lighting;
+  VkrRenderer *renderer;
   const VkrRendererFrameMetrics *frame_metrics;
   const VkrVisibilityStats *visibility;
   const VkrJobSystem *job_system;
@@ -366,10 +375,10 @@ bool8_t vkr_renderer_metrics_publish_pass_samples(
  * layout is a worse outcome than a report missing per-heap rows.
  */
 bool8_t vkr_renderer_metrics_register_device_memory(
-    VkrRendererMetrics *renderer_metrics, VkrRendererFrontendHandle renderer);
+    VkrRendererMetrics *renderer_metrics, VkrRenderer *renderer);
 bool8_t
 vkr_renderer_metrics_prepare_pass_table(VkrRendererMetrics *renderer_metrics,
-                                        VkrRendererFrontendHandle renderer,
+                                        VkrRenderer *renderer,
                                         VkrAllocator *allocator);
 const VkrRendererMetricsProducerConfig *
 vkr_renderer_metrics_get_producers(const VkrRendererMetrics *renderer_metrics);

@@ -40,5 +40,5 @@ normal path unless results establish a workload-specific advantage.
 
 - [mesh instances](../../lib/src/renderer/systems/vkr_mesh_manager.c)
 - [GPU geometry ABI](../../lib/src/renderer/vkr_gpu_abi.c)
-- [frontend draw diagnostics](../../lib/src/renderer/renderer_frontend.c)
+- [renderer draw diagnostics](../../lib/src/renderer/vkr_renderer.c)
 - [Vulkan frame graph](../../lib/src/renderer/vulkan/vkr_vulkan_graph.c)

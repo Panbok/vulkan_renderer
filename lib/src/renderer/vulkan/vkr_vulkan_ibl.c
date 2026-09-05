@@ -34,8 +34,8 @@ vkr_internal void vkr_vk_cmd_ibl_image_barrier(
   vkCmdPipelineBarrier2(command, &dependency);
 }
 
-vkr_internal bool8_t vkr_vk_record_ibl_dispatch(
-    VkrVulkanRenderer *renderer, VkCommandBuffer command,
+vkr_internal bool8_t vkr_vk_prepare_ibl_dispatch(
+    VkrVulkanRenderer *renderer, VkrVulkanPreparedCompute *prepared,
     VkrVulkanIblPipeline pipeline, const VkrVulkanPublishedTexture *source,
     const VkrVulkanPublishedTexture *target, uint32_t target_mip,
     uint32_t sample_count, float32_t roughness) {
@@ -63,21 +63,18 @@ vkr_internal bool8_t vkr_vk_record_ibl_dispatch(
       .source_mip_count = source->image.mip_levels,
       .roughness = roughness,
   };
-  const VkrVulkanPushConstants push = {.root = root_address};
-  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
-                    renderer->ibl_pipelines[pipeline]);
-  vkCmdPushConstants(command, renderer->pipeline_layout,
-                     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT |
-                         VK_SHADER_STAGE_COMPUTE_BIT,
-                     0u, sizeof(push), &push);
-  vkCmdDispatch(command, (root->target_size + 7u) / 8u,
-                (root->target_size + 7u) / 8u, target->image.array_layers);
+  prepared->root_address = root_address;
+  prepared->pipelines[0] = renderer->ibl_pipelines[pipeline];
+  prepared->groups[0][0] = (root->target_size + 7u) / 8u;
+  prepared->groups[0][1] = (root->target_size + 7u) / 8u;
+  prepared->groups[0][2] = target->image.array_layers;
+  prepared->dispatch_count = 1u;
   return true_v;
 }
 
 vkr_internal void
 vkr_vk_record_ibl_source_mips(VkCommandBuffer command,
-                              VkrVulkanPublishedTexture *source) {
+                              const VkrVulkanPublishedTexture *source) {
   if (source->image.mip_levels == 1u) {
     vkr_vk_cmd_ibl_image_barrier(
         command, source->image.handle, 0u, source->image.array_layers,
@@ -164,10 +161,6 @@ vkr_internal void vkr_vk_record_sh_clear(VkrVulkanRenderer *renderer,
                                          VkCommandBuffer command) {
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
-  if (renderer->sh_coefficients_cleared ||
-      slot->sh_coefficients_clear_recorded) {
-    return;
-  }
   vkCmdFillBuffer(command, renderer->sh_coefficients.handle, 0u,
                   (VkDeviceSize)VKR_SH_BUFFER_BYTES, 0u);
   const VkBufferMemoryBarrier2 barrier = {
@@ -198,8 +191,8 @@ vkr_internal void vkr_vk_record_sh_clear(VkrVulkanRenderer *renderer,
  * consuming the slot when the source cannot supply the selected mip, so the
  * caller can abandon the reservation and keep its prior publication.
  */
-vkr_internal bool8_t vkr_vk_record_ibl_sh_projection(
-    VkrVulkanRenderer *renderer, VkCommandBuffer command,
+vkr_internal bool8_t vkr_vk_prepare_ibl_sh_projection(
+    VkrVulkanRenderer *renderer, VkrVulkanPreparedCompute *prepared,
     const VkrVulkanPublishedTexture *source, uint32_t slot,
     float32_t deringing) {
   uint32_t projection_mip = 0u;
@@ -239,16 +232,12 @@ vkr_internal bool8_t vkr_vk_record_ibl_sh_projection(
       .window_band_2 = vkr_ibl_sh_window_factor(2u, deringing),
   };
 
-  const VkrVulkanPushConstants push = {.root = root_address};
-  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
-                    renderer->ibl_pipelines[VKR_VULKAN_IBL_PIPELINE_SH]);
-  vkCmdPushConstants(command, renderer->pipeline_layout,
-                     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT |
-                         VK_SHADER_STAGE_COMPUTE_BIT,
-                     0u, sizeof(push), &push);
-  // One workgroup per destination slot; the kernel's fixed reduction is what
-  // makes the result deterministic, so this must stay a single group.
-  vkCmdDispatch(command, 1u, 1u, 1u);
+  prepared->root_address = root_address;
+  prepared->pipelines[0] = renderer->ibl_pipelines[VKR_VULKAN_IBL_PIPELINE_SH];
+  prepared->groups[0][0] = 1u;
+  prepared->groups[0][1] = 1u;
+  prepared->groups[0][2] = 1u;
+  prepared->dispatch_count = 1u;
   return true_v;
 }
 
@@ -280,10 +269,19 @@ vkr_internal void vkr_vk_record_sh_visibility(VkrVulkanRenderer *renderer,
   vkCmdPipelineBarrier2(command, &dependency);
 }
 
-bool8_t vkr_vk_record_ibl_bakes(VkrVulkanRenderer *renderer,
-                                VkCommandBuffer command) {
-  vkr_vk_record_sh_clear(renderer, command);
-  bool8_t projected_any = false_v;
+bool8_t vkr_vk_prepare_ibl_bakes(VkrVulkanRenderer *renderer,
+                                 VkrVulkanPreparedIbl *prepared) {
+  prepared->clear_coefficients = !renderer->sh_coefficients_cleared;
+  if (renderer->pending_ibl_bake_count) {
+    prepared->bakes = vkr_allocator_alloc(
+        &renderer->graph_frame_allocator,
+        (uint64_t)renderer->pending_ibl_bake_count * sizeof(*prepared->bakes),
+        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    if (!prepared->bakes)
+      return false_v;
+    MemZero(prepared->bakes, (uint64_t)renderer->pending_ibl_bake_count *
+                                 sizeof(*prepared->bakes));
+  }
   for (uint32_t i = 0u; i < renderer->pending_ibl_bake_count; ++i) {
     VkrVulkanPendingIblBake *job = &renderer->pending_ibl_bakes[i];
     job->recorded = false_v;
@@ -302,12 +300,17 @@ bool8_t vkr_vk_record_ibl_bakes(VkrVulkanRenderer *renderer,
     if (input->initialization_pending) {
       continue;
     }
+    VkrVulkanPreparedIblBake *bake = &prepared->bakes[prepared->count];
+    bake->source = source;
+    bake->prefilter = prefilter;
+    bake->convert = job->convert_equirect;
+    if (prefilter->image.mip_levels > VKR_VULKAN_TEXTURE_MIP_MAX)
+      return false_v;
     if (job->convert_equirect) {
-      if (!vkr_vk_record_ibl_dispatch(renderer, command,
-                                      VKR_VULKAN_IBL_PIPELINE_EQUIRECT,
-                                      equirect, source, 0u, 1u, 0.0f))
+      if (!vkr_vk_prepare_ibl_dispatch(renderer, &bake->conversion,
+                                       VKR_VULKAN_IBL_PIPELINE_EQUIRECT,
+                                       equirect, source, 0u, 1u, 0.0f))
         return false_v;
-      vkr_vk_record_ibl_source_mips(command, source);
     }
     /* Exhaustion and projection failure are cold-path errors: the logical
        source keeps its prior publication, or black. */
@@ -315,12 +318,13 @@ bool8_t vkr_vk_record_ibl_bakes(VkrVulkanRenderer *renderer,
     uint32_t candidate_slot = VKR_SH_SLOT_BLACK;
     if (vkr_ibl_sh_pool_reserve(&renderer->sh_pool, &candidate_slot) ==
         VKR_SH_POOL_STATUS_OK) {
-      if (vkr_vk_record_ibl_sh_projection(renderer, command, source,
-                                          candidate_slot, job->sh_deringing) &&
+      if (vkr_vk_prepare_ibl_sh_projection(renderer, &bake->projection, source,
+                                           candidate_slot, job->sh_deringing) &&
           vkr_ibl_sh_pool_mark_recorded(&renderer->sh_pool, candidate_slot) ==
               VKR_SH_POOL_STATUS_OK) {
         job->sh_slot = candidate_slot;
-        projected_any = true_v;
+        prepared->projected_any = true_v;
+        bake->project = true_v;
       } else {
         (void)vkr_ibl_sh_pool_abandon(&renderer->sh_pool, candidate_slot);
         log_warn("Vulkan SH projection could not record for texture %u:%u",
@@ -336,24 +340,14 @@ bool8_t vkr_vk_record_ibl_bakes(VkrVulkanRenderer *renderer,
           prefilter->image.mip_levels > 1u
               ? (float32_t)mip / (float32_t)(prefilter->image.mip_levels - 1u)
               : 0.0f;
-      if (!vkr_vk_record_ibl_dispatch(renderer, command,
-                                      VKR_VULKAN_IBL_PIPELINE_PREFILTER, source,
-                                      prefilter, mip, 256u, roughness))
+      if (!vkr_vk_prepare_ibl_dispatch(renderer, &bake->mips[mip],
+                                       VKR_VULKAN_IBL_PIPELINE_PREFILTER,
+                                       source, prefilter, mip, 256u, roughness))
         return false_v;
-      vkr_vk_cmd_ibl_image_barrier(
-          command, prefilter->image.handle, mip, prefilter->image.array_layers,
-          VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-          VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-          VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_GENERAL,
-          VK_IMAGE_LAYOUT_GENERAL);
+      bake->mip_count++;
     }
     job->recorded = true_v;
-  }
-  /* A frame may consume the slot it just baked, so projection writes must be
-     visible to lighting inside this same command stream. */
-  if (projected_any) {
-    vkr_vk_record_sh_visibility(renderer, command);
+    prepared->count++;
   }
   return true_v;
 }
@@ -394,4 +388,33 @@ void vkr_vk_abandon_ibl_bake_recordings(VkrVulkanRenderer *renderer) {
     }
     job->recorded = false_v;
   }
+}
+
+void vkr_vk_record_ibl_bakes(VkrVulkanRenderer *renderer,
+                             VkCommandBuffer command,
+                             const VkrVulkanPreparedIbl *prepared) {
+  if (prepared->clear_coefficients)
+    vkr_vk_record_sh_clear(renderer, command);
+  for (uint32_t i = 0u; i < prepared->count; ++i) {
+    const VkrVulkanPreparedIblBake *bake = &prepared->bakes[i];
+    if (bake->convert) {
+      vkr_vk_record_prepared_compute(renderer, command, &bake->conversion);
+      vkr_vk_record_ibl_source_mips(command, bake->source);
+    }
+    if (bake->project)
+      vkr_vk_record_prepared_compute(renderer, command, &bake->projection);
+    for (uint32_t mip = 0u; mip < bake->mip_count; ++mip) {
+      vkr_vk_record_prepared_compute(renderer, command, &bake->mips[mip]);
+      vkr_vk_cmd_ibl_image_barrier(command, bake->prefilter->image.handle, mip,
+                                   bake->prefilter->image.array_layers,
+                                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                   VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                                   VK_IMAGE_LAYOUT_GENERAL,
+                                   VK_IMAGE_LAYOUT_GENERAL);
+    }
+  }
+  if (prepared->projected_any)
+    vkr_vk_record_sh_visibility(renderer, command);
 }

@@ -14,8 +14,8 @@
 #include "memory/vkr_dmemory.h"
 #include "renderer/resources/ui/vkr_ui_text.h"
 
-struct s_RendererFrontend;
-typedef struct s_RendererFrontend RendererFrontend;
+typedef struct VkrFontSystem VkrFontSystem;
+typedef struct VkrWindow VkrWindow;
 typedef struct VkrUiRetainedState VkrUiRetainedState;
 typedef struct VkrUiFrameNode VkrUiFrameNode;
 typedef struct VkrPreparedUiDrawList VkrPreparedUiDrawList;
@@ -88,7 +88,7 @@ typedef struct VkrUiSystem {
   uint32_t retained_count;
 
   VkrAllocator *frame_allocator;
-  RendererFrontend *renderer;
+  VkrFontSystem *fonts;
   InputState *input;
   VkrUiFrameNode *frame_nodes;
   uint32_t frame_node_count;
@@ -153,21 +153,20 @@ typedef struct VkrUiSystem {
   bool8_t initialized;
 } VkrUiSystem;
 
-bool8_t vkr_ui_system_init(RendererFrontend *rf, VkrUiSystem *system);
-void vkr_ui_system_shutdown(RendererFrontend *rf, VkrUiSystem *system);
-void vkr_ui_system_resize(RendererFrontend *rf, VkrUiSystem *system,
-                          uint32_t width, uint32_t height);
-void vkr_ui_system_set_offscreen_size(RendererFrontend *rf, VkrUiSystem *system,
-                                      bool8_t enabled, uint32_t width,
-                                      uint32_t height);
-void vkr_ui_system_set_offscreen_content_scale(RendererFrontend *rf,
-                                               VkrUiSystem *system,
+bool8_t vkr_ui_system_init(VkrUiSystem *system, VkrFontSystem *fonts);
+void vkr_ui_system_shutdown(VkrUiSystem *system);
+void vkr_ui_system_resize(VkrUiSystem *system, uint32_t width, uint32_t height);
+void vkr_ui_system_set_offscreen_size(VkrUiSystem *system, bool8_t enabled,
+                                      uint32_t width, uint32_t height);
+void vkr_ui_system_set_offscreen_content_scale(VkrUiSystem *system,
                                                float32_t content_scale);
 
 /** Begin one immediate UI frame. The root itself is a grid container. */
-bool8_t vkr_ui_begin(RendererFrontend *rf, VkrUiSystem *system,
-                     InputState *input, bool8_t mouse_captured,
-                     float64_t delta_time, const VkrUiPanelConfig *root_config);
+bool8_t vkr_ui_begin(VkrUiSystem *system, VkrAllocator *scratch,
+                     VkrWindow *window, uint32_t target_width,
+                     uint32_t target_height, InputState *input,
+                     bool8_t mouse_captured, float64_t delta_time,
+                     const VkrUiPanelConfig *root_config);
 
 /** Resolve layout, retain state, and produce the frame's input capture. */
 VkrUiInputCapture vkr_ui_end(VkrUiSystem *system);

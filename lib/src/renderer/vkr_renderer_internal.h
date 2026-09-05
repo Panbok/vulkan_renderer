@@ -1,33 +1,12 @@
 #pragma once
 
-#include "core/event.h"
-#include "core/vkr_atomic.h"
-#include "core/vkr_threads.h"
 #include "memory/arena.h"
 #include "memory/vkr_dmemory.h"
-#include "renderer/resources/loaders/bitmap_font_loader.h"
-#include "renderer/resources/loaders/cooked_font_loader.h"
-#include "renderer/resources/loaders/mesh_loader.h"
-#include "renderer/resources/loaders/mtsdf_font_loader.h"
-#include "renderer/resources/loaders/system_font_loader.h"
-#include "renderer/systems/vkr_camera.h"
-#include "renderer/systems/vkr_camera_controller.h"
-#include "renderer/systems/vkr_font_system.h"
 #include "renderer/systems/vkr_geometry_system.h"
-#include "renderer/systems/vkr_gizmo_system.h"
-#include "renderer/systems/vkr_lighting_system.h"
-#include "renderer/systems/vkr_material_system.h"
 #include "renderer/systems/vkr_mesh_manager.h"
-#include "renderer/systems/vkr_picking_system.h"
-#include "renderer/systems/vkr_shadow_system.h"
-#include "renderer/systems/vkr_skybox_system.h"
-#include "renderer/systems/vkr_texture_system.h"
-#include "renderer/systems/vkr_ui_system.h"
-#include "renderer/systems/vkr_world_resources.h"
 #include "renderer/vkr_dynamic_resolution.h"
-#include "renderer/vkr_gpu_abi.h"
+#include "renderer/vkr_frame_input.h"
 #include "renderer/vkr_render_graph.h"
-#include "renderer/vkr_render_packet.h"
 #include "renderer/vkr_renderer.h"
 #include "renderer/vkr_renderer_impl.h"
 #include "renderer/vkr_temporal.h"
@@ -116,19 +95,7 @@ typedef struct VkrRendererFrameMetrics {
   VkrExposureDebugSample exposure;
 } VkrRendererFrameMetrics;
 
-/** Validates the packet's backend-neutral pre-recording contract. */
-VkrRendererError
-vkr_renderer_validate_packet(const VkrRenderPacket *packet,
-                             VkrValidationError *out_validation_error);
-
-struct s_RendererFrontend {
-  Arena *arena;
-  VkrAllocator allocator;
-  Arena *scratch_arena;
-  VkrAllocator scratch_allocator;
-  // VkrDMemory dmemory;
-  // VkrAllocator dmemory_allocator;
-
+struct VkrRenderer {
   VkrWindow *window;
   VkrPresentTargetConfig present_target;
   /** Validated cold scene-resolution scale and its current pixel extent. */
@@ -142,7 +109,6 @@ struct s_RendererFrontend {
   bool8_t scene_output_extent_overridden;
   uint32_t render_width;
   uint32_t render_height;
-  EventManager *event_manager;
   VkrRendererBackendType backend_type;
   VkrRendererImpl impl;
   VkrMetalPacketRenderer *metal_renderer;
@@ -154,33 +120,9 @@ struct s_RendererFrontend {
   bool8_t supports_multi_draw_indirect;
   bool8_t supports_draw_indirect_first_instance;
   VkrRendererBootMetrics boot_metrics;
-  VkrSubsystemPlan subsystem_plan;
-  VkrMetricEventProducer hdr_decode_metrics;
-  VkrMetricEventProducer ibl_conversion_metrics;
-  VkrMetricEventProducer ibl_convolution_metrics;
 
-  // High-level renderer subsystems and state (now accessible)
-  VkrGeometrySystem geometry_system;
-  VkrTextureSystem texture_system;
-  VkrMaterialSystem material_system;
   VkrDMemory render_graph_dmemory;
   VkrAllocator render_graph_allocator;
-  VkrFontSystem font_system;
-  VkrGizmoSystem gizmo_system;
-  VkrLightingSystem lighting_system;
-  VkrShadowSystem shadow_system;
-  VkrWorldResources world_resources;
-  VkrUiSystem ui_system;
-  VkrSkyboxSystem skybox_system;
-
-  // Active scene for lighting and other ECS-driven systems
-  VkrScene *active_scene;
-  uint64_t scene_generation;
-
-  // Camera moved into frontend
-  VkrCameraSystem camera_system;
-  VkrCameraHandle active_camera;
-  VkrCameraController camera_controller;
   VkrTemporalState temporal_state;
   uint32_t temporal_reset_reasons;
   bool8_t temporal_enabled;
@@ -189,80 +131,19 @@ struct s_RendererFrontend {
   bool8_t bloom_forced_disabled;
   bool8_t gtao_forced_disabled;
 
-  // Meshes
-  VkrMeshManager mesh_manager;
-  VkrMeshLoaderContext mesh_loader;
-  VkrArenaPool mesh_arena_pool;
-  VkrDMemory scene_async_memory;
-  VkrAllocator scene_async_allocator;
-  VkrMutex scene_async_mutex;
-
-  // Bitmap fonts
-  VkrBitmapFontLoaderContext bitmap_font_loader;
-  VkrArenaPool bitmap_font_arena_pool;
-
-  // System fonts
-  VkrSystemFontLoaderContext system_font_loader;
-  VkrArenaPool system_font_arena_pool;
-
-  // MTSDF fonts
-  VkrMtsdfFontLoaderContext mtsdf_font_loader;
-  VkrArenaPool mtsdf_font_arena_pool;
-
-  // Picking system
-  VkrPickingContext picking;
-
-  // Cached global material state for both world and UI
-  VkrGlobalMaterialState globals;
-
   // Per-frame render statistics for UI/debug use.
   VkrRendererFrameMetrics frame_metrics;
-
-  // Debug visualization mode for CSM sampling in the world shader:
-  // 0=off, 1=cascades, 2=shadow factor, 3=shadow map depth.
-  uint32_t shadow_debug_mode;
-
-  /** Cold harness/debug control; production leaves the fifth peel disabled. */
-  bool8_t transmission_depth_diagnostic_enabled;
-
-  /* Cold ADR-038 scaling control: clamps how many scene reflection probes the
-     application packs into a frame. UINT32_MAX does not clamp. */
-  uint32_t ibl_probe_limit;
 
   /* Probes the last accepted packet actually packed, published as
      lighting.ibl.probes_packed so a performance case can assert the work it
      believes it is measuring. */
   uint32_t ibl_probes_packed;
 
-  // Window size tracking and thread safety for resize events
+  // Last target dimensions applied on the rendering thread.
   uint32_t last_window_width;
   uint32_t last_window_height;
-  VkrMutex rf_mutex;
 
   bool32_t frame_active;
   uint64_t frame_number;
-  uint64_t texture_pressure_poll_frame;
-  bool8_t texture_pressure_active;
-
-  uint64_t target_frame_rate;
-
-  VkrAtomicUint64 pending_resize_mailbox;
+  uint64_t target_generation;
 };
-
-bool8_t vkr_renderer_texture_pressure_budget(const VkrDeviceMemoryStats *stats,
-                                             bool8_t pressure_active,
-                                             uint64_t *out_budget,
-                                             bool8_t *out_pressure_active);
-
-typedef struct s_RendererFrontend RendererFrontend;
-
-/**
- * Published L2 diffuse coefficient slot for a source cubemap, or
- * VKR_SH_SLOT_BLACK when it has none yet (ADR-038). Cold: resolve it once per
- * frame while packing probes, never per draw.
- *
- * Declared here rather than in vkr_renderer.h because VkrTextureHandle's own
- * header already includes that one.
- */
-uint32_t vkr_renderer_ibl_sh_slot(VkrRendererFrontendHandle renderer,
-                                  VkrTextureHandle source);

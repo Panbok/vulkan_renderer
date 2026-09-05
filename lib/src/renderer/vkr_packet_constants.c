@@ -3,22 +3,22 @@
 #include "renderer/vkr_ibl_math.h"
 
 VkrPacketFrameConstants
-vkr_packet_derive_frame_constants(const VkrRenderPacket *packet,
+vkr_packet_derive_frame_constants(const VkrPreparedFrame *packet,
                                   uint32_t target_width,
                                   uint32_t target_height) {
   VkrPacketFrameConstants constants = {0};
   if (!packet)
     return constants;
 
-  const VkrFrameLighting *lighting = packet->lighting;
+  const VkrFrameLighting *lighting = packet->input.lighting;
   const float32_t inverse_width =
       1.0f / (float32_t)(target_width ? target_width : 1u);
   const float32_t inverse_height =
       1.0f / (float32_t)(target_height ? target_height : 1u);
 
-  constants.view_position =
-      (Vec4){packet->globals.view_position.x, packet->globals.view_position.y,
-             packet->globals.view_position.z, 1.0f};
+  constants.view_position = (Vec4){packet->input.globals.view_position.x,
+                                   packet->input.globals.view_position.y,
+                                   packet->input.globals.view_position.z, 1.0f};
   constants.ibl_controls =
       lighting
           ? (Vec4){lighting->ibl_intensity, lighting->ibl_diffuse_intensity,
@@ -37,8 +37,9 @@ vkr_packet_derive_frame_constants(const VkrRenderPacket *packet,
                    lighting->directional_intensity}
           : vec4_zero();
   constants.ambient_color =
-      (Vec4){packet->globals.ambient_color.x, packet->globals.ambient_color.y,
-             packet->globals.ambient_color.z, inverse_height};
+      (Vec4){packet->input.globals.ambient_color.x,
+             packet->input.globals.ambient_color.y,
+             packet->input.globals.ambient_color.z, inverse_height};
 
   /* The grid block stays zeroed unless finite lights actually populated it;
      an empty grid must not publish a cell size or dimensions. */
@@ -54,28 +55,28 @@ vkr_packet_derive_frame_constants(const VkrRenderPacket *packet,
   }
   constants.point_light_count = lighting ? lighting->point_light_count : 0u;
 
-  constants.render_mode = packet->globals.render_mode;
+  constants.render_mode = packet->input.globals.render_mode;
   constants.shadow_debug_mode =
-      packet->debug ? packet->debug->shadow_debug_mode : 0u;
+      packet->input.debug ? packet->input.debug->shadow_debug_mode : 0u;
   constants.prefilter_mip_count = VKR_IBL_PREFILTER_MIP_COUNT;
   constants.shadow_cascade_count =
-      packet->shadow ? packet->shadow->cascade_count : 0u;
+      packet->input.shadow ? packet->input.shadow->cascade_count : 0u;
   /* Zeroed without a shadow payload: a zero tap count is the receiver's own
      "no cascades" signal, so no separate enable bit is needed. */
-  if (packet->shadow)
-    constants.shadow_receiver = packet->shadow->receiver;
-  constants.view = packet->globals.view;
+  if (packet->input.shadow)
+    constants.shadow_receiver = packet->input.shadow->receiver;
+  constants.view = packet->input.globals.view;
   return constants;
 }
 
-uint32_t vkr_packet_derive_frame_flags(const VkrRenderPacket *packet,
+uint32_t vkr_packet_derive_frame_flags(const VkrPreparedFrame *packet,
                                        bool8_t lighting_pass,
                                        bool8_t ibl_resources_ready) {
   uint32_t flags = 0u;
   if (lighting_pass)
     flags |= VKR_PACKET_FRAME_FLAG_LIGHTING;
-  if (lighting_pass && ibl_resources_ready && packet && packet->lighting &&
-      packet->lighting->ibl_enabled)
+  if (lighting_pass && ibl_resources_ready && packet &&
+      packet->input.lighting && packet->input.lighting->ibl_enabled)
     flags |= VKR_PACKET_FRAME_FLAG_IBL;
   return flags;
 }

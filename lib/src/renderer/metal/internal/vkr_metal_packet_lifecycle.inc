@@ -222,13 +222,10 @@ uint32_t
 vkr_metal_packet_renderer_frame_slot(const VkrMetalPacketRenderer *renderer) {
   if (!renderer || renderer->command_slot_count == 0u)
     return 0u;
-  /* `next_command_slot` already points past the acquired slot, so an active
-     frame is recording into the one before it. Reporting `next_command_slot`
-     directly would name the slot the *following* frame will use. */
-  if (renderer->active_command_slot) {
-    return (renderer->next_command_slot + renderer->command_slot_count - 1u) %
-           renderer->command_slot_count;
-  }
+  if (renderer->reserved_frame_slot)
+    return (uint32_t)(renderer->reserved_frame_slot - renderer->command_slots);
+  if (renderer->active_command_slot)
+    return (uint32_t)(renderer->active_command_slot - renderer->command_slots);
   return renderer->next_command_slot;
 }
 

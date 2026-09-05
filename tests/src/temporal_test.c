@@ -1,7 +1,7 @@
 #include "temporal_test.h"
 
 #include "renderer/vkr_dynamic_resolution.h"
-#include "renderer/vkr_render_packet.h"
+#include "renderer/vkr_prepared_frame.h"
 #include "renderer/vkr_temporal.h"
 
 #include <assert.h>
@@ -82,11 +82,11 @@ static void test_temporal_projection_pixel_shift(void) {
             after.y = -after.y;
           }
           const float64_t dx =
-              ((float64_t)after.x / after.w -
-               (float64_t)before.x / before.w) * 0.5 * input.width;
+              ((float64_t)after.x / after.w - (float64_t)before.x / before.w) *
+              0.5 * input.width;
           const float64_t dy =
-              ((float64_t)after.y / after.w -
-               (float64_t)before.y / before.w) * viewport_y * input.height;
+              ((float64_t)after.y / after.w - (float64_t)before.y / before.w) *
+              viewport_y * input.height;
           assert(fabs(dx - frame.jitter_pixels.x) < 1e-4);
           assert(fabs(dy - frame.jitter_pixels.y) < 1e-4);
           assert(before.z == after.z && before.w == after.w);
@@ -106,46 +106,64 @@ static bool32_t temporal_signature_equal(VkrTemporalSceneSignature a,
 static void test_temporal_scene_signature(void) {
   printf("  Running test_temporal_scene_signature...\n");
   VkrWorldDrawCandidate candidate = {
-      .geometry = {1u, 1u}, .material = {2u, 1u},
+      .geometry = {1u, 1u},
+      .material = {2u, 1u},
       .instance = {.model = mat4_identity()},
   };
   VkrWorldDrawCandidate transmission = candidate;
   VkrInstanceDataGPU instance = {.model = mat4_identity()};
   VkrDrawItem draw = {
-      .geometry = {3u, 1u}, .material = {4u, 1u}, .instance_count = 1u,
+      .geometry = {3u, 1u},
+      .material = {4u, 1u},
+      .instance_count = 1u,
   };
   VkrWorldPassPayload world = {
-      .gpu_candidates = &candidate, .gpu_candidate_count = 1u,
+      .gpu_candidates = &candidate,
+      .gpu_candidate_count = 1u,
       .transmission_gpu_candidates = &transmission,
       .transmission_gpu_candidate_count = 1u,
-      .transparent_draws = &draw, .transparent_draw_count = 1u,
-      .instances = &instance, .instance_count = 1u,
+      .transparent_draws = &draw,
+      .transparent_draw_count = 1u,
+      .instances = &instance,
+      .instance_count = 1u,
   };
   VkrPointLight light = {.color = {1.0f, 0.8f, 0.5f}, .intensity = 2.0f};
-  VkrPointLightGrid grid = {.cell_size = 4.0f, .dimensions = {1u, 1u, 1u},
-                             .cell_count = 1u, .masks = {{{1u, 0u, 0u, 0u}}}};
+  VkrPointLightGrid grid = {.cell_size = 4.0f,
+                            .dimensions = {1u, 1u, 1u},
+                            .cell_count = 1u,
+                            .masks = {{{1u, 0u, 0u, 0u}}}};
   VkrFrameIblProbe probe = {.prefilter = {5u, 1u}, .weight = 1.0f};
   VkrFrameLighting lighting = {
-      .point_lights = &light, .point_light_count = 1u,
-      .point_light_grid = &grid, .ibl_probes = &probe, .ibl_probe_count = 1u,
+      .point_lights = &light,
+      .point_light_count = 1u,
+      .point_light_grid = &grid,
+      .ibl_probes = &probe,
+      .ibl_probe_count = 1u,
   };
   VkrShadowPassPayload shadow = {.cascade_count = 1u};
   shadow.cascades[0].light_view_projection = mat4_identity();
   VkrSkyboxPassPayload sky = {.cubemap = {6u, 1u}};
-  VkrRenderPacket packet = {
-      .globals = {.view = mat4_identity(), .projection = mat4_identity(),
-                  .gtao = {.enabled = true_v, .radius = 0.5f, .power = 2.2f}},
-      .world = &world, .lighting = &lighting, .shadow = &shadow, .skybox = &sky,
-  };
-  const VkrTemporalSceneSignature baseline = vkr_temporal_scene_signature(&packet);
+  VkrPreparedFrame packet = {
+      .input =
+          {
+              .globals = {.view = mat4_identity(),
+                          .projection = mat4_identity()},
+              .world = &world,
+              .lighting = &lighting,
+              .shadow = &shadow,
+              .skybox = &sky,
+          },
+      .gtao = {.enabled = true_v, .radius = 0.5f, .power = 2.2f}};
+  const VkrTemporalSceneSignature baseline =
+      vkr_temporal_scene_signature(&packet);
   assert(baseline.eligible);
 
   // Each mutation changes scene radiance or its spatial/temporal identity.
-#define EXPECT_SCENE_CHANGE(field, value)                                     \
-  do {                                                                       \
-    field = value;                                                           \
-    assert(!temporal_signature_equal(baseline,                                \
-                                      vkr_temporal_scene_signature(&packet))); \
+#define EXPECT_SCENE_CHANGE(field, value)                                      \
+  do {                                                                         \
+    field = value;                                                             \
+    assert(!temporal_signature_equal(baseline,                                 \
+                                     vkr_temporal_scene_signature(&packet)));  \
   } while (0)
   EXPECT_SCENE_CHANGE(candidate.instance.model.m03, 1.0f);
   candidate.instance.model.m03 = 0.0f;
@@ -167,32 +185,35 @@ static void test_temporal_scene_signature(void) {
   shadow.cascades[0].light_view_projection.m03 = 0.0f;
   EXPECT_SCENE_CHANGE(sky.cubemap.generation, 2u);
   sky.cubemap.generation = 1u;
-  EXPECT_SCENE_CHANGE(packet.globals.view_position.x, 1.0f);
-  packet.globals.view_position.x = 0.0f;
-  EXPECT_SCENE_CHANGE(packet.globals.gtao.radius, 1.0f);
-  packet.globals.gtao.radius = 0.5f;
+  EXPECT_SCENE_CHANGE(packet.input.globals.view_position.x, 1.0f);
+  packet.input.globals.view_position.x = 0.0f;
+  EXPECT_SCENE_CHANGE(packet.gtao.radius, 1.0f);
+  packet.gtao.radius = 0.5f;
 #undef EXPECT_SCENE_CHANGE
-  assert(temporal_signature_equal(baseline, vkr_temporal_scene_signature(&packet)));
+  assert(temporal_signature_equal(baseline,
+                                  vkr_temporal_scene_signature(&packet)));
 
   // Relocating borrowed arrays preserves content; addresses are not identity.
   const VkrWorldDrawCandidate relocated_candidate = candidate;
   const VkrPointLight relocated_light = light;
   world.gpu_candidates = &relocated_candidate;
   lighting.point_lights = &relocated_light;
-  assert(temporal_signature_equal(baseline, vkr_temporal_scene_signature(&packet)));
+  assert(temporal_signature_equal(baseline,
+                                  vkr_temporal_scene_signature(&packet)));
   // Frame phase drives GTAO noise as well as jitter. Post-temporal controls
   // and normalized-away authoring values cannot reset the scene proof.
-  packet.frame.frame_index = 37u;
-  packet.frame.delta_time = 0.125;
-  packet.globals.temporal.jitter_pixels = (Vec2){0.25f, -0.4f};
-  packet.globals.temporal.jittered_projection.m02 = 0.4f;
-  packet.globals.exposure.manual = 16.0f;
-  packet.globals.manual_exposure = 16.0f;
-  packet.globals.bloom_intensity = 2.0f;
-  packet.globals.gtao_radius = 7.0f;
+  packet.input.frame.frame_index = 37u;
+  packet.input.frame.delta_time = 0.125;
+  packet.temporal.jitter_pixels = (Vec2){0.25f, -0.4f};
+  packet.temporal.jittered_projection.m02 = 0.4f;
+  packet.exposure.manual = 16.0f;
+  packet.input.globals.manual_exposure = 16.0f;
+  packet.input.globals.bloom_intensity = 2.0f;
+  packet.input.globals.gtao_radius = 7.0f;
   VkrUiPassPayload ui = {0};
-  packet.ui = &ui;
-  assert(temporal_signature_equal(baseline, vkr_temporal_scene_signature(&packet)));
+  packet.input.ui = &ui;
+  assert(temporal_signature_equal(baseline,
+                                  vkr_temporal_scene_signature(&packet)));
   world.publication_pending = true_v;
   assert(!vkr_temporal_scene_signature(&packet).eligible);
   world.publication_pending = false_v;
@@ -268,8 +289,7 @@ static void test_temporal_sky_reprojection(void) {
   printf("  Running test_temporal_sky_reprojection...\n");
   const Vec3 current_eye = {25.0f, -9.0f, 8.0f};
   const Mat4 current_view = mat4_translate((Vec3){-25.0f, 9.0f, -8.0f});
-  const Mat4 previous_translation =
-      mat4_translate((Vec3){7.0f, -3.0f, -12.0f});
+  const Mat4 previous_translation = mat4_translate((Vec3){7.0f, -3.0f, -12.0f});
   const float32_t sine = 1.0f / sqrtf(5.0f);
   const float32_t cosine = 2.0f / sqrtf(5.0f);
   for (uint32_t native_clip = 0u; native_clip < 2u; ++native_clip) {
@@ -292,10 +312,9 @@ static void test_temporal_sky_reprojection(void) {
     yaw.m20 = -sine;
     yaw.m22 = cosine;
     reprojection = vkr_temporal_sky_reprojection(
-        current,
-        mat4_mul(projection, mat4_mul(yaw, previous_translation)), current_eye);
-    previous_clip =
-        mat4_mul_vec4(reprojection, (Vec4){0.0f, 0.0f, 1.0f, 1.0f});
+        current, mat4_mul(projection, mat4_mul(yaw, previous_translation)),
+        current_eye);
+    previous_clip = mat4_mul_vec4(reprojection, (Vec4){0.0f, 0.0f, 1.0f, 1.0f});
     /* The center ray rotates to (-sin(a), 0, -cos(a)); tan(a) = 1/2. */
     assert(fabsf(previous_clip.x / previous_clip.w + 0.5f) < 1e-5f);
     assert(fabsf(previous_clip.y / previous_clip.w) < 1e-5f);
@@ -306,11 +325,9 @@ static void test_temporal_sky_reprojection(void) {
     pitch.m21 = sine;
     pitch.m22 = cosine;
     reprojection = vkr_temporal_sky_reprojection(
-        current,
-        mat4_mul(projection, mat4_mul(pitch, previous_translation)),
+        current, mat4_mul(projection, mat4_mul(pitch, previous_translation)),
         current_eye);
-    previous_clip =
-        mat4_mul_vec4(reprojection, (Vec4){0.0f, 0.0f, 1.0f, 1.0f});
+    previous_clip = mat4_mul_vec4(reprojection, (Vec4){0.0f, 0.0f, 1.0f, 1.0f});
     assert(fabsf(previous_clip.x / previous_clip.w) < 1e-5f);
     assert(fabsf(previous_clip.y / previous_clip.w -
                  (native_clip != 0u ? 0.5f : -0.5f)) < 1e-5f);
@@ -340,11 +357,10 @@ static void test_temporal_orthographic_sky_reprojection(void) {
                          {0.25f, -0.375f, 1.0f, 1.0f}};
   for (uint32_t native_clip = 0u; native_clip < 2u; ++native_clip) {
     for (uint32_t shifted = 0u; shifted < 2u; ++shifted) {
-      Mat4 projection = shifted != 0u
-                            ? mat4_ortho_zo_yinv(-15.0f, 25.0f, -10.0f, 30.0f,
-                                                 0.1f, 20.0f)
-                            : mat4_ortho_zo_yinv(-20.0f, 20.0f, -20.0f, 20.0f,
-                                                 0.1f, 20.0f);
+      Mat4 projection =
+          shifted != 0u
+              ? mat4_ortho_zo_yinv(-15.0f, 25.0f, -10.0f, 30.0f, 0.1f, 20.0f)
+              : mat4_ortho_zo_yinv(-20.0f, 20.0f, -20.0f, 20.0f, 0.1f, 20.0f);
       if (native_clip != 0u) {
         projection.m11 = -projection.m11;
         projection.m13 = -projection.m13;
@@ -367,21 +383,23 @@ static void test_temporal_orthographic_sky_reprojection(void) {
           }
           /* Independent oracle: reconstruct both sky samples exactly as the
              shader does. They must address the same environment direction. */
-          const Vec4 current_far = mat4_mul_vec4(inverse_current, pixels[pixel]);
+          const Vec4 current_far =
+              mat4_mul_vec4(inverse_current, pixels[pixel]);
           const Vec4 previous_far = mat4_mul_vec4(
-              inverse_previous, vec4_new(previous_clip.x, previous_clip.y,
-                                          1.0f, 1.0f));
-          const Vec3 current_direction = vec3_normalize(vec3_sub(
-              vec3_new(current_far.x / current_far.w,
-                         current_far.y / current_far.w,
-                         current_far.z / current_far.w),
-              current_eye));
-          const Vec3 previous_direction = vec3_normalize(vec3_sub(
-              vec3_new(previous_far.x / previous_far.w,
-                         previous_far.y / previous_far.w,
-                         previous_far.z / previous_far.w),
-              previous_eye));
-          assert(vec3_dot(current_direction, previous_direction) > 1.0f - 1e-5f);
+              inverse_previous,
+              vec4_new(previous_clip.x, previous_clip.y, 1.0f, 1.0f));
+          const Vec3 current_direction =
+              vec3_normalize(vec3_sub(vec3_new(current_far.x / current_far.w,
+                                               current_far.y / current_far.w,
+                                               current_far.z / current_far.w),
+                                      current_eye));
+          const Vec3 previous_direction =
+              vec3_normalize(vec3_sub(vec3_new(previous_far.x / previous_far.w,
+                                               previous_far.y / previous_far.w,
+                                               previous_far.z / previous_far.w),
+                                      previous_eye));
+          assert(vec3_dot(current_direction, previous_direction) >
+                 1.0f - 1e-5f);
         }
       }
     }

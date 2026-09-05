@@ -1250,11 +1250,11 @@ vkr_internal bool8_t vkr_texture_system_create_pixel_default(
   return true_v;
 }
 
-bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
+bool8_t vkr_texture_system_init(const VkrDeviceInformation *device_info,
                                 const VkrTextureSystemConfig *config,
                                 VkrJobSystem *job_system,
                                 VkrTextureSystem *out_system) {
-  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(device_info != NULL, "Device information is NULL");
   assert_log(config != NULL, "Config is NULL");
   assert_log(out_system != NULL, "Out system is NULL");
   assert_log(config->max_texture_count > 0,
@@ -1326,15 +1326,14 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
   out_system->supports_texture_etc2 = false_v;
   out_system->supports_texture_bc5 = false_v;
   out_system->supports_texture_eac_rg11 = false_v;
-  VkrDeviceInformation device_info = {0};
-  vkr_renderer_get_device_information(renderer, &device_info,
-                                      out_system->arena);
-  out_system->device_types = device_info.device_types;
-  out_system->supports_texture_astc_4x4 = device_info.supports_texture_astc_4x4;
-  out_system->supports_texture_bc7 = device_info.supports_texture_bc7;
-  out_system->supports_texture_etc2 = device_info.supports_texture_etc2;
-  out_system->supports_texture_bc5 = device_info.supports_texture_bc5;
-  out_system->supports_texture_eac_rg11 = device_info.supports_texture_eac_rg11;
+  out_system->device_types = device_info->device_types;
+  out_system->supports_texture_astc_4x4 =
+      device_info->supports_texture_astc_4x4;
+  out_system->supports_texture_bc7 = device_info->supports_texture_bc7;
+  out_system->supports_texture_etc2 = device_info->supports_texture_etc2;
+  out_system->supports_texture_bc5 = device_info->supports_texture_bc5;
+  out_system->supports_texture_eac_rg11 =
+      device_info->supports_texture_eac_rg11;
 
   out_system->strict_vkt_only_mode =
       vkr_texture_env_flag("VKR_TEXTURE_VKT_STRICT", true_v);

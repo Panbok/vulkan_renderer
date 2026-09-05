@@ -11,10 +11,10 @@
 #include "math/mat.h"
 #include "math/vkr_math.h"
 #include "math/vkr_transform.h"
-#include "renderer/renderer_frontend.h"
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_material_system.h"
 #include "renderer/systems/vkr_mesh_manager.h"
+#include "renderer/systems/vkr_render_assets.h"
 
 #define ARROW_LENGTH 1.0f
 #define ARROW_HEAD_LENGTH 0.25f
@@ -37,10 +37,10 @@ vkr_local_persist const VkrGizmoHandle g_gizmo_submesh_handles[] = {
 };
 
 bool8_t vkr_gizmo_system_init(VkrGizmoSystem *system,
-                              struct s_RendererFrontend *renderer,
+                              struct VkrRenderAssets *assets,
                               const VkrGizmoConfig *config) {
   assert_log(system != NULL, "System is NULL");
-  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(assets != NULL, "Renderer is NULL");
 
   MemZero(system, sizeof(*system));
   system->config = config ? *config : VKR_GIZMO_CONFIG_DEFAULT;
@@ -58,7 +58,7 @@ bool8_t vkr_gizmo_system_init(VkrGizmoSystem *system,
   vkr_local_persist const char *axis_names[] = {"x", "y", "z"};
   VkrMaterialHandle axis_materials[3] = {0};
   VkrRendererError mat_err = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_material_system_create_gizmo_materials(&renderer->material_system,
+  if (!vkr_material_system_create_gizmo_materials(&assets->material_system,
                                                   axis_materials, &mat_err)) {
     String8 err = vkr_renderer_get_error_string(mat_err);
     log_error("Gizmo material create failed: %s", string8_cstr(&err));
@@ -73,7 +73,7 @@ bool8_t vkr_gizmo_system_init(VkrGizmoSystem *system,
     char name[GEOMETRY_NAME_MAX_LENGTH];
     string_format(name, sizeof(name), "gizmo_arrow_%s", axis_names[axis_index]);
     geometries[geom_index] = vkr_geometry_system_create_arrow(
-        &renderer->geometry_system, ARROW_LENGTH - ARROW_HEAD_LENGTH,
+        &assets->geometry_system, ARROW_LENGTH - ARROW_HEAD_LENGTH,
         ARROW_SHAFT_RADIUS, ARROW_HEAD_LENGTH, ARROW_HEAD_RADIUS,
         ARROW_SEGMENTS, axes[axis_index], vec3_zero(), name, &geom_err);
     if (geometries[geom_index].id == 0) {
@@ -88,7 +88,7 @@ bool8_t vkr_gizmo_system_init(VkrGizmoSystem *system,
     char name[GEOMETRY_NAME_MAX_LENGTH];
     string_format(name, sizeof(name), "gizmo_ring_%s", axis_names[axis_index]);
     geometries[geom_index] = vkr_geometry_system_create_torus(
-        &renderer->geometry_system, RING_RADIUS, RING_THICKNESS, RING_SEGMENTS,
+        &assets->geometry_system, RING_RADIUS, RING_THICKNESS, RING_SEGMENTS,
         RING_SIDES, axes[axis_index], vec3_zero(), name, &geom_err);
     if (geometries[geom_index].id == 0) {
       String8 err = vkr_renderer_get_error_string(geom_err);
@@ -103,7 +103,7 @@ bool8_t vkr_gizmo_system_init(VkrGizmoSystem *system,
     string_format(name, sizeof(name), "gizmo_scale_%s", axis_names[axis_index]);
     Vec3 center = vec3_scale(axes[axis_index], CUBE_OFFSET);
     geometries[geom_index] = vkr_geometry_system_create_box(
-        &renderer->geometry_system, center, CUBE_SIZE, CUBE_SIZE, CUBE_SIZE,
+        &assets->geometry_system, center, CUBE_SIZE, CUBE_SIZE, CUBE_SIZE,
         true_v, name, &geom_err);
     if (geometries[geom_index].id == 0) {
       String8 err = vkr_renderer_get_error_string(geom_err);
@@ -134,17 +134,17 @@ bool8_t vkr_gizmo_system_init(VkrGizmoSystem *system,
   };
 
   VkrRendererError mesh_err = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_mesh_manager_add(&renderer->mesh_manager, &mesh_desc,
+  if (!vkr_mesh_manager_add(&assets->mesh_manager, &mesh_desc,
                             &system->gizmo_mesh_index, &mesh_err)) {
     String8 err = vkr_renderer_get_error_string(mesh_err);
     log_error("Gizmo mesh create failed: %s", string8_cstr(&err));
     goto gizmo_geometry_cleanup;
   }
 
-  vkr_mesh_manager_update_model(&renderer->mesh_manager,
+  vkr_mesh_manager_update_model(&assets->mesh_manager,
                                 system->gizmo_mesh_index);
 
-  (void)vkr_mesh_manager_set_visible(&renderer->mesh_manager,
+  (void)vkr_mesh_manager_set_visible(&assets->mesh_manager,
                                      system->gizmo_mesh_index, false_v);
 
   system->initialized = true_v;
@@ -152,18 +152,17 @@ bool8_t vkr_gizmo_system_init(VkrGizmoSystem *system,
 
 gizmo_geometry_cleanup:
   if (system->gizmo_mesh_index != VKR_INVALID_ID) {
-    vkr_mesh_manager_remove(&renderer->mesh_manager, system->gizmo_mesh_index);
+    vkr_mesh_manager_remove(&assets->mesh_manager, system->gizmo_mesh_index);
     system->gizmo_mesh_index = VKR_INVALID_ID;
   }
   for (uint32_t index = 0; index < geom_index; ++index) {
     if (geometries[index].id != 0) {
-      vkr_geometry_system_release(&renderer->geometry_system,
-                                  geometries[index]);
+      vkr_geometry_system_release(&assets->geometry_system, geometries[index]);
     }
   }
   for (uint32_t index = 0; index < ArrayCount(axis_materials); ++index) {
     if (axis_materials[index].id != 0) {
-      vkr_material_system_release(&renderer->material_system,
+      vkr_material_system_release(&assets->material_system,
                                   axis_materials[index]);
     }
   }
@@ -171,13 +170,13 @@ gizmo_geometry_cleanup:
 }
 
 void vkr_gizmo_system_shutdown(VkrGizmoSystem *system,
-                               struct s_RendererFrontend *renderer) {
-  if (!system || !renderer) {
+                               struct VkrRenderAssets *assets) {
+  if (!system || !assets) {
     return;
   }
 
   if (system->gizmo_mesh_index != VKR_INVALID_ID) {
-    vkr_mesh_manager_remove(&renderer->mesh_manager, system->gizmo_mesh_index);
+    vkr_mesh_manager_remove(&assets->mesh_manager, system->gizmo_mesh_index);
     system->gizmo_mesh_index = VKR_INVALID_ID;
   }
 

@@ -506,7 +506,7 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketIblProbe {
   Vec4 intensity_box;
 } VkrMetalPacketIblProbe;
 
-/** Mirrors VkrShadowCascadePacketData; see vkr_render_packet.h for units. */
+/** Mirrors VkrShadowCascadePacketData; see vkr_frame_input.h for units. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketShadowCascade {
   Mat4 light_view_projection;
   Vec4 split_near_far_texel_depth;

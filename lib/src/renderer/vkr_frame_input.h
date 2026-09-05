@@ -18,8 +18,8 @@
 #include "renderer/vkr_renderer.h"
 #include "renderer/vkr_temporal.h"
 
-/** Version constant for VkrRenderPacket.packet_version validation. */
-#define VKR_RENDER_PACKET_VERSION 27u
+/** Version constant for VkrFrameInput.version validation. */
+#define VKR_FRAME_INPUT_VERSION 28u
 
 #define VKR_FRAME_IBL_PROBE_MAX 16u
 
@@ -31,7 +31,7 @@
 /** Frame-local reflection probe descriptor lowered by the selected renderer. */
 typedef struct VkrFrameIblProbe {
   /** Published L2 diffuse coefficient slot (ADR-038). Resolve it from the
-      probe's source cubemap with vkr_renderer_ibl_sh_slot(); slot 0 is the
+      probe's source cubemap with vkr_render_assets_ibl_sh_slot(); slot 0 is the
       valid black sentinel. Must be less than VKR_SH_SLOT_CAPACITY. */
   uint32_t sh_slot;
   VkrTextureHandle prefilter;
@@ -54,7 +54,7 @@ typedef VkrMeshInstanceHandle VkrMeshHandle;
  * @brief Frame-level metadata provided by the application.
  *
  * window_width/height must match the swapchain dimensions from
- * vkr_renderer_prepare_frame(). viewport_width/height of 0 means "use window
+ * vkr_renderer_begin_frame(). viewport_width/height of 0 means "use window
  * dimensions". frame_index is app-defined, but temporal history requires each
  * successfully submitted frame to increment it by one; gaps reset history.
  */
@@ -112,17 +112,6 @@ typedef struct VkrFrameGlobals {
   bool8_t gtao_enabled;
   float32_t gtao_radius;
   float32_t gtao_power;
-  /**
-   * Renderer-owned temporal state. Callers leave this zeroed; the frontend
-   * derives it after validation and commits it only after successful submit.
-   */
-  VkrTemporalFrame temporal;
-  /** Renderer-owned exposure state, derived and committed the same way. */
-  VkrExposureFrame exposure;
-  /** Renderer-owned bloom state, normalized from the fields above. */
-  VkrBloomFrame bloom;
-  /** Renderer-owned GTAO state, normalized from the fields above. */
-  VkrGtaoFrame gtao;
 } VkrFrameGlobals;
 
 /** Backend-neutral frame lighting controls consumed by world shading. */
@@ -385,23 +374,6 @@ typedef struct VkrPickingPassPayload {
 } VkrPickingPassPayload;
 
 /**
- * @brief Per-text slot update applied during submit.
- *
- * content/transform are optional; NULL means "no change".
- */
-typedef struct VkrTextUpdate {
-  uint32_t text_id;
-  String8 content;
-  const VkrTransform *transform;
-} VkrTextUpdate;
-
-/** @brief Frame-local updates for retained world-space text. */
-typedef struct VkrTextUpdatesPayload {
-  const VkrTextUpdate *world_text_updates;
-  uint32_t world_text_update_count;
-} VkrTextUpdatesPayload;
-
-/**
  * @brief Optional GPU debug and telemetry requests for the frame.
  */
 typedef struct VkrGpuDebugPayload {
@@ -418,13 +390,15 @@ typedef struct VkrGpuDebugPayload {
 } VkrGpuDebugPayload;
 
 /**
- * @brief Render packet consumed by the stateless renderer frontend.
+ * @brief Caller-owned rendering input for one acquired frame.
  *
- * All pointers are app-owned and must remain valid until submit returns.
- * Non-NULL pass payloads enable their corresponding render-graph passes.
+ * All pointers are caller-owned and must remain valid until render returns.
+ * Streams are authoritative: rendering does not extract UI/text or mutate
+ * assets. Non-NULL pass payloads enable their corresponding render-graph
+ * passes.
  */
-typedef struct VkrRenderPacket {
-  uint32_t packet_version;
+typedef struct VkrFrameInput {
+  uint32_t version;
   VkrFrameInfo frame;
   VkrFrameGlobals globals;
   const VkrFrameLighting *lighting;
@@ -434,9 +408,8 @@ typedef struct VkrRenderPacket {
   const VkrUiPassPayload *ui;
   const VkrEditorPassPayload *editor;
   const VkrPickingPassPayload *picking;
-  const VkrTextUpdatesPayload *text_updates;
   const VkrGpuDebugPayload *debug;
-} VkrRenderPacket;
+} VkrFrameInput;
 
 /**
  * @brief Validation error detail for packet submission.
@@ -448,3 +421,7 @@ typedef struct VkrValidationError {
   const char *field_path;
   const char *message;
 } VkrValidationError;
+
+/** Validate caller-owned data before allocating or recording frame work. */
+VkrRendererError vkr_frame_input_validate(const VkrFrameInput *packet,
+                                          VkrValidationError *out_error);

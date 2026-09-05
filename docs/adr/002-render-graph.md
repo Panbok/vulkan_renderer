@@ -25,6 +25,17 @@ graph. Each backend registry resolves executor names and pass types to operation
 IDs; native switches record those operations. Repeated passes carry a typed
 `repeat_index` for their native recorder.
 
+`vkr_render_graph_prepare_frame()` owns portable per-frame conditions and counts:
+viewport, exposure mode, transmission, picking, timing, shadows and
+HZB/transmission/bloom/GTAO mip chains, plus GTAO constants. Both native paths
+consume it. Native formats, realized resources, retained-content validity and
+completion-based history selection remain backend-owned. This extraction does
+not change the authored topology or introduce cached schedules. Both native
+implementations prepare every enabled pass's resources, roots and command
+parameters before recording the compiled schedule. Prepared command recorders
+consume these typed records; native encoder and command-buffer boundaries remain
+fallible.
+
 Name/type binding includes conditional declarations before frame conditions are
 evaluated. Vulkan recognizes the shared MetalFX executor names, but rejects them
 if they enter the compiled execution order, before resource realization or command
@@ -76,6 +87,7 @@ before moving additional work under the graph.
 
 ## Implementation
 
+[`vkr_render_graph_frame.c`](../../lib/src/renderer/vkr_render_graph_frame.c),
 [`vkr_rg_json.c`](../../lib/src/renderer/vkr_rg_json.c),
 [`vkr_rg_compile.c`](../../lib/src/renderer/vkr_rg_compile.c),
 [`main.rendergraph.json`](../../assets/render_graphs/main.rendergraph.json),

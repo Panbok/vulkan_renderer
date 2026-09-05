@@ -135,7 +135,7 @@ typedef struct VkrRenderGraph {
   VkrAllocatorScope frame_scope;      /**< Active frame-allocation scope */
   bool8_t frame_scope_active;         /**< True while frame_scope is live */
   VkrRenderGraphFrameInfo frame_info; /**< Frame info from last begin_frame */
-  const VkrRenderPacket *packet; /**< Frame-local; set via vkr_rg_set_packet;
+  const VkrPreparedFrame *packet; /**< Frame-local; set via vkr_rg_set_packet;
                                     valid during execute */
 
   Vector_VkrRgImage images;   /**< All image resources */

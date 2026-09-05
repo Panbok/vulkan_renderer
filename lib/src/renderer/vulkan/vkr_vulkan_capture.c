@@ -6,17 +6,17 @@ vkr_internal uint64_t vkr_vk_capture_align(uint64_t value) {
 }
 
 vkr_internal bool8_t vkr_vk_capture_source(
-    const VkrCaptureChannelDescription *channel, const VkrRenderPacket *packet,
+    const VkrCaptureChannelDescription *channel, const VkrPreparedFrame *packet,
     const char **out_name, uint32_t *out_layer) {
   const char *name = channel->source_name;
   uint32_t layer = 0u;
   if (string_equals(channel->name, "scene_color")) {
     name = "temporal_history_color";
   } else if (string_equals(channel->name, "hdr_pre_transmission") &&
-             packet->frame.editor_enabled) {
+             packet->input.frame.editor_enabled) {
     name = "scene_pre_transmission";
   } else if (string_equals(channel->name, "hdr_post_transmission") &&
-             packet->frame.editor_enabled) {
+             packet->input.frame.editor_enabled) {
     name = "scene_color";
   } else if (string_equals(channel->name,
                            "transmission_visibility_ids_layer_1")) {
@@ -38,7 +38,7 @@ vkr_internal bool8_t vkr_vk_capture_source(
       return false_v;
     layer = (uint32_t)(suffix - '0');
   } else if (string_equals(channel->name, "picking_ids") &&
-             (!packet->picking || !packet->picking->pending)) {
+             (!packet->input.picking || !packet->input.picking->pending)) {
     return false_v;
   }
   *out_name = name;
@@ -47,12 +47,12 @@ vkr_internal bool8_t vkr_vk_capture_source(
 }
 
 bool8_t vkr_vk_plan_capture(VkrVulkanRenderer *renderer,
-                            const VkrRenderPacket *packet,
+                            const VkrPreparedFrame *packet,
                             VkrVulkanFrameSlot *slot) {
   slot->capture_request_id = 0u;
   slot->capture_item_count = 0u;
   const VkrCaptureBatchRequest *request =
-      packet->debug ? packet->debug->capture : NULL;
+      packet->input.debug ? packet->input.debug->capture : NULL;
   if (!request)
     return true_v;
   if (!renderer->capture_ring.initialized || request->request_id == 0u ||
@@ -113,7 +113,7 @@ bool8_t vkr_vk_plan_capture(VkrVulkanRenderer *renderer,
                    .data_size = data_size,
                    .mip = 0u,
                    .layer = source_layer,
-                   .display_exposure = packet->globals.exposure.manual},
+                   .display_exposure = packet->exposure.manual},
         .buffer_offset = offset,
     };
     string_format(slot->capture_plans[i].result.producer_resource,
@@ -121,9 +121,9 @@ bool8_t vkr_vk_plan_capture(VkrVulkanRenderer *renderer,
                   source_name);
     offset += data_size;
   }
-  const VkrRendererError reserve =
-      vkr_capture_ring_reserve(&renderer->capture_ring, request,
-                               slot->capture_plans, packet->frame.frame_index);
+  const VkrRendererError reserve = vkr_capture_ring_reserve(
+      &renderer->capture_ring, request, slot->capture_plans,
+      packet->input.frame.frame_index);
   if (reserve != VKR_RENDERER_ERROR_NONE) {
     log_error("Vulkan capture reservation %llu failed (%u)",
               (unsigned long long)request->request_id, reserve);
@@ -134,12 +134,21 @@ bool8_t vkr_vk_plan_capture(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
-bool8_t vkr_vk_record_capture(VkrVulkanRenderer *renderer,
-                              VkCommandBuffer command,
-                              VkrVulkanFrameSlot *slot) {
+bool8_t vkr_vk_prepare_capture(VkrVulkanRenderer *renderer,
+
+                               VkrVulkanFrameSlot *slot) {
   if (slot->capture_request_id == 0u)
     return true_v;
+  slot->capture_copies = vkr_allocator_alloc(
+      &renderer->graph_frame_allocator,
+      (uint64_t)slot->capture_item_count * sizeof(*slot->capture_copies),
+      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  if (!slot->capture_copies)
+    return false_v;
+  MemZero(slot->capture_copies,
+          (uint64_t)slot->capture_item_count * sizeof(*slot->capture_copies));
   for (uint32_t i = 0; i < slot->capture_item_count; ++i) {
+    VkrVulkanPreparedCaptureCopy *copy = &slot->capture_copies[i];
     const VkrRgImageHandle handle = slot->capture_images[i];
     VkrVulkanGraphImageInstance *instance = vkr_vk_graph_image(
         renderer, handle, renderer->prepared_frame.image_index);
@@ -156,7 +165,8 @@ bool8_t vkr_vk_record_capture(VkrVulkanRenderer *renderer,
     const VkImageLayout old_layout =
         vkr_vk_texture_layout(graph_image->final_layout);
     if (old_layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
-      const VkImageMemoryBarrier2 barrier = {
+      copy->transition = true_v;
+      copy->barrier = (VkImageMemoryBarrier2){
           .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
           .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
           .srcAccessMask =
@@ -174,14 +184,9 @@ bool8_t vkr_vk_record_capture(VkrVulkanRenderer *renderer,
                                .baseArrayLayer = plan->result.layer,
                                .layerCount = 1u},
       };
-      const VkDependencyInfo dependency = {
-          .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-          .imageMemoryBarrierCount = 1u,
-          .pImageMemoryBarriers = &barrier,
-      };
-      vkCmdPipelineBarrier2(command, &dependency);
     }
-    const VkBufferImageCopy2 region = {
+    copy->source = instance->image.handle;
+    copy->region = (VkBufferImageCopy2){
         .sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
         .bufferOffset = plan->buffer_offset,
         .imageSubresource = {.aspectMask = aspects,
@@ -192,13 +197,31 @@ bool8_t vkr_vk_record_capture(VkrVulkanRenderer *renderer,
                         .height = plan->result.height,
                         .depth = 1u},
     };
+  }
+  return true_v;
+}
+
+void vkr_vk_record_capture(VkrVulkanRenderer *renderer, VkCommandBuffer command,
+                           VkrVulkanFrameSlot *slot) {
+  (void)renderer;
+  if (!slot->capture_request_id)
+    return;
+  for (uint32_t i = 0u; i < slot->capture_item_count; ++i) {
+    const VkrVulkanPreparedCaptureCopy *prepared = &slot->capture_copies[i];
+    if (prepared->transition) {
+      const VkDependencyInfo dependency = {
+          .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+          .imageMemoryBarrierCount = 1u,
+          .pImageMemoryBarriers = &prepared->barrier};
+      vkCmdPipelineBarrier2(command, &dependency);
+    }
     const VkCopyImageToBufferInfo2 copy = {
         .sType = VK_STRUCTURE_TYPE_COPY_IMAGE_TO_BUFFER_INFO_2,
-        .srcImage = instance->image.handle,
+        .srcImage = prepared->source,
         .srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         .dstBuffer = slot->capture_readback.handle,
         .regionCount = 1u,
-        .pRegions = &region,
+        .pRegions = &prepared->region,
     };
     vkCmdCopyImageToBuffer2(command, &copy);
   }
@@ -219,7 +242,6 @@ bool8_t vkr_vk_record_capture(VkrVulkanRenderer *renderer,
       .pBufferMemoryBarriers = &barrier,
   };
   vkCmdPipelineBarrier2(command, &dependency);
-  return true_v;
 }
 
 bool8_t vkr_vk_collect_captures(VkrVulkanRenderer *renderer,

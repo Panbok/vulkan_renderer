@@ -15,9 +15,6 @@ typedef enum VkrRendererImplKind {
  * refreshed only at the recreate boundary and otherwise read as plain data.
  */
 typedef struct VkrRendererImplCapabilities {
-  uint64_t renderer_arena_size;
-  uint64_t scratch_arena_size;
-  uint64_t scratch_arena_block_size;
   uint32_t frame_in_flight_count;
   uint32_t present_target_image_count;
   VkrPresentTargetKind present_target_kind;
@@ -251,69 +248,21 @@ typedef struct VkrRendererImplSubmitResult {
   VkrRendererImplPassTiming pass_timings[VKR_RENDERER_IMPL_MAX_PASS_TIMINGS];
 } VkrRendererImplSubmitResult;
 
-/**
- * Coarse operations selected once. Normal successful frames call only
- * prepare_frame and submit_packet through this table; no entry is per pass or
- * per draw.
- */
-typedef struct VkrRendererImplOps {
-  bool32_t (*initialize)(void *state, VkrWindow *window, uint32_t width,
-                         uint32_t height,
-                         VkrDeviceRequirements *device_requirements,
-                         const VkrRendererBackendConfig *backend_config,
-                         VkrRendererError *out_error);
-  void (*destroy)(void *state);
-  void (*get_device_information)(void *state,
-                                 VkrDeviceInformation *device_information,
-                                 Arena *temp_arena);
-  VkrRendererError (*wait_idle)(void *state);
-  uint64_t (*get_submit_serial)(void *state);
-  uint64_t (*get_completed_submit_serial)(void *state);
-  bool8_t (*get_and_reset_upload_wait_stats)(
-      void *state, VkrRendererUploadWaitStats *out_stats);
-  bool8_t (*get_and_reset_command_slot_wait_count)(void *state,
-                                                   uint64_t *out_wait_count);
-  bool8_t (*get_device_memory_stats)(void *state,
-                                     VkrDeviceMemoryStats *out_stats);
-  bool8_t (*get_memory_metrics)(void *state,
-                                VkrRendererImplMemoryMetrics *out_metrics);
-  VkrRendererError (*prepare_frame)(void *state, VkrFrameSetup *out_setup);
-  VkrRendererError (*submit_packet)(void *state, const VkrRenderPacket *packet,
-                                    VkrRendererFrameMetrics *out_metrics,
-                                    VkrValidationError *out_validation_error);
-  VkrRendererError (*cancel_frame)(void *state);
-  void (*resize)(void *state, uint32_t width, uint32_t height);
-  VkrRendererError (*present_target_recreate)(void *state, uint32_t width,
-                                              uint32_t height,
-                                              uint32_t image_count);
-  uint32_t (*frame_in_flight_index)(void *state);
-  VkrCaptureStatus (*capture_poll)(void *state, VkrCaptureRequestId request_id,
-                                   VkrCapturePollResult *out_result);
-  bool8_t (*capture_release)(void *state, VkrCaptureRequestId request_id);
-  bool8_t (*poll_submit_result)(void *state, uint64_t after_submit_value,
-                                VkrRendererImplSubmitResult *out_result);
-  VkrAllocator *(*get_allocator)(void *state);
-} VkrRendererImplOps;
-
-typedef struct VkrRendererImplStrategies {
-  const VkrRendererImplOps *metal;
-  const VkrRendererImplOps *vulkan;
-} VkrRendererImplStrategies;
-
-/** Coarse renderer implementation selected exactly once at initialization. */
+/** Native implementation properties selected before allocation. */
 typedef struct VkrRendererImpl {
   VkrRendererImplKind kind;
   VkrRendererImplCapabilities caps;
-  const VkrRendererImplOps *ops;
-  void *state;
   bool8_t initialization_supported;
 } VkrRendererImpl;
 
-/**
- * Selects immutable implementation properties. Vulkan is the
- * production Windows strategy and remains unavailable elsewhere.
- */
+/** Select capabilities only; native procedures are selected by the build. */
 bool8_t vkr_renderer_impl_select(VkrRendererBackendType backend_type,
                                  VkrPresentTargetKind target_kind,
-                                 const VkrRendererImplStrategies *strategies,
                                  VkrRendererImpl *out_impl);
+
+VkrCaptureStatus
+vkr_renderer_backend_capture_poll(VkrRenderer *renderer,
+                                  VkrCaptureRequestId request_id,
+                                  VkrCapturePollResult *out_result);
+bool8_t vkr_renderer_backend_capture_release(VkrRenderer *renderer,
+                                             VkrCaptureRequestId request_id);

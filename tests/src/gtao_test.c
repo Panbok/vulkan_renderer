@@ -1,7 +1,7 @@
 #include "gtao_test.h"
 
-#include "renderer/renderer_frontend.h"
 #include "renderer/vkr_gtao.h"
+#include "renderer/vkr_renderer_internal.h"
 
 #include <assert.h>
 #include <math.h>
@@ -95,47 +95,47 @@ static void test_gtao_gpu_params(void) {
 }
 static void test_gtao_packet_validation(void) {
   printf("  Running test_gtao_packet_validation...\n");
-  VkrRenderPacket packet = {
-      .packet_version = VKR_RENDER_PACKET_VERSION,
+  VkrFrameInput packet = {
+      .version = VKR_FRAME_INPUT_VERSION,
       .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE},
   };
   VkrValidationError validation = {0};
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_NONE);
 
   packet.globals.gtao_enabled = 2u;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.globals.gtao_enabled") == 0);
 
   packet.globals.gtao_enabled = true_v;
   packet.globals.gtao_radius = VKR_GTAO_DEFAULT_RADIUS;
   packet.globals.gtao_power = VKR_GTAO_DEFAULT_POWER;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_NONE);
 
   packet.globals.gtao_radius = 0.0f;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.globals.gtao_radius") == 0);
   packet.globals.gtao_radius = nextafterf(0.0f, 1.0f);
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.globals.gtao_radius") == 0);
   packet.globals.gtao_radius = VKR_GTAO_RADIUS_MAX + 1.0f;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.globals.gtao_radius") == 0);
   packet.globals.gtao_radius = VKR_GTAO_RADIUS_MIN;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_NONE);
   packet.globals.gtao_radius = VKR_GTAO_RADIUS_MAX;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_NONE);
   packet.globals.gtao_radius = VKR_GTAO_DEFAULT_RADIUS;
 
   packet.globals.gtao_power = INFINITY;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.globals.gtao_power") == 0);
   printf("  test_gtao_packet_validation PASSED\n");

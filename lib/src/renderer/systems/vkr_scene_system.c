@@ -8,11 +8,11 @@
 #include "core/logger.h"
 #include "math/vkr_math.h"
 #include "memory/vkr_arena_allocator.h"
-#include "renderer/renderer_frontend.h"
 #include "renderer/resources/world/vkr_text_3d.h"
 #include "renderer/systems/vkr_mesh_manager.h"
 #include "renderer/systems/vkr_picking_ids.h"
 #include "renderer/systems/vkr_picking_system.h"
+#include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_world_resources.h"
 
@@ -72,10 +72,10 @@ vkr_internal bool8_t scene_render_bridge_init(VkrSceneRenderBridge *bridge,
                                               uint32_t initial_capacity);
 vkr_internal void scene_render_bridge_shutdown(VkrSceneRenderBridge *bridge);
 vkr_internal void scene_render_bridge_sync(VkrSceneRenderBridge *bridge,
-                                           struct s_RendererFrontend *rf,
+                                           struct VkrRenderAssets *assets,
                                            VkrScene *scene);
 vkr_internal void scene_render_bridge_full_sync(VkrSceneRenderBridge *bridge,
-                                                struct s_RendererFrontend *rf,
+                                                struct VkrRenderAssets *assets,
                                                 VkrScene *scene);
 vkr_internal VkrEntityId scene_render_bridge_entity_from_picking_id(
     const VkrSceneRenderBridge *bridge, uint32_t object_id);
@@ -151,13 +151,13 @@ vkr_internal bool8_t scene_grow_array(VkrAllocator *alloc, void **array,
   return true_v;
 }
 
-vkr_internal void scene_release_owned_texture_handle(RendererFrontend *rf,
+vkr_internal void scene_release_owned_texture_handle(VkrRenderAssets *assets,
                                                      VkrTextureHandle *handle) {
-  if (!rf || !handle || handle->id == 0) {
+  if (!assets || !handle || handle->id == 0) {
     return;
   }
 
-  vkr_texture_system_release_by_handle(&rf->texture_system, *handle);
+  vkr_texture_system_release_by_handle(&assets->texture_system, *handle);
   *handle = VKR_TEXTURE_HANDLE_INVALID;
 }
 
@@ -1072,29 +1072,8 @@ bool8_t vkr_scene_init(VkrScene *scene, VkrAllocator *alloc, uint16_t world_id,
  */
 typedef struct DestroyText3DContext {
   VkrScene *scene;
-  RendererFrontend *rf;
+  VkrRenderAssets *assets;
 } DestroyText3DContext;
-
-/**
- * @brief Wait for renderer idle during scene teardown and log phase-specific
- * failures.
- *
- * Scene unload enqueues deferred GPU destruction; waiting again after teardown
- * allows serial-based deferred queues to drain immediately instead of carrying
- * large transient allocations into the next load cycle.
- */
-vkr_internal void scene_shutdown_wait_idle(RendererFrontend *rf,
-                                           const char *phase) {
-  if (!rf) {
-    return;
-  }
-
-  VkrRendererError wait_err = vkr_renderer_wait_idle(rf);
-  if (wait_err != VKR_RENDERER_ERROR_NONE) {
-    log_warn("Scene shutdown: renderer wait idle failed during %s (%d)", phase,
-             wait_err);
-  }
-}
 
 /**
  * @brief Chunk callback to send destroy messages for all text3d entities.
@@ -1104,7 +1083,7 @@ vkr_internal void destroy_text3d_chunk_cb(const VkrArchetype *arch,
   (void)arch;
   DestroyText3DContext *ctx = (DestroyText3DContext *)user;
   VkrScene *scene = ctx->scene;
-  RendererFrontend *rf = ctx->rf;
+  VkrRenderAssets *assets = ctx->assets;
 
   uint32_t count = vkr_entity_chunk_count(chunk);
   SceneText3D *text3d_comps =
@@ -1114,29 +1093,20 @@ vkr_internal void destroy_text3d_chunk_cb(const VkrArchetype *arch,
     return;
 
   for (uint32_t i = 0; i < count; i++) {
-    if (rf->world_resources.initialized) {
-      vkr_world_resources_text_destroy(rf, &rf->world_resources,
+    if (assets->world_resources.initialized) {
+      vkr_world_resources_text_destroy(&assets->world_resources,
                                        text3d_comps[i].text_index);
     }
   }
 }
 
-void vkr_scene_shutdown(VkrScene *scene, struct s_RendererFrontend *rf) {
+void vkr_scene_shutdown(VkrScene *scene, struct VkrRenderAssets *assets) {
   if (!scene)
     return;
 
-  // Wait for GPU idle before destroying any resources to avoid freeing
-  // descriptor sets and buffers that are still referenced by in-flight frames.
-  if (rf) {
-    scene_shutdown_wait_idle((RendererFrontend *)rf, "pre-teardown");
-
-    // Invalidate picking instance states before scene textures are destroyed.
-    // This ensures descriptor sets don't reference stale texture handles.
-  }
-
   // Send destroy messages for all text3d entities to world resources.
   // Must happen before ECS world destruction since we need to query components.
-  if (rf && scene->rf && scene->world) {
+  if (assets && scene->assets && scene->world) {
     // Build text3d query
     VkrQuery q_text3d;
     vkr_entity_query_build(scene->world, &scene->comp_text3d, 1, NULL, 0,
@@ -1147,7 +1117,7 @@ void vkr_scene_shutdown(VkrScene *scene, struct s_RendererFrontend *rf) {
                                  &compiled)) {
       DestroyText3DContext ctx = {
           .scene = scene,
-          .rf = (RendererFrontend *)rf,
+          .assets = (VkrRenderAssets *)assets,
       };
       vkr_entity_query_compiled_each_chunk(&compiled, destroy_text3d_chunk_cb,
                                            &ctx);
@@ -1156,43 +1126,40 @@ void vkr_scene_shutdown(VkrScene *scene, struct s_RendererFrontend *rf) {
   }
 
   // Remove owned mesh instances from mesh manager
-  if (rf && scene->owned_instances) {
+  if (assets && scene->owned_instances) {
     for (uint32_t i = 0; i < scene->owned_instance_count; i++) {
-      vkr_mesh_manager_destroy_instance(&rf->mesh_manager,
+      vkr_mesh_manager_destroy_instance(&assets->mesh_manager,
                                         scene->owned_instances[i]);
     }
     scene->owned_instance_count = 0;
   }
 
   // Remove owned meshes from mesh manager
-  if (rf && scene->owned_meshes) {
+  if (assets && scene->owned_meshes) {
     for (uint32_t i = 0; i < scene->owned_mesh_count; i++) {
-      vkr_mesh_manager_remove(&rf->mesh_manager, scene->owned_meshes[i]);
+      vkr_mesh_manager_remove(&assets->mesh_manager, scene->owned_meshes[i]);
     }
   }
 
-  // Scene-owned resources were retired above; wait once more so deferred Vulkan
-  // destruction completes before the next scene load begins.
-  if (rf) {
-    scene_release_owned_texture_handle((RendererFrontend *)rf,
+  // Release environment generations; native retirement retains submitted uses.
+  if (assets) {
+    scene_release_owned_texture_handle((VkrRenderAssets *)assets,
                                        &scene->environment.prefilter_cubemap);
-    scene_release_owned_texture_handle((RendererFrontend *)rf,
+    scene_release_owned_texture_handle((VkrRenderAssets *)assets,
                                        &scene->environment.source_cubemap);
-    scene_release_owned_texture_handle((RendererFrontend *)rf,
+    scene_release_owned_texture_handle((VkrRenderAssets *)assets,
                                        &scene->environment.delivery_equirect);
     for (uint32_t i = 0; i < scene->reflection_probe_count; ++i) {
       VkrSceneReflectionProbe *probe = &scene->reflection_probes[i];
-      scene_release_owned_texture_handle((RendererFrontend *)rf,
+      scene_release_owned_texture_handle((VkrRenderAssets *)assets,
                                          &probe->prefilter_cubemap);
-      scene_release_owned_texture_handle((RendererFrontend *)rf,
+      scene_release_owned_texture_handle((VkrRenderAssets *)assets,
                                          &probe->source_cubemap);
       scene_reset_reflection_probe_runtime(probe);
     }
     scene->reflection_probe_count = 0;
     scene->environment.bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE;
     scene->environment.enabled = false_v;
-
-    scene_shutdown_wait_idle((RendererFrontend *)rf, "post-teardown");
   }
 
   // Destroy queries
@@ -1721,11 +1688,11 @@ SceneDirectionalLight *vkr_scene_get_directional_light(VkrScene *scene,
 // Mesh Ownership
 // ============================================================================
 
-bool8_t vkr_scene_spawn_mesh(VkrScene *scene, struct s_RendererFrontend *rf,
+bool8_t vkr_scene_spawn_mesh(VkrScene *scene, struct VkrRenderAssets *assets,
                              const VkrMeshLoadDesc *desc,
                              uint32_t *out_mesh_index,
                              VkrSceneError *out_error) {
-  if (!scene || !rf || !desc || !out_mesh_index) {
+  if (!scene || !assets || !desc || !out_mesh_index) {
     if (out_error)
       *out_error = VKR_SCENE_ERROR_ALLOC_FAILED;
     return false;
@@ -1734,7 +1701,7 @@ bool8_t vkr_scene_spawn_mesh(VkrScene *scene, struct s_RendererFrontend *rf,
   uint32_t mesh_index;
   VkrRendererError load_error;
 
-  if (!vkr_mesh_manager_load(&rf->mesh_manager, desc, &mesh_index, NULL,
+  if (!vkr_mesh_manager_load(&assets->mesh_manager, desc, &mesh_index, NULL,
                              &load_error)) {
     if (out_error)
       *out_error = VKR_SCENE_ERROR_MESH_LOAD_FAILED;
@@ -1971,7 +1938,7 @@ vkr_internal bool8_t scene_entity_is_visible(VkrScene *scene,
  */
 typedef struct RenderSyncContext {
   VkrSceneRenderBridge *bridge;
-  struct s_RendererFrontend *rf;
+  struct VkrRenderAssets *assets;
   VkrScene *scene;
 } RenderSyncContext;
 
@@ -1992,8 +1959,8 @@ vkr_internal void scene_sync_renderable(RenderSyncContext *ctx,
                                         VkrMeshInstanceHandle instance,
                                         Mat4 world, uint32_t render_id,
                                         bool8_t is_visible) {
-  vkr_mesh_manager_instance_sync_render_state(&ctx->rf->mesh_manager, instance,
-                                              world, render_id, is_visible);
+  vkr_mesh_manager_instance_sync_render_state(
+      &ctx->assets->mesh_manager, instance, world, render_id, is_visible);
   scene_render_bridge_update_mapping(ctx->bridge, render_id, entity,
                                      is_visible);
 }
@@ -2062,7 +2029,7 @@ vkr_internal void render_sync_shape_cb(const VkrArchetype *arch,
   (void)arch;
   RenderSyncContext *ctx = (RenderSyncContext *)user;
   VkrScene *scene = ctx->scene;
-  RendererFrontend *rf = ctx->rf;
+  VkrRenderAssets *assets = ctx->assets;
 
   uint32_t count = vkr_entity_chunk_count(chunk);
   VkrEntityId *entities = vkr_entity_chunk_entities(chunk);
@@ -2082,10 +2049,11 @@ vkr_internal void render_sync_shape_cb(const VkrArchetype *arch,
     bool8_t is_visible = scene_entity_is_visible(scene, entities[i]);
 
     // Sync mesh-slot state for shapes
-    vkr_mesh_manager_set_model(&rf->mesh_manager, mesh_index,
+    vkr_mesh_manager_set_model(&assets->mesh_manager, mesh_index,
                                transforms[i].world);
-    vkr_mesh_manager_set_visible(&rf->mesh_manager, mesh_index, is_visible);
-    vkr_mesh_manager_set_render_id(&rf->mesh_manager, mesh_index, render_id);
+    vkr_mesh_manager_set_visible(&assets->mesh_manager, mesh_index, is_visible);
+    vkr_mesh_manager_set_render_id(&assets->mesh_manager, mesh_index,
+                                   render_id);
 
     // Update picking mapping
     scene_render_bridge_update_mapping(ctx->bridge, render_id, entities[i],
@@ -2094,17 +2062,17 @@ vkr_internal void render_sync_shape_cb(const VkrArchetype *arch,
 }
 
 vkr_internal void scene_render_bridge_sync(VkrSceneRenderBridge *bridge,
-                                           struct s_RendererFrontend *rf,
+                                           struct VkrRenderAssets *assets,
                                            VkrScene *scene) {
   // If full sync needed or dirty overflow, do full sync
   if (scene->render_full_sync_needed) {
-    scene_render_bridge_full_sync(bridge, rf, scene);
+    scene_render_bridge_full_sync(bridge, assets, scene);
     return;
   }
 
   RenderSyncContext ctx = {
       .bridge = bridge,
-      .rf = rf,
+      .assets = assets,
       .scene = scene,
   };
 
@@ -2147,11 +2115,11 @@ vkr_internal void scene_render_bridge_sync(VkrSceneRenderBridge *bridge,
         (const SceneShape *)vkr_entity_get_component_if_alive_const(
             world, entity, scene->comp_shape);
     if (shape && shape->mesh_index != VKR_INVALID_ID) {
-      vkr_mesh_manager_set_model(&rf->mesh_manager, shape->mesh_index,
+      vkr_mesh_manager_set_model(&assets->mesh_manager, shape->mesh_index,
                                  transform->world);
-      vkr_mesh_manager_set_visible(&rf->mesh_manager, shape->mesh_index,
+      vkr_mesh_manager_set_visible(&assets->mesh_manager, shape->mesh_index,
                                    is_visible);
-      vkr_mesh_manager_set_render_id(&rf->mesh_manager, shape->mesh_index,
+      vkr_mesh_manager_set_render_id(&assets->mesh_manager, shape->mesh_index,
                                      render_id);
       scene_render_bridge_update_mapping(ctx.bridge, render_id, entity,
                                          is_visible);
@@ -2162,7 +2130,7 @@ vkr_internal void scene_render_bridge_sync(VkrSceneRenderBridge *bridge,
 }
 
 vkr_internal void scene_render_bridge_full_sync(VkrSceneRenderBridge *bridge,
-                                                struct s_RendererFrontend *rf,
+                                                struct VkrRenderAssets *assets,
                                                 VkrScene *scene) {
   // Compile queries if needed
   if (!scene->queries_valid) {
@@ -2181,7 +2149,7 @@ vkr_internal void scene_render_bridge_full_sync(VkrSceneRenderBridge *bridge,
 
   RenderSyncContext ctx = {
       .bridge = bridge,
-      .rf = rf,
+      .assets = assets,
       .scene = scene,
   };
 
@@ -2289,7 +2257,7 @@ VkrSceneHandle vkr_scene_handle_create(VkrAllocator *alloc, uint16_t world_id,
 }
 
 void vkr_scene_handle_destroy(VkrSceneHandle handle,
-                              struct s_RendererFrontend *rf) {
+                              struct VkrRenderAssets *assets) {
   if (!handle)
     return;
 
@@ -2297,7 +2265,7 @@ void vkr_scene_handle_destroy(VkrSceneHandle handle,
   VkrAllocator *parent_alloc = runtime->parent_alloc;
 
   scene_render_bridge_shutdown(&runtime->bridge);
-  vkr_scene_shutdown(&runtime->scene, rf);
+  vkr_scene_shutdown(&runtime->scene, assets);
   // Release global accounting for the scene arena before destroying it.
   // This adjusts global memory stats for all allocations made from scene_alloc
   // since arena frees are no-ops and wouldn't decrement the counters otherwise.
@@ -2329,27 +2297,27 @@ void vkr_scene_handle_update(VkrSceneHandle handle, float64_t dt) {
 }
 
 void vkr_scene_handle_sync(VkrSceneHandle handle,
-                           struct s_RendererFrontend *rf) {
-  if (!handle || !rf)
+                           struct VkrRenderAssets *assets) {
+  if (!handle || !assets)
     return;
   struct VkrSceneRuntime *runtime = (struct VkrSceneRuntime *)handle;
-  scene_render_bridge_sync(&runtime->bridge, rf, &runtime->scene);
+  scene_render_bridge_sync(&runtime->bridge, assets, &runtime->scene);
 }
 
 void vkr_scene_handle_full_sync(VkrSceneHandle handle,
-                                struct s_RendererFrontend *rf) {
-  if (!handle || !rf)
+                                struct VkrRenderAssets *assets) {
+  if (!handle || !assets)
     return;
   struct VkrSceneRuntime *runtime = (struct VkrSceneRuntime *)handle;
-  scene_render_bridge_full_sync(&runtime->bridge, rf, &runtime->scene);
+  scene_render_bridge_full_sync(&runtime->bridge, assets, &runtime->scene);
 }
 
 void vkr_scene_handle_update_and_sync(VkrSceneHandle handle,
-                                      struct s_RendererFrontend *rf,
+                                      struct VkrRenderAssets *assets,
                                       float64_t dt) {
   struct VkrSceneRuntime *runtime = (struct VkrSceneRuntime *)handle;
   vkr_scene_update(&runtime->scene, dt);
-  scene_render_bridge_sync(&runtime->bridge, rf, &runtime->scene);
+  scene_render_bridge_sync(&runtime->bridge, assets, &runtime->scene);
 }
 
 VkrEntityId vkr_scene_handle_entity_from_picking_id(VkrSceneHandle handle,
@@ -2368,13 +2336,13 @@ VkrEntityId vkr_scene_handle_entity_from_picking_id(VkrSceneHandle handle,
 bool8_t vkr_scene_set_text3d(VkrScene *scene, VkrEntityId entity,
                              const VkrSceneText3DConfig *config,
                              VkrSceneError *out_error) {
-  if (!scene || !scene->world || !config || !scene->rf) {
+  if (!scene || !scene->world || !config || !scene->assets) {
     if (out_error)
       *out_error = VKR_SCENE_ERROR_ALLOC_FAILED;
     return false_v;
   }
 
-  RendererFrontend *rf = (RendererFrontend *)scene->rf;
+  VkrRenderAssets *assets = (VkrRenderAssets *)scene->assets;
 
   // Check if entity already has text3d
   SceneText3D *existing = (SceneText3D *)vkr_entity_get_component_mut(
@@ -2416,8 +2384,8 @@ bool8_t vkr_scene_set_text3d(VkrScene *scene, VkrEntityId entity,
       .transform = text_transform,
   };
 
-  if (rf->world_resources.initialized) {
-    vkr_world_resources_text_create(rf, &rf->world_resources, &payload);
+  if (assets->world_resources.initialized) {
+    vkr_world_resources_text_create(assets, &assets->world_resources, &payload);
   } else {
     log_warn("Scene: world_resources not initialized, text3d will not render");
   }
@@ -2442,8 +2410,8 @@ bool8_t vkr_scene_set_text3d(VkrScene *scene, VkrEntityId entity,
 
   if (!vkr_entity_add_component(scene->world, entity, scene->comp_text3d,
                                 &comp)) {
-    if (rf->world_resources.initialized) {
-      vkr_world_resources_text_destroy(rf, &rf->world_resources, text_id);
+    if (assets->world_resources.initialized) {
+      vkr_world_resources_text_destroy(&assets->world_resources, text_id);
     }
     if (out_error)
       *out_error = VKR_SCENE_ERROR_COMPONENT_ADD_FAILED;
@@ -2466,7 +2434,7 @@ SceneText3D *vkr_scene_get_text3d(VkrScene *scene, VkrEntityId entity) {
 
 bool8_t vkr_scene_update_text3d(VkrScene *scene, VkrEntityId entity,
                                 String8 text) {
-  if (!scene || !scene->world || !scene->rf)
+  if (!scene || !scene->world || !scene->assets)
     return false_v;
 
   SceneText3D *comp = (SceneText3D *)vkr_entity_get_component_mut(
@@ -2474,10 +2442,10 @@ bool8_t vkr_scene_update_text3d(VkrScene *scene, VkrEntityId entity,
   if (!comp)
     return false_v;
 
-  RendererFrontend *rf = (RendererFrontend *)scene->rf;
+  VkrRenderAssets *assets = (VkrRenderAssets *)scene->assets;
 
-  if (rf->world_resources.initialized) {
-    if (!vkr_world_resources_text_update(rf, &rf->world_resources,
+  if (assets->world_resources.initialized) {
+    if (!vkr_world_resources_text_update(&assets->world_resources,
                                          comp->text_index, text)) {
       return false_v;
     }
@@ -2491,11 +2459,11 @@ bool8_t vkr_scene_update_text3d(VkrScene *scene, VkrEntityId entity,
 // Shape Implementation
 // ============================================================================
 
-bool8_t vkr_scene_set_shape(VkrScene *scene, struct s_RendererFrontend *rf,
+bool8_t vkr_scene_set_shape(VkrScene *scene, struct VkrRenderAssets *assets,
                             VkrEntityId entity,
                             const VkrSceneShapeConfig *config,
                             VkrSceneError *out_error) {
-  if (!scene || !scene->world || !rf || !config) {
+  if (!scene || !scene->world || !assets || !config) {
     if (out_error)
       *out_error = VKR_SCENE_ERROR_ALLOC_FAILED;
     return false_v;
@@ -2516,7 +2484,7 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct s_RendererFrontend *rf,
 
   VkrRendererError geom_err = VKR_RENDERER_ERROR_NONE;
   VkrGeometryHandle geom = vkr_geometry_system_create_cube(
-      &rf->geometry_system, config->dimensions.x, config->dimensions.y,
+      &assets->geometry_system, config->dimensions.x, config->dimensions.y,
       config->dimensions.z, shape_name, &geom_err);
 
   if (geom.id == VKR_INVALID_ID) {
@@ -2539,21 +2507,22 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct s_RendererFrontend *rf,
   }
 
   // Acquire or create material for shape
-  VkrMaterialHandle mat = rf->material_system.default_material;
+  VkrMaterialHandle mat = assets->material_system.default_material;
   bool8_t owns_material = false_v;
 
   if (config->material_name.length > 0) {
     // Material specified with name and path
-    VkrAllocatorScope scope = vkr_allocator_begin_scope(&rf->scratch_allocator);
+    VkrAllocatorScope scope =
+        vkr_allocator_begin_scope(&assets->scratch_allocator);
     String8 mat_name =
-        string8_duplicate(&rf->scratch_allocator, &config->material_name);
+        string8_duplicate(&assets->scratch_allocator, &config->material_name);
     String8 mat_path =
-        string8_duplicate(&rf->scratch_allocator, &config->material_path);
+        string8_duplicate(&assets->scratch_allocator, &config->material_path);
 
     // Try to acquire existing material by name
     VkrRendererError mat_err = VKR_RENDERER_ERROR_NONE;
     VkrMaterialHandle acquired_mat = vkr_material_system_acquire(
-        &rf->material_system, mat_name, true_v, &mat_err);
+        &assets->material_system, mat_name, true_v, &mat_err);
 
     if (mat_err == VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED &&
         mat_path.length > 0) {
@@ -2562,10 +2531,10 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct s_RendererFrontend *rf,
       VkrRendererError load_err = VKR_RENDERER_ERROR_NONE;
 
       if (vkr_resource_system_load_sync(VKR_RESOURCE_TYPE_MATERIAL, mat_path,
-                                        &rf->scratch_allocator, &handle_info,
-                                        &load_err)) {
+                                        &assets->scratch_allocator,
+                                        &handle_info, &load_err)) {
         // After loading, acquire with name to get proper ref count
-        acquired_mat = vkr_material_system_acquire(&rf->material_system,
+        acquired_mat = vkr_material_system_acquire(&assets->material_system,
                                                    mat_name, true_v, &mat_err);
         if (mat_err == VKR_RENDERER_ERROR_NONE && acquired_mat.id != 0) {
           mat = acquired_mat;
@@ -2595,7 +2564,7 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct s_RendererFrontend *rf,
 
     VkrRendererError mat_err = VKR_RENDERER_ERROR_NONE;
     VkrMaterialHandle colored_mat = vkr_material_system_create_colored(
-        &rf->material_system, mat_name, config->color, &mat_err);
+        &assets->material_system, mat_name, config->color, &mat_err);
     if (mat_err == VKR_RENDERER_ERROR_NONE && colored_mat.id != 0) {
       mat = colored_mat;
       owns_material = true_v;
@@ -2623,15 +2592,15 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct s_RendererFrontend *rf,
 
   uint32_t mesh_index = VKR_INVALID_ID;
   VkrRendererError mesh_err = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_mesh_manager_add(&rf->mesh_manager, &mesh_desc, &mesh_index,
+  if (!vkr_mesh_manager_add(&assets->mesh_manager, &mesh_desc, &mesh_index,
                             &mesh_err)) {
     String8 err_str = vkr_renderer_get_error_string(mesh_err);
     log_error("Scene: failed to add shape to mesh manager: %s",
               string8_cstr(&err_str));
     if (owns_material) {
-      vkr_material_system_release(&rf->material_system, mat);
+      vkr_material_system_release(&assets->material_system, mat);
     }
-    vkr_geometry_system_release(&rf->geometry_system, geom);
+    vkr_geometry_system_release(&assets->geometry_system, geom);
     if (out_error)
       *out_error = VKR_SCENE_ERROR_MESH_LOAD_FAILED;
     return false_v;
@@ -2640,7 +2609,7 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct s_RendererFrontend *rf,
   // Track mesh ownership
   if (!vkr_scene_track_mesh(scene, mesh_index, out_error)) {
     // mesh_manager_remove handles geometry/material release via owns_* flags
-    vkr_mesh_manager_remove(&rf->mesh_manager, mesh_index);
+    vkr_mesh_manager_remove(&assets->mesh_manager, mesh_index);
     return false_v;
   }
 
@@ -2656,7 +2625,7 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct s_RendererFrontend *rf,
                                 &comp)) {
     vkr_scene_release_mesh(scene, mesh_index);
     // mesh_manager_remove handles geometry/material release via owns_* flags
-    vkr_mesh_manager_remove(&rf->mesh_manager, mesh_index);
+    vkr_mesh_manager_remove(&assets->mesh_manager, mesh_index);
     if (out_error)
       *out_error = VKR_SCENE_ERROR_COMPONENT_ADD_FAILED;
     return false_v;
@@ -2672,12 +2641,13 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct s_RendererFrontend *rf,
 
   // Set up mesh for picking and visibility
   bool8_t is_visible = scene_entity_is_visible(scene, entity);
-  vkr_mesh_manager_set_render_id(&rf->mesh_manager, mesh_index, render_id);
-  vkr_mesh_manager_set_visible(&rf->mesh_manager, mesh_index, is_visible);
+  vkr_mesh_manager_set_render_id(&assets->mesh_manager, mesh_index, render_id);
+  vkr_mesh_manager_set_visible(&assets->mesh_manager, mesh_index, is_visible);
 
   // Set model matrix from transform
   if (transform) {
-    vkr_mesh_manager_set_model(&rf->mesh_manager, mesh_index, transform->world);
+    vkr_mesh_manager_set_model(&assets->mesh_manager, mesh_index,
+                               transform->world);
   }
 
   scene_invalidate_queries(scene);

@@ -2,8 +2,8 @@
 
 #include "math/vkr_frustum.h"
 #include "math/vkr_math.h"
-#include "renderer/renderer_frontend.h"
 #include "renderer/vkr_candidate_residency.h"
+#include "renderer/vkr_renderer_internal.h"
 #include "renderer/vkr_visibility.h"
 
 #include <assert.h>
@@ -16,19 +16,19 @@ static void test_packet_pre_recording_rejection(void) {
   VkrWorldPassPayload world = {
       .gpu_candidate_count = VKR_GPU_DRAW_CANDIDATE_CAPACITY + 1u,
   };
-  VkrRenderPacket packet = {
-      .packet_version = VKR_RENDER_PACKET_VERSION,
+  VkrFrameInput packet = {
+      .version = VKR_FRAME_INPUT_VERSION,
       .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE},
       .world = &world,
   };
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.world.gpu_candidate_count") ==
          0);
 
   world = (VkrWorldPassPayload){.gpu_candidate_count = 1u};
   validation = (VkrValidationError){0};
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.world.gpu_candidates") == 0);
 
@@ -38,34 +38,34 @@ static void test_packet_pre_recording_rejection(void) {
   world.dynamic_generation = 1u;
   world.publication_generation = 1u;
   validation = (VkrValidationError){0};
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_NONE);
   assert(validation.field_path == NULL && validation.message == NULL);
   world.static_generation = 0u;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.world.static_generation") == 0);
   world.static_generation = 1u;
   world.dynamic_generation = 0u;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.world.dynamic_generation") == 0);
   world.dynamic_generation = 1u;
   world.publication_generation = 0u;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.world.publication_generation") ==
          0);
   world.publication_generation = 1u;
   world.static_candidate_count = 2u;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.world.static_candidate_count") ==
          0);
   world.static_candidate_count = 0u;
 
   packet.world = NULL;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_NONE);
 }
 static void test_candidate_residency_generation_contract(void) {
@@ -99,25 +99,25 @@ static void test_packet_independent_transmission_stream(void) {
       .transmission_gpu_candidates = &candidate,
       .transmission_gpu_candidate_count = 1u,
   };
-  const VkrRenderPacket packet = {
-      .packet_version = VKR_RENDER_PACKET_VERSION,
+  const VkrFrameInput packet = {
+      .version = VKR_FRAME_INPUT_VERSION,
       .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE},
       .world = &world,
   };
   VkrValidationError validation = {0};
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_NONE);
 }
 
 static void test_packet_borrowed_array_validation(void) {
   VkrValidationError validation = {0};
   VkrWorldPassPayload world = {.instance_count = 1u};
-  VkrRenderPacket packet = {
-      .packet_version = VKR_RENDER_PACKET_VERSION,
+  VkrFrameInput packet = {
+      .version = VKR_FRAME_INPUT_VERSION,
       .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE},
       .world = &world,
   };
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.world.instances") == 0);
 
@@ -126,18 +126,18 @@ static void test_packet_borrowed_array_validation(void) {
   world.instances = &instance;
   world.transparent_draws = &draw;
   world.transparent_draw_count = 1u;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.world.transparent_draws") == 0);
 
   draw.first_instance = 0u;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_NONE);
 
   VkrFrameLighting lighting = {.point_light_count = 1u};
   packet.world = NULL;
   packet.lighting = &lighting;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.lighting.point_lights") == 0);
 
@@ -145,7 +145,7 @@ static void test_packet_borrowed_array_validation(void) {
   VkrPointLightGrid grid = {0};
   lighting.point_lights = &light;
   lighting.point_light_grid = &grid;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_NONE);
 }
 
@@ -153,12 +153,12 @@ static void test_packet_text_geometry_validation(void) {
   VkrValidationError validation = {0};
   VkrPreparedTextDraw text = {.vertex_count = 1u, .index_count = 1u};
   VkrWorldPassPayload world = {.text_draws = &text, .text_draw_count = 1u};
-  const VkrRenderPacket packet = {
-      .packet_version = VKR_RENDER_PACKET_VERSION,
+  const VkrFrameInput packet = {
+      .version = VKR_FRAME_INPUT_VERSION,
       .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE},
       .world = &world,
   };
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.world.text_draws") == 0);
 
@@ -166,11 +166,11 @@ static void test_packet_text_geometry_validation(void) {
   uint32_t index = 0u;
   text.vertices = &vertex;
   text.indices = &index;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_NONE);
 
   text.max_index = 1u;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
 }
 
@@ -198,67 +198,34 @@ static void test_packet_ui_stream_validation(void) {
               .batch_count = 1u,
           },
   };
-  VkrRenderPacket packet = {
-      .packet_version = VKR_RENDER_PACKET_VERSION,
+  VkrFrameInput packet = {
+      .version = VKR_FRAME_INPUT_VERSION,
       .frame = {.window_width = 100u, .window_height = 50u},
       .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE},
       .ui = &ui,
   };
   VkrValidationError validation = {0};
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_NONE);
 
   indices[5] = 4u;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.ui.draw_list.indices") == 0);
   indices[5] = 0u;
 
   batch.scissor_rect_px.width = 101.0f;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path,
                 "packet.ui.draw_list.batches.scissor_rect_px") == 0);
   batch.scissor_rect_px.width = 100.0f;
 
   batch.mode = VKR_UI_DRAW_MODE_MTSDF_TEXT;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.ui.draw_list.batches.texture") ==
          0);
-}
-
-static VkrRendererError test_packet_cancel_success(void *state) {
-  RendererFrontend *renderer = state;
-  renderer->frame_active = false_v;
-  return VKR_RENDERER_ERROR_NONE;
-}
-
-static VkrRendererError test_packet_cancel_failure(void *state) {
-  (void)state;
-  return VKR_RENDERER_ERROR_DEVICE_ERROR;
-}
-
-static void test_packet_rejection_preserves_cancel_failure(void) {
-  static RendererFrontend renderer;
-  VkrRendererImplOps ops = {.cancel_frame = test_packet_cancel_success};
-  renderer = (RendererFrontend){
-      .impl = {.ops = &ops, .state = &renderer},
-      .frame_active = true_v,
-  };
-  const VkrRenderPacket invalid_packet = {0};
-  VkrValidationError validation = {0};
-  assert(vkr_renderer_submit_packet(&renderer, &invalid_packet, NULL,
-                                    &validation) ==
-         VKR_RENDERER_ERROR_INCOMPATIBLE_SIGNATURE);
-  assert(!renderer.frame_active);
-
-  ops.cancel_frame = test_packet_cancel_failure;
-  renderer.frame_active = true_v;
-  assert(vkr_renderer_submit_packet(&renderer, &invalid_packet, NULL,
-                                    &validation) ==
-         VKR_RENDERER_ERROR_DEVICE_ERROR);
-  assert(strcmp(validation.field_path, "frame") == 0);
 }
 
 static void test_alpha_routing(void) {
@@ -337,19 +304,22 @@ static void test_transparent_sort_and_emit(void) {
       {.mesh = {1u, 1u},
        .geometry = {11u, 1u},
        .material = {21u, 1u},
-       .instance = {.object_id = 31u, .temporal_index = 7u,
+       .instance = {.object_id = 31u,
+                    .temporal_index = 7u,
                     .temporal_generation = 4u},
        .sort_key = 10u},
       {.mesh = {2u, 1u},
        .geometry = {12u, 1u},
        .material = {22u, 1u},
-       .instance = {.object_id = 32u, .temporal_index = 8u,
+       .instance = {.object_id = 32u,
+                    .temporal_index = 8u,
                     .temporal_generation = 5u},
        .sort_key = 30u},
       {.mesh = {3u, 1u},
        .geometry = {13u, 1u},
        .material = {23u, 1u},
-       .instance = {.object_id = 33u, .temporal_index = 9u,
+       .instance = {.object_id = 33u,
+                    .temporal_index = 9u,
                     .temporal_generation = 6u},
        .sort_key = 20u},
   };
@@ -396,6 +366,30 @@ static void test_submesh_sphere_is_conservative_under_scale(void) {
          0.0001f);
 }
 
+/* An old acquisition must not render or cancel a newer frame. This checks the
+ * public rejection boundary without creating a device or replacing native ops.
+ */
+static void test_frame_rejects_stale_acquisition(void) {
+  VkrRenderer renderer = {.frame_active = true_v, .frame_number = 9u};
+  VkrFrame stale = {.renderer = &renderer, .number = 8u};
+  VkrFrame current = {.renderer = &renderer, .number = 9u};
+  VkrValidationError validation = {0};
+  assert(vkr_renderer_render_frame(&stale, NULL, NULL, &validation) ==
+         VKR_RENDERER_ERROR_INVALID_PARAMETER);
+  assert(strcmp(validation.field_path, "frame") == 0);
+  assert(vkr_renderer_cancel_frame(&stale) ==
+         VKR_RENDERER_ERROR_INVALID_PARAMETER);
+  assert(renderer.frame_active && renderer.frame_number == 9u);
+  const VkrFrameConfig config = {.shadow_map_size = 2048u,
+                                 .shadow_cascade_count = 1u};
+  assert(vkr_renderer_begin_frame(&renderer, &config, &current) ==
+         VKR_RENDERER_ERROR_FRAME_IN_PROGRESS);
+  assert(current.renderer == &renderer && current.number == 9u);
+  current.renderer = NULL;
+  assert(vkr_renderer_cancel_frame(&current) ==
+         VKR_RENDERER_ERROR_INVALID_PARAMETER);
+}
+
 bool32_t run_visibility_tests(void) {
   printf("--- Starting Visibility Tests ---\n");
   test_packet_pre_recording_rejection();
@@ -404,7 +398,7 @@ bool32_t run_visibility_tests(void) {
   test_packet_borrowed_array_validation();
   test_packet_text_geometry_validation();
   test_packet_ui_stream_validation();
-  test_packet_rejection_preserves_cancel_failure();
+  test_frame_rejects_stale_acquisition();
   test_alpha_routing();
   test_gpu_state_buckets();
   test_frustum_never_rejects_visible_geometry();

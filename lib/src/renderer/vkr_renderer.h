@@ -19,16 +19,14 @@
 // Forward Declarations & Opaque Handles
 // ============================================================================
 
-typedef struct s_RendererFrontend *VkrRendererFrontendHandle;
+typedef struct VkrRenderer VkrRenderer;
 typedef struct s_BufferResource *VkrBufferHandle;
 typedef struct s_TextureHandle *VkrTextureOpaqueHandle;
-typedef struct VkrRenderPacket VkrRenderPacket;
+typedef struct VkrFrameInput VkrFrameInput;
 typedef struct VkrValidationError VkrValidationError;
 typedef struct VkrRendererFrameMetrics VkrRendererFrameMetrics;
 typedef struct VkrRendererMetricsProducerConfig
     VkrRendererMetricsProducerConfig;
-typedef struct VkrUiTextConfig VkrUiTextConfig;
-typedef struct VkrText3DConfig VkrText3DConfig;
 
 typedef enum VkrRendererBackendType {
   VKR_RENDERER_BACKEND_TYPE_VULKAN,
@@ -872,36 +870,9 @@ typedef enum VkrRenderMode {
   VKR_RENDER_MODE_COUNT,
 } VkrRenderMode;
 
-typedef struct VkrGlobalMaterialState {
-  Mat4 projection;
-  Mat4 view;
-  Vec4 ambient_color;
-  Vec3 view_position;
-  /** Lowered verbatim into the packet's versioned exposure controls. */
-  VkrExposureMode exposure_mode;
-  float32_t manual_exposure;
-  float32_t exposure_compensation_ev;
-  /** Lowered verbatim into the packet's bloom controls; see VkrFrameGlobals. */
-  bool8_t bloom_enabled;
-  float32_t bloom_threshold;
-  float32_t bloom_knee;
-  float32_t bloom_intensity;
-  /** Lowered verbatim into the packet's GTAO controls; see VkrFrameGlobals. */
-  bool8_t gtao_enabled;
-  float32_t gtao_radius;
-  float32_t gtao_power;
-  VkrRenderMode render_mode;
-} VkrGlobalMaterialState;
-
 // =============================================================================
 // Text
 // =============================================================================
-typedef struct VkrWorldTextCreateData {
-  uint32_t text_id;
-  String8 content;
-  const VkrText3DConfig *config; // Optional; NULL uses defaults
-  VkrTransform transform;
-} VkrWorldTextCreateData;
 
 typedef enum VkrPipelineDomain {
   VKR_PIPELINE_DOMAIN_WORLD = 0,
@@ -963,92 +934,6 @@ typedef struct VkrRendererBootMetrics {
   uint64_t graph_ns;
 } VkrRendererBootMetrics;
 
-typedef enum VkrBootProfile {
-  VKR_BOOT_PROFILE_FULL = 0,
-  VKR_BOOT_PROFILE_AUTOMATION,
-} VkrBootProfile;
-
-/**
- * Stable initialization units used by dependency-resolved boot plans.
- *
- * The mandatory units come first and always initialize; the optional units
- * follow `VKR_RENDERER_SUBSYSTEM_WORLD` and are the only ones a plan may omit.
- * A new unit therefore belongs on the side of that boundary that matches
- * whether `vkr_renderer_systems_initialize()` actually gates it.
- */
-typedef enum VkrRendererSubsystem {
-  VKR_RENDERER_SUBSYSTEM_CAMERA = 0,
-  VKR_RENDERER_SUBSYSTEM_RENDER_GRAPH,
-  VKR_RENDERER_SUBSYSTEM_FRAME_STREAMS,
-  VKR_RENDERER_SUBSYSTEM_RESOURCES,
-  VKR_RENDERER_SUBSYSTEM_GEOMETRY,
-  VKR_RENDERER_SUBSYSTEM_TEXTURES,
-  VKR_RENDERER_SUBSYSTEM_MATERIALS,
-  VKR_RENDERER_SUBSYSTEM_MESHES,
-  VKR_RENDERER_SUBSYSTEM_FONTS,
-  VKR_RENDERER_SUBSYSTEM_LIGHTING,
-  VKR_RENDERER_SUBSYSTEM_SHADOWS,
-  VKR_RENDERER_SUBSYSTEM_WORLD,
-  VKR_RENDERER_SUBSYSTEM_UI,
-  VKR_RENDERER_SUBSYSTEM_SKYBOX,
-  VKR_RENDERER_SUBSYSTEM_EDITOR,
-  VKR_RENDERER_SUBSYSTEM_GIZMO,
-  VKR_RENDERER_SUBSYSTEM_PICKING,
-  VKR_RENDERER_SUBSYSTEM_COUNT,
-} VkrRendererSubsystem;
-
-typedef uint64_t VkrSubsystemMask;
-
-#define VKR_RENDERER_SUBSYSTEM_BIT(SUBSYSTEM)                                  \
-  ((VkrSubsystemMask)1u << (uint32_t)(SUBSYSTEM))
-#define VKR_RENDERER_SUBSYSTEM_ALL                                             \
-  (VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_COUNT) - 1u)
-/** Units every plan contains; no boot profile can omit them. */
-#define VKR_RENDERER_SUBSYSTEM_MANDATORY                                       \
-  (VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_UI) - 1u)
-/** The complement: the only units a workload may leave out. */
-#define VKR_RENDERER_SUBSYSTEM_OPTIONAL                                        \
-  (VKR_RENDERER_SUBSYSTEM_ALL & ~VKR_RENDERER_SUBSYSTEM_MANDATORY)
-
-/* The two masks are derived from the enum order, so a unit inserted on the
-   wrong side of the boundary would silently become excludable — or stop being
-   excludable — without touching either definition. */
-_Static_assert(VKR_RENDERER_SUBSYSTEM_UI == VKR_RENDERER_SUBSYSTEM_WORLD + 1,
-               "Optional subsystems must directly follow the mandatory ones");
-_Static_assert(VKR_RENDERER_SUBSYSTEM_COUNT ==
-                   VKR_RENDERER_SUBSYSTEM_PICKING + 1,
-               "Picking must remain the last optional subsystem");
-
-/**
- * One immutable initialization contract. `requested_mask` describes workload
- * needs; `effective_mask` is their transitive dependency closure.
- */
-typedef struct VkrSubsystemPlan {
-  VkrBootProfile profile;
-  VkrSubsystemMask requested_mask;
-  VkrSubsystemMask excluded_mask;
-  VkrSubsystemMask effective_mask;
-} VkrSubsystemPlan;
-
-/**
- * Builds and validates a plan before any frontend subsystem is initialized.
- * Dependencies that intersect `excluded_mask` make the request impossible.
- *
- * Callers describe intent only: `effective_mask` is always computed here, so a
- * zero-initialized request under `VKR_BOOT_PROFILE_FULL` resolves to
- * `VKR_RENDERER_SUBSYSTEM_ALL`.
- *
- * @param out_error Optional; receives the rejection reason when one is wanted.
- */
-bool8_t vkr_renderer_subsystem_plan_build(VkrBootProfile profile,
-                                          VkrSubsystemMask requested_mask,
-                                          VkrSubsystemMask excluded_mask,
-                                          VkrSubsystemPlan *out_plan,
-                                          VkrRendererError *out_error);
-
-bool8_t vkr_renderer_subsystem_plan_includes(const VkrSubsystemPlan *plan,
-                                             VkrRendererSubsystem subsystem);
-
 typedef struct VkrRendererBackendConfig {
   const char *application_name;
   VkrRendererBootMetrics *boot_metrics;
@@ -1096,14 +981,27 @@ typedef struct VkrRetainedShadowToken {
   uint32_t valid_layer_mask;
 } VkrRetainedShadowToken;
 
-typedef struct VkrFrameSetup {
+/* Acquired target and command-slot context. Do not copy or modify it.
+ * Render or cancel consumes this context; number identifies this acquisition,
+ * not GPU completion. The renderer must outlive the frame. */
+typedef struct VkrFrameConfig {
+  uint32_t shadow_map_size;
+  uint32_t shadow_cascade_count;
+} VkrFrameConfig;
+
+typedef struct VkrFrame {
+  VkrRenderer *renderer;
+  uint64_t number;
+  uint64_t target_generation;
   uint32_t image_index;
   uint32_t window_width;
   uint32_t window_height;
   VkrTextureFormat swapchain_format;
   VkrTextureFormat swapchain_depth_format;
+  uint32_t render_width;
+  uint32_t render_height;
   VkrRetainedShadowToken retained_shadow;
-} VkrFrameSetup;
+} VkrFrame;
 
 typedef struct VkrRendererUploadWaitStats {
   /**
@@ -1169,42 +1067,25 @@ typedef struct VkrDeviceMemoryStats {
 } VkrDeviceMemoryStats;
 
 // ============================================================================
-// Frontend API (User-Facing)
+// Renderer API
 // ============================================================================
 
 // --- START Initialization and Shutdown ---
-bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
+bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
                                  VkrRendererBackendType type, VkrWindow *window,
-                                 EventManager *event_manager,
                                  VkrDeviceRequirements *device_requirements,
                                  const VkrRendererBackendConfig *backend_config,
-                                 uint64_t target_frame_rate,
                                  VkrRendererError *out_error);
 
-bool32_t vkr_renderer_systems_initialize(
-    VkrRendererFrontendHandle renderer, VkrJobSystem *job_system,
-    const VkrRendererMetricsProducerConfig *metrics_producers,
-    const VkrSubsystemPlan *subsystem_plan);
-
-/**
- * @return The units that actually initialized. Some optional units can fail
- *         non-fatally, so this is the planned closure minus anything that did
- *         not come up — never the request. Reports and comparison identity use
- *         this value.
- */
-VkrSubsystemMask
-vkr_renderer_get_subsystem_mask(VkrRendererFrontendHandle renderer);
-
-void vkr_renderer_destroy(VkrRendererFrontendHandle renderer);
+void vkr_renderer_destroy(VkrRenderer *renderer);
 // --- END Initialization and Shutdown ---
 
 // --- START Utility ---
 String8 vkr_renderer_get_error_string(VkrRendererError error);
-VkrWindow *vkr_renderer_get_window(VkrRendererFrontendHandle renderer);
-VkrRendererBackendType
-vkr_renderer_get_backend_type(VkrRendererFrontendHandle renderer);
-bool32_t vkr_renderer_is_frame_active(VkrRendererFrontendHandle renderer);
-VkrRendererError vkr_renderer_wait_idle(VkrRendererFrontendHandle renderer);
+VkrWindow *vkr_renderer_get_window(VkrRenderer *renderer);
+VkrRendererBackendType vkr_renderer_get_backend_type(VkrRenderer *renderer);
+bool32_t vkr_renderer_is_frame_active(VkrRenderer *renderer);
+VkrRendererError vkr_renderer_wait_idle(VkrRenderer *renderer);
 
 /** One completed GPU queue submission, associated with its source frame. */
 typedef struct VkrGpuSubmissionTiming {
@@ -1221,33 +1102,25 @@ typedef struct VkrGpuSubmissionTiming {
  * completion is ready.
  */
 bool8_t
-vkr_renderer_gpu_submission_timing_poll(VkrRendererFrontendHandle renderer,
+vkr_renderer_gpu_submission_timing_poll(VkrRenderer *renderer,
                                         uint64_t after_submit_serial,
                                         VkrGpuSubmissionTiming *out_timing);
 
 void vkr_renderer_get_device_information(
-    VkrRendererFrontendHandle renderer,
-    VkrDeviceInformation *device_information, Arena *temp_arena);
-uint64_t vkr_renderer_get_target_frame_rate(VkrRendererFrontendHandle renderer);
-uint64_t vkr_renderer_get_submit_serial(VkrRendererFrontendHandle renderer);
-uint64_t
-vkr_renderer_get_completed_submit_serial(VkrRendererFrontendHandle renderer);
+    VkrRenderer *renderer, VkrDeviceInformation *device_information,
+    Arena *temp_arena);
+uint64_t vkr_renderer_get_submit_serial(VkrRenderer *renderer);
+uint64_t vkr_renderer_get_completed_submit_serial(VkrRenderer *renderer);
 bool8_t vkr_renderer_get_and_reset_upload_wait_stats(
-    VkrRendererFrontendHandle renderer, VkrRendererUploadWaitStats *out_stats);
+    VkrRenderer *renderer, VkrRendererUploadWaitStats *out_stats);
 /** Returns and resets CPU waits caused by bounded command-slot reuse. */
-bool8_t vkr_renderer_get_and_reset_command_slot_wait_count(
-    VkrRendererFrontendHandle renderer, uint64_t *out_wait_count);
+bool8_t
+vkr_renderer_get_and_reset_command_slot_wait_count(VkrRenderer *renderer,
+                                                   uint64_t *out_wait_count);
 /** @brief Snapshots device-memory allocation telemetry. Non-resetting. */
-bool8_t vkr_renderer_get_device_memory_stats(VkrRendererFrontendHandle renderer,
+bool8_t vkr_renderer_get_device_memory_stats(VkrRenderer *renderer,
                                              VkrDeviceMemoryStats *out_stats);
 // --- END Utility ---
-
-// Text creation/destruction (persistent world resources)
-bool8_t vkr_renderer_create_world_text(VkrRendererFrontendHandle renderer,
-                                       const VkrWorldTextCreateData *payload);
-bool8_t vkr_renderer_destroy_world_text(VkrRendererFrontendHandle renderer,
-                                        uint32_t text_id);
-// --- END Resource Management ---
 
 /**
  * @brief Frame-in-flight slot currently being recorded.
@@ -1256,9 +1129,9 @@ bool8_t vkr_renderer_destroy_world_text(VkrRendererFrontendHandle renderer,
  * buffers: the slot's fence is waited on in begin_frame, so its previous
  * contents are guaranteed to be free of GPU readers.
  */
-uint32_t vkr_renderer_frame_in_flight_index(VkrRendererFrontendHandle renderer);
+uint32_t vkr_renderer_frame_in_flight_index(VkrRenderer *renderer);
 /** @brief Number of distinct frame-in-flight slots (<= BUFFERING_FRAMES). */
-uint32_t vkr_renderer_frame_in_flight_count(VkrRendererFrontendHandle renderer);
+uint32_t vkr_renderer_frame_in_flight_count(VkrRenderer *renderer);
 /**
  * Target-neutral attachment and frame configuration queries.
  *
@@ -1267,15 +1140,13 @@ uint32_t vkr_renderer_frame_in_flight_count(VkrRendererFrontendHandle renderer);
  * offscreen renderer present the same contract to every caller above the
  * backend.
  */
-uint32_t
-vkr_renderer_present_target_image_count(VkrRendererFrontendHandle renderer);
-VkrPresentTargetKind
-vkr_renderer_present_target_kind(VkrRendererFrontendHandle renderer);
-void vkr_renderer_present_target_extent(VkrRendererFrontendHandle renderer,
+uint32_t vkr_renderer_present_target_image_count(VkrRenderer *renderer);
+VkrPresentTargetKind vkr_renderer_present_target_kind(VkrRenderer *renderer);
+void vkr_renderer_present_target_extent(VkrRenderer *renderer,
                                         uint32_t *out_width,
                                         uint32_t *out_height);
 VkrTextureFormat
-vkr_renderer_present_target_format(VkrRendererFrontendHandle renderer,
+vkr_renderer_present_target_format(VkrRenderer *renderer,
                                    VkrPresentTargetAttachment attachment);
 /**
  * @brief Recreates an offscreen target outside an active frame.
@@ -1283,22 +1154,29 @@ vkr_renderer_present_target_format(VkrRendererFrontendHandle renderer,
  * This is the only resize path for an offscreen target. It waits for GPU
  * completion before replacing all per-image attachments and synchronization.
  */
-VkrRendererError
-vkr_renderer_present_target_recreate(VkrRendererFrontendHandle renderer,
-                                     uint32_t width, uint32_t height,
-                                     uint32_t image_count);
-VkrTextureFormat
-vkr_renderer_get_shadow_depth_format(VkrRendererFrontendHandle renderer);
+VkrRendererError vkr_renderer_present_target_recreate(VkrRenderer *renderer,
+                                                      uint32_t width,
+                                                      uint32_t height,
+                                                      uint32_t image_count);
+VkrTextureFormat vkr_renderer_get_shadow_depth_format(VkrRenderer *renderer);
 // --- END Render Pass & Target Management ---
 
 // --- START Frame Lifecycle & Rendering Commands ---
-VkrRendererError vkr_renderer_prepare_frame(VkrRendererFrontendHandle renderer,
-                                            VkrFrameSetup *out_setup);
+/** Wait for slot reuse and acquire the target. On success, render or cancel
+ * the returned frame exactly once. A skipped frame acquires no context. */
+VkrRendererError vkr_renderer_begin_frame(VkrRenderer *renderer,
+                                          const VkrFrameConfig *config,
+                                          VkrFrame *out_frame);
+/** Cancel acquired resources and recorded work before submission. */
+VkrRendererError vkr_renderer_cancel_frame(VkrFrame *frame);
+/** Validate and prepare input, record native commands, submit and present.
+ * Consumes a valid acquired frame on success or failure. Input arrays are
+ * borrowed until return; referenced GPU resources remain retained through
+ * completion. */
 VkrRendererError
-vkr_renderer_submit_packet(VkrRendererFrontendHandle renderer,
-                           const VkrRenderPacket *packet,
-                           VkrRendererFrameMetrics *out_metrics,
-                           VkrValidationError *out_validation_error);
+vkr_renderer_render_frame(VkrFrame *frame, const VkrFrameInput *input,
+                          VkrRendererFrameMetrics *out_metrics,
+                          VkrValidationError *out_validation_error);
 
 uint32_t vkr_renderer_capture_channel_count(void);
 const VkrCaptureChannelDescription *
@@ -1307,13 +1185,13 @@ VkrCaptureChannelId vkr_renderer_capture_channel_from_name(const char *name);
 bool8_t
 vkr_renderer_capture_request_contains(const VkrCaptureBatchRequest *request,
                                       const char *channel_name);
-VkrCaptureStatus vkr_renderer_capture_poll(VkrRendererFrontendHandle renderer,
+VkrCaptureStatus vkr_renderer_capture_poll(VkrRenderer *renderer,
                                            VkrCaptureRequestId request_id,
                                            VkrCapturePollResult *out_result);
-bool8_t vkr_renderer_capture_release(VkrRendererFrontendHandle renderer,
+bool8_t vkr_renderer_capture_release(VkrRenderer *renderer,
                                      VkrCaptureRequestId request_id);
 
-void vkr_renderer_resize(VkrRendererFrontendHandle renderer, uint32_t width,
+void vkr_renderer_resize(VkrRenderer *renderer, uint32_t width,
                          uint32_t height);
 /**
  * Sets the reconstructed Scene extent outside an active frame.
@@ -1322,15 +1200,14 @@ void vkr_renderer_resize(VkrRendererFrontendHandle renderer, uint32_t width,
  * to the present target while the Scene is reconstructed to this extent and
  * then composited into its panel.
  */
-VkrRendererError
-vkr_renderer_set_scene_output_extent(VkrRendererFrontendHandle renderer,
-                                     uint32_t width, uint32_t height);
+VkrRendererError vkr_renderer_set_scene_output_extent(VkrRenderer *renderer,
+                                                      uint32_t width,
+                                                      uint32_t height);
 /** Restores Scene reconstruction to the current present-target extent. */
 VkrRendererError
-vkr_renderer_restore_scene_output_extent(VkrRendererFrontendHandle renderer);
+vkr_renderer_restore_scene_output_extent(VkrRenderer *renderer);
 /** Invalidates temporal accumulation before the next submitted frame. */
-void vkr_renderer_invalidate_temporal_history(
-    VkrRendererFrontendHandle renderer);
+void vkr_renderer_invalidate_temporal_history(VkrRenderer *renderer);
 /**
  * @brief Invalidates exposure adaptation before the next submitted frame.
  *
@@ -1340,8 +1217,7 @@ void vkr_renderer_invalidate_temporal_history(
  * does not necessarily mean the scene changed brightness. Resize, scene change,
  * camera cut, and mode change already invalidate both without this call.
  */
-void vkr_renderer_invalidate_exposure_history(
-    VkrRendererFrontendHandle renderer);
+void vkr_renderer_invalidate_exposure_history(VkrRenderer *renderer);
 
 // --- END Frame Lifecycle & Rendering Commands ---
 
@@ -1376,7 +1252,7 @@ typedef struct VkrPixelReadbackResult {
  * @return VKR_RENDERER_ERROR_NONE on success
  */
 VkrRendererError
-vkr_renderer_get_pixel_readback_result(VkrRendererFrontendHandle renderer,
+vkr_renderer_get_pixel_readback_result(VkrRenderer *renderer,
                                        VkrPixelReadbackResult *out_result);
 
 // --- END Pixel Readback API ---
@@ -1391,5 +1267,4 @@ vkr_renderer_get_pixel_readback_result(VkrRendererFrontendHandle renderer,
  * @param renderer The renderer frontend handle
  * @return The allocator
  */
-VkrAllocator *
-vkr_renderer_get_backend_allocator(VkrRendererFrontendHandle renderer);
+VkrAllocator *vkr_renderer_get_backend_allocator(VkrRenderer *renderer);

@@ -13,8 +13,8 @@
 #include "math/vec.h"
 #include "math/vkr_quat.h"
 #include "math/vkr_transform.h"
-#include "renderer/renderer_frontend.h"
 #include "renderer/systems/vkr_mesh_manager.h"
+#include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_world_resources.h"
 
 typedef struct SceneText3DImport {
@@ -148,7 +148,7 @@ typedef struct SceneShapeMaterialAsyncState {
 } SceneShapeMaterialAsyncState;
 
 typedef struct VkrSceneLoaderAsyncPayload {
-  struct s_RendererFrontend *rf;
+  struct VkrRenderAssets *assets;
   char *json_storage;
   uint64_t json_length;
   SceneEntityImport *imports;
@@ -208,16 +208,16 @@ vkr_internal uint32_t scene_loader_parse_reflection_probe_imports(
     SceneReflectionProbeImport out_imports[VKR_SCENE_REFLECTION_PROBE_MAX]);
 vkr_internal void
 scene_loader_reset_scene_environment(VkrScene *scene,
-                                     struct s_RendererFrontend *rf);
+                                     struct VkrRenderAssets *assets);
 vkr_internal void scene_loader_apply_environment_import(
-    VkrScene *scene, struct s_RendererFrontend *rf,
+    VkrScene *scene, struct VkrRenderAssets *assets,
     const SceneEnvironmentImport *environment_import,
     const VkrTexturePreparedLoad *prepared_environment);
 vkr_internal void
 scene_loader_reset_scene_reflection_probes(VkrScene *scene,
-                                           struct s_RendererFrontend *rf);
+                                           struct VkrRenderAssets *assets);
 vkr_internal void scene_loader_apply_reflection_probe_imports(
-    VkrScene *scene, struct s_RendererFrontend *rf,
+    VkrScene *scene, struct VkrRenderAssets *assets,
     const SceneReflectionProbeImport *imports, uint32_t import_count);
 vkr_internal bool8_t scene_loader_parse_json_imports(
     VkrAllocator *allocator, VkrMutex mutex, String8 json,
@@ -1202,24 +1202,24 @@ vkr_internal uint32_t scene_loader_parse_reflection_probe_imports(
   return import_count;
 }
 
-vkr_internal void scene_loader_reset_scene_environment(VkrScene *scene,
-                                                       RendererFrontend *rf) {
+vkr_internal void
+scene_loader_reset_scene_environment(VkrScene *scene, VkrRenderAssets *assets) {
   if (!scene) {
     return;
   }
 
-  if (rf) {
+  if (assets) {
     if (scene->environment.prefilter_cubemap.id != 0) {
       vkr_texture_system_release_by_handle(
-          &rf->texture_system, scene->environment.prefilter_cubemap);
+          &assets->texture_system, scene->environment.prefilter_cubemap);
     }
     if (scene->environment.source_cubemap.id != 0) {
-      vkr_texture_system_release_by_handle(&rf->texture_system,
+      vkr_texture_system_release_by_handle(&assets->texture_system,
                                            scene->environment.source_cubemap);
     }
     if (scene->environment.delivery_equirect.id != 0) {
       vkr_texture_system_release_by_handle(
-          &rf->texture_system, scene->environment.delivery_equirect);
+          &assets->texture_system, scene->environment.delivery_equirect);
     }
   }
 
@@ -1236,14 +1236,14 @@ vkr_internal void scene_loader_reset_scene_environment(VkrScene *scene,
 }
 
 vkr_internal void scene_loader_apply_environment_import(
-    VkrScene *scene, struct s_RendererFrontend *rf,
+    VkrScene *scene, struct VkrRenderAssets *assets,
     const SceneEnvironmentImport *environment_import,
     const VkrTexturePreparedLoad *prepared_environment) {
   if (!scene) {
     return;
   }
 
-  scene_loader_reset_scene_environment(scene, rf);
+  scene_loader_reset_scene_environment(scene, assets);
   if (!environment_import || !environment_import->has_block) {
     return;
   }
@@ -1268,7 +1268,7 @@ vkr_internal void scene_loader_apply_environment_import(
     return;
   }
 
-  if (!rf) {
+  if (!assets) {
     log_warn("Scene loader: renderer missing while applying environment block");
     scene->environment.enabled = false_v;
     scene->environment.bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE;
@@ -1281,26 +1281,30 @@ vkr_internal void scene_loader_apply_environment_import(
     if (environment_import->cubemap_path.length > 0u) {
       VkrTexturePreparedLoad local_prepared = {0};
       const VkrTexturePreparedLoad *upload = prepared_environment;
-      if (!upload && !vkr_texture_system_prepare_load_from_file(
-                         &rf->texture_system, environment_import->cubemap_path,
-                         VKR_TEXTURE_RGBA_CHANNELS, &rf->scratch_allocator,
-                         &local_prepared, &cubemap_error)) {
+      if (!upload &&
+          !vkr_texture_system_prepare_load_from_file(
+              &assets->texture_system, environment_import->cubemap_path,
+              VKR_TEXTURE_RGBA_CHANNELS, &assets->scratch_allocator,
+              &local_prepared, &cubemap_error)) {
         goto failed;
       }
       upload = upload ? upload : &local_prepared;
       const bool8_t valid =
           upload->description.type == VKR_TEXTURE_TYPE_CUBE_MAP;
       const bool8_t finalized =
-          valid && vkr_texture_system_finalize_prepared_load(
-                       &rf->texture_system, environment_import->cubemap_path,
-                       upload, &source_cubemap, &cubemap_error);
+          valid &&
+          vkr_texture_system_finalize_prepared_load(
+              &assets->texture_system, environment_import->cubemap_path, upload,
+              &source_cubemap, &cubemap_error);
       vkr_texture_system_release_prepared_load(&local_prepared);
       if (!finalized) {
         goto failed;
       }
-      vkr_texture_system_add_ref_by_handle(&rf->texture_system, source_cubemap);
+      vkr_texture_system_add_ref_by_handle(&assets->texture_system,
+                                           source_cubemap);
     } else if (!vkr_texture_system_load_cube_map(
-                   &rf->texture_system, environment_import->cubemap_base_path,
+                   &assets->texture_system,
+                   environment_import->cubemap_base_path,
                    environment_import->cubemap_extension, &source_cubemap,
                    &cubemap_error)) {
       String8 err_str = vkr_renderer_get_error_string(cubemap_error);
@@ -1317,8 +1321,8 @@ vkr_internal void scene_loader_apply_environment_import(
     VkrRendererError texture_error = VKR_RENDERER_ERROR_NONE;
     if (!upload) {
       if (!vkr_texture_system_prepare_load_from_file(
-              &rf->texture_system, environment_import->equirect_path,
-              VKR_TEXTURE_RGBA_CHANNELS, &rf->scratch_allocator,
+              &assets->texture_system, environment_import->equirect_path,
+              VKR_TEXTURE_RGBA_CHANNELS, &assets->scratch_allocator,
               &local_prepared, &texture_error)) {
         goto failed;
       }
@@ -1332,21 +1336,21 @@ vkr_internal void scene_loader_apply_environment_import(
       goto failed;
     }
     const bool8_t finalized = vkr_texture_system_finalize_prepared_load(
-        &rf->texture_system, environment_import->equirect_path, upload,
+        &assets->texture_system, environment_import->equirect_path, upload,
         &delivery, &texture_error);
     vkr_texture_system_release_prepared_load(&local_prepared);
     if (!finalized) {
       goto failed;
     }
-    vkr_texture_system_add_ref_by_handle(&rf->texture_system, delivery);
+    vkr_texture_system_add_ref_by_handle(&assets->texture_system, delivery);
     scene->environment.delivery_equirect = delivery;
     scene->environment.bake_state = VKR_SCENE_ENV_BAKE_STATE_SOURCE_LOADING;
   } else {
     goto failed;
   }
 
-  if (!vkr_world_resources_prepare_scene_environment(rf, &rf->world_resources,
-                                                     scene)) {
+  if (!vkr_world_resources_prepare_scene_environment(
+          assets, &assets->world_resources, scene)) {
     goto failed;
   }
   if (environment_import->source_kind == VKR_SCENE_ENV_SOURCE_EQUIRECT) {
@@ -1357,26 +1361,26 @@ vkr_internal void scene_loader_apply_environment_import(
   return;
 
 failed:
-  scene_loader_reset_scene_environment(scene, rf);
+  scene_loader_reset_scene_environment(scene, assets);
   scene->environment.bake_state = VKR_SCENE_ENV_BAKE_STATE_FAILED;
 }
 
 vkr_internal void
 scene_loader_reset_scene_reflection_probes(VkrScene *scene,
-                                           struct s_RendererFrontend *rf) {
+                                           struct VkrRenderAssets *assets) {
   if (!scene) {
     return;
   }
 
-  if (rf) {
+  if (assets) {
     for (uint32_t i = 0; i < scene->reflection_probe_count; ++i) {
       VkrSceneReflectionProbe *probe = &scene->reflection_probes[i];
       if (probe->prefilter_cubemap.id != 0) {
-        vkr_texture_system_release_by_handle(&rf->texture_system,
+        vkr_texture_system_release_by_handle(&assets->texture_system,
                                              probe->prefilter_cubemap);
       }
       if (probe->source_cubemap.id != 0) {
-        vkr_texture_system_release_by_handle(&rf->texture_system,
+        vkr_texture_system_release_by_handle(&assets->texture_system,
                                              probe->source_cubemap);
       }
     }
@@ -1402,22 +1406,22 @@ scene_loader_reset_scene_reflection_probes(VkrScene *scene,
 }
 
 vkr_internal void scene_loader_apply_reflection_probe_imports(
-    VkrScene *scene, struct s_RendererFrontend *rf,
+    VkrScene *scene, struct VkrRenderAssets *assets,
     const SceneReflectionProbeImport *imports, uint32_t import_count) {
   if (!scene) {
     return;
   }
 
-  scene_loader_reset_scene_reflection_probes(scene, rf);
+  scene_loader_reset_scene_reflection_probes(scene, assets);
   if (!imports || import_count == 0) {
     return;
   }
 
   VkrTextureHandle environment_source = VKR_TEXTURE_HANDLE_INVALID;
   bool8_t environment_source_valid = false_v;
-  if (rf && scene->environment.source_cubemap.id != 0) {
+  if (assets && scene->environment.source_cubemap.id != 0) {
     VkrTexture *environment_texture = vkr_texture_system_get_by_handle(
-        &rf->texture_system, scene->environment.source_cubemap);
+        &assets->texture_system, scene->environment.source_cubemap);
     if (environment_texture && environment_texture->handle &&
         environment_texture->description.type == VKR_TEXTURE_TYPE_CUBE_MAP) {
       environment_source = scene->environment.source_cubemap;
@@ -1448,7 +1452,7 @@ vkr_internal void scene_loader_apply_reflection_probe_imports(
     };
 
     if (probe.enabled) {
-      if (!rf) {
+      if (!assets) {
         log_warn(
             "Scene loader: renderer missing while applying reflection probe %u",
             i);
@@ -1459,7 +1463,7 @@ vkr_internal void scene_loader_apply_reflection_probe_imports(
         if (import->has_cubemap) {
           VkrRendererError cubemap_error = VKR_RENDERER_ERROR_NONE;
           if (vkr_texture_system_load_cube_map(
-                  &rf->texture_system, import->cubemap_base_path,
+                  &assets->texture_system, import->cubemap_base_path,
                   import->cubemap_extension, &source_cubemap, &cubemap_error)) {
             source_valid = true_v;
           } else {
@@ -1473,7 +1477,7 @@ vkr_internal void scene_loader_apply_reflection_probe_imports(
           }
         } else if (environment_source_valid) {
           source_cubemap = environment_source;
-          vkr_texture_system_add_ref_by_handle(&rf->texture_system,
+          vkr_texture_system_add_ref_by_handle(&assets->texture_system,
                                                source_cubemap);
           probe.source_mip_count = scene->environment.source_mip_count;
           probe.uses_scene_environment_source = true_v;
@@ -1926,14 +1930,15 @@ vkr_internal void scene_json_parse_entity(const VkrJsonReader *entity_reader,
   scene_json_parse_directional_light(entity_reader, entity_index, out_entity);
 }
 
-bool8_t vkr_scene_load_from_file(VkrScene *scene, struct s_RendererFrontend *rf,
-                                 String8 path, VkrAllocator *temp_alloc,
+bool8_t vkr_scene_load_from_file(VkrScene *scene,
+                                 struct VkrRenderAssets *assets, String8 path,
+                                 VkrAllocator *temp_alloc,
                                  VkrSceneLoadResult *out_result,
                                  VkrSceneError *out_error) {
   if (out_result) {
     *out_result = (VkrSceneLoadResult){0};
   }
-  if (!scene || !rf || !temp_alloc || !path.str) {
+  if (!scene || !assets || !temp_alloc || !path.str) {
     if (out_error)
       *out_error = VKR_SCENE_ERROR_ALLOC_FAILED;
     return false_v;
@@ -1964,25 +1969,26 @@ bool8_t vkr_scene_load_from_file(VkrScene *scene, struct s_RendererFrontend *rf,
     return false_v;
   }
 
-  return vkr_scene_load_from_json(scene, rf, json, temp_alloc, out_result,
+  return vkr_scene_load_from_json(scene, assets, json, temp_alloc, out_result,
                                   out_error);
 }
 
-bool8_t vkr_scene_load_from_json(VkrScene *scene, struct s_RendererFrontend *rf,
-                                 String8 json, VkrAllocator *temp_alloc,
+bool8_t vkr_scene_load_from_json(VkrScene *scene,
+                                 struct VkrRenderAssets *assets, String8 json,
+                                 VkrAllocator *temp_alloc,
                                  VkrSceneLoadResult *out_result,
                                  VkrSceneError *out_error) {
   if (out_result) {
     *out_result = (VkrSceneLoadResult){0};
   }
-  if (!scene || !scene->world || !rf || !temp_alloc || !json.str) {
+  if (!scene || !scene->world || !assets || !temp_alloc || !json.str) {
     if (out_error)
       *out_error = VKR_SCENE_ERROR_ALLOC_FAILED;
     return false_v;
   }
 
   // Store renderer frontend reference for layer message sending
-  scene->rf = rf;
+  scene->assets = assets;
 
   VkrJsonReader root = vkr_json_reader_from_string(json);
   int32_t version = 1;
@@ -1997,7 +2003,8 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene, struct s_RendererFrontend *rf,
 
   SceneEnvironmentImport environment_import =
       scene_loader_parse_environment_import(json);
-  scene_loader_apply_environment_import(scene, rf, &environment_import, NULL);
+  scene_loader_apply_environment_import(scene, assets, &environment_import,
+                                        NULL);
 
   SceneReflectionProbeImport
       reflection_probe_imports[VKR_SCENE_REFLECTION_PROBE_MAX] = {0};
@@ -2005,9 +2012,9 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene, struct s_RendererFrontend *rf,
       scene_loader_parse_reflection_probe_imports(json,
                                                   reflection_probe_imports);
   scene_loader_apply_reflection_probe_imports(
-      scene, rf, reflection_probe_imports, reflection_probe_import_count);
+      scene, assets, reflection_probe_imports, reflection_probe_import_count);
   (void)vkr_world_resources_prepare_scene_reflection_probes(
-      rf, &rf->world_resources, scene);
+      assets, &assets->world_resources, scene);
 
   uint32_t entity_count = 0;
   if (!scene_json_count_entities(&root, &entity_count)) {
@@ -2153,7 +2160,7 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene, struct s_RendererFrontend *rf,
       desc_index++;
     }
 
-    vkr_mesh_manager_create_instances_batch(&rf->mesh_manager, mesh_descs,
+    vkr_mesh_manager_create_instances_batch(&assets->mesh_manager, mesh_descs,
                                             mesh_desc_count, instance_handles,
                                             mesh_errors);
 
@@ -2186,7 +2193,7 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene, struct s_RendererFrontend *rf,
       }
 
       (void)vkr_mesh_manager_instance_set_shadow_mobility(
-          &rf->mesh_manager, instance,
+          &assets->mesh_manager, instance,
           imports[entity_index].shadow_caster_static
               ? VKR_SHADOW_CASTER_MOBILITY_STATIC
               : VKR_SHADOW_CASTER_MOBILITY_DYNAMIC);
@@ -2211,8 +2218,8 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene, struct s_RendererFrontend *rf,
       String8 font_name_copy =
           string8_duplicate(temp_alloc, &text_import->font_name);
       VkrRendererError font_err = VKR_RENDERER_ERROR_NONE;
-      font = vkr_font_system_acquire(&rf->font_system, font_name_copy, true_v,
-                                     &font_err);
+      font = vkr_font_system_acquire(&assets->font_system, font_name_copy,
+                                     true_v, &font_err);
       if (font.id == 0) {
         log_warn("Scene loader: entity %u text3d font '%.*s' not found, using "
                  "default",
@@ -2261,7 +2268,8 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene, struct s_RendererFrontend *rf,
     shape_config.material_path = shape_import->material_path;
 
     VkrSceneError shape_err = VKR_SCENE_ERROR_NONE;
-    if (!vkr_scene_set_shape(scene, rf, entity, &shape_config, &shape_err)) {
+    if (!vkr_scene_set_shape(scene, assets, entity, &shape_config,
+                             &shape_err)) {
       log_error("Scene loader: failed to set shape for entity %u (err=%d)", i,
                 (int)shape_err);
       continue;
@@ -2494,7 +2502,7 @@ vkr_internal void scene_loader_init_request_info(VkrResourceHandleInfo *info,
 
 vkr_internal bool8_t scene_loader_ensure_scene_handle(
     VkrSceneLoaderAsyncPayload *payload, VkrRendererError *out_error) {
-  if (!payload || !payload->rf || !out_error) {
+  if (!payload || !payload->assets || !out_error) {
     return false_v;
   }
 
@@ -2504,8 +2512,8 @@ vkr_internal bool8_t scene_loader_ensure_scene_handle(
   }
 
   VkrSceneError scene_error = VKR_SCENE_ERROR_NONE;
-  VkrSceneHandle handle = vkr_scene_handle_create(&payload->rf->allocator, 0,
-                                                  64, 256, &scene_error);
+  VkrSceneHandle handle = vkr_scene_handle_create(&payload->assets->allocator,
+                                                  0, 64, 256, &scene_error);
   if (!handle) {
     *out_error = scene_error_to_renderer_error(scene_error);
     return false_v;
@@ -2513,12 +2521,12 @@ vkr_internal bool8_t scene_loader_ensure_scene_handle(
 
   VkrScene *scene = vkr_scene_handle_get_scene(handle);
   if (!scene) {
-    vkr_scene_handle_destroy(handle, payload->rf);
+    vkr_scene_handle_destroy(handle, payload->assets);
     *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
     return false_v;
   }
 
-  scene->rf = payload->rf;
+  scene->assets = payload->assets;
   payload->scene_handle = handle;
   *out_error = VKR_RENDERER_ERROR_NONE;
   return true_v;
@@ -2526,17 +2534,17 @@ vkr_internal bool8_t scene_loader_ensure_scene_handle(
 
 vkr_internal void
 scene_loader_sync_partial(VkrSceneLoaderAsyncPayload *payload) {
-  if (!payload || !payload->scene_handle || !payload->rf) {
+  if (!payload || !payload->scene_handle || !payload->assets) {
     return;
   }
 
-  vkr_scene_handle_update_and_sync(payload->scene_handle, payload->rf, 0.0);
+  vkr_scene_handle_update_and_sync(payload->scene_handle, payload->assets, 0.0);
 }
 
 vkr_internal bool8_t scene_loader_apply_component_for_entity(
     VkrSceneLoaderAsyncPayload *payload, uint32_t entity_index,
     VkrRendererError *out_error) {
-  if (!payload || !payload->rf || !payload->scene_handle || !out_error) {
+  if (!payload || !payload->assets || !payload->scene_handle || !out_error) {
     if (out_error) {
       *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     }
@@ -2558,7 +2566,7 @@ vkr_internal bool8_t scene_loader_apply_component_for_entity(
   VkrEntityId entity = payload->entity_ids[entity_index];
 
   VkrAllocatorScope scope =
-      vkr_allocator_begin_scope(&payload->rf->scratch_allocator);
+      vkr_allocator_begin_scope(&payload->assets->scratch_allocator);
   bool8_t scope_valid = vkr_allocator_scope_is_valid(&scope);
   if (!scope_valid) {
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
@@ -2591,10 +2599,10 @@ vkr_internal bool8_t scene_loader_apply_component_for_entity(
     VkrFontHandle font = VKR_FONT_HANDLE_INVALID;
     if (text_import->font_name.length > 0) {
       String8 font_name_copy = string8_duplicate(
-          &payload->rf->scratch_allocator, &text_import->font_name);
+          &payload->assets->scratch_allocator, &text_import->font_name);
       VkrRendererError font_err = VKR_RENDERER_ERROR_NONE;
-      font = vkr_font_system_acquire(&payload->rf->font_system, font_name_copy,
-                                     true_v, &font_err);
+      font = vkr_font_system_acquire(&payload->assets->font_system,
+                                     font_name_copy, true_v, &font_err);
       if (font.id == 0) {
         log_warn("Scene loader: entity %u text3d font '%.*s' not found, using "
                  "default",
@@ -2604,8 +2612,8 @@ vkr_internal bool8_t scene_loader_apply_component_for_entity(
       }
     }
 
-    String8 text_copy =
-        string8_duplicate(&payload->rf->scratch_allocator, &text_import->text);
+    String8 text_copy = string8_duplicate(&payload->assets->scratch_allocator,
+                                          &text_import->text);
     VkrSceneText3DConfig text_config = VKR_SCENE_TEXT3D_CONFIG_DEFAULT;
     text_config.text = text_copy;
     text_config.font = font;
@@ -2634,7 +2642,7 @@ vkr_internal bool8_t scene_loader_apply_component_for_entity(
     shape_config.material_path = (String8){0};
 
     VkrSceneError shape_error = VKR_SCENE_ERROR_NONE;
-    if (!vkr_scene_set_shape(scene, payload->rf, entity, &shape_config,
+    if (!vkr_scene_set_shape(scene, payload->assets, entity, &shape_config,
                              &shape_error)) {
       log_error("Scene loader: failed to set shape for entity %u (err=%d)",
                 entity_index, (int)shape_error);
@@ -2706,7 +2714,7 @@ vkr_internal bool8_t scene_loader_apply_component_for_entity(
 vkr_internal bool8_t scene_loader_attach_mesh_for_entity(
     VkrSceneLoaderAsyncPayload *payload, uint32_t entity_index,
     VkrRendererError *out_error) {
-  if (!payload || !payload->rf || !payload->scene_handle || !out_error) {
+  if (!payload || !payload->assets || !payload->scene_handle || !out_error) {
     if (out_error) {
       *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     }
@@ -2779,8 +2787,8 @@ vkr_internal bool8_t scene_loader_attach_mesh_for_entity(
   VkrRendererError mesh_error = VKR_RENDERER_ERROR_NONE;
   VkrMeshInstanceHandle instance =
       vkr_mesh_manager_create_instance_from_resource(
-          &payload->rf->mesh_manager, &mesh_desc, &mesh_state->request_info, 0,
-          true_v, &mesh_error);
+          &payload->assets->mesh_manager, &mesh_desc, &mesh_state->request_info,
+          0, true_v, &mesh_error);
   if (instance.id == 0 || mesh_error != VKR_RENDERER_ERROR_NONE) {
     if (mesh_error == VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED) {
       /*
@@ -2829,7 +2837,7 @@ vkr_internal bool8_t scene_loader_attach_mesh_for_entity(
      classification as the batch path; without it every async-loaded scene
      mesh stays DYNAMIC and the static span is empty. */
   (void)vkr_mesh_manager_instance_set_shadow_mobility(
-      &payload->rf->mesh_manager, instance,
+      &payload->assets->mesh_manager, instance,
       entity_import->shadow_caster_static ? VKR_SHADOW_CASTER_MOBILITY_STATIC
                                           : VKR_SHADOW_CASTER_MOBILITY_DYNAMIC);
 
@@ -2895,9 +2903,9 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
   *out_payload = NULL;
   *out_error = VKR_RENDERER_ERROR_NONE;
 
-  struct s_RendererFrontend *rf =
-      (struct s_RendererFrontend *)self->resource_system;
-  if (!rf) {
+  struct VkrRenderAssets *assets =
+      (struct VkrRenderAssets *)self->resource_system;
+  if (!assets) {
     *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
@@ -2927,14 +2935,14 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
 
   VkrSceneLoaderAsyncPayload *payload =
       (VkrSceneLoaderAsyncPayload *)vkr_allocator_alloc_ts(
-          &rf->scene_async_allocator, sizeof(*payload),
-          VKR_ALLOCATOR_MEMORY_TAG_STRUCT, rf->scene_async_mutex);
+          &assets->scene_async_allocator, sizeof(*payload),
+          VKR_ALLOCATOR_MEMORY_TAG_STRUCT, assets->scene_async_mutex);
   if (!payload) {
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
   MemZero(payload, sizeof(*payload));
-  payload->rf = rf;
+  payload->assets = assets;
   payload->environment_import = scene_environment_import_defaults();
   payload->reflection_probe_import_count = 0;
   payload->reflection_probes_applied = false_v;
@@ -2943,8 +2951,8 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
   payload->ownership_transferred = false_v;
 
   String8 json_copy = {0};
-  if (!scene_loader_alloc_copy_string(&rf->scene_async_allocator,
-                                      rf->scene_async_mutex, json,
+  if (!scene_loader_alloc_copy_string(&assets->scene_async_allocator,
+                                      assets->scene_async_mutex, json,
                                       &payload->json_storage, &json_copy)) {
     scene_loader_destroy_async_payload(payload);
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
@@ -2954,7 +2962,7 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
 
   VkrSceneError scene_error = VKR_SCENE_ERROR_NONE;
   if (!scene_loader_parse_json_imports(
-          &rf->scene_async_allocator, rf->scene_async_mutex, json_copy,
+          &assets->scene_async_allocator, assets->scene_async_mutex, json_copy,
           &payload->imports, &payload->entity_count, &payload->imports_capacity,
           &scene_error)) {
     scene_loader_destroy_async_payload(payload);
@@ -2980,8 +2988,9 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
                        : payload->environment_import.equirect_path;
     VkrRendererError environment_error = VKR_RENDERER_ERROR_NONE;
     if (vkr_texture_system_prepare_load_from_file(
-            &rf->texture_system, environment_path, VKR_TEXTURE_RGBA_CHANNELS,
-            temp_alloc, &payload->environment_prepared, &environment_error) &&
+            &assets->texture_system, environment_path,
+            VKR_TEXTURE_RGBA_CHANNELS, temp_alloc,
+            &payload->environment_prepared, &environment_error) &&
         (!direct_cubemap || payload->environment_prepared.description.type ==
                                 VKR_TEXTURE_TYPE_CUBE_MAP)) {
       payload->environment_prepared_ready = true_v;
@@ -3005,15 +3014,15 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
     uint64_t shape_state_bytes =
         sizeof(SceneShapeMaterialAsyncState) * payload->entity_count;
     payload->entity_ids = (VkrEntityId *)vkr_allocator_alloc_ts(
-        &rf->scene_async_allocator, entity_id_bytes,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY, rf->scene_async_mutex);
+        &assets->scene_async_allocator, entity_id_bytes,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY, assets->scene_async_mutex);
     payload->mesh_states = (SceneMeshAsyncState *)vkr_allocator_alloc_ts(
-        &rf->scene_async_allocator, mesh_state_bytes,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY, rf->scene_async_mutex);
+        &assets->scene_async_allocator, mesh_state_bytes,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY, assets->scene_async_mutex);
     payload->shape_material_states =
         (SceneShapeMaterialAsyncState *)vkr_allocator_alloc_ts(
-            &rf->scene_async_allocator, shape_state_bytes,
-            VKR_ALLOCATOR_MEMORY_TAG_ARRAY, rf->scene_async_mutex);
+            &assets->scene_async_allocator, shape_state_bytes,
+            VKR_ALLOCATOR_MEMORY_TAG_ARRAY, assets->scene_async_mutex);
     if (!payload->entity_ids || !payload->mesh_states ||
         !payload->shape_material_states) {
       scene_loader_destroy_async_payload(payload);
@@ -3085,7 +3094,7 @@ vkr_internal bool8_t vkr_scene_loader_finalize_async(
 
   if (!async_payload->environment_applied) {
     scene_loader_apply_environment_import(
-        scene, async_payload->rf, &async_payload->environment_import,
+        scene, async_payload->assets, &async_payload->environment_import,
         async_payload->environment_prepared_ready
             ? &async_payload->environment_prepared
             : NULL);
@@ -3098,10 +3107,10 @@ vkr_internal bool8_t vkr_scene_loader_finalize_async(
   }
   if (!async_payload->reflection_probes_applied) {
     scene_loader_apply_reflection_probe_imports(
-        scene, async_payload->rf, async_payload->reflection_probe_imports,
+        scene, async_payload->assets, async_payload->reflection_probe_imports,
         async_payload->reflection_probe_import_count);
     (void)vkr_world_resources_prepare_scene_reflection_probes(
-        async_payload->rf, &async_payload->rf->world_resources, scene);
+        async_payload->assets, &async_payload->assets->world_resources, scene);
     async_payload->reflection_probes_applied = true_v;
   }
 
@@ -3341,44 +3350,44 @@ vkr_internal void scene_loader_destroy_async_payload_contents(
   }
 
   if (!payload->ownership_transferred && payload->scene_handle) {
-    vkr_scene_handle_destroy(payload->scene_handle, payload->rf);
+    vkr_scene_handle_destroy(payload->scene_handle, payload->assets);
     payload->scene_handle = VKR_SCENE_HANDLE_INVALID;
   }
 
   if (payload->shape_material_states) {
     vkr_allocator_free_ts(
-        &payload->rf->scene_async_allocator, payload->shape_material_states,
+        &payload->assets->scene_async_allocator, payload->shape_material_states,
         sizeof(SceneShapeMaterialAsyncState) * payload->entity_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY, payload->rf->scene_async_mutex);
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY, payload->assets->scene_async_mutex);
     payload->shape_material_states = NULL;
   }
   if (payload->mesh_states) {
     vkr_allocator_free_ts(
-        &payload->rf->scene_async_allocator, payload->mesh_states,
+        &payload->assets->scene_async_allocator, payload->mesh_states,
         sizeof(SceneMeshAsyncState) * payload->entity_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY, payload->rf->scene_async_mutex);
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY, payload->assets->scene_async_mutex);
     payload->mesh_states = NULL;
   }
   if (payload->entity_ids) {
     vkr_allocator_free_ts(
-        &payload->rf->scene_async_allocator, payload->entity_ids,
+        &payload->assets->scene_async_allocator, payload->entity_ids,
         sizeof(VkrEntityId) * payload->entity_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY, payload->rf->scene_async_mutex);
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY, payload->assets->scene_async_mutex);
     payload->entity_ids = NULL;
   }
   if (payload->imports) {
-    vkr_allocator_free_ts(&payload->rf->scene_async_allocator, payload->imports,
-                          sizeof(SceneEntityImport) * payload->imports_capacity,
-                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY,
-                          payload->rf->scene_async_mutex);
+    vkr_allocator_free_ts(
+        &payload->assets->scene_async_allocator, payload->imports,
+        sizeof(SceneEntityImport) * payload->imports_capacity,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY, payload->assets->scene_async_mutex);
     payload->imports = NULL;
     payload->imports_capacity = 0;
   }
   if (payload->json_storage) {
-    vkr_allocator_free_ts(&payload->rf->scene_async_allocator,
+    vkr_allocator_free_ts(&payload->assets->scene_async_allocator,
                           payload->json_storage, payload->json_length + 1,
                           VKR_ALLOCATOR_MEMORY_TAG_STRING,
-                          payload->rf->scene_async_mutex);
+                          payload->assets->scene_async_mutex);
     payload->json_storage = NULL;
     payload->json_length = 0;
   }
@@ -3390,10 +3399,11 @@ scene_loader_destroy_async_payload(VkrSceneLoaderAsyncPayload *payload) {
     return;
   }
 
-  struct s_RendererFrontend *rf = payload->rf;
+  struct VkrRenderAssets *assets = payload->assets;
   scene_loader_destroy_async_payload_contents(payload);
-  vkr_allocator_free_ts(&rf->scene_async_allocator, payload, sizeof(*payload),
-                        VKR_ALLOCATOR_MEMORY_TAG_STRUCT, rf->scene_async_mutex);
+  vkr_allocator_free_ts(&assets->scene_async_allocator, payload,
+                        sizeof(*payload), VKR_ALLOCATOR_MEMORY_TAG_STRUCT,
+                        assets->scene_async_mutex);
 }
 
 vkr_internal void
@@ -3430,16 +3440,16 @@ vkr_internal bool8_t vkr_scene_loader_load(VkrResourceLoader *self,
   assert_log(out_handle != NULL, "Out handle is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
-  struct s_RendererFrontend *rf =
-      (struct s_RendererFrontend *)self->resource_system;
-  if (!rf) {
+  struct VkrRenderAssets *assets =
+      (struct VkrRenderAssets *)self->resource_system;
+  if (!assets) {
     *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
 
   VkrSceneError scene_err = VKR_SCENE_ERROR_NONE;
   VkrSceneHandle handle =
-      vkr_scene_handle_create(&rf->allocator, 0, 64, 256, &scene_err);
+      vkr_scene_handle_create(&assets->allocator, 0, 64, 256, &scene_err);
   if (!handle) {
     *out_error = scene_error_to_renderer_error(scene_err);
     return false_v;
@@ -3450,7 +3460,7 @@ vkr_internal bool8_t vkr_scene_loader_load(VkrResourceLoader *self,
 
   VkrSceneLoadResult load_result = {0};
   VkrScene *scene = vkr_scene_handle_get_scene(handle);
-  bool8_t loaded = vkr_scene_load_from_file(scene, rf, name, temp_alloc,
+  bool8_t loaded = vkr_scene_load_from_file(scene, assets, name, temp_alloc,
                                             &load_result, &scene_err);
 
   if (scoped) {
@@ -3460,14 +3470,14 @@ vkr_internal bool8_t vkr_scene_loader_load(VkrResourceLoader *self,
   if (!loaded) {
     log_error("Scene loader: failed to load '%s' (error=%d)",
               string8_cstr(&name), (int)scene_err);
-    vkr_scene_handle_destroy(handle, rf);
+    vkr_scene_handle_destroy(handle, assets);
     *out_error = scene_error_to_renderer_error(scene_err);
     return false_v;
   }
 
   // Sync through the incremental path; async load uses staged partial syncs.
   vkr_scene_handle_update(handle, 0.0);
-  vkr_scene_handle_sync(handle, rf);
+  vkr_scene_handle_sync(handle, assets);
 
   log_info(
       "Scene loaded: %u entities, %u meshes, %u text3d, %u shapes, %u point "
@@ -3495,9 +3505,9 @@ vkr_internal void vkr_scene_loader_unload(VkrResourceLoader *self,
     return;
   }
 
-  struct s_RendererFrontend *rf =
-      (struct s_RendererFrontend *)self->resource_system;
-  vkr_scene_handle_destroy(handle->as.scene, rf);
+  struct VkrRenderAssets *assets =
+      (struct VkrRenderAssets *)self->resource_system;
+  vkr_scene_handle_destroy(handle->as.scene, assets);
 }
 
 VkrResourceLoader vkr_scene_loader_create(void) {

@@ -1,7 +1,7 @@
 #include "bloom_test.h"
 
-#include "renderer/renderer_frontend.h"
 #include "renderer/vkr_bloom.h"
+#include "renderer/vkr_renderer_internal.h"
 
 #include <assert.h>
 #include <math.h>
@@ -50,16 +50,16 @@ static void test_bloom_config_and_mips(void) {
 
 static void test_bloom_packet_validation(void) {
   printf("  Running test_bloom_packet_validation...\n");
-  VkrRenderPacket packet = {
-      .packet_version = VKR_RENDER_PACKET_VERSION,
+  VkrFrameInput packet = {
+      .version = VKR_FRAME_INPUT_VERSION,
       .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE},
   };
   VkrValidationError validation = {0};
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_NONE);
 
   packet.globals.bloom_enabled = 2u;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.globals.bloom_enabled") == 0);
 
@@ -67,29 +67,29 @@ static void test_bloom_packet_validation(void) {
   packet.globals.bloom_threshold = VKR_BLOOM_DEFAULT_THRESHOLD;
   packet.globals.bloom_knee = VKR_BLOOM_DEFAULT_KNEE;
   packet.globals.bloom_intensity = VKR_BLOOM_DEFAULT_INTENSITY;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_NONE);
 
   packet.globals.bloom_threshold = NAN;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.globals.bloom_threshold") == 0);
   packet.globals.bloom_threshold = VKR_BLOOM_DEFAULT_THRESHOLD;
 
   packet.globals.bloom_knee = -1.0f;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.globals.bloom_knee") == 0);
   packet.globals.bloom_knee = VKR_BLOOM_DEFAULT_KNEE;
 
   packet.globals.bloom_intensity = INFINITY;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.globals.bloom_intensity") == 0);
   packet.globals.bloom_intensity = VKR_BLOOM_DEFAULT_INTENSITY;
 
-  packet.packet_version = VKR_RENDER_PACKET_VERSION - 1u;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  packet.version = VKR_FRAME_INPUT_VERSION - 1u;
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_INCOMPATIBLE_SIGNATURE);
   printf("  test_bloom_packet_validation PASSED\n");
 }

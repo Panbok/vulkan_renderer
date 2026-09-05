@@ -19,7 +19,7 @@ window. A fake swapchain would preserve unnecessary WSI assumptions.
 
 Select window or offscreen presentation at renderer initialization. Each native
 implementation owns acquisition/advancement, image count, formats, recreation,
-submission completion and final presentation behavior. The frontend consumes
+submission completion and final presentation behavior. The renderer consumes
 capabilities and frame setup through `VkrRendererImpl`.
 
 Offscreen targets own ordinary images and advance through a bounded target ring.

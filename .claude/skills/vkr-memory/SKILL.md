@@ -65,8 +65,12 @@ is not a reset operation for a still-live allocator.
   well as success. Use one cleanup path for partial loads when it makes the
   acquisition order explicit. Release only acquired resources, in dependency
   order.
-- `VkrRenderPacket` arrays remain caller-owned until submission returns. That
-  CPU borrowing boundary does not retire GPU resources referenced by the packet.
+- `VkrFrameInput` arrays remain caller-owned until `vkr_renderer_render_frame()`
+  returns. That CPU borrowing boundary does not retire referenced GPU resources.
+- Keep Application frame scratch separate from `VkrRenderAssets` load scratch.
+  Assets own loader contexts, pools and asynchronous allocators, and borrow the
+  renderer publisher. Join workers and prove GPU idle before teardown; preserve
+  loader registration and publisher lifetime through final resource release.
 
 ## GPU memory and completion
 

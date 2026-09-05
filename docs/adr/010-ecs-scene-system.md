@@ -12,7 +12,7 @@ Accepted.
 ## Context
 
 Scenes need stable entity identity, composable components, transform hierarchy,
-editor selection, and renderer-owned mesh instances. The renderer cannot use
+editor selection, and asset-owned mesh instances. The renderer cannot use
 ECS storage directly as a GPU lifetime owner.
 
 ## Decision

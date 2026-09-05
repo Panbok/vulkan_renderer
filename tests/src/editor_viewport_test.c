@@ -1,8 +1,8 @@
 #include "editor_viewport_test.h"
 
-#include "renderer/renderer_frontend.h"
 #include "renderer/systems/vkr_editor_viewport.h"
 #include "renderer/vkr_exposure.h"
+#include "renderer/vkr_renderer_internal.h"
 
 #include <assert.h>
 #include <math.h>
@@ -57,10 +57,10 @@ static void test_editor_viewport_mapping(void) {
   printf("  test_editor_viewport_mapping PASSED\n");
 }
 
-static VkrRenderPacket
+static VkrFrameInput
 editor_viewport_packet(const VkrEditorPassPayload *payload) {
-  return (VkrRenderPacket){
-      .packet_version = VKR_RENDER_PACKET_VERSION,
+  return (VkrFrameInput){
+      .version = VKR_FRAME_INPUT_VERSION,
       .frame =
           {
               .window_width = 640u,
@@ -79,40 +79,40 @@ static void test_editor_viewport_packet_validation(void) {
   VkrEditorPassPayload payload = {
       .image_rect_px = {228.0f, 40.0f, 124.0f, 252.0f},
   };
-  VkrRenderPacket packet = editor_viewport_packet(&payload);
+  VkrFrameInput packet = editor_viewport_packet(&payload);
   VkrValidationError validation = {0};
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_NONE);
 
   packet.frame.editor_enabled = false_v;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.editor") == 0);
 
   packet.frame.editor_enabled = true_v;
   payload.image_rect_px.x = 228.5f;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.editor.image_rect_px") == 0);
 
   payload.image_rect_px = (Vec4){600.0f, 40.0f, 124.0f, 252.0f};
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
 
   payload.image_rect_px = (Vec4){NAN, 40.0f, 124.0f, 252.0f};
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
 
   payload.image_rect_px = (Vec4){228.0f, 40.0f, 124.0f, 252.0f};
   packet.frame.viewport_width = 0u;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   printf("  test_editor_viewport_packet_validation PASSED\n");
 }
 
 static void test_scene_output_extent_restore(void) {
   printf("  Running test_scene_output_extent_restore...\n");
-  RendererFrontend renderer = {
+  VkrRenderer renderer = {
       .backend_type = VKR_RENDERER_BACKEND_TYPE_METAL,
       .render_scale = 0.5f,
       .scene_output_width = 800u,

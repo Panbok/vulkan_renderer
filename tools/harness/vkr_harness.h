@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/vkr_subsystem_plan.h"
+
 #include "containers/str.h"
 #include "containers/vkr_sort.h"
 #include "core/vkr_json_writer.h"

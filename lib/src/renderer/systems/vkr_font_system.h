@@ -62,7 +62,6 @@ typedef struct VkrFontConfig {
 
 /**
  * @brief A font system.
- * @param renderer The renderer handle.
  * @param config The system config.
  * @param default_system_font_handle The default system font handle.
  * @param default_bitmap_font_handle The default bitmap font handle.
@@ -75,7 +74,6 @@ typedef struct VkrFontConfig {
  * @param generation_counter The generation counter.
  */
 typedef struct VkrFontSystem {
-  VkrRendererFrontendHandle renderer; // renderer handle
 
   VkrFontSystemConfig config; // system config
 
@@ -107,12 +105,10 @@ typedef struct VkrFontSystem {
 /**
  * @brief Initializes the font system.
  * @param system The font system.
- * @param renderer The renderer handle.
  * @param config The system config.
  * @param out_error The error output.
  */
 bool8_t vkr_font_system_init(VkrFontSystem *system,
-                             VkrRendererFrontendHandle renderer,
                              const VkrFontSystemConfig *config,
                              VkrRendererError *out_error);
 

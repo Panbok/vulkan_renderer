@@ -99,11 +99,11 @@ bool8_t vkr_text_3d_create(VkrText3D *text_3d, VkrFontSystem *font_system,
 void vkr_text_3d_destroy(VkrText3D *text_3d);
 
 /**
- * @brief Sets the text content.
+ * @brief Copies replacement content; preserves current content on failure.
  * @param text_3d The text 3D instance.
  * @param text The text content to set.
  */
-void vkr_text_3d_set_text(VkrText3D *text_3d, String8 text);
+bool8_t vkr_text_3d_set_text(VkrText3D *text_3d, String8 text);
 
 /**
  * @brief Sets the text color.
@@ -147,5 +147,5 @@ void vkr_text_3d_set_rotation(VkrText3D *text_3d, VkrQuat rotation);
  */
 void vkr_text_3d_set_scale(VkrText3D *text_3d, Vec3 scale);
 
-/** Prepares shaped CPU geometry without issuing renderer API calls. */
+/** Prepares shaped CPU geometry. Empty geometry succeeds with zero counts. */
 bool8_t vkr_text_3d_prepare_geometry(VkrText3D *text_3d);

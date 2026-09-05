@@ -57,41 +57,26 @@ bool8_t vkr_metal_dependency_lower(const VkrGpuDependency *dependency,
   return true_v;
 }
 
-bool8_t
-vkr_metal_dependency_encode_producer(id<MTL4CommandEncoder> encoder,
-                                     const VkrMetalDependency *dependency) {
-  if (!encoder || !dependency) {
-    return false_v;
-  }
+void vkr_metal_dependency_encode_producer(
+    id<MTL4CommandEncoder> encoder, const VkrMetalDependency *dependency) {
   [encoder
       barrierAfterStages:(MTLStages)dependency->src_stages
        beforeQueueStages:(MTLStages)dependency->dst_stages
        visibilityOptions:(MTL4VisibilityOptions)dependency->visibility_options];
-  return true_v;
 }
 
-bool8_t
-vkr_metal_dependency_encode_consumer(id<MTL4CommandEncoder> encoder,
-                                     const VkrMetalDependency *dependency) {
-  if (!encoder || !dependency) {
-    return false_v;
-  }
+void vkr_metal_dependency_encode_consumer(
+    id<MTL4CommandEncoder> encoder, const VkrMetalDependency *dependency) {
   [encoder barrierAfterQueueStages:(MTLStages)dependency->src_stages
                       beforeStages:(MTLStages)dependency->dst_stages
                  visibilityOptions:(MTL4VisibilityOptions)dependency->
                                    visibility_options];
-  return true_v;
 }
 
-bool8_t
-vkr_metal_dependency_encode_intra(id<MTL4CommandEncoder> encoder,
-                                  const VkrMetalDependency *dependency) {
-  if (!encoder || !dependency) {
-    return false_v;
-  }
+void vkr_metal_dependency_encode_intra(id<MTL4CommandEncoder> encoder,
+                                       const VkrMetalDependency *dependency) {
   [encoder barrierAfterEncoderStages:(MTLStages)dependency->src_stages
                  beforeEncoderStages:(MTLStages)dependency->dst_stages
                    visibilityOptions:(MTL4VisibilityOptions)dependency->
                                      visibility_options];
-  return true_v;
 }

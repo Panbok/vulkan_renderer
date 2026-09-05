@@ -3,7 +3,7 @@
 #include "math/mat.h"
 #include "math/vec.h"
 #include "renderer/systems/vkr_lighting_system.h"
-#include "renderer/vkr_render_packet.h"
+#include "renderer/vkr_prepared_frame.h"
 
 /** @file Shared frame-flag and immutable-material derivation. */
 
@@ -57,12 +57,12 @@ typedef struct VkrPacketMaterialConstants {
  *                      treated as one.
  */
 VkrPacketFrameConstants
-vkr_packet_derive_frame_constants(const VkrRenderPacket *packet,
+vkr_packet_derive_frame_constants(const VkrPreparedFrame *packet,
                                   uint32_t target_width,
                                   uint32_t target_height);
 
 /** Derives the shared lighting and IBL flags. */
-uint32_t vkr_packet_derive_frame_flags(const VkrRenderPacket *packet,
+uint32_t vkr_packet_derive_frame_flags(const VkrPreparedFrame *packet,
                                        bool8_t lighting_pass,
                                        bool8_t ibl_resources_ready);
 

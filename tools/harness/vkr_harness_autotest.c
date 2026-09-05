@@ -1,3 +1,4 @@
+#include "core/vkr_subsystem_plan.h"
 #include "vkr_harness_json.h"
 #include "vkr_harness_runtime.h"
 

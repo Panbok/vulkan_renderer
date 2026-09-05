@@ -726,7 +726,7 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanIblShRoot {
   uint32_t reserved[3];
 } VkrVulkanIblShRoot;
 
-/** Mirrors VkrShadowCascadePacketData; see vkr_render_packet.h for units. */
+/** Mirrors VkrShadowCascadePacketData; see vkr_frame_input.h for units. */
 typedef struct VKR_SIMD_ALIGN VkrVulkanPacketShadowCascade {
   Mat4 light_view_projection;
   Vec4 split_near_far_texel_depth;
@@ -1175,6 +1175,83 @@ typedef struct VkrVulkanRetiredTargetSet {
 
 typedef struct VkrVulkanPreparedDirectDraw VkrVulkanPreparedDirectDraw;
 
+typedef struct VkrVulkanPreparedCompute {
+  uint64_t root_address;
+  VkPipeline pipelines[3];
+  uint32_t groups[3][3];
+  uint32_t dispatch_count;
+  VkBuffer indirect_buffer;
+  VkDeviceSize indirect_offset;
+  VkImageMemoryBarrier2 image_barriers[4];
+  uint32_t image_barrier_count;
+  VkBufferMemoryBarrier2 buffer_barrier;
+  bool8_t has_buffer_barrier;
+} VkrVulkanPreparedCompute;
+
+typedef struct VkrVulkanPreparedRaster {
+  uint64_t root_address;
+  VkBuffer indices;
+  VkBuffer arguments;
+  VkBuffer counts;
+  VkPipeline pipelines[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
+  VkCullModeFlags cull_modes[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
+  VkDeviceSize argument_offsets[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
+  VkDeviceSize count_offsets[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
+} VkrVulkanPreparedRaster;
+
+typedef struct VkrVulkanPreparedWorldDraws {
+  VkrVulkanPacketPipeline pipeline;
+  uint64_t roots_address;
+  bool8_t lighting;
+  bool8_t enabled;
+} VkrVulkanPreparedWorldDraws;
+
+typedef struct VkrVulkanPreparedTextDraw VkrVulkanPreparedTextDraw;
+typedef struct VkrVulkanPreparedUiDraw VkrVulkanPreparedUiDraw;
+typedef struct VkrVulkanPreparedText {
+  VkrVulkanPacketPipeline pipeline;
+  VkrVulkanPreparedTextDraw *draws;
+  uint64_t roots_address;
+  uint32_t count;
+} VkrVulkanPreparedText;
+typedef struct VkrVulkanPreparedUi {
+  VkrVulkanPreparedUiDraw *draws;
+  uint64_t roots_address;
+  uint32_t count;
+  uint32_t width;
+  uint32_t height;
+} VkrVulkanPreparedUi;
+typedef struct VkrVulkanPreparedFullscreen {
+  VkPipeline pipeline;
+  VkrVulkanPushConstants push;
+} VkrVulkanPreparedFullscreen;
+
+typedef struct VkrVulkanPreparedUpload {
+  VkBuffer source;
+  VkBuffer candidates;
+  VkBuffer instances;
+  VkBuffer state;
+  VkBuffer sdsm;
+  VkBufferCopy candidate_copies[2];
+  VkBufferCopy instance_copies[2];
+  uint32_t copy_count;
+} VkrVulkanPreparedUpload;
+
+typedef struct VkrVulkanPreparedGraphPass VkrVulkanPreparedGraphPass;
+
+typedef struct VkrVulkanPreparedCaptureCopy {
+  VkImage source;
+  VkBufferImageCopy2 region;
+  VkImageMemoryBarrier2 barrier;
+  bool8_t transition;
+} VkrVulkanPreparedCaptureCopy;
+
+typedef struct VkrVulkanPreparedReadback {
+  VkBufferMemoryBarrier2 barriers[5];
+  VkBufferCopy copies[5];
+  uint32_t count;
+} VkrVulkanPreparedReadback;
+
 typedef struct VkrVulkanFrameSlot {
   VkCommandPool command_pool;
   VkCommandBuffer command_buffer;
@@ -1271,6 +1348,10 @@ typedef struct VkrVulkanFrameSlot {
   VkrVulkanGraphImageInstance *temporal_surface_input;
   VkrVulkanGraphImageInstance *temporal_surface_output;
   bool8_t temporal_history_valid;
+  VkrVulkanPreparedCaptureCopy *capture_copies;
+  VkImage picking_readback_image;
+  VkBufferImageCopy2 picking_readback_region;
+  VkrVulkanPreparedReadback deferred_readback;
   uint32_t indexed_draw_count;
   uint32_t blend_draw_count;
   /** Same-frame CPU cost of lowering this packet, reported at submit. */
@@ -1343,6 +1424,23 @@ typedef struct VkrVulkanPendingIblBake {
   float32_t sh_deringing;
 } VkrVulkanPendingIblBake;
 
+typedef struct VkrVulkanPreparedIblBake {
+  const VkrVulkanPublishedTexture *source;
+  const VkrVulkanPublishedTexture *prefilter;
+  VkrVulkanPreparedCompute conversion;
+  VkrVulkanPreparedCompute projection;
+  VkrVulkanPreparedCompute mips[VKR_VULKAN_TEXTURE_MIP_MAX];
+  uint32_t mip_count;
+  bool8_t convert;
+  bool8_t project;
+} VkrVulkanPreparedIblBake;
+typedef struct VkrVulkanPreparedIbl {
+  VkrVulkanPreparedIblBake *bakes;
+  uint32_t count;
+  bool8_t clear_coefficients;
+  bool8_t projected_any;
+} VkrVulkanPreparedIbl;
+
 typedef struct VkrVulkanPublishedSampler {
   VkrTextureDescription description;
   VkSampler sampler;
@@ -1385,6 +1483,11 @@ typedef struct VkrVulkanPendingBufferInitialization {
   VkAccessFlags2 destination_access;
   uint32_t geometry_record_index;
 } VkrVulkanPendingBufferInitialization;
+
+typedef struct VkrVulkanPreparedTextureInitialization {
+  const VkrVulkanPublishedTexture *texture;
+  const VkrVulkanPendingTextureInitialization *upload;
+} VkrVulkanPreparedTextureInitialization;
 
 typedef struct VkrVulkanRetiredGeometryMegabuffer {
   VkrVulkanBuffer vertices;
@@ -1502,10 +1605,12 @@ struct VkrVulkanRenderer {
   VkrRgBufferHandle gpu_candidate_instance_buffer_handle;
   VkrRgBufferHandle transmission_gpu_candidate_instance_buffer_handle;
   VkrRgBufferHandle temporal_transform_history_handle;
-  VkImageMemoryBarrier2 *graph_image_barriers;
-  uint64_t graph_image_barriers_size;
-  VkBufferMemoryBarrier2 *graph_buffer_barriers;
-  uint64_t graph_buffer_barriers_size;
+  VkrVulkanPreparedGraphPass *prepared_graph_passes;
+  VkrVulkanPreparedTextureInitialization *prepared_texture_initializations;
+  const VkrVulkanPendingBufferInitialization **prepared_buffer_initializations;
+  uint32_t prepared_texture_initialization_count;
+  uint32_t prepared_buffer_initialization_count;
+  VkDependencyInfo prepared_terminal_barriers;
   VkrVulkanDevice *device;
   VkrVulkanTargetSet targets;
   VkrVulkanRetiredTargetSet retired_targets[4];
@@ -1700,16 +1805,16 @@ bool8_t vkr_vk_mark_dirty(VkrVulkanDirtyRange *dirty,
                           const VkrVulkanBuffer *buffer, VkDeviceSize offset,
                           VkDeviceSize size);
 bool8_t vkr_vk_plan_capture(VkrVulkanRenderer *renderer,
-                            const VkrRenderPacket *packet,
+                            const VkrPreparedFrame *packet,
                             VkrVulkanFrameSlot *slot);
 /* CPU publication admission; recording consumes only these ready rows. */
-bool8_t vkr_vk_prepare_direct_draws(
-    VkrVulkanRenderer *renderer, VkrVulkanFrameSlot *slot,
-    const VkrWorldPassPayload *world);
+bool8_t vkr_vk_prepare_direct_draws(VkrVulkanRenderer *renderer,
+                                    VkrVulkanFrameSlot *slot,
+                                    const VkrWorldPassPayload *world);
 
 bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
                                       VkrVulkanFrameSlot *slot,
-                                      const VkrRenderPacket *packet);
+                                      const VkrPreparedFrame *packet);
 VkrVulkanPacketFrameRoot *vkr_vk_packet_frame_root(VkrVulkanFrameSlot *slot,
                                                    uint64_t *out_address);
 void vkr_vk_fill_packet_frame_root(
@@ -1725,127 +1830,127 @@ bool8_t vkr_vk_publish_sentinel_descriptors(VkrVulkanRenderer *renderer);
 bool8_t vkr_vk_publish_storage_view(VkrVulkanRenderer *renderer,
                                     VkImageView view,
                                     VkrGpuSlotHandle *out_handle);
-bool8_t vkr_vk_record_capture(VkrVulkanRenderer *renderer,
-                              VkCommandBuffer command,
-                              VkrVulkanFrameSlot *slot);
-bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
-                            VkCommandBuffer command);
-bool8_t vkr_vk_record_deferred_upload(VkrVulkanRenderer *renderer,
-                                      VkCommandBuffer command,
-                                      const VkrRgPass *pass,
-                                      bool8_t transmission);
-bool8_t vkr_vk_record_deferred_readback(VkrVulkanRenderer *renderer,
-                                        VkCommandBuffer command);
-bool8_t vkr_vk_record_deferred_cull(VkrVulkanRenderer *renderer,
-                                    VkCommandBuffer command,
-                                    const VkrRgPass *pass,
-                                    VkrVulkanDeferredPipeline pipeline,
-                                    bool8_t transmission);
-bool8_t vkr_vk_record_deferred_raster(VkrVulkanRenderer *renderer,
-                                      VkCommandBuffer command,
-                                      const VkrRgPass *pass, bool8_t shadow,
-                                      bool8_t transmission);
-bool8_t vkr_vk_record_deferred_gbuffer(VkrVulkanRenderer *renderer,
-                                       VkCommandBuffer command,
-                                       const VkrRgPass *pass);
-bool8_t vkr_vk_record_temporal_transform(VkrVulkanRenderer *renderer,
-                                         VkCommandBuffer command,
-                                         const VkrRgPass *pass);
-bool8_t vkr_vk_record_deferred_lighting(VkrVulkanRenderer *renderer,
-                                        VkCommandBuffer command,
+void vkr_vk_record_capture(VkrVulkanRenderer *renderer, VkCommandBuffer command,
+                           VkrVulkanFrameSlot *slot);
+void vkr_vk_record_graph(VkrVulkanRenderer *renderer, VkCommandBuffer command);
+bool8_t vkr_vk_prepare_deferred_upload(VkrVulkanRenderer *renderer,
+                                       VkrVulkanPreparedUpload *prepared,
+                                       const VkrRgPass *pass,
+                                       bool8_t transmission);
+void vkr_vk_record_deferred_readback(VkrVulkanRenderer *renderer,
+                                     VkCommandBuffer command);
+bool8_t vkr_vk_prepare_deferred_cull(VkrVulkanRenderer *renderer,
+                                     VkrVulkanPreparedCompute *prepared,
+                                     const VkrRgPass *pass,
+                                     VkrVulkanDeferredPipeline pipeline,
+                                     bool8_t transmission);
+bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
+                                       VkrVulkanPreparedRaster *prepared,
+                                       const VkrRgPass *pass, bool8_t shadow,
+                                       bool8_t transmission);
+bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
+                                        VkrVulkanPreparedCompute *prepared,
                                         const VkrRgPass *pass);
-bool8_t vkr_vk_record_temporal_resolve(VkrVulkanRenderer *renderer,
-                                       VkCommandBuffer command,
-                                       const VkrRgPass *pass);
-bool8_t vkr_vk_record_deferred_hzb(VkrVulkanRenderer *renderer,
-                                   VkCommandBuffer command,
-                                   const VkrRgPass *pass);
-bool8_t vkr_vk_record_exposure_histogram(VkrVulkanRenderer *renderer,
-                                         VkCommandBuffer command,
+bool8_t vkr_vk_prepare_temporal_transform(VkrVulkanRenderer *renderer,
+                                          VkrVulkanPreparedCompute *prepared,
+                                          const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
+                                         VkrVulkanPreparedCompute *prepared,
                                          const VkrRgPass *pass);
-bool8_t vkr_vk_record_exposure_resolve(VkrVulkanRenderer *renderer,
-                                       VkCommandBuffer command,
-                                       const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_temporal_resolve(VkrVulkanRenderer *renderer,
+                                        VkrVulkanPreparedCompute *prepared,
+                                        const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_deferred_hzb(VkrVulkanRenderer *renderer,
+                                    VkrVulkanPreparedCompute *prepared,
+                                    const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_exposure_histogram(VkrVulkanRenderer *renderer,
+                                          VkrVulkanPreparedCompute *prepared,
+                                          const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_exposure_resolve(VkrVulkanRenderer *renderer,
+                                        VkrVulkanPreparedCompute *prepared,
+                                        const VkrRgPass *pass);
 /** Publishes this frame's adaptation record once its submit value is known. */
 void vkr_vk_mark_exposure_submitted(VkrVulkanRenderer *renderer,
                                     uint64_t submit_value);
-bool8_t vkr_vk_record_bloom_prefilter(VkrVulkanRenderer *renderer,
-                                      VkCommandBuffer command,
-                                      const VkrRgPass *pass);
-bool8_t vkr_vk_record_bloom_downsample(VkrVulkanRenderer *renderer,
-                                       VkCommandBuffer command,
+bool8_t vkr_vk_prepare_bloom_prefilter(VkrVulkanRenderer *renderer,
+                                       VkrVulkanPreparedCompute *prepared,
                                        const VkrRgPass *pass);
-bool8_t vkr_vk_record_transmission_downsample(VkrVulkanRenderer *renderer,
-                                              VkCommandBuffer command,
-                                              const VkrRgPass *pass);
-bool8_t vkr_vk_record_bloom_upsample(VkrVulkanRenderer *renderer,
-                                     VkCommandBuffer command,
-                                     const VkrRgPass *pass);
-bool8_t vkr_vk_record_bloom_combine(VkrVulkanRenderer *renderer,
-                                    VkCommandBuffer command,
-                                    const VkrRgPass *pass);
-bool8_t vkr_vk_record_gtao_depth_prefilter(VkrVulkanRenderer *renderer,
-                                           VkCommandBuffer command,
-                                           const VkrRgPass *pass);
-bool8_t vkr_vk_record_gtao_depth_mip(VkrVulkanRenderer *renderer,
-                                     VkCommandBuffer command,
-                                     const VkrRgPass *pass);
-bool8_t vkr_vk_record_gtao_evaluate(VkrVulkanRenderer *renderer,
-                                    VkCommandBuffer command,
-                                    const VkrRgPass *pass);
-bool8_t vkr_vk_record_gtao_denoise(VkrVulkanRenderer *renderer,
-                                   VkCommandBuffer command,
-                                   const VkrRgPass *pass);
-bool8_t vkr_vk_record_deferred_sdsm(VkrVulkanRenderer *renderer,
-                                    VkCommandBuffer command,
-                                    const VkrRgPass *pass);
-bool8_t vkr_vk_record_deferred_picking(VkrVulkanRenderer *renderer,
-                                       VkCommandBuffer command,
-                                       const VkrRgPass *pass);
-bool8_t vkr_vk_record_deferred_transmission(VkrVulkanRenderer *renderer,
-                                            VkCommandBuffer command,
-                                            const VkrRgPass *pass);
-bool8_t vkr_vk_record_deferred_transmission_compact(VkrVulkanRenderer *renderer,
-                                                    VkCommandBuffer command,
-                                                    const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_bloom_downsample(VkrVulkanRenderer *renderer,
+                                        VkrVulkanPreparedCompute *prepared,
+                                        const VkrRgPass *pass);
 bool8_t
-vkr_vk_record_deferred_transmission_coverage(VkrVulkanRenderer *renderer,
-                                             VkCommandBuffer command,
+vkr_vk_prepare_transmission_downsample(VkrVulkanRenderer *renderer,
+                                       VkrVulkanPreparedCompute *prepared,
+                                       const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_bloom_upsample(VkrVulkanRenderer *renderer,
+                                      VkrVulkanPreparedCompute *prepared,
+                                      const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_bloom_combine(VkrVulkanRenderer *renderer,
+                                     VkrVulkanPreparedCompute *prepared,
+                                     const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_gtao_depth_prefilter(VkrVulkanRenderer *renderer,
+                                            VkrVulkanPreparedCompute *prepared,
+                                            const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_gtao_depth_mip(VkrVulkanRenderer *renderer,
+                                      VkrVulkanPreparedCompute *prepared,
+                                      const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_gtao_evaluate(VkrVulkanRenderer *renderer,
+                                     VkrVulkanPreparedCompute *prepared,
+                                     const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_gtao_denoise(VkrVulkanRenderer *renderer,
+                                    VkrVulkanPreparedCompute *prepared,
+                                    const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_deferred_sdsm(VkrVulkanRenderer *renderer,
+                                     VkrVulkanPreparedCompute *prepared,
+                                     const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_deferred_picking(VkrVulkanRenderer *renderer,
+                                        VkrVulkanPreparedCompute *prepared,
+                                        const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_deferred_transmission(VkrVulkanRenderer *renderer,
+                                             VkrVulkanPreparedCompute *prepared,
                                              const VkrRgPass *pass);
+bool8_t
+vkr_vk_prepare_deferred_transmission_compact(VkrVulkanRenderer *renderer,
+                                             VkrVulkanPreparedCompute *prepared,
+                                             const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_deferred_transmission_coverage(
+    VkrVulkanRenderer *renderer, VkrVulkanPreparedCompute *prepared,
+    const VkrRgPass *pass);
 void vkr_vk_mark_hzb_submitted(VkrVulkanRenderer *renderer,
                                uint64_t submit_value);
 void vkr_vk_mark_temporal_submitted(VkrVulkanRenderer *renderer,
                                     uint64_t submit_value);
-bool8_t vkr_vk_record_ibl_bakes(VkrVulkanRenderer *renderer,
-                                VkCommandBuffer command);
+void vkr_vk_record_ibl_bakes(VkrVulkanRenderer *renderer,
+                             VkCommandBuffer command,
+                             const VkrVulkanPreparedIbl *prepared);
 void vkr_vk_abandon_ibl_bake_recordings(VkrVulkanRenderer *renderer);
 void vkr_vk_discard_unsubmitted_asset_uses(VkrVulkanRenderer *renderer);
 void vkr_vk_discard_ibl_bakes(VkrVulkanRenderer *renderer);
-bool8_t vkr_vk_record_packet_draws(
-    VkrVulkanRenderer *renderer, VkCommandBuffer command,
+bool8_t vkr_vk_prepare_packet_draws(
+    VkrVulkanRenderer *renderer, VkrVulkanPreparedWorldDraws *out,
     VkrVulkanPacketPipeline pipeline, uint64_t instances, Mat4 view_projection,
-    uint32_t target_width, uint32_t target_height,
-    uint32_t shadow_texture, uint32_t transmission_texture);
+    uint32_t target_width, uint32_t target_height, uint32_t shadow_texture,
+    uint32_t transmission_texture);
 
-bool8_t vkr_vk_record_packet_fullscreen(VkrVulkanRenderer *renderer,
-                                        VkCommandBuffer command,
-                                        VkrVulkanPacketPipeline pipeline,
-                                        uint32_t texture_index,
-                                        uint64_t exposure_state, uint32_t flags,
-                                        uint32_t output_width,
-                                        uint32_t output_height);
-bool8_t vkr_vk_record_text_draws(VkrVulkanRenderer *renderer,
-                                 VkCommandBuffer command,
-                                 VkrVulkanPacketPipeline pipeline,
-                                 const VkrPreparedTextDraw *draws,
-                                 uint32_t draw_count, Mat4 view_projection,
-                                 uint32_t target_width, uint32_t target_height,
-                                 bool8_t ui_domain);
-bool8_t vkr_vk_record_ui_draw_list(VkrVulkanRenderer *renderer,
-                                   VkCommandBuffer command,
-                                   const VkrPreparedUiDrawList *draw_list,
-                                   uint32_t target_width,
-                                   uint32_t target_height);
+bool8_t vkr_vk_prepare_packet_fullscreen(VkrVulkanRenderer *renderer,
+                                         VkrVulkanPreparedFullscreen *out,
+                                         VkrVulkanPacketPipeline pipeline,
+                                         uint32_t texture_index,
+                                         uint64_t exposure_state,
+                                         uint32_t flags, uint32_t output_width,
+                                         uint32_t output_height);
+bool8_t vkr_vk_prepare_text_draws(VkrVulkanRenderer *renderer,
+                                  VkrVulkanPreparedText *out,
+                                  VkrVulkanPacketPipeline pipeline,
+                                  const VkrPreparedTextDraw *draws,
+                                  uint32_t draw_count, Mat4 view_projection,
+                                  uint32_t target_width, uint32_t target_height,
+                                  bool8_t ui_domain);
+bool8_t vkr_vk_prepare_ui_draw_list(VkrVulkanRenderer *renderer,
+                                    VkrVulkanPreparedUi *out,
+                                    const VkrPreparedUiDrawList *draw_list,
+                                    uint32_t target_width,
+                                    uint32_t target_height);
 bool8_t vkr_vk_recreate_window_target(VkrVulkanRenderer *renderer,
                                       uint32_t width, uint32_t height,
                                       uint32_t image_count);
@@ -1899,9 +2004,46 @@ void vkr_vk_collect_retired_window_targets(VkrVulkanRenderer *renderer,
                                            uint64_t completed_submit_value);
 void vkr_vk_discard_buffer_initializations(VkrVulkanRenderer *renderer);
 void vkr_vk_discard_texture_initializations(VkrVulkanRenderer *renderer);
+bool8_t vkr_vk_prepare_initializations(VkrVulkanRenderer *renderer);
 void vkr_vk_record_buffer_initializations(VkrVulkanRenderer *renderer,
                                           VkCommandBuffer command);
 void vkr_vk_record_texture_initializations(VkrVulkanRenderer *renderer,
                                            VkCommandBuffer command);
+
+void vkr_vk_record_world_draws(VkrVulkanRenderer *renderer,
+                               VkCommandBuffer command,
+                               const VkrVulkanPreparedWorldDraws *draws);
+
+void vkr_vk_record_text(VkrVulkanRenderer *renderer, VkCommandBuffer command,
+                        const VkrVulkanPreparedText *text);
+
+void vkr_vk_record_ui(VkrVulkanRenderer *renderer, VkCommandBuffer command,
+                      const VkrVulkanPreparedUi *ui);
+
+void vkr_vk_record_fullscreen(VkrVulkanRenderer *renderer,
+                              VkCommandBuffer command,
+                              const VkrVulkanPreparedFullscreen *fullscreen);
+
+bool8_t vkr_vk_prepare_deferred_readback(VkrVulkanRenderer *renderer);
+
+void vkr_vk_record_prepared_compute(VkrVulkanRenderer *renderer,
+                                    VkCommandBuffer command,
+                                    const VkrVulkanPreparedCompute *prepared);
+
+void vkr_vk_record_prepared_raster(VkrVulkanRenderer *renderer,
+                                   VkCommandBuffer command,
+                                   const VkrVulkanPreparedRaster *prepared);
+
+void vkr_vk_record_prepared_upload(VkCommandBuffer command,
+                                   const VkrVulkanPreparedUpload *prepared);
+
+bool8_t vkr_vk_prepare_graph(VkrVulkanRenderer *renderer);
+
+bool8_t vkr_vk_prepare_ibl_bakes(VkrVulkanRenderer *renderer,
+                                 VkrVulkanPreparedIbl *prepared);
+
+bool8_t vkr_vk_prepare_capture(VkrVulkanRenderer *renderer,
+
+                               VkrVulkanFrameSlot *slot);
 
 #endif

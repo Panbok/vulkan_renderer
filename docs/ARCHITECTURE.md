@@ -7,7 +7,7 @@ authority: architecture
 # Renderer architecture
 
 VKR is a C11 renderer with Metal 4 on macOS and capability-gated Vulkan 1.4 on
-Windows. Both consume versioned packets and one authored render graph. Native
+Windows. Both consume explicit frame inputs and one authored render graph. Native
 implementations own GPU resources, pipelines, commands and completion; shared
 code owns portable contracts and scene-facing systems. Linux, D3D12 and the
 retired Vulkan 1.2 renderer are not current execution paths.
@@ -20,56 +20,92 @@ and proposals; [CONTEXT](CONTEXT.md) defines vocabulary.
 
 | Owner | Responsibilities | Source |
 |---|---|---|
-| Application/runtime | Lifecycle, frame input, packet assembly, sample scenes | `lib/src/application.h`, `runtime/` |
-| Frontend | Scene-facing subsystems, renderer selection, packet validation | `lib/src/renderer/renderer_frontend.c` |
+| Application/runtime | Scene, camera, lighting, shadows, UI, picking, resize events, frame scratch and input construction | `lib/src/application.h`, `runtime/`, `lib/src/renderer/systems/vkr_scene_frame.c` |
+| Renderer | Acquired-frame lifecycle, targets, derived frame data and native operation selection | `lib/src/renderer/vkr_renderer.c` |
 | Selected implementation | Native resources/pipelines, graph realization, record/submit/cancel, targets | `lib/src/renderer/metal/`, `vulkan/` |
 | Shared graph | JSON realization, dependency order, culling, subresource barriers | `lib/src/renderer/vkr_rg_json.c`, `vkr_rg_compile.c` |
 | GPU lifetime cores | Ranges, submit values, generation slots, ABI, capture requests | `lib/src/renderer/vkr_gpu_*`, `vkr_capture_ring.*` |
-| Scene and assets | ECS scene, mesh bridge, loading, materials, lights, text and UI | `lib/src/renderer/systems/`, `resources/loaders/` |
+| Render assets | Geometry, textures, materials, meshes, fonts, persistent world text, loaders and load scratch | `lib/src/renderer/systems/vkr_render_assets.c`, `resources/loaders/` |
 | Production shaders | Shared math and native bindings/entry points | `lib/src/renderer/shaders/` |
 | Offline tools/harness | Asset cooking, cases, captures, comparisons and profiles | `tools/` |
 
 The application and editor are independent targets over `renderer_lib` and the
 neutral sample runtime. The app owns its F6 debug overlay; the editor owns its
 dock composition and startup `--scene-only` mode. Neither executable imports the
-other's source. Editor details are in [ADR-027](adr/027-immediate-mode-grid-ui.md).
+other's source. `core/vkr_subsystem_plan` resolves application boot dependencies;
+the GPU renderer does not own that subsystem policy. Editor details are in [ADR-027](adr/027-immediate-mode-grid-ui.md).
 
-`VkrRendererImpl` selects coarse lifecycle and frame operations once. There are
-no per-draw backend-table calls, frontend pipeline registry, generic command RHI,
-legacy adaptor or public render-pass object system. Assets publish through
-`VkrAssetPublisher`; [ADR-025](adr/025-selected-renderer-implementation-strategy.md)
-and [ADR-024](adr/024-shared-bindless-gpu-cores.md) define the boundary.
+Native operations are ordinary typed C functions selected by the platform build.
+`VkrRendererImpl` stores properties without an operations table or untyped state
+pointer. Assets retain the separate `VkrAssetPublisher` contract. There is no
+per-draw dispatch table, frontend pipeline registry or generic command RHI.
+[ADR-025](adr/025-selected-renderer-implementation-strategy.md) and
+[ADR-024](adr/024-shared-bindless-gpu-cores.md) define the boundary.
 
 ## Frame protocol
 
-1. `vkr_renderer_prepare_frame()` proves frame-slot reuse and prepares/acquires
-   the selected target.
-2. Render-thread resource finalization publishes ready asset generations.
-3. The application assembles `VkrRenderPacket` and borrowed arrays in scratch.
-4. `vkr_renderer_submit_packet()` validates structural input, realizes the graph,
-   records native work, submits, captures and presents through the implementation.
+1. The application consumes its resize mailbox and calls
+   `vkr_renderer_begin_frame(renderer, &config, &frame)` with explicit shadow
+   dimensions. Acquisition proves slot reuse and supplies target dimensions,
+   target generation and retained-shadow state.
+2. The application pumps render assets with explicit submission/completion state,
+   then extracts scene, UI and text draws and assembles
+   `VkrFrameInput` with borrowed arrays in scratch. Text edits happen through
+   their owner before rendering.
+3. `vkr_renderer_render_frame(&frame, &input, ...)` validates input and target
+   extent, derives private frame data, realizes the graph and prepares every
+   enabled pass before recording native work, submitting, capturing and presenting.
+4. Rendering consumes the acquired `VkrFrame`. Input-construction failure uses
+   `vkr_renderer_cancel_frame(&frame)` to release acquired resources and
+   recorded-but-unsubmitted work. Input rejection also cancels.
 5. Completed submission results feed timing, readback, retirement and history.
 
-Packet version 27 groups frame globals and optional world, shadow, skybox, UI,
-editor, picking, text and debug payloads. Globals include exposure, bloom, GTAO
-and temporal controls. Arrays remain caller-owned until submit returns; handles
-refer to retained registries. Version, capacity, pointer/range and generation
-checks belong before lowering; recording consumes producer-proven rows.
+`VkrFrame` identifies one acquisition and supplies resolved target facts. It must
+not be copied or modified; its renderer must outlive it. Consumed or stale frame
+contexts are rejected. Acquisition identity is separate from GPU completion.
 
-Preparation precedes packet validation and may acquire a target or begin command
-recording. Rejection/failure cancels through the selected implementation.
-Residency, retained graph contents and histories commit only after successful
-submission. Retained asset/text mutations are not a general transaction. Packets
-are not standalone serializable replay objects. See
+Frame-input version 28 contains frame metadata, camera/lighting/settings and typed
+world, shadow, skybox, UI, editor, picking and debug payloads. Supplied world-text
+and UI streams are authoritative. `vkr_frame_input_validate()` checks structural
+input. Private `VkrPreparedFrame` holds derived temporal, exposure, bloom and GTAO
+values alongside the borrowed input; those derived fields and text mutations are
+absent from the public frame input.
+
+Arrays remain caller-owned until rendering returns. Retained assets use generation
+identities and completion-protected storage. Acquisition precedes input validation;
+rejection or recording failure must resolve acquired native resources. Residency,
+retained graph contents and histories commit only after successful submission.
+Earlier scene/text edits and resource publication are not a general transaction.
+Frame inputs are not standalone replay recordings. See
 [ADR-004](adr/004-stateless-render-packet.md).
 
 ## Scene extraction and publication
 
+The application owns `VkrRenderAssets` independently of `VkrRenderer`. Assets own
+geometry, texture, material, mesh and font systems, persistent world resources,
+loader contexts and their arenas, pools and asynchronous allocators. Assets have
+a 64 MiB owner arena and 32 MiB load scratch; Application has separate 32 MiB
+frame scratch. The renderer has no duplicate owner or scratch arena. Native graph
+DMemory remains backend-owned, and the Metal backend allocator query returns that
+actual graph allocator. The assets borrow
+the native `VkrAssetPublisher`; its renderer must outlive them. Cameras, lights,
+shadows, UI, picking, gizmos, skybox and the active scene belong to the application.
+UI receives fonts, scratch, window and target extents explicitly. Scene operations
+receive assets; only picking readback needs a renderer operation.
+
+The application joins resource workers and proves GPU idle before releasing
+scene/asset resources. Scene unload drains GPU use before destruction and any
+teardown publication afterward. Partial initialization uses the same owner order;
+loader contexts and asynchronous storage survive until workers and queued payloads
+are drained. The renderer owns neither resource-loader registration nor app events.
+
+
 `VkrWorld` owns archetype ECS state and queries. `VkrScene` adds hierarchy,
 transforms, resource references, lights, environment/probes, text and render IDs.
 `vkr_scene_handle_sync()` mirrors render-facing changes into `VkrMeshManager`;
-application packet assembly scans mesh/instance/submesh records rather than
-reading ECS archetype arrays directly. This bridge duplicates some retained data.
+`vkr_scene_build_world_draws()` scans mesh/instance/submesh records through
+explicit mesh, material, publication and view inputs rather than reading ECS
+archetype arrays directly. This bridge duplicates some retained data.
 
 Extraction counts static and total candidates before allocation, then fills
 disjoint static/dynamic spans in one source traversal. Transmission and direct
@@ -81,10 +117,12 @@ and shadow classification run on the GPU.
 
 Direct-draw preparation resolves live generations and submesh ranges before
 native encoding. Vulkan omits pending geometry/material publication and preserves
-ready draw order; invalid or stale references still reject the packet. Metal has
-no pending native handle and rejects absent/stale references. Both encode prepared
-rows and reserve each pass's root span before its draw loop; picking and blend
-roots remain disjoint. See [ADR-004](adr/004-stateless-render-packet.md).
+ready draw order; invalid or stale references still fail frame preparation. Metal
+has no pending native handle and rejects absent/stale references. Both encode prepared
+rows. Every native pass family resolves resources, roots and dispatch parameters
+before command emission; picking and blend roots remain disjoint. Prepared
+draw/dispatch recorders return `void`. Native object/encoder creation, command-buffer
+begin/end, acquisition, submission and completion retain their failure boundaries. See [ADR-004](adr/004-stateless-render-packet.md).
 
 Workers perform CPU-only resource preparation. Render-thread finalization owns
 GPU publication; its upload budgets allow an oversized first upload to progress.
@@ -114,8 +152,12 @@ queued event payloads and latest-value resize delivery are in
 Both implementations parse
 [`main.rendergraph.json`](../assets/render_graphs/main.rendergraph.json), resolve
 conditions, aliases, names and repeats per submitted frame, and use the shared
-compiler for dependencies, ordering, culling and barriers. Native executor
-registries bind the authored operations, including conditional MetalFX declarations.
+compiler for dependencies, ordering, culling and barriers.
+`vkr_render_graph_prepare_frame()` derives portable conditions, shadow counts,
+HZB/transmission/bloom/GTAO mip counts and GTAO constants once from the prepared
+frame. Native formats, resource instances and history/completion selection remain
+with each backend. Native executor registries bind the authored operations,
+including conditional MetalFX declarations.
 Vulkan rejects active MetalFX passes during graph validation; disabled declarations
 do not block startup. There is one GPU-driven world topology;
 no retained-forward/legacy world branch remains.
@@ -218,7 +260,7 @@ supported nearby; partial support reduces history confidence. Temporal history u
 the preceding submitted frame with GPU dependencies, and output reuse still
 proves completion. Fully supported 4x4 color footprints use clamped cubic
 reconstruction; rejected edges keep masked bilinear sampling. Resets exclude
-every pre-reset producer. A packet-content signature plus native resource and
+every pre-reset producer. A frame-input content signature plus native resource and
 graph revisions enables accumulation without coverage clipping for unchanged
 scenes, including static glass and thin geometry absent in one jitter phase.
 Pending writers and unsupported text disable that path; any content or camera
@@ -233,7 +275,7 @@ scene-linear and exposure-independent.
 Automatic exposure adapts over elapsed time since its selected completed state,
 using a renderer-owned committed exposure clock and a bounded hitch policy.
 Defaults lower exposure at 8 EV/s and raise it at 1 EV/s with a +4 EV upper target
-limit. Exposure, bloom and GTAO have independent packet bypasses. GTAO's slice
+limit. Exposure, bloom and GTAO have independent frame controls. GTAO's slice
 basis and horizon signs follow view reconstruction and affect indirect diffuse
 only. Direct lighting and the IBL PDF share the unclipped supported GGX lobe.
 See [ADR-037](adr/037-portable-same-resolution-temporal-antialiasing.md)
@@ -281,7 +323,7 @@ owners, and failed text rebuilding preserves its previously published layout.
 Vulkan pools keyed device/upload/staging/readback blocks, with persistent mappings and
 required dedicated-allocation exceptions. Completion-protected Vulkan frame slots
 keep directly read uploads separate from copy-only candidate staging; both retain
-capacity grown during packet preflight. Metal uses placement heaps and native
+capacity grown during frame preflight. Metal uses placement heaps and native
 upload/readback adapters. Its candidate preparation initializes only referenced
 geometry rows in the existing completion-protected upload span; static residency
 hits refresh those rows while marking resource use. Shared cores track logical
@@ -292,8 +334,11 @@ Slot and resource reuse require their actual last-submit completion. Vulkan
 submission uses timeline values, while window presentation uses per-image
 semaphores and either maintenance present fences or completed reacquire-wait
 submissions. Metal maps completion to native command submission and event ordering.
-Lifecycle changes may wait idle; ordinary successful frames do not wait the whole
-device. Capture/picking results publish asynchronously and require release.
+Metal reserves the acquired frame's command slot while asset publication can use
+another completion-protected slot. Its native configuration requires at least two
+command slots; upload acquisition skips the reserved frame slot. Lifecycle changes
+may wait idle; ordinary successful frames do not wait the whole device.
+Capture/picking results publish asynchronously and require release.
 See [ADR-009](adr/009-frame-synchronization.md) and
 [ADR-014](adr/014-offscreen-present-target.md).
 
@@ -310,6 +355,14 @@ See [ADR-015](adr/015-metrics-module.md) and [ADR-051](adr/051-renderer-harness-
 
 These are limits of current code or retained acceptance, not scheduled promises:
 
+- The complete asset/application ownership split and preparation of all native
+  pass families passed Release app/editor builds, CPU checks, and serial Metal
+  API-validation draw/resize cases. Bistro depth and work counts match the
+  baseline; color variation remains. ADR-004 records these evidence limits.
+  Vulkan has compile-only coverage for this revision, with no native run.
+- Resource preparation, native object/encoder creation, command-buffer begin/end,
+  acquisition, submission and completion remain fallible. Prepared command
+  emission uses proven data and `void` recorders.
 - Metal present-target recreation retains its fixed three-image capability and
   ignores requested image counts; cases requiring two images are unavailable.
 - Deformation/procedural/particle motion and broad animation/disocclusion coverage

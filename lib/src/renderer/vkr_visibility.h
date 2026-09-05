@@ -7,7 +7,7 @@
 #include "defines.h"
 #include "math/mat.h"
 #include "math/vec.h"
-#include "renderer/vkr_render_packet.h"
+#include "renderer/vkr_frame_input.h"
 
 /** Independent world-blend and shadow-cutout routing from material alpha. */
 typedef struct VkrDrawAlphaRouting {

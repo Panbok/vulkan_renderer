@@ -3,8 +3,8 @@
 #include "containers/str.h"
 #include "memory/vkr_arena_allocator.h"
 #include "memory/vkr_dmemory_allocator.h"
-#include "renderer/renderer_frontend.h"
 #include "renderer/resources/loaders/scene_loader.h"
+#include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_scene_system.h"
 
 #include <assert.h>
@@ -15,7 +15,7 @@
 typedef struct SceneLoaderTestContext {
   Arena *arena;
   VkrAllocator allocator;
-  RendererFrontend renderer;
+  VkrRenderAssets assets;
   VkrScene scene;
 } SceneLoaderTestContext;
 
@@ -37,11 +37,11 @@ static bool8_t scene_loader_test_context_init(SceneLoaderTestContext *ctx) {
     return false_v;
   }
 
-  MemZero(&ctx->renderer, sizeof(ctx->renderer));
-  ctx->renderer.arena = ctx->arena;
-  ctx->renderer.allocator = ctx->allocator;
-  ctx->renderer.scratch_arena = ctx->arena;
-  ctx->renderer.scratch_allocator = ctx->allocator;
+  MemZero(&ctx->assets, sizeof(ctx->assets));
+  ctx->assets.arena = ctx->arena;
+  ctx->assets.allocator = ctx->allocator;
+  ctx->assets.scratch_arena = ctx->arena;
+  ctx->assets.scratch_allocator = ctx->allocator;
 
   VkrSceneError scene_error = VKR_SCENE_ERROR_NONE;
   if (!vkr_scene_init(&ctx->scene, &ctx->allocator, 1u, 32u, &scene_error)) {
@@ -74,7 +74,7 @@ static void test_scene_loader_missing_environment_succeeds(void) {
   String8 json = string8_lit("{\"version\":2,\"entities\":[]}");
   VkrSceneLoadResult result = {0};
   VkrSceneError error = VKR_SCENE_ERROR_NONE;
-  bool8_t ok = vkr_scene_load_from_json(&ctx.scene, &ctx.renderer, json,
+  bool8_t ok = vkr_scene_load_from_json(&ctx.scene, &ctx.assets, json,
                                         &ctx.allocator, &result, &error);
   assert(ok == true_v);
   assert(error == VKR_SCENE_ERROR_NONE);
@@ -100,7 +100,7 @@ static void test_scene_loader_invalid_environment_preserves_scene_load(void) {
       "\"entities\":[]}");
   VkrSceneLoadResult result = {0};
   VkrSceneError error = VKR_SCENE_ERROR_NONE;
-  bool8_t ok = vkr_scene_load_from_json(&ctx.scene, &ctx.renderer, json,
+  bool8_t ok = vkr_scene_load_from_json(&ctx.scene, &ctx.assets, json,
                                         &ctx.allocator, &result, &error);
   assert(ok == true_v);
   assert(error == VKR_SCENE_ERROR_NONE);
@@ -129,7 +129,7 @@ static void test_scene_loader_disabled_environment_parses_controls(void) {
       "\"entities\":[]}");
   VkrSceneLoadResult result = {0};
   VkrSceneError error = VKR_SCENE_ERROR_NONE;
-  bool8_t ok = vkr_scene_load_from_json(&ctx.scene, &ctx.renderer, json,
+  bool8_t ok = vkr_scene_load_from_json(&ctx.scene, &ctx.assets, json,
                                         &ctx.allocator, &result, &error);
   assert(ok == true_v);
   assert(error == VKR_SCENE_ERROR_NONE);
@@ -158,7 +158,7 @@ static void test_scene_loader_env_cubemap_load_failure_falls_back(void) {
       "\"extension\":\"jpg\"}},\"entities\":[]}");
   VkrSceneLoadResult result = {0};
   VkrSceneError error = VKR_SCENE_ERROR_NONE;
-  bool8_t ok = vkr_scene_load_from_json(&ctx.scene, &ctx.renderer, json,
+  bool8_t ok = vkr_scene_load_from_json(&ctx.scene, &ctx.assets, json,
                                         &ctx.allocator, &result, &error);
   assert(ok == true_v);
   assert(error == VKR_SCENE_ERROR_NONE);
@@ -185,8 +185,8 @@ static void test_scene_loader_environment_sources_are_mutually_exclusive(void) {
                   "\"extension\":\"jpg\"}},\"entities\":[]}");
   VkrSceneLoadResult result = {0};
   VkrSceneError error = VKR_SCENE_ERROR_NONE;
-  assert(vkr_scene_load_from_json(&ctx.scene, &ctx.renderer, json,
-                                  &ctx.allocator, &result, &error));
+  assert(vkr_scene_load_from_json(&ctx.scene, &ctx.assets, json, &ctx.allocator,
+                                  &result, &error));
   assert(error == VKR_SCENE_ERROR_NONE);
   assert(ctx.scene.environment.enabled == false_v);
   assert(ctx.scene.environment.source_kind == VKR_SCENE_ENV_SOURCE_NONE);
@@ -208,8 +208,8 @@ static void test_scene_loader_equirect_load_failure_falls_back(void) {
                   "\"entities\":[]}");
   VkrSceneLoadResult result = {0};
   VkrSceneError error = VKR_SCENE_ERROR_NONE;
-  assert(vkr_scene_load_from_json(&ctx.scene, &ctx.renderer, json,
-                                  &ctx.allocator, &result, &error));
+  assert(vkr_scene_load_from_json(&ctx.scene, &ctx.assets, json, &ctx.allocator,
+                                  &result, &error));
   assert(error == VKR_SCENE_ERROR_NONE);
   assert(ctx.scene.environment.enabled == false_v);
   assert(ctx.scene.environment.source_kind == VKR_SCENE_ENV_SOURCE_NONE);
@@ -232,8 +232,8 @@ static void test_scene_loader_disabled_environment_ignores_sources(void) {
                   "\"extension\":\"jpg\"}},\"entities\":[]}");
   VkrSceneLoadResult result = {0};
   VkrSceneError error = VKR_SCENE_ERROR_NONE;
-  assert(vkr_scene_load_from_json(&ctx.scene, &ctx.renderer, json,
-                                  &ctx.allocator, &result, &error));
+  assert(vkr_scene_load_from_json(&ctx.scene, &ctx.assets, json, &ctx.allocator,
+                                  &result, &error));
   assert(error == VKR_SCENE_ERROR_NONE);
   assert(ctx.scene.environment.enabled == false_v);
   assert(ctx.scene.environment.source_kind == VKR_SCENE_ENV_SOURCE_NONE);
@@ -254,7 +254,7 @@ static void test_scene_loader_missing_reflection_probes_succeeds(void) {
                              "\"entities\":[]}");
   VkrSceneLoadResult result = {0};
   VkrSceneError error = VKR_SCENE_ERROR_NONE;
-  bool8_t ok = vkr_scene_load_from_json(&ctx.scene, &ctx.renderer, json,
+  bool8_t ok = vkr_scene_load_from_json(&ctx.scene, &ctx.assets, json,
                                         &ctx.allocator, &result, &error);
   assert(ok == true_v);
   assert(error == VKR_SCENE_ERROR_NONE);
@@ -282,7 +282,7 @@ static void test_scene_loader_reflection_probes_parse_valid_block(void) {
       "\"entities\":[]}");
   VkrSceneLoadResult result = {0};
   VkrSceneError error = VKR_SCENE_ERROR_NONE;
-  bool8_t ok = vkr_scene_load_from_json(&ctx.scene, &ctx.renderer, json,
+  bool8_t ok = vkr_scene_load_from_json(&ctx.scene, &ctx.assets, json,
                                         &ctx.allocator, &result, &error);
   assert(ok == true_v);
   assert(error == VKR_SCENE_ERROR_NONE);
@@ -331,7 +331,7 @@ static void test_scene_loader_reflection_probe_invalid_entries_skipped(void) {
                   "\"entities\":[]}");
   VkrSceneLoadResult result = {0};
   VkrSceneError error = VKR_SCENE_ERROR_NONE;
-  bool8_t ok = vkr_scene_load_from_json(&ctx.scene, &ctx.renderer, json,
+  bool8_t ok = vkr_scene_load_from_json(&ctx.scene, &ctx.assets, json,
                                         &ctx.allocator, &result, &error);
   assert(ok == true_v);
   assert(error == VKR_SCENE_ERROR_NONE);
@@ -362,7 +362,7 @@ test_scene_loader_reflection_probe_missing_cubemap_disables_probe(void) {
                   "\"entities\":[]}");
   VkrSceneLoadResult result = {0};
   VkrSceneError error = VKR_SCENE_ERROR_NONE;
-  bool8_t ok = vkr_scene_load_from_json(&ctx.scene, &ctx.renderer, json,
+  bool8_t ok = vkr_scene_load_from_json(&ctx.scene, &ctx.assets, json,
                                         &ctx.allocator, &result, &error);
   assert(ok == true_v);
   assert(error == VKR_SCENE_ERROR_NONE);
@@ -418,15 +418,15 @@ static void test_scene_loader_async_light_source_contract(void) {
 
   SceneLoaderTestContext ctx;
   assert(scene_loader_test_context_init(&ctx) == true_v);
-  assert(vkr_dmemory_create(KB(64), MB(2), &ctx.renderer.scene_async_memory));
-  ctx.renderer.scene_async_allocator =
-      (VkrAllocator){.ctx = &ctx.renderer.scene_async_memory};
-  vkr_dmemory_allocator_create(&ctx.renderer.scene_async_allocator);
-  assert(vkr_mutex_create(&ctx.allocator, &ctx.renderer.scene_async_mutex));
-  assert(vkr_resource_system_init(&ctx.allocator, &ctx.renderer, NULL, NULL));
+  assert(vkr_dmemory_create(KB(64), MB(2), &ctx.assets.scene_async_memory));
+  ctx.assets.scene_async_allocator =
+      (VkrAllocator){.ctx = &ctx.assets.scene_async_memory};
+  vkr_dmemory_allocator_create(&ctx.assets.scene_async_allocator);
+  assert(vkr_mutex_create(&ctx.allocator, &ctx.assets.scene_async_mutex));
+  assert(vkr_resource_system_init(&ctx.allocator, NULL, NULL));
 
   VkrResourceLoader loader = vkr_scene_loader_create();
-  loader.resource_system = &ctx.renderer;
+  loader.resource_system = &ctx.assets;
   void *payload = NULL;
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
 
@@ -486,8 +486,8 @@ static void test_scene_loader_async_light_source_contract(void) {
   }
 
   vkr_resource_system_shutdown();
-  vkr_mutex_destroy(&ctx.allocator, &ctx.renderer.scene_async_mutex);
-  vkr_dmemory_allocator_destroy(&ctx.renderer.scene_async_allocator);
+  vkr_mutex_destroy(&ctx.allocator, &ctx.assets.scene_async_mutex);
+  vkr_dmemory_allocator_destroy(&ctx.assets.scene_async_allocator);
   scene_loader_test_context_shutdown(&ctx);
   printf("  test_scene_loader_async_light_source_contract PASSED\n");
 }

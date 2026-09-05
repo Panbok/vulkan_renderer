@@ -14,7 +14,14 @@
 #include "renderer/resources/world/vkr_text_3d.h"
 #include "renderer/vkr_renderer.h"
 
-struct s_RendererFrontend;
+struct VkrRenderAssets;
+typedef struct VkrWorldTextCreateData {
+  uint32_t text_id;
+  String8 content;
+  const VkrText3DConfig *config; // Optional; NULL uses defaults
+  VkrTransform transform;
+} VkrWorldTextCreateData;
+
 typedef struct VkrScene VkrScene;
 typedef struct VkrPreparedTextDraw VkrPreparedTextDraw;
 
@@ -51,29 +58,29 @@ typedef struct VkrWorldResources {
 
 /**
  * @brief Initialize text slots and fallback IBL state.
- * @param rf Renderer frontend
+ * @param assets Published asset owner
  * @param resources World resources to initialize
  * @return true on success, false on failure
  */
-bool8_t vkr_world_resources_init(struct s_RendererFrontend *rf,
+bool8_t vkr_world_resources_init(struct VkrRenderAssets *assets,
                                  VkrWorldResources *resources);
 
 /**
  * @brief Release fallback IBL handles and text resources.
- * @param rf Renderer frontend
+ * @param assets Published asset owner
  * @param resources World resources to shutdown
  */
-void vkr_world_resources_shutdown(struct s_RendererFrontend *rf,
+void vkr_world_resources_shutdown(struct VkrRenderAssets *assets,
                                   VkrWorldResources *resources);
 
 /** Prepares scene-owned source and prefilter textures for native baking. */
 bool8_t
-vkr_world_resources_prepare_scene_environment(struct s_RendererFrontend *rf,
+vkr_world_resources_prepare_scene_environment(struct VkrRenderAssets *assets,
                                               VkrWorldResources *resources,
                                               VkrScene *scene);
 
 bool8_t vkr_world_resources_prepare_scene_reflection_probes(
-    struct s_RendererFrontend *rf, VkrWorldResources *resources,
+    struct VkrRenderAssets *assets, VkrWorldResources *resources,
     VkrScene *scene);
 
 /**
@@ -83,14 +90,14 @@ bool8_t vkr_world_resources_prepare_scene_reflection_probes(
  * fallback maps remain active.
  */
 void vkr_world_resources_bake_scene_ibl_if_pending(
-    struct s_RendererFrontend *rf, VkrWorldResources *resources,
+    struct VkrRenderAssets *assets, VkrWorldResources *resources,
     VkrScene *scene);
 
 /**
  * @brief Bakes all pending local reflection probes for the active scene.
  */
 void vkr_world_resources_bake_scene_reflection_probes_if_pending(
-    struct s_RendererFrontend *rf, VkrWorldResources *resources,
+    struct VkrRenderAssets *assets, VkrWorldResources *resources,
     VkrScene *scene);
 
 /**
@@ -98,37 +105,33 @@ void vkr_world_resources_bake_scene_reflection_probes_if_pending(
  *
  * Uses payload->text_id when provided to target a specific slot; otherwise
  * allocates a free slot. Copies content and config from payload.
- * @param rf Renderer frontend
+ * @param assets Published asset owner
  * @param resources World resources
  * @param payload Create data (content, config, transform)
  * @return true on success, false on failure
  */
-bool8_t vkr_world_resources_text_create(struct s_RendererFrontend *rf,
+bool8_t vkr_world_resources_text_create(struct VkrRenderAssets *assets,
                                         VkrWorldResources *resources,
                                         const VkrWorldTextCreateData *payload);
 
 /**
  * @brief Update text content for a 3D text slot.
- * @param rf Renderer frontend
  * @param resources World resources
  * @param text_id Slot id from vkr_world_resources_text_create
  * @param content New text content (copied)
- * @return true on success, false if slot not found
+ * @return false when the slot is missing or content allocation fails
  */
-bool8_t vkr_world_resources_text_update(struct s_RendererFrontend *rf,
-                                        VkrWorldResources *resources,
+bool8_t vkr_world_resources_text_update(VkrWorldResources *resources,
                                         uint32_t text_id, String8 content);
 
 /**
  * @brief Update the transform for a 3D text slot.
- * @param rf Renderer frontend
  * @param resources World resources
  * @param text_id Slot id
  * @param transform New world transform (position, rotation, scale)
  * @return true on success, false if slot not found
  */
-bool8_t vkr_world_resources_text_set_transform(struct s_RendererFrontend *rf,
-                                               VkrWorldResources *resources,
+bool8_t vkr_world_resources_text_set_transform(VkrWorldResources *resources,
                                                uint32_t text_id,
                                                const VkrTransform *transform);
 
@@ -136,17 +139,19 @@ bool8_t vkr_world_resources_text_set_transform(struct s_RendererFrontend *rf,
  * @brief Destroy a 3D text slot.
  *
  * Releases the slot for reuse. Invalidates text_id.
- * @param rf Renderer frontend
  * @param resources World resources
  * @param text_id Slot id to destroy
  * @return true on success, false if slot not found
  */
-bool8_t vkr_world_resources_text_destroy(struct s_RendererFrontend *rf,
-                                         VkrWorldResources *resources,
+bool8_t vkr_world_resources_text_destroy(VkrWorldResources *resources,
                                          uint32_t text_id);
 
-/** Builds packet-ready world-text descriptors without issuing GPU commands. */
-uint32_t vkr_world_resources_prepare_text_draws(struct s_RendererFrontend *rf,
-                                                VkrWorldResources *resources,
-                                                VkrPreparedTextDraw *out_draws,
-                                                uint32_t capacity);
+/**
+ * Build world-text draws in frame scratch. Empty output succeeds. Geometry
+ * preparation or allocation failure returns false without publishing draws.
+ * Draw records borrow retained text geometry until submission returns.
+ */
+bool8_t vkr_world_resources_prepare_text_draws(VkrWorldResources *resources,
+                                               VkrAllocator *scratch,
+                                               VkrPreparedTextDraw **out_draws,
+                                               uint32_t *out_count);

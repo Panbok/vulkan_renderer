@@ -1,6 +1,6 @@
 #include "render_graph_barrier_test.h"
 #include "container_test_allocator.h"
-#include "renderer/vkr_render_packet.h"
+#include "renderer/vkr_frame_input.h"
 #include "renderer/vkr_renderer_impl.h"
 #include "renderer/vkr_rg_json.h"
 

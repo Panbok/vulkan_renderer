@@ -12,8 +12,8 @@ Accepted.
 
 ## Context
 
-Sharing C packets or shader source does not prove native binaries use the same
-bindings, layouts, dispatches or numerical meaning. Resource references differ
+Sharing C frame inputs or shader source does not prove native binaries use the
+same bindings, layouts, dispatches or numerical meaning. Resource references differ
 between Metal and Vulkan.
 
 ## Decision
@@ -30,14 +30,20 @@ production shader compilation; shaders are not hot-reloaded. Native driver
 pipeline caches/Metal archives are private to each implementation. There is no
 frontend shader manifest or named-uniform pipeline system.
 
+The split between public `VkrFrameInput` and private `VkrPreparedFrame` changes
+CPU preparation ownership, not the native root layouts or shader-visible instance
+records. Moving scene/assets to application owners and preparing all pass families
+before emission likewise preserve those native ABI and shader contracts. These
+source changes do not establish fresh bilateral execution evidence.
+
 Match coordinate conventions, units, field order/types, basis signs, bounds,
 edge behavior and dispatch coverage explicitly. World/view space is right-handed
 with forward `-Z`; depth is `[0,1]` and projection/viewport Y lowering is backend
 aware. Rounded dispatches retain guards required for valid edges. Material
 normal decode reconstructs positive tangent Z; output transfer follows ADR-043.
 
-The packet's source instance remains 80 bytes. Native publication/upload lowers
-it once into a 128-byte `VkrPreparedInstanceGPU` with three prepared normal-transform
+The frame input's source instance remains 80 bytes. Native publication/upload
+lowers it once into a 128-byte `VkrPreparedInstanceGPU` with three prepared normal-transform
 columns. Their common positive scale preserves inverse-transpose direction under
 normalization; the first column's w carries model handedness for mirrored tangent
 bases. Shaders transform tangents with the model's linear part and normals with

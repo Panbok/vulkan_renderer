@@ -1,3 +1,4 @@
+#include "core/vkr_subsystem_plan.h"
 #include "vkr_harness.h"
 
 static int32_t vkr_harness_fingerprint_field_compare(const void *a,

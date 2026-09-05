@@ -32,7 +32,7 @@ defragmentation or graph transient aliasing.
 Vulkan frame slots separate directly read UPLOAD storage from copy-only candidate
 STAGING storage. Direct storage starts at 16 MiB per slot and retains the 75 MiB
 ceiling. Candidate staging grows on demand, bounded by the two candidate streams'
-88 MiB maximum. Packet preflight reserves both before publishing pointers or GPU
+88 MiB maximum. Frame preflight reserves both before publishing pointers or GPU
 addresses, after the slot's last submission completes. Capacity is retained until
 slot teardown; no draw or dispatch grows either buffer. This avoids reserving
 225 MiB of a discrete GPU's small mapped device-local heap at startup. A larger
@@ -55,6 +55,27 @@ and uploads. Vulkan batches pending writes into submission and retires staging
 at that submit value. Metal batches texture payloads into upload slices and
 proves completion before consuming publication. Capture/picking readback uses
 bounded requests; completed results remain owned until explicit release.
+
+`VkrRenderAssets` owns CPU asset systems, loaders, their asynchronous allocators
+and load scratch. It borrows `VkrAssetPublisher` from the renderer; that publisher
+outlives all assets. Application frame scratch is separate, and its arrays live
+through `render_frame`. Loader staging scopes end only after their consumers have
+finished reading them.
+
+The application joins workers before asset teardown and proves GPU completion
+before scene unload, then drains work caused by destruction. Registered loader
+contexts survive subsystem release. Partial initialization uses the same ordering.
+The renderer does not own scene resources or perform hidden scene teardown waits.
+
+The resource pump receives explicit `VkrResourceSubmissionState` values from its
+caller: last submitted serial, completed serial and whether a frame is active.
+The resource owner still stamps active-frame publication with the next submit
+and waits for completion before READY. This removes renderer callback queries
+from resource-state progression without changing retirement semantics. The
+application calls `vkr_render_assets_pump()` after successful frame acquisition.
+Metal keeps that frame slot reserved while uploads acquire another slot only after
+its previous submission completes. At least two native command slots are required;
+uploads cannot reset the reserved frame slot.
 
 Metrics distinguish logical requested/reserved bytes from native allocation,
 retired storage, capacity failures and owner classes. Vulkan driver host memory
@@ -82,6 +103,7 @@ placement or upload policy with explicit last-use ownership.
 [`vkr_gpu_memory.c`](../../lib/src/renderer/vkr_gpu_memory.c),
 [`vkr_gpu_slot_table.c`](../../lib/src/renderer/vkr_gpu_slot_table.c),
 [`vkr_asset_publisher.h`](../../lib/src/renderer/vkr_asset_publisher.h),
+[`vkr_render_assets.c`](../../lib/src/renderer/systems/vkr_render_assets.c),
 [`vkr_vulkan_memory.c`](../../lib/src/renderer/vulkan/vkr_vulkan_memory.c), and
 [`vkr_metal_memory.c`](../../lib/src/renderer/metal/vkr_metal_memory.c).
 This record incorporates the surviving lifetime rules from former ADR-007/008.

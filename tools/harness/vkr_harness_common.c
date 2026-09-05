@@ -1,3 +1,4 @@
+#include "core/vkr_subsystem_plan.h"
 #include "vkr_harness.h"
 
 bool8_t vkr_harness_metric_is_current_frame_work(const char *name) {
@@ -147,8 +148,8 @@ bool8_t vkr_harness_subsystem_plan(VkrHarnessTool tool,
       profile == VKR_BOOT_PROFILE_AUTOMATION
           ? VKR_RENDERER_SUBSYSTEM_OPTIONAL & ~requested
           : 0u;
-  if (!vkr_renderer_subsystem_plan_build(profile, requested, excluded, out_plan,
-                                         &renderer_error)) {
+  if (!vkr_subsystem_plan_build(profile, requested, excluded, out_plan,
+                                &renderer_error)) {
     vkr_harness_error_set(out_error, "boot.plan", "$.boot",
                           "Workload requirements do not form a valid "
                           "renderer subsystem plan (%u)",

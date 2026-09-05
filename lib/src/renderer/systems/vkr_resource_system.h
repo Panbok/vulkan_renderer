@@ -72,7 +72,6 @@ struct VkrResourceLoader {
   VkrResourceType type; // resource type
   String8 custom_type;  // optional custom subtype tag
 
-  VkrRendererFrontendHandle renderer;
   void *resource_system; // opaque pointer to loader-specific resource system
                          // implementation
 
@@ -198,13 +197,11 @@ struct VkrResourceLoader {
 /**
  * @brief Initializes the resource system
  * @param allocator The allocator to use
- * @param renderer The renderer to use
  * @param job_system The job system to use for parallel loading (can be NULL)
  * @return True if the resource system was initialized, false otherwise
  */
 bool8_t vkr_resource_system_init(
-    VkrAllocator *allocator, VkrRendererFrontendHandle renderer,
-    VkrJobSystem *job_system,
+    VkrAllocator *allocator, VkrJobSystem *job_system,
     const VkrRendererMetricsProducerConfig *metrics_producers);
 
 /**
@@ -359,13 +356,21 @@ vkr_resource_system_try_get_resolved(const VkrResourceHandleInfo *tracked_info,
  */
 bool8_t vkr_resource_system_is_ready(const VkrResourceHandleInfo *info);
 
+/** Values observed before pumping; active-frame uploads use the next submit. */
+typedef struct VkrResourceSubmissionState {
+  uint64_t submit_serial;
+  uint64_t completed_submit_serial;
+  bool8_t frame_active;
+} VkrResourceSubmissionState;
+
 /**
  * @brief Progress async resource finalization on the render thread.
  *
  * The pointer can be NULL to use default budget limits.
  * @param budget The budget to use
  */
-void vkr_resource_system_pump(const VkrResourceAsyncBudget *budget);
+void vkr_resource_system_pump(VkrResourceSubmissionState submission,
+                              const VkrResourceAsyncBudget *budget);
 
 /**
  * @brief Mark an async request as canceled.

@@ -45,10 +45,13 @@
 // clang-format on
 #pragma once
 
+#include "core/vkr_subsystem_plan.h"
+
 #include "containers/bitset.h"
 #include "core/event.h"
 #include "core/logger.h"
 #include "core/ui/vkr_ui_dock.h"
+#include "core/vkr_atomic.h"
 #include "core/vkr_clock.h"
 #include "core/vkr_gamepad.h"
 #include "core/vkr_job_system.h"
@@ -60,13 +63,21 @@
 #include "math/vkr_frustum.h"
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
-#include "renderer/renderer_frontend.h"
 #include "renderer/systems/vkr_camera.h"
 #include "renderer/systems/vkr_camera_controller.h"
 #include "renderer/systems/vkr_editor_viewport.h"
+#include "renderer/systems/vkr_gizmo_system.h"
+#include "renderer/systems/vkr_lighting_system.h"
 #include "renderer/systems/vkr_picking_ids.h"
-#include "renderer/vkr_render_packet.h"
+#include "renderer/systems/vkr_picking_system.h"
+#include "renderer/systems/vkr_render_assets.h"
+#include "renderer/systems/vkr_scene_frame.h"
+#include "renderer/systems/vkr_shadow_system.h"
+#include "renderer/systems/vkr_skybox_system.h"
+#include "renderer/systems/vkr_ui_system.h"
+#include "renderer/vkr_frame_input.h"
 #include "renderer/vkr_renderer.h"
+#include "renderer/vkr_renderer_internal.h"
 #include "renderer/vkr_renderer_metrics.h"
 #include "renderer/vkr_visibility.h"
 
@@ -189,7 +200,29 @@ typedef struct Application {
   VkrWindow window;           /**< Represents the application window. */
   ApplicationConfig *config;  /**< Pointer to the configuration used to create
                                  this application instance. */
-  RendererFrontend renderer;  /**< Renderer frontend state (public). */
+  VkrRenderer renderer;
+  VkrAtomicUint64 pending_resize_mailbox;
+  uint64_t last_target_generation;
+  uint64_t texture_memory_sample_frame;
+  VkrRenderAssets assets;
+  Arena *frame_arena;
+  VkrAllocator frame_allocator;
+  VkrGizmoSystem gizmo_system;
+  VkrLightingSystem lighting_system;
+  VkrShadowSystem shadow_system;
+  VkrUiSystem ui_system;
+  VkrSkyboxSystem skybox_system;
+  VkrScene *active_scene;
+  uint64_t scene_generation;
+  VkrCameraSystem camera_system;
+  VkrCameraHandle active_camera;
+  VkrCameraController camera_controller;
+  VkrPickingContext picking;
+  VkrFrameGlobals globals;
+  VkrSubsystemPlan subsystem_plan;
+  uint32_t shadow_debug_mode;
+  bool8_t transmission_depth_diagnostic_enabled;
+  uint32_t ibl_probe_limit;
 
   VkrClock
       clock; /**< Clock used for timing frames and calculating delta time. */
@@ -370,6 +403,130 @@ bool8_t application_create_cube_mesh(Application *application);
  * @return `true_v` on successful initialization, `false_v` if any critical
  * initialization step fails (e.g., arena creation).
  */
+static uint32_t application_picking_pixel(uint32_t pixel,
+                                          uint32_t source_extent,
+                                          uint32_t target_extent) {
+  if (source_extent <= 1u || target_extent <= 1u)
+    return 0u;
+  return Min((uint32_t)((uint64_t)Min(pixel, source_extent - 1u) *
+                        (target_extent - 1u) / (source_extent - 1u)),
+             target_extent - 1u);
+}
+
+static bool8_t application_on_resize(Event *event, UserData user_data) {
+  Application *application = user_data;
+  const VkrWindowResizeEventData *resize = event->data;
+  if (!resize || resize->width == 0u || resize->height == 0u)
+    return true_v;
+  vkr_atomic_uint64_store(&application->pending_resize_mailbox,
+                          ((uint64_t)resize->width << 32u) | resize->height,
+                          VKR_MEMORY_ORDER_RELEASE);
+  return true_v;
+}
+
+static bool8_t application_rendering_initialize(
+    Application *application, const VkrSubsystemPlan *plan,
+    const VkrRendererMetricsProducerConfig *metrics_producers) {
+  const float64_t start = vkr_platform_get_absolute_time();
+  application->subsystem_plan = *plan;
+  application->frame_arena = arena_create(MB(32), MB(1));
+  if (!application->frame_arena)
+    return false_v;
+  application->frame_allocator =
+      (VkrAllocator){.ctx = application->frame_arena};
+  if (!vkr_allocator_arena(&application->frame_allocator))
+    return false_v;
+  VkrDeviceInformation device = {0};
+  vkr_renderer_get_device_information(&application->renderer, &device,
+                                      application->frame_arena);
+  if (!vkr_render_assets_initialize(
+          &application->assets, &application->renderer.asset_publisher, &device,
+          &application->job_system, metrics_producers))
+    return false_v;
+  VkrCameraSystemConfig camera_config = {.max_camera_count = 24u};
+  if (!vkr_camera_registry_init(&camera_config, &application->camera_system) ||
+      !vkr_camera_registry_create_perspective(
+          &application->camera_system, string8_lit("camera.default"),
+          application_is_windowed(application) ? &application->window : NULL,
+          70.0f, 0.1f, 500.0f, &application->active_camera))
+    return false_v;
+  vkr_camera_registry_set_active(&application->camera_system,
+                                 application->active_camera);
+  VkrCamera *camera = vkr_camera_registry_get_by_handle(
+      &application->camera_system, application->active_camera);
+  uint32_t width = 0u, height = 0u;
+  vkr_renderer_present_target_extent(&application->renderer, &width, &height);
+  if (!camera || !vkr_camera_set_perspective_lens(camera, 70.0f, 0.1f, 500.0f,
+                                                  width, height))
+    return false_v;
+  vkr_camera_system_update(camera);
+  if (!vkr_lighting_system_init(&application->lighting_system))
+    return false_v;
+  VkrShadowConfig shadow_config = VKR_SHADOW_CONFIG_DEFAULT;
+  if (!vkr_shadow_system_init(&application->shadow_system, &shadow_config))
+    return false_v;
+  if (vkr_subsystem_plan_includes(plan, VKR_RENDERER_SUBSYSTEM_UI) &&
+      !vkr_ui_system_init(&application->ui_system,
+                          &application->assets.font_system))
+    return false_v;
+  if (vkr_subsystem_plan_includes(plan, VKR_RENDERER_SUBSYSTEM_SKYBOX) &&
+      !vkr_skybox_system_init(&application->skybox_system))
+    return false_v;
+  VkrGizmoConfig gizmo_config = VKR_GIZMO_CONFIG_DEFAULT;
+  if (vkr_subsystem_plan_includes(plan, VKR_RENDERER_SUBSYSTEM_GIZMO) &&
+      !vkr_gizmo_system_init(&application->gizmo_system, &application->assets,
+                             &gizmo_config))
+    return false_v;
+  if (vkr_subsystem_plan_includes(plan, VKR_RENDERER_SUBSYSTEM_PICKING) &&
+      !vkr_picking_init(&application->picking, width, height))
+    return false_v;
+  application->scene_generation = 1u;
+  application->ibl_probe_limit = UINT32_MAX;
+  application->globals = (VkrFrameGlobals){
+      .ambient_color = vec4_new(0.1f, 0.1f, 0.1f, 1.0f),
+      .exposure_mode = VKR_EXPOSURE_MODE_AUTOMATIC,
+      .manual_exposure = VKR_DEFAULT_EXPOSURE,
+      .bloom_enabled = !application->renderer.bloom_forced_disabled,
+      .bloom_threshold = VKR_BLOOM_DEFAULT_THRESHOLD,
+      .bloom_knee = VKR_BLOOM_DEFAULT_KNEE,
+      .bloom_intensity = VKR_BLOOM_DEFAULT_INTENSITY,
+      .gtao_enabled = !application->renderer.gtao_forced_disabled,
+      .gtao_radius = VKR_GTAO_DEFAULT_RADIUS,
+      .gtao_power = VKR_GTAO_DEFAULT_POWER,
+      .render_mode = VKR_RENDER_MODE_DEFAULT,
+  };
+#if VKR_METRICS_ENABLED
+  application->renderer.boot_metrics.systems_ns = vkr_metrics_elapsed_ns(start);
+#else
+  (void)start;
+#endif
+  return true_v;
+}
+
+/* Call after joining workers; borrowed asset owners are released before assets,
+ * and the native publisher stays alive through all final resource releases. */
+static void application_rendering_shutdown(Application *application) {
+  vkr_renderer_wait_idle(&application->renderer);
+  if (application->assets.resource_system_initialized)
+    vkr_resource_system_quiesce();
+  if (application->picking.initialized)
+    vkr_picking_shutdown(&application->picking);
+  if (application->ui_system.initialized)
+    vkr_ui_system_shutdown(&application->ui_system);
+  if (application->skybox_system.initialized)
+    vkr_skybox_system_shutdown(&application->skybox_system);
+  if (application->shadow_system.initialized)
+    vkr_shadow_system_shutdown(&application->shadow_system);
+  if (application->gizmo_system.initialized)
+    vkr_gizmo_system_shutdown(&application->gizmo_system, &application->assets);
+  vkr_lighting_system_shutdown(&application->lighting_system);
+  vkr_camera_registry_shutdown(&application->camera_system);
+  vkr_render_assets_shutdown(&application->assets);
+  vkr_allocator_release_global_accounting(&application->frame_allocator);
+  arena_destroy(application->frame_arena);
+  application->frame_arena = NULL;
+}
+
 bool8_t application_create(Application *application,
                            ApplicationConfig *config) {
   assert(config != NULL && "Application config is NULL");
@@ -482,15 +639,20 @@ bool8_t application_create(Application *application,
       .capture_ring_capacity = config->capture_ring_capacity,
       .capture_max_batch_bytes = config->capture_max_batch_bytes,
   };
-  if (!vkr_renderer_initialize(
-          &application->renderer, config->renderer_backend,
-          windowed ? &application->window : NULL, &application->event_manager,
-          &application->config->device_requirements, &backend_cfg,
-          application->config->target_frame_rate, &renderer_error)) {
+  if (!vkr_renderer_initialize(&application->renderer, config->renderer_backend,
+                               windowed ? &application->window : NULL,
+                               &application->config->device_requirements,
+                               &backend_cfg, &renderer_error)) {
     log_error("Failed to create renderer!");
     goto cleanup;
   }
   renderer_ready = true_v;
+  vkr_atomic_uint64_store(&application->pending_resize_mailbox, 0u,
+                          VKR_MEMORY_ORDER_RELAXED);
+  if (windowed && !event_manager_subscribe(&application->event_manager,
+                                           EVENT_TYPE_WINDOW_RESIZE,
+                                           application_on_resize, application))
+    goto cleanup;
   if (!vkr_renderer_metrics_register_device_memory(
           &application->renderer_metrics, &application->renderer) ||
       !vkr_metrics_seal(application->metrics)) {
@@ -507,16 +669,15 @@ bool8_t application_create(Application *application,
      cannot hand-assemble an `effective_mask` that the renderer never agreed
      to, and a zero-initialized config resolves to the full interactive plan. */
   VkrSubsystemPlan subsystem_plan = {0};
-  if (!vkr_renderer_subsystem_plan_build(config->subsystem_plan.profile,
-                                         config->subsystem_plan.requested_mask,
-                                         config->subsystem_plan.excluded_mask,
-                                         &subsystem_plan, &renderer_error)) {
+  if (!vkr_subsystem_plan_build(config->subsystem_plan.profile,
+                                config->subsystem_plan.requested_mask,
+                                config->subsystem_plan.excluded_mask,
+                                &subsystem_plan, &renderer_error)) {
     log_error("Failed to build the renderer subsystem plan");
     goto cleanup;
   }
-  if (!vkr_renderer_systems_initialize(&application->renderer,
-                                       &application->job_system,
-                                       metrics_producers, &subsystem_plan)) {
+  if (!application_rendering_initialize(application, &subsystem_plan,
+                                        metrics_producers)) {
     log_error("Failed to initialize renderer frontend systems");
     goto cleanup;
   }
@@ -528,17 +689,16 @@ bool8_t application_create(Application *application,
   }
 
   VkrCameraHandle active_camera =
-      vkr_camera_registry_get_active(&application->renderer.camera_system);
-  application->renderer.active_camera = active_camera;
-  VkrCamera *camera =
-      vkr_camera_registry_get_by_handle(&application->renderer.camera_system,
-                                        application->renderer.active_camera);
+      vkr_camera_registry_get_active(&application->camera_system);
+  application->active_camera = active_camera;
+  VkrCamera *camera = vkr_camera_registry_get_by_handle(
+      &application->camera_system, application->active_camera);
   if (!camera) {
     log_error("Failed to retrieve active camera");
     goto cleanup;
   }
   vkr_camera_controller_create(
-      &application->renderer.camera_controller, camera,
+      &application->camera_controller, camera,
       (float32_t)application->config->target_frame_rate);
 
   if (!event_manager_subscribe(&application->event_manager,
@@ -589,8 +749,10 @@ bool8_t application_create(Application *application,
 cleanup:
   if (jobs_ready)
     vkr_job_system_shutdown(&application->job_system);
-  if (renderer_ready)
+  if (renderer_ready) {
+    application_rendering_shutdown(application);
     vkr_renderer_destroy(&application->renderer);
+  }
   if (gamepad_ready)
     vkr_gamepad_shutdown(&application->gamepad);
   if (window_ready)
@@ -609,548 +771,6 @@ cleanup:
   vkr_platform_shutdown();
   MemZero(application, sizeof(*application));
   return false_v;
-}
-
-vkr_internal VkrMaterial *application_get_material(RendererFrontend *rf,
-                                                   VkrMaterialHandle handle) {
-  return vkr_material_system_get_live(&rf->material_system, handle);
-}
-
-vkr_internal VkrDrawAlphaRouting application_material_alpha_routing(
-    RendererFrontend *rf, VkrMaterial *material) {
-  return vkr_draw_alpha_routing(
-      vkr_material_system_material_alpha_mode(&rf->material_system, material));
-}
-
-vkr_internal bool8_t
-application_material_is_transmissive(VkrMaterial *material) {
-  return vkr_material_system_material_is_transmissive(material);
-}
-
-vkr_internal float32_t application_transparent_depth(Mat4 view, Mat4 model,
-                                                     Vec3 local_center) {
-  Vec3 world_center = mat4_mul_vec3(model, local_center);
-  Vec4 view_pos = mat4_mul_vec4(
-      view, vec4_new(world_center.x, world_center.y, world_center.z, 1.0f));
-  float32_t depth = -view_pos.z;
-  return depth > 0.0f ? depth : 0.0f;
-}
-
-vkr_internal uint64_t application_pack_transparent_sort_key(
-    float32_t distance, uint32_t tie_breaker) {
-  uint32_t distance_bits = 0;
-  MemCopy(&distance_bits, &distance, sizeof(distance_bits));
-  return ((uint64_t)distance_bits << 32) | (uint64_t)tie_breaker;
-}
-
-typedef struct ApplicationWorldSource {
-  VkrMeshHandle mesh;
-  VkrGeometryHandle geometry;
-  VkrMaterialHandle material;
-  Mat4 model;
-  Vec3 center;
-  Vec3 min_extents;
-  Vec3 max_extents;
-  VkrDrawAlphaRouting alpha;
-  uint32_t submesh_index;
-  uint32_t object_id;
-  uint32_t temporal_index;
-  uint32_t temporal_generation;
-  bool8_t bounds_valid;
-  bool8_t transmissive;
-  bool8_t double_sided;
-  VkrShadowCasterMobility shadow_mobility;
-} ApplicationWorldSource;
-
-typedef struct ApplicationWorldEmitContext {
-  Mat4 view;
-  const uint8_t *transparent_visible;
-  VkrWorldDrawCandidate *gpu_candidates;
-  VkrWorldDrawCandidate *transmission_gpu_candidates;
-  VkrTransparentDrawCandidate *transparent_candidates;
-  uint32_t source_index;
-  uint32_t static_gpu_index;
-  uint32_t dynamic_gpu_index;
-  uint32_t transmission_index;
-  uint32_t transparent_index;
-} ApplicationWorldEmitContext;
-
-vkr_internal inline void
-application_emit_world_source(ApplicationWorldEmitContext *context,
-                              const ApplicationWorldSource *source) {
-  const Vec3 half_extents =
-      vec3_scale(vec3_sub(source->max_extents, source->min_extents), 0.5f);
-  const VkrWorldDrawCandidate candidate = {
-      .mesh = source->mesh,
-      .geometry = source->geometry,
-      .submesh_index = source->submesh_index,
-      .material = source->material,
-      .instance =
-          {
-              .model = source->model,
-              .object_id = source->object_id,
-              .temporal_index = source->temporal_index,
-              .temporal_generation = source->temporal_generation,
-          },
-      .local_bounding_sphere = {source->center.x, source->center.y,
-                                source->center.z, vec3_length(half_extents)},
-      .state_bucket = vkr_world_draw_state_bucket(
-          source->alpha.shadow_alpha_tested ? VKR_MATERIAL_ALPHA_CUTOUT
-                                            : VKR_MATERIAL_ALPHA_OPAQUE,
-          source->double_sided),
-      .flags =
-          (source->bounds_valid ? VKR_WORLD_DRAW_CANDIDATE_BOUNDS_VALID : 0u) |
-          (!source->transmissive && !source->alpha.world_transparent
-               ? VKR_WORLD_DRAW_CANDIDATE_CAMERA_OPAQUE
-               : 0u) |
-          VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER,
-  };
-  const uint32_t gpu_index =
-      source->shadow_mobility == VKR_SHADOW_CASTER_MOBILITY_STATIC
-          ? context->static_gpu_index++
-          : context->dynamic_gpu_index++;
-  context->gpu_candidates[gpu_index] = candidate;
-  if (source->transmissive)
-    context->transmission_gpu_candidates[context->transmission_index++] =
-        candidate;
-  if (!source->transmissive && source->alpha.world_transparent &&
-      context->transparent_visible[context->source_index]) {
-    const float32_t depth = application_transparent_depth(
-        context->view, source->model, source->center);
-    context->transparent_candidates[context->transparent_index++] =
-        (VkrTransparentDrawCandidate){
-            .instance = candidate.instance,
-            .mesh = source->mesh,
-            .geometry = source->geometry,
-            .material = source->material,
-            .submesh_index = source->submesh_index,
-            .sort_key = application_pack_transparent_sort_key(
-                depth, context->source_index + 1u),
-        };
-  }
-  context->source_index++;
-}
-
-/**
- * Grows a world-space AABB by one caster's bounding sphere.
- *
- * A sphere rather than the mesh's own AABB because that is what the renderer
- * already maintains; it over-covers, which is the safe direction for a volume
- * that must contain every caster.
- */
-vkr_internal inline void
-application_accumulate_caster_bounds(Vec3 *min, Vec3 *max, bool8_t *valid,
-                                     Vec3 center, float32_t radius) {
-  min->x = vkr_min_f32(min->x, center.x - radius);
-  min->y = vkr_min_f32(min->y, center.y - radius);
-  min->z = vkr_min_f32(min->z, center.z - radius);
-  max->x = vkr_max_f32(max->x, center.x + radius);
-  max->y = vkr_max_f32(max->y, center.y + radius);
-  max->z = vkr_max_f32(max->z, center.z + radius);
-  *valid = true_v;
-}
-
-/**
- * @brief Measures the world-space AABB of every visible, loaded caster.
- *
- * Runs its own traversal rather than reusing the payload build's, because
- * cascade fitting happens during update and the payload is built later in the
- * frame. A one-frame-stale interval would be the cheaper option and the wrong
- * one: the Z fit clips casters, so lagging it by a frame can drop the shadow of
- * something that just moved. The traversal is a bounds min/max per instance
- * with no allocation, against a CPU that measurement showed is ~95% idle.
- */
-vkr_internal void
-application_measure_caster_bounds(Application *application,
-                                  VkrShadowCasterDepthBounds *out_bounds) {
-  RendererFrontend *rf = &application->renderer;
-  Vec3 min = {VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX};
-  Vec3 max = {-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX};
-  bool8_t valid = false_v;
-
-  const uint32_t mesh_count = vkr_mesh_manager_count(&rf->mesh_manager);
-  for (uint32_t i = 0; i < mesh_count; ++i) {
-    uint32_t mesh_slot = 0;
-    VkrMesh *mesh = vkr_mesh_manager_get_mesh_by_live_index(&rf->mesh_manager,
-                                                            i, &mesh_slot);
-    if (!mesh || !mesh->visible || !mesh->bounds_valid ||
-        mesh->loading_state != VKR_MESH_LOADING_STATE_LOADED)
-      continue;
-    application_accumulate_caster_bounds(&min, &max, &valid,
-                                         mesh->bounds_world_center,
-                                         mesh->bounds_world_radius);
-  }
-
-  const uint32_t instance_count =
-      vkr_mesh_manager_instance_count(&rf->mesh_manager);
-  for (uint32_t i = 0; i < instance_count; ++i) {
-    uint32_t instance_slot = 0;
-    VkrMeshInstance *instance = vkr_mesh_manager_get_instance_by_live_index(
-        &rf->mesh_manager, i, &instance_slot);
-    if (!instance || !instance->visible || !instance->bounds_valid ||
-        instance->loading_state != VKR_MESH_LOADING_STATE_LOADED)
-      continue;
-    application_accumulate_caster_bounds(&min, &max, &valid,
-                                         instance->bounds_world_center,
-                                         instance->bounds_world_radius);
-  }
-
-  *out_bounds = (VkrShadowCasterDepthBounds){
-      .min = min,
-      .max = max,
-      .valid = valid,
-  };
-}
-
-/**
- * @brief Builds the sole GPU-driven world source and retained blend list.
- *
- * Opaque, cutout, transmission, and shadow visibility remain unculled packet
- * candidates; the selected backend owns their multi-view classification.
- * Ordinary alpha blend is the only camera-culled and depth-sorted CPU list.
- */
-vkr_internal bool8_t application_build_world_payload(
-    Application *application, VkrAllocator *scratch,
-    VkrWorldPassPayload *out_payload, VkrVisibilityStats *out_stats) {
-  RendererFrontend *rf = &application->renderer;
-  vkr_material_system_begin_texture_residency_frame(&rf->material_system);
-  const Mat4 view = rf->globals.view;
-  const VkrFrustum camera_frustum =
-      vkr_frustum_from_view_projection(view, rf->globals.projection);
-  const uint32_t mesh_count = vkr_mesh_manager_count(&rf->mesh_manager);
-  const uint32_t live_instance_count =
-      vkr_mesh_manager_instance_count(&rf->mesh_manager);
-  const uint32_t temporal_instance_offset =
-      vkr_mesh_manager_capacity(&rf->mesh_manager);
-  const uint64_t temporal_slot_capacity =
-      (uint64_t)temporal_instance_offset +
-      vkr_mesh_manager_instance_capacity(&rf->mesh_manager);
-  if (temporal_slot_capacity > VKR_TEMPORAL_TRANSFORM_CAPACITY) {
-    *out_payload = (VkrWorldPassPayload){0};
-    return false_v;
-  }
-  VkrVisibilityStats stats = {0};
-  uint64_t candidate_count_64 = 0u;
-  uint64_t static_candidate_count_64 = 0u;
-  /* True when a visible caster exists that has not finished loading. Its
-     geometry is absent from the candidate stream, so a cascade cannot be
-     reused: the missing caster may belong inside the volume. */
-  bool8_t publication_pending =
-      !rf->asset_publisher.publications_idle ||
-      !rf->asset_publisher.publications_idle(rf->asset_publisher.state);
-  const uint64_t publication_generation =
-      rf->asset_publisher.publication_generation
-          ? rf->asset_publisher.publication_generation(
-                rf->asset_publisher.state)
-          : 1u;
-
-  for (uint32_t i = 0; i < mesh_count; ++i) {
-    uint32_t mesh_slot = 0;
-    VkrMesh *mesh = vkr_mesh_manager_get_mesh_by_live_index(&rf->mesh_manager,
-                                                            i, &mesh_slot);
-    if (mesh->visible && mesh->loading_state == VKR_MESH_LOADING_STATE_LOADED) {
-      const uint32_t submesh_count = vkr_mesh_manager_submesh_count(mesh);
-      candidate_count_64 += submesh_count;
-      if (mesh->shadow_mobility == VKR_SHADOW_CASTER_MOBILITY_STATIC)
-        static_candidate_count_64 += submesh_count;
-    } else if (mesh->visible) {
-      publication_pending = true_v;
-    }
-  }
-  for (uint32_t i = 0; i < live_instance_count; ++i) {
-    uint32_t instance_slot = 0;
-    VkrMeshInstance *instance = vkr_mesh_manager_get_instance_by_live_index(
-        &rf->mesh_manager, i, &instance_slot);
-    if (!instance->visible ||
-        instance->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
-      publication_pending = publication_pending || instance->visible;
-      continue;
-    }
-    VkrMeshAsset *asset =
-        vkr_mesh_manager_get_live_asset(&rf->mesh_manager, instance->asset);
-    candidate_count_64 += asset->submeshes.length;
-    if (instance->shadow_mobility == VKR_SHADOW_CASTER_MOBILITY_STATIC)
-      static_candidate_count_64 += asset->submeshes.length;
-  }
-
-  if (candidate_count_64 > VKR_GPU_DRAW_CANDIDATE_CAPACITY) {
-    *out_payload = (VkrWorldPassPayload){
-        .gpu_candidate_count = VKR_GPU_DRAW_CANDIDATE_CAPACITY + 1u,
-    };
-    stats.objects_tested = VKR_GPU_DRAW_CANDIDATE_CAPACITY + 1u;
-    if (out_stats)
-      *out_stats = stats;
-    return true_v;
-  }
-
-  const uint32_t gpu_candidate_count = (uint32_t)candidate_count_64;
-  const uint32_t static_candidate_count = (uint32_t)static_candidate_count_64;
-  uint8_t *transparent_visible = NULL;
-  if (gpu_candidate_count > 0u) {
-    transparent_visible = vkr_allocator_alloc(scratch, gpu_candidate_count,
-                                              VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    if (!transparent_visible) {
-      *out_payload = (VkrWorldPassPayload){0};
-      return false_v;
-    }
-    MemZero(transparent_visible, gpu_candidate_count);
-  }
-
-  uint32_t gpu_camera_opaque_candidate_count = 0u;
-  uint32_t transmission_gpu_candidate_count = 0u;
-  uint32_t transparent_draw_count = 0u;
-  uint32_t source_index = 0u;
-
-  for (uint32_t i = 0; i < mesh_count; ++i) {
-    uint32_t mesh_slot = 0;
-    VkrMesh *mesh = vkr_mesh_manager_get_mesh_by_live_index(&rf->mesh_manager,
-                                                            i, &mesh_slot);
-    if (!mesh->visible || mesh->loading_state != VKR_MESH_LOADING_STATE_LOADED)
-      continue;
-    const uint32_t submesh_count = vkr_mesh_manager_submesh_count(mesh);
-    for (uint32_t s = 0; s < submesh_count; ++s) {
-      VkrSubMesh *submesh =
-          vkr_mesh_manager_get_submesh(&rf->mesh_manager, mesh_slot, s);
-      VkrMaterial *material = application_get_material(rf, submesh->material);
-      const VkrDrawAlphaRouting alpha =
-          application_material_alpha_routing(rf, material);
-      const bool8_t transmissive =
-          application_material_is_transmissive(material);
-      stats.objects_tested++;
-      stats.objects_without_bounds += mesh->bounds_valid ? 0u : 1u;
-      gpu_camera_opaque_candidate_count +=
-          !transmissive && !alpha.world_transparent ? 1u : 0u;
-      transmission_gpu_candidate_count += transmissive ? 1u : 0u;
-      if (!transmissive && alpha.world_transparent) {
-        bool8_t visible = true_v;
-        if (mesh->bounds_valid) {
-          Vec3 center = {0};
-          float32_t radius = 0.0f;
-          vkr_visibility_submesh_sphere(mesh->model, submesh->center,
-                                        submesh->min_extents,
-                                        submesh->max_extents, &center, &radius);
-          visible = vkr_frustum_test_sphere(&camera_frustum, center, radius);
-        }
-        transparent_visible[source_index] = visible;
-        transparent_draw_count += visible ? 1u : 0u;
-        stats.objects_culled_camera += visible ? 0u : 1u;
-      }
-      source_index++;
-    }
-  }
-
-  for (uint32_t i = 0; i < live_instance_count; ++i) {
-    uint32_t instance_slot = 0;
-    VkrMeshInstance *instance = vkr_mesh_manager_get_instance_by_live_index(
-        &rf->mesh_manager, i, &instance_slot);
-    if (!instance->visible ||
-        instance->loading_state != VKR_MESH_LOADING_STATE_LOADED)
-      continue;
-    VkrMeshAsset *asset =
-        vkr_mesh_manager_get_live_asset(&rf->mesh_manager, instance->asset);
-    const uint32_t submesh_count = (uint32_t)asset->submeshes.length;
-    for (uint32_t s = 0; s < submesh_count; ++s) {
-      VkrMeshAssetSubmesh *submesh = &asset->submeshes.data[s];
-      VkrMaterial *material = application_get_material(rf, submesh->material);
-      const VkrDrawAlphaRouting alpha =
-          application_material_alpha_routing(rf, material);
-      const bool8_t transmissive =
-          application_material_is_transmissive(material);
-      stats.objects_tested++;
-      stats.objects_without_bounds += instance->bounds_valid ? 0u : 1u;
-      gpu_camera_opaque_candidate_count +=
-          !transmissive && !alpha.world_transparent ? 1u : 0u;
-      transmission_gpu_candidate_count += transmissive ? 1u : 0u;
-      if (!transmissive && alpha.world_transparent) {
-        bool8_t visible = true_v;
-        if (instance->bounds_valid) {
-          Vec3 center = {0};
-          float32_t radius = 0.0f;
-          vkr_visibility_submesh_sphere(instance->model, submesh->center,
-                                        submesh->min_extents,
-                                        submesh->max_extents, &center, &radius);
-          visible = vkr_frustum_test_sphere(&camera_frustum, center, radius);
-        }
-        transparent_visible[source_index] = visible;
-        transparent_draw_count += visible ? 1u : 0u;
-        stats.objects_culled_camera += visible ? 0u : 1u;
-      }
-      source_index++;
-    }
-  }
-
-  VkrWorldDrawCandidate *gpu_candidates = NULL;
-  VkrWorldDrawCandidate *transmission_gpu_candidates = NULL;
-  VkrTransparentDrawCandidate *transparent_candidates = NULL;
-  VkrDrawItem *transparent_draws = NULL;
-  VkrInstanceDataGPU *transparent_instances = NULL;
-  if (gpu_candidate_count > 0u)
-    gpu_candidates = vkr_allocator_alloc(
-        scratch, sizeof(*gpu_candidates) * (uint64_t)gpu_candidate_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  if (transmission_gpu_candidate_count > 0u)
-    transmission_gpu_candidates =
-        vkr_allocator_alloc(scratch,
-                            sizeof(*transmission_gpu_candidates) *
-                                (uint64_t)transmission_gpu_candidate_count,
-                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  if (transparent_draw_count > 0u) {
-    transparent_candidates = vkr_allocator_alloc(
-        scratch,
-        sizeof(*transparent_candidates) * (uint64_t)transparent_draw_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    transparent_draws = vkr_allocator_alloc(
-        scratch, sizeof(*transparent_draws) * (uint64_t)transparent_draw_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    transparent_instances = vkr_allocator_alloc(
-        scratch,
-        sizeof(*transparent_instances) * (uint64_t)transparent_draw_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  }
-  if ((gpu_candidate_count > 0u && !gpu_candidates) ||
-      (transmission_gpu_candidate_count > 0u && !transmission_gpu_candidates) ||
-      (transparent_draw_count > 0u &&
-       (!transparent_candidates || !transparent_draws ||
-        !transparent_instances))) {
-    *out_payload = (VkrWorldPassPayload){0};
-    return false_v;
-  }
-
-  ApplicationWorldEmitContext emit = {
-      .view = view,
-      .transparent_visible = transparent_visible,
-      .gpu_candidates = gpu_candidates,
-      .dynamic_gpu_index = static_candidate_count,
-      .transmission_gpu_candidates = transmission_gpu_candidates,
-      .transparent_candidates = transparent_candidates,
-  };
-
-  /* Counted spans keep static casters first while each partition and both
-     side streams retain source encounter order in this single traversal. */
-  for (uint32_t i = 0; i < mesh_count; ++i) {
-    uint32_t mesh_slot = 0;
-    VkrMesh *mesh = vkr_mesh_manager_get_mesh_by_live_index(&rf->mesh_manager,
-                                                            i, &mesh_slot);
-    if (!mesh->visible || mesh->loading_state != VKR_MESH_LOADING_STATE_LOADED)
-      continue;
-    const uint32_t object_id =
-        mesh->render_id
-            ? vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE, mesh->render_id)
-            : 0u;
-    const uint32_t submesh_count = vkr_mesh_manager_submesh_count(mesh);
-    for (uint32_t s = 0; s < submesh_count; ++s) {
-      VkrSubMesh *submesh =
-          vkr_mesh_manager_get_submesh(&rf->mesh_manager, mesh_slot, s);
-      VkrMaterial *material = application_get_material(rf, submesh->material);
-      const VkrMaterialHandle draw_material =
-          material ? (VkrMaterialHandle){.id = material->id,
-                                         .generation = material->generation}
-                   : submesh->material;
-      vkr_material_system_touch_texture_residency(&rf->material_system,
-                                                  draw_material);
-      const VkrDrawAlphaRouting alpha =
-          application_material_alpha_routing(rf, material);
-      const bool8_t transmissive =
-          application_material_is_transmissive(material);
-      const ApplicationWorldSource source = {
-          .mesh = {.id = mesh_slot + 1u, .generation = 0u},
-          .geometry = submesh->geometry,
-          .material = draw_material,
-          .model = mesh->model,
-          .center = submesh->center,
-          .min_extents = submesh->min_extents,
-          .max_extents = submesh->max_extents,
-          .alpha = alpha,
-          .submesh_index = s,
-          .object_id = object_id,
-          .temporal_index = mesh_slot,
-          .temporal_generation = mesh->temporal_generation,
-          .bounds_valid = mesh->bounds_valid,
-          .transmissive = transmissive,
-          .double_sided = material ? material->double_sided : false_v,
-          .shadow_mobility = mesh->shadow_mobility,
-      };
-      application_emit_world_source(&emit, &source);
-    }
-  }
-
-  for (uint32_t i = 0; i < live_instance_count; ++i) {
-    uint32_t instance_slot = 0;
-    VkrMeshInstance *instance = vkr_mesh_manager_get_instance_by_live_index(
-        &rf->mesh_manager, i, &instance_slot);
-    if (!instance->visible ||
-        instance->loading_state != VKR_MESH_LOADING_STATE_LOADED)
-      continue;
-    VkrMeshAsset *asset =
-        vkr_mesh_manager_get_live_asset(&rf->mesh_manager, instance->asset);
-    const uint32_t object_id =
-        instance->render_id ? vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE,
-                                                    instance->render_id)
-                            : 0u;
-    const uint32_t submesh_count = (uint32_t)asset->submeshes.length;
-    for (uint32_t s = 0; s < submesh_count; ++s) {
-      VkrMeshAssetSubmesh *submesh = &asset->submeshes.data[s];
-      VkrMaterial *material = application_get_material(rf, submesh->material);
-      const VkrMaterialHandle draw_material =
-          material ? (VkrMaterialHandle){.id = material->id,
-                                         .generation = material->generation}
-                   : submesh->material;
-      vkr_material_system_touch_texture_residency(&rf->material_system,
-                                                  draw_material);
-      const VkrDrawAlphaRouting alpha =
-          application_material_alpha_routing(rf, material);
-      const bool8_t transmissive =
-          application_material_is_transmissive(material);
-      const ApplicationWorldSource source = {
-          .mesh = {.id = instance_slot + 1u,
-                   .generation = instance->generation},
-          .geometry = submesh->geometry,
-          .material = draw_material,
-          .model = instance->model,
-          .center = submesh->center,
-          .min_extents = submesh->min_extents,
-          .max_extents = submesh->max_extents,
-          .alpha = alpha,
-          .submesh_index = s,
-          .object_id = object_id,
-          .temporal_index = temporal_instance_offset + instance_slot,
-          .temporal_generation = instance->generation,
-          .bounds_valid = instance->bounds_valid,
-          .transmissive = transmissive,
-          .double_sided = material ? material->double_sided : false_v,
-          .shadow_mobility = instance->shadow_mobility,
-      };
-      application_emit_world_source(&emit, &source);
-    }
-  }
-
-  if (transparent_draw_count > 1u)
-    qsort(transparent_candidates, transparent_draw_count,
-          sizeof(*transparent_candidates), vkr_transparent_draw_depth_compare);
-  vkr_transparent_draw_emit(transparent_candidates, transparent_draw_count,
-                            transparent_draws, transparent_instances);
-
-  *out_payload = (VkrWorldPassPayload){
-      .gpu_candidates = gpu_candidates,
-      .gpu_candidate_count = gpu_candidate_count,
-      .gpu_camera_opaque_candidate_count = gpu_camera_opaque_candidate_count,
-      .gpu_shadow_candidate_count = gpu_candidate_count,
-      .static_candidate_count = static_candidate_count,
-      .static_generation = rf->mesh_manager.generations.static_content,
-      .dynamic_generation = rf->mesh_manager.generations.dynamic_content,
-      .publication_generation = publication_generation,
-      .caster_bounds_generation = rf->mesh_manager.generations.caster_bounds,
-      .publication_pending = publication_pending,
-      .transmission_gpu_candidates = transmission_gpu_candidates,
-      .transmission_gpu_candidate_count = transmission_gpu_candidate_count,
-      .transparent_draws = transparent_draws,
-      .transparent_draw_count = transparent_draw_count,
-      .instances = transparent_instances,
-      .instance_count = transparent_draw_count,
-  };
-  if (out_stats)
-    *out_stats = stats;
-  return true_v;
 }
 
 vkr_internal bool8_t application_editor_viewport_panel_rect(
@@ -1216,8 +836,8 @@ application_configure_editor_scene_output(Application *application) {
   const bool8_t paneled =
       application->editor_viewport.enabled &&
       !application->editor_viewport.scene_only &&
-      vkr_renderer_subsystem_plan_includes(
-          &application->renderer.subsystem_plan, VKR_RENDERER_SUBSYSTEM_EDITOR);
+      vkr_subsystem_plan_includes(&application->subsystem_plan,
+                                  VKR_RENDERER_SUBSYSTEM_EDITOR);
   if (!paneled)
     return vkr_renderer_restore_scene_output_extent(&application->renderer);
 
@@ -1241,31 +861,49 @@ application_configure_editor_scene_output(Application *application) {
                                               height);
 }
 
-/**
- * @brief Draws a frame using the renderer.
- * This function is called once per frame from within the main application
- * loop
- * (`application_start`). It handles:
- * - Calling the user-defined `application_update()` function.
- * - Updating the input system state.
- * - Implementing frame rate limiting to match `target_frame_rate`.
- * - Calling the user-defined `application_draw_frame()` function.
- * Asserts that the application has been initialized and is running.
- * @param application Pointer to the initialized `Application` structure.
- * @param delta The time elapsed since the last frame, in seconds.
- */
+/* Release the acquired target and discard unsubmitted shadow reuse state. */
+vkr_internal void application_cancel_frame(Application *application,
+                                           VkrFrame *frame,
+                                           VkrRendererError error) {
+  const VkrRendererError cancel_error = vkr_renderer_cancel_frame(frame);
+  vkr_shadow_system_discard_frame(&application->shadow_system);
+  application->last_renderer_error =
+      cancel_error != VKR_RENDERER_ERROR_NONE ? cancel_error : error;
+  String8 message =
+      vkr_renderer_get_error_string(application->last_renderer_error);
+  log_error("Failed to prepare scene frame: %s", string8_cstr(&message));
+  if (application->last_renderer_error == VKR_RENDERER_ERROR_DEVICE_ERROR)
+    bitset8_clear(&application->app_flags, APPLICATION_FLAG_RUNNING);
+}
+
 void application_draw_frame(Application *application, float64_t delta) {
   assert(application != NULL && "Application is NULL");
   assert(bitset8_is_set(&application->app_flags, APPLICATION_FLAG_RUNNING) &&
          "Application is not running");
 
-  VkrFrameSetup setup = {0};
+  const uint64_t resize = vkr_atomic_uint64_exchange(
+      &application->pending_resize_mailbox, 0u, VKR_MEMORY_ORDER_ACQ_REL);
+  if (resize)
+    vkr_renderer_resize(&application->renderer, (uint32_t)(resize >> 32u),
+                        (uint32_t)resize);
+  VkrFrame setup = {0};
+  const VkrFrameConfig frame_config = {
+      .shadow_map_size = application->shadow_system.initialized
+                             ? vkr_shadow_config_get_max_map_size(
+                                   &application->shadow_system.config)
+                             : 2048u,
+      .shadow_cascade_count =
+          application->shadow_system.initialized
+              ? application->shadow_system.config.cascade_count
+              : 1u,
+  };
   VkrRendererError prepare_err = VKR_RENDERER_ERROR_NONE;
   VKR_METRICS_SCOPE_NS(application->metrics,
                        application->metric_ids.render_prepare) {
     prepare_err = application_configure_editor_scene_output(application);
     if (prepare_err == VKR_RENDERER_ERROR_NONE)
-      prepare_err = vkr_renderer_prepare_frame(&application->renderer, &setup);
+      prepare_err = vkr_renderer_begin_frame(&application->renderer,
+                                             &frame_config, &setup);
   }
   application->last_renderer_error = prepare_err;
   if (prepare_err != VKR_RENDERER_ERROR_NONE) {
@@ -1282,32 +920,74 @@ void application_draw_frame(Application *application, float64_t delta) {
     return;
   }
 
-  VkrAllocator *scratch = &application->renderer.scratch_allocator;
+  const bool8_t target_changed =
+      application->last_target_generation != setup.target_generation;
+  if (target_changed) {
+    application->last_target_generation = setup.target_generation;
+    if (application->ui_system.initialized)
+      vkr_ui_system_resize(&application->ui_system, setup.window_width,
+                           setup.window_height);
+    vkr_shadow_system_invalidate_fit_history(&application->shadow_system);
+  }
+  VkrDeviceMemoryStats device_memory = {0};
+  const VkrDeviceMemoryStats *memory = NULL;
+  if (!application->assets.material_system
+           .texture_stream_budget_user_configured &&
+      setup.number - 1u >= application->texture_memory_sample_frame + 60u) {
+    application->texture_memory_sample_frame = setup.number - 1u;
+    if (vkr_renderer_get_device_memory_stats(&application->renderer,
+                                             &device_memory))
+      memory = &device_memory;
+  }
+  const VkrResourceSubmissionState submission = {
+      .submit_serial = vkr_renderer_get_submit_serial(&application->renderer),
+      .completed_submit_serial =
+          vkr_renderer_get_completed_submit_serial(&application->renderer),
+      .frame_active = true_v,
+  };
+  if (!vkr_render_assets_pump(&application->assets, submission, memory)) {
+    application_cancel_frame(application, &setup,
+                             VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED);
+    return;
+  }
+  VkrAllocator *scratch = &application->frame_allocator;
 
   VkrShadowFrameData shadow_frame = {0};
   uint32_t shadow_cascade_count = 0;
 
   VkrWorldPassPayload world_payload = {0};
   VkrVisibilityStats visibility_stats = {0};
-  bool8_t has_world = false_v;
+  const VkrAssetPublisher *publisher = &application->renderer.asset_publisher;
+  VkrRendererError world_error = VKR_RENDERER_ERROR_NONE;
   VKR_METRICS_SCOPE_NS(application->metrics,
                        application->metric_ids.world_payload_build) {
-    has_world = application_build_world_payload(
-        application, scratch, &world_payload, &visibility_stats);
+    world_error = vkr_scene_build_world_draws(
+        &application->assets.mesh_manager, &application->assets.material_system,
+        !publisher->publications_idle ||
+            !publisher->publications_idle(publisher->state),
+        publisher->publication_generation
+            ? publisher->publication_generation(publisher->state)
+            : 1u,
+        application->globals.view, application->globals.projection, scratch,
+        &world_payload, &visibility_stats);
+  }
+  if (world_error != VKR_RENDERER_ERROR_NONE) {
+    application_cancel_frame(application, &setup, world_error);
+    return;
   }
   application->visibility_stats = visibility_stats;
 
-  if (has_world && world_payload.gpu_shadow_candidate_count > 0u &&
-      application->renderer.shadow_system.initialized) {
+  if (world_payload.gpu_shadow_candidate_count > 0u &&
+      application->shadow_system.initialized) {
     vkr_shadow_system_resolve_frame(
-        &application->renderer.shadow_system, setup.image_index,
-        setup.retained_shadow, &world_payload,
+        &application->shadow_system, setup.image_index, setup.retained_shadow,
+        &world_payload,
         vkr_renderer_get_shadow_depth_format(&application->renderer),
         &shadow_frame);
     shadow_cascade_count =
         shadow_frame.enabled ? shadow_frame.cascade_count : 0u;
   } else {
-    vkr_shadow_system_discard_frame(&application->renderer.shadow_system);
+    vkr_shadow_system_discard_frame(&application->shadow_system);
   }
 
   VkrShadowPassPayload shadow_payload = {0};
@@ -1318,9 +998,8 @@ void application_draw_frame(Application *application, float64_t delta) {
      returns. */
   VkrShadowConfigOverride raster_bias_override = {0};
   bool8_t has_shadow = false_v;
-  if (has_world && shadow_cascade_count > 0) {
-    const VkrShadowConfig *shadow_config =
-        &application->renderer.shadow_system.config;
+  if (shadow_cascade_count > 0) {
+    const VkrShadowConfig *shadow_config = &application->shadow_system.config;
     const float32_t inverse_map_size =
         1.0f / (float32_t)shadow_config->shadow_map_size;
     shadow_payload.cascade_count = shadow_cascade_count;
@@ -1369,7 +1048,7 @@ void application_draw_frame(Application *application, float64_t delta) {
 
   VkrPickingPassPayload picking_payload = {0};
   bool8_t has_picking =
-      application->renderer.picking.state == VKR_PICKING_STATE_RENDER_PENDING;
+      application->picking.state == VKR_PICKING_STATE_RENDER_PENDING;
   /* An identifier capture has no producer unless the picking pass runs this
      frame, so the request itself schedules it. The catalog names the dependency
      as a subsystem; matching on the channel name instead would silently stop
@@ -1388,15 +1067,15 @@ void application_draw_frame(Application *application, float64_t delta) {
   }
   if (has_picking) {
     picking_payload.pending = true_v;
-    picking_payload.x = application->renderer.picking.requested_x;
-    picking_payload.y = application->renderer.picking.requested_y;
+    picking_payload.x = application->picking.requested_x;
+    picking_payload.y = application->picking.requested_y;
   }
 
   bool8_t editor_enabled =
       application->editor_viewport.enabled &&
       !application->editor_viewport.scene_only &&
-      vkr_renderer_subsystem_plan_includes(
-          &application->renderer.subsystem_plan, VKR_RENDERER_SUBSYSTEM_EDITOR);
+      vkr_subsystem_plan_includes(&application->subsystem_plan,
+                                  VKR_RENDERER_SUBSYSTEM_EDITOR);
   bool8_t has_editor = false_v;
   uint32_t viewport_width = 0;
   uint32_t viewport_height = 0;
@@ -1419,21 +1098,40 @@ void application_draw_frame(Application *application, float64_t delta) {
   if (editor_enabled) {
     if (viewport_width != application->editor_viewport.last_target_width ||
         viewport_height != application->editor_viewport.last_target_height) {
-      vkr_camera_registry_resize_all(&application->renderer.camera_system,
+      vkr_camera_registry_resize_all(&application->camera_system,
                                      viewport_width, viewport_height);
       application->editor_viewport.last_target_width = viewport_width;
       application->editor_viewport.last_target_height = viewport_height;
     }
-  } else if (application->editor_viewport.last_target_width != 0 ||
+  } else if (target_changed ||
+             application->editor_viewport.last_target_width != 0 ||
              application->editor_viewport.last_target_height != 0) {
-    vkr_camera_registry_resize_all(&application->renderer.camera_system,
+    vkr_camera_registry_resize_all(&application->camera_system,
                                    setup.window_width, setup.window_height);
     application->editor_viewport.last_target_width = 0;
     application->editor_viewport.last_target_height = 0;
   }
 
+  if (has_picking && (application->renderer.render_scale != 1.0f ||
+                      application->renderer.upscale_mode ==
+                          VKR_UPSCALE_MODE_METALFX_TEMPORAL)) {
+    const uint32_t source_width =
+        editor_enabled ? application->picking.width : setup.window_width;
+    const uint32_t source_height =
+        editor_enabled ? application->picking.height : setup.window_height;
+    picking_payload.x = application_picking_pixel(
+        picking_payload.x, source_width, setup.render_width);
+    picking_payload.y = application_picking_pixel(
+        picking_payload.y, source_height, setup.render_height);
+    if (editor_enabled) {
+      application->picking.requested_x = picking_payload.x;
+      application->picking.requested_y = picking_payload.y;
+      vkr_picking_resize(&application->picking, setup.render_width,
+                         setup.render_height);
+    }
+  }
   VkrUiPassPayload ui_payload = {0};
-  const VkrScene *active_scene = application->renderer.active_scene;
+  const VkrScene *active_scene = application->active_scene;
   VkrSkyboxPassPayload skybox_payload = {
       .cubemap = VKR_TEXTURE_HANDLE_INVALID,
       .material = VKR_MATERIAL_HANDLE_INVALID,
@@ -1446,11 +1144,11 @@ void application_draw_frame(Application *application, float64_t delta) {
   VkrTextureHandle frame_ibl_source = VKR_TEXTURE_HANDLE_INVALID;
   if (scene_environment) {
     frame_ibl_source = scene_environment->source_cubemap;
-  } else if (application->renderer.world_resources.ibl_default_ready) {
+  } else if (application->assets.world_resources.ibl_default_ready) {
     frame_ibl_source =
-        application->renderer.world_resources.ibl_fallback_source_cubemap;
+        application->assets.world_resources.ibl_fallback_source_cubemap;
   }
-  skybox_payload.cubemap = application->renderer.skybox_system.initialized
+  skybox_payload.cubemap = application->skybox_system.initialized
                                ? frame_ibl_source
                                : VKR_TEXTURE_HANDLE_INVALID;
   bool8_t frame_ibl_enabled = frame_ibl_source.id != 0;
@@ -1464,26 +1162,47 @@ void application_draw_frame(Application *application, float64_t delta) {
     frame_ibl_specular_intensity = scene_environment->specular_intensity;
   }
 
-  VkrTextUpdate world_text_updates[VKR_MAX_PENDING_TEXT_UPDATES];
-  VkrTextUpdatesPayload text_updates_payload = {0};
-  bool8_t has_text_updates = false_v;
-
-  if (application->world_text_update_count > 0) {
-    uint32_t count = application->world_text_update_count;
-    if (count > VKR_MAX_PENDING_TEXT_UPDATES) {
-      count = VKR_MAX_PENDING_TEXT_UPDATES;
+  VkrWorldResources *world_resources = &application->assets.world_resources;
+  if (application->world_text_update_count > VKR_MAX_PENDING_TEXT_UPDATES) {
+    application_cancel_frame(application, &setup,
+                             VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
+    return;
+  }
+  for (uint32_t i = 0u; i < application->world_text_update_count; ++i) {
+    const ApplicationTextUpdate *pending = &application->world_text_updates[i];
+    if (!world_resources->initialized ||
+        !vkr_world_resources_text_update(world_resources, pending->text_id,
+                                         pending->content) ||
+        (pending->has_transform &&
+         !vkr_world_resources_text_set_transform(
+             world_resources, pending->text_id, &pending->transform))) {
+      application_cancel_frame(application, &setup,
+                               VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED);
+      return;
     }
-    for (uint32_t i = 0; i < count; ++i) {
-      ApplicationTextUpdate *pending = &application->world_text_updates[i];
-      world_text_updates[i] = (VkrTextUpdate){
-          .text_id = pending->text_id,
-          .content = pending->content,
-          .transform = pending->has_transform ? &pending->transform : NULL,
-      };
+  }
+  application->world_text_update_count = 0u;
+  if (world_resources->initialized) {
+    VkrPreparedTextDraw *text_draws = NULL;
+    uint32_t text_draw_count = 0u;
+    if (!vkr_world_resources_prepare_text_draws(
+            world_resources, scratch, &text_draws, &text_draw_count)) {
+      application_cancel_frame(application, &setup,
+                               VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED);
+      return;
     }
-    text_updates_payload.world_text_updates = world_text_updates;
-    text_updates_payload.world_text_update_count = count;
-    has_text_updates = true_v;
+    world_payload.text_draws = text_draws;
+    world_payload.text_draw_count = text_draw_count;
+  }
+  VkrUiSystem *ui = &application->ui_system;
+  /* An unauthored UI frame contributes an empty stream. */
+  if (ui->initialized && ui->frame_index > 0u &&
+      !vkr_ui_system_prepare_draw_list(ui, scratch, setup.window_width,
+                                       setup.window_height,
+                                       &ui_payload.draw_list)) {
+    application_cancel_frame(application, &setup,
+                             VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED);
+    return;
   }
 
   // The metrics config is the single authority for whether timestamps are
@@ -1499,14 +1218,14 @@ void application_draw_frame(Application *application, float64_t delta) {
       .capture_pass_timestamps = pass_gpu_timing,
       .capture_submission_timing = submission_gpu_timing,
       .transmission_depth_diagnostic_enabled =
-          application->renderer.transmission_depth_diagnostic_enabled,
-      .shadow_debug_mode = application->renderer.shadow_debug_mode,
+          application->transmission_depth_diagnostic_enabled,
+      .shadow_debug_mode = application->shadow_debug_mode,
       .capture = application->capture_request,
   };
   const VkrGpuDebugPayload *debug_ptr =
       (gpu_timing || application->capture_request ||
-       application->renderer.transmission_depth_diagnostic_enabled ||
-       application->renderer.shadow_debug_mode != 0u)
+       application->transmission_depth_diagnostic_enabled ||
+       application->shadow_debug_mode != 0u)
           ? &debug_payload
           : NULL;
   VkrFrameIblProbe frame_ibl_probes[VKR_FRAME_IBL_PROBE_MAX] = {0};
@@ -1514,7 +1233,7 @@ void application_draw_frame(Application *application, float64_t delta) {
   /* Cold ADR-038 control: the fixture asserts the packed count, so an
      unavailable probe texture cannot silently reduce the measured work. */
   const uint32_t frame_ibl_probe_cap =
-      Min(application->renderer.ibl_probe_limit, VKR_FRAME_IBL_PROBE_MAX);
+      Min(application->ibl_probe_limit, VKR_FRAME_IBL_PROBE_MAX);
   if (active_scene) {
     for (uint32_t i = 0; i < active_scene->reflection_probe_count &&
                          frame_ibl_probe_count < frame_ibl_probe_cap;
@@ -1528,8 +1247,8 @@ void application_draw_frame(Application *application, float64_t delta) {
         continue;
       }
       frame_ibl_probes[frame_ibl_probe_count++] = (VkrFrameIblProbe){
-          .sh_slot = vkr_renderer_ibl_sh_slot(&application->renderer,
-                                              probe->source_cubemap),
+          .sh_slot = vkr_render_assets_ibl_sh_slot(&application->assets,
+                                                   probe->source_cubemap),
           .prefilter = probe->prefilter_cubemap,
           .center = probe->center,
           .extents = probe->extents,
@@ -1543,30 +1262,26 @@ void application_draw_frame(Application *application, float64_t delta) {
     }
   }
   const VkrFrameLighting frame_lighting = {
-      .directional_enabled =
-          application->renderer.lighting_system.directional.enabled,
+      .directional_enabled = application->lighting_system.directional.enabled,
       .directional_direction =
-          application->renderer.lighting_system.directional.direction,
-      .directional_color =
-          application->renderer.lighting_system.directional.color,
+          application->lighting_system.directional.direction,
+      .directional_color = application->lighting_system.directional.color,
       .directional_intensity =
-          application->renderer.lighting_system.directional.intensity,
+          application->lighting_system.directional.intensity,
       .ibl_enabled = frame_ibl_enabled,
       .ibl_source = frame_ibl_source,
       .ibl_intensity = frame_ibl_intensity,
       .ibl_diffuse_intensity = frame_ibl_diffuse_intensity,
       .ibl_specular_intensity = frame_ibl_specular_intensity,
-      .point_lights = application->renderer.lighting_system.point_lights,
-      .point_light_count =
-          application->renderer.lighting_system.point_light_count,
-      .point_light_grid =
-          &application->renderer.lighting_system.point_light_grid,
+      .point_lights = application->lighting_system.point_lights,
+      .point_light_count = application->lighting_system.point_light_count,
+      .point_light_grid = &application->lighting_system.point_light_grid,
       .ibl_probes = frame_ibl_probes,
       .ibl_probe_count = frame_ibl_probe_count,
   };
 
-  VkrRenderPacket packet = {
-      .packet_version = VKR_RENDER_PACKET_VERSION,
+  VkrFrameInput packet = {
+      .version = VKR_FRAME_INPUT_VERSION,
       .frame =
           {
               .frame_index = (uint32_t)application->renderer.frame_number,
@@ -1576,31 +1291,29 @@ void application_draw_frame(Application *application, float64_t delta) {
               .viewport_width = viewport_width,
               .viewport_height = viewport_height,
               .editor_enabled = editor_enabled,
-              .scene_generation = application->renderer.scene_generation,
+              .scene_generation = application->scene_generation,
           },
       .globals =
           {
-              .view = application->renderer.globals.view,
-              .projection = application->renderer.globals.projection,
-              .view_position = application->renderer.globals.view_position,
-              .ambient_color = application->renderer.globals.ambient_color,
-              .exposure_mode =
-                  (uint32_t)application->renderer.globals.exposure_mode,
-              .manual_exposure = application->renderer.globals.manual_exposure,
+              .view = application->globals.view,
+              .projection = application->globals.projection,
+              .view_position = application->globals.view_position,
+              .ambient_color = application->globals.ambient_color,
+              .exposure_mode = (uint32_t)application->globals.exposure_mode,
+              .manual_exposure = application->globals.manual_exposure,
               .exposure_compensation_ev =
-                  application->renderer.globals.exposure_compensation_ev,
-              .bloom_enabled = application->renderer.globals.bloom_enabled,
-              .bloom_threshold = application->renderer.globals.bloom_threshold,
-              .bloom_knee = application->renderer.globals.bloom_knee,
-              .bloom_intensity = application->renderer.globals.bloom_intensity,
-              .gtao_enabled = application->renderer.globals.gtao_enabled,
-              .gtao_radius = application->renderer.globals.gtao_radius,
-              .gtao_power = application->renderer.globals.gtao_power,
-              .render_mode =
-                  (uint32_t)application->renderer.globals.render_mode,
+                  application->globals.exposure_compensation_ev,
+              .bloom_enabled = application->globals.bloom_enabled,
+              .bloom_threshold = application->globals.bloom_threshold,
+              .bloom_knee = application->globals.bloom_knee,
+              .bloom_intensity = application->globals.bloom_intensity,
+              .gtao_enabled = application->globals.gtao_enabled,
+              .gtao_radius = application->globals.gtao_radius,
+              .gtao_power = application->globals.gtao_power,
+              .render_mode = (uint32_t)application->globals.render_mode,
           },
       .lighting = &frame_lighting,
-      .world = has_world ? &world_payload : NULL,
+      .world = &world_payload,
       .shadow = has_shadow ? &shadow_payload : NULL,
       .skybox = !application->config->disable_skybox &&
                         skybox_payload.cubemap.id != 0 &&
@@ -1610,7 +1323,6 @@ void application_draw_frame(Application *application, float64_t delta) {
       .ui = &ui_payload,
       .editor = has_editor ? &editor_payload : NULL,
       .picking = has_picking ? &picking_payload : NULL,
-      .text_updates = has_text_updates ? &text_updates_payload : NULL,
       .debug = debug_ptr,
   };
 
@@ -1619,15 +1331,15 @@ void application_draw_frame(Application *application, float64_t delta) {
   VkrRendererError submit_err = VKR_RENDERER_ERROR_NONE;
   VKR_METRICS_SCOPE_NS(application->metrics,
                        application->metric_ids.render_submit) {
-    submit_err = vkr_renderer_submit_packet(&application->renderer, &packet,
-                                            &metrics, &validation);
+    submit_err =
+        vkr_renderer_render_frame(&setup, &packet, &metrics, &validation);
   }
   if (submit_err == VKR_RENDERER_ERROR_NONE) {
     vkr_shadow_system_commit_frame(
-        &application->renderer.shadow_system,
+        &application->shadow_system,
         vkr_renderer_get_submit_serial(&application->renderer));
   } else {
-    vkr_shadow_system_discard_frame(&application->renderer.shadow_system);
+    vkr_shadow_system_discard_frame(&application->shadow_system);
   }
   for (uint32_t cascade = 0u; cascade < shadow_frame.cascade_count; ++cascade) {
     metrics.shadow.rendered[cascade] = shadow_frame.rendered[cascade];
@@ -1647,11 +1359,20 @@ void application_draw_frame(Application *application, float64_t delta) {
   metrics.shadow.sdsm_linear_near = shadow_frame.sdsm_linear_near;
   metrics.shadow.sdsm_linear_far = shadow_frame.sdsm_linear_far;
   application->last_renderer_error = submit_err;
+  vkr_mesh_manager_get_metrics(&application->assets.mesh_manager,
+                               &metrics.world.mesh_assets);
+  if (submit_err == VKR_RENDERER_ERROR_NONE && has_picking &&
+      application->renderer.backend_type == VKR_RENDERER_BACKEND_TYPE_VULKAN &&
+      application->picking.state == VKR_PICKING_STATE_RENDER_PENDING)
+    application->picking.state = VKR_PICKING_STATE_READBACK_PENDING;
   if (submit_err != VKR_RENDERER_ERROR_CAPTURE_BUSY) {
     application->capture_request = NULL;
   }
 #if VKR_METRICS_ENABLED
   VkrRendererMetricsCollectContext metrics_context = {
+      .assets = &application->assets,
+      .ui = &application->ui_system,
+      .lighting = &application->lighting_system,
       .renderer = &application->renderer,
       .frame_metrics = &metrics,
       .visibility = &application->visibility_stats,
@@ -1755,7 +1476,7 @@ void application_start(Application *application) {
         vkr_renderer_get_submit_serial(&application->renderer));
 
     VkrAllocatorScope frame_scope = {0};
-    VkrAllocator *frame_alloc = &application->renderer.scratch_allocator;
+    VkrAllocator *frame_alloc = &application->frame_allocator;
     if (vkr_allocator_supports_scopes(frame_alloc)) {
       frame_scope = vkr_allocator_begin_scope(frame_alloc);
     }
@@ -1777,70 +1498,68 @@ void application_start(Application *application) {
       break;
     }
 
-    VkrCameraSystem *camera_system = &application->renderer.camera_system;
+    VkrCameraSystem *camera_system = &application->camera_system;
     VkrCameraHandle active_camera =
         vkr_camera_registry_get_active(camera_system);
-    application->renderer.active_camera = active_camera;
+    application->active_camera = active_camera;
     VkrCamera *camera =
         vkr_camera_registry_get_by_handle(camera_system, active_camera);
 
     if (camera) {
-      application->renderer.camera_controller.camera = camera;
+      application->camera_controller.camera = camera;
     } else {
       log_warn("Active camera handle invalid; skipping controller update");
     }
 
     if (camera && !application->config->disable_camera_controller) {
-      vkr_camera_controller_update(
-          &application->renderer.camera_controller, delta,
-          application->ui_capture.mouse || application->ui_capture.keyboard);
+      vkr_camera_controller_update(&application->camera_controller, delta,
+                                   application->ui_capture.mouse ||
+                                       application->ui_capture.keyboard);
     }
 
     vkr_camera_registry_update_all(camera_system);
 
-    if (application->renderer.active_scene) {
-      vkr_lighting_system_sync_from_scene(
-          &application->renderer.lighting_system,
-          application->renderer.active_scene);
+    if (application->active_scene) {
+      vkr_lighting_system_sync_from_scene(&application->lighting_system,
+                                          application->active_scene);
     }
 
     if (camera) {
       VKR_METRICS_SCOPE_NS(application->metrics,
                            application->metric_ids.shadow_update) {
         VkrShadowCasterDepthBounds caster_bounds = {0};
-        application_measure_caster_bounds(application, &caster_bounds);
+        vkr_scene_measure_caster_bounds(&application->assets.mesh_manager,
+                                        &caster_bounds);
         const VkrShadowDepthRangeSample *sdsm_sample =
             application->renderer.timing_result.shadow_depth_range
                         .submit_value > 0u
                 ? &application->renderer.timing_result.shadow_depth_range
                 : NULL;
         vkr_shadow_system_set_depth_range_sample(
-            &application->renderer.shadow_system, sdsm_sample,
-            application->renderer.frame_number,
-            application->renderer.scene_generation);
+            &application->shadow_system, sdsm_sample,
+            application->renderer.frame_number, application->scene_generation);
         vkr_shadow_system_update(
-            &application->renderer.shadow_system, camera,
-            application->renderer.lighting_system.directional.enabled,
-            application->renderer.lighting_system.directional.direction,
-            &caster_bounds);
+            &application->shadow_system, camera,
+            application->lighting_system.directional.enabled,
+            application->lighting_system.directional.direction, &caster_bounds);
       }
     }
 
     if (camera) {
       // update_all() refreshed these cached matrices above.
-      application->renderer.globals.view = camera->view;
-      application->renderer.globals.projection = camera->projection;
-      application->renderer.globals.view_position = camera->position;
+      application->globals.view = camera->view;
+      application->globals.projection = camera->projection;
+      application->globals.view_position = camera->position;
     } else {
-      application->renderer.globals.view = mat4_identity();
-      application->renderer.globals.projection = mat4_identity();
+      application->globals.view = mat4_identity();
+      application->globals.projection = mat4_identity();
     }
 
     uint32_t mesh_capacity =
-        vkr_mesh_manager_capacity(&application->renderer.mesh_manager);
+        vkr_mesh_manager_capacity(&application->assets.mesh_manager);
     for (uint32_t mesh_index = 0; mesh_index < mesh_capacity; ++mesh_index) {
       VkrMesh *mesh =
-          vkr_mesh_manager_get(&application->renderer.mesh_manager, mesh_index);
+          vkr_mesh_manager_get(&application->assets.mesh_manager, mesh_index);
       if (!mesh) {
         continue;
       }
@@ -1851,7 +1570,7 @@ void application_start(Application *application) {
         continue;
       }
 
-      vkr_mesh_manager_update_model(&application->renderer.mesh_manager,
+      vkr_mesh_manager_update_model(&application->assets.mesh_manager,
                                     mesh_index);
     }
 
@@ -1999,6 +1718,7 @@ void application_shutdown(Application *application) {
    */
   vkr_job_system_shutdown(&application->job_system);
 
+  application_rendering_shutdown(application);
   vkr_renderer_destroy(&application->renderer);
   if (application_is_windowed(application)) {
     vkr_window_destroy(&application->window);

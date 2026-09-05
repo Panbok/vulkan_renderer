@@ -236,12 +236,14 @@ vkr_internal bool8_t vkr_metal_packet_acquire_command_slot(
     VkrMetalPacketRenderer *renderer, bool8_t upload_path) {
   if (renderer->active_command_slot)
     return false_v;
-  VkrMetalPacketCommandSlot *slot =
-      &renderer->command_slots[renderer->next_command_slot];
+  uint32_t slot_index = renderer->next_command_slot;
+  if (&renderer->command_slots[slot_index] == renderer->reserved_frame_slot)
+    slot_index = (slot_index + 1u) % renderer->command_slot_count;
+  VkrMetalPacketCommandSlot *slot = &renderer->command_slots[slot_index];
   if (!vkr_metal_packet_complete_command_slot(renderer, slot, upload_path))
     return false_v;
   renderer->next_command_slot =
-      (renderer->next_command_slot + 1u) % renderer->command_slot_count;
+      (slot_index + 1u) % renderer->command_slot_count;
   renderer->active_command_slot = slot;
   renderer->command_allocator = slot->allocator;
   renderer->command_buffer = slot->buffer;
@@ -285,15 +287,21 @@ vkr_metal_packet_discard_unsubmitted_uses(VkrMetalPacketRenderer *renderer) {
 vkr_internal void
 vkr_metal_packet_finish_frame(VkrMetalPacketRenderer *renderer,
                               bool8_t graph_active, bool8_t submitted) {
-  if (!submitted)
+  /* A reserved frame has no speculative draw uses. Independent publication
+   * may already have submitted uploads, or still own an open upload batch. */
+  if (!submitted && !renderer->reserved_frame_slot)
     vkr_metal_packet_discard_unsubmitted_uses(renderer);
   if (graph_active)
     vkr_rg_end_frame(renderer->graph);
   [renderer->drawable release];
   renderer->drawable = nil;
   renderer->frame_prepared = false_v;
-  if (!submitted)
+  if (renderer->reserved_frame_slot) {
+    [renderer->reserved_frame_slot->allocator reset];
+    renderer->reserved_frame_slot = NULL;
+  } else if (!submitted && renderer->active_command_slot) {
     vkr_metal_packet_release_unsubmitted_command_slot(renderer);
+  }
 }
 
 vkr_internal bool8_t vkr_metal_packet_texture_upload_batch_start(
@@ -302,7 +310,7 @@ vkr_internal bool8_t vkr_metal_packet_texture_upload_batch_start(
   VkrMetalPacketTextureUploadBatch *batch = &renderer->texture_upload_batch;
   if (batch->active)
     return true_v;
-  if (!batch->enabled || renderer->frame_prepared ||
+  if (!batch->enabled || (renderer->frame_prepared && !renderer->reserved_frame_slot) ||
       !vkr_metal_packet_acquire_command_slot(renderer, true_v))
     return false_v;
 
@@ -384,7 +392,7 @@ vkr_internal bool8_t vkr_metal_packet_texture_upload_batch_flush(
 
 bool8_t vkr_metal_packet_renderer_begin_texture_upload_batch(
     VkrMetalPacketRenderer *renderer) {
-  if (!renderer || renderer->frame_prepared ||
+  if (!renderer || (renderer->frame_prepared && !renderer->reserved_frame_slot) ||
       renderer->texture_upload_batch.enabled)
     return false_v;
   renderer->pending_texture_upload_bytes = 0u;

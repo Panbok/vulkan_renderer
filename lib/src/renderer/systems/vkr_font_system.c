@@ -595,11 +595,9 @@ vkr_internal void vkr_font_system_unload_font(VkrFontSystem *system,
 // =============================================================================
 
 bool8_t vkr_font_system_init(VkrFontSystem *system,
-                             VkrRendererFrontendHandle renderer,
                              const VkrFontSystemConfig *config,
                              VkrRendererError *out_error) {
   assert_log(system != NULL, "System is NULL");
-  assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(config != NULL, "Config is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
@@ -645,7 +643,6 @@ bool8_t vkr_font_system_init(VkrFontSystem *system,
     goto initialization_failure;
   }
 
-  system->renderer = renderer;
   system->config = *config;
   system->job_system = NULL;
 

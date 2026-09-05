@@ -7,7 +7,7 @@
 #include "renderer/vkr_renderer.h"
 
 // Forward declarations for stateless render packet access.
-typedef struct VkrRenderPacket VkrRenderPacket;
+typedef struct VkrPreparedFrame VkrPreparedFrame;
 typedef struct VkrFrameInfo VkrFrameInfo;
 typedef struct VkrFrameGlobals VkrFrameGlobals;
 typedef struct VkrWorldPassPayload VkrWorldPassPayload;
@@ -423,7 +423,7 @@ const VkrRgBufferUse *vkr_rg_pass_find_buffer_use(const VkrRgPassDesc *pass,
  * @param packet Render packet to attach
  */
 void vkr_rg_set_packet(struct VkrRenderGraph *graph,
-                       const VkrRenderPacket *packet);
+                       const VkrPreparedFrame *packet);
 
 /**
  * @brief Finds an image handle by name in the graph.

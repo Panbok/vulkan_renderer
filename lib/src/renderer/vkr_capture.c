@@ -1,6 +1,7 @@
 #include "vkr_capture.h"
+#include "core/vkr_subsystem_plan.h"
 
-#include "renderer/renderer_frontend.h"
+#include "renderer/vkr_renderer_internal.h"
 
 enum {
   VKR_CAPTURE_CHANNEL_FINAL_COLOR = 0,
@@ -190,25 +191,23 @@ vkr_renderer_capture_request_contains(const VkrCaptureBatchRequest *request,
   return false_v;
 }
 
-VkrCaptureStatus vkr_renderer_capture_poll(VkrRendererFrontendHandle renderer,
+VkrCaptureStatus vkr_renderer_capture_poll(VkrRenderer *renderer,
                                            VkrCaptureRequestId request_id,
                                            VkrCapturePollResult *out_result) {
-  if (!renderer || !renderer->impl.ops || !renderer->impl.ops->capture_poll) {
+  if (!renderer) {
     if (out_result) {
       MemZero(out_result, sizeof(*out_result));
       out_result->error = VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
     }
     return VKR_CAPTURE_STATUS_NOT_FOUND;
   }
-  return renderer->impl.ops->capture_poll(renderer->impl.state, request_id,
-                                          out_result);
+  return vkr_renderer_backend_capture_poll(renderer, request_id, out_result);
 }
 
-bool8_t vkr_renderer_capture_release(VkrRendererFrontendHandle renderer,
+bool8_t vkr_renderer_capture_release(VkrRenderer *renderer,
                                      VkrCaptureRequestId request_id) {
-  if (renderer && renderer->impl.ops && renderer->impl.ops->capture_release) {
-    return renderer->impl.ops->capture_release(renderer->impl.state,
-                                               request_id);
+  if (renderer) {
+    return vkr_renderer_backend_capture_release(renderer, request_id);
   }
   return false_v;
 }

@@ -12,7 +12,7 @@
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_scene_system.h"
 
-struct s_RendererFrontend;
+struct VkrRenderAssets;
 
 /**
  * @brief Summary of a scene load operation.
@@ -60,15 +60,16 @@ bool8_t vkr_scene_loader_read_gltf_punctual_lights(
  * @brief Load a scene from a JSON file path.
  *
  * @param scene Target scene (must be initialized).
- * @param rf Renderer frontend for mesh loading.
+ * @param assets Published asset owner for mesh and text loading.
  * @param path Path to the .scene.json file.
  * @param temp_alloc Temporary allocator for file contents and parsing.
  * @param out_result Optional load summary.
  * @param out_error Optional error output.
  * @return true on success.
  */
-bool8_t vkr_scene_load_from_file(VkrScene *scene, struct s_RendererFrontend *rf,
-                                 String8 path, VkrAllocator *temp_alloc,
+bool8_t vkr_scene_load_from_file(VkrScene *scene,
+                                 struct VkrRenderAssets *assets, String8 path,
+                                 VkrAllocator *temp_alloc,
                                  VkrSceneLoadResult *out_result,
                                  VkrSceneError *out_error);
 
@@ -76,15 +77,16 @@ bool8_t vkr_scene_load_from_file(VkrScene *scene, struct s_RendererFrontend *rf,
  * @brief Load a scene from a JSON buffer.
  *
  * @param scene Target scene (must be initialized).
- * @param rf Renderer frontend for mesh loading.
+ * @param assets Published asset owner for mesh and text loading.
  * @param json Scene JSON buffer (lifetime must cover this call).
  * @param temp_alloc Temporary allocator for parse scratch data.
  * @param out_result Optional load summary.
  * @param out_error Optional error output.
  * @return true on success.
  */
-bool8_t vkr_scene_load_from_json(VkrScene *scene, struct s_RendererFrontend *rf,
-                                 String8 json, VkrAllocator *temp_alloc,
+bool8_t vkr_scene_load_from_json(VkrScene *scene,
+                                 struct VkrRenderAssets *assets, String8 json,
+                                 VkrAllocator *temp_alloc,
                                  VkrSceneLoadResult *out_result,
                                  VkrSceneError *out_error);
 

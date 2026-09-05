@@ -405,7 +405,7 @@ bool8_t vkr_metrics_event_record(VkrMetricEventProducer producer,
  * referenced outside the guard that declared it.
  *
  *   VKR_METRICS_SCOPE_NS(metrics, id) {
- *     err = vkr_renderer_prepare_frame(renderer, &setup);
+ *     err = vkr_renderer_begin_frame(renderer, &setup);
  *   }
  */
 typedef struct VkrMetricsScopeTimer {

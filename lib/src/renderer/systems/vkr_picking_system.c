@@ -1,7 +1,7 @@
 #include "renderer/systems/vkr_picking_system.h"
 
 #include "core/logger.h"
-#include "renderer/renderer_frontend.h"
+#include "renderer/vkr_renderer.h"
 
 static bool8_t picking_set_target_size(VkrPickingContext *ctx, uint32_t width,
                                        uint32_t height) {
@@ -13,10 +13,9 @@ static bool8_t picking_set_target_size(VkrPickingContext *ctx, uint32_t width,
   return true_v;
 }
 
-bool8_t vkr_picking_init(struct s_RendererFrontend *renderer,
-                         VkrPickingContext *ctx, uint32_t width,
+bool8_t vkr_picking_init(VkrPickingContext *ctx, uint32_t width,
                          uint32_t height) {
-  if (!renderer || !ctx || !picking_set_target_size(ctx, width, height)) {
+  if (!ctx || !picking_set_target_size(ctx, width, height)) {
     return false_v;
   }
   ctx->state = VKR_PICKING_STATE_IDLE;
@@ -24,10 +23,9 @@ bool8_t vkr_picking_init(struct s_RendererFrontend *renderer,
   return true_v;
 }
 
-void vkr_picking_resize(struct s_RendererFrontend *renderer,
-                        VkrPickingContext *ctx, uint32_t width,
+void vkr_picking_resize(VkrPickingContext *ctx, uint32_t width,
                         uint32_t height) {
-  if (!renderer || !ctx || !ctx->initialized ||
+  if (!ctx || !ctx->initialized ||
       (ctx->width == width && ctx->height == height)) {
     return;
   }
@@ -51,7 +49,7 @@ void vkr_picking_request(VkrPickingContext *ctx, uint32_t x, uint32_t y) {
   ctx->state = VKR_PICKING_STATE_RENDER_PENDING;
 }
 
-VkrPickResult vkr_picking_get_result(struct s_RendererFrontend *renderer,
+VkrPickResult vkr_picking_get_result(struct VkrRenderer *renderer,
                                      VkrPickingContext *ctx) {
   VkrPickResult result = {0};
   if (!renderer || !ctx || !ctx->initialized) {
@@ -98,9 +96,8 @@ void vkr_picking_cancel(VkrPickingContext *ctx) {
   }
 }
 
-void vkr_picking_shutdown(struct s_RendererFrontend *renderer,
-                          VkrPickingContext *ctx) {
-  if (!renderer || !ctx) {
+void vkr_picking_shutdown(VkrPickingContext *ctx) {
+  if (!ctx) {
     return;
   }
   MemZero(ctx, sizeof(*ctx));

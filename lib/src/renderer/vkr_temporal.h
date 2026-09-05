@@ -7,7 +7,7 @@
 /** Renderer-owned jitter period used to align deterministic replay. */
 #define VKR_TEMPORAL_SEQUENCE_LENGTH 8u
 
-struct VkrRenderPacket;
+struct VkrPreparedFrame;
 
 /** Packet-content proof for static scene accumulation; native resource and
  * graph revisions must also match. Contains no borrowed storage. */
@@ -19,7 +19,7 @@ typedef struct VkrTemporalSceneSignature {
 /** Consumes a validated packet with normalized renderer-owned frame controls.
  * Excludes temporal sampling noise and post-temporal exposure/bloom/UI. */
 VkrTemporalSceneSignature
-vkr_temporal_scene_signature(const struct VkrRenderPacket *packet);
+vkr_temporal_scene_signature(const struct VkrPreparedFrame *packet);
 
 typedef enum VkrTemporalResetReason {
   VKR_TEMPORAL_RESET_NONE = 0u,

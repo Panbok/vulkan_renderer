@@ -3,7 +3,7 @@
 #include "defines.h"
 #include "renderer/vkr_renderer.h"
 
-struct s_RendererFrontend;
+struct VkrRenderer;
 
 typedef enum VkrPickingState {
   VKR_PICKING_STATE_IDLE = 0,
@@ -28,16 +28,13 @@ typedef struct VkrPickResult {
   bool8_t hit;
 } VkrPickResult;
 
-bool8_t vkr_picking_init(struct s_RendererFrontend *renderer,
-                         VkrPickingContext *ctx, uint32_t width,
+bool8_t vkr_picking_init(VkrPickingContext *ctx, uint32_t width,
                          uint32_t height);
-void vkr_picking_resize(struct s_RendererFrontend *renderer,
-                        VkrPickingContext *ctx, uint32_t width,
+void vkr_picking_resize(VkrPickingContext *ctx, uint32_t width,
                         uint32_t height);
 void vkr_picking_request(VkrPickingContext *ctx, uint32_t x, uint32_t y);
-VkrPickResult vkr_picking_get_result(struct s_RendererFrontend *renderer,
+VkrPickResult vkr_picking_get_result(struct VkrRenderer *renderer,
                                      VkrPickingContext *ctx);
 bool8_t vkr_picking_is_pending(const VkrPickingContext *ctx);
 void vkr_picking_cancel(VkrPickingContext *ctx);
-void vkr_picking_shutdown(struct s_RendererFrontend *renderer,
-                          VkrPickingContext *ctx);
+void vkr_picking_shutdown(VkrPickingContext *ctx);

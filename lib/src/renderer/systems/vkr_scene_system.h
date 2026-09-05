@@ -21,7 +21,7 @@
 #include "renderer/resources/vkr_resources.h"
 
 // Forward declarations
-struct s_RendererFrontend;
+struct VkrRenderAssets;
 struct VkrMeshLoadDesc;
 typedef struct SceneChildIndexSlot SceneChildIndexSlot;
 
@@ -308,10 +308,10 @@ typedef struct VkrSceneEnvironment {
  * @brief Scene containing ECS world and renderer integration state.
  */
 typedef struct VkrScene {
-  VkrWorld *world;               // ECS storage (authoritative scene state)
-  VkrAllocator *alloc;           // Scene-owned allocator
-  struct s_RendererFrontend *rf; // Renderer for layer messages
-  uint16_t world_id;             // Copied into entity IDs
+  VkrWorld *world;                // ECS storage (authoritative scene state)
+  VkrAllocator *alloc;            // Scene-owned allocator
+  struct VkrRenderAssets *assets; // Borrowed owner of published scene assets
+  uint16_t world_id;              // Copied into entity IDs
 
   // Component type IDs (cached after registration)
   VkrComponentTypeId comp_name;
@@ -391,10 +391,10 @@ bool8_t vkr_scene_init(VkrScene *scene, VkrAllocator *alloc, uint16_t world_id,
 /**
  * @brief Shutdown a scene and release all resources.
  * @param scene Scene to shutdown
- * @param rf Optional renderer frontend (to remove owned meshes); waits for
- * renderer idle before removing meshes to avoid freeing in-flight resources.
+ * @param assets Optional published asset owner. The caller must prove
+ * GPU idle at the caller before teardown; drain retirement before another load.
  */
-void vkr_scene_shutdown(VkrScene *scene, struct s_RendererFrontend *rf);
+void vkr_scene_shutdown(VkrScene *scene, struct VkrRenderAssets *assets);
 
 /**
  * @brief Update scene transforms and prepare for renderer sync.
@@ -431,10 +431,11 @@ VkrSceneHandle vkr_scene_handle_create(VkrAllocator *alloc, uint16_t world_id,
  * @brief Destroys a runtime scene handle and releases owned renderer resources.
  *
  * @param handle Scene handle to destroy.
- * @param rf Optional renderer frontend (required for owned mesh cleanup).
+ * @param assets Optional published asset owner (required for owned mesh
+ * cleanup).
  */
 void vkr_scene_handle_destroy(VkrSceneHandle handle,
-                              struct s_RendererFrontend *rf);
+                              struct VkrRenderAssets *assets);
 
 /**
  * @brief Gets the underlying scene pointer from a runtime handle.
@@ -453,27 +454,27 @@ void vkr_scene_handle_update(VkrSceneHandle handle, float64_t dt);
 /**
  * @brief Incrementally syncs dirty entities from scene to renderer.
  * @param handle Scene handle.
- * @param rf Renderer frontend.
+ * @param assets Published asset owner.
  */
 void vkr_scene_handle_sync(VkrSceneHandle handle,
-                           struct s_RendererFrontend *rf);
+                           struct VkrRenderAssets *assets);
 
 /**
  * @brief Full sync of all renderables (use after scene load).
  * @param handle Scene handle.
- * @param rf Renderer frontend.
+ * @param assets Published asset owner.
  */
 void vkr_scene_handle_full_sync(VkrSceneHandle handle,
-                                struct s_RendererFrontend *rf);
+                                struct VkrRenderAssets *assets);
 
 /**
  * @brief Convenience helper: update + incremental sync.
  * @param handle Scene handle.
- * @param rf Renderer frontend.
+ * @param assets Published asset owner.
  * @param dt Delta time.
  */
 void vkr_scene_handle_update_and_sync(VkrSceneHandle handle,
-                                      struct s_RendererFrontend *rf,
+                                      struct VkrRenderAssets *assets,
                                       float64_t dt);
 
 /**
@@ -666,13 +667,13 @@ SceneDirectionalLight *vkr_scene_get_directional_light(VkrScene *scene,
  * @brief Spawn a mesh via mesh manager and track ownership.
  * Scene will destroy owned meshes on shutdown.
  * @param scene Scene to own the mesh
- * @param rf Renderer frontend
+ * @param assets Published asset owner
  * @param desc Mesh load descriptor
  * @param out_mesh_index Output mesh index
  * @param out_error Optional error output
  * @return true on success
  */
-bool8_t vkr_scene_spawn_mesh(VkrScene *scene, struct s_RendererFrontend *rf,
+bool8_t vkr_scene_spawn_mesh(VkrScene *scene, struct VkrRenderAssets *assets,
                              const struct VkrMeshLoadDesc *desc,
                              uint32_t *out_mesh_index,
                              VkrSceneError *out_error);
@@ -808,13 +809,13 @@ typedef struct VkrSceneShapeConfig {
  * The mesh is tracked as scene-owned.
  *
  * @param scene Scene containing the entity.
- * @param rf Renderer frontend.
+ * @param assets Published asset owner.
  * @param entity Entity to add shape to.
  * @param config Shape configuration.
  * @param out_error Optional error output.
  * @return true on success.
  */
-bool8_t vkr_scene_set_shape(VkrScene *scene, struct s_RendererFrontend *rf,
+bool8_t vkr_scene_set_shape(VkrScene *scene, struct VkrRenderAssets *assets,
                             VkrEntityId entity,
                             const VkrSceneShapeConfig *config,
                             VkrSceneError *out_error);

@@ -236,7 +236,7 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
   if (!out_handle)
     return false_v;
   *out_handle = VKR_MESH_HANDLE_INVALID;
-  if (!renderer || !create_info || renderer->frame_prepared ||
+  if (!renderer || !create_info || (renderer->frame_prepared && !renderer->reserved_frame_slot) ||
       (requested_handle.id > renderer->max_meshes) ||
       (requested_handle.id > 0 &&
        requested_handle.generation == VKR_INVALID_ID) ||
@@ -252,7 +252,7 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
       (uint64_t)create_info->index_count > UINT64_MAX / sizeof(uint32_t)) {
     log_error("Metal geometry publication rejected before upload "
               "(frame_prepared=%u handle=%u:%u vertices=%u indices=%u)",
-              renderer ? renderer->frame_prepared : 0u, requested_handle.id,
+              renderer ? (renderer->frame_prepared && !renderer->reserved_frame_slot) : 0u, requested_handle.id,
               requested_handle.generation,
               create_info ? create_info->vertex_count : 0u,
               create_info ? create_info->index_count : 0u);
@@ -594,7 +594,7 @@ bool8_t vkr_metal_packet_renderer_create_material(
   if (!out_handle)
     return false_v;
   *out_handle = VKR_MATERIAL_HANDLE_INVALID;
-  if (!renderer || renderer->frame_prepared ||
+  if (!renderer || (renderer->frame_prepared && !renderer->reserved_frame_slot) ||
       !vkr_metal_packet_material_info_valid(create_info))
     return false_v;
   if (!@available(macOS 26.0, *))
@@ -773,7 +773,7 @@ bool8_t
 vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
                                            VkrMaterialHandle handle,
                                            const struct VkrMaterial *material) {
-  if (!renderer || !material || renderer->frame_prepared || handle.id == 0 ||
+  if (!renderer || !material || (renderer->frame_prepared && !renderer->reserved_frame_slot) || handle.id == 0 ||
       handle.id > renderer->max_materials ||
       handle.generation == VKR_INVALID_ID || material->id != handle.id ||
       material->generation != handle.generation)
@@ -895,7 +895,7 @@ bool8_t vkr_metal_packet_renderer_create_rgba8_texture(
     VkrMetalPacketRenderer *renderer,
     const VkrMetalPacketRgba8TextureCreateInfo *create_info,
     VkrTextureHandle *out_handle) {
-  if (!renderer || !create_info || !out_handle || renderer->frame_prepared ||
+  if (!renderer || !create_info || !out_handle || (renderer->frame_prepared && !renderer->reserved_frame_slot) ||
       !create_info->pixels || create_info->width == 0 ||
       create_info->height == 0 ||
       create_info->width > VKR_TEXTURE_MAX_DIMENSION ||
@@ -960,7 +960,7 @@ bool8_t vkr_metal_packet_renderer_create_rgba8_texture(
 bool8_t vkr_metal_packet_renderer_publish_prepared_texture(
     VkrMetalPacketRenderer *renderer, VkrTextureHandle handle,
     const struct VkrTexturePreparedLoad *prepared) {
-  if (!renderer || !prepared || renderer->frame_prepared || handle.id == 0 ||
+  if (!renderer || !prepared || (renderer->frame_prepared && !renderer->reserved_frame_slot) || handle.id == 0 ||
       handle.id > renderer->max_textures ||
       handle.generation == VKR_INVALID_ID || !prepared->upload_data ||
       prepared->upload_data_size == 0 || !prepared->upload_regions ||
@@ -1070,7 +1070,7 @@ bool8_t vkr_metal_packet_renderer_publish_prepared_texture(
 bool8_t vkr_metal_packet_renderer_publish_writable_texture(
     VkrMetalPacketRenderer *renderer, VkrTextureHandle handle,
     const VkrTextureDescription *description) {
-  if (!renderer || !description || renderer->frame_prepared || handle.id == 0 ||
+  if (!renderer || !description || (renderer->frame_prepared && !renderer->reserved_frame_slot) || handle.id == 0 ||
       handle.id > renderer->max_textures ||
       handle.generation == VKR_INVALID_ID || description->id != handle.id ||
       description->generation != handle.generation || description->width == 0 ||
@@ -1140,7 +1140,7 @@ bool8_t vkr_metal_packet_renderer_publish_writable_texture(
 bool8_t vkr_metal_packet_renderer_update_texture_sampler(
     VkrMetalPacketRenderer *renderer, VkrTextureHandle handle,
     const VkrTextureDescription *description) {
-  if (!renderer || !description || renderer->frame_prepared || handle.id == 0 ||
+  if (!renderer || !description || (renderer->frame_prepared && !renderer->reserved_frame_slot) || handle.id == 0 ||
       description->id != handle.id ||
       description->generation != handle.generation) {
     return false_v;
@@ -1217,7 +1217,7 @@ vkr_internal bool8_t vkr_metal_packet_validate_ibl_textures(
 bool8_t vkr_metal_packet_renderer_bake_ibl_cubemap(
     VkrMetalPacketRenderer *renderer, VkrTextureHandle source_handle,
     VkrTextureHandle prefilter_handle, float32_t sh_deringing) {
-  if (!renderer || renderer->frame_prepared) {
+  if (!renderer || (renderer->frame_prepared && !renderer->reserved_frame_slot)) {
     return false_v;
   }
   if (!@available(macOS 26.0, *)) {
@@ -1347,7 +1347,7 @@ bool8_t vkr_metal_packet_renderer_bake_hdr_environment(
     VkrMetalPacketRenderer *renderer, VkrTextureHandle equirect_handle,
     VkrTextureHandle source_handle, VkrTextureHandle prefilter_handle,
     float32_t sh_deringing) {
-  if (!renderer || renderer->frame_prepared) {
+  if (!renderer || (renderer->frame_prepared && !renderer->reserved_frame_slot)) {
     return false_v;
   }
   if (!@available(macOS 26.0, *)) {
@@ -1413,7 +1413,7 @@ bool8_t vkr_metal_packet_renderer_create_cubemap(
     VkrMetalPacketRenderer *renderer,
     const VkrMetalPacketCubemapCreateInfo *create_info,
     VkrTextureHandle *out_handle) {
-  if (!renderer || !create_info || !out_handle || renderer->frame_prepared ||
+  if (!renderer || !create_info || !out_handle || (renderer->frame_prepared && !renderer->reserved_frame_slot) ||
       !create_info->rgba8_faces || create_info->extent == 0 ||
       create_info->extent > VKR_TEXTURE_MAX_DIMENSION)
     return false_v;
@@ -1475,7 +1475,7 @@ bool8_t vkr_metal_packet_renderer_create_hdr_environment(
     VkrMetalPacketRenderer *renderer,
     const VkrMetalPacketHdrEnvironmentCreateInfo *create_info,
     VkrTextureHandle *out_handle) {
-  if (!renderer || !create_info || !out_handle || renderer->frame_prepared ||
+  if (!renderer || !create_info || !out_handle || (renderer->frame_prepared && !renderer->reserved_frame_slot) ||
       !create_info->rgba16_equirect || create_info->width == 0 ||
       create_info->height == 0 || create_info->cube_extent == 0 ||
       create_info->width > VKR_TEXTURE_MAX_DIMENSION ||
@@ -1619,19 +1619,19 @@ vkr_metal_packet_renderer_destroy_texture(VkrMetalPacketRenderer *renderer,
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_ibl_source(const VkrRenderPacket *packet,
+vkr_internal bool8_t vkr_metal_packet_ibl_source(const VkrPreparedFrame *packet,
                                                  VkrTextureHandle *out_source) {
   *out_source = VKR_TEXTURE_HANDLE_INVALID;
-  if (packet->lighting && packet->lighting->ibl_source.id != 0) {
-    *out_source = packet->lighting->ibl_source;
-  } else if (packet->skybox && packet->skybox->cubemap.id != 0) {
-    *out_source = packet->skybox->cubemap;
+  if (packet->input.lighting && packet->input.lighting->ibl_source.id != 0) {
+    *out_source = packet->input.lighting->ibl_source;
+  } else if (packet->input.skybox && packet->input.skybox->cubemap.id != 0) {
+    *out_source = packet->input.skybox->cubemap;
   }
   return out_source->id != 0;
 }
 
 vkr_internal bool8_t vkr_metal_packet_ibl_needs_bake(
-    const VkrMetalPacketRenderer *renderer, const VkrRenderPacket *packet) {
+    const VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet) {
   VkrTextureHandle source = VKR_TEXTURE_HANDLE_INVALID;
   if (!vkr_metal_packet_ibl_source(packet, &source))
     return false_v;
@@ -1834,17 +1834,17 @@ vkr_internal bool8_t vkr_metal_packet_prepare_direct_draws(
 }
 
 vkr_internal bool8_t vkr_metal_packet_prepare_upload(
-    VkrMetalPacketRenderer *renderer, const VkrRenderPacket *packet,
+    VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
     VkrMetalPacketFrameUpload *upload) {
   MemZero(upload, sizeof(*upload));
   const uint32_t world_count =
-      packet->world ? packet->world->instance_count : 0;
+      packet->input.world ? packet->input.world->instance_count : 0;
   const uint32_t shadow_count = 0u;
   const uint32_t picking_count = 0u;
   const VkrPreparedUiDrawList *ui_draw_list =
-      packet->ui ? &packet->ui->draw_list : NULL;
+      packet->input.ui ? &packet->input.ui->draw_list : NULL;
   const uint32_t ui_batch_count = ui_draw_list ? ui_draw_list->batch_count : 0u;
-  const VkrWorldPassPayload *world = packet->world;
+  const VkrWorldPassPayload *world = packet->input.world;
   const uint32_t source_gpu_draw_count =
       world ? world->gpu_candidate_count : 0u;
   const uint32_t source_static_count =
@@ -1883,7 +1883,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   renderer->gpu_draw_count = 0u;
   renderer->transmission_gpu_draw_count = 0u;
   const uint32_t world_text_count =
-      packet->world ? packet->world->text_draw_count : 0;
+      packet->input.world ? packet->input.world->text_draw_count : 0;
   if (world_text_count > renderer->max_draws)
     return false_v;
   const uint64_t retained_instance_count =
@@ -1908,7 +1908,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
             pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_WORLD_BLEND)) {
       direct_pass_count++;
       direct_frame_root_count += 2u;
-    } else if (packet->picking && packet->picking->pending &&
+    } else if (packet->input.picking && packet->input.picking->pending &&
                vkr_metal_packet_graph_pass_is(
                    pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING)) {
       direct_pass_count++;
@@ -1936,13 +1936,13 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     root_count +=
         17u +
         (renderer->prepared_frame.transmission_compact_enabled ? 4u : 0u) +
-        (packet->debug && packet->debug->enable_timing &&
-                 packet->debug->capture_pass_timestamps &&
+        (packet->input.debug && packet->input.debug->enable_timing &&
+                 packet->input.debug->capture_pass_timestamps &&
                  !renderer->prepared_frame.transmission_compact_enabled
              ? 4u
              : 0u);
   root_count += renderer->prepared_frame.shadow_cascade_count;
-  if (packet->picking && packet->picking->pending)
+  if (packet->input.picking && packet->input.picking->pending)
     root_count += 1u;
   root_count += ui_batch_count;
   /*
@@ -1978,10 +1978,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   const uint64_t instance_bytes = transmission_gpu_draw_instances_offset +
                                   transmission_gpu_draw_instances_bytes;
   const uint32_t point_light_count =
-      packet->lighting ? packet->lighting->point_light_count : 0;
+      packet->input.lighting ? packet->input.lighting->point_light_count : 0;
   const uint32_t point_light_cell_count =
-      point_light_count > 0 ? packet->lighting->point_light_grid->cell_count
-                            : 0;
+      point_light_count > 0
+          ? packet->input.lighting->point_light_grid->cell_count
+          : 0;
   const uint64_t point_light_offset =
       vkr_metal_packet_align_up(instance_bytes, AlignOf(VkrGpuPointLightRow));
   const uint64_t point_light_bytes =
@@ -1991,14 +1992,14 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   const uint64_t point_light_masks_bytes =
       (uint64_t)point_light_cell_count * sizeof(VkrPointLightMask);
   const uint32_t shadow_cascade_count =
-      packet->shadow ? packet->shadow->cascade_count : 0;
+      packet->input.shadow ? packet->input.shadow->cascade_count : 0;
   const uint64_t shadow_cascades_offset = vkr_metal_packet_align_up(
       point_light_masks_offset + point_light_masks_bytes,
       AlignOf(VkrMetalPacketShadowCascade));
   const uint64_t shadow_cascades_bytes =
       (uint64_t)shadow_cascade_count * sizeof(VkrMetalPacketShadowCascade);
   const uint32_t ibl_probe_count =
-      packet->lighting ? packet->lighting->ibl_probe_count : 0;
+      packet->input.lighting ? packet->input.lighting->ibl_probe_count : 0;
   const uint64_t ibl_probes_offset =
       vkr_metal_packet_align_up(shadow_cascades_offset + shadow_cascades_bytes,
                                 AlignOf(VkrMetalPacketIblProbe));
@@ -2094,7 +2095,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   uint64_t text_geometry_end = transmission_gpu_draw_icb_argument_offset +
                                transmission_gpu_draw_icb_argument_bytes;
   for (uint32_t i = 0; i < world_text_count; ++i) {
-    const VkrPreparedTextDraw *draw = &packet->world->text_draws[i];
+    const VkrPreparedTextDraw *draw = &packet->input.world->text_draws[i];
     const uint64_t vertex_bytes =
         (uint64_t)draw->vertex_count * sizeof(VkrTextVertex);
     const uint64_t index_bytes = (uint64_t)draw->index_count * sizeof(uint32_t);
@@ -2171,7 +2172,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   if (world_bytes > 0) {
     VkrPreparedInstanceGPU *instances = (VkrPreparedInstanceGPU *)cpu;
     for (uint32_t i = 0u; i < world_count; ++i)
-      instances[i] = vkr_gpu_prepare_instance(&packet->world->instances[i]);
+      instances[i] =
+          vkr_gpu_prepare_instance(&packet->input.world->instances[i]);
     upload->world_instances_gpu = gpu;
   }
   if (picking_bytes > 0) {
@@ -2334,12 +2336,12 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     VkrGpuPointLightRow *packed =
         (VkrGpuPointLightRow *)(cpu + point_light_offset);
     for (uint32_t i = 0; i < point_light_count; ++i)
-      vkr_lighting_system_pack_point_light(&packet->lighting->point_lights[i],
-                                           &packed[i]);
+      vkr_lighting_system_pack_point_light(
+          &packet->input.lighting->point_lights[i], &packed[i]);
     upload->point_light_data_gpu = gpu + point_light_offset;
     if (point_light_masks_bytes > 0) {
       MemCopy(cpu + point_light_masks_offset,
-              packet->lighting->point_light_grid->masks,
+              packet->input.lighting->point_light_grid->masks,
               point_light_masks_bytes);
       upload->point_light_masks_gpu = gpu + point_light_masks_offset;
     }
@@ -2348,7 +2350,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     VkrMetalPacketShadowCascade *cascades =
         (VkrMetalPacketShadowCascade *)(cpu + shadow_cascades_offset);
     for (uint32_t i = 0; i < shadow_cascade_count; ++i) {
-      const VkrShadowCascadePacketData *source = &packet->shadow->cascades[i];
+      const VkrShadowCascadePacketData *source =
+          &packet->input.shadow->cascades[i];
       cascades[i] = (VkrMetalPacketShadowCascade){
           .light_view_projection = source->light_view_projection,
           .split_near_far_texel_depth = source->split_near_far_texel_depth,
@@ -2376,7 +2379,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     VkrMetalPacketIblProbe *packed =
         (VkrMetalPacketIblProbe *)(cpu + ibl_probes_offset);
     for (uint32_t i = 0; i < ibl_probe_count; ++i) {
-      const VkrFrameIblProbe *probe = &packet->lighting->ibl_probes[i];
+      const VkrFrameIblProbe *probe = &packet->input.lighting->ibl_probes[i];
       VkrMetalPacketTexture *prefilter =
           vkr_metal_packet_resolve_texture(renderer, probe->prefilter);
       if (!prefilter)
@@ -2401,14 +2404,14 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     VkrMetalPacketGpuDrawView *views =
         (VkrMetalPacketGpuDrawView *)(cpu + gpu_draw_views_offset);
     const VkrFrustum camera = vkr_frustum_from_view_projection(
-        packet->globals.view, packet->globals.projection);
+        packet->input.globals.view, packet->input.globals.projection);
     vkr_metal_packet_pack_gpu_draw_view(
         &views[0], &camera, VKR_WORLD_DRAW_CANDIDATE_CAMERA_OPAQUE,
         renderer->prepared_frame.hzb_history_valid);
     for (uint32_t cascade = 0u;
          cascade < renderer->prepared_frame.shadow_cascade_count; ++cascade) {
       const VkrFrustum shadow = vkr_frustum_from_matrix(
-          packet->shadow->cascades[cascade].light_view_projection);
+          packet->input.shadow->cascades[cascade].light_view_projection);
       vkr_metal_packet_pack_gpu_draw_view(
           &views[cascade + 1u], &shadow, VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER,
           false_v);
@@ -2419,7 +2422,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     VkrMetalPacketGpuDrawView *view =
         (VkrMetalPacketGpuDrawView *)(cpu + transmission_gpu_draw_view_offset);
     const VkrFrustum camera = vkr_frustum_from_view_projection(
-        packet->globals.view, packet->globals.projection);
+        packet->input.globals.view, packet->input.globals.projection);
     vkr_metal_packet_pack_gpu_draw_view(
         view, &camera, 0u, renderer->prepared_frame.hzb_history_valid);
     upload->transmission_gpu_draw_view_gpu =
@@ -2429,7 +2432,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
                          transmission_gpu_draw_icb_argument_bytes;
   uint32_t text_upload_index = 0;
   for (uint32_t i = 0; i < world_text_count; ++i) {
-    const VkrPreparedTextDraw *draw = &packet->world->text_draws[i];
+    const VkrPreparedTextDraw *draw = &packet->input.world->text_draws[i];
     VkrMetalPacketTextUpload *text_upload =
         &renderer->text_uploads[text_upload_index++];
     const uint64_t vertex_bytes =
@@ -2459,10 +2462,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     upload->ui_indices_length = ui_index_bytes;
     text_offset += ui_index_bytes;
   }
-  if (packet->world && packet->world->transmission_gpu_candidate_count > 0) {
+  if (packet->input.world &&
+      packet->input.world->transmission_gpu_candidate_count > 0) {
     id<MTLTexture> transmission_texture = vkr_metal_packet_named_texture(
-        renderer, packet->frame.editor_enabled ? "scene_pre_transmission"
-                                               : "hdr_pre_transmission");
+        renderer, packet->input.frame.editor_enabled ? "scene_pre_transmission"
+                                                     : "hdr_pre_transmission");
     if (!transmission_texture)
       return false_v;
     upload->transmission_texture_id = transmission_texture.gpuResourceID._impl;
@@ -2484,17 +2488,17 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
 
 /** Rolls provisional candidate uses back when no queue submission follows. */
 vkr_internal void vkr_metal_packet_rollback_gpu_draw_resource_preparation(
-    VkrMetalPacketRenderer *renderer, const VkrRenderPacket *packet) {
-  if (!packet->world)
+    VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet) {
+  if (!packet->input.world)
     return;
   const uint64_t pending_submit = renderer->submit_value + 1u;
   const VkrWorldDrawCandidate *streams[] = {
-      packet->world->gpu_candidates,
-      packet->world->transmission_gpu_candidates,
+      packet->input.world->gpu_candidates,
+      packet->input.world->transmission_gpu_candidates,
   };
   const uint32_t counts[] = {
-      packet->world->gpu_candidate_count,
-      packet->world->transmission_gpu_candidate_count,
+      packet->input.world->gpu_candidate_count,
+      packet->input.world->transmission_gpu_candidate_count,
   };
   for (uint32_t stream = 0u; stream < ArrayCount(streams); ++stream) {
     for (uint32_t i = 0u; i < counts[stream]; ++i) {

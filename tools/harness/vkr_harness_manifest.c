@@ -3,7 +3,7 @@
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/systems/vkr_shadow_system.h"
 #include "renderer/vkr_dynamic_resolution.h"
-#include "renderer/vkr_render_packet.h"
+#include "renderer/vkr_frame_input.h"
 
 #include <float.h>
 #include <math.h>

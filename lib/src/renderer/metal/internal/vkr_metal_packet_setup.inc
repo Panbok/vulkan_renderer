@@ -1567,7 +1567,7 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
   if (!config || !out_renderer || !config->allocator || !config->graph_path ||
       !config->slang_msl_path || !config->fragment_msl_path ||
       config->heap_size == 0 || config->upload_ring_size == 0 ||
-      config->frame_slot_count == 0 || config->capture_ring_capacity == 0 ||
+      config->frame_slot_count < 2u || config->capture_ring_capacity == 0 ||
       config->capture_ring_capacity > VKR_CAPTURE_RING_CAPACITY_MAX ||
       config->capture_max_batch_bytes == 0 ||
       config->frame_slot_count > UINT32_MAX - 2u ||

@@ -1,9 +1,10 @@
 #include "text_test.h"
 #include "container_test_allocator.h"
+#include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_window_internal.h"
-#include "renderer/renderer_frontend.h"
 #include "renderer/resources/ui/vkr_ui_text.h"
 #include "renderer/systems/vkr_ui_system.h"
+#include "renderer/vkr_frame_input.h"
 
 static Arena *arena = NULL;
 static VkrAllocator allocator = {0};
@@ -479,26 +480,22 @@ static void test_ui_system_scale_revision_and_offsets(void) {
   setup_suite();
   TestCookedFont fixture;
   test_cooked_font_init(&fixture);
-  RendererFrontend renderer = {0};
-  renderer.allocator = allocator;
-  renderer.scratch_allocator = allocator;
-  renderer.last_window_width = 200u;
-  renderer.last_window_height = 100u;
-  renderer.font_system.fonts =
-      (Array_VkrFont){.length = 1u, .data = &fixture.font};
-  renderer.font_system.default_mtsdf_font_handle = (VkrFontHandle){
+  VkrFontSystem fonts = {0};
+  fonts.fonts = (Array_VkrFont){.length = 1u, .data = &fixture.font};
+  fonts.default_mtsdf_font_handle = (VkrFontHandle){
       .id = fixture.font.id, .generation = fixture.font.generation};
   VkrUiSystem system = {0};
-  assert(vkr_ui_system_init(&renderer, &system));
-  vkr_ui_system_set_offscreen_size(&renderer, &system, true_v, 200u, 100u);
+  assert(vkr_ui_system_init(&system, &fonts));
+  vkr_ui_system_set_offscreen_size(&system, true_v, 200u, 100u);
 
   InputState input = {0};
   const float32_t scales[] = {1.25f, 1.5f, 2.0f, 1.0f};
   for (uint32_t i = 0; i < ArrayCount(scales); ++i) {
-    vkr_ui_system_set_offscreen_content_scale(&renderer, &system, scales[i]);
+    vkr_ui_system_set_offscreen_content_scale(&system, scales[i]);
     VkrAllocatorScope scope = vkr_allocator_begin_scope(&allocator);
     assert(vkr_allocator_scope_is_valid(&scope));
-    assert(vkr_ui_begin(&renderer, &system, &input, false_v, 1.0 / 60.0, NULL));
+    assert(vkr_ui_begin(&system, &allocator, NULL, 200u, 100u, &input, false_v,
+                        1.0 / 60.0, NULL));
     VkrUiWidgetConfig label = vkr_ui_widget_config_default();
     label.placement.justify = VKR_UI_ALIGN_START;
     label.placement.align = VKR_UI_ALIGN_START;
@@ -528,10 +525,10 @@ static void test_ui_system_scale_revision_and_offsets(void) {
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
 
-  vkr_ui_system_resize(&renderer, &system, 320u, 180u);
+  vkr_ui_system_resize(&system, 320u, 180u);
   assert_f32_eq(system.content_scale, 1.0f, 0.0f,
                 "extent resize preserves density");
-  vkr_ui_system_shutdown(&renderer, &system);
+  vkr_ui_system_shutdown(&system);
   teardown_suite();
   printf("  test_ui_system_scale_revision_and_offsets PASSED\n");
 }
@@ -541,18 +538,13 @@ static void test_ui_system_reuses_unchanged_draw_geometry(void) {
   setup_suite();
   TestCookedFont fixture;
   test_cooked_font_init(&fixture);
-  RendererFrontend renderer = {0};
-  renderer.allocator = allocator;
-  renderer.scratch_allocator = allocator;
-  renderer.last_window_width = 200u;
-  renderer.last_window_height = 100u;
-  renderer.font_system.fonts =
-      (Array_VkrFont){.length = 1u, .data = &fixture.font};
-  renderer.font_system.default_mtsdf_font_handle = (VkrFontHandle){
+  VkrFontSystem fonts = {0};
+  fonts.fonts = (Array_VkrFont){.length = 1u, .data = &fixture.font};
+  fonts.default_mtsdf_font_handle = (VkrFontHandle){
       .id = fixture.font.id, .generation = fixture.font.generation};
   VkrUiSystem system = {0};
-  assert(vkr_ui_system_init(&renderer, &system));
-  vkr_ui_system_set_offscreen_size(&renderer, &system, true_v, 200u, 100u);
+  assert(vkr_ui_system_init(&system, &fonts));
+  vkr_ui_system_set_offscreen_size(&system, true_v, 200u, 100u);
 
   InputState input = {0};
   const VkrUiVertex *cached_vertices = NULL;
@@ -560,7 +552,8 @@ static void test_ui_system_reuses_unchanged_draw_geometry(void) {
   for (uint32_t frame = 0u; frame < 4u; ++frame) {
     VkrAllocatorScope scope = vkr_allocator_begin_scope(&allocator);
     assert(vkr_allocator_scope_is_valid(&scope));
-    assert(vkr_ui_begin(&renderer, &system, &input, true_v, 1.0 / 60.0, NULL));
+    assert(vkr_ui_begin(&system, &allocator, NULL, 200u, 100u, &input, true_v,
+                        1.0 / 60.0, NULL));
     vkr_ui_label(&system, string8_lit("cached-label"),
                  frame < 2u ? string8_lit("A") : string8_lit("B"), NULL);
     (void)vkr_ui_end(&system);
@@ -592,7 +585,8 @@ static void test_ui_system_reuses_unchanged_draw_geometry(void) {
       checked = true_v;
     VkrAllocatorScope scope = vkr_allocator_begin_scope(&allocator);
     assert(vkr_allocator_scope_is_valid(&scope));
-    assert(vkr_ui_begin(&renderer, &system, &input, true_v, 1.0 / 60.0, NULL));
+    assert(vkr_ui_begin(&system, &allocator, NULL, 200u, 100u, &input, true_v,
+                        1.0 / 60.0, NULL));
     (void)vkr_ui_checkbox(&system, string8_lit("cached-checkbox"),
                           string8_lit("Visible"), &checked, NULL);
     (void)vkr_ui_end(&system);
@@ -609,10 +603,11 @@ static void test_ui_system_reuses_unchanged_draw_geometry(void) {
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
 
-  vkr_ui_system_set_offscreen_size(&renderer, &system, true_v, 220u, 120u);
+  vkr_ui_system_set_offscreen_size(&system, true_v, 220u, 120u);
   VkrAllocatorScope resize_scope = vkr_allocator_begin_scope(&allocator);
   assert(vkr_allocator_scope_is_valid(&resize_scope));
-  assert(vkr_ui_begin(&renderer, &system, &input, true_v, 1.0 / 60.0, NULL));
+  assert(vkr_ui_begin(&system, &allocator, NULL, 200u, 100u, &input, true_v,
+                      1.0 / 60.0, NULL));
   vkr_ui_label(&system, string8_lit("cached-label"), string8_lit("B"), NULL);
   (void)vkr_ui_end(&system);
   assert(!system.frame_reuses_cached_draw_list);
@@ -621,10 +616,11 @@ static void test_ui_system_reuses_unchanged_draw_geometry(void) {
                                          &resized_draw_list));
   vkr_allocator_end_scope(&resize_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
-  vkr_ui_system_set_offscreen_content_scale(&renderer, &system, 2.0f);
+  vkr_ui_system_set_offscreen_content_scale(&system, 2.0f);
   VkrAllocatorScope scale_scope = vkr_allocator_begin_scope(&allocator);
   assert(vkr_allocator_scope_is_valid(&scale_scope));
-  assert(vkr_ui_begin(&renderer, &system, &input, true_v, 1.0 / 60.0, NULL));
+  assert(vkr_ui_begin(&system, &allocator, NULL, 200u, 100u, &input, true_v,
+                      1.0 / 60.0, NULL));
   vkr_ui_label(&system, string8_lit("cached-label"), string8_lit("B"), NULL);
   (void)vkr_ui_end(&system);
   assert(!system.frame_reuses_cached_draw_list);
@@ -633,19 +629,19 @@ static void test_ui_system_reuses_unchanged_draw_geometry(void) {
                                          &scaled_draw_list));
   vkr_allocator_end_scope(&scale_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
-  vkr_ui_system_shutdown(&renderer, &system);
+  vkr_ui_system_shutdown(&system);
   teardown_suite();
   printf("  test_ui_system_reuses_unchanged_draw_geometry PASSED\n");
 }
 
-static bool8_t test_ui_text_field_frame(RendererFrontend *renderer,
-                                        VkrUiSystem *system, InputState *input,
+static bool8_t test_ui_text_field_frame(VkrUiSystem *system, InputState *input,
                                         VkrUiTextEditBuffer *buffer,
                                         float64_t delta,
                                         VkrUiInputCapture *out_capture) {
   VkrAllocatorScope scope = vkr_allocator_begin_scope(&allocator);
   assert(vkr_allocator_scope_is_valid(&scope));
-  assert(vkr_ui_begin(renderer, system, input, false_v, delta, NULL));
+  assert(vkr_ui_begin(system, &allocator, NULL, 200u, 100u, input, false_v,
+                      delta, NULL));
   const bool8_t changed =
       vkr_ui_text_field(system, string8_lit("edit"), buffer, NULL);
   *out_capture = vkr_ui_end(system);
@@ -658,18 +654,13 @@ static void test_ui_text_field_character_input_and_repeat(void) {
   setup_suite();
   TestCookedFont fixture;
   test_cooked_font_init(&fixture);
-  RendererFrontend renderer = {0};
-  renderer.allocator = allocator;
-  renderer.scratch_allocator = allocator;
-  renderer.last_window_width = 200u;
-  renderer.last_window_height = 100u;
-  renderer.font_system.fonts =
-      (Array_VkrFont){.length = 1u, .data = &fixture.font};
-  renderer.font_system.default_mtsdf_font_handle = (VkrFontHandle){
+  VkrFontSystem fonts = {0};
+  fonts.fonts = (Array_VkrFont){.length = 1u, .data = &fixture.font};
+  fonts.default_mtsdf_font_handle = (VkrFontHandle){
       .id = fixture.font.id, .generation = fixture.font.generation};
   VkrUiSystem system = {0};
-  assert(vkr_ui_system_init(&renderer, &system));
-  vkr_ui_system_set_offscreen_size(&renderer, &system, true_v, 200u, 100u);
+  assert(vkr_ui_system_init(&system, &fonts));
+  vkr_ui_system_set_offscreen_size(&system, true_v, 200u, 100u);
 
   uint8_t bytes[32];
   MemSet(bytes, 0xcc, sizeof(bytes));
@@ -678,15 +669,15 @@ static void test_ui_text_field_character_input_and_repeat(void) {
   assert(event_manager_create(&event_manager));
   InputState input = input_init(&event_manager);
   VkrUiInputCapture capture = {0};
-  assert(!test_ui_text_field_frame(&renderer, &system, &input, &edit,
-                                   1.0 / 60.0, &capture));
+  assert(
+      !test_ui_text_field_frame(&system, &input, &edit, 1.0 / 60.0, &capture));
 
   input_process_mouse_move(&input, 10, 10);
   input_process_button(&input, BUTTON_LEFT, true_v);
   assert(input_process_char(&input, 'A'));
   assert(input_process_char(&input, 0x00e9u));
-  assert(test_ui_text_field_frame(&renderer, &system, &input, &edit, 1.0 / 60.0,
-                                  &capture));
+  assert(
+      test_ui_text_field_frame(&system, &input, &edit, 1.0 / 60.0, &capture));
   assert(capture.keyboard && capture.text);
   assert(edit.length == 3u);
   assert(MemCompare(edit.data, "A\xc3\xa9", 3u) == 0);
@@ -695,30 +686,29 @@ static void test_ui_text_field_character_input_and_repeat(void) {
   input_update(&input);
   input_process_button(&input, BUTTON_LEFT, false_v);
   input_process_key(&input, KEY_BACKSPACE, true_v);
-  assert(test_ui_text_field_frame(&renderer, &system, &input, &edit, 1.0 / 60.0,
-                                  &capture));
+  assert(
+      test_ui_text_field_frame(&system, &input, &edit, 1.0 / 60.0, &capture));
   assert(edit.length == 1u && edit.data[0] == 'A');
 
   input_update(&input);
-  assert(!test_ui_text_field_frame(&renderer, &system, &input, &edit, 0.39,
-                                   &capture));
+  assert(!test_ui_text_field_frame(&system, &input, &edit, 0.39, &capture));
   input_update(&input);
-  assert(test_ui_text_field_frame(&renderer, &system, &input, &edit, 0.02,
-                                  &capture));
+  assert(test_ui_text_field_frame(&system, &input, &edit, 0.02, &capture));
   assert(edit.length == 0u && edit.data[0] == 0u);
 
   input_update(&input);
   input_process_key(&input, KEY_BACKSPACE, false_v);
   VkrAllocatorScope scope = vkr_allocator_begin_scope(&allocator);
   assert(vkr_allocator_scope_is_valid(&scope));
-  assert(vkr_ui_begin(&renderer, &system, &input, false_v, 1.0 / 60.0, NULL));
+  assert(vkr_ui_begin(&system, &allocator, NULL, 200u, 100u, &input, false_v,
+                      1.0 / 60.0, NULL));
   capture = vkr_ui_end(&system);
   assert(!capture.keyboard && !capture.text);
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
   input_shutdown(&input);
   event_manager_destroy(&event_manager);
-  vkr_ui_system_shutdown(&renderer, &system);
+  vkr_ui_system_shutdown(&system);
   teardown_suite();
   printf("  test_ui_text_field_character_input_and_repeat PASSED\n");
 }
@@ -728,18 +718,13 @@ static void test_ui_input_layer_blocks_click_through(void) {
   setup_suite();
   TestCookedFont fixture;
   test_cooked_font_init(&fixture);
-  RendererFrontend renderer = {0};
-  renderer.allocator = allocator;
-  renderer.scratch_allocator = allocator;
-  renderer.last_window_width = 200u;
-  renderer.last_window_height = 100u;
-  renderer.font_system.fonts =
-      (Array_VkrFont){.length = 1u, .data = &fixture.font};
-  renderer.font_system.default_mtsdf_font_handle = (VkrFontHandle){
+  VkrFontSystem fonts = {0};
+  fonts.fonts = (Array_VkrFont){.length = 1u, .data = &fixture.font};
+  fonts.default_mtsdf_font_handle = (VkrFontHandle){
       .id = fixture.font.id, .generation = fixture.font.generation};
   VkrUiSystem system = {0};
-  assert(vkr_ui_system_init(&renderer, &system));
-  vkr_ui_system_set_offscreen_size(&renderer, &system, true_v, 200u, 100u);
+  assert(vkr_ui_system_init(&system, &fonts));
+  vkr_ui_system_set_offscreen_size(&system, true_v, 200u, 100u);
 
   EventManager event_manager = {0};
   assert(event_manager_create(&event_manager));
@@ -765,7 +750,8 @@ static void test_ui_input_layer_blocks_click_through(void) {
     }
     VkrAllocatorScope scope = vkr_allocator_begin_scope(&allocator);
     assert(vkr_allocator_scope_is_valid(&scope));
-    assert(vkr_ui_begin(&renderer, &system, &input, false_v, 1.0 / 60.0, NULL));
+    assert(vkr_ui_begin(&system, &allocator, NULL, 200u, 100u, &input, false_v,
+                        1.0 / 60.0, NULL));
     assert(vkr_ui_input_layer_register(&system, 2u, overlay_rect));
     assert(vkr_ui_input_layer_register(&system, 1u, overlay_rect));
     assert(vkr_ui_input_layer_set(&system, 0u));
@@ -794,7 +780,7 @@ static void test_ui_input_layer_blocks_click_through(void) {
 
   input_shutdown(&input);
   event_manager_destroy(&event_manager);
-  vkr_ui_system_shutdown(&renderer, &system);
+  vkr_ui_system_shutdown(&system);
   teardown_suite();
   printf("  test_ui_input_layer_blocks_click_through PASSED\n");
 }

@@ -25,20 +25,25 @@ The local payload remains valid only until all callbacks for that event return. 
 that retains data makes its own copy.
 
 `EventManager` owns the queued ring block; the event worker owns the local-arena
-copy; each callback owns any retained copy it creates. `RendererFrontend` owns
-the mailbox, and its render thread owns consumption and every resulting
-renderer mutation.
+copy; each callback owns any retained copy it creates. `Application` owns the
+resize subscription and mailbox. Its render thread consumes the mailbox and
+performs the resulting renderer mutation.
 
 Subscription returns false when its callback list cannot grow, preserving
 existing registrations. Duplicate callback/user-data pairs succeed without
-adding a row. Application and frontend initialization propagate registration
-failure through their partial initialization cleanup.
+adding a row. Application initialization propagates registration failure through
+partial initialization cleanup. The renderer has no event-manager dependency.
 
-The renderer resize subscriber writes a nonzero `width << 32 | height` value to
-`RendererFrontend.pending_resize_mailbox` with release ordering. It ignores
-zero dimensions. `vkr_renderer_prepare_frame()` atomically exchanges that value
-with zero using acquire-release ordering and performs the resize before backend
-frame preparation. Newer resize events may replace older pending dimensions.
+The application resize subscriber writes a nonzero `width << 32 | height` value
+to `Application.pending_resize_mailbox` with release ordering. It ignores zero
+dimensions. `application_draw_frame()` exchanges that value with zero using
+acquire-release ordering and calls `vkr_renderer_resize()` before frame acquisition.
+Newer resize events may replace older pending dimensions.
+
+The renderer increments target generation on resize and successful target
+recreation, including unchanged dimensions. The next acquired `VkrFrame` exposes
+that generation. The application uses its change to resize UI target state and
+invalidate retained shadow fitting before preparing scene data.
 
 ## Consequences
 
@@ -63,5 +68,5 @@ or renderer work moves to a separately owned render thread.
 - [event ownership and callback API](../../lib/src/core/event.h)
 - [event worker lifetime ordering](../../lib/src/core/event.c)
 - [payload ring](../../lib/src/core/vkr_event_data_buffer.c)
-- [resize producer](../../lib/src/renderer/renderer_frontend.c)
-- [mailbox consumer](../../lib/src/renderer/renderer_frontend.c)
+- [resize producer and mailbox consumer](../../lib/src/application.h)
+- [target generation](../../lib/src/renderer/vkr_renderer.c)

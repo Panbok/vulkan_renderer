@@ -1,10 +1,9 @@
 #include "shadow_system_test.h"
 
 #include "math/vkr_math.h"
-#include "renderer/renderer_frontend.h"
 #include "renderer/systems/vkr_camera.h"
 #include "renderer/systems/vkr_shadow_system.h"
-#include "renderer/vkr_render_packet.h"
+#include "renderer/vkr_frame_input.h"
 
 #include <assert.h>
 #include <math.h>
@@ -17,14 +16,6 @@
    on the stabilization fit's extra guard texel. */
 
 static const float32_t k_texel = 0.5f;
-
-/* vkr_shadow_system_init() only rejects a null frontend; it stores nothing from
-   it and vkr_shadow_system_shutdown() ignores it entirely. Passing an opaque
-   non-null pointer keeps these tests free of the whole renderer frontend. */
-static struct s_RendererFrontend *test_frontend(void) {
-  static int placeholder = 0;
-  return (struct s_RendererFrontend *)&placeholder;
-}
 
 static VkrCamera test_camera(void) {
   VkrCamera camera = {0};
@@ -174,19 +165,19 @@ static void test_quantize_extent_is_stable_under_small_change(void) {
 static void test_history_invalid_before_first_update(void) {
   VkrShadowSystem system = {0};
   const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
-  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+  assert(vkr_shadow_system_init(&system, &config));
   assert(!system.fit_history.valid);
   // Generation starts nonzero, or a zeroed history would compare equal to it.
   assert(system.enable_generation != 0u);
-  vkr_shadow_system_shutdown(&system, test_frontend());
+  vkr_shadow_system_shutdown(&system);
 }
 
 static void test_disable_reenable_bumps_generation(void) {
   VkrShadowSystem system = {0};
   VkrShadowSystem reference = {0};
   const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
-  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
-  assert(vkr_shadow_system_init(&reference, test_frontend(), &config));
+  assert(vkr_shadow_system_init(&system, &config));
+  assert(vkr_shadow_system_init(&reference, &config));
 
   const VkrCamera initial_camera = test_camera();
   VkrCamera moved_camera = initial_camera;
@@ -221,16 +212,16 @@ static void test_disable_reenable_bumps_generation(void) {
                      &reference.fit_history.cascades[i]);
   }
 
-  vkr_shadow_system_shutdown(&system, test_frontend());
-  vkr_shadow_system_shutdown(&reference, test_frontend());
+  vkr_shadow_system_shutdown(&system);
+  vkr_shadow_system_shutdown(&reference);
 }
 
 static void test_light_direction_change_invalidates_history(void) {
   VkrShadowSystem system = {0};
   VkrShadowSystem reference = {0};
   const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
-  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
-  assert(vkr_shadow_system_init(&reference, test_frontend(), &config));
+  assert(vkr_shadow_system_init(&system, &config));
+  assert(vkr_shadow_system_init(&reference, &config));
 
   const VkrCamera camera = test_camera();
 
@@ -256,14 +247,14 @@ static void test_light_direction_change_invalidates_history(void) {
                      &reference.fit_history.cascades[i]);
   }
 
-  vkr_shadow_system_shutdown(&system, test_frontend());
-  vkr_shadow_system_shutdown(&reference, test_frontend());
+  vkr_shadow_system_shutdown(&system);
+  vkr_shadow_system_shutdown(&reference);
 }
 
 static void test_explicit_invalidation_clears_history(void) {
   VkrShadowSystem system = {0};
   const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
-  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+  assert(vkr_shadow_system_init(&system, &config));
 
   const VkrCamera camera = test_camera();
 
@@ -276,7 +267,7 @@ static void test_explicit_invalidation_clears_history(void) {
   vkr_shadow_system_invalidate_fit_history(&system);
   assert(!system.fit_history.valid);
 
-  vkr_shadow_system_shutdown(&system, test_frontend());
+  vkr_shadow_system_shutdown(&system);
 }
 
 static void test_disabled_stabilization_does_not_publish_history(void) {
@@ -284,10 +275,10 @@ static void test_disabled_stabilization_does_not_publish_history(void) {
   VkrShadowSystem reference = {0};
   VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
   config.stabilize_cascades = false_v;
-  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+  assert(vkr_shadow_system_init(&system, &config));
 
   const VkrShadowConfig stable_config = VKR_SHADOW_CONFIG_DEFAULT;
-  assert(vkr_shadow_system_init(&reference, test_frontend(), &stable_config));
+  assert(vkr_shadow_system_init(&reference, &stable_config));
   const VkrCamera camera = test_camera();
   const Vec3 light = vec3_normalize(vec3_new(-0.4f, -1.0f, -0.3f));
 
@@ -303,14 +294,14 @@ static void test_disabled_stabilization_does_not_publish_history(void) {
                      &reference.fit_history.cascades[i]);
   }
 
-  vkr_shadow_system_shutdown(&system, test_frontend());
-  vkr_shadow_system_shutdown(&reference, test_frontend());
+  vkr_shadow_system_shutdown(&system);
+  vkr_shadow_system_shutdown(&reference);
 }
 
 static void test_frame_data_carries_only_consumed_fields(void) {
   VkrShadowSystem system = {0};
   const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
-  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+  assert(vkr_shadow_system_init(&system, &config));
 
   const VkrCamera camera = test_camera();
 
@@ -344,7 +335,7 @@ static void test_frame_data_carries_only_consumed_fields(void) {
   assert(!frame.enabled);
   assert(frame.cascade_count == 0u);
 
-  vkr_shadow_system_shutdown(&system, test_frontend());
+  vkr_shadow_system_shutdown(&system);
 }
 
 /* A payload the receiver can trust: one cascade with a real slice, texel size,
@@ -382,31 +373,31 @@ static void test_shadow_raster_bias_packet_validation(void) {
   };
   VkrShadowPassPayload shadow = test_shadow_valid_payload();
   shadow.config_override = &bias;
-  const VkrRenderPacket packet = {
-      .packet_version = VKR_RENDER_PACKET_VERSION,
+  const VkrFrameInput packet = {
+      .version = VKR_FRAME_INPUT_VERSION,
       .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE},
       .shadow = &shadow,
   };
   VkrValidationError validation = {0};
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_NONE);
 
   bias.depth_bias_constant = NAN;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path,
                 "packet.shadow.config_override.depth_bias_constant") == 0);
 
   bias.depth_bias_constant = 1.25f;
   bias.depth_bias_slope = -0.01f;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path,
                 "packet.shadow.config_override.depth_bias_slope") == 0);
 
   bias.depth_bias_slope = 1.75f;
   bias.depth_bias_clamp = INFINITY;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path,
                 "packet.shadow.config_override.depth_bias_clamp") == 0);
@@ -418,13 +409,13 @@ static void test_shadow_raster_bias_packet_validation(void) {
 
 static void test_shadow_receiver_packet_validation(void) {
   VkrShadowPassPayload shadow = test_shadow_valid_payload();
-  const VkrRenderPacket packet = {
-      .packet_version = VKR_RENDER_PACKET_VERSION,
+  const VkrFrameInput packet = {
+      .version = VKR_FRAME_INPUT_VERSION,
       .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE},
       .shadow = &shadow,
   };
   VkrValidationError validation = {0};
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_NONE);
 
   /* Every supported tap count passes; the one immediately outside each does
@@ -432,13 +423,13 @@ static void test_shadow_receiver_packet_validation(void) {
   const uint32_t supported[] = {1u, 4u, 9u, 16u, 32u};
   for (uint32_t i = 0; i < ArrayCount(supported); ++i) {
     shadow.receiver.pcf_sample_count = supported[i];
-    assert(vkr_renderer_validate_packet(&packet, &validation) ==
+    assert(vkr_frame_input_validate(&packet, &validation) ==
            VKR_RENDERER_ERROR_NONE);
   }
   const uint32_t rejected[] = {0u, 2u, 8u, 17u, 64u, 65u};
   for (uint32_t i = 0; i < ArrayCount(rejected); ++i) {
     shadow.receiver.pcf_sample_count = rejected[i];
-    assert(vkr_renderer_validate_packet(&packet, &validation) ==
+    assert(vkr_frame_input_validate(&packet, &validation) ==
            VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
     assert(strcmp(validation.field_path,
                   "packet.shadow.receiver.pcf_sample_count") == 0);
@@ -446,21 +437,21 @@ static void test_shadow_receiver_packet_validation(void) {
   shadow.receiver.pcf_sample_count = 16u;
 
   shadow.receiver.pcf_uniform_early_out = 2u;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path,
                 "packet.shadow.receiver.pcf_uniform_early_out") == 0);
   shadow.receiver.pcf_uniform_early_out = true_v;
 
   shadow.receiver.pcf_radius_texels = -0.1f;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path,
                 "packet.shadow.receiver.pcf_radius_texels") == 0);
   shadow.receiver.pcf_radius_texels = 1.5f;
 
   shadow.receiver.slope_bias_texels = NAN;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.shadow.receiver") == 0);
   shadow.receiver.slope_bias_texels = 2.0f;
@@ -468,20 +459,20 @@ static void test_shadow_receiver_packet_validation(void) {
   /* Above 0.5 the band would consume more than half a cascade's span and the
      fade would reach back past the previous split. */
   shadow.receiver.cascade_blend_fraction = 0.51f;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path,
                 "packet.shadow.receiver.cascade_blend_fraction") == 0);
   shadow.receiver.cascade_blend_fraction = 0.08f;
 
   shadow.receiver.fade_end = shadow.receiver.fade_start - 1.0f;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.shadow.receiver.fade_end") == 0);
   shadow.receiver.fade_end = 200.0f;
 
   shadow.receiver.fade_end = 201.0f;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.shadow.receiver.fade_end") == 0);
   shadow.receiver.fade_end = 200.0f;
@@ -489,21 +480,21 @@ static void test_shadow_receiver_packet_validation(void) {
   /* A zero depth span is the receiver's bias divisor. Rejecting it here is why
      the shader can divide unconditionally. */
   shadow.cascades[0].split_near_far_texel_depth.w = 0.0f;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path,
                 "packet.shadow.cascades.split_near_far_texel_depth") == 0);
   shadow.cascades[0].split_near_far_texel_depth.w = 120.0f;
 
   shadow.cascades[0].origin_inv_size_pad.x = NAN;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path,
                 "packet.shadow.cascades.origin_inv_size_pad") == 0);
   shadow.cascades[0].origin_inv_size_pad.x = 3.0f;
 
   shadow.cascades[0].origin_inv_size_pad.z = 0.0f;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path,
                 "packet.shadow.cascades.origin_inv_size_pad") == 0);
@@ -511,7 +502,7 @@ static void test_shadow_receiver_packet_validation(void) {
 
   shadow.cascades[0].split_near_far_texel_depth.y =
       shadow.cascades[0].split_near_far_texel_depth.x;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path,
                 "packet.shadow.cascades.split_near_far_texel_depth") == 0);
@@ -531,7 +522,7 @@ static void test_shadow_receiver_config_normalization(void) {
   config.shadow_distance_fade_range = NAN;
 
   VkrShadowSystem system = {0};
-  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+  assert(vkr_shadow_system_init(&system, &config));
   assert(system.config.receiver_bias_texels == 0.0f);
   assert(system.config.receiver_slope_bias_texels == 0.0f);
   assert(system.config.normal_offset_texels == 0.0f);
@@ -542,16 +533,16 @@ static void test_shadow_receiver_config_normalization(void) {
   assert(system.config.pcf_uniform_early_out == true_v);
   assert(system.config.cascade_blend_fraction == 0.5f);
   assert(system.config.shadow_distance_fade_range == 0.0f);
-  vkr_shadow_system_shutdown(&system, test_frontend());
+  vkr_shadow_system_shutdown(&system);
 
   /* A fade range wider than the shadow distance would put fade_start behind the
      camera and fade every visible shadow. */
   config = VKR_SHADOW_CONFIG_HIGH;
   config.max_shadow_distance = 50.0f;
   config.shadow_distance_fade_range = 400.0f;
-  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+  assert(vkr_shadow_system_init(&system, &config));
   assert(system.config.shadow_distance_fade_range == 50.0f);
-  vkr_shadow_system_shutdown(&system, test_frontend());
+  vkr_shadow_system_shutdown(&system);
 
   /* Every shipped preset must already satisfy packet validation. */
   const VkrShadowConfig presets[] = {VKR_SHADOW_CONFIG_HIGH,
@@ -600,7 +591,7 @@ static void
 test_retained_history_reuses_per_image_and_commits_only_on_submit(void) {
   VkrShadowSystem system = {0};
   const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
-  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+  assert(vkr_shadow_system_init(&system, &config));
   VkrCamera camera = test_camera();
   VkrWorldPassPayload payload = retained_static_payload();
   prime_retained_history(&system, &camera, 0u, &payload);
@@ -627,7 +618,7 @@ test_retained_history_reuses_per_image_and_commits_only_on_submit(void) {
                                   VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
   vkr_shadow_system_commit_frame(&system, 19u);
   assert(system.cascade_history[1][0].last_submit_value == 19u);
-  vkr_shadow_system_shutdown(&system, test_frontend());
+  vkr_shadow_system_shutdown(&system);
 }
 
 static void test_reused_cascade_publishes_its_rendered_receiver_data(void) {
@@ -637,7 +628,7 @@ static void test_reused_cascade_publishes_its_rendered_receiver_data(void) {
      texel-denominated bias for that cascade and read as a bias defect. */
   VkrShadowSystem system = {0};
   const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
-  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+  assert(vkr_shadow_system_init(&system, &config));
   VkrCamera camera = test_camera();
   VkrWorldPassPayload payload = retained_static_payload();
   prime_retained_history(&system, &camera, 0u, &payload);
@@ -685,14 +676,14 @@ static void test_reused_cascade_publishes_its_rendered_receiver_data(void) {
         system.pending_history.cascades[i].rendered_fit.world_units_per_texel);
     assert(frame.light_space_depth_span[i] > 0.0f);
   }
-  vkr_shadow_system_shutdown(&system, test_frontend());
+  vkr_shadow_system_shutdown(&system);
 }
 
 static void
 test_retained_history_guard_contains_small_motion_not_large_motion(void) {
   VkrShadowSystem system = {0};
   const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
-  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+  assert(vkr_shadow_system_init(&system, &config));
   VkrCamera camera = test_camera();
   VkrWorldPassPayload payload = retained_static_payload();
   prime_retained_history(&system, &camera, 0u, &payload);
@@ -714,7 +705,7 @@ test_retained_history_guard_contains_small_motion_not_large_motion(void) {
   vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
                                   VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
   assert(frame.cascade_render_mask == cascade_mask(&system));
-  vkr_shadow_system_shutdown(&system, test_frontend());
+  vkr_shadow_system_shutdown(&system);
 }
 
 static VkrWorldDrawCandidate
@@ -735,7 +726,7 @@ dynamic_candidate_at_history(const VkrShadowCascadeHistory *history,
 static void test_dynamic_overlap_and_publication_fail_closed(void) {
   VkrShadowSystem system = {0};
   const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
-  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+  assert(vkr_shadow_system_init(&system, &config));
   VkrCamera camera = test_camera();
   VkrWorldPassPayload payload = retained_static_payload();
   prime_retained_history(&system, &camera, 0u, &payload);
@@ -791,14 +782,14 @@ static void test_dynamic_overlap_and_publication_fail_closed(void) {
   vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
                                   VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
   assert(frame.cascade_render_mask == cascade_mask(&system));
-  vkr_shadow_system_shutdown(&system, test_frontend());
+  vkr_shadow_system_shutdown(&system);
 }
 
 static void
 test_retained_history_signatures_and_invalidation_fail_closed(void) {
   VkrShadowSystem system = {0};
   VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
-  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+  assert(vkr_shadow_system_init(&system, &config));
   VkrCamera camera = test_camera();
   VkrWorldPassPayload payload = retained_static_payload();
   prime_retained_history(&system, &camera, 0u, &payload);
@@ -863,13 +854,13 @@ test_retained_history_signatures_and_invalidation_fail_closed(void) {
   vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,
                                   VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
   assert(frame.cascade_render_mask == cascade_mask(&system));
-  vkr_shadow_system_shutdown(&system, test_frontend());
+  vkr_shadow_system_shutdown(&system);
 }
 
 static void test_stale_dynamic_contents_render_once_after_caster_leaves(void) {
   VkrShadowSystem system = {0};
   const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
-  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+  assert(vkr_shadow_system_init(&system, &config));
   VkrCamera camera = test_camera();
   VkrWorldPassPayload payload = retained_static_payload();
   update_for_reuse(&system, &camera);
@@ -903,14 +894,14 @@ static void test_stale_dynamic_contents_render_once_after_caster_leaves(void) {
   vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,
                                   VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
   assert(frame.cascade_render_mask == 0u);
-  vkr_shadow_system_shutdown(&system, test_frontend());
+  vkr_shadow_system_shutdown(&system);
 }
 
 static void test_proactive_refresh_is_bounded_to_reusable_cascades(void) {
   VkrShadowSystem system = {0};
   VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
   config.reuse_proactive_refresh_budget = 1u;
-  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+  assert(vkr_shadow_system_init(&system, &config));
   VkrCamera camera = test_camera();
   VkrWorldPassPayload payload = retained_static_payload();
   prime_retained_history(&system, &camera, 0u, &payload);
@@ -937,14 +928,15 @@ static void test_proactive_refresh_is_bounded_to_reusable_cascades(void) {
   assert(proactive_count == 1u);
   assert(reused_count == config.cascade_count - 1u);
   assert(frame.cascade_render_mask != 0u);
-  vkr_shadow_system_shutdown(&system, test_frontend());
+  vkr_shadow_system_shutdown(&system);
 }
 
-static void test_retained_images_converge_without_publishing_cancelled_fit(void) {
+static void
+test_retained_images_converge_without_publishing_cancelled_fit(void) {
   VkrShadowSystem system = {0};
   VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
   config.cascade_count = 1u;
-  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+  assert(vkr_shadow_system_init(&system, &config));
   VkrCamera camera = test_camera();
   VkrWorldPassPayload payload = retained_static_payload();
   prime_retained_history(&system, &camera, 0u, &payload);
@@ -968,8 +960,8 @@ static void test_retained_images_converge_without_publishing_cancelled_fit(void)
   system.cascade_history[3][0] = original;
   system.cascade_history[3][0].static_generation++;
   system.cascade_history[3][0].last_submit_value = 100u;
-  const VkrRetainedShadowToken valid = {
-      .resource_generation = 3u, .valid_layer_mask = 1u};
+  const VkrRetainedShadowToken valid = {.resource_generation = 3u,
+                                        .valid_layer_mask = 1u};
   VkrShadowFrameData frame = {0};
 
   vkr_shadow_system_resolve_frame(&system, 0u, valid, &payload,
@@ -992,8 +984,8 @@ static void test_retained_images_converge_without_publishing_cancelled_fit(void)
     vkr_shadow_system_resolve_frame(&system, stale_images[i], valid, &payload,
                                     VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
     assert(frame.cascade_render_mask == 1u);
-    assert(MemCompare(&frame.view_projection[0], &wider.rendered_view_projection,
-                      sizeof(Mat4)) == 0);
+    assert(MemCompare(&frame.view_projection[0],
+                      &wider.rendered_view_projection, sizeof(Mat4)) == 0);
     vkr_shadow_system_commit_frame(&system, 20u + i);
   }
   for (uint32_t repeat = 0u; repeat < 2u; ++repeat)
@@ -1001,8 +993,8 @@ static void test_retained_images_converge_without_publishing_cancelled_fit(void)
       vkr_shadow_system_resolve_frame(&system, image, valid, &payload,
                                       VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
       assert(frame.cascade_render_mask == 0u && frame.reused[0] == 1u);
-      assert(MemCompare(&frame.view_projection[0], &wider.rendered_view_projection,
-                        sizeof(Mat4)) == 0);
+      assert(MemCompare(&frame.view_projection[0],
+                        &wider.rendered_view_projection, sizeof(Mat4)) == 0);
       assert(!system.pending_history.active);
     }
 
@@ -1044,7 +1036,7 @@ static void test_retained_images_converge_without_publishing_cancelled_fit(void)
          payload.static_generation);
   assert(system.pending_history.cascades[0].rendered_fit.extent <
          wider.rendered_fit.extent);
-  vkr_shadow_system_shutdown(&system, test_frontend());
+  vkr_shadow_system_shutdown(&system);
 }
 
 static void test_sdsm_uses_completed_occupied_depth_and_keeps_fixed_tail(void) {
@@ -1052,7 +1044,7 @@ static void test_sdsm_uses_completed_occupied_depth_and_keeps_fixed_tail(void) {
   VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
   config.sdsm_enabled = true_v;
   config.sdsm_temporal_blend = 0.0f;
-  assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+  assert(vkr_shadow_system_init(&system, &config));
   VkrCamera camera = test_camera();
   camera.projection =
       mat4_perspective(vkr_to_radians(camera.zoom),
@@ -1157,7 +1149,7 @@ static void test_sdsm_uses_completed_occupied_depth_and_keeps_fixed_tail(void) {
   assert(!system.sdsm_range_valid);
   assert(system.sdsm_source_lag == 0u);
   assert(system.sdsm_occupied_count == 0u);
-  vkr_shadow_system_shutdown(&system, test_frontend());
+  vkr_shadow_system_shutdown(&system);
 }
 
 static void test_sdsm_cached_range_rejects_scene_and_projection_changes(void) {
@@ -1166,7 +1158,7 @@ static void test_sdsm_cached_range_rejects_scene_and_projection_changes(void) {
     VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
     config.sdsm_enabled = true_v;
     config.sdsm_temporal_blend = 0.0f;
-    assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+    assert(vkr_shadow_system_init(&system, &config));
     VkrCamera camera = test_camera();
     camera.projection = mat4_perspective(vkr_to_radians(camera.zoom), 1.0f,
                                          camera.near_clip, camera.far_clip);
@@ -1203,7 +1195,7 @@ static void test_sdsm_cached_range_rejects_scene_and_projection_changes(void) {
     assert(system.sdsm_status == VKR_SHADOW_SDSM_STALE);
     assert(!system.sdsm_range_valid);
     assert(fabsf(system.cascade_splits[0] - camera.near_clip) < 0.001f);
-    vkr_shadow_system_shutdown(&system, test_frontend());
+    vkr_shadow_system_shutdown(&system);
   }
 }
 

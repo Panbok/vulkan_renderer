@@ -52,7 +52,6 @@ typedef struct VkrResourceAsyncJobPayload {
 
 struct VkrResourceSystem {
   VkrAllocator *allocator;
-  VkrRendererFrontendHandle renderer;
   VkrJobSystem *job_system;
 
   // Registered loaders
@@ -916,14 +915,13 @@ vkr_internal void vkr_resource_system_init_cleanup(VkrResourceSystem *sys) {
 }
 
 bool8_t vkr_resource_system_init(
-    VkrAllocator *allocator, VkrRendererFrontendHandle renderer,
-    VkrJobSystem *job_system,
+    VkrAllocator *allocator, VkrJobSystem *job_system,
     const VkrRendererMetricsProducerConfig *metrics_producers) {
   assert_log(allocator != NULL, "Allocator is NULL");
-  assert_log(renderer != NULL, "Renderer is NULL");
 
   if (vkr_resource_system) {
-    if (vkr_resource_system->renderer != renderer) {
+    if (vkr_resource_system->allocator != allocator ||
+        vkr_resource_system->job_system != job_system) {
       log_error(
           "Resource system already initialized with different parameters");
       return false_v;
@@ -942,7 +940,6 @@ bool8_t vkr_resource_system_init(
 
   MemZero(vkr_resource_system, sizeof(*vkr_resource_system));
 
-  vkr_resource_system->renderer = renderer;
   vkr_resource_system->allocator = allocator;
   vkr_resource_system->job_system = job_system;
   if (metrics_producers) {
@@ -1097,7 +1094,6 @@ bool8_t vkr_resource_system_register_loader(void *resource_system,
   VkrResourceLoader *dst = &vkr_resource_system->loaders[id];
   dst->id = id;
   dst->resource_system = resource_system;
-  dst->renderer = vkr_resource_system->renderer;
 
   return true_v;
 }
@@ -1786,7 +1782,8 @@ vkr_internal void vkr_resource_system_estimate_finalize_cost(
   }
 }
 
-void vkr_resource_system_pump(const VkrResourceAsyncBudget *budget) {
+void vkr_resource_system_pump(VkrResourceSubmissionState submission,
+                              const VkrResourceAsyncBudget *budget) {
   if (!vkr_resource_system) {
     return;
   }
@@ -1794,12 +1791,9 @@ void vkr_resource_system_pump(const VkrResourceAsyncBudget *budget) {
   const VkrResourceAsyncBudget *effective_budget =
       budget ? budget : &vkr_resource_async_budget_default;
 
-  uint64_t completed_submit_serial =
-      vkr_renderer_get_completed_submit_serial(vkr_resource_system->renderer);
-  bool8_t frame_active =
-      vkr_renderer_is_frame_active(vkr_resource_system->renderer);
-  uint64_t submit_serial =
-      vkr_renderer_get_submit_serial(vkr_resource_system->renderer);
+  const uint64_t completed_submit_serial = submission.completed_submit_serial;
+  const bool8_t frame_active = submission.frame_active;
+  uint64_t submit_serial = submission.submit_serial;
   if (frame_active && submit_serial < UINT64_MAX) {
     submit_serial += 1u;
   }

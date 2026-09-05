@@ -43,18 +43,19 @@ static void test_packet_frame_constants(void) {
   };
   Mat4 view = mat4_identity();
   view.elements[12] = 13.0f;
-  const VkrRenderPacket packet = {
-      .globals =
-          {
-              .view = view,
-              .view_position = {14.0f, 15.0f, 16.0f},
-              .ambient_color = {0.4f, 0.5f, 0.6f, 1.0f},
-              .render_mode = 17u,
-          },
-      .lighting = &lighting,
-      .shadow = &shadow,
-      .debug = &(const VkrGpuDebugPayload){.shadow_debug_mode = 3u},
-  };
+  const VkrPreparedFrame packet = {
+      .input = {
+          .globals =
+              {
+                  .view = view,
+                  .view_position = {14.0f, 15.0f, 16.0f},
+                  .ambient_color = {0.4f, 0.5f, 0.6f, 1.0f},
+                  .render_mode = 17u,
+              },
+          .lighting = &lighting,
+          .shadow = &shadow,
+          .debug = &(const VkrGpuDebugPayload){.shadow_debug_mode = 3u},
+      }};
 
   const VkrPacketFrameConstants constants =
       vkr_packet_derive_frame_constants(&packet, 800u, 400u);
@@ -88,7 +89,7 @@ static void test_packet_frame_constants(void) {
                     sizeof(shadow.receiver)) == 0);
   assert(MemCompare(&constants.view, &view, sizeof(view)) == 0);
 
-  const VkrRenderPacket unlit = {0};
+  const VkrPreparedFrame unlit = {.input = {0}};
   const VkrPacketFrameConstants defaults =
       vkr_packet_derive_frame_constants(&unlit, 0u, 0u);
   assert(defaults.ibl_controls.x == 1.0f && defaults.ibl_controls.y == 1.0f &&
@@ -136,7 +137,7 @@ static void test_packet_material_constants(void) {
 static void test_packet_frame_flags(void) {
   printf("  Running test_packet_frame_flags...\n");
   VkrFrameLighting lighting = {.ibl_enabled = true_v};
-  VkrRenderPacket packet = {.lighting = &lighting};
+  VkrPreparedFrame packet = {.input = {.lighting = &lighting}};
 
   assert(vkr_packet_derive_frame_flags(&packet, true_v, true_v) ==
          (VKR_PACKET_FRAME_FLAG_LIGHTING | VKR_PACKET_FRAME_FLAG_IBL));

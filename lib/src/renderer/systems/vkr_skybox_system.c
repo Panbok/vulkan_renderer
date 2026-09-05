@@ -1,8 +1,7 @@
 #include "renderer/systems/vkr_skybox_system.h"
 
-bool8_t vkr_skybox_system_init(struct s_RendererFrontend *rf,
-                               VkrSkyboxSystem *system) {
-  if (!rf || !system) {
+bool8_t vkr_skybox_system_init(VkrSkyboxSystem *system) {
+  if (!system) {
     return false_v;
   }
 
@@ -11,9 +10,8 @@ bool8_t vkr_skybox_system_init(struct s_RendererFrontend *rf,
   return true_v;
 }
 
-void vkr_skybox_system_shutdown(struct s_RendererFrontend *rf,
-                                VkrSkyboxSystem *system) {
-  if (!rf || !system) {
+void vkr_skybox_system_shutdown(VkrSkyboxSystem *system) {
+  if (!system) {
     return;
   }
   MemZero(system, sizeof(*system));

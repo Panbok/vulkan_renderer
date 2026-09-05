@@ -1,8 +1,8 @@
 #pragma once
 
 #include "renderer/systems/vkr_scene_system.h"
+#include "renderer/vkr_frame_input.h"
 #include "renderer/vkr_ibl_math.h"
-#include "renderer/vkr_render_packet.h"
 
 /*
  * Bounded copy-on-write pool of L2 coefficient slots (ADR-038).

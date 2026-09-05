@@ -1,7 +1,6 @@
 #include "resource_async_state_tests.h"
 
 #include "memory/vkr_arena_allocator.h"
-#include "renderer/renderer_frontend.h"
 #include "renderer/systems/vkr_resource_system.h"
 
 #include <assert.h>
@@ -9,11 +8,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-
-typedef struct ResourceAsyncMockBackendState {
-  uint64_t submit_serial;
-  uint64_t completed_submit_serial;
-} ResourceAsyncMockBackendState;
 
 typedef struct ResourceAsyncMockLoaderContext {
   atomic_uint load_calls;
@@ -81,36 +75,6 @@ typedef struct ResourceAsyncSceneContext {
 typedef struct ResourceAsyncScenePayload {
   uint32_t token;
 } ResourceAsyncScenePayload;
-
-static uint64_t resource_async_mock_get_submit_serial(void *backend_state) {
-  ResourceAsyncMockBackendState *state =
-      (ResourceAsyncMockBackendState *)backend_state;
-  return state ? state->submit_serial : 0;
-}
-
-static uint64_t
-resource_async_mock_get_completed_submit_serial(void *backend_state) {
-  ResourceAsyncMockBackendState *state =
-      (ResourceAsyncMockBackendState *)backend_state;
-  return state ? state->completed_submit_serial : 0;
-}
-
-static const VkrRendererImplOps resource_async_impl_ops = {
-    .get_submit_serial = resource_async_mock_get_submit_serial,
-    .get_completed_submit_serial =
-        resource_async_mock_get_completed_submit_serial,
-};
-
-static void resource_async_mock_init_renderer(
-    RendererFrontend *renderer, ResourceAsyncMockBackendState *backend_state) {
-  MemZero(renderer, sizeof(*renderer));
-  MemZero(backend_state, sizeof(*backend_state));
-  backend_state->submit_serial = 1;
-  backend_state->completed_submit_serial = 2;
-  renderer->impl.ops = &resource_async_impl_ops;
-  renderer->impl.state = backend_state;
-  renderer->frame_active = false_v;
-}
 
 static VkrJobSystemConfig resource_async_make_job_config(void) {
   VkrJobSystemConfig cfg = vkr_job_system_config_default();
@@ -624,12 +588,11 @@ static void resource_async_scene_unload(VkrResourceLoader *self,
   atomic_fetch_add_explicit(&ctx->unload_calls, 1u, memory_order_relaxed);
 }
 
-static bool8_t
-resource_async_wait_for_state(const VkrResourceHandleInfo *handle,
-                              VkrResourceLoadState expected,
-                              VkrRendererError *out_error) {
+static bool8_t resource_async_wait_for_state(
+    VkrResourceSubmissionState *submission, const VkrResourceHandleInfo *handle,
+    VkrResourceLoadState expected, VkrRendererError *out_error) {
   for (uint32_t i = 0; i < 300; ++i) {
-    vkr_resource_system_pump(NULL);
+    vkr_resource_system_pump(*submission, NULL);
     VkrRendererError err = VKR_RENDERER_ERROR_NONE;
     VkrResourceLoadState state = vkr_resource_system_get_state(handle, &err);
     if (state == expected) {
@@ -648,7 +611,8 @@ resource_async_wait_for_state(const VkrResourceHandleInfo *handle,
 }
 
 static void
-test_resource_async_dedupe_and_ready(VkrAllocator *allocator,
+test_resource_async_dedupe_and_ready(VkrResourceSubmissionState *submission,
+                                     VkrAllocator *allocator,
                                      ResourceAsyncMockLoaderContext *ctx) {
   printf("  Running test_resource_async_dedupe_and_ready...\n");
 
@@ -671,7 +635,8 @@ test_resource_async_dedupe_and_ready(VkrAllocator *allocator,
   assert(h0.request_id == h1.request_id);
 
   VkrRendererError state_error = VKR_RENDERER_ERROR_UNKNOWN;
-  assert(resource_async_wait_for_state(&h0, VKR_RESOURCE_LOAD_STATE_READY,
+  assert(resource_async_wait_for_state(submission, &h0,
+                                       VKR_RESOURCE_LOAD_STATE_READY,
                                        &state_error) == true_v);
   assert(state_error == VKR_RENDERER_ERROR_NONE);
   assert(vkr_resource_system_is_ready(&h1) == true_v);
@@ -684,13 +649,12 @@ test_resource_async_dedupe_and_ready(VkrAllocator *allocator,
   printf("  test_resource_async_dedupe_and_ready PASSED\n");
 }
 
-static void
-test_resource_async_release_callback_growth(VkrAllocator *allocator,
-                                            RendererFrontend *renderer,
-                                            ResourceAsyncBudgetContext *ctx) {
+static void test_resource_async_release_callback_growth(
+    VkrResourceSubmissionState *submission, VkrAllocator *allocator,
+    ResourceAsyncBudgetContext *ctx) {
   ResourceAsyncReleaseGrowth growth = {.allocator = allocator};
   ctx->release_growth = &growth;
-  renderer->frame_active = true_v;
+  submission->frame_active = true_v;
   const String8 path = string8_lit("tests/assets/growth.budget.mock");
   VkrResourceHandleInfo request = {0};
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
@@ -699,7 +663,7 @@ test_resource_async_release_callback_growth(VkrAllocator *allocator,
   assert(vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, path, allocator,
                                   &request, &error));
   for (uint32_t i = 0u; i < 300u && ctx->release_growth; ++i) {
-    vkr_resource_system_pump(NULL);
+    vkr_resource_system_pump(*submission, NULL);
     vkr_platform_sleep(2u);
   }
   assert(!ctx->release_growth);
@@ -713,20 +677,21 @@ test_resource_async_release_callback_growth(VkrAllocator *allocator,
   assert(atomic_load(&ctx->finalize_calls) == finalizations + 1u);
   for (uint32_t i = 0u; i < ArrayCount(growth.requests); ++i) {
     assert(growth.requests[i].request_id != 0u);
-    assert(resource_async_wait_for_state(
-        &growth.requests[i], VKR_RESOURCE_LOAD_STATE_READY, &error));
+    assert(resource_async_wait_for_state(submission, &growth.requests[i],
+                                         VKR_RESOURCE_LOAD_STATE_READY,
+                                         &error));
     vkr_resource_system_unload(
         &growth.requests[i],
         string8_create((uint8_t *)growth.paths[i], strlen(growth.paths[i])));
   }
   vkr_resource_system_unload(&request, path);
-  renderer->frame_active = false_v;
+  submission->frame_active = false_v;
 }
 
 static void test_resource_async_release_callback_cancellation(
-    VkrAllocator *allocator, RendererFrontend *renderer,
+    VkrResourceSubmissionState *submission, VkrAllocator *allocator,
     ResourceAsyncBudgetContext *ctx) {
-  renderer->frame_active = true_v;
+  submission->frame_active = true_v;
   const String8 path = string8_lit("tests/assets/reentrant_cancel.budget.mock");
   VkrResourceHandleInfo request = {0};
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
@@ -737,21 +702,21 @@ static void test_resource_async_release_callback_cancellation(
   ctx->cancel_on_release = &request;
   ctx->cancel_path = path;
   for (uint32_t i = 0u; i < 300u && ctx->cancel_on_release; ++i) {
-    vkr_resource_system_pump(NULL);
+    vkr_resource_system_pump(*submission, NULL);
     vkr_platform_sleep(2u);
   }
   assert(!ctx->cancel_on_release);
-  vkr_resource_system_pump(NULL);
+  vkr_resource_system_pump(*submission, NULL);
   assert(vkr_resource_system_get_state(&request, &error) ==
          VKR_RESOURCE_LOAD_STATE_INVALID);
   assert(atomic_load(&ctx->release_calls) == releases + 1u);
   assert(atomic_load(&ctx->unload_calls) == unloads + 1u);
-  renderer->frame_active = false_v;
+  submission->frame_active = false_v;
 }
 
 static void test_resource_async_submit_saturation_recovers(
-    VkrAllocator *allocator, VkrJobSystem *job_system,
-    ResourceAsyncMockLoaderContext *ctx) {
+    VkrResourceSubmissionState *submission, VkrAllocator *allocator,
+    VkrJobSystem *job_system, ResourceAsyncMockLoaderContext *ctx) {
   printf("  Running test_resource_async_submit_saturation_recovers...\n");
 
   assert(job_system != NULL);
@@ -811,7 +776,8 @@ static void test_resource_async_submit_saturation_recovers(
   }
 
   VkrRendererError ready_error = VKR_RENDERER_ERROR_UNKNOWN;
-  assert(resource_async_wait_for_state(&handle, VKR_RESOURCE_LOAD_STATE_READY,
+  assert(resource_async_wait_for_state(submission, &handle,
+                                       VKR_RESOURCE_LOAD_STATE_READY,
                                        &ready_error) == true_v);
   assert(ready_error == VKR_RENDERER_ERROR_NONE);
   assert(atomic_load_explicit(&ctx->load_calls, memory_order_relaxed) ==
@@ -823,7 +789,9 @@ static void test_resource_async_submit_saturation_recovers(
   printf("  test_resource_async_submit_saturation_recovers PASSED\n");
 }
 
-static void test_resource_async_failure_state(VkrAllocator *allocator) {
+static void
+test_resource_async_failure_state(VkrResourceSubmissionState *submission,
+                                  VkrAllocator *allocator) {
   printf("  Running test_resource_async_failure_state...\n");
 
   String8 path = string8_lit("tests/assets/fail.mock");
@@ -836,7 +804,8 @@ static void test_resource_async_failure_state(VkrAllocator *allocator) {
   assert(handle.request_id != 0);
 
   VkrRendererError state_error = VKR_RENDERER_ERROR_NONE;
-  assert(resource_async_wait_for_state(&handle, VKR_RESOURCE_LOAD_STATE_FAILED,
+  assert(resource_async_wait_for_state(submission, &handle,
+                                       VKR_RESOURCE_LOAD_STATE_FAILED,
                                        &state_error) == true_v);
   assert(state_error == VKR_RENDERER_ERROR_FILE_NOT_FOUND);
 
@@ -846,7 +815,8 @@ static void test_resource_async_failure_state(VkrAllocator *allocator) {
 }
 
 static void
-test_resource_async_batch_accept_count(VkrAllocator *allocator,
+test_resource_async_batch_accept_count(VkrResourceSubmissionState *submission,
+                                       VkrAllocator *allocator,
                                        ResourceAsyncMockLoaderContext *ctx) {
   printf("  Running test_resource_async_batch_accept_count...\n");
 
@@ -877,10 +847,10 @@ test_resource_async_batch_accept_count(VkrAllocator *allocator,
 
   VkrRendererError ready_error = VKR_RENDERER_ERROR_UNKNOWN;
   VkrRendererError failed_error = VKR_RENDERER_ERROR_NONE;
-  assert(resource_async_wait_for_state(&handles[0],
+  assert(resource_async_wait_for_state(submission, &handles[0],
                                        VKR_RESOURCE_LOAD_STATE_READY,
                                        &ready_error) == true_v);
-  assert(resource_async_wait_for_state(&handles[2],
+  assert(resource_async_wait_for_state(submission, &handles[2],
                                        VKR_RESOURCE_LOAD_STATE_FAILED,
                                        &failed_error) == true_v);
   assert(ready_error == VKR_RENDERER_ERROR_NONE);
@@ -901,7 +871,8 @@ test_resource_async_batch_accept_count(VkrAllocator *allocator,
 }
 
 static void test_resource_async_cancel_cleans_loaded_result(
-    VkrAllocator *allocator, ResourceAsyncMockLoaderContext *ctx) {
+    VkrResourceSubmissionState *submission, VkrAllocator *allocator,
+    ResourceAsyncMockLoaderContext *ctx) {
   printf("  Running test_resource_async_cancel_cleans_loaded_result...\n");
 
   String8 path = string8_lit("tests/assets/slow_cancel.mock");
@@ -920,7 +891,7 @@ static void test_resource_async_cancel_cleans_loaded_result(
 
   bool8_t reached_terminal = false_v;
   for (uint32_t i = 0; i < 400; ++i) {
-    vkr_resource_system_pump(NULL);
+    vkr_resource_system_pump(*submission, NULL);
     VkrRendererError err = VKR_RENDERER_ERROR_NONE;
     VkrResourceLoadState state = vkr_resource_system_get_state(&handle, &err);
     uint32_t unload_now =
@@ -942,7 +913,8 @@ static void test_resource_async_cancel_cleans_loaded_result(
 }
 
 static void test_resource_async_cancel_then_reload_same_path(
-    VkrAllocator *allocator, ResourceAsyncMockLoaderContext *ctx) {
+    VkrResourceSubmissionState *submission, VkrAllocator *allocator,
+    ResourceAsyncMockLoaderContext *ctx) {
   printf("  Running test_resource_async_cancel_then_reload_same_path...\n");
 
   String8 path = string8_lit("tests/assets/slow_cancel_reload.mock");
@@ -978,7 +950,7 @@ static void test_resource_async_cancel_then_reload_same_path(
 
   bool8_t reached_terminal = false_v;
   for (uint32_t i = 0; i < 300; ++i) {
-    vkr_resource_system_pump(NULL);
+    vkr_resource_system_pump(*submission, NULL);
     VkrRendererError first_state_error = VKR_RENDERER_ERROR_NONE;
     VkrResourceLoadState first_state =
         vkr_resource_system_get_state(&first, &first_state_error);
@@ -1000,7 +972,8 @@ static void test_resource_async_cancel_then_reload_same_path(
   assert(reloaded.request_id != first_request_id);
 
   VkrRendererError state_error = VKR_RENDERER_ERROR_UNKNOWN;
-  assert(resource_async_wait_for_state(&reloaded, VKR_RESOURCE_LOAD_STATE_READY,
+  assert(resource_async_wait_for_state(submission, &reloaded,
+                                       VKR_RESOURCE_LOAD_STATE_READY,
                                        &state_error) == true_v);
   assert(state_error == VKR_RENDERER_ERROR_NONE);
   assert(vkr_resource_system_is_ready(&reloaded) == true_v);
@@ -1018,14 +991,14 @@ static void test_resource_async_cancel_then_reload_same_path(
 }
 
 static void test_resource_async_dependency_waits_then_ready(
-    VkrAllocator *allocator, RendererFrontend *renderer,
+    VkrResourceSubmissionState *submission, VkrAllocator *allocator,
     ResourceAsyncDependencyContext *ctx) {
   printf("  Running test_resource_async_dependency_waits_then_ready...\n");
 
   String8 path = string8_lit("tests/assets/mesh_dep_ok.mock");
   VkrResourceHandleInfo handle = {0};
   VkrRendererError load_error = VKR_RENDERER_ERROR_NONE;
-  renderer->frame_active = true_v;
+  submission->frame_active = true_v;
 
   bool8_t accepted = vkr_resource_system_load(VKR_RESOURCE_TYPE_MESH, path,
                                               allocator, &handle, &load_error);
@@ -1036,7 +1009,7 @@ static void test_resource_async_dependency_waits_then_ready(
   bool8_t saw_pending_dependencies = false_v;
   bool8_t reached_ready = false_v;
   for (uint32_t i = 0; i < 600; ++i) {
-    vkr_resource_system_pump(NULL);
+    vkr_resource_system_pump(*submission, NULL);
     VkrRendererError err = VKR_RENDERER_ERROR_NONE;
     VkrResourceLoadState state = vkr_resource_system_get_state(&handle, &err);
     if (state == VKR_RESOURCE_LOAD_STATE_PENDING_DEPENDENCIES) {
@@ -1058,7 +1031,7 @@ static void test_resource_async_dependency_waits_then_ready(
   assert(resolved.as.mesh != NULL);
 
   vkr_resource_system_unload(&handle, path);
-  renderer->frame_active = false_v;
+  submission->frame_active = false_v;
 
   assert(atomic_load_explicit(&ctx->root_blocked_calls, memory_order_relaxed) >=
          1u);
@@ -1071,14 +1044,14 @@ static void test_resource_async_dependency_waits_then_ready(
 }
 
 static void test_resource_async_dependency_failure_propagates(
-    VkrAllocator *allocator, RendererFrontend *renderer,
+    VkrResourceSubmissionState *submission, VkrAllocator *allocator,
     ResourceAsyncDependencyContext *ctx) {
   printf("  Running test_resource_async_dependency_failure_propagates...\n");
 
   String8 path = string8_lit("tests/assets/mesh_dep_fail.mock");
   VkrResourceHandleInfo handle = {0};
   VkrRendererError load_error = VKR_RENDERER_ERROR_NONE;
-  renderer->frame_active = true_v;
+  submission->frame_active = true_v;
 
   bool8_t accepted = vkr_resource_system_load(VKR_RESOURCE_TYPE_MESH, path,
                                               allocator, &handle, &load_error);
@@ -1088,7 +1061,7 @@ static void test_resource_async_dependency_failure_propagates(
   bool8_t reached_failed = false_v;
   VkrRendererError state_error = VKR_RENDERER_ERROR_NONE;
   for (uint32_t i = 0; i < 600; ++i) {
-    vkr_resource_system_pump(NULL);
+    vkr_resource_system_pump(*submission, NULL);
     VkrResourceLoadState state =
         vkr_resource_system_get_state(&handle, &state_error);
     if (state == VKR_RESOURCE_LOAD_STATE_FAILED) {
@@ -1105,7 +1078,7 @@ static void test_resource_async_dependency_failure_propagates(
   assert(state_error == VKR_RENDERER_ERROR_FILE_NOT_FOUND);
 
   vkr_resource_system_unload(&handle, path);
-  renderer->frame_active = false_v;
+  submission->frame_active = false_v;
 
   assert(atomic_load_explicit(&ctx->dep_finalize_calls, memory_order_relaxed) >=
          1u);
@@ -1116,8 +1089,7 @@ static void test_resource_async_dependency_failure_propagates(
 }
 
 static void test_resource_async_pending_gpu_waits_for_submit_completion(
-    VkrAllocator *allocator, RendererFrontend *renderer,
-    ResourceAsyncMockBackendState *backend_state) {
+    VkrResourceSubmissionState *submission, VkrAllocator *allocator) {
   printf("  Running "
          "test_resource_async_pending_gpu_waits_for_submit_completion...\n");
 
@@ -1125,9 +1097,9 @@ static void test_resource_async_pending_gpu_waits_for_submit_completion(
   VkrResourceHandleInfo handle = {0};
   VkrRendererError load_error = VKR_RENDERER_ERROR_NONE;
 
-  backend_state->submit_serial = 7;
-  backend_state->completed_submit_serial = 7;
-  renderer->frame_active = true_v;
+  submission->submit_serial = 7;
+  submission->completed_submit_serial = 7;
+  submission->frame_active = true_v;
 
   bool8_t accepted = vkr_resource_system_load(VKR_RESOURCE_TYPE_MATERIAL, path,
                                               allocator, &handle, &load_error);
@@ -1137,7 +1109,7 @@ static void test_resource_async_pending_gpu_waits_for_submit_completion(
 
   bool8_t reached_pending_gpu = false_v;
   for (uint32_t i = 0; i < 400; ++i) {
-    vkr_resource_system_pump(NULL);
+    vkr_resource_system_pump(*submission, NULL);
     VkrRendererError state_error = VKR_RENDERER_ERROR_NONE;
     VkrResourceLoadState state =
         vkr_resource_system_get_state(&handle, &state_error);
@@ -1151,21 +1123,22 @@ static void test_resource_async_pending_gpu_waits_for_submit_completion(
   }
   assert(reached_pending_gpu == true_v);
 
-  backend_state->completed_submit_serial = backend_state->submit_serial + 1u;
+  submission->completed_submit_serial = submission->submit_serial + 1u;
   VkrRendererError ready_error = VKR_RENDERER_ERROR_UNKNOWN;
-  assert(resource_async_wait_for_state(&handle, VKR_RESOURCE_LOAD_STATE_READY,
+  assert(resource_async_wait_for_state(submission, &handle,
+                                       VKR_RESOURCE_LOAD_STATE_READY,
                                        &ready_error) == true_v);
   assert(ready_error == VKR_RENDERER_ERROR_NONE);
 
   vkr_resource_system_unload(&handle, path);
-  renderer->frame_active = false_v;
+  submission->frame_active = false_v;
 
   printf(
       "  test_resource_async_pending_gpu_waits_for_submit_completion PASSED\n");
 }
 
 static void test_resource_async_finalize_requires_active_frame(
-    VkrAllocator *allocator, RendererFrontend *renderer,
+    VkrResourceSubmissionState *submission, VkrAllocator *allocator,
     ResourceAsyncDependencyContext *ctx) {
   printf("  Running test_resource_async_finalize_requires_active_frame...\n");
 
@@ -1173,7 +1146,7 @@ static void test_resource_async_finalize_requires_active_frame(
   VkrResourceHandleInfo handle = {0};
   VkrRendererError load_error = VKR_RENDERER_ERROR_NONE;
 
-  renderer->frame_active = false_v;
+  submission->frame_active = false_v;
   uint32_t finalize_before =
       atomic_load_explicit(&ctx->dep_finalize_calls, memory_order_relaxed);
 
@@ -1184,7 +1157,7 @@ static void test_resource_async_finalize_requires_active_frame(
   assert(handle.request_id != 0);
 
   for (uint32_t i = 0; i < 200; ++i) {
-    vkr_resource_system_pump(NULL);
+    vkr_resource_system_pump(*submission, NULL);
     VkrRendererError state_error = VKR_RENDERER_ERROR_NONE;
     VkrResourceLoadState state =
         vkr_resource_system_get_state(&handle, &state_error);
@@ -1197,23 +1170,23 @@ static void test_resource_async_finalize_requires_active_frame(
       atomic_load_explicit(&ctx->dep_finalize_calls, memory_order_relaxed);
   assert(finalize_inactive == finalize_before);
 
-  renderer->frame_active = true_v;
+  submission->frame_active = true_v;
   VkrRendererError ready_error = VKR_RENDERER_ERROR_UNKNOWN;
-  assert(resource_async_wait_for_state(&handle, VKR_RESOURCE_LOAD_STATE_READY,
+  assert(resource_async_wait_for_state(submission, &handle,
+                                       VKR_RESOURCE_LOAD_STATE_READY,
                                        &ready_error) == true_v);
   assert(ready_error == VKR_RENDERER_ERROR_NONE);
   assert(atomic_load_explicit(&ctx->dep_finalize_calls, memory_order_relaxed) >
          finalize_before);
 
   vkr_resource_system_unload(&handle, path);
-  renderer->frame_active = false_v;
+  submission->frame_active = false_v;
 
   printf("  test_resource_async_finalize_requires_active_frame PASSED\n");
 }
 
 static void test_resource_async_gpu_budget_throttles_finalize(
-    VkrAllocator *allocator, RendererFrontend *renderer,
-    ResourceAsyncMockBackendState *backend_state,
+    VkrResourceSubmissionState *submission, VkrAllocator *allocator,
     ResourceAsyncBudgetContext *ctx) {
   printf("  Running test_resource_async_gpu_budget_throttles_finalize...\n");
 
@@ -1224,7 +1197,7 @@ static void test_resource_async_gpu_budget_throttles_finalize(
   VkrRendererError error_a = VKR_RENDERER_ERROR_NONE;
   VkrRendererError error_b = VKR_RENDERER_ERROR_NONE;
 
-  renderer->frame_active = false_v;
+  submission->frame_active = false_v;
   bool8_t accepted_a = vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, path_a,
                                                 allocator, &handle_a, &error_a);
   bool8_t accepted_b = vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, path_b,
@@ -1236,7 +1209,7 @@ static void test_resource_async_gpu_budget_throttles_finalize(
 
   bool8_t both_pending_gpu = false_v;
   for (uint32_t i = 0; i < 400; ++i) {
-    vkr_resource_system_pump(NULL);
+    vkr_resource_system_pump(*submission, NULL);
     VkrRendererError state_error_a = VKR_RENDERER_ERROR_NONE;
     VkrRendererError state_error_b = VKR_RENDERER_ERROR_NONE;
     VkrResourceLoadState state_a =
@@ -1257,16 +1230,16 @@ static void test_resource_async_gpu_budget_throttles_finalize(
   uint32_t finalize_calls_before =
       atomic_load_explicit(&ctx->finalize_calls, memory_order_relaxed);
 
-  renderer->frame_active = true_v;
-  backend_state->submit_serial = 80;
-  backend_state->completed_submit_serial = 128;
+  submission->frame_active = true_v;
+  submission->submit_serial = 80;
+  submission->completed_submit_serial = 128;
 
   VkrResourceAsyncBudget throttle_budget = {
       .max_finalize_requests = 8,
       .max_gpu_upload_ops = 1,
       .max_gpu_upload_bytes = 1024u,
   };
-  vkr_resource_system_pump(&throttle_budget);
+  vkr_resource_system_pump(*submission, &throttle_budget);
 
   VkrRendererError state_error_a = VKR_RENDERER_ERROR_NONE;
   VkrRendererError state_error_b = VKR_RENDERER_ERROR_NONE;
@@ -1281,12 +1254,14 @@ static void test_resource_async_gpu_budget_throttles_finalize(
        state_a == VKR_RESOURCE_LOAD_STATE_PENDING_GPU);
   assert(one_ready_one_pending == true_v);
 
-  vkr_resource_system_pump(&throttle_budget);
+  vkr_resource_system_pump(*submission, &throttle_budget);
   VkrRendererError ready_error_a = VKR_RENDERER_ERROR_UNKNOWN;
   VkrRendererError ready_error_b = VKR_RENDERER_ERROR_UNKNOWN;
-  assert(resource_async_wait_for_state(&handle_a, VKR_RESOURCE_LOAD_STATE_READY,
+  assert(resource_async_wait_for_state(submission, &handle_a,
+                                       VKR_RESOURCE_LOAD_STATE_READY,
                                        &ready_error_a) == true_v);
-  assert(resource_async_wait_for_state(&handle_b, VKR_RESOURCE_LOAD_STATE_READY,
+  assert(resource_async_wait_for_state(submission, &handle_b,
+                                       VKR_RESOURCE_LOAD_STATE_READY,
                                        &ready_error_b) == true_v);
   assert(ready_error_a == VKR_RENDERER_ERROR_NONE);
   assert(ready_error_b == VKR_RENDERER_ERROR_NONE);
@@ -1297,21 +1272,20 @@ static void test_resource_async_gpu_budget_throttles_finalize(
 
   vkr_resource_system_unload(&handle_a, path_a);
   vkr_resource_system_unload(&handle_b, path_b);
-  renderer->frame_active = false_v;
+  submission->frame_active = false_v;
 
   printf("  test_resource_async_gpu_budget_throttles_finalize PASSED\n");
 }
 
 static void test_resource_async_busy_finalize_retries(
-    VkrAllocator *allocator, RendererFrontend *renderer,
-    ResourceAsyncMockBackendState *backend_state,
+    VkrResourceSubmissionState *submission, VkrAllocator *allocator,
     ResourceAsyncBudgetContext *ctx) {
   printf("  Running test_resource_async_busy_finalize_retries...\n");
 
   String8 path = string8_lit("tests/assets/busy_retry.budget.mock");
   VkrResourceHandleInfo handle = {0};
   VkrRendererError load_error = VKR_RENDERER_ERROR_NONE;
-  renderer->frame_active = false_v;
+  submission->frame_active = false_v;
   ctx->busy_finalize_attempts_remaining = 2u;
 
   assert(vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, path, allocator,
@@ -1320,7 +1294,7 @@ static void test_resource_async_busy_finalize_retries(
 
   bool8_t pending_gpu = false_v;
   for (uint32_t i = 0u; i < 400u; ++i) {
-    vkr_resource_system_pump(NULL);
+    vkr_resource_system_pump(*submission, NULL);
     VkrRendererError state_error = VKR_RENDERER_ERROR_NONE;
     VkrResourceLoadState state =
         vkr_resource_system_get_state(&handle, &state_error);
@@ -1337,12 +1311,12 @@ static void test_resource_async_busy_finalize_retries(
       atomic_load_explicit(&ctx->finalize_calls, memory_order_relaxed);
   const uint32_t release_before =
       atomic_load_explicit(&ctx->release_calls, memory_order_relaxed);
-  renderer->frame_active = true_v;
-  backend_state->submit_serial = 160u;
-  backend_state->completed_submit_serial = 161u;
+  submission->frame_active = true_v;
+  submission->submit_serial = 160u;
+  submission->completed_submit_serial = 161u;
 
   for (uint32_t attempt = 1u; attempt <= 2u; ++attempt) {
-    vkr_resource_system_pump(NULL);
+    vkr_resource_system_pump(*submission, NULL);
     VkrRendererError state_error = VKR_RENDERER_ERROR_UNKNOWN;
     assert(vkr_resource_system_get_state(&handle, &state_error) ==
            VKR_RESOURCE_LOAD_STATE_PENDING_GPU);
@@ -1354,7 +1328,8 @@ static void test_resource_async_busy_finalize_retries(
   }
 
   VkrRendererError ready_error = VKR_RENDERER_ERROR_UNKNOWN;
-  assert(resource_async_wait_for_state(&handle, VKR_RESOURCE_LOAD_STATE_READY,
+  assert(resource_async_wait_for_state(submission, &handle,
+                                       VKR_RESOURCE_LOAD_STATE_READY,
                                        &ready_error) == true_v);
   assert(ready_error == VKR_RENDERER_ERROR_NONE);
   assert(atomic_load_explicit(&ctx->finalize_calls, memory_order_relaxed) ==
@@ -1363,23 +1338,22 @@ static void test_resource_async_busy_finalize_retries(
          release_before + 1u);
 
   vkr_resource_system_unload(&handle, path);
-  renderer->frame_active = false_v;
+  submission->frame_active = false_v;
   printf("  test_resource_async_busy_finalize_retries PASSED\n");
 }
 
-static void
-test_scene_async_load_smoke(VkrAllocator *allocator, RendererFrontend *renderer,
-                            ResourceAsyncMockBackendState *backend_state,
-                            ResourceAsyncSceneContext *ctx) {
+static void test_scene_async_load_smoke(VkrResourceSubmissionState *submission,
+                                        VkrAllocator *allocator,
+                                        ResourceAsyncSceneContext *ctx) {
   printf("  Running test_scene_async_load_smoke...\n");
 
   String8 path = string8_lit("tests/assets/smoke.scene.mock");
   VkrResourceHandleInfo handle = {0};
   VkrRendererError load_error = VKR_RENDERER_ERROR_NONE;
 
-  renderer->frame_active = false_v;
-  backend_state->submit_serial = 100u;
-  backend_state->completed_submit_serial = 99u;
+  submission->frame_active = false_v;
+  submission->submit_serial = 100u;
+  submission->completed_submit_serial = 99u;
 
   bool8_t accepted = vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, path,
                                               allocator, &handle, &load_error);
@@ -1396,7 +1370,7 @@ test_scene_async_load_smoke(VkrAllocator *allocator, RendererFrontend *renderer,
 
   bool8_t reached_pending_gpu = false_v;
   for (uint32_t i = 0; i < 400; ++i) {
-    vkr_resource_system_pump(NULL);
+    vkr_resource_system_pump(*submission, NULL);
     VkrRendererError state_error = VKR_RENDERER_ERROR_NONE;
     VkrResourceLoadState state =
         vkr_resource_system_get_state(&handle, &state_error);
@@ -1410,11 +1384,12 @@ test_scene_async_load_smoke(VkrAllocator *allocator, RendererFrontend *renderer,
   }
   assert(reached_pending_gpu == true_v);
 
-  renderer->frame_active = true_v;
-  backend_state->completed_submit_serial = backend_state->submit_serial + 1u;
+  submission->frame_active = true_v;
+  submission->completed_submit_serial = submission->submit_serial + 1u;
 
   VkrRendererError ready_error = VKR_RENDERER_ERROR_UNKNOWN;
-  assert(resource_async_wait_for_state(&handle, VKR_RESOURCE_LOAD_STATE_READY,
+  assert(resource_async_wait_for_state(submission, &handle,
+                                       VKR_RESOURCE_LOAD_STATE_READY,
                                        &ready_error) == true_v);
   assert(ready_error == VKR_RENDERER_ERROR_NONE);
   assert(atomic_load_explicit(&ctx->prepare_calls, memory_order_relaxed) >= 1u);
@@ -1422,15 +1397,14 @@ test_scene_async_load_smoke(VkrAllocator *allocator, RendererFrontend *renderer,
          1u);
 
   vkr_resource_system_unload(&handle, path);
-  renderer->frame_active = false_v;
+  submission->frame_active = false_v;
 
   printf("  test_scene_async_load_smoke PASSED\n");
 }
 
 static void
-test_scene_reload_async_cancel(VkrAllocator *allocator,
-                               RendererFrontend *renderer,
-                               ResourceAsyncMockBackendState *backend_state,
+test_scene_reload_async_cancel(VkrResourceSubmissionState *submission,
+                               VkrAllocator *allocator,
                                ResourceAsyncSceneContext *ctx) {
   printf("  Running test_scene_reload_async_cancel...\n");
 
@@ -1441,7 +1415,7 @@ test_scene_reload_async_cancel(VkrAllocator *allocator,
   const uint32_t release_before =
       atomic_load_explicit(&ctx->release_calls, memory_order_relaxed);
 
-  renderer->frame_active = false_v;
+  submission->frame_active = false_v;
   bool8_t accepted = vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, path,
                                               allocator, &first, &first_error);
   assert(accepted == true_v);
@@ -1464,7 +1438,7 @@ test_scene_reload_async_cancel(VkrAllocator *allocator,
 
   bool8_t reached_terminal = false_v;
   for (uint32_t i = 0; i < 400; ++i) {
-    vkr_resource_system_pump(NULL);
+    vkr_resource_system_pump(*submission, NULL);
     VkrRendererError state_error = VKR_RENDERER_ERROR_NONE;
     VkrResourceLoadState state =
         vkr_resource_system_get_state(&first, &state_error);
@@ -1485,16 +1459,17 @@ test_scene_reload_async_cancel(VkrAllocator *allocator,
   assert(reloaded.request_id != 0);
   assert(reloaded.request_id != first_request_id);
 
-  renderer->frame_active = true_v;
-  backend_state->submit_serial = 200u;
-  backend_state->completed_submit_serial = 201u;
+  submission->frame_active = true_v;
+  submission->submit_serial = 200u;
+  submission->completed_submit_serial = 201u;
   VkrRendererError ready_error = VKR_RENDERER_ERROR_UNKNOWN;
-  assert(resource_async_wait_for_state(&reloaded, VKR_RESOURCE_LOAD_STATE_READY,
+  assert(resource_async_wait_for_state(submission, &reloaded,
+                                       VKR_RESOURCE_LOAD_STATE_READY,
                                        &ready_error) == true_v);
   assert(ready_error == VKR_RENDERER_ERROR_NONE);
 
   vkr_resource_system_unload(&reloaded, path);
-  renderer->frame_active = false_v;
+  submission->frame_active = false_v;
 
   const uint32_t release_after =
       atomic_load_explicit(&ctx->release_calls, memory_order_relaxed);
@@ -1515,12 +1490,12 @@ bool32_t run_resource_async_state_tests(void) {
   VkrJobSystemConfig cfg = resource_async_make_job_config();
   assert(vkr_job_system_init(&cfg, &job_system) == true_v);
 
-  RendererFrontend renderer = {0};
-  ResourceAsyncMockBackendState backend_state = {0};
-  resource_async_mock_init_renderer(&renderer, &backend_state);
+  VkrResourceSubmissionState submission = {
+      .submit_serial = 1u,
+      .completed_submit_serial = 2u,
+  };
 
-  assert(vkr_resource_system_init(&allocator, &renderer, &job_system, NULL) ==
-         true_v);
+  assert(vkr_resource_system_init(&allocator, &job_system, NULL) == true_v);
 
   ResourceAsyncMockLoaderContext loader_ctx = {0};
   VkrResourceLoader loader = {
@@ -1594,33 +1569,33 @@ bool32_t run_resource_async_state_tests(void) {
   assert(vkr_resource_system_register_loader(&scene_ctx, scene_loader) ==
          true_v);
 
-  test_resource_async_release_callback_growth(&allocator, &renderer,
+  test_resource_async_release_callback_growth(&submission, &allocator,
                                               &budget_ctx);
-  test_resource_async_release_callback_cancellation(&allocator, &renderer,
+  test_resource_async_release_callback_cancellation(&submission, &allocator,
                                                     &budget_ctx);
-  test_resource_async_dedupe_and_ready(&allocator, &loader_ctx);
-  test_resource_async_submit_saturation_recovers(&allocator, &job_system,
-                                                 &loader_ctx);
-  test_resource_async_failure_state(&allocator);
-  test_resource_async_batch_accept_count(&allocator, &loader_ctx);
-  test_resource_async_cancel_cleans_loaded_result(&allocator, &loader_ctx);
-  test_resource_async_cancel_then_reload_same_path(&allocator, &loader_ctx);
-  test_resource_async_dependency_waits_then_ready(&allocator, &renderer,
+  test_resource_async_dedupe_and_ready(&submission, &allocator, &loader_ctx);
+  test_resource_async_submit_saturation_recovers(&submission, &allocator,
+                                                 &job_system, &loader_ctx);
+  test_resource_async_failure_state(&submission, &allocator);
+  test_resource_async_batch_accept_count(&submission, &allocator, &loader_ctx);
+  test_resource_async_cancel_cleans_loaded_result(&submission, &allocator,
+                                                  &loader_ctx);
+  test_resource_async_cancel_then_reload_same_path(&submission, &allocator,
+                                                   &loader_ctx);
+  test_resource_async_dependency_waits_then_ready(&submission, &allocator,
                                                   &dependency_ctx);
-  test_resource_async_dependency_failure_propagates(&allocator, &renderer,
+  test_resource_async_dependency_failure_propagates(&submission, &allocator,
                                                     &dependency_ctx);
-  test_resource_async_finalize_requires_active_frame(&allocator, &renderer,
+  test_resource_async_finalize_requires_active_frame(&submission, &allocator,
                                                      &dependency_ctx);
-  test_resource_async_pending_gpu_waits_for_submit_completion(
-      &allocator, &renderer, &backend_state);
-  test_resource_async_gpu_budget_throttles_finalize(
-      &allocator, &renderer, &backend_state, &budget_ctx);
-  test_resource_async_busy_finalize_retries(&allocator, &renderer,
-                                            &backend_state, &budget_ctx);
-  test_scene_async_load_smoke(&allocator, &renderer, &backend_state,
-                              &scene_ctx);
-  test_scene_reload_async_cancel(&allocator, &renderer, &backend_state,
-                                 &scene_ctx);
+  test_resource_async_pending_gpu_waits_for_submit_completion(&submission,
+                                                              &allocator);
+  test_resource_async_gpu_budget_throttles_finalize(&submission, &allocator,
+                                                    &budget_ctx);
+  test_resource_async_busy_finalize_retries(&submission, &allocator,
+                                            &budget_ctx);
+  test_scene_async_load_smoke(&submission, &allocator, &scene_ctx);
+  test_scene_reload_async_cancel(&submission, &allocator, &scene_ctx);
 
   vkr_job_system_shutdown(&job_system);
   vkr_resource_system_shutdown();

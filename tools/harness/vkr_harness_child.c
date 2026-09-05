@@ -1,3 +1,4 @@
+#include "core/vkr_subsystem_plan.h"
 /**
  * @file vkr_harness_child.c
  * @brief One isolated timed repetition: boot the renderer, freeze simulation
@@ -16,12 +17,13 @@
 #include "renderer/systems/vkr_scene_system.h"
 #include "renderer/systems/vkr_shadow_system.h"
 #include "renderer/systems/vkr_ui_system.h"
-#include "renderer/vkr_temporal.h"
 #include "renderer/vkr_gtao.h"
+#include "renderer/vkr_temporal.h"
 
 #define VKR_HARNESS_MAX_CAPTURE_BATCH_BYTES GB(1)
 
-_Static_assert(VKR_GTAO_NOISE_SEQUENCE_LENGTH % VKR_TEMPORAL_SEQUENCE_LENGTH == 0u,
+_Static_assert(VKR_GTAO_NOISE_SEQUENCE_LENGTH % VKR_TEMPORAL_SEQUENCE_LENGTH ==
+                   0u,
                "Replay phase alignment must cover both temporal sequences");
 
 static bool8_t vkr_harness_u64_add(uint64_t a, uint64_t b, uint64_t *out) {
@@ -544,18 +546,17 @@ static bool8_t vkr_harness_child_activate_scene(Application *application) {
     }
     child->scene_resource = resolved;
   }
-  application->renderer.active_scene =
+  application->active_scene =
       vkr_scene_handle_get_scene(child->scene_resource.as.scene);
-  if (!application->renderer.active_scene) {
+  if (!application->active_scene) {
     vkr_harness_child_fail(application, "scene.null");
     return false_v;
   }
-  application->renderer.scene_generation =
-      application->renderer.scene_generation == UINT64_MAX
-          ? 1u
-          : application->renderer.scene_generation + 1u;
+  application->scene_generation = application->scene_generation == UINT64_MAX
+                                      ? 1u
+                                      : application->scene_generation + 1u;
   vkr_scene_handle_full_sync(child->scene_resource.as.scene,
-                             &application->renderer);
+                             &application->assets);
   child->scene_first_frame_index = application->renderer.frame_number + 1u;
   child->scene_active = true_v;
   return true_v;
@@ -566,7 +567,7 @@ vkr_harness_child_texture_streams_ready(Application *application) {
   VkrHarnessChildContext *child = g_harness_child;
   const VkrMaterialTextureStreamStats stats =
       vkr_material_system_get_texture_stream_stats(
-          &application->renderer.material_system);
+          &application->assets.material_system);
   if (stats.pending_count == 0u) {
     return true_v;
   }
@@ -742,7 +743,11 @@ static void vkr_harness_child_build_ui(Application *application,
   root.rows = rows;
   root.row_count = ArrayCount(rows);
   root.style.padding_pt = (VkrUiEdges){32.0f, 32.0f, 32.0f, 32.0f};
-  if (!vkr_ui_begin(&application->renderer, &application->renderer.ui_system,
+  if (!vkr_ui_begin(&application->ui_system, &application->frame_allocator,
+                    application_is_windowed(application) ? &application->window
+                                                         : NULL,
+                    application->renderer.last_window_width,
+                    application->renderer.last_window_height,
                     &application->window.input_state, false_v, delta, &root))
     return;
 
@@ -755,17 +760,17 @@ static void vkr_harness_child_build_ui(Application *application,
   } fixtures[] = {
       {.id = string8_lit("fixture.system"),
        .content = string8_lit("SYSTEM | Aa Bb 0123456789 !?"),
-       .font = application->renderer.font_system.default_system_font_handle,
+       .font = application->assets.font_system.default_system_font_handle,
        .color = {0.20f, 0.85f, 1.00f, 1.00f},
        .size = 32.0f},
       {.id = string8_lit("fixture.bitmap"),
        .content = string8_lit("BITMAP | PIXEL 0123456789"),
-       .font = application->renderer.font_system.default_bitmap_font_handle,
+       .font = application->assets.font_system.default_bitmap_font_handle,
        .color = {1.00f, 0.35f, 0.60f, 1.00f},
        .size = 42.0f},
       {.id = string8_lit("fixture.mtsdf"),
        .content = string8_lit("MTSDF | Smooth Aa 0123456789"),
-       .font = application->renderer.font_system.default_mtsdf_font_handle,
+       .font = application->assets.font_system.default_mtsdf_font_handle,
        .color = {1.00f, 0.85f, 0.20f, 1.00f},
        .size = 48.0f},
   };
@@ -784,10 +789,10 @@ static void vkr_harness_child_build_ui(Application *application,
     label.text.font = fixtures[i].font;
     label.text.font_size = fixtures[i].size;
     label.text.uv_inset_px = 0.5f;
-    vkr_ui_label(&application->renderer.ui_system, fixtures[i].id,
-                 fixtures[i].content, &label);
+    vkr_ui_label(&application->ui_system, fixtures[i].id, fixtures[i].content,
+                 &label);
   }
-  (void)vkr_ui_end(&application->renderer.ui_system);
+  (void)vkr_ui_end(&application->ui_system);
 }
 
 void application_update(Application *application, float64_t delta) {
@@ -865,7 +870,19 @@ void application_update(Application *application, float64_t delta) {
     application_close(application);
     return;
   }
-  vkr_resource_system_pump(NULL);
+  const uint64_t completed_submit_serial =
+      vkr_renderer_get_completed_submit_serial(&application->renderer);
+  const bool8_t frame_active =
+      vkr_renderer_is_frame_active(&application->renderer);
+  const uint64_t submit_serial =
+      vkr_renderer_get_submit_serial(&application->renderer);
+  vkr_resource_system_pump(
+      (VkrResourceSubmissionState){
+          .submit_serial = submit_serial,
+          .completed_submit_serial = completed_submit_serial,
+          .frame_active = frame_active,
+      },
+      NULL);
   if (!child->scene_active) {
     if (!vkr_harness_child_activate_scene(application))
       return;
@@ -911,10 +928,9 @@ void application_update(Application *application, float64_t delta) {
     }
   }
   vkr_scene_handle_update_and_sync(child->scene_resource.as.scene,
-                                   &application->renderer, delta);
-  VkrCamera *camera =
-      vkr_camera_registry_get_by_handle(&application->renderer.camera_system,
-                                        application->renderer.active_camera);
+                                   &application->assets, delta);
+  VkrCamera *camera = vkr_camera_registry_get_by_handle(
+      &application->camera_system, application->active_camera);
   /* Determinism rule 2: the pose is a function of the case-frame index and the
      fixed delta, never of wall-clock time or input. */
   VkrHarnessCameraPose pose = {0};
@@ -1107,71 +1123,61 @@ vkr_harness_child_apply_renderer(Application *application,
   }
   const VkrShadowConfig shadow_config =
       vkr_harness_child_shadow_config(case_manifest);
-  vkr_shadow_system_shutdown(&application->renderer.shadow_system,
-                             &application->renderer);
-  if (!vkr_shadow_system_init(&application->renderer.shadow_system,
-                              &application->renderer, &shadow_config)) {
+  vkr_shadow_system_shutdown(&application->shadow_system);
+  if (!vkr_shadow_system_init(&application->shadow_system, &shadow_config)) {
     return false_v;
   }
   if (string_equals(case_manifest->renderer.render_mode, "lighting")) {
-    application->renderer.globals.render_mode = VKR_RENDER_MODE_LIGHTING;
+    application->globals.render_mode = VKR_RENDER_MODE_LIGHTING;
   } else if (string_equals(case_manifest->renderer.render_mode, "normal")) {
-    application->renderer.globals.render_mode = VKR_RENDER_MODE_NORMAL;
+    application->globals.render_mode = VKR_RENDER_MODE_NORMAL;
   } else if (string_equals(case_manifest->renderer.render_mode, "unlit")) {
-    application->renderer.globals.render_mode = VKR_RENDER_MODE_UNLIT;
+    application->globals.render_mode = VKR_RENDER_MODE_UNLIT;
   } else if (string_equals(case_manifest->renderer.render_mode,
                            "direct_diffuse")) {
-    application->renderer.globals.render_mode = VKR_RENDER_MODE_DIRECT_DIFFUSE;
+    application->globals.render_mode = VKR_RENDER_MODE_DIRECT_DIFFUSE;
   } else if (string_equals(case_manifest->renderer.render_mode,
                            "direct_specular")) {
-    application->renderer.globals.render_mode = VKR_RENDER_MODE_DIRECT_SPECULAR;
+    application->globals.render_mode = VKR_RENDER_MODE_DIRECT_SPECULAR;
   } else if (string_equals(case_manifest->renderer.render_mode,
                            "material_params")) {
-    application->renderer.globals.render_mode = VKR_RENDER_MODE_MATERIAL_PARAMS;
+    application->globals.render_mode = VKR_RENDER_MODE_MATERIAL_PARAMS;
   } else if (string_equals(case_manifest->renderer.render_mode,
                            "temporal_motion")) {
-    application->renderer.globals.render_mode = VKR_RENDER_MODE_TEMPORAL_MOTION;
+    application->globals.render_mode = VKR_RENDER_MODE_TEMPORAL_MOTION;
   } else if (string_equals(case_manifest->renderer.render_mode,
                            "temporal_history")) {
-    application->renderer.globals.render_mode =
-        VKR_RENDER_MODE_TEMPORAL_HISTORY;
+    application->globals.render_mode = VKR_RENDER_MODE_TEMPORAL_HISTORY;
   } else if (string_equals(case_manifest->renderer.render_mode,
                            "indirect_diffuse")) {
-    application->renderer.globals.render_mode =
-        VKR_RENDER_MODE_INDIRECT_DIFFUSE;
+    application->globals.render_mode = VKR_RENDER_MODE_INDIRECT_DIFFUSE;
   }
-  application->renderer.shadow_debug_mode =
-      case_manifest->renderer.shadow_debug_mode;
-  application->renderer.transmission_depth_diagnostic_enabled =
+  application->shadow_debug_mode = case_manifest->renderer.shadow_debug_mode;
+  application->transmission_depth_diagnostic_enabled =
       case_manifest->renderer.transmission_depth_diagnostic_enabled;
-  application->renderer.ibl_probe_limit =
-      case_manifest->renderer.ibl_probe_limit;
+  application->ibl_probe_limit = case_manifest->renderer.ibl_probe_limit;
   application->renderer.temporal_enabled = case_manifest->renderer.taa_enabled;
-  application->renderer.globals.exposure_mode =
+  application->globals.exposure_mode =
       string_equals(case_manifest->renderer.exposure_mode, "automatic")
           ? VKR_EXPOSURE_MODE_AUTOMATIC
           : VKR_EXPOSURE_MODE_MANUAL;
-  application->renderer.globals.manual_exposure =
+  application->globals.manual_exposure =
       case_manifest->renderer.manual_exposure;
-  application->renderer.globals.exposure_compensation_ev =
+  application->globals.exposure_compensation_ev =
       case_manifest->renderer.exposure_compensation_ev;
-  application->renderer.globals.bloom_enabled =
-      case_manifest->renderer.bloom_enabled;
-  application->renderer.globals.bloom_threshold =
+  application->globals.bloom_enabled = case_manifest->renderer.bloom_enabled;
+  application->globals.bloom_threshold =
       case_manifest->renderer.bloom_threshold;
-  application->renderer.globals.bloom_knee = case_manifest->renderer.bloom_knee;
-  application->renderer.globals.bloom_intensity =
+  application->globals.bloom_knee = case_manifest->renderer.bloom_knee;
+  application->globals.bloom_intensity =
       case_manifest->renderer.bloom_intensity;
-  application->renderer.globals.gtao_enabled =
-      case_manifest->renderer.gtao_enabled;
-  application->renderer.globals.gtao_radius =
-      case_manifest->renderer.gtao_radius;
-  application->renderer.globals.gtao_power = case_manifest->renderer.gtao_power;
+  application->globals.gtao_enabled = case_manifest->renderer.gtao_enabled;
+  application->globals.gtao_radius = case_manifest->renderer.gtao_radius;
+  application->globals.gtao_power = case_manifest->renderer.gtao_power;
   /* Determinism rule 3: the harness camera receives an explicit extent and
      lens; it never reads window size or input state. */
-  VkrCamera *camera =
-      vkr_camera_registry_get_by_handle(&application->renderer.camera_system,
-                                        application->renderer.active_camera);
+  VkrCamera *camera = vkr_camera_registry_get_by_handle(
+      &application->camera_system, application->active_camera);
   return vkr_camera_set_perspective_lens(
       camera, case_manifest->camera.vertical_fov_degrees,
       case_manifest->camera.near_plane, case_manifest->camera.far_plane,
@@ -1541,7 +1547,7 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
       const VkrCaptureChannelDescription *description =
           vkr_renderer_capture_channel_get(channel);
       if (description->required_subsystem != VKR_RENDERER_SUBSYSTEM_COUNT &&
-          !vkr_renderer_subsystem_plan_includes(
+          !vkr_subsystem_plan_includes(
               &subsystem_plan,
               (VkrRendererSubsystem)description->required_subsystem)) {
         vkr_harness_stderr("Capture channel is unavailable: %s\n",
@@ -1599,7 +1605,7 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
     goto cleanup;
   }
   application_live = true_v;
-  subsystem_mask = vkr_renderer_get_subsystem_mask(&application->renderer);
+  subsystem_mask = application->subsystem_plan.effective_mask;
   if (subsystem_mask != subsystem_plan.effective_mask) {
     char planned_text[VKR_HARNESS_SUBSYSTEM_MASK_MAX] = {0};
     char actual_text[VKR_HARNESS_SUBSYSTEM_MASK_MAX] = {0};
@@ -1630,20 +1636,19 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
     goto cleanup;
   }
   if (case_manifest.target == VKR_HARNESS_TARGET_OFFSCREEN) {
-    if (application->renderer.ui_system.initialized) {
-      vkr_ui_system_set_offscreen_content_scale(&application->renderer,
-                                                &application->renderer.ui_system,
+    if (application->ui_system.initialized) {
+      vkr_ui_system_set_offscreen_content_scale(&application->ui_system,
                                                 case_manifest.content_scale);
-      vkr_ui_system_set_offscreen_size(
-          &application->renderer, &application->renderer.ui_system, true_v,
-          case_manifest.width, case_manifest.height);
+      vkr_ui_system_set_offscreen_size(&application->ui_system, true_v,
+                                       case_manifest.width,
+                                       case_manifest.height);
     }
   } else {
     case_manifest.content_scale =
         vkr_window_get_content_scale(&application->window).value;
   }
   if (case_manifest.renderer.text_fixture &&
-      !application->renderer.ui_system.initialized) {
+      !application->ui_system.initialized) {
     vkr_harness_stderr(
         "The deterministic text fixture requires the UI subsystem\n");
     exit_code = VKR_HARNESS_EXIT_INVALID;
@@ -1754,7 +1759,7 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
                                            string_length(case_manifest.scene));
   VkrRendererError load_error = VKR_RENDERER_ERROR_NONE;
   if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, scene,
-                                &application->renderer.scratch_allocator,
+                                &application->frame_allocator,
                                 &child.scene_resource, &load_error)) {
     child.failed = true_v;
     string_format(child.failure, sizeof(child.failure), "scene.enqueue_failed");
@@ -1767,8 +1772,7 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
     vkr_harness_stderr("Repetition did not complete: %s\n", child.failure);
   }
 
-  vkr_harness_child_device_provenance(application, &case_manifest,
-                                      &provenance);
+  vkr_harness_child_device_provenance(application, &case_manifest, &provenance);
   vkr_harness_timestamp_utc(provenance.ended_at);
   const bool8_t warmup_stable =
       !child.failed &&
@@ -1776,7 +1780,14 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
                                 sample_catalog, samples, availability);
   if (child.scene_resource.type == VKR_RESOURCE_TYPE_SCENE ||
       child.scene_resource.request_id != 0u || child.scene_resource.as.scene) {
-    vkr_resource_system_unload(&child.scene_resource, scene);
+    if (vkr_renderer_wait_idle(&application->renderer) ==
+        VKR_RENDERER_ERROR_NONE) {
+      vkr_resource_system_unload(&child.scene_resource, scene);
+    } else {
+      child.failed = true_v;
+      string_format(child.failure, sizeof(child.failure),
+                    "scene.unload_wait_failed");
+    }
   }
   application_shutdown(application);
   application_live = false_v;

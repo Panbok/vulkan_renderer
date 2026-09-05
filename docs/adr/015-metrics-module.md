@@ -39,7 +39,9 @@ concurrent interval is discarded explicitly. Bounded events copy subjects into
 an MPSC ring and report dropped events and truncated subjects.
 
 The renderer adapter owns collection of graph/backend aggregates and the
-resetting upload/command-slot wait counters. Availability and reason codes
+resetting upload/command-slot wait counters. Its collection context receives
+explicit application-owned assets, UI and lighting pointers for their statistics;
+the GPU renderer does not own those systems. Availability and reason codes
 survive into reports. GPU timings retain source frame and submit serials;
 collection time does not establish which frame performed the work.
 

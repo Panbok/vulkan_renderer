@@ -1,4 +1,5 @@
 #include "vkr_sample_runtime.h"
+#include "core/vkr_subsystem_plan.h"
 
 #include "application.h"
 #include "core/event.h"
@@ -267,7 +268,7 @@ application_update_ibl_validation_controls(Application *application) {
     return;
   }
 
-  VkrScene *scene = application->renderer.active_scene;
+  VkrScene *scene = application->active_scene;
   if (!scene) {
     state->ibl_validation_scene = NULL;
     state->ibl_validation_defaults_captured = false_v;
@@ -741,9 +742,8 @@ vkr_internal VkrViewportHitInfo application_get_viewport_hit_info(
   }
 
   if (application->editor_viewport.enabled &&
-      vkr_renderer_subsystem_plan_includes(
-          &application->renderer.subsystem_plan,
-          VKR_RENDERER_SUBSYSTEM_EDITOR)) {
+      vkr_subsystem_plan_includes(&application->subsystem_plan,
+                                  VKR_RENDERER_SUBSYSTEM_EDITOR)) {
     VkrViewportMapping mapping = {0};
     VkrWindowPixelSize window_size =
         vkr_window_get_pixel_size(&application->window);
@@ -879,9 +879,9 @@ vkr_internal void application_clear_gizmo_handles(Application *application) {
     return;
   }
 
-  vkr_gizmo_system_set_active_handle(&application->renderer.gizmo_system,
+  vkr_gizmo_system_set_active_handle(&application->gizmo_system,
                                      VKR_GIZMO_HANDLE_NONE);
-  vkr_gizmo_system_set_hot_handle(&application->renderer.gizmo_system,
+  vkr_gizmo_system_set_hot_handle(&application->gizmo_system,
                                   VKR_GIZMO_HANDLE_NONE);
   state->gizmo_hot_handle = VKR_GIZMO_HANDLE_NONE;
 }
@@ -893,7 +893,7 @@ vkr_internal void application_clear_gizmo_selection(Application *application) {
 
   state->selected_entity = VKR_ENTITY_ID_INVALID;
   state->has_selection = false_v;
-  vkr_gizmo_system_clear_target(&application->renderer.gizmo_system);
+  vkr_gizmo_system_clear_target(&application->gizmo_system);
   state->gizmo_hot_handle = VKR_GIZMO_HANDLE_NONE;
   state->gizmo_drag.uses_text_pivot = false_v;
 }
@@ -1020,8 +1020,7 @@ vkr_internal bool8_t application_request_picking(
 
   if (picking->width != viewport_info->target_width ||
       picking->height != viewport_info->target_height) {
-    vkr_picking_resize(&application->renderer, picking,
-                       viewport_info->target_width,
+    vkr_picking_resize(picking, viewport_info->target_width,
                        viewport_info->target_height);
   }
 
@@ -1059,9 +1058,8 @@ vkr_internal bool8_t application_begin_gizmo_drag(Application *application,
     has_text_pivot = application_text_pivot_local(text, &pivot_local);
   }
 
-  VkrCamera *camera =
-      vkr_camera_registry_get_by_handle(&application->renderer.camera_system,
-                                        application->renderer.active_camera);
+  VkrCamera *camera = vkr_camera_registry_get_by_handle(
+      &application->camera_system, application->active_camera);
   if (!camera) {
     return false_v;
   }
@@ -1153,9 +1151,8 @@ application_update_gizmo_drag(Application *application,
     return;
   }
 
-  VkrCamera *camera =
-      vkr_camera_registry_get_by_handle(&application->renderer.camera_system,
-                                        application->renderer.active_camera);
+  VkrCamera *camera = vkr_camera_registry_get_by_handle(
+      &application->camera_system, application->active_camera);
   if (!camera) {
     state->gizmo_drag.active = false_v;
     state->gizmo_drag.handle = VKR_GIZMO_HANDLE_NONE;
@@ -1324,7 +1321,7 @@ vkr_internal void application_apply_filter_mode(Application *application,
              "anisotropy for this mode");
   }
 
-  VkrTextureSystem *texture_system = &application->renderer.texture_system;
+  VkrTextureSystem *texture_system = &application->assets.texture_system;
   uint32_t failures = 0;
   for (uint32_t i = 0; i < texture_system->textures.length; ++i) {
     VkrTexture *tex = &texture_system->textures.data[i];
@@ -1336,7 +1333,7 @@ vkr_internal void application_apply_filter_mode(Application *application,
     VkrTextureHandle handle = {.id = tex->description.id,
                                .generation = tex->description.generation};
     // MTSDF reconstruction requires linear atlas filtering in every mode.
-    if (application_is_mtsdf_atlas(&application->renderer.font_system, handle))
+    if (application_is_mtsdf_atlas(&application->assets.font_system, handle))
       continue;
     VkrRendererError err = vkr_texture_system_update_sampler(
         texture_system, handle, entry.min_filter, entry.mag_filter,
@@ -1444,24 +1441,22 @@ application_try_activate_scene_resource(Application *application) {
   }
 
   state->scene_load_terminal_logged = false_v;
-  if (application->renderer.active_scene != scene) {
-    application->renderer.active_scene = scene;
-    application->renderer.scene_generation =
-        application->renderer.scene_generation == UINT64_MAX
-            ? 1u
-            : application->renderer.scene_generation + 1u;
+  if (application->active_scene != scene) {
+    application->active_scene = scene;
+    application->scene_generation = application->scene_generation == UINT64_MAX
+                                        ? 1u
+                                        : application->scene_generation + 1u;
     /* A fit from the previous scene is framed by a camera and caster set that
        no longer exist, so it is not a previous value of the same quantity. The
        configuration stamps cannot catch this: they are all identical across a
        scene swap. */
-    vkr_shadow_system_invalidate_fit_history(
-        &application->renderer.shadow_system);
+    vkr_shadow_system_invalidate_fit_history(&application->shadow_system);
     float64_t elapsed =
         application_consume_scene_load_elapsed_seconds(application);
     if (elapsed >= 0.0) {
       const VkrMaterialTextureStreamStats texture_stats =
           vkr_material_system_get_texture_stream_stats(
-              &application->renderer.material_system);
+              &application->assets.material_system);
       vkr_renderer_metrics_set_scene_boot_ns(
           &application->renderer_metrics, (uint64_t)(elapsed * 1000000000.0));
       log_info("SCENE_LOAD_TIME result=ready seconds=%.3f ms=%.1f "
@@ -1515,7 +1510,7 @@ vkr_internal void application_init_scene_system(Application *application) {
     }
   }
 
-  if (application->renderer.active_scene != NULL) {
+  if (application->active_scene != NULL) {
     return;
   }
 
@@ -1525,7 +1520,7 @@ vkr_internal void application_init_scene_system(Application *application) {
   state->scene_load_start_time_seconds = 0.0;
 
   VkrAllocatorScope load_scope =
-      vkr_allocator_begin_scope(&application->renderer.scratch_allocator);
+      vkr_allocator_begin_scope(&application->frame_allocator);
   if (!vkr_allocator_scope_is_valid(&load_scope)) {
     log_error("Failed to create scene load scratch scope");
     return;
@@ -1533,7 +1528,7 @@ vkr_internal void application_init_scene_system(Application *application) {
 
   VkrRendererError load_err = VKR_RENDERER_ERROR_NONE;
   if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, scene_path,
-                                &application->renderer.scratch_allocator,
+                                &application->frame_allocator,
                                 &state->scene_resource, &load_err)) {
     String8 err_str = vkr_renderer_get_error_string(load_err);
     log_error("Failed to load scene '%s': %s", string8_cstr(&scene_path),
@@ -1565,20 +1560,29 @@ vkr_internal void application_unload_scene_system(Application *application) {
   String8 scene_path = string8_lit(SCENE_PATH);
   if (state->scene_resource.type == VKR_RESOURCE_TYPE_SCENE ||
       state->scene_resource.request_id != 0 || state->scene_resource.as.scene) {
+    if (vkr_renderer_wait_idle(&application->renderer) !=
+        VKR_RENDERER_ERROR_NONE) {
+      application->last_renderer_error = VKR_RENDERER_ERROR_DEVICE_ERROR;
+      bitset8_clear(&application->app_flags, APPLICATION_FLAG_RUNNING);
+      return;
+    }
     vkr_resource_system_unload(&state->scene_resource, scene_path);
+    if (vkr_renderer_wait_idle(&application->renderer) !=
+        VKR_RENDERER_ERROR_NONE) {
+      application->last_renderer_error = VKR_RENDERER_ERROR_DEVICE_ERROR;
+      bitset8_clear(&application->app_flags, APPLICATION_FLAG_RUNNING);
+    }
   }
   state->scene_resource = (VkrResourceHandleInfo){0};
   state->scene_load_terminal_logged = false_v;
   state->scene_load_stats_baseline_valid = false_v;
   state->scene_load_timer_active = false_v;
   state->scene_load_start_time_seconds = 0.0;
-  application->renderer.active_scene = NULL;
-  application->renderer.scene_generation =
-      application->renderer.scene_generation == UINT64_MAX
-          ? 1u
-          : application->renderer.scene_generation + 1u;
-  vkr_shadow_system_invalidate_fit_history(
-      &application->renderer.shadow_system);
+  application->active_scene = NULL;
+  application->scene_generation = application->scene_generation == UINT64_MAX
+                                      ? 1u
+                                      : application->scene_generation + 1u;
+  vkr_shadow_system_invalidate_fit_history(&application->shadow_system);
   application_log_backend_allocator_stats(application, "unload", NULL);
   application_log_device_memory_stats(application, "unload");
 }
@@ -1717,9 +1721,8 @@ vkr_internal void application_log_camera_snapshot(Application *application) {
     return;
   }
 
-  VkrCamera *camera =
-      vkr_camera_registry_get_by_handle(&application->renderer.camera_system,
-                                        application->renderer.active_camera);
+  VkrCamera *camera = vkr_camera_registry_get_by_handle(
+      &application->camera_system, application->active_camera);
   if (!camera) {
     log_warn("Cannot capture camera snapshot: active camera is unavailable");
     return;
@@ -1866,14 +1869,13 @@ vkr_internal void application_handle_input(Application *application,
     return;
   }
 
-  VkrCamera *camera =
-      vkr_camera_registry_get_by_handle(&application->renderer.camera_system,
-                                        application->renderer.active_camera);
+  VkrCamera *camera = vkr_camera_registry_get_by_handle(
+      &application->camera_system, application->active_camera);
   if (!camera) {
     return;
   }
 
-  VkrCameraController *controller = &application->renderer.camera_controller;
+  VkrCameraController *controller = &application->camera_controller;
   controller->camera = camera;
 
   if (!state->free_camera_wheel_initialized) {
@@ -2003,11 +2005,10 @@ vkr_internal void application_update_fps_text(Application *application,
     state->hud_frametime_sum = 0.0;
     state->hud_frame_samples = 0;
 
-    VkrCamera *camera =
-        vkr_camera_registry_get_by_handle(&application->renderer.camera_system,
-                                          application->renderer.active_camera);
+    VkrCamera *camera = vkr_camera_registry_get_by_handle(
+        &application->camera_system, application->active_camera);
 
-    VkrAllocator *frame_alloc = &application->renderer.scratch_allocator;
+    VkrAllocator *frame_alloc = &application->frame_allocator;
 
     // Everything below describes one published frame. Seed from the live
     // structs so a metric the collector could not sample leaves the last known
@@ -2043,8 +2044,7 @@ vkr_internal void application_update_fps_text(Application *application,
       application_ui_text_set(&state->fps_text, fps_text);
 
       String8 left_text = string8_create_formatted(
-          frame_alloc,
-          "Pos: x %.2f  y %.2f  z %.2f\nYaw %.2f  Pitch %.2f",
+          frame_alloc, "Pos: x %.2f  y %.2f  z %.2f\nYaw %.2f  Pitch %.2f",
           camera->position.x, camera->position.y, camera->position.z,
           camera->yaw, camera->pitch);
       if (left_text.length > 0) {
@@ -2154,8 +2154,7 @@ vkr_internal void application_init_ui_texts(Application *application) {
                           string8_lit("FPS: 0.0\nFrametime: 0.0"));
   application_ui_text_set(
       &state->left_text,
-      string8_lit(
-          "Pos: x 0.0  y 0.0  z 0.0\nYaw 0.0  Pitch 0.0"));
+      string8_lit("Pos: x 0.0  y 0.0  z 0.0\nYaw 0.0  Pitch 0.0"));
 
   state->fps_update_clock = vkr_clock_create();
   vkr_clock_start(&state->fps_update_clock);
@@ -2196,7 +2195,7 @@ vkr_internal void application_update_scene(Application *application,
   }
 
   (void)application_try_activate_scene_resource(application);
-  if (!state->scene_resource.as.scene || !application->renderer.active_scene) {
+  if (!state->scene_resource.as.scene || !application->active_scene) {
     return;
   }
 
@@ -2207,9 +2206,9 @@ vkr_internal void application_update_scene(Application *application,
   }
 
   vkr_scene_handle_update_and_sync(state->scene_resource.as.scene,
-                                   &application->renderer, delta_time);
+                                   &application->assets, delta_time);
 
-  if (application->renderer.gizmo_system.initialized) {
+  if (application->gizmo_system.initialized) {
     if (!state->has_selection) {
       application_clear_gizmo_selection(application);
       return;
@@ -2233,7 +2232,7 @@ vkr_internal void application_update_scene(Application *application,
       }
     }
 
-    vkr_gizmo_system_set_target(&application->renderer.gizmo_system,
+    vkr_gizmo_system_set_target(&application->gizmo_system,
                                 state->selected_entity, world_position,
                                 vkr_quat_identity());
   }
@@ -2244,7 +2243,7 @@ vkr_internal void application_update_picking(Application *application) {
     return;
   }
 
-  VkrPickingContext *picking = &application->renderer.picking;
+  VkrPickingContext *picking = &application->picking;
   if (!picking->initialized) {
     return;
   }
@@ -2307,7 +2306,7 @@ vkr_internal void application_update_picking(Application *application) {
   if (!state->gizmo_drag.active && !state->gizmo_drag.pending_pick &&
       !state->gizmo_hover_pending && !vkr_picking_is_pending(picking) &&
       mouse_moved && !left_down && !right_down && !middle_down &&
-      application->renderer.gizmo_system.visible) {
+      application->gizmo_system.visible) {
     if (application_request_picking(application, picking, &viewport_info)) {
       state->gizmo_hover_pending = true_v;
     }
@@ -2319,7 +2318,7 @@ vkr_internal void application_update_picking(Application *application) {
   if (state->gizmo_drag.pending_pick && !vkr_picking_is_pending(picking)) {
     state->gizmo_drag.pending_pick = false_v;
 
-    VkrAllocator *frame_alloc = &application->renderer.scratch_allocator;
+    VkrAllocator *frame_alloc = &application->frame_allocator;
     String8 picked_text = {0};
     VkrEntityId picked_entity = VKR_ENTITY_ID_INVALID;
     bool8_t picked_entity_valid = false_v;
@@ -2382,15 +2381,14 @@ vkr_internal void application_update_picking(Application *application) {
 
         VkrGizmoHandle handle = vkr_gizmo_decode_picking_id(result.object_id);
         state->gizmo_hot_handle = handle;
-        vkr_gizmo_system_set_hot_handle(&application->renderer.gizmo_system,
-                                        handle);
+        vkr_gizmo_system_set_hot_handle(&application->gizmo_system, handle);
         bool8_t drag_button_down =
             input_is_button_down(state->input_state, BUTTON_LEFT);
         if (drag_button_down && handle != VKR_GIZMO_HANDLE_NONE) {
           if (application_begin_gizmo_drag(application, handle)) {
-            vkr_gizmo_system_set_active_handle(
-                &application->renderer.gizmo_system, handle);
-            application->renderer.gizmo_system.mode = state->gizmo_drag.mode;
+            vkr_gizmo_system_set_active_handle(&application->gizmo_system,
+                                               handle);
+            application->gizmo_system.mode = state->gizmo_drag.mode;
             update_selection = false_v;
           }
         }
@@ -2433,8 +2431,7 @@ vkr_internal void application_update_picking(Application *application) {
     }
 
     state->gizmo_hot_handle = hot_handle;
-    vkr_gizmo_system_set_hot_handle(&application->renderer.gizmo_system,
-                                    hot_handle);
+    vkr_gizmo_system_set_hot_handle(&application->gizmo_system, hot_handle);
   }
 }
 
@@ -2577,7 +2574,7 @@ vkr_internal void application_poll_upload_wait_stats(Application *application) {
 vkr_internal void application_update_ui(Application *application,
                                         float64_t delta) {
   if (!application || !state || !state->input_state ||
-      !application->renderer.ui_system.initialized) {
+      !application->ui_system.initialized) {
     return;
   }
 
@@ -2587,16 +2584,18 @@ vkr_internal void application_update_ui(Application *application,
   root.column_count = 1u;
   root.rows = &root_track;
   root.row_count = 1u;
-  if (!vkr_ui_begin(&application->renderer, &application->renderer.ui_system,
-                    state->input_state,
-                    vkr_window_is_mouse_captured(&application->window), delta,
-                    &root)) {
+  if (!vkr_ui_begin(
+          &application->ui_system, &application->frame_allocator,
+          application_is_windowed(application) ? &application->window : NULL,
+          application->renderer.last_window_width,
+          application->renderer.last_window_height, state->input_state,
+          vkr_window_is_mouse_captured(&application->window), delta, &root)) {
     application->ui_capture = (VkrUiInputCapture){0};
     return;
   }
 
   VkrSampleUiFrame frame = {
-      .ui = &application->renderer.ui_system,
+      .ui = &application->ui_system,
       .dock = &application->editor_viewport.dock,
       .input = state->input_state,
       .text =
@@ -2611,12 +2610,12 @@ vkr_internal void application_update_ui(Application *application,
   };
   if (application->editor_viewport.enabled) {
     frame.mapping_valid = application_editor_viewport_mapping(
-        application, application->renderer.ui_system.target_width,
-        application->renderer.ui_system.target_height, &frame.mapping);
+        application, application->ui_system.target_width,
+        application->ui_system.target_height, &frame.mapping);
   }
   application->editor_viewport.dock_capture =
       state->ui.build(state->ui.state, &frame);
-  application->ui_capture = vkr_ui_end(&application->renderer.ui_system);
+  application->ui_capture = vkr_ui_end(&application->ui_system);
   application->ui_capture.mouse |=
       application->editor_viewport.dock_capture.mouse;
 }
@@ -2628,22 +2627,21 @@ void application_update(Application *application, float64_t delta) {
   if (!application->ui_capture.keyboard &&
       input_is_key_up(state->input_state, KEY_Q) &&
       input_was_key_down(state->input_state, KEY_Q)) {
-    application->renderer.globals.render_mode =
-        (VkrRenderMode)(((uint32_t)application->renderer.globals.render_mode +
-                         1) %
+    application->globals.render_mode =
+        (VkrRenderMode)(((uint32_t)application->globals.render_mode + 1) %
                         VKR_RENDER_MODE_COUNT);
-    log_debug("RENDER MODE: %d", application->renderer.globals.render_mode);
+    log_debug("RENDER MODE: %d", application->globals.render_mode);
   }
 
   if (!application->ui_capture.keyboard &&
       input_is_key_up(state->input_state, KEY_E) &&
       input_was_key_down(state->input_state, KEY_E)) {
-    application->renderer.shadow_debug_mode =
-        (application->renderer.shadow_debug_mode + 1u) % 14u;
+    application->shadow_debug_mode =
+        (application->shadow_debug_mode + 1u) % 14u;
     log_debug("SHADOW DEBUG MODE: %u "
               "(0=off,1=cascades,2=factor,3=depth,4=map0,5=map1,6=map2,7=map3,"
               "8=map4,9=map5,10=map6,11=map7,12=frustum,13=camera)",
-              application->renderer.shadow_debug_mode);
+              application->shadow_debug_mode);
   }
 
   application_update_fps_text(application, delta);
@@ -2992,12 +2990,9 @@ int vkr_sample_runtime_run(int argc, char **argv,
     }
   }
 
-  String8 scene_path = string8_lit(SCENE_PATH);
-  if (state->scene_resource.type == VKR_RESOURCE_TYPE_SCENE ||
-      state->scene_resource.request_id != 0 || state->scene_resource.as.scene) {
-    vkr_resource_system_unload(&state->scene_resource, scene_path);
-  }
-  state->scene_resource = (VkrResourceHandleInfo){0};
+  application_unload_scene_system(&application);
+  if (application.last_renderer_error == VKR_RENDERER_ERROR_DEVICE_ERROR)
+    exit_code = 5;
 
   arena_destroy(state->stats_arena);
   state->stats_arena = NULL;

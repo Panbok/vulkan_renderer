@@ -54,5 +54,5 @@ required and has an accepted resource/cost budget.
 ## Implementation
 
 [`vkr_lighting_system.c`](../../lib/src/renderer/systems/vkr_lighting_system.c),
-[`vkr_render_packet.h`](../../lib/src/renderer/vkr_render_packet.h),
+[`vkr_frame_input.h`](../../lib/src/renderer/vkr_frame_input.h),
 [`vkr_gpu_abi.h`](../../lib/src/renderer/vkr_gpu_abi.h), and production world/deferred shaders.

@@ -2,9 +2,8 @@
 
 #include "core/logger.h"
 #include "math/vkr_math.h"
-#include "renderer/renderer_frontend.h"
 #include "renderer/systems/vkr_camera.h"
-#include "renderer/vkr_render_packet.h"
+#include "renderer/vkr_frame_input.h"
 
 // ============================================================================
 // Cascade Helpers
@@ -983,9 +982,9 @@ vkr_internal void vkr_shadow_compute_cascade_matrix(
   *out_view_projection = mat4_mul(light_projection, view);
 }
 
-bool8_t vkr_shadow_system_init(VkrShadowSystem *system, RendererFrontend *rf,
+bool8_t vkr_shadow_system_init(VkrShadowSystem *system,
                                const VkrShadowConfig *config) {
-  if (!system || !rf) {
+  if (!system) {
     return false_v;
   }
 
@@ -1083,8 +1082,7 @@ bool8_t vkr_shadow_system_init(VkrShadowSystem *system, RendererFrontend *rf,
   return true_v;
 }
 
-void vkr_shadow_system_shutdown(VkrShadowSystem *system, RendererFrontend *rf) {
-  (void)rf;
+void vkr_shadow_system_shutdown(VkrShadowSystem *system) {
   if (system) {
     MemZero(system, sizeof(*system));
   }
@@ -1319,9 +1317,9 @@ vkr_internal bool8_t vkr_shadow_submitted_signature_matches(
 vkr_internal bool8_t vkr_shadow_rendered_descriptor_equal(
     const VkrShadowCascadeHistory *a, const VkrShadowCascadeHistory *b) {
   return MemCompare(&a->rendered_view_projection, &b->rendered_view_projection,
-                     sizeof(Mat4)) == 0 &&
+                    sizeof(Mat4)) == 0 &&
          MemCompare(&a->rendered_light_view, &b->rendered_light_view,
-                     sizeof(Mat4)) == 0 &&
+                    sizeof(Mat4)) == 0 &&
          a->rendered_fit.center_x == b->rendered_fit.center_x &&
          a->rendered_fit.center_y == b->rendered_fit.center_y &&
          a->rendered_fit.extent == b->rendered_fit.extent &&
@@ -1372,17 +1370,18 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
       continue;
     // Select a submitted CPU descriptor, not another image's depth contents.
     // Stale physical images render this fit at their normal protected reuse.
-    for (uint32_t image = 0u; image < VKR_SHADOW_TARGET_IMAGE_COUNT_MAX; ++image) {
+    for (uint32_t image = 0u; image < VKR_SHADOW_TARGET_IMAGE_COUNT_MAX;
+         ++image) {
       const VkrShadowCascadeHistory *history =
           &system->cascade_history[image][cascade];
-      if ((desired[cascade] && history->last_submit_value <=
-                                   desired[cascade]->last_submit_value) ||
+      if ((desired[cascade] &&
+           history->last_submit_value <= desired[cascade]->last_submit_value) ||
           !vkr_shadow_submitted_signature_matches(
               history, candidates, retained_token.resource_generation,
               bias_signature, light_signature))
         continue;
-      const float32_t margin = vkr_shadow_rendered_fit_margin(
-          history, &system->cascades[cascade]);
+      const float32_t margin =
+          vkr_shadow_rendered_fit_margin(history, &system->cascades[cascade]);
       if (margin < 0.0f)
         continue;
       desired[cascade] = history;
@@ -1411,10 +1410,9 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
       for (uint32_t cascade = 0u; cascade < cascade_count; ++cascade) {
         out_data->dynamic_candidates_tested[cascade]++;
         const VkrShadowCascadeHistory *history = desired[cascade];
-        if (history &&
-            vkr_shadow_sphere_intersects_fit(center, radius,
-                                             &history->rendered_light_view,
-                                             &history->rendered_fit))
+        if (history && vkr_shadow_sphere_intersects_fit(
+                           center, radius, &history->rendered_light_view,
+                           &history->rendered_fit))
           desired_dynamic_overlap[cascade] = true_v;
         if (vkr_shadow_sphere_intersects_fit(
                 center, radius, &system->cascades[cascade].light_view,
@@ -1442,7 +1440,8 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
     const bool8_t dynamic_forced =
         dynamic_scan_failed || desired_dynamic_overlap[cascade];
     reusable[cascade] = (retained_token.valid_layer_mask & bit) != 0u &&
-                        descriptor_matches && remaining_margin[cascade] >= 0.0f &&
+                        descriptor_matches &&
+                        remaining_margin[cascade] >= 0.0f &&
                         !publication_pending && !dynamic_forced;
   }
 
@@ -1487,23 +1486,24 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
     // Explicit proactive refresh still creates a fresh guarded fit. Ordinary
     // convergence redraws adopt the selected submitted descriptor exactly.
     const bool8_t adopt_submitted = desired[cascade] && !dynamic_forced &&
-                                   !publication_pending && !proactive[cascade];
+                                    !publication_pending && !proactive[cascade];
     const Mat4 light_view = adopt_submitted
-                               ? desired[cascade]->rendered_light_view
-                               : system->cascades[cascade].light_view;
-    const VkrShadowFit fit = adopt_submitted
-                                ? desired[cascade]->rendered_fit
-                                : guarded_fits[cascade];
+                                ? desired[cascade]->rendered_light_view
+                                : system->cascades[cascade].light_view;
+    const VkrShadowFit fit = adopt_submitted ? desired[cascade]->rendered_fit
+                                             : guarded_fits[cascade];
     out_data->view_projection[cascade] =
-        adopt_submitted ? desired[cascade]->rendered_view_projection
-                        : vkr_shadow_view_projection_from_fit(&light_view, &fit);
+        adopt_submitted
+            ? desired[cascade]->rendered_view_projection
+            : vkr_shadow_view_projection_from_fit(&light_view, &fit);
     vkr_shadow_publish_cascade_receiver(&light_view, &fit, cascade, out_data);
 
     pending->cascade_mask |= bit;
     pending->cascades[cascade] = (VkrShadowCascadeHistory){
-        .static_only_contents = !publication_pending && !dynamic_scan_failed &&
-                                !(adopt_submitted ? desired_dynamic_overlap[cascade]
-                                                  : guarded_dynamic_overlap[cascade]),
+        .static_only_contents =
+            !publication_pending && !dynamic_scan_failed &&
+            !(adopt_submitted ? desired_dynamic_overlap[cascade]
+                              : guarded_dynamic_overlap[cascade]),
         .rendered_fit = fit,
         .rendered_light_view = light_view,
         .rendered_view_projection = out_data->view_projection[cascade],

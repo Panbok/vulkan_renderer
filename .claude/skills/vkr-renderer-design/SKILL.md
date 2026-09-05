@@ -58,10 +58,11 @@ commands. Declare frame resource accesses in the authored graph. Backend-owned
 uploads, IBL preparation, capture, and presentation outside that schedule retain
 explicit access and completion ownership.
 
-`VkrRenderPacket` borrows arrays until `vkr_renderer_submit_packet()` returns.
-`prepare_frame` precedes submission and may already have acquired a target.
-Packet rejection and recording failure must cancel through the selected
-implementation, resolving acquired resources and recorded-but-unsubmitted uses.
+`VkrFrameInput` borrows arrays until `vkr_renderer_render_frame()` returns.
+`vkr_renderer_begin_frame()` acquires a target and returns a `VkrFrame` context.
+Input rejection and recording failure must cancel through the native backend,
+resolving acquired resources and recorded-but-unsubmitted uses. Reject stale
+frame contexts before touching a newer acquisition.
 
 Graph `TRANSIENT` resources are reusable across realizations. Recreate them when
 the resolved description changes; do not infer per-frame destruction or aliasing.

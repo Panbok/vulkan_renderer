@@ -1,3 +1,4 @@
+#include "core/vkr_subsystem_plan.h"
 /**
  * @file vkr_harness_parent.c
  * @brief `profile` orchestration: launch independent child repetitions, verify

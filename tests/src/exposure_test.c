@@ -1,8 +1,8 @@
 #include "exposure_test.h"
 
-#include "renderer/renderer_frontend.h"
 #include "renderer/vkr_exposure.h"
-#include "renderer/vkr_render_packet.h"
+#include "renderer/vkr_frame_input.h"
+#include "renderer/vkr_renderer_internal.h"
 
 #include <assert.h>
 #include <float.h>
@@ -221,32 +221,32 @@ static void test_exposure_metering_config_normalize(void) {
 
 static void test_exposure_packet_validation(void) {
   printf("  Running test_exposure_packet_validation...\n");
-  VkrRenderPacket packet = {
-      .packet_version = VKR_RENDER_PACKET_VERSION,
+  VkrFrameInput packet = {
+      .version = VKR_FRAME_INPUT_VERSION,
       .globals = {.manual_exposure = VKR_DEFAULT_EXPOSURE},
   };
   VkrValidationError validation = {0};
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_NONE);
 
   packet.globals.exposure_mode = (uint32_t)VKR_EXPOSURE_MODE_COUNT;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.globals.exposure_mode") == 0);
 
   packet.globals.exposure_mode = (uint32_t)VKR_EXPOSURE_MODE_AUTOMATIC;
   packet.globals.manual_exposure = 0.0f;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path, "packet.globals.manual_exposure") == 0);
 
   packet.globals.manual_exposure = NAN;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
 
   packet.globals.manual_exposure = VKR_DEFAULT_EXPOSURE;
   packet.globals.exposure_compensation_ev = INFINITY;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
   assert(strcmp(validation.field_path,
                 "packet.globals.exposure_compensation_ev") == 0);
@@ -254,8 +254,8 @@ static void test_exposure_packet_validation(void) {
   /* Version 20 introduced the exposure contract; packet 21 adds bloom.
      The validator still rejects every immediately preceding packet ABI. */
   packet.globals.exposure_compensation_ev = 0.0f;
-  packet.packet_version = VKR_RENDER_PACKET_VERSION - 1u;
-  assert(vkr_renderer_validate_packet(&packet, &validation) ==
+  packet.version = VKR_FRAME_INPUT_VERSION - 1u;
+  assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_INCOMPATIBLE_SIGNATURE);
   printf("  test_exposure_packet_validation PASSED\n");
 }

@@ -13,7 +13,6 @@
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/vkr_renderer.h"
 
-struct s_RendererFrontend;
 struct VkrCamera;
 
 #define VKR_SHADOW_CASCADE_COUNT_MAX 8
@@ -562,7 +561,6 @@ VkrShadowFit vkr_shadow_apply_fit_hysteresis(const VkrShadowFit *previous,
  * Normalizes the packet-facing cascade configuration.
  */
 bool8_t vkr_shadow_system_init(VkrShadowSystem *system,
-                               struct s_RendererFrontend *rf,
                                const VkrShadowConfig *config);
 
 /**
@@ -570,8 +568,7 @@ bool8_t vkr_shadow_system_init(VkrShadowSystem *system,
  *
  * Clears CPU-side shadow state.
  */
-void vkr_shadow_system_shutdown(VkrShadowSystem *system,
-                                struct s_RendererFrontend *rf);
+void vkr_shadow_system_shutdown(VkrShadowSystem *system);
 
 /**
  * @brief Recompute cascade splits and light-space matrices for this frame.

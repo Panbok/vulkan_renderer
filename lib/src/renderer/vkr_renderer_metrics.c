@@ -1,4 +1,8 @@
 #include "renderer/vkr_renderer_metrics.h"
+#include "renderer/systems/vkr_lighting_system.h"
+#include "renderer/systems/vkr_render_assets.h"
+#include "renderer/systems/vkr_ui_system.h"
+#include "renderer/vkr_renderer_internal.h"
 
 #include "core/vkr_json_writer.h"
 #include "memory/vkr_allocator.h"
@@ -904,7 +908,7 @@ static bool8_t vkr_renderer_metrics_register_impl_memory(
 }
 
 bool8_t vkr_renderer_metrics_register_device_memory(
-    VkrRendererMetrics *renderer_metrics, VkrRendererFrontendHandle renderer) {
+    VkrRendererMetrics *renderer_metrics, VkrRenderer *renderer) {
   if (!renderer_metrics || !renderer_metrics->metrics || !renderer ||
       renderer_metrics->metrics->sealed) {
     return false_v;
@@ -992,7 +996,7 @@ void vkr_renderer_metrics_set_scene_boot_ns(
 
 bool8_t
 vkr_renderer_metrics_prepare_pass_table(VkrRendererMetrics *renderer_metrics,
-                                        VkrRendererFrontendHandle renderer,
+                                        VkrRenderer *renderer,
                                         VkrAllocator *allocator) {
   if (!renderer_metrics || !renderer || !allocator) {
     return false_v;
@@ -1013,7 +1017,7 @@ vkr_renderer_metrics_prepare_pass_table(VkrRendererMetrics *renderer_metrics,
 
 vkr_internal void
 vkr_renderer_metrics_collect_passes(VkrRendererMetrics *renderer_metrics,
-                                    RendererFrontend *renderer,
+                                    VkrRenderer *renderer,
                                     uint64_t cpu_frame_index) {
   VkrRendererMetricsPassTable *table = &renderer_metrics->passes;
   table->count = 0;
@@ -1171,7 +1175,7 @@ static uint32_t vkr_renderer_metrics_impl_values(
 
 static void
 vkr_renderer_metrics_collect_impl_memory(VkrRendererMetrics *renderer_metrics,
-                                         RendererFrontend *renderer) {
+                                         VkrRenderer *renderer) {
   if (renderer_metrics->impl_memory_metric_count == 0)
     return;
   uint64_t values[VKR_RENDERER_IMPL_MEMORY_METRIC_MAX] = {0};
@@ -1218,7 +1222,7 @@ void vkr_renderer_metrics_collect(
 #else
   VkrMetrics *metrics = renderer_metrics->metrics;
   VkrRendererMetricIds *ids = &renderer_metrics->ids;
-  RendererFrontend *renderer = (RendererFrontend *)context->renderer;
+  VkrRenderer *renderer = (VkrRenderer *)context->renderer;
   const VkrWorldBatchMetrics *world = &context->frame_metrics->world;
   const VkrShadowMetrics *shadow = &context->frame_metrics->shadow;
   const VkrVisibilityStats *visibility = context->visibility;
@@ -1232,9 +1236,9 @@ void vkr_renderer_metrics_collect(
   VKR_SET_U64(frame_render_height, renderer->render_height);
   VKR_SET_U64(frame_dynamic_resolution_transitions,
               renderer->dynamic_resolution_state.transition_count);
-  VKR_SET_F64(ui_dirty_tile_ratio, renderer->ui_system.dirty_tile_ratio);
-  VKR_SET_U64(ui_dirty_tiles, renderer->ui_system.dirty_tile_count);
-  VKR_SET_U64(ui_tile_count, renderer->ui_system.tile_count);
+  VKR_SET_F64(ui_dirty_tile_ratio, context->ui->dirty_tile_ratio);
+  VKR_SET_U64(ui_dirty_tiles, context->ui->dirty_tile_count);
+  VKR_SET_U64(ui_tile_count, context->ui->tile_count);
   const VkrExposureDebugSample *exposure = &context->frame_metrics->exposure;
   if (exposure->valid) {
     VKR_SET_U64(exposure_accepted_texels, exposure->state.accepted_texel_count);
@@ -1376,18 +1380,17 @@ void vkr_renderer_metrics_collect(
   VKR_SET_F64(world_avg_batch_size, world->avg_batch_size);
   VKR_SET_U64(world_max_batch_size, world->max_batch_size);
   VKR_SET_U64(lighting_ibl_probes_packed, renderer->ibl_probes_packed);
-  VKR_SET_U64(lighting_point_selected,
-              renderer->lighting_system.point_light_count);
+  VKR_SET_U64(lighting_point_selected, context->lighting->point_light_count);
   VKR_SET_U64(lighting_point_dropped,
-              renderer->lighting_system.point_light_dropped_count);
+              context->lighting->point_light_dropped_count);
   VKR_SET_U64(lighting_point_grid_cells,
-              renderer->lighting_system.point_light_grid.cell_count);
+              context->lighting->point_light_grid.cell_count);
   VKR_SET_U64(lighting_point_grid_references,
-              renderer->lighting_system.point_light_grid.reference_count);
+              context->lighting->point_light_grid.reference_count);
   VKR_SET_U64(lighting_point_grid_max_lights_per_cell,
-              renderer->lighting_system.point_light_grid.max_lights_per_cell);
+              context->lighting->point_light_grid.max_lights_per_cell);
   VKR_SET_U64(lighting_point_grid_global_lights,
-              renderer->lighting_system.point_light_grid.global_light_count);
+              context->lighting->point_light_grid.global_light_count);
 
   VKR_SET_U64(visibility_objects_tested, visibility->objects_tested);
   VKR_SET_U64(visibility_culled_camera, visibility->objects_culled_camera);
@@ -1556,41 +1559,42 @@ void vkr_renderer_metrics_collect(
                   ? (float64_t)mesh->bytes_fetched_after /
                         (float64_t)mesh->analyzed_vertex_bytes_after
                   : 0.0);
-  VKR_SET_U64(
-      texture_transcode_cache_hits,
-      vkr_atomic_uint64_load(&renderer->texture_system.transcode_cache_hits,
-                             VKR_MEMORY_ORDER_RELAXED));
-  VKR_SET_U64(
-      texture_transcode_cache_misses,
-      vkr_atomic_uint64_load(&renderer->texture_system.transcode_cache_misses,
-                             VKR_MEMORY_ORDER_RELAXED));
-  VKR_SET_U64(
-      texture_transcode_cache_writes,
-      vkr_atomic_uint64_load(&renderer->texture_system.transcode_cache_writes,
-                             VKR_MEMORY_ORDER_RELAXED));
+  VKR_SET_U64(texture_transcode_cache_hits,
+              vkr_atomic_uint64_load(
+                  &context->assets->texture_system.transcode_cache_hits,
+                  VKR_MEMORY_ORDER_RELAXED));
+  VKR_SET_U64(texture_transcode_cache_misses,
+              vkr_atomic_uint64_load(
+                  &context->assets->texture_system.transcode_cache_misses,
+                  VKR_MEMORY_ORDER_RELAXED));
+  VKR_SET_U64(texture_transcode_cache_writes,
+              vkr_atomic_uint64_load(
+                  &context->assets->texture_system.transcode_cache_writes,
+                  VKR_MEMORY_ORDER_RELAXED));
   VKR_SET_U64(material_texture_stream_pending,
-              renderer->material_system.texture_stream_queued_count +
-                  renderer->material_system.texture_stream_active_count);
+              context->assets->material_system.texture_stream_queued_count +
+                  context->assets->material_system.texture_stream_active_count);
   VKR_SET_U64(material_texture_stream_in_flight,
-              renderer->material_system.texture_stream_active_count);
+              context->assets->material_system.texture_stream_active_count);
   VKR_SET_U64(material_texture_stream_resident,
-              renderer->material_system.texture_stream_resident_count);
+              context->assets->material_system.texture_stream_resident_count);
   VKR_SET_U64(material_texture_stream_evicted,
-              renderer->material_system.texture_stream_evicted_count);
+              context->assets->material_system.texture_stream_evicted_count);
   VKR_SET_U64(material_texture_stream_resident_bytes,
-              renderer->material_system.texture_stream_resident_bytes);
+              context->assets->material_system.texture_stream_resident_bytes);
   VKR_SET_U64(material_texture_stream_budget_bytes,
-              renderer->material_system.texture_stream_budget_bytes);
+              context->assets->material_system.texture_stream_budget_bytes);
   VKR_SET_U64(material_texture_stream_applied,
-              renderer->material_system.texture_stream_applied_total);
+              context->assets->material_system.texture_stream_applied_total);
   VKR_SET_U64(material_texture_stream_failed,
-              renderer->material_system.texture_stream_failed_total);
+              context->assets->material_system.texture_stream_failed_total);
   VKR_SET_U64(material_texture_stream_evicted_total,
-              renderer->material_system.texture_stream_evicted_total);
-  VKR_SET_U64(material_texture_stream_pressure_stalls,
-              renderer->material_system.texture_stream_pressure_stalls_total);
+              context->assets->material_system.texture_stream_evicted_total);
+  VKR_SET_U64(
+      material_texture_stream_pressure_stalls,
+      context->assets->material_system.texture_stream_pressure_stalls_total);
   VKR_SET_U64(material_texture_stream_automatic_pressure_active,
-              renderer->texture_pressure_active ? 1u : 0u);
+              context->assets->texture_pressure_active ? 1u : 0u);
 
   for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
     vkr_metrics_gauge_set_u64(metrics, ids->shadow_indirect_draws_opaque[i],

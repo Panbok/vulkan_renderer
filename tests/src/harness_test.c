@@ -1,4 +1,5 @@
 #include "harness_test.h"
+#include "core/vkr_subsystem_plan.h"
 
 #include "vkr_harness.h"
 #include "vkr_harness_json.h"
@@ -986,8 +987,8 @@ static void test_harness_subsystem_plans(void) {
   printf("  Running test_harness_subsystem_plans...\n");
   VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
   VkrSubsystemPlan plan = {0};
-  assert(vkr_renderer_subsystem_plan_build(VKR_BOOT_PROFILE_FULL, 0u, 0u, &plan,
-                                           &renderer_error));
+  assert(vkr_subsystem_plan_build(VKR_BOOT_PROFILE_FULL, 0u, 0u, &plan,
+                                  &renderer_error));
   assert(plan.effective_mask == VKR_RENDERER_SUBSYSTEM_ALL);
 
   /* The two published masks must partition the enum, or the harness would
@@ -999,23 +1000,20 @@ static void test_harness_subsystem_plans(void) {
 
   /* The rejection reason is optional; a NULL out_error is not itself an error.
    */
-  assert(vkr_renderer_subsystem_plan_build(VKR_BOOT_PROFILE_AUTOMATION, 0u, 0u,
-                                           &plan, NULL));
+  assert(vkr_subsystem_plan_build(VKR_BOOT_PROFILE_AUTOMATION, 0u, 0u, &plan,
+                                  NULL));
   assert(plan.effective_mask == VKR_RENDERER_SUBSYSTEM_MANDATORY);
 
   const VkrSubsystemMask skybox =
       VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_SKYBOX);
-  assert(vkr_renderer_subsystem_plan_build(
-      VKR_BOOT_PROFILE_AUTOMATION, skybox,
-      VKR_RENDERER_SUBSYSTEM_OPTIONAL & ~skybox, &plan, &renderer_error));
-  assert(vkr_renderer_subsystem_plan_includes(&plan,
-                                              VKR_RENDERER_SUBSYSTEM_SKYBOX));
-  assert(vkr_renderer_subsystem_plan_includes(&plan,
-                                              VKR_RENDERER_SUBSYSTEM_FONTS));
-  assert(
-      !vkr_renderer_subsystem_plan_includes(&plan, VKR_RENDERER_SUBSYSTEM_UI));
+  assert(vkr_subsystem_plan_build(VKR_BOOT_PROFILE_AUTOMATION, skybox,
+                                  VKR_RENDERER_SUBSYSTEM_OPTIONAL & ~skybox,
+                                  &plan, &renderer_error));
+  assert(vkr_subsystem_plan_includes(&plan, VKR_RENDERER_SUBSYSTEM_SKYBOX));
+  assert(vkr_subsystem_plan_includes(&plan, VKR_RENDERER_SUBSYSTEM_FONTS));
+  assert(!vkr_subsystem_plan_includes(&plan, VKR_RENDERER_SUBSYSTEM_UI));
 
-  assert(!vkr_renderer_subsystem_plan_build(
+  assert(!vkr_subsystem_plan_build(
       VKR_BOOT_PROFILE_AUTOMATION,
       VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_UI),
       VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_FONTS), &plan,
@@ -1031,40 +1029,33 @@ static void test_harness_subsystem_plans(void) {
   VkrHarnessError harness_error = {0};
   assert(vkr_harness_subsystem_plan(VKR_HARNESS_TOOL_PROFILE, &case_manifest,
                                     &plan, &harness_error));
-  assert(vkr_renderer_subsystem_plan_includes(&plan,
-                                              VKR_RENDERER_SUBSYSTEM_SKYBOX));
-  assert(!vkr_renderer_subsystem_plan_includes(&plan,
-                                               VKR_RENDERER_SUBSYSTEM_EDITOR));
+  assert(vkr_subsystem_plan_includes(&plan, VKR_RENDERER_SUBSYSTEM_SKYBOX));
+  assert(!vkr_subsystem_plan_includes(&plan, VKR_RENDERER_SUBSYSTEM_EDITOR));
   case_manifest.renderer.text_fixture = true_v;
   assert(vkr_harness_subsystem_plan(VKR_HARNESS_TOOL_PROFILE, &case_manifest,
                                     &plan, &harness_error));
-  assert(
-      vkr_renderer_subsystem_plan_includes(&plan, VKR_RENDERER_SUBSYSTEM_UI));
+  assert(vkr_subsystem_plan_includes(&plan, VKR_RENDERER_SUBSYSTEM_UI));
   case_manifest.renderer.text_fixture = false_v;
   case_manifest.assertion_count = 1u;
   snprintf(case_manifest.assertions[0].metric,
            sizeof(case_manifest.assertions[0].metric), "draw.ui.calls_issued");
   assert(vkr_harness_subsystem_plan(VKR_HARNESS_TOOL_PROFILE, &case_manifest,
                                     &plan, &harness_error));
-  assert(
-      vkr_renderer_subsystem_plan_includes(&plan, VKR_RENDERER_SUBSYSTEM_UI));
-  assert(vkr_renderer_subsystem_plan_includes(&plan,
-                                              VKR_RENDERER_SUBSYSTEM_FONTS));
+  assert(vkr_subsystem_plan_includes(&plan, VKR_RENDERER_SUBSYSTEM_UI));
+  assert(vkr_subsystem_plan_includes(&plan, VKR_RENDERER_SUBSYSTEM_FONTS));
   /* Both spellings of a subsystem's own metric family request it, and a name
      that merely contains the word does not. */
   snprintf(case_manifest.assertions[0].metric,
            sizeof(case_manifest.assertions[0].metric), "picking.readbacks");
   assert(vkr_harness_subsystem_plan(VKR_HARNESS_TOOL_PROFILE, &case_manifest,
                                     &plan, &harness_error));
-  assert(vkr_renderer_subsystem_plan_includes(&plan,
-                                              VKR_RENDERER_SUBSYSTEM_PICKING));
+  assert(vkr_subsystem_plan_includes(&plan, VKR_RENDERER_SUBSYSTEM_PICKING));
   snprintf(case_manifest.assertions[0].metric,
            sizeof(case_manifest.assertions[0].metric),
            "draw.world.picking_ish");
   assert(vkr_harness_subsystem_plan(VKR_HARNESS_TOOL_PROFILE, &case_manifest,
                                     &plan, &harness_error));
-  assert(!vkr_renderer_subsystem_plan_includes(&plan,
-                                               VKR_RENDERER_SUBSYSTEM_PICKING));
+  assert(!vkr_subsystem_plan_includes(&plan, VKR_RENDERER_SUBSYSTEM_PICKING));
 
   /* The report schema pins this spelling; the workload fingerprint hashes it.
    */

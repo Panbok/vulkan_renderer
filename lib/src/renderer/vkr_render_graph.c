@@ -2,7 +2,7 @@
 
 #include "core/logger.h"
 #include "defines.h"
-#include "renderer/vkr_render_packet.h"
+#include "renderer/vkr_prepared_frame.h"
 
 vkr_internal int64_t vkr_rg_find_image_index(VkrRenderGraph *graph,
                                              String8 name) {
@@ -169,7 +169,7 @@ vkr_rg_resource_instance_domain(VkrRgResourceFlags flags) {
   return VKR_RG_RESOURCE_INSTANCE_SINGLE;
 }
 
-void vkr_rg_set_packet(VkrRenderGraph *graph, const VkrRenderPacket *packet) {
+void vkr_rg_set_packet(VkrRenderGraph *graph, const VkrPreparedFrame *packet) {
   graph->packet = packet;
 }
 

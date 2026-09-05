@@ -7,8 +7,8 @@
 #include "renderer/vkr_gpu_slot_table.h"
 #include "renderer/vkr_gtao.h"
 #include "renderer/vkr_ibl_math.h"
+#include "renderer/vkr_prepared_frame.h"
 #include "renderer/vkr_render_graph.h"
-#include "renderer/vkr_render_packet.h"
 #include "renderer/vkr_renderer_impl.h"
 #include "renderer/vulkan/vkr_vulkan_device.h"
 
@@ -154,17 +154,21 @@ void vkr_vulkan_renderer_geometry_megabuffer_metrics(
 bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
                                    VkrVulkanRenderer **out_renderer);
 void vkr_vulkan_renderer_destroy(VkrVulkanRenderer *renderer);
+/** Terminal submission/presentation faults prohibit further frame acquisition.
+ */
+VkrRendererError
+vkr_vulkan_renderer_get_error(const VkrVulkanRenderer *renderer);
 
 bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
                                           uint64_t source_frame_index,
                                           uint32_t shadow_map_size,
                                           uint32_t shadow_cascade_count,
-                                          VkrFrameSetup *out_setup);
+                                          VkrFrame *out_setup);
 void vkr_vulkan_renderer_retained_shadow_token(
     VkrVulkanRenderer *renderer, uint32_t image_index,
     VkrRetainedShadowToken *out_token);
 bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
-                                          const VkrRenderPacket *packet,
+                                          const VkrPreparedFrame *packet,
                                           VkrVulkanResult *out_result);
 bool8_t vkr_vulkan_renderer_poll_result(VkrVulkanRenderer *renderer,
                                         uint64_t after_submit_value,

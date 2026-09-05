@@ -529,20 +529,69 @@ bool8_t vkr_vk_stage_next_publication_batch(VkrVulkanRenderer *renderer) {
   return staged;
 }
 
-void vkr_vk_record_texture_initializations(VkrVulkanRenderer *renderer,
-                                           VkCommandBuffer command) {
-  for (uint32_t i = 0; i < renderer->pending_texture_initialization_count;
+bool8_t vkr_vk_prepare_initializations(VkrVulkanRenderer *renderer) {
+  renderer->prepared_texture_initialization_count = 0u;
+  renderer->prepared_buffer_initialization_count = 0u;
+  renderer->prepared_texture_initializations = NULL;
+  renderer->prepared_buffer_initializations = NULL;
+  if (renderer->pending_texture_initialization_count) {
+    renderer->prepared_texture_initializations = vkr_allocator_alloc(
+        &renderer->graph_frame_allocator,
+        (uint64_t)renderer->pending_texture_initialization_count *
+            sizeof(*renderer->prepared_texture_initializations),
+        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    if (!renderer->prepared_texture_initializations)
+      return false_v;
+  }
+  if (renderer->pending_buffer_initialization_count) {
+    renderer->prepared_buffer_initializations = vkr_allocator_alloc(
+        &renderer->graph_frame_allocator,
+        (uint64_t)renderer->pending_buffer_initialization_count *
+            sizeof(*renderer->prepared_buffer_initializations),
+        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    if (!renderer->prepared_buffer_initializations)
+      return false_v;
+  }
+  for (uint32_t i = 0u; i < renderer->pending_texture_initialization_count;
        ++i) {
     const VkrVulkanPendingTextureInitialization *initialization =
         &renderer->pending_texture_initializations[i];
     const VkrVulkanPublishedTexture *texture =
         vkr_vk_texture_publication(renderer, initialization->texture);
     if (!texture) {
-      log_fatal("Vulkan lost texture %u:%u before initialization "
-                "recording",
+      log_error("Vulkan lost texture %u:%u before initialization preparation",
                 initialization->texture.id, initialization->texture.generation);
-      return;
+      return false_v;
     }
+    if (!initialization->writable &&
+        (initialization->next_batch >= initialization->batch_count ||
+         !initialization->staged_batch_count ||
+         !initialization->staging.handle))
+      continue;
+    renderer->prepared_texture_initializations
+        [renderer->prepared_texture_initialization_count++] =
+        (VkrVulkanPreparedTextureInitialization){texture, initialization};
+  }
+  for (uint32_t i = 0u; i < renderer->pending_buffer_initialization_count;
+       ++i) {
+    const VkrVulkanPendingBufferInitialization *initialization =
+        &renderer->pending_buffer_initializations[i];
+    if (initialization->staging.handle)
+      renderer->prepared_buffer_initializations
+          [renderer->prepared_buffer_initialization_count++] = initialization;
+  }
+  return true_v;
+}
+
+void vkr_vk_record_texture_initializations(VkrVulkanRenderer *renderer,
+                                           VkCommandBuffer command) {
+  for (uint32_t i = 0; i < renderer->prepared_texture_initialization_count;
+       ++i) {
+    const VkrVulkanPreparedTextureInitialization *prepared =
+        &renderer->prepared_texture_initializations[i];
+    const VkrVulkanPendingTextureInitialization *initialization =
+        prepared->upload;
+    const VkrVulkanPublishedTexture *texture = prepared->texture;
     if (initialization->writable) {
       vkr_vk_cmd_image_barrier_range(
           command, texture->image.handle, VK_PIPELINE_STAGE_2_NONE,
@@ -556,9 +605,6 @@ void vkr_vk_record_texture_initializations(VkrVulkanRenderer *renderer,
           texture->image.mip_levels, texture->image.array_layers);
       continue;
     }
-    if (initialization->next_batch >= initialization->batch_count ||
-        !initialization->staged_batch_count || !initialization->staging.handle)
-      continue;
     if (initialization->next_batch == 0u)
       vkr_vk_cmd_image_barrier_range(
           command, texture->image.handle, VK_PIPELINE_STAGE_2_NONE,
@@ -651,11 +697,10 @@ void vkr_vk_record_buffer_initializations(VkrVulkanRenderer *renderer,
     };
     vkCmdPipelineBarrier2(command, &dependency);
   }
-  for (uint32_t i = 0; i < renderer->pending_buffer_initialization_count; ++i) {
+  for (uint32_t i = 0; i < renderer->prepared_buffer_initialization_count;
+       ++i) {
     const VkrVulkanPendingBufferInitialization *initialization =
-        &renderer->pending_buffer_initializations[i];
-    if (!initialization->staging.handle)
-      continue;
+        renderer->prepared_buffer_initializations[i];
     const VkBufferCopy2 region = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
         .dstOffset =

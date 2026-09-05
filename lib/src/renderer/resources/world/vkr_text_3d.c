@@ -547,19 +547,21 @@ void vkr_text_3d_destroy(VkrText3D *text_3d) {
   MemZero(text_3d, sizeof(*text_3d));
 }
 
-void vkr_text_3d_set_text(VkrText3D *text_3d, String8 text) {
-  assert_log(text_3d != NULL, "Text3D instance is NULL");
-  assert_log(text_3d->allocator != NULL, "Allocator is NULL");
-
+bool8_t vkr_text_3d_set_text(VkrText3D *text_3d, String8 text) {
+  if (!text_3d || !text_3d->allocator || (text.length > 0u && !text.str))
+    return false_v;
+  String8 replacement = vkr_text_3d_copy_text(text_3d->allocator, text);
+  if (text.length > 0u && !replacement.str)
+    return false_v;
   if (text_3d->text.str) {
     vkr_allocator_free(text_3d->allocator, (void *)text_3d->text.str,
                        text_3d->text.length + 1,
                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
   }
-
-  text_3d->text = vkr_text_3d_copy_text(text_3d->allocator, text);
+  text_3d->text = replacement;
   text_3d->layout_dirty = true_v;
   text_3d->buffers_dirty = true_v;
+  return true_v;
 }
 
 void vkr_text_3d_set_color(VkrText3D *text_3d, Vec4 color) {
@@ -618,5 +620,5 @@ bool8_t vkr_text_3d_prepare_geometry(VkrText3D *text_3d) {
     if (!vkr_text_3d_generate_geometry(text_3d, font))
       return false_v;
   }
-  return text_3d->vertex_count > 0 && text_3d->index_count > 0;
+  return true_v;
 }

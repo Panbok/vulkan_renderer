@@ -52,7 +52,7 @@ measurements justify a different spatial filter.
 
 ## Implementation
 
-[`renderer_frontend.c`](../../lib/src/renderer/renderer_frontend.c),
+[`vkr_renderer.c`](../../lib/src/renderer/vkr_renderer.c),
 [`vkr_viewport.c`](../../lib/src/renderer/vkr_viewport.c),
 [`vkr_metal_packet_graph.inc`](../../lib/src/renderer/metal/internal/vkr_metal_packet_graph.inc), and
 [`tonemap.metal`](../../lib/src/renderer/shaders/metal/msl/post/tonemap.metal).

@@ -521,6 +521,8 @@ struct VkrMetalPacketRenderer {
   VkrMetalPacketResult *completed_timing_results;
   VkrMetalPacketCommitFeedbackRecord *commit_feedback_records;
   VkrMetalPacketCommandSlot *active_command_slot;
+  /* Acquired frame storage stays unavailable to uploads until render/cancel. */
+  VkrMetalPacketCommandSlot *reserved_frame_slot;
   uint32_t command_slot_count;
   uint32_t history_instance_count;
   uint32_t history_output_index;

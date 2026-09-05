@@ -20,8 +20,8 @@ and lifetime rules.
 `VkrResourceSystem` tracks requests through pending CPU, dependency, GPU,
 ready, failed, and canceled states. A loader may prepare a CPU-only payload on
 a worker. Only `vkr_resource_system_pump()` invokes its finalizer, after the
-renderer has activated a frame, so GPU and renderer state mutation stays on the
-render thread. The resource system owns a prepared payload until exactly one
+application has acquired a frame and supplied explicit submission/completion
+state, so GPU publication and asset-system mutation stay on the render thread. The resource system owns a prepared payload until exactly one
 release callback runs, including cancellation and failure paths. An executing
 callback pins its request slot, path and payload against cancellation release;
 the pump reacquires the request view after callbacks because worker dependency
@@ -42,8 +42,11 @@ Workers may enqueue CPU-side dependency requests through the resource system;
 mesh preparation uses this path for materials. They do not publish GPU objects
 or mutate render-thread subsystem state.
 Finalizers must estimate their work and safely handle cancellation.
-Shutdown first quiesces outstanding work, then lets subsystems release through
-the still-registered loaders.
+`VkrRenderAssets` owns loader contexts, pools, asynchronous allocators and the
+resource registry's lifecycle. The registry and loaders hold no renderer pointer.
+The application joins workers and proves GPU idle before teardown, then assets
+quiesce queued payloads and let subsystems release through still-registered loaders.
+The borrowed native publisher remains valid through their final releases.
 
 ## Alternatives considered
 
@@ -58,6 +61,7 @@ publication contract that preserves this ownership boundary.
 
 ## Code evidence
 
+- [asset owner and lifecycle](../../lib/src/renderer/systems/vkr_render_assets.c)
 - [resource states and loader callbacks](../../lib/src/renderer/systems/vkr_resource_system.h)
 - [request scheduling and pump](../../lib/src/renderer/systems/vkr_resource_system.c)
 - [scene asynchronous loader](../../lib/src/renderer/resources/loaders/scene_loader.c)

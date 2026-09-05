@@ -8,8 +8,8 @@
 #include "renderer/vkr_gpu_abi.h"
 #include "renderer/vkr_gtao.h"
 #include "renderer/vkr_ibl_math.h"
+#include "renderer/vkr_prepared_frame.h"
 #include "renderer/vkr_render_graph.h"
-#include "renderer/vkr_render_packet.h"
 #include "renderer/vkr_renderer_impl.h"
 
 typedef struct VkrMetalPacketRenderer VkrMetalPacketRenderer;
@@ -61,6 +61,7 @@ typedef struct VkrMetalPacketRendererConfig {
   VkrPresentMode requested_present_mode;
   uint64_t heap_size;
   uint64_t upload_ring_size;
+  /** At least two slots: one acquired frame and one completion-protected upload slot. */
   uint32_t frame_slot_count;
   /** Request-owned capture results retained until explicit release. */
   uint32_t capture_ring_capacity;
@@ -333,7 +334,7 @@ vkr_metal_packet_renderer_cancel_frame(VkrMetalPacketRenderer *renderer);
  */
 bool8_t
 vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
-                                        const VkrRenderPacket *packet,
+                                        const VkrPreparedFrame *packet,
                                         VkrMetalPacketResult *out_result);
 
 /** Polls a bounded capture request without waiting for GPU completion. */

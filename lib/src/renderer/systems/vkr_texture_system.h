@@ -190,7 +190,7 @@ bool8_t vkr_texture_format_has_ktx_transcode_target(VkrTextureFormat format);
  * @param out_system The initialized texture system (output)
  * @return true on success, false on failure
  */
-bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
+bool8_t vkr_texture_system_init(const VkrDeviceInformation *device_info,
                                 const VkrTextureSystemConfig *config,
                                 VkrJobSystem *job_system,
                                 VkrTextureSystem *out_system);

@@ -2,7 +2,7 @@
  * @file vkr_gizmo_system.h
  * @brief Editor transform gizmo system.
  *
- * Provides a lightweight gizmo renderer that can be driven by higher-level
+ * Provides a lightweight gizmo assets that can be driven by higher-level
  * editor code. The system does not own selection logic; callers provide the
  * target transform each frame.
  */
@@ -16,7 +16,7 @@
 #include "renderer/systems/vkr_picking_ids.h"
 #include "renderer/vkr_renderer.h"
 
-struct s_RendererFrontend;
+struct VkrRenderAssets;
 
 typedef enum VkrGizmoMode {
   VKR_GIZMO_MODE_NONE = 0,      /**< Gizmo hidden. */
@@ -215,23 +215,23 @@ typedef struct VkrGizmoSystem {
 /**
  * @brief Initialize gizmo resources.
  *
- * Selected renderers publish the mesh and materials through the asset seam.
+ * Geometry and material systems publish the gizmo assets.
  * @param system Gizmo system to initialize.
- * @param renderer Renderer frontend.
+ * @param assets Published asset owner.
  * @param config Optional config override (NULL uses defaults).
  * @return true on success.
  */
 bool8_t vkr_gizmo_system_init(VkrGizmoSystem *system,
-                              struct s_RendererFrontend *renderer,
+                              struct VkrRenderAssets *assets,
                               const VkrGizmoConfig *config);
 
 /**
  * @brief Shutdown the gizmo system and release owned resources.
  * @param system Gizmo system to shutdown.
- * @param renderer Renderer frontend.
+ * @param assets Published asset owner.
  */
 void vkr_gizmo_system_shutdown(VkrGizmoSystem *system,
-                               struct s_RendererFrontend *renderer);
+                               struct VkrRenderAssets *assets);
 
 /**
  * @brief Update the gizmo target transform for rendering.

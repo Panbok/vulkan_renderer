@@ -3,8 +3,9 @@
 #include "core/logger.h"
 #include "core/vkr_window.h"
 #include "memory/vkr_dmemory_allocator.h"
-#include "renderer/renderer_frontend.h"
+#include "renderer/systems/vkr_font_system.h"
 #include "renderer/vkr_color_transfer.h"
+#include "renderer/vkr_frame_input.h"
 
 #include <math.h>
 
@@ -150,14 +151,12 @@ VkrUiWidgetConfig vkr_ui_widget_config_default(void) {
   };
 }
 
-static bool8_t vkr_ui_system_dimensions(RendererFrontend *rf,
-                                        VkrUiSystem *system,
+static bool8_t vkr_ui_system_dimensions(VkrWindow *window, VkrUiSystem *system,
+                                        uint32_t width, uint32_t height,
                                         uint32_t *out_width,
                                         uint32_t *out_height) {
-  uint32_t width = rf->last_window_width;
-  uint32_t height = rf->last_window_height;
-  if ((width == 0u || height == 0u) && rf->window) {
-    const VkrWindowPixelSize size = vkr_window_get_pixel_size(rf->window);
+  if ((width == 0u || height == 0u) && window) {
+    const VkrWindowPixelSize size = vkr_window_get_pixel_size(window);
     width = size.width;
     height = size.height;
   }
@@ -172,14 +171,14 @@ static bool8_t vkr_ui_system_dimensions(RendererFrontend *rf,
 }
 
 static VkrWindowContentScale
-vkr_ui_system_content_scale(RendererFrontend *rf, const VkrUiSystem *system) {
+vkr_ui_system_content_scale(VkrWindow *window, const VkrUiSystem *system) {
   if (system->offscreen_enabled)
     return (VkrWindowContentScale){
         .value = system->offscreen_content_scale,
         .revision = system->offscreen_content_scale_revision,
     };
-  if (rf->window)
-    return vkr_window_get_content_scale(rf->window);
+  if (window)
+    return vkr_window_get_content_scale(window);
   return (VkrWindowContentScale){.value = 1.0f, .revision = 1u};
 }
 
@@ -277,8 +276,8 @@ static void vkr_ui_retained_reclaim(VkrUiSystem *system) {
   }
 }
 
-bool8_t vkr_ui_system_init(RendererFrontend *rf, VkrUiSystem *system) {
-  if (!rf || !system)
+bool8_t vkr_ui_system_init(VkrUiSystem *system, VkrFontSystem *fonts) {
+  if (!fonts || !system)
     return false_v;
   MemZero(system, sizeof(*system));
   if (!vkr_dmemory_create(MB(2), MB(64), &system->retained_memory))
@@ -335,7 +334,7 @@ bool8_t vkr_ui_system_init(RendererFrontend *rf, VkrUiSystem *system) {
     MemZero(system, sizeof(*system));
     return false_v;
   }
-  system->renderer = rf;
+  system->fonts = fonts;
   system->offscreen_content_scale = 1.0f;
   system->offscreen_content_scale_revision = 1u;
   system->content_scale = 1.0f;
@@ -345,8 +344,7 @@ bool8_t vkr_ui_system_init(RendererFrontend *rf, VkrUiSystem *system) {
   return true_v;
 }
 
-void vkr_ui_system_shutdown(RendererFrontend *rf, VkrUiSystem *system) {
-  (void)rf;
+void vkr_ui_system_shutdown(VkrUiSystem *system) {
   if (!system || !system->initialized)
     return;
   vkr_ui_tile_cache_destroy(&system->tile_cache);
@@ -388,9 +386,8 @@ static void vkr_ui_system_invalidate_layout(VkrUiSystem *system) {
   }
 }
 
-void vkr_ui_system_resize(RendererFrontend *rf, VkrUiSystem *system,
-                          uint32_t width, uint32_t height) {
-  (void)rf;
+void vkr_ui_system_resize(VkrUiSystem *system, uint32_t width,
+                          uint32_t height) {
   if (!system)
     return;
   if (!system->offscreen_enabled) {
@@ -400,10 +397,8 @@ void vkr_ui_system_resize(RendererFrontend *rf, VkrUiSystem *system,
   vkr_ui_system_invalidate_layout(system);
 }
 
-void vkr_ui_system_set_offscreen_size(RendererFrontend *rf, VkrUiSystem *system,
-                                      bool8_t enabled, uint32_t width,
-                                      uint32_t height) {
-  (void)rf;
+void vkr_ui_system_set_offscreen_size(VkrUiSystem *system, bool8_t enabled,
+                                      uint32_t width, uint32_t height) {
   if (!system)
     return;
   if (system->offscreen_enabled == enabled &&
@@ -415,10 +410,8 @@ void vkr_ui_system_set_offscreen_size(RendererFrontend *rf, VkrUiSystem *system,
   vkr_ui_system_invalidate_layout(system);
 }
 
-void vkr_ui_system_set_offscreen_content_scale(RendererFrontend *rf,
-                                               VkrUiSystem *system,
+void vkr_ui_system_set_offscreen_content_scale(VkrUiSystem *system,
                                                float32_t content_scale) {
-  (void)rf;
   if (!system || !isfinite(content_scale) || content_scale <= 0.0f ||
       system->offscreen_content_scale == content_scale)
     return;
@@ -488,9 +481,8 @@ static bool8_t vkr_ui_text_prepare(VkrUiSystem *system, VkrUiFrameNode *node,
     config.font_size = node->style.font_size_px / system->content_scale;
   if (!retained->text_live) {
     VkrRendererError error = VKR_RENDERER_ERROR_NONE;
-    if (!vkr_ui_text_create(&system->retained_allocator,
-                            &system->renderer->font_system, content, &config,
-                            &retained->text, &error))
+    if (!vkr_ui_text_create(&system->retained_allocator, system->fonts, content,
+                            &config, &retained->text, &error))
       return false_v;
     retained->text_live = true_v;
   } else {
@@ -550,26 +542,27 @@ static bool8_t vkr_ui_interact(VkrUiSystem *system, VkrUiFrameNode *node,
   return false_v;
 }
 
-bool8_t vkr_ui_begin(RendererFrontend *rf, VkrUiSystem *system,
-                     InputState *input, bool8_t mouse_captured,
-                     float64_t delta_time,
+bool8_t vkr_ui_begin(VkrUiSystem *system, VkrAllocator *scratch,
+                     VkrWindow *window, uint32_t target_width,
+                     uint32_t target_height, InputState *input,
+                     bool8_t mouse_captured, float64_t delta_time,
                      const VkrUiPanelConfig *root_config) {
-  if (!rf || !system || !system->initialized || !input || system->frame_open ||
-      !isfinite(delta_time) || delta_time < 0.0)
+  if (!scratch || !system || !system->initialized || !input ||
+      system->frame_open || !isfinite(delta_time) || delta_time < 0.0)
     return false_v;
   uint32_t width = 0u;
   uint32_t height = 0u;
-  if (!vkr_ui_system_dimensions(rf, system, &width, &height))
+  if (!vkr_ui_system_dimensions(window, system, target_width, target_height,
+                                &width, &height))
     return false_v;
-  VkrWindowContentScale scale = vkr_ui_system_content_scale(rf, system);
+  VkrWindowContentScale scale = vkr_ui_system_content_scale(window, system);
   if (!isfinite(scale.value) || scale.value <= 0.0f)
     scale = (VkrWindowContentScale){.value = 1.0f, .revision = 0u};
   if (system->content_scale != scale.value ||
       system->content_scale_revision != scale.revision)
     vkr_ui_system_invalidate_layout(system);
 
-  system->renderer = rf;
-  system->frame_allocator = &rf->scratch_allocator;
+  system->frame_allocator = scratch;
   system->input = input;
   system->target_width = width;
   system->target_height = height;

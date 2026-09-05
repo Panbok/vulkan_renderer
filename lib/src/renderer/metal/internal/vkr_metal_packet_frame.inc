@@ -1,3 +1,5 @@
+#include "renderer/vkr_render_graph_frame.h"
+
 /* Per-frame upload preparation, pass encoding, submission, and failure
  * rollback. */
 vkr_internal void *vkr_metal_packet_next_root(VkrMetalPacketFrameUpload *upload,
@@ -55,7 +57,7 @@ vkr_metal_packet_abandon_ibl_sh_candidate(VkrMetalPacketRenderer *renderer,
 }
 
 vkr_internal bool8_t vkr_metal_packet_create_frame_root(
-    VkrMetalPacketRenderer *renderer, const VkrRenderPacket *packet,
+    VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
     VkrMetalPacketFrameUpload *upload, uint64_t instances_gpu,
     uint32_t target_width, uint32_t target_height, Mat4 view_projection,
     bool8_t lighting_pass, bool8_t transmission_pass, uint64_t *out_root_gpu,
@@ -121,7 +123,7 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
       .transmission_texture_id = upload->transmission_texture_id,
       .ibl_probes = upload->ibl_probes_gpu,
       .ibl_probe_count =
-          packet->lighting ? packet->lighting->ibl_probe_count : 0,
+          packet->input.lighting ? packet->input.lighting->ibl_probe_count : 0,
   };
   if (lighting_pass && !transmission_pass &&
       instances_gpu == upload->world_instances_gpu) {
@@ -145,34 +147,28 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
         .previous_transforms = previous_transform->resource.gpu_address,
         .current_view_projection = vkr_metal_packet_clip_matrix(
             renderer->convert_vulkan_clip_y,
-            packet->globals.temporal.current_view_projection),
+            packet->temporal.current_view_projection),
         .previous_view_projection =
-            history_valid
-                ? previous_transform->history_view_projection
-                : vkr_metal_packet_clip_matrix(
-                      renderer->convert_vulkan_clip_y,
-                      packet->globals.temporal.current_view_projection),
+            history_valid ? previous_transform->history_view_projection
+                          : vkr_metal_packet_clip_matrix(
+                                renderer->convert_vulkan_clip_y,
+                                packet->temporal.current_view_projection),
         .history_valid = history_valid,
         .previous_frame_index = history_valid
                                     ? previous_transform->history_frame_index
-                                    : packet->frame.frame_index,
+                                    : packet->input.frame.frame_index,
     };
     frame_root->temporal_draw_state = temporal_gpu;
   }
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_encode_draws(
+vkr_internal void vkr_metal_packet_record_prepared_draws(
     VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
     id<MTLRenderPipelineState> pipeline, id<MTLDepthStencilState> depth_state,
     const VkrMetalPacketPreparedDraw *draws, uint32_t draw_count,
-    uint64_t instances_gpu, uint32_t target_width, uint32_t target_height,
-    Mat4 view_projection, const VkrRenderPacket *packet, bool8_t lighting_pass,
-    bool8_t transmission_pass, VkrMetalPacketFrameUpload *upload,
-    uint32_t *domain_draw_count, VkrMetalPacketResult *result)
+    uint32_t target_width, uint32_t target_height, uint64_t root_gpu)
     API_AVAILABLE(macos(26.0)) {
-  if (draw_count == 0)
-    return true_v;
   [encoder setViewport:(MTLViewport){0.0, 0.0, target_width, target_height, 0.0,
                                      1.0}];
   MTLCullMode active_cull_mode = MTLCullModeNone;
@@ -180,6 +176,39 @@ vkr_internal bool8_t vkr_metal_packet_encode_draws(
   [encoder setFrontFacingWinding:MTLWindingCounterClockwise];
   [encoder setDepthStencilState:depth_state];
   [encoder setRenderPipelineState:pipeline];
+  for (uint32_t i = 0; i < draw_count; ++i) {
+    const VkrMetalPacketPreparedDraw *draw = &draws[i];
+    if (draw->cull_mode != active_cull_mode) {
+      [encoder setCullMode:draw->cull_mode];
+      active_cull_mode = draw->cull_mode;
+    }
+    [renderer->argument_table setAddress:root_gpu atIndex:0];
+    [renderer->argument_table setAddress:root_gpu atIndex:1];
+    [encoder setArgumentTable:renderer->argument_table
+                     atStages:MTLRenderStageVertex | MTLRenderStageFragment];
+    [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
+                        indexCount:draw->visible.index_count
+                         indexType:MTLIndexTypeUInt32
+                       indexBuffer:draw->index_address
+                 indexBufferLength:draw->index_length
+                     instanceCount:draw->instance_count
+                        baseVertex:draw->visible.vertex_offset
+                      baseInstance:0];
+    root_gpu += VKR_METAL_PACKET_DRAW_ROOT_STRIDE;
+  }
+}
+
+vkr_internal bool8_t vkr_metal_packet_prepare_draws(
+    VkrMetalPacketRenderer *renderer, VkrMetalPacketDirectPass *prepared,
+    id<MTLRenderPipelineState> pipeline, id<MTLDepthStencilState> depth_state,
+    const VkrMetalPacketPreparedDraw *draws, uint32_t draw_count,
+    uint64_t instances_gpu, uint32_t target_width, uint32_t target_height,
+    Mat4 view_projection, const VkrPreparedFrame *packet, bool8_t lighting_pass,
+    bool8_t transmission_pass, VkrMetalPacketFrameUpload *upload,
+    uint32_t *domain_draw_count, VkrMetalPacketResult *result)
+    API_AVAILABLE(macos(26.0)) {
+  if (draw_count == 0)
+    return true_v;
   uint64_t frame_root_gpu = 0;
   uint32_t frame_flags = 0u;
   if (!vkr_metal_packet_create_frame_root(
@@ -203,12 +232,8 @@ vkr_internal bool8_t vkr_metal_packet_encode_draws(
   uint8_t *root_cpu = upload->root_cpu + root_offset;
   uint64_t root_gpu = upload->root_gpu + root_offset;
   upload->root_cursor += draw_count;
-  for (uint32_t i = 0; i < draw_count; ++i) {
+  for (uint32_t i = 0u; i < draw_count; ++i) {
     const VkrMetalPacketPreparedDraw *draw = &draws[i];
-    if (draw->cull_mode != active_cull_mode) {
-      [encoder setCullMode:draw->cull_mode];
-      active_cull_mode = draw->cull_mode;
-    }
     VkrMetalPacketTableDrawUpload *table_draw =
         (VkrMetalPacketTableDrawUpload *)root_cpu;
     *table_draw = (VkrMetalPacketTableDrawUpload){
@@ -225,21 +250,18 @@ vkr_internal bool8_t vkr_metal_packet_encode_draws(
         .geometry = draw->geometry,
         .visible = draw->visible,
     };
-    [renderer->argument_table setAddress:root_gpu atIndex:0];
-    [renderer->argument_table setAddress:root_gpu atIndex:1];
-    [encoder setArgumentTable:renderer->argument_table
-                     atStages:MTLRenderStageVertex | MTLRenderStageFragment];
-    [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
-                        indexCount:draw->visible.index_count
-                         indexType:MTLIndexTypeUInt32
-                       indexBuffer:draw->index_address
-                 indexBufferLength:draw->index_length
-                     instanceCount:draw->instance_count
-                        baseVertex:draw->visible.vertex_offset
-                      baseInstance:0];
     root_cpu += VKR_METAL_PACKET_DRAW_ROOT_STRIDE;
     root_gpu += VKR_METAL_PACKET_DRAW_ROOT_STRIDE;
   }
+  *prepared = (VkrMetalPacketDirectPass){
+      .pipeline = pipeline,
+      .depth = depth_state,
+      .draws = draws,
+      .count = draw_count,
+      .width = target_width,
+      .height = target_height,
+      .root_gpu = upload->root_gpu + root_offset,
+  };
   if ((frame_flags & VKR_PACKET_FRAME_FLAG_IBL) != 0u)
     renderer->ibl_last_use_submit_value = renderer->submit_value + 1u;
   *domain_draw_count += draw_count;
@@ -247,90 +269,175 @@ vkr_internal bool8_t vkr_metal_packet_encode_draws(
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_encode_text_draws(
+/* The native root remains the prefix; command arguments use its reserved
+ * 512-byte upload slot and are consumed only by the CPU recorder. */
+typedef struct VkrMetalPacketPreparedTextDraw {
+  VkrMetalPacketTextRoot root;
+  uint64_t index_address;
+  uint64_t index_length;
+  uint32_t index_count;
+} VkrMetalPacketPreparedTextDraw;
+
+typedef struct VkrMetalPacketPreparedUiDraw {
+  VkrMetalPacketUiRoot root;
+  MTLScissorRect scissor;
+  id<MTLRenderPipelineState> pipeline;
+  uint64_t index_address;
+  uint64_t index_length;
+  uint32_t index_count;
+} VkrMetalPacketPreparedUiDraw;
+
+_Static_assert(sizeof(VkrMetalPacketPreparedTextDraw) <=
+                   VKR_METAL_PACKET_DRAW_ROOT_STRIDE,
+               "Prepared text draw must fit its upload root slot");
+_Static_assert(sizeof(VkrMetalPacketPreparedUiDraw) <=
+                   VKR_METAL_PACKET_DRAW_ROOT_STRIDE,
+               "Prepared UI draw must fit its upload root slot");
+
+vkr_internal void vkr_metal_packet_record_prepared_text_draws(
     VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
     id<MTLRenderPipelineState> pipeline, id<MTLDepthStencilState> depth_state,
-    const VkrPreparedTextDraw *draws, uint32_t draw_count,
-    uint32_t text_upload_start, uint32_t target_width, uint32_t target_height,
-    Mat4 view_projection, bool8_t ui_domain, VkrMetalPacketFrameUpload *upload,
-    uint32_t *domain_draw_count, VkrMetalPacketResult *result)
-    API_AVAILABLE(macos(26.0)) {
-  if (draw_count == 0)
-    return true_v;
+    const uint8_t *root_cpu, uint64_t root_gpu, uint32_t draw_count,
+    uint32_t target_width, uint32_t target_height) API_AVAILABLE(macos(26.0)) {
   [encoder setViewport:(MTLViewport){0.0, 0.0, target_width, target_height, 0.0,
                                      1.0}];
   [encoder setCullMode:MTLCullModeNone];
   [encoder setDepthStencilState:depth_state];
   [encoder setRenderPipelineState:pipeline];
-  for (uint32_t i = 0; i < draw_count; ++i) {
-    const VkrPreparedTextDraw *draw = &draws[i];
-    const VkrMetalPacketTextUpload *text_upload =
-        &upload->text_uploads[text_upload_start + i];
-    VkrMetalPacketTexture *atlas =
-        vkr_metal_packet_resolve_texture(renderer, draw->atlas);
-    if (!atlas || text_upload->vertices_gpu == 0 ||
-        text_upload->indices_gpu == 0 || text_upload->indices_length == 0)
-      return false_v;
-    uint64_t root_gpu = 0;
-    VkrMetalPacketTextRoot *root =
-        vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
-    if (!root)
-      return false_v;
-    *root = (VkrMetalPacketTextRoot){
-        .vertices = text_upload->vertices_gpu,
-        .atlas_texture_id = atlas->resource.resource_id,
-        .model = draw->model,
-        .view_projection = view_projection,
-        .controls = {draw->unit_range.x, draw->unit_range.y,
-                     (float32_t)target_width, (float32_t)target_height},
-        .object_id = draw->object_id,
-        .flags = (ui_domain ? 1u : 0u) | (draw->font_mode != 0u ? 2u : 0u),
-    };
+  for (uint32_t i = 0u; i < draw_count; ++i) {
+    const VkrMetalPacketPreparedTextDraw *draw =
+        (const VkrMetalPacketPreparedTextDraw *)root_cpu;
     [renderer->argument_table setAddress:root_gpu atIndex:1];
     [encoder setArgumentTable:renderer->argument_table
                      atStages:MTLRenderStageVertex | MTLRenderStageFragment];
     [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
                         indexCount:draw->index_count
                          indexType:MTLIndexTypeUInt32
-                       indexBuffer:text_upload->indices_gpu
-                 indexBufferLength:text_upload->indices_length
+                       indexBuffer:draw->index_address
+                 indexBufferLength:draw->index_length
                      instanceCount:1
                         baseVertex:0
                       baseInstance:0];
-    atlas->last_use_submit_value = renderer->submit_value + 1u;
-    (*domain_draw_count)++;
-    result->indexed_draw_count++;
+    root_cpu += VKR_METAL_PACKET_DRAW_ROOT_STRIDE;
+    root_gpu += VKR_METAL_PACKET_DRAW_ROOT_STRIDE;
   }
+}
+
+vkr_internal bool8_t vkr_metal_packet_prepare_text_draws(
+    VkrMetalPacketRenderer *renderer, VkrMetalPacketTextPass *prepared_pass,
+    id<MTLRenderPipelineState> pipeline, id<MTLDepthStencilState> depth_state,
+    const VkrPreparedTextDraw *draws, uint32_t draw_count,
+    uint32_t text_upload_start, uint32_t target_width, uint32_t target_height,
+    Mat4 view_projection, bool8_t ui_domain, VkrMetalPacketFrameUpload *upload,
+    uint32_t *domain_draw_count, VkrMetalPacketResult *result)
+    API_AVAILABLE(macos(26.0)) {
+  if (draw_count == 0u)
+    return true_v;
+  if (text_upload_start > upload->world_text_count ||
+      draw_count > upload->world_text_count - text_upload_start ||
+      draw_count > upload->root_capacity - upload->root_cursor)
+    return false_v;
+  const uint64_t root_offset =
+      (uint64_t)upload->root_cursor * VKR_METAL_PACKET_DRAW_ROOT_STRIDE;
+  uint8_t *root_cpu = upload->root_cpu + root_offset;
+  const uint64_t root_gpu = upload->root_gpu + root_offset;
+  upload->root_cursor += draw_count;
+  for (uint32_t i = 0u; i < draw_count; ++i) {
+    const VkrPreparedTextDraw *draw = &draws[i];
+    const VkrMetalPacketTextUpload *text_upload =
+        &upload->text_uploads[text_upload_start + i];
+    VkrMetalPacketTexture *atlas =
+        vkr_metal_packet_resolve_texture(renderer, draw->atlas);
+    if (!atlas || text_upload->vertices_gpu == 0u ||
+        text_upload->indices_gpu == 0u || text_upload->indices_length == 0u)
+      return false_v;
+    VkrMetalPacketPreparedTextDraw *prepared =
+        (VkrMetalPacketPreparedTextDraw
+             *)(root_cpu + (uint64_t)i * VKR_METAL_PACKET_DRAW_ROOT_STRIDE);
+    *prepared = (VkrMetalPacketPreparedTextDraw){
+        .root =
+            {
+                .vertices = text_upload->vertices_gpu,
+                .atlas_texture_id = atlas->resource.resource_id,
+                .model = draw->model,
+                .view_projection = view_projection,
+                .controls = {draw->unit_range.x, draw->unit_range.y,
+                             (float32_t)target_width, (float32_t)target_height},
+                .object_id = draw->object_id,
+                .flags =
+                    (ui_domain ? 1u : 0u) | (draw->font_mode != 0u ? 2u : 0u),
+            },
+        .index_address = text_upload->indices_gpu,
+        .index_length = text_upload->indices_length,
+        .index_count = draw->index_count,
+    };
+    atlas->last_use_submit_value = renderer->submit_value + 1u;
+  }
+  *prepared_pass = (VkrMetalPacketTextPass){
+      .pipeline = pipeline,
+      .depth = depth_state,
+      .count = draw_count,
+      .width = target_width,
+      .height = target_height,
+      .root_cpu = root_cpu,
+      .root_gpu = root_gpu,
+  };
+  *domain_draw_count += draw_count;
+  result->indexed_draw_count += draw_count;
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_encode_ui_draw_list(
+vkr_internal void vkr_metal_packet_record_prepared_ui_draws(
     VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
+    const uint8_t *root_cpu, uint64_t root_gpu, uint32_t draw_count,
+    uint32_t target_width, uint32_t target_height) API_AVAILABLE(macos(26.0)) {
+  [encoder setViewport:(MTLViewport){0.0, 0.0, target_width, target_height, 0.0,
+                                     1.0}];
+  [encoder setCullMode:MTLCullModeNone];
+  [encoder setDepthStencilState:nil];
+  id<MTLRenderPipelineState> bound_pipeline = nil;
+  for (uint32_t i = 0u; i < draw_count; ++i) {
+    const VkrMetalPacketPreparedUiDraw *draw =
+        (const VkrMetalPacketPreparedUiDraw *)root_cpu;
+    if (draw->pipeline != bound_pipeline) {
+      [encoder setRenderPipelineState:draw->pipeline];
+      bound_pipeline = draw->pipeline;
+    }
+    [encoder setScissorRect:draw->scissor];
+    [renderer->argument_table setAddress:root_gpu atIndex:1u];
+    [encoder setArgumentTable:renderer->argument_table
+                     atStages:MTLRenderStageVertex | MTLRenderStageFragment];
+    [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
+                        indexCount:draw->index_count
+                         indexType:MTLIndexTypeUInt32
+                       indexBuffer:draw->index_address
+                 indexBufferLength:draw->index_length
+                     instanceCount:1u
+                        baseVertex:0
+                      baseInstance:0u];
+    root_cpu += VKR_METAL_PACKET_DRAW_ROOT_STRIDE;
+    root_gpu += VKR_METAL_PACKET_DRAW_ROOT_STRIDE;
+  }
+}
+
+vkr_internal bool8_t vkr_metal_packet_prepare_ui_draw_list(
+    VkrMetalPacketRenderer *renderer, VkrMetalPacketUiPass *prepared_pass,
     const VkrPreparedUiDrawList *draw_list, uint32_t target_width,
     uint32_t target_height, VkrMetalPacketFrameUpload *upload,
     VkrMetalPacketResult *result) API_AVAILABLE(macos(26.0)) {
   if (draw_list->batch_count == 0u)
     return true_v;
   if (upload->ui_vertices_gpu == 0u || upload->ui_indices_gpu == 0u ||
-      upload->ui_indices_length == 0u)
+      upload->ui_indices_length == 0u ||
+      draw_list->batch_count > upload->root_capacity - upload->root_cursor)
     return false_v;
-
-  [encoder setViewport:(MTLViewport){0.0, 0.0, target_width, target_height, 0.0,
-                                     1.0}];
-  [encoder setCullMode:MTLCullModeNone];
-  [encoder setDepthStencilState:nil];
-  id<MTLRenderPipelineState> bound_pipeline = nil;
+  const uint64_t root_offset =
+      (uint64_t)upload->root_cursor * VKR_METAL_PACKET_DRAW_ROOT_STRIDE;
+  uint8_t *root_cpu = upload->root_cpu + root_offset;
+  const uint64_t root_gpu = upload->root_gpu + root_offset;
+  uint32_t prepared_count = 0u;
   for (uint32_t i = 0u; i < draw_list->batch_count; ++i) {
     const VkrUiDrawBatch *batch = &draw_list->batches[i];
-    id<MTLRenderPipelineState> pipeline =
-        batch->mode == VKR_UI_DRAW_MODE_ROUNDED_RECT
-            ? renderer->ui_rect_pipeline
-            : renderer->ui_pipeline;
-    if (pipeline != bound_pipeline) {
-      [encoder setRenderPipelineState:pipeline];
-      bound_pipeline = pipeline;
-    }
-
     VkrMetalPacketTexture *texture = NULL;
     if (batch->texture.id != 0u) {
       texture = vkr_metal_packet_resolve_texture(
@@ -340,45 +447,51 @@ vkr_internal bool8_t vkr_metal_packet_encode_ui_draw_list(
       if (!texture)
         continue;
     }
-
-    uint64_t root_gpu = 0u;
-    VkrMetalPacketUiRoot *root =
-        vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
-    if (!root)
-      return false_v;
-    *root = (VkrMetalPacketUiRoot){
-        .vertices = upload->ui_vertices_gpu,
-        .texture_id = texture ? texture->resource.resource_id : 0u,
-        .target_unit_range = {(float32_t)target_width, (float32_t)target_height,
-                              batch->sdf_unit_range.x, batch->sdf_unit_range.y},
-        .rect_extent = batch->rect_extent_px,
-        .mode = batch->mode,
-        .flags = texture ? 1u : 0u,
-        .corner_radii = batch->corner_radius_px,
-    };
-    [encoder setScissorRect:(MTLScissorRect){
-                                (NSUInteger)batch->scissor_rect_px.x,
-                                (NSUInteger)batch->scissor_rect_px.y,
-                                (NSUInteger)batch->scissor_rect_px.width,
-                                (NSUInteger)batch->scissor_rect_px.height}];
-    [renderer->argument_table setAddress:root_gpu atIndex:1u];
-    [encoder setArgumentTable:renderer->argument_table
-                     atStages:MTLRenderStageVertex | MTLRenderStageFragment];
+    VkrMetalPacketPreparedUiDraw *prepared =
+        (VkrMetalPacketPreparedUiDraw *)(root_cpu +
+                                         (uint64_t)prepared_count *
+                                             VKR_METAL_PACKET_DRAW_ROOT_STRIDE);
     const uint64_t index_offset =
         (uint64_t)batch->first_index * sizeof(uint32_t);
-    [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
-                        indexCount:batch->index_count
-                         indexType:MTLIndexTypeUInt32
-                       indexBuffer:upload->ui_indices_gpu + index_offset
-                 indexBufferLength:upload->ui_indices_length - index_offset
-                     instanceCount:1u
-                        baseVertex:0
-                      baseInstance:0u];
+    *prepared = (VkrMetalPacketPreparedUiDraw){
+        .root =
+            {
+                .vertices = upload->ui_vertices_gpu,
+                .texture_id = texture ? texture->resource.resource_id : 0u,
+                .target_unit_range = {(float32_t)target_width,
+                                      (float32_t)target_height,
+                                      batch->sdf_unit_range.x,
+                                      batch->sdf_unit_range.y},
+                .rect_extent = batch->rect_extent_px,
+                .mode = batch->mode,
+                .flags = texture ? 1u : 0u,
+                .corner_radii = batch->corner_radius_px,
+            },
+        .scissor = {(NSUInteger)batch->scissor_rect_px.x,
+                    (NSUInteger)batch->scissor_rect_px.y,
+                    (NSUInteger)batch->scissor_rect_px.width,
+                    (NSUInteger)batch->scissor_rect_px.height},
+        .pipeline = batch->mode == VKR_UI_DRAW_MODE_ROUNDED_RECT
+                        ? renderer->ui_rect_pipeline
+                        : renderer->ui_pipeline,
+        .index_address = upload->ui_indices_gpu + index_offset,
+        .index_length = upload->ui_indices_length - index_offset,
+        .index_count = batch->index_count,
+    };
     if (texture)
       texture->last_use_submit_value = renderer->submit_value + 1u;
-    result->ui_draw_count++;
-    result->indexed_draw_count++;
+    prepared_count++;
   }
+  upload->root_cursor += prepared_count;
+  *prepared_pass = (VkrMetalPacketUiPass){
+      .count = prepared_count,
+      .width = target_width,
+      .height = target_height,
+      .root_cpu = root_cpu,
+      .root_gpu = root_gpu,
+  };
+  result->ui_draw_count += prepared_count;
+  result->indexed_draw_count += prepared_count;
   return true_v;
 }
 
@@ -394,9 +507,9 @@ vkr_metal_packet_subresource_texture(VkrMetalPacketRenderer *renderer,
                         : vkr_metal_packet_texture(renderer, use->image);
 }
 
-vkr_internal bool8_t vkr_metal_packet_encode_tonemap(
+vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
-    const VkrRenderPacket *packet, id<MTL4RenderCommandEncoder> encoder,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
     VkrMetalPacketFrameUpload *upload, uint32_t target_width,
     uint32_t target_height, const VkrEditorPassPayload *editor)
     API_AVAILABLE(macos(26.0)) {
@@ -415,7 +528,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_tonemap(
   if (!root || !manual_state)
     return false_v;
   *manual_state = (VkrExposureGpuState){
-      .exposure_multiplier = packet->globals.exposure.manual,
+      .exposure_multiplier = packet->exposure.manual,
   };
   const uint32_t output_x = editor ? (uint32_t)editor->image_rect_px.x : 0u;
   const uint32_t output_y = editor ? (uint32_t)editor->image_rect_px.y : 0u;
@@ -439,21 +552,18 @@ vkr_internal bool8_t vkr_metal_packet_encode_tonemap(
           : NULL;
   if (exposure_state)
     root->exposure_state = exposure_state->resource.gpu_address;
-  [renderer->argument_table setAddress:root_gpu atIndex:1];
-  [encoder setViewport:(MTLViewport){output_x, output_y, output_width,
-                                     output_height, 0.0, 1.0}];
-  [encoder setScissorRect:(MTLScissorRect){output_x, output_y, output_width,
-                                           output_height}];
-  [encoder setRenderPipelineState:renderer->tonemap_pipeline];
-  [encoder setArgumentTable:renderer->argument_table
-                   atStages:MTLRenderStageFragment];
-  [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+  prepared->tonemap.root = root_gpu;
+  prepared->tonemap.viewport =
+      (MTLViewport){output_x, output_y, output_width, output_height, 0.0, 1.0};
+  prepared->tonemap.scissor =
+      (MTLScissorRect){output_x, output_y, output_width, output_height};
+  prepared->active = true_v;
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_encode_ibl(
-    VkrMetalPacketRenderer *renderer, const VkrRenderPacket *packet,
-    id<MTL4ComputeCommandEncoder> encoder, VkrMetalPacketFrameUpload *upload,
+vkr_internal bool8_t vkr_metal_packet_prepare_ibl(
+    VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
+    VkrMetalPacketPreparedPass *prepared, VkrMetalPacketFrameUpload *upload,
     VkrMetalPacketResult *result) API_AVAILABLE(macos(26.0)) {
   VkrTextureHandle source_handle = VKR_TEXTURE_HANDLE_INVALID;
   if (!vkr_metal_packet_ibl_source(packet, &source_handle))
@@ -483,11 +593,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_ibl(
         .source_mip_count = (float32_t)source_texture.mipmapLevelCount,
         .target_mip = mip,
     };
-    [renderer->argument_table setAddress:root_gpu atIndex:0];
-    [encoder setComputePipelineState:renderer->ibl_prefilter_pipeline];
-    [encoder setArgumentTable:renderer->argument_table];
-    [encoder dispatchThreads:MTLSizeMake(mip_size, mip_size, 6)
-        threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+    prepared->ibl.prefilter_roots[mip] = root_gpu;
     result->ibl_dispatch_count++;
   }
 
@@ -527,15 +633,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_ibl(
             .window_band_1 = 1.0f,
             .window_band_2 = 1.0f,
         };
-        [renderer->argument_table setAddress:root_gpu atIndex:0];
-        [encoder setComputePipelineState:renderer->ibl_sh_pipeline];
-        [encoder setArgumentTable:renderer->argument_table];
-        [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1)
-                threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
-        [encoder barrierAfterEncoderStages:MTLStageDispatch
-                       beforeEncoderStages:(MTLStages)(MTLStageDispatch |
-                                                       MTLStageFragment)
-                         visibilityOptions:MTL4VisibilityOptionDevice];
+        prepared->ibl.sh_root = root_gpu;
         if (vkr_ibl_sh_pool_mark_recorded(&renderer->sh_pool, candidate_slot) !=
             VKR_SH_POOL_STATUS_OK) {
           (void)vkr_ibl_sh_pool_abandon(&renderer->sh_pool, candidate_slot);
@@ -548,6 +646,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_ibl(
     }
   }
 
+  prepared->active = true_v;
   const uint64_t pending_submit = renderer->submit_value + 1;
   source->last_use_submit_value = pending_submit;
   renderer->ibl_last_use_submit_value = pending_submit;
@@ -620,11 +719,11 @@ vkr_metal_packet_next_gpu_draw_root(VkrMetalPacketFrameUpload *upload,
                                     out_gpu_address);
 }
 
-vkr_internal bool8_t vkr_metal_packet_encode_gpu_draw_compute(
+vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
-    const VkrRenderPacket *packet, id<MTL4ComputeCommandEncoder> encoder,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
     VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
-  if (!renderer || !pass || !packet || !encoder || !upload)
+  if (!renderer || !pass || !packet || !prepared || !upload)
     return false_v;
   VkrMetalPacketGraphExecutorKind kind;
   if (!vkr_metal_packet_graph_executor_kind(pass, &kind))
@@ -694,11 +793,13 @@ vkr_internal bool8_t vkr_metal_packet_encode_gpu_draw_compute(
     // Keep the comparison conservative across projected-sphere and depth-buffer
     // quantization; a smaller tolerance self-rejected static fixture geometry.
     root->hzb_depth_epsilon = 1e-3f;
-    [renderer->argument_table setAddress:root_gpu atIndex:0u];
-    [encoder setComputePipelineState:renderer->gpu_draw_classify_pipeline];
-    [encoder setArgumentTable:renderer->argument_table];
-    [encoder dispatchThreads:MTLSizeMake(candidate_count, view_count, 1u)
-        threadsPerThreadgroup:MTLSizeMake(64u, 1u, 1u)];
+    prepared->dispatch = (VkrMetalPacketDispatch){
+        .pipeline = renderer->gpu_draw_classify_pipeline,
+        .root = root_gpu,
+        .threads = MTLSizeMake(candidate_count, view_count, 1u),
+        .group_size = MTLSizeMake(64u, 1u, 1u),
+    };
+    prepared->active = true_v;
     return true_v;
   }
 
@@ -708,11 +809,13 @@ vkr_internal bool8_t vkr_metal_packet_encode_gpu_draw_compute(
     if (!state)
       return false_v;
     root->compaction_state = state->resource.gpu_address;
-    [renderer->argument_table setAddress:root_gpu atIndex:0u];
-    [encoder setComputePipelineState:renderer->gpu_draw_prefix_pipeline];
-    [encoder setArgumentTable:renderer->argument_table];
-    [encoder dispatchThreads:MTLSizeMake(view_count, 1u, 1u)
-        threadsPerThreadgroup:MTLSizeMake(view_count, 1u, 1u)];
+    prepared->dispatch = (VkrMetalPacketDispatch){
+        .pipeline = renderer->gpu_draw_prefix_pipeline,
+        .root = root_gpu,
+        .threads = MTLSizeMake(view_count, 1u, 1u),
+        .group_size = MTLSizeMake(view_count, 1u, 1u),
+    };
+    prepared->active = true_v;
     return true_v;
   }
 
@@ -740,14 +843,14 @@ vkr_internal bool8_t vkr_metal_packet_encode_gpu_draw_compute(
   for (uint32_t view = 0u; view < view_count; ++view) {
     const bool8_t camera_view = view == 0u;
     const Mat4 view_projection =
-        camera_view
-            ? vkr_metal_packet_clip_matrix(
-                  renderer->convert_vulkan_clip_y,
-                  mat4_mul(packet->globals.temporal.jittered_projection,
-                           packet->globals.view))
-            : vkr_metal_packet_clip_matrix(
-                  renderer->convert_vulkan_clip_y,
-                  packet->shadow->cascades[view - 1u].light_view_projection);
+        camera_view ? vkr_metal_packet_clip_matrix(
+                          renderer->convert_vulkan_clip_y,
+                          mat4_mul(packet->temporal.jittered_projection,
+                                   packet->input.globals.view))
+                    : vkr_metal_packet_clip_matrix(
+                          renderer->convert_vulkan_clip_y,
+                          packet->input.shadow->cascades[view - 1u]
+                              .light_view_projection);
     uint64_t frame_root_gpu = 0u;
     uint32_t view_frame_flags = 0u;
     if (!vkr_metal_packet_create_frame_root(
@@ -779,13 +882,16 @@ vkr_internal bool8_t vkr_metal_packet_encode_gpu_draw_compute(
   root->draw_roots = draw_roots_gpu;
   if (transmission)
     upload->transmission_gpu_draw_root_gpu = draw_roots_gpu;
-  [encoder
-      setComputePipelineState:transmission
-                                  ? renderer->gpu_draw_encode_inherited_pipeline
-                                  : renderer->gpu_draw_encode_pipeline];
+  prepared->gpu_encode.pipeline =
+      transmission ? renderer->gpu_draw_encode_inherited_pipeline
+                   : renderer->gpu_draw_encode_pipeline;
   const uint32_t encode_group_size = root->icb_view_group_size;
   const uint32_t encode_group_count =
       (view_count + encode_group_size - 1u) / encode_group_size;
+  if (encode_group_count > VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX)
+    return false_v;
+  prepared->gpu_encode.group_count = encode_group_count;
+  prepared->gpu_encode.candidate_count = candidate_count;
   for (uint32_t group = 0u; group < encode_group_count; ++group) {
     const uint32_t first_view = group * encode_group_size;
     const uint32_t group_view_count =
@@ -804,31 +910,27 @@ vkr_internal bool8_t vkr_metal_packet_encode_gpu_draw_compute(
                      : renderer->active_command_slot->gpu_draw_icbs[group];
     if (!icb)
       return false_v;
-    for (uint32_t group_view = 0u; group_view < group_view_count; ++group_view)
-      [encoder
-          resetCommandsInBuffer:icb
-                      withRange:NSMakeRange((uint64_t)group_view *
-                                                VKR_GPU_DRAW_CANDIDATE_CAPACITY,
-                                            candidate_count)];
     const uint64_t icb_argument_gpu =
         transmission
             ? upload->transmission_gpu_draw_icb_argument_gpu
             : upload->gpu_draw_icb_argument_gpu +
                   (uint64_t)group * upload->gpu_draw_icb_argument_stride;
-    [renderer->argument_table setAddress:view_root_gpu atIndex:0u];
-    [renderer->argument_table setAddress:icb_argument_gpu atIndex:1u];
-    [encoder setArgumentTable:renderer->argument_table];
-    [encoder dispatchThreads:MTLSizeMake(candidate_count, group_view_count, 1u)
-        threadsPerThreadgroup:MTLSizeMake(64u, 1u, 1u)];
+    prepared->gpu_encode.groups[group] = (VkrMetalPacketGpuEncodeGroup){
+        .commands = icb,
+        .root = view_root_gpu,
+        .arguments = icb_argument_gpu,
+        .view_count = group_view_count,
+    };
   }
+  prepared->active = true_v;
   if ((frame_flags & VKR_PACKET_FRAME_FLAG_IBL) != 0u)
     renderer->ibl_last_use_submit_value = renderer->submit_value + 1u;
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_encode_temporal_transform(
+vkr_internal bool8_t vkr_metal_packet_prepare_temporal_transform(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
-    const VkrRenderPacket *packet, id<MTL4ComputeCommandEncoder> encoder,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
     VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
   VkrMetalPacketGraphBufferInstance *instances =
       vkr_metal_packet_pass_buffer(renderer, pass, 0u);
@@ -846,20 +948,21 @@ vkr_internal bool8_t vkr_metal_packet_encode_temporal_transform(
       .transforms = transforms->resource.gpu_address,
       .instance_count = renderer->gpu_draw_count,
       .transform_capacity = VKR_TEMPORAL_TRANSFORM_CAPACITY,
-      .frame_index = packet->frame.frame_index,
+      .frame_index = packet->input.frame.frame_index,
   };
-  [renderer->argument_table setAddress:root_gpu atIndex:0u];
-  [encoder setComputePipelineState:renderer->temporal_transform_pipeline];
-  [encoder setArgumentTable:renderer->argument_table];
-  if (root->instance_count)
-    [encoder dispatchThreads:MTLSizeMake(root->instance_count, 1u, 1u)
-        threadsPerThreadgroup:MTLSizeMake(64u, 1u, 1u)];
+  prepared->dispatch = (VkrMetalPacketDispatch){
+      .pipeline = renderer->temporal_transform_pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(root->instance_count, 1u, 1u),
+      .group_size = MTLSizeMake(64u, 1u, 1u),
+  };
+  prepared->active = root->instance_count > 0u;
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_encode_gbuffer_resolve(
+vkr_internal bool8_t vkr_metal_packet_prepare_gbuffer_resolve(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
-    const VkrRenderPacket *packet, id<MTL4ComputeCommandEncoder> encoder,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
     VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
   if (!renderer->gbuffer_resolve_pipeline)
     return false_v;
@@ -909,17 +1012,16 @@ vkr_internal bool8_t vkr_metal_packet_encode_gbuffer_resolve(
       .hdr_seed_texture_id = hdr_seed.gpuResourceID._impl,
       .view_projection = vkr_metal_packet_clip_matrix(
           renderer->convert_vulkan_clip_y,
-          mat4_mul(packet->globals.temporal.jittered_projection,
-                   packet->globals.view)),
+          mat4_mul(packet->temporal.jittered_projection,
+                   packet->input.globals.view)),
       .current_view_projection = vkr_metal_packet_clip_matrix(
           renderer->convert_vulkan_clip_y,
-          packet->globals.temporal.current_view_projection),
+          packet->temporal.current_view_projection),
       .previous_view_projection =
-          previous_transform
-              ? previous_transform->history_view_projection
-              : vkr_metal_packet_clip_matrix(
-                    renderer->convert_vulkan_clip_y,
-                    packet->globals.temporal.current_view_projection),
+          previous_transform ? previous_transform->history_view_projection
+                             : vkr_metal_packet_clip_matrix(
+                                   renderer->convert_vulkan_clip_y,
+                                   packet->temporal.current_view_projection),
       .previous_transforms =
           previous_transform ? previous_transform->resource.gpu_address : 0u,
       .motion_texture_id = motion.gpuResourceID._impl,
@@ -929,32 +1031,34 @@ vkr_internal bool8_t vkr_metal_packet_encode_gbuffer_resolve(
       .geometry_count = renderer->max_meshes,
       .material_count = renderer->max_materials,
       .instance_count = renderer->gpu_draw_count,
-      .render_mode = packet->globals.render_mode,
+      .render_mode = packet->input.globals.render_mode,
       .history_valid = previous_transform != NULL,
       .previous_frame_index = previous_transform
                                   ? previous_transform->history_frame_index
-                                  : packet->frame.frame_index,
+                                  : packet->input.frame.frame_index,
       .sky_reprojection =
           previous_transform
               ? vkr_temporal_sky_reprojection(
                     vkr_metal_packet_clip_matrix(
                         renderer->convert_vulkan_clip_y,
-                        packet->globals.temporal.current_view_projection),
+                        packet->temporal.current_view_projection),
                     previous_transform->history_view_projection,
-                    packet->globals.view_position)
+                    packet->input.globals.view_position)
               : mat4_identity(),
   };
-  [renderer->argument_table setAddress:root_gpu atIndex:0u];
-  [encoder setComputePipelineState:renderer->gbuffer_resolve_pipeline];
-  [encoder setArgumentTable:renderer->argument_table];
-  [encoder dispatchThreads:MTLSizeMake(vbuffer.width, vbuffer.height, 1u)
-      threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
+  prepared->dispatch = (VkrMetalPacketDispatch){
+      .pipeline = renderer->gbuffer_resolve_pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(vbuffer.width, vbuffer.height, 1u),
+      .group_size = MTLSizeMake(8u, 8u, 1u),
+  };
+  prepared->active = true_v;
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_encode_gtao(
+vkr_internal bool8_t vkr_metal_packet_prepare_gtao(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
-    id<MTL4ComputeCommandEncoder> encoder, VkrMetalPacketFrameUpload *upload,
+    VkrMetalPacketPreparedPass *prepared, VkrMetalPacketFrameUpload *upload,
     VkrMetalPacketGraphExecutorKind kind) API_AVAILABLE(macos(26.0)) {
   if (!renderer->prepared_frame.gtao_enabled)
     return false_v;
@@ -993,12 +1097,13 @@ vkr_internal bool8_t vkr_metal_packet_encode_gtao(
         .destination_extent = {(uint32_t)destination.width,
                                (uint32_t)destination.height},
     };
-    [renderer->argument_table setAddress:root_gpu atIndex:0u];
-    [encoder setComputePipelineState:pipeline];
-    [encoder setArgumentTable:renderer->argument_table];
-    [encoder dispatchThreads:MTLSizeMake(destination.width, destination.height,
-                                         1u)
-        threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
+    prepared->dispatch = (VkrMetalPacketDispatch){
+        .pipeline = pipeline,
+        .root = root_gpu,
+        .threads = MTLSizeMake(destination.width, destination.height, 1u),
+        .group_size = MTLSizeMake(8u, 8u, 1u),
+    };
+    prepared->active = true_v;
     return true_v;
   }
 
@@ -1035,12 +1140,13 @@ vkr_internal bool8_t vkr_metal_packet_encode_gtao(
         .destination_extent = {(uint32_t)destination.width,
                                (uint32_t)destination.height},
     };
-    [renderer->argument_table setAddress:root_gpu atIndex:0u];
-    [encoder setComputePipelineState:renderer->gtao_evaluate_pipeline];
-    [encoder setArgumentTable:renderer->argument_table];
-    [encoder dispatchThreads:MTLSizeMake(destination.width, destination.height,
-                                         1u)
-        threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
+    prepared->dispatch = (VkrMetalPacketDispatch){
+        .pipeline = renderer->gtao_evaluate_pipeline,
+        .root = root_gpu,
+        .threads = MTLSizeMake(destination.width, destination.height, 1u),
+        .group_size = MTLSizeMake(8u, 8u, 1u),
+    };
+    prepared->active = true_v;
     return true_v;
   }
 
@@ -1071,18 +1177,19 @@ vkr_internal bool8_t vkr_metal_packet_encode_gtao(
       .destination_extent = {(uint32_t)destination.width,
                              (uint32_t)destination.height},
   };
-  [renderer->argument_table setAddress:root_gpu atIndex:0u];
-  [encoder setComputePipelineState:renderer->gtao_denoise_pipeline];
-  [encoder setArgumentTable:renderer->argument_table];
-  [encoder dispatchThreads:MTLSizeMake(destination.width, destination.height,
-                                       1u)
-      threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
+  prepared->dispatch = (VkrMetalPacketDispatch){
+      .pipeline = renderer->gtao_denoise_pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(destination.width, destination.height, 1u),
+      .group_size = MTLSizeMake(8u, 8u, 1u),
+  };
+  prepared->active = true_v;
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_encode_deferred_lighting(
+vkr_internal bool8_t vkr_metal_packet_prepare_deferred_lighting(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
-    const VkrRenderPacket *packet, id<MTL4ComputeCommandEncoder> encoder,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
     VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
   if (!renderer->deferred_lighting_pipeline)
     return false_v;
@@ -1102,18 +1209,18 @@ vkr_internal bool8_t vkr_metal_packet_encode_deferred_lighting(
       vbuffer.height > UINT32_MAX)
     return false_v;
   VkrMetalPacketTexture *sky =
-      packet->skybox
-          ? vkr_metal_packet_resolve_texture(renderer, packet->skybox->cubemap)
-          : NULL;
-  if (packet->skybox && !sky)
+      packet->input.skybox ? vkr_metal_packet_resolve_texture(
+                                 renderer, packet->input.skybox->cubemap)
+                           : NULL;
+  if (packet->input.skybox && !sky)
     return false_v;
 
   uint64_t frame_root_gpu = 0u;
   uint32_t frame_flags = 0u;
   const Mat4 view_projection = vkr_metal_packet_clip_matrix(
       renderer->convert_vulkan_clip_y,
-      mat4_mul(packet->globals.temporal.jittered_projection,
-               packet->globals.view));
+      mat4_mul(packet->temporal.jittered_projection,
+               packet->input.globals.view));
   if (!vkr_metal_packet_create_frame_root(
           renderer, packet, upload, upload->gpu_draw_instances_gpu,
           (uint32_t)vbuffer.width, (uint32_t)vbuffer.height, view_projection,
@@ -1139,11 +1246,13 @@ vkr_internal bool8_t vkr_metal_packet_encode_deferred_lighting(
       .extent = {(uint32_t)vbuffer.width, (uint32_t)vbuffer.height},
       .sky_enabled = sky ? 1u : 0u,
   };
-  [renderer->argument_table setAddress:root_gpu atIndex:0u];
-  [encoder setComputePipelineState:renderer->deferred_lighting_pipeline];
-  [encoder setArgumentTable:renderer->argument_table];
-  [encoder dispatchThreads:MTLSizeMake(vbuffer.width, vbuffer.height, 1u)
-      threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
+  prepared->dispatch = (VkrMetalPacketDispatch){
+      .pipeline = renderer->deferred_lighting_pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(vbuffer.width, vbuffer.height, 1u),
+      .group_size = MTLSizeMake(8u, 8u, 1u),
+  };
+  prepared->active = true_v;
   const uint64_t pending_submit = renderer->submit_value + 1u;
   if ((frame_flags & VKR_PACKET_FRAME_FLAG_IBL) != 0u)
     renderer->ibl_last_use_submit_value = pending_submit;
@@ -1154,9 +1263,9 @@ vkr_internal bool8_t vkr_metal_packet_encode_deferred_lighting(
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_encode_temporal_resolve(
+vkr_internal bool8_t vkr_metal_packet_prepare_temporal_resolve(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
-    const VkrRenderPacket *packet, id<MTL4ComputeCommandEncoder> encoder,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
     VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
   id<MTLTexture> scene = vkr_metal_packet_pass_texture(renderer, pass, 0u);
   id<MTLTexture> pre_transmission =
@@ -1209,9 +1318,9 @@ vkr_internal bool8_t vkr_metal_packet_encode_temporal_resolve(
                                 selected < depth_slot->instance_count &&
                                 selected < identity_slot->instance_count &&
                                 selected < surface_slot->instance_count;
-  const Mat4 current_history_view_projection = vkr_metal_packet_clip_matrix(
-      renderer->convert_vulkan_clip_y,
-      packet->globals.temporal.current_view_projection);
+  const Mat4 current_history_view_projection =
+      vkr_metal_packet_clip_matrix(renderer->convert_vulkan_clip_y,
+                                   packet->temporal.current_view_projection);
   id<MTLTexture> history_color =
       history_valid ? (id<MTLTexture>)color_slot->instances[selected]
                           .resource.metal_texture
@@ -1252,7 +1361,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_temporal_resolve(
       .output_surface_texture_id = output_surface.gpuResourceID._impl,
       .extent = {(uint32_t)scene.width, (uint32_t)scene.height},
       .history_valid = history_valid,
-      .render_mode = packet->globals.render_mode,
+      .render_mode = packet->input.globals.render_mode,
       .camera_stationary =
           history_valid &&
           MemCompare(&color_slot->instances[selected].history_view_projection,
@@ -1268,9 +1377,11 @@ vkr_internal bool8_t vkr_metal_packet_encode_temporal_resolve(
       .transmission_depth_texture_id =
           transmission_enabled ? transmission_depth.gpuResourceID._impl : 0u,
       .transmission_enabled = transmission_enabled,
-      .current_jitter_pixels = packet->globals.temporal.jitter_pixels,
+      .current_jitter_pixels = packet->temporal.jitter_pixels,
       .previous_jitter_pixels =
-          history_valid ? vkr_temporal_jitter_for_frame((uint32_t)color_slot->instances[selected].history_frame_index)
+          history_valid ? vkr_temporal_jitter_for_frame(
+                              (uint32_t)color_slot->instances[selected]
+                                  .history_frame_index)
                         : (Vec2){0},
       .scene_stationary =
           history_valid && upload->temporal_scene.signature.eligible &&
@@ -1283,21 +1394,25 @@ vkr_internal bool8_t vkr_metal_packet_encode_temporal_resolve(
           upload->temporal_scene.radiance_revision ==
               color_slot->instances[selected].history_scene.radiance_revision &&
           upload->temporal_scene.publication_generation ==
-              color_slot->instances[selected].history_scene.publication_generation &&
+              color_slot->instances[selected]
+                  .history_scene.publication_generation &&
           upload->temporal_scene.graph_revision ==
               color_slot->instances[selected].history_scene.graph_revision,
   };
-  [renderer->argument_table setAddress:root_gpu atIndex:0u];
-  [encoder setComputePipelineState:renderer->temporal_resolve_pipeline];
-  [encoder setArgumentTable:renderer->argument_table];
-  [encoder dispatchThreads:MTLSizeMake(scene.width, scene.height, 1u)
-      threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
+  prepared->dispatch = (VkrMetalPacketDispatch){
+      .pipeline = renderer->temporal_resolve_pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(scene.width, scene.height, 1u),
+      .group_size = MTLSizeMake(8u, 8u, 1u),
+  };
+  prepared->active = true_v;
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_encode_metalfx_temporal(
+vkr_internal bool8_t vkr_metal_packet_prepare_metalfx_temporal(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
-    const VkrRenderPacket *packet) API_AVAILABLE(macos(26.0)) {
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared)
+    API_AVAILABLE(macos(26.0)) {
   id<MTLTexture> color = vkr_metal_packet_pass_texture(renderer, pass, 0u);
   id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 1u);
   id<MTLTexture> motion = vkr_metal_packet_pass_texture(renderer, pass, 2u);
@@ -1306,33 +1421,28 @@ vkr_internal bool8_t vkr_metal_packet_encode_metalfx_temporal(
   const uint32_t content_width = renderer->prepared_frame.viewport_width;
   const uint32_t content_height = renderer->prepared_frame.viewport_height;
 
-  scaler.colorTexture = color;
-  scaler.depthTexture = depth;
-  scaler.motionTexture = motion;
-  scaler.outputTexture = output;
-  scaler.exposureTexture = nil;
-  scaler.reactiveMaskTexture = nil;
-  scaler.inputContentWidth = content_width;
-  scaler.inputContentHeight = content_height;
-  scaler.preExposure = 1.0f;
-  scaler.jitterOffsetX = packet->globals.temporal.jitter_pixels.x;
-  scaler.jitterOffsetY = packet->globals.temporal.jitter_pixels.y;
-  scaler.motionVectorScaleX = (float32_t)content_width;
-  scaler.motionVectorScaleY = (float32_t)content_height;
-  scaler.depthReversed = NO;
-  scaler.reset = packet->globals.temporal.reset_reasons != 0u ||
-                 !packet->globals.temporal.history_valid ||
-                 renderer->selected_temporal_history_instance == UINT32_MAX;
-  [scaler encodeToCommandBuffer:renderer->command_buffer];
+  if (!scaler || !color || !depth || !motion || !output)
+    return false_v;
+  prepared->metalfx.color = color;
+  prepared->metalfx.depth = depth;
+  prepared->metalfx.motion = motion;
+  prepared->metalfx.output = output;
+  prepared->metalfx.width = content_width;
+  prepared->metalfx.height = content_height;
+  prepared->metalfx.jitter = packet->temporal.jitter_pixels;
+  prepared->metalfx.reset =
+      packet->temporal.reset_reasons != 0u || !packet->temporal.history_valid ||
+      renderer->selected_temporal_history_instance == UINT32_MAX;
+  prepared->active = true_v;
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_encode_transmission_shade(
+vkr_internal bool8_t vkr_metal_packet_prepare_transmission_shade(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
-    const VkrRenderPacket *packet, id<MTL4ComputeCommandEncoder> encoder,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
     VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
-  if (!renderer || !pass || !packet || !packet->world || !encoder || !upload ||
-      !renderer->transmission_shade_pipeline ||
+  if (!renderer || !pass || !packet || !packet->input.world || !prepared ||
+      !upload || !renderer->transmission_shade_pipeline ||
       !renderer->transmission_shade_partitioned_pipeline ||
       !renderer->transmission_shade_production_pipeline ||
       !renderer->transmission_shade_production_temporal_pipeline ||
@@ -1374,8 +1484,8 @@ vkr_internal bool8_t vkr_metal_packet_encode_transmission_shade(
     return false_v;
   const bool8_t temporal_outputs = compact_layer == 0u;
   const bool8_t diagnostic =
-      packet->globals.render_mode != 0u ||
-      (packet->debug && packet->debug->shadow_debug_mode != 0u);
+      packet->input.globals.render_mode != 0u ||
+      (packet->input.debug && packet->input.debug->shadow_debug_mode != 0u);
   id<MTLTexture> motion =
       temporal_outputs ? vkr_metal_packet_pass_texture(renderer, pass, 11u)
                        : nil;
@@ -1402,8 +1512,8 @@ vkr_internal bool8_t vkr_metal_packet_encode_transmission_shade(
 
   const Mat4 view_projection = vkr_metal_packet_clip_matrix(
       renderer->convert_vulkan_clip_y,
-      mat4_mul(packet->globals.temporal.jittered_projection,
-               packet->globals.view));
+      mat4_mul(packet->temporal.jittered_projection,
+               packet->input.globals.view));
   uint64_t frame_root_gpu = 0u;
   uint32_t frame_flags = 0u;
   if (!vkr_metal_packet_create_frame_root(
@@ -1454,23 +1564,23 @@ vkr_internal bool8_t vkr_metal_packet_encode_transmission_shade(
       .previous_transforms = previous_transform->resource.gpu_address,
       .current_view_projection = vkr_metal_packet_clip_matrix(
           renderer->convert_vulkan_clip_y,
-          packet->globals.temporal.current_view_projection),
+          packet->temporal.current_view_projection),
       .previous_view_projection =
           renderer->selected_temporal_history_instance != UINT32_MAX
               ? previous_transform->history_view_projection
               : vkr_metal_packet_clip_matrix(
                     renderer->convert_vulkan_clip_y,
-                    packet->globals.temporal.current_view_projection),
+                    packet->temporal.current_view_projection),
       .history_valid =
           renderer->selected_temporal_history_instance != UINT32_MAX,
       .previous_frame_index =
           renderer->selected_temporal_history_instance != UINT32_MAX
               ? previous_transform->history_frame_index
-              : packet->frame.frame_index,
+              : packet->input.frame.frame_index,
       .temporal_outputs_enabled = temporal_outputs,
   };
-  [renderer->argument_table setAddress:root_gpu atIndex:0u];
-  [encoder setArgumentTable:renderer->argument_table];
+  prepared->transmission.root = root_gpu;
+  prepared->transmission.indirect = compact;
   if (compact) {
     const VkrRgBufferUse *indirect_use = vkr_rg_pass_find_buffer_use(
         &pass->desc, pass->desc.dispatch.indirect_binding,
@@ -1493,12 +1603,9 @@ vkr_internal bool8_t vkr_metal_packet_encode_transmission_shade(
                          ->transmission_shade_partitioned_production_temporal_pipeline
                    : renderer
                          ->transmission_shade_partitioned_production_pipeline);
-    [encoder setComputePipelineState:pipeline];
-    [encoder dispatchThreadgroupsWithIndirectBuffer:indirect_source->resource
-                                                        .gpu_address +
-                                                    pass->desc.dispatch
-                                                        .indirect_offset
-                              threadsPerThreadgroup:MTLSizeMake(64u, 1u, 1u)];
+    prepared->transmission.pipeline = pipeline;
+    prepared->transmission.arguments = indirect_source->resource.gpu_address +
+                                       pass->desc.dispatch.indirect_offset;
   } else {
     id<MTLComputePipelineState> pipeline =
         diagnostic
@@ -1506,18 +1613,19 @@ vkr_internal bool8_t vkr_metal_packet_encode_transmission_shade(
             : (temporal_outputs
                    ? renderer->transmission_shade_production_temporal_pipeline
                    : renderer->transmission_shade_production_pipeline);
-    [encoder setComputePipelineState:pipeline];
-    [encoder dispatchThreads:MTLSizeMake(vbuffer.width, vbuffer.height, 1u)
-        threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
+    prepared->transmission.pipeline = pipeline;
+    prepared->transmission.threads =
+        MTLSizeMake(vbuffer.width, vbuffer.height, 1u);
   }
   if ((frame_flags & VKR_PACKET_FRAME_FLAG_IBL) != 0u)
     renderer->ibl_last_use_submit_value = renderer->submit_value + 1u;
+  prepared->active = true_v;
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_encode_transmission_compact(
+vkr_internal bool8_t vkr_metal_packet_prepare_transmission_compact(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
-    id<MTL4ComputeCommandEncoder> encoder, VkrMetalPacketFrameUpload *upload)
+    VkrMetalPacketPreparedPass *prepared, VkrMetalPacketFrameUpload *upload)
     API_AVAILABLE(macos(26.0)) {
   id<MTLTexture> visibility = vkr_metal_packet_pass_texture(renderer, pass, 0u);
   VkrMetalPacketGraphBufferInstance *pixel_list =
@@ -1576,31 +1684,16 @@ vkr_internal bool8_t vkr_metal_packet_encode_transmission_compact(
       .layer = layer,
       .capacity = (uint32_t)capacity,
   };
-  [renderer->argument_table setAddress:root_gpu atIndex:0u];
-  [encoder
-      setComputePipelineState:renderer->transmission_compact_clear_pipeline];
-  [encoder setArgumentTable:renderer->argument_table];
-  [encoder dispatchThreads:MTLSizeMake(1u, 1u, 1u)
-      threadsPerThreadgroup:MTLSizeMake(1u, 1u, 1u)];
-  [encoder barrierAfterEncoderStages:MTLStageDispatch
-                 beforeEncoderStages:MTLStageDispatch
-                   visibilityOptions:MTL4VisibilityOptionDevice];
-  [encoder setComputePipelineState:renderer->transmission_compact_pipeline];
-  [encoder dispatchThreads:MTLSizeMake(visibility.width, visibility.height, 1u)
-      threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
-  [encoder barrierAfterEncoderStages:MTLStageDispatch
-                 beforeEncoderStages:MTLStageDispatch
-                   visibilityOptions:MTL4VisibilityOptionDevice];
-  [encoder
-      setComputePipelineState:renderer->transmission_compact_finalize_pipeline];
-  [encoder dispatchThreads:MTLSizeMake(1u, 1u, 1u)
-      threadsPerThreadgroup:MTLSizeMake(1u, 1u, 1u)];
+  prepared->compact.root = root_gpu;
+  prepared->compact.extent =
+      MTLSizeMake(visibility.width, visibility.height, 1u);
+  prepared->active = true_v;
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_encode_transmission_coverage(
+vkr_internal bool8_t vkr_metal_packet_prepare_transmission_coverage(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
-    id<MTL4ComputeCommandEncoder> encoder, VkrMetalPacketFrameUpload *upload)
+    VkrMetalPacketPreparedPass *prepared, VkrMetalPacketFrameUpload *upload)
     API_AVAILABLE(macos(26.0)) {
   id<MTLTexture> visibility = vkr_metal_packet_pass_texture(renderer, pass, 0u);
   VkrMetalPacketGraphBufferInstance *state =
@@ -1625,19 +1718,21 @@ vkr_internal bool8_t vkr_metal_packet_encode_transmission_coverage(
       .extent = {(uint32_t)visibility.width, (uint32_t)visibility.height},
       .layer = layer,
   };
-  [renderer->argument_table setAddress:root_gpu atIndex:0u];
-  [encoder setComputePipelineState:renderer->transmission_coverage_pipeline];
-  [encoder setArgumentTable:renderer->argument_table];
-  [encoder dispatchThreads:MTLSizeMake(visibility.width, visibility.height, 1u)
-      threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
+  prepared->dispatch = (VkrMetalPacketDispatch){
+      .pipeline = renderer->transmission_coverage_pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(visibility.width, visibility.height, 1u),
+      .group_size = MTLSizeMake(8u, 8u, 1u),
+  };
+  prepared->active = true_v;
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_encode_picking_resolve(
+vkr_internal bool8_t vkr_metal_packet_prepare_picking_resolve(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
-    const VkrRenderPacket *packet, id<MTL4ComputeCommandEncoder> encoder,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
     VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
-  if (!renderer || !pass || !packet || !packet->picking || !encoder ||
+  if (!renderer || !pass || !packet || !packet->input.picking || !prepared ||
       !upload || !renderer->picking_resolve_pipeline)
     return false_v;
   id<MTLTexture> opaque_vbuffer =
@@ -1689,8 +1784,9 @@ vkr_internal bool8_t vkr_metal_packet_encode_picking_resolve(
       .transmission_depth_texture_id =
           transmission ? transmission_depth.gpuResourceID._impl : 0u,
       .destination_texture_id = destination.gpuResourceID._impl,
-      .pixel = {MIN(packet->picking->x, (uint32_t)destination.width - 1u),
-                MIN(packet->picking->y, (uint32_t)destination.height - 1u)},
+      .pixel = {MIN(packet->input.picking->x, (uint32_t)destination.width - 1u),
+                MIN(packet->input.picking->y,
+                    (uint32_t)destination.height - 1u)},
       .extent = {(uint32_t)destination.width, (uint32_t)destination.height},
       .opaque_visible_capacity = VKR_GPU_DRAW_CANDIDATE_CAPACITY,
       .opaque_instance_count = renderer->gpu_draw_count,
@@ -1698,19 +1794,21 @@ vkr_internal bool8_t vkr_metal_packet_encode_picking_resolve(
       .transmission_instance_count = renderer->transmission_gpu_draw_count,
       .transmission_enabled = transmission ? 1u : 0u,
   };
-  [renderer->argument_table setAddress:root_gpu atIndex:0u];
-  [encoder setComputePipelineState:renderer->picking_resolve_pipeline];
-  [encoder setArgumentTable:renderer->argument_table];
-  [encoder dispatchThreads:MTLSizeMake(1u, 1u, 1u)
-      threadsPerThreadgroup:MTLSizeMake(1u, 1u, 1u)];
+  prepared->dispatch = (VkrMetalPacketDispatch){
+      .pipeline = renderer->picking_resolve_pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(1u, 1u, 1u),
+      .group_size = MTLSizeMake(1u, 1u, 1u),
+  };
+  prepared->active = true_v;
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_encode_hzb_build(
+vkr_internal bool8_t vkr_metal_packet_prepare_hzb_build(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
-    id<MTL4ComputeCommandEncoder> encoder, VkrMetalPacketFrameUpload *upload)
+    VkrMetalPacketPreparedPass *prepared, VkrMetalPacketFrameUpload *upload)
     API_AVAILABLE(macos(26.0)) {
-  if (!renderer || !pass || !encoder || !upload ||
+  if (!renderer || !pass || !prepared || !upload ||
       !renderer->hzb_build_pipeline)
     return false_v;
   const VkrRgImageUse *source_use =
@@ -1751,20 +1849,21 @@ vkr_internal bool8_t vkr_metal_packet_encode_hzb_build(
                              (uint32_t)destination.height},
       .source_is_depth = source_use->image.id != destination_use->image.id,
   };
-  [renderer->argument_table setAddress:root_gpu atIndex:0u];
-  [encoder setComputePipelineState:renderer->hzb_build_pipeline];
-  [encoder setArgumentTable:renderer->argument_table];
-  [encoder dispatchThreads:MTLSizeMake(destination.width, destination.height,
-                                       1u)
-      threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
+  prepared->dispatch = (VkrMetalPacketDispatch){
+      .pipeline = renderer->hzb_build_pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(destination.width, destination.height, 1u),
+      .group_size = MTLSizeMake(8u, 8u, 1u),
+  };
+  prepared->active = true_v;
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_encode_sdsm_reduce(
+vkr_internal bool8_t vkr_metal_packet_prepare_sdsm_reduce(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
-    id<MTL4ComputeCommandEncoder> encoder, VkrMetalPacketFrameUpload *upload)
+    VkrMetalPacketPreparedPass *prepared, VkrMetalPacketFrameUpload *upload)
     API_AVAILABLE(macos(26.0)) {
-  if (!renderer || !pass || !encoder || !upload ||
+  if (!renderer || !pass || !prepared || !upload ||
       !renderer->sdsm_reduce_pipeline)
     return false_v;
   id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 0u);
@@ -1786,17 +1885,19 @@ vkr_internal bool8_t vkr_metal_packet_encode_sdsm_reduce(
       .reduce_state = state->resource.gpu_address,
       .extent = {(uint32_t)depth.width, (uint32_t)depth.height},
   };
-  [renderer->argument_table setAddress:root_gpu atIndex:0u];
-  [encoder setComputePipelineState:renderer->sdsm_reduce_pipeline];
-  [encoder setArgumentTable:renderer->argument_table];
-  [encoder dispatchThreads:MTLSizeMake(depth.width, depth.height, 1u)
-      threadsPerThreadgroup:MTLSizeMake(16u, 16u, 1u)];
+  prepared->dispatch = (VkrMetalPacketDispatch){
+      .pipeline = renderer->sdsm_reduce_pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(depth.width, depth.height, 1u),
+      .group_size = MTLSizeMake(16u, 16u, 1u),
+  };
+  prepared->active = true_v;
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_encode_exposure_histogram(
+vkr_internal bool8_t vkr_metal_packet_prepare_exposure_histogram(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
-    const VkrRenderPacket *packet, id<MTL4ComputeCommandEncoder> encoder,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
     VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
   id<MTLTexture> source = vkr_metal_packet_pass_texture(renderer, pass, 0u);
   VkrMetalPacketGraphBufferInstance *histogram =
@@ -1815,30 +1916,20 @@ vkr_internal bool8_t vkr_metal_packet_encode_exposure_histogram(
       .histogram = histogram->resource.gpu_address,
       .source_texture_id = source.gpuResourceID._impl,
       .extent = {(uint32_t)source.width, (uint32_t)source.height},
-      .reset_reasons = packet->globals.exposure.reset_reasons,
+      .reset_reasons = packet->exposure.reset_reasons,
       .metering = vkr_exposure_gpu_metering(&renderer->exposure_metering,
-                                            &packet->globals.exposure),
+                                            &packet->exposure),
   };
-  [renderer->argument_table setAddress:root_gpu atIndex:0u];
-  [encoder setComputePipelineState:renderer->exposure_clear_pipeline];
-  [encoder setArgumentTable:renderer->argument_table];
-  [encoder dispatchThreads:MTLSizeMake(VKR_EXPOSURE_HISTOGRAM_BIN_COUNT, 1u, 1u)
-      threadsPerThreadgroup:MTLSizeMake(VKR_EXPOSURE_HISTOGRAM_BIN_COUNT, 1u,
-                                        1u)];
-  [encoder barrierAfterEncoderStages:MTLStageDispatch
-                 beforeEncoderStages:MTLStageDispatch
-                   visibilityOptions:MTL4VisibilityOptionDevice];
-  [encoder setComputePipelineState:renderer->exposure_histogram_pipeline];
-  // Every group needs all 256 lanes to initialize and merge its histogram bins.
-  [encoder dispatchThreadgroups:MTLSizeMake((source.width + 15u) / 16u,
-                                           (source.height + 15u) / 16u, 1u)
-          threadsPerThreadgroup:MTLSizeMake(16u, 16u, 1u)];
+  prepared->histogram.root = root_gpu;
+  prepared->histogram.groups =
+      MTLSizeMake((source.width + 15u) / 16u, (source.height + 15u) / 16u, 1u);
+  prepared->active = true_v;
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_encode_exposure_resolve(
+vkr_internal bool8_t vkr_metal_packet_prepare_exposure_resolve(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
-    const VkrRenderPacket *packet, id<MTL4ComputeCommandEncoder> encoder,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
     VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
   VkrMetalPacketGraphBufferInstance *histogram =
       vkr_metal_packet_pass_buffer(renderer, pass, 0u);
@@ -1860,9 +1951,9 @@ vkr_internal bool8_t vkr_metal_packet_encode_exposure_resolve(
       .state = output->resource.gpu_address,
       .previous_state = previous ? previous->resource.gpu_address
                                  : output->resource.gpu_address,
-      .reset_reasons = packet->globals.exposure.reset_reasons,
+      .reset_reasons = packet->exposure.reset_reasons,
       .metering = vkr_exposure_gpu_metering(&renderer->exposure_metering,
-                                            &packet->globals.exposure),
+                                            &packet->exposure),
   };
   if (previous)
     root->metering.delta_seconds = vkr_exposure_history_delta(
@@ -1870,12 +1961,13 @@ vkr_internal bool8_t vkr_metal_packet_encode_exposure_resolve(
         previous->history_exposure_seconds);
   else
     root->metering.history_valid = 0u;
-  [renderer->argument_table setAddress:root_gpu atIndex:0u];
-  [encoder setComputePipelineState:renderer->exposure_resolve_pipeline];
-  [encoder setArgumentTable:renderer->argument_table];
-  [encoder dispatchThreads:MTLSizeMake(VKR_EXPOSURE_HISTOGRAM_BIN_COUNT, 1u, 1u)
-      threadsPerThreadgroup:MTLSizeMake(VKR_EXPOSURE_HISTOGRAM_BIN_COUNT, 1u,
-                                        1u)];
+  prepared->dispatch = (VkrMetalPacketDispatch){
+      .pipeline = renderer->exposure_resolve_pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(VKR_EXPOSURE_HISTOGRAM_BIN_COUNT, 1u, 1u),
+      .group_size = MTLSizeMake(VKR_EXPOSURE_HISTOGRAM_BIN_COUNT, 1u, 1u),
+  };
+  prepared->active = true_v;
   return true_v;
 }
 
@@ -1893,9 +1985,9 @@ vkr_internal bool8_t vkr_metal_packet_encode_exposure_resolve(
  * Selecting on the CPU is what keeps the kernel free of a bootstrap branch and
  * keeps every sampled texel defined.
  */
-vkr_internal bool8_t vkr_metal_packet_encode_bloom(
+vkr_internal bool8_t vkr_metal_packet_prepare_bloom(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
-    const VkrRenderPacket *packet, id<MTL4ComputeCommandEncoder> encoder,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
     VkrMetalPacketFrameUpload *upload, VkrMetalPacketGraphExecutorKind kind)
     API_AVAILABLE(macos(26.0)) {
   const VkrRgImageUse *source_use =
@@ -1964,21 +2056,21 @@ vkr_internal bool8_t vkr_metal_packet_encode_bloom(
       .filter_extent = {(uint32_t)filtered.width, (uint32_t)filtered.height},
       .destination_extent = {(uint32_t)destination.width,
                              (uint32_t)destination.height},
-      .params =
-          vkr_bloom_gpu_params(&renderer->bloom_config, &packet->globals.bloom),
+      .params = vkr_bloom_gpu_params(&renderer->bloom_config, &packet->bloom),
   };
-  [renderer->argument_table setAddress:root_gpu atIndex:0u];
-  [encoder setComputePipelineState:pipeline];
-  [encoder setArgumentTable:renderer->argument_table];
-  [encoder dispatchThreads:MTLSizeMake(destination.width, destination.height,
-                                       1u)
-      threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
+  prepared->dispatch = (VkrMetalPacketDispatch){
+      .pipeline = pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(destination.width, destination.height, 1u),
+      .group_size = MTLSizeMake(8u, 8u, 1u),
+  };
+  prepared->active = true_v;
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_encode_gpu_draws(
+vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draws(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
-    const VkrRenderPacket *packet, id<MTL4RenderCommandEncoder> encoder,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
     id<MTLRenderPipelineState> pipeline,
     id<MTLRenderPipelineState> opaque_pipeline,
     VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
@@ -2014,51 +2106,32 @@ vkr_internal bool8_t vkr_metal_packet_encode_gpu_draws(
         .depth_epsilon = 1e-6f,
         .previous_depth_enabled = previous_depth ? 1u : 0u,
     };
-    [renderer->argument_table setAddress:peel_root_gpu atIndex:2u];
-    [renderer->argument_table setAddress:upload->transmission_gpu_draw_root_gpu
-                                 atIndex:0u];
-    [renderer->argument_table setAddress:upload->transmission_gpu_draw_root_gpu
-                                 atIndex:1u];
-    [encoder setArgumentTable:renderer->argument_table
-                     atStages:MTLRenderStageVertex | MTLRenderStageFragment];
+    prepared->indirect.peel_root = peel_root_gpu;
+    prepared->indirect.draw_root = upload->transmission_gpu_draw_root_gpu;
   }
-  [encoder setViewport:(MTLViewport){
-                           0.0, 0.0, renderer->prepared_frame.viewport_width,
-                           renderer->prepared_frame.viewport_height, 0.0, 1.0}];
-  [encoder setFrontFacingWinding:MTLWindingCounterClockwise];
-  [encoder setDepthStencilState:renderer->depth_write_state];
-  id<MTLRenderPipelineState> bound_pipeline = nil;
-  for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
-       ++bucket) {
-    // Opaque buckets take the discard-free variant when one exists; the
-    // transmission pass passes nil because its peel logic needs the full stage.
-    id<MTLRenderPipelineState> wanted_pipeline =
-        (opaque_pipeline &&
-         (bucket == VKR_WORLD_DRAW_STATE_OPAQUE_BACK ||
-          bucket == VKR_WORLD_DRAW_STATE_OPAQUE_DOUBLE_SIDED))
-            ? opaque_pipeline
-            : pipeline;
-    if (wanted_pipeline != bound_pipeline) {
-      [encoder setRenderPipelineState:wanted_pipeline];
-      bound_pipeline = wanted_pipeline;
-    }
-    [encoder
-        setCullMode:(bucket & 1u) != 0u ? MTLCullModeNone : MTLCullModeBack];
-    [encoder executeCommandsInBuffer:icb
-                      indirectBuffer:state->resource.gpu_address +
-                                     (uint64_t)bucket * 2u * sizeof(uint32_t)];
-  }
+  prepared->indirect.commands = icb;
+  prepared->indirect.pipeline = pipeline;
+  prepared->indirect.opaque_pipeline = opaque_pipeline;
+  prepared->indirect.arguments = state->resource.gpu_address;
+  prepared->indirect.viewport =
+      (MTLViewport){0.0,
+                    0.0,
+                    renderer->prepared_frame.viewport_width,
+                    renderer->prepared_frame.viewport_height,
+                    0.0,
+                    1.0};
+  prepared->active = true_v;
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_encode_gpu_shadow(
+vkr_internal bool8_t vkr_metal_packet_prepare_gpu_shadow(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
-    const VkrRenderPacket *packet, id<MTL4RenderCommandEncoder> encoder,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
     uint32_t cascade, uint32_t target_width, uint32_t target_height,
     VkrMetalPacketResult *result) API_AVAILABLE(macos(26.0)) {
   VkrMetalPacketGraphBufferInstance *state =
       vkr_metal_packet_pass_buffer(renderer, pass, 2u);
-  if (!packet->world || !packet->shadow || !state ||
+  if (!packet->input.world || !packet->input.shadow || !state ||
       !renderer->gpu_shadow_pipeline ||
       cascade >= renderer->prepared_frame.shadow_cascade_count)
     return false_v;
@@ -2068,48 +2141,25 @@ vkr_internal bool8_t vkr_metal_packet_encode_gpu_shadow(
       renderer->active_command_slot->gpu_draw_icbs[group];
   if (!icb)
     return false_v;
-  [encoder setViewport:(MTLViewport){0.0, 0.0, target_width, target_height, 0.0,
-                                     1.0}];
-  [encoder setFrontFacingWinding:MTLWindingCounterClockwise];
-  [encoder setDepthStencilState:renderer->depth_write_state];
-  /* Raster depth bias from the shared packet contract. Each backend lowers the
-     same constant/slope/clamp controls through its native depth-bias command;
-     receiver bias remains a separate shader input. */
-  const VkrShadowConfigOverride bias = packet->shadow->config_override
-                                           ? *packet->shadow->config_override
-                                           : (VkrShadowConfigOverride){0};
-  [encoder setDepthBias:bias.depth_bias_constant
-             slopeScale:bias.depth_bias_slope
-                  clamp:bias.depth_bias_clamp];
-  id<MTLRenderPipelineState> bound_shadow_pipeline = nil;
-  for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
-       ++bucket) {
-    // Opaque cascade geometry runs the depth-only pipeline; only the cutout
-    // buckets need the alpha-testing fragment stage.
-    id<MTLRenderPipelineState> wanted_shadow_pipeline =
-        (bucket == VKR_WORLD_DRAW_STATE_OPAQUE_BACK ||
-         bucket == VKR_WORLD_DRAW_STATE_OPAQUE_DOUBLE_SIDED)
-            ? renderer->gpu_shadow_opaque_pipeline
-            : renderer->gpu_shadow_pipeline;
-    if (wanted_shadow_pipeline != bound_shadow_pipeline) {
-      [encoder setRenderPipelineState:wanted_shadow_pipeline];
-      bound_shadow_pipeline = wanted_shadow_pipeline;
-    }
-    [encoder
-        setCullMode:(bucket & 1u) != 0u ? MTLCullModeNone : MTLCullModeBack];
-    [encoder executeCommandsInBuffer:icb
-                      indirectBuffer:state->resource.gpu_address +
-                                     ((uint64_t)view *
-                                      sizeof(VkrGpuDrawCompactionState)) +
-                                     (uint64_t)bucket * 2u * sizeof(uint32_t)];
-  }
+  prepared->indirect.commands = icb;
+  prepared->indirect.pipeline = renderer->gpu_shadow_pipeline;
+  prepared->indirect.opaque_pipeline = renderer->gpu_shadow_opaque_pipeline;
+  prepared->indirect.arguments =
+      state->resource.gpu_address +
+      (uint64_t)view * sizeof(VkrGpuDrawCompactionState);
+  prepared->indirect.viewport =
+      (MTLViewport){0.0, 0.0, target_width, target_height, 0.0, 1.0};
+  prepared->indirect.depth_bias = packet->input.shadow->config_override
+                                      ? *packet->input.shadow->config_override
+                                      : (VkrShadowConfigOverride){0};
+  prepared->active = true_v;
   (void)result;
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_encode_pass_body(
+vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
-    const VkrRenderPacket *packet, id<MTL4RenderCommandEncoder> encoder,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
     VkrMetalPacketFrameUpload *upload, VkrMetalPacketResult *result)
     API_AVAILABLE(macos(26.0)) {
   id<MTLTexture> target = nil;
@@ -2127,93 +2177,188 @@ vkr_internal bool8_t vkr_metal_packet_encode_pass_body(
   if (!vkr_metal_packet_graph_executor_kind(pass, &kind))
     return false_v;
   if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_SHADOW) {
-    if (!packet->shadow)
+    if (!packet->input.shadow)
       return true_v;
     const uint32_t cascade = pass->desc.repeat_index;
-    if (cascade >= packet->shadow->cascade_count)
+    if (cascade >= packet->input.shadow->cascade_count)
       return true_v;
-    if (!packet->world || renderer->gpu_draw_count == 0u)
+    if (!packet->input.world || renderer->gpu_draw_count == 0u)
       return true_v;
-    return vkr_metal_packet_encode_gpu_shadow(renderer, pass, packet, encoder,
-                                              cascade, (uint32_t)target.width,
-                                              (uint32_t)target.height, result);
+    return vkr_metal_packet_prepare_gpu_shadow(renderer, pass, packet, prepared,
+                                               cascade, (uint32_t)target.width,
+                                               (uint32_t)target.height, result);
   }
   if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_VBUFFER_OPAQUE)
-    return vkr_metal_packet_encode_gpu_draws(
-        renderer, pass, packet, encoder, renderer->vbuffer_pipeline,
+    return vkr_metal_packet_prepare_gpu_draws(
+        renderer, pass, packet, prepared, renderer->vbuffer_pipeline,
         renderer->vbuffer_opaque_pipeline, upload);
   if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_VBUFFER_TRANSMISSION)
-    return vkr_metal_packet_encode_gpu_draws(
-        renderer, pass, packet, encoder,
+    return vkr_metal_packet_prepare_gpu_draws(
+        renderer, pass, packet, prepared,
         renderer->transmission_vbuffer_pipeline, nil, upload);
   if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_WORLD_BLEND) {
-    if (!packet->world)
+    prepared->active = true_v;
+    if (!packet->input.world)
       return true_v;
     const Mat4 view_projection = vkr_metal_packet_clip_matrix(
         renderer->convert_vulkan_clip_y,
-        mat4_mul(packet->globals.temporal.jittered_projection,
-                 packet->globals.view));
-    if (!vkr_metal_packet_encode_draws(
-            renderer, encoder, renderer->blend_pipeline,
+        mat4_mul(packet->temporal.jittered_projection,
+                 packet->input.globals.view));
+    if (!vkr_metal_packet_prepare_draws(
+            renderer, &prepared->world.direct, renderer->blend_pipeline,
             renderer->depth_read_state, upload->direct_draws,
             upload->direct_draw_count, upload->world_instances_gpu,
             (uint32_t)target.width, (uint32_t)target.height, view_projection,
             packet, true_v, false_v, upload, &result->blend_draw_count, result))
       return false_v;
-    return vkr_metal_packet_encode_text_draws(
-        renderer, encoder, renderer->world_text_pipeline,
-        renderer->depth_read_state, packet->world->text_draws,
-        packet->world->text_draw_count, 0, (uint32_t)target.width,
+    return vkr_metal_packet_prepare_text_draws(
+        renderer, &prepared->world.text, renderer->world_text_pipeline,
+        renderer->depth_read_state, packet->input.world->text_draws,
+        packet->input.world->text_draw_count, 0, (uint32_t)target.width,
         (uint32_t)target.height, view_projection, false_v, upload,
         &result->text_draw_count, result);
   }
   if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING) {
-    if (!packet->picking || !packet->picking->pending)
+    prepared->active = true_v;
+    if (!packet->input.picking || !packet->input.picking->pending)
       return true_v;
     uint32_t picking_draw_count = 0u;
     uint32_t picking_text_draw_count = 0u;
     const Mat4 view_projection = vkr_metal_packet_clip_matrix(
         renderer->convert_vulkan_clip_y,
-        mat4_mul(packet->globals.projection, packet->globals.view));
-    if (packet->world &&
-        !vkr_metal_packet_encode_draws(
-            renderer, encoder, renderer->picking_pipeline,
+        mat4_mul(packet->input.globals.projection, packet->input.globals.view));
+    if (packet->input.world &&
+        !vkr_metal_packet_prepare_draws(
+            renderer, &prepared->world.direct, renderer->picking_pipeline,
             renderer->depth_write_state, upload->direct_draws,
             upload->direct_draw_count, upload->world_instances_gpu,
             (uint32_t)target.width, (uint32_t)target.height, view_projection,
             packet, false_v, false_v, upload, &picking_draw_count, result))
       return false_v;
-    if (packet->world &&
-        !vkr_metal_packet_encode_text_draws(
-            renderer, encoder, renderer->picking_text_pipeline,
-            renderer->depth_write_state, packet->world->text_draws,
-            packet->world->text_draw_count, 0u, (uint32_t)target.width,
+    if (packet->input.world &&
+        !vkr_metal_packet_prepare_text_draws(
+            renderer, &prepared->world.text, renderer->picking_text_pipeline,
+            renderer->depth_write_state, packet->input.world->text_draws,
+            packet->input.world->text_draw_count, 0u, (uint32_t)target.width,
             (uint32_t)target.height, view_projection, false_v, upload,
             &picking_text_draw_count, result))
       return false_v;
     return true_v;
   }
   if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_TONEMAP)
-    return vkr_metal_packet_encode_tonemap(renderer, pass, packet, encoder,
-                                           upload, (uint32_t)target.width,
-                                           (uint32_t)target.height, NULL);
+    return vkr_metal_packet_prepare_tonemap(renderer, pass, packet, prepared,
+                                            upload, (uint32_t)target.width,
+                                            (uint32_t)target.height, NULL);
   if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR)
-    return vkr_metal_packet_encode_tonemap(
-        renderer, pass, packet, encoder, upload, (uint32_t)target.width,
-        (uint32_t)target.height, packet->editor);
+    return vkr_metal_packet_prepare_tonemap(
+        renderer, pass, packet, prepared, upload, (uint32_t)target.width,
+        (uint32_t)target.height, packet->input.editor);
   if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_UI) {
-    if (!packet->ui)
+    prepared->active = true_v;
+    if (!packet->input.ui)
       return true_v;
-    return vkr_metal_packet_encode_ui_draw_list(
-        renderer, encoder, &packet->ui->draw_list, (uint32_t)target.width,
-        (uint32_t)target.height, upload, result);
+    return vkr_metal_packet_prepare_ui_draw_list(
+        renderer, &prepared->ui, &packet->input.ui->draw_list,
+        (uint32_t)target.width, (uint32_t)target.height, upload, result);
   }
   return true_v;
 }
 
+vkr_internal bool8_t vkr_metal_packet_prepare_pass(
+    VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
+    VkrMetalPacketPreparedPass *prepared, VkrMetalPacketFrameUpload *upload,
+    id<MTLBuffer> readback, uint64_t readback_offset,
+    VkrMetalPacketResult *result) API_AVAILABLE(macos(26.0)) {
+  const VkrRgPass *pass = prepared->source;
+  if (!vkr_metal_packet_prepare_dependencies(renderer, prepared))
+    return false_v;
+  if (pass->desc.type == VKR_RG_PASS_TYPE_GRAPHICS) {
+    if (!vkr_metal_packet_configure_render_pass(
+            renderer, pass, packet, renderer->render_passes[prepared->index]))
+      return false_v;
+    return vkr_metal_packet_prepare_pass_body(renderer, pass, packet, prepared,
+                                              upload, result);
+  }
+  if (pass->desc.type == VKR_RG_PASS_TYPE_TRANSFER)
+    return vkr_metal_packet_prepare_transfer(renderer, pass, prepared, upload);
+  switch (prepared->kind) {
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_IBL_BAKE:
+    return vkr_metal_packet_prepare_ibl(renderer, packet, prepared, upload,
+                                        result);
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_METALFX_TEMPORAL:
+    return vkr_metal_packet_prepare_metalfx_temporal(renderer, pass, packet,
+                                                     prepared);
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_TEMPORAL_TRANSFORM:
+    return vkr_metal_packet_prepare_temporal_transform(renderer, pass, packet,
+                                                       prepared, upload);
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_GBUFFER_RESOLVE:
+    return vkr_metal_packet_prepare_gbuffer_resolve(renderer, pass, packet,
+                                                    prepared, upload);
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_DEFERRED_LIGHTING:
+    return vkr_metal_packet_prepare_deferred_lighting(renderer, pass, packet,
+                                                      prepared, upload);
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_TEMPORAL_RESOLVE:
+    return vkr_metal_packet_prepare_temporal_resolve(renderer, pass, packet,
+                                                     prepared, upload);
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_HISTOGRAM:
+    return vkr_metal_packet_prepare_exposure_histogram(renderer, pass, packet,
+                                                       prepared, upload);
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_RESOLVE:
+    return vkr_metal_packet_prepare_exposure_resolve(renderer, pass, packet,
+                                                     prepared, upload);
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_SHADE:
+    return vkr_metal_packet_prepare_transmission_shade(renderer, pass, packet,
+                                                       prepared, upload);
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING_RESOLVE:
+    return vkr_metal_packet_prepare_picking_resolve(renderer, pass, packet,
+                                                    prepared, upload);
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_COVERAGE:
+    return vkr_metal_packet_prepare_transmission_coverage(renderer, pass,
+                                                          prepared, upload);
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_COMPACT:
+    return vkr_metal_packet_prepare_transmission_compact(renderer, pass,
+                                                         prepared, upload);
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_HZB_BUILD:
+    return vkr_metal_packet_prepare_hzb_build(renderer, pass, prepared, upload);
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_SDSM_REDUCE:
+    return vkr_metal_packet_prepare_sdsm_reduce(renderer, pass, prepared,
+                                                upload);
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_DEPTH_PREFILTER:
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_DEPTH_MIP:
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_EVALUATE:
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_DENOISE:
+    return vkr_metal_packet_prepare_gtao(renderer, pass, prepared, upload,
+                                         prepared->kind);
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_PREFILTER:
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_DOWNSAMPLE:
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_UPSAMPLE:
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_COMBINE:
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_DOWNSAMPLE:
+    return vkr_metal_packet_prepare_bloom(renderer, pass, packet, prepared,
+                                          upload, prepared->kind);
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_CLASSIFY:
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_PREFIX:
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_ENCODE:
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_CLASSIFY:
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_PREFIX:
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_ENCODE:
+    return vkr_metal_packet_prepare_gpu_draw_compute(renderer, pass, packet,
+                                                     prepared, upload);
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING_READBACK:
+    return vkr_metal_packet_prepare_picking_readback(
+        renderer, pass, packet, prepared, readback, readback_offset);
+  default:
+    return false_v;
+  }
+}
+
+#include "renderer/metal/internal/vkr_metal_packet_record.inc"
+
 bool8_t vkr_metal_packet_renderer_prepare_frame(
     VkrMetalPacketRenderer *renderer,
     const VkrRenderGraphFrameInfo *frame_info) {
+  if (renderer->frame_prepared || renderer->reserved_frame_slot)
+    return false_v;
   if (frame_info->target_width == 0 || frame_info->target_height == 0 ||
       frame_info->scene_output_width == 0 ||
       frame_info->scene_output_height == 0 || frame_info->viewport_width == 0 ||
@@ -2258,6 +2403,8 @@ bool8_t vkr_metal_packet_renderer_prepare_frame(
       return false_v;
     }
   }
+  renderer->reserved_frame_slot = renderer->active_command_slot;
+  vkr_metal_packet_detach_active_command_slot(renderer);
   renderer->frame_prepared = true_v;
   return true_v;
 }
@@ -2298,80 +2445,54 @@ vkr_metal_packet_pass_label(VkrMetalPacketRenderer *renderer, uint32_t index,
 
 bool8_t
 vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
-                                        const VkrRenderPacket *packet,
+                                        const VkrPreparedFrame *packet,
                                         VkrMetalPacketResult *out_result) {
   if (!@available(macOS 26.0, *)) {
     vkr_metal_packet_finish_frame(renderer, false_v, false_v);
     return false_v;
   }
 
-  /* prepare_frame acquires the present target before the packet exists. Patch
-     packet-derived graph conditions and viewport here, immediately before
-     graph build. */
-  renderer->prepared_frame.picking_pending =
-      packet->picking && packet->picking->pending;
-  renderer->prepared_frame.editor_enabled = packet->frame.editor_enabled;
-  renderer->prepared_frame.viewport_width =
-      packet->frame.viewport_width ? packet->frame.viewport_width
-                                   : renderer->prepared_frame.target_width;
-  renderer->prepared_frame.viewport_height =
-      packet->frame.viewport_height ? packet->frame.viewport_height
-                                    : renderer->prepared_frame.target_height;
+  if (!renderer->frame_prepared || !renderer->reserved_frame_slot)
+    return false_v;
+  if (renderer->texture_upload_batch.enabled &&
+      !vkr_metal_packet_texture_upload_batch_flush(renderer, true_v)) {
+    log_error("Metal frame preparation failed while finishing asset uploads");
+    vkr_metal_packet_finish_frame(renderer, false_v, false_v);
+    return false_v;
+  }
+  if (renderer->active_command_slot) {
+    log_error(
+        "Metal frame preparation found an unfinished upload command slot");
+    vkr_metal_packet_finish_frame(renderer, false_v, false_v);
+    return false_v;
+  }
+  renderer->active_command_slot = renderer->reserved_frame_slot;
+  /* Uploads advanced their own acquisitions past the reserved frame. Resume
+   * frame rotation after this slot so the next frame can overlap its submit. */
+  renderer->next_command_slot =
+      ((uint32_t)(renderer->reserved_frame_slot - renderer->command_slots) + 1u) %
+      renderer->command_slot_count;
+  renderer->reserved_frame_slot = NULL;
+  renderer->command_allocator = renderer->active_command_slot->allocator;
+  renderer->command_buffer = renderer->active_command_slot->buffer;
+
+  vkr_render_graph_prepare_frame(
+      packet, &renderer->bloom_config, &renderer->gtao_config,
+      &renderer->prepared_frame, &renderer->gtao_params);
   *out_result = (VkrMetalPacketResult){0};
   out_result->source_render_scale = renderer->prepared_frame.render_scale;
   out_result->source_render_width = renderer->prepared_frame.viewport_width;
   out_result->source_render_height = renderer->prepared_frame.viewport_height;
-  renderer->prepared_frame.exposure_automatic =
-      packet->globals.exposure.mode == VKR_EXPOSURE_MODE_AUTOMATIC;
-  /* A requested chain that the viewport is too small to hold is not bloom, so
-     the graph sees the same "no bloom" state it would for a frame that never
-     asked, rather than a one-mip chain nothing can upsample. */
-  renderer->prepared_frame.bloom_mip_count =
-      packet->globals.bloom.enabled
-          ? vkr_bloom_mip_count(&renderer->bloom_config,
-                                renderer->prepared_frame.viewport_width,
-                                renderer->prepared_frame.viewport_height)
-          : 0u;
-  renderer->prepared_frame.bloom_enabled =
-      renderer->prepared_frame.bloom_mip_count > 0u;
-  renderer->prepared_frame.gtao_depth_mip_count =
-      packet->globals.gtao.enabled
-          ? vkr_gtao_depth_mip_count(&renderer->gtao_config,
-                                     renderer->prepared_frame.viewport_width,
-                                     renderer->prepared_frame.viewport_height)
-          : 0u;
-  renderer->prepared_frame.gtao_enabled =
-      renderer->prepared_frame.gtao_depth_mip_count > 0u;
-  renderer->gtao_params =
-      renderer->prepared_frame.gtao_enabled
-          ? vkr_gtao_gpu_params(&renderer->gtao_config, &packet->globals.gtao,
-                                packet->globals.view,
-                                packet->globals.temporal.jittered_projection,
-                                renderer->prepared_frame.viewport_width,
-                                renderer->prepared_frame.viewport_height,
-                                packet->frame.frame_index,
-                                packet->globals.temporal.enabled)
-          : (VkrGtaoGpuParams){0};
-  renderer->prepared_frame.transmission_pending =
-      packet->world && packet->world->transmission_gpu_candidate_count > 0u;
-  renderer->prepared_frame.transmission_depth_diagnostic_enabled =
-      renderer->prepared_frame.transmission_pending && packet->debug &&
-      (packet->debug->transmission_depth_diagnostic_enabled ||
-       vkr_renderer_capture_request_contains(
-           packet->debug->capture, "transmission_visibility_ids_layer_4"));
   renderer->prepared_frame.transmission_compact_enabled =
       renderer->transmission_compact_enabled &&
       renderer->prepared_frame.transmission_pending;
-  renderer->prepared_frame.timing_enabled =
-      packet->debug && packet->debug->enable_timing &&
-      packet->debug->capture_pass_timestamps;
   renderer->prepared_frame.hzb_history_valid = false_v;
   renderer->selected_hzb_history_instance = UINT32_MAX;
   renderer->selected_temporal_history_instance = UINT32_MAX;
   renderer->selected_exposure_history_instance = UINT32_MAX;
   renderer->current_hzb_view_projection = vkr_metal_packet_clip_matrix(
       renderer->convert_vulkan_clip_y,
-      mat4_mul(packet->globals.projection, packet->globals.view));
+      mat4_mul(packet->input.globals.projection, packet->input.globals.view));
   /* Seeded valid so a frame with no candidates publishes an honest zero rather
      than reading as an absent producer; the pack path overwrites it on
      failure. */
@@ -2380,29 +2501,11 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   const float64_t candidate_hash_start = vkr_platform_get_absolute_time();
 #endif
   renderer->current_hzb_world_epoch =
-      vkr_metal_packet_world_occluder_epoch(packet->world);
+      vkr_metal_packet_world_occluder_epoch(packet->input.world);
 #if VKR_METRICS_ENABLED
   renderer->packet_build.candidate_hash_ns =
       vkr_metrics_elapsed_ns(candidate_hash_start);
 #endif
-  uint32_t hzb_mip_count = 1u;
-  uint32_t hzb_max_extent = MAX(renderer->prepared_frame.viewport_width,
-                                renderer->prepared_frame.viewport_height);
-  while (hzb_max_extent > 1u) {
-    hzb_max_extent >>= 1u;
-    hzb_mip_count++;
-  }
-  renderer->prepared_frame.hzb_reduce_pass_count = hzb_mip_count - 1u;
-  renderer->prepared_frame.transmission_rough_mip_pass_count =
-      Min(hzb_mip_count, 6u) - 1u;
-  renderer->prepared_frame.shadow_cascade_count =
-      packet->shadow
-          ? MIN(packet->shadow->cascade_count, VKR_SHADOW_CASCADE_COUNT_MAX)
-          : 0u;
-  renderer->prepared_frame.sdsm_enabled =
-      packet->shadow && packet->shadow->sdsm_enabled;
-  renderer->prepared_frame.shadow_cascade_render_mask =
-      packet->shadow ? packet->shadow->cascade_render_mask : 0u;
   const uint64_t completed_submit_value = renderer->completion.signaledValue;
   vkr_capture_ring_collect(&renderer->capture_ring, completed_submit_value);
   vkr_metal_packet_collect_retired_image_views(renderer,
@@ -2472,14 +2575,14 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   VkrTextureHandle ibl_source = VKR_TEXTURE_HANDLE_INVALID;
   const bool8_t ibl = vkr_metal_packet_ibl_source(packet, &ibl_source);
   const bool8_t ibl_bake = vkr_metal_packet_ibl_needs_bake(renderer, packet);
-  const bool8_t pass_timing_requested = packet->debug &&
-                                        packet->debug->enable_timing &&
-                                        packet->debug->capture_pass_timestamps;
+  const bool8_t pass_timing_requested =
+      packet->input.debug && packet->input.debug->enable_timing &&
+      packet->input.debug->capture_pass_timestamps;
   const bool8_t submission_timing_requested =
       renderer->metalfx_dynamic_resolution_enabled ||
-      (packet->debug && packet->debug->enable_timing &&
-       packet->debug->capture_submission_timing);
-  const bool8_t deferred_diagnostics = packet->world != NULL;
+      (packet->input.debug && packet->input.debug->enable_timing &&
+       packet->input.debug->capture_submission_timing);
+  const bool8_t deferred_diagnostics = packet->input.world != NULL;
   const bool8_t synchronous_deferred_validation =
       renderer->synchronous_validation_readback && deferred_diagnostics;
   const bool8_t transmission_coverage =
@@ -2506,7 +2609,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     return false_v;
   }
   const VkrCaptureBatchRequest *capture_request =
-      packet->debug ? packet->debug->capture : NULL;
+      packet->input.debug ? packet->input.debug->capture : NULL;
   uint64_t capture_base = 0;
   if (capture_count > 0) {
     capture_base = capture_plans[0].buffer_offset;
@@ -2516,9 +2619,9 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
           .buffer_offset = capture_plans[i].buffer_offset - capture_base,
       };
     }
-    const VkrRendererError capture_error =
-        vkr_capture_ring_reserve(&renderer->capture_ring, capture_request,
-                                 capture_ring_plans, packet->frame.frame_index);
+    const VkrRendererError capture_error = vkr_capture_ring_reserve(
+        &renderer->capture_ring, capture_request, capture_ring_plans,
+        packet->input.frame.frame_index);
     if (capture_error != VKR_RENDERER_ERROR_NONE) {
       out_result->capture = (VkrCapturePollResult){
           .status = VKR_CAPTURE_STATUS_FAILED, .error = capture_error};
@@ -2528,7 +2631,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   }
   VkrMetalPacketFrameUpload frame_upload = {0};
   const VkrMetalPacketTemporalSceneState temporal_scene = {
-      .signature = packet->globals.temporal.enabled && !renderer->metalfx_enabled
+      .signature = packet->temporal.enabled && !renderer->metalfx_enabled
                        ? vkr_temporal_scene_signature(packet)
                        : (VkrTemporalSceneSignature){0},
       .radiance_revision = renderer->radiance_revision,
@@ -2537,8 +2640,8 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   };
   if (!vkr_metal_packet_prepare_upload(renderer, packet, &frame_upload)) {
     log_error("Metal packet stage failed: frame upload (world=%u ui=%u)",
-              packet->world ? packet->world->instance_count : 0,
-              packet->ui ? packet->ui->draw_list.vertex_count : 0);
+              packet->input.world ? packet->input.world->instance_count : 0,
+              packet->input.ui ? packet->input.ui->draw_list.vertex_count : 0);
     vkr_metal_packet_rollback_gpu_draw_resource_preparation(renderer, packet);
     if (frame_upload.acquired)
       vkr_metal_memory_device_cancel_ring(
@@ -2580,6 +2683,147 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   }
   MemZero(readback.cpu_address, capture_size);
 
+  const VkrGpuDependency capture_dependency = {
+      .src_stages = VKR_GPU_STAGE_COLOR_OUTPUT,
+      .dst_stages = VKR_GPU_STAGE_TRANSFER,
+      .visibility = VKR_GPU_VISIBILITY_DEVICE,
+  };
+  const VkrGpuDependency shadow_capture_dependency = {
+      .src_stages = VKR_GPU_STAGE_LATE_DEPTH,
+      .dst_stages = VKR_GPU_STAGE_TRANSFER,
+      .visibility = VKR_GPU_VISIBILITY_DEVICE,
+  };
+  const VkrGpuDependency ibl_capture_dependency = {
+      .src_stages = VKR_GPU_STAGE_COMPUTE_SHADER,
+      .dst_stages = VKR_GPU_STAGE_TRANSFER,
+      .visibility = VKR_GPU_VISIBILITY_DEVICE,
+  };
+  const VkrGpuDependency batch_capture_dependency = {
+      .src_stages = VKR_GPU_STAGE_ALL_GRAPHICS | VKR_GPU_STAGE_COMPUTE_SHADER |
+                    VKR_GPU_STAGE_TRANSFER,
+      .dst_stages = VKR_GPU_STAGE_COMPUTE_SHADER | VKR_GPU_STAGE_TRANSFER,
+      .visibility = VKR_GPU_VISIBILITY_DEVICE,
+  };
+  VkrMetalDependency capture_barrier = {0};
+  VkrMetalDependency shadow_capture_barrier = {0};
+  VkrMetalDependency ibl_capture_barrier = {0};
+  VkrMetalDependency batch_capture_barrier = {0};
+  bool8_t passed =
+      vkr_metal_dependency_lower(&capture_dependency, &capture_barrier) &&
+      vkr_metal_dependency_lower(&shadow_capture_dependency,
+                                 &shadow_capture_barrier) &&
+      vkr_metal_dependency_lower(&ibl_capture_dependency,
+                                 &ibl_capture_barrier) &&
+      vkr_metal_dependency_lower(&batch_capture_dependency,
+                                 &batch_capture_barrier);
+  const VkrRgPass *failed_pass = NULL;
+  VkrMetalPacketGraphBufferInstance *deferred_state = NULL;
+  VkrMetalPacketGraphBufferInstance *transmission_deferred_state = NULL;
+  VkrMetalPacketGraphBufferInstance *sdsm_reduce_state = NULL;
+  VkrMetalPacketGraphBufferInstance *exposure_histogram = NULL;
+  VkrMetalPacketGraphBufferInstance *exposure_state = NULL;
+  const uint64_t prepared_count = renderer->graph->execution_order.length;
+  VkrMetalPacketPreparedPass *prepared_passes =
+      vkr_allocator_alloc(&renderer->graph_frame_allocator,
+                          prepared_count * sizeof(*prepared_passes),
+                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  passed = passed && (prepared_count == 0u || prepared_passes != NULL);
+  for (uint64_t order = 0u; passed && order < prepared_count; ++order) {
+    const CFTimeInterval preparation_cpu_begin = CACurrentMediaTime();
+    const uint32_t index = renderer->graph->execution_order.data[order];
+    const VkrRgPass *pass = &renderer->graph->passes.data[index];
+    VkrMetalPacketPreparedPass *prepared = &prepared_passes[order];
+    *prepared = (VkrMetalPacketPreparedPass){
+        .source = pass,
+        .index = index,
+        .last_present_writer =
+            vkr_metal_packet_is_last_present_writer(renderer, order),
+        .label = vkr_metal_packet_pass_label(renderer, index, pass),
+    };
+    if (pass->culled)
+      continue;
+    if (!vkr_metal_packet_graph_executor_kind(pass, &prepared->kind) ||
+        !vkr_metal_packet_prepare_pass(
+            renderer, packet, prepared, &frame_upload,
+            (id<MTLBuffer>)readback_object, readback_slice.offset + 8u,
+            out_result)) {
+      failed_pass = pass;
+      passed = false_v;
+      break;
+    }
+    switch (prepared->kind) {
+    case VKR_METAL_PACKET_GRAPH_EXECUTOR_GBUFFER_RESOLVE:
+      if (deferred_diagnostics)
+        deferred_state = vkr_metal_packet_pass_buffer(renderer, pass, 7u);
+      break;
+    case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_SHADE:
+      if (deferred_diagnostics)
+        transmission_deferred_state =
+            vkr_metal_packet_pass_buffer(renderer, pass, 3u);
+      break;
+    case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_COVERAGE:
+      if (transmission_coverage)
+        transmission_deferred_state =
+            vkr_metal_packet_pass_buffer(renderer, pass, 1u);
+      break;
+    case VKR_METAL_PACKET_GRAPH_EXECUTOR_SDSM_REDUCE:
+      sdsm_reduce_state = vkr_metal_packet_pass_buffer(renderer, pass, 2u);
+      break;
+    case VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_HISTOGRAM:
+      exposure_histogram = vkr_metal_packet_pass_buffer(renderer, pass, 1u);
+      break;
+    case VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_RESOLVE:
+      exposure_state = vkr_metal_packet_pass_buffer(renderer, pass, 1u);
+      break;
+    default:
+      break;
+    }
+    prepared->preparation_cpu_ms =
+        (CACurrentMediaTime() - preparation_cpu_begin) * 1000.0;
+  }
+  id<MTLTexture> present =
+      vkr_metal_packet_texture(renderer, renderer->graph->present_image);
+  id<MTLTexture> shadow =
+      vkr_metal_packet_named_texture(renderer, "shadow_map");
+  const VkrMetalPacketGraphBufferInstance *temporal_wait_source =
+      renderer->selected_temporal_history_instance != UINT32_MAX
+          ? vkr_metal_packet_graph_buffer_instance(
+                renderer, renderer->temporal_transform_history_handle,
+                renderer->selected_temporal_history_instance)
+          : NULL;
+  const uint64_t temporal_wait_value =
+      temporal_wait_source ? temporal_wait_source->history_producer_submit_value
+                           : 0u;
+  passed =
+      passed && (renderer->selected_temporal_history_instance == UINT32_MAX ||
+                 temporal_wait_source);
+  passed = passed && present && shadow &&
+           (!deferred_diagnostics || deferred_state) &&
+           (!(renderer->prepared_frame.transmission_pending &&
+              (deferred_diagnostics || transmission_coverage)) ||
+            transmission_deferred_state) &&
+           (!readback_layout.sdsm_size || sdsm_reduce_state) &&
+           (!readback_layout.exposure_size ||
+            (exposure_histogram && exposure_state));
+  if (!passed) {
+    if (failed_pass) {
+      log_error("Metal frame preparation failed at pass '%.*s'",
+                (int)failed_pass->desc.name.length, failed_pass->desc.name.str);
+    } else {
+      log_error("Metal frame preparation failed for capture resources or "
+                "native dependencies");
+    }
+    vkr_metal_packet_rollback_gpu_draw_resource_preparation(renderer, packet);
+    vkr_metal_packet_abandon_ibl_sh_candidate(renderer, &frame_upload);
+    vkr_metal_memory_device_cancel_ring(
+        renderer->memory, VKR_METAL_RING_KIND_READBACK, readback_slice);
+    vkr_metal_memory_device_cancel_ring(
+        renderer->memory, VKR_METAL_RING_KIND_UPLOAD, frame_upload.slice);
+    vkr_metal_packet_capture_fail_reserved(
+        renderer, capture_request, VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED);
+    vkr_metal_packet_finish_frame(renderer, true_v, false_v);
+    return false_v;
+  }
   if (pass_timing_requested) {
     [renderer->active_command_slot->timestamp_heap
         invalidateCounterRange:NSMakeRange(
@@ -2605,293 +2849,117 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
         renderer->active_command_slot->gpu_draw_icb_residencies[group];
   [renderer->command_buffer useResidencySets:residency_sets
                                        count:residency_set_count];
-  const VkrGpuDependency capture_dependency = {
-      .src_stages = VKR_GPU_STAGE_COLOR_OUTPUT,
-      .dst_stages = VKR_GPU_STAGE_TRANSFER,
-      .visibility = VKR_GPU_VISIBILITY_DEVICE,
-  };
-  const VkrGpuDependency shadow_capture_dependency = {
-      .src_stages = VKR_GPU_STAGE_LATE_DEPTH,
-      .dst_stages = VKR_GPU_STAGE_TRANSFER,
-      .visibility = VKR_GPU_VISIBILITY_DEVICE,
-  };
-  const VkrGpuDependency ibl_capture_dependency = {
-      .src_stages = VKR_GPU_STAGE_COMPUTE_SHADER,
-      .dst_stages = VKR_GPU_STAGE_TRANSFER,
-      .visibility = VKR_GPU_VISIBILITY_DEVICE,
-  };
-  const VkrGpuDependency batch_capture_dependency = {
-      .src_stages = VKR_GPU_STAGE_ALL_GRAPHICS | VKR_GPU_STAGE_COMPUTE_SHADER |
-                    VKR_GPU_STAGE_TRANSFER,
-      .dst_stages = VKR_GPU_STAGE_COMPUTE_SHADER | VKR_GPU_STAGE_TRANSFER,
-      .visibility = VKR_GPU_VISIBILITY_DEVICE,
-  };
-  bool8_t passed = true_v;
-  const VkrRgPass *failed_pass = NULL;
-  VkrMetalPacketGraphBufferInstance *deferred_state = NULL;
-  VkrMetalPacketGraphBufferInstance *transmission_deferred_state = NULL;
-  VkrMetalPacketGraphBufferInstance *sdsm_reduce_state = NULL;
-  VkrMetalPacketGraphBufferInstance *exposure_histogram = NULL;
-  VkrMetalPacketGraphBufferInstance *exposure_state = NULL;
-  for (uint64_t order = 0;
-       passed && order < renderer->graph->execution_order.length; ++order) {
-    const uint32_t *pass_index =
-        vector_get_uint32_t(&renderer->graph->execution_order, order);
-    VkrRgPass *pass =
-        vector_get_VkrRgPass(&renderer->graph->passes, *pass_index);
-    if (!pass || pass->culled)
+  for (uint64_t order = 0u; passed && order < prepared_count; ++order) {
+    const VkrMetalPacketPreparedPass *prepared = &prepared_passes[order];
+    const VkrRgPass *pass = prepared->source;
+    const uint32_t *pass_index = &prepared->index;
+    if (pass->culled)
       continue;
-    const bool8_t metalfx_pass = vkr_metal_packet_graph_pass_is(
-        pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_METALFX_TEMPORAL);
+    const bool8_t metalfx_pass =
+        prepared->kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_METALFX_TEMPORAL;
     const bool8_t encoder_timing_pass =
         pass_timing_requested && pass->desc.type != VKR_RG_PASS_TYPE_TRANSFER &&
         !metalfx_pass;
     const CFTimeInterval pass_cpu_begin = CACurrentMediaTime();
-    const bool8_t last_present_writer =
-        vkr_metal_packet_is_last_present_writer(renderer, order);
     if (pass->desc.type == VKR_RG_PASS_TYPE_GRAPHICS) {
-      MTL4RenderPassDescriptor *descriptor =
-          renderer->render_passes[*pass_index];
-      passed = vkr_metal_packet_configure_render_pass(renderer, pass, packet,
-                                                      descriptor);
-      id<MTL4RenderCommandEncoder> encoder =
-          passed ? [renderer->command_buffer
-                       renderCommandEncoderWithDescriptor:descriptor]
-                 : nil;
-      encoder.label = vkr_metal_packet_pass_label(renderer, *pass_index, pass);
-      if (encoder_timing_pass && encoder) {
-        [encoder writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
-                                    afterStage:MTLRenderStageFragment
-                                      intoHeap:renderer->active_command_slot
-                                                   ->timestamp_heap
-                                       atIndex:(NSUInteger)*pass_index * 2u];
+      id<MTL4RenderCommandEncoder> encoder = [renderer->command_buffer
+          renderCommandEncoderWithDescriptor:renderer->render_passes
+                                                 [prepared->index]];
+      if (!encoder) {
+        passed = false_v;
+        failed_pass = pass;
+        break;
       }
-      passed =
-          passed && encoder &&
-          vkr_metal_packet_encode_consumers(encoder, pass,
-                                            &out_result->dependency_count) &&
-          vkr_metal_packet_encode_pass_body(renderer, pass, packet, encoder,
-                                            &frame_upload, out_result) &&
-          vkr_metal_packet_encode_producers(renderer, encoder, *pass_index,
-                                            &out_result->dependency_count);
-      if (passed && last_present_writer) {
-        passed = vkr_metal_packet_encode_dependency(
-            encoder, &capture_dependency, true_v);
-        out_result->dependency_count++;
-      }
-      if (passed &&
-          vkr_metal_packet_graph_pass_is(
-              pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_SHADOW) &&
-          pass->desc.repeat_index + 1 ==
-              renderer->prepared_frame.shadow_cascade_count) {
-        passed = vkr_metal_packet_encode_dependency(
-            encoder, &shadow_capture_dependency, true_v);
-        out_result->dependency_count++;
-      }
-      if (passed && capture_count > 0) {
-        passed = vkr_metal_packet_encode_dependency(
-            encoder, &batch_capture_dependency, true_v);
-        out_result->dependency_count++;
-      }
-      if (encoder_timing_pass && passed) {
+      encoder.label = prepared->label;
+      if (encoder_timing_pass)
         [encoder
             writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
                                afterStage:MTLRenderStageFragment
                                  intoHeap:renderer->active_command_slot
                                               ->timestamp_heap
-                                  atIndex:(NSUInteger)*pass_index * 2u + 1u];
+                                  atIndex:(NSUInteger)prepared->index * 2u];
+      vkr_metal_packet_record_consumers(encoder, prepared);
+      if (prepared->active)
+        vkr_metal_packet_record_graphics_pass(renderer, encoder, prepared);
+      vkr_metal_packet_record_producers(encoder, prepared);
+      out_result->dependency_count +=
+          prepared->consumer_count + prepared->producer_count;
+      if (prepared->last_present_writer) {
+        vkr_metal_dependency_encode_producer(encoder, &capture_barrier);
+        out_result->dependency_count++;
       }
+      if (prepared->kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_SHADOW &&
+          pass->desc.repeat_index + 1u ==
+              renderer->prepared_frame.shadow_cascade_count) {
+        vkr_metal_dependency_encode_producer(encoder, &shadow_capture_barrier);
+        out_result->dependency_count++;
+      }
+      if (capture_count > 0u) {
+        vkr_metal_dependency_encode_producer(encoder, &batch_capture_barrier);
+        out_result->dependency_count++;
+      }
+      if (encoder_timing_pass)
+        [encoder
+            writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
+                               afterStage:MTLRenderStageFragment
+                                 intoHeap:renderer->active_command_slot
+                                              ->timestamp_heap
+                                  atIndex:(NSUInteger)prepared->index * 2u +
+                                          1u];
       [encoder endEncoding];
       out_result->graphics_pass_count++;
     } else if (metalfx_pass) {
-      /* MetalFX owns its internal Metal 4 encoders. The staging producer and
-         each downstream consumer retain the graph-authored queue barriers on
-         their own encoders, so no empty compatibility encoder is inserted. */
-      passed = vkr_metal_packet_encode_metalfx_temporal(renderer, pass, packet);
+      vkr_metal_packet_record_metalfx(renderer, prepared);
       out_result->compute_pass_count++;
     } else {
       id<MTL4ComputeCommandEncoder> encoder =
           [renderer->command_buffer computeCommandEncoder];
-      encoder.label = vkr_metal_packet_pass_label(renderer, *pass_index, pass);
-      if (encoder_timing_pass && encoder) {
-        [encoder writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
-                                      intoHeap:renderer->active_command_slot
-                                                   ->timestamp_heap
-                                       atIndex:(NSUInteger)*pass_index * 2u];
+      if (!encoder) {
+        passed = false_v;
+        failed_pass = pass;
+        break;
       }
-      passed = encoder && vkr_metal_packet_encode_consumers(
-                              encoder, pass, &out_result->dependency_count);
-      if (passed && pass->desc.type == VKR_RG_PASS_TYPE_TRANSFER)
-        passed = vkr_metal_packet_encode_transfer(renderer, pass, encoder,
-                                                  &frame_upload);
-      if (passed && vkr_metal_packet_graph_pass_is(
-                        pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_IBL_BAKE))
-        passed = vkr_metal_packet_encode_ibl(renderer, packet, encoder,
-                                             &frame_upload, out_result);
-      if (passed &&
-          vkr_metal_packet_graph_pass_is(
-              pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_TEMPORAL_TRANSFORM))
-        passed = vkr_metal_packet_encode_temporal_transform(
-            renderer, pass, packet, encoder, &frame_upload);
-      if (passed && vkr_metal_packet_graph_pass_is(
-                        pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_GBUFFER_RESOLVE))
-        passed = vkr_metal_packet_encode_gbuffer_resolve(
-            renderer, pass, packet, encoder, &frame_upload);
-      for (uint32_t gtao_kind =
-               VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_DEPTH_PREFILTER;
-           passed && gtao_kind <= VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_DENOISE;
-           ++gtao_kind) {
-        if (!vkr_metal_packet_graph_pass_is(
-                pass, (VkrMetalPacketGraphExecutorKind)gtao_kind))
-          continue;
-        passed = vkr_metal_packet_encode_gtao(
-            renderer, pass, encoder, &frame_upload,
-            (VkrMetalPacketGraphExecutorKind)gtao_kind);
-      }
-      if (passed &&
-          vkr_metal_packet_graph_pass_is(
-              pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_DEFERRED_LIGHTING))
-        passed = vkr_metal_packet_encode_deferred_lighting(
-            renderer, pass, packet, encoder, &frame_upload);
-      if (passed && vkr_metal_packet_graph_pass_is(
-                        pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_TEMPORAL_RESOLVE))
-        passed = vkr_metal_packet_encode_temporal_resolve(
-            renderer, pass, packet, encoder, &frame_upload);
-      if (passed &&
-          vkr_metal_packet_graph_pass_is(
-              pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_HISTOGRAM))
-        passed = vkr_metal_packet_encode_exposure_histogram(
-            renderer, pass, packet, encoder, &frame_upload);
-      if (passed &&
-          vkr_metal_packet_graph_pass_is(
-              pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_HISTOGRAM))
-        exposure_histogram = vkr_metal_packet_pass_buffer(renderer, pass, 1u);
-      if (passed && vkr_metal_packet_graph_pass_is(
-                        pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_RESOLVE))
-        passed = vkr_metal_packet_encode_exposure_resolve(
-            renderer, pass, packet, encoder, &frame_upload);
-      if (passed && vkr_metal_packet_graph_pass_is(
-                        pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_RESOLVE))
-        exposure_state = vkr_metal_packet_pass_buffer(renderer, pass, 1u);
-      /* All four bloom pass kinds share one encoder; only the pipeline and the
-         coarse-source selection differ, so the kind is carried in rather than
-         split into three near-identical call sites. */
-      for (uint32_t bloom_kind =
-               VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_PREFILTER;
-           passed &&
-           bloom_kind <= VKR_METAL_PACKET_GRAPH_EXECUTOR_BLOOM_COMBINE;
-           ++bloom_kind) {
-        if (!vkr_metal_packet_graph_pass_is(
-                pass, (VkrMetalPacketGraphExecutorKind)bloom_kind))
-          continue;
-        passed = vkr_metal_packet_encode_bloom(
-            renderer, pass, packet, encoder, &frame_upload,
-            (VkrMetalPacketGraphExecutorKind)bloom_kind);
-      }
-      if (passed &&
-          vkr_metal_packet_graph_pass_is(
-              pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_DOWNSAMPLE))
-        passed = vkr_metal_packet_encode_bloom(
-            renderer, pass, packet, encoder, &frame_upload,
-            VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_DOWNSAMPLE);
-      if (passed &&
-          vkr_metal_packet_graph_pass_is(
-              pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_SHADE))
-        passed = vkr_metal_packet_encode_transmission_shade(
-            renderer, pass, packet, encoder, &frame_upload);
-      if (passed &&
-          vkr_metal_packet_graph_pass_is(
-              pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_COVERAGE))
-        passed = vkr_metal_packet_encode_transmission_coverage(
-            renderer, pass, encoder, &frame_upload);
-      if (passed &&
-          vkr_metal_packet_graph_pass_is(
-              pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_COMPACT))
-        passed = vkr_metal_packet_encode_transmission_compact(
-            renderer, pass, encoder, &frame_upload);
-      if (passed && vkr_metal_packet_graph_pass_is(
-                        pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING_RESOLVE))
-        passed = vkr_metal_packet_encode_picking_resolve(
-            renderer, pass, packet, encoder, &frame_upload);
-      if (passed && vkr_metal_packet_graph_pass_is(
-                        pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_HZB_BUILD))
-        passed = vkr_metal_packet_encode_hzb_build(renderer, pass, encoder,
-                                                   &frame_upload);
-      if (passed && vkr_metal_packet_graph_pass_is(
-                        pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_SDSM_REDUCE))
-        passed = vkr_metal_packet_encode_sdsm_reduce(renderer, pass, encoder,
-                                                     &frame_upload);
-      if (passed && vkr_metal_packet_graph_pass_is(
-                        pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_SDSM_REDUCE))
-        sdsm_reduce_state = vkr_metal_packet_pass_buffer(renderer, pass, 2u);
-      if (passed && deferred_diagnostics &&
-          vkr_metal_packet_graph_pass_is(
-              pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_GBUFFER_RESOLVE))
-        deferred_state = vkr_metal_packet_pass_buffer(renderer, pass, 7u);
-      if (passed && deferred_diagnostics &&
-          vkr_metal_packet_graph_pass_is(
-              pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_SHADE))
-        transmission_deferred_state =
-            vkr_metal_packet_pass_buffer(renderer, pass, 3u);
-      if (passed && transmission_coverage &&
-          vkr_metal_packet_graph_pass_is(
-              pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_COVERAGE))
-        transmission_deferred_state =
-            vkr_metal_packet_pass_buffer(renderer, pass, 1u);
-      if (passed &&
-          (vkr_metal_packet_graph_pass_is(
-               pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_CLASSIFY) ||
-           vkr_metal_packet_graph_pass_is(
-               pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_PREFIX) ||
-           vkr_metal_packet_graph_pass_is(
-               pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_ENCODE) ||
-           vkr_metal_packet_graph_pass_is(
-               pass,
-               VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_CLASSIFY) ||
-           vkr_metal_packet_graph_pass_is(
-               pass,
-               VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_PREFIX) ||
-           vkr_metal_packet_graph_pass_is(
-               pass,
-               VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_ENCODE)))
-        passed = vkr_metal_packet_encode_gpu_draw_compute(
-            renderer, pass, packet, encoder, &frame_upload);
-      if (passed && picking)
-        passed = vkr_metal_packet_encode_picking_readback(
-            renderer, pass, packet, encoder, (id<MTLBuffer>)readback_object,
-            readback_slice.offset + 8);
-      if (passed)
-        passed = vkr_metal_packet_encode_producers(
-            renderer, encoder, *pass_index, &out_result->dependency_count);
-      if (passed && ibl_bake &&
-          vkr_metal_packet_graph_pass_is(
-              pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_IBL_BAKE)) {
-        passed = vkr_metal_packet_encode_dependency(
-            encoder, &ibl_capture_dependency, true_v);
-        out_result->dependency_count++;
-      }
-      if (passed && (capture_count > 0 || deferred_diagnostics ||
-                     transmission_coverage || readback_layout.sdsm_size > 0u ||
-                     readback_layout.exposure_size > 0u)) {
-        passed = vkr_metal_packet_encode_dependency(
-            encoder, &batch_capture_dependency, true_v);
-        out_result->dependency_count++;
-      }
-      if (encoder_timing_pass && passed) {
+      encoder.label = prepared->label;
+      if (encoder_timing_pass)
         [encoder
             writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
                                  intoHeap:renderer->active_command_slot
                                               ->timestamp_heap
-                                  atIndex:(NSUInteger)*pass_index * 2u + 1u];
+                                  atIndex:(NSUInteger)prepared->index * 2u];
+      vkr_metal_packet_record_consumers(encoder, prepared);
+      if (prepared->active) {
+        if (pass->desc.type == VKR_RG_PASS_TYPE_TRANSFER)
+          vkr_metal_packet_record_transfer(encoder, &prepared->transfer);
+        else
+          vkr_metal_packet_record_compute_pass(renderer, encoder, prepared);
       }
+      vkr_metal_packet_record_producers(encoder, prepared);
+      out_result->dependency_count +=
+          prepared->consumer_count + prepared->producer_count;
+      if (ibl_bake &&
+          prepared->kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_IBL_BAKE) {
+        vkr_metal_dependency_encode_producer(encoder, &ibl_capture_barrier);
+        out_result->dependency_count++;
+      }
+      if (capture_count > 0u || deferred_diagnostics || transmission_coverage ||
+          readback_layout.sdsm_size > 0u ||
+          readback_layout.exposure_size > 0u) {
+        vkr_metal_dependency_encode_producer(encoder, &batch_capture_barrier);
+        out_result->dependency_count++;
+      }
+      if (encoder_timing_pass)
+        [encoder
+            writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
+                                 intoHeap:renderer->active_command_slot
+                                              ->timestamp_heap
+                                  atIndex:(NSUInteger)prepared->index * 2u +
+                                          1u];
       [encoder endEncoding];
       if (pass->desc.type == VKR_RG_PASS_TYPE_TRANSFER)
         out_result->transfer_pass_count++;
       else
         out_result->compute_pass_count++;
     }
-    if (!passed)
-      failed_pass = pass;
     if (out_result->pass_timing_count < VKR_METAL_PACKET_MAX_PASS_TIMINGS) {
       VkrMetalPacketPassTiming *timing =
           &out_result->pass_timings[out_result->pass_timing_count++];
@@ -2902,7 +2970,8 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
         MemCopy(timing->name, pass->desc.name.str, name_length);
       timing->name[name_length] = '\0';
       timing->pass_index = *pass_index;
-      timing->cpu_ms = (CACurrentMediaTime() - pass_cpu_begin) * 1000.0;
+      timing->cpu_ms = prepared->preparation_cpu_ms +
+                       (CACurrentMediaTime() - pass_cpu_begin) * 1000.0;
       timing->valid = false_v;
       timing->unavailable_reason =
           encoder_timing_pass
@@ -2913,27 +2982,23 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     }
     out_result->executed_pass_count++;
   }
-  id<MTLTexture> present =
-      vkr_metal_packet_texture(renderer, renderer->graph->present_image);
   id<MTL4ComputeCommandEncoder> capture_encoder =
       passed ? [renderer->command_buffer computeCommandEncoder] : nil;
+  passed = passed && capture_encoder != nil;
   if (passed) {
-    passed = capture_encoder && present &&
-             vkr_metal_packet_encode_dependency(capture_encoder,
-                                                &capture_dependency, false_v) &&
-             vkr_metal_packet_encode_dependency(
-                 capture_encoder, &shadow_capture_dependency, false_v);
-    out_result->dependency_count += 2;
-    if (passed && ibl_bake) {
-      passed = vkr_metal_packet_encode_dependency(
-          capture_encoder, &ibl_capture_dependency, false_v);
+    vkr_metal_dependency_encode_consumer(capture_encoder, &capture_barrier);
+    vkr_metal_dependency_encode_consumer(capture_encoder,
+                                         &shadow_capture_barrier);
+    out_result->dependency_count += 2u;
+    if (ibl_bake) {
+      vkr_metal_dependency_encode_consumer(capture_encoder,
+                                           &ibl_capture_barrier);
       out_result->dependency_count++;
     }
-    if (passed && (capture_count > 0 || deferred_diagnostics ||
-                   transmission_coverage || readback_layout.sdsm_size > 0u ||
-                   readback_layout.exposure_size > 0u)) {
-      passed = vkr_metal_packet_encode_dependency(
-          capture_encoder, &batch_capture_dependency, false_v);
+    if (capture_count > 0u || deferred_diagnostics || transmission_coverage ||
+        readback_layout.sdsm_size > 0u || readback_layout.exposure_size > 0u) {
+      vkr_metal_dependency_encode_consumer(capture_encoder,
+                                           &batch_capture_barrier);
       out_result->dependency_count++;
     }
   }
@@ -2948,22 +3013,16 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
               destinationBytesPerRow:4
             destinationBytesPerImage:4
                              options:MTLBlitOptionNone];
-    id<MTLTexture> shadow =
-        vkr_metal_packet_named_texture(renderer, "shadow_map");
-    if (!shadow) {
-      passed = false_v;
-    } else {
-      [capture_encoder copyFromTexture:shadow
-                           sourceSlice:0
-                           sourceLevel:0
-                          sourceOrigin:MTLOriginMake(0, 0, 0)
-                            sourceSize:MTLSizeMake(1, 1, 1)
-                              toBuffer:(id<MTLBuffer>)readback_object
-                     destinationOffset:readback_slice.offset + 4
-                destinationBytesPerRow:sizeof(float32_t)
-              destinationBytesPerImage:sizeof(float32_t)
-                               options:MTLBlitOptionNone];
-    }
+    [capture_encoder copyFromTexture:shadow
+                         sourceSlice:0
+                         sourceLevel:0
+                        sourceOrigin:MTLOriginMake(0, 0, 0)
+                          sourceSize:MTLSizeMake(1, 1, 1)
+                            toBuffer:(id<MTLBuffer>)readback_object
+                   destinationOffset:readback_slice.offset + 4
+              destinationBytesPerRow:sizeof(float32_t)
+            destinationBytesPerImage:sizeof(float32_t)
+                             options:MTLBlitOptionNone];
     if (passed && ibl) {
       for (uint32_t mip = 0; mip < VKR_IBL_PREFILTER_MIP_COUNT; ++mip) {
         [capture_encoder
@@ -2981,69 +3040,50 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
                              options:MTLBlitOptionNone];
       }
     }
-    if (passed && (deferred_diagnostics || transmission_coverage)) {
-      if (!deferred_state) {
-        passed = deferred_diagnostics ? false_v : passed;
-      } else {
-        if (deferred_diagnostics) {
-          [capture_encoder
-                 copyFromBuffer:(id<MTLBuffer>)
-                                    deferred_state->resource.metal_buffer
-                   sourceOffset:0u
-                       toBuffer:(id<MTLBuffer>)readback_object
-              destinationOffset:readback_slice.offset +
-                                readback_layout.deferred_diagnostics
-                           size:readback_layout.deferred_diagnostics_size];
-        }
-      }
-      if (passed && renderer->prepared_frame.transmission_pending) {
-        if (!transmission_deferred_state) {
-          passed = false_v;
-        } else {
-          [capture_encoder
-                 copyFromBuffer:(id<MTLBuffer>)transmission_deferred_state
-                                    ->resource.metal_buffer
-                   sourceOffset:0u
-                       toBuffer:(id<MTLBuffer>)readback_object
-              destinationOffset:readback_slice.offset +
-                                readback_layout.transmission_diagnostics
-                           size:sizeof(VkrMetalPacketTransmissionDiagnostics)];
-        }
-      }
+    if (deferred_diagnostics) {
+      [capture_encoder
+             copyFromBuffer:(id<MTLBuffer>)deferred_state->resource.metal_buffer
+               sourceOffset:0u
+                   toBuffer:(id<MTLBuffer>)readback_object
+          destinationOffset:readback_slice.offset +
+                            readback_layout.deferred_diagnostics
+                       size:readback_layout.deferred_diagnostics_size];
     }
-    if (passed && readback_layout.sdsm_size > 0u) {
-      if (!sdsm_reduce_state) {
-        passed = false_v;
-      } else {
-        [capture_encoder
-               copyFromBuffer:(id<MTLBuffer>)
-                                  sdsm_reduce_state->resource.metal_buffer
-                 sourceOffset:0u
-                     toBuffer:(id<MTLBuffer>)readback_object
-            destinationOffset:readback_slice.offset + readback_layout.sdsm
-                         size:readback_layout.sdsm_size];
-      }
+    if ((deferred_diagnostics || transmission_coverage) &&
+        renderer->prepared_frame.transmission_pending) {
+      [capture_encoder
+             copyFromBuffer:(id<MTLBuffer>)transmission_deferred_state->resource
+                                .metal_buffer
+               sourceOffset:0u
+                   toBuffer:(id<MTLBuffer>)readback_object
+          destinationOffset:readback_slice.offset +
+                            readback_layout.transmission_diagnostics
+                       size:sizeof(VkrMetalPacketTransmissionDiagnostics)];
     }
-    if (passed && readback_layout.exposure_size > 0u) {
-      if (!exposure_histogram || !exposure_state) {
-        passed = false_v;
-      } else {
-        [capture_encoder
-               copyFromBuffer:(id<MTLBuffer>)
-                                  exposure_state->resource.metal_buffer
-                 sourceOffset:0u
-                     toBuffer:(id<MTLBuffer>)readback_object
-            destinationOffset:readback_slice.offset + readback_layout.exposure
-                         size:sizeof(VkrExposureGpuState)];
-        [capture_encoder
-               copyFromBuffer:(id<MTLBuffer>)
-                                  exposure_histogram->resource.metal_buffer
-                 sourceOffset:0u
-                     toBuffer:(id<MTLBuffer>)readback_object
-            destinationOffset:readback_slice.offset + readback_layout.exposure +
-                              sizeof(VkrExposureGpuState)
-                         size:sizeof(VkrExposureGpuHistogram)];
-      }
+    if (readback_layout.sdsm_size > 0u) {
+      [capture_encoder
+             copyFromBuffer:(id<MTLBuffer>)
+                                sdsm_reduce_state->resource.metal_buffer
+               sourceOffset:0u
+                   toBuffer:(id<MTLBuffer>)readback_object
+          destinationOffset:readback_slice.offset + readback_layout.sdsm
+                       size:readback_layout.sdsm_size];
+    }
+    if (readback_layout.exposure_size > 0u) {
+      [capture_encoder
+             copyFromBuffer:(id<MTLBuffer>)exposure_state->resource.metal_buffer
+               sourceOffset:0u
+                   toBuffer:(id<MTLBuffer>)readback_object
+          destinationOffset:readback_slice.offset + readback_layout.exposure
+                       size:sizeof(VkrExposureGpuState)];
+      [capture_encoder
+             copyFromBuffer:(id<MTLBuffer>)
+                                exposure_histogram->resource.metal_buffer
+               sourceOffset:0u
+                   toBuffer:(id<MTLBuffer>)readback_object
+          destinationOffset:readback_slice.offset + readback_layout.exposure +
+                            sizeof(VkrExposureGpuState)
+                       size:sizeof(VkrExposureGpuHistogram)];
     }
     for (uint32_t i = 0; passed && i < capture_count; ++i) {
       const VkrMetalPacketCapturePlan *plan = &capture_plans[i];
@@ -3083,22 +3123,15 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     return false_v;
   }
 
-  const uint64_t temporal_wait_value =
-      renderer->selected_temporal_history_instance != UINT32_MAX
-          ? vkr_metal_packet_graph_buffer_instance(
-                renderer, renderer->temporal_transform_history_handle,
-                renderer->selected_temporal_history_instance)
-                ->history_producer_submit_value
-          : 0u;
   const uint64_t submit_value = ++renderer->submit_value;
   vkr_ibl_sh_pool_reference(&renderer->sh_pool,
                             frame_upload.ibl_sh_candidate_slot, submit_value);
-  if (packet->lighting && packet->lighting->ibl_enabled) {
+  if (packet->input.lighting && packet->input.lighting->ibl_enabled) {
     vkr_ibl_sh_pool_reference(&renderer->sh_pool, renderer->ibl_sh_slot,
                               submit_value);
-    for (uint32_t i = 0u; i < packet->lighting->ibl_probe_count; ++i) {
+    for (uint32_t i = 0u; i < packet->input.lighting->ibl_probe_count; ++i) {
       vkr_ibl_sh_pool_reference(&renderer->sh_pool,
-                                packet->lighting->ibl_probes[i].sh_slot,
+                                packet->input.lighting->ibl_probes[i].sh_slot,
                                 submit_value);
     }
   }
@@ -3161,19 +3194,19 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   if (renderer->drawable)
     [renderer->queue waitForDrawable:renderer->drawable];
   out_result->submit_value = submit_value;
-  out_result->source_frame_index = packet->frame.frame_index;
+  out_result->source_frame_index = packet->input.frame.frame_index;
   if (readback_layout.sdsm_size > 0u) {
-    const float32_t a = packet->globals.projection.elements[10];
-    const float32_t b = packet->globals.projection.elements[14];
+    const float32_t a = packet->input.globals.projection.elements[10];
+    const float32_t b = packet->input.globals.projection.elements[14];
     out_result->shadow_depth_range = (VkrShadowDepthRangeSample){
         .projection_convention = 0u,
         .source_depth_linearize = {a, b, 0.0f, 0.0f},
         .source_near = a != 0.0f ? b / a : 0.0f,
         .source_far = (1.0f + a) != 0.0f ? b / (1.0f + a) : 0.0f,
-        .source_frame_index = packet->frame.frame_index,
+        .source_frame_index = packet->input.frame.frame_index,
         .source_projection_generation =
-            vkr_shadow_projection_generation(&packet->globals.projection),
-        .source_scene_generation = packet->frame.scene_generation,
+            vkr_shadow_projection_generation(&packet->input.globals.projection),
+        .source_scene_generation = packet->input.frame.scene_generation,
         .submit_value = submit_value,
     };
   }
@@ -3197,8 +3230,8 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
      contents stay authoritative. */
   vkr_rg_commit_retained_state(renderer->graph);
   if (!renderer->metalfx_enabled) {
-    VkrMetalPacketImage *colors = vkr_metal_packet_named_image_slot(
-        renderer, "temporal_history_color");
+    VkrMetalPacketImage *colors =
+        vkr_metal_packet_named_image_slot(renderer, "temporal_history_color");
     if (colors && renderer->history_output_index < colors->instance_count) {
       frame_upload.temporal_scene.signature.eligible =
           frame_upload.temporal_scene.signature.eligible &&
