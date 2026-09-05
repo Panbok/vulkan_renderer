@@ -94,6 +94,12 @@ indexing must preserve transformed-axis culling bounds. Depth equality and odd
 HZB mip edges follow ADR-028. Vulkan transmission compaction uses native subgroup
 identity/count, independent of workgroup-local invocation numbering.
 
+Direct lighting and IBL sampling PDFs share the GGX distribution. Its factored
+denominator preserves the narrow supported specular lobe instead of flooring
+the squared denominator. The zero-roughness prefilter retains its explicit
+source-mip-zero behavior. Changes to the distribution and importance-sampling PDF
+must remain consistent.
+
 Exposure requires complete histogram groups and GTAO requires mip-selecting
 depth sampling under ADR-042. Equirectangular HDR conversion wraps longitude
 and clamps latitude, preserving the prepared source texture's pole behavior.

@@ -75,7 +75,7 @@ VkrVulkanDirectResult packet_direct(float3 normal, float3 view, float3 light,
     float no_v = max(dot(normal, view), 0.0f);
     float3 fresnel = packet_fresnel(max(dot(half_vector, view), 0.0f), f0);
     float distribution =
-        distribution_ggx(max(dot(normal, half_vector), 0.0f), roughness);
+        vkr_ggx_distribution(dot(normal, half_vector), roughness);
     float geometry = packet_geometry_schlick(no_v, roughness) *
                      packet_geometry_schlick(no_l, roughness);
     float3 specular =
@@ -96,7 +96,7 @@ float3 packet_direct_specular(float3 normal, float3 view, float3 light,
     float no_v = max(dot(normal, view), 0.0f);
     float3 fresnel = packet_fresnel(max(dot(half_vector, view), 0.0f), f0);
     float distribution =
-        distribution_ggx(max(dot(normal, half_vector), 0.0f), roughness);
+        vkr_ggx_distribution(dot(normal, half_vector), roughness);
     float geometry = packet_geometry_schlick(no_v, roughness) *
                      packet_geometry_schlick(no_l, roughness);
     float3 specular =

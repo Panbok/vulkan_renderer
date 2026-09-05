@@ -27,16 +27,6 @@ float vkr_metal_packet_pbr_geometry_schlick(float no_x, float roughness) {
   return no_x / max(no_x * (1.0 - k) + k, 1e-6);
 }
 
-float vkr_metal_packet_distribution(float3 normal, float3 half_vector,
-                                    float roughness) {
-  float alpha = roughness * roughness;
-  float alpha2 = alpha * alpha;
-  float no_h = max(dot(normal, half_vector), 0.0);
-  float denominator = no_h * no_h * (alpha2 - 1.0) + 1.0;
-  return alpha2 /
-         max(vkr_metal_packet_pbr_pi * denominator * denominator, 1e-6);
-}
-
 struct VkrMetalPacketDirectResult {
   float3 diffuse;
   float3 specular;
@@ -52,7 +42,7 @@ vkr_metal_packet_direct(float3 normal, float3 view, float3 light,
   float3 fresnel =
       vkr_metal_packet_fresnel(max(dot(half_vector, view), 0.0), f0);
   float distribution =
-      vkr_metal_packet_distribution(normal, half_vector, roughness);
+      vkr_ggx_distribution(dot(normal, half_vector), roughness);
   float geometry = vkr_metal_packet_pbr_geometry_schlick(no_v, roughness) *
                    vkr_metal_packet_pbr_geometry_schlick(no_l, roughness);
   float3 specular =
@@ -71,7 +61,7 @@ float3 vkr_metal_packet_direct_specular(float3 normal, float3 view,
   float3 fresnel =
       vkr_metal_packet_fresnel(max(dot(half_vector, view), 0.0), f0);
   float distribution =
-      vkr_metal_packet_distribution(normal, half_vector, roughness);
+      vkr_ggx_distribution(dot(normal, half_vector), roughness);
   float geometry = vkr_metal_packet_pbr_geometry_schlick(no_v, roughness) *
                    vkr_metal_packet_pbr_geometry_schlick(no_l, roughness);
   float3 specular =
@@ -90,7 +80,7 @@ vkr_metal_packet_direct_deferred(float3 normal, float3 view, float3 light,
   float3 fresnel =
       vkr_metal_packet_fresnel(max(dot(half_vector, view), 0.0), f0);
   float distribution =
-      vkr_metal_packet_distribution(normal, half_vector, roughness);
+      vkr_ggx_distribution(dot(normal, half_vector), roughness);
   float geometry =
       geometry_view * vkr_metal_packet_pbr_geometry_schlick(no_l, roughness);
   float3 specular =

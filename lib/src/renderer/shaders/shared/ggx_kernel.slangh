@@ -1,0 +1,14 @@
+// Shared GGX normal distribution for direct lighting and the IBL sampling PDF.
+float vkr_ggx_distribution(float no_h, float roughness)
+{
+    // Zero-roughness IBL samples mip zero; retain a finite distribution
+    // for that dispatch. Shaded materials already have a 0.04 roughness floor.
+    float alpha = max(roughness * roughness, 1e-6f);
+    float cosine = clamp(no_h, 0.0f, 1.0f);
+    // Factoring 1-cosine^2 preserves the alpha^2 term near the lobe's peak.
+    // alpha > 0 proves the denominator positive without clipping the lobe.
+    float denominator = (1.0f - cosine) * (1.0f + cosine) +
+                        alpha * alpha * cosine * cosine;
+    float ratio = alpha / denominator;
+    return ratio * ratio * (1.0f / 3.14159265358979323846f);
+}

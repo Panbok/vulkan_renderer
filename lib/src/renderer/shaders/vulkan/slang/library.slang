@@ -5,6 +5,7 @@
 // firefly weight, so it must follow it here and in the MSL concatenation list.
 #include "../../shared/bloom_kernel.slangh"
 #include "../../shared/gtao_kernel.slangh"
+#include "../../shared/ggx_kernel.slangh"
 #include "../../shared/normal_map_kernel.slangh"
 #include "../../shared/transmission_kernel.slangh"
 // VkrShL2Packed is referenced by the IBL projection kernel and by deferred

@@ -51,10 +51,3 @@ float3 vkr_metal_packet_importance_ggx(float2 xi, float3 normal,
   return vkr_metal_packet_tangent_sample(
       normal, float3(cos(phi) * sin_theta, sin(phi) * sin_theta, cos_theta));
 }
-
-float vkr_metal_packet_distribution_ggx(float no_h, float roughness) {
-  float alpha = max(roughness * roughness, 1e-6);
-  float alpha2 = alpha * alpha;
-  float denominator = no_h * no_h * (alpha2 - 1.0) + 1.0;
-  return alpha2 / max(vkr_metal_packet_pi * denominator * denominator, 1e-6);
-}

@@ -159,7 +159,7 @@ void ibl_prefilter(uint3 position : SV_DispatchThreadID)
             continue;
         float no_h = max(dot(normal, half_vector), 1e-6f);
         float vo_h = max(dot(view, half_vector), 1e-6f);
-        float pdf = distribution_ggx(no_h, root.roughness) * no_h /
+        float pdf = vkr_ggx_distribution(no_h, root.roughness) * no_h /
                     max(4.0f * vo_h, 1e-6f);
         float sample_solid_angle =
             1.0f / (float(sample_count) * max(pdf, 1e-6f));

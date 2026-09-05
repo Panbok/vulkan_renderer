@@ -35,7 +35,7 @@ vkr_metal_packet_ibl_prefilter(uint3 position [[thread_position_in_grid]],
     float no_h = max(dot(normal, half_vector), 1e-6);
     float vo_h = max(dot(view, half_vector), 1e-6);
     float distribution =
-        vkr_metal_packet_distribution_ggx(no_h, root->roughness);
+        vkr_ggx_distribution(no_h, root->roughness);
     float pdf = distribution * no_h / max(4.0 * vo_h, 1e-6);
     float sample_solid_angle = 1.0 / (float(sample_count) * max(pdf, 1e-6));
     float texel_solid_angle =
