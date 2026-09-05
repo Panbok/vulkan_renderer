@@ -111,7 +111,9 @@ Both implementations parse
 [`main.rendergraph.json`](../assets/render_graphs/main.rendergraph.json), resolve
 conditions, aliases, names and repeats per submitted frame, and use the shared
 compiler for dependencies, ordering, culling and barriers. Native executor
-registries bind the authored operations. There is one GPU-driven world topology;
+registries bind the authored operations, including conditional MetalFX declarations.
+Vulkan rejects active MetalFX passes during graph validation; disabled declarations
+do not block startup. There is one GPU-driven world topology;
 no retained-forward/legacy world branch remains.
 
 The graph describes image reads/writes/attachments, buffer access, compute

@@ -25,6 +25,11 @@ graph. Each backend registry resolves executor names and pass types to operation
 IDs; native switches record those operations. Repeated passes carry a typed
 `repeat_index` for their native recorder.
 
+Name/type binding includes conditional declarations before frame conditions are
+evaluated. Vulkan recognizes the shared MetalFX executor names, but rejects them
+if they enter the compiled execution order, before resource realization or command
+recording. Disabled Metal-only passes do not prevent portable graph startup.
+
 The shared compiler validates declarations, orders dependencies, culls work
 outside exported/present/`NO_CULL` roots and emits subresource image barriers and
 whole-buffer barriers. Same-layout writes remain hazards. Compatible uses within
