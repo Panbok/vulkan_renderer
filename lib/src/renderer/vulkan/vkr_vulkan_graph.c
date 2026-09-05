@@ -427,6 +427,31 @@ vkr_internal uint32_t vkr_vk_graph_image_instance_count(
   return 1u;
 }
 
+vkr_internal bool8_t vkr_vk_wait_graph_replacement(
+    VkrVulkanRenderer *renderer, uint64_t last_use) {
+  if (last_use <= renderer->completed_value)
+    return true_v;
+  if (last_use > renderer->submit_value) {
+    log_error("Vulkan graph replacement refers to unsubmitted use %llu",
+              (unsigned long long)last_use);
+    return false_v;
+  }
+  const VkSemaphoreWaitInfo wait = {
+      .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+      .semaphoreCount = 1u,
+      .pSemaphores = &renderer->timeline,
+      .pValues = &last_use,
+  };
+  const VkResult result = vkWaitSemaphores(vkr_vk_renderer_device(renderer),
+                                          &wait, UINT64_MAX);
+  if (result != VK_SUCCESS) {
+    log_error("Vulkan graph replacement wait failed (submit=%llu, result=%d)",
+              (unsigned long long)last_use, (int)result);
+    return false_v;
+  }
+  return vkr_vk_refresh_completed(renderer) >= last_use;
+}
+
 bool8_t vkr_vk_realize_graph_images(VkrVulkanRenderer *renderer) {
   if (renderer->graph->images.length > renderer->config.max_graph_images)
     return false_v;
@@ -448,19 +473,16 @@ bool8_t vkr_vk_realize_graph_images(VkrVulkanRenderer *renderer) {
         vkr_vk_graph_image_desc_equal(&slot->desc, &image->desc))
       continue;
     if (slot->live) {
-      const uint64_t completed = vkr_vk_refresh_completed(renderer);
+      uint64_t last_use = 0u;
       for (uint32_t instance = 0u; instance < slot->instance_count;
            ++instance) {
-        if (slot->instances[instance].last_use_submit_value > completed) {
-          log_error("Vulkan graph image '%.*s' replacement is busy "
-                    "through submit %llu (completed %llu)",
-                    (int)image->name.length, image->name.str,
-                    (unsigned long long)slot->instances[instance]
-                        .last_use_submit_value,
-                    (unsigned long long)completed);
-          return false_v;
-        }
+        const VkrVulkanGraphImageInstance *old = &slot->instances[instance];
+        last_use = Max(last_use, Max(old->last_use_submit_value,
+                                     old->history_producer_submit_value));
       }
+      // A resize replaces every instance, including other in-flight slots.
+      if (!vkr_vk_wait_graph_replacement(renderer, last_use))
+        return false_v;
       vkr_vk_destroy_graph_image(renderer, slot);
     }
     /* Wholesale reassignment zeroes every instance's retained_states, so
@@ -673,7 +695,6 @@ vkr_internal uint32_t vkr_vk_graph_buffer_instance_count(
 bool8_t vkr_vk_realize_graph_buffers(VkrVulkanRenderer *renderer) {
   if (renderer->graph->buffers.length > renderer->config.max_graph_buffers)
     return false_v;
-  const uint64_t completed = vkr_vk_refresh_completed(renderer);
   renderer->gpu_candidate_buffer_handle = VKR_RG_BUFFER_HANDLE_INVALID;
   renderer->gpu_candidate_instance_buffer_handle = VKR_RG_BUFFER_HANDLE_INVALID;
   renderer->transmission_gpu_candidate_instance_buffer_handle =
@@ -717,18 +738,15 @@ bool8_t vkr_vk_realize_graph_buffers(VkrVulkanRenderer *renderer) {
         slot->desc.flags == buffer->desc.flags)
       continue;
     if (slot->live) {
+      uint64_t last_use = 0u;
       for (uint32_t instance = 0u; instance < slot->instance_count;
            ++instance) {
-        if (slot->instances[instance].last_use_submit_value > completed) {
-          log_error("Vulkan graph buffer '%.*s' replacement is busy "
-                    "through submit %llu (completed %llu)",
-                    (int)buffer->name.length, buffer->name.str,
-                    (unsigned long long)slot->instances[instance]
-                        .last_use_submit_value,
-                    (unsigned long long)completed);
-          return false_v;
-        }
+        const VkrVulkanGraphBufferInstance *old = &slot->instances[instance];
+        last_use = Max(last_use, Max(old->last_use_submit_value,
+                                     old->history_producer_submit_value));
       }
+      if (!vkr_vk_wait_graph_replacement(renderer, last_use))
+        return false_v;
       vkr_vk_destroy_graph_buffer(renderer, slot);
     }
     const VkBufferUsageFlags usage =

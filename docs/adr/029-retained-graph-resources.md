@@ -30,6 +30,10 @@ Compilation stages pending terminal state. Only successful native submission
 commits it with `vkr_rg_commit_retained_state()`. Cancellation commits nothing.
 Description changes and target recreation invalidate affected instances before
 reuse; resource destruction still requires GPU completion.
+Vulkan realizes a changed image or buffer after a timeline wait covering all
+instances it replaces, including history producers and readers. Unchanged
+resources do not wait at this boundary. This also covers editor viewport changes
+that leave the window target unchanged.
 
 The production `shadow_map` uses `RETAINED, PER_IMAGE, RESIZABLE` on both
 backends. Omitted cascade passes consume previously submitted layers under

@@ -127,6 +127,9 @@ barriers cover whole buffers. Compute/transfer pass types use the graphics
 submission path and do not implement asynchronous queues or ownership transfer.
 
 Native backend caches reuse graph resources until their resolved descriptions change.
+Vulkan replacement waits for the greatest submitted use of the changed resource's
+instances before freeing their views, descriptors and storage. Editor Scene-panel
+resizes use this boundary independently of swapchain recreation.
 `TRANSIENT` contents are frame-local, backed by reusable overlap-safe allocations;
 transient aliasing is absent.
 History owners select completed compatible instances. `RETAINED` image contents

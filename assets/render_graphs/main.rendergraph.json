@@ -174,7 +174,7 @@
       "condition": "transmission_compact_enabled",
       "size": { "mode": "viewport_pixels", "bytes_per_pixel": 8 },
       "usage": ["STORAGE"],
-      "flags": ["PER_FRAME_SLOT"]
+      "flags": ["PER_FRAME_SLOT", "RESIZABLE"]
     },
     {
       "name": "transmission_compact_arguments",
