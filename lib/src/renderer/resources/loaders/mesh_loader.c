@@ -1184,6 +1184,33 @@ vkr_mesh_loader_finalize_all_buckets(VkrMeshLoaderState *state) {
     return true_v;
   }
 
+  // Deduplication can only reduce each builder's vertex count. Reserve the
+  // merged upper bounds once; arena reallocations retain the old storage.
+  uint64_t vertex_capacity = state->merged_vertices.length;
+  uint64_t index_capacity = state->merged_indices.length;
+  uint64_t range_capacity = state->merged_submeshes.length;
+  for (uint64_t i = 0; i < state->material_buckets.length; ++i) {
+    const VkrMeshLoaderSubsetBuilder *builder =
+        &state->material_buckets.data[i].builder;
+    if (builder->vertices.length == 0 || builder->indices.length == 0)
+      continue;
+    vertex_capacity =
+        Min((uint64_t)UINT32_MAX, vertex_capacity + builder->vertices.length);
+    index_capacity += builder->indices.length;
+    ++range_capacity;
+    if (index_capacity > UINT32_MAX || range_capacity > UINT32_MAX) {
+      *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      return false_v;
+    }
+  }
+  if (!vector_reserve_VkrVertex3d(&state->merged_vertices, vertex_capacity) ||
+      !vector_reserve_uint32_t(&state->merged_indices, index_capacity) ||
+      !vector_reserve_VkrMeshLoaderSubmeshRange(&state->merged_submeshes,
+                                               range_capacity)) {
+    *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+
   for (uint64_t i = 0; i < state->material_buckets.length; ++i) {
     VkrMeshLoaderMaterialBucket *bucket =
         vector_get_VkrMeshLoaderMaterialBucket(&state->material_buckets, i);
@@ -1523,9 +1550,22 @@ vkr_internal bool8_t vkr_mesh_loader_accept_gltf_primitive(
   const uint64_t vertex_count =
       builder->vertices.length + primitive->vertex_count;
   const uint64_t index_count = builder->indices.length + primitive->index_count;
+  // Keep retained arena storage linear when many primitives share a material.
+  const uint64_t vertex_capacity =
+      vertex_count > builder->vertices.capacity
+          ? Max(vertex_count,
+                Min((uint64_t)UINT32_MAX, builder->vertices.capacity *
+                                              DEFAULT_VECTOR_RESIZE_FACTOR))
+          : builder->vertices.capacity;
+  const uint64_t index_capacity =
+      index_count > builder->indices.capacity
+          ? Max(index_count,
+                Min((uint64_t)UINT32_MAX, builder->indices.capacity *
+                                              DEFAULT_VECTOR_RESIZE_FACTOR))
+          : builder->indices.capacity;
   if (vertex_count > UINT32_MAX || index_count > UINT32_MAX ||
-      !vector_reserve_VkrVertex3d(&builder->vertices, vertex_count) ||
-      !vector_reserve_uint32_t(&builder->indices, index_count)) {
+      !vector_reserve_VkrVertex3d(&builder->vertices, vertex_capacity) ||
+      !vector_reserve_uint32_t(&builder->indices, index_capacity)) {
     *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }

@@ -26,6 +26,15 @@ The glTF importer also decodes `EXT_meshopt_compression` input buffers. Runtime
 mesh loading retains source optimization for uncooked/imported input; cooked
 artifacts are the durable interchange boundary.
 
+Baked glTF node transforms apply inverse-transpose transport to normals and
+the model's linear part to tangent directions. Cooked version 16 invalidates artifacts made with the older
+tangent transform so corrected source loading cannot reuse those baked results.
+
+Per-material glTF builders grow geometrically because their arena retains old
+buffer generations. Finalization reserves merged vertex, index and range upper
+bounds once before visiting the material buckets. This bounds retained copying
+storage without changing primitive order, deduplication or cooked output policy.
+
 ## Consequences
 
 Artifact compatibility is explicit rather than a native-struct memory image.

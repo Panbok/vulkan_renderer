@@ -1754,7 +1754,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
     world_position = vec3_add(
         world_position, vec3_scale(world_normal, decal_normal_offset_meters));
     Vec3 world_tangent = vkr_mesh_loader_gltf_transform_direction(
-        normal_matrix, vec3_new(tangent.x, tangent.y, tangent.z),
+        world, vec3_new(tangent.x, tangent.y, tangent.z),
         vec3_new(1.0f, 0.0f, 0.0f));
 
     if (texcoord_accessor) {

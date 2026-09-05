@@ -5,7 +5,7 @@
 #include "renderer/resources/loaders/mesh_loader.h"
 
 #define VKR_MESH_COOKED_MAGIC 0x564B4D48u /* 'VKMH' */
-#define VKR_MESH_COOKED_VERSION 15u
+#define VKR_MESH_COOKED_VERSION 16u
 #define VKR_MESH_COOKED_ENDIAN_TAG 0x01020304u
 #define VKR_MESH_COOKED_LAYOUT_STATIC_PACKED_V1 2u
 #define VKR_MESH_COOKED_STREAM_ALIGNMENT 16u
@@ -48,7 +48,7 @@ bool8_t vkr_mesh_cook_source(String8 source_path, String8 output_path,
                              VkrMeshCookStats *out_stats,
                              VkrRendererError *out_error);
 
-/** Encodes an immutable version-15 artifact into scratch-owned memory. */
+/** Encodes an immutable cooked artifact into scratch-owned memory. */
 bool8_t vkr_mesh_cooked_encode(VkrAllocator *scratch_allocator,
                                const VkrMeshCookedEncodeInfo *info,
                                uint8_t **out_data, uint64_t *out_size);

@@ -19,7 +19,7 @@ if "%~1"=="" goto cook_defaults
 :cook_arguments
 if "%~1"=="" goto pack_textures
 call :cook "%~1"
-if errorlevel 1 exit /b 1
+if not "!errorlevel!"=="0" exit /b 1
 shift
 goto cook_arguments
 
