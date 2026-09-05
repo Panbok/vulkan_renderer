@@ -1761,9 +1761,9 @@ vkr_internal bool8_t vkr_metal_packet_pack_gpu_draw_stream(
 }
 
 vkr_internal void
-vkr_metal_packet_mark_gpu_draw_stream_use(VkrMetalPacketRenderer *renderer,
-                                          const VkrWorldDrawCandidate *sources,
-                                          uint32_t count) {
+vkr_metal_packet_prepare_resident_gpu_draw_stream(
+    VkrMetalPacketRenderer *renderer, const VkrWorldDrawCandidate *sources,
+    uint32_t count, VkrGpuGeometryRow *geometry_rows) {
   const uint64_t pending_submit = renderer->submit_value + 1u;
   for (uint32_t i = 0u; i < count; ++i) {
     const VkrWorldDrawCandidate *source = &sources[i];
@@ -1772,9 +1772,11 @@ vkr_metal_packet_mark_gpu_draw_stream_use(VkrMetalPacketRenderer *renderer,
                                   .generation = source->geometry.generation});
     VkrMetalPacketMaterial *material =
         vkr_metal_packet_resolve_material(renderer, source->material);
-    if (mesh)
+    if (mesh) {
+      geometry_rows[source->geometry.id - 1u] = mesh->gpu_row;
       mesh->last_use_submit_value =
           MAX(mesh->last_use_submit_value, pending_submit);
+    }
     if (material)
       material->last_use_submit_value =
           MAX(material->last_use_submit_value, pending_submit);
@@ -2186,17 +2188,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
                                    transmission_gpu_draw_candidates_offset);
     VkrGpuGeometryRow *geometry_rows =
         (VkrGpuGeometryRow *)(cpu + gpu_draw_geometry_rows_offset);
-#if VKR_METRICS_ENABLED
-    const float64_t geometry_table_start = vkr_platform_get_absolute_time();
-#endif
-    MemZero(geometry_rows, gpu_draw_geometry_rows_bytes);
-    for (uint32_t i = 0u; i < renderer->max_meshes; ++i) {
-      const VkrMetalPacketMesh *mesh = &renderer->meshes[i];
-      if (mesh->live)
-        geometry_rows[i] = mesh->gpu_row;
-    }
     renderer->packet_build.geometry_row_bytes = gpu_draw_geometry_rows_bytes;
 
+    /* Candidate preparation writes every reachable geometry row. The upload
+       span stays capacity-sized; row writes count toward candidate_pack_ns,
+       leaving the removed standalone geometry-table scope at zero. */
 #if VKR_METRICS_ENABLED
     const float64_t pack_start = vkr_platform_get_absolute_time();
 #endif
@@ -2210,8 +2206,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
         repack_static ? 0u : slot->candidate_residency.omitted_static_count;
     uint32_t stage_first = 0u;
     if (!repack_static)
-      vkr_metal_packet_mark_gpu_draw_stream_use(renderer, world->gpu_candidates,
-                                                source_static_count);
+      vkr_metal_packet_prepare_resident_gpu_draw_stream(
+          renderer, world->gpu_candidates, source_static_count, geometry_rows);
     if (repack_static) {
       packed = vkr_metal_packet_pack_gpu_draw_stream(
           renderer, world->gpu_candidates, source_static_count, 0u,
@@ -2277,8 +2273,6 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
 #if VKR_METRICS_ENABLED
     renderer->packet_build.candidate_pack_ns =
         vkr_metrics_elapsed_ns(pack_start);
-    renderer->packet_build.geometry_table_build_ns =
-        vkr_metrics_elapsed_ns(geometry_table_start);
 #endif
     const uint64_t written_candidates =
         (uint64_t)static_rows_written + dynamic_rows_written;

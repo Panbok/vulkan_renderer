@@ -127,7 +127,9 @@ layouts fail compilation. Same-layout writes still generate hazards. Buffer
 barriers cover whole buffers. Compute/transfer pass types use the graphics
 submission path and do not implement asynchronous queues or ownership transfer.
 
-Native backend caches reuse graph resources until their resolved descriptions change.
+Metal emits producer dependencies by traversing the compiler-owned outgoing
+edges; each consumer retains its declared resource barriers. Native backend
+caches reuse graph resources until their resolved descriptions change.
 Vulkan replacement waits for the greatest submitted use of the changed resource's
 instances before freeing their views, descriptors and storage. Editor Scene-panel
 resizes use this boundary independently of swapchain recreation.
@@ -280,8 +282,10 @@ Vulkan pools keyed device/upload/staging/readback blocks, with persistent mappin
 required dedicated-allocation exceptions. Completion-protected Vulkan frame slots
 keep directly read uploads separate from copy-only candidate staging; both retain
 capacity grown during packet preflight. Metal uses placement heaps and native
-upload/readback adapters. Shared cores track logical ranges, generations, submit
-values and retirement; physical allocations remain native. No VMA, online
+upload/readback adapters. Its candidate preparation initializes only referenced
+geometry rows in the existing completion-protected upload span; static residency
+hits refresh those rows while marking resource use. Shared cores track logical
+ranges, generations, submit values and retirement; physical allocations remain native. No VMA, online
 defragmentation, GPU heap eviction or transient aliasing is implemented.
 
 Slot and resource reuse require their actual last-submit completion. Vulkan

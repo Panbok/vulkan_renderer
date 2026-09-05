@@ -1742,16 +1742,6 @@ vkr_internal bool8_t vkr_metal_packet_encode_consumers(
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_has_in_edge(const VkrRgPass *pass,
-                                                  uint32_t producer_index) {
-  for (uint64_t i = 0; i < pass->in_edges.length; ++i) {
-    const uint32_t *edge = vector_get_uint32_t(&pass->in_edges, i);
-    if (edge && *edge == producer_index)
-      return true_v;
-  }
-  return false_v;
-}
-
 vkr_internal bool8_t vkr_metal_packet_pass_uses_image(const VkrRgPass *pass,
                                                       VkrRgImageHandle image) {
   for (uint64_t i = 0; i < pass->desc.color_attachments.length; ++i) {
@@ -1801,11 +1791,10 @@ vkr_internal bool8_t vkr_metal_packet_encode_producers(
     API_AVAILABLE(macos(26.0)) {
   const VkrRgPass *producer =
       vector_get_VkrRgPass(&renderer->graph->passes, producer_index);
-  for (uint64_t i = 0; i < renderer->graph->passes.length; ++i) {
+  for (uint64_t i = 0; i < producer->out_edges.length; ++i) {
     const VkrRgPass *consumer =
-        vector_get_VkrRgPass(&renderer->graph->passes, i);
-    if (!consumer || consumer->culled ||
-        !vkr_metal_packet_has_in_edge(consumer, producer_index))
+        &renderer->graph->passes.data[producer->out_edges.data[i]];
+    if (consumer->culled)
       continue;
     for (uint64_t b = 0; b < consumer->pre_image_barriers.length; ++b) {
       const VkrRgImageBarrier *barrier =

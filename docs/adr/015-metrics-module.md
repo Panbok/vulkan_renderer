@@ -43,6 +43,13 @@ resetting upload/command-slot wait counters. Availability and reason codes
 survive into reports. GPU timings retain source frame and submit serials;
 collection time does not establish which frame performed the work.
 
+Metal initializes referenced geometry rows during candidate preparation.
+`cpu.packet_candidate_pack` includes those writes; the removed standalone
+`cpu.packet_geometry_table_build` scope reports zero. Earlier Metal geometry
+timings also included candidate packing, so adding those two historical rows
+double-counts work. `packet.geometry_row_bytes` still reports the full indexed
+upload span, not the number of rows written.
+
 ## Consequences
 
 Writers use indexed storage after initialization. Consumer overlap and event
