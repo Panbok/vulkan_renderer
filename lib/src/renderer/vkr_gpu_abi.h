@@ -12,6 +12,8 @@ typedef VkrUiVertex VkrTextVertex;
 /** Fixed P3 candidate/visible capacity; growth publishes a later generation. */
 #define VKR_GPU_DRAW_CANDIDATE_CAPACITY 262144u
 #define VKR_TEMPORAL_TRANSFORM_CAPACITY 32768u
+/** Stable mesh-local submesh token occupies bits above transform-writer bit. */
+#define VKR_INSTANCE_TEMPORAL_SURFACE_SHIFT 1u
 
 typedef enum VkrInstanceTemporalFlag {
   VKR_INSTANCE_TEMPORAL_OWNER = 1u << 0u,
@@ -65,12 +67,14 @@ typedef struct VkrGeometryMegabufferMetrics {
   uint32_t generation;
 } VkrGeometryMegabufferMetrics;
 
-/** GPU-visible instance record shared by the selected implementations. */
+/** Caller-owned instance input; native upload adds derived normal columns. */
 typedef struct VkrInstanceDataGPU {
   Mat4 model;
   uint32_t object_id;
   uint32_t temporal_index;
   uint32_t temporal_generation;
+  /** OWNER bit zero; remaining bits carry stable mesh-local submesh + 1.
+      Ordinary blend history requires a token in [1, 0x1ffff]. */
   uint32_t temporal_flags;
 } VkrInstanceDataGPU;
 
@@ -78,6 +82,26 @@ _Static_assert(sizeof(VkrInstanceDataGPU) == 80,
                "VkrInstanceDataGPU must be 80 bytes");
 _Static_assert(sizeof(VkrInstanceDataGPU) % 16 == 0,
                "VkrInstanceDataGPU must be 16-byte aligned");
+
+/** Native instance row. The first 80 bytes retain the source field offsets. */
+typedef struct VkrPreparedInstanceGPU {
+  Mat4 model;
+  uint32_t object_id;
+  uint32_t temporal_index;
+  uint32_t temporal_generation;
+  /** OWNER in bit zero; stable submesh_index + 1 in the remaining bits. */
+  uint32_t temporal_flags;
+  /** Positive-scaled inverse transpose; column 0 w carries model handedness. */
+  Vec4 normal_column0;
+  Vec4 normal_column1;
+  Vec4 normal_column2;
+} VkrPreparedInstanceGPU;
+
+_Static_assert(sizeof(VkrPreparedInstanceGPU) == 128,
+               "Native prepared instance must be 128 bytes");
+
+/** Computes normal transport once at native instance publication/upload. */
+VkrPreparedInstanceGPU vkr_gpu_prepare_instance(const VkrInstanceDataGPU *source);
 
 /** One completion-protected object transform indexed by stable temporal ID. */
 typedef struct VkrTemporalTransformGPU {

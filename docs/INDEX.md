@@ -70,12 +70,12 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [034](adr/034-offline-cooked-font-artifacts.md) | Cooked MTSDF font artifacts | implemented |
 | [035](adr/035-canonical-mtsdf-screen-pixel-range-shading.md) | Derivative-based MTSDF coverage | implemented |
 | [036](adr/036-dpi-derived-ui-text-scale.md) | Window content scale before UI layout | implemented |
-| [037](adr/037-portable-same-resolution-temporal-antialiasing.md) | Portable scene-linear temporal antialiasing | partial |
+| [037](adr/037-portable-same-resolution-temporal-antialiasing.md) | Portable temporal antialiasing, motion-aware coverage and checked static accumulation | partial |
 | [038](adr/038-sh-l2-diffuse-irradiance.md) | GPU-resident L2 diffuse response | implemented |
 | [039](adr/039-metal-internal-render-scale.md) | Separate internal Scene and physical output extents | implemented |
 | [040](adr/040-metalfx-temporal-dynamic-resolution.md) | MetalFX temporal reconstruction and completed-GPU scale control | implemented |
 | [041](adr/041-retained-cascaded-shadows.md) | Stable fits and retained directional shadow cascades | implemented |
-| [042](adr/042-scene-linear-post-processing.md) | Scene-linear exposure, bloom and ambient visibility | implemented |
+| [042](adr/042-scene-linear-post-processing.md) | Scene-linear exposure with completed-history time, bloom and ambient visibility | implemented |
 | [043](adr/043-presentation-dpi-and-color-transfer.md) | Physical-pixel presentation with one sRGB transfer | implemented |
 | [044](adr/044-shader-cross-backend-contract.md) | Portable shader semantics with native ABI validation | implemented |
 | [045](adr/045-resource-prepare-and-render-thread-finalize.md) | Worker preparation and render-thread resource finalization | implemented |

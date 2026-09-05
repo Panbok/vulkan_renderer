@@ -427,12 +427,12 @@ vkr_internal uint32_t vkr_vk_graph_image_instance_count(
   return 1u;
 }
 
-vkr_internal bool8_t vkr_vk_wait_graph_replacement(
+vkr_internal bool8_t vkr_vk_wait_graph_use(
     VkrVulkanRenderer *renderer, uint64_t last_use) {
   if (last_use <= renderer->completed_value)
     return true_v;
   if (last_use > renderer->submit_value) {
-    log_error("Vulkan graph replacement refers to unsubmitted use %llu",
+    log_error("Vulkan graph resource refers to unsubmitted use %llu",
               (unsigned long long)last_use);
     return false_v;
   }
@@ -445,7 +445,7 @@ vkr_internal bool8_t vkr_vk_wait_graph_replacement(
   const VkResult result = vkWaitSemaphores(vkr_vk_renderer_device(renderer),
                                           &wait, UINT64_MAX);
   if (result != VK_SUCCESS) {
-    log_error("Vulkan graph replacement wait failed (submit=%llu, result=%d)",
+    log_error("Vulkan graph resource wait failed (submit=%llu, result=%d)",
               (unsigned long long)last_use, (int)result);
     return false_v;
   }
@@ -481,10 +481,16 @@ bool8_t vkr_vk_realize_graph_images(VkrVulkanRenderer *renderer) {
                                      old->history_producer_submit_value));
       }
       // A resize replaces every instance, including other in-flight slots.
-      if (!vkr_vk_wait_graph_replacement(renderer, last_use))
+      if (!vkr_vk_wait_graph_use(renderer, last_use))
         return false_v;
       vkr_vk_destroy_graph_image(renderer, slot);
     }
+    if (renderer->graph_revision == UINT64_MAX) {
+      renderer->terminal_failure = true_v;
+      log_fatal("Vulkan graph revision exhausted");
+      return false_v;
+    }
+    ++renderer->graph_revision;
     /* Wholesale reassignment zeroes every instance's retained_states, so
        content_valid goes false. That is the ADR-029 invalidation rule for
        resize, format, layer, mip, and image-count changes: reaching this line
@@ -745,7 +751,7 @@ bool8_t vkr_vk_realize_graph_buffers(VkrVulkanRenderer *renderer) {
         last_use = Max(last_use, Max(old->last_use_submit_value,
                                      old->history_producer_submit_value));
       }
-      if (!vkr_vk_wait_graph_replacement(renderer, last_use))
+      if (!vkr_vk_wait_graph_use(renderer, last_use))
         return false_v;
       vkr_vk_destroy_graph_buffer(renderer, slot);
     }
@@ -753,6 +759,12 @@ bool8_t vkr_vk_realize_graph_buffers(VkrVulkanRenderer *renderer) {
         vkr_vk_graph_buffer_usage(buffer->desc.usage);
     if (!buffer->desc.size || !usage)
       return false_v;
+    if (renderer->graph_revision == UINT64_MAX) {
+      renderer->terminal_failure = true_v;
+      log_fatal("Vulkan graph revision exhausted");
+      return false_v;
+    }
+    ++renderer->graph_revision;
     *slot = (VkrVulkanGraphBuffer){
         .desc = buffer->desc,
         .graph_generation = buffer->generation,
@@ -775,10 +787,6 @@ bool8_t vkr_vk_realize_graph_buffers(VkrVulkanRenderer *renderer) {
 bool8_t vkr_vk_select_history_output(VkrVulkanRenderer *renderer) {
   const uint64_t completed = vkr_vk_refresh_completed(renderer);
   uint64_t candidate_use[VKR_VULKAN_HISTORY_INSTANCE_COUNT] = {0};
-  bool8_t candidate_safe[VKR_VULKAN_HISTORY_INSTANCE_COUNT];
-  for (uint32_t candidate = 0u; candidate < VKR_VULKAN_HISTORY_INSTANCE_COUNT;
-       ++candidate)
-    candidate_safe[candidate] = true_v;
 
   for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
     const VkrRgImage *image =
@@ -796,8 +804,6 @@ bool8_t vkr_vk_select_history_output(VkrVulkanRenderer *renderer) {
       const uint64_t use = Max(instance->last_use_submit_value,
                                instance->history_producer_submit_value);
       candidate_use[candidate] = Max(candidate_use[candidate], use);
-      if (use > completed)
-        candidate_safe[candidate] = false_v;
     }
   }
 
@@ -818,8 +824,6 @@ bool8_t vkr_vk_select_history_output(VkrVulkanRenderer *renderer) {
       const uint64_t use = Max(instance->last_use_submit_value,
                                instance->history_producer_submit_value);
       candidate_use[candidate] = Max(candidate_use[candidate], use);
-      if (use > completed)
-        candidate_safe[candidate] = false_v;
     }
   }
 
@@ -827,19 +831,19 @@ bool8_t vkr_vk_select_history_output(VkrVulkanRenderer *renderer) {
   uint64_t selected_use = UINT64_MAX;
   for (uint32_t candidate = 0u; candidate < VKR_VULKAN_HISTORY_INSTANCE_COUNT;
        ++candidate) {
-    if (candidate_safe[candidate] && candidate_use[candidate] < selected_use) {
+    if (candidate_use[candidate] < selected_use) {
       selected = candidate;
       selected_use = candidate_use[candidate];
     }
   }
-  if (selected == VKR_VULKAN_HISTORY_INSTANCE_COUNT) {
-    for (uint32_t candidate = 0u; candidate < VKR_VULKAN_HISTORY_INSTANCE_COUNT;
-         ++candidate)
-      log_error("Vulkan history instance %u is busy through submit %llu",
-                candidate, (unsigned long long)candidate_use[candidate]);
-    log_error("Vulkan has no completion-safe history output instance "
-              "(completed %llu)",
-              (unsigned long long)completed);
+  if (selected == VKR_VULKAN_HISTORY_INSTANCE_COUNT)
+    return false_v;
+  // History families can occupy the whole fixed ring. Wait once for its
+  // oldest combined last use before publishing that index for CPU/GPU reuse.
+  if (selected_use > completed &&
+      !vkr_vk_wait_graph_use(renderer, selected_use)) {
+    log_error("Vulkan history output wait failed (instance=%u, submit=%llu)",
+              selected, (unsigned long long)selected_use);
     return false_v;
   }
   renderer->history_output_index = selected;
@@ -1479,8 +1483,8 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
   slot->temporal_depth_output = NULL;
   slot->temporal_identity_input = NULL;
   slot->temporal_identity_output = NULL;
-  slot->temporal_primitive_input = NULL;
-  slot->temporal_primitive_output = NULL;
+  slot->temporal_surface_input = NULL;
+  slot->temporal_surface_output = NULL;
   slot->temporal_history_valid = false_v;
   slot->sdsm_reduce_state = NULL;
   slot->exposure_histogram = NULL;

@@ -1,4 +1,5 @@
 #include "../../../shared/point_light.slangh"
+#include "../../../shared/normal_map_kernel.slangh"
 
 struct VkrMetalPacketVertex
 {
@@ -20,6 +21,9 @@ struct VkrMetalPacketInstance
     uint temporal_index;
     uint temporal_generation;
     uint temporal_flags;
+    float4 normal_column0;
+    float4 normal_column1;
+    float4 normal_column2;
 };
 
 struct VkrMetalPacketShadowCascade

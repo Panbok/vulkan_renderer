@@ -729,12 +729,11 @@ application_emit_world_source(ApplicationWorldEmitContext *context,
         context->view, source->model, source->center);
     context->transparent_candidates[context->transparent_index++] =
         (VkrTransparentDrawCandidate){
-            .model = source->model,
+            .instance = candidate.instance,
             .mesh = source->mesh,
             .geometry = source->geometry,
             .material = source->material,
             .submesh_index = source->submesh_index,
-            .object_id = source->object_id,
             .sort_key = application_pack_transparent_sort_key(
                 depth, context->source_index + 1u),
         };

@@ -600,14 +600,6 @@ packet_environment_terms(VkrVulkanPacketFrameRoot *frame, float3 world_position,
     // Frame-root indices are uniform. Each local-probe loop iteration also
     // visits one shared table row across the active lanes.
     VkrShL2Evaluation sh_evaluation = vkr_sh_l2_prepare_evaluation(normal);
-    float3 global_irradiance = vkr_sh_l2_evaluate(
-        frame.sh_coefficients[frame.sh_global_slot], sh_evaluation);
-    float3 global_prefiltered =
-        g_cube_textures[frame.prefilter_texture]
-            .SampleLevel(g_samplers[frame.prefilter_sampler], reflection,
-                         roughness *
-                             float(max(frame.prefilter_mip_count, 1u) - 1u))
-            .rgb;
     float2 brdf = packet_brdf_approximation(no_v, roughness);
     float f90 = saturate(max(f0.x, max(f0.y, f0.z)) * 25.0f);
     float horizon = saturate(1.0f + dot(reflection, horizon_normal));
@@ -651,7 +643,17 @@ packet_environment_terms(VkrVulkanPacketFrameRoot *frame, float3 world_position,
                     probe.intensity_box.z * weight;
     }
     float global_weight = max(1.0f - min(local_weight_sum, 1.0f), 0.0f);
+    // Global results are consumed after the local sum, so do not keep them
+    // live across the local-probe sampling and SH evaluation loop.
+    float3 global_irradiance = vkr_sh_l2_evaluate(
+        frame.sh_coefficients[frame.sh_global_slot], sh_evaluation);
     diffuse += kd * global_irradiance * albedo * ao * global_weight;
+    float3 global_prefiltered =
+        g_cube_textures[frame.prefilter_texture]
+            .SampleLevel(g_samplers[frame.prefilter_sampler], reflection,
+                         roughness *
+                             float(max(frame.prefilter_mip_count, 1u) - 1u))
+            .rgb;
     specular += global_prefiltered * (fresnel * brdf.x + f90 * brdf.y) *
                 specular_visibility * global_weight;
     VkrVulkanEnvironmentResult result;
@@ -668,12 +670,6 @@ float3 packet_environment_specular(VkrVulkanPacketFrameRoot *frame,
     float no_v = max(dot(normal, view), 0.0f);
     float3 reflection = reflect(-view, normal);
     float3 fresnel = packet_fresnel_roughness(no_v, f0, roughness);
-    float3 global_prefiltered =
-        g_cube_textures[frame.prefilter_texture]
-            .SampleLevel(g_samplers[frame.prefilter_sampler], reflection,
-                         roughness *
-                             float(max(frame.prefilter_mip_count, 1u) - 1u))
-            .rgb;
     float2 brdf = packet_brdf_approximation(no_v, roughness);
     float f90 = saturate(max(f0.x, max(f0.y, f0.z)) * 25.0f);
     float horizon = saturate(1.0f + dot(reflection, horizon_normal));
@@ -711,6 +707,12 @@ float3 packet_environment_specular(VkrVulkanPacketFrameRoot *frame,
                     probe.intensity_box.z * weight;
     }
     float global_weight = max(1.0f - min(local_weight_sum, 1.0f), 0.0f);
+    float3 global_prefiltered =
+        g_cube_textures[frame.prefilter_texture]
+            .SampleLevel(g_samplers[frame.prefilter_sampler], reflection,
+                         roughness *
+                             float(max(frame.prefilter_mip_count, 1u) - 1u))
+            .rgb;
     specular += global_prefiltered * (fresnel * brdf.x + f90 * brdf.y) *
                 specular_visibility * global_weight;
     return specular * frame.ibl_controls.z * frame.ibl_controls.x;
@@ -888,19 +890,19 @@ world_temporal_fragment(VkrVulkanTemporalVertexOutput input,
 
     const uint overlay_bit = 0x80000000u;
     const uint generation_mask = 0x7fffffffu;
-    const uint primitive_mask = 0x1ffffu;
+    const uint surface_mask = 0x1ffffu;
+    uint surface_token = input.temporal_flags >> 1u;
     bool identity_valid =
-        (input.temporal_flags & VKR_INSTANCE_TEMPORAL_OWNER) != 0u &&
         input.temporal_index < VKR_TEMPORAL_TRANSFORM_CAPACITY &&
         input.temporal_generation > 0u &&
-        input.temporal_generation <= generation_mask &&
-        primitive_id < primitive_mask;
+        input.temporal_generation <= generation_mask && surface_token > 0u &&
+        surface_token <= surface_mask;
     output.surface = uint2(overlay_bit, 0u);
     if (identity_valid)
     {
         output.surface.x = overlay_bit | input.temporal_generation;
         output.surface.y =
-            (input.temporal_index << 17u) | (primitive_id + 1u);
+            (input.temporal_index << 17u) | surface_token;
     }
     output.motion = 0.0f;
     output.validity = 0.0f;

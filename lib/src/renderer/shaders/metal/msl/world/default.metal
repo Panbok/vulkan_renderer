@@ -151,14 +151,6 @@ static float4 vkr_metal_packet_shade(
     float3 fresnel = vkr_metal_packet_fresnel_roughness(no_v, f0, roughness);
     float3 kd = (1.0 - fresnel) * (1.0 - metallic);
     VkrShL2Evaluation sh_evaluation = vkr_sh_l2_prepare_evaluation(normal);
-    float3 global_irradiance = vkr_sh_l2_evaluate(
-        frame->sh_coefficients[frame->sh_global_slot], sh_evaluation);
-    float3 global_prefiltered =
-        frame->prefilter
-            .sample(environment_sampler, reflection,
-                    level(roughness *
-                          float(max(frame->prefilter_mip_count, 1u) - 1u)))
-            .rgb;
     float2 brdf = vkr_metal_packet_brdf_approximation(no_v, roughness);
     float f90 = saturate(max(f0.x, max(f0.y, f0.z)) * 25.0);
     float horizon = saturate(1.0 + dot(reflection, geometric_normal));
@@ -205,7 +197,15 @@ static float4 vkr_metal_packet_shade(
       }
     }
     float global_weight = max(1.0 - min(local_weight_sum, 1.0), 0.0);
+    float3 global_irradiance = vkr_sh_l2_evaluate(
+        frame->sh_coefficients[frame->sh_global_slot], sh_evaluation);
     diffuse += kd * global_irradiance * base.rgb * ao * global_weight;
+    float3 global_prefiltered =
+        frame->prefilter
+            .sample(environment_sampler, reflection,
+                    level(roughness *
+                          float(max(frame->prefilter_mip_count, 1u) - 1u)))
+            .rgb;
     specular += global_prefiltered * (fresnel * brdf.x + f90 * brdf.y) *
                 specular_visibility * global_weight;
     color +=
@@ -260,18 +260,18 @@ vkr_metal_packet_temporal_blend_fragment(
 
   constexpr uint overlay_bit = 0x80000000u;
   constexpr uint generation_mask = 0x7fffffffu;
-  constexpr uint primitive_mask = 0x1ffffu;
+  constexpr uint surface_mask = 0x1ffffu;
+  uint surface_token = input.temporal_flags >> 1u;
   bool identity_valid =
-      (input.temporal_flags & VKR_INSTANCE_TEMPORAL_OWNER) != 0u &&
       input.temporal_index < VKR_TEMPORAL_TRANSFORM_CAPACITY &&
       input.temporal_generation > 0u &&
       input.temporal_generation <= generation_mask &&
-      primitive_id < primitive_mask;
+      surface_token > 0u && surface_token <= surface_mask;
   output.surface = uint2(overlay_bit, 0u);
   if (identity_valid) {
     output.surface.x = overlay_bit | input.temporal_generation;
     output.surface.y =
-        (input.temporal_index << 17u) | (primitive_id + 1u);
+        (input.temporal_index << 17u) | surface_token;
   }
   output.motion = 0.0;
   output.validity = 0.0;

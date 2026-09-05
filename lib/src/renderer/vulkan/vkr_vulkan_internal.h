@@ -21,6 +21,7 @@
 #include "renderer/vkr_packet_constants.h"
 #include "renderer/vkr_render_graph_internal.h"
 #include "renderer/vkr_rg_json.h"
+#include "renderer/vkr_temporal.h"
 #include "renderer/vulkan/vkr_vulkan_dependency.h"
 #include "renderer/vulkan/vkr_vulkan_memory.h"
 #include "renderer/vulkan/vkr_vulkan_wsi.h"
@@ -242,7 +243,7 @@ enum {
   VKR_VULKAN_GRAPH_LAYER_MAX = 16,
   VKR_VULKAN_TEXTURE_MIP_MAX = 16,
   VKR_VULKAN_PENDING_IBL_BAKE_MAX = 32,
-  VKR_VULKAN_FRAME_UPLOAD_SIZE = 48u * 1024u * 1024u,
+  VKR_VULKAN_FRAME_UPLOAD_SIZE = 75u * 1024u * 1024u,
 };
 
 enum {
@@ -474,7 +475,8 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanResolveRoot {
   uint32_t render_mode;
   uint32_t history_valid;
   uint32_t previous_frame_index;
-  uint32_t reserved_tail[2];
+  uint32_t reserved_tail[4];
+  Mat4 sky_reprojection;
 } VkrVulkanResolveRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanTemporalResolveRoot {
@@ -489,11 +491,11 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanTemporalResolveRoot {
   uint32_t history_color_texture;
   uint32_t history_depth_texture;
   uint32_t history_identity_texture;
-  uint32_t history_primitive_texture;
+  uint32_t history_surface_texture;
   uint32_t output_color_texture;
   uint32_t output_depth_texture;
   uint32_t output_identity_texture;
-  uint32_t output_primitive_texture;
+  uint32_t output_surface_texture;
   uint32_t history_sampler;
   uint32_t extent[2];
   uint32_t history_valid;
@@ -504,7 +506,9 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanTemporalResolveRoot {
   uint32_t transmission_vbuffer_texture;
   uint32_t transmission_depth_texture;
   uint32_t transmission_enabled;
-  uint32_t transmission_reserved;
+  uint32_t scene_stationary;
+  Vec2 current_jitter_pixels;
+  Vec2 previous_jitter_pixels;
 } VkrVulkanTemporalResolveRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
@@ -928,14 +932,22 @@ _Static_assert(sizeof(VkrVulkanRasterRoot) == 48u,
                "Deferred raster-root ABI size drift");
 _Static_assert(sizeof(VkrVulkanTemporalTransformRoot) == 32u,
                "Temporal transform-root ABI size drift");
-_Static_assert(sizeof(VkrVulkanResolveRoot) == 352u,
+_Static_assert(sizeof(VkrVulkanResolveRoot) == 416u,
                "Deferred resolve-root ABI size drift");
 _Static_assert(offsetof(VkrVulkanResolveRoot, vertices) == 40u,
                "Deferred resolve-root vertex address ABI drift");
 _Static_assert(offsetof(VkrVulkanResolveRoot, view_projection) == 64u,
                "Deferred resolve-root matrix ABI drift");
-_Static_assert(sizeof(VkrVulkanTemporalResolveRoot) == 128u,
+_Static_assert(offsetof(VkrVulkanResolveRoot, sky_reprojection) == 352u,
+               "G-buffer sky-reprojection matrix ABI drift");
+_Static_assert(sizeof(VkrVulkanTemporalResolveRoot) == 144u,
                "Temporal resolve-root ABI size drift");
+_Static_assert(offsetof(VkrVulkanTemporalResolveRoot, scene_stationary) == 124u &&
+                   offsetof(VkrVulkanTemporalResolveRoot, current_jitter_pixels) ==
+                       128u &&
+                   offsetof(VkrVulkanTemporalResolveRoot, previous_jitter_pixels) ==
+                       136u,
+               "Temporal resolve-root scene/jitter ABI drift");
 _Static_assert(sizeof(VkrVulkanLightingRoot) == 128u,
                "Deferred lighting-root ABI size drift");
 _Static_assert(offsetof(VkrVulkanLightingRoot, inverse_view_projection) == 16u,
@@ -1074,6 +1086,13 @@ typedef struct VkrVulkanTargetSet {
   uint32_t height;
 } VkrVulkanTargetSet;
 
+typedef struct VkrVulkanTemporalSceneState {
+  VkrTemporalSceneSignature signature;
+  uint64_t radiance_revision;
+  uint64_t publication_generation;
+  uint64_t graph_revision;
+} VkrVulkanTemporalSceneState;
+
 typedef struct VkrVulkanGraphImageInstance {
   VkrVulkanImage image;
   VkImageView mip_views[VKR_VULKAN_TEXTURE_MIP_MAX];
@@ -1091,6 +1110,7 @@ typedef struct VkrVulkanGraphImageInstance {
   uint32_t history_height;
   uint64_t history_frame_index;
   uint64_t history_scene_generation;
+  VkrVulkanTemporalSceneState history_scene;
   bool8_t has_sampled_mip_slot[VKR_VULKAN_TEXTURE_MIP_MAX];
   bool8_t has_storage_mip_slot[VKR_VULKAN_TEXTURE_MIP_MAX];
   bool8_t has_sampled_slot;
@@ -1182,6 +1202,7 @@ typedef struct VkrVulkanFrameSlot {
   bool8_t acquired_window_image;
   bool8_t reacquired_presented_image;
   uint64_t frame_upload_cursor;
+  VkrVulkanTemporalSceneState temporal_scene;
   /** Frame-upload allocation failures this frame. Non-zero means the frame was
    *  rejected for want of upload bytes, not for a malformed packet. */
   uint32_t frame_upload_exhaustions;
@@ -1239,8 +1260,8 @@ typedef struct VkrVulkanFrameSlot {
   VkrVulkanGraphImageInstance *temporal_depth_output;
   VkrVulkanGraphImageInstance *temporal_identity_input;
   VkrVulkanGraphImageInstance *temporal_identity_output;
-  VkrVulkanGraphImageInstance *temporal_primitive_input;
-  VkrVulkanGraphImageInstance *temporal_primitive_output;
+  VkrVulkanGraphImageInstance *temporal_surface_input;
+  VkrVulkanGraphImageInstance *temporal_surface_output;
   bool8_t temporal_history_valid;
   uint32_t indexed_draw_count;
   uint32_t blend_draw_count;
@@ -1578,6 +1599,8 @@ struct VkrVulkanRenderer {
   uint64_t submit_value;
   uint64_t completed_value;
   uint64_t candidate_publication_generation;
+  uint64_t radiance_revision;
+  uint64_t graph_revision;
   uint64_t upload_wait_count;
   uint64_t frame_upload_exhaustion_count;
   uint64_t command_slot_wait_count;
@@ -1593,6 +1616,7 @@ struct VkrVulkanRenderer {
 };
 
 VkDevice vkr_vk_renderer_device(const VkrVulkanRenderer *renderer);
+void vkr_vk_advance_radiance_revision(VkrVulkanRenderer *renderer);
 VkFormat vkr_vk_texture_format(VkrTextureFormat format);
 VkImageAspectFlags vkr_vk_format_aspects(VkFormat format);
 VkImageLayout vkr_vk_texture_layout(VkrTextureLayout layout);

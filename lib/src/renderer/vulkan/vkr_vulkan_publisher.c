@@ -1,4 +1,13 @@
 #include "renderer/vulkan/vkr_vulkan_internal.h"
+void vkr_vk_advance_radiance_revision(VkrVulkanRenderer *renderer) {
+  if (renderer->radiance_revision == UINT64_MAX) {
+    renderer->terminal_failure = true_v;
+    log_fatal("Vulkan radiance revision exhausted");
+    return;
+  }
+  ++renderer->radiance_revision;
+}
+
 vkr_internal void
 vkr_vk_advance_candidate_publication_generation(VkrVulkanRenderer *renderer) {
   if (renderer->candidate_publication_generation == UINT64_MAX) {
@@ -117,12 +126,19 @@ vkr_internal uint8_t vkr_vk_material_pending_texture_count(
 
 vkr_internal void
 vkr_vk_refresh_material_texture_readiness(VkrVulkanRenderer *renderer) {
+  bool8_t changed = false_v;
   for (uint32_t i = 0u; i < renderer->config.material_record_capacity; ++i) {
     VkrVulkanPublishedMaterial *material = &renderer->published_materials[i];
-    if (material->live)
-      material->pending_texture_count =
-          vkr_vk_material_pending_texture_count(renderer, material);
+    if (!material->live)
+      continue;
+    const uint32_t pending_count =
+        vkr_vk_material_pending_texture_count(renderer, material);
+    changed |= pending_count != material->pending_texture_count;
+    material->pending_texture_count = pending_count;
   }
+  // Static candidate residency caches omitted rows as well as published rows.
+  if (changed)
+    vkr_vk_advance_candidate_publication_generation(renderer);
 }
 
 vkr_internal bool8_t vkr_vk_enqueue_texture_initialization(
@@ -903,9 +919,11 @@ bool8_t vkr_vk_commit_texture_initializations(VkrVulkanRenderer *renderer,
       initialization->staged_batch_count = 0u;
       progressed = true_v;
     }
-    if (progressed)
+    if (progressed) {
+      vkr_vk_advance_radiance_revision(renderer);
       texture->last_use_submit_value =
           Max(texture->last_use_submit_value, retire_value);
+    }
     const bool8_t completed =
         initialization->writable ||
         initialization->next_batch == initialization->batch_count;
@@ -2053,6 +2071,7 @@ vkr_internal bool8_t vkr_vk_asset_publish_writable_texture(
   pending.initialization_pending = true_v;
   pending.live = true_v;
   *record = pending;
+  vkr_vk_advance_radiance_revision(renderer);
   return true_v;
 }
 
@@ -2174,6 +2193,9 @@ vkr_vk_asset_update_texture_sampler(void *state, VkrTextureHandle handle,
     return false_v;
   }
   vkr_vk_collect_samplers(renderer, completed);
+  vkr_vk_advance_radiance_revision(renderer);
+  if (dependent_material_count)
+    vkr_vk_advance_candidate_publication_generation(renderer);
   return true_v;
 }
 
@@ -2323,6 +2345,7 @@ vkr_vk_asset_publish_texture(void *state, VkrTextureHandle handle,
   pending.initialization_pending = true_v;
   pending.live = true_v;
   *record = pending;
+  vkr_vk_advance_radiance_revision(renderer);
   return true_v;
 }
 
@@ -2346,17 +2369,20 @@ bool8_t vkr_vk_asset_unpublish_texture(void *state, VkrTextureHandle handle) {
           Max(texture->last_use_submit_value, renderer->submit_value);
       *retired = *texture;
       MemZero(texture, sizeof(*texture));
+      vkr_vk_advance_radiance_revision(renderer);
       vkr_vk_collect_asset_publications(renderer,
                                         vkr_vk_refresh_completed(renderer));
       return true_v;
     }
     texture->unpublish_requested = true_v;
+    vkr_vk_advance_radiance_revision(renderer);
     return true_v;
   }
   if (texture->initialization_pending)
     vkr_vk_cancel_texture_initialization(renderer, handle);
   texture->live = false_v;
   texture->pending_retire = true_v;
+  vkr_vk_advance_radiance_revision(renderer);
   texture->last_use_submit_value = renderer->submit_value;
   const uint64_t completed = vkr_vk_refresh_completed(renderer);
   vkr_vk_collect_asset_publications(renderer, completed);
@@ -2579,6 +2605,7 @@ vkr_internal bool8_t vkr_vk_queue_ibl_bake(VkrVulkanRenderer *renderer,
   for (uint32_t i = convert_equirect ? 0u : 1u; i < ArrayCount(referenced); ++i)
     referenced[i]->ibl_reference_count++;
   source_texture->ibl_prefilter = prefilter;
+  vkr_vk_advance_radiance_revision(renderer);
   renderer->pending_ibl_bakes[renderer->pending_ibl_bake_count++] =
       (VkrVulkanPendingIblBake){
           .equirect = equirect,

@@ -47,12 +47,11 @@ typedef struct VkrVisibilityStats {
 
 /** One camera-visible ordinary-blend draw before back-to-front ordering. */
 typedef struct VkrTransparentDrawCandidate {
-  Mat4 model;
+  VkrInstanceDataGPU instance;
   VkrMeshHandle mesh;
   VkrGeometryHandle geometry;
   VkrMaterialHandle material;
   uint32_t submesh_index;
-  uint32_t object_id;
   uint64_t sort_key;
 } VkrTransparentDrawCandidate;
 

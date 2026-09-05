@@ -2,6 +2,12 @@
 // NORMAL_RG textures may transcode to BC5 or EAC RG11, whose sampled blue
 // channel is zero. Reconstructing the positive hemisphere from XY keeps those
 // formats equivalent to widened RGBA targets on both backends.
+float3 vkr_instance_transform_normal(float3 column0, float3 column1,
+                                      float3 column2, float3 normal)
+{
+    return column0 * normal.x + column1 * normal.y + column2 * normal.z;
+}
+
 float3 vkr_normal_map_decode(float3 encoded, float strength)
 {
     float2 xy = encoded.xy * 2.0f - 1.0f;

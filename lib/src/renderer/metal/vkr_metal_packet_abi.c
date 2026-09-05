@@ -474,6 +474,8 @@ vkr_global const VkrMetalPacketAbiField vkr_gbuffer_resolve_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketGBufferResolveRoot, previous_frame_index,
                   "previous_frame_index", 344),
     VKR_ABI_FIELD(VkrMetalPacketGBufferResolveRoot, reserved, "reserved", 348),
+    VKR_ABI_FIELD(VkrMetalPacketGBufferResolveRoot, sky_reprojection,
+                  "sky_reprojection", 352),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_deferred_lighting_root_fields[] = {
@@ -526,7 +528,7 @@ vkr_global const VkrMetalPacketAbiField vkr_temporal_resolve_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot,
                   history_identity_texture_id, "history_identity", 80),
     VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot,
-                  history_primitive_texture_id, "history_primitive", 88),
+                  history_surface_texture_id, "history_surface", 88),
     VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, output_color_texture_id,
                   "output_color", 96),
     VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, output_depth_texture_id,
@@ -534,7 +536,7 @@ vkr_global const VkrMetalPacketAbiField vkr_temporal_resolve_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, output_identity_texture_id,
                   "output_identity", 112),
     VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot,
-                  output_primitive_texture_id, "output_primitive", 120),
+                  output_surface_texture_id, "output_surface", 120),
     VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, extent, "extent", 128),
     VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, history_valid,
                   "history_valid", 136),
@@ -557,6 +559,12 @@ vkr_global const VkrMetalPacketAbiField vkr_temporal_resolve_root_fields[] = {
                   "transmission_alignment_padding", 188),
     VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, transmission_reserved,
                   "transmission_reserved", 192),
+    VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, current_jitter_pixels,
+                  "current_jitter_pixels", 200),
+    VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, previous_jitter_pixels,
+                  "previous_jitter_pixels", 208),
+    VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, scene_stationary,
+                  "scene_stationary", 216),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_transmission_shade_root_fields[] = {
@@ -783,7 +791,7 @@ vkr_global const VkrMetalPacketAbiRecord
                            vkr_temporal_transform_root_fields),
         [VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketGBufferResolveRoot,
-                           "VkrMetalPacketGBufferResolveRoot", 352, 16,
+                           "VkrMetalPacketGBufferResolveRoot", 416, 16,
                            vkr_gbuffer_resolve_root_fields),
         [VKR_METAL_PACKET_ABI_GTAO_PARAMS] = VKR_ABI_RECORD(
             VkrGtaoGpuParams, "VkrGtaoParams", 192, 16, vkr_gtao_params_fields),
@@ -802,7 +810,7 @@ vkr_global const VkrMetalPacketAbiRecord
                            vkr_deferred_lighting_root_fields),
         [VKR_METAL_PACKET_ABI_TEMPORAL_RESOLVE_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketTemporalResolveRoot,
-                           "VkrMetalPacketTemporalResolveRoot", 208, 16,
+                           "VkrMetalPacketTemporalResolveRoot", 224, 16,
                            vkr_temporal_resolve_root_fields),
         [VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketTransmissionShadeRoot,

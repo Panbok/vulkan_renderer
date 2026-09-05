@@ -19,6 +19,9 @@ struct VkrMetalPacketInstance {
   uint temporal_index;
   uint temporal_generation;
   uint temporal_flags;
+  float4 normal_column0;
+  float4 normal_column1;
+  float4 normal_column2;
 };
 
 struct VkrTemporalTransform {
@@ -297,8 +300,8 @@ static_assert(sizeof(VkrPackedStaticVertex) == 32,
               "Packed static vertex ABI must remain 32 bytes");
 static_assert(sizeof(VkrGpuGeometryDecodeRecord) == 32,
               "Geometry decode record ABI must remain 32 bytes");
-static_assert(sizeof(VkrMetalPacketInstance) == 80,
-              "VkrInstanceDataGPU Metal ABI must remain 80 bytes");
+static_assert(sizeof(VkrMetalPacketInstance) == 128,
+              "Prepared instance Metal ABI must remain 128 bytes");
 static_assert(sizeof(VkrMetalPacketMaterial) == 176,
               "Metal material row ABI must remain 176 bytes");
 static_assert(sizeof(VkrMetalPacketTransmissionMaterial) == 32,

@@ -166,6 +166,13 @@ with float32 UVs. Cooking and publication validate range quantization; there is
 no selectable 24-byte float16-UV mode. See
 [ADR-031](adr/031-versioned-packed-static-geometry-abi.md).
 
+Source instances remain 80 bytes; native publication/upload prepares 128-byte
+instances with inverse-transpose normal directions and mirror handedness.
+Tangents retain model-linear transport. Baked glTF import uses the same distinction;
+cooked mesh version 16 rejects older tangent-transform results. See
+[ADR-044](adr/044-shader-cross-backend-contract.md) and
+[ADR-030](adr/030-offline-mesh-optimization-and-cooking.md).
+
 Native depth-writing passes use strict less-than tests; blend/text depth reads
 accept equality. Both cull with transformed-axis sphere scale and retain odd
 source edges during HZB reduction. Transmission compaction uses native subgroup
@@ -193,16 +200,40 @@ See [ADR-016](adr/016-hdr-environment-format.md) and
 
 Directional shadows default to four cascades with snapping, fit hysteresis,
 per-target-image reuse and shared PCF/bias units. Static reuse requires guard
-containment, matching generations and valid retained layers. Dynamic overlap or
+containment, matching generations, valid retained layers and a match with the
+common submitted fit; stale physical copies redraw that fit once. Dynamic overlap or
 incomplete publication forces rendering. SDSM and proactive refresh are opt-in;
 fixed splits and zero proactive budget remain defaults. See
 [ADR-041](adr/041-retained-cascaded-shadows.md) and
 [ADR-033](adr/033-occupied-depth-sdsm-feedback.md).
 
-Portable TAA consumes rigid motion, visibility identity, depth and reactive
-composition; completed history remains scene-linear and exposure-independent.
-Automatic exposure, bloom and GTAO have independent packet bypasses. GTAO affects
-indirect diffuse only. See [ADR-037](adr/037-portable-same-resolution-temporal-antialiasing.md)
+Portable TAA consumes rigid motion, stable instance/submesh identity, depth and
+reactive composition. Current color is reconstructed onto the unjittered grid;
+history validation accounts for raw metadata's jittered footprint. Opaque/background
+coverage can survive camera motion while its surface, depth and motion remain
+supported nearby; partial support reduces history confidence. Temporal history uses
+the preceding submitted frame with GPU dependencies, and output reuse still
+proves completion. Fully supported 4x4 color footprints use clamped cubic
+reconstruction; rejected edges keep masked bilinear sampling. Resets exclude
+every pre-reset producer. A packet-content signature plus native resource and
+graph revisions enables accumulation without coverage clipping for unchanged
+scenes, including static glass and thin geometry absent in one jitter phase.
+Pending writers and unsupported text disable that path; any content or camera
+change restores normal rejection. After 128 unchanged samples, nonreactive pixels
+retain their completed value exactly. Sample age uses the existing depth-history
+spare channel, with no additional images. Retained shadow images converge to a
+common submitted projection so cached per-image fits cannot prevent temporal
+convergence after camera movement. The G-buffer writes
+sky rotation motion for portable TAA and MetalFX. Completed history remains
+scene-linear and exposure-independent.
+
+Automatic exposure adapts over elapsed time since its selected completed state,
+using a renderer-owned committed exposure clock and a bounded hitch policy.
+Defaults lower exposure at 8 EV/s and raise it at 1 EV/s with a +4 EV upper target
+limit. Exposure, bloom and GTAO have independent packet bypasses. GTAO's slice
+basis and horizon signs follow view reconstruction and affect indirect diffuse
+only. Direct lighting and the IBL PDF share the unclipped supported GGX lobe.
+See [ADR-037](adr/037-portable-same-resolution-temporal-antialiasing.md)
 and [ADR-042](adr/042-scene-linear-post-processing.md).
 
 ## Presentation and platform boundaries
@@ -263,8 +294,9 @@ Both backends publish completed GPU timing/results and allocation/visibility
 metrics. Unsupported timing scopes are unavailable, never zero-duration proof.
 Metal compute/graphics timestamps exist; transfer timing is not supported.
 The harness owns case identity, artifacts, comparison and performance authority.
-After resource/bootstrap readiness it starts authored warmup at jitter phase zero
-with temporal history invalidated; replay version 3 fingerprints this behavior.
+After resource/bootstrap readiness it starts authored warmup at the common zero
+of raster jitter and GTAO noise, with temporal history invalidated; replay version
+4 fingerprints this behavior.
 See [ADR-015](adr/015-metrics-module.md) and [ADR-051](adr/051-renderer-harness-and-evidence.md).
 
 ## Remaining implementation and evidence boundaries
@@ -289,6 +321,14 @@ These are limits of current code or retained acceptance, not scheduled promises:
 - Moving TAA/MetalFX quality, final-color baseline acceptance and authoritative
   post-effect/reconstruction performance require their own matched evidence.
   Portable Metal validation does not certify native MetalFX.
+- The shader corrections and stationary coverage support remain UNALIGNED under
+  ADR-044. Bounded Vulkan Release Bistro profiling and static/moving-camera
+  snapshots pass on RX 6700 XT after fixing cooker memory growth, upload-memory
+  fallback and harness stack exhaustion. The earlier host freeze cause remains
+  unconfirmed. Metal execution and bilateral capture comparison are unavailable
+  on that Windows host. Focused Vulkan synchronization validation passes;
+  matched speedup measurements and broader moving-image quality acceptance
+  remain open gates.
 
 [ADR-044](adr/044-shader-cross-backend-contract.md) maps source counterparts and
 defines parity evidence. Builds, static source review and one backend's success

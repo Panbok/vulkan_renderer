@@ -337,17 +337,20 @@ static void test_transparent_sort_and_emit(void) {
       {.mesh = {1u, 1u},
        .geometry = {11u, 1u},
        .material = {21u, 1u},
-       .object_id = 31u,
+       .instance = {.object_id = 31u, .temporal_index = 7u,
+                    .temporal_generation = 4u},
        .sort_key = 10u},
       {.mesh = {2u, 1u},
        .geometry = {12u, 1u},
        .material = {22u, 1u},
-       .object_id = 32u,
+       .instance = {.object_id = 32u, .temporal_index = 8u,
+                    .temporal_generation = 5u},
        .sort_key = 30u},
       {.mesh = {3u, 1u},
        .geometry = {13u, 1u},
        .material = {23u, 1u},
-       .object_id = 33u,
+       .instance = {.object_id = 33u, .temporal_index = 9u,
+                    .temporal_generation = 6u},
        .sort_key = 20u},
   };
   qsort(candidates, 3u, sizeof(candidates[0]),
@@ -361,8 +364,15 @@ static void test_transparent_sort_and_emit(void) {
     assert(draws[i].instance_count == 1u);
     assert(draws[i].first_instance == i);
     assert(draws[i].material.id == candidates[i].material.id);
-    assert(instances[i].object_id == candidates[i].object_id);
+    assert(instances[i].object_id == candidates[i].instance.object_id);
   }
+  /* Source identities must follow their draws through back-to-front sorting. */
+  assert(instances[0].temporal_index == 8u &&
+         instances[0].temporal_generation == 5u);
+  assert(instances[1].temporal_index == 9u &&
+         instances[1].temporal_generation == 6u);
+  assert(instances[2].temporal_index == 7u &&
+         instances[2].temporal_generation == 4u);
 }
 
 static void test_submesh_sphere_is_conservative_under_scale(void) {

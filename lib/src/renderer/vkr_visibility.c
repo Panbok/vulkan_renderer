@@ -26,10 +26,10 @@ vkr_transparent_draw_emit(const VkrTransparentDrawCandidate *candidates,
         .first_instance = i,
         .sort_key = candidates[i].sort_key,
     };
-    out_instances[i] = (VkrInstanceDataGPU){
-        .model = candidates[i].model,
-        .object_id = candidates[i].object_id,
-    };
+    out_instances[i] = candidates[i].instance;
+    out_instances[i].temporal_flags =
+        (candidates[i].submesh_index + 1u) <<
+        VKR_INSTANCE_TEMPORAL_SURFACE_SHIFT;
   }
   return count;
 }

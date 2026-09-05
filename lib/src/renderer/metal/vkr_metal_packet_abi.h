@@ -304,10 +304,14 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketGBufferResolveRoot {
   uint32_t history_valid;
   uint32_t previous_frame_index;
   uint32_t reserved;
+  Mat4 sky_reprojection;
 } VkrMetalPacketGBufferResolveRoot;
 
-_Static_assert(sizeof(VkrMetalPacketGBufferResolveRoot) == 352,
-               "Metal G-buffer resolve root ABI must remain 352 bytes");
+_Static_assert(sizeof(VkrMetalPacketGBufferResolveRoot) == 416,
+               "Metal G-buffer resolve root ABI must remain 416 bytes");
+_Static_assert(offsetof(VkrMetalPacketGBufferResolveRoot, sky_reprojection) ==
+                   352,
+               "Metal G-buffer sky-reprojection matrix ABI drift");
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketTemporalResolveRoot {
   uint64_t visible_rows;
@@ -321,11 +325,11 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketTemporalResolveRoot {
   uint64_t history_color_texture_id;
   uint64_t history_depth_texture_id;
   uint64_t history_identity_texture_id;
-  uint64_t history_primitive_texture_id;
+  uint64_t history_surface_texture_id;
   uint64_t output_color_texture_id;
   uint64_t output_depth_texture_id;
   uint64_t output_identity_texture_id;
-  uint64_t output_primitive_texture_id;
+  uint64_t output_surface_texture_id;
   uint32_t extent[2];
   uint32_t history_valid;
   uint32_t render_mode;
@@ -337,10 +341,20 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketTemporalResolveRoot {
   uint32_t transmission_enabled;
   uint32_t transmission_alignment_padding;
   uint32_t transmission_reserved[2];
+  Vec2 current_jitter_pixels;
+  Vec2 previous_jitter_pixels;
+  uint32_t scene_stationary;
 } VkrMetalPacketTemporalResolveRoot;
 
-_Static_assert(sizeof(VkrMetalPacketTemporalResolveRoot) == 208,
-               "Metal temporal-resolve root ABI must remain 208 bytes");
+_Static_assert(sizeof(VkrMetalPacketTemporalResolveRoot) == 224,
+               "Metal temporal-resolve root ABI must remain 224 bytes");
+_Static_assert(offsetof(VkrMetalPacketTemporalResolveRoot, current_jitter_pixels) ==
+                   200u &&
+                   offsetof(VkrMetalPacketTemporalResolveRoot, previous_jitter_pixels) ==
+                       208u,
+               "Metal temporal-resolve jitter ABI drift");
+_Static_assert(offsetof(VkrMetalPacketTemporalResolveRoot, scene_stationary) ==
+                   216u, "Metal temporal static-scene ABI drift");
 
 /** Per-dispatch deferred-lighting resources and reconstruction contract. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketDeferredLightingRoot {

@@ -358,6 +358,7 @@ vkr_internal bool8_t vkr_metal_packet_texture_upload_batch_flush(
   slot->submit_value = submit_value;
   id<MTL4CommandBuffer> submissions[] = {renderer->command_buffer};
   [renderer->queue commit:submissions count:1];
+  vkr_metal_packet_advance_revision(&renderer->radiance_revision);
   [renderer->queue signalEvent:renderer->completion value:submit_value];
   const bool8_t submitted =
       vkr_metal_memory_device_submit_ring(
@@ -445,6 +446,7 @@ vkr_internal bool8_t vkr_metal_packet_submit_upload(
   slot->submit_value = submit_value;
   id<MTL4CommandBuffer> submissions[] = {renderer->command_buffer};
   [renderer->queue commit:submissions count:1];
+  vkr_metal_packet_advance_revision(&renderer->radiance_revision);
   [renderer->queue signalEvent:renderer->completion value:submit_value];
   if (vkr_metal_memory_device_submit_ring(
           renderer->memory, VKR_METAL_RING_KIND_UPLOAD, slice, submit_value) !=

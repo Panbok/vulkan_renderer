@@ -141,7 +141,7 @@ bool8_t vkr_vk_record_deferred_upload(VkrVulkanRenderer *renderer,
       };
       const VkBufferCopy instance_copy = {
           .srcOffset = slot->transmission_gpu_instance_upload_offset,
-          .size = (uint64_t)count * sizeof(VkrInstanceDataGPU),
+          .size = (uint64_t)count * sizeof(VkrPreparedInstanceGPU),
       };
       vkCmdCopyBuffer(command, slot->frame_upload.handle,
                       candidates->buffer.handle, 1u, &candidate_copy);
@@ -166,8 +166,8 @@ bool8_t vkr_vk_record_deferred_upload(VkrVulkanRenderer *renderer,
       const VkBufferCopy instance_copy = {
           .srcOffset = range->instance_source_offset,
           .dstOffset =
-              (uint64_t)range->destination_first * sizeof(VkrInstanceDataGPU),
-          .size = (uint64_t)range->count * sizeof(VkrInstanceDataGPU),
+              (uint64_t)range->destination_first * sizeof(VkrPreparedInstanceGPU),
+          .size = (uint64_t)range->count * sizeof(VkrPreparedInstanceGPU),
       };
       vkCmdCopyBuffer(command, slot->frame_upload.handle,
                       candidates->buffer.handle, 1u, &candidate_copy);
@@ -494,16 +494,16 @@ bool8_t vkr_vk_record_temporal_transform(VkrVulkanRenderer *renderer,
       vkr_vk_temporal_graph_image(renderer, "temporal_history_depth");
   VkrVulkanGraphImage *identities =
       vkr_vk_temporal_graph_image(renderer, "temporal_history_identity");
-  VkrVulkanGraphImage *primitives =
-      vkr_vk_temporal_graph_image(renderer, "temporal_history_primitive");
+  VkrVulkanGraphImage *surfaces =
+      vkr_vk_temporal_graph_image(renderer, "temporal_history_surface");
   if (!instances || !output || !colors || !depths || !identities ||
-      !primitives ||
+      !surfaces ||
       !vkr_rg_buffer_handle_valid(
           renderer->temporal_transform_history_handle) ||
       colors->instance_count != VKR_VULKAN_HISTORY_INSTANCE_COUNT ||
       depths->instance_count != colors->instance_count ||
       identities->instance_count != colors->instance_count ||
-      primitives->instance_count != colors->instance_count)
+      surfaces->instance_count != colors->instance_count)
     return false_v;
 
   const uint32_t current = renderer->history_output_index;
@@ -511,7 +511,7 @@ bool8_t vkr_vk_record_temporal_transform(VkrVulkanRenderer *renderer,
   slot->temporal_color_output = &colors->instances[current];
   slot->temporal_depth_output = &depths->instances[current];
   slot->temporal_identity_output = &identities->instances[current];
-  slot->temporal_primitive_output = &primitives->instances[current];
+  slot->temporal_surface_output = &surfaces->instances[current];
 
   const VkrRenderPacket *packet = renderer->graph->packet;
   VkrVulkanGraphImageInstance *selected = NULL;
@@ -520,8 +520,7 @@ bool8_t vkr_vk_record_temporal_transform(VkrVulkanRenderer *renderer,
     for (uint32_t i = 0u; i < colors->instance_count; ++i) {
       VkrVulkanGraphImageInstance *candidate = &colors->instances[i];
       if (i == current || !candidate->history_valid ||
-          candidate->history_producer_submit_value >
-              renderer->completed_value ||
+          candidate->history_frame_index + 1u != packet->frame.frame_index ||
           candidate->history_scene_generation !=
               packet->frame.scene_generation ||
           candidate->history_width != renderer->prepared_frame.viewport_width ||
@@ -547,19 +546,23 @@ bool8_t vkr_vk_record_temporal_transform(VkrVulkanRenderer *renderer,
         &depths->instances[selected_index];
     VkrVulkanGraphImageInstance *previous_identity =
         &identities->instances[selected_index];
-    VkrVulkanGraphImageInstance *previous_primitive =
-        &primitives->instances[selected_index];
+    VkrVulkanGraphImageInstance *previous_surface =
+        &surfaces->instances[selected_index];
     if (!previous_transform->history_valid || !selected->has_sampled_slot ||
         !previous_depth->has_storage_slot ||
         !previous_identity->has_storage_slot ||
-        !previous_primitive->has_storage_slot) {
+        !previous_surface->has_storage_slot) {
       selected = NULL;
     } else {
+      /* The preceding submission may still be in flight. All render work
+         uses this queue; these dependencies order its writes before every
+         history reader. Output reuse still requires completed last use. */
       const VkBufferMemoryBarrier2 buffer_barrier = {
           .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
           .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
           .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-          .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+          .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
           .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
           .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
           .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -568,14 +571,14 @@ bool8_t vkr_vk_record_temporal_transform(VkrVulkanRenderer *renderer,
       };
       VkImageMemoryBarrier2 image_barriers[4] = {0};
       VkrVulkanGraphImageInstance *history_images[] = {
-          selected, previous_depth, previous_identity, previous_primitive};
+          selected, previous_depth, previous_identity, previous_surface};
       for (uint32_t i = 0u; i < ArrayCount(history_images); ++i) {
         image_barriers[i] = (VkImageMemoryBarrier2){
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .srcStageMask = i == 0u ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
-                                    : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            .srcAccessMask = i == 0u ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
-                                     : VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                            (i == 0u ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT : 0u),
+            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                             (i == 0u ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT : 0u),
             .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
             .dstAccessMask = i == 0u ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
                                      : VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
@@ -606,7 +609,7 @@ bool8_t vkr_vk_record_temporal_transform(VkrVulkanRenderer *renderer,
       slot->temporal_color_input = selected;
       slot->temporal_depth_input = previous_depth;
       slot->temporal_identity_input = previous_identity;
-      slot->temporal_primitive_input = previous_primitive;
+      slot->temporal_surface_input = previous_surface;
       slot->temporal_history_valid = true_v;
     }
   }
@@ -637,7 +640,7 @@ void vkr_vk_mark_temporal_submitted(VkrVulkanRenderer *renderer,
       &renderer->frame_slots[renderer->active_frame_slot];
   VkrVulkanGraphImageInstance *inputs[] = {
       slot->temporal_color_input, slot->temporal_depth_input,
-      slot->temporal_identity_input, slot->temporal_primitive_input};
+      slot->temporal_identity_input, slot->temporal_surface_input};
   for (uint32_t i = 0u; i < ArrayCount(inputs); ++i)
     if (inputs[i])
       inputs[i]->last_use_submit_value = submit_value;
@@ -647,7 +650,16 @@ void vkr_vk_mark_temporal_submitted(VkrVulkanRenderer *renderer,
   const VkrRenderPacket *packet = renderer->graph->packet;
   VkrVulkanGraphImageInstance *outputs[] = {
       slot->temporal_color_output, slot->temporal_depth_output,
-      slot->temporal_identity_output, slot->temporal_primitive_output};
+      slot->temporal_identity_output, slot->temporal_surface_output};
+  if (packet->globals.temporal.reset_reasons != 0u) {
+    /* Retire the old logical epoch only after this reset was submitted. GPU
+       last-use values still own physical image reuse. */
+    VkrVulkanGraphImage *colors =
+        vkr_vk_temporal_graph_image(renderer, "temporal_history_color");
+    if (colors)
+      for (uint32_t i = 0u; i < colors->instance_count; ++i)
+        colors->instances[i].history_valid = false_v;
+  }
   for (uint32_t i = 0u; i < ArrayCount(outputs); ++i) {
     VkrVulkanGraphImageInstance *instance = outputs[i];
     if (!instance)
@@ -670,6 +682,8 @@ void vkr_vk_mark_temporal_submitted(VkrVulkanRenderer *renderer,
         packet->frame.scene_generation;
     slot->temporal_transform_output->history_valid = true_v;
   }
+  if (slot->temporal_color_output)
+    slot->temporal_color_output->history_scene = slot->temporal_scene;
 }
 
 bool8_t vkr_vk_record_deferred_cull(VkrVulkanRenderer *renderer,
@@ -870,6 +884,13 @@ bool8_t vkr_vk_record_deferred_gbuffer(VkrVulkanRenderer *renderer,
           slot->temporal_history_valid
               ? slot->temporal_color_input->history_frame_index
               : packet->frame.frame_index,
+      .sky_reprojection =
+          slot->temporal_history_valid
+              ? vkr_temporal_sky_reprojection(
+                    packet->globals.temporal.current_view_projection,
+                    slot->temporal_color_input->history_view_projection,
+                    packet->globals.view_position)
+              : mat4_identity(),
   };
   uint64_t root_address = 0u;
   if (!vkr_vk_deferred_push_root(renderer, command, &root, sizeof(root),
@@ -1010,7 +1031,7 @@ bool8_t vkr_vk_record_temporal_resolve(VkrVulkanRenderer *renderer,
   const bool8_t history_valid =
       slot->temporal_history_valid && slot->temporal_color_input &&
       slot->temporal_depth_input && slot->temporal_identity_input &&
-      slot->temporal_primitive_input;
+      slot->temporal_surface_input;
   const VkrRenderPacket *packet = renderer->graph->packet;
   const VkrVulkanTemporalResolveRoot root = {
       .visible_rows = visible->buffer.address,
@@ -1030,13 +1051,13 @@ bool8_t vkr_vk_record_temporal_resolve(VkrVulkanRenderer *renderer,
       .history_identity_texture =
           history_valid ? slot->temporal_identity_input->storage_slot.index
                         : storage[3],
-      .history_primitive_texture =
-          history_valid ? slot->temporal_primitive_input->storage_slot.index
+      .history_surface_texture =
+          history_valid ? slot->temporal_surface_input->storage_slot.index
                         : storage[4],
       .output_color_texture = storage[1],
       .output_depth_texture = storage[2],
       .output_identity_texture = storage[3],
-      .output_primitive_texture = storage[4],
+      .output_surface_texture = storage[4],
       .history_sampler = renderer->transmission_sampler_slot,
       .extent = {renderer->prepared_frame.viewport_width,
                  renderer->prepared_frame.viewport_height},
@@ -1047,6 +1068,19 @@ bool8_t vkr_vk_record_temporal_resolve(VkrVulkanRenderer *renderer,
           MemCompare(&slot->temporal_color_input->history_view_projection,
                      &packet->globals.temporal.current_view_projection,
                      sizeof(Mat4)) == 0,
+      .scene_stationary =
+          history_valid && slot->temporal_scene.signature.eligible &&
+          slot->temporal_color_input->history_scene.signature.eligible &&
+          slot->temporal_scene.signature.hash[0] ==
+              slot->temporal_color_input->history_scene.signature.hash[0] &&
+          slot->temporal_scene.signature.hash[1] ==
+              slot->temporal_color_input->history_scene.signature.hash[1] &&
+          slot->temporal_scene.radiance_revision ==
+              slot->temporal_color_input->history_scene.radiance_revision &&
+          slot->temporal_scene.publication_generation ==
+              slot->temporal_color_input->history_scene.publication_generation &&
+          slot->temporal_scene.graph_revision ==
+              slot->temporal_color_input->history_scene.graph_revision,
       .transmission_visible_rows =
           transmission_visible ? transmission_visible->buffer.address : 0u,
       .transmission_instances =
@@ -1054,6 +1088,10 @@ bool8_t vkr_vk_record_temporal_resolve(VkrVulkanRenderer *renderer,
       .transmission_vbuffer_texture = transmission_vbuffer,
       .transmission_depth_texture = transmission_depth,
       .transmission_enabled = transmission_enabled,
+      .current_jitter_pixels = packet->globals.temporal.jitter_pixels,
+      .previous_jitter_pixels =
+          history_valid ? vkr_temporal_jitter_for_frame((uint32_t)slot->temporal_color_input->history_frame_index)
+                        : (Vec2){0},
   };
   uint64_t root_address = 0u;
   if (!vkr_vk_deferred_push_root(renderer, command, &root, sizeof(root),

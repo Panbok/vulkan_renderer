@@ -102,7 +102,15 @@ typedef struct VkrMetalPacketImageViews {
   void *layer_views[VKR_METAL_PACKET_MAX_TEXTURE_LAYERS];
 } VkrMetalPacketImageViews;
 
+typedef struct VkrMetalPacketTemporalSceneState {
+  VkrTemporalSceneSignature signature;
+  uint64_t radiance_revision;
+  uint64_t publication_generation;
+  uint64_t graph_revision;
+} VkrMetalPacketTemporalSceneState;
+
 typedef struct VkrMetalPacketImageInstance {
+  VkrMetalPacketTemporalSceneState history_scene;
   VkrMetalTextureResource resource;
   VkrMetalPacketImageViews views;
   uint64_t last_use_submit_value;
@@ -272,6 +280,7 @@ typedef struct VkrMetalPacketPreparedDraw {
 } VkrMetalPacketPreparedDraw;
 
 typedef struct VkrMetalPacketFrameUpload {
+  VkrMetalPacketTemporalSceneState temporal_scene;
   VkrMetalRingSlice slice;
   VkrMetalAddressPair addresses;
   id<MTLBuffer> buffer;
@@ -590,6 +599,8 @@ struct VkrMetalPacketRenderer {
   VkrRenderGraphFrameInfo prepared_frame;
   uint64_t submit_value;
   uint64_t candidate_publication_generation;
+  uint64_t radiance_revision;
+  uint64_t graph_revision;
   uint32_t gpu_draw_count;
   uint32_t transmission_gpu_draw_count;
   uint64_t current_hzb_world_epoch;
@@ -752,6 +763,12 @@ VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_retired_image_views_bytes,
  * domain independently reviewable.
  */
 // clang-format off
+vkr_internal void vkr_metal_packet_advance_revision(uint64_t *revision) {
+  if (*revision == UINT64_MAX)
+    log_fatal("Metal temporal content revision exhausted");
+  ++*revision;
+}
+
 #include "renderer/metal/internal/vkr_metal_packet_graph.inc"
 #include "renderer/metal/internal/vkr_metal_packet_commands.inc"
 #include "renderer/metal/internal/vkr_metal_packet_setup.inc"

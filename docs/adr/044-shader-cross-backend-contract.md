@@ -36,6 +36,25 @@ with forward `-Z`; depth is `[0,1]` and projection/viewport Y lowering is backen
 aware. Rounded dispatches retain guards required for valid edges. Material
 normal decode reconstructs positive tangent Z; output transfer follows ADR-043.
 
+The packet's source instance remains 80 bytes. Native publication/upload lowers
+it once into a 128-byte `VkrPreparedInstanceGPU` with three prepared normal-transform
+columns. Their common positive scale preserves inverse-transpose direction under
+normalization; the first column's w carries model handedness for mirrored tangent
+bases. Shaders transform tangents with the model's linear part and normals with
+the prepared columns. No per-pixel matrix inverse is required.
+
+Both G-buffer roots append the sky reprojection matrix at byte
+352 and have a 416-byte native size. The G-buffer owns sky motion for every
+temporal consumer; portable resolve carries no duplicate reprojection matrix.
+Temporal resolve roots carry current and previous pixel jitter for canonical
+color reconstruction and raw metadata validation. Vulkan offsets are 128/136
+with a 144-byte root; Metal offsets are 200/208 with a 224-byte root.
+The checked-scene flag occupies Vulkan byte 124 and Metal byte 216 without
+growing those roots. Both implementations store accumulation age in the existing
+depth-history second channel and retain raw depth in the first channel. Native
+content/revision eligibility and the portable signature gate the same static
+algorithm; unavailable Metal execution keeps this contract UNALIGNED.
+
 A parity entry is ALIGNED only with matching production semantics, applicable
 host/compiled reflection and non-degenerate native comparisons on both backends.
 Missing or conflicting evidence is UNALIGNED. Shared source, compilation or a
@@ -46,6 +65,21 @@ in [ARCHITECTURE](../ARCHITECTURE.md).
 Current evidence state: **UNALIGNED** for every domain below. The production
 source audit covers their counterparts; same-revision bilateral native
 comparisons and runtime reflection checks remain incomplete.
+Bounded Vulkan Release Bistro profiling and static/moving-camera snapshots pass
+on RX 6700 XT. A subsequent user-reported blur/static-jitter regression required
+preceding-submission history ordering, truthful center metadata, stationary
+coverage support and validated cubic history reconstruction. Focused Vulkan
+Debug execution loaded the Khronos validation layer and reported no synchronization
+hazards; Metal native execution remains unavailable. All 71 measured pass rows have valid GPU timestamps; captures
+were inspected without baseline promotion. The original host freeze cause is
+unconfirmed. Cooker arena growth, Vulkan upload fallback and harness report
+stack exhaustion were repaired during validation. Metal native execution is
+unavailable on that Windows host. Checked static-scene accumulation subsequently
+passed the aligned eight-phase Bistro capture and focused Vulkan validation;
+the matching moving-camera replay remained visually unchanged. These local
+observations do not close broader moving-image quality or bilateral comparison
+gates. Native Metal validation and same-revision bilateral captures remain
+unavailable.
 
 ## Consequences
 
@@ -72,12 +106,12 @@ Native lowering lives in [`metal/`](../../lib/src/renderer/metal) and
 | Domain | Shared source | Metal production | Vulkan production |
 |---|---|---|---|
 | Geometry/visibility/deferred/picking | `shared/gpu_draw.slangh` | `metal/msl/common/draw.metalh`, `metal/msl/world/gpu_draws.metal` | `vulkan/slang/common/`, `world/deferred.slang`, `picking/default.slang` |
-| Material/light math | `shared/normal_map_kernel.slangh`, `point_light.slangh` | `metal/msl/world/default.metal`, `lighting.metalh`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
+| Material/light math | `shared/normal_map_kernel.slangh`, `ggx_kernel.slangh`, `point_light.slangh` | `metal/msl/world/default.metal`, `lighting.metalh`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Transmission | `shared/transmission_kernel.slangh` | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang` |
 | Shadow receiver | `shared/shadow_kernel.slangh` | `metal/msl/shadow/sampling.metalh` | `vulkan/slang/world/default.slang` |
-| IBL and SH | `shared/sh_l2_kernel.slangh` | `metal/msl/ibl/` | `vulkan/slang/ibl/` |
+| IBL and SH | `shared/sh_l2_kernel.slangh`, `ggx_kernel.slangh` | `metal/msl/ibl/` | `vulkan/slang/ibl/` |
 | Exposure/bloom/GTAO | matching `shared/*_kernel.slangh` | `metal/msl/post/` | `vulkan/slang/post/` |
-| Temporal resolve | native visibility/identity helpers | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang` |
+| Temporal resolve | `shared/temporal_filter_kernel.slangh`; native visibility/identity helpers | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang` |
 | Tonemap/FXAA | shared exposure state | `metal/msl/post/tonemap.metal` | `vulkan/slang/post/default.slang`, `tonemap.slangh` |
 | Text/UI (UNALIGNED: native comparison pending) | native coverage; fixed MTSDF atlas sampling | `metal/msl/text/`, `ui/` | `vulkan/slang/text/`, `ui/` |
 

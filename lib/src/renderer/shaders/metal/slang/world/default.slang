@@ -39,12 +39,13 @@ vkr_metal_packet_vertex_data(uint vertex_id, uint instance_id,
     output.color = vertex.color;
     output.object_id = instance.object_id;
     output.world_position = world_position.xyz;
-    output.world_normal = normalize(
-        mul(instance.model, float4(vertex.normal, 0.0)).xyz);
+    output.world_normal = normalize(vkr_instance_transform_normal(
+        instance.normal_column0.xyz, instance.normal_column1.xyz,
+        instance.normal_column2.xyz, vertex.normal));
     output.world_tangent =
         float4(normalize(mul(instance.model,
                              float4(vertex.tangent.xyz, 0.0)).xyz),
-               vertex.tangent.w);
+               vertex.tangent.w * instance.normal_column0.w);
     output.visible_row_index = visible_row_index;
     output.object_position = vertex.position;
     output.temporal_index = instance.temporal_index;

@@ -81,7 +81,7 @@
     {
       "name": "gpu_draw_instances",
       "type": "buffer",
-      "size": 20971520,
+      "size": 33554432,
       "usage": ["STORAGE", "TRANSFER_DST"],
       "flags": ["PER_FRAME_SLOT"]
     },
@@ -132,7 +132,7 @@
       "name": "transmission_gpu_draw_instances",
       "type": "buffer",
       "condition": "transmission_pending",
-      "size": 20971520,
+      "size": 33554432,
       "usage": ["STORAGE", "TRANSFER_DST"],
       "flags": ["PER_FRAME_SLOT"]
     },
@@ -396,7 +396,7 @@
       "flags": ["HISTORY", "RESIZABLE"]
     },
     {
-      "name": "temporal_history_primitive",
+      "name": "temporal_history_surface",
       "type": "image",
       "condition": "!metalfx_enabled",
       "extent": { "mode": "viewport" },
@@ -1932,7 +1932,7 @@
         { "image": "temporal_history_color", "access": "STORAGE_WRITE", "binding": 8 },
         { "image": "temporal_history_depth", "access": "STORAGE_WRITE", "binding": 9 },
         { "image": "temporal_history_identity", "access": "STORAGE_WRITE", "binding": 10 },
-        { "image": "temporal_history_primitive", "access": "STORAGE_WRITE", "binding": 11 }
+        { "image": "temporal_history_surface", "access": "STORAGE_WRITE", "binding": 11 }
       ],
       "execute": "pass.temporal.resolve"
     },
@@ -1992,7 +1992,7 @@
         { "image": "temporal_history_color", "access": "STORAGE_WRITE", "binding": 8 },
         { "image": "temporal_history_depth", "access": "STORAGE_WRITE", "binding": 9 },
         { "image": "temporal_history_identity", "access": "STORAGE_WRITE", "binding": 10 },
-        { "image": "temporal_history_primitive", "access": "STORAGE_WRITE", "binding": 11 }
+        { "image": "temporal_history_surface", "access": "STORAGE_WRITE", "binding": 11 }
       ],
       "execute": "pass.temporal.resolve"
     },

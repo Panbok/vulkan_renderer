@@ -7,6 +7,20 @@
 /** Renderer-owned jitter period used to align deterministic replay. */
 #define VKR_TEMPORAL_SEQUENCE_LENGTH 8u
 
+struct VkrRenderPacket;
+
+/** Packet-content proof for static scene accumulation; native resource and
+ * graph revisions must also match. Contains no borrowed storage. */
+typedef struct VkrTemporalSceneSignature {
+  uint64_t hash[2];
+  bool8_t eligible;
+} VkrTemporalSceneSignature;
+
+/** Consumes a validated packet with normalized renderer-owned frame controls.
+ * Excludes temporal sampling noise and post-temporal exposure/bloom/UI. */
+VkrTemporalSceneSignature
+vkr_temporal_scene_signature(const struct VkrRenderPacket *packet);
+
 typedef enum VkrTemporalResetReason {
   VKR_TEMPORAL_RESET_NONE = 0u,
   VKR_TEMPORAL_RESET_FIRST_FRAME = 1u << 0u,
@@ -54,6 +68,9 @@ typedef struct VkrTemporalFrame {
   bool8_t enabled;
 } VkrTemporalFrame;
 
+/** Raster shift in pixels for an enabled temporal frame's fixed sequence. */
+Vec2 vkr_temporal_jitter_for_frame(uint32_t frame_index);
+
 /** Builds frame-local temporal state without committing it. */
 VkrTemporalFrame vkr_temporal_prepare(const VkrTemporalState *state,
                                       const VkrTemporalFrameInput *input);
@@ -61,3 +78,11 @@ VkrTemporalFrame vkr_temporal_prepare(const VkrTemporalState *state,
 /** Commits one successfully submitted frame as the next history source. */
 void vkr_temporal_commit(VkrTemporalState *state,
                          const VkrTemporalFrameInput *input);
+
+/** Maps current clip rays into history clip space without camera translation.
+ * Both matrices use the consumer's native clip convention and exclude jitter.
+ * History reuse must prove equal projections. Orthographic rays intersect the
+ * history far plane to match the sky shader's far_world-eye direction. */
+Mat4 vkr_temporal_sky_reprojection(Mat4 current_view_projection,
+                                   Mat4 previous_view_projection,
+                                   Vec3 current_view_position);

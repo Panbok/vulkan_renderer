@@ -38,6 +38,9 @@ no pending native handle; absent or stale references fail preparation there.
 
 Prepared records live in acquired frame storage. Native loops consume those
 records without repeated handle resolution or per-draw fallible root allocation.
+The 80-byte source instance lowers to a 128-byte native instance with prepared
+normal columns and mirror handedness at publication/upload; source packet layout
+remains unchanged. ADR-044 owns that shader contract.
 Each pass reserves its root span before encoding; picking and blend use disjoint
 roots so later preparation cannot replace an earlier pass's frame references.
 Cancellation releases the unsubmitted upload lease and clears speculative native

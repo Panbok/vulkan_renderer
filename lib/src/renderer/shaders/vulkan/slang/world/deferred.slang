@@ -1,3 +1,5 @@
+#include "../../../shared/temporal_filter_kernel.slangh"
+
 // Vulkan deferred visibility path. All variable-sized data is reached through
 // physical storage-buffer addresses; descriptor indices name graph images.
 
@@ -129,7 +131,8 @@ struct VkrVkResolveRoot
     uint render_mode;
     uint history_valid;
     uint previous_frame_index;
-    uint2 reserved_tail;
+    uint4 reserved_tail;
+    float4x4 sky_reprojection;
 };
 
 struct VkrVkTemporalResolveRoot
@@ -145,11 +148,11 @@ struct VkrVkTemporalResolveRoot
     uint history_color_texture;
     uint history_depth_texture;
     uint history_identity_texture;
-    uint history_primitive_texture;
+    uint history_surface_texture;
     uint output_color_texture;
     uint output_depth_texture;
     uint output_identity_texture;
-    uint output_primitive_texture;
+    uint output_surface_texture;
     uint history_sampler;
     uint2 extent;
     uint history_valid;
@@ -160,7 +163,9 @@ struct VkrVkTemporalResolveRoot
     uint transmission_vbuffer_texture;
     uint transmission_depth_texture;
     uint transmission_enabled;
-    uint transmission_reserved;
+    uint scene_stationary;
+    float2 current_jitter_pixels;
+    float2 previous_jitter_pixels;
 };
 
 struct VkrVkLightingRoot
@@ -1028,6 +1033,18 @@ void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
     if (encoded.x == 0u)
     {
         vkr_vk_resolve_defaults(root, thread_id.xy, 0.0f);
+        if (root.history_valid != 0u)
+        {
+            float2 uv = (float2(thread_id.xy) + 0.5f) / float2(root.extent);
+            float4 previous_clip = mul(root.sky_reprojection,
+                                        float4(uv * 2.0f - 1.0f, 1.0f, 1.0f));
+            if (previous_clip.w > 1e-6f)
+            {
+                float2 previous_uv = previous_clip.xy / previous_clip.w * 0.5f + 0.5f;
+                g_storage_float2_2d[root.motion_texture][thread_id.xy] = previous_uv - uv;
+                g_storage_float2_2d[root.validity_texture][thread_id.xy] = float2(1.0f, 1.0f);
+            }
+        }
         return;
     }
     VkrVkSurfaceSource source = {
@@ -1044,9 +1061,13 @@ void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
         return;
     }
     VkrVulkanInstance instance = source.instances[surface.instance_index];
+    surface.object_tangent.w *= instance.normal_column0.w;
     if (!vkr_vk_finish_surface_normal(
             source,
-            mul(instance.model, float4(surface.object_normal, 0.0f)).xyz,
+            vkr_instance_transform_normal(instance.normal_column0.xyz,
+                                          instance.normal_column1.xyz,
+                                          instance.normal_column2.xyz,
+                                          surface.object_normal),
             mul(instance.model, float4(surface.object_tangent.xyz, 0.0f)).xyz,
             surface))
     {
@@ -1306,74 +1327,161 @@ float vkr_vk_temporal_luminance(float3 color)
 struct VkrVkTemporalHistorySample
 {
     float4 color;
+    float confidence;
     bool accepted;
 };
 
+// Metadata remains on the raw jittered grid. Color is reconstructed onto
+// the canonical grid, so each color tap validates its own metadata footprint.
+bool vkr_vk_temporal_coverage_support(
+    VkrVkTemporalResolveRoot *root, uint2 pixel, uint2 previous_pixel, float2 reference_motion,
+    uint2 identity, uint surface_token, float previous_depth)
+{
+    if (identity.x != 0u && surface_token == 0u)
+        return false;
+    float2 previous_position = float2(previous_pixel) + 0.5f - root.previous_jitter_pixels;
+    for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x)
+        {
+            uint2 p = uint2(clamp(int2(pixel) + int2(x, y), int2(0), int2(root.extent) - 1));
+            float2 valid = g_textures[root.validity_texture].Load(int3(p, 0)).xy;
+            if (valid.x != 1.0f || abs(valid.y - previous_depth) > 0.005f)
+                continue;
+            float2 motion = g_textures[root.motion_texture].Load(int3(p, 0)).xy;
+            if (length((motion - reference_motion) * float2(root.extent)) > 0.5f)
+                continue;
+            float2 projected = float2(p) + 0.5f - root.current_jitter_pixels + motion * float2(root.extent);
+            if (any(abs(projected - previous_position) > 1.5f))
+                continue;
+            if (root.camera_stationary != 0u && length(motion * float2(root.extent)) < 0.01f)
+            {
+                float depth = g_depth_textures[root.depth_texture].Load(int3(p, 0));
+                if (abs(depth - valid.y) > 0.005f)
+                    continue;
+            }
+            uint2 encoded = g_storage_uint2_2d[root.vbuffer_texture][p];
+            if ((encoded.x & 0x80000000u) != 0u ||
+                (root.transmission_enabled != 0u && g_storage_uint2_images[root.transmission_vbuffer_texture][uint3(p, 0u)].x != 0u))
+                continue;
+            uint2 neighbor_identity = 0u;
+            uint neighbor_surface = 0u;
+            if (encoded.x != 0u)
+            {
+                VkrGpuVisibleDrawRow row = root.visible_rows[encoded.x - 1u];
+                VkrVulkanInstance instance = root.instances[row.instance_index];
+                neighbor_identity = uint2(instance.temporal_index + 1u, instance.temporal_generation);
+                neighbor_surface = instance.temporal_flags >> 1u;
+            }
+            if (all(neighbor_identity == identity) && neighbor_surface == surface_token)
+                return true;
+        }
+    return false;
+}
+
 VkrVkTemporalHistorySample vkr_vk_temporal_history_sample(
     VkrVkTemporalResolveRoot *root, float2 history_uv, uint2 identity,
-    uint primitive, float expected_depth, bool check_depth)
+    uint surface_token, float expected_depth, bool check_depth,
+    uint2 current_pixel, float2 reference_motion, bool allow_coverage)
 {
-    float2 history_texel = history_uv * float2(root.extent) - 0.5f;
-    int2 base = int2(floor(history_texel));
-    uint match_mask = 0u;
-    [unroll] for (int y = 0; y < 2; ++y)
-    {
-        [unroll] for (int x = 0; x < 2; ++x)
+
+
+    float2 texel = history_uv * float2(root.extent) - 0.5f;
+    int2 base = int2(floor(texel));
+    float2 fraction = frac(texel);
+    bool cubic_candidate = check_depth && any(fraction != 0.0f) &&
+                           all(base >= 1) && all(base + 2 < int2(root.extent));
+    int2 color_span = int2(cubic_candidate || fraction.x != 0.0f ? 2 : 1,
+                          cubic_candidate || fraction.y != 0.0f ? 2 : 1);
+    float2 metadata_fraction = frac(root.previous_jitter_pixels);
+    int2 extra = int2(metadata_fraction.x > 0.0f ? 1 : 0, metadata_fraction.y > 0.0f ? 1 : 0);
+    // Clamp canonical color taps first: their source footprints belong to
+    // the clamped color position, including when bilinear taps hit an edge.
+    int2 color_base = clamp(base, int2(0), int2(root.extent) - 1);
+    int2 color_upper = clamp(base + color_span - 1, int2(0), int2(root.extent) - 1);
+    int2 metadata_base = color_base + int2(floor(root.previous_jitter_pixels));
+    int2 metadata_span = color_upper - color_base + 1 + extra;
+    // The canonical inner 2x2 needs at most nine distinct raw metadata taps.
+    uint metadata_mask = 0u;
+    bool cubic_compatible = cubic_candidate;
+    for (int y = 0; y < metadata_span.y; ++y)
+        for (int x = 0; x < metadata_span.x; ++x)
         {
-            uint2 sample_pixel = uint2(clamp(base + int2(x, y), int2(0),
-                                             int2(root.extent) - 1));
-            uint2 previous_identity = g_storage_uint2_2d
-                [root.history_identity_texture][sample_pixel];
-            uint previous_primitive = g_storage_uint_2d
-                [root.history_primitive_texture][sample_pixel];
-            float previous_depth = g_storage_float2_2d
-                [root.history_depth_texture][sample_pixel]
-                    .x;
-            bool matches =
-                all(previous_identity == identity) &&
-                previous_primitive == primitive &&
-                (!check_depth ||
-                 abs(previous_depth - expected_depth) <= 0.005f);
-            uint bit = 1u << uint(y * 2 + x);
-            match_mask |= matches ? bit : 0u;
+            uint2 p = uint2(clamp(metadata_base + int2(x, y), int2(0), int2(root.extent) - 1));
+            uint2 previous_identity = g_storage_uint2_2d[root.history_identity_texture][p];
+            uint previous_surface = g_storage_uint_2d[root.history_surface_texture][p];
+            float previous_depth = g_storage_float2_2d[root.history_depth_texture][p].x;
+            bool strict = all(previous_identity == identity) && previous_surface == surface_token &&
+                          (!check_depth || abs(previous_depth - expected_depth) <= 0.005f);
+            cubic_compatible = cubic_compatible && strict;
+            bool accepted = strict;
+            if (!accepted && allow_coverage)
+                accepted = vkr_vk_temporal_coverage_support(root, current_pixel, p, reference_motion,
+                                                     previous_identity, previous_surface, previous_depth);
+            metadata_mask |= accepted ? 1u << uint(y * 3 + x) : 0u;
         }
-    }
+    // Cubic color spans four canonical taps per axis; validate only the raw
+    // outer ring not already cached above (at most 25 metadata taps total).
+    if (cubic_compatible)
+        for (int y = -1; y <= 2 + extra.y && cubic_compatible; ++y)
+            for (int x = -1; x <= 2 + extra.x && cubic_compatible; ++x)
+            {
+                if (x >= 0 && x < metadata_span.x && y >= 0 && y < metadata_span.y)
+                    continue;
+                uint2 p = uint2(clamp(metadata_base + int2(x, y), int2(0), int2(root.extent) - 1));
+                if (any(g_storage_uint2_2d[root.history_identity_texture][p] != identity) || g_storage_uint_2d[root.history_surface_texture][p] != surface_token ||
+                    abs(g_storage_float2_2d[root.history_depth_texture][p].x - expected_depth) > 0.005f)
+                    cubic_compatible = false;
+            }
     VkrVkTemporalHistorySample result;
     result.color = 0.0f;
-    result.accepted = match_mask != 0u;
-    if (!result.accepted)
-        return result;
-    if (match_mask == 0xfu)
+    result.confidence = 0.0f;
+    result.accepted = false;
+    if (cubic_compatible)
     {
-        result.color = g_textures[root.history_color_texture].SampleLevel(
-            g_samplers[root.history_sampler], history_uv, 0.0f);
+        float4 wx = vkr_temporal_cubic_weights(fraction.x);
+        float4 wy = vkr_temporal_cubic_weights(fraction.y);
+        float3 weights_x = float3(wx.x, wx.y + wx.z, wx.w);
+        float3 weights_y = float3(wy.x, wy.y + wy.z, wy.w);
+        float3 coords_x = (float(base.x) + float3(-1.0f, wx.z / weights_x.y, 2.0f) + 0.5f) / float(root.extent.x);
+        float3 coords_y = (float(base.y) + float3(-1.0f, wy.z / weights_y.y, 2.0f) + 0.5f) / float(root.extent.y);
+        for (int y = 0; y < 3; ++y)
+            for (int x = 0; x < 3; ++x)
+                result.color += g_textures[root.history_color_texture].SampleLevel(g_samplers[root.history_sampler], float2(coords_x[x], coords_y[y]), 0.0f) * (weights_x[x] * weights_y[y]);
+        result.accepted = true;
+        result.confidence = 1.0f;
         return result;
     }
-
-    float2 history_fraction = frac(history_texel);
     float weight_sum = 0.0f;
-    [unroll] for (int y = 0; y < 2; ++y)
-    {
-        [unroll] for (int x = 0; x < 2; ++x)
+    for (int y = 0; y < color_span.y; ++y)
+        for (int x = 0; x < color_span.x; ++x)
         {
-            uint bit = 1u << uint(y * 2 + x);
-            if ((match_mask & bit) == 0u)
+            float weight = (x == 0 ? 1.0f - fraction.x : fraction.x) *
+                           (y == 0 ? 1.0f - fraction.y : fraction.y);
+            if (weight <= 1e-5f)
                 continue;
-            uint2 sample_pixel = uint2(clamp(base + int2(x, y), int2(0),
-                                             int2(root.extent) - 1));
-            float weight_x =
-                x == 0 ? 1.0f - history_fraction.x : history_fraction.x;
-            float weight_y =
-                y == 0 ? 1.0f - history_fraction.y : history_fraction.y;
-            float weight = weight_x * weight_y;
-            result.color +=
-                g_textures[root.history_color_texture]
-                    .Load(int3(sample_pixel, 0)) * weight;
+            uint2 p = uint2(clamp(base + int2(x, y), int2(0), int2(root.extent) - 1));
+            int2 metadata_offset = int2(p) - color_base;
+            float confidence = 0.0f;
+            for (int sy = 0; sy <= extra.y; ++sy)
+                for (int sx = 0; sx <= extra.x; ++sx)
+                {
+                    uint bit = 1u << uint((metadata_offset.y + sy) * 3 + metadata_offset.x + sx);
+                    float metadata_weight =
+                        (sx == 0 ? 1.0f - metadata_fraction.x : metadata_fraction.x) *
+                        (sy == 0 ? 1.0f - metadata_fraction.y : metadata_fraction.y);
+                    confidence += (metadata_mask & bit) != 0u ? metadata_weight : 0.0f;
+                }
+            // Preserve partial support both when reconstructing color and
+            // when choosing retention; normalization alone loses confidence.
+            weight *= confidence;
+            if (weight <= 1e-5f)
+                continue;
+            result.color += g_textures[root.history_color_texture].Load(int3(p, 0)) * weight;
             weight_sum += weight;
         }
-    }
     result.accepted = weight_sum > 1e-5f;
-    result.color = result.accepted ? result.color / weight_sum : 0.0f;
+    result.confidence = result.accepted ? saturate(weight_sum) : 0.0f;
+    result.color = result.accepted ? result.color / weight_sum : float4(0.0f);
     return result;
 }
 
@@ -1386,28 +1494,42 @@ void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
         return;
 
     uint2 pixel = thread_id.xy;
-    float4 current = g_textures[root.scene_texture].Load(int3(pixel, 0));
-    float3 pre_transmission =
-        g_textures[root.pre_transmission_texture].Load(int3(pixel, 0)).rgb;
-    float2 motion = g_textures[root.motion_texture].Load(int3(pixel, 0)).xy;
-    float2 validity = g_textures[root.validity_texture].Load(int3(pixel, 0)).xy;
+    // Projection shifts raster samples by +jitter. Reconstruct current color
+    // at canonical pixel p from raw samples around p + jitter.
+    float4 current = 0.0f;
+    float current_weight = 0.0f;
+    for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x)
+        {
+            float weight = vkr_temporal_current_weight(float2(x, y), root.current_jitter_pixels);
+            if (weight <= 0.0f)
+                continue;
+            uint2 p = uint2(clamp(int2(pixel) + int2(x, y), int2(0), int2(root.extent) - 1));
+            current += g_textures[root.scene_texture].Load(int3(p, 0)) * weight;
+            current_weight += weight;
+        }
+    current /= current_weight;
     float surface_depth =
         g_depth_textures[root.depth_texture].Load(int3(pixel, 0));
     uint2 encoded = g_storage_uint2_2d[root.vbuffer_texture][pixel];
     const uint overlay_bit = 0x80000000u;
     const uint generation_mask = 0x7fffffffu;
-    const uint primitive_mask = 0x1ffffu;
+    const uint surface_mask = 0x1ffffu;
+
+    // Keep metadata on the raw center grid; history lookup accounts for jitter.
+    float2 motion = g_textures[root.motion_texture].Load(int3(pixel, 0)).xy;
+    float2 validity = g_textures[root.validity_texture].Load(int3(pixel, 0)).xy;
     bool blend_overlay = (encoded.x & overlay_bit) != 0u;
     bool check_history_depth = !blend_overlay;
     uint2 identity = 0u;
-    uint primitive = 0u;
+    uint surface_token = 0u;
     if (blend_overlay)
     {
         uint generation = encoded.x & generation_mask;
         if (encoded.y != 0u && generation != 0u)
         {
             identity = uint2((encoded.y >> 17u) + 1u, generation);
-            primitive = encoded.y & primitive_mask;
+            surface_token = encoded.y & surface_mask;
         }
     }
     else
@@ -1426,8 +1548,7 @@ void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
             identity =
                 uint2(instance.temporal_index + 1u,
                       instance.temporal_generation);
-            primitive =
-                (transmission_encoded.y & VKR_VK_PRIMITIVE_ID_MASK) + 1u;
+            surface_token = instance.temporal_flags >> 1u;
             surface_depth = g_depth_array_textures
                 [root.transmission_depth_texture]
                     .Load(int4(pixel, 0u, 0));
@@ -1439,16 +1560,59 @@ void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
             identity =
                 uint2(instance.temporal_index + 1u,
                       instance.temporal_generation);
-            primitive = (encoded.y & VKR_VK_PRIMITIVE_ID_MASK) + 1u;
+            surface_token = instance.temporal_flags >> 1u;
         }
     }
+
+    // CPU scene/resource equality proves that missing current coverage is
+    // another sample of the same radiance field, including thin transmission.
+    bool checked_static = root.scene_stationary != 0u && root.history_valid != 0u &&
+                          validity.x > 0.5f && !(blend_overlay && identity.x == 0u) &&
+                          (identity.x == 0u || surface_token != 0u);
+    if (checked_static)
+    {
+
+        float2 uv = (float2(pixel) + 0.5f) / float2(root.extent);
+        float previous_age = g_storage_float2_2d[root.history_depth_texture][pixel].y;
+        float age = min(previous_age + 1.0f, VKR_TEMPORAL_STATIC_SAMPLE_COUNT);
+        float authored_reactive = validity.x >= 2.0f ? saturate(validity.x - 2.0f) : 0.0f;
+        float history_weight = ((age - 1.0f) / age) * (1.0f - authored_reactive);
+        float4 history = g_textures[root.history_color_texture].Load(int3(pixel, 0));
+        // A capped EMA still oscillates with thin-coverage jitter forever.
+        // Copy the completed static integral exactly; any scene change resets
+        // its age through the ordinary resolve before this path can resume.
+        float4 resolved = previous_age >= VKR_TEMPORAL_STATIC_SAMPLE_COUNT && authored_reactive == 0.0f
+                              ? history
+                              : float4(lerp(current.rgb, history.rgb, history_weight), current.a);
+        if (root.render_mode == 7u)
+            resolved = float4(saturate(abs(motion) * float2(root.extent) / 16.0f), validity.x, 1.0f);
+        else if (root.render_mode == 8u)
+            resolved = float4(0.0f, 1.0f, 0.0f, 1.0f);
+        g_storage_2d[root.output_color_texture][pixel] = resolved;
+        g_storage_float2_2d[root.output_depth_texture][pixel] = float2(surface_depth, age);
+        g_storage_uint2_2d[root.output_identity_texture][pixel] = identity;
+        g_storage_uint_2d[root.output_surface_texture][pixel] = surface_token;
+        return;
+    }
+
+    // Optical contrast is used only by the normal temporal resolve. The
+    // checked static path returned before these texture reads and RGB state.
+    float3 pre_transmission = 0.0f;
+    for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x)
+        {
+            float weight = vkr_temporal_current_weight(float2(x, y), root.current_jitter_pixels);
+            if (weight <= 0.0f)
+                continue;
+            uint2 p = uint2(clamp(int2(pixel) + int2(x, y), int2(0), int2(root.extent) - 1));
+            pre_transmission += g_textures[root.pre_transmission_texture].Load(int3(p, 0)).rgb * weight;
+        }
+    pre_transmission /= current_weight;
 
     float current_luminance = vkr_vk_temporal_luminance(current.rgb);
     float pre_luminance = vkr_vk_temporal_luminance(pre_transmission);
     float derived_reactive =
-        root.camera_stationary != 0u
-            ? 0.0f
-            : min(0.75f,
+        min(0.75f,
                   saturate(abs(current_luminance - pre_luminance) /
                            max(max(current_luminance, pre_luminance), 0.05f)));
     float authored_reactive =
@@ -1456,26 +1620,32 @@ void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
     float reactive = max(derived_reactive, authored_reactive);
     float2 uv = (float2(pixel) + 0.5f) / float2(root.extent);
     float2 history_uv = uv + motion;
+    float motion_pixels = length(motion * float2(root.extent));
+    bool stationary_surface =
+        root.camera_stationary != 0u && motion_pixels < 0.01f;
+    bool allow_coverage = validity.x == 1.0f && reactive == 0.0f && !blend_overlay &&
+                          (!stationary_surface || abs(surface_depth - validity.y) <= 0.005f);
     bool accepted =
         root.history_valid != 0u &&
         !(blend_overlay && identity.x == 0u) &&
-        (validity.x > 0.5f || root.camera_stationary != 0u) &&
+        validity.x > 0.5f && (identity.x == 0u || surface_token != 0u) &&
         all(history_uv >= 0.0f) && all(history_uv <= 1.0f);
+    // The output slot is distinct from accepted history inputs. Publish raw
+    // metadata now so depth need not stay live through history reconstruction.
+    g_storage_float2_2d[root.output_depth_texture][pixel] =
+        float2(surface_depth, 0.0f);
+    g_storage_uint2_2d[root.output_identity_texture][pixel] = identity;
+    g_storage_uint_2d[root.output_surface_texture][pixel] = surface_token;
     float4 history = current;
+    float history_confidence = 0.0f;
     if (accepted)
     {
-        if (root.camera_stationary != 0u)
-            history = g_textures[root.history_color_texture].SampleLevel(
-                g_samplers[root.history_sampler], history_uv, 0.0f);
-        else
-        {
-            VkrVkTemporalHistorySample sample =
-                vkr_vk_temporal_history_sample(
-                    root, history_uv, identity, primitive, validity.y,
-                    check_history_depth);
-            accepted = sample.accepted;
-            history = accepted ? sample.color : current;
-        }
+        VkrVkTemporalHistorySample sample = vkr_vk_temporal_history_sample(
+            root, history_uv, identity, surface_token, validity.y,
+            check_history_depth, pixel, motion, allow_coverage);
+        accepted = sample.accepted;
+        history_confidence = sample.confidence;
+        history = accepted ? sample.color : current;
     }
 
     if (accepted)
@@ -1499,16 +1669,13 @@ void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
         }
         history.rgb = clamp(history.rgb, neighborhood_min, neighborhood_max);
     }
-    float motion_pixels = length(motion * float2(root.extent));
-    bool stationary_surface =
-        root.camera_stationary != 0u && motion_pixels < 0.01f;
     // A fixed 0.9 EMA preserves a visible periodic residual from the
     // eight-phase jitter sequence. Once both the camera and surface are
     // stationary, retain enough history to make that residual sub-perceptual.
     // Moving surfaces keep the responsive path even when the camera is still.
     float history_retention = stationary_surface ? 0.99f : 0.9f;
     float history_weight = accepted
-                               ? history_retention * (1.0f - reactive) *
+                               ? history_retention * history_confidence * (1.0f - reactive) *
                                      saturate(1.0f - motion_pixels / 128.0f)
                                : 0.0f;
     float4 resolved =
@@ -1521,10 +1688,6 @@ void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
                             : float4(1.0f, 0.0f, 0.0f, 1.0f);
 
     g_storage_2d[root.output_color_texture][pixel] = resolved;
-    g_storage_float2_2d[root.output_depth_texture][pixel] =
-        float2(surface_depth, 0.0f);
-    g_storage_uint2_2d[root.output_identity_texture][pixel] = identity;
-    g_storage_uint_2d[root.output_primitive_texture][pixel] = primitive;
 }
 
 [shader("compute")]
@@ -1768,13 +1931,13 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
     if (any(pixel >= root.extent))
         return;
     float2 screen_uv = (float2(pixel) + 0.5f) / float2(root.extent);
-    float4 background = g_textures[root.feedback_texture].SampleLevel(
-        g_samplers[root.feedback_sampler], screen_uv, 0.0f);
     uint2 encoded = g_storage_uint2_images[root.vbuffer_texture]
                                           [uint3(pixel, root.layer)];
     if (encoded.x == 0u)
     {
-        g_storage_2d[root.output_texture][pixel] = background;
+        g_storage_2d[root.output_texture][pixel] =
+            g_textures[root.feedback_texture].SampleLevel(
+                g_samplers[root.feedback_sampler], screen_uv, 0.0f);
         return;
     }
     bool temporal_outputs = temporal_mode == 1u ||
@@ -1794,23 +1957,30 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
     VkrVkSurface surface;
     if (!vkr_vk_resolve_surface(source, encoded, pixel, surface))
     {
-        g_storage_2d[root.output_texture][pixel] = background;
+        g_storage_2d[root.output_texture][pixel] =
+            g_textures[root.feedback_texture].SampleLevel(
+                g_samplers[root.feedback_sampler], screen_uv, 0.0f);
         return;
     }
     VkrVulkanInstance instance = source.instances[surface.instance_index];
+    surface.object_tangent.w *= instance.normal_column0.w;
     if (!vkr_vk_finish_surface_normal(
             source,
-            mul(instance.model, float4(surface.object_normal, 0.0f)).xyz,
+            vkr_instance_transform_normal(instance.normal_column0.xyz,
+                                          instance.normal_column1.xyz,
+                                          instance.normal_column2.xyz,
+                                          surface.object_normal),
             mul(instance.model, float4(surface.object_tangent.xyz, 0.0f)).xyz,
             surface))
     {
-        g_storage_2d[root.output_texture][pixel] = background;
+        g_storage_2d[root.output_texture][pixel] =
+            g_textures[root.feedback_texture].SampleLevel(
+                g_samplers[root.feedback_sampler], screen_uv, 0.0f);
         return;
     }
     VkrVulkanPacketFrameRoot *frame = root.frame;
     VkrVulkanMaterial material = root.materials[surface.material_index];
     if (temporal_outputs && root.history_valid != 0u &&
-        (instance.temporal_flags & VKR_INSTANCE_TEMPORAL_OWNER) != 0u &&
         instance.temporal_index < VKR_TEMPORAL_TRANSFORM_CAPACITY)
     {
         VkrTemporalTransform previous =
@@ -1869,6 +2039,65 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
     // The composition contract multiplies diffuse by zero at resolved T == 1.
     // Diagnostics retain the general lobe so term replays remain observable.
     bool diffuse_enabled = diagnostic_enabled || transmission < 1.0f;
+    float3 transmitted = 0.0f;
+    if (!diagnostic_enabled ||
+        (frame.shadow_debug_mode == 0u && frame.render_mode != 1u &&
+         frame.render_mode != 2u && frame.render_mode != 3u &&
+         frame.render_mode != 4u && frame.render_mode != 5u &&
+         frame.render_mode != 6u && frame.render_mode != 9u))
+    {
+        float thickness =
+            volume_enabled ? max(material.material_alpha.w, 0.0f) : 0.0f;
+        if (volume_enabled && textured_enabled && (material.flags & 16u) != 0u)
+        {
+            VkrVulkanTransmissionMaterial transmission_material =
+                root.transmission_materials[surface.material_index];
+            thickness *=
+                g_textures[NonUniformResourceIndex(
+                               transmission_material.thickness_texture)]
+                    .SampleGrad(g_samplers[NonUniformResourceIndex(
+                                    transmission_material.thickness_sampler)],
+                                surface.uv, surface.uv_dx, surface.uv_dy)
+                    .g;
+        }
+        thickness = max(thickness, 0.0f);
+        float2 sample_uv = screen_uv;
+        float path_length = 0.0f;
+        if (volume_enabled)
+        {
+            VkrTransmissionExit exit = vkr_transmission_exit_point(
+                world, frame.view_position.xyz, surface.normal,
+                mul(instance.model, float4(1.0f, 0.0f, 0.0f, 0.0f)).xyz,
+                mul(instance.model, float4(0.0f, 1.0f, 0.0f, 0.0f)).xyz,
+                mul(instance.model, float4(0.0f, 0.0f, 1.0f, 0.0f)).xyz,
+                material.material_alpha.z, thickness);
+            float4 exit_clip =
+                mul(root.view_projection, float4(exit.position, 1.0f));
+            sample_uv =
+                clamp(vkr_transmission_project_uv(exit_clip, 1.0f), 0.0f, 1.0f);
+            path_length = exit.path_length;
+        }
+        float3 ordered =
+            g_textures[root.feedback_texture]
+                .SampleLevel(g_samplers[root.feedback_sampler], sample_uv, 0.0f)
+                .rgb;
+        float rough_lod = vkr_transmission_rough_lod(surface.feedback_roughness,
+                                                     material.material_alpha.z,
+                                                     root.opaque_mip_count);
+        float3 rough = g_textures[root.opaque_texture]
+                           .SampleLevel(g_samplers[root.feedback_sampler],
+                                        sample_uv, rough_lod)
+                           .rgb;
+        transmitted =
+            lerp(ordered, rough,
+                 vkr_transmission_feedback_blend(surface.feedback_roughness));
+        if (volume_enabled && material.material_attenuation_color.w > 1e-4f)
+        {
+            transmitted *=
+                pow(clamp(material.material_attenuation_color.rgb, 1e-4f, 1.0f),
+                    path_length / material.material_attenuation_color.w);
+        }
+    }
     float3 color;
     // Transmissive surfaces keep their unfolded base colour and metallic
     // factor, so the shared helpers take the same arguments the forward
@@ -1986,65 +2215,6 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
             {
                 diffuse += frame.ambient_color.rgb * surface.base.rgb *
                            surface.occlusion;
-            }
-            float thickness = volume_enabled
-                ? max(material.material_alpha.w, 0.0f)
-                : 0.0f;
-            if (volume_enabled && textured_enabled &&
-                (material.flags & 16u) != 0u)
-            {
-                VkrVulkanTransmissionMaterial transmission_material =
-                    root.transmission_materials[surface.material_index];
-                thickness *=
-                    g_textures[NonUniformResourceIndex(
-                                   transmission_material.thickness_texture)]
-                        .SampleGrad(g_samplers[NonUniformResourceIndex(
-                                        transmission_material.thickness_sampler)],
-                                    surface.uv, surface.uv_dx, surface.uv_dy)
-                        .g;
-            }
-            thickness = max(thickness, 0.0f);
-            float2 sample_uv = screen_uv;
-            float path_length = 0.0f;
-            if (volume_enabled)
-            {
-                VkrTransmissionExit exit = vkr_transmission_exit_point(
-                    world, frame.view_position.xyz, surface.normal,
-                    mul(instance.model,
-                        float4(1.0f, 0.0f, 0.0f, 0.0f)).xyz,
-                    mul(instance.model,
-                        float4(0.0f, 1.0f, 0.0f, 0.0f)).xyz,
-                    mul(instance.model,
-                        float4(0.0f, 0.0f, 1.0f, 0.0f)).xyz,
-                    material.material_alpha.z, thickness);
-                float4 exit_clip = mul(root.view_projection,
-                                       float4(exit.position, 1.0f));
-                sample_uv = clamp(
-                    vkr_transmission_project_uv(exit_clip, 1.0f), 0.0f, 1.0f);
-                path_length = exit.path_length;
-            }
-            float3 ordered =
-                g_textures[root.feedback_texture]
-                    .SampleLevel(g_samplers[root.feedback_sampler], sample_uv,
-                                 0.0f)
-                    .rgb;
-            float rough_lod = vkr_transmission_rough_lod(
-                surface.feedback_roughness, material.material_alpha.z,
-                root.opaque_mip_count);
-            float3 rough =
-                g_textures[root.opaque_texture]
-                    .SampleLevel(g_samplers[root.feedback_sampler], sample_uv,
-                                 rough_lod)
-                    .rgb;
-            float3 transmitted = lerp(
-                ordered, rough,
-                vkr_transmission_feedback_blend(surface.feedback_roughness));
-            if (volume_enabled &&
-                material.material_attenuation_color.w > 1e-4f)
-            {
-                transmitted *= pow(
-                    clamp(material.material_attenuation_color.rgb, 1e-4f, 1.0f),
-                    path_length / material.material_attenuation_color.w);
             }
             VkrTransmissionLobes lobes = {
                 diffuse, specular, surface.emissive

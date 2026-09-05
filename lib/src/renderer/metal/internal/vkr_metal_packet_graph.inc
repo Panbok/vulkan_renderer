@@ -600,6 +600,7 @@ vkr_metal_packet_realize_images(VkrMetalPacketRenderer *renderer) {
     if (slot->live)
       renderer->resize_count++;
     *slot = replacement;
+    vkr_metal_packet_advance_revision(&renderer->graph_revision);
   }
   return true_v;
 }
@@ -663,6 +664,9 @@ vkr_metal_packet_named_image_slot(VkrMetalPacketRenderer *renderer,
   return NULL;
 }
 
+vkr_internal bool8_t vkr_metal_packet_wait(VkrMetalPacketRenderer *renderer,
+                                           uint64_t value);
+
 vkr_internal bool8_t
 vkr_metal_packet_select_history_output(VkrMetalPacketRenderer *renderer) {
   uint64_t candidate_use[VKR_METAL_PACKET_GRAPH_INSTANCE_MAX] = {0};
@@ -713,20 +717,20 @@ vkr_metal_packet_select_history_output(VkrMetalPacketRenderer *renderer) {
   uint64_t selected_use = UINT64_MAX;
   for (uint32_t candidate = 0u; candidate < renderer->history_instance_count;
        ++candidate) {
-    if (candidate_use[candidate] <= completed &&
-        candidate_use[candidate] < selected_use) {
+    if (candidate_use[candidate] < selected_use) {
       selected = candidate;
       selected_use = candidate_use[candidate];
     }
   }
-  if (selected == renderer->history_instance_count) {
-    for (uint32_t candidate = 0u; candidate < renderer->history_instance_count;
-         ++candidate)
-      log_error("Metal history instance %u is busy through submit %llu",
-                candidate, (unsigned long long)candidate_use[candidate]);
-    log_error("Metal has no completion-safe history output instance "
-              "(completed %llu)",
-              (unsigned long long)completed);
+  if (selected == renderer->history_instance_count)
+    return false_v;
+  // Reuse the oldest combined last use after one completion wait when every
+  // index in the fixed history ring is still referenced by a submission.
+  if (selected_use > completed &&
+      (selected_use > renderer->submit_value ||
+       !vkr_metal_packet_wait(renderer, selected_use))) {
+    log_error("Metal history output wait failed (instance=%u, submit=%llu)",
+              selected, (unsigned long long)selected_use);
     return false_v;
   }
   renderer->history_output_index = selected;
@@ -806,7 +810,6 @@ vkr_metal_packet_select_temporal_history(VkrMetalPacketRenderer *renderer) {
   if (!vkr_rg_buffer_handle_valid(renderer->temporal_transform_history_handle))
     return false_v;
   const uint32_t current = renderer->history_output_index;
-  const uint64_t completed = renderer->completion.signaledValue;
   uint64_t newest_producer = 0u;
   if (renderer->metalfx_enabled) {
     if (packet->frame.frame_index == 0u)
@@ -840,13 +843,13 @@ vkr_metal_packet_select_temporal_history(VkrMetalPacketRenderer *renderer) {
       vkr_metal_packet_named_image_slot(renderer, "temporal_history_depth");
   VkrMetalPacketImage *identities =
       vkr_metal_packet_named_image_slot(renderer, "temporal_history_identity");
-  VkrMetalPacketImage *primitives =
-      vkr_metal_packet_named_image_slot(renderer, "temporal_history_primitive");
-  if (!colors || !depths || !identities || !primitives ||
+  VkrMetalPacketImage *surfaces =
+      vkr_metal_packet_named_image_slot(renderer, "temporal_history_surface");
+  if (!colors || !depths || !identities || !surfaces ||
       colors->instance_count != renderer->history_instance_count ||
       depths->instance_count != colors->instance_count ||
       identities->instance_count != colors->instance_count ||
-      primitives->instance_count != colors->instance_count)
+      surfaces->instance_count != colors->instance_count)
     return false_v;
   for (uint32_t i = 0u; i < colors->instance_count; ++i) {
     VkrMetalPacketImageInstance *color = &colors->instances[i];
@@ -854,12 +857,12 @@ vkr_metal_packet_select_temporal_history(VkrMetalPacketRenderer *renderer) {
         vkr_metal_packet_graph_buffer_instance(
             renderer, renderer->temporal_transform_history_handle, i);
     if (i == current || !color->live || !color->history_valid ||
-        color->history_producer_submit_value > completed ||
+        color->history_frame_index + 1u != packet->frame.frame_index ||
         color->history_scene_generation != packet->frame.scene_generation ||
         color->history_width != renderer->prepared_frame.viewport_width ||
         color->history_height != renderer->prepared_frame.viewport_height ||
         !depths->instances[i].live || !identities->instances[i].live ||
-        !primitives->instances[i].live || !transform ||
+        !surfaces->instances[i].live || !transform ||
         !transform->history_valid)
       continue;
     if (renderer->selected_temporal_history_instance == UINT32_MAX ||
@@ -1037,6 +1040,7 @@ vkr_metal_packet_realize_buffers(VkrMetalPacketRenderer *renderer) {
       return false_v;
     }
     *slot = replacement;
+    vkr_metal_packet_advance_revision(&renderer->graph_revision);
     MemCopy(instances, replacement_instances,
             (uint64_t)replacement.instance_count * sizeof(*instances));
   }
@@ -1184,11 +1188,16 @@ vkr_metal_packet_mark_temporal_submitted(VkrMetalPacketRenderer *renderer,
       vkr_metal_packet_named_image_slot(renderer, "temporal_history_color"),
       vkr_metal_packet_named_image_slot(renderer, "temporal_history_depth"),
       vkr_metal_packet_named_image_slot(renderer, "temporal_history_identity"),
-      vkr_metal_packet_named_image_slot(renderer, "temporal_history_primitive"),
+      vkr_metal_packet_named_image_slot(renderer, "temporal_history_surface"),
   };
   const uint32_t current = renderer->history_output_index;
   const uint32_t selected = renderer->selected_temporal_history_instance;
   if (!renderer->metalfx_enabled) {
+    /* A submitted reset excludes every pre-reset producer, even while its
+       replacement is still in flight. Completion continues to govern reuse. */
+    if (packet->globals.temporal.reset_reasons != 0u && slots[0])
+      for (uint32_t i = 0u; i < slots[0]->instance_count; ++i)
+        slots[0]->instances[i].history_valid = false_v;
     for (uint32_t i = 0u; i < ArrayCount(slots); ++i) {
       if (!slots[i] || current >= slots[i]->instance_count)
         continue;
@@ -1904,7 +1913,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_transfer(
     if (transmission_gpu_upload) {
       const uint64_t count = renderer->transmission_gpu_draw_count;
       const uint64_t candidate_bytes = count * sizeof(VkrGpuCandidateDrawRow);
-      const uint64_t instance_bytes = count * sizeof(VkrInstanceDataGPU);
+      const uint64_t instance_bytes = count * sizeof(VkrPreparedInstanceGPU);
       if (candidate_bytes > candidates->resource.length ||
           instance_bytes > instances->resource.length)
         return false_v;
@@ -1930,11 +1939,11 @@ vkr_internal bool8_t vkr_metal_packet_encode_transfer(
         const uint64_t candidate_destination =
             (uint64_t)range->destination_first * sizeof(VkrGpuCandidateDrawRow);
         const uint64_t instance_destination =
-            (uint64_t)range->destination_first * sizeof(VkrInstanceDataGPU);
+            (uint64_t)range->destination_first * sizeof(VkrPreparedInstanceGPU);
         const uint64_t candidate_bytes =
             (uint64_t)range->count * sizeof(VkrGpuCandidateDrawRow);
         const uint64_t instance_bytes =
-            (uint64_t)range->count * sizeof(VkrInstanceDataGPU);
+            (uint64_t)range->count * sizeof(VkrPreparedInstanceGPU);
         if (candidate_destination > candidates->resource.length ||
             candidate_bytes >
                 candidates->resource.length - candidate_destination ||

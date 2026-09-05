@@ -1,0 +1,22 @@
+// Two complete 64-phase GTAO noise cycles, also divisible by raster jitter's
+// eight phases. Verified unchanged scenes retain the completed integral.
+#define VKR_TEMPORAL_STATIC_SAMPLE_COUNT 128.0f
+
+// Catmull-Rom reconstruction: only the two positive inner weights can be
+// combined into a hardware bilinear lookup. The outer lobes stay separate.
+float4 vkr_temporal_cubic_weights(float t)
+{
+    float t2 = t * t;
+    float t3 = t2 * t;
+    return float4(-0.5f * t + t2 - 0.5f * t3,
+                  1.0f - 2.5f * t2 + 1.5f * t3,
+                  0.5f * t + 2.0f * t2 - 1.5f * t3,
+                  -0.5f * t2 + 0.5f * t3);
+}
+
+// Positive separable tent around the canonical pixel's raw raster position.
+float vkr_temporal_current_weight(float2 offset, float2 jitter_pixels)
+{
+    float2 weight = max(1.0f - abs(offset - jitter_pixels), 0.0f);
+    return weight.x * weight.y;
+}

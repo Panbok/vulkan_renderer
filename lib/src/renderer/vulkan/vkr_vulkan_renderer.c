@@ -482,6 +482,24 @@ vkr_vk_report_upload_exhaustion(VkrVulkanRenderer *renderer,
 vkr_internal bool8_t vkr_vk_record_draw(VkrVulkanRenderer *renderer,
                                         VkrVulkanFrameSlot *slot) {
   VkCommandBuffer command = slot->command_buffer;
+  slot->temporal_scene = (VkrVulkanTemporalSceneState){0};
+  if (renderer->graph->packet->globals.temporal.enabled &&
+      vkr_rg_buffer_handle_valid(renderer->temporal_transform_history_handle)) {
+    // Capture rendered inputs before upload/IBL commands publish new content.
+    slot->temporal_scene = (VkrVulkanTemporalSceneState){
+        .signature = vkr_temporal_scene_signature(renderer->graph->packet),
+        .radiance_revision = renderer->radiance_revision,
+        .publication_generation = renderer->candidate_publication_generation,
+        .graph_revision = renderer->graph_revision,
+    };
+    slot->temporal_scene.signature.eligible =
+        slot->temporal_scene.signature.eligible &&
+        !renderer->pending_texture_initialization_count &&
+        !renderer->pending_buffer_initialization_count &&
+        !renderer->pending_ibl_bake_count &&
+        !renderer->geometry_megabuffer.copy_pending &&
+        renderer->sh_coefficients_cleared;
+  }
   if (!vkr_vk_prepare_packet_uploads(renderer, slot, renderer->graph->packet)) {
     vkr_vk_report_upload_exhaustion(renderer, slot);
     return false_v;
@@ -667,6 +685,7 @@ vkr_internal bool8_t vkr_vk_record_draw(VkrVulkanRenderer *renderer,
               (unsigned long long)slot->frame_upload_cursor);
     return false_v;
   }
+
   if (vkEndCommandBuffer(command) != VK_SUCCESS) {
     log_error("Vulkan failed to end the frame command buffer");
     return false_v;
@@ -926,6 +945,7 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
   }
   renderer->submit_value = signal_value;
   if (slot->sh_coefficients_clear_recorded) {
+    vkr_vk_advance_radiance_revision(renderer);
     renderer->sh_coefficients_cleared = true_v;
     slot->sh_coefficients_clear_recorded = false_v;
   }
@@ -968,6 +988,8 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
       pending_ibl_write++;
       continue;
     }
+    // Includes same-handle prefilter/cubemap and SH coefficient writes.
+    vkr_vk_advance_radiance_revision(renderer);
     /* Submission succeeded, so the candidate slot becomes this source's
        published coefficients and the previous generation retires against its
        own last reader. */

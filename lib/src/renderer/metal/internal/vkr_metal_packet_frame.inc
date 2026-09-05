@@ -934,6 +934,15 @@ vkr_internal bool8_t vkr_metal_packet_encode_gbuffer_resolve(
       .previous_frame_index = previous_transform
                                   ? previous_transform->history_frame_index
                                   : packet->frame.frame_index,
+      .sky_reprojection =
+          previous_transform
+              ? vkr_temporal_sky_reprojection(
+                    vkr_metal_packet_clip_matrix(
+                        renderer->convert_vulkan_clip_y,
+                        packet->globals.temporal.current_view_projection),
+                    previous_transform->history_view_projection,
+                    packet->globals.view_position)
+              : mat4_identity(),
   };
   [renderer->argument_table setAddress:root_gpu atIndex:0u];
   [encoder setComputePipelineState:renderer->gbuffer_resolve_pipeline];
@@ -1162,7 +1171,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_temporal_resolve(
       vkr_metal_packet_pass_texture(renderer, pass, 9u);
   id<MTLTexture> output_identity =
       vkr_metal_packet_pass_texture(renderer, pass, 10u);
-  id<MTLTexture> output_primitive =
+  id<MTLTexture> output_surface =
       vkr_metal_packet_pass_texture(renderer, pass, 11u);
   VkrMetalPacketGraphBufferInstance *visible =
       vkr_metal_packet_pass_buffer(renderer, pass, 6u);
@@ -1181,7 +1190,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_temporal_resolve(
       transmission_instances;
   if (!scene || !pre_transmission || !motion || !validity || !depth ||
       !vbuffer || !output_color || !output_depth || !output_identity ||
-      !output_primitive || !visible || !instances ||
+      !output_surface || !visible || !instances ||
       !renderer->temporal_resolve_pipeline)
     return false_v;
 
@@ -1192,14 +1201,14 @@ vkr_internal bool8_t vkr_metal_packet_encode_temporal_resolve(
       vkr_metal_packet_named_image_slot(renderer, "temporal_history_depth");
   VkrMetalPacketImage *identity_slot =
       vkr_metal_packet_named_image_slot(renderer, "temporal_history_identity");
-  VkrMetalPacketImage *primitive_slot =
-      vkr_metal_packet_named_image_slot(renderer, "temporal_history_primitive");
+  VkrMetalPacketImage *surface_slot =
+      vkr_metal_packet_named_image_slot(renderer, "temporal_history_surface");
   const bool8_t history_valid = selected != UINT32_MAX && color_slot &&
-                                depth_slot && identity_slot && primitive_slot &&
+                                depth_slot && identity_slot && surface_slot &&
                                 selected < color_slot->instance_count &&
                                 selected < depth_slot->instance_count &&
                                 selected < identity_slot->instance_count &&
-                                selected < primitive_slot->instance_count;
+                                selected < surface_slot->instance_count;
   const Mat4 current_history_view_projection = vkr_metal_packet_clip_matrix(
       renderer->convert_vulkan_clip_y,
       packet->globals.temporal.current_view_projection);
@@ -1215,10 +1224,10 @@ vkr_internal bool8_t vkr_metal_packet_encode_temporal_resolve(
       history_valid ? (id<MTLTexture>)identity_slot->instances[selected]
                           .resource.metal_texture
                     : output_identity;
-  id<MTLTexture> history_primitive =
-      history_valid ? (id<MTLTexture>)primitive_slot->instances[selected]
+  id<MTLTexture> history_surface =
+      history_valid ? (id<MTLTexture>)surface_slot->instances[selected]
                           .resource.metal_texture
-                    : output_primitive;
+                    : output_surface;
   uint64_t root_gpu = 0u;
   VkrMetalPacketTemporalResolveRoot *root =
       vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
@@ -1236,11 +1245,11 @@ vkr_internal bool8_t vkr_metal_packet_encode_temporal_resolve(
       .history_color_texture_id = history_color.gpuResourceID._impl,
       .history_depth_texture_id = history_depth.gpuResourceID._impl,
       .history_identity_texture_id = history_identity.gpuResourceID._impl,
-      .history_primitive_texture_id = history_primitive.gpuResourceID._impl,
+      .history_surface_texture_id = history_surface.gpuResourceID._impl,
       .output_color_texture_id = output_color.gpuResourceID._impl,
       .output_depth_texture_id = output_depth.gpuResourceID._impl,
       .output_identity_texture_id = output_identity.gpuResourceID._impl,
-      .output_primitive_texture_id = output_primitive.gpuResourceID._impl,
+      .output_surface_texture_id = output_surface.gpuResourceID._impl,
       .extent = {(uint32_t)scene.width, (uint32_t)scene.height},
       .history_valid = history_valid,
       .render_mode = packet->globals.render_mode,
@@ -1259,6 +1268,24 @@ vkr_internal bool8_t vkr_metal_packet_encode_temporal_resolve(
       .transmission_depth_texture_id =
           transmission_enabled ? transmission_depth.gpuResourceID._impl : 0u,
       .transmission_enabled = transmission_enabled,
+      .current_jitter_pixels = packet->globals.temporal.jitter_pixels,
+      .previous_jitter_pixels =
+          history_valid ? vkr_temporal_jitter_for_frame((uint32_t)color_slot->instances[selected].history_frame_index)
+                        : (Vec2){0},
+      .scene_stationary =
+          history_valid && upload->temporal_scene.signature.eligible &&
+          upload->ibl_sh_candidate_slot == VKR_SH_SLOT_BLACK &&
+          color_slot->instances[selected].history_scene.signature.eligible &&
+          upload->temporal_scene.signature.hash[0] ==
+              color_slot->instances[selected].history_scene.signature.hash[0] &&
+          upload->temporal_scene.signature.hash[1] ==
+              color_slot->instances[selected].history_scene.signature.hash[1] &&
+          upload->temporal_scene.radiance_revision ==
+              color_slot->instances[selected].history_scene.radiance_revision &&
+          upload->temporal_scene.publication_generation ==
+              color_slot->instances[selected].history_scene.publication_generation &&
+          upload->temporal_scene.graph_revision ==
+              color_slot->instances[selected].history_scene.graph_revision,
   };
   [renderer->argument_table setAddress:root_gpu atIndex:0u];
   [encoder setComputePipelineState:renderer->temporal_resolve_pipeline];
@@ -2500,6 +2527,14 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     }
   }
   VkrMetalPacketFrameUpload frame_upload = {0};
+  const VkrMetalPacketTemporalSceneState temporal_scene = {
+      .signature = packet->globals.temporal.enabled && !renderer->metalfx_enabled
+                       ? vkr_temporal_scene_signature(packet)
+                       : (VkrTemporalSceneSignature){0},
+      .radiance_revision = renderer->radiance_revision,
+      .publication_generation = renderer->candidate_publication_generation,
+      .graph_revision = renderer->graph_revision,
+  };
   if (!vkr_metal_packet_prepare_upload(renderer, packet, &frame_upload)) {
     log_error("Metal packet stage failed: frame upload (world=%u ui=%u)",
               packet->world ? packet->world->instance_count : 0,
@@ -2513,6 +2548,12 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     vkr_metal_packet_finish_frame(renderer, true_v, false_v);
     return false_v;
   }
+  frame_upload.temporal_scene = temporal_scene;
+  frame_upload.temporal_scene.signature.eligible =
+      temporal_scene.signature.eligible && !ibl_bake &&
+      !renderer->texture_upload_batch.enabled &&
+      !renderer->texture_upload_batch.active &&
+      temporal_scene.radiance_revision == renderer->radiance_revision;
   VkrMetalRingSlice readback_slice = {0};
   VkrMetalAddressPair readback = {0};
   void *readback_object = NULL;
@@ -3042,9 +3083,8 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     return false_v;
   }
 
-  const uint64_t metalfx_temporal_wait_value =
-      renderer->metalfx_enabled &&
-              renderer->selected_temporal_history_instance != UINT32_MAX
+  const uint64_t temporal_wait_value =
+      renderer->selected_temporal_history_instance != UINT32_MAX
           ? vkr_metal_packet_graph_buffer_instance(
                 renderer, renderer->temporal_transform_history_handle,
                 renderer->selected_temporal_history_instance)
@@ -3115,9 +3155,9 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
         renderer->prepared_frame.viewport_height;
   }
   id<MTL4CommandBuffer> submissions[] = {renderer->command_buffer};
-  if (metalfx_temporal_wait_value > renderer->completion.signaledValue)
+  if (temporal_wait_value > renderer->completion.signaledValue)
     [renderer->queue waitForEvent:renderer->completion
-                            value:metalfx_temporal_wait_value];
+                            value:temporal_wait_value];
   if (renderer->drawable)
     [renderer->queue waitForDrawable:renderer->drawable];
   out_result->submit_value = submit_value;
@@ -3156,6 +3196,19 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
      ADR-029 rollback: a cancelled frame commits nothing and the previous
      contents stay authoritative. */
   vkr_rg_commit_retained_state(renderer->graph);
+  if (!renderer->metalfx_enabled) {
+    VkrMetalPacketImage *colors = vkr_metal_packet_named_image_slot(
+        renderer, "temporal_history_color");
+    if (colors && renderer->history_output_index < colors->instance_count) {
+      frame_upload.temporal_scene.signature.eligible =
+          frame_upload.temporal_scene.signature.eligible &&
+          frame_upload.ibl_sh_candidate_slot == VKR_SH_SLOT_BLACK;
+      colors->instances[renderer->history_output_index].history_scene =
+          frame_upload.temporal_scene;
+    }
+  }
+  if (ibl_bake)
+    vkr_metal_packet_advance_revision(&renderer->radiance_revision);
   if (frame_upload.ibl_sh_candidate_slot != VKR_SH_SLOT_BLACK) {
     VkrMetalPacketTexture *sh_source =
         vkr_metal_packet_resolve_texture(renderer, ibl_source);

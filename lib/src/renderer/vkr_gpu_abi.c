@@ -3,6 +3,7 @@
 #include "renderer/vkr_buffer.h"
 
 #include <stddef.h>
+#include <math.h>
 
 #define VKR_GPU_ABI_FIELD(TYPE, HOST, SHADER, OFFSET)                          \
   {#HOST, SHADER, OFFSET, (uint32_t)offsetof(TYPE, HOST)}
@@ -15,6 +16,42 @@
    (uint32_t)_Alignof(TYPE),                                                   \
    FIELDS,                                                                     \
    ArrayCount(FIELDS)}
+
+VkrPreparedInstanceGPU vkr_gpu_prepare_instance(const VkrInstanceDataGPU *source) {
+  const Mat4 model = source->model;
+  /* Double intermediates keep cofactors finite for finite binary32 scales.
+     A common positive scale cancels when shaders normalize the result. */
+  const float64_t a0 = model.m00, a1 = model.m10, a2 = model.m20;
+  const float64_t b0 = model.m01, b1 = model.m11, b2 = model.m21;
+  const float64_t c0 = model.m02, c1 = model.m12, c2 = model.m22;
+  float64_t cofactor[9] = {
+      b1 * c2 - b2 * c1, b2 * c0 - b0 * c2, b0 * c1 - b1 * c0,
+      c1 * a2 - c2 * a1, c2 * a0 - c0 * a2, c0 * a1 - c1 * a0,
+      a1 * b2 - a2 * b1, a2 * b0 - a0 * b2, a0 * b1 - a1 * b0,
+  };
+  const float64_t determinant =
+      a0 * cofactor[0] + a1 * cofactor[1] + a2 * cofactor[2];
+  const float32_t handedness = determinant < 0.0 ? -1.0f : 1.0f;
+  float64_t magnitude = 0.0;
+  for (uint32_t i = 0u; i < ArrayCount(cofactor); ++i)
+    magnitude = Max(magnitude, fabs(cofactor[i]));
+  const float64_t scale = magnitude > 0.0 ? handedness / magnitude : 0.0;
+  for (uint32_t i = 0u; i < ArrayCount(cofactor); ++i)
+    cofactor[i] *= scale;
+  return (VkrPreparedInstanceGPU){
+      .model = model,
+      .object_id = source->object_id,
+      .temporal_index = source->temporal_index,
+      .temporal_generation = source->temporal_generation,
+      .temporal_flags = source->temporal_flags,
+      .normal_column0 = {(float32_t)cofactor[0], (float32_t)cofactor[1],
+                         (float32_t)cofactor[2], handedness},
+      .normal_column1 = {(float32_t)cofactor[3], (float32_t)cofactor[4],
+                         (float32_t)cofactor[5], 0.0f},
+      .normal_column2 = {(float32_t)cofactor[6], (float32_t)cofactor[7],
+                         (float32_t)cofactor[8], 0.0f},
+  };
+}
 
 void vkr_gpu_geometry_row_relocate(VkrGpuGeometryRow *row,
                                    uint64_t vertex_address,
@@ -57,12 +94,15 @@ vkr_global const VkrGpuAbiField vkr_gpu_geometry_decode_record_fields[] = {
 };
 
 vkr_global const VkrGpuAbiField vkr_gpu_instance_fields[] = {
-    VKR_GPU_ABI_FIELD(VkrInstanceDataGPU, model, "model", 0),
-    VKR_GPU_ABI_FIELD(VkrInstanceDataGPU, object_id, "object_id", 64),
-    VKR_GPU_ABI_FIELD(VkrInstanceDataGPU, temporal_index, "temporal_index", 68),
-    VKR_GPU_ABI_FIELD(VkrInstanceDataGPU, temporal_generation,
+    VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, model, "model", 0),
+    VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, object_id, "object_id", 64),
+    VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, temporal_index, "temporal_index", 68),
+    VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, temporal_generation,
                       "temporal_generation", 72),
-    VKR_GPU_ABI_FIELD(VkrInstanceDataGPU, temporal_flags, "temporal_flags", 76),
+    VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, temporal_flags, "temporal_flags", 76),
+    VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, normal_column0, "normal_column0", 80),
+    VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, normal_column1, "normal_column1", 96),
+    VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, normal_column2, "normal_column2", 112),
 };
 
 vkr_global const VkrGpuAbiField vkr_gpu_text_vertex_fields[] = {
@@ -133,7 +173,7 @@ vkr_global const VkrGpuAbiRecord
             VkrGpuGeometryDecodeRecord, "VkrGpuGeometryDecodeRecord", 32, 4,
             vkr_gpu_geometry_decode_record_fields),
         [VKR_GPU_ABI_INSTANCE] =
-            VKR_GPU_ABI_RECORD(VkrInstanceDataGPU, "VkrMetalPacketInstance", 80,
+            VKR_GPU_ABI_RECORD(VkrPreparedInstanceGPU, "VkrMetalPacketInstance", 128,
                                16, vkr_gpu_instance_fields),
         [VKR_GPU_ABI_TEXT_VERTEX] =
             VKR_GPU_ABI_RECORD(VkrTextVertex, "VkrMetalPacketTextVertex", 32,

@@ -74,12 +74,13 @@ vkr_internal bool8_t vkr_vk_upload_instances(
     return true_v;
   if (count > VKR_INSTANCE_BUFFER_MAX_INSTANCES)
     return false_v;
-  const uint64_t size = (uint64_t)count * sizeof(*instances);
-  void *destination = vkr_vk_frame_upload_allocate(
-      slot, size, _Alignof(VkrInstanceDataGPU), out_address, NULL);
+  const uint64_t size = (uint64_t)count * sizeof(VkrPreparedInstanceGPU);
+  VkrPreparedInstanceGPU *destination = vkr_vk_frame_upload_allocate(
+      slot, size, _Alignof(VkrPreparedInstanceGPU), out_address, NULL);
   if (!destination)
     return false_v;
-  MemCopy(destination, instances, size);
+  for (uint32_t i = 0u; i < count; ++i)
+    destination[i] = vkr_gpu_prepare_instance(&instances[i]);
   return true_v;
 }
 
@@ -255,7 +256,7 @@ vkr_internal bool8_t vkr_vk_candidate_graph_buffers(
                  sizeof(VkrGpuCandidateDrawRow) &&
          (*out_instances)->buffer.size >=
              (uint64_t)VKR_GPU_DRAW_CANDIDATE_CAPACITY *
-                 sizeof(VkrInstanceDataGPU) &&
+                 sizeof(VkrPreparedInstanceGPU) &&
          *out_resource_generation != 0u;
 }
 
@@ -408,7 +409,7 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
   slot->packet_build.candidate_row_bytes =
       written_candidates * sizeof(VkrGpuCandidateDrawRow);
   slot->packet_build.instance_row_bytes =
-      written_candidates * sizeof(VkrInstanceDataGPU);
+      written_candidates * sizeof(VkrPreparedInstanceGPU);
   slot->packet_build.static_candidate_row_bytes =
       (uint64_t)static_rows_written * sizeof(VkrGpuCandidateDrawRow);
   slot->packet_build.dynamic_candidate_row_bytes =
@@ -503,8 +504,8 @@ vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
   VkrGpuCandidateDrawRow *candidates = vkr_vk_frame_upload_allocate(
       slot, (uint64_t)count * sizeof(*candidates),
       _Alignof(VkrGpuCandidateDrawRow), NULL, &candidate_source_offset);
-  VkrInstanceDataGPU *instances = vkr_vk_frame_upload_allocate(
-      slot, (uint64_t)count * sizeof(*instances), _Alignof(VkrInstanceDataGPU),
+  VkrPreparedInstanceGPU *instances = vkr_vk_frame_upload_allocate(
+      slot, (uint64_t)count * sizeof(*instances), _Alignof(VkrPreparedInstanceGPU),
       NULL, &instance_source_offset);
   if (!candidates || !instances)
     return false_v;
@@ -545,11 +546,12 @@ vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
             vkr_gpu_draw_state_flags(candidate->state_bucket, candidate->flags),
         .local_bounding_sphere = candidate->local_bounding_sphere,
     };
-    instances[packed_count] = candidate->instance;
+    instances[packed_count] = vkr_gpu_prepare_instance(&candidate->instance);
     instances[packed_count].temporal_flags =
-        candidate->instance.temporal_index != last_temporal_index
-            ? VKR_INSTANCE_TEMPORAL_OWNER
-            : 0u;
+        ((candidate->submesh_index + 1u) << VKR_INSTANCE_TEMPORAL_SURFACE_SHIFT) |
+        (candidate->instance.temporal_index != last_temporal_index
+             ? VKR_INSTANCE_TEMPORAL_OWNER
+             : 0u);
     last_temporal_index = candidate->instance.temporal_index;
     packed_count++;
   }
