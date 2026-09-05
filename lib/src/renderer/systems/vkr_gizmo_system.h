@@ -57,7 +57,7 @@ typedef enum VkrGizmoHandle {
  * @param handle Gizmo handle to encode.
  * @return Encoded object id, or 0 if handle is invalid.
  */
-vkr_internal inline uint32_t
+vkr_internal INLINE uint32_t
 vkr_gizmo_encode_picking_id(VkrGizmoHandle handle) {
   return vkr_picking_encode_id(VKR_PICKING_ID_KIND_GIZMO, (uint32_t)handle);
 }
@@ -67,7 +67,7 @@ vkr_gizmo_encode_picking_id(VkrGizmoHandle handle) {
  * @param object_id Picking object id to decode.
  * @return Decoded handle or NONE if the id is not a gizmo handle.
  */
-vkr_internal inline VkrGizmoHandle
+vkr_internal INLINE VkrGizmoHandle
 vkr_gizmo_decode_picking_id(uint32_t object_id) {
   VkrPickingDecodedId decoded = vkr_picking_decode_id(object_id);
   if (!decoded.valid || decoded.kind != VKR_PICKING_ID_KIND_GIZMO) {
@@ -84,7 +84,7 @@ vkr_gizmo_decode_picking_id(uint32_t object_id) {
  * @param handle Gizmo handle to inspect.
  * @return Transform mode, or NONE if the handle is invalid.
  */
-vkr_internal inline VkrGizmoMode vkr_gizmo_handle_mode(VkrGizmoHandle handle) {
+vkr_internal INLINE VkrGizmoMode vkr_gizmo_handle_mode(VkrGizmoHandle handle) {
   switch (handle) {
   case VKR_GIZMO_HANDLE_TRANSLATE_X:
   case VKR_GIZMO_HANDLE_TRANSLATE_Y:
@@ -111,7 +111,7 @@ vkr_internal inline VkrGizmoMode vkr_gizmo_handle_mode(VkrGizmoHandle handle) {
  * @param out_axis Receives axis direction on success.
  * @return true when the handle implies an axis; false otherwise.
  */
-vkr_internal inline bool8_t vkr_gizmo_handle_axis(VkrGizmoHandle handle,
+vkr_internal INLINE bool8_t vkr_gizmo_handle_axis(VkrGizmoHandle handle,
                                                   Vec3 *out_axis) {
   if (!out_axis) {
     return false_v;
@@ -144,7 +144,7 @@ vkr_internal inline bool8_t vkr_gizmo_handle_axis(VkrGizmoHandle handle,
  * @param handle Gizmo handle to inspect.
  * @return 0=X, 1=Y, 2=Z, or -1 when the handle has no axis.
  */
-vkr_internal inline int32_t vkr_gizmo_handle_axis_index(VkrGizmoHandle handle) {
+vkr_internal INLINE int32_t vkr_gizmo_handle_axis_index(VkrGizmoHandle handle) {
   switch (handle) {
   case VKR_GIZMO_HANDLE_TRANSLATE_X:
   case VKR_GIZMO_HANDLE_ROTATE_X:
@@ -166,7 +166,7 @@ vkr_internal inline int32_t vkr_gizmo_handle_axis_index(VkrGizmoHandle handle) {
 /**
  * @brief Returns true for screen-plane translation handles.
  */
-vkr_internal inline bool8_t
+vkr_internal INLINE bool8_t
 vkr_gizmo_handle_is_free_translate(VkrGizmoHandle handle) {
   return handle == VKR_GIZMO_HANDLE_TRANSLATE_FREE;
 }
@@ -176,7 +176,7 @@ vkr_gizmo_handle_is_free_translate(VkrGizmoHandle handle) {
  *
  * Current UX treats all scale cubes as uniform scaling rather than per-axis.
  */
-vkr_internal inline bool8_t
+vkr_internal INLINE bool8_t
 vkr_gizmo_handle_is_uniform_scale(VkrGizmoHandle handle) {
   return handle == VKR_GIZMO_HANDLE_SCALE_UNIFORM ||
          handle == VKR_GIZMO_HANDLE_SCALE_X ||

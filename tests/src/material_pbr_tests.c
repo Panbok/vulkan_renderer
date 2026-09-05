@@ -44,15 +44,14 @@ typedef struct MaterialPbrTestContext {
   VkrAllocator temp_allocator;
 } MaterialPbrTestContext;
 
-static bool8_t
-material_pbr_mock_texture_upload_available(void *publisher_state,
-                                           uint64_t upload_bytes) {
+vkr_internal bool8_t material_pbr_mock_texture_upload_available(
+    void *publisher_state, uint64_t upload_bytes) {
   MaterialPbrMockPublisherState *state = publisher_state;
   assert(state != NULL);
   return upload_bytes != 0u && state->texture_upload_available;
 }
 
-static bool8_t material_pbr_mock_publish_texture(
+vkr_internal bool8_t material_pbr_mock_publish_texture(
     void *publisher_state, VkrTextureHandle handle,
     const struct VkrTexturePreparedLoad *texture) {
   (void)handle;
@@ -63,7 +62,7 @@ static bool8_t material_pbr_mock_publish_texture(
   return true_v;
 }
 
-static bool8_t material_pbr_mock_publish_writable_texture(
+vkr_internal bool8_t material_pbr_mock_publish_writable_texture(
     void *publisher_state, VkrTextureHandle handle,
     const VkrTextureDescription *description) {
   (void)handle;
@@ -74,8 +73,8 @@ static bool8_t material_pbr_mock_publish_writable_texture(
   return true_v;
 }
 
-static bool8_t material_pbr_mock_unpublish_texture(void *publisher_state,
-                                                   VkrTextureHandle handle) {
+vkr_internal bool8_t material_pbr_mock_unpublish_texture(
+    void *publisher_state, VkrTextureHandle handle) {
   MaterialPbrMockPublisherState *state = publisher_state;
   assert(state != NULL);
   for (uint32_t material_index = 0u;
@@ -97,10 +96,9 @@ static bool8_t material_pbr_mock_unpublish_texture(void *publisher_state,
   return true_v;
 }
 
-static bool8_t
-material_pbr_mock_publish_material(void *publisher_state,
-                                   VkrMaterialHandle handle,
-                                   const struct VkrMaterial *material) {
+vkr_internal bool8_t material_pbr_mock_publish_material(
+    void *publisher_state, VkrMaterialHandle handle,
+    const struct VkrMaterial *material) {
   MaterialPbrMockPublisherState *state = publisher_state;
   assert(state != NULL);
   assert(material != NULL);
@@ -118,8 +116,8 @@ material_pbr_mock_publish_material(void *publisher_state,
   return true_v;
 }
 
-static bool8_t material_pbr_mock_unpublish_material(void *publisher_state,
-                                                    VkrMaterialHandle handle) {
+vkr_internal bool8_t material_pbr_mock_unpublish_material(
+    void *publisher_state, VkrMaterialHandle handle) {
   MaterialPbrMockPublisherState *state = publisher_state;
   assert(state != NULL);
   assert(handle.id > 0u && handle.id <= ArrayCount(state->material_live));
@@ -130,7 +128,7 @@ static bool8_t material_pbr_mock_unpublish_material(void *publisher_state,
   return true_v;
 }
 
-static bool8_t material_pbr_test_make_dir(const char *path) {
+vkr_internal bool8_t material_pbr_test_make_dir(const char *path) {
   if (!path || path[0] == '\0') {
     return false_v;
   }
@@ -144,7 +142,7 @@ static bool8_t material_pbr_test_make_dir(const char *path) {
   return (result == 0 || errno == EEXIST) ? true_v : false_v;
 }
 
-static void material_pbr_test_remove_file(const char *path) {
+vkr_internal void material_pbr_test_remove_file(const char *path) {
   if (!path || path[0] == '\0') {
     return;
   }
@@ -164,8 +162,8 @@ static void material_pbr_test_remove_file(const char *path) {
 #endif
 }
 
-static bool8_t material_pbr_test_write_text_file(const char *path,
-                                                 const char *text) {
+vkr_internal bool8_t material_pbr_test_write_text_file(const char *path,
+                                                       const char *text) {
   if (!path || !text) {
     return false_v;
   }
@@ -181,9 +179,8 @@ static bool8_t material_pbr_test_write_text_file(const char *path,
   return written == len ? true_v : false_v;
 }
 
-static bool8_t material_pbr_test_write_uastc_texture(const char *path,
-                                                     uint32_t layer_count,
-                                                     uint32_t face_count) {
+vkr_internal bool8_t material_pbr_test_write_uastc_texture(
+    const char *path, uint32_t layer_count, uint32_t face_count) {
   if (!path || layer_count == 0u || (face_count != 1u && face_count != 6u)) {
     return false_v;
   }
@@ -236,7 +233,7 @@ static bool8_t material_pbr_test_write_uastc_texture(const char *path,
   return result == KTX_SUCCESS ? true_v : false_v;
 }
 
-static void material_pbr_test_ensure_dirs(void) {
+vkr_internal void material_pbr_test_ensure_dirs(void) {
   char tests_tmp[1024];
   snprintf(tests_tmp, sizeof(tests_tmp), "%stests/tmp", PROJECT_SOURCE_DIR);
   assert(material_pbr_test_make_dir(tests_tmp) == true_v);
@@ -247,7 +244,8 @@ static void material_pbr_test_ensure_dirs(void) {
   assert(material_pbr_test_make_dir(pbr_tmp) == true_v);
 }
 
-static void material_pbr_test_init_publisher(MaterialPbrTestContext *ctx) {
+vkr_internal void
+material_pbr_test_init_publisher(MaterialPbrTestContext *ctx) {
   assert(ctx != NULL);
 
   MemZero(ctx, sizeof(*ctx));
@@ -266,7 +264,8 @@ static void material_pbr_test_init_publisher(MaterialPbrTestContext *ctx) {
   };
 }
 
-static void material_pbr_test_shutdown_publisher(MaterialPbrTestContext *ctx) {
+vkr_internal void
+material_pbr_test_shutdown_publisher(MaterialPbrTestContext *ctx) {
   if (!ctx) {
     return;
   }
@@ -277,7 +276,8 @@ static void material_pbr_test_shutdown_publisher(MaterialPbrTestContext *ctx) {
   }
 }
 
-static bool8_t material_pbr_test_init_context(MaterialPbrTestContext *ctx) {
+vkr_internal bool8_t
+material_pbr_test_init_context(MaterialPbrTestContext *ctx) {
   assert(ctx != NULL);
 
   material_pbr_test_init_publisher(ctx);
@@ -329,7 +329,8 @@ static bool8_t material_pbr_test_init_context(MaterialPbrTestContext *ctx) {
   return true_v;
 }
 
-static void material_pbr_test_shutdown_context(MaterialPbrTestContext *ctx) {
+vkr_internal void
+material_pbr_test_shutdown_context(MaterialPbrTestContext *ctx) {
   if (!ctx) {
     return;
   }
@@ -345,7 +346,7 @@ static void material_pbr_test_shutdown_context(MaterialPbrTestContext *ctx) {
   material_pbr_test_shutdown_publisher(ctx);
 }
 
-static bool8_t material_pbr_test_load_material(
+vkr_internal bool8_t material_pbr_test_load_material(
     MaterialPbrTestContext *ctx, const char *stem, const char *content,
     char *out_path, size_t out_path_size, VkrResourceHandleInfo *out_info) {
   assert(ctx != NULL);
@@ -410,7 +411,7 @@ static bool8_t material_pbr_test_load_material(
              : false_v;
 }
 
-static void
+vkr_internal void
 material_pbr_test_unload_material(MaterialPbrTestContext *ctx,
                                   const VkrResourceHandleInfo *handle_info,
                                   const char *path_cstr) {
@@ -423,8 +424,9 @@ material_pbr_test_unload_material(MaterialPbrTestContext *ctx,
   ctx->material_loader.unload(&ctx->material_loader, handle_info, path);
 }
 
-static const char *material_pbr_test_texture_key(const VkrTextureSystem *system,
-                                                 VkrTextureHandle handle) {
+vkr_internal const char *
+material_pbr_test_texture_key(const VkrTextureSystem *system,
+                              VkrTextureHandle handle) {
   if (!system || handle.id == 0 || !system->texture_keys_by_index) {
     return NULL;
   }
@@ -437,8 +439,8 @@ static const char *material_pbr_test_texture_key(const VkrTextureSystem *system,
   return system->texture_keys_by_index[index];
 }
 
-static bool8_t material_pbr_test_string_contains(const char *value,
-                                                 const char *needle) {
+vkr_internal bool8_t material_pbr_test_string_contains(const char *value,
+                                                       const char *needle) {
   if (!value || !needle) {
     return false_v;
   }
@@ -446,7 +448,7 @@ static bool8_t material_pbr_test_string_contains(const char *value,
   return strstr(value, needle) != NULL ? true_v : false_v;
 }
 
-static void
+vkr_internal void
 test_material_pbr_inference_from_scalar_keys(MaterialPbrTestContext *ctx) {
   printf("  Running test_material_pbr_inference_from_scalar_keys...\n");
 
@@ -478,7 +480,7 @@ test_material_pbr_inference_from_scalar_keys(MaterialPbrTestContext *ctx) {
   printf("  test_material_pbr_inference_from_scalar_keys PASSED\n");
 }
 
-static void
+vkr_internal void
 test_material_temporal_reactivity_authoring(MaterialPbrTestContext *ctx) {
   printf("  Running test_material_temporal_reactivity_authoring...\n");
 
@@ -522,7 +524,7 @@ test_material_temporal_reactivity_authoring(MaterialPbrTestContext *ctx) {
   printf("  test_material_temporal_reactivity_authoring PASSED\n");
 }
 
-static void test_material_transmission_is_independent_of_alpha(
+vkr_internal void test_material_transmission_is_independent_of_alpha(
     MaterialPbrTestContext *ctx) {
   printf("  Running test_material_transmission_is_independent_of_alpha...\n");
 
@@ -564,7 +566,7 @@ static void test_material_transmission_is_independent_of_alpha(
   printf("  test_material_transmission_is_independent_of_alpha PASSED\n");
 }
 
-static void
+vkr_internal void
 test_material_pbr_alias_slots_and_inference(MaterialPbrTestContext *ctx) {
   printf("  Running test_material_pbr_alias_slots_and_inference...\n");
 
@@ -611,7 +613,7 @@ test_material_pbr_alias_slots_and_inference(MaterialPbrTestContext *ctx) {
   printf("  test_material_pbr_alias_slots_and_inference PASSED\n");
 }
 
-static void
+vkr_internal void
 test_material_alpha_mode_cutout_defaults(MaterialPbrTestContext *ctx) {
   printf("  Running test_material_alpha_mode_cutout_defaults...\n");
 
@@ -653,7 +655,8 @@ test_material_alpha_mode_cutout_defaults(MaterialPbrTestContext *ctx) {
   printf("  test_material_alpha_mode_cutout_defaults PASSED\n");
 }
 
-static void test_material_double_sided_state(MaterialPbrTestContext *ctx) {
+vkr_internal void
+test_material_double_sided_state(MaterialPbrTestContext *ctx) {
   printf("  Running test_material_double_sided_state...\n");
 
   char material_path[1024] = {0};
@@ -673,7 +676,7 @@ static void test_material_double_sided_state(MaterialPbrTestContext *ctx) {
   printf("  test_material_double_sided_state PASSED\n");
 }
 
-static void
+vkr_internal void
 test_material_legacy_cutout_compatibility(MaterialPbrTestContext *ctx) {
   printf("  Running test_material_legacy_cutout_compatibility...\n");
 
@@ -697,7 +700,7 @@ test_material_legacy_cutout_compatibility(MaterialPbrTestContext *ctx) {
   printf("  test_material_legacy_cutout_compatibility PASSED\n");
 }
 
-static void
+vkr_internal void
 test_material_texture_intent_query_normalization(MaterialPbrTestContext *ctx) {
   printf("  Running test_material_texture_intent_query_normalization...\n");
 
@@ -738,7 +741,7 @@ test_material_texture_intent_query_normalization(MaterialPbrTestContext *ctx) {
   printf("  test_material_texture_intent_query_normalization PASSED\n");
 }
 
-static void test_material_texture_intent_override_is_deterministic(
+vkr_internal void test_material_texture_intent_override_is_deterministic(
     MaterialPbrTestContext *ctx) {
   printf(
       "  Running test_material_texture_intent_override_is_deterministic...\n");
@@ -776,7 +779,7 @@ static void test_material_texture_intent_override_is_deterministic(
   printf("  test_material_texture_intent_override_is_deterministic PASSED\n");
 }
 
-static void test_material_batch_load_honors_parsed_name_over_stem(
+vkr_internal void test_material_batch_load_honors_parsed_name_over_stem(
     MaterialPbrTestContext *ctx) {
   printf(
       "  Running test_material_batch_load_honors_parsed_name_over_stem...\n");
@@ -846,7 +849,7 @@ static void test_material_batch_load_honors_parsed_name_over_stem(
   printf("  test_material_batch_load_honors_parsed_name_over_stem PASSED\n");
 }
 
-static void test_async_emissive_texture_uses_black_pending_fallback(
+vkr_internal void test_async_emissive_texture_uses_black_pending_fallback(
     MaterialPbrTestContext *ctx) {
   printf(
       "  Running test_async_emissive_texture_uses_black_pending_fallback...\n");
@@ -912,7 +915,7 @@ static void test_async_emissive_texture_uses_black_pending_fallback(
   printf("  test_async_emissive_texture_uses_black_pending_fallback PASSED\n");
 }
 
-static void
+vkr_internal void
 test_material_texture_stream_queue_is_bounded(MaterialPbrTestContext *ctx) {
   VkrMaterialSystem *system = &ctx->material_system;
   assert(system->texture_stream_budget_bytes == UINT64_MAX);
@@ -956,7 +959,7 @@ test_material_texture_stream_queue_is_bounded(MaterialPbrTestContext *ctx) {
   printf("  test_material_texture_stream_queue_is_bounded PASSED\n");
 }
 
-static void
+vkr_internal void
 test_material_texture_residency_evicts_to_budget(MaterialPbrTestContext *ctx) {
   VkrMaterialSystem *system = &ctx->material_system;
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
@@ -1040,7 +1043,7 @@ test_material_texture_residency_evicts_to_budget(MaterialPbrTestContext *ctx) {
   printf("  test_material_texture_residency_evicts_to_budget PASSED\n");
 }
 
-static void
+vkr_internal void
 test_shared_texture_eviction_tracks_unique_bytes(MaterialPbrTestContext *ctx) {
   VkrMaterialSystem *system = &ctx->material_system;
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
@@ -1168,7 +1171,7 @@ test_shared_texture_eviction_tracks_unique_bytes(MaterialPbrTestContext *ctx) {
   printf("  test_shared_texture_eviction_tracks_unique_bytes PASSED\n");
 }
 
-static void test_shared_texture_eviction_republishes_all_materials(
+vkr_internal void test_shared_texture_eviction_republishes_all_materials(
     MaterialPbrTestContext *ctx) {
   VkrMaterialSystem *system = &ctx->material_system;
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
@@ -1266,9 +1269,9 @@ static void test_shared_texture_eviction_republishes_all_materials(
   printf("  test_shared_texture_eviction_republishes_all_materials PASSED\n");
 }
 
-static void
+vkr_internal void
 test_compressed_texture_subresource_shapes(MaterialPbrTestContext *ctx) {
-  static const struct {
+  vkr_local_persist const struct {
     const char *name;
     uint32_t layers;
     uint32_t faces;
@@ -1332,7 +1335,7 @@ test_compressed_texture_subresource_shapes(MaterialPbrTestContext *ctx) {
   printf("  test_compressed_texture_subresource_shapes PASSED\n");
 }
 
-static void test_texture_publication_backpressure_is_retryable(
+vkr_internal void test_texture_publication_backpressure_is_retryable(
     MaterialPbrTestContext *ctx) {
   uint8_t pixels[4] = {255u, 255u, 255u, 255u};
   VkrTextureUploadRegion region = {
@@ -1386,7 +1389,7 @@ static void test_texture_publication_backpressure_is_retryable(
   printf("  test_texture_publication_backpressure_is_retryable PASSED\n");
 }
 
-static void test_repeated_texture_finalize_reuses_canonical_handle(
+vkr_internal void test_repeated_texture_finalize_reuses_canonical_handle(
     MaterialPbrTestContext *ctx) {
   uint8_t pixels[4] = {127u, 127u, 255u, 255u};
   VkrTextureUploadRegion region = {

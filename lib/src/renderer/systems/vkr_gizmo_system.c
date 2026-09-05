@@ -28,7 +28,7 @@
 #define RING_SEGMENTS 48
 #define RING_SIDES 12
 
-vkr_local_persist const VkrGizmoHandle g_gizmo_submesh_handles[] = {
+vkr_global const VkrGizmoHandle g_gizmo_submesh_handles[] = {
     VKR_GIZMO_HANDLE_TRANSLATE_X, VKR_GIZMO_HANDLE_TRANSLATE_Y,
     VKR_GIZMO_HANDLE_TRANSLATE_Z, VKR_GIZMO_HANDLE_ROTATE_X,
     VKR_GIZMO_HANDLE_ROTATE_Y,    VKR_GIZMO_HANDLE_ROTATE_Z,

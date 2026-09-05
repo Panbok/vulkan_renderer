@@ -36,7 +36,7 @@ enum {
   VKR_CAPTURE_CHANNEL_HDR_POST_TRANSMISSION,
 };
 
-static const VkrCaptureChannelDescription s_capture_channels[] = {
+vkr_global const VkrCaptureChannelDescription s_capture_channels[] = {
     {VKR_CAPTURE_CHANNEL_FINAL_COLOR, "final_color", "swapchain",
      VKR_RENDERER_SUBSYSTEM_COUNT, VKR_CAPTURE_ASPECT_COLOR,
      VKR_CAPTURE_VALUE_COLOR, VKR_CAPTURE_COLOR_SPACE_SRGB, "RGBA8_SRGB_PNG",

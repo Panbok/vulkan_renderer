@@ -319,7 +319,7 @@ typedef struct VkrRendererCumulativeBaselines {
 } VkrRendererCumulativeBaselines;
 
 /** Advances one cumulative-source baseline and returns its interval delta. */
-static INLINE uint64_t
+vkr_internal INLINE uint64_t
 vkr_renderer_metrics_cumulative_delta(uint64_t current, uint64_t *previous) {
   const uint64_t prior = *previous;
   *previous = current;

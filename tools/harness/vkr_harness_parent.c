@@ -20,25 +20,25 @@ typedef struct VkrHarnessGpuLane {
   VkrPlatformProcessLock lock;
 } VkrHarnessGpuLane;
 
-static void vkr_harness_gpu_lane_init(VkrHarnessGpuLane *lane) {
+vkr_internal void vkr_harness_gpu_lane_init(VkrHarnessGpuLane *lane) {
   MemZero(lane, sizeof(*lane));
 }
 
-static bool8_t vkr_harness_gpu_lane_acquire(VkrHarnessGpuLane *lane,
-                                            const char *artifact_root) {
+vkr_internal bool8_t vkr_harness_gpu_lane_acquire(VkrHarnessGpuLane *lane,
+                                                  const char *artifact_root) {
   return vkr_platform_process_lock_acquire("VkrHarnessGpuLane", artifact_root,
                                            &lane->lock);
 }
 
-static void vkr_harness_gpu_lane_release(VkrHarnessGpuLane *lane) {
+vkr_internal void vkr_harness_gpu_lane_release(VkrHarnessGpuLane *lane) {
   vkr_platform_process_lock_release(&lane->lock);
 }
 
 /** stdout carries exactly one machine-readable line, on every exit path. */
-static void vkr_harness_emit_result(const char *status,
-                                    VkrHarnessExitCode exit_code,
-                                    const char *report_relative_path,
-                                    const char *report_digest) {
+vkr_internal void vkr_harness_emit_result(const char *status,
+                                          VkrHarnessExitCode exit_code,
+                                          const char *report_relative_path,
+                                          const char *report_digest) {
   if (report_relative_path) {
     vkr_harness_stdout("{\"status\":\"%s\",\"exit_code\":%u,\"report\":\"%s\","
                        "\"sha256\":\"%s\"}\n",
@@ -50,13 +50,11 @@ static void vkr_harness_emit_result(const char *status,
   }
 }
 
-static int vkr_harness_spawn_child(const char *executable,
-                                   const char *repo_root, const char *case_path,
-                                   const char *profile_path,
-                                   const char *run_dir, const char *cache_path,
-                                   uint32_t timeout_ms, bool8_t prewarm,
-                                   const char *scene_content_digest,
-                                   const VkrHarnessRendererConfig *renderer) {
+vkr_internal int vkr_harness_spawn_child(
+    const char *executable, const char *repo_root, const char *case_path,
+    const char *profile_path, const char *run_dir, const char *cache_path,
+    uint32_t timeout_ms, bool8_t prewarm, const char *scene_content_digest,
+    const VkrHarnessRendererConfig *renderer) {
   char stdout_path[VKR_HARNESS_PATH_MAX];
   char stderr_path[VKR_HARNESS_PATH_MAX];
   string_format(stdout_path, sizeof(stdout_path), "%s/stdout.log", run_dir);
@@ -133,9 +131,8 @@ static int vkr_harness_spawn_child(const char *executable,
  * exceeds the harness JSON parser's fixed token budget; this checks the
  * artifact entry textually instead.
  */
-static bool8_t vkr_harness_child_sample_digest_matches(const char *report_path,
-                                                       const char *samples_path,
-                                                       Arena *transient) {
+vkr_internal bool8_t vkr_harness_child_sample_digest_matches(
+    const char *report_path, const char *samples_path, Arena *transient) {
   char digest[VKR_HARNESS_DIGEST_MAX];
   uint8_t *report_data = NULL;
   uint64_t report_length = 0u;
@@ -168,7 +165,7 @@ static bool8_t vkr_harness_child_sample_digest_matches(const char *report_path,
  * repetitions of the same case and build. A difference invalidates the timing
  * evidence regardless of its average.
  */
-static bool8_t vkr_harness_work_metric(const char *name) {
+vkr_internal bool8_t vkr_harness_work_metric(const char *name) {
   /* Completion-only HZB selection is scheduling state. Its reject count is
    *
    * work volume and remains covered by the visibility prefix below. */
@@ -179,7 +176,7 @@ static bool8_t vkr_harness_work_metric(const char *name) {
          string_find(name, "overflow") || string_find(name, "capture");
 }
 
-static bool8_t vkr_harness_work_volume_matches(
+vkr_internal bool8_t vkr_harness_work_volume_matches(
     const VkrHarnessCase *case_manifest, const VkrHarnessProfile *profile,
     const VkrHarnessSampleSet *runs, uint32_t run_count) {
   if (run_count < 2u) {
@@ -214,14 +211,13 @@ static bool8_t vkr_harness_work_volume_matches(
   return true_v;
 }
 
-static bool8_t vkr_harness_profile_matches(const char *required,
-                                           const char *actual) {
+vkr_internal bool8_t vkr_harness_profile_matches(const char *required,
+                                                 const char *actual) {
   return !required[0] || string_equals(required, actual);
 }
 
-static bool8_t
-vkr_harness_environment_satisfies_profile(const VkrHarnessProfile *profile,
-                                          const VkrHarnessProvenance *actual) {
+vkr_internal bool8_t vkr_harness_environment_satisfies_profile(
+    const VkrHarnessProfile *profile, const VkrHarnessProvenance *actual) {
   return vkr_harness_profile_matches(profile->required_os, actual->os) &&
          vkr_harness_profile_matches(profile->required_cpu, actual->cpu) &&
          vkr_harness_profile_matches(profile->required_gpu, actual->gpu) &&
@@ -241,7 +237,7 @@ vkr_harness_environment_satisfies_profile(const VkrHarnessProfile *profile,
 
 /** Adopts the presentation/device configuration the first repetition observed.
  */
-static void
+vkr_internal void
 vkr_harness_adopt_run_provenance(VkrHarnessProvenance *provenance,
                                  const VkrHarnessSampleFileHeader *header) {
   vkr_harness_provenance_set_text(provenance->gpu, sizeof(provenance->gpu),
@@ -273,9 +269,8 @@ vkr_harness_adopt_run_provenance(VkrHarnessProvenance *provenance,
  * A later repetition must describe the same catalog and device as the first,
  * or its samples belong to a different observation.
  */
-static bool8_t
-vkr_harness_run_is_compatible(const VkrHarnessSampleSet *first,
-                              const VkrHarnessSampleSet *candidate) {
+vkr_internal bool8_t vkr_harness_run_is_compatible(
+    const VkrHarnessSampleSet *first, const VkrHarnessSampleSet *candidate) {
   return candidate->header.metric_count == first->header.metric_count &&
          candidate->header.pass_count == first->header.pass_count &&
          MemCompare(first->metrics, candidate->metrics,
@@ -316,10 +311,9 @@ vkr_harness_run_is_compatible(const VkrHarnessSampleSet *first,
  * only known when every header has been read, which turns an incremental
  * `realloc` chain into a single sized allocation.
  */
-static bool8_t vkr_harness_collect_run_evidence(VkrHarnessReport *report,
-                                                const VkrHarnessSampleSet *runs,
-                                                Arena *persistent,
-                                                bool8_t *out_snapshot_dropped) {
+vkr_internal bool8_t vkr_harness_collect_run_evidence(
+    VkrHarnessReport *report, const VkrHarnessSampleSet *runs,
+    Arena *persistent, bool8_t *out_snapshot_dropped) {
   uint64_t total_events = 0;
   *out_snapshot_dropped = false_v;
   report->warmup_stable = true_v;
@@ -375,12 +369,10 @@ static bool8_t vkr_harness_collect_run_evidence(VkrHarnessReport *report,
  * unsupported GPU timestamp scope. It is answered here over the concatenated
  * flags, so the completeness claim covers exactly the summarized window.
  */
-static bool8_t vkr_harness_aggregate_runs(const VkrHarnessArenas *arenas,
-                                          VkrHarnessReport *report,
-                                          const VkrHarnessCase *case_manifest,
-                                          const VkrHarnessSampleSet *runs,
-                                          bool8_t *out_gpu_pass_complete,
-                                          VkrHarnessError *error) {
+vkr_internal bool8_t vkr_harness_aggregate_runs(
+    const VkrHarnessArenas *arenas, VkrHarnessReport *report,
+    const VkrHarnessCase *case_manifest, const VkrHarnessSampleSet *runs,
+    bool8_t *out_gpu_pass_complete, VkrHarnessError *error) {
   const uint32_t run_count = report->completed_repetitions;
   const uint32_t metric_count = runs[0].header.metric_count;
   const uint32_t pass_count = runs[0].header.pass_count;
@@ -460,7 +452,7 @@ static bool8_t vkr_harness_aggregate_runs(const VkrHarnessArenas *arenas,
  * Runs one repetition — optional isolated-cache prewarm, then the timed child
  * — and validates its artifacts before its samples may be aggregated.
  */
-static bool8_t vkr_harness_execute_repetition(
+vkr_internal bool8_t vkr_harness_execute_repetition(
     const VkrHarnessArenas *arenas, const char *executable,
     const char *repo_root, const char *case_path, const char *profile_path,
     const char *run_root, uint32_t index, const VkrHarnessCase *case_manifest,
@@ -519,10 +511,10 @@ static bool8_t vkr_harness_execute_repetition(
 }
 
 /** Records the run's artifact digests; every one must resolve. */
-static bool8_t vkr_harness_record_run_artifacts(VkrHarnessReport *report,
-                                                const char *run_root,
-                                                uint32_t index) {
-  static const struct {
+vkr_internal bool8_t vkr_harness_record_run_artifacts(VkrHarnessReport *report,
+                                                      const char *run_root,
+                                                      uint32_t index) {
+  vkr_local_persist const struct {
     const char *file;
     const char *role_suffix;
     const char *media_type;
@@ -553,12 +545,12 @@ static bool8_t vkr_harness_record_run_artifacts(VkrHarnessReport *report,
  * makes the run incomplete; only complete evidence that violates an assertion
  * is a failure.
  */
-static void vkr_harness_apply_verdict(VkrHarnessReport *report,
-                                      const VkrHarnessCase *case_manifest,
-                                      const VkrHarnessProfile *profile,
-                                      const VkrHarnessSampleSet *runs,
-                                      bool8_t snapshot_dropped,
-                                      bool8_t gpu_pass_complete) {
+vkr_internal void vkr_harness_apply_verdict(VkrHarnessReport *report,
+                                            const VkrHarnessCase *case_manifest,
+                                            const VkrHarnessProfile *profile,
+                                            const VkrHarnessSampleSet *runs,
+                                            bool8_t snapshot_dropped,
+                                            bool8_t gpu_pass_complete) {
   if (report->completed_repetitions != report->requested_repetitions) {
     vkr_harness_report_mark_incomplete(report,
                                        "execution.repetitions_incomplete");

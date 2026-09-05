@@ -94,7 +94,7 @@ vkr_internal bool8_t vkr_renderer_event_register(VkrMetrics *metrics,
  * catches a new enumerator, which would otherwise leave a NULL here and be
  * found only when snprintf read it.
  */
-vkr_internal const char
+vkr_global const char
     *const vkr_gpu_allocation_owner_names[VKR_GPU_ALLOCATION_OWNER_COUNT] = {
         [VKR_GPU_ALLOCATION_OWNER_UNKNOWN] = "unknown",
         [VKR_GPU_ALLOCATION_OWNER_MESH] = "mesh",
@@ -123,7 +123,7 @@ typedef struct VkrGpuOwnerMetricRowDescription {
   bool8_t follows_handle_table_exactness;
 } VkrGpuOwnerMetricRowDescription;
 
-vkr_internal const VkrGpuOwnerMetricRowDescription
+vkr_global const VkrGpuOwnerMetricRowDescription
     vkr_gpu_owner_metric_rows[VKR_GPU_OWNER_METRIC_ROW_COUNT] = {
         [VKR_GPU_OWNER_METRIC_ROW_LIVE_BYTES] = {"bytes.live",
                                                  VKR_METRIC_KIND_GAUGE,
@@ -183,7 +183,7 @@ typedef struct VkrRendererImplMemoryMetricDescription {
 #define VKR_IMPL_GAUGE(NAME, UNIT) {NAME, VKR_METRIC_KIND_GAUGE, UNIT}
 #define VKR_IMPL_COUNTER(NAME, UNIT) {NAME, VKR_METRIC_KIND_COUNTER, UNIT}
 
-vkr_internal const VkrRendererImplMemoryMetricDescription
+vkr_global const VkrRendererImplMemoryMetricDescription
     vkr_renderer_impl_memory_metric_descriptions[] = {
         VKR_IMPL_GAUGE("memory.gpu.heaps.live", VKR_METRIC_UNIT_COUNT),
         VKR_IMPL_GAUGE("memory.gpu.heaps.peak", VKR_METRIC_UNIT_COUNT),
@@ -813,7 +813,7 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
 
   VKR_REGISTER_U64(cpu_live_bytes, "memory.cpu.bytes.live",
                    VKR_METRIC_DOMAIN_MEMORY_CPU, VKR_METRIC_UNIT_BYTES);
-  static const char *tag_names[VKR_ALLOCATOR_MEMORY_TAG_MAX] = {
+  vkr_local_persist const char *tag_names[VKR_ALLOCATOR_MEMORY_TAG_MAX] = {
       "unknown",   "array",    "string",   "vector", "queue",
       "struct",    "buffer",   "renderer", "file",   "texture",
       "hashtable", "freelist", "vulkan",   "gpu",
@@ -849,7 +849,7 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
                                    &ids->ibl_convolution_event)) {
     return false_v;
   }
-  static const char *asset_names[VKR_RENDERER_ASSET_METRIC_COUNT] = {
+  vkr_local_persist const char *asset_names[VKR_RENDERER_ASSET_METRIC_COUNT] = {
       "asset.texture_load", "asset.mesh_load",  "asset.material_load",
       "asset.font_load",    "asset.scene_load",
   };
@@ -882,7 +882,7 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
 #undef VKR_REGISTER_F64
 #undef VKR_REGISTER_COUNTER
 
-static bool8_t vkr_renderer_metrics_register_impl_memory(
+vkr_internal bool8_t vkr_renderer_metrics_register_impl_memory(
     VkrRendererMetrics *renderer_metrics) {
   VkrMetrics *metrics = renderer_metrics->metrics;
   VkrMetricId *ids = renderer_metrics->ids.impl_memory;
@@ -1084,7 +1084,7 @@ bool8_t vkr_renderer_metrics_publish_pass_samples(
   return true_v;
 }
 
-static uint32_t vkr_renderer_metrics_impl_class_values(
+vkr_internal uint32_t vkr_renderer_metrics_impl_class_values(
     const VkrRendererImplMemoryClassMetrics *class_metrics, uint64_t *values) {
   uint32_t i = 0;
   values[i++] = class_metrics->live_allocations;
@@ -1101,7 +1101,7 @@ static uint32_t vkr_renderer_metrics_impl_class_values(
   return i;
 }
 
-static uint32_t vkr_renderer_metrics_impl_values(
+vkr_internal uint32_t vkr_renderer_metrics_impl_values(
     const VkrRendererImplMemoryMetrics *memory,
     uint64_t values[VKR_RENDERER_IMPL_MEMORY_METRIC_MAX]) {
   const VkrRendererImplMemoryMetrics *suballocations = memory;
@@ -1173,7 +1173,7 @@ static uint32_t vkr_renderer_metrics_impl_values(
   return i;
 }
 
-static void
+vkr_internal void
 vkr_renderer_metrics_collect_impl_memory(VkrRendererMetrics *renderer_metrics,
                                          VkrRenderer *renderer) {
   if (renderer_metrics->impl_memory_metric_count == 0)
@@ -1981,7 +1981,7 @@ vkr_internal const char *vkr_metric_kind_name(VkrMetricKind kind) {
 }
 
 vkr_internal const char *vkr_metric_unit_name(VkrMetricUnit unit) {
-  static const char *names[VKR_METRIC_UNIT_COUNT_MAX] = {
+  vkr_local_persist const char *names[VKR_METRIC_UNIT_COUNT_MAX] = {
       "count", "bytes", "ns", "ratio", "percent", "count_per_s",
   };
   return unit < VKR_METRIC_UNIT_COUNT_MAX ? names[unit] : "unknown";

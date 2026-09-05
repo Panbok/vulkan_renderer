@@ -79,11 +79,11 @@ struct VkrResourceSystem {
  */
 vkr_global VkrResourceSystem *vkr_resource_system = NULL;
 
-vkr_internal _Thread_local bool8_t g_resource_system_force_sync = false_v;
+vkr_global _Thread_local bool8_t g_resource_system_force_sync = false_v;
 
 #define VKR_RESOURCE_COMPLETION_QUEUE_INITIAL_CAPACITY 512u
 
-vkr_internal const VkrResourceAsyncBudget vkr_resource_async_budget_default = {
+vkr_global const VkrResourceAsyncBudget vkr_resource_async_budget_default = {
     .max_finalize_requests = 32,
     .max_gpu_upload_ops = 64,
     .max_gpu_upload_bytes = 32ull * 1024ull * 1024ull,

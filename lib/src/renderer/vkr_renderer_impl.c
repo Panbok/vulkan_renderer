@@ -8,7 +8,7 @@
  * both restate it after creating their renderer. Do not read these as the
  * shipped values.
  */
-static VkrRendererImplCapabilities
+vkr_internal VkrRendererImplCapabilities
 vkr_renderer_impl_default_caps(VkrPresentTargetKind target_kind) {
   return (VkrRendererImplCapabilities){
       .frame_in_flight_count = 3u,

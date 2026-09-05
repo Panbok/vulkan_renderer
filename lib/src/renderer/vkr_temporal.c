@@ -6,8 +6,8 @@
 #define VKR_TEMPORAL_CAMERA_CUT_DISTANCE 10.0f
 #define VKR_TEMPORAL_CAMERA_CUT_FORWARD_DOT 0.5f
 
-static void temporal_scene_lane(VkrTemporalSceneSignature *signature,
-                                uint64_t lane) {
+vkr_internal void temporal_scene_lane(VkrTemporalSceneSignature *signature,
+                                      uint64_t lane) {
   // Two independent 64-bit recurrences over semantic lanes, not struct bytes.
   signature->hash[0] ^= lane;
   signature->hash[0] =
@@ -19,47 +19,49 @@ static void temporal_scene_lane(VkrTemporalSceneSignature *signature,
   signature->hash[1] *= UINT64_C(0x165667b19e3779f9);
 }
 
-static void temporal_scene_pair(VkrTemporalSceneSignature *signature,
-                                uint32_t a, uint32_t b) {
+vkr_internal void temporal_scene_pair(VkrTemporalSceneSignature *signature,
+                                      uint32_t a, uint32_t b) {
   temporal_scene_lane(signature, (uint64_t)a | ((uint64_t)b << 32u));
 }
 
-static void temporal_scene_floats(VkrTemporalSceneSignature *signature,
-                                  float32_t a, float32_t b) {
+vkr_internal void temporal_scene_floats(VkrTemporalSceneSignature *signature,
+                                        float32_t a, float32_t b) {
   uint32_t a_bits, b_bits;
   MemCopy(&a_bits, &a, sizeof(a_bits));
   MemCopy(&b_bits, &b, sizeof(b_bits));
   temporal_scene_pair(signature, a_bits, b_bits);
 }
 
-static void temporal_scene_vec3(VkrTemporalSceneSignature *signature, Vec3 v) {
+vkr_internal void temporal_scene_vec3(VkrTemporalSceneSignature *signature,
+                                      Vec3 v) {
   temporal_scene_floats(signature, v.x, v.y);
   temporal_scene_floats(signature, v.z, 0.0f);
 }
 
-static void temporal_scene_vec4(VkrTemporalSceneSignature *signature, Vec4 v) {
+vkr_internal void temporal_scene_vec4(VkrTemporalSceneSignature *signature,
+                                      Vec4 v) {
   temporal_scene_floats(signature, v.x, v.y);
   temporal_scene_floats(signature, v.z, v.w);
 }
 
-static void temporal_scene_matrix(VkrTemporalSceneSignature *signature,
-                                  Mat4 matrix) {
+vkr_internal void temporal_scene_matrix(VkrTemporalSceneSignature *signature,
+                                        Mat4 matrix) {
   for (uint32_t i = 0u; i < 16u; i += 2u)
     temporal_scene_floats(signature, matrix.elements[i],
                           matrix.elements[i + 1u]);
 }
 
-static void temporal_scene_instance(VkrTemporalSceneSignature *signature,
-                                    const VkrInstanceDataGPU *instance) {
+vkr_internal void temporal_scene_instance(VkrTemporalSceneSignature *signature,
+                                          const VkrInstanceDataGPU *instance) {
   temporal_scene_matrix(signature, instance->model);
   temporal_scene_pair(signature, instance->object_id, instance->temporal_index);
   temporal_scene_pair(signature, instance->temporal_generation,
                       instance->temporal_flags);
 }
 
-static void temporal_scene_candidates(VkrTemporalSceneSignature *signature,
-                                      const VkrWorldDrawCandidate *rows,
-                                      uint32_t count) {
+vkr_internal void
+temporal_scene_candidates(VkrTemporalSceneSignature *signature,
+                          const VkrWorldDrawCandidate *rows, uint32_t count) {
   temporal_scene_lane(signature, count);
   for (uint32_t i = 0u; i < count; ++i) {
     const VkrWorldDrawCandidate *row = &rows[i];
@@ -246,7 +248,7 @@ Mat4 vkr_temporal_sky_reprojection(Mat4 current_view_projection,
   return reprojection;
 }
 
-static float32_t vkr_temporal_halton(uint32_t index, uint32_t base) {
+vkr_internal float32_t vkr_temporal_halton(uint32_t index, uint32_t base) {
   float32_t result = 0.0f;
   float32_t fraction = 1.0f;
   while (index > 0u) {
@@ -264,17 +266,17 @@ Vec2 vkr_temporal_jitter_for_frame(uint32_t frame_index) {
                 vkr_temporal_halton(sequence_index, 3u) - 0.5f};
 }
 
-static Vec3 vkr_temporal_view_forward(Mat4 view) {
+vkr_internal Vec3 vkr_temporal_view_forward(Mat4 view) {
   const Mat4 camera = mat4_inverse(view);
   return vec3_normalize((Vec3){-camera.m02, -camera.m12, -camera.m22});
 }
 
-static bool8_t vkr_temporal_matrix_equal(Mat4 a, Mat4 b) {
+vkr_internal bool8_t vkr_temporal_matrix_equal(Mat4 a, Mat4 b) {
   return MemCompare(&a, &b, sizeof(a)) == 0 ? true_v : false_v;
 }
 
-static bool8_t vkr_temporal_camera_cut(const VkrTemporalState *state,
-                                       const VkrTemporalFrameInput *input) {
+vkr_internal bool8_t vkr_temporal_camera_cut(
+    const VkrTemporalState *state, const VkrTemporalFrameInput *input) {
   const Vec3 delta = vec3_sub(input->view_position, state->view_position);
   if (vec3_length_squared(delta) >
       VKR_TEMPORAL_CAMERA_CUT_DISTANCE * VKR_TEMPORAL_CAMERA_CUT_DISTANCE)
@@ -286,8 +288,10 @@ static bool8_t vkr_temporal_camera_cut(const VkrTemporalState *state,
              : false_v;
 }
 
-static Mat4 vkr_temporal_jitter_projection(Mat4 projection, Vec2 jitter_pixels,
-                                           uint32_t width, uint32_t height) {
+vkr_internal Mat4 vkr_temporal_jitter_projection(Mat4 projection,
+                                                 Vec2 jitter_pixels,
+                                                 uint32_t width,
+                                                 uint32_t height) {
   // Translate clip xy by clip w so the raster shift is independent of depth,
   // including orthographic projections where clip w is constant.
   const float32_t x = 2.0f * jitter_pixels.x / (float32_t)width;

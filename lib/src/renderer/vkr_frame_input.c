@@ -2,10 +2,9 @@
 
 #include <math.h>
 
-static VkrRendererError
-vkr_renderer_validation_fail(VkrValidationError *out_error,
-                             VkrRendererError code, const char *field_path,
-                             const char *message) {
+vkr_internal VkrRendererError vkr_renderer_validation_fail(
+    VkrValidationError *out_error, VkrRendererError code,
+    const char *field_path, const char *message) {
   if (out_error) {
     out_error->code = code;
     out_error->field_path = field_path;
@@ -14,7 +13,7 @@ vkr_renderer_validation_fail(VkrValidationError *out_error,
   return code;
 }
 
-static VkrRendererError vkr_renderer_validate_packet_array(
+vkr_internal VkrRendererError vkr_renderer_validate_packet_array(
     const void *data, uint32_t count, uint32_t capacity, const char *data_field,
     const char *count_field, VkrValidationError *out_error) {
   if (count > capacity)
@@ -28,10 +27,9 @@ static VkrRendererError vkr_renderer_validate_packet_array(
   return VKR_RENDERER_ERROR_NONE;
 }
 
-static VkrRendererError
-vkr_renderer_validate_draw_ranges(const VkrDrawItem *draws, uint32_t draw_count,
-                                  uint32_t instance_count, const char *field,
-                                  VkrValidationError *out_error) {
+vkr_internal VkrRendererError vkr_renderer_validate_draw_ranges(
+    const VkrDrawItem *draws, uint32_t draw_count, uint32_t instance_count,
+    const char *field, VkrValidationError *out_error) {
   for (uint32_t i = 0u; i < draw_count; ++i) {
     const VkrDrawItem *draw = &draws[i];
     if (draw->first_instance > instance_count ||
@@ -43,7 +41,7 @@ vkr_renderer_validate_draw_ranges(const VkrDrawItem *draws, uint32_t draw_count,
   return VKR_RENDERER_ERROR_NONE;
 }
 
-static VkrRendererError vkr_renderer_validate_text_draws(
+vkr_internal VkrRendererError vkr_renderer_validate_text_draws(
     const VkrPreparedTextDraw *draws, uint32_t draw_count, const char *field,
     const char *count_field, VkrValidationError *out_error) {
   const VkrRendererError array_error = vkr_renderer_validate_packet_array(
@@ -63,12 +61,12 @@ static VkrRendererError vkr_renderer_validate_text_draws(
   return VKR_RENDERER_ERROR_NONE;
 }
 
-static bool8_t vkr_renderer_ui_vec4_finite(Vec4 value) {
+vkr_internal bool8_t vkr_renderer_ui_vec4_finite(Vec4 value) {
   return isfinite(value.x) && isfinite(value.y) && isfinite(value.z) &&
          isfinite(value.w);
 }
 
-static VkrRendererError vkr_renderer_validate_ui_draw_list(
+vkr_internal VkrRendererError vkr_renderer_validate_ui_draw_list(
     const VkrPreparedUiDrawList *list, uint32_t target_width,
     uint32_t target_height, VkrValidationError *out_error) {
   VkrRendererError error = vkr_renderer_validate_packet_array(

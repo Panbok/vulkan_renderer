@@ -15,9 +15,9 @@
    previous bound but may never retain a smaller one. Center retention relies
    on the stabilization fit's extra guard texel. */
 
-static const float32_t k_texel = 0.5f;
+vkr_global const float32_t k_texel = 0.5f;
 
-static VkrCamera test_camera(void) {
+vkr_internal VkrCamera test_camera(void) {
   VkrCamera camera = {0};
   camera.type = VKR_CAMERA_TYPE_PERSPECTIVE;
   camera.position = vec3_new(0.0f, 2.0f, 0.0f);
@@ -32,9 +32,9 @@ static VkrCamera test_camera(void) {
   return camera;
 }
 
-static VkrShadowFit make_fit(float32_t center_x, float32_t center_y,
-                             float32_t extent, float32_t min_z,
-                             float32_t max_z) {
+vkr_internal VkrShadowFit make_fit(float32_t center_x, float32_t center_y,
+                                   float32_t extent, float32_t min_z,
+                                   float32_t max_z) {
   return (VkrShadowFit){
       .center_x = center_x,
       .center_y = center_y,
@@ -45,7 +45,8 @@ static VkrShadowFit make_fit(float32_t center_x, float32_t center_y,
   };
 }
 
-static void assert_fit_equal(const VkrShadowFit *a, const VkrShadowFit *b) {
+vkr_internal void assert_fit_equal(const VkrShadowFit *a,
+                                   const VkrShadowFit *b) {
   assert(a->center_x == b->center_x);
   assert(a->center_y == b->center_y);
   assert(a->extent == b->extent);
@@ -54,7 +55,7 @@ static void assert_fit_equal(const VkrShadowFit *a, const VkrShadowFit *b) {
   assert(a->world_units_per_texel == b->world_units_per_texel);
 }
 
-static void
+vkr_internal void
 poison_history_inside_deadbands(VkrShadowFitHistory *history,
                                 const VkrShadowFitHistory *reference,
                                 uint32_t cascade_count) {
@@ -69,7 +70,7 @@ poison_history_inside_deadbands(VkrShadowFitHistory *history,
   }
 }
 
-static void test_growth_is_never_deadbanded(void) {
+vkr_internal void test_growth_is_never_deadbanded(void) {
   const VkrShadowFit previous = make_fit(0.0f, 0.0f, 100.0f, -10.0f, 10.0f);
   // Grown by a quarter texel: far inside the two-texel band, but growth is
   // taken regardless, or the volume would stop containing the raw fit.
@@ -86,7 +87,7 @@ static void test_growth_is_never_deadbanded(void) {
   assert(z_fit.max_z == grown_z.max_z);
 }
 
-static void test_extent_shrink_inside_deadband_is_held(void) {
+vkr_internal void test_extent_shrink_inside_deadband_is_held(void) {
   const VkrShadowFit previous = make_fit(0.0f, 0.0f, 100.0f, -10.0f, 10.0f);
   const VkrShadowFit raw =
       make_fit(0.0f, 0.0f, 100.0f - 1.5f * k_texel, -10.0f, 10.0f);
@@ -96,7 +97,7 @@ static void test_extent_shrink_inside_deadband_is_held(void) {
   assert(fit.extent > raw.extent); // Still contains the raw fit.
 }
 
-static void test_extent_shrink_beyond_deadband_is_taken(void) {
+vkr_internal void test_extent_shrink_beyond_deadband_is_taken(void) {
   const VkrShadowFit previous = make_fit(0.0f, 0.0f, 100.0f, -10.0f, 10.0f);
   const VkrShadowFit raw =
       make_fit(0.0f, 0.0f, 100.0f - 3.0f * k_texel, -10.0f, 10.0f);
@@ -104,7 +105,7 @@ static void test_extent_shrink_beyond_deadband_is_taken(void) {
   assert(fit.extent == raw.extent);
 }
 
-static void test_center_within_one_texel_keeps_previous(void) {
+vkr_internal void test_center_within_one_texel_keeps_previous(void) {
   const VkrShadowFit previous = make_fit(20.0f, -5.0f, 100.0f, -10.0f, 10.0f);
   const VkrShadowFit raw = make_fit(
       20.0f + 0.9f * k_texel, -5.0f - 0.9f * k_texel, 100.0f, -10.0f, 10.0f);
@@ -113,7 +114,7 @@ static void test_center_within_one_texel_keeps_previous(void) {
   assert(fit.center_y == previous.center_y);
 }
 
-static void test_center_beyond_one_texel_moves(void) {
+vkr_internal void test_center_beyond_one_texel_moves(void) {
   const VkrShadowFit previous = make_fit(20.0f, -5.0f, 100.0f, -10.0f, 10.0f);
   const VkrShadowFit raw =
       make_fit(20.0f + 4.0f * k_texel, -5.0f, 100.0f, -10.0f, 10.0f);
@@ -123,7 +124,7 @@ static void test_center_beyond_one_texel_moves(void) {
   assert(fit.center_y == previous.center_y);
 }
 
-static void test_depth_shrink_deadbands_each_bound_independently(void) {
+vkr_internal void test_depth_shrink_deadbands_each_bound_independently(void) {
   const VkrShadowFit previous = make_fit(0.0f, 0.0f, 100.0f, -10.0f, 10.0f);
   // min_z contracts slightly (held); max_z contracts a lot (taken).
   const VkrShadowFit raw = make_fit(0.0f, 0.0f, 100.0f, -10.0f + 1.0f * k_texel,
@@ -133,7 +134,7 @@ static void test_depth_shrink_deadbands_each_bound_independently(void) {
   assert(fit.max_z == raw.max_z);
 }
 
-static void test_quantize_extent_grows_and_is_bounded(void) {
+vkr_internal void test_quantize_extent_grows_and_is_bounded(void) {
   const uint32_t map_size = 2048u;
   const float32_t extent = 137.31f;
   const float32_t quantized = vkr_shadow_quantize_extent_up(extent, map_size);
@@ -149,7 +150,7 @@ static void test_quantize_extent_grows_and_is_bounded(void) {
   assert(vkr_shadow_quantize_extent_up(quantized, map_size) == quantized);
 }
 
-static void test_quantize_extent_is_stable_under_small_change(void) {
+vkr_internal void test_quantize_extent_is_stable_under_small_change(void) {
   const uint32_t map_size = 2048u;
   // Two extents a hair apart inside the same quantum must land on the same
   // value; that piecewise-constant behaviour is the whole point.
@@ -162,7 +163,7 @@ static void test_quantize_extent_is_stable_under_small_change(void) {
    These cases drive the system through the transitions the design names as
    invalidating. */
 
-static void test_history_invalid_before_first_update(void) {
+vkr_internal void test_history_invalid_before_first_update(void) {
   VkrShadowSystem system = {0};
   const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
   assert(vkr_shadow_system_init(&system, &config));
@@ -172,7 +173,7 @@ static void test_history_invalid_before_first_update(void) {
   vkr_shadow_system_shutdown(&system);
 }
 
-static void test_disable_reenable_bumps_generation(void) {
+vkr_internal void test_disable_reenable_bumps_generation(void) {
   VkrShadowSystem system = {0};
   VkrShadowSystem reference = {0};
   const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
@@ -216,7 +217,7 @@ static void test_disable_reenable_bumps_generation(void) {
   vkr_shadow_system_shutdown(&reference);
 }
 
-static void test_light_direction_change_invalidates_history(void) {
+vkr_internal void test_light_direction_change_invalidates_history(void) {
   VkrShadowSystem system = {0};
   VkrShadowSystem reference = {0};
   const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
@@ -251,7 +252,7 @@ static void test_light_direction_change_invalidates_history(void) {
   vkr_shadow_system_shutdown(&reference);
 }
 
-static void test_explicit_invalidation_clears_history(void) {
+vkr_internal void test_explicit_invalidation_clears_history(void) {
   VkrShadowSystem system = {0};
   const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
   assert(vkr_shadow_system_init(&system, &config));
@@ -270,7 +271,7 @@ static void test_explicit_invalidation_clears_history(void) {
   vkr_shadow_system_shutdown(&system);
 }
 
-static void test_disabled_stabilization_does_not_publish_history(void) {
+vkr_internal void test_disabled_stabilization_does_not_publish_history(void) {
   VkrShadowSystem system = {0};
   VkrShadowSystem reference = {0};
   VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
@@ -298,7 +299,7 @@ static void test_disabled_stabilization_does_not_publish_history(void) {
   vkr_shadow_system_shutdown(&reference);
 }
 
-static void test_frame_data_carries_only_consumed_fields(void) {
+vkr_internal void test_frame_data_carries_only_consumed_fields(void) {
   VkrShadowSystem system = {0};
   const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
   assert(vkr_shadow_system_init(&system, &config));
@@ -341,7 +342,7 @@ static void test_frame_data_carries_only_consumed_fields(void) {
 /* A payload the receiver can trust: one cascade with a real slice, texel size,
    and depth span, and a supported tap count. Tests mutate one field at a time
    from this baseline so a rejection names the field under test. */
-static VkrShadowPassPayload test_shadow_valid_payload(void) {
+vkr_internal VkrShadowPassPayload test_shadow_valid_payload(void) {
   VkrShadowPassPayload shadow = {
       .cascade_count = 1u,
       .receiver =
@@ -365,7 +366,7 @@ static VkrShadowPassPayload test_shadow_valid_payload(void) {
   return shadow;
 }
 
-static void test_shadow_raster_bias_packet_validation(void) {
+vkr_internal void test_shadow_raster_bias_packet_validation(void) {
   VkrShadowConfigOverride bias = {
       .depth_bias_constant = 1.25f,
       .depth_bias_slope = 1.75f,
@@ -407,7 +408,7 @@ static void test_shadow_raster_bias_packet_validation(void) {
    branch, so each of these is the only thing standing between a bad
    configuration and an out-of-range table index or a divide by zero. */
 
-static void test_shadow_receiver_packet_validation(void) {
+vkr_internal void test_shadow_receiver_packet_validation(void) {
   VkrShadowPassPayload shadow = test_shadow_valid_payload();
   const VkrFrameInput packet = {
       .version = VKR_FRAME_INPUT_VERSION,
@@ -508,7 +509,7 @@ static void test_shadow_receiver_packet_validation(void) {
                 "packet.shadow.cascades.split_near_far_texel_depth") == 0);
 }
 
-static void test_shadow_receiver_config_normalization(void) {
+vkr_internal void test_shadow_receiver_config_normalization(void) {
   /* Normalization happens once at init so nothing downstream needs a guard.
      A hostile configuration must come out of init already valid. */
   VkrShadowConfig config = VKR_SHADOW_CONFIG_HIGH;
@@ -557,7 +558,7 @@ static void test_shadow_receiver_config_normalization(void) {
   }
 }
 
-static VkrWorldPassPayload retained_static_payload(void) {
+vkr_internal VkrWorldPassPayload retained_static_payload(void) {
   return (VkrWorldPassPayload){
       .static_generation = 7u,
       .dynamic_generation = 11u,
@@ -566,18 +567,19 @@ static VkrWorldPassPayload retained_static_payload(void) {
   };
 }
 
-static uint32_t cascade_mask(const VkrShadowSystem *system) {
+vkr_internal uint32_t cascade_mask(const VkrShadowSystem *system) {
   return (UINT32_C(1) << system->config.cascade_count) - 1u;
 }
 
-static void update_for_reuse(VkrShadowSystem *system, VkrCamera *camera) {
+vkr_internal void update_for_reuse(VkrShadowSystem *system, VkrCamera *camera) {
   vkr_shadow_system_update(system, camera, true_v,
                            vec3_normalize(vec3_new(-0.4f, -1.0f, -0.3f)), NULL);
 }
 
-static void prime_retained_history(VkrShadowSystem *system, VkrCamera *camera,
-                                   uint32_t image_index,
-                                   VkrWorldPassPayload *payload) {
+vkr_internal void prime_retained_history(VkrShadowSystem *system,
+                                         VkrCamera *camera,
+                                         uint32_t image_index,
+                                         VkrWorldPassPayload *payload) {
   update_for_reuse(system, camera);
   VkrShadowFrameData frame = {0};
   vkr_shadow_system_resolve_frame(
@@ -587,7 +589,7 @@ static void prime_retained_history(VkrShadowSystem *system, VkrCamera *camera,
   vkr_shadow_system_commit_frame(system, 17u);
 }
 
-static void
+vkr_internal void
 test_retained_history_reuses_per_image_and_commits_only_on_submit(void) {
   VkrShadowSystem system = {0};
   const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
@@ -621,7 +623,8 @@ test_retained_history_reuses_per_image_and_commits_only_on_submit(void) {
   vkr_shadow_system_shutdown(&system);
 }
 
-static void test_reused_cascade_publishes_its_rendered_receiver_data(void) {
+vkr_internal void
+test_reused_cascade_publishes_its_rendered_receiver_data(void) {
   /* A reused layer publishes the matrix it was rendered with. Its texel size,
      origin, and depth span must come from that same committed fit: pairing the
      rendered matrix with the current raw fit's divisors would misconvert every
@@ -679,7 +682,7 @@ static void test_reused_cascade_publishes_its_rendered_receiver_data(void) {
   vkr_shadow_system_shutdown(&system);
 }
 
-static void
+vkr_internal void
 test_retained_history_guard_contains_small_motion_not_large_motion(void) {
   VkrShadowSystem system = {0};
   const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
@@ -708,9 +711,8 @@ test_retained_history_guard_contains_small_motion_not_large_motion(void) {
   vkr_shadow_system_shutdown(&system);
 }
 
-static VkrWorldDrawCandidate
-dynamic_candidate_at_history(const VkrShadowCascadeHistory *history,
-                             bool8_t bounds_valid) {
+vkr_internal VkrWorldDrawCandidate dynamic_candidate_at_history(
+    const VkrShadowCascadeHistory *history, bool8_t bounds_valid) {
   const Vec4 light_center = {
       history->rendered_fit.center_x, history->rendered_fit.center_y,
       (history->rendered_fit.min_z + history->rendered_fit.max_z) * 0.5f, 1.0f};
@@ -723,7 +725,7 @@ dynamic_candidate_at_history(const VkrShadowCascadeHistory *history,
   };
 }
 
-static void test_dynamic_overlap_and_publication_fail_closed(void) {
+vkr_internal void test_dynamic_overlap_and_publication_fail_closed(void) {
   VkrShadowSystem system = {0};
   const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
   assert(vkr_shadow_system_init(&system, &config));
@@ -785,7 +787,7 @@ static void test_dynamic_overlap_and_publication_fail_closed(void) {
   vkr_shadow_system_shutdown(&system);
 }
 
-static void
+vkr_internal void
 test_retained_history_signatures_and_invalidation_fail_closed(void) {
   VkrShadowSystem system = {0};
   VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
@@ -857,7 +859,8 @@ test_retained_history_signatures_and_invalidation_fail_closed(void) {
   vkr_shadow_system_shutdown(&system);
 }
 
-static void test_stale_dynamic_contents_render_once_after_caster_leaves(void) {
+vkr_internal void
+test_stale_dynamic_contents_render_once_after_caster_leaves(void) {
   VkrShadowSystem system = {0};
   const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
   assert(vkr_shadow_system_init(&system, &config));
@@ -897,7 +900,7 @@ static void test_stale_dynamic_contents_render_once_after_caster_leaves(void) {
   vkr_shadow_system_shutdown(&system);
 }
 
-static void test_proactive_refresh_is_bounded_to_reusable_cascades(void) {
+vkr_internal void test_proactive_refresh_is_bounded_to_reusable_cascades(void) {
   VkrShadowSystem system = {0};
   VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
   config.reuse_proactive_refresh_budget = 1u;
@@ -931,7 +934,7 @@ static void test_proactive_refresh_is_bounded_to_reusable_cascades(void) {
   vkr_shadow_system_shutdown(&system);
 }
 
-static void
+vkr_internal void
 test_retained_images_converge_without_publishing_cancelled_fit(void) {
   VkrShadowSystem system = {0};
   VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
@@ -1039,7 +1042,8 @@ test_retained_images_converge_without_publishing_cancelled_fit(void) {
   vkr_shadow_system_shutdown(&system);
 }
 
-static void test_sdsm_uses_completed_occupied_depth_and_keeps_fixed_tail(void) {
+vkr_internal void
+test_sdsm_uses_completed_occupied_depth_and_keeps_fixed_tail(void) {
   VkrShadowSystem system = {0};
   VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
   config.sdsm_enabled = true_v;
@@ -1152,7 +1156,8 @@ static void test_sdsm_uses_completed_occupied_depth_and_keeps_fixed_tail(void) {
   vkr_shadow_system_shutdown(&system);
 }
 
-static void test_sdsm_cached_range_rejects_scene_and_projection_changes(void) {
+vkr_internal void
+test_sdsm_cached_range_rejects_scene_and_projection_changes(void) {
   for (uint32_t change = 0u; change < 2u; ++change) {
     VkrShadowSystem system = {0};
     VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;

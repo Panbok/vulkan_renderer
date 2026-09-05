@@ -26,22 +26,24 @@ _Static_assert(VKR_GTAO_NOISE_SEQUENCE_LENGTH % VKR_TEMPORAL_SEQUENCE_LENGTH ==
                    0u,
                "Replay phase alignment must cover both temporal sequences");
 
-static bool8_t vkr_harness_u64_add(uint64_t a, uint64_t b, uint64_t *out) {
+vkr_internal bool8_t vkr_harness_u64_add(uint64_t a, uint64_t b,
+                                         uint64_t *out) {
   if (!out || a > UINT64_MAX - b)
     return false_v;
   *out = a + b;
   return true_v;
 }
 
-static bool8_t vkr_harness_u64_mul(uint64_t a, uint64_t b, uint64_t *out) {
+vkr_internal bool8_t vkr_harness_u64_mul(uint64_t a, uint64_t b,
+                                         uint64_t *out) {
   if (!out || (a != 0u && b > UINT64_MAX / a))
     return false_v;
   *out = a * b;
   return true_v;
 }
 
-static bool8_t vkr_harness_u64_align(uint64_t value, uint64_t alignment,
-                                     uint64_t *out) {
+vkr_internal bool8_t vkr_harness_u64_align(uint64_t value, uint64_t alignment,
+                                           uint64_t *out) {
   if (!out || alignment == 0u || (alignment & (alignment - 1u)) != 0u)
     return false_v;
   const uint64_t mask = alignment - 1u;
@@ -56,8 +58,9 @@ static bool8_t vkr_harness_u64_align(uint64_t value, uint64_t alignment,
  * requires a 256-byte readback row pitch; Vulkan is tightly packed, so this is
  * conservative there. Batch items retain the frontend's published alignment.
  */
-static bool8_t vkr_harness_capture_budget_item(uint64_t width, uint64_t height,
-                                               uint64_t *batch_bytes) {
+vkr_internal bool8_t vkr_harness_capture_budget_item(uint64_t width,
+                                                     uint64_t height,
+                                                     uint64_t *batch_bytes) {
   uint64_t row_bytes = 0u;
   uint64_t row_pitch = 0u;
   uint64_t image_bytes = 0u;
@@ -148,11 +151,11 @@ typedef struct VkrHarnessChildContext {
  * the in-flight repetition is reached through file scope. Exactly one exists
  * per process.
  */
-static VkrHarnessChildContext *g_harness_child;
-static void vkr_harness_child_fail(Application *application,
-                                   const char *reason);
+vkr_global VkrHarnessChildContext *g_harness_child;
+vkr_internal void vkr_harness_child_fail(Application *application,
+                                         const char *reason);
 
-static void
+vkr_internal void
 vkr_harness_child_collect_submission_timings(Application *application) {
   VkrHarnessChildContext *child = g_harness_child;
   if (!child->submission_gpu_timing || !child->phase_started)
@@ -226,13 +229,13 @@ bool8_t application_on_mouse_event(Event *event, UserData user_data) {
   return true_v;
 }
 
-static const char *vkr_harness_metric_unit_name(VkrMetricUnit unit) {
-  static const char *const names[] = {"count", "bytes",   "ns",
-                                      "ratio", "percent", "count_per_second"};
+vkr_internal const char *vkr_harness_metric_unit_name(VkrMetricUnit unit) {
+  vkr_local_persist const char *const names[] = {
+      "count", "bytes", "ns", "ratio", "percent", "count_per_second"};
   return unit < ArrayCount(names) ? names[unit] : "unknown";
 }
 
-static VkrHarnessPresentMode
+vkr_internal VkrHarnessPresentMode
 vkr_harness_present_from_renderer(VkrPresentMode mode) {
   switch (mode) {
   case VKR_PRESENT_MODE_IMMEDIATE:
@@ -246,25 +249,26 @@ vkr_harness_present_from_renderer(VkrPresentMode mode) {
   }
 }
 
-static VkrPresentMode
+vkr_internal VkrPresentMode
 vkr_harness_present_to_renderer(VkrHarnessPresentMode mode) {
   return mode == VKR_HARNESS_PRESENT_IMMEDIATE ? VKR_PRESENT_MODE_IMMEDIATE
                                                : VKR_PRESENT_MODE_FIFO;
 }
 
-static const char *
+vkr_internal const char *
 vkr_harness_surface_format_name(VkrSurfaceColorFormat format) {
-  static const char *const names[] = {"unknown", "bgra8_srgb", "rgba8_srgb",
-                                      "bgra8_unorm", "rgba8_unorm"};
+  vkr_local_persist const char *const names[] = {
+      "unknown", "bgra8_srgb", "rgba8_srgb", "bgra8_unorm", "rgba8_unorm"};
   return format < ArrayCount(names) ? names[format] : "unknown";
 }
 
-static const char *vkr_harness_color_space_name(VkrSurfaceColorSpace space) {
+vkr_internal const char *
+vkr_harness_color_space_name(VkrSurfaceColorSpace space) {
   return space == VKR_SURFACE_COLOR_SPACE_SRGB_NONLINEAR ? "srgb_nonlinear"
                                                          : "unknown";
 }
 
-static const char *
+vkr_internal const char *
 vkr_harness_world_renderer_name(VkrWorldRendererTopology topology) {
   switch (topology) {
   case VKR_WORLD_RENDERER_TOPOLOGY_DEFERRED:
@@ -274,7 +278,8 @@ vkr_harness_world_renderer_name(VkrWorldRendererTopology topology) {
   }
 }
 
-static const char *vkr_harness_depth_format_name(VkrSurfaceDepthFormat format) {
+vkr_internal const char *
+vkr_harness_depth_format_name(VkrSurfaceDepthFormat format) {
   switch (format) {
   case VKR_SURFACE_DEPTH_FORMAT_D16_UNORM:
     return "d16_unorm";
@@ -287,8 +292,8 @@ static const char *vkr_harness_depth_format_name(VkrSurfaceDepthFormat format) {
   }
 }
 
-static void vkr_harness_child_fail(Application *application,
-                                   const char *reason) {
+vkr_internal void vkr_harness_child_fail(Application *application,
+                                         const char *reason) {
   VkrHarnessChildContext *child = g_harness_child;
   if (!child->failed) {
     child->failed = true_v;
@@ -297,7 +302,8 @@ static void vkr_harness_child_fail(Application *application,
   application_close(application);
 }
 
-static bool8_t vkr_harness_child_resize_round_trip(Application *application) {
+vkr_internal bool8_t
+vkr_harness_child_resize_round_trip(Application *application) {
   VkrHarnessChildContext *child = g_harness_child;
   const VkrHarnessCase *case_manifest = child->case_manifest;
   if (!case_manifest->resize_round_trip || child->resize_round_trip_complete) {
@@ -378,7 +384,7 @@ static bool8_t vkr_harness_child_resize_round_trip(Application *application) {
  * since the last update, so no sample is recorded and the case-frame index
  * does not advance.
  */
-static void vkr_harness_child_sample(Application *application) {
+vkr_internal void vkr_harness_child_sample(Application *application) {
   VkrHarnessChildContext *child = g_harness_child;
   VkrMetricsSnapshotView view = {0};
   if (!vkr_metrics_snapshot_acquire(application->metrics, &view)) {
@@ -480,7 +486,7 @@ static void vkr_harness_child_sample(Application *application) {
   vkr_harness_child_collect_submission_timings(application);
 }
 
-static void vkr_harness_child_drain_events(Application *application) {
+vkr_internal void vkr_harness_child_drain_events(Application *application) {
   VkrHarnessChildContext *child = g_harness_child;
   uint32_t catalog_count = 0;
   const VkrMetricCatalogEntry *catalog =
@@ -513,7 +519,8 @@ static void vkr_harness_child_drain_events(Application *application) {
  * reaches a successful terminal state, its material texture streams settle,
  * and the selected backend has ordered every accepted publication.
  */
-static bool8_t vkr_harness_child_activate_scene(Application *application) {
+vkr_internal bool8_t
+vkr_harness_child_activate_scene(Application *application) {
   VkrHarnessChildContext *child = g_harness_child;
   VkrRendererError resource_error = VKR_RENDERER_ERROR_NONE;
   const VkrResourceLoadState load_state =
@@ -562,7 +569,7 @@ static bool8_t vkr_harness_child_activate_scene(Application *application) {
   return true_v;
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_harness_child_texture_streams_ready(Application *application) {
   VkrHarnessChildContext *child = g_harness_child;
   const VkrMaterialTextureStreamStats stats =
@@ -580,7 +587,7 @@ vkr_harness_child_texture_streams_ready(Application *application) {
   return false_v;
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_harness_child_renderer_publications_ready(Application *application) {
   VkrHarnessChildContext *child = g_harness_child;
   const VkrAssetPublisher *publisher = &application->renderer.asset_publisher;
@@ -603,7 +610,7 @@ vkr_harness_child_renderer_publications_ready(Application *application) {
  * one CPU frame can still expose the preceding boot graph and permanently
  * invalidate a different steady-state pass table.
  */
-static bool8_t
+vkr_internal bool8_t
 vkr_harness_child_prepare_pass_catalog(Application *application) {
   VkrHarnessChildContext *child = g_harness_child;
   const VkrRendererMetricsPassTable *passes =
@@ -692,7 +699,7 @@ vkr_harness_child_prepare_pass_catalog(Application *application) {
   return true_v;
 }
 
-static bool8_t
+vkr_internal bool8_t
 vkr_harness_child_compact_pass_samples(VkrHarnessChildContext *child) {
   if (!child || child->pass_count == 0u ||
       child->pass_capacity == child->pass_count)
@@ -723,9 +730,9 @@ vkr_harness_child_compact_pass_samples(VkrHarnessChildContext *child) {
   return true_v;
 }
 
-static void vkr_harness_child_build_ui(Application *application,
-                                       VkrHarnessChildContext *child,
-                                       float64_t delta) {
+vkr_internal void vkr_harness_child_build_ui(Application *application,
+                                             VkrHarnessChildContext *child,
+                                             float64_t delta) {
   if (!child->text_fixture)
     return;
   const VkrUiTrack columns[] = {
@@ -950,8 +957,8 @@ void application_update(Application *application, float64_t delta) {
 
 #if VKR_METRICS_ENABLED
 
-static bool8_t vkr_harness_catalog_has(const VkrMetrics *metrics,
-                                       const char *name) {
+vkr_internal bool8_t vkr_harness_catalog_has(const VkrMetrics *metrics,
+                                             const char *name) {
   uint32_t count = 0;
   const VkrMetricCatalogEntry *catalog =
       vkr_metrics_get_catalog(metrics, &count);
@@ -970,12 +977,10 @@ static bool8_t vkr_harness_catalog_has(const VkrMetrics *metrics,
  * window is never extended because that would shift every later simulation
  * pose.
  */
-static bool8_t vkr_harness_warmup_stable(const VkrHarnessCase *case_manifest,
-                                         const VkrHarnessProfile *profile,
-                                         uint32_t metric_count,
-                                         const VkrHarnessSampleMetric *catalog,
-                                         const float64_t *samples,
-                                         const uint8_t *availability) {
+vkr_internal bool8_t vkr_harness_warmup_stable(
+    const VkrHarnessCase *case_manifest, const VkrHarnessProfile *profile,
+    uint32_t metric_count, const VkrHarnessSampleMetric *catalog,
+    const float64_t *samples, const uint8_t *availability) {
   int32_t stability_metric = -1;
   int32_t pipeline_metric = -1;
   for (uint32_t i = 0; i < metric_count; ++i) {
@@ -1032,7 +1037,7 @@ static bool8_t vkr_harness_warmup_stable(const VkrHarnessCase *case_manifest,
   return drift <= profile->warmup_max_drift_ratio;
 }
 
-static ApplicationConfig vkr_harness_child_application_config(
+vkr_internal ApplicationConfig vkr_harness_child_application_config(
     const VkrHarnessCase *case_manifest, const VkrHarnessProfile *profile,
     const VkrSubsystemPlan *subsystem_plan, uint64_t capture_max_batch_bytes,
     VkrRendererBackendType renderer_backend) {
@@ -1095,7 +1100,7 @@ static ApplicationConfig vkr_harness_child_application_config(
   };
 }
 
-static VkrShadowConfig
+vkr_internal VkrShadowConfig
 vkr_harness_child_shadow_config(const VkrHarnessCase *case_manifest) {
   VkrShadowConfig config =
       string_equals(case_manifest->renderer.shadow_preset, "balanced")
@@ -1111,9 +1116,8 @@ vkr_harness_child_shadow_config(const VkrHarnessCase *case_manifest) {
 }
 
 /** Applies the case's renderer configuration to an already-created boot. */
-static bool8_t
-vkr_harness_child_apply_renderer(Application *application,
-                                 const VkrHarnessCase *case_manifest) {
+vkr_internal bool8_t vkr_harness_child_apply_renderer(
+    Application *application, const VkrHarnessCase *case_manifest) {
   application->editor_viewport.enabled = case_manifest->renderer.editor;
   /* Renderer creation can submit initialization work. Shadow reconfiguration
      destroys resources whose graph replacements must not race that work. */
@@ -1184,7 +1188,7 @@ vkr_harness_child_apply_renderer(Application *application,
       case_manifest->width, case_manifest->height);
 }
 
-static void
+vkr_internal void
 vkr_harness_child_device_provenance(Application *application,
                                     VkrHarnessCase *case_manifest,
                                     VkrHarnessProvenance *provenance) {
@@ -1232,7 +1236,7 @@ vkr_harness_child_device_provenance(Application *application,
 }
 
 /** Publishes this repetition's report; the samples file is already durable. */
-static bool8_t vkr_harness_child_write_report(
+vkr_internal bool8_t vkr_harness_child_write_report(
     const VkrHarnessArenas *arenas, const char *repo_root,
     const char *report_path, const VkrHarnessCase *case_manifest,
     const VkrHarnessProfile *profile, const VkrHarnessProvenance *provenance,
@@ -1378,7 +1382,7 @@ static bool8_t vkr_harness_child_write_report(
  * Fills the header describing this repetition's raw evidence. Kept beside the
  * sample arrays it labels so the two cannot drift apart.
  */
-static VkrHarnessSampleFileHeader vkr_harness_child_sample_header(
+vkr_internal VkrHarnessSampleFileHeader vkr_harness_child_sample_header(
     const VkrHarnessChildContext *child, const VkrHarnessCase *case_manifest,
     const VkrHarnessProvenance *provenance, VkrSubsystemMask subsystem_mask,
     bool8_t warmup_stable) {

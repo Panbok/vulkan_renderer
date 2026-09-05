@@ -62,8 +62,8 @@ enum {
  * prove that each callback returned before its commit options are reused.
  */
 vkr_internal dispatch_queue_t vkr_metal_packet_feedback_queue(void) {
-  static dispatch_once_t once;
-  static dispatch_queue_t queue;
+  vkr_local_persist dispatch_once_t once;
+  vkr_local_persist dispatch_queue_t queue;
   dispatch_once(&once, ^{
     queue = dispatch_queue_create("com.vkr.metal.commit-feedback",
                                   DISPATCH_QUEUE_SERIAL);

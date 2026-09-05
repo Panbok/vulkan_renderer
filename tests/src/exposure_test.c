@@ -10,7 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 
-static VkrExposureFrameInput exposure_input(uint32_t mode) {
+vkr_internal VkrExposureFrameInput exposure_input(uint32_t mode) {
   return (VkrExposureFrameInput){
       .mode = mode,
       .manual_exposure = VKR_DEFAULT_EXPOSURE,
@@ -19,7 +19,7 @@ static VkrExposureFrameInput exposure_input(uint32_t mode) {
   };
 }
 
-static void test_exposure_manual_is_passthrough(void) {
+vkr_internal void test_exposure_manual_is_passthrough(void) {
   printf("  Running test_exposure_manual_is_passthrough...\n");
   VkrExposureState state = {0};
   VkrExposureFrameInput input = exposure_input(VKR_EXPOSURE_MODE_MANUAL);
@@ -41,7 +41,7 @@ static void test_exposure_manual_is_passthrough(void) {
   printf("  test_exposure_manual_is_passthrough PASSED\n");
 }
 
-static void test_exposure_automatic_history(void) {
+vkr_internal void test_exposure_automatic_history(void) {
   printf("  Running test_exposure_automatic_history...\n");
   VkrExposureState state = {0};
   VkrExposureFrameInput input = exposure_input(VKR_EXPOSURE_MODE_AUTOMATIC);
@@ -59,11 +59,11 @@ static void test_exposure_automatic_history(void) {
      that drifts between two identical calls cannot be deterministic evidence.
    */
   const VkrExposureFrame repeated = vkr_exposure_prepare(&state, &input);
-  assert(memcmp(&second, &repeated, sizeof(second)) == 0);
+  assert(MemCompare(&second, &repeated, sizeof(second)) == 0);
   printf("  test_exposure_automatic_history PASSED\n");
 }
 
-static void test_exposure_reset_reasons(void) {
+vkr_internal void test_exposure_reset_reasons(void) {
   printf("  Running test_exposure_reset_reasons...\n");
   VkrExposureState state = {0};
   VkrExposureFrameInput input = exposure_input(VKR_EXPOSURE_MODE_AUTOMATIC);
@@ -101,7 +101,7 @@ static void test_exposure_reset_reasons(void) {
   printf("  test_exposure_reset_reasons PASSED\n");
 }
 
-static void test_exposure_bounded_delta(void) {
+vkr_internal void test_exposure_bounded_delta(void) {
   printf("  Running test_exposure_bounded_delta...\n");
   VkrExposureState state = {0};
   VkrExposureFrameInput input = exposure_input(VKR_EXPOSURE_MODE_AUTOMATIC);
@@ -125,7 +125,7 @@ static void test_exposure_bounded_delta(void) {
   printf("  test_exposure_bounded_delta PASSED\n");
 }
 
-static void test_exposure_completed_history_elapsed_time(void) {
+vkr_internal void test_exposure_completed_history_elapsed_time(void) {
   printf("  Running test_exposure_completed_history_elapsed_time...\n");
   /* Three submitted frames lasting 10, 20, and 30 ms end at 10.06 s.
      Their prior exposure records require 30, 50, and 60 ms respectively,
@@ -140,7 +140,7 @@ static void test_exposure_completed_history_elapsed_time(void) {
   printf("  test_exposure_completed_history_elapsed_time PASSED\n");
 }
 
-static void test_exposure_metering_config_normalize(void) {
+vkr_internal void test_exposure_metering_config_normalize(void) {
   printf("  Running test_exposure_metering_config_normalize...\n");
   const VkrExposureMeteringConfig defaults =
       vkr_exposure_metering_config_default();
@@ -149,8 +149,8 @@ static void test_exposure_metering_config_normalize(void) {
       vkr_exposure_metering_config_normalize(&zeroed);
   const VkrExposureMeteringConfig from_null =
       vkr_exposure_metering_config_normalize(NULL);
-  assert(memcmp(&from_zeroed, &defaults, sizeof(defaults)) == 0);
-  assert(memcmp(&from_null, &defaults, sizeof(defaults)) == 0);
+  assert(MemCompare(&from_zeroed, &defaults, sizeof(defaults)) == 0);
+  assert(MemCompare(&from_null, &defaults, sizeof(defaults)) == 0);
 
   const VkrExposureMeteringConfig hostile = {
       .histogram_bin_count = 100000u,
@@ -219,7 +219,7 @@ static void test_exposure_metering_config_normalize(void) {
   printf("  test_exposure_metering_config_normalize PASSED\n");
 }
 
-static void test_exposure_packet_validation(void) {
+vkr_internal void test_exposure_packet_validation(void) {
   printf("  Running test_exposure_packet_validation...\n");
   VkrFrameInput packet = {
       .version = VKR_FRAME_INPUT_VERSION,

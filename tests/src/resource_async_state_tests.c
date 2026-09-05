@@ -76,7 +76,7 @@ typedef struct ResourceAsyncScenePayload {
   uint32_t token;
 } ResourceAsyncScenePayload;
 
-static VkrJobSystemConfig resource_async_make_job_config(void) {
+vkr_internal VkrJobSystemConfig resource_async_make_job_config(void) {
   VkrJobSystemConfig cfg = vkr_job_system_config_default();
   cfg.worker_count = 1;
   cfg.max_jobs = 64;
@@ -84,16 +84,17 @@ static VkrJobSystemConfig resource_async_make_job_config(void) {
   return cfg;
 }
 
-static bool8_t resource_async_mock_can_load(VkrResourceLoader *self,
-                                            String8 name) {
+vkr_internal bool8_t resource_async_mock_can_load(VkrResourceLoader *self,
+                                                  String8 name) {
   (void)self;
   return name.str != NULL && name.length > 0;
 }
 
-static bool8_t resource_async_mock_load(VkrResourceLoader *self, String8 name,
-                                        VkrAllocator *temp_alloc,
-                                        VkrResourceHandleInfo *out_handle,
-                                        VkrRendererError *out_error) {
+vkr_internal bool8_t resource_async_mock_load(VkrResourceLoader *self,
+                                              String8 name,
+                                              VkrAllocator *temp_alloc,
+                                              VkrResourceHandleInfo *out_handle,
+                                              VkrRendererError *out_error) {
   (void)temp_alloc;
   assert(self != NULL);
   assert(out_handle != NULL);
@@ -127,9 +128,9 @@ static bool8_t resource_async_mock_load(VkrResourceLoader *self, String8 name,
   return true_v;
 }
 
-static void resource_async_mock_unload(VkrResourceLoader *self,
-                                       const VkrResourceHandleInfo *handle,
-                                       String8 name) {
+vkr_internal void
+resource_async_mock_unload(VkrResourceLoader *self,
+                           const VkrResourceHandleInfo *handle, String8 name) {
   (void)handle;
   (void)name;
   assert(self != NULL);
@@ -139,22 +140,24 @@ static void resource_async_mock_unload(VkrResourceLoader *self,
   atomic_fetch_add_explicit(&ctx->unload_calls, 1u, memory_order_relaxed);
 }
 
-static bool8_t resource_async_noop_job_run(VkrJobContext *ctx, void *payload) {
+vkr_internal bool8_t resource_async_noop_job_run(VkrJobContext *ctx,
+                                                 void *payload) {
   (void)ctx;
   (void)payload;
   return true_v;
 }
 
-static bool8_t resource_async_dep_can_load(VkrResourceLoader *self,
-                                           String8 name) {
+vkr_internal bool8_t resource_async_dep_can_load(VkrResourceLoader *self,
+                                                 String8 name) {
   (void)self;
   return name.str != NULL && name.length > 0;
 }
 
-static bool8_t resource_async_dep_prepare(VkrResourceLoader *self, String8 name,
-                                          VkrAllocator *temp_alloc,
-                                          void **out_payload,
-                                          VkrRendererError *out_error) {
+vkr_internal bool8_t resource_async_dep_prepare(VkrResourceLoader *self,
+                                                String8 name,
+                                                VkrAllocator *temp_alloc,
+                                                void **out_payload,
+                                                VkrRendererError *out_error) {
   (void)temp_alloc;
   assert(self != NULL);
   assert(out_payload != NULL);
@@ -181,10 +184,9 @@ static bool8_t resource_async_dep_prepare(VkrResourceLoader *self, String8 name,
   return true_v;
 }
 
-static bool8_t resource_async_dep_finalize(VkrResourceLoader *self,
-                                           String8 name, void *payload,
-                                           VkrResourceHandleInfo *out_handle,
-                                           VkrRendererError *out_error) {
+vkr_internal bool8_t resource_async_dep_finalize(
+    VkrResourceLoader *self, String8 name, void *payload,
+    VkrResourceHandleInfo *out_handle, VkrRendererError *out_error) {
   (void)name;
   assert(self != NULL);
   assert(payload != NULL);
@@ -211,8 +213,8 @@ static bool8_t resource_async_dep_finalize(VkrResourceLoader *self,
   return true_v;
 }
 
-static void resource_async_dep_release_payload(VkrResourceLoader *self,
-                                               void *payload) {
+vkr_internal void resource_async_dep_release_payload(VkrResourceLoader *self,
+                                                     void *payload) {
   assert(self != NULL);
   if (!payload) {
     return;
@@ -223,9 +225,9 @@ static void resource_async_dep_release_payload(VkrResourceLoader *self,
   free(payload);
 }
 
-static void resource_async_dep_unload(VkrResourceLoader *self,
-                                      const VkrResourceHandleInfo *handle,
-                                      String8 name) {
+vkr_internal void resource_async_dep_unload(VkrResourceLoader *self,
+                                            const VkrResourceHandleInfo *handle,
+                                            String8 name) {
   (void)handle;
   (void)name;
   assert(self != NULL);
@@ -234,17 +236,17 @@ static void resource_async_dep_unload(VkrResourceLoader *self,
   atomic_fetch_add_explicit(&ctx->dep_unload_calls, 1u, memory_order_relaxed);
 }
 
-static bool8_t resource_async_root_can_load(VkrResourceLoader *self,
-                                            String8 name) {
+vkr_internal bool8_t resource_async_root_can_load(VkrResourceLoader *self,
+                                                  String8 name) {
   (void)self;
   return name.str != NULL && name.length > 0;
 }
 
-static bool8_t resource_async_root_prepare(VkrResourceLoader *self,
-                                           String8 name,
-                                           VkrAllocator *temp_alloc,
-                                           void **out_payload,
-                                           VkrRendererError *out_error) {
+vkr_internal bool8_t resource_async_root_prepare(VkrResourceLoader *self,
+                                                 String8 name,
+                                                 VkrAllocator *temp_alloc,
+                                                 void **out_payload,
+                                                 VkrRendererError *out_error) {
   assert(self != NULL);
   assert(temp_alloc != NULL);
   assert(out_payload != NULL);
@@ -285,10 +287,9 @@ static bool8_t resource_async_root_prepare(VkrResourceLoader *self,
   return true_v;
 }
 
-static bool8_t resource_async_root_finalize(VkrResourceLoader *self,
-                                            String8 name, void *payload,
-                                            VkrResourceHandleInfo *out_handle,
-                                            VkrRendererError *out_error) {
+vkr_internal bool8_t resource_async_root_finalize(
+    VkrResourceLoader *self, String8 name, void *payload,
+    VkrResourceHandleInfo *out_handle, VkrRendererError *out_error) {
   (void)name;
   assert(self != NULL);
   assert(payload != NULL);
@@ -335,8 +336,8 @@ static bool8_t resource_async_root_finalize(VkrResourceLoader *self,
   return true_v;
 }
 
-static void resource_async_root_release_payload(VkrResourceLoader *self,
-                                                void *payload) {
+vkr_internal void resource_async_root_release_payload(VkrResourceLoader *self,
+                                                      void *payload) {
   assert(self != NULL);
   if (!payload) {
     return;
@@ -353,9 +354,9 @@ static void resource_async_root_release_payload(VkrResourceLoader *self,
   free(payload);
 }
 
-static void resource_async_root_unload(VkrResourceLoader *self,
-                                       const VkrResourceHandleInfo *handle,
-                                       String8 name) {
+vkr_internal void
+resource_async_root_unload(VkrResourceLoader *self,
+                           const VkrResourceHandleInfo *handle, String8 name) {
   (void)handle;
   (void)name;
   assert(self != NULL);
@@ -364,8 +365,8 @@ static void resource_async_root_unload(VkrResourceLoader *self,
   atomic_fetch_add_explicit(&ctx->root_unload_calls, 1u, memory_order_relaxed);
 }
 
-static bool8_t resource_async_budget_can_load(VkrResourceLoader *self,
-                                              String8 name) {
+vkr_internal bool8_t resource_async_budget_can_load(VkrResourceLoader *self,
+                                                    String8 name) {
   (void)self;
   if (!name.str || name.length == 0) {
     return false_v;
@@ -373,11 +374,9 @@ static bool8_t resource_async_budget_can_load(VkrResourceLoader *self,
   return string8_contains_cstr(&name, ".budget.mock");
 }
 
-static bool8_t resource_async_budget_prepare(VkrResourceLoader *self,
-                                             String8 name,
-                                             VkrAllocator *temp_alloc,
-                                             void **out_payload,
-                                             VkrRendererError *out_error) {
+vkr_internal bool8_t resource_async_budget_prepare(
+    VkrResourceLoader *self, String8 name, VkrAllocator *temp_alloc,
+    void **out_payload, VkrRendererError *out_error) {
   (void)name;
   (void)temp_alloc;
   assert(self != NULL);
@@ -401,10 +400,9 @@ static bool8_t resource_async_budget_prepare(VkrResourceLoader *self,
   return true_v;
 }
 
-static bool8_t resource_async_budget_finalize(VkrResourceLoader *self,
-                                              String8 name, void *payload,
-                                              VkrResourceHandleInfo *out_handle,
-                                              VkrRendererError *out_error) {
+vkr_internal bool8_t resource_async_budget_finalize(
+    VkrResourceLoader *self, String8 name, void *payload,
+    VkrResourceHandleInfo *out_handle, VkrRendererError *out_error) {
   (void)name;
   assert(self != NULL);
   assert(payload != NULL);
@@ -429,10 +427,9 @@ static bool8_t resource_async_budget_finalize(VkrResourceLoader *self,
   return true_v;
 }
 
-static bool8_t
-resource_async_budget_estimate_cost(VkrResourceLoader *self, String8 name,
-                                    void *payload,
-                                    VkrResourceAsyncFinalizeCost *out_cost) {
+vkr_internal bool8_t resource_async_budget_estimate_cost(
+    VkrResourceLoader *self, String8 name, void *payload,
+    VkrResourceAsyncFinalizeCost *out_cost) {
   (void)name;
   (void)payload;
   assert(self != NULL);
@@ -445,8 +442,8 @@ resource_async_budget_estimate_cost(VkrResourceLoader *self, String8 name,
   return true_v;
 }
 
-static void resource_async_budget_release_payload(VkrResourceLoader *self,
-                                                  void *payload) {
+vkr_internal void resource_async_budget_release_payload(VkrResourceLoader *self,
+                                                        void *payload) {
   assert(self != NULL);
   if (!payload) {
     return;
@@ -475,17 +472,18 @@ static void resource_async_budget_release_payload(VkrResourceLoader *self,
   free(payload);
 }
 
-static void resource_async_budget_unload(VkrResourceLoader *self,
-                                         const VkrResourceHandleInfo *handle,
-                                         String8 name) {
+vkr_internal void
+resource_async_budget_unload(VkrResourceLoader *self,
+                             const VkrResourceHandleInfo *handle,
+                             String8 name) {
   ResourceAsyncBudgetContext *ctx = self->resource_system;
   atomic_fetch_add_explicit(&ctx->unload_calls, 1u, memory_order_relaxed);
   (void)handle;
   (void)name;
 }
 
-static bool8_t resource_async_scene_can_load(VkrResourceLoader *self,
-                                             String8 name) {
+vkr_internal bool8_t resource_async_scene_can_load(VkrResourceLoader *self,
+                                                   String8 name) {
   (void)self;
   if (!name.str || name.length == 0) {
     return false_v;
@@ -493,11 +491,11 @@ static bool8_t resource_async_scene_can_load(VkrResourceLoader *self,
   return string8_contains_cstr(&name, ".scene.mock");
 }
 
-static bool8_t resource_async_scene_prepare(VkrResourceLoader *self,
-                                            String8 name,
-                                            VkrAllocator *temp_alloc,
-                                            void **out_payload,
-                                            VkrRendererError *out_error) {
+vkr_internal bool8_t resource_async_scene_prepare(VkrResourceLoader *self,
+                                                  String8 name,
+                                                  VkrAllocator *temp_alloc,
+                                                  void **out_payload,
+                                                  VkrRendererError *out_error) {
   (void)name;
   (void)temp_alloc;
   assert(self != NULL);
@@ -525,10 +523,9 @@ static bool8_t resource_async_scene_prepare(VkrResourceLoader *self,
   return true_v;
 }
 
-static bool8_t resource_async_scene_finalize(VkrResourceLoader *self,
-                                             String8 name, void *payload,
-                                             VkrResourceHandleInfo *out_handle,
-                                             VkrRendererError *out_error) {
+vkr_internal bool8_t resource_async_scene_finalize(
+    VkrResourceLoader *self, String8 name, void *payload,
+    VkrResourceHandleInfo *out_handle, VkrRendererError *out_error) {
   assert(self != NULL);
   assert(name.str != NULL);
   assert(payload != NULL);
@@ -552,10 +549,9 @@ static bool8_t resource_async_scene_finalize(VkrResourceLoader *self,
   return true_v;
 }
 
-static bool8_t
-resource_async_scene_estimate_cost(VkrResourceLoader *self, String8 name,
-                                   void *payload,
-                                   VkrResourceAsyncFinalizeCost *out_cost) {
+vkr_internal bool8_t resource_async_scene_estimate_cost(
+    VkrResourceLoader *self, String8 name, void *payload,
+    VkrResourceAsyncFinalizeCost *out_cost) {
   (void)self;
   (void)name;
   (void)payload;
@@ -565,8 +561,8 @@ resource_async_scene_estimate_cost(VkrResourceLoader *self, String8 name,
   return true_v;
 }
 
-static void resource_async_scene_release_payload(VkrResourceLoader *self,
-                                                 void *payload) {
+vkr_internal void resource_async_scene_release_payload(VkrResourceLoader *self,
+                                                       void *payload) {
   assert(self != NULL);
   if (!payload) {
     return;
@@ -577,9 +573,9 @@ static void resource_async_scene_release_payload(VkrResourceLoader *self,
   free(payload);
 }
 
-static void resource_async_scene_unload(VkrResourceLoader *self,
-                                        const VkrResourceHandleInfo *handle,
-                                        String8 name) {
+vkr_internal void
+resource_async_scene_unload(VkrResourceLoader *self,
+                            const VkrResourceHandleInfo *handle, String8 name) {
   (void)handle;
   (void)name;
   assert(self != NULL);
@@ -588,7 +584,7 @@ static void resource_async_scene_unload(VkrResourceLoader *self,
   atomic_fetch_add_explicit(&ctx->unload_calls, 1u, memory_order_relaxed);
 }
 
-static bool8_t resource_async_wait_for_state(
+vkr_internal bool8_t resource_async_wait_for_state(
     VkrResourceSubmissionState *submission, const VkrResourceHandleInfo *handle,
     VkrResourceLoadState expected, VkrRendererError *out_error) {
   for (uint32_t i = 0; i < 300; ++i) {
@@ -610,7 +606,7 @@ static bool8_t resource_async_wait_for_state(
   return false_v;
 }
 
-static void
+vkr_internal void
 test_resource_async_dedupe_and_ready(VkrResourceSubmissionState *submission,
                                      VkrAllocator *allocator,
                                      ResourceAsyncMockLoaderContext *ctx) {
@@ -649,7 +645,7 @@ test_resource_async_dedupe_and_ready(VkrResourceSubmissionState *submission,
   printf("  test_resource_async_dedupe_and_ready PASSED\n");
 }
 
-static void test_resource_async_release_callback_growth(
+vkr_internal void test_resource_async_release_callback_growth(
     VkrResourceSubmissionState *submission, VkrAllocator *allocator,
     ResourceAsyncBudgetContext *ctx) {
   ResourceAsyncReleaseGrowth growth = {.allocator = allocator};
@@ -688,7 +684,7 @@ static void test_resource_async_release_callback_growth(
   submission->frame_active = false_v;
 }
 
-static void test_resource_async_release_callback_cancellation(
+vkr_internal void test_resource_async_release_callback_cancellation(
     VkrResourceSubmissionState *submission, VkrAllocator *allocator,
     ResourceAsyncBudgetContext *ctx) {
   submission->frame_active = true_v;
@@ -714,7 +710,7 @@ static void test_resource_async_release_callback_cancellation(
   submission->frame_active = false_v;
 }
 
-static void test_resource_async_submit_saturation_recovers(
+vkr_internal void test_resource_async_submit_saturation_recovers(
     VkrResourceSubmissionState *submission, VkrAllocator *allocator,
     VkrJobSystem *job_system, ResourceAsyncMockLoaderContext *ctx) {
   printf("  Running test_resource_async_submit_saturation_recovers...\n");
@@ -789,7 +785,7 @@ static void test_resource_async_submit_saturation_recovers(
   printf("  test_resource_async_submit_saturation_recovers PASSED\n");
 }
 
-static void
+vkr_internal void
 test_resource_async_failure_state(VkrResourceSubmissionState *submission,
                                   VkrAllocator *allocator) {
   printf("  Running test_resource_async_failure_state...\n");
@@ -814,7 +810,7 @@ test_resource_async_failure_state(VkrResourceSubmissionState *submission,
   printf("  test_resource_async_failure_state PASSED\n");
 }
 
-static void
+vkr_internal void
 test_resource_async_batch_accept_count(VkrResourceSubmissionState *submission,
                                        VkrAllocator *allocator,
                                        ResourceAsyncMockLoaderContext *ctx) {
@@ -870,7 +866,7 @@ test_resource_async_batch_accept_count(VkrResourceSubmissionState *submission,
   printf("  test_resource_async_batch_accept_count PASSED\n");
 }
 
-static void test_resource_async_cancel_cleans_loaded_result(
+vkr_internal void test_resource_async_cancel_cleans_loaded_result(
     VkrResourceSubmissionState *submission, VkrAllocator *allocator,
     ResourceAsyncMockLoaderContext *ctx) {
   printf("  Running test_resource_async_cancel_cleans_loaded_result...\n");
@@ -912,7 +908,7 @@ static void test_resource_async_cancel_cleans_loaded_result(
   printf("  test_resource_async_cancel_cleans_loaded_result PASSED\n");
 }
 
-static void test_resource_async_cancel_then_reload_same_path(
+vkr_internal void test_resource_async_cancel_then_reload_same_path(
     VkrResourceSubmissionState *submission, VkrAllocator *allocator,
     ResourceAsyncMockLoaderContext *ctx) {
   printf("  Running test_resource_async_cancel_then_reload_same_path...\n");
@@ -990,7 +986,7 @@ static void test_resource_async_cancel_then_reload_same_path(
   printf("  test_resource_async_cancel_then_reload_same_path PASSED\n");
 }
 
-static void test_resource_async_dependency_waits_then_ready(
+vkr_internal void test_resource_async_dependency_waits_then_ready(
     VkrResourceSubmissionState *submission, VkrAllocator *allocator,
     ResourceAsyncDependencyContext *ctx) {
   printf("  Running test_resource_async_dependency_waits_then_ready...\n");
@@ -1043,7 +1039,7 @@ static void test_resource_async_dependency_waits_then_ready(
   printf("  test_resource_async_dependency_waits_then_ready PASSED\n");
 }
 
-static void test_resource_async_dependency_failure_propagates(
+vkr_internal void test_resource_async_dependency_failure_propagates(
     VkrResourceSubmissionState *submission, VkrAllocator *allocator,
     ResourceAsyncDependencyContext *ctx) {
   printf("  Running test_resource_async_dependency_failure_propagates...\n");
@@ -1088,7 +1084,7 @@ static void test_resource_async_dependency_failure_propagates(
   printf("  test_resource_async_dependency_failure_propagates PASSED\n");
 }
 
-static void test_resource_async_pending_gpu_waits_for_submit_completion(
+vkr_internal void test_resource_async_pending_gpu_waits_for_submit_completion(
     VkrResourceSubmissionState *submission, VkrAllocator *allocator) {
   printf("  Running "
          "test_resource_async_pending_gpu_waits_for_submit_completion...\n");
@@ -1137,7 +1133,7 @@ static void test_resource_async_pending_gpu_waits_for_submit_completion(
       "  test_resource_async_pending_gpu_waits_for_submit_completion PASSED\n");
 }
 
-static void test_resource_async_finalize_requires_active_frame(
+vkr_internal void test_resource_async_finalize_requires_active_frame(
     VkrResourceSubmissionState *submission, VkrAllocator *allocator,
     ResourceAsyncDependencyContext *ctx) {
   printf("  Running test_resource_async_finalize_requires_active_frame...\n");
@@ -1185,7 +1181,7 @@ static void test_resource_async_finalize_requires_active_frame(
   printf("  test_resource_async_finalize_requires_active_frame PASSED\n");
 }
 
-static void test_resource_async_gpu_budget_throttles_finalize(
+vkr_internal void test_resource_async_gpu_budget_throttles_finalize(
     VkrResourceSubmissionState *submission, VkrAllocator *allocator,
     ResourceAsyncBudgetContext *ctx) {
   printf("  Running test_resource_async_gpu_budget_throttles_finalize...\n");
@@ -1277,7 +1273,7 @@ static void test_resource_async_gpu_budget_throttles_finalize(
   printf("  test_resource_async_gpu_budget_throttles_finalize PASSED\n");
 }
 
-static void test_resource_async_busy_finalize_retries(
+vkr_internal void test_resource_async_busy_finalize_retries(
     VkrResourceSubmissionState *submission, VkrAllocator *allocator,
     ResourceAsyncBudgetContext *ctx) {
   printf("  Running test_resource_async_busy_finalize_retries...\n");
@@ -1342,9 +1338,10 @@ static void test_resource_async_busy_finalize_retries(
   printf("  test_resource_async_busy_finalize_retries PASSED\n");
 }
 
-static void test_scene_async_load_smoke(VkrResourceSubmissionState *submission,
-                                        VkrAllocator *allocator,
-                                        ResourceAsyncSceneContext *ctx) {
+vkr_internal void
+test_scene_async_load_smoke(VkrResourceSubmissionState *submission,
+                            VkrAllocator *allocator,
+                            ResourceAsyncSceneContext *ctx) {
   printf("  Running test_scene_async_load_smoke...\n");
 
   String8 path = string8_lit("tests/assets/smoke.scene.mock");
@@ -1402,7 +1399,7 @@ static void test_scene_async_load_smoke(VkrResourceSubmissionState *submission,
   printf("  test_scene_async_load_smoke PASSED\n");
 }
 
-static void
+vkr_internal void
 test_scene_reload_async_cancel(VkrResourceSubmissionState *submission,
                                VkrAllocator *allocator,
                                ResourceAsyncSceneContext *ctx) {

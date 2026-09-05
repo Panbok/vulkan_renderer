@@ -28,7 +28,8 @@ struct VkrCamera;
  * fallback branch. One tap is retained deliberately: it is the low-granularity
  * comparand for the receiver-quality sweep, not a legacy path.
  */
-static INLINE bool8_t vkr_shadow_pcf_sample_count_supported(uint32_t count) {
+vkr_internal INLINE bool8_t
+vkr_shadow_pcf_sample_count_supported(uint32_t count) {
   switch (count) {
   case 1u:
   case 4u:
@@ -367,7 +368,7 @@ typedef struct VkrShadowConfig {
  */
 #define VKR_SHADOW_CONFIG_DEFAULT VKR_SHADOW_CONFIG_HIGH
 
-static INLINE uint32_t
+vkr_internal INLINE uint32_t
 vkr_shadow_config_get_max_map_size(const VkrShadowConfig *config) {
   if (!config) {
     return VKR_SHADOW_MAP_SIZE_DEFAULT;

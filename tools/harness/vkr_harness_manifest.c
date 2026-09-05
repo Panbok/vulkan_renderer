@@ -10,10 +10,9 @@
 
 #define VKR_HARNESS_MANIFEST_MAX_BYTES MB(1)
 
-static bool8_t vkr_harness_manifest_field(const VkrHarnessJsonDocument *doc,
-                                          int32_t object, const char *name,
-                                          bool8_t required, int32_t *out,
-                                          VkrHarnessError *error) {
+vkr_internal bool8_t vkr_harness_manifest_field(
+    const VkrHarnessJsonDocument *doc, int32_t object, const char *name,
+    bool8_t required, int32_t *out, VkrHarnessError *error) {
   bool8_t duplicate = false_v;
   const int32_t token =
       vkr_harness_json_object_get(doc, object, name, &duplicate);
@@ -31,11 +30,9 @@ static bool8_t vkr_harness_manifest_field(const VkrHarnessJsonDocument *doc,
   return true_v;
 }
 
-static bool8_t vkr_harness_manifest_string(const VkrHarnessJsonDocument *doc,
-                                           int32_t object, const char *name,
-                                           bool8_t required, char *out,
-                                           uint32_t capacity,
-                                           VkrHarnessError *error) {
+vkr_internal bool8_t vkr_harness_manifest_string(
+    const VkrHarnessJsonDocument *doc, int32_t object, const char *name,
+    bool8_t required, char *out, uint32_t capacity, VkrHarnessError *error) {
   int32_t token = -1;
   if (!vkr_harness_manifest_field(doc, object, name, required, &token, error)) {
     return false_v;
@@ -44,10 +41,10 @@ static bool8_t vkr_harness_manifest_string(const VkrHarnessJsonDocument *doc,
          vkr_harness_json_string(doc, token, out, capacity, name, error);
 }
 
-static bool8_t vkr_harness_manifest_u64(const VkrHarnessJsonDocument *doc,
-                                        int32_t object, const char *name,
-                                        bool8_t required, uint64_t *out,
-                                        VkrHarnessError *error) {
+vkr_internal bool8_t vkr_harness_manifest_u64(const VkrHarnessJsonDocument *doc,
+                                              int32_t object, const char *name,
+                                              bool8_t required, uint64_t *out,
+                                              VkrHarnessError *error) {
   int32_t token = -1;
   if (!vkr_harness_manifest_field(doc, object, name, required, &token, error)) {
     return false_v;
@@ -55,10 +52,10 @@ static bool8_t vkr_harness_manifest_u64(const VkrHarnessJsonDocument *doc,
   return token < 0 || vkr_harness_json_u64(doc, token, out, name, error);
 }
 
-static bool8_t vkr_harness_manifest_f64(const VkrHarnessJsonDocument *doc,
-                                        int32_t object, const char *name,
-                                        bool8_t required, float64_t *out,
-                                        VkrHarnessError *error) {
+vkr_internal bool8_t vkr_harness_manifest_f64(const VkrHarnessJsonDocument *doc,
+                                              int32_t object, const char *name,
+                                              bool8_t required, float64_t *out,
+                                              VkrHarnessError *error) {
   int32_t token = -1;
   if (!vkr_harness_manifest_field(doc, object, name, required, &token, error)) {
     return false_v;
@@ -66,10 +63,10 @@ static bool8_t vkr_harness_manifest_f64(const VkrHarnessJsonDocument *doc,
   return token < 0 || vkr_harness_json_f64(doc, token, out, name, error);
 }
 
-static bool8_t vkr_harness_manifest_f32(const VkrHarnessJsonDocument *doc,
-                                        int32_t object, const char *name,
-                                        bool8_t required, float32_t *out,
-                                        VkrHarnessError *error) {
+vkr_internal bool8_t vkr_harness_manifest_f32(const VkrHarnessJsonDocument *doc,
+                                              int32_t object, const char *name,
+                                              bool8_t required, float32_t *out,
+                                              VkrHarnessError *error) {
   float64_t value = *out;
   if (!vkr_harness_manifest_f64(doc, object, name, required, &value, error)) {
     return false_v;
@@ -83,10 +80,9 @@ static bool8_t vkr_harness_manifest_f32(const VkrHarnessJsonDocument *doc,
   return true_v;
 }
 
-static bool8_t vkr_harness_manifest_bool(const VkrHarnessJsonDocument *doc,
-                                         int32_t object, const char *name,
-                                         bool8_t required, bool8_t *out,
-                                         VkrHarnessError *error) {
+vkr_internal bool8_t vkr_harness_manifest_bool(
+    const VkrHarnessJsonDocument *doc, int32_t object, const char *name,
+    bool8_t required, bool8_t *out, VkrHarnessError *error) {
   int32_t token = -1;
   if (!vkr_harness_manifest_field(doc, object, name, required, &token, error)) {
     return false_v;
@@ -94,10 +90,9 @@ static bool8_t vkr_harness_manifest_bool(const VkrHarnessJsonDocument *doc,
   return token < 0 || vkr_harness_json_bool(doc, token, out, name, error);
 }
 
-static bool8_t vkr_harness_manifest_vec3(const VkrHarnessJsonDocument *doc,
-                                         int32_t token, Vec3 *out,
-                                         const char *field,
-                                         VkrHarnessError *error) {
+vkr_internal bool8_t vkr_harness_manifest_vec3(
+    const VkrHarnessJsonDocument *doc, int32_t token, Vec3 *out,
+    const char *field, VkrHarnessError *error) {
   if (token < 0 || doc->tokens[token].type != VKR_HARNESS_JSON_ARRAY ||
       doc->tokens[token].child_count != 3u) {
     vkr_harness_error_set(error, "manifest.vec3", field,
@@ -122,7 +117,7 @@ static bool8_t vkr_harness_manifest_vec3(const VkrHarnessJsonDocument *doc,
   return true_v;
 }
 
-static bool8_t vkr_harness_manifest_id_valid(const char *id) {
+vkr_internal bool8_t vkr_harness_manifest_id_valid(const char *id) {
   if (!id || id[0] < 'a' || id[0] > 'z') {
     return false_v;
   }
@@ -141,7 +136,7 @@ static bool8_t vkr_harness_manifest_id_valid(const char *id) {
   return saw_dot;
 }
 
-static bool8_t vkr_harness_manifest_component_valid(const char *value) {
+vkr_internal bool8_t vkr_harness_manifest_component_valid(const char *value) {
   if (!value || value[0] == '\0') {
     return false_v;
   }
@@ -153,12 +148,12 @@ static bool8_t vkr_harness_manifest_component_valid(const char *value) {
   return true_v;
 }
 
-static bool8_t vkr_harness_metric_name_valid(const char *name) {
+vkr_internal bool8_t vkr_harness_metric_name_valid(const char *name) {
   return vkr_harness_manifest_id_valid(name);
 }
 
-static bool8_t vkr_harness_parse_speed(const char *value,
-                                       VkrHarnessSpeed *out) {
+vkr_internal bool8_t vkr_harness_parse_speed(const char *value,
+                                             VkrHarnessSpeed *out) {
   if (string_equals(value, "slow")) {
     *out = VKR_HARNESS_SPEED_SLOW;
   } else if (string_equals(value, "medium")) {
@@ -171,8 +166,8 @@ static bool8_t vkr_harness_parse_speed(const char *value,
   return true_v;
 }
 
-static bool8_t vkr_harness_parse_target(const char *value,
-                                        VkrHarnessTarget *out) {
+vkr_internal bool8_t vkr_harness_parse_target(const char *value,
+                                              VkrHarnessTarget *out) {
   if (string_equals(value, "windowed_visible")) {
     *out = VKR_HARNESS_TARGET_WINDOWED_VISIBLE;
   } else if (string_equals(value, "windowed_hidden")) {
@@ -185,8 +180,8 @@ static bool8_t vkr_harness_parse_target(const char *value,
   return true_v;
 }
 
-static bool8_t vkr_harness_parse_present(const char *value,
-                                         VkrHarnessPresentMode *out) {
+vkr_internal bool8_t vkr_harness_parse_present(const char *value,
+                                               VkrHarnessPresentMode *out) {
   if (string_equals(value, "immediate")) {
     *out = VKR_HARNESS_PRESENT_IMMEDIATE;
   } else if (string_equals(value, "fifo")) {
@@ -199,10 +194,9 @@ static bool8_t vkr_harness_parse_present(const char *value,
   return true_v;
 }
 
-static bool8_t vkr_harness_parse_camera_keys(const VkrHarnessJsonDocument *doc,
-                                             int32_t token,
-                                             VkrHarnessCamera *camera,
-                                             VkrHarnessError *error) {
+vkr_internal bool8_t vkr_harness_parse_camera_keys(
+    const VkrHarnessJsonDocument *doc, int32_t token, VkrHarnessCamera *camera,
+    VkrHarnessError *error) {
   if (token < 0 || doc->tokens[token].type != VKR_HARNESS_JSON_ARRAY ||
       doc->tokens[token].child_count < 2u ||
       doc->tokens[token].child_count > VKR_HARNESS_MAX_CAMERA_KEYS) {
@@ -211,7 +205,8 @@ static bool8_t vkr_harness_parse_camera_keys(const VkrHarnessJsonDocument *doc,
                           VKR_HARNESS_MAX_CAMERA_KEYS);
     return false_v;
   }
-  static const char *const allowed[] = {"t", "position", "yaw", "pitch"};
+  vkr_local_persist const char *const allowed[] = {"t", "position", "yaw",
+                                                   "pitch"};
   int32_t item = token + 1;
   while (item >= 0 && camera->key_count < doc->tokens[token].child_count) {
     if (!vkr_harness_json_object_validate(doc, item, allowed, 4u, allowed, 4u,
@@ -237,26 +232,27 @@ static bool8_t vkr_harness_parse_camera_keys(const VkrHarnessJsonDocument *doc,
   return true_v;
 }
 
-static bool8_t vkr_harness_parse_camera(const VkrHarnessJsonDocument *doc,
-                                        int32_t token, VkrHarnessCamera *camera,
-                                        VkrHarnessError *error) {
-  static const char *const allowed[] = {"mode",
-                                        "speed",
-                                        "position",
-                                        "yaw",
-                                        "pitch",
-                                        "vertical_fov_degrees",
-                                        "near_plane",
-                                        "far_plane",
-                                        "keys",
-                                        "interpolation",
-                                        "center",
-                                        "radius",
-                                        "height",
-                                        "revolutions",
-                                        "duration_seconds",
-                                        "start_angle_degrees"};
-  static const char *const required[] = {"mode"};
+vkr_internal bool8_t vkr_harness_parse_camera(const VkrHarnessJsonDocument *doc,
+                                              int32_t token,
+                                              VkrHarnessCamera *camera,
+                                              VkrHarnessError *error) {
+  vkr_local_persist const char *const allowed[] = {"mode",
+                                                   "speed",
+                                                   "position",
+                                                   "yaw",
+                                                   "pitch",
+                                                   "vertical_fov_degrees",
+                                                   "near_plane",
+                                                   "far_plane",
+                                                   "keys",
+                                                   "interpolation",
+                                                   "center",
+                                                   "radius",
+                                                   "height",
+                                                   "revolutions",
+                                                   "duration_seconds",
+                                                   "start_angle_degrees"};
+  vkr_local_persist const char *const required[] = {"mode"};
   if (!vkr_harness_json_object_validate(
           doc, token, allowed, ArrayCount(allowed), required,
           ArrayCount(required), "$.camera", error)) {
@@ -393,7 +389,7 @@ static bool8_t vkr_harness_parse_camera(const VkrHarnessJsonDocument *doc,
   return true_v;
 }
 
-static VkrHarnessCompareConfig vkr_harness_compare_defaults(void) {
+vkr_internal VkrHarnessCompareConfig vkr_harness_compare_defaults(void) {
   return (VkrHarnessCompareConfig){
       .max_pixel_delta = 2.0 / 255.0,
       .max_mean_absolute_error = 0.1 / 255.0,
@@ -402,18 +398,17 @@ static VkrHarnessCompareConfig vkr_harness_compare_defaults(void) {
   };
 }
 
-static bool8_t
-vkr_harness_parse_compare(const VkrHarnessJsonDocument *doc, int32_t token,
-                          const VkrHarnessCompareConfig *fallback,
-                          VkrHarnessCompareConfig *compare, const char *field,
-                          VkrHarnessError *error) {
+vkr_internal bool8_t vkr_harness_parse_compare(
+    const VkrHarnessJsonDocument *doc, int32_t token,
+    const VkrHarnessCompareConfig *fallback, VkrHarnessCompareConfig *compare,
+    const char *field, VkrHarnessError *error) {
   *compare = fallback ? *fallback : vkr_harness_compare_defaults();
   if (token < 0) {
     return true_v;
   }
-  static const char *const allowed[] = {"max_pixel_delta",
-                                        "max_mean_absolute_error",
-                                        "max_failed_pixel_ratio", "emit_diff"};
+  vkr_local_persist const char *const allowed[] = {
+      "max_pixel_delta", "max_mean_absolute_error", "max_failed_pixel_ratio",
+      "emit_diff"};
   if (!vkr_harness_json_object_validate(
           doc, token, allowed, ArrayCount(allowed), NULL, 0u, field, error) ||
       !vkr_harness_manifest_f64(doc, token, "max_pixel_delta", false_v,
@@ -436,46 +431,46 @@ vkr_harness_parse_compare(const VkrHarnessJsonDocument *doc, int32_t token,
   return true_v;
 }
 
-static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
-                                          int32_t token,
-                                          VkrHarnessRendererConfig *renderer,
-                                          VkrHarnessError *error) {
-  static const char *const allowed[] = {"editor",
-                                        "skybox",
-                                        "text_fixture",
-                                        "taa_enabled",
-                                        "tonemap_enabled",
-                                        "fxaa_enabled",
-                                        "transmission_depth_diagnostic_enabled",
-                                        "render_scale",
-                                        "upscaler",
-                                        "dynamic_resolution",
-                                        "dynamic_resolution_min_scale",
-                                        "dynamic_resolution_max_scale",
-                                        "dynamic_resolution_target_frame_ms",
-                                        "backend",
-                                        "shadow_preset",
-                                        "shadow_cascades",
-                                        "shadow_pcf_samples",
-                                        "shadow_split_lambda",
-                                        "shadow_map_size",
-                                        "shadow_pcf_early_out",
-                                        "shadow_sdsm",
-                                        "render_mode",
-                                        "exposure_mode",
-                                        "manual_exposure",
-                                        "exposure_compensation_ev",
-                                        "exposure_reset_frame",
-                                        "bloom_enabled",
-                                        "bloom_threshold",
-                                        "bloom_knee",
-                                        "bloom_intensity",
-                                        "gtao_enabled",
-                                        "gtao_radius",
-                                        "gtao_power",
-                                        "ibl_probe_limit"};
-  static const char *const required[] = {"editor", "skybox", "shadow_preset",
-                                         "shadow_cascades"};
+vkr_internal bool8_t vkr_harness_parse_renderer(
+    const VkrHarnessJsonDocument *doc, int32_t token,
+    VkrHarnessRendererConfig *renderer, VkrHarnessError *error) {
+  vkr_local_persist const char *const allowed[] = {
+      "editor",
+      "skybox",
+      "text_fixture",
+      "taa_enabled",
+      "tonemap_enabled",
+      "fxaa_enabled",
+      "transmission_depth_diagnostic_enabled",
+      "render_scale",
+      "upscaler",
+      "dynamic_resolution",
+      "dynamic_resolution_min_scale",
+      "dynamic_resolution_max_scale",
+      "dynamic_resolution_target_frame_ms",
+      "backend",
+      "shadow_preset",
+      "shadow_cascades",
+      "shadow_pcf_samples",
+      "shadow_split_lambda",
+      "shadow_map_size",
+      "shadow_pcf_early_out",
+      "shadow_sdsm",
+      "render_mode",
+      "exposure_mode",
+      "manual_exposure",
+      "exposure_compensation_ev",
+      "exposure_reset_frame",
+      "bloom_enabled",
+      "bloom_threshold",
+      "bloom_knee",
+      "bloom_intensity",
+      "gtao_enabled",
+      "gtao_radius",
+      "gtao_power",
+      "ibl_probe_limit"};
+  vkr_local_persist const char *const required[] = {
+      "editor", "skybox", "shadow_preset", "shadow_cascades"};
   if (!vkr_harness_json_object_validate(
           doc, token, allowed, ArrayCount(allowed), required,
           ArrayCount(required), "$.renderer", error)) {
@@ -776,14 +771,13 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
   return true_v;
 }
 
-static bool8_t vkr_harness_capture_channel_known(const char *channel) {
+vkr_internal bool8_t vkr_harness_capture_channel_known(const char *channel) {
   return vkr_harness_capture_channel_description(channel) != NULL;
 }
 
-static bool8_t vkr_harness_parse_captures(const VkrHarnessJsonDocument *doc,
-                                          int32_t token,
-                                          VkrHarnessCase *case_manifest,
-                                          VkrHarnessError *error) {
+vkr_internal bool8_t vkr_harness_parse_captures(
+    const VkrHarnessJsonDocument *doc, int32_t token,
+    VkrHarnessCase *case_manifest, VkrHarnessError *error) {
   if (token < 0) {
     return true_v;
   }
@@ -793,8 +787,9 @@ static bool8_t vkr_harness_parse_captures(const VkrHarnessJsonDocument *doc,
                           "Capture list exceeds its fixed capacity");
     return false_v;
   }
-  static const char *const allowed[] = {"at_frame", "channels", "compare"};
-  static const char *const required[] = {"at_frame", "channels"};
+  vkr_local_persist const char *const allowed[] = {"at_frame", "channels",
+                                                   "compare"};
+  vkr_local_persist const char *const required[] = {"at_frame", "channels"};
   int32_t item = token + 1;
   while (item >= 0 &&
          case_manifest->capture_count < doc->tokens[token].child_count) {
@@ -856,10 +851,9 @@ static bool8_t vkr_harness_parse_captures(const VkrHarnessJsonDocument *doc,
   return true_v;
 }
 
-static bool8_t vkr_harness_parse_assertions(const VkrHarnessJsonDocument *doc,
-                                            int32_t token,
-                                            VkrHarnessCase *case_manifest,
-                                            VkrHarnessError *error) {
+vkr_internal bool8_t vkr_harness_parse_assertions(
+    const VkrHarnessJsonDocument *doc, int32_t token,
+    VkrHarnessCase *case_manifest, VkrHarnessError *error) {
   if (token < 0) {
     return true_v;
   }
@@ -869,9 +863,9 @@ static bool8_t vkr_harness_parse_assertions(const VkrHarnessJsonDocument *doc,
                           "Assertion list exceeds its fixed capacity");
     return false_v;
   }
-  static const char *const allowed[] = {"metric", "stat",   "max",
-                                        "min",    "equals", "tolerance"};
-  static const char *const required[] = {"metric"};
+  vkr_local_persist const char *const allowed[] = {
+      "metric", "stat", "max", "min", "equals", "tolerance"};
+  vkr_local_persist const char *const required[] = {"metric"};
   int32_t item = token + 1;
   while (item >= 0 &&
          case_manifest->assertion_count < doc->tokens[token].child_count) {
@@ -942,31 +936,31 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
       doc.tokens[0].type != VKR_HARNESS_JSON_OBJECT) {
     return false_v;
   }
-  static const char *const allowed[] = {"schema_version",
-                                        "id",
-                                        "suite",
-                                        "description",
-                                        "scene",
-                                        "seed",
-                                        "resolution",
-                                        "content_scale",
-                                        "resize_round_trip",
-                                        "boot",
-                                        "target",
-                                        "present",
-                                        "target_image_count",
-                                        "cache",
-                                        "fixed_delta",
-                                        "frames",
-                                        "repetitions",
-                                        "repetition_timeout_ms",
-                                        "asset_ready_timeout_ms",
-                                        "camera",
-                                        "renderer",
-                                        "captures",
-                                        "assertions",
-                                        "compare"};
-  static const char *const required[] = {
+  vkr_local_persist const char *const allowed[] = {"schema_version",
+                                                   "id",
+                                                   "suite",
+                                                   "description",
+                                                   "scene",
+                                                   "seed",
+                                                   "resolution",
+                                                   "content_scale",
+                                                   "resize_round_trip",
+                                                   "boot",
+                                                   "target",
+                                                   "present",
+                                                   "target_image_count",
+                                                   "cache",
+                                                   "fixed_delta",
+                                                   "frames",
+                                                   "repetitions",
+                                                   "repetition_timeout_ms",
+                                                   "asset_ready_timeout_ms",
+                                                   "camera",
+                                                   "renderer",
+                                                   "captures",
+                                                   "assertions",
+                                                   "compare"};
+  vkr_local_persist const char *const required[] = {
       "schema_version", "id",     "suite",    "scene",   "seed",
       "resolution",     "boot",   "target",   "present", "cache",
       "fixed_delta",    "frames", "renderer", "camera"};
@@ -1131,8 +1125,8 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
   }
   out_case->width = (uint32_t)width;
   out_case->height = (uint32_t)height;
-  static const char *const frame_allowed[] = {"warmup", "measure"};
-  static const char *const frame_required[] = {"measure"};
+  vkr_local_persist const char *const frame_allowed[] = {"warmup", "measure"};
+  vkr_local_persist const char *const frame_required[] = {"measure"};
   if (!vkr_harness_manifest_field(&doc, 0, "frames", true_v, &frames,
                                   out_error) ||
       !vkr_harness_json_object_validate(
@@ -1234,14 +1228,15 @@ bool8_t vkr_harness_profile_parse(const char *json, uint64_t json_length,
       doc.tokens[0].type != VKR_HARNESS_JSON_OBJECT) {
     return false_v;
   }
-  static const char *const allowed[] = {
+  vkr_local_persist const char *const allowed[] = {
       "schema_version",  "id",           "description",
       "authoritative",   "dirty_policy", "environment",
       "instrumentation", "execution",    "required_metrics"};
-  static const char *const required[] = {"schema_version", "id",
-                                         "authoritative",  "dirty_policy",
-                                         "environment",    "instrumentation",
-                                         "execution",      "required_metrics"};
+  vkr_local_persist const char *const required[] = {
+      "schema_version", "id",
+      "authoritative",  "dirty_policy",
+      "environment",    "instrumentation",
+      "execution",      "required_metrics"};
   if (!vkr_harness_json_object_validate(&doc, 0, allowed, ArrayCount(allowed),
                                         required, ArrayCount(required), "$",
                                         out_error)) {
@@ -1289,19 +1284,20 @@ bool8_t vkr_harness_profile_parse(const char *json, uint64_t json_length,
   int32_t instrumentation = -1;
   int32_t execution = -1;
   int32_t required_metrics = -1;
-  static const char *const environment_fields[] = {"target",
-                                                   "required_present",
-                                                   "require_actual_present",
-                                                   "os",
-                                                   "cpu",
-                                                   "gpu",
-                                                   "driver",
-                                                   "gpu_vendor_id",
-                                                   "gpu_device_id",
-                                                   "power_mode",
-                                                   "thermal_state",
-                                                   "process_priority"};
-  static const char *const environment_required[] = {
+  vkr_local_persist const char *const environment_fields[] = {
+      "target",
+      "required_present",
+      "require_actual_present",
+      "os",
+      "cpu",
+      "gpu",
+      "driver",
+      "gpu_vendor_id",
+      "gpu_device_id",
+      "power_mode",
+      "thermal_state",
+      "process_priority"};
+  vkr_local_persist const char *const environment_required[] = {
       "target", "required_present", "require_actual_present"};
   if (!vkr_harness_manifest_field(&doc, 0, "environment", true_v, &environment,
                                   out_error) ||
@@ -1370,9 +1366,9 @@ bool8_t vkr_harness_profile_parse(const char *json, uint64_t json_length,
     out_profile->required_process_priority = (int32_t)priority;
     out_profile->has_required_process_priority = true_v;
   }
-  static const char *const instrumentation_fields[] = {
+  vkr_local_persist const char *const instrumentation_fields[] = {
       "gpu_timing", "submission_gpu_timing", "event_subjects"};
-  static const char *const required_instrumentation_fields[] = {
+  vkr_local_persist const char *const required_instrumentation_fields[] = {
       "gpu_timing", "event_subjects"};
   if (!vkr_harness_manifest_field(&doc, 0, "instrumentation", true_v,
                                   &instrumentation, out_error) ||
@@ -1391,11 +1387,11 @@ bool8_t vkr_harness_profile_parse(const char *json, uint64_t json_length,
                                  out_error)) {
     return false_v;
   }
-  static const char *const execution_fields[] = {
+  vkr_local_persist const char *const execution_fields[] = {
       "minimum_repetitions",      "warmup_stability_window",
       "warmup_stability_metric",  "warmup_max_drift_ratio",
       "require_warmup_stability", "exclusive_gpu_lane"};
-  static const char *const required_execution_fields[] = {
+  vkr_local_persist const char *const required_execution_fields[] = {
       "minimum_repetitions", "warmup_stability_window",
       "warmup_max_drift_ratio", "require_warmup_stability",
       "exclusive_gpu_lane"};
@@ -1504,9 +1500,10 @@ bool8_t vkr_harness_profile_parse(const char *json, uint64_t json_length,
   return true_v;
 }
 
-static bool8_t vkr_harness_load_text(const char *path, Arena *arena,
-                                     char **out_data, uint64_t *out_length,
-                                     VkrHarnessError *error) {
+vkr_internal bool8_t vkr_harness_load_text(const char *path, Arena *arena,
+                                           char **out_data,
+                                           uint64_t *out_length,
+                                           VkrHarnessError *error) {
   FilePath file_path = vkr_harness_file_path(path);
   FileStats stats = {0};
   if (file_stats(&file_path, &stats) != FILE_ERROR_NONE) {

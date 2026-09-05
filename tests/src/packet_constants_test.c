@@ -6,7 +6,7 @@
 #include <assert.h>
 #include <stdio.h>
 
-static void test_packet_frame_constants(void) {
+vkr_internal void test_packet_frame_constants(void) {
   printf("  Running test_packet_frame_constants...\n");
   VkrPointLightGrid grid = {
       .origin = {1.0f, 2.0f, 3.0f},
@@ -103,7 +103,7 @@ static void test_packet_frame_constants(void) {
   printf("  test_packet_frame_constants PASSED\n");
 }
 
-static void test_packet_material_constants(void) {
+vkr_internal void test_packet_material_constants(void) {
   printf("  Running test_packet_material_constants...\n");
   const VkrPbrProperties pbr = {
       .metallic = 0.1f,
@@ -134,7 +134,7 @@ static void test_packet_material_constants(void) {
   printf("  test_packet_material_constants PASSED\n");
 }
 
-static void test_packet_frame_flags(void) {
+vkr_internal void test_packet_frame_flags(void) {
   printf("  Running test_packet_frame_flags...\n");
   VkrFrameLighting lighting = {.ibl_enabled = true_v};
   VkrPreparedFrame packet = {.input = {.lighting = &lighting}};

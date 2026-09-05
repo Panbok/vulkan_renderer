@@ -247,11 +247,11 @@ typedef struct VkrMetrics {
   bool8_t frame_active;
 } VkrMetrics;
 
-static INLINE uint32_t vkr_metric_id_index(VkrMetricId id) {
+vkr_internal INLINE uint32_t vkr_metric_id_index(VkrMetricId id) {
   return id & UINT16_MAX;
 }
 
-static INLINE uint16_t vkr_metric_id_generation(VkrMetricId id) {
+vkr_internal INLINE uint16_t vkr_metric_id_generation(VkrMetricId id) {
   return (uint16_t)(id >> 16u);
 }
 
@@ -262,7 +262,8 @@ bool8_t vkr_metrics_register(VkrMetrics *metrics,
 bool8_t vkr_metrics_seal(VkrMetrics *metrics);
 
 /** Remaining catalog capacity; producers use this to degrade before failing. */
-static INLINE uint32_t vkr_metrics_slots_available(const VkrMetrics *metrics) {
+vkr_internal INLINE uint32_t
+vkr_metrics_slots_available(const VkrMetrics *metrics) {
   return metrics ? VKR_METRICS_MAX_SLOTS - metrics->slot_count : 0u;
 }
 
@@ -271,10 +272,10 @@ void vkr_metrics_begin_frame(VkrMetrics *metrics, uint64_t cpu_frame_index,
                              uint64_t submit_serial);
 bool8_t vkr_metrics_end_frame(VkrMetrics *metrics);
 
-static INLINE uint32_t vkr_metrics_writer_slot(VkrMetrics *metrics,
-                                               VkrMetricId id,
-                                               VkrMetricKind kind,
-                                               VkrMetricScalar scalar) {
+vkr_internal INLINE uint32_t vkr_metrics_writer_slot(VkrMetrics *metrics,
+                                                     VkrMetricId id,
+                                                     VkrMetricKind kind,
+                                                     VkrMetricScalar scalar) {
   const uint32_t index = vkr_metric_id_index(id);
 #ifndef NDEBUG
   assert(metrics != NULL && metrics->sealed && index < metrics->slot_count);
@@ -292,8 +293,8 @@ static INLINE uint32_t vkr_metrics_writer_slot(VkrMetrics *metrics,
   return index;
 }
 
-static INLINE void vkr_metrics_counter_add(VkrMetrics *metrics, VkrMetricId id,
-                                           uint64_t value) {
+vkr_internal INLINE void
+vkr_metrics_counter_add(VkrMetrics *metrics, VkrMetricId id, uint64_t value) {
   const uint32_t index = vkr_metrics_writer_slot(
       metrics, id, VKR_METRIC_KIND_COUNTER, VKR_METRIC_SCALAR_U64);
   if (metrics->catalog[index].writer == VKR_METRIC_WRITER_CONCURRENT) {
@@ -306,8 +307,8 @@ static INLINE void vkr_metrics_counter_add(VkrMetrics *metrics, VkrMetricId id,
   metrics->active[index].reason = VKR_METRIC_REASON_NONE;
 }
 
-static INLINE void vkr_metrics_gauge_set_u64(VkrMetrics *metrics,
-                                             VkrMetricId id, uint64_t value) {
+vkr_internal INLINE void
+vkr_metrics_gauge_set_u64(VkrMetrics *metrics, VkrMetricId id, uint64_t value) {
   const uint32_t index = vkr_metrics_writer_slot(
       metrics, id, VKR_METRIC_KIND_GAUGE, VKR_METRIC_SCALAR_U64);
   if (metrics->catalog[index].writer == VKR_METRIC_WRITER_CONCURRENT) {
@@ -320,8 +321,9 @@ static INLINE void vkr_metrics_gauge_set_u64(VkrMetrics *metrics,
   metrics->active[index].reason = VKR_METRIC_REASON_NONE;
 }
 
-static INLINE void vkr_metrics_gauge_set_f64(VkrMetrics *metrics,
-                                             VkrMetricId id, float64_t value) {
+vkr_internal INLINE void vkr_metrics_gauge_set_f64(VkrMetrics *metrics,
+                                                   VkrMetricId id,
+                                                   float64_t value) {
   const uint32_t index = vkr_metrics_writer_slot(
       metrics, id, VKR_METRIC_KIND_GAUGE, VKR_METRIC_SCALAR_F64);
   assert(metrics->catalog[index].writer == VKR_METRIC_WRITER_RENDER_THREAD);
@@ -330,9 +332,9 @@ static INLINE void vkr_metrics_gauge_set_f64(VkrMetrics *metrics,
   metrics->active[index].reason = VKR_METRIC_REASON_NONE;
 }
 
-static INLINE void vkr_metrics_duration_add_ns(VkrMetrics *metrics,
-                                               VkrMetricId id,
-                                               uint64_t duration_ns) {
+vkr_internal INLINE void vkr_metrics_duration_add_ns(VkrMetrics *metrics,
+                                                     VkrMetricId id,
+                                                     uint64_t duration_ns) {
   const uint32_t index = vkr_metrics_writer_slot(
       metrics, id, VKR_METRIC_KIND_DURATION, VKR_METRIC_SCALAR_U64);
   if (metrics->catalog[index].writer == VKR_METRIC_WRITER_CONCURRENT) {
@@ -356,9 +358,9 @@ static INLINE void vkr_metrics_duration_add_ns(VkrMetrics *metrics,
   metrics->active[index].reason = VKR_METRIC_REASON_NONE;
 }
 
-static INLINE void vkr_metrics_mark(VkrMetrics *metrics, VkrMetricId id,
-                                    VkrMetricAvailability availability,
-                                    VkrMetricReason reason) {
+vkr_internal INLINE void vkr_metrics_mark(VkrMetrics *metrics, VkrMetricId id,
+                                          VkrMetricAvailability availability,
+                                          VkrMetricReason reason) {
   const uint32_t index = vkr_metric_id_index(id);
 #ifndef NDEBUG
   assert(metrics != NULL && metrics->sealed && metrics->frame_active);
@@ -413,7 +415,7 @@ typedef struct VkrMetricsScopeTimer {
   bool8_t active;
 } VkrMetricsScopeTimer;
 
-static INLINE uint64_t vkr_metrics_elapsed_ns(float64_t start_seconds) {
+vkr_internal INLINE uint64_t vkr_metrics_elapsed_ns(float64_t start_seconds) {
   const float64_t elapsed = vkr_platform_get_absolute_time() - start_seconds;
   return elapsed > 0.0 ? (uint64_t)(elapsed * 1000000000.0) : 0u;
 }

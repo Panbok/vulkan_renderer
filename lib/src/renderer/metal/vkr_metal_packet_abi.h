@@ -18,7 +18,7 @@ enum {
 };
 
 /** Converts VKR's column-major matrix for Slang's row-vector MSL lowering. */
-static INLINE Mat4 vkr_metal_packet_slang_draw_matrix(Mat4 matrix) {
+vkr_internal INLINE Mat4 vkr_metal_packet_slang_draw_matrix(Mat4 matrix) {
   return mat4_transpose(matrix);
 }
 
@@ -348,13 +348,14 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketTemporalResolveRoot {
 
 _Static_assert(sizeof(VkrMetalPacketTemporalResolveRoot) == 224,
                "Metal temporal-resolve root ABI must remain 224 bytes");
-_Static_assert(offsetof(VkrMetalPacketTemporalResolveRoot, current_jitter_pixels) ==
-                   200u &&
-                   offsetof(VkrMetalPacketTemporalResolveRoot, previous_jitter_pixels) ==
-                       208u,
+_Static_assert(offsetof(VkrMetalPacketTemporalResolveRoot,
+                        current_jitter_pixels) == 200u &&
+                   offsetof(VkrMetalPacketTemporalResolveRoot,
+                            previous_jitter_pixels) == 208u,
                "Metal temporal-resolve jitter ABI drift");
 _Static_assert(offsetof(VkrMetalPacketTemporalResolveRoot, scene_stationary) ==
-                   216u, "Metal temporal static-scene ABI drift");
+                   216u,
+               "Metal temporal static-scene ABI drift");
 
 /** Per-dispatch deferred-lighting resources and reconstruction contract. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketDeferredLightingRoot {

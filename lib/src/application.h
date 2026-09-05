@@ -403,9 +403,9 @@ bool8_t application_create_cube_mesh(Application *application);
  * @return `true_v` on successful initialization, `false_v` if any critical
  * initialization step fails (e.g., arena creation).
  */
-static uint32_t application_picking_pixel(uint32_t pixel,
-                                          uint32_t source_extent,
-                                          uint32_t target_extent) {
+vkr_internal uint32_t application_picking_pixel(uint32_t pixel,
+                                                uint32_t source_extent,
+                                                uint32_t target_extent) {
   if (source_extent <= 1u || target_extent <= 1u)
     return 0u;
   return Min((uint32_t)((uint64_t)Min(pixel, source_extent - 1u) *
@@ -413,7 +413,7 @@ static uint32_t application_picking_pixel(uint32_t pixel,
              target_extent - 1u);
 }
 
-static bool8_t application_on_resize(Event *event, UserData user_data) {
+vkr_internal bool8_t application_on_resize(Event *event, UserData user_data) {
   Application *application = user_data;
   const VkrWindowResizeEventData *resize = event->data;
   if (!resize || resize->width == 0u || resize->height == 0u)
@@ -424,7 +424,7 @@ static bool8_t application_on_resize(Event *event, UserData user_data) {
   return true_v;
 }
 
-static bool8_t application_rendering_initialize(
+vkr_internal bool8_t application_rendering_initialize(
     Application *application, const VkrSubsystemPlan *plan,
     const VkrRendererMetricsProducerConfig *metrics_producers) {
   const float64_t start = vkr_platform_get_absolute_time();
@@ -505,7 +505,7 @@ static bool8_t application_rendering_initialize(
 
 /* Call after joining workers; borrowed asset owners are released before assets,
  * and the native publisher stays alive through all final resource releases. */
-static void application_rendering_shutdown(Application *application) {
+vkr_internal void application_rendering_shutdown(Application *application) {
   vkr_renderer_wait_idle(&application->renderer);
   if (application->assets.resource_system_initialized)
     vkr_resource_system_quiesce();

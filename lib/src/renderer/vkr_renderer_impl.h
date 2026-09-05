@@ -41,7 +41,7 @@ typedef enum VkrRendererImplGpuTimingReason {
   VKR_RENDERER_IMPL_GPU_TIMING_REASON_FEEDBACK_ERROR,
 } VkrRendererImplGpuTimingReason;
 
-static INLINE const char *vkr_renderer_impl_gpu_timing_reason_name(
+vkr_internal INLINE const char *vkr_renderer_impl_gpu_timing_reason_name(
     VkrRendererImplGpuTimingReason reason) {
   switch (reason) {
   case VKR_RENDERER_IMPL_GPU_TIMING_REASON_NONE:

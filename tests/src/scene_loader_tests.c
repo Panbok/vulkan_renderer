@@ -19,7 +19,8 @@ typedef struct SceneLoaderTestContext {
   VkrScene scene;
 } SceneLoaderTestContext;
 
-static bool8_t scene_loader_test_context_init(SceneLoaderTestContext *ctx) {
+vkr_internal bool8_t
+scene_loader_test_context_init(SceneLoaderTestContext *ctx) {
   if (!ctx) {
     return false_v;
   }
@@ -53,7 +54,8 @@ static bool8_t scene_loader_test_context_init(SceneLoaderTestContext *ctx) {
   return true_v;
 }
 
-static void scene_loader_test_context_shutdown(SceneLoaderTestContext *ctx) {
+vkr_internal void
+scene_loader_test_context_shutdown(SceneLoaderTestContext *ctx) {
   if (!ctx) {
     return;
   }
@@ -65,7 +67,7 @@ static void scene_loader_test_context_shutdown(SceneLoaderTestContext *ctx) {
   }
 }
 
-static void test_scene_loader_missing_environment_succeeds(void) {
+vkr_internal void test_scene_loader_missing_environment_succeeds(void) {
   printf("  Running test_scene_loader_missing_environment_succeeds...\n");
 
   SceneLoaderTestContext ctx;
@@ -88,7 +90,8 @@ static void test_scene_loader_missing_environment_succeeds(void) {
   printf("  test_scene_loader_missing_environment_succeeds PASSED\n");
 }
 
-static void test_scene_loader_invalid_environment_preserves_scene_load(void) {
+vkr_internal void
+test_scene_loader_invalid_environment_preserves_scene_load(void) {
   printf("  Running "
          "test_scene_loader_invalid_environment_preserves_scene_load...\n");
 
@@ -116,7 +119,7 @@ static void test_scene_loader_invalid_environment_preserves_scene_load(void) {
          "PASSED\n");
 }
 
-static void test_scene_loader_disabled_environment_parses_controls(void) {
+vkr_internal void test_scene_loader_disabled_environment_parses_controls(void) {
   printf(
       "  Running test_scene_loader_disabled_environment_parses_controls...\n");
 
@@ -145,7 +148,7 @@ static void test_scene_loader_disabled_environment_parses_controls(void) {
   printf("  test_scene_loader_disabled_environment_parses_controls PASSED\n");
 }
 
-static void test_scene_loader_env_cubemap_load_failure_falls_back(void) {
+vkr_internal void test_scene_loader_env_cubemap_load_failure_falls_back(void) {
   printf(
       "  Running test_scene_loader_env_cubemap_load_failure_falls_back...\n");
 
@@ -172,7 +175,8 @@ static void test_scene_loader_env_cubemap_load_failure_falls_back(void) {
   printf("  test_scene_loader_env_cubemap_load_failure_falls_back PASSED\n");
 }
 
-static void test_scene_loader_environment_sources_are_mutually_exclusive(void) {
+vkr_internal void
+test_scene_loader_environment_sources_are_mutually_exclusive(void) {
   printf("  Running "
          "test_scene_loader_environment_sources_are_mutually_exclusive...\n");
 
@@ -197,7 +201,7 @@ static void test_scene_loader_environment_sources_are_mutually_exclusive(void) {
          "PASSED\n");
 }
 
-static void test_scene_loader_equirect_load_failure_falls_back(void) {
+vkr_internal void test_scene_loader_equirect_load_failure_falls_back(void) {
   printf("  Running test_scene_loader_equirect_load_failure_falls_back...\n");
 
   SceneLoaderTestContext ctx;
@@ -219,7 +223,7 @@ static void test_scene_loader_equirect_load_failure_falls_back(void) {
   printf("  test_scene_loader_equirect_load_failure_falls_back PASSED\n");
 }
 
-static void test_scene_loader_disabled_environment_ignores_sources(void) {
+vkr_internal void test_scene_loader_disabled_environment_ignores_sources(void) {
   printf("  Running "
          "test_scene_loader_disabled_environment_ignores_sources...\n");
 
@@ -243,7 +247,7 @@ static void test_scene_loader_disabled_environment_ignores_sources(void) {
   printf("  test_scene_loader_disabled_environment_ignores_sources PASSED\n");
 }
 
-static void test_scene_loader_missing_reflection_probes_succeeds(void) {
+vkr_internal void test_scene_loader_missing_reflection_probes_succeeds(void) {
   printf("  Running test_scene_loader_missing_reflection_probes_succeeds...\n");
 
   SceneLoaderTestContext ctx;
@@ -265,7 +269,7 @@ static void test_scene_loader_missing_reflection_probes_succeeds(void) {
   printf("  test_scene_loader_missing_reflection_probes_succeeds PASSED\n");
 }
 
-static void test_scene_loader_reflection_probes_parse_valid_block(void) {
+vkr_internal void test_scene_loader_reflection_probes_parse_valid_block(void) {
   printf(
       "  Running test_scene_loader_reflection_probes_parse_valid_block...\n");
 
@@ -315,7 +319,8 @@ static void test_scene_loader_reflection_probes_parse_valid_block(void) {
   printf("  test_scene_loader_reflection_probes_parse_valid_block PASSED\n");
 }
 
-static void test_scene_loader_reflection_probe_invalid_entries_skipped(void) {
+vkr_internal void
+test_scene_loader_reflection_probe_invalid_entries_skipped(void) {
   printf("  Running "
          "test_scene_loader_reflection_probe_invalid_entries_skipped...\n");
 
@@ -346,7 +351,7 @@ static void test_scene_loader_reflection_probe_invalid_entries_skipped(void) {
       "  test_scene_loader_reflection_probe_invalid_entries_skipped PASSED\n");
 }
 
-static void
+vkr_internal void
 test_scene_loader_reflection_probe_missing_cubemap_disables_probe(void) {
   printf(
       "  Running "
@@ -378,7 +383,7 @@ test_scene_loader_reflection_probe_missing_cubemap_disables_probe(void) {
          "PASSED\n");
 }
 
-static void test_scene_loader_imports_gltf_punctual_lights(void) {
+vkr_internal void test_scene_loader_imports_gltf_punctual_lights(void) {
   printf("  Running test_scene_loader_imports_gltf_punctual_lights...\n");
   char path[1024];
   snprintf(path, sizeof(path),
@@ -413,7 +418,7 @@ static void test_scene_loader_imports_gltf_punctual_lights(void) {
   printf("  test_scene_loader_imports_gltf_punctual_lights PASSED\n");
 }
 
-static void test_scene_loader_async_light_source_contract(void) {
+vkr_internal void test_scene_loader_async_light_source_contract(void) {
   printf("  Running test_scene_loader_async_light_source_contract...\n");
 
   SceneLoaderTestContext ctx;

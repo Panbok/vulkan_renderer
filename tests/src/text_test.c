@@ -6,17 +6,17 @@
 #include "renderer/systems/vkr_ui_system.h"
 #include "renderer/vkr_frame_input.h"
 
-static Arena *arena = NULL;
-static VkrAllocator allocator = {0};
-static const uint64_t ARENA_SIZE = MB(1);
+vkr_global Arena *arena = NULL;
+vkr_global VkrAllocator allocator = {0};
+vkr_global const uint64_t ARENA_SIZE = MB(1);
 
-static void setup_suite(void) {
+vkr_internal void setup_suite(void) {
   arena = arena_create(ARENA_SIZE, ARENA_SIZE);
   allocator = (VkrAllocator){.ctx = arena};
   vkr_allocator_arena(&allocator);
 }
 
-static void teardown_suite(void) {
+vkr_internal void teardown_suite(void) {
   if (arena) {
     arena_destroy(arena);
     arena = NULL;
@@ -24,8 +24,8 @@ static void teardown_suite(void) {
   }
 }
 
-static void assert_f32_eq(float32_t a, float32_t b, float32_t epsilon,
-                          const char *message) {
+vkr_internal void assert_f32_eq(float32_t a, float32_t b, float32_t epsilon,
+                                const char *message) {
   if (fabsf(a - b) > epsilon) {
     fprintf(stderr, "Float assertion failed: %s (%.5f vs %.5f)\n", message, a,
             b);
@@ -33,7 +33,7 @@ static void assert_f32_eq(float32_t a, float32_t b, float32_t epsilon,
   }
 }
 
-static void test_utf8_decode_encode(void) {
+vkr_internal void test_utf8_decode_encode(void) {
   printf("  Running test_utf8_decode_encode...\n");
 
   uint8_t ascii[] = {0x24};
@@ -51,12 +51,12 @@ static void test_utf8_decode_encode(void) {
   uint8_t encoded[4] = {0};
   uint8_t bytes_written = vkr_utf8_encode(0x1F600, encoded, sizeof(encoded));
   uint8_t expected[] = {0xF0, 0x9F, 0x98, 0x80};
-  assert(bytes_written == 4 && memcmp(encoded, expected, 4) == 0);
+  assert(bytes_written == 4 && MemCompare(encoded, expected, 4) == 0);
 
   printf("  test_utf8_decode_encode PASSED\n");
 }
 
-static void test_codepoint_iteration(void) {
+vkr_internal void test_codepoint_iteration(void) {
   printf("  Running test_codepoint_iteration...\n");
 
   const uint8_t data[] = {'A', 0xE2, 0x98, 0x83, 'B'};
@@ -79,7 +79,7 @@ static void test_codepoint_iteration(void) {
   printf("  test_codepoint_iteration PASSED\n");
 }
 
-static void test_utf8_validation(void) {
+vkr_internal void test_utf8_validation(void) {
   printf("  Running test_utf8_validation...\n");
 
   String8 valid = string8_lit("Valid");
@@ -92,7 +92,7 @@ static void test_utf8_validation(void) {
   printf("  test_utf8_validation PASSED\n");
 }
 
-static void test_text_creation_and_destroy(void) {
+vkr_internal void test_text_creation_and_destroy(void) {
   printf("  Running test_text_creation_and_destroy...\n");
   setup_suite();
 
@@ -125,7 +125,7 @@ static void test_text_creation_and_destroy(void) {
   printf("  test_text_creation_and_destroy PASSED\n");
 }
 
-static void test_text_measurement(void) {
+vkr_internal void test_text_measurement(void) {
   printf("  Running test_text_measurement...\n");
 
   VkrTextStyle style =
@@ -145,7 +145,7 @@ static void test_text_measurement(void) {
   printf("  test_text_measurement PASSED\n");
 }
 
-static void test_text_layout(void) {
+vkr_internal void test_text_layout(void) {
   printf("  Running test_text_layout...\n");
   setup_suite();
 
@@ -176,7 +176,7 @@ static void test_text_layout(void) {
   printf("  test_text_layout PASSED\n");
 }
 
-static void test_mtsdf_unit_range(void) {
+vkr_internal void test_mtsdf_unit_range(void) {
   printf("  Running test_mtsdf_unit_range...\n");
 
   const Vec2 unit_range = vkr_text_mtsdf_unit_range(8.0f, 1024u, 512u);
@@ -195,7 +195,7 @@ typedef struct TestCookedFont {
   VkrFontGlyphKerning kernings[1];
 } TestCookedFont;
 
-static void test_cooked_font_init(TestCookedFont *fixture) {
+vkr_internal void test_cooked_font_init(TestCookedFont *fixture) {
   MemZero(fixture, sizeof(*fixture));
   fixture->glyphs[0] = (VkrFontGlyphId){
       .glyph_id = 3u,
@@ -266,7 +266,7 @@ static void test_cooked_font_init(TestCookedFont *fixture) {
   };
 }
 
-static void test_cooked_float_layout_contract(void) {
+vkr_internal void test_cooked_float_layout_contract(void) {
   printf("  Running test_cooked_float_layout_contract...\n");
   setup_suite();
   TestCookedFont fixture;
@@ -312,7 +312,7 @@ static void test_cooked_float_layout_contract(void) {
   printf("  test_cooked_float_layout_contract PASSED\n");
 }
 
-static void test_cooked_long_run_accumulation(void) {
+vkr_internal void test_cooked_long_run_accumulation(void) {
   printf("  Running test_cooked_long_run_accumulation...\n");
   setup_suite();
   TestCookedFont fixture;
@@ -340,7 +340,7 @@ static void test_cooked_long_run_accumulation(void) {
   printf("  test_cooked_long_run_accumulation PASSED\n");
 }
 
-static void test_cooked_negative_bearing_geometry(void) {
+vkr_internal void test_cooked_negative_bearing_geometry(void) {
   printf("  Running test_cooked_negative_bearing_geometry...\n");
   setup_suite();
   TestCookedFont fixture;
@@ -374,7 +374,7 @@ static void test_cooked_negative_bearing_geometry(void) {
   printf("  test_cooked_negative_bearing_geometry PASSED\n");
 }
 
-static void test_ui_text_reselects_default_font(void) {
+vkr_internal void test_ui_text_reselects_default_font(void) {
   printf("  Running test_ui_text_reselects_default_font...\n");
   setup_suite();
   TestCookedFont default_fixture;
@@ -409,7 +409,7 @@ static void test_ui_text_reselects_default_font(void) {
   printf("  test_ui_text_reselects_default_font PASSED\n");
 }
 
-static void test_window_content_scale_snapshot(void) {
+vkr_internal void test_window_content_scale_snapshot(void) {
   printf("  Running test_window_content_scale_snapshot...\n");
   VkrWindow window = {0};
   vkr_window_content_scale_init(&window);
@@ -426,7 +426,7 @@ static void test_window_content_scale_snapshot(void) {
   printf("  test_window_content_scale_snapshot PASSED\n");
 }
 
-static void test_ui_text_content_scale_contract(void) {
+vkr_internal void test_ui_text_content_scale_contract(void) {
   printf("  Running test_ui_text_content_scale_contract...\n");
   setup_suite();
   TestCookedFont fixture;
@@ -475,7 +475,7 @@ static void test_ui_text_content_scale_contract(void) {
   printf("  test_ui_text_content_scale_contract PASSED\n");
 }
 
-static void test_ui_system_scale_revision_and_offsets(void) {
+vkr_internal void test_ui_system_scale_revision_and_offsets(void) {
   printf("  Running test_ui_system_scale_revision_and_offsets...\n");
   setup_suite();
   TestCookedFont fixture;
@@ -533,7 +533,7 @@ static void test_ui_system_scale_revision_and_offsets(void) {
   printf("  test_ui_system_scale_revision_and_offsets PASSED\n");
 }
 
-static void test_ui_system_reuses_unchanged_draw_geometry(void) {
+vkr_internal void test_ui_system_reuses_unchanged_draw_geometry(void) {
   printf("  Running test_ui_system_reuses_unchanged_draw_geometry...\n");
   setup_suite();
   TestCookedFont fixture;
@@ -634,10 +634,11 @@ static void test_ui_system_reuses_unchanged_draw_geometry(void) {
   printf("  test_ui_system_reuses_unchanged_draw_geometry PASSED\n");
 }
 
-static bool8_t test_ui_text_field_frame(VkrUiSystem *system, InputState *input,
-                                        VkrUiTextEditBuffer *buffer,
-                                        float64_t delta,
-                                        VkrUiInputCapture *out_capture) {
+vkr_internal bool8_t test_ui_text_field_frame(VkrUiSystem *system,
+                                              InputState *input,
+                                              VkrUiTextEditBuffer *buffer,
+                                              float64_t delta,
+                                              VkrUiInputCapture *out_capture) {
   VkrAllocatorScope scope = vkr_allocator_begin_scope(&allocator);
   assert(vkr_allocator_scope_is_valid(&scope));
   assert(vkr_ui_begin(system, &allocator, NULL, 200u, 100u, input, false_v,
@@ -649,7 +650,7 @@ static bool8_t test_ui_text_field_frame(VkrUiSystem *system, InputState *input,
   return changed;
 }
 
-static void test_ui_text_field_character_input_and_repeat(void) {
+vkr_internal void test_ui_text_field_character_input_and_repeat(void) {
   printf("  Running test_ui_text_field_character_input_and_repeat...\n");
   setup_suite();
   TestCookedFont fixture;
@@ -713,7 +714,7 @@ static void test_ui_text_field_character_input_and_repeat(void) {
   printf("  test_ui_text_field_character_input_and_repeat PASSED\n");
 }
 
-static void test_ui_input_layer_blocks_click_through(void) {
+vkr_internal void test_ui_input_layer_blocks_click_through(void) {
   printf("  Running test_ui_input_layer_blocks_click_through...\n");
   setup_suite();
   TestCookedFont fixture;
@@ -785,21 +786,21 @@ static void test_ui_input_layer_blocks_click_through(void) {
   printf("  test_ui_input_layer_blocks_click_through PASSED\n");
 }
 
-static void *text_test_alloc_aligned(void *ctx, uint64_t size,
-                                     uint64_t alignment,
-                                     VkrAllocatorMemoryTag tag) {
+vkr_internal void *text_test_alloc_aligned(void *ctx, uint64_t size,
+                                           uint64_t alignment,
+                                           VkrAllocatorMemoryTag tag) {
   assert(alignment <= _Alignof(max_align_t));
   return container_test_alloc(ctx, size, tag);
 }
 
-static void text_test_free_aligned(void *ctx, void *ptr, uint64_t size,
-                                   uint64_t alignment,
-                                   VkrAllocatorMemoryTag tag) {
+vkr_internal void text_test_free_aligned(void *ctx, void *ptr, uint64_t size,
+                                         uint64_t alignment,
+                                         VkrAllocatorMemoryTag tag) {
   (void)alignment;
   container_test_free(ctx, ptr, size, tag);
 }
 
-static void test_layout_allocation_failure(void) {
+vkr_internal void test_layout_allocation_failure(void) {
   const VkrTextStyle style =
       vkr_text_style_new(VKR_FONT_HANDLE_INVALID, 10.0f, VKR_TEXT_COLOR_WHITE);
   const VkrText text = vkr_text_from_cstr("AB\nCD", &style);

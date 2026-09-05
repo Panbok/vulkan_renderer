@@ -167,8 +167,9 @@ bool8_t vkr_vk_validate_graph(const VkrVulkanRenderer *renderer) {
     const VkrVulkanGraphExecutorSpec *executor = &s_vk_graph_executors[kind];
     if (kind == VKR_VULKAN_GRAPH_EXECUTOR_METALFX_STAGE ||
         kind == VKR_VULKAN_GRAPH_EXECUTOR_METALFX_TEMPORAL) {
-      log_error("Vulkan graph pass '%.*s' requires unsupported MetalFX executor '%s'",
-                (int)pass->desc.name.length, pass->desc.name.str, executor->name);
+      log_error(
+          "Vulkan graph pass '%.*s' requires unsupported MetalFX executor '%s'",
+          (int)pass->desc.name.length, pass->desc.name.str, executor->name);
       return false_v;
     }
     if (pass->desc.type != executor->type) {
@@ -448,8 +449,8 @@ vkr_internal uint32_t vkr_vk_graph_image_instance_count(
   return 1u;
 }
 
-vkr_internal bool8_t vkr_vk_wait_graph_use(
-    VkrVulkanRenderer *renderer, uint64_t last_use) {
+vkr_internal bool8_t vkr_vk_wait_graph_use(VkrVulkanRenderer *renderer,
+                                           uint64_t last_use) {
   if (last_use <= renderer->completed_value)
     return true_v;
   if (last_use > renderer->submit_value) {
@@ -463,8 +464,8 @@ vkr_internal bool8_t vkr_vk_wait_graph_use(
       .pSemaphores = &renderer->timeline,
       .pValues = &last_use,
   };
-  const VkResult result = vkWaitSemaphores(vkr_vk_renderer_device(renderer),
-                                          &wait, UINT64_MAX);
+  const VkResult result =
+      vkWaitSemaphores(vkr_vk_renderer_device(renderer), &wait, UINT64_MAX);
   if (result != VK_SUCCESS) {
     log_error("Vulkan graph resource wait failed (submit=%llu, result=%d)",
               (unsigned long long)last_use, (int)result);
@@ -1385,9 +1386,9 @@ vkr_internal bool8_t vkr_vk_prepare_graph_transfer_pass(
 }
 
 uint64_t vkr_vk_graph_upload_bound(VkrVulkanRenderer *renderer,
-                                     uint64_t direct_draw_bytes,
-                                     uint64_t text_bytes,
-                                     uint64_t ui_root_bytes) {
+                                   uint64_t direct_draw_bytes,
+                                   uint64_t text_bytes,
+                                   uint64_t ui_root_bytes) {
   uint64_t bytes = 0u;
   for (uint64_t order = 0u; order < renderer->graph->execution_order.length;
        ++order) {
@@ -1612,7 +1613,7 @@ bool8_t vkr_vk_prepare_graph(VkrVulkanRenderer *renderer) {
       &renderer->prepared_terminal_barriers);
 }
 
-static void
+vkr_internal void
 vkr_vk_record_graph_graphics_pass(VkrVulkanRenderer *renderer,
                                   VkCommandBuffer command,
                                   const VkrVulkanPreparedGraphPass *prepared) {

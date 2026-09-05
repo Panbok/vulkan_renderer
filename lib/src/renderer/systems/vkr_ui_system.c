@@ -69,14 +69,14 @@ struct VkrUiFrameNode {
 #define VKR_UI_KEY_REPEAT_DELAY_SECONDS 0.4
 #define VKR_UI_KEY_REPEAT_INTERVAL_SECONDS 0.05
 
-static const VkrUiTrack VKR_UI_ONE_FR_TRACK = {
+vkr_global const VkrUiTrack VKR_UI_ONE_FR_TRACK = {
     .value = 1.0f,
     .unit = VKR_UI_TRACK_FR,
 };
 
-static const VkrUiTrack *vkr_ui_copy_tracks(VkrUiSystem *system,
-                                            const VkrUiTrack *tracks,
-                                            uint32_t count) {
+vkr_internal const VkrUiTrack *vkr_ui_copy_tracks(VkrUiSystem *system,
+                                                  const VkrUiTrack *tracks,
+                                                  uint32_t count) {
   if (!tracks || count == 0u)
     return &VKR_UI_ONE_FR_TRACK;
   if (count > VKR_UI_FRAME_NODE_CAPACITY)
@@ -89,19 +89,20 @@ static const VkrUiTrack *vkr_ui_copy_tracks(VkrUiSystem *system,
   return copy;
 }
 
-static bool8_t vkr_ui_rect_equal(VkrUiRect a, VkrUiRect b) {
+vkr_internal bool8_t vkr_ui_rect_equal(VkrUiRect a, VkrUiRect b) {
   return a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height;
 }
 
-static bool8_t vkr_ui_point_in_rect(int32_t x, int32_t y, VkrUiRect rect) {
+vkr_internal bool8_t vkr_ui_point_in_rect(int32_t x, int32_t y,
+                                          VkrUiRect rect) {
   return (float32_t)x >= rect.x && (float32_t)x < rect.x + rect.width &&
          (float32_t)y >= rect.y && (float32_t)y < rect.y + rect.height;
 }
 
-static bool8_t vkr_ui_color_visible(Vec4 color) { return color.w > 0.0f; }
+vkr_internal bool8_t vkr_ui_color_visible(Vec4 color) { return color.w > 0.0f; }
 
-static Vec2 vkr_ui_style_clamp_size(Vec2 size,
-                                    const VkrUiResolvedStyle *style) {
+vkr_internal Vec2 vkr_ui_style_clamp_size(Vec2 size,
+                                          const VkrUiResolvedStyle *style) {
   size.x = Max(size.x, style->min_size_px.x);
   size.y = Max(size.y, style->min_size_px.y);
   if (style->max_size_px.x > 0.0f)
@@ -111,7 +112,7 @@ static Vec2 vkr_ui_style_clamp_size(Vec2 size,
   return size;
 }
 
-static VkrUiEdges vkr_ui_edges_add(VkrUiEdges a, VkrUiEdges b) {
+vkr_internal VkrUiEdges vkr_ui_edges_add(VkrUiEdges a, VkrUiEdges b) {
   return (VkrUiEdges){
       .top = a.top + b.top,
       .right = a.right + b.right,
@@ -120,7 +121,8 @@ static VkrUiEdges vkr_ui_edges_add(VkrUiEdges a, VkrUiEdges b) {
   };
 }
 
-static VkrUiPlacement vkr_ui_normalize_placement(VkrUiPlacement placement) {
+vkr_internal VkrUiPlacement
+vkr_ui_normalize_placement(VkrUiPlacement placement) {
   if (placement.column_span == 0u)
     placement.column_span = 1u;
   if (placement.row_span == 0u)
@@ -151,10 +153,11 @@ VkrUiWidgetConfig vkr_ui_widget_config_default(void) {
   };
 }
 
-static bool8_t vkr_ui_system_dimensions(VkrWindow *window, VkrUiSystem *system,
-                                        uint32_t width, uint32_t height,
-                                        uint32_t *out_width,
-                                        uint32_t *out_height) {
+vkr_internal bool8_t vkr_ui_system_dimensions(VkrWindow *window,
+                                              VkrUiSystem *system,
+                                              uint32_t width, uint32_t height,
+                                              uint32_t *out_width,
+                                              uint32_t *out_height) {
   if ((width == 0u || height == 0u) && window) {
     const VkrWindowPixelSize size = vkr_window_get_pixel_size(window);
     width = size.width;
@@ -170,7 +173,7 @@ static bool8_t vkr_ui_system_dimensions(VkrWindow *window, VkrUiSystem *system,
   return width > 0u && height > 0u;
 }
 
-static VkrWindowContentScale
+vkr_internal VkrWindowContentScale
 vkr_ui_system_content_scale(VkrWindow *window, const VkrUiSystem *system) {
   if (system->offscreen_enabled)
     return (VkrWindowContentScale){
@@ -182,13 +185,15 @@ vkr_ui_system_content_scale(VkrWindow *window, const VkrUiSystem *system) {
   return (VkrWindowContentScale){.value = 1.0f, .revision = 1u};
 }
 
-static uint32_t vkr_ui_retained_bucket(const VkrUiSystem *system, VkrUiId id) {
+vkr_internal uint32_t vkr_ui_retained_bucket(const VkrUiSystem *system,
+                                             VkrUiId id) {
   return (uint32_t)id & (system->retained_bucket_capacity - 1u);
 }
 
-static VkrUiRetainedState *vkr_ui_retained_insert(VkrUiSystem *system,
-                                                  uint32_t bucket, VkrUiId id,
-                                                  VkrUiNodeKind kind) {
+vkr_internal VkrUiRetainedState *vkr_ui_retained_insert(VkrUiSystem *system,
+                                                        uint32_t bucket,
+                                                        VkrUiId id,
+                                                        VkrUiNodeKind kind) {
   VkrUiRetainedState *state =
       vkr_allocator_alloc(&system->retained_allocator, sizeof(*state),
                           VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
@@ -202,8 +207,8 @@ static VkrUiRetainedState *vkr_ui_retained_insert(VkrUiSystem *system,
   return state;
 }
 
-static void vkr_ui_retained_reset(VkrUiRetainedState *state,
-                                  VkrUiNodeKind kind) {
+vkr_internal void vkr_ui_retained_reset(VkrUiRetainedState *state,
+                                        VkrUiNodeKind kind) {
   if (state->text_live)
     vkr_ui_text_destroy(&state->text);
   const VkrUiId id = state->id;
@@ -214,8 +219,8 @@ static void vkr_ui_retained_reset(VkrUiRetainedState *state,
   state->last_seen_frame = last_seen;
 }
 
-static VkrUiRetainedState *vkr_ui_retained_get(VkrUiSystem *system, VkrUiId id,
-                                               VkrUiNodeKind kind) {
+vkr_internal VkrUiRetainedState *
+vkr_ui_retained_get(VkrUiSystem *system, VkrUiId id, VkrUiNodeKind kind) {
   const uint32_t mask = system->retained_bucket_capacity - 1u;
   uint32_t bucket = vkr_ui_retained_bucket(system, id);
   uint32_t first_tombstone = VKR_UI_NODE_NONE;
@@ -241,8 +246,8 @@ static VkrUiRetainedState *vkr_ui_retained_get(VkrUiSystem *system, VkrUiId id,
              : vkr_ui_retained_insert(system, first_tombstone, id, kind);
 }
 
-static VkrUiRetainedState *vkr_ui_retained_find(const VkrUiSystem *system,
-                                                VkrUiId id) {
+vkr_internal VkrUiRetainedState *vkr_ui_retained_find(const VkrUiSystem *system,
+                                                      VkrUiId id) {
   const uint32_t mask = system->retained_bucket_capacity - 1u;
   uint32_t bucket = vkr_ui_retained_bucket(system, id);
   for (uint32_t probe = 0u; probe < system->retained_bucket_capacity; ++probe) {
@@ -256,7 +261,7 @@ static VkrUiRetainedState *vkr_ui_retained_find(const VkrUiSystem *system,
   return NULL;
 }
 
-static void vkr_ui_retained_reclaim(VkrUiSystem *system) {
+vkr_internal void vkr_ui_retained_reclaim(VkrUiSystem *system) {
   for (uint32_t i = 0u; i < system->retained_bucket_capacity; ++i) {
     VkrUiRetainedState *state = system->retained_buckets[i];
     if (!state || state == VKR_UI_RETAINED_TOMBSTONE ||
@@ -377,7 +382,7 @@ void vkr_ui_system_shutdown(VkrUiSystem *system) {
   MemZero(system, sizeof(*system));
 }
 
-static void vkr_ui_system_invalidate_layout(VkrUiSystem *system) {
+vkr_internal void vkr_ui_system_invalidate_layout(VkrUiSystem *system) {
   system->draw_cache_valid = false_v;
   for (uint32_t i = 0u; i < system->retained_bucket_capacity; ++i) {
     VkrUiRetainedState *state = system->retained_buckets[i];
@@ -422,18 +427,19 @@ void vkr_ui_system_set_offscreen_content_scale(VkrUiSystem *system,
   vkr_ui_system_invalidate_layout(system);
 }
 
-static bool8_t vkr_ui_resolve_style(VkrUiSystem *system,
-                                    const VkrUiStyle *style,
-                                    VkrUiResolvedStyle *out_style) {
+vkr_internal bool8_t vkr_ui_resolve_style(VkrUiSystem *system,
+                                          const VkrUiStyle *style,
+                                          VkrUiResolvedStyle *out_style) {
   if (vkr_ui_style_resolve(style, system->content_scale, out_style))
     return true_v;
   const VkrUiStyle fallback = vkr_ui_style_default();
   return vkr_ui_style_resolve(&fallback, system->content_scale, out_style);
 }
 
-static uint32_t vkr_ui_add_node(VkrUiSystem *system, VkrUiId id,
-                                VkrUiNodeKind kind, VkrUiPlacement placement,
-                                const VkrUiStyle *style) {
+vkr_internal uint32_t vkr_ui_add_node(VkrUiSystem *system, VkrUiId id,
+                                      VkrUiNodeKind kind,
+                                      VkrUiPlacement placement,
+                                      const VkrUiStyle *style) {
   if (!system->frame_open ||
       system->frame_node_count == system->frame_node_capacity)
     return VKR_UI_NODE_NONE;
@@ -469,9 +475,9 @@ static uint32_t vkr_ui_add_node(VkrUiSystem *system, VkrUiId id,
   return index;
 }
 
-static bool8_t vkr_ui_text_prepare(VkrUiSystem *system, VkrUiFrameNode *node,
-                                   String8 content,
-                                   const VkrUiTextConfig *source_config) {
+vkr_internal bool8_t vkr_ui_text_prepare(VkrUiSystem *system,
+                                         VkrUiFrameNode *node, String8 content,
+                                         const VkrUiTextConfig *source_config) {
   VkrUiRetainedState *retained = node->retained;
   VkrUiTextConfig config = source_config
                                ? *source_config
@@ -510,8 +516,8 @@ static bool8_t vkr_ui_text_prepare(VkrUiSystem *system, VkrUiFrameNode *node,
   return true_v;
 }
 
-static bool8_t vkr_ui_interact(VkrUiSystem *system, VkrUiFrameNode *node,
-                               bool8_t focusable) {
+vkr_internal bool8_t vkr_ui_interact(VkrUiSystem *system, VkrUiFrameNode *node,
+                                     bool8_t focusable) {
   VkrUiRetainedState *retained = node->retained;
   const bool8_t hovered = !system->mouse_captured &&
                           system->input_layer == system->mouse_input_layer &&
@@ -854,7 +860,8 @@ bool8_t vkr_ui_scroll_area_end(VkrUiSystem *system) {
   return vkr_ui_panel_end(system);
 }
 
-static uint32_t vkr_ui_utf8_previous(const uint8_t *data, uint32_t cursor) {
+vkr_internal uint32_t vkr_ui_utf8_previous(const uint8_t *data,
+                                           uint32_t cursor) {
   if (cursor == 0u)
     return 0u;
   cursor--;
@@ -863,8 +870,8 @@ static uint32_t vkr_ui_utf8_previous(const uint8_t *data, uint32_t cursor) {
   return cursor;
 }
 
-static uint32_t vkr_ui_utf8_next(const uint8_t *data, uint32_t length,
-                                 uint32_t cursor) {
+vkr_internal uint32_t vkr_ui_utf8_next(const uint8_t *data, uint32_t length,
+                                       uint32_t cursor) {
   if (cursor >= length)
     return length;
   cursor++;
@@ -873,8 +880,8 @@ static uint32_t vkr_ui_utf8_next(const uint8_t *data, uint32_t length,
   return cursor;
 }
 
-static void vkr_ui_text_edit_erase(VkrUiTextEditBuffer *buffer, uint32_t begin,
-                                   uint32_t end) {
+vkr_internal void vkr_ui_text_edit_erase(VkrUiTextEditBuffer *buffer,
+                                         uint32_t begin, uint32_t end) {
   if (begin >= end || end > buffer->length)
     return;
   MemCopy(buffer->data + begin, buffer->data + end, buffer->length - end);
@@ -883,7 +890,7 @@ static void vkr_ui_text_edit_erase(VkrUiTextEditBuffer *buffer, uint32_t begin,
     buffer->data[buffer->length] = 0u;
 }
 
-static bool8_t vkr_ui_key_repeat(VkrUiSystem *system, Keys key) {
+vkr_internal bool8_t vkr_ui_key_repeat(VkrUiSystem *system, Keys key) {
   if (input_is_key_up(system->input, key))
     return false_v;
   if (input_key_just_pressed(system->input, key)) {
@@ -900,9 +907,10 @@ static bool8_t vkr_ui_key_repeat(VkrUiSystem *system, Keys key) {
   return true_v;
 }
 
-static bool8_t vkr_ui_text_edit_insert(VkrUiTextEditBuffer *buffer,
-                                       uint32_t *cursor, uint32_t *selection,
-                                       uint32_t codepoint) {
+vkr_internal bool8_t vkr_ui_text_edit_insert(VkrUiTextEditBuffer *buffer,
+                                             uint32_t *cursor,
+                                             uint32_t *selection,
+                                             uint32_t codepoint) {
   if (codepoint < 0x20u || codepoint == 0x7fu)
     return false_v;
   uint8_t encoded[4];
@@ -1005,8 +1013,8 @@ bool8_t vkr_ui_text_field(VkrUiSystem *system, String8 id_label,
   return changed;
 }
 
-static VkrUiTrack vkr_ui_track_resolve_points(VkrUiTrack track,
-                                              float32_t content_scale) {
+vkr_internal VkrUiTrack vkr_ui_track_resolve_points(VkrUiTrack track,
+                                                    float32_t content_scale) {
   if (track.unit == VKR_UI_TRACK_PX)
     track.value *= content_scale;
   track.min_px *= content_scale;
@@ -1014,7 +1022,8 @@ static VkrUiTrack vkr_ui_track_resolve_points(VkrUiTrack track,
   return track;
 }
 
-static uint64_t vkr_ui_node_hash(VkrUiSystem *system, uint32_t node_index) {
+vkr_internal uint64_t vkr_ui_node_hash(VkrUiSystem *system,
+                                       uint32_t node_index) {
   VkrUiFrameNode *node = &system->frame_nodes[node_index];
   uint64_t hash = vkr_ui_hash_bytes(UINT64_C(14695981039346656037), &node->kind,
                                     sizeof(node->kind));
@@ -1082,15 +1091,15 @@ static uint64_t vkr_ui_node_hash(VkrUiSystem *system, uint32_t node_index) {
   return hash;
 }
 
-static bool8_t vkr_ui_node_is_container(const VkrUiFrameNode *node) {
+vkr_internal bool8_t vkr_ui_node_is_container(const VkrUiFrameNode *node) {
   return node->kind == VKR_UI_NODE_ROOT || node->kind == VKR_UI_NODE_PANEL ||
          node->kind == VKR_UI_NODE_SCROLL;
 }
 
-static VkrUiGridItem vkr_ui_grid_item_from_node(VkrUiSystem *system,
-                                                VkrUiFrameNode *child,
-                                                uint32_t columns,
-                                                uint32_t rows) {
+vkr_internal VkrUiGridItem vkr_ui_grid_item_from_node(VkrUiSystem *system,
+                                                      VkrUiFrameNode *child,
+                                                      uint32_t columns,
+                                                      uint32_t rows) {
   const VkrUiPlacement placement = child->placement;
   const VkrUiEdges placement_margin = {
       .top = placement.margin_pt.top * system->content_scale,
@@ -1111,9 +1120,9 @@ static VkrUiGridItem vkr_ui_grid_item_from_node(VkrUiSystem *system,
   };
 }
 
-static bool8_t vkr_ui_container_intrinsic(VkrUiSystem *system,
-                                          VkrUiFrameNode *node,
-                                          Vec2 *out_size) {
+vkr_internal bool8_t vkr_ui_container_intrinsic(VkrUiSystem *system,
+                                                VkrUiFrameNode *node,
+                                                Vec2 *out_size) {
   uint32_t child_count = 0u;
   for (uint32_t child_index = node->first_child;
        child_index != VKR_UI_NODE_NONE;
@@ -1191,7 +1200,8 @@ static bool8_t vkr_ui_container_intrinsic(VkrUiSystem *system,
   return true_v;
 }
 
-static bool8_t vkr_ui_reuse_layout(VkrUiSystem *system, uint32_t node_index) {
+vkr_internal bool8_t vkr_ui_reuse_layout(VkrUiSystem *system,
+                                         uint32_t node_index) {
   VkrUiFrameNode *node = &system->frame_nodes[node_index];
   if (!vkr_ui_rect_has_area(node->retained->last_rect))
     return false_v;
@@ -1205,8 +1215,9 @@ static bool8_t vkr_ui_reuse_layout(VkrUiSystem *system, uint32_t node_index) {
   return true_v;
 }
 
-static bool8_t vkr_ui_layout_node(VkrUiSystem *system, uint32_t node_index,
-                                  VkrUiRect rect, VkrUiRect parent_clip) {
+vkr_internal bool8_t vkr_ui_layout_node(VkrUiSystem *system,
+                                        uint32_t node_index, VkrUiRect rect,
+                                        VkrUiRect parent_clip) {
   VkrUiFrameNode *node = &system->frame_nodes[node_index];
   if (node->retained->build_hash == node->build_hash &&
       vkr_ui_rect_equal(node->retained->last_rect, rect) &&
@@ -1348,16 +1359,16 @@ static bool8_t vkr_ui_layout_node(VkrUiSystem *system, uint32_t node_index,
   return true_v;
 }
 
-static Vec4 vkr_ui_linear_color(Vec4 color) {
+vkr_internal Vec4 vkr_ui_linear_color(Vec4 color) {
   return vkr_srgb_color_to_linear(color);
 }
 
-static bool8_t vkr_ui_edges_have_extent(VkrUiEdges edges) {
+vkr_internal bool8_t vkr_ui_edges_have_extent(VkrUiEdges edges) {
   return edges.top > 0.0f || edges.right > 0.0f || edges.bottom > 0.0f ||
          edges.left > 0.0f;
 }
 
-static Vec4 vkr_ui_inner_radii(Vec4 radii, VkrUiEdges border) {
+vkr_internal Vec4 vkr_ui_inner_radii(Vec4 radii, VkrUiEdges border) {
   return (Vec4){
       Max(0.0f, radii.x - Max(border.top, border.left)),
       Max(0.0f, radii.y - Max(border.top, border.right)),
@@ -1366,8 +1377,8 @@ static Vec4 vkr_ui_inner_radii(Vec4 radii, VkrUiEdges border) {
   };
 }
 
-static void vkr_ui_emit_rect(VkrUiDrawBuffer *buffer, VkrUiRect rect,
-                             Vec4 color, Vec4 radii) {
+vkr_internal void vkr_ui_emit_rect(VkrUiDrawBuffer *buffer, VkrUiRect rect,
+                                   Vec4 color, Vec4 radii) {
   if (!vkr_ui_rect_has_area(rect) || !vkr_ui_color_visible(color))
     return;
   const bool8_t rounded =
@@ -1379,8 +1390,8 @@ static void vkr_ui_emit_rect(VkrUiDrawBuffer *buffer, VkrUiRect rect,
     (void)vkr_ui_draw_buffer_solid(buffer, rect, vkr_ui_linear_color(color));
 }
 
-static float32_t vkr_ui_text_screen_range(const VkrUiText *text,
-                                          const VkrFont *font) {
+vkr_internal float32_t vkr_ui_text_screen_range(const VkrUiText *text,
+                                                const VkrFont *font) {
   const float32_t authored_size = text->config.font_size > 0.0f
                                       ? text->config.font_size
                                       : (float32_t)font->size;
@@ -1389,9 +1400,9 @@ static float32_t vkr_ui_text_screen_range(const VkrUiText *text,
          em_size;
 }
 
-static void vkr_ui_emit_text(VkrUiSystem *system, VkrUiDrawBuffer *buffer,
-                             VkrUiFrameNode *node, VkrUiRect content_rect,
-                             bool8_t centered, float32_t x_offset) {
+vkr_internal void vkr_ui_emit_text(VkrUiSystem *system, VkrUiDrawBuffer *buffer,
+                                   VkrUiFrameNode *node, VkrUiRect content_rect,
+                                   bool8_t centered, float32_t x_offset) {
   VkrUiText *text = &node->retained->text;
   VkrFont *font = text->resolved_font;
   if (!node->retained->text_live || !font || font->atlas.id == 0u ||
@@ -1451,12 +1462,12 @@ static void vkr_ui_emit_text(VkrUiSystem *system, VkrUiDrawBuffer *buffer,
   }
 }
 
-static VkrUiRect vkr_ui_uniform_inset(VkrUiRect rect, float32_t inset) {
+vkr_internal VkrUiRect vkr_ui_uniform_inset(VkrUiRect rect, float32_t inset) {
   return vkr_ui_rect_inset(rect, (VkrUiEdges){inset, inset, inset, inset});
 }
 
-static void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
-                             VkrUiDrawBuffer *buffer) {
+vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
+                                   VkrUiDrawBuffer *buffer) {
   VkrUiFrameNode *node = &system->frame_nodes[node_index];
   if (!vkr_ui_draw_buffer_push_clip(buffer, node->clip))
     return;
@@ -1563,7 +1574,7 @@ static void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
   (void)vkr_ui_draw_buffer_pop_clip(buffer);
 }
 
-static VkrUiRect vkr_ui_rect_union(VkrUiRect a, VkrUiRect b) {
+vkr_internal VkrUiRect vkr_ui_rect_union(VkrUiRect a, VkrUiRect b) {
   if (!vkr_ui_rect_has_area(a))
     return b;
   if (!vkr_ui_rect_has_area(b))
@@ -1575,8 +1586,8 @@ static VkrUiRect vkr_ui_rect_union(VkrUiRect a, VkrUiRect b) {
   return (VkrUiRect){x, y, right - x, bottom - y};
 }
 
-static VkrUiRect vkr_ui_node_draw_aabb(const VkrUiSystem *system,
-                                       const VkrUiFrameNode *node) {
+vkr_internal VkrUiRect vkr_ui_node_draw_aabb(const VkrUiSystem *system,
+                                             const VkrUiFrameNode *node) {
   VkrUiRect aabb = {0};
   for (uint32_t i = 0u; i < node->draw_command_count; ++i) {
     const VkrUiDrawCommand *command =
@@ -1588,7 +1599,7 @@ static VkrUiRect vkr_ui_node_draw_aabb(const VkrUiSystem *system,
   return aabb;
 }
 
-static bool8_t vkr_ui_build_tiles(VkrUiSystem *system) {
+vkr_internal bool8_t vkr_ui_build_tiles(VkrUiSystem *system) {
   VkrUiTileDamage *damage =
       system->retained_count
           ? vkr_allocator_alloc(system->frame_allocator,
@@ -1632,7 +1643,7 @@ static bool8_t vkr_ui_build_tiles(VkrUiSystem *system) {
   return true_v;
 }
 
-static uint32_t vkr_ui_command_estimate(VkrUiSystem *system) {
+vkr_internal uint32_t vkr_ui_command_estimate(VkrUiSystem *system) {
   uint64_t estimate = 0u;
   for (uint32_t i = 0u; i < system->frame_node_count; ++i) {
     const VkrUiFrameNode *node = &system->frame_nodes[i];

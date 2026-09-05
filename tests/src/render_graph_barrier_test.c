@@ -17,8 +17,8 @@
  *    when a later pass reads the whole image.
  */
 
-static bool8_t rg_barrier_test_write_json(const char *path,
-                                          const char *contents) {
+vkr_internal bool8_t rg_barrier_test_write_json(const char *path,
+                                                const char *contents) {
   FILE *file = fopen(path, "wb");
   if (!file)
     return false_v;
@@ -29,9 +29,9 @@ static bool8_t rg_barrier_test_write_json(const char *path,
   return ok;
 }
 
-static bool8_t rg_barrier_test_load_json(VkrAllocator *allocator,
-                                         const char *contents,
-                                         VkrRgJsonGraph *out_graph) {
+vkr_internal bool8_t rg_barrier_test_load_json(VkrAllocator *allocator,
+                                               const char *contents,
+                                               VkrRgJsonGraph *out_graph) {
   const char *path = "build/test_render_graph_contract.rendergraph.json";
   if (!rg_barrier_test_write_json(path, contents))
     return false_v;
@@ -47,9 +47,9 @@ static bool8_t rg_barrier_test_load_json(VkrAllocator *allocator,
  * graphics pass with no attachments, and storage read/write is compute work
  * anyway.
  */
-static VkrRgPassBuilder rg_barrier_test_add_pass(VkrRenderGraph *graph,
-                                                 VkrRgPassType type,
-                                                 const char *name) {
+vkr_internal VkrRgPassBuilder rg_barrier_test_add_pass(VkrRenderGraph *graph,
+                                                       VkrRgPassType type,
+                                                       const char *name) {
   // Name storage must outlive the graph; every caller passes a string literal.
   String8 pass_name =
       string8_create_from_cstr((const uint8_t *)name, string_length(name));
@@ -60,12 +60,12 @@ static VkrRgPassBuilder rg_barrier_test_add_pass(VkrRenderGraph *graph,
   return pb;
 }
 
-static const VkrRgPass *rg_barrier_test_pass(const VkrRenderGraph *graph,
-                                             uint32_t index) {
+vkr_internal const VkrRgPass *rg_barrier_test_pass(const VkrRenderGraph *graph,
+                                                   uint32_t index) {
   return vector_get_VkrRgPass((Vector_VkrRgPass *)&graph->passes, index);
 }
 
-static void test_resource_instance_domains(void) {
+vkr_internal void test_resource_instance_domains(void) {
   printf("  Running test_resource_instance_domains...\n");
   assert(vkr_rg_resource_instance_domain(VKR_RG_RESOURCE_FLAG_NONE) ==
          VKR_RG_RESOURCE_INSTANCE_SINGLE);
@@ -86,7 +86,7 @@ static void test_resource_instance_domains(void) {
   printf("  test_resource_instance_domains PASSED\n");
 }
 
-static void test_json_bindings_and_condition_parity(void) {
+vkr_internal void test_json_bindings_and_condition_parity(void) {
   printf("  Running test_json_bindings_and_condition_parity...\n");
   Arena *arena = arena_create(MB(2), MB(2));
   VkrAllocator allocator = {.ctx = arena};
@@ -158,7 +158,7 @@ static void test_json_bindings_and_condition_parity(void) {
   printf("  test_json_bindings_and_condition_parity PASSED\n");
 }
 
-static void test_transmission_condition(void) {
+vkr_internal void test_transmission_condition(void) {
   printf("  Running test_transmission_condition...\n");
   Arena *arena = arena_create(MB(1), MB(1));
   VkrAllocator allocator = {.ctx = arena};
@@ -212,7 +212,8 @@ static void test_transmission_condition(void) {
   printf("  test_transmission_condition PASSED\n");
 }
 
-static void test_transmission_compact_conditions_and_viewport_buffer(void) {
+vkr_internal void
+test_transmission_compact_conditions_and_viewport_buffer(void) {
   printf("  Running "
          "test_transmission_compact_conditions_and_viewport_buffer...\n");
   Arena *arena = arena_create(MB(2), MB(2));
@@ -320,7 +321,8 @@ static void test_transmission_compact_conditions_and_viewport_buffer(void) {
          "PASSED\n");
 }
 
-static void test_shadow_map_capacity_is_independent_of_active_cascades(void) {
+vkr_internal void
+test_shadow_map_capacity_is_independent_of_active_cascades(void) {
   printf("  Running "
          "test_shadow_map_capacity_is_independent_of_active_cascades...\n");
   Arena *arena = arena_create(MB(1), MB(1));
@@ -356,7 +358,7 @@ static void test_shadow_map_capacity_is_independent_of_active_cascades(void) {
          "PASSED\n");
 }
 
-static void test_shadow_reads_follow_active_cascades(void) {
+vkr_internal void test_shadow_reads_follow_active_cascades(void) {
   printf("  Running test_shadow_reads_follow_active_cascades...\n");
   Arena *arena = arena_create(MB(1), MB(1));
   VkrAllocator allocator = {.ctx = arena};
@@ -412,7 +414,7 @@ static void test_shadow_reads_follow_active_cascades(void) {
   printf("  test_shadow_reads_follow_active_cascades PASSED\n");
 }
 
-static void test_repeat_condition_mask_filters_iterations(void) {
+vkr_internal void test_repeat_condition_mask_filters_iterations(void) {
   printf("  Running test_repeat_condition_mask_filters_iterations...\n");
   Arena *arena = arena_create(MB(1), MB(1));
   VkrAllocator allocator = {.ctx = arena};
@@ -484,7 +486,7 @@ static void test_repeat_condition_mask_filters_iterations(void) {
   printf("  test_repeat_condition_mask_filters_iterations PASSED\n");
 }
 
-static void test_conflicting_runtime_bindings_are_rejected(void) {
+vkr_internal void test_conflicting_runtime_bindings_are_rejected(void) {
   printf("  Running test_conflicting_runtime_bindings_are_rejected...\n");
   Arena *arena = arena_create(MB(1), MB(1));
   VkrAllocator allocator = {.ctx = arena};
@@ -512,7 +514,7 @@ static void test_conflicting_runtime_bindings_are_rejected(void) {
   printf("  test_conflicting_runtime_bindings_are_rejected PASSED\n");
 }
 
-static void test_typed_executor_and_direct_dispatch_contract(void) {
+vkr_internal void test_typed_executor_and_direct_dispatch_contract(void) {
   printf("  Running test_typed_executor_and_direct_dispatch_contract...\n");
   Arena *arena = arena_create(MB(2), MB(2));
   VkrAllocator allocator = {.ctx = arena};
@@ -571,7 +573,7 @@ static void test_typed_executor_and_direct_dispatch_contract(void) {
   printf("  test_typed_executor_and_direct_dispatch_contract PASSED\n");
 }
 
-static void test_indirect_dispatch_dependency_contract(void) {
+vkr_internal void test_indirect_dispatch_dependency_contract(void) {
   printf("  Running test_indirect_dispatch_dependency_contract...\n");
   Arena *arena = arena_create(MB(2), MB(2));
   VkrAllocator allocator = {.ctx = arena};
@@ -628,7 +630,7 @@ static void test_indirect_dispatch_dependency_contract(void) {
   printf("  test_indirect_dispatch_dependency_contract PASSED\n");
 }
 
-static void test_json_mip_chain_and_subresource_uses(void) {
+vkr_internal void test_json_mip_chain_and_subresource_uses(void) {
   printf("  Running test_json_mip_chain_and_subresource_uses...\n");
   Arena *arena = arena_create(MB(2), MB(2));
   VkrAllocator allocator = {.ctx = arena};
@@ -684,7 +686,7 @@ static void test_json_mip_chain_and_subresource_uses(void) {
   printf("  test_json_mip_chain_and_subresource_uses PASSED\n");
 }
 
-static void test_bloom_reverse_repeat_barriers(void) {
+vkr_internal void test_bloom_reverse_repeat_barriers(void) {
   printf("  Running test_bloom_reverse_repeat_barriers...\n");
   Arena *arena = arena_create(MB(2), MB(2));
   VkrAllocator allocator = {.ctx = arena};
@@ -790,7 +792,7 @@ static void test_bloom_reverse_repeat_barriers(void) {
   printf("  test_bloom_reverse_repeat_barriers PASSED\n");
 }
 
-static void test_deferred_image_formats(void) {
+vkr_internal void test_deferred_image_formats(void) {
   printf("  Running test_deferred_image_formats...\n");
   Arena *arena = arena_create(MB(1), MB(1));
   VkrAllocator allocator = {.ctx = arena};
@@ -830,7 +832,7 @@ static void test_deferred_image_formats(void) {
   printf("  test_deferred_image_formats PASSED\n");
 }
 
-static void test_same_layout_write_then_read_emits_barrier(void) {
+vkr_internal void test_same_layout_write_then_read_emits_barrier(void) {
   printf("  Running test_same_layout_write_then_read_emits_barrier...\n");
   Arena *arena = arena_create(MB(1), MB(1));
   VkrAllocator allocator = {.ctx = arena};
@@ -877,7 +879,7 @@ static void test_same_layout_write_then_read_emits_barrier(void) {
   printf("  test_same_layout_write_then_read_emits_barrier PASSED\n");
 }
 
-static void test_explicit_stage_and_subresource_dependency(void) {
+vkr_internal void test_explicit_stage_and_subresource_dependency(void) {
   printf("  Running test_explicit_stage_and_subresource_dependency...\n");
   Arena *arena = arena_create(MB(1), MB(1));
   VkrAllocator allocator = {.ctx = arena};
@@ -943,7 +945,7 @@ static void test_explicit_stage_and_subresource_dependency(void) {
   printf("  test_explicit_stage_and_subresource_dependency PASSED\n");
 }
 
-static void test_present_target_import_and_terminal_states(void) {
+vkr_internal void test_present_target_import_and_terminal_states(void) {
   printf("  Running test_present_target_import_and_terminal_states...\n");
   Arena *arena = arena_create(MB(1), MB(1));
   VkrAllocator allocator = {.ctx = arena};
@@ -1010,7 +1012,7 @@ static void test_present_target_import_and_terminal_states(void) {
   printf("  test_present_target_import_and_terminal_states PASSED\n");
 }
 
-static void test_write_after_write_emits_barrier(void) {
+vkr_internal void test_write_after_write_emits_barrier(void) {
   printf("  Running test_write_after_write_emits_barrier...\n");
   Arena *arena = arena_create(MB(1), MB(1));
   VkrAllocator allocator = {.ctx = arena};
@@ -1052,7 +1054,7 @@ static void test_write_after_write_emits_barrier(void) {
   printf("  test_write_after_write_emits_barrier PASSED\n");
 }
 
-static void test_read_after_read_emits_nothing(void) {
+vkr_internal void test_read_after_read_emits_nothing(void) {
   printf("  Running test_read_after_read_emits_nothing...\n");
   Arena *arena = arena_create(MB(1), MB(1));
   VkrAllocator allocator = {.ctx = arena};
@@ -1089,7 +1091,7 @@ static void test_read_after_read_emits_nothing(void) {
   printf("  test_read_after_read_emits_nothing PASSED\n");
 }
 
-static void test_same_pass_storage_read_write_combines(void) {
+vkr_internal void test_same_pass_storage_read_write_combines(void) {
   printf("  Running test_same_pass_storage_read_write_combines...\n");
   Arena *arena = arena_create(MB(1), MB(1));
   VkrAllocator allocator = {.ctx = arena};
@@ -1127,7 +1129,7 @@ static void test_same_pass_storage_read_write_combines(void) {
   printf("  test_same_pass_storage_read_write_combines PASSED\n");
 }
 
-static void test_same_pass_incompatible_layouts_are_rejected(void) {
+vkr_internal void test_same_pass_incompatible_layouts_are_rejected(void) {
   printf("  Running test_same_pass_incompatible_layouts_are_rejected...\n");
   Arena *arena = arena_create(MB(1), MB(1));
   VkrAllocator allocator = {.ctx = arena};
@@ -1158,7 +1160,7 @@ static void test_same_pass_incompatible_layouts_are_rejected(void) {
   printf("  test_same_pass_incompatible_layouts_are_rejected PASSED\n");
 }
 
-static void test_cascade_slices_are_per_layer_then_coalesce(void) {
+vkr_internal void test_cascade_slices_are_per_layer_then_coalesce(void) {
   printf("  Running test_cascade_slices_are_per_layer_then_coalesce...\n");
   Arena *arena = arena_create(MB(1), MB(1));
   VkrAllocator allocator = {.ctx = arena};
@@ -1180,8 +1182,8 @@ static void test_cascade_slices_are_per_layer_then_coalesce(void) {
   VkrRgImageHandle shadow_map =
       vkr_rg_create_image(graph, string8_lit("shadow_map"), &desc);
 
-  static const char *cascade_names[4] = {"Cascade0", "Cascade1", "Cascade2",
-                                         "Cascade3"};
+  vkr_local_persist const char *cascade_names[4] = {"Cascade0", "Cascade1",
+                                                    "Cascade2", "Cascade3"};
   for (uint32_t i = 0; i < cascade_count; ++i) {
     VkrRgPassBuilder pb = rg_barrier_test_add_pass(
         graph, VKR_RG_PASS_TYPE_GRAPHICS, cascade_names[i]);
@@ -1228,7 +1230,7 @@ static void test_cascade_slices_are_per_layer_then_coalesce(void) {
   printf("  test_cascade_slices_are_per_layer_then_coalesce PASSED\n");
 }
 
-static void test_disjoint_layer_writes_coalesce_on_read(void) {
+vkr_internal void test_disjoint_layer_writes_coalesce_on_read(void) {
   printf("  Running test_disjoint_layer_writes_coalesce_on_read...\n");
   Arena *arena = arena_create(MB(1), MB(1));
   VkrAllocator allocator = {.ctx = arena};
@@ -1279,7 +1281,7 @@ static void test_disjoint_layer_writes_coalesce_on_read(void) {
   printf("  test_disjoint_layer_writes_coalesce_on_read PASSED\n");
 }
 
-static void test_capture_read_uses_exact_array_slice(void) {
+vkr_internal void test_capture_read_uses_exact_array_slice(void) {
   printf("  Running test_capture_read_uses_exact_array_slice...\n");
   Arena *arena = arena_create(MB(1), MB(1));
   VkrAllocator allocator = {.ctx = arena};
@@ -1325,7 +1327,7 @@ static void test_capture_read_uses_exact_array_slice(void) {
   printf("  test_capture_read_uses_exact_array_slice PASSED\n");
 }
 
-static void test_subresource_range_resolve(void) {
+vkr_internal void test_subresource_range_resolve(void) {
   printf("  Running test_subresource_range_resolve...\n");
 
   uint32_t base_mip = 0;
@@ -1367,7 +1369,7 @@ static void test_subresource_range_resolve(void) {
   printf("  test_subresource_range_resolve PASSED\n");
 }
 
-static void test_main_graph_editor_metalfx_topology(void) {
+vkr_internal void test_main_graph_editor_metalfx_topology(void) {
   printf("  Running test_main_graph_editor_metalfx_topology...\n");
   Arena *arena = arena_create(MB(16), MB(2));
   VkrAllocator allocator = {.ctx = arena};
@@ -1468,7 +1470,7 @@ static void test_main_graph_editor_metalfx_topology(void) {
   printf("  test_main_graph_editor_metalfx_topology PASSED\n");
 }
 
-static void test_main_graph_fits_runtime_pass_capacity(void) {
+vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   printf("  Running test_main_graph_fits_runtime_pass_capacity...\n");
   Arena *arena = arena_create(MB(16), MB(2));
   VkrAllocator allocator = {.ctx = arena};
@@ -1595,7 +1597,7 @@ static void test_main_graph_fits_runtime_pass_capacity(void) {
   printf("  test_main_graph_fits_runtime_pass_capacity PASSED\n");
 }
 
-static void test_frame_allocator_reclaims_authored_passes(void) {
+vkr_internal void test_frame_allocator_reclaims_authored_passes(void) {
   printf("  Running test_frame_allocator_reclaims_authored_passes...\n");
   Arena *persistent_arena = arena_create(MB(1), MB(1));
   Arena *frame_arena = arena_create(KB(64), KB(64));
@@ -1665,11 +1667,12 @@ typedef struct RgRetainedTestStore {
   uint32_t commit_calls;
 } RgRetainedTestStore;
 
-static RgRetainedTestStore g_retained_store;
+vkr_global RgRetainedTestStore g_retained_store;
 
-static void rg_retained_test_read(void *context, uint32_t image_index,
-                                  uint32_t instance_index, uint32_t subresource,
-                                  VkrRgRetainedState *out_state) {
+vkr_internal void rg_retained_test_read(void *context, uint32_t image_index,
+                                        uint32_t instance_index,
+                                        uint32_t subresource,
+                                        VkrRgRetainedState *out_state) {
   RgRetainedTestStore *store = context;
   store->read_calls++;
   if (image_index >= 8u || instance_index >= 4u || subresource >= 64u)
@@ -1677,10 +1680,10 @@ static void rg_retained_test_read(void *context, uint32_t image_index,
   *out_state = store->states[image_index][instance_index][subresource];
 }
 
-static void rg_retained_test_commit(void *context, uint32_t image_index,
-                                    uint32_t instance_index,
-                                    uint32_t subresource,
-                                    const VkrRgRetainedState *state) {
+vkr_internal void rg_retained_test_commit(void *context, uint32_t image_index,
+                                          uint32_t instance_index,
+                                          uint32_t subresource,
+                                          const VkrRgRetainedState *state) {
   RgRetainedTestStore *store = context;
   store->commit_calls++;
   if (image_index >= 8u || instance_index >= 4u || subresource >= 64u)
@@ -1688,7 +1691,7 @@ static void rg_retained_test_commit(void *context, uint32_t image_index,
   store->states[image_index][instance_index][subresource] = *state;
 }
 
-static void test_retained_flag_rejects_conflicting_lifetimes(void) {
+vkr_internal void test_retained_flag_rejects_conflicting_lifetimes(void) {
   printf("  Running test_retained_flag_rejects_conflicting_lifetimes...\n");
   Arena *arena = arena_create(MB(2), MB(2));
   VkrAllocator allocator = {.ctx = arena};
@@ -1697,8 +1700,8 @@ static void test_retained_flag_rejects_conflicting_lifetimes(void) {
   /* RETAINED describes content lifetime; each of these describes where
      instances come from or who owns them, and contradicts in-place retention.
    */
-  static const char *const conflicts[] = {"TRANSIENT", "EXTERNAL", "HISTORY",
-                                          "PER_FRAME_SLOT"};
+  vkr_local_persist const char *const conflicts[] = {
+      "TRANSIENT", "EXTERNAL", "HISTORY", "PER_FRAME_SLOT"};
   for (uint32_t i = 0; i < ArrayCount(conflicts); ++i) {
     char source[512];
     snprintf(source, sizeof(source),
@@ -1736,7 +1739,7 @@ static void test_retained_flag_rejects_conflicting_lifetimes(void) {
   printf("  test_retained_flag_rejects_conflicting_lifetimes PASSED\n");
 }
 
-static void test_retained_is_not_an_instance_domain(void) {
+vkr_internal void test_retained_is_not_an_instance_domain(void) {
   printf("  Running test_retained_is_not_an_instance_domain...\n");
   /* RETAINED alone must not move a resource off the single-instance domain,
      and must not displace PER_IMAGE when both are set. */
@@ -1748,7 +1751,7 @@ static void test_retained_is_not_an_instance_domain(void) {
   printf("  test_retained_is_not_an_instance_domain PASSED\n");
 }
 
-static void test_retained_read_without_contents_fails_compile(void) {
+vkr_internal void test_retained_read_without_contents_fails_compile(void) {
   printf("  Running test_retained_read_without_contents_fails_compile...\n");
   Arena *arena = arena_create(MB(4), MB(4));
   VkrAllocator allocator = {.ctx = arena};
@@ -1793,7 +1796,7 @@ static void test_retained_read_without_contents_fails_compile(void) {
   printf("  test_retained_read_without_contents_fails_compile PASSED\n");
 }
 
-static void test_retained_commit_then_read_succeeds(void) {
+vkr_internal void test_retained_commit_then_read_succeeds(void) {
   printf("  Running test_retained_commit_then_read_succeeds...\n");
   Arena *arena = arena_create(MB(4), MB(4));
   VkrAllocator allocator = {.ctx = arena};
@@ -1848,7 +1851,7 @@ static void test_retained_commit_then_read_succeeds(void) {
   printf("  test_retained_commit_then_read_succeeds PASSED\n");
 }
 
-static void test_retained_uncommitted_frame_rolls_back(void) {
+vkr_internal void test_retained_uncommitted_frame_rolls_back(void) {
   printf("  Running test_retained_uncommitted_frame_rolls_back...\n");
   Arena *arena = arena_create(MB(4), MB(4));
   VkrAllocator allocator = {.ctx = arena};
@@ -1892,7 +1895,7 @@ static void test_retained_uncommitted_frame_rolls_back(void) {
   printf("  test_retained_uncommitted_frame_rolls_back PASSED\n");
 }
 
-static void test_retained_state_is_per_instance_and_per_layer(void) {
+vkr_internal void test_retained_state_is_per_instance_and_per_layer(void) {
   printf("  Running test_retained_state_is_per_instance_and_per_layer...\n");
   Arena *arena = arena_create(MB(4), MB(4));
   VkrAllocator allocator = {.ctx = arena};
@@ -1952,7 +1955,7 @@ static void test_retained_state_is_per_instance_and_per_layer(void) {
   printf("  test_retained_state_is_per_instance_and_per_layer PASSED\n");
 }
 
-static void test_retained_write_does_not_validate_other_layers(void) {
+vkr_internal void test_retained_write_does_not_validate_other_layers(void) {
   printf("  Running test_retained_write_does_not_validate_other_layers...\n");
   Arena *arena = arena_create(MB(4), MB(4));
   VkrAllocator allocator = {.ctx = arena};
@@ -1998,7 +2001,7 @@ static void test_retained_write_does_not_validate_other_layers(void) {
   printf("  test_retained_write_does_not_validate_other_layers PASSED\n");
 }
 
-static void test_graph_builder_failure_does_not_publish(void) {
+vkr_internal void test_graph_builder_failure_does_not_publish(void) {
   ContainerTestAllocator state = {.fail = true};
   VkrAllocator allocator = container_test_allocator(&state);
   assert(!vkr_rg_create(&allocator));
@@ -2044,7 +2047,7 @@ static void test_graph_builder_failure_does_not_publish(void) {
   assert(!state.live_bytes);
 }
 
-static void test_graph_compile_allocation_failures_can_retry(void) {
+vkr_internal void test_graph_compile_allocation_failures_can_retry(void) {
   bool8_t completed = false_v;
   for (uint64_t failure = 1; failure < 64; ++failure) {
     ContainerTestAllocator state = {0};
@@ -2106,7 +2109,8 @@ static void test_graph_compile_allocation_failures_can_retry(void) {
   assert(completed);
 }
 
-static void test_graph_json_allocation_failures_release_owned_storage(void) {
+vkr_internal void
+test_graph_json_allocation_failures_release_owned_storage(void) {
   const char *source =
       "{\"version\":1,\"name\":\"failure\",\"resources\":["
       "{\"name\":\"image\",\"type\":\"image\",\"extent\":{\"mode\":\"fixed\","

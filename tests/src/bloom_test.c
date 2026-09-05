@@ -8,15 +8,15 @@
 #include <stdio.h>
 #include <string.h>
 
-static void bloom_assert_config_equal(const VkrBloomConfig *a,
-                                      const VkrBloomConfig *b) {
+vkr_internal void bloom_assert_config_equal(const VkrBloomConfig *a,
+                                            const VkrBloomConfig *b) {
   assert(a->max_mip_count == b->max_mip_count);
   assert(a->min_mip_extent == b->min_mip_extent);
   assert(a->firefly_clamp == b->firefly_clamp);
   assert(a->filter == b->filter);
 }
 
-static void test_bloom_config_and_mips(void) {
+vkr_internal void test_bloom_config_and_mips(void) {
   printf("  Running test_bloom_config_and_mips...\n");
   const VkrBloomConfig defaults = vkr_bloom_config_default();
   const VkrBloomConfig zeroed = {0};
@@ -48,7 +48,7 @@ static void test_bloom_config_and_mips(void) {
   printf("  test_bloom_config_and_mips PASSED\n");
 }
 
-static void test_bloom_packet_validation(void) {
+vkr_internal void test_bloom_packet_validation(void) {
   printf("  Running test_bloom_packet_validation...\n");
   VkrFrameInput packet = {
       .version = VKR_FRAME_INPUT_VERSION,

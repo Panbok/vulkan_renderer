@@ -55,7 +55,7 @@ typedef struct VkrSceneWorldEmitContext {
   uint32_t transparent_index;
 } VkrSceneWorldEmitContext;
 
-vkr_internal inline void
+vkr_internal INLINE void
 vkr_scene_emit_world_source(VkrSceneWorldEmitContext *context,
                             const VkrSceneWorldSource *source) {
   const Vec3 half_extents =
@@ -118,7 +118,7 @@ vkr_scene_emit_world_source(VkrSceneWorldEmitContext *context,
  * already maintains; it over-covers, which is the safe direction for a volume
  * that must contain every caster.
  */
-vkr_internal inline void
+vkr_internal INLINE void
 vkr_scene_accumulate_caster_bounds(Vec3 *min, Vec3 *max, bool8_t *valid,
                                    Vec3 center, float32_t radius) {
   min->x = vkr_min_f32(min->x, center.x - radius);

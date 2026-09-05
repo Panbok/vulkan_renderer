@@ -15,7 +15,7 @@ typedef struct VkrDrawAlphaRouting {
   bool8_t shadow_alpha_tested;
 } VkrDrawAlphaRouting;
 
-static INLINE VkrDrawAlphaRouting
+vkr_internal INLINE VkrDrawAlphaRouting
 vkr_draw_alpha_routing(VkrMaterialAlphaMode alpha_mode) {
   return (VkrDrawAlphaRouting){
       .world_transparent =
@@ -26,7 +26,7 @@ vkr_draw_alpha_routing(VkrMaterialAlphaMode alpha_mode) {
 }
 
 /** Maps the two pipeline-affecting material properties to a stable bucket. */
-static INLINE VkrWorldDrawStateBucket vkr_world_draw_state_bucket(
+vkr_internal INLINE VkrWorldDrawStateBucket vkr_world_draw_state_bucket(
     VkrMaterialAlphaMode alpha_mode, bool8_t double_sided) {
   const bool8_t cutout =
       alpha_mode == VKR_MATERIAL_ALPHA_CUTOUT ? true_v : false_v;

@@ -8,11 +8,11 @@
 #include <math.h>
 #include <stdio.h>
 
-static bool32_t temporal_near(float32_t a, float32_t b) {
+vkr_internal bool32_t temporal_near(float32_t a, float32_t b) {
   return fabsf(a - b) < 1e-6f;
 }
 
-static VkrTemporalFrameInput temporal_input(uint32_t frame_index) {
+vkr_internal VkrTemporalFrameInput temporal_input(uint32_t frame_index) {
   return (VkrTemporalFrameInput){
       .view = mat4_identity(),
       .projection =
@@ -25,7 +25,7 @@ static VkrTemporalFrameInput temporal_input(uint32_t frame_index) {
   };
 }
 
-static void test_temporal_jitter_and_commit(void) {
+vkr_internal void test_temporal_jitter_and_commit(void) {
   printf("  Running test_temporal_jitter_and_commit...\n");
   VkrTemporalState state = {0};
   VkrTemporalFrameInput input = temporal_input(0u);
@@ -49,7 +49,7 @@ static void test_temporal_jitter_and_commit(void) {
   printf("  test_temporal_jitter_and_commit PASSED\n");
 }
 
-static void test_temporal_projection_pixel_shift(void) {
+vkr_internal void test_temporal_projection_pixel_shift(void) {
   printf("  Running test_temporal_projection_pixel_shift...\n");
   Mat4 projections[] = {
       mat4_perspective(vkr_to_radians(60.0f), 16.0f / 9.0f, 0.1f, 100.0f),
@@ -97,13 +97,13 @@ static void test_temporal_projection_pixel_shift(void) {
   printf("  test_temporal_projection_pixel_shift PASSED\n");
 }
 
-static bool32_t temporal_signature_equal(VkrTemporalSceneSignature a,
-                                         VkrTemporalSceneSignature b) {
+vkr_internal bool32_t temporal_signature_equal(VkrTemporalSceneSignature a,
+                                               VkrTemporalSceneSignature b) {
   return a.eligible && b.eligible && a.hash[0] == b.hash[0] &&
          a.hash[1] == b.hash[1];
 }
 
-static void test_temporal_scene_signature(void) {
+vkr_internal void test_temporal_scene_signature(void) {
   printf("  Running test_temporal_scene_signature...\n");
   VkrWorldDrawCandidate candidate = {
       .geometry = {1u, 1u},
@@ -222,7 +222,7 @@ static void test_temporal_scene_signature(void) {
   printf("  test_temporal_scene_signature PASSED\n");
 }
 
-static void test_temporal_reset_reasons(void) {
+vkr_internal void test_temporal_reset_reasons(void) {
   printf("  Running test_temporal_reset_reasons...\n");
   VkrTemporalState state = {0};
   VkrTemporalFrameInput input = temporal_input(10u);
@@ -258,7 +258,7 @@ static void test_temporal_reset_reasons(void) {
   printf("  test_temporal_reset_reasons PASSED\n");
 }
 
-static void test_temporal_sequence_repeats(void) {
+vkr_internal void test_temporal_sequence_repeats(void) {
   printf("  Running test_temporal_sequence_repeats...\n");
   VkrTemporalState state = {0};
   VkrTemporalFrameInput first_input = temporal_input(0u);
@@ -271,7 +271,7 @@ static void test_temporal_sequence_repeats(void) {
   printf("  test_temporal_sequence_repeats PASSED\n");
 }
 
-static void test_temporal_rotation_cut(void) {
+vkr_internal void test_temporal_rotation_cut(void) {
   printf("  Running test_temporal_rotation_cut...\n");
   VkrTemporalState state = {0};
   VkrTemporalFrameInput input = temporal_input(0u);
@@ -285,7 +285,7 @@ static void test_temporal_rotation_cut(void) {
   printf("  test_temporal_rotation_cut PASSED\n");
 }
 
-static void test_temporal_sky_reprojection(void) {
+vkr_internal void test_temporal_sky_reprojection(void) {
   printf("  Running test_temporal_sky_reprojection...\n");
   const Vec3 current_eye = {25.0f, -9.0f, 8.0f};
   const Mat4 current_view = mat4_translate((Vec3){-25.0f, 9.0f, -8.0f});
@@ -335,7 +335,7 @@ static void test_temporal_sky_reprojection(void) {
   printf("  test_temporal_sky_reprojection PASSED\n");
 }
 
-static void test_temporal_orthographic_sky_reprojection(void) {
+vkr_internal void test_temporal_orthographic_sky_reprojection(void) {
   printf("  Running test_temporal_orthographic_sky_reprojection...\n");
   const Vec3 current_eye = {25.0f, -9.0f, 8.0f};
   const Vec3 previous_eye = {-7.0f, 3.0f, 12.0f};
@@ -407,7 +407,7 @@ static void test_temporal_orthographic_sky_reprojection(void) {
   printf("  test_temporal_orthographic_sky_reprojection PASSED\n");
 }
 
-static void test_dynamic_resolution_config(void) {
+vkr_internal void test_dynamic_resolution_config(void) {
   printf("  Running test_dynamic_resolution_config...\n");
   VkrDynamicResolutionConfig normalized = {0};
   float32_t initial_scale = 0.0f;
@@ -453,7 +453,7 @@ static void test_dynamic_resolution_config(void) {
   printf("  test_dynamic_resolution_config PASSED\n");
 }
 
-static void test_dynamic_resolution_hysteresis(void) {
+vkr_internal void test_dynamic_resolution_hysteresis(void) {
   printf("  Running test_dynamic_resolution_hysteresis...\n");
   const VkrDynamicResolutionConfig config = {
       .min_scale = 0.5f,

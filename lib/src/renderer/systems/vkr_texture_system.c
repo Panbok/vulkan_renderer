@@ -683,7 +683,7 @@ void vkr_texture_build_resolution_candidates(VkrAllocator *allocator,
 
 VkrTextureVktContainerType
 vkr_texture_detect_vkt_container(const uint8_t *bytes, uint64_t size) {
-  static const uint8_t ktx2_signature[12] = {
+  vkr_local_persist const uint8_t ktx2_signature[12] = {
       0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
 
   if (!bytes || size < 4) {
@@ -3585,7 +3585,8 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
   assert_log(out_error != NULL, "Out error is NULL");
 
   // Face suffixes: +X, -X, +Y, -Y, +Z, -Z -> r, l, u, d, f, b
-  static const char *face_suffixes[6] = {"_r", "_l", "_u", "_d", "_f", "_b"};
+  vkr_local_persist const char *face_suffixes[6] = {"_r", "_l", "_u",
+                                                    "_d", "_f", "_b"};
 
   VkrAllocator *temp_alloc = &system->allocator;
   VkrAllocatorScope temp_scope = vkr_allocator_begin_scope(temp_alloc);

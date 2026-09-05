@@ -1,8 +1,8 @@
 #include "core/vkr_subsystem_plan.h"
 #include "vkr_harness.h"
 
-static int32_t vkr_harness_fingerprint_field_compare(const void *a,
-                                                     const void *b) {
+vkr_internal int32_t vkr_harness_fingerprint_field_compare(const void *a,
+                                                           const void *b) {
   const VkrHarnessFingerprintField *lhs = a;
   const VkrHarnessFingerprintField *rhs = b;
   return string_compare(lhs->name, rhs->name);
@@ -15,8 +15,9 @@ static int32_t vkr_harness_fingerprint_field_compare(const void *a,
  * canonical buffer would have to be sized from the field struct's capacities
  * and silently overflows the moment either grows.
  */
-static void vkr_harness_fingerprint_absorb(VkrHarnessSha256 *hash,
-                                           const char *text, uint32_t length) {
+vkr_internal void vkr_harness_fingerprint_absorb(VkrHarnessSha256 *hash,
+                                                 const char *text,
+                                                 uint32_t length) {
   const uint8_t prefix[4] = {(uint8_t)(length >> 24u), (uint8_t)(length >> 16u),
                              (uint8_t)(length >> 8u), (uint8_t)length};
   vkr_harness_sha256_update(hash, prefix, sizeof(prefix));
@@ -62,7 +63,7 @@ bool8_t vkr_harness_fingerprint(const VkrHarnessFingerprintField *fields,
  * Fails rather than truncates: a clipped name or value would silently give two
  * different effective configurations the same comparison identity.
  */
-static bool8_t vkr_harness_add_field(
+vkr_internal bool8_t vkr_harness_add_field(
     VkrHarnessFingerprintField fields[VKR_HARNESS_MAX_FINGERPRINT_FIELDS],
     uint32_t *count, const char *name, const char *format, ...) {
   if (*count >= VKR_HARNESS_MAX_FINGERPRINT_FIELDS) {

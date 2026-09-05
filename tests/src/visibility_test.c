@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static void test_packet_pre_recording_rejection(void) {
+vkr_internal void test_packet_pre_recording_rejection(void) {
   VkrValidationError validation = {0};
   VkrWorldPassPayload world = {
       .gpu_candidate_count = VKR_GPU_DRAW_CANDIDATE_CAPACITY + 1u,
@@ -68,7 +68,7 @@ static void test_packet_pre_recording_rejection(void) {
   assert(vkr_frame_input_validate(&packet, &validation) ==
          VKR_RENDERER_ERROR_NONE);
 }
-static void test_candidate_residency_generation_contract(void) {
+vkr_internal void test_candidate_residency_generation_contract(void) {
   VkrCandidateResidencyState committed = {0};
   assert(vkr_candidate_residency_needs_static_repack(&committed, 1u, 1u, 1u));
   const VkrCandidateResidencyState staged =
@@ -93,7 +93,7 @@ static void test_candidate_residency_generation_contract(void) {
   assert(!vkr_candidate_residency_stage(0u, 1u, 1u, 0u, 0u).valid);
 }
 
-static void test_packet_independent_transmission_stream(void) {
+vkr_internal void test_packet_independent_transmission_stream(void) {
   const VkrWorldDrawCandidate candidate = {0};
   const VkrWorldPassPayload world = {
       .transmission_gpu_candidates = &candidate,
@@ -109,7 +109,7 @@ static void test_packet_independent_transmission_stream(void) {
          VKR_RENDERER_ERROR_NONE);
 }
 
-static void test_packet_borrowed_array_validation(void) {
+vkr_internal void test_packet_borrowed_array_validation(void) {
   VkrValidationError validation = {0};
   VkrWorldPassPayload world = {.instance_count = 1u};
   VkrFrameInput packet = {
@@ -149,7 +149,7 @@ static void test_packet_borrowed_array_validation(void) {
          VKR_RENDERER_ERROR_NONE);
 }
 
-static void test_packet_text_geometry_validation(void) {
+vkr_internal void test_packet_text_geometry_validation(void) {
   VkrValidationError validation = {0};
   VkrPreparedTextDraw text = {.vertex_count = 1u, .index_count = 1u};
   VkrWorldPassPayload world = {.text_draws = &text, .text_draw_count = 1u};
@@ -174,7 +174,7 @@ static void test_packet_text_geometry_validation(void) {
          VKR_RENDERER_ERROR_UNSUPPORTED_INPUT);
 }
 
-static void test_packet_ui_stream_validation(void) {
+vkr_internal void test_packet_ui_stream_validation(void) {
   VkrUiVertex vertices[4] = {
       {.position = {0.0f, 0.0f}},
       {.position = {10.0f, 0.0f}},
@@ -228,7 +228,7 @@ static void test_packet_ui_stream_validation(void) {
          0);
 }
 
-static void test_alpha_routing(void) {
+vkr_internal void test_alpha_routing(void) {
   const VkrDrawAlphaRouting opaque =
       vkr_draw_alpha_routing(VKR_MATERIAL_ALPHA_OPAQUE);
   const VkrDrawAlphaRouting cutout =
@@ -240,7 +240,7 @@ static void test_alpha_routing(void) {
   assert(blend.world_transparent && !blend.shadow_alpha_tested);
 }
 
-static void test_gpu_state_buckets(void) {
+vkr_internal void test_gpu_state_buckets(void) {
   assert(vkr_world_draw_state_bucket(VKR_MATERIAL_ALPHA_OPAQUE, false_v) ==
          VKR_WORLD_DRAW_STATE_OPAQUE_BACK);
   assert(vkr_world_draw_state_bucket(VKR_MATERIAL_ALPHA_OPAQUE, true_v) ==
@@ -255,7 +255,7 @@ static void test_gpu_state_buckets(void) {
           VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER) == 0u);
 }
 
-static bool8_t clip_contains_point(Mat4 view_projection, Vec3 point) {
+vkr_internal bool8_t clip_contains_point(Mat4 view_projection, Vec3 point) {
   const Vec4 clip =
       mat4_mul_vec4(view_projection, vec4_new(point.x, point.y, point.z, 1.0f));
   return clip.w > 0.0f && clip.z >= 0.0f && clip.z <= clip.w &&
@@ -265,7 +265,7 @@ static bool8_t clip_contains_point(Mat4 view_projection, Vec3 point) {
              : false_v;
 }
 
-static void test_frustum_never_rejects_visible_geometry(void) {
+vkr_internal void test_frustum_never_rejects_visible_geometry(void) {
   const Mat4 view =
       mat4_look_at(vec3_zero(), vec3_new(0.0f, 0.0f, -1.0f), vec3_up());
   const Mat4 projection =
@@ -287,7 +287,7 @@ static void test_frustum_never_rejects_visible_geometry(void) {
   assert(visible_count > 0u);
 }
 
-static void test_orthographic_frustum_uses_vulkan_depth(void) {
+vkr_internal void test_orthographic_frustum_uses_vulkan_depth(void) {
   const Mat4 view = mat4_look_at(vec3_zero(), vec3_forward(), vec3_up());
   const Mat4 projection =
       mat4_ortho_zo_yinv(-10.0f, 10.0f, -10.0f, 10.0f, 0.1f, 100.0f);
@@ -299,7 +299,7 @@ static void test_orthographic_frustum_uses_vulkan_depth(void) {
       !vkr_frustum_test_sphere(&frustum, vec3_new(0.0f, 0.0f, -101.0f), 0.0f));
 }
 
-static void test_transparent_sort_and_emit(void) {
+vkr_internal void test_transparent_sort_and_emit(void) {
   VkrTransparentDrawCandidate candidates[3] = {
       {.mesh = {1u, 1u},
        .geometry = {11u, 1u},
@@ -345,7 +345,7 @@ static void test_transparent_sort_and_emit(void) {
          instances[2].temporal_generation == 4u);
 }
 
-static void test_submesh_sphere_is_conservative_under_scale(void) {
+vkr_internal void test_submesh_sphere_is_conservative_under_scale(void) {
   Mat4 model = mat4_identity();
   model.m00 = 2.0f;
   model.m11 = 3.0f;
@@ -369,7 +369,7 @@ static void test_submesh_sphere_is_conservative_under_scale(void) {
 /* An old acquisition must not render or cancel a newer frame. This checks the
  * public rejection boundary without creating a device or replacing native ops.
  */
-static void test_frame_rejects_stale_acquisition(void) {
+vkr_internal void test_frame_rejects_stale_acquisition(void) {
   VkrRenderer renderer = {.frame_active = true_v, .frame_number = 9u};
   VkrFrame stale = {.renderer = &renderer, .number = 8u};
   VkrFrame current = {.renderer = &renderer, .number = 9u};

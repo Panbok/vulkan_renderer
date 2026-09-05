@@ -3,8 +3,8 @@
 #include "core/logger.h"
 #include "renderer/vkr_renderer.h"
 
-static bool8_t picking_set_target_size(VkrPickingContext *ctx, uint32_t width,
-                                       uint32_t height) {
+vkr_internal bool8_t picking_set_target_size(VkrPickingContext *ctx,
+                                             uint32_t width, uint32_t height) {
   if (!ctx || width == 0 || height == 0) {
     return false_v;
   }

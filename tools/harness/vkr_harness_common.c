@@ -58,10 +58,10 @@ vkr_harness_renderer_backend_resolve(const VkrHarnessRendererConfig *renderer,
  * @return True when `metric` belongs to `subsystem`'s own family, spelled
  *         either `<subsystem>.*` or `draw.<subsystem>.*`.
  */
-static bool8_t vkr_harness_metric_is_owned_by(const char *metric,
-                                              const char *subsystem) {
-  static const char draw_prefix[] = "draw.";
-  static const uint64_t draw_length = sizeof(draw_prefix) - 1u;
+vkr_internal bool8_t vkr_harness_metric_is_owned_by(const char *metric,
+                                                    const char *subsystem) {
+  vkr_local_persist const char draw_prefix[] = "draw.";
+  vkr_local_persist const uint64_t draw_length = sizeof(draw_prefix) - 1u;
   const uint64_t length = string_length(subsystem);
   if (string_n_equals(metric, draw_prefix, draw_length)) {
     metric += draw_length;
@@ -76,9 +76,9 @@ static bool8_t vkr_harness_metric_is_owned_by(const char *metric,
  * omitted it, so naming one requests it. No such metric family is registered
  * today; this is the seam `autotest` assertions arrive through in Phase 5.
  */
-static VkrSubsystemMask
+vkr_internal VkrSubsystemMask
 vkr_harness_assertion_subsystems(const VkrHarnessCase *case_manifest) {
-  static const struct {
+  vkr_local_persist const struct {
     const char *name;
     VkrRendererSubsystem subsystem;
   } owners[] = {
@@ -204,8 +204,8 @@ void vkr_harness_error_set(VkrHarnessError *error, const char *code,
   va_end(args);
 }
 
-static void vkr_harness_stream_write(bool8_t error_stream, const char *format,
-                                     va_list args) {
+vkr_internal void vkr_harness_stream_write(bool8_t error_stream,
+                                           const char *format, va_list args) {
   char message[4096];
   string_format_v(message, sizeof(message), format, args);
   if (error_stream) {
@@ -348,8 +348,9 @@ const char *vkr_harness_boot_name(VkrHarnessBootProfile boot) {
 
 /** Index-aligned with VkrHarnessStatisticKind; also the report/CSV wire names.
  */
-static const char *const vkr_harness_statistic_names[VKR_HARNESS_STAT_COUNT] = {
-    "mean", "p50", "p95", "min", "max", "stddev", "total"};
+vkr_global const char
+    *const vkr_harness_statistic_names[VKR_HARNESS_STAT_COUNT] = {
+        "mean", "p50", "p95", "min", "max", "stddev", "total"};
 
 const char *vkr_harness_statistic_name(VkrHarnessStatisticKind statistic) {
   return statistic < VKR_HARNESS_STAT_COUNT

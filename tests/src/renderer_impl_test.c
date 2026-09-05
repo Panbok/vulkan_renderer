@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 
-static void test_texture_pressure_budget_hysteresis(void) {
+vkr_internal void test_texture_pressure_budget_hysteresis(void) {
   printf("  Running test_texture_pressure_budget_hysteresis...\n");
   VkrDeviceMemoryStats stats = {
       .heap_count = 1u,

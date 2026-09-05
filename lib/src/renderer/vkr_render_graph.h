@@ -41,7 +41,7 @@ typedef struct VkrRgImageHandle {
  * @param h Image handle
  * @return true if valid
  */
-vkr_internal inline bool8_t vkr_rg_image_handle_valid(VkrRgImageHandle h) {
+vkr_internal INLINE bool8_t vkr_rg_image_handle_valid(VkrRgImageHandle h) {
   return h.id != 0;
 }
 
@@ -65,7 +65,7 @@ typedef struct VkrRgBufferHandle {
  * @param h Buffer handle
  * @return true if valid
  */
-vkr_internal inline bool8_t vkr_rg_buffer_handle_valid(VkrRgBufferHandle h) {
+vkr_internal INLINE bool8_t vkr_rg_buffer_handle_valid(VkrRgBufferHandle h) {
   return h.id != 0;
 }
 

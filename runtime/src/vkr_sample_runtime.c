@@ -42,7 +42,7 @@ typedef struct FilterModeEntry {
   const char *label;
 } FilterModeEntry;
 
-static const FilterModeEntry FILTER_MODES[] = {
+vkr_global const FilterModeEntry FILTER_MODES[] = {
     {VKR_FILTER_NEAREST, VKR_FILTER_NEAREST, VKR_MIP_FILTER_NONE, false_v,
      "No filtering (point, base level)"},
     {VKR_FILTER_NEAREST, VKR_FILTER_NEAREST, VKR_MIP_FILTER_NEAREST, false_v,

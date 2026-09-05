@@ -8,8 +8,8 @@
 #include <stdio.h>
 #include <string.h>
 
-static void gtao_assert_config_equal(const VkrGtaoConfig *a,
-                                     const VkrGtaoConfig *b) {
+vkr_internal void gtao_assert_config_equal(const VkrGtaoConfig *a,
+                                           const VkrGtaoConfig *b) {
   assert(a->max_depth_mip_count == b->max_depth_mip_count);
   assert(a->slice_count == b->slice_count);
   assert(a->steps_per_slice == b->steps_per_slice);
@@ -20,7 +20,7 @@ static void gtao_assert_config_equal(const VkrGtaoConfig *a,
   assert(a->denoise_blur_beta == b->denoise_blur_beta);
 }
 
-static void test_gtao_config_and_mips(void) {
+vkr_internal void test_gtao_config_and_mips(void) {
   printf("  Running test_gtao_config_and_mips...\n");
   const VkrGtaoConfig defaults = vkr_gtao_config_default();
   const VkrGtaoConfig zeroed = {0};
@@ -56,7 +56,7 @@ static void test_gtao_config_and_mips(void) {
   printf("  test_gtao_config_and_mips PASSED\n");
 }
 
-static void test_gtao_gpu_params(void) {
+vkr_internal void test_gtao_gpu_params(void) {
   printf("  Running test_gtao_gpu_params...\n");
   const VkrGtaoConfig config = vkr_gtao_config_default();
   const VkrGtaoFrame frame =
@@ -93,7 +93,7 @@ static void test_gtao_gpu_params(void) {
   assert(isfinite(maximum_params.depth_mip_falloff_mul));
   printf("  test_gtao_gpu_params PASSED\n");
 }
-static void test_gtao_packet_validation(void) {
+vkr_internal void test_gtao_packet_validation(void) {
   printf("  Running test_gtao_packet_validation...\n");
   VkrFrameInput packet = {
       .version = VKR_FRAME_INPUT_VERSION,

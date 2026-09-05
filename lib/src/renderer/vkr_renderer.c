@@ -19,19 +19,19 @@
 
 #include <math.h>
 
-static bool8_t vkr_renderer_env_enabled(const char *name) {
+vkr_internal bool8_t vkr_renderer_env_enabled(const char *name) {
   const char *value = name ? getenv(name) : NULL;
   return value && value[0] != '\0' && strcmp(value, "0") != 0 ? true_v
                                                               : false_v;
 }
 
-static uint32_t vkr_renderer_scaled_extent(uint32_t extent,
-                                           float32_t render_scale) {
+vkr_internal uint32_t vkr_renderer_scaled_extent(uint32_t extent,
+                                                 float32_t render_scale) {
   return ClampBot((uint32_t)((float64_t)extent * (float64_t)render_scale + 0.5),
                   1u);
 }
 
-static VkrMetricReason
+vkr_internal VkrMetricReason
 vkr_renderer_gpu_timing_metric_reason(VkrRendererImplGpuTimingReason reason) {
   switch (reason) {
   case VKR_RENDERER_IMPL_GPU_TIMING_REASON_DISABLED:
@@ -57,7 +57,7 @@ _Static_assert(VKR_RENDERER_IMPL_SHADOW_CASCADE_COUNT ==
                    VKR_SHADOW_CASCADE_COUNT_MAX,
                "backend-neutral and frontend cascade counts must match");
 
-static void
+vkr_internal void
 vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
                                      VkrRendererImplSubmitResult *destination) {
   if (!source || !destination) {
@@ -211,7 +211,7 @@ vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
 }
 #endif
 
-static void
+vkr_internal void
 vkr_renderer_record_gpu_candidate_metrics(VkrRenderer *renderer,
                                           const VkrFrameInput *packet) {
   const uint32_t count =
@@ -239,64 +239,57 @@ vkr_renderer_record_gpu_candidate_metrics(VkrRenderer *renderer,
                                                   mega);
 }
 
-static VkrRendererError
-vkr_renderer_validation_fail(VkrValidationError *out_error,
-                             VkrRendererError code, const char *field_path,
-                             const char *message);
-static bool32_t
-vkr_renderer_backend_initialize(VkrRenderer *renderer, VkrWindow *window,
-                                uint32_t width, uint32_t height,
-                                VkrDeviceRequirements *device_requirements,
-                                const VkrRendererBackendConfig *backend_config,
-                                VkrRendererError *out_error);
-static void vkr_renderer_backend_destroy(VkrRenderer *renderer);
-static void vkr_renderer_backend_get_device_information(
+vkr_internal VkrRendererError vkr_renderer_validation_fail(
+    VkrValidationError *out_error, VkrRendererError code,
+    const char *field_path, const char *message);
+vkr_internal bool32_t vkr_renderer_backend_initialize(
+    VkrRenderer *renderer, VkrWindow *window, uint32_t width, uint32_t height,
+    VkrDeviceRequirements *device_requirements,
+    const VkrRendererBackendConfig *backend_config,
+    VkrRendererError *out_error);
+vkr_internal void vkr_renderer_backend_destroy(VkrRenderer *renderer);
+vkr_internal void vkr_renderer_backend_get_device_information(
     VkrRenderer *renderer, VkrDeviceInformation *device_information,
     Arena *temp_arena);
-static VkrRendererError vkr_renderer_backend_wait_idle(VkrRenderer *renderer);
-static uint64_t vkr_renderer_backend_submit_serial(VkrRenderer *renderer);
-static uint64_t
+vkr_internal VkrRendererError
+vkr_renderer_backend_wait_idle(VkrRenderer *renderer);
+vkr_internal uint64_t vkr_renderer_backend_submit_serial(VkrRenderer *renderer);
+vkr_internal uint64_t
 vkr_renderer_backend_completed_submit_serial(VkrRenderer *renderer);
-static bool8_t
-vkr_renderer_backend_upload_wait_stats(VkrRenderer *renderer,
-                                       VkrRendererUploadWaitStats *out_stats);
-static bool8_t
-vkr_renderer_backend_command_slot_waits(VkrRenderer *renderer,
-                                        uint64_t *out_wait_count);
-static bool8_t
-vkr_renderer_backend_device_memory_stats(VkrRenderer *renderer,
-                                         VkrDeviceMemoryStats *out_stats);
-static bool8_t
-vkr_renderer_backend_memory_metrics(VkrRenderer *renderer,
-                                    VkrRendererImplMemoryMetrics *out_metrics);
-static void vkr_renderer_backend_resize(VkrRenderer *renderer, uint32_t width,
-                                        uint32_t height);
-static VkrRendererError
-vkr_renderer_backend_present_target_recreate(VkrRenderer *renderer,
-                                             uint32_t width, uint32_t height,
-                                             uint32_t image_count);
-static uint32_t
+vkr_internal bool8_t vkr_renderer_backend_upload_wait_stats(
+    VkrRenderer *renderer, VkrRendererUploadWaitStats *out_stats);
+vkr_internal bool8_t vkr_renderer_backend_command_slot_waits(
+    VkrRenderer *renderer, uint64_t *out_wait_count);
+vkr_internal bool8_t vkr_renderer_backend_device_memory_stats(
+    VkrRenderer *renderer, VkrDeviceMemoryStats *out_stats);
+vkr_internal bool8_t vkr_renderer_backend_memory_metrics(
+    VkrRenderer *renderer, VkrRendererImplMemoryMetrics *out_metrics);
+vkr_internal void vkr_renderer_backend_resize(VkrRenderer *renderer,
+                                              uint32_t width, uint32_t height);
+vkr_internal VkrRendererError vkr_renderer_backend_present_target_recreate(
+    VkrRenderer *renderer, uint32_t width, uint32_t height,
+    uint32_t image_count);
+vkr_internal uint32_t
 vkr_renderer_backend_frame_in_flight_index(VkrRenderer *renderer);
-static bool8_t vkr_renderer_backend_poll_submit_result(
+vkr_internal bool8_t vkr_renderer_backend_poll_submit_result(
     VkrRenderer *renderer, uint64_t after_submit_value,
     VkrRendererImplSubmitResult *out_result);
-static VkrAllocator *vkr_renderer_backend_allocator(VkrRenderer *renderer);
-static VkrRendererError vkr_renderer_backend_prepare_frame(
+vkr_internal VkrAllocator *
+vkr_renderer_backend_allocator(VkrRenderer *renderer);
+vkr_internal VkrRendererError vkr_renderer_backend_prepare_frame(
     VkrRenderer *renderer, const VkrFrameConfig *config, VkrFrame *out_setup);
-static VkrRendererError
-vkr_renderer_backend_render_frame(VkrRenderer *renderer,
-                                  const VkrFrameInput *packet,
-                                  VkrRendererFrameMetrics *out_metrics,
-                                  VkrValidationError *out_validation_error);
-static VkrRendererError
+vkr_internal VkrRendererError vkr_renderer_backend_render_frame(
+    VkrRenderer *renderer, const VkrFrameInput *packet,
+    VkrRendererFrameMetrics *out_metrics,
+    VkrValidationError *out_validation_error);
+vkr_internal VkrRendererError
 vkr_renderer_backend_cancel_frame(VkrRenderer *renderer);
 
-static bool32_t
-vkr_renderer_backend_initialize(VkrRenderer *renderer, VkrWindow *window,
-                                uint32_t width, uint32_t height,
-                                VkrDeviceRequirements *device_requirements,
-                                const VkrRendererBackendConfig *backend_config,
-                                VkrRendererError *out_error) {
+vkr_internal bool32_t vkr_renderer_backend_initialize(
+    VkrRenderer *renderer, VkrWindow *window, uint32_t width, uint32_t height,
+    VkrDeviceRequirements *device_requirements,
+    const VkrRendererBackendConfig *backend_config,
+    VkrRendererError *out_error) {
 #if defined(PLATFORM_APPLE)
   (void)device_requirements;
   /* Full-resolution deferred intermediates scale with the completion-slot
@@ -663,7 +656,7 @@ void vkr_renderer_destroy(VkrRenderer *renderer) {
     vkr_dmemory_allocator_destroy(&renderer->render_graph_allocator);
 }
 
-static void vkr_renderer_backend_destroy(VkrRenderer *renderer) {
+vkr_internal void vkr_renderer_backend_destroy(VkrRenderer *renderer) {
 #if defined(PLATFORM_APPLE)
   vkr_metal_packet_renderer_destroy(renderer->metal_renderer);
   renderer->metal_renderer = NULL;
@@ -679,9 +672,9 @@ typedef struct VkrFramePreparation {
   VkrExposureFrameInput exposure_input;
 } VkrFramePreparation;
 
-static void vkr_renderer_prepare_frame_data(VkrRenderer *rf,
-                                            const VkrFrameInput *packet,
-                                            VkrFramePreparation *prepared) {
+vkr_internal void
+vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
+                                VkrFramePreparation *prepared) {
   prepared->frame.input = *packet;
   const bool8_t scaled = rf->render_scale != 1.0f;
   const uint32_t temporal_width = scaled ? rf->render_width
@@ -745,7 +738,7 @@ static void vkr_renderer_prepare_frame_data(VkrRenderer *rf,
       packet->globals.gtao_radius, packet->globals.gtao_power);
 }
 
-static void vkr_renderer_backend_get_device_information(
+vkr_internal void vkr_renderer_backend_get_device_information(
     VkrRenderer *renderer, VkrDeviceInformation *device_information,
     Arena *temp_arena) {
 #if defined(PLATFORM_APPLE)
@@ -892,7 +885,8 @@ static void vkr_renderer_backend_get_device_information(
 #endif
 }
 
-static VkrRendererError vkr_renderer_backend_wait_idle(VkrRenderer *renderer) {
+vkr_internal VkrRendererError
+vkr_renderer_backend_wait_idle(VkrRenderer *renderer) {
 #if defined(PLATFORM_APPLE)
   return vkr_metal_packet_renderer_wait_idle(renderer->metal_renderer)
              ? VKR_RENDERER_ERROR_NONE
@@ -904,7 +898,8 @@ static VkrRendererError vkr_renderer_backend_wait_idle(VkrRenderer *renderer) {
 #endif
 }
 
-static uint64_t vkr_renderer_backend_submit_serial(VkrRenderer *renderer) {
+vkr_internal uint64_t
+vkr_renderer_backend_submit_serial(VkrRenderer *renderer) {
 #if defined(PLATFORM_APPLE)
   return vkr_metal_packet_renderer_submit_value(renderer->metal_renderer);
 #else
@@ -912,7 +907,7 @@ static uint64_t vkr_renderer_backend_submit_serial(VkrRenderer *renderer) {
 #endif
 }
 
-static uint64_t
+vkr_internal uint64_t
 vkr_renderer_backend_completed_submit_serial(VkrRenderer *renderer) {
 #if defined(PLATFORM_APPLE)
   return vkr_metal_packet_renderer_completed_value(renderer->metal_renderer);
@@ -921,9 +916,8 @@ vkr_renderer_backend_completed_submit_serial(VkrRenderer *renderer) {
 #endif
 }
 
-static bool8_t
-vkr_renderer_backend_upload_wait_stats(VkrRenderer *renderer,
-                                       VkrRendererUploadWaitStats *out_stats) {
+vkr_internal bool8_t vkr_renderer_backend_upload_wait_stats(
+    VkrRenderer *renderer, VkrRendererUploadWaitStats *out_stats) {
 #if defined(PLATFORM_APPLE)
   return vkr_metal_packet_renderer_get_and_reset_upload_wait_count(
       renderer->metal_renderer, &out_stats->fence_wait_count);
@@ -937,9 +931,8 @@ vkr_renderer_backend_upload_wait_stats(VkrRenderer *renderer,
 #endif
 }
 
-static bool8_t
-vkr_renderer_backend_command_slot_waits(VkrRenderer *renderer,
-                                        uint64_t *out_wait_count) {
+vkr_internal bool8_t vkr_renderer_backend_command_slot_waits(
+    VkrRenderer *renderer, uint64_t *out_wait_count) {
 #if defined(PLATFORM_APPLE)
   return vkr_metal_packet_renderer_get_and_reset_command_slot_wait_count(
       renderer->metal_renderer, out_wait_count);
@@ -949,9 +942,8 @@ vkr_renderer_backend_command_slot_waits(VkrRenderer *renderer,
 #endif
 }
 
-static bool8_t
-vkr_renderer_backend_device_memory_stats(VkrRenderer *renderer,
-                                         VkrDeviceMemoryStats *out_stats) {
+vkr_internal bool8_t vkr_renderer_backend_device_memory_stats(
+    VkrRenderer *renderer, VkrDeviceMemoryStats *out_stats) {
 #if defined(PLATFORM_APPLE)
   if (!renderer || !renderer->metal_renderer || !out_stats)
     return false_v;
@@ -997,9 +989,8 @@ vkr_renderer_backend_device_memory_stats(VkrRenderer *renderer,
 #endif
 }
 
-static bool8_t
-vkr_renderer_backend_memory_metrics(VkrRenderer *renderer,
-                                    VkrRendererImplMemoryMetrics *out_metrics) {
+vkr_internal bool8_t vkr_renderer_backend_memory_metrics(
+    VkrRenderer *renderer, VkrRendererImplMemoryMetrics *out_metrics) {
 #if defined(PLATFORM_APPLE)
   VkrMetalMemoryDeviceMetrics source = {0};
   if (!vkr_metal_packet_renderer_get_memory_metrics(renderer->metal_renderer,
@@ -1097,8 +1088,8 @@ vkr_renderer_backend_memory_metrics(VkrRenderer *renderer,
 #endif
 }
 
-static void vkr_renderer_backend_resize(VkrRenderer *renderer, uint32_t width,
-                                        uint32_t height) {
+vkr_internal void vkr_renderer_backend_resize(VkrRenderer *renderer,
+                                              uint32_t width, uint32_t height) {
 #if defined(PLATFORM_APPLE)
   if (!renderer ||
       renderer->upscale_mode != VKR_UPSCALE_MODE_METALFX_TEMPORAL ||
@@ -1122,10 +1113,9 @@ static void vkr_renderer_backend_resize(VkrRenderer *renderer, uint32_t width,
 #endif
 }
 
-static VkrRendererError
-vkr_renderer_backend_present_target_recreate(VkrRenderer *renderer,
-                                             uint32_t width, uint32_t height,
-                                             uint32_t image_count) {
+vkr_internal VkrRendererError vkr_renderer_backend_present_target_recreate(
+    VkrRenderer *renderer, uint32_t width, uint32_t height,
+    uint32_t image_count) {
 #if defined(PLATFORM_APPLE)
   (void)image_count;
   VkrRendererError idle = vkr_renderer_backend_wait_idle(renderer);
@@ -1161,7 +1151,7 @@ vkr_renderer_backend_present_target_recreate(VkrRenderer *renderer,
 #endif
 }
 
-static uint32_t
+vkr_internal uint32_t
 vkr_renderer_backend_frame_in_flight_index(VkrRenderer *renderer) {
 #if defined(PLATFORM_APPLE)
   /* Ask the backend which slot it acquired, the way the Vulkan path does.
@@ -1197,7 +1187,7 @@ bool8_t vkr_renderer_backend_capture_release(VkrRenderer *renderer,
 #endif
 }
 
-static bool8_t vkr_renderer_backend_poll_submit_result(
+vkr_internal bool8_t vkr_renderer_backend_poll_submit_result(
     VkrRenderer *renderer, uint64_t after_submit_value,
     VkrRendererImplSubmitResult *out_result) {
 #if defined(PLATFORM_APPLE)
@@ -1269,7 +1259,8 @@ static bool8_t vkr_renderer_backend_poll_submit_result(
 #endif
 }
 
-static VkrAllocator *vkr_renderer_backend_allocator(VkrRenderer *renderer) {
+vkr_internal VkrAllocator *
+vkr_renderer_backend_allocator(VkrRenderer *renderer) {
 #if defined(PLATFORM_APPLE)
   return &renderer->render_graph_allocator;
 #else
@@ -1482,10 +1473,9 @@ uint32_t vkr_renderer_frame_in_flight_count(VkrRenderer *renderer) {
   return renderer->impl.caps.frame_in_flight_count;
 }
 
-static VkrRendererError
-vkr_renderer_validation_fail(VkrValidationError *out_error,
-                             VkrRendererError code, const char *field_path,
-                             const char *message) {
+vkr_internal VkrRendererError vkr_renderer_validation_fail(
+    VkrValidationError *out_error, VkrRendererError code,
+    const char *field_path, const char *message) {
   if (out_error) {
     out_error->code = code;
     out_error->field_path = field_path;
@@ -1494,7 +1484,7 @@ vkr_renderer_validation_fail(VkrValidationError *out_error,
   return code;
 }
 
-static VkrRendererError vkr_renderer_backend_prepare_frame(
+vkr_internal VkrRendererError vkr_renderer_backend_prepare_frame(
     VkrRenderer *renderer, const VkrFrameConfig *config, VkrFrame *out_setup) {
 #if defined(PLATFORM_APPLE)
   if (renderer->frame_active) {
@@ -1637,11 +1627,10 @@ VkrRendererError vkr_renderer_begin_frame(VkrRenderer *renderer,
   return error;
 }
 
-static VkrRendererError
-vkr_renderer_backend_render_frame(VkrRenderer *renderer,
-                                  const VkrFrameInput *packet,
-                                  VkrRendererFrameMetrics *out_metrics,
-                                  VkrValidationError *out_validation_error) {
+vkr_internal VkrRendererError vkr_renderer_backend_render_frame(
+    VkrRenderer *renderer, const VkrFrameInput *packet,
+    VkrRendererFrameMetrics *out_metrics,
+    VkrValidationError *out_validation_error) {
 #if defined(PLATFORM_APPLE)
   VkrFramePreparation prepared;
   vkr_renderer_prepare_frame_data(renderer, packet, &prepared);
@@ -1972,10 +1961,9 @@ void vkr_renderer_resize(VkrRenderer *renderer, uint32_t width,
   rf->temporal_reset_reasons |= VKR_TEMPORAL_RESET_EXPLICIT;
 }
 
-static VkrRendererError
-vkr_renderer_configure_scene_output_extent(VkrRenderer *renderer,
-                                           uint32_t width, uint32_t height,
-                                           bool8_t overridden) {
+vkr_internal VkrRendererError vkr_renderer_configure_scene_output_extent(
+    VkrRenderer *renderer, uint32_t width, uint32_t height,
+    bool8_t overridden) {
   if (!renderer || width == 0u || height == 0u)
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
   if (renderer->frame_active)
@@ -2043,7 +2031,7 @@ void vkr_renderer_invalidate_exposure_history(VkrRenderer *renderer) {
       VKR_TEMPORAL_RESET_EXPLICIT;
 }
 
-static VkrRendererError
+vkr_internal VkrRendererError
 vkr_renderer_backend_cancel_frame(VkrRenderer *renderer) {
 #if defined(PLATFORM_APPLE)
   if (!vkr_metal_packet_renderer_cancel_frame(renderer->metal_renderer))

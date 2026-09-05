@@ -1,6 +1,6 @@
 #include "core/vkr_subsystem_plan.h"
 
-static const VkrSubsystemMask
+vkr_global const VkrSubsystemMask
     vkr_renderer_subsystem_dependencies[VKR_RENDERER_SUBSYSTEM_COUNT] = {
         [VKR_RENDERER_SUBSYSTEM_CAMERA] = 0u,
         [VKR_RENDERER_SUBSYSTEM_RENDER_GRAPH] = 0u,

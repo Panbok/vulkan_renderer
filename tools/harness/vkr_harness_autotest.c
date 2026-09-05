@@ -12,10 +12,9 @@ typedef struct VkrHarnessCommandResult {
   char sha256[VKR_HARNESS_DIGEST_MAX];
 } VkrHarnessCommandResult;
 
-static bool8_t
-vkr_harness_autotest_result_parse(const char *path, Arena *arena,
-                                  VkrHarnessCommandResult *result,
-                                  VkrHarnessError *error) {
+vkr_internal bool8_t vkr_harness_autotest_result_parse(
+    const char *path, Arena *arena, VkrHarnessCommandResult *result,
+    VkrHarnessError *error) {
   uint8_t *bytes = NULL;
   uint64_t length = 0u;
   VkrHarnessJsonDocument *document =
@@ -57,7 +56,7 @@ vkr_harness_autotest_result_parse(const char *path, Arena *arena,
   return true_v;
 }
 
-static int vkr_harness_autotest_spawn(
+vkr_internal int vkr_harness_autotest_spawn(
     const char *executable, const char *repo_root, const char *command,
     const char *case_path, const char *profile_path,
     const char *artifact_root_relative, const char *stdout_path,
@@ -91,11 +90,10 @@ static int vkr_harness_autotest_spawn(
  * reference. A child that named a report outside the run root is rejected
  * rather than quoted.
  */
-static bool8_t
-vkr_harness_autotest_reference(const char *repo_root, const char *run_relative,
-                               const VkrHarnessCommandResult *source,
-                               const char *absolute_root, Arena *arena,
-                               VkrHarnessRunReference *reference) {
+vkr_internal bool8_t vkr_harness_autotest_reference(
+    const char *repo_root, const char *run_relative,
+    const VkrHarnessCommandResult *source, const char *absolute_root,
+    Arena *arena, VkrHarnessRunReference *reference) {
   const uint64_t prefix = string_length(run_relative);
   if (!string_n_equals(source->report, run_relative, prefix) ||
       source->report[prefix] != '/') {
@@ -122,7 +120,7 @@ vkr_harness_autotest_reference(const char *repo_root, const char *run_relative,
  * The combined run makes no observations of its own, so its comparison
  * identity is exactly the pair of child identities it references.
  */
-static void vkr_harness_autotest_combine_fingerprint(
+vkr_internal void vkr_harness_autotest_combine_fingerprint(
     const char *primary, const char *snapshot,
     char out_digest[VKR_HARNESS_DIGEST_MAX], VkrHarnessError *error) {
   VkrHarnessFingerprintField fields[2] = {0};
@@ -138,10 +136,9 @@ static void vkr_harness_autotest_combine_fingerprint(
  * an errored or invalid child says nothing about the other's verdict, and a
  * pass cannot be claimed without an accepted baseline to have passed against.
  */
-static VkrHarnessExitCode
-vkr_harness_autotest_verdict(VkrHarnessExitCode primary,
-                             VkrHarnessExitCode snapshot,
-                             bool8_t baseline_available) {
+vkr_internal VkrHarnessExitCode vkr_harness_autotest_verdict(
+    VkrHarnessExitCode primary, VkrHarnessExitCode snapshot,
+    bool8_t baseline_available) {
   if (primary == VKR_HARNESS_EXIT_ERROR || snapshot == VKR_HARNESS_EXIT_ERROR) {
     return VKR_HARNESS_EXIT_ERROR;
   }

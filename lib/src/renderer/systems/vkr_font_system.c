@@ -257,7 +257,7 @@ vkr_internal VkrFontConfig vkr_font_config_parse(String8 fontcfg_path,
         config.size = (uint32_t)size_val;
       }
     } else {
-      static const char *const cooker_only_keys[] = {
+      vkr_local_persist const char *const cooker_only_keys[] = {
           "source",
           "face_index",
           "charset",

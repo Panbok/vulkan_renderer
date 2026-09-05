@@ -18,7 +18,7 @@
 #include <unistd.h>
 #endif
 
-static const char *HARNESS_CASE_FORMAT =
+vkr_global const char *HARNESS_CASE_FORMAT =
     "{\"schema_version\":1,\"id\":\"smoke.test.static\",\"suite\":\"smoke\","
     "\"scene\":\"assets/scenes/default.scene.json\",\"seed\":1,"
     "\"resolution\":[%u,%u],\"boot\":\"full\",\"target\":\"%s\","
@@ -27,11 +27,9 @@ static const char *HARNESS_CASE_FORMAT =
     "\"skybox\":true,\"shadow_preset\":\"default\",\"shadow_cascades\":4},"
     "\"camera\":%s%s}";
 
-static bool8_t harness_parse_case_extent(uint32_t width, uint32_t height,
-                                         const char *target,
-                                         const char *present,
-                                         const char *camera, const char *tail,
-                                         VkrHarnessCase *out_case) {
+vkr_internal bool8_t harness_parse_case_extent(
+    uint32_t width, uint32_t height, const char *target, const char *present,
+    const char *camera, const char *tail, VkrHarnessCase *out_case) {
   char json[8192];
   snprintf(json, sizeof(json), HARNESS_CASE_FORMAT, width, height, target,
            present, camera, tail ? tail : "");
@@ -39,14 +37,14 @@ static bool8_t harness_parse_case_extent(uint32_t width, uint32_t height,
   return vkr_harness_case_parse(json, strlen(json), "memory", out_case, &error);
 }
 
-static bool8_t harness_parse_case(const char *target, const char *present,
-                                  const char *camera, const char *tail,
-                                  VkrHarnessCase *out_case) {
+vkr_internal bool8_t harness_parse_case(const char *target, const char *present,
+                                        const char *camera, const char *tail,
+                                        VkrHarnessCase *out_case) {
   return harness_parse_case_extent(64u, 64u, target, present, camera, tail,
                                    out_case);
 }
 
-static void test_harness_camera_float_range_boundary(void) {
+vkr_internal void test_harness_camera_float_range_boundary(void) {
   const char *formats[] = {
       "{\"mode\":\"static\",\"position\":[%s,0,0],\"yaw\":0,\"pitch\":0}",
       "{\"mode\":\"static\",\"position\":[0,0,0],\"yaw\":%s,\"pitch\":0}",
@@ -67,7 +65,7 @@ static void test_harness_camera_float_range_boundary(void) {
   }
 }
 
-static void test_harness_hash_and_statistics(void) {
+vkr_internal void test_harness_hash_and_statistics(void) {
   printf("  Running test_harness_hash_and_statistics...\n");
   char digest[VKR_HARNESS_DIGEST_MAX];
   vkr_harness_sha256_bytes("abc", 3u, digest);
@@ -111,7 +109,7 @@ static void test_harness_hash_and_statistics(void) {
   printf("  test_harness_hash_and_statistics PASSED\n");
 }
 
-static void test_harness_current_frame_work_metrics(void) {
+vkr_internal void test_harness_current_frame_work_metrics(void) {
   printf("  Running test_harness_current_frame_work_metrics...\n");
   assert(vkr_harness_metric_is_current_frame_work("visibility.objects_tested"));
   assert(vkr_harness_metric_is_current_frame_work(
@@ -140,7 +138,7 @@ static void test_harness_current_frame_work_metrics(void) {
   printf("  test_harness_current_frame_work_metrics PASSED\n");
 }
 
-static void test_harness_case_parser(void) {
+vkr_internal void test_harness_case_parser(void) {
   printf("  Running test_harness_case_parser...\n");
   const char *static_camera =
       "{\"mode\":\"static\",\"position\":[1,2,3],\"yaw\":10,\"pitch\":-5}";
@@ -284,17 +282,17 @@ static void test_harness_case_parser(void) {
   snprintf(invalid_backend, sizeof(invalid_backend), "%s", metal_case);
   char *metal_value = strstr(invalid_backend, "\"metal\"");
   assert(metal_value);
-  memcpy(metal_value, "\"dx12x\"", 7u);
+  MemCopy(metal_value, "\"dx12x\"", 7u);
   assert(!vkr_harness_case_parse(invalid_backend, strlen(invalid_backend),
                                  "memory", &parsed, &backend_error));
   char invalid_scale[2048];
   snprintf(invalid_scale, sizeof(invalid_scale), "%s", metal_case);
   char *scale_value = strstr(invalid_scale, "\"render_scale\":0.5");
   assert(scale_value);
-  memcpy(scale_value + strlen("\"render_scale\":"), "0.0", 3u);
+  MemCopy(scale_value + strlen("\"render_scale\":"), "0.0", 3u);
   assert(!vkr_harness_case_parse(invalid_scale, strlen(invalid_scale), "memory",
                                  &parsed, &backend_error));
-  memcpy(scale_value + strlen("\"render_scale\":"), "1.1", 3u);
+  MemCopy(scale_value + strlen("\"render_scale\":"), "1.1", 3u);
   assert(!vkr_harness_case_parse(invalid_scale, strlen(invalid_scale), "memory",
                                  &parsed, &backend_error));
   const char *metalfx_case =
@@ -353,14 +351,14 @@ static void test_harness_case_parser(void) {
   snprintf(invalid_lambda, sizeof(invalid_lambda), "%s", metal_case);
   char *lambda_value = strstr(invalid_lambda, "0.25");
   assert(lambda_value);
-  memcpy(lambda_value, "1.25", 4u);
+  MemCopy(lambda_value, "1.25", 4u);
   assert(!vkr_harness_case_parse(invalid_lambda, strlen(invalid_lambda),
                                  "memory", &parsed, &backend_error));
   char invalid_map_size[2048];
   snprintf(invalid_map_size, sizeof(invalid_map_size), "%s", metal_case);
   char *map_size_value = strstr(invalid_map_size, "4096");
   assert(map_size_value);
-  memcpy(map_size_value, "4095", 4u);
+  MemCopy(map_size_value, "4095", 4u);
   assert(!vkr_harness_case_parse(invalid_map_size, strlen(invalid_map_size),
                                  "memory", &parsed, &backend_error));
   char invalid_ibl_probe_limit[2048];
@@ -370,7 +368,7 @@ static void test_harness_case_parser(void) {
       strstr(invalid_ibl_probe_limit, "\"ibl_probe_limit\":1");
   assert(ibl_probe_limit);
   ibl_probe_limit += strlen("\"ibl_probe_limit\":");
-  memmove(ibl_probe_limit + 2u, ibl_probe_limit + 1u,
+  MemCopy(ibl_probe_limit + 2u, ibl_probe_limit + 1u,
           strlen(ibl_probe_limit + 1u) + 1u);
   MemCopy(ibl_probe_limit, "17", 2u);
   assert(!vkr_harness_case_parse(invalid_ibl_probe_limit,
@@ -391,7 +389,7 @@ static void test_harness_case_parser(void) {
   char *automatic_mode = strstr(manual_with_reset, "automatic");
   assert(automatic_mode);
   MemCopy(automatic_mode, "manual", strlen("manual"));
-  memmove(automatic_mode + strlen("manual"),
+  MemCopy(automatic_mode + strlen("manual"),
           automatic_mode + strlen("automatic"),
           strlen(automatic_mode + strlen("automatic")) + 1u);
   assert(!vkr_harness_case_parse(manual_with_reset, strlen(manual_with_reset),
@@ -403,7 +401,7 @@ static void test_harness_case_parser(void) {
       strstr(disabled_invalid_bloom, "\"bloom_enabled\":true");
   assert(bloom_enabled);
   bloom_enabled += strlen("\"bloom_enabled\":");
-  memmove(bloom_enabled + strlen("false"), bloom_enabled + strlen("true"),
+  MemCopy(bloom_enabled + strlen("false"), bloom_enabled + strlen("true"),
           strlen(bloom_enabled + strlen("true")) + 1u);
   MemCopy(bloom_enabled, "false", strlen("false"));
   char *bloom_threshold =
@@ -420,7 +418,7 @@ static void test_harness_case_parser(void) {
   char *gtao_controls = strstr(missing_enabled_gtao_controls,
                                ",\"gtao_radius\":0.5,\"gtao_power\":2.2");
   assert(gtao_controls);
-  memmove(gtao_controls,
+  MemCopy(gtao_controls,
           gtao_controls + strlen(",\"gtao_radius\":0.5,\"gtao_power\":2.2"),
           strlen(gtao_controls +
                  strlen(",\"gtao_radius\":0.5,\"gtao_power\":2.2")) +
@@ -434,7 +432,7 @@ static void test_harness_case_parser(void) {
            metal_case);
   char *gtao_power = strstr(missing_enabled_gtao_power, ",\"gtao_power\":2.2");
   assert(gtao_power);
-  memmove(gtao_power, gtao_power + strlen(",\"gtao_power\":2.2"),
+  MemCopy(gtao_power, gtao_power + strlen(",\"gtao_power\":2.2"),
           strlen(gtao_power + strlen(",\"gtao_power\":2.2")) + 1u);
   assert(!vkr_harness_case_parse(missing_enabled_gtao_power,
                                  strlen(missing_enabled_gtao_power), "memory",
@@ -444,7 +442,7 @@ static void test_harness_case_parser(void) {
   char *gtao_enabled = strstr(disabled_invalid_gtao, "\"gtao_enabled\":true");
   assert(gtao_enabled);
   gtao_enabled += strlen("\"gtao_enabled\":");
-  memmove(gtao_enabled + strlen("false"), gtao_enabled + strlen("true"),
+  MemCopy(gtao_enabled + strlen("false"), gtao_enabled + strlen("true"),
           strlen(gtao_enabled + strlen("true")) + 1u);
   MemCopy(gtao_enabled, "false", strlen("false"));
   char *gtao_radius = strstr(disabled_invalid_gtao, "\"gtao_radius\":0.5");
@@ -488,7 +486,7 @@ static void test_harness_case_parser(void) {
   printf("  test_harness_case_parser PASSED\n");
 }
 
-static void test_harness_profile_parser(void) {
+vkr_internal void test_harness_profile_parser(void) {
   printf("  Running test_harness_profile_parser...\n");
   const char *profile =
       "{\"schema_version\":1,\"id\":\"local.test\",\"authoritative\":false,"
@@ -532,7 +530,7 @@ static void test_harness_profile_parser(void) {
   printf("  test_harness_profile_parser PASSED\n");
 }
 
-static void test_harness_camera_determinism(void) {
+vkr_internal void test_harness_camera_determinism(void) {
   printf("  Running test_harness_camera_determinism...\n");
   VkrHarnessCamera camera = {
       .mode = VKR_HARNESS_CAMERA_KEYFRAMES,
@@ -554,12 +552,12 @@ static void test_harness_camera_determinism(void) {
     VkrHarnessCameraPose second = {0};
     assert(vkr_harness_camera_evaluate(&camera, frame / 60.0, &first));
     assert(vkr_harness_camera_evaluate(&camera, frame / 60.0, &second));
-    assert(memcmp(&first, &second, sizeof(first)) == 0);
+    assert(MemCompare(&first, &second, sizeof(first)) == 0);
   }
   printf("  test_harness_camera_determinism PASSED\n");
 }
 
-static void test_harness_camera_warmup_holds_start_pose(void) {
+vkr_internal void test_harness_camera_warmup_holds_start_pose(void) {
   printf("  Running test_harness_camera_warmup_holds_start_pose...\n");
   const float64_t delta = 1.0 / 60.0;
   const uint32_t warmup = 120u;
@@ -580,7 +578,7 @@ static void test_harness_camera_warmup_holds_start_pose(void) {
   printf("  test_harness_camera_warmup_holds_start_pose PASSED\n");
 }
 
-static void test_harness_fingerprints(void) {
+vkr_internal void test_harness_fingerprints(void) {
   printf("  Running test_harness_fingerprints...\n");
   VkrHarnessFingerprintField a[] = {{.name = "z", .value = "2"},
                                     {.name = "a", .value = "1"}};
@@ -813,7 +811,7 @@ static void test_harness_fingerprints(void) {
 }
 
 #if !defined(_WIN32)
-static void test_harness_scene_manifest_tracks_transitive_content(void) {
+vkr_internal void test_harness_scene_manifest_tracks_transitive_content(void) {
   printf(
       "  Running test_harness_scene_manifest_tracks_transitive_content...\n");
   char root[] = "/tmp/vkr_scene_manifest_XXXXXX";
@@ -983,7 +981,7 @@ static void test_harness_scene_manifest_tracks_transitive_content(void) {
 }
 #endif
 
-static void test_harness_subsystem_plans(void) {
+vkr_internal void test_harness_subsystem_plans(void) {
   printf("  Running test_harness_subsystem_plans...\n");
   VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
   VkrSubsystemPlan plan = {0};
@@ -1068,7 +1066,7 @@ static void test_harness_subsystem_plans(void) {
   printf("  test_harness_subsystem_plans PASSED\n");
 }
 
-static void test_harness_case_profile_pairing(void) {
+vkr_internal void test_harness_case_profile_pairing(void) {
   printf("  Running test_harness_case_profile_pairing...\n");
   const char *static_camera =
       "{\"mode\":\"static\",\"position\":[1,2,3],\"yaw\":10,\"pitch\":-5}";
@@ -1098,7 +1096,7 @@ static void test_harness_case_profile_pairing(void) {
   printf("  test_harness_case_profile_pairing PASSED\n");
 }
 
-static void test_harness_assertion_verdict(void) {
+vkr_internal void test_harness_assertion_verdict(void) {
   printf("  Running test_harness_assertion_verdict...\n");
   for (uint32_t i = 0; i < VKR_HARNESS_STAT_COUNT; ++i) {
     VkrHarnessStatisticKind parsed = VKR_HARNESS_STAT_COUNT;
@@ -1150,7 +1148,7 @@ static void test_harness_assertion_verdict(void) {
   printf("  test_harness_assertion_verdict PASSED\n");
 }
 
-static void test_harness_report_shape(void) {
+vkr_internal void test_harness_report_shape(void) {
   printf("  Running test_harness_report_shape...\n");
 #if !defined(_WIN32)
   char directory[] = "/tmp/vkr-harness-report-XXXXXX";
@@ -1301,29 +1299,29 @@ static void test_harness_report_shape(void) {
                               "scale_range[1]", &error));
   assert(fabs(observed_min - 0.55) < 1e-12);
   assert(fabs(observed_max - 0.7) < 1e-12);
-  static const char *const fields[] = {"schema_version",
-                                       "kind",
-                                       "tool",
-                                       "tool_version",
-                                       "run_id",
-                                       "status",
-                                       "exit_code",
-                                       "authoritative",
-                                       "authority_reasons",
-                                       "case",
-                                       "profile",
-                                       "provenance",
-                                       "comparison",
-                                       "effective_config",
-                                       "execution",
-                                       "runs",
-                                       "auxiliary_runs",
-                                       "aggregate",
-                                       "events",
-                                       "captures",
-                                       "assertions",
-                                       "diagnostics",
-                                       "artifacts"};
+  vkr_local_persist const char *const fields[] = {"schema_version",
+                                                  "kind",
+                                                  "tool",
+                                                  "tool_version",
+                                                  "run_id",
+                                                  "status",
+                                                  "exit_code",
+                                                  "authoritative",
+                                                  "authority_reasons",
+                                                  "case",
+                                                  "profile",
+                                                  "provenance",
+                                                  "comparison",
+                                                  "effective_config",
+                                                  "execution",
+                                                  "runs",
+                                                  "auxiliary_runs",
+                                                  "aggregate",
+                                                  "events",
+                                                  "captures",
+                                                  "assertions",
+                                                  "diagnostics",
+                                                  "artifacts"};
   assert(vkr_harness_json_object_validate(&document, 0, fields,
                                           ArrayCount(fields), fields,
                                           ArrayCount(fields), "$", &error));
@@ -1334,7 +1332,7 @@ static void test_harness_report_shape(void) {
   printf("  test_harness_report_shape PASSED\n");
 }
 
-static void test_harness_safe_paths(void) {
+vkr_internal void test_harness_safe_paths(void) {
   printf("  Running test_harness_safe_paths...\n");
   assert(vkr_harness_path_is_safe_relative("tools/cases/smoke/case.json"));
   assert(!vkr_harness_path_is_safe_relative("../case.json"));
@@ -1355,7 +1353,7 @@ static void test_harness_safe_paths(void) {
   printf("  test_harness_safe_paths PASSED\n");
 }
 
-static void test_harness_platform_process_primitives(void) {
+vkr_internal void test_harness_platform_process_primitives(void) {
   printf("  Running test_harness_platform_process_primitives...\n");
   const char *arguments[] = {"--version"};
   char output[256];
@@ -1621,7 +1619,7 @@ typedef struct VkrHarnessCaptureSummaryHeaderV4Fixture {
   VkrHarnessProvenance provenance;
 } VkrHarnessCaptureSummaryHeaderV4Fixture;
 
-static void test_harness_capture_summary_legacy_compatibility(void) {
+vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   printf("  Running test_harness_capture_summary_legacy_compatibility...\n");
 #if !defined(_WIN32)
   char directory[] = "/tmp/vkr-capture-summary-legacy-XXXXXX";
@@ -1813,16 +1811,16 @@ static void test_harness_capture_summary_legacy_compatibility(void) {
   printf("  test_harness_capture_summary_legacy_compatibility PASSED\n");
 }
 
-static void harness_test_write_f32_le(uint8_t bytes[4], float32_t value) {
+vkr_internal void harness_test_write_f32_le(uint8_t bytes[4], float32_t value) {
   uint32_t bits = 0u;
-  memcpy(&bits, &value, sizeof(bits));
+  MemCopy(&bits, &value, sizeof(bits));
   bytes[0] = (uint8_t)bits;
   bytes[1] = (uint8_t)(bits >> 8u);
   bytes[2] = (uint8_t)(bits >> 16u);
   bytes[3] = (uint8_t)(bits >> 24u);
 }
 
-static void test_harness_capture_catalog_and_converters(void) {
+vkr_internal void test_harness_capture_catalog_and_converters(void) {
   printf("  Running test_harness_capture_catalog_and_converters...\n");
   assert(vkr_renderer_capture_channel_count() == 30u);
   assert(vkr_renderer_capture_channel_from_name("missing") ==
@@ -2043,7 +2041,7 @@ static void test_harness_capture_catalog_and_converters(void) {
   harness_test_write_f32_le(expected + 4u, 16384.0f / 65535.0f);
   harness_test_write_f32_le(expected + 8u, 1.0f);
   harness_test_write_f32_le(expected + 12u, 32768.0f / 65535.0f);
-  assert(memcmp(raw, expected, sizeof(expected)) == 0);
+  assert(MemCompare(raw, expected, sizeof(expected)) == 0);
   assert(strcmp(first->captures[3].source_format, "R16_SFLOAT") == 0);
   assert(strcmp(first->captures[4].source_format, "R16G16_SNORM") == 0);
   assert(strcmp(first->captures[5].source_format, "R8_UNORM") == 0);
@@ -2058,7 +2056,7 @@ static void test_harness_capture_catalog_and_converters(void) {
   harness_test_write_f32_le(expected + 4u, 8.0f);
   harness_test_write_f32_le(expected + 8u, 0.5f);
   harness_test_write_f32_le(expected + 12u, 2.0f);
-  assert(memcmp(raw, expected, sizeof(expected)) == 0);
+  assert(MemCompare(raw, expected, sizeof(expected)) == 0);
   uint8_t *encoded = NULL;
   uint64_t encoded_size = 0u;
   int32_t png_width = 0;
@@ -2074,8 +2072,8 @@ static void test_harness_capture_catalog_and_converters(void) {
                                          255u, 255u, 0u,   0u,   0u,   255u,
                                          51u,  51u,  51u,  255u};
   assert(depth_rgba && png_width == 2 && png_height == 2);
-  assert(memcmp(depth_rgba, expected_depth_rgba, sizeof(expected_depth_rgba)) ==
-         0);
+  assert(MemCompare(depth_rgba, expected_depth_rgba,
+                    sizeof(expected_depth_rgba)) == 0);
   stbi_image_free(depth_rgba);
   snprintf(raw_path, sizeof(raw_path), "%s/%s", first_dir,
            first->captures[4].data_path);
@@ -2084,7 +2082,7 @@ static void test_harness_capture_catalog_and_converters(void) {
       0x0000u, 0x7fffu, 0x4000u, 0x8000u, 0x8000u, 0x0000u, 0x7fffu, 0xc000u,
   };
   assert(raw_size == sizeof(expected_normal));
-  assert(memcmp(raw, expected_normal, sizeof(expected_normal)) == 0);
+  assert(MemCompare(raw, expected_normal, sizeof(expected_normal)) == 0);
   snprintf(raw_path, sizeof(raw_path), "%s/%s", first_dir,
            first->captures[5].data_path);
   assert(vkr_harness_read_file(raw_path, transient, &encoded, &encoded_size));
@@ -2098,8 +2096,8 @@ static void test_harness_capture_catalog_and_converters(void) {
       128u, 128u, 128u, 255u, 255u, 255u, 255u, 255u,
       0u,   0u,   0u,   255u, 64u,  64u,  64u,  255u};
   assert(visibility_rgba && png_width == 2 && png_height == 2);
-  assert(memcmp(visibility_rgba, expected_visibility_rgba,
-                sizeof(expected_visibility_rgba)) == 0);
+  assert(MemCompare(visibility_rgba, expected_visibility_rgba,
+                    sizeof(expected_visibility_rgba)) == 0);
   stbi_image_free(visibility_rgba);
 
   VkrHarnessReport *reports[] = {first, second};
@@ -2124,7 +2122,7 @@ static void test_harness_capture_catalog_and_converters(void) {
   printf("  test_harness_capture_catalog_and_converters PASSED\n");
 }
 
-static void test_harness_capture_replays(void) {
+vkr_internal void test_harness_capture_replays(void) {
   printf("  Running test_harness_capture_replays...\n");
   assert(sizeof(((VkrHarnessRendererConfig *)0)->render_mode) >
          strlen("temporal_history"));
@@ -2174,7 +2172,7 @@ static void test_harness_capture_replays(void) {
   printf("  test_harness_capture_replays PASSED\n");
 }
 
-static void test_harness_comparison_algorithms(void) {
+vkr_internal void test_harness_comparison_algorithms(void) {
   printf("  Running test_harness_comparison_algorithms...\n");
   const VkrHarnessCompareConfig thresholds = {
       .max_pixel_delta = 0.01,
@@ -2183,7 +2181,7 @@ static void test_harness_comparison_algorithms(void) {
   };
   const uint8_t baseline[] = {0, 10, 20, 255, 30, 40, 50, 255};
   uint8_t actual[sizeof(baseline)];
-  memcpy(actual, baseline, sizeof(actual));
+  MemCopy(actual, baseline, sizeof(actual));
   VkrHarnessComparisonResult result =
       vkr_harness_compare_rgba8(actual, baseline, 2u, &thresholds, NULL);
   assert(result.outcome == VKR_HARNESS_COMPARISON_PASS);
@@ -2197,7 +2195,7 @@ static void test_harness_comparison_algorithms(void) {
   uint8_t float_baseline[8];
   harness_test_write_f32_le(floats, 0.25f);
   harness_test_write_f32_le(floats + 4u, 0.5f);
-  memcpy(float_baseline, floats, sizeof(floats));
+  MemCopy(float_baseline, floats, sizeof(floats));
   result =
       vkr_harness_compare_f32_le(floats, float_baseline, 2u, &thresholds, NULL);
   assert(result.outcome == VKR_HARNESS_COMPARISON_PASS);
@@ -2208,7 +2206,7 @@ static void test_harness_comparison_algorithms(void) {
 
   const uint8_t ids[] = {1, 0, 0, 0, 2, 0, 0, 0};
   uint8_t changed_ids[sizeof(ids)];
-  memcpy(changed_ids, ids, sizeof(ids));
+  MemCopy(changed_ids, ids, sizeof(ids));
   result = vkr_harness_compare_u32_le(ids, changed_ids, 2u, NULL);
   assert(result.outcome == VKR_HARNESS_COMPARISON_PASS);
   changed_ids[4] = 3u;
@@ -2218,7 +2216,7 @@ static void test_harness_comparison_algorithms(void) {
   printf("  test_harness_comparison_algorithms PASSED\n");
 }
 
-static void test_harness_cross_backend_baseline_compatibility(void) {
+vkr_internal void test_harness_cross_backend_baseline_compatibility(void) {
   printf("  Running test_harness_cross_backend_baseline_compatibility...\n");
   VkrHarnessCaptureSummary actual = {0};
   VkrHarnessCaptureSummary baseline = {0};
@@ -2266,7 +2264,7 @@ static void test_harness_cross_backend_baseline_compatibility(void) {
 }
 
 #if !defined(_WIN32)
-static bool8_t harness_remove_tree(const char *path) {
+vkr_internal bool8_t harness_remove_tree(const char *path) {
   struct stat status;
   if (lstat(path, &status) != 0) {
     return true_v;
@@ -2292,7 +2290,7 @@ static bool8_t harness_remove_tree(const char *path) {
   return ok && rmdir(path) == 0;
 }
 
-static bool8_t harness_find_only_child(const char *path, char out[64]) {
+vkr_internal bool8_t harness_find_only_child(const char *path, char out[64]) {
   DIR *directory = opendir(path);
   if (!directory) {
     return false_v;
@@ -2311,7 +2309,7 @@ static bool8_t harness_find_only_child(const char *path, char out[64]) {
 }
 #endif
 
-static void test_harness_guarded_baseline_accept(void) {
+vkr_internal void test_harness_guarded_baseline_accept(void) {
   printf("  Running test_harness_guarded_baseline_accept...\n");
 #if defined(_WIN32)
   printf("  test_harness_guarded_baseline_accept SKIPPED (POSIX fixture)\n");
@@ -2441,7 +2439,7 @@ static void test_harness_guarded_baseline_accept(void) {
 #endif
 }
 
-static void test_harness_json_integer_and_escaped_key_boundaries(void) {
+vkr_internal void test_harness_json_integer_and_escaped_key_boundaries(void) {
   const struct {
     const char *json;
     uint64_t expected;

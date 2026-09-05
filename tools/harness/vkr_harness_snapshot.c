@@ -5,7 +5,7 @@
 
 #define VKR_HARNESS_SNAPSHOT_ARTIFACT_ROOT "build/_artifacts/snapshot"
 
-static int vkr_harness_snapshot_spawn(
+vkr_internal int vkr_harness_snapshot_spawn(
     const char *executable, const char *repo_root, const char *case_path,
     const char *profile_path, const char *run_dir, uint32_t capture_index,
     const char *replay_mode, const char *cache_path, uint32_t timeout_ms,
@@ -77,7 +77,7 @@ static int vkr_harness_snapshot_spawn(
   return exit_code;
 }
 
-static bool8_t vkr_harness_snapshot_is_capture_role(const char *role) {
+vkr_internal bool8_t vkr_harness_snapshot_is_capture_role(const char *role) {
   return string_n_equals(role, "capture.", 8u);
 }
 
@@ -86,9 +86,10 @@ static bool8_t vkr_harness_snapshot_is_capture_role(const char *role) {
  * Truncation is a failure, not a silently shortened path that would name a
  * different file than the one whose digest was verified.
  */
-static bool8_t vkr_harness_snapshot_reroot(char *destination, uint64_t capacity,
-                                           const char *child_relative,
-                                           const char *source) {
+vkr_internal bool8_t vkr_harness_snapshot_reroot(char *destination,
+                                                 uint64_t capacity,
+                                                 const char *child_relative,
+                                                 const char *source) {
   if (!vkr_harness_path_is_safe_relative(source)) {
     return false_v;
   }
@@ -101,7 +102,7 @@ static bool8_t vkr_harness_snapshot_reroot(char *destination, uint64_t capacity,
  * Adopts one child's captures into the aggregate report, after proving every
  * artifact it claims still hashes to the digest the child recorded.
  */
-static bool8_t vkr_harness_snapshot_merge_summary(
+vkr_internal bool8_t vkr_harness_snapshot_merge_summary(
     VkrHarnessReport *report, const char *child_relative, const char *child_dir,
     const VkrHarnessCaptureSummary *summary) {
   if (!report || !child_relative || !child_dir || !summary) {
