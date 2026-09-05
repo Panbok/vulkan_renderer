@@ -1919,6 +1919,7 @@ static void renderer_impl_no_resize(void *state, uint32_t width,
 
 static void renderer_impl_metal_resize(void *state, uint32_t width,
                                        uint32_t height) {
+#if defined(PLATFORM_APPLE)
   RendererFrontend *renderer = state;
   if (!renderer ||
       renderer->upscale_mode != VKR_UPSCALE_MODE_METALFX_TEMPORAL ||
@@ -1930,10 +1931,16 @@ static void renderer_impl_metal_resize(void *state, uint32_t width,
       !vkr_metal_packet_renderer_resize_metalfx(renderer->metal_renderer, width,
                                                 height))
     log_error("MetalFX temporal scaler resize failed for %ux%u", width, height);
+#else
+  (void)state;
+  (void)width;
+  (void)height;
+#endif
 }
 
 static VkrRendererError renderer_impl_metal_present_target_recreate(
     void *state, uint32_t width, uint32_t height, uint32_t image_count) {
+#if defined(PLATFORM_APPLE)
   (void)image_count;
   RendererFrontend *renderer = state;
   VkrRendererError idle = renderer_impl_metal_wait_idle(state);
@@ -1954,6 +1961,13 @@ static VkrRendererError renderer_impl_metal_present_target_recreate(
                                                 scene_width, scene_height))
     return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
   return VKR_RENDERER_ERROR_NONE;
+#else
+  (void)state;
+  (void)width;
+  (void)height;
+  (void)image_count;
+  return VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+#endif
 }
 
 static uint32_t renderer_impl_metal_frame_in_flight_index(void *state) {
@@ -3284,12 +3298,16 @@ renderer_frontend_configure_scene_output_extent(RendererFrontend *renderer,
   if (renderer->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL &&
       (renderer->scene_output_width != width ||
        renderer->scene_output_height != height)) {
+#if defined(PLATFORM_APPLE)
     const VkrRendererError idle = vkr_renderer_wait_idle(renderer);
     if (idle != VKR_RENDERER_ERROR_NONE)
       return idle;
     if (!vkr_metal_packet_renderer_resize_metalfx(renderer->metal_renderer,
                                                   width, height))
       return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+#else
+    return VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+#endif
   }
 
   renderer->scene_output_width = width;

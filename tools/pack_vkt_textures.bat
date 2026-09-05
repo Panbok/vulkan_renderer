@@ -47,7 +47,7 @@ if !errorlevel! EQU 0 if exist "C:\msys64\usr\bin" set "PATH=C:\msys64\usr\bin;C
 if !errorlevel! EQU 0 if exist "C:\mingw64\usr\bin" set "PATH=C:\mingw64\usr\bin;C:\mingw64\bin;%PATH%"
 
 echo Building the configuration-independent texture packer
-cmake -S . -B "%BUILD_DIR%" -U CMAKE_TOOLCHAIN_FILE -DCMAKE_BUILD_TYPE:STRING=Release %GENERATOR% %COMPILERS% %BASH_ARG%
+cmake --fresh -S . -B "%BUILD_DIR%" -DCMAKE_BUILD_TYPE:STRING=Release %GENERATOR% %COMPILERS% %BASH_ARG%
 if errorlevel 1 exit /b 1
 cmake --build "%BUILD_DIR%" --target vkr_vkt_packer --config Release
 if errorlevel 1 exit /b 1

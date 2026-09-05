@@ -16,7 +16,7 @@ if %errorlevel%==0 (
     if %errorlevel%==0 set "COMPILERS=-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
 )
 
-cmake --fresh -S . -B build_release_info -U CMAKE_TOOLCHAIN_FILE -DCMAKE_BUILD_TYPE:STRING=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE %GENERATOR% %COMPILERS%
+cmake --fresh -S . -B build_release_info -DCMAKE_BUILD_TYPE:STRING=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE %GENERATOR% %COMPILERS%
 if %errorlevel% neq 0 (
     echo CMake configure failed.
     exit /b 1

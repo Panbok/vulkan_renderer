@@ -1,6 +1,26 @@
 cmake_minimum_required(VERSION 3.27)
 
+# The Windows wrappers use the installed vcpkg dependencies. The toolchain must
+# be selected before project() so package wrappers supply transitive libraries.
+if(CMAKE_HOST_WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE AND
+   NOT DEFINED ENV{CMAKE_TOOLCHAIN_FILE} AND DEFINED ENV{VCPKG_ROOT})
+    file(TO_CMAKE_PATH "$ENV{VCPKG_ROOT}" VKR_VCPKG_ROOT)
+    set(CMAKE_TOOLCHAIN_FILE "${VKR_VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+        CACHE FILEPATH "CMake toolchain file")
+    if(NOT DEFINED VCPKG_TARGET_TRIPLET)
+        set(VCPKG_TARGET_TRIPLET "x64-windows-static" CACHE STRING "vcpkg target triplet")
+    endif()
+    unset(VKR_VCPKG_ROOT)
+endif()
+
 project(vulkan_renderer)
+
+# Match the CRT used by the selected vcpkg Windows triplet. CMake otherwise
+# defaults to the DLL CRT, which cannot link static-CRT font dependencies.
+if(WIN32 AND NOT DEFINED CMAKE_MSVC_RUNTIME_LIBRARY AND
+   VCPKG_TARGET_TRIPLET MATCHES "-windows-static$")
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 
 # Set explicit C standard
 set(CMAKE_C_STANDARD 11)
@@ -77,6 +97,9 @@ if((VKR_ENABLE_SANITIZERS OR VKR_ENABLE_DEBUG_SANITIZERS) AND NOT MSVC)
     if(WIN32 AND (CMAKE_C_COMPILER_ID STREQUAL "Clang"))
         if(CMAKE_CONFIGURATION_TYPES OR CMAKE_BUILD_TYPE STREQUAL "Debug")
             message(FATAL_ERROR "ASan/UBSan on Windows+Clang is not supported with the Debug CRT. Disable VKR_ENABLE_DEBUG_SANITIZERS or use VKR_ENABLE_SANITIZERS=ON with RelWithDebInfo.")
+        endif()
+        if(VCPKG_TARGET_TRIPLET MATCHES "-windows-static$")
+            message(FATAL_ERROR "Windows Clang sanitizers require the DLL CRT. Use a vcpkg triplet with the DLL CRT, such as x64-windows-static-md, and install FreeType for that triplet.")
         endif()
         set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
     endif()

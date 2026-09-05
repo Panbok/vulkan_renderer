@@ -37,7 +37,7 @@ if !errorlevel! EQU 0 if exist "C:\msys64\usr\bin" set "PATH=C:\msys64\usr\bin;C
 if !errorlevel! EQU 0 if exist "C:\mingw64\usr\bin" set "PATH=C:\mingw64\usr\bin;C:\mingw64\bin;%PATH%"
 
 rem The CPU suite owns a dedicated tree and deliberately refreshes its cache.
-cmake --fresh -B build_test -S . -U CMAKE_TOOLCHAIN_FILE -DCMAKE_BUILD_TYPE:STRING=Debug %GENERATOR% %COMPILERS% %BASH_ARG%
+cmake --fresh -B build_test -S . -DCMAKE_BUILD_TYPE:STRING=Debug %GENERATOR% %COMPILERS% %BASH_ARG%
 if %errorlevel% neq 0 (
     echo CMake configure failed.
     popd

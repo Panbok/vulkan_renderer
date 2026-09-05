@@ -17,10 +17,10 @@ static float32_t vkr_dynamic_resolution_canonical_scale(float32_t scale) {
 static float32_t vkr_dynamic_resolution_nearest_scale(float32_t scale,
                                                       float32_t min_scale,
                                                       float32_t max_scale) {
-  const float32_t clamped = MAX(min_scale, MIN(scale, max_scale));
+  const float32_t clamped = Max(min_scale, Min(scale, max_scale));
   const float32_t steps =
       floorf((max_scale - clamped) / VKR_DYNAMIC_RESOLUTION_SCALE_STEP + 0.5f);
-  const float32_t lattice = MAX(
+  const float32_t lattice = Max(
       min_scale, vkr_dynamic_resolution_canonical_scale(
                      max_scale - steps * VKR_DYNAMIC_RESOLUTION_SCALE_STEP));
   return fabsf(clamped - min_scale) < fabsf(clamped - lattice) ? min_scale
@@ -31,7 +31,7 @@ static float32_t
 vkr_dynamic_resolution_next_scale(const VkrDynamicResolutionState *state,
                                   bool8_t increase) {
   if (!increase)
-    return MAX(state->min_scale,
+    return Max(state->min_scale,
                vkr_dynamic_resolution_canonical_scale(
                    state->current_scale - VKR_DYNAMIC_RESOLUTION_SCALE_STEP));
   if (state->current_scale <=
@@ -43,9 +43,9 @@ vkr_dynamic_resolution_next_scale(const VkrDynamicResolutionState *state,
         state->max_scale - steps * VKR_DYNAMIC_RESOLUTION_SCALE_STEP);
     if (next <= state->min_scale + VKR_DYNAMIC_RESOLUTION_SCALE_EPSILON)
       next += VKR_DYNAMIC_RESOLUTION_SCALE_STEP;
-    return MIN(state->max_scale, vkr_dynamic_resolution_canonical_scale(next));
+    return Min(state->max_scale, vkr_dynamic_resolution_canonical_scale(next));
   }
-  return MIN(state->max_scale,
+  return Min(state->max_scale,
              vkr_dynamic_resolution_canonical_scale(
                  state->current_scale + VKR_DYNAMIC_RESOLUTION_SCALE_STEP));
 }

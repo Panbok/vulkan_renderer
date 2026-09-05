@@ -18,6 +18,18 @@ Build through the repository wrappers, which also compile shaders and cook asset
 ./build_editor.sh Release
 ```
 
+On Windows, use `build_release.bat` or `build_editor.bat Release`. Set
+`VCPKG_ROOT` to your vcpkg checkout and install the font cooker's dependency:
+
+```powershell
+& "$env:VCPKG_ROOT/vcpkg.exe" install freetype:x64-windows-static
+.\build_release.bat
+```
+
+CMake uses that checkout's toolchain and defaults to `x64-windows-static`,
+including its static C runtime. Explicit toolchain and triplet settings take
+precedence. Use a fresh build directory when changing either setting.
+
 `build_run.sh` and `build_editor_run.sh` also launch their respective targets.
 For profiles, captures, and baselines, use the
 [harness workflow](../.codex/skills/vkr-harness/SKILL.md). Use normal Release

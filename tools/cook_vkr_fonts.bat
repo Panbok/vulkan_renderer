@@ -33,7 +33,7 @@ echo !BASH_HINT! | findstr /I /C:"C:\msys64\" /C:"C:\mingw64\" >nul 2>&1
 if !errorlevel! EQU 0 if exist "C:\msys64\usr\bin" set "PATH=C:\msys64\usr\bin;C:\msys64\bin;%PATH%"
 if !errorlevel! EQU 0 if exist "C:\mingw64\usr\bin" set "PATH=C:\mingw64\usr\bin;C:\mingw64\bin;%PATH%"
 echo Building vkr_font_cooker in %BUILD_DIR%
-cmake -S "%REPO_ROOT%" -B "%BUILD_DIR%" -U CMAKE_TOOLCHAIN_FILE -DCMAKE_BUILD_TYPE:STRING=Release %GENERATOR% %COMPILERS% %BASH_ARG%
+cmake --fresh -S "%REPO_ROOT%" -B "%BUILD_DIR%" -DCMAKE_BUILD_TYPE:STRING=Release %GENERATOR% %COMPILERS% %BASH_ARG%
 if errorlevel 1 goto :configure_failed
 cmake --build "%BUILD_DIR%" --target vkr_font_cooker --config Release
 if errorlevel 1 goto :build_failed

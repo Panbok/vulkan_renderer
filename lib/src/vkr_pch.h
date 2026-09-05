@@ -9,7 +9,10 @@
 #include <fcntl.h>
 #include <math.h>
 #include <stdarg.h>
+#if !defined(__cplusplus)
+// C11 atomic declarations conflict with the Windows C++ <atomic> declarations.
 #include <stdatomic.h>
+#endif
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
