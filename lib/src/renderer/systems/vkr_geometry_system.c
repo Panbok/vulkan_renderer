@@ -293,14 +293,16 @@ bool32_t vkr_geometry_system_init(VkrGeometrySystem *system,
   bitset8_set(&app_arena_flags, ARENA_FLAG_LARGE_PAGES);
   system->arena = arena_create(MB(32), MB(8), app_arena_flags);
   if (!system->arena) {
-    log_fatal("Failed to create geometry system arena");
+    log_error("Failed to create geometry system arena");
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
 
   system->allocator.ctx = system->arena;
   if (!vkr_allocator_arena(&system->allocator)) {
-    log_fatal("Failed to create geometry system allocator");
+    log_error("Failed to create geometry system allocator");
+    arena_destroy(system->arena);
+    MemZero(system, sizeof(*system));
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
@@ -312,6 +314,11 @@ bool32_t vkr_geometry_system_init(VkrGeometrySystem *system,
 
   system->geometries =
       array_create_VkrGeometry(&system->allocator, system->max_geometries);
+  if (!system->geometries.data) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    vkr_geometry_system_shutdown(system);
+    return false_v;
+  }
   for (uint32_t geometry = 0; geometry < system->max_geometries; geometry++) {
     VkrGeometry init = {0};
     init.pipeline_id = VKR_INVALID_ID;
@@ -323,6 +330,11 @@ bool32_t vkr_geometry_system_init(VkrGeometrySystem *system,
 
   system->geometry_by_name = vkr_hash_table_create_VkrGeometryEntry(
       &system->allocator, (uint64_t)system->max_geometries * 2);
+  if (!system->free_ids.data || !system->geometry_by_name.entries) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    vkr_geometry_system_shutdown(system);
+    return false_v;
+  }
 
   system->generation_counter = 1;
 
@@ -330,6 +342,7 @@ bool32_t vkr_geometry_system_init(VkrGeometrySystem *system,
       vkr_geometry_system_create_default_cube(system, out_error);
   if (system->default_geometry.id == 0) {
     log_error("Failed to create default cube");
+    vkr_geometry_system_shutdown(system);
     return false_v;
   }
 
@@ -337,6 +350,7 @@ bool32_t vkr_geometry_system_init(VkrGeometrySystem *system,
       vkr_geometry_system_create_default_plane(system, 10.0f, 10.0f, out_error);
   if (system->default_plane.id == 0) {
     log_error("Failed to create default plane");
+    vkr_geometry_system_shutdown(system);
     return false_v;
   }
 
@@ -344,6 +358,7 @@ bool32_t vkr_geometry_system_init(VkrGeometrySystem *system,
       vkr_geometry_system_create_default_plane2d(system, 2.0f, 2.0f, out_error);
   if (system->default_plane2d.id == 0) {
     log_error("Failed to create default plane 2D");
+    vkr_geometry_system_shutdown(system);
     return false_v;
   }
 
@@ -368,6 +383,7 @@ void vkr_geometry_system_shutdown(VkrGeometrySystem *system) {
   array_destroy_VkrGeometry(&system->geometries);
   array_destroy_uint32_t(&system->free_ids);
   if (system->arena) {
+    vkr_allocator_release_global_accounting(&system->allocator);
     arena_destroy(system->arena);
   }
   MemZero(system, sizeof(VkrGeometrySystem));
@@ -544,8 +560,19 @@ VkrGeometryHandle vkr_geometry_system_create(VkrGeometrySystem *system,
       .auto_release = auto_release,
       .name = geom->name,
   };
-  vkr_hash_table_insert_VkrGeometryEntry(&system->geometry_by_name, geom->name,
-                                         life_entry);
+  if (!vkr_hash_table_insert_VkrGeometryEntry(&system->geometry_by_name,
+                                              geom->name, life_entry)) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    if (!system->asset_publisher->unpublish_geometry(
+            system->asset_publisher->state, handle)) {
+      /* Retain the slot for shutdown; a failed native retirement must not
+         expose it for reuse under another generation. */
+      log_error("Failed to retire unregistered geometry '%s'", geom->name);
+      *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      return VKR_GEOMETRY_HANDLE_INVALID;
+    }
+    return geometry_creation_failure(system, geom, handle);
+  }
   *out_error = VKR_RENDERER_ERROR_NONE;
   return handle;
 }

@@ -4,6 +4,8 @@
 #include "defines.h"
 #include "filesystem/filesystem.h"
 #include "memory/vkr_arena_allocator.h"
+#include "memory/vkr_dmemory.h"
+#include "memory/vkr_dmemory_allocator.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -140,6 +142,9 @@ vkr_internal void test_file_create_and_ensure_directory(void) {
                                PROJECT_SOURCE_DIR, FS_TEST_RELATIVE_DIR, id);
   FilePath create_path = {.path = create_target,
                           .type = FILE_PATH_TYPE_ABSOLUTE};
+  FilePath regular_file = file_path_create("tests/src/test_main.c", &allocator,
+                                           FILE_PATH_TYPE_RELATIVE);
+  assert(!file_create_directory(&regular_file));
   assert(file_create_directory(&create_path) == true_v);
   assert(file_create_directory(&create_path) == true_v);
   fs_test_remove_dir((const char *)create_target.str);
@@ -456,6 +461,66 @@ vkr_internal void test_file_portable_publication_primitives(void) {
   printf("  test_file_portable_publication_primitives PASSED\n");
 }
 
+static void test_file_io_failures_release_owned_outputs(void) {
+  Arena *arena = arena_create(MB(1), MB(1));
+  VkrAllocator paths = {.ctx = arena};
+  assert(vkr_allocator_arena(&paths));
+  VkrDMemory memory = {0};
+  assert(vkr_dmemory_create(MB(1), MB(1), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  char relative_path[256];
+  snprintf(relative_path, sizeof(relative_path), "%s/io_failure_%u.bin",
+           FS_TEST_RELATIVE_DIR, ++g_fs_test_counter);
+  FilePath path =
+      file_path_create(relative_path, &paths, FILE_PATH_TYPE_RELATIVE);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_WRITE);
+  FileHandle handle = {0};
+  assert(file_open(&path, mode, &handle) == FILE_ERROR_NONE);
+  String8 payload = string8_lit("payload");
+  assert(file_write_line(&handle, &payload) == FILE_ERROR_NONE);
+  file_close(&handle);
+  bitset8_set(&mode, FILE_MODE_APPEND);
+  assert(file_open(&path, mode, &handle) == FILE_ERROR_NONE);
+  const uint64_t free_before = vkr_dmemory_get_free_space(&memory);
+  uint8_t *bytes = NULL;
+  uint64_t count = 0;
+  assert(file_read(&handle, &allocator, 4u, &count, &bytes) ==
+         FILE_ERROR_IO_ERROR);
+  assert(bytes == NULL && count == 0);
+  assert(vkr_dmemory_get_free_space(&memory) == free_before);
+  String8 text = {0};
+#if !defined(_WIN32)
+  assert(file_read_all(&handle, &allocator, &bytes, &count) ==
+         FILE_ERROR_IO_ERROR);
+  assert(bytes == NULL && count == 0);
+  assert(vkr_dmemory_get_free_space(&memory) == free_before);
+  assert(file_read_string(&handle, &allocator, &text) == FILE_ERROR_IO_ERROR);
+  assert(text.str == NULL && text.length == 0);
+  assert(vkr_dmemory_get_free_space(&memory) == free_before);
+#endif
+  assert(file_read_line(&handle, &allocator, &allocator, 64u, &text) ==
+         FILE_ERROR_IO_ERROR);
+  assert(text.str == NULL && text.length == 0);
+  assert(vkr_dmemory_get_free_space(&memory) == free_before);
+  file_close(&handle);
+  mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  assert(file_open(&path, mode, &handle) == FILE_ERROR_NONE);
+  assert(file_write_line(&handle, &payload) == FILE_ERROR_IO_ERROR);
+  file_close(&handle);
+  FilePath directory =
+      file_path_create(FS_TEST_RELATIVE_DIR, &paths, FILE_PATH_TYPE_RELATIVE);
+  assert(file_load_spirv_shader(&directory, &allocator, &bytes, &count) !=
+         FILE_ERROR_NONE);
+  assert(bytes == NULL && count == 0);
+  assert(vkr_dmemory_get_free_space(&memory) == free_before);
+  fs_test_remove_file((const char *)path.path.str);
+  vkr_dmemory_allocator_destroy(&allocator);
+  arena_destroy(arena);
+}
+
 bool32_t run_filesystem_tests(void) {
   printf("--- Starting Filesystem Tests ---\n");
   g_fs_test_counter = 0;
@@ -470,6 +535,7 @@ bool32_t run_filesystem_tests(void) {
   test_file_path_helpers();
   test_file_get_error_strings();
   test_file_portable_publication_primitives();
+  test_file_io_failures_release_owned_outputs();
 
   printf("--- Filesystem Tests Completed ---\n");
   return true;

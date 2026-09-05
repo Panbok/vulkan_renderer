@@ -2,9 +2,9 @@
 
 /**
  * @file vkr_world_resources.h
- * @brief Shared world pipelines, HDR/IBL state, and 3D text resources.
+ * @brief Fallback IBL resources, scene bake preparation, and 3D text slots.
  *
- * Owns packet-facing HDR/IBL state and persistent 3D text slots.
+ * Retains fallback IBL handles and persistent 3D text slots.
  */
 
 #include "containers/array.h"
@@ -17,28 +17,6 @@
 struct s_RendererFrontend;
 typedef struct VkrScene VkrScene;
 typedef struct VkrPreparedTextDraw VkrPreparedTextDraw;
-
-typedef struct VkrWorldIblProbeSlot {
-  VkrTextureOpaqueHandle prefilter_map;
-  Vec3 center;
-  Vec3 extents;
-  float32_t blend_distance;
-  float32_t weight;
-  float32_t intensity;
-  float32_t diffuse_intensity;
-  float32_t specular_intensity;
-  bool8_t box_projection_enabled;
-} VkrWorldIblProbeSlot;
-
-float32_t vkr_world_resources_probe_fragment_influence(Vec3 center,
-                                                       Vec3 extents,
-                                                       float32_t blend_distance,
-                                                       Vec3 world_position);
-
-bool8_t vkr_world_resources_probe_intersects_sphere(Vec3 center, Vec3 extents,
-                                                    float32_t blend_distance,
-                                                    Vec3 sphere_center,
-                                                    float32_t sphere_radius);
 
 /**
  * @brief A single 3D text slot in the world resources.
@@ -55,7 +33,7 @@ Array(VkrWorldTextSlot);
 /**
  * @brief World IBL state and 3D text slots.
  *
- * Manages selected IBL handles and a fixed array of packet-ready 3D text slots.
+ * Retains fallback IBL handles and a fixed array of packet-ready 3D text slots.
  */
 typedef struct VkrWorldResources {
   Array_VkrWorldTextSlot text_slots; /**< Allocated 3D text slots */
@@ -63,11 +41,6 @@ typedef struct VkrWorldResources {
   VkrTextureHandle ibl_fallback_source_cubemap;
   VkrTextureHandle ibl_fallback_prefilter_cubemap;
 
-  VkrTextureHandle ibl_active_prefilter_cubemap;
-  bool8_t ibl_active_enabled;
-  float32_t ibl_active_intensity;
-  float32_t ibl_active_diffuse_intensity;
-  float32_t ibl_active_specular_intensity;
   bool8_t ibl_default_ready;
   bool8_t hdr_capability_failure_logged;
   uint32_t hdr_ibl_max_cube_extent;
@@ -77,7 +50,7 @@ typedef struct VkrWorldResources {
 } VkrWorldResources;
 
 /**
- * @brief Initialize default world pipelines and text slots.
+ * @brief Initialize text slots and fallback IBL state.
  * @param rf Renderer frontend
  * @param resources World resources to initialize
  * @return true on success, false on failure
@@ -86,29 +59,22 @@ bool8_t vkr_world_resources_init(struct s_RendererFrontend *rf,
                                  VkrWorldResources *resources);
 
 /**
- * @brief Release pipelines and text resources.
+ * @brief Release fallback IBL handles and text resources.
  * @param rf Renderer frontend
  * @param resources World resources to shutdown
  */
 void vkr_world_resources_shutdown(struct s_RendererFrontend *rf,
                                   VkrWorldResources *resources);
 
-/** Prepares all scene-owned bake products and cached face/mip targets. */
+/** Prepares scene-owned source and prefilter textures for native baking. */
 bool8_t
 vkr_world_resources_prepare_scene_environment(struct s_RendererFrontend *rf,
                                               VkrWorldResources *resources,
                                               VkrScene *scene);
 
-/** Destroys cached target views before their scene-owned textures retire. */
-void vkr_world_resources_release_scene_environment_targets(
-    struct s_RendererFrontend *rf, VkrScene *scene);
-
 bool8_t vkr_world_resources_prepare_scene_reflection_probes(
     struct s_RendererFrontend *rf, VkrWorldResources *resources,
     VkrScene *scene);
-
-void vkr_world_resources_release_scene_reflection_probe_targets(
-    struct s_RendererFrontend *rf, VkrScene *scene);
 
 /**
  * @brief Produces scene IBL maps when the scene environment bake is pending.
@@ -126,29 +92,6 @@ void vkr_world_resources_bake_scene_ibl_if_pending(
 void vkr_world_resources_bake_scene_reflection_probes_if_pending(
     struct s_RendererFrontend *rf, VkrWorldResources *resources,
     VkrScene *scene);
-
-/**
- * @brief Selects active IBL maps from scene-ready data or fallback maps.
- */
-void vkr_world_resources_set_active_ibl_from_scene_or_default(
-    struct s_RendererFrontend *rf, VkrWorldResources *resources,
-    const VkrScene *scene);
-
-/**
- * @brief Selects two local probe candidates plus a global fallback.
- *
- * Slot selection prefers local reflection probes by influence and falls back
- * to active/global IBL maps when no local probe contributes.
- */
-void vkr_world_resources_select_probe_slots_for_position(
-    struct s_RendererFrontend *rf, VkrWorldResources *resources,
-    const VkrScene *scene, Vec3 world_position,
-    VkrWorldIblProbeSlot out_slots[3]);
-
-void vkr_world_resources_select_probe_slots_for_bounds(
-    struct s_RendererFrontend *rf, VkrWorldResources *resources,
-    const VkrScene *scene, Vec3 bounds_center, float32_t bounds_radius,
-    VkrWorldIblProbeSlot out_slots[3]);
 
 /**
  * @brief Create or replace a 3D text slot.

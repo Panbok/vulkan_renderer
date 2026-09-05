@@ -260,6 +260,16 @@ typedef struct VkrMetalPacketCandidateCopyRange {
   uint32_t count;
 } VkrMetalPacketCandidateCopyRange;
 
+/* CPU-only rows borrowed from the frame upload slice until submit returns. */
+typedef struct VkrMetalPacketPreparedDraw {
+  VkrGpuGeometryRow geometry;
+  VkrGpuVisibleDrawRow visible;
+  uint64_t index_address;
+  uint64_t index_length;
+  uint32_t instance_count;
+  MTLCullMode cull_mode;
+} VkrMetalPacketPreparedDraw;
+
 typedef struct VkrMetalPacketFrameUpload {
   VkrMetalRingSlice slice;
   VkrMetalAddressPair addresses;
@@ -299,6 +309,8 @@ typedef struct VkrMetalPacketFrameUpload {
   uint32_t ibl_sh_candidate_slot;
   uint32_t ibl_sh_previous_slot;
   VkrMetalPacketTextUpload *text_uploads;
+  VkrMetalPacketPreparedDraw *direct_draws;
+  uint32_t direct_draw_count;
   uint32_t world_text_count;
   uint32_t root_capacity;
   uint32_t root_cursor;

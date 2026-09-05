@@ -78,8 +78,16 @@ let backend slots preserve unchanged static rows. Conservative camera culling
 and back-to-front sorting apply to ordinary blend; opaque/cutout/transmission
 and shadow classification run on the GPU.
 
+Direct-draw preparation resolves live generations and submesh ranges before
+native encoding. Vulkan omits pending geometry/material publication and preserves
+ready draw order; invalid or stale references still reject the packet. Metal has
+no pending native handle and rejects absent/stale references. Both encode prepared
+rows and reserve each pass's root span before its draw loop; picking and blend
+roots remain disjoint. See [ADR-004](adr/004-stateless-render-packet.md).
+
 Workers perform CPU-only resource preparation. Render-thread finalization owns
-GPU publication. Required dependency/publication failure prevents scene activation.
+GPU publication; its upload budgets allow an oversized first upload to progress.
+Required dependency/publication failure prevents scene activation.
 Materials initially publish semantic defaults and request textures incrementally;
 ready textures replace material rows. Shared texture residency counts each GPU
 texture once and completion-retires resources only after their last resident
@@ -113,7 +121,7 @@ layouts fail compilation. Same-layout writes still generate hazards. Buffer
 barriers cover whole buffers. Compute/transfer pass types use the graphics
 submission path and do not implement asynchronous queues or ownership transfer.
 
-Graph resources are reused until their resolved descriptions change.
+Native backend caches reuse graph resources until their resolved descriptions change.
 `TRANSIENT` contents are frame-local, backed by reusable overlap-safe allocations;
 transient aliasing is absent.
 History owners select completed compatible instances. `RETAINED` image contents
@@ -134,10 +142,10 @@ post controls and the temporal consumer. The main dataflow is:
 
 1. Publish transforms/candidate tables, classify camera and cascade views, compact
    visible rows, and encode Metal ICB or Vulkan indirect-count commands.
-2. Raster opaque/cutout visibility and depth; resolve material/geometry G-buffer
-   data; evaluate GTAO; compute HDR lighting and build HZB.
-3. Peel and shade four ordered transmission layers, then draw ordinary blend.
-   Picking resolves visibility/depth and feature-local IDs when requested.
+2. Raster opaque/cutout visibility and depth, build HZB, and peel four ordered
+   transmission visibility layers.
+3. Resolve the G-buffer, evaluate GTAO, compute HDR lighting, and shade transmission
+   from deepest to nearest. Resolve requested picking, then draw ordinary blend.
 4. Reconstruct temporal Scene HDR through portable TAA or selected MetalFX.
 5. Meter exposure, produce/combine bloom, tonemap/FXAA and compose native UI.
 
@@ -215,6 +223,12 @@ allocator synchronization is explicit. Vulkan driver host allocations use null
 callbacks and are outside VKR CPU totals. See
 [ADR-006](adr/006-cpu-memory-allocators.md).
 
+Container creation and growth report failure at their owning boundary. Failed
+vector/hash growth preserves the previous contents and capacity; callers reserve
+known batches before population and propagate allocation failure through existing
+load, build or initialization errors. Partial application startup unwinds acquired
+owners, and failed text rebuilding preserves its previously published layout.
+
 Vulkan pools keyed device/upload/staging/readback blocks, with persistent mappings and
 required dedicated-allocation exceptions. Metal uses placement heaps and native
 upload/readback adapters. Shared cores track logical ranges, generations, submit
@@ -234,12 +248,16 @@ Both backends publish completed GPU timing/results and allocation/visibility
 metrics. Unsupported timing scopes are unavailable, never zero-duration proof.
 Metal compute/graphics timestamps exist; transfer timing is not supported.
 The harness owns case identity, artifacts, comparison and performance authority.
+After resource/bootstrap readiness it starts authored warmup at jitter phase zero
+with temporal history invalidated; replay version 3 fingerprints this behavior.
 See [ADR-015](adr/015-metrics-module.md) and [ADR-051](adr/051-renderer-harness-and-evidence.md).
 
 ## Remaining implementation and evidence boundaries
 
 These are limits of current code or retained acceptance, not scheduled promises:
 
+- Metal present-target recreation retains its fixed three-image capability and
+  ignores requested image counts; cases requiring two images are unavailable.
 - Deformation/procedural/particle motion and broad animation/disocclusion coverage
   remain outside the completed rigid-motion temporal contract.
 - Visibility-buffer MSAA, terrain, a general effects system, asynchronous graph

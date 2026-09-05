@@ -19,6 +19,7 @@ typedef struct VkrResourceAsyncRequest {
   uint32_t ref_count;
   bool8_t cancel_requested;
   bool8_t cpu_job_in_flight;
+  bool8_t callback_in_flight;
   uint64_t gpu_submit_serial;
   void *async_payload;
   VkrResourceHandleInfo loaded_info;
@@ -935,7 +936,7 @@ bool8_t vkr_resource_system_init(
   vkr_resource_system = vkr_allocator_alloc(
       allocator, sizeof(VkrResourceSystem), VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!vkr_resource_system) {
-    log_fatal("Failed to allocate resource system");
+    log_error("Failed to allocate resource system");
     return false_v;
   }
 
@@ -960,7 +961,7 @@ bool8_t vkr_resource_system_init(
       sizeof(VkrResourceLoader) * vkr_resource_system->loader_capacity,
       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!vkr_resource_system->loaders) {
-    log_fatal("Failed to allocate loaders array");
+    log_error("Failed to allocate loaders array");
     vkr_resource_system_init_cleanup(vkr_resource_system);
     return false_v;
   }
@@ -973,20 +974,24 @@ bool8_t vkr_resource_system_init(
 
   if (!vkr_mutex_create(vkr_resource_system->allocator,
                         &vkr_resource_system->mutex)) {
-    log_fatal("Failed to create resource system mutex");
+    log_error("Failed to create resource system mutex");
     vkr_resource_system_init_cleanup(vkr_resource_system);
     return false_v;
   }
 
   vkr_resource_system->request_by_key =
       vkr_hash_table_create_uint32_t(vkr_resource_system->allocator, 128);
+  if (!vkr_resource_system->request_by_key.entries) {
+    vkr_resource_system_init_cleanup(vkr_resource_system);
+    return false_v;
+  }
 
   vkr_resource_system->requests = vkr_allocator_alloc(
       vkr_resource_system->allocator,
       sizeof(VkrResourceAsyncRequest) * vkr_resource_system->request_capacity,
       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!vkr_resource_system->requests) {
-    log_fatal("Failed to allocate async request table");
+    log_error("Failed to allocate async request table");
     vkr_resource_system_init_cleanup(vkr_resource_system);
     return false_v;
   }
@@ -1000,7 +1005,7 @@ bool8_t vkr_resource_system_init(
                               vkr_resource_system->completion_capacity,
                           VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!vkr_resource_system->completions) {
-    log_fatal("Failed to allocate async completion queue");
+    log_error("Failed to allocate async completion queue");
     vkr_resource_system_init_cleanup(vkr_resource_system);
     return false_v;
   }
@@ -1202,8 +1207,8 @@ bool8_t vkr_resource_system_load(VkrResourceType type, String8 path,
       vkr_allocator_free(vkr_resource_system->allocator, request_key,
                          key_len + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
 
-      return existing->load_state != VKR_RESOURCE_LOAD_STATE_FAILED &&
-             existing->load_state != VKR_RESOURCE_LOAD_STATE_CANCELED;
+      return out_info->load_state != VKR_RESOURCE_LOAD_STATE_FAILED &&
+             out_info->load_state != VKR_RESOURCE_LOAD_STATE_CANCELED;
     }
   }
 
@@ -1441,12 +1446,10 @@ void vkr_resource_system_unload(const VkrResourceHandleInfo *info,
   case VKR_RESOURCE_LOAD_STATE_CANCELED:
   case VKR_RESOURCE_LOAD_STATE_INVALID:
   default:
-    if (request->cpu_job_in_flight) {
-      /*
-       * Keep canceled/failed requests alive until the worker posts completion.
-       * Releasing here would free request-owned path/key storage that job
-       * payloads still reference.
-       */
+    if (request->cpu_job_in_flight || request->callback_in_flight ||
+        request->loaded_info.type != VKR_RESOURCE_TYPE_UNKNOWN) {
+      /* Workers/callbacks borrow the request path and payload. Published
+       * resources are unloaded by the render-thread cancellation drain. */
       request->cancel_requested = true_v;
       vkr_mutex_unlock(vkr_resource_system->mutex);
       return;
@@ -1843,7 +1846,7 @@ void vkr_resource_system_pump(const VkrResourceAsyncBudget *budget) {
           release_async_loader_id = completion.loader_id;
           release_async_ptr = completion.async_payload;
         }
-      } else if (request->cancel_requested && request->ref_count == 0) {
+      } else if (request->cancel_requested) {
         unload_loaded_resource = completion.loaded;
         unload_info = completion.loaded_info;
         if (completion.has_async_payload) {
@@ -1855,15 +1858,9 @@ void vkr_resource_system_pump(const VkrResourceAsyncBudget *budget) {
         request->last_error = VKR_RENDERER_ERROR_NONE;
         vkr_resource_system_record_request_load(vkr_resource_system, request,
                                                 VKR_METRIC_EVENT_STATUS_FAILED);
-        uint32_t detached_loader_id = VKR_INVALID_ID;
-        void *detached_payload = NULL;
-        vkr_resource_system_request_release_locked(
-            vkr_resource_system, request_index, &detached_loader_id,
-            &detached_payload);
-        if (detached_payload) {
-          release_async_payload = true_v;
-          release_async_loader_id = detached_loader_id;
-          release_async_ptr = detached_payload;
+        if (request->ref_count == 0) {
+          vkr_resource_system_request_release_locked(vkr_resource_system,
+                                                     request_index, NULL, NULL);
         }
       } else if (completion.has_async_payload) {
         request->loader_id = completion.loader_id;
@@ -1923,20 +1920,31 @@ void vkr_resource_system_pump(const VkrResourceAsyncBudget *budget) {
     }
 
     if (request->load_state == VKR_RESOURCE_LOAD_STATE_CANCELED &&
-        request->ref_count == 0 && !request->cpu_job_in_flight) {
-      uint32_t detached_loader_id = VKR_INVALID_ID;
-      void *detached_payload = NULL;
-      vkr_resource_system_request_release_locked(
-          vkr_resource_system, (int32_t)i, &detached_loader_id,
-          &detached_payload);
-      if (detached_payload) {
+        request->ref_count == 0 && !request->cpu_job_in_flight &&
+        !request->callback_in_flight) {
+      const uint32_t loader_id = request->loader_id;
+      void *payload = request->async_payload;
+      const VkrResourceHandleInfo loaded_info = request->loaded_info;
+      const String8 path = request->path;
+      request->async_payload = NULL;
+      request->loaded_info = (VkrResourceHandleInfo){0};
+      if (payload || loaded_info.type != VKR_RESOURCE_TYPE_UNKNOWN) {
+        request->callback_in_flight = true_v;
         vkr_mutex_unlock(vkr_resource_system->mutex);
-        vkr_resource_system_release_async_payload(detached_loader_id,
-                                                  detached_payload);
+        if (loaded_info.type != VKR_RESOURCE_TYPE_UNKNOWN) {
+          vkr_resource_system_unload_sync_internal(&loaded_info, path);
+        }
+        if (payload) {
+          vkr_resource_system_release_async_payload(loader_id, payload);
+        }
         if (!vkr_mutex_lock(vkr_resource_system->mutex)) {
           return;
         }
+        request = &vkr_resource_system->requests[i];
+        request->callback_in_flight = false_v;
       }
+      vkr_resource_system_request_release_locked(vkr_resource_system,
+                                                 (int32_t)i, NULL, NULL);
       finalize_budget--;
       continue;
     }
@@ -2040,8 +2048,8 @@ void vkr_resource_system_pump(const VkrResourceAsyncBudget *budget) {
 
         VkrResourceHandleInfo finalized_info = {0};
         VkrRendererError finalize_error = VKR_RENDERER_ERROR_NONE;
-        uint64_t finalize_request_id = request->request_id;
         String8 finalize_path = request->path;
+        request->callback_in_flight = true_v;
 
         /*
          * Finalize callbacks may submit nested async dependencies through the
@@ -2056,35 +2064,21 @@ void vkr_resource_system_pump(const VkrResourceAsyncBudget *budget) {
           return;
         }
 
-        int32_t refreshed_index = vkr_resource_system_request_find_by_id_locked(
-            vkr_resource_system, finalize_request_id);
-        if (refreshed_index < 0) {
-          /*
-           * Request vanished while finalize ran. Release the payload to avoid a
-           * CPU-side leak; any finalized GPU handle is orphaned and should not
-           * happen because pending requests are not released until terminal.
-           */
-          vkr_mutex_unlock(vkr_resource_system->mutex);
-          vkr_resource_system_release_async_payload(loader->id, payload_ptr);
-          if (!vkr_mutex_lock(vkr_resource_system->mutex)) {
-            return;
-          }
-          finalize_budget--;
-          continue;
-        }
-
-        request = &vkr_resource_system->requests[refreshed_index];
-        if (!request->in_use) {
-          vkr_mutex_unlock(vkr_resource_system->mutex);
-          vkr_resource_system_release_async_payload(loader->id, payload_ptr);
-          if (!vkr_mutex_lock(vkr_resource_system->mutex)) {
-            return;
-          }
-          finalize_budget--;
-          continue;
-        }
+        // The callback pins this slot and its path against cancellation
+        // release. Worker dependency requests may relocate the table, so reload
+        // the view.
+        request = &vkr_resource_system->requests[i];
 
         if (!finalized) {
+          request->callback_in_flight = false_v;
+          if (request->cancel_requested) {
+            request->load_state = VKR_RESOURCE_LOAD_STATE_CANCELED;
+            request->last_error = VKR_RENDERER_ERROR_NONE;
+            vkr_resource_system_record_request_load(
+                vkr_resource_system, request, VKR_METRIC_EVENT_STATUS_FAILED);
+            finalize_budget--;
+            continue;
+          }
           if (finalize_error == VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED) {
             request->load_state = VKR_RESOURCE_LOAD_STATE_PENDING_DEPENDENCIES;
             request->last_error = VKR_RENDERER_ERROR_NONE;
@@ -2128,6 +2122,16 @@ void vkr_resource_system_pump(const VkrResourceAsyncBudget *budget) {
                                                   payload_ptr);
         if (!vkr_mutex_lock(vkr_resource_system->mutex)) {
           return;
+        }
+        request = &vkr_resource_system->requests[i];
+        request->callback_in_flight = false_v;
+        if (request->cancel_requested) {
+          request->load_state = VKR_RESOURCE_LOAD_STATE_CANCELED;
+          request->last_error = VKR_RENDERER_ERROR_NONE;
+          vkr_resource_system_record_request_load(
+              vkr_resource_system, request, VKR_METRIC_EVENT_STATUS_FAILED);
+          finalize_budget--;
+          continue;
         }
       }
 

@@ -44,20 +44,17 @@ vkr_internal float32_t vkr_ui_text_device_font_size(const VkrUiText *text) {
   return authored_size * text->content_scale;
 }
 
-vkr_internal void vkr_ui_text_compute_layout(VkrUiText *text) {
+vkr_internal bool8_t vkr_ui_text_compute_layout(VkrUiText *text) {
   if (!text || !text->resolved_font) {
-    return;
-  }
-
-  if (text->layout.allocator != NULL) {
-    vkr_text_layout_destroy(&text->layout);
+    return false_v;
   }
 
   if (text->content.str == NULL || text->content.length == 0) {
+    vkr_text_layout_destroy(&text->layout);
     text->layout = (VkrTextLayout){0};
     text->bounds = (VkrTextBounds){0};
     text->layout_dirty = false_v;
-    return;
+    return true_v;
   }
 
   const float32_t font_size = vkr_ui_text_device_font_size(text);
@@ -75,8 +72,12 @@ vkr_internal void vkr_ui_text_compute_layout(VkrUiText *text) {
   if (layout.max_height > 0.0f) {
     layout.max_height *= text->content_scale;
   }
-  text->layout =
+  VkrTextLayout replacement =
       vkr_text_layout_compute(text->allocator, &text_for_layout, &layout);
+  if (replacement.line_count == 0u)
+    return false_v;
+  vkr_text_layout_destroy(&text->layout);
+  text->layout = replacement;
 
   text->bounds.size = text->layout.bounds;
 
@@ -91,6 +92,7 @@ vkr_internal void vkr_ui_text_compute_layout(VkrUiText *text) {
   }
 
   text->layout_dirty = false_v;
+  return true_v;
 }
 
 vkr_internal bool8_t vkr_ui_text_generate_geometry(VkrUiText *text) {
@@ -497,9 +499,8 @@ VkrTextBounds vkr_ui_text_get_bounds(VkrUiText *text) {
     return (VkrTextBounds){0};
   }
 
-  if (text->layout_dirty) {
-    vkr_ui_text_compute_layout(text);
-  }
+  if (text->layout_dirty && !vkr_ui_text_compute_layout(text))
+    return text->bounds;
 
   return text->bounds;
 }
@@ -509,9 +510,8 @@ bool8_t vkr_ui_text_prepare_geometry(VkrUiText *text) {
     return false_v;
   }
 
-  if (text->layout_dirty) {
-    vkr_ui_text_compute_layout(text);
-  }
+  if (text->layout_dirty && !vkr_ui_text_compute_layout(text))
+    return false_v;
 
   if (text->buffers_dirty) {
     if (!vkr_ui_text_generate_geometry(text)) {

@@ -28,6 +28,7 @@ static void vkr_gamepad_release_all(InputState *input_state) {
   input_process_button(input_state, BUTTON_GAMEPAD_DPAD_DOWN, false_v);
   input_process_button(input_state, BUTTON_GAMEPAD_DPAD_LEFT, false_v);
   input_process_button(input_state, BUTTON_GAMEPAD_DPAD_RIGHT, false_v);
+  input_process_thumbsticks(input_state, 0.0f, 0.0f, 0.0f, 0.0f);
 }
 
 bool8_t vkr_gamepad_init(VkrGamepad *gamepad, InputState *input_state) {
@@ -77,10 +78,7 @@ bool8_t vkr_gamepad_poll_all(VkrGamepad *gamepad) {
   assert_log(gamepad->input_state, "Input state is NULL");
 
   for (int32_t i = 0; i < VKR_GAMEPAD_MAX_CONTROLLERS; i++) {
-    VkrGamepadState *gamepad_state = &gamepad->gamepads[i];
-    if (!vkr_gamepad_poll(gamepad, i)) {
-      continue;
-    }
+    (void)vkr_gamepad_poll(gamepad, i);
   }
 
   return true_v;

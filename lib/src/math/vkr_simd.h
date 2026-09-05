@@ -11,7 +11,7 @@
  *
  * SIMD Architecture Support:
  * - ARM NEON (ARMv7, ARM64): Full implementation with native intrinsics
- * - x86 SSE/SSE2 (Intel/AMD): Type definitions ready, implementation pending
+ * - x86 SSE/FMA (Intel/AMD): Native implementation selected for AVX builds
  * - Scalar Fallback: Pure C implementation for unsupported architectures
  *
  * Memory Layout and Alignment:
@@ -1112,13 +1112,13 @@ vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_div_f32x4(VKR_SIMD_F32X4 a,
 
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_sqrt_f32x4(VKR_SIMD_F32X4 v) {
   VKR_SIMD_F32X4 result = {
-      {sqrt_f32(v.x), sqrt_f32(v.y), sqrt_f32(v.z), sqrt_f32(v.w)}};
+      {vkr_sqrt_f32(v.x), vkr_sqrt_f32(v.y), vkr_sqrt_f32(v.z), vkr_sqrt_f32(v.w)}};
   return result;
 }
 
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_rsqrt_f32x4(VKR_SIMD_F32X4 v) {
-  VKR_SIMD_F32X4 result = {{1.0f / sqrt_f32(v.x), 1.0f / sqrt_f32(v.y),
-                            1.0f / sqrt_f32(v.z), 1.0f / sqrt_f32(v.w)}};
+  VKR_SIMD_F32X4 result = {{1.0f / vkr_sqrt_f32(v.x), 1.0f / vkr_sqrt_f32(v.y),
+                            1.0f / vkr_sqrt_f32(v.z), 1.0f / vkr_sqrt_f32(v.w)}};
   return result;
 }
 

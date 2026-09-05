@@ -45,11 +45,17 @@ int main(int argc, char **argv) {
     fprintf(stderr, "Unable to create cooker arenas\n");
     return 1;
   }
-  log_init(scratch_arena);
+  if (!log_init(scratch_arena)) {
+    arena_destroy(scratch_arena);
+    arena_destroy(source_arena);
+    fprintf(stderr, "Unable to initialize cooker logging\n");
+    return 1;
+  }
   VkrAllocator source_allocator = {.ctx = source_arena};
   VkrAllocator scratch_allocator = {.ctx = scratch_arena};
   if (!vkr_allocator_arena(&source_allocator) ||
       !vkr_allocator_arena(&scratch_allocator)) {
+    log_shutdown();
     arena_destroy(scratch_arena);
     arena_destroy(source_arena);
     return 1;
@@ -77,6 +83,7 @@ int main(int argc, char **argv) {
 
   vkr_allocator_release_global_accounting(&scratch_allocator);
   vkr_allocator_release_global_accounting(&source_allocator);
+  log_shutdown();
   arena_destroy(scratch_arena);
   arena_destroy(source_arena);
   return success ? 0 : 1;

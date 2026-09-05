@@ -23,10 +23,6 @@ vkr_internal void vkr_return_node(VkrFreeList *freelist,
 uint64_t vkr_freelist_calculate_memory_requirement(uint64_t total_size) {
   // Use a reasonable default: assume average block size of 4KB
   uint64_t max_count = (total_size / 4096) + 16;
-  if (max_count < 2) {
-    max_count = 2; // ensure at least head + one additional node is available
-  }
-
   if (max_count > 1024) {
     max_count = 1024;
   }
@@ -76,12 +72,6 @@ void vkr_freelist_destroy(VkrFreeList *freelist) {
   assert_log(freelist != NULL, "Freelist must not be NULL");
   assert_log(freelist->memory != NULL, "Freelist memory must not be NULL");
 
-  freelist->memory = NULL;
-  freelist->total_size = 0;
-  freelist->max_count = 0;
-  freelist->nodes_allocated_size = 0;
-  freelist->head = NULL;
-  freelist->nodes = NULL;
   MemZero(freelist, sizeof(VkrFreeList));
 }
 
@@ -132,7 +122,7 @@ bool8_t vkr_freelist_free(VkrFreeList *freelist, uint64_t size,
     log_error("Zero size passed to vkr_freelist_free");
     return false_v;
   }
-  if (offset + size > freelist->total_size) {
+  if (offset > freelist->total_size || size > freelist->total_size - offset) {
     log_error("Free block exceeds freelist range");
     return false_v;
   }
@@ -200,13 +190,6 @@ bool8_t vkr_freelist_free(VkrFreeList *freelist, uint64_t size,
   if (node && (block_end == node->offset)) {
     node->offset = block_start;
     node->size += size;
-    // If also adjacent to previous (should not happen due to earlier branch),
-    // coalesce fully
-    if (previous && (previous->offset + previous->size == node->offset)) {
-      previous->size += node->size;
-      previous->next = node->next;
-      vkr_return_node(freelist, node);
-    }
     return true_v;
   }
 
@@ -274,16 +257,6 @@ bool8_t vkr_freelist_resize(VkrFreeList *freelist, uint64_t new_total_size,
       vkr_freelist_calculate_memory_requirement(new_total_size);
   uint32_t new_max_count =
       (uint32_t)(required_mem_size / sizeof(VkrFreeListNode));
-
-  if (new_max_count < 2) {
-    log_error(
-        "New memory block too small for freelist (need at least 2 nodes)");
-    return false_v;
-  }
-
-  if (new_max_count > 1024) {
-    new_max_count = 1024;
-  }
 
   VkrFreeListNode *new_nodes = (VkrFreeListNode *)new_memory;
   for (uint32_t i = 0; i < new_max_count; i++) {

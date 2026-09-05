@@ -8,7 +8,7 @@ authority: proposal
 
 Portable same-resolution temporal AA is implemented. Visibility-buffer MSAA is
 not: although [vkr_renderer.h](../../lib/src/renderer/vkr_renderer.h) defines
-sample counts, Vulkan rejects published textures whose count is not one in
+sample counts, Vulkan rejects multisampled published textures in
 [vkr_vulkan_publisher.c](../../lib/src/renderer/vulkan/vkr_vulkan_publisher.c),
 and graph images currently require one sample in
 [vkr_vulkan_graph.c](../../lib/src/renderer/vulkan/vkr_vulkan_graph.c).

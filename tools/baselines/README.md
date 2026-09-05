@@ -16,7 +16,7 @@ artifact has been rehashed and copied successfully.
 Do not copy files here manually. Create a no-mutation proposal first:
 
 ```sh
-build/tools/vkr_harness baseline propose \
+build_release/tools/vkr_harness baseline propose \
   --from build/_artifacts/snapshot/<run-id> \
   --actor '<actor>' \
   --reason '<reason>'
@@ -26,7 +26,7 @@ Review the emitted `plan.json` and `entries.ndjson`. Accept only with the exact
 plan digest printed by the proposal command:
 
 ```sh
-build/tools/vkr_harness baseline accept \
+build_release/tools/vkr_harness baseline accept \
   --plan build/_artifacts/baseline/<proposal-id>/plan.json \
   --confirm-sha256 sha256:<plan-digest>
 ```
@@ -83,4 +83,6 @@ bitmap, and MTSDF text:
 
 The case manifests pin their backend and reject a conflicting environment
 request. They cannot be used with `--cross-backend`; each root is compared only
-with later runs of the same backend.
+with runs whose workload, policy, and environment fingerprints match. The
+legacy Vulkan 1.2 generation is a retained historical reference; it does not
+validate the current Vulkan 1.4 packet implementation.

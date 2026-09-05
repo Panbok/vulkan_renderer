@@ -59,17 +59,21 @@
   } Queue_##name;                                                              \
   /**                                                                          \
    * @brief Creates a new queue with the specified capacity                    \
-   * @param arena Arena allocator to use for memory allocation                 \
+   * @param allocator Allocator owning the queue buffer                        \
    * @param capacity Maximum number of elements the queue can hold             \
-   * @return Initialized Queue_##name structure                                \
+   * @return Initialized record, or an all-zero record on allocation failure   \
    */                                                                          \
-  static inline Queue_##name queue_create_##name(VkrAllocator *allocator,      \
-                                                 uint64_t capacity) {          \
+  static inline VKR_MUST_USE Queue_##name queue_create_##name(                 \
+      VkrAllocator *allocator, uint64_t capacity) {                            \
     assert_log(allocator != NULL, "Allocator is NULL");                        \
-    assert_log(capacity > 0, "Capacity is 0");                                 \
+    if (capacity == 0 || capacity > SIZE_MAX / sizeof(type)) {                 \
+      return (Queue_##name){0};                                                \
+    }                                                                          \
     type *buf = vkr_allocator_alloc(allocator, capacity * sizeof(type),        \
                                     VKR_ALLOCATOR_MEMORY_TAG_QUEUE);           \
-    assert_log(buf != NULL, "alloc failed in queue_create");                   \
+    if (!buf) {                                                                \
+      return (Queue_##name){0};                                                \
+    }                                                                          \
     Queue_##name queue = {allocator, capacity, 0, 0, 0, buf};                  \
     return queue;                                                              \
   }                                                                            \
@@ -152,13 +156,12 @@
   /**                                                                          \
    * @brief Marks the queue as destroyed, sets all members to NULL/0           \
    * @param q Pointer to the queue                                             \
-   * @note This does not deallocate memory, as that's managed by the arena     \
+   * @note Releases the buffer through its owning allocator                    \
    */                                                                          \
   static inline void queue_destroy_##name(Queue_##name *q) {                   \
     assert_log(q != NULL, "Queue is NULL");                                    \
     if (q->data) {                                                             \
-      vkr_allocator_free(q->allocator, q->data,                                \
-                         q->capacity * sizeof(type),                          \
+      vkr_allocator_free(q->allocator, q->data, q->capacity * sizeof(type),    \
                          VKR_ALLOCATOR_MEMORY_TAG_QUEUE);                      \
     }                                                                          \
     q->data = NULL;                                                            \

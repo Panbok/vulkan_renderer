@@ -1358,13 +1358,6 @@ vkr_internal bool8_t vkr_metal_packet_upload_buffer_chunks_at(
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_packet_upload_buffer_chunks(
-    VkrMetalPacketRenderer *renderer, const void *source, uint64_t size,
-    id<MTLBuffer> destination) API_AVAILABLE(macos(26.0)) {
-  return vkr_metal_packet_upload_buffer_chunks_at(renderer, source, size,
-                                                  destination, 0u);
-}
-
 vkr_internal bool8_t vkr_metal_packet_upload_cubemap(
     VkrMetalPacketRenderer *renderer, const uint8_t *rgba8_faces,
     uint32_t extent, id<MTLTexture> destination) API_AVAILABLE(macos(26.0)) {

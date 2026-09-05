@@ -128,9 +128,8 @@ typedef struct VkrMeshLoadJobPayload {
   bool8_t *success;
 } VkrMeshLoadJobPayload;
 
-vkr_internal void
-vkr_mesh_loader_builder_init(VkrMeshLoaderSubsetBuilder *builder,
-                             VkrAllocator *allocator);
+vkr_internal bool8_t vkr_mesh_loader_builder_init(
+    VkrMeshLoaderSubsetBuilder *builder, VkrAllocator *allocator);
 vkr_internal bool8_t vkr_mesh_loader_prepare_async(VkrResourceLoader *self,
                                                    String8 name,
                                                    VkrAllocator *temp_alloc,
@@ -148,9 +147,8 @@ vkr_internal uint32_t vkr_mesh_loader_add_material_bucket(
     VkrMeshLoaderState *state, const String8 *material_name);
 vkr_internal uint32_t vkr_mesh_loader_find_material_bucket(
     VkrMeshLoaderState *state, const String8 *material_name);
-vkr_internal void
-vkr_mesh_loader_set_current_material(VkrMeshLoaderState *state,
-                                     const String8 *material_name);
+vkr_internal bool8_t vkr_mesh_loader_set_current_material(
+    VkrMeshLoaderState *state, const String8 *material_name);
 vkr_internal VkrMeshLoaderSubsetBuilder *
 vkr_mesh_loader_get_current_builder(VkrMeshLoaderState *state);
 vkr_internal void
@@ -585,6 +583,10 @@ vkr_internal bool8_t vkr_mesh_loader_capture_source_dependency(
   }
 
   String8 owned_path = string8_duplicate(state->load_allocator, &path);
+  if (!owned_path.str) {
+    *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
   FilePathType type = vkr_mesh_loader_path_is_absolute(path)
                           ? FILE_PATH_TYPE_ABSOLUTE
                           : FILE_PATH_TYPE_RELATIVE;
@@ -595,7 +597,11 @@ vkr_internal bool8_t vkr_mesh_loader_capture_source_dependency(
   }
 
   VkrMeshSourceDependency dependency = {.path = owned_path};
-  vector_push_VkrMeshSourceDependency(&state->source_dependencies, dependency);
+  if (!vector_push_VkrMeshSourceDependency(&state->source_dependencies,
+                                           dependency)) {
+    *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
   return true_v;
 }
 
@@ -617,26 +623,26 @@ vkr_internal bool8_t vkr_mesh_loader_collect_source_dependencies(
   return true_v;
 }
 
-vkr_internal VkrMeshLoaderState vkr_mesh_loader_state_create(
+vkr_internal bool8_t vkr_mesh_loader_state_create(
     VkrMeshLoaderContext *context, VkrAllocator *load_allocator,
     VkrAllocator *temp_allocator, VkrAllocator *scratch_allocator, String8 name,
-    VkrRendererError *out_error) {
+    VkrRendererError *out_error, VkrMeshLoaderState *out_state) {
 
   VkrMeshLoaderState state = {
       .context = context,
       .load_allocator = load_allocator,
       .temp_allocator = temp_allocator,
       .scratch_allocator = scratch_allocator,
-      .positions = {0},
-      .normals = {0},
-      .texcoords = {0},
-      .subsets = {0},
-      .materials = {0},
-      .material_buckets = {0},
-      .merged_vertices = {0},
-      .merged_indices = {0},
-      .merged_submeshes = {0},
-      .source_dependencies = {0},
+      .positions = {.allocator = load_allocator},
+      .normals = {.allocator = load_allocator},
+      .texcoords = {.allocator = load_allocator},
+      .subsets = {.allocator = load_allocator},
+      .materials = {.allocator = load_allocator},
+      .material_buckets = {.allocator = load_allocator},
+      .merged_vertices = {.allocator = load_allocator},
+      .merged_indices = {.allocator = load_allocator},
+      .merged_submeshes = {.allocator = load_allocator},
+      .source_dependencies = {.allocator = load_allocator},
       .merged_buffer = {0},
       .current_bucket = 0,
       .source_path = {0},
@@ -646,20 +652,6 @@ vkr_internal VkrMeshLoaderState vkr_mesh_loader_state_create(
       .out_error = out_error,
   };
 
-  state.positions = vector_create_Vec3(state.load_allocator);
-  state.normals = vector_create_Vec3(state.load_allocator);
-  state.texcoords = vector_create_Vec2(state.load_allocator);
-  state.subsets = vector_create_VkrMeshLoaderSubset(state.load_allocator);
-  state.materials =
-      vector_create_VkrMeshLoaderMaterialDef(state.load_allocator);
-  state.material_buckets =
-      vector_create_VkrMeshLoaderMaterialBucket(state.load_allocator);
-  state.merged_vertices = vector_create_VkrVertex3d(state.load_allocator);
-  state.merged_indices = vector_create_uint32_t(state.load_allocator);
-  state.merged_submeshes =
-      vector_create_VkrMeshLoaderSubmeshRange(state.load_allocator);
-  state.source_dependencies =
-      vector_create_VkrMeshSourceDependency(state.load_allocator);
   state.source_path = string8_duplicate(state.load_allocator, &name);
   state.source_dir = file_path_get_directory(state.load_allocator, name);
   state.source_stem = string8_get_stem(state.load_allocator, name);
@@ -667,9 +659,14 @@ vkr_internal VkrMeshLoaderState vkr_mesh_loader_state_create(
       vkr_mesh_loader_get_extension(state.load_allocator, name);
   state.material_dir = vkr_mesh_loader_make_material_dir(state.load_allocator,
                                                          &state.source_stem);
-  vkr_mesh_loader_add_material_bucket(&state, NULL);
-  state.current_bucket = 0;
-  return state;
+  if (!state.source_path.str || !state.source_stem.str ||
+      !state.material_dir.str ||
+      vkr_mesh_loader_add_material_bucket(&state, NULL) == VKR_INVALID_ID) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+  *out_state = state;
+  return true_v;
 }
 
 vkr_internal VkrMeshLoaderVertexRef
@@ -724,16 +721,16 @@ vkr_internal uint32_t vkr_mesh_loader_fix_index(int32_t value, uint32_t count) {
   return 0;
 }
 
-vkr_internal void
-vkr_mesh_loader_builder_init(VkrMeshLoaderSubsetBuilder *builder,
-                             VkrAllocator *allocator) {
-  builder->vertices = vector_create_VkrVertex3d(allocator);
-  builder->indices = vector_create_uint32_t(allocator);
+vkr_internal bool8_t vkr_mesh_loader_builder_init(
+    VkrMeshLoaderSubsetBuilder *builder, VkrAllocator *allocator) {
+  builder->vertices = (Vector_VkrVertex3d){.allocator = allocator};
+  builder->indices = (Vector_uint32_t){.allocator = allocator};
   builder->name = vkr_string8_duplicate_cstr(allocator, "default");
   builder->material_name = (String8){0};
   builder->material_is_path = false_v;
   builder->pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD;
   builder->shader_override = (String8){0};
+  return builder->name.str != NULL;
 }
 
 vkr_internal uint32_t vkr_mesh_loader_find_material_bucket(
@@ -769,27 +766,35 @@ vkr_internal uint32_t vkr_mesh_loader_add_material_bucket(
     bucket.material_name =
         string8_duplicate(state->load_allocator, material_name);
   }
-  vkr_mesh_loader_builder_init(&bucket.builder, state->load_allocator);
+  if ((material_name && material_name->length && !bucket.material_name.str) ||
+      !vkr_mesh_loader_builder_init(&bucket.builder, state->load_allocator))
+    return VKR_INVALID_ID;
   if (bucket.material_name.str) {
     bucket.builder.material_name = bucket.material_name;
     bucket.builder.material_is_path = false_v;
     bucket.builder.name = bucket.material_name;
   }
 
-  vector_push_VkrMeshLoaderMaterialBucket(&state->material_buckets, bucket);
+  if (!vector_push_VkrMeshLoaderMaterialBucket(&state->material_buckets,
+                                               bucket))
+    return VKR_INVALID_ID;
   return (uint32_t)(state->material_buckets.length - 1);
 }
 
-vkr_internal void
-vkr_mesh_loader_set_current_material(VkrMeshLoaderState *state,
-                                     const String8 *material_name) {
+vkr_internal bool8_t vkr_mesh_loader_set_current_material(
+    VkrMeshLoaderState *state, const String8 *material_name) {
   assert_log(state != NULL, "State is NULL");
 
   uint32_t index = vkr_mesh_loader_find_material_bucket(state, material_name);
   if (index == VKR_INVALID_ID) {
     index = vkr_mesh_loader_add_material_bucket(state, material_name);
   }
+  if (index == VKR_INVALID_ID) {
+    *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
   state->current_bucket = index;
+  return true_v;
 }
 
 vkr_internal VkrMeshLoaderSubsetBuilder *
@@ -1084,7 +1089,11 @@ vkr_internal bool8_t vkr_mesh_loader_finalize_builder(
   uint32_t *indices_copy = vkr_allocator_alloc(
       state->scratch_allocator, (uint64_t)index_count * sizeof(uint32_t),
       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  assert_log(indices_copy != NULL, "MeshLoader: failed to allocate indices");
+  if (!indices_copy) {
+    *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    return false_v;
+  }
   MemCopy(indices_copy, builder->indices.data,
           (uint64_t)builder->indices.length * sizeof(uint32_t));
 
@@ -1110,12 +1119,25 @@ vkr_internal bool8_t vkr_mesh_loader_finalize_builder(
 
   uint32_t vertex_base = (uint32_t)state->merged_vertices.length;
   uint32_t index_base = (uint32_t)state->merged_indices.length;
-  for (uint32_t i = 0; i < dedup_vertex_count; ++i) {
-    vector_push_VkrVertex3d(&state->merged_vertices, dedup_vertices[i]);
+  if (state->merged_vertices.length + dedup_vertex_count > UINT32_MAX ||
+      state->merged_indices.length + index_count > UINT32_MAX ||
+      !vector_reserve_VkrVertex3d(&state->merged_vertices,
+                                  state->merged_vertices.length +
+                                      dedup_vertex_count) ||
+      !vector_reserve_uint32_t(&state->merged_indices,
+                               state->merged_indices.length + index_count) ||
+      !vector_reserve_VkrMeshLoaderSubmeshRange(
+          &state->merged_submeshes, state->merged_submeshes.length + 1u)) {
+    *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    return false_v;
   }
-  for (uint32_t i = 0; i < index_count; ++i) {
-    vector_push_uint32_t(&state->merged_indices, indices_copy[i] + vertex_base);
-  }
+  MemCopy(state->merged_vertices.data + vertex_base, dedup_vertices,
+          (uint64_t)dedup_vertex_count * sizeof(*dedup_vertices));
+  state->merged_vertices.length += dedup_vertex_count;
+  for (uint32_t i = 0; i < index_count; ++i)
+    state->merged_indices.data[state->merged_indices.length++] =
+        indices_copy[i] + vertex_base;
 
   String8 material_path = {0};
   VkrMaterialHandle mat_handle = VKR_MATERIAL_HANDLE_INVALID;
@@ -1143,7 +1165,7 @@ vkr_internal bool8_t vkr_mesh_loader_finalize_builder(
       .pipeline_domain = builder->pipeline_domain,
       .material_handle = mat_handle,
   };
-  vector_push_VkrMeshLoaderSubmeshRange(&state->merged_submeshes, range);
+  state->merged_submeshes.data[state->merged_submeshes.length++] = range;
 
   vkr_allocator_free(state->scratch_allocator, indices_copy,
                      (uint64_t)index_count * sizeof(uint32_t),
@@ -1176,17 +1198,26 @@ vkr_mesh_loader_finalize_all_buckets(VkrMeshLoaderState *state) {
   return true_v;
 }
 
-vkr_internal void vkr_mesh_loader_push_face(VkrMeshLoaderState *state,
-                                            VkrMeshLoaderSubsetBuilder *builder,
-                                            uint32_t token_count,
-                                            String8 *tokens) {
+vkr_internal bool8_t vkr_mesh_loader_push_face(
+    VkrMeshLoaderState *state, VkrMeshLoaderSubsetBuilder *builder,
+    uint32_t token_count, String8 *tokens) {
   assert_log(state != NULL, "State is NULL");
   assert_log(builder != NULL, "Builder is NULL");
   assert_log(tokens != NULL, "Tokens is NULL");
 
   if (token_count < 3)
-    return;
+    return true_v;
 
+  const uint64_t index_count = (uint64_t)(token_count - 2u) * 3u;
+  if (builder->vertices.length + token_count > UINT32_MAX ||
+      builder->indices.length + index_count > UINT32_MAX ||
+      !vector_reserve_VkrVertex3d(&builder->vertices,
+                                  builder->vertices.length + token_count) ||
+      !vector_reserve_uint32_t(&builder->indices,
+                               builder->indices.length + index_count)) {
+    *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
   uint32_t first_index = (uint32_t)builder->vertices.length;
 
   for (uint32_t i = 0; i < token_count; ++i) {
@@ -1213,14 +1244,15 @@ vkr_internal void vkr_mesh_loader_push_face(VkrMeshLoaderState *state,
     vert.colour = vec4_new(1.0f, 1.0f, 1.0f, 1.0f);
     vert.tangent = vec4_zero();
 
-    vector_push_VkrVertex3d(&builder->vertices, vert);
+    builder->vertices.data[builder->vertices.length++] = vert;
   }
 
   for (uint32_t tri = 0; tri < token_count - 2; ++tri) {
-    vector_push_uint32_t(&builder->indices, first_index);
-    vector_push_uint32_t(&builder->indices, first_index + tri + 1);
-    vector_push_uint32_t(&builder->indices, first_index + tri + 2);
+    builder->indices.data[builder->indices.length++] = first_index;
+    builder->indices.data[builder->indices.length++] = first_index + tri + 1;
+    builder->indices.data[builder->indices.length++] = first_index + tri + 2;
   }
+  return true_v;
 }
 
 vkr_internal void vkr_mesh_loader_parse_next_line(String8 *file_str,
@@ -1296,7 +1328,11 @@ vkr_internal bool8_t vkr_mesh_loader_parse_mtl(VkrMeshLoaderState *state,
           .alpha_cutoff_set = false_v,
           .cutout = false_v,
       };
-      vector_push_VkrMeshLoaderMaterialDef(&state->materials, def);
+      if (!def.name.str ||
+          !vector_push_VkrMeshLoaderMaterialDef(&state->materials, def)) {
+        *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+        return false_v;
+      }
       current = vector_get_VkrMeshLoaderMaterialDef(
           &state->materials, state->materials.length - 1);
       continue;
@@ -1383,14 +1419,20 @@ vkr_internal bool8_t vkr_mesh_loader_parse_obj(VkrMeshLoaderState *state) {
 
     Vec3 vec3_val;
     if (vkr_string8_starts_with(&line, "v ")) {
-      if (vkr_mesh_loader_parse_vec3_line(&line, 1, &vec3_val))
-        vector_push_Vec3(&state->positions, vec3_val);
+      if (vkr_mesh_loader_parse_vec3_line(&line, 1, &vec3_val) &&
+          !vector_push_Vec3(&state->positions, vec3_val)) {
+        *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+        return false_v;
+      }
       continue;
     }
 
     if (vkr_string8_starts_with(&line, "vn")) {
-      if (vkr_mesh_loader_parse_vec3_line(&line, 2, &vec3_val))
-        vector_push_Vec3(&state->normals, vec3_val);
+      if (vkr_mesh_loader_parse_vec3_line(&line, 2, &vec3_val) &&
+          !vector_push_Vec3(&state->normals, vec3_val)) {
+        *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+        return false_v;
+      }
       continue;
     }
 
@@ -1401,20 +1443,25 @@ vkr_internal bool8_t vkr_mesh_loader_parse_obj(VkrMeshLoaderState *state) {
         float32_t u = 0, v = 0;
         string8_to_f32(&tokens[0], &u);
         string8_to_f32(&tokens[1], &v);
-        vector_push_Vec2(&state->texcoords, vec2_new(u, v));
+        if (!vector_push_Vec2(&state->texcoords, vec2_new(u, v))) {
+          *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+          return false_v;
+        }
       }
       continue;
     }
 
     if (vkr_string8_starts_with(&line, "mtllib")) {
       String8 path = vkr_string8_trimmed_suffix(&line, 6);
-      vkr_mesh_loader_parse_mtl(state, path);
+      if (!vkr_mesh_loader_parse_mtl(state, path))
+        return false_v;
       continue;
     }
 
     if (vkr_string8_starts_with(&line, "usemtl")) {
       String8 material_name = vkr_string8_trimmed_suffix(&line, 6);
-      vkr_mesh_loader_set_current_material(state, &material_name);
+      if (!vkr_mesh_loader_set_current_material(state, &material_name))
+        return false_v;
       continue;
     }
 
@@ -1430,9 +1477,9 @@ vkr_internal bool8_t vkr_mesh_loader_parse_obj(VkrMeshLoaderState *state) {
       if (count >= 3) {
         VkrMeshLoaderSubsetBuilder *builder =
             vkr_mesh_loader_get_current_builder(state);
-        if (builder) {
-          vkr_mesh_loader_push_face(state, builder, count, tokens);
-        }
+        if (!builder ||
+            !vkr_mesh_loader_push_face(state, builder, count, tokens))
+          return false_v;
       }
       continue;
     }
@@ -1457,6 +1504,10 @@ vkr_internal bool8_t vkr_mesh_loader_accept_gltf_primitive(
         vkr_mesh_loader_add_material_bucket(state, &primitive->material_path);
   }
 
+  if (bucket_index == VKR_INVALID_ID) {
+    *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
   VkrMeshLoaderMaterialBucket *bucket = vector_get_VkrMeshLoaderMaterialBucket(
       &state->material_buckets, bucket_index);
   if (!bucket) {
@@ -1469,15 +1520,22 @@ vkr_internal bool8_t vkr_mesh_loader_accept_gltf_primitive(
   builder->pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD;
   builder->shader_override = (String8){0};
 
-  for (uint32_t i = 0; i < primitive->vertex_count; ++i) {
-    vector_push_VkrVertex3d(&builder->vertices, primitive->vertices[i]);
+  const uint64_t vertex_count =
+      builder->vertices.length + primitive->vertex_count;
+  const uint64_t index_count = builder->indices.length + primitive->index_count;
+  if (vertex_count > UINT32_MAX || index_count > UINT32_MAX ||
+      !vector_reserve_VkrVertex3d(&builder->vertices, vertex_count) ||
+      !vector_reserve_uint32_t(&builder->indices, index_count)) {
+    *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
   }
-
-  uint32_t index_base =
-      (uint32_t)builder->vertices.length - (uint32_t)primitive->vertex_count;
-  for (uint32_t i = 0; i < primitive->index_count; ++i) {
-    vector_push_uint32_t(&builder->indices, primitive->indices[i] + index_base);
-  }
+  const uint32_t index_base = (uint32_t)builder->vertices.length;
+  MemCopy(builder->vertices.data + index_base, primitive->vertices,
+          (uint64_t)primitive->vertex_count * sizeof(*primitive->vertices));
+  builder->vertices.length = vertex_count;
+  for (uint32_t i = 0; i < primitive->index_count; ++i)
+    builder->indices.data[builder->indices.length++] =
+        primitive->indices[i] + index_base;
 
   return true_v;
 }
@@ -1489,9 +1547,8 @@ vkr_internal bool8_t vkr_mesh_loader_parse_source(VkrMeshLoaderState *state) {
 
   vector_clear_VkrMeshSourceDependency(&state->source_dependencies);
   if (!vkr_mesh_loader_capture_source_dependency(state, state->source_path)) {
-    if (state->out_error) {
+    if (*state->out_error == VKR_RENDERER_ERROR_NONE)
       *state->out_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
-    }
     return false_v;
   }
 
@@ -1504,8 +1561,7 @@ vkr_internal bool8_t vkr_mesh_loader_parse_source(VkrMeshLoaderState *state) {
   String8 glb_ext = string8_lit("glb");
   if (string8_equalsi(&state->source_extension, &gltf_ext) ||
       string8_equalsi(&state->source_extension, &glb_ext)) {
-    Vector_String8 dependency_paths =
-        vector_create_String8(state->load_allocator);
+    Vector_String8 dependency_paths = {.allocator = state->load_allocator};
     VkrMeshLoaderGltfParseInfo parse_info = {
         .source_path = state->source_path,
         .source_dir = state->source_dir,
@@ -1566,9 +1622,11 @@ bool8_t vkr_mesh_cook_source(String8 source_path, String8 output_path,
 
   VkrGeometrySystem geometry_system = {0};
   VkrMeshLoaderContext context = {.geometry_system = &geometry_system};
-  VkrMeshLoaderState state = vkr_mesh_loader_state_create(
-      &context, source_allocator, scratch_allocator, scratch_allocator,
-      source_path, out_error);
+  VkrMeshLoaderState state = {0};
+  if (!vkr_mesh_loader_state_create(&context, source_allocator,
+                                    scratch_allocator, scratch_allocator,
+                                    source_path, out_error, &state))
+    return false_v;
   if (!vkr_mesh_loader_parse_source(&state) ||
       state.merged_buffer.vertex_count == 0 ||
       state.merged_buffer.index_count == 0 ||
@@ -1656,9 +1714,11 @@ vkr_internal bool8_t vkr_mesh_load_job_run_inner(
   *job->success = false_v;
   *job->error = VKR_RENDERER_ERROR_NONE;
 
-  VkrMeshLoaderState state = vkr_mesh_loader_state_create(
-      job->context, parse_allocator, scratch_allocator, scratch_allocator,
-      job->mesh_path, job->error);
+  VkrMeshLoaderState state = {0};
+  if (!vkr_mesh_loader_state_create(job->context, parse_allocator,
+                                    scratch_allocator, scratch_allocator,
+                                    job->mesh_path, job->error, &state))
+    return false_v;
 
   String8 vkb_ext = string8_lit("vkb");
   if (string8_equalsi(&state.source_extension, &vkb_ext)) {

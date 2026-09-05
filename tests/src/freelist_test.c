@@ -46,6 +46,8 @@ static void test_allocate_exact_and_refill(void) {
   assert(vkr_freelist_allocate(&freelist, TOTAL_SIZE, &offset));
   assert(offset == 0);
   assert(vkr_freelist_free_space(&freelist) == 0);
+  assert(!vkr_freelist_free(&freelist, UINT64_MAX, 1u));
+  assert(vkr_freelist_free_space(&freelist) == 0u);
   // Next allocation should fail
   uint64_t off2 = VKR_INVALID_ID;
   assert(!vkr_freelist_allocate(&freelist, 1, &off2));

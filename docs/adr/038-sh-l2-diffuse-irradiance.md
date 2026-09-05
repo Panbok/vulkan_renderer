@@ -31,7 +31,9 @@ collect are distinct states. A failed unsubmitted projection abandons its slot.
 Exhaustion reports a cold-path error and preserves the prior publication or black;
 it cannot become a successful-frame wait or overwrite.
 
-Packets carry the coefficient buffer and slot identities, not coefficient values.
+The render packet carries the global source texture handle and local-probe slot
+identities. Native GPU roots add the backend-owned coefficient buffer address
+and resolved global slot; coefficient values stay out of the render packet.
 Metal loads source cube texels; Vulkan uses a lazily published 2D-array alias for
 exact texel access. Source, skybox and GGX specular prefilter remain cubemaps under
 ADR-016. The former diffuse cubemap and its A/B runtime path are removed.

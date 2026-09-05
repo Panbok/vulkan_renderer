@@ -340,10 +340,11 @@ publish:
         string_format(primary_manifest_path, sizeof(primary_manifest_path),
                       "%s/scene-content-manifest.json",
                       primary_run_root) <= 0 ||
-        !vkr_harness_report_add_artifact(&report, "scene.content_manifest",
-                                         "primary/scene-content-manifest.json",
-                                         "application/json",
-                                         primary_manifest_path)) {
+        !vkr_harness_existing_path_is_below(run_root, primary_manifest_path) ||
+        !vkr_harness_report_add_artifact(
+            &report, "scene.content_manifest",
+            primary_manifest_path + string_length(run_root) + 1u,
+            "application/json", primary_manifest_path)) {
       vkr_harness_report_mark_incomplete(&report, "scene_manifest.unavailable");
     }
   } else {

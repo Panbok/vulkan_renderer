@@ -1174,10 +1174,6 @@ void vkr_scene_shutdown(VkrScene *scene, struct s_RendererFrontend *rf) {
   // Scene-owned resources were retired above; wait once more so deferred Vulkan
   // destruction completes before the next scene load begins.
   if (rf) {
-    vkr_world_resources_release_scene_environment_targets(
-        (RendererFrontend *)rf, scene);
-    vkr_world_resources_release_scene_reflection_probe_targets(
-        (RendererFrontend *)rf, scene);
     scene_release_owned_texture_handle((RendererFrontend *)rf,
                                        &scene->environment.prefilter_cubemap);
     scene_release_owned_texture_handle((RendererFrontend *)rf,

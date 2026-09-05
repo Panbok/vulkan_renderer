@@ -4,6 +4,9 @@
 #include "math/mat.h"
 #include "math/vec.h"
 
+/** Renderer-owned jitter period used to align deterministic replay. */
+#define VKR_TEMPORAL_SEQUENCE_LENGTH 8u
+
 typedef enum VkrTemporalResetReason {
   VKR_TEMPORAL_RESET_NONE = 0u,
   VKR_TEMPORAL_RESET_FIRST_FRAME = 1u << 0u,

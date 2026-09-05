@@ -21,7 +21,9 @@ contracts or explain why a pass is retained.
 Author production topology in `assets/render_graphs/main.rendergraph.json`.
 The selected backend parses it once, resolves frame conditions, extent/format
 aliases, named executors and repeated passes, then builds and compiles the frame
-graph. Both implementations own their executor registry and native recording.
+graph. Each backend registry resolves executor names and pass types to operation
+IDs; native switches record those operations. Repeated passes carry a typed
+`repeat_index` for their native recorder.
 
 The shared compiler validates declarations, orders dependencies, culls work
 outside exported/present/`NO_CULL` roots and emits subresource image barriers and
@@ -29,10 +31,19 @@ whole-buffer barriers. Same-layout writes remain hazards. Compatible uses within
 one pass are combined; incompatible layouts fail compilation. Compute dispatch
 and indirect-read dependencies have production callers.
 
+Allocation-bearing builder mutators and frame reset return must-use success
+values; resource and pass constructors preserve invalid-handle error reporting.
+JSON realization aborts on a failed declaration. The builder retains ownership
+of partial declarations until frame reset or destruction. Compilation rejects
+scratch or capacity failure and exposes no execution order after failure.
+Retained resource state commits only after native submission succeeds.
+
 Image instance domains and buffer lifetimes are explicit. `TRANSIENT` resources
-have frame-local contents in graph-owned overlap-safe reusable allocations,
-recreated when descriptions change; they are not aliased. `RETAINED` contents follow ADR-029. History selection requires
-completion and metadata checks in the owning backend.
+have frame-local contents in backend-owned overlap-safe reusable allocations,
+recreated when descriptions change; they are not aliased. The shared graph owns
+declarations and scheduling, while native caches own physical resources and their
+allocation statistics. `RETAINED` contents follow ADR-029. History selection
+requires completion and metadata checks in the owning backend.
 
 All scheduled work uses the backend's graphics submission path. A compute or
 transfer pass type does not imply another queue. The uncullable `IBL.Bake` pass

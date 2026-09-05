@@ -1,5 +1,12 @@
 #include "renderer/vulkan/vkr_vulkan_internal.h"
 
+
+typedef struct VkrVulkanTableDrawUpload {
+  VkrVulkanPacketDrawRoot root;
+  VkrGpuGeometryRow geometry;
+  VkrGpuVisibleDrawRow visible;
+} VkrVulkanTableDrawUpload;
+
 vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
     VkrVulkanRenderer *renderer, VkrVulkanFrameSlot *slot,
     const VkrWorldDrawCandidate *source, uint32_t count,
@@ -278,6 +285,7 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
   slot->blend_draw_count = 0u;
   slot->packet_build = (VkrPacketBuildMetrics){0};
   const bool8_t common_uploads =
+      vkr_vk_prepare_direct_draws(renderer, slot, packet->world) &&
       vkr_vk_upload_packet_tables(renderer, slot, packet) &&
       (!packet->world || vkr_vk_upload_instances(slot, packet->world->instances,
                                                  packet->world->instance_count,
@@ -431,6 +439,50 @@ vkr_vk_resolve_material(VkrVulkanRenderer *renderer, VkrMaterialHandle handle) {
   return material->live && material->handle.generation == handle.generation
              ? material
              : NULL;
+}
+
+bool8_t vkr_vk_prepare_direct_draws(VkrVulkanRenderer *renderer,
+                                    VkrVulkanFrameSlot *slot,
+                                    const VkrWorldPassPayload *world) {
+  slot->direct_draws = NULL;
+  slot->direct_draw_count = 0u;
+  if (!world || !world->transparent_draw_count)
+    return true_v;
+  const uint32_t count = world->transparent_draw_count;
+  slot->direct_draws = vkr_vk_frame_upload_allocate(
+      slot, (uint64_t)count * sizeof(*slot->direct_draws),
+      _Alignof(VkrVulkanPreparedDirectDraw), NULL, NULL);
+  if (!slot->direct_draws)
+    return false_v;
+  for (uint32_t i = 0u; i < count; ++i) {
+    const VkrDrawItem *source = &world->transparent_draws[i];
+    if (!source->geometry.id ||
+        source->geometry.id > renderer->config.geometry_capacity)
+      return false_v;
+    VkrVulkanPublishedGeometry *geometry =
+        &renderer->published_geometries[source->geometry.id - 1u];
+    VkrVulkanPublishedMaterial *material =
+        vkr_vk_resolve_material(renderer, source->material);
+    if (!geometry->live ||
+        geometry->handle.generation != source->geometry.generation ||
+        !material || source->submesh_index >= geometry->submesh_count)
+      return false_v;
+    /* Pending publication is distinct from invalid generation/range. Validate
+       the complete draw before omitting it so pending work cannot hide errors.
+     */
+    if (geometry->pending_initialization_count ||
+        material->pending_texture_count)
+      continue;
+    slot->direct_draws[slot->direct_draw_count++] =
+        (VkrVulkanPreparedDirectDraw){
+            .geometry = geometry,
+            .material = material,
+            .range = &geometry->submeshes[source->submesh_index],
+            .first_instance = source->first_instance,
+            .instance_count = source->instance_count,
+        };
+  }
+  return true_v;
 }
 
 vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
@@ -603,16 +655,17 @@ void vkr_vk_fill_packet_frame_root(
       frame->shadow_receiver.pcf_uniform_early_out;
 }
 
-bool8_t vkr_vk_record_packet_draws(
-    VkrVulkanRenderer *renderer, VkCommandBuffer command,
-    VkrVulkanPacketPipeline pipeline, const VkrDrawItem *draws,
-    uint32_t draw_count, uint64_t instances, Mat4 view_projection,
-    uint32_t target_width, uint32_t target_height, bool8_t alpha_cutout,
-    uint32_t shadow_texture, uint32_t transmission_texture) {
-  if (draw_count == 0u)
-    return true_v;
+bool8_t
+vkr_vk_record_packet_draws(VkrVulkanRenderer *renderer, VkCommandBuffer command,
+                           VkrVulkanPacketPipeline pipeline, uint64_t instances,
+                           Mat4 view_projection, uint32_t target_width,
+                           uint32_t target_height, uint32_t shadow_texture,
+                           uint32_t transmission_texture) {
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
+  const uint32_t draw_count = slot->direct_draw_count;
+  if (!draw_count)
+    return true_v;
   const VkrRenderPacket *packet = renderer->graph->packet;
   const VkrPacketFrameConstants frame =
       vkr_packet_derive_frame_constants(packet, target_width, target_height);
@@ -652,41 +705,22 @@ bool8_t vkr_vk_record_packet_draws(
     };
     frame_root->temporal_draw_state = temporal_address;
   }
-  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    renderer->packet_pipelines[pipeline]);
-  for (uint32_t i = 0; i < draw_count; ++i) {
-    const VkrDrawItem *draw = &draws[i];
-    VkrVulkanPublishedGeometry *geometry =
-        vkr_vk_resolve_geometry(renderer, draw->geometry);
-    VkrVulkanPublishedMaterial *material =
-        vkr_vk_resolve_material(renderer, draw->material);
-    if (!geometry && draw->geometry.id > 0u &&
-        draw->geometry.id <= renderer->config.geometry_capacity) {
-      const VkrVulkanPublishedGeometry *pending_geometry =
-          &renderer->published_geometries[draw->geometry.id - 1u];
-      if (pending_geometry->live &&
-          pending_geometry->handle.generation == draw->geometry.generation &&
-          pending_geometry->pending_initialization_count)
-        continue;
-    }
-    if (!geometry || !material ||
-        draw->submesh_index >= geometry->submesh_count)
-      return false_v;
-    if (material->pending_texture_count)
-      continue;
-    const VkrVulkanSubmeshRange *range =
-        &geometry->submeshes[draw->submesh_index];
-    typedef struct VkrVulkanTableDrawUpload {
-      VkrVulkanPacketDrawRoot root;
-      VkrGpuGeometryRow geometry;
-      VkrGpuVisibleDrawRow visible;
-    } VkrVulkanTableDrawUpload;
-    uint64_t draw_root_address = 0u;
-    VkrVulkanTableDrawUpload *table_draw = vkr_vk_frame_upload_allocate(
-        slot, sizeof(*table_draw), _Alignof(VkrVulkanTableDrawUpload),
-        &draw_root_address, NULL);
-    if (!table_draw)
-      return false_v;
+  uint64_t draw_roots_address = 0u;
+  VkrVulkanTableDrawUpload *table_draws = vkr_vk_frame_upload_allocate(
+      slot, (uint64_t)draw_count * sizeof(*table_draws),
+      _Alignof(VkrVulkanTableDrawUpload), &draw_roots_address, NULL);
+  if (!table_draws)
+    return false_v;
+  /* Each pass owns a distinct root span: picking and blend reference different
+     frame constants while sharing the same prepared resource rows. */
+  for (uint32_t i = 0u; i < draw_count; ++i) {
+    const VkrVulkanPreparedDirectDraw *draw = &slot->direct_draws[i];
+    VkrVulkanPublishedGeometry *geometry = draw->geometry;
+    VkrVulkanPublishedMaterial *material = draw->material;
+    const VkrVulkanSubmeshRange *range = draw->range;
+    const uint64_t draw_root_address =
+        draw_roots_address + (uint64_t)i * sizeof(*table_draws);
+    VkrVulkanTableDrawUpload *table_draw = &table_draws[i];
     *table_draw = (VkrVulkanTableDrawUpload){
         .root =
             {
@@ -708,14 +742,32 @@ bool8_t vkr_vk_record_packet_draws(
                 .index_count = range->index_count,
                 .vertex_offset = range->vertex_offset,
                 .decode_index = range->decode_index,
-                .state_flags =
-                    vkr_gpu_draw_state_flags(0u, alpha_cutout ? 1u : 0u),
+                .state_flags = vkr_gpu_draw_state_flags(0u, 0u),
             },
     };
+    const uint64_t pending_submit = renderer->submit_value + 1u;
+    geometry->last_use_submit_value = pending_submit;
+    for (uint32_t texture = 0u;
+         texture < ArrayCount(material->texture_record_indices); ++texture) {
+      const uint32_t record_index = material->texture_record_indices[texture];
+      if (record_index != UINT32_MAX)
+        renderer->published_textures[record_index].last_use_submit_value =
+            pending_submit;
+    }
+  }
+  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    renderer->packet_pipelines[pipeline]);
+  for (uint32_t i = 0u; i < draw_count; ++i) {
+    const VkrVulkanPreparedDirectDraw *draw = &slot->direct_draws[i];
+    const VkrVulkanPublishedGeometry *geometry = draw->geometry;
+    const VkrVulkanPublishedMaterial *material = draw->material;
+    const VkrVulkanSubmeshRange *range = draw->range;
+    const uint64_t draw_root_address =
+        draw_roots_address + (uint64_t)i * sizeof(*table_draws);
     const VkrVulkanPushConstants push = {
         .root = draw_root_address,
         .material_index = material->slot.index,
-        .flags = alpha_cutout ? 1u : 0u,
+        .flags = 0u,
     };
     const uint64_t geometry_index_offset =
         (uint64_t)geometry->gpu_row.first_index * sizeof(uint32_t);
@@ -729,19 +781,10 @@ bool8_t vkr_vk_record_packet_draws(
                        0u, sizeof(push), &push);
     vkCmdDrawIndexed(command, range->index_count, draw->instance_count,
                      range->first_index, range->vertex_offset, 0u);
-    const uint64_t pending_submit = renderer->submit_value + 1u;
-    geometry->last_use_submit_value = pending_submit;
-    for (uint32_t texture = 0u;
-         texture < ArrayCount(material->texture_record_indices); ++texture) {
-      const uint32_t record_index = material->texture_record_indices[texture];
-      if (record_index != UINT32_MAX)
-        renderer->published_textures[record_index].last_use_submit_value =
-            pending_submit;
-    }
-    slot->indexed_draw_count++;
-    if (pipeline == VKR_VULKAN_PACKET_PIPELINE_WORLD_BLEND)
-      slot->blend_draw_count++;
   }
+  slot->indexed_draw_count += draw_count;
+  if (lighting_pass)
+    slot->blend_draw_count += draw_count;
   return true_v;
 }
 

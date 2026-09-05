@@ -1,6 +1,6 @@
 /**
  * @file vkr_world_resources.c
- * @brief Shared world pipelines, HDR/IBL state, and 3D text resources.
+ * @brief Fallback IBL resources, scene bake preparation, and 3D text slots.
  */
 
 #include "renderer/systems/vkr_world_resources.h"
@@ -20,9 +20,6 @@
 #include "renderer/vkr_render_packet.h"
 
 #define VKR_WORLD_RESOURCES_MAX_TEXTS 16
-#define VKR_WORLD_RESOURCES_IBL_PREFILTER_SIZE VKR_IBL_PREFILTER_SIZE
-#define VKR_WORLD_RESOURCES_IBL_RENDERPASS_NAME                                \
-  "Renderpass.Builtin.IBL.Convolution"
 
 vkr_internal bool8_t vkr_world_resources_ensure_text_slot(
     VkrWorldResources *resources, uint32_t text_id,
@@ -65,23 +62,6 @@ vkr_internal bool8_t vkr_world_resources_texture_is_valid(
          texture->description.type == expected_type;
 }
 
-vkr_internal VkrTextureOpaqueHandle vkr_world_resources_resolve_backend_texture(
-    VkrTextureSystem *texture_system, VkrTextureHandle handle,
-    VkrTextureType expected_type) {
-  if (!texture_system || handle.id == 0) {
-    return NULL;
-  }
-
-  VkrTexture *texture =
-      vkr_texture_system_get_by_handle(texture_system, handle);
-  if (!texture || !texture->handle ||
-      texture->description.type != expected_type) {
-    return NULL;
-  }
-
-  return texture->handle;
-}
-
 vkr_internal bool8_t vkr_world_resources_release_texture(
     VkrTextureSystem *texture_system, VkrTextureHandle *handle) {
   if (!texture_system || !handle || handle->id == 0) {
@@ -101,15 +81,6 @@ vkr_world_resources_has_retained_ibl_publisher(const RendererFrontend *rf) {
          rf->asset_publisher.bake_ibl_cubemap &&
          rf->asset_publisher.bake_hdr_environment &&
          rf->asset_publisher.ibl_sh_slot;
-}
-
-vkr_internal uint32_t vkr_world_resources_calculate_mip_count(uint32_t size) {
-  uint32_t mips = 1u;
-  while (size > 1u) {
-    size >>= 1u;
-    mips++;
-  }
-  return mips;
 }
 
 vkr_internal uint32_t
@@ -156,42 +127,6 @@ vkr_internal bool8_t vkr_world_resources_create_writable_cube_texture(
   return true_v;
 }
 
-vkr_internal bool8_t vkr_world_resources_create_writable_2d_texture(
-    RendererFrontend *rf, String8 name, uint32_t width, uint32_t height,
-    VkrTextureFormat format, VkrTextureHandle *out_handle) {
-  if (!rf || !name.str || !out_handle || width == 0u || height == 0u) {
-    return false_v;
-  }
-
-  VkrTextureDescription desc = {
-      .width = width,
-      .height = height,
-      .channels = 4u,
-      .type = VKR_TEXTURE_TYPE_2D,
-      .format = format,
-      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_TEXTURE,
-      .sample_count = VKR_SAMPLE_COUNT_1,
-      .properties = vkr_texture_property_flags_create(),
-      .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
-      .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
-      .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
-      .min_filter = VKR_FILTER_LINEAR,
-      .mag_filter = VKR_FILTER_LINEAR,
-      .mip_filter = VKR_MIP_FILTER_NONE,
-      .anisotropy_enable = false_v,
-  };
-
-  VkrRendererError texture_error = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_texture_system_create_writable(&rf->texture_system, name, &desc,
-                                          out_handle, &texture_error)) {
-    String8 error_string = vkr_renderer_get_error_string(texture_error);
-    log_warn("World resources: failed to create writable texture '%.*s': %s",
-             (int)name.length, name.str, string8_cstr(&error_string));
-    return false_v;
-  }
-  return true_v;
-}
-
 bool8_t vkr_world_resources_init(RendererFrontend *rf,
                                  VkrWorldResources *resources) {
   if (!rf || !resources) {
@@ -200,10 +135,6 @@ bool8_t vkr_world_resources_init(RendererFrontend *rf,
   MemZero(resources, sizeof(*resources));
   resources->ibl_fallback_source_cubemap = VKR_TEXTURE_HANDLE_INVALID;
   resources->ibl_fallback_prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID;
-  resources->ibl_active_prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID;
-  resources->ibl_active_intensity = 1.0f;
-  resources->ibl_active_diffuse_intensity = 1.0f;
-  resources->ibl_active_specular_intensity = 1.0f;
   resources->hdr_ibl_max_cube_extent = VKR_IBL_PREFILTER_SIZE;
   resources->hdr_ibl_max_mip_levels = VKR_IBL_PREFILTER_MIP_COUNT;
   resources->text_slots = array_create_VkrWorldTextSlot(
@@ -216,13 +147,6 @@ bool8_t vkr_world_resources_init(RendererFrontend *rf,
   resources->initialized = true_v;
   return true_v;
 }
-
-void vkr_world_resources_release_scene_environment_targets(RendererFrontend *rf,
-                                                           VkrScene *scene) {
-  (void)rf;
-  (void)scene;
-}
-
 vkr_internal void
 vkr_world_resources_fail_scene_environment(RendererFrontend *rf,
                                            VkrScene *scene) {
@@ -231,7 +155,6 @@ vkr_world_resources_fail_scene_environment(RendererFrontend *rf,
   }
 
   VkrSceneEnvironment *environment = &scene->environment;
-  vkr_world_resources_release_scene_environment_targets(rf, scene);
   vkr_world_resources_release_texture(&rf->texture_system,
                                       &environment->prefilter_cubemap);
   vkr_world_resources_release_texture(&rf->texture_system,
@@ -306,7 +229,7 @@ vkr_internal bool8_t vkr_world_resources_prepare_published_environment(
            VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
            &environment->source_cubemap)) ||
       !vkr_world_resources_create_writable_cube_texture(
-          rf, prefilter_name, VKR_WORLD_RESOURCES_IBL_PREFILTER_SIZE, true_v,
+          rf, prefilter_name, VKR_IBL_PREFILTER_SIZE, true_v,
           VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
           &environment->prefilter_cubemap)) {
     goto failed;
@@ -356,13 +279,6 @@ void vkr_world_resources_bake_scene_ibl_if_pending(RendererFrontend *rf,
   (void)resources;
   (void)scene;
 }
-
-void vkr_world_resources_release_scene_reflection_probe_targets(
-    RendererFrontend *rf, VkrScene *scene) {
-  (void)rf;
-  (void)scene;
-}
-
 vkr_internal void
 vkr_world_resources_fail_reflection_probe(RendererFrontend *rf,
                                           VkrSceneReflectionProbe *probe) {
@@ -431,7 +347,7 @@ bool8_t vkr_world_resources_prepare_scene_reflection_probes(
         string8_create_from_cstr((const uint8_t *)prefilter_name_storage,
                                  string_length(prefilter_name_storage));
     if (!vkr_world_resources_create_writable_cube_texture(
-            rf, prefilter_name, VKR_WORLD_RESOURCES_IBL_PREFILTER_SIZE, true_v,
+            rf, prefilter_name, VKR_IBL_PREFILTER_SIZE, true_v,
             VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
             &probe->prefilter_cubemap) ||
         !rf->asset_publisher.bake_ibl_cubemap(
@@ -451,210 +367,6 @@ void vkr_world_resources_bake_scene_reflection_probes_if_pending(
   (void)vkr_world_resources_prepare_scene_reflection_probes(rf, resources,
                                                             scene);
 }
-
-float32_t vkr_world_resources_probe_fragment_influence(Vec3 center,
-                                                       Vec3 extents,
-                                                       float32_t blend_distance,
-                                                       Vec3 world_position) {
-  float32_t dx = vkr_abs_f32(world_position.x - center.x);
-  float32_t dy = vkr_abs_f32(world_position.y - center.y);
-  float32_t dz = vkr_abs_f32(world_position.z - center.z);
-  float32_t outside_x = vkr_max_f32(0.0f, dx - extents.x);
-  float32_t outside_y = vkr_max_f32(0.0f, dy - extents.y);
-  float32_t outside_z = vkr_max_f32(0.0f, dz - extents.z);
-  float32_t outside_distance = vkr_sqrt_f32(
-      outside_x * outside_x + outside_y * outside_y + outside_z * outside_z);
-
-  if (outside_distance <= 1e-6f) {
-    return 1.0f;
-  }
-  if (blend_distance <= 0.0f) {
-    return 0.0f;
-  }
-
-  return vkr_max_f32(0.0f, 1.0f - outside_distance / blend_distance);
-}
-
-bool8_t vkr_world_resources_probe_intersects_sphere(Vec3 center, Vec3 extents,
-                                                    float32_t blend_distance,
-                                                    Vec3 sphere_center,
-                                                    float32_t sphere_radius) {
-  Vec3 influence_extents = vec3_add(
-      extents, vec3_new(blend_distance, blend_distance, blend_distance));
-  Vec3 delta = vec3_new(vkr_abs_f32(sphere_center.x - center.x),
-                        vkr_abs_f32(sphere_center.y - center.y),
-                        vkr_abs_f32(sphere_center.z - center.z));
-  Vec3 outside = vec3_new(vkr_max_f32(0.0f, delta.x - influence_extents.x),
-                          vkr_max_f32(0.0f, delta.y - influence_extents.y),
-                          vkr_max_f32(0.0f, delta.z - influence_extents.z));
-  float32_t radius = vkr_max_f32(sphere_radius, 0.0f);
-  return vec3_length_squared(outside) <= radius * radius ? true_v : false_v;
-}
-
-vkr_internal VkrWorldIblProbeSlot vkr_world_resources_fallback_probe_slot(
-    RendererFrontend *rf, VkrWorldResources *resources) {
-  VkrWorldIblProbeSlot slot = {
-      .prefilter_map = NULL,
-      .center = {0},
-      .extents = {0},
-      .blend_distance = 0.0f,
-      .weight = 1.0f,
-      .intensity = 1.0f,
-      .diffuse_intensity = 1.0f,
-      .specular_intensity = 1.0f,
-      .box_projection_enabled = false_v,
-  };
-
-  if (!rf || !resources) {
-    return slot;
-  }
-
-  slot.prefilter_map = vkr_world_resources_resolve_backend_texture(
-      &rf->texture_system, resources->ibl_active_prefilter_cubemap,
-      VKR_TEXTURE_TYPE_CUBE_MAP);
-  if (!slot.prefilter_map) {
-    slot.prefilter_map = vkr_world_resources_resolve_backend_texture(
-        &rf->texture_system, resources->ibl_fallback_prefilter_cubemap,
-        VKR_TEXTURE_TYPE_CUBE_MAP);
-  }
-  return slot;
-}
-
-void vkr_world_resources_select_probe_slots_for_position(
-    RendererFrontend *rf, VkrWorldResources *resources, const VkrScene *scene,
-    Vec3 world_position, VkrWorldIblProbeSlot out_slots[3]) {
-  vkr_world_resources_select_probe_slots_for_bounds(
-      rf, resources, scene, world_position, 0.0f, out_slots);
-}
-
-void vkr_world_resources_select_probe_slots_for_bounds(
-    RendererFrontend *rf, VkrWorldResources *resources, const VkrScene *scene,
-    Vec3 bounds_center, float32_t bounds_radius,
-    VkrWorldIblProbeSlot out_slots[3]) {
-  if (!out_slots) {
-    return;
-  }
-
-  MemZero(out_slots, sizeof(VkrWorldIblProbeSlot) * 3u);
-  if (!rf || !resources) {
-    out_slots[2].weight = 1.0f;
-    return;
-  }
-
-  if (!resources->ibl_default_ready) {
-    out_slots[2].weight = 1.0f;
-    return;
-  }
-
-  VkrWorldIblProbeSlot fallback =
-      vkr_world_resources_fallback_probe_slot(rf, resources);
-  out_slots[0] = fallback;
-  out_slots[1] = fallback;
-  out_slots[2] = fallback;
-  out_slots[0].weight = 0.0f;
-  out_slots[1].weight = 0.0f;
-  out_slots[2].weight = 1.0f;
-
-  uint32_t best_probe_index[2] = {0xFFFFFFFFu, 0xFFFFFFFFu};
-  float32_t best_probe_score[2] = {-VKR_FLOAT_MAX, -VKR_FLOAT_MAX};
-  if (scene) {
-    for (uint32_t i = 0; i < scene->reflection_probe_count; ++i) {
-      const VkrSceneReflectionProbe *probe = &scene->reflection_probes[i];
-      if (!probe->enabled ||
-          probe->bake_state != VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_READY) {
-        continue;
-      }
-
-      VkrTextureOpaqueHandle prefilter =
-          vkr_world_resources_resolve_backend_texture(
-              &rf->texture_system, probe->prefilter_cubemap,
-              VKR_TEXTURE_TYPE_CUBE_MAP);
-      if (!prefilter) {
-        continue;
-      }
-
-      if (!vkr_world_resources_probe_intersects_sphere(
-              probe->center, probe->extents, probe->blend_distance,
-              bounds_center, bounds_radius)) {
-        continue;
-      }
-
-      float32_t center_distance =
-          vec3_length(vec3_sub(bounds_center, probe->center));
-      float32_t score = -center_distance;
-      if (score > best_probe_score[0]) {
-        best_probe_score[1] = best_probe_score[0];
-        best_probe_index[1] = best_probe_index[0];
-        best_probe_score[0] = score;
-        best_probe_index[0] = i;
-      } else if (score > best_probe_score[1]) {
-        best_probe_score[1] = score;
-        best_probe_index[1] = i;
-      }
-    }
-  }
-
-  for (uint32_t slot_index = 0; slot_index < 2u; ++slot_index) {
-    if (best_probe_index[slot_index] == 0xFFFFFFFFu) {
-      continue;
-    }
-    const VkrSceneReflectionProbe *probe =
-        &scene->reflection_probes[best_probe_index[slot_index]];
-    out_slots[slot_index] = (VkrWorldIblProbeSlot){
-        .prefilter_map = vkr_world_resources_resolve_backend_texture(
-            &rf->texture_system, probe->prefilter_cubemap,
-            VKR_TEXTURE_TYPE_CUBE_MAP),
-        .center = probe->center,
-        .extents = probe->extents,
-        .blend_distance = probe->blend_distance,
-        .weight = 1.0f,
-        .intensity = probe->intensity,
-        .diffuse_intensity = probe->diffuse_intensity,
-        .specular_intensity = probe->specular_intensity,
-        .box_projection_enabled = true_v,
-    };
-  }
-}
-
-void vkr_world_resources_set_active_ibl_from_scene_or_default(
-    RendererFrontend *rf, VkrWorldResources *resources, const VkrScene *scene) {
-  if (!rf || !resources) {
-    return;
-  }
-
-  if (!resources->ibl_default_ready) {
-    resources->ibl_active_enabled = false_v;
-    resources->ibl_active_prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID;
-    return;
-  }
-
-  bool8_t use_scene_ibl =
-      scene && scene->environment.enabled &&
-      scene->environment.bake_state == VKR_SCENE_ENV_BAKE_STATE_READY &&
-      vkr_world_resources_texture_is_valid(&rf->texture_system,
-                                           scene->environment.prefilter_cubemap,
-                                           VKR_TEXTURE_TYPE_CUBE_MAP);
-
-  if (use_scene_ibl) {
-    resources->ibl_active_prefilter_cubemap =
-        scene->environment.prefilter_cubemap;
-    resources->ibl_active_enabled = true_v;
-    resources->ibl_active_intensity = scene->environment.intensity;
-    resources->ibl_active_diffuse_intensity =
-        scene->environment.diffuse_intensity;
-    resources->ibl_active_specular_intensity =
-        scene->environment.specular_intensity;
-    return;
-  }
-
-  resources->ibl_active_prefilter_cubemap =
-      resources->ibl_fallback_prefilter_cubemap;
-  resources->ibl_active_enabled = true_v;
-  resources->ibl_active_intensity = 1.0f;
-  resources->ibl_active_diffuse_intensity = 1.0f;
-  resources->ibl_active_specular_intensity = 1.0f;
-}
-
 void vkr_world_resources_shutdown(RendererFrontend *rf,
                                   VkrWorldResources *resources) {
   if (!rf || !resources) {

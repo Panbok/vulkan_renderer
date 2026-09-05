@@ -94,7 +94,7 @@ vkr_internal INLINE uint64_t vkr_align_to_page(uint64_t size,
 
 vkr_internal INLINE uint64_t vkr_choose_page_size(uint64_t total_size) {
   uint64_t large_page_size = vkr_platform_get_large_page_size();
-  if (total_size >= large_page_size) {
+  if (large_page_size != 0 && total_size >= large_page_size) {
     return large_page_size;
   }
   return vkr_platform_get_page_size();
@@ -105,25 +105,24 @@ bool8_t vkr_dmemory_create(uint64_t total_size, uint64_t max_reserve_size,
   assert_log(out_dmemory != NULL, "Output dmemory must not be NULL");
   assert_log(total_size > 0, "Total size must be greater than 0");
 
-  uint64_t overhead_slack =
-      vkr_dmemory_metadata_size() + vkr_dmemory_min_alignment();
-  uint64_t total_with_overhead = total_size + overhead_slack;
-  assert_log(total_with_overhead >= total_size,
-             "Total size overflow with overhead");
-
   MemZero(out_dmemory, sizeof(VkrDMemory));
-
   out_dmemory->page_size = vkr_choose_page_size(total_size);
-
-  uint64_t aligned_total_size =
-      vkr_align_to_page(total_with_overhead, out_dmemory->page_size);
-  uint64_t reserve_with_overhead = max_reserve_size + overhead_slack;
-  if (reserve_with_overhead < max_reserve_size) {
-    log_error("Reserve size overflow with overhead");
+  const uint64_t overhead_slack =
+      vkr_dmemory_metadata_size() + vkr_dmemory_min_alignment();
+  const uint64_t max_input_size =
+      UINT64_MAX - overhead_slack - (out_dmemory->page_size - 1);
+  if (total_size > max_input_size || max_reserve_size > max_input_size) {
+    log_error("DMemory size overflows metadata or page alignment");
     return false_v;
   }
-  uint64_t aligned_reserve_size =
-      vkr_align_to_page(reserve_with_overhead, out_dmemory->page_size);
+  if (total_size > max_reserve_size) {
+    log_error("DMemory initial size exceeds reserved capacity");
+    return false_v;
+  }
+  const uint64_t aligned_total_size =
+      vkr_align_to_page(total_size + overhead_slack, out_dmemory->page_size);
+  const uint64_t aligned_reserve_size = vkr_align_to_page(
+      max_reserve_size + overhead_slack, out_dmemory->page_size);
 
   out_dmemory->total_size = aligned_total_size;
   out_dmemory->reserve_size = aligned_reserve_size;
@@ -419,30 +418,18 @@ bool8_t vkr_dmemory_resize(VkrDMemory *dmemory, uint64_t new_total_size) {
     return false_v;
   }
 
-  uint64_t overhead_slack =
+  const uint64_t overhead_slack =
       vkr_dmemory_metadata_size() + vkr_dmemory_min_alignment();
-  uint64_t total_with_overhead = new_total_size + overhead_slack;
-  if (total_with_overhead < new_total_size) {
-    log_error("Overflow when calculating new total size with overhead");
+  if (new_total_size > UINT64_MAX - overhead_slack - (dmemory->page_size - 1)) {
+    log_error("DMemory resize overflows metadata or page alignment");
     return false_v;
   }
-
-  uint64_t aligned_new_size =
-      vkr_align_to_page(total_with_overhead, dmemory->page_size);
+  const uint64_t aligned_new_size =
+      vkr_align_to_page(new_total_size + overhead_slack, dmemory->page_size);
 
   if (aligned_new_size > dmemory->reserve_size) {
     log_error("Cannot resize: new size %llu exceeds reserved size %llu",
               (uint64_t)aligned_new_size, (uint64_t)dmemory->reserve_size);
-    return false_v;
-  }
-
-  uint64_t free_space = vkr_dmemory_get_free_space(dmemory);
-  uint64_t used_space = dmemory->total_size - free_space;
-
-  if (new_total_size < used_space) {
-    log_error(
-        "Cannot resize: new size %llu is smaller than allocated space %llu",
-        (uint64_t)new_total_size, (uint64_t)used_space);
     return false_v;
   }
 

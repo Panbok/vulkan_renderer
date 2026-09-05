@@ -1,4 +1,5 @@
 #include "input_test.h"
+#include "event_test_wait.h"
 
 static Arena *arena = NULL;
 static const uint64_t ARENA_SIZE = MB(1);
@@ -86,14 +87,14 @@ static void test_input_init() {
   setup_suite();
 
   EventManager manager;
-  event_manager_create(&manager);
-  event_manager_subscribe(&manager, EVENT_TYPE_INPUT_SYSTEM_INIT,
-                          on_input_system_init, NULL);
-  event_manager_subscribe(&manager, EVENT_TYPE_INPUT_SYSTEM_SHUTDOWN,
-                          on_input_system_shutdown, NULL);
+  assert(event_manager_create(&manager));
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_INPUT_SYSTEM_INIT,
+                                 on_input_system_init, NULL));
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_INPUT_SYSTEM_SHUTDOWN,
+                                 on_input_system_shutdown, NULL));
   InputState input_state = input_init(&manager);
 
-  vkr_platform_sleep(100);
+  event_test_wait_idle(&manager);
 
   assert(input_initialized == true && "Input system not initialized");
   assert(input_state.is_initialized == true && "Input state not initialized");
@@ -110,15 +111,15 @@ static void test_input_shutdown() {
   setup_suite();
 
   EventManager manager;
-  event_manager_create(&manager);
-  event_manager_subscribe(&manager, EVENT_TYPE_INPUT_SYSTEM_INIT,
-                          on_input_system_init, NULL);
-  event_manager_subscribe(&manager, EVENT_TYPE_INPUT_SYSTEM_SHUTDOWN,
-                          on_input_system_shutdown, NULL);
+  assert(event_manager_create(&manager));
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_INPUT_SYSTEM_INIT,
+                                 on_input_system_init, NULL));
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_INPUT_SYSTEM_SHUTDOWN,
+                                 on_input_system_shutdown, NULL));
   InputState input_state = input_init(&manager);
   input_shutdown(&input_state);
 
-  vkr_platform_sleep(100);
+  event_test_wait_idle(&manager);
 
   assert(input_initialized == false && "Input system was not shutdown");
   assert(input_state.is_initialized == false && "Input state not shutdown");
@@ -135,18 +136,20 @@ static void test_input_key_press_release() {
   reset_event_trackers();
 
   EventManager manager;
-  event_manager_create(&manager);
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, on_key_event, NULL);
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_RELEASE, on_key_event, NULL);
+  assert(event_manager_create(&manager));
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, on_key_event,
+                                 NULL));
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_KEY_RELEASE, on_key_event,
+                                 NULL));
   // Subscribe dummy handler for INPUT_SYSTEM_INIT for this test context
-  event_manager_subscribe(&manager, EVENT_TYPE_INPUT_SYSTEM_INIT,
-                          dummy_input_init_handler, NULL);
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_INPUT_SYSTEM_INIT,
+                                 dummy_input_init_handler, NULL));
 
   InputState input_state = input_init(&manager);
 
   // Test KEY_A press
   input_process_key(&input_state, KEY_A, true);
-  vkr_platform_sleep(100);
+  event_test_wait_idle(&manager);
 
   assert(input_is_key_down(&input_state, KEY_A) && "KEY_A should be down");
   assert(input_is_key_up(&input_state, KEY_A) == false &&
@@ -165,7 +168,7 @@ static void test_input_key_press_release() {
 
   // Test KEY_A release
   input_process_key(&input_state, KEY_A, false);
-  vkr_platform_sleep(100);
+  event_test_wait_idle(&manager);
 
   assert(input_is_key_down(&input_state, KEY_A) == false &&
          "KEY_A should not be down");
@@ -184,7 +187,7 @@ static void test_input_key_press_release() {
 
   // Test no event if state doesn't change
   input_process_key(&input_state, KEY_A, false); // Already released
-  vkr_platform_sleep(100);
+  event_test_wait_idle(&manager);
   assert(key_event_received == false &&
          "Event received when state did not change");
 
@@ -200,16 +203,16 @@ static void test_input_button_press_release() {
   reset_event_trackers();
 
   EventManager manager;
-  event_manager_create(&manager);
-  event_manager_subscribe(&manager, EVENT_TYPE_BUTTON_PRESS, on_button_event,
-                          NULL);
-  event_manager_subscribe(&manager, EVENT_TYPE_BUTTON_RELEASE, on_button_event,
-                          NULL);
+  assert(event_manager_create(&manager));
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_BUTTON_PRESS,
+                                 on_button_event, NULL));
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_BUTTON_RELEASE,
+                                 on_button_event, NULL));
   InputState input_state = input_init(&manager);
 
   // Test BUTTON_LEFT press
   input_process_button(&input_state, BUTTON_LEFT, true);
-  vkr_platform_sleep(100); // Allow time for event processing
+  event_test_wait_idle(&manager);
 
   assert(input_is_button_down(&input_state, BUTTON_LEFT) &&
          "BUTTON_LEFT should be down");
@@ -230,7 +233,7 @@ static void test_input_button_press_release() {
 
   // Test BUTTON_LEFT release
   input_process_button(&input_state, BUTTON_LEFT, false);
-  vkr_platform_sleep(100); // Allow time for event processing
+  event_test_wait_idle(&manager);
 
   assert(input_is_button_down(&input_state, BUTTON_LEFT) == false &&
          "BUTTON_LEFT should not be down");
@@ -251,8 +254,7 @@ static void test_input_button_press_release() {
 
   // Test no event if state doesn't change
   input_process_button(&input_state, BUTTON_LEFT, false); // Already released
-  vkr_platform_sleep(
-      100); // Allow time for any potential (erroneous) event processing
+  event_test_wait_idle(&manager);
   assert(button_event_received == false &&
          "Event received when button state did not change");
 
@@ -268,9 +270,9 @@ static void test_input_mouse_move() {
   reset_event_trackers();
 
   EventManager manager;
-  event_manager_create(&manager);
-  event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_MOVE, on_mouse_move_event,
-                          NULL);
+  assert(event_manager_create(&manager));
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_MOVE,
+                                 on_mouse_move_event, NULL));
   InputState input_state = input_init(&manager);
 
   int32_t current_x, current_y;
@@ -278,7 +280,7 @@ static void test_input_mouse_move() {
 
   // Initial move
   input_process_mouse_move(&input_state, 100, 200);
-  vkr_platform_sleep(100); // Allow time for event processing
+  event_test_wait_idle(&manager);
 
   input_get_mouse_position(&input_state, &current_x, &current_y);
   assert(current_x == 100 && current_y == 200 &&
@@ -296,7 +298,7 @@ static void test_input_mouse_move() {
 
   // Second move
   input_process_mouse_move(&input_state, -50, 75);
-  vkr_platform_sleep(100); // Allow time for event processing
+  event_test_wait_idle(&manager);
 
   input_get_mouse_position(&input_state, &current_x, &current_y);
   assert(current_x == -50 && current_y == 75 &&
@@ -319,8 +321,7 @@ static void test_input_mouse_move() {
 
   // No event if position doesn't change
   input_process_mouse_move(&input_state, -50, 75); // Same position
-  vkr_platform_sleep(
-      100); // Allow time for any potential (erroneous) event processing
+  event_test_wait_idle(&manager);
   assert(mouse_move_event_received == false &&
          "Mouse move event received when position did not change");
 
@@ -336,15 +337,15 @@ static void test_input_mouse_wheel() {
   reset_event_trackers();
 
   EventManager manager;
-  event_manager_create(&manager);
-  event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_WHEEL,
-                          on_mouse_wheel_event, NULL);
+  assert(event_manager_create(&manager));
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_WHEEL,
+                                 on_mouse_wheel_event, NULL));
   InputState input_state = input_init(&manager);
   int8_t current_delta;
 
   // Initial wheel movement (scroll up)
   input_process_mouse_wheel(&input_state, 1);
-  vkr_platform_sleep(100); // Allow time for event processing
+  event_test_wait_idle(&manager);
 
   input_get_mouse_wheel(
       &input_state,
@@ -357,7 +358,7 @@ static void test_input_mouse_wheel() {
 
   // Subsequent wheel movement (scroll down)
   input_process_mouse_wheel(&input_state, -1);
-  vkr_platform_sleep(100); // Allow time for event processing
+  event_test_wait_idle(&manager);
 
   input_get_mouse_wheel(&input_state, &current_delta);
   assert(current_delta == -1 &&
@@ -376,7 +377,7 @@ static void test_input_mouse_wheel() {
   // non-zero, that should be a change.
 
   input_process_mouse_wheel(&input_state, 0); // Reset wheel to 0
-  vkr_platform_sleep(100);                    // Allow time for event processing
+  event_test_wait_idle(&manager);
 
   input_get_mouse_wheel(&input_state, &current_delta);
   assert(current_delta == 0 && "Mouse wheel delta not reset to 0");
@@ -388,8 +389,7 @@ static void test_input_mouse_wheel() {
 
   // Test no event if delta is already 0 and we process 0 again
   input_process_mouse_wheel(&input_state, 0);
-  vkr_platform_sleep(
-      100); // Allow time for any potential (erroneous) event processing
+  event_test_wait_idle(&manager);
   assert(mouse_wheel_event_received == false &&
          "Mouse wheel event received when delta did not change from 0");
 
@@ -405,7 +405,7 @@ static void test_input_update_state_copy() {
 
   // Correctly initialize with an EventManager
   EventManager manager;
-  event_manager_create(&manager);
+  assert(event_manager_create(&manager));
   InputState input_state = input_init(&manager);
 
   // 1. Test Key State Copy

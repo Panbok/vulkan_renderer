@@ -1108,7 +1108,8 @@ vkr_internal bool8_t vkr_rg_json_parse_attachments(
   assert_log(ctx != NULL, "ctx is NULL");
 
   *out_attach = (VkrRgJsonAttachments){0};
-  out_attach->colors = vector_create_VkrRgJsonAttachment(ctx->allocator);
+  out_attach->colors =
+      (Vector_VkrRgJsonAttachment){.allocator = ctx->allocator};
 
   VkrJsonReader attachments_reader = *obj;
   if (!vkr_json_find_field(&attachments_reader, "attachments")) {
@@ -1139,7 +1140,9 @@ vkr_internal bool8_t vkr_rg_json_parse_attachments(
         return false_v;
       }
 
-      vector_push_VkrRgJsonAttachment(&out_attach->colors, attachment);
+      if (!vector_push_VkrRgJsonAttachment(&out_attach->colors, attachment)) {
+        return vkr_rg_json_error(ctx, field_path, "out of memory");
+      }
       color_index++;
     }
   }
@@ -1260,8 +1263,8 @@ vkr_internal bool8_t vkr_rg_json_parse_pass(VkrRgJsonParseContext *ctx,
 
   bool8_t ok = true_v;
   *out_pass = (VkrRgJsonPass){0};
-  out_pass->reads = vector_create_VkrRgJsonResourceUse(ctx->allocator);
-  out_pass->writes = vector_create_VkrRgJsonResourceUse(ctx->allocator);
+  out_pass->reads = (Vector_VkrRgJsonResourceUse){.allocator = ctx->allocator};
+  out_pass->writes = (Vector_VkrRgJsonResourceUse){.allocator = ctx->allocator};
 
   char field_path[128];
   snprintf(field_path, sizeof(field_path), "passes[%u]", index);
@@ -1376,7 +1379,10 @@ vkr_internal bool8_t vkr_rg_json_parse_pass(VkrRgJsonParseContext *ctx,
         goto cleanup;
       }
 
-      vector_push_VkrRgJsonResourceUse(&out_pass->reads, use);
+      if (!vector_push_VkrRgJsonResourceUse(&out_pass->reads, use)) {
+        ok = vkr_rg_json_error(ctx, field_path, "out of memory");
+        goto cleanup;
+      }
       read_index++;
     }
   }
@@ -1413,7 +1419,10 @@ vkr_internal bool8_t vkr_rg_json_parse_pass(VkrRgJsonParseContext *ctx,
         goto cleanup;
       }
 
-      vector_push_VkrRgJsonResourceUse(&out_pass->writes, use);
+      if (!vector_push_VkrRgJsonResourceUse(&out_pass->writes, use)) {
+        ok = vkr_rg_json_error(ctx, field_path, "out of memory");
+        goto cleanup;
+      }
       write_index++;
     }
   }
@@ -1459,8 +1468,8 @@ vkr_internal bool8_t vkr_rg_json_parse_outputs(VkrRgJsonParseContext *ctx,
   assert_log(ctx != NULL, "ctx is NULL");
 
   *out_outputs = (VkrRgJsonOutputs){0};
-  out_outputs->export_images = vector_create_String8(ctx->allocator);
-  out_outputs->export_buffers = vector_create_String8(ctx->allocator);
+  out_outputs->export_images = (Vector_String8){.allocator = ctx->allocator};
+  out_outputs->export_buffers = (Vector_String8){.allocator = ctx->allocator};
 
   VkrJsonReader outputs_reader = *root;
   if (!vkr_json_find_field(&outputs_reader, "outputs")) {
@@ -1483,7 +1492,9 @@ vkr_internal bool8_t vkr_rg_json_parse_outputs(VkrRgJsonParseContext *ctx,
         return vkr_rg_json_error(ctx, "outputs.export_images",
                                  "export_images must be strings");
       }
-      vector_push_String8(&out_outputs->export_images, value);
+      if (!vector_push_String8(&out_outputs->export_images, value)) {
+        return vkr_rg_json_error(ctx, "outputs.export_images", "out of memory");
+      }
     }
   }
 
@@ -1495,7 +1506,10 @@ vkr_internal bool8_t vkr_rg_json_parse_outputs(VkrRgJsonParseContext *ctx,
         return vkr_rg_json_error(ctx, "outputs.export_buffers",
                                  "export_buffers must be strings");
       }
-      vector_push_String8(&out_outputs->export_buffers, value);
+      if (!vector_push_String8(&out_outputs->export_buffers, value)) {
+        return vkr_rg_json_error(ctx, "outputs.export_buffers",
+                                 "out of memory");
+      }
     }
   }
 
@@ -1511,8 +1525,9 @@ vkr_internal bool8_t vkr_rg_json_parse_graph(VkrRgJsonParseContext *ctx,
   *out_graph = (VkrRgJsonGraph){0};
   out_graph->allocator = ctx->allocator;
   out_graph->source = json;
-  out_graph->resources = vector_create_VkrRgJsonResource(ctx->allocator);
-  out_graph->passes = vector_create_VkrRgJsonPass(ctx->allocator);
+  out_graph->resources =
+      (Vector_VkrRgJsonResource){.allocator = ctx->allocator};
+  out_graph->passes = (Vector_VkrRgJsonPass){.allocator = ctx->allocator};
 
   VkrJsonReader root = vkr_json_reader_from_string(json);
 
@@ -1559,7 +1574,9 @@ vkr_internal bool8_t vkr_rg_json_parse_graph(VkrRgJsonParseContext *ctx,
       }
     }
 
-    vector_push_VkrRgJsonResource(&out_graph->resources, resource);
+    if (!vector_push_VkrRgJsonResource(&out_graph->resources, resource)) {
+      return vkr_rg_json_error(ctx, "resources", "out of memory");
+    }
     resource_index++;
   }
 
@@ -1583,11 +1600,19 @@ vkr_internal bool8_t vkr_rg_json_parse_graph(VkrRgJsonParseContext *ctx,
     for (uint64_t i = 0; i < out_graph->passes.length; ++i) {
       VkrRgJsonPass *existing = vector_get_VkrRgJsonPass(&out_graph->passes, i);
       if (string8_equals(&existing->name, &pass.name)) {
+        vector_destroy_VkrRgJsonResourceUse(&pass.reads);
+        vector_destroy_VkrRgJsonResourceUse(&pass.writes);
+        vector_destroy_VkrRgJsonAttachment(&pass.attachments.colors);
         return vkr_rg_json_error(ctx, "passes", "duplicate pass name");
       }
     }
 
-    vector_push_VkrRgJsonPass(&out_graph->passes, pass);
+    if (!vector_push_VkrRgJsonPass(&out_graph->passes, pass)) {
+      vector_destroy_VkrRgJsonResourceUse(&pass.reads);
+      vector_destroy_VkrRgJsonResourceUse(&pass.writes);
+      vector_destroy_VkrRgJsonAttachment(&pass.attachments.colors);
+      return vkr_rg_json_error(ctx, "passes", "out of memory");
+    }
     pass_index++;
   }
 
@@ -1744,8 +1769,6 @@ bool8_t vkr_rg_json_bind_executors(VkrRgJsonGraph *graph,
     VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph->passes, i);
     const VkrRgPassExecutor *executor =
         vkr_rg_executor_registry_find(executors, pass->execute);
-    pass->execute_fn = executor->execute;
-    pass->execute_user_data = executor->user_data;
     pass->executor_id = executor->id;
     pass->executor_resolved = true_v;
   }
@@ -2322,7 +2345,13 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
             return false_v;
           }
 
-          vkr_rg_import_image(rg, resolved_name, NULL, access, layout, &desc);
+          if (!vkr_rg_image_handle_valid(vkr_rg_import_image(
+                  rg, resolved_name, NULL, access, layout, &desc))) {
+
+            vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
+
+            return false_v;
+          }
         } else {
           uint32_t width = 0;
           uint32_t height = 0;
@@ -2365,7 +2394,13 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
             break;
           }
 
-          vkr_rg_create_image(rg, resolved_name, &desc);
+          if (!vkr_rg_image_handle_valid(
+                  vkr_rg_create_image(rg, resolved_name, &desc))) {
+
+            vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
+
+            return false_v;
+          }
         }
       } else {
         VkrRgBufferDesc desc = {0};
@@ -2387,7 +2422,11 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
         }
         desc.usage = resource->buffer.usage;
         desc.flags = vkr_rg_json_resource_flags(resource->flags);
-        vkr_rg_create_buffer(rg, resolved_name, &desc);
+        if (!vkr_rg_buffer_handle_valid(
+                vkr_rg_create_buffer(rg, resolved_name, &desc))) {
+          vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
+          return false_v;
+        }
       }
 
       vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
@@ -2431,6 +2470,10 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
           vkr_rg_add_pass(rg, (VkrRgPassType)pass->type, resolved_name);
       vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
 
+      if (!pb.graph) {
+        return false_v;
+      }
+
       if (pass->flags != VKR_RG_PASS_FLAG_NONE) {
         vkr_rg_pass_set_flags(&pb, pass->flags);
       }
@@ -2439,8 +2482,7 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
         vkr_rg_pass_set_domain(&pb, pass->domain);
       }
 
-      if (!pass->executor_resolved || !pass->execute_fn ||
-          pass->executor_id == 0u) {
+      if (!pass->executor_resolved || pass->executor_id == 0u) {
         log_error("RenderGraph JSON: executor '%.*s' was not bound",
                   (int)pass->execute.length, pass->execute.str);
         return false_v;
@@ -2450,12 +2492,7 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
       graph_pass->desc.executor_id = pass->executor_id;
       graph_pass->desc.dispatch = pass->dispatch;
 
-      void *executor_user_data = pass->execute_user_data;
-      if (repeat_count > 1 && executor_user_data == NULL) {
-        executor_user_data = (void *)(uintptr_t)r;
-      }
-
-      vkr_rg_pass_set_execute(&pb, pass->execute_fn, executor_user_data);
+      graph_pass->desc.repeat_index = r;
 
       for (uint64_t c = 0; c < pass->attachments.colors.length; ++c) {
         VkrRgJsonAttachment *att =
@@ -2488,7 +2525,10 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
           return false_v;
         }
 
-        vkr_rg_pass_add_color_attachment(&pb, handle, &desc);
+        if (!vkr_rg_pass_add_color_attachment(&pb, handle, &desc)) {
+
+          return false_v;
+        }
       }
 
       if (pass->attachments.has_depth) {
@@ -2521,8 +2561,11 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
           return false_v;
         }
 
-        vkr_rg_pass_set_depth_attachment(&pb, handle, &desc,
-                                         pass->attachments.depth_read_only);
+        if (!vkr_rg_pass_set_depth_attachment(
+                &pb, handle, &desc, pass->attachments.depth_read_only)) {
+
+          return false_v;
+        }
       }
 
       for (uint64_t u = 0; u < pass->reads.length; ++u) {
@@ -2562,15 +2605,19 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
               if (!vkr_rg_json_resolve_use_slice(use, use_repeat > 1 ? ur : r,
                                                  &slice))
                 return false_v;
-              vkr_rg_pass_read_image_slice_at_stages(
-                  &pb, handle, (VkrRgImageAccessFlags)use->image_access,
-                  vkr_gpu_stages_for_image_access(
-                      (VkrRgImageAccessFlags)use->image_access, false_v),
-                  binding, array_index, slice);
+              if (!vkr_rg_pass_read_image_slice_at_stages(
+                      &pb, handle, (VkrRgImageAccessFlags)use->image_access,
+                      vkr_gpu_stages_for_image_access(
+                          (VkrRgImageAccessFlags)use->image_access, false_v),
+                      binding, array_index, slice)) {
+                return false_v;
+              }
             } else {
-              vkr_rg_pass_read_image(&pb, handle,
-                                     (VkrRgImageAccessFlags)use->image_access,
-                                     binding, array_index);
+              if (!vkr_rg_pass_read_image(
+                      &pb, handle, (VkrRgImageAccessFlags)use->image_access,
+                      binding, array_index)) {
+                return false_v;
+              }
             }
           } else {
             VkrRgBufferHandle handle =
@@ -2585,9 +2632,11 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
             uint32_t binding = use->binding.is_set ? use->binding.value : 0;
             uint32_t array_index = vkr_rg_resolve_index(
                 &use->array_index, use_repeat > 1 ? ur : r);
-            vkr_rg_pass_read_buffer(&pb, handle,
-                                    (VkrRgBufferAccessFlags)use->buffer_access,
-                                    binding, array_index);
+            if (!vkr_rg_pass_read_buffer(
+                    &pb, handle, (VkrRgBufferAccessFlags)use->buffer_access,
+                    binding, array_index)) {
+              return false_v;
+            }
           }
         }
       }
@@ -2629,15 +2678,19 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
               if (!vkr_rg_json_resolve_use_slice(use, use_repeat > 1 ? ur : r,
                                                  &slice))
                 return false_v;
-              vkr_rg_pass_write_image_slice_at_stages(
-                  &pb, handle, (VkrRgImageAccessFlags)use->image_access,
-                  vkr_gpu_stages_for_image_access(
-                      (VkrRgImageAccessFlags)use->image_access, false_v),
-                  binding, array_index, slice);
+              if (!vkr_rg_pass_write_image_slice_at_stages(
+                      &pb, handle, (VkrRgImageAccessFlags)use->image_access,
+                      vkr_gpu_stages_for_image_access(
+                          (VkrRgImageAccessFlags)use->image_access, false_v),
+                      binding, array_index, slice)) {
+                return false_v;
+              }
             } else {
-              vkr_rg_pass_write_image(&pb, handle,
-                                      (VkrRgImageAccessFlags)use->image_access,
-                                      binding, array_index);
+              if (!vkr_rg_pass_write_image(
+                      &pb, handle, (VkrRgImageAccessFlags)use->image_access,
+                      binding, array_index)) {
+                return false_v;
+              }
             }
           } else {
             VkrRgBufferHandle handle =
@@ -2652,9 +2705,11 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
             uint32_t binding = use->binding.is_set ? use->binding.value : 0;
             uint32_t array_index = vkr_rg_resolve_index(
                 &use->array_index, use_repeat > 1 ? ur : r);
-            vkr_rg_pass_write_buffer(&pb, handle,
-                                     (VkrRgBufferAccessFlags)use->buffer_access,
-                                     binding, array_index);
+            if (!vkr_rg_pass_write_buffer(
+                    &pb, handle, (VkrRgBufferAccessFlags)use->buffer_access,
+                    binding, array_index)) {
+              return false_v;
+            }
           }
         }
       }
@@ -2670,7 +2725,9 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
                 json_graph->outputs.present.str);
       return false_v;
     }
-    vkr_rg_set_present_image(rg, handle);
+    if (!vkr_rg_set_present_image(rg, handle)) {
+      return false_v;
+    }
   }
 
   for (uint64_t i = 0; i < json_graph->outputs.export_images.length; ++i) {
@@ -2681,7 +2738,9 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
                 (int)name.length, name.str);
       return false_v;
     }
-    vkr_rg_export_image(rg, handle);
+    if (!vkr_rg_export_image(rg, handle)) {
+      return false_v;
+    }
   }
 
   for (uint64_t i = 0; i < json_graph->outputs.export_buffers.length; ++i) {
@@ -2692,7 +2751,9 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
                 (int)name.length, name.str);
       return false_v;
     }
-    vkr_rg_export_buffer(rg, handle);
+    if (!vkr_rg_export_buffer(rg, handle)) {
+      return false_v;
+    }
   }
 
   return true_v;

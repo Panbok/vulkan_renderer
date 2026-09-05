@@ -29,7 +29,7 @@ below are starting points for checking a definition, not alternate API specs.
 |---|---|---|
 | Authored graph | JSON resource/pass declarations, conditions, and executor names. | [main.rendergraph.json](../assets/render_graphs/main.rendergraph.json) |
 | Compiled schedule | Shared ordering, dependency, culling, and resource-lifetime result lowered into native commands by each backend. | [vkr_rg_compile.c](../lib/src/renderer/vkr_rg_compile.c) |
-| Executor | Named pass implementation selected from the registry when graph declarations are realized. | [vkr_render_graph.h](../lib/src/renderer/vkr_render_graph.h) |
+| Executor | Named operation resolved to a backend ID during graph realization and recorded by that backend's native dispatcher. | [vkr_render_graph.h](../lib/src/renderer/vkr_render_graph.h) |
 | Subresource | A mip/layer/aspect range tracked for accesses and dependencies. | [vkr_render_graph.h](../lib/src/renderer/vkr_render_graph.h) |
 | Instance domain | Physical resource selection: single, per target image, or per frame slot. It is separate from content lifetime. | [vkr_render_graph.h](../lib/src/renderer/vkr_render_graph.h) |
 | Transient | Frame-local contents backed by overlap-safe physical instances; the flag alone does not imply heap aliasing. | [vkr_render_graph.h](../lib/src/renderer/vkr_render_graph.h) |

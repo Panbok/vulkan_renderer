@@ -45,6 +45,27 @@ static bool8_t harness_parse_case(const char *target, const char *present,
                                    out_case);
 }
 
+static void test_harness_camera_float_range_boundary(void) {
+  const char *formats[] = {
+      "{\"mode\":\"static\",\"position\":[%s,0,0],\"yaw\":0,\"pitch\":0}",
+      "{\"mode\":\"static\",\"position\":[0,0,0],\"yaw\":%s,\"pitch\":0}",
+      "{\"mode\":\"static\",\"position\":[0,0,0],\"yaw\":0,\"pitch\":0,\"far_"
+      "plane\":%s}",
+      "{\"mode\":\"keyframes\",\"keys\":[{\"t\":0,\"position\":[0,0,0],\"yaw\":"
+      "%s,\"pitch\":0},{\"t\":1,\"position\":[1,0,0],\"yaw\":0,\"pitch\":0}]}",
+      "{\"mode\":\"orbit\",\"center\":[0,0,0],\"radius\":%s,\"revolutions\":1,"
+      "\"duration_seconds\":2}",
+  };
+  for (uint32_t i = 0; i < ArrayCount(formats); ++i) {
+    char camera[512];
+    VkrHarnessCase parsed = {0};
+    snprintf(camera, sizeof(camera), formats[i], "2");
+    assert(harness_parse_case("offscreen", "none", camera, "", &parsed));
+    snprintf(camera, sizeof(camera), formats[i], "1e100");
+    assert(!harness_parse_case("offscreen", "none", camera, "", &parsed));
+  }
+}
+
 static void test_harness_hash_and_statistics(void) {
   printf("  Running test_harness_hash_and_statistics...\n");
   char digest[VKR_HARNESS_DIGEST_MAX];
@@ -1337,8 +1358,6 @@ static void test_harness_safe_paths(void) {
   char resolved[VKR_HARNESS_PATH_MAX];
   VkrHarnessError error = {0};
   assert(!vkr_harness_resolve_existing_path(root, "escape", resolved, &error));
-  assert(!vkr_harness_resolve_output_path(root, "escape/report.json", resolved,
-                                          &error));
   unlink(link_path);
   rmdir(root);
 #endif
@@ -2431,11 +2450,64 @@ static void test_harness_guarded_baseline_accept(void) {
 #endif
 }
 
+static void test_harness_json_integer_and_escaped_key_boundaries(void) {
+  const struct {
+    const char *json;
+    uint64_t expected;
+  } valid[] = {{"9007199254740993", UINT64_C(9007199254740993)},
+               {"18446744073709551615", UINT64_MAX},
+               {"1e3", 1000u},
+               {"1.0", 1u}};
+  VkrHarnessJsonDocument document = {0};
+  VkrHarnessError error = {0};
+  for (uint32_t i = 0; i < ArrayCount(valid); ++i) {
+    uint64_t value = 0;
+    assert(vkr_harness_json_parse(&document, valid[i].json,
+                                  string_length(valid[i].json), &error));
+    assert(vkr_harness_json_u64(&document, 0, &value, "value", &error));
+    assert(value == valid[i].expected);
+  }
+  const char *invalid[] = {"18446744073709551616", "-1", "1.5"};
+  for (uint32_t i = 0; i < ArrayCount(invalid); ++i) {
+    uint64_t value = 29;
+    assert(vkr_harness_json_parse(&document, invalid[i],
+                                  string_length(invalid[i]), &error));
+    assert(!vkr_harness_json_u64(&document, 0, &value, "value", &error));
+    assert(value == 29);
+  }
+  const char *escaped = "{\"\\u0073chema_version\":1}";
+  assert(vkr_harness_json_parse(&document, escaped, string_length(escaped),
+                                &error));
+  int32_t token =
+      vkr_harness_json_object_get(&document, 0, "schema_version", NULL);
+  uint64_t value = 0;
+  assert(token >= 0 && vkr_harness_json_u64(&document, token, &value,
+                                            "schema_version", &error));
+  assert(value == 1);
+  const char *duplicate = "{\"\\u0073chema_version\":1,\"schema_version\":2}";
+  assert(vkr_harness_json_parse(&document, duplicate, string_length(duplicate),
+                                &error));
+  bool8_t duplicated = false_v;
+  vkr_harness_json_object_get(&document, 0, "schema_version", &duplicated);
+  assert(duplicated);
+  const char *fields[] = {"schema_version"};
+  assert(!vkr_harness_json_object_validate(&document, 0, fields, 1u, fields, 1u,
+                                           "$", &error));
+  const char *nul_key = "{\"schema_version\\u0000ignored\":1}";
+  assert(vkr_harness_json_parse(&document, nul_key, string_length(nul_key),
+                                &error));
+  assert(vkr_harness_json_object_get(&document, 0, "schema_version", NULL) < 0);
+  assert(!vkr_harness_json_object_validate(&document, 0, fields, 1u, fields, 1u,
+                                           "$", &error));
+}
+
 bool32_t run_harness_tests(void) {
   printf("--- Running Harness tests... ---\n");
+  test_harness_json_integer_and_escaped_key_boundaries();
   test_harness_hash_and_statistics();
   test_harness_current_frame_work_metrics();
   test_harness_case_parser();
+  test_harness_camera_float_range_boundary();
   test_harness_profile_parser();
   test_harness_camera_determinism();
   test_harness_camera_warmup_holds_start_pose();

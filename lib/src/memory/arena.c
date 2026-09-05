@@ -47,19 +47,17 @@ Arena *arena_create_internal(uint64_t rsv_size, uint64_t cmt_size,
   s_cmt_size = AlignPow2(s_cmt_size, page_size);
 
   void *mem_block = vkr_platform_mem_reserve(s_rsv_size);
-  if (mem_block == (void *)-1 || mem_block == NULL) {
-    assert(0 && "Failed to reserve memory for arena");
+  if (mem_block == NULL) {
     return NULL;
   }
 
   Arena *arena = (Arena *)mem_block;
   if (!vkr_platform_mem_commit(arena, s_cmt_size)) {
     vkr_platform_mem_release(arena, s_rsv_size);
-    assert(0 && "Failed to commit memory for arena");
     return NULL;
   }
 
-  memset(arena->tags, 0, sizeof(arena->tags));
+  MemZero(arena->tags, sizeof(arena->tags));
 
   arena->current = arena;
   arena->rsv_size = s_rsv_size;
@@ -72,8 +70,6 @@ Arena *arena_create_internal(uint64_t rsv_size, uint64_t cmt_size,
   arena->prev = NULL;
   arena->free_size = 0;
   arena->free_last = NULL;
-  arena->min_bound = (uintptr_t)arena;
-  arena->max_bound = (uintptr_t)arena + s_rsv_size;
   arena->owns_memory = true_v;
   return arena;
 }
@@ -112,8 +108,6 @@ Arena *arena_create_from_buffer(void *buffer, uint64_t size) {
   arena->prev = NULL;
   arena->free_size = 0;
   arena->free_last = NULL;
-  arena->min_bound = (uintptr_t)arena;
-  arena->max_bound = (uintptr_t)arena + size;
   arena->owns_memory = false_v; // Caller owns the buffer
 
   return arena;
@@ -150,16 +144,6 @@ void arena_destroy(Arena *arena) {
   }
 }
 
-bool8_t arena_owns_ptr(Arena *arena, void *ptr) {
-  if (!arena || !ptr) {
-    return false_v;
-  }
-
-  // O(1) bounds check using cached min/max bounds
-  uintptr_t p = (uintptr_t)ptr;
-  return p >= arena->min_bound && p < arena->max_bound;
-}
-
 /**
  * Allocation Strategy:
  * 1. Calculate the aligned start position (`pos_pre`) and end position
@@ -183,8 +167,8 @@ bool8_t arena_owns_ptr(Arena *arena, void *ptr) {
  *    a. Calculate the result pointer: `(uint8*)current + pos_pre`.
  *    b. Update the current block's position: `current->pos = pos_post`.
  *    c. Return the result pointer.
- * 5. **Failure:** If memory cannot be reserved or committed, the program exits
- * (or could return NULL).
+ * 5. **Failure:** Return NULL without advancing the allocation position if
+ * memory cannot be reserved or committed.
  */
 vkr_internal INLINE void *arena_alloc_internal_aligned(Arena *arena,
                                                        uint64_t size,
@@ -249,18 +233,11 @@ vkr_internal INLINE void *arena_alloc_internal_aligned(Arena *arena,
           arena_create_internal(s_rsv_size, s_cmt_size, new_block_flags);
     }
 
+    if (!new_block) {
+      return NULL;
+    }
     new_block->base_pos = current->base_pos + current->rsv;
     SingleListAppend(arena->current, new_block, prev);
-
-    // Update bounds for O(1) arena_owns_ptr
-    uintptr_t block_start = (uintptr_t)new_block;
-    uintptr_t block_end = block_start + new_block->rsv;
-    if (block_start < arena->min_bound) {
-      arena->min_bound = block_start;
-    }
-    if (block_end > arena->max_bound) {
-      arena->max_bound = block_end;
-    }
 
     current = new_block;
     pos_pre = AlignPow2(current->pos, eff_alignment);
@@ -285,7 +262,7 @@ vkr_internal INLINE void *arena_alloc_internal_aligned(Arena *arena,
       uint64_t commit_size = required_cmt_from_block_start - current->cmt;
 
       if (!vkr_platform_mem_commit(commit_start, commit_size)) {
-        assert(0 && "Failed to commit memory");
+        return NULL;
       }
 
       current->cmt = required_cmt_from_block_start;
@@ -319,25 +296,9 @@ uint64_t arena_pos(Arena *arena) {
   return current->pos + current->base_pos;
 }
 
-/**
- * Reset Strategy:
- * 1. Clamp the target `pos` to be at least `sizeof(Arena)` (can't reset into
- * header).
- * 2. Iterate backwards through the block list (`arena->current`,
- * `current->prev`, ...).
- * 3. For each block whose *entire* range (`base_pos` to `base_pos + rsv`) is
- *    at or after the target `pos`:
- *    a. Decommit its memory (`mem_decommit`) - Optional but recommended to
- * release physical pages. b. Reset its internal `pos` to `sizeof(Arena)`. c.
- * Add the block to the `arena->free_last` list using `SLLStackPush_N`. d.
- * Update `arena->free_size`.
- * 4. Stop when a block is found where `base_pos < pos`. This block will become
- *    the new `current` block.
- * 5. Update `arena->current` to this block.
- * 6. Calculate the new `pos` *within* this `current` block: `new_pos = pos -
- * current->base_pos`.
- * 7. Set `current->pos = new_pos`.
- */
+/* Reset later blocks onto the reusable list, retaining their committed pages.
+ * The surviving block keeps its header and clamps the requested local position
+ * to its reserved range. No virtual memory is decommitted by reset. */
 void arena_reset_to(Arena *arena, uint64_t pos, ArenaMemoryTag tag) {
   uint64_t pos_before_reset = arena_pos(arena);
 

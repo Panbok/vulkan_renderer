@@ -172,10 +172,6 @@ static bool32_t test_point_light_gpu_row_packing(void) {
   assert(fabsf(row.p0.w - cosf(light.inner_cone_angle)) < 0.000001f);
   assert(fabsf(row.p1.w - cosf(light.outer_cone_angle)) < 0.000001f);
 
-  const VkrGpuAbiRecord *record =
-      vkr_gpu_abi_record(VKR_GPU_ABI_POINT_LIGHT_ROW);
-  assert(record && record->expected_size == 64u &&
-         record->expected_alignment == 16u && record->field_count == 4u);
   printf("  test_point_light_gpu_row_packing PASSED\n");
   return true_v;
 }

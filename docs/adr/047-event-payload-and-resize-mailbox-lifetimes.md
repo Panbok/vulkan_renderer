@@ -19,15 +19,20 @@ renderer state from the event worker.
 ## Decision
 
 `EventManager` copies a dispatched payload into its ring buffer. The event
-worker copies that payload into its 64 KiB local arena, releases the ring block,
-copies the callback list, unlocks the manager, and calls subscribers. The local
-payload remains valid only until all callbacks for that event return. A callback
+worker copies that payload and the callback list into its local arena, initialized
+at 64 KiB, then releases the ring block, unlocks the manager, and calls subscribers.
+The local payload remains valid only until all callbacks for that event return. A callback
 that retains data makes its own copy.
 
 `EventManager` owns the queued ring block; the event worker owns the local-arena
 copy; each callback owns any retained copy it creates. `RendererFrontend` owns
 the mailbox, and its render thread owns consumption and every resulting
 renderer mutation.
+
+Subscription returns false when its callback list cannot grow, preserving
+existing registrations. Duplicate callback/user-data pairs succeed without
+adding a row. Application and frontend initialization propagate registration
+failure through their partial initialization cleanup.
 
 The renderer resize subscriber writes a nonzero `width << 32 | height` value to
 `RendererFrontend.pending_resize_mailbox` with release ordering. It ignores

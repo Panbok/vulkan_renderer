@@ -230,8 +230,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_push_unique_path(
   }
 
   String8 copy = string8_duplicate(allocator, &value);
-  vector_push_String8(paths, copy);
-  return true_v;
+  return copy.str && vector_push_String8(paths, copy);
 }
 
 vkr_internal String8 vkr_mesh_loader_gltf_resolve_relative_texture_uri(

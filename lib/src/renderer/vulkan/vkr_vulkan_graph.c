@@ -1,10 +1,4 @@
 #include "renderer/vulkan/vkr_vulkan_internal.h"
-
-vkr_internal void vkr_vk_graph_noop(VkrRgPassContext *ctx, void *user_data) {
-  (void)ctx;
-  (void)user_data;
-}
-
 typedef enum VkrVulkanGraphExecutorKind {
   VKR_VULKAN_GRAPH_EXECUTOR_SHADOW = 0,
   VKR_VULKAN_GRAPH_EXECUTOR_PICKING,
@@ -123,7 +117,6 @@ bool8_t vkr_vk_register_graph_executors(VkrVulkanRenderer *renderer) {
                                          string_length(spec->name)),
         .id = i + 1u,
         .type = spec->type,
-        .execute = vkr_vk_graph_noop,
     };
     if (!vkr_rg_executor_registry_register(&renderer->executors, &executor))
       return false_v;
@@ -1093,14 +1086,10 @@ vkr_internal bool8_t vkr_vk_record_graphics_body(
       return true_v;
     const Mat4 view_projection =
         mat4_mul(packet->globals.projection, packet->globals.view);
-    const VkrDrawItem *picking_draws =
-        packet->world ? packet->world->transparent_draws : NULL;
-    const uint32_t picking_draw_count =
-        packet->world ? packet->world->transparent_draw_count : 0u;
     return vkr_vk_record_packet_draws(
                renderer, command, VKR_VULKAN_PACKET_PIPELINE_PICKING,
-               picking_draws, picking_draw_count, slot->world_instances,
-               view_projection, target_width, target_height, false_v, 0u, 0u) &&
+               slot->world_instances,
+               view_projection, target_width, target_height, 0u, 0u) &&
            (!packet->world ||
             vkr_vk_record_text_draws(
                 renderer, command, VKR_VULKAN_PACKET_PIPELINE_PICKING_TEXT,
@@ -1124,10 +1113,8 @@ vkr_internal bool8_t vkr_vk_record_graphics_body(
       return false_v;
     return vkr_vk_record_packet_draws(
                renderer, command, VKR_VULKAN_PACKET_PIPELINE_WORLD_BLEND,
-               packet->world->transparent_draws,
-               packet->world->transparent_draw_count, slot->world_instances,
-               view_projection, target_width, target_height, false_v,
-               shadow_texture, 0u) &&
+               slot->world_instances,
+               view_projection, target_width, target_height, shadow_texture, 0u) &&
            vkr_vk_record_text_draws(
                renderer, command, VKR_VULKAN_PACKET_PIPELINE_WORLD_TEXT,
                packet->world->text_draws, packet->world->text_draw_count,

@@ -1209,7 +1209,6 @@ vkr_internal void scene_loader_reset_scene_environment(VkrScene *scene,
   }
 
   if (rf) {
-    vkr_world_resources_release_scene_environment_targets(rf, scene);
     if (scene->environment.prefilter_cubemap.id != 0) {
       vkr_texture_system_release_by_handle(
           &rf->texture_system, scene->environment.prefilter_cubemap);
@@ -1370,7 +1369,6 @@ scene_loader_reset_scene_reflection_probes(VkrScene *scene,
   }
 
   if (rf) {
-    vkr_world_resources_release_scene_reflection_probe_targets(rf, scene);
     for (uint32_t i = 0; i < scene->reflection_probe_count; ++i) {
       VkrSceneReflectionProbe *probe = &scene->reflection_probes[i];
       if (probe->prefilter_cubemap.id != 0) {

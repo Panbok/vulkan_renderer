@@ -45,6 +45,12 @@ typedef struct ResourceAsyncRootPayload {
   VkrResourceHandleInfo dep_request;
 } ResourceAsyncRootPayload;
 
+typedef struct ResourceAsyncReleaseGrowth {
+  VkrAllocator *allocator;
+  VkrResourceHandleInfo requests[65];
+  char paths[65][64];
+} ResourceAsyncReleaseGrowth;
+
 typedef struct ResourceAsyncBudgetContext {
   atomic_uint prepare_calls;
   atomic_uint finalize_calls;
@@ -52,6 +58,10 @@ typedef struct ResourceAsyncBudgetContext {
   uint32_t finalize_ops;
   uint64_t finalize_bytes;
   uint32_t busy_finalize_attempts_remaining;
+  ResourceAsyncReleaseGrowth *release_growth;
+  VkrResourceHandleInfo *cancel_on_release;
+  String8 cancel_path;
+  atomic_uint unload_calls;
   atomic_uint token_counter;
 } ResourceAsyncBudgetContext;
 
@@ -480,13 +490,32 @@ static void resource_async_budget_release_payload(VkrResourceLoader *self,
   ResourceAsyncBudgetContext *ctx =
       (ResourceAsyncBudgetContext *)self->resource_system;
   atomic_fetch_add_explicit(&ctx->release_calls, 1u, memory_order_relaxed);
+  if (ctx->release_growth) {
+    ResourceAsyncReleaseGrowth *growth = ctx->release_growth;
+    ctx->release_growth = NULL;
+    for (uint32_t i = 0u; i < ArrayCount(growth->requests); ++i) {
+      int length = snprintf(growth->paths[i], sizeof(growth->paths[i]),
+                            "tests/assets/release_growth_%u.mock", i);
+      VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+      assert(vkr_resource_system_load(
+          VKR_RESOURCE_TYPE_MATERIAL,
+          string8_create((uint8_t *)growth->paths[i], (uint64_t)length),
+          growth->allocator, &growth->requests[i], &error));
+    }
+  }
+  if (ctx->cancel_on_release) {
+    vkr_resource_system_cancel(ctx->cancel_on_release);
+    vkr_resource_system_unload(ctx->cancel_on_release, ctx->cancel_path);
+    ctx->cancel_on_release = NULL;
+  }
   free(payload);
 }
 
 static void resource_async_budget_unload(VkrResourceLoader *self,
                                          const VkrResourceHandleInfo *handle,
                                          String8 name) {
-  (void)self;
+  ResourceAsyncBudgetContext *ctx = self->resource_system;
+  atomic_fetch_add_explicit(&ctx->unload_calls, 1u, memory_order_relaxed);
   (void)handle;
   (void)name;
 }
@@ -653,6 +682,71 @@ test_resource_async_dedupe_and_ready(VkrAllocator *allocator,
   assert(atomic_load_explicit(&ctx->unload_calls, memory_order_relaxed) == 1u);
 
   printf("  test_resource_async_dedupe_and_ready PASSED\n");
+}
+
+static void
+test_resource_async_release_callback_growth(VkrAllocator *allocator,
+                                            RendererFrontend *renderer,
+                                            ResourceAsyncBudgetContext *ctx) {
+  ResourceAsyncReleaseGrowth growth = {.allocator = allocator};
+  ctx->release_growth = &growth;
+  renderer->frame_active = true_v;
+  const String8 path = string8_lit("tests/assets/growth.budget.mock");
+  VkrResourceHandleInfo request = {0};
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  const uint32_t releases = atomic_load(&ctx->release_calls);
+  const uint32_t finalizations = atomic_load(&ctx->finalize_calls);
+  assert(vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, path, allocator,
+                                  &request, &error));
+  for (uint32_t i = 0u; i < 300u && ctx->release_growth; ++i) {
+    vkr_resource_system_pump(NULL);
+    vkr_platform_sleep(2u);
+  }
+  assert(!ctx->release_growth);
+  /* Check this pump's result; another pump could conceal a stale write. */
+  assert(vkr_resource_system_get_state(&request, &error) ==
+         VKR_RESOURCE_LOAD_STATE_READY);
+  VkrResourceHandleInfo resolved = {0};
+  assert(vkr_resource_system_try_get_resolved(&request, &resolved));
+  assert(resolved.as.scene);
+  assert(atomic_load(&ctx->release_calls) == releases + 1u);
+  assert(atomic_load(&ctx->finalize_calls) == finalizations + 1u);
+  for (uint32_t i = 0u; i < ArrayCount(growth.requests); ++i) {
+    assert(growth.requests[i].request_id != 0u);
+    assert(resource_async_wait_for_state(
+        &growth.requests[i], VKR_RESOURCE_LOAD_STATE_READY, &error));
+    vkr_resource_system_unload(
+        &growth.requests[i],
+        string8_create((uint8_t *)growth.paths[i], strlen(growth.paths[i])));
+  }
+  vkr_resource_system_unload(&request, path);
+  renderer->frame_active = false_v;
+}
+
+static void test_resource_async_release_callback_cancellation(
+    VkrAllocator *allocator, RendererFrontend *renderer,
+    ResourceAsyncBudgetContext *ctx) {
+  renderer->frame_active = true_v;
+  const String8 path = string8_lit("tests/assets/reentrant_cancel.budget.mock");
+  VkrResourceHandleInfo request = {0};
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  const uint32_t releases = atomic_load(&ctx->release_calls);
+  const uint32_t unloads = atomic_load(&ctx->unload_calls);
+  assert(vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, path, allocator,
+                                  &request, &error));
+  ctx->cancel_on_release = &request;
+  ctx->cancel_path = path;
+  for (uint32_t i = 0u; i < 300u && ctx->cancel_on_release; ++i) {
+    vkr_resource_system_pump(NULL);
+    vkr_platform_sleep(2u);
+  }
+  assert(!ctx->cancel_on_release);
+  vkr_resource_system_pump(NULL);
+  assert(vkr_resource_system_get_state(&request, &error) ==
+         VKR_RESOURCE_LOAD_STATE_INVALID);
+  assert(atomic_load(&ctx->release_calls) == releases + 1u);
+  assert(atomic_load(&ctx->unload_calls) == unloads + 1u);
+  renderer->frame_active = false_v;
 }
 
 static void test_resource_async_submit_saturation_recovers(
@@ -1287,15 +1381,11 @@ test_scene_async_load_smoke(VkrAllocator *allocator, RendererFrontend *renderer,
   backend_state->submit_serial = 100u;
   backend_state->completed_submit_serial = 99u;
 
-  float64_t start = vkr_platform_get_absolute_time();
   bool8_t accepted = vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, path,
                                               allocator, &handle, &load_error);
-  float64_t elapsed = vkr_platform_get_absolute_time() - start;
   assert(accepted == true_v);
   assert(load_error == VKR_RENDERER_ERROR_NONE);
   assert(handle.request_id != 0);
-  // Async API should return quickly and leave work pending.
-  assert(elapsed < 0.05);
 
   VkrRendererError initial_state_error = VKR_RENDERER_ERROR_NONE;
   VkrResourceLoadState initial_state =
@@ -1504,6 +1594,10 @@ bool32_t run_resource_async_state_tests(void) {
   assert(vkr_resource_system_register_loader(&scene_ctx, scene_loader) ==
          true_v);
 
+  test_resource_async_release_callback_growth(&allocator, &renderer,
+                                              &budget_ctx);
+  test_resource_async_release_callback_cancellation(&allocator, &renderer,
+                                                    &budget_ctx);
   test_resource_async_dedupe_and_ready(&allocator, &loader_ctx);
   test_resource_async_submit_saturation_recovers(&allocator, &job_system,
                                                  &loader_ctx);

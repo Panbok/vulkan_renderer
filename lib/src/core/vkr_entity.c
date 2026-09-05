@@ -74,15 +74,6 @@ vkr_internal INLINE void vkr_entity_sig_set(VkrSignature *signature,
       VKR_ENTITY_SIGNATURE_TYPE_SHIFT(typeId);
 }
 
-vkr_internal INLINE bool32_t vkr_entity_sig_has(const VkrSignature *signature,
-                                                VkrComponentTypeId typeId) {
-  assert_log(typeId < VKR_ECS_MAX_COMPONENTS, "Component id out of range");
-  return (signature->bits[VKR_ENTITY_SIGNATURE_TYPE_WORD(typeId)] &
-          VKR_ENTITY_SIGNATURE_TYPE_SHIFT(typeId)) != 0ull
-             ? true_v
-             : false_v;
-}
-
 vkr_internal INLINE bool32_t vkr_entity_sig_contains(const VkrSignature *sigA,
                                                      const VkrSignature *sigB) {
   assert_log(sigA, "Signature A must not be NULL");
@@ -139,40 +130,6 @@ vkr_internal INLINE void vkr_entity_free(VkrWorld *world, void *p,
   vkr_allocator_free(world->alloc, p, size, tag);
 }
 
-vkr_internal INLINE bool32_t vkr_entity_ensure_capacity_ptr(void ***arr,
-                                                            uint32_t *cap,
-                                                            uint32_t need,
-                                                            VkrWorld *world) {
-  assert_log(arr && *arr != (void **)0x1, "Array must be valid");
-  assert_log(cap, "Capacity must not be NULL");
-  assert_log(need > 0, "Need must be greater than 0");
-  assert_log(world, "World must not be NULL");
-
-  if (*cap >= need)
-    return true_v;
-
-  uint32_t new_cap = (*cap == 0) ? VKR_ENTITY_DIR_GROW_MIN_CAPACITY
-                                 : (*cap * VKR_ENTITY_DIR_GROW_FACTOR);
-  while (new_cap < need)
-    new_cap *= VKR_ENTITY_DIR_GROW_FACTOR;
-
-  void **new_data = NULL;
-  if (*cap == 0 || *arr == NULL) {
-    new_data = (void **)vkr_entity_alloc(world, new_cap * sizeof(void *),
-                                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  } else {
-    new_data = (void **)vkr_entity_realloc(
-        world, (void *)*arr, (*cap) * sizeof(void *), new_cap * sizeof(void *),
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  }
-  if (!new_data)
-    return false_v;
-
-  *arr = new_data;
-  *cap = new_cap;
-  return true_v;
-}
-
 vkr_internal INLINE bool32_t vkr_entity_ensure_capacity_u32(uint32_t **arr,
                                                             uint32_t *cap,
                                                             uint32_t need,
@@ -197,40 +154,6 @@ vkr_internal INLINE bool32_t vkr_entity_ensure_capacity_u32(uint32_t **arr,
   } else {
     new_data = vkr_entity_realloc(world, *arr, (*cap) * sizeof(uint32_t),
                                   new_cap * sizeof(uint32_t),
-                                  VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  }
-  if (!new_data)
-    return false_v;
-
-  *arr = new_data;
-  *cap = new_cap;
-  return true_v;
-}
-
-vkr_internal INLINE bool32_t vkr_entity_ensure_capacity_u16(uint16_t **arr,
-                                                            uint32_t *cap,
-                                                            uint32_t need,
-                                                            VkrWorld *world) {
-  assert_log(arr, "Array must not be NULL");
-  assert_log(cap, "Capacity must not be NULL");
-  assert_log(need > 0, "Need must be greater than 0");
-  assert_log(world, "World must not be NULL");
-
-  if (*cap >= need)
-    return true_v;
-
-  uint32_t new_cap = (*cap == 0) ? VKR_ENTITY_DIR_GROW_MIN_CAPACITY
-                                 : (*cap * VKR_ENTITY_DIR_GROW_FACTOR);
-  while (new_cap < need)
-    new_cap *= VKR_ENTITY_DIR_GROW_FACTOR;
-
-  uint16_t *new_data = NULL;
-  if (*cap == 0 || *arr == NULL) {
-    new_data = vkr_entity_alloc(world, new_cap * sizeof(uint16_t),
-                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  } else {
-    new_data = vkr_entity_realloc(world, *arr, (*cap) * sizeof(uint16_t),
-                                  new_cap * sizeof(uint16_t),
                                   VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
   if (!new_data)
@@ -961,11 +884,15 @@ VkrWorld *vkr_entity_create_world(const VkrWorldCreateInfo *info) {
                           : VKR_ENTITY_COMP_INITIAL_CAPACITY;
   world->component_name_to_id =
       vkr_hash_table_create_uint16_t(world->alloc, comp_cap);
+  if (!world->component_name_to_id.entries)
+    goto world_fail;
 
   world->arch_table = vkr_hash_table_create_VkrArchetypePtr(
       world->alloc, info->initial_archetypes
                         ? info->initial_archetypes
                         : VKR_ENTITY_ARCH_INITIAL_CAPACITY);
+  if (!world->arch_table.entries)
+    goto world_fail;
 
   world->arch_list = NULL;
   world->arch_capacity = 0u;
@@ -1393,7 +1320,6 @@ VkrEntityId vkr_entity_create_entity_with_components(
   return id;
 }
 
-
 vkr_internal INLINE void
 vkr_entity_chunk_swap_remove(VkrWorld *world, VkrChunk *chunk, uint32_t slot) {
   assert_log(world, "World must not be NULL");
@@ -1655,7 +1581,6 @@ bool8_t vkr_entity_remove_component(VkrWorld *world, VkrEntityId id,
   return vkr_entity_move_entity(world, id, dst, VKR_COMPONENT_TYPE_INVALID,
                                 NULL);
 }
-
 
 // ----------------------
 // Query

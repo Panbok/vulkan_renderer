@@ -108,8 +108,8 @@ VkrBloomConfig vkr_bloom_config_normalize(const VkrBloomConfig *config);
  * @brief Chain length for one viewport extent.
  *
  * Mip 0 is half the viewport, rounded down but never below one texel, so an odd
- * extent still produces a usable chain. Returns 0 when even mip 0 would fall
- * below `min_mip_extent`; the caller must then run the frame without bloom
+ * extent still produces a usable chain. Returns 0 when fewer than two mips meet
+ * `min_mip_extent`; the caller must then run the frame without bloom
  * rather than dispatch a degenerate chain.
  */
 uint32_t vkr_bloom_mip_count(const VkrBloomConfig *config,
@@ -123,21 +123,6 @@ void vkr_bloom_mip_extent(uint32_t viewport_width, uint32_t viewport_height,
 /** Lowers the cold record plus this frame's controls for the kernels. */
 VkrBloomGpuParams vkr_bloom_gpu_params(const VkrBloomConfig *config,
                                        const VkrBloomFrame *frame);
-
-/* CPU references for `shaders/shared/bloom_kernel.slangh`. They pin the
- * threshold curve and sanitizer without pretending to execute a GPU kernel. */
-
-/** Replaces a non-finite or negative component with zero and applies the
- * firefly ceiling. */
-void vkr_bloom_sanitize(const VkrBloomGpuParams *params, const float32_t rgb[3],
-                        float32_t out_rgb[3]);
-
-/** Quadratic soft-knee threshold applied to a sanitized scene-linear color. */
-void vkr_bloom_soft_threshold(const VkrBloomGpuParams *params,
-                              const float32_t rgb[3], float32_t out_rgb[3]);
-
-/** Karis firefly weight for one prefilter tap. */
-float32_t vkr_bloom_karis_weight(const float32_t rgb[3]);
 
 /** Builds frame-local bloom controls from validated packet fields. */
 VkrBloomFrame vkr_bloom_prepare(bool8_t enabled, float32_t threshold,

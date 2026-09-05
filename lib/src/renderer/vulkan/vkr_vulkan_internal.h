@@ -1146,6 +1146,8 @@ typedef struct VkrVulkanRetiredTargetSet {
   bool8_t occupied;
 } VkrVulkanRetiredTargetSet;
 
+typedef struct VkrVulkanPreparedDirectDraw VkrVulkanPreparedDirectDraw;
+
 typedef struct VkrVulkanFrameSlot {
   VkCommandPool command_pool;
   VkCommandBuffer command_buffer;
@@ -1183,6 +1185,9 @@ typedef struct VkrVulkanFrameSlot {
    *  rejected for want of upload bytes, not for a malformed packet. */
   uint32_t frame_upload_exhaustions;
   uint64_t world_instances;
+  /* CPU rows borrow this completion-protected slot's upload storage. */
+  VkrVulkanPreparedDirectDraw *direct_draws;
+  uint32_t direct_draw_count;
   uint64_t ui_vertices;
   uint64_t ui_index_offset;
   uint64_t ui_index_size;
@@ -1428,6 +1433,14 @@ typedef struct VkrVulkanPublishedMaterial {
   bool8_t live;
 } VkrVulkanPublishedMaterial;
 
+struct VkrVulkanPreparedDirectDraw {
+  VkrVulkanPublishedGeometry *geometry;
+  VkrVulkanPublishedMaterial *material;
+  const VkrVulkanSubmeshRange *range;
+  uint32_t first_instance;
+  uint32_t instance_count;
+};
+
 typedef struct VkrVulkanRetiredMaterial {
   uint32_t texture_record_indices[6];
   uint64_t retire_value;
@@ -1654,6 +1667,11 @@ bool8_t vkr_vk_mark_dirty(VkrVulkanDirtyRange *dirty,
 bool8_t vkr_vk_plan_capture(VkrVulkanRenderer *renderer,
                             const VkrRenderPacket *packet,
                             VkrVulkanFrameSlot *slot);
+/* CPU publication admission; recording consumes only these ready rows. */
+bool8_t vkr_vk_prepare_direct_draws(
+    VkrVulkanRenderer *renderer, VkrVulkanFrameSlot *slot,
+    const VkrWorldPassPayload *world);
+
 bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
                                       VkrVulkanFrameSlot *slot,
                                       const VkrRenderPacket *packet);
@@ -1769,9 +1787,8 @@ void vkr_vk_abandon_ibl_bake_recordings(VkrVulkanRenderer *renderer);
 void vkr_vk_discard_ibl_bakes(VkrVulkanRenderer *renderer);
 bool8_t vkr_vk_record_packet_draws(
     VkrVulkanRenderer *renderer, VkCommandBuffer command,
-    VkrVulkanPacketPipeline pipeline, const VkrDrawItem *draws,
-    uint32_t draw_count, uint64_t instances, Mat4 view_projection,
-    uint32_t target_width, uint32_t target_height, bool8_t alpha_cutout,
+    VkrVulkanPacketPipeline pipeline, uint64_t instances, Mat4 view_projection,
+    uint32_t target_width, uint32_t target_height,
     uint32_t shadow_texture, uint32_t transmission_texture);
 
 bool8_t vkr_vk_record_packet_fullscreen(VkrVulkanRenderer *renderer,

@@ -908,28 +908,28 @@ bool pack_texture_to_vkt(const fs::path &src_path, const fs::path &dst_path,
                                  TextureShape::k2D, config);
 }
 
-std::vector<fs::path> discover_source_textures(const fs::path &root_dir) {
-  std::vector<fs::path> files;
-  std::error_code ec;
-  for (fs::recursive_directory_iterator it(root_dir, ec), end; it != end;
-       it.increment(ec)) {
-    if (ec) {
-      continue;
+bool discover_source_textures(const fs::path &root_dir,
+                              std::vector<fs::path> *files,
+                              std::error_code *error) {
+  fs::recursive_directory_iterator it(root_dir, *error), end;
+  while (!*error && it != end) {
+    const bool regular = it->is_regular_file(*error);
+    if (*error) {
+      break;
     }
-    if (!it->is_regular_file()) {
-      continue;
+    if (regular && is_supported_source_extension(it->path())) {
+      files->push_back(it->path());
     }
-    const fs::path path = it->path();
-    if (is_supported_source_extension(path)) {
-      files.push_back(path);
-    }
+    it.increment(*error);
   }
-
-  std::sort(files.begin(), files.end(),
+  if (*error) {
+    return false;
+  }
+  std::sort(files->begin(), files->end(),
             [](const fs::path &a, const fs::path &b) {
               return a.generic_string() < b.generic_string();
             });
-  return files;
+  return true;
 }
 
 } // namespace
@@ -977,8 +977,13 @@ int main(int argc, char **argv) {
     return config.strict ? 1 : 0;
   }
 
-  const std::vector<fs::path> sources =
-      discover_source_textures(config.input_dir);
+  std::vector<fs::path> sources;
+  std::error_code discovery_error;
+  if (!discover_source_textures(config.input_dir, &sources, &discovery_error)) {
+    std::cerr << "Unable to enumerate textures under " << config.input_dir
+              << ": " << discovery_error.message() << "\n";
+    return 1;
+  }
   if (sources.empty()) {
     std::cout << "No source textures found under " << config.input_dir << "\n";
     return 0;

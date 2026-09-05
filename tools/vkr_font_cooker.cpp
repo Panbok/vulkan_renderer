@@ -261,7 +261,7 @@ bool parse_u32(const std::string &text, uint32_t *out, int base = 10) {
 }
 
 bool parse_u64(const std::string &text, uint64_t *out) {
-  if (text.empty())
+  if (text.empty() || text[0] == '-')
     return false;
   size_t consumed = 0;
   try {
@@ -580,8 +580,7 @@ bool read_bytes(const fs::path &path, std::vector<uint8_t> *bytes) {
     return false;
   bytes->resize(static_cast<size_t>(end));
   input.seekg(0);
-  return input.read(reinterpret_cast<char *>(bytes->data()), end).good() ||
-         input.eof();
+  return input.read(reinterpret_cast<char *>(bytes->data()), end).good();
 }
 
 uint64_t glyph_seed(uint64_t seed, uint32_t glyph_id) {
@@ -1144,8 +1143,15 @@ int main(int argc, char **argv) {
       std::unique(semantic_codepoints.begin(), semantic_codepoints.end()),
       semantic_codepoints.end());
   const auto identity = font_identity(config, source, semantic_codepoints);
-  if (!output.parent_path().empty())
-    fs::create_directories(output.parent_path());
+  if (!output.parent_path().empty()) {
+    std::error_code error;
+    fs::create_directories(output.parent_path(), error);
+    if (error) {
+      std::cerr << "Unable to create output directory: " << error.message()
+                << "\n";
+      return 1;
+    }
+  }
   const auto start = std::chrono::steady_clock::now();
   VkrFontCookedInspection inspection{};
   std::vector<uint8_t> existing;

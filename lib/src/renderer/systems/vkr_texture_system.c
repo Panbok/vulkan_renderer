@@ -1275,7 +1275,7 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
       arena_create(VKR_TEXTURE_SYSTEM_DEFAULT_ARENA_RSV,
                    VKR_TEXTURE_SYSTEM_DEFAULT_ARENA_CMT, app_arena_flags);
   if (!out_system->arena) {
-    log_fatal("Failed to create texture system arena");
+    log_error("Failed to create texture system arena");
     return false_v;
   }
 
@@ -1283,7 +1283,11 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
   out_system->asset_publisher = config->asset_publisher;
   out_system->job_system = job_system;
   out_system->allocator = (VkrAllocator){.ctx = out_system->arena};
-  vkr_allocator_arena(&out_system->allocator);
+  if (!vkr_allocator_arena(&out_system->allocator)) {
+    arena_destroy(out_system->arena);
+    MemZero(out_system, sizeof(*out_system));
+    return false_v;
+  }
 
   if (!vkr_dmemory_create(MB(1), MB(16), &out_system->string_memory)) {
     log_error("Failed to create texture system string allocator");
@@ -1358,8 +1362,20 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
 
   out_system->textures = array_create_VkrTexture(&out_system->allocator,
                                                  config->max_texture_count);
+  if (!out_system->textures.data) {
+    vkr_texture_system_shutdown(out_system);
+    return false_v;
+  }
+  for (uint64_t i = 0; i < out_system->textures.length; ++i) {
+    out_system->textures.data[i] = (VkrTexture){
+        .description = {.id = VKR_INVALID_ID, .generation = VKR_INVALID_ID}};
+  }
   out_system->texture_map = vkr_hash_table_create_VkrTextureEntry(
       &out_system->allocator, ((uint64_t)config->max_texture_count) * 2ULL);
+  if (!out_system->texture_map.entries) {
+    vkr_texture_system_shutdown(out_system);
+    return false_v;
+  }
   out_system->texture_keys_by_index = (const char **)vkr_allocator_alloc(
       &out_system->allocator,
       sizeof(*out_system->texture_keys_by_index) * config->max_texture_count,
@@ -1403,14 +1419,6 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
 
   out_system->next_free_index = 0;
   out_system->generation_counter = 1;
-
-  // Initialize slots as invalid
-  for (uint32_t texture_index = 0; texture_index < config->max_texture_count;
-       texture_index++) {
-    out_system->textures.data[texture_index].description.id = VKR_INVALID_ID;
-    out_system->textures.data[texture_index].description.generation =
-        VKR_INVALID_ID;
-  }
 
   // Create default checkerboard texture at index 0
   VkrTexture *default_texture = &out_system->textures.data[0];
@@ -1550,7 +1558,10 @@ void vkr_texture_system_shutdown(VkrTextureSystem *system) {
   if (system->string_allocator.ctx) {
     vkr_dmemory_allocator_destroy(&system->string_allocator);
   }
-  arena_destroy(system->arena);
+  if (system->arena) {
+    vkr_allocator_release_global_accounting(&system->allocator);
+    arena_destroy(system->arena);
+  }
   MemZero(system, sizeof(*system));
 }
 

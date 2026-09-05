@@ -177,16 +177,6 @@ bool8_t vkr_job_try_submit(VkrJobSystem *system, const VkrJobDesc *desc,
                            VkrJobHandle *out_handle);
 
 /**
- * @brief Add a dependency so that 'job' waits for 'dependency' to complete.
- * @param system The job system to add the dependency to.
- * @param job The job to add the dependency to.
- * @param dependency The dependency to add.
- * @return True if the dependency was added successfully, false otherwise.
- */
-bool8_t vkr_job_add_dependency(VkrJobSystem *system, VkrJobHandle job,
-                               VkrJobHandle dependency);
-
-/**
  * @brief Mark a pending job as ready for execution. Needed when submission was
  * deferred via VkrJobDesc::defer_enqueue.
  * @return True if the job was queued or already queued, false otherwise.

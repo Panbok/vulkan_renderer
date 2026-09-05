@@ -1,5 +1,6 @@
-#include "vector_test.h"
+#include "container_test_allocator.h"
 #include "memory/vkr_arena_allocator.h"
+#include "vector_test.h"
 
 // Instantiate Vector for a specific type for testing
 Vector(float);
@@ -71,9 +72,9 @@ static void test_vector_push_pop_float(void) {
 
   Vector_float vec = vector_create_float(&allocator);
 
-  vector_push_float(&vec, 1.0f);
-  vector_push_float(&vec, 2.5f);
-  vector_push_float(&vec, -3.0f);
+  assert(vector_push_float(&vec, 1.0f));
+  assert(vector_push_float(&vec, 2.5f));
+  assert(vector_push_float(&vec, -3.0f));
 
   assert(vec.length == 3 && "Length after pushes mismatch");
 
@@ -100,8 +101,8 @@ static void test_vector_get_set_float(void) {
   setup_suite();
 
   Vector_float vec = vector_create_float(&allocator);
-  vector_push_float(&vec, 10.0f);
-  vector_push_float(&vec, 20.0f);
+  assert(vector_push_float(&vec, 10.0f));
+  assert(vector_push_float(&vec, 20.0f));
 
   float *val_ptr = vector_get_float(&vec, 0);
   assert(val_ptr != NULL && "Got NULL pointer from get 0");
@@ -126,11 +127,11 @@ static void test_vector_resize_float(void) {
   Vector_float vec =
       vector_create_float_with_capacity(&allocator, initial_capacity);
 
-  vector_push_float(&vec, 1.0f);
-  vector_push_float(&vec, 2.0f);
+  assert(vector_push_float(&vec, 1.0f));
+  assert(vector_push_float(&vec, 2.0f));
 
   // Should trigger resize
-  vector_push_float(&vec, 3.0f);
+  assert(vector_push_float(&vec, 3.0f));
 
   assert(vec.length == 3 && "Length after resize mismatch");
   assert(vec.capacity == initial_capacity * DEFAULT_VECTOR_RESIZE_FACTOR &&
@@ -154,8 +155,8 @@ static void test_vector_clear_float(void) {
   setup_suite();
 
   Vector_float vec = vector_create_float(&allocator);
-  vector_push_float(&vec, 1.0f);
-  vector_push_float(&vec, 2.0f);
+  assert(vector_push_float(&vec, 1.0f));
+  assert(vector_push_float(&vec, 2.0f));
   assert(vec.length == 2 && "Length before clear mismatch");
 
   vector_clear_float(&vec);
@@ -176,9 +177,9 @@ static void test_vector_pop_at_float(void) {
   setup_suite();
 
   Vector_float vec = vector_create_float(&allocator);
-  vector_push_float(&vec, 1.0f);
-  vector_push_float(&vec, 2.0f);
-  vector_push_float(&vec, 3.0f);
+  assert(vector_push_float(&vec, 1.0f));
+  assert(vector_push_float(&vec, 2.0f));
+  assert(vector_push_float(&vec, 3.0f));
 
   float val = 0.0f;
   vector_pop_at_float(&vec, 1, &val);
@@ -189,10 +190,10 @@ static void test_vector_pop_at_float(void) {
   assert(val == 3.0f && "Pop at 1 value mismatch");
   assert(vec.length == 1 && "Length after pop at 1 mismatch");
 
-  vector_push_float(&vec, 4.0f);
-  vector_push_float(&vec, 5.0f);
-  vector_push_float(&vec, 6.0f);
-  vector_push_float(&vec, 7.0f);
+  assert(vector_push_float(&vec, 4.0f));
+  assert(vector_push_float(&vec, 5.0f));
+  assert(vector_push_float(&vec, 6.0f));
+  assert(vector_push_float(&vec, 7.0f));
 
   vector_pop_at_float(&vec, 1, &val);
   assert(val == 4.0f && "Pop at 1 value mismatch");
@@ -230,9 +231,9 @@ static void test_vector_find_float(void) {
   setup_suite();
 
   Vector_float vec = vector_create_float(&allocator);
-  vector_push_float(&vec, 1.0f);
-  vector_push_float(&vec, 2.0f);
-  vector_push_float(&vec, 3.0f);
+  assert(vector_push_float(&vec, 1.0f));
+  assert(vector_push_float(&vec, 2.0f));
+  assert(vector_push_float(&vec, 3.0f));
 
   float val = 2.0f;
   VectorFindResult res = vector_find_float(&vec, &val, float_equals);
@@ -254,10 +255,10 @@ static void test_vector_find_with_custom_callbacks(void) {
   setup_suite();
 
   Vector_float vec = vector_create_float(&allocator);
-  vector_push_float(&vec, 1.0f);
-  vector_push_float(&vec, 2.005f); // Slightly off from 2.0
-  vector_push_float(&vec, 3.0f);
-  vector_push_float(&vec, 4.5f);
+  assert(vector_push_float(&vec, 1.0f));
+  assert(vector_push_float(&vec, 2.005f)); // Slightly off from 2.0
+  assert(vector_push_float(&vec, 3.0f));
+  assert(vector_push_float(&vec, 4.5f));
 
   // Test exact equality callback
   float val = 2.0f;
@@ -298,7 +299,7 @@ static void test_vector_find_edge_cases(void) {
   assert(res.index == 0 && "Index should be 0 when not found");
 
   // Test with single element
-  vector_push_float(&empty_vec, 42.0f);
+  assert(vector_push_float(&empty_vec, 42.0f));
   val = 42.0f;
   res = vector_find_float(&empty_vec, &val, float_equals);
   assert(res.found && "Should find single element");
@@ -314,10 +315,57 @@ static void test_vector_find_edge_cases(void) {
   printf("  test_vector_find_edge_cases PASSED\n");
 }
 
+static void test_vector_allocation_failure_preserves_contents(void) {
+  ContainerTestAllocator state = {.fail = true};
+  VkrAllocator failing = container_test_allocator(&state);
+  Vector_float vec = vector_create_float(&failing);
+  assert(!vec.data && !vec.allocator && !vec.capacity && !vec.length);
+  vector_destroy_float(&vec);
+
+  uint64_t calls = state.calls;
+  vec =
+      vector_create_float_with_capacity(&failing, SIZE_MAX / sizeof(float) + 1);
+  assert(!vec.data && !vec.allocator && state.calls == calls);
+  vec = vector_create_float_with_capacity(&failing, 0);
+  assert(!vec.data && !vec.allocator && state.calls == calls);
+
+  vec = (Vector_float){.allocator = &failing};
+  assert(!vector_push_float(&vec, 1.0f));
+  assert(!vec.data && !vec.capacity && !vec.length &&
+         vec.allocator == &failing);
+  state.fail = false;
+  assert(vector_reserve_float(&vec, 2));
+  assert(vector_push_float(&vec, 3.0f));
+  assert(vector_push_float(&vec, 7.0f));
+  float *original = vec.data;
+  state.fail = true;
+  assert(!vector_push_float(&vec, 11.0f));
+  assert(!vector_resize_float(&vec));
+  assert(!vector_reserve_float(&vec, 8));
+  calls = state.calls;
+  assert(!vector_reserve_float(&vec, SIZE_MAX / sizeof(float) + 1));
+  assert(state.calls == calls);
+  assert(vec.data == original && vec.capacity == 2 && vec.length == 2);
+  assert(vec.data[0] == 3.0f && vec.data[1] == 7.0f);
+  assert(state.live_bytes == 2 * sizeof(float));
+
+  state.fail = false;
+  assert(vector_reserve_float(&vec, 4));
+  state.fail = true;
+  calls = state.calls;
+  assert(vector_reserve_float(&vec, 3));
+  assert(vector_push_float(&vec, 11.0f));
+  assert(state.calls == calls && vec.length == 3 && vec.capacity == 4);
+  assert(vec.data[0] == 3.0f && vec.data[1] == 7.0f && vec.data[2] == 11.0f);
+  vector_destroy_float(&vec);
+  assert(state.live_bytes == 0);
+}
+
 // Test runner for this suite
 bool32_t run_vector_tests() {
   printf("--- Starting Vector Tests ---\n");
 
+  test_vector_allocation_failure_preserves_contents();
   test_vector_create_float();
   test_vector_create_with_capacity_float();
   test_vector_push_pop_float();

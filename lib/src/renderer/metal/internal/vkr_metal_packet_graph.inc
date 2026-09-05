@@ -1,11 +1,5 @@
 /* Render-graph resources, dependency lowering, pass descriptors, and capture
  * plans. */
-vkr_internal void vkr_metal_packet_noop(VkrRgPassContext *ctx,
-                                        void *user_data) {
-  (void)ctx;
-  (void)user_data;
-}
-
 typedef enum VkrMetalPacketGraphExecutorKind {
   VKR_METAL_PACKET_GRAPH_EXECUTOR_SHADOW = 0,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING,
@@ -136,7 +130,6 @@ vkr_metal_packet_register_executors(VkrMetalPacketRenderer *renderer) {
                                          string_length(spec->name)),
         .id = i + 1u,
         .type = spec->type,
-        .execute = vkr_metal_packet_noop,
     };
     if (!vkr_rg_executor_registry_register(&renderer->executors, &entry))
       return false_v;

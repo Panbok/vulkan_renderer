@@ -4,8 +4,6 @@
 
 /** Keeps the soft-knee divisor away from zero when `knee` is zero. */
 #define VKR_BLOOM_KNEE_EPSILON 1e-4f
-/** Keeps the threshold contribution ratio away from zero for a black texel. */
-#define VKR_BLOOM_BRIGHTNESS_EPSILON 1e-4f
 /**
  * Ceiling on the authored firefly clamp. Beyond this a clamped tap is no longer
  * representable in the R16G16B16A16_SFLOAT chain, so the clamp would stop being
@@ -80,44 +78,6 @@ VkrBloomGpuParams vkr_bloom_gpu_params(const VkrBloomConfig *config,
       .firefly_clamp = config->firefly_clamp,
       .intensity = frame->enabled ? frame->intensity : 0.0f,
   };
-}
-
-void vkr_bloom_sanitize(const VkrBloomGpuParams *params, const float32_t rgb[3],
-                        float32_t out_rgb[3]) {
-  /* One NaN or infinity would survive every reduction and contaminate the whole
-     chain, so it is replaced where it enters rather than guarded against at
-     each later level. `value > 0` is false for NaN and for -inf, and `Min`
-     bounds +inf, so one comparison covers every non-finite and negative case
-     and matches the shared kernel expression exactly. */
-  for (uint32_t i = 0u; i < 3u; ++i) {
-    const float32_t value = rgb[i];
-    out_rgb[i] = value > 0.0f ? Min(value, params->firefly_clamp) : 0.0f;
-  }
-}
-
-void vkr_bloom_soft_threshold(const VkrBloomGpuParams *params,
-                              const float32_t rgb[3], float32_t out_rgb[3]) {
-  /* Maximum component rather than luminance: thresholding on luminance dims a
-     saturated primary below its own brightness and desaturates the bloom. */
-  const float32_t brightness = Max(rgb[0], Max(rgb[1], rgb[2]));
-  const float32_t soft = Clamp(brightness - params->threshold + params->knee,
-                               0.0f, 2.0f * params->knee);
-  const float32_t knee_contribution = soft * soft / params->knee_denominator;
-  const float32_t contribution =
-      Max(knee_contribution, brightness - params->threshold) /
-      Max(brightness, VKR_BLOOM_BRIGHTNESS_EPSILON);
-  const float32_t weight = ClampBot(contribution, 0.0f);
-  for (uint32_t i = 0u; i < 3u; ++i)
-    out_rgb[i] = rgb[i] * weight;
-}
-
-float32_t vkr_bloom_karis_weight(const float32_t rgb[3]) {
-  /* Weighting each tap by the reciprocal of its own brightness turns the box
-     into an average of perceived intensity, which is what keeps a single bright
-     texel from owning the reduction. */
-  const float32_t luminance =
-      0.2126f * rgb[0] + 0.7152f * rgb[1] + 0.0722f * rgb[2];
-  return 1.0f / (1.0f + luminance);
 }
 
 VkrBloomFrame vkr_bloom_prepare(bool8_t enabled, float32_t threshold,

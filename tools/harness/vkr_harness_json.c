@@ -385,14 +385,10 @@ int32_t vkr_harness_json_next(const VkrHarnessJsonDocument *document,
 static bool8_t
 vkr_harness_json_token_key_equals(const VkrHarnessJsonDocument *document,
                                   int32_t token, const char *name) {
-  if (!document || token < 0 || (uint32_t)token >= document->token_count ||
-      document->tokens[token].type != VKR_HARNESS_JSON_STRING) {
-    return false_v;
-  }
-  const VkrHarnessJsonToken *key = &document->tokens[token];
-  const uint64_t length = string_length(name);
-  return key->end - key->start == length &&
-         MemCompare(document->json + key->start, name, length) == 0;
+  char decoded[128];
+  return vkr_harness_json_string(document, token, decoded, sizeof(decoded), "$",
+                                 NULL) &&
+         string_equals(decoded, name);
 }
 
 int32_t vkr_harness_json_object_get(const VkrHarnessJsonDocument *document,
@@ -548,6 +544,11 @@ bool8_t vkr_harness_json_string(const VkrHarnessJsonDocument *document,
         (void)vkr_harness_json_hex(document->json[++i], &nibble);
         codepoint = (codepoint << 4u) | nibble;
       }
+      if (codepoint == 0) {
+        vkr_harness_error_set(out_error, "manifest.string_nul", field,
+                              "Embedded NUL is not supported in string fields");
+        return false_v;
+      }
       if (!vkr_harness_json_append_utf8(codepoint, out, out_capacity,
                                         &cursor)) {
         goto too_long;
@@ -621,16 +622,82 @@ bool8_t vkr_harness_json_f64(const VkrHarnessJsonDocument *document,
 bool8_t vkr_harness_json_u64(const VkrHarnessJsonDocument *document,
                              int32_t token, uint64_t *out, const char *field,
                              VkrHarnessError *out_error) {
-  float64_t parsed = 0.0;
-  if (!vkr_harness_json_f64(document, token, &parsed, field, out_error) ||
-      parsed < 0.0 || parsed > (float64_t)UINT64_MAX ||
-      vkr_floor_f64(parsed) != parsed) {
-    vkr_harness_error_set(out_error, "manifest.integer", field,
-                          "Expected a non-negative integer");
-    return false_v;
+  if (!document || token < 0 || (uint32_t)token >= document->token_count ||
+      !out || document->tokens[token].type != VKR_HARNESS_JSON_NUMBER) {
+    goto invalid;
   }
-  *out = (uint64_t)parsed;
+  const VkrHarnessJsonToken *value = &document->tokens[token];
+  const char *text = document->json + value->start;
+  const uint32_t length = value->end - value->start;
+  if (length >= 64u) {
+    goto invalid;
+  }
+
+  // Keep decimal digits exact, including integral decimal/exponent spellings.
+  char digits[64];
+  uint32_t count = 0;
+  uint32_t cursor = text[0] == '-' ? 1u : 0u;
+  int32_t fraction = 0;
+  bool8_t after_point = false_v;
+  while (cursor < length && text[cursor] != 'e' && text[cursor] != 'E') {
+    if (text[cursor] == '.') {
+      after_point = true_v;
+    } else {
+      digits[count++] = text[cursor];
+      fraction += after_point;
+    }
+    cursor++;
+  }
+  int32_t exponent = 0;
+  if (cursor < length) {
+    cursor++;
+    const bool8_t negative = text[cursor] == '-';
+    if (text[cursor] == '+' || text[cursor] == '-') {
+      cursor++;
+    }
+    // The token has fewer than 64 digits; larger exponents cannot change
+    // whether a nonzero value fits or has a fractional part.
+    while (cursor < length && exponent < 128) {
+      exponent = exponent * 10 + text[cursor++] - '0';
+    }
+    if (negative) {
+      exponent = -exponent;
+    }
+  }
+  uint32_t first = 0;
+  while (first < count && digits[first] == '0') {
+    first++;
+  }
+  if (first == count) {
+    *out = 0;
+    return true_v;
+  }
+  if (text[0] == '-') {
+    goto invalid;
+  }
+  int32_t scale = exponent - fraction;
+  while (scale < 0 && count > first && digits[count - 1u] == '0') {
+    count--;
+    scale++;
+  }
+  if (scale < 0 || (int32_t)(count - first) + scale > 20) {
+    goto invalid;
+  }
+  uint64_t parsed = 0;
+  for (uint32_t i = first; i < count + (uint32_t)scale; ++i) {
+    const uint32_t digit = i < count ? (uint32_t)(digits[i] - '0') : 0u;
+    if (parsed > (UINT64_MAX - digit) / 10u) {
+      goto invalid;
+    }
+    parsed = parsed * 10u + digit;
+  }
+  *out = parsed;
   return true_v;
+
+invalid:
+  vkr_harness_error_set(out_error, "manifest.integer", field,
+                        "Expected an integer in the uint64 range");
+  return false_v;
 }
 
 bool8_t vkr_harness_json_bool(const VkrHarnessJsonDocument *document,

@@ -26,7 +26,11 @@ instrumentation, environment constraints, stability, and authority requirements.
 The parent launches isolated children and records effective configuration and
 build/device provenance alongside workload, policy, and environment fingerprints.
 The camera script is versioned: warmup holds its initial pose and measured frame
-zero starts the authored path.
+zero starts the authored path. Version 3 starts warmup at phase zero of the
+renderer-owned jitter sequence and invalidates temporal history at that boundary.
+Waiting for that phase remains bootstrap work; authored frame counts and GPU
+completion rules do not change. The workload fingerprint includes this version,
+so results from the previous replay behavior are incompatible.
 
 `profile` collects capture-free repetitions. `snapshot` runs replay children,
 produces canonical captures with metadata and digests, and compares compatible

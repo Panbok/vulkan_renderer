@@ -5,10 +5,8 @@ boundaries. [CONTEXT.md](CONTEXT.md) defines project vocabulary. Code and its
 production callers are the implementation authority; ADRs explain decisions,
 and proposals describe future work.
 
-This is the complete documentation inventory. Superseded designs, phase logs,
-and the archive were removed after their current contracts were consolidated.
-Git history preserves the old documents. ADR numbers remain stable; gaps are
-intentional and removed numbers are not reused.
+This inventory covers every retained document. ADR numbers remain stable;
+removed numbers are not reused.
 
 ## Build and run
 

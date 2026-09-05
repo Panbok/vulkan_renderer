@@ -211,33 +211,6 @@ VkrExposureGpuMetering
 vkr_exposure_gpu_metering(const VkrExposureMeteringConfig *config,
                           const VkrExposureFrame *frame);
 
-/**
- * @brief CPU reference for the shared metering kernel.
- *
- * `shaders/shared/exposure_kernel.slangh` performs these exact steps. This
- * mirror exists so the arithmetic has deterministic CPU coverage; the project
- * has no GPU compute-kernel test harness, so a divergence here is the only
- * signal available before a capture.
- */
-
-/** Returns whether a scene-linear luminance is metered at all. */
-bool8_t vkr_exposure_luminance_accepted(const VkrExposureGpuMetering *metering,
-                                        float32_t luminance);
-
-/** Bin index for an accepted luminance. Out-of-range luminance clamps. */
-uint32_t vkr_exposure_bin_index(const VkrExposureGpuMetering *metering,
-                                float32_t luminance);
-
-/** log2 luminance at the center of a bin. */
-float32_t vkr_exposure_bin_log_luminance(const VkrExposureGpuMetering *metering,
-                                         uint32_t bin);
-
-/** Reduces one filled histogram into a published adaptation record. */
-VkrExposureGpuState
-vkr_exposure_resolve(const VkrExposureGpuMetering *metering,
-                     const VkrExposureGpuHistogram *histogram,
-                     const VkrExposureGpuState *previous);
-
 /** Production metering defaults, already normalized. */
 VkrExposureMeteringConfig vkr_exposure_metering_config_default(void);
 

@@ -1,4 +1,6 @@
 #include "event_test.h"
+#include "container_test_allocator.h"
+#include "event_test_wait.h"
 #include "memory/vkr_arena_allocator.h"
 
 #define THREAD_COUNT 4
@@ -27,17 +29,11 @@ static uint32_t callback2_count = 0;
 static EventManager *self_unsubscribe_manager = NULL;
 static uint32_t processed_count = 0;
 static VkrMutex count_mutex = NULL;
-static bool32_t slow_callback_executed = false;
-static bool32_t fast_callback_executed = false;
 
 // Global state for test_event_dispatch_processing
 static bool32_t g_dp_key_press_processed_flag = false;
 static uint32_t g_dp_key_press_value = 0;
 static uint32_t g_dp_key_release_value = 0;
-
-// Global state for test_slow_callbacks
-static uint32_t g_sc_event1_final_value = 0;
-static uint32_t g_sc_event2_final_value = 0;
 
 // --- Globals for new data ownership tests ---
 // For test_data_copying_original_integrity
@@ -121,38 +117,6 @@ static bool8_t counting_callback(Event *event, UserData user_data) {
   return true;
 }
 
-static bool8_t slow_callback(Event *event, UserData user_data) {
-  // Sleep to simulate long processing
-  vkr_platform_sleep(100);
-
-  TestEventData *data = (TestEventData *)event->data;
-  data->value += 1;
-  // Update global based on initial value before modification by this chain
-  if (data->value == 5 + 1) { // Assuming initial was 5 for event1
-    g_sc_event1_final_value = data->value;
-  } else if (data->value == 10 + 1) { // Assuming initial was 10 for event2
-    g_sc_event2_final_value = data->value;
-  }
-  slow_callback_executed = true;
-  return true;
-}
-
-static bool8_t fast_callback(Event *event, UserData user_data) {
-  TestEventData *data = (TestEventData *)event->data;
-  data->value *= 2;
-  // Update global based on initial value before modification by this chain
-  if (data->value == (5 + 1) * 2) { // Assuming initial was 5 for event1,
-                                    // processed by slow_callback first
-    g_sc_event1_final_value = data->value;
-  } else if (data->value ==
-             (10 + 1) * 2) { // Assuming initial was 10 for event2, processed by
-                             // slow_callback first
-    g_sc_event2_final_value = data->value;
-  }
-  fast_callback_executed = true;
-  return true;
-}
-
 static bool8_t integrity_check_callback(Event *event, UserData user_data) {
   TestEventData *data = (TestEventData *)event->data;
   if (data) { // data should not be null if data_size > 0 and copy occurred
@@ -223,7 +187,7 @@ static void test_event_manager_create_destroy(void) {
   setup_suite();
 
   EventManager manager;
-  event_manager_create(&manager);
+  assert(event_manager_create(&manager));
 
   assert(manager.arena != NULL && "Arena pointer should not be NULL");
   assert(manager.running == true && "Manager should be running");
@@ -241,28 +205,31 @@ static void test_event_subscription(void) {
   setup_suite();
 
   EventManager manager;
-  event_manager_create(&manager);
+  assert(event_manager_create(&manager));
 
   // Subscribe to an event
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, test_callback1, NULL);
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, test_callback1,
+                                 NULL));
 
   // Check that callback was added
   assert(manager.callbacks[EVENT_TYPE_KEY_PRESS].length == 1 &&
          "Callback should be added to the manager");
 
   // Subscribe another callback to the same event
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, test_callback2, NULL);
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, test_callback2,
+                                 NULL));
   assert(manager.callbacks[EVENT_TYPE_KEY_PRESS].length == 2 &&
          "Second callback should be added to the manager");
 
   // Subscribe to a different event
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_RELEASE, test_callback3,
-                          NULL);
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_KEY_RELEASE,
+                                 test_callback3, NULL));
   assert(manager.callbacks[EVENT_TYPE_KEY_RELEASE].length == 1 &&
          "Callback should be added to different event type");
 
   // Test duplicate subscription (should be ignored)
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, test_callback1, NULL);
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, test_callback1,
+                                 NULL));
   assert(manager.callbacks[EVENT_TYPE_KEY_PRESS].length == 2 &&
          "Duplicate subscription should be ignored");
 
@@ -288,7 +255,7 @@ static void test_event_dispatch_processing(void) {
   setup_suite();
 
   EventManager manager;
-  event_manager_create(&manager);
+  assert(event_manager_create(&manager));
 
   // Reset global state for this test
   g_dp_key_press_processed_flag = false;
@@ -296,12 +263,12 @@ static void test_event_dispatch_processing(void) {
   g_dp_key_release_value = 0;
 
   // Subscribe to events using specific callbacks for this test
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, dp_test_callback1,
-                          NULL);
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, dp_test_callback2,
-                          NULL);
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_RELEASE, dp_test_callback3,
-                          NULL);
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS,
+                                 dp_test_callback1, NULL));
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS,
+                                 dp_test_callback2, NULL));
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_KEY_RELEASE,
+                                 dp_test_callback3, NULL));
 
   // Create original test event data (can be on stack or temp arena)
   TestEventData original_key_press_data;
@@ -318,7 +285,7 @@ static void test_event_dispatch_processing(void) {
   assert(dispatch_result && "Event dispatch should succeed");
 
   // Wait for event to be processed
-  vkr_platform_sleep(100);
+  event_test_wait_idle(&manager);
 
   // The callbacks should have: added 1 and then multiplied by 2
   // So 5 -> 6 -> 12. Check global state instead of original_key_press_data.
@@ -340,7 +307,7 @@ static void test_event_dispatch_processing(void) {
   assert(dispatch_result && "Second event dispatch should succeed");
 
   // Wait for event to be processed
-  vkr_platform_sleep(100);
+  event_test_wait_idle(&manager);
 
   // The callback should have: subtracted 1
   // So 10 -> 9. Check global state.
@@ -353,77 +320,13 @@ static void test_event_dispatch_processing(void) {
   printf("  test_event_dispatch_processing PASSED\n");
 }
 
-// Test queue full scenario
-static void test_queue_full(void) {
-  printf("  Running test_queue_full...\n");
-  setup_suite();
-
-  EventManager manager;
-  event_manager_create(&manager);
-
-  // We need to fill the queue without processing events
-  // First, stop the event processor
-  vkr_mutex_lock(manager.mutex);
-  manager.running = false;
-  vkr_mutex_unlock(manager.mutex);
-  vkr_cond_signal(manager.cond);
-
-  // Wait for the thread to exit
-  vkr_thread_join(manager.thread);
-
-  // Now reinitialize queue and mutex manually without a thread
-  manager.running = false;
-  vkr_mutex_destroy(&manager.allocator, &manager.mutex);
-  vkr_cond_destroy(&manager.allocator, &manager.cond);
-  vkr_mutex_create(&manager.allocator, &manager.mutex);
-  vkr_cond_create(&manager.allocator, &manager.cond);
-
-  // Fill the queue
-  bool32_t queue_full = false;
-  for (uint32_t i = 0; i < 2000; i++) {
-    TestEventData *data =
-        arena_alloc(arena, sizeof(TestEventData), ARENA_MEMORY_TAG_UNKNOWN);
-    data->value = i;
-    data->processed = false;
-
-    Event event = {.type = EVENT_TYPE_KEY_PRESS,
-                   .data = data,
-                   .data_size = sizeof(TestEventData)};
-
-    bool32_t dispatch_result = false;
-    vkr_mutex_lock(manager.mutex);
-    dispatch_result = queue_enqueue_Event(&manager.queue, event);
-    vkr_mutex_unlock(manager.mutex);
-
-    if (!dispatch_result) {
-      queue_full = true;
-      break;
-    }
-  }
-
-  assert(queue_full && "Queue should become full after many events");
-
-  // Manually clean up resources
-  vkr_mutex_destroy(&manager.allocator, &manager.mutex);
-  vkr_cond_destroy(&manager.allocator, &manager.cond);
-
-  for (uint16_t i = 0; i < EVENT_TYPE_MAX; i++) {
-    if (manager.callbacks[i].data != NULL) {
-      vector_destroy_EventCallbackData(&manager.callbacks[i]);
-    }
-  }
-
-  teardown_suite();
-  printf("  test_queue_full PASSED\n");
-}
-
 // Test event FIFO ordering
 static void test_event_ordering(void) {
   printf("  Running test_event_ordering...\n");
   setup_suite();
 
   EventManager manager;
-  event_manager_create(&manager);
+  assert(event_manager_create(&manager));
 
   // Create an array to record the order of processing
   const uint32_t EVENT_COUNT = 10;
@@ -431,7 +334,8 @@ static void test_event_ordering(void) {
                                    ARENA_MEMORY_TAG_UNKNOWN);
   test_next_index = 0;
 
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, order_callback, NULL);
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, order_callback,
+                                 NULL));
 
   // Dispatch events with sequential IDs
   for (uint32_t i = 0; i < EVENT_COUNT; i++) {
@@ -447,7 +351,7 @@ static void test_event_ordering(void) {
   }
 
   // Wait for events to be processed
-  vkr_platform_sleep(100);
+  event_test_wait_idle(&manager);
 
   // Verify events were processed in FIFO order
   for (uint32_t i = 0; i < EVENT_COUNT; i++) {
@@ -466,7 +370,7 @@ static void test_dynamic_unsubscribe(void) {
   setup_suite();
 
   EventManager manager;
-  event_manager_create(&manager);
+  assert(event_manager_create(&manager));
 
   // Reset counters
   callback1_count = 0;
@@ -474,10 +378,10 @@ static void test_dynamic_unsubscribe(void) {
   self_unsubscribe_manager = &manager;
 
   // Subscribe both callbacks
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS,
-                          self_unsubscribe_callback, NULL);
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, persistent_callback,
-                          NULL);
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS,
+                                 self_unsubscribe_callback, NULL));
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS,
+                                 persistent_callback, NULL));
 
   // Dispatch several events
   for (uint32_t i = 0; i < 5; i++) {
@@ -492,7 +396,7 @@ static void test_dynamic_unsubscribe(void) {
     event_manager_dispatch(&manager, event);
 
     // Sleep briefly to ensure processing completes
-    vkr_platform_sleep(50);
+    event_test_wait_idle(&manager);
   }
 
   // Verify first callback only received one event before unsubscribing
@@ -513,14 +417,14 @@ static void test_concurrent_dispatch(void) {
   setup_suite();
 
   EventManager manager;
-  event_manager_create(&manager);
+  assert(event_manager_create(&manager));
 
   // Reset counter
   processed_count = 0;
   vkr_mutex_create(&test_allocator, &count_mutex);
 
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, counting_callback,
-                          NULL);
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS,
+                                 counting_callback, NULL));
 
   // Create and start multiple threads
   VkrThread threads[THREAD_COUNT];
@@ -541,7 +445,7 @@ static void test_concurrent_dispatch(void) {
   }
 
   // Wait for event processing to complete
-  vkr_platform_sleep(500);
+  event_test_wait_idle(&manager);
 
   // Verify all events were processed
   vkr_mutex_lock(count_mutex);
@@ -553,64 +457,6 @@ static void test_concurrent_dispatch(void) {
   event_manager_destroy(&manager);
   teardown_suite();
   printf("  test_concurrent_dispatch PASSED\n");
-}
-
-// Test slow/blocking callbacks
-static void test_slow_callbacks(void) {
-  printf("  Running test_slow_callbacks...\n");
-  setup_suite();
-
-  EventManager manager;
-  event_manager_create(&manager);
-
-  // Reset state
-  slow_callback_executed = false;
-  fast_callback_executed = false;
-  g_sc_event1_final_value = 0;
-  g_sc_event2_final_value = 0;
-
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, slow_callback, NULL);
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, fast_callback, NULL);
-
-  // Create original event data (can be on stack or temp arena)
-  TestEventData original_data1;
-  original_data1.value = 5;
-
-  TestEventData original_data2;
-  original_data2.value = 10;
-
-  // Dispatch events
-  Event event1 = {.type = EVENT_TYPE_KEY_PRESS,
-                  .data = &original_data1,
-                  .data_size = sizeof(TestEventData)};
-  Event event2 = {.type = EVENT_TYPE_KEY_PRESS,
-                  .data = &original_data2,
-                  .data_size = sizeof(TestEventData)};
-
-  event_manager_dispatch(&manager, event1);
-  event_manager_dispatch(&manager, event2);
-
-  // Wait for processing
-  vkr_platform_sleep(300);
-
-  // Verify both callbacks were executed
-  assert(slow_callback_executed && "Slow callback should execute");
-  assert(fast_callback_executed && "Fast callback should execute");
-
-  // Verify data was modified correctly using global state
-  // Each event goes through both callbacks: +1 and *2
-  // Event 1: (5+1)*2 = 12
-  // Event 2: (10+1)*2 = 22
-  assert(
-      g_sc_event1_final_value == 12 &&
-      "First event should be processed by both callbacks with correct value");
-  assert(
-      g_sc_event2_final_value == 22 &&
-      "Second event should be processed by both callbacks with correct value");
-
-  event_manager_destroy(&manager);
-  teardown_suite();
-  printf("  test_slow_callbacks PASSED\n");
 }
 
 static bool8_t increment_counter_callback(Event *event, UserData user_data) {
@@ -626,17 +472,17 @@ static void test_user_data_callback_functionality(void) {
   setup_suite();
 
   EventManager manager;
-  event_manager_create(&manager);
+  assert(event_manager_create(&manager));
 
   // Test data structures to pass as user_data
   uint32_t counter1 = 0;
   uint32_t counter2 = 0;
 
   // Subscribe same callback with different user_data
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS,
-                          increment_counter_callback, &counter1);
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS,
-                          increment_counter_callback, &counter2);
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS,
+                                 increment_counter_callback, &counter1));
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS,
+                                 increment_counter_callback, &counter2));
 
   // Dispatch an event
   TestEventData event_data = {.value = 42, .processed = false};
@@ -646,7 +492,7 @@ static void test_user_data_callback_functionality(void) {
   event_manager_dispatch(&manager, event);
 
   // Wait for processing
-  vkr_platform_sleep(100);
+  event_test_wait_idle(&manager);
 
   // Both counters should be incremented since they have different user_data
   assert(counter1 == 1 && "Counter1 should be incremented once");
@@ -662,26 +508,32 @@ static void test_same_callback_different_user_data_subscription(void) {
   setup_suite();
 
   EventManager manager;
-  event_manager_create(&manager);
+  assert(event_manager_create(&manager));
 
   uint32_t data1 = 100;
   uint32_t data2 = 200;
 
   // Subscribe same callback with different user_data - should be allowed
-  event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_MOVE, test_callback1,
-                          &data1);
-  event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_MOVE, test_callback1,
-                          &data2);
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_MOVE,
+                                 test_callback1, &data1));
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_MOVE,
+                                 test_callback1, &data2));
 
   // Should have 2 subscriptions
   assert(manager.callbacks[EVENT_TYPE_MOUSE_MOVE].length == 2 &&
          "Should have 2 subscriptions with different user_data");
 
   // Try to subscribe same callback with same user_data - should be ignored
-  event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_MOVE, test_callback1,
-                          &data1);
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_MOVE,
+                                 test_callback1, &data1));
   assert(manager.callbacks[EVENT_TYPE_MOUSE_MOVE].length == 2 &&
          "Duplicate subscription should be ignored");
+
+  event_manager_unsubscribe(&manager, EVENT_TYPE_MOUSE_MOVE, test_callback1);
+  assert(manager.callbacks[EVENT_TYPE_MOUSE_MOVE].length == 1u);
+  assert(manager.callbacks[EVENT_TYPE_MOUSE_MOVE].data[0].user_data == &data2);
+  event_manager_unsubscribe(&manager, EVENT_TYPE_MOUSE_MOVE, test_callback1);
+  assert(manager.callbacks[EVENT_TYPE_MOUSE_MOVE].length == 0u);
 
   event_manager_destroy(&manager);
   teardown_suite();
@@ -692,13 +544,13 @@ static void test_data_copying_original_integrity(void) {
   printf("  Running test_data_copying_original_integrity...\n");
   setup_suite();
   EventManager manager;
-  event_manager_create(&manager);
+  assert(event_manager_create(&manager));
 
   g_integrity_cb_executed = false;
   g_integrity_cb_received_value = 0;
 
-  event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_MOVE,
-                          integrity_check_callback, NULL);
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_MOVE,
+                                 integrity_check_callback, NULL));
 
   TestEventData *original_data =
       arena_alloc(arena, sizeof(TestEventData), ARENA_MEMORY_TAG_UNKNOWN);
@@ -713,7 +565,7 @@ static void test_data_copying_original_integrity(void) {
   // Modify original data AFTER dispatch
   original_data->value = 200;
 
-  vkr_platform_sleep(100);
+  event_test_wait_idle(&manager);
 
   assert(g_integrity_cb_executed && "Integrity callback should have executed");
   assert(
@@ -731,14 +583,14 @@ static void test_dispatch_data_size_zero(void) {
   printf("  Running test_dispatch_data_size_zero...\n");
   setup_suite();
   EventManager manager;
-  event_manager_create(&manager);
+  assert(event_manager_create(&manager));
 
   g_dsz_cb_execution_count = 0;
   g_dsz_cb_data_is_null = false;
   g_dsz_cb_data_size_is_zero = false;
 
-  event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_WHEEL,
-                          data_size_zero_check_callback, NULL);
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_WHEEL,
+                                 data_size_zero_check_callback, NULL));
 
   // Case 1: data_size = 0, data is non-NULL (but should be ignored for copying)
   TestEventData dummy_data = {.value = 50, .processed = false};
@@ -746,7 +598,7 @@ static void test_dispatch_data_size_zero(void) {
       .type = EVENT_TYPE_MOUSE_WHEEL, .data = &dummy_data, .data_size = 0};
   event_manager_dispatch(&manager, event1);
 
-  vkr_platform_sleep(100);
+  event_test_wait_idle(&manager);
 
   assert(g_dsz_cb_execution_count == 1 &&
          "DSZ Callback should have executed once for event1");
@@ -762,7 +614,7 @@ static void test_dispatch_data_size_zero(void) {
   // Case 2: data_size = 0, data is NULL
   Event event2 = {.type = EVENT_TYPE_MOUSE_WHEEL, .data = NULL, .data_size = 0};
   event_manager_dispatch(&manager, event2);
-  vkr_platform_sleep(100);
+  event_test_wait_idle(&manager);
 
   assert(g_dsz_cb_execution_count == 2 &&
          "DSZ Callback should have executed again for event2");
@@ -780,11 +632,11 @@ static void test_data_lifetime_original_freed(void) {
   printf("  Running test_data_lifetime_original_freed...\n");
   setup_suite(); // Main arena
   EventManager manager;
-  event_manager_create(&manager);
+  assert(event_manager_create(&manager));
 
   g_lifetime_cb_executed_successfully = false;
-  event_manager_subscribe(&manager, EVENT_TYPE_BUTTON_PRESS,
-                          lifetime_check_callback, NULL);
+  assert(event_manager_subscribe(&manager, EVENT_TYPE_BUTTON_PRESS,
+                                 lifetime_check_callback, NULL));
 
   // Create a temporary scratch arena for the original data
   VkrAllocator scratch_alloc = {.ctx = arena};
@@ -815,7 +667,7 @@ static void test_data_lifetime_original_freed(void) {
   vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_UNKNOWN);
   // original_data_on_scratch is now a dangling pointer / points to freed memory
 
-  vkr_platform_sleep(100);
+  event_test_wait_idle(&manager);
 
   assert(
       g_lifetime_cb_executed_successfully &&
@@ -826,17 +678,49 @@ static void test_data_lifetime_original_freed(void) {
   printf("  test_data_lifetime_original_freed PASSED\n");
 }
 
+static void test_subscription_allocation_failure(void) {
+  setup_suite();
+  ContainerTestAllocator state = {.fail = true_v};
+  EventManager manager = {.allocator = container_test_allocator(&state)};
+  assert(vkr_mutex_create(&test_allocator, &manager.mutex));
+  const EventType type = EVENT_TYPE_BUTTON_PRESS;
+  uint32_t subscribers[DEFAULT_VECTOR_CAPACITY + 1] = {0};
+  assert(!event_manager_subscribe(&manager, type, test_callback1,
+                                  &subscribers[0]));
+  assert(manager.callbacks[type].data == NULL);
+  state.fail = false_v;
+  for (uint32_t i = 0; i < DEFAULT_VECTOR_CAPACITY; ++i)
+    assert(event_manager_subscribe(&manager, type, test_callback1,
+                                   &subscribers[i]));
+  EventCallbackData *original = manager.callbacks[type].data;
+  state.fail = true_v;
+  assert(!event_manager_subscribe(&manager, type, test_callback1,
+                                  &subscribers[DEFAULT_VECTOR_CAPACITY]));
+  assert(manager.callbacks[type].data == original);
+  assert(manager.callbacks[type].length == DEFAULT_VECTOR_CAPACITY);
+  for (uint32_t i = 0; i < DEFAULT_VECTOR_CAPACITY; ++i) {
+    assert(original[i].callback == test_callback1);
+    assert(original[i].user_data == &subscribers[i]);
+  }
+  state.fail = false_v;
+  assert(event_manager_subscribe(&manager, type, test_callback1,
+                                 &subscribers[DEFAULT_VECTOR_CAPACITY]));
+  vector_destroy_EventCallbackData(&manager.callbacks[type]);
+  assert(state.live_bytes == 0);
+  vkr_mutex_destroy(&test_allocator, &manager.mutex);
+  teardown_suite();
+}
+
 // Run all event system tests
 bool32_t run_event_tests() {
   printf("--- Running Event System tests... ---\n");
   test_event_manager_create_destroy();
   test_event_subscription();
+  test_subscription_allocation_failure();
   test_event_dispatch_processing();
-  test_queue_full();
   test_event_ordering();
   test_dynamic_unsubscribe();
   test_concurrent_dispatch();
-  test_slow_callbacks();
   test_user_data_callback_functionality();
   test_same_callback_different_user_data_subscription();
   test_data_copying_original_integrity();

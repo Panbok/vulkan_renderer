@@ -66,6 +66,23 @@ static bool8_t vkr_harness_manifest_f64(const VkrHarnessJsonDocument *doc,
   return token < 0 || vkr_harness_json_f64(doc, token, out, name, error);
 }
 
+static bool8_t vkr_harness_manifest_f32(const VkrHarnessJsonDocument *doc,
+                                        int32_t object, const char *name,
+                                        bool8_t required, float32_t *out,
+                                        VkrHarnessError *error) {
+  float64_t value = *out;
+  if (!vkr_harness_manifest_f64(doc, object, name, required, &value, error)) {
+    return false_v;
+  }
+  if (value < -FLT_MAX || value > FLT_MAX) {
+    vkr_harness_error_set(error, "manifest.number", name,
+                          "Number exceeds the float32 range");
+    return false_v;
+  }
+  *out = (float32_t)value;
+  return true_v;
+}
+
 static bool8_t vkr_harness_manifest_bool(const VkrHarnessJsonDocument *doc,
                                          int32_t object, const char *name,
                                          bool8_t required, bool8_t *out,
@@ -91,6 +108,11 @@ static bool8_t vkr_harness_manifest_vec3(const VkrHarnessJsonDocument *doc,
   int32_t value_token = token + 1;
   for (uint32_t i = 0; i < 3; ++i) {
     if (!vkr_harness_json_f64(doc, value_token, &values[i], field, error)) {
+      return false_v;
+    }
+    if (values[i] < -FLT_MAX || values[i] > FLT_MAX) {
+      vkr_harness_error_set(error, "manifest.number", field,
+                            "Vector component exceeds the float32 range");
       return false_v;
     }
     value_token = vkr_harness_json_next(doc, value_token);
@@ -197,8 +219,6 @@ static bool8_t vkr_harness_parse_camera_keys(const VkrHarnessJsonDocument *doc,
       return false_v;
     }
     VkrHarnessCameraKey *key = &camera->keys[camera->key_count++];
-    float64_t yaw = 0.0;
-    float64_t pitch = 0.0;
     int32_t position = -1;
     if (!vkr_harness_manifest_f64(doc, item, "t", true_v, &key->time_seconds,
                                   error) ||
@@ -206,12 +226,12 @@ static bool8_t vkr_harness_parse_camera_keys(const VkrHarnessJsonDocument *doc,
                                     error) ||
         !vkr_harness_manifest_vec3(doc, position, &key->position,
                                    "$.camera.keys[].position", error) ||
-        !vkr_harness_manifest_f64(doc, item, "yaw", true_v, &yaw, error) ||
-        !vkr_harness_manifest_f64(doc, item, "pitch", true_v, &pitch, error)) {
+        !vkr_harness_manifest_f32(doc, item, "yaw", true_v, &key->yaw_degrees,
+                                  error) ||
+        !vkr_harness_manifest_f32(doc, item, "pitch", true_v,
+                                  &key->pitch_degrees, error)) {
       return false_v;
     }
-    key->yaw_degrees = (float32_t)yaw;
-    key->pitch_degrees = (float32_t)pitch;
     item = vkr_harness_json_next(doc, item);
   }
   return true_v;
@@ -271,20 +291,14 @@ static bool8_t vkr_harness_parse_camera(const VkrHarnessJsonDocument *doc,
                           "$.camera.interpolation", "Unknown interpolation");
     return false_v;
   }
-  float64_t fov = camera->vertical_fov_degrees;
-  float64_t near_plane = camera->near_plane;
-  float64_t far_plane = camera->far_plane;
-  if (!vkr_harness_manifest_f64(doc, token, "vertical_fov_degrees", false_v,
-                                &fov, error) ||
-      !vkr_harness_manifest_f64(doc, token, "near_plane", false_v, &near_plane,
-                                error) ||
-      !vkr_harness_manifest_f64(doc, token, "far_plane", false_v, &far_plane,
-                                error)) {
+  if (!vkr_harness_manifest_f32(doc, token, "vertical_fov_degrees", false_v,
+                                &camera->vertical_fov_degrees, error) ||
+      !vkr_harness_manifest_f32(doc, token, "near_plane", false_v,
+                                &camera->near_plane, error) ||
+      !vkr_harness_manifest_f32(doc, token, "far_plane", false_v,
+                                &camera->far_plane, error)) {
     return false_v;
   }
-  camera->vertical_fov_degrees = (float32_t)fov;
-  camera->near_plane = (float32_t)near_plane;
-  camera->far_plane = (float32_t)far_plane;
 
   int32_t keys = -1;
   int32_t position = -1;
@@ -322,13 +336,13 @@ static bool8_t vkr_harness_parse_camera(const VkrHarnessJsonDocument *doc,
   }
   if (string_equals(mode, "static")) {
     camera->mode = VKR_HARNESS_CAMERA_STATIC;
-    float64_t yaw = 0.0;
-    float64_t pitch = 0.0;
     if (position < 0 ||
         !vkr_harness_manifest_vec3(doc, position, &camera->static_pose.position,
                                    "$.camera.position", error) ||
-        !vkr_harness_manifest_f64(doc, token, "yaw", true_v, &yaw, error) ||
-        !vkr_harness_manifest_f64(doc, token, "pitch", true_v, &pitch, error) ||
+        !vkr_harness_manifest_f32(doc, token, "yaw", true_v,
+                                  &camera->static_pose.yaw_degrees, error) ||
+        !vkr_harness_manifest_f32(doc, token, "pitch", true_v,
+                                  &camera->static_pose.pitch_degrees, error) ||
         keys >= 0 || center >= 0 || interpolation_token >= 0 ||
         radius_token >= 0 || height_token >= 0 || revolutions_token >= 0 ||
         duration_token >= 0 || angle_token >= 0) {
@@ -336,8 +350,6 @@ static bool8_t vkr_harness_parse_camera(const VkrHarnessJsonDocument *doc,
                             "Static camera requires only position/yaw/pitch");
       return false_v;
     }
-    camera->static_pose.yaw_degrees = (float32_t)yaw;
-    camera->static_pose.pitch_degrees = (float32_t)pitch;
   } else if (string_equals(mode, "keyframes") ||
              string_equals(mode, "flythrough")) {
     camera->mode = string_equals(mode, "keyframes")
@@ -351,32 +363,22 @@ static bool8_t vkr_harness_parse_camera(const VkrHarnessJsonDocument *doc,
     }
   } else if (string_equals(mode, "orbit")) {
     camera->mode = VKR_HARNESS_CAMERA_ORBIT;
-    float64_t radius = 0.0;
-    float64_t height = 0.0;
-    float64_t revolutions = 0.0;
-    float64_t duration = 0.0;
-    float64_t angle = 0.0;
     if (center < 0 || keys >= 0 || position >= 0 || yaw_token >= 0 ||
         pitch_token >= 0 || interpolation_token >= 0 ||
         !vkr_harness_manifest_vec3(doc, center, &camera->orbit_center,
                                    "$.camera.center", error) ||
-        !vkr_harness_manifest_f64(doc, token, "radius", true_v, &radius,
-                                  error) ||
-        !vkr_harness_manifest_f64(doc, token, "height", false_v, &height,
-                                  error) ||
-        !vkr_harness_manifest_f64(doc, token, "revolutions", true_v,
-                                  &revolutions, error) ||
+        !vkr_harness_manifest_f32(doc, token, "radius", true_v,
+                                  &camera->orbit_radius, error) ||
+        !vkr_harness_manifest_f32(doc, token, "height", false_v,
+                                  &camera->orbit_height, error) ||
+        !vkr_harness_manifest_f32(doc, token, "revolutions", true_v,
+                                  &camera->orbit_revolutions, error) ||
         !vkr_harness_manifest_f64(doc, token, "duration_seconds", true_v,
-                                  &duration, error) ||
-        !vkr_harness_manifest_f64(doc, token, "start_angle_degrees", false_v,
-                                  &angle, error)) {
+                                  &camera->orbit_duration_seconds, error) ||
+        !vkr_harness_manifest_f32(doc, token, "start_angle_degrees", false_v,
+                                  &camera->orbit_start_angle_degrees, error)) {
       return false_v;
     }
-    camera->orbit_radius = (float32_t)radius;
-    camera->orbit_height = (float32_t)height;
-    camera->orbit_revolutions = (float32_t)revolutions;
-    camera->orbit_duration_seconds = duration;
-    camera->orbit_start_angle_degrees = (float32_t)angle;
   } else {
     vkr_harness_error_set(error, "camera.mode", "$.camera.mode",
                           "Unknown camera mode '%s'", mode);

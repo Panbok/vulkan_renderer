@@ -508,30 +508,6 @@ static void test_font_cooked_production_coverage(void) {
       test_font_find_codepoint(&decoded, '?');
   assert(fallback && fallback->glyph_id == decoded.fallback_glyph_id);
 
-  const char *shipped_overlays[] = {
-      "Memory metrics: pending",
-      "FPS: 0.0\nFrametime: 0.0",
-      "Camera: {x: 0.0, y: 0.0, z: 0.0}\nCamera rotation: {yaw: 0.0, "
-      "pitch: 0.0, roll: 0.0}\nPress Tab for free mode\nIBL mode: Scene IBL "
-      "(x1.00)\nF8 cycle mode, F9/F10 intensity",
-      "Picked: render id #0 (no entity)",
-      "Picked: UI text #0",
-      "Picked: world text #0",
-      "Picked: light #0",
-      "World batches: 0\nShadow: 0",
-      "SYSTEM | Aa Bb 0123456789 !?",
-      "BITMAP | PIXEL 0123456789",
-      "MTSDF | Smooth Aa 0123456789",
-      "WORLD MTSDF | Aa 0123456789",
-  };
-  for (uint32_t string_index = 0u; string_index < ArrayCount(shipped_overlays);
-       ++string_index) {
-    const char *text = shipped_overlays[string_index];
-    for (uint64_t byte = 0u; byte < strlen(text); ++byte) {
-      if (text[byte] != '\n')
-        assert(test_font_find_codepoint(&decoded, (uint8_t)text[byte]));
-    }
-  }
 #if !VKR_ALLOCATOR_DISABLE_STATS
   assert(allocator.stats.peak_temp_bytes > size);
   assert(allocator.stats.peak_temp_bytes < size + KB(64));

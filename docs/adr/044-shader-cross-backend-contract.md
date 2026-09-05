@@ -40,8 +40,8 @@ A parity entry is ALIGNED only with matching production semantics, applicable
 host/compiled reflection and non-degenerate native comparisons on both backends.
 Missing or conflicting evidence is UNALIGNED. Shared source, compilation or a
 single native run cannot establish bilateral parity. MetalFX is an explicit
-backend-specific mode under ADR-040. This documentation audit establishes source
-ownership only; current unclosed evidence is summarized in ARCHITECTURE.
+backend-specific mode under ADR-040. Current missing native evidence is summarized
+in [ARCHITECTURE](../ARCHITECTURE.md).
 
 ## Consequences
 

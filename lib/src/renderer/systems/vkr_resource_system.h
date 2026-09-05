@@ -100,7 +100,8 @@ struct VkrResourceLoader {
   /**
    * @brief Optional async worker-stage callback that performs CPU-only prep.
    *
-   * This must not call Vulkan or mutate renderer/resource-system state.
+   * This must not publish GPU objects or mutate render-thread subsystem state.
+   * CPU-side dependency requests may use vkr_resource_system_load().
    * Ownership of `*out_payload` transfers to the resource system, which will
    * later pass it to `finalize_async` and then `release_async_payload`.
 
@@ -136,10 +137,11 @@ struct VkrResourceLoader {
   /**
    * @brief Optional estimate callback for async finalize GPU cost.
    *
-   * When provided, the pump uses this estimate to enforce
+   * When provided, the pump schedules this estimate against
    * `VkrResourceAsyncBudget.max_gpu_upload_ops` and
    * `VkrResourceAsyncBudget.max_gpu_upload_bytes`. Returning false falls back
-   * to a conservative default cost.
+   * to a conservative default cost. An unused positive budget dimension permits
+   * one oversized request so indivisible uploads can progress.
    *
    * @param self The loader
    * @param name The name of the resource

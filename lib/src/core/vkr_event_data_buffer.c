@@ -1,4 +1,5 @@
 #include "vkr_event_data_buffer.h"
+#include "core/logger.h"
 
 bool8_t vkr_event_data_buffer_create(VkrAllocator *allocator, uint64_t capacity,
                                      VkrEventDataBuffer *out_edb) {
@@ -8,8 +9,8 @@ bool8_t vkr_event_data_buffer_create(VkrAllocator *allocator, uint64_t capacity,
 
   out_edb->allocator = allocator;
   out_edb->capacity = capacity;
-  out_edb->buffer = vkr_allocator_alloc(allocator, capacity,
-                                        VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
+  out_edb->buffer =
+      vkr_allocator_alloc(allocator, capacity, VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
 
   if (out_edb->buffer == NULL) {
     log_error(
@@ -20,7 +21,9 @@ bool8_t vkr_event_data_buffer_create(VkrAllocator *allocator, uint64_t capacity,
   out_edb->head = 0;
   out_edb->tail = 0;
   out_edb->fill = 0;
+  out_edb->wrap_boundary = capacity;
   out_edb->last_alloc_block_size = 0;
+  out_edb->last_alloc_tail = 0;
 
   return true;
 }
@@ -31,23 +34,7 @@ void vkr_event_data_buffer_destroy(VkrEventDataBuffer *edb) {
     vkr_allocator_free(edb->allocator, edb->buffer, edb->capacity,
                        VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
   }
-  edb->buffer = NULL;
-  edb->allocator = NULL;
-  edb->capacity = 0;
-  edb->head = 0;
-  edb->tail = 0;
-  edb->fill = 0;
-  edb->last_alloc_block_size = 0;
-}
-
-bool8_t vkr_event_data_buffer_can_alloc(const VkrEventDataBuffer *edb,
-                                        uint64_t payload_size) {
-  assert_log(edb != NULL, "VkrEventDataBuffer cannot be NULL.");
-  if (payload_size == 0) {
-    return true;
-  }
-  uint64_t block_size_needed = sizeof(uint64_t) + payload_size;
-  return edb->fill + block_size_needed <= edb->capacity;
+  MemZero(edb, sizeof(*edb));
 }
 
 bool8_t vkr_event_data_buffer_alloc(VkrEventDataBuffer *edb,
@@ -62,53 +49,35 @@ bool8_t vkr_event_data_buffer_alloc(VkrEventDataBuffer *edb,
     return true;
   }
 
+  if (payload_size > edb->capacity ||
+      edb->capacity - payload_size < sizeof(uint64_t)) {
+    return false;
+  }
   uint64_t block_size_needed = sizeof(uint64_t) + payload_size;
-
-  if (edb->fill + block_size_needed > edb->capacity) {
-    log_warn("EventDataBuffer full. Cannot allocate %llu bytes (payload %llu). "
-             "Fill: %llu, Capacity: %llu",
-             block_size_needed, payload_size, edb->fill, edb->capacity);
+  if (block_size_needed > edb->capacity - edb->fill ||
+      (edb->fill != 0 && edb->tail == edb->head)) {
     return false;
   }
 
-  uint8_t *write_ptr_base = edb->buffer;
-  uint64_t new_tail_candidate = edb->tail;
-  uint8_t *actual_write_location = NULL;
-
-  if (edb->tail >= edb->head) {
-    if (edb->tail + block_size_needed <= edb->capacity) {
-      actual_write_location = write_ptr_base + edb->tail;
-      new_tail_candidate = edb->tail + block_size_needed;
-    } else {
-      if (block_size_needed <= edb->head) {
-        actual_write_location = write_ptr_base + 0; // Write at the start
-        new_tail_candidate = block_size_needed;
-      } else {
-        log_warn("EventDataBuffer fragmented. Cannot allocate %llu bytes. "
-                 "Tail: %llu, Head: %llu, Capacity: %llu",
-                 block_size_needed, edb->tail, edb->head, edb->capacity);
-        return false;
-      }
-    }
-  } else {
-    if (edb->tail + block_size_needed <= edb->head) {
-      actual_write_location = write_ptr_base + edb->tail;
-      new_tail_candidate = edb->tail + block_size_needed;
-    } else {
-      log_warn("EventDataBuffer fragmented (wrapped). Cannot allocate %llu "
-               "bytes. Tail: %llu, Head: %llu",
-               block_size_needed, edb->tail, edb->head);
+  uint64_t write_offset = edb->tail;
+  if (edb->tail < edb->head) {
+    if (block_size_needed > edb->head - edb->tail) {
       return false;
     }
+  } else if (block_size_needed > edb->capacity - edb->tail) {
+    if (block_size_needed > edb->head) {
+      return false;
+    }
+    edb->wrap_boundary = edb->tail;
+    write_offset = 0;
   }
 
-  assert_log(actual_write_location != NULL,
-             "Write location should have been determined.");
-
+  uint8_t *actual_write_location = edb->buffer + write_offset;
+  edb->last_alloc_tail = edb->tail;
   MemCopy(actual_write_location, &payload_size, sizeof(uint64_t));
   *out_payload_ptr = actual_write_location + sizeof(uint64_t);
 
-  edb->tail = new_tail_candidate % edb->capacity;
+  edb->tail = (write_offset + block_size_needed) % edb->capacity;
   edb->fill += block_size_needed;
   edb->last_alloc_block_size = block_size_needed;
 
@@ -123,10 +92,6 @@ bool8_t vkr_event_data_buffer_free(VkrEventDataBuffer *edb,
     return true;
   }
 
-  // If the buffer is already empty, the data this event pointed to
-  // has already been implicitly "freed" by the head pointer advancing past it
-  // due to previous free operations. This is not an error from the buffer's
-  // perspective; its state (empty) is consistent.
   if (edb->fill == 0) {
     return true;
   }
@@ -161,12 +126,18 @@ bool8_t vkr_event_data_buffer_free(VkrEventDataBuffer *edb,
     return false;
   }
 
-  edb->head = (edb->head + actual_block_size_to_free) % edb->capacity;
+  edb->head += actual_block_size_to_free;
+  if (edb->head == edb->wrap_boundary) {
+    edb->head = 0;
+    edb->wrap_boundary = edb->capacity;
+  }
   edb->fill -= actual_block_size_to_free;
 
   if (edb->fill == 0) {
     edb->head = 0;
     edb->tail = 0;
+    edb->wrap_boundary = edb->capacity;
+    edb->last_alloc_block_size = 0;
   }
 
   return true;
@@ -182,17 +153,10 @@ void vkr_event_data_buffer_rollback_last_alloc(VkrEventDataBuffer *edb) {
   assert_log(edb->fill >= edb->last_alloc_block_size,
              "Rollback error: fill < last_alloc_block_size");
 
-  // To correctly rollback tail, we need to know if it wrapped.
-  // The alloc logic ensures tail points to the *end* of the allocated block.
-  // So, we subtract last_alloc_block_size from tail, handling underflow by
-  // wrapping around capacity.
-  if (edb->tail < edb->last_alloc_block_size) {
-    edb->tail = (edb->tail + edb->capacity - edb->last_alloc_block_size) %
-                edb->capacity;
-
-  } else {
-    edb->tail -= edb->last_alloc_block_size;
+  if (edb->last_alloc_tail == edb->wrap_boundary) {
+    edb->wrap_boundary = edb->capacity;
   }
+  edb->tail = edb->last_alloc_tail;
 
   edb->fill -= edb->last_alloc_block_size;
   edb->last_alloc_block_size = 0;
@@ -200,5 +164,7 @@ void vkr_event_data_buffer_rollback_last_alloc(VkrEventDataBuffer *edb) {
   if (edb->fill == 0) {
     edb->head = 0;
     edb->tail = 0;
+    edb->wrap_boundary = edb->capacity;
+    edb->last_alloc_block_size = 0;
   }
 }

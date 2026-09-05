@@ -1,4 +1,7 @@
 #include "allocator_test.h"
+#include "memory/vkr_pool.h"
+#include "memory/vkr_pool_allocator.h"
+#include "platform/vkr_platform.h"
 
 static VkrAllocatorStatistics snapshot_global(void) {
   return vkr_allocator_get_global_statistics();
@@ -338,6 +341,39 @@ static void test_allocator_report_manual(void) {
   printf("  test_allocator_report_manual PASSED\n");
 }
 
+static void test_failed_pool_operations_preserve_accounting(void) {
+  assert(vkr_platform_mem_reserve(UINT64_MAX) == NULL);
+  VkrPool pool = {0};
+  assert(vkr_pool_create(64u, 1u, &pool));
+  VkrAllocator allocator = {.ctx = &pool};
+  vkr_pool_allocator_create(&allocator);
+  const VkrAllocatorMemoryTag tag = VKR_ALLOCATOR_MEMORY_TAG_BUFFER;
+  const VkrAllocatorStatistics before = snapshot_global();
+  void *ptr = vkr_allocator_realloc(&allocator, NULL, 0u, 16u, tag);
+  assert(ptr);
+  MemSet(ptr, 0xA5, 16u);
+  const VkrAllocatorStatistics live = vkr_allocator_get_statistics(&allocator);
+#if !VKR_ALLOCATOR_DISABLE_STATS
+  assert(live.total_allocated == 16u && live.tagged_allocs[tag] == 16u);
+#endif
+  assert(!vkr_allocator_alloc(&allocator, 8u, tag));
+  assert(!vkr_allocator_alloc_aligned(&allocator, 8u, 8u, tag));
+  assert(!vkr_allocator_realloc(&allocator, ptr, 16u, 65u, tag));
+  assert(!vkr_allocator_realloc_aligned(&allocator, ptr, 16u, 65u, 8u, tag));
+  const VkrAllocatorStatistics rejected =
+      vkr_allocator_get_statistics(&allocator);
+  assert(rejected.total_allocated == live.total_allocated);
+  assert(rejected.tagged_allocs[tag] == live.tagged_allocs[tag]);
+  for (uint32_t i = 0u; i < 16u; ++i) {
+    assert(((uint8_t *)ptr)[i] == 0xA5);
+  }
+  vkr_allocator_free(&allocator, ptr, 16u, tag);
+  const VkrAllocatorStatistics after = snapshot_global();
+  assert(after.total_allocated == before.total_allocated);
+  assert(after.tagged_allocs[tag] == before.tagged_allocs[tag]);
+  vkr_pool_allocator_destroy(&allocator);
+}
+
 bool32_t run_allocator_tests(void) {
   printf("--- Starting Allocator Interface Tests ---\n");
 
@@ -349,6 +385,7 @@ bool32_t run_allocator_tests(void) {
   test_arena_nested_scopes();
   test_arena_scope_realloc();
   test_allocator_report_manual();
+  test_failed_pool_operations_preserve_accounting();
 
   printf("--- Allocator Interface Tests Completed ---\n");
   return true;

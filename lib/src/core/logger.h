@@ -14,7 +14,9 @@ typedef enum LogLevel {
   LOG_LEVEL_TRACE = 5,
 } LogLevel;
 
-void log_init(Arena *arena);
+VKR_MUST_USE bool8_t log_init(Arena *arena);
+// Call after logging threads join and before releasing the borrowed arena.
+void log_shutdown(void);
 void _log_message(LogLevel level, const char *file, uint32_t line,
                   const char *fmt, ...);
 

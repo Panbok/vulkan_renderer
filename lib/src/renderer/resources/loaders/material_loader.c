@@ -69,11 +69,6 @@ typedef struct VkrParsedMaterialData {
 /**
  * @brief Job payload for parallel material file parsing.
  */
-typedef struct VkrMaterialParseJobPayload {
-  char file_path[VKR_MATERIAL_PATH_MAX];
-  VkrParsedMaterialData *result;
-} VkrMaterialParseJobPayload;
-
 typedef struct VkrMaterialAsyncDependency {
   bool8_t requested;
   VkrTextureSlot slot;
@@ -1939,14 +1934,6 @@ vkr_internal bool8_t vkr_material_loader_parse_file(
 
   out_data->parse_success = true_v;
   return true_v;
-}
-
-vkr_internal bool8_t vkr_material_parse_job_run(VkrJobContext *ctx,
-                                                void *payload) {
-  VkrMaterialParseJobPayload *job = (VkrMaterialParseJobPayload *)payload;
-  String8 path = string8_create_from_cstr((const uint8_t *)job->file_path,
-                                          string_length(job->file_path));
-  return vkr_material_loader_parse_file(ctx->allocator, path, job->result);
 }
 
 vkr_internal uint32_t vkr_material_loader_load_batch(

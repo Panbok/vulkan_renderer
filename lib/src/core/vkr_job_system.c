@@ -122,8 +122,9 @@ vkr_internal bool8_t job_system_register_dependency_locked(
     return true_v;
   }
 
+  if (!vector_push_VkrJobHandle(&parent->dependents, child->handle))
+    return false_v;
   child->remaining_dependencies++;
-  vector_push_VkrJobHandle(&parent->dependents, child->handle);
   return true_v;
 }
 
@@ -279,9 +280,8 @@ vkr_internal void *job_worker_thread(void *param) {
     vkr_mutex_lock(system->mutex);
     VkrJobHandle handle = {0};
     bool8_t dequeued = false_v;
-    while (system->running &&
-           !(dequeued = job_system_try_dequeue_locked(
-                 system, worker->type_mask, &handle))) {
+    while (system->running && !(dequeued = job_system_try_dequeue_locked(
+                                    system, worker->type_mask, &handle))) {
       vkr_cond_wait(system->cond, system->mutex);
     }
 
@@ -370,27 +370,27 @@ bool8_t vkr_job_system_init(const VkrJobSystemConfig *config,
   out_system->arena =
       arena_create(config->arena_rsv_size, config->arena_cmt_size);
   if (!out_system->arena) {
-    return false_v;
+    goto cleanup;
   }
 
   out_system->allocator = (VkrAllocator){.ctx = out_system->arena};
   if (!vkr_allocator_arena(&out_system->allocator)) {
     log_error("Failed to initialize job system allocator");
-    arena_destroy(out_system->arena);
-    MemZero(out_system, sizeof(VkrJobSystem));
-    return false_v;
+    goto cleanup;
   }
 
   out_system->max_jobs = config->max_jobs;
   out_system->slots = vkr_allocator_alloc(&out_system->allocator,
                                           sizeof(VkrJobSlot) * config->max_jobs,
                                           VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  if (out_system->slots)
+    MemZero(out_system->slots, sizeof(VkrJobSlot) * config->max_jobs);
   out_system->free_stack = vkr_allocator_alloc(
       &out_system->allocator, sizeof(uint32_t) * config->max_jobs,
       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!out_system->slots || !out_system->free_stack) {
     log_error("Failed to allocate job slots or free stack");
-    return false_v;
+    goto cleanup;
   }
 
   for (uint32_t i = 0; i < config->max_jobs; i++) {
@@ -404,7 +404,7 @@ bool8_t vkr_job_system_init(const VkrJobSystemConfig *config,
         .payload_capacity = 0,
         .remaining_dependencies = 0,
         .defer_enqueue = false_v,
-        .dependents = vector_create_VkrJobHandle(&out_system->allocator),
+        .dependents = {.allocator = &out_system->allocator},
     };
     out_system->free_stack[i] = config->max_jobs - i - 1;
   }
@@ -413,6 +413,8 @@ bool8_t vkr_job_system_init(const VkrJobSystemConfig *config,
   for (uint32_t p = 0; p < VKR_JOB_PRIORITY_MAX; p++) {
     out_system->queues[p] = queue_create_VkrJobHandle(&out_system->allocator,
                                                       config->queue_capacity);
+    if (!out_system->queues[p].data)
+      goto cleanup;
   }
 
   out_system->running = true_v;
@@ -421,38 +423,46 @@ bool8_t vkr_job_system_init(const VkrJobSystemConfig *config,
       !vkr_cond_create(&out_system->allocator, &out_system->cond) ||
       !vkr_cond_create(&out_system->allocator, &out_system->slots_avail)) {
     log_error("Failed to create job system synchronization primitives");
-    return false_v;
+    goto cleanup;
   }
 
-  out_system->worker_count = config->worker_count;
   out_system->workers = vkr_allocator_alloc(
       &out_system->allocator, sizeof(VkrJobWorker) * config->worker_count,
       VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   if (!out_system->workers) {
     log_error("Failed to allocate job workers");
-    return false_v;
+    goto cleanup;
   }
 
+  MemZero(out_system->workers, sizeof(VkrJobWorker) * config->worker_count);
+  out_system->worker_count = config->worker_count;
   for (uint32_t i = 0; i < config->worker_count; i++) {
     VkrJobWorker *worker = &out_system->workers[i];
     worker->system = out_system;
     worker->index = i;
     worker->type_mask = config->worker_type_mask_default;
     worker->arena = arena_create(MB(32), MB(32));
+    if (!worker->arena)
+      goto cleanup;
     worker->allocator = (VkrAllocator){.ctx = worker->arena};
-    vkr_allocator_arena(&worker->allocator);
+    if (!vkr_allocator_arena(&worker->allocator))
+      goto cleanup;
 
     if (!vkr_thread_create(&out_system->allocator, &worker->thread,
                            job_worker_thread, worker)) {
       log_error("Failed to create job worker thread %u", i);
       worker->thread = NULL;
-      return false_v;
+      goto cleanup;
     }
   }
 
   log_debug("Job system initialized with %u workers", config->worker_count);
 
   return true_v;
+
+cleanup:
+  vkr_job_system_shutdown(out_system);
+  return false_v;
 }
 
 void vkr_job_system_get_metrics(const VkrJobSystem *system,
@@ -480,11 +490,15 @@ void vkr_job_system_shutdown(VkrJobSystem *system) {
     return;
   }
 
-  vkr_mutex_lock(system->mutex);
+  if (system->mutex)
+    vkr_mutex_lock(system->mutex);
   system->running = false_v;
-  vkr_mutex_unlock(system->mutex);
-  vkr_cond_broadcast(system->cond);
-  vkr_cond_broadcast(system->slots_avail); // Wake up any waiting submitters
+  if (system->mutex)
+    vkr_mutex_unlock(system->mutex);
+  if (system->cond)
+    vkr_cond_broadcast(system->cond);
+  if (system->slots_avail)
+    vkr_cond_broadcast(system->slots_avail);
 
   for (uint32_t i = 0; i < system->worker_count; i++) {
     VkrJobWorker *worker = &system->workers[i];
@@ -493,6 +507,7 @@ void vkr_job_system_shutdown(VkrJobSystem *system) {
       vkr_thread_destroy(&system->allocator, &worker->thread);
     }
     if (worker->arena) {
+      vkr_allocator_release_global_accounting(&worker->allocator);
       arena_destroy(worker->arena);
     }
   }
@@ -533,6 +548,7 @@ void vkr_job_system_shutdown(VkrJobSystem *system) {
   }
 
   if (system->arena) {
+    vkr_allocator_release_global_accounting(&system->allocator);
     arena_destroy(system->arena);
   }
 
@@ -575,6 +591,7 @@ vkr_internal bool8_t vkr_job_submit_internal(VkrJobSystem *system,
   slot->success = false_v;
   slot->defer_enqueue = desc->defer_enqueue;
 
+  uint32_t registered_dependencies = 0u;
   // Register dependencies up front to avoid races.
   if (desc->dependencies && desc->dependency_count > 0) {
     for (uint32_t i = 0; i < desc->dependency_count; i++) {
@@ -586,35 +603,30 @@ vkr_internal bool8_t vkr_job_submit_internal(VkrJobSystem *system,
       if (!job_system_register_dependency_locked(system, slot, dep)) {
         log_error("Job failed to register dependency for job %u",
                   slot->handle.id);
-        slot->state = JOB_STATE_FREE;
-        slot->handle.generation++;
-        system->free_stack[system->free_top++] = slot_index;
-        vkr_mutex_unlock(system->mutex);
-        return false_v;
+        goto failed;
       }
+      registered_dependencies = i + 1u;
     }
   }
 
   if (desc->payload && desc->payload_size > 0) {
     if (slot->payload_capacity < desc->payload_size) {
-      if (slot->payload && slot->payload_capacity > 0) {
+      void *payload =
+          vkr_allocator_alloc(&system->allocator, desc->payload_size,
+                              VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+      if (!payload) {
+        log_error("Job failed to allocate payload buffer");
+        goto failed;
+      }
+      if (slot->payload)
         vkr_allocator_free(&system->allocator, slot->payload,
                            slot->payload_capacity,
                            VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
-      }
-      slot->payload =
-          vkr_allocator_alloc(&system->allocator, desc->payload_size,
-                              VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+      slot->payload = payload;
       slot->payload_capacity = desc->payload_size;
     }
-    if (slot->payload) {
-      MemCopy(slot->payload, desc->payload, desc->payload_size);
-      slot->payload_size = desc->payload_size;
-    } else {
-      vkr_mutex_unlock(system->mutex);
-      log_error("Job failed to allocate payload buffer");
-      return false_v;
-    }
+    MemCopy(slot->payload, desc->payload, desc->payload_size);
+    slot->payload_size = desc->payload_size;
   } else {
     slot->payload_size = 0;
   }
@@ -624,11 +636,7 @@ vkr_internal bool8_t vkr_job_submit_internal(VkrJobSystem *system,
   if (should_enqueue) {
     if (!job_system_enqueue_locked(system, slot)) {
       log_warn("Job queue full for priority %d", slot->priority);
-      slot->state = JOB_STATE_FREE;
-      slot->handle.generation++;
-      system->free_stack[system->free_top++] = slot_index;
-      vkr_mutex_unlock(system->mutex);
-      return false_v;
+      goto failed;
     }
   }
   VkrJobHandle handle = slot->handle;
@@ -642,6 +650,26 @@ vkr_internal bool8_t vkr_job_submit_internal(VkrJobSystem *system,
 
   vkr_mutex_unlock(system->mutex);
   return true_v;
+
+failed:
+  // The mutex keeps these newly appended edges at the end of each parent.
+  for (uint32_t i = registered_dependencies; i > 0u; --i) {
+    VkrJobSlot *parent =
+        job_system_get_slot(system, desc->dependencies[i - 1u]);
+    if (parent && parent->dependents.length > 0u) {
+      VkrJobHandle last =
+          parent->dependents.data[parent->dependents.length - 1u];
+      if (last.id == slot->handle.id &&
+          last.generation == slot->handle.generation)
+        parent->dependents.length--;
+    }
+  }
+  job_slot_reset(system, slot);
+  slot->handle.generation++;
+  system->free_stack[system->free_top++] = slot_index;
+  vkr_cond_signal(system->slots_avail);
+  vkr_mutex_unlock(system->mutex);
+  return false_v;
 }
 
 bool8_t vkr_job_submit(VkrJobSystem *system, const VkrJobDesc *desc,
@@ -652,27 +680,6 @@ bool8_t vkr_job_submit(VkrJobSystem *system, const VkrJobDesc *desc,
 bool8_t vkr_job_try_submit(VkrJobSystem *system, const VkrJobDesc *desc,
                            VkrJobHandle *out_handle) {
   return vkr_job_submit_internal(system, desc, out_handle, false_v);
-}
-
-bool8_t vkr_job_add_dependency(VkrJobSystem *system, VkrJobHandle job,
-                               VkrJobHandle dependency) {
-  assert_log(system != NULL, "JobSystem is NULL");
-
-  if (!job_handle_is_valid(job) || !job_handle_is_valid(dependency)) {
-    return false_v;
-  }
-
-  vkr_mutex_lock(system->mutex);
-  VkrJobSlot *child = job_system_get_slot(system, job);
-  if (!child || child->state != JOB_STATE_PENDING) {
-    vkr_mutex_unlock(system->mutex);
-    log_warn("job_add_dependency: child not pending or missing");
-    return false_v;
-  }
-
-  bool8_t ok = job_system_register_dependency_locked(system, child, dependency);
-  vkr_mutex_unlock(system->mutex);
-  return ok;
 }
 
 bool8_t vkr_job_mark_ready(VkrJobSystem *system, VkrJobHandle handle) {

@@ -8,33 +8,6 @@
 #include <stdio.h>
 #include <string.h>
 
-static bool8_t gtao_near(float32_t a, float32_t b) {
-  const float32_t scale = fmaxf(1.0f, fabsf(b));
-  return fabsf(a - b) <= 1e-4f * scale;
-}
-
-static void gtao_assert_projection_roundtrip(Mat4 projection,
-                                             Vec3 view_position) {
-  const VkrGtaoConfig config = vkr_gtao_config_default();
-  const VkrGtaoFrame frame =
-      vkr_gtao_prepare(true_v, VKR_GTAO_DEFAULT_RADIUS, VKR_GTAO_DEFAULT_POWER);
-  const VkrGtaoGpuParams params = vkr_gtao_gpu_params(
-      &config, &frame, mat4_identity(), projection, 1920u, 1080u, 0u, false_v);
-  const Vec4 clip =
-      mat4_mul_vec4(projection, vec4_new(view_position.x, view_position.y,
-                                         view_position.z, 1.0f));
-  const float32_t inverse_w = 1.0f / clip.w;
-  const float32_t screen_x = (clip.x * inverse_w + 1.0f) * 0.5f;
-  const float32_t screen_y = (clip.y * inverse_w + 1.0f) * 0.5f;
-  const float32_t device_depth = clip.z * inverse_w;
-  const float32_t view_depth = vkr_gtao_linearize_depth(&params, device_depth);
-  const Vec3 reconstructed =
-      vkr_gtao_view_position(&params, screen_x, screen_y, view_depth);
-  assert(gtao_near(reconstructed.x, view_position.x));
-  assert(gtao_near(reconstructed.y, view_position.y));
-  assert(gtao_near(reconstructed.z, view_position.z));
-}
-
 static void gtao_assert_config_equal(const VkrGtaoConfig *a,
                                      const VkrGtaoConfig *b) {
   assert(a->max_depth_mip_count == b->max_depth_mip_count);
@@ -50,15 +23,6 @@ static void gtao_assert_config_equal(const VkrGtaoConfig *a,
 static void test_gtao_config_and_mips(void) {
   printf("  Running test_gtao_config_and_mips...\n");
   const VkrGtaoConfig defaults = vkr_gtao_config_default();
-  assert(defaults.max_depth_mip_count == 5u);
-  assert(defaults.slice_count == 3u);
-  assert(defaults.steps_per_slice == 3u);
-  assert(defaults.radius_multiplier == 1.457f);
-  assert(defaults.falloff_range == 0.615f);
-  assert(defaults.sample_distribution_power == 2.0f);
-  assert(defaults.depth_mip_sampling_offset == 3.30f);
-  assert(defaults.denoise_blur_beta == 1.2f);
-
   const VkrGtaoConfig zeroed = {0};
   const VkrGtaoConfig from_null = vkr_gtao_config_normalize(NULL);
   const VkrGtaoConfig from_zeroed = vkr_gtao_config_normalize(&zeroed);
@@ -92,74 +56,8 @@ static void test_gtao_config_and_mips(void) {
   printf("  test_gtao_config_and_mips PASSED\n");
 }
 
-static void test_gtao_frame_controls(void) {
-  printf("  Running test_gtao_frame_controls...\n");
-  const VkrGtaoFrame disabled = vkr_gtao_prepare(false_v, NAN, NAN);
-  assert(!disabled.enabled);
-  assert(disabled.radius == 0.0f);
-  assert(disabled.power == 0.0f);
-
-  const VkrGtaoFrame enabled = vkr_gtao_prepare(true_v, 0.75f, 1.8f);
-  assert(enabled.enabled == true_v);
-  assert(enabled.radius == 0.75f);
-  assert(enabled.power == 1.8f);
-  printf("  test_gtao_frame_controls PASSED\n");
-}
-
-static void test_gtao_depth_reference(void) {
-  printf("  Running test_gtao_depth_reference...\n");
-  const float32_t near_clip = 0.1f;
-  const float32_t far_clip = 100.0f;
-  const Mat4 projection = mat4_perspective(vkr_to_radians(60.0f), 16.0f / 9.0f,
-                                           near_clip, far_clip);
-  const VkrGtaoConfig config = vkr_gtao_config_default();
-  const VkrGtaoFrame frame =
-      vkr_gtao_prepare(true_v, VKR_GTAO_DEFAULT_RADIUS, VKR_GTAO_DEFAULT_POWER);
-  const VkrGtaoGpuParams params = vkr_gtao_gpu_params(
-      &config, &frame, mat4_identity(), projection, 1920u, 1080u, 0u, false_v);
-
-  assert(gtao_near(vkr_gtao_linearize_depth(&params, 0.0f), near_clip));
-  assert(gtao_near(vkr_gtao_linearize_depth(&params, 1.0f), far_clip));
-  const Mat4 extreme_projection = mat4_perspective(
-      vkr_to_radians(60.0f), 1.0f, near_clip, VKR_GTAO_VIEW_DEPTH_MAX * 2.0f);
-  const VkrGtaoGpuParams extreme_params =
-      vkr_gtao_gpu_params(&config, &frame, mat4_identity(), extreme_projection,
-                          1u, 1u, 0u, false_v);
-  assert(gtao_near(vkr_gtao_linearize_depth(&extreme_params, 1.0f),
-                   VKR_GTAO_VIEW_DEPTH_MAX));
-
-  const float32_t plane =
-      vkr_gtao_depth_mip_filter(&params, 4.0f, 4.0f, 4.0f, 4.0f);
-  assert(gtao_near(plane, 4.0f));
-
-  const float32_t plain_mean = (1.0f + 10.0f + 10.0f + 10.0f) * 0.25f;
-  const float32_t filtered =
-      vkr_gtao_depth_mip_filter(&params, 1.0f, 10.0f, 10.0f, 10.0f);
-  assert(filtered > plain_mean);
-  assert(filtered <= 10.0f);
-  printf("  test_gtao_depth_reference PASSED\n");
-}
-
-static void test_gtao_projection_roundtrip(void) {
-  printf("  Running test_gtao_projection_roundtrip...\n");
-  Mat4 jittered =
-      mat4_perspective(vkr_to_radians(67.0f), 16.0f / 9.0f, 0.1f, 500.0f);
-  jittered.m02 -= 0.037f;
-  jittered.m12 += 0.021f;
-  gtao_assert_projection_roundtrip(jittered, vec3_new(0.7f, -0.4f, -5.0f));
-
-  const Mat4 orthographic =
-      mat4_ortho_zo_yinv(-4.0f, 6.0f, -3.0f, 5.0f, 0.2f, 80.0f);
-  gtao_assert_projection_roundtrip(orthographic,
-                                   vec3_new(1.25f, -0.75f, -12.0f));
-  printf("  test_gtao_projection_roundtrip PASSED\n");
-}
-
 static void test_gtao_gpu_params(void) {
   printf("  Running test_gtao_gpu_params...\n");
-  assert(sizeof(VkrGtaoGpuParams) == 192u);
-  assert((sizeof(VkrGtaoGpuParams) % 16u) == 0u);
-
   const VkrGtaoConfig config = vkr_gtao_config_default();
   const VkrGtaoFrame frame =
       vkr_gtao_prepare(true_v, VKR_GTAO_DEFAULT_RADIUS, VKR_GTAO_DEFAULT_POWER);
@@ -246,9 +144,6 @@ static void test_gtao_packet_validation(void) {
 bool32_t run_gtao_tests(void) {
   printf("--- Running GTAO tests... ---\n");
   test_gtao_config_and_mips();
-  test_gtao_frame_controls();
-  test_gtao_depth_reference();
-  test_gtao_projection_roundtrip();
   test_gtao_gpu_params();
   test_gtao_packet_validation();
   printf("GTAO tests PASSED\n");

@@ -23,18 +23,6 @@ typedef struct VkrMaterialSystemConfig {
   const VkrAssetPublisher *asset_publisher;
 } VkrMaterialSystemConfig;
 
-typedef struct VkrMaterialIblProbeSlot {
-  VkrTextureOpaqueHandle prefilter_map;
-  Vec3 center;
-  Vec3 extents;
-  float32_t blend_distance;
-  float32_t weight;
-  float32_t intensity;
-  float32_t diffuse_intensity;
-  float32_t specular_intensity;
-  bool8_t box_projection_enabled;
-} VkrMaterialIblProbeSlot;
-
 // Lifetime entry stored only in a hash table keyed by material name.
 // 'id' is the index into the materials array. This structure manages
 // references and auto-release behavior only.
@@ -116,22 +104,6 @@ typedef struct VkrMaterialSystem {
   uint64_t texture_stream_failed_total;
   uint64_t texture_stream_evicted_total;
   uint64_t texture_stream_pressure_stalls_total;
-
-  // Shadow map bindings for world materials (updated per frame).
-  VkrTextureOpaqueHandle shadow_map;
-  bool8_t shadow_maps_enabled;
-
-  // IBL bindings for PBR world materials (updated per frame).
-  VkrTextureOpaqueHandle ibl_prefilter_map;
-  bool8_t ibl_enabled;
-  float32_t ibl_intensity;
-  float32_t ibl_diffuse_intensity;
-  float32_t ibl_specular_intensity;
-  VkrMaterialIblProbeSlot ibl_probe_slots[3];
-
-  // Graph-owned pre-transmission HDR image; valid only for transmission pass.
-  VkrTextureOpaqueHandle transmission_source;
-  bool8_t transmission_pass_enabled;
 
   uint32_t next_free_index;
   uint32_t generation_counter;
@@ -278,38 +250,6 @@ bool8_t vkr_material_system_unpublish(VkrMaterialSystem *system,
                                       VkrMaterialHandle handle);
 
 /**
- * @brief Updates shadow map bindings for world materials.
- *
- * Passing enabled=false clears bindings (default textures will be used).
- */
-void vkr_material_system_set_shadow_map(VkrMaterialSystem *system,
-                                        VkrTextureOpaqueHandle map,
-                                        bool8_t enabled);
-
-/**
- * @brief Updates active IBL maps and scalar controls for PBR materials.
- *
- * Call once per frame before world draws. Passing enabled=false keeps maps
- * bound for descriptor validity while disabling IBL contribution in shader.
- */
-void vkr_material_system_set_ibl_maps(VkrMaterialSystem *system,
-                                      VkrTextureOpaqueHandle prefilter_map,
-                                      bool8_t enabled, float32_t intensity,
-                                      float32_t diffuse_intensity,
-                                      float32_t specular_intensity);
-
-/**
- * @brief Updates two per-draw local probe slots for PBR IBL blending.
- */
-void vkr_material_system_set_ibl_probe_slots(
-    VkrMaterialSystem *system, const VkrMaterialIblProbeSlot slots[3]);
-
-/** Binds the graph-declared pre-transmission HDR source for world materials. */
-void vkr_material_system_set_transmission_source(VkrMaterialSystem *system,
-                                                 VkrTextureOpaqueHandle source,
-                                                 bool8_t enabled);
-
-/**
  * @brief Returns a pointer to the material referenced by handle if valid; NULL
  * otherwise.
  * @note Pointer is invalidated if the material is freed or if its slot is
@@ -362,14 +302,3 @@ vkr_material_system_material_uses_cutout(const VkrMaterialSystem *system,
 /** True when the scalar transmission factor selects the transmission path. */
 bool8_t
 vkr_material_system_material_is_transmissive(const VkrMaterial *material);
-
-/**
- * @brief Returns the effective alpha cutoff for cutout materials.
- *
- * When a material does not explicitly set alpha_cutoff but its diffuse texture
- * is classified as an alpha mask, this returns
- * VKR_MATERIAL_ALPHA_CUTOFF_DEFAULT.
- */
-float32_t
-vkr_material_system_material_alpha_cutoff(const VkrMaterialSystem *system,
-                                          const VkrMaterial *material);

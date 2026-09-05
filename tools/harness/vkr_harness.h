@@ -18,12 +18,11 @@
 
 #define VKR_HARNESS_SCHEMA_VERSION 1u
 /**
- * Bumped to 2 when warmup stopped advancing the camera. Version 1 evaluated the
- * authored path from frame 0, so warmup consumed the head of every script and
- * the measured window began mid-path. No version-1 measurement compares to a
- * version-2 one; the value is part of the workload fingerprint so they cannot.
+ * Version 3 starts authored warmup at jitter phase zero with invalid history.
+ * Version 2 first held warmup at the initial pose. This value participates in
+ * the workload fingerprint, preventing comparisons across replay behavior.
  */
-#define VKR_HARNESS_CAMERA_SCRIPT_VERSION 2u
+#define VKR_HARNESS_CAMERA_SCRIPT_VERSION 3u
 #define VKR_HARNESS_PATH_MAX 1024u
 /**
  * Paths recorded inside a report are relative to its run root, never absolute.
@@ -672,10 +671,6 @@ bool8_t vkr_harness_resolve_existing_path(const char *root,
                                           const char *relative_path,
                                           char out_path[VKR_HARNESS_PATH_MAX],
                                           VkrHarnessError *out_error);
-bool8_t vkr_harness_resolve_output_path(const char *root,
-                                        const char *relative_path,
-                                        char out_path[VKR_HARNESS_PATH_MAX],
-                                        VkrHarnessError *out_error);
 bool8_t vkr_harness_existing_path_is_below(const char *root, const char *path);
 /**
  * Writes everything before `path`'s last separator. Fails on a path with no
@@ -741,11 +736,6 @@ vkr_harness_scene_manifest_write(const char *path,
                                  VkrHarnessError *out_error);
 bool8_t vkr_harness_scene_manifest_verify_file(const char *path,
                                                const char *expected_digest);
-bool8_t vkr_harness_scene_manifest_publish(const char *repo_root,
-                                           const char *scene,
-                                           const char *run_root, Arena *arena,
-                                           VkrHarnessReport *report,
-                                           VkrHarnessError *out_error);
 
 /** Resolves the case's boot profile and optional workload requirements. */
 bool8_t vkr_harness_subsystem_plan(VkrHarnessTool tool,

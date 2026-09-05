@@ -165,9 +165,9 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
 vkr_internal bool8_t vkr_metal_packet_encode_draws(
     VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
     id<MTLRenderPipelineState> pipeline, id<MTLDepthStencilState> depth_state,
-    const VkrDrawItem *draws, uint32_t draw_count, uint64_t instances_gpu,
-    uint32_t target_width, uint32_t target_height, Mat4 view_projection,
-    const VkrRenderPacket *packet, bool8_t lighting_pass,
+    const VkrMetalPacketPreparedDraw *draws, uint32_t draw_count,
+    uint64_t instances_gpu, uint32_t target_width, uint32_t target_height,
+    Mat4 view_projection, const VkrRenderPacket *packet, bool8_t lighting_pass,
     bool8_t transmission_pass, VkrMetalPacketFrameUpload *upload,
     uint32_t *domain_draw_count, VkrMetalPacketResult *result)
     API_AVAILABLE(macos(26.0)) {
@@ -190,42 +190,27 @@ vkr_internal bool8_t vkr_metal_packet_encode_draws(
               upload->root_cursor, upload->root_capacity);
     return false_v;
   }
+  if (draw_count > upload->root_capacity - upload->root_cursor) {
+    log_error("Metal direct draw root span exhausted: draws=%u cursor=%u "
+              "capacity=%u",
+              draw_count, upload->root_cursor, upload->root_capacity);
+    return false_v;
+  }
+  /* Each pass owns a disjoint root span: a later picking/debug invocation
+     cannot replace frame pointers already referenced by encoded blend draws. */
+  const uint64_t root_offset =
+      (uint64_t)upload->root_cursor * VKR_METAL_PACKET_DRAW_ROOT_STRIDE;
+  uint8_t *root_cpu = upload->root_cpu + root_offset;
+  uint64_t root_gpu = upload->root_gpu + root_offset;
+  upload->root_cursor += draw_count;
   for (uint32_t i = 0; i < draw_count; ++i) {
-    const VkrDrawItem *draw = &draws[i];
-    const VkrMeshHandle geometry = {.id = draw->geometry.id,
-                                    .generation = draw->geometry.generation};
-    VkrMetalPacketMesh *mesh =
-        vkr_metal_packet_resolve_mesh(renderer, geometry);
-    VkrMetalPacketMaterial *material =
-        vkr_metal_packet_resolve_material(renderer, draw->material);
-    if (!mesh || !material || draw->submesh_index >= mesh->submesh_count) {
-      log_error("Metal draw %u resource invalid: geometry=%u:%u mesh=%u "
-                "material=%u:%u row=%u submesh=%u/%u",
-                i, draw->geometry.id, draw->geometry.generation, mesh != NULL,
-                draw->material.id, draw->material.generation, material != NULL,
-                draw->submesh_index, mesh ? mesh->submesh_count : 0);
-      return false_v;
+    const VkrMetalPacketPreparedDraw *draw = &draws[i];
+    if (draw->cull_mode != active_cull_mode) {
+      [encoder setCullMode:draw->cull_mode];
+      active_cull_mode = draw->cull_mode;
     }
-    const MTLCullMode material_cull_mode =
-        material->double_sided ? MTLCullModeNone : MTLCullModeBack;
-    if (material_cull_mode != active_cull_mode) {
-      [encoder setCullMode:material_cull_mode];
-      active_cull_mode = material_cull_mode;
-    }
-    const VkrMetalPacketSubmeshCreateInfo *submesh =
-        &renderer->submeshes[(uint64_t)(geometry.id - 1) *
-                                 renderer->max_submeshes_per_mesh +
-                             draw->submesh_index];
-    const uint64_t index_offset =
-        (uint64_t)submesh->first_index * sizeof(uint32_t);
-    uint64_t root_gpu = 0;
     VkrMetalPacketTableDrawUpload *table_draw =
-        vkr_metal_packet_next_root(upload, sizeof(*table_draw), &root_gpu);
-    if (!table_draw) {
-      log_error("Metal draw %u root upload exhausted: cursor=%u capacity=%u", i,
-                upload->root_cursor, upload->root_capacity);
-      return false_v;
-    }
+        (VkrMetalPacketTableDrawUpload *)root_cpu;
     *table_draw = (VkrMetalPacketTableDrawUpload){
         .root =
             {
@@ -237,43 +222,28 @@ vkr_internal bool8_t vkr_metal_packet_encode_draws(
                 .vertices = renderer->geometry_megabuffer.vertices.gpu_address,
                 .frame = frame_root_gpu,
             },
-        .geometry = mesh->gpu_row,
-        .visible =
-            {
-                .material_index = material->row_index,
-                .instance_index = draw->first_instance,
-                .first_index = mesh->gpu_row.first_index + submesh->first_index,
-                .index_count = submesh->index_count,
-                .vertex_offset = submesh->vertex_offset,
-                .decode_index = submesh->decode_index,
-            },
+        .geometry = draw->geometry,
+        .visible = draw->visible,
     };
     [renderer->argument_table setAddress:root_gpu atIndex:0];
     [renderer->argument_table setAddress:root_gpu atIndex:1];
     [encoder setArgumentTable:renderer->argument_table
                      atStages:MTLRenderStageVertex | MTLRenderStageFragment];
     [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
-                        indexCount:submesh->index_count
+                        indexCount:draw->visible.index_count
                          indexType:MTLIndexTypeUInt32
-                       indexBuffer:mesh->indices.gpu_address +
-                                   (uint64_t)mesh->gpu_row.first_index *
-                                       sizeof(uint32_t) +
-                                   index_offset
-                 indexBufferLength:mesh->indices.length -
-                                   (uint64_t)mesh->gpu_row.first_index *
-                                       sizeof(uint32_t) -
-                                   index_offset
+                       indexBuffer:draw->index_address
+                 indexBufferLength:draw->index_length
                      instanceCount:draw->instance_count
-                        baseVertex:submesh->vertex_offset
+                        baseVertex:draw->visible.vertex_offset
                       baseInstance:0];
-    const uint64_t pending_submit = renderer->submit_value + 1;
-    mesh->last_use_submit_value = pending_submit;
-    material->last_use_submit_value = pending_submit;
-    if ((frame_flags & VKR_PACKET_FRAME_FLAG_IBL) != 0u)
-      renderer->ibl_last_use_submit_value = pending_submit;
-    (*domain_draw_count)++;
-    result->indexed_draw_count++;
+    root_cpu += VKR_METAL_PACKET_DRAW_ROOT_STRIDE;
+    root_gpu += VKR_METAL_PACKET_DRAW_ROOT_STRIDE;
   }
+  if ((frame_flags & VKR_PACKET_FRAME_FLAG_IBL) != 0u)
+    renderer->ibl_last_use_submit_value = renderer->submit_value + 1u;
+  *domain_draw_count += draw_count;
+  result->indexed_draw_count += draw_count;
   return true_v;
 }
 
@@ -891,8 +861,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_gbuffer_resolve(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrRenderPacket *packet, id<MTL4ComputeCommandEncoder> encoder,
     VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
-  if (!renderer || !pass || !packet || !encoder || !upload ||
-      !renderer->gbuffer_resolve_pipeline)
+  if (!renderer->gbuffer_resolve_pipeline)
     return false_v;
   id<MTLTexture> vbuffer = vkr_metal_packet_pass_texture(renderer, pass, 0u);
   id<MTLTexture> albedo = vkr_metal_packet_pass_texture(renderer, pass, 2u);
@@ -978,8 +947,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_gtao(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     id<MTL4ComputeCommandEncoder> encoder, VkrMetalPacketFrameUpload *upload,
     VkrMetalPacketGraphExecutorKind kind) API_AVAILABLE(macos(26.0)) {
-  if (!renderer || !pass || !encoder || !upload ||
-      !renderer->prepared_frame.gtao_enabled)
+  if (!renderer->prepared_frame.gtao_enabled)
     return false_v;
 
   if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_GTAO_DEPTH_PREFILTER ||
@@ -1107,8 +1075,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_deferred_lighting(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrRenderPacket *packet, id<MTL4ComputeCommandEncoder> encoder,
     VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
-  if (!renderer || !pass || !packet || !encoder || !upload ||
-      !renderer->deferred_lighting_pipeline)
+  if (!renderer->deferred_lighting_pipeline)
     return false_v;
   id<MTLTexture> vbuffer = vkr_metal_packet_pass_texture(renderer, pass, 0u);
   id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 1u);
@@ -2129,7 +2096,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_pass_body(
   if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_SHADOW) {
     if (!packet->shadow)
       return true_v;
-    const uint32_t cascade = (uint32_t)(uintptr_t)pass->desc.user_data;
+    const uint32_t cascade = pass->desc.repeat_index;
     if (cascade >= packet->shadow->cascade_count)
       return true_v;
     if (!packet->world || renderer->gpu_draw_count == 0u)
@@ -2155,8 +2122,8 @@ vkr_internal bool8_t vkr_metal_packet_encode_pass_body(
                  packet->globals.view));
     if (!vkr_metal_packet_encode_draws(
             renderer, encoder, renderer->blend_pipeline,
-            renderer->depth_read_state, packet->world->transparent_draws,
-            packet->world->transparent_draw_count, upload->world_instances_gpu,
+            renderer->depth_read_state, upload->direct_draws,
+            upload->direct_draw_count, upload->world_instances_gpu,
             (uint32_t)target.width, (uint32_t)target.height, view_projection,
             packet, true_v, false_v, upload, &result->blend_draw_count, result))
       return false_v;
@@ -2178,8 +2145,8 @@ vkr_internal bool8_t vkr_metal_packet_encode_pass_body(
     if (packet->world &&
         !vkr_metal_packet_encode_draws(
             renderer, encoder, renderer->picking_pipeline,
-            renderer->depth_write_state, packet->world->transparent_draws,
-            packet->world->transparent_draw_count, upload->world_instances_gpu,
+            renderer->depth_write_state, upload->direct_draws,
+            upload->direct_draw_count, upload->world_instances_gpu,
             (uint32_t)target.width, (uint32_t)target.height, view_projection,
             packet, false_v, false_v, upload, &picking_draw_count, result))
       return false_v;
@@ -2419,7 +2386,11 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     return false_v;
   }
 
-  vkr_rg_begin_frame(renderer->graph, &renderer->prepared_frame);
+  if (!vkr_rg_begin_frame(renderer->graph, &renderer->prepared_frame)) {
+    log_error("Metal packet stage failed: graph frame allocation");
+    vkr_metal_packet_finish_frame(renderer, false_v, false_v);
+    return false_v;
+  }
   vkr_rg_set_packet(renderer->graph, packet);
   /* Installed before compilation, because seeding a retained subresource reads
      through this provider. */
@@ -2664,7 +2635,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
       if (passed &&
           vkr_metal_packet_graph_pass_is(
               pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_SHADOW) &&
-          (uint32_t)(uintptr_t)pass->desc.user_data + 1 ==
+          pass->desc.repeat_index + 1 ==
               renderer->prepared_frame.shadow_cascade_count) {
         passed = vkr_metal_packet_encode_dependency(
             encoder, &shadow_capture_dependency, true_v);

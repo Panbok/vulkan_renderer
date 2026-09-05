@@ -22,8 +22,11 @@ explicit opt-in. Reduce rendered camera depth into occupied range/count data,
 copy it through bounded readback, and publish only after its submit completes.
 Attach source frame, world/projection and extent metadata to each sample.
 
-The CPU shadow system validates compatibility, smooths accepted ranges and
-falls back to fixed splits when feedback is absent, stale, empty or invalid.
+The CPU shadow system validates incoming feedback and smooths accepted ranges.
+Without a new valid sample, it reuses compatible cached bounds until the source-lag
+limit. Scene or projection changes invalidate the cache before reuse or blending
+with fresh feedback. Without a cache, or on stale, empty or incompatible feedback,
+it uses fixed splits.
 Consumption does not block for a fresh GPU result. Fixed splits remain the
 production default; enabling feedback changes the workload and must be recorded.
 

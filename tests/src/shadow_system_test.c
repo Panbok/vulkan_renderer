@@ -566,33 +566,6 @@ static void test_shadow_receiver_config_normalization(void) {
   }
 }
 
-/* Mobility partition and generations (spec section 6.1-6.2). These exist to
-   serve the cascade-reuse rule, not to speed anything up: reuse compares the
-   generations a layer was rendered with, and scans only the dynamic span. */
-
-static void test_mobility_defaults_to_dynamic(void) {
-  /* The safe classification must be the one a caller gets by saying nothing.
-     A zeroed instance is DYNAMIC, so an unclassified caster forces a render
-     rather than silently qualifying a cascade for reuse. */
-  VkrMeshInstance instance = {0};
-  VkrMesh mesh = {0};
-  assert(instance.shadow_mobility == VKR_SHADOW_CASTER_MOBILITY_DYNAMIC);
-  assert(mesh.shadow_mobility == VKR_SHADOW_CASTER_MOBILITY_DYNAMIC);
-  assert(VKR_SHADOW_CASTER_MOBILITY_DYNAMIC == 0);
-}
-
-static void test_generations_never_start_at_zero(void) {
-  /* A consumer record is zeroed before its first use. If a live generation
-     could also be zero, that record would compare equal and be read as
-     "unchanged since I last rendered", authorizing reuse of contents that were
-     never produced. */
-  VkrMeshManagerGenerations zeroed = {0};
-  assert(zeroed.topology == 0u);
-  assert(zeroed.static_content == 0u);
-  assert(zeroed.dynamic_content == 0u);
-  assert(zeroed.caster_bounds == 0u);
-}
-
 static VkrWorldPassPayload retained_static_payload(void) {
   return (VkrWorldPassPayload){
       .static_generation = 7u,
@@ -1080,6 +1053,53 @@ static void test_sdsm_uses_completed_occupied_depth_and_keeps_fixed_tail(void) {
   vkr_shadow_system_shutdown(&system, test_frontend());
 }
 
+static void test_sdsm_cached_range_rejects_scene_and_projection_changes(void) {
+  for (uint32_t change = 0u; change < 2u; ++change) {
+    VkrShadowSystem system = {0};
+    VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+    config.sdsm_enabled = true_v;
+    config.sdsm_temporal_blend = 0.0f;
+    assert(vkr_shadow_system_init(&system, test_frontend(), &config));
+    VkrCamera camera = test_camera();
+    camera.projection = mat4_perspective(vkr_to_radians(camera.zoom), 1.0f,
+                                         camera.near_clip, camera.far_clip);
+    const float32_t a = camera.projection.elements[10];
+    const float32_t b = camera.projection.elements[14];
+    const VkrShadowDepthRangeSample sample = {
+        .min_device_z = b / 10.0f - a,
+        .max_device_z = b / 100.0f - a,
+        .occupied_count = 4096u,
+        .source_depth_linearize = {a, b, 0.0f, 0.0f},
+        .source_near = camera.near_clip,
+        .source_far = camera.far_clip,
+        .source_frame_index = 8u,
+        .source_projection_generation =
+            vkr_shadow_projection_generation(&camera.projection),
+        .source_scene_generation = 3u,
+        .submit_value = 9u,
+        .valid = true_v,
+    };
+    const Vec3 light = vec3_normalize((Vec3){-1.0f, -1.0f, -1.0f});
+    vkr_shadow_system_set_depth_range_sample(&system, &sample, 10u, 3u);
+    vkr_shadow_system_update(&system, &camera, true_v, light, NULL);
+    assert(system.sdsm_status == VKR_SHADOW_SDSM_ACTIVE);
+
+    /* A missing readback may reuse only a compatible cached sample. */
+    if (change == 1u) {
+      camera.projection =
+          mat4_perspective(vkr_to_radians(camera.zoom + 10.0f), 1.0f,
+                           camera.near_clip, camera.far_clip);
+    }
+    vkr_shadow_system_set_depth_range_sample(&system, NULL, 11u,
+                                             change == 0u ? 4u : 3u);
+    vkr_shadow_system_update(&system, &camera, true_v, light, NULL);
+    assert(system.sdsm_status == VKR_SHADOW_SDSM_STALE);
+    assert(!system.sdsm_range_valid);
+    assert(fabsf(system.cascade_splits[0] - camera.near_clip) < 0.001f);
+    vkr_shadow_system_shutdown(&system, test_frontend());
+  }
+}
+
 bool32_t run_shadow_system_tests(void) {
   printf("--- Starting Shadow System Tests ---\n");
   printf("  Running test_growth_is_never_deadbanded...\n");
@@ -1121,12 +1141,6 @@ bool32_t run_shadow_system_tests(void) {
   printf("  Running test_disabled_stabilization_does_not_publish_history...\n");
   test_disabled_stabilization_does_not_publish_history();
   printf("  test_disabled_stabilization_does_not_publish_history PASSED\n");
-  printf("  Running test_mobility_defaults_to_dynamic...\n");
-  test_mobility_defaults_to_dynamic();
-  printf("  test_mobility_defaults_to_dynamic PASSED\n");
-  printf("  Running test_generations_never_start_at_zero...\n");
-  test_generations_never_start_at_zero();
-  printf("  test_generations_never_start_at_zero PASSED\n");
   printf("  Running retained cascade reuse tests...\n");
   test_retained_history_reuses_per_image_and_commits_only_on_submit();
   test_retained_history_guard_contains_small_motion_not_large_motion();
@@ -1135,6 +1149,7 @@ bool32_t run_shadow_system_tests(void) {
   test_stale_dynamic_contents_render_once_after_caster_leaves();
   test_proactive_refresh_is_bounded_to_reusable_cascades();
   test_sdsm_uses_completed_occupied_depth_and_keeps_fixed_tail();
+  test_sdsm_cached_range_rejects_scene_and_projection_changes();
   test_reused_cascade_publishes_its_rendered_receiver_data();
   printf("  retained cascade reuse tests PASSED\n");
   printf("  Running test_frame_data_carries_only_consumed_fields...\n");

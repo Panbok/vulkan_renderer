@@ -201,84 +201,7 @@ static void test_exposure_metering_config_normalize(void) {
       vkr_exposure_gpu_metering(&bounded, &extreme_frame);
   assert(isfinite(extreme_metering.inverse_log_luminance_range));
   assert(extreme_metering.manual_ev == 127.0f);
-  const VkrExposureGpuState extreme_fallback =
-      vkr_exposure_resolve(&extreme_metering, &(VkrExposureGpuHistogram){0},
-                           &(VkrExposureGpuState){0});
-  assert(isfinite(extreme_fallback.exposure_multiplier));
   printf("  test_exposure_metering_config_normalize PASSED\n");
-}
-
-static void test_exposure_histogram_reference(void) {
-  printf("  Running test_exposure_histogram_reference...\n");
-  VkrExposureMeteringConfig config = vkr_exposure_metering_config_default();
-  config.min_log_luminance = -4.0f;
-  config.max_log_luminance = 4.0f;
-  config.low_percentile = 0.25f;
-  config.high_percentile = 0.75f;
-  config.middle_gray = 0.25f;
-  config.min_ev = -16.0f;
-  config.max_ev = 16.0f;
-  const VkrExposureFrame frame = {
-      .mode = VKR_EXPOSURE_MODE_AUTOMATIC,
-      .manual = 0.5f,
-      .compensation_ev = 0.5f,
-      .delta_seconds = 0.1f,
-  };
-  VkrExposureGpuMetering metering = vkr_exposure_gpu_metering(&config, &frame);
-
-  assert(!vkr_exposure_luminance_accepted(&metering, 0.0f));
-  assert(!vkr_exposure_luminance_accepted(&metering, NAN));
-  assert(!vkr_exposure_luminance_accepted(&metering, INFINITY));
-  assert(vkr_exposure_luminance_accepted(&metering, 1.0f));
-  assert(vkr_exposure_bin_index(&metering, exp2f(-8.0f)) == 0u);
-  assert(vkr_exposure_bin_index(&metering, 1.0f) == 128u);
-  assert(vkr_exposure_bin_index(&metering, exp2f(8.0f)) == 255u);
-
-  VkrExposureGpuHistogram histogram = {0};
-  histogram.bins[64] = 10u;
-  histogram.bins[128] = 10u;
-  const float32_t expected_average =
-      (vkr_exposure_bin_log_luminance(&metering, 64u) +
-       vkr_exposure_bin_log_luminance(&metering, 128u)) *
-      0.5f;
-  const float32_t expected_target =
-      metering.log_middle_gray - expected_average + frame.compensation_ev;
-  const VkrExposureGpuState resolved =
-      vkr_exposure_resolve(&metering, &histogram, NULL);
-  assert(resolved.accepted_texel_count == 20u);
-  assert(resolved.retained_low_bin == 64.0f);
-  assert(resolved.retained_high_bin == 128.0f);
-  assert(fabsf(resolved.average_log_luminance - expected_average) < 1e-6f);
-  assert(fabsf(resolved.target_ev - expected_target) < 1e-6f);
-  assert(resolved.adapted_ev == resolved.target_ev);
-  assert(fabsf(resolved.exposure_multiplier - exp2f(expected_target)) < 1e-6f);
-
-  metering.history_valid = 1u;
-  const VkrExposureGpuState previous = {.adapted_ev = -1.0f};
-  const VkrExposureGpuState adapted =
-      vkr_exposure_resolve(&metering, &histogram, &previous);
-  const float32_t rate = expected_target > previous.adapted_ev
-                             ? metering.brighten_rate_per_second
-                             : metering.darken_rate_per_second;
-  const float32_t expected_adapted =
-      previous.adapted_ev + Clamp(expected_target - previous.adapted_ev,
-                                  -rate * metering.delta_seconds,
-                                  rate * metering.delta_seconds);
-  assert(fabsf(adapted.adapted_ev - expected_adapted) < 1e-6f);
-  assert(fabsf(adapted.adapted_ev - (-0.7f)) < 1e-6f);
-
-  const VkrExposureGpuState bright_previous = {.adapted_ev = 2.0f};
-  const VkrExposureGpuState darkened =
-      vkr_exposure_resolve(&metering, &histogram, &bright_previous);
-  assert(fabsf(darkened.adapted_ev - 1.9f) < 1e-6f);
-
-  const VkrExposureGpuHistogram empty = {0};
-  const VkrExposureGpuState held =
-      vkr_exposure_resolve(&metering, &empty, &previous);
-  assert(held.accepted_texel_count == 0u);
-  assert(held.target_ev == previous.adapted_ev);
-  assert(held.adapted_ev == previous.adapted_ev);
-  printf("  test_exposure_histogram_reference PASSED\n");
 }
 
 static void test_exposure_packet_validation(void) {
@@ -329,7 +252,6 @@ bool32_t run_exposure_tests(void) {
   test_exposure_reset_reasons();
   test_exposure_bounded_delta();
   test_exposure_metering_config_normalize();
-  test_exposure_histogram_reference();
   test_exposure_packet_validation();
   printf("Exposure tests PASSED\n");
   return true_v;

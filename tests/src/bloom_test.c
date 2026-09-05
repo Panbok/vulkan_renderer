@@ -8,9 +8,6 @@
 #include <stdio.h>
 #include <string.h>
 
-static bool8_t bloom_near(float32_t a, float32_t b) {
-  return fabsf(a - b) <= 1e-5f;
-}
 static void bloom_assert_config_equal(const VkrBloomConfig *a,
                                       const VkrBloomConfig *b) {
   assert(a->max_mip_count == b->max_mip_count);
@@ -49,41 +46,6 @@ static void test_bloom_config_and_mips(void) {
   assert(vkr_bloom_mip_count(&defaults, 16u, 16u) == 0u);
   assert(vkr_bloom_mip_count(&defaults, 32u, 32u) == 2u);
   printf("  test_bloom_config_and_mips PASSED\n");
-}
-
-static void test_bloom_prefilter_reference(void) {
-  printf("  Running test_bloom_prefilter_reference...\n");
-  const VkrBloomConfig config = vkr_bloom_config_default();
-  const VkrBloomFrame frame = vkr_bloom_prepare(true_v, 1.0f, 0.5f, 0.05f);
-  const VkrBloomGpuParams params = vkr_bloom_gpu_params(&config, &frame);
-  assert(params.threshold == 1.0f && params.knee == 0.5f);
-  assert(params.knee_denominator > 2.0f);
-  assert(params.firefly_clamp == 32.0f && params.intensity == 0.05f);
-
-  const float32_t invalid[3] = {NAN, INFINITY, -1.0f};
-  float32_t sanitized[3] = {0};
-  vkr_bloom_sanitize(&params, invalid, sanitized);
-  assert(sanitized[0] == 0.0f && sanitized[1] == 32.0f && sanitized[2] == 0.0f);
-
-  const float32_t below_knee[3] = {0.5f, 0.25f, 0.0f};
-  float32_t thresholded[3] = {1.0f, 1.0f, 1.0f};
-  vkr_bloom_soft_threshold(&params, below_knee, thresholded);
-  assert(thresholded[0] == 0.0f && thresholded[1] == 0.0f &&
-         thresholded[2] == 0.0f);
-
-  const float32_t above_knee[3] = {1.5f, 0.75f, 0.0f};
-  vkr_bloom_soft_threshold(&params, above_knee, thresholded);
-  assert(bloom_near(thresholded[0], 0.5f));
-  assert(bloom_near(thresholded[1], 0.25f));
-  assert(thresholded[2] == 0.0f);
-
-  const float32_t white[3] = {1.0f, 1.0f, 1.0f};
-  assert(bloom_near(vkr_bloom_karis_weight(white), 0.5f));
-
-  const VkrBloomFrame disabled = vkr_bloom_prepare(false_v, NAN, NAN, NAN);
-  assert(!disabled.enabled);
-  assert(vkr_bloom_gpu_params(&config, &disabled).intensity == 0.0f);
-  printf("  test_bloom_prefilter_reference PASSED\n");
 }
 
 static void test_bloom_packet_validation(void) {
@@ -135,7 +97,6 @@ static void test_bloom_packet_validation(void) {
 bool32_t run_bloom_tests(void) {
   printf("--- Running bloom tests... ---\n");
   test_bloom_config_and_mips();
-  test_bloom_prefilter_reference();
   test_bloom_packet_validation();
   printf("Bloom tests PASSED\n");
   return true;

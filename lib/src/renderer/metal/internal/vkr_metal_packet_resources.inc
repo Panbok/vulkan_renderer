@@ -1776,6 +1776,56 @@ vkr_metal_packet_mark_gpu_draw_stream_use(VkrMetalPacketRenderer *renderer,
   }
 }
 
+vkr_internal bool8_t vkr_metal_packet_prepare_direct_draws(
+    VkrMetalPacketRenderer *renderer, const VkrDrawItem *draws,
+    uint32_t draw_count, VkrMetalPacketPreparedDraw *prepared) {
+  const uint64_t pending_submit = renderer->submit_value + 1u;
+  for (uint32_t i = 0u; i < draw_count; ++i) {
+    const VkrDrawItem *draw = &draws[i];
+    const VkrMeshHandle geometry = {.id = draw->geometry.id,
+                                    .generation = draw->geometry.generation};
+    VkrMetalPacketMesh *mesh =
+        vkr_metal_packet_resolve_mesh(renderer, geometry);
+    VkrMetalPacketMaterial *material =
+        vkr_metal_packet_resolve_material(renderer, draw->material);
+    /* Metal publishes only after upload submission succeeds; the frame queue
+       consumes those ordered uploads. An absent slot is an invalid handle. */
+    if (!mesh || !material || draw->submesh_index >= mesh->submesh_count) {
+      log_error("Metal direct draw %u has invalid geometry %u:%u, material "
+                "%u:%u or submesh %u",
+                i, geometry.id, geometry.generation, draw->material.id,
+                draw->material.generation, draw->submesh_index);
+      return false_v;
+    }
+    const VkrMetalPacketSubmeshCreateInfo *submesh =
+        &renderer->submeshes[(uint64_t)(geometry.id - 1u) *
+                                 renderer->max_submeshes_per_mesh +
+                             draw->submesh_index];
+    const uint64_t index_offset =
+        ((uint64_t)mesh->gpu_row.first_index + submesh->first_index) *
+        sizeof(uint32_t);
+    prepared[i] = (VkrMetalPacketPreparedDraw){
+        .geometry = mesh->gpu_row,
+        .visible =
+            {
+                .material_index = material->row_index,
+                .instance_index = draw->first_instance,
+                .first_index = mesh->gpu_row.first_index + submesh->first_index,
+                .index_count = submesh->index_count,
+                .vertex_offset = submesh->vertex_offset,
+                .decode_index = submesh->decode_index,
+            },
+        .index_address = mesh->indices.gpu_address + index_offset,
+        .index_length = mesh->indices.length - index_offset,
+        .instance_count = draw->instance_count,
+        .cull_mode = material->double_sided ? MTLCullModeNone : MTLCullModeBack,
+    };
+    mesh->last_use_submit_value = pending_submit;
+    material->last_use_submit_value = pending_submit;
+  }
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     VkrMetalPacketRenderer *renderer, const VkrRenderPacket *packet,
     VkrMetalPacketFrameUpload *upload) {
@@ -1835,11 +1885,36 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
       source_gpu_draw_count > renderer->max_instances ||
       source_transmission_gpu_draw_count > renderer->max_instances)
     return false_v;
+  const uint32_t direct_draw_count = world ? world->transparent_draw_count : 0u;
+  if (direct_draw_count > renderer->max_draws)
+    return false_v;
+  uint64_t direct_pass_count = 0u;
+  uint64_t direct_frame_root_count = 0u;
+  for (uint64_t order = 0u; order < renderer->graph->execution_order.length;
+       ++order) {
+    const VkrRgPass *pass =
+        &renderer->graph->passes
+             .data[renderer->graph->execution_order.data[order]];
+    if (pass->culled || !world)
+      continue;
+    if (vkr_metal_packet_graph_pass_is(
+            pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_WORLD_BLEND)) {
+      direct_pass_count++;
+      direct_frame_root_count += 2u;
+    } else if (packet->picking && packet->picking->pending &&
+               vkr_metal_packet_graph_pass_is(
+                   pass, VKR_METAL_PACKET_GRAPH_EXECUTOR_PICKING)) {
+      direct_pass_count++;
+      direct_frame_root_count++;
+    }
+  }
   uint64_t root_count = 1;
   if (vkr_metal_packet_ibl_needs_bake(renderer, packet))
     root_count += 1 + VKR_IBL_PREFILTER_MIP_COUNT;
-  if (packet->world)
-    root_count += packet->world->transparent_draw_count + world_text_count;
+  root_count +=
+      direct_pass_count * ((uint64_t)direct_draw_count + world_text_count);
+  if (direct_draw_count > 0u)
+    root_count += direct_frame_root_count;
   {
     const uint32_t gpu_draw_view_count =
         1u + renderer->prepared_frame.shadow_cascade_count;
@@ -1874,14 +1949,6 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   root_count += renderer->graph->execution_order.length;
   if (root_count > renderer->max_draws)
     return false_v;
-  uint64_t frame_root_count = 0;
-  if (packet->world && packet->world->transparent_draw_count > 0) {
-    // Blend encoding retains both its frame root and temporal draw state.
-    frame_root_count += 2u;
-  }
-  if (frame_root_count > UINT32_MAX - root_count)
-    return false_v;
-  root_count += frame_root_count;
 
   const uint64_t world_bytes =
       (uint64_t)world_count * sizeof(VkrInstanceDataGPU);
@@ -2053,8 +2120,14 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   if (ui_geometry_end > UINT64_MAX - ui_index_bytes)
     return false_v;
   ui_geometry_end += ui_index_bytes;
+  const uint64_t direct_draw_offset = vkr_metal_packet_align_up(
+      ui_geometry_end, AlignOf(VkrMetalPacketPreparedDraw));
+  const uint64_t direct_draw_bytes =
+      (uint64_t)direct_draw_count * sizeof(VkrMetalPacketPreparedDraw);
+  if (direct_draw_offset > UINT64_MAX - direct_draw_bytes)
+    return false_v;
   const uint64_t root_offset = vkr_metal_packet_align_up(
-      ui_geometry_end, VKR_METAL_PACKET_ROOT_ALIGNMENT);
+      direct_draw_offset + direct_draw_bytes, VKR_METAL_PACKET_ROOT_ALIGNMENT);
   if (root_count >
       (UINT64_MAX - root_offset) / VKR_METAL_PACKET_DRAW_ROOT_STRIDE)
     return false_v;
@@ -2393,6 +2466,13 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
       return false_v;
     upload->transmission_texture_id = transmission_texture.gpuResourceID._impl;
   }
+  upload->direct_draws =
+      (VkrMetalPacketPreparedDraw *)(cpu + direct_draw_offset);
+  upload->direct_draw_count = direct_draw_count;
+  if (direct_draw_count > 0u && !vkr_metal_packet_prepare_direct_draws(
+                                    renderer, world->transparent_draws,
+                                    direct_draw_count, upload->direct_draws))
+    return false_v;
   upload->root_cpu = cpu + root_offset;
   upload->root_gpu = gpu + root_offset;
   upload->text_uploads = renderer->text_uploads;

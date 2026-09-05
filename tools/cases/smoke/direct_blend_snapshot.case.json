@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "id": "smoke.direct_blend.snapshot",
+  "suite": "smoke",
+  "description": "Direct alpha blend and picking consume separate frame roots for the same published geometry.",
+  "scene": "assets/scenes/fixtures/direct_blend.scene.json",
+  "seed": 16,
+  "resolution": [
+    320,
+    240
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": {
+    "warmup": 2,
+    "measure": 1
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default",
+    "taa_enabled": false,
+    "exposure_mode": "manual",
+    "manual_exposure": 0.3
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      0,
+      1.25,
+      -0.5
+    ],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 10,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "captures": [
+    {
+      "at_frame": 0,
+      "channels": [
+        "final_color",
+        "picking_ids"
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "metric": "draw.world.transparent_draws",
+      "stat": "min",
+      "min": 1
+    },
+    {
+      "metric": "geometry.megabuffer.rejected_publications_total",
+      "stat": "max",
+      "max": 0
+    }
+  ]
+}

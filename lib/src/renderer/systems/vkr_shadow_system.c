@@ -125,6 +125,16 @@ vkr_internal void vkr_shadow_consume_sdsm(VkrShadowSystem *system,
 
   const VkrShadowDepthRangeSample sample = system->pending_sdsm_sample;
   system->pending_sdsm_sample = (VkrShadowDepthRangeSample){0};
+  const uint64_t projection_generation =
+      vkr_shadow_projection_generation(&camera->projection);
+  if (system->sdsm_range_valid &&
+      (system->sdsm_source_scene_generation !=
+           system->sdsm_current_scene_generation ||
+       system->sdsm_source_projection_generation != projection_generation)) {
+    vkr_shadow_sdsm_use_fixed(system, camera, fixed_far, VKR_SHADOW_SDSM_STALE);
+    if (!sample.valid)
+      return;
+  }
   if (!sample.valid) {
     if (!system->sdsm_range_valid) {
       system->sdsm_source_lag = 0u;
@@ -160,8 +170,7 @@ vkr_internal void vkr_shadow_consume_sdsm(VkrShadowSystem *system,
     return;
   }
   if (sample.submit_value == 0u || sample.projection_convention != 0u ||
-      sample.source_projection_generation !=
-          vkr_shadow_projection_generation(&camera->projection) ||
+      sample.source_projection_generation != projection_generation ||
       sample.source_scene_generation != system->sdsm_current_scene_generation ||
       lag > system->config.sdsm_max_source_lag_frames ||
       !isfinite(sample.source_near) || !isfinite(sample.source_far) ||
@@ -225,6 +234,9 @@ vkr_internal void vkr_shadow_consume_sdsm(VkrShadowSystem *system,
   system->sdsm_linear_near = linear_near;
   system->sdsm_linear_far = linear_far;
   system->sdsm_source_frame_index = sample.source_frame_index;
+  system->sdsm_source_scene_generation = sample.source_scene_generation;
+  system->sdsm_source_projection_generation =
+      sample.source_projection_generation;
   system->sdsm_submit_value = sample.submit_value;
   system->sdsm_range_valid = true_v;
   system->sdsm_status = VKR_SHADOW_SDSM_ACTIVE;

@@ -76,13 +76,6 @@ bool8_t vkr_codepoint_iter_has_next(const VkrCodepointIter *iter);
 VkrCodepoint vkr_codepoint_iter_next(VkrCodepointIter *iter);
 
 /**
- * @brief Peeks at the next codepoint without advancing the iterator.
- * @param iter The iterator to peek at.
- * @return The next codepoint.
- */
-VkrCodepoint vkr_codepoint_iter_peek(const VkrCodepointIter *iter);
-
-/**
  * @brief Counts the number of codepoints in a UTF-8 encoded string.
  * @param str The string to count the codepoints of.
  * @return The number of codepoints in the string.
@@ -160,23 +153,6 @@ VkrTextStyle vkr_text_style_new(VkrFontHandle font, float32_t font_size,
 VkrTextStyle vkr_text_style_with_font_data(const VkrTextStyle *base,
                                            const VkrFont *font_data);
 
-/**
- * @brief Creates a new text style with a specific color.
- * @param base The base text style.
- * @param color The text color.
- * @return The new text style.
- */
-VkrTextStyle vkr_text_style_with_color(const VkrTextStyle *base, Vec4 color);
-
-/**
- * @brief Creates a new text style with a specific font size.
- * @param base The base text style.
- * @param font_size The font size.
- * @return The new text style.
- */
-VkrTextStyle vkr_text_style_with_size(const VkrTextStyle *base,
-                                      float32_t font_size);
-
 /////////////////////
 // Text primitives
 /////////////////////
@@ -192,19 +168,6 @@ typedef struct VkrText {
   VkrTextStyle style;
   bool8_t owns_content;
 } VkrText;
-
-/**
- * @brief A text span.
- * @param start The start byte offset.
- * @param end The end byte offset.
- * @param style The text style.
- */
-typedef struct VkrTextSpan {
-  uint64_t start;
-  uint64_t end;
-  VkrTextStyle style;
-} VkrTextSpan;
-Vector(VkrTextSpan);
 
 /**
  * @brief A text bounds.
@@ -307,13 +270,6 @@ typedef struct VkrTextAnchor {
 /////////////////////
 
 /**
- * @brief Gets the width of a glyph.
- * @param font_size The font size.
- * @return The width of the glyph.
- */
-float32_t vkr_text_glyph_width(float32_t font_size);
-
-/**
  * @brief Measures the bounds of a text.
  * @param text The text to measure.
  * @return The bounds of the text.
@@ -389,7 +345,9 @@ VkrTextLayoutOptions vkr_text_layout_options_default();
  * @param allocator The allocator to use.
  * @param text The text to layout.
  * @param options The layout options.
- * @return The text layout.
+ * @return Owned layout, or a zeroed layout (line_count == 0) on invalid input
+ * or allocation failure. Successful empty text has one line. A NULL allocator
+ * computes measurement only, without glyph storage.
  */
 VkrTextLayout vkr_text_layout_compute(VkrAllocator *allocator,
                                       const VkrText *text,
@@ -400,56 +358,6 @@ VkrTextLayout vkr_text_layout_compute(VkrAllocator *allocator,
  * @param layout The text layout to destroy.
  */
 void vkr_text_layout_destroy(VkrTextLayout *layout);
-
-/////////////////////
-// Rich text
-/////////////////////
-
-/**
- * @brief A rich text.
- * @param content The text content.
- * @param base_style The base text style.
- * @param spans The spans in the rich text.
- * @param allocator The allocator to use.
- */
-typedef struct VkrRichText {
-  String8 content;          // Full text content
-  VkrTextStyle base_style;  // Default style for unstyled regions
-  Vector_VkrTextSpan spans; // Vector of styled spans
-  VkrAllocator *allocator;  // Allocator used for memory management
-} VkrRichText;
-
-/**
- * @brief Creates a new rich text.
- * @param allocator The allocator to use.
- * @param content The text content.
- * @param base_style The base text style.
- * @return The new rich text.
- */
-VkrRichText vkr_rich_text_create(VkrAllocator *allocator, String8 content,
-                                 const VkrTextStyle *base_style);
-
-/**
- * @brief Adds a span to a rich text.
- * @param rt The rich text to add the span to.
- * @param start The start byte offset.
- * @param end The end byte offset.
- * @param style The text style.
- */
-void vkr_rich_text_add_span(VkrRichText *rt, uint64_t start, uint64_t end,
-                            const VkrTextStyle *style);
-
-/**
- * @brief Clears the spans from a rich text.
- * @param rt The rich text to clear the spans from.
- */
-void vkr_rich_text_clear_spans(VkrRichText *rt);
-
-/**
- * @brief Destroys a rich text.
- * @param rt The rich text to destroy.
- */
-void vkr_rich_text_destroy(VkrRichText *rt);
 
 /////////////////////
 // Convenience

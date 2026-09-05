@@ -361,7 +361,6 @@ typedef struct InputState {
   KeysState current_keys;
   ButtonsState previous_buttons;
   ButtonsState current_buttons;
-  GamepadAxes previous_axes;
   GamepadAxes current_axes;
   uint32_t characters[VKR_INPUT_CHARACTER_CAPACITY];
   uint32_t character_count;
@@ -626,16 +625,6 @@ void input_process_thumbsticks(InputState *input_state, float left_x,
 void input_get_left_stick(InputState *input_state, float *x, float *y);
 
 /**
- * @brief Retrieves the previous left thumbstick state.
- * @param input_state Pointer to the `InputState` to query.
- * @param[out] x Pointer to store the previous X-coordinate of the left
- * thumbstick.
- * @param[out] y Pointer to store the previous Y-coordinate of the left
- * thumbstick.
- */
-void input_get_previous_left_stick(InputState *input_state, float *x, float *y);
-
-/**
  * @brief Retrieves the current right thumbstick state.
  * @param input_state Pointer to the `InputState` to query.
  * @param[out] x Pointer to store the current X-coordinate of the right
@@ -644,14 +633,3 @@ void input_get_previous_left_stick(InputState *input_state, float *x, float *y);
  * thumbstick.
  */
 void input_get_right_stick(InputState *input_state, float *x, float *y);
-
-/**
- * @brief Retrieves the previous right thumbstick state.
- * @param input_state Pointer to the `InputState` to query.
- * @param[out] x Pointer to store the previous X-coordinate of the right
- * thumbstick.
- * @param[out] y Pointer to store the previous Y-coordinate of the right
- * thumbstick.
- */
-void input_get_previous_right_stick(InputState *input_state, float *x,
-                                    float *y);

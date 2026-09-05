@@ -180,29 +180,6 @@ static void test_texture_transcode_target_policy(void) {
   printf("  test_texture_transcode_target_policy PASSED\n");
 }
 
-static Vec3 test_decode_normal_rg(float red, float green, float blue,
-                                  float strength) {
-  (void)blue;
-  const float x = (red * 2.0f - 1.0f) * strength;
-  const float y = -(green * 2.0f - 1.0f) * strength;
-  return vec3_new(x, y, sqrtf(fmaxf(0.0f, 1.0f - x * x - y * y)));
-}
-
-static void test_normal_rg_decode_contract(void) {
-  printf("  Running test_normal_rg_decode_contract...\n");
-
-  const Vec3 missing_blue = test_decode_normal_rg(0.5f, 0.5f, 0.0f, 1.0f);
-  const Vec3 stored_blue = test_decode_normal_rg(0.5f, 0.5f, 1.0f, 1.0f);
-  assert(vec3_equal(missing_blue, stored_blue, 0.000001f));
-  assert(vec3_equal(missing_blue, vec3_new(0.0f, 0.0f, 1.0f), 0.000001f));
-
-  const Vec3 tilted = test_decode_normal_rg(0.75f, 0.25f, 0.0f, 1.0f);
-  assert(tilted.z > 0.0f);
-  assert(fabsf(vec3_length(tilted) - 1.0f) < 0.000001f);
-
-  printf("  test_normal_rg_decode_contract PASSED\n");
-}
-
 static void test_normal_rg_basis_channel_contract(void) {
   printf("  Running test_normal_rg_basis_channel_contract...\n");
 
@@ -389,7 +366,6 @@ bool32_t run_texture_vkt_tests() {
   test_texture_query_colorspace_policy();
   test_texture_source_only_bypasses_strict_vkt_policy();
   test_texture_transcode_target_policy();
-  test_normal_rg_decode_contract();
   test_normal_rg_basis_channel_contract();
   test_transcode_target_always_transcodable();
   test_persistent_transcode_cache_contract();

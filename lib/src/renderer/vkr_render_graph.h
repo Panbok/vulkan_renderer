@@ -6,17 +6,6 @@
 #include "memory/vkr_allocator.h"
 #include "renderer/vkr_renderer.h"
 
-struct VkrRgPassContext;
-
-/**
- * @brief Pass execution callback invoked once per scheduled pass by a selected
- * renderer implementation.
- * @param ctx Pass context; valid only for the duration of the call
- * @param user_data User data passed when the pass was registered or set
- */
-typedef void (*VkrRgPassExecuteFn)(struct VkrRgPassContext *ctx,
-                                   void *user_data);
-
 // Forward declarations for stateless render packet access.
 typedef struct VkrRenderPacket VkrRenderPacket;
 typedef struct VkrFrameInfo VkrFrameInfo;
@@ -406,30 +395,9 @@ typedef struct VkrRgPassDesc {
   Vector_VkrRgBufferUse buffer_writes; /**< Buffer write uses */
 
   VkrRgComputeDispatchDesc dispatch; /**< Optional compute dispatch */
-  uint32_t executor_id;       /**< Backend-local typed executor identity */
-  VkrRgPassExecuteFn execute; /**< Execute callback */
-  void *user_data;            /**< User data passed to execute */
+  uint32_t executor_id;  /**< Backend-local typed executor identity */
+  uint32_t repeat_index; /**< Zero-based repetition in the authored pass. */
 } VkrRgPassDesc;
-
-// =============================================================================
-// Pass Context
-// =============================================================================
-
-/**
- * @brief Read-only context passed to VkrRgPassExecuteFn.
- * Valid only during the execute callback. image_index identifies the
- * implementation-owned present image for per-image resources.
- */
-typedef struct VkrRgPassContext {
-  struct VkrRenderGraph *graph;   /**< Render graph owning this pass */
-  const VkrRgPassDesc *pass_desc; /**< Pass descriptor */
-  uint32_t pass_index;            /**< Pass index in the graph */
-
-  uint32_t frame_index; /**< Current frame index */
-  uint32_t image_index; /**< Swapchain image index for per-image resources */
-  float64_t delta_time; /**< Frame delta time */
-
-} VkrRgPassContext;
 
 /**
  * @brief Finds an image use by its authored descriptor binding and array slot.
@@ -458,87 +426,6 @@ void vkr_rg_set_packet(struct VkrRenderGraph *graph,
                        const VkrRenderPacket *packet);
 
 /**
- * @brief Gets the world pass payload from the current render packet.
- * @param ctx Pass context
- * @return World pass payload, or NULL if not set or not applicable
- */
-const VkrWorldPassPayload *
-vkr_rg_pass_get_world_payload(const VkrRgPassContext *ctx);
-
-/**
- * @brief Gets the shadow pass payload from the current render packet.
- * @param ctx Pass context
- * @return Shadow pass payload, or NULL if not set or not applicable
- */
-const VkrShadowPassPayload *
-vkr_rg_pass_get_shadow_payload(const VkrRgPassContext *ctx);
-
-/**
- * @brief Gets the skybox pass payload from the current render packet.
- * @param ctx Pass context
- * @return Skybox pass payload, or NULL if not set or not applicable
- */
-const VkrSkyboxPassPayload *
-vkr_rg_pass_get_skybox_payload(const VkrRgPassContext *ctx);
-
-/**
- * @brief Gets the UI pass payload from the current render packet.
- * @param ctx Pass context
- * @return UI pass payload, or NULL if not set or not applicable
- */
-const VkrUiPassPayload *vkr_rg_pass_get_ui_payload(const VkrRgPassContext *ctx);
-
-/**
- * @brief Gets the editor pass payload from the current render packet.
- * @param ctx Pass context
- * @return Editor pass payload, or NULL if not set or not applicable
- */
-const VkrEditorPassPayload *
-vkr_rg_pass_get_editor_payload(const VkrRgPassContext *ctx);
-
-/**
- * @brief Gets the picking pass payload from the current render packet.
- * @param ctx Pass context
- * @return Picking pass payload, or NULL if not set or not applicable
- */
-const VkrPickingPassPayload *
-vkr_rg_pass_get_picking_payload(const VkrRgPassContext *ctx);
-
-/**
- * @brief Gets the render packet attached for this execute.
- * @param ctx Pass context
- * @return Render packet, or NULL if none was set
- */
-const VkrRenderPacket *vkr_rg_pass_get_packet(const VkrRgPassContext *ctx);
-
-/**
- * @brief Gets frame info from the current render packet.
- * @param ctx Pass context
- * @return Frame info
- */
-const VkrFrameInfo *vkr_rg_pass_get_frame_info(const VkrRgPassContext *ctx);
-
-/**
- * @brief Gets frame globals from the current render packet.
- * @param ctx Pass context
- * @return Frame globals
- */
-const VkrFrameGlobals *
-vkr_rg_pass_get_frame_globals(const VkrRgPassContext *ctx);
-
-/**
- * @brief Resolves a render-graph image to a backend texture for a specific
- * swapchain image index.
- * @param graph Render graph
- * @param image Image handle
- * @param image_index Swapchain image index
- * @return Backend texture handle; invalid if image handle is invalid
- */
-VkrTextureOpaqueHandle
-vkr_rg_get_image_texture(const struct VkrRenderGraph *graph,
-                         VkrRgImageHandle image, uint32_t image_index);
-
-/**
  * @brief Finds an image handle by name in the graph.
  * @param graph Render graph
  * @param name Image name
@@ -548,48 +435,12 @@ VkrRgImageHandle vkr_rg_find_image(const struct VkrRenderGraph *graph,
                                    String8 name);
 
 /**
- * @brief Resolves a render-graph buffer to a backend buffer handle for a
- * specific swapchain image index.
- * @param graph Render graph
- * @param buffer Buffer handle
- * @param image_index Swapchain image index
- * @return Backend buffer handle; invalid if buffer handle is invalid
- */
-VkrBufferHandle vkr_rg_get_buffer_handle(const struct VkrRenderGraph *graph,
-                                         VkrRgBufferHandle buffer,
-                                         uint32_t image_index);
-
-/**
- * @brief Resolves a render-graph image for the current pass context (uses
- * ctx->image_index).
- * @param ctx Pass context
- * @param image Image handle
- * @return Backend texture handle
- */
-VkrTextureOpaqueHandle
-vkr_rg_pass_get_image_texture(const VkrRgPassContext *ctx,
-                              VkrRgImageHandle image);
-
-/**
- * @brief Resolves a render-graph buffer for the current pass context (uses
- * ctx->image_index).
- * @param ctx Pass context
- * @param buffer Buffer handle
- * @return Backend buffer handle
- */
-VkrBufferHandle vkr_rg_pass_get_buffer_handle(const VkrRgPassContext *ctx,
-                                              VkrRgBufferHandle buffer);
-
-/**
  * @brief Named typed pass executor resolved once when a JSON graph is loaded.
- * user_data is passed to execute; ownership stays with the caller.
  */
 typedef struct VkrRgPassExecutor {
   String8 name;       /**< Executor name (used for lookup) */
   uint32_t id;        /**< Non-zero backend-local identity */
   VkrRgPassType type; /**< Only this pass type may select the executor */
-  VkrRgPassExecuteFn execute; /**< Execute callback */
-  void *user_data;            /**< User data passed to execute */
 } VkrRgPassExecutor;
 
 Vector(VkrRgPassExecutor);
@@ -610,8 +461,8 @@ typedef struct VkrRgExecutorRegistry {
  * @param allocator Allocator; must remain valid until destroy
  * @return true on success, false on allocation failure
  */
-bool8_t vkr_rg_executor_registry_init(VkrRgExecutorRegistry *reg,
-                                      VkrAllocator *allocator);
+VKR_MUST_USE bool8_t vkr_rg_executor_registry_init(VkrRgExecutorRegistry *reg,
+                                                   VkrAllocator *allocator);
 
 /**
  * @brief Destroys the executor registry and frees all entries.
@@ -625,8 +476,8 @@ void vkr_rg_executor_registry_destroy(VkrRgExecutorRegistry *reg);
  * @param entry Executor to register; ids and names must both be unique
  * @return true on success, false on allocation failure
  */
-bool8_t vkr_rg_executor_registry_register(VkrRgExecutorRegistry *reg,
-                                          const VkrRgPassExecutor *entry);
+VKR_MUST_USE bool8_t vkr_rg_executor_registry_register(
+    VkrRgExecutorRegistry *reg, const VkrRgPassExecutor *entry);
 
 /**
  * @brief Finds an executor by name.
@@ -645,8 +496,9 @@ vkr_rg_executor_registry_find(const VkrRgExecutorRegistry *reg, String8 name);
 typedef struct VkrRenderGraph VkrRenderGraph;
 
 /**
- * @brief Builder for a single pass; valid only until the next vkr_rg_add_pass
- * or vkr_rg_compile. Do not hold across begin_frame/end_frame.
+ * @brief Builder for a single pass; a NULL graph reports creation failure;
+ * valid only until the next vkr_rg_add_pass or vkr_rg_compile. Do not hold
+ * across begin_frame/end_frame.
  */
 typedef struct VkrRgPassBuilder {
   VkrRenderGraph *graph; /**< Render graph owning the pass */
@@ -756,44 +608,25 @@ typedef struct VkrRenderGraphResourceStats {
 } VkrRenderGraphResourceStats;
 
 /**
- * @brief Per-pass timing from the last execute.
- * name is a view into graph state; valid until next vkr_rg_begin_frame or graph
- * destroy. gpu_ms/gpu_valid reflect the last completed frame if GPU timing is
- * supported.
- */
-typedef struct VkrRgPassTiming {
-  String8 name;     /**< Pass name */
-  float64_t cpu_ms; /**< CPU time in milliseconds */
-  float64_t gpu_ms; /**< GPU time in milliseconds (if gpu_valid) */
-  uint64_t gpu_source_frame_index; /**< CPU frame that recorded this sample. */
-  uint64_t gpu_source_submit_serial; /**< Submission that owns this sample. */
-  bool8_t culled;                    /**< True if pass was culled */
-  bool8_t disabled;                  /**< True if pass was disabled */
-  bool8_t gpu_valid;                 /**< True if gpu_ms is valid */
-} VkrRgPassTiming;
-
-Vector(VkrRgPassTiming);
-
-/**
  * @brief Creates a new render graph.
  * @param allocator Allocator for all graph-owned data; must outlive the graph
  * @return New graph, or NULL on allocation failure
  */
-VkrRenderGraph *vkr_rg_create(VkrAllocator *allocator);
+VKR_MUST_USE VkrRenderGraph *vkr_rg_create(VkrAllocator *allocator);
 
 /**
  * @brief Assigns a scoped allocator for frame-authored pass data.
  *
  * Persistent resources and backend caches remain on the allocator passed to
  * vkr_rg_create. The frame allocator is reset by the next vkr_rg_begin_frame,
- * after timing/name views from the preceding frame cease to be valid.
+ * after pass/name views from the preceding frame cease to be valid.
  *
  * @param graph Graph with no authored passes
  * @param allocator Scoped allocator that must outlive the graph
  * @return true on success, false if arguments or allocator are invalid
  */
-bool8_t vkr_rg_set_frame_allocator(VkrRenderGraph *graph,
-                                   VkrAllocator *allocator);
+VKR_MUST_USE bool8_t vkr_rg_set_frame_allocator(VkrRenderGraph *graph,
+                                                VkrAllocator *allocator);
 
 /**
  * @brief Destroys the graph and all owned resources.
@@ -803,12 +636,13 @@ void vkr_rg_destroy(VkrRenderGraph *graph);
 
 /**
  * @brief Starts a new frame; updates frame info and may resize/recreate
- * transient resources. Must be paired with vkr_rg_end_frame.
+ * transient resources. A successful begin must be paired with vkr_rg_end_frame.
+ * Returns false if the frame allocation scope cannot be created.
  * @param graph Render graph
  * @param frame Frame info to copy
  */
-void vkr_rg_begin_frame(VkrRenderGraph *graph,
-                        const VkrRenderGraphFrameInfo *frame);
+VKR_MUST_USE bool8_t vkr_rg_begin_frame(VkrRenderGraph *graph,
+                                        const VkrRenderGraphFrameInfo *frame);
 
 /**
  * @brief Ends the frame; releases frame-specific state. Call after execute for
@@ -821,39 +655,10 @@ void vkr_rg_end_frame(VkrRenderGraph *graph);
  * @brief Gets the frame info last passed to begin_frame.
  * @param graph Render graph
  * @param out_frame Output frame info
- * @return true on success, false if no frame is active
+ * @return true on success, false for NULL graph or output
  */
 bool8_t vkr_rg_get_frame_info(const VkrRenderGraph *graph,
                               VkrRenderGraphFrameInfo *out_frame);
-
-/**
- * @brief Gets resource lifetime statistics (graph-owned only; imports
- * excluded).
- * @param graph Render graph
- * @param out_stats Output statistics
- * @return true on success, false if graph is NULL or stats unavailable
- */
-bool8_t vkr_rg_get_resource_stats(const VkrRenderGraph *graph,
-                                  VkrRenderGraphResourceStats *out_stats);
-
-/**
- * @brief Gets pass timings from the last execute.
- * @param graph Render graph
- * @param out_timings Receives pointer to timing array; valid until next
- * begin_frame or destroy
- * @param out_count Receives number of timings
- * @return true if timings are available, false otherwise
- */
-bool8_t vkr_rg_get_pass_timings(const VkrRenderGraph *graph,
-                                const VkrRgPassTiming **out_timings,
-                                uint32_t *out_count);
-
-/**
- * @brief Logs current resource stats under the given label.
- * @param graph Render graph
- * @param label Label for the log output (e.g. for debugging)
- */
-void vkr_rg_log_resource_stats(const VkrRenderGraph *graph, const char *label);
 
 /**
  * @brief Declares a new graph-owned image.
@@ -862,8 +667,9 @@ void vkr_rg_log_resource_stats(const VkrRenderGraph *graph, const char *label);
  * @param desc Image description
  * @return Image handle, or invalid handle on failure
  */
-VkrRgImageHandle vkr_rg_create_image(VkrRenderGraph *graph, String8 name,
-                                     const VkrRgImageDesc *desc);
+VKR_MUST_USE VkrRgImageHandle vkr_rg_create_image(VkrRenderGraph *graph,
+                                                  String8 name,
+                                                  const VkrRgImageDesc *desc);
 
 /**
  * @brief Declares an external image (EXTERNAL flag). handle/layout/access
@@ -876,11 +682,10 @@ VkrRgImageHandle vkr_rg_create_image(VkrRenderGraph *graph, String8 name,
  * @param desc Image description (for dimensions/format when needed)
  * @return Image handle
  */
-VkrRgImageHandle vkr_rg_import_image(VkrRenderGraph *graph, String8 name,
-                                     VkrTextureOpaqueHandle handle,
-                                     VkrRgImageAccessFlags current_access,
-                                     VkrTextureLayout current_layout,
-                                     const VkrRgImageDesc *desc);
+VKR_MUST_USE VkrRgImageHandle vkr_rg_import_image(
+    VkrRenderGraph *graph, String8 name, VkrTextureOpaqueHandle handle,
+    VkrRgImageAccessFlags current_access, VkrTextureLayout current_layout,
+    const VkrRgImageDesc *desc);
 
 /**
  * @brief Adds a usage capability to an imported image for the current graph.
@@ -900,8 +705,8 @@ bool8_t vkr_rg_imported_image_add_usage(VkrRenderGraph *graph,
  * @param desc Buffer description
  * @return Buffer handle, or invalid handle on failure
  */
-VkrRgBufferHandle vkr_rg_create_buffer(VkrRenderGraph *graph, String8 name,
-                                       const VkrRgBufferDesc *desc);
+VKR_MUST_USE VkrRgBufferHandle vkr_rg_create_buffer(
+    VkrRenderGraph *graph, String8 name, const VkrRgBufferDesc *desc);
 
 /**
  * @brief Declares an external buffer (EXTERNAL). current_access is used for
@@ -912,9 +717,9 @@ VkrRgBufferHandle vkr_rg_create_buffer(VkrRenderGraph *graph, String8 name,
  * @param current_access Current access flags
  * @return Buffer handle
  */
-VkrRgBufferHandle vkr_rg_import_buffer(VkrRenderGraph *graph, String8 name,
-                                       VkrBufferHandle handle,
-                                       VkrRgBufferAccessFlags current_access);
+VKR_MUST_USE VkrRgBufferHandle vkr_rg_import_buffer(
+    VkrRenderGraph *graph, String8 name, VkrBufferHandle handle,
+    VkrRgBufferAccessFlags current_access);
 
 /** Adds a capability present on an imported buffer's backing allocation. */
 bool8_t vkr_rg_imported_buffer_add_usage(VkrRenderGraph *graph,
@@ -929,17 +734,8 @@ bool8_t vkr_rg_imported_buffer_add_usage(VkrRenderGraph *graph,
  * @param name Pass name
  * @return Pass builder
  */
-VkrRgPassBuilder vkr_rg_add_pass(VkrRenderGraph *graph, VkrRgPassType type,
-                                 String8 name);
-
-/**
- * @brief Sets the execute callback and user_data for the pass.
- * @param pb Pass builder
- * @param execute Execute callback
- * @param user_data User data passed to execute
- */
-void vkr_rg_pass_set_execute(VkrRgPassBuilder *pb, VkrRgPassExecuteFn execute,
-                             void *user_data);
+VKR_MUST_USE VkrRgPassBuilder vkr_rg_add_pass(VkrRenderGraph *graph,
+                                              VkrRgPassType type, String8 name);
 
 /**
  * @brief Sets pass flags.
@@ -956,15 +752,19 @@ void vkr_rg_pass_set_flags(VkrRgPassBuilder *pb, VkrRgPassFlags flags);
  */
 void vkr_rg_pass_set_domain(VkrRgPassBuilder *pb, VkrPipelineDomain domain);
 
+// Allocation-bearing builder operations return false without publishing the
+// requested attachment/use/export. Successful earlier operations remain owned
+// by the graph and are released by the next frame or graph destruction.
+
 /**
  * @brief Adds one color attachment; order determines layout index.
  * @param pb Pass builder
  * @param image Image handle
  * @param desc Attachment description
  */
-void vkr_rg_pass_add_color_attachment(VkrRgPassBuilder *pb,
-                                      VkrRgImageHandle image,
-                                      const VkrRgAttachmentDesc *desc);
+VKR_MUST_USE bool8_t
+vkr_rg_pass_add_color_attachment(VkrRgPassBuilder *pb, VkrRgImageHandle image,
+                                 const VkrRgAttachmentDesc *desc);
 
 /**
  * @brief Sets the single depth attachment.
@@ -973,10 +773,9 @@ void vkr_rg_pass_add_color_attachment(VkrRgPassBuilder *pb,
  * @param desc Attachment description
  * @param read_only If true, depth is read-only (e.g. depth prepass)
  */
-void vkr_rg_pass_set_depth_attachment(VkrRgPassBuilder *pb,
-                                      VkrRgImageHandle image,
-                                      const VkrRgAttachmentDesc *desc,
-                                      bool8_t read_only);
+VKR_MUST_USE bool8_t vkr_rg_pass_set_depth_attachment(
+    VkrRgPassBuilder *pb, VkrRgImageHandle image,
+    const VkrRgAttachmentDesc *desc, bool8_t read_only);
 
 /**
  * @brief Declares a read use of an image.
@@ -986,19 +785,18 @@ void vkr_rg_pass_set_depth_attachment(VkrRgPassBuilder *pb,
  * @param binding Descriptor binding index
  * @param array_index Descriptor array index
  */
-void vkr_rg_pass_read_image(VkrRgPassBuilder *pb, VkrRgImageHandle image,
-                            VkrRgImageAccessFlags access, uint32_t binding,
-                            uint32_t array_index);
-void vkr_rg_pass_read_image_at_stages(VkrRgPassBuilder *pb,
-                                      VkrRgImageHandle image,
-                                      VkrRgImageAccessFlags access,
-                                      VkrGpuStageFlags stages, uint32_t binding,
-                                      uint32_t array_index);
-void vkr_rg_pass_read_image_slice(VkrRgPassBuilder *pb, VkrRgImageHandle image,
-                                  VkrRgImageAccessFlags access,
-                                  uint32_t binding, uint32_t array_index,
-                                  VkrRgImageSlice slice);
-void vkr_rg_pass_read_image_slice_at_stages(
+VKR_MUST_USE bool8_t vkr_rg_pass_read_image(VkrRgPassBuilder *pb,
+                                            VkrRgImageHandle image,
+                                            VkrRgImageAccessFlags access,
+                                            uint32_t binding,
+                                            uint32_t array_index);
+VKR_MUST_USE bool8_t vkr_rg_pass_read_image_at_stages(
+    VkrRgPassBuilder *pb, VkrRgImageHandle image, VkrRgImageAccessFlags access,
+    VkrGpuStageFlags stages, uint32_t binding, uint32_t array_index);
+VKR_MUST_USE bool8_t vkr_rg_pass_read_image_slice(
+    VkrRgPassBuilder *pb, VkrRgImageHandle image, VkrRgImageAccessFlags access,
+    uint32_t binding, uint32_t array_index, VkrRgImageSlice slice);
+VKR_MUST_USE bool8_t vkr_rg_pass_read_image_slice_at_stages(
     VkrRgPassBuilder *pb, VkrRgImageHandle image, VkrRgImageAccessFlags access,
     VkrGpuStageFlags stages, uint32_t binding, uint32_t array_index,
     VkrRgImageSlice slice);
@@ -1011,14 +809,14 @@ void vkr_rg_pass_read_image_slice_at_stages(
  * @param binding Descriptor binding index
  * @param array_index Descriptor array index
  */
-void vkr_rg_pass_write_image(VkrRgPassBuilder *pb, VkrRgImageHandle image,
-                             VkrRgImageAccessFlags access, uint32_t binding,
-                             uint32_t array_index);
-void vkr_rg_pass_write_image_at_stages(VkrRgPassBuilder *pb,
-                                       VkrRgImageHandle image,
-                                       VkrRgImageAccessFlags access,
-                                       VkrGpuStageFlags stages,
-                                       uint32_t binding, uint32_t array_index);
+VKR_MUST_USE bool8_t vkr_rg_pass_write_image(VkrRgPassBuilder *pb,
+                                             VkrRgImageHandle image,
+                                             VkrRgImageAccessFlags access,
+                                             uint32_t binding,
+                                             uint32_t array_index);
+VKR_MUST_USE bool8_t vkr_rg_pass_write_image_at_stages(
+    VkrRgPassBuilder *pb, VkrRgImageHandle image, VkrRgImageAccessFlags access,
+    VkrGpuStageFlags stages, uint32_t binding, uint32_t array_index);
 
 /**
  * @brief Declares a read use of a buffer.
@@ -1028,20 +826,21 @@ void vkr_rg_pass_write_image_at_stages(VkrRgPassBuilder *pb,
  * @param binding Descriptor binding index
  * @param array_index Descriptor array index
  */
-void vkr_rg_pass_read_buffer(VkrRgPassBuilder *pb, VkrRgBufferHandle buffer,
-                             VkrRgBufferAccessFlags access, uint32_t binding,
-                             uint32_t array_index);
+VKR_MUST_USE bool8_t vkr_rg_pass_read_buffer(VkrRgPassBuilder *pb,
+                                             VkrRgBufferHandle buffer,
+                                             VkrRgBufferAccessFlags access,
+                                             uint32_t binding,
+                                             uint32_t array_index);
 
 /** @brief Writes an exact image mip/layer range. */
-void vkr_rg_pass_write_image_slice_at_stages(
+VKR_MUST_USE bool8_t vkr_rg_pass_write_image_slice_at_stages(
     VkrRgPassBuilder *pb, VkrRgImageHandle image, VkrRgImageAccessFlags access,
     VkrGpuStageFlags stages, uint32_t binding, uint32_t array_index,
     VkrRgImageSlice slice);
-void vkr_rg_pass_read_buffer_at_stages(VkrRgPassBuilder *pb,
-                                       VkrRgBufferHandle buffer,
-                                       VkrRgBufferAccessFlags access,
-                                       VkrGpuStageFlags stages,
-                                       uint32_t binding, uint32_t array_index);
+VKR_MUST_USE bool8_t vkr_rg_pass_read_buffer_at_stages(
+    VkrRgPassBuilder *pb, VkrRgBufferHandle buffer,
+    VkrRgBufferAccessFlags access, VkrGpuStageFlags stages, uint32_t binding,
+    uint32_t array_index);
 
 /**
  * @brief Declares a write use of a buffer.
@@ -1051,32 +850,36 @@ void vkr_rg_pass_read_buffer_at_stages(VkrRgPassBuilder *pb,
  * @param binding Descriptor binding index
  * @param array_index Descriptor array index
  */
-void vkr_rg_pass_write_buffer(VkrRgPassBuilder *pb, VkrRgBufferHandle buffer,
-                              VkrRgBufferAccessFlags access, uint32_t binding,
-                              uint32_t array_index);
-void vkr_rg_pass_write_buffer_at_stages(VkrRgPassBuilder *pb,
-                                        VkrRgBufferHandle buffer,
-                                        VkrRgBufferAccessFlags access,
-                                        VkrGpuStageFlags stages,
-                                        uint32_t binding, uint32_t array_index);
+VKR_MUST_USE bool8_t vkr_rg_pass_write_buffer(VkrRgPassBuilder *pb,
+                                              VkrRgBufferHandle buffer,
+                                              VkrRgBufferAccessFlags access,
+                                              uint32_t binding,
+                                              uint32_t array_index);
+VKR_MUST_USE bool8_t vkr_rg_pass_write_buffer_at_stages(
+    VkrRgPassBuilder *pb, VkrRgBufferHandle buffer,
+    VkrRgBufferAccessFlags access, VkrGpuStageFlags stages, uint32_t binding,
+    uint32_t array_index);
 
 /**
  * @brief Marks the image as the present target for the frame (swapchain).
  * @param graph Render graph
  * @param image Image handle (typically swapchain)
  */
-void vkr_rg_set_present_image(VkrRenderGraph *graph, VkrRgImageHandle image);
+VKR_MUST_USE bool8_t vkr_rg_set_present_image(VkrRenderGraph *graph,
+                                              VkrRgImageHandle image);
 
 /**
  * @brief Marks image as exported (retain final layout/access for external use).
  * @param graph Render graph
  * @param image Image handle
  */
-void vkr_rg_export_image(VkrRenderGraph *graph, VkrRgImageHandle image);
+VKR_MUST_USE bool8_t vkr_rg_export_image(VkrRenderGraph *graph,
+                                         VkrRgImageHandle image);
 
 /**
  * @brief Marks buffer as exported (retain final access for external use).
  * @param graph Render graph
  * @param buffer Buffer handle
  */
-void vkr_rg_export_buffer(VkrRenderGraph *graph, VkrRgBufferHandle buffer);
+VKR_MUST_USE bool8_t vkr_rg_export_buffer(VkrRenderGraph *graph,
+                                          VkrRgBufferHandle buffer);

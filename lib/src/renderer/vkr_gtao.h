@@ -101,16 +101,3 @@ VkrGtaoGpuParams vkr_gtao_gpu_params(const VkrGtaoConfig *config,
                                      Mat4 projection, uint32_t width,
                                      uint32_t height, uint32_t frame_index,
                                      bool8_t temporal_enabled);
-
-/** Positive view-space distance for the renderer's right-handed [0,1] depth. */
-float32_t vkr_gtao_linearize_depth(const VkrGtaoGpuParams *params,
-                                   float32_t device_depth);
-
-/** CPU reference for the canonical top-left screen-to-view reconstruction. */
-Vec3 vkr_gtao_view_position(const VkrGtaoGpuParams *params, float32_t screen_x,
-                            float32_t screen_y, float32_t view_depth);
-
-/** XeGTAO farthest-depth weighted reduction used by every depth mip. */
-float32_t vkr_gtao_depth_mip_filter(const VkrGtaoGpuParams *params,
-                                    float32_t d0, float32_t d1, float32_t d2,
-                                    float32_t d3);

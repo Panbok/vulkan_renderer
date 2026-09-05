@@ -43,34 +43,6 @@ typedef struct VkrTransform {
 VkrTransform vkr_transform_new(Vec3 position, VkrQuat rotation, Vec3 scale);
 
 /**
- * @brief Creates a new transformation from a position
- * @param position The position of the object
- * @return The new transformation
- **/
-VkrTransform vkr_transform_from_position(Vec3 position);
-
-/**
- * @brief Creates a new transformation from a rotation
- * @param rotation The rotation of the object
- * @return The new transformation
- **/
-VkrTransform vkr_transform_from_rotation(VkrQuat rotation);
-
-/**
- * @brief Creates a new transformation from a scale
- * @param scale The scale of the object
- * @return The new transformation
- **/
-VkrTransform vkr_transform_from_scale(Vec3 scale);
-/**
- * @brief Creates a new transformation from a position and rotation
- * @param position The position of the object
- * @param rotation The rotation of the object
- * @return The new transformation
- **/
-VkrTransform vkr_transform_from_position_rotation(Vec3 position,
-                                                  VkrQuat rotation);
-/**
  * @brief Creates a new transformation from a position and scale and rotation
  * @param position The position of the object
  * @param scale The scale of the object
@@ -109,15 +81,6 @@ void vkr_transform_rotate(VkrTransform *transform, VkrQuat rotation);
 void vkr_transform_scale(VkrTransform *transform, Vec3 scale);
 
 /**
- * @brief Translates and rotates the transformation
- * @param transform The transformation
- * @param translation The translation
- * @param rotation Delta rotation applied after the translation (quaternion)
- **/
-void vkr_transform_translate_rotate(VkrTransform *transform, Vec3 translation,
-                                    VkrQuat rotation);
-
-/**
  * @brief Sets the position of the transformation
  * @param transform The transformation
  * @param position The position
@@ -137,32 +100,6 @@ void vkr_transform_set_rotation(VkrTransform *transform, VkrQuat rotation);
  * @param scale The scale
  **/
 void vkr_transform_set_scale(VkrTransform *transform, Vec3 scale);
-
-/**
- * @brief Sets the position and rotation of the transformation
- * @param transform The transformation
- * @param position The position
- * @param rotation The rotation
- **/
-void vkr_transform_set_position_rotation(VkrTransform *transform, Vec3 position,
-                                         VkrQuat rotation);
-
-/**
- * @brief Sets the position, rotation and scale of the transformation
- * @param transform The transformation
- * @param position The position
- * @param rotation The rotation
- * @param scale The scale
- **/
-void vkr_transform_set_transform(VkrTransform *transform, Vec3 position,
-                                 VkrQuat rotation, Vec3 scale);
-
-/**
- * @brief Sets the parent of the transformation
- * @param transform The transformation
- * @param parent The parent
- **/
-void vkr_transform_set_parent(VkrTransform *transform, VkrTransform *parent);
 
 /**
  * @brief Gets the world transformation

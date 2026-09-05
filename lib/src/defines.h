@@ -11,6 +11,12 @@
 #define ASSERT_LOG 1
 #endif
 
+#if defined(__clang__) || defined(__GNUC__)
+#define VKR_MUST_USE __attribute__((warn_unused_result))
+#else
+#define VKR_MUST_USE
+#endif
+
 #define AlignPow2(x, b) (((x) + (b) - 1) & (~((b) - 1)))
 #define AlignPow2Down(x, b)                                                    \
   ((x) & (~((b) - 1))) // Align x down to multiple of b (b must be power of 2)

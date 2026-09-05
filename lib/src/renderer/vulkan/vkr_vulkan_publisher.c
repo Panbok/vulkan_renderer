@@ -1130,53 +1130,6 @@ vkr_internal bool8_t vkr_vk_replace_material_gpu_row(
                            sizeof(row->transmission));
 }
 
-vkr_internal bool8_t vkr_vk_publish_material_row(VkrVulkanRenderer *renderer,
-                                                 uint32_t texture_index,
-                                                 uint32_t sampler_index,
-                                                 uint32_t material_id,
-                                                 VkrGpuSlotHandle *out_handle) {
-  const VkrPbrProperties pbr = {
-      .roughness = 1.0f,
-      .normal_scale = 1.0f,
-      .occlusion_strength = 1.0f,
-      .dielectric_specular = {0.04f, 0.04f, 0.04f},
-      .ior = 1.5f,
-      .attenuation_color = {1.0f, 1.0f, 1.0f},
-  };
-  const VkrPacketMaterialConstants material =
-      vkr_packet_derive_material_constants(&pbr, 0.5f,
-                                           VKR_MATERIAL_ALPHA_OPAQUE);
-  const VkrVulkanMaterialPublishedRow row = {
-      .material =
-          {
-              .tint = {1.0f, 1.0f, 1.0f, 1.0f},
-              .base_color_texture = texture_index,
-              .normal_texture = texture_index,
-              .orm_texture = texture_index,
-              .emissive_texture = texture_index,
-              .base_color_sampler = sampler_index,
-              .normal_sampler = sampler_index,
-              .orm_sampler = sampler_index,
-              .emissive_sampler = sampler_index,
-              .material_id = material_id,
-              .alpha_mode = material.alpha_mode,
-              .material_emissive = material.emissive,
-              .material_dielectric_specular = material.dielectric_specular,
-              .material_surface = material.surface,
-              .material_alpha = material.alpha,
-              .material_attenuation_color = material.attenuation_color,
-          },
-      .transmission =
-          {
-              .transmission_texture = texture_index,
-              .thickness_texture = texture_index,
-              .transmission_sampler = sampler_index,
-              .thickness_sampler = sampler_index,
-          },
-  };
-  return vkr_vk_publish_material_gpu_row(renderer, &row, out_handle);
-}
-
 vkr_internal VkSamplerAddressMode
 vkr_vk_sampler_address_mode(VkrTextureRepeatMode mode) {
   switch (mode) {

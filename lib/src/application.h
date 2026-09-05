@@ -378,6 +378,13 @@ bool8_t application_create(Application *application,
   assert(config->width > 0 && "Application width is less than 0");
   assert(config->height > 0 && "Application height is less than 0");
 
+  MemZero(application, sizeof(*application));
+  bool8_t log_ready = false_v;
+  bool8_t events_ready = false_v;
+  bool8_t window_ready = false_v;
+  bool8_t jobs_ready = false_v;
+  bool8_t renderer_ready = false_v;
+  bool8_t gamepad_ready = false_v;
   if (!vkr_platform_init()) {
     fprintf(stderr, "Failed to initialize platform\n");
     return false_v;
@@ -400,34 +407,42 @@ bool8_t application_create(Application *application,
   application->app_arena = arena_create(
       config->app_arena_size, config->app_arena_size, app_arena_flags);
   if (!application->app_arena) {
-    log_fatal("Failed to create app_arena!");
-    return false_v;
+    fprintf(stderr, "Failed to create app arena\n");
+    goto cleanup;
   }
 
   application->app_allocator = (VkrAllocator){.ctx = application->app_arena};
   if (!vkr_allocator_arena(&application->app_allocator)) {
-    log_fatal("Failed to initialize app allocator!");
-    return false_v;
+    fprintf(stderr, "Failed to initialize app allocator\n");
+    goto cleanup;
   }
 
   ArenaFlags log_arena_flags = bitset8_create();
   bitset8_set(&log_arena_flags, ARENA_FLAG_LARGE_PAGES);
   application->log_arena = arena_create(MB(5), MB(5), log_arena_flags);
   if (!application->log_arena) {
-    log_fatal("Failed to create log_arena!");
-    return false_v;
+    fprintf(stderr, "Failed to create log arena\n");
+    goto cleanup;
   }
 
-  log_init(application->log_arena);
+  if (!log_init(application->log_arena)) {
+    fprintf(stderr, "Failed to initialize logging\n");
+    goto cleanup;
+  }
 
+  log_ready = true_v;
   log_debug("Initialized logging");
 
   if (!application_metrics_initialize(application)) {
-    log_fatal("Failed to initialize application metrics");
-    return false_v;
+    log_error("Failed to initialize application metrics");
+    goto cleanup;
   }
 
-  event_manager_create(&application->event_manager);
+  if (!event_manager_create(&application->event_manager)) {
+    log_error("Failed to initialize application events");
+    goto cleanup;
+  }
+  events_ready = true_v;
   const bool8_t windowed =
       config->present_target.kind != VKR_PRESENT_TARGET_OFFSCREEN;
   if (windowed) {
@@ -435,22 +450,24 @@ bool8_t application_create(Application *application,
     if (!vkr_window_create(&application->window, &application->event_manager,
                            config->title, config->x, config->y, config->width,
                            config->height)) {
-      log_fatal("Failed to create application window");
-      return false_v;
+      log_error("Failed to create application window");
+      goto cleanup;
     }
   }
+  window_ready = windowed;
   application->clock = vkr_clock_create();
   if (!vkr_mutex_create(&application->app_allocator, &application->app_mutex)) {
-    log_fatal("Failed to create application mutex!");
-    return false_v;
+    log_error("Failed to create application mutex!");
+    goto cleanup;
   }
 
   VkrJobSystemConfig job_cfg = vkr_job_system_config_default();
   if (!vkr_job_system_init(&job_cfg, &application->job_system)) {
-    log_fatal("Failed to initialize job system");
-    return false_v;
+    log_error("Failed to initialize job system");
+    goto cleanup;
   }
 
+  jobs_ready = true_v;
   VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
   const VkrRendererMetricsProducerConfig *metrics_producers =
       vkr_renderer_metrics_get_producers(&application->renderer_metrics);
@@ -470,18 +487,20 @@ bool8_t application_create(Application *application,
           windowed ? &application->window : NULL, &application->event_manager,
           &application->config->device_requirements, &backend_cfg,
           application->config->target_frame_rate, &renderer_error)) {
-    log_fatal("Failed to create renderer!");
-    return false_v;
+    log_error("Failed to create renderer!");
+    goto cleanup;
   }
+  renderer_ready = true_v;
   if (!vkr_renderer_metrics_register_device_memory(
           &application->renderer_metrics, &application->renderer) ||
       !vkr_metrics_seal(application->metrics)) {
-    log_fatal("Failed to finalize renderer metrics catalog");
-    return false_v;
+    log_error("Failed to finalize renderer metrics catalog");
+    goto cleanup;
   }
 
   if (windowed) {
     vkr_gamepad_init(&application->gamepad, &application->window.input_state);
+    gamepad_ready = true_v;
   }
 
   /* The closure is always recomputed from the config's intent, so a caller
@@ -492,20 +511,20 @@ bool8_t application_create(Application *application,
                                          config->subsystem_plan.requested_mask,
                                          config->subsystem_plan.excluded_mask,
                                          &subsystem_plan, &renderer_error)) {
-    log_fatal("Failed to build the renderer subsystem plan");
-    return false_v;
+    log_error("Failed to build the renderer subsystem plan");
+    goto cleanup;
   }
   if (!vkr_renderer_systems_initialize(&application->renderer,
                                        &application->job_system,
                                        metrics_producers, &subsystem_plan)) {
-    log_fatal("Failed to initialize renderer frontend systems");
-    return false_v;
+    log_error("Failed to initialize renderer frontend systems");
+    goto cleanup;
   }
   if (!vkr_renderer_metrics_prepare_pass_table(
           &application->renderer_metrics, &application->renderer,
           &application->metrics_allocator)) {
-    log_fatal("Failed to prepare renderer metrics pass table");
-    return false_v;
+    log_error("Failed to prepare renderer metrics pass table");
+    goto cleanup;
   }
 
   VkrCameraHandle active_camera =
@@ -515,49 +534,49 @@ bool8_t application_create(Application *application,
       vkr_camera_registry_get_by_handle(&application->renderer.camera_system,
                                         application->renderer.active_camera);
   if (!camera) {
-    log_fatal("Failed to retrieve active camera");
-    return false_v;
+    log_error("Failed to retrieve active camera");
+    goto cleanup;
   }
   vkr_camera_controller_create(
       &application->renderer.camera_controller, camera,
       (float32_t)application->config->target_frame_rate);
 
-  event_manager_subscribe(&application->event_manager, EVENT_TYPE_WINDOW_CLOSE,
-                          application_on_window_event, NULL);
-
-  event_manager_subscribe(&application->event_manager, EVENT_TYPE_WINDOW_INIT,
-                          application_on_window_event, NULL);
-
-  event_manager_subscribe(&application->event_manager, EVENT_TYPE_KEY_PRESS,
-                          application_on_key_event, NULL);
-
-  event_manager_subscribe(&application->event_manager, EVENT_TYPE_KEY_RELEASE,
-                          application_on_key_event, NULL);
-
-  event_manager_subscribe(&application->event_manager, EVENT_TYPE_MOUSE_MOVE,
-                          application_on_mouse_event, NULL);
-
-  event_manager_subscribe(&application->event_manager, EVENT_TYPE_MOUSE_WHEEL,
-                          application_on_mouse_event, NULL);
-
-  event_manager_subscribe(&application->event_manager, EVENT_TYPE_BUTTON_PRESS,
-                          application_on_mouse_event, NULL);
-
-  event_manager_subscribe(&application->event_manager,
-                          EVENT_TYPE_BUTTON_RELEASE, application_on_mouse_event,
-                          NULL);
-
-  event_manager_subscribe(&application->event_manager,
-                          EVENT_TYPE_APPLICATION_INIT, application_on_event,
-                          NULL);
-
-  event_manager_subscribe(&application->event_manager,
-                          EVENT_TYPE_APPLICATION_SHUTDOWN, application_on_event,
-                          NULL);
-
-  event_manager_subscribe(&application->event_manager,
-                          EVENT_TYPE_APPLICATION_RESUME, application_on_event,
-                          NULL);
+  if (!event_manager_subscribe(&application->event_manager,
+                               EVENT_TYPE_WINDOW_CLOSE,
+                               application_on_window_event, NULL) ||
+      !event_manager_subscribe(&application->event_manager,
+                               EVENT_TYPE_WINDOW_INIT,
+                               application_on_window_event, NULL) ||
+      !event_manager_subscribe(&application->event_manager,
+                               EVENT_TYPE_KEY_PRESS, application_on_key_event,
+                               NULL) ||
+      !event_manager_subscribe(&application->event_manager,
+                               EVENT_TYPE_KEY_RELEASE, application_on_key_event,
+                               NULL) ||
+      !event_manager_subscribe(&application->event_manager,
+                               EVENT_TYPE_MOUSE_MOVE,
+                               application_on_mouse_event, NULL) ||
+      !event_manager_subscribe(&application->event_manager,
+                               EVENT_TYPE_MOUSE_WHEEL,
+                               application_on_mouse_event, NULL) ||
+      !event_manager_subscribe(&application->event_manager,
+                               EVENT_TYPE_BUTTON_PRESS,
+                               application_on_mouse_event, NULL) ||
+      !event_manager_subscribe(&application->event_manager,
+                               EVENT_TYPE_BUTTON_RELEASE,
+                               application_on_mouse_event, NULL) ||
+      !event_manager_subscribe(&application->event_manager,
+                               EVENT_TYPE_APPLICATION_INIT,
+                               application_on_event, NULL) ||
+      !event_manager_subscribe(&application->event_manager,
+                               EVENT_TYPE_APPLICATION_SHUTDOWN,
+                               application_on_event, NULL) ||
+      !event_manager_subscribe(&application->event_manager,
+                               EVENT_TYPE_APPLICATION_RESUME,
+                               application_on_event, NULL)) {
+    log_error("Failed to subscribe application event handlers");
+    goto cleanup;
+  }
 
   bitset8_set(&application->app_flags, APPLICATION_FLAG_INITIALIZED);
 
@@ -566,6 +585,30 @@ bool8_t application_create(Application *application,
 
   log_info("Application initialized");
   return true_v;
+
+cleanup:
+  if (jobs_ready)
+    vkr_job_system_shutdown(&application->job_system);
+  if (renderer_ready)
+    vkr_renderer_destroy(&application->renderer);
+  if (gamepad_ready)
+    vkr_gamepad_shutdown(&application->gamepad);
+  if (window_ready)
+    vkr_window_destroy(&application->window);
+  if (events_ready)
+    event_manager_destroy(&application->event_manager);
+  if (application->app_mutex)
+    vkr_mutex_destroy(&application->app_allocator, &application->app_mutex);
+  vkr_allocator_release_global_accounting(&application->metrics_allocator);
+  arena_destroy(application->metrics_arena);
+  vkr_allocator_release_global_accounting(&application->app_allocator);
+  if (log_ready)
+    log_shutdown();
+  arena_destroy(application->log_arena);
+  arena_destroy(application->app_arena);
+  vkr_platform_shutdown();
+  MemZero(application, sizeof(*application));
+  return false_v;
 }
 
 vkr_internal VkrMaterial *application_get_material(RendererFrontend *rf,
@@ -1434,20 +1477,15 @@ void application_draw_frame(Application *application, float64_t delta) {
   skybox_payload.cubemap = application->renderer.skybox_system.initialized
                                ? frame_ibl_source
                                : VKR_TEXTURE_HANDLE_INVALID;
-  bool8_t frame_ibl_enabled = application->renderer.material_system.ibl_enabled;
-  float32_t frame_ibl_intensity =
-      application->renderer.material_system.ibl_intensity;
-  float32_t frame_ibl_diffuse_intensity =
-      application->renderer.material_system.ibl_diffuse_intensity;
-  float32_t frame_ibl_specular_intensity =
-      application->renderer.material_system.ibl_specular_intensity;
+  bool8_t frame_ibl_enabled = frame_ibl_source.id != 0;
+  float32_t frame_ibl_intensity = 1.0f;
+  float32_t frame_ibl_diffuse_intensity = 1.0f;
+  float32_t frame_ibl_specular_intensity = 1.0f;
   if (scene_environment) {
     frame_ibl_enabled = true_v;
     frame_ibl_intensity = scene_environment->intensity;
     frame_ibl_diffuse_intensity = scene_environment->diffuse_intensity;
     frame_ibl_specular_intensity = scene_environment->specular_intensity;
-  } else if (!frame_ibl_enabled && frame_ibl_source.id != 0) {
-    frame_ibl_enabled = true_v;
   }
 
   VkrTextUpdate world_text_updates[VKR_MAX_PENDING_TEXT_UPDATES];
@@ -1995,12 +2033,15 @@ void application_shutdown(Application *application) {
     vkr_gamepad_shutdown(&application->gamepad);
   }
 
+  vkr_allocator_release_global_accounting(&application->metrics_allocator);
   arena_destroy(application->metrics_arena);
   application->metrics_arena = NULL;
   application->metrics = NULL;
 
   vkr_platform_shutdown();
 
+  vkr_allocator_release_global_accounting(&application->app_allocator);
+  log_shutdown();
   arena_destroy(application->log_arena);
   arena_destroy(application->app_arena);
 }

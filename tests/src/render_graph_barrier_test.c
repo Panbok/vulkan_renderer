@@ -1,4 +1,5 @@
 #include "render_graph_barrier_test.h"
+#include "container_test_allocator.h"
 #include "renderer/vkr_render_packet.h"
 #include "renderer/vkr_renderer_impl.h"
 #include "renderer/vkr_rg_json.h"
@@ -15,11 +16,6 @@
  *  - per-layer attachment slices produce per-layer barriers that coalesce again
  *    when a later pass reads the whole image.
  */
-
-static void rg_barrier_test_execute(VkrRgPassContext *ctx, void *user_data) {
-  (void)ctx;
-  (void)user_data;
-}
 
 static bool8_t rg_barrier_test_write_json(const char *path,
                                           const char *contents) {
@@ -58,7 +54,6 @@ static VkrRgPassBuilder rg_barrier_test_add_pass(VkrRenderGraph *graph,
   String8 pass_name =
       string8_create_from_cstr((const uint8_t *)name, string_length(name));
   VkrRgPassBuilder pb = vkr_rg_add_pass(graph, type, pass_name);
-  vkr_rg_pass_set_execute(&pb, rg_barrier_test_execute, NULL);
   // Culling removes passes whose outputs nobody consumes; these synthetic
   // graphs exist to be scheduled, so keep every pass.
   vkr_rg_pass_set_flags(&pb, VKR_RG_PASS_FLAG_NO_CULL);
@@ -183,7 +178,7 @@ static void test_transmission_condition(void) {
       .name = string8_lit("test.compute"),
       .id = 1u,
       .type = VKR_RG_PASS_TYPE_COMPUTE,
-      .execute = rg_barrier_test_execute,
+
   };
   assert(vkr_rg_executor_registry_register(&registry, &executor));
   assert(vkr_rg_json_bind_executors(&json, &registry));
@@ -191,11 +186,11 @@ static void test_transmission_condition(void) {
   VkrRenderGraph *graph = vkr_rg_create(&allocator);
   assert(graph);
   VkrRenderGraphFrameInfo frame = {.target_width = 1u, .target_height = 1u};
-  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_begin_frame(graph, &frame));
   assert(vkr_rg_build_from_json(graph, &json, &frame));
   assert(graph->passes.length == 0u);
   frame.transmission_pending = true_v;
-  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_begin_frame(graph, &frame));
   assert(vkr_rg_build_from_json(graph, &json, &frame));
   assert(graph->passes.length == 1u);
 
@@ -285,7 +280,7 @@ static void test_transmission_compact_conditions_and_viewport_buffer(void) {
       .name = string8_lit("test.compute"),
       .id = 1u,
       .type = VKR_RG_PASS_TYPE_COMPUTE,
-      .execute = rg_barrier_test_execute,
+
   };
   assert(vkr_rg_executor_registry_register(&registry, &executor));
   assert(vkr_rg_json_bind_executors(&json, &registry));
@@ -298,7 +293,7 @@ static void test_transmission_compact_conditions_and_viewport_buffer(void) {
       .transmission_pending = true_v,
       .transmission_compact_enabled = true_v,
   };
-  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_begin_frame(graph, &frame));
   assert(vkr_rg_build_from_json(graph, &json, &frame));
   assert(graph->buffers.length == 1u);
   assert(graph->buffers.data[0].desc.size == 320u * 200u * 4u);
@@ -306,7 +301,7 @@ static void test_transmission_compact_conditions_and_viewport_buffer(void) {
 
   frame.viewport_width = UINT32_MAX;
   frame.viewport_height = UINT32_MAX;
-  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_begin_frame(graph, &frame));
   assert(!vkr_rg_build_from_json(graph, &json, &frame));
 
   const char *bad_stride =
@@ -349,7 +344,7 @@ static void test_shadow_map_capacity_is_independent_of_active_cascades(void) {
       .shadow_map_layer_count = 4u,
       .shadow_cascade_count = 0u,
   };
-  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_begin_frame(graph, &frame));
   assert(vkr_rg_build_from_json(graph, &json, &frame));
   assert(graph->images.length == 1u);
   assert(graph->images.data[0].desc.layers == 4u);
@@ -388,7 +383,7 @@ static void test_shadow_reads_follow_active_cascades(void) {
       .name = string8_lit("test.compute"),
       .id = 1u,
       .type = VKR_RG_PASS_TYPE_COMPUTE,
-      .execute = rg_barrier_test_execute,
+
   };
   assert(vkr_rg_executor_registry_register(&registry, &executor));
   assert(vkr_rg_json_bind_executors(&json, &registry));
@@ -399,13 +394,13 @@ static void test_shadow_reads_follow_active_cascades(void) {
       .target_width = 16u,
       .target_height = 16u,
   };
-  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_begin_frame(graph, &frame));
   assert(vkr_rg_build_from_json(graph, &json, &frame));
   assert(graph->passes.length == 1u);
   assert(graph->passes.data[0].desc.image_reads.length == 0u);
 
   frame.shadow_cascade_count = 4u;
-  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_begin_frame(graph, &frame));
   assert(vkr_rg_build_from_json(graph, &json, &frame));
   assert(graph->passes.length == 1u);
   assert(graph->passes.data[0].desc.image_reads.length == 1u);
@@ -443,7 +438,7 @@ static void test_repeat_condition_mask_filters_iterations(void) {
       .name = string8_lit("test.compute"),
       .id = 1u,
       .type = VKR_RG_PASS_TYPE_COMPUTE,
-      .execute = rg_barrier_test_execute,
+
   };
   assert(vkr_rg_executor_registry_register(&registry, &executor));
   assert(vkr_rg_json_bind_executors(&json, &registry));
@@ -456,9 +451,11 @@ static void test_repeat_condition_mask_filters_iterations(void) {
       .shadow_cascade_count = 4u,
       .shadow_cascade_render_mask = 0x5u,
   };
-  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_begin_frame(graph, &frame));
   assert(vkr_rg_build_from_json(graph, &json, &frame));
   assert(graph->passes.length == 2u);
+  assert(graph->passes.data[0].desc.repeat_index == 0u);
+  assert(graph->passes.data[1].desc.repeat_index == 2u);
   assert(
       vkr_string8_equals_cstr(&graph->passes.data[0].desc.name, "cascade.0"));
   assert(
@@ -478,7 +475,7 @@ static void test_repeat_condition_mask_filters_iterations(void) {
   assert(vkr_rg_json_bind_executors(&json, &registry));
   graph = vkr_rg_create(&allocator);
   assert(graph);
-  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_begin_frame(graph, &frame));
   assert(!vkr_rg_build_from_json(graph, &json, &frame));
   vkr_rg_destroy(graph);
   vkr_rg_executor_registry_destroy(&registry);
@@ -505,8 +502,10 @@ static void test_conflicting_runtime_bindings_are_rejected(void) {
       vkr_rg_create_image(graph, string8_lit("second"), &desc);
   VkrRgPassBuilder pass =
       rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "Bindings");
-  vkr_rg_pass_read_image(&pass, first, VKR_RG_IMAGE_ACCESS_SAMPLED, 3u, 0u);
-  vkr_rg_pass_read_image(&pass, second, VKR_RG_IMAGE_ACCESS_SAMPLED, 3u, 0u);
+  assert(vkr_rg_pass_read_image(&pass, first, VKR_RG_IMAGE_ACCESS_SAMPLED, 3u,
+                                0u));
+  assert(vkr_rg_pass_read_image(&pass, second, VKR_RG_IMAGE_ACCESS_SAMPLED, 3u,
+                                0u));
   assert(!vkr_rg_compile_schedule(graph));
   vkr_rg_destroy(graph);
   arena_destroy(arena);
@@ -538,7 +537,7 @@ static void test_typed_executor_and_direct_dispatch_contract(void) {
       .name = string8_lit("test.compute"),
       .id = 7u,
       .type = VKR_RG_PASS_TYPE_COMPUTE,
-      .execute = rg_barrier_test_execute,
+
   };
   assert(vkr_rg_executor_registry_register(&registry, &executor));
   VkrRgPassExecutor duplicate_id = executor;
@@ -549,7 +548,7 @@ static void test_typed_executor_and_direct_dispatch_contract(void) {
   VkrRenderGraph *graph = vkr_rg_create(&allocator);
   assert(graph);
   VkrRenderGraphFrameInfo frame = {.target_width = 1u, .target_height = 1u};
-  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_begin_frame(graph, &frame));
   assert(vkr_rg_build_from_json(graph, &json, &frame));
   assert(graph->passes.length == 1u);
   assert(graph->passes.data[0].desc.executor_id == 7u);
@@ -602,7 +601,7 @@ static void test_indirect_dispatch_dependency_contract(void) {
       .name = string8_lit("test.compute"),
       .id = 1u,
       .type = VKR_RG_PASS_TYPE_COMPUTE,
-      .execute = rg_barrier_test_execute,
+
   };
   assert(vkr_rg_executor_registry_register(&registry, &executor));
   assert(vkr_rg_json_bind_executors(&json, &registry));
@@ -611,7 +610,7 @@ static void test_indirect_dispatch_dependency_contract(void) {
   assert(graph);
   const VkrRenderGraphFrameInfo frame = {.target_width = 1u,
                                          .target_height = 1u};
-  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_begin_frame(graph, &frame));
   assert(vkr_rg_build_from_json(graph, &json, &frame));
   assert(vkr_rg_compile_schedule(graph));
   const VkrRgPass *consumer = rg_barrier_test_pass(graph, 1u);
@@ -660,7 +659,7 @@ static void test_json_mip_chain_and_subresource_uses(void) {
       .name = string8_lit("test.compute"),
       .id = 1u,
       .type = VKR_RG_PASS_TYPE_COMPUTE,
-      .execute = rg_barrier_test_execute,
+
   };
   assert(vkr_rg_executor_registry_register(&registry, &executor));
   assert(vkr_rg_json_bind_executors(&json, &registry));
@@ -668,7 +667,7 @@ static void test_json_mip_chain_and_subresource_uses(void) {
   assert(graph);
   const VkrRenderGraphFrameInfo frame = {.target_width = 16u,
                                          .target_height = 8u};
-  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_begin_frame(graph, &frame));
   assert(vkr_rg_build_from_json(graph, &json, &frame));
   assert(graph->images.data[0].desc.mip_levels == 5u);
   assert(graph->passes.data[0].desc.image_writes.data[0].slice.mip_level == 1u);
@@ -720,7 +719,7 @@ static void test_bloom_reverse_repeat_barriers(void) {
       .name = string8_lit("test.compute"),
       .id = 1u,
       .type = VKR_RG_PASS_TYPE_COMPUTE,
-      .execute = rg_barrier_test_execute,
+
   };
   assert(vkr_rg_executor_registry_register(&registry, &executor));
   assert(vkr_rg_json_bind_executors(&json, &registry));
@@ -735,7 +734,7 @@ static void test_bloom_reverse_repeat_barriers(void) {
       .bloom_enabled = true_v,
       .bloom_mip_count = 3u,
   };
-  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_begin_frame(graph, &frame));
   assert(vkr_rg_build_from_json(graph, &json, &frame));
   assert(graph->images.length == 1u);
   assert(graph->images.data[0].desc.width == 64u);
@@ -851,12 +850,12 @@ static void test_same_layout_write_then_read_emits_barrier(void) {
   // layout comparison alone would see no transition and emit nothing.
   VkrRgPassBuilder writer =
       rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "Writer");
-  vkr_rg_pass_write_image(&writer, image, VKR_RG_IMAGE_ACCESS_STORAGE_WRITE, 0,
-                          0);
+  assert(vkr_rg_pass_write_image(&writer, image,
+                                 VKR_RG_IMAGE_ACCESS_STORAGE_WRITE, 0, 0));
   VkrRgPassBuilder reader =
       rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "Reader");
-  vkr_rg_pass_read_image(&reader, image, VKR_RG_IMAGE_ACCESS_STORAGE_READ, 0,
-                         0);
+  assert(vkr_rg_pass_read_image(&reader, image,
+                                VKR_RG_IMAGE_ACCESS_STORAGE_READ, 0, 0));
 
   assert(vkr_rg_compile_schedule(graph));
 
@@ -905,18 +904,18 @@ static void test_explicit_stage_and_subresource_dependency(void) {
 
   VkrRgPassBuilder writer =
       rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "ComputeWrite");
-  vkr_rg_pass_write_image_at_stages(&writer, source,
-                                    VKR_RG_IMAGE_ACCESS_STORAGE_WRITE,
-                                    VKR_GPU_STAGE_COMPUTE_SHADER, 0, 0);
+  assert(vkr_rg_pass_write_image_at_stages(&writer, source,
+                                           VKR_RG_IMAGE_ACCESS_STORAGE_WRITE,
+                                           VKR_GPU_STAGE_COMPUTE_SHADER, 0, 0));
 
   VkrRgPassBuilder reader = rg_barrier_test_add_pass(
       graph, VKR_RG_PASS_TYPE_GRAPHICS, "FragmentRead");
-  vkr_rg_pass_read_image_slice_at_stages(
+  assert(vkr_rg_pass_read_image_slice_at_stages(
       &reader, source, VKR_RG_IMAGE_ACCESS_SAMPLED,
       VKR_GPU_STAGE_FRAGMENT_SHADER, 0, 0,
-      (VkrRgImageSlice){.mip_level = 0, .base_layer = 1, .layer_count = 1});
+      (VkrRgImageSlice){.mip_level = 0, .base_layer = 1, .layer_count = 1}));
   VkrRgAttachmentDesc attachment = {.slice = VKR_RG_IMAGE_SLICE_DEFAULT};
-  vkr_rg_pass_add_color_attachment(&reader, target, &attachment);
+  assert(vkr_rg_pass_add_color_attachment(&reader, target, &attachment));
 
   assert(vkr_rg_compile_schedule(graph));
   const VkrRgPass *compiled = rg_barrier_test_pass(graph, 1);
@@ -965,7 +964,7 @@ static void test_present_target_import_and_terminal_states(void) {
                       .layout = VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                   },
     };
-    vkr_rg_begin_frame(graph, &frame);
+    assert(vkr_rg_begin_frame(graph, &frame));
 
     VkrRgImageDesc desc = VKR_RG_IMAGE_DESC_DEFAULT;
     desc.width = 32;
@@ -986,8 +985,8 @@ static void test_present_target_import_and_terminal_states(void) {
         .store_op = VKR_ATTACHMENT_STORE_OP_STORE,
         .slice = VKR_RG_IMAGE_SLICE_DEFAULT,
     };
-    vkr_rg_pass_add_color_attachment(&pass, target, &attachment);
-    vkr_rg_set_present_image(graph, target);
+    assert(vkr_rg_pass_add_color_attachment(&pass, target, &attachment));
+    assert(vkr_rg_set_present_image(graph, target));
 
     assert(vkr_rg_compile_schedule(graph));
     const VkrRgImageBarrier *initial = vector_get_VkrRgImageBarrier(
@@ -1032,12 +1031,12 @@ static void test_write_after_write_emits_barrier(void) {
   // overlapping writes unordered.
   VkrRgPassBuilder first =
       rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "First");
-  vkr_rg_pass_write_image(&first, image, VKR_RG_IMAGE_ACCESS_STORAGE_WRITE, 0,
-                          0);
+  assert(vkr_rg_pass_write_image(&first, image,
+                                 VKR_RG_IMAGE_ACCESS_STORAGE_WRITE, 0, 0));
   VkrRgPassBuilder second =
       rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "Second");
-  vkr_rg_pass_write_image(&second, image, VKR_RG_IMAGE_ACCESS_STORAGE_WRITE, 0,
-                          0);
+  assert(vkr_rg_pass_write_image(&second, image,
+                                 VKR_RG_IMAGE_ACCESS_STORAGE_WRITE, 0, 0));
 
   assert(vkr_rg_compile_schedule(graph));
 
@@ -1071,10 +1070,12 @@ static void test_read_after_read_emits_nothing(void) {
 
   VkrRgPassBuilder first =
       rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "ReadA");
-  vkr_rg_pass_read_image(&first, image, VKR_RG_IMAGE_ACCESS_SAMPLED, 0, 0);
+  assert(
+      vkr_rg_pass_read_image(&first, image, VKR_RG_IMAGE_ACCESS_SAMPLED, 0, 0));
   VkrRgPassBuilder second =
       rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "ReadB");
-  vkr_rg_pass_read_image(&second, image, VKR_RG_IMAGE_ACCESS_SAMPLED, 0, 0);
+  assert(vkr_rg_pass_read_image(&second, image, VKR_RG_IMAGE_ACCESS_SAMPLED, 0,
+                                0));
 
   assert(vkr_rg_compile_schedule(graph));
 
@@ -1106,9 +1107,10 @@ static void test_same_pass_storage_read_write_combines(void) {
 
   VkrRgPassBuilder pass =
       rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "ReadWrite");
-  vkr_rg_pass_read_image(&pass, image, VKR_RG_IMAGE_ACCESS_STORAGE_READ, 0, 0);
-  vkr_rg_pass_write_image(&pass, image, VKR_RG_IMAGE_ACCESS_STORAGE_WRITE, 0,
-                          0);
+  assert(vkr_rg_pass_read_image(&pass, image, VKR_RG_IMAGE_ACCESS_STORAGE_READ,
+                                0, 0));
+  assert(vkr_rg_pass_write_image(&pass, image,
+                                 VKR_RG_IMAGE_ACCESS_STORAGE_WRITE, 0, 0));
 
   assert(vkr_rg_compile_schedule(graph));
 
@@ -1144,9 +1146,10 @@ static void test_same_pass_incompatible_layouts_are_rejected(void) {
 
   VkrRgPassBuilder pass =
       rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "Incompatible");
-  vkr_rg_pass_read_image(&pass, image, VKR_RG_IMAGE_ACCESS_SAMPLED, 0, 0);
-  vkr_rg_pass_write_image(&pass, image, VKR_RG_IMAGE_ACCESS_STORAGE_WRITE, 0,
-                          0);
+  assert(
+      vkr_rg_pass_read_image(&pass, image, VKR_RG_IMAGE_ACCESS_SAMPLED, 0, 0));
+  assert(vkr_rg_pass_write_image(&pass, image,
+                                 VKR_RG_IMAGE_ACCESS_STORAGE_WRITE, 0, 0));
 
   assert(!vkr_rg_compile_schedule(graph));
 
@@ -1187,13 +1190,13 @@ static void test_cascade_slices_are_per_layer_then_coalesce(void) {
     att.slice.layer_count = 1;
     att.load_op = VKR_ATTACHMENT_LOAD_OP_CLEAR;
     att.store_op = VKR_ATTACHMENT_STORE_OP_STORE;
-    vkr_rg_pass_set_depth_attachment(&pb, shadow_map, &att, false_v);
+    assert(vkr_rg_pass_set_depth_attachment(&pb, shadow_map, &att, false_v));
   }
 
   VkrRgPassBuilder consumer =
       rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "World");
-  vkr_rg_pass_read_image(&consumer, shadow_map, VKR_RG_IMAGE_ACCESS_SAMPLED, 0,
-                         0);
+  assert(vkr_rg_pass_read_image(&consumer, shadow_map,
+                                VKR_RG_IMAGE_ACCESS_SAMPLED, 0, 0));
 
   assert(vkr_rg_compile_schedule(graph));
 
@@ -1254,12 +1257,13 @@ static void test_disjoint_layer_writes_coalesce_on_read(void) {
     att.slice.layer_count = 2;
     att.load_op = VKR_ATTACHMENT_LOAD_OP_CLEAR;
     att.store_op = VKR_ATTACHMENT_STORE_OP_STORE;
-    vkr_rg_pass_set_depth_attachment(&pb, image, &att, false_v);
+    assert(vkr_rg_pass_set_depth_attachment(&pb, image, &att, false_v));
   }
 
   VkrRgPassBuilder consumer =
       rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "Consumer");
-  vkr_rg_pass_read_image(&consumer, image, VKR_RG_IMAGE_ACCESS_SAMPLED, 0, 0);
+  assert(vkr_rg_pass_read_image(&consumer, image, VKR_RG_IMAGE_ACCESS_SAMPLED,
+                                0, 0));
 
   assert(vkr_rg_compile_schedule(graph));
 
@@ -1297,13 +1301,14 @@ static void test_capture_read_uses_exact_array_slice(void) {
   VkrRgAttachmentDesc attachment = {.slice = VKR_RG_IMAGE_SLICE_DEFAULT};
   attachment.slice.base_layer = 2u;
   attachment.slice.layer_count = 1u;
-  vkr_rg_pass_set_depth_attachment(&writer, image, &attachment, false_v);
+  assert(
+      vkr_rg_pass_set_depth_attachment(&writer, image, &attachment, false_v));
 
   VkrRgPassBuilder capture =
       rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_TRANSFER, "Capture");
-  vkr_rg_pass_read_image_slice(
+  assert(vkr_rg_pass_read_image_slice(
       &capture, image, VKR_RG_IMAGE_ACCESS_TRANSFER_SRC, 0u, 0u,
-      (VkrRgImageSlice){.mip_level = 0u, .base_layer = 2u, .layer_count = 1u});
+      (VkrRgImageSlice){.mip_level = 0u, .base_layer = 2u, .layer_count = 1u}));
 
   assert(vkr_rg_compile_schedule(graph));
   const VkrRgPass *compiled = rg_barrier_test_pass(graph, 1u);
@@ -1362,638 +1367,6 @@ static void test_subresource_range_resolve(void) {
   printf("  test_subresource_range_resolve PASSED\n");
 }
 
-static void test_image_access_is_write(void) {
-  printf("  Running test_image_access_is_write...\n");
-
-  assert(!vkr_image_access_is_write(VKR_IMAGE_ACCESS_NONE));
-  assert(!vkr_image_access_is_write(VKR_IMAGE_ACCESS_SAMPLED));
-  assert(!vkr_image_access_is_write(VKR_IMAGE_ACCESS_STORAGE_READ));
-  assert(!vkr_image_access_is_write(VKR_IMAGE_ACCESS_DEPTH_READ_ONLY));
-  assert(!vkr_image_access_is_write(VKR_IMAGE_ACCESS_TRANSFER_SRC));
-  assert(!vkr_image_access_is_write(VKR_IMAGE_ACCESS_PRESENT));
-
-  assert(vkr_image_access_is_write(VKR_IMAGE_ACCESS_STORAGE_WRITE));
-  assert(vkr_image_access_is_write(VKR_IMAGE_ACCESS_COLOR_ATTACHMENT));
-  assert(vkr_image_access_is_write(VKR_IMAGE_ACCESS_DEPTH_ATTACHMENT));
-  assert(vkr_image_access_is_write(VKR_IMAGE_ACCESS_TRANSFER_DST));
-  assert(vkr_image_access_is_write(VKR_IMAGE_ACCESS_SAMPLED |
-                                   VKR_IMAGE_ACCESS_STORAGE_WRITE));
-
-  printf("  test_image_access_is_write PASSED\n");
-}
-
-static void test_main_graph_contract(void) {
-  printf("  Running test_main_graph_contract...\n");
-  Arena *arena = arena_create(MB(2), MB(2));
-  VkrAllocator allocator = {.ctx = arena};
-  assert(vkr_allocator_arena(&allocator));
-  VkrRgJsonGraph graph = {0};
-  assert(vkr_rg_json_load_file(&allocator,
-                               "assets/render_graphs/main.rendergraph.json",
-                               &graph) == true_v);
-
-  const char *deferred_ordered[] = {
-      "VBuffer.Opaque", "GBuffer.Resolve.Fullscreen",
-      "Lighting.Deferred.Fullscreen", "World.FeedbackCopy.Fullscreen"};
-  uint32_t found = 0u;
-  for (uint64_t i = 0u;
-       i < graph.passes.length && found < ArrayCount(deferred_ordered); ++i) {
-    VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph.passes, i);
-    if (!pass || !vkr_string8_equals_cstr(&pass->name, deferred_ordered[found]))
-      continue;
-    if (found == 1u) {
-      assert(pass->writes.length == 9u);
-      VkrRgJsonResourceUse *hdr_seed =
-          vector_get_VkrRgJsonResourceUse(&pass->writes, 6u);
-      assert(hdr_seed && hdr_seed->binding.is_set &&
-             hdr_seed->binding.value == 8u &&
-             hdr_seed->image_access == VKR_RG_JSON_IMAGE_ACCESS_STORAGE_WRITE);
-    } else if (found == 2u) {
-      assert(pass->type == VKR_RG_JSON_PASS_COMPUTE);
-      assert(pass->reads.length == 8u && pass->writes.length == 1u);
-      VkrRgJsonResourceUse *hdr_read =
-          vector_get_VkrRgJsonResourceUse(&pass->reads, 6u);
-      VkrRgJsonResourceUse *gtao =
-          vector_get_VkrRgJsonResourceUse(&pass->reads, 7u);
-      VkrRgJsonResourceUse *hdr_write =
-          vector_get_VkrRgJsonResourceUse(&pass->writes, 0u);
-      assert(
-          hdr_read && gtao && hdr_write && hdr_read->binding.is_set &&
-          gtao->binding.is_set && hdr_write->binding.is_set &&
-          hdr_read->binding.value == 6u && gtao->binding.value == 7u &&
-          hdr_write->binding.value == 6u &&
-          vkr_string8_equals_cstr(&hdr_read->name, "hdr_pre_transmission") &&
-          vkr_string8_equals_cstr(&gtao->name, "gtao_visibility") &&
-          vkr_string8_equals_cstr(&hdr_write->name, "hdr_pre_transmission") &&
-          gtao->condition.kind == VKR_RG_JSON_CONDITION_GTAO_ENABLED &&
-          hdr_read->image_access == VKR_RG_JSON_IMAGE_ACCESS_STORAGE_READ &&
-          gtao->image_access == VKR_RG_JSON_IMAGE_ACCESS_SAMPLED &&
-          hdr_write->image_access == VKR_RG_JSON_IMAGE_ACCESS_STORAGE_WRITE);
-    }
-    found++;
-  }
-  assert(found == ArrayCount(deferred_ordered));
-
-  bool8_t found_blend = false_v;
-  for (uint64_t i = 0u; i < graph.passes.length; ++i) {
-    VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph.passes, i);
-    if (!pass ||
-        !vkr_string8_equals_cstr(&pass->name, "World.Blend.Fullscreen"))
-      continue;
-    assert(pass->attachments.has_depth);
-    assert(vkr_string8_equals_cstr(&pass->attachments.depth.image,
-                                   "opaque_vbuffer_depth"));
-    assert(pass->condition.kind == VKR_RG_JSON_CONDITION_EDITOR_DISABLED);
-    found_blend = true_v;
-    break;
-  }
-  assert(found_blend);
-
-  const char *transmission_deferred_ordered[] = {
-      "Transmission.Cull.Upload",        "Transmission.Cull.Classify",
-      "Transmission.Cull.Prefix",        "Transmission.Cull.Encode",
-      "Transmission.DepthSeed.0",        "Transmission.DepthSeed.3",
-      "VBuffer.Transmission.0",          "VBuffer.Transmission.3",
-      "Transmission.Shade.Fullscreen.3", "Transmission.Shade.Fullscreen.0"};
-  found = 0u;
-  for (uint64_t i = 0u; i < graph.passes.length &&
-                        found < ArrayCount(transmission_deferred_ordered);
-       ++i) {
-    VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph.passes, i);
-    if (pass && vkr_string8_equals_cstr(&pass->name,
-                                        transmission_deferred_ordered[found])) {
-      const VkrRgJsonConditionKind expected_condition =
-          found < 8u
-              ? VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING
-              : VKR_RG_JSON_CONDITION_EDITOR_DISABLED_TRANSMISSION_FULLSCREEN;
-      assert(pass->condition.kind == expected_condition);
-      found++;
-    }
-  }
-  assert(found == ArrayCount(transmission_deferred_ordered));
-
-  uint32_t transmission_coverage_passes = 0u;
-  bool8_t found_transmission_depth_diagnostic = false_v;
-  for (uint64_t i = 0u; i < graph.passes.length; ++i) {
-    VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph.passes, i);
-    if (!pass ||
-        !vkr_string8_starts_with(&pass->name, "Transmission.Coverage."))
-      continue;
-    if (vkr_string8_equals_cstr(&pass->name,
-                                "Transmission.Coverage.Diagnostic.4")) {
-      assert(pass->condition.kind ==
-             VKR_RG_JSON_CONDITION_TRANSMISSION_DEPTH_DIAGNOSTIC);
-      assert(pass->type == VKR_RG_JSON_PASS_COMPUTE &&
-             pass->reads.length == 2u && pass->writes.length == 0u);
-      found_transmission_depth_diagnostic = true_v;
-      continue;
-    }
-    assert(pass->condition.kind ==
-           VKR_RG_JSON_CONDITION_TRANSMISSION_FULLSCREEN_TIMING);
-    assert(pass->type == VKR_RG_JSON_PASS_COMPUTE && pass->reads.length == 2u &&
-           pass->writes.length == 0u);
-    transmission_coverage_passes++;
-  }
-  assert(transmission_coverage_passes == 4u &&
-         found_transmission_depth_diagnostic);
-
-  uint32_t transmission_compact_passes = 0u;
-  uint32_t transmission_compact_finalize_passes = 0u;
-  uint32_t transmission_compact_shade_passes = 0u;
-  for (uint64_t i = 0u; i < graph.passes.length; ++i) {
-    VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph.passes, i);
-    if (!pass)
-      continue;
-    if (vkr_string8_starts_with(&pass->name,
-                                "Transmission.Compact.Finalize.")) {
-      assert(pass->condition.kind ==
-             VKR_RG_JSON_CONDITION_TRANSMISSION_COMPACT_ENABLED);
-      assert(pass->reads.length == 3u && pass->writes.length == 1u);
-      transmission_compact_finalize_passes++;
-    } else if (vkr_string8_starts_with(&pass->name, "Transmission.Compact.")) {
-      assert(pass->condition.kind ==
-                 VKR_RG_JSON_CONDITION_EDITOR_DISABLED_TRANSMISSION_COMPACT ||
-             pass->condition.kind ==
-                 VKR_RG_JSON_CONDITION_EDITOR_ENABLED_TRANSMISSION_COMPACT);
-      assert(pass->reads.length == 3u && pass->writes.length == 4u);
-      assert(!pass->writes.data[2].is_image &&
-             pass->writes.data[2].binding.value == 3u &&
-             pass->writes.data[2].buffer_access ==
-                 VKR_RG_JSON_BUFFER_ACCESS_STORAGE_WRITE);
-      transmission_compact_passes++;
-    } else if (vkr_string8_starts_with(&pass->name,
-                                       "Transmission.Shade.Compact.")) {
-      assert(pass->dispatch.kind == VKR_RG_DISPATCH_INDIRECT);
-      assert(pass->dispatch.indirect_binding == 7u);
-      transmission_compact_shade_passes++;
-    }
-  }
-  assert(transmission_compact_passes == 8u);
-  assert(transmission_compact_finalize_passes == 0u);
-  assert(transmission_compact_shade_passes == 8u);
-
-  uint32_t layered_resource_count = 0u;
-  uint32_t diagnostic_layered_resource_count = 0u;
-  bool8_t found_transmission_feedback = false_v;
-  bool8_t found_transmission_compact_pixels = false_v;
-  for (uint64_t i = 0u; i < graph.resources.length; ++i) {
-    VkrRgJsonResource *resource =
-        vector_get_VkrRgJsonResource(&graph.resources, i);
-    if (!resource)
-      continue;
-    if (vkr_string8_equals_cstr(&resource->name, "transmission_vbuffer") ||
-        vkr_string8_equals_cstr(&resource->name,
-                                "transmission_vbuffer_depth")) {
-      assert(resource->condition.kind ==
-             VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING);
-      assert(resource->image.layers_is_set && resource->image.layers == 4u);
-      layered_resource_count++;
-    } else if (vkr_string8_equals_cstr(&resource->name,
-                                       "transmission_diagnostic_vbuffer") ||
-               vkr_string8_equals_cstr(&resource->name,
-                                       "transmission_diagnostic_depth")) {
-      assert(resource->condition.kind ==
-             VKR_RG_JSON_CONDITION_TRANSMISSION_DEPTH_DIAGNOSTIC);
-      assert(resource->image.layers_is_set && resource->image.layers == 5u);
-      diagnostic_layered_resource_count++;
-    } else if (vkr_string8_equals_cstr(&resource->name,
-                                       "transmission_feedback")) {
-      assert(resource->condition.kind ==
-             VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING);
-      found_transmission_feedback = true_v;
-    } else if (vkr_string8_equals_cstr(&resource->name,
-                                       "transmission_compact_pixels")) {
-      assert(resource->condition.kind ==
-             VKR_RG_JSON_CONDITION_TRANSMISSION_COMPACT_ENABLED);
-      assert(resource->buffer.size_mode ==
-             VKR_RG_JSON_BUFFER_SIZE_VIEWPORT_PIXELS);
-      assert(resource->buffer.bytes_per_pixel == 2u * sizeof(uint32_t));
-      found_transmission_compact_pixels = true_v;
-    }
-  }
-  assert(layered_resource_count == 2u &&
-         diagnostic_layered_resource_count == 2u &&
-         found_transmission_feedback && found_transmission_compact_pixels);
-
-  const char *multi_view_ordered[] = {"Cull.Classify", "Cull.Prefix",
-                                      "Cull.Encode", "Shadow.Cascade.${i}"};
-  found = 0u;
-  for (uint64_t i = 0u;
-       i < graph.passes.length && found < ArrayCount(multi_view_ordered); ++i) {
-    VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph.passes, i);
-    if (!pass ||
-        !vkr_string8_equals_cstr(&pass->name, multi_view_ordered[found]))
-      continue;
-    if (found == 3u) {
-      assert(pass->condition.kind == VKR_RG_JSON_CONDITION_NONE);
-      assert(pass->repeat.enabled &&
-             vkr_string8_equals_cstr(&pass->repeat.count_source,
-                                     "shadow_cascade_count"));
-      assert(vkr_string8_equals_cstr(&pass->repeat.condition_mask_source,
-                                     "shadow_cascade_render_mask"));
-      assert(pass->reads.length == 4u);
-      VkrRgJsonResourceUse *visible =
-          vector_get_VkrRgJsonResourceUse(&pass->reads, 0u);
-      VkrRgJsonResourceUse *instances =
-          vector_get_VkrRgJsonResourceUse(&pass->reads, 1u);
-      VkrRgJsonResourceUse *state =
-          vector_get_VkrRgJsonResourceUse(&pass->reads, 2u);
-      VkrRgJsonResourceUse *arguments =
-          vector_get_VkrRgJsonResourceUse(&pass->reads, 3u);
-      assert(
-          visible && instances && state && arguments &&
-          visible->binding.value == 1u && instances->binding.value == 9u &&
-          state->binding.value == 2u && arguments->binding.value == 3u &&
-          visible->buffer_access == VKR_RG_JSON_BUFFER_ACCESS_STORAGE_READ &&
-          instances->buffer_access == VKR_RG_JSON_BUFFER_ACCESS_STORAGE_READ &&
-          state->buffer_access == VKR_RG_JSON_BUFFER_ACCESS_INDIRECT_READ &&
-          arguments->buffer_access == VKR_RG_JSON_BUFFER_ACCESS_INDIRECT_READ);
-    }
-    found++;
-  }
-  assert(found == ArrayCount(multi_view_ordered));
-
-  bool8_t found_hzb_resource = false_v;
-  bool8_t found_stable_shadow_capacity = false_v;
-  bool8_t found_sdsm_resource = false_v;
-  bool8_t found_gpu_instances = false_v;
-  bool8_t found_transmission_gpu_instances = false_v;
-  bool8_t found_temporal_transform_resource = false_v;
-  bool8_t found_temporal_color_resource = false_v;
-  bool8_t found_metalfx_color_input = false_v;
-  bool8_t found_metalfx_depth_input = false_v;
-  bool8_t found_metalfx_motion_input = false_v;
-  bool8_t found_metalfx_output = false_v;
-  bool8_t found_gtao_view_depth = false_v;
-  bool8_t found_gtao_raw = false_v;
-  bool8_t found_gtao_edges = false_v;
-  bool8_t found_gtao_visibility = false_v;
-  for (uint64_t i = 0u; i < graph.resources.length; ++i) {
-    VkrRgJsonResource *resource =
-        vector_get_VkrRgJsonResource(&graph.resources, i);
-    if (!resource)
-      continue;
-    if (vkr_string8_equals_cstr(&resource->name, "hzb_history")) {
-      assert(resource->image.mip_levels_full);
-      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_HISTORY) != 0u);
-      found_hzb_resource = true_v;
-    } else if (vkr_string8_equals_cstr(&resource->name, "sdsm_reduce_state")) {
-      assert(resource->buffer.size == 16u);
-      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_PER_FRAME_SLOT) !=
-             0u);
-      found_sdsm_resource = true_v;
-    } else if (vkr_string8_equals_cstr(&resource->name, "gpu_draw_instances")) {
-      assert(resource->buffer.size ==
-             (uint64_t)VKR_GPU_DRAW_CANDIDATE_CAPACITY *
-                 sizeof(VkrInstanceDataGPU));
-      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_PER_FRAME_SLOT) !=
-             0u);
-      found_gpu_instances = true_v;
-    } else if (vkr_string8_equals_cstr(&resource->name,
-                                       "transmission_gpu_draw_instances")) {
-      assert(resource->condition.kind ==
-             VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING);
-      assert(resource->buffer.size ==
-             (uint64_t)VKR_GPU_DRAW_CANDIDATE_CAPACITY *
-                 sizeof(VkrInstanceDataGPU));
-      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_PER_FRAME_SLOT) !=
-             0u);
-      found_transmission_gpu_instances = true_v;
-    } else if (vkr_string8_equals_cstr(&resource->name,
-                                       "temporal_transform_history")) {
-      assert(resource->buffer.size ==
-             (uint64_t)VKR_TEMPORAL_TRANSFORM_CAPACITY *
-                 sizeof(VkrTemporalTransformGPU));
-      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_HISTORY) != 0u);
-      found_temporal_transform_resource = true_v;
-    } else if (vkr_string8_equals_cstr(&resource->name,
-                                       "temporal_history_color")) {
-      assert(resource->condition.kind ==
-             VKR_RG_JSON_CONDITION_METALFX_DISABLED);
-      assert(resource->image.format == VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT);
-      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_HISTORY) != 0u);
-      found_temporal_color_resource = true_v;
-    } else if (vkr_string8_equals_cstr(&resource->name,
-                                       "metalfx_color_input")) {
-      assert(resource->condition.kind == VKR_RG_JSON_CONDITION_METALFX_ENABLED);
-      assert(resource->image.extent.mode == VKR_RG_JSON_EXTENT_SCENE_OUTPUT);
-      assert(resource->image.format == VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT);
-      assert((resource->image.usage.set & VKR_TEXTURE_USAGE_TRANSFER_DST) !=
-             0u);
-      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_PER_IMAGE) != 0u);
-      found_metalfx_color_input = true_v;
-    } else if (vkr_string8_equals_cstr(&resource->name,
-                                       "metalfx_depth_input")) {
-      assert(resource->condition.kind == VKR_RG_JSON_CONDITION_METALFX_ENABLED);
-      assert(resource->image.extent.mode == VKR_RG_JSON_EXTENT_SCENE_OUTPUT);
-      assert(resource->image.format == VKR_TEXTURE_FORMAT_D32_SFLOAT);
-      assert((resource->image.usage.set & VKR_TEXTURE_USAGE_TRANSFER_DST) !=
-             0u);
-      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_PER_IMAGE) != 0u);
-      found_metalfx_depth_input = true_v;
-    } else if (vkr_string8_equals_cstr(&resource->name,
-                                       "metalfx_motion_input")) {
-      assert(resource->condition.kind == VKR_RG_JSON_CONDITION_METALFX_ENABLED);
-      assert(resource->image.extent.mode == VKR_RG_JSON_EXTENT_SCENE_OUTPUT);
-      assert(resource->image.format == VKR_TEXTURE_FORMAT_R16G16_SFLOAT);
-      assert((resource->image.usage.set & VKR_TEXTURE_USAGE_TRANSFER_DST) !=
-             0u);
-      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_PER_IMAGE) != 0u);
-      found_metalfx_motion_input = true_v;
-    } else if (vkr_string8_equals_cstr(&resource->name,
-                                       "metalfx_output_color")) {
-      assert(resource->condition.kind == VKR_RG_JSON_CONDITION_METALFX_ENABLED);
-      assert(resource->image.extent.mode == VKR_RG_JSON_EXTENT_SCENE_OUTPUT);
-      assert(resource->image.format == VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT);
-      assert((resource->image.usage.set & VKR_TEXTURE_USAGE_STORAGE) != 0u);
-      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_PER_IMAGE) != 0u);
-      found_metalfx_output = true_v;
-    } else if (vkr_string8_equals_cstr(&resource->name, "gtao_view_depth")) {
-      assert(resource->condition.kind == VKR_RG_JSON_CONDITION_GTAO_ENABLED);
-      assert(resource->image.format == VKR_TEXTURE_FORMAT_R16_SFLOAT);
-      assert(resource->image.mip_levels_full);
-      found_gtao_view_depth = true_v;
-    } else if (vkr_string8_equals_cstr(&resource->name, "gtao_raw")) {
-      assert(resource->condition.kind == VKR_RG_JSON_CONDITION_GTAO_ENABLED);
-      assert(resource->image.format == VKR_TEXTURE_FORMAT_R8_UNORM);
-      found_gtao_raw = true_v;
-    } else if (vkr_string8_equals_cstr(&resource->name, "gtao_edges")) {
-      assert(resource->condition.kind == VKR_RG_JSON_CONDITION_GTAO_ENABLED);
-      assert(resource->image.format == VKR_TEXTURE_FORMAT_R8_UNORM);
-      found_gtao_edges = true_v;
-    } else if (vkr_string8_equals_cstr(&resource->name, "gtao_visibility")) {
-      assert(resource->condition.kind == VKR_RG_JSON_CONDITION_GTAO_ENABLED);
-      assert(resource->image.format == VKR_TEXTURE_FORMAT_R8_UNORM);
-      found_gtao_visibility = true_v;
-    } else if (vkr_string8_equals_cstr(&resource->name, "shadow_map")) {
-      assert(vkr_string8_equals_cstr(&resource->image.layers_source,
-                                     "shadow_map_layer_count"));
-      /* RETAINED since ADR-029: cascade contents must survive across frames
-         for reuse to be possible at all. TRANSIENT would discard them, and
-         PERSISTENT only suppresses a diagnostic without preserving anything. */
-      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_RETAINED) != 0u);
-      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_TRANSIENT) == 0u);
-      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_PER_IMAGE) != 0u);
-      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_PERSISTENT) == 0u);
-      found_stable_shadow_capacity = true_v;
-    }
-  }
-  assert(found_hzb_resource && found_sdsm_resource && found_gpu_instances &&
-         found_transmission_gpu_instances && found_stable_shadow_capacity &&
-         found_temporal_transform_resource && found_temporal_color_resource &&
-         found_metalfx_color_input && found_metalfx_depth_input &&
-         found_metalfx_motion_input && found_metalfx_output &&
-         found_gtao_view_depth && found_gtao_raw && found_gtao_edges &&
-         found_gtao_visibility);
-
-  bool8_t found_exposure_histogram_resource = false_v;
-  bool8_t found_exposure_state_resource = false_v;
-  for (uint64_t i = 0u; i < graph.resources.length; ++i) {
-    VkrRgJsonResource *resource =
-        vector_get_VkrRgJsonResource(&graph.resources, i);
-    if (!resource)
-      continue;
-    if (vkr_string8_equals_cstr(&resource->name, "exposure_histogram")) {
-      assert(resource->condition.kind ==
-             VKR_RG_JSON_CONDITION_EXPOSURE_AUTOMATIC);
-      assert(resource->buffer.size == sizeof(VkrExposureGpuHistogram));
-      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_PER_FRAME_SLOT) !=
-             0u);
-      found_exposure_histogram_resource = true_v;
-    } else if (vkr_string8_equals_cstr(&resource->name, "exposure_state")) {
-      assert(resource->condition.kind ==
-             VKR_RG_JSON_CONDITION_EXPOSURE_AUTOMATIC);
-      assert(resource->buffer.size == sizeof(VkrExposureGpuState));
-      assert((resource->flags & VKR_RG_JSON_RESOURCE_FLAG_HISTORY) != 0u);
-      found_exposure_state_resource = true_v;
-    }
-  }
-  assert(found_exposure_histogram_resource && found_exposure_state_resource);
-
-  uint64_t temporal_fullscreen_index = UINT64_MAX;
-  uint64_t temporal_editor_index = UINT64_MAX;
-  uint64_t metalfx_stage_index = UINT64_MAX;
-  uint64_t metalfx_upscale_index = UINT64_MAX;
-  uint64_t exposure_histogram_index = UINT64_MAX;
-  uint64_t exposure_resolve_index = UINT64_MAX;
-  uint64_t tonemap_index = UINT64_MAX;
-  uint64_t editor_composite_index = UINT64_MAX;
-  uint64_t ui_editor_index = UINT64_MAX;
-  for (uint64_t i = 0u; i < graph.passes.length; ++i) {
-    VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph.passes, i);
-    if (!pass)
-      continue;
-    if (vkr_string8_equals_cstr(&pass->name, "Temporal.Resolve.Fullscreen"))
-      temporal_fullscreen_index = i;
-    else if (vkr_string8_equals_cstr(&pass->name, "Temporal.Resolve.Editor")) {
-      assert(pass->condition.kind ==
-             VKR_RG_JSON_CONDITION_EDITOR_ENABLED_METALFX_DISABLED);
-      temporal_editor_index = i;
-    } else if (vkr_string8_equals_cstr(&pass->name, "MetalFX.StageInputs")) {
-      assert(pass->type == VKR_RG_JSON_PASS_TRANSFER);
-      assert(pass->condition.kind == VKR_RG_JSON_CONDITION_METALFX_ENABLED);
-      assert(pass->reads.length == 4u && pass->writes.length == 3u);
-      assert(pass->reads.data[0].binding.value == 0u &&
-             pass->reads.data[0].condition.kind ==
-                 VKR_RG_JSON_CONDITION_EDITOR_DISABLED);
-      assert(pass->reads.data[1].binding.value == 0u &&
-             pass->reads.data[1].condition.kind ==
-                 VKR_RG_JSON_CONDITION_EDITOR_ENABLED);
-      for (uint32_t read = 0u; read < 4u; ++read)
-        assert(pass->reads.data[read].image_access ==
-               VKR_RG_JSON_IMAGE_ACCESS_TRANSFER_SRC);
-      assert(pass->reads.data[2].binding.value == 1u &&
-             pass->reads.data[3].binding.value == 2u);
-      for (uint32_t binding = 0u; binding < 3u; ++binding) {
-        assert(pass->writes.data[binding].binding.value == binding + 3u);
-        assert(pass->writes.data[binding].image_access ==
-               VKR_RG_JSON_IMAGE_ACCESS_TRANSFER_DST);
-      }
-      assert(vkr_string8_equals_cstr(&pass->execute, "pass.metalfx.stage"));
-      metalfx_stage_index = i;
-    } else if (vkr_string8_equals_cstr(&pass->name,
-                                       "MetalFX.TemporalUpscale")) {
-      assert(pass->type == VKR_RG_JSON_PASS_COMPUTE);
-      assert(pass->condition.kind == VKR_RG_JSON_CONDITION_METALFX_ENABLED);
-      assert(pass->reads.length == 3u && pass->writes.length == 1u);
-      assert(vkr_string8_equals_cstr(&pass->execute, "pass.metalfx.temporal"));
-      metalfx_upscale_index = i;
-    } else if (vkr_string8_equals_cstr(&pass->name,
-                                       "Post.Exposure.Histogram")) {
-      assert(pass->condition.kind == VKR_RG_JSON_CONDITION_EXPOSURE_AUTOMATIC);
-      assert(pass->reads.length == 2u && pass->writes.length == 1u);
-      assert(vkr_string8_equals_cstr(&pass->reads.data[0].name,
-                                     "temporal_history_color"));
-      assert(pass->reads.data[0].image_access ==
-             VKR_RG_JSON_IMAGE_ACCESS_SAMPLED);
-      assert(pass->reads.data[0].condition.kind ==
-             VKR_RG_JSON_CONDITION_METALFX_DISABLED);
-      assert(vkr_string8_equals_cstr(&pass->reads.data[1].name,
-                                     "metalfx_output_color"));
-      assert(pass->reads.data[1].image_access ==
-             VKR_RG_JSON_IMAGE_ACCESS_SAMPLED);
-      assert(pass->reads.data[1].condition.kind ==
-             VKR_RG_JSON_CONDITION_METALFX_ENABLED);
-      assert(vkr_string8_equals_cstr(&pass->writes.data[0].name,
-                                     "exposure_histogram"));
-      exposure_histogram_index = i;
-    } else if (vkr_string8_equals_cstr(&pass->name, "Post.Exposure.Resolve")) {
-      assert(pass->condition.kind == VKR_RG_JSON_CONDITION_EXPOSURE_AUTOMATIC);
-      exposure_resolve_index = i;
-    } else if (vkr_string8_equals_cstr(&pass->name, "Post.Tonemap.Fullscreen"))
-      tonemap_index = i;
-    else if (vkr_string8_equals_cstr(&pass->name, "Editor.Composite")) {
-      assert(pass->reads.length == 5u);
-      assert(pass->reads.data[0].condition.kind ==
-             VKR_RG_JSON_CONDITION_METALFX_DISABLED);
-      assert(pass->reads.data[1].condition.kind ==
-             VKR_RG_JSON_CONDITION_METALFX_ENABLED);
-      editor_composite_index = i;
-    } else if (vkr_string8_equals_cstr(&pass->name, "UI.Editor"))
-      ui_editor_index = i;
-  }
-  assert(temporal_fullscreen_index < exposure_histogram_index);
-  assert(temporal_editor_index < exposure_histogram_index);
-  assert(metalfx_stage_index < metalfx_upscale_index);
-  assert(metalfx_upscale_index < exposure_histogram_index);
-  assert(exposure_histogram_index < exposure_resolve_index);
-  assert(exposure_resolve_index < tonemap_index);
-  assert(exposure_resolve_index < editor_composite_index);
-  assert(editor_composite_index < ui_editor_index);
-
-  bool8_t found_hzb_reduce = false_v;
-  bool8_t found_sdsm_reduce = false_v;
-  bool8_t found_temporal_transform = false_v;
-  bool8_t found_temporal_resolve = false_v;
-  bool8_t found_gtao_depth_prefilter = false_v;
-  bool8_t found_gtao_depth_mip = false_v;
-  bool8_t found_gtao_evaluate = false_v;
-  bool8_t found_gtao_denoise = false_v;
-  for (uint64_t i = 0u; i < graph.passes.length; ++i) {
-    VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph.passes, i);
-    if (!pass)
-      continue;
-    if (vkr_string8_equals_cstr(&pass->name, "Temporal.TransformHistory")) {
-      assert(pass->reads.length == 1u && pass->writes.length == 1u);
-      found_temporal_transform = true_v;
-      continue;
-    }
-    if (vkr_string8_equals_cstr(&pass->name, "Temporal.Resolve.Fullscreen")) {
-      assert(pass->reads.length == 12u && pass->writes.length == 4u);
-      found_temporal_resolve = true_v;
-      continue;
-    }
-    if (vkr_string8_equals_cstr(&pass->name, "SDSM.Reduce")) {
-      assert(pass->condition.kind == VKR_RG_JSON_CONDITION_SDSM_ENABLED);
-      assert(pass->reads.length == 2u && pass->writes.length == 1u);
-      VkrRgJsonResourceUse *depth =
-          vector_get_VkrRgJsonResourceUse(&pass->reads, 0u);
-      VkrRgJsonResourceUse *vbuffer =
-          vector_get_VkrRgJsonResourceUse(&pass->reads, 1u);
-      VkrRgJsonResourceUse *state =
-          vector_get_VkrRgJsonResourceUse(&pass->writes, 0u);
-      assert(depth && vbuffer && state && depth->binding.value == 0u &&
-             vbuffer->binding.value == 1u && state->binding.value == 2u &&
-             depth->image_access == VKR_RG_JSON_IMAGE_ACCESS_SAMPLED &&
-             vbuffer->image_access == VKR_RG_JSON_IMAGE_ACCESS_SAMPLED &&
-             state->buffer_access == VKR_RG_JSON_BUFFER_ACCESS_STORAGE_WRITE);
-      found_sdsm_reduce = true_v;
-      continue;
-    }
-    if (vkr_string8_equals_cstr(&pass->name, "AO.PrefilterDepth")) {
-      assert(pass->condition.kind == VKR_RG_JSON_CONDITION_GTAO_ENABLED);
-      assert(pass->reads.length == 1u && pass->writes.length == 1u);
-      assert(pass->reads.data[0].binding.value == 0u &&
-             pass->writes.data[0].binding.value == 1u);
-      found_gtao_depth_prefilter = true_v;
-      continue;
-    }
-    if (vkr_string8_equals_cstr(&pass->name, "AO.PrefilterDepth.${i}")) {
-      assert(pass->condition.kind == VKR_RG_JSON_CONDITION_GTAO_ENABLED);
-      assert(pass->repeat.enabled &&
-             vkr_string8_equals_cstr(&pass->repeat.count_source,
-                                     "gtao_depth_mip_pass_count"));
-      assert(vkr_string8_equals_cstr(&pass->reads.data[0].slice_base_mip.token,
-                                     "${i}"));
-      assert(vkr_string8_equals_cstr(&pass->writes.data[0].slice_base_mip.token,
-                                     "${i+1}"));
-      found_gtao_depth_mip = true_v;
-      continue;
-    }
-    if (vkr_string8_equals_cstr(&pass->name, "AO.Evaluate")) {
-      assert(pass->condition.kind == VKR_RG_JSON_CONDITION_GTAO_ENABLED);
-      assert(pass->reads.length == 3u && pass->writes.length == 2u);
-      assert(pass->reads.data[0].binding.value == 0u &&
-             pass->reads.data[1].binding.value == 1u &&
-             pass->reads.data[2].binding.value == 2u &&
-             pass->writes.data[0].binding.value == 3u &&
-             pass->writes.data[1].binding.value == 4u);
-      found_gtao_evaluate = true_v;
-      continue;
-    }
-    if (vkr_string8_equals_cstr(&pass->name, "AO.Denoise")) {
-      assert(pass->condition.kind == VKR_RG_JSON_CONDITION_GTAO_ENABLED);
-      assert(pass->reads.length == 2u && pass->writes.length == 1u);
-      assert(pass->reads.data[0].binding.value == 0u &&
-             pass->reads.data[1].binding.value == 1u &&
-             pass->writes.data[0].binding.value == 2u);
-      found_gtao_denoise = true_v;
-      continue;
-    }
-    if (!vkr_string8_equals_cstr(&pass->name, "HZB.BuildMip.${i}"))
-      continue;
-    assert(pass->repeat.enabled &&
-           vkr_string8_equals_cstr(&pass->repeat.count_source,
-                                   "hzb_reduce_pass_count"));
-    assert(pass->reads.length == 1u && pass->writes.length == 1u);
-    VkrRgJsonResourceUse *read =
-        vector_get_VkrRgJsonResourceUse(&pass->reads, 0u);
-    VkrRgJsonResourceUse *write =
-        vector_get_VkrRgJsonResourceUse(&pass->writes, 0u);
-    assert(read && write && read->has_slice && write->has_slice);
-    assert(vkr_string8_equals_cstr(&read->slice_base_mip.token, "${i}"));
-    assert(vkr_string8_equals_cstr(&write->slice_base_mip.token, "${i+1}"));
-    found_hzb_reduce = true_v;
-  }
-  assert(found_hzb_reduce && found_sdsm_reduce && found_temporal_transform &&
-         found_temporal_resolve && found_gtao_depth_prefilter &&
-         found_gtao_depth_mip && found_gtao_evaluate && found_gtao_denoise);
-
-  const char *picking_deferred_ordered[] = {
-      "Picking.DepthSeed.Opaque", "Picking.Resolve.Opaque", "Picking.Features",
-      "Picking.Readback"};
-  found = 0u;
-  for (uint64_t i = 0u;
-       i < graph.passes.length && found < ArrayCount(picking_deferred_ordered);
-       ++i) {
-    VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph.passes, i);
-    if (!pass ||
-        !vkr_string8_equals_cstr(&pass->name, picking_deferred_ordered[found]))
-      continue;
-    if (found == 0u) {
-      assert(pass->type == VKR_RG_JSON_PASS_TRANSFER);
-      assert(pass->reads.length == 1u && pass->writes.length == 1u);
-    } else if (found == 1u) {
-      assert(pass->type == VKR_RG_JSON_PASS_COMPUTE);
-      assert(pass->reads.length == 5u && pass->writes.length == 1u);
-    } else if (found == 2u) {
-      assert(pass->type == VKR_RG_JSON_PASS_GRAPHICS);
-      assert(pass->attachments.colors.length == 1u &&
-             pass->attachments.has_depth);
-      VkrRgJsonAttachment *color =
-          vector_get_VkrRgJsonAttachment(&pass->attachments.colors, 0u);
-      assert(color && color->load_op == VKR_ATTACHMENT_LOAD_OP_LOAD);
-      assert(pass->attachments.depth.load_op == VKR_ATTACHMENT_LOAD_OP_LOAD);
-    }
-    found++;
-  }
-  assert(found == ArrayCount(picking_deferred_ordered));
-
-  vkr_rg_json_destroy(&graph);
-  arena_destroy(arena);
-  printf("  test_main_graph_contract PASSED\n");
-}
-
 static void test_main_graph_editor_metalfx_topology(void) {
   printf("  Running test_main_graph_editor_metalfx_topology...\n");
   Arena *arena = arena_create(MB(16), MB(2));
@@ -2014,7 +1387,7 @@ static void test_main_graph_editor_metalfx_topology(void) {
         .name = pass->execute,
         .id = executor_id++,
         .type = (VkrRgPassType)pass->type,
-        .execute = rg_barrier_test_execute,
+
     };
     assert(vkr_rg_executor_registry_register(&registry, &executor));
   }
@@ -2040,7 +1413,7 @@ static void test_main_graph_editor_metalfx_topology(void) {
       .shadow_map_size = 2048u,
       .shadow_map_layer_count = 4u,
   };
-  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_begin_frame(graph, &frame));
   assert(vkr_rg_build_from_json(graph, &json, &frame));
 
   const VkrRgImageHandle scene =
@@ -2115,7 +1488,7 @@ static void test_main_graph_fits_runtime_pass_capacity(void) {
         .name = pass->execute,
         .id = executor_id++,
         .type = (VkrRgPassType)pass->type,
-        .execute = rg_barrier_test_execute,
+
     };
     assert(vkr_rg_executor_registry_register(&registry, &executor));
   }
@@ -2151,14 +1524,14 @@ static void test_main_graph_fits_runtime_pass_capacity(void) {
       .gtao_enabled = true_v,
       .gtao_depth_mip_count = VKR_GTAO_MAX_DEPTH_MIP_COUNT,
   };
-  vkr_rg_begin_frame(runtime, &frame);
+  assert(vkr_rg_begin_frame(runtime, &frame));
   assert(vkr_rg_build_from_json(runtime, &graph, &frame));
   assert(runtime->passes.length == VKR_RENDERER_IMPL_MAX_GRAPH_PASSES);
   assert(vkr_rg_compile_schedule(runtime));
   vkr_rg_end_frame(runtime);
 
   frame.transmission_compact_enabled = true_v;
-  vkr_rg_begin_frame(runtime, &frame);
+  assert(vkr_rg_begin_frame(runtime, &frame));
   assert(vkr_rg_build_from_json(runtime, &graph, &frame));
   assert(runtime->passes.length == VKR_RENDERER_IMPL_MAX_GRAPH_PASSES);
   assert(vkr_rg_compile_schedule(runtime));
@@ -2182,7 +1555,7 @@ static void test_main_graph_fits_runtime_pass_capacity(void) {
       .transmission_depth_diagnostic_enabled = true_v,
       .transmission_compact_enabled = true_v,
   };
-  vkr_rg_begin_frame(runtime, &frame);
+  assert(vkr_rg_begin_frame(runtime, &frame));
   assert(vkr_rg_build_from_json(runtime, &graph, &frame));
   assert(runtime->passes.length <= VKR_RENDERER_IMPL_MAX_GRAPH_PASSES);
   assert(vkr_rg_compile_schedule(runtime));
@@ -2201,7 +1574,7 @@ static void test_main_graph_fits_runtime_pass_capacity(void) {
       .shadow_map_size = 2048u,
       .shadow_map_layer_count = 4u,
   };
-  vkr_rg_begin_frame(runtime, &frame);
+  assert(vkr_rg_begin_frame(runtime, &frame));
   assert(vkr_rg_build_from_json(runtime, &graph, &frame));
   bool8_t found_vbuffer = false_v;
   for (uint64_t i = 0u; i < runtime->passes.length; ++i) {
@@ -2242,7 +1615,7 @@ static void test_frame_allocator_reclaims_authored_passes(void) {
   // after only a few iterations. The scoped allocator must return to the same
   // high-water position on every rebuild.
   for (uint32_t iteration = 0; iteration < 500; ++iteration) {
-    vkr_rg_begin_frame(graph, &frame);
+    assert(vkr_rg_begin_frame(graph, &frame));
     VkrRgImageDesc desc = VKR_RG_IMAGE_DESC_DEFAULT;
     desc.width = 64;
     desc.height = 64;
@@ -2254,8 +1627,8 @@ static void test_frame_allocator_reclaims_authored_passes(void) {
     for (uint32_t pass_index = 0; pass_index < 16; ++pass_index) {
       VkrRgPassBuilder pass = rg_barrier_test_add_pass(
           graph, VKR_RG_PASS_TYPE_COMPUTE, "Scoped.Write");
-      vkr_rg_pass_write_image(&pass, image, VKR_RG_IMAGE_ACCESS_STORAGE_WRITE,
-                              0, 0);
+      assert(vkr_rg_pass_write_image(&pass, image,
+                                     VKR_RG_IMAGE_ACCESS_STORAGE_WRITE, 0, 0));
     }
     assert(vkr_rg_compile_schedule(graph));
     assert(graph->passes.length == 16);
@@ -2392,7 +1765,7 @@ static void test_retained_read_without_contents_fails_compile(void) {
   vkr_rg_set_retained_state_provider(graph, &provider);
 
   VkrRenderGraphFrameInfo frame = {.target_width = 4u, .target_height = 4u};
-  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_begin_frame(graph, &frame));
 
   VkrRgImageDesc desc = VKR_RG_IMAGE_DESC_DEFAULT;
   desc.width = 4u;
@@ -2409,8 +1782,8 @@ static void test_retained_read_without_contents_fails_compile(void) {
      no contents, so scheduling this would sample undefined memory. */
   VkrRgPassBuilder reader =
       rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "reader");
-  vkr_rg_pass_read_image(&reader, image, VKR_RG_IMAGE_ACCESS_STORAGE_READ, 0u,
-                         0u);
+  assert(vkr_rg_pass_read_image(&reader, image,
+                                VKR_RG_IMAGE_ACCESS_STORAGE_READ, 0u, 0u));
 
   assert(!vkr_rg_compile_schedule(graph));
   assert(g_retained_store.read_calls > 0u);
@@ -2446,14 +1819,14 @@ static void test_retained_commit_then_read_succeeds(void) {
 
   /* Frame 1 writes the image, then commits as a successful submit would. */
   VkrRenderGraphFrameInfo frame = {.target_width = 4u, .target_height = 4u};
-  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_begin_frame(graph, &frame));
   VkrRgImageHandle image =
       vkr_rg_create_image(graph, string8_lit("retained"), &desc);
   assert(vkr_rg_image_handle_valid(image));
   VkrRgPassBuilder writer =
       rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "writer");
-  vkr_rg_pass_write_image(&writer, image, VKR_RG_IMAGE_ACCESS_STORAGE_WRITE, 0u,
-                          0u);
+  assert(vkr_rg_pass_write_image(&writer, image,
+                                 VKR_RG_IMAGE_ACCESS_STORAGE_WRITE, 0u, 0u));
   assert(vkr_rg_compile_schedule(graph));
   vkr_rg_commit_retained_state(graph);
   assert(g_retained_store.commit_calls > 0u);
@@ -2461,13 +1834,13 @@ static void test_retained_commit_then_read_succeeds(void) {
 
   /* Frame 2 only reads. This is the case that must now compile: a reader whose
      producer ran in an earlier frame is exactly what retention is for. */
-  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_begin_frame(graph, &frame));
   image = vkr_rg_create_image(graph, string8_lit("retained"), &desc);
   assert(vkr_rg_image_handle_valid(image));
   VkrRgPassBuilder reader =
       rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "reader");
-  vkr_rg_pass_read_image(&reader, image, VKR_RG_IMAGE_ACCESS_STORAGE_READ, 0u,
-                         0u);
+  assert(vkr_rg_pass_read_image(&reader, image,
+                                VKR_RG_IMAGE_ACCESS_STORAGE_READ, 0u, 0u));
   assert(vkr_rg_compile_schedule(graph));
 
   vkr_rg_destroy(graph);
@@ -2500,13 +1873,13 @@ static void test_retained_uncommitted_frame_rolls_back(void) {
                                                  VKR_TEXTURE_USAGE_SAMPLED);
 
   VkrRenderGraphFrameInfo frame = {.target_width = 4u, .target_height = 4u};
-  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_begin_frame(graph, &frame));
   VkrRgImageHandle image =
       vkr_rg_create_image(graph, string8_lit("retained"), &desc);
   VkrRgPassBuilder writer =
       rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "writer");
-  vkr_rg_pass_write_image(&writer, image, VKR_RG_IMAGE_ACCESS_STORAGE_WRITE, 0u,
-                          0u);
+  assert(vkr_rg_pass_write_image(&writer, image,
+                                 VKR_RG_IMAGE_ACCESS_STORAGE_WRITE, 0u, 0u));
   assert(vkr_rg_compile_schedule(graph));
 
   /* Frame compiled and planned a write, but never submitted, so commit is not
@@ -2555,23 +1928,23 @@ static void test_retained_state_is_per_instance_and_per_layer(void) {
      valid layer succeeds. */
   VkrRenderGraphFrameInfo frame = {
       .target_width = 4u, .target_height = 4u, .image_index = 1u};
-  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_begin_frame(graph, &frame));
   VkrRgImageHandle image =
       vkr_rg_create_image(graph, string8_lit("retained"), &desc);
   VkrRgPassBuilder reader =
       rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "reader");
-  vkr_rg_pass_read_image_slice(
+  assert(vkr_rg_pass_read_image_slice(
       &reader, image, VKR_RG_IMAGE_ACCESS_STORAGE_READ, 0u, 0u,
-      (VkrRgImageSlice){.base_layer = 1u, .layer_count = 1u});
+      (VkrRgImageSlice){.base_layer = 1u, .layer_count = 1u}));
   assert(vkr_rg_compile_schedule(graph));
   vkr_rg_end_frame(graph);
 
   /* A whole-image read still fails because the other layers have nothing. */
-  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_begin_frame(graph, &frame));
   image = vkr_rg_create_image(graph, string8_lit("retained"), &desc);
   reader = rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "reader");
-  vkr_rg_pass_read_image(&reader, image, VKR_RG_IMAGE_ACCESS_STORAGE_READ, 0u,
-                         0u);
+  assert(vkr_rg_pass_read_image(&reader, image,
+                                VKR_RG_IMAGE_ACCESS_STORAGE_READ, 0u, 0u));
   assert(!vkr_rg_compile_schedule(graph));
 
   vkr_rg_destroy(graph);
@@ -2604,20 +1977,20 @@ static void test_retained_write_does_not_validate_other_layers(void) {
   desc.usage = vkr_texture_usage_flags_from_bits(VKR_TEXTURE_USAGE_STORAGE);
 
   VkrRenderGraphFrameInfo frame = {.target_width = 4u, .target_height = 4u};
-  vkr_rg_begin_frame(graph, &frame);
+  assert(vkr_rg_begin_frame(graph, &frame));
   VkrRgImageHandle image =
       vkr_rg_create_image(graph, string8_lit("retained"), &desc);
   VkrRgPassBuilder writer =
       rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "writer");
-  vkr_rg_pass_write_image_slice_at_stages(
+  assert(vkr_rg_pass_write_image_slice_at_stages(
       &writer, image, VKR_RG_IMAGE_ACCESS_STORAGE_WRITE,
       VKR_GPU_STAGE_COMPUTE_SHADER, 0u, 0u,
-      (VkrRgImageSlice){.base_layer = 0u, .layer_count = 1u});
+      (VkrRgImageSlice){.base_layer = 0u, .layer_count = 1u}));
   VkrRgPassBuilder reader =
       rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "reader");
-  vkr_rg_pass_read_image_slice(
+  assert(vkr_rg_pass_read_image_slice(
       &reader, image, VKR_RG_IMAGE_ACCESS_STORAGE_READ, 0u, 0u,
-      (VkrRgImageSlice){.base_layer = 1u, .layer_count = 1u});
+      (VkrRgImageSlice){.base_layer = 1u, .layer_count = 1u}));
   assert(!vkr_rg_compile_schedule(graph));
 
   vkr_rg_destroy(graph);
@@ -2625,9 +1998,150 @@ static void test_retained_write_does_not_validate_other_layers(void) {
   printf("  test_retained_write_does_not_validate_other_layers PASSED\n");
 }
 
+static void test_graph_builder_failure_does_not_publish(void) {
+  ContainerTestAllocator state = {.fail = true};
+  VkrAllocator allocator = container_test_allocator(&state);
+  assert(!vkr_rg_create(&allocator));
+  state.fail = false;
+  VkrRenderGraph *graph = vkr_rg_create(&allocator);
+  assert(graph);
+  const uint64_t graph_bytes = state.live_bytes;
+  VkrRgImageDesc desc = VKR_RG_IMAGE_DESC_DEFAULT;
+  desc.width = 4;
+  desc.height = 4;
+  desc.usage = vkr_texture_usage_flags_from_bits(VKR_TEXTURE_USAGE_STORAGE);
+
+  // Copying the name succeeds; admission to the owning vector fails.
+  state.fail_at = state.calls + 2;
+  assert(!vkr_rg_image_handle_valid(
+      vkr_rg_create_image(graph, string8_lit("image"), &desc)));
+  assert(graph->images.length == 0 && state.live_bytes == graph_bytes);
+  state.fail_at = 0;
+  VkrRgImageHandle image =
+      vkr_rg_create_image(graph, string8_lit("image"), &desc);
+  assert(vkr_rg_image_handle_valid(image));
+  uint64_t bytes = state.live_bytes;
+  state.fail_at = state.calls + 2;
+  VkrRgPassBuilder pass =
+      vkr_rg_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, string8_lit("pass"));
+  assert(!pass.graph && !graph->passes.length && state.live_bytes == bytes);
+  state.fail_at = 0;
+  pass = vkr_rg_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, string8_lit("pass"));
+  assert(pass.graph);
+  state.fail = true;
+  assert(!vkr_rg_pass_read_image(&pass, image, VKR_RG_IMAGE_ACCESS_STORAGE_READ,
+                                 0, 0));
+  assert(!graph->passes.data[0].desc.image_reads.length);
+  assert(!vkr_rg_export_image(graph, image));
+  assert(!graph->images.data[0].exported && !graph->export_images.length);
+  assert(!vkr_rg_pass_read_image(&pass, VKR_RG_IMAGE_HANDLE_INVALID,
+                                 VKR_RG_IMAGE_ACCESS_STORAGE_READ, 0, 0));
+  state.fail = false;
+  assert(vkr_rg_pass_read_image(&pass, image, VKR_RG_IMAGE_ACCESS_STORAGE_READ,
+                                0, 0));
+  assert(vkr_rg_export_image(graph, image));
+  vkr_rg_destroy(graph);
+  assert(!state.live_bytes);
+}
+
+static void test_graph_compile_allocation_failures_can_retry(void) {
+  bool8_t completed = false_v;
+  for (uint64_t failure = 1; failure < 64; ++failure) {
+    ContainerTestAllocator state = {0};
+    VkrAllocator allocator = container_test_allocator(&state);
+    VkrRenderGraph *graph = vkr_rg_create(&allocator);
+    assert(graph);
+    VkrRgImageDesc desc = VKR_RG_IMAGE_DESC_DEFAULT;
+    desc.width = 4;
+    desc.height = 4;
+    desc.usage = vkr_texture_usage_flags_from_bits(VKR_TEXTURE_USAGE_STORAGE);
+    VkrRgImageHandle image =
+        vkr_rg_create_image(graph, string8_lit("image"), &desc);
+    assert(vkr_rg_image_handle_valid(image));
+    VkrRgBufferDesc buffer_desc = {.size = 64};
+    bitset8_set(&buffer_desc.usage, VKR_BUFFER_USAGE_STORAGE);
+    VkrRgBufferHandle buffer =
+        vkr_rg_create_buffer(graph, string8_lit("buffer"), &buffer_desc);
+    assert(vkr_rg_buffer_handle_valid(buffer));
+    VkrRgPassBuilder writer =
+        rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "writer");
+    assert(writer.graph);
+    assert(vkr_rg_pass_write_image(&writer, image,
+                                   VKR_RG_IMAGE_ACCESS_STORAGE_WRITE, 0, 0));
+    assert(vkr_rg_pass_write_buffer(&writer, buffer,
+                                    VKR_RG_BUFFER_ACCESS_STORAGE_WRITE, 1, 0));
+    VkrRgPassBuilder reader =
+        rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "reader");
+    assert(reader.graph);
+    assert(vkr_rg_pass_read_image(&reader, image,
+                                  VKR_RG_IMAGE_ACCESS_STORAGE_READ, 0, 0));
+    assert(vkr_rg_pass_read_buffer(&reader, buffer,
+                                   VKR_RG_BUFFER_ACCESS_STORAGE_READ, 1, 0));
+    assert(vkr_rg_export_image(graph, image));
+    state.fail_at = state.calls + failure;
+    bool8_t ok = vkr_rg_compile_schedule(graph);
+    if (ok) {
+      // Reaching success before the selected call exhausts all failure sites.
+      assert(state.calls < state.fail_at);
+      completed = true_v;
+    } else {
+      assert(!graph->execution_order.length);
+      state.fail_at = 0;
+      assert(vkr_rg_compile_schedule(graph));
+    }
+    assert(graph->execution_order.length == 2);
+    assert(graph->execution_order.data[0] == 0);
+    assert(graph->execution_order.data[1] == 1);
+    assert(graph->passes.data[1].pre_image_barriers.length == 1);
+    assert(graph->passes.data[1].pre_buffer_barriers.length == 1);
+    assert(graph->passes.data[1].pre_image_barriers.data[0].src_access ==
+           VKR_RG_IMAGE_ACCESS_STORAGE_WRITE);
+    assert(graph->passes.data[1].pre_image_barriers.data[0].dst_access ==
+           VKR_RG_IMAGE_ACCESS_STORAGE_READ);
+    vkr_rg_destroy(graph);
+    assert(!state.live_bytes);
+    if (completed)
+      break;
+  }
+  assert(completed);
+}
+
+static void test_graph_json_allocation_failures_release_owned_storage(void) {
+  const char *source =
+      "{\"version\":1,\"name\":\"failure\",\"resources\":["
+      "{\"name\":\"image\",\"type\":\"image\",\"extent\":{\"mode\":\"fixed\","
+      "\"width\":4,\"height\":4},\"format\":\"R8G8B8A8_UNORM\","
+      "\"usage\":[\"SAMPLED\",\"STORAGE\"]}],\"passes\":["
+      "{\"name\":\"pass\",\"type\":\"compute\",\"reads\":[{\"image\":\"image\","
+      "\"access\":\"SAMPLED\",\"binding\":0}],\"writes\":[{\"image\":\"image\","
+      "\"access\":\"STORAGE_WRITE\",\"binding\":1}],\"execute\":\"test\"}],"
+      "\"outputs\":{\"export_images\":[\"image\"]}}";
+  bool8_t completed = false_v;
+  for (uint64_t failure = 1; failure < 32; ++failure) {
+    ContainerTestAllocator state = {.fail_at = failure};
+    VkrAllocator allocator = container_test_allocator(&state);
+    VkrRgJsonGraph graph = {0};
+    if (rg_barrier_test_load_json(&allocator, source, &graph)) {
+      assert(state.calls < failure);
+      assert(graph.passes.length == 1 && graph.resources.length == 1);
+      completed = true_v;
+    } else {
+      assert(!graph.source.str && !graph.passes.data && !graph.resources.data);
+    }
+    vkr_rg_json_destroy(&graph);
+    assert(!state.live_bytes);
+    if (completed)
+      break;
+  }
+  assert(completed);
+}
+
 bool32_t run_render_graph_barrier_tests() {
   printf("--- Running RenderGraph barrier tests... ---\n");
 
+  test_graph_builder_failure_does_not_publish();
+  test_graph_compile_allocation_failures_can_retry();
+  test_graph_json_allocation_failures_release_owned_storage();
   test_resource_instance_domains();
   test_retained_flag_rejects_conflicting_lifetimes();
   test_retained_is_not_an_instance_domain();
@@ -2636,7 +2150,6 @@ bool32_t run_render_graph_barrier_tests() {
   test_retained_uncommitted_frame_rolls_back();
   test_retained_state_is_per_instance_and_per_layer();
   test_retained_write_does_not_validate_other_layers();
-  test_image_access_is_write();
   test_json_bindings_and_condition_parity();
   test_transmission_condition();
   test_transmission_compact_conditions_and_viewport_buffer();
@@ -2650,7 +2163,6 @@ bool32_t run_render_graph_barrier_tests() {
   test_bloom_reverse_repeat_barriers();
   test_deferred_image_formats();
   test_frame_allocator_reclaims_authored_passes();
-  test_main_graph_contract();
   test_main_graph_editor_metalfx_topology();
   test_main_graph_fits_runtime_pass_capacity();
   test_subresource_range_resolve();

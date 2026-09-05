@@ -338,7 +338,7 @@ bool8_t file_ensure_directory(VkrAllocator *allocator, const String8 *path);
  *
  * Reads one line from the current position in the file,
  * including the newline character if present. The line is
- * allocated from the provided arena and stored as a
+ * allocated from line_allocator (or allocator when NULL) and stored as a
  * `String8`. The file position advances to the start of the
  * next line.
  *
@@ -346,8 +346,7 @@ bool8_t file_ensure_directory(VkrAllocator *allocator, const String8 *path);
  * NULL.
  * @param allocator Allocator to allocate the line string from. Must
  *   not be NULL.
- * @param line_allocator Allocator to allocate the line string from. Must
- *   not be NULL.
+ * @param line_allocator Optional allocator for the returned line.
  * @param max_line_length Maximum length of the line to read. Must be greater
  *   than 0.
  * @param out_line Pointer to store the line as a `String8`. Must not be NULL.
@@ -355,8 +354,9 @@ bool8_t file_ensure_directory(VkrAllocator *allocator, const String8 *path);
  * `FILE_ERROR_INVALID_HANDLE` if the file is not open, or
  * another error code on failure.
  *
- * @note The maximum line length is 32,000 characters.
- * Longer lines will be truncated.
+ * @note Reads at most max_line_length bytes. A longer line continues on the
+ * next call. The allocation reserves max_line_length + 1 bytes; the caller
+ * owns it. EOF and read errors return no allocation.
  */
 FileError file_read_line(FileHandle *handle, VkrAllocator *allocator,
                          VkrAllocator *line_allocator, uint64_t max_line_length,
@@ -366,8 +366,7 @@ FileError file_read_line(FileHandle *handle, VkrAllocator *allocator,
  * @brief Writes a line of text to a file.
  *
  * Writes the contents of the string to the file followed by
- * a newline character. The file is automatically flushed
- * after writing to ensure data persistence.
+ * a newline character. Call file_sync when durable storage is required.
  *
  * @param handle Pointer to an open file handle with write
  * permissions. Must not be NULL.
@@ -420,8 +419,7 @@ FileError file_read_into(FileHandle *handle, void *buffer, uint64_t size,
  * @brief Writes raw data to a file.
  *
  * Writes the specified buffer contents to the file at the
- * current position. The file is automatically flushed after
- * writing to ensure data persistence.
+ * current position. Call file_sync when durable storage is required.
  *
  * @param handle Pointer to an open file handle with write
  * permissions. Must not be NULL.
@@ -458,8 +456,8 @@ FileError file_write(FileHandle *handle, uint64_t size, const uint8_t *buffer,
  * `FILE_ERROR_IO_ERROR` on read failure, or another error
  * code.
  *
- * @note The returned string includes a null terminator for
- * C compatibility.
+ * @note Success owns length + 1 bytes including the C terminator. A file that
+ * shrinks during the read is an I/O error.
  */
 FileError file_read_string(FileHandle *handle, VkrAllocator *allocator,
                            String8 *out_data);
@@ -485,8 +483,10 @@ FileError file_read_string(FileHandle *handle, VkrAllocator *allocator,
  * `FILE_ERROR_IO_ERROR` on read failure, or another error
  * code.
  *
- * @note Uses `ftello`/`fseeko` for large file support
- * (>2GB).
+ * @note Uses native 64-bit file size and position queries. Failed reads release
+ * their allocation and return a NULL buffer with zero bytes. A file that
+ * shrinks during the read is an I/O error; success owns exactly bytes_read
+ * bytes.
  */
 FileError file_read_all(FileHandle *handle, VkrAllocator *allocator,
                         uint8_t **out_buffer, uint64_t *bytes_read);
@@ -509,8 +509,8 @@ FileError file_load_spirv_shader(const FilePath *path, VkrAllocator *allocator,
 /**
  * @brief Creates a directory.
  *
- * Creates the directory at the given path. If the directory already exists,
- * this function does nothing.
+ * Creates the directory at the given path. An existing directory succeeds;
+ * an existing non-directory fails.
  *
  * @param path The path to the directory to create. Must not be NULL.
  * @return `true` if the directory was created successfully, `false` otherwise.

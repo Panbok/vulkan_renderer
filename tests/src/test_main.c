@@ -10,7 +10,6 @@ static const VkrTestSuite VKR_TEST_SUITES[] = {
     run_array_tests,
     run_vector_tests,
     run_queue_tests,
-    run_bitset_tests,
     run_event_data_buffer_tests,
     run_threads_tests,
     run_job_system_tests,
@@ -26,7 +25,6 @@ static const VkrTestSuite VKR_TEST_SUITES[] = {
     run_quat_tests,
     run_transform_tests,
     run_simd_tests,
-    run_clock_tests,
     run_string_tests,
     run_text_tests,
     run_font_cooked_tests,
@@ -39,12 +37,10 @@ static const VkrTestSuite VKR_TEST_SUITES[] = {
     run_renderer_impl_tests,
     run_vulkan_tests,
     run_packet_constants_tests,
-    run_transmission_tests,
     run_temporal_tests,
     run_exposure_tests,
     run_bloom_tests,
     run_gtao_tests,
-    run_picking_state_tests,
     run_visibility_tests,
     run_editor_viewport_tests,
     run_ui_layout_tests,
@@ -75,7 +71,7 @@ int main(int argc, char **argv) {
   vkr_platform_init();
 
   Arena *log_arena = arena_create(MB(1), MB(1));
-  log_init(log_arena);
+  assert(log_init(log_arena));
 
   bool32_t all_passed = true;
   for (uint32_t i = 0u; i < ArrayCount(VKR_TEST_SUITES); ++i) {

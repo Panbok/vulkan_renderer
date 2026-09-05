@@ -16,6 +16,7 @@
 #include "renderer/systems/vkr_scene_system.h"
 #include "renderer/systems/vkr_shadow_system.h"
 #include "renderer/systems/vkr_ui_system.h"
+#include "renderer/vkr_temporal.h"
 
 #define VKR_HARNESS_MAX_CAPTURE_BATCH_BYTES GB(1)
 
@@ -871,34 +872,39 @@ void application_update(Application *application, float64_t delta) {
   if (!vkr_harness_child_renderer_publications_ready(application)) {
     return;
   }
+  const uint64_t next_frame = application->renderer.frame_number + 1u;
   if (!child->pass_catalog_ready) {
     if (!vkr_harness_child_prepare_pass_catalog(application))
       return;
-  } else if (!child->phase_started) {
-    /* The catalog allocation happened in the preceding bootstrap frame. Drop
-       that publication too so a zero-warmup case remains allocation-free. */
+  } else if (!child->phase_started &&
+             next_frame % VKR_TEMPORAL_SEQUENCE_LENGTH == 0u) {
+    /* Bootstrap duration must not choose the jitter phase or history consumed
+       by the authored warmup, including cases with no warmup frames. */
+    vkr_renderer_invalidate_temporal_history(&application->renderer);
     child->phase_started = true_v;
-    child->phase_first_frame_index = application->renderer.frame_number + 1u;
+    child->phase_first_frame_index = next_frame;
     child->submission_timing_cursor =
         vkr_renderer_get_submit_serial(&application->renderer);
   }
-  if (!vkr_harness_child_resize_round_trip(application)) {
-    return;
-  }
-  if (!child->exposure_reset_applied &&
-      child->case_manifest->renderer.exposure_reset_frame != UINT32_MAX &&
-      child->completed_frames ==
-          child->case_manifest->warmup_frames +
-              child->case_manifest->renderer.exposure_reset_frame) {
-    vkr_renderer_invalidate_exposure_history(&application->renderer);
-    child->exposure_reset_applied = true_v;
-  }
-  if (child->capture_index >= 0 && !child->capture_requested &&
-      child->completed_frames ==
-          child->case_manifest->warmup_frames +
-              child->case_manifest->captures[child->capture_index].at_frame) {
-    application->capture_request = &child->capture_request;
-    child->capture_requested = true_v;
+  if (child->phase_started) {
+    if (!vkr_harness_child_resize_round_trip(application)) {
+      return;
+    }
+    if (!child->exposure_reset_applied &&
+        child->case_manifest->renderer.exposure_reset_frame != UINT32_MAX &&
+        child->completed_frames ==
+            child->case_manifest->warmup_frames +
+                child->case_manifest->renderer.exposure_reset_frame) {
+      vkr_renderer_invalidate_exposure_history(&application->renderer);
+      child->exposure_reset_applied = true_v;
+    }
+    if (child->capture_index >= 0 && !child->capture_requested &&
+        child->completed_frames ==
+            child->case_manifest->warmup_frames +
+                child->case_manifest->captures[child->capture_index].at_frame) {
+      application->capture_request = &child->capture_request;
+      child->capture_requested = true_v;
+    }
   }
   vkr_scene_handle_update_and_sync(child->scene_resource.as.scene,
                                    &application->renderer, delta);

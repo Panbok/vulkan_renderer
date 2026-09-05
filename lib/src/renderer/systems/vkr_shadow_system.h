@@ -489,6 +489,8 @@ typedef struct VkrShadowSystem {
   uint64_t sdsm_current_frame_index;
   uint64_t sdsm_current_scene_generation;
   uint64_t sdsm_source_frame_index;
+  uint64_t sdsm_source_scene_generation;
+  uint64_t sdsm_source_projection_generation;
   uint64_t sdsm_submit_value;
   uint32_t sdsm_source_lag;
   uint32_t sdsm_occupied_count;

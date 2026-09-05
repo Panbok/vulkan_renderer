@@ -10,7 +10,6 @@
 #include "defines.h"
 #include "memory/vkr_allocator.h"
 
-#define VKR_HASH_TABLE_LOAD_FACTOR 0.75
 #define VKR_HASH_TABLE_MAX_PROBES 128
 #define VKR_HASH_TABLE_INITIAL_CAPACITY 16
 #define VKR_HASH_TABLE_FNV_OFFSET_BASIS 14695981039346656037ULL
@@ -22,6 +21,10 @@ typedef enum VkrOccupancyState {
   VKR_EMPTY = 0,
 } VkrOccupancyState;
 
+// Keys are borrowed and must outlive their entries. Creation returns an
+// all-zero record on failure. Resize and insert commit only on success; failure
+// preserves the original entries, capacity and mappings. Successful resize
+// invalidates borrowed value pointers.
 #define VkrHashTable(type) VkrHashTableConstructor(type, type)
 
 #define VkrHashTableConstructor(type, name)                                    \
@@ -30,14 +33,14 @@ typedef enum VkrOccupancyState {
     type value;                                                                \
     VkrOccupancyState occupied;                                                \
   } VkrHashEntry_##name;                                                       \
-                                                                              \
+                                                                               \
   typedef struct VkrHashTable_##name {                                         \
     VkrAllocator *allocator;                                                   \
     uint64_t capacity;                                                         \
     uint64_t size;                                                             \
     VkrHashEntry_##name *entries;                                              \
   } VkrHashTable_##name;                                                       \
-                                                                              \
+                                                                               \
   vkr_internal INLINE uint64_t vkr_hash_name_##name(const char *key,           \
                                                     uint64_t capacity) {       \
     assert_log(key != NULL, "Name must not be NULL");                          \
@@ -48,7 +51,7 @@ typedef enum VkrOccupancyState {
     }                                                                          \
     return hash % capacity;                                                    \
   }                                                                            \
-                                                                              \
+                                                                               \
   /* Internal insert without resizing; expects capacity headroom. */           \
   vkr_internal INLINE bool32_t vkr_hash_table_insert_internal_##name(          \
       VkrHashTable_##name *table, const char *key, type value) {               \
@@ -68,38 +71,41 @@ typedef enum VkrOccupancyState {
       index = (index + 1) % table->capacity;                                   \
       probes++;                                                                \
       if (probes >= VKR_HASH_TABLE_MAX_PROBES || probes >= table->capacity) {  \
+        if (first_tombstone != UINT64_MAX) {                                   \
+          break;                                                               \
+        }                                                                      \
         log_error("Hash table probe limit exceeded for key: %s", key);         \
         return false_v;                                                        \
       }                                                                        \
     }                                                                          \
-                                                                              \
+                                                                               \
     if (first_tombstone != UINT64_MAX) {                                       \
       index = first_tombstone;                                                 \
     }                                                                          \
-                                                                              \
+                                                                               \
     table->entries[index].key = key;                                           \
     table->entries[index].value = value;                                       \
     table->entries[index].occupied = VKR_OCCUPIED;                             \
     table->size++;                                                             \
     return true_v;                                                             \
   }                                                                            \
-                                                                              \
-  vkr_internal INLINE VkrHashTable_##name vkr_hash_table_create_##name(        \
-      VkrAllocator *allocator, uint64_t capacity) {                            \
+                                                                               \
+  vkr_internal INLINE VKR_MUST_USE                                             \
+      VkrHashTable_##name vkr_hash_table_create_##name(                        \
+          VkrAllocator *allocator, uint64_t capacity) {                        \
     assert_log(allocator != NULL, "Allocator must not be NULL");               \
-    assert_log(capacity > 0, "Capacity must be greater than 0");               \
-    VkrHashTable_##name table = {0};                                           \
-    table.allocator = allocator;                                               \
-    table.capacity = capacity;                                                 \
-    table.size = 0;                                                            \
-    table.entries = vkr_allocator_alloc(                                       \
-        allocator, capacity * sizeof(VkrHashEntry_##name),                    \
-        VKR_ALLOCATOR_MEMORY_TAG_HASH_TABLE);                                  \
-    assert_log(table.entries != NULL, "alloc failed for hash table entries");  \
-    MemZero(table.entries, capacity * sizeof(VkrHashEntry_##name));            \
-    return table;                                                              \
+    if (capacity == 0 || capacity > SIZE_MAX / sizeof(VkrHashEntry_##name)) {  \
+      return (VkrHashTable_##name){0};                                         \
+    }                                                                          \
+    VkrHashEntry_##name *entries =                                             \
+        vkr_allocator_alloc(allocator, capacity * sizeof(VkrHashEntry_##name), \
+                            VKR_ALLOCATOR_MEMORY_TAG_HASH_TABLE);              \
+    if (!entries) {                                                            \
+      return (VkrHashTable_##name){0};                                         \
+    }                                                                          \
+    MemZero(entries, capacity * sizeof(VkrHashEntry_##name));                  \
+    return (VkrHashTable_##name){allocator, capacity, 0, entries};             \
   }                                                                            \
-                                                                              \
   vkr_internal INLINE void vkr_hash_table_destroy_##name(                      \
       VkrHashTable_##name *table) {                                            \
     if (!table) {                                                              \
@@ -115,40 +121,38 @@ typedef enum VkrOccupancyState {
     table->capacity = 0;                                                       \
     table->size = 0;                                                           \
   }                                                                            \
-                                                                              \
-  vkr_internal INLINE void vkr_hash_table_resize_##name(                       \
-      VkrHashTable_##name *table, uint64_t new_capacity) {                     \
-    assert_log(table != NULL, "Table must not be NULL");                       \
-    assert_log(table->allocator != NULL, "Allocator must not be NULL");        \
-    assert_log(new_capacity > 0, "New capacity must be greater than 0");       \
-                                                                              \
-    VkrHashEntry_##name *old_entries = table->entries;                         \
-    uint64_t old_capacity = table->capacity;                                   \
-                                                                              \
-    VkrHashEntry_##name *new_entries = vkr_allocator_alloc(                    \
-        table->allocator, new_capacity * sizeof(VkrHashEntry_##name),         \
-        VKR_ALLOCATOR_MEMORY_TAG_HASH_TABLE);                                  \
-    assert_log(new_entries != NULL, "alloc failed for resized hash table");    \
-    MemZero(new_entries, new_capacity * sizeof(VkrHashEntry_##name));          \
-                                                                              \
-    table->entries = new_entries;                                              \
-    table->capacity = new_capacity;                                            \
-    table->size = 0;                                                           \
-                                                                              \
-    if (old_entries) {                                                         \
-      for (uint64_t i = 0; i < old_capacity; ++i) {                            \
-        if (old_entries[i].occupied == VKR_OCCUPIED) {                         \
-          vkr_hash_table_insert_internal_##name(table,                         \
-                                                 old_entries[i].key,           \
-                                                 old_entries[i].value);        \
-        }                                                                      \
-      }                                                                        \
-      vkr_allocator_free(table->allocator, old_entries,                        \
-                         old_capacity * sizeof(VkrHashEntry_##name),           \
-                         VKR_ALLOCATOR_MEMORY_TAG_HASH_TABLE);                 \
+                                                                               \
+  vkr_internal INLINE VkrHashTable_##name vkr_hash_table_rehash_##name(        \
+      const VkrHashTable_##name *table, uint64_t capacity) {                   \
+    if (capacity < table->size) {                                              \
+      return (VkrHashTable_##name){0};                                         \
     }                                                                          \
+    VkrHashTable_##name replacement =                                          \
+        vkr_hash_table_create_##name(table->allocator, capacity);              \
+    if (!replacement.entries) {                                                \
+      return replacement;                                                      \
+    }                                                                          \
+    for (uint64_t i = 0; i < table->capacity; ++i) {                           \
+      if (table->entries[i].occupied == VKR_OCCUPIED &&                        \
+          !vkr_hash_table_insert_internal_##name(                              \
+              &replacement, table->entries[i].key, table->entries[i].value)) { \
+        vkr_hash_table_destroy_##name(&replacement);                           \
+        return (VkrHashTable_##name){0};                                       \
+      }                                                                        \
+    }                                                                          \
+    return replacement;                                                        \
   }                                                                            \
-                                                                              \
+  vkr_internal INLINE VKR_MUST_USE bool32_t vkr_hash_table_resize_##name(      \
+      VkrHashTable_##name *table, uint64_t capacity) {                         \
+    VkrHashTable_##name replacement =                                          \
+        vkr_hash_table_rehash_##name(table, capacity);                         \
+    if (!replacement.entries) {                                                \
+      return false_v;                                                          \
+    }                                                                          \
+    vkr_hash_table_destroy_##name(table);                                      \
+    *table = replacement;                                                      \
+    return true_v;                                                             \
+  }                                                                            \
   vkr_internal INLINE void vkr_hash_table_reset_##name(                        \
       VkrHashTable_##name *table) {                                            \
     assert_log(table != NULL, "Table must not be NULL");                       \
@@ -157,24 +161,7 @@ typedef enum VkrOccupancyState {
     }                                                                          \
     table->size = 0;                                                           \
   }                                                                            \
-                                                                              \
-  vkr_internal INLINE bool32_t vkr_hash_table_insert_##name(                   \
-      VkrHashTable_##name *table, const char *key, type value) {               \
-    assert_log(table != NULL, "Table must not be NULL");                       \
-    assert_log(table->allocator != NULL, "Allocator must not be NULL");        \
-    assert_log(key != NULL, "Key must not be NULL");                           \
-                                                                              \
-    if (table->size >=                                                         \
-        (uint64_t)(table->capacity * VKR_HASH_TABLE_LOAD_FACTOR)) {            \
-      uint64_t new_capacity = table->capacity > 0                              \
-                                  ? table->capacity * 2                        \
-                                  : VKR_HASH_TABLE_INITIAL_CAPACITY;           \
-      vkr_hash_table_resize_##name(table, new_capacity);                       \
-    }                                                                          \
-                                                                              \
-    return vkr_hash_table_insert_internal_##name(table, key, value);           \
-  }                                                                            \
-                                                                              \
+                                                                               \
   vkr_internal INLINE bool8_t vkr_hash_table_remove_##name(                    \
       VkrHashTable_##name *table, const char *key) {                           \
     assert_log(table != NULL, "Table must not be NULL");                       \
@@ -182,7 +169,7 @@ typedef enum VkrOccupancyState {
     if (!table->entries) {                                                     \
       return false_v;                                                          \
     }                                                                          \
-                                                                              \
+                                                                               \
     uint64_t index = vkr_hash_name_##name(key, table->capacity);               \
     uint64_t probes = 0;                                                       \
     while (table->entries[index].occupied != VKR_EMPTY) {                      \
@@ -201,7 +188,7 @@ typedef enum VkrOccupancyState {
     }                                                                          \
     return false_v;                                                            \
   }                                                                            \
-                                                                              \
+                                                                               \
   vkr_internal INLINE type *vkr_hash_table_get_##name(                         \
       const VkrHashTable_##name *table, const char *key) {                     \
     assert_log(table != NULL, "Table must not be NULL");                       \
@@ -209,7 +196,7 @@ typedef enum VkrOccupancyState {
     if (!table->entries) {                                                     \
       return NULL;                                                             \
     }                                                                          \
-                                                                              \
+                                                                               \
     uint64_t index = vkr_hash_name_##name(key, table->capacity);               \
     uint64_t probes = 0;                                                       \
     while (table->entries[index].occupied != VKR_EMPTY) {                      \
@@ -225,12 +212,45 @@ typedef enum VkrOccupancyState {
     }                                                                          \
     return NULL;                                                               \
   }                                                                            \
-                                                                              \
+                                                                               \
+  vkr_internal INLINE VKR_MUST_USE bool32_t vkr_hash_table_insert_##name(      \
+      VkrHashTable_##name *table, const char *key, type value) {               \
+    assert_log(table != NULL, "Table must not be NULL");                       \
+    assert_log(table->allocator != NULL, "Allocator must not be NULL");        \
+    assert_log(key != NULL, "Key must not be NULL");                           \
+    uint64_t threshold =                                                       \
+        (table->capacity / 4) * 3 + (table->capacity % 4) * 3 / 4;             \
+    if (table->size < threshold) {                                             \
+      return vkr_hash_table_insert_internal_##name(table, key, value);         \
+    }                                                                          \
+    type *existing = vkr_hash_table_get_##name(table, key);                    \
+    if (existing) {                                                            \
+      *existing = value;                                                       \
+      return true_v;                                                           \
+    }                                                                          \
+    if (table->capacity > SIZE_MAX / sizeof(VkrHashEntry_##name) / 2) {        \
+      return false_v;                                                          \
+    }                                                                          \
+    uint64_t capacity = table->capacity ? table->capacity * 2                  \
+                                        : VKR_HASH_TABLE_INITIAL_CAPACITY;     \
+    VkrHashTable_##name replacement =                                          \
+        vkr_hash_table_rehash_##name(table, capacity);                         \
+    if (!replacement.entries) {                                                \
+      return false_v;                                                          \
+    }                                                                          \
+    if (!vkr_hash_table_insert_internal_##name(&replacement, key, value)) {    \
+      vkr_hash_table_destroy_##name(&replacement);                             \
+      return false_v;                                                          \
+    }                                                                          \
+    vkr_hash_table_destroy_##name(table);                                      \
+    *table = replacement;                                                      \
+    return true_v;                                                             \
+  }                                                                            \
   vkr_internal INLINE bool8_t vkr_hash_table_contains_##name(                  \
       const VkrHashTable_##name *table, const char *key) {                     \
     return vkr_hash_table_get_##name(table, key) != NULL ? true_v : false_v;   \
   }                                                                            \
-                                                                              \
+                                                                               \
   vkr_internal INLINE bool8_t vkr_hash_table_is_empty_##name(                  \
       const VkrHashTable_##name *table) {                                      \
     assert_log(table != NULL, "Table must not be NULL");                       \

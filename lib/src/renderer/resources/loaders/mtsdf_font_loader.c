@@ -291,7 +291,7 @@ vkr_internal bool8_t vkr_mtsdf_parse_glyph_bounds(
 
 vkr_internal bool8_t vkr_mtsdf_parse_glyphs(
     VkrJsonReader *reader, const VkrMtsdfFontMetadata *metadata,
-    Vector_VkrMtsdfGlyph *out_glyphs) {
+    Vector_VkrMtsdfGlyph *out_glyphs, VkrRendererError *out_error) {
   assert_log(reader != NULL, "Reader is NULL");
   assert_log(metadata != NULL, "Metadata is NULL");
   assert_log(out_glyphs != NULL, "Out glyphs is NULL");
@@ -370,7 +370,10 @@ vkr_internal bool8_t vkr_mtsdf_parse_glyphs(
       return false_v;
     }
 
-    vector_push_VkrMtsdfGlyph(out_glyphs, glyph);
+    if (!vector_push_VkrMtsdfGlyph(out_glyphs, glyph)) {
+      *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      return false_v;
+    }
     if (out_glyphs->length >= VKR_MTSDF_FONT_MAX_GLYPHS) {
       log_error("MtsdfFontLoader: glyph limit exceeded");
       return false_v;
@@ -474,14 +477,18 @@ vkr_internal bool8_t vkr_mtsdf_build_font(VkrMtsdfFontMetadata *metadata,
   }
   out_font->glyph_indices =
       vkr_hash_table_create_uint32_t(allocator, table_capacity);
+  if (!out_font->glyph_indices.entries)
+    return false_v;
 
   for (uint64_t i = 0; i < glyph_count; i++) {
     String8 key = string8_create_formatted(allocator, "%u",
                                            out_font->glyphs.data[i].codepoint);
-    if (!vkr_hash_table_insert_uint32_t(&out_font->glyph_indices,
+    if (!key.str ||
+        !vkr_hash_table_insert_uint32_t(&out_font->glyph_indices,
                                         string8_cstr(&key), (uint32_t)i)) {
-      log_warn("MtsdfFontLoader: failed to index glyph %u",
-               out_font->glyphs.data[i].codepoint);
+      log_error("MtsdfFontLoader: failed to index glyph %u",
+                out_font->glyphs.data[i].codepoint);
+      return false_v;
     }
   }
 
@@ -511,9 +518,9 @@ vkr_internal bool8_t vkr_mtsdf_build_font(VkrMtsdfFontMetadata *metadata,
   }
 
   out_font->atlas_pages = array_create_VkrTextureHandle(allocator, 1);
-  if (out_font->atlas_pages.data) {
-    out_font->atlas_pages.data[0] = atlas;
-  }
+  if (!out_font->atlas_pages.data)
+    return false_v;
+  out_font->atlas_pages.data[0] = atlas;
 
   out_font->mtsdf_glyphs = metadata->glyphs;
   out_font->sdf_distance_range = metadata->distance_range;
@@ -657,9 +664,9 @@ vkr_internal bool8_t vkr_mtsdf_font_loader_load(
     goto fail;
   }
 
-  Vector_VkrMtsdfGlyph glyphs = vector_create_VkrMtsdfGlyph(temp_alloc);
-  if (!vkr_mtsdf_parse_glyphs(&reader, &metadata, &glyphs)) {
-    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  Vector_VkrMtsdfGlyph glyphs = {.allocator = temp_alloc};
+  *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  if (!vkr_mtsdf_parse_glyphs(&reader, &metadata, &glyphs, out_error)) {
     goto fail;
   }
 

@@ -19,20 +19,17 @@ vkr_internal String8 vkr_text_3d_copy_text(VkrAllocator *allocator,
   return string8_duplicate(allocator, &text);
 }
 
-vkr_internal void vkr_text_3d_compute_layout(VkrText3D *text_3d,
-                                             const VkrFont *font) {
+vkr_internal bool8_t vkr_text_3d_compute_layout(VkrText3D *text_3d,
+                                                const VkrFont *font) {
   assert_log(text_3d != NULL, "Text3D instance is NULL");
   assert_log(font != NULL, "Font is NULL");
 
-  if (text_3d->layout.allocator != NULL) {
-    vkr_text_layout_destroy(&text_3d->layout);
-  }
-
   if (!text_3d->text.str || text_3d->text.length == 0) {
+    vkr_text_layout_destroy(&text_3d->layout);
     text_3d->layout = (VkrTextLayout){0};
     text_3d->bounds = (VkrTextBounds){0};
     text_3d->layout_dirty = false_v;
-    return;
+    return true_v;
   }
 
   float32_t font_size = text_3d->font_size;
@@ -45,8 +42,12 @@ vkr_internal void vkr_text_3d_compute_layout(VkrText3D *text_3d,
   style = vkr_text_style_with_font_data(&style, font);
 
   VkrText text_for_layout = vkr_text_from_view(text_3d->text, &style);
-  text_3d->layout = vkr_text_layout_compute(
+  VkrTextLayout replacement = vkr_text_layout_compute(
       text_3d->allocator, &text_for_layout, &text_3d->layout_options);
+  if (replacement.line_count == 0u)
+    return false_v;
+  vkr_text_layout_destroy(&text_3d->layout);
+  text_3d->layout = replacement;
 
   text_3d->bounds.size = text_3d->layout.bounds;
 
@@ -60,6 +61,7 @@ vkr_internal void vkr_text_3d_compute_layout(VkrText3D *text_3d,
   }
 
   text_3d->layout_dirty = false_v;
+  return true_v;
 }
 
 typedef struct VkrText3DGlyphQuad {
@@ -609,9 +611,8 @@ bool8_t vkr_text_3d_prepare_geometry(VkrText3D *text_3d) {
     return false_v;
   }
 
-  if (text_3d->layout_dirty) {
-    vkr_text_3d_compute_layout(text_3d, font);
-  }
+  if (text_3d->layout_dirty && !vkr_text_3d_compute_layout(text_3d, font))
+    return false_v;
 
   if (text_3d->buffers_dirty) {
     if (!vkr_text_3d_generate_geometry(text_3d, font))

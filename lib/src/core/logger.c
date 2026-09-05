@@ -22,19 +22,28 @@ vkr_internal INLINE void log_unlock(void) {
   }
 }
 
-void log_init(Arena *arena) {
-  assert(arena != NULL && "Log arena is not initialized.");
-  g_log_arena = arena;
-  g_log_allocator.ctx = arena;
-  vkr_allocator_arena(&g_log_allocator);
-
-  // Guard the global log allocator since logging can happen from job workers
-  // and other auxiliary threads.
-  if (!g_log_mutex) {
-    if (!vkr_mutex_create(&g_log_allocator, &g_log_mutex)) {
-      g_log_mutex = NULL;
-    }
+bool8_t log_init(Arena *arena) {
+  if (!arena) {
+    vkr_platform_stderr_write("Log arena is NULL\n");
+    return false_v;
   }
+  g_log_allocator = (VkrAllocator){.ctx = arena};
+  if (!vkr_allocator_arena(&g_log_allocator) ||
+      !vkr_mutex_create(&g_log_allocator, &g_log_mutex)) {
+    vkr_allocator_release_global_accounting(&g_log_allocator);
+    g_log_allocator = (VkrAllocator){0};
+    return false_v;
+  }
+  g_log_arena = arena;
+  return true_v;
+}
+
+void log_shutdown(void) {
+  if (g_log_mutex)
+    vkr_mutex_destroy(&g_log_allocator, &g_log_mutex);
+  vkr_allocator_release_global_accounting(&g_log_allocator);
+  g_log_allocator = (VkrAllocator){0};
+  g_log_arena = NULL;
 }
 
 void _log_message(LogLevel level, const char *file, uint32_t line,
@@ -54,14 +63,15 @@ void _log_message(LogLevel level, const char *file, uint32_t line,
   String8 message = string8_create_formatted_v(&g_log_allocator, fmt, args);
   va_end(args);
 
-  assert(message.str != NULL && "Error formatting log message.");
+  if (!message.str)
+    goto allocation_failed;
 
   String8 formatted_message = string8_create_formatted(
       &g_log_allocator, "%s(%s:%d) %.*s\n", LOG_LEVELS[level], file, line,
       message.length, message.str);
 
-  assert(formatted_message.str != NULL &&
-         "Error formatting final log message.");
+  if (!formatted_message.str)
+    goto allocation_failed;
 
   vkr_platform_console_write(string8_cstr(&formatted_message), level);
 
@@ -72,4 +82,10 @@ void _log_message(LogLevel level, const char *file, uint32_t line,
   if (level == LOG_LEVEL_FATAL) {
     debug_break();
   }
+  return;
+
+allocation_failed:
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  log_unlock();
+  vkr_platform_stderr_write("Log formatting allocation failed\n");
 }

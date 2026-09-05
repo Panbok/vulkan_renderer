@@ -12,7 +12,7 @@ static void app_ui_initialize(void *state, VkrUiDockTree *dock) {
 
 static void app_ui_handle_input(void *state, const InputState *input) {
   VkrAppUi *ui = state;
-  if (!vkr_debug_overlay_toggle_requested(input))
+  if (!input_key_just_released(input, KEY_F6))
     return;
 
   ui->visible = !ui->visible;

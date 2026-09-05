@@ -3,192 +3,127 @@
 
 static bool8_t event_callback_equals(EventCallbackData *current_value,
                                      EventCallbackData *value) {
-  return current_value->callback == value->callback &&
-         current_value->user_data == value->user_data;
+  return current_value->callback == value->callback;
 }
 
-/**
- * @brief The main function for the dedicated event processing thread.
- * Waits for events on the queue using a condition variable. When woken up,
- * it checks if the manager is still running and if events are available.
- * If an event is dequeued, it retrieves the list of subscribed callbacks
- * for that event type (copying them to a temporary buffer to minimize lock
- * duration), releases the lock, and invokes the callbacks.
- * Uses a thread-local arena with scratch allocations for the temporary callback
- * buffer.
- * Continues processing until the `manager->running` flag is set to false and
- * all remaining events in the queue have been drained (graceful shutdown).
- * Cleans up the thread-local arena before exiting.
- * @param arg Pointer to the EventManager instance.
- * @return void* Always returns NULL.
- */
+// Snapshot subscriptions and payload under the manager lock. Callbacks run
+// after unlocking and may subscribe, unsubscribe, or dispatch another event.
 static void *events_processor(void *arg) {
-  EventManager *manager = (EventManager *)arg;
-  Arena *local_thread_arena = arena_create(KB(64), KB(64));
-  VkrAllocator thread_allocator = manager->allocator;
-  thread_allocator.ctx = local_thread_arena;
-  bool32_t should_run = true;
+  EventManager *manager = arg;
+  VkrAllocator thread_allocator = {.ctx = manager->callback_arena};
+  (void)vkr_allocator_arena(&thread_allocator);
 
-  while (should_run) {
+  for (;;) {
     Event event;
-    Event local_event;
-    bool32_t event_dequeued = false;
-    bool8_t payload_pending_free = false_v;
-
     vkr_mutex_lock(manager->mutex);
-
     while (queue_is_empty_Event(&manager->queue) && manager->running) {
       vkr_cond_wait(manager->cond, manager->mutex);
     }
-
-    should_run = manager->running || !queue_is_empty_Event(&manager->queue);
-
-    if (!queue_is_empty_Event(&manager->queue)) {
-      event_dequeued = queue_dequeue_Event(&manager->queue, &event);
-      if (event_dequeued && event.data_size > 0 && event.data != NULL) {
-        payload_pending_free = true_v;
-      }
-    }
-
-    if (!event_dequeued) {
+    if (!queue_dequeue_Event(&manager->queue, &event)) {
       vkr_mutex_unlock(manager->mutex);
-      continue;
+      break;
     }
 
-    if (event.type >= EVENT_TYPE_MAX) {
-      log_warn("Processed event with invalid type: %u", event.type);
-      if (payload_pending_free) {
-        if (!vkr_event_data_buffer_free(&manager->event_data_buf,
-                                        event.data_size)) {
-          log_error("Events_processor: Failed to free data for event type %d, "
-                    "size %llu from event data buffer.",
-                    event.type, event.data_size);
-        }
-      }
-      vkr_mutex_unlock(manager->mutex);
-      continue;
-    }
-
-    Vector_EventCallbackData *callbacks_vec = &manager->callbacks[event.type];
-    uint16_t subs_count = callbacks_vec->length;
-
-    if (subs_count == 0) {
-      if (payload_pending_free) {
-        if (!vkr_event_data_buffer_free(&manager->event_data_buf,
-                                        event.data_size)) {
-          log_error("Events_processor: Failed to free data for event type %d, "
-                    "size %llu from event data buffer.",
-                    event.type, event.data_size);
-        }
+    Vector_EventCallbackData *callbacks = &manager->callbacks[event.type];
+    uint64_t count = callbacks->length;
+    if (count == 0) {
+      if (event.data_size > 0) {
+        vkr_event_data_buffer_free(&manager->event_data_buf, event.data_size);
       }
       vkr_mutex_unlock(manager->mutex);
       continue;
     }
 
     VkrAllocatorScope scope = vkr_allocator_begin_scope(&thread_allocator);
-    if (!vkr_allocator_scope_is_valid(&scope)) {
-      if (payload_pending_free) {
-        if (!vkr_event_data_buffer_free(&manager->event_data_buf,
-                                        event.data_size)) {
-          log_error("Events_processor: Failed to free data for event type %d, "
-                    "size %llu from event data buffer.",
-                    event.type, event.data_size);
+    Event local_event = event;
+    EventCallbackData *local_callbacks = NULL;
+    if (vkr_allocator_scope_is_valid(&scope)) {
+      if (event.data_size > 0) {
+        local_event.data =
+            vkr_allocator_alloc(&thread_allocator, event.data_size,
+                                VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+        if (!local_event.data) {
+          goto release_payload;
         }
+        MemCopy(local_event.data, event.data, event.data_size);
       }
-      vkr_mutex_unlock(manager->mutex);
-      continue;
-    }
-
-    local_event = event;
-    if (payload_pending_free) {
-      void *payload_copy = vkr_allocator_alloc(
-          &thread_allocator, event.data_size, VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
-      if (!payload_copy) {
-        log_error("Events_processor: Failed to allocate %llu bytes for event "
-                  "type %d payload copy.",
-                  event.data_size, event.type);
-        if (!vkr_event_data_buffer_free(&manager->event_data_buf,
-                                        event.data_size)) {
-          log_error("Events_processor: Failed to free data for event type %d, "
-                    "size %llu from event data buffer.",
-                    event.type, event.data_size);
-        }
-        vkr_mutex_unlock(manager->mutex);
-        vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
-        continue;
-      }
-
-      MemCopy(payload_copy, event.data, event.data_size);
-      local_event.data = payload_copy;
-
-      if (!vkr_event_data_buffer_free(&manager->event_data_buf,
-                                      event.data_size)) {
-        log_error("Events_processor: Failed to free data for event type %d, "
-                  "size %llu from event data buffer.",
-                  event.type, event.data_size);
+      local_callbacks = vkr_allocator_alloc(&thread_allocator,
+                                            count * sizeof(EventCallbackData),
+                                            VKR_ALLOCATOR_MEMORY_TAG_VECTOR);
+      if (local_callbacks) {
+        MemCopy(local_callbacks, callbacks->data,
+                count * sizeof(EventCallbackData));
       }
     }
 
-    EventCallbackData *local_callbacks_copy = vkr_allocator_alloc(
-        &thread_allocator, (uint64_t)subs_count * sizeof(EventCallbackData),
-        VKR_ALLOCATOR_MEMORY_TAG_VECTOR);
+  release_payload:
+    if (event.data_size > 0) {
+      vkr_event_data_buffer_free(&manager->event_data_buf, event.data_size);
+    }
+    vkr_mutex_unlock(manager->mutex);
 
-    if (callbacks_vec->data != NULL && local_callbacks_copy != NULL) {
-      MemCopy(local_callbacks_copy, callbacks_vec->data,
-              (size_t)subs_count * sizeof(EventCallbackData));
-      vkr_mutex_unlock(manager->mutex);
-
-      for (uint16_t i = 0; i < subs_count; i++) {
-        if (local_callbacks_copy[i].callback != NULL) {
-          local_callbacks_copy[i].callback(&local_event,
-                                           local_callbacks_copy[i].user_data);
-        }
+    if (local_callbacks) {
+      for (uint64_t i = 0; i < count; ++i) {
+        local_callbacks[i].callback(&local_event, local_callbacks[i].user_data);
       }
-
     } else {
-      log_warn("Event_processor: subs_count (%u) for event type %d, but "
-               "vector or array data pointer is NULL. Callbacks skipped.",
-               subs_count, event.type);
-      vkr_mutex_unlock(manager->mutex);
+      log_error("Failed to snapshot event %u for callback execution.",
+                event.type);
     }
-
-    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_VECTOR);
+    if (vkr_allocator_scope_is_valid(&scope)) {
+      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_VECTOR);
+    }
   }
 
-  arena_destroy(local_thread_arena);
+  vkr_allocator_release_global_accounting(&thread_allocator);
   return NULL;
 }
 
-void event_manager_create(EventManager *manager) {
+bool8_t event_manager_create(EventManager *manager) {
   assert_log(manager != NULL, "Manager is NULL");
-
+  MemZero(manager, sizeof(*manager));
   manager->arena = arena_create(MB(1), MB(1));
+  if (!manager->arena) {
+    goto cleanup;
+  }
   manager->allocator = (VkrAllocator){.ctx = manager->arena};
   if (!vkr_allocator_arena(&manager->allocator)) {
-    queue_destroy_Event(&manager->queue);
-    arena_destroy(manager->arena);
-    log_fatal("Failed to initialize event manager allocator.");
-    return;
+    goto cleanup;
   }
-  MemZero(manager->callbacks, sizeof(manager->callbacks));
+  manager->callback_arena = arena_create(KB(64), KB(64));
+  if (!manager->callback_arena) {
+    goto cleanup;
+  }
   manager->queue =
       queue_create_Event(&manager->allocator, DEFAULT_EVENT_QUEUE_CAPACITY);
-
-  if (!vkr_event_data_buffer_create(&manager->allocator,
+  if (!manager->queue.data ||
+      !vkr_event_data_buffer_create(&manager->allocator,
                                     DEFAULT_EVENT_DATA_RING_BUFFER_CAPACITY,
-                                    &manager->event_data_buf)) {
-    queue_destroy_Event(&manager->queue);
-    arena_destroy(manager->arena);
-    log_fatal("Failed to create event data buffer for EventManager.");
-    return;
+                                    &manager->event_data_buf) ||
+      !vkr_mutex_create(&manager->allocator, &manager->mutex) ||
+      !vkr_cond_create(&manager->allocator, &manager->cond)) {
+    goto cleanup;
   }
-
-  vkr_mutex_create(&manager->allocator, &manager->mutex);
-  vkr_cond_create(&manager->allocator, &manager->cond);
   manager->running = true;
+  if (!vkr_thread_create(&manager->allocator, &manager->thread,
+                         events_processor, manager)) {
+    goto cleanup;
+  }
+  return true_v;
 
-  vkr_thread_create(&manager->allocator, &manager->thread, events_processor,
-                    manager);
+cleanup:
+  if (manager->cond) {
+    vkr_cond_destroy(&manager->allocator, &manager->cond);
+  }
+  if (manager->mutex) {
+    vkr_mutex_destroy(&manager->allocator, &manager->mutex);
+  }
+  vkr_allocator_release_global_accounting(&manager->allocator);
+  arena_destroy(manager->callback_arena);
+  arena_destroy(manager->arena);
+  MemZero(manager, sizeof(*manager));
+  log_error("Failed to create event manager.");
+  return false_v;
 }
 
 void event_manager_destroy(EventManager *manager) {
@@ -209,13 +144,18 @@ void event_manager_destroy(EventManager *manager) {
 
   queue_destroy_Event(&manager->queue);
   vkr_event_data_buffer_destroy(&manager->event_data_buf);
+  vkr_allocator_release_global_accounting(&manager->allocator);
+  arena_destroy(manager->callback_arena);
   arena_destroy(manager->arena);
+  MemZero(manager, sizeof(*manager));
 }
 
-void event_manager_subscribe(EventManager *manager, EventType type,
-                             EventCallback callback, UserData user_data) {
-  assert_log(type < EVENT_TYPE_MAX, "Invalid event type");
-  assert_log(callback != NULL, "Callback is NULL");
+bool8_t event_manager_subscribe(EventManager *manager, EventType type,
+                                EventCallback callback, UserData user_data) {
+  if ((uint32_t)type >= EVENT_TYPE_MAX || !callback) {
+    log_error("Invalid event subscription.");
+    return false_v;
+  }
   assert_log(manager != NULL, "Manager is NULL");
 
   vkr_mutex_lock(manager->mutex);
@@ -223,44 +163,56 @@ void event_manager_subscribe(EventManager *manager, EventType type,
   if (manager->callbacks[type].data == NULL) {
     manager->callbacks[type] =
         vector_create_EventCallbackData(&manager->allocator);
+    if (!manager->callbacks[type].data) {
+      vkr_mutex_unlock(manager->mutex);
+      return false_v;
+    }
   }
 
-  uint16_t subs_count = manager->callbacks[type].length;
-  for (uint16_t i = 0; i < subs_count; i++) {
+  uint64_t subs_count = manager->callbacks[type].length;
+  for (uint64_t i = 0; i < subs_count; i++) {
     if (manager->callbacks[type].data[i].callback == callback &&
         manager->callbacks[type].data[i].user_data == user_data) {
       log_warn("Callback already subscribed");
       vkr_mutex_unlock(manager->mutex);
-      return;
+      return true_v;
     }
   }
 
-  vector_push_EventCallbackData(&manager->callbacks[type],
-                                (EventCallbackData){callback, user_data});
+  const bool8_t subscribed = vector_push_EventCallbackData(
+      &manager->callbacks[type], (EventCallbackData){callback, user_data});
   vkr_mutex_unlock(manager->mutex);
+  return subscribed;
 }
 
 void event_manager_unsubscribe(EventManager *manager, EventType type,
                                EventCallback callback) {
-  assert_log(type < EVENT_TYPE_MAX, "Invalid event type");
-  assert_log(callback != NULL, "Callback is NULL");
+  if ((uint32_t)type >= EVENT_TYPE_MAX || !callback) {
+    log_error("Invalid event subscription.");
+    return;
+  }
   assert_log(manager != NULL, "Manager is NULL");
 
   vkr_mutex_lock(manager->mutex);
-  VectorFindResult res = vector_find_EventCallbackData(
-      &manager->callbacks[type], &(EventCallbackData){callback, NULL},
-      event_callback_equals);
-  if (res.found) {
-    vector_pop_at_EventCallbackData(&manager->callbacks[type], res.index, NULL);
+  if (manager->callbacks[type].length > 0) {
+    VectorFindResult res = vector_find_EventCallbackData(
+        &manager->callbacks[type], &(EventCallbackData){callback, NULL},
+        event_callback_equals);
+    if (res.found) {
+      vector_pop_at_EventCallbackData(&manager->callbacks[type], res.index,
+                                      NULL);
+    }
   }
   vkr_mutex_unlock(manager->mutex);
 }
 
 bool32_t event_manager_dispatch(EventManager *manager, Event event) {
   assert_log(manager != NULL, "Manager is NULL");
-  assert_log(event.type < EVENT_TYPE_MAX, "Invalid event type");
-  assert_log(!(event.data_size > 0 && event.data == NULL),
-             "Event data is NULL but data_size is greater than 0");
+  if ((uint32_t)event.type >= EVENT_TYPE_MAX ||
+      (event.data_size > 0 && !event.data)) {
+    log_error("Invalid event payload or type.");
+    return false;
+  }
 
   vkr_mutex_lock(manager->mutex);
 
@@ -274,20 +226,11 @@ bool32_t event_manager_dispatch(EventManager *manager, Event event) {
       return false;
     }
 
-    if (!vkr_event_data_buffer_can_alloc(&manager->event_data_buf,
-                                         event.data_size)) {
-      log_warn("Event data buffer cannot allocate %llu bytes for event type %d "
-               "(full or too fragmented).",
-               event.data_size, event.type);
-      vkr_mutex_unlock(manager->mutex);
-      return false;
-    }
-
     if (!vkr_event_data_buffer_alloc(&manager->event_data_buf, event.data_size,
                                      &copied_data_ptr_in_buffer)) {
       log_warn(
           "Failed to allocate %llu bytes in event data buffer for event type "
-          "%d. Allocation failed unexpectedly after can_alloc passed.",
+          "%d (full or fragmented).",
           event.data_size, event.type);
       vkr_mutex_unlock(manager->mutex);
       return false;

@@ -140,18 +140,6 @@ VkrCodepoint vkr_codepoint_iter_next(VkrCodepointIter *iter) {
   return cp;
 }
 
-VkrCodepoint vkr_codepoint_iter_peek(const VkrCodepointIter *iter) {
-  assert_log(iter != NULL && iter->str != NULL && iter->str->str != NULL,
-             "Invalid iterator");
-  if (!vkr_codepoint_iter_has_next(iter)) {
-    return (VkrCodepoint){0, 0};
-  }
-
-  const uint64_t remaining = iter->str->length - iter->byte_offset;
-  const uint8_t *bytes = iter->str->str + iter->byte_offset;
-  return vkr_utf8_decode(bytes, remaining);
-}
-
 uint64_t vkr_string8_codepoint_count(const String8 *str) {
   if (str == NULL || str->str == NULL) {
     return 0;
@@ -558,19 +546,6 @@ VkrTextStyle vkr_text_style_with_font_data(const VkrTextStyle *base,
   return style;
 }
 
-VkrTextStyle vkr_text_style_with_color(const VkrTextStyle *base, Vec4 color) {
-  VkrTextStyle style = vkr_text_resolve_style(base);
-  style.color = color;
-  return style;
-}
-
-VkrTextStyle vkr_text_style_with_size(const VkrTextStyle *base,
-                                      float32_t font_size) {
-  VkrTextStyle style = vkr_text_resolve_style(base);
-  style.font_size = font_size;
-  return style;
-}
-
 /////////////////////
 // Text primitives
 /////////////////////
@@ -646,10 +621,6 @@ void vkr_text_destroy(VkrAllocator *allocator, VkrText *text) {
 /////////////////////
 // Measurement helpers
 /////////////////////
-
-float32_t vkr_text_glyph_width(float32_t font_size) {
-  return VKR_TEXT_DEFAULT_GLYPH_WIDTH(font_size);
-}
 
 vkr_internal VkrTextBounds vkr_text_measure_internal(const VkrText *text,
                                                      float32_t max_width,
@@ -792,7 +763,7 @@ VkrTextLayout vkr_text_layout_compute(VkrAllocator *allocator,
                                       const VkrText *text,
                                       const VkrTextLayoutOptions *options) {
   VkrTextLayout layout = {0};
-  if (text == NULL) {
+  if (text == NULL || text->content.length >= UINT32_MAX) {
     return layout;
   }
 
@@ -824,13 +795,13 @@ VkrTextLayout vkr_text_layout_compute(VkrAllocator *allocator,
   Vector_VkrTextGlyphPlacement placements = {0};
   bool8_t collect_positions = allocator != NULL;
   if (collect_positions) {
-    line_widths = vector_create_float64_t_with_capacity(allocator, 8);
-    uint64_t glyph_capacity = text->content.length;
-    if (glyph_capacity < 8) {
-      glyph_capacity = 8;
-    }
+    // UTF-8 bytes bound glyph count; each byte can start at most one new line.
+    line_widths = vector_create_float64_t_with_capacity(
+        allocator, text->content.length + 1u);
     placements = vector_create_VkrTextGlyphPlacement_with_capacity(
-        allocator, glyph_capacity);
+        allocator, Max(text->content.length, 1u));
+    if (!line_widths.data || !placements.data)
+      goto failed;
   }
 
   VkrCodepointIter iter = vkr_codepoint_iter_begin(&text->content);
@@ -842,7 +813,7 @@ VkrTextLayout vkr_text_layout_compute(VkrAllocator *allocator,
 
     if (cp.value == '\n') {
       if (collect_positions) {
-        vector_push_float64_t(&line_widths, current_width);
+        line_widths.data[line_widths.length++] = current_width;
       }
       max_line_width = Max(max_line_width, current_width);
       current_width = 0.0;
@@ -875,7 +846,7 @@ VkrTextLayout vkr_text_layout_compute(VkrAllocator *allocator,
     if (opts.word_wrap && opts.max_width > 0.0f && current_width > 0.0 &&
         current_width + total_advance > (float64_t)opts.max_width) {
       if (collect_positions) {
-        vector_push_float64_t(&line_widths, current_width);
+        line_widths.data[line_widths.length++] = current_width;
       }
       max_line_width = Max(max_line_width, current_width);
       current_width = 0.0;
@@ -893,16 +864,15 @@ VkrTextLayout vkr_text_layout_compute(VkrAllocator *allocator,
     }
 
     if (collect_positions) {
-      vector_push_VkrTextGlyphPlacement(&placements,
-                                        (VkrTextGlyphPlacement){
-                                            .codepoint = cp.value,
-                                            .glyph_id = current.glyph_id,
-                                            .glyph_index = current.glyph_index,
-                                            .line_index = line_index,
-                                            .x_in_line = current_width + kern,
-                                            .advance = total_advance,
-                                            .page_id = current.page_id,
-                                        });
+      placements.data[placements.length++] = (VkrTextGlyphPlacement){
+          .codepoint = cp.value,
+          .glyph_id = current.glyph_id,
+          .glyph_index = current.glyph_index,
+          .line_index = line_index,
+          .x_in_line = current_width + kern,
+          .advance = total_advance,
+          .page_id = current.page_id,
+      };
     }
 
     current_width += total_advance;
@@ -912,7 +882,7 @@ VkrTextLayout vkr_text_layout_compute(VkrAllocator *allocator,
   }
 
   if (collect_positions) {
-    vector_push_float64_t(&line_widths, current_width);
+    line_widths.data[line_widths.length++] = current_width;
   }
   max_line_width = Max(max_line_width, current_width);
 
@@ -952,31 +922,26 @@ VkrTextLayout vkr_text_layout_compute(VkrAllocator *allocator,
 
   const uint32_t glyph_count = (uint32_t)placements.length;
   Array_VkrTextGlyph glyphs = array_create_VkrTextGlyph(allocator, glyph_count);
+  if (!glyphs.data)
+    goto failed;
 
   for (uint32_t i = 0; i < glyph_count; ++i) {
-    const VkrTextGlyphPlacement *p =
-        vector_get_VkrTextGlyphPlacement(&placements, (uint64_t)i);
-
-    float64_t line_width = 0.0;
-    if (p->line_index < line_widths.length) {
-      line_width = *vector_get_float64_t(&line_widths, p->line_index);
-    }
+    const VkrTextGlyphPlacement *p = &placements.data[i];
+    const float64_t line_width = line_widths.data[p->line_index];
     const float64_t align_offset = vkr_text_align_offset(
         line_width, max_line_width, opts.anchor.horizontal);
     const float64_t baseline_y =
         first_baseline + (float64_t)p->line_index * (float64_t)line_height;
 
-    array_set_VkrTextGlyph(
-        &glyphs, (uint64_t)i,
-        (VkrTextGlyph){
-            .codepoint = p->codepoint,
-            .glyph_id = p->glyph_id,
-            .glyph_index = p->glyph_index,
-            .position = vec2_new((float32_t)(align_offset + p->x_in_line),
-                                 (float32_t)baseline_y),
-            .advance = (float32_t)p->advance,
-            .page_id = p->page_id,
-        });
+    glyphs.data[i] = (VkrTextGlyph){
+        .codepoint = p->codepoint,
+        .glyph_id = p->glyph_id,
+        .glyph_index = p->glyph_index,
+        .position = vec2_new((float32_t)(align_offset + p->x_in_line),
+                             (float32_t)baseline_y),
+        .advance = (float32_t)p->advance,
+        .page_id = p->page_id,
+    };
   }
 
   layout.glyphs = glyphs;
@@ -985,6 +950,11 @@ VkrTextLayout vkr_text_layout_compute(VkrAllocator *allocator,
   vector_destroy_VkrTextGlyphPlacement(&placements);
 
   return layout;
+
+failed:
+  vector_destroy_float64_t(&line_widths);
+  vector_destroy_VkrTextGlyphPlacement(&placements);
+  return (VkrTextLayout){0};
 }
 
 void vkr_text_layout_destroy(VkrTextLayout *layout) {
@@ -997,50 +967,4 @@ void vkr_text_layout_destroy(VkrTextLayout *layout) {
   layout->baseline = vec2_new(0.0f, 0.0f);
   layout->line_count = 0;
   layout->allocator = NULL;
-}
-
-/////////////////////
-// Rich text
-/////////////////////
-
-VkrRichText vkr_rich_text_create(VkrAllocator *allocator, String8 content,
-                                 const VkrTextStyle *base_style) {
-  VkrRichText rt = {0};
-  rt.content = content;
-  rt.base_style = vkr_text_resolve_style(base_style);
-  rt.allocator = allocator;
-  rt.spans = vector_create_VkrTextSpan(allocator);
-
-  return rt;
-}
-
-void vkr_rich_text_add_span(VkrRichText *rt, uint64_t start, uint64_t end,
-                            const VkrTextStyle *style) {
-  assert_log(rt != NULL, "Rich text is NULL");
-  assert_log(start <= end, "Start must be <= end");
-  assert_log(end <= rt->content.length, "Span end exceeds content length");
-
-  vector_push_VkrTextSpan(&rt->spans,
-                          (VkrTextSpan){
-                              .start = start,
-                              .end = end,
-                              .style = vkr_text_resolve_style(style),
-                          });
-}
-
-void vkr_rich_text_clear_spans(VkrRichText *rt) {
-  if (rt == NULL) {
-    return;
-  }
-
-  vector_clear_VkrTextSpan(&rt->spans);
-}
-
-void vkr_rich_text_destroy(VkrRichText *rt) {
-  if (rt == NULL) {
-    return;
-  }
-
-  vector_destroy_VkrTextSpan(&rt->spans);
-  rt->allocator = NULL;
 }

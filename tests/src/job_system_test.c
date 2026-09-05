@@ -181,11 +181,54 @@ static void test_deferred_ready(void) {
   printf("  test_deferred_ready PASSED\n");
 }
 
+static void *(*job_test_original_alloc)(void *, uint64_t,
+                                        VkrAllocatorMemoryTag);
+
+static void *fail_job_payload_allocation(void *ctx, uint64_t size,
+                                         VkrAllocatorMemoryTag tag) {
+  return tag == VKR_ALLOCATOR_MEMORY_TAG_STRUCT
+             ? NULL
+             : job_test_original_alloc(ctx, size, tag);
+}
+
+static void test_failed_submission_returns_slot(void) {
+  VkrJobSystem system;
+  VkrJobSystemConfig cfg = make_small_config();
+  assert(vkr_job_system_init(&cfg, &system));
+  atomic_int runs = 0;
+  DeferredPayload payload = {.runs = &runs};
+  VkrJobDesc parent_desc = {.priority = VKR_JOB_PRIORITY_NORMAL,
+                            .type_mask = vkr_job_type_mask_all(),
+                            .run = deferred_run,
+                            .payload = &payload,
+                            .payload_size = sizeof(payload),
+                            .defer_enqueue = true_v};
+  VkrJobHandle parent = {0};
+  assert(vkr_job_submit(&system, &parent_desc, &parent));
+  VkrJobDesc child_desc = parent_desc;
+  child_desc.defer_enqueue = false_v;
+  child_desc.dependencies = &parent;
+  child_desc.dependency_count = 1;
+  const uint32_t available_slots = system.free_top;
+  job_test_original_alloc = system.allocator.alloc;
+  system.allocator.alloc = fail_job_payload_allocation;
+  VkrJobHandle child = {0};
+  assert(!vkr_job_try_submit(&system, &child_desc, &child));
+  system.allocator.alloc = job_test_original_alloc;
+  assert(system.free_top == available_slots);
+  assert(vkr_job_try_submit(&system, &child_desc, &child));
+  assert(vkr_job_mark_ready(&system, parent));
+  assert(vkr_job_wait(&system, child));
+  assert(atomic_load_explicit(&runs, memory_order_relaxed) == 2);
+  vkr_job_system_shutdown(&system);
+}
+
 bool32_t run_job_system_tests(void) {
   printf("--- Running JobSystem tests... ---\n");
   test_single_job();
   test_dependency_ordering();
   test_deferred_ready();
+  test_failed_submission_returns_slot();
   printf("--- JobSystem tests completed. ---\n");
   return true_v;
 }

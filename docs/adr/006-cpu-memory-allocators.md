@@ -29,6 +29,22 @@ Local tagged counters and atomic global counters report ownership. Bulk arena
 destruction reconciles accounting with
 `vkr_allocator_release_global_accounting()` when individual frees are skipped.
 
+Container creation and growth are fallible. Vector and hash constructors return
+zero records on failure; callers check backing storage before population.
+Vector reserve, resize and push, and hash resize and insert, return must-use
+success values. Failed growth preserves existing contents and capacity. A lazy
+vector explicitly retains its allocator until its first successful reserve.
+Input and creation boundaries propagate failures through their existing error
+paths, releasing partial owned state. Known batch sizes are reserved before
+population, so proven loops write directly without per-element recovery.
+
+Application startup tracks acquired owners and unwinds partial initialization.
+Job workers join before renderer teardown; event workers stop before the borrowed
+logging arena is released. Failed job submission removes newly registered
+dependency edges and returns its slot. Text layout reports failure with a zero
+layout (`line_count == 0`); successful empty text has one line. UI and world text
+keep the previous published layout when rebuilding fails.
+
 Vulkan uses null `VkAllocationCallbacks`; driver host allocation is outside these
 CPU totals. Device-memory accounting belongs to ADR-024.
 

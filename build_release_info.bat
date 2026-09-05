@@ -24,9 +24,17 @@ if %errorlevel% neq 0 (
 
 REM Build target
 echo Building vulkan_renderer (RelWithDebInfo)
-cmake --build .\build_release_info --target vulkan_renderer vkr_harness vkr_mesh_cooker --config RelWithDebInfo
+cmake --build .\build_release_info --target vulkan_renderer vkr_harness vkr_mesh_cooker vkr_font_cooker --config RelWithDebInfo
 if %errorlevel% neq 0 (
     echo Build failed.
+    exit /b 1
+)
+
+set "VKR_FONT_COOKER_BIN=%~dp0build_release_info\tools\vkr_font_cooker.exe"
+if not exist "%VKR_FONT_COOKER_BIN%" set "VKR_FONT_COOKER_BIN=%~dp0build_release_info\tools\RelWithDebInfo\vkr_font_cooker.exe"
+call "%~dp0tools\cook_vkr_fonts.bat"
+if %errorlevel% neq 0 (
+    echo Font cooking failed.
     exit /b 1
 )
 

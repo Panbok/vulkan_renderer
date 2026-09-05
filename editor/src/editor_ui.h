@@ -29,5 +29,3 @@ typedef struct VkrEditorUi {
 void vkr_editor_ui_init(VkrEditorUi *editor);
 VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
                                           const VkrSampleUiFrame *frame);
-bool8_t vkr_editor_ui_load_layout(VkrUiDockTree *dock, String8 path);
-bool8_t vkr_editor_ui_save_layout(const VkrUiDockTree *dock, String8 path);

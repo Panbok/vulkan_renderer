@@ -45,26 +45,30 @@
   struct Array_##name;                                                         \
   typedef struct Array_##name {                                                \
     VkrAllocator *allocator; /**< Allocator used for memory allocation */      \
-    uint64_t length;        /**< Number of elements in the array */            \
-    type *data;             /**< Pointer to the contiguous array storage */    \
+    uint64_t length;         /**< Number of elements in the array */           \
+    type *data;              /**< Pointer to the contiguous array storage */   \
   } Array_##name;                                                              \
                                                                                \
   /**                                                                          \
    * @brief Creates a new array with the specified length                      \
    * @param allocator Allocator to use for memory allocation                   \
    * @param length Number of elements to allocate in the array                 \
-   * @return Initialized Array_##name structure                                \
+   * @return Initialized record, or an all-zero record on allocation failure   \
    */                                                                          \
-  static inline Array_##name array_create_##name(VkrAllocator *allocator,      \
-                                                 const uint64_t length) {      \
+  static inline VKR_MUST_USE Array_##name array_create_##name(                 \
+      VkrAllocator *allocator, const uint64_t length) {                        \
     assert_log(allocator != NULL, "Allocator is NULL");                        \
-    assert_log(length > 0, "Length is 0");                                     \
+    if (length == 0 || length > SIZE_MAX / sizeof(type)) {                     \
+      return (Array_##name){0};                                                \
+    }                                                                          \
                                                                                \
-    type *buf = vkr_allocator_alloc_aligned(                                   \
-        allocator, length * sizeof(type), AlignOf(type),                       \
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);                                       \
-    assert_log(buf != NULL, "allocator alloc failed for array_create");        \
-    Array_##name array = {allocator, buf ? length : 0, buf};                   \
+    type *buf = vkr_allocator_alloc_aligned(allocator, length * sizeof(type),  \
+                                            AlignOf(type),                     \
+                                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);   \
+    if (!buf) {                                                                \
+      return (Array_##name){0};                                                \
+    }                                                                          \
+    Array_##name array = {allocator, length, buf};                             \
     return array;                                                              \
   }                                                                            \
                                                                                \
@@ -103,8 +107,7 @@
     assert_log(array != NULL, "Array is NULL");                                \
     if (array->allocator && array->data) {                                     \
       vkr_allocator_free_aligned(array->allocator, array->data,                \
-                                 array->length * sizeof(type),                \
-                                 AlignOf(type),                                \
+                                 array->length * sizeof(type), AlignOf(type),  \
                                  VKR_ALLOCATOR_MEMORY_TAG_ARRAY);              \
     }                                                                          \
     array->data = NULL;                                                        \

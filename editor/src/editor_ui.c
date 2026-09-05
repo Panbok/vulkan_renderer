@@ -144,11 +144,3 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   vkr_editor_windows_build_menu(editor, frame->ui);
   return dock_capture;
 }
-
-bool8_t vkr_editor_ui_load_layout(VkrUiDockTree *dock, String8 path) {
-  return vkr_ui_dock_load_file(dock, path);
-}
-
-bool8_t vkr_editor_ui_save_layout(const VkrUiDockTree *dock, String8 path) {
-  return vkr_ui_dock_save_file(dock, path);
-}

@@ -425,6 +425,11 @@ vkr_internal bool8_t vkr_font_system_load_single_variant(
   String8 load_name = string8_create_formatted(
       &system->temp_allocator, "%.*s?size=%u&index=%u",
       (int32_t)config->file.length, config->file.str, size, font_index);
+  if (!load_name.str) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    vkr_allocator_end_scope(&load_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    return false_v;
+  }
 
   VkrResourceHandleInfo handle_info = {0};
   VkrRendererError load_error = VKR_RENDERER_ERROR_NONE;
@@ -441,9 +446,9 @@ vkr_internal bool8_t vkr_font_system_load_single_variant(
   VkrSystemFontLoaderResult *result =
       (VkrSystemFontLoaderResult *)handle_info.as.custom;
   if (!result || !result->success) {
-    vkr_resource_system_unload(&handle_info, load_name);
     *out_error =
         result ? result->error : VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
+    vkr_resource_system_unload(&handle_info, load_name);
     vkr_allocator_end_scope(&load_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     return false_v;
   }
@@ -479,6 +484,8 @@ vkr_internal bool8_t vkr_font_system_load_single_variant(
 
   if (!vkr_hash_table_insert_VkrFontSystemEntry(&system->font_map, stable_key,
                                                 entry)) {
+    vkr_allocator_free(&system->allocator, stable_key, register_name.length + 1,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
     vkr_resource_system_unload(&handle_info, load_name);
     MemZero(font, sizeof(*font));
     font->id = VKR_INVALID_ID;
@@ -551,25 +558,19 @@ vkr_internal void vkr_font_system_unload_font(VkrFontSystem *system,
   font->id = VKR_INVALID_ID;
   font->generation = VKR_INVALID_ID;
 
-  entry->index = VKR_INVALID_ID;
-  entry->ref_count = 0;
-  entry->auto_release = false_v;
-  entry->loader_id = VKR_INVALID_ID;
-  entry->resource = NULL;
+  if (!remove_entry) {
+    entry->index = VKR_INVALID_ID;
+    entry->ref_count = 0;
+    entry->auto_release = false_v;
+    entry->loader_id = VKR_INVALID_ID;
+    entry->resource = NULL;
+  }
 
   if (freed_index < system->next_free_index) {
     system->next_free_index = freed_index;
   }
 
   if (remove_entry) {
-    if (freed_index == VKR_INVALID_ID || freed_index >= system->fonts.length) {
-      if (name.str) {
-        vkr_hash_table_remove_VkrFontSystemEntry(&system->font_map,
-                                                 (const char *)name.str);
-      }
-      return;
-    }
-
     for (uint64_t i = 0; i < system->font_map.capacity; i++) {
       VkrHashEntry_VkrFontSystemEntry *map_entry = &system->font_map.entries[i];
       if (map_entry->occupied != VKR_OCCUPIED) {
@@ -580,10 +581,11 @@ vkr_internal void vkr_font_system_unload_font(VkrFontSystem *system,
         continue;
       }
 
-      if (map_entry->key) {
-        vkr_hash_table_remove_VkrFontSystemEntry(&system->font_map,
-                                                 map_entry->key);
-      }
+      const char *key = map_entry->key;
+      uint64_t key_bytes = string_length(key) + 1;
+      vkr_hash_table_remove_VkrFontSystemEntry(&system->font_map, key);
+      vkr_allocator_free(&system->allocator, (void *)key, key_bytes,
+                         VKR_ALLOCATOR_MEMORY_TAG_STRING);
     }
   }
 }
@@ -609,7 +611,7 @@ bool8_t vkr_font_system_init(VkrFontSystem *system,
   if (max_fonts == 0) {
     log_error("Font system max font count must be greater than 0");
     *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
-    return false_v;
+    goto initialization_failure;
   }
 
   ArenaFlags arena_flags = bitset8_create();
@@ -617,34 +619,30 @@ bool8_t vkr_font_system_init(VkrFontSystem *system,
   system->arena = arena_create(VKR_FONT_SYSTEM_DEFAULT_MEM,
                                VKR_FONT_SYSTEM_DEFAULT_MEM / 4, arena_flags);
   if (!system->arena) {
-    log_fatal("Failed to create font system arena");
+    log_error("Failed to create font system arena");
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    return false_v;
+    goto initialization_failure;
   }
 
   system->allocator = (VkrAllocator){.ctx = system->arena};
   if (!vkr_allocator_arena(&system->allocator)) {
-    log_fatal("Failed to create font system allocator");
-    arena_destroy(system->arena);
+    log_error("Failed to create font system allocator");
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    return false_v;
+    goto initialization_failure;
   }
 
   system->temp_arena = arena_create(MB(1), KB(256), arena_flags);
   if (!system->temp_arena) {
-    log_fatal("Failed to create font system temp arena");
-    arena_destroy(system->arena);
+    log_error("Failed to create font system temp arena");
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    return false_v;
+    goto initialization_failure;
   }
 
   system->temp_allocator = (VkrAllocator){.ctx = system->temp_arena};
   if (!vkr_allocator_arena(&system->temp_allocator)) {
-    log_fatal("Failed to create font system temp allocator");
-    arena_destroy(system->temp_arena);
-    arena_destroy(system->arena);
+    log_error("Failed to create font system temp allocator");
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    return false_v;
+    goto initialization_failure;
   }
 
   system->renderer = renderer;
@@ -653,11 +651,9 @@ bool8_t vkr_font_system_init(VkrFontSystem *system,
 
   system->fonts = array_create_VkrFont(&system->allocator, max_fonts);
   if (!system->fonts.data) {
-    log_fatal("Failed to allocate fonts array");
-    arena_destroy(system->temp_arena);
-    arena_destroy(system->arena);
+    log_error("Failed to allocate fonts array");
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    return false_v;
+    goto initialization_failure;
   }
 
   for (uint32_t i = 0; i < max_fonts; i++) {
@@ -667,6 +663,10 @@ bool8_t vkr_font_system_init(VkrFontSystem *system,
 
   system->font_map = vkr_hash_table_create_VkrFontSystemEntry(
       &system->allocator, ((uint64_t)max_fonts) * 2ULL);
+  if (!system->font_map.entries) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    goto initialization_failure;
+  }
 
   system->next_free_index = 0;
   system->generation_counter = 1;
@@ -686,7 +686,7 @@ bool8_t vkr_font_system_init(VkrFontSystem *system,
     log_error("Failed to load default system UI font: %s",
               string8_cstr(&err_str));
     *out_error = font_load_error;
-    return false_v;
+    goto initialization_failure;
   }
 
   VkrRendererError font_acq_error = VKR_RENDERER_ERROR_NONE;
@@ -697,7 +697,7 @@ bool8_t vkr_font_system_init(VkrFontSystem *system,
     log_error("Failed to acquire default system UI font: %s",
               string8_cstr(&err_str));
     *out_error = font_acq_error;
-    return false_v;
+    goto initialization_failure;
   }
 
   String8 font_bitmap_name = string8_lit("UbuntuMono-bitmap");
@@ -709,7 +709,7 @@ bool8_t vkr_font_system_init(VkrFontSystem *system,
     log_error("Failed to load default bitmap UI font: %s",
               string8_cstr(&err_str));
     *out_error = font_load_error;
-    return false_v;
+    goto initialization_failure;
   }
 
   system->default_bitmap_font_handle = vkr_font_system_acquire(
@@ -719,7 +719,7 @@ bool8_t vkr_font_system_init(VkrFontSystem *system,
     log_error("Failed to acquire default bitmap UI font: %s",
               string8_cstr(&err_str));
     *out_error = font_acq_error;
-    return false_v;
+    goto initialization_failure;
   }
 
   String8 font_mtsdf_name = string8_lit("UbuntuMono-mtsdf");
@@ -731,7 +731,7 @@ bool8_t vkr_font_system_init(VkrFontSystem *system,
     log_error("Failed to load default mtsdf UI font: %s",
               string8_cstr(&err_str));
     *out_error = font_load_error;
-    return false_v;
+    goto initialization_failure;
   }
 
   system->default_mtsdf_font_handle =
@@ -741,11 +741,15 @@ bool8_t vkr_font_system_init(VkrFontSystem *system,
     log_error("Failed to acquire default mtsdf UI font: %s",
               string8_cstr(&err_str));
     *out_error = font_acq_error;
-    return false_v;
+    goto initialization_failure;
   }
 
   *out_error = VKR_RENDERER_ERROR_NONE;
   return true_v;
+
+initialization_failure:
+  vkr_font_system_shutdown(system);
+  return false_v;
 }
 
 void vkr_font_system_shutdown(VkrFontSystem *system) {
@@ -786,10 +790,12 @@ void vkr_font_system_shutdown(VkrFontSystem *system) {
   vkr_hash_table_destroy_VkrFontSystemEntry(&system->font_map);
 
   if (system->temp_arena) {
+    vkr_allocator_release_global_accounting(&system->temp_allocator);
     arena_destroy(system->temp_arena);
   }
 
   if (system->arena) {
+    vkr_allocator_release_global_accounting(&system->allocator);
     arena_destroy(system->arena);
   }
 
@@ -970,6 +976,18 @@ bool8_t vkr_font_system_load_from_file(VkrFontSystem *system, String8 name,
       variants_to_load = config.face_count;
     }
 
+    typedef struct VkrFontVariantAdmission {
+      VkrFontSystemEntry entry;
+      String8 name;
+    } VkrFontVariantAdmission;
+    VkrFontVariantAdmission *admitted = vkr_allocator_alloc(
+        &system->temp_allocator, (uint64_t)variants_to_load * sizeof(*admitted),
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    uint32_t admitted_count = 0;
+    char *registered_alias = NULL;
+    if (!admitted)
+      goto variant_allocation_failure;
+
     uint32_t loaded = 0;
     bool8_t name_registered = false_v;
 
@@ -984,10 +1002,20 @@ bool8_t vkr_font_system_load_from_file(VkrFontSystem *system, String8 name,
                                      (int32_t)name.length, name.str, i);
       }
 
+      if (!variant_name.str)
+        goto variant_allocation_failure;
+      bool8_t variant_existed = vkr_hash_table_contains_VkrFontSystemEntry(
+          &system->font_map, (const char *)variant_name.str);
       VkrRendererError variant_error = VKR_RENDERER_ERROR_NONE;
       if (vkr_font_system_load_single_variant(system, variant_name, &config, i,
                                               &variant_error)) {
         loaded++;
+        if (!variant_existed) {
+          VkrFontSystemEntry *entry = vkr_hash_table_get_VkrFontSystemEntry(
+              &system->font_map, (const char *)variant_name.str);
+          admitted[admitted_count++] =
+              (VkrFontVariantAdmission){.entry = *entry, .name = variant_name};
+        }
 
         if (name_registered) {
           continue;
@@ -998,29 +1026,32 @@ bool8_t vkr_font_system_load_from_file(VkrFontSystem *system, String8 name,
           VkrFontSystemEntry *variant_entry =
               vkr_hash_table_get_VkrFontSystemEntry(&system->font_map,
                                                     variant_key);
-          if (variant_entry) {
-            char *alias_key =
-                (char *)vkr_allocator_alloc(&system->allocator, name.length + 1,
-                                            VKR_ALLOCATOR_MEMORY_TAG_STRING);
-            if (alias_key) {
-              MemCopy(alias_key, name.str, name.length);
-              alias_key[name.length] = '\0';
-
-              VkrFontSystemEntry alias_entry = *variant_entry;
-              alias_entry.ref_count = 0;
-              if (!vkr_hash_table_insert_VkrFontSystemEntry(
-                      &system->font_map, alias_key, alias_entry)) {
-                log_warn("Failed to register font alias '%s'", alias_key);
-              }
-            } else {
-              log_warn("Failed to allocate font alias '%.*s'",
-                       (int32_t)name.length, name.str);
-            }
+          VkrFontSystemEntry alias_entry = *variant_entry;
+          alias_entry.ref_count = 0;
+          char *alias_key =
+              vkr_allocator_alloc(&system->allocator, name.length + 1,
+                                  VKR_ALLOCATOR_MEMORY_TAG_STRING);
+          bool8_t alias_inserted = false_v;
+          if (alias_key) {
+            MemCopy(alias_key, name.str, name.length);
+            alias_key[name.length] = '\0';
+            alias_inserted = vkr_hash_table_insert_VkrFontSystemEntry(
+                &system->font_map, alias_key, alias_entry);
           }
+          if (!alias_inserted) {
+            if (alias_key) {
+              vkr_allocator_free(&system->allocator, alias_key, name.length + 1,
+                                 VKR_ALLOCATOR_MEMORY_TAG_STRING);
+            }
+            goto variant_allocation_failure;
+          }
+          registered_alias = alias_key;
         }
 
         name_registered = true_v;
       } else {
+        if (variant_error == VKR_RENDERER_ERROR_OUT_OF_MEMORY)
+          goto variant_allocation_failure;
         log_warn("Failed to load font variant %u from '%.*s': error %d", i,
                  (int32_t)config.file.length, config.file.str,
                  (int)variant_error);
@@ -1036,6 +1067,22 @@ bool8_t vkr_font_system_load_from_file(VkrFontSystem *system, String8 name,
 
     *out_error = VKR_RENDERER_ERROR_NONE;
     return true_v;
+
+  variant_allocation_failure:
+    if (registered_alias) {
+      vkr_hash_table_remove_VkrFontSystemEntry(&system->font_map,
+                                               registered_alias);
+      vkr_allocator_free(&system->allocator, registered_alias, name.length + 1,
+                         VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    }
+    while (admitted_count > 0) {
+      VkrFontVariantAdmission *variant = &admitted[--admitted_count];
+      vkr_font_system_unload_font(system, &variant->entry, variant->name,
+                                  true_v);
+    }
+    vkr_allocator_end_scope(&load_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
   }
 
   uint32_t free_slot = vkr_font_system_find_free_slot(system);
@@ -1176,6 +1223,8 @@ bool8_t vkr_font_system_load_from_file(VkrFontSystem *system, String8 name,
   if (!vkr_hash_table_insert_VkrFontSystemEntry(&system->font_map, stable_key,
                                                 entry)) {
     log_error("Failed to insert font '%s' into hash table", stable_key);
+    vkr_allocator_free(&system->allocator, stable_key, name.length + 1,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
     vkr_resource_system_unload(&handle_info, load_name);
     MemZero(font, sizeof(*font));
     font->id = VKR_INVALID_ID;

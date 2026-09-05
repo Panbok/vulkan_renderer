@@ -149,8 +149,7 @@ static bool8_t cursor_in_content_area(PlatformState *state);
   if (state && state->window == [notification object]) {
     [[notification object] setDelegate:nil];
 
-    state->view = nil;
-    state->layer = nil;
+    // The view and layer keep their owned references until window_destroy.
     state->window = nil;
   }
 }
@@ -516,7 +515,7 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
     state->app_delegate = [[ApplicationDelegate alloc] init];
     if (!state->app_delegate) {
       log_error("Failed to create application delegate");
-      free(state);
+      vkr_window_destroy(window);
       return false_v;
     }
     [NSApp setDelegate:state->app_delegate];
@@ -525,7 +524,7 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
     state->wnd_delegate = [[WindowDelegate alloc] initWithState:state];
     if (!state->wnd_delegate) {
       log_error("Failed to create window delegate");
-      free(state);
+      vkr_window_destroy(window);
       return false_v;
     }
 
@@ -540,7 +539,7 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
                                         defer:NO];
     if (!state->window) {
       log_error("Failed to create window");
-      free(state);
+      vkr_window_destroy(window);
       return false_v;
     }
 
@@ -548,7 +547,7 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
     state->layer = [[CAMetalLayer layer] retain];
     if (!state->layer) {
       log_error("Failed to create layer for view");
-      free(state);
+      vkr_window_destroy(window);
       return false_v;
     }
 
@@ -560,6 +559,11 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
     // View creation
     state->view = [[ContentView alloc] initWithWindow:state->window
                                                 state:state];
+    if (!state->view) {
+      log_error("Failed to create content view");
+      vkr_window_destroy(window);
+      return false_v;
+    }
     [state->view setLayer:state->layer];
     [state->view setWantsLayer:YES];
 
@@ -638,6 +642,7 @@ void vkr_window_destroy(VkrWindow *window) {
 
   input_shutdown(state->input_state);
   free(state);
+  window->platform_state = NULL;
 }
 
 bool8_t vkr_window_update(VkrWindow *window) {

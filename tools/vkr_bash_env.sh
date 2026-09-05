@@ -17,8 +17,4 @@
 #   bash that was selected for the build.
 #
 
-case ":$PATH:" in
-  *":/usr/bin:"*) ;;
-  *) export PATH="/usr/bin:/bin:$PATH" ;;
-esac
-
+export PATH="/usr/bin:/bin:$PATH"

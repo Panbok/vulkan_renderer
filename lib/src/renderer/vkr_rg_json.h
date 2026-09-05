@@ -329,8 +329,6 @@ typedef struct VkrRgJsonPass {
   VkrRgJsonAttachments attachments;   // The attachments of the pass.
   VkrRgComputeDispatchDesc dispatch;  // Optional typed compute dispatch.
   String8 execute;                    // The execute of the pass.
-  VkrRgPassExecuteFn execute_fn;      // Resolved once before frame building.
-  void *execute_user_data;            // Stable backend executor data.
   uint32_t executor_id;               // Stable backend-local executor kind.
   bool8_t executor_resolved;          // Whether the typed binding succeeded.
 } VkrRgJsonPass;
@@ -368,8 +366,9 @@ typedef struct VkrRgJsonGraph {
  * @param out_graph: The output graph.
  * @return: true_v if the graph was loaded successfully, false_v otherwise.
  */
-bool8_t vkr_rg_json_load_file(VkrAllocator *allocator, const char *path,
-                              VkrRgJsonGraph *out_graph);
+VKR_MUST_USE bool8_t vkr_rg_json_load_file(VkrAllocator *allocator,
+                                           const char *path,
+                                           VkrRgJsonGraph *out_graph);
 
 /**
  * Destroy a graph.
@@ -382,8 +381,8 @@ void vkr_rg_json_destroy(VkrRgJsonGraph *graph);
  * Resolves every authored executor exactly once and validates pass-type
  * compatibility. Must be called before vkr_rg_build_from_json().
  */
-bool8_t vkr_rg_json_bind_executors(VkrRgJsonGraph *graph,
-                                   const VkrRgExecutorRegistry *executors);
+VKR_MUST_USE bool8_t vkr_rg_json_bind_executors(
+    VkrRgJsonGraph *graph, const VkrRgExecutorRegistry *executors);
 
 /**
  * Build a render graph from a JSON graph.
@@ -394,6 +393,6 @@ bool8_t vkr_rg_json_bind_executors(VkrRgJsonGraph *graph,
  * @return: true_v if the render graph was built successfully, false_v
  * otherwise.
  */
-bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
-                               const VkrRgJsonGraph *json_graph,
-                               const VkrRenderGraphFrameInfo *frame);
+VKR_MUST_USE bool8_t
+vkr_rg_build_from_json(VkrRenderGraph *rg, const VkrRgJsonGraph *json_graph,
+                       const VkrRenderGraphFrameInfo *frame);

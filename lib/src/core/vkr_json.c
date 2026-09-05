@@ -2,6 +2,8 @@
 
 #include "containers/str.h"
 
+#include <float.h>
+
 VkrJsonReader vkr_json_reader_create(const uint8_t *data, uint64_t length) {
   return (VkrJsonReader){.data = data, .length = length, .pos = 0};
 }
@@ -35,21 +37,12 @@ bool8_t vkr_json_find_field(VkrJsonReader *reader, const char *field_name) {
 
   while (reader->pos < reader->length) {
     if (reader->data[reader->pos] == '"') {
-      uint64_t start = reader->pos + 1;
-      reader->pos++;
-
-      while (reader->pos < reader->length && reader->data[reader->pos] != '"') {
-        if (reader->data[reader->pos] == '\\') {
-          reader->pos++;
-        }
-        reader->pos++;
+      String8 key = {0};
+      if (!vkr_json_parse_string(reader, &key)) {
+        break;
       }
-
-      uint64_t end = reader->pos;
-      reader->pos++; // skip closing quote
-
-      if (end - start == field_len &&
-          MemCompare(reader->data + start, field_name, field_len) == 0) {
+      if (key.length == field_len &&
+          MemCompare(key.str, field_name, field_len) == 0) {
         vkr_json_skip_whitespace(reader);
         if (reader->pos < reader->length && reader->data[reader->pos] == ':') {
           reader->pos++;
@@ -68,7 +61,7 @@ bool8_t vkr_json_find_field(VkrJsonReader *reader, const char *field_name) {
 
 bool8_t vkr_json_parse_float(VkrJsonReader *reader, float32_t *out_value) {
   float64_t val = 0.0;
-  if (!vkr_json_parse_double(reader, &val)) {
+  if (!vkr_json_parse_double(reader, &val) || val < -FLT_MAX || val > FLT_MAX) {
     return false_v;
   }
   *out_value = (float32_t)val;
@@ -114,32 +107,38 @@ bool8_t vkr_json_parse_double(VkrJsonReader *reader, float64_t *out_value) {
   return string8_to_f64(&num_str, out_value);
 }
 
+static bool8_t vkr_json_value_ended(const VkrJsonReader *reader) {
+  if (reader->pos == reader->length) {
+    return true_v;
+  }
+  const uint8_t next = reader->data[reader->pos];
+  return next == ',' || next == ']' || next == '}' || next == ' ' ||
+         next == '\t' || next == '\n' || next == '\r';
+}
+
 bool8_t vkr_json_parse_int(VkrJsonReader *reader, int32_t *out_value) {
   vkr_json_skip_whitespace(reader);
-  uint64_t start = reader->pos;
-
-  int sign = 1;
+  bool8_t negative = false_v;
   if (reader->pos < reader->length && reader->data[reader->pos] == '-') {
-    sign = -1;
-    reader->pos++;
-  } else if (reader->pos < reader->length && reader->data[reader->pos] == '+') {
+    negative = true_v;
     reader->pos++;
   }
-
-  int64_t val = 0;
-  bool8_t has_digits = false_v;
+  const uint64_t digits_start = reader->pos;
+  const uint32_t limit = negative ? (uint32_t)INT32_MAX + 1u : INT32_MAX;
+  uint32_t value = 0;
   while (reader->pos < reader->length && reader->data[reader->pos] >= '0' &&
          reader->data[reader->pos] <= '9') {
-    val = val * 10 + (reader->data[reader->pos] - '0');
+    const uint32_t digit = reader->data[reader->pos] - '0';
+    if (value > (limit - digit) / 10u) {
+      return false_v;
+    }
+    value = value * 10u + digit;
     reader->pos++;
-    has_digits = true_v;
   }
-
-  if (!has_digits) {
+  if (reader->pos == digits_start || !vkr_json_value_ended(reader)) {
     return false_v;
   }
-
-  *out_value = (int32_t)(val * sign);
+  *out_value = negative ? (int32_t)-(int64_t)value : (int32_t)value;
   return true_v;
 }
 
@@ -156,48 +155,46 @@ bool8_t vkr_json_parse_string(VkrJsonReader *reader, String8 *out_value) {
   while (reader->pos < reader->length && reader->data[reader->pos] != '"') {
     if (reader->data[reader->pos] == '\\') {
       reader->pos++;
+      if (reader->pos == reader->length) {
+        return false_v;
+      }
     }
     reader->pos++;
+  }
+  if (reader->pos == reader->length) {
+    return false_v;
   }
 
   out_value->str = (uint8_t *)(reader->data + start);
   out_value->length = reader->pos - start;
 
-  if (reader->pos < reader->length) {
-    reader->pos++; // skip closing quote
-  }
-
+  reader->pos++; // skip closing quote
   return true_v;
 }
 
 bool8_t vkr_json_parse_bool(VkrJsonReader *reader, bool8_t *out_value) {
   vkr_json_skip_whitespace(reader);
-
-  if (reader->pos + 4 <= reader->length &&
+  const uint64_t remaining = reader->length - reader->pos;
+  bool8_t value;
+  uint32_t length;
+  if (remaining >= 4 &&
       MemCompare(reader->data + reader->pos, "true", 4) == 0) {
-    reader->pos += 4;
-
-    if (reader->pos < reader->length) {
-      uint8_t next = reader->data[reader->pos];
-      if (next != ',' && next != ']' && next != '}' && next != ' ' &&
-          next != '\t' && next != '\n' && next != '\r') {
-        reader->pos -= 4;
-        return false_v;
-      }
-    }
-
-    *out_value = true_v;
-    return true_v;
+    value = true_v;
+    length = 4;
+  } else if (remaining >= 5 &&
+             MemCompare(reader->data + reader->pos, "false", 5) == 0) {
+    value = false_v;
+    length = 5;
+  } else {
+    return false_v;
   }
-
-  if (reader->pos + 5 <= reader->length &&
-      MemCompare(reader->data + reader->pos, "false", 5) == 0) {
-    reader->pos += 5;
-    *out_value = false_v;
-    return true_v;
+  reader->pos += length;
+  if (!vkr_json_value_ended(reader)) {
+    reader->pos -= length;
+    return false_v;
   }
-
-  return false_v;
+  *out_value = value;
+  return true_v;
 }
 
 bool8_t vkr_json_find_array(VkrJsonReader *reader, const char *array_name) {
@@ -228,11 +225,7 @@ bool8_t vkr_json_next_array_element(VkrJsonReader *reader) {
     return false_v;
   }
 
-  if (reader->pos < reader->length) {
-    return true_v;
-  }
-
-  return false_v;
+  return true_v;
 }
 
 bool8_t vkr_json_enter_object(VkrJsonReader *reader,
@@ -251,14 +244,10 @@ bool8_t vkr_json_enter_object(VkrJsonReader *reader,
     uint8_t c = reader->data[reader->pos];
 
     if (c == '"') {
-      reader->pos++;
-      while (reader->pos < reader->length && reader->data[reader->pos] != '"') {
-        if (reader->data[reader->pos] == '\\') {
-          reader->pos++; // Skip escaped character
-        }
-        reader->pos++;
+      String8 ignored = {0};
+      if (!vkr_json_parse_string(reader, &ignored)) {
+        return false_v;
       }
-      reader->pos++; // Skip closing quote
       continue;
     }
 
@@ -270,6 +259,9 @@ bool8_t vkr_json_enter_object(VkrJsonReader *reader,
     reader->pos++;
   }
 
+  if (brace_depth != 0) {
+    return false_v;
+  }
   *out_sub_reader = (VkrJsonReader){.data = reader->data + obj_start,
                                     .length = reader->pos - obj_start,
                                     .pos = 0};

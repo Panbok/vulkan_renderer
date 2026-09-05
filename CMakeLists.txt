@@ -85,8 +85,6 @@ elseif((VKR_ENABLE_SANITIZERS OR VKR_ENABLE_DEBUG_SANITIZERS) AND MSVC)
 endif()
 unset(_VKR_SAN_FLAGS)
 
-# TODO: Add optimization flags for release build like -O3, -flto, -ffast-math, etc.
-
 # Add subdirectories for each component
 add_subdirectory(lib)
 add_subdirectory(tools)

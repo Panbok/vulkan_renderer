@@ -1,9 +1,5 @@
 #include "debug_overlay.h"
 
-bool8_t vkr_debug_overlay_toggle_requested(const InputState *input) {
-  return input_key_just_released(input, KEY_F6);
-}
-
 static VkrUiStyle debug_overlay_panel_style(void) {
   VkrUiStyle style = vkr_ui_style_default();
   style.padding_pt = (VkrUiEdges){10.0f, 12.0f, 10.0f, 12.0f};

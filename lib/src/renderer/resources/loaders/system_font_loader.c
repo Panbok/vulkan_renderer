@@ -208,6 +208,12 @@ vkr_system_font_rasterize_glyphs(VkrSystemFontParseState *state) {
   }
   MemZero(state->atlas_bitmap, atlas_size);
 
+  if (!vector_reserve_VkrFontGlyph(&state->glyphs,
+                                   VKR_SYSTEM_FONT_LAST_CODEPOINT -
+                                       VKR_SYSTEM_FONT_FIRST_CODEPOINT + 1u)) {
+    *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
   uint32_t cursor_x = VKR_SYSTEM_FONT_ATLAS_PADDING;
   uint32_t cursor_y = VKR_SYSTEM_FONT_ATLAS_PADDING;
   uint32_t row_height = 0;
@@ -274,7 +280,7 @@ vkr_system_font_rasterize_glyphs(VkrSystemFontParseState *state) {
         .x_advance = (int16_t)(advance_width * state->scale + 0.5f),
         .page_id = 0,
     };
-    vector_push_VkrFontGlyph(&state->glyphs, glyph);
+    state->glyphs.data[state->glyphs.length++] = glyph;
 
     cursor_x += (uint32_t)glyph_width + VKR_SYSTEM_FONT_ATLAS_PADDING;
     if ((uint32_t)glyph_height > row_height) {
@@ -426,13 +432,20 @@ vkr_internal bool8_t vkr_system_font_build_result(
   }
   out_font->glyph_indices =
       vkr_hash_table_create_uint32_t(state->load_allocator, table_capacity);
+  if (!out_font->glyph_indices.entries) {
+    *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
   for (uint64_t i = 0; i < glyph_count; ++i) {
     VkrFontGlyph *glyph = &out_font->glyphs.data[i];
     String8 key =
         string8_create_formatted(state->load_allocator, "%u", glyph->codepoint);
-    if (!vkr_hash_table_insert_uint32_t(&out_font->glyph_indices,
+    if (!key.str ||
+        !vkr_hash_table_insert_uint32_t(&out_font->glyph_indices,
                                         string8_cstr(&key), (uint32_t)i)) {
-      log_warn("SystemFontLoader: failed to index glyph %u", glyph->codepoint);
+      log_error("SystemFontLoader: failed to index glyph %u", glyph->codepoint);
+      *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      return false_v;
     }
   }
 
@@ -464,9 +477,11 @@ vkr_internal bool8_t vkr_system_font_build_result(
 
   out_font->atlas_pages =
       array_create_VkrTextureHandle(state->load_allocator, 1);
-  if (out_font->atlas_pages.data) {
-    out_font->atlas_pages.data[0] = atlas;
+  if (!out_font->atlas_pages.data) {
+    *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
   }
+  out_font->atlas_pages.data[0] = atlas;
 
   return true_v;
 }
@@ -648,8 +663,8 @@ vkr_internal bool8_t vkr_system_font_loader_load(
       .out_error = out_error,
   };
 
-  state.glyphs = vector_create_VkrFontGlyph(temp_alloc);
-  state.kernings = vector_create_VkrFontKerning(temp_alloc);
+  state.glyphs = (Vector_VkrFontGlyph){.allocator = temp_alloc};
+  state.kernings = (Vector_VkrFontKerning){.allocator = temp_alloc};
 
   state.face_name = string8_get_stem(temp_alloc, request.file_path);
 
@@ -680,7 +695,10 @@ vkr_internal bool8_t vkr_system_font_loader_load(
             .codepoint_1 = cp2,
             .amount = (int16_t)(kern * state.scale + 0.5f),
         };
-        vector_push_VkrFontKerning(&state.kernings, kerning);
+        if (!vector_push_VkrFontKerning(&state.kernings, kerning)) {
+          *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+          goto fail;
+        }
       }
     }
   }

@@ -1,23 +1,8 @@
 #include "debug_overlay_test.h"
 
 #include "app_ui.h"
-#include "debug_overlay.h"
 #include <assert.h>
 #include <stdio.h>
-
-static void test_debug_overlay_toggles_on_f6_release(void) {
-  printf("  Running test_debug_overlay_toggles_on_f6_release...\n");
-  InputState input = {0};
-
-  assert(!vkr_debug_overlay_toggle_requested(&input));
-  input.previous_keys.keys[KEY_F6] = true_v;
-  input.current_keys.keys[KEY_F6] = false_v;
-  assert(vkr_debug_overlay_toggle_requested(&input));
-  input.current_keys.keys[KEY_F6] = true_v;
-  assert(!vkr_debug_overlay_toggle_requested(&input));
-
-  printf("  test_debug_overlay_toggles_on_f6_release PASSED\n");
-}
 
 static void test_app_ui_client_owns_visibility(void) {
   printf("  Running test_app_ui_client_owns_visibility...\n");
@@ -41,7 +26,6 @@ static void test_app_ui_client_owns_visibility(void) {
 
 bool32_t run_debug_overlay_tests(void) {
   printf("Running debug overlay tests...\n");
-  test_debug_overlay_toggles_on_f6_release();
   test_app_ui_client_owns_visibility();
   printf("Debug overlay tests PASSED\n");
   return true;

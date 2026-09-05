@@ -1037,14 +1037,14 @@ bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
   bitset8_set(&mesh_arena_flags, ARENA_FLAG_LARGE_PAGES);
   manager->arena = arena_create(MB(6), MB(6), mesh_arena_flags);
   if (!manager->arena) {
-    log_fatal("Failed to create mesh manager arena!");
-    return false_v;
+    log_error("Failed to create mesh manager arena!");
+    goto allocation_failure;
   }
 
   manager->scratch_arena = arena_create(MB(3), KB(64));
   if (!manager->scratch_arena) {
-    log_fatal("Failed to create mesh manager scratch arena!");
-    return false_v;
+    log_error("Failed to create mesh manager scratch arena!");
+    goto allocation_failure;
   }
 
   manager->geometry_system = geometry_system;
@@ -1058,9 +1058,11 @@ bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
   }
 
   manager->allocator.ctx = manager->arena;
-  vkr_allocator_arena(&manager->allocator);
+  if (!vkr_allocator_arena(&manager->allocator))
+    goto allocation_failure;
   manager->scratch_allocator.ctx = manager->scratch_arena;
-  vkr_allocator_arena(&manager->scratch_allocator);
+  if (!vkr_allocator_arena(&manager->scratch_allocator))
+    goto allocation_failure;
 
   manager->meshes =
       array_create_VkrMesh(&manager->allocator, manager->config.max_mesh_count);
@@ -1068,6 +1070,9 @@ bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
       &manager->allocator, manager->config.max_mesh_count);
   manager->free_indices = array_create_uint32_t(&manager->allocator,
                                                 manager->config.max_mesh_count);
+  if (!manager->meshes.data || !manager->mesh_live_indices.data ||
+      !manager->free_indices.data)
+    goto allocation_failure;
   manager->free_count = 0;
   manager->mesh_count = 0;
   manager->next_free_index = 0;
@@ -1079,7 +1084,7 @@ bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
 
   if (!vkr_dmemory_create(MB(2), MB(8), &manager->asset_dmemory)) {
     log_error("Failed to create mesh manager asset dmemory");
-    return false_v;
+    goto allocation_failure;
   }
   manager->asset_allocator.ctx = &manager->asset_dmemory;
   vkr_dmemory_allocator_create(&manager->asset_allocator);
@@ -1099,6 +1104,11 @@ bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
       array_create_uint32_t(&manager->allocator, max_assets);
   manager->asset_instance_generations =
       array_create_uint32_t(&manager->allocator, max_assets);
+
+  if (!manager->mesh_assets.data || !manager->asset_free_indices.data ||
+      !manager->asset_by_key.entries || !manager->asset_instance_heads.data ||
+      !manager->asset_instance_generations.data)
+    goto allocation_failure;
 
   for (uint32_t i = 0; i < manager->mesh_assets.length; ++i) {
     VkrMeshAsset empty = {0};
@@ -1124,6 +1134,11 @@ bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
   manager->instance_generation_counter = 1;
   manager->mesh_temporal_generation_counter = 1u;
 
+  if (!manager->mesh_instances.data || !manager->instance_live_indices.data ||
+      !manager->instance_free_indices.data ||
+      !manager->instance_asset_next.data || !manager->instance_asset_prev.data)
+    goto allocation_failure;
+
   for (uint32_t i = 0; i < manager->mesh_instances.length; ++i) {
     VkrMeshInstance empty = {0};
     array_set_VkrMeshInstance(&manager->mesh_instances, i, empty);
@@ -1132,6 +1147,18 @@ bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
   }
 
   return true_v;
+
+allocation_failure:
+  if (manager->asset_allocator.ctx)
+    vkr_dmemory_allocator_destroy(&manager->asset_allocator);
+  vkr_allocator_release_global_accounting(&manager->allocator);
+  vkr_allocator_release_global_accounting(&manager->scratch_allocator);
+  if (manager->scratch_arena)
+    arena_destroy(manager->scratch_arena);
+  if (manager->arena)
+    arena_destroy(manager->arena);
+  MemZero(manager, sizeof(*manager));
+  return false_v;
 }
 
 void vkr_mesh_manager_shutdown(VkrMeshManager *manager) {
@@ -1170,8 +1197,11 @@ void vkr_mesh_manager_shutdown(VkrMeshManager *manager) {
   array_destroy_VkrMesh(&manager->meshes);
   array_destroy_uint32_t(&manager->mesh_live_indices);
   array_destroy_uint32_t(&manager->free_indices);
+  vkr_allocator_release_global_accounting(&manager->allocator);
+  vkr_allocator_release_global_accounting(&manager->scratch_allocator);
   arena_destroy(manager->arena);
   arena_destroy(manager->scratch_arena);
+  MemZero(manager, sizeof(*manager));
 }
 
 void vkr_mesh_manager_get_metrics(const VkrMeshManager *manager,
@@ -3046,6 +3076,13 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_asset_from_handle_info(
         string8_duplicate(&manager->asset_allocator, &desc->shader_override);
   }
 
+  if (!asset->mesh_path.str ||
+      (desc->shader_override.length > 0 && !asset->shader_override.str)) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    vkr_mesh_manager_destroy_asset_slot(manager, slot, false_v);
+    return VKR_MESH_ASSET_HANDLE_INVALID;
+  }
+
   asset->submeshes =
       array_create_VkrMeshAssetSubmesh(&manager->asset_allocator, subset_count);
   if (!asset->submeshes.data) {
@@ -3304,8 +3341,16 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_asset_from_handle_info(
   string_copy(key_copy, key_buf);
   asset->key_string = key_copy;
   VkrMeshAssetEntry entry = {.asset_index = slot, .key = key_copy};
-  vkr_hash_table_insert_VkrMeshAssetEntry(&manager->asset_by_key, key_copy,
-                                          entry);
+  if (!vkr_hash_table_insert_VkrMeshAssetEntry(&manager->asset_by_key, key_copy,
+                                               entry)) {
+    asset->key_string = NULL;
+    vkr_allocator_free(&manager->asset_allocator, key_copy,
+                       string_length(key_copy) + 1u,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    vkr_mesh_manager_destroy_asset_slot(manager, slot, false_v);
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return VKR_MESH_ASSET_HANDLE_INVALID;
+  }
 
   manager->asset_count++;
 

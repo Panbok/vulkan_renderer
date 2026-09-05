@@ -795,26 +795,3 @@ bool8_t vkr_harness_scene_manifest_verify_file(const char *path,
              ? true_v
              : false_v;
 }
-
-bool8_t vkr_harness_scene_manifest_publish(const char *repo_root,
-                                           const char *scene,
-                                           const char *run_root, Arena *arena,
-                                           VkrHarnessReport *report,
-                                           VkrHarnessError *out_error) {
-  if (!run_root || !arena || !report) {
-    return false_v;
-  }
-  Scratch scratch = scratch_create(arena);
-  VkrHarnessSceneManifest manifest = {0};
-  char path[VKR_HARNESS_PATH_MAX];
-  string_format(path, sizeof(path), "%s/scene-content-manifest.json", run_root);
-  const bool8_t ok =
-      vkr_harness_scene_manifest_build(repo_root, scene, arena, &manifest,
-                                       out_error) &&
-      vkr_harness_scene_manifest_write(path, &manifest, out_error) &&
-      vkr_harness_report_add_artifact(report, "scene.content_manifest",
-                                      "scene-content-manifest.json",
-                                      "application/json", path);
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-  return ok;
-}

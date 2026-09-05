@@ -71,10 +71,10 @@ new work.
 | Need | Instrument and limit |
 |---|---|
 | CPU work or queue-slot waits | Harness CPU metrics; inspect scope definitions before interpreting duration |
-| GPU pass duration | `vkr_rg_get_pass_timings()` in `vkr_render_graph.h`; use `gpu_ms` only when `gpu_valid`, for a completed buffered frame |
+| GPU pass duration | Harness pass rows collected from completed `VkrRendererImplSubmitResult.pass_timings` in `vkr_renderer_metrics.c`; use `gpu_ms` only when `gpu_valid` and retain source frame/submit identity |
 | Draw, visibility, overflow equivalence | Harness work-volume rows plus relevant captures; fewer calls alone does not prove equivalent work |
 | Upload stall attribution | Harness upload metrics; `vkr_renderer_get_and_reset_upload_wait_stats()` consumes counters, so do not read it in competition with the metrics collector |
-| Graph resource churn | `vkr_rg_get_resource_stats()`; a higher peak is a clue, not proof of recreation or a leak |
+| Graph resource churn | Harness `rendergraph.*` resource rows collected from native backend caches in `vkr_renderer_metrics.c`; a higher peak is a clue, not proof of recreation or a leak |
 | CPU/GPU resident memory | Harness memory rows and `memory.gpu.live_totals_exact`; use `vkr-memory` to distinguish allocator accounting from live ownership |
 | GPU limiter or occupancy | Instruments trace on Metal; counters suggest a cause and do not establish a speed claim |
 

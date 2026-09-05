@@ -704,10 +704,29 @@ static void test_dmemory_resize_shrink_rejected(void) {
   printf("  test_dmemory_resize_shrink_rejected PASSED\n");
 }
 
+static void test_dmemory_page_rounding_overflow(void) {
+  VkrDMemory memory = {0};
+  assert(!vkr_dmemory_create(UINT64_MAX, UINT64_MAX, &memory));
+  assert(!vkr_dmemory_create(UINT64_MAX - 256u, UINT64_MAX - 256u, &memory));
+  assert(vkr_dmemory_create(MB(1), MB(2), &memory));
+  uint8_t *bytes = vkr_dmemory_alloc(&memory, 16u);
+  assert(bytes);
+  MemSet(bytes, 0x5A, 16u);
+  const uint64_t total = memory.total_size;
+  const uint64_t available = vkr_dmemory_get_free_space(&memory);
+  assert(!vkr_dmemory_resize(&memory, UINT64_MAX - 256u));
+  assert(memory.total_size == total);
+  assert(vkr_dmemory_get_free_space(&memory) == available);
+  for (uint32_t i = 0; i < 16u; ++i)
+    assert(bytes[i] == 0x5A);
+  vkr_dmemory_destroy(&memory);
+}
+
 bool32_t run_dmemory_tests(void) {
   printf("--- Starting DMemory Tests ---\n");
 
   test_dmemory_create();
+  test_dmemory_page_rounding_overflow();
   test_dmemory_alloc_basic();
   test_dmemory_default_alignment();
   test_dmemory_multiple_allocs();

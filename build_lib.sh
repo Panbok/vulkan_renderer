@@ -15,6 +15,5 @@ set -e # Exit early if any commands fail
   fi
   cmake -B build_lib -S . -U CMAKE_TOOLCHAIN_FILE -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE ${GENERATOR} ${COMPILERS}
   cmake --build ./build_lib --target renderer_lib
-  cmake --install ./build_lib || true
   ./tools/pack_vkt_textures.sh
 )

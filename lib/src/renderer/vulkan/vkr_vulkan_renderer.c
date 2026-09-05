@@ -758,7 +758,10 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
                                 packet->frame.frame_index,
                                 packet->globals.temporal.enabled)
           : (VkrGtaoGpuParams){0};
-  vkr_rg_begin_frame(renderer->graph, &renderer->prepared_frame);
+  if (!vkr_rg_begin_frame(renderer->graph, &renderer->prepared_frame)) {
+    vkr_vulkan_renderer_cancel_frame(renderer);
+    return false_v;
+  }
   vkr_rg_set_packet(renderer->graph, packet);
   /* Installed before compilation, because seeding a retained subresource reads
      through this provider. */

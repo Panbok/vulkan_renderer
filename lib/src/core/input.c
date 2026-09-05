@@ -9,7 +9,6 @@ InputState input_init(EventManager *event_manager) {
       .current_keys = {0},
       .previous_buttons = {0},
       .current_buttons = {0},
-      .previous_axes = {0},
       .current_axes = {0},
       .is_initialized = true,
   };
@@ -48,8 +47,6 @@ void input_update(InputState *input_state) {
           sizeof(KeysState));
   MemCopy(&input_state->previous_buttons, &input_state->current_buttons,
           sizeof(ButtonsState));
-  MemCopy(&input_state->previous_axes, &input_state->current_axes,
-          sizeof(GamepadAxes));
   input_state->character_count = 0u;
   input_state->dropped_character_count = 0u;
 }
@@ -248,22 +245,8 @@ void input_get_left_stick(InputState *input_state, float *x, float *y) {
   *y = input_state->current_axes.left_y;
 }
 
-void input_get_previous_left_stick(InputState *input_state, float *x,
-                                   float *y) {
-  assert_log(input_state != NULL && x && y, "Invalid args");
-  *x = input_state->previous_axes.left_x;
-  *y = input_state->previous_axes.left_y;
-}
-
 void input_get_right_stick(InputState *input_state, float *x, float *y) {
   assert_log(input_state != NULL && x && y, "Invalid args");
   *x = input_state->current_axes.right_x;
   *y = input_state->current_axes.right_y;
-}
-
-void input_get_previous_right_stick(InputState *input_state, float *x,
-                                    float *y) {
-  assert_log(input_state != NULL && x && y, "Invalid args");
-  *x = input_state->previous_axes.right_x;
-  *y = input_state->previous_axes.right_y;
 }

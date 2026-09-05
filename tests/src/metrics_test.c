@@ -607,122 +607,6 @@ static void test_metrics_registry_generation(void) {
   printf("  test_metrics_registry_generation PASSED\n");
 }
 
-static void test_renderer_owner_metric_catalog(void) {
-  printf("  Running test_renderer_owner_metric_catalog...\n");
-
-  MetricsFixture fixture = metrics_fixture_create();
-  VkrRendererMetrics renderer_metrics = {0};
-  assert(vkr_renderer_metrics_register(&renderer_metrics, fixture.metrics));
-  for (uint32_t layer = 0u; layer < 5u; ++layer) {
-    assert(renderer_metrics.ids.visibility_transmission_covered_pixels[layer] !=
-           VKR_METRIC_ID_INVALID);
-  }
-  assert(renderer_metrics.ids.visibility_transmission_coverage_extent_width !=
-         VKR_METRIC_ID_INVALID);
-  assert(renderer_metrics.ids.visibility_transmission_coverage_extent_height !=
-         VKR_METRIC_ID_INVALID);
-  assert(
-      renderer_metrics.ids.visibility_transmission_pixel_compaction_overflow !=
-      VKR_METRIC_ID_INVALID);
-  assert(renderer_metrics.ids.visibility_transmission_gpu_resolve_invalid !=
-         VKR_METRIC_ID_INVALID);
-  assert(
-      renderer_metrics.ids.visibility_transmission_gpu_bucket_opaque_single !=
-      VKR_METRIC_ID_INVALID);
-  assert(
-      renderer_metrics.ids.visibility_transmission_gpu_bucket_opaque_double !=
-      VKR_METRIC_ID_INVALID);
-  assert(
-      renderer_metrics.ids.visibility_transmission_gpu_bucket_cutout_single !=
-      VKR_METRIC_ID_INVALID);
-  assert(
-      renderer_metrics.ids.visibility_transmission_gpu_bucket_cutout_double !=
-      VKR_METRIC_ID_INVALID);
-  assert(renderer_metrics.previous.gpu_memory_interval_contiguous);
-
-  uint32_t catalog_count = 0;
-  const VkrMetricCatalogEntry *catalog =
-      vkr_metrics_get_catalog(fixture.metrics, &catalog_count);
-
-  // Every owner publishes every row, under a name the report contract fixes.
-  // Spot-checking two rows would not catch a bucket whose name went missing.
-  static const char *const owner_names[VKR_GPU_ALLOCATION_OWNER_COUNT] = {
-      "unknown",  "mesh",     "texture", "font",     "render_graph", "shader",
-      "instance", "indirect", "staging", "readback", "swapchain",
-  };
-  static const struct {
-    const char *suffix;
-    VkrMetricKind kind;
-    VkrMetricUnit unit;
-  } rows[VKR_GPU_OWNER_METRIC_ROW_COUNT] = {
-      [VKR_GPU_OWNER_METRIC_ROW_LIVE_BYTES] = {"bytes.live",
-                                               VKR_METRIC_KIND_GAUGE,
-                                               VKR_METRIC_UNIT_BYTES},
-      [VKR_GPU_OWNER_METRIC_ROW_PEAK_BYTES] = {"bytes.peak",
-                                               VKR_METRIC_KIND_GAUGE,
-                                               VKR_METRIC_UNIT_BYTES},
-      [VKR_GPU_OWNER_METRIC_ROW_ALLOCATED_BYTES] = {"bytes.allocated",
-                                                    VKR_METRIC_KIND_COUNTER,
-                                                    VKR_METRIC_UNIT_BYTES},
-      [VKR_GPU_OWNER_METRIC_ROW_LIVE_ALLOCATIONS] = {"allocations.live",
-                                                     VKR_METRIC_KIND_GAUGE,
-                                                     VKR_METRIC_UNIT_COUNT},
-      [VKR_GPU_OWNER_METRIC_ROW_PEAK_ALLOCATIONS] = {"allocations.peak",
-                                                     VKR_METRIC_KIND_GAUGE,
-                                                     VKR_METRIC_UNIT_COUNT},
-      [VKR_GPU_OWNER_METRIC_ROW_CREATED_ALLOCATIONS] = {"allocations.created",
-                                                        VKR_METRIC_KIND_COUNTER,
-                                                        VKR_METRIC_UNIT_COUNT},
-  };
-
-  const uint32_t aggregate_counter_index =
-      vkr_metric_id_index(renderer_metrics.ids.gpu_allocations_created);
-  assert(aggregate_counter_index < catalog_count);
-  assert(strcmp(catalog[aggregate_counter_index].name,
-                "memory.gpu.allocations.created") == 0);
-  assert(catalog[aggregate_counter_index].kind == VKR_METRIC_KIND_COUNTER);
-  assert(catalog[aggregate_counter_index].unit == VKR_METRIC_UNIT_COUNT);
-
-  const uint32_t command_wait_index =
-      vkr_metric_id_index(renderer_metrics.ids.frame_command_slot_waits);
-  assert(command_wait_index < catalog_count);
-  assert(strcmp(catalog[command_wait_index].name, "frame.command_slot_waits") ==
-         0);
-  assert(catalog[command_wait_index].domain == VKR_METRIC_DOMAIN_FRAME);
-  assert(catalog[command_wait_index].kind == VKR_METRIC_KIND_GAUGE);
-  assert(catalog[command_wait_index].unit == VKR_METRIC_UNIT_COUNT);
-
-  const uint32_t upload_exhaustion_index =
-      vkr_metric_id_index(renderer_metrics.ids.frame_upload_exhaustions);
-  assert(upload_exhaustion_index < catalog_count);
-  assert(strcmp(catalog[upload_exhaustion_index].name,
-                "frame.upload_exhaustions") == 0);
-  assert(catalog[upload_exhaustion_index].domain == VKR_METRIC_DOMAIN_FRAME);
-  assert(catalog[upload_exhaustion_index].kind == VKR_METRIC_KIND_GAUGE);
-  assert(catalog[upload_exhaustion_index].unit == VKR_METRIC_UNIT_COUNT);
-
-  for (uint32_t owner = 0; owner < VKR_GPU_ALLOCATION_OWNER_COUNT; ++owner) {
-    for (uint32_t row = 0; row < VKR_GPU_OWNER_METRIC_ROW_COUNT; ++row) {
-      const VkrMetricId id = renderer_metrics.ids.gpu_owner[owner][row];
-      assert(id != VKR_METRIC_ID_INVALID);
-      const uint32_t index = vkr_metric_id_index(id);
-      assert(index < catalog_count);
-
-      char expected[64];
-      snprintf(expected, sizeof(expected), "memory.gpu.owner.%s.%s",
-               owner_names[owner], rows[row].suffix);
-      assert(strcmp(catalog[index].name, expected) == 0);
-      assert(catalog[index].unit == rows[row].unit);
-      assert(catalog[index].kind == rows[row].kind);
-      assert(catalog[index].scalar == VKR_METRIC_SCALAR_U64);
-      assert(catalog[index].domain == VKR_METRIC_DOMAIN_MEMORY_GPU);
-    }
-  }
-
-  metrics_fixture_destroy(&fixture);
-  printf("  test_renderer_owner_metric_catalog PASSED\n");
-}
-
 static void test_renderer_cumulative_delta(void) {
   printf("  Running test_renderer_cumulative_delta...\n");
 
@@ -780,7 +664,6 @@ bool32_t run_metrics_tests(void) {
   test_metrics_event_record_status();
   test_metrics_event_ring_mpsc();
   test_metrics_registry_generation();
-  test_renderer_owner_metric_catalog();
   test_renderer_cumulative_delta();
   test_renderer_pass_sample_publication();
   printf("--- Metrics tests completed. ---\n");

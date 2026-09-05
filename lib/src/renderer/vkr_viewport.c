@@ -15,14 +15,10 @@ vkr_viewport_mapping_window_to_target_pixel(const VkrViewportMapping *mapping,
 
   const int32_t img_x = (int32_t)vkr_round_f32(mapping->image_rect_px.x);
   const int32_t img_y = (int32_t)vkr_round_f32(mapping->image_rect_px.y);
-  const float32_t raw_w =
-      vkr_max_f32(0.0f, mapping->image_rect_px.z);
-  const float32_t raw_h =
-      vkr_max_f32(0.0f, mapping->image_rect_px.w);
-  const uint32_t img_w =
-      vkr_max_u32(1u, (uint32_t)vkr_round_f32(raw_w));
-  const uint32_t img_h =
-      vkr_max_u32(1u, (uint32_t)vkr_round_f32(raw_h));
+  const float32_t raw_w = vkr_max_f32(0.0f, mapping->image_rect_px.z);
+  const float32_t raw_h = vkr_max_f32(0.0f, mapping->image_rect_px.w);
+  const uint32_t img_w = vkr_max_u32(1u, (uint32_t)vkr_round_f32(raw_w));
+  const uint32_t img_h = vkr_max_u32(1u, (uint32_t)vkr_round_f32(raw_h));
 
   if (window_x < img_x || window_y < img_y) {
     return false_v;
@@ -53,7 +49,7 @@ vkr_viewport_mapping_window_to_target_pixel(const VkrViewportMapping *mapping,
                           (uint64_t)(img_h - 1u));
   }
 
-  *out_x = vkr_min_u32(target_x, mapping->target_width - 1u);
-  *out_y = vkr_min_u32(target_y, mapping->target_height - 1u);
+  *out_x = target_x;
+  *out_y = target_y;
   return true_v;
 }

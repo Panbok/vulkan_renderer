@@ -52,6 +52,8 @@ typedef struct VkrPlatformProcessLock {
   bool8_t acquired;
 } VkrPlatformProcessLock;
 
+/** Reserve address space; returns NULL on either platform if reservation fails.
+ */
 void *vkr_platform_mem_reserve(uint64_t size);
 
 bool32_t vkr_platform_mem_commit(void *ptr, uint64_t size);

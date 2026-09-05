@@ -2,11 +2,7 @@ cmake_minimum_required(VERSION 3.27)
 
 project(vulkan_renderer_tester)
 
-# Discover all source files in tests/src
-# Note: GLOB_RECURSE includes headers, which is fine but unnecessary for compilation
-file(GLOB_RECURSE TEST_SOURCES src/*.c src/*.h)
-
-# Create the test executable
+file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS src/*.c)
 add_executable(vulkan_renderer_tester ${TEST_SOURCES})
 target_sources(vulkan_renderer_tester PRIVATE
     "${CMAKE_SOURCE_DIR}/app/src/app_ui.c"
@@ -34,10 +30,9 @@ if(TARGET Vulkan::Vulkan)
     target_link_libraries(vulkan_renderer_tester PRIVATE Vulkan::Vulkan)
 endif()
 
-# Include directories
 target_include_directories(vulkan_renderer_tester
     PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src # For test headers (e.g., arena_test.h)
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_SOURCE_DIR}/app/src
         ${CMAKE_SOURCE_DIR}/runtime/src
         ${CMAKE_SOURCE_DIR}/tools

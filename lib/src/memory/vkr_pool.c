@@ -164,9 +164,7 @@ void *vkr_pool_alloc(VkrPool *pool) {
     return NULL;
   }
 
-  if (pool->allocated < pool->chunk_count) {
-    pool->allocated++;
-  }
+  pool->allocated++;
 
   return (uint8_t *)pool->memory + offset;
 }
@@ -214,9 +212,7 @@ bool8_t vkr_pool_free(VkrPool *pool, void *ptr) {
     return false_v;
   }
 
-  if (pool->allocated > 0) {
-    pool->allocated--;
-  }
+  pool->allocated--;
 
   return true_v;
 }

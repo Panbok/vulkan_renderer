@@ -13,23 +13,6 @@ VkrTransform vkr_transform_new(Vec3 position, VkrQuat rotation, Vec3 scale) {
   return transform;
 }
 
-VkrTransform vkr_transform_from_position(Vec3 position) {
-  return vkr_transform_new(position, vkr_quat_identity(), vec3_one());
-}
-
-VkrTransform vkr_transform_from_rotation(VkrQuat rotation) {
-  return vkr_transform_new(vec3_zero(), rotation, vec3_one());
-}
-
-VkrTransform vkr_transform_from_scale(Vec3 scale) {
-  return vkr_transform_new(vec3_zero(), vkr_quat_identity(), scale);
-}
-
-VkrTransform vkr_transform_from_position_rotation(Vec3 position,
-                                                  VkrQuat rotation) {
-  return vkr_transform_new(position, rotation, vec3_one());
-}
-
 VkrTransform vkr_transform_from_position_scale_rotation(Vec3 position,
                                                         Vec3 scale,
                                                         VkrQuat rotation) {
@@ -63,13 +46,6 @@ void vkr_transform_scale(VkrTransform *transform, Vec3 scale) {
   transform->is_dirty = true;
 }
 
-void vkr_transform_translate_rotate(VkrTransform *transform, Vec3 translation,
-                                    VkrQuat rotation) {
-  assert_log(transform != NULL, "Transform is NULL");
-  vkr_transform_translate(transform, translation);
-  vkr_transform_rotate(transform, rotation);
-}
-
 void vkr_transform_set_position(VkrTransform *transform, Vec3 position) {
   assert_log(transform != NULL, "Transform is NULL");
   transform->position = position;
@@ -86,37 +62,6 @@ void vkr_transform_set_scale(VkrTransform *transform, Vec3 scale) {
   assert_log(transform != NULL, "Transform is NULL");
   transform->scale = scale;
   transform->is_dirty = true;
-}
-
-void vkr_transform_set_position_rotation(VkrTransform *transform, Vec3 position,
-                                         VkrQuat rotation) {
-  assert_log(transform != NULL, "Transform is NULL");
-  transform->position = position;
-  transform->rotation = vkr_quat_normalize(rotation);
-  transform->is_dirty = true;
-}
-
-void vkr_transform_set_transform(VkrTransform *transform, Vec3 position,
-                                 VkrQuat rotation, Vec3 scale) {
-  assert_log(transform != NULL, "Transform is NULL");
-  transform->position = position;
-  transform->rotation = vkr_quat_normalize(rotation);
-  transform->scale = scale;
-  transform->is_dirty = true;
-}
-
-void vkr_transform_set_parent(VkrTransform *transform, VkrTransform *parent) {
-  assert_log(transform != NULL, "Transform is NULL");
-  assert_log(parent != NULL, "Parent is NULL");
-
-  if (!transform)
-    return;
-
-  if (transform->parent == parent)
-    return;
-
-  transform->parent = parent;
-  transform->is_dirty = true_v;
 }
 
 vkr_internal Mat4 vkr_transform_get_world_internal(VkrTransform *transform,

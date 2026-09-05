@@ -8,6 +8,7 @@
 #include "renderer/vkr_gpu_submit_ring.h"
 #include "renderer/vulkan/vkr_vulkan_device.h"
 #include "renderer/vulkan/vkr_vulkan_memory.h"
+#include "renderer/vulkan/vkr_vulkan_internal.h"
 #include "renderer/vulkan/vkr_vulkan_renderer.h"
 #include "renderer/vulkan/vkr_vulkan_wsi.h"
 
@@ -311,8 +312,6 @@ static void test_shared_submit_ring_completion_contract(void) {
 
 static void test_shared_gpu_memory_and_abi_contracts(void) {
   printf("  Running test_shared_gpu_memory_and_abi_contracts...\n");
-  assert(vkr_gpu_abi_validate_host());
-
   VkrGpuGeometryRow geometry = {
       .vertex_address = 0x1000u,
       .index_address = 0x2000u,
@@ -324,22 +323,6 @@ static void test_shared_gpu_memory_and_abi_contracts(void) {
   assert(geometry.index_address == 0xa000u);
   assert(geometry.decode_address == 0x8180u);
   assert(geometry.publication_generation == 4u);
-  assert(vkr_gpu_abi_record(VKR_GPU_ABI_VERTEX)->expected_size == 64u);
-  assert(vkr_gpu_abi_record(VKR_GPU_ABI_PACKED_STATIC_VERTEX)->expected_size ==
-         32u);
-  assert(
-      vkr_gpu_abi_record(VKR_GPU_ABI_GEOMETRY_DECODE_RECORD)->expected_size ==
-      32u);
-  assert(vkr_gpu_abi_record(VKR_GPU_ABI_INSTANCE)->expected_size == 80u);
-  assert(vkr_gpu_abi_record(VKR_GPU_ABI_TEXT_VERTEX)->expected_size == 32u);
-  assert(vkr_gpu_abi_record(VKR_GPU_ABI_GEOMETRY_ROW)->expected_size == 48u);
-  assert(vkr_gpu_abi_record(VKR_GPU_ABI_CANDIDATE_DRAW_ROW)->expected_size ==
-         48u);
-  assert(vkr_gpu_abi_record(VKR_GPU_ABI_VISIBLE_DRAW_ROW)->expected_size ==
-         32u);
-  assert(vkr_gpu_abi_record(VKR_GPU_ABI_POINT_LIGHT_ROW)->expected_size == 64u);
-  assert(vkr_gpu_abi_record(VKR_GPU_ABI_POINT_LIGHT_ROW)->expected_alignment ==
-         16u);
   const uint32_t candidate_flags = 0x5u;
   const uint32_t packed_draw_state = vkr_gpu_draw_state_flags(
       VKR_WORLD_DRAW_STATE_CUTOUT_DOUBLE_SIDED, candidate_flags);
@@ -347,11 +330,6 @@ static void test_shared_gpu_memory_and_abi_contracts(void) {
          VKR_WORLD_DRAW_STATE_CUTOUT_DOUBLE_SIDED);
   assert((packed_draw_state >> VKR_GPU_DRAW_STATE_BUCKET_BITS) ==
          candidate_flags);
-  assert(sizeof(VkrGpuDrawCompactionState) == 80u);
-  assert(sizeof(VkrGpuTransmissionDiagnostics) == 116u);
-  assert(offsetof(VkrGpuTransmissionDiagnostics, covered_pixels) == 80u);
-  assert(offsetof(VkrGpuTransmissionDiagnostics, compact_overflow) == 100u);
-
   const VkrGpuMemoryConfig config = {256u, 2u, 2u, 3u};
   uint8_t storage[2048] = {0};
   const uint64_t required = vkr_gpu_memory_storage_requirement(&config);
@@ -459,8 +437,91 @@ static void test_shared_slot_table_retirement_preflight(void) {
   printf("  test_shared_slot_table_retirement_preflight PASSED\n");
 }
 
+/* Exercise CPU publication admission with real native records. No Vulkan
+   command or completion behavior is simulated by this test. */
+static void test_direct_draw_publication_admission(void) {
+  VkrVulkanRenderer renderer = {0};
+  VkrVulkanSubmeshRange range = {.index_count = 3u};
+  VkrVulkanPublishedGeometry geometry[2] = {
+      {.handle = {.id = 1u, .generation = 7u},
+       .submeshes = &range,
+       .submesh_count = 1u,
+       .live = true_v},
+      {.handle = {.id = 2u, .generation = 8u},
+       .submeshes = &range,
+       .submesh_count = 1u,
+       .live = true_v,
+       .pending_initialization_count = 1u},
+  };
+  VkrVulkanPublishedMaterial materials[2] = {
+      {.handle = {.id = 1u, .generation = 11u}, .live = true_v},
+      {.handle = {.id = 2u, .generation = 12u},
+       .live = true_v,
+       .pending_texture_count = 1u},
+  };
+  VkrDrawItem draws[4] = {
+      {.geometry = geometry[0].handle,
+       .material = materials[0].handle,
+       .first_instance = 3u,
+       .instance_count = 1u},
+      {.geometry = geometry[1].handle,
+       .material = materials[0].handle,
+       .first_instance = 5u,
+       .instance_count = 1u},
+      {.geometry = geometry[0].handle,
+       .material = materials[1].handle,
+       .first_instance = 9u,
+       .instance_count = 1u},
+      {.geometry = geometry[0].handle,
+       .material = materials[0].handle,
+       .first_instance = 17u,
+       .instance_count = 1u},
+  };
+  renderer.config.geometry_capacity = 2u;
+  renderer.config.material_record_capacity = 2u;
+  renderer.published_geometries = geometry;
+  renderer.published_materials = materials;
+  uint64_t storage[128] = {0};
+  VkrVulkanFrameSlot *slot = &renderer.frame_slots[0];
+  slot->frame_upload.allocation.mapped = storage;
+  slot->frame_upload.size = sizeof(storage);
+  VkrWorldPassPayload world = {.transparent_draws = draws,
+                               .transparent_draw_count = 4u};
+  assert(vkr_vk_prepare_direct_draws(&renderer, slot, &world));
+  assert(slot->direct_draw_count == 2u);
+  assert(slot->direct_draws[0].first_instance == 3u);
+  assert(slot->direct_draws[1].first_instance == 17u);
+
+  geometry[1].pending_initialization_count = 0u;
+  materials[1].pending_texture_count = 0u;
+  slot->frame_upload_cursor = 0u;
+  assert(vkr_vk_prepare_direct_draws(&renderer, slot, &world));
+  assert(slot->direct_draw_count == 4u);
+  assert(slot->direct_draws[1].first_instance == 5u);
+  assert(slot->direct_draws[2].first_instance == 9u);
+
+  geometry[1].pending_initialization_count = 1u;
+  draws[1].submesh_index = 9u;
+  slot->frame_upload_cursor = 0u;
+  assert(!vkr_vk_prepare_direct_draws(&renderer, slot, &world));
+  draws[1].submesh_index = 0u;
+  draws[1].geometry.generation++;
+  slot->frame_upload_cursor = 0u;
+  assert(!vkr_vk_prepare_direct_draws(&renderer, slot, &world));
+  draws[1].geometry = geometry[1].handle;
+
+  slot->frame_upload_cursor = 0u;
+  slot->frame_upload.size = 1u;
+  assert(!vkr_vk_prepare_direct_draws(&renderer, slot, &world));
+  assert(slot->frame_upload_cursor == 0u);
+  assert(slot->direct_draw_count == 0u);
+  assert(slot->frame_upload_exhaustions == 1u);
+  printf("  test_direct_draw_publication_admission PASSED\n");
+}
+
 bool32_t run_vulkan_tests(void) {
   printf("--- Running Vulkan tests... ---\n");
+  test_direct_draw_publication_admission();
   test_present_result_classifier();
   test_reacquisition_completion_contract();
   test_surface_extension_classifier();

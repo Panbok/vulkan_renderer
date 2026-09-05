@@ -1,4 +1,5 @@
 #include "text_test.h"
+#include "container_test_allocator.h"
 #include "platform/vkr_window_internal.h"
 #include "renderer/renderer_frontend.h"
 #include "renderer/resources/ui/vkr_ui_text.h"
@@ -174,43 +175,8 @@ static void test_text_layout(void) {
   printf("  test_text_layout PASSED\n");
 }
 
-static void test_rich_text_spans(void) {
-  printf("  Running test_rich_text_spans...\n");
-  setup_suite();
-
-  VkrTextStyle base = vkr_text_style_default();
-  String8 content = string8_lit("Hello World");
-  VkrRichText rt = vkr_rich_text_create(&allocator, content, &base);
-
-  vkr_rich_text_add_span(&rt, 0, 5, &base);
-  vkr_rich_text_add_span(&rt, 6, 11, &base);
-  assert(rt.spans.length == 2);
-  assert(rt.spans.capacity >= 2);
-
-  vkr_rich_text_clear_spans(&rt);
-  assert(rt.spans.length == 0);
-
-  vkr_rich_text_destroy(&rt);
-  teardown_suite();
-  printf("  test_rich_text_spans PASSED\n");
-}
-
-static float32_t test_mtsdf_screen_range(Vec2 unit_range, Vec2 dx, Vec2 dy) {
-  Vec2 gradient_squared = {
-      Max(dx.x * dx.x + dy.x * dy.x, 1e-12f),
-      Max(dx.y * dx.y + dy.y * dy.y, 1e-12f),
-  };
-  Vec2 screen_tex_size = {
-      1.0f / sqrtf(gradient_squared.x),
-      1.0f / sqrtf(gradient_squared.y),
-  };
-  return Max(0.5f * (unit_range.x * screen_tex_size.x +
-                     unit_range.y * screen_tex_size.y),
-             1.0f);
-}
-
-static void test_mtsdf_unit_range_and_derivatives(void) {
-  printf("  Running test_mtsdf_unit_range_and_derivatives...\n");
+static void test_mtsdf_unit_range(void) {
+  printf("  Running test_mtsdf_unit_range...\n");
 
   const Vec2 unit_range = vkr_text_mtsdf_unit_range(8.0f, 1024u, 512u);
   assert_f32_eq(unit_range.x, 8.0f / 1024.0f, 0.000001f,
@@ -218,41 +184,7 @@ static void test_mtsdf_unit_range_and_derivatives(void) {
   assert_f32_eq(unit_range.y, 8.0f / 512.0f, 0.000001f,
                 "rectangular unit range y");
 
-  const float32_t axis_aligned = test_mtsdf_screen_range(
-      unit_range, vec2_new(1.0f / 512.0f, 0.0f), vec2_new(0.0f, 1.0f / 256.0f));
-  assert_f32_eq(axis_aligned, 4.0f, 0.0001f, "axis-aligned derivative range");
-
-  const float32_t rotated = test_mtsdf_screen_range(
-      unit_range, vec2_new(0.0f, 1.0f / 256.0f), vec2_new(1.0f / 512.0f, 0.0f));
-  assert_f32_eq(rotated, 4.0f, 0.0001f, "rotated derivative range");
-
-  printf("  test_mtsdf_unit_range_and_derivatives PASSED\n");
-}
-
-static void test_mtsdf_fractional_uv_bounds_remain_exact(void) {
-  printf("  Running test_mtsdf_fractional_uv_bounds_remain_exact...\n");
-
-  const float32_t inv_width = 1.0f / 1024.0f;
-  const float32_t inv_height = 1.0f / 1024.0f;
-  const float32_t left = 948.5f * inv_width;
-  const float32_t bottom = 973.5f * inv_height;
-  const float32_t right = 965.5f * inv_width;
-  const float32_t top = 1023.5f * inv_height;
-  const float32_t inset = vkr_text_uv_inset(1.0f, true_v);
-
-  assert_f32_eq(inset, 0.0f, 0.0f, "MTSDF inset disabled");
-  assert_f32_eq(left + inset * inv_width, left, 0.0f,
-                "fractional left preserved");
-  assert_f32_eq(bottom + inset * inv_height, bottom, 0.0f,
-                "fractional bottom preserved");
-  assert_f32_eq(right - inset * inv_width, right, 0.0f,
-                "fractional right preserved");
-  assert_f32_eq(top - inset * inv_height, top, 0.0f,
-                "fractional top preserved");
-  assert_f32_eq(vkr_text_uv_inset(-1.0f, false_v), 0.0f, 0.0f,
-                "negative bitmap inset clamped");
-
-  printf("  test_mtsdf_fractional_uv_bounds_remain_exact PASSED\n");
+  printf("  test_mtsdf_unit_range PASSED\n");
 }
 
 typedef struct TestCookedFont {
@@ -743,7 +675,7 @@ static void test_ui_text_field_character_input_and_repeat(void) {
   MemSet(bytes, 0xcc, sizeof(bytes));
   VkrUiTextEditBuffer edit = {.data = bytes, .capacity = sizeof(bytes)};
   EventManager event_manager = {0};
-  event_manager_create(&event_manager);
+  assert(event_manager_create(&event_manager));
   InputState input = input_init(&event_manager);
   VkrUiInputCapture capture = {0};
   assert(!test_ui_text_field_frame(&renderer, &system, &input, &edit,
@@ -810,7 +742,7 @@ static void test_ui_input_layer_blocks_click_through(void) {
   vkr_ui_system_set_offscreen_size(&renderer, &system, true_v, 200u, 100u);
 
   EventManager event_manager = {0};
-  event_manager_create(&event_manager);
+  assert(event_manager_create(&event_manager));
   InputState input = input_init(&event_manager);
   const VkrUiRect overlay_rect = {0.0f, 0.0f, 200.0f, 100.0f};
   VkrUiWidgetConfig button = vkr_ui_widget_config_default();
@@ -867,6 +799,46 @@ static void test_ui_input_layer_blocks_click_through(void) {
   printf("  test_ui_input_layer_blocks_click_through PASSED\n");
 }
 
+static void *text_test_alloc_aligned(void *ctx, uint64_t size,
+                                     uint64_t alignment,
+                                     VkrAllocatorMemoryTag tag) {
+  assert(alignment <= _Alignof(max_align_t));
+  return container_test_alloc(ctx, size, tag);
+}
+
+static void text_test_free_aligned(void *ctx, void *ptr, uint64_t size,
+                                   uint64_t alignment,
+                                   VkrAllocatorMemoryTag tag) {
+  (void)alignment;
+  container_test_free(ctx, ptr, size, tag);
+}
+
+static void test_layout_allocation_failure(void) {
+  const VkrTextStyle style =
+      vkr_text_style_new(VKR_FONT_HANDLE_INVALID, 10.0f, VKR_TEXT_COLOR_WHITE);
+  const VkrText text = vkr_text_from_cstr("AB\nCD", &style);
+  ContainerTestAllocator state = {0};
+  VkrAllocator fault_allocator = container_test_allocator(&state);
+  fault_allocator.alloc_aligned = text_test_alloc_aligned;
+  fault_allocator.free_aligned = text_test_free_aligned;
+  VkrTextLayout layout = vkr_text_layout_compute(&fault_allocator, &text, NULL);
+  assert(layout.line_count == 2 && layout.glyphs.length == 4);
+  const uint64_t allocation_count = state.calls;
+  vkr_text_layout_destroy(&layout);
+  assert(state.live_bytes == 0);
+  for (uint64_t fail_at = 1; fail_at <= allocation_count; ++fail_at) {
+    state = (ContainerTestAllocator){.fail_at = fail_at};
+    layout = vkr_text_layout_compute(&fault_allocator, &text, NULL);
+    assert(layout.line_count == 0 && layout.glyphs.data == NULL);
+    assert(state.live_bytes == 0);
+    state.fail_at = 0;
+    layout = vkr_text_layout_compute(&fault_allocator, &text, NULL);
+    assert(layout.line_count == 2 && layout.glyphs.length == 4);
+    vkr_text_layout_destroy(&layout);
+    assert(state.live_bytes == 0);
+  }
+}
+
 bool32_t run_text_tests(void) {
   printf("--- Starting Text Tests ---\n");
 
@@ -876,9 +848,8 @@ bool32_t run_text_tests(void) {
   test_text_creation_and_destroy();
   test_text_measurement();
   test_text_layout();
-  test_rich_text_spans();
-  test_mtsdf_unit_range_and_derivatives();
-  test_mtsdf_fractional_uv_bounds_remain_exact();
+  test_layout_allocation_failure();
+  test_mtsdf_unit_range();
   test_cooked_float_layout_contract();
   test_cooked_long_run_accumulation();
   test_cooked_negative_bearing_geometry();

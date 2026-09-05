@@ -48,7 +48,7 @@ static void editor_application_initialize(void *state, VkrUiDockTree *dock) {
 
   const String8 path = string8_create_from_cstr(
       (const uint8_t *)editor->layout_path, string_length(editor->layout_path));
-  if (vkr_editor_ui_load_layout(dock, path)) {
+  if (vkr_ui_dock_load_file(dock, path)) {
     log_info("Loaded editor layout from '%s'", editor->layout_path);
   } else {
     log_warn("Using the default editor layout; '%s' could not be loaded",
@@ -76,7 +76,7 @@ static bool8_t editor_application_shutdown(void *state,
 
   const String8 path = string8_create_from_cstr(
       (const uint8_t *)editor->layout_path, string_length(editor->layout_path));
-  if (vkr_editor_ui_save_layout(dock, path))
+  if (vkr_ui_dock_save_file(dock, path))
     return true_v;
 
   log_error("Failed to save editor layout to '%s'", editor->layout_path);

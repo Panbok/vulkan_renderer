@@ -1,4 +1,6 @@
 #include "str.h"
+
+#include <float.h>
 /////////////////////
 // String8
 /////////////////////
@@ -35,18 +37,17 @@ String8 string8_create_formatted_v(VkrAllocator *allocator, const char *fmt,
   va_copy(args_copy, args);
 
   int32_t required_size_i = vsnprintf(NULL, 0, fmt, args_copy);
-  assert(required_size_i >= 0 && "Failed to format string");
-
-  uint32_t required_size = (uint32_t)required_size_i;
   va_end(args_copy);
-
-  assert(required_size >= 0 && "Failed to format string");
+  if (required_size_i < 0)
+    return (String8){0};
+  uint32_t required_size = (uint32_t)required_size_i;
 
   uint64_t buffer_size = (uint64_t)required_size + 1;
   uint8_t *buffer = vkr_allocator_alloc(allocator, buffer_size,
                                         VKR_ALLOCATOR_MEMORY_TAG_STRING);
 
-  assert(buffer != NULL && "Failed to allocate buffer");
+  if (!buffer)
+    return (String8){0};
 
   vsnprintf((char *)buffer, buffer_size, fmt, args);
 
@@ -228,7 +229,7 @@ String8 string8_duplicate(VkrAllocator *allocator, const String8 *str) {
   assert(allocator != NULL && "Allocator is NULL");
   assert(str != NULL && "String is NULL");
 
-  if (!str->str || str->length == 0) {
+  if (!str->str || str->length == 0 || str->length == UINT64_MAX) {
     String8 result = {NULL, 0};
     return result;
   }
@@ -236,7 +237,8 @@ String8 string8_duplicate(VkrAllocator *allocator, const String8 *str) {
   String8 result = {NULL, 0};
   result.str = vkr_allocator_alloc(allocator, str->length + 1,
                                    VKR_ALLOCATOR_MEMORY_TAG_STRING);
-  assert(result.str != NULL && "Failed to allocate memory");
+  if (!result.str)
+    return (String8){0};
   MemCopy(result.str, str->str, str->length);
   result.str[str->length] = '\0';
   result.length = str->length;
@@ -583,7 +585,7 @@ vkr_internal INLINE bool8_t string__parse_f64(const char *s, float64_t *out) {
 
 vkr_internal INLINE bool8_t string__parse_f32(const char *s, float32_t *out) {
   float64_t d;
-  if (!string__parse_f64(s, &d))
+  if (!string__parse_f64(s, &d) || d < -FLT_MAX || d > FLT_MAX)
     return false_v;
 
   *out = (float32_t)d;
@@ -597,8 +599,9 @@ vkr_internal INLINE bool8_t string__parse_i64(const char *s, int64_t *out) {
   char *endptr = NULL;
 
   const char *start = string__skip_ws(s);
+  errno = 0;
   int64_t v = strtoll(start, &endptr, 10);
-  if (start == endptr)
+  if (start == endptr || errno == ERANGE)
     return false_v;
   const char *trail = string__skip_ws(endptr);
   if (*trail != '\0')
@@ -614,8 +617,11 @@ vkr_internal INLINE bool8_t string__parse_u64(const char *s, uint64_t *out) {
   char *endptr = NULL;
 
   const char *start = string__skip_ws(s);
+  if (*start == '-')
+    return false_v;
+  errno = 0;
   uint64_t v = strtoull(start, &endptr, 10);
-  if (start == endptr)
+  if (start == endptr || errno == ERANGE)
     return false_v;
 
   const char *trail = string__skip_ws(endptr);
@@ -689,8 +695,10 @@ vkr_internal INLINE bool8_t string__parse_vecn(const char *s, double *dst,
 
   for (int i = 0; i < n; i++) {
     char *endptr = NULL;
+    errno = 0;
     double v = strtod(p, &endptr);
-    if (p == endptr)
+    if (p == endptr || errno == ERANGE || !isfinite(v) || v < -FLT_MAX ||
+        v > FLT_MAX)
       return false_v;
     dst[i] = v;
     p = endptr;

@@ -102,9 +102,11 @@ FileError file_stats(const FilePath *path, FileStats *out_stats) {
 bool8_t file_create_directory(const FilePath *path) {
   if (CreateDirectoryA((char *)path->path.str, NULL))
     return true_v;
-  if (GetLastError() == ERROR_ALREADY_EXISTS)
-    return true_v;
-  return false_v;
+  if (GetLastError() != ERROR_ALREADY_EXISTS)
+    return false_v;
+  const DWORD attributes = GetFileAttributesA((const char *)path->path.str);
+  return attributes != INVALID_FILE_ATTRIBUTES &&
+         (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }
 
 FileError file_create_directory_exclusive(const FilePath *path) {
@@ -334,11 +336,10 @@ FileError file_write(FileHandle *handle, uint64_t size, const uint8_t *buffer,
   while (remaining > 0) {
     DWORD chunk = (DWORD)(remaining > 0xFFFFFFFF ? 0xFFFFFFFF : remaining);
     DWORD written = 0;
-    if (!WriteFile((HANDLE)handle->handle, current, chunk, &written, NULL))
+    if (!WriteFile((HANDLE)handle->handle, current, chunk, &written, NULL) ||
+        written == 0)
       return FILE_ERROR_IO_ERROR;
     *bytes_written += written;
-    if (written < chunk)
-      break; // Partial write
     current += written;
     remaining -= written;
   }
@@ -347,12 +348,23 @@ FileError file_write(FileHandle *handle, uint64_t size, const uint8_t *buffer,
 
 FileError file_read(FileHandle *handle, VkrAllocator *allocator, uint64_t size,
                     uint64_t *bytes_read, uint8_t **out_buffer) {
-  *out_buffer =
-      vkr_allocator_alloc(allocator, size, VKR_ALLOCATOR_MEMORY_TAG_FILE);
-  if (!*out_buffer && size > 0u) {
+  *out_buffer = NULL;
+  *bytes_read = 0;
+  uint8_t *buffer =
+      size ? vkr_allocator_alloc(allocator, size, VKR_ALLOCATOR_MEMORY_TAG_FILE)
+           : NULL;
+  if (!buffer && size > 0u)
     return FILE_ERROR_IO_ERROR;
+  FileError error = file_read_into(handle, buffer, size, bytes_read);
+  if (error != FILE_ERROR_NONE) {
+    if (buffer)
+      vkr_allocator_free(allocator, buffer, size,
+                         VKR_ALLOCATOR_MEMORY_TAG_FILE);
+    *bytes_read = 0;
+    return error;
   }
-  return file_read_into(handle, *out_buffer, size, bytes_read);
+  *out_buffer = buffer;
+  return FILE_ERROR_NONE;
 }
 
 FileError file_read_into(FileHandle *handle, void *buffer, uint64_t size,
@@ -378,22 +390,38 @@ FileError file_read_into(FileHandle *handle, void *buffer, uint64_t size,
   return FILE_ERROR_NONE;
 }
 
+static FileError fs_remaining_size(FileHandle *handle, uint64_t *out_size) {
+  if (!handle || !handle->handle)
+    return FILE_ERROR_INVALID_HANDLE;
+  const HANDLE file = (HANDLE)handle->handle;
+  LARGE_INTEGER size;
+  LARGE_INTEGER position;
+  const LARGE_INTEGER zero = {0};
+  if (!GetFileSizeEx(file, &size) ||
+      !SetFilePointerEx(file, zero, &position, FILE_CURRENT) ||
+      position.QuadPart < 0 || position.QuadPart > size.QuadPart)
+    return FILE_ERROR_IO_ERROR;
+  *out_size = (uint64_t)(size.QuadPart - position.QuadPart);
+  return FILE_ERROR_NONE;
+}
+
 FileError file_read_all(FileHandle *handle, VkrAllocator *allocator,
                         uint8_t **out_buffer, uint64_t *bytes_read) {
-  HANDLE hFile = (HANDLE)handle->handle;
-  LARGE_INTEGER fileSize;
-  if (!GetFileSizeEx(hFile, &fileSize))
+  *out_buffer = NULL;
+  *bytes_read = 0;
+  uint64_t size = 0;
+  FileError error = fs_remaining_size(handle, &size);
+  if (error != FILE_ERROR_NONE)
+    return error;
+  error = file_read(handle, allocator, size, bytes_read, out_buffer);
+  if (error == FILE_ERROR_NONE && *bytes_read != size) {
+    vkr_allocator_free(allocator, *out_buffer, size,
+                       VKR_ALLOCATOR_MEMORY_TAG_FILE);
+    *out_buffer = NULL;
+    *bytes_read = 0;
     return FILE_ERROR_IO_ERROR;
-
-  LARGE_INTEGER currentPos = {0}, zero = {0};
-  if (!SetFilePointerEx(hFile, zero, &currentPos, FILE_CURRENT))
-    return FILE_ERROR_IO_ERROR;
-
-  uint64_t bytesToRead = (uint64_t)(fileSize.QuadPart - currentPos.QuadPart);
-  *out_buffer = vkr_allocator_alloc(allocator, bytesToRead,
-                                    VKR_ALLOCATOR_MEMORY_TAG_FILE);
-
-  return file_read_into(handle, *out_buffer, bytesToRead, bytes_read);
+  }
+  return error;
 }
 
 FileError file_sync(FileHandle *handle) {
@@ -435,22 +463,36 @@ FileError file_rename(const FilePath *source, const FilePath *destination,
 FileError file_read_line(FileHandle *handle, VkrAllocator *allocator,
                          VkrAllocator *line_allocator, uint64_t max_line_length,
                          String8 *out_line) {
+  *out_line = (String8){0};
+  if (!handle || !handle->handle)
+    return FILE_ERROR_INVALID_HANDLE;
   HANDLE hFile = (HANDLE)handle->handle;
+  if (max_line_length == 0 || max_line_length == UINT64_MAX)
+    return FILE_ERROR_LINE_TOO_LONG;
   VkrAllocator *target_alloc = line_allocator ? line_allocator : allocator;
+  FileError error = FILE_ERROR_NONE;
 
   uint8_t *result_buf = vkr_allocator_alloc(target_alloc, max_line_length + 1,
                                             VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  if (!result_buf)
+    return FILE_ERROR_IO_ERROR;
 
   char chunk[128];
   uint64_t total_len = 0;
 
   while (total_len < max_line_length) {
     LARGE_INTEGER startPos, zero = {0};
-    SetFilePointerEx(hFile, zero, &startPos, FILE_CURRENT);
+    if (!SetFilePointerEx(hFile, zero, &startPos, FILE_CURRENT)) {
+      error = FILE_ERROR_IO_ERROR;
+      goto cleanup;
+    }
 
     DWORD read_len = 0;
-    if (!ReadFile(hFile, chunk, sizeof(chunk), &read_len, NULL) ||
-        read_len == 0)
+    if (!ReadFile(hFile, chunk, sizeof(chunk), &read_len, NULL)) {
+      error = FILE_ERROR_IO_ERROR;
+      goto cleanup;
+    }
+    if (read_len == 0)
       break;
 
     int newline_idx = -1;
@@ -461,7 +503,6 @@ FileError file_read_line(FileHandle *handle, VkrAllocator *allocator,
       }
     }
 
-    // FIX: Include the newline in the count
     uint64_t amount_available =
         (newline_idx != -1) ? (uint64_t)(newline_idx + 1) : (uint64_t)read_len;
     uint64_t amount_to_copy = amount_available;
@@ -476,41 +517,58 @@ FileError file_read_line(FileHandle *handle, VkrAllocator *allocator,
     if (newline_idx != -1 || total_len == max_line_length) {
       LARGE_INTEGER move;
       move.QuadPart = startPos.QuadPart + amount_to_copy;
-      SetFilePointerEx(hFile, move, NULL, FILE_BEGIN);
+      if (!SetFilePointerEx(hFile, move, NULL, FILE_BEGIN)) {
+        error = FILE_ERROR_IO_ERROR;
+        goto cleanup;
+      }
       break;
     }
   }
 
-  if (total_len == 0)
-    return FILE_ERROR_EOF;
+  if (total_len == 0) {
+    error = FILE_ERROR_EOF;
+    goto cleanup;
+  }
 
   result_buf[total_len] = '\0';
   *out_line = (String8){.str = result_buf, .length = total_len};
   return FILE_ERROR_NONE;
+cleanup:
+  vkr_allocator_free(target_alloc, result_buf, max_line_length + 1,
+                     VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  return error;
 }
 
 FileError file_write_line(FileHandle *handle, const String8 *text) {
-  uint64_t written;
-  if (file_write(handle, text->length, text->str, &written) != FILE_ERROR_NONE)
-    return FILE_ERROR_IO_ERROR;
-  DWORD nl_written;
-  if (!WriteFile((HANDLE)handle->handle, "\n", 1, &nl_written, NULL))
-    return FILE_ERROR_IO_ERROR;
-  return FILE_ERROR_NONE;
+  uint64_t written = 0;
+  FileError error = file_write(handle, text->length, text->str, &written);
+  if (error != FILE_ERROR_NONE)
+    return error;
+  return file_write(handle, 1, (const uint8_t *)"\n", &written);
 }
 
 FileError file_read_string(FileHandle *handle, VkrAllocator *allocator,
                            String8 *out_data) {
-  uint8_t *buffer = NULL;
-  uint64_t bytes_read = 0;
-  if (file_read_all(handle, allocator, &buffer, &bytes_read) != FILE_ERROR_NONE)
+  *out_data = (String8){0};
+  uint64_t size = 0;
+  FileError error = fs_remaining_size(handle, &size);
+  if (error != FILE_ERROR_NONE)
+    return error;
+  if (size == UINT64_MAX)
     return FILE_ERROR_IO_ERROR;
-
-  uint8_t *str_buf = vkr_allocator_alloc(allocator, bytes_read + 1,
-                                         VKR_ALLOCATOR_MEMORY_TAG_STRING);
-  MemCopy(str_buf, buffer, bytes_read);
-  str_buf[bytes_read] = '\0';
-  *out_data = (String8){.str = str_buf, .length = bytes_read};
+  uint8_t *buffer =
+      vkr_allocator_alloc(allocator, size + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  if (!buffer)
+    return FILE_ERROR_IO_ERROR;
+  uint64_t bytes_read = 0;
+  error = file_read_into(handle, buffer, size, &bytes_read);
+  if (error != FILE_ERROR_NONE || bytes_read != size) {
+    vkr_allocator_free(allocator, buffer, size + 1,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    return error != FILE_ERROR_NONE ? error : FILE_ERROR_IO_ERROR;
+  }
+  buffer[bytes_read] = '\0';
+  *out_data = (String8){.str = buffer, .length = bytes_read};
   return FILE_ERROR_NONE;
 }
 
@@ -549,6 +607,8 @@ String8 file_get_error_string(FileError error) {
 
 FileError file_load_spirv_shader(const FilePath *path, VkrAllocator *allocator,
                                  uint8_t **out_data, uint64_t *out_size) {
+  *out_data = NULL;
+  *out_size = 0;
   FileHandle handle;
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
@@ -559,11 +619,20 @@ FileError file_load_spirv_shader(const FilePath *path, VkrAllocator *allocator,
 
   FileError err = file_read_all(&handle, allocator, out_data, out_size);
   file_close(&handle);
+  if (err != FILE_ERROR_NONE)
+    return err;
 
   if ((uintptr_t)(*out_data) % 4 != 0) {
     uint8_t *old_buffer = *out_data;
-    uint8_t *aligned = vkr_allocator_alloc(allocator, *out_size,
-                                           VKR_ALLOCATOR_MEMORY_TAG_FILE);
+    uint8_t *aligned = vkr_allocator_alloc_aligned(
+        allocator, *out_size, 4, VKR_ALLOCATOR_MEMORY_TAG_FILE);
+    if (!aligned) {
+      vkr_allocator_free(allocator, old_buffer, *out_size,
+                         VKR_ALLOCATOR_MEMORY_TAG_FILE);
+      *out_data = NULL;
+      *out_size = 0;
+      return FILE_ERROR_IO_ERROR;
+    }
     MemCopy(aligned, old_buffer, *out_size);
     vkr_allocator_free(allocator, old_buffer, *out_size,
                        VKR_ALLOCATOR_MEMORY_TAG_FILE);

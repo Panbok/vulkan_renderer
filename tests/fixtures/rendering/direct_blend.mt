@@ -1,0 +1,9 @@
+name=direct_blend
+type=pbr
+base_color=1.0,0.2,0.1,0.5
+metallic=0.0
+roughness=0.5
+alpha_mode=blend
+double_sided=true
+shader=shader.pbr.world
+pipeline=world

@@ -717,9 +717,11 @@ renderer_impl_metal_initialize(void *state, VkrWindow *window, uint32_t width,
      stays as configured. */
   renderer->impl.caps.frame_in_flight_count =
       vkr_metal_packet_renderer_frame_slot_count(renderer->metal_renderer);
-  if (renderer->present_target.kind != VKR_PRESENT_TARGET_OFFSCREEN) {
-    event_manager_subscribe(renderer->event_manager, EVENT_TYPE_WINDOW_RESIZE,
-                            vkr_renderer_on_window_resize, renderer);
+  if (renderer->present_target.kind != VKR_PRESENT_TARGET_OFFSCREEN &&
+      !event_manager_subscribe(renderer->event_manager, EVENT_TYPE_WINDOW_RESIZE,
+                               vkr_renderer_on_window_resize, renderer)) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
   }
   *out_error = VKR_RENDERER_ERROR_NONE;
   log_info("Selected Metal 4 packet renderer");
@@ -819,9 +821,11 @@ renderer_impl_vulkan_initialize(void *state, VkrWindow *window, uint32_t width,
      backend's slot count and the caps it publishes cannot drift apart the way
      Metal's did. */
   renderer->impl.caps.frame_in_flight_count = VKR_VULKAN_FRAME_SLOT_COUNT;
-  if (renderer->present_target.kind != VKR_PRESENT_TARGET_OFFSCREEN) {
-    event_manager_subscribe(renderer->event_manager, EVENT_TYPE_WINDOW_RESIZE,
-                            vkr_renderer_on_window_resize, renderer);
+  if (renderer->present_target.kind != VKR_PRESENT_TARGET_OFFSCREEN &&
+      !event_manager_subscribe(renderer->event_manager, EVENT_TYPE_WINDOW_RESIZE,
+                               vkr_renderer_on_window_resize, renderer)) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
   }
   *out_error = VKR_RENDERER_ERROR_NONE;
   log_info("Selected Vulkan 1.4 packet renderer");
@@ -912,46 +916,47 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
     return false_v;
   }
 
-  // if (!vkr_dmemory_create(MB(100), MB(500), &renderer->dmemory)) {
-  //   log_fatal("Failed to create dmemory!");
-  //   return false_v;
-  // }
-
-  // renderer->dmemory_allocator = (VkrAllocator){.ctx = &renderer->dmemory};
-  // vkr_dmemory_allocator_create(&renderer->dmemory_allocator);
+  *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+  renderer->arena = NULL;
+  renderer->scratch_arena = NULL;
+  renderer->allocator = (VkrAllocator){0};
+  renderer->scratch_allocator = (VkrAllocator){0};
+  renderer->render_graph_dmemory = (VkrDMemory){0};
+  renderer->render_graph_allocator = (VkrAllocator){0};
+  renderer->rf_mutex = NULL;
+  renderer->metal_renderer = NULL;
+  renderer->vulkan_renderer = NULL;
+  renderer->impl = selected_impl;
+  renderer->impl.state = renderer;
 
   renderer->arena = arena_create(selected_impl.caps.renderer_arena_size);
   if (!renderer->arena) {
-    log_fatal("Failed to create renderer arena!");
-    return false_v;
+    log_error("Failed to create renderer arena!");
+    goto initialize_failure;
   }
 
   renderer->allocator = (VkrAllocator){.ctx = renderer->arena};
   if (!vkr_allocator_arena(&renderer->allocator)) {
-    arena_destroy(renderer->arena);
-    log_fatal("Failed to initialize renderer allocator!");
-    return false_v;
+    log_error("Failed to initialize renderer allocator!");
+    goto initialize_failure;
   }
 
   renderer->scratch_arena =
       arena_create(selected_impl.caps.scratch_arena_size,
                    selected_impl.caps.scratch_arena_block_size);
   if (!renderer->scratch_arena) {
-    log_fatal("Failed to create scratch_arena!");
-    return false_v;
+    log_error("Failed to create scratch_arena!");
+    goto initialize_failure;
   }
 
   renderer->scratch_allocator = (VkrAllocator){.ctx = renderer->scratch_arena};
   if (!vkr_allocator_arena(&renderer->scratch_allocator)) {
-    arena_destroy(renderer->scratch_arena);
-    log_fatal("Failed to initialize scratch allocator!");
-    return false_v;
+    log_error("Failed to initialize scratch allocator!");
+    goto initialize_failure;
   }
 
   // Initialize struct in-place
   renderer->backend_type = backend_type;
-  renderer->impl = selected_impl;
-  renderer->impl.state = renderer;
   renderer->window = window;
   renderer->present_target = requested_target;
   renderer->render_scale = requested_render_scale;
@@ -962,8 +967,6 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
                               requested_render_scale);
   renderer->event_manager = event_manager;
   renderer->frame_active = false;
-  renderer->metal_renderer = NULL;
-  renderer->vulkan_renderer = NULL;
   renderer->asset_publisher = (VkrAssetPublisher){0};
   renderer->timing_result = (VkrRendererImplSubmitResult){0};
   renderer->timing_last_completed_submit_value = 0;
@@ -975,8 +978,6 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   renderer->geometry_system = (VkrGeometrySystem){0};
   renderer->texture_system = (VkrTextureSystem){0};
   renderer->material_system = (VkrMaterialSystem){0};
-  renderer->render_graph_dmemory = (VkrDMemory){0};
-  renderer->render_graph_allocator = (VkrAllocator){0};
   renderer->mesh_manager = (VkrMeshManager){0};
   renderer->mesh_loader = (VkrMeshLoaderContext){0};
   renderer->scene_async_memory = (VkrDMemory){0};
@@ -1025,7 +1026,6 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   renderer->frame_metrics = (VkrRendererFrameMetrics){0};
   renderer->boot_metrics = (VkrRendererBootMetrics){0};
   renderer->subsystem_plan = (VkrSubsystemPlan){0};
-  renderer->rf_mutex = NULL;
   renderer->frame_number = 0;
 
   /* The selected Vulkan strategy owns its persistent graph realization,
@@ -1038,10 +1038,8 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
 
    * resident. */
   if (!vkr_dmemory_create(MB(2), MB(64), &renderer->render_graph_dmemory)) {
-    log_fatal("Failed to create render graph allocator!");
-    arena_destroy(renderer->scratch_arena);
-    arena_destroy(renderer->arena);
-    return false_v;
+    log_error("Failed to create render graph allocator!");
+    goto initialize_failure;
   }
   renderer->render_graph_allocator =
       (VkrAllocator){.ctx = &renderer->render_graph_dmemory};
@@ -1052,8 +1050,8 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
 
   // Create renderer mutex and initialize size tracking
   if (!vkr_mutex_create(&renderer->allocator, &renderer->rf_mutex)) {
-    log_fatal("Failed to create renderer mutex!");
-    return false_v;
+    log_error("Failed to create renderer mutex!");
+    goto initialize_failure;
   }
 
   VkrWindowPixelSize initial = requested_target.kind ==
@@ -1095,19 +1093,34 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
     resolved_backend_config.dynamic_resolution = requested_dynamic_resolution;
   }
   const VkrRendererBackendConfig *backend_cfg = &resolved_backend_config;
-  if (!renderer->impl.ops || !renderer->impl.ops->initialize ||
-      !renderer->impl.ops->initialize(renderer->impl.state, window, width,
+  if (!renderer->impl.ops->initialize(renderer->impl.state, window, width,
                                       height, device_requirements, backend_cfg,
                                       out_error)) {
-    return false_v;
+    goto initialize_failure;
   }
   return true_v;
+
+initialize_failure:
+  if (renderer->metal_renderer || renderer->vulkan_renderer)
+    renderer->impl.ops->destroy(renderer);
+  if (renderer->rf_mutex)
+    vkr_mutex_destroy(&renderer->allocator, &renderer->rf_mutex);
+  if (renderer->render_graph_allocator.ctx)
+    vkr_dmemory_allocator_destroy(&renderer->render_graph_allocator);
+  vkr_allocator_release_global_accounting(&renderer->scratch_allocator);
+  vkr_allocator_release_global_accounting(&renderer->allocator);
+  arena_destroy(renderer->scratch_arena);
+  arena_destroy(renderer->arena);
+  renderer->scratch_arena = NULL;
+  renderer->arena = NULL;
+  renderer->scratch_allocator = (VkrAllocator){0};
+  renderer->allocator = (VkrAllocator){0};
+  renderer->render_graph_allocator = (VkrAllocator){0};
+  return false_v;
 }
 
 void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
   assert_log(renderer != NULL, "Renderer is NULL");
-
-  // log_debug("Destroying renderer");
 
   RendererFrontend *rf = (RendererFrontend *)renderer;
 
@@ -1143,13 +1156,9 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
   }
 
   vkr_lighting_system_shutdown(&rf->lighting_system);
-  /* Renderer-only initialization is a supported focused-backend path, and
-
-   * system initialization can fail partway through. These two shutdown
-
-   * routines own mandatory arenas/allocators and therefore cannot consume a
-
-   * zero-initialized system. */
+  vkr_camera_registry_shutdown(&rf->camera_system);
+  /* Partial system initialization leaves mandatory arenas absent. Their
+     shutdown routines require those arenas to exist. */
   if (rf->mesh_manager.arena) {
     vkr_mesh_manager_shutdown(&rf->mesh_manager);
   }
@@ -1192,7 +1201,8 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
     vkr_dmemory_allocator_destroy(&rf->render_graph_allocator);
   }
 
-  // vkr_dmemory_destroy(&renderer->dmemory);
+  vkr_allocator_release_global_accounting(&renderer->allocator);
+  vkr_allocator_release_global_accounting(&renderer->scratch_allocator);
   arena_destroy(renderer->arena);
   arena_destroy(renderer->scratch_arena);
 }

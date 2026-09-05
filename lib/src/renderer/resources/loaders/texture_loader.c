@@ -399,7 +399,6 @@ vkr_internal void vkr_texture_loader_unload(VkrResourceLoader *self,
 
   uint32_t texture_index = entry->index;
   const char *stable_name = entry->name;
-  const VkrTextureEntry retained_entry = *entry;
 
   // Don't remove default texture
   if (texture_index == system->default_texture.id - 1) {
@@ -410,28 +409,8 @@ vkr_internal void vkr_texture_loader_unload(VkrResourceLoader *self,
     return;
   }
 
-  /* Remove CPU lookup first so successful GPU destruction cannot leave a map
-     entry pointing at a cleared slot or freed key. If GPU destruction fails,
-     reinserting the just-removed entry is capacity-neutral and restores the
-     exact retryable ownership state. */
-  if (!vkr_hash_table_remove_VkrTextureEntry(&system->texture_map,
-                                             remove_key)) {
-    log_warn("Texture map remove failed for key '%s' during unload",
-             remove_key);
-    vkr_texture_loader_release_unload_keys(system, &primary_key,
-                                           primary_key_size, &queryless_key,
-                                           queryless_key_size);
-    return;
-  }
-
   VkrTexture *texture = &system->textures.data[texture_index];
   if (!vkr_texture_destroy(system, texture)) {
-    if (!vkr_hash_table_insert_VkrTextureEntry(&system->texture_map,
-                                               stable_name, retained_entry)) {
-      log_fatal("Texture map rollback failed for key '%s' after GPU "
-                "destruction rejection",
-                stable_name);
-    }
     log_warn("Texture '%s' remains registered because GPU destruction failed",
              remove_key);
     vkr_texture_loader_release_unload_keys(system, &primary_key,
@@ -439,6 +418,11 @@ vkr_internal void vkr_texture_loader_unload(VkrResourceLoader *self,
                                            queryless_key_size);
     return;
   }
+
+  // Native destruction leaves this map and its stable key untouched.
+  const bool8_t removed =
+      vkr_hash_table_remove_VkrTextureEntry(&system->texture_map, remove_key);
+  assert_log(removed, "Texture lookup changed during native destruction");
 
   // Mark slot as free
   texture->description.id = VKR_INVALID_ID;

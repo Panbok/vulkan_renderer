@@ -42,7 +42,7 @@ static void test_str8_create(void) {
   String8 str =
       string8_create((uint8_t *)test_string, string_length(test_string));
   assert(str.length == 13 && "String length is not 13");
-  assert(strcmp((char *)str.str, "Hello, World!") == 0 &&
+  assert(MemCompare(str.str, "Hello, World!", str.length) == 0 &&
          "String is not 'Hello, World!'");
   printf("  test_str8_create PASSED\n");
 }
@@ -61,7 +61,7 @@ static void test_str8_create_literal(void) {
   printf("  Running test_str8_create_literal...\n");
   String8 str = string8_lit("Hello, World!");
   assert(str.length == 13 && "String length is not 13");
-  assert(strcmp((char *)str.str, "Hello, World!") == 0 &&
+  assert(MemCompare(str.str, "Hello, World!", str.length) == 0 &&
          "String is not 'Hello, World!'");
   printf("  test_str8_create_literal PASSED\n");
 }
@@ -72,7 +72,7 @@ static void test_str8_create_formatted(void) {
 
   String8 str = string8_create_formatted(&allocator, "Hello, %s!", "World");
   assert(str.length == 13 && "String length is not 13");
-  assert(strcmp((char *)str.str, "Hello, World!") == 0 &&
+  assert(MemCompare(str.str, "Hello, World!", str.length) == 0 &&
          "String is not 'Hello, World!'");
 
   string8_destroy(&str);
@@ -88,7 +88,7 @@ static void test_str8_create_formatted_v(void) {
   String8 str =
       invoke_test_string8_create_formatted_v(&allocator, "Hello, %s!", "World");
   assert(str.length == 13 && "String length is not 13");
-  assert(strcmp((char *)str.str, "Hello, World!") == 0 &&
+  assert(MemCompare(str.str, "Hello, World!", str.length) == 0 &&
          "String is not 'Hello, World!'");
 
   string8_destroy(&str);
@@ -117,7 +117,7 @@ static void test_str8_concat(void) {
   String8 str2 = string8_create_formatted(&allocator, "World!");
   String8 str = string8_concat(&allocator, &str1, &str2);
   assert(str.length == 13 && "String length is not 13");
-  assert(strcmp((char *)str.str, "Hello, World!") == 0 &&
+  assert(MemCompare(str.str, "Hello, World!", str.length) == 0 &&
          "String is not 'Hello, World!'");
 
   string8_destroy(&str);
@@ -545,6 +545,33 @@ static void test_string_conversions(void) {
   printf("  test_string_conversions PASSED\n");
 }
 
+static void test_conversion_range_failures_preserve_output(void) {
+  int64_t signed_value = 0;
+  assert(string_to_i64("9223372036854775807", &signed_value));
+  assert(signed_value == INT64_MAX);
+  assert(string_to_i64("-9223372036854775808", &signed_value));
+  assert(signed_value == INT64_MIN);
+  assert(!string_to_i64("9223372036854775808", &signed_value));
+  assert(signed_value == INT64_MIN);
+  assert(!string_to_i64("-9223372036854775809", &signed_value));
+  assert(signed_value == INT64_MIN);
+  uint64_t unsigned_value = 0;
+  assert(string_to_u64("18446744073709551615", &unsigned_value));
+  assert(unsigned_value == UINT64_MAX);
+  assert(!string_to_u64("18446744073709551616", &unsigned_value));
+  assert(unsigned_value == UINT64_MAX);
+  assert(!string_to_u64("-1", &unsigned_value));
+  assert(unsigned_value == UINT64_MAX);
+  float32_t scalar = 17.0f;
+  assert(!string_to_f32("1e39", &scalar));
+  assert(scalar == 17.0f);
+  Vec3 vector = {.x = 2.0f, .y = 3.0f, .z = 4.0f};
+  assert(!string_to_vec3("1,1e39,3", &vector));
+  assert(vector.x == 2.0f && vector.y == 3.0f && vector.z == 4.0f);
+  assert(!string_to_vec3("1,nan,3", &vector));
+  assert(vector.x == 2.0f && vector.y == 3.0f && vector.z == 4.0f);
+}
+
 static void test_cstring_compare_and_search(void) {
   printf("  Running test_cstring_compare_and_search...\n");
   assert(string_compare("alpha", "beta") < 0);
@@ -611,6 +638,7 @@ bool32_t run_string_tests(void) {
   test_cstring_index_of();
   test_cstring_compare_and_search();
   test_string_conversions();
+  test_conversion_range_failures_preserve_output();
 
   printf("--- String Tests Completed ---\n");
   return true;

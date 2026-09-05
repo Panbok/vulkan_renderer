@@ -248,6 +248,60 @@ static void test_enter_object_nested(void) {
   printf("  test_enter_object_nested PASSED\n");
 }
 
+static void test_truncated_tokens_do_not_publish_views(void) {
+  const char *strings[] = {"\"missing quote", "\"trailing\\"};
+  for (uint32_t i = 0; i < ArrayCount(strings); ++i) {
+    VkrJsonReader reader = vkr_json_reader_create((const uint8_t *)strings[i],
+                                                  string_length(strings[i]));
+    String8 value = {0};
+    assert(!vkr_json_parse_string(&reader, &value));
+    assert(value.str == NULL && value.length == 0);
+  }
+
+  const char *objects[] = {"{\"a\":1", "{\"a\":\"missing}"};
+  for (uint32_t i = 0; i < ArrayCount(objects); ++i) {
+    VkrJsonReader reader = vkr_json_reader_create((const uint8_t *)objects[i],
+                                                  string_length(objects[i]));
+    VkrJsonReader object = {0};
+    assert(!vkr_json_enter_object(&reader, &object));
+    assert(object.data == NULL && object.length == 0);
+  }
+
+  VkrJsonReader reader = vkr_json_reader_from_string(string8_lit("{\"key\\"));
+  assert(!vkr_json_find_field(&reader, "key"));
+  assert(reader.pos == 0);
+}
+
+static void test_integer_range_and_token_boundaries(void) {
+  const struct {
+    const char *json;
+    int32_t expected;
+  } valid[] = {{"2147483647", INT32_MAX},
+               {"-2147483648", INT32_MIN},
+               {"12,", 12},
+               {"-7}", -7}};
+  for (uint32_t i = 0; i < ArrayCount(valid); ++i) {
+    VkrJsonReader reader = vkr_json_reader_create(
+        (const uint8_t *)valid[i].json, string_length(valid[i].json));
+    int32_t value = 0;
+    assert(vkr_json_parse_int(&reader, &value));
+    assert(value == valid[i].expected);
+  }
+  const char *invalid[] = {"2147483648", "-2147483649",
+                           "999999999999999999999999999999", "12junk", "+1"};
+  for (uint32_t i = 0; i < ArrayCount(invalid); ++i) {
+    VkrJsonReader reader = vkr_json_reader_create((const uint8_t *)invalid[i],
+                                                  string_length(invalid[i]));
+    int32_t value = 53;
+    assert(!vkr_json_parse_int(&reader, &value));
+    assert(value == 53);
+  }
+  VkrJsonReader reader = vkr_json_reader_from_string(string8_lit("falsejunk"));
+  bool8_t value = true_v;
+  assert(!vkr_json_parse_bool(&reader, &value));
+  assert(value == true_v && reader.pos == 0);
+}
+
 bool32_t run_json_tests(void) {
   printf("--- Starting JSON Tests ---\n");
 
@@ -259,6 +313,8 @@ bool32_t run_json_tests(void) {
   test_parse_bool_invalid_true_suffix();
   test_array_iteration_objects();
   test_enter_object_nested();
+  test_truncated_tokens_do_not_publish_views();
+  test_integer_range_and_token_boundaries();
 
   printf("--- JSON Tests Completed ---\n");
   return true;

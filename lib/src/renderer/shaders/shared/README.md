@@ -17,9 +17,10 @@ both Slang libraries. Metal's native deferred library mirrors that row in
 representations.
 
 `sh_l2_kernel.slangh` owns the L2 diffuse basis, packing, evaluation, and exact
-cubemap texel solid angle for ADR-038, mirroring `renderer/vkr_ibl_math.h`. It
-is included by the Vulkan Slang library and concatenated into the native Metal
-library, so both production backends compile the same math.
+cubemap texel solid angle for ADR-038. `renderer/vkr_ibl_math.h` defines the host
+coefficient layout and slot constants. The kernel is included by the Vulkan
+Slang library and concatenated into the native Metal library, so both production
+backends compile the same math.
 
 Backend ABI records, resource bindings, entry points, and helpers written in a
 backend-native language stay under `../metal/` or `../vulkan/`. A helper moves

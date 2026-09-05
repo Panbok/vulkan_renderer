@@ -313,17 +313,25 @@ bool8_t vkr_camera_registry_init(const VkrCameraSystemConfig *config,
 
   out_system->arena = arena_create(arena_reserve, arena_commit, arena_flags);
   if (!out_system->arena) {
-    log_fatal("Failed to create camera system arena");
+    log_error("Failed to create camera system arena");
     return false_v;
   }
 
   out_system->allocator = (VkrAllocator){.ctx = out_system->arena};
-  vkr_allocator_arena(&out_system->allocator);
+  if (!vkr_allocator_arena(&out_system->allocator)) {
+    vkr_camera_registry_shutdown(out_system);
+    return false_v;
+  }
 
   out_system->cameras =
       array_create_VkrCamera(&out_system->allocator, config->max_camera_count);
   out_system->camera_map = vkr_hash_table_create_VkrCameraEntry(
       &out_system->allocator, ((uint64_t)config->max_camera_count) * 2ULL);
+
+  if (!out_system->cameras.data || !out_system->camera_map.entries) {
+    vkr_camera_registry_shutdown(out_system);
+    return false_v;
+  }
 
   out_system->next_free_index = 0;
   out_system->generation_counter = 1;
@@ -342,6 +350,7 @@ void vkr_camera_registry_shutdown(VkrCameraSystem *system) {
     return;
 
   if (system->arena) {
+    vkr_allocator_release_global_accounting(&system->allocator);
     arena_destroy(system->arena);
   }
   MemZero(system, sizeof(*system));
@@ -384,6 +393,8 @@ bool8_t vkr_camera_registry_create_perspective(
       .index = slot, .ref_count = 0, .auto_release = false_v};
   if (!vkr_hash_table_insert_VkrCameraEntry(&system->camera_map, key, entry)) {
     log_error("Failed to insert camera '%s' into registry", key);
+    vkr_allocator_free(&system->allocator, (void *)key, name.length + 1,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
     vkr_camera_registry_reset_camera(camera);
     return false_v;
   }
@@ -435,6 +446,8 @@ bool8_t vkr_camera_registry_create_orthographic(
       .index = slot, .ref_count = 0, .auto_release = false_v};
   if (!vkr_hash_table_insert_VkrCameraEntry(&system->camera_map, key, entry)) {
     log_error("Failed to insert camera '%s' into registry", key);
+    vkr_allocator_free(&system->allocator, (void *)key, name.length + 1,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
     vkr_camera_registry_reset_camera(camera);
     return false_v;
   }

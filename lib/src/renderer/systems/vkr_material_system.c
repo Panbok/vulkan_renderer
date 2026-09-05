@@ -89,25 +89,6 @@ vkr_material_system_material_is_transmissive(const VkrMaterial *material) {
              : false_v;
 }
 
-float32_t
-vkr_material_system_material_alpha_cutoff(const VkrMaterialSystem *system,
-                                          const VkrMaterial *material) {
-  if (!system || !material) {
-    return 0.0f;
-  }
-
-  if (vkr_material_system_material_alpha_mode(system, material) !=
-      VKR_MATERIAL_ALPHA_CUTOUT) {
-    return 0.0f;
-  }
-
-  if (material->alpha_cutoff > 0.0f) {
-    return material->alpha_cutoff;
-  }
-
-  return VKR_MATERIAL_ALPHA_CUTOFF_DEFAULT;
-}
-
 vkr_internal bool8_t
 vkr_material_system_find_by_name(VkrMaterialSystem *system, const char *name,
                                  VkrMaterialHandle *out_handle) {
@@ -762,8 +743,14 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
   system->arena =
       arena_create(VKR_MATERIAL_SYSTEM_DEFAULT_ARENA_RSV,
                    VKR_MATERIAL_SYSTEM_DEFAULT_ARENA_CMT, app_arena_flags);
+  if (!system->arena)
+    return false_v;
   system->allocator = (VkrAllocator){.ctx = system->arena};
-  vkr_allocator_arena(&system->allocator);
+  if (!vkr_allocator_arena(&system->allocator)) {
+    arena_destroy(system->arena);
+    MemZero(system, sizeof(*system));
+    return false_v;
+  }
 
   system->string_allocator.ctx = &system->string_memory;
   if (!vkr_dmemory_create(MB(1), MB(8), &system->string_memory)) {
@@ -795,35 +782,22 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
 
   system->texture_system = texture_system;
   system->asset_publisher = config->asset_publisher;
-  system->ibl_intensity = 1.0f;
-  system->ibl_diffuse_intensity = 1.0f;
-  system->ibl_specular_intensity = 1.0f;
-  for (uint32_t i = 0; i < 3u; ++i) {
-    system->ibl_probe_slots[i] = (VkrMaterialIblProbeSlot){
-        .prefilter_map = NULL,
-        .center = {0},
-        .extents = {0},
-        .blend_distance = 0.0f,
-        .weight = (i == 2u) ? 1.0f : 0.0f,
-        .intensity = 1.0f,
-        .diffuse_intensity = 1.0f,
-        .specular_intensity = 1.0f,
-        .box_projection_enabled = false_v,
-    };
-  }
+
   system->config = *config;
   system->materials =
       array_create_VkrMaterial(&system->allocator, config->max_material_count);
+  if (!system->materials.data) {
+    vkr_material_system_shutdown(system);
+    return false_v;
+  }
+  for (uint64_t i = 0; i < system->materials.length; ++i)
+    system->materials.data[i] = (VkrMaterial){.pipeline_id = VKR_INVALID_ID};
 
   uint64_t hash_size = ((uint64_t)config->max_material_count) * 2ULL;
   if (hash_size > UINT32_MAX) {
-    log_fatal("Hash table size overflow for max_material_count %u",
+    log_error("Hash table size overflow for max_material_count %u",
               config->max_material_count);
-    vkr_mutex_destroy(&system->allocator, &system->async_mutex);
-    vkr_dmemory_allocator_destroy(&system->async_allocator);
-    vkr_dmemory_allocator_destroy(&system->string_allocator);
-    arena_destroy(system->arena);
-    MemZero(system, sizeof(*system));
+    vkr_material_system_shutdown(system);
     return false_v;
   }
   system->material_by_name =
@@ -831,6 +805,10 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
 
   system->free_ids =
       array_create_uint32_t(&system->allocator, config->max_material_count);
+  if (!system->material_by_name.entries || !system->free_ids.data) {
+    vkr_material_system_shutdown(system);
+    return false_v;
+  }
   system->free_count = 0;
   system->next_free_index = 0;
   system->generation_counter = 1;
@@ -878,14 +856,6 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
              VKR_MATERIAL_TEXTURE_STREAM_IN_FLIGHT_MAX);
   }
 
-  // Initialize as empty
-  for (uint32_t mat = 0; mat < system->materials.length; mat++) {
-    system->materials.data[mat].id = 0;
-    system->materials.data[mat].generation = 0;
-    system->materials.data[mat].name = NULL;
-    system->materials.data[mat].pipeline_id = VKR_INVALID_ID;
-  }
-
   system->default_material = vkr_material_system_create_default(system);
   if (system->default_material.id == 0) {
     vkr_material_system_shutdown(system);
@@ -895,8 +865,11 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
   VkrMaterial *def = &system->materials.data[0];
   VkrMaterialEntry def_entry = {
       .id = 0, .ref_count = 1, .auto_release = false_v, .name = def->name};
-  vkr_hash_table_insert_VkrMaterialEntry(&system->material_by_name, def->name,
-                                         def_entry);
+  if (!vkr_hash_table_insert_VkrMaterialEntry(&system->material_by_name,
+                                              def->name, def_entry)) {
+    vkr_material_system_shutdown(system);
+    return false_v;
+  }
   return true_v;
 }
 
@@ -949,8 +922,10 @@ void vkr_material_system_shutdown(VkrMaterialSystem *system) {
   if (system->string_allocator.ctx) {
     vkr_dmemory_allocator_destroy(&system->string_allocator);
   }
-  if (system->arena)
+  if (system->arena) {
+    vkr_allocator_release_global_accounting(&system->allocator);
     arena_destroy(system->arena);
+  }
   MemZero(system, sizeof(*system));
 }
 
@@ -1231,75 +1206,6 @@ void vkr_material_system_add_ref(VkrMaterialSystem *system,
     return;
 
   entry->ref_count++;
-}
-
-void vkr_material_system_set_shadow_map(VkrMaterialSystem *system,
-                                        VkrTextureOpaqueHandle map,
-                                        bool8_t enabled) {
-  assert_log(system != NULL, "System is NULL");
-
-  if (!enabled || !map) {
-    system->shadow_map = NULL;
-    system->shadow_maps_enabled = false_v;
-    return;
-  }
-
-  system->shadow_map = map;
-  system->shadow_maps_enabled = true_v;
-}
-
-void vkr_material_system_set_ibl_maps(VkrMaterialSystem *system,
-                                      VkrTextureOpaqueHandle prefilter_map,
-                                      bool8_t enabled, float32_t intensity,
-                                      float32_t diffuse_intensity,
-                                      float32_t specular_intensity) {
-  assert_log(system != NULL, "System is NULL");
-
-  system->ibl_prefilter_map = prefilter_map;
-  system->ibl_enabled = enabled ? true_v : false_v;
-  system->ibl_intensity = intensity;
-  system->ibl_diffuse_intensity = diffuse_intensity;
-  system->ibl_specular_intensity = specular_intensity;
-}
-
-void vkr_material_system_set_ibl_probe_slots(
-    VkrMaterialSystem *system, const VkrMaterialIblProbeSlot slots[3]) {
-  assert_log(system != NULL, "System is NULL");
-
-  if (!slots) {
-    for (uint32_t i = 0; i < 3u; ++i) {
-      system->ibl_probe_slots[i] = (VkrMaterialIblProbeSlot){
-          .prefilter_map = NULL,
-          .center = {0},
-          .extents = {0},
-          .blend_distance = 0.0f,
-          .weight = (i == 2u) ? 1.0f : 0.0f,
-          .intensity = 1.0f,
-          .diffuse_intensity = 1.0f,
-          .specular_intensity = 1.0f,
-          .box_projection_enabled = false_v,
-      };
-    }
-    return;
-  }
-
-  for (uint32_t i = 0; i < 3u; ++i) {
-    system->ibl_probe_slots[i] = slots[i];
-    if (system->ibl_probe_slots[i].blend_distance < 0.0f) {
-      system->ibl_probe_slots[i].blend_distance = 0.0f;
-    }
-    if (system->ibl_probe_slots[i].weight < 0.0f) {
-      system->ibl_probe_slots[i].weight = 0.0f;
-    }
-  }
-}
-
-void vkr_material_system_set_transmission_source(VkrMaterialSystem *system,
-                                                 VkrTextureOpaqueHandle source,
-                                                 bool8_t enabled) {
-  assert_log(system != NULL, "System is NULL");
-  system->transmission_source = enabled ? source : NULL;
-  system->transmission_pass_enabled = enabled && source ? true_v : false_v;
 }
 
 VkrMaterial *vkr_material_system_get_by_handle(VkrMaterialSystem *system,

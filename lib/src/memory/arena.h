@@ -55,7 +55,7 @@
  * You create a scratch, perform allocations, and then destroy the scratch.
  * Destroying the scratch resets the arena's position back to where it was
  * when the scratch was created, effectively freeing all memory allocated
- * within the scratch's lifetime in O(1) time.
+ * within the scratch's lifetime. Reset visits each block moved to the free list.
  *
  * Scratch Arenas are useful for:
  * - Short-lived allocations
@@ -152,16 +152,10 @@ typedef struct Arena {
                    start of the block. */
   uint64_t rsv; /**< Total amount of memory reserved *for this block*, relative
                  to the start of the block. */
-  uint64_t free_size; /**< Total reserved size of all blocks currently in the
-                       free list. Only valid in the *first* block's header. */
-  Arena *free_last;   /**< Pointer to the last block added to the free list
-                         (LIFO). Only valid in the *first* block's header. */
-  uintptr_t
-      min_bound; /**< Minimum address across all blocks (for O(1) ownership
-                    check). Only valid in the *first* block's header. */
-  uintptr_t
-      max_bound; /**< Maximum address across all blocks (for O(1) ownership
-                    check). Only valid in the *first* block's header. */
+  uint64_t free_size;  /**< Total reserved size of all blocks currently in the
+                        free list. Only valid in the *first* block's header. */
+  Arena *free_last;    /**< Pointer to the last block added to the free list
+                          (LIFO). Only valid in the *first* block's header. */
   bool8_t owns_memory; /**< If true, arena_destroy releases memory. If false
                           (buffer-backed), caller is responsible for memory. */
   ArenaMemoryTagInfo
@@ -189,8 +183,7 @@ typedef struct Scratch {
  * @param rsv_size The total virtual memory to reserve for the first block.
  * @param cmt_size The initial amount of physical memory to commit for the first
  * block.
- * @return Pointer to the initialized Arena structure (the first block). Exits
- * on failure.
+ * @return Pointer to the first Arena block, or NULL on reserve/commit failure.
  */
 Arena *arena_create_internal(uint64_t rsv_size, uint64_t cmt_size,
                              ArenaFlags flags);
@@ -245,7 +238,6 @@ Arena *arena_create_internal(uint64_t rsv_size, uint64_t cmt_size,
  */
 Arena *arena_create_from_buffer(void *buffer, uint64_t size);
 void arena_destroy(Arena *arena);
-bool8_t arena_owns_ptr(Arena *arena, void *ptr);
 
 /**
  * @brief Allocates memory from the arena.
@@ -286,20 +278,20 @@ uint64_t arena_pos(Arena *arena);
  * @brief Resets the arena's allocation position back to a specific absolute
  * position. Any allocations made after this position are effectively freed. If
  * the reset position falls within a previous block, subsequent blocks are moved
- * to the free list for potential reuse. Memory is decommitted (but not
- * released) in the freed blocks.
+ * to the free list for reuse. Reserved address space and committed pages are
+ * retained until arena destruction.
  *
  * @example Resetting moves blocks B2 and B3 to the free list.
  *    Before: arena->current -> B3 -> B2 -> B1
- *            arena->free_list -> NULL
+ *            arena->free_last -> NULL
  *
  *    After reset_to(pos_in_B1):
  *            arena->current -> B1
- *            arena->free_list -> B2 -> B3 -> NULL (or B3 -> B2 -> NULL)
+ *            arena->free_last -> B2 -> B3 -> NULL (or B3 -> B2 -> NULL)
  *
  * @param arena Pointer to the arena.
  * @param pos The absolute position to reset to. Clamped to be at least
- * sizeof(Arena).
+ * ARENA_HEADER_SIZE.
  * @param tag The memory tag whose statistics should be updated to reflect the
  * reclaimed memory.
  */

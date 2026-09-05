@@ -22,8 +22,6 @@ static bool8_t editor_menu_button(VkrUiSystem *ui, String8 id, String8 content,
 }
 
 static void editor_window_raise(VkrEditorUi *editor, VkrEditorWindowKind kind) {
-  if (kind >= VKR_EDITOR_WINDOW_COUNT)
-    return;
   VkrEditorWindowState *window = &editor->windows[kind];
   const uint32_t old_z = window->z_order;
   for (uint32_t i = 0u; i < VKR_EDITOR_WINDOW_COUNT; ++i) {
@@ -245,9 +243,6 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
                                 InputState *input, VkrEditorWindowKind kind,
                                 const VkrSampleUiText *text) {
   VkrEditorWindowState *window = &editor->windows[kind];
-  if (!window->visible)
-    return;
-
   String8 title_text = {0};
   String8 body_text = {0};
   float32_t font_size_pt = 10.0f;
