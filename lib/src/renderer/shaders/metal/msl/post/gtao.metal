@@ -94,6 +94,7 @@ vkr_metal_packet_gtao_evaluate(constant VkrMetalPacketGtaoEvaluateRoot &root
                                              root.params.viewport_pixel_size_y);
   float2 texel = float2(root.params.viewport_pixel_size_x,
                         root.params.viewport_pixel_size_y);
+  float2 view_pixel_scale = vkr_gtao_view_pixel_scale(root.params);
   float center_depth = vkr_metal_gtao_view_depth(root, uv, 0.0);
   float left_depth =
       vkr_metal_gtao_view_depth(root, uv - float2(texel.x, 0.0), 0.0);
@@ -126,7 +127,8 @@ vkr_metal_packet_gtao_evaluate(constant VkrMetalPacketGtaoEvaluateRoot &root
     float phi =
         (float(slice) + noise.x) * VKR_GTAO_PI / float(root.params.slice_count);
     float2 slice_direction = float2(cos(phi), sin(phi));
-    float3 view_slice_direction = float3(slice_direction, 0.0);
+    float3 view_slice_direction =
+        normalize(float3(slice_direction * view_pixel_scale, 0.0));
     float3 slice_orthogonal =
         normalize(cross(view_slice_direction, view_direction));
     float3 projected_normal =
@@ -152,7 +154,7 @@ vkr_metal_packet_gtao_evaluate(constant VkrMetalPacketGtaoEvaluateRoot &root
           clamp(log2(sample_distance) - root.params.depth_mip_sampling_offset,
                 0.0, float(max(root.params.depth_mip_count, 1u) - 1u));
       for (uint side = 0u; side < 2u; ++side) {
-        float side_sign = side == 0u ? -1.0 : 1.0;
+        float side_sign = side == 0u ? 1.0 : -1.0;
         float2 sample_uv =
             clamp(uv + slice_direction * sample_distance * texel * side_sign,
                   texel * 0.5, 1.0 - texel * 0.5);

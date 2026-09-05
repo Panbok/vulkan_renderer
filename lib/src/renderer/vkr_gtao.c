@@ -134,6 +134,6 @@ VkrGtaoGpuParams vkr_gtao_gpu_params(const VkrGtaoConfig *config,
       .denoise_blur_beta = config->denoise_blur_beta,
       .slice_count = config->slice_count,
       .steps_per_slice = config->steps_per_slice,
-      .noise_index = temporal_enabled ? frame_index % 64u : 0u,
+      .noise_index = temporal_enabled ? frame_index % VKR_GTAO_NOISE_SEQUENCE_LENGTH : 0u,
   };
 }

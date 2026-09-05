@@ -100,6 +100,14 @@ float vkr_gtao_pixel_view_size(VkrGtaoParams params, float2 screen_position,
     return max(length(next_y - center), 1e-6f);
 }
 
+// Common clip W and the NDC factor cancel when normalizing a slice direction.
+// Keep projection signs: increasing screen Y moves toward negative view Y.
+float2 vkr_gtao_view_pixel_scale(VkrGtaoParams params)
+{
+    return float2(params.viewport_pixel_size_x / params.projection_m00,
+                  params.viewport_pixel_size_y / params.projection_m11);
+}
+
 float vkr_gtao_depth_mip_filter(VkrGtaoParams params, float d0, float d1,
                                 float d2, float d3)
 {
@@ -198,6 +206,7 @@ float vkr_gtao_integrate_slice(float projected_normal_length, float cos_normal,
                                float normal_angle, float horizon_cos0,
                                float horizon_cos1)
 {
+    // Horizon 0 bounds the positive slice direction; horizon 1 the negative.
     float h0 = -acos(clamp(horizon_cos1, -1.0f, 1.0f));
     float h1 = acos(clamp(horizon_cos0, -1.0f, 1.0f));
     float arc0 = (cos_normal + 2.0f * h0 * sin(normal_angle) -

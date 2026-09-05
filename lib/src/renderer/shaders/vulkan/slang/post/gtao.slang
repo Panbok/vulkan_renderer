@@ -113,6 +113,7 @@ void vk_gtao_evaluate(uint3 thread_id : SV_DispatchThreadID)
                root.params.viewport_pixel_size_y);
     float2 texel = float2(root.params.viewport_pixel_size_x,
                           root.params.viewport_pixel_size_y);
+    float2 view_pixel_scale = vkr_gtao_view_pixel_scale(root.params);
     float center_depth = vkr_vk_gtao_view_depth(root, uv, 0.0f);
     float left_depth =
         vkr_vk_gtao_view_depth(root, uv - float2(texel.x, 0.0f), 0.0f);
@@ -149,7 +150,8 @@ void vk_gtao_evaluate(uint3 thread_id : SV_DispatchThreadID)
             (float(slice) + noise.x) * VKR_GTAO_PI /
             float(root.params.slice_count);
         float2 slice_direction = float2(cos(phi), sin(phi));
-        float3 view_slice_direction = float3(slice_direction, 0.0f);
+        float3 view_slice_direction =
+            normalize(float3(slice_direction * view_pixel_scale, 0.0f));
         float3 slice_orthogonal =
             normalize(cross(view_slice_direction, view_direction));
         float3 projected_normal =
@@ -181,7 +183,7 @@ void vk_gtao_evaluate(uint3 thread_id : SV_DispatchThreadID)
             [unroll]
             for (uint side = 0u; side < 2u; ++side)
             {
-                float side_sign = side == 0u ? -1.0f : 1.0f;
+                float side_sign = side == 0u ? 1.0f : -1.0f;
                 float2 sample_uv = clamp(
                     uv + slice_direction * sample_distance * texel * side_sign,
                     texel * 0.5f, 1.0f - texel * 0.5f);

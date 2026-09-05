@@ -37,6 +37,8 @@ positive-view-depth R16 pyramid feeds full-resolution three-slice/three-step
 horizon evaluation, separate raw R8 visibility and edge data, and an edge-aware
 3x3 denoise. A white fallback disables the effect without per-light branching.
 Depth-pyramid horizon samples use nearest texel and nearest mip filtering.
+Slice directions use the signed view-space pixel scale, including projection Y,
+and the positive/negative horizon bounds share the integration sign convention.
 It multiplies indirect diffuse after material AO; direct and specular terms keep
 their separate policies. It is not reused HZB history or general wall visibility.
 
