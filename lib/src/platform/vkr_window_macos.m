@@ -4,7 +4,52 @@
 #if defined(PLATFORM_APPLE)
 #import <Cocoa/Cocoa.h>
 #import <Foundation/Foundation.h>
+#include <IOKit/hidsystem/IOLLEvent.h>
 #import <QuartzCore/QuartzCore.h>
+
+bool8_t vkr_platform_clipboard_read_text(uint8_t *buffer, uint32_t capacity,
+                                         uint32_t *out_length) {
+  if (!buffer || capacity == 0u || !out_length)
+    return false_v;
+  buffer[0] = 0u;
+  *out_length = 0u;
+  @autoreleasepool {
+    NSString *text =
+        [[NSPasteboard generalPasteboard] stringForType:NSPasteboardTypeString];
+    if (!text)
+      return false_v;
+    NSUInteger used = 0u;
+    [text getBytes:buffer
+             maxLength:capacity - 1u
+            usedLength:&used
+              encoding:NSUTF8StringEncoding
+               options:0
+                 range:NSMakeRange(0, [text length])
+        remainingRange:NULL];
+    buffer[used] = 0u;
+    *out_length = (uint32_t)used;
+    return true_v;
+  }
+}
+
+bool8_t vkr_platform_clipboard_write_text(const uint8_t *text,
+                                          uint32_t length) {
+  if (!text && length != 0u)
+    return false_v;
+  @autoreleasepool {
+    NSString *string = [[NSString alloc] initWithBytes:text
+                                                length:length
+                                              encoding:NSUTF8StringEncoding];
+    if (!string)
+      return false_v;
+    NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
+    [pasteboard clearContents];
+    const bool8_t written = [pasteboard setString:string
+                                          forType:NSPasteboardTypeString];
+    [string release];
+    return written;
+  }
+}
 
 @class ApplicationDelegate;
 @class WindowDelegate;
@@ -32,6 +77,65 @@ typedef struct PlatformState {
 
 // Key translation
 static Keys translate_keycode(uint32_t ns_keycode);
+
+static bool8_t canvas_command_key(Keys key) {
+  switch (key) {
+  case KEY_A:
+  case KEY_C:
+  case KEY_X:
+  case KEY_V:
+  case KEY_P:
+  case KEY_S:
+  case KEY_Z:
+    return true_v;
+  default:
+    return false_v;
+  }
+}
+
+static void sync_modifier_keys(InputState *input, NSEventModifierFlags flags,
+                               Keys changed_key) {
+  static const struct {
+    NSEventModifierFlags aggregate_mask;
+    NSUInteger left_mask, right_mask;
+    Keys left_key, right_key, aggregate_key;
+  } modifiers[] = {
+      {NSEventModifierFlagShift, NX_DEVICELSHIFTKEYMASK, NX_DEVICERSHIFTKEYMASK,
+       KEY_LSHIFT, KEY_RSHIFT, KEY_SHIFT},
+      {NSEventModifierFlagControl, NX_DEVICELCTLKEYMASK, NX_DEVICERCTLKEYMASK,
+       KEY_LCONTROL, KEY_RCONTROL, KEY_CONTROL},
+      {NSEventModifierFlagOption, NX_DEVICELALTKEYMASK, NX_DEVICERALTKEYMASK,
+       KEY_LMENU, KEY_RMENU, KEY_MAX_KEYS},
+      {NSEventModifierFlagCommand, NX_DEVICELCMDKEYMASK, NX_DEVICERCMDKEYMASK,
+       KEY_LWIN, KEY_RWIN, KEY_MAX_KEYS},
+  };
+  for (uint32_t i = 0; i < ArrayCount(modifiers); ++i) {
+    const bool8_t held = (flags & modifiers[i].aggregate_mask) != 0;
+    bool8_t left = held && (flags & modifiers[i].left_mask) != 0;
+    bool8_t right = held && (flags & modifiers[i].right_mask) != 0;
+    if (held && !left && !right) {
+      // Synthetic/accessibility events may supply only aggregate flags. Keep
+      // known sides, use flagsChanged's keycode for transitions, then fall
+      // back to left when the event does not identify a physical side.
+      left = input_is_key_down(input, modifiers[i].left_key);
+      right = input_is_key_down(input, modifiers[i].right_key);
+      if (changed_key == modifiers[i].left_key) {
+        left = !left;
+        if (!left)
+          right = true_v;
+      } else if (changed_key == modifiers[i].right_key) {
+        right = !right;
+        if (!right)
+          left = true_v;
+      } else if (!left && !right)
+        left = true_v;
+    }
+    input_process_key(input, modifiers[i].left_key, left);
+    input_process_key(input, modifiers[i].right_key, right);
+    if (modifiers[i].aggregate_key != KEY_MAX_KEYS)
+      input_process_key(input, modifiers[i].aggregate_key, held);
+  }
+}
 
 // Helper functions for cursor management
 static void hide_cursor(PlatformState *state);
@@ -162,6 +266,7 @@ static bool8_t cursor_in_content_area(PlatformState *state);
 }
 
 - (void)windowDidResignKey:(NSNotification *)notification {
+  sync_modifier_keys(state->input_state, 0, KEY_MAX_KEYS);
   // When window loses focus, show cursor if it was hidden due to capture
   if (state->mouse_captured) {
     show_cursor(state);
@@ -215,7 +320,17 @@ static bool8_t cursor_in_content_area(PlatformState *state);
   return YES;
 }
 
+- (void)syncMouseButtonEvent:(NSEvent *)event {
+  sync_modifier_keys(platform_state->input_state, [event modifierFlags],
+                     KEY_MAX_KEYS);
+  // Down/up events carry their own location; a preceding mouseMoved is not
+  // guaranteed. Captured input keeps its existing virtual cursor position.
+  if (!platform_state->mouse_captured)
+    [self mouseMoved:event];
+}
+
 - (void)mouseDown:(NSEvent *)event {
+  [self syncMouseButtonEvent:event];
   input_process_button(platform_state->input_state, BUTTON_LEFT, true_v);
 }
 
@@ -225,6 +340,7 @@ static bool8_t cursor_in_content_area(PlatformState *state);
 }
 
 - (void)mouseUp:(NSEvent *)event {
+  [self syncMouseButtonEvent:event];
   input_process_button(platform_state->input_state, BUTTON_LEFT, false_v);
 }
 
@@ -267,6 +383,7 @@ static bool8_t cursor_in_content_area(PlatformState *state);
 }
 
 - (void)rightMouseDown:(NSEvent *)event {
+  [self syncMouseButtonEvent:event];
   input_process_button(platform_state->input_state, BUTTON_RIGHT, true_v);
 }
 
@@ -276,10 +393,12 @@ static bool8_t cursor_in_content_area(PlatformState *state);
 }
 
 - (void)rightMouseUp:(NSEvent *)event {
+  [self syncMouseButtonEvent:event];
   input_process_button(platform_state->input_state, BUTTON_RIGHT, false_v);
 }
 
 - (void)otherMouseDown:(NSEvent *)event {
+  [self syncMouseButtonEvent:event];
   // Interpreted as middle click
   input_process_button(platform_state->input_state, BUTTON_MIDDLE, true_v);
 }
@@ -290,22 +409,56 @@ static bool8_t cursor_in_content_area(PlatformState *state);
 }
 
 - (void)otherMouseUp:(NSEvent *)event {
+  [self syncMouseButtonEvent:event];
   // Interpreted as middle click
   input_process_button(platform_state->input_state, BUTTON_MIDDLE, false_v);
 }
 
+- (BOOL)performKeyEquivalent:(NSEvent *)event {
+  if ([super performKeyEquivalent:event])
+    return YES;
+  if ([event type] != NSEventTypeKeyDown || ![window isKeyWindow] ||
+      [window firstResponder] != self)
+    return NO;
+  const NSEventModifierFlags modifiers = [event modifierFlags];
+  if (!(modifiers & NSEventModifierFlagCommand) ||
+      (modifiers & (NSEventModifierFlagOption | NSEventModifierFlagControl)) ||
+      !canvas_command_key(translate_keycode((uint32_t)[event keyCode])))
+    return NO;
+  // Native menu bindings keep priority. The renderer's canvas handles only
+  // its supported equivalents, through the same keyDown input bridge.
+  if ([[NSApp mainMenu] performKeyEquivalent:event])
+    return YES;
+  [self keyDown:event];
+  return YES;
+}
+
 - (void)keyDown:(NSEvent *)event {
+  // Update modifiers before the normal key so InputState snapshots the chord
+  // at press time, even when flagsChanged was not delivered to this view.
+  sync_modifier_keys(platform_state->input_state, [event modifierFlags],
+                     KEY_MAX_KEYS);
   Keys key = translate_keycode((uint32_t)[event keyCode]);
+  if (key != KEY_MAX_KEYS)
+    input_process_key(platform_state->input_state, key, true_v);
 
-  input_process_key(platform_state->input_state, key, true_v);
-
-  [self interpretKeyEvents:@[ event ]];
+  // Canvas shortcuts are not text input or Cocoa edit-selector actions.
+  if (!([event modifierFlags] & NSEventModifierFlagCommand) ||
+      !canvas_command_key(key))
+    [self interpretKeyEvents:@[ event ]];
 }
 
 - (void)keyUp:(NSEvent *)event {
+  sync_modifier_keys(platform_state->input_state, [event modifierFlags],
+                     KEY_MAX_KEYS);
   Keys key = translate_keycode((uint32_t)[event keyCode]);
+  if (key != KEY_MAX_KEYS)
+    input_process_key(platform_state->input_state, key, false_v);
+}
 
-  input_process_key(platform_state->input_state, key, false_v);
+- (void)flagsChanged:(NSEvent *)event {
+  sync_modifier_keys(platform_state->input_state, [event modifierFlags],
+                     translate_keycode((uint32_t)[event keyCode]));
 }
 
 - (void)scrollWheel:(NSEvent *)event {
@@ -672,6 +825,17 @@ bool8_t vkr_window_update(VkrWindow *window) {
         break;
 
       [NSApp sendEvent:event];
+      // AppKit can consume Command key-up instead of forwarding it to the
+      // canvas. Forward only a still-held key belonging to this key window;
+      // a normally delivered keyUp has already cleared it, avoiding duplicates.
+      if ([event type] == NSEventTypeKeyUp && state->window &&
+          [state->window firstResponder] == state->view &&
+          ([event window] == state->window ||
+           (![event window] && [state->window isKeyWindow]))) {
+        const Keys key = translate_keycode((uint32_t)[event keyCode]);
+        if (key != KEY_MAX_KEYS && input_is_key_down(state->input_state, key))
+          [state->view keyUp:event];
+      }
     }
 
   } // autoreleasepool

@@ -714,6 +714,91 @@ vkr_internal void test_ui_text_field_character_input_and_repeat(void) {
   printf("  test_ui_text_field_character_input_and_repeat PASSED\n");
 }
 
+vkr_internal bool8_t test_ui_readonly_frame(VkrUiSystem *system,
+                                            InputState *input,
+                                            VkrUiTextEditBuffer *buffer,
+                                            bool8_t read_only) {
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(&allocator);
+  assert(vkr_allocator_scope_is_valid(&scope));
+  assert(vkr_ui_begin(system, &allocator, NULL, 200u, 100u, input, false_v,
+                      1.0 / 60.0, NULL));
+  VkrUiWidgetConfig config = vkr_ui_widget_config_default();
+  config.read_only = read_only;
+  config.text.font_size = 10;
+  config.style.padding_pt = (VkrUiEdges){4, 6, 4, 6};
+  bool8_t changed =
+      vkr_ui_text_field(system, string8_lit("readonly"), buffer, &config);
+  (void)vkr_ui_end(system);
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  return changed;
+}
+
+vkr_internal void test_ui_readonly_selection_and_mutation(void) {
+  printf("  Running test_ui_readonly_selection_and_mutation...\n");
+  setup_suite();
+  TestCookedFont fixture;
+  test_cooked_font_init(&fixture);
+  VkrFontSystem fonts = {0};
+  fonts.fonts = (Array_VkrFont){.length = 1u, .data = &fixture.font};
+  fonts.default_mtsdf_font_handle = (VkrFontHandle){
+      .id = fixture.font.id, .generation = fixture.font.generation};
+  for (uint32_t mode = 0; mode < 3u; ++mode) {
+    VkrUiSystem system = {0};
+    assert(vkr_ui_system_init(&system, &fonts));
+    vkr_ui_system_set_offscreen_size(&system, true_v, 200u, 100u);
+    EventManager events = {0};
+    assert(event_manager_create(&events));
+    InputState input = input_init(&events);
+    uint8_t bytes[32] = "AAAV";
+    VkrUiTextEditBuffer edit = {bytes, 4, sizeof(bytes)};
+    assert(!test_ui_readonly_frame(&system, &input, &edit, true_v));
+    // The first two glyphs occupy [6,18). All event schedules select the
+    // same substring: held movement, a complete same-pump drag, release-only
+    // move.
+    input_process_mouse_move(&input, 6, 6);
+    input_process_button(&input, BUTTON_LEFT, true_v);
+    if (mode != 1u) {
+      assert(!test_ui_readonly_frame(&system, &input, &edit, true_v));
+      input_update(&input);
+    }
+    input_process_mouse_move(&input, 18, 6);
+    if (mode == 0u) {
+      assert(!test_ui_readonly_frame(&system, &input, &edit, true_v));
+      input_update(&input);
+    }
+    input_process_button(&input, BUTTON_LEFT, false_v);
+    assert(!test_ui_readonly_frame(&system, &input, &edit, true_v));
+    input_update(&input);
+    input_process_key(&input, KEY_SHIFT, true_v);
+    input_process_key(&input, KEY_RIGHT, true_v);
+    assert(!test_ui_readonly_frame(&system, &input, &edit, true_v));
+    input_update(&input);
+    input_process_key(&input, KEY_SHIFT, false_v);
+    input_process_key(&input, KEY_RIGHT, false_v);
+    assert(input_process_char(&input, 'B'));
+    input_process_key(&input, KEY_DELETE, true_v);
+    assert(!test_ui_readonly_frame(&system, &input, &edit, true_v));
+    assert(edit.length == 4 && MemCompare(bytes, "AAAV", 5) == 0);
+    input_update(&input);
+    input_process_key(&input, KEY_DELETE, false_v);
+    input_process_key(&input, KEY_BACKSPACE, true_v);
+    assert(!test_ui_readonly_frame(&system, &input, &edit, true_v));
+    assert(edit.length == 4 && MemCompare(bytes, "AAAV", 5) == 0);
+    // Prove the retained selection spans three characters without touching the
+    // user's native clipboard: an editable Delete leaves the fourth character.
+    input_update(&input);
+    input_process_key(&input, KEY_BACKSPACE, false_v);
+    input_process_key(&input, KEY_DELETE, true_v);
+    assert(test_ui_readonly_frame(&system, &input, &edit, false_v));
+    assert(edit.length == 1 && MemCompare(bytes, "V", 2) == 0);
+    input_shutdown(&input);
+    event_manager_destroy(&events);
+    vkr_ui_system_shutdown(&system);
+  }
+  teardown_suite();
+  printf("  test_ui_readonly_selection_and_mutation PASSED\n");
+}
+
 vkr_internal void test_ui_input_layer_blocks_click_through(void) {
   printf("  Running test_ui_input_layer_blocks_click_through...\n");
   setup_suite();
@@ -741,13 +826,20 @@ vkr_internal void test_ui_input_layer_blocks_click_through(void) {
       .align = VKR_UI_ALIGN_STRETCH,
   };
   VkrUiId overlay_id = VKR_UI_ID_NONE;
-  for (uint32_t frame = 0u; frame < 3u; ++frame) {
+  for (uint32_t frame = 0u; frame < 7u; ++frame) {
     if (frame == 1u) {
       input_process_mouse_move(&input, 10, 10);
       input_process_button(&input, BUTTON_LEFT, true_v);
     } else if (frame == 2u) {
       input_update(&input);
       input_process_button(&input, BUTTON_LEFT, false_v);
+    } else if (frame == 3u) {
+      // Native event pumps can drain a full click before the next UI build.
+      input_process_button(&input, BUTTON_LEFT, true_v);
+      input_process_button(&input, BUTTON_LEFT, false_v);
+    } else if (frame == 5u) {
+      input_process_key(&input, KEY_ENTER, true_v);
+      input_process_key(&input, KEY_ENTER, false_v);
     }
     VkrAllocatorScope scope = vkr_allocator_begin_scope(&allocator);
     assert(vkr_allocator_scope_is_valid(&scope));
@@ -762,22 +854,42 @@ vkr_internal void test_ui_input_layer_blocks_click_through(void) {
     const bool8_t lower_clicked = vkr_ui_button(&system, string8_lit("lower"),
                                                 string8_lit("lower"), &button);
     assert(vkr_ui_input_layer_set(&system, 2u));
+    // The top input layer contains a scroll area. Its hover/wheel capture must
+    // leave the press/release gesture to the nested button.
+    VkrUiPanelConfig scroll = vkr_ui_panel_config_default();
+    // Overlay placement is explicit: AUTO cannot find another cell in this
+    // one-cell grid already occupied by the two lower-layer buttons.
+    scroll.placement = button.placement;
+    assert(vkr_ui_scroll_area_begin(&system, string8_lit("scroll"), &scroll));
     overlay_id =
         vkr_ui_id_stack_widget_label(&system.id_stack, string8_lit("overlay"));
     const bool8_t overlay_clicked = vkr_ui_button(
         &system, string8_lit("overlay"), string8_lit("overlay"), &button);
+    assert(vkr_ui_scroll_area_end(&system));
     const VkrUiInputCapture capture = vkr_ui_end(&system);
+    assert(system.frame_draw_ready);
     assert(!base_clicked && !lower_clicked);
     if (frame == 1u) {
       assert(capture.active_id == overlay_id);
       assert(capture.mouse);
     }
-    if (frame == 2u)
-      assert(overlay_clicked);
+    assert(overlay_clicked == (frame == 2u || frame == 3u || frame == 5u));
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     if (frame != 1u)
       input_update(&input);
   }
+
+  // A modal layer still captures shortcuts after a background click leaves no
+  // focused widget; vkr_ui_end must preserve the explicit keyboard claim.
+  VkrAllocatorScope modal_scope = vkr_allocator_begin_scope(&allocator);
+  assert(vkr_allocator_scope_is_valid(&modal_scope));
+  assert(vkr_ui_begin(&system, &allocator, NULL, 200u, 100u, &input, false_v,
+                      1.0 / 60.0, NULL));
+  system.focused_id = VKR_UI_ID_NONE;
+  system.capture.keyboard = true_v;
+  const VkrUiInputCapture modal_capture = vkr_ui_end(&system);
+  assert(modal_capture.keyboard && !modal_capture.text);
+  vkr_allocator_end_scope(&modal_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
   input_shutdown(&input);
   event_manager_destroy(&event_manager);
@@ -846,6 +958,7 @@ bool32_t run_text_tests(void) {
   test_ui_system_scale_revision_and_offsets();
   test_ui_system_reuses_unchanged_draw_geometry();
   test_ui_text_field_character_input_and_repeat();
+  test_ui_readonly_selection_and_mutation();
   test_ui_input_layer_blocks_click_through();
 
   return true_v;

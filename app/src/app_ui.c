@@ -3,11 +3,14 @@
 #include "core/logger.h"
 #include "debug_overlay.h"
 
-static void app_ui_initialize(void *state, VkrUiDockTree *dock) {
+static bool8_t app_ui_initialize(void *state, VkrUiDockTree *dock,
+                                 VkrUiSystem *system) {
+  (void)system;
   (void)dock;
   VkrAppUi *ui = state;
   ui->visible = true_v;
   log_info("Debug UI enabled; press F6 to toggle it");
+  return true_v;
 }
 
 static void app_ui_handle_input(void *state, const InputState *input) {
@@ -28,7 +31,9 @@ static VkrUiDockInputCapture app_ui_build(void *state,
   return (VkrUiDockInputCapture){0};
 }
 
-static bool8_t app_ui_shutdown(void *state, const VkrUiDockTree *dock) {
+static bool8_t app_ui_shutdown(void *state, const VkrUiDockTree *dock,
+                               VkrUiSystem *system) {
+  (void)system;
   (void)state;
   (void)dock;
   return true_v;

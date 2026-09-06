@@ -72,6 +72,23 @@ bool8_t vkr_ui_draw_buffer_solid(VkrUiDrawBuffer *buffer, VkrUiRect rect_px,
                                  });
 }
 
+bool8_t vkr_ui_draw_buffer_polygon(VkrUiDrawBuffer *buffer,
+                                   const Vec2 corners_px[4], Vec4 color) {
+  VkrUiDrawCommand command = {
+      .color = color, .mode = VKR_UI_DRAW_MODE_QUAD, .has_corners = true_v};
+  float32_t left = corners_px[0].x, right = left;
+  float32_t top = corners_px[0].y, bottom = top;
+  for (uint32_t i = 0u; i < 4u; ++i) {
+    command.corners_px[i] = corners_px[i];
+    left = Min(left, corners_px[i].x);
+    right = Max(right, corners_px[i].x);
+    top = Min(top, corners_px[i].y);
+    bottom = Max(bottom, corners_px[i].y);
+  }
+  command.rect_px = (VkrUiRect){left, top, right - left, bottom - top};
+  return vkr_ui_draw_buffer_push(buffer, command);
+}
+
 bool8_t vkr_ui_draw_buffer_image(VkrUiDrawBuffer *buffer, VkrUiRect rect_px,
                                  Vec4 uv_rect, Vec4 color,
                                  VkrUiTextureRef texture) {
@@ -126,6 +143,14 @@ static bool8_t vkr_ui_draw_command_valid(VkrUiDrawCommand command) {
       command.mode >= VKR_UI_DRAW_MODE_COUNT ||
       !isfinite(command.screen_px_range) || command.screen_px_range < 0.0f)
     return false_v;
+  if (command.has_corners) {
+    if (command.mode != VKR_UI_DRAW_MODE_QUAD || command.texture.id != 0u)
+      return false_v;
+    for (uint32_t i = 0u; i < 4u; ++i)
+      if (!isfinite(command.corners_px[i].x) ||
+          !isfinite(command.corners_px[i].y))
+        return false_v;
+  }
   if ((command.mode == VKR_UI_DRAW_MODE_MTSDF_TEXT ||
        command.mode == VKR_UI_DRAW_MODE_BITMAP_TEXT) &&
       command.texture.id == 0u)
@@ -205,6 +230,13 @@ static void vkr_ui_draw_write_quad(const VkrUiDrawCommand *command,
   out_draws->vertices[base + 3u] = (VkrUiVertex){.position = {left, top},
                                                  .texcoord = {uv.x, uv.y},
                                                  .color = command->color};
+
+  if (command->has_corners) {
+    for (uint32_t i = 0u; i < 4u; ++i)
+      out_draws->vertices[base + i].position =
+          (Vec2){command->corners_px[i].x,
+                 (float32_t)target_height - command->corners_px[i].y};
+  }
 
   const uint32_t indices[] = {base + 0u, base + 1u, base + 2u,
                               base + 2u, base + 3u, base + 0u};

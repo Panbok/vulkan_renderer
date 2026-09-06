@@ -48,11 +48,13 @@ void vkr_ui_dock_default_editor_layout(VkrUiDockTree *tree) {
   tree->root = 0u;
   tree->node_high_water = 9u;
   tree->revision = 1u;
-  tree->splitter_px = 8.0f;
-  tree->tab_bar_px = 28.0f;
+  tree->focused_tab_id = (uint64_t)VKR_UI_DOCK_PANEL_SCENE_VIEWPORT + 1u;
+  tree->splitter_px = VKR_UI_DOCK_SPLITTER_PT;
+  tree->tab_bar_px = VKR_UI_DOCK_TAB_BAR_PT;
   tree->interaction = (VkrUiDockInteraction){
       .tab_leaf = VKR_UI_DOCK_NODE_NONE,
       .resize_split = VKR_UI_DOCK_NODE_NONE,
+      .drop_leaf = VKR_UI_DOCK_NODE_NONE,
   };
   vkr_ui_dock_split(tree, 0u, VKR_UI_DOCK_NODE_NONE, VKR_UI_DOCK_SPLIT_Y, 0.06f,
                     1u, 2u);
@@ -135,29 +137,91 @@ bool8_t vkr_ui_dock_validate(const VkrUiDockTree *tree) {
   return true_v;
 }
 
+static bool8_t vkr_ui_dock_node_is_toolbar(const VkrUiDockNode *node) {
+  return node->kind == VKR_UI_DOCK_NODE_TABS && node->as.leaf.tab_count == 1u &&
+         node->as.leaf.tabs[0].panel_kind == VKR_UI_DOCK_PANEL_TOOLBAR;
+}
+
+static bool8_t vkr_ui_dock_split_has_toolbar(const VkrUiDockTree *tree,
+                                             const VkrUiDockNode *split) {
+  return vkr_ui_dock_node_is_toolbar(&tree->nodes[split->as.split.first]) ||
+         vkr_ui_dock_node_is_toolbar(&tree->nodes[split->as.split.second]);
+}
+
+static Vec2 vkr_ui_dock_measure_minimum(const VkrUiDockTree *tree,
+                                        uint32_t index, Vec2 *minimum) {
+  const VkrUiDockNode *node = &tree->nodes[index];
+  const float32_t scale = tree->tab_bar_px / VKR_UI_DOCK_TAB_BAR_PT;
+  Vec2 size;
+  if (node->kind == VKR_UI_DOCK_NODE_TABS) {
+    size = (Vec2){
+        ceilf(VKR_UI_DOCK_PANEL_MIN_WIDTH_PT * scale),
+        vkr_ui_dock_node_is_toolbar(node)
+            ? roundf(VKR_UI_DOCK_TOOLBAR_PT * scale)
+            : tree->tab_bar_px +
+                  ceilf(VKR_UI_DOCK_PANEL_MIN_CONTENT_HEIGHT_PT * scale)};
+  } else {
+    const Vec2 first =
+        vkr_ui_dock_measure_minimum(tree, node->as.split.first, minimum);
+    const Vec2 second =
+        vkr_ui_dock_measure_minimum(tree, node->as.split.second, minimum);
+    size = node->as.split.axis == VKR_UI_DOCK_SPLIT_X
+               ? (Vec2){first.x + tree->splitter_px + second.x,
+                        Max(first.y, second.y)}
+               : (Vec2){Max(first.x, second.x),
+                        first.y + tree->splitter_px + second.y};
+  }
+  minimum[index] = size;
+  return size;
+}
+
+static float32_t vkr_ui_dock_first_extent(const VkrUiDockTree *tree,
+                                          uint32_t index, float32_t available,
+                                          float32_t ratio,
+                                          const Vec2 *minimum) {
+  const VkrUiDockNode *node = &tree->nodes[index];
+  const Vec2 first = minimum[node->as.split.first];
+  const Vec2 second = minimum[node->as.split.second];
+  const bool8_t horizontal = node->as.split.axis == VKR_UI_DOCK_SPLIT_X;
+  const float32_t first_min = horizontal ? first.x : first.y;
+  const float32_t second_min = horizontal ? second.x : second.y;
+  const float32_t minimum_sum = first_min + second_min;
+  /* Undersized windows share the shortage; neither side disappears first. */
+  if (available < minimum_sum)
+    return Min(available, roundf(available * first_min / minimum_sum));
+  if (!horizontal && vkr_ui_dock_split_has_toolbar(tree, node))
+    return vkr_ui_dock_node_is_toolbar(&tree->nodes[node->as.split.first])
+               ? first_min
+               : available - second_min;
+  return vkr_clamp_f32(roundf(available * ratio), first_min,
+                       available - second_min);
+}
+
 static void vkr_ui_dock_layout_node(VkrUiDockTree *tree, uint32_t index,
-                                    VkrUiRect rect) {
+                                    VkrUiRect rect, const Vec2 *minimum) {
   VkrUiDockNode *node = &tree->nodes[index];
   node->rect_px = rect;
   if (node->kind != VKR_UI_DOCK_NODE_SPLIT)
     return;
   const float32_t extent =
       node->as.split.axis == VKR_UI_DOCK_SPLIT_X ? rect.width : rect.height;
-  const float32_t available = Max(0.0f, extent - tree->splitter_px);
-  const float32_t first_extent = roundf(available * node->as.split.ratio);
+  const float32_t gap = Min(extent, tree->splitter_px);
+  const float32_t available = Max(0.0f, extent - gap);
+  const float32_t first_extent = vkr_ui_dock_first_extent(
+      tree, index, available, node->as.split.ratio, minimum);
   VkrUiRect first = rect;
   VkrUiRect second = rect;
   if (node->as.split.axis == VKR_UI_DOCK_SPLIT_X) {
     first.width = first_extent;
-    second.x += first_extent + tree->splitter_px;
+    second.x += first_extent + gap;
     second.width = Max(0.0f, available - first_extent);
   } else {
     first.height = first_extent;
-    second.y += first_extent + tree->splitter_px;
+    second.y += first_extent + gap;
     second.height = Max(0.0f, available - first_extent);
   }
-  vkr_ui_dock_layout_node(tree, node->as.split.first, first);
-  vkr_ui_dock_layout_node(tree, node->as.split.second, second);
+  vkr_ui_dock_layout_node(tree, node->as.split.first, first, minimum);
+  vkr_ui_dock_layout_node(tree, node->as.split.second, second, minimum);
 }
 
 bool8_t vkr_ui_dock_layout(VkrUiDockTree *tree, VkrUiRect target_rect_px,
@@ -168,7 +232,9 @@ bool8_t vkr_ui_dock_layout(VkrUiDockTree *tree, VkrUiRect target_rect_px,
     return false_v;
   tree->splitter_px = splitter_px;
   tree->tab_bar_px = tab_bar_px;
-  vkr_ui_dock_layout_node(tree, tree->root, target_rect_px);
+  Vec2 minimum[VKR_UI_DOCK_NODE_CAPACITY];
+  (void)vkr_ui_dock_measure_minimum(tree, tree->root, minimum);
+  vkr_ui_dock_layout_node(tree, tree->root, target_rect_px, minimum);
   return true_v;
 }
 
@@ -211,6 +277,8 @@ String8 vkr_ui_dock_panel_label(VkrUiDockPanelKind panel_kind) {
     return string8_lit("Console");
   case VKR_UI_DOCK_PANEL_TOOLBAR:
     return string8_lit("Toolbar");
+  case VKR_UI_DOCK_PANEL_BAKERY:
+    return string8_lit("Bakery");
   default:
     return string8_lit("Panel");
   }
@@ -219,9 +287,26 @@ String8 vkr_ui_dock_panel_label(VkrUiDockPanelKind panel_kind) {
 bool8_t vkr_ui_dock_set_split_ratio(VkrUiDockTree *tree, uint32_t split,
                                     float32_t ratio) {
   if (!tree || split >= tree->node_high_water || !tree->nodes[split].used ||
-      tree->nodes[split].kind != VKR_UI_DOCK_NODE_SPLIT || !isfinite(ratio))
+      tree->nodes[split].kind != VKR_UI_DOCK_NODE_SPLIT || !isfinite(ratio) ||
+      vkr_ui_dock_split_has_toolbar(tree, &tree->nodes[split]))
     return false_v;
-  tree->nodes[split].as.split.ratio = vkr_clamp_f32(ratio, 0.05f, 0.95f);
+  float32_t normalized = vkr_clamp_f32(ratio, 0.05f, 0.95f);
+  const VkrUiDockNode *node = &tree->nodes[split];
+  const float32_t available =
+      (node->as.split.axis == VKR_UI_DOCK_SPLIT_X ? node->rect_px.width
+                                                  : node->rect_px.height) -
+      tree->splitter_px;
+  if (available > 0.0f) {
+    Vec2 minimum[VKR_UI_DOCK_NODE_CAPACITY];
+    (void)vkr_ui_dock_measure_minimum(tree, split, minimum);
+    normalized = vkr_clamp_f32(
+        vkr_ui_dock_first_extent(tree, split, available, normalized, minimum) /
+            available,
+        0.05f, 0.95f);
+  }
+  if (tree->nodes[split].as.split.ratio == normalized)
+    return true_v;
+  tree->nodes[split].as.split.ratio = normalized;
   tree->revision++;
   return true_v;
 }
@@ -247,6 +332,8 @@ static VkrUiDockTab vkr_ui_dock_remove_tab(VkrUiDockNode *leaf,
   leaf->as.leaf.tab_count--;
   if (leaf->as.leaf.tab_count == 0u)
     leaf->as.leaf.active_tab = 0u;
+  else if (index < leaf->as.leaf.active_tab)
+    leaf->as.leaf.active_tab--;
   else if (leaf->as.leaf.active_tab >= leaf->as.leaf.tab_count)
     leaf->as.leaf.active_tab = leaf->as.leaf.tab_count - 1u;
   return tab;
@@ -293,6 +380,13 @@ static void vkr_ui_dock_collapse_empty_leaf(VkrUiDockTree *tree,
   *split = (VkrUiDockNode){0};
 }
 
+static uint32_t vkr_ui_dock_first_tab_leaf(const VkrUiDockTree *tree,
+                                           uint32_t index) {
+  while (tree->nodes[index].kind == VKR_UI_DOCK_NODE_SPLIT)
+    index = tree->nodes[index].as.split.first;
+  return index;
+}
+
 bool8_t vkr_ui_dock_move_tab(VkrUiDockTree *tree, uint32_t source_leaf,
                              uint32_t source_tab, uint32_t target_leaf,
                              uint32_t target_index,
@@ -316,10 +410,12 @@ bool8_t vkr_ui_dock_move_tab(VkrUiDockTree *tree, uint32_t source_leaf,
     vkr_ui_dock_insert_tab(&tree->nodes[target_leaf], target_index, tab);
     if (source_leaf != target_leaf)
       vkr_ui_dock_collapse_empty_leaf(tree, source_leaf);
+    tree->focused_tab_id = tab.id;
     tree->revision++;
     return vkr_ui_dock_validate(tree);
   }
-  if (source_leaf == target_leaf)
+  if (source_leaf == target_leaf &&
+      tree->nodes[source_leaf].as.leaf.tab_count == 1u)
     return false_v;
   const uint32_t new_leaf = vkr_ui_dock_allocate_node(tree);
   const uint32_t new_split = vkr_ui_dock_allocate_node(tree);
@@ -345,18 +441,92 @@ bool8_t vkr_ui_dock_move_tab(VkrUiDockTree *tree, uint32_t source_leaf,
                     new_first ? target_leaf : new_leaf);
   tree->nodes[target_leaf].parent = new_split;
   vkr_ui_dock_rewire_parent(tree, target_parent, target_leaf, new_split);
+  tree->focused_tab_id = tab.id;
   tree->revision++;
   return vkr_ui_dock_validate(tree);
 }
 
+bool8_t vkr_ui_dock_close_tab(VkrUiDockTree *tree, uint32_t leaf,
+                              uint32_t tab) {
+  if (!vkr_ui_dock_validate(tree) || leaf >= tree->node_high_water ||
+      !tree->nodes[leaf].used ||
+      tree->nodes[leaf].kind != VKR_UI_DOCK_NODE_TABS ||
+      tab >= tree->nodes[leaf].as.leaf.tab_count ||
+      tree->nodes[leaf].as.leaf.tabs[tab].panel_kind ==
+          VKR_UI_DOCK_PANEL_SCENE_VIEWPORT ||
+      (leaf == tree->root && tree->nodes[leaf].as.leaf.tab_count == 1u))
+    return false_v;
+
+  const VkrUiDockTab closed = vkr_ui_dock_remove_tab(&tree->nodes[leaf], tab);
+  uint32_t focus_leaf = leaf;
+  if (tree->nodes[leaf].as.leaf.tab_count == 0u) {
+    const VkrUiDockNode *parent = &tree->nodes[tree->nodes[leaf].parent];
+    focus_leaf = parent->as.split.first == leaf ? parent->as.split.second
+                                                : parent->as.split.first;
+    vkr_ui_dock_collapse_empty_leaf(tree, leaf);
+  }
+  if (tree->focused_tab_id == closed.id) {
+    focus_leaf = vkr_ui_dock_first_tab_leaf(tree, focus_leaf);
+    const VkrUiDockNode *focused = &tree->nodes[focus_leaf];
+    tree->focused_tab_id =
+        focused->as.leaf.tabs[focused->as.leaf.active_tab].id;
+  }
+  tree->revision++;
+  return vkr_ui_dock_validate(tree);
+}
+
+VkrUiRect vkr_ui_dock_split_bar_rect(const VkrUiDockTree *tree,
+                                     uint32_t split) {
+  const VkrUiDockNode *node = &tree->nodes[split];
+  const VkrUiRect first = tree->nodes[node->as.split.first].rect_px;
+  const VkrUiRect second = tree->nodes[node->as.split.second].rect_px;
+  if (node->as.split.axis == VKR_UI_DOCK_SPLIT_X)
+    return (VkrUiRect){first.x + first.width, node->rect_px.y,
+                       second.x - first.x - first.width, node->rect_px.height};
+  return (VkrUiRect){node->rect_px.x, first.y + first.height,
+                     node->rect_px.width, second.y - first.y - first.height};
+}
+
 static VkrUiRect vkr_ui_dock_splitter_rect(const VkrUiDockTree *tree,
                                            const VkrUiDockNode *node) {
-  const VkrUiDockNode *first = &tree->nodes[node->as.split.first];
-  if (node->as.split.axis == VKR_UI_DOCK_SPLIT_X)
-    return (VkrUiRect){first->rect_px.x + first->rect_px.width, node->rect_px.y,
-                       tree->splitter_px, node->rect_px.height};
-  return (VkrUiRect){node->rect_px.x, first->rect_px.y + first->rect_px.height,
-                     node->rect_px.width, tree->splitter_px};
+  VkrUiRect rect =
+      vkr_ui_dock_split_bar_rect(tree, (uint32_t)(node - tree->nodes));
+  const float32_t hit_width =
+      Max(tree->splitter_px, 8.0f * tree->tab_bar_px / VKR_UI_DOCK_TAB_BAR_PT);
+  if (node->as.split.axis == VKR_UI_DOCK_SPLIT_X) {
+    rect.x -= (hit_width - rect.width) * 0.5f;
+    rect.width = hit_width;
+  } else {
+    rect.y -= (hit_width - rect.height) * 0.5f;
+    rect.height = hit_width;
+  }
+  return rect;
+}
+
+VkrUiRect vkr_ui_dock_tab_rect(const VkrUiDockTree *tree, uint32_t leaf,
+                               uint32_t tab) {
+  const VkrUiDockNode *node = &tree->nodes[leaf];
+  /* Compact widths include the category icon and label. A crowded stack
+     divides available width proportionally; its clipped labels retain tooltips.
+   */
+  static const float32_t widths_pt[VKR_UI_DOCK_PANEL_COUNT] = {
+      88.0f, 116.0f, 116.0f, 102.0f, 98.0f, 88.0f, 104.0f,
+  };
+  float32_t total = 0.0f;
+  float32_t preceding = 0.0f;
+  for (uint32_t i = 0u; i < node->as.leaf.tab_count; ++i) {
+    const float32_t width = widths_pt[node->as.leaf.tabs[i].panel_kind];
+    total += width;
+    if (i < tab)
+      preceding += width;
+  }
+  const float32_t scale = Min(tree->tab_bar_px / VKR_UI_DOCK_TAB_BAR_PT,
+                              node->rect_px.width / total);
+  const float32_t width = widths_pt[node->as.leaf.tabs[tab].panel_kind];
+  const float32_t left = roundf(preceding * scale);
+  const float32_t right = roundf((preceding + width) * scale);
+  return (VkrUiRect){node->rect_px.x + left, node->rect_px.y, right - left,
+                     Min(tree->tab_bar_px, node->rect_px.height)};
 }
 
 static bool8_t vkr_ui_dock_tab_at(const VkrUiDockTree *tree, int32_t x,
@@ -364,19 +534,17 @@ static bool8_t vkr_ui_dock_tab_at(const VkrUiDockTree *tree, int32_t x,
                                   uint32_t *out_tab) {
   for (uint32_t i = 0u; i < tree->node_high_water; ++i) {
     const VkrUiDockNode *node = &tree->nodes[i];
-    if (!node->used || node->kind != VKR_UI_DOCK_NODE_TABS ||
-        node->as.leaf.tab_count == 0u)
+    if (!node->used || node->kind != VKR_UI_DOCK_NODE_TABS)
       continue;
-    const VkrUiRect bar = {node->rect_px.x, node->rect_px.y,
-                           node->rect_px.width,
-                           Min(tree->tab_bar_px, node->rect_px.height)};
-    if (!vkr_ui_dock_point_in_rect(x, y, bar))
-      continue;
-    const float32_t tab_width = bar.width / node->as.leaf.tab_count;
-    *out_leaf = i;
-    *out_tab = Min((uint32_t)(((float32_t)x - bar.x) / tab_width),
-                   node->as.leaf.tab_count - 1u);
-    return true_v;
+    for (uint32_t tab = 0u; tab < node->as.leaf.tab_count; ++tab) {
+      if (node->as.leaf.tabs[tab].panel_kind == VKR_UI_DOCK_PANEL_TOOLBAR)
+        continue;
+      if (vkr_ui_dock_point_in_rect(x, y, vkr_ui_dock_tab_rect(tree, i, tab))) {
+        *out_leaf = i;
+        *out_tab = tab;
+        return true_v;
+      }
+    }
   }
   return false_v;
 }
@@ -386,6 +554,8 @@ static bool8_t vkr_ui_dock_leaf_at(const VkrUiDockTree *tree, int32_t x,
   for (uint32_t i = 0u; i < tree->node_high_water; ++i) {
     const VkrUiDockNode *node = &tree->nodes[i];
     if (node->used && node->kind == VKR_UI_DOCK_NODE_TABS &&
+        node->as.leaf.tabs[node->as.leaf.active_tab].panel_kind !=
+            VKR_UI_DOCK_PANEL_TOOLBAR &&
         vkr_ui_dock_point_in_rect(x, y, node->rect_px)) {
       *out_leaf = i;
       return true_v;
@@ -436,13 +606,16 @@ VkrUiDockInputCapture vkr_ui_dock_update_input(VkrUiDockTree *tree,
   VkrUiDockInputCapture capture = {0};
   if (!tree || !input)
     return capture;
-  if (mouse_captured) {
+  if (mouse_captured || input_key_just_pressed(input, KEY_ESCAPE)) {
     tree->interaction = (VkrUiDockInteraction){
         .tab_leaf = VKR_UI_DOCK_NODE_NONE,
         .resize_split = VKR_UI_DOCK_NODE_NONE,
+        .drop_leaf = VKR_UI_DOCK_NODE_NONE,
     };
     return capture;
   }
+  const VkrUiRect root_rect = tree->nodes[tree->root].rect_px;
+  const uint64_t revision = tree->revision;
   int32_t x = 0;
   int32_t y = 0;
   input_get_mouse_position((InputState *)input, &x, &y);
@@ -455,12 +628,29 @@ VkrUiDockInputCapture vkr_ui_dock_update_input(VkrUiDockTree *tree,
       tree->interaction.resize_split != VKR_UI_DOCK_NODE_NONE;
 
   if (pressed) {
+    int32_t press_x, press_y;
+    input_get_button_press_position(input, BUTTON_LEFT, &press_x, &press_y);
+    uint32_t focused_leaf = 0u;
+    if (vkr_ui_dock_leaf_at(tree, press_x, press_y, &focused_leaf)) {
+      const VkrUiDockNode *node = &tree->nodes[focused_leaf];
+      tree->focused_tab_id = node->as.leaf.tabs[node->as.leaf.active_tab].id;
+    }
     for (uint32_t i = 0u; i < tree->node_high_water; ++i) {
       const VkrUiDockNode *node = &tree->nodes[i];
       if (node->used && node->kind == VKR_UI_DOCK_NODE_SPLIT &&
-          vkr_ui_dock_point_in_rect(x, y,
+          !vkr_ui_dock_split_has_toolbar(tree, node) &&
+          vkr_ui_dock_point_in_rect(press_x, press_y,
                                     vkr_ui_dock_splitter_rect(tree, node))) {
         tree->interaction.resize_split = i;
+        tree->interaction.press_x = press_x;
+        tree->interaction.press_y = press_y;
+        const VkrUiRect first = tree->nodes[node->as.split.first].rect_px;
+        const bool8_t horizontal = node->as.split.axis == VKR_UI_DOCK_SPLIT_X;
+        const float32_t available =
+            (horizontal ? node->rect_px.width : node->rect_px.height) -
+            tree->splitter_px;
+        tree->interaction.resize_press_ratio =
+            (horizontal ? first.width : first.height) / Max(1.0f, available);
         capture.mouse = true_v;
         break;
       }
@@ -468,53 +658,115 @@ VkrUiDockInputCapture vkr_ui_dock_update_input(VkrUiDockTree *tree,
     if (tree->interaction.resize_split == VKR_UI_DOCK_NODE_NONE) {
       uint32_t leaf = 0u;
       uint32_t tab = 0u;
-      if (vkr_ui_dock_tab_at(tree, x, y, &leaf, &tab)) {
+      if (vkr_ui_dock_tab_at(tree, press_x, press_y, &leaf, &tab)) {
         tree->interaction.tab_leaf = leaf;
         tree->interaction.tab_index = tab;
-        tree->interaction.press_x = x;
-        tree->interaction.press_y = y;
+        tree->interaction.press_x = press_x;
+        tree->interaction.press_y = press_y;
+        if (tree->nodes[leaf].as.leaf.active_tab != tab)
+          tree->revision++;
         tree->nodes[leaf].as.leaf.active_tab = tab;
+        tree->focused_tab_id = tree->nodes[leaf].as.leaf.tabs[tab].id;
         capture.mouse = true_v;
       }
     }
   }
-  if (down && tree->interaction.resize_split != VKR_UI_DOCK_NODE_NONE) {
+  /* The release event can carry the last movement, including a whole gesture
+     drained before this frame. Use its endpoint before clearing interaction. */
+  if ((down || released) &&
+      tree->interaction.resize_split != VKR_UI_DOCK_NODE_NONE) {
     VkrUiDockNode *split = &tree->nodes[tree->interaction.resize_split];
-    const float32_t position = split->as.split.axis == VKR_UI_DOCK_SPLIT_X
-                                   ? (float32_t)x - split->rect_px.x
-                                   : (float32_t)y - split->rect_px.y;
+    const float32_t delta = split->as.split.axis == VKR_UI_DOCK_SPLIT_X
+                                ? (float32_t)x - tree->interaction.press_x
+                                : (float32_t)y - tree->interaction.press_y;
     const float32_t extent = split->as.split.axis == VKR_UI_DOCK_SPLIT_X
                                  ? split->rect_px.width
                                  : split->rect_px.height;
-    (void)vkr_ui_dock_set_split_ratio(
-        tree, tree->interaction.resize_split,
-        position / Max(1.0f, extent - tree->splitter_px));
+    if (delta != 0.0f)
+      (void)vkr_ui_dock_set_split_ratio(
+          tree, tree->interaction.resize_split,
+          tree->interaction.resize_press_ratio +
+              delta / Max(1.0f, extent - tree->splitter_px));
     capture.mouse = true_v;
     capture.resizing_split = true_v;
   }
-  if (down && tree->interaction.tab_leaf != VKR_UI_DOCK_NODE_NONE) {
+  if ((down || released) &&
+      tree->interaction.tab_leaf != VKR_UI_DOCK_NODE_NONE) {
     const int64_t dx = (int64_t)x - tree->interaction.press_x;
     const int64_t dy = (int64_t)y - tree->interaction.press_y;
-    tree->interaction.dragging_tab |= dx * dx + dy * dy >= 16;
+    const float32_t threshold =
+        4.0f * tree->tab_bar_px / VKR_UI_DOCK_TAB_BAR_PT;
+    tree->interaction.dragging_tab |=
+        (float64_t)dx * dx + (float64_t)dy * dy >= threshold * threshold;
     capture.mouse = true_v;
     capture.dragging_tab = tree->interaction.dragging_tab;
   }
-  if (released && tree->interaction.tab_leaf != VKR_UI_DOCK_NODE_NONE &&
-      tree->interaction.dragging_tab) {
+  tree->interaction.drop_leaf = VKR_UI_DOCK_NODE_NONE;
+  if (tree->interaction.dragging_tab) {
     uint32_t target = 0u;
-    if (vkr_ui_dock_leaf_at(tree, x, y, &target))
-      (void)vkr_ui_dock_move_tab(
-          tree, tree->interaction.tab_leaf, tree->interaction.tab_index, target,
-          tree->nodes[target].as.leaf.tab_count,
-          vkr_ui_dock_drop_zone(tree->nodes[target].rect_px, x, y));
+    if (vkr_ui_dock_leaf_at(tree, x, y, &target)) {
+      const VkrUiDockNode *node = &tree->nodes[target];
+      VkrUiDockDropZone zone = vkr_ui_dock_drop_zone(node->rect_px, x, y);
+      uint32_t insertion = node->as.leaf.tab_count;
+      VkrUiRect preview = node->rect_px;
+      if ((float32_t)y < node->rect_px.y + tree->tab_bar_px) {
+        zone = VKR_UI_DOCK_DROP_CENTER;
+        for (uint32_t tab = 0u; tab < node->as.leaf.tab_count; ++tab) {
+          const VkrUiRect rect = vkr_ui_dock_tab_rect(tree, target, tab);
+          if ((float32_t)x < rect.x + rect.width * 0.5f) {
+            insertion = tab;
+            break;
+          }
+        }
+        const uint32_t at = Min(insertion, node->as.leaf.tab_count - 1u);
+        preview = vkr_ui_dock_tab_rect(tree, target, at);
+        if (insertion == node->as.leaf.tab_count)
+          preview.x += preview.width;
+        preview.width =
+            Max(2.0f, 2.0f * tree->tab_bar_px / VKR_UI_DOCK_TAB_BAR_PT);
+      } else if (zone == VKR_UI_DOCK_DROP_LEFT ||
+                 zone == VKR_UI_DOCK_DROP_RIGHT) {
+        preview.width *= 0.5f;
+        if (zone == VKR_UI_DOCK_DROP_RIGHT)
+          preview.x += preview.width;
+      } else if (zone == VKR_UI_DOCK_DROP_TOP ||
+                 zone == VKR_UI_DOCK_DROP_BOTTOM) {
+        preview.height *= 0.5f;
+        if (zone == VKR_UI_DOCK_DROP_BOTTOM)
+          preview.y += preview.height;
+      }
+      const bool8_t same_leaf = target == tree->interaction.tab_leaf;
+      const bool8_t can_drop =
+          zone == VKR_UI_DOCK_DROP_CENTER
+              ? same_leaf || node->as.leaf.tab_count < VKR_UI_DOCK_TAB_CAPACITY
+              : !same_leaf || node->as.leaf.tab_count > 1u;
+      if (can_drop) {
+        tree->interaction.drop_leaf = target;
+        tree->interaction.drop_index = insertion;
+        tree->interaction.drop_zone = zone;
+        tree->interaction.drop_rect_px = preview;
+      }
+    }
+  }
+  if (released && tree->interaction.drop_leaf != VKR_UI_DOCK_NODE_NONE) {
+    (void)vkr_ui_dock_move_tab(
+        tree, tree->interaction.tab_leaf, tree->interaction.tab_index,
+        tree->interaction.drop_leaf, tree->interaction.drop_index,
+        tree->interaction.drop_zone);
   }
   if (released) {
     tree->interaction = (VkrUiDockInteraction){
         .tab_leaf = VKR_UI_DOCK_NODE_NONE,
         .resize_split = VKR_UI_DOCK_NODE_NONE,
+        .drop_leaf = VKR_UI_DOCK_NODE_NONE,
     };
     capture.mouse |= had_interaction;
   }
+  /* Keep presentation and picking on the mutation's current rectangles, even
+     when dropping the last tab collapses and replaces the root node. */
+  if (tree->revision != revision && vkr_ui_rect_has_area(root_rect))
+    (void)vkr_ui_dock_layout(tree, root_rect, tree->splitter_px,
+                             tree->tab_bar_px);
   return capture;
 }
 
@@ -531,8 +783,8 @@ static String8 vkr_ui_dock_kind_name(VkrUiDockNodeKind kind) {
 
 static String8 vkr_ui_dock_panel_name(VkrUiDockPanelKind kind) {
   static const char *const names[VKR_UI_DOCK_PANEL_COUNT] = {
-      "scene_viewport", "hierarchy", "inspector",
-      "console",        "toolbar",   "custom",
+      "scene_viewport", "hierarchy", "inspector", "console",
+      "toolbar",        "custom",    "bakery",
   };
   return string8_create_from_cstr((const uint8_t *)names[kind],
                                   string_length(names[kind]));
@@ -682,11 +934,12 @@ bool8_t vkr_ui_dock_read_json(String8 json, VkrUiDockTree *out_tree) {
   VkrUiDockTree parsed = {0};
   parsed.root = (uint32_t)root;
   parsed.revision = 1u;
-  parsed.splitter_px = 8.0f;
-  parsed.tab_bar_px = 28.0f;
+  parsed.splitter_px = VKR_UI_DOCK_SPLITTER_PT;
+  parsed.tab_bar_px = VKR_UI_DOCK_TAB_BAR_PT;
   parsed.interaction = (VkrUiDockInteraction){
       .tab_leaf = VKR_UI_DOCK_NODE_NONE,
       .resize_split = VKR_UI_DOCK_NODE_NONE,
+      .drop_leaf = VKR_UI_DOCK_NODE_NONE,
   };
   VkrJsonReader nodes = reader;
   if (!vkr_json_find_array(&nodes, "nodes"))

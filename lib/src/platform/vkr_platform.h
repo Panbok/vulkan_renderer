@@ -44,6 +44,10 @@ typedef struct VkrPlatformProcessConfig {
   uint32_t timeout_ms;           /**< Zero waits without a timeout. */
   uint32_t termination_grace_ms; /**< Grace before forced termination. */
   bool8_t hidden;
+  /** Optional cancellation query on the waiting thread. Context is borrowed
+   * through process_run; the callback synchronizes its own state. */
+  bool8_t (*is_cancelled)(void *context);
+  void *cancel_context;
 } VkrPlatformProcessConfig;
 
 /** Opaque storage for one non-recursive cross-process lock. */
@@ -118,6 +122,13 @@ bool8_t vkr_platform_process_lock_acquire(const char *name,
                                           const char *lock_directory,
                                           VkrPlatformProcessLock *out_lock);
 void vkr_platform_process_lock_release(VkrPlatformProcessLock *lock);
+
+/** Clipboard UTF-8 access on the UI thread, only for an explicit user action.
+ * Read returns a complete-codepoint prefix fitting capacity, including NUL.
+ * No clipboard-owned pointer escapes either call. */
+bool8_t vkr_platform_clipboard_read_text(uint8_t *buffer, uint32_t capacity,
+                                         uint32_t *out_length);
+bool8_t vkr_platform_clipboard_write_text(const uint8_t *text, uint32_t length);
 
 void vkr_platform_console_write(const char *message, uint8_t colour);
 

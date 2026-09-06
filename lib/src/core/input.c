@@ -47,6 +47,12 @@ void input_update(InputState *input_state) {
           sizeof(KeysState));
   MemCopy(&input_state->previous_buttons, &input_state->current_buttons,
           sizeof(ButtonsState));
+  MemZero(&input_state->pressed_keys, sizeof(input_state->pressed_keys));
+  MemZero(&input_state->released_keys, sizeof(input_state->released_keys));
+  MemZero(input_state->pressed_buttons, sizeof(input_state->pressed_buttons));
+  MemZero(input_state->released_buttons, sizeof(input_state->released_buttons));
+  MemZero(input_state->key_press_modifiers,
+          sizeof(input_state->key_press_modifiers));
   input_state->character_count = 0u;
   input_state->dropped_character_count = 0u;
 }
@@ -68,13 +74,15 @@ bool8_t input_was_key_up(InputState *input_state, Keys key) {
 }
 
 bool8_t input_key_just_pressed(const InputState *input_state, Keys key) {
-  return input_is_key_down((InputState *)input_state, key) &&
-         input_was_key_up((InputState *)input_state, key);
+  return input_state->pressed_keys.keys[key] ||
+         (input_state->current_keys.keys[key] &&
+          !input_state->previous_keys.keys[key]);
 }
 
 bool8_t input_key_just_released(const InputState *input_state, Keys key) {
-  return input_is_key_up((InputState *)input_state, key) &&
-         input_was_key_down((InputState *)input_state, key);
+  return input_state->released_keys.keys[key] ||
+         (!input_state->current_keys.keys[key] &&
+          input_state->previous_keys.keys[key]);
 }
 
 bool8_t input_is_button_down(InputState *input_state, Buttons button) {
@@ -95,19 +103,56 @@ bool8_t input_was_button_up(InputState *input_state, Buttons button) {
 
 bool8_t input_button_just_pressed(const InputState *input_state,
                                   Buttons button) {
-  return input_is_button_down((InputState *)input_state, button) &&
-         input_was_button_up((InputState *)input_state, button);
+  return input_state->pressed_buttons[button] ||
+         (input_state->current_buttons.buttons[button] &&
+          !input_state->previous_buttons.buttons[button]);
 }
 
 bool8_t input_button_just_released(const InputState *input_state,
                                    Buttons button) {
-  return input_is_button_up((InputState *)input_state, button) &&
-         input_was_button_down((InputState *)input_state, button);
+  return input_state->released_buttons[button] ||
+         (!input_state->current_buttons.buttons[button] &&
+          input_state->previous_buttons.buttons[button]);
+}
+
+static uint8_t input_held_modifiers(const InputState *input) {
+  const bool8_t *keys = input->current_keys.keys;
+  return ((keys[KEY_SHIFT] || keys[KEY_LSHIFT] || keys[KEY_RSHIFT])
+              ? VKR_INPUT_MOD_SHIFT
+              : 0) |
+         ((keys[KEY_CONTROL] || keys[KEY_LCONTROL] || keys[KEY_RCONTROL])
+              ? VKR_INPUT_MOD_CONTROL
+              : 0) |
+         ((keys[KEY_LMENU] || keys[KEY_RMENU]) ? VKR_INPUT_MOD_ALT : 0) |
+         ((keys[KEY_LWIN] || keys[KEY_RWIN]) ? VKR_INPUT_MOD_SUPER : 0);
+}
+
+uint8_t input_key_press_modifiers(const InputState *input_state, Keys key) {
+  return input_state->pressed_keys.keys[key]
+             ? input_state->key_press_modifiers[key]
+             : input_held_modifiers(input_state);
+}
+
+bool8_t input_key_shortcut_modifier(const InputState *input_state, Keys key) {
+  const uint8_t modifiers = input_key_press_modifiers(input_state, key);
+#if defined(PLATFORM_APPLE)
+  return (modifiers & VKR_INPUT_MOD_SUPER) != 0;
+#else
+  return (modifiers & (VKR_INPUT_MOD_CONTROL | VKR_INPUT_MOD_ALT)) ==
+         VKR_INPUT_MOD_CONTROL;
+#endif
 }
 
 void input_process_key(InputState *input_state, Keys key, bool8_t pressed) {
   if (input_state->current_keys.keys[key] != pressed) {
     input_state->current_keys.keys[key] = pressed;
+    if (pressed) {
+      if (!input_state->pressed_keys.keys[key])
+        input_state->key_press_modifiers[key] =
+            input_held_modifiers(input_state);
+      input_state->pressed_keys.keys[key] = true_v;
+    } else
+      input_state->released_keys.keys[key] = true_v;
 
     KeyEventData key_event_data = {
         .key = key,
@@ -150,6 +195,14 @@ void input_process_button(InputState *input_state, Buttons button,
                           bool8_t pressed) {
   if (input_state->current_buttons.buttons[button] != pressed) {
     input_state->current_buttons.buttons[button] = pressed;
+    if (pressed) {
+      if (!input_state->pressed_buttons[button]) {
+        input_state->button_press_x[button] = input_state->current_buttons.x;
+        input_state->button_press_y[button] = input_state->current_buttons.y;
+      }
+      input_state->pressed_buttons[button] = true_v;
+    } else
+      input_state->released_buttons[button] = true_v;
 
     ButtonEventData button_event_data = {
         .button = button,
@@ -200,6 +253,15 @@ void input_process_mouse_wheel(InputState *input_state, int8_t delta) {
     };
     event_manager_dispatch(input_state->event_manager, event);
   }
+}
+
+void input_get_button_press_position(const InputState *input_state,
+                                     Buttons button, int32_t *x, int32_t *y) {
+  const bool8_t pressed = input_state->pressed_buttons[button];
+  *x = pressed ? input_state->button_press_x[button]
+               : input_state->current_buttons.x;
+  *y = pressed ? input_state->button_press_y[button]
+               : input_state->current_buttons.y;
 }
 
 void input_get_mouse_position(InputState *input_state, int32_t *x, int32_t *y) {

@@ -531,6 +531,67 @@ static void test_input_character_queue() {
   printf("  test_input_character_queue PASSED\n");
 }
 
+static void test_input_quick_edges_and_modifiers(void) {
+  printf("  Running test_input_quick_edges_and_modifiers...\n");
+  setup_suite();
+  EventManager manager;
+  assert(event_manager_create(&manager));
+  InputState input = input_init(&manager);
+  input_process_key(&input, KEY_LCONTROL, true_v);
+  input_process_key(&input, KEY_LSHIFT, true_v);
+  input_process_key(&input, KEY_Z, true_v);
+  input_process_key(&input, KEY_Z, false_v);
+  input_process_key(&input, KEY_LSHIFT, false_v);
+  input_process_key(&input, KEY_LCONTROL, false_v);
+  // A complete drag in one event pump retains its start independently of the
+  // final cursor; a second press cannot overwrite that first edge's position.
+  input_process_mouse_move(&input, 31, 47);
+  input_process_button(&input, BUTTON_LEFT, true_v);
+  input_process_mouse_move(&input, 281, 163);
+  input_process_button(&input, BUTTON_LEFT, false_v);
+  input_process_button(&input, BUTTON_RIGHT, true_v);
+  input_process_button(&input, BUTTON_RIGHT, false_v);
+  input_process_button(&input, BUTTON_LEFT, true_v);
+  input_process_button(&input, BUTTON_LEFT, false_v);
+  int32_t press_x, press_y;
+  input_get_button_press_position(&input, BUTTON_LEFT, &press_x, &press_y);
+  assert(press_x == 31 && press_y == 47);
+  input_get_button_press_position(&input, BUTTON_RIGHT, &press_x, &press_y);
+  assert(press_x == 281 && press_y == 163);
+  input_get_mouse_position(&input, &press_x, &press_y);
+  assert(press_x == 281 && press_y == 163);
+  assert(!input_is_key_down(&input, KEY_Z));
+  assert(input_key_just_pressed(&input, KEY_Z) &&
+         input_key_just_released(&input, KEY_Z));
+  assert(input_key_press_modifiers(&input, KEY_Z) ==
+         (VKR_INPUT_MOD_CONTROL | VKR_INPUT_MOD_SHIFT));
+  assert(!input_is_button_down(&input, BUTTON_LEFT));
+  assert(input_button_just_pressed(&input, BUTTON_LEFT) &&
+         input_button_just_released(&input, BUTTON_LEFT));
+  input_update(&input);
+  input_process_mouse_move(&input, 9, 17);
+  input_get_button_press_position(&input, BUTTON_LEFT, &press_x, &press_y);
+  assert(press_x == 9 && press_y == 17);
+  assert(!input_key_just_pressed(&input, KEY_Z) &&
+         !input_key_just_released(&input, KEY_Z));
+  assert(input_key_press_modifiers(&input, KEY_Z) == 0);
+  assert(!input_button_just_pressed(&input, BUTTON_LEFT) &&
+         !input_button_just_released(&input, BUTTON_LEFT));
+  // The modifier snapshot belongs to the key press, not a later modifier.
+  input_process_key(&input, KEY_P, true_v);
+  input_process_key(&input, KEY_P, false_v);
+  input_process_key(&input, KEY_LCONTROL, true_v);
+  assert(input_key_press_modifiers(&input, KEY_P) == 0);
+  input_update(&input);
+  assert(input_is_key_down(&input, KEY_LCONTROL));
+  assert(!input_key_just_pressed(&input, KEY_LCONTROL));
+  printf("  InputState size: %zu bytes\n", sizeof(InputState));
+  input_shutdown(&input);
+  event_manager_destroy(&manager);
+  teardown_suite();
+  printf("  test_input_quick_edges_and_modifiers PASSED\n");
+}
+
 bool32_t run_input_tests() {
   printf("--- Running Input System tests... ---\n");
   test_input_init();
@@ -541,6 +602,7 @@ bool32_t run_input_tests() {
   test_input_mouse_wheel();
   test_input_update_state_copy();
   test_input_character_queue();
+  test_input_quick_edges_and_modifiers();
   printf("--- Input System tests completed. ---\n");
   return true;
 }

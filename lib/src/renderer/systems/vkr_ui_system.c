@@ -34,6 +34,7 @@ struct VkrUiRetainedState {
   uint32_t text_selection;
   float32_t animation_phase;
   bool8_t text_live;
+  bool8_t text_dragging;
 };
 
 struct VkrUiFrameNode {
@@ -51,6 +52,12 @@ struct VkrUiFrameNode {
   const VkrUiTrack *rows;
   uint32_t row_count;
   String8 content;
+  String8 tooltip;
+  VkrUiIcon icon;
+  float32_t icon_size_px;
+  bool8_t disabled;
+  bool8_t focusable;
+  uint32_t input_layer;
   VkrUiRect rect;
   VkrUiRect clip;
   Vec2 intrinsic_size;
@@ -150,6 +157,7 @@ VkrUiWidgetConfig vkr_ui_widget_config_default(void) {
       .placement = VKR_UI_PLACEMENT_DEFAULT,
       .style = vkr_ui_style_default(),
       .text = VKR_UI_TEXT_CONFIG_DEFAULT,
+      .icon_size_pt = 14.0f,
   };
 }
 
@@ -501,7 +509,7 @@ vkr_internal bool8_t vkr_ui_text_prepare(VkrUiSystem *system,
   const bool8_t has_geometry = vkr_ui_text_prepare_geometry(&retained->text);
   if (!has_geometry && content.length > 0u)
     return false_v;
-  node->content = content;
+  node->content = retained->text.content;
   const VkrTextBounds bounds = vkr_ui_text_get_bounds(&retained->text);
   node->intrinsic_size = (Vec2){
       bounds.size.x + node->style.padding_px.left +
@@ -516,26 +524,107 @@ vkr_internal bool8_t vkr_ui_text_prepare(VkrUiSystem *system,
   return true_v;
 }
 
+vkr_internal bool8_t vkr_ui_widget_prepare(VkrUiSystem *system,
+                                           VkrUiFrameNode *node,
+                                           String8 content,
+                                           const VkrUiWidgetConfig *config) {
+  node->disabled = config->disabled;
+  node->tooltip = config->tooltip;
+  if (node->disabled)
+    node->style.text_color.w *= 0.45f;
+  if (!vkr_ui_text_prepare(system, node, content, &config->text))
+    return false_v;
+  if ((node->kind == VKR_UI_NODE_LABEL || node->kind == VKR_UI_NODE_BUTTON) &&
+      config->icon > VKR_UI_ICON_NONE && config->icon < VKR_UI_ICON_COUNT) {
+    node->icon = config->icon;
+    node->icon_size_px =
+        (isfinite(config->icon_size_pt) && config->icon_size_pt > 0.0f
+             ? config->icon_size_pt
+             : 14.0f) *
+        system->content_scale;
+    const float32_t gap = content.length ? 6.0f * system->content_scale : 0.0f;
+    node->intrinsic_size.x += node->icon_size_px + gap;
+    node->intrinsic_size.y =
+        Max(node->intrinsic_size.y,
+            node->icon_size_px + node->style.padding_px.top +
+                node->style.padding_px.bottom + node->style.border_px.top +
+                node->style.border_px.bottom);
+    node->intrinsic_size =
+        vkr_ui_style_clamp_size(node->intrinsic_size, &node->style);
+  }
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_ui_key_pressed(VkrUiSystem *system, Keys key) {
+  return input_key_just_pressed(system->input, key);
+}
+
+vkr_internal bool8_t vkr_ui_shift_down(VkrUiSystem *system) {
+  return input_is_key_down(system->input, KEY_SHIFT) ||
+         input_is_key_down(system->input, KEY_LSHIFT) ||
+         input_is_key_down(system->input, KEY_RSHIFT);
+}
+
+vkr_internal bool8_t vkr_ui_keyboard_eligible(const VkrUiSystem *system,
+                                              const VkrUiFrameNode *node) {
+  return node->focusable && !system->mouse_captured &&
+         node->input_layer == system->keyboard_input_layer &&
+         vkr_ui_rect_has_area(vkr_ui_rect_intersect(node->retained->last_rect,
+                                                    node->retained->last_clip));
+}
+
 vkr_internal bool8_t vkr_ui_interact(VkrUiSystem *system, VkrUiFrameNode *node,
                                      bool8_t focusable) {
   VkrUiRetainedState *retained = node->retained;
+  node->focusable = focusable && !node->disabled;
+  node->input_layer = system->input_layer;
   const bool8_t hovered = !system->mouse_captured &&
                           system->input_layer == system->mouse_input_layer &&
                           vkr_ui_rect_has_area(retained->last_rect) &&
                           vkr_ui_point_in_rect(system->mouse_x, system->mouse_y,
-                                               retained->last_rect);
+                                               retained->last_rect) &&
+                          vkr_ui_point_in_rect(system->mouse_x, system->mouse_y,
+                                               retained->last_clip);
   node->hovered = hovered;
   if (hovered) {
     system->hot_id = node->id;
     system->capture.mouse = true_v;
   }
-  if (system->mouse_pressed && hovered && system->active_id == VKR_UI_ID_NONE) {
+  // Scroll containers own hover/wheel handling; descendants own click/drag
+  // gestures. Claiming active_id here would starve every child on mouse-down.
+  if (node->kind == VKR_UI_NODE_SCROLL)
+    return false_v;
+  if (node->disabled) {
+    if (system->active_id == node->id)
+      system->active_id = VKR_UI_ID_NONE;
+    if (system->focused_id == node->id)
+      system->focused_id = VKR_UI_ID_NONE;
+    return false_v;
+  }
+  int32_t press_x = system->mouse_x, press_y = system->mouse_y;
+  if (system->mouse_pressed)
+    input_get_button_press_position(system->input, BUTTON_LEFT, &press_x,
+                                    &press_y);
+  const bool8_t pressed_here =
+      system->mouse_pressed && !system->mouse_captured &&
+      system->input_layer == system->mouse_input_layer &&
+      vkr_ui_rect_has_area(retained->last_rect) &&
+      vkr_ui_point_in_rect(press_x, press_y, retained->last_rect) &&
+      vkr_ui_point_in_rect(press_x, press_y, retained->last_clip);
+  if (pressed_here && system->active_id == VKR_UI_ID_NONE) {
     system->active_id = node->id;
     if (focusable) {
       system->focused_id = node->id;
       system->focus_claimed = true_v;
     }
   }
+  if (vkr_ui_keyboard_eligible(system, node) &&
+      system->focused_id == node->id &&
+      (node->kind == VKR_UI_NODE_BUTTON ||
+       node->kind == VKR_UI_NODE_CHECKBOX) &&
+      (vkr_ui_key_pressed(system, KEY_ENTER) ||
+       vkr_ui_key_pressed(system, KEY_SPACE)))
+    return true_v;
   node->active = system->active_id == node->id;
   if (node->active)
     system->capture.mouse = true_v;
@@ -587,15 +676,17 @@ bool8_t vkr_ui_begin(VkrUiSystem *system, VkrAllocator *scratch,
   system->mouse_captured = mouse_captured;
   input_get_mouse_position(input, &system->mouse_x, &system->mouse_y);
   input_get_mouse_wheel(input, &system->mouse_wheel);
-  system->mouse_pressed = input_is_button_down(input, BUTTON_LEFT) &&
-                          input_was_button_up(input, BUTTON_LEFT);
-  system->mouse_released = input_is_button_up(input, BUTTON_LEFT) &&
-                           input_was_button_down(input, BUTTON_LEFT);
+  system->mouse_pressed = input_button_just_pressed(input, BUTTON_LEFT);
+  system->mouse_released = input_button_just_released(input, BUTTON_LEFT);
   system->focus_claimed = false_v;
   system->focused_is_text = false_v;
   system->hot_id = VKR_UI_ID_NONE;
   system->input_layer = 0u;
   system->mouse_input_layer = 0u;
+  system->keyboard_layer_claimed = false_v;
+  system->keyboard_navigation_enabled = true_v;
+  if (system->mouse_pressed)
+    system->keyboard_input_layer = 0u;
   system->capture = (VkrUiInputCapture){0};
   system->frame_commands = NULL;
   system->frame_command_count = 0u;
@@ -673,6 +764,8 @@ bool8_t vkr_ui_input_layer_register(VkrUiSystem *system, uint32_t layer,
   if (vkr_ui_point_in_rect(system->mouse_x, system->mouse_y, rect_px) &&
       layer > system->mouse_input_layer) {
     system->mouse_input_layer = layer;
+    if (system->mouse_pressed)
+      system->keyboard_input_layer = layer;
     system->capture.mouse = true_v;
   }
   return true_v;
@@ -682,6 +775,19 @@ bool8_t vkr_ui_input_layer_set(VkrUiSystem *system, uint32_t layer) {
   if (!system || !system->frame_open)
     return false_v;
   system->input_layer = layer;
+  return true_v;
+}
+
+void vkr_ui_keyboard_navigation_enabled(VkrUiSystem *system, bool8_t enabled) {
+  if (system && system->frame_open)
+    system->keyboard_navigation_enabled = enabled;
+}
+
+bool8_t vkr_ui_keyboard_layer_set(VkrUiSystem *system, uint32_t layer) {
+  if (!system || !system->frame_open)
+    return false_v;
+  system->keyboard_input_layer = layer;
+  system->keyboard_layer_claimed = true_v;
   return true_v;
 }
 
@@ -730,8 +836,8 @@ void vkr_ui_label(VkrUiSystem *system, String8 id_label, String8 content,
   const uint32_t index = vkr_ui_add_node(system, id, VKR_UI_NODE_LABEL,
                                          config->placement, &config->style);
   if (index != VKR_UI_NODE_NONE)
-    (void)vkr_ui_text_prepare(system, &system->frame_nodes[index], content,
-                              &config->text);
+    (void)vkr_ui_widget_prepare(system, &system->frame_nodes[index], content,
+                                config);
 }
 
 bool8_t vkr_ui_button(VkrUiSystem *system, String8 id_label, String8 content,
@@ -747,8 +853,8 @@ bool8_t vkr_ui_button(VkrUiSystem *system, String8 id_label, String8 content,
   const uint32_t index = vkr_ui_add_node(system, id, VKR_UI_NODE_BUTTON,
                                          config->placement, &config->style);
   if (index == VKR_UI_NODE_NONE ||
-      !vkr_ui_text_prepare(system, &system->frame_nodes[index], content,
-                           &config->text))
+      !vkr_ui_widget_prepare(system, &system->frame_nodes[index], content,
+                             config))
     return false_v;
   return vkr_ui_interact(system, &system->frame_nodes[index], true_v);
 }
@@ -765,8 +871,8 @@ bool8_t vkr_ui_checkbox(VkrUiSystem *system, String8 id_label, String8 content,
   const uint32_t index = vkr_ui_add_node(system, id, VKR_UI_NODE_CHECKBOX,
                                          config->placement, &config->style);
   if (index == VKR_UI_NODE_NONE ||
-      !vkr_ui_text_prepare(system, &system->frame_nodes[index], content,
-                           &config->text))
+      !vkr_ui_widget_prepare(system, &system->frame_nodes[index], content,
+                             config))
     return false_v;
   VkrUiFrameNode *node = &system->frame_nodes[index];
   const float32_t box = 16.0f * system->content_scale;
@@ -801,6 +907,8 @@ bool8_t vkr_ui_slider_f32(VkrUiSystem *system, String8 id_label,
              Max(node->style.min_size_px.y, 20.0f * system->content_scale)};
   node->intrinsic_size =
       vkr_ui_style_clamp_size(node->intrinsic_size, &node->style);
+  node->disabled = config->disabled;
+  node->tooltip = config->tooltip;
   (void)vkr_ui_interact(system, node, true_v);
   bool8_t changed = false_v;
   if (system->active_id == id &&
@@ -812,6 +920,15 @@ bool8_t vkr_ui_slider_f32(VkrUiSystem *system, String8 id_label,
         0.0f, 1.0f);
     const float32_t next = minimum + fraction * (maximum - minimum);
     changed = next != *value;
+    *value = next;
+  }
+  if (vkr_ui_keyboard_eligible(system, node) && system->focused_id == id) {
+    const int32_t direction = (int32_t)vkr_ui_key_pressed(system, KEY_RIGHT) -
+                              (int32_t)vkr_ui_key_pressed(system, KEY_LEFT);
+    const float32_t next = vkr_clamp_f32(
+        *value + (float32_t)direction * (maximum - minimum) * 0.01f, minimum,
+        maximum);
+    changed |= next != *value;
     *value = next;
   }
   node->slider_fraction =
@@ -856,6 +973,20 @@ bool8_t vkr_ui_scroll_area_begin(VkrUiSystem *system, String8 id_label,
   return vkr_ui_id_stack_push_label(&system->id_stack, id_label);
 }
 
+bool8_t vkr_ui_scroll_area_offset_set(VkrUiSystem *system,
+                                      float32_t offset_pt) {
+  if (!system || !system->frame_open || !system->container_count ||
+      !isfinite(offset_pt) || offset_pt < 0)
+    return false_v;
+  VkrUiFrameNode *node =
+      &system
+           ->frame_nodes[system->container_stack[system->container_count - 1u]];
+  if (node->kind != VKR_UI_NODE_SCROLL)
+    return false_v;
+  node->retained->scroll_offset.y = offset_pt * system->content_scale;
+  return true_v;
+}
+
 bool8_t vkr_ui_scroll_area_end(VkrUiSystem *system) {
   return vkr_ui_panel_end(system);
 }
@@ -891,14 +1022,14 @@ vkr_internal void vkr_ui_text_edit_erase(VkrUiTextEditBuffer *buffer,
 }
 
 vkr_internal bool8_t vkr_ui_key_repeat(VkrUiSystem *system, Keys key) {
-  if (input_is_key_up(system->input, key))
-    return false_v;
   if (input_key_just_pressed(system->input, key)) {
     system->repeat_key = key;
     system->repeat_elapsed = 0.0;
     system->repeat_next = VKR_UI_KEY_REPEAT_DELAY_SECONDS;
     return true_v;
   }
+  if (input_is_key_up(system->input, key))
+    return false_v;
   if (system->repeat_key != key || system->repeat_elapsed < system->repeat_next)
     return false_v;
   do {
@@ -935,6 +1066,75 @@ vkr_internal bool8_t vkr_ui_text_edit_insert(VkrUiTextEditBuffer *buffer,
   return true_v;
 }
 
+vkr_internal float32_t vkr_ui_text_line_height(const VkrUiText *text) {
+  return text->layout.line_count
+             ? text->bounds.size.y / text->layout.line_count
+             : Max(1.0f, text->config.font_size * text->content_scale);
+}
+
+vkr_internal Vec2 vkr_ui_text_cursor_position(const VkrUiText *text,
+                                              uint32_t byte_offset) {
+  Vec2 caret = {0};
+  uint32_t glyph = 0u;
+  for (uint32_t offset = 0u; offset < text->content.length;) {
+    const VkrCodepoint cp = vkr_utf8_decode(text->content.str + offset,
+                                            text->content.length - offset);
+    if (cp.byte_length == 0u)
+      break;
+    if (cp.value != '\n' && glyph < text->layout.glyphs.length) {
+      const VkrTextGlyph *item = &text->layout.glyphs.data[glyph];
+      caret = (Vec2){item->position.x, item->position.y - text->bounds.ascent};
+    }
+    if (offset >= byte_offset)
+      return caret;
+    if (cp.value == '\n') {
+      caret.x = 0.0f;
+      caret.y += vkr_ui_text_line_height(text);
+    } else if (glyph < text->layout.glyphs.length) {
+      caret.x += text->layout.glyphs.data[glyph++].advance;
+    }
+    offset += cp.byte_length;
+  }
+  return caret;
+}
+
+vkr_internal uint32_t vkr_ui_text_mouse_cursor(const VkrUiText *text,
+                                               Vec2 mouse) {
+  uint32_t best = 0u, glyph = 0u;
+  float32_t distance = INFINITY;
+  Vec2 caret = {0};
+  const float32_t height = vkr_ui_text_line_height(text);
+  for (uint32_t offset = 0u; offset <= text->content.length;) {
+    VkrCodepoint cp = {0};
+    if (offset < text->content.length)
+      cp = vkr_utf8_decode(text->content.str + offset,
+                           text->content.length - offset);
+    if (cp.byte_length && cp.value != '\n' &&
+        glyph < text->layout.glyphs.length) {
+      const VkrTextGlyph *item = &text->layout.glyphs.data[glyph];
+      caret = (Vec2){item->position.x, item->position.y - text->bounds.ascent};
+    }
+    const float32_t dy = mouse.y < caret.y ? caret.y - mouse.y
+                         : mouse.y > caret.y + height
+                             ? mouse.y - caret.y - height
+                             : 0.0f;
+    const float32_t cost = dy * 10000.0f + fabsf(mouse.x - caret.x);
+    if (cost < distance) {
+      distance = cost;
+      best = offset;
+    }
+    if (!cp.byte_length)
+      break;
+    if (cp.value == '\n') {
+      caret.x = 0.0f;
+      caret.y += height;
+    } else if (glyph < text->layout.glyphs.length)
+      caret.x += text->layout.glyphs.data[glyph++].advance;
+    offset += cp.byte_length;
+  }
+  return best;
+}
+
 bool8_t vkr_ui_text_field(VkrUiSystem *system, String8 id_label,
                           VkrUiTextEditBuffer *buffer,
                           const VkrUiWidgetConfig *source_config) {
@@ -953,28 +1153,139 @@ bool8_t vkr_ui_text_field(VkrUiSystem *system, String8 id_label,
   if (index == VKR_UI_NODE_NONE)
     return false_v;
   VkrUiFrameNode *node = &system->frame_nodes[index];
+  node->disabled = config->disabled;
+  node->tooltip = config->tooltip;
+  if (node->disabled)
+    node->style.text_color.w *= 0.45f;
+  const String8 incoming_content = {.str = buffer->data,
+                                    .length = buffer->length};
+  if (config->read_only && node->retained->text_live &&
+      !string8_equals(&node->retained->text.content, &incoming_content)) {
+    node->retained->text_cursor = 0u;
+    node->retained->text_selection = 0u;
+    node->retained->scroll_offset = (Vec2){0};
+  }
+  if (!vkr_ui_text_prepare(system, node, incoming_content, &config->text))
+    return false_v;
   (void)vkr_ui_interact(system, node, true_v);
   VkrUiRetainedState *retained = node->retained;
+  const uint32_t previous_cursor = retained->text_cursor;
+  if (!node->disabled && !system->mouse_captured &&
+      node->input_layer == system->keyboard_input_layer) {
+    const VkrUiRect box =
+        vkr_ui_style_content_rect(retained->last_rect, &node->style);
+    if (system->mouse_pressed && system->focused_id == id) {
+      int32_t press_x, press_y;
+      input_get_button_press_position(system->input, BUTTON_LEFT, &press_x,
+                                      &press_y);
+      if (vkr_ui_point_in_rect(press_x, press_y, retained->last_rect) &&
+          vkr_ui_point_in_rect(press_x, press_y, retained->last_clip)) {
+        const Vec2 anchor = {
+            (float32_t)press_x - box.x + retained->scroll_offset.x,
+            (float32_t)press_y - box.y + retained->scroll_offset.y};
+        retained->text_cursor =
+            vkr_ui_text_mouse_cursor(&retained->text, anchor);
+        if (!vkr_ui_shift_down(system))
+          retained->text_selection = retained->text_cursor;
+        retained->text_dragging = true_v;
+      }
+    }
+    if (retained->text_dragging) {
+      int32_t dx, dy;
+      input_get_mouse_delta(system->input, &dx, &dy);
+      // An unchanged release must not move the caret merely because text or
+      // layout changed while the mouse was held.
+      if (system->mouse_pressed ||
+          ((dx || dy) && (system->mouse_released ||
+                          input_is_button_down(system->input, BUTTON_LEFT)))) {
+        const Vec2 endpoint = {
+            (float32_t)system->mouse_x - box.x + retained->scroll_offset.x,
+            (float32_t)system->mouse_y - box.y + retained->scroll_offset.y};
+        retained->text_cursor =
+            vkr_ui_text_mouse_cursor(&retained->text, endpoint);
+      }
+    }
+  }
+  if (system->mouse_released || system->mouse_captured || node->disabled)
+    retained->text_dragging = false_v;
   retained->text_cursor = Min(retained->text_cursor, buffer->length);
   retained->text_selection = Min(retained->text_selection, buffer->length);
+  while (retained->text_cursor > 0u && retained->text_cursor < buffer->length &&
+         (buffer->data[retained->text_cursor] & 0xc0u) == 0x80u)
+    --retained->text_cursor;
+  while (retained->text_selection > 0u &&
+         retained->text_selection < buffer->length &&
+         (buffer->data[retained->text_selection] & 0xc0u) == 0x80u)
+    --retained->text_selection;
   bool8_t changed = false_v;
-  if (system->focused_id == id) {
-    system->focus_claimed = true_v;
+  if (vkr_ui_keyboard_eligible(system, node) && system->focused_id == id) {
     system->focused_is_text = true_v;
     uint32_t selection_begin =
         Min(retained->text_cursor, retained->text_selection);
     uint32_t selection_end =
         Max(retained->text_cursor, retained->text_selection);
-    uint32_t character_count = 0u;
-    const uint32_t *characters =
-        input_get_characters(system->input, &character_count);
-    for (uint32_t i = 0u; i < character_count; ++i)
-      changed |=
-          vkr_ui_text_edit_insert(buffer, &retained->text_cursor,
-                                  &retained->text_selection, characters[i]);
+    const bool8_t shortcut =
+        input_key_shortcut_modifier(system->input, KEY_A) ||
+        input_key_shortcut_modifier(system->input, KEY_C) ||
+        input_key_shortcut_modifier(system->input, KEY_X) ||
+        input_key_shortcut_modifier(system->input, KEY_V);
+    if (input_key_shortcut_modifier(system->input, KEY_A) &&
+        vkr_ui_key_pressed(system, KEY_A)) {
+      retained->text_selection = 0u;
+      retained->text_cursor = buffer->length;
+      retained->text_dragging = false_v;
+    } else if ((input_key_shortcut_modifier(system->input, KEY_C) &&
+                vkr_ui_key_pressed(system, KEY_C)) ||
+               (input_key_shortcut_modifier(system->input, KEY_X) &&
+                vkr_ui_key_pressed(system, KEY_X))) {
+      if (selection_end > selection_begin &&
+          vkr_platform_clipboard_write_text(buffer->data + selection_begin,
+                                            selection_end - selection_begin) &&
+          !config->read_only &&
+          input_key_shortcut_modifier(system->input, KEY_X) &&
+          vkr_ui_key_pressed(system, KEY_X)) {
+        vkr_ui_text_edit_erase(buffer, selection_begin, selection_end);
+        retained->text_cursor = selection_begin;
+        retained->text_selection = selection_begin;
+        changed = true_v;
+      }
+    } else if (!config->read_only &&
+               input_key_shortcut_modifier(system->input, KEY_V) &&
+               vkr_ui_key_pressed(system, KEY_V)) {
+      // This bounded paste copy expires with the caller's frame scratch.
+      uint8_t *paste =
+          vkr_allocator_alloc(system->frame_allocator, buffer->capacity,
+                              VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      uint32_t length = 0u;
+      if (paste &&
+          vkr_platform_clipboard_read_text(paste, buffer->capacity, &length)) {
+        for (uint32_t offset = 0u; offset < length;) {
+          const VkrCodepoint cp =
+              vkr_utf8_decode(paste + offset, length - offset);
+          if (cp.byte_length == 0u)
+            break;
+          if (cp.value >= 0x20u && cp.value != 0x7fu) {
+            if (!vkr_ui_text_edit_insert(buffer, &retained->text_cursor,
+                                         &retained->text_selection, cp.value))
+              break;
+            changed = true_v;
+          }
+          offset += cp.byte_length;
+        }
+      }
+    }
+    if (!config->read_only && !shortcut) {
+      uint32_t character_count = 0u;
+      const uint32_t *characters =
+          input_get_characters(system->input, &character_count);
+      for (uint32_t i = 0u; i < character_count; ++i)
+        changed |=
+            vkr_ui_text_edit_insert(buffer, &retained->text_cursor,
+                                    &retained->text_selection, characters[i]);
+    }
     selection_begin = Min(retained->text_cursor, retained->text_selection);
     selection_end = Max(retained->text_cursor, retained->text_selection);
-    if (vkr_ui_key_repeat(system, KEY_BACKSPACE)) {
+    if (!config->read_only && vkr_ui_key_repeat(system, KEY_BACKSPACE)) {
       if (selection_begin == selection_end)
         selection_begin = vkr_ui_utf8_previous(buffer->data, selection_begin);
       const uint32_t old_length = buffer->length;
@@ -982,7 +1293,7 @@ bool8_t vkr_ui_text_field(VkrUiSystem *system, String8 id_label,
       retained->text_cursor = selection_begin;
       retained->text_selection = selection_begin;
       changed |= buffer->length != old_length;
-    } else if (vkr_ui_key_repeat(system, KEY_DELETE)) {
+    } else if (!config->read_only && vkr_ui_key_repeat(system, KEY_DELETE)) {
       if (selection_begin == selection_end)
         selection_end =
             vkr_ui_utf8_next(buffer->data, buffer->length, selection_end);
@@ -992,24 +1303,87 @@ bool8_t vkr_ui_text_field(VkrUiSystem *system, String8 id_label,
       retained->text_selection = selection_begin;
       changed |= buffer->length != old_length;
     }
-    if (vkr_ui_key_repeat(system, KEY_LEFT))
+    bool8_t shift = vkr_ui_shift_down(system);
+    bool8_t moved = false_v;
+    if (vkr_ui_key_repeat(system, KEY_LEFT)) {
+      shift = (input_key_press_modifiers(system->input, KEY_LEFT) &
+               VKR_INPUT_MOD_SHIFT) != 0;
       retained->text_cursor =
-          vkr_ui_utf8_previous(buffer->data, retained->text_cursor);
-    if (vkr_ui_key_repeat(system, KEY_RIGHT))
+          !shift && selection_begin != selection_end
+              ? selection_begin
+              : vkr_ui_utf8_previous(buffer->data, retained->text_cursor);
+      moved = true_v;
+    }
+    if (vkr_ui_key_repeat(system, KEY_RIGHT)) {
+      shift = (input_key_press_modifiers(system->input, KEY_RIGHT) &
+               VKR_INPUT_MOD_SHIFT) != 0;
       retained->text_cursor =
-          vkr_ui_utf8_next(buffer->data, buffer->length, retained->text_cursor);
-    if (input_is_key_down(system->input, KEY_HOME) &&
-        input_was_key_up(system->input, KEY_HOME))
+          !shift && selection_begin != selection_end
+              ? selection_end
+              : vkr_ui_utf8_next(buffer->data, buffer->length,
+                                 retained->text_cursor);
+      moved = true_v;
+    }
+    const int32_t vertical = (int32_t)vkr_ui_key_repeat(system, KEY_DOWN) -
+                             (int32_t)vkr_ui_key_repeat(system, KEY_UP);
+    if (vertical && retained->text.layout.line_count > 1u) {
+      shift = (input_key_press_modifiers(system->input,
+                                         vertical > 0 ? KEY_DOWN : KEY_UP) &
+               VKR_INPUT_MOD_SHIFT) != 0;
+      Vec2 target =
+          vkr_ui_text_cursor_position(&retained->text, retained->text_cursor);
+      target.y += ((float32_t)vertical + 0.5f) *
+                  vkr_ui_text_line_height(&retained->text);
+      retained->text_cursor = vkr_ui_text_mouse_cursor(&retained->text, target);
+      moved = true_v;
+    }
+    if (vkr_ui_key_pressed(system, KEY_HOME)) {
+      shift = (input_key_press_modifiers(system->input, KEY_HOME) &
+               VKR_INPUT_MOD_SHIFT) != 0;
       retained->text_cursor = 0u;
-    if (input_is_key_down(system->input, KEY_END) &&
-        input_was_key_up(system->input, KEY_END))
+      moved = true_v;
+    }
+    if (vkr_ui_key_pressed(system, KEY_END)) {
+      shift = (input_key_press_modifiers(system->input, KEY_END) &
+               VKR_INPUT_MOD_SHIFT) != 0;
       retained->text_cursor = buffer->length;
-    if (!input_is_key_down(system->input, KEY_SHIFT))
+      moved = true_v;
+    }
+    if (moved && !shift)
       retained->text_selection = retained->text_cursor;
+    // Typing or keyboard navigation takes ownership of the caret. A later
+    // mouse-up must not reselect text at the old pointer position.
+    if (changed || moved)
+      retained->text_dragging = false_v;
   }
   const String8 content = {.str = buffer->data, .length = buffer->length};
-  if (!vkr_ui_text_prepare(system, node, content, &config->text))
+  if (changed && !vkr_ui_text_prepare(system, node, content, &config->text))
     return false_v;
+  const VkrUiRect box =
+      vkr_ui_style_content_rect(retained->last_rect, &node->style);
+  const VkrUiText *text = &retained->text;
+  const float32_t line_height = vkr_ui_text_line_height(text);
+  if (system->focused_id == id && box.width > 0.0f && box.height > 0.0f &&
+      (changed || retained->text_cursor != previous_cursor ||
+       retained->text_dragging)) {
+    const Vec2 caret = vkr_ui_text_cursor_position(text, retained->text_cursor);
+    retained->scroll_offset.x = vkr_clamp_f32(
+        retained->scroll_offset.x,
+        Max(0.0f, caret.x + 2.0f * system->content_scale - box.width), caret.x);
+    retained->scroll_offset.y =
+        vkr_clamp_f32(retained->scroll_offset.y,
+                      Max(0.0f, caret.y + line_height - box.height), caret.y);
+  }
+  if (node->hovered && system->mouse_wheel && text->layout.line_count > 1u)
+    retained->scroll_offset.y = vkr_clamp_f32(
+        retained->scroll_offset.y - system->mouse_wheel * line_height * 3.0f,
+        0.0f, Max(0.0f, text->bounds.size.y - box.height));
+  retained->scroll_offset.x =
+      Min(retained->scroll_offset.x,
+          Max(0.0f,
+              text->bounds.size.x + 2.0f * system->content_scale - box.width));
+  retained->scroll_offset.y = Min(retained->scroll_offset.y,
+                                  Max(0.0f, text->bounds.size.y - box.height));
   return changed;
 }
 
@@ -1076,6 +1450,10 @@ vkr_internal uint64_t vkr_ui_node_hash(VkrUiSystem *system,
   hash = vkr_ui_hash_bytes(hash, &node->slider_fraction,
                            sizeof(node->slider_fraction));
   hash = vkr_ui_hash_bytes(hash, &node->checked, sizeof(node->checked));
+  hash = vkr_ui_hash_bytes(hash, &node->icon, sizeof(node->icon));
+  hash =
+      vkr_ui_hash_bytes(hash, &node->icon_size_px, sizeof(node->icon_size_px));
+  hash = vkr_ui_hash_bytes(hash, &node->disabled, sizeof(node->disabled));
   hash = vkr_ui_hash_bytes(hash, &node->hovered, sizeof(node->hovered));
   hash = vkr_ui_hash_bytes(hash, &node->active, sizeof(node->active));
   hash = vkr_ui_hash_bytes(hash, &node->clip_children,
@@ -1390,6 +1768,182 @@ vkr_internal void vkr_ui_emit_rect(VkrUiDrawBuffer *buffer, VkrUiRect rect,
     (void)vkr_ui_draw_buffer_solid(buffer, rect, vkr_ui_linear_color(color));
 }
 
+typedef struct VkrUiIconLine {
+  float32_t x0, y0, x1, y1;
+} VkrUiIconLine;
+
+vkr_internal void vkr_ui_emit_icon(VkrUiDrawBuffer *buffer, VkrUiIcon icon,
+                                   VkrUiRect rect, Vec4 color) {
+  static const VkrUiIconLine monitor[] = {{1, 2, 15, 2},   {15, 2, 15, 12},
+                                          {15, 12, 1, 12}, {1, 12, 1, 2},
+                                          {8, 12, 8, 15},  {5, 15, 11, 15}};
+  static const VkrUiIconLine hierarchy[] = {{3, 3, 3, 13},  {3, 8, 8, 8},
+                                            {3, 13, 8, 13}, {1, 2, 5, 2},
+                                            {9, 7, 14, 7},  {9, 12, 14, 12}};
+  static const VkrUiIconLine inspector[] = {{2, 3, 14, 3},   {2, 8, 14, 8},
+                                            {2, 13, 14, 13}, {6, 1, 6, 5},
+                                            {11, 6, 11, 10}, {5, 11, 5, 15}};
+  static const VkrUiIconLine console[] = {
+      {2, 4, 6, 8}, {6, 8, 2, 12}, {8, 12, 14, 12}};
+  static const VkrUiIconLine scene[] = {
+      {8, 1, 14, 4},  {14, 4, 14, 12}, {14, 12, 8, 15},
+      {8, 15, 2, 12}, {2, 12, 2, 4},   {2, 4, 8, 1},
+      {2, 4, 8, 7},   {8, 7, 14, 4},   {8, 7, 8, 15}};
+  static const VkrUiIconLine bakery[] = {
+      {2, 3, 14, 3}, {14, 3, 14, 14}, {14, 14, 2, 14}, {2, 14, 2, 3},
+      {2, 6, 14, 6}, {5, 9, 11, 9},   {5, 11, 11, 11}};
+  static const VkrUiIconLine scene_load[] = {
+      {2, 9, 2, 14}, {2, 14, 14, 14}, {14, 14, 14, 9},
+      {8, 1, 8, 10}, {4, 6, 8, 10}, {8, 10, 12, 6}};
+  static const VkrUiIconLine scene_unload[] = {
+      {2, 9, 2, 14}, {2, 14, 14, 14}, {14, 14, 14, 9},
+      {8, 10, 8, 1}, {4, 5, 8, 1}, {8, 1, 12, 5}};
+  static const VkrUiIconLine camera[] = {
+      {1, 4, 10, 4},  {10, 4, 10, 12}, {10, 12, 1, 12}, {1, 12, 1, 4},
+      {10, 6, 15, 3}, {15, 3, 15, 13}, {15, 13, 10, 10}};
+  static const VkrUiIconLine log_fatal[] = {
+      {5, 1, 11, 1},   {11, 1, 15, 5}, {15, 5, 15, 11}, {15, 11, 11, 15},
+      {11, 15, 5, 15}, {5, 15, 1, 11}, {1, 11, 1, 5},   {1, 5, 5, 1},
+      {8, 4, 8, 10},   {6, 12, 10, 12}};
+  static const VkrUiIconLine log_error[] = {{8, 1, 15, 8},  {15, 8, 8, 15},
+                                            {8, 15, 1, 8},  {1, 8, 8, 1},
+                                            {5, 5, 11, 11}, {11, 5, 5, 11}};
+  static const VkrUiIconLine log_warning[] = {{8, 1, 15, 15},
+                                              {15, 15, 1, 15},
+                                              {1, 15, 8, 1},
+                                              {8, 5, 8, 10},
+                                              {6, 12, 10, 12}};
+  static const VkrUiIconLine log_info[] = {
+      {5, 1, 11, 1},   {11, 1, 15, 5}, {15, 5, 15, 11}, {15, 11, 11, 15},
+      {11, 15, 5, 15}, {5, 15, 1, 11}, {1, 11, 1, 5},   {1, 5, 5, 1},
+      {8, 6, 8, 12},   {7, 4, 9, 4}};
+  static const VkrUiIconLine log_debug[] = {{6, 2, 2, 8},   {2, 8, 6, 14},
+                                            {10, 2, 14, 8}, {14, 8, 10, 14},
+                                            {7, 5, 9, 5},   {7, 11, 9, 11}};
+  static const VkrUiIconLine log_trace[] = {{2, 3, 7, 3},    {7, 3, 7, 13},
+                                            {7, 13, 14, 13}, {7, 8, 14, 8},
+                                            {11, 5, 14, 8},  {14, 8, 11, 11}};
+  const VkrUiIconLine *lines = NULL;
+  uint32_t count = 0u;
+  switch (icon) {
+  case VKR_UI_ICON_MONITOR_PLAY:
+  case VKR_UI_ICON_MONITOR_STOP:
+    lines = monitor;
+    count = ArrayCount(monitor);
+    break;
+  case VKR_UI_ICON_HIERARCHY:
+    lines = hierarchy;
+    count = ArrayCount(hierarchy);
+    break;
+  case VKR_UI_ICON_INSPECTOR:
+    lines = inspector;
+    count = ArrayCount(inspector);
+    break;
+  case VKR_UI_ICON_CONSOLE:
+    lines = console;
+    count = ArrayCount(console);
+    break;
+  case VKR_UI_ICON_SCENE:
+    lines = scene;
+    count = ArrayCount(scene);
+    break;
+  case VKR_UI_ICON_SCENE_LOAD:
+    lines = scene_load;
+    count = ArrayCount(scene_load);
+    break;
+  case VKR_UI_ICON_SCENE_UNLOAD:
+    lines = scene_unload;
+    count = ArrayCount(scene_unload);
+    break;
+  case VKR_UI_ICON_CAMERA:
+    lines = camera;
+    count = ArrayCount(camera);
+    break;
+  case VKR_UI_ICON_BAKERY:
+    lines = bakery;
+    count = ArrayCount(bakery);
+    break;
+  case VKR_UI_ICON_LOG_FATAL:
+    lines = log_fatal;
+    count = ArrayCount(log_fatal);
+    break;
+  case VKR_UI_ICON_LOG_ERROR:
+    lines = log_error;
+    count = ArrayCount(log_error);
+    break;
+  case VKR_UI_ICON_LOG_WARNING:
+    lines = log_warning;
+    count = ArrayCount(log_warning);
+    break;
+  case VKR_UI_ICON_LOG_INFO:
+    lines = log_info;
+    count = ArrayCount(log_info);
+    break;
+  case VKR_UI_ICON_LOG_DEBUG:
+    lines = log_debug;
+    count = ArrayCount(log_debug);
+    break;
+  case VKR_UI_ICON_LOG_TRACE:
+    lines = log_trace;
+    count = ArrayCount(log_trace);
+    break;
+  default:
+    break;
+  }
+  const Vec4 linear = vkr_ui_linear_color(color);
+  const float32_t scale = rect.width / 16.0f;
+  const float32_t half_stroke = 0.75f * scale;
+  for (uint32_t i = 0u; i < count; ++i) {
+    const VkrUiIconLine line = lines[i];
+    const Vec2 start = {rect.x + line.x0 * scale, rect.y + line.y0 * scale};
+    const Vec2 end = {rect.x + line.x1 * scale, rect.y + line.y1 * scale};
+    const float32_t dx = end.x - start.x, dy = end.y - start.y;
+    const float32_t length = sqrtf(dx * dx + dy * dy);
+    const Vec2 normal = {-dy * half_stroke / length, dx * half_stroke / length};
+    const Vec2 corners[4] = {{start.x + normal.x, start.y + normal.y},
+                             {end.x + normal.x, end.y + normal.y},
+                             {end.x - normal.x, end.y - normal.y},
+                             {start.x - normal.x, start.y - normal.y}};
+    (void)vkr_ui_draw_buffer_polygon(buffer, corners, linear);
+  }
+  if (icon == VKR_UI_ICON_GRIP) {
+    for (uint32_t row = 0u; row < 3u; ++row)
+      for (uint32_t column = 0u; column < 2u; ++column)
+        (void)vkr_ui_draw_buffer_solid(buffer,
+            (VkrUiRect){rect.x + (5.0f + 4.0f * column) * scale,
+                        rect.y + (3.0f + 4.0f * row) * scale,
+                        2.0f * scale, 2.0f * scale}, linear);
+  } else if (icon == VKR_UI_ICON_PLAY || icon == VKR_UI_ICON_MONITOR_PLAY) {
+    const float32_t left = icon == VKR_UI_ICON_PLAY ? 4.0f : 6.0f;
+    const float32_t top = icon == VKR_UI_ICON_PLAY ? 2.0f : 4.0f;
+    const float32_t bottom = icon == VKR_UI_ICON_PLAY ? 14.0f : 10.0f;
+    const float32_t right = icon == VKR_UI_ICON_PLAY ? 14.0f : 11.0f;
+    const Vec2 corners[4] = {
+        {rect.x + left * scale, rect.y + top * scale},
+        {rect.x + left * scale, rect.y + bottom * scale},
+        {rect.x + right * scale, rect.y + (top + bottom) * 0.5f * scale},
+        {rect.x + right * scale, rect.y + (top + bottom) * 0.5f * scale}};
+    (void)vkr_ui_draw_buffer_polygon(buffer, corners, linear);
+  } else if (icon == VKR_UI_ICON_PAUSE) {
+    (void)vkr_ui_draw_buffer_solid(buffer,
+                                   (VkrUiRect){rect.x + 3 * scale,
+                                               rect.y + 2 * scale, 3 * scale,
+                                               12 * scale},
+                                   linear);
+    (void)vkr_ui_draw_buffer_solid(buffer,
+                                   (VkrUiRect){rect.x + 10 * scale,
+                                               rect.y + 2 * scale, 3 * scale,
+                                               12 * scale},
+                                   linear);
+  } else if (icon == VKR_UI_ICON_MONITOR_STOP) {
+    (void)vkr_ui_draw_buffer_solid(buffer,
+                                   (VkrUiRect){rect.x + 6 * scale,
+                                               rect.y + 5 * scale, 4 * scale,
+                                               4 * scale},
+                                   linear);
+  }
+}
+
 vkr_internal float32_t vkr_ui_text_screen_range(const VkrUiText *text,
                                                 const VkrFont *font) {
   const float32_t authored_size = text->config.font_size > 0.0f
@@ -1410,7 +1964,9 @@ vkr_internal void vkr_ui_emit_text(VkrUiSystem *system, VkrUiDrawBuffer *buffer,
     return;
   const VkrTextBounds bounds = vkr_ui_text_get_bounds(text);
   const float32_t origin_x =
-      content_rect.x + x_offset +
+      content_rect.x + x_offset -
+      (node->kind == VKR_UI_NODE_TEXT_FIELD ? node->retained->scroll_offset.x
+                                            : 0.0f) +
       (centered
            ? Max(0.0f, content_rect.width - x_offset - bounds.size.x) * 0.5f
            : 0.0f);
@@ -1423,8 +1979,13 @@ vkr_internal void vkr_ui_emit_text(VkrUiSystem *system, VkrUiDrawBuffer *buffer,
         Max(geometry_max_y, text->geometry.vertices[vertex].position.y);
   }
   const float32_t geometry_height = geometry_max_y - geometry_min_y;
-  const float32_t top =
+  float32_t top =
       content_rect.y + Max(0.0f, content_rect.height - geometry_height) * 0.5f;
+  if (node->kind == VKR_UI_NODE_TEXT_FIELD) {
+    top = content_rect.y - node->retained->scroll_offset.y;
+    geometry_max_y =
+        text->layout.baseline.y - text->bounds.ascent + text->bounds.size.y;
+  }
   const VkrUiDrawMode mode = font->type == VKR_FONT_TYPE_MTSDF
                                  ? VKR_UI_DRAW_MODE_MTSDF_TEXT
                                  : VKR_UI_DRAW_MODE_BITMAP_TEXT;
@@ -1474,7 +2035,8 @@ vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
   node->draw_first_command = buffer->command_count;
   Vec4 background = node->style.background_color;
   if (node->kind == VKR_UI_NODE_BUTTON) {
-    const float32_t factor = node->active    ? 0.68f
+    const float32_t factor = node->disabled  ? 0.65f
+                             : node->active  ? 0.68f
                              : node->hovered ? 1.18f
                                              : 1.0f;
     background.x = vkr_clamp_f32(background.x * factor, 0.0f, 1.0f);
@@ -1494,11 +2056,30 @@ vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
   const VkrUiRect content = vkr_ui_style_content_rect(node->rect, &node->style);
   switch (node->kind) {
   case VKR_UI_NODE_LABEL:
-    vkr_ui_emit_text(system, buffer, node, content, false_v, 0.0f);
+  case VKR_UI_NODE_BUTTON: {
+    const bool8_t centered = node->kind == VKR_UI_NODE_BUTTON;
+    if (node->icon == VKR_UI_ICON_NONE) {
+      vkr_ui_emit_text(system, buffer, node, content, centered, 0.0f);
+      break;
+    }
+    const float32_t size =
+        Min(node->icon_size_px, Min(content.width, content.height));
+    const float32_t text_width =
+        vkr_ui_text_get_bounds(&node->retained->text).size.x;
+    const float32_t gap =
+        node->content.length ? 6.0f * system->content_scale : 0.0f;
+    const float32_t offset =
+        centered ? Max(0.0f, (content.width - size - gap - text_width) * 0.5f)
+                 : 0.0f;
+    const VkrUiRect icon_rect = {content.x + offset,
+                                 content.y + (content.height - size) * 0.5f,
+                                 size, size};
+    if (size > 0.0f)
+      vkr_ui_emit_icon(buffer, node->icon, icon_rect, node->style.text_color);
+    vkr_ui_emit_text(system, buffer, node, content, false_v,
+                     offset + size + gap);
     break;
-  case VKR_UI_NODE_BUTTON:
-    vkr_ui_emit_text(system, buffer, node, content, true_v, 0.0f);
-    break;
+  }
   case VKR_UI_NODE_CHECKBOX: {
     const float32_t size = Min(content.height, 16.0f * system->content_scale);
     const VkrUiRect box = {
@@ -1536,36 +2117,69 @@ vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
         (Vec4){knob * 0.5f, knob * 0.5f, knob * 0.5f, knob * 0.5f});
     break;
   }
-  case VKR_UI_NODE_TEXT_FIELD:
+  case VKR_UI_NODE_TEXT_FIELD: {
+    if (!vkr_ui_draw_buffer_push_clip(buffer, content))
+      break;
+    VkrUiText *text = &node->retained->text;
+    const float32_t height = vkr_ui_text_line_height(text);
+    const Vec2 origin = {content.x - node->retained->scroll_offset.x,
+                         content.y - node->retained->scroll_offset.y};
+    if (system->focused_id == node->id) {
+      const uint32_t begin =
+          Min(node->retained->text_cursor, node->retained->text_selection);
+      const uint32_t end =
+          Max(node->retained->text_cursor, node->retained->text_selection);
+      uint32_t glyph = 0u;
+      for (uint32_t offset = 0u; offset < text->content.length;) {
+        const VkrCodepoint cp = vkr_utf8_decode(text->content.str + offset,
+                                                text->content.length - offset);
+        if (!cp.byte_length)
+          break;
+        if (cp.value != '\n' && glyph < text->layout.glyphs.length) {
+          const VkrTextGlyph *item = &text->layout.glyphs.data[glyph++];
+          if (offset >= begin && offset < end)
+            vkr_ui_emit_rect(
+                buffer,
+                (VkrUiRect){origin.x + item->position.x,
+                            origin.y + item->position.y - text->bounds.ascent,
+                            item->advance, height},
+                (Vec4){0.24f, 0.40f, 0.58f, 0.85f}, (Vec4){0});
+        }
+        offset += cp.byte_length;
+      }
+    }
     vkr_ui_emit_text(system, buffer, node, content, false_v, 0.0f);
     if (system->focused_id == node->id) {
-      const VkrUiText *text = &node->retained->text;
-      const String8 prefix = {
-          .str = text->content.str,
-          .length = Min(node->retained->text_cursor, text->content.length),
-      };
-      const uint64_t caret_glyph = vkr_string8_codepoint_count(&prefix);
-      float32_t caret_x = 0.0f;
-      if (caret_glyph < text->layout.glyphs.length)
-        caret_x = text->layout.glyphs.data[caret_glyph].position.x;
-      else if (text->layout.glyphs.length > 0u) {
-        const VkrTextGlyph *last =
-            &text->layout.glyphs.data[text->layout.glyphs.length - 1u];
-        caret_x = last->position.x + last->advance;
-      }
-      const VkrTextBounds bounds =
-          vkr_ui_text_get_bounds(&node->retained->text);
-      const VkrUiRect cursor = {
-          content.x + caret_x,
-          content.y + Max(0.0f, (content.height - bounds.size.y) * 0.5f),
-          Max(1.0f, system->content_scale),
-          bounds.size.y,
-      };
-      vkr_ui_emit_rect(buffer, cursor, node->style.text_color, (Vec4){0});
+      const Vec2 caret =
+          vkr_ui_text_cursor_position(text, node->retained->text_cursor);
+      vkr_ui_emit_rect(buffer,
+                       (VkrUiRect){origin.x + caret.x, origin.y + caret.y,
+                                   Max(1.0f, system->content_scale), height},
+                       node->style.text_color, (Vec4){0});
     }
+    (void)vkr_ui_draw_buffer_pop_clip(buffer);
     break;
+  }
   default:
     break;
+  }
+  if (node->focusable && system->focused_id == node->id) {
+    const float32_t stroke = Max(1.0f, system->content_scale);
+    const VkrUiRect focus = vkr_ui_uniform_inset(node->rect, stroke);
+    const Vec4 color = {0.96f, 0.71f, 0.34f, 1.0f};
+    vkr_ui_emit_rect(buffer, (VkrUiRect){focus.x, focus.y, focus.width, stroke},
+                     color, (Vec4){0});
+    vkr_ui_emit_rect(buffer,
+                     (VkrUiRect){focus.x, focus.y + focus.height - stroke,
+                                 focus.width, stroke},
+                     color, (Vec4){0});
+    vkr_ui_emit_rect(buffer,
+                     (VkrUiRect){focus.x, focus.y, stroke, focus.height}, color,
+                     (Vec4){0});
+    vkr_ui_emit_rect(buffer,
+                     (VkrUiRect){focus.x + focus.width - stroke, focus.y,
+                                 stroke, focus.height},
+                     color, (Vec4){0});
   }
   node->draw_command_count = buffer->command_count - node->draw_first_command;
   for (uint32_t child = node->first_child; child != VKR_UI_NODE_NONE;
@@ -1647,11 +2261,107 @@ vkr_internal uint32_t vkr_ui_command_estimate(VkrUiSystem *system) {
   uint64_t estimate = 0u;
   for (uint32_t i = 0u; i < system->frame_node_count; ++i) {
     const VkrUiFrameNode *node = &system->frame_nodes[i];
-    estimate += 5u;
-    if (node->retained->text_live)
+    estimate += 9u;
+    if (node->icon != VKR_UI_ICON_NONE)
+      estimate += 10u;
+    if (node->retained->text_live) {
       estimate += node->retained->text.geometry.vertex_count / 4u;
+      if (node->kind == VKR_UI_NODE_TEXT_FIELD)
+        estimate += node->retained->text.layout.glyphs.length;
+    }
   }
   return (uint32_t)Min(estimate, (uint64_t)VKR_UI_INDEX_CAPACITY / 6u);
+}
+
+vkr_internal void vkr_ui_focus_traverse(VkrUiSystem *system) {
+  if (!system->keyboard_layer_claimed && system->keyboard_input_layer != 0u) {
+    bool8_t has_eligible = false_v;
+    for (uint32_t i = 0u; i < system->frame_node_count; ++i)
+      has_eligible |= vkr_ui_keyboard_eligible(system, &system->frame_nodes[i]);
+    if (!has_eligible)
+      system->keyboard_input_layer = 0u;
+  }
+  for (uint32_t i = 0u; i < system->frame_node_count; ++i) {
+    const VkrUiFrameNode *node = &system->frame_nodes[i];
+    if (node->id == system->focused_id &&
+        !vkr_ui_keyboard_eligible(system, node)) {
+      system->focused_id = VKR_UI_ID_NONE;
+      break;
+    }
+  }
+  if (!system->keyboard_navigation_enabled ||
+      !vkr_ui_key_pressed(system, KEY_TAB) || system->mouse_captured)
+    return;
+  uint32_t first = VKR_UI_NODE_NONE, last = VKR_UI_NODE_NONE;
+  uint32_t previous = VKR_UI_NODE_NONE, next = VKR_UI_NODE_NONE;
+  bool8_t passed_focus = false_v;
+  for (uint32_t i = 0u; i < system->frame_node_count; ++i) {
+    VkrUiFrameNode *node = &system->frame_nodes[i];
+    if (!vkr_ui_keyboard_eligible(system, node))
+      continue;
+    if (first == VKR_UI_NODE_NONE)
+      first = i;
+    if (node->id == system->focused_id) {
+      previous = last;
+      passed_focus = true_v;
+    } else if (passed_focus && next == VKR_UI_NODE_NONE) {
+      next = i;
+    }
+    last = i;
+  }
+  const bool8_t reverse = (input_key_press_modifiers(system->input, KEY_TAB) &
+                           VKR_INPUT_MOD_SHIFT) != 0;
+  const uint32_t target = reverse
+                              ? (previous == VKR_UI_NODE_NONE ? last : previous)
+                              : (next == VKR_UI_NODE_NONE ? first : next);
+  if (target != VKR_UI_NODE_NONE) {
+    system->focused_id = system->frame_nodes[target].id;
+    system->focused_is_text =
+        system->frame_nodes[target].kind == VKR_UI_NODE_TEXT_FIELD;
+  }
+}
+
+/** One retained tooltip text record, released with the UI system. Its frame
+ * node is detached from grid layout and emitted after all ordinary panels. */
+vkr_internal uint32_t vkr_ui_tooltip_prepare(VkrUiSystem *system,
+                                             uint32_t *out_source) {
+  uint32_t source = VKR_UI_NODE_NONE;
+  for (uint32_t i = 0u; i < system->frame_node_count; ++i) {
+    const VkrUiFrameNode *node = &system->frame_nodes[i];
+    if (!node->tooltip.str || node->tooltip.length == 0u)
+      continue;
+    if (node->id == system->hot_id) {
+      source = i;
+      break;
+    }
+    if (system->hot_id == VKR_UI_ID_NONE &&
+        node->id == system->focused_id &&
+        node->input_layer == system->keyboard_input_layer)
+      source = i;
+  }
+  if (source == VKR_UI_NODE_NONE || system->active_id != VKR_UI_ID_NONE)
+    return VKR_UI_NODE_NONE;
+  const String8 text = system->frame_nodes[source].tooltip;
+  VkrUiWidgetConfig config = vkr_ui_widget_config_default();
+  config.style.padding_pt = (VkrUiEdges){6, 9, 6, 9};
+  config.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
+  config.style.background_color = (Vec4){0.12f, 0.14f, 0.17f, 1.0f};
+  config.style.border_color = (Vec4){0.58f, 0.46f, 0.30f, 1.0f};
+  config.style.text_color = (Vec4){0.96f, 0.96f, 0.96f, 1.0f};
+  config.style.font_size_pt = 12.0f;
+  const uint32_t containers = system->container_count;
+  system->container_count = 0u;
+  const uint32_t index = vkr_ui_add_node(
+      system,
+      vkr_ui_id_from_label(vkr_ui_id_root(), string8_lit("##ui-tooltip")),
+      VKR_UI_NODE_LABEL, config.placement, &config.style);
+  system->container_count = containers;
+  if (index == VKR_UI_NODE_NONE ||
+      !vkr_ui_text_prepare(system, &system->frame_nodes[index], text,
+                           &config.text))
+    return VKR_UI_NODE_NONE;
+  *out_source = source;
+  return index;
 }
 
 VkrUiInputCapture vkr_ui_end(VkrUiSystem *system) {
@@ -1671,8 +2381,18 @@ VkrUiInputCapture vkr_ui_end(VkrUiSystem *system) {
   if (system->mouse_released && system->active_id != VKR_UI_ID_NONE)
     system->active_id = VKR_UI_ID_NONE;
 
+  vkr_ui_focus_traverse(system);
+  uint32_t tooltip_source = VKR_UI_NODE_NONE;
+  const uint32_t tooltip = vkr_ui_tooltip_prepare(system, &tooltip_source);
   VkrUiFrameNode *root = &system->frame_nodes[0];
-  const uint64_t draw_hash = vkr_ui_node_hash(system, 0u);
+  uint64_t draw_hash = vkr_ui_node_hash(system, 0u);
+  if (tooltip != VKR_UI_NODE_NONE) {
+    const uint64_t tooltip_hash = vkr_ui_node_hash(system, tooltip);
+    draw_hash =
+        vkr_ui_hash_bytes(draw_hash, &tooltip_hash, sizeof(tooltip_hash));
+    draw_hash = vkr_ui_hash_bytes(
+        draw_hash, &system->frame_nodes[tooltip_source].id, sizeof(VkrUiId));
+  }
   system->frame_draw_hash = draw_hash;
   if (system->draw_cache_valid && system->cached_draw_hash == draw_hash &&
       system->cached_target_width == system->target_width &&
@@ -1697,6 +2417,20 @@ VkrUiInputCapture vkr_ui_end(VkrUiSystem *system) {
     return (VkrUiInputCapture){0};
   }
 
+  if (tooltip != VKR_UI_NODE_NONE) {
+    VkrUiFrameNode *node = &system->frame_nodes[tooltip];
+    const VkrUiRect anchor = system->frame_nodes[tooltip_source].rect;
+    const float32_t gap = 5.0f * system->content_scale;
+    const float32_t width = Min(node->intrinsic_size.x, target.width);
+    const float32_t height = Min(node->intrinsic_size.y, target.height);
+    float32_t y = anchor.y + anchor.height + gap;
+    if (y + height > target.height)
+      y = Max(0.0f, anchor.y - height - gap);
+    const VkrUiRect rect = {
+        vkr_clamp_f32(anchor.x, 0.0f, Max(0.0f, target.width - width)), y,
+        width, height};
+    (void)vkr_ui_layout_node(system, tooltip, rect, target);
+  }
   const uint32_t command_capacity = vkr_ui_command_estimate(system);
   if (command_capacity > 0u) {
     system->frame_commands = vkr_allocator_alloc(
@@ -1708,6 +2442,8 @@ VkrUiInputCapture vkr_ui_end(VkrUiSystem *system) {
       if (vkr_ui_draw_buffer_begin(&buffer, system->frame_commands,
                                    command_capacity, target)) {
         vkr_ui_emit_node(system, 0u, &buffer);
+        if (tooltip != VKR_UI_NODE_NONE)
+          vkr_ui_emit_node(system, tooltip, &buffer);
         system->frame_command_count = buffer.command_count;
         system->frame_command_capacity = command_capacity;
         if (buffer.dropped_command_count &&
@@ -1731,9 +2467,18 @@ VkrUiInputCapture vkr_ui_end(VkrUiSystem *system) {
   }
 
 finish:
+  system->focused_is_text = false_v;
+  for (uint32_t i = 0u; i < system->frame_node_count; ++i) {
+    if (system->frame_nodes[i].id == system->focused_id) {
+      system->focused_is_text =
+          system->frame_nodes[i].kind == VKR_UI_NODE_TEXT_FIELD;
+      break;
+    }
+  }
   system->capture = (VkrUiInputCapture){
       .mouse = system->capture.mouse || system->active_id != VKR_UI_ID_NONE,
-      .keyboard = system->focused_id != VKR_UI_ID_NONE,
+      .keyboard =
+          system->capture.keyboard || system->focused_id != VKR_UI_ID_NONE,
       .text = system->focused_id != VKR_UI_ID_NONE && system->focused_is_text,
       .hot_id = system->hot_id,
       .active_id = system->active_id,

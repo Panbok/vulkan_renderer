@@ -266,7 +266,7 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
   }
 
   int status = 0;
-  if (config->timeout_ms == 0u) {
+  if (config->timeout_ms == 0u && !config->is_cancelled) {
     while (waitpid(pid, &status, 0) < 0) {
       if (errno != EINTR) {
         return false_v;
@@ -282,9 +282,14 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
       if (waited < 0 && errno != EINTR) {
         return false_v;
       }
-      if ((vkr_platform_monotonic_seconds() - started) * 1000.0 >=
-          config->timeout_ms) {
-        *out_timed_out = true_v;
+      const bool8_t cancelled =
+          config->is_cancelled && config->is_cancelled(config->cancel_context);
+      const bool8_t timed_out =
+          config->timeout_ms > 0u &&
+          (vkr_platform_monotonic_seconds() - started) * 1000.0 >=
+              config->timeout_ms;
+      if (cancelled || timed_out) {
+        *out_timed_out = timed_out;
         (void)kill(pid, SIGTERM);
         const float64_t grace_started = vkr_platform_monotonic_seconds();
         while (waitpid(pid, &status, WNOHANG) == 0 &&

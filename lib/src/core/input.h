@@ -342,6 +342,13 @@ typedef struct GamepadAxes {
 
 #define VKR_INPUT_CHARACTER_CAPACITY 64u
 
+typedef enum VkrInputModifier {
+  VKR_INPUT_MOD_SHIFT = 1u << 0,
+  VKR_INPUT_MOD_CONTROL = 1u << 1,
+  VKR_INPUT_MOD_ALT = 1u << 2,
+  VKR_INPUT_MOD_SUPER = 1u << 3,
+} VkrInputModifier;
+
 // TODO(v2): Multi-device input design
 // Currently, all raw input devices contributing to a window (mouse, keyboard,
 // any connected gamepads) are merged into a single `InputState` owned by the
@@ -361,6 +368,15 @@ typedef struct InputState {
   KeysState current_keys;
   ButtonsState previous_buttons;
   ButtonsState current_buttons;
+  // Coalesced transitions survive a full event drain, including down+up in one
+  // frame. input_update retires them after all frame consumers have read them.
+  KeysState pressed_keys;
+  KeysState released_keys;
+  bool8_t pressed_buttons[BUTTON_MAX_BUTTONS];
+  bool8_t released_buttons[BUTTON_MAX_BUTTONS];
+  uint8_t key_press_modifiers[KEY_MAX_KEYS];
+  int32_t button_press_x[BUTTON_MAX_BUTTONS];
+  int32_t button_press_y[BUTTON_MAX_BUTTONS];
   GamepadAxes current_axes;
   uint32_t characters[VKR_INPUT_CHARACTER_CAPACITY];
   uint32_t character_count;
@@ -387,10 +403,10 @@ void input_shutdown(InputState *input_state);
 
 /**
  * @brief Updates the input system's state.
- * This function should be called once per frame, typically before any game
- * logic that depends on input. It copies the current input states (keys,
- * buttons, mouse position) to the previous state buffers, allowing for
- * detection of just-pressed/just-released states.
+ * Call once after the prior frame's consumers finish, before the next event
+ * pump. Copies held state to previous state and clears frame transition and
+ * character latches. A complete press/release during one pump remains visible
+ * to all consumers until this retirement point.
  * @param input_state Pointer to the `InputState` to update.
  */
 void input_update(InputState *input_state);
@@ -431,8 +447,8 @@ bool8_t input_was_key_down(InputState *input_state, Keys key);
 bool8_t input_was_key_up(InputState *input_state, Keys key);
 
 /**
- * @brief Checks if a key was just pressed this frame.
- * Requires `input_update()` to have been called to update previous states.
+ * @brief Checks whether a key was pressed since the last input_update.
+ * A key may report both pressed and released while no longer held.
  * @param input_state Pointer to the `InputState` to query.
  * @param key The `Keys` identifier of the key to check.
  * @return `true` if the key transitioned from up to down this frame.
@@ -440,13 +456,20 @@ bool8_t input_was_key_up(InputState *input_state, Keys key);
 bool8_t input_key_just_pressed(const InputState *input_state, Keys key);
 
 /**
- * @brief Checks if a key was just released this frame.
- * Requires `input_update()` to have been called to update previous states.
+ * @brief Checks whether a key was released since the last input_update.
  * @param input_state Pointer to the `InputState` to query.
  * @param key The `Keys` identifier of the key to check.
  * @return `true` if the key transitioned from down to up this frame.
  */
 bool8_t input_key_just_released(const InputState *input_state, Keys key);
+/** Modifier snapshot at the first press this frame; otherwise current held
+ * modifiers. This preserves rapid shortcuts even after modifier release. */
+uint8_t input_key_press_modifiers(const InputState *input_state, Keys key);
+/** Platform shortcut modifier at key press: Command on macOS, Control without
+ * Alt elsewhere. Defined by the input owner, independent of caller build flags.
+ * This query does not require a press edge; pair with input_key_just_pressed.
+ */
+bool8_t input_key_shortcut_modifier(const InputState *input_state, Keys key);
 
 /**
  * @brief Processes a keyboard key event.
@@ -533,6 +556,11 @@ bool8_t input_button_just_released(const InputState *input_state,
  * @param[out] y Pointer to store the current Y-coordinate of the mouse.
  */
 void input_get_mouse_position(InputState *input_state, int32_t *x, int32_t *y);
+
+/** First button-down position since input_update, even after a same-frame
+ * release. Returns current position when no processed press edge exists. */
+void input_get_button_press_position(const InputState *input_state,
+                                     Buttons button, int32_t *x, int32_t *y);
 
 /**
  * @brief Retrieves the mouse cursor position from the previous frame.

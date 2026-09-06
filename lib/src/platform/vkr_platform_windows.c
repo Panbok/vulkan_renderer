@@ -2,6 +2,88 @@
 
 #if defined(PLATFORM_WINDOWS)
 #include "containers/str.h"
+#include <limits.h>
+
+bool8_t vkr_platform_clipboard_read_text(uint8_t *buffer, uint32_t capacity,
+                                         uint32_t *out_length) {
+  if (!buffer || capacity == 0u || !out_length)
+    return false_v;
+  buffer[0] = 0u;
+  *out_length = 0u;
+  if (!OpenClipboard(GetActiveWindow()))
+    return false_v;
+  bool8_t success = false_v;
+  HANDLE handle = GetClipboardData(CF_UNICODETEXT);
+  if (handle) {
+    const WCHAR *text = GlobalLock(handle);
+    if (text) {
+      const SIZE_T limit = GlobalSize(handle) / sizeof(WCHAR);
+      uint32_t written = 0u;
+      success = true_v;
+      for (SIZE_T i = 0u; i < limit && text[i] != 0u;) {
+        const int units = text[i] >= 0xd800u && text[i] <= 0xdbffu ? 2 : 1;
+        if ((SIZE_T)units > limit - i) {
+          success = false_v;
+          break;
+        }
+        char encoded[4];
+        const int bytes =
+            WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text + i, units,
+                                encoded, sizeof(encoded), NULL, NULL);
+        if (bytes == 0) {
+          success = false_v;
+          break;
+        }
+        if ((uint32_t)bytes >= capacity - written)
+          break;
+        MemCopy(buffer + written, encoded, (uint32_t)bytes);
+        written += (uint32_t)bytes;
+        i += (SIZE_T)units;
+      }
+      buffer[written] = 0u;
+      *out_length = written;
+      GlobalUnlock(handle);
+    }
+  }
+  CloseClipboard();
+  return success;
+}
+
+bool8_t vkr_platform_clipboard_write_text(const uint8_t *text,
+                                          uint32_t length) {
+  if ((!text && length != 0u) || length > INT_MAX)
+    return false_v;
+  const int units =
+      length ? MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                   (const char *)text, (int)length, NULL, 0)
+             : 0;
+  if (length && units == 0)
+    return false_v;
+  HGLOBAL handle =
+      GlobalAlloc(GMEM_MOVEABLE, ((SIZE_T)units + 1u) * sizeof(WCHAR));
+  if (!handle)
+    return false_v;
+  WCHAR *wide = GlobalLock(handle);
+  if (!wide) {
+    GlobalFree(handle);
+    return false_v;
+  }
+  if (units)
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, (const char *)text,
+                        (int)length, wide, units);
+  wide[units] = 0u;
+  GlobalUnlock(handle);
+  bool8_t success = false_v;
+  if (OpenClipboard(GetActiveWindow())) {
+    if (EmptyClipboard() && SetClipboardData(CF_UNICODETEXT, handle))
+      success = true_v;
+    CloseClipboard();
+  }
+  // SetClipboardData transfers the movable allocation to the OS on success.
+  if (!success)
+    GlobalFree(handle);
+  return success;
+}
 
 static float64_t clock_frequency;
 static bool32_t high_res_timer_enabled = false;
@@ -429,17 +511,31 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
   }
   *out_exit_code = -1;
   *out_timed_out = false_v;
-  const DWORD wait = WaitForSingleObject(
-      process.hProcess, config->timeout_ms ? config->timeout_ms : INFINITE);
-  if (wait == WAIT_TIMEOUT) {
-    *out_timed_out = true_v;
-    (void)TerminateProcess(process.hProcess, 1u);
-    (void)WaitForSingleObject(process.hProcess, INFINITE);
-  } else if (wait == WAIT_OBJECT_0) {
-    DWORD exit_code = 0u;
-    if (GetExitCodeProcess(process.hProcess, &exit_code)) {
-      *out_exit_code = (int32_t)exit_code;
+  const ULONGLONG started = GetTickCount64();
+  DWORD wait;
+  for (;;) {
+    wait = WaitForSingleObject(
+        process.hProcess,
+        config->is_cancelled
+            ? 10u
+            : (config->timeout_ms ? config->timeout_ms : INFINITE));
+    if (wait != WAIT_TIMEOUT)
+      break;
+    const bool8_t cancelled =
+        config->is_cancelled && config->is_cancelled(config->cancel_context);
+    const bool8_t timed_out = config->timeout_ms > 0u &&
+                              GetTickCount64() - started >= config->timeout_ms;
+    if (cancelled || timed_out) {
+      *out_timed_out = timed_out;
+      (void)TerminateProcess(process.hProcess, 1u);
+      (void)WaitForSingleObject(process.hProcess, INFINITE);
+      break;
     }
+  }
+  if (wait == WAIT_OBJECT_0) {
+    DWORD exit_code = 0u;
+    if (GetExitCodeProcess(process.hProcess, &exit_code))
+      *out_exit_code = (int32_t)exit_code;
   }
   CloseHandle(process.hThread);
   CloseHandle(process.hProcess);

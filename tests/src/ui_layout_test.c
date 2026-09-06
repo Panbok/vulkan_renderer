@@ -422,6 +422,8 @@ static void test_ui_dock_layout_drag_and_json_round_trip(void) {
   assert(vkr_ui_dock_validate(&tree));
   assert(vkr_ui_dock_layout(&tree, (VkrUiRect){0.0f, 0.0f, 1000.0f, 800.0f},
                             8.0f, 28.0f));
+  assert(ui_near(tree.nodes[1u].rect_px.height, 35.0f));
+  assert(!vkr_ui_dock_set_split_ratio(&tree, 0u, 0.25f));
   uint32_t scene_leaf = VKR_UI_DOCK_NODE_NONE;
   VkrUiRect scene = {0};
   assert(vkr_ui_dock_find_panel(&tree, VKR_UI_DOCK_PANEL_SCENE_VIEWPORT,
@@ -467,6 +469,231 @@ static void test_ui_dock_layout_drag_and_json_round_trip(void) {
   printf("  test_ui_dock_layout_drag_and_json_round_trip PASSED\n");
 }
 
+static void test_ui_dock_close_nested_sibling_focus(void) {
+  printf("  Running test_ui_dock_close_nested_sibling_focus...\n");
+  VkrUiDockTree tree = {0};
+  vkr_ui_dock_default_editor_layout(&tree);
+  const uint64_t closed_id = tree.nodes[4u].as.leaf.tabs[0u].id;
+  tree.focused_tab_id = closed_id;
+
+  assert(vkr_ui_dock_close_tab(&tree, 4u, 0u));
+  assert(vkr_ui_dock_validate(&tree));
+  assert(tree.nodes[tree.root].kind == VKR_UI_DOCK_NODE_SPLIT);
+  bool8_t focused_live = false_v;
+  for (uint32_t leaf = 0u; leaf < tree.node_high_water; ++leaf) {
+    const VkrUiDockNode *node = &tree.nodes[leaf];
+    if (!node->used || node->kind != VKR_UI_DOCK_NODE_TABS)
+      continue;
+    for (uint32_t tab = 0u; tab < node->as.leaf.tab_count; ++tab)
+      focused_live |= node->as.leaf.tabs[tab].id == tree.focused_tab_id;
+  }
+  assert(focused_live && tree.focused_tab_id != closed_id);
+  printf("  test_ui_dock_close_nested_sibling_focus PASSED\n");
+}
+
+static void test_ui_dock_compact_tabs_and_stack_interaction(void) {
+  printf("  Running test_ui_dock_compact_tabs_and_stack_interaction...\n");
+  VkrUiDockTree tree = {0};
+  vkr_ui_dock_default_editor_layout(&tree);
+  assert(vkr_ui_dock_move_tab(&tree, 5u, 0u, 4u, 0u, VKR_UI_DOCK_DROP_CENTER));
+  assert(vkr_ui_dock_move_tab(&tree, 8u, 0u, 4u, 1u, VKR_UI_DOCK_DROP_CENTER));
+  assert(vkr_ui_dock_layout(&tree, (VkrUiRect){0.0f, 0.0f, 1000.0f, 800.0f},
+                            3.0f, 28.0f));
+  /* A wide stack has compact tabs, followed by noninteractive empty strip. */
+  VkrUiRect first = vkr_ui_dock_tab_rect(&tree, 4u, 0u);
+  VkrUiRect third = vkr_ui_dock_tab_rect(&tree, 4u, 2u);
+  assert(ui_near(first.width, 116.0f));
+  assert(ui_near(third.x, 232.0f) && ui_near(third.width, 102.0f));
+  InputState input = {0};
+  input.current_buttons = (ButtonsState){.x = 260, .y = (int32_t)third.y + 12};
+  input.current_buttons.buttons[BUTTON_LEFT] = true_v;
+  VkrUiDockInputCapture capture =
+      vkr_ui_dock_update_input(&tree, &input, false_v);
+  assert(capture.mouse && tree.interaction.tab_index == 2u);
+  assert(tree.nodes[4u].as.leaf.active_tab == 2u);
+
+  /* Move Console before Inspector by crossing the insertion midpoint. */
+  input.previous_buttons = input.current_buttons;
+  input.current_buttons.x = 130;
+  capture = vkr_ui_dock_update_input(&tree, &input, false_v);
+  assert(capture.dragging_tab);
+  assert(tree.interaction.drop_leaf == 4u && tree.interaction.drop_index == 1u);
+  assert(tree.interaction.drop_zone == VKR_UI_DOCK_DROP_CENTER);
+  input.previous_buttons = input.current_buttons;
+  input.current_buttons.buttons[BUTTON_LEFT] = false_v;
+  (void)vkr_ui_dock_update_input(&tree, &input, false_v);
+  assert(tree.nodes[4u].as.leaf.tabs[0u].panel_kind ==
+         VKR_UI_DOCK_PANEL_HIERARCHY);
+  assert(tree.nodes[4u].as.leaf.tabs[1u].panel_kind ==
+         VKR_UI_DOCK_PANEL_CONSOLE);
+  assert(tree.nodes[4u].as.leaf.tabs[2u].panel_kind ==
+         VKR_UI_DOCK_PANEL_INSPECTOR);
+  assert(tree.nodes[4u].as.leaf.active_tab == 1u);
+
+  input.previous_buttons = input.current_buttons;
+  input.current_buttons.x = 600;
+  input.current_buttons.buttons[BUTTON_LEFT] = true_v;
+  (void)vkr_ui_dock_update_input(&tree, &input, false_v);
+  assert(tree.interaction.tab_leaf == VKR_UI_DOCK_NODE_NONE);
+
+  /* Removing an earlier inactive tab must keep Console selected. */
+  const uint64_t console_id = tree.nodes[4u].as.leaf.tabs[1u].id;
+  assert(vkr_ui_dock_move_tab(&tree, 4u, 0u, 7u, 1u, VKR_UI_DOCK_DROP_CENTER));
+  assert(tree.nodes[4u].as.leaf.tabs[tree.nodes[4u].as.leaf.active_tab].id ==
+         console_id);
+
+  /* A tab may split out of its own stack without losing its identity. */
+  assert(vkr_ui_dock_move_tab(&tree, 4u, 0u, 4u, 0u, VKR_UI_DOCK_DROP_TOP));
+  assert(vkr_ui_dock_validate(&tree));
+  uint32_t console_leaf = VKR_UI_DOCK_NODE_NONE;
+  assert(vkr_ui_dock_find_panel(&tree, VKR_UI_DOCK_PANEL_CONSOLE, &console_leaf,
+                                0));
+  assert(console_leaf != 4u);
+  assert(tree.nodes[console_leaf].as.leaf.tabs[0u].id == console_id);
+  /* Resizing starts anywhere in the wider hit target without moving on press,
+     then publishes new rectangles during the same input update. */
+  vkr_ui_dock_default_editor_layout(&tree);
+  assert(vkr_ui_dock_layout(&tree, (VkrUiRect){0.0f, 0.0f, 1000.0f, 800.0f},
+                            3.0f, 28.0f));
+  const float32_t split_x = tree.nodes[5u].rect_px.width;
+  const float32_t initial_ratio = tree.nodes[3u].as.split.ratio;
+  input = (InputState){0};
+  input.current_buttons.x = (int32_t)split_x - 1;
+  input.current_buttons.y = (int32_t)tree.nodes[5u].rect_px.y + 40;
+  input.current_buttons.buttons[BUTTON_LEFT] = true_v;
+  capture = vkr_ui_dock_update_input(&tree, &input, false_v);
+  assert(capture.resizing_split && tree.interaction.resize_split == 3u);
+  assert(tree.nodes[3u].as.split.ratio == initial_ratio);
+  input.previous_buttons = input.current_buttons;
+  input.current_buttons.x += 40;
+  (void)vkr_ui_dock_update_input(&tree, &input, false_v);
+  assert(ui_near(tree.nodes[5u].rect_px.width, split_x + 40.0f));
+  /* An extreme top/bottom drag preserves 64pt of content below the 28pt tab
+     bar. Nested horizontal splits must reserve 96pt for each descendant. */
+  vkr_ui_dock_default_editor_layout(&tree);
+  assert(vkr_ui_dock_layout(&tree, (VkrUiRect){0.0f, 0.0f, 800.0f, 600.0f},
+                            3.0f, 28.0f));
+  const VkrUiRect separator = vkr_ui_dock_split_bar_rect(&tree, 2u);
+  assert(ui_near(separator.height, 3.0f));
+  assert(ui_near(separator.y + separator.height, tree.nodes[4u].rect_px.y));
+  input = (InputState){0};
+  input.current_buttons.x = 400;
+  input.current_buttons.y = (int32_t)separator.y + 1;
+  input.current_buttons.buttons[BUTTON_LEFT] = true_v;
+  capture = vkr_ui_dock_update_input(&tree, &input, false_v);
+  assert(capture.resizing_split && tree.interaction.resize_split == 2u);
+  input.previous_buttons = input.current_buttons;
+  input.current_buttons.y = -1000;
+  (void)vkr_ui_dock_update_input(&tree, &input, false_v);
+  VkrUiRect scene_content;
+  assert(vkr_ui_dock_find_panel(&tree, VKR_UI_DOCK_PANEL_SCENE_VIEWPORT, NULL,
+                                &scene_content));
+  assert(ui_near(scene_content.height, 64.0f));
+  assert(ui_near(tree.nodes[1u].rect_px.height, 35.0f));
+  assert(vkr_ui_dock_set_split_ratio(&tree, 3u, 1.0f));
+  assert(vkr_ui_dock_layout(&tree, (VkrUiRect){0.0f, 0.0f, 800.0f, 600.0f},
+                            3.0f, 28.0f));
+  assert(tree.nodes[5u].rect_px.width >= 96.0f);
+  assert(tree.nodes[7u].rect_px.width >= 96.0f);
+  assert(tree.nodes[8u].rect_px.width >= 96.0f);
+  assert(vkr_ui_dock_layout(&tree, (VkrUiRect){0.0f, 0.0f, 1600.0f, 1200.0f},
+                            6.0f, 56.0f));
+  assert(vkr_ui_dock_find_panel(&tree, VKR_UI_DOCK_PANEL_SCENE_VIEWPORT, NULL,
+                                &scene_content));
+  assert(scene_content.height >= 128.0f);
+  assert(tree.nodes[7u].rect_px.width >= 192.0f);
+  assert(tree.nodes[8u].rect_px.width >= 192.0f);
+  /* When the root cannot fit the minima, all descendants stay inside it. */
+  assert(vkr_ui_dock_layout(&tree, (VkrUiRect){0.0f, 0.0f, 80.0f, 60.0f}, 3.0f,
+                            28.0f));
+  for (uint32_t i = 0u; i < tree.node_high_water; ++i) {
+    const VkrUiRect rect = tree.nodes[i].rect_px;
+    assert(rect.width >= 0.0f && rect.height >= 0.0f);
+    assert(rect.x >= 0.0f && rect.y >= 0.0f);
+    assert(rect.x + rect.width <= 80.0f && rect.y + rect.height <= 60.0f);
+  }
+  printf("  test_ui_dock_compact_tabs_and_stack_interaction PASSED\n");
+}
+
+/* Native event drains may deliver movement and release without an intervening
+   frame. The same 40px resize and Console->Inspector drop must result for a
+   held gesture, a release-only endpoint, and a complete same-frame gesture. */
+static void test_ui_dock_release_endpoint_and_coalesced_gesture(void) {
+  for (uint32_t mode = 0; mode < 3; ++mode) {
+    VkrUiDockTree tree = {0};
+    vkr_ui_dock_default_editor_layout(&tree);
+    assert(vkr_ui_dock_layout(&tree, (VkrUiRect){0, 0, 1000, 800}, 3, 28));
+    const VkrUiRect separator = vkr_ui_dock_split_bar_rect(&tree, 3u);
+    const float32_t original_width = tree.nodes[5u].rect_px.width;
+    InputState input = {0};
+    input.current_buttons.x = (int32_t)separator.x + 1;
+    input.current_buttons.y = (int32_t)separator.y + 50;
+    input.current_buttons.buttons[BUTTON_LEFT] = true_v;
+    input.pressed_buttons[BUTTON_LEFT] = true_v;
+    input.button_press_x[BUTTON_LEFT] = input.current_buttons.x;
+    input.button_press_y[BUTTON_LEFT] = input.current_buttons.y;
+    if (mode != 2) {
+      (void)vkr_ui_dock_update_input(&tree, &input, false_v);
+      input_update(&input);
+    }
+    input.current_buttons.x += 40;
+    if (mode == 0) {
+      (void)vkr_ui_dock_update_input(&tree, &input, false_v);
+      input_update(&input);
+    }
+    input.current_buttons.buttons[BUTTON_LEFT] = false_v;
+    input.released_buttons[BUTTON_LEFT] = true_v;
+    VkrUiDockInputCapture capture =
+        vkr_ui_dock_update_input(&tree, &input, false_v);
+    assert(capture.mouse &&
+           ui_near(tree.nodes[5u].rect_px.width, original_width + 40));
+    assert(tree.interaction.resize_split == VKR_UI_DOCK_NODE_NONE);
+
+    vkr_ui_dock_default_editor_layout(&tree);
+    assert(vkr_ui_dock_layout(&tree, (VkrUiRect){0, 0, 1000, 800}, 3, 28));
+    uint32_t console, inspector;
+    assert(vkr_ui_dock_find_panel(&tree, VKR_UI_DOCK_PANEL_CONSOLE, &console,
+                                  NULL));
+    assert(vkr_ui_dock_find_panel(&tree, VKR_UI_DOCK_PANEL_INSPECTOR,
+                                  &inspector, NULL));
+    const uint64_t console_id = tree.nodes[console].as.leaf.tabs[0].id;
+    const VkrUiRect tab = vkr_ui_dock_tab_rect(&tree, console, 0);
+    const VkrUiRect target = tree.nodes[inspector].rect_px;
+    input = (InputState){0};
+    input.current_buttons.x = (int32_t)tab.x + 20;
+    input.current_buttons.y = (int32_t)tab.y + 12;
+    input.current_buttons.buttons[BUTTON_LEFT] = true_v;
+    input.pressed_buttons[BUTTON_LEFT] = true_v;
+    input.button_press_x[BUTTON_LEFT] = input.current_buttons.x;
+    input.button_press_y[BUTTON_LEFT] = input.current_buttons.y;
+    if (mode != 2) {
+      (void)vkr_ui_dock_update_input(&tree, &input, false_v);
+      input_update(&input);
+    }
+    input.current_buttons.x = (int32_t)(target.x + target.width * 0.5f);
+    input.current_buttons.y = (int32_t)(target.y + target.height * 0.5f);
+    if (mode == 0) {
+      (void)vkr_ui_dock_update_input(&tree, &input, false_v);
+      input_update(&input);
+    }
+    input.current_buttons.buttons[BUTTON_LEFT] = false_v;
+    input.released_buttons[BUTTON_LEFT] = true_v;
+    capture = vkr_ui_dock_update_input(&tree, &input, false_v);
+    assert(capture.mouse && vkr_ui_dock_validate(&tree));
+    assert(vkr_ui_dock_find_panel(&tree, VKR_UI_DOCK_PANEL_CONSOLE, &console,
+                                  NULL));
+    /* find_panel locates visible content. Inspector is now inactive, so verify
+       its retained tab in the original destination stack instead. */
+    assert(console == inspector && tree.nodes[console].as.leaf.tab_count == 2);
+    assert(tree.nodes[console].as.leaf.tabs[0].panel_kind ==
+           VKR_UI_DOCK_PANEL_INSPECTOR);
+    assert(tree.nodes[console]
+               .as.leaf.tabs[tree.nodes[console].as.leaf.active_tab]
+               .id == console_id);
+    assert(tree.interaction.tab_leaf == VKR_UI_DOCK_NODE_NONE);
+  }
+}
+
 bool32_t run_ui_layout_tests(void) {
   printf("Running UI layout tests...\n");
   test_ui_id_stability();
@@ -479,6 +706,9 @@ bool32_t run_ui_layout_tests(void) {
   test_ui_draw_build();
   test_ui_tile_hashing_and_motion_damage();
   test_ui_dock_layout_drag_and_json_round_trip();
+  test_ui_dock_close_nested_sibling_focus();
+  test_ui_dock_compact_tabs_and_stack_interaction();
+  test_ui_dock_release_endpoint_and_coalesced_gesture();
   printf("UI layout tests PASSED\n");
   return true_v;
 }

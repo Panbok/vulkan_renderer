@@ -517,33 +517,24 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
     return FALSE;
   }
 
-  case WM_LBUTTONDOWN: {
-    input_process_button(state->input_state, BUTTON_LEFT, true_v);
-    return FALSE;
-  }
-
-  case WM_LBUTTONUP: {
-    input_process_button(state->input_state, BUTTON_LEFT, false_v);
-    return FALSE;
-  }
-
-  case WM_RBUTTONDOWN: {
-    input_process_button(state->input_state, BUTTON_RIGHT, true_v);
-    return FALSE;
-  }
-
-  case WM_RBUTTONUP: {
-    input_process_button(state->input_state, BUTTON_RIGHT, false_v);
-    return FALSE;
-  }
-
-  case WM_MBUTTONDOWN: {
-    input_process_button(state->input_state, BUTTON_MIDDLE, true_v);
-    return FALSE;
-  }
-
+  case WM_LBUTTONDOWN:
+  case WM_LBUTTONUP:
+  case WM_RBUTTONDOWN:
+  case WM_RBUTTONUP:
+  case WM_MBUTTONDOWN:
   case WM_MBUTTONUP: {
-    input_process_button(state->input_state, BUTTON_MIDDLE, false_v);
+    // Button messages carry their own client position; no preceding move is
+    // required. Captured camera input retains its virtual cursor coordinates.
+    if (!state->mouse_captured)
+      input_process_mouse_move(state->input_state, GET_X_LPARAM(lparam),
+                               GET_Y_LPARAM(lparam));
+    const Buttons button =
+        (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP)   ? BUTTON_LEFT
+        : (msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP) ? BUTTON_RIGHT
+                                                         : BUTTON_MIDDLE;
+    const bool8_t pressed =
+        msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN;
+    input_process_button(state->input_state, button, pressed);
     return FALSE;
   }
 

@@ -12,6 +12,12 @@
 #define VKR_UI_DOCK_TAB_CAPACITY 8u
 #define VKR_UI_DOCK_NODE_NONE UINT32_MAX
 #define VKR_UI_DOCK_JSON_CAPACITY KB(16)
+#define VKR_UI_DOCK_TAB_BAR_PT 28.0f
+#define VKR_UI_DOCK_TOOLBAR_PT 35.0f
+#define VKR_UI_DOCK_SPLITTER_PT 3.0f
+/* A dock leaf keeps usable content below its tab bar at normal window sizes. */
+#define VKR_UI_DOCK_PANEL_MIN_WIDTH_PT 96.0f
+#define VKR_UI_DOCK_PANEL_MIN_CONTENT_HEIGHT_PT 64.0f
 
 typedef enum VkrUiDockNodeKind {
   VKR_UI_DOCK_NODE_SPLIT = 0,
@@ -30,6 +36,7 @@ typedef enum VkrUiDockPanelKind {
   VKR_UI_DOCK_PANEL_CONSOLE,
   VKR_UI_DOCK_PANEL_TOOLBAR,
   VKR_UI_DOCK_PANEL_CUSTOM,
+  VKR_UI_DOCK_PANEL_BAKERY,
   VKR_UI_DOCK_PANEL_COUNT,
 } VkrUiDockPanelKind;
 
@@ -72,7 +79,12 @@ typedef struct VkrUiDockInteraction {
   uint32_t resize_split;
   int32_t press_x;
   int32_t press_y;
+  float32_t resize_press_ratio;
   bool8_t dragging_tab;
+  uint32_t drop_leaf;
+  uint32_t drop_index;
+  VkrUiDockDropZone drop_zone;
+  VkrUiRect drop_rect_px;
 } VkrUiDockInteraction;
 
 typedef struct VkrUiDockTree {
@@ -80,6 +92,7 @@ typedef struct VkrUiDockTree {
   uint32_t node_high_water;
   uint32_t root;
   uint64_t revision;
+  uint64_t focused_tab_id;
   float32_t splitter_px;
   float32_t tab_bar_px;
   VkrUiDockInteraction interaction;
@@ -99,6 +112,12 @@ bool8_t vkr_ui_dock_find_panel(const VkrUiDockTree *tree,
                                VkrUiDockPanelKind panel_kind,
                                uint32_t *out_leaf, VkrUiRect *out_content_rect);
 String8 vkr_ui_dock_panel_label(VkrUiDockPanelKind panel_kind);
+/** Dock-owned tab geometry, shared by drawing, hit-testing, and insertion. */
+VkrUiRect vkr_ui_dock_tab_rect(const VkrUiDockTree *tree, uint32_t leaf,
+                               uint32_t tab);
+
+/** Visible splitter geometry; pointer hit targets expand around this bar. */
+VkrUiRect vkr_ui_dock_split_bar_rect(const VkrUiDockTree *tree, uint32_t split);
 
 bool8_t vkr_ui_dock_set_split_ratio(VkrUiDockTree *tree, uint32_t split,
                                     float32_t ratio);
@@ -106,6 +125,8 @@ bool8_t vkr_ui_dock_move_tab(VkrUiDockTree *tree, uint32_t source_leaf,
                              uint32_t source_tab, uint32_t target_leaf,
                              uint32_t target_index,
                              VkrUiDockDropZone drop_zone);
+/** Closes a non-Scene tab, collapsing an emptied non-root leaf. */
+bool8_t vkr_ui_dock_close_tab(VkrUiDockTree *tree, uint32_t leaf, uint32_t tab);
 VkrUiDockInputCapture vkr_ui_dock_update_input(VkrUiDockTree *tree,
                                                const InputState *input,
                                                bool8_t mouse_captured);

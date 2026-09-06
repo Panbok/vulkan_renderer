@@ -62,11 +62,45 @@ typedef struct VkrUiPanelConfig {
   bool8_t clip_children;
 } VkrUiPanelConfig;
 
+/** CPU vector symbols; independent of the selected font atlas. */
+typedef enum VkrUiIcon {
+  VKR_UI_ICON_NONE = 0,
+  VKR_UI_ICON_PLAY,
+  VKR_UI_ICON_PAUSE,
+  VKR_UI_ICON_MONITOR_PLAY,
+  VKR_UI_ICON_MONITOR_STOP,
+  VKR_UI_ICON_HIERARCHY,
+  VKR_UI_ICON_INSPECTOR,
+  VKR_UI_ICON_CONSOLE,
+  VKR_UI_ICON_SCENE,
+  VKR_UI_ICON_BAKERY,
+  VKR_UI_ICON_SCENE_LOAD,
+  VKR_UI_ICON_SCENE_UNLOAD,
+  VKR_UI_ICON_CAMERA,
+  VKR_UI_ICON_GRIP,
+  VKR_UI_ICON_LOG_FATAL,
+  VKR_UI_ICON_LOG_ERROR,
+  VKR_UI_ICON_LOG_WARNING,
+  VKR_UI_ICON_LOG_INFO,
+  VKR_UI_ICON_LOG_DEBUG,
+  VKR_UI_ICON_LOG_TRACE,
+  VKR_UI_ICON_COUNT,
+} VkrUiIcon;
+
 /** Shared placement, style, and text settings for leaf widgets. */
 typedef struct VkrUiWidgetConfig {
   VkrUiPlacement placement;
   VkrUiStyle style;
   VkrUiTextConfig text;
+  /** Optional leading icon on labels/buttons. Empty content centers the icon.
+   */
+  VkrUiIcon icon;
+  float32_t icon_size_pt;
+  bool8_t disabled;
+  /** Text fields retain selection and copying while rejecting mutation. */
+  bool8_t read_only;
+  /** Borrowed through vkr_ui_end; shown on hover or keyboard focus. */
+  String8 tooltip;
 } VkrUiWidgetConfig;
 
 typedef struct VkrUiTextEditBuffer {
@@ -133,6 +167,9 @@ typedef struct VkrUiSystem {
   VkrUiId hot_id;
   uint32_t input_layer;
   uint32_t mouse_input_layer;
+  uint32_t keyboard_input_layer;
+  bool8_t keyboard_layer_claimed;
+  bool8_t keyboard_navigation_enabled;
   VkrUiInputCapture capture;
   Keys repeat_key;
   float64_t repeat_elapsed;
@@ -187,6 +224,12 @@ bool8_t vkr_ui_input_layer_register(VkrUiSystem *system, uint32_t layer,
 /** Select the layer assigned to subsequently built interactive widgets. */
 bool8_t vkr_ui_input_layer_set(VkrUiSystem *system, uint32_t layer);
 
+/** Select keyboard focus scope before building widgets (for example an open
+ * popup). Pointer presses otherwise select the top layer under the pointer. */
+bool8_t vkr_ui_keyboard_layer_set(VkrUiSystem *system, uint32_t layer);
+/** Frame-local routing: a focused viewport can consume Tab itself. */
+void vkr_ui_keyboard_navigation_enabled(VkrUiSystem *system, bool8_t enabled);
+
 bool8_t vkr_ui_panel_begin(VkrUiSystem *system, String8 id_label,
                            const VkrUiPanelConfig *config);
 bool8_t vkr_ui_panel_end(VkrUiSystem *system);
@@ -201,6 +244,9 @@ bool8_t vkr_ui_slider_f32(VkrUiSystem *system, String8 id_label,
                           float32_t maximum, const VkrUiWidgetConfig *config);
 bool8_t vkr_ui_scroll_area_begin(VkrUiSystem *system, String8 id_label,
                                  const VkrUiPanelConfig *config);
+/** Set the open scroll area's vertical offset in points. The caller owns
+ * virtualization/reveal policy; layout clamps to its declared row extent. */
+bool8_t vkr_ui_scroll_area_offset_set(VkrUiSystem *system, float32_t offset_pt);
 bool8_t vkr_ui_scroll_area_end(VkrUiSystem *system);
 bool8_t vkr_ui_text_field(VkrUiSystem *system, String8 id_label,
                           VkrUiTextEditBuffer *buffer,
