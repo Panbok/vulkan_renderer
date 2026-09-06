@@ -898,6 +898,108 @@ vkr_internal void test_ui_input_layer_blocks_click_through(void) {
   printf("  test_ui_input_layer_blocks_click_through PASSED\n");
 }
 
+vkr_internal void test_ui_scroll_keyboard_navigation_and_child_click(void) {
+  printf("  Running test_ui_scroll_keyboard_navigation_and_child_click...\n");
+  setup_suite();
+  TestCookedFont fixture;
+  test_cooked_font_init(&fixture);
+  VkrFontSystem fonts = {0};
+  fonts.fonts = (Array_VkrFont){.length = 1u, .data = &fixture.font};
+  fonts.default_mtsdf_font_handle = (VkrFontHandle){
+      .id = fixture.font.id, .generation = fixture.font.generation};
+  VkrUiSystem system = {0};
+  assert(vkr_ui_system_init(&system, &fonts));
+  vkr_ui_system_set_offscreen_size(&system, true_v, 200u, 60u);
+  EventManager event_manager = {0};
+  assert(event_manager_create(&event_manager));
+  InputState input = input_init(&event_manager);
+  const VkrUiTrack rows[] = {
+      {.unit = VKR_UI_TRACK_PX, .value = 40.0f},
+      {.unit = VKR_UI_TRACK_PX, .value = 40.0f},
+      {.unit = VKR_UI_TRACK_PX, .value = 40.0f},
+  };
+  // A 60px viewport pages over 120px of rows. The last button begins at80px.
+  const Keys keys[] = {KEY_MAX_KEYS, KEY_TAB, KEY_NEXT, KEY_PRIOR, KEY_END,
+                       KEY_HOME, KEY_NEXT, KEY_MAX_KEYS, KEY_MAX_KEYS, KEY_HOME};
+  const float32_t expected_y[] = {80, 80, 20, 80, 20, 80, 20, 20, 20, 20};
+  float32_t target_y = 0.0f;
+  bool8_t target_visible = false_v;
+  for (uint32_t frame = 0u; frame < ArrayCount(keys); ++frame) {
+    input_update(&input);
+    if (frame > 0u && keys[frame - 1u] != KEY_MAX_KEYS)
+      input_process_key(&input, keys[frame - 1u], false_v);
+    if (keys[frame] != KEY_MAX_KEYS)
+      input_process_key(&input, keys[frame], true_v);
+    if (frame == 7u) {
+      input_process_mouse_move(&input, 10, 30);
+      input_process_button(&input, BUTTON_LEFT, true_v);
+    } else if (frame == 8u) {
+      input_process_button(&input, BUTTON_LEFT, false_v);
+    }
+    VkrAllocatorScope scope = vkr_allocator_begin_scope(&allocator);
+    assert(vkr_allocator_scope_is_valid(&scope));
+    assert(vkr_ui_begin(&system, &allocator, NULL, 200u, 60u, &input, false_v,
+                        1.0 / 60.0, NULL));
+    const VkrUiId scroll_id =
+        vkr_ui_id_stack_widget_label(&system.id_stack, string8_lit("scroll"));
+    VkrUiPanelConfig panel = vkr_ui_panel_config_default();
+    panel.rows = rows;
+    panel.row_count = ArrayCount(rows);
+    assert(vkr_ui_scroll_area_begin(&system, string8_lit("scroll"), &panel));
+    bool8_t activated = false_v;
+    for (uint32_t row = 0u; row < ArrayCount(rows); ++row) {
+      VkrUiWidgetConfig button = vkr_ui_widget_config_default();
+      button.placement.row = row;
+      button.placement.column = 0u;
+      if (row == 2u)
+        button.style.background_color = (Vec4){1, 0, 0, 1};
+      assert(vkr_ui_push_id_u64(&system, row));
+      const bool8_t clicked = vkr_ui_button(
+          &system, string8_lit("button"), string8_lit("A"), &button);
+      if (row == 2u)
+        activated = clicked;
+      else
+        assert(!clicked);
+      assert(vkr_ui_pop_id(&system));
+    }
+    assert(vkr_ui_scroll_area_end(&system));
+    const VkrUiInputCapture capture = vkr_ui_end(&system);
+    bool8_t found_target = system.frame_reuses_cached_draw_list;
+    for (uint32_t i = 0u; i < system.frame_command_count; ++i) {
+      const VkrUiDrawCommand *command = &system.frame_commands[i];
+      // The pressed button dims its background; its red-only identity remains.
+      if (command->mode != VKR_UI_DRAW_MODE_QUAD || command->color.x <= 0.0f ||
+          command->color.y != 0.0f || command->color.z != 0.0f)
+        continue;
+      found_target = true_v;
+      target_y = command->rect_px.y;
+      target_visible = vkr_ui_rect_has_area(
+          vkr_ui_rect_intersect(command->rect_px, command->clip_rect_px));
+      if (frame >= 1u && frame <= 6u)
+        assert_f32_eq(command->clip_rect_px.x, 2.0f, 0.0f,
+                      "children leave the focused scroll border visible");
+    }
+    assert(found_target);
+    assert_f32_eq(target_y, expected_y[frame], 0.0f,
+                  "keyboard scroll reveals declared rows and clamps at ends");
+    assert(target_visible == (expected_y[frame] == 20.0f));
+    assert(activated == (frame == 8u));
+    if (frame >= 1u && frame <= 6u) {
+      assert(system.focused_id == scroll_id);
+      assert(capture.keyboard && !capture.text);
+    }
+    if (frame >= 7u)
+      assert(system.focused_id != VKR_UI_ID_NONE &&
+             system.focused_id != scroll_id);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  input_shutdown(&input);
+  event_manager_destroy(&event_manager);
+  vkr_ui_system_shutdown(&system);
+  teardown_suite();
+  printf("  test_ui_scroll_keyboard_navigation_and_child_click PASSED\n");
+}
+
 vkr_internal void *text_test_alloc_aligned(void *ctx, uint64_t size,
                                            uint64_t alignment,
                                            VkrAllocatorMemoryTag tag) {
@@ -960,6 +1062,7 @@ bool32_t run_text_tests(void) {
   test_ui_text_field_character_input_and_repeat();
   test_ui_readonly_selection_and_mutation();
   test_ui_input_layer_blocks_click_through();
+  test_ui_scroll_keyboard_navigation_and_child_click();
 
   return true_v;
 }

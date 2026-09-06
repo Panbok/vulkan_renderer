@@ -13,4 +13,4 @@ void vkr_editor_bakery_destroy(VkrEditorBakery *bakery);
 void vkr_editor_bakery_update(VkrEditorBakery *bakery);
 /** Build within a caller-owned panel. No renderer or asset mutation occurs. */
 void vkr_editor_bakery_build(VkrEditorBakery *bakery, VkrUiSystem *ui,
-                             VkrFontHandle heading);
+                             VkrUiRect rect, VkrFontHandle heading);

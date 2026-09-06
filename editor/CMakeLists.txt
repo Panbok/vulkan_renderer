@@ -17,8 +17,9 @@ add_executable(vkr_editor
 target_include_directories(vkr_editor PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 vkr_configure_application_target(vkr_editor)
 
-add_dependencies(vkr_editor vkr_font_cooker vkr_vkt_packer)
+add_dependencies(vkr_editor vkr_mesh_cooker vkr_font_cooker vkr_vkt_packer)
 target_compile_definitions(vkr_editor PRIVATE
+    VKR_EDITOR_MESH_COOKER_PATH="$<TARGET_FILE:vkr_mesh_cooker>"
     VKR_EDITOR_FONT_COOKER_PATH="$<TARGET_FILE:vkr_font_cooker>"
     VKR_EDITOR_TEXTURE_COOKER_PATH="$<TARGET_FILE:vkr_vkt_packer>"
 )

@@ -12,7 +12,7 @@ removed numbers are not reused.
 
 The app and editor are separate executables using `runtime/` and `renderer_lib`.
 Build through the repository wrappers, which compile shaders and asset cookers.
-Bakery runs font and texture jobs; mesh cooking remains an explicit scene-cache step:
+Bakery runs mesh, font and texture cooker jobs:
 
 ```sh
 ./build_release.sh

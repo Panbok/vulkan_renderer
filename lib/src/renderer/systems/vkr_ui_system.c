@@ -7,6 +7,7 @@
 #include "renderer/vkr_color_transfer.h"
 #include "renderer/vkr_frame_input.h"
 
+#include <float.h>
 #include <math.h>
 
 typedef enum VkrUiNodeKind {
@@ -963,12 +964,29 @@ bool8_t vkr_ui_scroll_area_begin(VkrUiSystem *system, String8 id_label,
   node->rows = rows;
   node->row_count = config->row_count ? config->row_count : 1u;
   node->clip_children = true_v;
-  (void)vkr_ui_interact(system, node, false_v);
+  (void)vkr_ui_interact(system, node, true_v);
   if (node->hovered && system->mouse_wheel != 0)
     node->retained->scroll_offset.y =
         Max(0.0f,
             node->retained->scroll_offset.y -
                 (float32_t)system->mouse_wheel * 32.0f * system->content_scale);
+  if (vkr_ui_keyboard_eligible(system, node) && system->focused_id == id) {
+    const float32_t page =
+        vkr_ui_style_content_rect(node->retained->last_rect, &node->style)
+            .height;
+    if (vkr_ui_key_pressed(system, KEY_HOME))
+      node->retained->scroll_offset.y = 0.0f;
+    else if (vkr_ui_key_pressed(system, KEY_END))
+      // Layout clamps this request to the current declared row extent.
+      node->retained->scroll_offset.y = FLT_MAX;
+    else {
+      const int32_t direction =
+          (int32_t)vkr_ui_key_pressed(system, KEY_NEXT) -
+          (int32_t)vkr_ui_key_pressed(system, KEY_PRIOR);
+      node->retained->scroll_offset.y =
+          Max(0.0f, node->retained->scroll_offset.y + direction * page);
+    }
+  }
   system->container_stack[system->container_count++] = index;
   return vkr_ui_id_stack_push_label(&system->id_stack, id_label);
 }
@@ -1612,9 +1630,16 @@ vkr_internal bool8_t vkr_ui_layout_node(VkrUiSystem *system,
     return true_v;
 
   const VkrUiRect content_rect = vkr_ui_style_content_rect(rect, &node->style);
-  const VkrUiRect child_clip =
+  VkrUiRect child_clip =
       node->clip_children ? vkr_ui_rect_intersect(parent_clip, content_rect)
                           : parent_clip;
+  if (node->kind == VKR_UI_NODE_SCROLL && system->focused_id == node->id) {
+    // Descendants must not paint over the container's keyboard focus ring.
+    const float32_t inset = 2.0f * Max(1.0f, system->content_scale);
+    const VkrUiRect focus_content = vkr_ui_rect_inset(
+        rect, (VkrUiEdges){inset, inset, inset, inset});
+    child_clip = vkr_ui_rect_intersect(child_clip, focus_content);
+  }
   const uint32_t columns = node->column_count ? node->column_count : 1u;
   const uint32_t rows = node->row_count ? node->row_count : 1u;
   uint32_t child_count = 0u;

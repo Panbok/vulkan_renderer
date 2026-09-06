@@ -209,7 +209,7 @@ void vkr_editor_dock_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
         vkr_editor_console_build(&editor->console, ui, rect, heading_font);
         break;
       case VKR_UI_DOCK_PANEL_BAKERY:
-        vkr_editor_bakery_build(editor->bakery, ui, heading_font);
+        vkr_editor_bakery_build(editor->bakery, ui, rect, heading_font);
         break;
       default:
         break;

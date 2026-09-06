@@ -56,6 +56,9 @@ shortcut modifiers until frame completion. Docking consumes final movement befor
 releasing its drag, including a complete gesture received in one event drain.
 The input module selects the platform shortcut modifier for all callers.
 Scroll containers capture hover and wheel input while child controls own clicks.
+Tab also focuses scroll containers: Page Up/Down moves one viewport and Home/End
+moves to the declared bounds. Tab then reaches the visible child controls. A
+focused container keeps its border visible without moving its children's layout.
 Keyboard scope follows floating input layers, including popups. Text fields
 support UTF-8 clipboard input, mouse and keyboard selection, Cmd/Ctrl A/C/X/V,
 read-only selection, and caret scrolling. Text drags retain their press anchor
@@ -116,12 +119,17 @@ Editor builds compile all log levels; capture defaults to INFO, and Verbose capt
 enables DEBUG/TRACE before formatting. App builds retain their existing compile
 policy and do not allocate the editor logger ring.
 
-Bakery queues font and texture cooker jobs on one worker. The worker launches a
+Bakery queues mesh, font and texture cooker jobs on one worker. The worker launches a
 cancellable child with explicit arguments, writes no renderer state, and publishes
 completion before the UI reads results. Shutdown cancels and joins the worker.
-The panel shows progress, log tails, failure, cancellation and retry. Cookers own
-incremental checks and atomic artifact publication. Mesh `.vkb` cooking remains
-with scene caching outside Bakery. Reload the scene after texture baking; restart
+New bake separates mesh, font, single texture and texture-directory sources,
+retaining each source draft when the type changes. Jobs shows textual status,
+selection, cancellation and retry; Output shows a wrapped 4 KiB display tail and
+copies up to 16 KiB of captured status/output. Controls stack in narrow docks.
+Mesh jobs accept `.obj`, `.gltf` and `.glb`, always rebuild, and replace the
+source extension with `.vkb`. Font and texture cookers own incremental checks;
+their Rebuild option bypasses unchanged-output skipping. All cookers own atomic
+artifact publication. Reload the scene after mesh or texture baking; restart
 the editor after baking a font it already loaded. Normal wrappers compile the
 cookers without running asset baking. Pinned bootstrap fonts keep the first editor
 launch independent of Bakery; see [ADR-034](034-offline-cooked-font-artifacts.md).

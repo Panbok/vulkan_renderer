@@ -26,6 +26,12 @@ The glTF importer also decodes `EXT_meshopt_compression` input buffers. Runtime
 mesh loading retains source optimization for uncooked/imported input; cooked
 artifacts are the durable interchange boundary.
 
+Editor Bakery invokes the same standalone mesh cooker with explicit input and
+output arguments on its cancellable worker. Source `.obj`, `.gltf` and `.glb`
+paths produce a sibling `.vkb`. Mesh jobs always rebuild; they do not claim the
+incremental checks used by the font and texture cookers. Loading the result still
+passes through the existing cooked-artifact validation and scene reload boundary.
+
 Cooked version 17 stores original glTF node indices, names, parent links, exact
 local matrices, selected-scene membership, source mesh spans, punctual lights,
 camera/skin references, animation count and a source-content fingerprint.

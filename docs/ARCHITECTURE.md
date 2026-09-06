@@ -39,7 +39,8 @@ load/unload and camera entry. Scene focus routes Tab to camera capture; panel
 focus routes it to widgets. Hierarchy reads the authoritative scene
 through a virtualized tree; Inspector sends typed selection and edit requests to
 the runtime. Console snapshots bounded structured logger history with a checkbox filter dropdown. Bakery runs
-font and texture cookers in a cancellable child process. Render Stop retains the last Scene image while UI continues;
+mesh, font and texture cookers in a cancellable child process. Its setup, jobs
+and output views use labeled controls and adapt to dock width. Render Stop retains the last Scene image while UI continues;
 Scene allocation failures trigger bounded output-resolution reductions while UI
 resolution stays unchanged; an error at the minimum stops Scene retries.
 The first Metal GPU completion timeout flushes diagnostics and terminates the
