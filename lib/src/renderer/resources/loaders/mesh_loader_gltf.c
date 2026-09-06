@@ -1621,7 +1621,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_read_decal_overrides(
 vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
     const VkrMeshLoaderGltfParseInfo *info, const cgltf_data *data,
     const cgltf_primitive *primitive, Mat4 world, Mat4 normal_matrix,
-    const String8 *material_paths,
+    Mat4 decal_world, const String8 *material_paths,
     const VkrMeshLoaderGltfDecalOverrides *decal_overrides,
     uint32_t *in_out_primitive_count) {
   if (!info || !data || !primitive || !in_out_primitive_count) {
@@ -1676,6 +1676,27 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
                   : "<unnamed>");
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_INVALID_PARAMETER);
     return false_v;
+  }
+
+  Mat4 inverse_decal = mat4_identity();
+  Mat4 decal_normal_matrix = mat4_identity();
+  if (decal_normal_offset_meters != 0.0f) {
+    const float32_t determinant = mat4_determinant(decal_world);
+    if (!isfinite(determinant) || fabsf(determinant) < 1e-6f) {
+      log_error("MeshLoader(glTF): decal offset requires an invertible node "
+                "transform");
+      vkr_mesh_loader_gltf_set_error(info,
+                                     VKR_RENDERER_ERROR_INVALID_PARAMETER);
+      return false_v;
+    }
+    inverse_decal = mat4_inverse(decal_world);
+    for (uint32_t f = 0; f < 16u; ++f)
+      if (!isfinite(inverse_decal.elements[f])) {
+        vkr_mesh_loader_gltf_set_error(info,
+                                       VKR_RENDERER_ERROR_INVALID_PARAMETER);
+        return false_v;
+      }
+    decal_normal_matrix = mat4_transpose(inverse_decal);
   }
 
   const cgltf_size pos_count = position_accessor->count;
@@ -1741,6 +1762,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
     const bool8_t normal_valid = vkr_mesh_loader_gltf_transform_unit_direction(
         normal_matrix, normal, &world_normal);
     if (!normal_valid && decal_normal_offset_meters > 0.0f) {
+      vkr_allocator_end_scope(&primitive_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
       log_error("MeshLoader(glTF): decal material '%s' has a degenerate NORMAL",
                 primitive->material && primitive->material->name
                     ? primitive->material->name
@@ -1751,8 +1773,22 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
     }
     if (!normal_valid)
       world_normal = vec3_new(0.0f, 1.0f, 0.0f);
-    world_position = vec3_add(
-        world_position, vec3_scale(world_normal, decal_normal_offset_meters));
+    if (decal_normal_offset_meters != 0.0f) {
+      Vec3 offset_normal;
+      if (!vkr_mesh_loader_gltf_transform_unit_direction(
+              decal_normal_matrix, normal, &offset_normal)) {
+        vkr_allocator_end_scope(&primitive_scope,
+                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+        return false_v;
+      }
+      Vec4 local_offset = mat4_mul_vec4(
+          inverse_decal,
+          vec4_new(offset_normal.x, offset_normal.y, offset_normal.z, 0.0f));
+      world_position = vec3_add(
+          world_position,
+          vec3_scale(vec3_new(local_offset.x, local_offset.y, local_offset.z),
+                     decal_normal_offset_meters));
+    }
     Vec3 world_tangent = vkr_mesh_loader_gltf_transform_direction(
         world, vec3_new(tangent.x, tangent.y, tangent.z),
         vec3_new(1.0f, 0.0f, 0.0f));
@@ -1819,41 +1855,225 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
   return true_v;
 }
 
-vkr_internal bool8_t vkr_mesh_loader_gltf_emit_node(
+vkr_internal uint64_t vkr_mesh_source_hash(uint64_t hash, const void *bytes,
+                                           uint64_t size) {
+  const uint8_t *data = bytes;
+  for (uint64_t i = 0; i < size; ++i)
+    hash = (hash ^ data[i]) * UINT64_C(1099511628211);
+  return hash;
+}
+
+vkr_internal bool8_t vkr_mesh_loader_gltf_emit_scene(
     const VkrMeshLoaderGltfParseInfo *info, const cgltf_data *data,
-    const cgltf_node *node, const String8 *material_paths,
+    const String8 *material_paths,
     const VkrMeshLoaderGltfDecalOverrides *decal_overrides,
-    uint32_t *in_out_primitive_count) {
-  if (!info || !data || !node || !in_out_primitive_count) {
+    uint32_t *primitive_count) {
+  if (!info->out_source || !data->nodes_count ||
+      data->nodes_count > UINT32_MAX ||
+      data->meshes_count > UINT32_MAX - data->nodes_count ||
+      data->animations_count > UINT32_MAX)
     return false_v;
-  }
-
-  cgltf_float world_values[16] = {0};
-  cgltf_node_transform_world(node, world_values);
-  Mat4 world = vkr_mesh_loader_gltf_mat4_from_cgltf(world_values);
-  Mat4 normal_matrix = mat4_transpose(mat4_inverse(world));
-
-  if (node->mesh) {
-    for (uint32_t primitive_index = 0;
-         primitive_index < (uint32_t)node->mesh->primitives_count;
-         ++primitive_index) {
-      if (!vkr_mesh_loader_gltf_emit_primitive(
-              info, data, &node->mesh->primitives[primitive_index], world,
-              normal_matrix, material_paths, decal_overrides,
-              in_out_primitive_count)) {
+  VkrMeshSource *source = info->out_source;
+  *source = (VkrMeshSource){
+      .nodes = array_create_VkrMeshSourceNode(info->load_allocator,
+                                              data->nodes_count),
+      .meshes = array_create_VkrMeshSourceMesh(
+          info->load_allocator, data->meshes_count + data->nodes_count),
+      .animation_count = (uint32_t)data->animations_count,
+      .fingerprint = vkr_mesh_source_hash(UINT64_C(14695981039346656037),
+                                          data->json, data->json_size),
+  };
+  if ((data->nodes_count && !source->nodes.data) ||
+      ((data->meshes_count + data->nodes_count) && !source->meshes.data))
+    return false_v;
+  source->meshes.length = data->meshes_count;
+  MemZero(source->meshes.data,
+          (data->meshes_count + data->nodes_count) * sizeof(VkrMeshSourceMesh));
+  Mat4 *variant_worlds = vkr_allocator_alloc(
+      info->load_allocator,
+      (data->meshes_count + data->nodes_count) * sizeof(Mat4),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  bool8_t *has_decal =
+      data->meshes_count
+          ? vkr_allocator_alloc(info->load_allocator, data->meshes_count,
+                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
+          : NULL;
+  if (data->meshes_count && (!variant_worlds || !has_decal))
+    return false_v;
+  if (data->meshes_count)
+    MemZero(has_decal, data->meshes_count);
+  for (uint32_t m = 0; m < data->meshes_count; ++m) {
+    source->meshes.data[m].source_mesh_index = m;
+    variant_worlds[m] = mat4_identity();
+    for (cgltf_size p = 0; p < data->meshes[m].primitives_count; ++p) {
+      const cgltf_material *material = data->meshes[m].primitives[p].material;
+      const uint32_t index =
+          material ? (uint32_t)(material - data->materials) : UINT32_MAX;
+      const float32_t override = index < decal_overrides->count
+                                     ? decal_overrides->offsets[index]
+                                     : 0.0f;
+      float32_t offset = 0.0f;
+      if (!vkr_mesh_loader_gltf_decal_normal_offset(info, material, override,
+                                                    &offset))
         return false_v;
+      has_decal[m] |= offset != 0.0f;
+    }
+  }
+  for (cgltf_size i = 0; i < data->buffers_count; ++i)
+    source->fingerprint = vkr_mesh_source_hash(
+        source->fingerprint, data->buffers[i].data, data->buffers[i].size);
+  source->fingerprint =
+      vkr_mesh_source_hash(source->fingerprint, decal_overrides->offsets,
+                           decal_overrides->count * sizeof(float32_t));
+  uint32_t *root_indices = vkr_allocator_alloc(
+      info->load_allocator, data->nodes_count * sizeof(uint32_t),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (data->nodes_count && !root_indices)
+    return false_v;
+  for (uint32_t i = 0; i < data->nodes_count; ++i)
+    root_indices[i] = UINT32_MAX;
+  const cgltf_scene *scene =
+      data->scene ? data->scene
+                  : (data->scenes_count ? &data->scenes[0] : NULL);
+  for (uint32_t i = 0; i < data->nodes_count; ++i) {
+    const cgltf_node *node = &data->nodes[i];
+    const cgltf_node *root = node;
+    uint32_t depth = 0;
+    while (root->parent && root_indices[root - data->nodes] == UINT32_MAX &&
+           depth++ < data->nodes_count)
+      root = root->parent;
+    if (depth >= data->nodes_count && root->parent)
+      return false_v;
+    const uint32_t root_index = root_indices[root - data->nodes] == UINT32_MAX
+                                    ? (uint32_t)(root - data->nodes)
+                                    : root_indices[root - data->nodes];
+    const cgltf_node *path = node;
+    while (path && root_indices[path - data->nodes] == UINT32_MAX) {
+      root_indices[path - data->nodes] = root_index;
+      path = path->parent;
+    }
+    root = &data->nodes[root_index];
+    bool8_t in_scene = !scene;
+    for (cgltf_size r = 0; scene && r < scene->nodes_count; ++r)
+      in_scene |= scene->nodes[r] == root;
+    cgltf_float local[16];
+    cgltf_node_transform_local(node, local);
+    VkrMeshSourceNode *out = &source->nodes.data[i];
+    *out = (VkrMeshSourceNode){
+        .name = node->name ? string8_create_formatted(info->load_allocator,
+                                                      "%s", node->name)
+                           : (String8){0},
+        .local = vkr_mesh_loader_gltf_mat4_from_cgltf(local),
+        .parent =
+            node->parent ? (uint32_t)(node->parent - data->nodes) : UINT32_MAX,
+        .mesh = node->mesh ? (uint32_t)(node->mesh - data->meshes) : UINT32_MAX,
+        .mesh_variant =
+            node->mesh ? (uint32_t)(node->mesh - data->meshes) : UINT32_MAX,
+        .camera = node->camera ? (uint32_t)(node->camera - data->cameras)
+                               : UINT32_MAX,
+        .skin = node->skin ? (uint32_t)(node->skin - data->skins) : UINT32_MAX,
+        .light =
+            node->light ? (uint32_t)(node->light - data->lights) : UINT32_MAX,
+        .in_scene = in_scene,
+    };
+    if (node->light) {
+      const cgltf_light *light = node->light;
+      out->punctual = (VkrMeshSourceLight){
+          .color = vec3_new(light->color[0], light->color[1], light->color[2]),
+          .intensity = light->intensity,
+          .range = light->range,
+          .inner_cone = light->spot_inner_cone_angle,
+          .outer_cone = light->spot_outer_cone_angle,
+          .kind = light->type == cgltf_light_type_directional ? 1u
+                  : light->type == cgltf_light_type_point     ? 2u
+                  : light->type == cgltf_light_type_spot      ? 3u
+                                                              : 0u,
+      };
+    }
+    if (node->name && !out->name.str)
+      return false_v;
+    for (uint32_t f = 0; f < 16u; ++f)
+      if (!isfinite(out->local.elements[f]))
+        return false_v;
+    if (!isfinite(out->punctual.color.x) || !isfinite(out->punctual.color.y) ||
+        !isfinite(out->punctual.color.z) ||
+        !isfinite(out->punctual.intensity) || !isfinite(out->punctual.range) ||
+        !isfinite(out->punctual.inner_cone) ||
+        !isfinite(out->punctual.outer_cone))
+      return false_v;
+  }
+  Mat4 *node_worlds = vkr_allocator_alloc(info->scratch_allocator,
+                                          data->nodes_count * sizeof(Mat4),
+                                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint8_t *world_ready =
+      vkr_allocator_alloc(info->scratch_allocator, data->nodes_count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint32_t *node_stack = vkr_allocator_alloc(
+      info->scratch_allocator, data->nodes_count * sizeof(uint32_t),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (data->nodes_count && (!node_worlds || !world_ready || !node_stack))
+    return false_v;
+  MemZero(world_ready, data->nodes_count);
+  for (uint32_t n = 0; n < data->nodes_count; ++n) {
+    uint32_t cursor = n, count = 0u;
+    while (cursor != UINT32_MAX && !world_ready[cursor]) {
+      node_stack[count++] = cursor;
+      cursor = source->nodes.data[cursor].parent;
+    }
+    while (count) {
+      const uint32_t index = node_stack[--count];
+      const VkrMeshSourceNode *node = &source->nodes.data[index];
+      node_worlds[index] =
+          node->parent == UINT32_MAX
+              ? node->local
+              : mat4_mul(node_worlds[node->parent], node->local);
+      world_ready[index] = 1u;
+    }
+  }
+  for (uint32_t n = 0; n < data->nodes_count; ++n) {
+    VkrMeshSourceNode *node = &source->nodes.data[n];
+    if (!node->in_scene || node->mesh == UINT32_MAX || !has_decal[node->mesh])
+      continue;
+    Mat4 world = node_worlds[n];
+    world.elements[12] = world.elements[13] = world.elements[14] = 0.0f;
+    if (has_decal[node->mesh] == 1u) {
+      variant_worlds[node->mesh] = world;
+      has_decal[node->mesh] = 2u;
+    }
+    uint32_t variant = UINT32_MAX;
+    for (uint32_t m = 0; m < source->meshes.length; ++m) {
+      if (source->meshes.data[m].source_mesh_index == node->mesh &&
+          MemCompare(&variant_worlds[m], &world, sizeof(Mat4)) == 0) {
+        variant = m;
+        break;
       }
     }
-  }
-
-  for (uint32_t i = 0; i < (uint32_t)node->children_count; ++i) {
-    if (!vkr_mesh_loader_gltf_emit_node(info, data, node->children[i],
-                                        material_paths, decal_overrides,
-                                        in_out_primitive_count)) {
-      return false_v;
+    if (variant == UINT32_MAX) {
+      variant = (uint32_t)source->meshes.length++;
+      source->meshes.data[variant].source_mesh_index = node->mesh;
+      variant_worlds[variant] = world;
     }
+    node->mesh_variant = variant;
   }
-
+  for (uint32_t m = 0; m < source->meshes.length; ++m) {
+    VkrMeshSourceMesh *mesh = &source->meshes.data[m];
+    mesh->first_range = *primitive_count;
+    bool8_t referenced = false_v;
+    for (uint32_t n = 0; n < source->nodes.length; ++n)
+      referenced |= source->nodes.data[n].in_scene &&
+                    source->nodes.data[n].mesh_variant == m;
+    if (!referenced)
+      continue;
+    const cgltf_mesh *input = &data->meshes[mesh->source_mesh_index];
+    for (cgltf_size p = 0; p < input->primitives_count; ++p) {
+      if (!vkr_mesh_loader_gltf_emit_primitive(
+              info, data, &input->primitives[p], mat4_identity(),
+              mat4_identity(), variant_worlds[m], material_paths,
+              decal_overrides, primitive_count))
+        return false_v;
+    }
+    mesh->range_count = *primitive_count - mesh->first_range;
+  }
   return true_v;
 }
 
@@ -2055,39 +2275,17 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_run_parse(
     }
 
     uint32_t primitive_count = 0;
-    const cgltf_scene *scene =
-        data->scene ? data->scene
-                    : (data->scenes_count > 0 ? &data->scenes[0] : NULL);
-
-    if (scene) {
-      for (uint32_t i = 0; i < (uint32_t)scene->nodes_count; ++i) {
-        if (!vkr_mesh_loader_gltf_emit_node(info, data, scene->nodes[i],
-                                            material_paths, &decal_overrides,
-                                            &primitive_count)) {
-          ok = false_v;
-          break;
-        }
-      }
-    } else {
-      for (uint32_t i = 0; i < (uint32_t)data->nodes_count; ++i) {
-        const cgltf_node *node = &data->nodes[i];
-        if (node->parent) {
-          continue;
-        }
-        if (!vkr_mesh_loader_gltf_emit_node(info, data, node, material_paths,
-                                            &decal_overrides,
-                                            &primitive_count)) {
-          ok = false_v;
-          break;
-        }
-      }
-    }
+    ok = vkr_mesh_loader_gltf_emit_scene(info, data, material_paths,
+                                         &decal_overrides, &primitive_count);
 
     if (!ok) {
+      if (!info->out_error || *info->out_error == VKR_RENDERER_ERROR_NONE)
+        vkr_mesh_loader_gltf_set_error(info,
+                                       VKR_RENDERER_ERROR_INVALID_PARAMETER);
       break;
     }
 
-    if (primitive_count == 0) {
+    if (primitive_count == 0 && !info->out_source->nodes.length) {
       log_error("MeshLoader(glTF): no renderable triangle primitives in '%s'",
                 string8_cstr(&cstr_path));
       vkr_mesh_loader_gltf_set_error(info,

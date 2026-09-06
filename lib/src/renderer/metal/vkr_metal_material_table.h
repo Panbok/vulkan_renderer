@@ -6,6 +6,7 @@
 
 typedef struct VkrMetalMaterialTableCore VkrMetalMaterialTableCore;
 typedef struct VkrMetalMaterialTableDevice VkrMetalMaterialTableDevice;
+typedef struct VkrMetalMemoryDevice VkrMetalMemoryDevice;
 
 typedef enum VkrMetalMaterialStatus {
   VKR_METAL_MATERIAL_STATUS_OK = 0,
@@ -117,6 +118,8 @@ VkrMetalMaterialStatus vkr_metal_material_table_device_create(
     const VkrMetalMaterialTableConfig *config,
     // Borrowed id<MTLDevice>; the adapter retains it for its own lifetime.
     void *metal_device,
+    // Borrowed budget owner; must outlive the table. Required.
+    VkrMetalMemoryDevice *memory,
     // Owns the adapter's host allocations. Required.
     VkrAllocator *allocator, VkrMetalMaterialTableDevice **out_table);
 

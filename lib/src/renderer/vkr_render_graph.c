@@ -48,7 +48,12 @@ vkr_internal bool8_t vkr_rg_buffer_desc_equal(const VkrRgBufferDesc *a,
 }
 
 vkr_internal bool8_t
-vkr_rg_retained_image_flags_valid(String8 name, VkrRgResourceFlags flags) {
+vkr_rg_image_flags_valid(String8 name, VkrRgResourceFlags flags) {
+  if (flags & VKR_RG_RESOURCE_FLAG_GROW_ONLY) {
+    log_error("RenderGraph image '%.*s': GROW_ONLY requires an owned buffer",
+              (int)name.length, name.str);
+    return false_v;
+  }
   if ((flags & VKR_RG_RESOURCE_FLAG_RETAINED) == 0u)
     return true_v;
   if ((flags & VKR_RG_RESOURCE_RETAINED_EXCLUSIONS) == 0u)
@@ -555,7 +560,7 @@ VkrRgImageHandle vkr_rg_create_image(VkrRenderGraph *graph, String8 name,
     log_error("RenderGraph create image failed: invalid args");
     return VKR_RG_IMAGE_HANDLE_INVALID;
   }
-  if (!vkr_rg_retained_image_flags_valid(name, desc->flags))
+  if (!vkr_rg_image_flags_valid(name, desc->flags))
     return VKR_RG_IMAGE_HANDLE_INVALID;
 
   int64_t index = vkr_rg_find_image_index(graph, name);
@@ -615,7 +620,7 @@ VkrRgImageHandle vkr_rg_import_image(VkrRenderGraph *graph, String8 name,
     resolved_desc = *desc;
   }
   resolved_desc.flags |= VKR_RG_RESOURCE_FLAG_EXTERNAL;
-  if (!vkr_rg_retained_image_flags_valid(name, resolved_desc.flags))
+  if (!vkr_rg_image_flags_valid(name, resolved_desc.flags))
     return VKR_RG_IMAGE_HANDLE_INVALID;
 
   int64_t index = vkr_rg_find_image_index(graph, name);
@@ -687,6 +692,14 @@ VkrRgBufferHandle vkr_rg_create_buffer(VkrRenderGraph *graph, String8 name,
     log_error("RenderGraph create buffer failed: invalid args");
     return VKR_RG_BUFFER_HANDLE_INVALID;
   }
+  if ((desc->flags & VKR_RG_RESOURCE_FLAG_GROW_ONLY) &&
+      (desc->flags & (VKR_RG_RESOURCE_FLAG_EXTERNAL |
+                      VKR_RG_RESOURCE_FLAG_HISTORY |
+                      VKR_RG_RESOURCE_FLAG_RETAINED))) {
+    log_error("RenderGraph buffer '%.*s': GROW_ONLY requires owned, non-history storage",
+              (int)name.length, name.str);
+    return VKR_RG_BUFFER_HANDLE_INVALID;
+  }
   if (desc->flags & VKR_RG_RESOURCE_FLAG_RETAINED) {
     log_error("RenderGraph buffer '%.*s': RETAINED currently supports images "
               "only",
@@ -749,6 +762,11 @@ VkrRgBufferHandle vkr_rg_import_buffer(VkrRenderGraph *graph, String8 name,
   if (index >= 0) {
     VkrRgBuffer *buffer =
         vector_get_VkrRgBuffer(&graph->buffers, (uint32_t)index);
+    if (buffer->desc.flags & VKR_RG_RESOURCE_FLAG_GROW_ONLY) {
+      log_error("RenderGraph buffer '%.*s': GROW_ONLY cannot be imported",
+                (int)name.length, name.str);
+      return VKR_RG_BUFFER_HANDLE_INVALID;
+    }
     buffer->desc.flags |= VKR_RG_RESOURCE_FLAG_EXTERNAL;
     buffer->imported = true_v;
     buffer->imported_handle = handle;

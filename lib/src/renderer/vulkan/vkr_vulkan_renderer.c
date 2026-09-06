@@ -278,8 +278,65 @@ cleanup:
 
 VkrRendererError
 vkr_vulkan_renderer_get_error(const VkrVulkanRenderer *renderer) {
-  return renderer->terminal_failure ? VKR_RENDERER_ERROR_DEVICE_ERROR
-                                    : VKR_RENDERER_ERROR_NONE;
+  if (renderer->terminal_failure)
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
+  return renderer->submit_error;
+}
+
+void vkr_vk_record_graph_resource_result(VkrVulkanRenderer *renderer,
+                                         VkResult result) {
+  if (result == VK_ERROR_OUT_OF_HOST_MEMORY ||
+      result == VK_ERROR_OUT_OF_DEVICE_MEMORY)
+    renderer->submit_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+}
+
+/* Preserve a completed pixel before its acquired frame slot is reused. */
+vkr_internal void vkr_vk_preserve_picking_result(VkrVulkanRenderer *renderer,
+                                                 VkrPixelReadbackResult result,
+                                                 uint64_t order) {
+  if (order <= renderer->picking_consumed_order)
+    return;
+  if (renderer->picking_completed_result.status == VKR_READBACK_STATUS_IDLE ||
+      order > renderer->picking_completed_order) {
+    renderer->picking_completed_result = result;
+    renderer->picking_completed_order = order;
+  }
+}
+
+void vkr_vk_fail_picking_readback(VkrVulkanRenderer *renderer,
+                                  VkrVulkanFrameSlot *slot) {
+  if (!slot->picking_readback_pending)
+    return;
+  vkr_vk_preserve_picking_result(renderer,
+                                 (VkrPixelReadbackResult){
+                                     .status = VKR_READBACK_STATUS_ERROR,
+                                     .request_id = slot->picking_request_id,
+                                     .x = slot->picking_x,
+                                     .y = slot->picking_y,
+                                 },
+                                 slot->picking_request_order);
+  slot->picking_readback_pending = false_v;
+}
+
+vkr_internal void vkr_vk_collect_picking_result(VkrVulkanRenderer *renderer,
+                                                VkrVulkanFrameSlot *slot) {
+  if (!slot->picking_readback_pending)
+    return;
+  VkrPixelReadbackResult result = {
+      .status = VKR_READBACK_STATUS_ERROR,
+      .request_id = slot->picking_request_id,
+      .x = slot->picking_x,
+      .y = slot->picking_y,
+  };
+  if (vkr_vk_invalidate(renderer, &slot->readback.allocation, 0u,
+                        sizeof(result.data))) {
+    MemCopy(&result.data, slot->readback.allocation.mapped,
+            sizeof(result.data));
+    result.status = VKR_READBACK_STATUS_READY;
+    result.valid = true_v;
+  }
+  vkr_vk_preserve_picking_result(renderer, result, slot->picking_request_order);
+  slot->picking_readback_pending = false_v;
 }
 
 bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
@@ -287,6 +344,7 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
                                           uint32_t shadow_map_size,
                                           uint32_t shadow_cascade_count,
                                           VkrFrame *out_setup) {
+  renderer->submit_error = VKR_RENDERER_ERROR_NONE;
   if (renderer->terminal_failure) {
     return false_v;
   }
@@ -322,6 +380,7 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
     vkr_vk_collect_retired_targets(renderer, completed);
     vkr_vk_collect_asset_publications(renderer, completed);
   }
+  vkr_vk_collect_picking_result(renderer, slot);
   if (slot->retire_value && slot->retire_value <= completed &&
       slot->timing_requested && !slot->timing_collected &&
       !vkr_vk_collect_slot_timings(renderer, slot))
@@ -473,7 +532,8 @@ vkr_vk_report_upload_exhaustion(VkrVulkanRenderer *renderer,
 vkr_internal bool8_t vkr_vk_prepare_frame_commands(VkrVulkanRenderer *renderer,
                                                    VkrVulkanFrameSlot *slot) {
   slot->temporal_scene = (VkrVulkanTemporalSceneState){0};
-  if (renderer->graph->packet->temporal.enabled &&
+  if (renderer->graph->packet->scene_rendering &&
+      renderer->graph->packet->temporal.enabled &&
       vkr_rg_buffer_handle_valid(renderer->temporal_transform_history_handle)) {
     // Capture rendered inputs before upload/IBL commands publish new content.
     slot->temporal_scene = (VkrVulkanTemporalSceneState){
@@ -505,7 +565,6 @@ vkr_internal bool8_t vkr_vk_prepare_frame_commands(VkrVulkanRenderer *renderer,
   VkrVulkanImage *readback_image = target;
   uint32_t readback_x = 0u;
   uint32_t readback_y = 0u;
-  slot->picking_readback_pending = false_v;
   const VkrPreparedFrame *packet = renderer->graph->packet;
   if (packet->input.picking && packet->input.picking->pending) {
     const VkrRgImageHandle picking_handle =
@@ -714,12 +773,25 @@ vkr_internal bool8_t vkr_vk_fail_after_submit(VkrVulkanRenderer *renderer,
 bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
                                           const VkrPreparedFrame *packet,
                                           VkrVulkanResult *out_result) {
+  renderer->submit_error = VKR_RENDERER_ERROR_NONE;
   vkr_render_graph_prepare_frame(
       packet, &renderer->bloom_config, &renderer->gtao_config,
       &renderer->prepared_frame, &renderer->gtao_params);
   renderer->prepared_frame.transmission_compact_enabled =
       renderer->config.transmission_compact_enabled &&
       renderer->prepared_frame.transmission_pending;
+  VkrVulkanFrameSlot *picking_slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  if (packet->input.picking && packet->input.picking->pending) {
+    picking_slot->picking_request_id = packet->input.picking->request_id;
+    /* Reserve order before submission, including canceled offscreen attempts.
+       Caller IDs are identity tokens and may repeat or be zero. */
+    picking_slot->picking_request_order = ++renderer->picking_request_order;
+    picking_slot->picking_submit_value = UINT64_MAX;
+    picking_slot->picking_x = packet->input.picking->x;
+    picking_slot->picking_y = packet->input.picking->y;
+    picking_slot->picking_readback_pending = true_v;
+  }
   if (!vkr_rg_begin_frame(renderer->graph, &renderer->prepared_frame)) {
     vkr_vulkan_renderer_cancel_frame(renderer);
     return false_v;
@@ -768,7 +840,7 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
     vkr_vulkan_renderer_cancel_frame(renderer);
     return false_v;
   }
-  if (!vkr_vk_select_history_output(renderer)) {
+  if (packet->scene_rendering && !vkr_vk_select_history_output(renderer)) {
     log_error("Vulkan failed to select a completion-safe history output");
     vkr_vulkan_renderer_cancel_frame(renderer);
     return false_v;
@@ -872,6 +944,7 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
                      &submit_info, VK_NULL_HANDLE);
   if (submit_result != VK_SUCCESS) {
     log_error("Vulkan queue submission failed (result=%d)", (int)submit_result);
+    vkr_vk_fail_picking_readback(renderer, slot);
     vkr_vk_abandon_ibl_bake_recordings(renderer);
     vkr_vk_discard_unsubmitted_asset_uses(renderer);
     slot->sh_coefficients_clear_recorded = false_v;
@@ -887,6 +960,8 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
     return false_v;
   }
   renderer->submit_value = signal_value;
+  if (slot->picking_readback_pending)
+    slot->picking_submit_value = signal_value;
   if (slot->sh_coefficients_clear_recorded) {
     vkr_vk_advance_radiance_revision(renderer);
     renderer->sh_coefficients_cleared = true_v;
@@ -901,9 +976,11 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
      ADR-029 rollback: a cancelled frame commits nothing and the previous
      contents stay authoritative. */
   vkr_rg_commit_retained_state(renderer->graph);
-  vkr_vk_mark_hzb_submitted(renderer, signal_value);
-  vkr_vk_mark_temporal_submitted(renderer, signal_value);
-  vkr_vk_mark_exposure_submitted(renderer, signal_value);
+  if (packet->scene_rendering) {
+    vkr_vk_mark_hzb_submitted(renderer, signal_value);
+    vkr_vk_mark_temporal_submitted(renderer, signal_value);
+    vkr_vk_mark_exposure_submitted(renderer, signal_value);
+  }
   vkr_vk_mark_graph_images_submitted(renderer, signal_value);
   vkr_vk_mark_graph_buffers_submitted(renderer, signal_value);
   slot->retire_value = signal_value;
@@ -1320,8 +1397,9 @@ void vkr_vulkan_renderer_geometry_megabuffer_metrics(
   out_metrics->decode_metadata_live_bytes = mega->decode_metadata_live_bytes;
   out_metrics->live_bytes = mega->vertex_live_bytes + mega->index_live_bytes +
                             mega->decode_metadata_live_bytes;
-  out_metrics->fragmentation_bytes =
-      mega->vertex_cursor + mega->index_cursor - out_metrics->live_bytes;
+  out_metrics->fragmentation_bytes = mega->vertex_high_water +
+                                     mega->index_high_water -
+                                     out_metrics->live_bytes;
   out_metrics->high_water_bytes =
       mega->vertex_high_water + mega->index_high_water;
   out_metrics->vertex_high_water_bytes = mega->vertex_high_water;
@@ -1335,6 +1413,7 @@ void vkr_vulkan_renderer_geometry_megabuffer_metrics(
   out_metrics->rejected_publications = mega->rejected_publications;
   out_metrics->generation_replacements = mega->generation_replacements;
   out_metrics->generation = mega->generation;
+  vkr_geometry_ranges_metrics(&renderer->geometry_ranges, out_metrics);
 }
 
 void vkr_vulkan_renderer_device_memory_stats(const VkrVulkanRenderer *renderer,
@@ -1462,27 +1541,28 @@ VkrRendererError vkr_vulkan_renderer_get_pixel_readback_result(
   for (uint32_t i = 0u; i < VKR_VULKAN_FRAME_SLOT_COUNT; ++i) {
     VkrVulkanFrameSlot *slot = &renderer->frame_slots[i];
     if (slot->picking_readback_pending &&
-        (!best || slot->retire_value < best->retire_value))
+        slot->picking_request_order > renderer->picking_consumed_order &&
+        (!best || slot->picking_request_order > best->picking_request_order))
       best = slot;
   }
-  if (!best)
-    return VKR_RENDERER_ERROR_NONE;
-  out_result->x = best->picking_x;
-  out_result->y = best->picking_y;
-  if (best->retire_value > completed) {
+  if (best && best->picking_submit_value <= completed)
+    vkr_vk_collect_picking_result(renderer, best);
+  if (renderer->picking_completed_result.status != VKR_READBACK_STATUS_IDLE &&
+      (!best ||
+       renderer->picking_completed_order >= best->picking_request_order)) {
+    *out_result = renderer->picking_completed_result;
+    renderer->picking_consumed_order = renderer->picking_completed_order;
+    renderer->picking_completed_result = (VkrPixelReadbackResult){0};
+    return out_result->status == VKR_READBACK_STATUS_ERROR
+               ? VKR_RENDERER_ERROR_DEVICE_ERROR
+               : VKR_RENDERER_ERROR_NONE;
+  }
+  if (best) {
+    out_result->request_id = best->picking_request_id;
+    out_result->x = best->picking_x;
+    out_result->y = best->picking_y;
     out_result->status = VKR_READBACK_STATUS_PENDING;
-    return VKR_RENDERER_ERROR_NONE;
   }
-  if (!vkr_vk_invalidate(renderer, &best->readback.allocation, 0u,
-                         sizeof(uint32_t))) {
-    out_result->status = VKR_READBACK_STATUS_ERROR;
-    return VKR_RENDERER_ERROR_DEVICE_ERROR;
-  }
-  MemCopy(&out_result->data, best->readback.allocation.mapped,
-          sizeof(out_result->data));
-  out_result->valid = true_v;
-  out_result->status = VKR_READBACK_STATUS_READY;
-  best->picking_readback_pending = false_v;
   return VKR_RENDERER_ERROR_NONE;
 }
 
@@ -1714,6 +1794,7 @@ void vkr_vulkan_renderer_destroy(VkrVulkanRenderer *renderer) {
     }
     vkr_vk_pipeline_cache_shutdown(renderer);
   }
+  vkr_geometry_ranges_destroy(&renderer->geometry_ranges);
   if (renderer->descriptor_scratch) {
     vkr_allocator_free(allocator, renderer->descriptor_scratch,
                        renderer->descriptor_scratch_size,

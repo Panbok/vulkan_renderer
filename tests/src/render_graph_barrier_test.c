@@ -3,6 +3,7 @@
 #include "renderer/vkr_frame_input.h"
 #include "renderer/vkr_renderer_impl.h"
 #include "renderer/vkr_rg_json.h"
+#include "renderer/vkr_render_graph_frame.h"
 
 /**
  * Barrier planning is a deterministic function of the declared graph, so it is
@@ -319,6 +320,109 @@ test_transmission_compact_conditions_and_viewport_buffer(void) {
   arena_destroy(arena);
   printf("  test_transmission_compact_conditions_and_viewport_buffer "
          "PASSED\n");
+}
+
+vkr_internal void test_draw_table_capacity_and_json_sizes(void) {
+  printf("  Running test_draw_table_capacity_and_json_sizes...\n");
+  /* Independent expected capacities include an all-in-one-bucket scene and
+     the point where the existing 65536-draw bucket ceiling takes over. */
+  const uint32_t counts[] = {0u, 1u, 3u, 65536u, 65537u, 262144u};
+  const uint32_t candidates[] = {1u, 1u, 4u, 65536u, 131072u, 262144u};
+  const uint32_t visible[] = {4u, 4u, 16u, 262144u, 262144u, 262144u};
+  VkrWorldPassPayload world = {0};
+  VkrPreparedFrame packet = {.input = {.world = &world}};
+  VkrRenderGraphFrameInfo frame = {.target_width = 16u, .target_height = 16u};
+  VkrGtaoGpuParams gtao = {0};
+  for (uint32_t i = 0u; i < ArrayCount(counts); ++i) {
+    world.gpu_candidate_count = counts[i];
+    world.transmission_gpu_candidate_count = counts[i];
+    vkr_render_graph_prepare_frame(&packet, NULL, NULL, &frame, &gtao);
+    assert(frame.gpu_draw_candidate_capacity == candidates[i]);
+    assert(frame.transmission_gpu_draw_candidate_capacity == candidates[i]);
+    assert(frame.gpu_draw_visible_capacity == visible[i]);
+    assert(frame.transmission_gpu_draw_visible_capacity == visible[i]);
+    const uint32_t one_bucket_count = Min(counts[i], 65536u);
+    assert(frame.gpu_draw_visible_capacity / 4u >= one_bucket_count);
+  }
+
+  Arena *arena = arena_create(MB(2), MB(2));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+  const char *source =
+      "{\"version\":1,\"name\":\"draws\",\"resources\":["
+      "{\"name\":\"candidate\",\"type\":\"buffer\",\"size\":{"
+      "\"mode\":\"draw_elements\",\"count_source\":\"gpu_draw_candidate_capacity\","
+      "\"bytes_per_element\":48},\"usage\":[\"STORAGE\"],"
+      "\"flags\":[\"PER_FRAME_SLOT\",\"RESIZABLE\",\"GROW_ONLY\"]},"
+      "{\"name\":\"visible\",\"type\":\"buffer\",\"size\":{"
+      "\"mode\":\"draw_elements\",\"count_source\":\"gpu_draw_visible_capacity\","
+      "\"bytes_per_element\":160},\"usage\":[\"STORAGE\"],"
+      "\"flags\":[\"PER_FRAME_SLOT\",\"RESIZABLE\",\"GROW_ONLY\"]},"
+      "{\"name\":\"transmission_instance\",\"type\":\"buffer\",\"size\":{"
+      "\"mode\":\"draw_elements\",\"count_source\":"
+      "\"transmission_gpu_draw_candidate_capacity\",\"bytes_per_element\":128},"
+      "\"usage\":[\"STORAGE\"],\"flags\":[\"PER_FRAME_SLOT\",\"RESIZABLE\",\"GROW_ONLY\"]},"
+      "{\"name\":\"transmission_arguments\",\"type\":\"buffer\",\"size\":{"
+      "\"mode\":\"draw_elements\",\"count_source\":"
+      "\"transmission_gpu_draw_visible_capacity\",\"bytes_per_element\":20},"
+      "\"usage\":[\"STORAGE\"],\"flags\":[\"PER_FRAME_SLOT\",\"RESIZABLE\",\"GROW_ONLY\"]}],"
+      "\"passes\":[]}";
+  VkrRgJsonGraph json = {0};
+  assert(rg_barrier_test_load_json(&allocator, source, &json));
+  VkrRenderGraph *graph = vkr_rg_create(&allocator);
+  assert(graph);
+  world.gpu_candidate_count = 3u;
+  world.transmission_gpu_candidate_count = 1u;
+  vkr_render_graph_prepare_frame(&packet, NULL, NULL, &frame, &gtao);
+  assert(vkr_rg_begin_frame(graph, &frame));
+  assert(vkr_rg_build_from_json(graph, &json, &frame));
+  const uint64_t bytes[] = {192u, 2560u, 128u, 80u};
+  for (uint32_t i = 0u; i < ArrayCount(bytes); ++i) {
+    assert(graph->buffers.data[i].desc.size == bytes[i]);
+    assert(graph->buffers.data[i].desc.flags & VKR_RG_RESOURCE_FLAG_GROW_ONLY);
+  }
+  const uint32_t generation = graph->buffers.data[0].generation;
+  world.gpu_candidate_count = 1u;
+  vkr_render_graph_prepare_frame(&packet, NULL, NULL, &frame, &gtao);
+  assert(vkr_rg_begin_frame(graph, &frame));
+  assert(vkr_rg_build_from_json(graph, &json, &frame));
+  /* Requested descriptions shrink; native caches retain backing and must
+     adopt this generation before candidate residency is reused. */
+  assert(graph->buffers.data[0].desc.size == 48u);
+  assert(graph->buffers.data[0].generation > generation);
+  frame.gpu_draw_candidate_capacity = 262145u;
+  assert(vkr_rg_begin_frame(graph, &frame));
+  assert(!vkr_rg_build_from_json(graph, &json, &frame));
+  frame.gpu_draw_candidate_capacity = 0u;
+  assert(vkr_rg_begin_frame(graph, &frame));
+  assert(!vkr_rg_build_from_json(graph, &json, &frame));
+
+  VkrRgImageDesc image = VKR_RG_IMAGE_DESC_DEFAULT;
+  image.flags = VKR_RG_RESOURCE_FLAG_GROW_ONLY;
+  assert(!vkr_rg_image_handle_valid(
+      vkr_rg_create_image(graph, string8_lit("bad_image"), &image)));
+  const VkrRgResourceFlags conflicts[] = {
+      VKR_RG_RESOURCE_FLAG_EXTERNAL, VKR_RG_RESOURCE_FLAG_HISTORY,
+      VKR_RG_RESOURCE_FLAG_RETAINED};
+  for (uint32_t i = 0u; i < ArrayCount(conflicts); ++i) {
+    VkrRgBufferDesc buffer = {
+        .size = 16u,
+        .flags = VKR_RG_RESOURCE_FLAG_GROW_ONLY | conflicts[i]};
+    assert(!vkr_rg_buffer_handle_valid(
+        vkr_rg_create_buffer(graph, string8_lit("bad_buffer"), &buffer)));
+  }
+
+  const char *bad_source =
+      "{\"version\":1,\"name\":\"bad\",\"resources\":[{\"name\":\"rows\","
+      "\"type\":\"buffer\",\"size\":{\"mode\":\"draw_elements\","
+      "\"count_source\":\"unknown\",\"bytes_per_element\":48},"
+      "\"usage\":[\"STORAGE\"],\"flags\":[\"PER_FRAME_SLOT\"]}],\"passes\":[]}";
+  VkrRgJsonGraph rejected = {0};
+  assert(!rg_barrier_test_load_json(&allocator, bad_source, &rejected));
+  vkr_rg_destroy(graph);
+  vkr_rg_json_destroy(&json);
+  arena_destroy(arena);
+  printf("  test_draw_table_capacity_and_json_sizes PASSED\n");
 }
 
 vkr_internal void
@@ -1398,6 +1502,11 @@ vkr_internal void test_main_graph_editor_metalfx_topology(void) {
   VkrRenderGraph *graph = vkr_rg_create(&allocator);
   assert(graph);
   const VkrRenderGraphFrameInfo frame = {
+      .scene_rendering = true_v,
+      .gpu_draw_candidate_capacity = 1u,
+      .gpu_draw_visible_capacity = 4u,
+      .transmission_gpu_draw_candidate_capacity = 1u,
+      .transmission_gpu_draw_visible_capacity = 4u,
       .target_width = 1000u,
       .target_height = 800u,
       .window_width = 1000u,
@@ -1409,6 +1518,9 @@ vkr_internal void test_main_graph_editor_metalfx_topology(void) {
       .render_scale = 0.5f,
       .metalfx_enabled = true_v,
       .editor_enabled = true_v,
+      .editor_image_available = true_v,
+      .editor_image_width = 600u,
+      .editor_image_height = 400u,
       .target_color_format = VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB,
       .target_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
       .shadow_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
@@ -1431,6 +1543,7 @@ vkr_internal void test_main_graph_editor_metalfx_topology(void) {
 
   uint64_t stage_index = UINT64_MAX;
   uint64_t upscale_index = UINT64_MAX;
+  uint64_t resolve_index = UINT64_MAX;
   uint64_t composite_index = UINT64_MAX;
   uint64_t ui_index = UINT64_MAX;
   for (uint64_t i = 0u; i < graph->passes.length; ++i) {
@@ -1449,17 +1562,29 @@ vkr_internal void test_main_graph_editor_metalfx_topology(void) {
     } else if (vkr_string8_equals_cstr(&pass->desc.name,
                                        "MetalFX.TemporalUpscale")) {
       upscale_index = i;
-    } else if (vkr_string8_equals_cstr(&pass->desc.name, "Editor.Composite")) {
+    } else if (vkr_string8_equals_cstr(&pass->desc.name, "Editor.Resolve")) {
       const VkrRgImageUse *source =
           vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
       assert(source && source->image.id == output.id);
+      resolve_index = i;
+    } else if (vkr_string8_equals_cstr(&pass->desc.name, "Editor.Composite")) {
+      const VkrRgImageUse *source =
+          vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+      const VkrRgImageHandle retained =
+          vkr_rg_find_image(graph, string8_lit("editor_scene_image"));
+      assert(source && source->image.id == retained.id);
+      const VkrRgImage *image = &graph->images.data[retained.id - 1u];
+      assert(image->desc.width == 600u && image->desc.height == 400u);
+      assert(image->desc.flags & VKR_RG_RESOURCE_FLAG_RETAINED);
+      assert(vkr_rg_resource_instance_domain(image->desc.flags) ==
+             VKR_RG_RESOURCE_INSTANCE_SINGLE);
       composite_index = i;
     } else if (vkr_string8_equals_cstr(&pass->desc.name, "UI.Editor")) {
       ui_index = i;
     }
   }
-  assert(stage_index < upscale_index && upscale_index < composite_index &&
-         composite_index < ui_index);
+  assert(stage_index < upscale_index && upscale_index < resolve_index &&
+         resolve_index < composite_index && composite_index < ui_index);
   assert(vkr_rg_compile_schedule(graph));
   vkr_rg_end_frame(graph);
 
@@ -1499,6 +1624,11 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   VkrRenderGraph *runtime = vkr_rg_create(&allocator);
   assert(runtime);
   VkrRenderGraphFrameInfo frame = {
+      .scene_rendering = true_v,
+      .gpu_draw_candidate_capacity = 1u,
+      .gpu_draw_visible_capacity = 4u,
+      .transmission_gpu_draw_candidate_capacity = 1u,
+      .transmission_gpu_draw_visible_capacity = 4u,
       .target_width = VKR_TEXTURE_MAX_DIMENSION,
       .target_height = VKR_TEXTURE_MAX_DIMENSION,
       .window_width = VKR_TEXTURE_MAX_DIMENSION,
@@ -1506,6 +1636,10 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
       .viewport_width = VKR_TEXTURE_MAX_DIMENSION,
       .viewport_height = VKR_TEXTURE_MAX_DIMENSION,
       .metalfx_enabled = true_v,
+      .editor_enabled = true_v,
+      .editor_image_available = true_v,
+      .editor_image_width = VKR_TEXTURE_MAX_DIMENSION,
+      .editor_image_height = VKR_TEXTURE_MAX_DIMENSION,
       .target_color_format = VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB,
       .target_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
       .shadow_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
@@ -1540,6 +1674,11 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   vkr_rg_end_frame(runtime);
 
   frame = (VkrRenderGraphFrameInfo){
+      .scene_rendering = true_v,
+      .gpu_draw_candidate_capacity = 1u,
+      .gpu_draw_visible_capacity = 4u,
+      .transmission_gpu_draw_candidate_capacity = 1u,
+      .transmission_gpu_draw_visible_capacity = 4u,
       .target_width = 960u,
       .target_height = 540u,
       .window_width = 960u,
@@ -1564,6 +1703,11 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   vkr_rg_end_frame(runtime);
 
   frame = (VkrRenderGraphFrameInfo){
+      .scene_rendering = true_v,
+      .gpu_draw_candidate_capacity = 1u,
+      .gpu_draw_visible_capacity = 4u,
+      .transmission_gpu_draw_candidate_capacity = 1u,
+      .transmission_gpu_draw_visible_capacity = 4u,
       .target_width = 3840u,
       .target_height = 2160u,
       .window_width = 3840u,
@@ -2157,6 +2301,7 @@ bool32_t run_render_graph_barrier_tests() {
   test_json_bindings_and_condition_parity();
   test_transmission_condition();
   test_transmission_compact_conditions_and_viewport_buffer();
+  test_draw_table_capacity_and_json_sizes();
   test_shadow_map_capacity_is_independent_of_active_cascades();
   test_shadow_reads_follow_active_cascades();
   test_repeat_condition_mask_filters_iterations();

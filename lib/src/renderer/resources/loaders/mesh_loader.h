@@ -8,6 +8,7 @@
 #include "memory/vkr_allocator.h"
 #include "memory/vkr_arena_pool.h"
 #include "memory/vkr_dmemory.h"
+#include "renderer/resources/loaders/vkr_mesh_source.h"
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_material_system.h"
@@ -75,6 +76,7 @@ typedef struct VkrMeshLoaderResult {
   VkrAllocator allocator; /**< Arena allocator wrapper (used for accounting) */
   String8 source_path;
   VkrTransform root_transform;
+  VkrMeshSource source;
   bool8_t
       has_mesh_buffer; /**< True when mesh_buffer/submeshes are populated. */
   VkrMeshLoaderBuffer mesh_buffer; /**< Merged vertex/index payload. */

@@ -237,8 +237,10 @@ vkr_metal_packet_gpu_draw_prefix(constant VkrMetalPacketGpuDrawRoot &root
   if (view_index >= root.view_count)
     return;
   device VkrGpuDrawCompactionState &state = root.compaction_state[view_index];
+  // Commands use the candidate count; visible rows use the prepared stride
+  // shared by classification, raster, resolve and picking for this frame.
   uint command_base =
-      (view_index % root.icb_view_group_size) * root.visible_capacity;
+      (view_index % root.icb_view_group_size) * root.candidate_count;
   uint bucket_capacity = root.visible_capacity / 4u;
   uint visible_count = 0u;
   uint overflow_count = 0u;
@@ -280,7 +282,7 @@ vkr_metal_packet_gpu_draw_encode_impl(constant VkrMetalPacketGpuDrawRoot &root,
   if (local_index >= bucket_capacity)
     return;
   uint command_base =
-      (view_index % root.icb_view_group_size) * root.visible_capacity;
+      (view_index % root.icb_view_group_size) * root.candidate_count;
   uint visible_index =
       state.execution_ranges[bucket].x - command_base + local_index;
 

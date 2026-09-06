@@ -12,6 +12,7 @@
 #include "renderer/vkr_bloom.h"
 #include "renderer/vkr_candidate_residency.h"
 #include "renderer/vkr_capture_ring.h"
+#include "renderer/vkr_geometry_ranges.h"
 #include "renderer/vkr_gpu_abi.h"
 #include "renderer/vkr_gpu_memory.h"
 #include "renderer/vkr_gpu_slot_table.h"
@@ -37,6 +38,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef VKR_VULKAN_PACKET_EDITOR_OVERLAY_VERT_SPV
+#define VKR_VULKAN_PACKET_EDITOR_OVERLAY_VERT_SPV                              \
+  "packet.editor_overlay.vert.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_EDITOR_OVERLAY_FRAG_SPV
+#define VKR_VULKAN_PACKET_EDITOR_OVERLAY_FRAG_SPV                              \
+  "packet.editor_overlay.frag.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_EDITOR_OVERLAY_PICKING_FRAG_SPV
+#define VKR_VULKAN_PACKET_EDITOR_OVERLAY_PICKING_FRAG_SPV                      \
+  "packet.editor_overlay_picking.frag.spv"
+#endif
 #ifndef VKR_VULKAN_PACKET_WORLD_VERT_SPV
 #define VKR_VULKAN_PACKET_WORLD_VERT_SPV "packet.world.vert.spv"
 #endif
@@ -283,6 +296,8 @@ typedef enum VkrVulkanPacketPipeline {
   VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_OPAQUE,
   VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_SHADOW,
   VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_SHADOW_OPAQUE,
+  VKR_VULKAN_PACKET_PIPELINE_EDITOR_OVERLAY,
+  VKR_VULKAN_PACKET_PIPELINE_EDITOR_OVERLAY_PICKING,
   VKR_VULKAN_PACKET_PIPELINE_COUNT,
 } VkrVulkanPacketPipeline;
 
@@ -310,6 +325,9 @@ typedef enum VkrVulkanPacketShader {
   VKR_VULKAN_PACKET_SHADER_VISIBILITY_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_VISIBILITY_OPAQUE_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_VISIBILITY_SHADOW_FRAGMENT,
+  VKR_VULKAN_PACKET_SHADER_EDITOR_OVERLAY_VERTEX,
+  VKR_VULKAN_PACKET_SHADER_EDITOR_OVERLAY_FRAGMENT,
+  VKR_VULKAN_PACKET_SHADER_EDITOR_OVERLAY_PICKING_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_COUNT,
 } VkrVulkanPacketShader;
 
@@ -826,6 +844,24 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketDrawRoot {
 } VkrVulkanPacketDrawRoot;
 
 /** Compact per-batch root for the retained UI stream. */
+typedef struct VKR_SIMD_ALIGN VkrVulkanEditorOverlayRoot {
+  uint64_t vertices;
+  uint64_t decode;
+  Mat4 model_view_projection;
+  Vec4 color;
+  uint32_t first_vertex;
+  uint32_t decode_index;
+  uint32_t object_id;
+  uint32_t reserved;
+} VkrVulkanEditorOverlayRoot;
+_Static_assert(sizeof(VkrVulkanEditorOverlayRoot) == 112u,
+               "Editor overlay root ABI size drift");
+_Static_assert(offsetof(VkrVulkanEditorOverlayRoot, model_view_projection) ==
+                       16u &&
+                   offsetof(VkrVulkanEditorOverlayRoot, color) == 80u &&
+                   offsetof(VkrVulkanEditorOverlayRoot, object_id) == 104u,
+               "Editor overlay root ABI offset drift");
+
 typedef struct VKR_SIMD_ALIGN VkrVulkanUiRoot {
   uint64_t vertices;
   uint32_t texture;
@@ -948,12 +984,11 @@ _Static_assert(offsetof(VkrVulkanResolveRoot, sky_reprojection) == 352u,
                "G-buffer sky-reprojection matrix ABI drift");
 _Static_assert(sizeof(VkrVulkanTemporalResolveRoot) == 144u,
                "Temporal resolve-root ABI size drift");
-_Static_assert(offsetof(VkrVulkanTemporalResolveRoot, scene_stationary) == 124u &&
-                   offsetof(VkrVulkanTemporalResolveRoot, current_jitter_pixels) ==
-                       128u &&
-                   offsetof(VkrVulkanTemporalResolveRoot, previous_jitter_pixels) ==
-                       136u,
-               "Temporal resolve-root scene/jitter ABI drift");
+_Static_assert(
+    offsetof(VkrVulkanTemporalResolveRoot, scene_stationary) == 124u &&
+        offsetof(VkrVulkanTemporalResolveRoot, current_jitter_pixels) == 128u &&
+        offsetof(VkrVulkanTemporalResolveRoot, previous_jitter_pixels) == 136u,
+    "Temporal resolve-root scene/jitter ABI drift");
 _Static_assert(sizeof(VkrVulkanLightingRoot) == 128u,
                "Deferred lighting-root ABI size drift");
 _Static_assert(offsetof(VkrVulkanLightingRoot, inverse_view_projection) == 16u,
@@ -1190,6 +1225,7 @@ typedef struct VkrVulkanPreparedCompute {
 
 typedef struct VkrVulkanPreparedRaster {
   uint64_t root_address;
+  uint32_t command_partition_capacity;
   VkBuffer indices;
   VkBuffer arguments;
   VkBuffer counts;
@@ -1205,6 +1241,14 @@ typedef struct VkrVulkanPreparedWorldDraws {
   bool8_t lighting;
   bool8_t enabled;
 } VkrVulkanPreparedWorldDraws;
+
+typedef struct VkrVulkanPreparedOverlayDraw VkrVulkanPreparedOverlayDraw;
+typedef struct VkrVulkanPreparedOverlay {
+  VkrVulkanPacketPipeline pipeline;
+  VkrVulkanPreparedOverlayDraw *draws;
+  uint64_t roots_address;
+  uint32_t count;
+} VkrVulkanPreparedOverlay;
 
 typedef struct VkrVulkanPreparedTextDraw VkrVulkanPreparedTextDraw;
 typedef struct VkrVulkanPreparedUiDraw VkrVulkanPreparedUiDraw;
@@ -1331,6 +1375,9 @@ typedef struct VkrVulkanFrameSlot {
       serial once submission succeeds. */
   uint32_t sh_referenced_slots[VKR_FRAME_IBL_PROBE_MAX + 1u];
   uint32_t sh_referenced_slot_count;
+  uint64_t picking_request_id;
+  uint64_t picking_request_order;
+  uint64_t picking_submit_value;
   uint32_t picking_x;
   uint32_t picking_y;
   bool8_t picking_readback_pending;
@@ -1504,8 +1551,6 @@ typedef struct VkrVulkanGeometryMegabuffer {
   uint64_t copy_vertex_size;
   uint64_t copy_index_size;
   VkrVulkanRetiredGeometryMegabuffer retired[4];
-  uint64_t vertex_cursor;
-  uint64_t index_cursor;
   uint64_t vertex_live_bytes;
   uint64_t index_live_bytes;
   uint64_t vertex_high_water;
@@ -1540,6 +1585,7 @@ typedef struct VkrVulkanPublishedGeometry {
   VkrVulkanBuffer vertices;
   VkrVulkanBuffer indices;
   VkrGpuGeometryRow gpu_row;
+  VkrGeometryRangeAllocation ranges;
   uint32_t vertex_count;
   uint32_t index_count;
   uint32_t decode_count;
@@ -1634,6 +1680,7 @@ struct VkrVulkanRenderer {
   VkrGpuSlotTable *material_slots;
   VkrVulkanPublishedGeometry *published_geometries;
   VkrVulkanGeometryMegabuffer geometry_megabuffer;
+  VkrGeometryRanges geometry_ranges;
   VkrVulkanPublishedGeometry *retired_geometries;
   VkrVulkanPublishedTexture *published_textures;
   VkrVulkanPublishedTexture *retired_textures;
@@ -1711,6 +1758,10 @@ struct VkrVulkanRenderer {
   VkSemaphore timeline;
   uint64_t submit_value;
   uint64_t completed_value;
+  VkrPixelReadbackResult picking_completed_result;
+  uint64_t picking_request_order;
+  uint64_t picking_completed_order;
+  uint64_t picking_consumed_order;
   uint64_t candidate_publication_generation;
   uint64_t radiance_revision;
   uint64_t graph_revision;
@@ -1724,11 +1775,14 @@ struct VkrVulkanRenderer {
   bool8_t sentinel_uploaded;
   bool8_t target_dirty;
   bool8_t terminal_failure;
+  VkrRendererError submit_error;
   // One-shot so the bounded publication boundary cannot log per frame.
   bool8_t deferred_candidate_drop_logged;
 };
 
 VkDevice vkr_vk_renderer_device(const VkrVulkanRenderer *renderer);
+void vkr_vk_record_graph_resource_result(VkrVulkanRenderer *renderer,
+                                         VkResult result);
 void vkr_vk_advance_radiance_revision(VkrVulkanRenderer *renderer);
 VkFormat vkr_vk_texture_format(VkrTextureFormat format);
 VkImageAspectFlags vkr_vk_format_aspects(VkFormat format);
@@ -1789,7 +1843,8 @@ bool8_t vkr_vk_create_image_ex(VkrVulkanRenderer *renderer, uint32_t width,
                                VkImageViewType view_type,
                                VkImageUsageFlags usage,
                                VkrGpuAllocationOwner owner,
-                               VkrVulkanImage *out_image);
+                               VkrVulkanImage *out_image,
+                               VkrRendererError *out_error);
 bool8_t vkr_vk_create_target_set(VkrVulkanRenderer *renderer, uint32_t width,
                                  uint32_t height, uint32_t image_count,
                                  VkrVulkanTargetSet *out_targets);
@@ -1924,21 +1979,28 @@ void vkr_vk_record_ibl_bakes(VkrVulkanRenderer *renderer,
                              VkCommandBuffer command,
                              const VkrVulkanPreparedIbl *prepared);
 void vkr_vk_abandon_ibl_bake_recordings(VkrVulkanRenderer *renderer);
+void vkr_vk_fail_picking_readback(VkrVulkanRenderer *renderer,
+                                  VkrVulkanFrameSlot *slot);
 void vkr_vk_discard_unsubmitted_asset_uses(VkrVulkanRenderer *renderer);
 void vkr_vk_discard_ibl_bakes(VkrVulkanRenderer *renderer);
+bool8_t vkr_vk_prepare_editor_overlay(VkrVulkanRenderer *renderer,
+                                      VkrVulkanPreparedOverlay *out,
+                                      bool8_t picking);
+void vkr_vk_record_editor_overlay(VkrVulkanRenderer *renderer,
+                                  VkCommandBuffer command,
+                                  const VkrVulkanPreparedOverlay *overlay);
+
 bool8_t vkr_vk_prepare_packet_draws(
     VkrVulkanRenderer *renderer, VkrVulkanPreparedWorldDraws *out,
     VkrVulkanPacketPipeline pipeline, uint64_t instances, Mat4 view_projection,
     uint32_t target_width, uint32_t target_height, uint32_t shadow_texture,
     uint32_t transmission_texture);
 
-bool8_t vkr_vk_prepare_packet_fullscreen(VkrVulkanRenderer *renderer,
-                                         VkrVulkanPreparedFullscreen *out,
-                                         VkrVulkanPacketPipeline pipeline,
-                                         uint32_t texture_index,
-                                         uint64_t exposure_state,
-                                         uint32_t flags, uint32_t output_width,
-                                         uint32_t output_height);
+bool8_t vkr_vk_prepare_packet_fullscreen(
+    VkrVulkanRenderer *renderer, VkrVulkanPreparedFullscreen *out,
+    VkrVulkanPacketPipeline pipeline, uint32_t texture_index,
+    uint64_t exposure_state, uint32_t flags, bool8_t composite,
+    uint32_t output_width, uint32_t output_height);
 bool8_t vkr_vk_prepare_text_draws(VkrVulkanRenderer *renderer,
                                   VkrVulkanPreparedText *out,
                                   VkrVulkanPacketPipeline pipeline,
@@ -1986,13 +2048,12 @@ void *vkr_vk_frame_upload_allocate(VkrVulkanFrameSlot *slot, uint64_t size,
                                    uint64_t alignment, uint64_t *out_address,
                                    uint64_t *out_offset);
 bool8_t vkr_vk_reserve_frame_uploads(VkrVulkanRenderer *renderer,
-                                      VkrVulkanFrameSlot *slot,
-                                      uint64_t direct_bytes,
-                                      uint64_t candidate_bytes);
+                                     VkrVulkanFrameSlot *slot,
+                                     uint64_t direct_bytes,
+                                     uint64_t candidate_bytes);
 uint64_t vkr_vk_graph_upload_bound(VkrVulkanRenderer *renderer,
-                                     uint64_t direct_draw_bytes,
-                                     uint64_t text_bytes,
-                                     uint64_t ui_root_bytes);
+                                   uint64_t direct_draw_bytes,
+                                   uint64_t text_bytes, uint64_t ui_root_bytes);
 void vkr_vk_cmd_image_barrier(VkCommandBuffer command_buffer, VkImage image,
                               VkPipelineStageFlags2 src_stage,
                               VkAccessFlags2 src_access,

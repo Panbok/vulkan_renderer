@@ -109,6 +109,8 @@ typedef enum VkrRgResourceFlags {
    * HISTORY, and PER_FRAME_SLOT.
    */
   VKR_RG_RESOURCE_FLAG_RETAINED = 1 << 8,
+  /** Owned buffers retain completed backing capacity when demand decreases. */
+  VKR_RG_RESOURCE_FLAG_GROW_ONLY = 1 << 9,
 } VkrRgResourceFlags;
 
 /** Lifetime flags that cannot combine with RETAINED, for validation. */
@@ -527,6 +529,11 @@ typedef struct VkrRenderGraphFrameInfo {
   /** True only for the MetalFX temporal reconstruction topology. */
   bool8_t metalfx_enabled;
   bool8_t editor_enabled; /**< Whether editor is enabled */
+  bool8_t scene_rendering;
+  bool8_t editor_image_available;
+  bool8_t editor_overlay_enabled;
+  uint32_t editor_image_width;
+  uint32_t editor_image_height;
   /** True only when a completion-protected HZB history generation is valid. */
   bool8_t hzb_history_valid;
   /** Metal P6 occupied-depth feedback is enabled for this packet. */
@@ -537,6 +544,11 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t transmission_rough_mip_pass_count;
   /** True when the packet contains transmissive world work. */
   bool8_t transmission_pending;
+  /** Current draw-table strides; native GROW_ONLY backing may be larger. */
+  uint32_t gpu_draw_candidate_capacity;
+  uint32_t gpu_draw_visible_capacity;
+  uint32_t transmission_gpu_draw_candidate_capacity;
+  uint32_t transmission_gpu_draw_visible_capacity;
   /** True only when a focused capture requests the post-layer-3 peel. */
   bool8_t transmission_depth_diagnostic_enabled;
   /**

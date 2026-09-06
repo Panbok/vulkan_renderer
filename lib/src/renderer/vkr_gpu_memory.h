@@ -100,6 +100,13 @@ VkrGpuMemoryStatus vkr_gpu_memory_allocate(VkrGpuMemoryCore *memory,
                                            VkrGpuAllocationHandle *out_handle,
                                            VkrGpuPlacement *out_placement);
 
+/* Both reserved padding and resource bytes stay within the requested range.
+   Offsets remain relative to the core's full logical address space. */
+VkrGpuMemoryStatus vkr_gpu_memory_allocate_in_range(
+    VkrGpuMemoryCore *memory, uint64_t resource_size, uint64_t alignment,
+    uint32_t kind, uint64_t range_offset, uint64_t range_size,
+    VkrGpuAllocationHandle *out_handle, VkrGpuPlacement *out_placement);
+
 VkrGpuMemoryStatus vkr_gpu_memory_resolve(VkrGpuMemoryCore *memory,
                                           VkrGpuAllocationHandle handle,
                                           VkrGpuPlacement *out_placement);

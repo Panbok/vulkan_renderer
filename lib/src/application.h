@@ -87,8 +87,19 @@
 typedef struct ApplicationEditorViewport {
   bool8_t enabled;
   bool8_t scene_only;
+  bool8_t simulation_running;
+  bool8_t scene_rendering_stopped;
+  VkrRendererError scene_error;
+  float64_t simulation_time;
   VkrViewportFitMode fit_mode;
   float32_t render_scale;
+  /* Memory fallback scales Scene output independently of temporal reconstruction. */
+  float32_t output_scale;
+  uint64_t memory_relief_generation;
+  uint32_t rendered_width;
+  uint32_t rendered_height;
+  uint32_t output_width;
+  uint32_t output_height;
   uint32_t last_target_width;
   uint32_t last_target_height;
   VkrUiDockTree dock;
@@ -553,6 +564,7 @@ bool8_t application_create(Application *application,
       .scene_only = false_v,
       .fit_mode = VKR_VIEWPORT_FIT_STRETCH,
       .render_scale = 1.0f,
+      .output_scale = 1.0f,
       .last_target_width = 0,
       .last_target_height = 0,
   };
@@ -790,14 +802,33 @@ vkr_internal bool8_t application_editor_viewport_panel_rect(
         content_scale = scale.value;
     }
     VkrUiDockTree *dock = &application->editor_viewport.dock;
-    if (!vkr_ui_dock_layout(dock, panel, 8.0f * content_scale,
-                            28.0f * content_scale) ||
-        !vkr_ui_dock_find_panel(dock, VKR_UI_DOCK_PANEL_SCENE_VIEWPORT, NULL,
-                                &panel))
+    if (!vkr_ui_dock_layout(dock, panel,
+                            VKR_UI_DOCK_SPLITTER_PT * content_scale,
+                            VKR_UI_DOCK_TAB_BAR_PT * content_scale))
       return false_v;
+    // A hidden Scene tab still submits editor UI, never direct presentation.
+    if (!vkr_ui_dock_find_panel(dock, VKR_UI_DOCK_PANEL_SCENE_VIEWPORT, NULL,
+                                &panel) ||
+        !vkr_ui_rect_has_area(panel))
+      panel = (VkrUiRect){0.0f, 0.0f, 1.0f, 1.0f};
   }
   *out_panel_rect = (Vec4){panel.x, panel.y, panel.width, panel.height};
   return true_v;
+}
+
+vkr_internal bool8_t
+application_editor_scene_rendering_stopped(const Application *application) {
+  if (!application->editor_viewport.enabled)
+    return false_v;
+  if (application->editor_viewport.scene_rendering_stopped)
+    return true_v;
+  if (application->editor_viewport.scene_only)
+    return false_v;
+  VkrUiRect content = {0};
+  return !vkr_ui_dock_find_panel(&application->editor_viewport.dock,
+                                 VKR_UI_DOCK_PANEL_SCENE_VIEWPORT, NULL,
+                                 &content) ||
+         !vkr_ui_rect_has_area(content);
 }
 
 vkr_internal bool8_t application_editor_viewport_mapping(
@@ -808,7 +839,6 @@ vkr_internal bool8_t application_editor_viewport_mapping(
                           application, window_width, window_height, &panel))
     return false_v;
   const bool8_t renderer_scaled_scene =
-      !application->editor_viewport.scene_only &&
       application->renderer.backend_type == VKR_RENDERER_BACKEND_TYPE_METAL &&
       (application->renderer.render_scale != 1.0f ||
        application->renderer.upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL);
@@ -821,7 +851,9 @@ vkr_internal bool8_t application_editor_viewport_mapping(
   }
   return vkr_editor_viewport_mapping_from_panel_rect(
       panel, application->editor_viewport.fit_mode,
-      application->editor_viewport.render_scale, out_mapping);
+      application->editor_viewport.render_scale *
+          application->editor_viewport.output_scale,
+      out_mapping);
 }
 
 vkr_internal VkrRendererError
@@ -833,9 +865,10 @@ application_configure_editor_scene_output(Application *application) {
        application->renderer.upscale_mode != VKR_UPSCALE_MODE_METALFX_TEMPORAL))
     return VKR_RENDERER_ERROR_NONE;
 
+  if (application_editor_scene_rendering_stopped(application))
+    return VKR_RENDERER_ERROR_NONE;
   const bool8_t paneled =
       application->editor_viewport.enabled &&
-      !application->editor_viewport.scene_only &&
       vkr_subsystem_plan_includes(&application->subsystem_plan,
                                   VKR_RENDERER_SUBSYSTEM_EDITOR);
   if (!paneled)
@@ -843,8 +876,11 @@ application_configure_editor_scene_output(Application *application) {
 
   /* MetalFX scaler recreation waits for completion. Keep the previous Scene
      output while a dock gesture is live, let the compositor stretch it, and
-     resize once when the gesture releases. */
+     resize once when the gesture releases. Pending memory relief must realize
+     its smaller targets before it can authorize texture retries. */
   if (application->renderer.scene_output_extent_overridden &&
+      application->editor_viewport.memory_relief_generation ==
+          application->assets.material_system.texture_stream_relief_generation &&
       (application->editor_viewport.dock_capture.resizing_split ||
        application->editor_viewport.dock_capture.dragging_tab))
     return VKR_RENDERER_ERROR_NONE;
@@ -855,10 +891,35 @@ application_configure_editor_scene_output(Application *application) {
   if (!application_editor_viewport_panel_rect(application, pixels.width,
                                               pixels.height, &panel))
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
-  const uint32_t width = vkr_max_u32(1u, (uint32_t)vkr_round_f32(panel.z));
-  const uint32_t height = vkr_max_u32(1u, (uint32_t)vkr_round_f32(panel.w));
-  return vkr_renderer_set_scene_output_extent(&application->renderer, width,
-                                              height);
+  const float32_t scale = application->editor_viewport.output_scale;
+  const uint32_t width =
+      vkr_max_u32(1u, (uint32_t)vkr_round_f32(panel.z * scale));
+  const uint32_t height =
+      vkr_max_u32(1u, (uint32_t)vkr_round_f32(panel.w * scale));
+  return vkr_renderer_set_scene_output_extent(
+      &application->renderer, width, height,
+      application->editor_viewport.memory_relief_generation !=
+          application->assets.material_system.texture_stream_relief_generation);
+}
+
+/* A failed packet has already cancelled its speculative uses. Retry once on
+ * the next application frame; the 0.25 floor bounds successive OOM retries. */
+vkr_internal bool8_t application_reduce_scene_resolution(
+    Application *application, VkrRendererError error) {
+  ApplicationEditorViewport *viewport = &application->editor_viewport;
+  if (error != VKR_RENDERER_ERROR_OUT_OF_MEMORY || !viewport->enabled ||
+      application_editor_scene_rendering_stopped(application) ||
+      viewport->output_scale <= 0.25f)
+    return false_v;
+  viewport->output_scale = Max(0.25f, viewport->output_scale * 0.75f);
+  viewport->memory_relief_generation++;
+  viewport->scene_error = error;
+  vkr_picking_cancel(&application->picking);
+  vkr_window_set_mouse_capture(&application->window, false_v);
+  vkr_renderer_invalidate_temporal_history(&application->renderer);
+  log_warn("Scene memory limit reached; retrying at %.1f%% output resolution",
+           (double)(viewport->output_scale * 100.0f));
+  return true_v;
 }
 
 /* Release the acquired target and discard unsubmitted shadow reuse state. */
@@ -912,6 +973,18 @@ void application_draw_frame(Application *application, float64_t delta) {
     if (prepare_err != VKR_RENDERER_ERROR_FRAME_SKIPPED) {
       String8 err = vkr_renderer_get_error_string(prepare_err);
       log_error("Failed to prepare renderer frame: %s", string8_cstr(&err));
+      const bool8_t reduced =
+          application_reduce_scene_resolution(application, prepare_err);
+      if (!reduced && application->editor_viewport.enabled &&
+          !application_editor_scene_rendering_stopped(application) &&
+          prepare_err != VKR_RENDERER_ERROR_DEVICE_ERROR &&
+          prepare_err != VKR_RENDERER_ERROR_CAPTURE_BUSY &&
+          prepare_err != VKR_RENDERER_ERROR_RESOURCE_BUSY) {
+        application->editor_viewport.scene_error = prepare_err;
+        application->editor_viewport.scene_rendering_stopped = true_v;
+        vkr_picking_cancel(&application->picking);
+        vkr_window_set_mouse_capture(&application->window, false_v);
+      }
       if (prepare_err == VKR_RENDERER_ERROR_DEVICE_ERROR) {
         log_fatal("Renderer device is unusable; stopping");
         bitset8_clear(&application->app_flags, APPLICATION_FLAG_RUNNING);
@@ -929,29 +1002,34 @@ void application_draw_frame(Application *application, float64_t delta) {
                            setup.window_height);
     vkr_shadow_system_invalidate_fit_history(&application->shadow_system);
   }
-  VkrDeviceMemoryStats device_memory = {0};
-  const VkrDeviceMemoryStats *memory = NULL;
-  if (!application->assets.material_system
-           .texture_stream_budget_user_configured &&
-      setup.number - 1u >= application->texture_memory_sample_frame + 60u) {
-    application->texture_memory_sample_frame = setup.number - 1u;
-    if (vkr_renderer_get_device_memory_stats(&application->renderer,
-                                             &device_memory))
-      memory = &device_memory;
-  }
   const VkrResourceSubmissionState submission = {
       .submit_serial = vkr_renderer_get_submit_serial(&application->renderer),
       .completed_submit_serial =
           vkr_renderer_get_completed_submit_serial(&application->renderer),
       .frame_active = true_v,
   };
-  if (!vkr_render_assets_pump(&application->assets, submission, memory)) {
+  if (!vkr_render_assets_pump_publications(&application->assets, submission)) {
     application_cancel_frame(application, &setup,
                              VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED);
     return;
   }
+  VkrMaterialSystem *materials = &application->assets.material_system;
+  if (!materials->texture_stream_budget_user_configured &&
+      (materials->texture_stream_active_count ||
+       setup.number - 1u >= application->texture_memory_sample_frame + 60u)) {
+    VkrDeviceMemoryStats device_memory = {0};
+    if (vkr_renderer_get_device_memory_stats(&application->renderer,
+                                             &device_memory)) {
+      vkr_render_assets_refresh_texture_residency_budget(
+          &application->assets, &device_memory);
+      application->texture_memory_sample_frame = setup.number - 1u;
+    }
+  }
+  vkr_material_system_pump_texture_streams(materials, 32u);
   VkrAllocator *scratch = &application->frame_allocator;
 
+  const bool8_t scene_stopped =
+      application_editor_scene_rendering_stopped(application);
   VkrShadowFrameData shadow_frame = {0};
   uint32_t shadow_cascade_count = 0;
 
@@ -961,20 +1039,24 @@ void application_draw_frame(Application *application, float64_t delta) {
   VkrRendererError world_error = VKR_RENDERER_ERROR_NONE;
   VKR_METRICS_SCOPE_NS(application->metrics,
                        application->metric_ids.world_payload_build) {
-    world_error = vkr_scene_build_world_draws(
-        &application->assets.mesh_manager, &application->assets.material_system,
-        !publisher->publications_idle ||
-            !publisher->publications_idle(publisher->state),
-        publisher->publication_generation
-            ? publisher->publication_generation(publisher->state)
-            : 1u,
-        application->globals.view, application->globals.projection, scratch,
-        &world_payload, &visibility_stats);
+    if (!scene_stopped)
+      world_error = vkr_scene_build_world_draws(
+          &application->assets.mesh_manager,
+          &application->assets.material_system,
+          !publisher->publications_idle ||
+              !publisher->publications_idle(publisher->state),
+          publisher->publication_generation
+              ? publisher->publication_generation(publisher->state)
+              : 1u,
+          application->globals.view, application->globals.projection, scratch,
+          &world_payload, &visibility_stats);
   }
   if (world_error != VKR_RENDERER_ERROR_NONE) {
     application_cancel_frame(application, &setup, world_error);
     return;
   }
+  vkr_material_system_refresh_texture_stream_demand(
+      &application->assets.material_system);
   application->visibility_stats = visibility_stats;
 
   if (world_payload.gpu_shadow_candidate_count > 0u &&
@@ -1047,13 +1129,13 @@ void application_draw_frame(Application *application, float64_t delta) {
   }
 
   VkrPickingPassPayload picking_payload = {0};
-  bool8_t has_picking =
-      application->picking.state == VKR_PICKING_STATE_RENDER_PENDING;
+  bool8_t has_picking = !scene_stopped && application->picking.state ==
+                                              VKR_PICKING_STATE_RENDER_PENDING;
   /* An identifier capture has no producer unless the picking pass runs this
      frame, so the request itself schedules it. The catalog names the dependency
      as a subsystem; matching on the channel name instead would silently stop
      working the moment a channel is renamed. */
-  if (!has_picking && application->capture_request) {
+  if (!scene_stopped && !has_picking && application->capture_request) {
     for (uint32_t i = 0; i < application->capture_request->item_count; ++i) {
       const VkrCaptureChannelDescription *channel =
           vkr_renderer_capture_channel_get(
@@ -1069,11 +1151,13 @@ void application_draw_frame(Application *application, float64_t delta) {
     picking_payload.pending = true_v;
     picking_payload.x = application->picking.requested_x;
     picking_payload.y = application->picking.requested_y;
+    picking_payload.request_id =
+        application->picking.state == VKR_PICKING_STATE_RENDER_PENDING
+            ? application->picking.request_id : 0u;
   }
 
   bool8_t editor_enabled =
       application->editor_viewport.enabled &&
-      !application->editor_viewport.scene_only &&
       vkr_subsystem_plan_includes(&application->subsystem_plan,
                                   VKR_RENDERER_SUBSYSTEM_EDITOR);
   bool8_t has_editor = false_v;
@@ -1087,6 +1171,7 @@ void application_draw_frame(Application *application, float64_t delta) {
                                             setup.window_height,
                                             &editor_mapping) &&
         vkr_editor_viewport_build_payload(&editor_mapping, &editor_payload)) {
+      editor_payload.scene_rendering_stopped = scene_stopped;
       viewport_width = editor_mapping.target_width;
       viewport_height = editor_mapping.target_height;
       has_editor = true_v;
@@ -1096,8 +1181,9 @@ void application_draw_frame(Application *application, float64_t delta) {
   }
 
   if (editor_enabled) {
-    if (viewport_width != application->editor_viewport.last_target_width ||
-        viewport_height != application->editor_viewport.last_target_height) {
+    if (!scene_stopped &&
+        (viewport_width != application->editor_viewport.last_target_width ||
+         viewport_height != application->editor_viewport.last_target_height)) {
       vkr_camera_registry_resize_all(&application->camera_system,
                                      viewport_width, viewport_height);
       application->editor_viewport.last_target_width = viewport_width;
@@ -1123,12 +1209,6 @@ void application_draw_frame(Application *application, float64_t delta) {
         picking_payload.x, source_width, setup.render_width);
     picking_payload.y = application_picking_pixel(
         picking_payload.y, source_height, setup.render_height);
-    if (editor_enabled) {
-      application->picking.requested_x = picking_payload.x;
-      application->picking.requested_y = picking_payload.y;
-      vkr_picking_resize(&application->picking, setup.render_width,
-                         setup.render_height);
-    }
   }
   VkrUiPassPayload ui_payload = {0};
   const VkrScene *active_scene = application->active_scene;
@@ -1182,7 +1262,7 @@ void application_draw_frame(Application *application, float64_t delta) {
     }
   }
   application->world_text_update_count = 0u;
-  if (world_resources->initialized) {
+  if (!scene_stopped && world_resources->initialized) {
     VkrPreparedTextDraw *text_draws = NULL;
     uint32_t text_draw_count = 0u;
     if (!vkr_world_resources_prepare_text_draws(
@@ -1218,8 +1298,8 @@ void application_draw_frame(Application *application, float64_t delta) {
       .capture_pass_timestamps = pass_gpu_timing,
       .capture_submission_timing = submission_gpu_timing,
       .transmission_depth_diagnostic_enabled =
-          application->transmission_depth_diagnostic_enabled,
-      .shadow_debug_mode = application->shadow_debug_mode,
+          !scene_stopped && application->transmission_depth_diagnostic_enabled,
+      .shadow_debug_mode = scene_stopped ? 0u : application->shadow_debug_mode,
       .capture = application->capture_request,
   };
   const VkrGpuDebugPayload *debug_ptr =
@@ -1280,6 +1360,14 @@ void application_draw_frame(Application *application, float64_t delta) {
       .ibl_probe_count = frame_ibl_probe_count,
   };
 
+  VkrEditorOverlayDraw overlay_draws[VKR_EDITOR_OVERLAY_DRAW_MAX];
+  if (has_editor && !scene_stopped) {
+    editor_payload.overlay_draw_count = vkr_gizmo_system_build_draws(
+        &application->gizmo_system, application->globals.view,
+        application->globals.projection, &editor_mapping, overlay_draws);
+    editor_payload.overlay_draws = overlay_draws;
+  }
+
   VkrFrameInput packet = {
       .version = VKR_FRAME_INPUT_VERSION,
       .frame =
@@ -1312,10 +1400,10 @@ void application_draw_frame(Application *application, float64_t delta) {
               .gtao_power = application->globals.gtao_power,
               .render_mode = (uint32_t)application->globals.render_mode,
           },
-      .lighting = &frame_lighting,
-      .world = &world_payload,
+      .lighting = scene_stopped ? NULL : &frame_lighting,
+      .world = scene_stopped ? NULL : &world_payload,
       .shadow = has_shadow ? &shadow_payload : NULL,
-      .skybox = !application->config->disable_skybox &&
+      .skybox = !scene_stopped && !application->config->disable_skybox &&
                         skybox_payload.cubemap.id != 0 &&
                         skybox_payload.cubemap.generation != VKR_INVALID_ID
                     ? &skybox_payload
@@ -1335,6 +1423,37 @@ void application_draw_frame(Application *application, float64_t delta) {
         vkr_renderer_render_frame(&setup, &packet, &metrics, &validation);
   }
   if (submit_err == VKR_RENDERER_ERROR_NONE) {
+    if (has_editor && !scene_stopped) {
+      if (application->editor_viewport.memory_relief_generation >
+          application->assets.material_system
+              .texture_stream_relief_generation) {
+        VkrDeviceMemoryStats relieved_memory = {0};
+        if (vkr_renderer_get_device_memory_stats(&application->renderer,
+                                                 &relieved_memory)) {
+          vkr_render_assets_refresh_texture_residency_budget(
+              &application->assets, &relieved_memory);
+          application->texture_memory_sample_frame = setup.number - 1u;
+        }
+      }
+      vkr_material_system_commit_scene_memory_relief(
+          &application->assets.material_system,
+          application->editor_viewport.memory_relief_generation);
+      application->editor_viewport.scene_error = VKR_RENDERER_ERROR_NONE;
+      application->editor_viewport.rendered_width = viewport_width;
+      application->editor_viewport.rendered_height = viewport_height;
+      const bool8_t scaled_metal =
+          application->renderer.backend_type ==
+              VKR_RENDERER_BACKEND_TYPE_METAL &&
+          (application->renderer.render_scale != 1.0f ||
+           application->renderer.upscale_mode ==
+               VKR_UPSCALE_MODE_METALFX_TEMPORAL);
+      application->editor_viewport.output_width =
+          scaled_metal ? application->renderer.scene_output_width
+                       : viewport_width;
+      application->editor_viewport.output_height =
+          scaled_metal ? application->renderer.scene_output_height
+                       : viewport_height;
+    }
     vkr_shadow_system_commit_frame(
         &application->shadow_system,
         vkr_renderer_get_submit_serial(&application->renderer));
@@ -1362,7 +1481,6 @@ void application_draw_frame(Application *application, float64_t delta) {
   vkr_mesh_manager_get_metrics(&application->assets.mesh_manager,
                                &metrics.world.mesh_assets);
   if (submit_err == VKR_RENDERER_ERROR_NONE && has_picking &&
-      application->renderer.backend_type == VKR_RENDERER_BACKEND_TYPE_VULKAN &&
       application->picking.state == VKR_PICKING_STATE_RENDER_PENDING)
     application->picking.state = VKR_PICKING_STATE_READBACK_PENDING;
   if (submit_err != VKR_RENDERER_ERROR_CAPTURE_BUSY) {
@@ -1383,13 +1501,43 @@ void application_draw_frame(Application *application, float64_t delta) {
   vkr_renderer_metrics_collect(&application->renderer_metrics,
                                &metrics_context);
 #endif
-  if (submit_err != VKR_RENDERER_ERROR_NONE) {
-    if (validation.field_path && validation.message) {
+  VkrRendererError scene_error = submit_err;
+  const VkrMaterialTextureStreamStats texture_streams =
+      vkr_material_system_get_texture_stream_stats(
+          &application->assets.material_system);
+  /* Finish outstanding publication/retry work before judging remaining
+     texture pressure. Native frame OOM still requests immediate relief. */
+  if (scene_error == VKR_RENDERER_ERROR_NONE && has_editor && !scene_stopped &&
+      texture_streams.in_flight_count == 0u &&
+      (application->assets.material_system.texture_stream_memory_wait_count ||
+       texture_streams.demanded_evicted_count))
+    scene_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+  if (scene_error != VKR_RENDERER_ERROR_NONE) {
+    if (submit_err == VKR_RENDERER_ERROR_NONE) {
+      log_warn("Scene textures require memory relief");
+    } else if (validation.field_path && validation.message) {
       log_error("Packet validation failed: %s (%s)", validation.field_path,
                 validation.message);
     } else {
       String8 err = vkr_renderer_get_error_string(submit_err);
       log_error("Packet submit failed: %s", string8_cstr(&err));
+    }
+    const bool8_t reduced =
+        has_editor && !scene_stopped &&
+        application_reduce_scene_resolution(application, scene_error);
+    if (has_editor && !scene_stopped && !reduced &&
+        submit_err != VKR_RENDERER_ERROR_DEVICE_ERROR &&
+        submit_err != VKR_RENDERER_ERROR_CAPTURE_BUSY &&
+        submit_err != VKR_RENDERER_ERROR_RESOURCE_BUSY &&
+        submit_err != VKR_RENDERER_ERROR_FRAME_SKIPPED) {
+      /* A failed Scene must not starve presentation of the editor controls.
+         Resume is an explicit retry after unloading or changing the scene. */
+      application->editor_viewport.scene_error = scene_error;
+      application->editor_viewport.scene_rendering_stopped = true_v;
+      vkr_picking_cancel(&application->picking);
+      vkr_window_set_mouse_capture(&application->window, false_v);
+      log_warn("Scene rendering stopped after a frame failure; editor controls "
+               "remain available. Unload the scene or retry rendering.");
     }
     if (submit_err == VKR_RENDERER_ERROR_DEVICE_ERROR) {
       log_fatal("Renderer device is unusable; stopping");
@@ -1511,7 +1659,8 @@ void application_start(Application *application) {
       log_warn("Active camera handle invalid; skipping controller update");
     }
 
-    if (camera && !application->config->disable_camera_controller) {
+    if (camera && !application_editor_scene_rendering_stopped(application) &&
+        !application->config->disable_camera_controller) {
       vkr_camera_controller_update(&application->camera_controller, delta,
                                    application->ui_capture.mouse ||
                                        application->ui_capture.keyboard);
@@ -1524,7 +1673,7 @@ void application_start(Application *application) {
                                           application->active_scene);
     }
 
-    if (camera) {
+    if (camera && !application_editor_scene_rendering_stopped(application)) {
       VKR_METRICS_SCOPE_NS(application->metrics,
                            application->metric_ids.shadow_update) {
         VkrShadowCasterDepthBounds caster_bounds = {0};

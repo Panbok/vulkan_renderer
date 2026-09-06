@@ -237,8 +237,46 @@ static void test_mesh_cooked_round_trip_and_malformed_boundaries(void) {
           .material_handle = VKR_MATERIAL_HANDLE_INVALID,
       },
   };
+  VkrMeshSourceNode source_nodes[3] = {
+      {.name = string8_lit("group"),
+       .local = mat4_identity(),
+       .parent = UINT32_MAX,
+       .mesh = UINT32_MAX,
+       .mesh_variant = UINT32_MAX,
+       .camera = UINT32_MAX,
+       .skin = UINT32_MAX,
+       .light = UINT32_MAX,
+       .in_scene = true_v},
+      {.name = string8_lit("shared one"),
+       .local = mat4_identity(),
+       .parent = 0,
+       .mesh = 0,
+       .mesh_variant = 0,
+       .camera = UINT32_MAX,
+       .skin = UINT32_MAX,
+       .light = UINT32_MAX,
+       .in_scene = true_v},
+      {.name = string8_lit("shared two"),
+       .local = mat4_identity(),
+       .parent = 0,
+       .mesh = 0,
+       .mesh_variant = 0,
+       .camera = 2,
+       .skin = 3,
+       .light = UINT32_MAX,
+       .in_scene = true_v},
+  };
+  source_nodes[0].local.elements[12] = 10.0f;
+  source_nodes[1].local.elements[12] = 2.0f;
+  source_nodes[2].local.elements[12] = -2.0f;
+  VkrMeshSourceMesh source_mesh = {
+      .source_mesh_index = 0, .first_range = 0, .range_count = 2};
   String8 dependency_string = string8_lit(dependency_path);
   VkrMeshCookedEncodeInfo info = {
+      .source = {.nodes = {.data = source_nodes, .length = 3},
+                 .meshes = {.data = &source_mesh, .length = 1},
+                 .fingerprint = UINT64_C(0x123456789abcdef0),
+                 .animation_count = 2},
       .source_path = dependency_string,
       .dependency_paths = &dependency_string,
       .dependency_count = 1,
@@ -292,6 +330,18 @@ static void test_mesh_cooked_round_trip_and_malformed_boundaries(void) {
   assert(decoded.mesh_buffer.vertex_count == 6);
   assert(decoded.mesh_buffer.index_count == 6);
   assert(decoded.ranges.length == 2);
+  assert(decoded.source.nodes.length == 3u &&
+         decoded.source.meshes.length == 1u);
+  assert(decoded.source.fingerprint == UINT64_C(0x123456789abcdef0));
+  assert(decoded.source.animation_count == 2u);
+  assert(decoded.source.nodes.data[1].parent == 0u);
+  assert(decoded.source.nodes.data[2].mesh_variant == 0u);
+  assert(decoded.source.nodes.data[2].camera == 2u &&
+         decoded.source.nodes.data[2].skin == 3u);
+  assert(decoded.source.nodes.data[0].local.elements[12] == 10.0f);
+  assert(decoded.source.nodes.data[2].local.elements[12] == -2.0f);
+  assert(string8_equals(&decoded.source.nodes.data[1].name,
+                        &source_nodes[1].name));
   assert(decoded.ranges.data[0].range_id == 0);
   assert(decoded.ranges.data[0].first_index == 0);
   assert(decoded.ranges.data[1].range_id == 1);
@@ -336,6 +386,12 @@ static void test_mesh_cooked_round_trip_and_malformed_boundaries(void) {
   loader_info.range_count = 1;
   uint8_t *loader_artifact = NULL;
   uint64_t loader_artifact_size = 0;
+  // Source spans must describe the exact geometry range table being cooked.
+  assert(!vkr_mesh_cooked_encode(&scratch, &loader_info, &loader_artifact,
+                                 &loader_artifact_size));
+  VkrMeshSourceMesh loader_source_mesh = source_mesh;
+  loader_source_mesh.range_count = 1u;
+  loader_info.source.meshes.data = &loader_source_mesh;
   assert(vkr_mesh_cooked_encode(&scratch, &loader_info, &loader_artifact,
                                 &loader_artifact_size));
   assert(vkr_mesh_cooked_write_atomic(&scratch,
@@ -653,12 +709,79 @@ static void test_mesh_source_optimization_is_mandatory(void) {
   printf("  test_mesh_source_optimization_is_mandatory PASSED\n");
 }
 
+static void test_metadata_only_gltf_source_and_cooked_load(void) {
+  static const char source_path[] = "build/vkr_metadata_nodes.gltf";
+  static const char cooked_path[] = "build/vkr_metadata_nodes.vkb";
+  static const char json[] =
+      "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}"
+      "],"
+      "\"cameras\":[{\"type\":\"perspective\",\"perspective\":{\"yfov\":1,"
+      "\"znear\":0.1}}],"
+      "\"extensions\":{\"KHR_lights_punctual\":{\"lights\":[{\"type\":"
+      "\"point\",\"intensity\":3}]}},"
+      "\"nodes\":[{\"name\":\"Group\",\"translation\":[2,0,0],\"children\":[1,"
+      "2]},"
+      "{\"name\":\"Camera\",\"camera\":0},"
+      "{\"name\":\"Lamp\",\"extensions\":{\"KHR_lights_punctual\":{\"light\":0}"
+      "}}]}";
+  FILE *file = fopen(source_path, "wb");
+  assert(file &&
+         fwrite(json, 1u, sizeof(json) - 1u, file) == sizeof(json) - 1u);
+  assert(fclose(file) == 0);
+  Arena *scratch_arena = arena_create(MB(16), MB(2));
+  Arena *source_arena = arena_create(MB(16), MB(2));
+  assert(scratch_arena && source_arena);
+  VkrAllocator scratch = {.ctx = scratch_arena};
+  VkrAllocator source = {.ctx = source_arena};
+  assert(vkr_allocator_arena(&scratch) && vkr_allocator_arena(&source));
+  VkrArenaPool pool = {0};
+  assert(vkr_arena_pool_create(MB(1), 1, &scratch, &pool));
+  VkrGeometrySystem geometry = {0};
+  VkrMeshLoaderContext context = {.arena_pool = &pool,
+                                  .geometry_system = &geometry};
+  VkrResourceLoader loader = vkr_mesh_loader_create(&context);
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  VkrMeshCookStats stats = {0};
+  assert(vkr_mesh_cook_source(string8_lit(source_path),
+                              string8_lit(cooked_path), &source, &scratch,
+                              &stats, &error));
+  assert(stats.range_count == 0 && stats.vertex_count == 0 &&
+         stats.decoded_bytes == 0);
+  for (uint32_t pass = 0; pass < 2; ++pass) {
+    String8 path = pass ? string8_lit(cooked_path) : string8_lit(source_path);
+    VkrResourceHandleInfo handle = {0};
+    assert(loader.load(&loader, path, &scratch, &handle, &error));
+    const VkrMeshLoaderResult *mesh = handle.as.mesh;
+    assert(mesh && !mesh->has_mesh_buffer && mesh->submeshes.length == 0);
+    assert(mesh->load_metrics.upload_bytes == 0);
+    assert(mesh->source.nodes.length == 3 && mesh->source.meshes.length == 0);
+    assert(mesh->source.nodes.data[0].local.elements[12] == 2.0f);
+    assert(mesh->source.nodes.data[1].parent == 0 &&
+           mesh->source.nodes.data[1].camera == 0);
+    assert(mesh->source.nodes.data[2].punctual.kind == 2 &&
+           mesh->source.nodes.data[2].punctual.intensity == 3.0f);
+    assert(mesh->source.nodes.data[2].mesh == UINT32_MAX);
+    loader.unload(&loader, &handle, path);
+    assert(pool.pool.allocated == 0);
+    if (!pass)
+      assert(remove(source_path) == 0);
+  }
+  assert(remove(cooked_path) == 0);
+  vkr_arena_pool_destroy(&scratch, &pool);
+  vkr_allocator_release_global_accounting(&source);
+  vkr_allocator_release_global_accounting(&scratch);
+  arena_destroy(source_arena);
+  arena_destroy(scratch_arena);
+  printf("  test_metadata_only_gltf_source_and_cooked_load PASSED\n");
+}
+
 bool32_t run_mesh_cooked_tests(void) {
   printf("--- Starting Mesh Cooked Tests ---\n");
   test_packed_geometry_validation_contract();
   test_tangent_generation_repairs_parallel_accumulation();
   test_mesh_cooked_round_trip_and_malformed_boundaries();
   test_mesh_source_optimization_is_mandatory();
+  test_metadata_only_gltf_source_and_cooked_load();
   printf("--- Mesh Cooked Tests Completed ---\n");
   return true_v;
 }

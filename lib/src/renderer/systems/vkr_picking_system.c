@@ -19,6 +19,7 @@ bool8_t vkr_picking_init(VkrPickingContext *ctx, uint32_t width,
     return false_v;
   }
   ctx->state = VKR_PICKING_STATE_IDLE;
+  ctx->request_id = 0u;
   ctx->initialized = true_v;
   return true_v;
 }
@@ -45,6 +46,9 @@ void vkr_picking_request(VkrPickingContext *ctx, uint32_t x, uint32_t y) {
   }
   ctx->requested_x = x;
   ctx->requested_y = y;
+  ctx->request_id++;
+  if (ctx->request_id == 0u)
+    ctx->request_id = 1u;
   ctx->result_object_id = 0;
   ctx->state = VKR_PICKING_STATE_RENDER_PENDING;
 }
@@ -70,6 +74,10 @@ VkrPickResult vkr_picking_get_result(struct VkrRenderer *renderer,
     ctx->state = VKR_PICKING_STATE_IDLE;
     return result;
   }
+  /* Cancellation leaves submitted GPU work alive. A later click must never
+     consume that earlier pixel, even when its coordinates are unchanged. */
+  if (readback.request_id != ctx->request_id)
+    return result;
   if (readback.status == VKR_READBACK_STATUS_READY) {
     if (readback.valid) {
       ctx->result_object_id = readback.data;

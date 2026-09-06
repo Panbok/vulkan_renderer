@@ -391,8 +391,11 @@ bool8_t vkr_vk_create_buffer(VkrVulkanRenderer *renderer,
           requirements.memoryRequirements.alignment, allocation->owner,
           &allocation->pooled_allocation))
     return false_v;
-  if (vkCreateBuffer(device, &buffer_info, NULL, &out_buffer->handle) !=
-      VK_SUCCESS) {
+  const VkResult create_result =
+      vkCreateBuffer(device, &buffer_info, NULL, &out_buffer->handle);
+  if (create_result != VK_SUCCESS) {
+    if (allocation->owner == VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH)
+      vkr_vk_record_graph_resource_result(renderer, create_result);
     if (allocation->pooled_allocation.valid)
       (void)vkr_vulkan_memory_pool_release(
           renderer->memory_pool, &allocation->pooled_allocation,
@@ -450,6 +453,8 @@ bool8_t vkr_vk_create_buffer(VkrVulkanRenderer *renderer,
       allocation->pool_key.memory_type_index = allocation->memory_type_index;
     }
     if (allocate_result != VK_SUCCESS) {
+      if (allocation->owner == VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH)
+        vkr_vk_record_graph_resource_result(renderer, allocate_result);
       log_error("Vulkan dedicated buffer allocation failed "
                 "(size=%llu, type=%u, class=%u, result=%d)",
                 (unsigned long long)allocation->memory_size,
@@ -487,6 +492,8 @@ bool8_t vkr_vk_create_buffer(VkrVulkanRenderer *renderer,
   const VkResult bind_result = vkBindBufferMemory(
       device, out_buffer->handle, allocation->memory, allocation->offset);
   if (bind_result != VK_SUCCESS) {
+    if (allocation->owner == VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH)
+      vkr_vk_record_graph_resource_result(renderer, bind_result);
     log_error("Vulkan buffer bind failed "
               "(size=%llu, type=%u, class=%u, offset=%llu, result=%d)",
               (unsigned long long)allocation->memory_size,
@@ -575,14 +582,22 @@ void vkr_vk_destroy_image(VkrVulkanRenderer *renderer, VkrVulkanImage *image) {
   MemZero(image, sizeof(*image));
 }
 
-bool8_t vkr_vk_create_image_ex(VkrVulkanRenderer *renderer, uint32_t width,
-                               uint32_t height, uint32_t mip_levels,
-                               uint32_t array_layers, VkFormat format,
-                               VkImageCreateFlags flags,
-                               VkImageViewType view_type,
-                               VkImageUsageFlags usage,
-                               VkrGpuAllocationOwner owner,
-                               VkrVulkanImage *out_image) {
+vkr_internal VkrRendererError vkr_vk_native_resource_error(VkResult result) {
+  return result == VK_ERROR_OUT_OF_HOST_MEMORY ||
+                 result == VK_ERROR_OUT_OF_DEVICE_MEMORY
+             ? VKR_RENDERER_ERROR_OUT_OF_MEMORY
+             : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+}
+
+bool8_t
+vkr_vk_create_image_ex(VkrVulkanRenderer *renderer, uint32_t width,
+                       uint32_t height, uint32_t mip_levels,
+                       uint32_t array_layers, VkFormat format,
+                       VkImageCreateFlags flags, VkImageViewType view_type,
+                       VkImageUsageFlags usage, VkrGpuAllocationOwner owner,
+                       VkrVulkanImage *out_image, VkrRendererError *out_error) {
+  if (out_error)
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
   if (!width || !height || !mip_levels || !array_layers ||
       format == VK_FORMAT_UNDEFINED)
     return false_v;
@@ -654,6 +669,10 @@ bool8_t vkr_vk_create_image_ex(VkrVulkanRenderer *renderer, uint32_t width,
   const VkResult create_result =
       vkCreateImage(device, &image_info, NULL, &out_image->handle);
   if (create_result != VK_SUCCESS) {
+    if (out_error)
+      *out_error = vkr_vk_native_resource_error(create_result);
+    if (allocation->owner == VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH)
+      vkr_vk_record_graph_resource_result(renderer, create_result);
     log_error("Vulkan native image creation failed "
               "(%ux%u, mips=%u, layers=%u, format=%u, result=%d)",
               width, height, mip_levels, array_layers, format,
@@ -680,6 +699,10 @@ bool8_t vkr_vk_create_image_ex(VkrVulkanRenderer *renderer, uint32_t width,
     const VkResult allocate_result =
         vkAllocateMemory(device, &allocate_info, NULL, &allocation->memory);
     if (allocate_result != VK_SUCCESS) {
+      if (out_error)
+        *out_error = vkr_vk_native_resource_error(allocate_result);
+      if (allocation->owner == VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH)
+        vkr_vk_record_graph_resource_result(renderer, allocate_result);
       log_error("Vulkan dedicated image allocation failed "
                 "(%ux%u, mips=%u, layers=%u, format=%u, bytes=%llu, type=%u, "
                 "result=%d)",
@@ -702,6 +725,10 @@ bool8_t vkr_vk_create_image_ex(VkrVulkanRenderer *renderer, uint32_t width,
   const VkResult bind_result = vkBindImageMemory(
       device, out_image->handle, allocation->memory, allocation->offset);
   if (bind_result != VK_SUCCESS) {
+    if (out_error)
+      *out_error = vkr_vk_native_resource_error(bind_result);
+    if (allocation->owner == VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH)
+      vkr_vk_record_graph_resource_result(renderer, bind_result);
     log_error("Vulkan image bind failed "
               "(%ux%u, mips=%u, layers=%u, format=%u, offset=%llu, result=%d)",
               width, height, mip_levels, array_layers, format,
@@ -721,6 +748,10 @@ bool8_t vkr_vk_create_image_ex(VkrVulkanRenderer *renderer, uint32_t width,
   const VkResult view_result =
       vkCreateImageView(device, &view_info, NULL, &out_image->view);
   if (view_result != VK_SUCCESS) {
+    if (out_error)
+      *out_error = vkr_vk_native_resource_error(view_result);
+    if (allocation->owner == VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH)
+      vkr_vk_record_graph_resource_result(renderer, view_result);
     log_error("Vulkan image view creation failed "
               "(%ux%u, mips=%u, layers=%u, format=%u, view=%u, result=%d)",
               width, height, mip_levels, array_layers, format, view_type,
@@ -858,7 +889,7 @@ bool8_t vkr_vk_create_resources(VkrVulkanRenderer *renderer) {
           VK_IMAGE_VIEW_TYPE_2D,
           VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
               VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-          VKR_GPU_ALLOCATION_OWNER_SHADER, &renderer->sentinel_image)) {
+          VKR_GPU_ALLOCATION_OWNER_SHADER, &renderer->sentinel_image, NULL)) {
     log_error("Vulkan failed to create the sentinel image");
     return false_v;
   }
@@ -932,6 +963,10 @@ bool8_t vkr_vk_create_resources(VkrVulkanRenderer *renderer) {
 }
 
 bool8_t vkr_vk_create_descriptor_slot_tables(VkrVulkanRenderer *renderer) {
+  if (!vkr_geometry_ranges_create(&renderer->geometry_ranges,
+                                   renderer->allocator,
+                                   renderer->config.geometry_capacity))
+    return false_v;
   const VkPhysicalDeviceDescriptorBufferPropertiesEXT *properties =
       vkr_vulkan_device_descriptor_properties(renderer->device);
   const VkrVulkanDescriptorLayout *resource_layout =

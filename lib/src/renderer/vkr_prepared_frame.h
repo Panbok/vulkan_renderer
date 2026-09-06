@@ -7,6 +7,11 @@
  * retain their independent last-submission lifetime. */
 typedef struct VkrPreparedFrame {
   VkrFrameInput input;
+  bool8_t scene_rendering;
+  bool8_t editor_image_available;
+  uint32_t editor_image_width;
+  uint32_t editor_image_height;
+  Vec4 editor_image_rect_px;
   VkrTemporalFrame temporal;
   VkrExposureFrame exposure;
   VkrBloomFrame bloom;

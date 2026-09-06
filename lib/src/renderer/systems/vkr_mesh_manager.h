@@ -79,6 +79,8 @@ typedef struct VkrSubMeshDesc {
 } VkrSubMeshDesc;
 
 typedef struct VkrMeshLoadDesc {
+  uint32_t
+      source_mesh_index_plus_one; // 0: legacy whole asset, 1: source span 0.
   String8 mesh_path;
   VkrTransform transform;
   VkrPipelineDomain pipeline_domain;

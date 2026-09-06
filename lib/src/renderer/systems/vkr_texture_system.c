@@ -1172,9 +1172,11 @@ vkr_internal bool8_t vkr_texture_system_publish_prepared(
     *out_error = VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
     return false_v;
   }
-  if (!system->asset_publisher->publish_texture(system->asset_publisher->state,
-                                                logical_handle, prepared)) {
-    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+  const VkrRendererError publish_error =
+      system->asset_publisher->publish_texture(system->asset_publisher->state,
+                                               logical_handle, prepared);
+  if (publish_error != VKR_RENDERER_ERROR_NONE) {
+    *out_error = publish_error;
     return false_v;
   }
   *out_backend_handle =
@@ -1734,6 +1736,35 @@ bool8_t vkr_texture_system_create_writable(VkrTextureSystem *system,
   return true_v;
 }
 
+/* Final destruction belongs to the texture system. Loader unload releases
+ * its acquired reference and never dispatches back through the resource table. */
+vkr_internal bool8_t vkr_texture_system_destroy_unreferenced(
+    VkrTextureSystem *system, VkrTextureEntry *entry) {
+  const uint32_t texture_index = entry->index;
+  if (texture_index == system->default_texture.id - 1u)
+    return true_v;
+  VkrTexture *texture = &system->textures.data[texture_index];
+  const char *stable_name = entry->name;
+  if (!vkr_texture_destroy(system, texture)) {
+    log_warn("Texture '%s' remains registered because GPU destruction failed",
+             stable_name);
+    return false_v;
+  }
+  const bool8_t removed =
+      vkr_hash_table_remove_VkrTextureEntry(&system->texture_map, stable_name);
+  assert_log(removed, "Texture lookup changed during native destruction");
+  texture->description.id = VKR_INVALID_ID;
+  texture->description.generation = VKR_INVALID_ID;
+  system->texture_keys_by_index[texture_index] = NULL;
+  if (vkr_dmemory_owns_ptr(&system->string_memory, (void *)stable_name)) {
+    vkr_allocator_free(&system->string_allocator, (void *)stable_name,
+                       string_length(stable_name) + 1u,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  }
+  system->next_free_index = Min(system->next_free_index, texture_index);
+  return true_v;
+}
+
 bool8_t vkr_texture_system_release(VkrTextureSystem *system,
                                    String8 texture_name) {
   assert_log(system != NULL, "System is NULL");
@@ -1787,27 +1818,8 @@ bool8_t vkr_texture_system_release(VkrTextureSystem *system,
   }
 
   bool8_t released = true_v;
-  if (entry->ref_count == 0 && entry->auto_release) {
-    uint32_t texture_index = entry->index;
-    if (texture_index != system->default_texture.id - 1) {
-      String8 unload_name = texture_name;
-      if (entry->name) {
-        unload_name = string8_create_from_cstr((const uint8_t *)entry->name,
-                                               string_length(entry->name));
-      }
-      VkrResourceHandleInfo handle_info = {
-          .type = VKR_RESOURCE_TYPE_TEXTURE,
-          .loader_id = vkr_resource_system_get_loader_id(
-              VKR_RESOURCE_TYPE_TEXTURE, unload_name),
-          .as.texture = (VkrTextureHandle){
-              .id = system->textures.data[texture_index].description.id,
-              .generation =
-                  system->textures.data[texture_index].description.generation}};
-      vkr_resource_system_unload(&handle_info, unload_name);
-      released = vkr_texture_system_get_by_handle(
-                     system, handle_info.as.texture) == NULL;
-    }
-  }
+  if (entry->ref_count == 0 && entry->auto_release)
+    released = vkr_texture_system_destroy_unreferenced(system, entry);
 
   if (queryless_key) {
     free(queryless_key);
@@ -3400,8 +3412,8 @@ bool8_t vkr_texture_system_finalize_prepared_load(
   VkrTextureEntry *existing_entry = vkr_hash_table_get_VkrTextureEntry(
       &system->texture_map, (const char *)name.str);
   if (existing_entry) {
-    /* The async request is not an owner. Its consumer retains this canonical
-       handle after resolving the request. */
+    /* The loader retains this canonical result for its request. Direct
+       texture-system callers acquire their own reference separately. */
     VkrTexture *existing_texture =
         &system->textures.data[existing_entry->index];
     *out_handle = (VkrTextureHandle){

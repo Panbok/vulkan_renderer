@@ -64,6 +64,10 @@ typedef struct VkrGeometryMegabufferMetrics {
   uint64_t index_uploaded_bytes_total;
   uint64_t rejected_publications;
   uint64_t generation_replacements;
+  uint64_t reusable_range_bytes;
+  uint64_t retired_range_bytes;
+  uint64_t live_range_count;
+  uint64_t retired_range_count;
   uint32_t generation;
 } VkrGeometryMegabufferMetrics;
 

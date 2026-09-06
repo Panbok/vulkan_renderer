@@ -462,7 +462,7 @@ VkrRendererError vkr_scene_build_world_draws(
           .min_extents = submesh->min_extents,
           .max_extents = submesh->max_extents,
           .alpha = alpha,
-          .submesh_index = s,
+          .submesh_index = submesh->geometry_submesh_index,
           .object_id = object_id,
           .temporal_index = temporal_instance_offset + instance_slot,
           .temporal_generation = instance->generation,

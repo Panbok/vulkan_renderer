@@ -25,7 +25,7 @@ typedef struct VkrRendererImplCapabilities {
 
 enum {
   VKR_RENDERER_IMPL_TIMING_NAME_CAPACITY = 64,
-  VKR_RENDERER_IMPL_MAX_GRAPH_PASSES = 97,
+  VKR_RENDERER_IMPL_MAX_GRAPH_PASSES = 98,
   VKR_RENDERER_IMPL_MAX_PASS_TIMINGS = VKR_RENDERER_IMPL_MAX_GRAPH_PASSES,
   VKR_RENDERER_IMPL_DRAW_BUCKET_COUNT = 4,
   VKR_RENDERER_IMPL_SHADOW_CASCADE_COUNT = 8,
@@ -144,9 +144,18 @@ typedef struct VkrRendererImplMemoryMetrics {
   uint64_t upload_ring_acquires;
   uint64_t upload_ring_reuses;
   uint64_t upload_ring_busy_failures;
+  uint64_t upload_ring_total_capacity_bytes;
+  uint64_t upload_ring_slot_capacity_bytes;
+  uint64_t upload_ring_max_requested_bytes;
+  uint64_t upload_ring_oversize_failures;
   uint64_t readback_ring_acquires;
   uint64_t readback_ring_reuses;
   uint64_t readback_ring_busy_failures;
+  uint64_t readback_ring_total_capacity_bytes;
+  uint64_t readback_ring_slot_capacity_bytes;
+  uint64_t readback_ring_max_requested_bytes;
+  uint64_t readback_ring_oversize_failures;
+  bool8_t transfer_ring_demand_metrics_supported;
 } VkrRendererImplMemoryMetrics;
 
 typedef struct VkrRendererImplMaterialMetrics {

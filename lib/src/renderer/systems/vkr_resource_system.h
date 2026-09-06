@@ -27,6 +27,9 @@ typedef enum VkrResourceType {
   VKR_RESOURCE_TYPE_CUSTOM,
 } VkrResourceType;
 
+/* Texture loader results retain one texture reference until unload, including
+ * PENDING_GPU. Resolved views borrow that request-owned reference; consumers
+ * acquire a separate reference before ending the request if they keep it. */
 typedef struct VkrResourceHandleInfo {
   uint32_t
       loader_id; // id of the loader that created this handle, or VKR_INVALID_ID

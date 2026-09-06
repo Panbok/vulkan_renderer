@@ -157,8 +157,8 @@ vkr_internal bool8_t vkr_metal_packet_ensure_geometry_megabuffer(
     if (indices.metal_buffer)
       (void)vkr_metal_memory_device_retire(renderer->memory, indices.handle,
                                            renderer->submit_value);
-    (void)vkr_metal_memory_device_collect(
-        renderer->memory, renderer->completion.signaledValue, NULL);
+    (void)vkr_metal_packet_collect_memory(
+        renderer, renderer->completion.signaledValue, NULL);
     return false_v;
   }
 
@@ -175,18 +175,26 @@ vkr_internal bool8_t vkr_metal_packet_ensure_geometry_megabuffer(
                                            renderer->submit_value);
       return false_v;
     }
-    if (mega->vertex_cursor)
+    /* Previous publication uploads can still write the source generation. */
+    [encoder barrierAfterQueueStages:MTLStageBlit
+                        beforeStages:MTLStageBlit
+                   visibilityOptions:MTL4VisibilityOptionDevice];
+    if (mega->vertex_high_water)
       [encoder copyFromBuffer:(id<MTLBuffer>)mega->vertices.metal_buffer
                  sourceOffset:0u
                      toBuffer:(id<MTLBuffer>)vertices.metal_buffer
             destinationOffset:0u
-                         size:mega->vertex_cursor];
-    if (mega->index_cursor)
+                         size:mega->vertex_high_water];
+    if (mega->index_high_water)
       [encoder copyFromBuffer:(id<MTLBuffer>)mega->indices.metal_buffer
                  sourceOffset:0u
                      toBuffer:(id<MTLBuffer>)indices.metal_buffer
             destinationOffset:0u
-                         size:mega->index_cursor];
+                         size:mega->index_high_water];
+    /* New publications may reuse holes covered by this preservation copy. */
+    [encoder barrierAfterStages:MTLStageBlit
+              beforeQueueStages:MTLStageBlit
+              visibilityOptions:MTL4VisibilityOptionDevice];
     if (!vkr_metal_packet_submit_upload(renderer, encoder, slice)) {
       (void)vkr_metal_memory_device_retire(renderer->memory, vertices.handle,
                                            renderer->submit_value);
@@ -236,13 +244,17 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
   if (!out_handle)
     return false_v;
   *out_handle = VKR_MESH_HANDLE_INVALID;
-  if (!renderer || !create_info || (renderer->frame_prepared && !renderer->reserved_frame_slot) ||
+  if (!renderer || !create_info ||
+      (renderer->frame_prepared && !renderer->reserved_frame_slot) ||
       (requested_handle.id > renderer->max_meshes) ||
       (requested_handle.id > 0 &&
        requested_handle.generation == VKR_INVALID_ID) ||
       !create_info->vertices || create_info->vertex_count == 0 ||
       !create_info->indices || create_info->index_count == 0 ||
-      create_info->submesh_count > renderer->max_submeshes_per_mesh ||
+      create_info->submesh_count >
+          (UINT32_MAX >> VKR_INSTANCE_TEMPORAL_SURFACE_SHIFT) ||
+      (uint64_t)create_info->submesh_count >
+          SIZE_MAX / sizeof(VkrMetalPacketSubmeshCreateInfo) ||
       (create_info->submesh_count > 0 && !create_info->submeshes) ||
       (uint64_t)create_info->vertex_count >
           UINT64_MAX / sizeof(VkrPackedStaticVertex) ||
@@ -252,8 +264,10 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
       (uint64_t)create_info->index_count > UINT64_MAX / sizeof(uint32_t)) {
     log_error("Metal geometry publication rejected before upload "
               "(frame_prepared=%u handle=%u:%u vertices=%u indices=%u)",
-              renderer ? (renderer->frame_prepared && !renderer->reserved_frame_slot) : 0u, requested_handle.id,
-              requested_handle.generation,
+              renderer
+                  ? (renderer->frame_prepared && !renderer->reserved_frame_slot)
+                  : 0u,
+              requested_handle.id, requested_handle.generation,
               create_info ? create_info->vertex_count : 0u,
               create_info ? create_info->index_count : 0u);
     return false_v;
@@ -292,6 +306,14 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
     if (slot->live)
       continue;
     const uint32_t generation = slot->generation;
+    const uint32_t submesh_count = Max(create_info->submesh_count, 1u);
+    const uint64_t submesh_bytes =
+        (uint64_t)submesh_count * sizeof(VkrMetalPacketSubmeshCreateInfo);
+    VkrMetalPacketSubmeshCreateInfo *submeshes = vkr_allocator_alloc(
+        renderer->allocator, submesh_bytes, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    if (!submeshes)
+      return false_v;
+
     const uint64_t vertex_bytes =
         (uint64_t)create_info->vertex_count * sizeof(VkrPackedStaticVertex);
     const uint64_t decode_bytes = (uint64_t)create_info->decode_count *
@@ -299,32 +321,24 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
     const uint64_t index_bytes =
         (uint64_t)create_info->index_count * sizeof(uint32_t);
     VkrMetalPacketGeometryMegabuffer *mega = &renderer->geometry_megabuffer;
-    const bool8_t vertex_cursor_alignable =
-        mega->vertex_cursor <= UINT64_MAX - 31u;
-    const uint64_t vertex_offset =
-        vertex_cursor_alignable
-            ? vkr_metal_packet_align_up(mega->vertex_cursor, 32u)
-            : UINT64_MAX;
-    const bool8_t vertex_data_fits = vertex_offset <= UINT64_MAX - vertex_bytes;
-    const uint64_t vertex_data_end =
-        vertex_data_fits ? vertex_offset + vertex_bytes : UINT64_MAX;
-    const bool8_t decode_alignable = vertex_data_end <= UINT64_MAX - 15u;
-    const uint64_t decode_offset =
-        decode_alignable ? vkr_metal_packet_align_up(vertex_data_end, 16u)
-                         : UINT64_MAX;
-    const bool8_t decode_fits = decode_offset <= UINT64_MAX - decode_bytes;
-    const uint64_t vertex_end =
-        decode_fits ? decode_offset + decode_bytes : UINT64_MAX;
-    const uint64_t index_offset =
-        vkr_metal_packet_align_up(mega->index_cursor, sizeof(uint32_t));
-    const bool8_t offsets_valid =
-        vertex_cursor_alignable && vertex_data_fits && decode_alignable &&
-        decode_fits && index_offset <= UINT64_MAX - index_bytes &&
-        vertex_offset / sizeof(VkrPackedStaticVertex) <= UINT32_MAX &&
-        index_offset / sizeof(uint32_t) <= UINT32_MAX;
+    if (!vkr_geometry_ranges_collect(&renderer->geometry_ranges,
+                                     renderer->completion.signaledValue)) {
+      vkr_allocator_free(renderer->allocator, submeshes, submesh_bytes,
+                         VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+      return false_v;
+    }
+    VkrGeometryRangeAllocation ranges = {0};
+    const bool8_t offsets_valid = vkr_geometry_ranges_allocate(
+        &renderer->geometry_ranges, create_info->vertex_count,
+        create_info->decode_count, create_info->index_count,
+        mega->live ? mega->vertices.length : 0u,
+        mega->live ? mega->indices.length : 0u, &ranges);
+    const uint64_t vertex_offset = ranges.vertex_offset;
+    const uint64_t decode_offset = ranges.decode_offset;
+    const uint64_t index_offset = ranges.index_offset;
     const bool8_t capacity_ready =
         offsets_valid && vkr_metal_packet_ensure_geometry_megabuffer(
-                             renderer, vertex_end, index_offset + index_bytes);
+                             renderer, ranges.vertex_end, ranges.index_end);
     const bool8_t vertices_uploaded =
         capacity_ready &&
         vkr_metal_packet_upload_buffer_chunks_at(
@@ -346,11 +360,22 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
                 offsets_valid, capacity_ready, vertices_uploaded,
                 indices_uploaded);
       mega->rejected_publications++;
+      /* Earlier chunks or a backing growth copy may already be submitted. */
+      if (offsets_valid) {
+        if (!vkr_geometry_ranges_retire(&renderer->geometry_ranges, ranges,
+                                        renderer->submit_value))
+          log_fatal("Metal failed to retire unpublished geometry ranges");
+        (void)vkr_geometry_ranges_collect(&renderer->geometry_ranges,
+                                          renderer->completion.signaledValue);
+      }
+      vkr_allocator_free(renderer->allocator, submeshes, submesh_bytes,
+                         VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
       *slot = (VkrMetalPacketMesh){.generation = generation};
       return false_v;
     }
     slot->vertices = mega->vertices;
     slot->indices = mega->indices;
+    slot->ranges = ranges;
     if (requested_handle.id) {
       slot->generation = requested_handle.generation;
     } else {
@@ -374,8 +399,7 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
         .flags = 1u,
         .decode_address = mega->vertices.gpu_address + decode_offset,
     };
-    VkrMetalPacketSubmeshCreateInfo *submeshes =
-        renderer->submeshes + (uint64_t)i * renderer->max_submeshes_per_mesh;
+    slot->submeshes = submeshes;
     if (create_info->submesh_count > 0) {
       MemCopy(submeshes, create_info->submeshes,
               (uint64_t)create_info->submesh_count * sizeof(*submeshes));
@@ -389,19 +413,34 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
     }
     slot->last_use_submit_value = renderer->submit_value;
     slot->live = true_v;
-    mega->vertex_cursor = vertex_end;
-    mega->index_cursor = index_offset + index_bytes;
+    VKR_METAL_DIAGNOSTIC(renderer, "geometry_ranges_allocate",
+                         "handle=%u:%u vertex=%llu decode=%llu index=%llu "
+                         "vertex_end=%llu index_end=%llu",
+                         i + 1u, slot->generation,
+                         (unsigned long long)ranges.vertex_offset,
+                         (unsigned long long)ranges.decode_offset,
+                         (unsigned long long)ranges.index_offset,
+                         (unsigned long long)ranges.vertex_end,
+                         (unsigned long long)ranges.index_end);
+    mega->vertex_high_water = Max(mega->vertex_high_water, ranges.vertex_end);
+    mega->index_high_water = Max(mega->index_high_water, ranges.index_end);
     mega->vertex_live_bytes += vertex_bytes;
     mega->index_live_bytes += index_bytes;
     mega->decode_metadata_live_bytes += decode_bytes;
     mega->vertex_uploaded_bytes_total += vertex_bytes;
     mega->index_uploaded_bytes_total += index_bytes;
     mega->decode_metadata_uploaded_bytes_total += decode_bytes;
-    mega->vertex_high_water = Max(mega->vertex_high_water, mega->vertex_cursor);
-    mega->index_high_water = Max(mega->index_high_water, mega->index_cursor);
     mega->decode_metadata_high_water =
         Max(mega->decode_metadata_high_water, mega->decode_metadata_live_bytes);
+    vkr_metal_packet_geometry_ranges_diagnostic(renderer,
+                                                "geometry_ranges_published");
     *out_handle = (VkrMeshHandle){.id = i + 1, .generation = slot->generation};
+    VKR_METAL_DIAGNOSTIC(
+        renderer, "mesh_publish",
+        "handle=%u:%u ranges=%u vertex_high_water=%llu index_high_water=%llu",
+        out_handle->id, out_handle->generation, slot->submesh_count,
+        (unsigned long long)mega->vertex_high_water,
+        (unsigned long long)mega->index_high_water);
     return true_v;
   }
   return false_v;
@@ -411,266 +450,512 @@ bool8_t vkr_metal_packet_renderer_create_mesh(
     VkrMetalPacketRenderer *renderer,
     const VkrMetalPacketMeshCreateInfo *create_info,
     VkrMeshHandle *out_handle) {
-  return vkr_metal_packet_renderer_create_mesh_internal(
-      renderer, create_info, VKR_MESH_HANDLE_INVALID, out_handle);
+  @autoreleasepool {
+    return vkr_metal_packet_renderer_create_mesh_internal(
+        renderer, create_info, VKR_MESH_HANDLE_INVALID, out_handle);
+  }
+}
+
+vkr_internal void vkr_metal_packet_copy_loaded_submeshes(
+    VkrMetalPacketSubmeshCreateInfo *submeshes,
+    const VkrMeshLoaderResult *loader_result) {
+  for (uint32_t i = 0; i < loader_result->submeshes.length; ++i) {
+    const VkrMeshLoaderSubmeshRange *range = &loader_result->submeshes.data[i];
+    submeshes[i] = (VkrMetalPacketSubmeshCreateInfo){
+        .first_index = range->first_index,
+        .index_count = range->index_count,
+        .vertex_offset = range->vertex_offset,
+        .decode_index = range->decode_index,
+    };
+  }
 }
 
 bool8_t vkr_metal_packet_renderer_create_loaded_mesh(
     VkrMetalPacketRenderer *renderer,
     const struct VkrMeshLoaderResult *loader_result,
     VkrMeshHandle *out_handle) {
-  if (!out_handle)
-    return false_v;
-  *out_handle = VKR_MESH_HANDLE_INVALID;
-  if (!renderer || !loader_result || !loader_result->has_mesh_buffer ||
-      loader_result->mesh_buffer.vertex_size != sizeof(VkrPackedStaticVertex) ||
-      loader_result->mesh_buffer.vertex_layout !=
-          VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1 ||
-      !loader_result->mesh_buffer.decodes ||
-      loader_result->mesh_buffer.decode_count == 0 ||
-      loader_result->mesh_buffer.index_size != sizeof(uint32_t) ||
-      loader_result->submeshes.length == 0 ||
-      loader_result->submeshes.length > renderer->max_submeshes_per_mesh ||
-      loader_result->submeshes.length > VKR_METAL_PACKET_LOADER_SUBMESH_MAX)
-    return false_v;
-  VkrMetalPacketSubmeshCreateInfo
-      submeshes[VKR_METAL_PACKET_LOADER_SUBMESH_MAX];
-  for (uint64_t i = 0; i < loader_result->submeshes.length; ++i) {
-    const VkrMeshLoaderSubmeshRange *range = &loader_result->submeshes.data[i];
-    submeshes[i] = (VkrMetalPacketSubmeshCreateInfo){
-        .first_index = range->first_index,
-        .index_count = range->index_count,
-        .vertex_offset = range->vertex_offset,
-        .decode_index = range->decode_index,
-    };
+  @autoreleasepool {
+    if (!out_handle)
+      return false_v;
+    *out_handle = VKR_MESH_HANDLE_INVALID;
+    if (!renderer || !loader_result || !loader_result->has_mesh_buffer ||
+        loader_result->mesh_buffer.vertex_size !=
+            sizeof(VkrPackedStaticVertex) ||
+        loader_result->mesh_buffer.vertex_layout !=
+            VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1 ||
+        !loader_result->mesh_buffer.decodes ||
+        loader_result->mesh_buffer.decode_count == 0 ||
+        loader_result->mesh_buffer.index_size != sizeof(uint32_t) ||
+        !loader_result->submeshes.data || !loader_result->submeshes.length ||
+        loader_result->submeshes.length >
+            (UINT32_MAX >> VKR_INSTANCE_TEMPORAL_SURFACE_SHIFT) ||
+        loader_result->submeshes.length >
+            SIZE_MAX / sizeof(VkrMetalPacketSubmeshCreateInfo))
+      return false_v;
+    const uint64_t submesh_bytes = loader_result->submeshes.length *
+                                   sizeof(VkrMetalPacketSubmeshCreateInfo);
+    VkrMetalPacketSubmeshCreateInfo *submeshes = vkr_allocator_alloc(
+        renderer->allocator, submesh_bytes, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    if (!submeshes)
+      return false_v;
+    vkr_metal_packet_copy_loaded_submeshes(submeshes, loader_result);
+    const bool8_t created = vkr_metal_packet_renderer_create_mesh(
+        renderer,
+        &(VkrMetalPacketMeshCreateInfo){
+            .vertices = loader_result->mesh_buffer.vertices,
+            .vertex_count = loader_result->mesh_buffer.vertex_count,
+            .decodes = loader_result->mesh_buffer.decodes,
+            .decode_count = loader_result->mesh_buffer.decode_count,
+            .indices = loader_result->mesh_buffer.indices,
+            .index_count = loader_result->mesh_buffer.index_count,
+            .submeshes = submeshes,
+            .submesh_count = (uint32_t)loader_result->submeshes.length,
+        },
+        out_handle);
+    vkr_allocator_free(renderer->allocator, submeshes,
+                       loader_result->submeshes.length * sizeof(*submeshes),
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    return created;
   }
-  return vkr_metal_packet_renderer_create_mesh(
-      renderer,
-      &(VkrMetalPacketMeshCreateInfo){
-          .vertices = loader_result->mesh_buffer.vertices,
-          .vertex_count = loader_result->mesh_buffer.vertex_count,
-          .decodes = loader_result->mesh_buffer.decodes,
-          .decode_count = loader_result->mesh_buffer.decode_count,
-          .indices = loader_result->mesh_buffer.indices,
-          .index_count = loader_result->mesh_buffer.index_count,
-          .submeshes = submeshes,
-          .submesh_count = (uint32_t)loader_result->submeshes.length,
-      },
-      out_handle);
 }
 
 bool8_t vkr_metal_packet_renderer_publish_loaded_mesh(
     VkrMetalPacketRenderer *renderer, VkrGeometryHandle handle,
     const struct VkrMeshLoaderResult *loader_result) {
-  if (!renderer || !loader_result || !loader_result->has_mesh_buffer ||
-      loader_result->mesh_buffer.vertex_size != sizeof(VkrPackedStaticVertex) ||
-      loader_result->mesh_buffer.vertex_layout !=
-          VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1 ||
-      !loader_result->mesh_buffer.decodes ||
-      loader_result->mesh_buffer.decode_count == 0 ||
-      loader_result->mesh_buffer.index_size != sizeof(uint32_t) ||
-      handle.id == 0 || handle.id > renderer->max_meshes ||
-      loader_result->submeshes.length == 0 ||
-      loader_result->submeshes.length > renderer->max_submeshes_per_mesh ||
-      loader_result->submeshes.length > VKR_METAL_PACKET_LOADER_SUBMESH_MAX)
-    return false_v;
-  VkrMetalPacketSubmeshCreateInfo
-      submeshes[VKR_METAL_PACKET_LOADER_SUBMESH_MAX];
-  for (uint64_t i = 0; i < loader_result->submeshes.length; ++i) {
-    const VkrMeshLoaderSubmeshRange *range = &loader_result->submeshes.data[i];
-    submeshes[i] = (VkrMetalPacketSubmeshCreateInfo){
-        .first_index = range->first_index,
-        .index_count = range->index_count,
-        .vertex_offset = range->vertex_offset,
-        .decode_index = range->decode_index,
-    };
-  }
-  VkrMetalPacketMesh *existing = &renderer->meshes[handle.id - 1];
-  if (existing->live) {
-    if (existing->generation != handle.generation ||
-        existing->vertex_count != loader_result->mesh_buffer.vertex_count ||
-        existing->index_count != loader_result->mesh_buffer.index_count ||
-        existing->decode_count != loader_result->mesh_buffer.decode_count)
+  @autoreleasepool {
+    if (!renderer || !loader_result || !loader_result->has_mesh_buffer ||
+        loader_result->mesh_buffer.vertex_size !=
+            sizeof(VkrPackedStaticVertex) ||
+        loader_result->mesh_buffer.vertex_layout !=
+            VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1 ||
+        !loader_result->mesh_buffer.decodes ||
+        loader_result->mesh_buffer.decode_count == 0 ||
+        loader_result->mesh_buffer.index_size != sizeof(uint32_t) ||
+        handle.id == 0 || handle.id > renderer->max_meshes ||
+        !loader_result->submeshes.data || !loader_result->submeshes.length ||
+        loader_result->submeshes.length >
+            (UINT32_MAX >> VKR_INSTANCE_TEMPORAL_SURFACE_SHIFT) ||
+        loader_result->submeshes.length >
+            SIZE_MAX / sizeof(VkrMetalPacketSubmeshCreateInfo))
       return false_v;
-    for (uint32_t i = 0; i < loader_result->submeshes.length; ++i) {
-      const VkrMetalPacketSubmeshCreateInfo *submesh = &submeshes[i];
-      if (submesh->index_count == 0 ||
-          submesh->first_index > existing->index_count ||
-          submesh->index_count > existing->index_count - submesh->first_index ||
-          submesh->decode_index >= loader_result->mesh_buffer.decode_count)
+    VkrMetalPacketMesh *existing = &renderer->meshes[handle.id - 1];
+    if (existing->live) {
+      if (existing->generation != handle.generation ||
+          existing->vertex_count != loader_result->mesh_buffer.vertex_count ||
+          existing->index_count != loader_result->mesh_buffer.index_count ||
+          existing->decode_count != loader_result->mesh_buffer.decode_count)
         return false_v;
+      for (uint32_t i = 0; i < loader_result->submeshes.length; ++i) {
+        const VkrMeshLoaderSubmeshRange *submesh =
+            &loader_result->submeshes.data[i];
+        if (submesh->index_count == 0 ||
+            submesh->first_index > existing->index_count ||
+            submesh->index_count >
+                existing->index_count - submesh->first_index ||
+            submesh->decode_index >= loader_result->mesh_buffer.decode_count)
+          return false_v;
+      }
     }
-    VkrMetalPacketSubmeshCreateInfo *destination =
-        renderer->submeshes +
-        (uint64_t)(handle.id - 1) * renderer->max_submeshes_per_mesh;
-    MemZero(destination,
-            (uint64_t)renderer->max_submeshes_per_mesh * sizeof(*destination));
-    MemCopy(destination, submeshes,
-            loader_result->submeshes.length * sizeof(*submeshes));
-    existing->submesh_count = (uint32_t)loader_result->submeshes.length;
-    return true_v;
+    if (existing->live &&
+        existing->submesh_count == loader_result->submeshes.length) {
+      vkr_metal_packet_copy_loaded_submeshes(existing->submeshes,
+                                             loader_result);
+      return true_v;
+    }
+    const uint64_t submesh_bytes = loader_result->submeshes.length *
+                                   sizeof(VkrMetalPacketSubmeshCreateInfo);
+    VkrMetalPacketSubmeshCreateInfo *submeshes = vkr_allocator_alloc(
+        renderer->allocator, submesh_bytes, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    if (!submeshes)
+      return false_v;
+    vkr_metal_packet_copy_loaded_submeshes(submeshes, loader_result);
+    if (existing->live) {
+      // Prepared candidates and direct draws already contain value copies.
+      vkr_allocator_free(renderer->allocator, existing->submeshes,
+                         (uint64_t)existing->submesh_count *
+                             sizeof(*existing->submeshes),
+                         VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+      existing->submeshes = submeshes;
+      existing->submesh_count = (uint32_t)loader_result->submeshes.length;
+      return true_v;
+    }
+    VkrMeshHandle published = VKR_MESH_HANDLE_INVALID;
+    const VkrMeshHandle requested = {.id = handle.id,
+                                     .generation = handle.generation};
+    const bool8_t created = vkr_metal_packet_renderer_create_mesh_internal(
+        renderer,
+        &(VkrMetalPacketMeshCreateInfo){
+            .vertices = loader_result->mesh_buffer.vertices,
+            .vertex_count = loader_result->mesh_buffer.vertex_count,
+            .decodes = loader_result->mesh_buffer.decodes,
+            .decode_count = loader_result->mesh_buffer.decode_count,
+            .indices = loader_result->mesh_buffer.indices,
+            .index_count = loader_result->mesh_buffer.index_count,
+            .submeshes = submeshes,
+            .submesh_count = (uint32_t)loader_result->submeshes.length,
+        },
+        requested, &published);
+    vkr_allocator_free(renderer->allocator, submeshes,
+                       loader_result->submeshes.length * sizeof(*submeshes),
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    return created && published.id == handle.id &&
+           published.generation == handle.generation;
   }
-  VkrMeshHandle published = VKR_MESH_HANDLE_INVALID;
-  const VkrMeshHandle requested = {.id = handle.id,
-                                   .generation = handle.generation};
-  return vkr_metal_packet_renderer_create_mesh_internal(
-             renderer,
-             &(VkrMetalPacketMeshCreateInfo){
-                 .vertices = loader_result->mesh_buffer.vertices,
-                 .vertex_count = loader_result->mesh_buffer.vertex_count,
-                 .decodes = loader_result->mesh_buffer.decodes,
-                 .decode_count = loader_result->mesh_buffer.decode_count,
-                 .indices = loader_result->mesh_buffer.indices,
-                 .index_count = loader_result->mesh_buffer.index_count,
-                 .submeshes = submeshes,
-                 .submesh_count = (uint32_t)loader_result->submeshes.length,
-             },
-             requested, &published) &&
-         published.id == handle.id && published.generation == handle.generation;
 }
 
 bool8_t vkr_metal_packet_renderer_publish_geometry(
     VkrMetalPacketRenderer *renderer, VkrGeometryHandle handle,
     const struct VkrGeometryConfig *geometry) {
-  if (!renderer || !geometry || !geometry->vertices || !geometry->indices ||
-      geometry->vertex_layout != VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1 ||
-      geometry->vertex_size != sizeof(VkrPackedStaticVertex) ||
-      !geometry->decodes || geometry->decode_count == 0 ||
-      geometry->index_size != sizeof(uint32_t) || geometry->vertex_count == 0 ||
-      geometry->index_count == 0)
-    return false_v;
-  VkrMeshHandle published = VKR_MESH_HANDLE_INVALID;
-  const VkrMeshHandle requested = {.id = handle.id,
-                                   .generation = handle.generation};
-  return vkr_metal_packet_renderer_create_mesh_internal(
-             renderer,
-             &(VkrMetalPacketMeshCreateInfo){
-                 .vertices = geometry->vertices,
-                 .vertex_count = geometry->vertex_count,
-                 .decodes = geometry->decodes,
-                 .decode_count = geometry->decode_count,
-                 .indices = geometry->indices,
-                 .index_count = geometry->index_count,
-             },
-             requested, &published) &&
-         published.id == requested.id &&
-         published.generation == requested.generation;
+  @autoreleasepool {
+    if (!renderer || !geometry || !geometry->vertices || !geometry->indices ||
+        geometry->vertex_layout != VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1 ||
+        geometry->vertex_size != sizeof(VkrPackedStaticVertex) ||
+        !geometry->decodes || geometry->decode_count == 0 ||
+        geometry->index_size != sizeof(uint32_t) ||
+        geometry->vertex_count == 0 || geometry->index_count == 0)
+      return false_v;
+    VkrMeshHandle published = VKR_MESH_HANDLE_INVALID;
+    const VkrMeshHandle requested = {.id = handle.id,
+                                     .generation = handle.generation};
+    return vkr_metal_packet_renderer_create_mesh_internal(
+               renderer,
+               &(VkrMetalPacketMeshCreateInfo){
+                   .vertices = geometry->vertices,
+                   .vertex_count = geometry->vertex_count,
+                   .decodes = geometry->decodes,
+                   .decode_count = geometry->decode_count,
+                   .indices = geometry->indices,
+                   .index_count = geometry->index_count,
+               },
+               requested, &published) &&
+           published.id == requested.id &&
+           published.generation == requested.generation;
+  }
 }
 
 bool8_t vkr_metal_packet_renderer_destroy_mesh(VkrMetalPacketRenderer *renderer,
                                                VkrMeshHandle handle) {
-  if (!renderer || handle.id == 0 || handle.id > renderer->max_meshes)
-    return false_v;
-  VkrMetalPacketMesh *slot = &renderer->meshes[handle.id - 1];
-  if (!slot->live || slot->generation != handle.generation)
-    return false_v;
-  VkrMetalPacketGeometryMegabuffer *mega = &renderer->geometry_megabuffer;
-  const uint64_t vertex_bytes =
-      (uint64_t)slot->vertex_count * sizeof(VkrPackedStaticVertex);
-  const uint64_t index_bytes = (uint64_t)slot->index_count * sizeof(uint32_t);
-  mega->vertex_live_bytes -= Min(mega->vertex_live_bytes, vertex_bytes);
-  mega->index_live_bytes -= Min(mega->index_live_bytes, index_bytes);
-  mega->decode_metadata_live_bytes -=
-      Min(mega->decode_metadata_live_bytes,
-          (uint64_t)slot->decode_count * sizeof(VkrGpuGeometryDecodeRecord));
-  slot->live = false_v;
-  slot->generation =
-      slot->generation == UINT32_MAX ? 1u : slot->generation + 1u;
-  slot->vertices = (VkrMetalBufferResource){0};
-  slot->indices = (VkrMetalBufferResource){0};
-  slot->gpu_row = (VkrGpuGeometryRow){0};
-  MemZero(renderer->submeshes +
-              (uint64_t)(handle.id - 1) * renderer->max_submeshes_per_mesh,
-          (uint64_t)renderer->max_submeshes_per_mesh *
-              sizeof(*renderer->submeshes));
-  slot->submesh_count = 0;
-  return true_v;
+  @autoreleasepool {
+    if (!renderer || handle.id == 0 || handle.id > renderer->max_meshes)
+      return false_v;
+    VkrMetalPacketMesh *slot = &renderer->meshes[handle.id - 1];
+    if (!slot->live || slot->generation != handle.generation)
+      return false_v;
+    VKR_METAL_DIAGNOSTIC(renderer, "mesh_destroy", "handle=%u:%u last_use=%llu",
+                         handle.id, handle.generation,
+                         (unsigned long long)slot->last_use_submit_value);
+    const uint64_t retire_value =
+        Max(slot->last_use_submit_value, renderer->submit_value);
+    if (!vkr_geometry_ranges_retire(&renderer->geometry_ranges, slot->ranges,
+                                    retire_value))
+      return false_v;
+    VKR_METAL_DIAGNOSTIC(
+        renderer, "geometry_ranges_retire",
+        "handle=%u:%u vertex=%llu decode=%llu index=%llu retire_after=%llu",
+        handle.id, handle.generation,
+        (unsigned long long)slot->ranges.vertex_offset,
+        (unsigned long long)slot->ranges.decode_offset,
+        (unsigned long long)slot->ranges.index_offset,
+        (unsigned long long)retire_value);
+    slot->ranges = (VkrGeometryRangeAllocation){0};
+    VkrMetalPacketGeometryMegabuffer *mega = &renderer->geometry_megabuffer;
+    const uint64_t vertex_bytes =
+        (uint64_t)slot->vertex_count * sizeof(VkrPackedStaticVertex);
+    const uint64_t index_bytes = (uint64_t)slot->index_count * sizeof(uint32_t);
+    mega->vertex_live_bytes -= Min(mega->vertex_live_bytes, vertex_bytes);
+    mega->index_live_bytes -= Min(mega->index_live_bytes, index_bytes);
+    mega->decode_metadata_live_bytes -=
+        Min(mega->decode_metadata_live_bytes,
+            (uint64_t)slot->decode_count * sizeof(VkrGpuGeometryDecodeRecord));
+    slot->live = false_v;
+    slot->generation =
+        slot->generation == UINT32_MAX ? 1u : slot->generation + 1u;
+    slot->vertices = (VkrMetalBufferResource){0};
+    slot->indices = (VkrMetalBufferResource){0};
+    slot->gpu_row = (VkrGpuGeometryRow){0};
+    // Frame preparation copies range values; GPU work never borrows this array.
+    vkr_allocator_free(renderer->allocator, slot->submeshes,
+                       (uint64_t)slot->submesh_count * sizeof(*slot->submeshes),
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    slot->submeshes = NULL;
+    slot->submesh_count = 0;
+    vkr_metal_packet_geometry_ranges_diagnostic(renderer,
+                                                "geometry_ranges_unpublished");
+    return true_v;
+  }
 }
 
 bool8_t vkr_metal_packet_renderer_create_material(
     VkrMetalPacketRenderer *renderer,
     const VkrMetalPacketMaterialCreateInfo *create_info,
     VkrMaterialHandle *out_handle) {
-  if (!out_handle)
+  @autoreleasepool {
+    if (!out_handle)
+      return false_v;
+    *out_handle = VKR_MATERIAL_HANDLE_INVALID;
+    if (!renderer ||
+        (renderer->frame_prepared && !renderer->reserved_frame_slot) ||
+        !vkr_metal_packet_material_info_valid(create_info))
+      return false_v;
+    if (!@available(macOS 26.0, *))
+      return false_v;
+    id<MTLSamplerState> material_sampler =
+        vkr_metal_packet_default_material_sampler(renderer, 1);
+    if (!material_sampler || material_sampler.gpuResourceID._impl == 0)
+      return false_v;
+    const uint64_t material_sampler_id = material_sampler.gpuResourceID._impl;
+    for (uint32_t i = 0; i < renderer->max_materials; ++i) {
+      VkrMetalPacketMaterial *slot = &renderer->packet_materials[i];
+      if (slot->live)
+        continue;
+      const uint32_t generation = slot->generation;
+      MemZero(slot->textures, sizeof(slot->textures));
+      slot->row = (VkrMetalMaterialHandle){0};
+      slot->row_index = 0;
+      MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
+      descriptor.textureType = MTLTextureType2D;
+      descriptor.pixelFormat = MTLPixelFormatRGBA8Unorm;
+      descriptor.mipmapLevelCount = 1;
+      descriptor.usage = MTLTextureUsageShaderRead;
+      bool8_t textures_created = true_v;
+      for (uint32_t texture_index = 0;
+           textures_created && texture_index < ArrayCount(slot->textures);
+           ++texture_index) {
+        const VkrMetalPacketRgba8TextureCreateInfo *texture =
+            &create_info->textures[texture_index];
+        descriptor.width = texture->width;
+        descriptor.height = texture->height;
+        const uint64_t texture_size =
+            (uint64_t)texture->width * texture->height * 4u;
+        textures_created =
+            vkr_metal_memory_device_create_texture(
+                renderer->memory, descriptor, VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+                &slot->textures[texture_index]) == VKR_METAL_MEMORY_STATUS_OK &&
+            vkr_metal_packet_upload(
+                renderer, texture->pixels, texture_size, nil, NULL, 0, nil,
+                (id<MTLTexture>)slot->textures[texture_index].metal_texture,
+                texture->width, texture->height);
+      }
+      [descriptor release];
+      if (!textures_created) {
+        for (uint32_t texture_index = 0;
+             texture_index < ArrayCount(slot->textures); ++texture_index) {
+          if (!slot->textures[texture_index].metal_texture)
+            continue;
+          (void)vkr_metal_memory_device_retire(
+              renderer->memory, slot->textures[texture_index].handle,
+              renderer->submit_value);
+        }
+        (void)vkr_metal_packet_collect_memory(
+            renderer, renderer->completion.signaledValue, NULL);
+        *slot = (VkrMetalPacketMaterial){.generation = generation};
+        return false_v;
+      }
+      const VkrPacketMaterialConstants material_constants =
+          vkr_packet_derive_material_constants(&create_info->pbr,
+                                               create_info->alpha_cutoff,
+                                               create_info->alpha_mode);
+      VkrMetalMaterialPublishedRow row = {
+          .material =
+              {
+                  .base_color_texture_id = slot->textures[0].resource_id,
+                  .normal_texture_id = slot->textures[1].resource_id,
+                  .orm_texture_id = slot->textures[2].resource_id,
+                  .emissive_texture_id = slot->textures[3].resource_id,
+                  .base_color_sampler_id = material_sampler_id,
+                  .normal_sampler_id = material_sampler_id,
+                  .orm_sampler_id = material_sampler_id,
+                  .emissive_sampler_id = material_sampler_id,
+                  .material_id = create_info->material_id,
+                  .flags = create_info->texture_flags,
+                  .alpha_mode = material_constants.alpha_mode,
+                  .temporal_reactivity =
+                      Clamp(create_info->pbr.temporal_reactivity, 0.0f, 1.0f),
+                  .material_emissive = material_constants.emissive,
+                  .material_dielectric_specular =
+                      material_constants.dielectric_specular,
+                  .material_surface = material_constants.surface,
+                  .material_alpha = material_constants.alpha,
+                  .material_attenuation_color =
+                      material_constants.attenuation_color,
+              },
+          .transmission =
+              {
+                  .transmission_texture_id = slot->textures[4].resource_id,
+                  .thickness_texture_id = slot->textures[5].resource_id,
+                  .transmission_sampler_id = material_sampler_id,
+                  .thickness_sampler_id = material_sampler_id,
+              },
+      };
+      MemCopy(row.material.tint, create_info->tint, sizeof(row.material.tint));
+      const VkrMetalMaterialStatus publish_status =
+          vkr_metal_material_table_device_publish(renderer->materials, &row,
+                                                  &slot->row);
+      const VkrMetalMaterialStatus resolve_status =
+          publish_status == VKR_METAL_MATERIAL_STATUS_OK
+              ? vkr_metal_material_table_device_resolve(
+                    renderer->materials, slot->row, &slot->row_index)
+              : publish_status;
+      if (publish_status != VKR_METAL_MATERIAL_STATUS_OK ||
+          resolve_status != VKR_METAL_MATERIAL_STATUS_OK) {
+        if (publish_status == VKR_METAL_MATERIAL_STATUS_OK)
+          (void)vkr_metal_material_table_device_retire(
+              renderer->materials, slot->row, renderer->submit_value);
+        for (uint32_t texture_index = 0;
+             texture_index < ArrayCount(slot->textures); ++texture_index) {
+          (void)vkr_metal_memory_device_retire(
+              renderer->memory, slot->textures[texture_index].handle,
+              renderer->submit_value);
+        }
+        (void)vkr_metal_packet_collect_memory(
+            renderer, renderer->completion.signaledValue, NULL);
+        *slot = (VkrMetalPacketMaterial){.generation = generation};
+        return false_v;
+      }
+      slot->generation =
+          slot->generation == UINT32_MAX ? 1u : slot->generation + 1u;
+      if (slot->generation == 0)
+        slot->generation = 1;
+      slot->last_use_submit_value = renderer->submit_value;
+      slot->pbr = create_info->pbr;
+      slot->alpha_mode = create_info->alpha_mode;
+      slot->alpha_cutoff = create_info->alpha_cutoff;
+      slot->owns_textures = true_v;
+      slot->double_sided = false_v;
+      slot->live = true_v;
+      *out_handle =
+          (VkrMaterialHandle){.id = i + 1, .generation = slot->generation};
+      return true_v;
+    }
     return false_v;
-  *out_handle = VKR_MATERIAL_HANDLE_INVALID;
-  if (!renderer || (renderer->frame_prepared && !renderer->reserved_frame_slot) ||
-      !vkr_metal_packet_material_info_valid(create_info))
-    return false_v;
-  if (!@available(macOS 26.0, *))
-    return false_v;
-  id<MTLSamplerState> material_sampler =
-      vkr_metal_packet_default_material_sampler(renderer, 1);
-  if (!material_sampler || material_sampler.gpuResourceID._impl == 0)
-    return false_v;
-  const uint64_t material_sampler_id = material_sampler.gpuResourceID._impl;
-  for (uint32_t i = 0; i < renderer->max_materials; ++i) {
-    VkrMetalPacketMaterial *slot = &renderer->packet_materials[i];
-    if (slot->live)
-      continue;
-    const uint32_t generation = slot->generation;
+  }
+}
+
+bool8_t
+vkr_metal_packet_renderer_destroy_material(VkrMetalPacketRenderer *renderer,
+                                           VkrMaterialHandle handle) {
+  @autoreleasepool {
+    if (!renderer || handle.id == 0 || handle.id > renderer->max_materials)
+      return false_v;
+    VkrMetalPacketMaterial *slot = &renderer->packet_materials[handle.id - 1];
+    if (!slot->live || slot->generation != handle.generation)
+      return false_v;
+    if (vkr_metal_material_table_device_retire(renderer->materials, slot->row,
+                                               slot->last_use_submit_value) !=
+        VKR_METAL_MATERIAL_STATUS_OK)
+      return false_v;
+    for (uint32_t texture_index = 0; texture_index < ArrayCount(slot->textures);
+         ++texture_index) {
+      if (slot->owns_textures) {
+        if (vkr_metal_memory_device_retire(
+                renderer->memory, slot->textures[texture_index].handle,
+                slot->last_use_submit_value) != VKR_METAL_MEMORY_STATUS_OK)
+          return false_v;
+      } else {
+        VkrMetalPacketTexture *texture = vkr_metal_packet_resolve_texture(
+            renderer, slot->texture_handles[texture_index]);
+        if (texture &&
+            texture->last_use_submit_value < slot->last_use_submit_value)
+          texture->last_use_submit_value = slot->last_use_submit_value;
+      }
+    }
+    slot->live = false_v;
+    slot->generation =
+        slot->generation == UINT32_MAX ? 1u : slot->generation + 1u;
     MemZero(slot->textures, sizeof(slot->textures));
+    MemZero(slot->texture_handles, sizeof(slot->texture_handles));
     slot->row = (VkrMetalMaterialHandle){0};
     slot->row_index = 0;
-    MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
-    descriptor.textureType = MTLTextureType2D;
-    descriptor.pixelFormat = MTLPixelFormatRGBA8Unorm;
-    descriptor.mipmapLevelCount = 1;
-    descriptor.usage = MTLTextureUsageShaderRead;
-    bool8_t textures_created = true_v;
-    for (uint32_t texture_index = 0;
-         textures_created && texture_index < ArrayCount(slot->textures);
-         ++texture_index) {
-      const VkrMetalPacketRgba8TextureCreateInfo *texture =
-          &create_info->textures[texture_index];
-      descriptor.width = texture->width;
-      descriptor.height = texture->height;
-      const uint64_t texture_size =
-          (uint64_t)texture->width * texture->height * 4u;
-      textures_created =
-          vkr_metal_memory_device_create_texture(
-              renderer->memory, descriptor, VKR_GPU_ALLOCATION_OWNER_TEXTURE,
-              &slot->textures[texture_index]) == VKR_METAL_MEMORY_STATUS_OK &&
-          vkr_metal_packet_upload(
-              renderer, texture->pixels, texture_size, nil, NULL, 0, nil,
-              (id<MTLTexture>)slot->textures[texture_index].metal_texture,
-              texture->width, texture->height);
-    }
-    [descriptor release];
-    if (!textures_created) {
-      for (uint32_t texture_index = 0;
-           texture_index < ArrayCount(slot->textures); ++texture_index) {
-        if (!slot->textures[texture_index].metal_texture)
-          continue;
-        (void)vkr_metal_memory_device_retire(
-            renderer->memory, slot->textures[texture_index].handle,
-            renderer->submit_value);
-      }
-      (void)vkr_metal_memory_device_collect(renderer->memory,
-                                            renderer->submit_value, NULL);
-      *slot = (VkrMetalPacketMaterial){.generation = generation};
+    slot->owns_textures = false_v;
+    slot->double_sided = false_v;
+    return true_v;
+  }
+}
+
+bool8_t
+vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
+                                           VkrMaterialHandle handle,
+                                           const struct VkrMaterial *material) {
+  @autoreleasepool {
+    if (!renderer || !material ||
+        (renderer->frame_prepared && !renderer->reserved_frame_slot) ||
+        handle.id == 0 || handle.id > renderer->max_materials ||
+        handle.generation == VKR_INVALID_ID || material->id != handle.id ||
+        material->generation != handle.generation)
       return false_v;
+    if (!@available(macOS 26.0, *))
+      return false_v;
+    VkrMetalPacketMaterial *slot = &renderer->packet_materials[handle.id - 1];
+    if (slot->live)
+      return false_v;
+    VkrTextureSlot source_slots[6] = {
+        VKR_TEXTURE_SLOT_DIFFUSE,
+        material->textures[VKR_TEXTURE_SLOT_NORMAL].enabled
+            ? VKR_TEXTURE_SLOT_NORMAL
+            : VKR_TEXTURE_SLOT_DIFFUSE,
+        material->textures[VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS].enabled
+            ? VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS
+            : (material->textures[VKR_TEXTURE_SLOT_SPECULAR].enabled
+                   ? VKR_TEXTURE_SLOT_SPECULAR
+                   : VKR_TEXTURE_SLOT_DIFFUSE),
+        material->textures[VKR_TEXTURE_SLOT_EMISSION].enabled
+            ? VKR_TEXTURE_SLOT_EMISSION
+            : VKR_TEXTURE_SLOT_DIFFUSE,
+        material->textures[VKR_TEXTURE_SLOT_TRANSMISSION].enabled
+            ? VKR_TEXTURE_SLOT_TRANSMISSION
+            : VKR_TEXTURE_SLOT_DIFFUSE,
+        material->textures[VKR_TEXTURE_SLOT_THICKNESS].enabled
+            ? VKR_TEXTURE_SLOT_THICKNESS
+            : VKR_TEXTURE_SLOT_DIFFUSE,
+    };
+    VkrMetalPacketTexture *textures[6] = {0};
+    for (uint32_t i = 0; i < ArrayCount(source_slots); ++i) {
+      const VkrMaterialTexture *source = &material->textures[source_slots[i]];
+      if (source->handle.id == 0 ||
+          !(textures[i] =
+                vkr_metal_packet_resolve_texture(renderer, source->handle)) ||
+          textures[i]->sampler_resource_id == 0)
+        return false_v;
+      slot->texture_handles[i] = source->handle;
+    }
+    uint32_t flags = 0;
+    if (material->textures[VKR_TEXTURE_SLOT_NORMAL].enabled)
+      flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_NORMAL;
+    if (material->textures[VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS].enabled)
+      flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_ORM;
+    if (material->textures[VKR_TEXTURE_SLOT_EMISSION].enabled)
+      flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_EMISSIVE;
+    if (material->textures[VKR_TEXTURE_SLOT_TRANSMISSION].enabled)
+      flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_TRANSMISSION;
+    if (material->textures[VKR_TEXTURE_SLOT_THICKNESS].enabled)
+      flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_THICKNESS;
+    const Vec4 tint = material->material_type == VKR_MATERIAL_TYPE_PBR
+                          ? material->pbr.base_color
+                          : material->phong.diffuse_color;
+    VkrPbrProperties pbr = material->pbr;
+    if (material->material_type != VKR_MATERIAL_TYPE_PBR) {
+      pbr.base_color = material->phong.diffuse_color;
+      pbr.emissive_factor = material->phong.emission_color;
     }
     const VkrPacketMaterialConstants material_constants =
-        vkr_packet_derive_material_constants(&create_info->pbr,
-                                             create_info->alpha_cutoff,
-                                             create_info->alpha_mode);
+        vkr_packet_derive_material_constants(&pbr, material->alpha_cutoff,
+                                             material->alpha_mode);
     VkrMetalMaterialPublishedRow row = {
         .material =
             {
-                .base_color_texture_id = slot->textures[0].resource_id,
-                .normal_texture_id = slot->textures[1].resource_id,
-                .orm_texture_id = slot->textures[2].resource_id,
-                .emissive_texture_id = slot->textures[3].resource_id,
-                .base_color_sampler_id = material_sampler_id,
-                .normal_sampler_id = material_sampler_id,
-                .orm_sampler_id = material_sampler_id,
-                .emissive_sampler_id = material_sampler_id,
-                .material_id = create_info->material_id,
-                .flags = create_info->texture_flags,
+                .base_color_texture_id = textures[0]->resource.resource_id,
+                .normal_texture_id = textures[1]->resource.resource_id,
+                .orm_texture_id = textures[2]->resource.resource_id,
+                .emissive_texture_id = textures[3]->resource.resource_id,
+                .base_color_sampler_id = textures[0]->sampler_resource_id,
+                .normal_sampler_id = textures[1]->sampler_resource_id,
+                .orm_sampler_id = textures[2]->sampler_resource_id,
+                .emissive_sampler_id = textures[3]->sampler_resource_id,
+                .material_id = handle.id,
+                .flags = flags,
                 .alpha_mode = material_constants.alpha_mode,
                 .temporal_reactivity =
-                    Clamp(create_info->pbr.temporal_reactivity, 0.0f, 1.0f),
+                    Clamp(pbr.temporal_reactivity, 0.0f, 1.0f),
                 .material_emissive = material_constants.emissive,
                 .material_dielectric_specular =
                     material_constants.dielectric_specular,
@@ -681,511 +966,392 @@ bool8_t vkr_metal_packet_renderer_create_material(
             },
         .transmission =
             {
-                .transmission_texture_id = slot->textures[4].resource_id,
-                .thickness_texture_id = slot->textures[5].resource_id,
-                .transmission_sampler_id = material_sampler_id,
-                .thickness_sampler_id = material_sampler_id,
+                .transmission_texture_id = textures[4]->resource.resource_id,
+                .thickness_texture_id = textures[5]->resource.resource_id,
+                .transmission_sampler_id = textures[4]->sampler_resource_id,
+                .thickness_sampler_id = textures[5]->sampler_resource_id,
             },
     };
-    MemCopy(row.material.tint, create_info->tint, sizeof(row.material.tint));
-    const VkrMetalMaterialStatus publish_status =
-        vkr_metal_material_table_device_publish(renderer->materials, &row,
-                                                &slot->row);
-    const VkrMetalMaterialStatus resolve_status =
-        publish_status == VKR_METAL_MATERIAL_STATUS_OK
-            ? vkr_metal_material_table_device_resolve(
-                  renderer->materials, slot->row, &slot->row_index)
-            : publish_status;
-    if (publish_status != VKR_METAL_MATERIAL_STATUS_OK ||
-        resolve_status != VKR_METAL_MATERIAL_STATUS_OK) {
-      if (publish_status == VKR_METAL_MATERIAL_STATUS_OK)
+    const float32_t tint_values[4] = {tint.x, tint.y, tint.z, tint.w};
+    MemCopy(row.material.tint, tint_values, sizeof(row.material.tint));
+    if (vkr_metal_material_table_device_publish(renderer->materials, &row,
+                                                &slot->row) !=
+            VKR_METAL_MATERIAL_STATUS_OK ||
+        vkr_metal_material_table_device_resolve(renderer->materials, slot->row,
+                                                &slot->row_index) !=
+            VKR_METAL_MATERIAL_STATUS_OK) {
+      if (slot->row.generation != 0)
         (void)vkr_metal_material_table_device_retire(
             renderer->materials, slot->row, renderer->submit_value);
-      for (uint32_t texture_index = 0;
-           texture_index < ArrayCount(slot->textures); ++texture_index) {
-        (void)vkr_metal_memory_device_retire(
-            renderer->memory, slot->textures[texture_index].handle,
-            renderer->submit_value);
-      }
-      (void)vkr_metal_memory_device_collect(renderer->memory,
-                                            renderer->submit_value, NULL);
-      *slot = (VkrMetalPacketMaterial){.generation = generation};
+      *slot = (VkrMetalPacketMaterial){0};
       return false_v;
     }
-    slot->generation =
-        slot->generation == UINT32_MAX ? 1u : slot->generation + 1u;
-    if (slot->generation == 0)
-      slot->generation = 1;
+    slot->generation = handle.generation;
     slot->last_use_submit_value = renderer->submit_value;
-    slot->pbr = create_info->pbr;
-    slot->alpha_mode = create_info->alpha_mode;
-    slot->alpha_cutoff = create_info->alpha_cutoff;
-    slot->owns_textures = true_v;
-    slot->double_sided = false_v;
+    slot->pbr = pbr;
+    slot->alpha_mode = material->alpha_mode;
+    slot->alpha_cutoff = material->alpha_cutoff;
+    slot->owns_textures = false_v;
+    slot->double_sided = material->double_sided;
     slot->live = true_v;
-    *out_handle =
-        (VkrMaterialHandle){.id = i + 1, .generation = slot->generation};
     return true_v;
   }
-  return false_v;
-}
-
-bool8_t
-vkr_metal_packet_renderer_destroy_material(VkrMetalPacketRenderer *renderer,
-                                           VkrMaterialHandle handle) {
-  if (!renderer || handle.id == 0 || handle.id > renderer->max_materials)
-    return false_v;
-  VkrMetalPacketMaterial *slot = &renderer->packet_materials[handle.id - 1];
-  if (!slot->live || slot->generation != handle.generation)
-    return false_v;
-  if (vkr_metal_material_table_device_retire(renderer->materials, slot->row,
-                                             slot->last_use_submit_value) !=
-      VKR_METAL_MATERIAL_STATUS_OK)
-    return false_v;
-  for (uint32_t texture_index = 0; texture_index < ArrayCount(slot->textures);
-       ++texture_index) {
-    if (slot->owns_textures) {
-      if (vkr_metal_memory_device_retire(
-              renderer->memory, slot->textures[texture_index].handle,
-              slot->last_use_submit_value) != VKR_METAL_MEMORY_STATUS_OK)
-        return false_v;
-    } else {
-      VkrMetalPacketTexture *texture = vkr_metal_packet_resolve_texture(
-          renderer, slot->texture_handles[texture_index]);
-      if (texture &&
-          texture->last_use_submit_value < slot->last_use_submit_value)
-        texture->last_use_submit_value = slot->last_use_submit_value;
-    }
-  }
-  slot->live = false_v;
-  slot->generation =
-      slot->generation == UINT32_MAX ? 1u : slot->generation + 1u;
-  MemZero(slot->textures, sizeof(slot->textures));
-  MemZero(slot->texture_handles, sizeof(slot->texture_handles));
-  slot->row = (VkrMetalMaterialHandle){0};
-  slot->row_index = 0;
-  slot->owns_textures = false_v;
-  slot->double_sided = false_v;
-  return true_v;
-}
-
-bool8_t
-vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
-                                           VkrMaterialHandle handle,
-                                           const struct VkrMaterial *material) {
-  if (!renderer || !material || (renderer->frame_prepared && !renderer->reserved_frame_slot) || handle.id == 0 ||
-      handle.id > renderer->max_materials ||
-      handle.generation == VKR_INVALID_ID || material->id != handle.id ||
-      material->generation != handle.generation)
-    return false_v;
-  if (!@available(macOS 26.0, *))
-    return false_v;
-  VkrMetalPacketMaterial *slot = &renderer->packet_materials[handle.id - 1];
-  if (slot->live)
-    return false_v;
-  VkrTextureSlot source_slots[6] = {
-      VKR_TEXTURE_SLOT_DIFFUSE,
-      material->textures[VKR_TEXTURE_SLOT_NORMAL].enabled
-          ? VKR_TEXTURE_SLOT_NORMAL
-          : VKR_TEXTURE_SLOT_DIFFUSE,
-      material->textures[VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS].enabled
-          ? VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS
-          : (material->textures[VKR_TEXTURE_SLOT_SPECULAR].enabled
-                 ? VKR_TEXTURE_SLOT_SPECULAR
-                 : VKR_TEXTURE_SLOT_DIFFUSE),
-      material->textures[VKR_TEXTURE_SLOT_EMISSION].enabled
-          ? VKR_TEXTURE_SLOT_EMISSION
-          : VKR_TEXTURE_SLOT_DIFFUSE,
-      material->textures[VKR_TEXTURE_SLOT_TRANSMISSION].enabled
-          ? VKR_TEXTURE_SLOT_TRANSMISSION
-          : VKR_TEXTURE_SLOT_DIFFUSE,
-      material->textures[VKR_TEXTURE_SLOT_THICKNESS].enabled
-          ? VKR_TEXTURE_SLOT_THICKNESS
-          : VKR_TEXTURE_SLOT_DIFFUSE,
-  };
-  VkrMetalPacketTexture *textures[6] = {0};
-  for (uint32_t i = 0; i < ArrayCount(source_slots); ++i) {
-    const VkrMaterialTexture *source = &material->textures[source_slots[i]];
-    if (source->handle.id == 0 ||
-        !(textures[i] =
-              vkr_metal_packet_resolve_texture(renderer, source->handle)) ||
-        textures[i]->sampler_resource_id == 0)
-      return false_v;
-    slot->texture_handles[i] = source->handle;
-  }
-  uint32_t flags = 0;
-  if (material->textures[VKR_TEXTURE_SLOT_NORMAL].enabled)
-    flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_NORMAL;
-  if (material->textures[VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS].enabled)
-    flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_ORM;
-  if (material->textures[VKR_TEXTURE_SLOT_EMISSION].enabled)
-    flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_EMISSIVE;
-  if (material->textures[VKR_TEXTURE_SLOT_TRANSMISSION].enabled)
-    flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_TRANSMISSION;
-  if (material->textures[VKR_TEXTURE_SLOT_THICKNESS].enabled)
-    flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_THICKNESS;
-  const Vec4 tint = material->material_type == VKR_MATERIAL_TYPE_PBR
-                        ? material->pbr.base_color
-                        : material->phong.diffuse_color;
-  VkrPbrProperties pbr = material->pbr;
-  if (material->material_type != VKR_MATERIAL_TYPE_PBR) {
-    pbr.base_color = material->phong.diffuse_color;
-    pbr.emissive_factor = material->phong.emission_color;
-  }
-  const VkrPacketMaterialConstants material_constants =
-      vkr_packet_derive_material_constants(&pbr, material->alpha_cutoff,
-                                           material->alpha_mode);
-  VkrMetalMaterialPublishedRow row = {
-      .material =
-          {
-              .base_color_texture_id = textures[0]->resource.resource_id,
-              .normal_texture_id = textures[1]->resource.resource_id,
-              .orm_texture_id = textures[2]->resource.resource_id,
-              .emissive_texture_id = textures[3]->resource.resource_id,
-              .base_color_sampler_id = textures[0]->sampler_resource_id,
-              .normal_sampler_id = textures[1]->sampler_resource_id,
-              .orm_sampler_id = textures[2]->sampler_resource_id,
-              .emissive_sampler_id = textures[3]->sampler_resource_id,
-              .material_id = handle.id,
-              .flags = flags,
-              .alpha_mode = material_constants.alpha_mode,
-              .temporal_reactivity = Clamp(pbr.temporal_reactivity, 0.0f, 1.0f),
-              .material_emissive = material_constants.emissive,
-              .material_dielectric_specular =
-                  material_constants.dielectric_specular,
-              .material_surface = material_constants.surface,
-              .material_alpha = material_constants.alpha,
-              .material_attenuation_color =
-                  material_constants.attenuation_color,
-          },
-      .transmission =
-          {
-              .transmission_texture_id = textures[4]->resource.resource_id,
-              .thickness_texture_id = textures[5]->resource.resource_id,
-              .transmission_sampler_id = textures[4]->sampler_resource_id,
-              .thickness_sampler_id = textures[5]->sampler_resource_id,
-          },
-  };
-  const float32_t tint_values[4] = {tint.x, tint.y, tint.z, tint.w};
-  MemCopy(row.material.tint, tint_values, sizeof(row.material.tint));
-  if (vkr_metal_material_table_device_publish(renderer->materials, &row,
-                                              &slot->row) !=
-          VKR_METAL_MATERIAL_STATUS_OK ||
-      vkr_metal_material_table_device_resolve(renderer->materials, slot->row,
-                                              &slot->row_index) !=
-          VKR_METAL_MATERIAL_STATUS_OK) {
-    if (slot->row.generation != 0)
-      (void)vkr_metal_material_table_device_retire(
-          renderer->materials, slot->row, renderer->submit_value);
-    *slot = (VkrMetalPacketMaterial){0};
-    return false_v;
-  }
-  slot->generation = handle.generation;
-  slot->last_use_submit_value = renderer->submit_value;
-  slot->pbr = pbr;
-  slot->alpha_mode = material->alpha_mode;
-  slot->alpha_cutoff = material->alpha_cutoff;
-  slot->owns_textures = false_v;
-  slot->double_sided = material->double_sided;
-  slot->live = true_v;
-  return true_v;
 }
 
 bool8_t vkr_metal_packet_renderer_create_rgba8_texture(
     VkrMetalPacketRenderer *renderer,
     const VkrMetalPacketRgba8TextureCreateInfo *create_info,
     VkrTextureHandle *out_handle) {
-  if (!renderer || !create_info || !out_handle || (renderer->frame_prepared && !renderer->reserved_frame_slot) ||
-      !create_info->pixels || create_info->width == 0 ||
-      create_info->height == 0 ||
-      create_info->width > VKR_TEXTURE_MAX_DIMENSION ||
-      create_info->height > VKR_TEXTURE_MAX_DIMENSION ||
-      (uint64_t)create_info->width >
-          UINT64_MAX / ((uint64_t)create_info->height * 4u))
+  @autoreleasepool {
+    if (!renderer || !create_info || !out_handle ||
+        (renderer->frame_prepared && !renderer->reserved_frame_slot) ||
+        !create_info->pixels || create_info->width == 0 ||
+        create_info->height == 0 ||
+        create_info->width > VKR_TEXTURE_MAX_DIMENSION ||
+        create_info->height > VKR_TEXTURE_MAX_DIMENSION ||
+        (uint64_t)create_info->width >
+            UINT64_MAX / ((uint64_t)create_info->height * 4u))
+      return false_v;
+    *out_handle = VKR_TEXTURE_HANDLE_INVALID;
+    if (!@available(macOS 26.0, *))
+      return false_v;
+    id<MTLSamplerState> sampler =
+        vkr_metal_packet_default_material_sampler(renderer, 1u);
+    if (!sampler || sampler.gpuResourceID._impl == 0)
+      return false_v;
+    for (uint32_t i = 0; i < renderer->max_textures; ++i) {
+      VkrMetalPacketTexture *slot = &renderer->textures[i];
+      if (slot->live)
+        continue;
+      const uint32_t generation = slot->generation;
+      slot->resource = (VkrMetalTextureResource){0};
+      MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
+      descriptor.textureType = MTLTextureType2D;
+      descriptor.pixelFormat = MTLPixelFormatRGBA8Unorm;
+      descriptor.width = create_info->width;
+      descriptor.height = create_info->height;
+      descriptor.mipmapLevelCount = 1;
+      descriptor.usage = MTLTextureUsageShaderRead;
+      const bool8_t created =
+          vkr_metal_memory_device_create_texture(
+              renderer->memory, descriptor, VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+              &slot->resource) == VKR_METAL_MEMORY_STATUS_OK;
+      [descriptor release];
+      const uint64_t byte_count =
+          (uint64_t)create_info->width * create_info->height * 4u;
+      if (!created || !vkr_metal_packet_upload(
+                          renderer, create_info->pixels, byte_count, nil, NULL,
+                          0, nil, (id<MTLTexture>)slot->resource.metal_texture,
+                          create_info->width, create_info->height)) {
+        if (slot->resource.metal_texture) {
+          (void)vkr_metal_memory_device_retire(
+              renderer->memory, slot->resource.handle, renderer->submit_value);
+          (void)vkr_metal_packet_collect_memory(
+              renderer, renderer->completion.signaledValue, NULL);
+        }
+        *slot = (VkrMetalPacketTexture){.generation = generation};
+        return false_v;
+      }
+      slot->generation =
+          slot->generation == UINT32_MAX ? 1u : slot->generation + 1u;
+      if (slot->generation == 0)
+        slot->generation = 1;
+      slot->sampler_resource_id = sampler.gpuResourceID._impl;
+      slot->last_use_submit_value = renderer->submit_value;
+      slot->live = true_v;
+      *out_handle =
+          (VkrTextureHandle){.id = i + 1, .generation = slot->generation};
+      return true_v;
+    }
     return false_v;
-  *out_handle = VKR_TEXTURE_HANDLE_INVALID;
-  if (!@available(macOS 26.0, *))
-    return false_v;
-  id<MTLSamplerState> sampler =
-      vkr_metal_packet_default_material_sampler(renderer, 1u);
-  if (!sampler || sampler.gpuResourceID._impl == 0)
-    return false_v;
-  for (uint32_t i = 0; i < renderer->max_textures; ++i) {
-    VkrMetalPacketTexture *slot = &renderer->textures[i];
+  }
+}
+
+VkrRendererError vkr_metal_packet_renderer_publish_prepared_texture(
+    VkrMetalPacketRenderer *renderer, VkrTextureHandle handle,
+    const struct VkrTexturePreparedLoad *prepared) {
+  @autoreleasepool {
+    if (!renderer || !prepared ||
+        (renderer->frame_prepared && !renderer->reserved_frame_slot) ||
+        handle.id == 0 || handle.id > renderer->max_textures ||
+        handle.generation == VKR_INVALID_ID || !prepared->upload_data ||
+        prepared->upload_data_size == 0 || !prepared->upload_regions ||
+        prepared->upload_region_count == 0 ||
+        prepared->description.width == 0 || prepared->description.height == 0 ||
+        prepared->description.width > VKR_TEXTURE_MAX_DIMENSION ||
+        prepared->description.height > VKR_TEXTURE_MAX_DIMENSION ||
+        prepared->description.type >= VKR_TEXTURE_TYPE_COUNT ||
+        prepared->upload_mip_levels == 0 ||
+        prepared->upload_mip_levels > VKR_METAL_PACKET_MAX_TEXTURE_MIPS ||
+        prepared->upload_array_layers == 0 ||
+        prepared->upload_array_layers > VKR_TEXTURE_MAX_ARRAY_LAYERS)
+      return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    if (!@available(macOS 26.0, *))
+      return VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+    VkrMetalPacketTexture *slot = &renderer->textures[handle.id - 1];
     if (slot->live)
-      continue;
-    const uint32_t generation = slot->generation;
+      return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    const MTLPixelFormat pixel_format =
+        vkr_metal_packet_pixel_format(prepared->description.format);
+    if (pixel_format == MTLPixelFormatInvalid)
+      return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    const VkrMetalPacketTextureUpload payload = {
+        .data = prepared->upload_data,
+        .data_size = prepared->upload_data_size,
+        .mip_levels = prepared->upload_mip_levels,
+        .array_layers = prepared->upload_array_layers,
+        .is_compressed = prepared->upload_is_compressed,
+        .region_count = prepared->upload_region_count,
+        .regions = prepared->upload_regions,
+    };
+    const bool8_t requested_batch = renderer->texture_upload_batch.enabled;
+    const uint64_t aligned_upload_size = vkr_metal_packet_align_up(
+        payload.data_size, VKR_METAL_PACKET_ROOT_ALIGNMENT);
+    const uint64_t upload_capacity =
+        requested_batch && aligned_upload_size <
+                               VKR_METAL_PACKET_TEXTURE_UPLOAD_BATCH_BYTES
+            ? VKR_METAL_PACKET_TEXTURE_UPLOAD_BATCH_BYTES
+            : aligned_upload_size;
+    /* Only growth needs an early flush. Ordinary batch admission remains owned
+       by upload_texture_batched below. */
+    if (upload_capacity > vkr_metal_memory_device_ring_slot_capacity(
+                              renderer->memory, VKR_METAL_RING_KIND_UPLOAD) &&
+        renderer->texture_upload_batch.active &&
+        !vkr_metal_packet_texture_upload_batch_flush(renderer, false_v))
+      return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    const VkrMetalMemoryStatus upload_capacity_status =
+        vkr_metal_packet_ensure_ring_capacity(
+            renderer, VKR_METAL_RING_KIND_UPLOAD, upload_capacity);
+    const VkrRendererError upload_capacity_error =
+        vkr_metal_packet_allocation_error(upload_capacity_status);
+    if (upload_capacity_status != VKR_METAL_MEMORY_STATUS_OK) {
+      if (upload_capacity_error == VKR_RENDERER_ERROR_OUT_OF_MEMORY)
+        renderer->graph_memory_recovery_pending = true_v;
+      return upload_capacity_error;
+    }
+    const uint32_t prior_generation = slot->generation;
     slot->resource = (VkrMetalTextureResource){0};
     MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
-    descriptor.textureType = MTLTextureType2D;
-    descriptor.pixelFormat = MTLPixelFormatRGBA8Unorm;
-    descriptor.width = create_info->width;
-    descriptor.height = create_info->height;
-    descriptor.mipmapLevelCount = 1;
+    const bool8_t cubemap =
+        prepared->description.type == VKR_TEXTURE_TYPE_CUBE_MAP;
+    const bool8_t cubemap_array =
+        prepared->description.type == VKR_TEXTURE_TYPE_CUBE_MAP_ARRAY;
+    const bool8_t array =
+        prepared->description.type == VKR_TEXTURE_TYPE_2D_ARRAY;
+    const bool8_t cube_shape = cubemap || cubemap_array;
+    const bool8_t valid_layers =
+        (prepared->description.type == VKR_TEXTURE_TYPE_2D &&
+         prepared->upload_array_layers == 1u) ||
+        (array && prepared->upload_array_layers > 1u) ||
+        (cubemap && prepared->upload_array_layers == 6u) ||
+        (cubemap_array && prepared->upload_array_layers > 6u &&
+         prepared->upload_array_layers % 6u == 0u);
+    if (!valid_layers || (cube_shape && prepared->description.width !=
+                                            prepared->description.height)) {
+      [descriptor release];
+      return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    }
+    descriptor.textureType = cubemap         ? MTLTextureTypeCube
+                             : cubemap_array ? MTLTextureTypeCubeArray
+                             : array         ? MTLTextureType2DArray
+                                             : MTLTextureType2D;
+    descriptor.pixelFormat = pixel_format;
+    descriptor.width = prepared->description.width;
+    descriptor.height = prepared->description.height;
+    descriptor.mipmapLevelCount = prepared->upload_mip_levels;
+    if (array) {
+      descriptor.arrayLength = prepared->upload_array_layers;
+    } else if (cubemap_array) {
+      descriptor.arrayLength = prepared->upload_array_layers / 6u;
+    }
     descriptor.usage = MTLTextureUsageShaderRead;
-    const bool8_t created =
+    const VkrMetalMemoryStatus create_status =
         vkr_metal_memory_device_create_texture(
-            renderer->memory, descriptor, VKR_GPU_ALLOCATION_OWNER_TEXTURE,
-            &slot->resource) == VKR_METAL_MEMORY_STATUS_OK;
+            renderer->memory, descriptor,
+            prepared->description.allocation_owner, &slot->resource);
+    const bool8_t created = create_status == VKR_METAL_MEMORY_STATUS_OK;
+    if (!created && vkr_metal_packet_allocation_error(create_status) ==
+                        VKR_RENDERER_ERROR_OUT_OF_MEMORY)
+      renderer->graph_memory_recovery_pending = true_v;
     [descriptor release];
-    const uint64_t byte_count =
-        (uint64_t)create_info->width * create_info->height * 4u;
-    if (!created || !vkr_metal_packet_upload(
-                        renderer, create_info->pixels, byte_count, nil, NULL, 0,
-                        nil, (id<MTLTexture>)slot->resource.metal_texture,
-                        create_info->width, create_info->height)) {
+    const bool8_t batched = created && requested_batch;
+    const bool8_t uploaded =
+        created &&
+        (batched ? vkr_metal_packet_upload_texture_batched(
+                       renderer, &payload, prepared->description.format,
+                       (id<MTLTexture>)slot->resource.metal_texture)
+                 : vkr_metal_packet_upload_texture(
+                       renderer, &payload, prepared->description.format,
+                       (id<MTLTexture>)slot->resource.metal_texture));
+    id<MTLSamplerState> sampler =
+        uploaded ? vkr_metal_packet_sampler(renderer, &prepared->description,
+                                            prepared->upload_mip_levels)
+                 : nil;
+    if (batched && uploaded && (!sampler || sampler.gpuResourceID._impl == 0)) {
+      // flush(false) failure occurs after commit; the current submit serial
+      // still owns the upload. Always defer its texture through the cleanup
+      // below.
+      (void)vkr_metal_packet_texture_upload_batch_flush(renderer, false_v);
+    }
+    if (!uploaded || !sampler || sampler.gpuResourceID._impl == 0) {
+      VKR_METAL_DIAGNOSTIC(renderer, "texture_publish_failed",
+                           "handle=%u:%u created=%u uploaded=%u sampler=%u "
+                           "batched=%u resource=%llu",
+                           handle.id, handle.generation, created, uploaded,
+                           sampler != nil, batched,
+                           (unsigned long long)slot->resource.resource_id);
       if (slot->resource.metal_texture) {
         (void)vkr_metal_memory_device_retire(
             renderer->memory, slot->resource.handle, renderer->submit_value);
-        (void)vkr_metal_memory_device_collect(renderer->memory,
-                                              renderer->submit_value, NULL);
+        (void)vkr_metal_packet_collect_memory(
+            renderer, renderer->completion.signaledValue, NULL);
       }
-      *slot = (VkrMetalPacketTexture){.generation = generation};
-      return false_v;
+      *slot = (VkrMetalPacketTexture){.generation = prior_generation};
+      return created ? VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED
+                     : vkr_metal_packet_allocation_error(create_status);
     }
-    slot->generation =
-        slot->generation == UINT32_MAX ? 1u : slot->generation + 1u;
-    if (slot->generation == 0)
-      slot->generation = 1;
     slot->sampler_resource_id = sampler.gpuResourceID._impl;
-    slot->last_use_submit_value = renderer->submit_value;
+    slot->generation = handle.generation;
+    slot->last_use_submit_value =
+        batched ? renderer->submit_value + 1u : renderer->submit_value;
     slot->live = true_v;
-    *out_handle =
-        (VkrTextureHandle){.id = i + 1, .generation = slot->generation};
-    return true_v;
+    VKR_METAL_DIAGNOSTIC(
+        renderer, "texture_publish",
+        "handle=%u:%u resource=%llu extent=%ux%u last_use=%llu batched=%u",
+        handle.id, handle.generation,
+        (unsigned long long)slot->resource.resource_id,
+        prepared->description.width, prepared->description.height,
+        (unsigned long long)slot->last_use_submit_value, batched);
+    vkr_metal_packet_advance_revision(&renderer->radiance_revision);
+    return VKR_RENDERER_ERROR_NONE;
   }
-  return false_v;
-}
-
-bool8_t vkr_metal_packet_renderer_publish_prepared_texture(
-    VkrMetalPacketRenderer *renderer, VkrTextureHandle handle,
-    const struct VkrTexturePreparedLoad *prepared) {
-  if (!renderer || !prepared || (renderer->frame_prepared && !renderer->reserved_frame_slot) || handle.id == 0 ||
-      handle.id > renderer->max_textures ||
-      handle.generation == VKR_INVALID_ID || !prepared->upload_data ||
-      prepared->upload_data_size == 0 || !prepared->upload_regions ||
-      prepared->upload_region_count == 0 || prepared->description.width == 0 ||
-      prepared->description.height == 0 ||
-      prepared->description.width > VKR_TEXTURE_MAX_DIMENSION ||
-      prepared->description.height > VKR_TEXTURE_MAX_DIMENSION ||
-      prepared->description.type >= VKR_TEXTURE_TYPE_COUNT ||
-      prepared->upload_mip_levels == 0 ||
-      prepared->upload_mip_levels > VKR_METAL_PACKET_MAX_TEXTURE_MIPS ||
-      prepared->upload_array_layers == 0 ||
-      prepared->upload_array_layers > VKR_TEXTURE_MAX_ARRAY_LAYERS)
-    return false_v;
-  if (!@available(macOS 26.0, *))
-    return false_v;
-  VkrMetalPacketTexture *slot = &renderer->textures[handle.id - 1];
-  if (slot->live)
-    return false_v;
-  const MTLPixelFormat pixel_format =
-      vkr_metal_packet_pixel_format(prepared->description.format);
-  if (pixel_format == MTLPixelFormatInvalid)
-    return false_v;
-  const uint32_t prior_generation = slot->generation;
-  slot->resource = (VkrMetalTextureResource){0};
-  MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
-  const bool8_t cubemap =
-      prepared->description.type == VKR_TEXTURE_TYPE_CUBE_MAP;
-  const bool8_t cubemap_array =
-      prepared->description.type == VKR_TEXTURE_TYPE_CUBE_MAP_ARRAY;
-  const bool8_t array = prepared->description.type == VKR_TEXTURE_TYPE_2D_ARRAY;
-  const bool8_t cube_shape = cubemap || cubemap_array;
-  const bool8_t valid_layers =
-      (prepared->description.type == VKR_TEXTURE_TYPE_2D &&
-       prepared->upload_array_layers == 1u) ||
-      (array && prepared->upload_array_layers > 1u) ||
-      (cubemap && prepared->upload_array_layers == 6u) ||
-      (cubemap_array && prepared->upload_array_layers > 6u &&
-       prepared->upload_array_layers % 6u == 0u);
-  if (!valid_layers || (cube_shape && prepared->description.width !=
-                                          prepared->description.height)) {
-    [descriptor release];
-    return false_v;
-  }
-  descriptor.textureType = cubemap         ? MTLTextureTypeCube
-                           : cubemap_array ? MTLTextureTypeCubeArray
-                           : array         ? MTLTextureType2DArray
-                                           : MTLTextureType2D;
-  descriptor.pixelFormat = pixel_format;
-  descriptor.width = prepared->description.width;
-  descriptor.height = prepared->description.height;
-  descriptor.mipmapLevelCount = prepared->upload_mip_levels;
-  if (array) {
-    descriptor.arrayLength = prepared->upload_array_layers;
-  } else if (cubemap_array) {
-    descriptor.arrayLength = prepared->upload_array_layers / 6u;
-  }
-  descriptor.usage = MTLTextureUsageShaderRead;
-  const bool8_t created =
-      vkr_metal_memory_device_create_texture(
-          renderer->memory, descriptor, prepared->description.allocation_owner,
-          &slot->resource) == VKR_METAL_MEMORY_STATUS_OK;
-  [descriptor release];
-  const VkrMetalPacketTextureUpload payload = {
-      .data = prepared->upload_data,
-      .data_size = prepared->upload_data_size,
-      .mip_levels = prepared->upload_mip_levels,
-      .array_layers = prepared->upload_array_layers,
-      .is_compressed = prepared->upload_is_compressed,
-      .region_count = prepared->upload_region_count,
-      .regions = prepared->upload_regions,
-  };
-  const bool8_t batched = created && renderer->texture_upload_batch.enabled;
-  const bool8_t uploaded =
-      created &&
-      (batched ? vkr_metal_packet_upload_texture_batched(
-                     renderer, &payload, prepared->description.format,
-                     (id<MTLTexture>)slot->resource.metal_texture)
-               : vkr_metal_packet_upload_texture(
-                     renderer, &payload, prepared->description.format,
-                     (id<MTLTexture>)slot->resource.metal_texture));
-  id<MTLSamplerState> sampler =
-      uploaded ? vkr_metal_packet_sampler(renderer, &prepared->description,
-                                          prepared->upload_mip_levels)
-               : nil;
-  if (batched && uploaded && (!sampler || sampler.gpuResourceID._impl == 0) &&
-      !vkr_metal_packet_texture_upload_batch_flush(renderer, false_v))
-    return false_v;
-  if (!uploaded || !sampler || sampler.gpuResourceID._impl == 0) {
-    if (slot->resource.metal_texture) {
-      (void)vkr_metal_memory_device_retire(
-          renderer->memory, slot->resource.handle, renderer->submit_value);
-      (void)vkr_metal_memory_device_collect(renderer->memory,
-                                            renderer->submit_value, NULL);
-    }
-    *slot = (VkrMetalPacketTexture){.generation = prior_generation};
-    return false_v;
-  }
-  slot->sampler_resource_id = sampler.gpuResourceID._impl;
-  slot->generation = handle.generation;
-  slot->last_use_submit_value =
-      batched ? renderer->submit_value + 1u : renderer->submit_value;
-  slot->live = true_v;
-  vkr_metal_packet_advance_revision(&renderer->radiance_revision);
-  return true_v;
 }
 
 bool8_t vkr_metal_packet_renderer_publish_writable_texture(
     VkrMetalPacketRenderer *renderer, VkrTextureHandle handle,
     const VkrTextureDescription *description) {
-  if (!renderer || !description || (renderer->frame_prepared && !renderer->reserved_frame_slot) || handle.id == 0 ||
-      handle.id > renderer->max_textures ||
-      handle.generation == VKR_INVALID_ID || description->id != handle.id ||
-      description->generation != handle.generation || description->width == 0 ||
-      description->height == 0 ||
-      description->width > VKR_TEXTURE_MAX_DIMENSION ||
-      description->height > VKR_TEXTURE_MAX_DIMENSION ||
-      description->sample_count != VKR_SAMPLE_COUNT_1 ||
-      (description->type != VKR_TEXTURE_TYPE_2D &&
-       description->type != VKR_TEXTURE_TYPE_CUBE_MAP) ||
-      (description->type == VKR_TEXTURE_TYPE_CUBE_MAP &&
-       description->width != description->height)) {
-    return false_v;
-  }
-  if (!@available(macOS 26.0, *))
-    return false_v;
-
-  VkrMetalPacketTexture *slot = &renderer->textures[handle.id - 1];
-  if (slot->live)
-    return false_v;
-  const uint32_t prior_generation = slot->generation;
-  const MTLPixelFormat pixel_format =
-      vkr_metal_packet_pixel_format(description->format);
-  if (pixel_format == MTLPixelFormatInvalid)
-    return false_v;
-
-  const uint32_t mip_count =
-      description->mip_filter == VKR_MIP_FILTER_NONE
-          ? 1u
-          : vkr_metal_packet_mip_count(
-                Max(description->width, description->height));
-  MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
-  descriptor.textureType = description->type == VKR_TEXTURE_TYPE_CUBE_MAP
-                               ? MTLTextureTypeCube
-                               : MTLTextureType2D;
-  descriptor.pixelFormat = pixel_format;
-  descriptor.width = description->width;
-  descriptor.height = description->height;
-  descriptor.mipmapLevelCount = mip_count;
-  descriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
-  const bool8_t created =
-      vkr_metal_memory_device_create_texture(
-          renderer->memory, descriptor, description->allocation_owner,
-          &slot->resource) == VKR_METAL_MEMORY_STATUS_OK;
-  [descriptor release];
-  id<MTLSamplerState> sampler =
-      created ? vkr_metal_packet_sampler(renderer, description, mip_count)
-              : nil;
-  if (!created || !sampler || sampler.gpuResourceID._impl == 0) {
-    if (slot->resource.metal_texture) {
-      (void)vkr_metal_memory_device_retire(
-          renderer->memory, slot->resource.handle, renderer->submit_value);
-      (void)vkr_metal_memory_device_collect(renderer->memory,
-                                            renderer->submit_value, NULL);
+  @autoreleasepool {
+    if (!renderer || !description ||
+        (renderer->frame_prepared && !renderer->reserved_frame_slot) ||
+        handle.id == 0 || handle.id > renderer->max_textures ||
+        handle.generation == VKR_INVALID_ID || description->id != handle.id ||
+        description->generation != handle.generation ||
+        description->width == 0 || description->height == 0 ||
+        description->width > VKR_TEXTURE_MAX_DIMENSION ||
+        description->height > VKR_TEXTURE_MAX_DIMENSION ||
+        description->sample_count != VKR_SAMPLE_COUNT_1 ||
+        (description->type != VKR_TEXTURE_TYPE_2D &&
+         description->type != VKR_TEXTURE_TYPE_CUBE_MAP) ||
+        (description->type == VKR_TEXTURE_TYPE_CUBE_MAP &&
+         description->width != description->height)) {
+      return false_v;
     }
-    *slot = (VkrMetalPacketTexture){.generation = prior_generation};
-    return false_v;
-  }
+    if (!@available(macOS 26.0, *))
+      return false_v;
 
-  slot->sampler_resource_id = sampler.gpuResourceID._impl;
-  slot->generation = handle.generation;
-  slot->last_use_submit_value = renderer->submit_value;
-  slot->live = true_v;
-  vkr_metal_packet_advance_revision(&renderer->radiance_revision);
-  return true_v;
+    VkrMetalPacketTexture *slot = &renderer->textures[handle.id - 1];
+    if (slot->live)
+      return false_v;
+    const uint32_t prior_generation = slot->generation;
+    const MTLPixelFormat pixel_format =
+        vkr_metal_packet_pixel_format(description->format);
+    if (pixel_format == MTLPixelFormatInvalid)
+      return false_v;
+
+    const uint32_t mip_count =
+        description->mip_filter == VKR_MIP_FILTER_NONE
+            ? 1u
+            : vkr_metal_packet_mip_count(
+                  Max(description->width, description->height));
+    MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
+    descriptor.textureType = description->type == VKR_TEXTURE_TYPE_CUBE_MAP
+                                 ? MTLTextureTypeCube
+                                 : MTLTextureType2D;
+    descriptor.pixelFormat = pixel_format;
+    descriptor.width = description->width;
+    descriptor.height = description->height;
+    descriptor.mipmapLevelCount = mip_count;
+    descriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+    const bool8_t created =
+        vkr_metal_memory_device_create_texture(
+            renderer->memory, descriptor, description->allocation_owner,
+            &slot->resource) == VKR_METAL_MEMORY_STATUS_OK;
+    [descriptor release];
+    id<MTLSamplerState> sampler =
+        created ? vkr_metal_packet_sampler(renderer, description, mip_count)
+                : nil;
+    if (!created || !sampler || sampler.gpuResourceID._impl == 0) {
+      if (slot->resource.metal_texture) {
+        (void)vkr_metal_memory_device_retire(
+            renderer->memory, slot->resource.handle, renderer->submit_value);
+        (void)vkr_metal_packet_collect_memory(
+            renderer, renderer->completion.signaledValue, NULL);
+      }
+      *slot = (VkrMetalPacketTexture){.generation = prior_generation};
+      return false_v;
+    }
+
+    slot->sampler_resource_id = sampler.gpuResourceID._impl;
+    slot->generation = handle.generation;
+    slot->last_use_submit_value = renderer->submit_value;
+    slot->live = true_v;
+    vkr_metal_packet_advance_revision(&renderer->radiance_revision);
+    return true_v;
+  }
 }
 
 bool8_t vkr_metal_packet_renderer_update_texture_sampler(
     VkrMetalPacketRenderer *renderer, VkrTextureHandle handle,
     const VkrTextureDescription *description) {
-  if (!renderer || !description || (renderer->frame_prepared && !renderer->reserved_frame_slot) || handle.id == 0 ||
-      description->id != handle.id ||
-      description->generation != handle.generation) {
-    return false_v;
-  }
-  if (!@available(macOS 26.0, *)) {
-    return false_v;
-  }
-
-  VkrMetalPacketTexture *texture =
-      vkr_metal_packet_resolve_texture(renderer, handle);
-  if (!texture) {
-    return false_v;
-  }
-  for (uint32_t material_index = 0; material_index < renderer->max_materials;
-       ++material_index) {
-    const VkrMetalPacketMaterial *material =
-        &renderer->packet_materials[material_index];
-    if (!material->live || material->owns_textures) {
-      continue;
+  @autoreleasepool {
+    if (!renderer || !description ||
+        (renderer->frame_prepared && !renderer->reserved_frame_slot) ||
+        handle.id == 0 || description->id != handle.id ||
+        description->generation != handle.generation) {
+      return false_v;
     }
-    for (uint32_t texture_index = 0;
-         texture_index < ArrayCount(material->texture_handles);
-         ++texture_index) {
-      const VkrTextureHandle referenced =
-          material->texture_handles[texture_index];
-      if (referenced.id == handle.id &&
-          referenced.generation == handle.generation) {
-        log_warn("Metal sampler update for texture %u:%u requires material "
-                 "republication; update rejected",
-                 handle.id, handle.generation);
-        return false_v;
+    if (!@available(macOS 26.0, *)) {
+      return false_v;
+    }
+
+    VkrMetalPacketTexture *texture =
+        vkr_metal_packet_resolve_texture(renderer, handle);
+    if (!texture) {
+      return false_v;
+    }
+    for (uint32_t material_index = 0; material_index < renderer->max_materials;
+         ++material_index) {
+      const VkrMetalPacketMaterial *material =
+          &renderer->packet_materials[material_index];
+      if (!material->live || material->owns_textures) {
+        continue;
+      }
+      for (uint32_t texture_index = 0;
+           texture_index < ArrayCount(material->texture_handles);
+           ++texture_index) {
+        const VkrTextureHandle referenced =
+            material->texture_handles[texture_index];
+        if (referenced.id == handle.id &&
+            referenced.generation == handle.generation) {
+          log_warn("Metal sampler update for texture %u:%u requires material "
+                   "republication; update rejected",
+                   handle.id, handle.generation);
+          return false_v;
+        }
       }
     }
+    id<MTLTexture> metal_texture =
+        (id<MTLTexture>)texture->resource.metal_texture;
+    const uint32_t mip_level_count = (uint32_t)metal_texture.mipmapLevelCount;
+    id<MTLSamplerState> sampler =
+        vkr_metal_packet_sampler(renderer, description, mip_level_count);
+    if (!sampler || sampler.gpuResourceID._impl == 0) {
+      return false_v;
+    }
+    texture->sampler_resource_id = sampler.gpuResourceID._impl;
+    vkr_metal_packet_advance_revision(&renderer->radiance_revision);
+    return true_v;
   }
-  id<MTLTexture> metal_texture =
-      (id<MTLTexture>)texture->resource.metal_texture;
-  const uint32_t mip_level_count = (uint32_t)metal_texture.mipmapLevelCount;
-  id<MTLSamplerState> sampler =
-      vkr_metal_packet_sampler(renderer, description, mip_level_count);
-  if (!sampler || sampler.gpuResourceID._impl == 0) {
-    return false_v;
-  }
-  texture->sampler_resource_id = sampler.gpuResourceID._impl;
-  vkr_metal_packet_advance_revision(&renderer->radiance_revision);
-  return true_v;
 }
 
 vkr_internal bool8_t vkr_metal_packet_validate_ibl_textures(
@@ -1217,406 +1383,422 @@ vkr_internal bool8_t vkr_metal_packet_validate_ibl_textures(
 bool8_t vkr_metal_packet_renderer_bake_ibl_cubemap(
     VkrMetalPacketRenderer *renderer, VkrTextureHandle source_handle,
     VkrTextureHandle prefilter_handle, float32_t sh_deringing) {
-  if (!renderer || (renderer->frame_prepared && !renderer->reserved_frame_slot)) {
-    return false_v;
-  }
-  if (!@available(macOS 26.0, *)) {
-    return false_v;
-  }
-  VkrMetalPacketTexture *source =
-      vkr_metal_packet_resolve_texture(renderer, source_handle);
-  VkrMetalPacketTexture *prefilter =
-      vkr_metal_packet_resolve_texture(renderer, prefilter_handle);
-  if (!vkr_metal_packet_validate_ibl_textures(source, prefilter))
-    return false_v;
+  @autoreleasepool {
+    if (!renderer ||
+        (renderer->frame_prepared && !renderer->reserved_frame_slot)) {
+      return false_v;
+    }
+    if (!@available(macOS 26.0, *)) {
+      return false_v;
+    }
+    VkrMetalPacketTexture *source =
+        vkr_metal_packet_resolve_texture(renderer, source_handle);
+    VkrMetalPacketTexture *prefilter =
+        vkr_metal_packet_resolve_texture(renderer, prefilter_handle);
+    if (!vkr_metal_packet_validate_ibl_textures(source, prefilter))
+      return false_v;
 
-  id<MTLTexture> source_texture =
-      (id<MTLTexture>)source->resource.metal_texture;
-  id<MTLTexture> prefilter_texture =
-      (id<MTLTexture>)prefilter->resource.metal_texture;
-  const uint32_t prefilter_mip_count =
-      (uint32_t)prefilter_texture.mipmapLevelCount;
-  const uint64_t root_count = 1u + prefilter_mip_count;
-  const uint64_t root_bytes = root_count * VKR_METAL_PACKET_ROOT_ALIGNMENT;
-  VkrMetalRingSlice slice = {0};
-  VkrMetalAddressPair upload = {0};
-  id<MTLBuffer> upload_buffer = nil;
-  id<MTL4ComputeCommandEncoder> encoder = nil;
-  if (!vkr_metal_packet_begin_upload(renderer, root_bytes, &slice, &upload,
-                                     &upload_buffer, &encoder)) {
-    return false_v;
-  }
+    id<MTLTexture> source_texture =
+        (id<MTLTexture>)source->resource.metal_texture;
+    id<MTLTexture> prefilter_texture =
+        (id<MTLTexture>)prefilter->resource.metal_texture;
+    const uint32_t prefilter_mip_count =
+        (uint32_t)prefilter_texture.mipmapLevelCount;
+    const uint64_t root_count = 1u + prefilter_mip_count;
+    const uint64_t root_bytes = root_count * VKR_METAL_PACKET_ROOT_ALIGNMENT;
+    VkrMetalRingSlice slice = {0};
+    VkrMetalAddressPair upload = {0};
+    id<MTLBuffer> upload_buffer = nil;
+    id<MTL4ComputeCommandEncoder> encoder = nil;
+    if (!vkr_metal_packet_begin_upload(renderer, root_bytes, &slice, &upload,
+                                       &upload_buffer, &encoder)) {
+      return false_v;
+    }
 
-  for (uint32_t mip = 0; mip < prefilter_mip_count; ++mip) {
-    const uint64_t root_offset =
-        (uint64_t)mip * VKR_METAL_PACKET_ROOT_ALIGNMENT;
-    VkrMetalPacketPrefilterRoot *prefilter_root =
-        (VkrMetalPacketPrefilterRoot *)((uint8_t *)upload.cpu_address +
-                                        root_offset);
-    *prefilter_root = (VkrMetalPacketPrefilterRoot){
-        .source_texture_id = source->resource.resource_id,
-        .target_texture_id = prefilter->resource.resource_id,
-        .roughness =
-            prefilter_mip_count > 1u
-                ? (float32_t)mip / (float32_t)(prefilter_mip_count - 1u)
-                : 0.0f,
-        .source_face_size = (float32_t)source_texture.width,
-        .source_mip_count = (float32_t)source_texture.mipmapLevelCount,
-        .target_mip = mip,
-    };
-    const uint32_t mip_size = Max(1u, (uint32_t)prefilter_texture.width >> mip);
-    [renderer->argument_table setAddress:upload.gpu_address + root_offset
-                                 atIndex:0];
-    [encoder setComputePipelineState:renderer->ibl_prefilter_pipeline];
-    [encoder setArgumentTable:renderer->argument_table];
-    [encoder dispatchThreads:MTLSizeMake(mip_size, mip_size, 6)
-        threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
-  }
-
-  /* Exhaustion and projection failure are cold-path errors: the logical source
-     keeps its prior publication, or black. */
-  uint32_t sh_slot = VKR_SH_SLOT_BLACK;
-  uint32_t projection_mip = 0u;
-  uint32_t projection_extent = 0u;
-  if (vkr_ibl_sh_projection_mip((uint32_t)source_texture.width,
-                                (uint32_t)source_texture.mipmapLevelCount,
-                                &projection_mip, &projection_extent)) {
-    if (vkr_ibl_sh_pool_reserve(&renderer->sh_pool, &sh_slot) ==
-        VKR_SH_POOL_STATUS_OK) {
-      const uint64_t sh_root_offset =
-          (uint64_t)prefilter_mip_count * VKR_METAL_PACKET_ROOT_ALIGNMENT;
-      VkrMetalPacketShProjectRoot *sh_root =
-          (VkrMetalPacketShProjectRoot *)((uint8_t *)upload.cpu_address +
-                                          sh_root_offset);
-      *sh_root = (VkrMetalPacketShProjectRoot){
+    for (uint32_t mip = 0; mip < prefilter_mip_count; ++mip) {
+      const uint64_t root_offset =
+          (uint64_t)mip * VKR_METAL_PACKET_ROOT_ALIGNMENT;
+      VkrMetalPacketPrefilterRoot *prefilter_root =
+          (VkrMetalPacketPrefilterRoot *)((uint8_t *)upload.cpu_address +
+                                          root_offset);
+      *prefilter_root = (VkrMetalPacketPrefilterRoot){
           .source_texture_id = source->resource.resource_id,
-          .destination = renderer->sh_coefficients.gpuAddress +
-                         (uint64_t)sh_slot * VKR_SH_SLOT_BYTES,
-          .source_face_size = projection_extent,
-          .source_mip = projection_mip,
-          /* The CPU owns pow(sinc_pi(l/3), sh_deringing) so the kernel carries
-             no pow() and both sides cannot drift. */
-          .window_band_0 = vkr_ibl_sh_window_factor(0u, sh_deringing),
-          .window_band_1 = vkr_ibl_sh_window_factor(1u, sh_deringing),
-          .window_band_2 = vkr_ibl_sh_window_factor(2u, sh_deringing),
+          .target_texture_id = prefilter->resource.resource_id,
+          .roughness =
+              prefilter_mip_count > 1u
+                  ? (float32_t)mip / (float32_t)(prefilter_mip_count - 1u)
+                  : 0.0f,
+          .source_face_size = (float32_t)source_texture.width,
+          .source_mip_count = (float32_t)source_texture.mipmapLevelCount,
+          .target_mip = mip,
       };
-      [renderer->argument_table setAddress:upload.gpu_address + sh_root_offset
+      const uint32_t mip_size =
+          Max(1u, (uint32_t)prefilter_texture.width >> mip);
+      [renderer->argument_table setAddress:upload.gpu_address + root_offset
                                    atIndex:0];
-      [encoder setComputePipelineState:renderer->ibl_sh_pipeline];
+      [encoder setComputePipelineState:renderer->ibl_prefilter_pipeline];
       [encoder setArgumentTable:renderer->argument_table];
-      /* One workgroup per destination slot; the kernel's fixed reduction is
-         what makes the result deterministic, so this must stay a single
-         group. */
-      [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1)
-              threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
-      (void)vkr_ibl_sh_pool_mark_recorded(&renderer->sh_pool, sh_slot);
-    } else {
-      log_error("Metal SH coefficient pool exhausted; source keeps its "
-                "previous coefficients");
+      [encoder dispatchThreads:MTLSizeMake(mip_size, mip_size, 6)
+          threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
     }
-  }
 
-  if (!vkr_metal_packet_submit_upload(renderer, encoder, slice)) {
-    /* Nothing was submitted, so the candidate returns to the pool immediately
-       rather than through retirement. */
-    if (sh_slot != VKR_SH_SLOT_BLACK)
-      (void)vkr_ibl_sh_pool_abandon(&renderer->sh_pool, sh_slot);
-    return false_v;
-  }
-  source->last_use_submit_value = renderer->submit_value;
-  prefilter->last_use_submit_value = renderer->submit_value;
-  /* Submission succeeded, so the candidate becomes this source's published
-     coefficients and the previous generation retires against its own last
-     reader. */
-  if (sh_slot != VKR_SH_SLOT_BLACK) {
-    vkr_ibl_sh_pool_reference(&renderer->sh_pool, sh_slot,
-                              renderer->submit_value);
-    if (vkr_ibl_sh_pool_publish(&renderer->sh_pool, sh_slot) ==
-        VKR_SH_POOL_STATUS_OK) {
-      if (source->ibl_sh_slot != VKR_SH_SLOT_BLACK)
-        (void)vkr_ibl_sh_pool_retire(&renderer->sh_pool, source->ibl_sh_slot);
-      source->ibl_sh_slot = sh_slot;
-    } else {
-      (void)vkr_ibl_sh_pool_retire(&renderer->sh_pool, sh_slot);
+    /* Exhaustion and projection failure are cold-path errors: the logical
+       source keeps its prior publication, or black. */
+    uint32_t sh_slot = VKR_SH_SLOT_BLACK;
+    uint32_t projection_mip = 0u;
+    uint32_t projection_extent = 0u;
+    if (vkr_ibl_sh_projection_mip((uint32_t)source_texture.width,
+                                  (uint32_t)source_texture.mipmapLevelCount,
+                                  &projection_mip, &projection_extent)) {
+      if (vkr_ibl_sh_pool_reserve(&renderer->sh_pool, &sh_slot) ==
+          VKR_SH_POOL_STATUS_OK) {
+        const uint64_t sh_root_offset =
+            (uint64_t)prefilter_mip_count * VKR_METAL_PACKET_ROOT_ALIGNMENT;
+        VkrMetalPacketShProjectRoot *sh_root =
+            (VkrMetalPacketShProjectRoot *)((uint8_t *)upload.cpu_address +
+                                            sh_root_offset);
+        *sh_root = (VkrMetalPacketShProjectRoot){
+            .source_texture_id = source->resource.resource_id,
+            .destination = renderer->sh_coefficients.gpuAddress +
+                           (uint64_t)sh_slot * VKR_SH_SLOT_BYTES,
+            .source_face_size = projection_extent,
+            .source_mip = projection_mip,
+            /* The CPU owns pow(sinc_pi(l/3), sh_deringing) so the kernel
+               carries no pow() and both sides cannot drift. */
+            .window_band_0 = vkr_ibl_sh_window_factor(0u, sh_deringing),
+            .window_band_1 = vkr_ibl_sh_window_factor(1u, sh_deringing),
+            .window_band_2 = vkr_ibl_sh_window_factor(2u, sh_deringing),
+        };
+        [renderer->argument_table setAddress:upload.gpu_address + sh_root_offset
+                                     atIndex:0];
+        [encoder setComputePipelineState:renderer->ibl_sh_pipeline];
+        [encoder setArgumentTable:renderer->argument_table];
+        /* One workgroup per destination slot; the kernel's fixed reduction is
+           what makes the result deterministic, so this must stay a single
+           group. */
+        [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+        (void)vkr_ibl_sh_pool_mark_recorded(&renderer->sh_pool, sh_slot);
+      } else {
+        log_error("Metal SH coefficient pool exhausted; source keeps its "
+                  "previous coefficients");
+      }
     }
+
+    if (!vkr_metal_packet_submit_upload(renderer, encoder, slice)) {
+      /* Nothing was submitted, so the candidate returns to the pool immediately
+         rather than through retirement. */
+      if (sh_slot != VKR_SH_SLOT_BLACK)
+        (void)vkr_ibl_sh_pool_abandon(&renderer->sh_pool, sh_slot);
+      return false_v;
+    }
+    source->last_use_submit_value = renderer->submit_value;
+    prefilter->last_use_submit_value = renderer->submit_value;
+    /* Submission succeeded, so the candidate becomes this source's published
+       coefficients and the previous generation retires against its own last
+       reader. */
+    if (sh_slot != VKR_SH_SLOT_BLACK) {
+      vkr_ibl_sh_pool_reference(&renderer->sh_pool, sh_slot,
+                                renderer->submit_value);
+      if (vkr_ibl_sh_pool_publish(&renderer->sh_pool, sh_slot) ==
+          VKR_SH_POOL_STATUS_OK) {
+        if (source->ibl_sh_slot != VKR_SH_SLOT_BLACK)
+          (void)vkr_ibl_sh_pool_retire(&renderer->sh_pool, source->ibl_sh_slot);
+        source->ibl_sh_slot = sh_slot;
+      } else {
+        (void)vkr_ibl_sh_pool_retire(&renderer->sh_pool, sh_slot);
+      }
+    }
+    return true_v;
   }
-  return true_v;
 }
 
 bool8_t vkr_metal_packet_renderer_bake_hdr_environment(
     VkrMetalPacketRenderer *renderer, VkrTextureHandle equirect_handle,
     VkrTextureHandle source_handle, VkrTextureHandle prefilter_handle,
     float32_t sh_deringing) {
-  if (!renderer || (renderer->frame_prepared && !renderer->reserved_frame_slot)) {
-    return false_v;
-  }
-  if (!@available(macOS 26.0, *)) {
-    return false_v;
-  }
-  VkrMetalPacketTexture *equirect =
-      vkr_metal_packet_resolve_texture(renderer, equirect_handle);
-  VkrMetalPacketTexture *source =
-      vkr_metal_packet_resolve_texture(renderer, source_handle);
-  VkrMetalPacketTexture *prefilter =
-      vkr_metal_packet_resolve_texture(renderer, prefilter_handle);
-  if (!equirect || equirect == source || equirect == prefilter ||
-      !vkr_metal_packet_validate_ibl_textures(source, prefilter)) {
-    return false_v;
-  }
-  id<MTLTexture> equirect_texture =
-      (id<MTLTexture>)equirect->resource.metal_texture;
-  id<MTLTexture> source_texture =
-      (id<MTLTexture>)source->resource.metal_texture;
-  if (equirect_texture.textureType != MTLTextureType2D ||
-      equirect_texture.width != equirect_texture.height * 2u ||
-      (equirect_texture.usage & MTLTextureUsageShaderRead) == 0 ||
-      source_texture.pixelFormat != MTLPixelFormatRGBA16Float ||
-      (source_texture.usage & MTLTextureUsageShaderWrite) == 0) {
-    return false_v;
-  }
+  @autoreleasepool {
+    if (!renderer ||
+        (renderer->frame_prepared && !renderer->reserved_frame_slot)) {
+      return false_v;
+    }
+    if (!@available(macOS 26.0, *)) {
+      return false_v;
+    }
+    VkrMetalPacketTexture *equirect =
+        vkr_metal_packet_resolve_texture(renderer, equirect_handle);
+    VkrMetalPacketTexture *source =
+        vkr_metal_packet_resolve_texture(renderer, source_handle);
+    VkrMetalPacketTexture *prefilter =
+        vkr_metal_packet_resolve_texture(renderer, prefilter_handle);
+    if (!equirect || equirect == source || equirect == prefilter ||
+        !vkr_metal_packet_validate_ibl_textures(source, prefilter)) {
+      return false_v;
+    }
+    id<MTLTexture> equirect_texture =
+        (id<MTLTexture>)equirect->resource.metal_texture;
+    id<MTLTexture> source_texture =
+        (id<MTLTexture>)source->resource.metal_texture;
+    if (equirect_texture.textureType != MTLTextureType2D ||
+        equirect_texture.width != equirect_texture.height * 2u ||
+        (equirect_texture.usage & MTLTextureUsageShaderRead) == 0 ||
+        source_texture.pixelFormat != MTLPixelFormatRGBA16Float ||
+        (source_texture.usage & MTLTextureUsageShaderWrite) == 0) {
+      return false_v;
+    }
 
-  VkrMetalRingSlice slice = {0};
-  VkrMetalAddressPair upload = {0};
-  id<MTLBuffer> upload_buffer = nil;
-  id<MTL4ComputeCommandEncoder> encoder = nil;
-  if (!vkr_metal_packet_begin_upload(renderer, VKR_METAL_PACKET_ROOT_ALIGNMENT,
-                                     &slice, &upload, &upload_buffer,
-                                     &encoder)) {
-    return false_v;
+    VkrMetalRingSlice slice = {0};
+    VkrMetalAddressPair upload = {0};
+    id<MTLBuffer> upload_buffer = nil;
+    id<MTL4ComputeCommandEncoder> encoder = nil;
+    if (!vkr_metal_packet_begin_upload(renderer,
+                                       VKR_METAL_PACKET_ROOT_ALIGNMENT, &slice,
+                                       &upload, &upload_buffer, &encoder)) {
+      return false_v;
+    }
+    VkrMetalPacketEquirectRoot *root = upload.cpu_address;
+    *root = (VkrMetalPacketEquirectRoot){
+        .source_texture_id = equirect->resource.resource_id,
+        .target_texture_id = source->resource.resource_id,
+        .target_size = (uint32_t)source_texture.width,
+    };
+    [renderer->argument_table setAddress:upload.gpu_address atIndex:0];
+    [encoder setComputePipelineState:renderer->ibl_equirect_pipeline];
+    [encoder setArgumentTable:renderer->argument_table];
+    [encoder dispatchThreads:MTLSizeMake(source_texture.width,
+                                         source_texture.height, 6)
+        threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+    [encoder barrierAfterEncoderStages:MTLStageDispatch
+                   beforeEncoderStages:MTLStageBlit
+                     visibilityOptions:MTL4VisibilityOptionDevice];
+    [encoder generateMipmapsForTexture:source_texture];
+    if (!vkr_metal_packet_submit_upload(renderer, encoder, slice)) {
+      return false_v;
+    }
+    equirect->last_use_submit_value = renderer->submit_value;
+    source->last_use_submit_value = renderer->submit_value;
+    return vkr_metal_packet_renderer_bake_ibl_cubemap(
+        renderer, source_handle, prefilter_handle, sh_deringing);
   }
-  VkrMetalPacketEquirectRoot *root = upload.cpu_address;
-  *root = (VkrMetalPacketEquirectRoot){
-      .source_texture_id = equirect->resource.resource_id,
-      .target_texture_id = source->resource.resource_id,
-      .target_size = (uint32_t)source_texture.width,
-  };
-  [renderer->argument_table setAddress:upload.gpu_address atIndex:0];
-  [encoder setComputePipelineState:renderer->ibl_equirect_pipeline];
-  [encoder setArgumentTable:renderer->argument_table];
-  [encoder dispatchThreads:MTLSizeMake(source_texture.width,
-                                       source_texture.height, 6)
-      threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
-  [encoder barrierAfterEncoderStages:MTLStageDispatch
-                 beforeEncoderStages:MTLStageBlit
-                   visibilityOptions:MTL4VisibilityOptionDevice];
-  [encoder generateMipmapsForTexture:source_texture];
-  if (!vkr_metal_packet_submit_upload(renderer, encoder, slice)) {
-    return false_v;
-  }
-  equirect->last_use_submit_value = renderer->submit_value;
-  source->last_use_submit_value = renderer->submit_value;
-  return vkr_metal_packet_renderer_bake_ibl_cubemap(
-      renderer, source_handle, prefilter_handle, sh_deringing);
 }
 
 bool8_t vkr_metal_packet_renderer_create_cubemap(
     VkrMetalPacketRenderer *renderer,
     const VkrMetalPacketCubemapCreateInfo *create_info,
     VkrTextureHandle *out_handle) {
-  if (!renderer || !create_info || !out_handle || (renderer->frame_prepared && !renderer->reserved_frame_slot) ||
-      !create_info->rgba8_faces || create_info->extent == 0 ||
-      create_info->extent > VKR_TEXTURE_MAX_DIMENSION)
-    return false_v;
-  *out_handle = VKR_TEXTURE_HANDLE_INVALID;
-  if (!@available(macOS 26.0, *))
-    return false_v;
-  id<MTLSamplerState> sampler =
-      vkr_metal_packet_default_material_sampler(renderer, 1u);
-  if (!sampler || sampler.gpuResourceID._impl == 0)
-    return false_v;
-  for (uint32_t i = 0; i < renderer->max_textures; ++i) {
-    VkrMetalPacketTexture *slot = &renderer->textures[i];
-    if (slot->live)
-      continue;
-    const uint32_t generation = slot->generation;
-    slot->resource = (VkrMetalTextureResource){0};
-    MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
-    descriptor.textureType = MTLTextureTypeCube;
-    descriptor.pixelFormat = MTLPixelFormatRGBA8Unorm;
-    descriptor.width = create_info->extent;
-    descriptor.height = create_info->extent;
-    descriptor.depth = 1;
-    descriptor.mipmapLevelCount = 1;
-    descriptor.arrayLength = 1;
-    descriptor.usage = MTLTextureUsageShaderRead;
-    const bool8_t texture_created =
-        vkr_metal_memory_device_create_texture(
-            renderer->memory, descriptor, VKR_GPU_ALLOCATION_OWNER_TEXTURE,
-            &slot->resource) == VKR_METAL_MEMORY_STATUS_OK;
-    [descriptor release];
-    if (!texture_created ||
-        !vkr_metal_packet_upload_cubemap(
-            renderer, create_info->rgba8_faces, create_info->extent,
-            (id<MTLTexture>)slot->resource.metal_texture)) {
-      if (slot->resource.metal_texture) {
-        (void)vkr_metal_memory_device_retire(
-            renderer->memory, slot->resource.handle, renderer->submit_value);
-        (void)vkr_metal_memory_device_collect(renderer->memory,
-                                              renderer->submit_value, NULL);
-      }
-      *slot = (VkrMetalPacketTexture){.generation = generation};
+  @autoreleasepool {
+    if (!renderer || !create_info || !out_handle ||
+        (renderer->frame_prepared && !renderer->reserved_frame_slot) ||
+        !create_info->rgba8_faces || create_info->extent == 0 ||
+        create_info->extent > VKR_TEXTURE_MAX_DIMENSION)
       return false_v;
+    *out_handle = VKR_TEXTURE_HANDLE_INVALID;
+    if (!@available(macOS 26.0, *))
+      return false_v;
+    id<MTLSamplerState> sampler =
+        vkr_metal_packet_default_material_sampler(renderer, 1u);
+    if (!sampler || sampler.gpuResourceID._impl == 0)
+      return false_v;
+    for (uint32_t i = 0; i < renderer->max_textures; ++i) {
+      VkrMetalPacketTexture *slot = &renderer->textures[i];
+      if (slot->live)
+        continue;
+      const uint32_t generation = slot->generation;
+      slot->resource = (VkrMetalTextureResource){0};
+      MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
+      descriptor.textureType = MTLTextureTypeCube;
+      descriptor.pixelFormat = MTLPixelFormatRGBA8Unorm;
+      descriptor.width = create_info->extent;
+      descriptor.height = create_info->extent;
+      descriptor.depth = 1;
+      descriptor.mipmapLevelCount = 1;
+      descriptor.arrayLength = 1;
+      descriptor.usage = MTLTextureUsageShaderRead;
+      const bool8_t texture_created =
+          vkr_metal_memory_device_create_texture(
+              renderer->memory, descriptor, VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+              &slot->resource) == VKR_METAL_MEMORY_STATUS_OK;
+      [descriptor release];
+      if (!texture_created ||
+          !vkr_metal_packet_upload_cubemap(
+              renderer, create_info->rgba8_faces, create_info->extent,
+              (id<MTLTexture>)slot->resource.metal_texture)) {
+        if (slot->resource.metal_texture) {
+          (void)vkr_metal_memory_device_retire(
+              renderer->memory, slot->resource.handle, renderer->submit_value);
+          (void)vkr_metal_packet_collect_memory(
+              renderer, renderer->completion.signaledValue, NULL);
+        }
+        *slot = (VkrMetalPacketTexture){.generation = generation};
+        return false_v;
+      }
+      slot->generation =
+          slot->generation == UINT32_MAX ? 1u : slot->generation + 1u;
+      if (slot->generation == 0)
+        slot->generation = 1;
+      slot->sampler_resource_id = sampler.gpuResourceID._impl;
+      slot->last_use_submit_value = renderer->submit_value;
+      slot->live = true_v;
+      *out_handle =
+          (VkrTextureHandle){.id = i + 1, .generation = slot->generation};
+      return true_v;
     }
-    slot->generation =
-        slot->generation == UINT32_MAX ? 1u : slot->generation + 1u;
-    if (slot->generation == 0)
-      slot->generation = 1;
-    slot->sampler_resource_id = sampler.gpuResourceID._impl;
-    slot->last_use_submit_value = renderer->submit_value;
-    slot->live = true_v;
-    *out_handle =
-        (VkrTextureHandle){.id = i + 1, .generation = slot->generation};
-    return true_v;
+    return false_v;
   }
-  return false_v;
 }
 
 bool8_t vkr_metal_packet_renderer_create_hdr_environment(
     VkrMetalPacketRenderer *renderer,
     const VkrMetalPacketHdrEnvironmentCreateInfo *create_info,
     VkrTextureHandle *out_handle) {
-  if (!renderer || !create_info || !out_handle || (renderer->frame_prepared && !renderer->reserved_frame_slot) ||
-      !create_info->rgba16_equirect || create_info->width == 0 ||
-      create_info->height == 0 || create_info->cube_extent == 0 ||
-      create_info->width > VKR_TEXTURE_MAX_DIMENSION ||
-      create_info->height > VKR_TEXTURE_MAX_DIMENSION ||
-      create_info->cube_extent > VKR_TEXTURE_MAX_DIMENSION ||
-      create_info->height > UINT32_MAX / 2u ||
-      create_info->width != create_info->height * 2u)
-    return false_v;
-  *out_handle = VKR_TEXTURE_HANDLE_INVALID;
-  if (!@available(macOS 26.0, *))
-    return false_v;
-  const uint32_t cube_mip_count =
-      vkr_metal_packet_mip_count(create_info->cube_extent);
-  id<MTLSamplerState> sampler =
-      vkr_metal_packet_default_material_sampler(renderer, cube_mip_count);
-  if (!sampler || sampler.gpuResourceID._impl == 0)
-    return false_v;
-  for (uint32_t i = 0; i < renderer->max_textures; ++i) {
-    VkrMetalPacketTexture *slot = &renderer->textures[i];
-    if (slot->live)
-      continue;
-    const uint32_t generation = slot->generation;
-    VkrMetalTextureResource source = {0};
-    slot->resource = (VkrMetalTextureResource){0};
-    MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
-    descriptor.textureType = MTLTextureType2D;
-    descriptor.pixelFormat = MTLPixelFormatRGBA16Float;
-    descriptor.width = create_info->width;
-    descriptor.height = create_info->height;
-    descriptor.mipmapLevelCount = 1;
-    descriptor.usage = MTLTextureUsageShaderRead;
-    const bool8_t source_created =
-        vkr_metal_memory_device_create_texture(
-            renderer->memory, descriptor, VKR_GPU_ALLOCATION_OWNER_TEXTURE,
-            &source) == VKR_METAL_MEMORY_STATUS_OK;
-    descriptor.textureType = MTLTextureTypeCube;
-    descriptor.width = create_info->cube_extent;
-    descriptor.height = create_info->cube_extent;
-    descriptor.mipmapLevelCount = cube_mip_count;
-    descriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
-    const bool8_t cube_created =
-        source_created &&
-        vkr_metal_memory_device_create_texture(
-            renderer->memory, descriptor, VKR_GPU_ALLOCATION_OWNER_TEXTURE,
-            &slot->resource) == VKR_METAL_MEMORY_STATUS_OK;
-    [descriptor release];
-    const bool8_t converted =
-        cube_created && vkr_metal_packet_convert_equirect(
-                            renderer, create_info->rgba16_equirect,
-                            create_info->width, create_info->height,
-                            create_info->cube_extent, &source, &slot->resource);
-    if (source.metal_texture) {
-      (void)vkr_metal_memory_device_retire(renderer->memory, source.handle,
-                                           renderer->submit_value);
-    }
-    if (!converted) {
-      if (slot->resource.metal_texture) {
-        (void)vkr_metal_memory_device_retire(
-            renderer->memory, slot->resource.handle, renderer->submit_value);
-      }
-      (void)vkr_metal_memory_device_collect(
-          renderer->memory, renderer->completion.signaledValue, NULL);
-      *slot = (VkrMetalPacketTexture){.generation = generation};
+  @autoreleasepool {
+    if (!renderer || !create_info || !out_handle ||
+        (renderer->frame_prepared && !renderer->reserved_frame_slot) ||
+        !create_info->rgba16_equirect || create_info->width == 0 ||
+        create_info->height == 0 || create_info->cube_extent == 0 ||
+        create_info->width > VKR_TEXTURE_MAX_DIMENSION ||
+        create_info->height > VKR_TEXTURE_MAX_DIMENSION ||
+        create_info->cube_extent > VKR_TEXTURE_MAX_DIMENSION ||
+        create_info->height > UINT32_MAX / 2u ||
+        create_info->width != create_info->height * 2u)
       return false_v;
+    *out_handle = VKR_TEXTURE_HANDLE_INVALID;
+    if (!@available(macOS 26.0, *))
+      return false_v;
+    const uint32_t cube_mip_count =
+        vkr_metal_packet_mip_count(create_info->cube_extent);
+    id<MTLSamplerState> sampler =
+        vkr_metal_packet_default_material_sampler(renderer, cube_mip_count);
+    if (!sampler || sampler.gpuResourceID._impl == 0)
+      return false_v;
+    for (uint32_t i = 0; i < renderer->max_textures; ++i) {
+      VkrMetalPacketTexture *slot = &renderer->textures[i];
+      if (slot->live)
+        continue;
+      const uint32_t generation = slot->generation;
+      VkrMetalTextureResource source = {0};
+      slot->resource = (VkrMetalTextureResource){0};
+      MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
+      descriptor.textureType = MTLTextureType2D;
+      descriptor.pixelFormat = MTLPixelFormatRGBA16Float;
+      descriptor.width = create_info->width;
+      descriptor.height = create_info->height;
+      descriptor.mipmapLevelCount = 1;
+      descriptor.usage = MTLTextureUsageShaderRead;
+      const bool8_t source_created =
+          vkr_metal_memory_device_create_texture(
+              renderer->memory, descriptor, VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+              &source) == VKR_METAL_MEMORY_STATUS_OK;
+      descriptor.textureType = MTLTextureTypeCube;
+      descriptor.width = create_info->cube_extent;
+      descriptor.height = create_info->cube_extent;
+      descriptor.mipmapLevelCount = cube_mip_count;
+      descriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+      const bool8_t cube_created =
+          source_created &&
+          vkr_metal_memory_device_create_texture(
+              renderer->memory, descriptor, VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+              &slot->resource) == VKR_METAL_MEMORY_STATUS_OK;
+      [descriptor release];
+      const bool8_t converted =
+          cube_created &&
+          vkr_metal_packet_convert_equirect(
+              renderer, create_info->rgba16_equirect, create_info->width,
+              create_info->height, create_info->cube_extent, &source,
+              &slot->resource);
+      if (source.metal_texture) {
+        (void)vkr_metal_memory_device_retire(renderer->memory, source.handle,
+                                             renderer->submit_value);
+      }
+      if (!converted) {
+        if (slot->resource.metal_texture) {
+          (void)vkr_metal_memory_device_retire(
+              renderer->memory, slot->resource.handle, renderer->submit_value);
+        }
+        (void)vkr_metal_packet_collect_memory(
+            renderer, renderer->completion.signaledValue, NULL);
+        *slot = (VkrMetalPacketTexture){.generation = generation};
+        return false_v;
+      }
+      (void)vkr_metal_packet_collect_memory(
+          renderer, renderer->completion.signaledValue, NULL);
+      slot->generation =
+          slot->generation == UINT32_MAX ? 1u : slot->generation + 1u;
+      if (slot->generation == 0)
+        slot->generation = 1;
+      slot->sampler_resource_id = sampler.gpuResourceID._impl;
+      slot->last_use_submit_value = renderer->submit_value;
+      slot->live = true_v;
+      *out_handle =
+          (VkrTextureHandle){.id = i + 1, .generation = slot->generation};
+      return true_v;
     }
-    (void)vkr_metal_memory_device_collect(
-        renderer->memory, renderer->completion.signaledValue, NULL);
-    slot->generation =
-        slot->generation == UINT32_MAX ? 1u : slot->generation + 1u;
-    if (slot->generation == 0)
-      slot->generation = 1;
-    slot->sampler_resource_id = sampler.gpuResourceID._impl;
-    slot->last_use_submit_value = renderer->submit_value;
-    slot->live = true_v;
-    *out_handle =
-        (VkrTextureHandle){.id = i + 1, .generation = slot->generation};
-    return true_v;
+    return false_v;
   }
-  return false_v;
 }
 
 bool8_t
 vkr_metal_packet_renderer_destroy_texture(VkrMetalPacketRenderer *renderer,
                                           VkrTextureHandle handle) {
-  if (!renderer || handle.id == 0 || handle.id > renderer->max_textures) {
-    log_warn("Metal texture destroy rejected invalid handle %u:%u", handle.id,
-             handle.generation);
-    return false_v;
-  }
-  VkrMetalPacketTexture *slot = &renderer->textures[handle.id - 1];
-  if (!slot->live || slot->generation != handle.generation) {
-    log_warn("Metal texture destroy rejected stale handle %u:%u "
-             "(live=%u current_generation=%u)",
-             handle.id, handle.generation, slot->live, slot->generation);
-    return false_v;
-  }
-  for (uint32_t material_index = 0; material_index < renderer->max_materials;
-       ++material_index) {
-    const VkrMetalPacketMaterial *material =
-        &renderer->packet_materials[material_index];
-    if (!material->live || material->owns_textures)
-      continue;
-    for (uint32_t texture_index = 0;
-         texture_index < ArrayCount(material->texture_handles);
-         ++texture_index) {
-      const VkrTextureHandle referenced =
-          material->texture_handles[texture_index];
-      if (referenced.id == handle.id &&
-          referenced.generation == handle.generation) {
-        log_warn("Metal texture %u:%u is still referenced by material %u:%u; "
-                 "ownership retained for retry",
-                 handle.id, handle.generation, material_index + 1u,
-                 material->generation);
-        return false_v;
+  @autoreleasepool {
+    if (!renderer || handle.id == 0 || handle.id > renderer->max_textures) {
+      log_warn("Metal texture destroy rejected invalid handle %u:%u", handle.id,
+               handle.generation);
+      return false_v;
+    }
+    VkrMetalPacketTexture *slot = &renderer->textures[handle.id - 1];
+    if (!slot->live || slot->generation != handle.generation) {
+      log_warn("Metal texture destroy rejected stale handle %u:%u "
+               "(live=%u current_generation=%u)",
+               handle.id, handle.generation, slot->live, slot->generation);
+      return false_v;
+    }
+    for (uint32_t material_index = 0; material_index < renderer->max_materials;
+         ++material_index) {
+      const VkrMetalPacketMaterial *material =
+          &renderer->packet_materials[material_index];
+      if (!material->live || material->owns_textures)
+        continue;
+      for (uint32_t texture_index = 0;
+           texture_index < ArrayCount(material->texture_handles);
+           ++texture_index) {
+        const VkrTextureHandle referenced =
+            material->texture_handles[texture_index];
+        if (referenced.id == handle.id &&
+            referenced.generation == handle.generation) {
+          log_warn("Metal texture %u:%u is still referenced by material %u:%u; "
+                   "ownership retained for retry",
+                   handle.id, handle.generation, material_index + 1u,
+                   material->generation);
+          return false_v;
+        }
       }
     }
+    if (vkr_metal_memory_device_retire(renderer->memory, slot->resource.handle,
+                                       slot->last_use_submit_value) !=
+        VKR_METAL_MEMORY_STATUS_OK) {
+      log_warn("Metal texture %u:%u retirement failed at submit %llu",
+               handle.id, handle.generation,
+               (unsigned long long)slot->last_use_submit_value);
+      return false_v;
+    }
+    if (renderer->ibl_ready && renderer->ibl_source.id == handle.id &&
+        renderer->ibl_source.generation == handle.generation) {
+      renderer->ibl_ready = false_v;
+      renderer->ibl_source = VKR_TEXTURE_HANDLE_INVALID;
+    }
+    if (slot->ibl_sh_slot != VKR_SH_SLOT_BLACK &&
+        vkr_ibl_sh_pool_retire(&renderer->sh_pool, slot->ibl_sh_slot) !=
+            VKR_SH_POOL_STATUS_OK) {
+      log_fatal("Metal lost the SH publication owned by texture %u:%u",
+                handle.id, handle.generation);
+    }
+    const uint32_t next_generation =
+        slot->generation == UINT32_MAX ? 1u : slot->generation + 1u;
+    *slot = (VkrMetalPacketTexture){.generation = next_generation};
+    vkr_metal_packet_advance_revision(&renderer->radiance_revision);
+    return true_v;
   }
-  if (vkr_metal_memory_device_retire(renderer->memory, slot->resource.handle,
-                                     slot->last_use_submit_value) !=
-      VKR_METAL_MEMORY_STATUS_OK) {
-    log_warn("Metal texture %u:%u retirement failed at submit %llu", handle.id,
-             handle.generation,
-             (unsigned long long)slot->last_use_submit_value);
-    return false_v;
-  }
-  if (renderer->ibl_ready && renderer->ibl_source.id == handle.id &&
-      renderer->ibl_source.generation == handle.generation) {
-    renderer->ibl_ready = false_v;
-    renderer->ibl_source = VKR_TEXTURE_HANDLE_INVALID;
-  }
-  if (slot->ibl_sh_slot != VKR_SH_SLOT_BLACK &&
-      vkr_ibl_sh_pool_retire(&renderer->sh_pool, slot->ibl_sh_slot) !=
-          VKR_SH_POOL_STATUS_OK) {
-    log_fatal("Metal lost the SH publication owned by texture %u:%u", handle.id,
-              handle.generation);
-  }
-  const uint32_t next_generation =
-      slot->generation == UINT32_MAX ? 1u : slot->generation + 1u;
-  *slot = (VkrMetalPacketTexture){.generation = next_generation};
-  vkr_metal_packet_advance_revision(&renderer->radiance_revision);
-  return true_v;
 }
 
 vkr_internal bool8_t vkr_metal_packet_ibl_source(const VkrPreparedFrame *packet,
@@ -1682,19 +1864,20 @@ vkr_internal bool8_t vkr_metal_packet_candidate_graph_buffers(
       instance_graph->graph_generation;
   return *out_candidates && *out_instances &&
          (*out_candidates)->resource.length >=
-             (uint64_t)VKR_GPU_DRAW_CANDIDATE_CAPACITY *
+             (uint64_t)renderer->prepared_frame.gpu_draw_candidate_capacity *
                  sizeof(VkrGpuCandidateDrawRow) &&
          (*out_instances)->resource.length >=
-             (uint64_t)VKR_GPU_DRAW_CANDIDATE_CAPACITY *
+             (uint64_t)renderer->prepared_frame.gpu_draw_candidate_capacity *
                  sizeof(VkrPreparedInstanceGPU) &&
          *out_resource_generation != 0u;
 }
 
 vkr_internal bool8_t vkr_metal_packet_pack_gpu_draw_stream(
     VkrMetalPacketRenderer *renderer, const VkrWorldDrawCandidate *sources,
-    uint32_t count, uint32_t destination_first, VkrPreparedInstanceGPU *instances,
-    VkrGpuCandidateDrawRow *candidates, VkrGpuGeometryRow *geometry_rows,
-    uint32_t *out_packed_count, uint32_t *out_omitted_count) {
+    uint32_t count, uint32_t destination_first,
+    VkrPreparedInstanceGPU *instances, VkrGpuCandidateDrawRow *candidates,
+    VkrGpuGeometryRow *geometry_rows, uint32_t *out_packed_count,
+    uint32_t *out_omitted_count) {
   *out_packed_count = 0u;
   *out_omitted_count = 0u;
   if (count == 0u)
@@ -1723,9 +1906,7 @@ vkr_internal bool8_t vkr_metal_packet_pack_gpu_draw_stream(
     if (source->submesh_index >= mesh->submesh_count)
       return false_v;
     const VkrMetalPacketSubmeshCreateInfo *submesh =
-        &renderer->submeshes[(uint64_t)(geometry.id - 1u) *
-                                 renderer->max_submeshes_per_mesh +
-                             source->submesh_index];
+        &mesh->submeshes[source->submesh_index];
     instances[packed_count] = vkr_gpu_prepare_instance(&source->instance);
     instances[packed_count].temporal_flags =
         ((source->submesh_index + 1u) << VKR_INSTANCE_TEMPORAL_SURFACE_SHIFT) |
@@ -1760,8 +1941,7 @@ vkr_internal bool8_t vkr_metal_packet_pack_gpu_draw_stream(
   return true_v;
 }
 
-vkr_internal void
-vkr_metal_packet_prepare_resident_gpu_draw_stream(
+vkr_internal void vkr_metal_packet_prepare_resident_gpu_draw_stream(
     VkrMetalPacketRenderer *renderer, const VkrWorldDrawCandidate *sources,
     uint32_t count, VkrGpuGeometryRow *geometry_rows) {
   const uint64_t pending_submit = renderer->submit_value + 1u;
@@ -1805,9 +1985,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_direct_draws(
       return false_v;
     }
     const VkrMetalPacketSubmeshCreateInfo *submesh =
-        &renderer->submeshes[(uint64_t)(geometry.id - 1u) *
-                                 renderer->max_submeshes_per_mesh +
-                             draw->submesh_index];
+        &mesh->submeshes[draw->submesh_index];
     const uint64_t index_offset =
         ((uint64_t)mesh->gpu_row.first_index + submesh->first_index) *
         sizeof(uint32_t);
@@ -1833,12 +2011,79 @@ vkr_internal bool8_t vkr_metal_packet_prepare_direct_draws(
   return true_v;
 }
 
+/* Packet validation owns the bounded overlay list; this boundary resolves the
+ * published geometry before command emission and stamps its pending GPU use. */
+vkr_internal bool8_t vkr_metal_packet_prepare_overlay_draws(
+    VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
+    VkrMetalPacketFrameUpload *upload, uint32_t count) {
+  VkrMetalPacketMesh *meshes[VKR_EDITOR_OVERLAY_DRAW_MAX];
+  const VkrEditorOverlayDraw *sources = packet->input.editor->overlay_draws;
+  for (uint32_t i = 0u; i < count; ++i) {
+    const VkrEditorOverlayDraw *source = &sources[i];
+    meshes[i] = vkr_metal_packet_resolve_mesh(
+        renderer,
+        (VkrMeshHandle){source->geometry.id, source->geometry.generation});
+    if (!meshes[i] || source->submesh_index >= meshes[i]->submesh_count) {
+      log_error("Metal editor overlay %u has invalid geometry or submesh", i);
+      return false_v;
+    }
+  }
+  const Mat4 view_projection = vkr_metal_packet_clip_matrix(
+      renderer->convert_vulkan_clip_y,
+      mat4_mul(packet->input.globals.projection, packet->input.globals.view));
+  upload->overlay_draw_count = count;
+  upload->overlay_root_gpu = upload->root_gpu;
+  upload->root_cursor = count;
+  for (uint32_t i = 0u; i < count; ++i) {
+    const VkrEditorOverlayDraw *source = &sources[i];
+    VkrMetalPacketMesh *mesh = meshes[i];
+    const VkrMetalPacketSubmeshCreateInfo *submesh =
+        &mesh->submeshes[source->submesh_index];
+    const uint64_t index_offset =
+        ((uint64_t)mesh->gpu_row.first_index + submesh->first_index) *
+        sizeof(uint32_t);
+    upload->overlay_draws[i] = (VkrMetalPacketPreparedDraw){
+        .visible = {.index_count = submesh->index_count,
+                    .vertex_offset = submesh->vertex_offset},
+        .index_address = mesh->indices.gpu_address + index_offset,
+        .index_length = mesh->indices.length - index_offset,
+        .instance_count = 1u,
+        .cull_mode = MTLCullModeNone,
+    };
+    VkrMetalPacketEditorOverlayRoot *root =
+        (VkrMetalPacketEditorOverlayRoot
+             *)(upload->root_cpu +
+                (uint64_t)i * VKR_METAL_PACKET_DRAW_ROOT_STRIDE);
+    *root = (VkrMetalPacketEditorOverlayRoot){
+        .vertices = mesh->gpu_row.vertex_address +
+                    (uint64_t)mesh->gpu_row.first_vertex *
+                        sizeof(VkrPackedStaticVertex),
+        .decode = mesh->gpu_row.decode_address +
+                  (uint64_t)submesh->decode_index *
+                      sizeof(VkrGpuGeometryDecodeRecord),
+        .model_view_projection = mat4_mul(view_projection, source->model),
+        .color = source->color,
+        .object_id = source->object_id,
+    };
+    mesh->last_use_submit_value = renderer->submit_value + 1u;
+  }
+  VKR_METAL_DIAGNOSTIC(renderer, "editor_overlay_prepare",
+                       "count=%u first_id=%u last_id=%u", count,
+                       sources[0].object_id, sources[count - 1u].object_id);
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
-    VkrMetalPacketFrameUpload *upload) {
+    VkrMetalPacketFrameUpload *upload, VkrRendererError *out_error) {
+  *out_error = VKR_RENDERER_ERROR_NONE;
   MemZero(upload, sizeof(*upload));
   const uint32_t world_count =
       packet->input.world ? packet->input.world->instance_count : 0;
+  const uint32_t overlay_count =
+      packet->input.editor && !packet->input.editor->scene_rendering_stopped
+          ? packet->input.editor->overlay_draw_count
+          : 0u;
   const uint32_t shadow_count = 0u;
   const uint32_t picking_count = 0u;
   const VkrPreparedUiDrawList *ui_draw_list =
@@ -1892,6 +2137,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
       source_gpu_draw_count > renderer->max_instances ||
       source_transmission_gpu_draw_count > renderer->max_instances)
     return false_v;
+  if (!vkr_metal_packet_prepare_gpu_draw_icbs(
+          renderer, source_gpu_draw_count, source_transmission_gpu_draw_count,
+          1u + renderer->prepared_frame.shadow_cascade_count))
+    return false_v;
   const uint32_t direct_draw_count = world ? world->transparent_draw_count : 0u;
   if (direct_draw_count > renderer->max_draws)
     return false_v;
@@ -1915,7 +2164,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
       direct_frame_root_count++;
     }
   }
-  uint64_t root_count = 1;
+  uint64_t root_count = 1u + overlay_count;
   if (vkr_metal_packet_ibl_needs_bake(renderer, packet))
     root_count += 1 + VKR_IBL_PREFILTER_MIP_COUNT;
   root_count +=
@@ -1974,7 +2223,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
                                     gpu_draw_instances_bytes,
                                 AlignOf(VkrPreparedInstanceGPU));
   const uint64_t transmission_gpu_draw_instances_bytes =
-      (uint64_t)source_transmission_gpu_draw_count * sizeof(VkrPreparedInstanceGPU);
+      (uint64_t)source_transmission_gpu_draw_count *
+      sizeof(VkrPreparedInstanceGPU);
   const uint64_t instance_bytes = transmission_gpu_draw_instances_offset +
                                   transmission_gpu_draw_instances_bytes;
   const uint32_t point_light_count =
@@ -2142,11 +2392,22 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   const uint64_t required =
       root_offset + root_count * VKR_METAL_PACKET_DRAW_ROOT_STRIDE;
   void *buffer = NULL;
-  if (vkr_metal_memory_device_acquire_ring(
+  const VkrMetalMemoryStatus upload_capacity_status =
+      vkr_metal_packet_ensure_ring_capacity(
+          renderer, VKR_METAL_RING_KIND_UPLOAD, required);
+  if (upload_capacity_status != VKR_METAL_MEMORY_STATUS_OK) {
+    *out_error = vkr_metal_packet_allocation_error(upload_capacity_status);
+    return false_v;
+  }
+  const VkrMetalMemoryStatus upload_status =
+      vkr_metal_memory_device_acquire_ring(
           renderer->memory, VKR_METAL_RING_KIND_UPLOAD, required,
           renderer->completion.signaledValue, &upload->slice,
-          &upload->addresses, &buffer) != VKR_METAL_MEMORY_STATUS_OK)
+          &upload->addresses, &buffer);
+  if (upload_status != VKR_METAL_MEMORY_STATUS_OK) {
+    *out_error = vkr_metal_packet_allocation_error(upload_status);
     return false_v;
+  }
   upload->buffer = (id<MTLBuffer>)buffer;
   upload->acquired = true_v;
   uint8_t *cpu = upload->addresses.cpu_address;
@@ -2184,7 +2445,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     VkrGpuCandidateDrawRow *gpu_candidates =
         (VkrGpuCandidateDrawRow *)(cpu + gpu_draw_candidates_offset);
     VkrPreparedInstanceGPU *transmission_gpu_instances =
-        (VkrPreparedInstanceGPU *)(cpu + transmission_gpu_draw_instances_offset);
+        (VkrPreparedInstanceGPU *)(cpu +
+                                   transmission_gpu_draw_instances_offset);
     VkrGpuCandidateDrawRow *transmission_gpu_candidates =
         (VkrGpuCandidateDrawRow *)(cpu +
                                    transmission_gpu_draw_candidates_offset);
@@ -2483,38 +2745,25 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   upload->text_uploads = renderer->text_uploads;
   upload->world_text_count = world_text_count;
   upload->root_capacity = (uint32_t)root_count;
+  if (overlay_count > 0u && !vkr_metal_packet_prepare_overlay_draws(
+                                renderer, packet, upload, overlay_count))
+    return false_v;
   return true_v;
 }
 
 /** Rolls provisional candidate uses back when no queue submission follows. */
 vkr_internal void vkr_metal_packet_rollback_gpu_draw_resource_preparation(
     VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet) {
-  if (!packet->input.world)
-    return;
+  (void)packet;
   const uint64_t pending_submit = renderer->submit_value + 1u;
-  const VkrWorldDrawCandidate *streams[] = {
-      packet->input.world->gpu_candidates,
-      packet->input.world->transmission_gpu_candidates,
-  };
-  const uint32_t counts[] = {
-      packet->input.world->gpu_candidate_count,
-      packet->input.world->transmission_gpu_candidate_count,
-  };
-  for (uint32_t stream = 0u; stream < ArrayCount(streams); ++stream) {
-    for (uint32_t i = 0u; i < counts[stream]; ++i) {
-      const VkrWorldDrawCandidate *candidate = &streams[stream][i];
-      const VkrMeshHandle geometry = {
-          .id = candidate->geometry.id,
-          .generation = candidate->geometry.generation,
-      };
-      VkrMetalPacketMesh *mesh =
-          vkr_metal_packet_resolve_mesh(renderer, geometry);
-      VkrMetalPacketMaterial *material =
-          vkr_metal_packet_resolve_material(renderer, candidate->material);
-      if (mesh && mesh->last_use_submit_value == pending_submit)
-        mesh->last_use_submit_value = renderer->submit_value;
-      if (material && material->last_use_submit_value == pending_submit)
-        material->last_use_submit_value = renderer->submit_value;
-    }
+  for (uint32_t i = 0u; i < renderer->max_meshes; ++i) {
+    VkrMetalPacketMesh *mesh = &renderer->meshes[i];
+    if (mesh->live && mesh->last_use_submit_value == pending_submit)
+      mesh->last_use_submit_value = renderer->submit_value;
+  }
+  for (uint32_t i = 0u; i < renderer->max_materials; ++i) {
+    VkrMetalPacketMaterial *material = &renderer->packet_materials[i];
+    if (material->live && material->last_use_submit_value == pending_submit)
+      material->last_use_submit_value = renderer->submit_value;
   }
 }

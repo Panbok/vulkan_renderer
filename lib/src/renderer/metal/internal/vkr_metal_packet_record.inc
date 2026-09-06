@@ -22,7 +22,7 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
         [encoder resetCommandsInBuffer:group->commands
                              withRange:NSMakeRange(
                                            (uint64_t)view *
-                                               VKR_GPU_DRAW_CANDIDATE_CAPACITY,
+                                               pass->gpu_encode.candidate_count,
                                            pass->gpu_encode.candidate_count)];
       [renderer->argument_table setAddress:group->root atIndex:0u];
       [renderer->argument_table setAddress:group->arguments atIndex:1u];
@@ -180,6 +180,15 @@ vkr_internal void vkr_metal_packet_record_graphics_pass(
       vkr_metal_packet_record_prepared_text_draws(
           renderer, encoder, text->pipeline, text->depth, text->root_cpu,
           text->root_gpu, text->count, text->width, text->height);
+    break;
+  }
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_OVERLAY:
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_OVERLAY_PICKING: {
+    const VkrMetalPacketDirectPass *direct = &pass->world.direct;
+    if (direct->count)
+      vkr_metal_packet_record_prepared_draws(
+          renderer, encoder, direct->pipeline, direct->depth, direct->draws,
+          direct->count, direct->width, direct->height, direct->root_gpu);
     break;
   }
   case VKR_METAL_PACKET_GRAPH_EXECUTOR_UI:

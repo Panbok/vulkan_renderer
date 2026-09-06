@@ -11,7 +11,8 @@ removed numbers are not reused.
 ## Build and run
 
 The app and editor are separate executables using `runtime/` and `renderer_lib`.
-Build through the repository wrappers, which also compile shaders and cook assets:
+Build through the repository wrappers, which compile shaders and asset cookers.
+Bakery runs font and texture jobs; mesh cooking remains an explicit scene-cache step:
 
 ```sh
 ./build_release.sh
@@ -49,7 +50,7 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [004](adr/004-stateless-render-packet.md) | Explicit frame inputs, application ownership and acquired frame context | implemented |
 | [006](adr/006-cpu-memory-allocators.md) | CPU allocation by lifetime | implemented |
 | [009](adr/009-frame-synchronization.md) | Separate submission and presentation completion | implemented |
-| [010](adr/010-ecs-scene-system.md) | ECS-owned scene state with a retained render mirror | implemented |
+| [010](adr/010-ecs-scene-system.md) | ECS-owned scene state with glTF node identities and a retained render mirror | implemented |
 | [012](adr/012-texture-compression-pipeline.md) | KTX2/UASTC texture artifacts with capability-selected transcode | implemented |
 | [014](adr/014-offscreen-present-target.md) | Window and offscreen targets share frame submission | implemented |
 | [015](adr/015-metrics-module.md) | Bounded typed metrics and pinned snapshots | implemented |
@@ -58,12 +59,12 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [018](adr/018-graph-declared-transmission-feedback.md) | Ordered transmission with declared feedback | implemented |
 | [019](adr/019-bounded-forward-spatial-lighting.md) | Bounded punctual lighting and local probes | implemented |
 | [023](adr/023-vulkan-1-4-bindless-capability-profile.md) | One explicit Vulkan capability floor | implemented |
-| [024](adr/024-shared-bindless-gpu-cores.md) | Shared allocation, publication and completion cores | implemented |
+| [024](adr/024-shared-bindless-gpu-cores.md) | Shared allocation/completion cores and bounded Metal heap residency | implemented |
 | [025](adr/025-selected-renderer-implementation-strategy.md) | Procedural renderer and prepared native commands | implemented |
-| [027](adr/027-immediate-mode-grid-ui.md) | Immediate-mode grid UI with retained CPU state | implemented |
+| [027](adr/027-immediate-mode-grid-ui.md) | Grid UI, dock stacks, scene panels, Console and Bakery | implemented |
 | [028](adr/028-gpu-driven-deferred-visibility-buffer.md) | One GPU-driven world topology | implemented |
 | [029](adr/029-retained-graph-resources.md) | Retain submitted image contents per subresource | implemented |
-| [030](adr/030-offline-mesh-optimization-and-cooking.md) | Versioned meshoptimizer-cooked mesh artifacts | implemented |
+| [030](adr/030-offline-mesh-optimization-and-cooking.md) | Versioned meshoptimizer artifacts preserving glTF nodes and shared geometry | implemented |
 | [031](adr/031-versioned-packed-static-geometry-abi.md) | One 32-byte packed static vertex ABI | implemented |
 | [032](adr/032-two-phase-confirmed-visibility.md) | Keep exact one-phase visibility gates | declined |
 | [033](adr/033-occupied-depth-sdsm-feedback.md) | Optional occupied-depth shadow fitting | implemented |
@@ -79,9 +80,9 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [043](adr/043-presentation-dpi-and-color-transfer.md) | Physical-pixel presentation with one sRGB transfer | implemented |
 | [044](adr/044-shader-cross-backend-contract.md) | Portable shader semantics with native ABI validation | implemented |
 | [045](adr/045-resource-prepare-and-render-thread-finalize.md) | Worker preparation and render-thread resource finalization | implemented |
-| [046](adr/046-editor-viewport-mapping-and-picking.md) | One editor viewport mapping for scene presentation and interaction | implemented |
+| [046](adr/046-editor-viewport-mapping-and-picking.md) | Editor viewport mapping, transform gizmos, picking and retained Scene presentation | implemented |
 | [047](adr/047-event-payload-and-resize-mailbox-lifetimes.md) | Event callback payload lifetime and coalesced resize handoff | implemented |
-| [051](adr/051-renderer-harness-and-evidence.md) | Isolated harness runs and reviewed capture baselines | implemented |
+| [051](adr/051-renderer-harness-and-evidence.md) | Isolated harness runs, crash diagnostics and reviewed capture baselines | implemented |
 
 ## Proposals
 

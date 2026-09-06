@@ -177,6 +177,8 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId material_texture_stream_in_flight;
   VkrMetricId material_texture_stream_resident;
   VkrMetricId material_texture_stream_evicted;
+  VkrMetricId material_texture_stream_demanded_missing;
+  VkrMetricId material_texture_stream_demanded_evicted;
   VkrMetricId material_texture_stream_resident_bytes;
   VkrMetricId material_texture_stream_budget_bytes;
   VkrMetricId material_texture_stream_applied;
@@ -254,6 +256,7 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId gpu_peak_bytes;
   VkrMetricId gpu_live_totals_exact;
   VkrMetricId gpu_heap_usage_valid;
+  VkrMetricId gpu_texture_heap_capacity_bytes;
   VkrMetricId gpu_owner[VKR_GPU_ALLOCATION_OWNER_COUNT]
                        [VKR_GPU_OWNER_METRIC_ROW_COUNT];
   VkrMetricId gpu_type_live_bytes[VKR_DEVICE_MEMORY_TYPE_MAX];

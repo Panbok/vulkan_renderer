@@ -25,7 +25,7 @@ bool8_t vkr_vk_create_target_set(VkrVulkanRenderer *renderer, uint32_t width,
             VK_IMAGE_VIEW_TYPE_2D,
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-            VKR_GPU_ALLOCATION_OWNER_SWAPCHAIN, &out_targets->images[i])) {
+            VKR_GPU_ALLOCATION_OWNER_SWAPCHAIN, &out_targets->images[i], NULL)) {
       vkr_vk_destroy_target_set(renderer, out_targets);
       return false_v;
     }
@@ -440,6 +440,7 @@ void vkr_vk_discard_unsubmitted_asset_uses(VkrVulkanRenderer *renderer) {
 void vkr_vulkan_renderer_cancel_frame(VkrVulkanRenderer *renderer) {
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
+  vkr_vk_fail_picking_readback(renderer, slot);
   vkr_vk_abandon_ibl_bake_recordings(renderer);
   slot->sh_coefficients_clear_recorded = false_v;
   vkr_vk_discard_unsubmitted_asset_uses(renderer);

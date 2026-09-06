@@ -3,143 +3,160 @@ VkrCaptureStatus
 vkr_metal_packet_renderer_capture_poll(VkrMetalPacketRenderer *renderer,
                                        VkrCaptureRequestId request_id,
                                        VkrCapturePollResult *out_result) {
-  if (!renderer || !out_result || request_id == 0) {
-    if (out_result)
-      MemZero(out_result, sizeof(*out_result));
+  @autoreleasepool {
+    if (!renderer || !out_result || request_id == 0) {
+      if (out_result)
+        MemZero(out_result, sizeof(*out_result));
+      return VKR_CAPTURE_STATUS_NOT_FOUND;
+    }
+    if (@available(macOS 26.0, *)) {
+      vkr_metal_packet_collect_completed_results(renderer);
+      return vkr_capture_ring_poll(&renderer->capture_ring, request_id,
+                                   renderer->completion.signaledValue,
+                                   out_result);
+    }
+    MemZero(out_result, sizeof(*out_result));
     return VKR_CAPTURE_STATUS_NOT_FOUND;
   }
-  if (@available(macOS 26.0, *)) {
-    vkr_metal_packet_collect_completed_results(renderer);
-    return vkr_capture_ring_poll(&renderer->capture_ring, request_id,
-                                 renderer->completion.signaledValue,
-                                 out_result);
-  }
-  MemZero(out_result, sizeof(*out_result));
-  return VKR_CAPTURE_STATUS_NOT_FOUND;
 }
 
 bool8_t vkr_metal_packet_renderer_pass_timings_poll(
     VkrMetalPacketRenderer *renderer, uint64_t submit_value,
     VkrMetalPacketPassTiming *out_timings, uint32_t capacity,
     uint32_t *out_count) {
-  if (out_count)
-    *out_count = 0;
-  if (!renderer || !out_timings || !out_count || submit_value == 0 ||
-      capacity == 0)
-    return false_v;
-  if (!@available(macOS 26.0, *))
-    return false_v;
-  vkr_metal_packet_collect_completed_results(renderer);
-  const VkrMetalPacketResult *result =
-      vkr_metal_packet_find_completed_timing(renderer, submit_value);
-  if (!result || result->pass_timing_count == 0 ||
-      result->pass_timing_count > capacity)
-    return false_v;
-  MemCopy(out_timings, result->pass_timings,
-          (uint64_t)result->pass_timing_count * sizeof(*out_timings));
-  *out_count = result->pass_timing_count;
-  return true_v;
+  @autoreleasepool {
+    if (out_count)
+      *out_count = 0;
+    if (!renderer || !out_timings || !out_count || submit_value == 0 ||
+        capacity == 0)
+      return false_v;
+    if (!@available(macOS 26.0, *))
+      return false_v;
+    vkr_metal_packet_collect_completed_results(renderer);
+    const VkrMetalPacketResult *result =
+        vkr_metal_packet_find_completed_timing(renderer, submit_value);
+    if (!result || result->pass_timing_count == 0 ||
+        result->pass_timing_count > capacity)
+      return false_v;
+    MemCopy(out_timings, result->pass_timings,
+            (uint64_t)result->pass_timing_count * sizeof(*out_timings));
+    *out_count = result->pass_timing_count;
+    return true_v;
+  }
 }
 
 bool8_t vkr_metal_packet_renderer_submit_result_poll_next(
     VkrMetalPacketRenderer *renderer, uint64_t after_submit_value,
     VkrMetalPacketResult *out_result) {
-  if (!renderer || !out_result)
-    return false_v;
-  *out_result = (VkrMetalPacketResult){0};
-  if (!@available(macOS 26.0, *))
-    return false_v;
-  vkr_metal_packet_collect_completed_results(renderer);
-  const VkrMetalPacketResult *next = NULL;
-  for (uint32_t i = 0; i < VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY; ++i) {
-    const VkrMetalPacketResult *candidate =
-        &renderer->completed_timing_results[i];
-    if (candidate->submit_value > after_submit_value &&
-        (!next || candidate->submit_value < next->submit_value))
-      next = candidate;
+  @autoreleasepool {
+    if (!renderer || !out_result)
+      return false_v;
+    *out_result = (VkrMetalPacketResult){0};
+    if (!@available(macOS 26.0, *))
+      return false_v;
+    vkr_metal_packet_collect_completed_results(renderer);
+    const VkrMetalPacketResult *next = NULL;
+    for (uint32_t i = 0; i < VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY; ++i) {
+      const VkrMetalPacketResult *candidate =
+          &renderer->completed_timing_results[i];
+      if (candidate->submit_value > after_submit_value &&
+          (!next || candidate->submit_value < next->submit_value))
+        next = candidate;
+    }
+    if (!next)
+      return false_v;
+    *out_result = *next;
+    return true_v;
   }
-  if (!next)
-    return false_v;
-  *out_result = *next;
-  return true_v;
 }
 
 bool8_t vkr_metal_packet_renderer_wait_idle(VkrMetalPacketRenderer *renderer) {
-  if (!renderer || renderer->frame_prepared || renderer->active_command_slot)
-    return false_v;
-  if (@available(macOS 26.0, *)) {
-    if (renderer->submit_value > renderer->completion.signaledValue &&
-        !vkr_metal_packet_wait(renderer, renderer->submit_value))
+  @autoreleasepool {
+    if (!renderer || renderer->frame_prepared || renderer->active_command_slot)
       return false_v;
-    for (uint32_t i = 0; i < renderer->command_slot_count; ++i) {
-      if (!vkr_metal_packet_complete_command_slot(
-              renderer, &renderer->command_slots[i], false_v))
+    if (@available(macOS 26.0, *)) {
+      VKR_METAL_DIAGNOSTIC(renderer, "idle_begin", "slots=%u",
+                           renderer->command_slot_count);
+      VKR_METAL_DIAGNOSTIC_FLUSH(renderer);
+      if (renderer->submit_value > renderer->completion.signaledValue &&
+          !vkr_metal_packet_wait(renderer, renderer->submit_value))
         return false_v;
-    }
-    if (renderer->commit_feedback_records) {
-      const CFTimeInterval deadline =
-          CACurrentMediaTime() +
-          (CFTimeInterval)VKR_METAL_PACKET_TIMEOUT_MS / 1000.0;
-      bool8_t feedback_complete = false_v;
-      do {
-        dispatch_sync(vkr_metal_packet_feedback_queue(), ^{
-                      });
-        feedback_complete = true_v;
-        for (uint32_t i = 0u; i < VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY;
-             ++i) {
-          const VkrMetalPacketCommitFeedbackRecord *record =
-              &renderer->commit_feedback_records[i];
-          if (record->in_use &&
-              !vkr_atomic_bool_load(&record->feedback_ready,
-                                    VKR_MEMORY_ORDER_ACQUIRE)) {
-            feedback_complete = false_v;
-            break;
+      for (uint32_t i = 0; i < renderer->command_slot_count; ++i) {
+        if (!vkr_metal_packet_complete_command_slot(
+                renderer, &renderer->command_slots[i], false_v))
+          return false_v;
+      }
+      if (renderer->commit_feedback_records) {
+        const CFTimeInterval deadline =
+            CACurrentMediaTime() +
+            (CFTimeInterval)VKR_METAL_PACKET_TIMEOUT_MS / 1000.0;
+        bool8_t feedback_complete = false_v;
+        do {
+          dispatch_sync(vkr_metal_packet_feedback_queue(), ^{
+                        });
+          feedback_complete = true_v;
+          for (uint32_t i = 0u; i < VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY;
+               ++i) {
+            const VkrMetalPacketCommitFeedbackRecord *record =
+                &renderer->commit_feedback_records[i];
+            if (record->in_use &&
+                !vkr_atomic_bool_load(&record->feedback_ready,
+                                      VKR_MEMORY_ORDER_ACQUIRE)) {
+              feedback_complete = false_v;
+              break;
+            }
           }
-        }
-      } while (!feedback_complete && CACurrentMediaTime() < deadline);
-      if (!feedback_complete)
-        return false_v;
+        } while (!feedback_complete && CACurrentMediaTime() < deadline);
+        if (!feedback_complete)
+          return false_v;
+      }
+      vkr_metal_packet_harvest_commit_feedback(renderer);
+      vkr_capture_ring_collect(&renderer->capture_ring,
+                               renderer->completion.signaledValue);
+      const bool8_t collected =
+          vkr_metal_packet_collect_memory(renderer,
+                                          renderer->completion.signaledValue,
+                                          NULL) == VKR_METAL_MEMORY_STATUS_OK &&
+          vkr_metal_material_table_device_collect(
+              renderer->materials, renderer->completion.signaledValue, NULL) ==
+              VKR_METAL_MATERIAL_STATUS_OK;
+      VKR_METAL_DIAGNOSTIC(renderer, "idle_end", "success=%u", collected);
+      VKR_METAL_DIAGNOSTIC_FLUSH(renderer);
+      return collected;
     }
-    vkr_metal_packet_harvest_commit_feedback(renderer);
-    vkr_capture_ring_collect(&renderer->capture_ring,
-                             renderer->completion.signaledValue);
-    vkr_metal_packet_collect_retired_image_views(
-        renderer, renderer->completion.signaledValue);
-    return vkr_metal_memory_device_collect(
-               renderer->memory, renderer->completion.signaledValue, NULL) ==
-               VKR_METAL_MEMORY_STATUS_OK &&
-           vkr_metal_material_table_device_collect(
-               renderer->materials, renderer->completion.signaledValue, NULL) ==
-               VKR_METAL_MATERIAL_STATUS_OK;
+    return false_v;
   }
-  return false_v;
 }
 
 bool8_t
 vkr_metal_packet_renderer_resize_metalfx(VkrMetalPacketRenderer *renderer,
                                          uint32_t width, uint32_t height) {
-  if (!renderer || width == 0u || height == 0u || renderer->frame_prepared ||
-      renderer->active_command_slot)
-    return false_v;
-  if (!renderer->metalfx_enabled || (renderer->metalfx_output_width == width &&
-                                     renderer->metalfx_output_height == height))
-    return true_v;
-  if (@available(macOS 26.0, *)) {
-    if (renderer->completion.signaledValue < renderer->submit_value)
+  @autoreleasepool {
+    if (!renderer || width == 0u || height == 0u || renderer->frame_prepared ||
+        renderer->active_command_slot)
       return false_v;
-    return vkr_metal_packet_create_metalfx_temporal_scaler(renderer, width,
-                                                           height);
+    if (!renderer->metalfx_enabled || (renderer->metalfx_output_width == width &&
+                                       renderer->metalfx_output_height == height))
+      return true_v;
+    if (@available(macOS 26.0, *)) {
+      if (renderer->completion.signaledValue < renderer->submit_value)
+        return false_v;
+      return vkr_metal_packet_create_metalfx_temporal_scaler(renderer, width,
+                                                             height);
+    }
+    return false_v;
   }
-  return false_v;
 }
 
 bool8_t
 vkr_metal_packet_renderer_cancel_frame(VkrMetalPacketRenderer *renderer) {
-  if (@available(macOS 26.0, *)) {
-    vkr_metal_packet_finish_frame(renderer, false_v, false_v);
-    return true_v;
+  @autoreleasepool {
+    if (@available(macOS 26.0, *)) {
+      vkr_metal_packet_finish_frame(renderer, false_v, false_v);
+      return true_v;
+    }
+    return false_v;
   }
-  return false_v;
 }
 
 uint64_t
@@ -162,8 +179,6 @@ bool8_t vkr_metal_packet_renderer_get_memory_metrics(
   if (!renderer || !out_metrics)
     return false_v;
   vkr_metal_memory_device_get_metrics(renderer->memory, out_metrics);
-  out_metrics->pending_texture_upload_bytes =
-      renderer->pending_texture_upload_bytes;
   return true_v;
 }
 
@@ -184,7 +199,7 @@ void vkr_metal_packet_renderer_geometry_megabuffer_metrics(
   out_metrics->live_bytes = mega->vertex_live_bytes + mega->index_live_bytes +
                             mega->decode_metadata_live_bytes;
   out_metrics->fragmentation_bytes =
-      mega->vertex_cursor + mega->index_cursor - out_metrics->live_bytes;
+      mega->vertex_high_water + mega->index_high_water - out_metrics->live_bytes;
   out_metrics->high_water_bytes =
       mega->vertex_high_water + mega->index_high_water;
   out_metrics->vertex_high_water_bytes = mega->vertex_high_water;
@@ -198,6 +213,7 @@ void vkr_metal_packet_renderer_geometry_megabuffer_metrics(
   out_metrics->rejected_publications = mega->rejected_publications;
   out_metrics->generation_replacements = mega->generation_replacements;
   out_metrics->generation = mega->generation;
+  vkr_geometry_ranges_metrics(&renderer->geometry_ranges, out_metrics);
 }
 
 bool8_t vkr_metal_packet_renderer_get_and_reset_upload_wait_count(
@@ -246,98 +262,100 @@ bool8_t vkr_metal_packet_renderer_drain(
     VkrMetalPacketRenderer *renderer,
     VkrMetalMemoryDeviceMetrics *out_memory_metrics,
     VkrMetalMaterialTableMetrics *out_material_metrics) {
-  if (!renderer)
-    return false_v;
-  if (!@available(macOS 26.0, *))
-    return false_v;
-  if (!vkr_metal_packet_renderer_wait_idle(renderer))
-    return false_v;
-  vkr_capture_ring_collect(&renderer->capture_ring,
-                           renderer->completion.signaledValue);
+  @autoreleasepool {
+    if (!renderer)
+      return false_v;
+    if (!@available(macOS 26.0, *))
+      return false_v;
+    if (!vkr_metal_packet_renderer_wait_idle(renderer))
+      return false_v;
+    vkr_capture_ring_collect(&renderer->capture_ring,
+                             renderer->completion.signaledValue);
 
-  if (renderer->gtao_white_live) {
-    if (vkr_metal_memory_device_retire(
-            renderer->memory, renderer->gtao_white_visibility.handle,
-            renderer->gtao_white_last_use_submit_value) !=
-        VKR_METAL_MEMORY_STATUS_OK)
-      return false_v;
-    renderer->gtao_white_live = false_v;
-    renderer->gtao_white_visibility = (VkrMetalTextureResource){0};
-  }
+    if (renderer->gtao_white_live) {
+      if (vkr_metal_memory_device_retire(
+              renderer->memory, renderer->gtao_white_visibility.handle,
+              renderer->gtao_white_last_use_submit_value) !=
+          VKR_METAL_MEMORY_STATUS_OK)
+        return false_v;
+      renderer->gtao_white_live = false_v;
+      renderer->gtao_white_visibility = (VkrMetalTextureResource){0};
+    }
 
-  if (renderer->ibl_live) {
-    if (vkr_metal_memory_device_retire(
-            renderer->memory, renderer->ibl_prefilter.handle,
-            renderer->ibl_last_use_submit_value) != VKR_METAL_MEMORY_STATUS_OK)
-      return false_v;
-    renderer->ibl_live = false_v;
-    renderer->ibl_prefilter = (VkrMetalTextureResource){0};
-  }
+    if (renderer->ibl_live) {
+      if (vkr_metal_memory_device_retire(
+              renderer->memory, renderer->ibl_prefilter.handle,
+              renderer->ibl_last_use_submit_value) != VKR_METAL_MEMORY_STATUS_OK)
+        return false_v;
+      renderer->ibl_live = false_v;
+      renderer->ibl_prefilter = (VkrMetalTextureResource){0};
+    }
 
-  for (uint32_t i = 0; i < renderer->max_materials; ++i) {
-    if (renderer->packet_materials[i].live &&
-        !vkr_metal_packet_renderer_destroy_material(
-            renderer,
-            (VkrMaterialHandle){.id = i + 1,
-                                .generation =
-                                    renderer->packet_materials[i].generation}))
+    for (uint32_t i = 0; i < renderer->max_materials; ++i) {
+      if (renderer->packet_materials[i].live &&
+          !vkr_metal_packet_renderer_destroy_material(
+              renderer,
+              (VkrMaterialHandle){.id = i + 1,
+                                  .generation =
+                                      renderer->packet_materials[i].generation}))
+        return false_v;
+    }
+    for (uint32_t i = 0; i < renderer->max_meshes; ++i) {
+      if (renderer->meshes[i].live &&
+          !vkr_metal_packet_renderer_destroy_mesh(
+              renderer,
+              (VkrMeshHandle){.id = i + 1,
+                              .generation = renderer->meshes[i].generation}))
+        return false_v;
+    }
+    if (renderer->geometry_megabuffer.live) {
+      if (vkr_metal_memory_device_retire(
+              renderer->memory, renderer->geometry_megabuffer.vertices.handle,
+              renderer->submit_value) != VKR_METAL_MEMORY_STATUS_OK ||
+          vkr_metal_memory_device_retire(
+              renderer->memory, renderer->geometry_megabuffer.indices.handle,
+              renderer->submit_value) != VKR_METAL_MEMORY_STATUS_OK)
+        return false_v;
+      renderer->geometry_megabuffer = (VkrMetalPacketGeometryMegabuffer){0};
+    }
+    for (uint32_t i = 0; i < renderer->max_textures; ++i) {
+      if (renderer->textures[i].live &&
+          !vkr_metal_packet_renderer_destroy_texture(
+              renderer,
+              (VkrTextureHandle){.id = i + 1,
+                                 .generation = renderer->textures[i].generation}))
+        return false_v;
+    }
+    for (uint32_t i = 0; i < renderer->max_images; ++i) {
+      VkrMetalPacketImage *slot = &renderer->images[i];
+      if (slot->live && !vkr_metal_packet_retire_image_instances(
+                            renderer, slot->instances, slot->instance_count))
+        return false_v;
+      *slot = (VkrMetalPacketImage){0};
+    }
+    for (uint32_t i = 0; i < renderer->max_images; ++i) {
+      VkrMetalPacketGraphBuffer *slot = &renderer->graph_buffers[i];
+      VkrMetalPacketGraphBufferInstance *instances =
+          &renderer->graph_buffer_instances[(uint64_t)i *
+                                            renderer->history_instance_count];
+      if (slot->live && !vkr_metal_packet_retire_graph_buffer_instances(
+                            renderer, instances, slot->instance_count))
+        return false_v;
+      *slot = (VkrMetalPacketGraphBuffer){0};
+    }
+    if (vkr_metal_material_table_device_collect(renderer->materials,
+                                                renderer->submit_value, NULL) !=
+            VKR_METAL_MATERIAL_STATUS_OK ||
+        vkr_metal_packet_collect_memory(renderer, renderer->submit_value, NULL) !=
+            VKR_METAL_MEMORY_STATUS_OK)
       return false_v;
+    if (out_memory_metrics)
+      vkr_metal_memory_device_get_metrics(renderer->memory, out_memory_metrics);
+    if (out_material_metrics)
+      vkr_metal_material_table_device_get_metrics(renderer->materials,
+                                                  out_material_metrics);
+    return true_v;
   }
-  for (uint32_t i = 0; i < renderer->max_meshes; ++i) {
-    if (renderer->meshes[i].live &&
-        !vkr_metal_packet_renderer_destroy_mesh(
-            renderer,
-            (VkrMeshHandle){.id = i + 1,
-                            .generation = renderer->meshes[i].generation}))
-      return false_v;
-  }
-  if (renderer->geometry_megabuffer.live) {
-    if (vkr_metal_memory_device_retire(
-            renderer->memory, renderer->geometry_megabuffer.vertices.handle,
-            renderer->submit_value) != VKR_METAL_MEMORY_STATUS_OK ||
-        vkr_metal_memory_device_retire(
-            renderer->memory, renderer->geometry_megabuffer.indices.handle,
-            renderer->submit_value) != VKR_METAL_MEMORY_STATUS_OK)
-      return false_v;
-    renderer->geometry_megabuffer = (VkrMetalPacketGeometryMegabuffer){0};
-  }
-  for (uint32_t i = 0; i < renderer->max_textures; ++i) {
-    if (renderer->textures[i].live &&
-        !vkr_metal_packet_renderer_destroy_texture(
-            renderer,
-            (VkrTextureHandle){.id = i + 1,
-                               .generation = renderer->textures[i].generation}))
-      return false_v;
-  }
-  for (uint32_t i = 0; i < renderer->max_images; ++i) {
-    VkrMetalPacketImage *slot = &renderer->images[i];
-    if (slot->live && !vkr_metal_packet_retire_image_instances(
-                          renderer, slot->instances, slot->instance_count))
-      return false_v;
-    *slot = (VkrMetalPacketImage){0};
-  }
-  for (uint32_t i = 0; i < renderer->max_images; ++i) {
-    VkrMetalPacketGraphBuffer *slot = &renderer->graph_buffers[i];
-    VkrMetalPacketGraphBufferInstance *instances =
-        &renderer->graph_buffer_instances[(uint64_t)i *
-                                          renderer->history_instance_count];
-    if (slot->live && !vkr_metal_packet_retire_graph_buffer_instances(
-                          renderer, instances, slot->instance_count))
-      return false_v;
-    *slot = (VkrMetalPacketGraphBuffer){0};
-  }
-  if (vkr_metal_material_table_device_collect(renderer->materials,
-                                              renderer->submit_value, NULL) !=
-          VKR_METAL_MATERIAL_STATUS_OK ||
-      vkr_metal_memory_device_collect(renderer->memory, renderer->submit_value,
-                                      NULL) != VKR_METAL_MEMORY_STATUS_OK)
-    return false_v;
-  if (out_memory_metrics)
-    vkr_metal_memory_device_get_metrics(renderer->memory, out_memory_metrics);
-  if (out_material_metrics)
-    vkr_metal_material_table_device_get_metrics(renderer->materials,
-                                                out_material_metrics);
-  return true_v;
 }
 
 vkr_internal bool8_t vkr_metal_packet_publish_candidate_result(
@@ -393,7 +411,7 @@ vkr_metal_packet_end_texture_upload_batch_adapter(void *state) {
   return vkr_metal_packet_renderer_end_texture_upload_batch(state);
 }
 
-vkr_internal bool8_t vkr_metal_packet_publish_texture_adapter(
+vkr_internal VkrRendererError vkr_metal_packet_publish_texture_adapter(
     void *state, VkrTextureHandle handle,
     const struct VkrTexturePreparedLoad *texture) {
   return vkr_metal_packet_renderer_publish_prepared_texture(state, handle,
@@ -457,37 +475,7 @@ vkr_internal bool8_t vkr_metal_packet_publications_idle_adapter(void *state) {
   return state != NULL;
 }
 
-vkr_internal bool8_t vkr_metal_packet_texture_upload_available_adapter(
-    void *state, uint64_t upload_bytes) {
-  VkrMetalPacketRenderer *renderer = state;
-  VkrMetalMemoryDeviceMetrics metrics = {0};
-  if (!renderer || upload_bytes == 0u ||
-      !vkr_metal_packet_renderer_get_memory_metrics(renderer, &metrics) ||
-      metrics.suballocations.heap_size == 0u ||
-      metrics.suballocations.free_bytes > metrics.suballocations.heap_size) {
-    return false_v;
-  }
-  const uint64_t placement_capacity = metrics.suballocations.heap_size;
-  const uint64_t budget = vkr_metal_memory_effective_budget(
-      placement_capacity, metrics.driver_recommended_working_set_size);
-  const uint64_t effective_free = vkr_metal_memory_effective_free_bytes(
-      placement_capacity, metrics.suballocations.free_bytes,
-      metrics.driver_recommended_working_set_size);
-  VkrMetalMemoryMetrics effective = metrics.suballocations;
-  effective.heap_size = budget;
-  effective.free_bytes = Min(effective_free, budget);
-  effective.largest_free_range =
-      Min(effective.largest_free_range, effective.free_bytes);
-  const uint64_t reserve = budget / 10u;
 
-  if (vkr_metal_memory_can_allocate_before_reserve(&effective, upload_bytes,
-                                                   reserve)) {
-    return true_v;
-  }
-  renderer->pending_texture_upload_bytes =
-      Max(renderer->pending_texture_upload_bytes, upload_bytes);
-  return false_v;
-}
 
 void vkr_metal_packet_renderer_get_asset_publisher(
     VkrMetalPacketRenderer *renderer, VkrAssetPublisher *out_publisher) {
@@ -500,8 +488,6 @@ void vkr_metal_packet_renderer_get_asset_publisher(
                                  vkr_metal_packet_publications_idle_adapter,
                              .publication_generation =
                                  vkr_metal_packet_candidate_publication_generation,
-                             .texture_upload_available =
-                                 vkr_metal_packet_texture_upload_available_adapter,
                              .publish_geometry =
                                  vkr_metal_packet_publish_geometry_adapter,
                              .publish_loaded_mesh =
@@ -535,136 +521,187 @@ void vkr_metal_packet_renderer_get_asset_publisher(
 }
 
 void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
-  if (!renderer)
-    return;
-  if (@available(macOS 26.0, *)) {
-    if (renderer->memory && renderer->materials && renderer->images)
-      (void)vkr_metal_packet_renderer_drain(renderer, NULL, NULL);
-    if (renderer->render_passes) {
-      for (uint32_t i = 0; i < renderer->max_passes; ++i)
-        [renderer->render_passes[i] release];
-    }
-    if (renderer->pass_labels) {
-      for (uint32_t i = 0; i < renderer->max_passes; ++i) {
-        [renderer->pass_labels[i].value release];
-        renderer->pass_labels[i].value = nil;
+  @autoreleasepool {
+    if (!renderer)
+      return;
+    VKR_METAL_DIAGNOSTIC(renderer, "renderer_destroy_begin", "shutdown=1");
+    VKR_METAL_DIAGNOSTIC_FLUSH(renderer);
+    if (@available(macOS 26.0, *)) {
+      VkrMetalPacketTextureUploadBatch *batch = &renderer->texture_upload_batch;
+      if (batch->active) {
+        /* These uploads were never submitted. End their retained encoder before
+         * resetting its slot, then retire only actual submitted resource uses. */
+        [batch->encoder endEncoding];
+        [batch->encoder release];
+        batch->encoder = nil;
+        [renderer->command_buffer endCommandBuffer];
+        vkr_metal_memory_device_cancel_ring(
+            renderer->memory, VKR_METAL_RING_KIND_UPLOAD, batch->slice);
+        vkr_metal_packet_release_unsubmitted_command_slot(renderer);
+        *batch = (VkrMetalPacketTextureUploadBatch){0};
+        vkr_metal_packet_discard_unsubmitted_uses(renderer);
       }
-    }
-    if (renderer->command_slots) {
-      for (uint32_t i = 0; i < renderer->command_slot_count; ++i) {
-        VkrMetalPacketCommandSlot *slot = &renderer->command_slots[i];
-        for (uint32_t group = 0u;
-             group < VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX; ++group) {
-          if (group < slot->gpu_draw_icb_residency_count)
-            [slot->gpu_draw_icb_residencies[group] endResidency];
-          [slot->gpu_draw_icbs[group] release];
-          [slot->gpu_draw_icb_residencies[group] release];
+      if (renderer->frame_prepared)
+        vkr_metal_packet_finish_frame(renderer, false_v, false_v);
+      if (renderer->memory && renderer->materials && renderer->images)
+        (void)vkr_metal_packet_renderer_drain(renderer, NULL, NULL);
+      if (renderer->render_passes) {
+        for (uint32_t i = 0; i < renderer->max_passes; ++i)
+          [renderer->render_passes[i] release];
+      }
+      if (renderer->pass_labels) {
+        for (uint32_t i = 0; i < renderer->max_passes; ++i) {
+          [renderer->pass_labels[i].value release];
+          renderer->pass_labels[i].value = nil;
         }
-        [slot->transmission_gpu_draw_icb release];
-        [slot->timestamp_heap release];
-        [slot->buffer release];
-        [slot->allocator release];
+      }
+      if (renderer->command_slots) {
+        for (uint32_t i = 0; i < renderer->command_slot_count; ++i) {
+          VkrMetalPacketCommandSlot *slot = &renderer->command_slots[i];
+          for (uint32_t group = 0u;
+               group < VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX; ++group) {
+            if (group < slot->gpu_draw_icb_residency_count)
+              [slot->gpu_draw_icb_residencies[group] endResidency];
+            if (slot->gpu_draw_icbs[group])
+              [slot->gpu_draw_icb_residencies[group]
+                  removeAllocation:slot->gpu_draw_icbs[group]];
+            if (group == 0u && slot->transmission_gpu_draw_icb)
+              [slot->gpu_draw_icb_residencies[group]
+                  removeAllocation:slot->transmission_gpu_draw_icb];
+            [slot->gpu_draw_icb_residencies[group] commit];
+            vkr_metal_packet_release_budgeted_resource(
+                renderer, slot->gpu_draw_icbs[group]);
+            [slot->gpu_draw_icb_residencies[group] release];
+          }
+          vkr_metal_packet_release_budgeted_resource(
+              renderer, slot->transmission_gpu_draw_icb);
+          [slot->timestamp_heap release];
+          [slot->buffer release];
+          [slot->allocator release];
+        }
+      }
+      if (renderer->commit_feedback_records) {
+        for (uint32_t i = 0u; i < VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY;
+             ++i) {
+          [renderer->commit_feedback_records[i].options release];
+          if (renderer->commit_feedback_records[i].handler)
+            Block_release(renderer->commit_feedback_records[i].handler);
+          if (renderer->commit_feedback_records[i].ready_handler)
+            Block_release(renderer->commit_feedback_records[i].ready_handler);
+        }
+      }
+      if (renderer->samplers) {
+        for (uint32_t i = 0; i < renderer->sampler_count; ++i)
+          [renderer->samplers[i].state release];
+      }
+      [renderer->argument_table release];
+      [renderer->gpu_draw_icb_argument_encoder release];
+      [renderer->depth_read_state release];
+      [renderer->depth_write_state release];
+      [renderer->ui_rect_pipeline release];
+      [renderer->world_text_pipeline release];
+      [renderer->picking_text_pipeline release];
+      [renderer->tonemap_pipeline release];
+      [renderer->ibl_equirect_pipeline release];
+      [renderer->ibl_prefilter_pipeline release];
+      [renderer->ibl_sh_pipeline release];
+      /* The pool has renderer lifetime and is released only here, after normal
+         device teardown has drained outstanding readers. */
+      vkr_metal_packet_release_budgeted_resource(renderer,
+                                                 renderer->sh_coefficients);
+      [renderer->gpu_draw_encode_pipeline release];
+      [renderer->gpu_draw_encode_inherited_pipeline release];
+      [renderer->temporal_transform_pipeline release];
+      [renderer->gbuffer_resolve_pipeline release];
+      [renderer->gtao_denoise_pipeline release];
+      [renderer->gtao_evaluate_pipeline release];
+      [renderer->gtao_depth_mip_pipeline release];
+      [renderer->gtao_depth_prefilter_pipeline release];
+      [renderer->deferred_lighting_pipeline release];
+      [renderer->temporal_resolve_pipeline release];
+      [renderer->transmission_shade_pipeline release];
+      [renderer->transmission_shade_partitioned_pipeline release];
+      [renderer->transmission_shade_production_pipeline release];
+      [renderer->transmission_shade_production_temporal_pipeline release];
+      [renderer->transmission_shade_partitioned_production_pipeline release];
+      [renderer->transmission_shade_partitioned_production_temporal_pipeline
+              release];
+      [renderer->transmission_coverage_pipeline release];
+      [renderer->transmission_compact_clear_pipeline release];
+      [renderer->transmission_compact_pipeline release];
+      [renderer->transmission_compact_finalize_pipeline release];
+      [renderer->picking_resolve_pipeline release];
+      [renderer->hzb_build_pipeline release];
+      [renderer->sdsm_reduce_pipeline release];
+      [renderer->bloom_combine_pipeline release];
+      [renderer->bloom_upsample_pipeline release];
+      [renderer->bloom_downsample_box4_pipeline release];
+      [renderer->bloom_downsample_tent13_pipeline release];
+      [renderer->bloom_prefilter_pipeline release];
+      [renderer->exposure_resolve_pipeline release];
+      [renderer->exposure_histogram_pipeline release];
+      [renderer->exposure_clear_pipeline release];
+      [renderer->gpu_draw_prefix_pipeline release];
+      [renderer->gpu_draw_classify_pipeline release];
+      [renderer->vbuffer_pipeline release];
+      [renderer->transmission_vbuffer_pipeline release];
+      [renderer->gpu_shadow_pipeline release];
+      [renderer->gpu_shadow_opaque_pipeline release];
+      [renderer->vbuffer_opaque_pipeline release];
+      [renderer->blend_pipeline release];
+      [renderer->ui_pipeline release];
+      [renderer->picking_pipeline release];
+      [renderer->editor_overlay_pipeline release];
+      [renderer->editor_overlay_picking_pipeline release];
+      [renderer->metalfx_temporal_scaler release];
+      [renderer->compiler release];
+      [renderer->compiler_options release];
+      [renderer->pipeline_archive release];
+      [renderer->pipeline_serializer release];
+      [renderer->completion release];
+      [renderer->queue release];
+      [renderer->drawable release];
+      [renderer->layer release];
+      [renderer->device release];
+    }
+    vkr_rg_destroy(renderer->graph);
+    arena_destroy(renderer->graph_frame_arena);
+    vkr_rg_json_destroy(&renderer->json_graph);
+    vkr_rg_executor_registry_destroy(&renderer->executors);
+    vkr_metal_material_table_device_destroy(renderer->materials);
+    vkr_metal_memory_device_destroy(renderer->memory);
+    vkr_metal_diagnostics_flush(&renderer->diagnostics);
+    vkr_metal_diagnostics_close(&renderer->diagnostics);
+    /* Every record array lives in one tagged reservation. Release its aggregate
+       accounting immediately before the backing store, matching bulk-lifetime
+       allocator ownership. */
+    VkrAllocator *allocator = renderer->allocator;
+    // Also unwind partial initialization or a failed drain before record storage.
+    if (renderer->meshes) {
+      for (uint32_t i = 0; i < renderer->max_meshes; ++i) {
+        VkrMetalPacketMesh *mesh = &renderer->meshes[i];
+        if (mesh->submeshes)
+          vkr_allocator_free(allocator, mesh->submeshes,
+                             (uint64_t)mesh->submesh_count *
+                                 sizeof(*mesh->submeshes),
+                             VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
       }
     }
-    if (renderer->commit_feedback_records) {
-      for (uint32_t i = 0u; i < VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY;
-           ++i) {
-        [renderer->commit_feedback_records[i].options release];
-        if (renderer->commit_feedback_records[i].handler)
-          Block_release(renderer->commit_feedback_records[i].handler);
-        if (renderer->commit_feedback_records[i].ready_handler)
-          Block_release(renderer->commit_feedback_records[i].ready_handler);
-      }
+    vkr_geometry_ranges_destroy(&renderer->geometry_ranges);
+    if (renderer->record_allocator.ctx) {
+      vkr_allocator_release_global_accounting(&renderer->record_allocator);
+      vkr_dmemory_allocator_destroy(&renderer->record_allocator);
     }
-    if (renderer->samplers) {
-      for (uint32_t i = 0; i < renderer->sampler_count; ++i)
-        [renderer->samplers[i].state release];
+    if (renderer->capture_storage_allocator.ctx) {
+      vkr_allocator_release_global_accounting(
+          &renderer->capture_storage_allocator);
+      vkr_dmemory_allocator_destroy(&renderer->capture_storage_allocator);
     }
-    [renderer->argument_table release];
-    [renderer->gpu_draw_icb_argument_encoder release];
-    [renderer->depth_read_state release];
-    [renderer->depth_write_state release];
-    [renderer->ui_rect_pipeline release];
-    [renderer->world_text_pipeline release];
-    [renderer->picking_text_pipeline release];
-    [renderer->tonemap_pipeline release];
-    [renderer->ibl_equirect_pipeline release];
-    [renderer->ibl_prefilter_pipeline release];
-    [renderer->ibl_sh_pipeline release];
-    /* The pool has renderer lifetime and is released only here, after normal
-       device teardown has drained outstanding readers. */
-    [renderer->sh_coefficients release];
-    [renderer->gpu_draw_encode_pipeline release];
-    [renderer->gpu_draw_encode_inherited_pipeline release];
-    [renderer->temporal_transform_pipeline release];
-    [renderer->gbuffer_resolve_pipeline release];
-    [renderer->gtao_denoise_pipeline release];
-    [renderer->gtao_evaluate_pipeline release];
-    [renderer->gtao_depth_mip_pipeline release];
-    [renderer->gtao_depth_prefilter_pipeline release];
-    [renderer->deferred_lighting_pipeline release];
-    [renderer->temporal_resolve_pipeline release];
-    [renderer->transmission_shade_pipeline release];
-    [renderer->transmission_shade_partitioned_pipeline release];
-    [renderer->transmission_shade_production_pipeline release];
-    [renderer->transmission_shade_production_temporal_pipeline release];
-    [renderer->transmission_shade_partitioned_production_pipeline release];
-    [renderer->transmission_shade_partitioned_production_temporal_pipeline
-            release];
-    [renderer->transmission_coverage_pipeline release];
-    [renderer->transmission_compact_clear_pipeline release];
-    [renderer->transmission_compact_pipeline release];
-    [renderer->transmission_compact_finalize_pipeline release];
-    [renderer->picking_resolve_pipeline release];
-    [renderer->hzb_build_pipeline release];
-    [renderer->sdsm_reduce_pipeline release];
-    [renderer->bloom_combine_pipeline release];
-    [renderer->bloom_upsample_pipeline release];
-    [renderer->bloom_downsample_box4_pipeline release];
-    [renderer->bloom_downsample_tent13_pipeline release];
-    [renderer->bloom_prefilter_pipeline release];
-    [renderer->exposure_resolve_pipeline release];
-    [renderer->exposure_histogram_pipeline release];
-    [renderer->exposure_clear_pipeline release];
-    [renderer->gpu_draw_prefix_pipeline release];
-    [renderer->gpu_draw_classify_pipeline release];
-    [renderer->vbuffer_pipeline release];
-    [renderer->transmission_vbuffer_pipeline release];
-    [renderer->gpu_shadow_pipeline release];
-    [renderer->gpu_shadow_opaque_pipeline release];
-    [renderer->vbuffer_opaque_pipeline release];
-    [renderer->blend_pipeline release];
-    [renderer->ui_pipeline release];
-    [renderer->picking_pipeline release];
-    [renderer->metalfx_temporal_scaler release];
-    [renderer->compiler release];
-    [renderer->compiler_options release];
-    [renderer->pipeline_archive release];
-    [renderer->pipeline_serializer release];
-    [renderer->completion release];
-    [renderer->queue release];
-    [renderer->drawable release];
-    [renderer->layer release];
-    [renderer->device release];
+    vkr_metal_packet_free_sized(allocator, renderer, sizeof(*renderer));
   }
-  vkr_rg_destroy(renderer->graph);
-  arena_destroy(renderer->graph_frame_arena);
-  vkr_rg_json_destroy(&renderer->json_graph);
-  vkr_rg_executor_registry_destroy(&renderer->executors);
-  vkr_metal_material_table_device_destroy(renderer->materials);
-  vkr_metal_memory_device_destroy(renderer->memory);
-  /* Every record array lives in one tagged reservation. Release its aggregate
-     accounting immediately before the backing store, matching bulk-lifetime
-     allocator ownership. */
-  VkrAllocator *allocator = renderer->allocator;
-  if (renderer->record_allocator.ctx) {
-    vkr_allocator_release_global_accounting(&renderer->record_allocator);
-    vkr_dmemory_allocator_destroy(&renderer->record_allocator);
-  }
-  if (renderer->capture_storage_allocator.ctx) {
-    vkr_allocator_release_global_accounting(
-        &renderer->capture_storage_allocator);
-    vkr_dmemory_allocator_destroy(&renderer->capture_storage_allocator);
-  }
-  vkr_metal_packet_free_sized(allocator, renderer, sizeof(*renderer));
+}
+
+void vkr_metal_packet_renderer_request_memory_relief(VkrMetalPacketRenderer *renderer) {
+  if (renderer)
+    renderer->graph_memory_recovery_pending = true_v;
 }

@@ -253,7 +253,25 @@ bool8_t vkr_render_assets_texture_pressure_budget(
       stats->pending_texture_upload_bytes > budget - Min(usage, budget)
           ? budget
           : usage + stats->pending_texture_upload_bytes;
-  if (projected_usage >= budget - budget / 10u) {
+  if (stats->texture_heap_capacity_valid) {
+    const uint64_t asset_capacity = stats->texture_heap_capacity_bytes;
+    if (asset_capacity > usage)
+      return false_v;
+    const uint64_t non_asset_bytes = usage - asset_capacity;
+    const uint64_t target_usage = budget - budget / 5u;
+    const uint64_t target_asset_bytes = target_usage > non_asset_bytes
+                                            ? target_usage - non_asset_bytes
+                                            : 0u;
+    /* Reusing charged asset heaps needs no new managed allocation. Pending
+     * publication and completed retirement do not change this allowance. */
+    *out_budget = Max(asset_capacity, target_asset_bytes);
+    *out_pressure_active =
+        projected_usage >= budget - budget / 10u ||
+        (pressure_active && usage > budget - budget / 4u);
+    return true_v;
+  }
+  if (projected_usage >= budget - budget / 10u ||
+      (pressure_active && usage > budget - budget / 4u)) {
     const uint64_t texture_bytes =
         stats->owners[VKR_GPU_ALLOCATION_OWNER_TEXTURE].live_bytes;
     const uint64_t non_texture_bytes =
@@ -273,26 +291,35 @@ bool8_t vkr_render_assets_texture_pressure_budget(
   return false_v;
 }
 
-bool8_t vkr_render_assets_pump(VkrRenderAssets *assets,
-                               VkrResourceSubmissionState submission,
-                               const VkrDeviceMemoryStats *device_memory) {
-  if (!assets || !assets->resource_system_initialized)
-    return false_v;
-  if (device_memory &&
-      !assets->material_system.texture_stream_budget_user_configured) {
+void vkr_render_assets_refresh_texture_residency_budget(
+    VkrRenderAssets *assets, const VkrDeviceMemoryStats *device_memory) {
+  if (!assets->material_system.texture_stream_budget_user_configured) {
     VkrDeviceMemoryStats stats = *device_memory;
-    stats.owners[VKR_GPU_ALLOCATION_OWNER_TEXTURE].live_bytes =
-        assets->material_system.texture_stream_resident_bytes;
+    if (!stats.texture_heap_capacity_valid)
+      stats.owners[VKR_GPU_ALLOCATION_OWNER_TEXTURE].live_bytes =
+          assets->material_system.texture_stream_resident_bytes;
     uint64_t texture_budget = 0u;
     bool8_t pressure_active = assets->texture_pressure_active;
     if (vkr_render_assets_texture_pressure_budget(
             &stats, assets->texture_pressure_active, &texture_budget,
             &pressure_active)) {
-      vkr_material_system_set_automatic_texture_residency_budget(
-          &assets->material_system, texture_budget);
+      if (stats.texture_heap_capacity_valid) {
+        vkr_material_system_set_texture_capacity_budget(
+            &assets->material_system,
+            pressure_active ? texture_budget : UINT64_MAX, texture_budget);
+      } else {
+        vkr_material_system_set_automatic_texture_residency_budget(
+            &assets->material_system, texture_budget);
+      }
       assets->texture_pressure_active = pressure_active;
     }
   }
+}
+
+bool8_t vkr_render_assets_pump_publications(
+    VkrRenderAssets *assets, VkrResourceSubmissionState submission) {
+  if (!assets || !assets->resource_system_initialized)
+    return false_v;
   const VkrAssetPublisher *publisher = assets->asset_publisher;
   const bool8_t batching = publisher->begin_texture_upload_batch != NULL;
   if (batching != (publisher->end_texture_upload_batch != NULL) ||
@@ -305,7 +332,6 @@ bool8_t vkr_render_assets_pump(VkrRenderAssets *assets,
     log_error("Asset texture upload batch submission failed");
     return false_v;
   }
-  vkr_material_system_pump_texture_streams(&assets->material_system, 32u);
   vkr_mesh_manager_pump_async(&assets->mesh_manager);
   return true_v;
 }

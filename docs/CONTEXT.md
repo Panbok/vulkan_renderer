@@ -81,3 +81,11 @@ below are starting points for checking a definition, not alternate API specs.
 | Snapshot / baseline | Captured run artifacts / reviewed immutable reference generation. | [ADR-051](adr/051-renderer-harness-and-evidence.md) |
 | Authoritative measurement | A report satisfying its provenance, comparability, validity, and repetition policy; process success is a separate result. | [ADR-051](adr/051-renderer-harness-and-evidence.md) |
 | Accepted / partial / proposed | Decision in force / explicit remaining integration / unimplemented feature or unsettled design. Native evidence limitations are stated separately. | [documentation skill](../.codex/skills/vkr-docs/SKILL.md) |
+
+Editor workflow terms:
+
+- **Bakery:** editor-owned queue for font and texture cooker processes. Mesh cooking
+  and scene caches remain separate. See [ADR-027](adr/027-immediate-mode-grid-ui.md).
+- **Scene override sidecar:** `<scene>.editor.json`, written by Save and applied by
+  the shared app/editor runtime after validating source fingerprints and node identities.
+  See [scene edit owner](../lib/src/renderer/systems/vkr_scene_edit.c).

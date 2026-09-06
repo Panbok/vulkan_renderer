@@ -4,11 +4,12 @@
 #include "containers/vector.h"
 #include "defines.h"
 #include "memory/vkr_allocator.h"
+#include "renderer/resources/loaders/vkr_mesh_source.h"
 #include "renderer/vkr_buffer.h"
 #include "renderer/vkr_renderer.h"
 
 /**
- * @brief Flattened primitive payload emitted by the glTF parser.
+ * @brief Mesh-local primitive payload emitted by the glTF parser.
  *
  * `vertices` and `indices` are valid only for the duration of the callback
  * invocation and point into parser-owned scratch allocations. Consumers that
@@ -23,7 +24,7 @@ typedef struct VkrMeshLoaderGltfPrimitive {
 } VkrMeshLoaderGltfPrimitive;
 
 /**
- * @brief Receives one flattened triangle primitive from a glTF source.
+ * @brief Receives one mesh-local triangle primitive from a glTF source.
  *
  * Returning false aborts parsing and propagates a loader failure.
  * @param user_data User-defined data passed to the callback.
@@ -53,6 +54,7 @@ typedef struct VkrMeshLoaderGltfParseInfo {
   VkrMeshLoaderGltfPrimitiveFn
       on_primitive; // The callback to use for the primitives.
   void *user_data;  // User-defined data to pass to the callback.
+  VkrMeshSource *out_source; // Required for local-space node-preserving import.
   Vector_String8 *out_dependency_paths; // The paths to the dependency files.
   Vector_String8 *out_generated_material_paths; // The paths to the generated
                                                 // material files.
@@ -60,7 +62,7 @@ typedef struct VkrMeshLoaderGltfParseInfo {
 } VkrMeshLoaderGltfParseInfo;
 
 /**
- * @brief Parse a glTF source, emit flattened triangle primitives, and generate
+ * @brief Parse a glTF source, emit mesh-local triangle primitives, and generate
  * deterministic material files for referenced glTF materials.
  *
  * Embedded image sources (`data:` URIs and `image.buffer_view`) are rejected.

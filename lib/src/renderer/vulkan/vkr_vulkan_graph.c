@@ -42,6 +42,9 @@ typedef enum VkrVulkanGraphExecutorKind {
   VKR_VULKAN_GRAPH_EXECUTOR_GTAO_DENOISE,
   VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP,
   VKR_VULKAN_GRAPH_EXECUTOR_EDITOR,
+  VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_CLEAR,
+  VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY,
+  VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY_PICKING,
   VKR_VULKAN_GRAPH_EXECUTOR_UI,
   VKR_VULKAN_GRAPH_EXECUTOR_METALFX_STAGE,
   VKR_VULKAN_GRAPH_EXECUTOR_METALFX_TEMPORAL,
@@ -58,6 +61,7 @@ struct VkrVulkanPreparedGraphPass {
   VkRect2D scissor;
   VkrShadowConfigOverride depth_bias;
   VkrVulkanPreparedWorldDraws world;
+  VkrVulkanPreparedOverlay overlay;
   VkrVulkanPreparedText text;
   VkrVulkanPreparedUi ui;
   VkrVulkanPreparedFullscreen fullscreen;
@@ -117,6 +121,9 @@ vkr_global const VkrVulkanGraphExecutorSpec s_vk_graph_executors[] = {
     {"pass.gtao.denoise", VKR_RG_PASS_TYPE_COMPUTE},
     {"pass.tonemap", VKR_RG_PASS_TYPE_GRAPHICS},
     {"pass.editor", VKR_RG_PASS_TYPE_GRAPHICS},
+    {"pass.editor.clear", VKR_RG_PASS_TYPE_GRAPHICS},
+    {"pass.editor.overlay", VKR_RG_PASS_TYPE_GRAPHICS},
+    {"pass.editor.overlay.picking", VKR_RG_PASS_TYPE_GRAPHICS},
     {"pass.ui", VKR_RG_PASS_TYPE_GRAPHICS},
     // Bind the shared graph before its conditions are evaluated. These names
     // are recognized, but active MetalFX passes are rejected by validation.
@@ -351,7 +358,8 @@ vkr_internal bool8_t vkr_vk_create_graph_image_instance(
           renderer, desc->width, desc->height, desc->mip_levels, desc->layers,
           format, 0u,
           array_view ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D,
-          usage, VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH, &out_instance->image))
+          usage, VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH, &out_instance->image,
+          NULL))
     return false_v;
   const VkImageAspectFlags aspects = vkr_vk_format_aspects(format);
   for (uint32_t mip = 0u; mip < desc->mip_levels; ++mip) {
@@ -370,8 +378,11 @@ vkr_internal bool8_t vkr_vk_create_graph_image_instance(
                 .layerCount = desc->layers,
             },
     };
-    if (vkCreateImageView(vkr_vk_renderer_device(renderer), &mip_view_info,
-                          NULL, &out_instance->mip_views[mip]) != VK_SUCCESS) {
+    const VkResult mip_view_result =
+        vkCreateImageView(vkr_vk_renderer_device(renderer), &mip_view_info,
+                          NULL, &out_instance->mip_views[mip]);
+    if (mip_view_result != VK_SUCCESS) {
+      vkr_vk_record_graph_resource_result(renderer, mip_view_result);
       vkr_vk_destroy_graph_image_instance(renderer, out_instance);
       return false_v;
     }
@@ -390,9 +401,11 @@ vkr_internal bool8_t vkr_vk_create_graph_image_instance(
                   .layerCount = 1u,
               },
       };
-      if (vkCreateImageView(vkr_vk_renderer_device(renderer), &view_info, NULL,
-                            &out_instance->mip_layer_views[mip][layer]) !=
-          VK_SUCCESS) {
+      const VkResult layer_view_result =
+          vkCreateImageView(vkr_vk_renderer_device(renderer), &view_info, NULL,
+                            &out_instance->mip_layer_views[mip][layer]);
+      if (layer_view_result != VK_SUCCESS) {
+        vkr_vk_record_graph_resource_result(renderer, layer_view_result);
         vkr_vk_destroy_graph_image_instance(renderer, out_instance);
         return false_v;
       }
@@ -599,6 +612,27 @@ void vkr_vk_install_retained_provider(VkrVulkanRenderer *renderer) {
   vkr_rg_set_retained_state_provider(renderer->graph, &provider);
 }
 
+void vkr_vulkan_renderer_retained_editor_extent(
+    VkrVulkanRenderer *renderer, uint32_t *out_width, uint32_t *out_height) {
+  *out_width = 0u;
+  *out_height = 0u;
+  for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
+    const VkrRgImage *image =
+        vector_get_VkrRgImage(&renderer->graph->images, i);
+    if (!vkr_string8_equals_cstr(&image->name, "editor_scene_image"))
+      continue;
+    const VkrVulkanGraphImage *slot = &renderer->graph_images[i];
+    if (!slot->live || slot->graph_generation != image->generation ||
+        slot->instance_count != 1u || slot->desc.mip_levels != 1u ||
+        slot->desc.layers != 1u ||
+        !slot->instances[0].retained_states[0].content_valid)
+      return;
+    *out_width = slot->desc.width;
+    *out_height = slot->desc.height;
+    return;
+  }
+}
+
 void vkr_vulkan_renderer_retained_shadow_token(
     VkrVulkanRenderer *renderer, uint32_t image_index,
     VkrRetainedShadowToken *out_token) {
@@ -759,12 +793,18 @@ bool8_t vkr_vk_realize_graph_buffers(VkrVulkanRenderer *renderer) {
     if (!instance_count || instance_count > VKR_VULKAN_TARGET_IMAGE_MAX)
       return false_v;
     VkrVulkanGraphBuffer *slot = &renderer->graph_buffers[i];
-    if (slot->live && slot->graph_generation == buffer->generation &&
+    const bool8_t grow_only =
+        (buffer->desc.flags & VKR_RG_RESOURCE_FLAG_GROW_ONLY) != 0u;
+    if (slot->live &&
+        (grow_only || slot->graph_generation == buffer->generation) &&
         slot->instance_count == instance_count &&
-        slot->desc.size == buffer->desc.size &&
+        (grow_only ? slot->desc.size >= buffer->desc.size
+                   : slot->desc.size == buffer->desc.size) &&
         slot->desc.usage.set == buffer->desc.usage.set &&
-        slot->desc.flags == buffer->desc.flags)
+        slot->desc.flags == buffer->desc.flags) {
+      slot->graph_generation = buffer->generation;
       continue;
+    }
     if (slot->live) {
       uint64_t last_use = 0u;
       for (uint32_t instance = 0u; instance < slot->instance_count;
@@ -1181,16 +1221,18 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
                packet->input.world->text_draw_count, view_projection,
                target_width, target_height, false_v);
   }
+  case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY:
+  case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY_PICKING:
+    return vkr_vk_prepare_editor_overlay(
+        renderer, &prepared->overlay,
+        kind == VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY_PICKING);
   case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR: {
+    /* The retained sRGB texture already contains exposure, tonemap and FXAA.
+       Decode/sample/re-encode it without applying those operations again. */
     uint32_t texture_index = 0u;
-    const VkrRgBufferUse *exposure_use =
-        vkr_rg_pass_find_buffer_use(&pass->desc, 1u, 0u);
-    VkrVulkanGraphBufferInstance *exposure_state =
-        exposure_use ? vkr_vk_graph_buffer(renderer, exposure_use->buffer)
-                     : NULL;
     if (!vkr_vk_graph_fullscreen_source(renderer, pass, &texture_index))
       return false_v;
-    const Vec4 image_rect = packet->input.editor->image_rect_px;
+    const Vec4 image_rect = packet->editor_image_rect_px;
     const VkViewport editor_viewport = {
         .x = image_rect.x,
         .y = image_rect.y,
@@ -1207,11 +1249,8 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
     prepared->scissor = editor_scissor;
     if (!vkr_vk_prepare_packet_fullscreen(
             renderer, &prepared->fullscreen,
-            VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_FINAL, texture_index,
-            exposure_state ? exposure_state->buffer.address : 0u,
-            renderer->config.tonemap_enabled ? VKR_VULKAN_FULLSCREEN_TONEMAP
-                                             : 0u,
-            (uint32_t)image_rect.z, (uint32_t)image_rect.w))
+            VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_FINAL, texture_index, 0u, 0u,
+            true_v, (uint32_t)image_rect.z, (uint32_t)image_rect.w))
       return false_v;
     return true_v;
   }
@@ -1231,13 +1270,15 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
         VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_FINAL, texture_index,
         exposure_state ? exposure_state->buffer.address : 0u,
         renderer->config.tonemap_enabled ? VKR_VULKAN_FULLSCREEN_TONEMAP : 0u,
-        target_width, target_height);
+        false_v, target_width, target_height);
     if (!recorded)
       log_error("Vulkan tonemap root allocation failed at %llu/%llu bytes",
                 (unsigned long long)slot->frame_upload_cursor,
                 (unsigned long long)slot->frame_upload.size);
     return recorded;
   }
+  case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_CLEAR:
+    return true_v;
   case VKR_VULKAN_GRAPH_EXECUTOR_UI: {
     if (!packet->input.ui)
       return true_v;
@@ -1447,6 +1488,9 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
   case VKR_VULKAN_GRAPH_EXECUTOR_WORLD_BLEND:
   case VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP:
   case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR:
+  case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_CLEAR:
+  case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY:
+  case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY_PICKING:
   case VKR_VULKAN_GRAPH_EXECUTOR_UI:
     return vkr_vk_prepare_graph_graphics_pass(renderer, prepared, pass, kind);
   case VKR_VULKAN_GRAPH_EXECUTOR_IBL_BAKE:
@@ -1638,6 +1682,10 @@ vkr_vk_record_graph_graphics_pass(VkrVulkanRenderer *renderer,
     vkr_vk_record_world_draws(renderer, command, &prepared->world);
     vkr_vk_record_text(renderer, command, &prepared->text);
     break;
+  case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY:
+  case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY_PICKING:
+    vkr_vk_record_editor_overlay(renderer, command, &prepared->overlay);
+    break;
   case VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP:
   case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR:
     vkr_vk_record_fullscreen(renderer, command, &prepared->fullscreen);
@@ -1683,6 +1731,9 @@ void vkr_vk_record_graph(VkrVulkanRenderer *renderer, VkCommandBuffer command) {
     case VKR_VULKAN_GRAPH_EXECUTOR_WORLD_BLEND:
     case VKR_VULKAN_GRAPH_EXECUTOR_TONEMAP:
     case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR:
+    case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_CLEAR:
+    case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY:
+    case VKR_VULKAN_GRAPH_EXECUTOR_EDITOR_OVERLAY_PICKING:
     case VKR_VULKAN_GRAPH_EXECUTOR_UI:
       vkr_vk_record_graph_graphics_pass(renderer, command, prepared);
       break;

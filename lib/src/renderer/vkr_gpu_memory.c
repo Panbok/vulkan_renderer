@@ -137,24 +137,28 @@ VkrGpuMemoryStatus vkr_gpu_memory_create(const VkrGpuMemoryConfig *config,
   return VKR_GPU_MEMORY_STATUS_OK;
 }
 
-vkr_internal int32_t vkr_gpu_take_free_slot(VkrGpuMemoryCore *memory) {
-  return memory->free_slot_count
-             ? (int32_t)memory->free_slots[--memory->free_slot_count]
-             : -1;
-}
-
 VkrGpuMemoryStatus vkr_gpu_memory_allocate(VkrGpuMemoryCore *memory,
                                            uint64_t resource_size,
                                            uint64_t alignment, uint32_t kind,
                                            VkrGpuAllocationHandle *out_handle,
                                            VkrGpuPlacement *out_placement) {
+  return vkr_gpu_memory_allocate_in_range(
+      memory, resource_size, alignment, kind, 0,
+      memory ? memory->config.heap_size : 0, out_handle, out_placement);
+}
+
+VkrGpuMemoryStatus vkr_gpu_memory_allocate_in_range(
+    VkrGpuMemoryCore *memory, uint64_t resource_size, uint64_t alignment,
+    uint32_t kind, uint64_t range_offset, uint64_t range_size,
+    VkrGpuAllocationHandle *out_handle, VkrGpuPlacement *out_placement) {
   if (!memory || !out_handle || !out_placement || resource_size == 0 ||
       !vkr_gpu_is_power_of_two(alignment) ||
-      resource_size > memory->config.heap_size)
+      resource_size > memory->config.heap_size || range_size == 0 ||
+      range_offset > memory->config.heap_size ||
+      range_size > memory->config.heap_size - range_offset)
     return VKR_GPU_MEMORY_STATUS_INVALID_ARGUMENT;
 
-  const int32_t slot_index = vkr_gpu_take_free_slot(memory);
-  if (slot_index < 0) {
+  if (memory->free_slot_count == 0) {
     memory->metrics.handle_exhaustion_failures++;
     return VKR_GPU_MEMORY_STATUS_OUT_OF_HANDLES;
   }
@@ -162,24 +166,29 @@ VkrGpuMemoryStatus vkr_gpu_memory_allocate(VkrGpuMemoryCore *memory,
   uint64_t total_free = 0;
   int32_t range_index = -1;
   uint64_t resource_offset = 0;
+  uint64_t reserved_offset = 0;
   uint64_t reserved_size = 0;
+  const uint64_t range_end = range_offset + range_size;
   for (uint32_t i = 0; i < memory->free_range_count; ++i) {
     const VkrGpuFreeRange range = memory->free_ranges[i];
-    total_free += range.size;
-    if (range_index >= 0 || range.offset > UINT64_MAX - (alignment - 1))
+    const uint64_t begin = Max(range.offset, range_offset);
+    const uint64_t end = Min(range.offset + range.size, range_end);
+    if (begin >= end)
       continue;
-    const uint64_t aligned_offset = AlignPow2(range.offset, alignment);
-    const uint64_t padding = aligned_offset - range.offset;
-    if (padding <= range.size && resource_size <= range.size - padding) {
+    const uint64_t available = end - begin;
+    total_free += available;
+    if (range_index >= 0 || begin > UINT64_MAX - (alignment - 1))
+      continue;
+    const uint64_t aligned_offset = AlignPow2(begin, alignment);
+    const uint64_t padding = aligned_offset - begin;
+    if (padding <= available && resource_size <= available - padding) {
       range_index = (int32_t)i;
       resource_offset = aligned_offset;
+      reserved_offset = begin;
       reserved_size = padding + resource_size;
     }
   }
   if (range_index < 0) {
-    /* The slot was reserved before the range search; return it or the handle
-       space leaks one entry per byte-exhaustion or fragmentation failure. */
-    memory->free_slots[memory->free_slot_count++] = (uint32_t)slot_index;
     if (total_free < resource_size) {
       memory->metrics.byte_exhaustion_failures++;
       return VKR_GPU_MEMORY_STATUS_OUT_OF_BYTES;
@@ -189,10 +198,29 @@ VkrGpuMemoryStatus vkr_gpu_memory_allocate(VkrGpuMemoryCore *memory,
   }
 
   VkrGpuFreeRange *range = &memory->free_ranges[range_index];
-  const uint64_t reserved_offset = range->offset;
-  range->offset += reserved_size;
-  range->size -= reserved_size;
-  if (range->size == 0) {
+  const uint64_t prefix_size = reserved_offset - range->offset;
+  const uint64_t reserved_end = reserved_offset + reserved_size;
+  const uint64_t suffix_size = range->offset + range->size - reserved_end;
+  if (prefix_size != 0 && suffix_size != 0 &&
+      memory->free_range_count == memory->config.max_free_ranges) {
+    memory->metrics.range_metadata_failures++;
+    return VKR_GPU_MEMORY_STATUS_OUT_OF_RANGE_METADATA;
+  }
+
+  const uint32_t slot_index = memory->free_slots[--memory->free_slot_count];
+  if (prefix_size != 0) {
+    range->size = prefix_size;
+    if (suffix_size != 0) {
+      for (uint32_t i = memory->free_range_count;
+           i > (uint32_t)range_index + 1; --i)
+        memory->free_ranges[i] = memory->free_ranges[i - 1];
+      memory->free_ranges[range_index + 1] =
+          (VkrGpuFreeRange){reserved_end, suffix_size};
+      memory->free_range_count++;
+    }
+  } else if (suffix_size != 0) {
+    *range = (VkrGpuFreeRange){reserved_end, suffix_size};
+  } else {
     for (uint32_t i = (uint32_t)range_index + 1; i < memory->free_range_count;
          ++i)
       memory->free_ranges[i - 1] = memory->free_ranges[i];
@@ -209,8 +237,7 @@ VkrGpuMemoryStatus vkr_gpu_memory_allocate(VkrGpuMemoryCore *memory,
       .alignment = alignment,
       .kind = kind,
   };
-  *out_handle =
-      (VkrGpuAllocationHandle){(uint32_t)slot_index, slot->generation};
+  *out_handle = (VkrGpuAllocationHandle){slot_index, slot->generation};
   *out_placement = slot->placement;
 
   VkrGpuMemoryMetrics *metrics = &memory->metrics;

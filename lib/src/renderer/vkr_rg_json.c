@@ -6,6 +6,7 @@
 #include "defines.h"
 #include "filesystem/filesystem.h"
 #include "renderer/vkr_render_graph_internal.h"
+#include "renderer/vkr_gpu_abi.h"
 
 typedef struct VkrRgJsonParseContext {
   VkrAllocator *allocator;
@@ -20,6 +21,14 @@ typedef struct VkrRgJsonConditionSpec {
 
 vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"editor_enabled", VKR_RG_JSON_CONDITION_EDITOR_ENABLED},
+    {"scene_rendering", VKR_RG_JSON_CONDITION_SCENE_RENDERING},
+    {"editor_overlay_enabled", VKR_RG_JSON_CONDITION_EDITOR_OVERLAY_ENABLED},
+    {"editor_overlay_enabled && picking_pending",
+     VKR_RG_JSON_CONDITION_EDITOR_OVERLAY_PICKING},
+    {"editor_enabled && editor_image_available",
+     VKR_RG_JSON_CONDITION_EDITOR_IMAGE_AVAILABLE},
+    {"editor_enabled && !editor_image_available",
+     VKR_RG_JSON_CONDITION_EDITOR_IMAGE_UNAVAILABLE},
     {"!editor_enabled", VKR_RG_JSON_CONDITION_EDITOR_DISABLED},
     {"hzb_history_valid", VKR_RG_JSON_CONDITION_HZB_HISTORY_VALID},
     {"!hzb_history_valid", VKR_RG_JSON_CONDITION_HZB_HISTORY_INVALID},
@@ -101,6 +110,13 @@ vkr_internal bool8_t vkr_rg_json_parse_condition(
 
   String8 trimmed = raw;
   string8_trim(&trimmed);
+  const String8 scene_prefix = string8_lit("scene_rendering && ");
+  if (trimmed.length > scene_prefix.length &&
+      MemCompare(trimmed.str, scene_prefix.str, scene_prefix.length) == 0) {
+    out_condition->requires_scene_rendering = true_v;
+    trimmed.str += scene_prefix.length;
+    trimmed.length -= scene_prefix.length;
+  }
   bool8_t matched = false_v;
   for (uint32_t i = 0u; i < ArrayCount(vkr_rg_json_condition_specs); ++i) {
     const VkrRgJsonConditionSpec *spec = &vkr_rg_json_condition_specs[i];
@@ -211,6 +227,8 @@ vkr_rg_json_parse_resource_flags(VkrRgJsonParseContext *ctx, VkrJsonReader *obj,
       *out_flags |= VKR_RG_JSON_RESOURCE_FLAG_PER_IMAGE;
     } else if (vkr_string8_equals_cstr_i(&value, "RESIZABLE")) {
       *out_flags |= VKR_RG_JSON_RESOURCE_FLAG_RESIZABLE;
+    } else if (vkr_string8_equals_cstr_i(&value, "GROW_ONLY")) {
+      *out_flags |= VKR_RG_JSON_RESOURCE_FLAG_GROW_ONLY;
     } else if (vkr_string8_equals_cstr_i(&value, "PER_FRAME_SLOT")) {
       *out_flags |= VKR_RG_JSON_RESOURCE_FLAG_PER_FRAME_SLOT;
     } else if (vkr_string8_equals_cstr_i(&value, "HISTORY")) {
@@ -288,6 +306,8 @@ vkr_internal bool8_t vkr_rg_json_parse_extent(VkrRgJsonParseContext *ctx,
     out_extent->mode = VKR_RG_JSON_EXTENT_WINDOW;
   } else if (vkr_string8_equals_cstr_i(&mode, "scene_output")) {
     out_extent->mode = VKR_RG_JSON_EXTENT_SCENE_OUTPUT;
+  } else if (vkr_string8_equals_cstr_i(&mode, "editor_image")) {
+    out_extent->mode = VKR_RG_JSON_EXTENT_EDITOR_IMAGE;
   } else if (vkr_string8_equals_cstr_i(&mode, "viewport")) {
     out_extent->mode = VKR_RG_JSON_EXTENT_VIEWPORT;
   } else if (vkr_string8_equals_cstr_i(&mode, "fixed")) {
@@ -324,6 +344,7 @@ vkr_internal bool8_t vkr_rg_json_parse_extent(VkrRgJsonParseContext *ctx,
   if (vkr_json_find_field(&divisor_reader, "divisor")) {
     if (out_extent->mode != VKR_RG_JSON_EXTENT_WINDOW &&
         out_extent->mode != VKR_RG_JSON_EXTENT_SCENE_OUTPUT &&
+        out_extent->mode != VKR_RG_JSON_EXTENT_EDITOR_IMAGE &&
         out_extent->mode != VKR_RG_JSON_EXTENT_VIEWPORT) {
       return vkr_rg_json_error(
           ctx, field_path,
@@ -722,18 +743,47 @@ vkr_internal bool8_t vkr_rg_json_parse_buffer_desc(
                                "buffer size must be an integer or object");
     VkrJsonReader mode_reader = size_obj;
     String8 mode = {0};
-    if (!vkr_json_get_string(&mode_reader, "mode", &mode) ||
-        !vkr_string8_equals_cstr_i(&mode, "viewport_pixels"))
-      return vkr_rg_json_error(ctx, field_path, "unknown buffer size mode");
+    if (!vkr_json_get_string(&mode_reader, "mode", &mode))
+      return vkr_rg_json_error(ctx, field_path, "buffer size mode is required");
     VkrJsonReader stride_reader = size_obj;
-    int32_t bytes_per_pixel = 0;
-    if (!vkr_json_get_int(&stride_reader, "bytes_per_pixel",
-                          &bytes_per_pixel) ||
-        bytes_per_pixel <= 0)
-      return vkr_rg_json_error(ctx, field_path,
-                               "size.bytes_per_pixel must be > 0");
-    out_desc->size_mode = VKR_RG_JSON_BUFFER_SIZE_VIEWPORT_PIXELS;
-    out_desc->bytes_per_pixel = (uint32_t)bytes_per_pixel;
+    int32_t stride = 0;
+    if (vkr_string8_equals_cstr_i(&mode, "viewport_pixels")) {
+      if (!vkr_json_get_int(&stride_reader, "bytes_per_pixel", &stride) ||
+          stride <= 0)
+        return vkr_rg_json_error(ctx, field_path,
+                                 "size.bytes_per_pixel must be > 0");
+      out_desc->size_mode = VKR_RG_JSON_BUFFER_SIZE_VIEWPORT_PIXELS;
+      out_desc->bytes_per_pixel = (uint32_t)stride;
+    } else if (vkr_string8_equals_cstr_i(&mode, "draw_elements")) {
+      if (!vkr_json_get_int(&stride_reader, "bytes_per_element", &stride) ||
+          stride <= 0)
+        return vkr_rg_json_error(ctx, field_path,
+                                 "size.bytes_per_element must be > 0");
+      VkrJsonReader source_reader = size_obj;
+      String8 source = {0};
+      if (!vkr_json_get_string(&source_reader, "count_source", &source))
+        return vkr_rg_json_error(ctx, field_path,
+                                 "size.count_source is required");
+      if (vkr_string8_equals_cstr_i(&source, "gpu_draw_candidate_capacity"))
+        out_desc->draw_count_source = VKR_RG_JSON_DRAW_COUNT_CANDIDATES;
+      else if (vkr_string8_equals_cstr_i(&source, "gpu_draw_visible_capacity"))
+        out_desc->draw_count_source = VKR_RG_JSON_DRAW_COUNT_VISIBLE;
+      else if (vkr_string8_equals_cstr_i(
+                   &source, "transmission_gpu_draw_candidate_capacity"))
+        out_desc->draw_count_source =
+            VKR_RG_JSON_DRAW_COUNT_TRANSMISSION_CANDIDATES;
+      else if (vkr_string8_equals_cstr_i(
+                   &source, "transmission_gpu_draw_visible_capacity"))
+        out_desc->draw_count_source =
+            VKR_RG_JSON_DRAW_COUNT_TRANSMISSION_VISIBLE;
+      else
+        return vkr_rg_json_error(ctx, field_path,
+                                 "unknown draw-table count source");
+      out_desc->size_mode = VKR_RG_JSON_BUFFER_SIZE_DRAW_ELEMENTS;
+      out_desc->bytes_per_element = (uint32_t)stride;
+    } else {
+      return vkr_rg_json_error(ctx, field_path, "unknown buffer size mode");
+    }
   }
 
   if (!vkr_rg_json_parse_buffer_usage(ctx, obj, field_path, &out_desc->usage)) {
@@ -790,6 +840,14 @@ vkr_rg_json_parse_resource(VkrRgJsonParseContext *ctx, VkrJsonReader *obj,
                                         &out_resource->flags)) {
     return false_v;
   }
+
+  if ((out_resource->flags & VKR_RG_JSON_RESOURCE_FLAG_GROW_ONLY) &&
+      (out_resource->type != VKR_RG_JSON_RESOURCE_BUFFER ||
+       (out_resource->flags & (VKR_RG_JSON_RESOURCE_FLAG_EXTERNAL |
+                               VKR_RG_JSON_RESOURCE_FLAG_HISTORY |
+                               VKR_RG_JSON_RESOURCE_FLAG_RETAINED))))
+    return vkr_rg_json_error(ctx, field_path,
+                             "GROW_ONLY requires an owned buffer without HISTORY or RETAINED");
 
   if (out_resource->flags & VKR_RG_JSON_RESOURCE_FLAG_RETAINED) {
     /* RETAINED describes content lifetime; these four describe where instances
@@ -1777,6 +1835,9 @@ bool8_t vkr_rg_json_bind_executors(VkrRgJsonGraph *graph,
 
 vkr_internal bool8_t vkr_rg_json_condition_enabled(
     const VkrRgJsonCondition *condition, const VkrRenderGraphFrameInfo *frame) {
+  if (condition && condition->requires_scene_rendering &&
+      (!frame || !frame->scene_rendering))
+    return false_v;
   if (!condition || condition->kind == VKR_RG_JSON_CONDITION_NONE) {
     return true_v;
   }
@@ -1785,6 +1846,16 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
   }
 
   switch (condition->kind) {
+  case VKR_RG_JSON_CONDITION_SCENE_RENDERING:
+    return frame->scene_rendering;
+  case VKR_RG_JSON_CONDITION_EDITOR_OVERLAY_ENABLED:
+    return frame->editor_overlay_enabled;
+  case VKR_RG_JSON_CONDITION_EDITOR_OVERLAY_PICKING:
+    return frame->editor_overlay_enabled && frame->picking_pending;
+  case VKR_RG_JSON_CONDITION_EDITOR_IMAGE_AVAILABLE:
+    return frame->editor_enabled && frame->editor_image_available;
+  case VKR_RG_JSON_CONDITION_EDITOR_IMAGE_UNAVAILABLE:
+    return frame->editor_enabled && !frame->editor_image_available;
   case VKR_RG_JSON_CONDITION_EDITOR_ENABLED:
     return frame->editor_enabled;
   case VKR_RG_JSON_CONDITION_EDITOR_DISABLED:
@@ -1972,6 +2043,10 @@ vkr_internal bool8_t vkr_rg_json_resolve_extent(
     *out_height =
         vkr_rg_json_divide_extent(frame->scene_output_height, extent->divisor);
     return true_v;
+  case VKR_RG_JSON_EXTENT_EDITOR_IMAGE:
+    *out_width = frame->editor_image_width;
+    *out_height = frame->editor_image_height;
+    return true_v;
   case VKR_RG_JSON_EXTENT_VIEWPORT:
     *out_width =
         vkr_rg_json_divide_extent(frame->viewport_width, extent->divisor);
@@ -2058,6 +2133,9 @@ vkr_internal VkrRgResourceFlags vkr_rg_json_resource_flags(uint32_t flags) {
   }
   if (flags & VKR_RG_JSON_RESOURCE_FLAG_RESIZABLE) {
     out |= VKR_RG_RESOURCE_FLAG_RESIZABLE;
+  }
+  if (flags & VKR_RG_JSON_RESOURCE_FLAG_GROW_ONLY) {
+    out |= VKR_RG_RESOURCE_FLAG_GROW_ONLY;
   }
   if (flags & VKR_RG_JSON_RESOURCE_FLAG_PER_FRAME_SLOT) {
     out |= VKR_RG_RESOURCE_FLAG_PER_FRAME_SLOT;
@@ -2417,6 +2495,30 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
             return false_v;
           }
           desc.size = pixels * resource->buffer.bytes_per_pixel;
+        } else if (resource->buffer.size_mode ==
+                   VKR_RG_JSON_BUFFER_SIZE_DRAW_ELEMENTS) {
+          uint32_t count = 0u;
+          switch (resource->buffer.draw_count_source) {
+          case VKR_RG_JSON_DRAW_COUNT_CANDIDATES:
+            count = frame->gpu_draw_candidate_capacity;
+            break;
+          case VKR_RG_JSON_DRAW_COUNT_VISIBLE:
+            count = frame->gpu_draw_visible_capacity;
+            break;
+          case VKR_RG_JSON_DRAW_COUNT_TRANSMISSION_CANDIDATES:
+            count = frame->transmission_gpu_draw_candidate_capacity;
+            break;
+          case VKR_RG_JSON_DRAW_COUNT_TRANSMISSION_VISIBLE:
+            count = frame->transmission_gpu_draw_visible_capacity;
+            break;
+          }
+          if (!count || count > VKR_GPU_DRAW_CANDIDATE_CAPACITY) {
+            log_error("RenderGraph buffer '%.*s': invalid draw capacity %u",
+                      (int)resolved_name.length, resolved_name.str, count);
+            vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
+            return false_v;
+          }
+          desc.size = (uint64_t)count * resource->buffer.bytes_per_element;
         } else {
           desc.size = resource->buffer.size;
         }

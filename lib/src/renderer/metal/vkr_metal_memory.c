@@ -56,31 +56,6 @@ void vkr_metal_memory_get_metrics(VkrMetalMemoryCore *memory,
   vkr_gpu_memory_get_metrics(memory, out_metrics);
 }
 
-uint64_t vkr_metal_memory_effective_budget(uint64_t placement_capacity,
-                                           uint64_t driver_budget) {
-  return driver_budget > 0u && driver_budget < placement_capacity
-             ? driver_budget
-             : placement_capacity;
-}
-
-uint64_t vkr_metal_memory_effective_free_bytes(uint64_t placement_capacity,
-                                               uint64_t placement_free_bytes,
-                                               uint64_t driver_budget) {
-  const uint64_t budget =
-      vkr_metal_memory_effective_budget(placement_capacity, driver_budget);
-  const uint64_t usage = placement_capacity - placement_free_bytes;
-  return usage < budget ? budget - usage : 0u;
-}
-
-bool8_t vkr_metal_memory_can_allocate_before_reserve(
-    const VkrMetalMemoryMetrics *metrics, uint64_t requested_size,
-    uint64_t reserve_size) {
-  return metrics && requested_size > 0u &&
-         reserve_size <= metrics->free_bytes &&
-         requested_size <= metrics->free_bytes - reserve_size &&
-         requested_size <= metrics->largest_free_range;
-}
-
 void vkr_metal_memory_owner_record_allocate(
     VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT],
     VkrGpuAllocationOwner owner, uint64_t size) {

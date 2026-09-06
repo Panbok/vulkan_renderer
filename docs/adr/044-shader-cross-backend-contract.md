@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-09-06
 authority: adr
 ---
 
@@ -97,7 +97,44 @@ CPU preparation changes. This adds Metal execution evidence; same-revision
 bilateral captures and full stationary-accumulation/moving-image quality gates
 remain open.
 
+The editor retained-image path reuses the existing Tonemap pipeline for resolve
+and composite. Resolve performs output processing once into a swapchain-format
+image; composite samples that image with exposure 1, tonemap disabled and FXAA
+disabled. Both backend host paths implement the same lowering without changing
+shader roots or source. Same-revision native Vulkan/Metal image comparison remains
+unavailable for this change.
+
+Metal command-buffer demand growth uses the existing candidate count as its
+per-view ICB command stride. Graph draw-table storage now follows scene demand
+on both backends through existing native capacity fields. Source capacity is
+`C = pow2(max(candidate_count, 1))`; visible/classification/argument stride is
+`V = 4 * min(C, 65536)`. The per-bucket limit remains sufficient for a concentrated
+small scene and preserves the previous ceiling for larger scenes. Metal supplies
+`V` to classification, raster, resolve and picking; Vulkan also uses `V / 4` for
+indirect argument offsets and `maxDrawCount`. Native root layouts are unchanged.
+Same-revision native Vulkan validation of these smaller argument ranges remains
+unavailable; this domain remains **UNALIGNED**. The Metal command-capacity fixture
+with four shadow views and seven transmission candidates passed API validation
+(report SHA-256 `819dfb4ee766c027d61ee4144e01bd3e2112aa607304276e0476b419db8022a5`).
+Its matched Release captures were byte-identical with SHA-256
+`82510845bfe55d00ca57c4948579a0ebe367e8dd210f8f42fa48b9a2b49a7c28`.
+This local Metal evidence does not close the bilateral UNALIGNED state.
+
 ## Consequences
+
+Editor overlay color and picking share packed geometry and an unjittered MVP.
+Both native roots are 112 bytes with independently pinned layouts: Metal roots
+carry offset vertex/decode pointers, while Vulkan roots carry base addresses and
+explicit vertex/decode indices. Opaque linear color is written after tonemapping;
+picking writes the supplied integer ID with identical primitive order and no
+depth test or culling. This new domain is **UNALIGNED** until same-revision native
+Metal/Vulkan captures and reflection checks pass; native Vulkan is unavailable
+on the current macOS host.
+
+Metal and Vulkan reject geometry range counts that cannot fit the existing
+32-bit temporal surface token before publication or narrowing loader counts.
+Metal's per-geometry CPU range storage changes neither that encoding nor shader
+roots. Native Vulkan validation of the publication guard remains unavailable.
 
 Portable contracts remain reviewable without pretending native roots are identical.
 A shader change requires both source/lowering paths to be inspected; output
@@ -121,6 +158,7 @@ Native lowering lives in [`metal/`](../../lib/src/renderer/metal) and
 
 | Domain | Shared source | Metal production | Vulkan production |
 |---|---|---|---|
+| Editor handles/color/picking | CPU `VkrEditorOverlayDraw` | `metal/msl/editor/overlay.metal` | `vulkan/slang/editor/overlay.slang` |
 | Geometry/visibility/deferred/picking | `shared/gpu_draw.slangh` | `metal/msl/common/draw.metalh`, `metal/msl/world/gpu_draws.metal` | `vulkan/slang/common/`, `world/deferred.slang`, `picking/default.slang` |
 | Material/light math | `shared/normal_map_kernel.slangh`, `ggx_kernel.slangh`, `point_light.slangh` | `metal/msl/world/default.metal`, `lighting.metalh`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Transmission | `shared/transmission_kernel.slangh` | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang` |

@@ -102,6 +102,7 @@ typedef struct VkrMeshLoaderState {
   Vector_VkrMeshLoaderSubmeshRange merged_submeshes;
   Vector_VkrMeshSourceDependency source_dependencies;
   VkrMeshLoaderBuffer merged_buffer;
+  VkrMeshSource source;
   uint32_t current_bucket;
 
   String8 source_path;
@@ -1524,12 +1525,10 @@ vkr_internal bool8_t vkr_mesh_loader_accept_gltf_primitive(
   }
 
   VkrMeshLoaderState *state = (VkrMeshLoaderState *)user_data;
+  /* One range per source primitive keeps source-mesh spans contiguous and
+     allows repeated nodes to share local geometry. */
   uint32_t bucket_index =
-      vkr_mesh_loader_find_material_bucket(state, &primitive->material_path);
-  if (bucket_index == VKR_INVALID_ID) {
-    bucket_index =
-        vkr_mesh_loader_add_material_bucket(state, &primitive->material_path);
-  }
+      vkr_mesh_loader_add_material_bucket(state, &primitive->material_path);
 
   if (bucket_index == VKR_INVALID_ID) {
     *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
@@ -1611,6 +1610,7 @@ vkr_internal bool8_t vkr_mesh_loader_parse_source(VkrMeshLoaderState *state) {
         .out_error = state->out_error,
         .on_primitive = vkr_mesh_loader_accept_gltf_primitive,
         .user_data = state,
+        .out_source = &state->source,
         .out_dependency_paths = &dependency_paths,
         .out_generated_material_paths = &dependency_paths,
     };
@@ -1668,9 +1668,9 @@ bool8_t vkr_mesh_cook_source(String8 source_path, String8 output_path,
                                     source_path, out_error, &state))
     return false_v;
   if (!vkr_mesh_loader_parse_source(&state) ||
-      state.merged_buffer.vertex_count == 0 ||
-      state.merged_buffer.index_count == 0 ||
-      state.merged_submeshes.length == 0 ||
+      (!state.source.nodes.length && (state.merged_buffer.vertex_count == 0 ||
+                                      state.merged_buffer.index_count == 0 ||
+                                      state.merged_submeshes.length == 0)) ||
       state.merged_submeshes.length > UINT32_MAX ||
       state.source_dependencies.length == 0 ||
       state.source_dependencies.length > UINT32_MAX) {
@@ -1694,6 +1694,7 @@ bool8_t vkr_mesh_cook_source(String8 source_path, String8 output_path,
 
   VkrMeshCookedEncodeInfo encode_info = {
       .source_path = source_path,
+      .source = state.source,
       .dependency_paths = dependency_paths,
       .dependency_count = dependency_count,
       .mesh_buffer = state.merged_buffer,
@@ -1793,9 +1794,10 @@ vkr_internal bool8_t vkr_mesh_load_job_run_inner(
     job->result->source_path =
         string8_duplicate(job->result_allocator, &job->mesh_path);
     job->result->root_transform = vkr_transform_identity();
-    job->result->has_mesh_buffer = true_v;
+    job->result->has_mesh_buffer = decoded.ranges.length != 0u;
     job->result->mesh_buffer = decoded.mesh_buffer;
     job->result->submeshes = decoded.ranges;
+    job->result->source = decoded.source;
     job->result->subsets = (Array_VkrMeshLoaderSubset){0};
     job->result->load_metrics = (VkrMeshLoadMetrics){
         .source_bytes = decoded.source_bytes,
@@ -1807,7 +1809,8 @@ vkr_internal bool8_t vkr_mesh_load_job_run_inner(
         .range_count = (uint32_t)decoded.ranges.length,
         .preparation = VKR_MESH_PREPARATION_COOKED,
     };
-    if (!vkr_mesh_loader_analyze_buffer(
+    if (job->result->has_mesh_buffer &&
+        !vkr_mesh_loader_analyze_buffer(
             &decoded.mesh_buffer, decoded.ranges.data,
             (uint32_t)decoded.ranges.length, scratch_allocator, true_v,
             &job->result->load_metrics)) {
@@ -1826,7 +1829,7 @@ vkr_internal bool8_t vkr_mesh_load_job_run_inner(
   const bool8_t has_mesh_buffer = state.merged_buffer.vertex_count > 0 &&
                                   state.merged_buffer.index_count > 0 &&
                                   state.merged_submeshes.length > 0;
-  if (!has_mesh_buffer) {
+  if (!has_mesh_buffer && !state.source.nodes.length) {
     *job->error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
@@ -1839,19 +1842,19 @@ vkr_internal bool8_t vkr_mesh_load_job_run_inner(
       .preparation = VKR_MESH_PREPARATION_SOURCE,
       .runtime_optimized = true_v,
   };
-  if (!vkr_mesh_loader_analyze_buffer(
-          &state.merged_buffer, state.merged_submeshes.data,
-          (uint32_t)state.merged_submeshes.length, scratch_allocator, true_v,
-          &load_metrics)) {
+  if (has_mesh_buffer && !vkr_mesh_loader_analyze_buffer(
+                             &state.merged_buffer, state.merged_submeshes.data,
+                             (uint32_t)state.merged_submeshes.length,
+                             scratch_allocator, true_v, &load_metrics)) {
     *job->error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
 
   VkrMeshLoaderBuffer result_buffer = {0};
   Array_VkrMeshLoaderSubmeshRange result_ranges = {0};
-  if (!vkr_mesh_loader_commit_merged_buffer(&state, job->result_allocator,
-                                            scratch_allocator, &result_buffer,
-                                            &result_ranges)) {
+  if (has_mesh_buffer && !vkr_mesh_loader_commit_merged_buffer(
+                             &state, job->result_allocator, scratch_allocator,
+                             &result_buffer, &result_ranges)) {
     *job->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
     return false_v;
   }
@@ -1862,7 +1865,8 @@ vkr_internal bool8_t vkr_mesh_load_job_run_inner(
   load_metrics.decoded_bytes = decoded_bytes;
   load_metrics.upload_bytes = decoded_bytes;
   load_metrics.vertex_count = result_buffer.vertex_count;
-  if (!vkr_mesh_loader_analyze_buffer(
+  if (has_mesh_buffer &&
+      !vkr_mesh_loader_analyze_buffer(
           &result_buffer, result_ranges.data, (uint32_t)result_ranges.length,
           scratch_allocator, false_v, &load_metrics)) {
     *job->error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
@@ -1872,11 +1876,35 @@ vkr_internal bool8_t vkr_mesh_load_job_run_inner(
   job->result->source_path =
       string8_duplicate(job->result_allocator, &job->mesh_path);
   job->result->root_transform = vkr_transform_identity();
-  job->result->has_mesh_buffer = true_v;
+  job->result->has_mesh_buffer = has_mesh_buffer;
   job->result->mesh_buffer = result_buffer;
   job->result->submeshes = result_ranges;
   job->result->subsets = (Array_VkrMeshLoaderSubset){0};
   job->result->load_metrics = load_metrics;
+  job->result->source = state.source;
+  job->result->source.nodes = array_create_VkrMeshSourceNode(
+      job->result_allocator, state.source.nodes.length);
+  job->result->source.meshes = array_create_VkrMeshSourceMesh(
+      job->result_allocator, state.source.meshes.length);
+  if ((state.source.nodes.length && !job->result->source.nodes.data) ||
+      (state.source.meshes.length && !job->result->source.meshes.data)) {
+    *job->error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+  if (state.source.meshes.length)
+    MemCopy(job->result->source.meshes.data, state.source.meshes.data,
+            state.source.meshes.length * sizeof(VkrMeshSourceMesh));
+  for (uint64_t i = 0; i < state.source.nodes.length; ++i) {
+    job->result->source.nodes.data[i] = state.source.nodes.data[i];
+    if (state.source.nodes.data[i].name.length) {
+      job->result->source.nodes.data[i].name = string8_duplicate(
+          job->result_allocator, &state.source.nodes.data[i].name);
+      if (!job->result->source.nodes.data[i].name.str) {
+        *job->error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+        return false_v;
+      }
+    }
+  }
 
   *job->success = true_v;
   return true_v;

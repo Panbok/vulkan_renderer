@@ -17,6 +17,10 @@ struct VkrMeshLoaderResult;
 struct VkrTexturePreparedLoad;
 struct VkrMaterial;
 
+/** Nonblocking, newest submitted picking request; READY is consumed once. */
+VkrRendererError vkr_metal_packet_renderer_get_pixel_readback_result(
+    VkrMetalPacketRenderer *renderer, VkrPixelReadbackResult *out_result);
+
 void vkr_metal_packet_renderer_geometry_megabuffer_metrics(
     const VkrMetalPacketRenderer *renderer,
     VkrGeometryMegabufferMetrics *out_metrics);
@@ -59,9 +63,13 @@ typedef struct VkrMetalPacketRendererConfig {
   void *metal_layer;
   /** Requested window presentation policy; offscreen targets ignore it. */
   VkrPresentMode requested_present_mode;
-  uint64_t heap_size;
+  /** Managed native heaps, transfer rings and explicit buffers/ICBs. */
+  uint64_t managed_budget_size;
+  uint64_t heap_chunk_size;
   uint64_t upload_ring_size;
-  /** At least two slots: one acquired frame and one completion-protected upload slot. */
+  uint64_t upload_ring_max_size;
+  /** At least two slots: one acquired frame and one completion-protected upload
+   * slot. */
   uint32_t frame_slot_count;
   /** Request-owned capture results retained until explicit release. */
   uint32_t capture_ring_capacity;
@@ -86,7 +94,6 @@ typedef struct VkrMetalPacketRendererConfig {
   uint32_t max_passes;
   uint32_t max_material_rows;
   uint32_t max_meshes;
-  uint32_t max_submeshes_per_mesh;
   uint32_t max_textures;
   uint32_t max_draws;
   uint32_t max_instances;
@@ -167,6 +174,7 @@ typedef struct VkrMetalPacketPassTiming {
 
 /** CPU-visible evidence returned after the requested readbacks complete. */
 typedef struct VkrMetalPacketResult {
+  VkrRendererError error;
   uint64_t submit_value;
   uint64_t source_frame_index;
   uint64_t gpu_submission_ns;
@@ -278,13 +286,16 @@ bool8_t vkr_metal_packet_renderer_create_rgba8_texture(
     VkrMetalPacketRenderer *renderer,
     const VkrMetalPacketRgba8TextureCreateInfo *create_info,
     VkrTextureHandle *out_handle);
+/** Authorizes completion-gated retirement before a smaller graph realization. */
+void vkr_metal_packet_renderer_request_memory_relief(VkrMetalPacketRenderer *renderer);
+
 bool8_t vkr_metal_packet_renderer_begin_texture_upload_batch(
     VkrMetalPacketRenderer *renderer);
 bool8_t vkr_metal_packet_renderer_end_texture_upload_batch(
     VkrMetalPacketRenderer *renderer);
 
 /** Publishes a shared decoder payload under its existing texture handle. */
-bool8_t vkr_metal_packet_renderer_publish_prepared_texture(
+VkrRendererError vkr_metal_packet_renderer_publish_prepared_texture(
     VkrMetalPacketRenderer *renderer, VkrTextureHandle handle,
     const struct VkrTexturePreparedLoad *prepared);
 bool8_t vkr_metal_packet_renderer_publish_writable_texture(
@@ -319,6 +330,9 @@ bool8_t vkr_metal_packet_renderer_prepare_frame(
     const VkrRenderGraphFrameInfo *frame_info);
 uint32_t vkr_metal_packet_renderer_frame_image_index(
     const VkrMetalPacketRenderer *renderer);
+/** Returns the extent only when the retained editor image has committed contents. */
+void vkr_metal_packet_renderer_retained_editor_extent(
+    VkrMetalPacketRenderer *renderer, uint32_t *out_width, uint32_t *out_height);
 void vkr_metal_packet_renderer_retained_shadow_token(
     VkrMetalPacketRenderer *renderer, uint32_t image_index,
     VkrRetainedShadowToken *out_token);

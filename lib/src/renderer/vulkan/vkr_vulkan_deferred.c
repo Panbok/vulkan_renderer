@@ -3,8 +3,6 @@
 
 enum {
   VKR_VULKAN_DEFERRED_BUCKET_COUNT = VKR_WORLD_DRAW_STATE_BUCKET_COUNT,
-  VKR_VULKAN_DEFERRED_COMMAND_PARTITION_CAPACITY =
-      VKR_GPU_DRAW_CANDIDATE_CAPACITY / VKR_WORLD_DRAW_STATE_BUCKET_COUNT,
   VKR_VULKAN_INDIRECT_COMMAND_SIZE = sizeof(VkDrawIndexedIndirectCommand),
   VKR_VULKAN_DEFERRED_PREFIX_GROUP_SIZE = 5,
 };
@@ -339,6 +337,10 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
       }
     }
   }
+  const uint32_t visible_capacity =
+      transmission
+          ? renderer->prepared_frame.transmission_gpu_draw_visible_capacity
+          : renderer->prepared_frame.gpu_draw_visible_capacity;
   *out_root = (VkrVulkanCullRoot){
       .candidates = candidates ? candidates->buffer.address : 0u,
       .classifications = classifications ? classifications->buffer.address : 0u,
@@ -352,9 +354,9 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
       .candidate_count = transmission ? slot->transmission_gpu_candidate_count
                                       : slot->gpu_candidate_count,
       .view_count = view_count,
-      .candidate_capacity = VKR_GPU_DRAW_CANDIDATE_CAPACITY,
+      .candidate_capacity = visible_capacity,
       .command_partition_capacity =
-          VKR_VULKAN_DEFERRED_COMMAND_PARTITION_CAPACITY,
+          visible_capacity / VKR_WORLD_DRAW_STATE_BUCKET_COUNT,
       .hzb_depth_epsilon = 1e-3f,
       .camera_required_flags =
           transmission ? 0u : VKR_WORLD_DRAW_CANDIDATE_CAMERA_OPAQUE,
@@ -733,7 +735,10 @@ bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
       .states = states->buffer.address,
       .frame = frame_address,
       .view_index = view_index,
-      .visible_capacity = VKR_GPU_DRAW_CANDIDATE_CAPACITY,
+      .visible_capacity =
+          transmission
+              ? renderer->prepared_frame.transmission_gpu_draw_visible_capacity
+              : renderer->prepared_frame.gpu_draw_visible_capacity,
       .previous_depth_texture = UINT32_MAX,
   };
   if (transmission) {
@@ -760,6 +765,8 @@ bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
   prepared->arguments = commands->buffer.handle;
   prepared->counts = states->buffer.handle;
   prepared->root_address = root_address;
+  prepared->command_partition_capacity =
+      root.visible_capacity / VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
   for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
        ++bucket) {
     const bool8_t opaque_bucket =
@@ -781,7 +788,7 @@ bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
     const VkDeviceSize argument_offset =
         ((VkDeviceSize)view_index * VKR_WORLD_DRAW_STATE_BUCKET_COUNT +
          bucket) *
-        VKR_VULKAN_DEFERRED_COMMAND_PARTITION_CAPACITY *
+        prepared->command_partition_capacity *
         sizeof(VkDrawIndexedIndirectCommand);
     const VkDeviceSize count_offset =
         (VkDeviceSize)view_index * sizeof(VkrGpuDrawCompactionState) +
@@ -841,7 +848,7 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
       .validity_texture = indices[8],
       .extent = {renderer->prepared_frame.viewport_width,
                  renderer->prepared_frame.viewport_height},
-      .visible_capacity = VKR_GPU_DRAW_CANDIDATE_CAPACITY,
+      .visible_capacity = renderer->prepared_frame.gpu_draw_visible_capacity,
       .geometry_count = renderer->config.geometry_capacity,
       .material_count = renderer->config.material_slot_capacity,
       .instance_count = slot->gpu_candidate_count,
@@ -1775,7 +1782,8 @@ bool8_t vkr_vk_prepare_deferred_transmission(VkrVulkanRenderer *renderer,
       .layer = layer,
       .extent = {renderer->prepared_frame.viewport_width,
                  renderer->prepared_frame.viewport_height},
-      .visible_capacity = VKR_GPU_DRAW_CANDIDATE_CAPACITY,
+      .visible_capacity =
+          renderer->prepared_frame.transmission_gpu_draw_visible_capacity,
       .geometry_count = renderer->config.geometry_capacity,
       .material_count = renderer->config.material_slot_capacity,
       .instance_count = slot->transmission_gpu_candidate_count,
@@ -2017,7 +2025,7 @@ void vkr_vk_record_prepared_raster(VkrVulkanRenderer *renderer,
     vkCmdDrawIndexedIndirectCount(
         command, prepared->arguments, prepared->argument_offsets[bucket],
         prepared->counts, prepared->count_offsets[bucket],
-        VKR_VULKAN_DEFERRED_COMMAND_PARTITION_CAPACITY,
+        prepared->command_partition_capacity,
         sizeof(VkDrawIndexedIndirectCommand));
   }
 }

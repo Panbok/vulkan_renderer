@@ -40,11 +40,32 @@ static float32_t editor_env_render_scale(void) {
   return vkr_clamp_f32(parsed, 0.25f, 1.0f);
 }
 
-static void editor_application_initialize(void *state, VkrUiDockTree *dock) {
+static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
+                                             VkrUiSystem *ui) {
   VkrEditorApplication *editor = state;
   vkr_editor_ui_init(&editor->ui);
+  if (!vkr_editor_console_init(&editor->ui.console, &ui->retained_allocator))
+    goto cleanup;
+  editor->ui.bakery = vkr_editor_bakery_create(&ui->retained_allocator);
+  editor->ui.scene_panels =
+      vkr_editor_scene_panels_create(&ui->retained_allocator);
+  if (!editor->ui.bakery || !editor->ui.scene_panels)
+    goto cleanup;
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  const String8 name = string8_lit("editor-heading");
+  if (!vkr_font_system_load_from_file(
+          ui->fonts, name,
+          string8_lit("assets/fonts/UbuntuMono-Bold-cooked.fontcfg"), &error)) {
+    log_error("Failed to load the editor heading font (%u)", (uint32_t)error);
+    goto cleanup;
+  }
+  // The font system retains storage until UI text borrowers have shut down.
+  editor->ui.heading_font =
+      vkr_font_system_acquire(ui->fonts, name, false_v, &error);
+  if (error != VKR_RENDERER_ERROR_NONE)
+    goto cleanup;
   if (!editor->layout_path || editor->layout_path[0] == '\0')
-    return;
+    return true_v;
 
   const String8 path = string8_create_from_cstr(
       (const uint8_t *)editor->layout_path, string_length(editor->layout_path));
@@ -54,6 +75,14 @@ static void editor_application_initialize(void *state, VkrUiDockTree *dock) {
     log_warn("Using the default editor layout; '%s' could not be loaded",
              editor->layout_path);
   }
+  return true_v;
+cleanup:
+  vkr_editor_bakery_destroy(editor->ui.bakery);
+  vkr_editor_scene_panels_destroy(editor->ui.scene_panels);
+  vkr_editor_console_shutdown(&editor->ui.console);
+  editor->ui.bakery = NULL;
+  editor->ui.scene_panels = NULL;
+  return false_v;
 }
 
 static void editor_application_handle_input(void *state,
@@ -69,8 +98,13 @@ editor_application_build(void *state, const VkrSampleUiFrame *frame) {
 }
 
 static bool8_t editor_application_shutdown(void *state,
-                                           const VkrUiDockTree *dock) {
-  const VkrEditorApplication *editor = state;
+                                           const VkrUiDockTree *dock,
+                                           VkrUiSystem *ui) {
+  VkrEditorApplication *editor = state;
+  vkr_editor_bakery_destroy(editor->ui.bakery);
+  vkr_editor_scene_panels_destroy(editor->ui.scene_panels);
+  vkr_editor_console_shutdown(&editor->ui.console);
+  vkr_font_system_release_by_handle(ui->fonts, editor->ui.heading_font);
   if (!editor->layout_path || editor->layout_path[0] == '\0')
     return true_v;
 
@@ -89,6 +123,8 @@ vkr_editor_application_config(VkrEditorApplication *editor, int argc,
   *editor = (VkrEditorApplication){
       .layout_path = getenv("VKR_EDITOR_LAYOUT_PATH"),
   };
+  if (!editor->layout_path)
+    editor->layout_path = ".vkr-editor-layout.json";
   bool8_t scene_only = editor_env_flag("VKR_EDITOR_SCENE_ONLY", false_v);
   for (int i = 1; i < argc; ++i) {
     if (strcmp(argv[i], "--scene-only") == 0)

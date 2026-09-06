@@ -178,10 +178,16 @@ typedef struct VkrRendererImplMemoryMetricDescription {
   const char *name;
   VkrMetricKind kind;
   VkrMetricUnit unit;
+  bool8_t metal_only;
 } VkrRendererImplMemoryMetricDescription;
 
-#define VKR_IMPL_GAUGE(NAME, UNIT) {NAME, VKR_METRIC_KIND_GAUGE, UNIT}
-#define VKR_IMPL_COUNTER(NAME, UNIT) {NAME, VKR_METRIC_KIND_COUNTER, UNIT}
+#define VKR_IMPL_GAUGE(NAME, UNIT) {NAME, VKR_METRIC_KIND_GAUGE, UNIT, false_v}
+#define VKR_IMPL_COUNTER(NAME, UNIT)                                           \
+  {NAME, VKR_METRIC_KIND_COUNTER, UNIT, false_v}
+#define VKR_IMPL_METAL_GAUGE(NAME, UNIT)                                       \
+  {NAME, VKR_METRIC_KIND_GAUGE, UNIT, true_v}
+#define VKR_IMPL_METAL_COUNTER(NAME, UNIT)                                     \
+  {NAME, VKR_METRIC_KIND_COUNTER, UNIT, true_v}
 
 vkr_global const VkrRendererImplMemoryMetricDescription
     vkr_renderer_impl_memory_metric_descriptions[] = {
@@ -245,12 +251,28 @@ vkr_global const VkrRendererImplMemoryMetricDescription
                          VKR_METRIC_UNIT_COUNT),
         VKR_IMPL_COUNTER("memory.gpu.rings.upload.busy_failures",
                          VKR_METRIC_UNIT_COUNT),
+        VKR_IMPL_METAL_GAUGE("memory.gpu.rings.upload.capacity.total_bytes",
+                             VKR_METRIC_UNIT_BYTES),
+        VKR_IMPL_METAL_GAUGE("memory.gpu.rings.upload.capacity.slot_bytes",
+                             VKR_METRIC_UNIT_BYTES),
+        VKR_IMPL_METAL_GAUGE("memory.gpu.rings.upload.requested.peak_bytes",
+                             VKR_METRIC_UNIT_BYTES),
+        VKR_IMPL_METAL_COUNTER("memory.gpu.rings.upload.failures.oversize",
+                               VKR_METRIC_UNIT_COUNT),
         VKR_IMPL_COUNTER("memory.gpu.rings.readback.acquires",
                          VKR_METRIC_UNIT_COUNT),
         VKR_IMPL_COUNTER("memory.gpu.rings.readback.reuses",
                          VKR_METRIC_UNIT_COUNT),
         VKR_IMPL_COUNTER("memory.gpu.rings.readback.busy_failures",
                          VKR_METRIC_UNIT_COUNT),
+        VKR_IMPL_METAL_GAUGE("memory.gpu.rings.readback.capacity.total_bytes",
+                             VKR_METRIC_UNIT_BYTES),
+        VKR_IMPL_METAL_GAUGE("memory.gpu.rings.readback.capacity.slot_bytes",
+                             VKR_METRIC_UNIT_BYTES),
+        VKR_IMPL_METAL_GAUGE("memory.gpu.rings.readback.requested.peak_bytes",
+                             VKR_METRIC_UNIT_BYTES),
+        VKR_IMPL_METAL_COUNTER("memory.gpu.rings.readback.failures.oversize",
+                               VKR_METRIC_UNIT_COUNT),
         VKR_IMPL_GAUGE("memory.gpu.heaps.bytes.used.current",
                        VKR_METRIC_UNIT_BYTES),
         VKR_IMPL_GAUGE("memory.gpu.heaps.bytes.allocated.current",
@@ -312,6 +334,8 @@ _Static_assert(ArrayCount(vkr_renderer_impl_memory_metric_descriptions) <=
 
 #undef VKR_IMPL_COUNTER
 #undef VKR_IMPL_GAUGE
+#undef VKR_IMPL_METAL_COUNTER
+#undef VKR_IMPL_METAL_GAUGE
 
 bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
                                       VkrMetrics *metrics) {
@@ -608,6 +632,12 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
   VKR_REGISTER_U64(material_texture_stream_evicted,
                    "asset.material.texture_stream.evicted",
                    VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(material_texture_stream_demanded_missing,
+                   "asset.material.texture_stream.demanded_missing",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(material_texture_stream_demanded_evicted,
+                   "asset.material.texture_stream.demanded_evicted",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(material_texture_stream_resident_bytes,
                    "asset.material.texture_stream.resident_bytes",
                    VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_BYTES);
@@ -779,6 +809,9 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
                    VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(gpu_heap_usage_valid, "memory.gpu.heap_usage_valid",
                    VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(gpu_texture_heap_capacity_bytes,
+                   "memory.gpu.texture_heap.capacity_bytes",
+                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_BYTES);
 
   for (uint32_t owner = 0; owner < VKR_GPU_ALLOCATION_OWNER_COUNT; ++owner) {
     for (uint32_t row = 0; row < VKR_GPU_OWNER_METRIC_ROW_COUNT; ++row) {
@@ -1147,9 +1180,17 @@ vkr_internal uint32_t vkr_renderer_metrics_impl_values(
   values[i++] = memory->upload_ring_acquires;
   values[i++] = memory->upload_ring_reuses;
   values[i++] = memory->upload_ring_busy_failures;
+  values[i++] = memory->upload_ring_total_capacity_bytes;
+  values[i++] = memory->upload_ring_slot_capacity_bytes;
+  values[i++] = memory->upload_ring_max_requested_bytes;
+  values[i++] = memory->upload_ring_oversize_failures;
   values[i++] = memory->readback_ring_acquires;
   values[i++] = memory->readback_ring_reuses;
   values[i++] = memory->readback_ring_busy_failures;
+  values[i++] = memory->readback_ring_total_capacity_bytes;
+  values[i++] = memory->readback_ring_slot_capacity_bytes;
+  values[i++] = memory->readback_ring_max_requested_bytes;
+  values[i++] = memory->readback_ring_oversize_failures;
   values[i++] = memory->native_heap_used_size;
   values[i++] = memory->native_heap_allocated_size;
   i += vkr_renderer_metrics_impl_class_values(
@@ -1195,6 +1236,14 @@ vkr_renderer_metrics_collect_impl_memory(VkrRendererMetrics *renderer_metrics,
       renderer_metrics->previous.impl_memory_interval_contiguous;
   for (uint32_t i = 0; i < count; ++i) {
     const VkrMetricId id = renderer_metrics->ids.impl_memory[i];
+    if (vkr_renderer_impl_memory_metric_descriptions[i].metal_only &&
+        !renderer->timing_result.memory
+             .transfer_ring_demand_metrics_supported) {
+      vkr_metrics_mark(renderer_metrics->metrics, id,
+                       VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                       VKR_METRIC_REASON_UNSUPPORTED);
+      continue;
+    }
     if (vkr_renderer_impl_memory_metric_descriptions[i].kind ==
         VKR_METRIC_KIND_COUNTER) {
       const uint64_t delta = vkr_renderer_metrics_cumulative_delta(
@@ -1571,9 +1620,13 @@ void vkr_renderer_metrics_collect(
               vkr_atomic_uint64_load(
                   &context->assets->texture_system.transcode_cache_writes,
                   VKR_MEMORY_ORDER_RELAXED));
-  VKR_SET_U64(material_texture_stream_pending,
-              context->assets->material_system.texture_stream_queued_count +
-                  context->assets->material_system.texture_stream_active_count);
+  const VkrMaterialTextureStreamStats texture_streams =
+      vkr_material_system_get_texture_stream_stats(&context->assets->material_system);
+  VKR_SET_U64(material_texture_stream_pending, texture_streams.pending_count);
+  VKR_SET_U64(material_texture_stream_demanded_missing,
+              texture_streams.demanded_missing_count);
+  VKR_SET_U64(material_texture_stream_demanded_evicted,
+              texture_streams.demanded_evicted_count);
   VKR_SET_U64(material_texture_stream_in_flight,
               context->assets->material_system.texture_stream_active_count);
   VKR_SET_U64(material_texture_stream_resident,
@@ -1685,6 +1738,14 @@ void vkr_renderer_metrics_collect(
     VKR_SET_U64(gpu_peak_bytes, gpu.peak_bytes);
     VKR_SET_U64(gpu_live_totals_exact, gpu.live_totals_exact);
     VKR_SET_U64(gpu_heap_usage_valid, gpu.heap_usage_valid);
+    if (gpu.texture_heap_capacity_valid) {
+      VKR_SET_U64(gpu_texture_heap_capacity_bytes,
+                   gpu.texture_heap_capacity_bytes);
+    } else {
+      vkr_metrics_mark(metrics, ids->gpu_texture_heap_capacity_bytes,
+                       VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                       VKR_METRIC_REASON_UNSUPPORTED);
+    }
     for (uint32_t owner = 0; owner < VKR_GPU_ALLOCATION_OWNER_COUNT; ++owner) {
       uint64_t values[VKR_GPU_OWNER_METRIC_ROW_COUNT];
       vkr_gpu_owner_metric_row_values(

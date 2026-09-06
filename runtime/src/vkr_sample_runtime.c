@@ -66,6 +66,11 @@ typedef struct GizmoDragState {
   bool8_t pending_select;
   VkrGizmoMode mode;
   VkrGizmoHandle handle;
+  VkrEntityId entity;
+  Mat4 parent_inverse;
+  VkrQuat parent_rotation;
+  Vec3 pick_ray_origin;
+  Vec3 pick_ray_direction;
   Vec3 axis;
   Vec3 plane_normal;
   Vec3 start_world_position;
@@ -79,6 +84,10 @@ typedef struct GizmoDragState {
   uint32_t pick_y;
   uint32_t pick_width;
   uint32_t pick_height;
+  bool8_t released;
+  bool8_t release_has_target_coords;
+  uint32_t release_x;
+  uint32_t release_y;
 } GizmoDragState;
 
 #define VKR_APPLICATION_UI_TEXT_CAPACITY 32768u
@@ -90,6 +99,7 @@ typedef struct ApplicationUiText {
 
 typedef struct State {
   InputState *input_state;
+  bool8_t scene_keyboard_focus;
 
   Arena *app_arena;
   Arena *event_arena;
@@ -106,6 +116,11 @@ typedef struct State {
   ApplicationUiText memory_text;
   ApplicationUiText metrics_text;
   VkrSampleUiClient ui;
+  VkrSceneEditState edits;
+  String8 scene_path;
+  char sidecar_path[1024];
+  VkrSceneEditValues gizmo_before;
+  bool8_t gizmo_edit_pending;
   VkrClock fps_update_clock;
   VkrClock memory_update_clock;
   float64_t fps_accumulated_time;
@@ -126,6 +141,8 @@ typedef struct State {
   GizmoDragState gizmo_drag;
   bool8_t gizmo_hover_pending;
   VkrGizmoHandle gizmo_hot_handle;
+  uint64_t pick_scene_generation;
+  VkrEntityId pick_selected_entity;
 
   bool8_t free_camera_use_gamepad;
   bool8_t free_camera_wheel_initialized;
@@ -789,17 +806,10 @@ vkr_internal bool8_t application_build_view_ray(
   Mat4 projection = vkr_camera_system_get_projection_matrix(camera);
   Mat4 inv_vp = mat4_inverse(mat4_mul(projection, view));
 
-  float32_t ndc_x = 0.0f;
-  if (viewport_width > 1u) {
-    ndc_x =
-        ((float32_t)target_x / (float32_t)(viewport_width - 1u)) * 2.0f - 1.0f;
-  }
-
-  float32_t ndc_y = 0.0f;
-  if (viewport_height > 1u) {
-    ndc_y =
-        ((float32_t)target_y / (float32_t)(viewport_height - 1u)) * 2.0f - 1.0f;
-  }
+  const float32_t ndc_x =
+      (((float32_t)target_x + 0.5f) / viewport_width) * 2.0f - 1.0f;
+  const float32_t ndc_y =
+      (((float32_t)target_y + 0.5f) / viewport_height) * 2.0f - 1.0f;
 
   Vec4 near_clip = vec4_new(ndc_x, ndc_y, 0.0f, 1.0f);
   Vec4 far_clip = vec4_new(ndc_x, ndc_y, 1.0f, 1.0f);
@@ -886,11 +896,23 @@ vkr_internal void application_clear_gizmo_handles(Application *application) {
   state->gizmo_hot_handle = VKR_GIZMO_HANDLE_NONE;
 }
 
+vkr_internal void application_cancel_gizmo_pick(Application *application) {
+  vkr_picking_cancel(&application->picking);
+  state->gizmo_hover_pending = false_v;
+  state->gizmo_drag.pending_pick = false_v;
+  state->gizmo_drag.pending_select = false_v;
+  state->gizmo_drag.released = false_v;
+  state->gizmo_drag.release_has_target_coords = false_v;
+}
+
 vkr_internal void application_clear_gizmo_selection(Application *application) {
   if (!application || !state) {
     return;
   }
 
+  application_cancel_gizmo_pick(application);
+  state->gizmo_drag.active = false_v;
+  state->gizmo_edit_pending = false_v;
   state->selected_entity = VKR_ENTITY_ID_INVALID;
   state->has_selection = false_v;
   vkr_gizmo_system_clear_target(&application->gizmo_system);
@@ -1009,6 +1031,24 @@ application_sync_world_text_transform(Application *application, VkrScene *scene,
                                       (String8){0}, &text_transform);
 }
 
+vkr_internal void application_cancel_gizmo_edit(Application *application) {
+  VkrScene *scene = application->active_scene;
+  if (state->gizmo_edit_pending && scene) {
+    vkr_scene_set_position(scene, state->gizmo_drag.entity,
+                           state->gizmo_before.position);
+    vkr_scene_set_rotation(scene, state->gizmo_drag.entity,
+                           state->gizmo_before.rotation);
+    vkr_scene_set_scale(scene, state->gizmo_drag.entity,
+                        state->gizmo_before.scale);
+    application_sync_world_text_transform(application, scene,
+                                          state->gizmo_drag.entity);
+  }
+  state->gizmo_edit_pending = false_v;
+  state->gizmo_drag.active = false_v;
+  state->gizmo_drag.handle = VKR_GIZMO_HANDLE_NONE;
+  application_clear_gizmo_handles(application);
+}
+
 vkr_internal bool8_t application_request_picking(
     Application *application, VkrPickingContext *picking,
     const VkrViewportHitInfo *viewport_info) {
@@ -1029,8 +1069,55 @@ vkr_internal bool8_t application_request_picking(
     return false_v;
   }
 
+  VkrCamera *camera = vkr_camera_registry_get_by_handle(
+      &application->camera_system, application->active_camera);
+  if (!application_build_view_ray(
+          camera, viewport_info->target_width, viewport_info->target_height,
+          viewport_info->target_x, viewport_info->target_y,
+          &state->gizmo_drag.pick_ray_origin,
+          &state->gizmo_drag.pick_ray_direction))
+    return false_v;
+  state->pick_scene_generation = application->scene_generation;
+  state->pick_selected_entity = state->selected_entity;
   vkr_picking_request(picking, viewport_info->target_x,
                       viewport_info->target_y);
+  return true_v;
+}
+
+vkr_internal bool8_t
+application_gizmo_parent_frame(VkrScene *scene, const SceneTransform *transform,
+                               Mat4 *out_inverse, VkrQuat *out_rotation) {
+  if (!transform || !transform->trs_editable ||
+      fabsf(transform->scale.x) < 1e-6f || fabsf(transform->scale.y) < 1e-6f ||
+      fabsf(transform->scale.z) < 1e-6f)
+    return false_v;
+  *out_inverse = mat4_identity();
+  *out_rotation = vkr_quat_identity();
+  VkrEntityId ancestor = transform->parent;
+  if (ancestor.u64 != VKR_ENTITY_ID_INVALID.u64) {
+    const SceneTransform *parent = vkr_scene_get_transform(scene, ancestor);
+    if (!parent)
+      return false_v;
+    const Mat4 world = parent->world;
+    const Vec3 x =
+        vec3_new(world.elements[0], world.elements[1], world.elements[2]);
+    const Vec3 y =
+        vec3_new(world.elements[4], world.elements[5], world.elements[6]);
+    const Vec3 z =
+        vec3_new(world.elements[8], world.elements[9], world.elements[10]);
+    const float32_t determinant = vec3_dot(x, vec3_cross(y, z));
+    if (!isfinite(determinant) || fabsf(determinant) < 1e-6f)
+      return false_v;
+    *out_inverse = mat4_inverse_affine(world);
+  }
+  while (ancestor.u64 != VKR_ENTITY_ID_INVALID.u64) {
+    const SceneTransform *parent = vkr_scene_get_transform(scene, ancestor);
+    if (!parent || !parent->trs_editable)
+      return false_v;
+    *out_rotation = vkr_quat_mul(parent->rotation, *out_rotation);
+    ancestor = parent->parent;
+  }
+  *out_rotation = vkr_quat_normalize(*out_rotation);
   return true_v;
 }
 
@@ -1045,11 +1132,14 @@ vkr_internal bool8_t application_begin_gizmo_drag(Application *application,
     return false_v;
   }
 
+  vkr_scene_update(scene, 0.0);
   SceneTransform *transform =
       vkr_scene_get_transform(scene, state->selected_entity);
-  if (!transform) {
+  Mat4 parent_inverse;
+  VkrQuat parent_rotation;
+  if (!application_gizmo_parent_frame(scene, transform, &parent_inverse,
+                                      &parent_rotation))
     return false_v;
-  }
 
   Vec3 pivot_local = vec3_zero();
   bool8_t has_text_pivot = false_v;
@@ -1096,14 +1186,8 @@ vkr_internal bool8_t application_begin_gizmo_drag(Application *application,
   if (has_text_pivot) {
     world_position = application_text_pivot_world(transform, pivot_local);
   }
-  Vec3 ray_origin = vec3_zero();
-  Vec3 ray_dir = vec3_zero();
-  if (!application_build_view_ray(
-          camera, state->gizmo_drag.pick_width, state->gizmo_drag.pick_height,
-          state->gizmo_drag.pick_x, state->gizmo_drag.pick_y, &ray_origin,
-          &ray_dir)) {
-    return false_v;
-  }
+  const Vec3 ray_origin = state->gizmo_drag.pick_ray_origin;
+  const Vec3 ray_dir = state->gizmo_drag.pick_ray_direction;
 
   Vec3 hit = vec3_zero();
   if (!application_ray_plane_intersect(ray_origin, ray_dir, world_position,
@@ -1113,6 +1197,18 @@ vkr_internal bool8_t application_begin_gizmo_drag(Application *application,
 
   Vec3 offset = vec3_sub(hit, world_position);
 
+  state->gizmo_edit_pending =
+      application->editor_viewport.enabled &&
+      vkr_scene_edit_read(scene, state->selected_entity, &state->gizmo_before);
+  if (!state->gizmo_edit_pending ||
+      !(state->gizmo_before.fields & VKR_SCENE_EDIT_TRANSFORM)) {
+    state->gizmo_edit_pending = false_v;
+    return false_v;
+  }
+  state->gizmo_before.fields = VKR_SCENE_EDIT_TRANSFORM;
+  state->gizmo_drag.entity = state->selected_entity;
+  state->gizmo_drag.parent_inverse = parent_inverse;
+  state->gizmo_drag.parent_rotation = parent_rotation;
   state->gizmo_drag.active = true_v;
   state->gizmo_drag.mode = mode;
   state->gizmo_drag.handle = handle;
@@ -1136,26 +1232,42 @@ application_update_gizmo_drag(Application *application,
     return;
   }
 
+  if (viewport_info->target_width != state->gizmo_drag.pick_width ||
+      viewport_info->target_height != state->gizmo_drag.pick_height) {
+    application_cancel_gizmo_edit(application);
+    return;
+  }
+
   VkrScene *scene = vkr_scene_handle_get_scene(state->scene_resource.as.scene);
   if (!scene) {
-    state->gizmo_drag.active = false_v;
-    state->gizmo_drag.handle = VKR_GIZMO_HANDLE_NONE;
+    application_cancel_gizmo_edit(application);
     return;
   }
 
   SceneTransform *transform =
-      vkr_scene_get_transform(scene, state->selected_entity);
+      vkr_scene_get_transform(scene, state->gizmo_drag.entity);
   if (!transform) {
-    state->gizmo_drag.active = false_v;
-    state->gizmo_drag.handle = VKR_GIZMO_HANDLE_NONE;
+    application_cancel_gizmo_edit(application);
+    return;
+  }
+
+  if (viewport_info->target_x == state->gizmo_drag.pick_x &&
+      viewport_info->target_y == state->gizmo_drag.pick_y) {
+    vkr_scene_set_position(scene, state->gizmo_drag.entity,
+                           state->gizmo_before.position);
+    vkr_scene_set_rotation(scene, state->gizmo_drag.entity,
+                           state->gizmo_before.rotation);
+    vkr_scene_set_scale(scene, state->gizmo_drag.entity,
+                        state->gizmo_before.scale);
+    application_sync_world_text_transform(application, scene,
+                                          state->gizmo_drag.entity);
     return;
   }
 
   VkrCamera *camera = vkr_camera_registry_get_by_handle(
       &application->camera_system, application->active_camera);
   if (!camera) {
-    state->gizmo_drag.active = false_v;
-    state->gizmo_drag.handle = VKR_GIZMO_HANDLE_NONE;
+    application_cancel_gizmo_edit(application);
     return;
   }
 
@@ -1194,42 +1306,36 @@ application_update_gizmo_drag(Application *application,
       local_pos = application_text_origin_from_pivot(
           scene, transform, new_pivot, state->gizmo_drag.text_pivot_local,
           state->gizmo_drag.start_scale, state->gizmo_drag.start_rotation);
-    } else if (transform->parent.u64 != VKR_ENTITY_ID_INVALID.u64) {
-      SceneTransform *parent_transform =
-          vkr_scene_get_transform(scene, transform->parent);
-      if (parent_transform) {
-        Mat4 parent_inv = mat4_inverse_affine(parent_transform->world);
-        Vec4 local = mat4_mul_vec4(
-            parent_inv, vec4_new(new_pivot.x, new_pivot.y, new_pivot.z, 1.0f));
-        local_pos = vec3_new(local.x, local.y, local.z);
-      }
+    } else {
+      const Vec4 local =
+          mat4_mul_vec4(state->gizmo_drag.parent_inverse,
+                        vec4_new(new_pivot.x, new_pivot.y, new_pivot.z, 1.0f));
+      local_pos = vec3_new(local.x, local.y, local.z);
     }
 
-    vkr_scene_set_position(scene, state->selected_entity, local_pos);
+    vkr_scene_set_position(scene, state->gizmo_drag.entity, local_pos);
     updated = true_v;
   } else if (state->gizmo_drag.mode == VKR_GIZMO_MODE_SCALE) {
     Vec3 new_scale = state->gizmo_drag.start_scale;
-    const float32_t min_scale = 0.001f;
-    Vec3 offset = vec3_sub(hit, state->gizmo_drag.start_world_position);
-
+    const Vec3 offset = vec3_sub(hit, state->gizmo_drag.start_world_position);
     if (state->gizmo_drag.start_radius > VKR_FLOAT_EPSILON) {
-      float32_t radius = vec3_length(offset);
-      float32_t scale_factor = radius / state->gizmo_drag.start_radius;
-      new_scale = vec3_scale(state->gizmo_drag.start_scale, scale_factor);
+      const float32_t radius = vec3_length(offset);
+      const Vec3 start = state->gizmo_drag.start_scale;
+      const float32_t smallest =
+          Min(fabsf(start.x), Min(fabsf(start.y), fabsf(start.z)));
+      const float32_t scale_factor =
+          Max(0.001f / smallest, radius / state->gizmo_drag.start_radius);
+      new_scale = vec3_scale(start, scale_factor);
     }
-
-    new_scale.x = vkr_max_f32(min_scale, new_scale.x);
-    new_scale.y = vkr_max_f32(min_scale, new_scale.y);
-    new_scale.z = vkr_max_f32(min_scale, new_scale.z);
     if (state->gizmo_drag.uses_text_pivot) {
       Vec3 local_pos = application_text_origin_from_pivot(
           scene, transform, state->gizmo_drag.start_world_position,
           state->gizmo_drag.text_pivot_local, new_scale,
           state->gizmo_drag.start_rotation);
-      vkr_scene_set_position(scene, state->selected_entity, local_pos);
+      vkr_scene_set_position(scene, state->gizmo_drag.entity, local_pos);
     }
 
-    vkr_scene_set_scale(scene, state->selected_entity, new_scale);
+    vkr_scene_set_scale(scene, state->gizmo_drag.entity, new_scale);
     updated = true_v;
   } else if (state->gizmo_drag.mode == VKR_GIZMO_MODE_ROTATE) {
     Vec3 pivot = state->gizmo_drag.start_world_position;
@@ -1250,19 +1356,11 @@ application_update_gizmo_drag(Application *application,
         (vec3_dot(state->gizmo_drag.axis, cross) < 0.0f) ? -1.0f : 1.0f;
     angle *= sign;
 
-    Vec3 local_axis = state->gizmo_drag.axis;
-    if (transform->parent.u64 != VKR_ENTITY_ID_INVALID.u64) {
-      SceneTransform *parent_transform =
-          vkr_scene_get_transform(scene, transform->parent);
-      if (parent_transform) {
-        Mat4 parent_inv = mat4_inverse_affine(parent_transform->world);
-        Vec4 axis_local =
-            mat4_mul_vec4(parent_inv, vec4_new(local_axis.x, local_axis.y,
-                                               local_axis.z, 0.0f));
-        local_axis =
-            vec3_normalize(vec3_new(axis_local.x, axis_local.y, axis_local.z));
-      }
-    }
+    /* Preserve editable local TRS. A nonuniform parent can introduce shear
+     * under exact world rotation, so only its rotational frame is converted. */
+    const Vec3 local_axis = vkr_quat_rotate_vec3(
+        vkr_quat_conjugate(state->gizmo_drag.parent_rotation),
+        state->gizmo_drag.axis);
 
     VkrQuat delta = vkr_quat_from_axis_angle(local_axis, angle);
     VkrQuat new_rotation =
@@ -1274,16 +1372,16 @@ application_update_gizmo_drag(Application *application,
           scene, transform, state->gizmo_drag.start_world_position,
           state->gizmo_drag.text_pivot_local, state->gizmo_drag.start_scale,
           new_rotation);
-      vkr_scene_set_position(scene, state->selected_entity, local_pos);
+      vkr_scene_set_position(scene, state->gizmo_drag.entity, local_pos);
     }
 
-    vkr_scene_set_rotation(scene, state->selected_entity, new_rotation);
+    vkr_scene_set_rotation(scene, state->gizmo_drag.entity, new_rotation);
     updated = true_v;
   }
 
   if (updated) {
     application_sync_world_text_transform(application, scene,
-                                          state->selected_entity);
+                                          state->gizmo_drag.entity);
   }
 }
 
@@ -1376,7 +1474,7 @@ application_try_activate_scene_resource(Application *application) {
     return false_v;
   }
 
-  String8 scene_path = string8_lit(SCENE_PATH);
+  String8 scene_path = state->scene_path;
   VkrRendererError state_error = VKR_RENDERER_ERROR_NONE;
   VkrResourceLoadState load_state =
       vkr_resource_system_get_state(&state->scene_resource, &state_error);
@@ -1442,10 +1540,17 @@ application_try_activate_scene_resource(Application *application) {
 
   state->scene_load_terminal_logged = false_v;
   if (application->active_scene != scene) {
+    application_clear_gizmo_selection(application);
     application->active_scene = scene;
     application->scene_generation = application->scene_generation == UINT64_MAX
                                         ? 1u
                                         : application->scene_generation + 1u;
+    vkr_scene_edit_reset(&state->edits,
+                         &application->ui_system.retained_allocator,
+                         application->scene_generation);
+    (void)vkr_scene_edit_load(&state->edits, scene,
+                              string8_create((uint8_t *)state->sidecar_path,
+                                             strlen(state->sidecar_path)));
     /* A fit from the previous scene is framed by a camera and caster set that
        no longer exist, so it is not a previous value of the same quantity. The
        configuration stamps cannot catch this: they are all identical across a
@@ -1488,7 +1593,7 @@ vkr_internal void application_init_scene_system(Application *application) {
     return;
   }
 
-  String8 scene_path = string8_lit(SCENE_PATH);
+  String8 scene_path = state->scene_path;
   if (state->scene_resource.type == VKR_RESOURCE_TYPE_SCENE) {
     if (application_try_activate_scene_resource(application)) {
       return;
@@ -1557,7 +1662,7 @@ vkr_internal void application_unload_scene_system(Application *application) {
     return;
   }
 
-  String8 scene_path = string8_lit(SCENE_PATH);
+  String8 scene_path = state->scene_path;
   if (state->scene_resource.type == VKR_RESOURCE_TYPE_SCENE ||
       state->scene_resource.request_id != 0 || state->scene_resource.as.scene) {
     if (vkr_renderer_wait_idle(&application->renderer) !=
@@ -1578,7 +1683,17 @@ vkr_internal void application_unload_scene_system(Application *application) {
   state->scene_load_stats_baseline_valid = false_v;
   state->scene_load_timer_active = false_v;
   state->scene_load_start_time_seconds = 0.0;
+  vkr_scene_edit_reset(&state->edits,
+                       &application->ui_system.retained_allocator, 0);
+  state->gizmo_edit_pending = false_v;
+  application_clear_gizmo_selection(application);
   application->active_scene = NULL;
+  application->editor_viewport.output_scale = 1.0f;
+  application->editor_viewport.rendered_width = 0u;
+  application->editor_viewport.rendered_height = 0u;
+  application->editor_viewport.output_width = 0u;
+  application->editor_viewport.output_height = 0u;
+  application->editor_viewport.scene_error = VKR_RENDERER_ERROR_NONE;
   application->scene_generation = application->scene_generation == UINT64_MAX
                                       ? 1u
                                       : application->scene_generation + 1u;
@@ -1747,7 +1862,7 @@ vkr_internal void application_log_camera_snapshot(Application *application) {
            "  \"near_plane\": %.9g,\n"
            "  \"far_plane\": %.9g\n"
            "}",
-           SCENE_PATH, camera->cached_window_width,
+           (const char *)state->scene_path.str, camera->cached_window_width,
            camera->cached_window_height, camera->position.x, camera->position.y,
            camera->position.z, camera->yaw, camera->pitch, camera->zoom,
            camera->near_clip, camera->far_clip);
@@ -1764,7 +1879,8 @@ vkr_internal void application_handle_input(Application *application,
 
   InputState *input_state = state->input_state;
 
-  if (input_is_key_up(state->input_state, KEY_M) &&
+  if (!application->ui_capture.keyboard &&
+      input_is_key_up(state->input_state, KEY_M) &&
       input_was_key_down(state->input_state, KEY_M)) {
     VkrAllocatorScope stats_scope =
         vkr_allocator_begin_scope(&application->app_allocator);
@@ -1778,14 +1894,21 @@ vkr_internal void application_handle_input(Application *application,
     vkr_allocator_end_scope(&stats_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
   }
 
-  if (input_is_key_up(state->input_state, KEY_L) &&
+  if (!application->ui_capture.keyboard &&
+      input_is_key_up(state->input_state, KEY_L) &&
       input_was_key_down(state->input_state, KEY_L)) {
     application_init_scene_system(application);
   }
 
-  if (input_is_key_up(state->input_state, KEY_U) &&
+  if (!application->ui_capture.keyboard &&
+      input_is_key_up(state->input_state, KEY_U) &&
       input_was_key_down(state->input_state, KEY_U)) {
-    application_unload_scene_system(application);
+    if (state->edits.revision != state->edits.saved_revision) {
+      snprintf(state->edits.status, sizeof(state->edits.status),
+               "Save edits before unloading the scene.");
+      log_warn("Save editor overrides before unloading the scene");
+    } else
+      application_unload_scene_system(application);
   }
 
   if (input_is_key_up(input_state, KEY_F4) &&
@@ -1840,16 +1963,19 @@ vkr_internal void application_handle_input(Application *application,
     application_log_camera_snapshot(application);
   }
 
-  if (!application->ui_capture.keyboard &&
-      input_is_key_down(input_state, KEY_TAB) &&
-      input_was_key_up(input_state, KEY_TAB)) {
-    bool8_t should_capture =
-        !vkr_window_is_mouse_captured(&application->window);
-    vkr_window_set_mouse_capture(&application->window, should_capture);
-    if (!should_capture) {
-      state->free_camera_wheel_initialized = false_v;
-      state->free_camera_use_gamepad = false_v;
-    }
+  const bool8_t camera_captured =
+      vkr_window_is_mouse_captured(&application->window);
+  const bool8_t camera_tab = input_key_just_pressed(input_state, KEY_TAB) &&
+      (camera_captured ||
+       (application->editor_viewport.enabled ? state->scene_keyboard_focus
+                                            : !application->ui_capture.keyboard));
+  const bool8_t camera_shortcut = application->editor_viewport.enabled &&
+      !application->ui_capture.text && input_key_just_pressed(input_state, KEY_F3);
+  if ((camera_tab || camera_shortcut) &&
+      (camera_captured || !application_editor_scene_rendering_stopped(application))) {
+    vkr_window_set_mouse_capture(&application->window, !camera_captured);
+    state->free_camera_wheel_initialized = false_v;
+    state->free_camera_use_gamepad = false_v;
   }
 
   if (input_is_button_down(input_state, BUTTON_GAMEPAD_A) &&
@@ -1865,7 +1991,8 @@ vkr_internal void application_handle_input(Application *application,
   }
 
   if (!vkr_window_is_mouse_captured(&application->window) ||
-      application->ui_capture.mouse || application->ui_capture.keyboard) {
+      application->ui_capture.mouse || application->ui_capture.keyboard ||
+      application_editor_scene_rendering_stopped(application)) {
     return;
   }
 
@@ -2210,7 +2337,7 @@ vkr_internal void application_update_scene(Application *application,
 
   if (application->gizmo_system.initialized) {
     if (!state->has_selection) {
-      application_clear_gizmo_selection(application);
+      vkr_gizmo_system_clear_target(&application->gizmo_system);
       return;
     }
 
@@ -2223,6 +2350,13 @@ vkr_internal void application_update_scene(Application *application,
       return;
     }
 
+    Mat4 parent_inverse;
+    VkrQuat parent_rotation;
+    if (!application_gizmo_parent_frame(scene, transform, &parent_inverse,
+                                        &parent_rotation)) {
+      vkr_gizmo_system_clear_target(&application->gizmo_system);
+      return;
+    }
     Vec3 world_position = mat4_position(transform->world);
     SceneText3D *text = vkr_scene_get_text3d(scene, state->selected_entity);
     if (text) {
@@ -2238,6 +2372,46 @@ vkr_internal void application_update_scene(Application *application,
   }
 }
 
+vkr_internal void application_finish_gizmo_edit(Application *application) {
+  if (state->gizmo_edit_pending) {
+    VkrScene *scene = application->active_scene;
+    VkrSceneEditValues after;
+    if (scene && vkr_scene_edit_read(scene, state->gizmo_drag.entity, &after)) {
+      after.fields = VKR_SCENE_EDIT_TRANSFORM;
+      const bool8_t changed =
+          !vec3_equal(state->gizmo_before.position, after.position, 0.0f) ||
+          !vec3_equal(state->gizmo_before.scale, after.scale, 0.0f) ||
+          MemCompare(&state->gizmo_before.rotation, &after.rotation,
+                     sizeof(after.rotation)) != 0;
+      if (changed && !vkr_scene_edit_record_external(
+                         &state->edits, scene, state->gizmo_drag.entity,
+                         &state->gizmo_before, &after)) {
+        vkr_scene_set_position(scene, state->gizmo_drag.entity,
+                               state->gizmo_before.position);
+        vkr_scene_set_rotation(scene, state->gizmo_drag.entity,
+                               state->gizmo_before.rotation);
+        vkr_scene_set_scale(scene, state->gizmo_drag.entity,
+                            state->gizmo_before.scale);
+      }
+    }
+    state->gizmo_edit_pending = false_v;
+  }
+  state->gizmo_drag.active = false_v;
+  state->gizmo_drag.handle = VKR_GIZMO_HANDLE_NONE;
+  application_clear_gizmo_handles(application);
+}
+
+vkr_internal void application_capture_gizmo_release(
+    const VkrViewportHitInfo *viewport_info) {
+  state->gizmo_drag.released = true_v;
+  state->gizmo_drag.release_has_target_coords =
+      viewport_info->has_target_coords &&
+      viewport_info->target_width == state->gizmo_drag.pick_width &&
+      viewport_info->target_height == state->gizmo_drag.pick_height;
+  state->gizmo_drag.release_x = viewport_info->target_x;
+  state->gizmo_drag.release_y = viewport_info->target_y;
+}
+
 vkr_internal void application_update_picking(Application *application) {
   if (!application || !state || !state->input_state) {
     return;
@@ -2248,7 +2422,16 @@ vkr_internal void application_update_picking(Application *application) {
     return;
   }
 
-  if (application->ui_capture.mouse && !state->gizmo_drag.active) {
+  if ((state->gizmo_drag.pending_pick || state->gizmo_hover_pending) &&
+      (state->pick_scene_generation != application->scene_generation ||
+       state->pick_selected_entity.u64 != state->selected_entity.u64))
+    application_cancel_gizmo_pick(application);
+
+  if (application_editor_scene_rendering_stopped(application) ||
+      input_is_key_down(state->input_state, KEY_ESCAPE) ||
+      vkr_window_is_mouse_captured(&application->window) ||
+      (application->ui_capture.mouse && !state->gizmo_drag.active &&
+       !state->gizmo_drag.pending_pick)) {
     if (vkr_picking_is_pending(picking))
       vkr_picking_cancel(picking);
     state->gizmo_hover_pending = false_v;
@@ -2261,7 +2444,7 @@ vkr_internal void application_update_picking(Application *application) {
   bool8_t right_down = input_is_button_down(state->input_state, BUTTON_RIGHT);
   bool8_t middle_down = input_is_button_down(state->input_state, BUTTON_MIDDLE);
   bool8_t left_pressed =
-      left_down && input_was_button_up(state->input_state, BUTTON_LEFT);
+      input_button_just_pressed(state->input_state, BUTTON_LEFT);
   bool8_t click_pressed = left_pressed;
   bool8_t click_select = left_pressed;
 
@@ -2274,16 +2457,17 @@ vkr_internal void application_update_picking(Application *application) {
                                     &prev_mouse_y);
   VkrViewportHitInfo viewport_info =
       application_get_viewport_hit_info(application, mouse_x, mouse_y);
+  if (state->gizmo_drag.pending_pick &&
+      (state->gizmo_drag.pick_width != viewport_info.target_width ||
+       state->gizmo_drag.pick_height != viewport_info.target_height))
+    application_cancel_gizmo_pick(application);
 
-  if (state->gizmo_drag.active) {
-    if (!left_down) {
-      state->gizmo_drag.active = false_v;
-      state->gizmo_drag.handle = VKR_GIZMO_HANDLE_NONE;
-      application_clear_gizmo_handles(application);
-    } else {
-      application_update_gizmo_drag(application, &viewport_info);
-    }
-  }
+  if (state->gizmo_drag.pending_pick && !left_down &&
+      !state->gizmo_drag.released)
+    application_capture_gizmo_release(&viewport_info);
+
+  if (state->gizmo_drag.active && left_down)
+    application_update_gizmo_drag(application, &viewport_info);
 
   if (click_pressed && state->gizmo_hover_pending) {
     vkr_picking_cancel(picking);
@@ -2292,13 +2476,22 @@ vkr_internal void application_update_picking(Application *application) {
 
   if (!state->gizmo_drag.active && !state->gizmo_drag.pending_pick &&
       click_pressed && !vkr_picking_is_pending(picking)) {
-    if (application_request_picking(application, picking, &viewport_info)) {
+    int32_t press_x, press_y;
+    input_get_button_press_position(state->input_state, BUTTON_LEFT, &press_x,
+                                    &press_y);
+    const VkrViewportHitInfo press_info =
+        application_get_viewport_hit_info(application, press_x, press_y);
+    if (application_request_picking(application, picking, &press_info)) {
       state->gizmo_drag.pending_pick = true_v;
       state->gizmo_drag.pending_select = click_select;
-      state->gizmo_drag.pick_x = viewport_info.target_x;
-      state->gizmo_drag.pick_y = viewport_info.target_y;
-      state->gizmo_drag.pick_width = viewport_info.target_width;
-      state->gizmo_drag.pick_height = viewport_info.target_height;
+      state->gizmo_drag.pick_x = press_info.target_x;
+      state->gizmo_drag.pick_y = press_info.target_y;
+      state->gizmo_drag.pick_width = press_info.target_width;
+      state->gizmo_drag.pick_height = press_info.target_height;
+      state->gizmo_drag.released = false_v;
+      state->gizmo_drag.release_has_target_coords = false_v;
+      if (!left_down)
+        application_capture_gizmo_release(&viewport_info);
     }
   }
 
@@ -2384,11 +2577,26 @@ vkr_internal void application_update_picking(Application *application) {
         vkr_gizmo_system_set_hot_handle(&application->gizmo_system, handle);
         bool8_t drag_button_down =
             input_is_button_down(state->input_state, BUTTON_LEFT);
-        if (drag_button_down && handle != VKR_GIZMO_HANDLE_NONE) {
+        if ((drag_button_down || state->gizmo_drag.released) &&
+            handle != VKR_GIZMO_HANDLE_NONE) {
           if (application_begin_gizmo_drag(application, handle)) {
             vkr_gizmo_system_set_active_handle(&application->gizmo_system,
                                                handle);
             application->gizmo_system.mode = state->gizmo_drag.mode;
+            if (state->gizmo_drag.released) {
+              const VkrViewportHitInfo release_info = {
+                  .target_x = state->gizmo_drag.release_x,
+                  .target_y = state->gizmo_drag.release_y,
+                  .target_width = state->gizmo_drag.pick_width,
+                  .target_height = state->gizmo_drag.pick_height,
+                  .has_target_coords =
+                      state->gizmo_drag.release_has_target_coords,
+              };
+              application_update_gizmo_drag(application, &release_info);
+              application_finish_gizmo_edit(application);
+            } else {
+              application_update_gizmo_drag(application, &viewport_info);
+            }
             update_selection = false_v;
           }
         }
@@ -2578,6 +2786,44 @@ vkr_internal void application_update_ui(Application *application,
     return;
   }
 
+  if (application->editor_viewport.enabled) {
+    if (state->gizmo_edit_pending &&
+        application->editor_viewport.scene_error != VKR_RENDERER_ERROR_NONE)
+      application_cancel_gizmo_edit(application);
+    const bool8_t command =
+        input_key_shortcut_modifier(state->input_state, KEY_P);
+    const bool8_t escape =
+        input_key_just_pressed(state->input_state, KEY_ESCAPE);
+    if (escape ||
+        (command && input_key_just_pressed(state->input_state, KEY_P))) {
+      vkr_window_set_mouse_capture(&application->window, false_v);
+      state->free_camera_wheel_initialized = false_v;
+      state->free_camera_use_gamepad = false_v;
+    }
+    if (escape) {
+      application_cancel_gizmo_pick(application);
+      application_clear_gizmo_handles(application);
+    }
+    if (escape && state->gizmo_edit_pending)
+      application_cancel_gizmo_edit(application);
+  }
+
+  /* Complete a released drag before UI commands can change selection or stop
+     scene rendering. Picking may be suppressed by that UI interaction. */
+  if ((state->gizmo_drag.active || state->gizmo_drag.pending_pick) &&
+      !input_is_button_down(state->input_state, BUTTON_LEFT)) {
+    int32_t release_x, release_y;
+    input_get_mouse_position(state->input_state, &release_x, &release_y);
+    const VkrViewportHitInfo release_info =
+        application_get_viewport_hit_info(application, release_x, release_y);
+    if (!state->gizmo_drag.released)
+      application_capture_gizmo_release(&release_info);
+    if (state->gizmo_drag.active) {
+      application_update_gizmo_drag(application, &release_info);
+      application_finish_gizmo_edit(application);
+    }
+  }
+
   const VkrUiTrack root_track = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
   VkrUiPanelConfig root = vkr_ui_panel_config_default();
   root.columns = &root_track;
@@ -2594,6 +2840,10 @@ vkr_internal void application_update_ui(Application *application,
     return;
   }
 
+  VkrSampleTransportAction transport_action = VKR_SAMPLE_TRANSPORT_NONE;
+  VkrSceneEditRequest scene_edit = {0};
+  const VkrMaterialTextureStreamStats texture_streams =
+      vkr_material_system_get_texture_stream_stats(&application->assets.material_system);
   VkrSampleUiFrame frame = {
       .ui = &application->ui_system,
       .dock = &application->editor_viewport.dock,
@@ -2605,6 +2855,25 @@ vkr_internal void application_update_ui(Application *application,
               .metrics = application_ui_text_view(&state->metrics_text),
               .memory = application_ui_text_view(&state->memory_text),
           },
+      .simulation_time = application->editor_viewport.simulation_time,
+      .simulation_running = application->editor_viewport.simulation_running,
+      .scene_rendering_stopped =
+          application->editor_viewport.scene_rendering_stopped,
+      .scene_error = application->editor_viewport.scene_error,
+      .texture_pending_count = texture_streams.pending_count,
+      .texture_demanded_missing_count = texture_streams.demanded_missing_count,
+      .scene_output_scale = application->editor_viewport.output_scale,
+      .scene_render_width = application->editor_viewport.rendered_width,
+      .scene_render_height = application->editor_viewport.rendered_height,
+      .scene_output_width = application->editor_viewport.output_width,
+      .scene_output_height = application->editor_viewport.output_height,
+      .transport_action = &transport_action,
+      .scene_keyboard_focus = &state->scene_keyboard_focus,
+      .scene = application->active_scene,
+      .selected_entity = state->selected_entity,
+      .scene_generation = application->scene_generation,
+      .edits = &state->edits,
+      .scene_edit = &scene_edit,
       .scene_only = application->editor_viewport.scene_only,
       .mouse_captured = vkr_window_is_mouse_captured(&application->window),
   };
@@ -2618,6 +2887,150 @@ vkr_internal void application_update_ui(Application *application,
   application->ui_capture = vkr_ui_end(&application->ui_system);
   application->ui_capture.mouse |=
       application->editor_viewport.dock_capture.mouse;
+  if (application->editor_viewport.enabled && !application->ui_capture.text) {
+    if (input_key_shortcut_modifier(state->input_state, KEY_S) &&
+        input_key_just_pressed(state->input_state, KEY_S))
+      scene_edit.action = VKR_SCENE_EDIT_SAVE;
+    if (input_key_shortcut_modifier(state->input_state, KEY_Z) &&
+        input_key_just_pressed(state->input_state, KEY_Z))
+      scene_edit.action =
+          (input_key_press_modifiers(state->input_state, KEY_Z) &
+           VKR_INPUT_MOD_SHIFT)
+              ? VKR_SCENE_EDIT_REDO
+              : VKR_SCENE_EDIT_UNDO;
+  }
+  if (state->gizmo_drag.active &&
+      (scene_edit.action != VKR_SCENE_EDIT_NONE ||
+       transport_action == VKR_SAMPLE_TRANSPORT_STOP_RENDERING))
+    application_finish_gizmo_edit(application);
+  if (scene_edit.action == VKR_SCENE_EDIT_LOAD)
+    application_init_scene_system(application);
+  if (scene_edit.action == VKR_SCENE_EDIT_UNLOAD ||
+      scene_edit.action == VKR_SCENE_EDIT_RELOAD) {
+    if (state->edits.revision != state->edits.saved_revision) {
+      snprintf(state->edits.status, sizeof(state->edits.status),
+               "Save edits before reloading or unloading.");
+      log_warn("Save editor overrides before reloading or unloading");
+    } else {
+      application_unload_scene_system(application);
+      if (scene_edit.action == VKR_SCENE_EDIT_RELOAD)
+        application_init_scene_system(application);
+    }
+  }
+  VkrScene *scene = application->active_scene;
+  if (scene) {
+    switch (scene_edit.action) {
+    case VKR_SCENE_EDIT_SELECT:
+      if (vkr_scene_entity_alive(scene, scene_edit.entity)) {
+        application_cancel_gizmo_pick(application);
+        application_clear_gizmo_handles(application);
+        state->gizmo_drag.active = false_v;
+        state->selected_entity = scene_edit.entity;
+        state->has_selection = true_v;
+      }
+      break;
+    case VKR_SCENE_EDIT_APPLY:
+      (void)vkr_scene_edit_apply(&state->edits, scene, scene_edit.entity,
+                                 &scene_edit.values);
+      break;
+    case VKR_SCENE_EDIT_UNDO:
+    case VKR_SCENE_EDIT_REDO:
+      (void)vkr_scene_edit_undo(&state->edits, scene,
+                                scene_edit.action == VKR_SCENE_EDIT_REDO);
+      break;
+    case VKR_SCENE_EDIT_SAVE:
+      (void)vkr_scene_edit_save(&state->edits, scene,
+                                string8_create((uint8_t *)state->sidecar_path,
+                                               strlen(state->sidecar_path)));
+      break;
+    case VKR_SCENE_EDIT_FRAME: {
+      const SceneTransform *tr = vkr_entity_get_component(
+          scene->world, scene_edit.entity, scene->comp_transform);
+      VkrCamera *camera = vkr_camera_registry_get_by_handle(
+          &application->camera_system, application->active_camera);
+      if (tr && camera) {
+        Vec3 lower = mat4_position(tr->world), upper = lower;
+        for (uint32_t i = 0; i < scene->topo_count; i++) {
+          VkrEntityId candidate = scene->topo_order[i], ancestor = candidate;
+          while (ancestor.u64 && ancestor.u64 != scene_edit.entity.u64) {
+            const SceneTransform *parent =
+                vkr_entity_get_component_unchecked_const(scene->world, ancestor,
+                                                         scene->comp_transform);
+            ancestor = parent->parent;
+          }
+          if (!ancestor.u64)
+            continue;
+          // Topology includes transform-only glTF nodes as well as meshes.
+          const SceneMeshRenderer *mesh = vkr_entity_get_component(
+              scene->world, candidate, scene->comp_mesh_renderer);
+          if (!mesh)
+            continue;
+          VkrMeshInstance *instance = vkr_mesh_manager_get_instance(
+              &application->assets.mesh_manager, mesh->instance);
+          if (!instance || !instance->bounds_valid)
+            continue;
+          Vec3 radius = vec3_new(instance->bounds_world_radius,
+                                 instance->bounds_world_radius,
+                                 instance->bounds_world_radius);
+          Vec3 lo = vec3_sub(instance->bounds_world_center, radius),
+               hi = vec3_add(instance->bounds_world_center, radius);
+          lower = vec3_new(Min(lower.x, lo.x), Min(lower.y, lo.y),
+                           Min(lower.z, lo.z));
+          upper = vec3_new(Max(upper.x, hi.x), Max(upper.y, hi.y),
+                           Max(upper.z, hi.z));
+        }
+        Vec3 target = vec3_scale(vec3_add(lower, upper), 0.5f);
+        float32_t radius =
+            Max(0.25f, vec3_length(vec3_sub(upper, lower)) * 0.5f);
+        float32_t aspect = camera->cached_window_height
+                               ? (float32_t)camera->cached_window_width /
+                                     camera->cached_window_height
+                               : 1.0f;
+        float32_t half_angle =
+            atanf(tanf(camera->zoom * 0.0087266463f) * Min(1.0f, aspect));
+        float32_t distance = radius / Max(0.01f, sinf(half_angle)) * 1.1f;
+        camera->position =
+            vec3_sub(target, vec3_scale(camera->forward, distance));
+        camera->view_dirty = true_v;
+      }
+      break;
+    }
+    default:
+      break;
+    }
+  }
+  switch (transport_action) {
+  case VKR_SAMPLE_TRANSPORT_START_SIMULATION:
+    application->editor_viewport.simulation_running = true_v;
+    break;
+  case VKR_SAMPLE_TRANSPORT_PAUSE_SIMULATION:
+    application->editor_viewport.simulation_running = false_v;
+    break;
+  case VKR_SAMPLE_TRANSPORT_START_RENDERING:
+    application->editor_viewport.scene_error = VKR_RENDERER_ERROR_NONE;
+    application->editor_viewport.scene_rendering_stopped = false_v;
+    break;
+  case VKR_SAMPLE_TRANSPORT_STOP_RENDERING:
+    application->editor_viewport.scene_rendering_stopped = true_v;
+    vkr_picking_cancel(&application->picking);
+    state->gizmo_drag.active = false_v;
+    state->gizmo_drag.pending_pick = false_v;
+    state->gizmo_drag.pending_select = false_v;
+    state->gizmo_hover_pending = false_v;
+    application_clear_gizmo_handles(application);
+    break;
+  case VKR_SAMPLE_TRANSPORT_TOGGLE_CAMERA:
+    if (!application_editor_scene_rendering_stopped(application)) {
+      const bool8_t captured = vkr_window_is_mouse_captured(&application->window);
+      vkr_window_set_mouse_capture(&application->window, !captured);
+      state->scene_keyboard_focus = true_v;
+      state->free_camera_wheel_initialized = false_v;
+      state->free_camera_use_gamepad = false_v;
+    }
+    break;
+  case VKR_SAMPLE_TRANSPORT_NONE:
+    break;
+  }
 }
 
 void application_update(Application *application, float64_t delta) {
@@ -2646,9 +3059,13 @@ void application_update(Application *application, float64_t delta) {
 
   application_update_fps_text(application, delta);
   application_update_memory_text(application);
-  application_update_world_text(application);
+  if (application->editor_viewport.simulation_running)
+    application_update_world_text(application);
   application_update_picking(application);
-  application_update_scene(application, delta);
+  const float64_t scene_delta =
+      application->editor_viewport.simulation_running ? delta : 0.0;
+  application->editor_viewport.simulation_time += scene_delta;
+  application_update_scene(application, scene_delta);
   application_update_ibl_validation_controls(application);
   application_poll_upload_wait_stats(application);
   application_dump_periodic_metrics(application);
@@ -2684,13 +3101,24 @@ int vkr_sample_runtime_run(int argc, char **argv,
 
   int exit_code = 0;
   const char *metrics_json_path = NULL;
+  const char *scene_path_arg = getenv("VKR_SCENE_PATH");
+  bool8_t scene_requested = scene_path_arg && scene_path_arg[0];
+  if (!scene_requested)
+    scene_path_arg = SCENE_PATH;
 #if defined(_WIN32)
   VkrRendererBackendType renderer_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
 #else
   VkrRendererBackendType renderer_backend = VKR_RENDERER_BACKEND_TYPE_METAL;
 #endif
   for (int i = 1; i < argc; ++i) {
-    if (strcmp(argv[i], "--metrics-json") == 0) {
+    if (strcmp(argv[i], "--scene") == 0) {
+      if (i + 1 >= argc || !argv[i + 1][0]) {
+        fprintf(stderr, "--scene requires a scene JSON path\n");
+        return 2;
+      }
+      scene_path_arg = argv[++i];
+      scene_requested = true_v;
+    } else if (strcmp(argv[i], "--metrics-json") == 0) {
       if (i + 1 >= argc || argv[i + 1][0] == '\0') {
         fprintf(stderr, "--metrics-json requires an output path\n");
         return 2;
@@ -2726,8 +3154,8 @@ int vkr_sample_runtime_run(int argc, char **argv,
   application_config.title = runtime_config->title;
   application_config.x = 100;
   application_config.y = 100;
-  application_config.width = 800;
-  application_config.height = 600;
+  application_config.width = runtime_config->presentation.paneled ? 1280 : 800;
+  application_config.height = runtime_config->presentation.paneled ? 800 : 600;
   application_config.app_arena_size = MB(1);
   application_config.target_frame_rate = 0;
   application_config.renderer_backend = renderer_backend;
@@ -2772,6 +3200,8 @@ int vkr_sample_runtime_run(int argc, char **argv,
              "reconstruction instead of MetalFX");
   }
   application.editor_viewport.enabled = runtime_config->presentation.paneled;
+  application.assets.material_system.texture_stream_memory_recovery_enabled =
+      application.editor_viewport.enabled;
   application.editor_viewport.scene_only =
       runtime_config->presentation.scene_only;
   application.editor_viewport.render_scale =
@@ -2805,7 +3235,31 @@ int vkr_sample_runtime_run(int argc, char **argv,
   state->current_fps = 0.0;
   state->current_frametime = 0.0;
   state->ui = runtime_config->ui;
-  state->ui.initialize(state->ui.state, &application.editor_viewport.dock);
+  if (strlen(PROJECT_SOURCE_DIR) + strlen(scene_path_arg) +
+          sizeof(".editor.json") >
+      sizeof(state->sidecar_path)) {
+    arena_destroy(state->stats_arena);
+    application_shutdown(&application);
+    return 2;
+  }
+  state->scene_path =
+      string8_create((uint8_t *)scene_path_arg, strlen(scene_path_arg));
+  /* Scene loader paths are project-relative. Direct sidecar I/O must use the
+     same root even when the editor is launched from another directory. */
+  snprintf(state->sidecar_path, sizeof(state->sidecar_path),
+           PROJECT_SOURCE_DIR "%s.editor.json", scene_path_arg);
+  state->edits = (VkrSceneEditState){
+      .allocator = &application.ui_system.retained_allocator};
+  state->gizmo_edit_pending = false_v;
+  application.editor_viewport.simulation_running =
+      !runtime_config->presentation.paneled;
+  if (!state->ui.initialize(state->ui.state, &application.editor_viewport.dock,
+                            &application.ui_system)) {
+    arena_destroy(state->stats_arena);
+    state->stats_arena = NULL;
+    application_shutdown(&application);
+    return 6;
+  }
   state->world_text_id = 0;
   state->world_text_update_clock = vkr_clock_create();
   state->free_camera_use_gamepad = false_v;
@@ -2879,8 +3333,8 @@ int vkr_sample_runtime_run(int argc, char **argv,
   // Headless metrics capture. Both knobs are opt-in so interactive runs are
   // unchanged; together with VKR_AUTOCLOSE_SECONDS they make a baseline
   // reproducible without a human driving the app.
-  if (application_env_flag("VKR_AUTOLOAD_SCENE", false_v)) {
-    log_info("Auto-loading scene '%s' via VKR_AUTOLOAD_SCENE", SCENE_PATH);
+  if (scene_requested || application_env_flag("VKR_AUTOLOAD_SCENE", false_v)) {
+    log_info("Auto-loading scene '%s'", scene_path_arg);
     application_init_scene_system(&application);
   }
 
@@ -2997,7 +3451,8 @@ int vkr_sample_runtime_run(int argc, char **argv,
   arena_destroy(state->stats_arena);
   state->stats_arena = NULL;
 
-  if (!state->ui.shutdown(state->ui.state, &application.editor_viewport.dock) &&
+  if (!state->ui.shutdown(state->ui.state, &application.editor_viewport.dock,
+                          &application.ui_system) &&
       exit_code == 0)
     exit_code = 6;
 

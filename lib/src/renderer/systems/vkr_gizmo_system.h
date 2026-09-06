@@ -14,7 +14,9 @@
 #include "math/vkr_quat.h"
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/systems/vkr_picking_ids.h"
+#include "renderer/vkr_frame_input.h"
 #include "renderer/vkr_renderer.h"
+#include "renderer/vkr_viewport.h"
 
 struct VkrRenderAssets;
 
@@ -207,7 +209,9 @@ typedef struct VkrGizmoSystem {
   VkrGizmoHandle hot_handle;
   VkrGizmoHandle active_handle;
 
-  uint32_t gizmo_mesh_index;
+  /* Owned geometry references; released before the asset publisher shuts down.
+   */
+  VkrGeometryHandle geometries[VKR_EDITOR_OVERLAY_DRAW_MAX];
   bool8_t visible;
   bool8_t initialized;
 } VkrGizmoSystem;
@@ -215,7 +219,7 @@ typedef struct VkrGizmoSystem {
 /**
  * @brief Initialize gizmo resources.
  *
- * Geometry and material systems publish the gizmo assets.
+ * The geometry system publishes nine independently owned handle shapes.
  * @param system Gizmo system to initialize.
  * @param assets Published asset owner.
  * @param config Optional config override (NULL uses defaults).
@@ -264,3 +268,11 @@ void vkr_gizmo_system_set_hot_handle(VkrGizmoSystem *system,
  */
 void vkr_gizmo_system_set_active_handle(VkrGizmoSystem *system,
                                         VkrGizmoHandle handle);
+
+/* Builds borrowed frame records in caller storage. Size is measured in
+ * displayed window pixels, independent of scene render scale. Matrices are
+ * unjittered. */
+uint32_t vkr_gizmo_system_build_draws(
+    const VkrGizmoSystem *system, Mat4 view, Mat4 projection,
+    const VkrViewportMapping *mapping,
+    VkrEditorOverlayDraw out_draws[VKR_EDITOR_OVERLAY_DRAW_MAX]);

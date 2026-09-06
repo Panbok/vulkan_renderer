@@ -45,6 +45,9 @@ typedef enum VkrMetalPacketGraphExecutorKind {
   VKR_METAL_PACKET_GRAPH_EXECUTOR_WORLD_BLEND,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_TONEMAP,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_CLEAR,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_OVERLAY,
+  VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_OVERLAY_PICKING,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_UI,
   VKR_METAL_PACKET_GRAPH_EXECUTOR_COUNT,
 } VkrMetalPacketGraphExecutorKind;
@@ -102,6 +105,9 @@ vkr_global const VkrMetalPacketGraphExecutorSpec
         {"pass.world.blend", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.tonemap", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.editor", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.editor.clear", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.editor.overlay", VKR_RG_PASS_TYPE_GRAPHICS},
+        {"pass.editor.overlay.picking", VKR_RG_PASS_TYPE_GRAPHICS},
         {"pass.ui", VKR_RG_PASS_TYPE_GRAPHICS},
 };
 _Static_assert(ArrayCount(s_metal_packet_graph_executors) ==
@@ -265,10 +271,60 @@ vkr_metal_packet_collect_retired_image_views(VkrMetalPacketRenderer *renderer,
   }
 }
 
+vkr_internal void
+vkr_metal_packet_geometry_ranges_diagnostic(VkrMetalPacketRenderer *renderer,
+                                            const char *event) {
+  if (!renderer->diagnostics.enabled)
+    return;
+  VkrGeometryMegabufferMetrics metrics = {
+      .vertex_capacity_bytes = renderer->geometry_megabuffer.vertices.length,
+      .index_capacity_bytes = renderer->geometry_megabuffer.indices.length,
+  };
+  vkr_geometry_ranges_metrics(&renderer->geometry_ranges, &metrics);
+  VKR_METAL_DIAGNOSTIC(
+      renderer, event,
+      "live_spans=%llu retired_spans=%llu reusable=%llu retired_bytes=%llu "
+      "vertex_capacity=%llu index_capacity=%llu",
+      (unsigned long long)metrics.live_range_count,
+      (unsigned long long)metrics.retired_range_count,
+      (unsigned long long)metrics.reusable_range_bytes,
+      (unsigned long long)metrics.retired_range_bytes,
+      (unsigned long long)metrics.vertex_capacity_bytes,
+      (unsigned long long)metrics.index_capacity_bytes);
+}
+
+/* Views retain the same backing allocation. Drop every completed view before
+ * returning that allocation's heap charge, using one completion observation. */
+vkr_internal VkrMetalMemoryStatus vkr_metal_packet_collect_memory(
+    VkrMetalPacketRenderer *renderer, uint64_t completed_submit_value,
+    uint32_t *out_collected_count) {
+  vkr_metal_packet_collect_retired_image_views(renderer,
+                                               completed_submit_value);
+  VkrGeometryMegabufferMetrics before = {0}, after = {0};
+  if (renderer->diagnostics.enabled)
+    vkr_geometry_ranges_metrics(&renderer->geometry_ranges, &before);
+  if (!vkr_geometry_ranges_collect(&renderer->geometry_ranges,
+                                   completed_submit_value))
+    return VKR_METAL_MEMORY_STATUS_INVALID_ARGUMENT;
+  if (renderer->diagnostics.enabled) {
+    vkr_geometry_ranges_metrics(&renderer->geometry_ranges, &after);
+    if (after.retired_range_count != before.retired_range_count)
+      vkr_metal_packet_geometry_ranges_diagnostic(renderer,
+                                                  "geometry_ranges_collected");
+  }
+  return vkr_metal_memory_device_collect(
+      renderer->memory, completed_submit_value, out_collected_count);
+}
+
 vkr_internal bool8_t vkr_metal_packet_retire_image_instance(
     VkrMetalPacketRenderer *renderer, VkrMetalPacketImageInstance *instance) {
   if (!instance || !instance->live)
     return true_v;
+  VKR_METAL_DIAGNOSTIC(renderer, "graph_image_retire",
+                       "resource=%llu retire_after=%llu owned=%u",
+                       (unsigned long long)instance->resource.resource_id,
+                       (unsigned long long)instance->last_use_submit_value,
+                       instance->owned);
   VkrMetalPacketRetiredImageViews *deferred_views = NULL;
   const uint64_t completed = renderer->completion.signaledValue;
   if (instance->owned && instance->last_use_submit_value > completed) {
@@ -399,9 +455,30 @@ vkr_internal bool8_t vkr_metal_packet_metalfx_image_contract(
   return false_v;
 }
 
+vkr_internal VkrRendererError
+vkr_metal_packet_allocation_error(VkrMetalMemoryStatus status) {
+  switch (status) {
+  case VKR_METAL_MEMORY_STATUS_OUT_OF_BYTES:
+  case VKR_METAL_MEMORY_STATUS_OUT_OF_HANDLES:
+  case VKR_METAL_MEMORY_STATUS_FRAGMENTED:
+  case VKR_METAL_MEMORY_STATUS_OUT_OF_RANGE_METADATA:
+  case VKR_METAL_MEMORY_STATUS_NATIVE_ALLOCATION_FAILED:
+    return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+  default:
+    return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+  }
+}
+
+/* Borrows the graph descriptor until this realization attempt is reported. */
+typedef struct VkrMetalPacketImageAllocationFailure {
+  const VkrRgImage *image;
+  VkrMetalMemoryStatus status;
+} VkrMetalPacketImageAllocationFailure;
+
 vkr_internal bool8_t vkr_metal_packet_create_image_instance(
     VkrMetalPacketRenderer *renderer, const VkrRgImage *image,
-    VkrMetalPacketImageInstance *instance) API_AVAILABLE(macos(26.0)) {
+    VkrMetalPacketImageInstance *instance, VkrRendererError *out_error,
+    VkrMetalPacketImageAllocationFailure *out_failure) API_AVAILABLE(macos(26.0)) {
   const MTLPixelFormat format =
       vkr_metal_packet_pixel_format(image->desc.format);
   if (!vkr_metal_packet_graph_image_format_supported(renderer, &image->desc) ||
@@ -439,12 +516,15 @@ vkr_internal bool8_t vkr_metal_packet_create_image_instance(
       renderer->memory, descriptor, owner, &resource);
   [descriptor release];
   if (status != VKR_METAL_MEMORY_STATUS_OK) {
-    log_error("Metal graph image '%.*s' allocation failed: %s, format=%u "
-              "extent=%ux%u layers=%u mips=%u usage=0x%x",
-              (int)image->name.length, image->name.str,
-              vkr_metal_memory_status_string(status), image->desc.format,
-              image->desc.width, image->desc.height, image->desc.layers,
-              image->desc.mip_levels, image->desc.usage.set);
+    *out_error = vkr_metal_packet_allocation_error(status);
+    *out_failure = (VkrMetalPacketImageAllocationFailure){image, status};
+    VKR_METAL_DIAGNOSTIC(
+        renderer, "graph_image_allocation_failed",
+        "name=%.*s status=%s format=%u extent=%ux%u layers=%u mips=%u usage=0x%x",
+        (int)image->name.length, image->name.str,
+        vkr_metal_memory_status_string(status), image->desc.format,
+        image->desc.width, image->desc.height, image->desc.layers,
+        image->desc.mip_levels, image->desc.usage.set);
     return false_v;
   }
 
@@ -453,6 +533,12 @@ vkr_internal bool8_t vkr_metal_packet_create_image_instance(
       .live = true_v,
       .owned = true_v,
   };
+  VKR_METAL_DIAGNOSTIC(renderer, "graph_image_create",
+                       "name=%.*s resource=%llu extent=%ux%u mips=%u layers=%u",
+                       (int)image->name.length, image->name.str,
+                       (unsigned long long)resource.resource_id,
+                       image->desc.width, image->desc.height,
+                       image->desc.mip_levels, image->desc.layers);
   id<MTLTexture> texture = (id<MTLTexture>)resource.metal_texture;
   const MTLTextureType view_type =
       image->desc.layers > 1u ? MTLTextureType2DArray : MTLTextureType2D;
@@ -468,8 +554,8 @@ vkr_internal bool8_t vkr_metal_packet_create_image_instance(
       vkr_metal_packet_release_image_views(&instance->views);
       (void)vkr_metal_memory_device_retire(renderer->memory, resource.handle,
                                            renderer->completion.signaledValue);
-      (void)vkr_metal_memory_device_collect(
-          renderer->memory, renderer->completion.signaledValue, NULL);
+      (void)vkr_metal_packet_collect_memory(
+          renderer, renderer->completion.signaledValue, NULL);
       *instance = (VkrMetalPacketImageInstance){0};
       return false_v;
     }
@@ -483,8 +569,8 @@ vkr_internal bool8_t vkr_metal_packet_create_image_instance(
       vkr_metal_packet_release_image_views(&instance->views);
       (void)vkr_metal_memory_device_retire(renderer->memory, resource.handle,
                                            renderer->completion.signaledValue);
-      (void)vkr_metal_memory_device_collect(
-          renderer->memory, renderer->completion.signaledValue, NULL);
+      (void)vkr_metal_packet_collect_memory(
+          renderer, renderer->completion.signaledValue, NULL);
       *instance = (VkrMetalPacketImageInstance){0};
       return false_v;
     }
@@ -501,8 +587,8 @@ vkr_internal bool8_t vkr_metal_packet_create_image_instance(
         (void)vkr_metal_memory_device_retire(
             renderer->memory, resource.handle,
             renderer->completion.signaledValue);
-        (void)vkr_metal_memory_device_collect(
-            renderer->memory, renderer->completion.signaledValue, NULL);
+        (void)vkr_metal_packet_collect_memory(
+            renderer, renderer->completion.signaledValue, NULL);
         *instance = (VkrMetalPacketImageInstance){0};
         return false_v;
       }
@@ -512,8 +598,69 @@ vkr_internal bool8_t vkr_metal_packet_create_image_instance(
   return true_v;
 }
 
+vkr_internal bool8_t vkr_metal_packet_wait(VkrMetalPacketRenderer *renderer,
+                                           uint64_t value);
+
+vkr_internal bool8_t vkr_metal_packet_retire_graph_buffer_instances(
+    VkrMetalPacketRenderer *renderer,
+    VkrMetalPacketGraphBufferInstance *instances, uint32_t instance_count);
+
+/* Allocation recovery keeps the requested extent. Wait for submitted work,
+ * including detached old generations from partial realization, then retire
+ * mismatched owned targets before allocating replacements. Unchanged retained
+ * images remain available; no live resource moves between heaps. */
+vkr_internal bool8_t vkr_metal_packet_reclaim_graph_targets(
+    VkrMetalPacketRenderer *renderer) {
+  if (renderer->graph->images.length > renderer->max_images ||
+      renderer->graph->buffers.length > renderer->max_images)
+    return false_v;
+  if (renderer->submit_value > renderer->completion.signaledValue &&
+      !vkr_metal_packet_wait(renderer, renderer->submit_value))
+    return false_v;
+  for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
+    const VkrRgImage *image = vector_get_VkrRgImage(&renderer->graph->images, i);
+    VkrMetalPacketImage *slot = &renderer->images[i];
+    if (!image->declared_this_frame || image->imported || !slot->live ||
+        slot->external || vkr_metal_packet_image_desc_equal(&slot->desc,
+                                                            &image->desc))
+      continue;
+    if (!vkr_metal_packet_retire_image_instances(renderer, slot->instances,
+                                                 slot->instance_count))
+      return false_v;
+    *slot = (VkrMetalPacketImage){0};
+    renderer->resize_count++;
+    vkr_metal_packet_advance_revision(&renderer->graph_revision);
+  }
+  for (uint64_t i = 0u; i < renderer->graph->buffers.length; ++i) {
+    const VkrRgBuffer *buffer =
+        vector_get_VkrRgBuffer(&renderer->graph->buffers, i);
+    VkrMetalPacketGraphBuffer *slot = &renderer->graph_buffers[i];
+    if (!buffer->declared_this_frame || buffer->imported || !slot->live ||
+        (buffer->desc.flags & VKR_RG_RESOURCE_FLAG_GROW_ONLY) ||
+        buffer->desc.size == slot->desc.size)
+      continue;
+    VkrMetalPacketGraphBufferInstance *instances =
+        &renderer->graph_buffer_instances[i * renderer->history_instance_count];
+    if (!vkr_metal_packet_retire_graph_buffer_instances(renderer, instances,
+                                                        slot->instance_count))
+      return false_v;
+    *slot = (VkrMetalPacketGraphBuffer){0};
+    vkr_metal_packet_advance_revision(&renderer->graph_revision);
+  }
+  if (vkr_metal_packet_collect_memory(
+          renderer, renderer->completion.signaledValue, NULL) !=
+      VKR_METAL_MEMORY_STATUS_OK)
+    return false_v;
+  renderer->graph_memory_recovery_pending = false_v;
+  return true_v;
+}
+
 vkr_internal bool8_t
-vkr_metal_packet_realize_images(VkrMetalPacketRenderer *renderer) {
+vkr_metal_packet_realize_images(
+    VkrMetalPacketRenderer *renderer, VkrRendererError *out_error,
+    VkrMetalPacketImageAllocationFailure *out_failure) {
+  *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+  *out_failure = (VkrMetalPacketImageAllocationFailure){0};
   if (renderer->graph->images.length > renderer->max_images) {
     log_error("Metal graph image count %llu exceeds capacity %u",
               (unsigned long long)renderer->graph->images.length,
@@ -584,7 +731,8 @@ vkr_metal_packet_realize_images(VkrMetalPacketRenderer *renderer) {
     } else {
       for (uint32_t instance = 0u; instance < instance_count; ++instance) {
         if (!vkr_metal_packet_create_image_instance(
-                renderer, image, &replacement.instances[instance])) {
+                renderer, image, &replacement.instances[instance], out_error,
+                out_failure)) {
           (void)vkr_metal_packet_retire_image_instances(
               renderer, replacement.instances, instance);
           return false_v;
@@ -604,6 +752,7 @@ vkr_metal_packet_realize_images(VkrMetalPacketRenderer *renderer) {
     *slot = replacement;
     vkr_metal_packet_advance_revision(&renderer->graph_revision);
   }
+  *out_error = VKR_RENDERER_ERROR_NONE;
   return true_v;
 }
 
@@ -665,9 +814,6 @@ vkr_metal_packet_named_image_slot(VkrMetalPacketRenderer *renderer,
   }
   return NULL;
 }
-
-vkr_internal bool8_t vkr_metal_packet_wait(VkrMetalPacketRenderer *renderer,
-                                           uint64_t value);
 
 vkr_internal bool8_t
 vkr_metal_packet_select_history_output(VkrMetalPacketRenderer *renderer) {
@@ -953,7 +1099,8 @@ vkr_internal bool8_t vkr_metal_packet_retire_graph_buffer_instances(
 }
 
 vkr_internal bool8_t
-vkr_metal_packet_realize_buffers(VkrMetalPacketRenderer *renderer) {
+vkr_metal_packet_realize_buffers(VkrMetalPacketRenderer *renderer,
+                                  VkrRendererError *out_error) {
   if (renderer->graph->buffers.length > renderer->max_images) {
     log_error("Metal graph buffer count %llu exceeds capacity %u",
               (unsigned long long)renderer->graph->buffers.length,
@@ -1001,14 +1148,40 @@ vkr_metal_packet_realize_buffers(VkrMetalPacketRenderer *renderer) {
             ? renderer->history_instance_count
             : renderer->command_slot_count;
     VkrMetalPacketGraphBuffer *slot = &renderer->graph_buffers[i];
-    if (slot->live && slot->graph_generation == buffer->generation &&
+    const bool8_t grow_only =
+        (buffer->desc.flags & VKR_RG_RESOURCE_FLAG_GROW_ONLY) != 0u;
+    if (slot->live &&
+        (slot->graph_generation == buffer->generation || grow_only) &&
         slot->instance_count == instance_count &&
-        slot->desc.size == buffer->desc.size &&
+        (grow_only ? slot->desc.size >= buffer->desc.size
+                   : slot->desc.size == buffer->desc.size) &&
         slot->desc.usage.set == buffer->desc.usage.set &&
-        slot->desc.flags == buffer->desc.flags)
+        slot->desc.flags == buffer->desc.flags) {
+      slot->graph_generation = buffer->generation;
       continue;
+    }
     VkrMetalPacketGraphBufferInstance *instances =
         &renderer->graph_buffer_instances[i * renderer->history_instance_count];
+    if (slot->live && grow_only) {
+      uint64_t last_use = 0u;
+      for (uint32_t instance = 0u; instance < slot->instance_count; ++instance)
+        last_use = Max(last_use, instances[instance].last_use_submit_value);
+      if (last_use > renderer->completion.signaledValue &&
+          !vkr_metal_packet_wait(renderer, last_use)) {
+        if (out_error)
+          *out_error = VKR_RENDERER_ERROR_DEVICE_ERROR;
+        return false_v;
+      }
+      if (!vkr_metal_packet_retire_graph_buffer_instances(
+              renderer, instances, slot->instance_count))
+        return false_v;
+      *slot = (VkrMetalPacketGraphBuffer){0};
+      vkr_metal_packet_advance_revision(&renderer->graph_revision);
+      if (vkr_metal_packet_collect_memory(
+              renderer, renderer->completion.signaledValue, NULL) !=
+          VKR_METAL_MEMORY_STATUS_OK)
+        return false_v;
+    }
     VkrMetalPacketGraphBuffer replacement = {
         .desc = buffer->desc,
         .graph_generation = buffer->generation,
@@ -1023,6 +1196,7 @@ vkr_metal_packet_realize_buffers(VkrMetalPacketRenderer *renderer) {
           VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH,
           &replacement_instances[instance].resource);
       if (status != VKR_METAL_MEMORY_STATUS_OK) {
+        *out_error = vkr_metal_packet_allocation_error(status);
         log_error("Metal graph buffer '%.*s' instance %u allocation of %llu "
                   "bytes failed: %s",
                   (int)buffer->name.length, buffer->name.str, instance,
@@ -1065,6 +1239,7 @@ vkr_metal_packet_retained_slot(VkrMetalPacketRenderer *renderer,
       vector_get_VkrRgImage(&renderer->graph->images, image_index);
   VkrMetalPacketImage *slot = &renderer->images[image_index];
   if (!image || !slot->live || slot->graph_generation != image->generation ||
+      !vkr_metal_packet_image_desc_equal(&slot->desc, &image->desc) ||
       instance_index >= slot->instance_count)
     return NULL;
   if (subresource >=
@@ -1105,6 +1280,28 @@ vkr_metal_packet_install_retained_provider(VkrMetalPacketRenderer *renderer) {
       .commit = vkr_metal_packet_retained_commit,
   };
   vkr_rg_set_retained_state_provider(renderer->graph, &provider);
+}
+
+void vkr_metal_packet_renderer_retained_editor_extent(
+    VkrMetalPacketRenderer *renderer, uint32_t *out_width, uint32_t *out_height) {
+  *out_width = 0u;
+  *out_height = 0u;
+  for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
+    const VkrRgImage *image =
+        vector_get_VkrRgImage(&renderer->graph->images, i);
+    if (!vkr_string8_equals_cstr(&image->name, "editor_scene_image"))
+      continue;
+    const VkrMetalPacketImage *slot = &renderer->images[i];
+    if (!slot->live || slot->graph_generation != image->generation ||
+        slot->instance_count != 1u || slot->desc.mip_levels != 1u ||
+        slot->desc.layers != 1u || !slot->instances[0].live ||
+        !slot->instances[0].resource.metal_texture ||
+        !slot->instances[0].retained_states[0].content_valid)
+      return;
+    *out_width = slot->desc.width;
+    *out_height = slot->desc.height;
+    return;
+  }
 }
 
 void vkr_metal_packet_renderer_retained_shadow_token(

@@ -85,8 +85,21 @@ typedef struct SceneTransform {
   Mat4 local;         // Cached local matrix (TRS composition)
   Mat4 world;         // Cached world matrix (parent.world * local)
 
+  bool8_t matrix_authored;
+  bool8_t trs_editable;
   uint8_t flags; // Bitmask of SCENE_TRANSFORM_DIRTY_* flags
 } SceneTransform;
+
+/* Stable within a source revision; names and ECS entity slots are not keys. */
+typedef struct SceneSourceIdentity {
+  uint32_t scene_entity_index;
+  uint32_t gltf_node_index;
+  uint32_t gltf_mesh_index;
+  uint32_t gltf_camera_index;
+  uint32_t gltf_skin_index;
+  uint32_t gltf_light_index;
+  uint64_t source_fingerprint;
+} SceneSourceIdentity;
 
 /**
  * @brief Mesh renderer component linking entity to mesh manager slot.
@@ -311,9 +324,11 @@ typedef struct VkrScene {
   VkrWorld *world;                // ECS storage (authoritative scene state)
   VkrAllocator *alloc;            // Scene-owned allocator
   struct VkrRenderAssets *assets; // Borrowed owner of published scene assets
+  uint64_t structure_revision;
   uint16_t world_id;              // Copied into entity IDs
 
   // Component type IDs (cached after registration)
+  VkrComponentTypeId comp_source_identity;
   VkrComponentTypeId comp_name;
   VkrComponentTypeId comp_transform;
   VkrComponentTypeId comp_mesh_renderer;
@@ -840,3 +855,10 @@ const SceneShape *vkr_scene_get_shape(const VkrScene *scene,
  * @return Entity ID, or VKR_ENTITY_ID_INVALID if not found.
  */
 VkrEntityId vkr_scene_find_entity_by_name(const VkrScene *scene, String8 name);
+
+/* Exact imported matrix is retained until an explicit representable TRS edit.
+ */
+bool8_t vkr_scene_set_local_matrix(VkrScene *scene, VkrEntityId entity,
+                                   Mat4 local);
+bool8_t vkr_scene_set_source_identity(VkrScene *scene, VkrEntityId entity,
+                                      const SceneSourceIdentity *identity);

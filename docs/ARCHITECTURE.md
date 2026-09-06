@@ -33,7 +33,24 @@ The application and editor are independent targets over `renderer_lib` and the
 neutral sample runtime. The app owns its F6 debug overlay; the editor owns its
 dock composition and startup `--scene-only` mode. Neither executable imports the
 other's source. `core/vkr_subsystem_plan` resolves application boot dependencies;
-the GPU renderer does not own that subsystem policy. Editor details are in [ADR-027](adr/027-immediate-mode-grid-ui.md).
+the GPU renderer does not own that subsystem policy. The editor has tab stacking, layout persistence, keyboard focus and icon-only
+independent simulation/render controls in a draggable Scene toolbar, alongside
+load/unload and camera entry. Scene focus routes Tab to camera capture; panel
+focus routes it to widgets. Hierarchy reads the authoritative scene
+through a virtualized tree; Inspector sends typed selection and edit requests to
+the runtime. Console snapshots bounded structured logger history with a checkbox filter dropdown. Bakery runs
+font and texture cookers in a cancellable child process. Render Stop retains the last Scene image while UI continues;
+Scene allocation failures trigger bounded output-resolution reductions while UI
+resolution stays unchanged; an error at the minimum stops Scene retries.
+The first Metal GPU completion timeout flushes diagnostics and terminates the
+process without GPU teardown, because completion is unproven;
+see [ADR-046](adr/046-editor-viewport-mapping-and-picking.md).
+Editor details are in [ADR-027](adr/027-immediate-mode-grid-ui.md).
+Transform editing is available through Inspector and world-axis gizmos. The
+application submits a bounded geometry overlay to both backends after tonemapping;
+matching handle-picking draws take priority over scene surfaces. Handles keep a
+fixed displayed size and remain outside lighting and temporal history. Local TRS
+editing preserves scale and does not introduce shear under nonuniform parents.
 
 Native operations are ordinary typed C functions selected by the platform build.
 `VkrRendererImpl` stores properties without an operations table or untyped state
@@ -64,7 +81,7 @@ per-draw dispatch table, frontend pipeline registry or generic command RHI.
 not be copied or modified; its renderer must outlive it. Consumed or stale frame
 contexts are rejected. Acquisition identity is separate from GPU completion.
 
-Frame-input version 28 contains frame metadata, camera/lighting/settings and typed
+Frame-input version 30 contains frame metadata, camera/lighting/settings and typed
 world, shadow, skybox, UI, editor, picking and debug payloads. Supplied world-text
 and UI streams are authoritative. `vkr_frame_input_validate()` checks structural
 input. Private `VkrPreparedFrame` holds derived temporal, exposure, bloom and GTAO
@@ -97,11 +114,20 @@ The application joins resource workers and proves GPU idle before releasing
 scene/asset resources. Scene unload drains GPU use before destruction and any
 teardown publication afterward. Partial initialization uses the same owner order;
 loader contexts and asynchronous storage survive until workers and queued payloads
-are drained. The renderer owns neither resource-loader registration nor app events.
+are drained. Scene-created shapes use auto-released geometry and transfer
+creator references to the mesh manager; default geometry keeps its existing
+persistent lifetime. The renderer owns neither resource-loader registration nor app events.
 
 
 `VkrWorld` owns archetype ECS state and queries. `VkrScene` adds hierarchy,
 transforms, resource references, lights, environment/probes, text and render IDs.
+glTF nodes retain local matrices, names and source identities; source geometry is
+shared across node instances, with decal variants where world-offset corrections
+differ. Cooked mesh v17 retains the same source hierarchy. Source fingerprints
+protect editor sidecar overrides against reimport conflicts. Inspector supports
+TRS where the authored matrix is decomposable; sheared matrices remain exact and
+read-only. The runtime owns selection and a bounded undo journal. UI borrows
+scene data for its current build and never keeps ECS component pointers.
 `vkr_scene_handle_sync()` mirrors render-facing changes into `VkrMeshManager`;
 `vkr_scene_build_world_draws()` scans mesh/instance/submesh records through
 explicit mesh, material, publication and view inputs rather than reading ECS
@@ -119,7 +145,10 @@ Direct-draw preparation resolves live generations and submesh ranges before
 native encoding. Vulkan omits pending geometry/material publication and preserves
 ready draw order; invalid or stale references still fail frame preparation. Metal
 has no pending native handle and rejects absent/stale references. Both encode prepared
-rows. Every native pass family resolves resources, roots and dispatch parameters
+rows. Each Metal geometry owns an exact-count CPU submesh array in the backend's
+freeable allocator; publication copies loader ranges, and geometry destruction
+reclaims them. Prepared GPU records contain values, so these CPU arrays do not
+extend GPU retirement. Every native pass family resolves resources, roots and dispatch parameters
 before command emission; picking and blend roots remain disjoint. Prepared
 draw/dispatch recorders return `void`. Native object/encoder creation, command-buffer
 begin/end, acquisition, submission and completion retain their failure boundaries. See [ADR-004](adr/004-stateless-render-packet.md).
@@ -213,8 +242,9 @@ no selectable 24-byte float16-UV mode. See
 
 Source instances remain 80 bytes; native publication/upload prepares 128-byte
 instances with inverse-transpose normal directions and mirror handedness.
-Tangents retain model-linear transport. Baked glTF import uses the same distinction;
-cooked mesh version 16 rejects older tangent-transform results. See
+Tangents retain model-linear transport. glTF geometry remains local and node
+matrices apply through the same instance contract. Cooked mesh version 17
+retains source hierarchy metadata and rejects older flattened artifacts. See
 [ADR-044](adr/044-shader-cross-backend-contract.md) and
 [ADR-030](adr/030-offline-mesh-optimization-and-cooking.md).
 
@@ -323,8 +353,20 @@ owners, and failed text rebuilding preserves its previously published layout.
 Vulkan pools keyed device/upload/staging/readback blocks, with persistent mappings and
 required dedicated-allocation exceptions. Completion-protected Vulkan frame slots
 keep directly read uploads separate from copy-only candidate staging; both retain
-capacity grown during frame preflight. Metal uses placement heaps and native
-upload/readback adapters. Its candidate preparation initializes only referenced
+capacity grown during frame preflight. Metal creates placement heaps on demand
+and releases empty heaps after completed retirement. Its default 4 GiB managed
+allocation cap includes heap capacity, upload/readback rings and explicit native
+buffers/ICBs; opaque driver allocations remain outside that cap. Separate lifetime
+groups keep asset textures from pinning retired Scene heaps. Transfer buffers grow
+on demand after their GPU and CPU consumers finish. Graph draw tables use scene
+candidate capacities on both backends; native caches retain sufficient backing
+and wait for submitted users before replacing undersized buffers. Automatic texture pressure
+accounts charged asset-heap capacity separately, and capacity retries require a
+new finite high-water allowance or committed Scene reduction.
+Metal entrypoints use autorelease pools for temporary Objective-C objects;
+resources that span calls retain explicit ownership and completion-gated release.
+`VKR_METAL_MEMORY_BUDGET_MB` configures the cap at startup. See
+[ADR-024](adr/024-shared-bindless-gpu-cores.md) for budget and failure semantics. Its candidate preparation initializes only referenced
 geometry rows in the existing completion-protected upload span; static residency
 hits refresh those rows while marking resource use. Shared cores track logical
 ranges, generations, submit values and retirement; physical allocations remain native. No VMA, online
@@ -365,6 +407,54 @@ These are limits of current code or retained acceptance, not scheduled promises:
   emission uses proven data and `void` recorders.
 - Metal present-target recreation retains its fixed three-image capability and
   ignores requested image counts; cases requiring two images are unavailable.
+- Metal's per-geometry submesh storage removes the former 512-range limit.
+  The node-preserving Bistro cache contains 646 ranges. Native loading,
+  API-validated stop/resize/resume and Release retained-image captures pass.
+  Shared GPU geometry buffers now reuse completed vertex/decode and index spans
+  while preserving persistent defaults and retaining high-water backing.
+  A serial Metal API validation run alternates a small glTF fixture with added
+  shapes and back twice: each unload restores the same live default ranges,
+  backing capacity stays fixed, and final teardown releases every range without
+  resource warnings. Material slot reuse preserves live materials after reload.
+  Native evidence remains separate from allocator tests.
+- Interactive editor runs have produced two macOS AGX firmware data aborts with
+  the same fault signature. The second occurred with Scene rendering stopped
+  and Metal API/shader validation disabled; the editor stack was waiting for
+  command-slot completion. The triggering GPU operation remains unidentified.
+  The triggering operation remains unresolved; bounded passing captures
+  do not establish long-session editor stability.
+  Offline review corrected missing window-layer residency registration and
+  premature memory collection in publication-failure cleanup. These are concrete
+  contract defects; their relationship to the panics remains unverified. An opt-in,
+  bounded Metal diagnostic log now records CPU submission and lifetime events
+  ([ADR-051](adr/051-renderer-harness-and-evidence.md#metal-crash-diagnostics)).
+  After two passing tiny diagnostic cases, a serial API-validated Bistro startup
+  produced a system watchdog panic. Demand-created heaps and a managed cap now
+  replace the fixed resident heap. Demand-grown ICBs let the bounded Bistro
+  case pass under 4 GiB; larger interactive configurations can still exhaust
+  the managed cap. Geometry ranges are reused after completion. A later tiny
+  UI-only run with a reduced test cap produced an IOGPUFamily kernel data abort
+  and a 13.37 GiB editor resident-memory observation. Missing autorelease pools
+  were corrected afterward. Subsequent bounded normal Release checks pass full-size
+  Bistro Stop/resize/Resume and unload/reload. Resolution fallback and bounded
+  texture retries finish both loads without terminal texture failures; the UI
+  stays responsive. Demanded missing/evicted gauges now prevent false readiness,
+  and asynchronous requests retain published textures through GPU completion.
+  Charged texture-capacity accounting and bounded retries correct the later
+  automatic-budget feedback loop. Demand-sized graph draw tables and budget
+  sampling after publication remove further avoidable pressure. Metal retries
+  Scene image allocation once at the same requested extent after completion-gated
+  reclamation of superseded targets. A bounded two-load Bistro editor check keeps
+  1528×1074 output with all 517 texture assignments resident and zero missing,
+  pending, failed or evicted textures; the existing MetalFX frame-rate controller
+  still varies internal resolution. Failed upward tiers now require measured
+  headroom before another probe, limiting repeated resizing for unchanged work.
+  Recovered Scene-image allocation attempts emit one warning; terminal failures
+  retain detailed errors. A separate full-target spatial check passes
+  actual 1528×1074 internal rendering under the unchanged 4 GiB managed cap.
+  Native Vulkan acceptance and panic causality remain unresolved; see
+  [ADR-046](adr/046-editor-viewport-mapping-and-picking.md#verification-and-limits)
+  for the distinct failure and memory evidence.
 - Deformation/procedural/particle motion and broad animation/disocclusion coverage
   remain outside the completed rigid-motion temporal contract.
 - Visibility-buffer MSAA, terrain, a general effects system, asynchronous graph

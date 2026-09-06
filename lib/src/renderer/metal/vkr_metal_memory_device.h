@@ -4,6 +4,7 @@
 #include "renderer/metal/vkr_metal_memory.h"
 
 typedef struct VkrMetalMemoryDevice VkrMetalMemoryDevice;
+typedef struct VkrMetalDiagnostics VkrMetalDiagnostics;
 
 typedef enum VkrMetalResourceKind {
   VKR_METAL_RESOURCE_KIND_BUFFER = 1,
@@ -28,12 +29,20 @@ typedef struct VkrMetalMemoryDeviceConfig {
   // Owns every host-side allocation the adapter makes. Required: host bytes go
   // through the engine allocator so they enter tag and leak accounting.
   VkrAllocator *allocator;
-  uint64_t heap_size;
+  // Optional borrowed sink; its renderer-owned state outlives this adapter.
+  VkrMetalDiagnostics *diagnostics;
+  // Includes reserved heap capacity, transfer rings and external reservations.
+  uint64_t managed_budget_size;
+  uint64_t heap_chunk_size;
   uint64_t upload_ring_size;
+  uint64_t upload_ring_max_size;
   uint64_t readback_ring_size;
+  uint64_t readback_ring_max_size;
   uint32_t ring_slot_count;
   uint32_t max_allocations;
+  // At least max_allocations; failed native creation must always retire.
   uint32_t max_retirements;
+  // At least max_allocations + 1, including every possible logical free gap.
   uint32_t max_free_ranges;
 } VkrMetalMemoryDeviceConfig;
 
@@ -53,6 +62,18 @@ typedef struct VkrMetalTextureResource {
 typedef struct VkrMetalMemoryDeviceMetrics {
   VkrMetalMemoryMetrics suballocations;
   VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT];
+  uint64_t managed_budget_size;
+  uint64_t managed_allocated_size;
+  uint64_t texture_heap_capacity_bytes;
+  uint64_t managed_peak_allocated_size;
+  uint64_t external_allocation_count;
+  uint64_t external_allocated_size;
+  uint64_t transfer_ring_allocated_size;
+  uint64_t residency_allocated_size;
+  uint64_t native_heap_count;
+  uint64_t native_heap_peak_count;
+  uint64_t native_heap_total_count;
+  uint64_t max_native_heaps;
   uint64_t native_heap_size;
   uint64_t native_heap_used_size;
   uint64_t native_heap_allocated_size;
@@ -60,16 +81,23 @@ typedef struct VkrMetalMemoryDeviceMetrics {
   uint64_t native_heap_peak_allocated_size;
   uint64_t driver_current_allocated_size;
   uint64_t driver_recommended_working_set_size;
-  uint64_t pending_texture_upload_bytes;
   uint64_t residency_allocation_count;
   uint64_t native_live_resources;
   uint64_t native_resources_released;
   uint64_t upload_ring_acquires;
   uint64_t upload_ring_reuses;
   uint64_t upload_ring_busy_failures;
+  uint64_t upload_ring_total_capacity_bytes;
+  uint64_t upload_ring_slot_capacity_bytes;
+  uint64_t upload_ring_max_requested_bytes;
+  uint64_t upload_ring_oversize_failures;
   uint64_t readback_ring_acquires;
   uint64_t readback_ring_reuses;
   uint64_t readback_ring_busy_failures;
+  uint64_t readback_ring_total_capacity_bytes;
+  uint64_t readback_ring_slot_capacity_bytes;
+  uint64_t readback_ring_max_requested_bytes;
+  uint64_t readback_ring_oversize_failures;
 } VkrMetalMemoryDeviceMetrics;
 
 VkrMetalMemoryStatus
@@ -118,6 +146,24 @@ VkrMetalMemoryStatus vkr_metal_memory_device_submit_ring(
 void vkr_metal_memory_device_cancel_ring(VkrMetalMemoryDevice *device,
                                          VkrMetalRingKind ring_kind,
                                          VkrMetalRingSlice slice);
+VkrMetalMemoryStatus vkr_metal_memory_device_grow_ring(
+    VkrMetalMemoryDevice *device, VkrMetalRingKind ring_kind,
+    uint64_t required_slot_size, uint64_t completed_submit_value);
+uint64_t vkr_metal_memory_device_ring_slot_capacity(
+    const VkrMetalMemoryDevice *device, VkrMetalRingKind ring_kind);
+
+// External native resources remain caller-owned. Reserve before creation, then
+// reconcile with actual allocatedSize. A failed reconcile preserves the
+// original reservation; release the native resource before releasing that
+// reservation. Release accounted bytes only after the caller proves the
+// resource's GPU last use.
+bool8_t vkr_metal_memory_device_reserve_external(VkrMetalMemoryDevice *device,
+                                                 uint64_t bytes);
+bool8_t vkr_metal_memory_device_reconcile_external(VkrMetalMemoryDevice *device,
+                                                   uint64_t reserved_bytes,
+                                                   uint64_t allocated_bytes);
+void vkr_metal_memory_device_release_external(VkrMetalMemoryDevice *device,
+                                              uint64_t bytes);
 
 void *vkr_metal_memory_device_residency_set(VkrMetalMemoryDevice *device);
 

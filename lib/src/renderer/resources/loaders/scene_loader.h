@@ -9,6 +9,7 @@
 
 #include "containers/str.h"
 #include "defines.h"
+#include "renderer/resources/loaders/vkr_mesh_source.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_scene_system.h"
 
@@ -33,6 +34,8 @@ typedef enum VkrSceneGltfPunctualLightType {
 } VkrSceneGltfPunctualLightType;
 
 typedef struct VkrSceneGltfPunctualLightImport {
+  uint32_t scene_entity_index;
+  uint32_t gltf_node_index;
   char name[64];
   Vec3 position;
   Vec3 direction;
@@ -97,3 +100,14 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene,
  * handle is a `VkrSceneHandle` (runtime scene instance).
  */
 VkrResourceLoader vkr_scene_loader_create(void);
+
+/* CPU scene instantiation used by raw/cooked loading. out_nodes has one slot
+   per source node and belongs to caller scratch. The scene owns copied names.
+   Failure removes created nodes and leaves the wrapper identity unchanged.
+ */
+bool8_t vkr_scene_instantiate_source_nodes(VkrScene *scene,
+                                           const VkrMeshSource *source,
+                                           VkrEntityId wrapper,
+                                           uint32_t scene_entity_index,
+                                           VkrEntityId *out_nodes,
+                                           VkrSceneError *out_error);

@@ -19,7 +19,7 @@
 #include "renderer/vkr_temporal.h"
 
 /** Version constant for VkrFrameInput.version validation. */
-#define VKR_FRAME_INPUT_VERSION 28u
+#define VKR_FRAME_INPUT_VERSION 30u
 
 #define VKR_FRAME_IBL_PROBE_MAX 16u
 
@@ -356,10 +356,26 @@ typedef struct VkrSkyboxPassPayload {
 /**
  * @brief Payload for the editor pass.
  */
+/** One unlit, always-on-top editor handle. Draw order also owns pick priority.
+    Geometry is published asset storage; records are borrowed through render. */
+typedef struct VkrEditorOverlayDraw {
+  VkrGeometryHandle geometry;
+  uint32_t submesh_index;
+  Mat4 model;
+  Vec4 color;
+  uint32_t object_id;
+} VkrEditorOverlayDraw;
+
+#define VKR_EDITOR_OVERLAY_DRAW_MAX 9u
+
 typedef struct VkrEditorPassPayload {
   /** Scene destination in Y-down swapchain pixels: (x, y, width, height).
       Components are finite integral values validated at packet submission. */
   Vec4 image_rect_px;
+  /** Keep the last submitted Scene image while the editor UI continues. */
+  bool8_t scene_rendering_stopped;
+  const VkrEditorOverlayDraw *overlay_draws;
+  uint32_t overlay_draw_count;
 } VkrEditorPassPayload;
 
 /**
@@ -371,6 +387,8 @@ typedef struct VkrPickingPassPayload {
   bool8_t pending;
   uint32_t x;
   uint32_t y;
+  /** Echoed by readback; zero is reserved for capture-only requests. */
+  uint64_t request_id;
 } VkrPickingPassPayload;
 
 /**

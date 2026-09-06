@@ -81,6 +81,7 @@ vkr_mesh_manager_build_mesh_buffer_key(char out_name[GEOMETRY_NAME_MAX_LENGTH],
  * since these affect the resulting submesh configuration.
  */
 typedef struct VkrMeshAssetKey {
+  uint32_t source_mesh_index_plus_one;
   String8 mesh_path;
   VkrPipelineDomain pipeline_domain;
   String8 shader_override;
@@ -91,7 +92,8 @@ typedef struct VkrMeshAssetKey {
  */
 vkr_internal bool8_t vkr_mesh_asset_key_equals(const VkrMeshAssetKey *a,
                                                const VkrMeshAssetKey *b) {
-  if (a->pipeline_domain != b->pipeline_domain) {
+  if (a->source_mesh_index_plus_one != b->source_mesh_index_plus_one ||
+      a->pipeline_domain != b->pipeline_domain) {
     return false_v;
   }
   if (!string8_equals(&a->mesh_path, &b->mesh_path)) {
@@ -115,6 +117,7 @@ vkr_mesh_asset_key_from_desc(const VkrMeshLoadDesc *desc) {
       vkr_mesh_manager_resolve_domain(desc->pipeline_domain, 0);
   return (VkrMeshAssetKey){
       .mesh_path = desc->mesh_path,
+      .source_mesh_index_plus_one = desc->source_mesh_index_plus_one,
       .pipeline_domain = domain,
       .shader_override = desc->shader_override,
   };
@@ -654,6 +657,7 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_pending_asset_slot(
   asset->id = slot + 1;
   asset->generation = manager->asset_generation_counter++;
   asset->domain = vkr_mesh_manager_resolve_domain(desc->pipeline_domain, 0);
+  asset->source_mesh_index_plus_one = desc->source_mesh_index_plus_one;
   asset->loading_state = pending_request_id != 0
                              ? VKR_MESH_LOADING_STATE_PENDING
                              : VKR_MESH_LOADING_STATE_NOT_LOADED;
@@ -835,6 +839,7 @@ vkr_internal bool8_t vkr_mesh_manager_sync_pending_asset(
 
   VkrMeshLoadDesc desc = {
       .mesh_path = asset->mesh_path,
+      .source_mesh_index_plus_one = asset->source_mesh_index_plus_one,
       .pipeline_domain = asset->domain,
       .shader_override = asset->shader_override,
   };
@@ -1478,6 +1483,12 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
   }
 
   VkrMeshLoaderResult *mesh_result = handle_info->as.mesh;
+  if (mesh_result->source.nodes.length) {
+    log_error("MeshManager: node-preserved sources require scene instances");
+    if (out_error)
+      *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
 
   // Validate mesh result
   bool8_t use_merged = mesh_result->has_mesh_buffer &&
@@ -2569,11 +2580,22 @@ VkrMeshInstanceHandle vkr_mesh_manager_create_instance_from_resource(
   const char *shader_str =
       desc->shader_override.str ? (const char *)desc->shader_override.str : "";
 
+  if (desc->mesh_path.length > 448u || desc->shader_override.length > 448u ||
+      desc->mesh_path.length + desc->shader_override.length > 448u) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return VKR_MESH_INSTANCE_HANDLE_INVALID;
+  }
   char key_buf[512];
   string_format(key_buf, sizeof(key_buf), "%.*s|%u|%.*s",
                 (int)desc->mesh_path.length, desc->mesh_path.str,
                 (uint32_t)normalized_domain, (int)desc->shader_override.length,
                 shader_str);
+
+  if (desc->source_mesh_index_plus_one != 0u) {
+    const uint64_t length = string_length(key_buf);
+    string_format(key_buf + length, sizeof(key_buf) - length, "|source:%u",
+                  desc->source_mesh_index_plus_one - 1u);
+  }
 
   VkrMeshAssetHandle asset_handle = VKR_MESH_ASSET_HANDLE_INVALID;
   bool8_t created_new_asset = false_v;
@@ -2754,6 +2776,25 @@ vkr_internal bool8_t vkr_mesh_manager_build_asset_from_mesh_result(
 
   uint32_t subset_count = use_merged ? (uint32_t)mesh_result->submeshes.length
                                      : (uint32_t)mesh_result->subsets.length;
+  uint32_t first_subset = 0u;
+  if (mesh_result->source.nodes.length || desc->source_mesh_index_plus_one) {
+    const uint32_t selected = desc->source_mesh_index_plus_one - 1u;
+    if (!use_merged || !desc->source_mesh_index_plus_one ||
+        selected >= mesh_result->source.meshes.length) {
+      *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      return false_v;
+    }
+    const VkrMeshSourceMesh *source_mesh =
+        &mesh_result->source.meshes.data[selected];
+    first_subset = source_mesh->first_range;
+    subset_count = source_mesh->range_count;
+    if (!subset_count || first_subset > mesh_result->submeshes.length ||
+        subset_count > mesh_result->submeshes.length - first_subset) {
+      *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      return false_v;
+    }
+  }
+
   asset->submeshes =
       array_create_VkrMeshAssetSubmesh(&manager->asset_allocator, subset_count);
   if (!asset->submeshes.data) {
@@ -2844,7 +2885,8 @@ vkr_internal bool8_t vkr_mesh_manager_build_asset_from_mesh_result(
         array_get_VkrMeshAssetSubmesh(&asset->submeshes, i);
 
     if (use_merged) {
-      const VkrMeshLoaderSubmeshRange *range = &mesh_result->submeshes.data[i];
+      const VkrMeshLoaderSubmeshRange *range =
+          &mesh_result->submeshes.data[first_subset + i];
 
       if (i > 0 && merged_geometry.id != 0) {
         vkr_geometry_system_acquire(manager->geometry_system, merged_geometry);
@@ -2873,6 +2915,7 @@ vkr_internal bool8_t vkr_mesh_manager_build_asset_from_mesh_result(
       }
 
       *submesh = (VkrMeshAssetSubmesh){
+          .geometry_submesh_index = first_subset + i,
           .geometry = merged_geometry,
           .material = material,
           .shader_override = shader_override_copy,
@@ -3040,6 +3083,24 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_asset_from_handle_info(
 
   uint32_t subset_count = use_merged ? (uint32_t)mesh_result->submeshes.length
                                      : (uint32_t)mesh_result->subsets.length;
+  uint32_t first_subset = 0u;
+  if (mesh_result->source.nodes.length || desc->source_mesh_index_plus_one) {
+    const uint32_t selected = desc->source_mesh_index_plus_one - 1u;
+    if (!use_merged || !desc->source_mesh_index_plus_one ||
+        selected >= mesh_result->source.meshes.length) {
+      *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      return VKR_MESH_ASSET_HANDLE_INVALID;
+    }
+    const VkrMeshSourceMesh *source_mesh =
+        &mesh_result->source.meshes.data[selected];
+    first_subset = source_mesh->first_range;
+    subset_count = source_mesh->range_count;
+    if (!subset_count || first_subset > mesh_result->submeshes.length ||
+        subset_count > mesh_result->submeshes.length - first_subset) {
+      *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      return VKR_MESH_ASSET_HANDLE_INVALID;
+    }
+  }
 
   uint32_t slot;
   if (manager->asset_free_count > 0) {
@@ -3063,6 +3124,7 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_asset_from_handle_info(
   asset->id = id;
   asset->generation = generation;
   asset->domain = vkr_mesh_manager_resolve_domain(desc->pipeline_domain, 0);
+  asset->source_mesh_index_plus_one = desc->source_mesh_index_plus_one;
   asset->ref_count = 0;
   asset->loading_state = VKR_MESH_LOADING_STATE_NOT_LOADED;
   asset->last_error = VKR_RENDERER_ERROR_NONE;
@@ -3177,8 +3239,8 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_asset_from_handle_info(
         array_get_VkrMeshAssetSubmesh(&asset->submeshes, i);
 
     if (use_merged) {
-      VkrMeshLoaderSubmeshRange *range =
-          array_get_VkrMeshLoaderSubmeshRange(&mesh_result->submeshes, i);
+      VkrMeshLoaderSubmeshRange *range = array_get_VkrMeshLoaderSubmeshRange(
+          &mesh_result->submeshes, first_subset + i);
 
       if (i > 0 && merged_geometry.id != 0) {
         vkr_geometry_system_acquire(manager->geometry_system, merged_geometry);
@@ -3207,6 +3269,7 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_asset_from_handle_info(
       }
 
       *submesh = (VkrMeshAssetSubmesh){
+          .geometry_submesh_index = first_subset + i,
           .geometry = merged_geometry,
           .material = material,
           .shader_override = shader_override_copy,
@@ -3380,6 +3443,15 @@ uint32_t vkr_mesh_manager_create_instances_batch(
   if (out_errors) {
     for (uint32_t i = 0; i < count; i++) {
       out_errors[i] = VKR_RENDERER_ERROR_NONE;
+    }
+  }
+
+  for (uint32_t i = 0; i < count; ++i) {
+    if (descs[i].source_mesh_index_plus_one) {
+      if (out_errors)
+        for (uint32_t j = 0; j < count; ++j)
+          out_errors[j] = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      return 0u; // Source nodes use the resolved-resource instantiation path.
     }
   }
 

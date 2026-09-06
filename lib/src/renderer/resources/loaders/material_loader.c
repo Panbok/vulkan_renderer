@@ -226,10 +226,6 @@ vkr_internal uint32_t vkr_material_find_slot(VkrMaterialSystem *system) {
   }
 
   uint32_t slot = system->next_free_index;
-  while (slot < system->materials.length &&
-         system->materials.data[slot].id != 0) {
-    slot++;
-  }
   if (slot >= system->materials.length) {
     return VKR_INVALID_ID;
   }
@@ -277,9 +273,6 @@ vkr_internal void vkr_material_loader_discard_slot(VkrMaterialSystem *system,
   MemZero(material, sizeof(*material));
   if (system->free_count < system->free_ids.length) {
     system->free_ids.data[system->free_count++] = slot;
-  }
-  if (slot < system->next_free_index) {
-    system->next_free_index = slot;
   }
 }
 
@@ -1070,6 +1063,7 @@ vkr_internal bool8_t vkr_material_loader_load(VkrResourceLoader *self,
   if (!stable_name) {
     log_error("Failed to allocate name for material");
     vkr_material_cleanup_shader_name(system, loaded_material.shader_name);
+    system->free_ids.data[system->free_count++] = slot;
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
@@ -1244,6 +1238,7 @@ vkr_internal bool8_t vkr_material_loader_finalize_async(
       vkr_allocator_alloc(&system->string_allocator, material_name.length + 1,
                           VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!stable_name) {
+    system->free_ids.data[system->free_count++] = slot;
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
@@ -1300,9 +1295,6 @@ vkr_internal bool8_t vkr_material_loader_finalize_async(
     MemZero(dst, sizeof(*dst));
     if (system->free_count < system->free_ids.length) {
       system->free_ids.data[system->free_count++] = slot;
-    }
-    if (slot < system->next_free_index) {
-      system->next_free_index = slot;
     }
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
@@ -1484,10 +1476,6 @@ vkr_material_loader_unload(VkrResourceLoader *self,
     uint64_t len = string_length(stable_shader) + 1;
     vkr_allocator_free(&system->string_allocator, (void *)stable_shader, len,
                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
-  }
-
-  if (material_index < system->next_free_index) {
-    system->next_free_index = material_index;
   }
 }
 
@@ -2171,6 +2159,7 @@ vkr_internal uint32_t vkr_material_loader_load_batch(
         vkr_allocator_alloc(&mat_sys->string_allocator, name_len + 1,
                             VKR_ALLOCATOR_MEMORY_TAG_STRING);
     if (!stable_name) {
+      mat_sys->free_ids.data[mat_sys->free_count++] = slot;
       out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
       continue;
     }

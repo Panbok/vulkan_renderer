@@ -20,12 +20,14 @@
 #include "memory/vkr_dmemory_allocator.h"
 #include "renderer/metal/internal/vkr_metal_packet_waits.h"
 #include "renderer/metal/vkr_metal_dependency.h"
+#include "renderer/metal/vkr_metal_diagnostics.h"
 #include "renderer/metal/vkr_metal_packet_abi.h"
 #include "renderer/resources/loaders/mesh_loader.h"
 #include "renderer/systems/vkr_texture_system.h"
 #include "renderer/vkr_candidate_residency.h"
 #include "renderer/vkr_capture_ring.h"
 #include "renderer/vkr_ibl_math.h"
+#include "renderer/vkr_geometry_ranges.h"
 #include "renderer/vkr_ibl_sh_pool.h"
 #include "renderer/vkr_packet_constants.h"
 #include "renderer/vkr_render_graph_internal.h"
@@ -39,7 +41,6 @@
 enum {
   VKR_METAL_PACKET_TIMEOUT_MS = 5000,
   VKR_METAL_PACKET_MAX_COLOR_ATTACHMENTS = 8,
-  VKR_METAL_PACKET_LOADER_SUBMESH_MAX = 4096,
   VKR_METAL_PACKET_MAX_TEXTURE_MIPS = 15,
   VKR_METAL_PACKET_MAX_TEXTURE_LAYERS = 8,
   VKR_METAL_PACKET_GRAPH_INSTANCE_MAX = 8,
@@ -175,6 +176,8 @@ typedef struct VkrMetalPacketMesh {
   VkrMetalBufferResource vertices;
   VkrMetalBufferResource indices;
   VkrGpuGeometryRow gpu_row;
+  VkrGeometryRangeAllocation ranges;
+  VkrMetalPacketSubmeshCreateInfo *submeshes;
   uint32_t vertex_count;
   uint32_t index_count;
   uint32_t submesh_count;
@@ -187,8 +190,6 @@ typedef struct VkrMetalPacketMesh {
 typedef struct VkrMetalPacketGeometryMegabuffer {
   VkrMetalBufferResource vertices;
   VkrMetalBufferResource indices;
-  uint64_t vertex_cursor;
-  uint64_t index_cursor;
   uint64_t vertex_live_bytes;
   uint64_t index_live_bytes;
   uint64_t vertex_high_water;
@@ -320,6 +321,9 @@ typedef struct VkrMetalPacketFrameUpload {
   uint32_t ibl_sh_previous_slot;
   VkrMetalPacketTextUpload *text_uploads;
   VkrMetalPacketPreparedDraw *direct_draws;
+  VkrMetalPacketPreparedDraw overlay_draws[VKR_EDITOR_OVERLAY_DRAW_MAX];
+  uint64_t overlay_root_gpu;
+  uint32_t overlay_draw_count;
   uint32_t direct_draw_count;
   uint32_t world_text_count;
   uint32_t root_capacity;
@@ -416,6 +420,9 @@ typedef struct VkrMetalPacketCommandSlot {
   id<MTLIndirectCommandBuffer>
       gpu_draw_icbs[VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX];
   id<MTLIndirectCommandBuffer> transmission_gpu_draw_icb;
+  /* Native command capacities; retained until this completed slot grows. */
+  uint32_t gpu_draw_icb_capacities[VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX];
+  uint32_t transmission_gpu_draw_icb_capacity;
   VkrMetalPacketResult pending_result;
   VkrMetalPacketCommitFeedbackRecord *commit_feedback;
   uint64_t submit_value;
@@ -424,6 +431,7 @@ typedef struct VkrMetalPacketCommandSlot {
   bool8_t pass_timing_requested;
   bool8_t result_pending;
   bool8_t result_collected;
+  const uint8_t *picking_readback;
   const uint8_t *gpu_draw_diagnostics_readback;
   const uint8_t *sdsm_readback;
   const uint8_t *exposure_readback;
@@ -455,7 +463,10 @@ typedef struct VkrMetalPacketTextureUploadBatch {
 } VkrMetalPacketTextureUploadBatch;
 
 struct VkrMetalPacketRenderer {
+  VkrPixelReadbackResult picking_result;
+  uint64_t picking_submit_value;
   VkrAllocator *allocator;
+  VkrMetalDiagnostics diagnostics;
   Arena *graph_frame_arena;
   VkrAllocator graph_frame_allocator;
   VkrRgJsonGraph json_graph;
@@ -496,7 +507,7 @@ struct VkrMetalPacketRenderer {
   VkrRgBufferHandle exposure_state_handle;
   VkrMetalPacketMesh *meshes;
   VkrMetalPacketGeometryMegabuffer geometry_megabuffer;
-  VkrMetalPacketSubmeshCreateInfo *submeshes;
+  VkrGeometryRanges geometry_ranges;
   VkrMetalPacketMaterial *packet_materials;
   VkrMetalPacketTexture *textures;
   VkrMetalPacketSampler *samplers;
@@ -534,7 +545,6 @@ struct VkrMetalPacketRenderer {
   id<MTL4CommandAllocator> command_allocator;
   id<MTL4CommandBuffer> command_buffer;
   VkrMetalPacketTextureUploadBatch texture_upload_batch;
-  uint64_t pending_texture_upload_bytes;
   uint64_t timestamp_frequency;
   id<MTLRenderPipelineState> gpu_shadow_pipeline;
   id<MTLRenderPipelineState> gpu_shadow_opaque_pipeline;
@@ -544,6 +554,8 @@ struct VkrMetalPacketRenderer {
   id<MTLRenderPipelineState> blend_pipeline;
   id<MTLRenderPipelineState> ui_pipeline;
   id<MTLRenderPipelineState> picking_pipeline;
+  id<MTLRenderPipelineState> editor_overlay_pipeline;
+  id<MTLRenderPipelineState> editor_overlay_picking_pipeline;
   id<MTLRenderPipelineState> tonemap_pipeline;
   id<MTLRenderPipelineState> world_text_pipeline;
   id<MTLRenderPipelineState> ui_rect_pipeline;
@@ -616,7 +628,6 @@ struct VkrMetalPacketRenderer {
   uint32_t max_images;
   uint32_t max_passes;
   uint32_t max_meshes;
-  uint32_t max_submeshes_per_mesh;
   uint32_t max_materials;
   uint32_t max_textures;
   uint32_t max_samplers;
@@ -627,6 +638,8 @@ struct VkrMetalPacketRenderer {
   uint32_t gpu_draw_icb_group_count;
   uint64_t upload_slot_size;
   uint32_t resize_count;
+  /* Only allocation failure enables the cold resize retirement prepass. */
+  bool8_t graph_memory_recovery_pending;
   VkrMetalPacketTargetKind target_kind;
   VkrPresentMode actual_present_mode;
   bool8_t srgb_output;
@@ -654,24 +667,9 @@ struct VkrMetalPacketRenderer {
   bool8_t synchronous_validation_readback;
 };
 
-/*
- * The fixed-capacity record arrays are owned by the engine rather than libc, so
- * their bytes enter the tagging and leak accounting ADR-006 and ADR-015 rely
- * on.
- *
- * They share one dedicated VkrDMemory reservation instead of the renderer
- * arena. The reason is size: max_meshes * max_submeshes_per_mesh is 16384 *
- * 512, so the submesh array alone is 96 MiB at the production defaults — larger
- * than the whole renderer arena, which is sized for per-frame graph work.
- * calloc hid this because the pages stayed untouched and therefore unbacked; a
- * committing allocator cannot. One reservation keeps the previous memory
- * behaviour, keeps these arrays from displacing every other renderer
- * allocation, and collapses teardown to a single destroy.
- *
- * The worst-case submesh product is the real problem and is worth revisiting;
- * that is a capacity decision, not a plumbing one, and is deliberately not made
- * here.
- */
+/* Fixed-capacity record arrays share one tagged reservation. Variable submesh
+   metadata belongs to each live mesh and uses renderer->allocator, so capacity
+   follows published geometry and is reclaimed independently at destruction. */
 vkr_internal void *vkr_metal_packet_alloc_zeroed(VkrAllocator *allocator,
                                                  uint64_t size) {
   if (!size)
@@ -729,9 +727,6 @@ VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_graph_buffer_instances_bytes,
                                  renderer->history_instance_count)
 VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_meshes_bytes, meshes,
                              renderer->max_meshes)
-VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_submeshes_bytes, submeshes,
-                             (uint64_t)renderer->max_meshes *
-                                 renderer->max_submeshes_per_mesh)
 VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_materials_bytes, packet_materials,
                              renderer->max_materials)
 VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_textures_bytes, textures,
@@ -759,16 +754,53 @@ VKR_METAL_PACKET_ARRAY_BYTES(vkr_metal_packet_retired_image_views_bytes,
 
 #undef VKR_METAL_PACKET_ARRAY_BYTES
 
+/* Diagnostics are single-owner CPU observations, never GPU completion proofs.
+   Keep argument evaluation and native counter queries out of normal frames. */
+#define VKR_METAL_DIAGNOSTIC(renderer, event, ...)                             \
+  do {                                                                         \
+    if ((renderer)->diagnostics.enabled)                                       \
+      vkr_metal_diagnostics_record(                                            \
+          &(renderer)->diagnostics, event, (renderer)->submit_value,           \
+          (renderer)->completion.signaledValue, __VA_ARGS__);                  \
+  } while (0)
+
+#define VKR_METAL_DIAGNOSTIC_FLUSH(renderer)                                   \
+  do {                                                                         \
+    if ((renderer)->diagnostics.enabled)                                       \
+      vkr_metal_diagnostics_flush(&(renderer)->diagnostics);                   \
+  } while (0)
+
 /*
  * Private implementation units remain one Objective-C translation unit. This
  * keeps renderer state and static helpers private while making each lifetime
- * domain independently reviewable.
+ * domain independently reviewable. Public Objective-C entrypoints own lexical
+ * autorelease pools because the C application loop has no surrounding pool.
+ * Objects that span calls, including drawables and open upload encoders, retain
+ * explicit ownership independently of those temporary-object scopes.
  */
 // clang-format off
 vkr_internal void vkr_metal_packet_advance_revision(uint64_t *revision) {
   if (*revision == UINT64_MAX)
     log_fatal("Metal temporal content revision exhausted");
   ++*revision;
+}
+
+/* Copy completed pixels while their ring slices still exist. Submit order,
+ * rather than caller IDs, also orders harness requests whose ID is zero. */
+vkr_internal void vkr_metal_packet_collect_picking_results(
+    VkrMetalPacketRenderer *renderer, uint64_t completed_submit_value) {
+  for (uint32_t i = 0u; i < renderer->command_slot_count; ++i) {
+    VkrMetalPacketCommandSlot *slot = &renderer->command_slots[i];
+    if (!slot->picking_readback || slot->submit_value > completed_submit_value)
+      continue;
+    if (slot->submit_value == renderer->picking_submit_value) {
+      MemCopy(&renderer->picking_result.data, slot->picking_readback,
+              sizeof(renderer->picking_result.data));
+      renderer->picking_result.valid = true_v;
+      renderer->picking_result.status = VKR_READBACK_STATUS_READY;
+    }
+    slot->picking_readback = NULL;
+  }
 }
 
 #include "renderer/metal/internal/vkr_metal_packet_graph.inc"
@@ -778,6 +810,19 @@ vkr_internal void vkr_metal_packet_advance_revision(uint64_t *revision) {
 #include "renderer/metal/internal/vkr_metal_packet_frame.inc"
 #include "renderer/metal/internal/vkr_metal_packet_lifecycle.inc"
 // clang-format on
+
+VkrRendererError vkr_metal_packet_renderer_get_pixel_readback_result(
+    VkrMetalPacketRenderer *renderer, VkrPixelReadbackResult *out_result) {
+  if (!renderer || !out_result)
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  vkr_metal_packet_collect_picking_results(renderer,
+                                           renderer->completion.signaledValue);
+  *out_result = renderer->picking_result;
+  if (out_result->status == VKR_READBACK_STATUS_READY)
+    renderer->picking_result =
+        (VkrPixelReadbackResult){.status = VKR_READBACK_STATUS_IDLE};
+  return VKR_RENDERER_ERROR_NONE;
+}
 
 VkrPresentMode
 vkr_metal_packet_renderer_present_mode(const VkrMetalPacketRenderer *renderer) {

@@ -302,6 +302,7 @@ typedef struct VkrMeshAssetHandle {
  * instance descriptors) is stored separately in VkrMeshSubmeshInstanceState.
  */
 typedef struct VkrMeshAssetSubmesh {
+  uint32_t geometry_submesh_index; // Native range within the shared geometry.
   VkrGeometryHandle geometry;
   VkrMaterialHandle material;
   VkrPipelineDomain pipeline_domain;
@@ -365,6 +366,7 @@ typedef struct VkrMeshAsset {
   uint32_t id;
   uint32_t generation;
 
+  uint32_t source_mesh_index_plus_one;
   String8 mesh_path; // Owned (freeable allocator)
   VkrPipelineDomain domain;
   String8 shader_override; // Owned (freeable allocator)

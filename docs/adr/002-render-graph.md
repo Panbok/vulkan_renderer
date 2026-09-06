@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-09-06
 authority: adr
 ---
 
@@ -60,6 +60,21 @@ recreated when descriptions change; they are not aliased. The shared graph owns
 declarations and scheduling, while native caches own physical resources and their
 allocation statistics. `RETAINED` contents follow ADR-029. History selection
 requires completion and metadata checks in the owning backend.
+
+Draw-table byte sizes use typed frame-capacity sources. Frame preparation derives
+source capacity from the next power of two covering the scene candidate count,
+with a minimum of one and the existing 262,144-candidate ceiling. Visible-row,
+classification and indirect-command strides preserve four buckets, each allowing
+at least the smaller of source capacity and the existing 65,536-draw limit.
+The five main-view storage regions remain fixed in number.
+
+Owned, non-history buffers can declare `GROW_ONLY`. The graph still records the
+current requested size and generation. Each native cache owns its physical
+high-water capacity, reuses sufficient backing and adopts the current generation.
+Growth waits for all old instances' submitted uses, releases completed backing,
+then allocates replacements. This avoids simultaneous old/new reservations;
+first use of a larger scene can wait and allocate. Images, imported storage,
+history and retained contents cannot use this policy.
 
 All scheduled work uses the backend's graphics submission path. A compute or
 transfer pass type does not imply another queue. The uncullable `IBL.Bake` pass

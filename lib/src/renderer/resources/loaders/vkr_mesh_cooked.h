@@ -5,7 +5,7 @@
 #include "renderer/resources/loaders/mesh_loader.h"
 
 #define VKR_MESH_COOKED_MAGIC 0x564B4D48u /* 'VKMH' */
-#define VKR_MESH_COOKED_VERSION 16u
+#define VKR_MESH_COOKED_VERSION 17u
 #define VKR_MESH_COOKED_ENDIAN_TAG 0x01020304u
 #define VKR_MESH_COOKED_LAYOUT_STATIC_PACKED_V1 2u
 #define VKR_MESH_COOKED_STREAM_ALIGNMENT 16u
@@ -15,6 +15,7 @@ typedef struct VkrMeshCookedEncodeInfo {
   const String8 *dependency_paths;
   uint32_t dependency_count;
   VkrMeshLoaderBuffer mesh_buffer;
+  VkrMeshSource source;
   const VkrMeshLoaderSubmeshRange *ranges;
   uint32_t range_count;
   VkrGeometryQuantizationBudgets budgets;
@@ -25,6 +26,7 @@ typedef struct VkrMeshCookedDecoded {
   uint64_t cooked_bytes;
   uint64_t decoded_bytes;
   VkrMeshLoaderBuffer mesh_buffer;
+  VkrMeshSource source;
   Array_VkrMeshLoaderSubmeshRange ranges;
 } VkrMeshCookedDecoded;
 

@@ -86,6 +86,19 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketFrameRoot {
   uint64_t temporal_draw_state;
 } VkrMetalPacketFrameRoot;
 
+/** Native unlit editor handle; pointers address packed published geometry. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketEditorOverlayRoot {
+  uint64_t vertices;
+  uint64_t decode;
+  Mat4 model_view_projection;
+  Vec4 color;
+  uint32_t object_id;
+  uint32_t reserved[3];
+} VkrMetalPacketEditorOverlayRoot;
+
+_Static_assert(sizeof(VkrMetalPacketEditorOverlayRoot) == 112,
+               "Metal editor overlay root must remain 112 bytes");
+
 /** The only record written per indexed packet draw. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketDrawRoot {
   uint64_t geometry_rows;
@@ -601,6 +614,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_SH_PROJECT_ROOT,
   VKR_METAL_PACKET_ABI_TEXT_ROOT,
   VKR_METAL_PACKET_ABI_UI_ROOT,
+  VKR_METAL_PACKET_ABI_EDITOR_OVERLAY_ROOT,
   VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT,
   VKR_METAL_PACKET_ABI_TRANSMISSION_PEEL_ROOT,
   VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT,

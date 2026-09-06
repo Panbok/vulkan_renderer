@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-09-06
 authority: adr
 ---
 
@@ -32,6 +32,12 @@ Materials can publish semantic defaults before texture residency completes.
 Ready textures republish a replacement row and retire the old generation after
 GPU use. No frontend `.shadercfg`, named-uniform staging or instance descriptor
 system participates in the current material path.
+
+glTF material preparation keeps source-mesh primitive ranges rather than merging
+instances by material. Source-world decal normal offsets are converted into
+local vertex corrections, with geometry variants only for decal instances that
+need different corrections. The node and cooked-artifact ownership is specified
+in [ADR-030](030-offline-mesh-optimization-and-cooking.md).
 
 ## Consequences
 

@@ -164,6 +164,9 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
                                           uint32_t shadow_map_size,
                                           uint32_t shadow_cascade_count,
                                           VkrFrame *out_setup);
+/** Returns the extent only when the retained editor image has committed contents. */
+void vkr_vulkan_renderer_retained_editor_extent(
+    VkrVulkanRenderer *renderer, uint32_t *out_width, uint32_t *out_height);
 void vkr_vulkan_renderer_retained_shadow_token(
     VkrVulkanRenderer *renderer, uint32_t image_index,
     VkrRetainedShadowToken *out_token);

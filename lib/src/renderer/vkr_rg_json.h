@@ -15,6 +15,11 @@ typedef enum VkrRgJsonConditionKind {
   VKR_RG_JSON_CONDITION_NONE = 0,
   VKR_RG_JSON_CONDITION_EDITOR_ENABLED,
   VKR_RG_JSON_CONDITION_EDITOR_DISABLED,
+  VKR_RG_JSON_CONDITION_SCENE_RENDERING,
+  VKR_RG_JSON_CONDITION_EDITOR_IMAGE_AVAILABLE,
+  VKR_RG_JSON_CONDITION_EDITOR_IMAGE_UNAVAILABLE,
+  VKR_RG_JSON_CONDITION_EDITOR_OVERLAY_ENABLED,
+  VKR_RG_JSON_CONDITION_EDITOR_OVERLAY_PICKING,
   VKR_RG_JSON_CONDITION_HZB_HISTORY_VALID,
   VKR_RG_JSON_CONDITION_HZB_HISTORY_INVALID,
   VKR_RG_JSON_CONDITION_SHADOW_CASCADES_ACTIVE,
@@ -55,6 +60,7 @@ typedef enum VkrRgJsonConditionKind {
 typedef struct VkrRgJsonCondition {
   VkrRgJsonConditionKind kind; // The kind of condition expression.
   String8 raw;                 // The raw condition expression string.
+  bool8_t requires_scene_rendering;
 } VkrRgJsonCondition;
 
 /**
@@ -95,6 +101,7 @@ typedef enum VkrRgJsonResourceFlags {
   VKR_RG_JSON_RESOURCE_FLAG_HISTORY = 1 << 6, // Completion-gated history ring.
   VKR_RG_JSON_RESOURCE_FLAG_RETAINED =
       1 << 7, // Contents survive across frames in place. See ADR-029.
+  VKR_RG_JSON_RESOURCE_FLAG_GROW_ONLY = 1 << 8,
 } VkrRgJsonResourceFlags;
 
 /**
@@ -105,6 +112,7 @@ typedef enum VkrRgJsonExtentMode {
   VKR_RG_JSON_EXTENT_NONE = 0,
   VKR_RG_JSON_EXTENT_WINDOW,       // The extent is the window size.
   VKR_RG_JSON_EXTENT_SCENE_OUTPUT, // Reconstructed Scene presentation size.
+  VKR_RG_JSON_EXTENT_EDITOR_IMAGE, // Retained editor presentation size.
   VKR_RG_JSON_EXTENT_VIEWPORT,     // Internal Scene render size.
   VKR_RG_JSON_EXTENT_FIXED,        // The extent is a fixed size.
   VKR_RG_JSON_EXTENT_SQUARE,       // The extent is a square size.
@@ -164,12 +172,22 @@ typedef struct VkrRgJsonImageDesc {
 typedef enum VkrRgJsonBufferSizeMode {
   VKR_RG_JSON_BUFFER_SIZE_FIXED = 0,
   VKR_RG_JSON_BUFFER_SIZE_VIEWPORT_PIXELS,
+  VKR_RG_JSON_BUFFER_SIZE_DRAW_ELEMENTS,
 } VkrRgJsonBufferSizeMode;
+
+typedef enum VkrRgJsonDrawCountSource {
+  VKR_RG_JSON_DRAW_COUNT_CANDIDATES = 0,
+  VKR_RG_JSON_DRAW_COUNT_VISIBLE,
+  VKR_RG_JSON_DRAW_COUNT_TRANSMISSION_CANDIDATES,
+  VKR_RG_JSON_DRAW_COUNT_TRANSMISSION_VISIBLE,
+} VkrRgJsonDrawCountSource;
 
 typedef struct VkrRgJsonBufferDesc {
   VkrRgJsonBufferSizeMode size_mode;
   uint64_t size;             // Fixed byte size.
   uint32_t bytes_per_pixel;  // Viewport-pixel stride.
+  uint32_t bytes_per_element; // Draw-table stride, including authored views.
+  VkrRgJsonDrawCountSource draw_count_source;
   VkrBufferUsageFlags usage; // The usage of the buffer.
 } VkrRgJsonBufferDesc;
 

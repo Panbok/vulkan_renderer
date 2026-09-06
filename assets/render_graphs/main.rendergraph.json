@@ -9,7 +9,17 @@
       "flags": ["EXTERNAL", "PER_IMAGE"]
     },
     {
+      "name": "editor_scene_image",
+      "type": "image",
+      "condition": "editor_enabled && editor_image_available",
+      "extent": { "mode": "editor_image" },
+      "format": "SWAPCHAIN",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"],
+      "flags": ["RETAINED", "RESIZABLE"]
+    },
+    {
       "name": "shadow_map",
+      "condition": "scene_rendering",
       "type": "image",
       "extent": { "mode": "square", "size_source": "shadow_map_size" },
       "layers_source": "shadow_map_layer_count",
@@ -20,7 +30,7 @@
     {
       "name": "scene_color",
       "type": "image",
-      "condition": "editor_enabled",
+      "condition": "scene_rendering && editor_enabled",
       "extent": { "mode": "viewport" },
       "format": "R16G16B16A16_SFLOAT",
       "usage": ["COLOR_ATTACHMENT", "SAMPLED", "STORAGE", "TRANSFER_SRC", "TRANSFER_DST"],
@@ -29,7 +39,7 @@
     {
       "name": "hdr_scene_color",
       "type": "image",
-      "condition": "!editor_enabled",
+      "condition": "scene_rendering && !editor_enabled",
       "extent": { "mode": "viewport" },
       "format": "R16G16B16A16_SFLOAT",
       "usage": ["COLOR_ATTACHMENT", "SAMPLED", "STORAGE", "TRANSFER_SRC", "TRANSFER_DST"],
@@ -38,7 +48,7 @@
     {
       "name": "scene_pre_transmission",
       "type": "image",
-      "condition": "editor_enabled",
+      "condition": "scene_rendering && editor_enabled",
       "extent": { "mode": "viewport" },
       "format": "R16G16B16A16_SFLOAT",
       "usage": ["COLOR_ATTACHMENT", "SAMPLED", "STORAGE", "TRANSFER_SRC"],
@@ -47,7 +57,7 @@
     {
       "name": "hdr_pre_transmission",
       "type": "image",
-      "condition": "!editor_enabled",
+      "condition": "scene_rendering && !editor_enabled",
       "extent": { "mode": "viewport" },
       "format": "R16G16B16A16_SFLOAT",
       "usage": ["COLOR_ATTACHMENT", "SAMPLED", "STORAGE", "TRANSFER_SRC"],
@@ -56,7 +66,7 @@
     {
       "name": "picking_color",
       "type": "image",
-      "condition": "picking_pending",
+      "condition": "scene_rendering && picking_pending",
       "extent": { "mode": "viewport" },
       "format": "R32_UINT",
       "usage": ["COLOR_ATTACHMENT", "STORAGE", "TRANSFER_SRC"],
@@ -65,7 +75,7 @@
     {
       "name": "picking_depth",
       "type": "image",
-      "condition": "picking_pending",
+      "condition": "scene_rendering && picking_pending",
       "extent": { "mode": "viewport" },
       "format": "SWAPCHAIN_DEPTH",
       "usage": ["DEPTH_STENCIL_ATTACHMENT", "TRANSFER_DST"],
@@ -73,34 +83,39 @@
     },
     {
       "name": "gpu_draw_candidates",
+      "condition": "scene_rendering",
       "type": "buffer",
-      "size": 12582912,
+      "size": { "mode": "draw_elements", "count_source": "gpu_draw_candidate_capacity", "bytes_per_element": 48 },
       "usage": ["STORAGE", "TRANSFER_DST"],
-      "flags": ["PER_FRAME_SLOT"]
+      "flags": ["PER_FRAME_SLOT", "RESIZABLE", "GROW_ONLY"]
     },
     {
       "name": "gpu_draw_instances",
+      "condition": "scene_rendering",
       "type": "buffer",
-      "size": 33554432,
+      "size": { "mode": "draw_elements", "count_source": "gpu_draw_candidate_capacity", "bytes_per_element": 128 },
       "usage": ["STORAGE", "TRANSFER_DST"],
-      "flags": ["PER_FRAME_SLOT"]
+      "flags": ["PER_FRAME_SLOT", "RESIZABLE", "GROW_ONLY"]
     },
     {
       "name": "gpu_visible_draws",
+      "condition": "scene_rendering",
       "type": "buffer",
-      "size": 41943040,
+      "size": { "mode": "draw_elements", "count_source": "gpu_draw_visible_capacity", "bytes_per_element": 160 },
       "usage": ["STORAGE"],
-      "flags": ["PER_FRAME_SLOT"]
+      "flags": ["PER_FRAME_SLOT", "RESIZABLE", "GROW_ONLY"]
     },
     {
       "name": "gpu_draw_classifications",
+      "condition": "scene_rendering",
       "type": "buffer",
-      "size": 5242880,
+      "size": { "mode": "draw_elements", "count_source": "gpu_draw_visible_capacity", "bytes_per_element": 20 },
       "usage": ["STORAGE"],
-      "flags": ["PER_FRAME_SLOT"]
+      "flags": ["PER_FRAME_SLOT", "RESIZABLE", "GROW_ONLY"]
     },
     {
       "name": "gpu_draw_compaction_state",
+      "condition": "scene_rendering",
       "type": "buffer",
       "size": 400,
       "usage": ["STORAGE", "INDIRECT", "TRANSFER_SRC", "TRANSFER_DST"],
@@ -108,13 +123,15 @@
     },
     {
       "name": "gpu_draw_arguments",
+      "condition": "scene_rendering",
       "type": "buffer",
-      "size": 26214400,
+      "size": { "mode": "draw_elements", "count_source": "gpu_draw_visible_capacity", "bytes_per_element": 100 },
       "usage": ["STORAGE", "INDIRECT"],
-      "flags": ["PER_FRAME_SLOT"]
+      "flags": ["PER_FRAME_SLOT", "RESIZABLE", "GROW_ONLY"]
     },
     {
       "name": "sdsm_reduce_state",
+      "condition": "scene_rendering",
       "type": "buffer",
       "size": 16,
       "usage": ["STORAGE", "TRANSFER_SRC", "TRANSFER_DST"],
@@ -123,39 +140,39 @@
     {
       "name": "transmission_gpu_draw_candidates",
       "type": "buffer",
-      "condition": "transmission_pending",
-      "size": 12582912,
+      "condition": "scene_rendering && transmission_pending",
+      "size": { "mode": "draw_elements", "count_source": "transmission_gpu_draw_candidate_capacity", "bytes_per_element": 48 },
       "usage": ["STORAGE", "TRANSFER_DST"],
-      "flags": ["PER_FRAME_SLOT"]
+      "flags": ["PER_FRAME_SLOT", "RESIZABLE", "GROW_ONLY"]
     },
     {
       "name": "transmission_gpu_draw_instances",
       "type": "buffer",
-      "condition": "transmission_pending",
-      "size": 33554432,
+      "condition": "scene_rendering && transmission_pending",
+      "size": { "mode": "draw_elements", "count_source": "transmission_gpu_draw_candidate_capacity", "bytes_per_element": 128 },
       "usage": ["STORAGE", "TRANSFER_DST"],
-      "flags": ["PER_FRAME_SLOT"]
+      "flags": ["PER_FRAME_SLOT", "RESIZABLE", "GROW_ONLY"]
     },
     {
       "name": "transmission_gpu_visible_draws",
       "type": "buffer",
-      "condition": "transmission_pending",
-      "size": 8388608,
+      "condition": "scene_rendering && transmission_pending",
+      "size": { "mode": "draw_elements", "count_source": "transmission_gpu_draw_visible_capacity", "bytes_per_element": 32 },
       "usage": ["STORAGE"],
-      "flags": ["PER_FRAME_SLOT"]
+      "flags": ["PER_FRAME_SLOT", "RESIZABLE", "GROW_ONLY"]
     },
     {
       "name": "transmission_gpu_draw_classifications",
       "type": "buffer",
-      "condition": "transmission_pending",
-      "size": 1048576,
+      "condition": "scene_rendering && transmission_pending",
+      "size": { "mode": "draw_elements", "count_source": "transmission_gpu_draw_visible_capacity", "bytes_per_element": 4 },
       "usage": ["STORAGE"],
-      "flags": ["PER_FRAME_SLOT"]
+      "flags": ["PER_FRAME_SLOT", "RESIZABLE", "GROW_ONLY"]
     },
     {
       "name": "transmission_gpu_draw_compaction_state",
       "type": "buffer",
-      "condition": "transmission_pending",
+      "condition": "scene_rendering && transmission_pending",
       "size": 116,
       "usage": ["STORAGE", "INDIRECT", "TRANSFER_SRC", "TRANSFER_DST"],
       "flags": ["PER_FRAME_SLOT"]
@@ -163,15 +180,15 @@
     {
       "name": "transmission_gpu_draw_arguments",
       "type": "buffer",
-      "condition": "transmission_pending",
-      "size": 5242880,
+      "condition": "scene_rendering && transmission_pending",
+      "size": { "mode": "draw_elements", "count_source": "transmission_gpu_draw_visible_capacity", "bytes_per_element": 20 },
       "usage": ["STORAGE", "INDIRECT"],
-      "flags": ["PER_FRAME_SLOT"]
+      "flags": ["PER_FRAME_SLOT", "RESIZABLE", "GROW_ONLY"]
     },
     {
       "name": "transmission_compact_pixels",
       "type": "buffer",
-      "condition": "transmission_compact_enabled",
+      "condition": "scene_rendering && transmission_compact_enabled",
       "size": { "mode": "viewport_pixels", "bytes_per_pixel": 8 },
       "usage": ["STORAGE"],
       "flags": ["PER_FRAME_SLOT", "RESIZABLE"]
@@ -179,13 +196,14 @@
     {
       "name": "transmission_compact_arguments",
       "type": "buffer",
-      "condition": "transmission_compact_enabled",
+      "condition": "scene_rendering && transmission_compact_enabled",
       "size": 32,
       "usage": ["STORAGE", "INDIRECT"],
       "flags": ["PER_FRAME_SLOT"]
     },
     {
       "name": "opaque_vbuffer",
+      "condition": "scene_rendering",
       "type": "image",
       "extent": { "mode": "viewport" },
       "format": "R32G32_UINT",
@@ -194,6 +212,7 @@
     },
     {
       "name": "opaque_vbuffer_depth",
+      "condition": "scene_rendering",
       "type": "image",
       "extent": { "mode": "viewport" },
       "format": "SWAPCHAIN_DEPTH",
@@ -202,6 +221,7 @@
     },
     {
       "name": "hzb_history",
+      "condition": "scene_rendering",
       "type": "image",
       "extent": { "mode": "viewport" },
       "format": "R32_SFLOAT",
@@ -212,7 +232,7 @@
     {
       "name": "transmission_vbuffer",
       "type": "image",
-      "condition": "transmission_pending",
+      "condition": "scene_rendering && transmission_pending",
       "extent": { "mode": "viewport" },
       "layers": 4,
       "format": "R32G32_UINT",
@@ -222,7 +242,7 @@
     {
       "name": "transmission_vbuffer_depth",
       "type": "image",
-      "condition": "transmission_pending",
+      "condition": "scene_rendering && transmission_pending",
       "extent": { "mode": "viewport" },
       "layers": 4,
       "format": "SWAPCHAIN_DEPTH",
@@ -232,7 +252,7 @@
     {
       "name": "transmission_diagnostic_vbuffer",
       "type": "image",
-      "condition": "transmission_depth_diagnostic_enabled",
+      "condition": "scene_rendering && transmission_depth_diagnostic_enabled",
       "extent": { "mode": "viewport" },
       "layers": 5,
       "format": "R32G32_UINT",
@@ -242,7 +262,7 @@
     {
       "name": "transmission_diagnostic_depth",
       "type": "image",
-      "condition": "transmission_depth_diagnostic_enabled",
+      "condition": "scene_rendering && transmission_depth_diagnostic_enabled",
       "extent": { "mode": "viewport" },
       "layers": 5,
       "format": "SWAPCHAIN_DEPTH",
@@ -252,7 +272,7 @@
     {
       "name": "transmission_feedback",
       "type": "image",
-      "condition": "transmission_pending",
+      "condition": "scene_rendering && transmission_pending",
       "extent": { "mode": "viewport" },
       "format": "R16G16B16A16_SFLOAT",
       "usage": ["SAMPLED", "STORAGE"],
@@ -261,7 +281,7 @@
     {
       "name": "transmission_opaque_pyramid",
       "type": "image",
-      "condition": "transmission_pending",
+      "condition": "scene_rendering && transmission_pending",
       "extent": { "mode": "viewport" },
       "format": "R16G16B16A16_SFLOAT",
       "mip_levels": 6,
@@ -270,6 +290,7 @@
     },
     {
       "name": "gbuffer_albedo",
+      "condition": "scene_rendering",
       "type": "image",
       "extent": { "mode": "viewport" },
       "format": "R8G8B8A8_UNORM",
@@ -278,6 +299,7 @@
     },
     {
       "name": "gbuffer_specular",
+      "condition": "scene_rendering",
       "type": "image",
       "extent": { "mode": "viewport" },
       "format": "R8G8B8A8_UNORM",
@@ -286,6 +308,7 @@
     },
     {
       "name": "gbuffer_normal",
+      "condition": "scene_rendering",
       "type": "image",
       "extent": { "mode": "viewport" },
       "format": "R16G16_SNORM",
@@ -295,7 +318,7 @@
     {
       "name": "gtao_view_depth",
       "type": "image",
-      "condition": "gtao_enabled",
+      "condition": "scene_rendering && gtao_enabled",
       "extent": { "mode": "viewport" },
       "format": "R16_SFLOAT",
       "mip_levels": "full_chain",
@@ -305,7 +328,7 @@
     {
       "name": "gtao_raw",
       "type": "image",
-      "condition": "gtao_enabled",
+      "condition": "scene_rendering && gtao_enabled",
       "extent": { "mode": "viewport" },
       "format": "R8_UNORM",
       "usage": ["STORAGE", "SAMPLED", "TRANSFER_SRC"],
@@ -314,7 +337,7 @@
     {
       "name": "gtao_edges",
       "type": "image",
-      "condition": "gtao_enabled",
+      "condition": "scene_rendering && gtao_enabled",
       "extent": { "mode": "viewport" },
       "format": "R8_UNORM",
       "usage": ["STORAGE", "SAMPLED"],
@@ -323,7 +346,7 @@
     {
       "name": "gtao_visibility",
       "type": "image",
-      "condition": "gtao_enabled",
+      "condition": "scene_rendering && gtao_enabled",
       "extent": { "mode": "viewport" },
       "format": "R8_UNORM",
       "usage": ["STORAGE", "SAMPLED", "TRANSFER_SRC"],
@@ -331,6 +354,7 @@
     },
     {
       "name": "deferred_emissive_seed",
+      "condition": "scene_rendering",
       "type": "image",
       "extent": { "mode": "viewport" },
       "format": "R16G16B16A16_SFLOAT",
@@ -339,6 +363,7 @@
     },
     {
       "name": "deferred_resolve_debug",
+      "condition": "scene_rendering",
       "type": "image",
       "extent": { "mode": "viewport" },
       "format": "R16G16B16A16_SFLOAT",
@@ -347,6 +372,7 @@
     },
     {
       "name": "temporal_transform_history",
+      "condition": "scene_rendering",
       "type": "buffer",
       "size": 2621440,
       "usage": ["STORAGE"],
@@ -354,6 +380,7 @@
     },
     {
       "name": "temporal_motion",
+      "condition": "scene_rendering",
       "type": "image",
       "extent": { "mode": "viewport" },
       "format": "R16G16_SFLOAT",
@@ -362,6 +389,7 @@
     },
     {
       "name": "temporal_validity",
+      "condition": "scene_rendering",
       "type": "image",
       "extent": { "mode": "viewport" },
       "format": "R16G16_SFLOAT",
@@ -371,7 +399,7 @@
     {
       "name": "temporal_history_color",
       "type": "image",
-      "condition": "!metalfx_enabled",
+      "condition": "scene_rendering && !metalfx_enabled",
       "extent": { "mode": "viewport" },
       "format": "R16G16B16A16_SFLOAT",
       "usage": ["STORAGE", "SAMPLED", "TRANSFER_SRC"],
@@ -380,7 +408,7 @@
     {
       "name": "temporal_history_depth",
       "type": "image",
-      "condition": "!metalfx_enabled",
+      "condition": "scene_rendering && !metalfx_enabled",
       "extent": { "mode": "viewport" },
       "format": "R16G16_SFLOAT",
       "usage": ["STORAGE"],
@@ -389,7 +417,7 @@
     {
       "name": "temporal_history_identity",
       "type": "image",
-      "condition": "!metalfx_enabled",
+      "condition": "scene_rendering && !metalfx_enabled",
       "extent": { "mode": "viewport" },
       "format": "R32G32_UINT",
       "usage": ["STORAGE"],
@@ -398,7 +426,7 @@
     {
       "name": "temporal_history_surface",
       "type": "image",
-      "condition": "!metalfx_enabled",
+      "condition": "scene_rendering && !metalfx_enabled",
       "extent": { "mode": "viewport" },
       "format": "R32_UINT",
       "usage": ["STORAGE"],
@@ -407,7 +435,7 @@
     {
       "name": "metalfx_color_input",
       "type": "image",
-      "condition": "metalfx_enabled",
+      "condition": "scene_rendering && metalfx_enabled",
       "extent": { "mode": "scene_output" },
       "format": "R16G16B16A16_SFLOAT",
       "usage": ["SAMPLED", "TRANSFER_DST"],
@@ -416,7 +444,7 @@
     {
       "name": "metalfx_depth_input",
       "type": "image",
-      "condition": "metalfx_enabled",
+      "condition": "scene_rendering && metalfx_enabled",
       "extent": { "mode": "scene_output" },
       "format": "D32_SFLOAT",
       "usage": ["SAMPLED", "TRANSFER_DST"],
@@ -425,7 +453,7 @@
     {
       "name": "metalfx_motion_input",
       "type": "image",
-      "condition": "metalfx_enabled",
+      "condition": "scene_rendering && metalfx_enabled",
       "extent": { "mode": "scene_output" },
       "format": "R16G16_SFLOAT",
       "usage": ["SAMPLED", "TRANSFER_DST"],
@@ -434,7 +462,7 @@
     {
       "name": "metalfx_output_color",
       "type": "image",
-      "condition": "metalfx_enabled",
+      "condition": "scene_rendering && metalfx_enabled",
       "extent": { "mode": "scene_output" },
       "format": "R16G16B16A16_SFLOAT",
       "usage": ["STORAGE", "SAMPLED", "COLOR_ATTACHMENT", "TRANSFER_SRC"],
@@ -443,7 +471,7 @@
     {
       "name": "exposure_histogram",
       "type": "buffer",
-      "condition": "exposure_automatic",
+      "condition": "scene_rendering && exposure_automatic",
       "size": 1024,
       "usage": ["STORAGE", "TRANSFER_SRC"],
       "flags": ["PER_FRAME_SLOT"]
@@ -451,7 +479,7 @@
     {
       "name": "exposure_state",
       "type": "buffer",
-      "condition": "exposure_automatic",
+      "condition": "scene_rendering && exposure_automatic",
       "size": 32,
       "usage": ["STORAGE", "TRANSFER_SRC"],
       "flags": ["HISTORY"]
@@ -459,7 +487,7 @@
     {
       "name": "bloom_chain",
       "type": "image",
-      "condition": "bloom_enabled",
+      "condition": "scene_rendering && bloom_enabled",
       "extent": { "mode": "viewport", "divisor": 2 },
       "format": "R16G16B16A16_SFLOAT",
       "mip_levels": "full_chain",
@@ -469,7 +497,7 @@
     {
       "name": "bloom_accum",
       "type": "image",
-      "condition": "bloom_enabled",
+      "condition": "scene_rendering && bloom_enabled",
       "extent": { "mode": "viewport", "divisor": 2 },
       "format": "R16G16B16A16_SFLOAT",
       "mip_levels": "full_chain",
@@ -479,7 +507,7 @@
     {
       "name": "bloom_combined",
       "type": "image",
-      "condition": "bloom_enabled && !metalfx_enabled",
+      "condition": "scene_rendering && bloom_enabled && !metalfx_enabled",
       "extent": { "mode": "viewport" },
       "format": "R16G16B16A16_SFLOAT",
       "usage": ["STORAGE", "SAMPLED", "TRANSFER_SRC"],
@@ -488,7 +516,7 @@
     {
       "name": "metalfx_bloom_combined",
       "type": "image",
-      "condition": "bloom_enabled && metalfx_enabled",
+      "condition": "scene_rendering && bloom_enabled && metalfx_enabled",
       "extent": { "mode": "scene_output" },
       "format": "R16G16B16A16_SFLOAT",
       "usage": ["STORAGE", "SAMPLED", "TRANSFER_SRC"],
@@ -504,6 +532,7 @@
     },
     {
       "name": "Cull.Upload",
+      "condition": "scene_rendering",
       "type": "transfer",
       "flags": ["NO_CULL"],
       "writes": [
@@ -516,6 +545,7 @@
     },
     {
       "name": "Temporal.TransformHistory",
+      "condition": "scene_rendering",
       "type": "compute",
       "flags": ["NO_CULL"],
       "reads": [
@@ -528,6 +558,7 @@
     },
     {
       "name": "Cull.Classify",
+      "condition": "scene_rendering",
       "type": "compute",
       "flags": ["NO_CULL"],
       "reads": [
@@ -543,6 +574,7 @@
     },
     {
       "name": "Cull.Prefix",
+      "condition": "scene_rendering",
       "type": "compute",
       "flags": ["NO_CULL"],
       "writes": [
@@ -552,6 +584,7 @@
     },
     {
       "name": "Cull.Encode",
+      "condition": "scene_rendering",
       "type": "compute",
       "flags": ["NO_CULL"],
       "reads": [
@@ -567,6 +600,7 @@
     },
     {
       "name": "Shadow.Cascade.${i}",
+      "condition": "scene_rendering",
       "type": "graphics",
       "domain": "SHADOW",
       "repeat": {
@@ -593,7 +627,7 @@
     {
       "name": "Transmission.Cull.Upload",
       "type": "transfer",
-      "condition": "transmission_pending",
+      "condition": "scene_rendering && transmission_pending",
       "flags": ["NO_CULL"],
       "writes": [
         { "buffer": "transmission_gpu_draw_candidates", "access": "TRANSFER_DST", "binding": 0 },
@@ -605,7 +639,7 @@
     {
       "name": "Transmission.Cull.Classify",
       "type": "compute",
-      "condition": "transmission_pending",
+      "condition": "scene_rendering && transmission_pending",
       "flags": ["NO_CULL"],
       "reads": [
         { "buffer": "transmission_gpu_draw_candidates", "access": "STORAGE_READ", "binding": 0 },
@@ -621,7 +655,7 @@
     {
       "name": "Transmission.Cull.Prefix",
       "type": "compute",
-      "condition": "transmission_pending",
+      "condition": "scene_rendering && transmission_pending",
       "flags": ["NO_CULL"],
       "writes": [
         { "buffer": "transmission_gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 0 }
@@ -631,7 +665,7 @@
     {
       "name": "Transmission.Cull.Encode",
       "type": "compute",
-      "condition": "transmission_pending",
+      "condition": "scene_rendering && transmission_pending",
       "flags": ["NO_CULL"],
       "reads": [
         { "buffer": "transmission_gpu_draw_candidates", "access": "STORAGE_READ", "binding": 0 },
@@ -646,6 +680,7 @@
     },
     {
       "name": "VBuffer.Opaque",
+      "condition": "scene_rendering",
       "type": "graphics",
       "domain": "WORLD",
       "reads": [
@@ -675,7 +710,7 @@
     {
       "name": "SDSM.Reduce",
       "type": "compute",
-      "condition": "sdsm_enabled",
+      "condition": "scene_rendering && sdsm_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "opaque_vbuffer_depth", "access": "SAMPLED", "binding": 0 },
@@ -688,6 +723,7 @@
     },
     {
       "name": "HZB.BuildBase",
+      "condition": "scene_rendering",
       "type": "compute",
       "flags": ["NO_CULL"],
       "reads": [
@@ -705,6 +741,7 @@
     },
     {
       "name": "HZB.BuildMip.${i}",
+      "condition": "scene_rendering",
       "type": "compute",
       "repeat": { "count_source": "hzb_reduce_pass_count" },
       "flags": ["NO_CULL"],
@@ -729,7 +766,7 @@
     {
       "name": "Transmission.DepthSeed.0",
       "type": "transfer",
-      "condition": "transmission_pending",
+      "condition": "scene_rendering && transmission_pending",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "opaque_vbuffer_depth", "access": "TRANSFER_SRC", "binding": 0 }
@@ -747,7 +784,7 @@
     {
       "name": "Transmission.DepthSeed.1",
       "type": "transfer",
-      "condition": "transmission_pending",
+      "condition": "scene_rendering && transmission_pending",
       "flags": ["NO_CULL"],
       "reads": [{ "image": "opaque_vbuffer_depth", "access": "TRANSFER_SRC", "binding": 0 }],
       "writes": [{
@@ -759,7 +796,7 @@
     {
       "name": "Transmission.DepthSeed.2",
       "type": "transfer",
-      "condition": "transmission_pending",
+      "condition": "scene_rendering && transmission_pending",
       "flags": ["NO_CULL"],
       "reads": [{ "image": "opaque_vbuffer_depth", "access": "TRANSFER_SRC", "binding": 0 }],
       "writes": [{
@@ -771,7 +808,7 @@
     {
       "name": "Transmission.DepthSeed.3",
       "type": "transfer",
-      "condition": "transmission_pending",
+      "condition": "scene_rendering && transmission_pending",
       "flags": ["NO_CULL"],
       "reads": [{ "image": "opaque_vbuffer_depth", "access": "TRANSFER_SRC", "binding": 0 }],
       "writes": [{
@@ -783,7 +820,7 @@
     {
       "name": "Transmission.DepthSeed.Diagnostic.4",
       "type": "transfer",
-      "condition": "transmission_depth_diagnostic_enabled",
+      "condition": "scene_rendering && transmission_depth_diagnostic_enabled",
       "flags": ["NO_CULL"],
       "reads": [{ "image": "opaque_vbuffer_depth", "access": "TRANSFER_SRC", "binding": 0 }],
       "writes": [{
@@ -796,7 +833,7 @@
       "name": "VBuffer.Transmission.0",
       "type": "graphics",
       "domain": "WORLD_TRANSPARENT",
-      "condition": "transmission_pending",
+      "condition": "scene_rendering && transmission_pending",
       "reads": [
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 1 },
         { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
@@ -820,7 +857,7 @@
       "name": "VBuffer.Transmission.1",
       "type": "graphics",
       "domain": "WORLD_TRANSPARENT",
-      "condition": "transmission_pending",
+      "condition": "scene_rendering && transmission_pending",
       "reads": [
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 1 },
         { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
@@ -848,7 +885,7 @@
       "name": "VBuffer.Transmission.2",
       "type": "graphics",
       "domain": "WORLD_TRANSPARENT",
-      "condition": "transmission_pending",
+      "condition": "scene_rendering && transmission_pending",
       "reads": [
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 1 },
         { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
@@ -876,7 +913,7 @@
       "name": "VBuffer.Transmission.3",
       "type": "graphics",
       "domain": "WORLD_TRANSPARENT",
-      "condition": "transmission_pending",
+      "condition": "scene_rendering && transmission_pending",
       "reads": [
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 1 },
         { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
@@ -904,7 +941,7 @@
       "name": "VBuffer.Transmission.Diagnostic.4",
       "type": "graphics",
       "domain": "WORLD_TRANSPARENT",
-      "condition": "transmission_depth_diagnostic_enabled",
+      "condition": "scene_rendering && transmission_depth_diagnostic_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "buffer": "transmission_gpu_visible_draws", "access": "STORAGE_READ", "binding": 1 },
@@ -932,7 +969,7 @@
     {
       "name": "GBuffer.Resolve.Fullscreen",
       "type": "compute",
-      "condition": "!editor_enabled",
+      "condition": "scene_rendering && !editor_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "opaque_vbuffer", "access": "STORAGE_READ", "binding": 0 },
@@ -956,7 +993,7 @@
     {
       "name": "GBuffer.Resolve.Editor",
       "type": "compute",
-      "condition": "editor_enabled",
+      "condition": "scene_rendering && editor_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "opaque_vbuffer", "access": "STORAGE_READ", "binding": 0 },
@@ -980,7 +1017,7 @@
     {
       "name": "AO.PrefilterDepth",
       "type": "compute",
-      "condition": "gtao_enabled",
+      "condition": "scene_rendering && gtao_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "opaque_vbuffer_depth", "access": "SAMPLED", "binding": 0 }
@@ -998,7 +1035,7 @@
     {
       "name": "AO.PrefilterDepth.${i}",
       "type": "compute",
-      "condition": "gtao_enabled",
+      "condition": "scene_rendering && gtao_enabled",
       "repeat": { "count_source": "gtao_depth_mip_pass_count" },
       "flags": ["NO_CULL"],
       "reads": [
@@ -1022,7 +1059,7 @@
     {
       "name": "AO.Evaluate",
       "type": "compute",
-      "condition": "gtao_enabled",
+      "condition": "scene_rendering && gtao_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "opaque_vbuffer", "access": "STORAGE_READ", "binding": 0 },
@@ -1038,7 +1075,7 @@
     {
       "name": "AO.Denoise",
       "type": "compute",
-      "condition": "gtao_enabled",
+      "condition": "scene_rendering && gtao_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "gtao_raw", "access": "SAMPLED", "binding": 0 },
@@ -1052,7 +1089,7 @@
     {
       "name": "Lighting.Deferred.Fullscreen",
       "type": "compute",
-      "condition": "!editor_enabled",
+      "condition": "scene_rendering && !editor_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "opaque_vbuffer", "access": "STORAGE_READ", "binding": 0 },
@@ -1082,7 +1119,7 @@
     {
       "name": "Lighting.Deferred.Editor",
       "type": "compute",
-      "condition": "editor_enabled",
+      "condition": "scene_rendering && editor_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "opaque_vbuffer", "access": "STORAGE_READ", "binding": 0 },
@@ -1112,7 +1149,7 @@
     {
       "name": "Transmission.OpaquePyramid.Copy.Fullscreen",
       "type": "transfer",
-      "condition": "!editor_enabled && transmission_pending",
+      "condition": "scene_rendering && !editor_enabled && transmission_pending",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "hdr_pre_transmission", "access": "TRANSFER_SRC", "binding": 0 }
@@ -1125,7 +1162,7 @@
     {
       "name": "Transmission.OpaquePyramid.Copy.Editor",
       "type": "transfer",
-      "condition": "editor_enabled && transmission_pending",
+      "condition": "scene_rendering && editor_enabled && transmission_pending",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "scene_pre_transmission", "access": "TRANSFER_SRC", "binding": 0 }
@@ -1138,7 +1175,7 @@
     {
       "name": "Transmission.OpaquePyramid.Downsample.${i}",
       "type": "compute",
-      "condition": "transmission_pending",
+      "condition": "scene_rendering && transmission_pending",
       "repeat": { "count_source": "transmission_rough_mip_pass_count" },
       "flags": ["NO_CULL"],
       "reads": [
@@ -1152,7 +1189,7 @@
     {
       "name": "World.FeedbackCopy.Fullscreen",
       "type": "transfer",
-      "condition": "!editor_enabled",
+      "condition": "scene_rendering && !editor_enabled",
       "reads": [
         { "image": "hdr_pre_transmission", "access": "TRANSFER_SRC", "binding": 0 }
       ],
@@ -1164,7 +1201,7 @@
     {
       "name": "World.FeedbackCopy.Editor",
       "type": "transfer",
-      "condition": "editor_enabled",
+      "condition": "scene_rendering && editor_enabled",
       "reads": [
         { "image": "scene_pre_transmission", "access": "TRANSFER_SRC", "binding": 0 }
       ],
@@ -1176,7 +1213,7 @@
     {
       "name": "Transmission.Compact.Fullscreen.3",
       "type": "compute",
-      "condition": "!editor_enabled && transmission_compact_enabled",
+      "condition": "scene_rendering && !editor_enabled && transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 3, "layer_count": 1 } },
@@ -1194,7 +1231,7 @@
     {
       "name": "Transmission.Compact.Editor.3",
       "type": "compute",
-      "condition": "editor_enabled && transmission_compact_enabled",
+      "condition": "scene_rendering && editor_enabled && transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 3, "layer_count": 1 } },
@@ -1212,7 +1249,7 @@
     {
       "name": "Transmission.Shade.Compact.Fullscreen.3",
       "type": "compute",
-      "condition": "!editor_enabled && transmission_compact_enabled",
+      "condition": "scene_rendering && !editor_enabled && transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 3, "layer_count": 1 } },
@@ -1233,7 +1270,7 @@
     {
       "name": "Transmission.Shade.Compact.Editor.3",
       "type": "compute",
-      "condition": "editor_enabled && transmission_compact_enabled",
+      "condition": "scene_rendering && editor_enabled && transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 3, "layer_count": 1 } },
@@ -1254,7 +1291,7 @@
     {
       "name": "Transmission.Compact.Fullscreen.2",
       "type": "compute",
-      "condition": "!editor_enabled && transmission_compact_enabled",
+      "condition": "scene_rendering && !editor_enabled && transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 2, "layer_count": 1 } },
@@ -1272,7 +1309,7 @@
     {
       "name": "Transmission.Compact.Editor.2",
       "type": "compute",
-      "condition": "editor_enabled && transmission_compact_enabled",
+      "condition": "scene_rendering && editor_enabled && transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 2, "layer_count": 1 } },
@@ -1290,7 +1327,7 @@
     {
       "name": "Transmission.Shade.Compact.Fullscreen.2",
       "type": "compute",
-      "condition": "!editor_enabled && transmission_compact_enabled",
+      "condition": "scene_rendering && !editor_enabled && transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 2, "layer_count": 1 } },
@@ -1311,7 +1348,7 @@
     {
       "name": "Transmission.Shade.Compact.Editor.2",
       "type": "compute",
-      "condition": "editor_enabled && transmission_compact_enabled",
+      "condition": "scene_rendering && editor_enabled && transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 2, "layer_count": 1 } },
@@ -1332,7 +1369,7 @@
     {
       "name": "Transmission.Compact.Fullscreen.1",
       "type": "compute",
-      "condition": "!editor_enabled && transmission_compact_enabled",
+      "condition": "scene_rendering && !editor_enabled && transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 1, "layer_count": 1 } },
@@ -1350,7 +1387,7 @@
     {
       "name": "Transmission.Compact.Editor.1",
       "type": "compute",
-      "condition": "editor_enabled && transmission_compact_enabled",
+      "condition": "scene_rendering && editor_enabled && transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 1, "layer_count": 1 } },
@@ -1368,7 +1405,7 @@
     {
       "name": "Transmission.Shade.Compact.Fullscreen.1",
       "type": "compute",
-      "condition": "!editor_enabled && transmission_compact_enabled",
+      "condition": "scene_rendering && !editor_enabled && transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 1, "layer_count": 1 } },
@@ -1389,7 +1426,7 @@
     {
       "name": "Transmission.Shade.Compact.Editor.1",
       "type": "compute",
-      "condition": "editor_enabled && transmission_compact_enabled",
+      "condition": "scene_rendering && editor_enabled && transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 1, "layer_count": 1 } },
@@ -1410,7 +1447,7 @@
     {
       "name": "Transmission.Compact.Fullscreen.0",
       "type": "compute",
-      "condition": "!editor_enabled && transmission_compact_enabled",
+      "condition": "scene_rendering && !editor_enabled && transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 0, "layer_count": 1 } },
@@ -1428,7 +1465,7 @@
     {
       "name": "Transmission.Compact.Editor.0",
       "type": "compute",
-      "condition": "editor_enabled && transmission_compact_enabled",
+      "condition": "scene_rendering && editor_enabled && transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 0, "layer_count": 1 } },
@@ -1446,7 +1483,7 @@
     {
       "name": "Transmission.Shade.Compact.Fullscreen.0",
       "type": "compute",
-      "condition": "!editor_enabled && transmission_compact_enabled",
+      "condition": "scene_rendering && !editor_enabled && transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 0, "layer_count": 1 } },
@@ -1472,7 +1509,7 @@
     {
       "name": "Transmission.Shade.Compact.Editor.0",
       "type": "compute",
-      "condition": "editor_enabled && transmission_compact_enabled",
+      "condition": "scene_rendering && editor_enabled && transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 0, "layer_count": 1 } },
@@ -1498,7 +1535,7 @@
     {
       "name": "Transmission.Shade.Fullscreen.3",
       "type": "compute",
-      "condition": "!editor_enabled && transmission_pending && !transmission_compact_enabled",
+      "condition": "scene_rendering && !editor_enabled && transmission_pending && !transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 3, "layer_count": 1 } },
@@ -1522,7 +1559,7 @@
     {
       "name": "Transmission.Shade.Fullscreen.2",
       "type": "compute",
-      "condition": "!editor_enabled && transmission_pending && !transmission_compact_enabled",
+      "condition": "scene_rendering && !editor_enabled && transmission_pending && !transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 2, "layer_count": 1 } },
@@ -1546,7 +1583,7 @@
     {
       "name": "Transmission.Shade.Fullscreen.1",
       "type": "compute",
-      "condition": "!editor_enabled && transmission_pending && !transmission_compact_enabled",
+      "condition": "scene_rendering && !editor_enabled && transmission_pending && !transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 1, "layer_count": 1 } },
@@ -1570,7 +1607,7 @@
     {
       "name": "Transmission.Shade.Fullscreen.0",
       "type": "compute",
-      "condition": "!editor_enabled && transmission_pending && !transmission_compact_enabled",
+      "condition": "scene_rendering && !editor_enabled && transmission_pending && !transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 0, "layer_count": 1 } },
@@ -1598,7 +1635,7 @@
     {
       "name": "Transmission.Shade.Editor.3",
       "type": "compute",
-      "condition": "editor_enabled && transmission_pending && !transmission_compact_enabled",
+      "condition": "scene_rendering && editor_enabled && transmission_pending && !transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 3, "layer_count": 1 } },
@@ -1622,7 +1659,7 @@
     {
       "name": "Transmission.Shade.Editor.2",
       "type": "compute",
-      "condition": "editor_enabled && transmission_pending && !transmission_compact_enabled",
+      "condition": "scene_rendering && editor_enabled && transmission_pending && !transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 2, "layer_count": 1 } },
@@ -1646,7 +1683,7 @@
     {
       "name": "Transmission.Shade.Editor.1",
       "type": "compute",
-      "condition": "editor_enabled && transmission_pending && !transmission_compact_enabled",
+      "condition": "scene_rendering && editor_enabled && transmission_pending && !transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 1, "layer_count": 1 } },
@@ -1670,7 +1707,7 @@
     {
       "name": "Transmission.Shade.Editor.0",
       "type": "compute",
-      "condition": "editor_enabled && transmission_pending && !transmission_compact_enabled",
+      "condition": "scene_rendering && editor_enabled && transmission_pending && !transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 0, "layer_count": 1 } },
@@ -1698,7 +1735,7 @@
     {
       "name": "Transmission.Coverage.0",
       "type": "compute",
-      "condition": "transmission_pending && timing_enabled && !transmission_compact_enabled",
+      "condition": "scene_rendering && transmission_pending && timing_enabled && !transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 0, "layer_count": 1 } },
@@ -1709,7 +1746,7 @@
     {
       "name": "Transmission.Coverage.1",
       "type": "compute",
-      "condition": "transmission_pending && timing_enabled && !transmission_compact_enabled",
+      "condition": "scene_rendering && transmission_pending && timing_enabled && !transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 1, "layer_count": 1 } },
@@ -1720,7 +1757,7 @@
     {
       "name": "Transmission.Coverage.2",
       "type": "compute",
-      "condition": "transmission_pending && timing_enabled && !transmission_compact_enabled",
+      "condition": "scene_rendering && transmission_pending && timing_enabled && !transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 2, "layer_count": 1 } },
@@ -1731,7 +1768,7 @@
     {
       "name": "Transmission.Coverage.3",
       "type": "compute",
-      "condition": "transmission_pending && timing_enabled && !transmission_compact_enabled",
+      "condition": "scene_rendering && transmission_pending && timing_enabled && !transmission_compact_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 3, "layer_count": 1 } },
@@ -1742,7 +1779,7 @@
     {
       "name": "Transmission.Coverage.Diagnostic.4",
       "type": "compute",
-      "condition": "transmission_depth_diagnostic_enabled",
+      "condition": "scene_rendering && transmission_depth_diagnostic_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_diagnostic_vbuffer", "access": "STORAGE_READ", "binding": 0, "subresource": { "base_layer": 4, "layer_count": 1 } },
@@ -1753,7 +1790,7 @@
     {
       "name": "Picking.DepthSeed.Opaque",
       "type": "transfer",
-      "condition": "picking_pending && !transmission_pending",
+      "condition": "scene_rendering && picking_pending && !transmission_pending",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "opaque_vbuffer_depth", "access": "TRANSFER_SRC", "binding": 0 }
@@ -1766,7 +1803,7 @@
     {
       "name": "Picking.DepthSeed.Transmission",
       "type": "transfer",
-      "condition": "picking_pending && transmission_pending",
+      "condition": "scene_rendering && picking_pending && transmission_pending",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "transmission_vbuffer_depth", "access": "TRANSFER_SRC", "binding": 0, "subresource": { "base_layer": 0, "layer_count": 1 } }
@@ -1779,7 +1816,7 @@
     {
       "name": "Picking.Resolve.Opaque",
       "type": "compute",
-      "condition": "picking_pending && !transmission_pending",
+      "condition": "scene_rendering && picking_pending && !transmission_pending",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "opaque_vbuffer", "access": "STORAGE_READ", "binding": 0 },
@@ -1796,7 +1833,7 @@
     {
       "name": "Picking.Resolve.Transmission",
       "type": "compute",
-      "condition": "picking_pending && transmission_pending",
+      "condition": "scene_rendering && picking_pending && transmission_pending",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "opaque_vbuffer", "access": "STORAGE_READ", "binding": 0 },
@@ -1819,7 +1856,7 @@
       "name": "Picking.Features",
       "type": "graphics",
       "domain": "PICKING",
-      "condition": "picking_pending",
+      "condition": "scene_rendering && picking_pending",
       "flags": ["NO_CULL"],
       "attachments": {
         "color": [
@@ -1838,9 +1875,22 @@
       "execute": "pass.picking"
     },
     {
+      "name": "Picking.EditorOverlay",
+      "type": "graphics",
+      "domain": "PICKING",
+      "condition": "scene_rendering && editor_overlay_enabled && picking_pending",
+      "flags": ["NO_CULL"],
+      "attachments": {
+        "color": [
+          { "image": "picking_color", "load": "LOAD", "store": "STORE" }
+        ]
+      },
+      "execute": "pass.editor.overlay.picking"
+    },
+    {
       "name": "Picking.Readback",
       "type": "compute",
-      "condition": "picking_pending",
+      "condition": "scene_rendering && picking_pending",
       "flags": ["NO_CULL"],
       "reads": [
         {
@@ -1855,7 +1905,7 @@
       "name": "World.Blend.Fullscreen",
       "type": "graphics",
       "domain": "WORLD_TRANSPARENT",
-      "condition": "!editor_enabled",
+      "condition": "scene_rendering && !editor_enabled",
       "reads": [
         {
           "image": "shadow_map",
@@ -1884,7 +1934,7 @@
       "name": "World.Blend.Editor",
       "type": "graphics",
       "domain": "WORLD_TRANSPARENT",
-      "condition": "editor_enabled",
+      "condition": "scene_rendering && editor_enabled",
       "reads": [
         {
           "image": "shadow_map",
@@ -1912,7 +1962,7 @@
     {
       "name": "Temporal.Resolve.Fullscreen",
       "type": "compute",
-      "condition": "!editor_enabled && !metalfx_enabled",
+      "condition": "scene_rendering && !editor_enabled && !metalfx_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "hdr_scene_color", "access": "SAMPLED", "binding": 0 },
@@ -1939,7 +1989,7 @@
     {
       "name": "MetalFX.StageInputs",
       "type": "transfer",
-      "condition": "metalfx_enabled",
+      "condition": "scene_rendering && metalfx_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "hdr_scene_color", "access": "TRANSFER_SRC", "binding": 0, "when": "!editor_enabled" },
@@ -1957,7 +2007,7 @@
     {
       "name": "MetalFX.TemporalUpscale",
       "type": "compute",
-      "condition": "metalfx_enabled",
+      "condition": "scene_rendering && metalfx_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "metalfx_color_input", "access": "SAMPLED", "binding": 0 },
@@ -1972,7 +2022,7 @@
     {
       "name": "Temporal.Resolve.Editor",
       "type": "compute",
-      "condition": "editor_enabled && !metalfx_enabled",
+      "condition": "scene_rendering && editor_enabled && !metalfx_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "scene_color", "access": "SAMPLED", "binding": 0 },
@@ -1999,7 +2049,7 @@
     {
       "name": "Post.Exposure.Histogram",
       "type": "compute",
-      "condition": "exposure_automatic",
+      "condition": "scene_rendering && exposure_automatic",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "temporal_history_color", "access": "SAMPLED", "binding": 0, "when": "!metalfx_enabled" },
@@ -2013,7 +2063,7 @@
     {
       "name": "Post.Exposure.Resolve",
       "type": "compute",
-      "condition": "exposure_automatic",
+      "condition": "scene_rendering && exposure_automatic",
       "flags": ["NO_CULL"],
       "reads": [
         { "buffer": "exposure_histogram", "access": "STORAGE_READ", "binding": 0 }
@@ -2026,7 +2076,7 @@
     {
       "name": "Post.Bloom.Prefilter",
       "type": "compute",
-      "condition": "bloom_enabled",
+      "condition": "scene_rendering && bloom_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "temporal_history_color", "access": "SAMPLED", "binding": 0, "when": "!metalfx_enabled" },
@@ -2045,7 +2095,7 @@
     {
       "name": "Post.Bloom.Downsample.${i}",
       "type": "compute",
-      "condition": "bloom_enabled",
+      "condition": "scene_rendering && bloom_enabled",
       "repeat": { "count_source": "bloom_downsample_pass_count" },
       "flags": ["NO_CULL"],
       "reads": [
@@ -2069,7 +2119,7 @@
     {
       "name": "Post.Bloom.Upsample.${i}",
       "type": "compute",
-      "condition": "bloom_enabled",
+      "condition": "scene_rendering && bloom_enabled",
       "repeat": {
         "count_source": "bloom_upsample_pass_count",
         "reverse": true
@@ -2108,7 +2158,7 @@
     {
       "name": "Post.Bloom.Combine",
       "type": "compute",
-      "condition": "bloom_enabled",
+      "condition": "scene_rendering && bloom_enabled",
       "flags": ["NO_CULL"],
       "reads": [
         { "image": "temporal_history_color", "access": "SAMPLED", "binding": 0, "when": "!metalfx_enabled" },
@@ -2130,7 +2180,7 @@
       "name": "Post.Tonemap.Fullscreen",
       "type": "graphics",
       "domain": "POST",
-      "condition": "!editor_enabled",
+      "condition": "scene_rendering && !editor_enabled",
       "reads": [
         {
           "image": "temporal_history_color",
@@ -2175,10 +2225,10 @@
       "execute": "pass.tonemap"
     },
     {
-      "name": "Editor.Composite",
+      "name": "Editor.Resolve",
       "type": "graphics",
-      "domain": "UI",
-      "condition": "editor_enabled",
+      "domain": "POST",
+      "condition": "scene_rendering && editor_enabled",
       "reads": [
         {
           "image": "temporal_history_color",
@@ -2213,14 +2263,55 @@
       "attachments": {
         "color": [
           {
-            "image": "swapchain",
+            "image": "editor_scene_image",
             "load": "CLEAR",
             "store": "STORE",
             "clear": { "color": [0, 0, 0, 1] }
           }
         ]
       },
+      "execute": "pass.tonemap"
+    },
+    {
+      "name": "Editor.Overlay",
+      "type": "graphics",
+      "domain": "UI",
+      "condition": "scene_rendering && editor_overlay_enabled",
+      "attachments": {
+        "color": [
+          { "image": "editor_scene_image", "load": "LOAD", "store": "STORE" }
+        ]
+      },
+      "execute": "pass.editor.overlay"
+    },
+    {
+      "name": "Editor.Composite",
+      "type": "graphics",
+      "domain": "UI",
+      "condition": "editor_enabled && editor_image_available",
+      "reads": [
+        { "image": "editor_scene_image", "access": "SAMPLED", "binding": 0 }
+      ],
+      "attachments": {
+        "color": [
+          { "image": "swapchain", "load": "CLEAR", "store": "STORE",
+            "clear": { "color": [0, 0, 0, 1] } }
+        ]
+      },
       "execute": "pass.editor"
+    },
+    {
+      "name": "Editor.Clear",
+      "type": "graphics",
+      "domain": "UI",
+      "condition": "editor_enabled && !editor_image_available",
+      "attachments": {
+        "color": [
+          { "image": "swapchain", "load": "CLEAR", "store": "STORE",
+            "clear": { "color": [0, 0, 0, 1] } }
+        ]
+      },
+      "execute": "pass.editor.clear"
     },
     {
       "name": "UI.Fullscreen",

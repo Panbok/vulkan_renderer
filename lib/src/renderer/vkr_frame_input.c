@@ -1,5 +1,7 @@
 #include "renderer/vkr_frame_input.h"
 
+#include "containers/str.h"
+
 #include <math.h>
 
 vkr_internal VkrRendererError vkr_renderer_validation_fail(
@@ -436,6 +438,50 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT, "packet.editor",
                       "presence must match packet.frame.editor_enabled");
   if (editor) {
+    VkrRendererError overlay_error = vkr_renderer_validate_packet_array(
+        editor->overlay_draws, editor->overlay_draw_count,
+        VKR_EDITOR_OVERLAY_DRAW_MAX, "packet.editor.overlay_draws",
+        "packet.editor.overlay_draw_count", out_validation_error);
+    if (overlay_error != VKR_RENDERER_ERROR_NONE)
+      return overlay_error;
+    for (uint32_t i = 0u; i < editor->overlay_draw_count; ++i) {
+      const VkrEditorOverlayDraw *draw = &editor->overlay_draws[i];
+      if (!draw->geometry.id || !draw->object_id ||
+          !vkr_renderer_ui_vec4_finite(draw->color) ||
+          draw->color.x < 0.0f || draw->color.x > 1.0f ||
+          draw->color.y < 0.0f || draw->color.y > 1.0f ||
+          draw->color.z < 0.0f || draw->color.z > 1.0f ||
+          draw->color.w != 1.0f)
+        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                          "packet.editor.overlay_draws",
+                          "requires geometry, a pick ID and opaque linear color");
+      for (uint32_t component = 0u; component < 16u; ++component) {
+        if (!isfinite(draw->model.elements[component]))
+          VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                            "packet.editor.overlay_draws.model",
+                            "must be finite");
+      }
+    }
+    if (editor->scene_rendering_stopped > true_v)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.editor.scene_rendering_stopped",
+                        "must be zero or one");
+    if (editor->scene_rendering_stopped && packet->debug &&
+        packet->debug->capture) {
+      const VkrCaptureBatchRequest *capture = packet->debug->capture;
+      if (capture->item_count > VKR_CAPTURE_MAX_ITEMS ||
+          (capture->item_count > 0u && !capture->items))
+        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                          "packet.debug.capture", "invalid capture item array");
+      for (uint32_t i = 0u; i < capture->item_count; ++i) {
+        const VkrCaptureChannelDescription *channel =
+            vkr_renderer_capture_channel_get(capture->items[i].channel);
+        if (!channel || !string_equals(channel->source_name, "swapchain"))
+          VKR_REJECT_PACKET(
+              VKR_RENDERER_ERROR_CAPTURE_UNAVAILABLE, "packet.debug.capture",
+              "stopped Scene rendering only supports final-color capture");
+      }
+    }
     const Vec4 rect = editor->image_rect_px;
     if (!isfinite(rect.x) || !isfinite(rect.y) || !isfinite(rect.z) ||
         !isfinite(rect.w) || rect.x < 0.0f || rect.y < 0.0f || rect.z <= 0.0f ||

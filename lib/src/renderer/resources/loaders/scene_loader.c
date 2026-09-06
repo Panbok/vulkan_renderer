@@ -136,6 +136,9 @@ typedef enum SceneAsyncFinalizeStage {
 } SceneAsyncFinalizeStage;
 
 typedef struct SceneMeshAsyncState {
+  VkrEntityId *source_nodes;
+  uint32_t source_node_count;
+  uint32_t source_cursor;
   bool8_t requested;
   bool8_t attached;
   bool8_t completed;
@@ -151,6 +154,7 @@ typedef struct VkrSceneLoaderAsyncPayload {
   struct VkrRenderAssets *assets;
   char *json_storage;
   uint64_t json_length;
+  uint64_t scene_source_fingerprint;
   SceneEntityImport *imports;
   uint32_t imports_capacity;
   uint32_t entity_count;
@@ -278,16 +282,25 @@ vkr_internal bool8_t scene_loader_apply_gltf_punctual_light(
   const VkrSceneGltfPunctualLightImport *import =
       &payload->gltf_punctual_lights[light_index];
   VkrSceneError scene_error = VKR_SCENE_ERROR_NONE;
-  const VkrEntityId entity = vkr_scene_create_entity(scene, &scene_error);
+  const SceneMeshAsyncState *mesh =
+      &payload->mesh_states[import->scene_entity_index];
+  const bool8_t source_node =
+      mesh->source_nodes && import->gltf_node_index < mesh->source_node_count;
+  const VkrEntityId entity = source_node
+                                 ? mesh->source_nodes[import->gltf_node_index]
+                                 : vkr_scene_create_entity(scene, &scene_error);
+  if (source_node && entity.u64 == VKR_ENTITY_ID_INVALID.u64)
+    return true_v;
   if (entity.u64 == VKR_ENTITY_ID_INVALID.u64) {
     *out_error = scene_error_to_renderer_error(scene_error);
     return false_v;
   }
   String8 name = string8_create_from_cstr((const uint8_t *)import->name,
                                           string_length(import->name));
-  if (!vkr_scene_set_name(scene, entity, name) ||
-      !vkr_scene_set_transform(scene, entity, import->position,
-                               vkr_quat_identity(), vec3_one())) {
+  if (!source_node &&
+      (!vkr_scene_set_name(scene, entity, name) ||
+       !vkr_scene_set_transform(scene, entity, import->position,
+                                vkr_quat_identity(), vec3_one()))) {
     *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
     return false_v;
   }
@@ -296,14 +309,14 @@ vkr_internal bool8_t scene_loader_apply_gltf_punctual_light(
     const SceneDirectionalLight light = {
         .color = import->color,
         .intensity = import->intensity,
-        .direction_local = import->direction,
+        .direction_local = source_node ? vec3_new(0, 0, -1) : import->direction,
         .enabled = true_v,
     };
     if (!vkr_scene_set_directional_light(scene, entity, &light)) {
       *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
       return false_v;
     }
-    payload->load_result.directional_light_count++;
+    payload->load_result.directional_light_count += !source_node;
   } else if (import->type == VKR_SCENE_GLTF_LIGHT_POINT ||
              import->type == VKR_SCENE_GLTF_LIGHT_SPOT) {
     const ScenePointLight light = {
@@ -313,7 +326,7 @@ vkr_internal bool8_t scene_loader_apply_gltf_punctual_light(
         .linear = 0.0f,
         .quadratic = 0.0f,
         .range = import->range,
-        .direction_local = import->direction,
+        .direction_local = source_node ? vec3_new(0, 0, -1) : import->direction,
         .inner_cone_angle = import->inner_cone_angle,
         .outer_cone_angle = import->outer_cone_angle,
         .kind = import->type == VKR_SCENE_GLTF_LIGHT_SPOT
@@ -325,9 +338,9 @@ vkr_internal bool8_t scene_loader_apply_gltf_punctual_light(
       *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
       return false_v;
     }
-    payload->load_result.point_light_count++;
+    payload->load_result.point_light_count += !source_node;
   }
-  payload->load_result.entity_count++;
+  payload->load_result.entity_count += !source_node;
   *out_error = VKR_RENDERER_ERROR_NONE;
   return true_v;
 }
@@ -816,6 +829,8 @@ vkr_internal bool8_t scene_loader_read_gltf_punctual_lights(
         .outer_cone_angle = (float32_t)node->light->spot_outer_cone_angle,
         .type = type,
     };
+    out->scene_entity_index = scene_entity_index;
+    out->gltf_node_index = node_index;
     snprintf(out->name, sizeof(out->name), "gltf.%u.%s", scene_entity_index,
              node->name          ? node->name
              : node->light->name ? node->light->name
@@ -1930,6 +1945,142 @@ vkr_internal void scene_json_parse_entity(const VkrJsonReader *entity_reader,
   scene_json_parse_directional_light(entity_reader, entity_index, out_entity);
 }
 
+vkr_internal uint64_t scene_loader_source_fingerprint(String8 json) {
+  uint64_t hash = UINT64_C(14695981039346656037);
+  for (uint64_t i = 0; i < json.length; ++i)
+    hash = (hash ^ json.str[i]) * UINT64_C(1099511628211);
+  return hash;
+}
+
+bool8_t vkr_scene_instantiate_source_nodes(VkrScene *scene,
+                                           const VkrMeshSource *source,
+                                           VkrEntityId wrapper,
+                                           uint32_t scene_entity_index,
+                                           VkrEntityId *out_nodes,
+                                           VkrSceneError *out_error) {
+  if (!scene || !source || !out_nodes ||
+      !vkr_scene_entity_alive(scene, wrapper))
+    return false_v;
+  const SceneSourceIdentity *wrapper_source = vkr_entity_get_component(
+      scene->world, wrapper, scene->comp_source_identity);
+  uint64_t fingerprint =
+      wrapper_source ? wrapper_source->source_fingerprint : 0u;
+  if (fingerprint) {
+    for (uint32_t i = 0; i < 8u; ++i)
+      fingerprint = (fingerprint ^ ((source->fingerprint >> (i * 8u)) & 255u)) *
+                    UINT64_C(1099511628211);
+  } else {
+    fingerprint = source->fingerprint;
+  }
+  SceneSourceIdentity identity = {
+      .scene_entity_index = scene_entity_index,
+      .gltf_node_index = UINT32_MAX,
+      .gltf_mesh_index = UINT32_MAX,
+      .gltf_camera_index = UINT32_MAX,
+      .gltf_skin_index = UINT32_MAX,
+      .gltf_light_index = UINT32_MAX,
+      .source_fingerprint = fingerprint,
+  };
+  const SceneSourceIdentity wrapper_identity = identity;
+  for (uint32_t i = 0; i < source->nodes.length; ++i)
+    out_nodes[i] = VKR_ENTITY_ID_INVALID;
+  for (uint32_t i = 0; i < source->nodes.length; ++i) {
+    const VkrMeshSourceNode *node = &source->nodes.data[i];
+    if (!node->in_scene)
+      continue;
+    VkrEntityId entity = vkr_scene_create_entity(scene, out_error);
+    if (entity.u64 == VKR_ENTITY_ID_INVALID.u64)
+      goto cleanup;
+    out_nodes[i] = entity;
+    identity.gltf_node_index = i;
+    identity.gltf_mesh_index = node->mesh;
+    identity.gltf_camera_index = node->camera;
+    identity.gltf_skin_index = node->skin;
+    identity.gltf_light_index = node->light;
+    if (!vkr_scene_set_name(scene, entity, node->name) ||
+        !vkr_scene_set_local_matrix(scene, entity, node->local) ||
+        !vkr_scene_set_source_identity(scene, entity, &identity))
+      goto cleanup;
+    vkr_scene_set_visibility(scene, entity, true_v, true_v);
+    if (!vkr_entity_has_component(scene->world, entity, scene->comp_visibility))
+      goto cleanup;
+    if (node->punctual.kind == 1u) {
+      SceneDirectionalLight light = {.color = node->punctual.color,
+                                     .intensity = node->punctual.intensity,
+                                     .direction_local = {0, 0, -1},
+                                     .enabled = true_v};
+      if (!vkr_scene_set_directional_light(scene, entity, &light))
+        goto cleanup;
+    } else if (node->punctual.kind == 2u || node->punctual.kind == 3u) {
+      ScenePointLight light = {.color = node->punctual.color,
+                               .intensity = node->punctual.intensity,
+                               .constant = 1.0f,
+                               .range = node->punctual.range,
+                               .direction_local = {0, 0, -1},
+                               .inner_cone_angle = node->punctual.inner_cone,
+                               .outer_cone_angle = node->punctual.outer_cone,
+                               .kind = node->punctual.kind == 3u
+                                           ? VKR_POINT_LIGHT_KIND_GLTF_SPOT
+                                           : VKR_POINT_LIGHT_KIND_GLTF_POINT,
+                               .enabled = true_v};
+      if (!vkr_scene_set_point_light(scene, entity, &light))
+        goto cleanup;
+    }
+  }
+  if (!vkr_scene_set_source_identity(scene, wrapper, &wrapper_identity))
+    goto cleanup;
+  for (uint32_t i = 0; i < source->nodes.length; ++i) {
+    const VkrMeshSourceNode *node = &source->nodes.data[i];
+    if (node->in_scene)
+      vkr_scene_set_parent(
+          scene, out_nodes[i],
+          node->parent == UINT32_MAX ? wrapper : out_nodes[node->parent]);
+  }
+  return true_v;
+
+cleanup:
+  for (uint32_t i = 0; i < source->nodes.length; ++i) {
+    if (out_nodes[i].u64 == VKR_ENTITY_ID_INVALID.u64)
+      continue;
+    SceneName *name = vkr_entity_get_component_mut(scene->world, out_nodes[i],
+                                                   scene->comp_name);
+    if (name && name->name.str)
+      vkr_allocator_free(scene->alloc, name->name.str, name->name.length + 1u,
+                         VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    vkr_scene_destroy_entity(scene, out_nodes[i]);
+    out_nodes[i] = VKR_ENTITY_ID_INVALID;
+  }
+  if (out_error && *out_error == VKR_SCENE_ERROR_NONE)
+    *out_error = VKR_SCENE_ERROR_COMPONENT_ADD_FAILED;
+  return false_v;
+}
+
+vkr_internal bool8_t scene_loader_attach_source_mesh(
+    VkrScene *scene, VkrRenderAssets *assets, VkrEntityId entity,
+    const VkrMeshLoadDesc *desc, const VkrResourceHandleInfo *resource,
+    bool8_t shadow_static, VkrRendererError *out_error) {
+  VkrMeshInstanceHandle instance =
+      vkr_mesh_manager_create_instance_from_resource(
+          &assets->mesh_manager, desc, resource, 0u, true_v, out_error);
+  if (!instance.id)
+    return false_v;
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  if (!vkr_scene_track_instance(scene, instance, &error)) {
+    (void)vkr_mesh_manager_destroy_instance(&assets->mesh_manager, instance);
+    *out_error = scene_error_to_renderer_error(error);
+    return false_v;
+  }
+  if (!vkr_scene_set_mesh_renderer(scene, entity, instance)) {
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return false_v;
+  }
+  (void)vkr_mesh_manager_instance_set_shadow_mobility(
+      &assets->mesh_manager, instance,
+      shadow_static ? VKR_SHADOW_CASTER_MOBILITY_STATIC
+                    : VKR_SHADOW_CASTER_MOBILITY_DYNAMIC);
+  return true_v;
+}
+
 bool8_t vkr_scene_load_from_file(VkrScene *scene,
                                  struct VkrRenderAssets *assets, String8 path,
                                  VkrAllocator *temp_alloc,
@@ -2082,9 +2233,11 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene,
     }
 
     entity_ids[i] = entity;
+    vkr_scene_set_visibility(scene, entity, true_v, true_v);
+    if (!vkr_entity_has_component(scene->world, entity, scene->comp_visibility))
+      return false_v;
 
-    if (imports[i].name.length > 0 &&
-        !vkr_scene_set_name(scene, entity, imports[i].name)) {
+    if (!vkr_scene_set_name(scene, entity, imports[i].name)) {
       if (out_error)
         *out_error = VKR_SCENE_ERROR_ALLOC_FAILED;
       log_error("Scene loader: failed to set name for entity %u", i);
@@ -2113,92 +2266,67 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene,
     vkr_scene_set_parent(scene, entity_ids[i], entity_ids[parent_index]);
   }
 
-  uint32_t mesh_desc_count = 0;
-  for (uint32_t i = 0; i < entity_count; i++) {
-    if (imports[i].has_mesh) {
-      mesh_desc_count++;
-    }
-  }
-
   uint32_t loaded_meshes = 0;
-  if (mesh_desc_count > 0) {
-    VkrMeshLoadDesc *mesh_descs = vkr_allocator_alloc(
-        temp_alloc, mesh_desc_count * sizeof(VkrMeshLoadDesc),
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    uint32_t *mesh_entity_indices =
-        vkr_allocator_alloc(temp_alloc, mesh_desc_count * sizeof(uint32_t),
-                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    VkrMeshInstanceHandle *instance_handles = vkr_allocator_alloc(
-        temp_alloc, mesh_desc_count * sizeof(VkrMeshInstanceHandle),
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    VkrRendererError *mesh_errors = vkr_allocator_alloc(
-        temp_alloc, mesh_desc_count * sizeof(VkrRendererError),
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-
-    if (!mesh_descs || !mesh_entity_indices || !instance_handles ||
-        !mesh_errors) {
-      if (out_error)
-        *out_error = VKR_SCENE_ERROR_ALLOC_FAILED;
-      log_error("Scene loader: failed to allocate mesh load buffers");
+  uint32_t imported_nodes = 0;
+  const uint64_t scene_source_fingerprint =
+      scene_loader_source_fingerprint(json);
+  for (uint32_t i = 0; i < entity_count; ++i) {
+    SceneSourceIdentity identity = {.scene_entity_index = i,
+                                    .gltf_node_index = UINT32_MAX,
+                                    .gltf_mesh_index = UINT32_MAX,
+                                    .gltf_camera_index = UINT32_MAX,
+                                    .gltf_skin_index = UINT32_MAX,
+                                    .gltf_light_index = UINT32_MAX,
+                                    .source_fingerprint =
+                                        scene_source_fingerprint};
+    if (!vkr_scene_set_source_identity(scene, entity_ids[i], &identity))
       return false_v;
+    if (!imports[i].has_mesh)
+      continue;
+    VkrResourceHandleInfo resource = {0}, resolved = {0};
+    VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+    if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_MESH, imports[i].mesh_path,
+                                  temp_alloc, &resource, &error))
+      return false_v;
+    resolved = resource;
+    bool8_t success = resource.as.mesh || vkr_resource_system_try_get_resolved(
+                                              &resource, &resolved);
+    VkrMeshLoadDesc desc = {.mesh_path = imports[i].mesh_path,
+                            .pipeline_domain = imports[i].pipeline_domain,
+                            .shader_override = imports[i].shader_override,
+                            .transform = vkr_transform_identity()};
+    if (success && resolved.as.mesh->source.nodes.length) {
+      const VkrMeshSource *source = &resolved.as.mesh->source;
+      VkrEntityId *nodes = vkr_allocator_alloc(
+          temp_alloc, source->nodes.length * sizeof(VkrEntityId),
+          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      success = nodes && vkr_scene_instantiate_source_nodes(
+                             scene, source, entity_ids[i], i, nodes, out_error);
+      for (uint32_t n = 0; success && n < source->nodes.length; ++n) {
+        const VkrMeshSourceNode *node = &source->nodes.data[n];
+        if (!node->in_scene)
+          continue;
+        imported_nodes++;
+        if (node->mesh_variant == UINT32_MAX ||
+            !source->meshes.data[node->mesh_variant].range_count)
+          continue;
+        desc.source_mesh_index_plus_one = node->mesh_variant + 1u;
+        success = scene_loader_attach_source_mesh(
+            scene, assets, nodes[n], &desc, &resolved,
+            imports[i].shadow_caster_static, &error);
+        loaded_meshes += success;
+      }
+    } else if (success) {
+      success = scene_loader_attach_source_mesh(
+          scene, assets, entity_ids[i], &desc, &resolved,
+          imports[i].shadow_caster_static, &error);
+      loaded_meshes += success;
     }
-
-    uint32_t desc_index = 0;
-    for (uint32_t i = 0; i < entity_count; i++) {
-      if (!imports[i].has_mesh) {
-        continue;
-      }
-
-      mesh_descs[desc_index] = (VkrMeshLoadDesc){
-          .mesh_path = imports[i].mesh_path,
-          .transform = vkr_transform_from_position_scale_rotation(
-              imports[i].position, imports[i].scale, imports[i].rotation),
-          .pipeline_domain = imports[i].pipeline_domain,
-          .shader_override = imports[i].shader_override,
-      };
-      mesh_entity_indices[desc_index] = i;
-      desc_index++;
-    }
-
-    vkr_mesh_manager_create_instances_batch(&assets->mesh_manager, mesh_descs,
-                                            mesh_desc_count, instance_handles,
-                                            mesh_errors);
-
-    for (uint32_t i = 0; i < mesh_desc_count; i++) {
-      VkrMeshInstanceHandle instance = instance_handles[i];
-      VkrRendererError mesh_err = mesh_errors[i];
-      if (instance.id == 0 || mesh_err != VKR_RENDERER_ERROR_NONE) {
-        String8 err_str = vkr_renderer_get_error_string(mesh_err);
-        log_error("Scene loader: failed to load mesh '%.*s': %.*s",
-                  (int)mesh_descs[i].mesh_path.length,
-                  mesh_descs[i].mesh_path.str, (int)err_str.length,
-                  err_str.str);
-        continue;
-      }
-
-      uint32_t entity_index = mesh_entity_indices[i];
-      VkrEntityId entity = entity_ids[entity_index];
-
-      if (!vkr_scene_set_mesh_renderer(scene, entity, instance)) {
-        if (out_error)
-          *out_error = VKR_SCENE_ERROR_COMPONENT_ADD_FAILED;
-        log_error("Scene loader: failed to add mesh renderer to entity %u",
-                  entity_index);
-        return false_v;
-      }
-
-      if (!vkr_scene_track_instance(scene, instance, out_error)) {
-        log_error("Scene loader: failed to track instance %u", instance.id);
-        return false_v;
-      }
-
-      (void)vkr_mesh_manager_instance_set_shadow_mobility(
-          &assets->mesh_manager, instance,
-          imports[entity_index].shadow_caster_static
-              ? VKR_SHADOW_CASTER_MOBILITY_STATIC
-              : VKR_SHADOW_CASTER_MOBILITY_DYNAMIC);
-
-      loaded_meshes++;
+    vkr_resource_system_unload(&resource, imports[i].mesh_path);
+    if (!success) {
+      if (out_error)
+        *out_error = VKR_SCENE_ERROR_MESH_LOAD_FAILED;
+      return false_v;
     }
   }
 
@@ -2342,7 +2470,7 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene,
   }
 
   if (out_result) {
-    out_result->entity_count = entity_count;
+    out_result->entity_count = entity_count + imported_nodes;
     out_result->mesh_count = loaded_meshes;
     out_result->text3d_count = loaded_text3d;
     out_result->shape_count = loaded_shapes;
@@ -2775,6 +2903,64 @@ vkr_internal bool8_t scene_loader_attach_mesh_for_entity(
     return false_v;
   }
 
+  VkrResourceHandleInfo resolved = mesh_state->request_info;
+  if (!resolved.as.mesh && !vkr_resource_system_try_get_resolved(
+                               &mesh_state->request_info, &resolved)) {
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
+    return false_v;
+  }
+  const VkrMeshSource *source = &resolved.as.mesh->source;
+  if (source->nodes.length) {
+    VkrScene *scene = vkr_scene_handle_get_scene(payload->scene_handle);
+    if (!mesh_state->source_nodes) {
+      mesh_state->source_node_count = (uint32_t)source->nodes.length;
+      mesh_state->source_nodes = vkr_allocator_alloc_ts(
+          &payload->assets->scene_async_allocator,
+          source->nodes.length * sizeof(VkrEntityId),
+          VKR_ALLOCATOR_MEMORY_TAG_ARRAY, payload->assets->scene_async_mutex);
+      VkrSceneError error = VKR_SCENE_ERROR_NONE;
+      if (!mesh_state->source_nodes ||
+          !vkr_scene_instantiate_source_nodes(
+              scene, source, payload->entity_ids[entity_index], entity_index,
+              mesh_state->source_nodes, &error)) {
+        *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+        return false_v;
+      }
+      for (uint32_t n = 0; n < source->nodes.length; ++n) {
+        const VkrMeshSourceNode *node = &source->nodes.data[n];
+        payload->load_result.entity_count += node->in_scene;
+        payload->load_result.directional_light_count +=
+            node->in_scene && node->punctual.kind == 1u;
+        payload->load_result.point_light_count +=
+            node->in_scene && node->punctual.kind >= 2u;
+      }
+    }
+    uint32_t end = Min(mesh_state->source_cursor + SCENE_ASYNC_ENTITY_CHUNK,
+                       mesh_state->source_node_count);
+    for (; mesh_state->source_cursor < end; ++mesh_state->source_cursor) {
+      uint32_t n = mesh_state->source_cursor;
+      const VkrMeshSourceNode *node = &source->nodes.data[n];
+      if (!node->in_scene || node->mesh_variant == UINT32_MAX ||
+          !source->meshes.data[node->mesh_variant].range_count)
+        continue;
+      VkrMeshLoadDesc desc = {.mesh_path = entity_import->mesh_path,
+                              .source_mesh_index_plus_one =
+                                  node->mesh_variant + 1u,
+                              .pipeline_domain = entity_import->pipeline_domain,
+                              .shader_override = entity_import->shader_override,
+                              .transform = vkr_transform_identity()};
+      if (!scene_loader_attach_source_mesh(
+              scene, payload->assets, mesh_state->source_nodes[n], &desc,
+              &resolved, entity_import->shadow_caster_static, out_error))
+        return false_v;
+      payload->load_result.mesh_count++;
+    }
+    mesh_state->attached = end == mesh_state->source_node_count;
+    *out_error = mesh_state->attached ? VKR_RENDERER_ERROR_NONE
+                                      : VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
+    return mesh_state->attached;
+  }
+
   VkrMeshLoadDesc mesh_desc = {
       .mesh_path = entity_import->mesh_path,
       .transform = vkr_transform_from_position_scale_rotation(
@@ -2959,6 +3145,8 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
     return false_v;
   }
   payload->json_length = json_copy.length;
+  payload->scene_source_fingerprint =
+      scene_loader_source_fingerprint(json_copy);
 
   VkrSceneError scene_error = VKR_SCENE_ERROR_NONE;
   if (!scene_loader_parse_json_imports(
@@ -3132,9 +3320,26 @@ vkr_internal bool8_t vkr_scene_loader_finalize_async(
       }
 
       async_payload->entity_ids[i] = entity;
+      vkr_scene_set_visibility(scene, entity, true_v, true_v);
+      if (!vkr_entity_has_component(scene->world, entity,
+                                    scene->comp_visibility)) {
+        *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+        return false_v;
+      }
+      const SceneSourceIdentity source_identity = {
+          .scene_entity_index = i,
+          .gltf_node_index = UINT32_MAX,
+          .gltf_mesh_index = UINT32_MAX,
+          .gltf_camera_index = UINT32_MAX,
+          .gltf_skin_index = UINT32_MAX,
+          .gltf_light_index = UINT32_MAX,
+          .source_fingerprint = async_payload->scene_source_fingerprint};
+      if (!vkr_scene_set_source_identity(scene, entity, &source_identity)) {
+        *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+        return false_v;
+      }
 
-      if (async_payload->imports[i].name.length > 0 &&
-          !vkr_scene_set_name(scene, entity, async_payload->imports[i].name)) {
+      if (!vkr_scene_set_name(scene, entity, async_payload->imports[i].name)) {
         *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
         return false_v;
       }
@@ -3211,7 +3416,7 @@ vkr_internal bool8_t vkr_scene_loader_finalize_async(
       *out_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
       return false_v;
     }
-    async_payload->stage = SCENE_ASYNC_STAGE_APPLY_GLTF_LIGHTS;
+    async_payload->stage = SCENE_ASYNC_STAGE_ATTACH_MESHES;
     async_payload->stage_cursor = 0;
     *out_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
     return false_v;
@@ -3235,7 +3440,7 @@ vkr_internal bool8_t vkr_scene_loader_finalize_async(
       *out_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
       return false_v;
     }
-    async_payload->stage = SCENE_ASYNC_STAGE_ATTACH_MESHES;
+    async_payload->stage = SCENE_ASYNC_STAGE_WAIT_DEPENDENCIES;
     async_payload->stage_cursor = 0;
     *out_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
     return false_v;
@@ -3261,7 +3466,8 @@ vkr_internal bool8_t vkr_scene_loader_finalize_async(
       *out_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
       return false_v;
     }
-    async_payload->stage = SCENE_ASYNC_STAGE_WAIT_DEPENDENCIES;
+    async_payload->stage = SCENE_ASYNC_STAGE_APPLY_GLTF_LIGHTS;
+    async_payload->stage_cursor = 0;
     *out_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
     return false_v;
   }
@@ -3326,6 +3532,15 @@ vkr_internal void scene_loader_destroy_async_payload_contents(
     if (payload->mesh_states) {
       for (uint32_t i = 0; i < payload->entity_count; ++i) {
         SceneMeshAsyncState *mesh_state = &payload->mesh_states[i];
+        if (mesh_state->source_nodes) {
+          vkr_allocator_free_ts(
+              &payload->assets->scene_async_allocator, mesh_state->source_nodes,
+              (uint64_t)mesh_state->source_node_count * sizeof(VkrEntityId),
+              VKR_ALLOCATOR_MEMORY_TAG_ARRAY,
+              payload->assets->scene_async_mutex);
+          mesh_state->source_nodes = NULL;
+        }
+
         if (mesh_state->request_info.request_id != 0 &&
             payload->imports[i].mesh_path.str &&
             payload->imports[i].mesh_path.length > 0) {

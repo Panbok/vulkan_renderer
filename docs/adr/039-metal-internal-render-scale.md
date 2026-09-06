@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-09-06
 authority: adr
 ---
 
@@ -22,8 +22,10 @@ unit scale for API callers. Vulkan rejects non-unit scale. Keep native physical
 output and UI extent separate from the Scene presentation extent: whole target
 in direct mode or the dock-owned panel in editor mode.
 
-Round Scene output dimensions times scale to the internal render extent, with a
-minimum of one pixel. Viewport-domain graph resources use that internal extent.
+Spatial mode rounds Scene output dimensions times scale to the nearest internal
+pixel, with a minimum of one. MetalFX rounds upward so integer content dimensions
+cannot cross the device's maximum upscaling factor at small dock extents.
+Viewport-domain graph resources use that internal extent.
 Spatial reconstruction samples internal HDR during final tonemap/composition;
 FXAA offsets use output pixels and UI composes afterward at native resolution.
 Portable TAA stays same-resolution within the internal Scene domain.

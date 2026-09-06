@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-09-06
 authority: adr
 ---
 # ADR-010: ECS-owned scene state with a retained render mirror
@@ -31,6 +31,22 @@ local matrices, then a parent-before-child order updates world matrices. A
 child index accelerates hierarchy traversal; a query scan remains the fallback
 when the index cannot be built. The same update marks renderable entities for
 mirror synchronization.
+
+Source scene entities keep their authored JSON entity index. A glTF instance
+expands below that wrapper into the selected glTF scene's nodes, including
+non-renderable parents. `SceneSourceIdentity` pairs the wrapper index with the
+original glTF node index and a source-content fingerprint; renaming or moving
+an ECS entity does not change that identity. Shared mesh references create
+independent scene instances backed by the same asset geometry.
+
+Imported local matrices remain exact. A reconstruction check determines whether
+TRS controls can represent the matrix; shear and degenerate matrices remain
+read-only in those controls. An explicit supported TRS edit replaces the matrix
+while preserving the parent. Punctual lights attach to their source nodes.
+Camera and skin references and the source animation count are retained metadata;
+this import path does not activate glTF cameras or implement skeletal/animation
+playback. `structure_revision` identifies create, destroy, rename and reparent
+changes for editor hierarchy rebuilding.
 
 ## Consequences
 

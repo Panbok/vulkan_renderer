@@ -65,13 +65,20 @@ bool8_t vkr_render_assets_initialize(
  * initialization. */
 void vkr_render_assets_shutdown(VkrRenderAssets *assets);
 
-bool8_t vkr_render_assets_pump(VkrRenderAssets *assets,
-                               VkrResourceSubmissionState submission,
-                               const VkrDeviceMemoryStats *device_memory);
+/* Refresh at a sampled frame boundary or after committed Scene memory relief. */
+void vkr_render_assets_refresh_texture_residency_budget(
+    VkrRenderAssets *assets, const VkrDeviceMemoryStats *device_memory);
+
+/* Publish before sampling memory and applying ready material textures, so a
+ * newly charged texture heap cannot be rejected by an older allowance. */
+bool8_t vkr_render_assets_pump_publications(
+    VkrRenderAssets *assets, VkrResourceSubmissionState submission);
 uint32_t vkr_render_assets_ibl_sh_slot(const VkrRenderAssets *assets,
                                        VkrTextureHandle source);
 
-/* Pure pressure/hysteresis policy; false means keep the current budget. */
+/* Pure pressure/hysteresis policy; false means keep the current budget.
+ * With texture heap accounting, out_budget is always the finite capacity
+ * allowance; out_pressure_active selects whether it is enforced. */
 bool8_t vkr_render_assets_texture_pressure_budget(
     const VkrDeviceMemoryStats *stats, bool8_t pressure_active,
     uint64_t *out_budget, bool8_t *out_pressure_active);

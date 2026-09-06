@@ -527,16 +527,16 @@ vkr_global const VkrMetalPacketAbiField vkr_temporal_resolve_root_fields[] = {
                   "history_depth", 72),
     VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot,
                   history_identity_texture_id, "history_identity", 80),
-    VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot,
-                  history_surface_texture_id, "history_surface", 88),
+    VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, history_surface_texture_id,
+                  "history_surface", 88),
     VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, output_color_texture_id,
                   "output_color", 96),
     VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, output_depth_texture_id,
                   "output_depth", 104),
     VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, output_identity_texture_id,
                   "output_identity", 112),
-    VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot,
-                  output_surface_texture_id, "output_surface", 120),
+    VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, output_surface_texture_id,
+                  "output_surface", 120),
     VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, extent, "extent", 128),
     VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, history_valid,
                   "history_valid", 136),
@@ -723,6 +723,16 @@ vkr_global const VkrMetalPacketAbiField vkr_picking_resolve_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketPickingResolveRoot, reserved, "reserved", 124),
 };
 
+vkr_global const VkrMetalPacketAbiField vkr_editor_overlay_root_fields[] = {
+    VKR_ABI_FIELD(VkrMetalPacketEditorOverlayRoot, vertices, "vertices", 0),
+    VKR_ABI_FIELD(VkrMetalPacketEditorOverlayRoot, decode, "decode", 8),
+    VKR_ABI_FIELD(VkrMetalPacketEditorOverlayRoot, model_view_projection,
+                  "model_view_projection", 16),
+    VKR_ABI_FIELD(VkrMetalPacketEditorOverlayRoot, color, "color", 80),
+    VKR_ABI_FIELD(VkrMetalPacketEditorOverlayRoot, object_id, "object_id", 96),
+    VKR_ABI_FIELD(VkrMetalPacketEditorOverlayRoot, reserved, "reserved", 100),
+};
+
 #define VKR_ABI_RECORD(TYPE, SHADER, SIZE, ALIGNMENT, FIELDS)                  \
   {#TYPE,                                                                      \
    SHADER,                                                                     \
@@ -778,6 +788,9 @@ vkr_global const VkrMetalPacketAbiRecord
         [VKR_METAL_PACKET_ABI_UI_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketUiRoot, "VkrMetalPacketUiRoot", 64, 16,
                            vkr_ui_root_fields),
+        [VKR_METAL_PACKET_ABI_EDITOR_OVERLAY_ROOT] = VKR_ABI_RECORD(
+            VkrMetalPacketEditorOverlayRoot, "VkrMetalPacketEditorOverlayRoot",
+            112, 16, vkr_editor_overlay_root_fields),
         [VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketGpuDrawRoot, "VkrMetalPacketGpuDrawRoot", 192, 16,
             vkr_gpu_draw_root_fields),

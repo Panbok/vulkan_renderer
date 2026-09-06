@@ -23,6 +23,20 @@ typedef struct VkrVulkanPreparedUiDraw {
   uint32_t index_count;
 } VkrVulkanPreparedUiDraw;
 
+typedef struct VkrVulkanPreparedOverlayDraw {
+  VkrVulkanEditorOverlayRoot root;
+  VkBuffer indices;
+  uint64_t index_offset;
+  uint64_t index_size;
+  uint32_t first_index;
+  uint32_t index_count;
+  int32_t vertex_offset;
+} VkrVulkanPreparedOverlayDraw;
+_Static_assert(VKR_EDITOR_OVERLAY_DRAW_MAX *
+                       sizeof(VkrVulkanPreparedOverlayDraw) <
+                   4096u,
+               "Overlay draws exceed the graph pass upload reservation");
+
 vkr_internal uint64_t vkr_vk_text_draw_upload_size(
     const VkrPreparedTextDraw *draws, uint32_t draw_count) {
   uint64_t size = (uint64_t)draw_count * sizeof(VkrVulkanPreparedTextDraw);
@@ -285,10 +299,10 @@ vkr_internal bool8_t vkr_vk_candidate_graph_buffers(
       instance_graph->graph_generation;
   return *out_candidates && *out_instances &&
          (*out_candidates)->buffer.size >=
-             (uint64_t)VKR_GPU_DRAW_CANDIDATE_CAPACITY *
+             (uint64_t)renderer->prepared_frame.gpu_draw_candidate_capacity *
                  sizeof(VkrGpuCandidateDrawRow) &&
          (*out_instances)->buffer.size >=
-             (uint64_t)VKR_GPU_DRAW_CANDIDATE_CAPACITY *
+             (uint64_t)renderer->prepared_frame.gpu_draw_candidate_capacity *
                  sizeof(VkrPreparedInstanceGPU) &&
          *out_resource_generation != 0u;
 }
@@ -302,7 +316,9 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
   // Bound variable uploads before publishing any mapped pointer or GPU address.
   // A capped conservative bound preserves the former 75 MiB direct-only limit.
   uint64_t direct_bytes =
-      (uint64_t)renderer->config.geometry_capacity * sizeof(VkrGpuGeometryRow) +
+      (packet->scene_rendering ? (uint64_t)renderer->config.geometry_capacity *
+                                     sizeof(VkrGpuGeometryRow)
+                               : 0u) +
       256u; // Alignment between the fixed packet tables below.
   uint64_t candidate_bytes = 0u;
   uint64_t draw_bytes = 0u;
@@ -337,15 +353,15 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
         (uint64_t)lighting->ibl_probe_count * sizeof(VkrVulkanPacketIblProbe);
     if (lighting->point_light_count)
       direct_bytes += (uint64_t)lighting->point_light_grid->cell_count *
-                       sizeof(VkrPointLightMask);
+                      sizeof(VkrPointLightMask);
   }
   if (packet->input.shadow)
     direct_bytes += (uint64_t)packet->input.shadow->cascade_count *
                     sizeof(VkrVulkanPacketShadowCascade);
   direct_bytes += vkr_vk_graph_upload_bound(renderer, draw_bytes, text_bytes,
-                                              ui_root_bytes);
+                                            ui_root_bytes);
   if (!vkr_vk_reserve_frame_uploads(renderer, slot, direct_bytes,
-                                     candidate_bytes))
+                                    candidate_bytes))
     return false_v;
   slot->world_instances = 0u;
   slot->ui_vertices = 0u;
@@ -378,6 +394,10 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
        vkr_vk_upload_ui_draw_list(slot, &packet->input.ui->draw_list));
   if (!common_uploads)
     return false_v;
+  if (!packet->scene_rendering) {
+    slot->packet_build.valid = true_v;
+    return true_v;
+  }
 
   const uint64_t geometry_bytes =
       (uint64_t)renderer->config.geometry_capacity * sizeof(VkrGpuGeometryRow);
@@ -588,14 +608,16 @@ vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
   // The completed-slot preflight reserved both candidate streams together.
   // These rows are transfer sources only; shaders read the DEVICE graph copies.
   candidate_source_offset = slot->candidate_upload_cursor;
-  instance_source_offset =
-      candidate_source_offset + (uint64_t)count * sizeof(VkrGpuCandidateDrawRow);
-  VkrGpuCandidateDrawRow *candidates = (VkrGpuCandidateDrawRow *)(
-      (uint8_t *)slot->candidate_upload.allocation.mapped +
-      candidate_source_offset);
-  VkrPreparedInstanceGPU *instances = (VkrPreparedInstanceGPU *)(
-      (uint8_t *)slot->candidate_upload.allocation.mapped +
-      instance_source_offset);
+  instance_source_offset = candidate_source_offset +
+                           (uint64_t)count * sizeof(VkrGpuCandidateDrawRow);
+  VkrGpuCandidateDrawRow *candidates =
+      (VkrGpuCandidateDrawRow *)((uint8_t *)
+                                     slot->candidate_upload.allocation.mapped +
+                                 candidate_source_offset);
+  VkrPreparedInstanceGPU *instances =
+      (VkrPreparedInstanceGPU *)((uint8_t *)
+                                     slot->candidate_upload.allocation.mapped +
+                                 instance_source_offset);
   slot->candidate_upload_cursor =
       instance_source_offset + (uint64_t)count * sizeof(*instances);
   uint32_t packed_count = 0u;
@@ -637,7 +659,8 @@ vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
     };
     instances[packed_count] = vkr_gpu_prepare_instance(&candidate->instance);
     instances[packed_count].temporal_flags =
-        ((candidate->submesh_index + 1u) << VKR_INSTANCE_TEMPORAL_SURFACE_SHIFT) |
+        ((candidate->submesh_index + 1u)
+         << VKR_INSTANCE_TEMPORAL_SURFACE_SHIFT) |
         (candidate->instance.temporal_index != last_temporal_index
              ? VKR_INSTANCE_TEMPORAL_OWNER
              : 0u);
@@ -783,6 +806,93 @@ vkr_internal void vkr_vk_record_prepared_direct_draws(
   slot->indexed_draw_count += draw_count;
   if (lighting_pass)
     slot->blend_draw_count += draw_count;
+}
+
+bool8_t vkr_vk_prepare_editor_overlay(VkrVulkanRenderer *renderer,
+                                      VkrVulkanPreparedOverlay *out,
+                                      bool8_t picking) {
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  const VkrEditorPassPayload *editor = packet->input.editor;
+  if (!editor || !editor->overlay_draw_count)
+    return true_v;
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  uint64_t address = 0u;
+  VkrVulkanPreparedOverlayDraw *draws = vkr_vk_frame_upload_allocate(
+      slot, editor->overlay_draw_count * sizeof(*draws),
+      _Alignof(VkrVulkanPreparedOverlayDraw), &address, NULL);
+  if (!draws)
+    return false_v;
+  const Mat4 view_projection =
+      mat4_mul(packet->input.globals.projection, packet->input.globals.view);
+  uint32_t count = 0u;
+  for (uint32_t i = 0u; i < editor->overlay_draw_count; ++i) {
+    const VkrEditorOverlayDraw *source = &editor->overlay_draws[i];
+    VkrVulkanPublishedGeometry *geometry =
+        vkr_vk_resolve_geometry(renderer, source->geometry);
+    if (!geometry || source->submesh_index >= geometry->submesh_count)
+      return false_v;
+    if (geometry->pending_initialization_count)
+      continue;
+    const VkrVulkanSubmeshRange *range =
+        &geometry->submeshes[source->submesh_index];
+    const uint64_t index_offset =
+        (uint64_t)geometry->gpu_row.first_index * sizeof(uint32_t);
+    draws[count++] = (VkrVulkanPreparedOverlayDraw){
+        .root =
+            {
+                .vertices = geometry->gpu_row.vertex_address,
+                .decode = geometry->gpu_row.decode_address,
+                .model_view_projection =
+                    mat4_mul(view_projection, source->model),
+                .color = source->color,
+                .first_vertex = geometry->gpu_row.first_vertex,
+                .decode_index = range->decode_index,
+                .object_id = source->object_id,
+            },
+        .indices = geometry->indices.handle,
+        .index_offset = index_offset,
+        .index_size = geometry->indices.size - index_offset,
+        .first_index = range->first_index,
+        .index_count = range->index_count,
+        .vertex_offset = range->vertex_offset,
+    };
+    geometry->last_use_submit_value = renderer->submit_value + 1u;
+  }
+  *out = (VkrVulkanPreparedOverlay){
+      .pipeline = picking ? VKR_VULKAN_PACKET_PIPELINE_EDITOR_OVERLAY_PICKING
+                          : VKR_VULKAN_PACKET_PIPELINE_EDITOR_OVERLAY,
+      .draws = draws,
+      .roots_address = address,
+      .count = count,
+  };
+  return true_v;
+}
+
+void vkr_vk_record_editor_overlay(VkrVulkanRenderer *renderer,
+                                  VkCommandBuffer command,
+                                  const VkrVulkanPreparedOverlay *overlay) {
+  if (!overlay->count)
+    return;
+  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    renderer->packet_pipelines[overlay->pipeline]);
+  for (uint32_t i = 0u; i < overlay->count; ++i) {
+    const VkrVulkanPreparedOverlayDraw *draw = &overlay->draws[i];
+    const VkrVulkanPushConstants push = {
+        .root = overlay->roots_address + i * sizeof(*draw),
+    };
+    vkCmdBindIndexBuffer2(command, draw->indices, draw->index_offset,
+                          draw->index_size, VK_INDEX_TYPE_UINT32);
+    vkCmdPushConstants(command, renderer->pipeline_layout,
+                       VK_SHADER_STAGE_VERTEX_BIT |
+                           VK_SHADER_STAGE_FRAGMENT_BIT |
+                           VK_SHADER_STAGE_COMPUTE_BIT,
+                       0u, sizeof(push), &push);
+    vkCmdDrawIndexed(command, draw->index_count, 1u, draw->first_index,
+                     draw->vertex_offset, 0u);
+  }
+  renderer->frame_slots[renderer->active_frame_slot].indexed_draw_count +=
+      overlay->count;
 }
 
 bool8_t vkr_vk_prepare_packet_draws(
@@ -1085,13 +1195,11 @@ bool8_t vkr_vk_prepare_ui_draw_list(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
-bool8_t vkr_vk_prepare_packet_fullscreen(VkrVulkanRenderer *renderer,
-                                         VkrVulkanPreparedFullscreen *out,
-                                         VkrVulkanPacketPipeline pipeline,
-                                         uint32_t texture_index,
-                                         uint64_t exposure_state,
-                                         uint32_t flags, uint32_t output_width,
-                                         uint32_t output_height) {
+bool8_t vkr_vk_prepare_packet_fullscreen(
+    VkrVulkanRenderer *renderer, VkrVulkanPreparedFullscreen *out,
+    VkrVulkanPacketPipeline pipeline, uint32_t texture_index,
+    uint64_t exposure_state, uint32_t flags, bool8_t composite,
+    uint32_t output_width, uint32_t output_height) {
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   uint64_t root_address = 0u;
@@ -1104,21 +1212,23 @@ bool8_t vkr_vk_prepare_packet_fullscreen(VkrVulkanRenderer *renderer,
   if (!root || !manual_state)
     return false_v;
   *manual_state = (VkrExposureGpuState){
-      .exposure_multiplier = renderer->graph->packet->exposure.manual,
+      .exposure_multiplier =
+          composite ? 1.0f : renderer->graph->packet->exposure.manual,
   };
   root->materials = renderer->materials.address;
   root->transmission_texture = texture_index;
-  root->transmission_sampler =
-      renderer->config.fxaa_enabled ? renderer->transmission_sampler_slot : 0u;
+  root->transmission_sampler = (composite || renderer->config.fxaa_enabled)
+                                   ? renderer->transmission_sampler_slot
+                                   : 0u;
   root->exposure_state = exposure_state ? exposure_state : manual_state_address;
   root->point_light_grid_origin_cell_size =
       (Vec4){(float32_t)output_width, (float32_t)output_height, 0.0f, 0.0f};
   const VkrVulkanPushConstants push = {
       .root = root_address,
       .material_index = 0u,
-      .flags =
-          flags |
-          (renderer->config.fxaa_enabled ? VKR_VULKAN_FULLSCREEN_FXAA : 0u),
+      .flags = flags | (!composite && renderer->config.fxaa_enabled
+                            ? VKR_VULKAN_FULLSCREEN_FXAA
+                            : 0u),
   };
   *out = (VkrVulkanPreparedFullscreen){
       .pipeline = renderer->packet_pipelines[pipeline], .push = push};

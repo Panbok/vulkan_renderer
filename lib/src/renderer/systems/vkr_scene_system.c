@@ -4,6 +4,7 @@
  */
 
 #include "vkr_scene_system.h"
+#include <math.h>
 
 #include "core/logger.h"
 #include "math/vkr_math.h"
@@ -989,6 +990,9 @@ bool8_t vkr_scene_init(VkrScene *scene, VkrAllocator *alloc, uint16_t world_id,
   }
 
   // Register components
+  scene->comp_source_identity = vkr_entity_register_component_once(
+      scene->world, "SceneSourceIdentity", sizeof(SceneSourceIdentity),
+      AlignOf(SceneSourceIdentity));
   scene->comp_name = vkr_entity_register_component_once(
       scene->world, "SceneName", sizeof(SceneName), AlignOf(SceneName));
   scene->comp_transform = vkr_entity_register_component_once(
@@ -1014,7 +1018,8 @@ bool8_t vkr_scene_init(VkrScene *scene, VkrAllocator *alloc, uint16_t world_id,
       scene->world, "ScenePointLight", sizeof(ScenePointLight),
       AlignOf(ScenePointLight));
 
-  if (scene->comp_name == VKR_COMPONENT_TYPE_INVALID ||
+  if (scene->comp_source_identity == VKR_COMPONENT_TYPE_INVALID ||
+      scene->comp_name == VKR_COMPONENT_TYPE_INVALID ||
       scene->comp_transform == VKR_COMPONENT_TYPE_INVALID ||
       scene->comp_mesh_renderer == VKR_COMPONENT_TYPE_INVALID ||
       scene->comp_visibility == VKR_COMPONENT_TYPE_INVALID ||
@@ -1313,6 +1318,7 @@ VkrEntityId vkr_scene_create_entity(VkrScene *scene, VkrSceneError *out_error) {
 
   if (out_error)
     *out_error = VKR_SCENE_ERROR_NONE;
+  scene->structure_revision++;
   return entity;
 }
 
@@ -1368,6 +1374,7 @@ void vkr_scene_destroy_entity(VkrScene *scene, VkrEntityId entity) {
   }
 
   vkr_entity_destroy_entity(scene->world, entity);
+  scene->structure_revision++;
 
   // Note: hierarchy will be cleaned up on next topo rebuild
   scene->hierarchy_dirty = true;
@@ -1418,13 +1425,18 @@ bool8_t vkr_scene_set_name(VkrScene *scene, VkrEntityId entity, String8 name) {
                          VKR_ALLOCATOR_MEMORY_TAG_STRING);
     }
     *existing = comp;
+    scene->structure_revision++;
     return true_v;
   }
 
   bool8_t result =
       vkr_entity_add_component(scene->world, entity, scene->comp_name, &comp);
   if (result) {
+    scene->structure_revision++;
     scene_invalidate_queries(scene);
+  } else {
+    vkr_allocator_free(scene->alloc, name_copy, name.length + 1,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
   }
   return result;
 }
@@ -1446,16 +1458,24 @@ bool8_t vkr_scene_set_transform(VkrScene *scene, VkrEntityId entity,
   if (!scene || !scene->world)
     return false;
 
+  SceneTransform *previous = vkr_scene_get_transform(scene, entity);
+  const VkrEntityId parent =
+      previous ? previous->parent : VKR_ENTITY_ID_INVALID;
   SceneTransform comp = {
       .position = position,
       .rotation = rotation,
       .scale = scale,
-      .parent = VKR_ENTITY_ID_INVALID,
+      .parent = parent,
       .local = scene_compute_local_matrix(position, rotation, scale),
       .world = mat4_identity(),
       .flags = SCENE_TRANSFORM_DIRTY_WORLD,
+      .trs_editable = true_v,
   };
-  comp.world = comp.local; // Initial world = local (no parent)
+  comp.world = comp.local; // Updated below in parent-before-child order.
+  if (previous) {
+    *previous = comp;
+    return true_v;
+  }
 
   bool8_t result = vkr_entity_add_component(scene->world, entity,
                                             scene->comp_transform, &comp);
@@ -1479,26 +1499,29 @@ SceneTransform *vkr_scene_get_transform(VkrScene *scene, VkrEntityId entity) {
 void vkr_scene_set_position(VkrScene *scene, VkrEntityId entity,
                             Vec3 position) {
   SceneTransform *t = vkr_scene_get_transform(scene, entity);
-  if (!t)
+  if (!t || (t->matrix_authored && !t->trs_editable))
     return;
   t->position = position;
+  t->matrix_authored = false_v;
   t->flags |= SCENE_TRANSFORM_DIRTY_LOCAL | SCENE_TRANSFORM_DIRTY_WORLD;
 }
 
 void vkr_scene_set_rotation(VkrScene *scene, VkrEntityId entity,
                             VkrQuat rotation) {
   SceneTransform *t = vkr_scene_get_transform(scene, entity);
-  if (!t)
+  if (!t || (t->matrix_authored && !t->trs_editable))
     return;
   t->rotation = rotation;
+  t->matrix_authored = false_v;
   t->flags |= SCENE_TRANSFORM_DIRTY_LOCAL | SCENE_TRANSFORM_DIRTY_WORLD;
 }
 
 void vkr_scene_set_scale(VkrScene *scene, VkrEntityId entity, Vec3 scale) {
   SceneTransform *t = vkr_scene_get_transform(scene, entity);
-  if (!t)
+  if (!t || (t->matrix_authored && !t->trs_editable))
     return;
   t->scale = scale;
+  t->matrix_authored = false_v;
   t->flags |= SCENE_TRANSFORM_DIRTY_LOCAL | SCENE_TRANSFORM_DIRTY_WORLD;
 }
 
@@ -1522,6 +1545,7 @@ void vkr_scene_set_parent(VkrScene *scene, VkrEntityId entity,
   }
 
   t->parent = parent;
+  scene->structure_revision++;
   t->flags |= SCENE_TRANSFORM_DIRTY_HIERARCHY | SCENE_TRANSFORM_DIRTY_WORLD;
   scene->hierarchy_dirty = true;
 }
@@ -2483,11 +2507,12 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct VkrRenderAssets *assets,
            entity.parts.index, entity.parts.generation);
 
   VkrRendererError geom_err = VKR_RENDERER_ERROR_NONE;
-  VkrGeometryHandle geom = vkr_geometry_system_create_cube(
-      &assets->geometry_system, config->dimensions.x, config->dimensions.y,
-      config->dimensions.z, shape_name, &geom_err);
+  VkrGeometryHandle geom = vkr_geometry_system_create_box(
+      &assets->geometry_system, vec3_zero(), config->dimensions.x,
+      config->dimensions.y, config->dimensions.z, true_v, shape_name,
+      &geom_err);
 
-  if (geom.id == VKR_INVALID_ID) {
+  if (geom.id == 0) {
     String8 err_str = vkr_renderer_get_error_string(geom_err);
     log_error("Scene: failed to create cube geometry: %s",
               string8_cstr(&err_str));
@@ -2505,6 +2530,8 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct VkrRenderAssets *assets,
     mesh_transform = vkr_transform_from_position_scale_rotation(
         transform->position, transform->scale, transform->rotation);
   }
+  /* Adding SceneShape can move the entity to another archetype. */
+  const Mat4 mesh_model = transform ? transform->world : mat4_identity();
 
   // Acquire or create material for shape
   VkrMaterialHandle mat = assets->material_system.default_material;
@@ -2543,6 +2570,7 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct VkrRenderAssets *assets,
           log_warn("Scene: failed to acquire shape material '%.*s' after load",
                    (int)mat_name.length, mat_name.str);
         }
+        vkr_resource_system_unload(&handle_info, mat_path);
       } else {
         log_warn("Scene: failed to load shape material '%.*s': %d",
                  (int)mat_path.length, mat_path.str, (int)load_err);
@@ -2606,6 +2634,12 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct VkrRenderAssets *assets,
     return false_v;
   }
 
+  /* Mesh creation acquired its own references. Drop this function's factory
+   * or acquisition references before any later failure removes the mesh. */
+  vkr_geometry_system_release(&assets->geometry_system, geom);
+  if (owns_material)
+    vkr_material_system_release(&assets->material_system, mat);
+
   // Track mesh ownership
   if (!vkr_scene_track_mesh(scene, mesh_index, out_error)) {
     // mesh_manager_remove handles geometry/material release via owns_* flags
@@ -2645,10 +2679,7 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct VkrRenderAssets *assets,
   vkr_mesh_manager_set_visible(&assets->mesh_manager, mesh_index, is_visible);
 
   // Set model matrix from transform
-  if (transform) {
-    vkr_mesh_manager_set_model(&assets->mesh_manager, mesh_index,
-                               transform->world);
-  }
+  vkr_mesh_manager_set_model(&assets->mesh_manager, mesh_index, mesh_model);
 
   scene_invalidate_queries(scene);
 
@@ -2729,4 +2760,54 @@ VkrEntityId vkr_scene_find_entity_by_name(const VkrScene *scene, String8 name) {
   vkr_entity_query_compiled_destroy((VkrAllocator *)scene->alloc, &compiled);
 
   return ctx.result;
+}
+
+bool8_t vkr_scene_set_source_identity(VkrScene *scene, VkrEntityId entity,
+                                      const SceneSourceIdentity *identity) {
+  if (!scene || !identity || !vkr_scene_entity_alive(scene, entity))
+    return false_v;
+  SceneSourceIdentity *existing = vkr_entity_get_component_mut(
+      scene->world, entity, scene->comp_source_identity);
+  if (existing) {
+    *existing = *identity;
+    return true_v;
+  }
+  if (!vkr_entity_add_component(scene->world, entity,
+                                scene->comp_source_identity, identity))
+    return false_v;
+  scene_invalidate_queries(scene);
+  return true_v;
+}
+
+bool8_t vkr_scene_set_local_matrix(VkrScene *scene, VkrEntityId entity,
+                                   Mat4 local) {
+  for (uint32_t i = 0; i < 16u; ++i)
+    if (!isfinite(local.elements[i]))
+      return false_v;
+  Vec3 position =
+      vec3_new(local.elements[12], local.elements[13], local.elements[14]);
+  Vec3 x = vec3_new(local.elements[0], local.elements[1], local.elements[2]);
+  Vec3 y = vec3_new(local.elements[4], local.elements[5], local.elements[6]);
+  Vec3 z = vec3_new(local.elements[8], local.elements[9], local.elements[10]);
+  Vec3 scale = vec3_new(vec3_length(x), vec3_length(y), vec3_length(z));
+  VkrQuat rotation = vkr_quat_identity();
+  bool8_t editable = scale.x > 1e-8f && scale.y > 1e-8f && scale.z > 1e-8f;
+  if (editable) {
+    if (vec3_dot(vec3_cross(x, y), z) < 0.0f)
+      scale.x = -scale.x;
+    rotation = vkr_quat_look_at(vec3_scale(z, -1.0f / scale.z),
+                                vec3_scale(y, 1.0f / scale.y));
+    const Mat4 reconstructed =
+        scene_compute_local_matrix(position, rotation, scale);
+    for (uint32_t i = 0; i < 16u; ++i)
+      editable &= fabsf(reconstructed.elements[i] - local.elements[i]) <=
+                  1e-5f * fmaxf(1.0f, fabsf(local.elements[i]));
+  }
+  if (!vkr_scene_set_transform(scene, entity, position, rotation, scale))
+    return false_v;
+  SceneTransform *transform = vkr_scene_get_transform(scene, entity);
+  transform->local = local;
+  transform->matrix_authored = true_v;
+  transform->trs_editable = editable;
+  return true_v;
 }

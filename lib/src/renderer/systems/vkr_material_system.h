@@ -47,6 +47,7 @@ typedef enum VkrMaterialTextureResidencyState {
   VKR_MATERIAL_TEXTURE_RESIDENCY_ACTIVE,
   VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT,
   VKR_MATERIAL_TEXTURE_RESIDENCY_EVICTED,
+  VKR_MATERIAL_TEXTURE_RESIDENCY_MEMORY_WAIT,
 } VkrMaterialTextureResidencyState;
 
 typedef struct VkrMaterialTextureStream {
@@ -57,6 +58,7 @@ typedef struct VkrMaterialTextureStream {
   VkrResourceHandleInfo request;
   VkrTextureHandle resident_texture;
   uint64_t resident_bytes;
+  uint64_t attempt_relief_generation;
 } VkrMaterialTextureStream;
 
 typedef struct VkrMaterialTextureStreamStats {
@@ -65,6 +67,8 @@ typedef struct VkrMaterialTextureStreamStats {
   uint32_t in_flight_count;
   uint32_t resident_count;
   uint32_t evicted_count;
+  uint32_t demanded_missing_count;
+  uint32_t demanded_evicted_count;
   uint64_t failed_total;
 } VkrMaterialTextureStreamStats;
 
@@ -95,8 +99,14 @@ typedef struct VkrMaterialSystem {
   uint32_t texture_stream_active_count;
   uint32_t texture_stream_resident_count;
   uint32_t texture_stream_evicted_count;
+  uint32_t texture_stream_memory_wait_count;
+  uint32_t texture_stream_demanded_missing_count;
+  uint32_t texture_stream_demanded_evicted_count;
+  bool8_t texture_stream_memory_recovery_enabled;
+  uint64_t texture_stream_relief_generation;
   uint64_t texture_stream_resident_bytes;
   uint64_t texture_stream_budget_bytes;
+  uint64_t texture_stream_capacity_retry_high_water;
   bool8_t texture_stream_budget_user_configured;
   uint64_t texture_stream_epoch;
   uint64_t *texture_material_last_used_epochs;
@@ -105,6 +115,8 @@ typedef struct VkrMaterialSystem {
   uint64_t texture_stream_evicted_total;
   uint64_t texture_stream_pressure_stalls_total;
 
+  /* High-water cursor for never-reserved slots. Released slots belong only to
+   * free_ids; neither unload nor failed publication rewinds this cursor. */
   uint32_t next_free_index;
   uint32_t generation_counter;
 
@@ -142,6 +154,14 @@ bool8_t vkr_material_system_stream_texture(VkrMaterialSystem *system,
 void vkr_material_system_pump_texture_streams(VkrMaterialSystem *system,
                                               uint32_t max_updates);
 
+/** Refreshes demand counters once after world demand/publication changes. */
+void vkr_material_system_refresh_texture_stream_demand(VkrMaterialSystem *system);
+
+/** Commits successful reduced Scene output; retries each waiting request once.
+ */
+void vkr_material_system_commit_scene_memory_relief(VkrMaterialSystem *system,
+                                                    uint64_t generation);
+
 /** Cancels and releases every pending streamed texture for a material. */
 void vkr_material_system_cancel_texture_streams(VkrMaterialSystem *system,
                                                 VkrMaterialHandle material);
@@ -163,6 +183,9 @@ void vkr_material_system_set_texture_residency_budget(VkrMaterialSystem *system,
                                                       uint64_t budget_bytes);
 void vkr_material_system_set_automatic_texture_residency_budget(
     VkrMaterialSystem *system, uint64_t budget_bytes);
+/** Capacity retries use a finite high-water value even while budget is unlimited. */
+void vkr_material_system_set_texture_capacity_budget(
+    VkrMaterialSystem *system, uint64_t budget_bytes, uint64_t capacity_allowance);
 
 /** Returns the neutral fallback representation for one texture slot. */
 VkrMaterialTexture
@@ -193,18 +216,6 @@ VkrMaterialHandle
 vkr_material_system_create_colored(VkrMaterialSystem *system, const char *name,
                                    Vec4 diffuse_color,
                                    VkrRendererError *out_error);
-
-/**
- * @brief Creates or updates built-in gizmo materials (X/Y/Z emissive axes).
- * @param system The material system to create the materials in.
- * @param out_handles Optional array of 3 handles (X/Y/Z).
- * @param out_error Optional error output.
- * @return true on success.
- */
-bool8_t
-vkr_material_system_create_gizmo_materials(VkrMaterialSystem *system,
-                                           VkrMaterialHandle out_handles[3],
-                                           VkrRendererError *out_error);
 
 /**
  * @brief Acquires a material by name; increments refcount if it exists; fails

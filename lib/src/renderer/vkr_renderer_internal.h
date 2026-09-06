@@ -123,6 +123,10 @@ struct VkrRenderer {
 
   VkrDMemory render_graph_dmemory;
   VkrAllocator render_graph_allocator;
+  /* Last successfully submitted editor Scene image; native graph owns storage.
+   */
+  uint32_t editor_image_width;
+  uint32_t editor_image_height;
   VkrTemporalState temporal_state;
   uint32_t temporal_reset_reasons;
   bool8_t temporal_enabled;

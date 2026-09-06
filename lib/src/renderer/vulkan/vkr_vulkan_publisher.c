@@ -179,7 +179,9 @@ vkr_vk_asset_texture_upload_available(void *state, uint64_t upload_bytes) {
 vkr_internal bool8_t vkr_vk_upload_prepared_texture(
     VkrVulkanRenderer *renderer, const VkrTexturePreparedLoad *prepared,
     VkrTextureHandle texture, VkrVulkanImage *out_image,
-    VkrVulkanPendingTextureInitialization *out_initialization) {
+    VkrVulkanPendingTextureInitialization *out_initialization,
+    VkrRendererError *out_error) {
+  *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
   if (!prepared || !out_image || !out_initialization ||
       !prepared->upload_data || !prepared->upload_data_size ||
       !prepared->upload_regions || !prepared->upload_region_count ||
@@ -237,7 +239,7 @@ vkr_internal bool8_t vkr_vk_upload_prepared_texture(
           (cube || cube_array) ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0u,
           view_type,
           VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-          prepared->description.allocation_owner, out_image)) {
+          prepared->description.allocation_owner, out_image, out_error)) {
     log_error("Vulkan failed to create prepared texture image "
               "(%ux%u, format=%u, mips=%u, layers=%u, bytes=%llu)",
               prepared->description.width, prepared->description.height, format,
@@ -644,6 +646,34 @@ void vkr_vk_record_buffer_initializations(VkrVulkanRenderer *renderer,
                                           VkCommandBuffer command) {
   VkrVulkanGeometryMegabuffer *mega = &renderer->geometry_megabuffer;
   if (mega->copy_pending) {
+    /* Submitted publication uploads may still write the source generation.
+     * Make those writes visible to preservation reads on this queue. */
+    const VkBufferMemoryBarrier2 source_barriers[2] = {
+        {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+         .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+         .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+         .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+         .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+         .buffer = mega->copy_source_vertices.handle,
+         .size = VK_WHOLE_SIZE},
+        {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+         .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+         .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+         .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+         .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+         .buffer = mega->copy_source_indices.handle,
+         .size = VK_WHOLE_SIZE},
+    };
+    const VkDependencyInfo source_dependency = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .bufferMemoryBarrierCount = ArrayCount(source_barriers),
+        .pBufferMemoryBarriers = source_barriers,
+    };
+    vkCmdPipelineBarrier2(command, &source_dependency);
     VkBufferCopy2 regions[2] = {
         {.sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
          .size = mega->copy_vertex_size},
@@ -666,13 +696,17 @@ void vkr_vk_record_buffer_initializations(VkrVulkanRenderer *renderer,
       vkCmdCopyBuffer2(command, &copies[0]);
     if (regions[1].size)
       vkCmdCopyBuffer2(command, &copies[1]);
+    /* Growth copies include reusable holes. Order later uploads that can
+     * overwrite those same bytes after the preservation copy. */
     const VkBufferMemoryBarrier2 barriers[2] = {
         {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
          .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
          .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
          .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
-                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-         .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                         VK_PIPELINE_STAGE_2_COPY_BIT,
+         .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                          VK_ACCESS_2_TRANSFER_WRITE_BIT,
          .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
          .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
          .buffer = mega->vertices.handle,
@@ -682,9 +716,11 @@ void vkr_vk_record_buffer_initializations(VkrVulkanRenderer *renderer,
          .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
          .dstStageMask = VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT |
                          VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
-                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-         .dstAccessMask =
-             VK_ACCESS_2_INDEX_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                         VK_PIPELINE_STAGE_2_COPY_BIT,
+         .dstAccessMask = VK_ACCESS_2_INDEX_READ_BIT |
+                          VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                          VK_ACCESS_2_TRANSFER_WRITE_BIT,
          .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
          .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
          .buffer = mega->indices.handle,
@@ -1226,7 +1262,8 @@ vkr_internal bool8_t vkr_vk_create_published_sampler(
       .addressModeU = vkr_vk_sampler_address_mode(description->u_repeat_mode),
       .addressModeV = vkr_vk_sampler_address_mode(description->v_repeat_mode),
       .addressModeW = vkr_vk_sampler_address_mode(description->w_repeat_mode),
-      .anisotropyEnable = description->anisotropy_enable && max_anisotropy > 1.0f,
+      .anisotropyEnable =
+          description->anisotropy_enable && max_anisotropy > 1.0f,
       .maxAnisotropy = description->anisotropy_enable ? max_anisotropy : 1.0f,
       .maxLod = description->mip_filter == VKR_MIP_FILTER_NONE
                     ? 0.0f
@@ -1532,6 +1569,8 @@ vkr_vk_reserve_retired_texture(VkrVulkanRenderer *renderer) {
 
 void vkr_vk_collect_asset_publications(VkrVulkanRenderer *renderer,
                                        uint64_t completed) {
+  if (!vkr_geometry_ranges_collect(&renderer->geometry_ranges, completed))
+    log_fatal("Vulkan failed to collect completed geometry ranges");
   (void)vkr_gpu_slot_table_collect(renderer->material_slots, completed, NULL);
   vkr_vk_collect_samplers(renderer, completed);
   for (uint32_t i = 0u; i < ArrayCount(renderer->geometry_megabuffer.retired);
@@ -1672,8 +1711,8 @@ vkr_internal bool8_t vkr_vk_ensure_geometry_megabuffer(
   if (mega->live) {
     mega->copy_source_vertices = mega->vertices;
     mega->copy_source_indices = mega->indices;
-    mega->copy_vertex_size = mega->vertex_cursor;
-    mega->copy_index_size = mega->index_cursor;
+    mega->copy_vertex_size = mega->vertex_high_water;
+    mega->copy_index_size = mega->index_high_water;
     mega->copy_pending = true_v;
     mega->generation_replacements++;
   }
@@ -1731,6 +1770,14 @@ vkr_internal bool8_t vkr_vk_prepare_published_upload(
   return true_v;
 }
 
+vkr_internal void vkr_vk_release_unused_geometry_ranges(
+    VkrVulkanRenderer *renderer, VkrGeometryRangeAllocation ranges) {
+  /* Publication has queued no native writes for this reservation. */
+  if (!vkr_geometry_ranges_retire(&renderer->geometry_ranges, ranges, 0u) ||
+      !vkr_geometry_ranges_collect(&renderer->geometry_ranges, 0u))
+    log_fatal("Vulkan failed to release an unused geometry reservation");
+}
+
 vkr_internal bool8_t vkr_vk_asset_publish_geometry_internal(
     void *state, VkrGeometryHandle handle, const VkrGeometryConfig *geometry,
     const VkrMeshLoaderSubmeshRange *submeshes, uint32_t submesh_count) {
@@ -1739,6 +1786,7 @@ vkr_internal bool8_t vkr_vk_asset_publish_geometry_internal(
       handle.id > renderer->config.geometry_capacity || !geometry->vertices ||
       !geometry->indices || !geometry->vertex_count || !geometry->index_count ||
       !submeshes || !submesh_count ||
+      submesh_count > (UINT32_MAX >> VKR_INSTANCE_TEMPORAL_SURFACE_SHIFT) ||
       renderer->pending_buffer_initialization_count >
           renderer->pending_buffer_initialization_capacity - 3u ||
       renderer->staging_buffer_count >
@@ -1816,33 +1864,26 @@ vkr_internal bool8_t vkr_vk_asset_publish_geometry_internal(
   const uint64_t index_size =
       (uint64_t)sizeof(uint32_t) * geometry->index_count;
   VkrVulkanGeometryMegabuffer *mega = &renderer->geometry_megabuffer;
-  const bool8_t vertex_cursor_alignable =
-      mega->vertex_cursor <= UINT64_MAX - 31u;
-  const uint64_t vertex_offset = vertex_cursor_alignable
-                                     ? vkr_vk_align_up(mega->vertex_cursor, 32u)
-                                     : UINT64_MAX;
-  const bool8_t vertex_data_fits = vertex_offset <= UINT64_MAX - vertex_size;
-  const uint64_t vertex_data_end =
-      vertex_data_fits ? vertex_offset + vertex_size : UINT64_MAX;
-  const bool8_t decode_alignable = vertex_data_end <= UINT64_MAX - 15u;
-  const uint64_t decode_offset =
-      decode_alignable ? vkr_vk_align_up(vertex_data_end, 16u) : UINT64_MAX;
-  const bool8_t decode_fits = decode_offset <= UINT64_MAX - decode_size;
-  const uint64_t vertex_end =
-      decode_fits ? decode_offset + decode_size : UINT64_MAX;
-  const uint64_t index_offset =
-      vkr_vk_align_up(mega->index_cursor, sizeof(uint32_t));
-  if (!vertex_cursor_alignable || !vertex_data_fits || !decode_alignable ||
-      !decode_fits || index_offset > UINT64_MAX - index_size ||
-      vertex_offset / sizeof(VkrPackedStaticVertex) > UINT32_MAX ||
-      index_offset / sizeof(uint32_t) > UINT32_MAX ||
-      !vkr_vk_ensure_geometry_megabuffer(renderer, vertex_end,
-                                         index_offset + index_size)) {
+  VkrGeometryRangeAllocation ranges = {0};
+  if (!vkr_geometry_ranges_allocate(
+          &renderer->geometry_ranges, geometry->vertex_count,
+          geometry->decode_count, geometry->index_count, mega->vertices.size,
+          mega->indices.size, &ranges)) {
     mega->rejected_publications++;
+    return false_v;
+  }
+  const uint64_t vertex_offset = ranges.vertex_offset;
+  const uint64_t decode_offset = ranges.decode_offset;
+  const uint64_t index_offset = ranges.index_offset;
+  if (!vkr_vk_ensure_geometry_megabuffer(renderer, ranges.vertex_end,
+                                         ranges.index_end)) {
+    mega->rejected_publications++;
+    vkr_vk_release_unused_geometry_ranges(renderer, ranges);
     return false_v;
   }
   VkrVulkanPublishedGeometry pending = {
       .handle = handle,
+      .ranges = ranges,
       .vertices = mega->vertices,
       .indices = mega->indices,
       .vertex_count = geometry->vertex_count,
@@ -1855,8 +1896,10 @@ vkr_internal bool8_t vkr_vk_asset_publish_geometry_internal(
   pending.submeshes =
       vkr_allocator_alloc(renderer->allocator, pending.submeshes_size,
                           VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-  if (!pending.submeshes)
+  if (!pending.submeshes) {
+    vkr_vk_release_unused_geometry_ranges(renderer, ranges);
     return false_v;
+  }
   for (uint32_t i = 0; i < submesh_count; ++i) {
     pending.submeshes[i] = (VkrVulkanSubmeshRange){
         .first_index = submeshes[i].first_index,
@@ -1895,6 +1938,7 @@ vkr_internal bool8_t vkr_vk_asset_publish_geometry_internal(
     vkr_allocator_free(renderer->allocator, pending.submeshes,
                        pending.submeshes_size,
                        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    vkr_vk_release_unused_geometry_ranges(renderer, ranges);
     return false_v;
   }
   if (renderer->pending_buffer_initialization_count >
@@ -1907,6 +1951,7 @@ vkr_internal bool8_t vkr_vk_asset_publish_geometry_internal(
     vkr_allocator_free(renderer->allocator, pending.submeshes,
                        pending.submeshes_size,
                        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    vkr_vk_release_unused_geometry_ranges(renderer, ranges);
     return false_v;
   }
   pending.pending_initialization_count = 3u;
@@ -1923,16 +1968,14 @@ vkr_internal bool8_t vkr_vk_asset_publish_geometry_internal(
   };
   pending.live = true_v;
   *record = pending;
-  mega->vertex_cursor = vertex_end;
-  mega->index_cursor = index_offset + index_size;
   mega->vertex_live_bytes += vertex_size;
   mega->index_live_bytes += index_size;
   mega->decode_metadata_live_bytes += decode_size;
   mega->vertex_uploaded_bytes_total += vertex_size;
   mega->index_uploaded_bytes_total += index_size;
   mega->decode_metadata_uploaded_bytes_total += decode_size;
-  mega->vertex_high_water = Max(mega->vertex_high_water, mega->vertex_cursor);
-  mega->index_high_water = Max(mega->index_high_water, mega->index_cursor);
+  mega->vertex_high_water = Max(mega->vertex_high_water, ranges.vertex_end);
+  mega->index_high_water = Max(mega->index_high_water, ranges.index_end);
   mega->decode_metadata_high_water =
       Max(mega->decode_metadata_high_water, mega->decode_metadata_live_bytes);
   renderer->pending_buffer_initializations
@@ -2069,7 +2112,7 @@ vkr_internal bool8_t vkr_vk_asset_publish_writable_texture(
       cube ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_2D,
       VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
           VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-      description->allocation_owner, &pending.image);
+      description->allocation_owner, &pending.image, NULL);
   const bool8_t sampler_acquired =
       image_created && vkr_vk_acquire_sampler(renderer, description, mip_levels,
                                               &pending.sampler_record_index);
@@ -2248,6 +2291,8 @@ vkr_internal bool8_t vkr_vk_asset_publish_loaded_mesh(
     void *state, VkrGeometryHandle handle, const VkrMeshLoaderResult *mesh) {
   if (!mesh || !mesh->has_mesh_buffer || !mesh->submeshes.data ||
       !mesh->submeshes.length ||
+      mesh->submeshes.length >
+          (UINT32_MAX >> VKR_INSTANCE_TEMPORAL_SURFACE_SHIFT) ||
       mesh->mesh_buffer.vertex_size != sizeof(VkrPackedStaticVertex) ||
       mesh->mesh_buffer.vertex_layout !=
           VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1 ||
@@ -2298,6 +2343,14 @@ bool8_t vkr_vk_asset_unpublish_geometry(void *state, VkrGeometryHandle handle) {
     return false_v;
   if (record->pending_initialization_count)
     vkr_vk_discard_geometry_initializations(renderer, handle.id - 1u);
+  const uint64_t last_use =
+      Max(record->last_use_submit_value, renderer->submit_value);
+  if (!vkr_geometry_ranges_retire(&renderer->geometry_ranges, record->ranges,
+                                   last_use)) {
+    log_error("Vulkan failed to retire geometry ranges");
+    return false_v;
+  }
+  record->ranges = (VkrGeometryRangeAllocation){0};
   VkrVulkanGeometryMegabuffer *mega = &renderer->geometry_megabuffer;
   const uint64_t vertex_bytes =
       (uint64_t)record->vertex_count * sizeof(VkrPackedStaticVertex);
@@ -2309,8 +2362,7 @@ bool8_t vkr_vk_asset_unpublish_geometry(void *state, VkrGeometryHandle handle) {
           (uint64_t)record->decode_count * sizeof(VkrGpuGeometryDecodeRecord));
   record->live = false_v;
   record->pending_retire = true_v;
-  record->last_use_submit_value =
-      Max(record->last_use_submit_value, renderer->submit_value);
+  record->last_use_submit_value = last_use;
   vkr_vk_collect_asset_publications(renderer,
                                     vkr_vk_refresh_completed(renderer));
   if (!record->pending_retire) {
@@ -2329,7 +2381,7 @@ bool8_t vkr_vk_asset_unpublish_geometry(void *state, VkrGeometryHandle handle) {
   return true_v;
 }
 
-vkr_internal bool8_t
+vkr_internal VkrRendererError
 vkr_vk_asset_publish_texture(void *state, VkrTextureHandle handle,
                              const VkrTexturePreparedLoad *prepared) {
   VkrVulkanRenderer *renderer = state;
@@ -2339,18 +2391,20 @@ vkr_vk_asset_publish_texture(void *state, VkrTextureHandle handle,
           renderer->config.texture_capacity ||
       renderer->staging_buffer_count >=
           renderer->retired_staging_buffer_capacity)
-    return false_v;
+    return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
   VkrVulkanPublishedTexture *record =
       &renderer->published_textures[handle.id - 1u];
   if (record->live || record->pending_retire) {
     log_error("Vulkan texture %u:%u is already published", handle.id,
               handle.generation);
-    return false_v;
+    return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
   }
   VkrVulkanPublishedTexture pending = {.handle = handle};
   VkrVulkanPendingTextureInitialization initialization = {0};
-  const bool8_t image_uploaded = vkr_vk_upload_prepared_texture(
-      renderer, prepared, handle, &pending.image, &initialization);
+  VkrRendererError upload_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+  const bool8_t image_uploaded =
+      vkr_vk_upload_prepared_texture(renderer, prepared, handle, &pending.image,
+                                     &initialization, &upload_error);
   const bool8_t sampler_acquired =
       image_uploaded && vkr_vk_acquire_sampler(renderer, &prepared->description,
                                                prepared->upload_mip_levels,
@@ -2385,13 +2439,14 @@ vkr_vk_asset_publish_texture(void *state, VkrTextureHandle handle,
     if (image_uploaded)
       vkr_vk_release_texture_initialization(renderer, &initialization);
     vkr_vk_destroy_image(renderer, &pending.image);
-    return false_v;
+    return image_uploaded ? VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED
+                          : upload_error;
   }
   pending.initialization_pending = true_v;
   pending.live = true_v;
   *record = pending;
   vkr_vk_advance_radiance_revision(renderer);
-  return true_v;
+  return VKR_RENDERER_ERROR_NONE;
 }
 
 bool8_t vkr_vk_asset_unpublish_texture(void *state, VkrTextureHandle handle) {

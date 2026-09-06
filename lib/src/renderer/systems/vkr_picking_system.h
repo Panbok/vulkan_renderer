@@ -20,6 +20,7 @@ typedef struct VkrPickingContext {
   uint32_t requested_x;
   uint32_t requested_y;
   uint32_t result_object_id;
+  uint64_t request_id;
   bool8_t initialized;
 } VkrPickingContext;
 

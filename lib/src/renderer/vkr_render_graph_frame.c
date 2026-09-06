@@ -1,11 +1,25 @@
 #include "renderer/vkr_render_graph_frame.h"
 
+vkr_internal uint32_t vkr_render_graph_draw_capacity(uint32_t count) {
+  uint32_t capacity = 1u;
+  while (capacity < count)
+    capacity *= 2u;
+  return capacity;
+}
+
 void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
                                     const VkrBloomConfig *bloom_config,
                                     const VkrGtaoConfig *gtao_config,
                                     VkrRenderGraphFrameInfo *frame,
                                     VkrGtaoGpuParams *gtao_params) {
   frame->editor_enabled = packet->input.frame.editor_enabled;
+  frame->scene_rendering = packet->scene_rendering;
+  frame->editor_image_available = packet->editor_image_available;
+  frame->editor_overlay_enabled =
+      packet->scene_rendering && packet->input.editor &&
+      packet->input.editor->overlay_draw_count > 0u;
+  frame->editor_image_width = packet->editor_image_width;
+  frame->editor_image_height = packet->editor_image_height;
   frame->viewport_width = packet->input.frame.viewport_width
                               ? packet->input.frame.viewport_width
                               : frame->target_width;
@@ -13,12 +27,26 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
                                ? packet->input.frame.viewport_height
                                : frame->target_height;
   frame->exposure_automatic =
+      packet->scene_rendering &&
       packet->exposure.mode == VKR_EXPOSURE_MODE_AUTOMATIC;
-  frame->picking_pending =
-      packet->input.picking && packet->input.picking->pending;
+  frame->picking_pending = packet->scene_rendering && packet->input.picking &&
+                           packet->input.picking->pending;
   frame->transmission_pending =
       packet->input.world &&
       packet->input.world->transmission_gpu_candidate_count > 0u;
+  frame->gpu_draw_candidate_capacity = vkr_render_graph_draw_capacity(
+      packet->input.world ? packet->input.world->gpu_candidate_count : 0u);
+  frame->transmission_gpu_draw_candidate_capacity =
+      vkr_render_graph_draw_capacity(
+          packet->input.world
+              ? packet->input.world->transmission_gpu_candidate_count
+              : 0u);
+  /* Four fixed state buckets retain the accepted 65536-draw bucket ceiling.
+     A smaller scene must still fit when every candidate uses one bucket. */
+  frame->gpu_draw_visible_capacity =
+      4u * Min(frame->gpu_draw_candidate_capacity, 65536u);
+  frame->transmission_gpu_draw_visible_capacity =
+      4u * Min(frame->transmission_gpu_draw_candidate_capacity, 65536u);
   frame->transmission_depth_diagnostic_enabled =
       frame->transmission_pending && packet->input.debug &&
       (packet->input.debug->transmission_depth_diagnostic_enabled ||

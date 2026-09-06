@@ -1063,6 +1063,10 @@ typedef struct VkrDeviceMemoryStats {
   uint64_t heap_budget_bytes[VKR_DEVICE_MEMORY_HEAP_MAX];
   /** Largest upload currently blocked by the backend's heap reserve. */
   uint64_t pending_texture_upload_bytes;
+  /** Charged backing dedicated to asset textures, including spare capacity and
+   * resources awaiting completion. Comparable to heap_usage_bytes when valid. */
+  uint64_t texture_heap_capacity_bytes;
+  bool8_t texture_heap_capacity_valid;
   bool8_t heap_usage_valid;
 } VkrDeviceMemoryStats;
 
@@ -1202,7 +1206,8 @@ void vkr_renderer_resize(VkrRenderer *renderer, uint32_t width,
  */
 VkrRendererError vkr_renderer_set_scene_output_extent(VkrRenderer *renderer,
                                                       uint32_t width,
-                                                      uint32_t height);
+                                                      uint32_t height,
+                                                      bool8_t memory_relief);
 /** Restores Scene reconstruction to the current present-target extent. */
 VkrRendererError
 vkr_renderer_restore_scene_output_extent(VkrRenderer *renderer);
@@ -1238,6 +1243,7 @@ typedef enum VkrReadbackStatus {
  */
 typedef struct VkrPixelReadbackResult {
   VkrReadbackStatus status; // Current status
+  uint64_t request_id;      // Identity from the submitted picking payload
   uint32_t x;               // Requested X coordinate
   uint32_t y;               // Requested Y coordinate
   uint32_t data;            // Pixel data (for R32_UINT format)

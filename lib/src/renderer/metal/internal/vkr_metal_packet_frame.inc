@@ -511,7 +511,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
     VkrMetalPacketFrameUpload *upload, uint32_t target_width,
-    uint32_t target_height, const VkrEditorPassPayload *editor)
+    uint32_t target_height, const Vec4 *editor_rect)
     API_AVAILABLE(macos(26.0)) {
   const VkrRgImageUse *read = vkr_rg_pass_find_image_use(&pass->desc, 2u, 0u);
   if (!read)
@@ -528,19 +528,21 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
   if (!root || !manual_state)
     return false_v;
   *manual_state = (VkrExposureGpuState){
-      .exposure_multiplier = packet->exposure.manual,
+      .exposure_multiplier = editor_rect ? 1.0f : packet->exposure.manual,
   };
-  const uint32_t output_x = editor ? (uint32_t)editor->image_rect_px.x : 0u;
-  const uint32_t output_y = editor ? (uint32_t)editor->image_rect_px.y : 0u;
+  const uint32_t output_x = editor_rect ? (uint32_t)editor_rect->x : 0u;
+  const uint32_t output_y = editor_rect ? (uint32_t)editor_rect->y : 0u;
   const uint32_t output_width =
-      editor ? (uint32_t)editor->image_rect_px.z : target_width;
+      editor_rect ? (uint32_t)editor_rect->z : target_width;
   const uint32_t output_height =
-      editor ? (uint32_t)editor->image_rect_px.w : target_height;
+      editor_rect ? (uint32_t)editor_rect->w : target_height;
   *root = (VkrMetalPacketTonemapRoot){
       .source_texture_id = source.gpuResourceID._impl,
-      .reserved = {renderer->tonemap_enabled ? 1u : 0u,
-                   renderer->fxaa_enabled && !renderer->metalfx_enabled ? 1u
-                                                                        : 0u},
+      .reserved = {!editor_rect && renderer->tonemap_enabled ? 1u : 0u,
+                   !editor_rect && renderer->fxaa_enabled &&
+                           !renderer->metalfx_enabled
+                       ? 1u
+                       : 0u},
       .exposure_state = manual_state_gpu,
       .output_extent = {output_width, output_height},
   };
@@ -759,7 +761,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
   if (!root)
     return false_v;
   root->candidate_count = candidate_count;
-  root->visible_capacity = VKR_GPU_DRAW_CANDIDATE_CAPACITY;
+  root->visible_capacity =
+      transmission ? renderer->prepared_frame.transmission_gpu_draw_visible_capacity
+                   : renderer->prepared_frame.gpu_draw_visible_capacity;
   root->view_count = view_count;
   root->icb_view_group_size =
       transmission ? 1u : renderer->gpu_draw_icb_view_group_size;
@@ -866,7 +870,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
     draw_roots[view] = (VkrMetalPacketDrawRoot){
         .geometry_rows = upload->gpu_draw_geometry_rows_gpu,
         .visible_rows = visible->resource.gpu_address +
-                        (uint64_t)view * VKR_GPU_DRAW_CANDIDATE_CAPACITY *
+                        (uint64_t)view * root->visible_capacity *
                             sizeof(VkrGpuVisibleDrawRow),
         .vertices = renderer->geometry_megabuffer.vertices.gpu_address,
         .frame = frame_root_gpu,
@@ -1027,7 +1031,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gbuffer_resolve(
       .motion_texture_id = motion.gpuResourceID._impl,
       .validity_texture_id = validity.gpuResourceID._impl,
       .extent = {(uint32_t)vbuffer.width, (uint32_t)vbuffer.height},
-      .visible_capacity = VKR_GPU_DRAW_CANDIDATE_CAPACITY,
+      .visible_capacity = renderer->prepared_frame.gpu_draw_visible_capacity,
       .geometry_count = renderer->max_meshes,
       .material_count = renderer->max_materials,
       .instance_count = renderer->gpu_draw_count,
@@ -1548,7 +1552,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_transmission_shade(
       .view_projection = view_projection,
       .inverse_view_projection = mat4_inverse(view_projection),
       .extent = {(uint32_t)vbuffer.width, (uint32_t)vbuffer.height},
-      .visible_capacity = VKR_GPU_DRAW_CANDIDATE_CAPACITY,
+      .visible_capacity =
+          renderer->prepared_frame.transmission_gpu_draw_visible_capacity,
       .geometry_count = renderer->max_meshes,
       .material_count = renderer->max_materials,
       .instance_count = renderer->transmission_gpu_draw_count,
@@ -1788,9 +1793,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_picking_resolve(
                 MIN(packet->input.picking->y,
                     (uint32_t)destination.height - 1u)},
       .extent = {(uint32_t)destination.width, (uint32_t)destination.height},
-      .opaque_visible_capacity = VKR_GPU_DRAW_CANDIDATE_CAPACITY,
+      .opaque_visible_capacity = renderer->prepared_frame.gpu_draw_visible_capacity,
       .opaque_instance_count = renderer->gpu_draw_count,
-      .transmission_visible_capacity = VKR_GPU_DRAW_CANDIDATE_CAPACITY,
+      .transmission_visible_capacity =
+          renderer->prepared_frame.transmission_gpu_draw_visible_capacity,
       .transmission_instance_count = renderer->transmission_gpu_draw_count,
       .transmission_enabled = transmission ? 1u : 0u,
   };
@@ -2245,6 +2251,23 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
       return false_v;
     return true_v;
   }
+  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_OVERLAY ||
+      kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_OVERLAY_PICKING) {
+    prepared->active = true_v;
+    prepared->world.direct = (VkrMetalPacketDirectPass){
+        .pipeline = kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_OVERLAY
+                        ? renderer->editor_overlay_pipeline
+                        : renderer->editor_overlay_picking_pipeline,
+        .depth = nil,
+        .draws = upload->overlay_draws,
+        .count = upload->overlay_draw_count,
+        .width = (uint32_t)target.width,
+        .height = (uint32_t)target.height,
+        .root_gpu = upload->overlay_root_gpu,
+    };
+    result->indexed_draw_count += upload->overlay_draw_count;
+    return true_v;
+  }
   if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_TONEMAP)
     return vkr_metal_packet_prepare_tonemap(renderer, pass, packet, prepared,
                                             upload, (uint32_t)target.width,
@@ -2252,7 +2275,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
   if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR)
     return vkr_metal_packet_prepare_tonemap(
         renderer, pass, packet, prepared, upload, (uint32_t)target.width,
-        (uint32_t)target.height, packet->input.editor);
+        (uint32_t)target.height, &packet->editor_image_rect_px);
+  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_EDITOR_CLEAR) {
+    prepared->active = true_v;
+    return true_v;
+  }
   if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_UI) {
     prepared->active = true_v;
     if (!packet->input.ui)
@@ -2357,56 +2384,65 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass(
 bool8_t vkr_metal_packet_renderer_prepare_frame(
     VkrMetalPacketRenderer *renderer,
     const VkrRenderGraphFrameInfo *frame_info) {
-  if (renderer->frame_prepared || renderer->reserved_frame_slot)
-    return false_v;
-  if (frame_info->target_width == 0 || frame_info->target_height == 0 ||
-      frame_info->scene_output_width == 0 ||
-      frame_info->scene_output_height == 0 || frame_info->viewport_width == 0 ||
-      frame_info->viewport_height == 0) {
-    log_error(
-        "Metal frame preparation rejected a zero target, Scene output, or "
-        "viewport");
-    return false_v;
-  }
-  [renderer->drawable release];
-  renderer->drawable = nil;
-  renderer->prepared_frame = *frame_info;
-  if (renderer->target_kind == VKR_METAL_PACKET_TARGET_WINDOW) {
-    if (vkr_metal_packet_pixel_format(frame_info->target_color_format) !=
-        renderer->layer.pixelFormat) {
-      log_error("Metal frame preparation target format mismatch");
+  @autoreleasepool {
+    if (renderer->frame_prepared || renderer->reserved_frame_slot)
+      return false_v;
+    VKR_METAL_DIAGNOSTIC(
+        renderer, "frame_prepare",
+        "target=%ux%u scene=%ux%u render=%ux%u next_slot=%u",
+        frame_info->target_width, frame_info->target_height,
+        frame_info->scene_output_width, frame_info->scene_output_height,
+        frame_info->viewport_width, frame_info->viewport_height,
+        renderer->next_command_slot);
+    if (frame_info->target_width == 0 || frame_info->target_height == 0 ||
+        frame_info->scene_output_width == 0 ||
+        frame_info->scene_output_height == 0 ||
+        frame_info->viewport_width == 0 || frame_info->viewport_height == 0) {
+      log_error(
+          "Metal frame preparation rejected a zero target, Scene output, or "
+          "viewport");
       return false_v;
     }
-  }
-  if (!vkr_metal_packet_acquire_command_slot(renderer, false_v)) {
-    log_error("Metal frame preparation could not acquire a command slot "
-              "(next=%u completed=%llu submitted=%llu)",
-              renderer->next_command_slot,
-              (unsigned long long)renderer->completion.signaledValue,
-              (unsigned long long)renderer->submit_value);
-    return false_v;
-  }
-  renderer->prepared_frame.image_index =
-      (uint32_t)(renderer->active_command_slot - renderer->command_slots);
-  if (renderer->target_kind == VKR_METAL_PACKET_TARGET_WINDOW) {
-    renderer->layer.drawableSize =
-        CGSizeMake(frame_info->target_width, frame_info->target_height);
-    renderer->drawable = [[renderer->layer nextDrawable] retain];
-    if (!renderer->drawable ||
-        renderer->drawable.texture.width != frame_info->target_width ||
-        renderer->drawable.texture.height != frame_info->target_height) {
-      [renderer->drawable release];
-      renderer->drawable = nil;
-      vkr_metal_packet_release_unsubmitted_command_slot(renderer);
-      log_error("Metal frame preparation could not acquire the requested "
-                "drawable extent");
+    [renderer->drawable release];
+    renderer->drawable = nil;
+    renderer->prepared_frame = *frame_info;
+    if (renderer->target_kind == VKR_METAL_PACKET_TARGET_WINDOW) {
+      if (vkr_metal_packet_pixel_format(frame_info->target_color_format) !=
+          renderer->layer.pixelFormat) {
+        log_error("Metal frame preparation target format mismatch");
+        return false_v;
+      }
+    }
+    if (!vkr_metal_packet_acquire_command_slot(renderer, false_v)) {
+      log_error("Metal frame preparation could not acquire a command slot "
+                "(next=%u completed=%llu submitted=%llu)",
+                renderer->next_command_slot,
+                (unsigned long long)renderer->completion.signaledValue,
+                (unsigned long long)renderer->submit_value);
       return false_v;
     }
+    renderer->prepared_frame.image_index =
+        (uint32_t)(renderer->active_command_slot - renderer->command_slots);
+    if (renderer->target_kind == VKR_METAL_PACKET_TARGET_WINDOW) {
+      renderer->layer.drawableSize =
+          CGSizeMake(frame_info->target_width, frame_info->target_height);
+      renderer->drawable = [[renderer->layer nextDrawable] retain];
+      if (!renderer->drawable ||
+          renderer->drawable.texture.width != frame_info->target_width ||
+          renderer->drawable.texture.height != frame_info->target_height) {
+        [renderer->drawable release];
+        renderer->drawable = nil;
+        vkr_metal_packet_release_unsubmitted_command_slot(renderer);
+        log_error("Metal frame preparation could not acquire the requested "
+                  "drawable extent");
+        return false_v;
+      }
+    }
+    renderer->reserved_frame_slot = renderer->active_command_slot;
+    vkr_metal_packet_detach_active_command_slot(renderer);
+    renderer->frame_prepared = true_v;
+    return true_v;
   }
-  renderer->reserved_frame_slot = renderer->active_command_slot;
-  vkr_metal_packet_detach_active_command_slot(renderer);
-  renderer->frame_prepared = true_v;
-  return true_v;
 }
 
 uint32_t vkr_metal_packet_renderer_frame_image_index(
@@ -2447,975 +2483,1135 @@ bool8_t
 vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
                                         const VkrPreparedFrame *packet,
                                         VkrMetalPacketResult *out_result) {
-  if (!@available(macOS 26.0, *)) {
-    vkr_metal_packet_finish_frame(renderer, false_v, false_v);
-    return false_v;
-  }
-
-  if (!renderer->frame_prepared || !renderer->reserved_frame_slot)
-    return false_v;
-  if (renderer->texture_upload_batch.enabled &&
-      !vkr_metal_packet_texture_upload_batch_flush(renderer, true_v)) {
-    log_error("Metal frame preparation failed while finishing asset uploads");
-    vkr_metal_packet_finish_frame(renderer, false_v, false_v);
-    return false_v;
-  }
-  if (renderer->active_command_slot) {
-    log_error(
-        "Metal frame preparation found an unfinished upload command slot");
-    vkr_metal_packet_finish_frame(renderer, false_v, false_v);
-    return false_v;
-  }
-  renderer->active_command_slot = renderer->reserved_frame_slot;
-  /* Uploads advanced their own acquisitions past the reserved frame. Resume
-   * frame rotation after this slot so the next frame can overlap its submit. */
-  renderer->next_command_slot =
-      ((uint32_t)(renderer->reserved_frame_slot - renderer->command_slots) + 1u) %
-      renderer->command_slot_count;
-  renderer->reserved_frame_slot = NULL;
-  renderer->command_allocator = renderer->active_command_slot->allocator;
-  renderer->command_buffer = renderer->active_command_slot->buffer;
-
-  vkr_render_graph_prepare_frame(
-      packet, &renderer->bloom_config, &renderer->gtao_config,
-      &renderer->prepared_frame, &renderer->gtao_params);
-  *out_result = (VkrMetalPacketResult){0};
-  out_result->source_render_scale = renderer->prepared_frame.render_scale;
-  out_result->source_render_width = renderer->prepared_frame.viewport_width;
-  out_result->source_render_height = renderer->prepared_frame.viewport_height;
-  renderer->prepared_frame.transmission_compact_enabled =
-      renderer->transmission_compact_enabled &&
-      renderer->prepared_frame.transmission_pending;
-  renderer->prepared_frame.hzb_history_valid = false_v;
-  renderer->selected_hzb_history_instance = UINT32_MAX;
-  renderer->selected_temporal_history_instance = UINT32_MAX;
-  renderer->selected_exposure_history_instance = UINT32_MAX;
-  renderer->current_hzb_view_projection = vkr_metal_packet_clip_matrix(
-      renderer->convert_vulkan_clip_y,
-      mat4_mul(packet->input.globals.projection, packet->input.globals.view));
-  /* Seeded valid so a frame with no candidates publishes an honest zero rather
-     than reading as an absent producer; the pack path overwrites it on
-     failure. */
-  renderer->packet_build = (VkrPacketBuildMetrics){.valid = true_v};
-#if VKR_METRICS_ENABLED
-  const float64_t candidate_hash_start = vkr_platform_get_absolute_time();
-#endif
-  renderer->current_hzb_world_epoch =
-      vkr_metal_packet_world_occluder_epoch(packet->input.world);
-#if VKR_METRICS_ENABLED
-  renderer->packet_build.candidate_hash_ns =
-      vkr_metrics_elapsed_ns(candidate_hash_start);
-#endif
-  const uint64_t completed_submit_value = renderer->completion.signaledValue;
-  vkr_capture_ring_collect(&renderer->capture_ring, completed_submit_value);
-  vkr_metal_packet_collect_retired_image_views(renderer,
-                                               completed_submit_value);
-  uint32_t collected = 0;
-  if (vkr_metal_memory_device_collect(renderer->memory, completed_submit_value,
-                                      &collected) !=
-          VKR_METAL_MEMORY_STATUS_OK ||
-      vkr_metal_material_table_device_collect(
-          renderer->materials, completed_submit_value, &collected) !=
-          VKR_METAL_MATERIAL_STATUS_OK) {
-    log_error("Metal packet stage failed: retirement collection");
-    vkr_metal_packet_finish_frame(renderer, false_v, false_v);
-    return false_v;
-  }
-
-  if (!vkr_rg_begin_frame(renderer->graph, &renderer->prepared_frame)) {
-    log_error("Metal packet stage failed: graph frame allocation");
-    vkr_metal_packet_finish_frame(renderer, false_v, false_v);
-    return false_v;
-  }
-  vkr_rg_set_packet(renderer->graph, packet);
-  /* Installed before compilation, because seeding a retained subresource reads
-     through this provider. */
-  vkr_metal_packet_install_retained_provider(renderer);
-  if (!vkr_rg_build_from_json(renderer->graph, &renderer->json_graph,
-                              &renderer->prepared_frame)) {
-    log_error("Metal packet stage failed: graph build");
-    goto graph_failure;
-  }
-  if (!vkr_rg_compile_schedule(renderer->graph)) {
-    log_error("Metal packet stage failed: graph compile");
-    goto graph_failure;
-  }
-  if (renderer->graph->passes.length > renderer->max_passes) {
-    log_error("Metal packet stage failed: %llu passes exceed capacity %u",
-              (unsigned long long)renderer->graph->passes.length,
-              renderer->max_passes);
-    goto graph_failure;
-  }
-  if (!vkr_metal_packet_realize_images(renderer)) {
-    log_error("Metal packet stage failed: image realization");
-    goto graph_failure;
-  }
-  if (!vkr_metal_packet_realize_buffers(renderer)) {
-    log_error("Metal packet stage failed: buffer realization");
-    goto graph_failure;
-  }
-  if (!vkr_metal_packet_select_history_output(renderer)) {
-    log_error("Metal packet stage failed: history output selection");
-    goto graph_failure;
-  }
-  if (!vkr_metal_packet_select_hzb_history(renderer)) {
-    log_error("Metal packet stage failed: HZB history selection");
-    goto graph_failure;
-  }
-  if (!vkr_metal_packet_select_temporal_history(renderer)) {
-    log_error("Metal packet stage failed: temporal history selection");
-    goto graph_failure;
-  }
-  if (!vkr_metal_packet_select_exposure_history(renderer)) {
-    log_error("Metal packet stage failed: exposure history selection");
-    goto graph_failure;
-  }
-
-  const bool8_t picking = renderer->prepared_frame.picking_pending;
-  VkrTextureHandle ibl_source = VKR_TEXTURE_HANDLE_INVALID;
-  const bool8_t ibl = vkr_metal_packet_ibl_source(packet, &ibl_source);
-  const bool8_t ibl_bake = vkr_metal_packet_ibl_needs_bake(renderer, packet);
-  const bool8_t pass_timing_requested =
-      packet->input.debug && packet->input.debug->enable_timing &&
-      packet->input.debug->capture_pass_timestamps;
-  const bool8_t submission_timing_requested =
-      renderer->metalfx_dynamic_resolution_enabled ||
-      (packet->input.debug && packet->input.debug->enable_timing &&
-       packet->input.debug->capture_submission_timing);
-  const bool8_t deferred_diagnostics = packet->input.world != NULL;
-  const bool8_t synchronous_deferred_validation =
-      renderer->synchronous_validation_readback && deferred_diagnostics;
-  const bool8_t transmission_coverage =
-      renderer->prepared_frame.transmission_pending &&
-      (pass_timing_requested ||
-       renderer->prepared_frame.transmission_compact_enabled ||
-       renderer->prepared_frame.transmission_depth_diagnostic_enabled);
-  const VkrMetalPacketReadbackLayout readback_layout =
-      vkr_metal_packet_readback_layout(
-          picking, ibl, deferred_diagnostics,
-          renderer->prepared_frame.transmission_pending,
-          renderer->prepared_frame.sdsm_enabled,
-          renderer->prepared_frame.exposure_automatic,
-          renderer->prepared_frame.shadow_cascade_count);
-  VkrMetalPacketCapturePlan capture_plans[VKR_CAPTURE_MAX_ITEMS] = {0};
-  VkrCaptureBackendItemPlan capture_ring_plans[VKR_CAPTURE_MAX_ITEMS] = {0};
-  uint32_t capture_count = 0;
-  uint64_t capture_size = readback_layout.prefix_size;
-  if (!vkr_metal_packet_capture_plan(renderer, packet,
-                                     readback_layout.prefix_size, capture_plans,
-                                     &capture_count, &capture_size)) {
-    log_error("Metal packet stage failed: capture plan");
-    vkr_metal_packet_finish_frame(renderer, true_v, false_v);
-    return false_v;
-  }
-  const VkrCaptureBatchRequest *capture_request =
-      packet->input.debug ? packet->input.debug->capture : NULL;
-  uint64_t capture_base = 0;
-  if (capture_count > 0) {
-    capture_base = capture_plans[0].buffer_offset;
-    for (uint32_t i = 0; i < capture_count; ++i) {
-      capture_ring_plans[i] = (VkrCaptureBackendItemPlan){
-          .result = capture_plans[i].result,
-          .buffer_offset = capture_plans[i].buffer_offset - capture_base,
-      };
+  @autoreleasepool {
+    *out_result = (VkrMetalPacketResult){0};
+    if (!@available(macOS 26.0, *)) {
+      vkr_metal_packet_finish_frame(renderer, false_v, false_v);
+      return false_v;
     }
-    const VkrRendererError capture_error = vkr_capture_ring_reserve(
-        &renderer->capture_ring, capture_request, capture_ring_plans,
-        packet->input.frame.frame_index);
-    if (capture_error != VKR_RENDERER_ERROR_NONE) {
-      out_result->capture = (VkrCapturePollResult){
-          .status = VKR_CAPTURE_STATUS_FAILED, .error = capture_error};
+
+    if (!renderer->frame_prepared || !renderer->reserved_frame_slot)
+      return false_v;
+    if (renderer->texture_upload_batch.enabled &&
+        !vkr_metal_packet_texture_upload_batch_flush(renderer, true_v)) {
+      log_error("Metal frame preparation failed while finishing asset uploads");
+      vkr_metal_packet_finish_frame(renderer, false_v, false_v);
+      return false_v;
+    }
+    if (renderer->active_command_slot) {
+      log_error(
+          "Metal frame preparation found an unfinished upload command slot");
+      vkr_metal_packet_finish_frame(renderer, false_v, false_v);
+      return false_v;
+    }
+    renderer->active_command_slot = renderer->reserved_frame_slot;
+    /* Uploads advanced their own acquisitions past the reserved frame. Resume
+     * frame rotation after this slot so the next frame can overlap its submit.
+     */
+    renderer->next_command_slot =
+        ((uint32_t)(renderer->reserved_frame_slot - renderer->command_slots) +
+         1u) %
+        renderer->command_slot_count;
+    renderer->reserved_frame_slot = NULL;
+    renderer->command_allocator = renderer->active_command_slot->allocator;
+    renderer->command_buffer = renderer->active_command_slot->buffer;
+
+    vkr_render_graph_prepare_frame(
+        packet, &renderer->bloom_config, &renderer->gtao_config,
+        &renderer->prepared_frame, &renderer->gtao_params);
+    VKR_METAL_DIAGNOSTIC(
+        renderer, "frame_packet",
+        "frame=%llu scene_rendering=%u retained=%u "
+        "retained_extent=%ux%u metalfx=%u",
+        (unsigned long long)packet->input.frame.frame_index,
+        packet->scene_rendering, packet->editor_image_available,
+        packet->editor_image_width, packet->editor_image_height,
+        renderer->metalfx_enabled);
+    out_result->source_render_scale = renderer->prepared_frame.render_scale;
+    out_result->source_render_width = renderer->prepared_frame.viewport_width;
+    out_result->source_render_height = renderer->prepared_frame.viewport_height;
+    renderer->prepared_frame.transmission_compact_enabled =
+        renderer->transmission_compact_enabled &&
+        renderer->prepared_frame.transmission_pending;
+    renderer->prepared_frame.hzb_history_valid = false_v;
+    renderer->selected_hzb_history_instance = UINT32_MAX;
+    renderer->selected_temporal_history_instance = UINT32_MAX;
+    renderer->selected_exposure_history_instance = UINT32_MAX;
+    renderer->current_hzb_view_projection = vkr_metal_packet_clip_matrix(
+        renderer->convert_vulkan_clip_y,
+        mat4_mul(packet->input.globals.projection, packet->input.globals.view));
+    /* Seeded valid so a frame with no candidates publishes an honest zero
+       rather than reading as an absent producer; the pack path overwrites it on
+       failure. */
+    renderer->packet_build = (VkrPacketBuildMetrics){.valid = true_v};
+#if VKR_METRICS_ENABLED
+    const float64_t candidate_hash_start = vkr_platform_get_absolute_time();
+#endif
+    renderer->current_hzb_world_epoch =
+        vkr_metal_packet_world_occluder_epoch(packet->input.world);
+#if VKR_METRICS_ENABLED
+    renderer->packet_build.candidate_hash_ns =
+        vkr_metrics_elapsed_ns(candidate_hash_start);
+#endif
+    const uint64_t completed_submit_value = renderer->completion.signaledValue;
+    vkr_capture_ring_collect(&renderer->capture_ring, completed_submit_value);
+    uint32_t collected = 0;
+    if (vkr_metal_packet_collect_memory(renderer, completed_submit_value,
+                                        &collected) !=
+            VKR_METAL_MEMORY_STATUS_OK ||
+        vkr_metal_material_table_device_collect(
+            renderer->materials, completed_submit_value, &collected) !=
+            VKR_METAL_MATERIAL_STATUS_OK) {
+      log_error("Metal packet stage failed: retirement collection");
+      vkr_metal_packet_finish_frame(renderer, false_v, false_v);
+      return false_v;
+    }
+
+    if (!vkr_rg_begin_frame(renderer->graph, &renderer->prepared_frame)) {
+      log_error("Metal packet stage failed: graph frame allocation");
+      vkr_metal_packet_finish_frame(renderer, false_v, false_v);
+      return false_v;
+    }
+    vkr_rg_set_packet(renderer->graph, packet);
+    /* Installed before compilation, because seeding a retained subresource
+       reads through this provider. */
+    vkr_metal_packet_install_retained_provider(renderer);
+    if (!vkr_rg_build_from_json(renderer->graph, &renderer->json_graph,
+                                &renderer->prepared_frame)) {
+      log_error("Metal packet stage failed: graph build");
+      goto graph_failure;
+    }
+    if (!vkr_rg_compile_schedule(renderer->graph)) {
+      log_error("Metal packet stage failed: graph compile");
+      goto graph_failure;
+    }
+    if (renderer->graph->passes.length > renderer->max_passes) {
+      log_error("Metal packet stage failed: %llu passes exceed capacity %u",
+                (unsigned long long)renderer->graph->passes.length,
+                renderer->max_passes);
+      goto graph_failure;
+    }
+    /* Normal DRS and UI-only frames retain the ordinary replacement policy.
+     * The cold completion wait is reserved for allocation-OOM recovery. */
+    if (packet->scene_rendering && renderer->graph_memory_recovery_pending &&
+        !vkr_metal_packet_reclaim_graph_targets(renderer)) {
+      log_error("Metal packet stage failed: graph memory recovery");
+      goto graph_failure;
+    }
+    VkrMetalPacketImageAllocationFailure image_failure = {0};
+    bool8_t images_realized = vkr_metal_packet_realize_images(
+        renderer, &out_result->error, &image_failure);
+    if (!images_realized && packet->scene_rendering &&
+        out_result->error == VKR_RENDERER_ERROR_OUT_OF_MEMORY) {
+      /* One cold retry avoids old/new target overlap before Application
+       * considers reducing Scene output. No commands use this graph yet. */
+      if (!vkr_metal_packet_reclaim_graph_targets(renderer)) {
+        out_result->error = VKR_RENDERER_ERROR_DEVICE_ERROR;
+        log_error("Metal packet stage failed: image allocation reclamation "
+                  "after '%.*s' allocation failed (%s)",
+                  (int)image_failure.image->name.length,
+                  image_failure.image->name.str,
+                  vkr_metal_memory_status_string(image_failure.status));
+        goto graph_failure;
+      }
+      const VkrMetalPacketImageAllocationFailure first_failure = image_failure;
+      images_realized = vkr_metal_packet_realize_images(
+          renderer, &out_result->error, &image_failure);
+      if (images_realized)
+        log_warn("Metal Scene image allocation recovered at unchanged "
+                 "resolution %ux%u after GPU completion and reclamation "
+                 "(image='%.*s', reason=%s)",
+                 renderer->prepared_frame.viewport_width,
+                 renderer->prepared_frame.viewport_height,
+                 (int)first_failure.image->name.length,
+                 first_failure.image->name.str,
+                 vkr_metal_memory_status_string(first_failure.status));
+    }
+    if (!images_realized) {
+      renderer->graph_memory_recovery_pending |=
+          out_result->error == VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      if (image_failure.image) {
+        const VkrRgImage *image = image_failure.image;
+        log_error("Metal graph image '%.*s' allocation failed: %s, format=%u "
+                  "extent=%ux%u layers=%u mips=%u usage=0x%x",
+                  (int)image->name.length, image->name.str,
+                  vkr_metal_memory_status_string(image_failure.status),
+                  image->desc.format, image->desc.width, image->desc.height,
+                  image->desc.layers, image->desc.mip_levels,
+                  image->desc.usage.set);
+      } else {
+        log_error("Metal packet stage failed: image realization");
+      }
+      goto graph_failure;
+    }
+    if (!vkr_metal_packet_realize_buffers(renderer, &out_result->error)) {
+      renderer->graph_memory_recovery_pending |=
+          out_result->error == VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      log_error("Metal packet stage failed: buffer realization");
+      goto graph_failure;
+    }
+    if (packet->scene_rendering &&
+        !vkr_metal_packet_select_history_output(renderer)) {
+      log_error("Metal packet stage failed: history output selection");
+      goto graph_failure;
+    }
+    if (packet->scene_rendering &&
+        !vkr_metal_packet_select_hzb_history(renderer)) {
+      log_error("Metal packet stage failed: HZB history selection");
+      goto graph_failure;
+    }
+    if (packet->scene_rendering &&
+        !vkr_metal_packet_select_temporal_history(renderer)) {
+      log_error("Metal packet stage failed: temporal history selection");
+      goto graph_failure;
+    }
+    if (packet->scene_rendering &&
+        !vkr_metal_packet_select_exposure_history(renderer)) {
+      log_error("Metal packet stage failed: exposure history selection");
+      goto graph_failure;
+    }
+
+    const bool8_t picking = renderer->prepared_frame.picking_pending;
+    VkrTextureHandle ibl_source = VKR_TEXTURE_HANDLE_INVALID;
+    const bool8_t ibl = vkr_metal_packet_ibl_source(packet, &ibl_source);
+    const bool8_t ibl_bake = vkr_metal_packet_ibl_needs_bake(renderer, packet);
+    const bool8_t pass_timing_requested =
+        packet->input.debug && packet->input.debug->enable_timing &&
+        packet->input.debug->capture_pass_timestamps;
+    const bool8_t submission_timing_requested =
+        renderer->metalfx_dynamic_resolution_enabled ||
+        (packet->input.debug && packet->input.debug->enable_timing &&
+         packet->input.debug->capture_submission_timing);
+    const bool8_t deferred_diagnostics = packet->input.world != NULL;
+    const bool8_t synchronous_deferred_validation =
+        renderer->synchronous_validation_readback && deferred_diagnostics;
+    const bool8_t transmission_coverage =
+        renderer->prepared_frame.transmission_pending &&
+        (pass_timing_requested ||
+         renderer->prepared_frame.transmission_compact_enabled ||
+         renderer->prepared_frame.transmission_depth_diagnostic_enabled);
+    const VkrMetalPacketReadbackLayout readback_layout =
+        vkr_metal_packet_readback_layout(
+            picking, ibl, deferred_diagnostics,
+            renderer->prepared_frame.transmission_pending,
+            renderer->prepared_frame.sdsm_enabled,
+            renderer->prepared_frame.exposure_automatic,
+            renderer->prepared_frame.shadow_cascade_count);
+    VkrMetalPacketCapturePlan capture_plans[VKR_CAPTURE_MAX_ITEMS] = {0};
+    VkrCaptureBackendItemPlan capture_ring_plans[VKR_CAPTURE_MAX_ITEMS] = {0};
+    uint32_t capture_count = 0;
+    uint64_t capture_size = readback_layout.prefix_size;
+    if (!vkr_metal_packet_capture_plan(
+            renderer, packet, readback_layout.prefix_size, capture_plans,
+            &capture_count, &capture_size)) {
+      log_error("Metal packet stage failed: capture plan");
       vkr_metal_packet_finish_frame(renderer, true_v, false_v);
       return false_v;
     }
-  }
-  VkrMetalPacketFrameUpload frame_upload = {0};
-  const VkrMetalPacketTemporalSceneState temporal_scene = {
-      .signature = packet->temporal.enabled && !renderer->metalfx_enabled
-                       ? vkr_temporal_scene_signature(packet)
-                       : (VkrTemporalSceneSignature){0},
-      .radiance_revision = renderer->radiance_revision,
-      .publication_generation = renderer->candidate_publication_generation,
-      .graph_revision = renderer->graph_revision,
-  };
-  if (!vkr_metal_packet_prepare_upload(renderer, packet, &frame_upload)) {
-    log_error("Metal packet stage failed: frame upload (world=%u ui=%u)",
-              packet->input.world ? packet->input.world->instance_count : 0,
-              packet->input.ui ? packet->input.ui->draw_list.vertex_count : 0);
-    vkr_metal_packet_rollback_gpu_draw_resource_preparation(renderer, packet);
-    if (frame_upload.acquired)
+    const VkrCaptureBatchRequest *capture_request =
+        packet->input.debug ? packet->input.debug->capture : NULL;
+    uint64_t capture_base = 0;
+    if (capture_count > 0) {
+      capture_base = capture_plans[0].buffer_offset;
+      for (uint32_t i = 0; i < capture_count; ++i) {
+        capture_ring_plans[i] = (VkrCaptureBackendItemPlan){
+            .result = capture_plans[i].result,
+            .buffer_offset = capture_plans[i].buffer_offset - capture_base,
+        };
+      }
+      const VkrRendererError capture_error = vkr_capture_ring_reserve(
+          &renderer->capture_ring, capture_request, capture_ring_plans,
+          packet->input.frame.frame_index);
+      if (capture_error != VKR_RENDERER_ERROR_NONE) {
+        out_result->capture = (VkrCapturePollResult){
+            .status = VKR_CAPTURE_STATUS_FAILED, .error = capture_error};
+        vkr_metal_packet_finish_frame(renderer, true_v, false_v);
+        return false_v;
+      }
+    }
+    VkrMetalPacketFrameUpload frame_upload = {0};
+    const VkrMetalPacketTemporalSceneState temporal_scene = {
+        .signature = packet->scene_rendering && packet->temporal.enabled &&
+                             !renderer->metalfx_enabled
+                         ? vkr_temporal_scene_signature(packet)
+                         : (VkrTemporalSceneSignature){0},
+        .radiance_revision = renderer->radiance_revision,
+        .publication_generation = renderer->candidate_publication_generation,
+        .graph_revision = renderer->graph_revision,
+    };
+    VkrRendererError upload_error = VKR_RENDERER_ERROR_NONE;
+    if (!vkr_metal_packet_prepare_upload(renderer, packet, &frame_upload,
+                                         &upload_error)) {
+      if (upload_error == VKR_RENDERER_ERROR_NONE)
+        upload_error = VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED;
+      out_result->error = upload_error;
+      log_error("Metal packet stage failed: frame upload (world=%u ui=%u)",
+                packet->input.world ? packet->input.world->instance_count : 0,
+                packet->input.ui ? packet->input.ui->draw_list.vertex_count
+                                 : 0);
+      vkr_metal_packet_rollback_gpu_draw_resource_preparation(renderer, packet);
+      if (frame_upload.acquired)
+        vkr_metal_memory_device_cancel_ring(
+            renderer->memory, VKR_METAL_RING_KIND_UPLOAD, frame_upload.slice);
+      vkr_metal_packet_capture_fail_reserved(renderer, capture_request,
+                                             upload_error);
+      vkr_metal_packet_finish_frame(renderer, true_v, false_v);
+      return false_v;
+    }
+    frame_upload.temporal_scene = temporal_scene;
+    frame_upload.temporal_scene.signature.eligible =
+        temporal_scene.signature.eligible && !ibl_bake &&
+        !renderer->texture_upload_batch.enabled &&
+        !renderer->texture_upload_batch.active &&
+        temporal_scene.radiance_revision == renderer->radiance_revision;
+    VkrMetalRingSlice readback_slice = {0};
+    VkrMetalAddressPair readback = {0};
+    void *readback_object = NULL;
+    /* Ring acquisition reclaims completed slices. Use the same completion
+       observation when preserving pixels so it cannot reclaim a newer slice. */
+    uint64_t readback_completed = renderer->completion.signaledValue;
+    vkr_metal_packet_collect_picking_results(renderer, readback_completed);
+    const VkrMetalMemoryStatus readback_capacity_status =
+        vkr_metal_packet_ensure_ring_capacity(
+            renderer, VKR_METAL_RING_KIND_READBACK, capture_size);
+    if (readback_capacity_status != VKR_METAL_MEMORY_STATUS_OK) {
+      const VkrRendererError readback_error =
+          readback_capacity_status == VKR_METAL_MEMORY_STATUS_RING_BUSY
+              ? VKR_RENDERER_ERROR_CAPTURE_BUSY
+              : vkr_metal_packet_allocation_error(readback_capacity_status);
+      out_result->error = readback_error;
+      vkr_metal_packet_rollback_gpu_draw_resource_preparation(renderer, packet);
       vkr_metal_memory_device_cancel_ring(
           renderer->memory, VKR_METAL_RING_KIND_UPLOAD, frame_upload.slice);
-    vkr_metal_packet_capture_fail_reserved(
-        renderer, capture_request, VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED);
-    vkr_metal_packet_finish_frame(renderer, true_v, false_v);
-    return false_v;
-  }
-  frame_upload.temporal_scene = temporal_scene;
-  frame_upload.temporal_scene.signature.eligible =
-      temporal_scene.signature.eligible && !ibl_bake &&
-      !renderer->texture_upload_batch.enabled &&
-      !renderer->texture_upload_batch.active &&
-      temporal_scene.radiance_revision == renderer->radiance_revision;
-  VkrMetalRingSlice readback_slice = {0};
-  VkrMetalAddressPair readback = {0};
-  void *readback_object = NULL;
-  const VkrMetalMemoryStatus readback_status =
-      vkr_metal_memory_device_acquire_ring(
-          renderer->memory, VKR_METAL_RING_KIND_READBACK, capture_size,
-          renderer->completion.signaledValue, &readback_slice, &readback,
-          &readback_object);
-  if (readback_status != VKR_METAL_MEMORY_STATUS_OK) {
-    const VkrRendererError readback_error =
-        readback_status == VKR_METAL_MEMORY_STATUS_RING_BUSY
-            ? VKR_RENDERER_ERROR_CAPTURE_BUSY
-            : VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    log_error("Metal packet stage failed: readback ring %s (%llu bytes)",
-              vkr_metal_memory_status_string(readback_status),
-              (unsigned long long)capture_size);
-    vkr_metal_packet_rollback_gpu_draw_resource_preparation(renderer, packet);
-    vkr_metal_memory_device_cancel_ring(
-        renderer->memory, VKR_METAL_RING_KIND_UPLOAD, frame_upload.slice);
-    vkr_metal_packet_capture_fail_reserved(renderer, capture_request,
-                                           readback_error);
-    vkr_metal_packet_finish_frame(renderer, true_v, false_v);
-    return false_v;
-  }
-  MemZero(readback.cpu_address, capture_size);
+      vkr_metal_packet_capture_fail_reserved(renderer, capture_request,
+                                             readback_error);
+      vkr_metal_packet_finish_frame(renderer, true_v, false_v);
+      return false_v;
+    }
+    readback_completed = renderer->completion.signaledValue;
+    const VkrMetalMemoryStatus readback_status =
+        vkr_metal_memory_device_acquire_ring(
+            renderer->memory, VKR_METAL_RING_KIND_READBACK, capture_size,
+            readback_completed, &readback_slice, &readback, &readback_object);
+    if (readback_status != VKR_METAL_MEMORY_STATUS_OK) {
+      const VkrRendererError readback_error =
+          readback_status == VKR_METAL_MEMORY_STATUS_RING_BUSY
+              ? VKR_RENDERER_ERROR_CAPTURE_BUSY
+              : vkr_metal_packet_allocation_error(readback_status);
+      out_result->error = readback_error;
+      log_error("Metal packet stage failed: readback ring %s (%llu bytes)",
+                vkr_metal_memory_status_string(readback_status),
+                (unsigned long long)capture_size);
+      vkr_metal_packet_rollback_gpu_draw_resource_preparation(renderer, packet);
+      vkr_metal_memory_device_cancel_ring(
+          renderer->memory, VKR_METAL_RING_KIND_UPLOAD, frame_upload.slice);
+      vkr_metal_packet_capture_fail_reserved(renderer, capture_request,
+                                             readback_error);
+      vkr_metal_packet_finish_frame(renderer, true_v, false_v);
+      return false_v;
+    }
+    MemZero(readback.cpu_address, capture_size);
 
-  const VkrGpuDependency capture_dependency = {
-      .src_stages = VKR_GPU_STAGE_COLOR_OUTPUT,
-      .dst_stages = VKR_GPU_STAGE_TRANSFER,
-      .visibility = VKR_GPU_VISIBILITY_DEVICE,
-  };
-  const VkrGpuDependency shadow_capture_dependency = {
-      .src_stages = VKR_GPU_STAGE_LATE_DEPTH,
-      .dst_stages = VKR_GPU_STAGE_TRANSFER,
-      .visibility = VKR_GPU_VISIBILITY_DEVICE,
-  };
-  const VkrGpuDependency ibl_capture_dependency = {
-      .src_stages = VKR_GPU_STAGE_COMPUTE_SHADER,
-      .dst_stages = VKR_GPU_STAGE_TRANSFER,
-      .visibility = VKR_GPU_VISIBILITY_DEVICE,
-  };
-  const VkrGpuDependency batch_capture_dependency = {
-      .src_stages = VKR_GPU_STAGE_ALL_GRAPHICS | VKR_GPU_STAGE_COMPUTE_SHADER |
-                    VKR_GPU_STAGE_TRANSFER,
-      .dst_stages = VKR_GPU_STAGE_COMPUTE_SHADER | VKR_GPU_STAGE_TRANSFER,
-      .visibility = VKR_GPU_VISIBILITY_DEVICE,
-  };
-  VkrMetalDependency capture_barrier = {0};
-  VkrMetalDependency shadow_capture_barrier = {0};
-  VkrMetalDependency ibl_capture_barrier = {0};
-  VkrMetalDependency batch_capture_barrier = {0};
-  bool8_t passed =
-      vkr_metal_dependency_lower(&capture_dependency, &capture_barrier) &&
-      vkr_metal_dependency_lower(&shadow_capture_dependency,
-                                 &shadow_capture_barrier) &&
-      vkr_metal_dependency_lower(&ibl_capture_dependency,
-                                 &ibl_capture_barrier) &&
-      vkr_metal_dependency_lower(&batch_capture_dependency,
-                                 &batch_capture_barrier);
-  const VkrRgPass *failed_pass = NULL;
-  VkrMetalPacketGraphBufferInstance *deferred_state = NULL;
-  VkrMetalPacketGraphBufferInstance *transmission_deferred_state = NULL;
-  VkrMetalPacketGraphBufferInstance *sdsm_reduce_state = NULL;
-  VkrMetalPacketGraphBufferInstance *exposure_histogram = NULL;
-  VkrMetalPacketGraphBufferInstance *exposure_state = NULL;
-  const uint64_t prepared_count = renderer->graph->execution_order.length;
-  VkrMetalPacketPreparedPass *prepared_passes =
-      vkr_allocator_alloc(&renderer->graph_frame_allocator,
-                          prepared_count * sizeof(*prepared_passes),
-                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-  passed = passed && (prepared_count == 0u || prepared_passes != NULL);
-  for (uint64_t order = 0u; passed && order < prepared_count; ++order) {
-    const CFTimeInterval preparation_cpu_begin = CACurrentMediaTime();
-    const uint32_t index = renderer->graph->execution_order.data[order];
-    const VkrRgPass *pass = &renderer->graph->passes.data[index];
-    VkrMetalPacketPreparedPass *prepared = &prepared_passes[order];
-    *prepared = (VkrMetalPacketPreparedPass){
-        .source = pass,
-        .index = index,
-        .last_present_writer =
-            vkr_metal_packet_is_last_present_writer(renderer, order),
-        .label = vkr_metal_packet_pass_label(renderer, index, pass),
+    const VkrGpuDependency capture_dependency = {
+        .src_stages = VKR_GPU_STAGE_COLOR_OUTPUT,
+        .dst_stages = VKR_GPU_STAGE_TRANSFER,
+        .visibility = VKR_GPU_VISIBILITY_DEVICE,
     };
-    if (pass->culled)
-      continue;
-    if (!vkr_metal_packet_graph_executor_kind(pass, &prepared->kind) ||
-        !vkr_metal_packet_prepare_pass(
-            renderer, packet, prepared, &frame_upload,
-            (id<MTLBuffer>)readback_object, readback_slice.offset + 8u,
-            out_result)) {
-      failed_pass = pass;
-      passed = false_v;
-      break;
+    const VkrGpuDependency shadow_capture_dependency = {
+        .src_stages = VKR_GPU_STAGE_LATE_DEPTH,
+        .dst_stages = VKR_GPU_STAGE_TRANSFER,
+        .visibility = VKR_GPU_VISIBILITY_DEVICE,
+    };
+    const VkrGpuDependency ibl_capture_dependency = {
+        .src_stages = VKR_GPU_STAGE_COMPUTE_SHADER,
+        .dst_stages = VKR_GPU_STAGE_TRANSFER,
+        .visibility = VKR_GPU_VISIBILITY_DEVICE,
+    };
+    const VkrGpuDependency batch_capture_dependency = {
+        .src_stages = VKR_GPU_STAGE_ALL_GRAPHICS |
+                      VKR_GPU_STAGE_COMPUTE_SHADER | VKR_GPU_STAGE_TRANSFER,
+        .dst_stages = VKR_GPU_STAGE_COMPUTE_SHADER | VKR_GPU_STAGE_TRANSFER,
+        .visibility = VKR_GPU_VISIBILITY_DEVICE,
+    };
+    VkrMetalDependency capture_barrier = {0};
+    VkrMetalDependency shadow_capture_barrier = {0};
+    VkrMetalDependency ibl_capture_barrier = {0};
+    VkrMetalDependency batch_capture_barrier = {0};
+    bool8_t passed =
+        vkr_metal_dependency_lower(&capture_dependency, &capture_barrier) &&
+        vkr_metal_dependency_lower(&shadow_capture_dependency,
+                                   &shadow_capture_barrier) &&
+        vkr_metal_dependency_lower(&ibl_capture_dependency,
+                                   &ibl_capture_barrier) &&
+        vkr_metal_dependency_lower(&batch_capture_dependency,
+                                   &batch_capture_barrier);
+    const VkrRgPass *failed_pass = NULL;
+    VkrMetalPacketGraphBufferInstance *deferred_state = NULL;
+    VkrMetalPacketGraphBufferInstance *transmission_deferred_state = NULL;
+    VkrMetalPacketGraphBufferInstance *sdsm_reduce_state = NULL;
+    VkrMetalPacketGraphBufferInstance *exposure_histogram = NULL;
+    VkrMetalPacketGraphBufferInstance *exposure_state = NULL;
+    const uint64_t prepared_count = renderer->graph->execution_order.length;
+    /* This diagnostic pass inventory is separate from command emission. It
+       reports planned work, not proof that any pass reached the GPU. */
+    if (renderer->diagnostics.enabled) {
+      for (uint64_t order = 0u; order < prepared_count; ++order) {
+        const uint32_t index = renderer->graph->execution_order.data[order];
+        const VkrRgPass *pass = &renderer->graph->passes.data[index];
+        VKR_METAL_DIAGNOSTIC(
+            renderer, "frame_pass",
+            "frame=%llu order=%llu index=%u culled=%u name=%.*s",
+            (unsigned long long)packet->input.frame.frame_index,
+            (unsigned long long)order, index, pass->culled,
+            (int)pass->desc.name.length, pass->desc.name.str);
+      }
     }
-    switch (prepared->kind) {
-    case VKR_METAL_PACKET_GRAPH_EXECUTOR_GBUFFER_RESOLVE:
-      if (deferred_diagnostics)
-        deferred_state = vkr_metal_packet_pass_buffer(renderer, pass, 7u);
-      break;
-    case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_SHADE:
-      if (deferred_diagnostics)
-        transmission_deferred_state =
-            vkr_metal_packet_pass_buffer(renderer, pass, 3u);
-      break;
-    case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_COVERAGE:
-      if (transmission_coverage)
-        transmission_deferred_state =
-            vkr_metal_packet_pass_buffer(renderer, pass, 1u);
-      break;
-    case VKR_METAL_PACKET_GRAPH_EXECUTOR_SDSM_REDUCE:
-      sdsm_reduce_state = vkr_metal_packet_pass_buffer(renderer, pass, 2u);
-      break;
-    case VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_HISTOGRAM:
-      exposure_histogram = vkr_metal_packet_pass_buffer(renderer, pass, 1u);
-      break;
-    case VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_RESOLVE:
-      exposure_state = vkr_metal_packet_pass_buffer(renderer, pass, 1u);
-      break;
-    default:
-      break;
-    }
-    prepared->preparation_cpu_ms =
-        (CACurrentMediaTime() - preparation_cpu_begin) * 1000.0;
-  }
-  id<MTLTexture> present =
-      vkr_metal_packet_texture(renderer, renderer->graph->present_image);
-  id<MTLTexture> shadow =
-      vkr_metal_packet_named_texture(renderer, "shadow_map");
-  const VkrMetalPacketGraphBufferInstance *temporal_wait_source =
-      renderer->selected_temporal_history_instance != UINT32_MAX
-          ? vkr_metal_packet_graph_buffer_instance(
-                renderer, renderer->temporal_transform_history_handle,
-                renderer->selected_temporal_history_instance)
-          : NULL;
-  const uint64_t temporal_wait_value =
-      temporal_wait_source ? temporal_wait_source->history_producer_submit_value
-                           : 0u;
-  passed =
-      passed && (renderer->selected_temporal_history_instance == UINT32_MAX ||
-                 temporal_wait_source);
-  passed = passed && present && shadow &&
-           (!deferred_diagnostics || deferred_state) &&
-           (!(renderer->prepared_frame.transmission_pending &&
-              (deferred_diagnostics || transmission_coverage)) ||
-            transmission_deferred_state) &&
-           (!readback_layout.sdsm_size || sdsm_reduce_state) &&
-           (!readback_layout.exposure_size ||
-            (exposure_histogram && exposure_state));
-  if (!passed) {
-    if (failed_pass) {
-      log_error("Metal frame preparation failed at pass '%.*s'",
-                (int)failed_pass->desc.name.length, failed_pass->desc.name.str);
-    } else {
-      log_error("Metal frame preparation failed for capture resources or "
-                "native dependencies");
-    }
-    vkr_metal_packet_rollback_gpu_draw_resource_preparation(renderer, packet);
-    vkr_metal_packet_abandon_ibl_sh_candidate(renderer, &frame_upload);
-    vkr_metal_memory_device_cancel_ring(
-        renderer->memory, VKR_METAL_RING_KIND_READBACK, readback_slice);
-    vkr_metal_memory_device_cancel_ring(
-        renderer->memory, VKR_METAL_RING_KIND_UPLOAD, frame_upload.slice);
-    vkr_metal_packet_capture_fail_reserved(
-        renderer, capture_request, VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED);
-    vkr_metal_packet_finish_frame(renderer, true_v, false_v);
-    return false_v;
-  }
-  if (pass_timing_requested) {
-    [renderer->active_command_slot->timestamp_heap
-        invalidateCounterRange:NSMakeRange(
-                                   0u,
-                                   (NSUInteger)renderer->graph->passes.length *
-                                       2u)];
-  }
-
-  [renderer->command_buffer
-      beginCommandBufferWithAllocator:renderer->command_allocator];
-  id<MTLResidencySet>
-      residency_sets[2u + VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX] = {
-          (id<MTLResidencySet>)vkr_metal_memory_device_residency_set(
-              renderer->memory),
-          (id<MTLResidencySet>)vkr_metal_material_table_device_residency_set(
-              renderer->materials),
+    VkrMetalPacketPreparedPass *prepared_passes =
+        vkr_allocator_alloc(&renderer->graph_frame_allocator,
+                            prepared_count * sizeof(*prepared_passes),
+                            VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    passed = passed && (prepared_count == 0u || prepared_passes != NULL);
+    for (uint64_t order = 0u; passed && order < prepared_count; ++order) {
+      const CFTimeInterval preparation_cpu_begin = CACurrentMediaTime();
+      const uint32_t index = renderer->graph->execution_order.data[order];
+      const VkrRgPass *pass = &renderer->graph->passes.data[index];
+      VkrMetalPacketPreparedPass *prepared = &prepared_passes[order];
+      *prepared = (VkrMetalPacketPreparedPass){
+          .source = pass,
+          .index = index,
+          .last_present_writer =
+              vkr_metal_packet_is_last_present_writer(renderer, order),
+          .label = vkr_metal_packet_pass_label(renderer, index, pass),
       };
-  NSUInteger residency_set_count = 2u;
-  for (uint32_t group = 0u;
-       group < renderer->active_command_slot->gpu_draw_icb_residency_count;
-       ++group)
-    residency_sets[residency_set_count++] =
-        renderer->active_command_slot->gpu_draw_icb_residencies[group];
-  [renderer->command_buffer useResidencySets:residency_sets
-                                       count:residency_set_count];
-  for (uint64_t order = 0u; passed && order < prepared_count; ++order) {
-    const VkrMetalPacketPreparedPass *prepared = &prepared_passes[order];
-    const VkrRgPass *pass = prepared->source;
-    const uint32_t *pass_index = &prepared->index;
-    if (pass->culled)
-      continue;
-    const bool8_t metalfx_pass =
-        prepared->kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_METALFX_TEMPORAL;
-    const bool8_t encoder_timing_pass =
-        pass_timing_requested && pass->desc.type != VKR_RG_PASS_TYPE_TRANSFER &&
-        !metalfx_pass;
-    const CFTimeInterval pass_cpu_begin = CACurrentMediaTime();
-    if (pass->desc.type == VKR_RG_PASS_TYPE_GRAPHICS) {
-      id<MTL4RenderCommandEncoder> encoder = [renderer->command_buffer
-          renderCommandEncoderWithDescriptor:renderer->render_passes
-                                                 [prepared->index]];
-      if (!encoder) {
-        passed = false_v;
+      if (pass->culled)
+        continue;
+      if (!vkr_metal_packet_graph_executor_kind(pass, &prepared->kind) ||
+          !vkr_metal_packet_prepare_pass(
+              renderer, packet, prepared, &frame_upload,
+              (id<MTLBuffer>)readback_object, readback_slice.offset + 8u,
+              out_result)) {
         failed_pass = pass;
+        passed = false_v;
         break;
       }
-      encoder.label = prepared->label;
-      if (encoder_timing_pass)
-        [encoder
-            writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
-                               afterStage:MTLRenderStageFragment
-                                 intoHeap:renderer->active_command_slot
-                                              ->timestamp_heap
-                                  atIndex:(NSUInteger)prepared->index * 2u];
-      vkr_metal_packet_record_consumers(encoder, prepared);
-      if (prepared->active)
-        vkr_metal_packet_record_graphics_pass(renderer, encoder, prepared);
-      vkr_metal_packet_record_producers(encoder, prepared);
-      out_result->dependency_count +=
-          prepared->consumer_count + prepared->producer_count;
-      if (prepared->last_present_writer) {
-        vkr_metal_dependency_encode_producer(encoder, &capture_barrier);
-        out_result->dependency_count++;
-      }
-      if (prepared->kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_SHADOW &&
-          pass->desc.repeat_index + 1u ==
-              renderer->prepared_frame.shadow_cascade_count) {
-        vkr_metal_dependency_encode_producer(encoder, &shadow_capture_barrier);
-        out_result->dependency_count++;
-      }
-      if (capture_count > 0u) {
-        vkr_metal_dependency_encode_producer(encoder, &batch_capture_barrier);
-        out_result->dependency_count++;
-      }
-      if (encoder_timing_pass)
-        [encoder
-            writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
-                               afterStage:MTLRenderStageFragment
-                                 intoHeap:renderer->active_command_slot
-                                              ->timestamp_heap
-                                  atIndex:(NSUInteger)prepared->index * 2u +
-                                          1u];
-      [encoder endEncoding];
-      out_result->graphics_pass_count++;
-    } else if (metalfx_pass) {
-      vkr_metal_packet_record_metalfx(renderer, prepared);
-      out_result->compute_pass_count++;
-    } else {
-      id<MTL4ComputeCommandEncoder> encoder =
-          [renderer->command_buffer computeCommandEncoder];
-      if (!encoder) {
-        passed = false_v;
-        failed_pass = pass;
+      switch (prepared->kind) {
+      case VKR_METAL_PACKET_GRAPH_EXECUTOR_GBUFFER_RESOLVE:
+        if (deferred_diagnostics)
+          deferred_state = vkr_metal_packet_pass_buffer(renderer, pass, 7u);
+        break;
+      case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_SHADE:
+        if (deferred_diagnostics)
+          transmission_deferred_state =
+              vkr_metal_packet_pass_buffer(renderer, pass, 3u);
+        break;
+      case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_COVERAGE:
+        if (transmission_coverage)
+          transmission_deferred_state =
+              vkr_metal_packet_pass_buffer(renderer, pass, 1u);
+        break;
+      case VKR_METAL_PACKET_GRAPH_EXECUTOR_SDSM_REDUCE:
+        sdsm_reduce_state = vkr_metal_packet_pass_buffer(renderer, pass, 2u);
+        break;
+      case VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_HISTOGRAM:
+        exposure_histogram = vkr_metal_packet_pass_buffer(renderer, pass, 1u);
+        break;
+      case VKR_METAL_PACKET_GRAPH_EXECUTOR_EXPOSURE_RESOLVE:
+        exposure_state = vkr_metal_packet_pass_buffer(renderer, pass, 1u);
+        break;
+      default:
         break;
       }
-      encoder.label = prepared->label;
-      if (encoder_timing_pass)
-        [encoder
-            writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
-                                 intoHeap:renderer->active_command_slot
-                                              ->timestamp_heap
-                                  atIndex:(NSUInteger)prepared->index * 2u];
-      vkr_metal_packet_record_consumers(encoder, prepared);
-      if (prepared->active) {
+      prepared->preparation_cpu_ms =
+          (CACurrentMediaTime() - preparation_cpu_begin) * 1000.0;
+    }
+    id<MTLTexture> present =
+        vkr_metal_packet_texture(renderer, renderer->graph->present_image);
+    id<MTLTexture> shadow =
+        packet->scene_rendering
+            ? vkr_metal_packet_named_texture(renderer, "shadow_map")
+            : nil;
+    const VkrMetalPacketGraphBufferInstance *temporal_wait_source =
+        renderer->selected_temporal_history_instance != UINT32_MAX
+            ? vkr_metal_packet_graph_buffer_instance(
+                  renderer, renderer->temporal_transform_history_handle,
+                  renderer->selected_temporal_history_instance)
+            : NULL;
+    const uint64_t temporal_wait_value =
+        temporal_wait_source
+            ? temporal_wait_source->history_producer_submit_value
+            : 0u;
+    passed =
+        passed && (renderer->selected_temporal_history_instance == UINT32_MAX ||
+                   temporal_wait_source);
+    passed = passed && present && (!packet->scene_rendering || shadow) &&
+             (!deferred_diagnostics || deferred_state) &&
+             (!(renderer->prepared_frame.transmission_pending &&
+                (deferred_diagnostics || transmission_coverage)) ||
+              transmission_deferred_state) &&
+             (!readback_layout.sdsm_size || sdsm_reduce_state) &&
+             (!readback_layout.exposure_size ||
+              (exposure_histogram && exposure_state));
+    if (!passed) {
+      if (failed_pass) {
+        log_error("Metal frame preparation failed at pass '%.*s'",
+                  (int)failed_pass->desc.name.length,
+                  failed_pass->desc.name.str);
+      } else {
+        log_error("Metal frame preparation failed for capture resources or "
+                  "native dependencies");
+      }
+      vkr_metal_packet_rollback_gpu_draw_resource_preparation(renderer, packet);
+      vkr_metal_packet_abandon_ibl_sh_candidate(renderer, &frame_upload);
+      vkr_metal_memory_device_cancel_ring(
+          renderer->memory, VKR_METAL_RING_KIND_READBACK, readback_slice);
+      vkr_metal_memory_device_cancel_ring(
+          renderer->memory, VKR_METAL_RING_KIND_UPLOAD, frame_upload.slice);
+      vkr_metal_packet_capture_fail_reserved(
+          renderer, capture_request,
+          VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED);
+      vkr_metal_packet_finish_frame(renderer, true_v, false_v);
+      return false_v;
+    }
+    if (pass_timing_requested) {
+      [renderer->active_command_slot->timestamp_heap
+          invalidateCounterRange:NSMakeRange(0u, (NSUInteger)renderer->graph
+                                                         ->passes.length *
+                                                     2u)];
+    }
+
+    [renderer->command_buffer
+        beginCommandBufferWithAllocator:renderer->command_allocator];
+    id<MTLResidencySet>
+        residency_sets[2u + VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX] = {
+            (id<MTLResidencySet>)vkr_metal_memory_device_residency_set(
+                renderer->memory),
+            (id<MTLResidencySet>)vkr_metal_material_table_device_residency_set(
+                renderer->materials),
+        };
+    NSUInteger residency_set_count = 2u;
+    for (uint32_t group = 0u;
+         group < renderer->active_command_slot->gpu_draw_icb_residency_count;
+         ++group)
+      residency_sets[residency_set_count++] =
+          renderer->active_command_slot->gpu_draw_icb_residencies[group];
+    [renderer->command_buffer useResidencySets:residency_sets
+                                         count:residency_set_count];
+    for (uint64_t order = 0u; passed && order < prepared_count; ++order) {
+      const VkrMetalPacketPreparedPass *prepared = &prepared_passes[order];
+      const VkrRgPass *pass = prepared->source;
+      const uint32_t *pass_index = &prepared->index;
+      if (pass->culled)
+        continue;
+      const bool8_t metalfx_pass =
+          prepared->kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_METALFX_TEMPORAL;
+      const bool8_t encoder_timing_pass =
+          pass_timing_requested &&
+          pass->desc.type != VKR_RG_PASS_TYPE_TRANSFER && !metalfx_pass;
+      const CFTimeInterval pass_cpu_begin = CACurrentMediaTime();
+      if (pass->desc.type == VKR_RG_PASS_TYPE_GRAPHICS) {
+        id<MTL4RenderCommandEncoder> encoder = [renderer->command_buffer
+            renderCommandEncoderWithDescriptor:renderer->render_passes
+                                                   [prepared->index]];
+        if (!encoder) {
+          passed = false_v;
+          failed_pass = pass;
+          break;
+        }
+        encoder.label = prepared->label;
+        if (encoder_timing_pass)
+          [encoder
+              writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
+                                 afterStage:MTLRenderStageFragment
+                                   intoHeap:renderer->active_command_slot
+                                                ->timestamp_heap
+                                    atIndex:(NSUInteger)prepared->index * 2u];
+        vkr_metal_packet_record_consumers(encoder, prepared);
+        if (prepared->active)
+          vkr_metal_packet_record_graphics_pass(renderer, encoder, prepared);
+        vkr_metal_packet_record_producers(encoder, prepared);
+        out_result->dependency_count +=
+            prepared->consumer_count + prepared->producer_count;
+        if (prepared->last_present_writer) {
+          vkr_metal_dependency_encode_producer(encoder, &capture_barrier);
+          out_result->dependency_count++;
+        }
+        if (prepared->kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_SHADOW &&
+            pass->desc.repeat_index + 1u ==
+                renderer->prepared_frame.shadow_cascade_count) {
+          vkr_metal_dependency_encode_producer(encoder,
+                                               &shadow_capture_barrier);
+          out_result->dependency_count++;
+        }
+        if (capture_count > 0u) {
+          vkr_metal_dependency_encode_producer(encoder, &batch_capture_barrier);
+          out_result->dependency_count++;
+        }
+        if (encoder_timing_pass)
+          [encoder
+              writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
+                                 afterStage:MTLRenderStageFragment
+                                   intoHeap:renderer->active_command_slot
+                                                ->timestamp_heap
+                                    atIndex:(NSUInteger)prepared->index * 2u +
+                                            1u];
+        [encoder endEncoding];
+        out_result->graphics_pass_count++;
+      } else if (metalfx_pass) {
+        vkr_metal_packet_record_metalfx(renderer, prepared);
+        out_result->compute_pass_count++;
+      } else {
+        id<MTL4ComputeCommandEncoder> encoder =
+            [renderer->command_buffer computeCommandEncoder];
+        if (!encoder) {
+          passed = false_v;
+          failed_pass = pass;
+          break;
+        }
+        encoder.label = prepared->label;
+        if (encoder_timing_pass)
+          [encoder
+              writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
+                                   intoHeap:renderer->active_command_slot
+                                                ->timestamp_heap
+                                    atIndex:(NSUInteger)prepared->index * 2u];
+        vkr_metal_packet_record_consumers(encoder, prepared);
+        if (prepared->active) {
+          if (pass->desc.type == VKR_RG_PASS_TYPE_TRANSFER)
+            vkr_metal_packet_record_transfer(encoder, &prepared->transfer);
+          else
+            vkr_metal_packet_record_compute_pass(renderer, encoder, prepared);
+        }
+        vkr_metal_packet_record_producers(encoder, prepared);
+        out_result->dependency_count +=
+            prepared->consumer_count + prepared->producer_count;
+        if (ibl_bake &&
+            prepared->kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_IBL_BAKE) {
+          vkr_metal_dependency_encode_producer(encoder, &ibl_capture_barrier);
+          out_result->dependency_count++;
+        }
+        if (capture_count > 0u || deferred_diagnostics ||
+            transmission_coverage || readback_layout.sdsm_size > 0u ||
+            readback_layout.exposure_size > 0u) {
+          vkr_metal_dependency_encode_producer(encoder, &batch_capture_barrier);
+          out_result->dependency_count++;
+        }
+        if (encoder_timing_pass)
+          [encoder
+              writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
+                                   intoHeap:renderer->active_command_slot
+                                                ->timestamp_heap
+                                    atIndex:(NSUInteger)prepared->index * 2u +
+                                            1u];
+        [encoder endEncoding];
         if (pass->desc.type == VKR_RG_PASS_TYPE_TRANSFER)
-          vkr_metal_packet_record_transfer(encoder, &prepared->transfer);
+          out_result->transfer_pass_count++;
         else
-          vkr_metal_packet_record_compute_pass(renderer, encoder, prepared);
+          out_result->compute_pass_count++;
       }
-      vkr_metal_packet_record_producers(encoder, prepared);
-      out_result->dependency_count +=
-          prepared->consumer_count + prepared->producer_count;
-      if (ibl_bake &&
-          prepared->kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_IBL_BAKE) {
-        vkr_metal_dependency_encode_producer(encoder, &ibl_capture_barrier);
+      if (out_result->pass_timing_count < VKR_METAL_PACKET_MAX_PASS_TIMINGS) {
+        VkrMetalPacketPassTiming *timing =
+            &out_result->pass_timings[out_result->pass_timing_count++];
+        const uint64_t name_length =
+            Min(pass->desc.name.length,
+                (uint64_t)VKR_METAL_PACKET_TIMING_NAME_CAPACITY - 1u);
+        if (name_length > 0)
+          MemCopy(timing->name, pass->desc.name.str, name_length);
+        timing->name[name_length] = '\0';
+        timing->pass_index = *pass_index;
+        timing->cpu_ms = prepared->preparation_cpu_ms +
+                         (CACurrentMediaTime() - pass_cpu_begin) * 1000.0;
+        timing->valid = false_v;
+        timing->unavailable_reason =
+            encoder_timing_pass
+                ? VKR_RENDERER_IMPL_GPU_TIMING_REASON_NOT_READY
+                : (pass_timing_requested
+                       ? VKR_RENDERER_IMPL_GPU_TIMING_REASON_UNSUPPORTED_TIMESTAMP_SCOPE
+                       : VKR_RENDERER_IMPL_GPU_TIMING_REASON_DISABLED);
+      }
+      out_result->executed_pass_count++;
+    }
+    id<MTL4ComputeCommandEncoder> capture_encoder =
+        passed ? [renderer->command_buffer computeCommandEncoder] : nil;
+    passed = passed && capture_encoder != nil;
+    if (passed) {
+      vkr_metal_dependency_encode_consumer(capture_encoder, &capture_barrier);
+      out_result->dependency_count++;
+      if (packet->scene_rendering) {
+        vkr_metal_dependency_encode_consumer(capture_encoder,
+                                             &shadow_capture_barrier);
+        out_result->dependency_count++;
+      }
+      if (ibl_bake) {
+        vkr_metal_dependency_encode_consumer(capture_encoder,
+                                             &ibl_capture_barrier);
         out_result->dependency_count++;
       }
       if (capture_count > 0u || deferred_diagnostics || transmission_coverage ||
           readback_layout.sdsm_size > 0u ||
           readback_layout.exposure_size > 0u) {
-        vkr_metal_dependency_encode_producer(encoder, &batch_capture_barrier);
+        vkr_metal_dependency_encode_consumer(capture_encoder,
+                                             &batch_capture_barrier);
         out_result->dependency_count++;
       }
-      if (encoder_timing_pass)
-        [encoder
-            writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
-                                 intoHeap:renderer->active_command_slot
-                                              ->timestamp_heap
-                                  atIndex:(NSUInteger)prepared->index * 2u +
-                                          1u];
-      [encoder endEncoding];
-      if (pass->desc.type == VKR_RG_PASS_TYPE_TRANSFER)
-        out_result->transfer_pass_count++;
-      else
-        out_result->compute_pass_count++;
     }
-    if (out_result->pass_timing_count < VKR_METAL_PACKET_MAX_PASS_TIMINGS) {
-      VkrMetalPacketPassTiming *timing =
-          &out_result->pass_timings[out_result->pass_timing_count++];
-      const uint64_t name_length =
-          Min(pass->desc.name.length,
-              (uint64_t)VKR_METAL_PACKET_TIMING_NAME_CAPACITY - 1u);
-      if (name_length > 0)
-        MemCopy(timing->name, pass->desc.name.str, name_length);
-      timing->name[name_length] = '\0';
-      timing->pass_index = *pass_index;
-      timing->cpu_ms = prepared->preparation_cpu_ms +
-                       (CACurrentMediaTime() - pass_cpu_begin) * 1000.0;
-      timing->valid = false_v;
-      timing->unavailable_reason =
-          encoder_timing_pass
-              ? VKR_RENDERER_IMPL_GPU_TIMING_REASON_NOT_READY
-              : (pass_timing_requested
-                     ? VKR_RENDERER_IMPL_GPU_TIMING_REASON_UNSUPPORTED_TIMESTAMP_SCOPE
-                     : VKR_RENDERER_IMPL_GPU_TIMING_REASON_DISABLED);
-    }
-    out_result->executed_pass_count++;
-  }
-  id<MTL4ComputeCommandEncoder> capture_encoder =
-      passed ? [renderer->command_buffer computeCommandEncoder] : nil;
-  passed = passed && capture_encoder != nil;
-  if (passed) {
-    vkr_metal_dependency_encode_consumer(capture_encoder, &capture_barrier);
-    vkr_metal_dependency_encode_consumer(capture_encoder,
-                                         &shadow_capture_barrier);
-    out_result->dependency_count += 2u;
-    if (ibl_bake) {
-      vkr_metal_dependency_encode_consumer(capture_encoder,
-                                           &ibl_capture_barrier);
-      out_result->dependency_count++;
-    }
-    if (capture_count > 0u || deferred_diagnostics || transmission_coverage ||
-        readback_layout.sdsm_size > 0u || readback_layout.exposure_size > 0u) {
-      vkr_metal_dependency_encode_consumer(capture_encoder,
-                                           &batch_capture_barrier);
-      out_result->dependency_count++;
-    }
-  }
-  if (passed) {
-    [capture_encoder copyFromTexture:present
-                         sourceSlice:0
-                         sourceLevel:0
-                        sourceOrigin:MTLOriginMake(0, 0, 0)
-                          sourceSize:MTLSizeMake(1, 1, 1)
-                            toBuffer:(id<MTLBuffer>)readback_object
-                   destinationOffset:readback_slice.offset
-              destinationBytesPerRow:4
-            destinationBytesPerImage:4
-                             options:MTLBlitOptionNone];
-    [capture_encoder copyFromTexture:shadow
-                         sourceSlice:0
-                         sourceLevel:0
-                        sourceOrigin:MTLOriginMake(0, 0, 0)
-                          sourceSize:MTLSizeMake(1, 1, 1)
-                            toBuffer:(id<MTLBuffer>)readback_object
-                   destinationOffset:readback_slice.offset + 4
-              destinationBytesPerRow:sizeof(float32_t)
-            destinationBytesPerImage:sizeof(float32_t)
-                             options:MTLBlitOptionNone];
-    if (passed && ibl) {
-      for (uint32_t mip = 0; mip < VKR_IBL_PREFILTER_MIP_COUNT; ++mip) {
+    if (passed) {
+      [capture_encoder copyFromTexture:present
+                           sourceSlice:0
+                           sourceLevel:0
+                          sourceOrigin:MTLOriginMake(0, 0, 0)
+                            sourceSize:MTLSizeMake(1, 1, 1)
+                              toBuffer:(id<MTLBuffer>)readback_object
+                     destinationOffset:readback_slice.offset
+                destinationBytesPerRow:4
+              destinationBytesPerImage:4
+                               options:MTLBlitOptionNone];
+      if (packet->scene_rendering) {
+        [capture_encoder copyFromTexture:shadow
+                             sourceSlice:0
+                             sourceLevel:0
+                            sourceOrigin:MTLOriginMake(0, 0, 0)
+                              sourceSize:MTLSizeMake(1, 1, 1)
+                                toBuffer:(id<MTLBuffer>)readback_object
+                       destinationOffset:readback_slice.offset + 4
+                  destinationBytesPerRow:sizeof(float32_t)
+                destinationBytesPerImage:sizeof(float32_t)
+                                 options:MTLBlitOptionNone];
+      }
+      if (passed && ibl) {
+        for (uint32_t mip = 0; mip < VKR_IBL_PREFILTER_MIP_COUNT; ++mip) {
+          [capture_encoder
+                       copyFromTexture:(id<MTLTexture>)
+                                           renderer->ibl_prefilter.metal_texture
+                           sourceSlice:0
+                           sourceLevel:mip
+                          sourceOrigin:MTLOriginMake(0, 0, 0)
+                            sourceSize:MTLSizeMake(1, 1, 1)
+                              toBuffer:(id<MTLBuffer>)readback_object
+                     destinationOffset:readback_slice.offset +
+                                       readback_layout.ibl_prefilter + mip * 8u
+                destinationBytesPerRow:8
+              destinationBytesPerImage:8
+                               options:MTLBlitOptionNone];
+        }
+      }
+      if (deferred_diagnostics) {
         [capture_encoder
-                     copyFromTexture:(id<MTLTexture>)
-                                         renderer->ibl_prefilter.metal_texture
-                         sourceSlice:0
-                         sourceLevel:mip
+               copyFromBuffer:(id<MTLBuffer>)
+                                  deferred_state->resource.metal_buffer
+                 sourceOffset:0u
+                     toBuffer:(id<MTLBuffer>)readback_object
+            destinationOffset:readback_slice.offset +
+                              readback_layout.deferred_diagnostics
+                         size:readback_layout.deferred_diagnostics_size];
+      }
+      if ((deferred_diagnostics || transmission_coverage) &&
+          renderer->prepared_frame.transmission_pending) {
+        [capture_encoder
+               copyFromBuffer:(id<MTLBuffer>)transmission_deferred_state
+                                  ->resource.metal_buffer
+                 sourceOffset:0u
+                     toBuffer:(id<MTLBuffer>)readback_object
+            destinationOffset:readback_slice.offset +
+                              readback_layout.transmission_diagnostics
+                         size:sizeof(VkrMetalPacketTransmissionDiagnostics)];
+      }
+      if (readback_layout.sdsm_size > 0u) {
+        [capture_encoder
+               copyFromBuffer:(id<MTLBuffer>)
+                                  sdsm_reduce_state->resource.metal_buffer
+                 sourceOffset:0u
+                     toBuffer:(id<MTLBuffer>)readback_object
+            destinationOffset:readback_slice.offset + readback_layout.sdsm
+                         size:readback_layout.sdsm_size];
+      }
+      if (readback_layout.exposure_size > 0u) {
+        [capture_encoder
+               copyFromBuffer:(id<MTLBuffer>)
+                                  exposure_state->resource.metal_buffer
+                 sourceOffset:0u
+                     toBuffer:(id<MTLBuffer>)readback_object
+            destinationOffset:readback_slice.offset + readback_layout.exposure
+                         size:sizeof(VkrExposureGpuState)];
+        [capture_encoder
+               copyFromBuffer:(id<MTLBuffer>)
+                                  exposure_histogram->resource.metal_buffer
+                 sourceOffset:0u
+                     toBuffer:(id<MTLBuffer>)readback_object
+            destinationOffset:readback_slice.offset + readback_layout.exposure +
+                              sizeof(VkrExposureGpuState)
+                         size:sizeof(VkrExposureGpuHistogram)];
+      }
+      for (uint32_t i = 0; passed && i < capture_count; ++i) {
+        const VkrMetalPacketCapturePlan *plan = &capture_plans[i];
+        [capture_encoder
+                     copyFromTexture:plan->texture
+                         sourceSlice:plan->source_slice
+                         sourceLevel:0
                         sourceOrigin:MTLOriginMake(0, 0, 0)
-                          sourceSize:MTLSizeMake(1, 1, 1)
+                          sourceSize:MTLSizeMake(plan->result.width,
+                                                 plan->result.height, 1)
                             toBuffer:(id<MTLBuffer>)readback_object
-                   destinationOffset:readback_slice.offset +
-                                     readback_layout.ibl_prefilter + mip * 8u
-              destinationBytesPerRow:8
-            destinationBytesPerImage:8
+                   destinationOffset:readback_slice.offset + plan->buffer_offset
+              destinationBytesPerRow:plan->result.row_pitch
+            destinationBytesPerImage:plan->result.data_size
                              options:MTLBlitOptionNone];
       }
     }
-    if (deferred_diagnostics) {
-      [capture_encoder
-             copyFromBuffer:(id<MTLBuffer>)deferred_state->resource.metal_buffer
-               sourceOffset:0u
-                   toBuffer:(id<MTLBuffer>)readback_object
-          destinationOffset:readback_slice.offset +
-                            readback_layout.deferred_diagnostics
-                       size:readback_layout.deferred_diagnostics_size];
+    [capture_encoder endEncoding];
+    [renderer->command_buffer endCommandBuffer];
+    if (!passed) {
+      if (failed_pass) {
+        log_error("Metal packet stage failed: encode pass '%.*s' executor %u",
+                  (int)failed_pass->desc.name.length,
+                  failed_pass->desc.name.str, failed_pass->desc.executor_id);
+      } else {
+        log_error("Metal packet stage failed: final capture encoding");
+      }
+      vkr_metal_packet_rollback_gpu_draw_resource_preparation(renderer, packet);
+      vkr_metal_packet_abandon_ibl_sh_candidate(renderer, &frame_upload);
+      vkr_metal_memory_device_cancel_ring(
+          renderer->memory, VKR_METAL_RING_KIND_READBACK, readback_slice);
+      vkr_metal_memory_device_cancel_ring(
+          renderer->memory, VKR_METAL_RING_KIND_UPLOAD, frame_upload.slice);
+      vkr_metal_packet_capture_fail_reserved(
+          renderer, capture_request,
+          VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED);
+      vkr_metal_packet_finish_frame(renderer, true_v, false_v);
+      return false_v;
     }
-    if ((deferred_diagnostics || transmission_coverage) &&
-        renderer->prepared_frame.transmission_pending) {
-      [capture_encoder
-             copyFromBuffer:(id<MTLBuffer>)transmission_deferred_state->resource
-                                .metal_buffer
-               sourceOffset:0u
-                   toBuffer:(id<MTLBuffer>)readback_object
-          destinationOffset:readback_slice.offset +
-                            readback_layout.transmission_diagnostics
-                       size:sizeof(VkrMetalPacketTransmissionDiagnostics)];
-    }
-    if (readback_layout.sdsm_size > 0u) {
-      [capture_encoder
-             copyFromBuffer:(id<MTLBuffer>)
-                                sdsm_reduce_state->resource.metal_buffer
-               sourceOffset:0u
-                   toBuffer:(id<MTLBuffer>)readback_object
-          destinationOffset:readback_slice.offset + readback_layout.sdsm
-                       size:readback_layout.sdsm_size];
-    }
-    if (readback_layout.exposure_size > 0u) {
-      [capture_encoder
-             copyFromBuffer:(id<MTLBuffer>)exposure_state->resource.metal_buffer
-               sourceOffset:0u
-                   toBuffer:(id<MTLBuffer>)readback_object
-          destinationOffset:readback_slice.offset + readback_layout.exposure
-                       size:sizeof(VkrExposureGpuState)];
-      [capture_encoder
-             copyFromBuffer:(id<MTLBuffer>)
-                                exposure_histogram->resource.metal_buffer
-               sourceOffset:0u
-                   toBuffer:(id<MTLBuffer>)readback_object
-          destinationOffset:readback_slice.offset + readback_layout.exposure +
-                            sizeof(VkrExposureGpuState)
-                       size:sizeof(VkrExposureGpuHistogram)];
-    }
-    for (uint32_t i = 0; passed && i < capture_count; ++i) {
-      const VkrMetalPacketCapturePlan *plan = &capture_plans[i];
-      [capture_encoder
-                   copyFromTexture:plan->texture
-                       sourceSlice:plan->source_slice
-                       sourceLevel:0
-                      sourceOrigin:MTLOriginMake(0, 0, 0)
-                        sourceSize:MTLSizeMake(plan->result.width,
-                                               plan->result.height, 1)
-                          toBuffer:(id<MTLBuffer>)readback_object
-                 destinationOffset:readback_slice.offset + plan->buffer_offset
-            destinationBytesPerRow:plan->result.row_pitch
-          destinationBytesPerImage:plan->result.data_size
-                           options:MTLBlitOptionNone];
-    }
-  }
-  [capture_encoder endEncoding];
-  [renderer->command_buffer endCommandBuffer];
-  if (!passed) {
-    if (failed_pass) {
-      log_error("Metal packet stage failed: encode pass '%.*s' executor %u",
-                (int)failed_pass->desc.name.length, failed_pass->desc.name.str,
-                failed_pass->desc.executor_id);
-    } else {
-      log_error("Metal packet stage failed: final capture encoding");
-    }
-    vkr_metal_packet_rollback_gpu_draw_resource_preparation(renderer, packet);
-    vkr_metal_packet_abandon_ibl_sh_candidate(renderer, &frame_upload);
-    vkr_metal_memory_device_cancel_ring(
-        renderer->memory, VKR_METAL_RING_KIND_READBACK, readback_slice);
-    vkr_metal_memory_device_cancel_ring(
-        renderer->memory, VKR_METAL_RING_KIND_UPLOAD, frame_upload.slice);
-    vkr_metal_packet_capture_fail_reserved(
-        renderer, capture_request, VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED);
-    vkr_metal_packet_finish_frame(renderer, true_v, false_v);
-    return false_v;
-  }
 
-  const uint64_t submit_value = ++renderer->submit_value;
-  vkr_ibl_sh_pool_reference(&renderer->sh_pool,
-                            frame_upload.ibl_sh_candidate_slot, submit_value);
-  if (packet->input.lighting && packet->input.lighting->ibl_enabled) {
-    vkr_ibl_sh_pool_reference(&renderer->sh_pool, renderer->ibl_sh_slot,
-                              submit_value);
-    for (uint32_t i = 0u; i < packet->input.lighting->ibl_probe_count; ++i) {
-      vkr_ibl_sh_pool_reference(&renderer->sh_pool,
-                                packet->input.lighting->ibl_probes[i].sh_slot,
+    const uint64_t submit_value = ++renderer->submit_value;
+    vkr_ibl_sh_pool_reference(&renderer->sh_pool,
+                              frame_upload.ibl_sh_candidate_slot, submit_value);
+    if (packet->input.lighting && packet->input.lighting->ibl_enabled) {
+      vkr_ibl_sh_pool_reference(&renderer->sh_pool, renderer->ibl_sh_slot,
                                 submit_value);
+      for (uint32_t i = 0u; i < packet->input.lighting->ibl_probe_count; ++i) {
+        vkr_ibl_sh_pool_reference(&renderer->sh_pool,
+                                  packet->input.lighting->ibl_probes[i].sh_slot,
+                                  submit_value);
+      }
     }
-  }
-  vkr_metal_packet_mark_graph_images_submitted(renderer, submit_value);
-  vkr_metal_packet_mark_hzb_history_submitted(renderer, submit_value);
-  vkr_metal_packet_mark_temporal_submitted(renderer, submit_value);
-  vkr_metal_packet_mark_exposure_submitted(renderer, submit_value);
-  vkr_metal_packet_mark_graph_buffers_submitted(renderer, submit_value);
-  VkrMetalPacketCommandSlot *command_slot = renderer->active_command_slot;
-  command_slot->submit_value = submit_value;
-  command_slot->timestamp_entry_count =
-      pass_timing_requested ? (uint32_t)renderer->graph->passes.length * 2u
-                            : 0u;
-  command_slot->pass_timing_requested = pass_timing_requested;
-  VkrMetalPacketCommitFeedbackRecord *commit_feedback =
-      submission_timing_requested
-          ? vkr_metal_packet_acquire_commit_feedback(renderer)
-          : NULL;
-  command_slot->commit_feedback = commit_feedback;
-  out_result->gpu_submission_unavailable_reason =
-      submission_timing_requested
-          ? (commit_feedback
-                 ? VKR_RENDERER_IMPL_GPU_TIMING_REASON_NOT_READY
-                 : VKR_RENDERER_IMPL_GPU_TIMING_REASON_FEEDBACK_UNAVAILABLE)
-          : VKR_RENDERER_IMPL_GPU_TIMING_REASON_DISABLED;
-  command_slot->gpu_draw_diagnostics_requested = deferred_diagnostics;
-  command_slot->sdsm_requested = readback_layout.sdsm_size > 0u;
-  command_slot->exposure_requested = readback_layout.exposure_size > 0u;
-  command_slot->shadow_cascade_count =
-      renderer->prepared_frame.shadow_cascade_count;
-  if (deferred_diagnostics) {
-    command_slot->gpu_draw_diagnostics_readback =
-        (const uint8_t *)readback.cpu_address +
-        readback_layout.deferred_diagnostics;
-  }
-  command_slot->sdsm_readback =
-      readback_layout.sdsm_size > 0u
-          ? (const uint8_t *)readback.cpu_address + readback_layout.sdsm
-          : NULL;
-  command_slot->exposure_readback =
-      readback_layout.exposure_size > 0u
-          ? (const uint8_t *)readback.cpu_address + readback_layout.exposure
-          : NULL;
-  command_slot->transmission_coverage_requested = transmission_coverage;
-  if (renderer->prepared_frame.transmission_pending) {
-    command_slot->transmission_coverage_readback =
-        (const uint8_t *)readback.cpu_address +
-        readback_layout.transmission_diagnostics;
-  }
-  if (transmission_coverage) {
-    command_slot->transmission_coverage_extent[0] =
-        renderer->prepared_frame.viewport_width;
-    command_slot->transmission_coverage_extent[1] =
-        renderer->prepared_frame.viewport_height;
-  }
-  id<MTL4CommandBuffer> submissions[] = {renderer->command_buffer};
-  if (temporal_wait_value > renderer->completion.signaledValue)
-    [renderer->queue waitForEvent:renderer->completion
-                            value:temporal_wait_value];
-  if (renderer->drawable)
-    [renderer->queue waitForDrawable:renderer->drawable];
-  out_result->submit_value = submit_value;
-  out_result->source_frame_index = packet->input.frame.frame_index;
-  if (readback_layout.sdsm_size > 0u) {
-    const float32_t a = packet->input.globals.projection.elements[10];
-    const float32_t b = packet->input.globals.projection.elements[14];
-    out_result->shadow_depth_range = (VkrShadowDepthRangeSample){
-        .projection_convention = 0u,
-        .source_depth_linearize = {a, b, 0.0f, 0.0f},
-        .source_near = a != 0.0f ? b / a : 0.0f,
-        .source_far = (1.0f + a) != 0.0f ? b / (1.0f + a) : 0.0f,
-        .source_frame_index = packet->input.frame.frame_index,
-        .source_projection_generation =
-            vkr_shadow_projection_generation(&packet->input.globals.projection),
-        .source_scene_generation = packet->input.frame.scene_generation,
-        .submit_value = submit_value,
-    };
-  }
-  command_slot->pending_result = *out_result;
-  command_slot->result_pending = true_v;
-  if (commit_feedback)
-    [renderer->queue commit:submissions
-                      count:1
-                    options:commit_feedback->options];
-  else
-    [renderer->queue commit:submissions count:1];
-  [renderer->queue signalEvent:renderer->completion value:submit_value];
-  if (command_slot->candidate_residency_pending) {
-    command_slot->candidate_residency =
-        command_slot->pending_candidate_residency;
-    command_slot->candidate_residency_pending = false_v;
-  }
-  /* Past the commit, so retained contents are now proven to have been written.
-     Every earlier failure path returns without reaching here, which is the
-     ADR-029 rollback: a cancelled frame commits nothing and the previous
-     contents stay authoritative. */
-  vkr_rg_commit_retained_state(renderer->graph);
-  if (!renderer->metalfx_enabled) {
-    VkrMetalPacketImage *colors =
-        vkr_metal_packet_named_image_slot(renderer, "temporal_history_color");
-    if (colors && renderer->history_output_index < colors->instance_count) {
-      frame_upload.temporal_scene.signature.eligible =
-          frame_upload.temporal_scene.signature.eligible &&
-          frame_upload.ibl_sh_candidate_slot == VKR_SH_SLOT_BLACK;
-      colors->instances[renderer->history_output_index].history_scene =
-          frame_upload.temporal_scene;
+    vkr_metal_packet_mark_graph_images_submitted(renderer, submit_value);
+    if (packet->scene_rendering) {
+      vkr_metal_packet_mark_hzb_history_submitted(renderer, submit_value);
+      vkr_metal_packet_mark_temporal_submitted(renderer, submit_value);
+      vkr_metal_packet_mark_exposure_submitted(renderer, submit_value);
     }
-  }
-  if (ibl_bake)
-    vkr_metal_packet_advance_revision(&renderer->radiance_revision);
-  if (frame_upload.ibl_sh_candidate_slot != VKR_SH_SLOT_BLACK) {
-    VkrMetalPacketTexture *sh_source =
-        vkr_metal_packet_resolve_texture(renderer, ibl_source);
-    if (sh_source &&
-        vkr_ibl_sh_pool_publish(&renderer->sh_pool,
-                                frame_upload.ibl_sh_candidate_slot) ==
-            VKR_SH_POOL_STATUS_OK) {
-      if (sh_source->ibl_sh_slot != VKR_SH_SLOT_BLACK)
+    vkr_metal_packet_mark_graph_buffers_submitted(renderer, submit_value);
+    VkrMetalPacketCommandSlot *command_slot = renderer->active_command_slot;
+    command_slot->submit_value = submit_value;
+    command_slot->timestamp_entry_count =
+        pass_timing_requested ? (uint32_t)renderer->graph->passes.length * 2u
+                              : 0u;
+    command_slot->pass_timing_requested = pass_timing_requested;
+    VkrMetalPacketCommitFeedbackRecord *commit_feedback =
+        submission_timing_requested
+            ? vkr_metal_packet_acquire_commit_feedback(renderer)
+            : NULL;
+    command_slot->commit_feedback = commit_feedback;
+    out_result->gpu_submission_unavailable_reason =
+        submission_timing_requested
+            ? (commit_feedback
+                   ? VKR_RENDERER_IMPL_GPU_TIMING_REASON_NOT_READY
+                   : VKR_RENDERER_IMPL_GPU_TIMING_REASON_FEEDBACK_UNAVAILABLE)
+            : VKR_RENDERER_IMPL_GPU_TIMING_REASON_DISABLED;
+    command_slot->gpu_draw_diagnostics_requested = deferred_diagnostics;
+    command_slot->sdsm_requested = readback_layout.sdsm_size > 0u;
+    command_slot->exposure_requested = readback_layout.exposure_size > 0u;
+    command_slot->shadow_cascade_count =
+        renderer->prepared_frame.shadow_cascade_count;
+    if (deferred_diagnostics) {
+      command_slot->gpu_draw_diagnostics_readback =
+          (const uint8_t *)readback.cpu_address +
+          readback_layout.deferred_diagnostics;
+    }
+    command_slot->sdsm_readback =
+        readback_layout.sdsm_size > 0u
+            ? (const uint8_t *)readback.cpu_address + readback_layout.sdsm
+            : NULL;
+    command_slot->exposure_readback =
+        readback_layout.exposure_size > 0u
+            ? (const uint8_t *)readback.cpu_address + readback_layout.exposure
+            : NULL;
+    command_slot->transmission_coverage_requested = transmission_coverage;
+    if (renderer->prepared_frame.transmission_pending) {
+      command_slot->transmission_coverage_readback =
+          (const uint8_t *)readback.cpu_address +
+          readback_layout.transmission_diagnostics;
+    }
+    if (transmission_coverage) {
+      command_slot->transmission_coverage_extent[0] =
+          renderer->prepared_frame.viewport_width;
+      command_slot->transmission_coverage_extent[1] =
+          renderer->prepared_frame.viewport_height;
+    }
+    id<MTL4CommandBuffer> submissions[] = {renderer->command_buffer};
+    VKR_METAL_DIAGNOSTIC(renderer, "frame_queue_begin",
+                         "frame=%llu slot=%u temporal_wait=%llu drawable=%u",
+                         (unsigned long long)packet->input.frame.frame_index,
+                         (uint32_t)(command_slot - renderer->command_slots),
+                         (unsigned long long)temporal_wait_value,
+                         renderer->drawable != nil);
+    VKR_METAL_DIAGNOSTIC_FLUSH(renderer);
+    if (temporal_wait_value > renderer->completion.signaledValue)
+      [renderer->queue waitForEvent:renderer->completion
+                              value:temporal_wait_value];
+    if (renderer->drawable)
+      [renderer->queue waitForDrawable:renderer->drawable];
+    out_result->submit_value = submit_value;
+    out_result->source_frame_index = packet->input.frame.frame_index;
+    if (readback_layout.sdsm_size > 0u) {
+      const float32_t a = packet->input.globals.projection.elements[10];
+      const float32_t b = packet->input.globals.projection.elements[14];
+      out_result->shadow_depth_range = (VkrShadowDepthRangeSample){
+          .projection_convention = 0u,
+          .source_depth_linearize = {a, b, 0.0f, 0.0f},
+          .source_near = a != 0.0f ? b / a : 0.0f,
+          .source_far = (1.0f + a) != 0.0f ? b / (1.0f + a) : 0.0f,
+          .source_frame_index = packet->input.frame.frame_index,
+          .source_projection_generation = vkr_shadow_projection_generation(
+              &packet->input.globals.projection),
+          .source_scene_generation = packet->input.frame.scene_generation,
+          .submit_value = submit_value,
+      };
+    }
+    command_slot->pending_result = *out_result;
+    command_slot->result_pending = true_v;
+    VKR_METAL_DIAGNOSTIC(renderer, "frame_commit_begin",
+                         "frame=%llu slot=%u passes=%u temporal_wait=%llu",
+                         (unsigned long long)packet->input.frame.frame_index,
+                         (uint32_t)(command_slot - renderer->command_slots),
+                         out_result->executed_pass_count,
+                         (unsigned long long)temporal_wait_value);
+    VKR_METAL_DIAGNOSTIC_FLUSH(renderer);
+    if (commit_feedback)
+      [renderer->queue commit:submissions
+                        count:1
+                      options:commit_feedback->options];
+    else
+      [renderer->queue commit:submissions count:1];
+    [renderer->queue signalEvent:renderer->completion value:submit_value];
+    if (picking) {
+      command_slot->picking_readback =
+          (const uint8_t *)readback.cpu_address + 8u;
+      renderer->picking_submit_value = submit_value;
+      renderer->picking_result = (VkrPixelReadbackResult){
+          .status = VKR_READBACK_STATUS_PENDING,
+          .request_id = packet->input.picking->request_id,
+          .x = packet->input.picking->x,
+          .y = packet->input.picking->y,
+      };
+    }
+    VKR_METAL_DIAGNOSTIC(renderer, "frame_commit_end", "frame=%llu slot=%u",
+                         (unsigned long long)packet->input.frame.frame_index,
+                         (uint32_t)(command_slot - renderer->command_slots));
+    VKR_METAL_DIAGNOSTIC_FLUSH(renderer);
+    if (command_slot->candidate_residency_pending) {
+      command_slot->candidate_residency =
+          command_slot->pending_candidate_residency;
+      command_slot->candidate_residency_pending = false_v;
+    }
+    /* Past the commit, so retained contents are now proven to have been
+       written. Every earlier failure path returns without reaching here, which
+       is the ADR-029 rollback: a cancelled frame commits nothing and the
+       previous contents stay authoritative. */
+    vkr_rg_commit_retained_state(renderer->graph);
+    if (packet->scene_rendering && !renderer->metalfx_enabled) {
+      VkrMetalPacketImage *colors =
+          vkr_metal_packet_named_image_slot(renderer, "temporal_history_color");
+      if (colors && renderer->history_output_index < colors->instance_count) {
+        frame_upload.temporal_scene.signature.eligible =
+            frame_upload.temporal_scene.signature.eligible &&
+            frame_upload.ibl_sh_candidate_slot == VKR_SH_SLOT_BLACK;
+        colors->instances[renderer->history_output_index].history_scene =
+            frame_upload.temporal_scene;
+      }
+    }
+    if (ibl_bake)
+      vkr_metal_packet_advance_revision(&renderer->radiance_revision);
+    if (frame_upload.ibl_sh_candidate_slot != VKR_SH_SLOT_BLACK) {
+      VkrMetalPacketTexture *sh_source =
+          vkr_metal_packet_resolve_texture(renderer, ibl_source);
+      if (sh_source &&
+          vkr_ibl_sh_pool_publish(&renderer->sh_pool,
+                                  frame_upload.ibl_sh_candidate_slot) ==
+              VKR_SH_POOL_STATUS_OK) {
+        if (sh_source->ibl_sh_slot != VKR_SH_SLOT_BLACK)
+          (void)vkr_ibl_sh_pool_retire(&renderer->sh_pool,
+                                       sh_source->ibl_sh_slot);
+        sh_source->ibl_sh_slot = frame_upload.ibl_sh_candidate_slot;
+      } else {
         (void)vkr_ibl_sh_pool_retire(&renderer->sh_pool,
-                                     sh_source->ibl_sh_slot);
-      sh_source->ibl_sh_slot = frame_upload.ibl_sh_candidate_slot;
-    } else {
-      (void)vkr_ibl_sh_pool_retire(&renderer->sh_pool,
-                                   frame_upload.ibl_sh_candidate_slot);
-      renderer->ibl_sh_slot = frame_upload.ibl_sh_previous_slot;
+                                     frame_upload.ibl_sh_candidate_slot);
+        renderer->ibl_sh_slot = frame_upload.ibl_sh_previous_slot;
+      }
     }
-  }
-  if (renderer->drawable) {
-    [renderer->queue signalDrawable:renderer->drawable];
-    [renderer->drawable present];
-  }
-  const bool8_t capture_submitted =
-      capture_count == 0 ||
-      vkr_capture_ring_submit(
-          &renderer->capture_ring, capture_request->request_id, submit_value,
-          (const uint8_t *)readback.cpu_address + capture_base);
-  const VkrMetalMemoryStatus readback_submitted =
-      vkr_metal_memory_device_submit_ring(renderer->memory,
-                                          VKR_METAL_RING_KIND_READBACK,
-                                          readback_slice, submit_value);
-  const VkrMetalMemoryStatus upload_submitted =
-      vkr_metal_memory_device_submit_ring(renderer->memory,
-                                          VKR_METAL_RING_KIND_UPLOAD,
-                                          frame_upload.slice, submit_value);
-  if (!capture_submitted || readback_submitted != VKR_METAL_MEMORY_STATUS_OK ||
-      upload_submitted != VKR_METAL_MEMORY_STATUS_OK) {
-    log_error("Metal packet stage failed: submit rings capture=%u readback=%s "
-              "upload=%s",
-              capture_submitted,
-              vkr_metal_memory_status_string(readback_submitted),
-              vkr_metal_memory_status_string(upload_submitted));
-    if (vkr_metal_packet_wait(renderer, submit_value)) {
-      (void)vkr_metal_packet_complete_command_slot(renderer, command_slot,
-                                                   false_v);
-      if (readback_submitted != VKR_METAL_MEMORY_STATUS_OK)
-        vkr_metal_memory_device_cancel_ring(
-            renderer->memory, VKR_METAL_RING_KIND_READBACK, readback_slice);
-      if (upload_submitted != VKR_METAL_MEMORY_STATUS_OK)
-        vkr_metal_memory_device_cancel_ring(
-            renderer->memory, VKR_METAL_RING_KIND_UPLOAD, frame_upload.slice);
+    if (renderer->drawable) {
+      [renderer->queue signalDrawable:renderer->drawable];
+      [renderer->drawable present];
+      VKR_METAL_DIAGNOSTIC(renderer, "drawable_present", "frame=%llu",
+                           (unsigned long long)packet->input.frame.frame_index);
     }
-    vkr_metal_packet_detach_active_command_slot(renderer);
-    vkr_metal_packet_capture_fail_reserved(
-        renderer, capture_request, VKR_RENDERER_ERROR_SUBMISSION_FAILED);
-    vkr_metal_packet_finish_frame(renderer, true_v, true_v);
-    return false_v;
-  }
-  if (renderer->synchronous_validation_readback) {
-    if (!vkr_metal_packet_wait(renderer, submit_value)) {
+    const bool8_t capture_submitted =
+        capture_count == 0 ||
+        vkr_capture_ring_submit(
+            &renderer->capture_ring, capture_request->request_id, submit_value,
+            (const uint8_t *)readback.cpu_address + capture_base);
+    const VkrMetalMemoryStatus readback_submitted =
+        vkr_metal_memory_device_submit_ring(renderer->memory,
+                                            VKR_METAL_RING_KIND_READBACK,
+                                            readback_slice, submit_value);
+    const VkrMetalMemoryStatus upload_submitted =
+        vkr_metal_memory_device_submit_ring(renderer->memory,
+                                            VKR_METAL_RING_KIND_UPLOAD,
+                                            frame_upload.slice, submit_value);
+    if (!capture_submitted ||
+        readback_submitted != VKR_METAL_MEMORY_STATUS_OK ||
+        upload_submitted != VKR_METAL_MEMORY_STATUS_OK) {
+      log_error(
+          "Metal packet stage failed: submit rings capture=%u readback=%s "
+          "upload=%s",
+          capture_submitted, vkr_metal_memory_status_string(readback_submitted),
+          vkr_metal_memory_status_string(upload_submitted));
+      if (vkr_metal_packet_wait(renderer, submit_value)) {
+        (void)vkr_metal_packet_complete_command_slot(renderer, command_slot,
+                                                     false_v);
+        if (readback_submitted != VKR_METAL_MEMORY_STATUS_OK)
+          vkr_metal_memory_device_cancel_ring(
+              renderer->memory, VKR_METAL_RING_KIND_READBACK, readback_slice);
+        if (upload_submitted != VKR_METAL_MEMORY_STATUS_OK)
+          vkr_metal_memory_device_cancel_ring(
+              renderer->memory, VKR_METAL_RING_KIND_UPLOAD, frame_upload.slice);
+      }
       vkr_metal_packet_detach_active_command_slot(renderer);
+      vkr_metal_packet_capture_fail_reserved(
+          renderer, capture_request, VKR_RENDERER_ERROR_SUBMISSION_FAILED);
       vkr_metal_packet_finish_frame(renderer, true_v, true_v);
       return false_v;
     }
-    if (readback_layout.exposure_size > 0u) {
-      VkrExposureGpuState state = {0};
-      MemCopy(&state,
-              (const uint8_t *)readback.cpu_address + readback_layout.exposure,
-              sizeof(state));
-      (void)vkr_capture_ring_set_display_exposure(
-          &renderer->capture_ring, submit_value, state.exposure_multiplier);
-    }
-    vkr_capture_ring_collect(&renderer->capture_ring,
-                             renderer->completion.signaledValue);
-    if (transmission_coverage) {
-      VkrMetalPacketTransmissionDiagnostics transmission_diagnostics = {0};
-      MemCopy(&transmission_diagnostics,
-              (uint8_t *)readback.cpu_address +
-                  readback_layout.transmission_diagnostics,
-              sizeof(transmission_diagnostics));
-      MemCopy(out_result->transmission_covered_pixels,
-              transmission_diagnostics.covered_pixels,
-              sizeof(out_result->transmission_covered_pixels));
-      out_result->transmission_coverage_extent[0] =
-          renderer->prepared_frame.viewport_width;
-      out_result->transmission_coverage_extent[1] =
-          renderer->prepared_frame.viewport_height;
-      for (uint32_t layer = 0u;
-           layer < VKR_METAL_PACKET_TRANSMISSION_LAYER_COUNT; ++layer) {
-        out_result->transmission_compact_overflow_count +=
-            transmission_diagnostics.compact_overflow[layer];
+    if (renderer->synchronous_validation_readback) {
+      if (!vkr_metal_packet_wait(renderer, submit_value)) {
+        vkr_metal_packet_detach_active_command_slot(renderer);
+        vkr_metal_packet_finish_frame(renderer, true_v, true_v);
+        return false_v;
       }
-      out_result->has_transmission_coverage = true_v;
-    }
+      if (readback_layout.exposure_size > 0u) {
+        VkrExposureGpuState state = {0};
+        MemCopy(&state,
+                (const uint8_t *)readback.cpu_address +
+                    readback_layout.exposure,
+                sizeof(state));
+        (void)vkr_capture_ring_set_display_exposure(
+            &renderer->capture_ring, submit_value, state.exposure_multiplier);
+      }
+      vkr_capture_ring_collect(&renderer->capture_ring,
+                               renderer->completion.signaledValue);
+      if (transmission_coverage) {
+        VkrMetalPacketTransmissionDiagnostics transmission_diagnostics = {0};
+        MemCopy(&transmission_diagnostics,
+                (uint8_t *)readback.cpu_address +
+                    readback_layout.transmission_diagnostics,
+                sizeof(transmission_diagnostics));
+        MemCopy(out_result->transmission_covered_pixels,
+                transmission_diagnostics.covered_pixels,
+                sizeof(out_result->transmission_covered_pixels));
+        out_result->transmission_coverage_extent[0] =
+            renderer->prepared_frame.viewport_width;
+        out_result->transmission_coverage_extent[1] =
+            renderer->prepared_frame.viewport_height;
+        for (uint32_t layer = 0u;
+             layer < VKR_METAL_PACKET_TRANSMISSION_LAYER_COUNT; ++layer) {
+          out_result->transmission_compact_overflow_count +=
+              transmission_diagnostics.compact_overflow[layer];
+        }
+        out_result->has_transmission_coverage = true_v;
+      }
 
-    MemCopy(out_result->color, readback.cpu_address, 4);
-    MemCopy(&out_result->shadow_depth,
-            (uint8_t *)readback.cpu_address + sizeof(uint32_t),
-            sizeof(float32_t));
-    out_result->has_shadow_depth = true_v;
-    if (picking) {
-      MemCopy(&out_result->picking_id,
-              (uint8_t *)readback.cpu_address + sizeof(uint32_t) * 2,
-              sizeof(uint32_t));
-      out_result->has_picking_id = true_v;
-    }
-    if (ibl) {
-      for (uint32_t mip = 0; mip < VKR_IBL_PREFILTER_MIP_COUNT; ++mip) {
-        vkr_metal_packet_decode_half4((uint8_t *)readback.cpu_address +
-                                          readback_layout.ibl_prefilter +
-                                          mip * 8u,
-                                      out_result->ibl_prefilter[mip]);
+      MemCopy(out_result->color, readback.cpu_address, 4);
+      if (packet->scene_rendering) {
+        MemCopy(&out_result->shadow_depth,
+                (uint8_t *)readback.cpu_address + sizeof(uint32_t),
+                sizeof(float32_t));
+        out_result->has_shadow_depth = true_v;
       }
-      out_result->ibl_prefilter_size = VKR_IBL_PREFILTER_SIZE;
-      out_result->ibl_prefilter_mip_count = VKR_IBL_PREFILTER_MIP_COUNT;
-      out_result->has_ibl_convolution = true_v;
+      if (picking) {
+        MemCopy(&out_result->picking_id,
+                (uint8_t *)readback.cpu_address + sizeof(uint32_t) * 2,
+                sizeof(uint32_t));
+        out_result->has_picking_id = true_v;
+      }
+      if (ibl) {
+        for (uint32_t mip = 0; mip < VKR_IBL_PREFILTER_MIP_COUNT; ++mip) {
+          vkr_metal_packet_decode_half4((uint8_t *)readback.cpu_address +
+                                            readback_layout.ibl_prefilter +
+                                            mip * 8u,
+                                        out_result->ibl_prefilter[mip]);
+        }
+        out_result->ibl_prefilter_size = VKR_IBL_PREFILTER_SIZE;
+        out_result->ibl_prefilter_mip_count = VKR_IBL_PREFILTER_MIP_COUNT;
+        out_result->has_ibl_convolution = true_v;
+      }
+      if (synchronous_deferred_validation) {
+        out_result->gpu_candidate_count = renderer->gpu_draw_count;
+        out_result->transmission_gpu_candidate_count =
+            renderer->transmission_gpu_draw_count;
+        vkr_metal_packet_decode_gpu_draw_diagnostics(
+            out_result,
+            (const uint8_t *)readback.cpu_address +
+                readback_layout.deferred_diagnostics,
+            renderer->prepared_frame.shadow_cascade_count,
+            renderer->prepared_frame.transmission_pending
+                ? (const uint8_t *)readback.cpu_address +
+                      readback_layout.transmission_diagnostics
+                : NULL);
+        out_result->hzb_history_valid =
+            renderer->prepared_frame.hzb_history_valid;
+        log_info(
+            "Metal deferred validation: candidates=%u visible=%u buckets="
+            "%u/%u/%u/%u overflow=%u resolve_invalid=%u hzb_rejected=%u",
+            out_result->gpu_candidate_count, out_result->gpu_visible_count,
+            out_result->gpu_bucket_counts[0], out_result->gpu_bucket_counts[1],
+            out_result->gpu_bucket_counts[2], out_result->gpu_bucket_counts[3],
+            out_result->gpu_overflow_count,
+            out_result->gpu_resolve_invalid_count,
+            out_result->gpu_occlusion_culled_count);
+      }
     }
-    if (synchronous_deferred_validation) {
+    if (ibl_bake) {
+      renderer->ibl_source = ibl_source;
+      renderer->ibl_ready = true_v;
+    }
+    if (capture_count > 0) {
+      (void)vkr_capture_ring_poll(
+          &renderer->capture_ring, capture_request->request_id,
+          renderer->completion.signaledValue, &out_result->capture);
+    }
+    out_result->packet_build = renderer->packet_build;
+    out_result->hzb_history_valid = renderer->prepared_frame.hzb_history_valid;
+    out_result->resize_count = renderer->resize_count;
+    out_result->pipeline_count = 34u;
+    out_result->pipeline_archive_warm = renderer->pipeline_archive_warm;
+    out_result->pipeline_archive_written = renderer->pipeline_archive_written;
+    if (deferred_diagnostics) {
       out_result->gpu_candidate_count = renderer->gpu_draw_count;
       out_result->transmission_gpu_candidate_count =
           renderer->transmission_gpu_draw_count;
-      vkr_metal_packet_decode_gpu_draw_diagnostics(
-          out_result,
-          (const uint8_t *)readback.cpu_address +
-              readback_layout.deferred_diagnostics,
-          renderer->prepared_frame.shadow_cascade_count,
-          renderer->prepared_frame.transmission_pending
-              ? (const uint8_t *)readback.cpu_address +
-                    readback_layout.transmission_diagnostics
-              : NULL);
-      out_result->hzb_history_valid =
-          renderer->prepared_frame.hzb_history_valid;
-      log_info(
-          "Metal deferred validation: candidates=%u visible=%u buckets="
-          "%u/%u/%u/%u overflow=%u resolve_invalid=%u hzb_rejected=%u",
-          out_result->gpu_candidate_count, out_result->gpu_visible_count,
-          out_result->gpu_bucket_counts[0], out_result->gpu_bucket_counts[1],
-          out_result->gpu_bucket_counts[2], out_result->gpu_bucket_counts[3],
-          out_result->gpu_overflow_count, out_result->gpu_resolve_invalid_count,
-          out_result->gpu_occlusion_culled_count);
     }
-  }
-  if (ibl_bake) {
-    renderer->ibl_source = ibl_source;
-    renderer->ibl_ready = true_v;
-  }
-  if (capture_count > 0) {
-    (void)vkr_capture_ring_poll(
-        &renderer->capture_ring, capture_request->request_id,
-        renderer->completion.signaledValue, &out_result->capture);
-  }
-  out_result->packet_build = renderer->packet_build;
-  out_result->hzb_history_valid = renderer->prepared_frame.hzb_history_valid;
-  out_result->resize_count = renderer->resize_count;
-  out_result->pipeline_count = 34u;
-  out_result->pipeline_archive_warm = renderer->pipeline_archive_warm;
-  out_result->pipeline_archive_written = renderer->pipeline_archive_written;
-  if (deferred_diagnostics) {
-    out_result->gpu_candidate_count = renderer->gpu_draw_count;
-    out_result->transmission_gpu_candidate_count =
-        renderer->transmission_gpu_draw_count;
-  }
-  vkr_metal_memory_device_get_metrics(renderer->memory, &out_result->memory);
-  vkr_metal_material_table_device_get_metrics(renderer->materials,
-                                              &out_result->materials);
-  command_slot->pending_result = *out_result;
-  if (renderer->synchronous_validation_readback) {
-    (void)vkr_metal_packet_complete_command_slot(renderer, command_slot,
-                                                 false_v);
-  }
-  vkr_metal_packet_detach_active_command_slot(renderer);
-  vkr_metal_packet_finish_frame(renderer, true_v, true_v);
-  return true_v;
+    vkr_metal_memory_device_get_metrics(renderer->memory, &out_result->memory);
+    vkr_metal_material_table_device_get_metrics(renderer->materials,
+                                                &out_result->materials);
+    command_slot->pending_result = *out_result;
+    if (renderer->synchronous_validation_readback) {
+      (void)vkr_metal_packet_complete_command_slot(renderer, command_slot,
+                                                   false_v);
+    }
+    vkr_metal_packet_detach_active_command_slot(renderer);
+    vkr_metal_packet_finish_frame(renderer, true_v, true_v);
+    return true_v;
 
-graph_failure:
-  vkr_metal_packet_finish_frame(renderer, true_v, false_v);
-  return false_v;
+  graph_failure:
+    vkr_metal_packet_finish_frame(renderer, true_v, false_v);
+    return false_v;
+  }
 }

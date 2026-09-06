@@ -123,7 +123,7 @@ vkr_internal void test_scene_output_extent_restore(void) {
       .last_window_width = 800u,
       .last_window_height = 600u,
   };
-  assert(vkr_renderer_set_scene_output_extent(&renderer, 400u, 300u) ==
+  assert(vkr_renderer_set_scene_output_extent(&renderer, 400u, 300u, false_v) ==
          VKR_RENDERER_ERROR_NONE);
   assert(renderer.scene_output_extent_overridden);
   assert(renderer.scene_output_width == 400u &&

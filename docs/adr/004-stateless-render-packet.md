@@ -18,7 +18,7 @@ history still require retained state.
 
 ## Decision
 
-Use `VkrFrameInput` version 28 with frame metadata, camera/lighting/settings and
+Use `VkrFrameInput` version 30 with frame metadata, camera/lighting/settings and
 typed optional world, shadow, skybox, UI, editor, picking and debug payloads.
 The application builds scene candidates, ordinary blend draws, UI geometry and
 world-text draws before rendering. Text edits apply through the text owner and
@@ -63,6 +63,12 @@ storage and speculative last-use marks. Static candidate residency, retained gra
 contents and temporal histories commit only after successful submission. Earlier
 scene/text edits and resource publication are not a transaction rolled back by
 frame cancellation. ADR-024 owns GPU retirement; ADR-044 owns native shader ABI.
+
+Metal mesh records own exact-count CPU submesh arrays in the backend DMemory
+allocator. Creation and range-count changes allocate before publication;
+same-count updates reuse storage. Destruction and partial-creation cleanup free
+the arrays. Prepared candidates and draws copy range values, preserving existing
+GPU completion and resource retirement. There is no dense per-slot submesh table.
 
 ## Consequences
 

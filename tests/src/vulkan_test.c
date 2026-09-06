@@ -1,15 +1,16 @@
 #include "vulkan_test.h"
 
+#include "memory/vkr_arena_allocator.h"
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
-#include "memory/vkr_arena_allocator.h"
 #include "renderer/vkr_gpu_abi.h"
 #include "renderer/vkr_gpu_memory.h"
+#include "renderer/vkr_geometry_ranges.h"
 #include "renderer/vkr_gpu_slot_table.h"
 #include "renderer/vkr_gpu_submit_ring.h"
 #include "renderer/vulkan/vkr_vulkan_device.h"
-#include "renderer/vulkan/vkr_vulkan_memory.h"
 #include "renderer/vulkan/vkr_vulkan_internal.h"
+#include "renderer/vulkan/vkr_vulkan_memory.h"
 #include "renderer/vulkan/vkr_vulkan_renderer.h"
 #include "renderer/vulkan/vkr_vulkan_wsi.h"
 
@@ -359,6 +360,197 @@ static void test_shared_gpu_memory_and_abi_contracts(void) {
   printf("  test_shared_gpu_memory_and_abi_contracts PASSED\n");
 }
 
+static void test_shared_gpu_memory_bounded_placement(void) {
+  printf("  Running test_shared_gpu_memory_bounded_placement...\n");
+  const VkrGpuMemoryConfig config = {256u, 4u, 4u, 5u};
+  uint8_t storage[4096] = {0};
+  VkrGpuMemoryCore *memory = NULL;
+  assert(vkr_gpu_memory_storage_requirement(&config) <= sizeof(storage));
+  assert(vkr_gpu_memory_create(&config, storage, sizeof(storage), &memory) ==
+         VKR_GPU_MEMORY_STATUS_OK);
+  VkrGpuAllocationHandle middle = {0}, prefix = {0}, suffix = {0}, tail = {0};
+  VkrGpuPlacement placement = {0};
+  assert(vkr_gpu_memory_allocate_in_range(
+             memory, 60u, 64u, VKR_GPU_MEMORY_CLASS_BUFFER, 100u, 128u,
+             &middle, &placement) == VKR_GPU_MEMORY_STATUS_OK);
+  assert(placement.reserved_offset == 100u && placement.reserved_size == 88u);
+  assert(placement.resource_offset == 128u && placement.resource_size == 60u);
+
+  /* The span has 40 bytes left, despite 168 free bytes in the full core. */
+  assert(vkr_gpu_memory_allocate_in_range(
+             memory, 41u, 1u, VKR_GPU_MEMORY_CLASS_BUFFER, 100u, 128u,
+             &tail, &placement) == VKR_GPU_MEMORY_STATUS_OUT_OF_BYTES);
+  assert(vkr_gpu_memory_allocate_in_range(
+             memory, 40u, 64u, VKR_GPU_MEMORY_CLASS_BUFFER, 100u, 128u,
+             &tail, &placement) == VKR_GPU_MEMORY_STATUS_FRAGMENTED);
+  assert(vkr_gpu_memory_allocate(memory, 100u, 1u, VKR_GPU_MEMORY_CLASS_BUFFER,
+                                 &prefix, &placement) ==
+         VKR_GPU_MEMORY_STATUS_OK);
+  assert(placement.reserved_offset == 0u && placement.reserved_size == 100u);
+  assert(vkr_gpu_memory_allocate_in_range(
+             memory, 28u, 1u, VKR_GPU_MEMORY_CLASS_TEXTURE, 228u, 28u,
+             &suffix, &placement) == VKR_GPU_MEMORY_STATUS_OK);
+  assert(placement.reserved_offset == 228u && placement.reserved_size == 28u);
+  assert(vkr_gpu_memory_allocate_in_range(
+             memory, 40u, 1u, VKR_GPU_MEMORY_CLASS_BUFFER, 100u, 128u,
+             &tail, &placement) == VKR_GPU_MEMORY_STATUS_OK);
+  assert(placement.reserved_offset == 188u && placement.reserved_size == 40u);
+
+  assert(vkr_gpu_memory_retire(memory, middle, 7u) == VKR_GPU_MEMORY_STATUS_OK);
+  assert(vkr_gpu_memory_retire(memory, tail, 7u) == VKR_GPU_MEMORY_STATUS_OK);
+  assert(vkr_gpu_memory_resolve(memory, middle, &placement) ==
+         VKR_GPU_MEMORY_STATUS_STALE_HANDLE);
+  uint32_t collected = 0;
+  assert(vkr_gpu_memory_collect(memory, 6u, NULL, NULL, &collected) ==
+         VKR_GPU_MEMORY_STATUS_OK);
+  assert(collected == 0u);
+  VkrGpuMemoryMetrics metrics = {0};
+  vkr_gpu_memory_get_metrics(memory, &metrics);
+  assert(metrics.free_bytes == 0u && metrics.retired_reserved_bytes == 128u);
+  assert(vkr_gpu_memory_collect(memory, 7u, NULL, NULL, &collected) ==
+         VKR_GPU_MEMORY_STATUS_OK);
+  assert(collected == 2u);
+  VkrGpuAllocationHandle replacement = {0};
+  assert(vkr_gpu_memory_allocate_in_range(
+             memory, 128u, 1u, VKR_GPU_MEMORY_CLASS_BUFFER, 100u, 128u,
+             &replacement, &placement) == VKR_GPU_MEMORY_STATUS_OK);
+  assert(placement.reserved_offset == 100u && placement.reserved_size == 128u);
+  assert(replacement.generation != middle.generation);
+  assert(vkr_gpu_memory_retire(memory, prefix, 9u) == VKR_GPU_MEMORY_STATUS_OK);
+  assert(vkr_gpu_memory_retire(memory, replacement, 9u) ==
+         VKR_GPU_MEMORY_STATUS_OK);
+  assert(vkr_gpu_memory_retire(memory, suffix, 9u) == VKR_GPU_MEMORY_STATUS_OK);
+  assert(vkr_gpu_memory_collect(memory, 9u, NULL, NULL, &collected) ==
+         VKR_GPU_MEMORY_STATUS_OK);
+  assert(collected == 3u);
+  vkr_gpu_memory_get_metrics(memory, &metrics);
+  assert(metrics.free_bytes == 256u && metrics.largest_free_range == 256u);
+  assert(metrics.live_allocations == 0u && metrics.retired_allocations == 0u);
+  assert(vkr_gpu_memory_allocate(memory, 256u, 1u, VKR_GPU_MEMORY_CLASS_BUFFER,
+                                 &replacement, &placement) ==
+         VKR_GPU_MEMORY_STATUS_OK);
+  assert(placement.reserved_offset == 0u && placement.reserved_size == 256u);
+  printf("  test_shared_gpu_memory_bounded_placement PASSED\n");
+}
+
+static void test_shared_gpu_memory_range_failure_is_transactional(void) {
+  printf("  Running test_shared_gpu_memory_range_failure_is_transactional...\n");
+  const VkrGpuMemoryConfig config = {256u, 1u, 1u, 1u};
+  uint8_t storage[2048] = {0};
+  VkrGpuMemoryCore *memory = NULL;
+  assert(vkr_gpu_memory_storage_requirement(&config) <= sizeof(storage));
+  assert(vkr_gpu_memory_create(&config, storage, sizeof(storage), &memory) ==
+         VKR_GPU_MEMORY_STATUS_OK);
+  VkrGpuAllocationHandle handle = {19u, 23u};
+  VkrGpuPlacement placement = {.resource_offset = 17u, .reserved_size = 29u};
+  assert(vkr_gpu_memory_allocate_in_range(
+             memory, 64u, 1u, VKR_GPU_MEMORY_CLASS_BUFFER, 64u, 64u,
+             &handle, &placement) == VKR_GPU_MEMORY_STATUS_OUT_OF_RANGE_METADATA);
+  assert(handle.index == 19u && handle.generation == 23u);
+  assert(placement.resource_offset == 17u && placement.reserved_size == 29u);
+  VkrGpuMemoryMetrics metrics = {0};
+  vkr_gpu_memory_get_metrics(memory, &metrics);
+  assert(metrics.free_bytes == 256u && metrics.largest_free_range == 256u);
+  assert(metrics.live_allocations == 0u && metrics.allocations_created == 0u);
+  assert(metrics.range_metadata_failures == 1u);
+  assert(vkr_gpu_memory_allocate_in_range(
+             memory, 1u, 1u, VKR_GPU_MEMORY_CLASS_BUFFER, UINT64_MAX, 2u,
+             &handle, &placement) == VKR_GPU_MEMORY_STATUS_INVALID_ARGUMENT);
+  assert(vkr_gpu_memory_allocate_in_range(
+             memory, 1u, 1u, VKR_GPU_MEMORY_CLASS_BUFFER, 128u, UINT64_MAX,
+             &handle, &placement) == VKR_GPU_MEMORY_STATUS_INVALID_ARGUMENT);
+  assert(vkr_gpu_memory_allocate_in_range(
+             memory, 1u, 1u, VKR_GPU_MEMORY_CLASS_BUFFER, 0u, 0u,
+             &handle, &placement) == VKR_GPU_MEMORY_STATUS_INVALID_ARGUMENT);
+  assert(vkr_gpu_memory_allocate(memory, 256u, 1u, VKR_GPU_MEMORY_CLASS_BUFFER,
+                                 &handle, &placement) == VKR_GPU_MEMORY_STATUS_OK);
+  assert(handle.index == 0u && handle.generation == 1u);
+  assert(placement.resource_offset == 0u && placement.reserved_size == 256u);
+  printf("  test_shared_gpu_memory_range_failure_is_transactional PASSED\n");
+}
+
+/* These CPU oracles exercise paired reservation and retirement directly. A
+ * renderer run cannot cheaply force the second stream's address-space failure.
+ */
+static void test_geometry_ranges_reuse_completed_holes(void) {
+  printf("  Running test_geometry_ranges_reuse_completed_holes...\n");
+  VkrDMemory memory = {0};
+  assert(vkr_dmemory_create(MB(1), MB(1), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  const uint64_t free_before = vkr_dmemory_get_free_space(&memory);
+  VkrGeometryRanges ranges = {0};
+  assert(vkr_geometry_ranges_create(&ranges, &allocator, 4u));
+  VkrGeometryRangeAllocation defaults, first, pending, replacement;
+  assert(vkr_geometry_ranges_allocate(&ranges, 1u, 1u, 1u, 1024u, 256u,
+                                      &defaults));
+  assert(defaults.vertex_offset == 0u && defaults.decode_offset == 32u &&
+         defaults.vertex_end == 64u && defaults.index_offset == 0u);
+  assert(
+      vkr_geometry_ranges_allocate(&ranges, 3u, 2u, 6u, 1024u, 256u, &first));
+  assert(first.vertex_offset == 64u && first.decode_offset == 160u &&
+         first.vertex_end == 224u && first.index_offset == 4u);
+  assert(vkr_geometry_ranges_retire(&ranges, first, 10u));
+  assert(vkr_geometry_ranges_collect(&ranges, 9u));
+  assert(
+      vkr_geometry_ranges_allocate(&ranges, 2u, 1u, 3u, 1024u, 256u, &pending));
+  assert(pending.vertex_offset == 224u && pending.index_offset == 28u);
+  assert(vkr_geometry_ranges_retire(&ranges, pending, 11u));
+  assert(vkr_geometry_ranges_collect(&ranges, 10u));
+  assert(vkr_geometry_ranges_allocate(&ranges, 3u, 2u, 6u, 1024u, 256u,
+                                      &replacement));
+  assert(replacement.vertex_offset == first.vertex_offset &&
+         replacement.decode_offset == first.decode_offset &&
+         replacement.index_offset == first.index_offset);
+  VkrGpuPlacement placement = {0};
+  assert(vkr_gpu_memory_resolve(ranges.vertices, defaults.vertices,
+                                &placement) == VKR_GPU_MEMORY_STATUS_OK);
+  assert(placement.resource_offset == 0u && placement.resource_size == 64u);
+  assert(!vkr_geometry_ranges_retire(&ranges, first, 12u));
+  assert(vkr_geometry_ranges_retire(&ranges, replacement, 12u));
+  assert(vkr_geometry_ranges_collect(&ranges, 12u));
+  VkrGeometryMegabufferMetrics metrics = {.vertex_capacity_bytes = 1024u,
+                                          .index_capacity_bytes = 256u};
+  vkr_geometry_ranges_metrics(&ranges, &metrics);
+  assert(metrics.live_range_count == 2u && metrics.retired_range_count == 0u &&
+         metrics.reusable_range_bytes == 1212u);
+  assert(vkr_geometry_ranges_retire(&ranges, defaults, 12u));
+  assert(vkr_geometry_ranges_collect(&ranges, 12u));
+  vkr_geometry_ranges_destroy(&ranges);
+  assert(vkr_dmemory_get_free_space(&memory) == free_before);
+  vkr_dmemory_destroy(&memory);
+  printf("  test_geometry_ranges_reuse_completed_holes PASSED\n");
+}
+
+static void test_geometry_ranges_second_stream_failure_is_transactional(void) {
+  printf("  Running "
+         "test_geometry_ranges_second_stream_failure_is_transactional...\n");
+  VkrDMemory memory = {0};
+  assert(vkr_dmemory_create(MB(1), MB(1), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  VkrGeometryRanges ranges = {0};
+  assert(vkr_geometry_ranges_create(&ranges, &allocator, 2u));
+  VkrGeometryRangeAllocation first, rejected, tail;
+  assert(vkr_geometry_ranges_allocate(&ranges, 1u, 1u, UINT32_MAX, 0u, 0u,
+                                      &first));
+  assert(!vkr_geometry_ranges_allocate(&ranges, 1u, 1u, 2u, 0u, 0u, &rejected));
+  VkrGpuMemoryMetrics metrics = {0};
+  vkr_gpu_memory_get_metrics(ranges.vertices, &metrics);
+  assert(metrics.live_allocations == 1u && metrics.retired_allocations == 0u &&
+         metrics.live_requested_bytes == 64u);
+  assert(vkr_geometry_ranges_allocate(&ranges, 1u, 1u, 1u, 0u, 0u, &tail));
+  assert(tail.vertex_offset == 64u &&
+         tail.index_offset == (uint64_t)UINT32_MAX * 4u);
+  assert(vkr_geometry_ranges_retire(&ranges, first, 0u));
+  assert(vkr_geometry_ranges_retire(&ranges, tail, 0u));
+  assert(vkr_geometry_ranges_collect(&ranges, 0u));
+  vkr_geometry_ranges_destroy(&ranges);
+  vkr_dmemory_destroy(&memory);
+  printf(
+      "  test_geometry_ranges_second_stream_failure_is_transactional PASSED\n");
+}
+
 static void test_shared_slot_table_metric_contract(void) {
   printf("  Running test_shared_slot_table_metric_contract...\n");
   const VkrGpuSlotTableConfig config = {3u, 3u, sizeof(uint32_t)};
@@ -568,13 +760,21 @@ static void test_shared_graph_metalfx_capability_boundary(void) {
   assert(vkr_rg_executor_registry_init(&renderer.executors, &allocator));
   assert(vkr_vk_register_graph_executors(&renderer));
   assert(vkr_rg_json_load_file(&allocator,
-                              "assets/render_graphs/main.rendergraph.json",
-                              &renderer.json_graph));
+                               "assets/render_graphs/main.rendergraph.json",
+                               &renderer.json_graph));
   assert(vkr_rg_json_bind_executors(&renderer.json_graph, &renderer.executors));
   renderer.graph = vkr_rg_create(&allocator);
   assert(renderer.graph);
 
   VkrRenderGraphFrameInfo frame = {
+      .scene_rendering = true_v,
+      .gpu_draw_candidate_capacity = 1u,
+      .gpu_draw_visible_capacity = 4u,
+      .transmission_gpu_draw_candidate_capacity = 1u,
+      .transmission_gpu_draw_visible_capacity = 4u,
+      .editor_image_available = true_v,
+      .editor_image_width = 640u,
+      .editor_image_height = 480u,
       .target_width = 640u,
       .target_height = 480u,
       .window_width = 640u,
@@ -594,7 +794,8 @@ static void test_shared_graph_metalfx_capability_boundary(void) {
     frame.editor_enabled = (mode & 1u) != 0u;
     frame.metalfx_enabled = (mode & 2u) != 0u;
     assert(vkr_rg_begin_frame(renderer.graph, &frame));
-    assert(vkr_rg_build_from_json(renderer.graph, &renderer.json_graph, &frame));
+    assert(
+        vkr_rg_build_from_json(renderer.graph, &renderer.json_graph, &frame));
     assert(vkr_rg_compile_schedule(renderer.graph));
     assert(vkr_vk_validate_graph(&renderer) == !frame.metalfx_enabled);
     vkr_rg_end_frame(renderer.graph);
@@ -621,6 +822,10 @@ bool32_t run_vulkan_tests(void) {
   test_renderer_create_failure_is_transactional();
   test_shared_submit_ring_completion_contract();
   test_shared_gpu_memory_and_abi_contracts();
+  test_shared_gpu_memory_bounded_placement();
+  test_shared_gpu_memory_range_failure_is_transactional();
+  test_geometry_ranges_reuse_completed_holes();
+  test_geometry_ranges_second_stream_failure_is_transactional();
   test_shared_slot_table_metric_contract();
   test_shared_slot_table_retirement_preflight();
   printf("--- Vulkan tests completed. ---\n");

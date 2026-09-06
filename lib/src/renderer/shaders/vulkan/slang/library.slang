@@ -28,3 +28,5 @@
 #include "post/default.slang"
 #include "text/default.slang"
 #include "ui/default.slang"
+
+#include "editor/overlay.slang"

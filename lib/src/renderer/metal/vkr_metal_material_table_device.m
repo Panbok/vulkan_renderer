@@ -1,4 +1,5 @@
 #include "renderer/metal/vkr_metal_material_table.h"
+#include "renderer/metal/vkr_metal_memory_device.h"
 
 #if defined(PLATFORM_APPLE)
 
@@ -11,6 +12,9 @@ struct VkrMetalMaterialTableDevice {
   void *core_storage;
   /** Owns this struct and core_storage; retained for the sized frees. */
   VkrAllocator *allocator;
+  /** Borrowed budget owner; the table is destroyed before this adapter. */
+  VkrMetalMemoryDevice *memory;
+  uint64_t buffer_budget_charge;
   uint64_t core_storage_size;
   uint64_t transmission_offset;
   VkrMetalMaterialTableCore *core;
@@ -29,8 +33,9 @@ vkr_internal void *vkr_metal_material_device_alloc(VkrAllocator *allocator,
 
 VkrMetalMaterialStatus vkr_metal_material_table_device_create(
     const VkrMetalMaterialTableConfig *config, void *metal_device,
-    VkrAllocator *allocator, VkrMetalMaterialTableDevice **out_table) {
-  if (!config || !metal_device || !allocator || !out_table ||
+    VkrMetalMemoryDevice *memory, VkrAllocator *allocator,
+    VkrMetalMaterialTableDevice **out_table) {
+  if (!config || !metal_device || !memory || !allocator || !out_table ||
       config->max_rows == 0 || config->max_retirements == 0)
     return VKR_METAL_MATERIAL_STATUS_INVALID_ARGUMENT;
   *out_table = NULL;
@@ -40,6 +45,7 @@ VkrMetalMaterialStatus vkr_metal_material_table_device_create(
     if (!table)
       return VKR_METAL_MATERIAL_STATUS_NATIVE_ALLOCATION_FAILED;
     table->allocator = allocator;
+    table->memory = memory;
     table->device = [(id<MTLDevice>)metal_device retain];
     table->transmission_offset =
         (uint64_t)config->max_rows * sizeof(VkrMetalMaterialGpuRow);
@@ -51,13 +57,30 @@ VkrMetalMaterialStatus vkr_metal_material_table_device_create(
     table->core_storage_size = storage_size;
     table->core_storage =
         vkr_metal_material_device_alloc(allocator, storage_size);
+    const MTLResourceOptions buffer_options =
+        MTLResourceStorageModeShared | MTLResourceCPUCacheModeWriteCombined;
+    const MTLSizeAndAlign buffer_size_align =
+        [table->device heapBufferSizeAndAlignWithLength:buffer_size
+                                              options:buffer_options];
+    if (!table->device || ![table->device supportsFamily:MTLGPUFamilyMetal4] ||
+        !table->core_storage || buffer_size_align.size == 0 ||
+        !vkr_metal_memory_device_reserve_external(memory,
+                                                  buffer_size_align.size)) {
+      vkr_metal_material_table_device_destroy(table);
+      return VKR_METAL_MATERIAL_STATUS_NATIVE_ALLOCATION_FAILED;
+    }
+    table->buffer_budget_charge = buffer_size_align.size;
     table->buffer = [table->device
         newBufferWithLength:buffer_size
-                    options:MTLResourceStorageModeShared |
-                            MTLResourceCPUCacheModeWriteCombined];
-    if (!table->device || ![table->device supportsFamily:MTLGPUFamilyMetal4] ||
-        !table->core_storage || !table->buffer ||
-        table->buffer.gpuAddress == 0 ||
+                    options:buffer_options];
+    if (!table->buffer ||
+        !vkr_metal_memory_device_reconcile_external(
+            memory, table->buffer_budget_charge, table->buffer.allocatedSize)) {
+      vkr_metal_material_table_device_destroy(table);
+      return VKR_METAL_MATERIAL_STATUS_NATIVE_ALLOCATION_FAILED;
+    }
+    table->buffer_budget_charge = table->buffer.allocatedSize;
+    if (table->buffer.gpuAddress == 0 ||
         vkr_metal_material_table_create(
             config, table->core_storage, storage_size, table->buffer.contents,
             &table->core) != VKR_METAL_MATERIAL_STATUS_OK) {
@@ -185,6 +208,9 @@ void vkr_metal_material_table_device_destroy(
     [table->residency endResidency];
     [table->residency release];
     [table->buffer release];
+    if (table->buffer_budget_charge)
+      vkr_metal_memory_device_release_external(table->memory,
+                                                 table->buffer_budget_charge);
     [table->device release];
   }
   VkrAllocator *allocator = table->allocator;

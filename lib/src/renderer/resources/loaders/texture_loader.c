@@ -23,60 +23,6 @@ vkr_internal String8 vkr_texture_loader_strip_query(String8 name) {
 }
 
 /**
- * @brief Remove accidental `<type>|` request-key prefixes from texture paths.
- */
-vkr_internal String8
-vkr_texture_loader_strip_resource_key_prefix(String8 name) {
-  if (!name.str || name.length < 3) {
-    return name;
-  }
-
-  String8 stripped = name;
-  for (uint32_t pass = 0; pass < 4; ++pass) {
-    uint64_t pipe_index = UINT64_MAX;
-
-    for (uint64_t segment_start = 0; segment_start < stripped.length;) {
-      if (segment_start > 0) {
-        uint8_t prev = stripped.str[segment_start - 1];
-        if (prev != '/' && prev != '\\') {
-          segment_start++;
-          continue;
-        }
-      }
-
-      uint64_t index = segment_start;
-      while (index < stripped.length && stripped.str[index] >= '0' &&
-             stripped.str[index] <= '9') {
-        index++;
-      }
-
-      if (index > segment_start && index < stripped.length &&
-          stripped.str[index] == '|') {
-        pipe_index = index;
-        break;
-      }
-
-      while (segment_start < stripped.length &&
-             stripped.str[segment_start] != '/' &&
-             stripped.str[segment_start] != '\\') {
-        segment_start++;
-      }
-      if (segment_start < stripped.length) {
-        segment_start++;
-      }
-    }
-
-    if (pipe_index == UINT64_MAX || pipe_index + 1 >= stripped.length) {
-      break;
-    }
-
-    stripped = string8_substring(&stripped, pipe_index + 1, stripped.length);
-  }
-
-  return stripped;
-}
-
-/**
  * @brief Returns the file extension (without dot) from a query-stripped path.
  */
 vkr_internal String8 vkr_texture_loader_extract_extension(String8 base_name) {
@@ -119,51 +65,6 @@ vkr_texture_loader_async_allocator_is_ready(const VkrTextureSystem *system) {
          system->async_allocator.alloc && system->async_allocator.free;
 }
 
-vkr_internal char *vkr_texture_loader_alloc_key(VkrTextureSystem *system,
-                                                String8 key_source) {
-  if (!vkr_texture_loader_async_allocator_is_ready(system)) {
-    return NULL;
-  }
-
-  char *key = (char *)vkr_allocator_alloc_ts(
-      &system->async_allocator, key_source.length + 1,
-      VKR_ALLOCATOR_MEMORY_TAG_STRING, system->async_mutex);
-  if (!key) {
-    return NULL;
-  }
-
-  MemCopy(key, key_source.str, (size_t)key_source.length);
-  key[key_source.length] = '\0';
-  return key;
-}
-
-vkr_internal void vkr_texture_loader_release_unload_keys(
-    VkrTextureSystem *system, char **primary_key, uint64_t primary_key_size,
-    char **queryless_key, uint64_t queryless_key_size) {
-  if (!vkr_texture_loader_async_allocator_is_ready(system)) {
-    if (queryless_key) {
-      *queryless_key = NULL;
-    }
-    if (primary_key) {
-      *primary_key = NULL;
-    }
-    return;
-  }
-
-  if (queryless_key && *queryless_key) {
-    vkr_allocator_free_ts(&system->async_allocator, *queryless_key,
-                          queryless_key_size, VKR_ALLOCATOR_MEMORY_TAG_STRING,
-                          system->async_mutex);
-    *queryless_key = NULL;
-  }
-  if (primary_key && *primary_key) {
-    vkr_allocator_free_ts(&system->async_allocator, *primary_key,
-                          primary_key_size, VKR_ALLOCATOR_MEMORY_TAG_STRING,
-                          system->async_mutex);
-    *primary_key = NULL;
-  }
-}
-
 vkr_internal bool8_t vkr_texture_loader_can_load(VkrResourceLoader *self,
                                                  String8 name) {
   assert_log(self != NULL, "Self is NULL");
@@ -198,6 +99,9 @@ vkr_internal bool8_t vkr_texture_loader_load(VkrResourceLoader *self,
     return false_v;
   }
 
+  /* One reference belongs to the loader result, including its PENDING_GPU
+   * interval. Request deduplication shares this owner until the final unload. */
+  vkr_texture_system_add_ref_by_handle(system, handle);
   out_handle->type = VKR_RESOURCE_TYPE_TEXTURE;
   out_handle->loader_id = self->id;
   out_handle->as.texture = handle;
@@ -261,6 +165,9 @@ vkr_internal bool8_t vkr_texture_loader_finalize_async(
     return false_v;
   }
 
+  /* One reference belongs to the loader result, including its PENDING_GPU
+   * interval. Request deduplication shares this owner until the final unload. */
+  vkr_texture_system_add_ref_by_handle(system, handle);
   out_handle->type = VKR_RESOURCE_TYPE_TEXTURE;
   out_handle->loader_id = self->id;
   out_handle->as.texture = handle;
@@ -310,143 +217,9 @@ vkr_texture_loader_release_async_payload(VkrResourceLoader *self,
 vkr_internal void vkr_texture_loader_unload(VkrResourceLoader *self,
                                             const VkrResourceHandleInfo *handle,
                                             String8 name) {
-  assert_log(self != NULL, "Self is NULL");
-  assert_log(handle != NULL, "Handle is NULL");
-  assert_log(name.str != NULL, "Name is NULL");
-
+  (void)name;
   VkrTextureSystem *system = (VkrTextureSystem *)self->resource_system;
-
-  name = vkr_texture_loader_strip_resource_key_prefix(name);
-  String8 queryless_name = vkr_texture_loader_strip_query(name);
-
-  uint64_t primary_key_size = name.length + 1;
-  char *primary_key = vkr_texture_loader_alloc_key(system, name);
-  if (!primary_key) {
-    log_debug("Skipping texture unload for '%.*s' because async allocator is "
-              "not available",
-              (int32_t)name.length, name.str);
-    return;
-  }
-
-  char *queryless_key = NULL;
-  uint64_t queryless_key_size = 0;
-  const char *remove_key = primary_key;
-  VkrTextureEntry *entry =
-      vkr_hash_table_get_VkrTextureEntry(&system->texture_map, primary_key);
-
-  if (!entry && queryless_name.str && queryless_name.length > 0 &&
-      queryless_name.length < name.length) {
-    queryless_key_size = queryless_name.length + 1;
-    queryless_key = vkr_texture_loader_alloc_key(system, queryless_name);
-    if (queryless_key) {
-      entry = vkr_hash_table_get_VkrTextureEntry(&system->texture_map,
-                                                 queryless_key);
-      if (entry) {
-        remove_key = queryless_key;
-      }
-    }
-  }
-
-  /*
-   * Async request path canonicalization can diverge from texture-map keys when
-   * legacy callers pass mixed aliases. Use the texture-system reverse lookup
-   * (slot index -> stable key) to resolve by handle in O(1).
-   */
-  if (!entry && handle->type == VKR_RESOURCE_TYPE_TEXTURE &&
-      handle->as.texture.id != 0) {
-    uint32_t texture_index = handle->as.texture.id - 1;
-    if (texture_index < system->textures.length &&
-        system->texture_keys_by_index) {
-      VkrTexture *mapped_texture = &system->textures.data[texture_index];
-      const char *reverse_key = system->texture_keys_by_index[texture_index];
-      if (reverse_key &&
-          mapped_texture->description.id == handle->as.texture.id &&
-          mapped_texture->description.generation ==
-              handle->as.texture.generation) {
-        entry = vkr_hash_table_get_VkrTextureEntry(&system->texture_map,
-                                                   reverse_key);
-        if (entry) {
-          remove_key = reverse_key;
-        }
-      }
-    }
-  }
-
-  if (!entry) {
-    /*
-     * Async dedup/cancel paths can legitimately race request teardown against
-     * owner-driven release, so missing map entries are not always an error.
-     */
-    log_debug("Texture '%s' already released before loader unload",
-              primary_key);
-    vkr_texture_loader_release_unload_keys(system, &primary_key,
-                                           primary_key_size, &queryless_key,
-                                           queryless_key_size);
-    return;
-  }
-
-  /*
-   * Async resource requests do not hold a texture-system refcount. If the
-   * texture has been acquired by a material/mesh, keep it alive and let the
-   * normal ref-counted release path destroy it when the last user releases.
-   */
-  if (entry->ref_count > 0) {
-    vkr_texture_loader_release_unload_keys(system, &primary_key,
-                                           primary_key_size, &queryless_key,
-                                           queryless_key_size);
-    return;
-  }
-
-  uint32_t texture_index = entry->index;
-  const char *stable_name = entry->name;
-
-  // Don't remove default texture
-  if (texture_index == system->default_texture.id - 1) {
-    log_warn("Cannot remove default texture");
-    vkr_texture_loader_release_unload_keys(system, &primary_key,
-                                           primary_key_size, &queryless_key,
-                                           queryless_key_size);
-    return;
-  }
-
-  VkrTexture *texture = &system->textures.data[texture_index];
-  if (!vkr_texture_destroy(system, texture)) {
-    log_warn("Texture '%s' remains registered because GPU destruction failed",
-             remove_key);
-    vkr_texture_loader_release_unload_keys(system, &primary_key,
-                                           primary_key_size, &queryless_key,
-                                           queryless_key_size);
-    return;
-  }
-
-  // Native destruction leaves this map and its stable key untouched.
-  const bool8_t removed =
-      vkr_hash_table_remove_VkrTextureEntry(&system->texture_map, remove_key);
-  assert_log(removed, "Texture lookup changed during native destruction");
-
-  // Mark slot as free
-  texture->description.id = VKR_INVALID_ID;
-  texture->description.generation = VKR_INVALID_ID;
-
-  if (system->texture_keys_by_index &&
-      texture_index < system->textures.length) {
-    system->texture_keys_by_index[texture_index] = NULL;
-  }
-
-  if (stable_name &&
-      vkr_dmemory_owns_ptr(&system->string_memory, (void *)stable_name)) {
-    uint64_t len = string_length(stable_name) + 1;
-    vkr_allocator_free(&system->string_allocator, (void *)stable_name, len,
-                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
-  }
-
-  // Update free index for slot reuse
-  if (texture_index < system->next_free_index) {
-    system->next_free_index = texture_index;
-  }
-
-  vkr_texture_loader_release_unload_keys(system, &primary_key, primary_key_size,
-                                         &queryless_key, queryless_key_size);
+  (void)vkr_texture_system_release_by_handle(system, handle->as.texture);
 }
 
 VkrResourceLoader vkr_texture_loader_create(void) {

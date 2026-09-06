@@ -30,6 +30,7 @@
 
 typedef struct GltfImporterTestCapture {
   VkrAllocator *allocator;
+  VkrMeshSource source;
   uint32_t primitive_count;
   uint32_t total_vertices;
   uint32_t total_indices;
@@ -468,6 +469,7 @@ static VkrMeshLoaderGltfParseInfo gltf_test_make_parse_info(
       .out_error = out_error,
       .on_primitive = gltf_test_capture_primitive,
       .user_data = capture,
+      .out_source = capture ? &capture->source : NULL,
   };
 }
 
@@ -568,7 +570,9 @@ gltf_test_run_decal_case(const char *stem, const Vec3 *normal,
       break;
     }
   }
-  MemCopy(result.positions, capture.first_positions, sizeof(result.positions));
+  for (uint32_t i = 0; i < result.position_count; ++i)
+    result.positions[i] = mat4_mul_vec3(capture.source.nodes.data[0].local,
+                                        capture.first_positions[i]);
 
   arena_destroy(scratch_arena);
   arena_destroy(arena);
@@ -606,7 +610,10 @@ static void test_gltf_import_basic_and_deterministic_mt(void) {
            "\"asset\":{\"version\":\"2.0\"},"
            "\"scene\":0,"
            "\"scenes\":[{\"nodes\":[0]}],"
-           "\"nodes\":[{\"mesh\":0}],"
+           "\"nodes\":[{\"name\":\"Group\",\"translation\":[10,0,0],"
+           "\"children\":[1,2]},"
+           "{\"name\":\"Shared A\",\"mesh\":0,\"translation\":[2,0,0]},"
+           "{\"name\":\"Shared B\",\"mesh\":0,\"translation\":[-2,0,0]}],"
            "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},"
            "\"indices\":1,\"material\":0}]}],"
            "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.8,"
@@ -644,6 +651,17 @@ static void test_gltf_import_basic_and_deterministic_mt(void) {
   assert(vkr_mesh_loader_gltf_parse(&parse_info) == true_v);
   assert(error == VKR_RENDERER_ERROR_NONE);
   assert(capture.primitive_count == 1u);
+  assert(capture.source.nodes.length == 3u);
+  assert(capture.source.meshes.length == 1u);
+  assert(capture.source.nodes.data[0].mesh == UINT32_MAX);
+  assert(capture.source.nodes.data[1].parent == 0u);
+  assert(capture.source.nodes.data[2].parent == 0u);
+  assert(capture.source.nodes.data[1].mesh_variant ==
+         capture.source.nodes.data[2].mesh_variant);
+  assert(capture.source.nodes.data[0].local.elements[12] == 10.0f);
+  assert(capture.first_positions[0].x == 0.0f);
+  assert(capture.source.fingerprint != 0u);
+
   assert(capture.total_vertices == 3u);
   assert(capture.total_indices == 3u);
   assert(capture.first_texcoord_count == 3u);

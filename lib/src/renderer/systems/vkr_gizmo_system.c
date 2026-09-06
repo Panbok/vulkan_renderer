@@ -10,10 +10,7 @@
 #include "defines.h"
 #include "math/mat.h"
 #include "math/vkr_math.h"
-#include "math/vkr_transform.h"
 #include "renderer/systems/vkr_geometry_system.h"
-#include "renderer/systems/vkr_material_system.h"
-#include "renderer/systems/vkr_mesh_manager.h"
 #include "renderer/systems/vkr_render_assets.h"
 
 #define ARROW_LENGTH 1.0f
@@ -28,7 +25,7 @@
 #define RING_SEGMENTS 48
 #define RING_SIDES 12
 
-vkr_global const VkrGizmoHandle g_gizmo_submesh_handles[] = {
+vkr_internal const VkrGizmoHandle g_gizmo_submesh_handles[] = {
     VKR_GIZMO_HANDLE_TRANSLATE_X, VKR_GIZMO_HANDLE_TRANSLATE_Y,
     VKR_GIZMO_HANDLE_TRANSLATE_Z, VKR_GIZMO_HANDLE_ROTATE_X,
     VKR_GIZMO_HANDLE_ROTATE_Y,    VKR_GIZMO_HANDLE_ROTATE_Z,
@@ -44,6 +41,9 @@ bool8_t vkr_gizmo_system_init(VkrGizmoSystem *system,
 
   MemZero(system, sizeof(*system));
   system->config = config ? *config : VKR_GIZMO_CONFIG_DEFAULT;
+  if (!isfinite(system->config.screen_size) ||
+      system->config.screen_size <= 0.0f)
+    return false_v;
   system->mode = VKR_GIZMO_MODE_TRANSLATE;
   system->space = VKR_GIZMO_SPACE_WORLD;
   system->selected_entity = VKR_ENTITY_ID_INVALID;
@@ -51,32 +51,21 @@ bool8_t vkr_gizmo_system_init(VkrGizmoSystem *system,
   system->orientation = vkr_quat_identity();
   system->hot_handle = VKR_GIZMO_HANDLE_NONE;
   system->active_handle = VKR_GIZMO_HANDLE_NONE;
-  system->gizmo_mesh_index = VKR_INVALID_ID;
   system->visible = false_v;
 
   const Vec3 axes[] = {vec3_right(), vec3_up(), vec3_back()};
   vkr_local_persist const char *axis_names[] = {"x", "y", "z"};
-  VkrMaterialHandle axis_materials[3] = {0};
-  VkrRendererError mat_err = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_material_system_create_gizmo_materials(&assets->material_system,
-                                                  axis_materials, &mat_err)) {
-    String8 err = vkr_renderer_get_error_string(mat_err);
-    log_error("Gizmo material create failed: %s", string8_cstr(&err));
-    goto gizmo_geometry_cleanup;
-  }
-
-  VkrGeometryHandle geometries[ArrayCount(g_gizmo_submesh_handles)] = {0};
   uint32_t geom_index = 0;
   VkrRendererError geom_err = VKR_RENDERER_ERROR_NONE;
 
   for (uint32_t axis_index = 0; axis_index < ArrayCount(axes); ++axis_index) {
     char name[GEOMETRY_NAME_MAX_LENGTH];
     string_format(name, sizeof(name), "gizmo_arrow_%s", axis_names[axis_index]);
-    geometries[geom_index] = vkr_geometry_system_create_arrow(
+    system->geometries[geom_index] = vkr_geometry_system_create_arrow(
         &assets->geometry_system, ARROW_LENGTH - ARROW_HEAD_LENGTH,
         ARROW_SHAFT_RADIUS, ARROW_HEAD_LENGTH, ARROW_HEAD_RADIUS,
         ARROW_SEGMENTS, axes[axis_index], vec3_zero(), name, &geom_err);
-    if (geometries[geom_index].id == 0) {
+    if (system->geometries[geom_index].id == 0) {
       String8 err = vkr_renderer_get_error_string(geom_err);
       log_error("Gizmo arrow create failed: %s", string8_cstr(&err));
       goto gizmo_geometry_cleanup;
@@ -87,10 +76,10 @@ bool8_t vkr_gizmo_system_init(VkrGizmoSystem *system,
   for (uint32_t axis_index = 0; axis_index < ArrayCount(axes); ++axis_index) {
     char name[GEOMETRY_NAME_MAX_LENGTH];
     string_format(name, sizeof(name), "gizmo_ring_%s", axis_names[axis_index]);
-    geometries[geom_index] = vkr_geometry_system_create_torus(
+    system->geometries[geom_index] = vkr_geometry_system_create_torus(
         &assets->geometry_system, RING_RADIUS, RING_THICKNESS, RING_SEGMENTS,
         RING_SIDES, axes[axis_index], vec3_zero(), name, &geom_err);
-    if (geometries[geom_index].id == 0) {
+    if (system->geometries[geom_index].id == 0) {
       String8 err = vkr_renderer_get_error_string(geom_err);
       log_error("Gizmo ring create failed: %s", string8_cstr(&err));
       goto gizmo_geometry_cleanup;
@@ -102,10 +91,10 @@ bool8_t vkr_gizmo_system_init(VkrGizmoSystem *system,
     char name[GEOMETRY_NAME_MAX_LENGTH];
     string_format(name, sizeof(name), "gizmo_scale_%s", axis_names[axis_index]);
     Vec3 center = vec3_scale(axes[axis_index], CUBE_OFFSET);
-    geometries[geom_index] = vkr_geometry_system_create_box(
+    system->geometries[geom_index] = vkr_geometry_system_create_box(
         &assets->geometry_system, center, CUBE_SIZE, CUBE_SIZE, CUBE_SIZE,
         true_v, name, &geom_err);
-    if (geometries[geom_index].id == 0) {
+    if (system->geometries[geom_index].id == 0) {
       String8 err = vkr_renderer_get_error_string(geom_err);
       log_error("Gizmo cube create failed: %s", string8_cstr(&err));
       goto gizmo_geometry_cleanup;
@@ -113,74 +102,25 @@ bool8_t vkr_gizmo_system_init(VkrGizmoSystem *system,
     geom_index++;
   }
 
-  VkrSubMeshDesc submeshes[ArrayCount(g_gizmo_submesh_handles)] = {0};
-  uint32_t submesh_count = ArrayCount(g_gizmo_submesh_handles);
-  for (uint32_t index = 0; index < submesh_count; ++index) {
-    uint32_t axis_index = index % ArrayCount(axes);
-    submeshes[index] = (VkrSubMeshDesc){
-        .geometry = geometries[index],
-        .material = axis_materials[axis_index],
-        .shader_override = (String8){0},
-        .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD,
-        .owns_geometry = true_v,
-        .owns_material = false_v,
-    };
-  }
-
-  VkrMeshDesc mesh_desc = {
-      .transform = vkr_transform_identity(),
-      .submeshes = submeshes,
-      .submesh_count = submesh_count,
-  };
-
-  VkrRendererError mesh_err = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_mesh_manager_add(&assets->mesh_manager, &mesh_desc,
-                            &system->gizmo_mesh_index, &mesh_err)) {
-    String8 err = vkr_renderer_get_error_string(mesh_err);
-    log_error("Gizmo mesh create failed: %s", string8_cstr(&err));
-    goto gizmo_geometry_cleanup;
-  }
-
-  vkr_mesh_manager_update_model(&assets->mesh_manager,
-                                system->gizmo_mesh_index);
-
-  (void)vkr_mesh_manager_set_visible(&assets->mesh_manager,
-                                     system->gizmo_mesh_index, false_v);
-
   system->initialized = true_v;
   return true_v;
 
 gizmo_geometry_cleanup:
-  if (system->gizmo_mesh_index != VKR_INVALID_ID) {
-    vkr_mesh_manager_remove(&assets->mesh_manager, system->gizmo_mesh_index);
-    system->gizmo_mesh_index = VKR_INVALID_ID;
-  }
-  for (uint32_t index = 0; index < geom_index; ++index) {
-    if (geometries[index].id != 0) {
-      vkr_geometry_system_release(&assets->geometry_system, geometries[index]);
-    }
-  }
-  for (uint32_t index = 0; index < ArrayCount(axis_materials); ++index) {
-    if (axis_materials[index].id != 0) {
-      vkr_material_system_release(&assets->material_system,
-                                  axis_materials[index]);
-    }
-  }
+  vkr_gizmo_system_shutdown(system, assets);
   return false_v;
 }
 
 void vkr_gizmo_system_shutdown(VkrGizmoSystem *system,
                                struct VkrRenderAssets *assets) {
-  if (!system || !assets) {
+  if (!system || !assets)
     return;
+  for (uint32_t i = 0; i < ArrayCount(system->geometries); ++i) {
+    if (system->geometries[i].id)
+      vkr_geometry_system_release(&assets->geometry_system,
+                                  system->geometries[i]);
+    system->geometries[i] = VKR_GEOMETRY_HANDLE_INVALID;
   }
-
-  if (system->gizmo_mesh_index != VKR_INVALID_ID) {
-    vkr_mesh_manager_remove(&assets->mesh_manager, system->gizmo_mesh_index);
-    system->gizmo_mesh_index = VKR_INVALID_ID;
-  }
-
-  system->visible = false_v;
+  vkr_gizmo_system_clear_target(system);
   system->initialized = false_v;
 }
 
@@ -218,4 +158,66 @@ void vkr_gizmo_system_set_active_handle(VkrGizmoSystem *system,
                                         VkrGizmoHandle handle) {
   assert_log(system != NULL, "System is NULL");
   system->active_handle = handle;
+}
+
+uint32_t vkr_gizmo_system_build_draws(
+    const VkrGizmoSystem *system, Mat4 view, Mat4 projection,
+    const VkrViewportMapping *mapping,
+    VkrEditorOverlayDraw out_draws[VKR_EDITOR_OVERLAY_DRAW_MAX]) {
+  if (!system || !system->initialized || !system->visible || !mapping ||
+      !out_draws || system->mode < VKR_GIZMO_MODE_TRANSLATE ||
+      system->mode > VKR_GIZMO_MODE_SCALE || mapping->image_rect_px.w <= 0.0f)
+    return 0u;
+  const Vec4 center =
+      mat4_mul_vec4(view, vec4_new(system->position.x, system->position.y,
+                                   system->position.z, 1.0f));
+  const Vec4 clip = mat4_mul_vec4(projection, center);
+  const float32_t projection_y = fabsf(projection.elements[5]);
+  if (!isfinite(clip.w) || clip.w <= VKR_FLOAT_EPSILON || clip.z < 0.0f ||
+      clip.z > clip.w || projection_y <= VKR_FLOAT_EPSILON)
+    return 0u;
+  const float32_t scale = 2.0f * system->config.screen_size * clip.w /
+                          (projection_y * mapping->image_rect_px.w);
+  if (!isfinite(scale) || scale <= 0.0f)
+    return 0u;
+  const Mat4 model = mat4_mul(mat4_translate(system->position),
+                              mat4_scale(vec3_new(scale, scale, scale)));
+  const Vec4 colors[3] = {vec4_new(1.0f, 0.08f, 0.08f, 1.0f),
+                          vec4_new(0.08f, 1.0f, 0.08f, 1.0f),
+                          vec4_new(0.08f, 0.25f, 1.0f, 1.0f)};
+  uint32_t order[VKR_EDITOR_OVERLAY_DRAW_MAX];
+  uint32_t count = 0u;
+  for (uint32_t shape = 0; shape < ArrayCount(g_gizmo_submesh_handles);
+       ++shape) {
+    const VkrGizmoHandle handle = g_gizmo_submesh_handles[shape];
+    if (handle != system->hot_handle && handle != system->active_handle)
+      order[count++] = shape;
+  }
+  for (uint32_t shape = 0; shape < ArrayCount(g_gizmo_submesh_handles);
+       ++shape) {
+    if (g_gizmo_submesh_handles[shape] == system->hot_handle &&
+        system->hot_handle != system->active_handle)
+      order[count++] = shape;
+  }
+  for (uint32_t shape = 0; shape < ArrayCount(g_gizmo_submesh_handles);
+       ++shape) {
+    if (g_gizmo_submesh_handles[shape] == system->active_handle)
+      order[count++] = shape;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint32_t shape = order[i];
+    const VkrGizmoHandle handle = g_gizmo_submesh_handles[shape];
+    const Vec4 color =
+        handle == system->active_handle ? vec4_new(1.0f, 0.65f, 0.02f, 1.0f)
+        : handle == system->hot_handle  ? vec4_new(1.0f, 1.0f, 0.3f, 1.0f)
+                                        : colors[shape % 3u];
+    out_draws[i] = (VkrEditorOverlayDraw){
+        .geometry = system->geometries[shape],
+        .submesh_index = 0u,
+        .model = model,
+        .color = color,
+        .object_id = vkr_gizmo_encode_picking_id(handle),
+    };
+  }
+  return count;
 }
