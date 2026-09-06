@@ -127,6 +127,8 @@ typedef struct VkrUiSystem {
   VkrUiFrameNode *frame_nodes;
   uint32_t frame_node_count;
   uint32_t frame_node_capacity;
+  uint32_t frame_tooltip;
+  uint32_t frame_tooltip_source;
   uint32_t container_stack[VKR_UI_CONTAINER_STACK_CAPACITY];
   uint32_t container_count;
   VkrUiIdStack id_stack;
@@ -183,6 +185,7 @@ typedef struct VkrUiSystem {
   uint32_t content_scale_revision;
   bool8_t frame_open;
   bool8_t frame_draw_ready;
+  bool8_t frame_draw_pending;
   bool8_t frame_reuses_cached_draw_list;
   bool8_t draw_cache_valid;
   bool8_t draw_capacity_warning_emitted;
@@ -205,7 +208,7 @@ bool8_t vkr_ui_begin(VkrUiSystem *system, VkrAllocator *scratch,
                      bool8_t mouse_captured, float64_t delta_time,
                      const VkrUiPanelConfig *root_config);
 
-/** Resolve layout, retain state, and produce the frame's input capture. */
+/** Finalize input and tooltips. Frame scratch stays live through draw preparation. */
 VkrUiInputCapture vkr_ui_end(VkrUiSystem *system);
 
 bool8_t vkr_ui_push_id_label(VkrUiSystem *system, String8 label);
@@ -252,12 +255,17 @@ bool8_t vkr_ui_text_field(VkrUiSystem *system, String8 id_label,
                           VkrUiTextEditBuffer *buffer,
                           const VkrUiWidgetConfig *config);
 
+/** Set an authored widget's left/top margins and fixed size in points before
+ * draw preparation. Input keeps using the preceding presented bounds. */
+bool8_t vkr_ui_widget_set_rect(VkrUiSystem *system, VkrUiId id,
+                                VkrUiRect rect_pt);
+
 VkrUiInputCapture vkr_ui_system_capture(const VkrUiSystem *system);
 
 /** Most recent CPU damage result; 1 means every tile needs redraw. */
 float32_t vkr_ui_system_dirty_tile_ratio(const VkrUiSystem *system);
 
-/** Build the packet-facing indexed stream from the resolved frame commands. */
+/** Resolve layout, damage and commands, then build the packet-facing indexed stream. */
 bool8_t vkr_ui_system_prepare_draw_list(VkrUiSystem *system,
                                         VkrAllocator *frame_allocator,
                                         uint32_t target_width,

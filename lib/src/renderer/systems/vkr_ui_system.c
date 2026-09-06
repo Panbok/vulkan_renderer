@@ -25,6 +25,7 @@ struct VkrUiRetainedState {
   VkrUiId id;
   VkrUiNodeKind kind;
   uint64_t last_seen_frame;
+  uint32_t frame_node_index;
   uint64_t build_hash;
   VkrUiRect last_rect;
   VkrUiRect last_clip;
@@ -459,6 +460,7 @@ vkr_internal uint32_t vkr_ui_add_node(VkrUiSystem *system, VkrUiId id,
     return VKR_UI_NODE_NONE;
   retained->last_seen_frame = system->frame_index;
   const uint32_t index = system->frame_node_count++;
+  retained->frame_node_index = index;
   VkrUiFrameNode *node = &system->frame_nodes[index];
   *node = (VkrUiFrameNode){
       .id = id,
@@ -612,7 +614,9 @@ vkr_internal bool8_t vkr_ui_interact(VkrUiSystem *system, VkrUiFrameNode *node,
       vkr_ui_rect_has_area(retained->last_rect) &&
       vkr_ui_point_in_rect(press_x, press_y, retained->last_rect) &&
       vkr_ui_point_in_rect(press_x, press_y, retained->last_clip);
-  if (pressed_here && system->active_id == VKR_UI_ID_NONE) {
+  // A fresh press belongs to the last overlapping widget in draw order.
+  // Existing drags retain their owner on frames without a new press.
+  if (pressed_here) {
     system->active_id = node->id;
     if (focusable) {
       system->focused_id = node->id;
@@ -694,6 +698,7 @@ bool8_t vkr_ui_begin(VkrUiSystem *system, VkrAllocator *scratch,
   system->frame_command_capacity = 0u;
   system->frame_draw_hash = 0u;
   system->frame_draw_ready = false_v;
+  system->frame_draw_pending = false_v;
   system->frame_reuses_cached_draw_list = false_v;
   system->frame_index++;
   if (system->frame_index == 0u)
@@ -910,10 +915,15 @@ bool8_t vkr_ui_slider_f32(VkrUiSystem *system, String8 id_label,
       vkr_ui_style_clamp_size(node->intrinsic_size, &node->style);
   node->disabled = config->disabled;
   node->tooltip = config->tooltip;
-  (void)vkr_ui_interact(system, node, true_v);
+  const bool8_t was_active = system->active_id == id;
+  const bool8_t released_here = vkr_ui_interact(system, node, true_v);
   bool8_t changed = false_v;
-  if (system->active_id == id &&
-      input_is_button_down(system->input, BUTTON_LEFT) &&
+  const bool8_t pointer_edit =
+      (system->active_id == id &&
+       input_is_button_down(system->input, BUTTON_LEFT)) ||
+      released_here || (was_active && system->mouse_released);
+  if (pointer_edit && !node->disabled && !system->mouse_captured &&
+      node->input_layer == system->mouse_input_layer &&
       node->retained->last_rect.width > 0.0f) {
     const float32_t fraction = vkr_clamp_f32(
         ((float32_t)system->mouse_x - node->retained->last_rect.x) /
@@ -2410,8 +2420,58 @@ VkrUiInputCapture vkr_ui_end(VkrUiSystem *system) {
     system->active_id = VKR_UI_ID_NONE;
 
   vkr_ui_focus_traverse(system);
-  uint32_t tooltip_source = VKR_UI_NODE_NONE;
-  const uint32_t tooltip = vkr_ui_tooltip_prepare(system, &tooltip_source);
+  system->frame_tooltip_source = VKR_UI_NODE_NONE;
+  system->frame_tooltip =
+      vkr_ui_tooltip_prepare(system, &system->frame_tooltip_source);
+  system->frame_draw_pending = true_v;
+  system->focused_is_text = false_v;
+  for (uint32_t i = 0u; i < system->frame_node_count; ++i) {
+    if (system->frame_nodes[i].id == system->focused_id) {
+      system->focused_is_text =
+          system->frame_nodes[i].kind == VKR_UI_NODE_TEXT_FIELD;
+      break;
+    }
+  }
+  system->capture = (VkrUiInputCapture){
+      .mouse = system->capture.mouse || system->active_id != VKR_UI_ID_NONE,
+      .keyboard =
+          system->capture.keyboard || system->focused_id != VKR_UI_ID_NONE,
+      .text = system->focused_id != VKR_UI_ID_NONE && system->focused_is_text,
+      .hot_id = system->hot_id,
+      .active_id = system->active_id,
+  };
+  system->frame_open = false_v;
+  return system->capture;
+}
+
+bool8_t vkr_ui_widget_set_rect(VkrUiSystem *system, VkrUiId id,
+                                VkrUiRect rect_pt) {
+  if (!system || (!system->frame_open && !system->frame_draw_pending) ||
+      id == VKR_UI_ID_NONE || !vkr_ui_rect_is_finite(rect_pt) ||
+      !vkr_ui_rect_has_area(rect_pt))
+    return false_v;
+  VkrUiRetainedState *retained = vkr_ui_retained_find(system, id);
+  if (!retained || retained->last_seen_frame != system->frame_index)
+    return false_v;
+  VkrUiFrameNode *node = &system->frame_nodes[retained->frame_node_index];
+  const Vec2 size_px = {rect_pt.width * system->content_scale,
+                         rect_pt.height * system->content_scale};
+  if (!isfinite(size_px.x) || !isfinite(size_px.y))
+    return false_v;
+  node->placement.margin_pt.left = rect_pt.x;
+  node->placement.margin_pt.top = rect_pt.y;
+  node->style.min_size_px = size_px;
+  node->style.max_size_px = size_px;
+  node->intrinsic_size = size_px;
+  return true_v;
+}
+
+/* Input already reflects the preceding presented geometry. Resolve the next
+ * geometry only after scene anchors have received the current camera pose. */
+vkr_internal bool8_t vkr_ui_resolve_draw_commands(VkrUiSystem *system) {
+  system->frame_draw_pending = false_v;
+  const uint32_t tooltip_source = system->frame_tooltip_source;
+  const uint32_t tooltip = system->frame_tooltip;
   VkrUiFrameNode *root = &system->frame_nodes[0];
   uint64_t draw_hash = vkr_ui_node_hash(system, 0u);
   if (tooltip != VKR_UI_NODE_NONE) {
@@ -2431,18 +2491,17 @@ VkrUiInputCapture vkr_ui_end(VkrUiSystem *system) {
     system->dirty_tile_ratio = 0.0f;
     system->dirty_tile_count = 0u;
     system->tile_count = system->tile_cache.tile_count;
-    goto finish;
+    vkr_ui_retained_reclaim(system);
+    return true_v;
   }
   system->draw_cache_valid = false_v;
   if (!vkr_ui_container_intrinsic(system, root, &root->intrinsic_size)) {
-    system->frame_open = false_v;
-    return (VkrUiInputCapture){0};
+    return false_v;
   }
   const VkrUiRect target = {0.0f, 0.0f, (float32_t)system->target_width,
                             (float32_t)system->target_height};
   if (!vkr_ui_layout_node(system, 0u, target, target)) {
-    system->frame_open = false_v;
-    return (VkrUiInputCapture){0};
+    return false_v;
   }
 
   if (tooltip != VKR_UI_NODE_NONE) {
@@ -2494,26 +2553,8 @@ VkrUiInputCapture vkr_ui_end(VkrUiSystem *system) {
     }
   }
 
-finish:
-  system->focused_is_text = false_v;
-  for (uint32_t i = 0u; i < system->frame_node_count; ++i) {
-    if (system->frame_nodes[i].id == system->focused_id) {
-      system->focused_is_text =
-          system->frame_nodes[i].kind == VKR_UI_NODE_TEXT_FIELD;
-      break;
-    }
-  }
-  system->capture = (VkrUiInputCapture){
-      .mouse = system->capture.mouse || system->active_id != VKR_UI_ID_NONE,
-      .keyboard =
-          system->capture.keyboard || system->focused_id != VKR_UI_ID_NONE,
-      .text = system->focused_id != VKR_UI_ID_NONE && system->focused_is_text,
-      .hot_id = system->hot_id,
-      .active_id = system->active_id,
-  };
   vkr_ui_retained_reclaim(system);
-  system->frame_open = false_v;
-  return system->capture;
+  return system->frame_draw_ready;
 }
 
 VkrUiInputCapture vkr_ui_system_capture(const VkrUiSystem *system) {
@@ -2533,8 +2574,12 @@ bool8_t vkr_ui_system_prepare_draw_list(VkrUiSystem *system,
       target_height == 0u)
     return false_v;
   *out_draw_list = (VkrPreparedUiDrawList){0};
-  if (!system->frame_draw_ready || target_width != system->target_width ||
+  if (system->frame_open || target_width != system->target_width ||
       target_height != system->target_height)
+    return false_v;
+  if (system->frame_draw_pending && !vkr_ui_resolve_draw_commands(system))
+    return false_v;
+  if (!system->frame_draw_ready)
     return false_v;
   if (system->draw_cache_valid &&
       system->cached_draw_hash == system->frame_draw_hash &&

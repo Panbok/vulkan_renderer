@@ -499,18 +499,24 @@ vkr_internal void test_ui_system_scale_revision_and_offsets(void) {
     VkrUiWidgetConfig label = vkr_ui_widget_config_default();
     label.placement.justify = VKR_UI_ALIGN_START;
     label.placement.align = VKR_UI_ALIGN_START;
-    label.placement.margin_pt = (VkrUiEdges){4.0f, 0.0f, 0.0f, 3.0f};
+    label.placement.margin_pt = (VkrUiEdges){0};
     label.style.font_size_pt = 10.0f;
     label.text.font = (VkrFontHandle){.id = fixture.font.id,
                                       .generation = fixture.font.generation};
     label.text.font_size = 10.0f;
+    const VkrUiId label_id = vkr_ui_id_stack_widget_label(
+        &system.id_stack, string8_lit("scaled-label"));
     vkr_ui_label(&system, string8_lit("scaled-label"), string8_lit("A"),
                  &label);
     (void)vkr_ui_end(&system);
+    assert(vkr_ui_widget_set_rect(
+        &system, label_id, (VkrUiRect){3.0f, 4.0f, 20.0f, 20.0f}));
     VkrPreparedUiDrawList draw_list = {0};
     assert(vkr_ui_system_prepare_draw_list(&system, &allocator, 200u, 100u,
                                            &draw_list));
     assert(draw_list.vertex_count == 4u);
+    assert(!vkr_ui_widget_set_rect(
+        &system, label_id, (VkrUiRect){9.0f, 4.0f, 20.0f, 20.0f}));
     assert(system.content_scale_revision ==
            system.offscreen_content_scale_revision);
     float32_t min_x = draw_list.vertices[0].position.x;
@@ -617,12 +623,11 @@ vkr_internal void test_ui_system_reuses_unchanged_draw_geometry(void) {
     vkr_ui_label(&system, string8_lit("cached-label"),
                  frame < 2u ? string8_lit("A") : string8_lit("B"), NULL);
     (void)vkr_ui_end(&system);
-    assert(system.frame_reuses_cached_draw_list ==
-           (frame == 1u || frame == 3u));
-
     VkrPreparedUiDrawList draw_list = {0};
     assert(vkr_ui_system_prepare_draw_list(&system, &allocator, 200u, 100u,
                                            &draw_list));
+    assert(system.frame_reuses_cached_draw_list ==
+           (frame == 1u || frame == 3u));
     assert(draw_list.vertex_count == 4u);
     assert(draw_list.vertices == system.cached_vertices);
     if (frame == 0u) {
@@ -650,10 +655,10 @@ vkr_internal void test_ui_system_reuses_unchanged_draw_geometry(void) {
     (void)vkr_ui_checkbox(&system, string8_lit("cached-checkbox"),
                           string8_lit("Visible"), &checked, NULL);
     (void)vkr_ui_end(&system);
-    assert(system.frame_reuses_cached_draw_list == (frame == 1u));
     VkrPreparedUiDrawList draw_list = {0};
     assert(vkr_ui_system_prepare_draw_list(&system, &allocator, 200u, 100u,
                                            &draw_list));
+    assert(system.frame_reuses_cached_draw_list == (frame == 1u));
     if (frame == 0u)
       unchecked_hash = system.cached_draw_hash;
     if (frame == 2u) {
@@ -706,6 +711,9 @@ vkr_internal bool8_t test_ui_text_field_frame(VkrUiSystem *system,
   const bool8_t changed =
       vkr_ui_text_field(system, string8_lit("edit"), buffer, NULL);
   *out_capture = vkr_ui_end(system);
+  VkrPreparedUiDrawList draw_list = {0};
+  assert(vkr_ui_system_prepare_draw_list(system, &allocator, 200u, 100u,
+                                         &draw_list));
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   return changed;
 }
@@ -789,6 +797,9 @@ vkr_internal bool8_t test_ui_readonly_frame(VkrUiSystem *system,
   bool8_t changed =
       vkr_ui_text_field(system, string8_lit("readonly"), buffer, &config);
   (void)vkr_ui_end(system);
+  VkrPreparedUiDrawList draw_list = {0};
+  assert(vkr_ui_system_prepare_draw_list(system, &allocator, 200u, 100u,
+                                         &draw_list));
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   return changed;
 }
@@ -927,6 +938,9 @@ vkr_internal void test_ui_input_layer_blocks_click_through(void) {
         &system, string8_lit("overlay"), string8_lit("overlay"), &button);
     assert(vkr_ui_scroll_area_end(&system));
     const VkrUiInputCapture capture = vkr_ui_end(&system);
+    VkrPreparedUiDrawList draw_list = {0};
+    assert(vkr_ui_system_prepare_draw_list(&system, &allocator, 200u, 100u,
+                                           &draw_list));
     assert(system.frame_draw_ready);
     assert(!base_clicked && !lower_clicked);
     if (frame == 1u) {
@@ -938,6 +952,37 @@ vkr_internal void test_ui_input_layer_blocks_click_through(void) {
     if (frame != 1u)
       input_update(&input);
   }
+
+  // Equal input layers follow paint order: the front button owns a press held
+  // across frame boundaries, and the covered button never activates on release.
+  for (uint32_t frame = 0u; frame < 3u; ++frame) {
+    input_update(&input);
+    input_process_mouse_move(&input, 10, 10);
+    if (frame == 1u)
+      input_process_button(&input, BUTTON_LEFT, true_v);
+    else if (frame == 2u)
+      input_process_button(&input, BUTTON_LEFT, false_v);
+    VkrAllocatorScope scope = vkr_allocator_begin_scope(&allocator);
+    assert(vkr_allocator_scope_is_valid(&scope));
+    assert(vkr_ui_begin(&system, &allocator, NULL, 200u, 100u, &input, false_v,
+                        1.0 / 60.0, NULL));
+    const bool8_t back_clicked = vkr_ui_button(
+        &system, string8_lit("overlap-back"), string8_lit("Back"), &button);
+    const VkrUiId front_id = vkr_ui_id_stack_widget_label(
+        &system.id_stack, string8_lit("overlap-front"));
+    const bool8_t front_clicked = vkr_ui_button(
+        &system, string8_lit("overlap-front"), string8_lit("Front"), &button);
+    const VkrUiInputCapture capture = vkr_ui_end(&system);
+    VkrPreparedUiDrawList draw_list = {0};
+    assert(vkr_ui_system_prepare_draw_list(&system, &allocator, 200u, 100u,
+                                           &draw_list));
+    assert(!back_clicked);
+    assert(front_clicked == (frame == 2u));
+    if (frame == 1u)
+      assert(capture.active_id == front_id);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  input_update(&input);
 
   // A modal layer still captures shortcuts after a background click leaves no
   // focused widget; vkr_ui_end must preserve the explicit keyboard claim.
@@ -956,6 +1001,73 @@ vkr_internal void test_ui_input_layer_blocks_click_through(void) {
   vkr_ui_system_shutdown(&system);
   teardown_suite();
   printf("  test_ui_input_layer_blocks_click_through PASSED\n");
+}
+
+vkr_internal void test_ui_slider_final_pointer_position(void) {
+  printf("  Running test_ui_slider_final_pointer_position...\n");
+  setup_suite();
+  TestCookedFont fixture;
+  test_cooked_font_init(&fixture);
+  VkrFontSystem fonts = {0};
+  fonts.fonts = (Array_VkrFont){.length = 1u, .data = &fixture.font};
+  fonts.default_mtsdf_font_handle = (VkrFontHandle){
+      .id = fixture.font.id, .generation = fixture.font.generation};
+  VkrUiSystem system = {0};
+  assert(vkr_ui_system_init(&system, &fonts));
+  vkr_ui_system_set_offscreen_size(&system, true_v, 200u, 100u);
+  EventManager events = {0};
+  assert(event_manager_create(&events));
+  InputState input = input_init(&events);
+  float32_t value = -10.0f;
+  // A 200px slider over [-10,30] maps x=150 to 20 and x=50 to 0.
+  // Releasing beyond its right edge must commit the clamped maximum of 30.
+  const float32_t expected[] = {-10.0f, 20.0f, 0.0f, 30.0f, 30.0f, 30.0f};
+  for (uint32_t frame = 0u; frame < ArrayCount(expected); ++frame) {
+    input_update(&input);
+    if (frame == 1u) {
+      input_process_mouse_move(&input, 150, 10);
+      input_process_button(&input, BUTTON_LEFT, true_v);
+      input_process_button(&input, BUTTON_LEFT, false_v);
+    } else if (frame == 2u) {
+      input_process_mouse_move(&input, 50, 10);
+      input_process_button(&input, BUTTON_LEFT, true_v);
+    } else if (frame == 3u) {
+      input_process_mouse_move(&input, 250, 10);
+      input_process_button(&input, BUTTON_LEFT, false_v);
+    } else if (frame >= 4u) {
+      input_process_mouse_move(&input, 25, 10);
+      input_process_button(&input, BUTTON_LEFT, true_v);
+      input_process_button(&input, BUTTON_LEFT, false_v);
+    }
+    VkrAllocatorScope scope = vkr_allocator_begin_scope(&allocator);
+    assert(vkr_allocator_scope_is_valid(&scope));
+    assert(vkr_ui_begin(&system, &allocator, NULL, 200u, 100u, &input, false_v,
+                        1.0 / 60.0, NULL));
+    if (frame == 5u)
+      assert(vkr_ui_input_layer_register(
+          &system, 1u, (VkrUiRect){0.0f, 0.0f, 200.0f, 100.0f}));
+    VkrUiWidgetConfig slider = vkr_ui_widget_config_default();
+    slider.style.min_size_pt = (Vec2){200.0f, 20.0f};
+    slider.style.max_size_pt = slider.style.min_size_pt;
+    slider.placement.justify = VKR_UI_ALIGN_START;
+    slider.placement.align = VKR_UI_ALIGN_START;
+    slider.disabled = frame == 4u;
+    const bool8_t changed = vkr_ui_slider_f32(
+        &system, string8_lit("slider"), &value, -10.0f, 30.0f, &slider);
+    (void)vkr_ui_end(&system);
+    VkrPreparedUiDrawList draw_list = {0};
+    assert(vkr_ui_system_prepare_draw_list(&system, &allocator, 200u, 100u,
+                                           &draw_list));
+    assert(changed == (frame >= 1u && frame <= 3u));
+    assert_f32_eq(value, expected[frame], 0.0f,
+                  "slider commits final release position and honors input gates");
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  input_shutdown(&input);
+  event_manager_destroy(&events);
+  vkr_ui_system_shutdown(&system);
+  teardown_suite();
+  printf("  test_ui_slider_final_pointer_position PASSED\n");
 }
 
 vkr_internal void test_ui_scroll_keyboard_navigation_and_child_click(void) {
@@ -1024,25 +1136,47 @@ vkr_internal void test_ui_scroll_keyboard_navigation_and_child_click(void) {
     }
     assert(vkr_ui_scroll_area_end(&system));
     const VkrUiInputCapture capture = vkr_ui_end(&system);
-    bool8_t found_target = system.frame_reuses_cached_draw_list;
-    for (uint32_t i = 0u; i < system.frame_command_count; ++i) {
-      const VkrUiDrawCommand *command = &system.frame_commands[i];
-      // The pressed button dims its background; its red-only identity remains.
-      if (command->mode != VKR_UI_DRAW_MODE_QUAD || command->color.x <= 0.0f ||
-          command->color.y != 0.0f || command->color.z != 0.0f)
+    VkrPreparedUiDrawList draw_list = {0};
+    assert(vkr_ui_system_prepare_draw_list(&system, &allocator, 200u, 60u,
+                                           &draw_list));
+    bool8_t found_target = false_v;
+    target_visible = false_v;
+    target_y = 1.0e30f;
+    for (uint32_t batch_index = 0u; batch_index < draw_list.batch_count;
+         ++batch_index) {
+      const VkrUiDrawBatch *batch = &draw_list.batches[batch_index];
+      Vec2 minimum = {1.0e30f, 1.0e30f}, maximum = {-1.0e30f, -1.0e30f};
+      bool8_t batch_has_target = false_v;
+      for (uint32_t i = 0u; i < batch->index_count; ++i) {
+        const VkrUiVertex *vertex =
+            &draw_list.vertices[draw_list.indices[batch->first_index + i]];
+        // The pressed button dims its background; its red-only identity remains.
+        if (vertex->color.x <= 0.0f || vertex->color.y != 0.0f ||
+            vertex->color.z != 0.0f)
+          continue;
+        batch_has_target = true_v;
+        const Vec2 position = {vertex->position.x, 60.0f - vertex->position.y};
+        minimum.x = Min(minimum.x, position.x);
+        minimum.y = Min(minimum.y, position.y);
+        maximum.x = Max(maximum.x, position.x);
+        maximum.y = Max(maximum.y, position.y);
+      }
+      if (!batch_has_target)
         continue;
       found_target = true_v;
-      target_y = command->rect_px.y;
-      target_visible = vkr_ui_rect_has_area(
-          vkr_ui_rect_intersect(command->rect_px, command->clip_rect_px));
+      target_y = Min(target_y, minimum.y);
+      const VkrUiRect target = {minimum.x, minimum.y, maximum.x - minimum.x,
+                                maximum.y - minimum.y};
+      target_visible |= vkr_ui_rect_has_area(
+          vkr_ui_rect_intersect(target, batch->scissor_rect_px));
       if (frame >= 1u && frame <= 6u)
-        assert_f32_eq(command->clip_rect_px.x, 2.0f, 0.0f,
+        assert_f32_eq(batch->scissor_rect_px.x, 2.0f, 0.0f,
                       "children leave the focused scroll border visible");
     }
     assert(found_target);
+    assert(target_visible == (expected_y[frame] == 20.0f));
     assert_f32_eq(target_y, expected_y[frame], 0.0f,
                   "keyboard scroll reveals declared rows and clamps at ends");
-    assert(target_visible == (expected_y[frame] == 20.0f));
     assert(activated == (frame == 8u));
     if (frame >= 1u && frame <= 6u) {
       assert(system.focused_id == scroll_id);
@@ -1123,6 +1257,7 @@ bool32_t run_text_tests(void) {
   test_ui_text_field_character_input_and_repeat();
   test_ui_readonly_selection_and_mutation();
   test_ui_input_layer_blocks_click_through();
+  test_ui_slider_final_pointer_position();
   test_ui_scroll_keyboard_navigation_and_child_click();
 
   return true_v;
