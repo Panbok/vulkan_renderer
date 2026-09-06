@@ -51,6 +51,8 @@ if not exist "%COOKER_BIN%" (
 if not "%~1"=="" goto :cook_arguments
 "%COOKER_BIN%" --config "assets\fonts\UbuntuMono-cooked.fontcfg"
 if errorlevel 1 goto :cook_failed
+"%COOKER_BIN%" --config "assets\fonts\UbuntuMono-Bold-cooked.fontcfg"
+if errorlevel 1 goto :cook_failed
 goto :done
 
 :cook_arguments

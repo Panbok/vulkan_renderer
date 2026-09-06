@@ -42,7 +42,6 @@ if [ "$#" -gt 0 ]; then
   for source_path in "$@"; do
     cook_one "${source_path}"
   done
-  "${REPO_ROOT}/tools/pack_vkt_textures.sh"
   exit 0
 fi
 
@@ -54,5 +53,3 @@ cook_one "assets/models/bistro-lights.gltf"
 cook_one "assets/models/bistrox.gltf"
 cook_one "assets/models/bistro.gltf"
 cook_one "assets/models/san-miguel-low-poly.obj"
-
-"${REPO_ROOT}/tools/pack_vkt_textures.sh"

@@ -13,7 +13,6 @@ set -e # Exit early if any commands fail
   if command -v clang >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
     COMPILERS="-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
   fi
-  cmake -B build_lib -S . -U CMAKE_TOOLCHAIN_FILE -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE ${GENERATOR} ${COMPILERS}
+  cmake -B build_lib -S . -U CMAKE_TOOLCHAIN_FILE -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE -DVKR_EDITOR_LOGGING:BOOL=OFF ${GENERATOR} ${COMPILERS}
   cmake --build ./build_lib --target renderer_lib
-  ./tools/pack_vkt_textures.sh
 )

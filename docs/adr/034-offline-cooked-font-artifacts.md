@@ -27,6 +27,13 @@ Text layout resolves codepoints to glyph IDs, then uses glyph-ID kerning and
 float em values. Bitmap and system-font loaders remain separate compatibility
 paths; they do not redefine the cooked MTSDF contract.
 
+The repository ships cooked regular and bold Ubuntu Mono bootstrap atlases, plus
+the small bitmap compatibility atlas required during font-system startup. Normal
+app/editor build wrappers compile cooker binaries without baking these assets.
+The editor Bakery invokes the same incremental font cooker for later changes;
+headless tooling can still call it directly. This keeps first launch usable before
+Bakery runs and preserves the offline runtime font contract.
+
 ## Consequences
 
 The cooker and loader must advance together when VKFA changes. A malformed or

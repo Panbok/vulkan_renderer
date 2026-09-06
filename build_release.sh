@@ -22,12 +22,7 @@ set -e # Exit early if any commands fail
       exit 1
       ;;
   esac
-  cmake --fresh -B build_release -S . -U CMAKE_TOOLCHAIN_FILE -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE -DVKR_METRICS_ENABLED="${VKR_METRICS_CMAKE_VALUE}" ${GENERATOR} ${COMPILERS}
-  cmake --build ./build_release --target vulkan_renderer vkr_harness vkr_mesh_cooker vkr_font_cooker --config Release
-  FONT_COOKER_BIN="./build_release/tools/vkr_font_cooker"
-  if [ ! -x "${FONT_COOKER_BIN}" ]; then
-    FONT_COOKER_BIN="./build_release/tools/Release/vkr_font_cooker"
-  fi
-  VKR_FONT_COOKER_BIN="${FONT_COOKER_BIN}" ./tools/cook_vkr_fonts.sh
-  ./tools/pack_vkt_textures.sh
+  cmake --fresh -B build_release -S . -U CMAKE_TOOLCHAIN_FILE -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE -DVKR_EDITOR_LOGGING:BOOL=OFF -DVKR_METRICS_ENABLED="${VKR_METRICS_CMAKE_VALUE}" ${GENERATOR} ${COMPILERS}
+  cmake --build ./build_release --target vulkan_renderer vkr_harness vkr_mesh_cooker vkr_font_cooker vkr_vkt_packer --config Release
+
 )

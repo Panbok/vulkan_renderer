@@ -18,10 +18,14 @@ assets/textures/*
 !assets/textures/citrus_orchard_puresky_4k.hdr
 !assets/textures/citrus_orchard_puresky_4k.hdr.license.md
 !assets/textures/bistro_indoor_probe_*.png
+!assets/textures/UbuntuMono21px_0.png
+!assets/textures/UbuntuMono21px_0.png.vkt
 assets/models/*
 !assets/models/*.vkr.json
 assets/meters
 assets/fonts/*.vkfa
+!assets/fonts/UbuntuMono-cooked.vkfa
+!assets/fonts/UbuntuMono-Bold-cooked.vkfa
 assets/materials
 assets/scenes/*
 !assets/scenes/bistro.scene.json
@@ -59,3 +63,6 @@ assets/*.spv
 # Task notes are local working state, not shared context. Durable findings
 # belong in docs/.
 /.scratch/
+
+# Per-project editor workspace layout.
+.vkr-editor-layout.json

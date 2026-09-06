@@ -41,6 +41,7 @@ option(VKR_ENABLE_DEBUG_SANITIZERS
        "Enable ASan/UBSan in Debug configurations (Clang/GCC only)"
        ${_VKR_DEBUG_SANITIZERS_DEFAULT})
 unset(_VKR_DEBUG_SANITIZERS_DEFAULT)
+option(VKR_EDITOR_LOGGING "Capture all editor log levels with runtime filtering" OFF)
 option(VKR_METRICS_ENABLED "Compile renderer metrics instrumentation" ON)
 
 if(VKR_METRICS_ENABLED)

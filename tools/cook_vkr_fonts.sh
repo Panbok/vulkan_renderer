@@ -34,7 +34,7 @@ fi
 
 cd "${REPO_ROOT}"
 if [ "$#" -eq 0 ]; then
-  set -- "assets/fonts/UbuntuMono-cooked.fontcfg"
+  set -- "assets/fonts/UbuntuMono-cooked.fontcfg" "assets/fonts/UbuntuMono-Bold-cooked.fontcfg"
 fi
 for config in "$@"; do
   echo "Cooking ${config}"

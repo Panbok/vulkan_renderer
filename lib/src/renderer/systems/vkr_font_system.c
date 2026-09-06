@@ -283,7 +283,9 @@ vkr_internal VkrFontConfig vkr_font_config_parse(String8 fontcfg_path,
       bool8_t cooker_only = false_v;
       for (uint32_t i = 0;
            i < sizeof(cooker_only_keys) / sizeof(cooker_only_keys[0]); ++i) {
-        String8 cooker_key = string8_lit(cooker_only_keys[i]);
+        String8 cooker_key = string8_create_from_cstr(
+            (const uint8_t *)cooker_only_keys[i],
+            string_length(cooker_only_keys[i]));
         if (string8_equalsi(&key, &cooker_key)) {
           cooker_only = true_v;
           break;

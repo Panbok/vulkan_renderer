@@ -16,7 +16,7 @@ if %errorlevel%==0 (
     if %errorlevel%==0 set "COMPILERS=-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
 )
 
-cmake --fresh -S . -B build_release_info -DCMAKE_BUILD_TYPE:STRING=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE %GENERATOR% %COMPILERS%
+cmake --fresh -S . -B build_release_info -DCMAKE_BUILD_TYPE:STRING=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE -DVKR_EDITOR_LOGGING:BOOL=OFF %GENERATOR% %COMPILERS%
 if %errorlevel% neq 0 (
     echo CMake configure failed.
     exit /b 1
@@ -24,25 +24,12 @@ if %errorlevel% neq 0 (
 
 REM Build target
 echo Building vulkan_renderer (RelWithDebInfo)
-cmake --build .\build_release_info --target vulkan_renderer vkr_harness vkr_mesh_cooker vkr_font_cooker --config RelWithDebInfo
+cmake --build .\build_release_info --target vulkan_renderer vkr_harness vkr_mesh_cooker vkr_font_cooker vkr_vkt_packer --config RelWithDebInfo
 if %errorlevel% neq 0 (
     echo Build failed.
     exit /b 1
 )
 
-set "VKR_FONT_COOKER_BIN=%~dp0build_release_info\tools\vkr_font_cooker.exe"
-if not exist "%VKR_FONT_COOKER_BIN%" set "VKR_FONT_COOKER_BIN=%~dp0build_release_info\tools\RelWithDebInfo\vkr_font_cooker.exe"
-call "%~dp0tools\cook_vkr_fonts.bat"
-if %errorlevel% neq 0 (
-    echo Font cooking failed.
-    exit /b 1
-)
-
-call "%~dp0tools\pack_vkt_textures.bat"
-if %errorlevel% neq 0 (
-    echo Texture packing failed.
-    exit /b 1
-)
 
 echo RelWithDebInfo build completed successfully!
 endlocal

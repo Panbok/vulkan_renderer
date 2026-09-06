@@ -7,6 +7,8 @@ set "BUILD_TYPE=%~1"
 if "%BUILD_TYPE%"=="" set "BUILD_TYPE=Debug"
 if "%VKR_BUILD_TARGET%"=="" set "VKR_BUILD_TARGET=vulkan_renderer"
 if "%VKR_BUILD_LABEL%"=="" set "VKR_BUILD_LABEL=VKR app"
+set "VKR_EDITOR_LOGGING=OFF"
+if "%VKR_BUILD_TARGET%"=="vkr_editor" set "VKR_EDITOR_LOGGING=ON"
 
 set "BUILD_DIR="
 if /I "%BUILD_TYPE%"=="Debug" set "BUILD_DIR=build_debug"
@@ -56,20 +58,12 @@ echo !BASH_HINT! | findstr /I /C:"C:\msys64\" /C:"C:\mingw64\" >nul 2>&1
 if !errorlevel! EQU 0 if exist "C:\msys64\usr\bin" set "PATH=C:\msys64\usr\bin;C:\msys64\bin;%PATH%"
 if !errorlevel! EQU 0 if exist "C:\mingw64\usr\bin" set "PATH=C:\mingw64\usr\bin;C:\mingw64\bin;%PATH%"
 
-cmake --fresh -S . -B "%BUILD_DIR%" -DCMAKE_BUILD_TYPE:STRING=%BUILD_TYPE% -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE %GENERATOR% %COMPILERS% %BASH_ARG%
+cmake --fresh -S . -B "%BUILD_DIR%" -DCMAKE_BUILD_TYPE:STRING=%BUILD_TYPE% -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE -DVKR_EDITOR_LOGGING:BOOL=%VKR_EDITOR_LOGGING% %GENERATOR% %COMPILERS% %BASH_ARG%
 if errorlevel 1 goto :vkr_cmake_configure_failed
 
 echo Building %VKR_BUILD_LABEL% (%BUILD_TYPE%)
-cmake --build ".\%BUILD_DIR%" --target %VKR_BUILD_TARGET% vkr_harness vkr_mesh_cooker vkr_font_cooker --config %BUILD_TYPE%
+cmake --build ".\%BUILD_DIR%" --target %VKR_BUILD_TARGET% vkr_harness vkr_mesh_cooker vkr_font_cooker vkr_vkt_packer --config %BUILD_TYPE%
 if errorlevel 1 goto :vkr_build_failed
-set "FONT_COOKER_BIN=%BUILD_DIR%\tools\vkr_font_cooker.exe"
-if not exist "!FONT_COOKER_BIN!" set "FONT_COOKER_BIN=%BUILD_DIR%\tools\%BUILD_TYPE%\vkr_font_cooker.exe"
-set "VKR_FONT_COOKER_BIN=!FONT_COOKER_BIN!"
-call "%REPO_ROOT%\tools\cook_vkr_fonts.bat"
-if errorlevel 1 goto :vkr_font_cook_failed
-call "%REPO_ROOT%\tools\pack_vkt_textures.bat"
-if errorlevel 1 goto :vkr_texture_pack_failed
-
 echo Build completed successfully!
 endlocal
 exit /b 0
@@ -80,12 +74,4 @@ exit /b 1
 
 :vkr_build_failed
 echo Build failed.
-exit /b 1
-
-:vkr_texture_pack_failed
-echo Texture packing failed.
-exit /b 1
-
-:vkr_font_cook_failed
-echo Font cooking failed.
 exit /b 1

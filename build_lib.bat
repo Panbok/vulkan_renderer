@@ -16,7 +16,7 @@ if %errorlevel%==0 (
     if %errorlevel%==0 set "COMPILERS=-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
 )
 
-cmake --fresh -S . -B build_lib -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE %GENERATOR% %COMPILERS%
+cmake --fresh -S . -B build_lib -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE -DVKR_EDITOR_LOGGING:BOOL=OFF %GENERATOR% %COMPILERS%
 if %errorlevel% neq 0 (
     echo CMake configure failed.
     exit /b 1
@@ -30,11 +30,6 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-call "%~dp0tools\pack_vkt_textures.bat"
-if %errorlevel% neq 0 (
-    echo Texture packing failed.
-    exit /b 1
-)
 
 echo Library build completed successfully!
 endlocal

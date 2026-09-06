@@ -18,10 +18,12 @@ target_include_directories(vkr_sample_runtime PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 target_compile_definitions(vkr_sample_runtime PRIVATE
-    $<$<CONFIG:Release>:LOG_LEVEL=1>
+    $<$<AND:$<CONFIG:Release>,$<NOT:$<BOOL:${VKR_EDITOR_LOGGING}>>>:LOG_LEVEL=1>
+    $<$<BOOL:${VKR_EDITOR_LOGGING}>:LOG_LEVEL=5>
+    $<$<BOOL:${VKR_EDITOR_LOGGING}>:VKR_EDITOR_LOGGING=1>
     $<$<CONFIG:Release>:ASSERT_LOG=0>
-    $<$<CONFIG:RelWithDebInfo>:LOG_LEVEL=3>
+    $<$<AND:$<CONFIG:RelWithDebInfo>,$<NOT:$<BOOL:${VKR_EDITOR_LOGGING}>>>:LOG_LEVEL=3>
     $<$<CONFIG:RelWithDebInfo>:ASSERT_LOG=0>
-    $<$<CONFIG:Debug>:LOG_LEVEL=4>
+    $<$<AND:$<CONFIG:Debug>,$<NOT:$<BOOL:${VKR_EDITOR_LOGGING}>>>:LOG_LEVEL=4>
     $<$<CONFIG:Debug>:ASSERT_LOG=1>
 )

@@ -44,7 +44,7 @@ echo !BASH_HINT! | findstr /I /C:"C:\msys64\" /C:"C:\mingw64\" >nul 2>&1
 if !errorlevel! EQU 0 if exist "C:\msys64\usr\bin" set "PATH=C:\msys64\usr\bin;C:\msys64\bin;%PATH%"
 if !errorlevel! EQU 0 if exist "C:\mingw64\usr\bin" set "PATH=C:\mingw64\usr\bin;C:\mingw64\bin;%PATH%"
 
-cmake --fresh -S . -B build_release -DCMAKE_BUILD_TYPE:STRING=Release -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE %GENERATOR% %GEN_TOOLSET% %COMPILERS% %BASH_ARG%
+cmake --fresh -S . -B build_release -DCMAKE_BUILD_TYPE:STRING=Release -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE -DVKR_EDITOR_LOGGING:BOOL=OFF %GENERATOR% %GEN_TOOLSET% %COMPILERS% %BASH_ARG%
 if %errorlevel% neq 0 (
     echo CMake configure failed.
     exit /b 1
@@ -52,26 +52,12 @@ if %errorlevel% neq 0 (
 
 REM Build target
 echo Building vulkan_renderer (Release)
-cmake --build .\build_release --target vulkan_renderer vkr_harness vkr_mesh_cooker vkr_font_cooker --config Release
+cmake --build .\build_release --target vulkan_renderer vkr_harness vkr_mesh_cooker vkr_font_cooker vkr_vkt_packer --config Release
 if %errorlevel% neq 0 (
     echo Build failed.
     exit /b 1
 )
 
-set "FONT_COOKER_BIN=%CD%\build_release\tools\vkr_font_cooker.exe"
-if not exist "%FONT_COOKER_BIN%" set "FONT_COOKER_BIN=%CD%\build_release\tools\Release\vkr_font_cooker.exe"
-set "VKR_FONT_COOKER_BIN=%FONT_COOKER_BIN%"
-call "%~dp0tools\cook_vkr_fonts.bat"
-if %errorlevel% neq 0 (
-    echo Font cooking failed.
-    exit /b 1
-)
-
-call "%~dp0tools\pack_vkt_textures.bat"
-if %errorlevel% neq 0 (
-    echo Texture packing failed.
-    exit /b 1
-)
 
 echo Release build completed successfully!
 endlocal

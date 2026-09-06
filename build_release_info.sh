@@ -13,12 +13,7 @@ set -e # Exit early if any commands fail
   if command -v clang >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
     COMPILERS="-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
   fi
-  cmake --fresh -B build_release_info -S . -U CMAKE_TOOLCHAIN_FILE -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE ${GENERATOR} ${COMPILERS}
-  cmake --build ./build_release_info --target vulkan_renderer vkr_harness vkr_mesh_cooker vkr_font_cooker --config RelWithDebInfo
-  FONT_COOKER_BIN="./build_release_info/tools/vkr_font_cooker"
-  if [ ! -x "${FONT_COOKER_BIN}" ]; then
-    FONT_COOKER_BIN="./build_release_info/tools/RelWithDebInfo/vkr_font_cooker"
-  fi
-  VKR_FONT_COOKER_BIN="${FONT_COOKER_BIN}" ./tools/cook_vkr_fonts.sh
-  ./tools/pack_vkt_textures.sh
+  cmake --fresh -B build_release_info -S . -U CMAKE_TOOLCHAIN_FILE -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE -DVKR_EDITOR_LOGGING:BOOL=OFF ${GENERATOR} ${COMPILERS}
+  cmake --build ./build_release_info --target vulkan_renderer vkr_harness vkr_mesh_cooker vkr_font_cooker vkr_vkt_packer --config RelWithDebInfo
+
 )

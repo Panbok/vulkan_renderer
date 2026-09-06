@@ -37,7 +37,7 @@ if !errorlevel! EQU 0 if exist "C:\msys64\usr\bin" set "PATH=C:\msys64\usr\bin;C
 if !errorlevel! EQU 0 if exist "C:\mingw64\usr\bin" set "PATH=C:\mingw64\usr\bin;C:\mingw64\bin;%PATH%"
 
 rem The CPU suite owns a dedicated tree and deliberately refreshes its cache.
-cmake --fresh -B build_test -S . -DCMAKE_BUILD_TYPE:STRING=Debug %GENERATOR% %COMPILERS% %BASH_ARG%
+cmake --fresh -B build_test -S . -DCMAKE_BUILD_TYPE:STRING=Debug -DVKR_EDITOR_LOGGING:BOOL=OFF %GENERATOR% %COMPILERS% %BASH_ARG%
 if %errorlevel% neq 0 (
     echo CMake configure failed.
     popd
@@ -104,21 +104,6 @@ if errorlevel 1 (
     exit /b 1
 )
 rmdir /s /q "!FONT_COOK_TEST_DIR!"
-set "VKR_FONT_COOKER_BIN=!FONT_COOKER_BIN!"
-call "%~dp0tools\cook_vkr_fonts.bat"
-if errorlevel 1 (
-    echo Font cooking failed.
-    popd
-    exit /b 1
-)
-
-call "%~dp0tools\pack_vkt_textures.bat"
-if %errorlevel% neq 0 (
-    echo Texture packing failed.
-    popd
-    exit /b 1
-)
-
 rem Return to the original directory
 popd
 

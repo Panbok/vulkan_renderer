@@ -17,7 +17,7 @@ if not exist "%VKR_MESH_COOKER_BIN%" (
 if "%~1"=="" goto cook_defaults
 
 :cook_arguments
-if "%~1"=="" goto pack_textures
+if "%~1"=="" goto cook_complete
 call :cook "%~1"
 if not "!errorlevel!"=="0" exit /b 1
 shift
@@ -32,11 +32,9 @@ call :cook "assets\models\bistro-lights.gltf" || exit /b 1
 call :cook "assets\models\bistrox.gltf" || exit /b 1
 call :cook "assets\models\bistro.gltf" || exit /b 1
 call :cook "assets\models\san-miguel-low-poly.obj" || exit /b 1
-goto pack_textures
+goto cook_complete
 
-:pack_textures
-call "%REPO_ROOT%\tools\pack_vkt_textures.bat"
-if errorlevel 1 exit /b 1
+:cook_complete
 exit /b 0
 
 :cook
