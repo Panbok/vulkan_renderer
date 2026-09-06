@@ -102,6 +102,19 @@ void vkr_dynamic_resolution_init(VkrDynamicResolutionState *state,
       (uint64_t)((float64_t)config->target_frame_ms * 1000000.0 + 0.5);
 }
 
+void vkr_dynamic_resolution_reset_feedback(VkrDynamicResolutionState *state) {
+  state->filtered_frame_ns = 0.0;
+  state->filtered_sample_valid = false_v;
+  state->upshift_source_frame_ns = 0.0;
+  state->upshift_source_scale = 0.0f;
+  state->failed_upshift_cost_ratio = 0.0;
+  state->failed_upshift_lower_scale = 0.0f;
+  state->failed_upshift_upper_scale = 0.0f;
+  state->over_budget_samples = 0u;
+  state->under_budget_samples = 0u;
+  state->cooldown_samples = 0u;
+}
+
 bool8_t vkr_dynamic_resolution_update(VkrDynamicResolutionState *state,
                                       uint64_t submit_value,
                                       uint64_t gpu_frame_ns,
@@ -132,27 +145,59 @@ bool8_t vkr_dynamic_resolution_update(VkrDynamicResolutionState *state,
                                    VKR_DYNAMIC_RESOLUTION_OVER_BUDGET_RATIO;
   const float64_t under_threshold = (float64_t)state->target_frame_ns *
                                     VKR_DYNAMIC_RESOLUTION_UNDER_BUDGET_RATIO;
+  // A failed probe calibrates this boundary from measured costs. Do not expire
+  // it on a timer: unchanged work would start probing the same failure again.
+  const bool8_t failed_upshift_has_headroom =
+      state->failed_upshift_cost_ratio == 0.0 ||
+      fabsf(state->current_scale - state->failed_upshift_lower_scale) >
+          VKR_DYNAMIC_RESOLUTION_SCALE_EPSILON ||
+      state->filtered_frame_ns * state->failed_upshift_cost_ratio <
+          under_threshold;
   if (state->filtered_frame_ns > over_threshold) {
-    state->over_budget_samples++;
+    state->over_budget_samples = Min(state->over_budget_samples + 1u,
+                                    VKR_DYNAMIC_RESOLUTION_DOWNSHIFT_SAMPLES);
     state->under_budget_samples = 0u;
-  } else if (state->filtered_frame_ns < under_threshold) {
-    state->under_budget_samples++;
+  } else if (state->filtered_frame_ns < under_threshold &&
+             failed_upshift_has_headroom) {
+    state->under_budget_samples = Min(state->under_budget_samples + 1u,
+                                     VKR_DYNAMIC_RESOLUTION_UPSHIFT_SAMPLES);
     state->over_budget_samples = 0u;
   } else {
     state->over_budget_samples = 0u;
     state->under_budget_samples = 0u;
   }
 
+  if (state->under_budget_samples >= VKR_DYNAMIC_RESOLUTION_UPSHIFT_SAMPLES) {
+    // Sustained headroom at the upper tier completes its probe successfully.
+    state->upshift_source_frame_ns = 0.0;
+    if (fabsf(state->current_scale - state->failed_upshift_upper_scale) <=
+        VKR_DYNAMIC_RESOLUTION_SCALE_EPSILON)
+      state->failed_upshift_cost_ratio = 0.0;
+  }
+
   bool8_t changed = false_v;
   if (state->over_budget_samples >= VKR_DYNAMIC_RESOLUTION_DOWNSHIFT_SAMPLES &&
       state->current_scale >
           state->min_scale + VKR_DYNAMIC_RESOLUTION_SCALE_EPSILON) {
-    state->current_scale = vkr_dynamic_resolution_next_scale(state, false_v);
+    const float32_t lower_scale =
+        vkr_dynamic_resolution_next_scale(state, false_v);
+    if (state->upshift_source_frame_ns > 0.0 &&
+        fabsf(lower_scale - state->upshift_source_scale) <=
+            VKR_DYNAMIC_RESOLUTION_SCALE_EPSILON) {
+      state->failed_upshift_lower_scale = lower_scale;
+      state->failed_upshift_upper_scale = state->current_scale;
+      state->failed_upshift_cost_ratio =
+          state->filtered_frame_ns / state->upshift_source_frame_ns;
+    }
+    state->upshift_source_frame_ns = 0.0;
+    state->current_scale = lower_scale;
     changed = true_v;
   } else if (state->under_budget_samples >=
                  VKR_DYNAMIC_RESOLUTION_UPSHIFT_SAMPLES &&
              state->current_scale <
                  state->max_scale - VKR_DYNAMIC_RESOLUTION_SCALE_EPSILON) {
+    state->upshift_source_frame_ns = state->filtered_frame_ns;
+    state->upshift_source_scale = state->current_scale;
     state->current_scale = vkr_dynamic_resolution_next_scale(state, true_v);
     changed = true_v;
   }

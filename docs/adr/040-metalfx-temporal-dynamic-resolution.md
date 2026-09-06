@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-09-06
 authority: adr
 ---
 
@@ -42,7 +42,38 @@ Ignore duplicate and stale-tier samples. The allocation-free controller uses an
 EMA, asymmetric over/under-budget thresholds, bounded 0.05 tiers and a cooldown;
 retain the exact minimum endpoint and reset temporal state on transitions. The
 sample starts at 0.8 within `[0.334,1.0]` targeting 13.333333 ms of GPU work.
-Device factor limits and rounded endpoint extents are checked before encoding.
+Before an upward step, the controller records the lower tier's filtered cost.
+If the higher tier exceeds budget and returns to that lower tier, it retains the
+measured higher/lower cost ratio. Another upward attempt requires the lower
+cost times that ratio to stay below the existing 82% headroom threshold for the
+existing 45 qualifying samples. Unchanged work cannot repeatedly probe the same
+known failure. Sustained headroom at the higher tier clears the failed boundary;
+there is no timer expiry that would restart oscillation.
+
+The most recent failed boundary is controller-owned, fixed-size CPU state. Actual
+Scene output-size changes clear timing and learned costs while preserving scale,
+configuration, submission watermark and transition count. Samples from the old
+output extent are ignored. Internal tier changes retain the learned boundary.
+This policy can keep a lower tier longer when workload characteristics change
+without a corresponding lower-tier cost improvement; the user accepted that
+tradeoff. It does not change the target, scale bounds, tier spacing or downshift
+thresholds. Deterministic temporal checks cover a failed 15 ms upper tier above a
+9 ms lower tier, no repeated probe for unchanged work, and a later retry after
+the lower tier improves to 6 ms.
+A local Release Bistro observation held scale 0.85 through its 600 measured
+frames, with all 517 texture assignments resident; the matched case before this
+change made six tier transitions during that window. This is a bounded stability
+observation with different internal pixel workloads, not an authoritative speed
+or moving-image quality comparison. The two local Release runs used
+`tools/cases/local/editor_bistro_drs_headroom.case.json`; their reports passed
+eight assertions with 517 resident textures and report SHA-256 values
+`fc67990dc648643a6cf79daddade83628a014ddb6407a983838bff623d89f071` (before)
+and `7d49cc8e09ef626d8d688dff0c4be3a6f08b2b8a8b162de26f8dfaa091389f6e` (after).
+The shared Scene extent owner and MetalFX descriptor endpoints both round scaled
+dimensions upward. This prevents a valid continuous minimum such as 0.334 from
+rounding below the device's 1/3 input boundary in a small or odd-sized dock.
+The requested scale tiers and device factor checks remain unchanged; quantization
+adds at most one pixel per axis compared with nearest rounding.
 
 ## Consequences
 

@@ -517,6 +517,82 @@ vkr_internal void test_dynamic_resolution_hysteresis(void) {
   printf("  test_dynamic_resolution_hysteresis PASSED\n");
 }
 
+vkr_internal void test_dynamic_resolution_failed_upshift_headroom(void) {
+  printf("  Running test_dynamic_resolution_failed_upshift_headroom...\n");
+  const VkrDynamicResolutionConfig config = {
+      .min_scale = 0.85f,
+      .max_scale = 0.9f,
+      .target_frame_ms = 1000.0f / 75.0f,
+      .enabled = true_v,
+  };
+  VkrDynamicResolutionState state = {0};
+  vkr_dynamic_resolution_init(&state, &config, 0.85f);
+  uint64_t submit = 0u;
+  float32_t next_scale = 0.0f;
+
+  // A cheap lower tier earns one probe; the upper tier misses the frame target.
+  for (uint32_t i = 0u; i < 45u; ++i)
+    vkr_dynamic_resolution_update(&state, ++submit, 9000000u,
+                                  state.current_scale, &next_scale);
+  assert(temporal_near(state.current_scale, 0.9f));
+  assert(state.transition_count == 1u);
+  for (uint32_t i = 0u; i < 33u; ++i)
+    vkr_dynamic_resolution_update(&state, ++submit, 15000000u,
+                                  state.current_scale, &next_scale);
+  assert(temporal_near(state.current_scale, 0.85f));
+  assert(state.transition_count == 2u);
+
+  VkrDynamicResolutionState resized = state;
+  const uint64_t resized_submit = submit + 1u;
+  assert(!vkr_dynamic_resolution_update(&resized, resized_submit, 9000000u,
+                                        resized.current_scale, &next_scale));
+  assert(resized.filtered_sample_valid && resized.cooldown_samples > 0u);
+
+  // Sustained identical work must not retry the known failing upper tier.
+  for (uint32_t i = 0u; i < 600u; ++i)
+    assert(!vkr_dynamic_resolution_update(&state, ++submit, 9000000u,
+                                          state.current_scale, &next_scale));
+  assert(temporal_near(state.current_scale, 0.85f));
+  assert(state.transition_count == 2u);
+
+  vkr_dynamic_resolution_reset_feedback(&resized);
+  assert(resized.last_submit_value == resized_submit);
+  assert(resized.transition_count == 2u);
+  assert(resized.enabled == state.enabled);
+  assert(resized.target_frame_ns == state.target_frame_ns);
+  assert(resized.current_scale == state.current_scale);
+  assert(resized.min_scale == state.min_scale);
+  assert(resized.max_scale == state.max_scale);
+  assert(!resized.filtered_sample_valid);
+  assert(resized.cooldown_samples == 0u);
+  assert(resized.over_budget_samples == 0u);
+  assert(resized.under_budget_samples == 0u);
+  assert(!vkr_dynamic_resolution_update(&resized, resized_submit, 9000000u,
+                                        resized.current_scale, &next_scale));
+  assert(!resized.filtered_sample_valid);
+  for (uint64_t i = 1u; i <= 45u; ++i)
+    vkr_dynamic_resolution_update(&resized, resized_submit + i, 9000000u,
+                                  resized.current_scale, &next_scale);
+  assert(temporal_near(resized.current_scale, 0.9f));
+  assert(resized.transition_count == 3u);
+
+  // A one-third cheaper lower tier predicts 10 ms upstairs, below headroom.
+  for (uint32_t i = 0u; i < 100u; ++i) {
+    const uint64_t cost = temporal_near(state.current_scale, 0.85f)
+                              ? 6000000u
+                              : 10000000u;
+    vkr_dynamic_resolution_update(&state, ++submit, cost,
+                                  state.current_scale, &next_scale);
+  }
+  assert(temporal_near(state.current_scale, 0.9f));
+  assert(state.transition_count == 3u);
+  for (uint32_t i = 0u; i < 100u; ++i)
+    assert(!vkr_dynamic_resolution_update(&state, ++submit, 10000000u,
+                                          state.current_scale, &next_scale));
+  assert(state.failed_upshift_cost_ratio == 0.0);
+  printf("  test_dynamic_resolution_failed_upshift_headroom PASSED\n");
+}
+
 bool32_t run_temporal_tests(void) {
   printf("Running temporal tests...\n");
   test_temporal_jitter_and_commit();
@@ -529,6 +605,7 @@ bool32_t run_temporal_tests(void) {
   test_temporal_orthographic_sky_reprojection();
   test_dynamic_resolution_config();
   test_dynamic_resolution_hysteresis();
+  test_dynamic_resolution_failed_upshift_headroom();
   printf("Temporal tests PASSED\n");
   return true_v;
 }

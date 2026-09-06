@@ -17,6 +17,11 @@ typedef struct VkrDynamicResolutionState {
   float32_t min_scale;
   float32_t max_scale;
   float64_t filtered_frame_ns;
+  float64_t upshift_source_frame_ns;
+  float64_t failed_upshift_cost_ratio;
+  float32_t upshift_source_scale;
+  float32_t failed_upshift_lower_scale;
+  float32_t failed_upshift_upper_scale;
   uint32_t over_budget_samples;
   uint32_t under_budget_samples;
   uint32_t cooldown_samples;
@@ -34,6 +39,11 @@ bool8_t vkr_dynamic_resolution_config_normalize(
 void vkr_dynamic_resolution_init(VkrDynamicResolutionState *state,
                                  const VkrDynamicResolutionConfig *config,
                                  float32_t initial_scale);
+
+/** Clears timing and learned tier costs after the output workload changes.
+ * Preserves configuration, current scale, submit watermark and transition total.
+ */
+void vkr_dynamic_resolution_reset_feedback(VkrDynamicResolutionState *state);
 
 /**
  * Consumes one completion-owned submission interval. Samples from a prior
