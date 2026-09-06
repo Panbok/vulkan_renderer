@@ -46,8 +46,10 @@ The first Metal GPU completion timeout flushes diagnostics and terminates the
 process without GPU teardown, because completion is unproven;
 see [ADR-046](adr/046-editor-viewport-mapping-and-picking.md).
 Editor details are in [ADR-027](adr/027-immediate-mode-grid-ui.md).
-Transform editing is available through Inspector and world-axis gizmos. The
-application submits a bounded geometry overlay to both backends after tonemapping;
+Transform editing is available through Inspector and world-axis gizmos. Gizmo
+gestures use normalized displayed-image coordinates so internal resolution
+changes preserve active edits and delayed releases. The application submits a
+bounded geometry overlay to both backends after tonemapping;
 matching handle-picking draws take priority over scene surfaces. Handles keep a
 fixed displayed size and remain outside lighting and temporal history. Local TRS
 editing preserves scale and does not introduce shear under nonuniform parents.

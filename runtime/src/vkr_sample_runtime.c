@@ -80,14 +80,10 @@ typedef struct GizmoDragState {
   float32_t start_radius;
   bool8_t uses_text_pivot;
   Vec3 text_pivot_local;
-  uint32_t pick_x;
-  uint32_t pick_y;
-  uint32_t pick_width;
-  uint32_t pick_height;
+  Vec2 pick_position;
   bool8_t released;
   bool8_t release_has_target_coords;
-  uint32_t release_x;
-  uint32_t release_y;
+  Vec2 release_position;
 } GizmoDragState;
 
 #define VKR_APPLICATION_UI_TEXT_CAPACITY 32768u
@@ -741,6 +737,8 @@ application_queue_world_text_update(Application *application, uint32_t text_id,
  * @brief Viewport mapping info for pointer-driven world interactions.
  */
 typedef struct VkrViewportHitInfo {
+  // Normalized displayed image coordinates, independent of render scale.
+  Vec2 position;
   uint32_t target_x;
   uint32_t target_y;
   uint32_t target_width;
@@ -770,6 +768,12 @@ vkr_internal VkrViewportHitInfo application_get_viewport_hit_info(
       info.target_height = mapping.target_height;
       if (vkr_viewport_mapping_window_to_target_pixel(
               &mapping, mouse_x, mouse_y, &info.target_x, &info.target_y)) {
+        info.position = (Vec2){
+            ((float32_t)mouse_x + 0.5f - mapping.image_rect_px.x) /
+                mapping.image_rect_px.z,
+            ((float32_t)mouse_y + 0.5f - mapping.image_rect_px.y) /
+                mapping.image_rect_px.w,
+        };
         info.has_target_coords = true_v;
       }
     }
@@ -780,6 +784,10 @@ vkr_internal VkrViewportHitInfo application_get_viewport_hit_info(
     info.target_height = window_size.height;
     if (mouse_x >= 0 && mouse_y >= 0 && (uint32_t)mouse_x < window_size.width &&
         (uint32_t)mouse_y < window_size.height) {
+      info.position = (Vec2){
+          ((float32_t)mouse_x + 0.5f) / window_size.width,
+          ((float32_t)mouse_y + 0.5f) / window_size.height,
+      };
       info.target_x = (uint32_t)mouse_x;
       info.target_y = (uint32_t)mouse_y;
       info.has_target_coords = true_v;
@@ -790,13 +798,11 @@ vkr_internal VkrViewportHitInfo application_get_viewport_hit_info(
 }
 
 /**
- * @brief Build a world-space ray from a viewport pixel coordinate.
+ * @brief Build a world-space ray from normalized displayed image coordinates.
  */
 vkr_internal bool8_t application_build_view_ray(
-    VkrCamera *camera, uint32_t viewport_width, uint32_t viewport_height,
-    uint32_t target_x, uint32_t target_y, Vec3 *out_origin, Vec3 *out_dir) {
-  if (!camera || !out_origin || !out_dir || viewport_width == 0 ||
-      viewport_height == 0) {
+    VkrCamera *camera, Vec2 position, Vec3 *out_origin, Vec3 *out_dir) {
+  if (!camera || !out_origin || !out_dir) {
     return false_v;
   }
 
@@ -806,10 +812,8 @@ vkr_internal bool8_t application_build_view_ray(
   Mat4 projection = vkr_camera_system_get_projection_matrix(camera);
   Mat4 inv_vp = mat4_inverse(mat4_mul(projection, view));
 
-  const float32_t ndc_x =
-      (((float32_t)target_x + 0.5f) / viewport_width) * 2.0f - 1.0f;
-  const float32_t ndc_y =
-      (((float32_t)target_y + 0.5f) / viewport_height) * 2.0f - 1.0f;
+  const float32_t ndc_x = position.x * 2.0f - 1.0f;
+  const float32_t ndc_y = position.y * 2.0f - 1.0f;
 
   Vec4 near_clip = vec4_new(ndc_x, ndc_y, 0.0f, 1.0f);
   Vec4 far_clip = vec4_new(ndc_x, ndc_y, 1.0f, 1.0f);
@@ -1072,8 +1076,7 @@ vkr_internal bool8_t application_request_picking(
   VkrCamera *camera = vkr_camera_registry_get_by_handle(
       &application->camera_system, application->active_camera);
   if (!application_build_view_ray(
-          camera, viewport_info->target_width, viewport_info->target_height,
-          viewport_info->target_x, viewport_info->target_y,
+          camera, viewport_info->position,
           &state->gizmo_drag.pick_ray_origin,
           &state->gizmo_drag.pick_ray_direction))
     return false_v;
@@ -1232,12 +1235,6 @@ application_update_gizmo_drag(Application *application,
     return;
   }
 
-  if (viewport_info->target_width != state->gizmo_drag.pick_width ||
-      viewport_info->target_height != state->gizmo_drag.pick_height) {
-    application_cancel_gizmo_edit(application);
-    return;
-  }
-
   VkrScene *scene = vkr_scene_handle_get_scene(state->scene_resource.as.scene);
   if (!scene) {
     application_cancel_gizmo_edit(application);
@@ -1251,8 +1248,8 @@ application_update_gizmo_drag(Application *application,
     return;
   }
 
-  if (viewport_info->target_x == state->gizmo_drag.pick_x &&
-      viewport_info->target_y == state->gizmo_drag.pick_y) {
+  if (viewport_info->position.x == state->gizmo_drag.pick_position.x &&
+      viewport_info->position.y == state->gizmo_drag.pick_position.y) {
     vkr_scene_set_position(scene, state->gizmo_drag.entity,
                            state->gizmo_before.position);
     vkr_scene_set_rotation(scene, state->gizmo_drag.entity,
@@ -1273,10 +1270,8 @@ application_update_gizmo_drag(Application *application,
 
   Vec3 ray_origin = vec3_zero();
   Vec3 ray_dir = vec3_zero();
-  if (!application_build_view_ray(
-          camera, viewport_info->target_width, viewport_info->target_height,
-          viewport_info->target_x, viewport_info->target_y, &ray_origin,
-          &ray_dir)) {
+  if (!application_build_view_ray(camera, viewport_info->position, &ray_origin,
+                                   &ray_dir)) {
     return;
   }
 
@@ -2405,11 +2400,8 @@ vkr_internal void application_capture_gizmo_release(
     const VkrViewportHitInfo *viewport_info) {
   state->gizmo_drag.released = true_v;
   state->gizmo_drag.release_has_target_coords =
-      viewport_info->has_target_coords &&
-      viewport_info->target_width == state->gizmo_drag.pick_width &&
-      viewport_info->target_height == state->gizmo_drag.pick_height;
-  state->gizmo_drag.release_x = viewport_info->target_x;
-  state->gizmo_drag.release_y = viewport_info->target_y;
+      viewport_info->has_target_coords;
+  state->gizmo_drag.release_position = viewport_info->position;
 }
 
 vkr_internal void application_update_picking(Application *application) {
@@ -2457,11 +2449,6 @@ vkr_internal void application_update_picking(Application *application) {
                                     &prev_mouse_y);
   VkrViewportHitInfo viewport_info =
       application_get_viewport_hit_info(application, mouse_x, mouse_y);
-  if (state->gizmo_drag.pending_pick &&
-      (state->gizmo_drag.pick_width != viewport_info.target_width ||
-       state->gizmo_drag.pick_height != viewport_info.target_height))
-    application_cancel_gizmo_pick(application);
-
   if (state->gizmo_drag.pending_pick && !left_down &&
       !state->gizmo_drag.released)
     application_capture_gizmo_release(&viewport_info);
@@ -2484,10 +2471,7 @@ vkr_internal void application_update_picking(Application *application) {
     if (application_request_picking(application, picking, &press_info)) {
       state->gizmo_drag.pending_pick = true_v;
       state->gizmo_drag.pending_select = click_select;
-      state->gizmo_drag.pick_x = press_info.target_x;
-      state->gizmo_drag.pick_y = press_info.target_y;
-      state->gizmo_drag.pick_width = press_info.target_width;
-      state->gizmo_drag.pick_height = press_info.target_height;
+      state->gizmo_drag.pick_position = press_info.position;
       state->gizmo_drag.released = false_v;
       state->gizmo_drag.release_has_target_coords = false_v;
       if (!left_down)
@@ -2585,10 +2569,7 @@ vkr_internal void application_update_picking(Application *application) {
             application->gizmo_system.mode = state->gizmo_drag.mode;
             if (state->gizmo_drag.released) {
               const VkrViewportHitInfo release_info = {
-                  .target_x = state->gizmo_drag.release_x,
-                  .target_y = state->gizmo_drag.release_y,
-                  .target_width = state->gizmo_drag.pick_width,
-                  .target_height = state->gizmo_drag.pick_height,
+                  .position = state->gizmo_drag.release_position,
                   .has_target_coords =
                       state->gizmo_drag.release_has_target_coords,
               };
@@ -2787,9 +2768,13 @@ vkr_internal void application_update_ui(Application *application,
   }
 
   if (application->editor_viewport.enabled) {
+    /* Resolution recovery invalidates GPU picks, not scene-owned edits. */
+    if (application->editor_viewport.scene_error != VKR_RENDERER_ERROR_NONE &&
+        (state->gizmo_drag.pending_pick || state->gizmo_hover_pending))
+      application_cancel_gizmo_pick(application);
     if (state->gizmo_edit_pending &&
-        application->editor_viewport.scene_error != VKR_RENDERER_ERROR_NONE)
-      application_cancel_gizmo_edit(application);
+        application_editor_scene_rendering_stopped(application))
+      application_finish_gizmo_edit(application);
     const bool8_t command =
         input_key_shortcut_modifier(state->input_state, KEY_P);
     const bool8_t escape =
@@ -3282,10 +3267,7 @@ int vkr_sample_runtime_run(int argc, char **argv,
   state->gizmo_drag.start_radius = 0.0f;
   state->gizmo_drag.uses_text_pivot = false_v;
   state->gizmo_drag.text_pivot_local = vec3_zero();
-  state->gizmo_drag.pick_x = 0;
-  state->gizmo_drag.pick_y = 0;
-  state->gizmo_drag.pick_width = 0;
-  state->gizmo_drag.pick_height = 0;
+  state->gizmo_drag.pick_position = (Vec2){0};
   state->gizmo_hover_pending = false_v;
   state->gizmo_hot_handle = VKR_GIZMO_HANDLE_NONE;
   state->auto_close_enabled = false_v;

@@ -148,11 +148,23 @@ pending when its completion has not arrived.
 Each interaction request carries a monotonically increasing identity echoed by
 native readback. Completed pixels are copied before their GPU storage is reused;
 cancelled selections ignore older results without waiting for the GPU.
-Drag requests retain the press position and the first release position. A gesture
-that ends before asynchronous picking completes still applies its final transform
-as one undo transaction. A handle click with no displacement preserves history.
+Drag requests retain the press position and the first release position in
+normalized displayed-image coordinates. Internal render-size changes do not
+cancel pending picks or active edits; GPU request pixels are remapped when the
+packet is prepared. A gesture that ends before asynchronous picking completes
+still applies its final transform as one undo transaction. A handle click with no
+displacement preserves history. Recoverable Scene errors cancel invalidated GPU
+picks while retaining active edits; stopping Scene rendering commits the current
+edit. Escape explicitly restores the pre-drag transform.
 
 ## Verification and limits
+
+A focused CPU interaction check reproduces the old extent-change rollback and
+passes with normalized gesture coordinates, including translation, rotation,
+uniform scale, delayed release, and undo/redo. A normal Release Bistro editor check also passes native
+Metal translation and undo/redo with 1528×1074 Scene output. Native rotation and
+scale across resolution changes, Vulkan execution, and forced allocation-failure
+recovery remain unverified for this change.
 
 The transport and bounded-retry checks pass on Metal after the autorelease and recovery changes.
 Normal Release full-size Bistro exercises 5,985 nodes, toolbar unload/reload,
