@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "id": "local.editor.diagnostic.nodes_transport",
+  "suite": "local",
+  "description": "Prepared six-frame tiny shared-geometry fixture: live0, stopped1-3 with resize, resumed4-5; no MetalFX or capture.",
+  "scene": "assets/scenes/fixtures/editor_nodes.scene.json",
+  "seed": 1,
+  "resolution": [
+    320,
+    240
+  ],
+  "boot": "automation",
+  "target": "windowed_hidden",
+  "present": "fifo",
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 15000,
+  "asset_ready_timeout_ms": 5000,
+  "frames": {
+    "warmup": 3,
+    "measure": 3
+  },
+  "renderer": {
+    "editor": true,
+    "editor_stop_frame": 1,
+    "skybox": false,
+    "text_fixture": false,
+    "taa_enabled": false,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 1,
+    "render_mode": "default",
+    "upscaler": "spatial",
+    "dynamic_resolution": false,
+    "editor_resume_frame": 4
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      0,
+      0,
+      6
+    ],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 60,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "resize_round_trip": [
+    400,
+    300
+  ]
+}

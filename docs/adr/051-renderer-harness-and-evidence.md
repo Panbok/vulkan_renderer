@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-09-06
 authority: adr
 ---
 # ADR-051: Isolated harness runs and reviewed capture baselines
@@ -34,6 +34,14 @@ Waiting for that phase remains bootstrap work; authored frame counts and GPU
 completion rules do not change. The workload fingerprint includes this version,
 so results from the previous replay behavior are incompatible.
 
+Editor cases may set `renderer.editor_stop_frame` and `editor_resume_frame` to
+exercise retained Scene presentation. Their zero-based indices include authored
+warmup and exclude bootstrap; stop at zero also suppresses bootstrap Scene work.
+Resume must follow stop. Captures during the stopped interval support only
+`final_color`. These optional controls enter the workload fingerprint when set.
+Capture-summary version 7 stores them; readers migrate versions 2–6 with both
+controls unset so older captures preserve their original behavior.
+
 `profile` collects capture-free repetitions. `snapshot` runs replay children,
 produces canonical captures with metadata and digests, and compares compatible
 baselines. `autotest` keeps these two results separate. `compare` rechecks a
@@ -45,6 +53,12 @@ application resources before publishing reports, and destroys the arena after
 publication. This keeps nested fingerprint/report calls within the Windows
 executable's default stack. The parent logs abnormal child exit codes alongside
 the child artifact directory.
+
+Scene readiness requires successful streamed textures. A terminal texture request
+failure reports `scene.texture_load_failed` before testing pending streams, so
+optional interactive fallback materials cannot silently become complete capture
+or profile evidence. Pending work without a terminal failure retains the bounded
+readiness timeout. The editor's optional-texture fallback policy is unchanged.
 
 The child consumes pinned metrics snapshots, checks required sample validity,
 collects completed GPU timings by source serial, and records bounded events.
@@ -60,6 +74,36 @@ Run artifacts live under `build/_artifacts/`. Ordinary runs do not change
 generation before publishing an immutable generation and atomically replacing
 `current.json`. Cross-backend comparison is explicit and still requires matching
 workload and policy fingerprints.
+
+## Metal crash diagnostics
+
+`VKR_METAL_DIAGNOSTICS_DIR` opts into a separate CPU observation log. The renderer
+creates a new directory exclusively; existing directories are rejected without
+overwriting prior evidence. One renderer-owned sink writes two rotating 4 MiB
+JSONL segments, with bounded 4 KiB records. The memory adapter borrows the sink
+until adapter destruction. No worker or submission-feedback callback writes it.
+With the option unset, diagnostic code does not open files, format records, or
+query extra completion counters.
+
+Records cover queue submissions, completion waits, command-slot reuse, planned
+passes, Scene running/stopped state, and GPU resource creation/retirement/collection.
+`seq` orders both segments. `submitted` is the renderer's serial counter, which
+is assigned before commit; a begin record does not prove submission succeeded.
+`completed` is an observed completion value. Memory events use zero for counters
+the memory adapter does not know; their explicit `retire_after` field is the
+retirement deadline. Planned passes and CPU commit returns do not prove GPU
+execution. Text truncation is marked, and rotation removes older history.
+
+Submission, wait, idle and shutdown boundaries request `fsync` for both segments.
+This does not guarantee that the last record survives a kernel panic. An I/O
+failure reports once and disables diagnostics without changing renderer work.
+The added I/O perturbs scheduling, so these logs cannot support performance claims.
+[`inspect_metal_diagnostics.py`](../../tools/inspect_metal_diagnostics.py) reads
+both segments in sequence order and reports incomplete records without launching
+a renderer.
+
+The empty-stopped and tiny-node transport diagnostic cases are prepared for
+separate, bounded native runs; CPU manifest checks do not establish GPU stability.
 
 ## Consequences
 

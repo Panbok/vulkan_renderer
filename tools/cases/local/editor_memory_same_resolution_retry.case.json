@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "id": "local.editor.memory.same_resolution_retry",
+  "suite": "local",
+  "description": "Bounded analytic scene resize and retained-image stop/resume under an externally selected Metal budget; observes completion-safe allocation recovery.",
+  "scene": "assets/scenes/fixtures/transmission_analytic.scene.json",
+  "seed": 31,
+  "resolution": [
+    320,
+    240
+  ],
+  "boot": "full",
+  "target": "windowed_hidden",
+  "present": "fifo",
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 60000,
+  "asset_ready_timeout_ms": 30000,
+  "frames": {
+    "warmup": 3,
+    "measure": 6
+  },
+  "renderer": {
+    "editor": true,
+    "skybox": false,
+    "backend": "metal",
+    "taa_enabled": false,
+    "exposure_mode": "manual",
+    "manual_exposure": 0.3,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default",
+    "editor_stop_frame": 1,
+    "editor_resume_frame": 4,
+    "upscaler": "spatial",
+    "dynamic_resolution": false
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      0,
+      1.45,
+      5.5
+    ],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 58,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "captures": [
+    {
+      "at_frame": 4,
+      "channels": [
+        "final_color"
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "metric": "frame.render_width",
+      "stat": "max",
+      "equals": 1528
+    },
+    {
+      "metric": "frame.render_height",
+      "stat": "max",
+      "equals": 1074
+    }
+  ],
+  "resize_round_trip": [
+    764,
+    537
+  ]
+}

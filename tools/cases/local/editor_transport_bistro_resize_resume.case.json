@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "id": "local.editor.transport.bistro_resize_resume",
+  "suite": "local",
+  "description": "Six authored frames: live 0, stopped 1-3 during capture-free resize round trip, resumed 4-5.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 1,
+  "resolution": [
+    320,
+    240
+  ],
+  "boot": "automation",
+  "target": "windowed_hidden",
+  "present": "fifo",
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 900000,
+  "asset_ready_timeout_ms": 600000,
+  "frames": {
+    "warmup": 3,
+    "measure": 3
+  },
+  "renderer": {
+    "editor": true,
+    "editor_stop_frame": 1,
+    "skybox": false,
+    "text_fixture": false,
+    "taa_enabled": false,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 1,
+    "render_mode": "default",
+    "editor_resume_frame": 4
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      -28.4774647,
+      4.60749865,
+      2.86034966
+    ],
+    "yaw": 228.125198,
+    "pitch": -3.32655358,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500
+  },
+  "resize_round_trip": [
+    400,
+    300
+  ]
+}

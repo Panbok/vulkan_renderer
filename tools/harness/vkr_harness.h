@@ -279,6 +279,11 @@ typedef struct VkrHarnessRendererConfig {
   float32_t dynamic_resolution_min_scale;
   float32_t dynamic_resolution_max_scale;
   float32_t dynamic_resolution_target_frame_ms;
+  /** Authored case-frame indices including warmup, excluding bootstrap.
+   * UINT32_MAX disables the action. Stop at zero also stops bootstrap, before
+   * the first scene frame. Resume must follow the configured stop. */
+  uint32_t editor_stop_frame;
+  uint32_t editor_resume_frame;
 } VkrHarnessRendererConfig;
 
 typedef struct VkrHarnessCompareConfig {

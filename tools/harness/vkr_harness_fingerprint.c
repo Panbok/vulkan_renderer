@@ -184,6 +184,12 @@ bool8_t vkr_harness_case_fingerprints_with_scene_digest(
   ADD("case.scene_content", "%s", scene_content_digest);
   ADD("case.seed", "%llu", (unsigned long long)case_manifest->seed);
   ADD("renderer.editor", "%u", case_manifest->renderer.editor);
+  if (case_manifest->renderer.editor_stop_frame != UINT32_MAX)
+    ADD("renderer.editor_stop_frame", "%u",
+        case_manifest->renderer.editor_stop_frame);
+  if (case_manifest->renderer.editor_resume_frame != UINT32_MAX)
+    ADD("renderer.editor_resume_frame", "%u",
+        case_manifest->renderer.editor_resume_frame);
   ADD("renderer.skybox", "%u", case_manifest->renderer.skybox);
   ADD("renderer.text_fixture", "%u", case_manifest->renderer.text_fixture);
   ADD("renderer.taa_enabled", "%u", case_manifest->renderer.taa_enabled);

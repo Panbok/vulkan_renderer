@@ -164,6 +164,8 @@ vkr_internal void test_harness_case_parser(void) {
   assert(parsed.renderer.manual_exposure == VKR_DEFAULT_EXPOSURE);
   assert(parsed.renderer.exposure_compensation_ev == 0.0f);
   assert(parsed.renderer.exposure_reset_frame == UINT32_MAX);
+  assert(parsed.renderer.editor_stop_frame == UINT32_MAX);
+  assert(parsed.renderer.editor_resume_frame == UINT32_MAX);
   assert(!parsed.renderer.bloom_enabled);
   assert(parsed.renderer.bloom_threshold == VKR_BLOOM_DEFAULT_THRESHOLD);
   assert(parsed.renderer.bloom_knee == VKR_BLOOM_DEFAULT_KNEE);
@@ -1619,6 +1621,124 @@ typedef struct VkrHarnessCaptureSummaryHeaderV4Fixture {
   VkrHarnessProvenance provenance;
 } VkrHarnessCaptureSummaryHeaderV4Fixture;
 
+/* Frozen pre-transport layout from the version-6 writer. Sentinel values
+ * after renderer detect shifted fields; omitted controls must remain disabled.
+ */
+typedef struct VkrHarnessRendererConfigV6Fixture {
+  bool8_t editor;
+  bool8_t skybox;
+  bool8_t text_fixture;
+  /** Whether temporal reconstruction and camera jitter are enabled. */
+  bool8_t taa_enabled;
+  bool8_t shadow_pcf_early_out;
+  bool8_t shadow_sdsm;
+  char backend[16];
+  char shadow_preset[32];
+  uint32_t shadow_cascades;
+  /** Effective receiver tap count after the optional case field is resolved. */
+  uint32_t shadow_pcf_samples;
+  uint32_t shadow_map_size;
+  float32_t shadow_split_lambda;
+  char render_mode[24];
+  char exposure_mode[16];
+  float32_t manual_exposure;
+  float32_t exposure_compensation_ev;
+  /** Measure-relative frame that explicitly resets automatic adaptation. */
+  uint32_t exposure_reset_frame;
+  /** Bloom is opt-in for deterministic cases; production defaults do not leak
+   * into a harness workload. */
+  bool8_t bloom_enabled;
+  float32_t bloom_threshold;
+  float32_t bloom_knee;
+  float32_t bloom_intensity;
+  /** GTAO is opt-in and must carry its complete deterministic control tuple. */
+  bool8_t gtao_enabled;
+  float32_t gtao_radius;
+  float32_t gtao_power;
+  uint32_t shadow_debug_mode;
+  /** Cold probe-count control used by the SH scaling fixture. UINT32_MAX means
+   * "do not clamp". */
+  uint32_t ibl_probe_limit;
+  /** Whether the fullscreen ACES tonemap stage is enabled. */
+  bool8_t tonemap_enabled;
+  /** Whether the fullscreen FXAA stage is enabled. */
+  bool8_t fxaa_enabled;
+  /** Enables the capture-only fifth transmission peel on every case frame. */
+  bool8_t transmission_depth_diagnostic_enabled;
+  /** Internal renderer resolution relative to the present target. */
+  float32_t render_scale;
+  /** Renderer-reported scene extent. Output-only; manifests cannot author it.
+   */
+  uint32_t render_width;
+  uint32_t render_height;
+  /** Reconstruction implementation: `spatial` or `metalfx_temporal`. */
+  char upscaler[24];
+  /** Completion-driven MetalFX resolution policy. */
+  bool8_t dynamic_resolution;
+  float32_t dynamic_resolution_min_scale;
+  float32_t dynamic_resolution_max_scale;
+  float32_t dynamic_resolution_target_frame_ms;
+} VkrHarnessRendererConfigV6Fixture;
+
+typedef struct VkrHarnessCaseV6Fixture {
+  uint32_t schema_version;
+  char manifest_path[VKR_HARNESS_PATH_MAX];
+  char manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char id[VKR_HARNESS_ID_MAX];
+  char suite[64];
+  char description[VKR_HARNESS_TEXT_MAX];
+  char scene[VKR_HARNESS_PATH_MAX];
+  uint64_t seed;
+  uint32_t width;
+  uint32_t height;
+  bool8_t resize_round_trip;
+  uint32_t resize_width;
+  uint32_t resize_height;
+  VkrHarnessBootProfile boot;
+  VkrHarnessTarget target;
+  VkrHarnessPresentMode present;
+  uint32_t target_image_count;
+  VkrHarnessCacheMode cache;
+  float64_t fixed_delta_seconds;
+  uint32_t warmup_frames;
+  uint32_t measure_frames;
+  uint32_t repetitions;
+  uint32_t repetition_timeout_ms;
+  uint32_t asset_ready_timeout_ms;
+  VkrHarnessRendererConfigV6Fixture renderer;
+  VkrHarnessCamera camera;
+  VkrHarnessCapture captures[VKR_HARNESS_MAX_CAPTURES];
+  uint32_t capture_count;
+  VkrHarnessAssertion assertions[VKR_HARNESS_MAX_ASSERTIONS];
+  uint32_t assertion_count;
+  VkrHarnessCompareConfig compare;
+  /** Explicit offscreen logical-UI scale; effective OS scale for reports. */
+  float32_t content_scale;
+} VkrHarnessCaseV6Fixture;
+
+typedef struct VkrHarnessCaptureSummaryHeaderV6Fixture {
+  uint8_t magic[8];
+  uint32_t version;
+  uint32_t capture_count;
+  uint32_t artifact_count;
+  uint32_t tool;
+  uint32_t exit_code;
+  bool8_t authoritative;
+  bool8_t profile_compatible;
+  uint8_t reserved[2];
+  char status[24];
+  char case_id[VKR_HARNESS_ID_MAX];
+  char case_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char profile_id[VKR_HARNESS_ID_MAX];
+  char profile_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char environment_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char workload_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char policy_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  VkrHarnessCaseV6Fixture case_manifest;
+  VkrHarnessProfile profile;
+  VkrHarnessProvenance provenance;
+} VkrHarnessCaptureSummaryHeaderV6Fixture;
+
 vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   printf("  Running test_harness_capture_summary_legacy_compatibility...\n");
 #if !defined(_WIN32)
@@ -1627,11 +1747,14 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   char legacy_path[VKR_HARNESS_PATH_MAX];
   char legacy_v2_path[VKR_HARNESS_PATH_MAX];
   char legacy_v4_path[VKR_HARNESS_PATH_MAX];
+  char legacy_v6_path[VKR_HARNESS_PATH_MAX];
   char current_path[VKR_HARNESS_PATH_MAX];
   snprintf(legacy_path, sizeof(legacy_path), "%s/legacy.bin", directory);
   snprintf(legacy_v2_path, sizeof(legacy_v2_path), "%s/legacy-v2.bin",
            directory);
   snprintf(legacy_v4_path, sizeof(legacy_v4_path), "%s/legacy-v4.bin",
+           directory);
+  snprintf(legacy_v6_path, sizeof(legacy_v6_path), "%s/legacy-v6.bin",
            directory);
   snprintf(current_path, sizeof(current_path), "%s/current.bin", directory);
   VkrHarnessCaptureSummaryHeaderV3Fixture *legacy = calloc(1u, sizeof(*legacy));
@@ -1706,10 +1829,34 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
            "local.legacy.v4");
   assert(vkr_harness_atomic_write(legacy_v4_path, legacy_v4, sizeof(*legacy_v4),
                                   &error));
+  VkrHarnessCaptureSummaryHeaderV6Fixture *legacy_v6 =
+      calloc(1u, sizeof(*legacy_v6));
+  assert(legacy_v6);
+  MemCopy(legacy_v6->magic, magic, sizeof(magic));
+  legacy_v6->version = 6u;
+  legacy_v6->tool = VKR_HARNESS_TOOL_SNAPSHOT;
+  legacy_v6->exit_code = VKR_HARNESS_EXIT_PASS;
+  legacy_v6->profile_compatible = true_v;
+  string_copy(legacy_v6->case_manifest.id, "smoke.legacy.v6");
+  legacy_v6->case_manifest.renderer.editor = true_v;
+  legacy_v6->case_manifest.renderer.render_scale = 0.75f;
+  legacy_v6->case_manifest.renderer.dynamic_resolution_target_frame_ms = 12.5f;
+  legacy_v6->case_manifest.camera.far_plane = 987.0f;
+  legacy_v6->case_manifest.capture_count = 1u;
+  legacy_v6->case_manifest.captures[0].at_frame = 9u;
+  legacy_v6->case_manifest.assertion_count = 1u;
+  legacy_v6->case_manifest.assertions[0].limit = 17.0;
+  legacy_v6->case_manifest.compare.max_pixel_delta = 0.375;
+  legacy_v6->case_manifest.content_scale = 1.5f;
+  string_copy(legacy_v6->profile.id, "local.legacy.v6");
+  assert(vkr_harness_atomic_write(legacy_v6_path, legacy_v6, sizeof(*legacy_v6),
+                                  &error));
   Arena *arena = arena_create(MB(2), MB(2));
   assert(arena);
   VkrHarnessCaptureSummary summary = {0};
   assert(vkr_harness_capture_summary_read(legacy_path, arena, &summary));
+  assert(summary.case_manifest.renderer.editor_stop_frame == UINT32_MAX);
+  assert(summary.case_manifest.renderer.editor_resume_frame == UINT32_MAX);
   assert(strcmp(summary.case_manifest.id, "smoke.legacy.v3") == 0);
   assert(summary.case_manifest.width == 801u &&
          summary.case_manifest.height == 601u);
@@ -1725,6 +1872,8 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   assert(summary.case_manifest.compare.max_pixel_delta == 0.125);
   assert(strcmp(summary.profile.id, "local.legacy.v3") == 0);
   assert(vkr_harness_capture_summary_read(legacy_v2_path, arena, &summary));
+  assert(summary.case_manifest.renderer.editor_stop_frame == UINT32_MAX);
+  assert(summary.case_manifest.renderer.editor_resume_frame == UINT32_MAX);
   assert(strcmp(summary.case_manifest.id, "smoke.legacy.v2") == 0);
   assert(summary.case_manifest.renderer.bloom_enabled);
   assert(!summary.case_manifest.renderer.gtao_enabled);
@@ -1738,6 +1887,8 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   assert(strcmp(summary.profile.warmup_stability_metric, "cpu.render_submit") ==
          0);
   assert(vkr_harness_capture_summary_read(legacy_v4_path, arena, &summary));
+  assert(summary.case_manifest.renderer.editor_stop_frame == UINT32_MAX);
+  assert(summary.case_manifest.renderer.editor_resume_frame == UINT32_MAX);
   assert(strcmp(summary.case_manifest.id, "smoke.legacy.v4") == 0);
   assert(summary.case_manifest.width == 911u &&
          summary.case_manifest.height == 703u);
@@ -1757,6 +1908,22 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   assert(summary.case_manifest.camera.far_plane == 654.0f);
   assert(summary.case_manifest.compare.max_pixel_delta == 0.25);
   assert(strcmp(summary.profile.id, "local.legacy.v4") == 0);
+  assert(vkr_harness_capture_summary_read(legacy_v6_path, arena, &summary));
+  assert(strcmp(summary.case_manifest.id, "smoke.legacy.v6") == 0);
+  assert(summary.case_manifest.renderer.editor);
+  assert(summary.case_manifest.renderer.editor_stop_frame == UINT32_MAX);
+  assert(summary.case_manifest.renderer.editor_resume_frame == UINT32_MAX);
+  assert(summary.case_manifest.renderer.render_scale == 0.75f);
+  assert(summary.case_manifest.renderer.dynamic_resolution_target_frame_ms ==
+         12.5f);
+  assert(summary.case_manifest.camera.far_plane == 987.0f);
+  assert(summary.case_manifest.capture_count == 1u);
+  assert(summary.case_manifest.captures[0].at_frame == 9u);
+  assert(summary.case_manifest.assertion_count == 1u);
+  assert(summary.case_manifest.assertions[0].limit == 17.0);
+  assert(summary.case_manifest.compare.max_pixel_delta == 0.375);
+  assert(summary.case_manifest.content_scale == 1.5f);
+  assert(strcmp(summary.profile.id, "local.legacy.v6") == 0);
   VkrHarnessReport report = {.tool = VKR_HARNESS_TOOL_SNAPSHOT};
   assert(vkr_harness_report_init_storage(&report, arena, 1u, 0u));
   report.capture_count = 1u;
@@ -1773,6 +1940,8 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   report.case_manifest.renderer.dynamic_resolution_target_frame_ms =
       1000.0f / 75.0f;
   report.case_manifest.content_scale = 1.25f;
+  report.case_manifest.renderer.editor_stop_frame = 1u;
+  report.case_manifest.renderer.editor_resume_frame = 4u;
   assert(
       vkr_harness_capture_summary_write(current_path, &report, arena, &error));
   uint8_t *current_bytes = NULL;
@@ -1782,9 +1951,11 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   uint32_t current_version = 0u;
   assert(current_size >= 12u);
   MemCopy(&current_version, current_bytes + 8u, sizeof(current_version));
-  assert(current_version == 6u);
+  assert(current_version == 7u);
   assert(vkr_harness_capture_summary_read(current_path, arena, &summary));
   assert(summary.capture_count == 1u);
+  assert(summary.case_manifest.renderer.editor_stop_frame == 1u);
+  assert(summary.case_manifest.renderer.editor_resume_frame == 4u);
   assert(summary.case_manifest.renderer.gtao_enabled);
   assert(summary.case_manifest.renderer.gtao_radius == 0.75f);
   assert(summary.case_manifest.renderer.gtao_power == 1.5f);
@@ -1801,9 +1972,11 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   free(legacy);
   free(legacy_v2);
   free(legacy_v4);
+  free(legacy_v6);
   assert(unlink(legacy_path) == 0);
   assert(unlink(legacy_v2_path) == 0);
   assert(unlink(legacy_v4_path) == 0);
+  assert(unlink(legacy_v6_path) == 0);
   assert(unlink(current_path) == 0);
   assert(rmdir(directory) == 0);
   arena_destroy(arena);
@@ -2490,12 +2663,40 @@ vkr_internal void test_harness_json_integer_and_escaped_key_boundaries(void) {
                                            "$", &error));
 }
 
+/* Validate the prepared crash-isolation inputs without launching a renderer. */
+vkr_internal void test_harness_editor_diagnostic_manifests(void) {
+  const char *paths[] = {
+      "tools/cases/local/editor_diagnostic_empty_stopped.case.json",
+      "tools/cases/local/editor_diagnostic_nodes_transport.case.json",
+  };
+  VkrHarnessProfile profile = {0};
+  VkrHarnessError error = {0};
+  assert(vkr_harness_profile_load(
+      PROJECT_SOURCE_DIR,
+      "tools/profiles/local-metal-windowed-validation-serial.json", &profile,
+      &error));
+  for (uint32_t i = 0; i < ArrayCount(paths); ++i) {
+    VkrHarnessCase manifest = {0};
+    const bool8_t loaded =
+        vkr_harness_case_load(PROJECT_SOURCE_DIR, paths[i], &manifest, &error);
+    if (!loaded)
+      fprintf(stderr, "Diagnostic case %s: %s\n", paths[i], error.message);
+    assert(loaded);
+    assert(!vkr_harness_case_profile_mismatch(&manifest, &profile));
+    assert(manifest.capture_count == 0);
+    assert(manifest.renderer.editor);
+    assert(!manifest.renderer.dynamic_resolution);
+    assert(strcmp(manifest.renderer.upscaler, "spatial") == 0);
+  }
+}
+
 bool32_t run_harness_tests(void) {
   printf("--- Running Harness tests... ---\n");
   test_harness_json_integer_and_escaped_key_boundaries();
   test_harness_hash_and_statistics();
   test_harness_current_frame_work_metrics();
   test_harness_case_parser();
+  test_harness_editor_diagnostic_manifests();
   test_harness_camera_float_range_boundary();
   test_harness_profile_parser();
   test_harness_camera_determinism();

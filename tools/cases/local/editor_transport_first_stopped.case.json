@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "id": "local.editor.transport.first_stopped",
+  "suite": "local",
+  "description": "Six authored frames with renderer stopped before first scene frame; no mesh or image dependencies.",
+  "scene": "assets/scenes/fixtures/editor_transport_empty.scene.json",
+  "seed": 1,
+  "resolution": [
+    320,
+    240
+  ],
+  "boot": "automation",
+  "target": "windowed_hidden",
+  "present": "fifo",
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": {
+    "warmup": 0,
+    "measure": 6
+  },
+  "renderer": {
+    "editor": true,
+    "editor_stop_frame": 0,
+    "skybox": false,
+    "text_fixture": false,
+    "taa_enabled": false,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 1,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      0,
+      0,
+      6
+    ],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 60,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "captures": [
+    {
+      "at_frame": 0,
+      "channels": [
+        "final_color"
+      ]
+    }
+  ]
+}

@@ -436,6 +436,8 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
     VkrHarnessRendererConfig *renderer, VkrHarnessError *error) {
   vkr_local_persist const char *const allowed[] = {
       "editor",
+      "editor_stop_frame",
+      "editor_resume_frame",
       "skybox",
       "text_fixture",
       "taa_enabled",
@@ -484,6 +486,8 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
   renderer->fxaa_enabled = true_v;
   renderer->manual_exposure = VKR_DEFAULT_EXPOSURE;
   renderer->exposure_reset_frame = UINT32_MAX;
+  renderer->editor_stop_frame = UINT32_MAX;
+  renderer->editor_resume_frame = UINT32_MAX;
   renderer->bloom_enabled = false_v;
   renderer->bloom_threshold = VKR_BLOOM_DEFAULT_THRESHOLD;
   renderer->bloom_knee = VKR_BLOOM_DEFAULT_KNEE;
@@ -498,6 +502,8 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
   uint64_t ibl_probe_limit = UINT32_MAX;
   uint64_t cascades = 0;
   uint64_t exposure_reset_frame = UINT32_MAX;
+  uint64_t editor_stop_frame = UINT32_MAX;
+  uint64_t editor_resume_frame = UINT32_MAX;
   float64_t manual_exposure = renderer->manual_exposure;
   float64_t exposure_compensation_ev = 0.0;
   float64_t bloom_threshold = renderer->bloom_threshold;
@@ -522,6 +528,10 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
   int32_t ibl_probe_limit_token = -1;
   if (!vkr_harness_manifest_bool(doc, token, "editor", true_v,
                                  &renderer->editor, error) ||
+      !vkr_harness_manifest_u64(doc, token, "editor_stop_frame", false_v,
+                                &editor_stop_frame, error) ||
+      !vkr_harness_manifest_u64(doc, token, "editor_resume_frame", false_v,
+                                &editor_resume_frame, error) ||
       !vkr_harness_manifest_bool(doc, token, "skybox", true_v,
                                  &renderer->skybox, error) ||
       !vkr_harness_manifest_bool(doc, token, "text_fixture", false_v,
@@ -605,6 +615,20 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
                                 &ibl_probe_limit, error)) {
     return false_v;
   }
+  if (editor_stop_frame > UINT32_MAX || editor_resume_frame > UINT32_MAX ||
+      ((editor_stop_frame != UINT32_MAX || editor_resume_frame != UINT32_MAX) &&
+       !renderer->editor) ||
+      (editor_resume_frame != UINT32_MAX &&
+       (editor_stop_frame == UINT32_MAX ||
+        editor_resume_frame <= editor_stop_frame))) {
+    vkr_harness_error_set(
+        error, "renderer.editor_transport", "$.renderer",
+        "Editor transport frames require editor=true, uint32 "
+        "indices, and resume strictly after a configured stop");
+    return false_v;
+  }
+  renderer->editor_stop_frame = (uint32_t)editor_stop_frame;
+  renderer->editor_resume_frame = (uint32_t)editor_resume_frame;
   renderer->shadow_cascades = (uint32_t)cascades;
   renderer->ibl_probe_limit =
       ibl_probe_limit > UINT32_MAX ? UINT32_MAX : (uint32_t)ibl_probe_limit;
@@ -1210,6 +1234,35 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
                           "Exposure reset frame must be inside the measured "
                           "frame range");
     return false_v;
+  }
+  const uint64_t case_frame_count =
+      (uint64_t)out_case->warmup_frames + out_case->measure_frames;
+  if ((out_case->renderer.editor_stop_frame != UINT32_MAX &&
+       out_case->renderer.editor_stop_frame >= case_frame_count) ||
+      (out_case->renderer.editor_resume_frame != UINT32_MAX &&
+       out_case->renderer.editor_resume_frame >= case_frame_count)) {
+    vkr_harness_error_set(out_error, "renderer.editor_transport", "$.renderer",
+                          "Editor transport frame indices include warmup and "
+                          "must be inside warmup + measure frames");
+    return false_v;
+  }
+  for (uint32_t i = 0u; i < out_case->capture_count; ++i) {
+    const VkrHarnessCapture *capture = &out_case->captures[i];
+    const uint64_t frame =
+        (uint64_t)out_case->warmup_frames + capture->at_frame;
+    if (out_case->renderer.editor_stop_frame == UINT32_MAX ||
+        frame < out_case->renderer.editor_stop_frame ||
+        frame >= out_case->renderer.editor_resume_frame)
+      continue;
+    for (uint32_t channel = 0u; channel < capture->channel_count; ++channel) {
+      if (!string_equals(capture->channels[channel], "final_color")) {
+        vkr_harness_error_set(out_error, "renderer.editor_transport.capture",
+                              "$.captures",
+                              "Stopped editor captures require "
+                              "the final_color channel");
+        return false_v;
+      }
+    }
   }
   vkr_harness_sha256_bytes(json, json_length, out_case->manifest_sha256);
   return true_v;

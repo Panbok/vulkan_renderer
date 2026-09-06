@@ -100,6 +100,8 @@ typedef struct VkrHarnessChildContext {
   /** Set once bootstrap/allocation frames are discarded and sampling begins. */
   bool8_t phase_started;
   bool8_t exposure_reset_applied;
+  bool8_t editor_stop_applied;
+  bool8_t editor_resume_applied;
   uint64_t phase_first_frame_index;
   uint64_t submission_timing_cursor;
   uint32_t submission_metric_index;
@@ -575,7 +577,15 @@ vkr_harness_child_texture_streams_ready(Application *application) {
   const VkrMaterialTextureStreamStats stats =
       vkr_material_system_get_texture_stream_stats(
           &application->assets.material_system);
-  if (stats.pending_count == 0u) {
+  /* Interactive fallbacks are useful, but do not constitute complete scene
+   * evidence. A terminal load failure must not become a readiness timeout. */
+  if (stats.failed_total != 0u) {
+    vkr_harness_stderr("Scene texture loading failed: %llu failed requests\n",
+                       (unsigned long long)stats.failed_total);
+    vkr_harness_child_fail(application, "scene.texture_load_failed");
+    return false_v;
+  }
+  if (stats.pending_count == 0u && stats.demanded_missing_count == 0u) {
     return true_v;
   }
 
@@ -915,6 +925,23 @@ void application_update(Application *application, float64_t delta) {
         vkr_renderer_get_submit_serial(&application->renderer);
   }
   if (child->phase_started) {
+    const VkrHarnessRendererConfig *renderer = &child->case_manifest->renderer;
+    if (!child->editor_stop_applied &&
+        child->completed_frames == renderer->editor_stop_frame) {
+      application->editor_viewport.scene_rendering_stopped = true_v;
+      child->editor_stop_applied = true_v;
+      vkr_harness_stderr("Editor transport: stop before case frame %u "
+                         "(including warmup)\n",
+                         child->completed_frames);
+    }
+    if (!child->editor_resume_applied &&
+        child->completed_frames == renderer->editor_resume_frame) {
+      application->editor_viewport.scene_rendering_stopped = false_v;
+      child->editor_resume_applied = true_v;
+      vkr_harness_stderr("Editor transport: resume before case frame %u "
+                         "(including warmup)\n",
+                         child->completed_frames);
+    }
     if (!vkr_harness_child_resize_round_trip(application)) {
       return;
     }
@@ -1119,6 +1146,11 @@ vkr_harness_child_shadow_config(const VkrHarnessCase *case_manifest) {
 vkr_internal bool8_t vkr_harness_child_apply_renderer(
     Application *application, const VkrHarnessCase *case_manifest) {
   application->editor_viewport.enabled = case_manifest->renderer.editor;
+  application->editor_viewport.scene_rendering_stopped =
+      case_manifest->renderer.editor_stop_frame == 0u;
+  if (application->editor_viewport.scene_rendering_stopped)
+    vkr_harness_stderr("Editor transport: stopped before first scene frame "
+                       "(case frame 0 includes warmup)\n");
   /* Renderer creation can submit initialization work. Shadow reconfiguration
      destroys resources whose graph replacements must not race that work. */
   if (vkr_renderer_wait_idle(&application->renderer) !=
@@ -1729,6 +1761,7 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
       .submission_metric_index = submission_metric_index,
       .submission_gpu_timing = profile.submission_gpu_timing,
       .text_fixture = case_manifest.renderer.text_fixture,
+      .editor_stop_applied = case_manifest.renderer.editor_stop_frame == 0u,
       .capture_index = capture_index,
       .run_dir = run_dir,
   };

@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "id": "local.editor.diagnostic.bistro_budgeted",
+  "suite": "local",
+  "description": "Budgeted Bistro startup and six authored transport frames; bounded readiness and child timeout.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 1,
+  "resolution": [
+    320,
+    240
+  ],
+  "boot": "automation",
+  "target": "windowed_hidden",
+  "present": "fifo",
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 60000,
+  "asset_ready_timeout_ms": 30000,
+  "frames": {
+    "warmup": 3,
+    "measure": 3
+  },
+  "renderer": {
+    "editor": true,
+    "editor_stop_frame": 1,
+    "skybox": false,
+    "text_fixture": false,
+    "taa_enabled": false,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 1,
+    "render_mode": "default",
+    "editor_resume_frame": 4,
+    "upscaler": "spatial",
+    "dynamic_resolution": false
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      -28.4774647,
+      4.60749865,
+      2.86034966
+    ],
+    "yaw": 228.125198,
+    "pitch": -3.32655358,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500
+  },
+  "resize_round_trip": [
+    400,
+    300
+  ]
+}

@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "id": "local.editor.transport.bistro_snapshot",
+  "suite": "local",
+  "description": "Five authored orbit frames: capture last live frame1, frozen frame3 after stop2, and resumed frame4. Frame1 and frame3 final pixels should match; frame4 should differ.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 1,
+  "resolution": [
+    320,
+    240
+  ],
+  "boot": "automation",
+  "target": "windowed_hidden",
+  "present": "fifo",
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 900000,
+  "asset_ready_timeout_ms": 600000,
+  "frames": {
+    "warmup": 0,
+    "measure": 5
+  },
+  "renderer": {
+    "editor": true,
+    "editor_stop_frame": 2,
+    "skybox": false,
+    "text_fixture": false,
+    "taa_enabled": false,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 1,
+    "render_mode": "default",
+    "editor_resume_frame": 4
+  },
+  "camera": {
+    "mode": "orbit",
+    "speed": "medium",
+    "center": [
+      -28.5,
+      4.6,
+      2.9
+    ],
+    "radius": 8,
+    "height": 3,
+    "revolutions": 1.0,
+    "duration_seconds": 1.0,
+    "start_angle_degrees": 0,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.1,
+    "far_plane": 500
+  },
+  "captures": [
+    {
+      "at_frame": 1,
+      "channels": [
+        "final_color"
+      ]
+    },
+    {
+      "at_frame": 3,
+      "channels": [
+        "final_color"
+      ]
+    },
+    {
+      "at_frame": 4,
+      "channels": [
+        "final_color"
+      ]
+    }
+  ]
+}
