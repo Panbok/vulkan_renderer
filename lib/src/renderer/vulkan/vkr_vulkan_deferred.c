@@ -177,6 +177,12 @@ bool8_t vkr_vk_prepare_deferred_upload(VkrVulkanRenderer *renderer,
 bool8_t vkr_vk_prepare_deferred_readback(VkrVulkanRenderer *renderer) {
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
+  VkrVulkanPreparedReadback *prepared = &slot->deferred_readback;
+  prepared->count = 0u;
+  // UI-only frames have no Scene producers. Clear prior slot readbacks before
+  // returning so reused slots cannot copy stale Scene statistics.
+  if (!renderer->graph->packet->scene_rendering)
+    return true_v;
   VkrVulkanGraphBufferInstance *opaque = slot->gpu_compaction_state;
   VkrVulkanGraphBufferInstance *transmission =
       renderer->prepared_frame.transmission_pending
@@ -188,8 +194,6 @@ bool8_t vkr_vk_prepare_deferred_readback(VkrVulkanRenderer *renderer) {
       (slot->exposure_requested &&
        (!slot->exposure_histogram || !slot->exposure_state_output)))
     return false_v;
-  VkrVulkanPreparedReadback *prepared = &slot->deferred_readback;
-  prepared->count = 0u;
   const VkBufferCopy copies[] = {
       {.dstOffset = VKR_VULKAN_READBACK_DRAW_STATE_OFFSET,
        .size = (1u + renderer->prepared_frame.shadow_cascade_count) *

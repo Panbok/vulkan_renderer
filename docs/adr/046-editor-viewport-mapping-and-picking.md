@@ -67,6 +67,12 @@ refreshes its extent and invalidates temporal continuity. UI-only submissions do
 not publish Scene temporal or exposure history. Picking and camera manipulation
 are disabled while stopped. Hiding the Scene tab also suspends Scene work.
 
+Vulkan resets each frame slot's prepared Scene readback list before accepting a
+UI-only frame. Such frames have no draw-compaction, shadow-reduction or exposure
+producers. The readback recorder still clears old statistics, but copies no
+Scene buffers; live frames retain their required-producer checks. Slot reuse
+continues to require completion of its last submission.
+
 The user approved the extra scene-sized image and compositing pass so Render Stop
 preserves the visible scene while the editor and simulation remain independent.
 
@@ -158,6 +164,25 @@ picks while retaining active edits; stopping Scene rendering commits the current
 edit. Escape explicitly restores the pre-drag transform.
 
 ## Verification and limits
+
+The Vulkan stopped-frame readback fix passes Release and Debug checks on an
+RX 6700 XT at 100% Windows scaling. The
+[`editor_vulkan_empty_stopped`](../../tools/cases/local/editor_vulkan_empty_stopped.case.json)
+case submits six frames without any Scene image. The
+[`editor_vulkan_stop_resize_resume`](../../tools/cases/local/editor_vulkan_stop_resize_resume.case.json)
+case stops at frame 1, reuses slots while stopped, resizes 320×240 to 400×300
+and back, then resumes at frame 6. Both use
+[`local-windowed-single`](../../tools/profiles/local-windowed-single.json) with
+`vkr_harness profile --case <case> --profile <profile>`.
+The transition case also passes `vkr_harness snapshot` in Release and under
+Debug Vulkan synchronization validation, with no validation errors. Its small
+fixture captures show [stopped](../../assets/editor/vulkan-render-stopped-fixture.png)
+and [resumed](../../assets/editor/vulkan-render-resumed-fixture.png) presentation;
+they do not establish scene-quality or cross-backend pixel parity. Release
+snapshot report SHA-256:
+`4573e88ac04804604a406ab86ac11b59f15c027ab22e272acd763f62be8406e1`.
+That check also exposed and verified the mapped-buffer alignment correction in
+[ADR-024](024-shared-bindless-gpu-cores.md). No shaders or shader ABI changed.
 
 A focused CPU interaction check reproduces the old extent-change rollback and
 passes with normalized gesture coordinates, including translation, rotation,

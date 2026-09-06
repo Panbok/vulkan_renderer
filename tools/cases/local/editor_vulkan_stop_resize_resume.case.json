@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "id": "local.editor.vulkan.stop_resize_resume",
+  "suite": "local",
+  "description": "Vulkan live frame 0, stopped frames 1-5 with a resize round trip and slot reuse, resumed frames 6-8.",
+  "scene": "assets/scenes/fixtures/editor_nodes.scene.json",
+  "seed": 1,
+  "resolution": [
+    320,
+    240
+  ],
+  "boot": "automation",
+  "target": "windowed_hidden",
+  "present": "immediate",
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 15000,
+  "asset_ready_timeout_ms": 5000,
+  "frames": {
+    "warmup": 3,
+    "measure": 6
+  },
+  "renderer": {
+    "editor": true,
+    "editor_stop_frame": 1,
+    "skybox": false,
+    "text_fixture": false,
+    "taa_enabled": false,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 1,
+    "render_mode": "default",
+    "upscaler": "spatial",
+    "dynamic_resolution": false,
+    "editor_resume_frame": 6,
+    "backend": "vulkan"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      0,
+      0,
+      6
+    ],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 60,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "resize_round_trip": [
+    400,
+    300
+  ],
+  "captures": [
+    {
+      "at_frame": 1,
+      "channels": [
+        "final_color"
+      ]
+    },
+    {
+      "at_frame": 5,
+      "channels": [
+        "final_color"
+      ]
+    }
+  ]
+}

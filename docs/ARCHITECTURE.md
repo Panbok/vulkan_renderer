@@ -41,6 +41,7 @@ through a virtualized tree; Inspector sends typed selection and edit requests to
 the runtime. Console snapshots bounded structured logger history with a checkbox filter dropdown. Bakery runs
 mesh, font and texture cookers in a cancellable child process. Its setup, jobs
 and output views use labeled controls and adapt to dock width. Render Stop retains the last Scene image while UI continues;
+Vulkan UI-only frames reset Scene readback copies before skipping absent producers.
 Scene allocation failures trigger bounded output-resolution reductions while UI
 resolution stays unchanged; an error at the minimum stops Scene retries.
 The first Metal GPU completion timeout flushes diagnostics and terminates the
