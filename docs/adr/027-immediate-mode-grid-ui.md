@@ -37,7 +37,12 @@ smaller windows divide the shortage proportionally. The editor saves its layout 
 
 Editor tabs use category-colored vector icons and an amber focused border. Real
 Ubuntu Mono Bold supplies headings; vector controls keep the existing UI vertex
-ABI. Scene load/unload, simulation, rendering and camera controls are icon-only
+ABI. Icon strokes and fills use inner/outer convex polygon rings with a
+one-physical-pixel alpha transition centered on each edge. Shared CPU lowering
+emits opaque inner and transparent outer vertices; both backends interpolate
+coverage through their existing linear-alpha blending. Capacity checks admit
+complete polygons, including their fringe, and tile bounds include the outer ring.
+Scene load/unload, simulation, rendering and camera controls are icon-only
 with tooltips in a floating Scene toolbar. Its grip supports dragging; releasing
 near a viewport edge anchors that edge, and resize clamps the toolbar inside the
 Scene. Narrow panes wrap the controls. Floating windows and popups have input
@@ -155,6 +160,8 @@ layout behavior grids cannot express.
 ## Code evidence
 
 ![Editor UI](../../assets/editor/editor-ui.png)
+
+![Windows UI at 100% scale with icon edge coverage](../../assets/editor/ui-antialiasing-windows.png)
 
 - [UI state and lowering](../../lib/src/renderer/systems/vkr_ui_system.c)
 - [grid solver](../../lib/src/core/ui/vkr_ui_grid.c)

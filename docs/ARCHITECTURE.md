@@ -169,7 +169,12 @@ reference leaves. Loader/cooker decisions are in
 UI uses an immediate-mode API over a retained cache, grid layout and one bounded
 indexed/scissored stream. Text/font systems own glyph layout resources and
 cooked VKFA font loading; canonical derivative MTSDF coverage and DPI-derived
-pre-layout sizing are shared contracts. MTSDF atlas sampling stays linear when
+pre-layout sizing are shared contracts. Immediate labels and buttons use common
+font line metrics and align their baseline to physical pixels after DPI resolution.
+Icon polygons carry a one-physical-pixel alpha fringe in the shared UI stream.
+The regular/bold bootstrap atlases use a 16-texel distance range at 64 texels/em,
+providing at least a two-pixel reconstruction range for text at 8 physical pixels/em.
+MTSDF atlas sampling stays linear when
 scene-texture filtering changes. The app debug overlay has 11/13-device-pixel
 minimum title/body sizes; its authored 9/11-point sizing still governs at higher
 content scales. See [ADR-027](adr/027-immediate-mode-grid-ui.md)

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-09-06
 authority: adr
 ---
 # ADR-034: Cooked MTSDF font artifacts
@@ -30,6 +30,14 @@ paths; they do not redefine the cooked MTSDF contract.
 The repository ships cooked regular and bold Ubuntu Mono bootstrap atlases, plus
 the small bitmap compatibility atlas required during font-system startup. Normal
 app/editor build wrappers compile cooker binaries without baking these assets.
+
+The regular and bold atlases use 64 atlas texels per em and a 16-texel distance
+range. This supplies a screen range of two at 8 physical pixels per em; the old
+8-texel setting dropped below two for small UI text on a 1x display. Atlas
+dimensions remain 1024 by 1024, with unchanged glyph advances and font metrics.
+The wider field expands glyph quads, so unchanged atlas storage does not imply
+unchanged fragment work.
+
 The editor Bakery invokes the same incremental font cooker for later changes;
 headless tooling can still call it directly. This keeps first launch usable before
 Bakery runs and preserves the offline runtime font contract.

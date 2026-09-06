@@ -1797,6 +1797,13 @@ typedef struct VkrUiIconLine {
   float32_t x0, y0, x1, y1;
 } VkrUiIconLine;
 
+static void vkr_ui_icon_rect(VkrUiDrawBuffer *buffer, VkrUiRect rect, Vec4 color) {
+  const Vec2 corners[] = {{rect.x, rect.y}, {rect.x + rect.width, rect.y},
+                          {rect.x + rect.width, rect.y + rect.height},
+                          {rect.x, rect.y + rect.height}};
+  (void)vkr_ui_draw_buffer_polygon(buffer, corners, color);
+}
+
 vkr_internal void vkr_ui_emit_icon(VkrUiDrawBuffer *buffer, VkrUiIcon icon,
                                    VkrUiRect rect, Vec4 color) {
   static const VkrUiIconLine monitor[] = {{1, 2, 15, 2},   {15, 2, 15, 12},
@@ -1917,7 +1924,7 @@ vkr_internal void vkr_ui_emit_icon(VkrUiDrawBuffer *buffer, VkrUiIcon icon,
   }
   const Vec4 linear = vkr_ui_linear_color(color);
   const float32_t scale = rect.width / 16.0f;
-  const float32_t half_stroke = 0.75f * scale;
+  const float32_t half_stroke = Max(0.75f * scale, 0.5f);
   for (uint32_t i = 0u; i < count; ++i) {
     const VkrUiIconLine line = lines[i];
     const Vec2 start = {rect.x + line.x0 * scale, rect.y + line.y0 * scale};
@@ -1934,7 +1941,7 @@ vkr_internal void vkr_ui_emit_icon(VkrUiDrawBuffer *buffer, VkrUiIcon icon,
   if (icon == VKR_UI_ICON_GRIP) {
     for (uint32_t row = 0u; row < 3u; ++row)
       for (uint32_t column = 0u; column < 2u; ++column)
-        (void)vkr_ui_draw_buffer_solid(buffer,
+        vkr_ui_icon_rect(buffer,
             (VkrUiRect){rect.x + (5.0f + 4.0f * column) * scale,
                         rect.y + (3.0f + 4.0f * row) * scale,
                         2.0f * scale, 2.0f * scale}, linear);
@@ -1950,18 +1957,18 @@ vkr_internal void vkr_ui_emit_icon(VkrUiDrawBuffer *buffer, VkrUiIcon icon,
         {rect.x + right * scale, rect.y + (top + bottom) * 0.5f * scale}};
     (void)vkr_ui_draw_buffer_polygon(buffer, corners, linear);
   } else if (icon == VKR_UI_ICON_PAUSE) {
-    (void)vkr_ui_draw_buffer_solid(buffer,
+    vkr_ui_icon_rect(buffer,
                                    (VkrUiRect){rect.x + 3 * scale,
                                                rect.y + 2 * scale, 3 * scale,
                                                12 * scale},
                                    linear);
-    (void)vkr_ui_draw_buffer_solid(buffer,
+    vkr_ui_icon_rect(buffer,
                                    (VkrUiRect){rect.x + 10 * scale,
                                                rect.y + 2 * scale, 3 * scale,
                                                12 * scale},
                                    linear);
   } else if (icon == VKR_UI_ICON_MONITOR_STOP) {
-    (void)vkr_ui_draw_buffer_solid(buffer,
+    vkr_ui_icon_rect(buffer,
                                    (VkrUiRect){rect.x + 6 * scale,
                                                rect.y + 5 * scale, 4 * scale,
                                                4 * scale},
@@ -1995,21 +2002,17 @@ vkr_internal void vkr_ui_emit_text(VkrUiSystem *system, VkrUiDrawBuffer *buffer,
       (centered
            ? Max(0.0f, content_rect.width - x_offset - bounds.size.x) * 0.5f
            : 0.0f);
-  float32_t geometry_min_y = text->geometry.vertices[0].position.y;
-  float32_t geometry_max_y = geometry_min_y;
-  for (uint32_t vertex = 1u; vertex < text->geometry.vertex_count; ++vertex) {
-    geometry_min_y =
-        Min(geometry_min_y, text->geometry.vertices[vertex].position.y);
-    geometry_max_y =
-        Max(geometry_max_y, text->geometry.vertices[vertex].position.y);
-  }
-  const float32_t geometry_height = geometry_max_y - geometry_min_y;
+  // Center the font's line box, not the padded atlas bounds of this string.
+  // A changing label must keep its baseline and its device-pixel phase.
   float32_t top =
-      content_rect.y + Max(0.0f, content_rect.height - geometry_height) * 0.5f;
+      content_rect.y + Max(0.0f, content_rect.height - bounds.size.y) * 0.5f;
+  float32_t geometry_max_y = bounds.size.y;
   if (node->kind == VKR_UI_NODE_TEXT_FIELD) {
     top = content_rect.y - node->retained->scroll_offset.y;
     geometry_max_y =
         text->layout.baseline.y - text->bounds.ascent + text->bounds.size.y;
+  } else {
+    top = roundf(top + bounds.ascent) - bounds.ascent;
   }
   const VkrUiDrawMode mode = font->type == VKR_FONT_TYPE_MTSDF
                                  ? VKR_UI_DRAW_MODE_MTSDF_TEXT

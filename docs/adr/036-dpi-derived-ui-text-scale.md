@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-09-06
 authority: adr
 ---
 # ADR-036: Window content scale before UI layout
@@ -22,6 +22,12 @@ UI uses an explicit positive scale. The UI system invalidates layout whenever
 the snapshot changes and resolves authored style, tracks, text sizes, spacing,
 and bounds into device pixels before layout. Retained text transforms do not
 apply content scale again.
+
+Immediate labels and buttons center the font line box rather than each string's
+padded atlas bounds. Their first baseline is rounded once in physical pixels
+after resolving DPI, so changing a label does not change its vertical placement
+or raster phase. Glyph sizes, advances and UVs remain unchanged. Editable fields
+retain the origin shared by glyphs, selection and caret placement.
 
 ## Consequences
 

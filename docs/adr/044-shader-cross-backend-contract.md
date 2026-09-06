@@ -71,6 +71,13 @@ in [ARCHITECTURE](../ARCHITECTURE.md).
 Current evidence state: **UNALIGNED** for every domain below. The production
 source audit covers their counterparts; same-revision bilateral native
 comparisons and runtime reflection checks remain incomplete.
+UI icon coverage uses shared CPU-generated opaque/transparent polygon rings
+through the existing 32-byte vertex format and native straight-alpha blending.
+Bootstrap MTSDF atlases increase their distance range to 16 texels at 64 texels/em;
+native coverage formulas and GPU roots are unchanged. Windows 100% scale captures
+were inspected, and a focused Debug editor run with the Khronos layer loaded
+reported no Vulkan validation errors. Matching Metal captures remain unavailable, so Text/UI stays
+UNALIGNED.
 Bounded Vulkan Release Bistro profiling and static/moving-camera snapshots pass
 on RX 6700 XT. A subsequent user-reported blur/static-jitter regression required
 preceding-submission history ordering, truthful center metadata, stationary

@@ -35,7 +35,7 @@ vkr_ui_tile_command_fingerprint(const VkrUiDrawCommand *command) {
   hash = vkr_ui_tile_hash_bytes(hash, &command->FIELD, sizeof(command->FIELD))
   VKR_UI_TILE_HASH_FIELD(mode);
   VKR_UI_TILE_HASH_FIELD(rect_px);
-  VKR_UI_TILE_HASH_FIELD(has_corners);
+  VKR_UI_TILE_HASH_FIELD(corner_count);
   VKR_UI_TILE_HASH_FIELD(corners_px);
   VKR_UI_TILE_HASH_FIELD(clip_rect_px);
   VKR_UI_TILE_HASH_FIELD(uv_rect);

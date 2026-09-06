@@ -15,7 +15,8 @@ field=mtsdf
 atlas_width=1024
 atlas_height=1024
 atlas_px_per_em=64
-distance_range=8
+# Keep the screen distance range above 2px at 9px text on a 1x display.
+distance_range=16
 inner_padding_px=0
 outer_padding_px=0
 edge_coloring=inktrap

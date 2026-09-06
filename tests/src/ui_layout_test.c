@@ -311,6 +311,69 @@ static void test_ui_draw_build(void) {
   printf("  test_ui_draw_build PASSED\n");
 }
 
+static void test_ui_icon_coverage_and_capacity(void) {
+  printf("  Running test_ui_icon_coverage_and_capacity...\n");
+  VkrUiDrawCommand commands[2] = {0};
+  VkrUiDrawBuffer buffer = {0};
+  assert(vkr_ui_draw_buffer_begin(&buffer, commands, 2u,
+                                  (VkrUiRect){0, 0, 100, 100}));
+  const Vec2 square[] = {{10, 10}, {20, 10}, {20, 20}, {10, 20}};
+  const Vec2 triangle[] = {{30, 10}, {30, 20}, {40, 15}, {40, 15}};
+  const Vec4 color = {0.2f, 0.4f, 0.6f, 0.8f};
+  assert(vkr_ui_draw_buffer_polygon(&buffer, square, color));
+  assert(vkr_ui_draw_buffer_polygon(&buffer, triangle, color));
+  VkrUiVertex vertices[14];
+  uint32_t indices[51];
+  VkrUiDrawBatch batches[1];
+  VkrUiDrawOutput output = {.vertices = vertices,
+                            .vertex_capacity = 14u,
+                            .indices = indices,
+                            .index_capacity = 51u,
+                            .batches = batches,
+                            .batch_capacity = 1u};
+  assert(vkr_ui_draw_build(&buffer, 100u, 100u, &output).status ==
+         VKR_UI_DRAW_BUILD_OK);
+  assert(output.vertex_count == 14u && output.index_count == 51u);
+  assert(output.batch_count == 1u && batches[0].index_count == 51u);
+  // Coverage transitions over exactly one physical pixel, centered on the
+  // authored edge. RGB remains linear and unchanged as alpha falls to zero.
+  assert(ui_near(vertices[0].position.x, 10.5f));
+  assert(ui_near(vertices[0].position.y, 89.5f));
+  assert(ui_near(vertices[4].position.x, 9.5f));
+  assert(ui_near(vertices[4].position.y, 90.5f));
+  assert(ui_near(vertices[0].color.w, 0.8f) && vertices[4].color.w == 0.0f);
+  assert(ui_near((vertices[0].color.w + vertices[4].color.w) * 0.5f, 0.4f));
+  assert(ui_near(vertices[4].color.x, color.x) &&
+         ui_near(vertices[4].color.z, color.z));
+  assert(ui_near(commands[0].rect_px.x, 9.5f) &&
+         ui_near(commands[0].rect_px.width, 11.0f));
+  for (uint32_t i = 0u; i < output.index_count; ++i)
+    assert(indices[i] < output.vertex_count);
+  // Capacity rejection preserves complete shapes; a partial fringe is visible
+  // corruption, even when its opaque center would fit the remaining storage.
+  output.index_capacity = 50u;
+  VkrUiDrawBuildResult result = vkr_ui_draw_build(&buffer, 100u, 100u, &output);
+  assert(result.status == VKR_UI_DRAW_BUILD_TRUNCATED &&
+         result.dropped_command_count == 1u);
+  assert(output.vertex_count == 8u && output.index_count == 30u);
+  output.vertex_capacity = 7u;
+  result = vkr_ui_draw_build(&buffer, 100u, 100u, &output);
+  assert(result.status == VKR_UI_DRAW_BUILD_TRUNCATED &&
+         result.dropped_command_count == 2u);
+  assert(output.vertex_count == 0u && output.index_count == 0u);
+  // Reverse winding produces the same inset, not an opaque expanded outline.
+  const Vec2 reversed[] = {{10, 10}, {10, 20}, {20, 20}, {20, 10}};
+  assert(vkr_ui_draw_buffer_begin(&buffer, commands, 2u,
+                                  (VkrUiRect){0, 0, 100, 100}));
+  assert(vkr_ui_draw_buffer_polygon(&buffer, reversed, color));
+  output.vertex_capacity = 14u;
+  assert(vkr_ui_draw_build(&buffer, 100u, 100u, &output).status ==
+         VKR_UI_DRAW_BUILD_OK);
+  assert(ui_near(vertices[0].position.x, 10.5f) &&
+         ui_near(vertices[0].position.y, 89.5f));
+  printf("  test_ui_icon_coverage_and_capacity PASSED\n");
+}
+
 static void test_ui_tile_hashing_and_motion_damage(void) {
   printf("  Running test_ui_tile_hashing_and_motion_damage...\n");
   Arena *arena = arena_create(MB(1), MB(1));
@@ -704,6 +767,7 @@ bool32_t run_ui_layout_tests(void) {
   test_ui_grid_intrinsic_measurement();
   test_ui_style_content_scale();
   test_ui_draw_build();
+  test_ui_icon_coverage_and_capacity();
   test_ui_tile_hashing_and_motion_damage();
   test_ui_dock_layout_drag_and_json_round_trip();
   test_ui_dock_close_nested_sibling_focus();

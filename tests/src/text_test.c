@@ -533,6 +533,66 @@ vkr_internal void test_ui_system_scale_revision_and_offsets(void) {
   printf("  test_ui_system_scale_revision_and_offsets PASSED\n");
 }
 
+vkr_internal void test_ui_label_baseline_is_content_independent(void) {
+  printf("  Running test_ui_label_baseline_is_content_independent...\n");
+  setup_suite();
+  TestCookedFont fixture;
+  test_cooked_font_init(&fixture);
+  VkrFontSystem fonts = {0};
+  fonts.fonts = (Array_VkrFont){.length = 1u, .data = &fixture.font};
+  fonts.default_mtsdf_font_handle = (VkrFontHandle){
+      .id = fixture.font.id, .generation = fixture.font.generation};
+  VkrUiSystem system = {0};
+  assert(vkr_ui_system_init(&system, &fonts));
+  vkr_ui_system_set_offscreen_size(&system, true_v, 200u, 100u);
+  InputState input = {0};
+  const float32_t scales[] = {1.0f, 1.25f, 2.0f};
+  // 24pt row at y=4.25pt: 12.5pt line box and 8pt ascent give baseline
+  // 18pt. Snap the final physical baseline once, preserving glyph dimensions.
+  const float32_t expected_baselines[] = {18.0f, 23.0f, 36.0f};
+  const String8 contents[] = {string8_lit("A"), string8_lit("A\xc3\xa9")};
+  for (uint32_t scale = 0u; scale < ArrayCount(scales); ++scale) {
+    vkr_ui_system_set_offscreen_content_scale(&system, scales[scale]);
+    for (uint32_t content = 0u; content < ArrayCount(contents); ++content) {
+      VkrAllocatorScope scope = vkr_allocator_begin_scope(&allocator);
+      assert(vkr_allocator_scope_is_valid(&scope));
+      assert(vkr_ui_begin(&system, &allocator, NULL, 200u, 100u, &input,
+                          false_v, 1.0 / 60.0, NULL));
+      VkrUiWidgetConfig label = vkr_ui_widget_config_default();
+      label.placement.justify = VKR_UI_ALIGN_START;
+      label.placement.align = VKR_UI_ALIGN_START;
+      label.placement.margin_pt.top = 4.25f;
+      label.style.min_size_pt = (Vec2){80.0f, 24.0f};
+      label.style.max_size_pt = label.style.min_size_pt;
+      label.style.font_size_pt = 10.0f;
+      label.text.font_size = 10.0f;
+      vkr_ui_label(&system, string8_lit("baseline-label"), contents[content],
+                   &label);
+      (void)vkr_ui_end(&system);
+      VkrPreparedUiDrawList draw_list = {0};
+      assert(vkr_ui_system_prepare_draw_list(&system, &allocator, 200u, 100u,
+                                             &draw_list));
+      assert(draw_list.vertex_count == 4u * (content + 1u));
+      float32_t minimum_y = draw_list.vertices[0].position.y;
+      float32_t maximum_y = minimum_y;
+      for (uint32_t vertex = 1u; vertex < 4u; ++vertex) {
+        minimum_y = Min(minimum_y, draw_list.vertices[vertex].position.y);
+        maximum_y = Max(maximum_y, draw_list.vertices[vertex].position.y);
+      }
+      // Packet vertices use a bottom-left origin; authored UI uses top-left.
+      assert_f32_eq(100.0f - maximum_y + 8.0f * scales[scale],
+                    expected_baselines[scale], 0.0001f,
+                    "content-independent physical baseline");
+      assert_f32_eq(maximum_y - minimum_y, 10.0f * scales[scale], 0.0001f,
+                    "baseline alignment preserves glyph size");
+      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    }
+  }
+  vkr_ui_system_shutdown(&system);
+  teardown_suite();
+  printf("  test_ui_label_baseline_is_content_independent PASSED\n");
+}
+
 vkr_internal void test_ui_system_reuses_unchanged_draw_geometry(void) {
   printf("  Running test_ui_system_reuses_unchanged_draw_geometry...\n");
   setup_suite();
@@ -1058,6 +1118,7 @@ bool32_t run_text_tests(void) {
   test_window_content_scale_snapshot();
   test_ui_text_content_scale_contract();
   test_ui_system_scale_revision_and_offsets();
+  test_ui_label_baseline_is_content_independent();
   test_ui_system_reuses_unchanged_draw_geometry();
   test_ui_text_field_character_input_and_repeat();
   test_ui_readonly_selection_and_mutation();

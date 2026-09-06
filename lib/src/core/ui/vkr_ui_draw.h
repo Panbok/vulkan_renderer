@@ -19,9 +19,11 @@ typedef enum VkrUiDrawMode {
 
 typedef struct VkrUiDrawCommand {
   VkrUiRect rect_px;
-  /** Optional convex solid quad in Y-down pixels; CPU lowering only. */
-  Vec2 corners_px[4];
-  bool8_t has_corners;
+  /** Prepared convex icon polygon: inner then outer coverage ring, Y-down.
+   *
+   * Three or four corners per ring; zero selects the ordinary rectangle. */
+  Vec2 corners_px[8];
+  uint32_t corner_count;
   VkrUiRect clip_rect_px;
   /** Top-left texture coordinates: u0, v0, u1, v1. */
   Vec4 uv_rect;
@@ -91,7 +93,10 @@ bool8_t vkr_ui_draw_buffer_push(VkrUiDrawBuffer *buffer,
                                 VkrUiDrawCommand command);
 bool8_t vkr_ui_draw_buffer_solid(VkrUiDrawBuffer *buffer, VkrUiRect rect_px,
                                  Vec4 color);
-/** Convex solid quad; repeat the last corner to emit a triangle. */
+/** Convex icon quad with a one-device-pixel alpha fringe centered on its
+ * edges.
+ * Repeat the last corner for a triangle. Edges must support a 0.5px
+ * inset. */
 bool8_t vkr_ui_draw_buffer_polygon(VkrUiDrawBuffer *buffer,
                                    const Vec2 corners_px[4], Vec4 color);
 bool8_t vkr_ui_draw_buffer_image(VkrUiDrawBuffer *buffer, VkrUiRect rect_px,

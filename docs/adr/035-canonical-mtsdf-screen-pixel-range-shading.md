@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-09-06
 authority: adr
 ---
 # ADR-035: Derivative-based MTSDF coverage
@@ -27,6 +27,9 @@ The cooked MTSDF loader accepts only a linear, single-page RGBA8 MTSDF atlas.
 Its clamp-to-edge, linear, non-mipmapped sampling stays fixed when the sample's
 scene-texture filtering controls change.
 No alpha-SDF blend fallback is implemented.
+Bootstrap atlas range is selected for the smallest UI text at 1x display scale;
+see [ADR-034](034-offline-cooked-font-artifacts.md). Clamping a too-small range in
+the shader does not recover distance information missing from the cooked field.
 
 ## Consequences
 
