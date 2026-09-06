@@ -61,7 +61,7 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [023](adr/023-vulkan-1-4-bindless-capability-profile.md) | One explicit Vulkan capability floor | implemented |
 | [024](adr/024-shared-bindless-gpu-cores.md) | Shared allocation/completion cores and bounded Metal heap residency | implemented |
 | [025](adr/025-selected-renderer-implementation-strategy.md) | Procedural renderer and prepared native commands | implemented |
-| [027](adr/027-immediate-mode-grid-ui.md) | Grid UI, dock stacks, scene panels, Console and Bakery | implemented |
+| [027](adr/027-immediate-mode-grid-ui.md) | Grid UI, scene light labels and controls, dock stacks, Console and Bakery | implemented |
 | [028](adr/028-gpu-driven-deferred-visibility-buffer.md) | One GPU-driven world topology | implemented |
 | [029](adr/029-retained-graph-resources.md) | Retain submitted image contents per subresource | implemented |
 | [030](adr/030-offline-mesh-optimization-and-cooking.md) | Versioned meshoptimizer artifacts preserving glTF nodes and shared geometry | implemented |

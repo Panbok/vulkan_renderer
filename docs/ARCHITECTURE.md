@@ -38,7 +38,13 @@ independent simulation/render controls in a draggable Scene toolbar, alongside
 load/unload and camera entry. Scene focus routes Tab to camera capture; panel
 focus routes it to widgets. Hierarchy reads the authoritative scene
 through a virtualized tree; Inspector sends typed selection and edit requests to
-the runtime. Console snapshots bounded structured logger history with a checkbox filter dropdown. Bakery runs
+the runtime. Debug > Labels controls selectable directional, spot and point
+light texture icons. The editor identifies ECS light components and projects
+32-point labels above their origins using the packet's unjittered camera and
+Scene mapping. Inspector exposes light enable, color/intensity, local direction
+angles, punctual range and spotlight cone controls through the edit journal.
+RMB holds free-camera capture; Tab/F3 and the toolbar remain toggle alternatives.
+Console snapshots bounded structured logger history with a checkbox filter dropdown. Bakery runs
 mesh, font and texture cookers in a cancellable child process. Its setup, jobs
 and output views use labeled controls and adapt to dock width. Render Stop retains the last Scene image while UI continues;
 Vulkan UI-only frames reset Scene readback copies before skipping absent producers.

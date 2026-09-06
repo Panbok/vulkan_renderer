@@ -21,6 +21,14 @@ state by stable widget ID, including interaction, text editing, scroll offsets,
 last layout, and reusable draw storage. Layout uses grid tracks only. Input
 hit-testing uses the previous frame's retained rectangles.
 
+`vkr_ui_end()` completes focus, input capture and tooltip text borrowing.
+Layout, hashes, damage and draw geometry resolve once in
+`vkr_ui_system_prepare_draw_list()`. Before that resolution, the runtime's
+projection callback can update current-frame widget rectangles by stable ID.
+The editor uses this boundary to keep light icons on the same unjittered camera
+pose and Scene rectangle as the submitted packet, including camera motion and
+dock resizing. Rectangle changes after preparation are rejected.
+
 The system lowers the complete visual tree to ordered, scissored batches of
 vertices and indices. When the tree, target, and scale are unchanged, it reuses
 retained CPU geometry; each frame still uploads and draws that stream. Tile
@@ -56,6 +64,11 @@ An unobstructed Scene click clears widget focus and gives Tab to free-camera
 capture. Clicking a panel or control restores Tab/Shift-Tab widget navigation.
 F3 and the toolbar camera button also enter camera mode; Escape releases capture.
 Stopped or hidden Scene views do not accept camera entry.
+Holding right mouse over an unobstructed live Scene captures the free camera
+until release; focus loss synthesizes the right-button release. This temporary
+capture has separate state from Tab/F3/toolbar toggles. Camera capture clears
+widget focus and consumes editor input even when its virtual pointer crosses
+an overlay. The capture-entry frame consumes no mouse motion.
 Window input retains press/release edges, button press positions and press-time
 shortcut modifiers until frame completion. Docking consumes final movement before
 releasing its drag, including a complete gesture received in one event drain.
@@ -79,6 +92,50 @@ It edits name, visibility, local TRS and light values. Apply commits a transacti
 Revert/Escape discards the field draft. Authored shear matrices remain read-only.
 Runtime selection is shared with viewport picking, and frame selection fits the
 selected subtree's mesh bounds.
+
+Debug > Labels expands a master visibility checkbox and directional, spot and
+point light checkboxes. Type choices survive the master switch. Actual ECS
+components determine the label type, including imported glTF light nodes;
+Bistro's punctual lights are points. The editor loads a three-symbol bitmap
+font atlas once and releases its font reference at shutdown. The existing font
+system retains atlas storage until UI text borrowers are destroyed. No new
+shader, UI vertex contract or Scene render target is required.
+
+Light labels are 32-point texture buttons above the entity origin, composited
+at native UI resolution, outside lighting and temporal history. They are visible
+through scene geometry, clipped to the displayed Scene image, hidden behind the
+camera and while Scene rendering is stopped. Disabled lights remain selectable
+with gray icons. Clicking an icon selects its entity in Hierarchy and Inspector;
+selected icons have an amber border. Frame-scratch anchor records retain entity
+IDs, never component pointers, and are discarded on the next UI build. A scene
+generation change prevents their use after unload/reload. Labels reserve 96
+nodes for subsequent editor controls within the shared 1024-node UI capacity;
+capacity exhaustion emits a Console warning and keeps those controls reachable.
+Overlapping button presses give ownership to the last drawn button. Slider
+release consumes its final pointer position, including a click whose press and
+release arrive together.
+
+Inspector distinguishes directional, spot and point lights. Light enabled,
+linear RGB, intensity and punctual range use the existing Apply/Revert journal.
+Directional and spot directions have local yaw/elevation fields and sliders;
+node rotation still transforms that local direction. Spots add inner/outer
+half-angle fields and sliders in degrees. Edited cones require an ordered,
+distinguishable cosine interval for smooth attenuation. Unedited authored values
+retain their exact representation. These controls use existing undo/redo and
+sidecar persistence.
+
+The [light-controls screenshot](../../assets/editor/light-label-controls.png)
+comes from a normal Release Metal run of
+[`editor_lights.scene.json`](../../assets/scenes/fixtures/editor_lights.scene.json).
+`./build_editor.sh Release`, `./build_release.sh`, and `./build_test.sh` pass.
+Native UI checks cover all three light types, master/type switches, icon
+selection, direction sliders and Apply/Undo/Redo, light enable, invalid cones,
+F3/Escape capture and Stop/Resume. A bounded Bistro run also selects imported
+point lights from their labels. CPU checks cover deferred rectangle placement,
+retained hit bounds, overlapping-button ownership and final slider positions.
+The computer-use interface cannot hold right mouse across movement; sustained
+RMB gestures and focus-loss release remain unverified natively. Windows/Vulkan
+execution is unavailable on this host. No performance comparison is claimed.
 
 Commands (Cmd/Ctrl+P) searches scene, layout, panel and transport actions.
 Pointer hover selects a visibly highlighted result; click or Enter runs it.

@@ -29,6 +29,8 @@ typedef struct VkrSampleUiFrame {
   VkrUiDockTree *dock;
   InputState *input;
   VkrViewportMapping mapping;
+  Mat4 view_projection; /* Unjittered camera, same Y-down convention as picking.
+                         */
   VkrSampleUiText text;
   const VkrScene *scene; /* Borrowed until build returns; edits are requests. */
   VkrEntityId selected_entity;
@@ -60,6 +62,8 @@ typedef struct VkrSampleUiClient {
   bool8_t (*initialize)(void *state, VkrUiDockTree *dock, VkrUiSystem *ui);
   void (*handle_input)(void *state, const InputState *input);
   VkrUiDockInputCapture (*build)(void *state, const VkrSampleUiFrame *frame);
+  /** Optional projection of current UI anchors after Scene camera input. */
+  void (*project_scene)(void *state, const VkrSampleUiFrame *frame);
   bool8_t (*shutdown)(void *state, const VkrUiDockTree *dock, VkrUiSystem *ui);
 } VkrSampleUiClient;
 

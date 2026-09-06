@@ -1,4 +1,5 @@
 #include "editor_application.h"
+#include "editor_internal.h"
 
 #include "core/logger.h"
 #include <math.h>
@@ -64,6 +65,17 @@ static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
       vkr_font_system_acquire(ui->fonts, name, false_v, &error);
   if (error != VKR_RENDERER_ERROR_NONE)
     goto cleanup;
+  const String8 label_name = string8_lit("editor-light-labels");
+  if (!vkr_font_system_load_from_file(
+          ui->fonts, label_name,
+          string8_lit("assets/fonts/editor-light-labels.fontcfg"), &error)) {
+    log_error("Failed to load editor light labels (%u)", (uint32_t)error);
+    goto cleanup;
+  }
+  editor->ui.label_font =
+      vkr_font_system_acquire(ui->fonts, label_name, false_v, &error);
+  if (error != VKR_RENDERER_ERROR_NONE)
+    goto cleanup;
   if (!editor->layout_path || editor->layout_path[0] == '\0')
     return true_v;
 
@@ -77,6 +89,10 @@ static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
   }
   return true_v;
 cleanup:
+  if (editor->ui.heading_font.id)
+    vkr_font_system_release_by_handle(ui->fonts, editor->ui.heading_font);
+  if (editor->ui.label_font.id)
+    vkr_font_system_release_by_handle(ui->fonts, editor->ui.label_font);
   vkr_editor_bakery_destroy(editor->ui.bakery);
   vkr_editor_scene_panels_destroy(editor->ui.scene_panels);
   vkr_editor_console_shutdown(&editor->ui.console);
@@ -105,6 +121,7 @@ static bool8_t editor_application_shutdown(void *state,
   vkr_editor_scene_panels_destroy(editor->ui.scene_panels);
   vkr_editor_console_shutdown(&editor->ui.console);
   vkr_font_system_release_by_handle(ui->fonts, editor->ui.heading_font);
+  vkr_font_system_release_by_handle(ui->fonts, editor->ui.label_font);
   if (!editor->layout_path || editor->layout_path[0] == '\0')
     return true_v;
 
@@ -115,6 +132,12 @@ static bool8_t editor_application_shutdown(void *state,
 
   log_error("Failed to save editor layout to '%s'", editor->layout_path);
   return false_v;
+}
+
+static void editor_application_project_scene(void *state,
+                                             const VkrSampleUiFrame *frame) {
+  VkrEditorApplication *editor = state;
+  vkr_editor_labels_project(&editor->ui, frame);
 }
 
 VkrSampleRuntimeConfig
@@ -145,6 +168,7 @@ vkr_editor_application_config(VkrEditorApplication *editor, int argc,
       .initialize = editor_application_initialize,
       .handle_input = editor_application_handle_input,
       .build = editor_application_build,
+      .project_scene = editor_application_project_scene,
       .shutdown = editor_application_shutdown,
   };
   return config;

@@ -222,6 +222,8 @@ typedef struct Application {
   VkrLightingSystem lighting_system;
   VkrShadowSystem shadow_system;
   VkrUiSystem ui_system;
+  /** Resolve UI anchors against the camera and viewport used by this packet. */
+  void (*project_ui)(struct Application *, const VkrViewportMapping *);
   VkrSkyboxSystem skybox_system;
   VkrScene *active_scene;
   uint64_t scene_generation;
@@ -1275,6 +1277,8 @@ void application_draw_frame(Application *application, float64_t delta) {
     world_payload.text_draw_count = text_draw_count;
   }
   VkrUiSystem *ui = &application->ui_system;
+  if (application->project_ui && has_editor)
+    application->project_ui(application, &editor_mapping);
   /* An unauthored UI frame contributes an empty stream. */
   if (ui->initialized && ui->frame_index > 0u &&
       !vkr_ui_system_prepare_draw_list(ui, scratch, setup.window_width,

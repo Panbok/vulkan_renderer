@@ -3085,6 +3085,21 @@ vkr_internal void application_update_ui(Application *application,
   }
 }
 
+static void application_project_ui(Application *application,
+                                    const VkrViewportMapping *mapping) {
+  const VkrSampleUiFrame frame = {
+      .ui = &application->ui_system,
+      .mapping = *mapping,
+      .mapping_valid = true_v,
+      .view_projection = mat4_mul(application->globals.projection,
+                                   application->globals.view),
+      .scene = application->active_scene,
+      .scene_generation = application->scene_generation,
+      .scene_rendering_stopped = application_editor_scene_rendering_stopped(application),
+  };
+  state->ui.project_scene(state->ui.state, &frame);
+}
+
 void application_update(Application *application, float64_t delta) {
   application_update_ui(application, delta);
   application_handle_input(application, delta);
@@ -3287,6 +3302,7 @@ int vkr_sample_runtime_run(int argc, char **argv,
   state->current_fps = 0.0;
   state->current_frametime = 0.0;
   state->ui = runtime_config->ui;
+  application.project_ui = state->ui.project_scene ? application_project_ui : NULL;
   if (strlen(PROJECT_SOURCE_DIR) + strlen(scene_path_arg) +
           sizeof(".editor.json") >
       sizeof(state->sidecar_path)) {

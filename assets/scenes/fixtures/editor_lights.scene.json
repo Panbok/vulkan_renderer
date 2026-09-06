@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "entities": [
+    {
+      "name": "Light controls fixture",
+      "parent": null,
+      "transform": {
+        "pos": [
+          -1.5,
+          0,
+          10
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "mesh": {
+        "path": "tests/fixtures/rendering/editor_lights.gltf",
+        "pipeline_domain": "world"
+      }
+    }
+  ]
+}
