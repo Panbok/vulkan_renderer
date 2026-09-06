@@ -386,7 +386,8 @@ void vkr_editor_scene_toolbar_build(VkrEditorUi *editor,
           ui, string8_lit("camera.enter"), VKR_UI_ICON_CAMERA,
           frame->mouse_captured
               ? string8_lit("Free camera active; Escape to release")
-              : string8_lit("Enter free camera (Tab / F3); Escape to release"),
+              : string8_lit("Hold RMB to fly; Tab / F3 toggles camera; Escape "
+                            "releases"),
           7, cols, frame->mouse_captured ? amber : blue,
           frame->scene_rendering_stopped))
     *frame->transport_action = VKR_SAMPLE_TRANSPORT_TOGGLE_CAMERA;
@@ -682,11 +683,13 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
     break;
   case VKR_EDITOR_WINDOW_HELP:
     title_text = string8_lit("EDITOR CONTROLS");
-    body_text = string8_lit("Cmd/Ctrl+P   Commands: scene, panels, transport\n"
-                            "Tab/F3 Camera (click Scene for Tab); Esc release\n"
-                            "F8  Cycle IBL mode\n"
-                            "F9 / F10  IBL intensity     G   Camera snapshot\n"
-                            "Click a title bar to focus and drag a window.");
+    body_text =
+        string8_lit("Cmd/Ctrl+P   Commands: scene, panels, transport\n"
+                    "Hold RMB in Scene to fly; release RMB to stop\n"
+                    "Tab/F3 or Camera button toggles fly; Esc releases\n"
+                    "F8  Cycle IBL mode\n"
+                    "F9 / F10  IBL intensity     G   Camera snapshot\n"
+                    "Click a title bar to focus and drag a window.");
     font_size_pt = 11.0f;
     break;
   default:

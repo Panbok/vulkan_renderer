@@ -267,6 +267,9 @@ static bool8_t cursor_in_content_area(PlatformState *state);
 
 - (void)windowDidResignKey:(NSNotification *)notification {
   sync_modifier_keys(state->input_state, 0, KEY_MAX_KEYS);
+  /* A release outside this window may never arrive. End editor RMB holds while
+     leaving the latched camera-capture policy to the runtime. */
+  input_process_button(state->input_state, BUTTON_RIGHT, false_v);
   // When window loses focus, show cursor if it was hidden due to capture
   if (state->mouse_captured) {
     show_cursor(state);

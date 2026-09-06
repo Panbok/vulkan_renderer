@@ -141,6 +141,7 @@ typedef struct State {
   VkrEntityId pick_selected_entity;
 
   bool8_t free_camera_use_gamepad;
+  bool8_t free_camera_held;
   bool8_t free_camera_wheel_initialized;
   int8_t free_camera_prev_wheel_delta;
 
@@ -1958,17 +1959,31 @@ vkr_internal void application_handle_input(Application *application,
     application_log_camera_snapshot(application);
   }
 
-  const bool8_t camera_captured =
+  bool8_t camera_captured =
       vkr_window_is_mouse_captured(&application->window);
+  if (state->free_camera_held &&
+      (!camera_captured || input_is_button_up(input_state, BUTTON_RIGHT) ||
+       application_editor_scene_rendering_stopped(application))) {
+    if (camera_captured)
+      vkr_window_set_mouse_capture(&application->window, false_v);
+    state->free_camera_held = false_v;
+    state->free_camera_wheel_initialized = false_v;
+    camera_captured = false_v;
+  }
+  bool8_t camera_started = false_v;
   const bool8_t camera_tab = input_key_just_pressed(input_state, KEY_TAB) &&
       (camera_captured ||
        (application->editor_viewport.enabled ? state->scene_keyboard_focus
                                             : !application->ui_capture.keyboard));
   const bool8_t camera_shortcut = application->editor_viewport.enabled &&
-      !application->ui_capture.text && input_key_just_pressed(input_state, KEY_F3);
+      !application->ui_capture.text &&
+      application->ui_system.keyboard_input_layer == 0u &&
+      input_key_just_pressed(input_state, KEY_F3);
   if ((camera_tab || camera_shortcut) &&
       (camera_captured || !application_editor_scene_rendering_stopped(application))) {
     vkr_window_set_mouse_capture(&application->window, !camera_captured);
+    state->free_camera_held = false_v;
+    camera_started = !camera_captured;
     state->free_camera_wheel_initialized = false_v;
     state->free_camera_use_gamepad = false_v;
   }
@@ -1978,12 +1993,57 @@ vkr_internal void application_handle_input(Application *application,
     bool8_t should_capture =
         !vkr_window_is_mouse_captured(&application->window);
     vkr_window_set_mouse_capture(&application->window, should_capture);
+    state->free_camera_held = false_v;
+    camera_started = should_capture;
     if (should_capture) {
       state->free_camera_use_gamepad = !state->free_camera_use_gamepad;
     } else {
       state->free_camera_use_gamepad = false_v;
     }
   }
+
+  if (application->editor_viewport.enabled &&
+      !vkr_window_is_mouse_captured(&application->window) &&
+      !application_editor_scene_rendering_stopped(application) &&
+      !application->ui_capture.mouse && !application->ui_capture.text &&
+      application->ui_system.mouse_input_layer == 0u &&
+      application->ui_system.keyboard_input_layer == 0u &&
+      !state->gizmo_drag.active && !state->gizmo_drag.pending_pick &&
+      !input_is_key_down(input_state, KEY_ESCAPE) &&
+      input_button_just_pressed(input_state, BUTTON_RIGHT) &&
+      input_is_button_down(input_state, BUTTON_RIGHT)) {
+    int32_t press_x = 0, press_y = 0;
+    input_get_button_press_position(input_state, BUTTON_RIGHT, &press_x,
+                                    &press_y);
+    const VkrViewportHitInfo hit =
+        application_get_viewport_hit_info(application, press_x, press_y);
+    if (hit.has_target_coords) {
+      vkr_window_set_mouse_capture(&application->window, true_v);
+      state->free_camera_held = true_v;
+      state->free_camera_use_gamepad = false_v;
+      state->free_camera_wheel_initialized = false_v;
+      state->scene_keyboard_focus = true_v;
+      application->ui_system.focused_id = VKR_UI_ID_NONE;
+      application->ui_system.focused_is_text = false_v;
+      application->ui_capture.keyboard = false_v;
+      camera_started = true_v;
+    }
+  }
+
+  /* Camera capture owns editor input. A previously focused Inspector button or
+     a toolbar under the virtual pointer must not block movement. */
+  if (application->editor_viewport.enabled &&
+      vkr_window_is_mouse_captured(&application->window)) {
+    application->ui_system.focused_id = VKR_UI_ID_NONE;
+    application->ui_system.focused_is_text = false_v;
+    application->ui_capture = (VkrUiInputCapture){0};
+    state->scene_keyboard_focus = true_v;
+  }
+
+  /* Capture changes the platform cursor coordinates. Consume motion only after
+     the next input snapshot establishes a baseline in captured coordinates. */
+  if (camera_started)
+    return;
 
   if (!vkr_window_is_mouse_captured(&application->window) ||
       application->ui_capture.mouse || application->ui_capture.keyboard ||
@@ -2782,6 +2842,7 @@ vkr_internal void application_update_ui(Application *application,
     if (escape ||
         (command && input_key_just_pressed(state->input_state, KEY_P))) {
       vkr_window_set_mouse_capture(&application->window, false_v);
+      state->free_camera_held = false_v;
       state->free_camera_wheel_initialized = false_v;
       state->free_camera_use_gamepad = false_v;
     }
@@ -2997,6 +3058,11 @@ vkr_internal void application_update_ui(Application *application,
     break;
   case VKR_SAMPLE_TRANSPORT_STOP_RENDERING:
     application->editor_viewport.scene_rendering_stopped = true_v;
+    if (vkr_window_is_mouse_captured(&application->window))
+      vkr_window_set_mouse_capture(&application->window, false_v);
+    state->free_camera_held = false_v;
+    state->free_camera_wheel_initialized = false_v;
+    state->free_camera_use_gamepad = false_v;
     vkr_picking_cancel(&application->picking);
     state->gizmo_drag.active = false_v;
     state->gizmo_drag.pending_pick = false_v;
@@ -3008,6 +3074,7 @@ vkr_internal void application_update_ui(Application *application,
     if (!application_editor_scene_rendering_stopped(application)) {
       const bool8_t captured = vkr_window_is_mouse_captured(&application->window);
       vkr_window_set_mouse_capture(&application->window, !captured);
+      state->free_camera_held = false_v;
       state->scene_keyboard_focus = true_v;
       state->free_camera_wheel_initialized = false_v;
       state->free_camera_use_gamepad = false_v;
@@ -3248,6 +3315,7 @@ int vkr_sample_runtime_run(int argc, char **argv,
   state->world_text_id = 0;
   state->world_text_update_clock = vkr_clock_create();
   state->free_camera_use_gamepad = false_v;
+  state->free_camera_held = false_v;
   state->free_camera_wheel_initialized = false_v;
   state->free_camera_prev_wheel_delta = 0;
   state->last_picked_object_id = 0;
