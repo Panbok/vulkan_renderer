@@ -29,6 +29,12 @@ while retaining accounting. Metal uses placement heaps and upload/readback
 rings through the same range and submit contracts. There is no VMA, online
 defragmentation or graph transient aliasing.
 
+Host-visible Vulkan buffer placements satisfy both native memory requirements
+and the 16-byte alignment of typed CPU vector records. Transfer-only staging
+buffers can report a four-byte native requirement; using that alone permits
+misaligned candidate-row stores in optimized builds. Buffer-relative upload
+offsets retain their existing typed alignment, and resource retirement is unchanged.
+
 Metal creates private placement heaps on demand instead of reserving one large
 resident heap at startup. Each heap owns a disjoint span in the shared logical
 allocator. Bounded range allocation cannot cross its heap span; native offsets

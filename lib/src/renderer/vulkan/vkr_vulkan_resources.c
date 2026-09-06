@@ -384,11 +384,17 @@ bool8_t vkr_vk_create_buffer(VkrVulkanRenderer *renderer,
       dedicated_requirements.requiresDedicatedAllocation ||
       dedicated_requirements.prefersDedicatedAllocation ||
       requirements.memoryRequirements.size > pool_block_size;
+  // Typed mapped uploads contain Vec4 records. Transfer-only buffers can have
+  // a smaller native alignment, which does not satisfy those CPU stores.
+  const VkDeviceSize alignment =
+      (allocation->properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+          ? Max(requirements.memoryRequirements.alignment,
+                (VkDeviceSize)_Alignof(Vec4))
+          : requirements.memoryRequirements.alignment;
   if (!dedicated &&
       !vkr_vulkan_memory_pool_allocate(
           renderer->memory_pool, allocation->pool_key, allocation->properties,
-          requirements.memoryRequirements.size,
-          requirements.memoryRequirements.alignment, allocation->owner,
+          requirements.memoryRequirements.size, alignment, allocation->owner,
           &allocation->pooled_allocation))
     return false_v;
   const VkResult create_result =
