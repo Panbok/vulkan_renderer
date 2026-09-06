@@ -528,12 +528,17 @@ int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
     vkr_harness_stderr("%s: %s\n", error.code, error.message);
     return VKR_HARNESS_EXIT_ERROR;
   }
+  for (char *cursor = final_report; *cursor; ++cursor)
+    if (*cursor == '\\')
+      *cursor = '/';
   uint64_t repo_root_length = string_length(repo_root);
-  while (repo_root_length > 0u && repo_root[repo_root_length - 1u] == '/') {
+  while (repo_root_length > 0u &&
+         (repo_root[repo_root_length - 1u] == '/' ||
+          repo_root[repo_root_length - 1u] == '\\')) {
     repo_root_length--;
   }
   const char *relative = final_report + repo_root_length;
-  if (*relative == '/') {
+  if (*relative == '/' || *relative == '\\') {
     relative++;
   }
   vkr_harness_stdout("{\"status\":\"%s\",\"exit_code\":%u,\"report\":\"%s\","

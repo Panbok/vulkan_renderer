@@ -70,13 +70,21 @@ uint32_t vkr_bloom_mip_count(const VkrBloomConfig *config,
 }
 
 VkrBloomGpuParams vkr_bloom_gpu_params(const VkrBloomConfig *config,
-                                       const VkrBloomFrame *frame) {
+                                       const VkrBloomFrame *frame,
+                                       uint32_t mip_count) {
+  /* Each unsaturated level contributes unit DC gain. Apply the correction at
+     combine only; the reduction and accumulation kernels ignore intensity. */
+  const float32_t intensity =
+      frame->enabled && mip_count != 0u
+          ? frame->intensity *
+                ((float32_t)config->max_mip_count / (float32_t)mip_count)
+          : 0.0f;
   return (VkrBloomGpuParams){
       .threshold = frame->threshold,
       .knee = frame->knee,
       .knee_denominator = 4.0f * frame->knee + VKR_BLOOM_KNEE_EPSILON,
       .firefly_clamp = config->firefly_clamp,
-      .intensity = frame->enabled ? frame->intensity : 0.0f,
+      .intensity = intensity,
   };
 }
 

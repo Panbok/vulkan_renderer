@@ -612,7 +612,9 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
       [renderer->gpu_draw_encode_pipeline release];
       [renderer->gpu_draw_encode_inherited_pipeline release];
       [renderer->temporal_transform_pipeline release];
-      [renderer->gbuffer_resolve_pipeline release];
+      for (uint32_t i = 0u; i < ArrayCount(renderer->gbuffer_resolve_pipelines);
+           ++i)
+        [renderer->gbuffer_resolve_pipelines[i] release];
       [renderer->gtao_denoise_pipeline release];
       [renderer->gtao_evaluate_pipeline release];
       [renderer->gtao_depth_mip_pipeline release];

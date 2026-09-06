@@ -14,6 +14,7 @@
 #include "core/logger.h"
 #include "core/vkr_atomic.h"
 #include "math/vkr_frustum.h"
+#include "renderer/vkr_visibility.h"
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
 #include "memory/vkr_dmemory.h"
@@ -118,6 +119,7 @@ typedef struct VkrMetalPacketImageInstance {
   uint64_t history_producer_submit_value;
   uint64_t history_world_epoch;
   Mat4 history_view_projection;
+  Mat4 history_raster_view_projection;
   uint32_t history_width;
   uint32_t history_height;
   uint64_t history_frame_index;
@@ -278,6 +280,7 @@ typedef struct VkrMetalPacketPreparedDraw {
   uint64_t index_length;
   uint32_t instance_count;
   MTLCullMode cull_mode;
+  MTLWinding winding;
 } VkrMetalPacketPreparedDraw;
 
 typedef struct VkrMetalPacketFrameUpload {
@@ -568,7 +571,7 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> gpu_draw_encode_pipeline;
   id<MTLComputePipelineState> gpu_draw_encode_inherited_pipeline;
   id<MTLComputePipelineState> temporal_transform_pipeline;
-  id<MTLComputePipelineState> gbuffer_resolve_pipeline;
+  id<MTLComputePipelineState> gbuffer_resolve_pipelines[4];
   id<MTLComputePipelineState> deferred_lighting_pipeline;
   id<MTLComputePipelineState> gtao_depth_prefilter_pipeline;
   id<MTLComputePipelineState> gtao_depth_mip_pipeline;
@@ -619,6 +622,7 @@ struct VkrMetalPacketRenderer {
   uint32_t transmission_gpu_draw_count;
   uint64_t current_hzb_world_epoch;
   Mat4 current_hzb_view_projection;
+  Mat4 current_hzb_raster_view_projection;
   uint32_t selected_hzb_history_instance;
   uint32_t selected_temporal_history_instance;
   uint32_t selected_exposure_history_instance;
@@ -651,6 +655,7 @@ struct VkrMetalPacketRenderer {
   bool8_t fxaa_enabled;
   bool8_t transmission_compact_enabled;
   bool8_t hzb_enabled;
+  bool8_t frustum_enabled;
   bool8_t frame_prepared;
   bool8_t pipeline_archive_warm;
   bool8_t pipeline_archive_written;

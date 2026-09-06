@@ -1,0 +1,131 @@
+{
+  "version": 2,
+  "entities": [
+    {
+      "name": "Root",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Sun",
+      "parent": 0,
+      "transform": {
+        "pos": [
+          0,
+          4,
+          3
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "directional_light": {
+        "enabled": true,
+        "color": [
+          1.0,
+          0.96,
+          0.9
+        ],
+        "intensity": 2.2,
+        "direction_local": [
+          -0.35,
+          -0.75,
+          -0.45
+        ]
+      }
+    },
+    {
+      "name": "LowerOccluder",
+      "parent": 0,
+      "transform": {
+        "pos": [
+          0,
+          -1.1,
+          -5
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          6,
+          2.6,
+          0.2
+        ],
+        "material": {
+          "name": "p20_opaque_single",
+          "path": "tests/fixtures/rendering/p20_opaque_single.mt"
+        }
+      }
+    },
+    {
+      "name": "UpperVisibleTarget",
+      "parent": 0,
+      "transform": {
+        "pos": [
+          0,
+          2,
+          -10
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          0.3,
+          0.3,
+          0.3
+        ],
+        "material": {
+          "name": "p20_opaque_single",
+          "path": "tests/fixtures/rendering/p20_opaque_single.mt"
+        }
+      }
+    }
+  ]
+}

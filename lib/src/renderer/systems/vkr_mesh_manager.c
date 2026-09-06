@@ -294,7 +294,7 @@ vkr_internal uint32_t vkr_mesh_manager_batch_wave_size(const VkrMeshManager *m,
 
 /**
  * @brief Update world-space bounding sphere from local bounds and model matrix.
- * Handles non-uniform scale conservatively using max scale factor.
+ * Includes shear from composed non-uniform scales and rotations.
  */
 vkr_internal void vkr_mesh_update_world_bounds(VkrMesh *mesh) {
   if (!mesh->bounds_valid) {
@@ -305,23 +305,14 @@ vkr_internal void vkr_mesh_update_world_bounds(VkrMesh *mesh) {
   mesh->bounds_world_center =
       mat4_mul_vec3(mesh->model, mesh->bounds_local_center);
 
-  // Compute max scale factor from matrix columns (handles non-uniform scale)
-  Vec3 col0 = vec3_new(mesh->model.m00, mesh->model.m10, mesh->model.m20);
-  Vec3 col1 = vec3_new(mesh->model.m01, mesh->model.m11, mesh->model.m21);
-  Vec3 col2 = vec3_new(mesh->model.m02, mesh->model.m12, mesh->model.m22);
-
-  float32_t sx = vec3_length(col0);
-  float32_t sy = vec3_length(col1);
-  float32_t sz = vec3_length(col2);
-  float32_t max_scale = vkr_max_f32(vkr_max_f32(sx, sy), sz);
-
-  mesh->bounds_world_radius = mesh->bounds_local_radius * max_scale;
+  mesh->bounds_world_radius =
+      mesh->bounds_local_radius * mat4_affine_sphere_scale(mesh->model);
 }
 
 /**
  * @brief Update instance bounds from asset local bounds and model matrix.
  *
- * Uses max scale factor to stay conservative under non-uniform scale and
+ * Uses an affine stretch bound to remain conservative under shear and
  * clears bounds when the asset has no valid bounds.
  */
 vkr_internal void
@@ -336,16 +327,8 @@ vkr_mesh_manager_update_instance_bounds(VkrMeshInstance *instance,
   instance->bounds_world_center =
       mat4_mul_vec3(model, asset->bounds_local_center);
 
-  Vec3 col0 = vec3_new(model.m00, model.m10, model.m20);
-  Vec3 col1 = vec3_new(model.m01, model.m11, model.m21);
-  Vec3 col2 = vec3_new(model.m02, model.m12, model.m22);
-
-  float32_t sx = vec3_length(col0);
-  float32_t sy = vec3_length(col1);
-  float32_t sz = vec3_length(col2);
-  float32_t max_scale = vkr_max_f32(vkr_max_f32(sx, sy), sz);
-
-  instance->bounds_world_radius = asset->bounds_local_radius * max_scale;
+  instance->bounds_world_radius =
+      asset->bounds_local_radius * mat4_affine_sphere_scale(model);
 }
 
 vkr_internal bool8_t vkr_mesh_manager_resolve_geometry(

@@ -117,7 +117,7 @@
       "name": "gpu_draw_compaction_state",
       "condition": "scene_rendering",
       "type": "buffer",
-      "size": 400,
+      "size": 720,
       "usage": ["STORAGE", "INDIRECT", "TRANSFER_SRC", "TRANSFER_DST"],
       "flags": ["PER_FRAME_SLOT"]
     },
@@ -173,7 +173,7 @@
       "name": "transmission_gpu_draw_compaction_state",
       "type": "buffer",
       "condition": "scene_rendering && transmission_pending",
-      "size": 116,
+      "size": 180,
       "usage": ["STORAGE", "INDIRECT", "TRANSFER_SRC", "TRANSFER_DST"],
       "flags": ["PER_FRAME_SLOT"]
     },
@@ -354,7 +354,7 @@
     },
     {
       "name": "deferred_emissive_seed",
-      "condition": "scene_rendering",
+      "condition": "scene_rendering && deferred_emissive_capture_enabled",
       "type": "image",
       "extent": { "mode": "viewport" },
       "format": "R16G16B16A16_SFLOAT",
@@ -363,7 +363,7 @@
     },
     {
       "name": "deferred_resolve_debug",
-      "condition": "scene_rendering",
+      "condition": "scene_rendering && resolve_barycentric_lod_capture_enabled",
       "type": "image",
       "extent": { "mode": "viewport" },
       "format": "R16G16B16A16_SFLOAT",
@@ -564,7 +564,7 @@
       "reads": [
         { "buffer": "gpu_draw_candidates", "access": "STORAGE_READ", "binding": 0 },
         { "buffer": "gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
-        { "image": "hzb_history", "access": "STORAGE_READ", "binding": 3 }
+        { "image": "hzb_history", "access": "STORAGE_READ", "binding": 3, "when": "hzb_build_enabled" }
       ],
       "writes": [
         { "buffer": "gpu_draw_classifications", "access": "STORAGE_WRITE", "binding": 1 },
@@ -644,7 +644,7 @@
       "reads": [
         { "buffer": "transmission_gpu_draw_candidates", "access": "STORAGE_READ", "binding": 0 },
         { "buffer": "transmission_gpu_draw_instances", "access": "STORAGE_READ", "binding": 9 },
-        { "image": "hzb_history", "access": "STORAGE_READ", "binding": 3 }
+        { "image": "hzb_history", "access": "STORAGE_READ", "binding": 3, "when": "hzb_build_enabled" }
       ],
       "writes": [
         { "buffer": "transmission_gpu_draw_classifications", "access": "STORAGE_WRITE", "binding": 1 },
@@ -723,7 +723,7 @@
     },
     {
       "name": "HZB.BuildBase",
-      "condition": "scene_rendering",
+      "condition": "hzb_build_enabled",
       "type": "compute",
       "flags": ["NO_CULL"],
       "reads": [
@@ -741,7 +741,7 @@
     },
     {
       "name": "HZB.BuildMip.${i}",
-      "condition": "scene_rendering",
+      "condition": "hzb_build_enabled",
       "type": "compute",
       "repeat": { "count_source": "hzb_reduce_pass_count" },
       "flags": ["NO_CULL"],
@@ -981,8 +981,8 @@
         { "image": "gbuffer_albedo", "access": "STORAGE_WRITE", "binding": 2 },
         { "image": "gbuffer_specular", "access": "STORAGE_WRITE", "binding": 3 },
         { "image": "gbuffer_normal", "access": "STORAGE_WRITE", "binding": 4 },
-        { "image": "deferred_emissive_seed", "access": "STORAGE_WRITE", "binding": 5 },
-        { "image": "deferred_resolve_debug", "access": "STORAGE_WRITE", "binding": 6 },
+        { "image": "deferred_emissive_seed", "access": "STORAGE_WRITE", "binding": 5, "when": "deferred_emissive_capture_enabled" },
+        { "image": "deferred_resolve_debug", "access": "STORAGE_WRITE", "binding": 6, "when": "resolve_barycentric_lod_capture_enabled" },
         { "buffer": "gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 7 },
         { "image": "hdr_pre_transmission", "access": "STORAGE_WRITE", "binding": 8 },
         { "image": "temporal_motion", "access": "STORAGE_WRITE", "binding": 11 },
@@ -1005,8 +1005,8 @@
         { "image": "gbuffer_albedo", "access": "STORAGE_WRITE", "binding": 2 },
         { "image": "gbuffer_specular", "access": "STORAGE_WRITE", "binding": 3 },
         { "image": "gbuffer_normal", "access": "STORAGE_WRITE", "binding": 4 },
-        { "image": "deferred_emissive_seed", "access": "STORAGE_WRITE", "binding": 5 },
-        { "image": "deferred_resolve_debug", "access": "STORAGE_WRITE", "binding": 6 },
+        { "image": "deferred_emissive_seed", "access": "STORAGE_WRITE", "binding": 5, "when": "deferred_emissive_capture_enabled" },
+        { "image": "deferred_resolve_debug", "access": "STORAGE_WRITE", "binding": 6, "when": "resolve_barycentric_lod_capture_enabled" },
         { "buffer": "gpu_draw_compaction_state", "access": "STORAGE_READ_WRITE", "binding": 7 },
         { "image": "scene_pre_transmission", "access": "STORAGE_WRITE", "binding": 8 },
         { "image": "temporal_motion", "access": "STORAGE_WRITE", "binding": 11 },

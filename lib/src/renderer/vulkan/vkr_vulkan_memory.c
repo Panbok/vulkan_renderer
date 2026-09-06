@@ -61,6 +61,11 @@ int32_t vkr_vulkan_memory_type_rank(VkrVulkanMemoryClass memory_class,
     if (properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
       return 1;
     return 2;
+  case VKR_VULKAN_MEMORY_CLASS_PUBLICATION:
+    if (!(properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+      return -1;
+    /* Coherent publication uses the same placement preference as uploads. */
+    // fall through
   case VKR_VULKAN_MEMORY_CLASS_UPLOAD:
     if (!(properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
       return -1;

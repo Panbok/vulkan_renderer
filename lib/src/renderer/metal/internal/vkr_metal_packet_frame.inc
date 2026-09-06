@@ -173,11 +173,11 @@ vkr_internal void vkr_metal_packet_record_prepared_draws(
                                      1.0}];
   MTLCullMode active_cull_mode = MTLCullModeNone;
   [encoder setCullMode:active_cull_mode];
-  [encoder setFrontFacingWinding:MTLWindingCounterClockwise];
   [encoder setDepthStencilState:depth_state];
   [encoder setRenderPipelineState:pipeline];
   for (uint32_t i = 0; i < draw_count; ++i) {
     const VkrMetalPacketPreparedDraw *draw = &draws[i];
+    [encoder setFrontFacingWinding:draw->winding];
     if (draw->cull_mode != active_cull_mode) {
       [encoder setCullMode:draw->cull_mode];
       active_cull_mode = draw->cull_mode;
@@ -785,11 +785,16 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
     root->instances = instances_gpu;
     root->classifications = classifications->resource.gpu_address;
     root->compaction_state = state->resource.gpu_address;
-    id<MTLTexture> hzb = renderer->prepared_frame.hzb_history_valid
-                             ? vkr_metal_packet_selected_hzb_texture(renderer)
-                             : nil;
+    const VkrMetalPacketImageInstance *history =
+        renderer->prepared_frame.hzb_history_valid
+            ? vkr_metal_packet_selected_hzb_instance(renderer)
+            : NULL;
+    id<MTLTexture> hzb =
+        history ? (id<MTLTexture>)history->resource.metal_texture : nil;
     root->hzb_texture_id = hzb ? hzb.gpuResourceID._impl : 0u;
-    root->history_view_projection = renderer->current_hzb_view_projection;
+    root->history_view_projection =
+        history ? history->history_raster_view_projection
+                : renderer->current_hzb_raster_view_projection;
     root->hzb_extent[0] = renderer->prepared_frame.viewport_width;
     root->hzb_extent[1] = renderer->prepared_frame.viewport_height;
     root->hzb_mip_count = renderer->prepared_frame.hzb_reduce_pass_count + 1u;
@@ -968,7 +973,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gbuffer_resolve(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
     VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
-  if (!renderer->gbuffer_resolve_pipeline)
+  if (!renderer->gbuffer_resolve_pipelines[0])
     return false_v;
   id<MTLTexture> vbuffer = vkr_metal_packet_pass_texture(renderer, pass, 0u);
   id<MTLTexture> albedo = vkr_metal_packet_pass_texture(renderer, pass, 2u);
@@ -989,8 +994,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gbuffer_resolve(
                 renderer, renderer->temporal_transform_history_handle,
                 renderer->selected_temporal_history_instance)
           : NULL;
-  if (!vbuffer || !albedo || !specular || !normal || !emissive || !debug ||
-      !hdr_seed || !motion || !validity || !visible || !state ||
+  const bool8_t emissive_capture = emissive != nil;
+  const bool8_t resolve_debug_capture = debug != nil;
+  if (!vbuffer || !albedo || !specular || !normal || !hdr_seed || !motion ||
+      !validity || !visible || !state ||
       !vkr_metal_packet_pass_buffer(renderer, pass, 10u) ||
       vbuffer.width == 0u || vbuffer.height == 0u ||
       vbuffer.width > UINT32_MAX || vbuffer.height > UINT32_MAX)
@@ -1011,8 +1018,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gbuffer_resolve(
       .albedo_texture_id = albedo.gpuResourceID._impl,
       .specular_texture_id = specular.gpuResourceID._impl,
       .normal_texture_id = normal.gpuResourceID._impl,
-      .emissive_texture_id = emissive.gpuResourceID._impl,
-      .debug_texture_id = debug.gpuResourceID._impl,
+      /* The selected no-capture entry point compiles out these accesses. */
+      .emissive_texture_id =
+          emissive_capture ? emissive.gpuResourceID._impl : 0u,
+      .debug_texture_id =
+          resolve_debug_capture ? debug.gpuResourceID._impl : 0u,
       .hdr_seed_texture_id = hdr_seed.gpuResourceID._impl,
       .view_projection = vkr_metal_packet_clip_matrix(
           renderer->convert_vulkan_clip_y,
@@ -1051,7 +1061,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gbuffer_resolve(
               : mat4_identity(),
   };
   prepared->dispatch = (VkrMetalPacketDispatch){
-      .pipeline = renderer->gbuffer_resolve_pipeline,
+      .pipeline = renderer->gbuffer_resolve_pipelines[
+          (emissive_capture ? 1u : 0u) | (resolve_debug_capture ? 2u : 0u)],
       .root = root_gpu,
       .threads = MTLSizeMake(vbuffer.width, vbuffer.height, 1u),
       .group_size = MTLSizeMake(8u, 8u, 1u),
@@ -2062,7 +2073,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_bloom(
       .filter_extent = {(uint32_t)filtered.width, (uint32_t)filtered.height},
       .destination_extent = {(uint32_t)destination.width,
                              (uint32_t)destination.height},
-      .params = vkr_bloom_gpu_params(&renderer->bloom_config, &packet->bloom),
+      .params = vkr_bloom_gpu_params(
+          &renderer->bloom_config, &packet->bloom,
+          renderer->prepared_frame.bloom_mip_count),
   };
   prepared->dispatch = (VkrMetalPacketDispatch){
       .pipeline = pipeline,
@@ -2519,6 +2532,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     vkr_render_graph_prepare_frame(
         packet, &renderer->bloom_config, &renderer->gtao_config,
         &renderer->prepared_frame, &renderer->gtao_params);
+    renderer->prepared_frame.hzb_build_enabled &= renderer->hzb_enabled;
     VKR_METAL_DIAGNOSTIC(
         renderer, "frame_packet",
         "frame=%llu scene_rendering=%u retained=%u "
@@ -2540,6 +2554,10 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     renderer->current_hzb_view_projection = vkr_metal_packet_clip_matrix(
         renderer->convert_vulkan_clip_y,
         mat4_mul(packet->input.globals.projection, packet->input.globals.view));
+    renderer->current_hzb_raster_view_projection = vkr_metal_packet_clip_matrix(
+        renderer->convert_vulkan_clip_y,
+        mat4_mul(packet->temporal.jittered_projection,
+                 packet->input.globals.view));
     /* Seeded valid so a frame with no candidates publishes an honest zero
        rather than reading as an absent producer; the pack path overwrites it on
        failure. */
@@ -3569,10 +3587,12 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
             renderer->prepared_frame.hzb_history_valid;
         log_info(
             "Metal deferred validation: candidates=%u visible=%u buckets="
-            "%u/%u/%u/%u overflow=%u resolve_invalid=%u hzb_rejected=%u",
+            "%u/%u/%u/%u/%u/%u/%u/%u overflow=%u resolve_invalid=%u hzb_rejected=%u",
             out_result->gpu_candidate_count, out_result->gpu_visible_count,
             out_result->gpu_bucket_counts[0], out_result->gpu_bucket_counts[1],
             out_result->gpu_bucket_counts[2], out_result->gpu_bucket_counts[3],
+            out_result->gpu_bucket_counts[4], out_result->gpu_bucket_counts[5],
+            out_result->gpu_bucket_counts[6], out_result->gpu_bucket_counts[7],
             out_result->gpu_overflow_count,
             out_result->gpu_resolve_invalid_count,
             out_result->gpu_occlusion_culled_count);

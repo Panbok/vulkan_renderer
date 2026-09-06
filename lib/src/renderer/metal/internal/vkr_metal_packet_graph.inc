@@ -891,8 +891,11 @@ vkr_metal_packet_select_hzb_history(VkrMetalPacketRenderer *renderer) {
     return false_v;
   renderer->selected_hzb_history_instance = UINT32_MAX;
   renderer->prepared_frame.hzb_history_valid = false_v;
-  if (!renderer->hzb_enabled)
+  renderer->packet_build.hzb_history_checks_valid = true_v;
+  if (!renderer->prepared_frame.hzb_build_enabled) {
+    renderer->packet_build.hzb_history_rejections[VKR_HZB_HISTORY_DISABLED]++;
     return true_v;
+  }
   VkrMetalPacketImage *slot =
       vkr_metal_packet_named_image_slot(renderer, "hzb_history");
   if (!slot || slot->instance_count == 0u)
@@ -902,14 +905,30 @@ vkr_metal_packet_select_hzb_history(VkrMetalPacketRenderer *renderer) {
   uint64_t newest_producer = 0u;
   for (uint32_t i = 0u; i < slot->instance_count; ++i) {
     const VkrMetalPacketImageInstance *instance = &slot->instances[i];
-    if (i == current || !instance->live || !instance->history_valid ||
-        instance->history_producer_submit_value > completed ||
-        instance->history_width != renderer->prepared_frame.viewport_width ||
-        instance->history_height != renderer->prepared_frame.viewport_height ||
-        instance->history_world_epoch != renderer->current_hzb_world_epoch ||
-        MemCompare(&instance->history_view_projection,
-                   &renderer->current_hzb_view_projection, sizeof(Mat4)) != 0)
+    if (i == current)
       continue;
+    VkrHzbHistoryRejection rejection = VKR_HZB_HISTORY_REJECTION_COUNT;
+    if (!instance->live || !instance->history_valid)
+      rejection = VKR_HZB_HISTORY_INVALID;
+    else if (instance->history_producer_submit_value > completed)
+      rejection = VKR_HZB_HISTORY_INCOMPLETE;
+    else if (instance->history_world_epoch != renderer->current_hzb_world_epoch)
+      rejection = VKR_HZB_HISTORY_WORLD_CHANGED;
+    else if (instance->history_width != renderer->prepared_frame.viewport_width ||
+             instance->history_height != renderer->prepared_frame.viewport_height)
+      rejection = VKR_HZB_HISTORY_EXTENT_CHANGED;
+    else if (MemCompare(&instance->history_view_projection,
+                        &renderer->current_hzb_view_projection, sizeof(Mat4)) != 0)
+      rejection = VKR_HZB_HISTORY_CAMERA_CHANGED;
+    /* Another jitter phase does not prove coverage at the current sample. */
+    else if (MemCompare(&instance->history_raster_view_projection,
+                        &renderer->current_hzb_raster_view_projection,
+                        sizeof(Mat4)) != 0)
+      rejection = VKR_HZB_HISTORY_RASTER_CHANGED;
+    if (rejection != VKR_HZB_HISTORY_REJECTION_COUNT) {
+      renderer->packet_build.hzb_history_rejections[rejection]++;
+      continue;
+    }
     if (renderer->selected_hzb_history_instance == UINT32_MAX ||
         instance->history_producer_submit_value > newest_producer) {
       renderer->selected_hzb_history_instance = i;
@@ -921,15 +940,15 @@ vkr_metal_packet_select_hzb_history(VkrMetalPacketRenderer *renderer) {
   return true_v;
 }
 
-vkr_internal id<MTLTexture>
-vkr_metal_packet_selected_hzb_texture(VkrMetalPacketRenderer *renderer) {
+vkr_internal const VkrMetalPacketImageInstance *
+vkr_metal_packet_selected_hzb_instance(VkrMetalPacketRenderer *renderer) {
   VkrMetalPacketImage *slot =
       vkr_metal_packet_named_image_slot(renderer, "hzb_history");
   const uint32_t selected = renderer->selected_hzb_history_instance;
   return slot && selected < slot->instance_count &&
                  slot->instances[selected].live
-             ? (id<MTLTexture>)slot->instances[selected].resource.metal_texture
-             : nil;
+             ? &slot->instances[selected]
+             : NULL;
 }
 
 vkr_internal VkrMetalPacketGraphBufferInstance *
@@ -1361,11 +1380,14 @@ vkr_metal_packet_mark_hzb_history_submitted(VkrMetalPacketRenderer *renderer,
   if (!slot || !renderer->active_command_slot)
     return;
   const uint32_t current = renderer->history_output_index;
-  if (current < slot->instance_count) {
+  if (renderer->prepared_frame.hzb_build_enabled &&
+      current < slot->instance_count) {
     VkrMetalPacketImageInstance *instance = &slot->instances[current];
     instance->history_producer_submit_value = submit_value;
     instance->history_world_epoch = renderer->current_hzb_world_epoch;
     instance->history_view_projection = renderer->current_hzb_view_projection;
+    instance->history_raster_view_projection =
+        renderer->current_hzb_raster_view_projection;
     instance->history_width = renderer->prepared_frame.viewport_width;
     instance->history_height = renderer->prepared_frame.viewport_height;
     instance->history_valid = true_v;

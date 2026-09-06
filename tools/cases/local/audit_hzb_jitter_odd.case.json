@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "id": "local.audit_hzb_jitter_odd",
+  "suite": "local",
+  "description": "All eight raster jitter samples at odd extents compared with HZB disabled.",
+  "scene": "assets/scenes/fixtures/audit_hzb.scene.json",
+  "seed": 2,
+  "resolution": [
+    641,
+    481
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 180000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": {
+    "warmup": 64,
+    "measure": 16
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default",
+    "taa_enabled": true,
+    "upscaler": "spatial",
+    "dynamic_resolution": false,
+    "exposure_mode": "manual",
+    "gtao_enabled": false,
+    "bloom_enabled": false
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      0,
+      0,
+      0
+    ],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 60,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "assertions": [
+    {
+      "metric": "packet.publication_omitted_candidates",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "visibility.gpu_visible.overflow",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "visibility.gbuffer.resolve_invalid",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "visibility.gpu_visible.count",
+      "stat": "min",
+      "min": 1
+    }
+  ],
+  "target_image_count": 3,
+  "captures": [
+    {
+      "at_frame": 0,
+      "channels": [
+        "depth",
+        "final_color"
+      ]
+    },
+    {
+      "at_frame": 1,
+      "channels": [
+        "depth",
+        "final_color"
+      ]
+    },
+    {
+      "at_frame": 2,
+      "channels": [
+        "depth",
+        "final_color"
+      ]
+    },
+    {
+      "at_frame": 3,
+      "channels": [
+        "depth",
+        "final_color"
+      ]
+    },
+    {
+      "at_frame": 4,
+      "channels": [
+        "depth",
+        "final_color"
+      ]
+    },
+    {
+      "at_frame": 5,
+      "channels": [
+        "depth",
+        "final_color"
+      ]
+    },
+    {
+      "at_frame": 6,
+      "channels": [
+        "depth",
+        "final_color"
+      ]
+    },
+    {
+      "at_frame": 7,
+      "channels": [
+        "depth",
+        "final_color"
+      ]
+    }
+  ]
+}

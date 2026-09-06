@@ -55,6 +55,12 @@ typedef struct VkrTransparentDrawCandidate {
   uint64_t sort_key;
 } VkrTransparentDrawCandidate;
 
+/** Maximal nonempty contiguous run sharing raster winding. */
+uint32_t vkr_draw_parity_run_length(const VkrInstanceDataGPU *instances,
+                                    uint32_t count, bool8_t *out_mirrored);
+/** Exact direct draw demand before allocating native rows and roots. */
+uint64_t vkr_world_draw_parity_run_count(const VkrWorldPassPayload *world);
+
 /** Orders ordinary-blend candidates back to front. */
 int vkr_transparent_draw_depth_compare(const void *lhs, const void *rhs);
 

@@ -1665,6 +1665,7 @@ vkr_vk_record_graph_graphics_pass(VkrVulkanRenderer *renderer,
   vkCmdSetViewport(command, 0u, 1u, &prepared->viewport);
   vkCmdSetScissor(command, 0u, 1u, &prepared->scissor);
   vkCmdSetCullMode(command, VK_CULL_MODE_NONE);
+  vkCmdSetFrontFace(command, VK_FRONT_FACE_COUNTER_CLOCKWISE);
   switch (prepared->kind) {
   case VKR_VULKAN_GRAPH_EXECUTOR_SHADOW:
     vkCmdSetDepthBias(command, prepared->depth_bias.depth_bias_constant,

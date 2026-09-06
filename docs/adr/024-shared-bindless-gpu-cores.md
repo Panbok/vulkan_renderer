@@ -29,6 +29,22 @@ while retaining accounting. Metal uses placement heaps and upload/readback
 rings through the same range and submit contracts. There is no VMA, online
 defragmentation or graph transient aliasing.
 
+Vulkan's PUBLICATION class requires coherent memory for descriptor and material
+rows that can be updated beside older GPU readers. It preserves native descriptor
+strides and uses the capability failure policy in ADR-023. The white sentinel
+stays in GENERAL for both sampled and storage descriptors; its initial copy
+dependency includes fragment and compute consumers. White remains the unoccluded
+AO/default value; this does not authorize passes to use it as a scratch output.
+
+The Vulkan geometry owner retains a CPU row mirror with a publication generation.
+Each completed frame slot reserves a fixed prefix in its upload buffer and copies
+that mirror only when its generation differs. Publication, retirement and
+megabuffer address changes update the mirror. Upload-buffer replacement and
+non-scene prefix reuse invalidate the slot's generation. Old submissions retain
+their independent table bytes and resource lifetime proofs. Unchanged frames
+perform no table clear, capacity scan or row copy; a changed generation refreshes
+the whole table rather than maintaining a second dirty journal.
+
 Host-visible Vulkan buffer placements satisfy both native memory requirements
 and the 16-byte alignment of typed CPU vector records. Transfer-only staging
 buffers can report a four-byte native requirement; using that alone permits

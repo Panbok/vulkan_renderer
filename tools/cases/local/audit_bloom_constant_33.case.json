@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "id": "local.audit_bloom_constant_33",
+  "suite": "local",
+  "description": "Constant HDR bloom gain across odd extents and chain lengths.",
+  "scene": "assets/scenes/fixtures/audit_bloom_constant.scene.json",
+  "seed": 2,
+  "resolution": [
+    33,
+    35
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 180000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": {
+    "warmup": 64,
+    "measure": 16
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default",
+    "taa_enabled": false,
+    "upscaler": "spatial",
+    "dynamic_resolution": false,
+    "exposure_mode": "manual",
+    "gtao_enabled": false,
+    "bloom_enabled": true,
+    "manual_exposure": 1.0,
+    "bloom_threshold": 1.0,
+    "bloom_knee": 0.5,
+    "bloom_intensity": 0.05
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      0,
+      0,
+      0
+    ],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 60,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "assertions": [
+    {
+      "metric": "packet.publication_omitted_candidates",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "visibility.gpu_visible.overflow",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "visibility.gbuffer.resolve_invalid",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "visibility.gpu_visible.count",
+      "stat": "min",
+      "min": 1
+    }
+  ],
+  "target_image_count": 3,
+  "captures": [
+    {
+      "at_frame": 15,
+      "channels": [
+        "hdr_pre_bloom",
+        "bloom_prefilter",
+        "hdr_combined"
+      ]
+    }
+  ]
+}

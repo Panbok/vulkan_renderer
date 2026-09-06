@@ -162,6 +162,20 @@ static void test_noncoherent_atom_ranges(void) {
 
 static void test_memory_pool_topology_contract(void) {
   printf("  Running test_memory_pool_topology_contract...\n");
+  /* Adjacent live descriptor rows may share any atom size. Publication must
+     reject every non-coherent placement, regardless of device locality. */
+  for (uint32_t device_local = 0u; device_local < 2u; ++device_local) {
+    const VkMemoryPropertyFlags properties =
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+        (device_local ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT : 0u);
+    assert(vkr_vulkan_memory_type_rank(VKR_VULKAN_MEMORY_CLASS_PUBLICATION,
+                                       properties) < 0);
+    assert(vkr_vulkan_memory_type_rank(
+               VKR_VULKAN_MEMORY_CLASS_PUBLICATION,
+               properties | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) >= 0);
+  }
+  assert(vkr_vulkan_memory_type_rank(VKR_VULKAN_MEMORY_CLASS_PUBLICATION,
+                                     VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) < 0);
   assert(vkr_vulkan_memory_type_rank(VKR_VULKAN_MEMORY_CLASS_DEVICE,
                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0);
   assert(vkr_vulkan_memory_type_rank(VKR_VULKAN_MEMORY_CLASS_DEVICE,
@@ -678,8 +692,13 @@ static void test_direct_draw_publication_admission(void) {
   VkrVulkanFrameSlot *slot = &renderer.frame_slots[0];
   slot->frame_upload.allocation.mapped = storage;
   slot->frame_upload.size = sizeof(storage);
+  VkrInstanceDataGPU instances[18];
+  for (uint32_t i = 0u; i < ArrayCount(instances); ++i)
+    instances[i] = (VkrInstanceDataGPU){.model = mat4_identity()};
   VkrWorldPassPayload world = {.transparent_draws = draws,
-                               .transparent_draw_count = 4u};
+                               .transparent_draw_count = 4u,
+                               .instances = instances,
+                               .instance_count = ArrayCount(instances)};
   assert(vkr_vk_prepare_direct_draws(&renderer, slot, &world));
   assert(slot->direct_draw_count == 2u);
   assert(slot->direct_draws[0].first_instance == 3u);
@@ -769,9 +788,9 @@ static void test_shared_graph_metalfx_capability_boundary(void) {
   VkrRenderGraphFrameInfo frame = {
       .scene_rendering = true_v,
       .gpu_draw_candidate_capacity = 1u,
-      .gpu_draw_visible_capacity = 4u,
+      .gpu_draw_visible_capacity = 8u,
       .transmission_gpu_draw_candidate_capacity = 1u,
-      .transmission_gpu_draw_visible_capacity = 4u,
+      .transmission_gpu_draw_visible_capacity = 8u,
       .editor_image_available = true_v,
       .editor_image_width = 640u,
       .editor_image_height = 480u,

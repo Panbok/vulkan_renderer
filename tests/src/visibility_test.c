@@ -391,6 +391,26 @@ vkr_internal void test_frame_rejects_stale_acquisition(void) {
 }
 
 bool32_t run_visibility_tests(void) {
+  /* Mixed parity inside one instanced blend draw must preserve source order. */
+  VkrInstanceDataGPU parity_instances[5];
+  for (uint32_t i = 0u; i < 5u; ++i)
+    parity_instances[i] = (VkrInstanceDataGPU){.model = mat4_identity()};
+  parity_instances[2].model.m00 = parity_instances[3].model.m00 = -1.0f;
+  const VkrDrawItem parity_draw = {.first_instance = 0u, .instance_count = 5u};
+  const VkrWorldPassPayload parity_world = {.instances = parity_instances,
+                                            .instance_count = 5u,
+                                            .transparent_draws = &parity_draw,
+                                            .transparent_draw_count = 1u};
+  assert(vkr_world_draw_parity_run_count(&parity_world) == 3u);
+  bool8_t mirrored = true_v;
+  assert(vkr_draw_parity_run_length(parity_instances, 5u, &mirrored) == 2u);
+  assert(!mirrored);
+  assert(vkr_draw_parity_run_length(parity_instances + 2u, 3u, &mirrored) ==
+         2u);
+  assert(mirrored);
+  assert(vkr_draw_parity_run_length(parity_instances + 4u, 1u, &mirrored) ==
+         1u);
+  assert(!mirrored);
   printf("--- Starting Visibility Tests ---\n");
   test_packet_pre_recording_rejection();
   test_candidate_residency_generation_contract();

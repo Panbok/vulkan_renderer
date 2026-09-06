@@ -36,8 +36,13 @@ VkrMetalPacketDirectResult
 vkr_metal_packet_direct(float3 normal, float3 view, float3 light,
                         float3 radiance, float3 albedo, float metallic,
                         float roughness, float3 f0) {
-  float3 half_vector = normalize(view + light);
+  float3 half_vector = view + light;
   float no_l = max(dot(normal, light), 0.0);
+  float half_inverse_length =
+      vkr_direct_half_vector_inverse_length(no_l, half_vector);
+  if (half_inverse_length == 0.0f)
+    return {float3(0.0f), float3(0.0f)};
+  half_vector *= half_inverse_length;
   float no_v = max(dot(normal, view), 0.0);
   float3 fresnel =
       vkr_metal_packet_fresnel(max(dot(half_vector, view), 0.0), f0);
@@ -55,8 +60,13 @@ vkr_metal_packet_direct(float3 normal, float3 view, float3 light,
 float3 vkr_metal_packet_direct_specular(float3 normal, float3 view,
                                         float3 light, float3 radiance,
                                         float roughness, float3 f0) {
-  float3 half_vector = normalize(view + light);
+  float3 half_vector = view + light;
   float no_l = max(dot(normal, light), 0.0);
+  float half_inverse_length =
+      vkr_direct_half_vector_inverse_length(no_l, half_vector);
+  if (half_inverse_length == 0.0f)
+    return float3(0.0f);
+  half_vector *= half_inverse_length;
   float no_v = max(dot(normal, view), 0.0);
   float3 fresnel =
       vkr_metal_packet_fresnel(max(dot(half_vector, view), 0.0), f0);
@@ -75,8 +85,13 @@ vkr_metal_packet_direct_deferred(float3 normal, float3 view, float3 light,
                                  float3 radiance, float3 diffuse_albedo,
                                  float roughness, float3 f0, float no_v,
                                  float geometry_view) {
-  float3 half_vector = normalize(view + light);
+  float3 half_vector = view + light;
   float no_l = max(dot(normal, light), 0.0);
+  float half_inverse_length =
+      vkr_direct_half_vector_inverse_length(no_l, half_vector);
+  if (half_inverse_length == 0.0f)
+    return {float3(0.0f), float3(0.0f)};
+  half_vector *= half_inverse_length;
   float3 fresnel =
       vkr_metal_packet_fresnel(max(dot(half_vector, view), 0.0), f0);
   float distribution =
@@ -115,7 +130,7 @@ float2 vkr_metal_packet_brdf_approximation(float no_v, float roughness) {
 float vkr_metal_packet_probe_influence(
     const device VkrMetalPacketIblProbe &probe, float3 world_position) {
   float weight = max(probe.extents_weight.w, 0.0);
-  if (weight <= 1e-6 || probe.intensity_box.w <= 0.5)
+  if (weight <= 1e-6)
     return weight;
   float3 outside = max(abs(world_position - probe.center_blend.xyz) -
                            max(probe.extents_weight.xyz, 0.0),

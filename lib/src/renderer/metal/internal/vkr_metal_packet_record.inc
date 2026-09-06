@@ -14,8 +14,7 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
     const VkrMetalPacketPreparedPass *pass) API_AVAILABLE(macos(26.0)) {
   switch (pass->kind) {
   case VKR_METAL_PACKET_GRAPH_EXECUTOR_GPU_DRAW_ENCODE:
-  case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_ENCODE:
-    [encoder setComputePipelineState:pass->gpu_encode.pipeline];
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_TRANSMISSION_GPU_DRAW_ENCODE: {
     for (uint32_t i = 0u; i < pass->gpu_encode.group_count; ++i) {
       const VkrMetalPacketGpuEncodeGroup *group = &pass->gpu_encode.groups[i];
       for (uint32_t view = 0u; view < group->view_count; ++view)
@@ -24,6 +23,18 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
                                            (uint64_t)view *
                                                pass->gpu_encode.candidate_count,
                                            pass->gpu_encode.candidate_count)];
+    }
+    /* Metal 4 resets execute at the blit stage, concurrently with dispatches
+       unless this intra-pass dependency orders command generation after them. */
+    const VkrMetalDependency reset_to_encode = {
+        .src_stages = MTLStageBlit,
+        .dst_stages = MTLStageDispatch,
+        .visibility_options = MTL4VisibilityOptionDevice,
+    };
+    vkr_metal_dependency_encode_intra(encoder, &reset_to_encode);
+    [encoder setComputePipelineState:pass->gpu_encode.pipeline];
+    for (uint32_t i = 0u; i < pass->gpu_encode.group_count; ++i) {
+      const VkrMetalPacketGpuEncodeGroup *group = &pass->gpu_encode.groups[i];
       [renderer->argument_table setAddress:group->root atIndex:0u];
       [renderer->argument_table setAddress:group->arguments atIndex:1u];
       [encoder setArgumentTable:renderer->argument_table];
@@ -32,6 +43,7 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
           threadsPerThreadgroup:MTLSizeMake(64u, 1u, 1u)];
     }
     break;
+  }
   case VKR_METAL_PACKET_GRAPH_EXECUTOR_IBL_BAKE:
     for (uint32_t mip = 0u; mip < VKR_IBL_PREFILTER_MIP_COUNT; ++mip) {
       const uint32_t extent = Max(1u, VKR_IBL_PREFILTER_SIZE >> mip);
@@ -133,7 +145,6 @@ vkr_internal void vkr_metal_packet_record_indirect_pass(
                      atStages:MTLRenderStageVertex | MTLRenderStageFragment];
   }
   [encoder setViewport:draw->viewport];
-  [encoder setFrontFacingWinding:MTLWindingCounterClockwise];
   [encoder setDepthStencilState:renderer->depth_write_state];
   if (pass->kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_SHADOW)
     [encoder setDepthBias:draw->depth_bias.depth_bias_constant
@@ -143,9 +154,7 @@ vkr_internal void vkr_metal_packet_record_indirect_pass(
   for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
        ++bucket) {
     id<MTLRenderPipelineState> pipeline =
-        draw->opaque_pipeline &&
-                (bucket == VKR_WORLD_DRAW_STATE_OPAQUE_BACK ||
-                 bucket == VKR_WORLD_DRAW_STATE_OPAQUE_DOUBLE_SIDED)
+        draw->opaque_pipeline && (bucket & 2u) == 0u
             ? draw->opaque_pipeline
             : draw->pipeline;
     if (pipeline != bound_pipeline) {
@@ -153,6 +162,9 @@ vkr_internal void vkr_metal_packet_record_indirect_pass(
       bound_pipeline = pipeline;
     }
     [encoder setCullMode:(bucket & 1u) ? MTLCullModeNone : MTLCullModeBack];
+    [encoder setFrontFacingWinding:(bucket & VKR_GPU_DRAW_STATE_MIRRORED_BIT)
+                                      ? MTLWindingClockwise
+                                      : MTLWindingCounterClockwise];
     [encoder executeCommandsInBuffer:draw->commands
                       indirectBuffer:draw->arguments +
                                      (uint64_t)bucket * 2u * sizeof(uint32_t)];

@@ -100,10 +100,10 @@ struct VkrGpuVisibleDrawRow
 
 uint vkr_gpu_draw_state_bucket(uint state_flags)
 {
-    return state_flags & 3u;
+    return state_flags & 7u;
 }
 
 uint vkr_gpu_draw_candidate_flags(uint state_flags)
 {
-    return state_flags >> 2u;
+    return state_flags >> 3u;
 }

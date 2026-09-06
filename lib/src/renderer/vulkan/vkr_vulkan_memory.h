@@ -13,6 +13,9 @@ typedef enum VkrVulkanMemoryClass {
       roots, material rows. Prefers device-local host-visible memory so the
       write lands where the GPU reads it. */
   VKR_VULKAN_MEMORY_CLASS_UPLOAD,
+  /** Concurrently published descriptor/material rows require coherent memory:
+      adjacent rows can still be read by an older submission. */
+  VKR_VULKAN_MEMORY_CLASS_PUBLICATION,
   /** Bulk transfer sources that are only ever a copy source. These are large
       and short-lived, so they must not compete for the small device-local
       host-visible heap that UPLOAD depends on. */

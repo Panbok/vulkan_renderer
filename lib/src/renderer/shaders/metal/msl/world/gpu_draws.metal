@@ -1,7 +1,7 @@
 struct VkrGpuDrawCompactionState {
-  uint2 execution_ranges[4];
-  atomic_uint bucket_counts[4];
-  atomic_uint bucket_cursors[4];
+  uint2 execution_ranges[8];
+  atomic_uint bucket_counts[8];
+  atomic_uint bucket_cursors[8];
   uint visible_count;
   atomic_uint overflow_count;
   atomic_uint resolve_invalid_count;
@@ -130,10 +130,7 @@ static bool vkr_metal_packet_candidate_in_frustum(
       root.instances[candidate.instance_index];
   float3 center =
       (instance.model * float4(candidate.local_bounding_sphere.xyz, 1.0)).xyz;
-  float scale =
-      max(length(instance.model[0].xyz),
-          max(length(instance.model[1].xyz), length(instance.model[2].xyz)));
-  float radius = candidate.local_bounding_sphere.w * scale;
+  float radius = candidate.local_bounding_sphere.w * instance.normal_column1.w;
   for (uint plane = 0u; plane < 6u; ++plane) {
     float4 equation = view.frustum_planes[plane];
     if (dot(equation.xyz, center) + equation.w < -radius)
@@ -153,10 +150,8 @@ static bool vkr_metal_packet_candidate_occluded(
       root.instances[candidate.instance_index];
   float3 center =
       (instance.model * float4(candidate.local_bounding_sphere.xyz, 1.0)).xyz;
-  float scale =
-      max(length(instance.model[0].xyz),
-          max(length(instance.model[1].xyz), length(instance.model[2].xyz)));
-  float radius = max(candidate.local_bounding_sphere.w * scale, 0.0);
+  float radius = max(candidate.local_bounding_sphere.w *
+                     instance.normal_column1.w, 0.0);
   float2 ndc_min = float2(1e30);
   float2 ndc_max = float2(-1e30);
   float nearest_depth = 1.0;
@@ -241,10 +236,10 @@ vkr_metal_packet_gpu_draw_prefix(constant VkrMetalPacketGpuDrawRoot &root
   // shared by classification, raster, resolve and picking for this frame.
   uint command_base =
       (view_index % root.icb_view_group_size) * root.candidate_count;
-  uint bucket_capacity = root.visible_capacity / 4u;
+  uint bucket_capacity = root.visible_capacity / 8u;
   uint visible_count = 0u;
   uint overflow_count = 0u;
-  for (uint bucket = 0u; bucket < 4u; ++bucket) {
+  for (uint bucket = 0u; bucket < 8u; ++bucket) {
     uint bucket_count = atomic_load_explicit(&state.bucket_counts[bucket],
                                              memory_order_relaxed);
     uint written_count = min(bucket_count, bucket_capacity);
@@ -278,7 +273,7 @@ vkr_metal_packet_gpu_draw_encode_impl(constant VkrMetalPacketGpuDrawRoot &root,
   uint bucket = classification - 1u;
   uint local_index = atomic_fetch_add_explicit(&state.bucket_cursors[bucket],
                                                1u, memory_order_relaxed);
-  uint bucket_capacity = root.visible_capacity / 4u;
+  uint bucket_capacity = root.visible_capacity / 8u;
   if (local_index >= bucket_capacity)
     return;
   uint command_base =
@@ -446,15 +441,18 @@ struct VkrMetalPacketGBufferResolveRoot {
   float4x4 sky_reprojection;
 };
 
+template <bool WriteEmissive, bool WriteDebug>
 static void vkr_metal_packet_resolve_defaults(
     constant VkrMetalPacketGBufferResolveRoot &root, uint2 pixel,
     float debug_marker) {
   root.albedo.write(float4(0.0, 0.0, 0.0, 1.0), pixel);
   root.specular.write(float4(0.0, 0.0, 0.0, 1.0), pixel);
   root.normal.write(float4(0.0), pixel);
-  root.emissive.write(float4(0.0), pixel);
+  if (WriteEmissive)
+    root.emissive.write(float4(0.0), pixel);
   root.hdr_seed.write(float4(0.0), pixel);
-  root.debug.write(float4(0.0, 0.0, 0.0, debug_marker), pixel);
+  if (WriteDebug)
+    root.debug.write(float4(0.0, 0.0, 0.0, debug_marker), pixel);
   root.motion.write(float4(0.0), pixel);
   root.validity.write(float4(0.0), pixel);
 }
@@ -531,15 +529,15 @@ static bool vkr_metal_packet_finite_nonzero(float3 value) {
   return all(isfinite(value)) && dot(value, value) > 1e-12;
 }
 
-kernel void
-vkr_metal_packet_gbuffer_resolve(constant VkrMetalPacketGBufferResolveRoot &root
-                                 [[buffer(0)]],
-                                 uint2 pixel [[thread_position_in_grid]]) {
+template <bool WriteEmissive, bool WriteDebug>
+static void vkr_metal_packet_gbuffer_resolve(
+    constant VkrMetalPacketGBufferResolveRoot &root, uint2 pixel) {
   if (any(pixel >= root.extent))
     return;
   uint2 visibility = root.vbuffer.read(pixel).xy;
   if (visibility.x == 0u) {
-    vkr_metal_packet_resolve_defaults(root, pixel, 0.0);
+    vkr_metal_packet_resolve_defaults<WriteEmissive, WriteDebug>(root, pixel,
+                                                                  0.0);
     if (root.history_valid != 0u) {
       float2 uv = (float2(pixel) + 0.5) / float2(root.extent);
       float4 previous_clip = root.sky_reprojection *
@@ -559,7 +557,8 @@ vkr_metal_packet_gbuffer_resolve(constant VkrMetalPacketGBufferResolveRoot &root
       visible_index >= visible_count) {
     atomic_fetch_add_explicit(&root.compaction_state->resolve_invalid_count, 1u,
                               memory_order_relaxed);
-    vkr_metal_packet_resolve_defaults(root, pixel, -1.0);
+    vkr_metal_packet_resolve_defaults<WriteEmissive, WriteDebug>(root, pixel,
+                                                                  -1.0);
     return;
   }
 
@@ -569,7 +568,8 @@ vkr_metal_packet_gbuffer_resolve(constant VkrMetalPacketGBufferResolveRoot &root
       visible.instance_index >= root.instance_count) {
     atomic_fetch_add_explicit(&root.compaction_state->resolve_invalid_count, 1u,
                               memory_order_relaxed);
-    vkr_metal_packet_resolve_defaults(root, pixel, -1.0);
+    vkr_metal_packet_resolve_defaults<WriteEmissive, WriteDebug>(root, pixel,
+                                                                  -1.0);
     return;
   }
   uint primitive_id = visibility.y;
@@ -577,7 +577,8 @@ vkr_metal_packet_gbuffer_resolve(constant VkrMetalPacketGBufferResolveRoot &root
       primitive_id > (visible.index_count - 3u) / 3u) {
     atomic_fetch_add_explicit(&root.compaction_state->resolve_invalid_count, 1u,
                               memory_order_relaxed);
-    vkr_metal_packet_resolve_defaults(root, pixel, -1.0);
+    vkr_metal_packet_resolve_defaults<WriteEmissive, WriteDebug>(root, pixel,
+                                                                  -1.0);
     return;
   }
   const device VkrGpuGeometryRow &geometry =
@@ -600,7 +601,8 @@ vkr_metal_packet_gbuffer_resolve(constant VkrMetalPacketGBufferResolveRoot &root
     if (vertex_index < 0) {
       atomic_fetch_add_explicit(&root.compaction_state->resolve_invalid_count,
                                 1u, memory_order_relaxed);
-      vkr_metal_packet_resolve_defaults(root, pixel, -1.0);
+      vkr_metal_packet_resolve_defaults<WriteEmissive, WriteDebug>(
+          root, pixel, -1.0);
       return;
     }
     vertices[corner] = vkr_decode_packed_vertex(
@@ -619,7 +621,8 @@ vkr_metal_packet_gbuffer_resolve(constant VkrMetalPacketGBufferResolveRoot &root
           barycentric, barycentric_dx, barycentric_dy)) {
     atomic_fetch_add_explicit(&root.compaction_state->resolve_invalid_count, 1u,
                               memory_order_relaxed);
-    vkr_metal_packet_resolve_defaults(root, pixel, -1.0);
+    vkr_metal_packet_resolve_defaults<WriteEmissive, WriteDebug>(root, pixel,
+                                                                  -1.0);
     return;
   }
 
@@ -673,9 +676,13 @@ vkr_metal_packet_gbuffer_resolve(constant VkrMetalPacketGBufferResolveRoot &root
       !vkr_metal_packet_finite_nonzero(transformed_normal)) {
     atomic_fetch_add_explicit(&root.compaction_state->resolve_invalid_count, 1u,
                               memory_order_relaxed);
-    vkr_metal_packet_resolve_defaults(root, pixel, -1.0);
+    vkr_metal_packet_resolve_defaults<WriteEmissive, WriteDebug>(root, pixel,
+                                                                  -1.0);
     return;
   }
+  // Projected orientation is geometric winding; raster state also includes the
+  // instance reflection parity, including when culling is disabled.
+  face_sign *= instance.normal_column0.w;
   float3 normal = normalize(transformed_normal) * face_sign;
   if ((material.flags & 1u) != 0u) {
     float3 sampled = vkr_normal_map_decode(
@@ -688,7 +695,8 @@ vkr_metal_packet_gbuffer_resolve(constant VkrMetalPacketGBufferResolveRoot &root
         !vkr_metal_packet_finite_nonzero(tangent)) {
       atomic_fetch_add_explicit(&root.compaction_state->resolve_invalid_count,
                                 1u, memory_order_relaxed);
-      vkr_metal_packet_resolve_defaults(root, pixel, -1.0);
+      vkr_metal_packet_resolve_defaults<WriteEmissive, WriteDebug>(
+          root, pixel, -1.0);
       return;
     }
     tangent = normalize(tangent);
@@ -696,7 +704,8 @@ vkr_metal_packet_gbuffer_resolve(constant VkrMetalPacketGBufferResolveRoot &root
     if (!vkr_metal_packet_finite_nonzero(tangent)) {
       atomic_fetch_add_explicit(&root.compaction_state->resolve_invalid_count,
                                 1u, memory_order_relaxed);
-      vkr_metal_packet_resolve_defaults(root, pixel, -1.0);
+      vkr_metal_packet_resolve_defaults<WriteEmissive, WriteDebug>(
+          root, pixel, -1.0);
       return;
     }
     tangent = normalize(tangent);
@@ -755,10 +764,36 @@ vkr_metal_packet_gbuffer_resolve(constant VkrMetalPacketGBufferResolveRoot &root
   root.specular.write(float4(f0, roughness), pixel);
   root.normal.write(
       float4(vkr_metal_packet_octahedral_encode(normal), 0.0, 0.0), pixel);
-  root.emissive.write(float4(emissive, 1.0), pixel);
+  if (WriteEmissive)
+    root.emissive.write(float4(emissive, 1.0), pixel);
   float3 hdr_seed = root.render_mode == 3u ? base.rgb + emissive : emissive;
   root.hdr_seed.write(float4(hdr_seed, metallic), pixel);
-  root.debug.write(float4(barycentric, selected_lod + 1.0), pixel);
+  if (WriteDebug)
+    root.debug.write(float4(barycentric, selected_lod + 1.0), pixel);
+}
+
+kernel void vkr_metal_packet_gbuffer_resolve_none(
+    constant VkrMetalPacketGBufferResolveRoot &root [[buffer(0)]],
+    uint2 pixel [[thread_position_in_grid]]) {
+  vkr_metal_packet_gbuffer_resolve<false, false>(root, pixel);
+}
+
+kernel void vkr_metal_packet_gbuffer_resolve_emissive(
+    constant VkrMetalPacketGBufferResolveRoot &root [[buffer(0)]],
+    uint2 pixel [[thread_position_in_grid]]) {
+  vkr_metal_packet_gbuffer_resolve<true, false>(root, pixel);
+}
+
+kernel void vkr_metal_packet_gbuffer_resolve_debug(
+    constant VkrMetalPacketGBufferResolveRoot &root [[buffer(0)]],
+    uint2 pixel [[thread_position_in_grid]]) {
+  vkr_metal_packet_gbuffer_resolve<false, true>(root, pixel);
+}
+
+kernel void vkr_metal_packet_gbuffer_resolve_emissive_debug(
+    constant VkrMetalPacketGBufferResolveRoot &root [[buffer(0)]],
+    uint2 pixel [[thread_position_in_grid]]) {
+  vkr_metal_packet_gbuffer_resolve<true, true>(root, pixel);
 }
 
 struct VkrMetalPacketDeferredLightingRoot {
@@ -1649,6 +1684,7 @@ static bool vkr_metal_packet_resolve_transmission_surface(
                               memory_order_relaxed);
     return false;
   }
+  face_sign *= instance.normal_column0.w;
   float3 normal = normalize(transformed_normal) * face_sign;
   if ((material.flags & 1u) != 0u) {
     float3 sampled = vkr_normal_map_decode(
@@ -2377,8 +2413,8 @@ kernel void vkr_metal_packet_sdsm_reduce(constant VkrMetalPacketSdsmRoot &root
   }
 }
 
-static_assert(sizeof(VkrGpuDrawCompactionState) == 80,
-              "GPU draw compaction state ABI must remain 80 bytes");
+static_assert(sizeof(VkrGpuDrawCompactionState) == 144,
+              "GPU draw compaction state ABI must remain 144 bytes");
 static_assert(sizeof(VkrMetalPacketTemporalTransformRoot) == 32,
               "Temporal-transform root ABI must remain 32 bytes");
 static_assert(sizeof(VkrMetalPacketGBufferResolveRoot) == 416,

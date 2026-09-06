@@ -7,6 +7,28 @@ static uint32_t vkr_harness_read_u32_le(const uint8_t *bytes) {
          ((uint32_t)bytes[2] << 16u) | ((uint32_t)bytes[3] << 24u);
 }
 
+static uint16_t vkr_harness_read_u16_le(const uint8_t *bytes) {
+  return (uint16_t)bytes[0] | ((uint16_t)bytes[1] << 8u);
+}
+
+static float32_t vkr_harness_half_to_float(uint16_t half) {
+  const uint32_t sign = half >> 15u;
+  const uint32_t exponent = (half >> 10u) & 0x1fu;
+  const uint32_t mantissa = half & 0x3ffu;
+  float32_t value = 0.0f;
+  if (exponent == 0u) {
+    value = (float32_t)mantissa * (1.0f / 16777216.0f);
+  } else if (exponent < 31u) {
+    value = (1.0f + (float32_t)mantissa * (1.0f / 1024.0f)) *
+            vkr_pow_f32(2.0f, (float32_t)((int32_t)exponent - 15));
+  } else {
+    const uint32_t bits = (sign << 31u) | 0x7f800000u | (mantissa << 13u);
+    MemCopy(&value, &bits, sizeof(value));
+    return value;
+  }
+  return sign ? -value : value;
+}
+
 static VkrHarnessComparisonResult
 vkr_harness_comparison_finish(VkrHarnessComparisonResult result,
                               const VkrHarnessCompareConfig *config,
@@ -108,6 +130,46 @@ VkrHarnessComparisonResult vkr_harness_compare_f32_le(
     result.failing_value_count += failed ? 1u : 0u;
     result.failing_pixel_count += failed ? 1u : 0u;
     vkr_harness_diff_pixel(diff_rgba, pixel, error, failed);
+  }
+  return vkr_harness_comparison_finish(result, config, false_v);
+}
+
+VkrHarnessComparisonResult vkr_harness_compare_rgba16f_le(
+    const uint8_t *actual, const uint8_t *baseline, uint64_t pixel_count,
+    const VkrHarnessCompareConfig *config, uint8_t *diff_rgba) {
+  VkrHarnessComparisonResult result = {
+      .outcome = VKR_HARNESS_COMPARISON_INCOMPATIBLE,
+      .value_count = pixel_count * 4u,
+      .pixel_count = pixel_count,
+  };
+  if (!actual || !baseline || !config) {
+    return result;
+  }
+  for (uint64_t pixel = 0; pixel < pixel_count; ++pixel) {
+    bool8_t failed = false_v;
+    float64_t pixel_error = 0.0;
+    for (uint32_t component = 0; component < 4u; ++component) {
+      const uint64_t index = pixel * 8u + component * 2u;
+      const float32_t actual_value =
+          vkr_harness_half_to_float(vkr_harness_read_u16_le(actual + index));
+      const float32_t baseline_value =
+          vkr_harness_half_to_float(vkr_harness_read_u16_le(baseline + index));
+      if (!vkr_is_finite_f64(actual_value) ||
+          !vkr_is_finite_f64(baseline_value)) {
+        return result;
+      }
+      const float64_t error =
+          vkr_abs_f64((float64_t)actual_value - baseline_value);
+      result.mean_absolute_error += error;
+      result.max_absolute_error = Max(result.max_absolute_error, error);
+      pixel_error = Max(pixel_error, error);
+      if (error > config->max_pixel_delta) {
+        result.failing_value_count++;
+        failed = true_v;
+      }
+    }
+    result.failing_pixel_count += failed ? 1u : 0u;
+    vkr_harness_diff_pixel(diff_rgba, pixel, pixel_error, failed);
   }
   return vkr_harness_comparison_finish(result, config, false_v);
 }
@@ -454,7 +516,13 @@ VkrHarnessExitCode vkr_harness_compare_capture_sets(
       scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
       return VKR_HARNESS_EXIT_ERROR;
     }
-    if (string_equals(row->value_kind, "color")) {
+    const bool8_t rgba8_png =
+        string_equals(row->canonical_encoding, "RGBA8_SRGB_PNG") ||
+        string_equals(row->canonical_encoding, "RGBA8_UNORM") ||
+        string_equals(row->canonical_encoding, "RGBA8_UNORM_PNG");
+    const bool8_t rgba16f =
+        string_equals(row->canonical_encoding, "RGBA16_FLOAT_LE");
+    if (rgba8_png) {
       int actual_width = 0, actual_height = 0, actual_channels = 0;
       int baseline_width = 0, baseline_height = 0, baseline_channels = 0;
       uint8_t *actual_png = NULL;
@@ -500,7 +568,8 @@ VkrHarnessExitCode vkr_harness_compare_capture_sets(
                                  &actual_size) ||
           !vkr_harness_read_file(baseline_path, arenas->transient,
                                  &baseline_bytes, &baseline_size) ||
-          actual_size != pixels * 4u || baseline_size != actual_size) {
+          actual_size != pixels * (rgba16f ? 8u : 4u) ||
+          baseline_size != actual_size) {
         scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
         row->comparison.outcome = VKR_HARNESS_COMPARISON_INCOMPATIBLE;
         string_format(row->comparison_status, sizeof(row->comparison_status),
@@ -509,7 +578,10 @@ VkrHarnessExitCode vkr_harness_compare_capture_sets(
         continue;
       }
       row->comparison =
-          string_equals(row->value_kind, "depth")
+          rgba16f
+              ? vkr_harness_compare_rgba16f_le(actual_bytes, baseline_bytes,
+                                               pixels, &row->thresholds, diff)
+          : string_equals(row->value_kind, "depth")
               ? vkr_harness_compare_f32_le(actual_bytes, baseline_bytes, pixels,
                                            &row->thresholds, diff)
               : vkr_harness_compare_u32_le(actual_bytes, baseline_bytes, pixels,

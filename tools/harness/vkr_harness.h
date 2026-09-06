@@ -802,6 +802,9 @@ VkrHarnessComparisonResult vkr_harness_compare_rgba8(
 VkrHarnessComparisonResult vkr_harness_compare_f32_le(
     const uint8_t *actual, const uint8_t *baseline, uint64_t pixel_count,
     const VkrHarnessCompareConfig *config, uint8_t *diff_rgba);
+VkrHarnessComparisonResult vkr_harness_compare_rgba16f_le(
+    const uint8_t *actual, const uint8_t *baseline, uint64_t pixel_count,
+    const VkrHarnessCompareConfig *config, uint8_t *diff_rgba);
 VkrHarnessComparisonResult vkr_harness_compare_u32_le(const uint8_t *actual,
                                                       const uint8_t *baseline,
                                                       uint64_t pixel_count,

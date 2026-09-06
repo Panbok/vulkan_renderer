@@ -27,7 +27,7 @@ enum {
   VKR_RENDERER_IMPL_TIMING_NAME_CAPACITY = 64,
   VKR_RENDERER_IMPL_MAX_GRAPH_PASSES = 98,
   VKR_RENDERER_IMPL_MAX_PASS_TIMINGS = VKR_RENDERER_IMPL_MAX_GRAPH_PASSES,
-  VKR_RENDERER_IMPL_DRAW_BUCKET_COUNT = 4,
+  VKR_RENDERER_IMPL_DRAW_BUCKET_COUNT = VKR_WORLD_DRAW_STATE_BUCKET_COUNT,
   VKR_RENDERER_IMPL_SHADOW_CASCADE_COUNT = 8,
 };
 
@@ -191,18 +191,35 @@ typedef struct VkrRendererImplPassTiming {
  * publication-boundary omission changes work volume instead of looking like a
  * faster pack.
  *
- * `geometry_table_build_ns` covers the geometry-row clear and rebuild. Vulkan
- * performs that as a separate capacity walk. Metal writes rows during candidate
- * packing, so its geometry duration overlaps `candidate_pack_ns`; callers must
- * not sum those two Metal scopes.
+ * `geometry_table_build_ns` covers a Vulkan table refresh. A slot reuses its
+ * completion-protected copy when publication has not changed, so a cache hit
+ * reports zero bytes and duration. Metal writes rows during candidate packing,
+ * so its geometry duration overlaps `candidate_pack_ns`; callers must not sum
+ * those two Metal scopes.
  *
  * `valid` stays false until a submitted frame fills the block, so a missing
  * producer reads as unavailable rather than as zero cost.
  */
+typedef enum VkrHzbHistoryRejection {
+  VKR_HZB_HISTORY_DISABLED = 0,
+  VKR_HZB_HISTORY_INVALID,
+  VKR_HZB_HISTORY_INCOMPLETE,
+  VKR_HZB_HISTORY_WORLD_CHANGED,
+  VKR_HZB_HISTORY_EXTENT_CHANGED,
+  VKR_HZB_HISTORY_CAMERA_CHANGED,
+  VKR_HZB_HISTORY_RASTER_CHANGED,
+  VKR_HZB_HISTORY_REJECTION_COUNT,
+} VkrHzbHistoryRejection;
+
 typedef struct VkrPacketBuildMetrics {
   uint64_t candidate_hash_ns;
   uint64_t candidate_pack_ns;
   uint64_t geometry_table_build_ns;
+  uint64_t graph_build_ns;
+  uint64_t graph_compile_ns;
+  bool8_t graph_timing_valid;
+  uint32_t hzb_history_rejections[VKR_HZB_HISTORY_REJECTION_COUNT];
+  bool8_t hzb_history_checks_valid;
   uint64_t candidate_row_bytes;
   uint64_t instance_row_bytes;
   uint64_t static_candidate_row_bytes;

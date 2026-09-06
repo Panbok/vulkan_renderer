@@ -18,6 +18,16 @@ vkr_vk_advance_candidate_publication_generation(VkrVulkanRenderer *renderer) {
   renderer->candidate_publication_generation++;
 }
 
+vkr_internal void
+vkr_vk_advance_geometry_table_generation(VkrVulkanRenderer *renderer) {
+  if (renderer->geometry_table_generation == UINT64_MAX) {
+    renderer->geometry_table_generation = 0u;
+    log_fatal("Vulkan geometry-table generation exhausted");
+    return;
+  }
+  renderer->geometry_table_generation++;
+}
+
 vkr_internal uint64_t vkr_vk_candidate_publication_generation(void *state) {
   const VkrVulkanRenderer *renderer = state;
   return renderer ? renderer->candidate_publication_generation : 0u;
@@ -894,8 +904,12 @@ bool8_t vkr_vk_commit_buffer_initializations(VkrVulkanRenderer *renderer,
     if (initialization->next_offset == initialization->size) {
       if (geometry->pending_initialization_count)
         geometry->pending_initialization_count--;
-      if (!geometry->pending_initialization_count)
+      if (!geometry->pending_initialization_count) {
+        renderer->geometry_table_rows[initialization->geometry_record_index] =
+            geometry->gpu_row;
+        vkr_vk_advance_geometry_table_generation(renderer);
         vkr_vk_advance_candidate_publication_generation(renderer);
+      }
       vkr_vk_release_buffer_initialization(renderer, initialization);
       continue;
     }
@@ -1723,6 +1737,7 @@ vkr_internal bool8_t vkr_vk_ensure_geometry_megabuffer(
   if (mega->generation == 0u)
     mega->generation = 1u;
   mega->live = true_v;
+  bool8_t relocated_geometry_rows = false_v;
   for (uint32_t i = 0u; i < renderer->config.geometry_capacity; ++i) {
     VkrVulkanPublishedGeometry *geometry = &renderer->published_geometries[i];
     if (!geometry->live)
@@ -1730,8 +1745,14 @@ vkr_internal bool8_t vkr_vk_ensure_geometry_megabuffer(
     geometry->vertices = mega->vertices;
     geometry->indices = mega->indices;
     vkr_gpu_geometry_row_relocate(&geometry->gpu_row, mega->vertices.address,
-                                  mega->indices.address, mega->generation);
+                                   mega->indices.address, mega->generation);
+    if (!geometry->pending_initialization_count) {
+      renderer->geometry_table_rows[i] = geometry->gpu_row;
+      relocated_geometry_rows = true_v;
+    }
   }
+  if (relocated_geometry_rows)
+    vkr_vk_advance_geometry_table_generation(renderer);
   return true_v;
 }
 
@@ -2363,6 +2384,9 @@ bool8_t vkr_vk_asset_unpublish_geometry(void *state, VkrGeometryHandle handle) {
   record->live = false_v;
   record->pending_retire = true_v;
   record->last_use_submit_value = last_use;
+  MemZero(&renderer->geometry_table_rows[handle.id - 1u],
+          sizeof(renderer->geometry_table_rows[handle.id - 1u]));
+  vkr_vk_advance_geometry_table_generation(renderer);
   vkr_vk_collect_asset_publications(renderer,
                                     vkr_vk_refresh_completed(renderer));
   if (!record->pending_retire) {

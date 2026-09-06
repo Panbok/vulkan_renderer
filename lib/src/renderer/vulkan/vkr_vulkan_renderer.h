@@ -78,6 +78,7 @@ typedef struct VkrVulkanRendererConfig {
   bool8_t fxaa_enabled;
   /** Previous-frame HZB occlusion is independent from frustum culling. */
   bool8_t hzb_enabled;
+  bool8_t frustum_enabled;
   /** Bounded transmission scan plus indirect sparse shading. */
   bool8_t transmission_compact_enabled;
   bool8_t enable_validation;

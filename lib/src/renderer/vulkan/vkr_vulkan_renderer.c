@@ -128,6 +128,7 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
   if (!renderer->config.graph_path)
     renderer->config.graph_path = "assets/render_graphs/main.rendergraph.json";
   renderer->candidate_publication_generation = 1u;
+  renderer->geometry_table_generation = 1u;
   if (!renderer->config.max_graph_images)
     renderer->config.max_graph_images = 128u;
   if (!renderer->config.max_graph_buffers)
@@ -211,6 +212,13 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
                           config->device_image_block_size,
                   },
               [VKR_VULKAN_MEMORY_CLASS_UPLOAD] =
+                  {
+                      [VKR_VULKAN_MEMORY_KIND_BUFFER] =
+                          config->upload_buffer_block_size,
+                      [VKR_VULKAN_MEMORY_KIND_IMAGE] =
+                          config->upload_buffer_block_size,
+                  },
+              [VKR_VULKAN_MEMORY_CLASS_PUBLICATION] =
                   {
                       [VKR_VULKAN_MEMORY_KIND_BUFFER] =
                           config->upload_buffer_block_size,
@@ -639,10 +647,14 @@ vkr_internal void vkr_vk_record_frame_commands(VkrVulkanRenderer *renderer,
     vkCmdCopyBufferToImage2(command, &copy_info);
     vkr_vk_cmd_image_barrier(
         command, renderer->sentinel_image.handle, VK_PIPELINE_STAGE_2_COPY_BIT,
-        VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT |
+            VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        VK_IMAGE_LAYOUT_GENERAL);
   }
 
   const VkDescriptorBufferBindingInfoEXT descriptor_bindings[] = {
@@ -777,6 +789,7 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
   vkr_render_graph_prepare_frame(
       packet, &renderer->bloom_config, &renderer->gtao_config,
       &renderer->prepared_frame, &renderer->gtao_params);
+  renderer->prepared_frame.hzb_build_enabled &= renderer->config.hzb_enabled;
   renderer->prepared_frame.transmission_compact_enabled =
       renderer->config.transmission_compact_enabled &&
       renderer->prepared_frame.transmission_pending;
@@ -800,17 +813,27 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
   /* Installed before compilation, because seeding a retained subresource reads
      through this provider. */
   vkr_vk_install_retained_provider(renderer);
+#if VKR_METRICS_ENABLED
+  const float64_t graph_build_start = vkr_platform_get_absolute_time();
+#endif
   if (!vkr_rg_build_from_json(renderer->graph, &renderer->json_graph,
                               &renderer->prepared_frame)) {
     log_error("Vulkan failed to build the authored render graph");
     vkr_vulkan_renderer_cancel_frame(renderer);
     return false_v;
   }
+#if VKR_METRICS_ENABLED
+  const uint64_t graph_build_ns = vkr_metrics_elapsed_ns(graph_build_start);
+  const float64_t graph_compile_start = vkr_platform_get_absolute_time();
+#endif
   if (!vkr_rg_compile_schedule(renderer->graph)) {
     log_error("Vulkan failed to compile the authored render graph");
     vkr_vulkan_renderer_cancel_frame(renderer);
     return false_v;
   }
+#if VKR_METRICS_ENABLED
+  const uint64_t graph_compile_ns = vkr_metrics_elapsed_ns(graph_compile_start);
+#endif
   if (renderer->graph->images.length > renderer->config.max_graph_images ||
       renderer->graph->buffers.length > renderer->config.max_graph_buffers ||
       renderer->graph->passes.length > renderer->config.max_graph_passes) {
@@ -876,6 +899,11 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
     vkr_vulkan_renderer_cancel_frame(renderer);
     return false_v;
   }
+#if VKR_METRICS_ENABLED
+  slot->packet_build.graph_build_ns = graph_build_ns;
+  slot->packet_build.graph_compile_ns = graph_compile_ns;
+  slot->packet_build.graph_timing_valid = true_v;
+#endif
   if (!vkr_vk_flush_publication_ranges(renderer)) {
     log_error("Vulkan publication range flush failed");
     if (slot->capture_request_id)
@@ -1072,7 +1100,7 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
         renderer, "asset staging retirement could not be committed");
   renderer->targets.images[slot->image_index].layout =
       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-  renderer->sentinel_image.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  renderer->sentinel_image.layout = VK_IMAGE_LAYOUT_GENERAL;
   if (renderer->config.target_kind != VKR_PRESENT_TARGET_OFFSCREEN) {
     VkrVulkanWindowTarget *window = &renderer->window_target;
     const uint32_t image_index = slot->image_index;
@@ -1843,6 +1871,11 @@ void vkr_vulkan_renderer_destroy(VkrVulkanRenderer *renderer) {
   if (renderer->published_geometries) {
     vkr_allocator_free(allocator, renderer->published_geometries,
                        renderer->published_geometries_size,
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  }
+  if (renderer->geometry_table_rows) {
+    vkr_allocator_free(allocator, renderer->geometry_table_rows,
+                       renderer->geometry_table_rows_size,
                        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   }
   if (renderer->retired_geometries) {

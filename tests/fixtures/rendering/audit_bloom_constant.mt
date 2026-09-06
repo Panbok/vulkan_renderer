@@ -1,0 +1,10 @@
+name=audit_bloom_constant
+type=pbr
+base_color=0.0,0.0,0.0,1.0
+metallic=1.0
+roughness=1.0
+emissive_factor=3.0,3.0,3.0
+alpha_mode=opaque
+double_sided=false
+shader=shader.pbr.world
+pipeline=world

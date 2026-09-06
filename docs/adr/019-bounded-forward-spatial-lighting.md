@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-09-06
 authority: adr
 ---
 
@@ -25,6 +25,10 @@ Metal and Vulkan shading paths.
 
 Pack up to 16 ready local IBL probes per frame. Compute their influence from
 fragment position and AABB weights; keep the global environment as fallback.
+Box projection controls only parallax-corrected reflection lookup. Disabling it
+does not bypass a local probe's influence extents or blend falloff. The global
+environment remains the unbounded source; existing application packing enables
+box projection, so this correction does not migrate current authored probe values.
 Diffuse uses ADR-038 coefficients and specular uses prefiltered cubemaps.
 Prepared scene metadata can override exact glTF light-definition ranges at the
 cold import boundary; malformed or unmatched overrides fail preparation.

@@ -355,10 +355,22 @@ publish:
       !vkr_harness_sha256_file(report_path, digest)) {
     goto cleanup;
   }
+  for (char *cursor = report_path; *cursor; ++cursor)
+    if (*cursor == '\\')
+      *cursor = '/';
+  uint64_t repo_root_length = string_length(repo_root);
+  while (repo_root_length > 0u &&
+         (repo_root[repo_root_length - 1u] == '/' ||
+          repo_root[repo_root_length - 1u] == '\\')) {
+    repo_root_length--;
+  }
+  const char *report_relative = report_path + repo_root_length;
+  if (*report_relative == '/' || *report_relative == '\\')
+    report_relative++;
   vkr_harness_stdout(
-      "{\"status\":\"%s\",\"exit_code\":%u,\"report\":\"%s/report.json\","
+      "{\"status\":\"%s\",\"exit_code\":%u,\"report\":\"%s\","
       "\"sha256\":\"%s\"}\n",
-      report.status, report.exit_code, run_relative, digest);
+      report.status, report.exit_code, report_relative, digest);
   result = report.exit_code;
 cleanup:
   if (result == VKR_HARNESS_EXIT_ERROR && error.message[0]) {

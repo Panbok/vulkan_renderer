@@ -5,7 +5,7 @@
 
 static const uint VKR_VK_PRIMITIVE_ID_MASK = 0x7fffffffu;
 static const uint VKR_VK_FRONT_FACE_BIT = 0x80000000u;
-static const uint VKR_VK_DRAW_BUCKET_COUNT = 4u;
+static const uint VKR_VK_DRAW_BUCKET_COUNT = 8u;
 static const uint VKR_VK_FRUSTUM_PLANE_COUNT = 6u;
 static const uint VKR_VK_HZB_MIP_MAX = 16u;
 
@@ -134,6 +134,13 @@ struct VkrVkResolveRoot
     uint4 reserved_tail;
     float4x4 sky_reprojection;
 };
+
+#ifndef VKR_VULKAN_GBUFFER_WRITE_EMISSIVE
+#define VKR_VULKAN_GBUFFER_WRITE_EMISSIVE 0
+#endif
+#ifndef VKR_VULKAN_GBUFFER_WRITE_DEBUG
+#define VKR_VULKAN_GBUFFER_WRITE_DEBUG 0
+#endif
 
 struct VkrVkTemporalResolveRoot
 {
@@ -402,11 +409,8 @@ static bool vkr_vk_candidate_occluded(VkrVkCullRoot *root,
     float3 center =
         mul(instance.model, float4(candidate.local_bounding_sphere.xyz, 1.0f))
             .xyz;
-    float3 scale_x = mul(instance.model, float4(1.0f, 0.0f, 0.0f, 0.0f)).xyz;
-    float3 scale_y = mul(instance.model, float4(0.0f, 1.0f, 0.0f, 0.0f)).xyz;
-    float3 scale_z = mul(instance.model, float4(0.0f, 0.0f, 1.0f, 0.0f)).xyz;
-    float scale = max(length(scale_x), max(length(scale_y), length(scale_z)));
-    float radius = max(candidate.local_bounding_sphere.w * scale, 0.0f);
+    float radius = max(candidate.local_bounding_sphere.w *
+                       instance.normal_column1.w, 0.0f);
     float2 ndc_min = 1e30f;
     float2 ndc_max = -1e30f;
     float nearest_depth = 1.0f;
@@ -426,10 +430,9 @@ static bool vkr_vk_candidate_occluded(VkrVkCullRoot *root,
     }
     if (nearest_depth <= 0.0f || any(ndc_min > 1.0f) || any(ndc_max < -1.0f))
         return false;
-    float2 uv_min =
-        clamp(float2(ndc_min.x, -ndc_max.y) * 0.5f + 0.5f, 0.0f, 1.0f);
-    float2 uv_max =
-        clamp(float2(ndc_max.x, -ndc_min.y) * 0.5f + 0.5f, 0.0f, 1.0f);
+    // Positive-height Vulkan viewports and the HZB producer keep image Y.
+    float2 uv_min = clamp(ndc_min * 0.5f + 0.5f, 0.0f, 1.0f);
+    float2 uv_max = clamp(ndc_max * 0.5f + 0.5f, 0.0f, 1.0f);
     uint2 base_min = min(uint2(floor(uv_min * float2(root.hzb_extent))),
                          root.hzb_extent - 1u);
     uint2 base_max = min(uint2(floor(uv_max * float2(root.hzb_extent))),
@@ -482,11 +485,7 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
     VkrVulkanInstance instance = root.instances[candidate.instance_index];
     float4 local = candidate.local_bounding_sphere;
     float4 world_center = mul(instance.model, float4(local.xyz, 1.0f));
-    float3 scale_x = mul(instance.model, float4(1.0f, 0.0f, 0.0f, 0.0f)).xyz;
-    float3 scale_y = mul(instance.model, float4(0.0f, 1.0f, 0.0f, 0.0f)).xyz;
-    float3 scale_z = mul(instance.model, float4(0.0f, 0.0f, 1.0f, 0.0f)).xyz;
-    float world_radius =
-        local.w * max(length(scale_x), max(length(scale_y), length(scale_z)));
+    float world_radius = local.w * instance.normal_column1.w;
     uint classification_index =
         view_index * root.candidate_capacity + candidate_index;
     float4 world_sphere = float4(world_center.xyz, world_radius);
@@ -794,8 +793,12 @@ void vkr_vk_resolve_defaults(VkrVkResolveRoot *root, uint2 pixel, float marker)
     g_storage_2d[root.albedo_texture][pixel] = float4(0.0f, 0.0f, 0.0f, 1.0f);
     g_storage_2d[root.specular_texture][pixel] = float4(0.0f, 0.0f, 0.0f, 1.0f);
     g_storage_float2_2d[root.normal_texture][pixel] = 0.0f;
+#if VKR_VULKAN_GBUFFER_WRITE_EMISSIVE
     g_storage_2d[root.emissive_texture][pixel] = 0.0f;
+#endif
+#if VKR_VULKAN_GBUFFER_WRITE_DEBUG
     g_storage_2d[root.debug_texture][pixel] = float4(0.0f, 0.0f, 0.0f, marker);
+#endif
     g_storage_2d[root.scene_texture][pixel] = 0.0f;
     g_storage_float2_2d[root.motion_texture][pixel] = 0.0f;
     g_storage_float2_2d[root.validity_texture][pixel] = 0.0f;
@@ -1117,10 +1120,14 @@ void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
         float4(f0, surface.roughness);
     g_storage_float2_2d[root.normal_texture][thread_id.xy] =
         vkr_vk_octahedral_encode(surface.normal);
+#if VKR_VULKAN_GBUFFER_WRITE_EMISSIVE
     g_storage_2d[root.emissive_texture][thread_id.xy] =
         float4(surface.emissive, 1.0f);
+#endif
+#if VKR_VULKAN_GBUFFER_WRITE_DEBUG
     g_storage_2d[root.debug_texture][thread_id.xy] =
         float4(surface.barycentric, surface.selected_lod + 1.0f);
+#endif
     // Alpha carries metallic so deferred lighting can answer the material
     // debug view without a fifth G-buffer target.
     float3 hdr_seed = root.render_mode == 3u

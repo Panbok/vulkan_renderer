@@ -1,4 +1,5 @@
 #include "renderer/vulkan/vkr_vulkan_internal.h"
+#include "renderer/vkr_visibility.h"
 
 typedef struct VkrVulkanTableDrawUpload {
   VkrVulkanPacketDrawRoot root;
@@ -315,22 +316,25 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
   slot->frame_upload_exhaustions = 0u;
   // Bound variable uploads before publishing any mapped pointer or GPU address.
   // A capped conservative bound preserves the former 75 MiB direct-only limit.
-  uint64_t direct_bytes =
-      (packet->scene_rendering ? (uint64_t)renderer->config.geometry_capacity *
-                                     sizeof(VkrGpuGeometryRow)
-                               : 0u) +
-      256u; // Alignment between the fixed packet tables below.
+  const uint64_t geometry_table_bytes =
+      packet->scene_rendering
+          ? (uint64_t)renderer->config.geometry_capacity *
+                sizeof(VkrGpuGeometryRow)
+          : 0u;
+  uint64_t direct_bytes = geometry_table_bytes +
+                          256u; // Alignment between the fixed packet tables below.
   uint64_t candidate_bytes = 0u;
   uint64_t draw_bytes = 0u;
   uint64_t text_bytes = 0u;
   uint64_t ui_root_bytes = 0u;
   if (packet->input.world) {
     const VkrWorldPassPayload *world = packet->input.world;
+    const uint64_t direct_run_count = vkr_world_draw_parity_run_count(world);
     direct_bytes +=
         (uint64_t)world->instance_count * sizeof(VkrPreparedInstanceGPU) +
-        (uint64_t)world->transparent_draw_count *
+        direct_run_count *
             sizeof(VkrVulkanPreparedDirectDraw);
-    draw_bytes = (uint64_t)world->transparent_draw_count *
+    draw_bytes = direct_run_count *
                  sizeof(VkrVulkanTableDrawUpload);
     candidate_bytes =
         ((uint64_t)world->gpu_candidate_count +
@@ -383,6 +387,30 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
   slot->indexed_draw_count = 0u;
   slot->blend_draw_count = 0u;
   slot->packet_build = (VkrPacketBuildMetrics){0};
+  if (packet->scene_rendering) {
+    VkrGpuGeometryRow *geometry_rows = vkr_vk_frame_upload_allocate(
+        slot, geometry_table_bytes, _Alignof(VkrGpuGeometryRow),
+        &slot->gpu_geometry_rows, NULL);
+    if (!geometry_rows)
+      return false_v;
+    if (slot->geometry_table_generation !=
+        renderer->geometry_table_generation) {
+#if VKR_METRICS_ENABLED
+      const float64_t geometry_table_start = vkr_platform_get_absolute_time();
+#endif
+      MemCopy(geometry_rows, renderer->geometry_table_rows,
+              geometry_table_bytes);
+#if VKR_METRICS_ENABLED
+      slot->packet_build.geometry_table_build_ns =
+          vkr_metrics_elapsed_ns(geometry_table_start);
+#endif
+      slot->packet_build.geometry_row_bytes = geometry_table_bytes;
+      slot->geometry_table_generation = renderer->geometry_table_generation;
+    }
+  } else {
+    /* Non-scene uploads begin at offset zero and invalidate this cached prefix. */
+    slot->geometry_table_generation = 0u;
+  }
   const bool8_t common_uploads =
       vkr_vk_prepare_direct_draws(renderer, slot, packet->input.world) &&
       vkr_vk_upload_packet_tables(renderer, slot, packet) &&
@@ -398,29 +426,6 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
     slot->packet_build.valid = true_v;
     return true_v;
   }
-
-  const uint64_t geometry_bytes =
-      (uint64_t)renderer->config.geometry_capacity * sizeof(VkrGpuGeometryRow);
-  VkrGpuGeometryRow *geometry_rows = vkr_vk_frame_upload_allocate(
-      slot, geometry_bytes, _Alignof(VkrGpuGeometryRow),
-      &slot->gpu_geometry_rows, NULL);
-  if (!geometry_rows)
-    return false_v;
-#if VKR_METRICS_ENABLED
-  const float64_t geometry_table_start = vkr_platform_get_absolute_time();
-#endif
-  MemZero(geometry_rows, geometry_bytes);
-  for (uint32_t i = 0u; i < renderer->config.geometry_capacity; ++i) {
-    const VkrVulkanPublishedGeometry *geometry =
-        &renderer->published_geometries[i];
-    if (geometry->live && geometry->pending_initialization_count == 0u)
-      geometry_rows[i] = geometry->gpu_row;
-  }
-#if VKR_METRICS_ENABLED
-  slot->packet_build.geometry_table_build_ns =
-      vkr_metrics_elapsed_ns(geometry_table_start);
-#endif
-  slot->packet_build.geometry_row_bytes = geometry_bytes;
 
 #if VKR_METRICS_ENABLED
   const float64_t hash_start = vkr_platform_get_absolute_time();
@@ -553,13 +558,17 @@ bool8_t vkr_vk_prepare_direct_draws(VkrVulkanRenderer *renderer,
   slot->direct_draw_count = 0u;
   if (!world || !world->transparent_draw_count)
     return true_v;
-  const uint32_t count = world->transparent_draw_count;
+  const uint64_t run_count = vkr_world_draw_parity_run_count(world);
+  if (run_count > UINT32_MAX)
+    return false_v;
+  if (run_count == 0u)
+    return true_v;
   slot->direct_draws = vkr_vk_frame_upload_allocate(
-      slot, (uint64_t)count * sizeof(*slot->direct_draws),
+      slot, run_count * sizeof(*slot->direct_draws),
       _Alignof(VkrVulkanPreparedDirectDraw), NULL, NULL);
   if (!slot->direct_draws)
     return false_v;
-  for (uint32_t i = 0u; i < count; ++i) {
+  for (uint32_t i = 0u; i < world->transparent_draw_count; ++i) {
     const VkrDrawItem *source = &world->transparent_draws[i];
     if (!source->geometry.id ||
         source->geometry.id > renderer->config.geometry_capacity)
@@ -578,14 +587,26 @@ bool8_t vkr_vk_prepare_direct_draws(VkrVulkanRenderer *renderer,
     if (geometry->pending_initialization_count ||
         material->pending_texture_count)
       continue;
-    slot->direct_draws[slot->direct_draw_count++] =
-        (VkrVulkanPreparedDirectDraw){
-            .geometry = geometry,
-            .material = material,
-            .range = &geometry->submeshes[source->submesh_index],
-            .first_instance = source->first_instance,
-            .instance_count = source->instance_count,
-        };
+    uint32_t offset = 0u;
+    while (offset < source->instance_count) {
+      bool8_t mirrored;
+      const uint32_t run_length = vkr_draw_parity_run_length(
+          world->instances + source->first_instance + offset,
+          source->instance_count - offset, &mirrored);
+      slot->direct_draws[slot->direct_draw_count++] =
+          (VkrVulkanPreparedDirectDraw){
+              .geometry = geometry,
+              .material = material,
+              .range = &geometry->submeshes[source->submesh_index],
+              .first_instance = source->first_instance + offset,
+              .instance_count = run_length,
+              .front_face = mirrored ? VK_FRONT_FACE_CLOCKWISE
+                                     : VK_FRONT_FACE_COUNTER_CLOCKWISE,
+              .cull_mode = material->double_sided ? VK_CULL_MODE_NONE
+                                                  : VK_CULL_MODE_BACK_BIT,
+          };
+      offset += run_length;
+    }
   }
   return true_v;
 }
@@ -645,6 +666,12 @@ vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
     }
     const VkrVulkanSubmeshRange *submesh =
         &geometry->submeshes[candidate->submesh_index];
+    instances[packed_count] = vkr_gpu_prepare_instance(&candidate->instance);
+    const uint32_t state_bucket =
+        candidate->state_bucket |
+        (instances[packed_count].normal_column0.w < 0.0f
+             ? VKR_GPU_DRAW_STATE_MIRRORED_BIT
+             : 0u);
     candidates[packed_count] = (VkrGpuCandidateDrawRow){
         .geometry_index = candidate->geometry.id - 1u,
         .material_index = material->slot.index,
@@ -653,11 +680,9 @@ vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
         .index_count = submesh->index_count,
         .vertex_offset = submesh->vertex_offset,
         .decode_index = submesh->decode_index,
-        .state_flags =
-            vkr_gpu_draw_state_flags(candidate->state_bucket, candidate->flags),
+        .state_flags = vkr_gpu_draw_state_flags(state_bucket, candidate->flags),
         .local_bounding_sphere = candidate->local_bounding_sphere,
     };
-    instances[packed_count] = vkr_gpu_prepare_instance(&candidate->instance);
     instances[packed_count].temporal_flags =
         ((candidate->submesh_index + 1u)
          << VKR_INSTANCE_TEMPORAL_SURFACE_SHIFT) |
@@ -780,6 +805,8 @@ vkr_internal void vkr_vk_record_prepared_direct_draws(
                     renderer->packet_pipelines[pipeline]);
   for (uint32_t i = 0u; i < draw_count; ++i) {
     const VkrVulkanPreparedDirectDraw *draw = &slot->direct_draws[i];
+    vkCmdSetFrontFace(command, draw->front_face);
+    vkCmdSetCullMode(command, draw->cull_mode);
     const VkrVulkanPublishedGeometry *geometry = draw->geometry;
     const VkrVulkanPublishedMaterial *material = draw->material;
     const VkrVulkanSubmeshRange *range = draw->range;
@@ -804,6 +831,8 @@ vkr_internal void vkr_vk_record_prepared_direct_draws(
                      range->first_index, range->vertex_offset, 0u);
   }
   slot->indexed_draw_count += draw_count;
+  vkCmdSetFrontFace(command, VK_FRONT_FACE_COUNTER_CLOCKWISE);
+  vkCmdSetCullMode(command, VK_CULL_MODE_NONE);
   if (lighting_pass)
     slot->blend_draw_count += draw_count;
 }
@@ -1105,6 +1134,7 @@ vkr_internal void vkr_vk_record_prepared_ui_draws(
   };
   vkCmdSetViewport(command, 0u, 1u, &viewport);
   vkCmdSetCullMode(command, VK_CULL_MODE_NONE);
+  vkCmdSetFrontFace(command, VK_FRONT_FACE_COUNTER_CLOCKWISE);
   vkCmdBindIndexBuffer2(command, slot->frame_upload.handle,
                         slot->ui_index_offset, slot->ui_index_size,
                         VK_INDEX_TYPE_UINT32);

@@ -90,6 +90,7 @@ typedef struct VkrMetalPacketRendererConfig {
   bool8_t transmission_compact_enabled;
   /** Diagnostic rollback for P14 while retaining the deferred graph. */
   bool8_t hzb_enabled;
+  bool8_t frustum_enabled;
   uint32_t max_images;
   uint32_t max_passes;
   uint32_t max_material_rows;

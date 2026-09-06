@@ -217,6 +217,9 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId packet_candidate_hash;
   VkrMetricId packet_candidate_pack;
   VkrMetricId packet_geometry_table_build;
+  VkrMetricId graph_build;
+  VkrMetricId graph_compile;
+  VkrMetricId hzb_history_rejections[VKR_HZB_HISTORY_REJECTION_COUNT];
   VkrMetricId packet_candidate_row_bytes;
   VkrMetricId packet_instance_row_bytes;
   VkrMetricId packet_static_candidate_row_bytes;

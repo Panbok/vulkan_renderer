@@ -120,9 +120,14 @@ void vkr_bloom_mip_extent(uint32_t viewport_width, uint32_t viewport_height,
                           uint32_t mip, uint32_t *out_width,
                           uint32_t *out_height);
 
-/** Lowers the cold record plus this frame's controls for the kernels. */
+/**
+ * Lowers frame controls for a prepared chain. The combine intensity compensates
+ * for fewer contributing levels relative to the configured maximum chain.
+ * A zero mip count or disabled frame has zero combine intensity.
+ */
 VkrBloomGpuParams vkr_bloom_gpu_params(const VkrBloomConfig *config,
-                                       const VkrBloomFrame *frame);
+                                       const VkrBloomFrame *frame,
+                                       uint32_t mip_count);
 
 /** Builds frame-local bloom controls from validated packet fields. */
 VkrBloomFrame vkr_bloom_prepare(bool8_t enabled, float32_t threshold,

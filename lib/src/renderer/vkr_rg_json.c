@@ -32,12 +32,17 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"!editor_enabled", VKR_RG_JSON_CONDITION_EDITOR_DISABLED},
     {"hzb_history_valid", VKR_RG_JSON_CONDITION_HZB_HISTORY_VALID},
     {"!hzb_history_valid", VKR_RG_JSON_CONDITION_HZB_HISTORY_INVALID},
+    {"hzb_build_enabled", VKR_RG_JSON_CONDITION_HZB_BUILD_ENABLED},
     {"shadow_cascades_active", VKR_RG_JSON_CONDITION_SHADOW_CASCADES_ACTIVE},
     {"sdsm_enabled", VKR_RG_JSON_CONDITION_SDSM_ENABLED},
     {"transmission_pending", VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING},
     {"!transmission_pending", VKR_RG_JSON_CONDITION_TRANSMISSION_IDLE},
     {"transmission_depth_diagnostic_enabled",
      VKR_RG_JSON_CONDITION_TRANSMISSION_DEPTH_DIAGNOSTIC},
+    {"deferred_emissive_capture_enabled",
+     VKR_RG_JSON_CONDITION_DEFERRED_EMISSIVE_CAPTURE},
+    {"resolve_barycentric_lod_capture_enabled",
+     VKR_RG_JSON_CONDITION_RESOLVE_BARYCENTRIC_LOD_CAPTURE},
     {"transmission_compact_enabled",
      VKR_RG_JSON_CONDITION_TRANSMISSION_COMPACT_ENABLED},
     {"editor_enabled && transmission_pending",
@@ -1864,6 +1869,8 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->hzb_history_valid;
   case VKR_RG_JSON_CONDITION_HZB_HISTORY_INVALID:
     return !frame->hzb_history_valid;
+  case VKR_RG_JSON_CONDITION_HZB_BUILD_ENABLED:
+    return frame->hzb_build_enabled;
   case VKR_RG_JSON_CONDITION_SHADOW_CASCADES_ACTIVE:
     return frame->shadow_cascade_count > 0u;
   case VKR_RG_JSON_CONDITION_SDSM_ENABLED:
@@ -1874,6 +1881,10 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return !frame->transmission_pending;
   case VKR_RG_JSON_CONDITION_TRANSMISSION_DEPTH_DIAGNOSTIC:
     return frame->transmission_depth_diagnostic_enabled;
+  case VKR_RG_JSON_CONDITION_DEFERRED_EMISSIVE_CAPTURE:
+    return frame->deferred_emissive_capture_enabled;
+  case VKR_RG_JSON_CONDITION_RESOLVE_BARYCENTRIC_LOD_CAPTURE:
+    return frame->resolve_barycentric_lod_capture_enabled;
   case VKR_RG_JSON_CONDITION_TRANSMISSION_COMPACT_ENABLED:
     return frame->transmission_compact_enabled;
   case VKR_RG_JSON_CONDITION_EDITOR_ENABLED_TRANSMISSION:
@@ -2498,21 +2509,24 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
         } else if (resource->buffer.size_mode ==
                    VKR_RG_JSON_BUFFER_SIZE_DRAW_ELEMENTS) {
           uint32_t count = 0u;
+          uint32_t max_count = VKR_GPU_DRAW_CANDIDATE_CAPACITY;
           switch (resource->buffer.draw_count_source) {
           case VKR_RG_JSON_DRAW_COUNT_CANDIDATES:
             count = frame->gpu_draw_candidate_capacity;
             break;
           case VKR_RG_JSON_DRAW_COUNT_VISIBLE:
             count = frame->gpu_draw_visible_capacity;
+            max_count = VKR_WORLD_DRAW_STATE_BUCKET_COUNT * 65536u;
             break;
           case VKR_RG_JSON_DRAW_COUNT_TRANSMISSION_CANDIDATES:
             count = frame->transmission_gpu_draw_candidate_capacity;
             break;
           case VKR_RG_JSON_DRAW_COUNT_TRANSMISSION_VISIBLE:
             count = frame->transmission_gpu_draw_visible_capacity;
+            max_count = VKR_WORLD_DRAW_STATE_BUCKET_COUNT * 65536u;
             break;
           }
-          if (!count || count > VKR_GPU_DRAW_CANDIDATE_CAPACITY) {
+          if (!count || count > max_count) {
             log_error("RenderGraph buffer '%.*s': invalid draw capacity %u",
                       (int)resolved_name.length, resolved_name.str, count);
             vkr_rg_release_name(frame_allocator, resolved_name, owned_name);

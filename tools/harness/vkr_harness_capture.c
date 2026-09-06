@@ -694,6 +694,11 @@ static void vkr_harness_capture_write_u32_le(uint8_t *bytes, uint32_t value) {
   bytes[3] = (uint8_t)(value >> 24u);
 }
 
+static void vkr_harness_capture_write_u16_le(uint8_t *bytes, uint16_t value) {
+  bytes[0] = (uint8_t)value;
+  bytes[1] = (uint8_t)(value >> 8u);
+}
+
 bool8_t vkr_harness_capture_png_write(const char *path, const uint8_t *rgba,
                                       uint32_t width, uint32_t height,
                                       const VkrHarnessArenas *arenas,
@@ -953,6 +958,38 @@ static void vkr_harness_capture_canonical_u32(const VkrCaptureItemResult *item,
   }
 }
 
+/** Writes a tight top-left IEEE-754 binary16 payload with a fixed byte order.
+ */
+static void
+vkr_harness_capture_canonical_rgba16f(const VkrCaptureItemResult *item,
+                                      uint8_t *tight) {
+  for (uint32_t y = 0; y < item->height; ++y) {
+    const uint8_t *source = vkr_harness_capture_row(item, y);
+    uint8_t *target = tight + (uint64_t)y * item->width * 8u;
+    for (uint32_t x = 0; x < item->width; ++x) {
+      const uint8_t *source_texel = source + (uint64_t)x * 8u;
+      uint8_t *target_texel = target + (uint64_t)x * 8u;
+      for (uint32_t component = 0; component < 4u; ++component) {
+        vkr_harness_capture_write_u16_le(
+            target_texel + component * 2u,
+            vkr_harness_capture_read_u16(source_texel + component * 2u));
+      }
+    }
+  }
+}
+
+static bool8_t
+vkr_harness_capture_encoding_is_png(const char *canonical_encoding) {
+  return string_equals(canonical_encoding, "RGBA8_SRGB_PNG") ||
+         string_equals(canonical_encoding, "RGBA8_UNORM") ||
+         string_equals(canonical_encoding, "RGBA8_UNORM_PNG");
+}
+
+static bool8_t
+vkr_harness_capture_encoding_is_rgba16f(const char *canonical_encoding) {
+  return string_equals(canonical_encoding, "RGBA16_FLOAT_LE");
+}
+
 /**
  * Emits the sidecar describing how one canonical payload was produced. Written
  * through the shared JSON writer so escaping, bounds, and atomic publication
@@ -1106,11 +1143,17 @@ bool8_t vkr_harness_capture_publish(
                             "Capture item %u cannot be published", i);
       return false_v;
     }
-    /* Packed G-buffer normals need their exact signed components for parity
-       comparisons; their decoded PNG remains a reviewer preview. */
+    /* Catalog encoding controls payload; HDR data stays numeric. */
     const bool8_t png_canonical =
-        item->value_kind == VKR_CAPTURE_VALUE_COLOR &&
-        item->format != VKR_TEXTURE_FORMAT_R16G16_SNORM;
+        vkr_harness_capture_encoding_is_png(channel->canonical_encoding);
+    const bool8_t rgba16f_canonical =
+        vkr_harness_capture_encoding_is_rgba16f(channel->canonical_encoding);
+    if (rgba16f_canonical &&
+        item->format != VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT) {
+      vkr_harness_error_set(error, "capture.encoding", logical_channel->name,
+                            "RGBA16_FLOAT_LE requires R16G16B16A16_SFLOAT");
+      return false_v;
+    }
     char stem[160];
     char png_path[VKR_HARNESS_PATH_MAX];
     char data_path[VKR_HARNESS_PATH_MAX];
@@ -1124,12 +1167,15 @@ bool8_t vkr_harness_capture_publish(
                   png_canonical ? "%s/%s.png" : "%s/%s.raw", capture_dir, stem);
 
     Scratch scratch = scratch_create(arenas->transient);
-    const uint64_t pixel_bytes = (uint64_t)item->width * item->height * 4u;
+    const uint64_t preview_bytes = (uint64_t)item->width * item->height * 4u;
+    const uint64_t canonical_bytes =
+        (uint64_t)item->width * item->height * (rgba16f_canonical ? 8u : 4u);
     uint8_t *rgba =
-        arena_alloc(arenas->transient, pixel_bytes, ARENA_MEMORY_TAG_ARRAY);
-    uint8_t *tight = png_canonical ? rgba
-                                   : arena_alloc(arenas->transient, pixel_bytes,
-                                                 ARENA_MEMORY_TAG_ARRAY);
+        arena_alloc(arenas->transient, preview_bytes, ARENA_MEMORY_TAG_ARRAY);
+    uint8_t *tight = png_canonical
+                         ? rgba
+                         : arena_alloc(arenas->transient, canonical_bytes,
+                                       ARENA_MEMORY_TAG_ARRAY);
     float32_t preview_min = 0.0f;
     float32_t preview_max = 1.0f;
     bool8_t ok = rgba != NULL && tight != NULL;
@@ -1146,8 +1192,13 @@ bool8_t vkr_harness_capture_publish(
 
     VkrHarnessCaptureResult *capture = &report->captures[report->capture_count];
     if (ok && !png_canonical) {
-      vkr_harness_capture_canonical_u32(item, uint_component, uint_mask, tight);
-      ok = vkr_harness_atomic_write(data_path, tight, pixel_bytes, error);
+      if (rgba16f_canonical) {
+        vkr_harness_capture_canonical_rgba16f(item, tight);
+      } else {
+        vkr_harness_capture_canonical_u32(item, uint_component, uint_mask,
+                                          tight);
+      }
+      ok = vkr_harness_atomic_write(data_path, tight, canonical_bytes, error);
     }
     ok = ok && vkr_harness_capture_png_write(png_path, rgba, item->width,
                                              item->height, arenas, error);

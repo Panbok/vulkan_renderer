@@ -46,7 +46,11 @@ The frame input's source instance remains 80 bytes. Native publication/upload
 lowers it once into a 128-byte `VkrPreparedInstanceGPU` with three prepared normal-transform
 columns. Their common positive scale preserves inverse-transpose direction under
 normalization; the first column's w carries model handedness for mirrored tangent
-bases. Shaders transform tangents with the model's linear part and normals with
+bases. The second column's w carries an outward-rounded conservative affine
+sphere stretch; source and prepared instance sizes remain 80 and 128 bytes.
+Eight raster buckets partition material state by reflection parity; the shared
+compaction record is 144 bytes. Direct draws preserve order through contiguous
+parity runs. Shaders transform tangents with the model's linear part and normals with
 the prepared columns. No per-pixel matrix inverse is required.
 
 Both G-buffer roots append the sky reprojection matrix at byte
@@ -185,7 +189,7 @@ former ADR-005's deleted reflection-driven frontend.
 
 Material normals transform through the explicit tangent/bitangent/normal basis;
 Slang row constructors must not transpose that basis. Native model-matrix
-indexing must preserve transformed-axis culling bounds. Depth equality and odd
+indexing must preserve conservative affine culling bounds. Depth equality and odd
 HZB mip edges follow ADR-028. Vulkan transmission compaction uses native subgroup
 identity/count, independent of workgroup-local invocation numbering.
 
@@ -198,6 +202,18 @@ must remain consistent.
 Exposure requires complete histogram groups and GTAO requires mip-selecting
 depth sampling under ADR-042. Equirectangular HDR conversion wraps longitude
 and clamps latitude, preserving the prepared source texture's pole behavior.
+
+Direct-light helpers reject noncontributing light hemispheres before half-vector
+construction. Shared GGX math defines zero contribution when the half-vector's
+squared length is zero or subnormal; finite back-view diffuse behavior remains
+unchanged. Local probe influence bounds remain active independently of parallax
+projection. Bloom gain follows ADR-042's maximum-chain normalization.
+
+Audit remediation changes visibility, HZB producer-grid metadata, Metal reset
+ordering, optional resolve outputs and numerical edges. These domains remain
+**UNALIGNED** until the same-revision Metal build, focused native validation and
+bilateral capture gates pass. The available host is Windows/Vulkan; analytical
+oracles do not substitute for Metal execution.
 
 Two near-degenerate reconstruction policies still differ: Metal rejects
 barycentric normalization sums at `1e-8`, Vulkan at `1e-12`; interpolated tangent

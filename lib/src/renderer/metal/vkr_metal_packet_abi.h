@@ -433,8 +433,8 @@ _Static_assert(sizeof(VkrMetalPacketTransmissionShadeRoot) == 464,
 
 typedef VkrGpuTransmissionDiagnostics VkrMetalPacketTransmissionDiagnostics;
 
-_Static_assert(sizeof(VkrMetalPacketTransmissionDiagnostics) == 116,
-               "Metal transmission diagnostics ABI must remain 116 bytes");
+_Static_assert(sizeof(VkrMetalPacketTransmissionDiagnostics) == 180,
+               "Metal transmission diagnostics ABI must remain 180 bytes");
 _Static_assert(offsetof(VkrMetalPacketTransmissionDiagnostics,
                         covered_pixels) == sizeof(VkrGpuDrawCompactionState),
                "Metal transmission coverage must follow compaction state");

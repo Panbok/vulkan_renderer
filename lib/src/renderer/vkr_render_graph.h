@@ -536,6 +536,8 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t editor_image_height;
   /** True only when a completion-protected HZB history generation is valid. */
   bool8_t hzb_history_valid;
+  /** Build HZB only when its raster grid can support the reuse policy. */
+  bool8_t hzb_build_enabled;
   /** Metal P6 occupied-depth feedback is enabled for this packet. */
   bool8_t sdsm_enabled;
   /** Number of graph-authored reductions after the HZB base mip. */
@@ -551,6 +553,10 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t transmission_gpu_draw_visible_capacity;
   /** True only when a focused capture requests the post-layer-3 peel. */
   bool8_t transmission_depth_diagnostic_enabled;
+  /** True only when capture requests the resolve emissive diagnostic. */
+  bool8_t deferred_emissive_capture_enabled;
+  /** True only when capture requests resolve barycentrics and LOD. */
+  bool8_t resolve_barycentric_lod_capture_enabled;
   /**
    * True only for an automatic-exposure packet. Manual frames must not pay for
    * metering, so both exposure passes and both exposure buffers are gated here

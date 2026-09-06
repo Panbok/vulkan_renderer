@@ -221,6 +221,37 @@ typedef VKR_SIMD_ALIGN union Mat4 {
   };
 } Mat4;
 
+// Conservative affine sphere stretch: ||A||2 <= sqrt(||transpose(A) A||inf).
+// Double intermediates avoid overflow for finite float32 transforms. One
+// outward float32 ULP covers both intermediate and final conversion rounding.
+static INLINE float32_t mat4_affine_sphere_scale(Mat4 model) {
+  const float64_t a0 = model.m00, a1 = model.m10, a2 = model.m20;
+  const float64_t b0 = model.m01, b1 = model.m11, b2 = model.m21;
+  const float64_t c0 = model.m02, c1 = model.m12, c2 = model.m22;
+  const float64_t ab = fabs(a0 * b0 + a1 * b1 + a2 * b2);
+  const float64_t ac = fabs(a0 * c0 + a1 * c1 + a2 * c2);
+  const float64_t bc = fabs(b0 * c0 + b1 * c1 + b2 * c2);
+  const float64_t row0 = a0 * a0 + a1 * a1 + a2 * a2 + ab + ac;
+  const float64_t row1 = b0 * b0 + b1 * b1 + b2 * b2 + ab + bc;
+  const float64_t row2 = c0 * c0 + c1 * c1 + c2 * c2 + ac + bc;
+  const float64_t bound = sqrt(Max(row0, Max(row1, row2)));
+  const float32_t rounded = (float32_t)bound;
+  return rounded > 0.0f && isfinite(rounded)
+             ? nextafterf(rounded, INFINITY)
+             : rounded;
+}
+
+/** Affine reflection parity, matching the prepared normal-basis sign. */
+static INLINE bool8_t mat4_affine_mirrored(Mat4 model) {
+  const float64_t a0 = model.m00, a1 = model.m10, a2 = model.m20;
+  const float64_t b0 = model.m01, b1 = model.m11, b2 = model.m21;
+  const float64_t c0 = model.m02, c1 = model.m12, c2 = model.m22;
+  const float64_t determinant = a0 * (b1 * c2 - b2 * c1) +
+                                a1 * (b2 * c0 - b0 * c2) +
+                                a2 * (b0 * c1 - b1 * c0);
+  return determinant < 0.0;
+}
+
 // =============================================================================
 // Matrix Constructor Functions
 // =============================================================================

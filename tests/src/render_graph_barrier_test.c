@@ -328,7 +328,7 @@ vkr_internal void test_draw_table_capacity_and_json_sizes(void) {
      the point where the existing 65536-draw bucket ceiling takes over. */
   const uint32_t counts[] = {0u, 1u, 3u, 65536u, 65537u, 262144u};
   const uint32_t candidates[] = {1u, 1u, 4u, 65536u, 131072u, 262144u};
-  const uint32_t visible[] = {4u, 4u, 16u, 262144u, 262144u, 262144u};
+  const uint32_t visible[] = {8u, 8u, 32u, 524288u, 524288u, 524288u};
   VkrWorldPassPayload world = {0};
   VkrPreparedFrame packet = {.input = {.world = &world}};
   VkrRenderGraphFrameInfo frame = {.target_width = 16u, .target_height = 16u};
@@ -342,7 +342,7 @@ vkr_internal void test_draw_table_capacity_and_json_sizes(void) {
     assert(frame.gpu_draw_visible_capacity == visible[i]);
     assert(frame.transmission_gpu_draw_visible_capacity == visible[i]);
     const uint32_t one_bucket_count = Min(counts[i], 65536u);
-    assert(frame.gpu_draw_visible_capacity / 4u >= one_bucket_count);
+    assert(frame.gpu_draw_visible_capacity / 8u >= one_bucket_count);
   }
 
   Arena *arena = arena_create(MB(2), MB(2));
@@ -376,12 +376,20 @@ vkr_internal void test_draw_table_capacity_and_json_sizes(void) {
   vkr_render_graph_prepare_frame(&packet, NULL, NULL, &frame, &gtao);
   assert(vkr_rg_begin_frame(graph, &frame));
   assert(vkr_rg_build_from_json(graph, &json, &frame));
-  const uint64_t bytes[] = {192u, 2560u, 128u, 80u};
+  const uint64_t bytes[] = {192u, 5120u, 128u, 160u};
   for (uint32_t i = 0u; i < ArrayCount(bytes); ++i) {
     assert(graph->buffers.data[i].desc.size == bytes[i]);
     assert(graph->buffers.data[i].desc.flags & VKR_RG_RESOURCE_FLAG_GROW_ONLY);
   }
   const uint32_t generation = graph->buffers.data[0].generation;
+  world.gpu_candidate_count = 65537u;
+  vkr_render_graph_prepare_frame(&packet, NULL, NULL, &frame, &gtao);
+  assert(vkr_rg_begin_frame(graph, &frame));
+  assert(vkr_rg_build_from_json(graph, &json, &frame));
+  assert(graph->buffers.data[1].desc.size == 83886080u);
+  frame.gpu_draw_visible_capacity = 524289u;
+  assert(vkr_rg_begin_frame(graph, &frame));
+  assert(!vkr_rg_build_from_json(graph, &json, &frame));
   world.gpu_candidate_count = 1u;
   vkr_render_graph_prepare_frame(&packet, NULL, NULL, &frame, &gtao);
   assert(vkr_rg_begin_frame(graph, &frame));
@@ -1504,9 +1512,9 @@ vkr_internal void test_main_graph_editor_metalfx_topology(void) {
   const VkrRenderGraphFrameInfo frame = {
       .scene_rendering = true_v,
       .gpu_draw_candidate_capacity = 1u,
-      .gpu_draw_visible_capacity = 4u,
+      .gpu_draw_visible_capacity = 8u,
       .transmission_gpu_draw_candidate_capacity = 1u,
-      .transmission_gpu_draw_visible_capacity = 4u,
+      .transmission_gpu_draw_visible_capacity = 8u,
       .target_width = 1000u,
       .target_height = 800u,
       .window_width = 1000u,
@@ -1626,9 +1634,9 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   VkrRenderGraphFrameInfo frame = {
       .scene_rendering = true_v,
       .gpu_draw_candidate_capacity = 1u,
-      .gpu_draw_visible_capacity = 4u,
+      .gpu_draw_visible_capacity = 8u,
       .transmission_gpu_draw_candidate_capacity = 1u,
-      .transmission_gpu_draw_visible_capacity = 4u,
+      .transmission_gpu_draw_visible_capacity = 8u,
       .target_width = VKR_TEXTURE_MAX_DIMENSION,
       .target_height = VKR_TEXTURE_MAX_DIMENSION,
       .window_width = VKR_TEXTURE_MAX_DIMENSION,
@@ -1647,11 +1655,14 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
       .shadow_map_layer_count = VKR_SHADOW_CASCADE_COUNT_MAX,
       .shadow_cascade_count = VKR_SHADOW_CASCADE_COUNT_MAX,
       .shadow_cascade_render_mask = 0xffu,
+      .hzb_build_enabled = true_v,
       .hzb_reduce_pass_count = 14u,
       .transmission_rough_mip_pass_count = 5u,
       .sdsm_enabled = true_v,
       .transmission_pending = true_v,
       .transmission_depth_diagnostic_enabled = true_v,
+      .deferred_emissive_capture_enabled = true_v,
+      .resolve_barycentric_lod_capture_enabled = true_v,
       .exposure_automatic = true_v,
       .timing_enabled = true_v,
       .picking_pending = true_v,
@@ -1676,9 +1687,9 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   frame = (VkrRenderGraphFrameInfo){
       .scene_rendering = true_v,
       .gpu_draw_candidate_capacity = 1u,
-      .gpu_draw_visible_capacity = 4u,
+      .gpu_draw_visible_capacity = 8u,
       .transmission_gpu_draw_candidate_capacity = 1u,
-      .transmission_gpu_draw_visible_capacity = 4u,
+      .transmission_gpu_draw_visible_capacity = 8u,
       .target_width = 960u,
       .target_height = 540u,
       .window_width = 960u,
@@ -1690,6 +1701,7 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
       .shadow_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
       .shadow_map_size = 2048u,
       .shadow_map_layer_count = 4u,
+      .hzb_build_enabled = true_v,
       .hzb_reduce_pass_count = 9u,
       .transmission_rough_mip_pass_count = 5u,
       .transmission_pending = true_v,
@@ -1705,9 +1717,9 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   frame = (VkrRenderGraphFrameInfo){
       .scene_rendering = true_v,
       .gpu_draw_candidate_capacity = 1u,
-      .gpu_draw_visible_capacity = 4u,
+      .gpu_draw_visible_capacity = 8u,
       .transmission_gpu_draw_candidate_capacity = 1u,
-      .transmission_gpu_draw_visible_capacity = 4u,
+      .transmission_gpu_draw_visible_capacity = 8u,
       .target_width = 3840u,
       .target_height = 2160u,
       .window_width = 3840u,

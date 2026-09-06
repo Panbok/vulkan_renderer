@@ -20,7 +20,7 @@ struct VkrMetalPacketInstance {
   uint temporal_generation;
   uint temporal_flags;
   float4 normal_column0;
-  float4 normal_column1;
+  float4 normal_column1; // w: conservative affine sphere stretch.
   float4 normal_column2;
 };
 
@@ -242,11 +242,11 @@ struct VkrGpuVisibleDrawRow {
 };
 
 inline uint vkr_gpu_draw_state_bucket(uint state_flags) {
-  return state_flags & 3u;
+  return state_flags & 7u;
 }
 
 inline uint vkr_gpu_draw_candidate_flags(uint state_flags) {
-  return state_flags >> 2u;
+  return state_flags >> 3u;
 }
 
 struct VkrMetalPacketDrawRoot {

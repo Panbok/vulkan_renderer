@@ -505,6 +505,22 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(visibility_hzb_history_valid, "visibility.hzb.history_valid",
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  const char *hzb_rejection_names[VKR_HZB_HISTORY_REJECTION_COUNT] = {
+      "visibility.hzb.history_rejection.disabled",
+      "visibility.hzb.history_rejection.invalid",
+      "visibility.hzb.history_rejection.incomplete",
+      "visibility.hzb.history_rejection.world",
+      "visibility.hzb.history_rejection.extent",
+      "visibility.hzb.history_rejection.camera",
+      "visibility.hzb.history_rejection.raster",
+  };
+  for (uint32_t i = 0u; i < VKR_HZB_HISTORY_REJECTION_COUNT; ++i) {
+    if (!vkr_renderer_metric_register(
+            metrics, hzb_rejection_names[i], VKR_METRIC_DOMAIN_DRAW,
+            VKR_METRIC_KIND_GAUGE, VKR_METRIC_UNIT_COUNT,
+            VKR_METRIC_SCALAR_U64, &ids->hzb_history_rejections[i]))
+      return false_v;
+  }
   VKR_REGISTER_U64(exposure_accepted_texels, "post.exposure.accepted_texels",
                    VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_F64(exposure_retained_low_bin, "post.exposure.retained_low_bin",
@@ -744,6 +760,8 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
                                "cpu.packet_candidate_pack");
   VKR_REGISTER_PACKET_BUILD_NS(packet_geometry_table_build,
                                "cpu.packet_geometry_table_build");
+  VKR_REGISTER_PACKET_BUILD_NS(graph_build, "cpu.graph_build");
+  VKR_REGISTER_PACKET_BUILD_NS(graph_compile, "cpu.graph_compile");
 #undef VKR_REGISTER_PACKET_BUILD_NS
   VKR_REGISTER_U64(packet_candidate_row_bytes, "packet.candidate_row_bytes",
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_BYTES);
@@ -1340,6 +1358,28 @@ void vkr_renderer_metrics_collect(
      draws. The block is published whole or marked unavailable whole. */
   const VkrPacketBuildMetrics *packet_build =
       &context->frame_metrics->packet_build;
+  for (uint32_t i = 0u; i < VKR_HZB_HISTORY_REJECTION_COUNT; ++i) {
+    if (packet_build->valid && packet_build->hzb_history_checks_valid)
+      vkr_metrics_gauge_set_u64(metrics, ids->hzb_history_rejections[i],
+                          packet_build->hzb_history_rejections[i]);
+    else
+      vkr_metrics_mark(metrics, ids->hzb_history_rejections[i],
+                       VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                       VKR_METRIC_REASON_NOT_SAMPLED);
+  }
+  if (packet_build->valid && packet_build->graph_timing_valid) {
+    vkr_metrics_duration_add_ns(metrics, ids->graph_build,
+                                packet_build->graph_build_ns);
+    vkr_metrics_duration_add_ns(metrics, ids->graph_compile,
+                                packet_build->graph_compile_ns);
+  } else {
+    vkr_metrics_mark(metrics, ids->graph_build,
+                     VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                     VKR_METRIC_REASON_NOT_SAMPLED);
+    vkr_metrics_mark(metrics, ids->graph_compile,
+                     VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                     VKR_METRIC_REASON_NOT_SAMPLED);
+  }
   if (packet_build->valid) {
     vkr_metrics_duration_add_ns(metrics, ids->packet_candidate_hash,
                                 packet_build->candidate_hash_ns);
@@ -1454,13 +1494,13 @@ void vkr_renderer_metrics_collect(
   if (world->gpu_diagnostics_valid) {
     VKR_SET_U64(visibility_gpu_visible_count, world->gpu_visible_count);
     VKR_SET_U64(visibility_gpu_bucket_opaque_single,
-                world->gpu_bucket_counts[0]);
+                world->gpu_bucket_counts[0] + world->gpu_bucket_counts[4]);
     VKR_SET_U64(visibility_gpu_bucket_opaque_double,
-                world->gpu_bucket_counts[1]);
+                world->gpu_bucket_counts[1] + world->gpu_bucket_counts[5]);
     VKR_SET_U64(visibility_gpu_bucket_cutout_single,
-                world->gpu_bucket_counts[2]);
+                world->gpu_bucket_counts[2] + world->gpu_bucket_counts[6]);
     VKR_SET_U64(visibility_gpu_bucket_cutout_double,
-                world->gpu_bucket_counts[3]);
+                world->gpu_bucket_counts[3] + world->gpu_bucket_counts[7]);
     VKR_SET_U64(visibility_gpu_compaction_overflow,
                 world->gpu_compaction_overflow_count);
     VKR_SET_U64(visibility_gpu_resolve_invalid,
@@ -1468,13 +1508,13 @@ void vkr_renderer_metrics_collect(
     VKR_SET_U64(visibility_transmission_gpu_visible_count,
                 world->transmission_gpu_visible_count);
     VKR_SET_U64(visibility_transmission_gpu_bucket_opaque_single,
-                world->transmission_gpu_bucket_counts[0]);
+                world->transmission_gpu_bucket_counts[0] + world->transmission_gpu_bucket_counts[4]);
     VKR_SET_U64(visibility_transmission_gpu_bucket_opaque_double,
-                world->transmission_gpu_bucket_counts[1]);
+                world->transmission_gpu_bucket_counts[1] + world->transmission_gpu_bucket_counts[5]);
     VKR_SET_U64(visibility_transmission_gpu_bucket_cutout_single,
-                world->transmission_gpu_bucket_counts[2]);
+                world->transmission_gpu_bucket_counts[2] + world->transmission_gpu_bucket_counts[6]);
     VKR_SET_U64(visibility_transmission_gpu_bucket_cutout_double,
-                world->transmission_gpu_bucket_counts[3]);
+                world->transmission_gpu_bucket_counts[3] + world->transmission_gpu_bucket_counts[7]);
     VKR_SET_U64(visibility_transmission_gpu_compaction_overflow,
                 world->transmission_gpu_compaction_overflow_count);
     VKR_SET_U64(visibility_transmission_gpu_resolve_invalid,

@@ -7,8 +7,8 @@ enum {
   VKR_VULKAN_DEFERRED_PREFIX_GROUP_SIZE = 5,
 };
 
-_Static_assert(VKR_WORLD_DRAW_STATE_BUCKET_COUNT == 4u,
-               "Vulkan deferred shaders require four draw-state buckets");
+_Static_assert(VKR_WORLD_DRAW_STATE_BUCKET_COUNT == 8u,
+               "Vulkan deferred shaders require eight draw-state buckets");
 _Static_assert(VKR_FRUSTUM_PLANE_COUNT == 6u,
                "Vulkan deferred shaders require six frustum planes");
 _Static_assert(VKR_VULKAN_DEFERRED_VIEW_COUNT_MAX <=
@@ -340,6 +340,8 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
             source->normal.x, source->normal.y, source->normal.z, source->d};
       }
     }
+    if (!renderer->config.frustum_enabled)
+      MemZero(planes, (uint64_t)view_count * VKR_FRUSTUM_PLANE_COUNT * sizeof(*planes));
   }
   const uint32_t visible_capacity =
       transmission
@@ -368,29 +370,49 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
   };
   for (uint32_t mip = 0u; mip < VKR_VULKAN_TEXTURE_MIP_MAX; ++mip)
     out_root->hzb_textures[mip] = UINT32_MAX;
+  if (pipeline == VKR_VULKAN_DEFERRED_PIPELINE_CLASSIFY && !transmission) {
+    slot->packet_build.hzb_history_checks_valid = true_v;
+    if (!renderer->prepared_frame.hzb_build_enabled)
+      slot->packet_build.hzb_history_rejections[VKR_HZB_HISTORY_DISABLED]++;
+  }
   if (pipeline == VKR_VULKAN_DEFERRED_PIPELINE_CLASSIFY && !transmission &&
-      renderer->config.hzb_enabled) {
+      renderer->prepared_frame.hzb_build_enabled) {
     const VkrRgImageUse *hzb_use =
         vkr_rg_pass_find_image_use(&pass->desc, 3u, 0u);
     if (hzb_use && vkr_rg_image_handle_valid(hzb_use->image)) {
       VkrVulkanGraphImage *hzb =
           &renderer->graph_images[hzb_use->image.id - 1u];
       const Mat4 current_view_projection = views[0];
+      const VkrPreparedFrame *packet = renderer->graph->packet;
+      const Mat4 raster_view_projection =
+          mat4_mul(packet->temporal.jittered_projection,
+                   packet->input.globals.view);
       VkrVulkanGraphImageInstance *selected = NULL;
       for (uint32_t i = 0u; i < hzb->instance_count; ++i) {
         VkrVulkanGraphImageInstance *candidate = &hzb->instances[i];
-        if (i == renderer->history_output_index || !candidate->history_valid ||
-            candidate->history_producer_submit_value >
-                renderer->completed_value ||
-            candidate->history_world_epoch != slot->gpu_world_epoch ||
-            candidate->history_width !=
-                renderer->prepared_frame.viewport_width ||
-            candidate->history_height !=
-                renderer->prepared_frame.viewport_height ||
-            MemCompare(&candidate->history_view_projection,
-                       &current_view_projection,
-                       sizeof(current_view_projection)) != 0)
+        if (i == renderer->history_output_index)
           continue;
+        VkrHzbHistoryRejection rejection = VKR_HZB_HISTORY_REJECTION_COUNT;
+        if (!candidate->history_valid)
+          rejection = VKR_HZB_HISTORY_INVALID;
+        else if (candidate->history_producer_submit_value > renderer->completed_value)
+          rejection = VKR_HZB_HISTORY_INCOMPLETE;
+        else if (candidate->history_world_epoch != slot->gpu_world_epoch)
+          rejection = VKR_HZB_HISTORY_WORLD_CHANGED;
+        else if (candidate->history_width != renderer->prepared_frame.viewport_width ||
+                 candidate->history_height != renderer->prepared_frame.viewport_height)
+          rejection = VKR_HZB_HISTORY_EXTENT_CHANGED;
+        else if (MemCompare(&candidate->history_view_projection,
+                            &current_view_projection, sizeof(Mat4)) != 0)
+          rejection = VKR_HZB_HISTORY_CAMERA_CHANGED;
+        /* Another jitter phase cannot prove coverage at the current sample. */
+        else if (MemCompare(&candidate->history_raster_view_projection,
+                            &raster_view_projection, sizeof(Mat4)) != 0)
+          rejection = VKR_HZB_HISTORY_RASTER_CHANGED;
+        if (rejection != VKR_HZB_HISTORY_REJECTION_COUNT) {
+          slot->packet_build.hzb_history_rejections[rejection]++;
+          continue;
+        }
         if (!selected || candidate->history_producer_submit_value >
                              selected->history_producer_submit_value)
           selected = candidate;
@@ -430,6 +452,7 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
         out_root->hzb_extent[0] = selected->image.width;
         out_root->hzb_extent[1] = selected->image.height;
         out_root->hzb_enabled = 1u;
+        views[0] = selected->history_raster_view_projection;
         slot->hzb_history_valid = true_v;
         slot->hzb_history_input = selected;
       }
@@ -454,6 +477,8 @@ void vkr_vk_mark_hzb_submitted(VkrVulkanRenderer *renderer,
   instance->history_world_epoch = slot->gpu_world_epoch;
   instance->history_view_projection =
       mat4_mul(packet->input.globals.projection, packet->input.globals.view);
+  instance->history_raster_view_projection =
+      mat4_mul(packet->temporal.jittered_projection, packet->input.globals.view);
   instance->history_width = renderer->prepared_frame.viewport_width;
   instance->history_height = renderer->prepared_frame.viewport_height;
   instance->history_valid = true_v;
@@ -773,9 +798,7 @@ bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
       root.visible_capacity / VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
   for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
        ++bucket) {
-    const bool8_t opaque_bucket =
-        bucket == VKR_WORLD_DRAW_STATE_OPAQUE_BACK ||
-        bucket == VKR_WORLD_DRAW_STATE_OPAQUE_DOUBLE_SIDED;
+    const bool8_t opaque_bucket = (bucket & 2u) == 0u;
     const VkrVulkanPacketPipeline wanted_pipeline =
         shadow ? (opaque_bucket
                       ? VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_SHADOW_OPAQUE
@@ -785,10 +808,10 @@ bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
             : VKR_VULKAN_PACKET_PIPELINE_VISIBILITY;
     prepared->pipelines[bucket] = renderer->packet_pipelines[wanted_pipeline];
     prepared->cull_modes[bucket] =
-        bucket == VKR_WORLD_DRAW_STATE_OPAQUE_BACK ||
-                bucket == VKR_WORLD_DRAW_STATE_CUTOUT_BACK
-            ? VK_CULL_MODE_BACK_BIT
-            : VK_CULL_MODE_NONE;
+        (bucket & 1u) ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
+    prepared->front_faces[bucket] =
+        (bucket & VKR_GPU_DRAW_STATE_MIRRORED_BIT)
+            ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
     const VkDeviceSize argument_offset =
         ((VkDeviceSize)view_index * VKR_WORLD_DRAW_STATE_BUCKET_COUNT +
          bucket) *
@@ -813,15 +836,32 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
       vkr_vk_deferred_buffer(renderer, pass, 1u);
   VkrVulkanGraphBufferInstance *state =
       vkr_vk_deferred_buffer(renderer, pass, 7u);
-  uint32_t indices[9] = {0};
+  uint32_t indices[7] = {0};
   if (!visible || !state || !vkr_vk_deferred_buffer(renderer, pass, 10u))
     return false_v;
-  const uint32_t bindings[] = {0u, 2u, 3u, 4u, 5u, 6u, 8u, 11u, 12u};
+  const uint32_t bindings[] = {0u, 2u, 3u, 4u, 8u, 11u, 12u};
   for (uint32_t i = 0u; i < ArrayCount(bindings); ++i)
     if (!vkr_vk_deferred_storage_index(renderer, pass, bindings[i],
                                        &indices[i]))
       return false_v;
   const VkrPreparedFrame *packet = renderer->graph->packet;
+  const bool8_t emissive_capture =
+      packet->input.debug && vkr_renderer_capture_request_contains(
+                                 packet->input.debug->capture,
+                                 "deferred_emissive");
+  const bool8_t resolve_debug_capture =
+      packet->input.debug && vkr_renderer_capture_request_contains(
+                                 packet->input.debug->capture,
+                                 "resolve_barycentric_lod");
+  /* The selected no-capture modules compile out every access through these
+     fields; slot zero is never an optional-output write target. */
+  uint32_t emissive_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  uint32_t debug_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  if ((emissive_capture &&
+       !vkr_vk_deferred_storage_index(renderer, pass, 5u, &emissive_texture)) ||
+      (resolve_debug_capture &&
+       !vkr_vk_deferred_storage_index(renderer, pass, 6u, &debug_texture)))
+    return false_v;
   const VkrVulkanResolveRoot root = {
       .geometry_rows = slot->gpu_geometry_rows,
       .visible_rows = visible->buffer.address,
@@ -845,11 +885,11 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
       .albedo_texture = indices[1],
       .specular_texture = indices[2],
       .normal_texture = indices[3],
-      .emissive_texture = indices[4],
-      .debug_texture = indices[5],
-      .scene_texture = indices[6],
-      .motion_texture = indices[7],
-      .validity_texture = indices[8],
+      .emissive_texture = emissive_texture,
+      .debug_texture = debug_texture,
+      .scene_texture = indices[4],
+      .motion_texture = indices[5],
+      .validity_texture = indices[6],
       .extent = {renderer->prepared_frame.viewport_width,
                  renderer->prepared_frame.viewport_height},
       .visible_capacity = renderer->prepared_frame.gpu_draw_visible_capacity,
@@ -874,8 +914,15 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
                                  _Alignof(VkrVulkanResolveRoot),
                                  &prepared->root_address))
     return false_v;
+  const VkrVulkanDeferredPipeline pipeline =
+      emissive_capture
+          ? (resolve_debug_capture
+                 ? VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_EMISSIVE_DEBUG
+                 : VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_EMISSIVE)
+          : (resolve_debug_capture ? VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_DEBUG
+                                   : VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_NONE);
   prepared->pipelines[prepared->dispatch_count] =
-      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER];
+      renderer->deferred_pipelines[pipeline];
   {
     prepared->groups[prepared->dispatch_count][0] = (root.extent[0] + 7u) / 8u;
     prepared->groups[prepared->dispatch_count][1] = (root.extent[1] + 7u) / 8u;
@@ -1400,7 +1447,9 @@ vkr_internal bool8_t vkr_vk_bloom_root(VkrVulkanRenderer *renderer,
                                  destination->image.width >> destination_mip),
                              Max(1u,
                                  destination->image.height >> destination_mip)},
-      .params = vkr_bloom_gpu_params(&renderer->bloom_config, &packet->bloom),
+      .params = vkr_bloom_gpu_params(
+          &renderer->bloom_config, &packet->bloom,
+          renderer->prepared_frame.bloom_mip_count),
   };
   return true_v;
 }
@@ -2026,6 +2075,7 @@ void vkr_vk_record_prepared_raster(VkrVulkanRenderer *renderer,
                            VK_SHADER_STAGE_COMPUTE_BIT,
                        0u, sizeof(push), &push);
     vkCmdSetCullMode(command, prepared->cull_modes[bucket]);
+    vkCmdSetFrontFace(command, prepared->front_faces[bucket]);
     vkCmdDrawIndexedIndirectCount(
         command, prepared->arguments, prepared->argument_offsets[bucket],
         prepared->counts, prepared->count_offsets[bucket],

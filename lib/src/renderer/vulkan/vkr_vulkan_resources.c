@@ -23,8 +23,12 @@ vkr_internal bool8_t vkr_vk_choose_memory_type(
       best_index = i;
     }
   }
-  if (best_index == UINT32_MAX)
+  if (best_index == UINT32_MAX) {
+    if (memory_class == VKR_VULKAN_MEMORY_CLASS_PUBLICATION)
+      log_error("Vulkan publication tables require compatible host-visible "
+                "HOST_COHERENT memory (memoryTypeBits=0x%x)", memory_type_bits);
     return false_v;
+  }
   *out_index = best_index;
   *out_properties = memory->memoryTypes[best_index].propertyFlags;
   if (memory_class == VKR_VULKAN_MEMORY_CLASS_DEVICE && best_rank == 2)
@@ -375,6 +379,7 @@ bool8_t vkr_vk_create_buffer(VkrVulkanRenderer *renderer,
   };
   const uint64_t pool_block_size =
       memory_class == VKR_VULKAN_MEMORY_CLASS_UPLOAD ||
+              memory_class == VKR_VULKAN_MEMORY_CLASS_PUBLICATION ||
               memory_class == VKR_VULKAN_MEMORY_CLASS_STAGING
           ? renderer->config.upload_buffer_block_size
       : memory_class == VKR_VULKAN_MEMORY_CLASS_READBACK
@@ -449,7 +454,8 @@ bool8_t vkr_vk_create_buffer(VkrVulkanRenderer *renderer,
          heap. The UPLOAD ranking also accepts host memory; try that placement
          at creation, retaining the same mapped buffer and completion owner. */
       if (allocate_result != VK_ERROR_OUT_OF_DEVICE_MEMORY ||
-          memory_class != VKR_VULKAN_MEMORY_CLASS_UPLOAD ||
+          (memory_class != VKR_VULKAN_MEMORY_CLASS_UPLOAD &&
+           memory_class != VKR_VULKAN_MEMORY_CLASS_PUBLICATION) ||
           !vkr_vk_choose_memory_type(renderer, remaining_memory_types,
                                      memory_class,
                                      &allocation->memory_type_index,
@@ -552,13 +558,13 @@ vkr_internal bool8_t vkr_vk_create_upload_buffers(VkrVulkanRenderer *renderer) {
       (VkDeviceSize)renderer->config.material_slot_capacity *
       sizeof(VkrVulkanMaterialGpuRow);
   return vkr_vk_create_buffer(
-             renderer, VKR_VULKAN_MEMORY_CLASS_UPLOAD,
+             renderer, VKR_VULKAN_MEMORY_CLASS_PUBLICATION,
              VKR_GPU_ALLOCATION_OWNER_SHADER, resource_layout->size,
              VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |
                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
              &renderer->resource_descriptors) &&
          vkr_vk_create_buffer(
-             renderer, VKR_VULKAN_MEMORY_CLASS_UPLOAD,
+             renderer, VKR_VULKAN_MEMORY_CLASS_PUBLICATION,
              VKR_GPU_ALLOCATION_OWNER_SHADER, sampler_layout->size,
              VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT |
                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
@@ -568,7 +574,7 @@ vkr_internal bool8_t vkr_vk_create_upload_buffers(VkrVulkanRenderer *renderer) {
              VKR_GPU_ALLOCATION_OWNER_STAGING, VKR_VULKAN_SENTINEL_UPLOAD_SIZE,
              VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &renderer->upload) &&
          vkr_vk_create_buffer(
-             renderer, VKR_VULKAN_MEMORY_CLASS_UPLOAD,
+             renderer, VKR_VULKAN_MEMORY_CLASS_PUBLICATION,
              VKR_GPU_ALLOCATION_OWNER_SHADER,
              renderer->transmission_material_offset +
                  (VkDeviceSize)renderer->config.material_slot_capacity *
@@ -805,6 +811,8 @@ bool8_t vkr_vk_reserve_frame_uploads(VkrVulkanRenderer *renderer,
     }
     vkr_vk_destroy_buffer(renderer, buffer);
     *buffer = replacement;
+    if (i == 0u)
+      slot->geometry_table_generation = 0u;
   }
   return true_v;
 }
@@ -1019,6 +1027,9 @@ bool8_t vkr_vk_create_descriptor_slot_tables(VkrVulkanRenderer *renderer) {
   renderer->published_geometries_size =
       (uint64_t)renderer->config.geometry_capacity *
       sizeof(*renderer->published_geometries);
+  renderer->geometry_table_rows_size =
+      (uint64_t)renderer->config.geometry_capacity *
+      sizeof(*renderer->geometry_table_rows);
   renderer->retired_geometries_size =
       (uint64_t)renderer->config.geometry_capacity *
       sizeof(*renderer->retired_geometries);
@@ -1072,6 +1083,9 @@ bool8_t vkr_vk_create_descriptor_slot_tables(VkrVulkanRenderer *renderer) {
   renderer->published_geometries = vkr_allocator_alloc(
       renderer->allocator, renderer->published_geometries_size,
       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  renderer->geometry_table_rows = vkr_allocator_alloc(
+      renderer->allocator, renderer->geometry_table_rows_size,
+      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   renderer->retired_geometries = vkr_allocator_alloc(
       renderer->allocator, renderer->retired_geometries_size,
       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
@@ -1103,7 +1117,8 @@ bool8_t vkr_vk_create_descriptor_slot_tables(VkrVulkanRenderer *renderer) {
       !renderer->storage_image_slot_storage ||
       !renderer->sampler_slot_storage || !renderer->material_slot_storage ||
       !renderer->descriptor_scratch || !renderer->published_geometries ||
-      !renderer->retired_geometries || !renderer->published_textures ||
+      !renderer->geometry_table_rows || !renderer->retired_geometries ||
+      !renderer->published_textures ||
       !renderer->retired_textures || !renderer->published_samplers ||
       !renderer->published_materials || !renderer->retired_materials ||
       !renderer->pending_texture_initializations ||
@@ -1112,6 +1127,7 @@ bool8_t vkr_vk_create_descriptor_slot_tables(VkrVulkanRenderer *renderer) {
     return false_v;
   }
   MemZero(renderer->published_geometries, renderer->published_geometries_size);
+  MemZero(renderer->geometry_table_rows, renderer->geometry_table_rows_size);
   MemZero(renderer->retired_geometries, renderer->retired_geometries_size);
   MemZero(renderer->published_textures, renderer->published_textures_size);
   MemZero(renderer->retired_textures, renderer->retired_textures_size);
@@ -1158,7 +1174,7 @@ bool8_t vkr_vk_publish_sentinel_descriptors(VkrVulkanRenderer *renderer) {
       vkr_vulkan_device_sampler_layout(renderer->device);
   VkDescriptorImageInfo image_info = {
       .imageView = renderer->sentinel_image.view,
-      .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+      .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
   };
   VkDescriptorImageInfo storage_info = {
       .imageView = renderer->sentinel_image.view,

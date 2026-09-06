@@ -671,10 +671,27 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
           renderer, fragment, "vkr_metal_packet_temporal_transform",
           VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT, false_v,
           @"VKR Metal packet temporal transform");
-  renderer->gbuffer_resolve_pipeline = vkr_metal_packet_create_compute_pipeline(
-      renderer, fragment, "vkr_metal_packet_gbuffer_resolve",
-      VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT, false_v,
-      @"VKR Metal packet G-buffer resolve");
+  renderer->gbuffer_resolve_pipelines[0] =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_gbuffer_resolve_none",
+          VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT, false_v,
+          @"VKR Metal packet G-buffer resolve");
+  renderer->gbuffer_resolve_pipelines[1] =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_gbuffer_resolve_emissive",
+          VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT, false_v,
+          @"VKR Metal packet G-buffer resolve emissive capture");
+  renderer->gbuffer_resolve_pipelines[2] =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_gbuffer_resolve_debug",
+          VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT, false_v,
+          @"VKR Metal packet G-buffer resolve debug capture");
+  renderer->gbuffer_resolve_pipelines[3] =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment,
+          "vkr_metal_packet_gbuffer_resolve_emissive_debug",
+          VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT, false_v,
+          @"VKR Metal packet G-buffer resolve diagnostics capture");
   renderer->gtao_depth_prefilter_pipeline =
       vkr_metal_packet_create_compute_pipeline(
           renderer, fragment, "vkr_metal_packet_gtao_depth_prefilter",
@@ -816,7 +833,10 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       !renderer->gpu_draw_encode_pipeline ||
       !renderer->gpu_draw_encode_inherited_pipeline ||
       !renderer->temporal_transform_pipeline ||
-      !renderer->gbuffer_resolve_pipeline ||
+      !renderer->gbuffer_resolve_pipelines[0] ||
+      !renderer->gbuffer_resolve_pipelines[1] ||
+      !renderer->gbuffer_resolve_pipelines[2] ||
+      !renderer->gbuffer_resolve_pipelines[3] ||
       !renderer->gtao_depth_prefilter_pipeline ||
       !renderer->gtao_depth_mip_pipeline || !renderer->gtao_evaluate_pipeline ||
       !renderer->gtao_denoise_pipeline ||
@@ -900,7 +920,14 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
       {renderer->gpu_draw_encode_inherited_pipeline,
        "inherited draw encode pipeline"},
       {renderer->temporal_transform_pipeline, "temporal transform pipeline"},
-      {renderer->gbuffer_resolve_pipeline, "G-buffer resolve pipeline"},
+      {renderer->gbuffer_resolve_pipelines[0],
+       "G-buffer resolve pipeline"},
+      {renderer->gbuffer_resolve_pipelines[1],
+       "G-buffer emissive capture pipeline"},
+      {renderer->gbuffer_resolve_pipelines[2],
+       "G-buffer debug capture pipeline"},
+      {renderer->gbuffer_resolve_pipelines[3],
+       "G-buffer diagnostics capture pipeline"},
       {renderer->gtao_depth_prefilter_pipeline,
        "GTAO depth prefilter pipeline"},
       {renderer->gtao_depth_mip_pipeline, "GTAO depth mip pipeline"},
@@ -1762,6 +1789,7 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
       renderer->transmission_compact_enabled =
           config->transmission_compact_enabled;
       renderer->hzb_enabled = config->hzb_enabled;
+      renderer->frustum_enabled = config->frustum_enabled;
       renderer->max_samplers = VKR_METAL_PACKET_SAMPLER_CACHE_CAPACITY;
       renderer->max_draws = config->max_draws;
       renderer->max_instances = config->max_instances;

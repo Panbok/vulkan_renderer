@@ -47,7 +47,8 @@ VkrPreparedInstanceGPU vkr_gpu_prepare_instance(const VkrInstanceDataGPU *source
       .normal_column0 = {(float32_t)cofactor[0], (float32_t)cofactor[1],
                          (float32_t)cofactor[2], handedness},
       .normal_column1 = {(float32_t)cofactor[3], (float32_t)cofactor[4],
-                         (float32_t)cofactor[5], 0.0f},
+                         (float32_t)cofactor[5],
+                         mat4_affine_sphere_scale(model)},
       .normal_column2 = {(float32_t)cofactor[6], (float32_t)cofactor[7],
                          (float32_t)cofactor[8], 0.0f},
   };

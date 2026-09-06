@@ -1993,6 +1993,11 @@ vkr_internal void harness_test_write_f32_le(uint8_t bytes[4], float32_t value) {
   bytes[3] = (uint8_t)(bits >> 24u);
 }
 
+vkr_internal void harness_test_write_u16_le(uint8_t bytes[2], uint16_t value) {
+  bytes[0] = (uint8_t)value;
+  bytes[1] = (uint8_t)(value >> 8u);
+}
+
 vkr_internal void test_harness_capture_catalog_and_converters(void) {
   printf("  Running test_harness_capture_catalog_and_converters...\n");
   assert(vkr_renderer_capture_channel_count() == 30u);
@@ -2038,6 +2043,10 @@ vkr_internal void test_harness_capture_catalog_and_converters(void) {
       vkr_renderer_capture_channel_from_name("gtao_raw");
   const VkrCaptureChannelId gbuffer_normal =
       vkr_renderer_capture_channel_from_name("gbuffer_normal");
+  const VkrCaptureChannelId deferred_emissive =
+      vkr_renderer_capture_channel_from_name("deferred_emissive");
+  const VkrCaptureChannelId resolve_barycentric_lod =
+      vkr_renderer_capture_channel_from_name("resolve_barycentric_lod");
   assert(final_color != VKR_CAPTURE_CHANNEL_INVALID);
   assert(depth != VKR_CAPTURE_CHANNEL_INVALID);
   assert(picking != VKR_CAPTURE_CHANNEL_INVALID);
@@ -2066,6 +2075,8 @@ vkr_internal void test_harness_capture_catalog_and_converters(void) {
   assert(gtao_visibility != VKR_CAPTURE_CHANNEL_INVALID);
   assert(gtao_raw != VKR_CAPTURE_CHANNEL_INVALID);
   assert(gbuffer_normal != VKR_CAPTURE_CHANNEL_INVALID);
+  assert(deferred_emissive != VKR_CAPTURE_CHANNEL_INVALID);
+  assert(resolve_barycentric_lod != VKR_CAPTURE_CHANNEL_INVALID);
   const VkrCaptureChannelDescription *gbuffer_normal_description =
       vkr_renderer_capture_channel_get(gbuffer_normal);
   assert(gbuffer_normal_description);
@@ -2081,10 +2092,19 @@ vkr_internal void test_harness_capture_catalog_and_converters(void) {
          VKR_CAPTURE_COLOR_SPACE_LINEAR);
   assert(hdr_post_transmission_description->color_space ==
          VKR_CAPTURE_COLOR_SPACE_LINEAR);
-  assert(strcmp(hdr_pre_transmission_description->canonical_encoding,
-                "RGBA16_FLOAT_LE") == 0);
-  assert(strcmp(hdr_post_transmission_description->canonical_encoding,
-                "RGBA16_FLOAT_LE") == 0);
+  const VkrCaptureChannelId rgba16f_channels[] = {
+      deferred_emissive,    resolve_barycentric_lod,
+      hdr_pre_bloom,        bloom_prefilter,
+      bloom_result,         hdr_combined,
+      hdr_pre_transmission, hdr_post_transmission,
+  };
+  for (uint32_t channel_index = 0u;
+       channel_index < ArrayCount(rgba16f_channels); ++channel_index) {
+    const VkrCaptureChannelDescription *description =
+        vkr_renderer_capture_channel_get(rgba16f_channels[channel_index]);
+    assert(description && description->version == 2u);
+    assert(strcmp(description->canonical_encoding, "RGBA16_FLOAT_LE") == 0);
+  }
 
 #if !defined(_WIN32)
   char first_dir[] = "/tmp/vkr-capture-first-XXXXXX";
@@ -2115,6 +2135,11 @@ vkr_internal void test_harness_capture_catalog_and_converters(void) {
   const uint16_t normal_bottom_left[] = {
       0x8000u, 0x0000u, 0x7fffu, 0xc000u, 0u, 0u,
       0x0000u, 0x7fffu, 0x4000u, 0x8000u, 0u, 0u,
+  };
+  const uint16_t hdr_bottom_left[] = {
+      0x0001u, 0x3c00u, 0xbc00u, 0x0000u, 0x7bffu, 0x0400u, 0x3555u,
+      0x3c00u, 0u,      0u,      0x3800u, 0x3e00u, 0x4000u, 0x4200u,
+      0x4400u, 0x4600u, 0x4800u, 0x4a00u, 0u,      0u,
   };
   const uint8_t gtao_visibility_bottom_left[] = {0u,   64u,  99u, 99u,
                                                  128u, 255u, 99u, 99u};
@@ -2176,6 +2201,16 @@ vkr_internal void test_harness_capture_catalog_and_converters(void) {
        .origin = VKR_CAPTURE_ORIGIN_BOTTOM_LEFT,
        .data = gtao_visibility_bottom_left,
        .data_size = sizeof(gtao_visibility_bottom_left)},
+      {.channel = hdr_pre_bloom,
+       .width = 2u,
+       .height = 2u,
+       .row_pitch = 20u,
+       .format = VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
+       .value_kind = VKR_CAPTURE_VALUE_COLOR,
+       .color_space = VKR_CAPTURE_COLOR_SPACE_LINEAR,
+       .origin = VKR_CAPTURE_ORIGIN_BOTTOM_LEFT,
+       .data = (const uint8_t *)hdr_bottom_left,
+       .data_size = sizeof(hdr_bottom_left)},
   };
   const VkrCapturePollResult poll = {
       .status = VKR_CAPTURE_STATUS_READY,
@@ -2184,9 +2219,9 @@ vkr_internal void test_harness_capture_catalog_and_converters(void) {
       .source_frame_index = 7u,
       .submit_serial = 9u,
   };
-  const char logical_channels[][64] = {"final_color",    "depth",
-                                       "picking_ids",    "gtao_view_depth",
-                                       "gbuffer_normal", "gtao_visibility"};
+  const char logical_channels[][64] = {
+      "final_color",    "depth",           "picking_ids",  "gtao_view_depth",
+      "gbuffer_normal", "gtao_visibility", "hdr_pre_bloom"};
   VkrHarnessError error = {0};
   assert(vkr_harness_capture_publish(first_dir, 1u, &poll, logical_channels,
                                      ArrayCount(logical_channels), &arenas,
@@ -2194,7 +2229,7 @@ vkr_internal void test_harness_capture_catalog_and_converters(void) {
   assert(vkr_harness_capture_publish(second_dir, 1u, &poll, logical_channels,
                                      ArrayCount(logical_channels), &arenas,
                                      second, &error));
-  assert(first->capture_count == 6u && second->capture_count == 6u);
+  assert(first->capture_count == 7u && second->capture_count == 7u);
   for (uint32_t i = 0; i < first->capture_count; ++i) {
     assert(strcmp(first->captures[i].data_sha256,
                   second->captures[i].data_sha256) == 0);
@@ -2256,6 +2291,23 @@ vkr_internal void test_harness_capture_catalog_and_converters(void) {
   };
   assert(raw_size == sizeof(expected_normal));
   assert(MemCompare(raw, expected_normal, sizeof(expected_normal)) == 0);
+  snprintf(raw_path, sizeof(raw_path), "%s/%s", first_dir,
+           first->captures[6].data_path);
+  assert(vkr_harness_read_file(raw_path, transient, &raw, &raw_size));
+  uint8_t expected_hdr[32];
+  const uint16_t expected_hdr_components[] = {
+      0x3800u, 0x3e00u, 0x4000u, 0x4200u, 0x4400u, 0x4600u, 0x4800u, 0x4a00u,
+      0x0001u, 0x3c00u, 0xbc00u, 0x0000u, 0x7bffu, 0x0400u, 0x3555u, 0x3c00u,
+  };
+  for (uint32_t component = 0; component < ArrayCount(expected_hdr_components);
+       ++component) {
+    harness_test_write_u16_le(expected_hdr + component * 2u,
+                              expected_hdr_components[component]);
+  }
+  assert(strcmp(first->captures[6].canonical_encoding, "RGBA16_FLOAT_LE") == 0);
+  assert(first->captures[6].capture_version == 2u);
+  assert(raw_size == sizeof(expected_hdr));
+  assert(MemCompare(raw, expected_hdr, sizeof(expected_hdr)) == 0);
   snprintf(raw_path, sizeof(raw_path), "%s/%s", first_dir,
            first->captures[5].data_path);
   assert(vkr_harness_read_file(raw_path, transient, &encoded, &encoded_size));
@@ -2375,6 +2427,27 @@ vkr_internal void test_harness_comparison_algorithms(void) {
   harness_test_write_f32_le(floats + 4u, NAN);
   result =
       vkr_harness_compare_f32_le(floats, float_baseline, 2u, &thresholds, NULL);
+  assert(result.outcome == VKR_HARNESS_COMPARISON_INCOMPATIBLE);
+
+  uint8_t rgba16f[8];
+  uint8_t rgba16f_baseline[8];
+  const uint16_t rgba16f_components[] = {0x0001u, 0x3c00u, 0xbc00u, 0x0400u};
+  for (uint32_t component = 0; component < ArrayCount(rgba16f_components);
+       ++component) {
+    harness_test_write_u16_le(rgba16f + component * 2u,
+                              rgba16f_components[component]);
+  }
+  MemCopy(rgba16f_baseline, rgba16f, sizeof(rgba16f));
+  result = vkr_harness_compare_rgba16f_le(rgba16f, rgba16f_baseline, 1u,
+                                          &thresholds, NULL);
+  assert(result.outcome == VKR_HARNESS_COMPARISON_PASS);
+  harness_test_write_u16_le(rgba16f + 6u, 0x3c00u);
+  result = vkr_harness_compare_rgba16f_le(rgba16f, rgba16f_baseline, 1u,
+                                          &thresholds, NULL);
+  assert(result.outcome == VKR_HARNESS_COMPARISON_FAIL);
+  harness_test_write_u16_le(rgba16f, 0x7e00u);
+  result = vkr_harness_compare_rgba16f_le(rgba16f, rgba16f_baseline, 1u,
+                                          &thresholds, NULL);
   assert(result.outcome == VKR_HARNESS_COMPARISON_INCOMPATIBLE);
 
   const uint8_t ids[] = {1, 0, 0, 0, 2, 0, 0, 0};

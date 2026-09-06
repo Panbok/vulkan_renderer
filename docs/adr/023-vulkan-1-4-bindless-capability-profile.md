@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-09-06
 authority: adr
 ---
 
@@ -31,6 +31,14 @@ are separate descriptors. Native descriptor sizes remain inside host layout and
 writer code. Shaders index arrays with logical indices and never interpret
 native descriptor bytes. Unsupported devices fail initialization with capability
 diagnostics; there is no legacy descriptor-set renderer fallback.
+
+Concurrent host publication of descriptor and material rows additionally requires
+compatible host-visible, host-coherent memory. The PUBLICATION memory class prefers
+device-local coherent placement and permits coherent system memory. If no compatible
+coherent type exists, initialization fails with a diagnostic. Ordinary frame uploads
+retain their completion-protected non-coherent fallback. This avoids whole-atom
+flush accesses overlapping adjacent live publication rows without padding native
+descriptor-array strides or adding per-frame waits.
 
 Swapchain maintenance is optional and supplies present fences when available.
 Sampler anisotropy is optional: enable the queried feature on the selected

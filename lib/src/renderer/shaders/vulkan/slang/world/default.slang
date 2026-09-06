@@ -70,8 +70,13 @@ VkrVulkanDirectResult packet_direct(float3 normal, float3 view, float3 light,
                                     float3 radiance, float3 albedo,
                                     float metallic, float roughness, float3 f0)
 {
-    float3 half_vector = normalize(view + light);
+    float3 half_vector = view + light;
     float no_l = max(dot(normal, light), 0.0f);
+    float half_inverse_length =
+        vkr_direct_half_vector_inverse_length(no_l, half_vector);
+    if (half_inverse_length == 0.0f)
+        return (VkrVulkanDirectResult)0;
+    half_vector *= half_inverse_length;
     float no_v = max(dot(normal, view), 0.0f);
     float3 fresnel = packet_fresnel(max(dot(half_vector, view), 0.0f), f0);
     float distribution =
@@ -91,8 +96,13 @@ VkrVulkanDirectResult packet_direct(float3 normal, float3 view, float3 light,
 float3 packet_direct_specular(float3 normal, float3 view, float3 light,
                               float3 radiance, float roughness, float3 f0)
 {
-    float3 half_vector = normalize(view + light);
+    float3 half_vector = view + light;
     float no_l = max(dot(normal, light), 0.0f);
+    float half_inverse_length =
+        vkr_direct_half_vector_inverse_length(no_l, half_vector);
+    if (half_inverse_length == 0.0f)
+        return float3(0.0f);
+    half_vector *= half_inverse_length;
     float no_v = max(dot(normal, view), 0.0f);
     float3 fresnel = packet_fresnel(max(dot(half_vector, view), 0.0f), f0);
     float distribution =
@@ -397,7 +407,7 @@ float3 packet_shadow_debug_color(uint mode, VkrVulkanShadowDebugSample sample)
 float packet_probe_influence(VkrVulkanIblProbe probe, float3 world_position)
 {
     float weight = max(probe.extents_weight.w, 0.0f);
-    if (weight <= 1e-6f || probe.intensity_box.w <= 0.5f)
+    if (weight <= 1e-6f)
         return weight;
     float3 outside = max(abs(world_position - probe.center_blend.xyz) -
                              max(probe.extents_weight.xyz, 0.0f),

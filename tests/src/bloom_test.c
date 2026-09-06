@@ -48,6 +48,42 @@ vkr_internal void test_bloom_config_and_mips(void) {
   printf("  test_bloom_config_and_mips PASSED\n");
 }
 
+vkr_internal void test_bloom_chain_gain(void) {
+  printf("  Running test_bloom_chain_gain...\n");
+  const VkrBloomConfig config = vkr_bloom_config_default();
+  VkrBloomFrame frame = vkr_bloom_prepare(true_v, 1.0f, 0.5f, 0.05f);
+  const struct {
+    uint32_t width;
+    uint32_t height;
+    uint32_t mip_count;
+  } cases[] = {{1u, 1u, 0u},       {16u, 17u, 0u},
+               {33u, 35u, 2u},   {65u, 67u, 3u},
+               {129u, 131u, 4u}, {257u, 259u, 5u},
+               {801u, 601u, 6u}};
+  for (uint32_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+    const uint32_t count =
+        vkr_bloom_mip_count(&config, cases[i].width, cases[i].height);
+    assert(count == cases[i].mip_count);
+    const VkrBloomGpuParams params =
+        vkr_bloom_gpu_params(&config, &frame, count);
+    /* A unit constant survives every normalized reduction and tent filter.
+       Summing its levels must reproduce the authored six-level response. */
+    const float32_t combined = (float32_t)count * params.intensity;
+    assert(fabsf(combined - (count ? 0.3f : 0.0f)) < 1e-6f);
+    if (count == 6u)
+      assert(params.intensity == frame.intensity);
+  }
+  VkrBloomConfig shorter = config;
+  shorter.max_mip_count = 4u;
+  const VkrBloomGpuParams short_params =
+      vkr_bloom_gpu_params(&shorter, &frame, 2u);
+  assert(fabsf(2.0f * short_params.intensity - 0.2f) < 1e-6f);
+  frame.enabled = false_v;
+  assert(vkr_bloom_gpu_params(&config, &frame, 6u).intensity == 0.0f);
+  assert(vkr_bloom_gpu_params(&config, &frame, 0u).intensity == 0.0f);
+  printf("  test_bloom_chain_gain PASSED\n");
+}
+
 vkr_internal void test_bloom_packet_validation(void) {
   printf("  Running test_bloom_packet_validation...\n");
   VkrFrameInput packet = {
@@ -97,6 +133,7 @@ vkr_internal void test_bloom_packet_validation(void) {
 bool32_t run_bloom_tests(void) {
   printf("--- Running bloom tests... ---\n");
   test_bloom_config_and_mips();
+  test_bloom_chain_gain();
   test_bloom_packet_validation();
   printf("Bloom tests PASSED\n");
   return true;

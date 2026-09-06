@@ -72,6 +72,32 @@ static void test_prepared_instance_normal_orthogonality(void) {
   printf("  test_prepared_instance_normal_orthogonality PASSED\n");
 }
 
+/* The exact maximum stretch of x'=x+y, y'=y is the golden ratio.
+   The old longest-column bound sqrt(2) falsely rejects a plane at -1.5. */
+static void test_prepared_instance_shear_enclosure(void) {
+  VkrInstanceDataGPU source = {.model = mat4_identity()};
+  source.model.m01 = 1.0f;
+  const VkrPreparedInstanceGPU prepared = vkr_gpu_prepare_instance(&source);
+  const float64_t exact_stretch = (1.0 + sqrt(5.0)) * 0.5;
+  assert((float64_t)prepared.normal_column1.w >= exact_stretch);
+  assert(-1.5f >= -prepared.normal_column1.w);
+  source.model = mat4_identity();
+  source.model.m00 = -4.0f;
+  const VkrPreparedInstanceGPU reflected = vkr_gpu_prepare_instance(&source);
+  assert(reflected.normal_column1.w >= 4.0f);
+  assert(reflected.normal_column1.w - 4.0f < 0.00001f);
+  assert(reflected.normal_column0.w == -1.0f);
+  /* Any positive shear stretches some unit vector beyond one, even when
+     double-precision sqrt of its Gram bound rounds back to exactly one. */
+  source.model = mat4_identity();
+  source.model.m01 = 0x1p-52f;
+  const VkrPreparedInstanceGPU tiny_shear = vkr_gpu_prepare_instance(&source);
+  assert(tiny_shear.normal_column1.w > 1.0f);
+  source.model = (Mat4){0};
+  const VkrPreparedInstanceGPU collapsed = vkr_gpu_prepare_instance(&source);
+  assert(collapsed.normal_column1.w == 0.0f);
+}
+
 static void test_metal_packet_shader_minimum_alignment(void) {
   printf("  Running test_metal_packet_shader_minimum_alignment...\n");
   assert(vkr_metal_packet_abi_alignment_compatible(
@@ -95,6 +121,7 @@ bool32_t run_metal_packet_abi_tests(void) {
   printf("--- Running Metal packet ABI tests... ---\n");
   test_metal_packet_slang_draw_matrix_conversion();
   test_prepared_instance_normal_orthogonality();
+  test_prepared_instance_shear_enclosure();
   test_metal_packet_shader_minimum_alignment();
   printf("--- Metal packet ABI tests completed. ---\n");
   return true_v;

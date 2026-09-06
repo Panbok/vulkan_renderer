@@ -360,6 +360,7 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .transmission_compact_enabled =
           !vkr_renderer_env_enabled("VKR_TRANSMISSION_COMPACT_DISABLED"),
       .hzb_enabled = !vkr_renderer_env_enabled("VKR_HZB_DISABLED"),
+      .frustum_enabled = !vkr_renderer_env_enabled("VKR_FRUSTUM_DISABLED"),
       .max_images = 128,
       .max_passes = VKR_RENDERER_IMPL_MAX_GRAPH_PASSES,
       .max_material_rows = 8192,
@@ -441,6 +442,7 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .tonemap_enabled = !vkr_renderer_env_enabled("VKR_TONEMAP_DISABLED"),
       .fxaa_enabled = !vkr_renderer_env_enabled("VKR_FXAA_DISABLED"),
       .hzb_enabled = !vkr_renderer_env_enabled("VKR_HZB_DISABLED"),
+      .frustum_enabled = !vkr_renderer_env_enabled("VKR_FRUSTUM_DISABLED"),
       .transmission_compact_enabled =
           !vkr_renderer_env_enabled("VKR_TRANSMISSION_COMPACT_DISABLED"),
 #if !defined(NDEBUG)

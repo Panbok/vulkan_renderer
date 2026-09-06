@@ -873,10 +873,16 @@ vkr_vk_validate_deferred_root_abi(VkrVulkanRenderer *renderer) {
         renderer, cull_shaders[i], cull_entries[i], cull_fields,
         ArrayCount(cull_fields), sizeof(VkrVulkanCullRoot), "candidates",
         VKR_GPU_ABI_CANDIDATE_DRAW_ROW);
-  valid &= vkr_vk_validate_root_abi(
-      renderer, VKR_VULKAN_PACKET_GBUFFER_RESOLVE_COMP_SPV,
-      "vk_gbuffer_resolve", resolve_fields, ArrayCount(resolve_fields),
-      sizeof(VkrVulkanResolveRoot));
+  static const char *const resolve_shaders[] = {
+      VKR_VULKAN_PACKET_GBUFFER_RESOLVE_NONE_COMP_SPV,
+      VKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_COMP_SPV,
+      VKR_VULKAN_PACKET_GBUFFER_RESOLVE_DEBUG_COMP_SPV,
+      VKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_DEBUG_COMP_SPV,
+  };
+  for (uint32_t i = 0u; i < ArrayCount(resolve_shaders); ++i)
+    valid &= vkr_vk_validate_root_abi(
+        renderer, resolve_shaders[i], "vk_gbuffer_resolve", resolve_fields,
+        ArrayCount(resolve_fields), sizeof(VkrVulkanResolveRoot));
   valid &= vkr_vk_validate_root_abi(
       renderer, VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV,
       "vk_deferred_lighting", lighting_fields, ArrayCount(lighting_fields),
@@ -1127,11 +1133,12 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline(
       VK_DYNAMIC_STATE_VIEWPORT,
       VK_DYNAMIC_STATE_SCISSOR,
       VK_DYNAMIC_STATE_CULL_MODE,
+      VK_DYNAMIC_STATE_FRONT_FACE,
       VK_DYNAMIC_STATE_DEPTH_BIAS,
   };
   const VkPipelineDynamicStateCreateInfo dynamic = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-      .dynamicStateCount = depth_bias ? ArrayCount(dynamic_states) : 3u,
+      .dynamicStateCount = depth_bias ? ArrayCount(dynamic_states) : 4u,
       .pDynamicStates = dynamic_states,
   };
   const VkFormat color_formats[] = {
@@ -1321,7 +1328,10 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_PACKET_GPU_DRAW_PREFIX_COMP_SPV,
       VKR_VULKAN_PACKET_GPU_DRAW_ENCODE_COMP_SPV,
       VKR_VULKAN_PACKET_TEMPORAL_TRANSFORM_COMP_SPV,
-      VKR_VULKAN_PACKET_GBUFFER_RESOLVE_COMP_SPV,
+      VKR_VULKAN_PACKET_GBUFFER_RESOLVE_NONE_COMP_SPV,
+      VKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_COMP_SPV,
+      VKR_VULKAN_PACKET_GBUFFER_RESOLVE_DEBUG_COMP_SPV,
+      VKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_DEBUG_COMP_SPV,
       VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV,
       VKR_VULKAN_PACKET_TEMPORAL_RESOLVE_COMP_SPV,
       VKR_VULKAN_PACKET_HZB_BUILD_COMP_SPV,
@@ -1356,6 +1366,9 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
           "vk_gpu_draw_prefix",
           "vk_gpu_draw_encode",
           "vk_temporal_transform",
+          "vk_gbuffer_resolve",
+          "vk_gbuffer_resolve",
+          "vk_gbuffer_resolve",
           "vk_gbuffer_resolve",
           "vk_deferred_lighting",
           "vk_temporal_resolve",

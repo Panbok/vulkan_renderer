@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-09-06
 authority: architecture
 ---
 
@@ -258,9 +258,15 @@ retains source hierarchy metadata and rejects older flattened artifacts. See
 [ADR-030](adr/030-offline-mesh-optimization-and-cooking.md).
 
 Native depth-writing passes use strict less-than tests; blend/text depth reads
-accept equality. Both cull with transformed-axis sphere scale and retain odd
+accept equality. Both cull with conservative affine sphere scale and retain odd
 source edges during HZB reduction. Transmission compaction uses native subgroup
 identity instead of assuming a workgroup invocation mapping.
+Eight indirect buckets include reflection parity; direct blend preparation
+splits contiguous parity runs without changing instance order. HZB metadata
+separates camera compatibility from its exact raster producer grid. Jittered
+frames skip history construction because the accepted conservative policy cannot
+reuse another sampling grid. Optional emissive/debug resolve images are realized
+only for requested captures, with specialized no-write production variants.
 
 PBR materials use prepared metallic-roughness data with retained dielectric
 response from specular-glossiness conversion. Texture color/data interpretation
@@ -353,6 +359,13 @@ allocator synchronization is explicit. Vulkan driver host allocations use null
 callbacks and are outside VKR CPU totals. See
 [ADR-006](adr/006-cpu-memory-allocators.md).
 
+Vulkan descriptor/material publication requires coherent host-visible storage;
+regular frame uploads retain their completion-protected fallback. A CPU geometry
+mirror updates at publication/retirement/address changes. Each frame slot refreshes
+its fixed upload-table prefix only when the mirror generation changes. The white
+sampled/storage sentinel uses GENERAL with explicit first-use fragment/compute
+dependencies. See [ADR-024](adr/024-shared-bindless-gpu-cores.md).
+
 Container creation and growth report failure at their owning boundary. Failed
 vector/hash growth preserves the previous contents and capacity; callers reserve
 known batches before population and propagate allocation failure through existing
@@ -410,7 +423,18 @@ These are limits of current code or retained acceptance, not scheduled promises:
   pass families passed Release app/editor builds, CPU checks, and serial Metal
   API-validation draw/resize cases. Bistro depth and work counts match the
   baseline; color variation remains. ADR-004 records these evidence limits.
-  Vulkan has compile-only coverage for this revision, with no native run.
+  That ownership series had compile-only Vulkan coverage; later focused Vulkan
+  audit checks are recorded below.
+- The renderer audit fixes passed Windows Release and CPU builds plus a focused
+  native Vulkan synchronization-validation capture. Shear, static HZB and all
+  eight jitter phases at an odd extent match their culling-disabled reference depth;
+  mirrored instances match reference depth with small color differences. Bistro
+  retains identical depth; 21 of 480,000 color pixels differ, at most 3/255.
+  Completed steady-state slots upload zero geometry-table bytes. Raw float16
+  bloom captures across two, four and six levels differ by one output ULP.
+  Native Metal execution and cross-backend shader acceptance remain unavailable
+  for this audit. Transmission redesign, draw sorting and graph caching remain
+  unimplemented: local measurements do not establish a sufficient benefit.
 - Resource preparation, native object/encoder creation, command-buffer begin/end,
   acquisition, submission and completion remain fallible. Prepared command
   emission uses proven data and `void` recorders.

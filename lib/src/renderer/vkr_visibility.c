@@ -2,6 +2,32 @@
 
 #include "math/vkr_math.h"
 
+uint32_t vkr_draw_parity_run_length(const VkrInstanceDataGPU *instances,
+                                    uint32_t count, bool8_t *out_mirrored) {
+  *out_mirrored = mat4_affine_mirrored(instances[0].model);
+  uint32_t length = 1u;
+  while (length < count &&
+         mat4_affine_mirrored(instances[length].model) == *out_mirrored)
+    ++length;
+  return length;
+}
+
+uint64_t vkr_world_draw_parity_run_count(const VkrWorldPassPayload *world) {
+  uint64_t count = 0u;
+  for (uint32_t i = 0u; i < world->transparent_draw_count; ++i) {
+    const VkrDrawItem *draw = &world->transparent_draws[i];
+    uint32_t offset = 0u;
+    while (offset < draw->instance_count) {
+      bool8_t mirrored;
+      offset += vkr_draw_parity_run_length(
+          world->instances + draw->first_instance + offset,
+          draw->instance_count - offset, &mirrored);
+      ++count;
+    }
+  }
+  return count;
+}
+
 int vkr_transparent_draw_depth_compare(const void *lhs, const void *rhs) {
   const VkrTransparentDrawCandidate *a = lhs;
   const VkrTransparentDrawCandidate *b = rhs;
@@ -39,12 +65,6 @@ void vkr_visibility_submesh_sphere(Mat4 model, Vec3 center, Vec3 min_extents,
                                    float32_t *out_radius) {
   *out_center = mat4_mul_vec3(model, center);
 
-  Vec3 col0 = vec3_new(model.m00, model.m10, model.m20);
-  Vec3 col1 = vec3_new(model.m01, model.m11, model.m21);
-  Vec3 col2 = vec3_new(model.m02, model.m12, model.m22);
-  const float32_t max_scale = vkr_max_f32(
-      vkr_max_f32(vec3_length(col0), vec3_length(col1)), vec3_length(col2));
-
   Vec3 half = vec3_scale(vec3_sub(max_extents, min_extents), 0.5f);
-  *out_radius = vec3_length(half) * max_scale;
+  *out_radius = vec3_length(half) * mat4_affine_sphere_scale(model);
 }

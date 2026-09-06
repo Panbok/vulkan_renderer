@@ -1829,11 +1829,14 @@ vkr_metal_packet_resolve_texture(VkrMetalPacketRenderer *renderer,
 
 vkr_internal void vkr_metal_packet_pack_gpu_draw_view(
     VkrMetalPacketGpuDrawView *out_view, const VkrFrustum *frustum,
-    uint32_t required_candidate_flags, bool8_t hzb_enabled) {
+    uint32_t required_candidate_flags, bool8_t hzb_enabled,
+    bool8_t frustum_enabled) {
   *out_view = (VkrMetalPacketGpuDrawView){
       .required_candidate_flags = required_candidate_flags,
       .hzb_enabled = hzb_enabled ? 1u : 0u,
   };
+  if (!frustum_enabled)
+    return;
   for (uint32_t i = 0u; i < VKR_FRUSTUM_PLANE_COUNT; ++i) {
     const VkrPlane *plane = &frustum->planes[i];
     out_view->frustum_planes[i] =
@@ -1908,6 +1911,9 @@ vkr_internal bool8_t vkr_metal_packet_pack_gpu_draw_stream(
     const VkrMetalPacketSubmeshCreateInfo *submesh =
         &mesh->submeshes[source->submesh_index];
     instances[packed_count] = vkr_gpu_prepare_instance(&source->instance);
+    const uint32_t state_bucket = source->state_bucket |
+        (instances[packed_count].normal_column0.w < 0.0f
+             ? VKR_GPU_DRAW_STATE_MIRRORED_BIT : 0u);
     instances[packed_count].temporal_flags =
         ((source->submesh_index + 1u) << VKR_INSTANCE_TEMPORAL_SURFACE_SHIFT) |
         (source->instance.temporal_index != last_temporal_index
@@ -1924,7 +1930,7 @@ vkr_internal bool8_t vkr_metal_packet_pack_gpu_draw_stream(
         .vertex_offset = submesh->vertex_offset,
         .decode_index = submesh->decode_index,
         .state_flags =
-            vkr_gpu_draw_state_flags(source->state_bucket, source->flags),
+            vkr_gpu_draw_state_flags(state_bucket, source->flags),
         .local_bounding_sphere = source->local_bounding_sphere,
     };
     packed_count++;
@@ -1965,8 +1971,10 @@ vkr_internal void vkr_metal_packet_prepare_resident_gpu_draw_stream(
 
 vkr_internal bool8_t vkr_metal_packet_prepare_direct_draws(
     VkrMetalPacketRenderer *renderer, const VkrDrawItem *draws,
-    uint32_t draw_count, VkrMetalPacketPreparedDraw *prepared) {
+    uint32_t draw_count, const VkrInstanceDataGPU *instances,
+    VkrMetalPacketPreparedDraw *prepared) {
   const uint64_t pending_submit = renderer->submit_value + 1u;
+  uint32_t prepared_count = 0u;
   for (uint32_t i = 0u; i < draw_count; ++i) {
     const VkrDrawItem *draw = &draws[i];
     const VkrMeshHandle geometry = {.id = draw->geometry.id,
@@ -1989,22 +1997,34 @@ vkr_internal bool8_t vkr_metal_packet_prepare_direct_draws(
     const uint64_t index_offset =
         ((uint64_t)mesh->gpu_row.first_index + submesh->first_index) *
         sizeof(uint32_t);
-    prepared[i] = (VkrMetalPacketPreparedDraw){
-        .geometry = mesh->gpu_row,
-        .visible =
-            {
-                .material_index = material->row_index,
-                .instance_index = draw->first_instance,
-                .first_index = mesh->gpu_row.first_index + submesh->first_index,
-                .index_count = submesh->index_count,
-                .vertex_offset = submesh->vertex_offset,
-                .decode_index = submesh->decode_index,
-            },
-        .index_address = mesh->indices.gpu_address + index_offset,
-        .index_length = mesh->indices.length - index_offset,
-        .instance_count = draw->instance_count,
-        .cull_mode = material->double_sided ? MTLCullModeNone : MTLCullModeBack,
-    };
+    uint32_t offset = 0u;
+    while (offset < draw->instance_count) {
+      bool8_t mirrored;
+      const uint32_t run_length =
+          vkr_draw_parity_run_length(instances + draw->first_instance + offset,
+                                     draw->instance_count - offset, &mirrored);
+      prepared[prepared_count++] = (VkrMetalPacketPreparedDraw){
+          .geometry = mesh->gpu_row,
+          .visible =
+              {
+                  .material_index = material->row_index,
+                  .instance_index = draw->first_instance + offset,
+                  .first_index =
+                      mesh->gpu_row.first_index + submesh->first_index,
+                  .index_count = submesh->index_count,
+                  .vertex_offset = submesh->vertex_offset,
+                  .decode_index = submesh->decode_index,
+              },
+          .index_address = mesh->indices.gpu_address + index_offset,
+          .index_length = mesh->indices.length - index_offset,
+          .instance_count = run_length,
+          .cull_mode =
+              material->double_sided ? MTLCullModeNone : MTLCullModeBack,
+          .winding =
+              mirrored ? MTLWindingClockwise : MTLWindingCounterClockwise,
+      };
+      offset += run_length;
+    }
     mesh->last_use_submit_value = pending_submit;
     material->last_use_submit_value = pending_submit;
   }
@@ -2141,9 +2161,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
           renderer, source_gpu_draw_count, source_transmission_gpu_draw_count,
           1u + renderer->prepared_frame.shadow_cascade_count))
     return false_v;
-  const uint32_t direct_draw_count = world ? world->transparent_draw_count : 0u;
-  if (direct_draw_count > renderer->max_draws)
+  const uint64_t direct_run_count =
+      world ? vkr_world_draw_parity_run_count(world) : 0u;
+  if (direct_run_count > renderer->max_draws)
     return false_v;
+  const uint32_t direct_draw_count = (uint32_t)direct_run_count;
   uint64_t direct_pass_count = 0u;
   uint64_t direct_frame_root_count = 0u;
   for (uint64_t order = 0u; order < renderer->graph->execution_order.length;
@@ -2669,14 +2691,14 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
         packet->input.globals.view, packet->input.globals.projection);
     vkr_metal_packet_pack_gpu_draw_view(
         &views[0], &camera, VKR_WORLD_DRAW_CANDIDATE_CAMERA_OPAQUE,
-        renderer->prepared_frame.hzb_history_valid);
+        renderer->prepared_frame.hzb_history_valid, renderer->frustum_enabled);
     for (uint32_t cascade = 0u;
          cascade < renderer->prepared_frame.shadow_cascade_count; ++cascade) {
       const VkrFrustum shadow = vkr_frustum_from_matrix(
           packet->input.shadow->cascades[cascade].light_view_projection);
       vkr_metal_packet_pack_gpu_draw_view(
           &views[cascade + 1u], &shadow, VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER,
-          false_v);
+          false_v, renderer->frustum_enabled);
     }
     upload->gpu_draw_views_gpu = gpu + gpu_draw_views_offset;
   }
@@ -2686,7 +2708,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
     const VkrFrustum camera = vkr_frustum_from_view_projection(
         packet->input.globals.view, packet->input.globals.projection);
     vkr_metal_packet_pack_gpu_draw_view(
-        view, &camera, 0u, renderer->prepared_frame.hzb_history_valid);
+        view, &camera, 0u, renderer->prepared_frame.hzb_history_valid,
+        renderer->frustum_enabled);
     upload->transmission_gpu_draw_view_gpu =
         gpu + transmission_gpu_draw_view_offset;
   }
@@ -2738,7 +2761,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   upload->direct_draw_count = direct_draw_count;
   if (direct_draw_count > 0u && !vkr_metal_packet_prepare_direct_draws(
                                     renderer, world->transparent_draws,
-                                    direct_draw_count, upload->direct_draws))
+                                    world->transparent_draw_count,
+                                    world->instances, upload->direct_draws))
     return false_v;
   upload->root_cpu = cpu + root_offset;
   upload->root_gpu = gpu + root_offset;

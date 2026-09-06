@@ -48,6 +48,14 @@ baselines. `autotest` keeps these two results separate. `compare` rechecks a
 completed snapshot. Offscreen cases use ordinary images without a window or
 swapchain; automation boot alone does not imply an offscreen target.
 
+Color channels declared `RGBA16_FLOAT_LE` publish tight, top-left, little-endian
+binary16 RGBA payloads separately from their PNG previews. Their capture version
+is 2: earlier output mislabeled PNG-only files as float16, so those baselines are
+incompatible. Numeric comparison decodes finite half values and never substitutes
+a preview for radiance data. Final-color PNG and scalar/vector channels keep
+their existing contracts. Windows CLI summaries normalize report paths to forward
+slashes so the publication line remains valid JSON.
+
 The child owns its large application record in the repetition arena, releases
 application resources before publishing reports, and destroys the arena after
 publication. This keeps nested fingerprint/report calls within the Windows

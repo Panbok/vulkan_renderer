@@ -41,18 +41,28 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
           packet->input.world
               ? packet->input.world->transmission_gpu_candidate_count
               : 0u);
-  /* Four fixed state buckets retain the accepted 65536-draw bucket ceiling.
+  /* Parity-aware buckets retain the accepted 65536-draw bucket ceiling.
      A smaller scene must still fit when every candidate uses one bucket. */
   frame->gpu_draw_visible_capacity =
-      4u * Min(frame->gpu_draw_candidate_capacity, 65536u);
+      VKR_WORLD_DRAW_STATE_BUCKET_COUNT *
+      Min(frame->gpu_draw_candidate_capacity, 65536u);
   frame->transmission_gpu_draw_visible_capacity =
-      4u * Min(frame->transmission_gpu_draw_candidate_capacity, 65536u);
+      VKR_WORLD_DRAW_STATE_BUCKET_COUNT *
+      Min(frame->transmission_gpu_draw_candidate_capacity, 65536u);
   frame->transmission_depth_diagnostic_enabled =
       frame->transmission_pending && packet->input.debug &&
       (packet->input.debug->transmission_depth_diagnostic_enabled ||
        vkr_renderer_capture_request_contains(
            packet->input.debug->capture,
            "transmission_visibility_ids_layer_4"));
+  frame->deferred_emissive_capture_enabled =
+      packet->scene_rendering && packet->input.debug &&
+      vkr_renderer_capture_request_contains(packet->input.debug->capture,
+                                            "deferred_emissive");
+  frame->resolve_barycentric_lod_capture_enabled =
+      packet->scene_rendering && packet->input.debug &&
+      vkr_renderer_capture_request_contains(packet->input.debug->capture,
+                                            "resolve_barycentric_lod");
   frame->timing_enabled = packet->input.debug &&
                           packet->input.debug->enable_timing &&
                           packet->input.debug->capture_pass_timestamps;
@@ -65,6 +75,12 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->shadow_cascade_render_mask =
       packet->input.shadow ? packet->input.shadow->cascade_render_mask : 0u;
 
+  /* Exact-grid history reuse is useful for stable unjittered samples. Avoid
+     producing depth history while temporal jitter changes that grid. */
+  frame->hzb_build_enabled =
+      packet->scene_rendering &&
+      MemCompare(&packet->temporal.jittered_projection,
+                 &packet->input.globals.projection, sizeof(Mat4)) == 0;
   uint32_t hzb_mip_count = 1u;
   uint32_t hzb_extent = Max(frame->viewport_width, frame->viewport_height);
   while (hzb_extent > 1u) {

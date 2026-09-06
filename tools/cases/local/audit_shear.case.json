@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "id": "local.audit_shear",
+  "suite": "local",
+  "description": "Sheared thin cube crosses the right frustum plane although longest-column sphere is outside.",
+  "scene": "assets/scenes/fixtures/audit_shear.scene.json",
+  "seed": 2,
+  "resolution": [
+    640,
+    480
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 180000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": {
+    "warmup": 64,
+    "measure": 16
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default",
+    "taa_enabled": false,
+    "upscaler": "spatial",
+    "dynamic_resolution": false
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      0,
+      0,
+      0
+    ],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 60,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "assertions": [
+    {
+      "metric": "packet.publication_omitted_candidates",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "visibility.gpu_visible.overflow",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "visibility.gbuffer.resolve_invalid",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "visibility.gpu_visible.count",
+      "stat": "min",
+      "min": 1
+    }
+  ],
+  "target_image_count": 3,
+  "captures": [
+    {
+      "at_frame": 15,
+      "channels": [
+        "final_color",
+        "depth"
+      ]
+    }
+  ]
+}

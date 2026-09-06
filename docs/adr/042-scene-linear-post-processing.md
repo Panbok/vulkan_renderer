@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-09-06
 authority: adr
 ---
 
@@ -37,6 +37,11 @@ half-resolution chain, downsamples, accumulates deepest-first, and combines into
 full-resolution HDR before exposure multiplication/tonemap. Separate graph
 resources preserve read/write dependencies. Shared arithmetic handles non-finite
 and extreme input and pins the knee/Karis behavior. Bloom can bypass independently.
+Combine intensity is multiplied once by configured maximum mip count divided
+by the actual contributing count. This preserves the usual full six-level look
+and its constant-field gain on shorter chains. Fewer than two levels disables
+bloom. Normalization changes amplitude, not the spatial spread of a shorter
+chain; firefly saturation and boundaries remain nonlinear limits of the DC rule.
 
 GTAO uses current-frame depth and normals before deferred lighting. A dedicated
 positive-view-depth R16 pyramid feeds full-resolution three-slice/three-step

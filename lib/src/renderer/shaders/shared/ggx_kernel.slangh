@@ -1,3 +1,16 @@
+// Zero means no direct contribution. Keep subnormal lengths out of rsqrt so
+// denormal flushing cannot turn an almost opposite pair into a NaN. Preserve
+// the existing shading-normal policy for finite directions with N.V <= 0.
+float vkr_direct_half_vector_inverse_length(float no_l, float3 half_vector)
+{
+    if (no_l <= 0.0f)
+        return 0.0f;
+    float length_squared = dot(half_vector, half_vector);
+    if (length_squared < 1.175494351e-38f)
+        return 0.0f;
+    return rsqrt(length_squared);
+}
+
 // Shared GGX normal distribution for direct lighting and the IBL sampling PDF.
 float vkr_ggx_distribution(float no_h, float roughness)
 {

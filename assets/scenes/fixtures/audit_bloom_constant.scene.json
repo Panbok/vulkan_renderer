@@ -1,0 +1,61 @@
+{
+  "version": 2,
+  "entities": [
+    {
+      "name": "Root",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          0
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "ConstantEmissiveField",
+      "parent": 0,
+      "transform": {
+        "pos": [
+          0,
+          0,
+          -5
+        ],
+        "rot": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [
+          100,
+          100,
+          1
+        ],
+        "material": {
+          "name": "audit_bloom_constant",
+          "path": "tests/fixtures/rendering/audit_bloom_constant.mt"
+        }
+      }
+    }
+  ]
+}

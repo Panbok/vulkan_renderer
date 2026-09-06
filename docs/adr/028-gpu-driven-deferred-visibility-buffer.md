@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-09-06
 authority: adr
 ---
 
@@ -26,9 +26,15 @@ There is no CPU opaque/transmission/shadow draw fallback or legacy world selecto
 
 Opaque/cutout raster writes visibility identity and depth. Compute resolves
 geometry/material data into the G-buffer, evaluates GTAO, and shades HDR lighting.
+Separate emissive and barycentric/LOD debug images exist only when their capture
+channels are requested. Four native resolve variants compile out unrequested
+writes; temporal, normal, albedo/specular and scene-color outputs remain present.
+Capture-enabled variants retain initialized background and invalid-surface values.
 Depth-writing visibility, shadow and picking passes use strict less-than depth
 tests; depth-read-only blend and text accept equal depth. Culling sphere scale
-uses the longest transformed model axis. HZB reductions include an unpaired
+uses the conservative bound `sqrt(||A^T A||_infinity)`, prepared once per native
+instance into `normal_column1.w`. The bound preserves sheared affine transforms;
+CPU blend/caster bounds use the same helper. HZB reductions include an unpaired
 source row or column in the last destination texel's maximum.
 The graph also builds HZB history, handles visibility-based picking, and schedules
 ADR-018's four transmission peels. Compacted transmission shading retains a
@@ -38,11 +44,31 @@ Ordinary alpha blend is a narrow CPU exception: conservative camera culling and
 back-to-front sorting produce feature-local direct draws. UI and text have their
 own streams. Shadow candidates are not derived from the camera-culled blend list.
 
+Opaque/cutout and single/double-sided buckets are partitioned by determinant
+parity, for eight buckets. Native front-face state follows each partition;
+Metal reconstructed face signs include the same parity. Direct blend draws
+split contiguous instance parity runs while preserving source order. Existing
+material bucket metrics sum both parity partitions. Nearly singular transforms
+keep the existing prepared normal-basis fallback; a negative determinant selects
+reflected winding. `VKR_FRUSTUM_DISABLED=1` zeros packed native frustum planes
+for reference captures without adding per-candidate validation.
+
 HZB rejection requires completed compatible history, matching world epoch and
-view-projection; camera motion cannot silently relax those gates. Candidate
+unjittered view-projection and the exact raster projection that produced depth;
+camera motion cannot silently relax those gates. Vulkan maps NDC Y directly to
+its positive-height framebuffer; Metal keeps its native clip conversion. Different
+jitter phases do not prove current-sample coverage. The graph skips HZB construction
+when raster and unjittered projections differ, or HZB is explicitly disabled.
+Both culling passes declare history reads only under that same enable condition;
+disabled history has neither a producer nor a declared consumer in the graph.
+History rejection metrics distinguish disabled, invalid, incomplete, world,
+extent, camera and raster-grid failures. Candidate
 capacity is checked before recording. Completion-gated GPU diagnostics expose
 visible/bucket/overflow/resolve-invalid counts; overflow is not permission to
 silently claim a complete frame.
+
+Metal batches ICB resets before a device-visible blit-to-dispatch intra-pass
+barrier. Command-generation-to-indirect-execution dependencies remain separate.
 
 ## Consequences
 

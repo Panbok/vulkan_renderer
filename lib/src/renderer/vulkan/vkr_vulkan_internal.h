@@ -129,9 +129,21 @@
 #define VKR_VULKAN_PACKET_GPU_DRAW_ENCODE_COMP_SPV                             \
   "packet.gpu_draw_encode.comp.spv"
 #endif
-#ifndef VKR_VULKAN_PACKET_GBUFFER_RESOLVE_COMP_SPV
-#define VKR_VULKAN_PACKET_GBUFFER_RESOLVE_COMP_SPV                             \
-  "packet.gbuffer_resolve.comp.spv"
+#ifndef VKR_VULKAN_PACKET_GBUFFER_RESOLVE_NONE_COMP_SPV
+#define VKR_VULKAN_PACKET_GBUFFER_RESOLVE_NONE_COMP_SPV                        \
+  "packet.gbuffer_resolve.none.comp.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_COMP_SPV
+#define VKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_COMP_SPV                    \
+  "packet.gbuffer_resolve.emissive.comp.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_GBUFFER_RESOLVE_DEBUG_COMP_SPV
+#define VKR_VULKAN_PACKET_GBUFFER_RESOLVE_DEBUG_COMP_SPV                       \
+  "packet.gbuffer_resolve.debug.comp.spv"
+#endif
+#ifndef VKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_DEBUG_COMP_SPV
+#define VKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_DEBUG_COMP_SPV              \
+  "packet.gbuffer_resolve.emissive_debug.comp.spv"
 #endif
 #ifndef VKR_VULKAN_PACKET_TEMPORAL_TRANSFORM_COMP_SPV
 #define VKR_VULKAN_PACKET_TEMPORAL_TRANSFORM_COMP_SPV                          \
@@ -344,7 +356,10 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_PREFIX,
   VKR_VULKAN_DEFERRED_PIPELINE_ENCODE,
   VKR_VULKAN_DEFERRED_PIPELINE_TEMPORAL_TRANSFORM,
-  VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER,
+  VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_NONE,
+  VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_EMISSIVE,
+  VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_DEBUG,
+  VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_EMISSIVE_DEBUG,
   VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING,
   VKR_VULKAN_DEFERRED_PIPELINE_TEMPORAL_RESOLVE,
   VKR_VULKAN_DEFERRED_PIPELINE_HZB,
@@ -1147,6 +1162,8 @@ typedef struct VkrVulkanGraphImageInstance {
   uint64_t history_producer_submit_value;
   uint64_t history_world_epoch;
   Mat4 history_view_projection;
+  /** Exact raster grid that produced HZB depth; camera compatibility is separate. */
+  Mat4 history_raster_view_projection;
   uint32_t history_width;
   uint32_t history_height;
   uint64_t history_frame_index;
@@ -1231,6 +1248,7 @@ typedef struct VkrVulkanPreparedRaster {
   VkBuffer counts;
   VkPipeline pipelines[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
   VkCullModeFlags cull_modes[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
+  VkFrontFace front_faces[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
   VkDeviceSize argument_offsets[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
   VkDeviceSize count_offsets[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
 } VkrVulkanPreparedRaster;
@@ -1345,6 +1363,8 @@ typedef struct VkrVulkanFrameSlot {
   uint64_t gpu_candidate_instances;
   uint64_t transmission_gpu_candidate_instances;
   uint64_t gpu_geometry_rows;
+  /** Generation copied into this slot's completion-protected table prefix. */
+  uint64_t geometry_table_generation;
   VkrVulkanCandidateCopyRange gpu_candidate_copies[2];
   uint32_t gpu_candidate_copy_count;
   uint64_t transmission_gpu_candidate_upload_offset;
@@ -1618,6 +1638,8 @@ struct VkrVulkanPreparedDirectDraw {
   const VkrVulkanSubmeshRange *range;
   uint32_t first_instance;
   uint32_t instance_count;
+  VkFrontFace front_face;
+  VkCullModeFlags cull_mode;
 };
 
 typedef struct VkrVulkanRetiredMaterial {
@@ -1679,6 +1701,7 @@ struct VkrVulkanRenderer {
   VkrGpuSlotTable *sampler_slots;
   VkrGpuSlotTable *material_slots;
   VkrVulkanPublishedGeometry *published_geometries;
+  VkrGpuGeometryRow *geometry_table_rows;
   VkrVulkanGeometryMegabuffer geometry_megabuffer;
   VkrGeometryRanges geometry_ranges;
   VkrVulkanPublishedGeometry *retired_geometries;
@@ -1691,6 +1714,7 @@ struct VkrVulkanRenderer {
   VkrVulkanPendingBufferInitialization *pending_buffer_initializations;
   VkrVulkanRetiredStagingBuffer *retired_staging_buffers;
   uint64_t published_geometries_size;
+  uint64_t geometry_table_rows_size;
   uint64_t retired_geometries_size;
   uint64_t published_textures_size;
   uint64_t retired_textures_size;
@@ -1763,6 +1787,7 @@ struct VkrVulkanRenderer {
   uint64_t picking_completed_order;
   uint64_t picking_consumed_order;
   uint64_t candidate_publication_generation;
+  uint64_t geometry_table_generation;
   uint64_t radiance_revision;
   uint64_t graph_revision;
   uint64_t upload_wait_count;

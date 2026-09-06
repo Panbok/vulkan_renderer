@@ -31,15 +31,20 @@ typedef enum VkrWorldDrawStateBucket {
   VKR_WORLD_DRAW_STATE_OPAQUE_DOUBLE_SIDED,
   VKR_WORLD_DRAW_STATE_CUTOUT_BACK,
   VKR_WORLD_DRAW_STATE_CUTOUT_DOUBLE_SIDED,
+  VKR_WORLD_DRAW_STATE_OPAQUE_BACK_MIRRORED,
+  VKR_WORLD_DRAW_STATE_OPAQUE_DOUBLE_SIDED_MIRRORED,
+  VKR_WORLD_DRAW_STATE_CUTOUT_BACK_MIRRORED,
+  VKR_WORLD_DRAW_STATE_CUTOUT_DOUBLE_SIDED_MIRRORED,
   VKR_WORLD_DRAW_STATE_BUCKET_COUNT,
 } VkrWorldDrawStateBucket;
 
-#define VKR_GPU_DRAW_STATE_BUCKET_BITS 2u
-#define VKR_GPU_DRAW_STATE_BUCKET_MASK 0x3u
+#define VKR_GPU_DRAW_STATE_BUCKET_BITS 3u
+#define VKR_GPU_DRAW_STATE_BUCKET_MASK 0x7u
+#define VKR_GPU_DRAW_STATE_MIRRORED_BIT 0x4u
 
 _Static_assert(VKR_WORLD_DRAW_STATE_BUCKET_COUNT ==
                    VKR_GPU_DRAW_STATE_BUCKET_MASK + 1u,
-               "Packed draw state requires exactly four buckets");
+               "Packed draw state requires exactly eight buckets");
 
 static INLINE uint32_t vkr_gpu_draw_state_flags(uint32_t state_bucket,
                                                 uint32_t flags) {
@@ -95,7 +100,9 @@ typedef struct VkrPreparedInstanceGPU {
   uint32_t temporal_generation;
   /** OWNER in bit zero; stable submesh_index + 1 in the remaining bits. */
   uint32_t temporal_flags;
-  /** Positive-scaled inverse transpose; column 0 w carries model handedness. */
+  /** Positive-scaled inverse transpose; column 0 w carries model handedness.
+
+   * Column 1 w carries the conservative affine sphere stretch. */
   Vec4 normal_column0;
   Vec4 normal_column1;
   Vec4 normal_column2;
@@ -104,7 +111,7 @@ typedef struct VkrPreparedInstanceGPU {
 _Static_assert(sizeof(VkrPreparedInstanceGPU) == 128,
                "Native prepared instance must be 128 bytes");
 
-/** Computes normal transport once at native instance publication/upload. */
+/** Computes normal transport and bounds once at native publication/upload. */
 VkrPreparedInstanceGPU vkr_gpu_prepare_instance(const VkrInstanceDataGPU *source);
 
 /** One completion-protected object transform indexed by stable temporal ID. */
@@ -201,7 +208,7 @@ typedef struct VkrGpuPointLightRow {
   Vec4 p3;
 } VkrGpuPointLightRow;
 
-/** GPU-written compacted work volume and four-bucket prefix state. */
+/** GPU-written compacted work volume and parity-aware bucket prefix state. */
 typedef struct VkrGpuDrawCompactionState {
   uint32_t execution_ranges[VKR_WORLD_DRAW_STATE_BUCKET_COUNT][2];
   uint32_t bucket_counts[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
@@ -228,14 +235,14 @@ _Static_assert(sizeof(VkrGpuPointLightRow) == 64u,
                "VkrGpuPointLightRow ABI drift");
 _Static_assert(_Alignof(VkrGpuPointLightRow) == 16u,
                "VkrGpuPointLightRow alignment drift");
-_Static_assert(sizeof(VkrGpuDrawCompactionState) == 80u,
+_Static_assert(sizeof(VkrGpuDrawCompactionState) == 144u,
                "VkrGpuDrawCompactionState ABI drift");
-_Static_assert(sizeof(VkrGpuTransmissionDiagnostics) == 116u,
+_Static_assert(sizeof(VkrGpuTransmissionDiagnostics) == 180u,
                "VkrGpuTransmissionDiagnostics ABI drift");
-_Static_assert(offsetof(VkrGpuTransmissionDiagnostics, covered_pixels) == 80u,
+_Static_assert(offsetof(VkrGpuTransmissionDiagnostics, covered_pixels) == 144u,
                "Transmission coverage ABI drift");
 _Static_assert(offsetof(VkrGpuTransmissionDiagnostics, compact_overflow) ==
-                   100u,
+                   164u,
                "Transmission compact-overflow ABI drift");
 
 typedef enum VkrGpuAbiRecordId {

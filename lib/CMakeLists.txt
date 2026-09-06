@@ -92,7 +92,18 @@ vkr_add_vulkan_packet_shader("packet.visibility.vert" vk_visibility_vertex verte
 vkr_add_vulkan_packet_shader("packet.visibility.frag" vk_visibility_fragment fragment)
 vkr_add_vulkan_packet_shader("packet.visibility_opaque.frag" vk_visibility_opaque_fragment fragment)
 vkr_add_vulkan_packet_shader("packet.visibility_shadow.frag" vk_visibility_shadow_fragment fragment)
-vkr_add_vulkan_packet_shader("packet.gbuffer_resolve.comp" vk_gbuffer_resolve compute)
+vkr_add_vulkan_packet_shader(
+    "packet.gbuffer_resolve.none.comp" vk_gbuffer_resolve compute
+    -DVKR_VULKAN_GBUFFER_WRITE_EMISSIVE=0 -DVKR_VULKAN_GBUFFER_WRITE_DEBUG=0)
+vkr_add_vulkan_packet_shader(
+    "packet.gbuffer_resolve.emissive.comp" vk_gbuffer_resolve compute
+    -DVKR_VULKAN_GBUFFER_WRITE_EMISSIVE=1 -DVKR_VULKAN_GBUFFER_WRITE_DEBUG=0)
+vkr_add_vulkan_packet_shader(
+    "packet.gbuffer_resolve.debug.comp" vk_gbuffer_resolve compute
+    -DVKR_VULKAN_GBUFFER_WRITE_EMISSIVE=0 -DVKR_VULKAN_GBUFFER_WRITE_DEBUG=1)
+vkr_add_vulkan_packet_shader(
+    "packet.gbuffer_resolve.emissive_debug.comp" vk_gbuffer_resolve compute
+    -DVKR_VULKAN_GBUFFER_WRITE_EMISSIVE=1 -DVKR_VULKAN_GBUFFER_WRITE_DEBUG=1)
 vkr_add_vulkan_packet_shader("packet.deferred_lighting.comp" vk_deferred_lighting compute)
 vkr_add_vulkan_packet_shader("packet.temporal_resolve.comp" vk_temporal_resolve compute)
 vkr_add_vulkan_packet_shader("packet.hzb_build.comp" vk_hzb_build compute)
