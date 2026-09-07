@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-06
+updated: 2026-09-07
 authority: adr
 ---
 
@@ -69,7 +69,9 @@ ICBs. It covers spare heap capacity and resources awaiting completion. Allocatio
 and reconciliation against native sizes happen before publication. Metal offers
 no ICB size query: provisional ICB creation is followed by an actual-size budget
 check before residency; rejection releases the object. Thus this cap bounds
-accepted managed allocations, not every transient native allocation.
+accepted managed allocations, not every transient native allocation. ICB budget
+rejections retain typed out-of-memory status through frame-upload preparation
+so bounded Scene recovery can run; other native creation failures remain terminal.
 
 Device-reported allocation and residency footprints remain separate observations.
 Driver/validation/compiler storage, opaque command and counter heaps, MetalFX
@@ -109,7 +111,7 @@ Metal no longer maps permanent placement exhaustion to upload-busy retries.
 Native allocation failure terminates the asset request and releases its prepared
 payload. Required mesh failure terminates scene loading; optional streamed texture
 failures keep the established fallback material and log the failure. The paneled
-editor retains only memory-failed stream paths for the bounded Scene-resolution
+editor and standalone Metal app retain only memory-failed stream paths for bounded Scene-resolution
 recovery in [ADR-046](046-editor-viewport-mapping-and-picking.md); failed upload
 payloads are still released. Vulkan's
 transient upload admission remains unchanged. CPU tests cover bounded placement,

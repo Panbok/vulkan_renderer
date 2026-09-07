@@ -2140,7 +2140,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   if (!vkr_metal_packet_prepare_gpu_draw_icbs(
           renderer, source_gpu_draw_count, source_transmission_gpu_draw_count,
           1u + renderer->prepared_frame.shadow_cascade_count +
-              renderer->prepared_frame.local_shadow_view_count))
+              renderer->prepared_frame.local_shadow_view_count,
+          out_error))
     return false_v;
   const uint32_t direct_draw_count = world ? world->transparent_draw_count : 0u;
   if (direct_draw_count > renderer->max_draws)

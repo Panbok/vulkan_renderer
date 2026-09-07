@@ -93,9 +93,6 @@ typedef struct ApplicationEditorViewport {
   float64_t simulation_time;
   VkrViewportFitMode fit_mode;
   float32_t render_scale;
-  /* Memory fallback scales Scene output independently of temporal reconstruction. */
-  float32_t output_scale;
-  uint64_t memory_relief_generation;
   uint32_t rendered_width;
   uint32_t rendered_height;
   uint32_t output_width;
@@ -256,6 +253,9 @@ typedef struct Application {
   ApplicationTextUpdate world_text_updates[VKR_MAX_PENDING_TEXT_UPDATES];
   uint32_t world_text_update_count;
 
+  /* Bounded Scene memory recovery applies to app and editor presentation. */
+  float32_t scene_output_scale;
+  uint64_t scene_memory_relief_generation;
   ApplicationEditorViewport editor_viewport;
   VkrUiInputCapture ui_capture;
   const VkrCaptureBatchRequest *capture_request;
@@ -561,12 +561,12 @@ bool8_t application_create(Application *application,
   }
 
   application->config = config;
+  application->scene_output_scale = 1.0f;
   application->editor_viewport = (ApplicationEditorViewport){
       .enabled = false_v,
       .scene_only = false_v,
       .fit_mode = VKR_VIEWPORT_FIT_STRETCH,
       .render_scale = 1.0f,
-      .output_scale = 1.0f,
       .last_target_width = 0,
       .last_target_height = 0,
   };
@@ -842,7 +842,8 @@ vkr_internal bool8_t application_editor_viewport_mapping(
     return false_v;
   const bool8_t renderer_scaled_scene =
       application->renderer.backend_type == VKR_RENDERER_BACKEND_TYPE_METAL &&
-      (application->renderer.render_scale != 1.0f ||
+      (application->renderer.scene_output_extent_overridden ||
+       application->renderer.render_scale != 1.0f ||
        application->renderer.upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL);
   if (renderer_scaled_scene && application->renderer.render_width > 0u &&
       application->renderer.render_height > 0u) {
@@ -854,17 +855,15 @@ vkr_internal bool8_t application_editor_viewport_mapping(
   return vkr_editor_viewport_mapping_from_panel_rect(
       panel, application->editor_viewport.fit_mode,
       application->editor_viewport.render_scale *
-          application->editor_viewport.output_scale,
+          application->scene_output_scale,
       out_mapping);
 }
 
 vkr_internal VkrRendererError
-application_configure_editor_scene_output(Application *application) {
+application_configure_scene_output(Application *application) {
   if (!application)
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
-  if (application->renderer.backend_type != VKR_RENDERER_BACKEND_TYPE_METAL ||
-      (application->renderer.render_scale == 1.0f &&
-       application->renderer.upscale_mode != VKR_UPSCALE_MODE_METALFX_TEMPORAL))
+  if (application->renderer.backend_type != VKR_RENDERER_BACKEND_TYPE_METAL)
     return VKR_RENDERER_ERROR_NONE;
 
   if (application_editor_scene_rendering_stopped(application))
@@ -873,34 +872,43 @@ application_configure_editor_scene_output(Application *application) {
       application->editor_viewport.enabled &&
       vkr_subsystem_plan_includes(&application->subsystem_plan,
                                   VKR_RENDERER_SUBSYSTEM_EDITOR);
-  if (!paneled)
+  /* Unit-scale editor scenes already use the packet's mapped viewport. */
+  if (paneled && application->renderer.render_scale == 1.0f &&
+      application->renderer.upscale_mode != VKR_UPSCALE_MODE_METALFX_TEMPORAL &&
+      application->scene_output_scale == 1.0f)
+    return vkr_renderer_restore_scene_output_extent(&application->renderer);
+  if (!paneled && application->scene_output_scale == 1.0f)
     return vkr_renderer_restore_scene_output_extent(&application->renderer);
 
   /* MetalFX scaler recreation waits for completion. Keep the previous Scene
      output while a dock gesture is live, let the compositor stretch it, and
      resize once when the gesture releases. Pending memory relief must realize
      its smaller targets before it can authorize texture retries. */
-  if (application->renderer.scene_output_extent_overridden &&
-      application->editor_viewport.memory_relief_generation ==
-          application->assets.material_system.texture_stream_relief_generation &&
+  if (paneled && application->renderer.scene_output_extent_overridden &&
+      application->scene_memory_relief_generation ==
+          application->assets.material_system
+              .texture_stream_relief_generation &&
       (application->editor_viewport.dock_capture.resizing_split ||
        application->editor_viewport.dock_capture.dragging_tab))
     return VKR_RENDERER_ERROR_NONE;
 
   const VkrWindowPixelSize pixels =
-      vkr_window_get_pixel_size(&application->window);
-  Vec4 panel = {0};
-  if (!application_editor_viewport_panel_rect(application, pixels.width,
-                                              pixels.height, &panel))
+      application_is_windowed(application)
+          ? vkr_window_get_pixel_size(&application->window)
+          : (VkrWindowPixelSize){application->renderer.last_window_width,
+                                 application->renderer.last_window_height};
+  Vec4 panel = {0, 0, (float32_t)pixels.width, (float32_t)pixels.height};
+  if (paneled && !application_editor_viewport_panel_rect(
+                     application, pixels.width, pixels.height, &panel))
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
-  const float32_t scale = application->editor_viewport.output_scale;
+  const float32_t scale = application->scene_output_scale;
   const uint32_t width =
       vkr_max_u32(1u, (uint32_t)vkr_round_f32(panel.z * scale));
   const uint32_t height =
       vkr_max_u32(1u, (uint32_t)vkr_round_f32(panel.w * scale));
   return vkr_renderer_set_scene_output_extent(
       &application->renderer, width, height,
-      application->editor_viewport.memory_relief_generation !=
+      application->scene_memory_relief_generation !=
           application->assets.material_system.texture_stream_relief_generation);
 }
 
@@ -909,18 +917,23 @@ application_configure_editor_scene_output(Application *application) {
 vkr_internal bool8_t application_reduce_scene_resolution(
     Application *application, VkrRendererError error) {
   ApplicationEditorViewport *viewport = &application->editor_viewport;
-  if (error != VKR_RENDERER_ERROR_OUT_OF_MEMORY || !viewport->enabled ||
+  if (error != VKR_RENDERER_ERROR_OUT_OF_MEMORY ||
+      (!viewport->enabled &&
+       application->renderer.backend_type != VKR_RENDERER_BACKEND_TYPE_METAL) ||
       application_editor_scene_rendering_stopped(application) ||
-      viewport->output_scale <= 0.25f)
+      application->scene_output_scale <= 0.25f)
     return false_v;
-  viewport->output_scale = Max(0.25f, viewport->output_scale * 0.75f);
-  viewport->memory_relief_generation++;
-  viewport->scene_error = error;
+  application->scene_output_scale =
+      Max(0.25f, application->scene_output_scale * 0.75f);
+  application->scene_memory_relief_generation++;
+  if (viewport->enabled)
+    viewport->scene_error = error;
   vkr_picking_cancel(&application->picking);
-  vkr_window_set_mouse_capture(&application->window, false_v);
+  if (application_is_windowed(application))
+    vkr_window_set_mouse_capture(&application->window, false_v);
   vkr_renderer_invalidate_temporal_history(&application->renderer);
   log_warn("Scene memory limit reached; retrying at %.1f%% output resolution",
-           (double)(viewport->output_scale * 100.0f));
+           (double)(application->scene_output_scale * 100.0f));
   return true_v;
 }
 
@@ -960,10 +973,13 @@ void application_draw_frame(Application *application, float64_t delta) {
               ? application->shadow_system.config.cascade_count
               : 1u,
   };
+  application->assets.material_system.texture_stream_memory_recovery_enabled =
+      application->editor_viewport.enabled ||
+      application->renderer.backend_type == VKR_RENDERER_BACKEND_TYPE_METAL;
   VkrRendererError prepare_err = VKR_RENDERER_ERROR_NONE;
   VKR_METRICS_SCOPE_NS(application->metrics,
                        application->metric_ids.render_prepare) {
-    prepare_err = application_configure_editor_scene_output(application);
+    prepare_err = application_configure_scene_output(application);
     if (prepare_err == VKR_RENDERER_ERROR_NONE)
       prepare_err = vkr_renderer_begin_frame(&application->renderer,
                                              &frame_config, &setup);
@@ -986,6 +1002,11 @@ void application_draw_frame(Application *application, float64_t delta) {
         application->editor_viewport.scene_rendering_stopped = true_v;
         vkr_picking_cancel(&application->picking);
         vkr_window_set_mouse_capture(&application->window, false_v);
+      }
+      if (!application->editor_viewport.enabled && !reduced &&
+          prepare_err == VKR_RENDERER_ERROR_OUT_OF_MEMORY) {
+        log_error("Scene memory recovery exhausted; stopping application");
+        bitset8_clear(&application->app_flags, APPLICATION_FLAG_RUNNING);
       }
       if (prepare_err == VKR_RENDERER_ERROR_DEVICE_ERROR) {
         log_fatal("Renderer device is unusable; stopping");
@@ -1210,7 +1231,8 @@ void application_draw_frame(Application *application, float64_t delta) {
     application->editor_viewport.last_target_height = 0;
   }
 
-  if (has_picking && (application->renderer.render_scale != 1.0f ||
+  if (has_picking && (application->renderer.scene_output_extent_overridden ||
+                      application->renderer.render_scale != 1.0f ||
                       application->renderer.upscale_mode ==
                           VKR_UPSCALE_MODE_METALFX_TEMPORAL)) {
     const uint32_t source_width =
@@ -1439,8 +1461,8 @@ void application_draw_frame(Application *application, float64_t delta) {
         vkr_renderer_render_frame(&setup, &packet, &metrics, &validation);
   }
   if (submit_err == VKR_RENDERER_ERROR_NONE) {
-    if (has_editor && !scene_stopped) {
-      if (application->editor_viewport.memory_relief_generation >
+    if (!scene_stopped) {
+      if (application->scene_memory_relief_generation >
           application->assets.material_system
               .texture_stream_relief_generation) {
         VkrDeviceMemoryStats relieved_memory = {0};
@@ -1453,14 +1475,17 @@ void application_draw_frame(Application *application, float64_t delta) {
       }
       vkr_material_system_commit_scene_memory_relief(
           &application->assets.material_system,
-          application->editor_viewport.memory_relief_generation);
+          application->scene_memory_relief_generation);
+    }
+    if (has_editor && !scene_stopped) {
       application->editor_viewport.scene_error = VKR_RENDERER_ERROR_NONE;
       application->editor_viewport.rendered_width = viewport_width;
       application->editor_viewport.rendered_height = viewport_height;
       const bool8_t scaled_metal =
           application->renderer.backend_type ==
               VKR_RENDERER_BACKEND_TYPE_METAL &&
-          (application->renderer.render_scale != 1.0f ||
+          (application->renderer.scene_output_extent_overridden ||
+           application->renderer.render_scale != 1.0f ||
            application->renderer.upscale_mode ==
                VKR_UPSCALE_MODE_METALFX_TEMPORAL);
       application->editor_viewport.output_width =
@@ -1523,7 +1548,9 @@ void application_draw_frame(Application *application, float64_t delta) {
           &application->assets.material_system);
   /* Finish outstanding publication/retry work before judging remaining
      texture pressure. Native frame OOM still requests immediate relief. */
-  if (scene_error == VKR_RENDERER_ERROR_NONE && has_editor && !scene_stopped &&
+  if (scene_error == VKR_RENDERER_ERROR_NONE && !scene_stopped &&
+      application->assets.material_system
+          .texture_stream_memory_recovery_enabled &&
       texture_streams.in_flight_count == 0u &&
       (application->assets.material_system.texture_stream_memory_wait_count ||
        texture_streams.demanded_evicted_count))
@@ -1539,7 +1566,7 @@ void application_draw_frame(Application *application, float64_t delta) {
       log_error("Packet submit failed: %s", string8_cstr(&err));
     }
     const bool8_t reduced =
-        has_editor && !scene_stopped &&
+        !scene_stopped &&
         application_reduce_scene_resolution(application, scene_error);
     if (has_editor && !scene_stopped && !reduced &&
         submit_err != VKR_RENDERER_ERROR_DEVICE_ERROR &&
@@ -1554,6 +1581,11 @@ void application_draw_frame(Application *application, float64_t delta) {
       vkr_window_set_mouse_capture(&application->window, false_v);
       log_warn("Scene rendering stopped after a frame failure; editor controls "
                "remain available. Unload the scene or retry rendering.");
+    }
+    if (!has_editor && !reduced &&
+        scene_error == VKR_RENDERER_ERROR_OUT_OF_MEMORY) {
+      log_error("Scene memory recovery exhausted; stopping application");
+      bitset8_clear(&application->app_flags, APPLICATION_FLAG_RUNNING);
     }
     if (submit_err == VKR_RENDERER_ERROR_DEVICE_ERROR) {
       log_fatal("Renderer device is unusable; stopping");

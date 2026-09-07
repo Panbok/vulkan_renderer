@@ -744,7 +744,8 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
     prepared->frame.input.skybox = NULL;
     prepared->frame.input.picking = NULL;
   }
-  const bool8_t scaled = rf->render_scale != 1.0f;
+  const bool8_t scaled =
+      rf->scene_output_extent_overridden || rf->render_scale != 1.0f;
   const uint32_t temporal_width = scaled ? rf->render_width
                                   : packet->frame.viewport_width
                                       ? packet->frame.viewport_width

@@ -382,7 +382,12 @@ on demand after their GPU and CPU consumers finish. Graph draw tables use scene
 candidate capacities on both backends; native caches retain sufficient backing
 and wait for submitted users before replacing undersized buffers. Automatic texture pressure
 accounts charged asset-heap capacity separately, and capacity retries require a
-new finite high-water allowance or committed Scene reduction.
+new finite high-water allowance or committed Scene reduction. Application owns
+bounded Scene-output recovery for the paneled editor and standalone Metal app;
+failed texture payloads are released, while their paths wait for a successfully
+submitted reduction before retrying. Fullscreen Scene composition stretches to
+the physical output and leaves UI native. App recovery stops at the existing
+25% floor; standalone Vulkan has no Scene-output override capability.
 Metal entrypoints use autorelease pools for temporary Objective-C objects;
 resources that span calls retain explicit ownership and completion-gated release.
 `VKR_METAL_MEMORY_BUDGET_MB` configures the cap at startup. See

@@ -1684,7 +1684,7 @@ vkr_internal void application_unload_scene_system(Application *application) {
   state->gizmo_edit_pending = false_v;
   application_clear_gizmo_selection(application);
   application->active_scene = NULL;
-  application->editor_viewport.output_scale = 1.0f;
+  application->scene_output_scale = 1.0f;
   application->editor_viewport.rendered_width = 0u;
   application->editor_viewport.rendered_height = 0u;
   application->editor_viewport.output_width = 0u;
@@ -2908,7 +2908,7 @@ vkr_internal void application_update_ui(Application *application,
       .scene_error = application->editor_viewport.scene_error,
       .texture_pending_count = texture_streams.pending_count,
       .texture_demanded_missing_count = texture_streams.demanded_missing_count,
-      .scene_output_scale = application->editor_viewport.output_scale,
+      .scene_output_scale = application->scene_output_scale,
       .scene_render_width = application->editor_viewport.rendered_width,
       .scene_render_height = application->editor_viewport.rendered_height,
       .scene_output_width = application->editor_viewport.output_width,
@@ -3267,8 +3267,6 @@ int vkr_sample_runtime_run(int argc, char **argv,
              "reconstruction instead of MetalFX");
   }
   application.editor_viewport.enabled = runtime_config->presentation.paneled;
-  application.assets.material_system.texture_stream_memory_recovery_enabled =
-      application.editor_viewport.enabled;
   application.editor_viewport.scene_only =
       runtime_config->presentation.scene_only;
   application.editor_viewport.render_scale =

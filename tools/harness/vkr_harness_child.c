@@ -820,6 +820,20 @@ void application_update(Application *application, float64_t delta) {
   }
   vkr_harness_child_build_ui(application, child, delta);
   vkr_harness_child_drain_events(application);
+  /* Bootstrap may retry a typed OOM only after Application schedules a new,
+     bounded Scene reduction. Never sample that failed frame or permit recovery
+     inside authored warmup/measurement/capture phases. */
+  if (!child->phase_started &&
+      application->last_renderer_error == VKR_RENDERER_ERROR_OUT_OF_MEMORY &&
+      application->scene_memory_relief_generation >
+          application->assets.material_system
+              .texture_stream_relief_generation) {
+    vkr_harness_stderr(
+        "Bootstrap Scene memory recovery: scale=%.4f generation=%llu\n",
+        (double)application->scene_output_scale,
+        (unsigned long long)application->scene_memory_relief_generation);
+    return;
+  }
   /* A failed renderer frame cannot contribute valid timing or snapshot
      evidence. Abort on the following update instead of repeatedly hitting the
      same bounded GPU wait until the parent process timeout hides the cause. */
