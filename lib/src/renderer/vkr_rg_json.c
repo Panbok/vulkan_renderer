@@ -32,6 +32,7 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"!editor_enabled", VKR_RG_JSON_CONDITION_EDITOR_DISABLED},
     {"hzb_history_valid", VKR_RG_JSON_CONDITION_HZB_HISTORY_VALID},
     {"!hzb_history_valid", VKR_RG_JSON_CONDITION_HZB_HISTORY_INVALID},
+    {"local_shadows_active", VKR_RG_JSON_CONDITION_LOCAL_SHADOWS_ACTIVE},
     {"shadow_cascades_active", VKR_RG_JSON_CONDITION_SHADOW_CASCADES_ACTIVE},
     {"sdsm_enabled", VKR_RG_JSON_CONDITION_SDSM_ENABLED},
     {"transmission_pending", VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING},
@@ -134,6 +135,41 @@ vkr_internal bool8_t vkr_rg_json_parse_condition(
   return true_v;
 }
 
+/* Repeat on a resource use must not become repetition of its enclosing pass.
+ * The legacy reader's find_field searches nested values as well as members. */
+vkr_internal bool8_t vkr_rg_json_find_member(VkrJsonReader *reader,
+                                             const char *name) {
+  VkrJsonReader scan = *reader;
+  scan.pos = 0u;
+  uint32_t depth = 0u;
+  while (scan.pos < scan.length) {
+    const uint8_t c = scan.data[scan.pos];
+    if (c == '"') {
+      String8 key = {0};
+      if (!vkr_json_parse_string(&scan, &key))
+        return false_v;
+      vkr_json_skip_whitespace(&scan);
+      if (depth == 1u && vkr_string8_equals_cstr(&key, name) &&
+          scan.pos < scan.length && scan.data[scan.pos] == ':') {
+        ++scan.pos;
+        vkr_json_skip_whitespace(&scan);
+        *reader = scan;
+        return true_v;
+      }
+      continue;
+    }
+    if (c == '{' || c == '[')
+      ++depth;
+    else if (c == '}' || c == ']') {
+      if (!depth)
+        return false_v;
+      --depth;
+    }
+    ++scan.pos;
+  }
+  return false_v;
+}
+
 vkr_internal bool8_t vkr_rg_json_parse_repeat(VkrRgJsonParseContext *ctx,
                                               VkrJsonReader *obj,
                                               const char *field_path,
@@ -146,7 +182,7 @@ vkr_internal bool8_t vkr_rg_json_parse_repeat(VkrRgJsonParseContext *ctx,
   *out_repeat = (VkrRgJsonRepeat){0};
 
   VkrJsonReader reader = *obj;
-  if (!vkr_json_find_field(&reader, "repeat")) {
+  if (!vkr_rg_json_find_member(&reader, "repeat")) {
     return true_v;
   }
 
@@ -766,6 +802,10 @@ vkr_internal bool8_t vkr_rg_json_parse_buffer_desc(
                                  "size.count_source is required");
       if (vkr_string8_equals_cstr_i(&source, "gpu_draw_candidate_capacity"))
         out_desc->draw_count_source = VKR_RG_JSON_DRAW_COUNT_CANDIDATES;
+      else if (vkr_string8_equals_cstr_i(&source, "gpu_draw_view_rows"))
+        out_desc->draw_count_source = VKR_RG_JSON_DRAW_COUNT_VIEW_ROWS;
+      else if (vkr_string8_equals_cstr_i(&source, "gpu_draw_view_count"))
+        out_desc->draw_count_source = VKR_RG_JSON_DRAW_COUNT_VIEWS;
       else if (vkr_string8_equals_cstr_i(&source, "gpu_draw_visible_capacity"))
         out_desc->draw_count_source = VKR_RG_JSON_DRAW_COUNT_VISIBLE;
       else if (vkr_string8_equals_cstr_i(
@@ -1864,6 +1904,8 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->hzb_history_valid;
   case VKR_RG_JSON_CONDITION_HZB_HISTORY_INVALID:
     return !frame->hzb_history_valid;
+  case VKR_RG_JSON_CONDITION_LOCAL_SHADOWS_ACTIVE:
+    return frame->local_shadow_view_count > 0u;
   case VKR_RG_JSON_CONDITION_SHADOW_CASCADES_ACTIVE:
     return frame->shadow_cascade_count > 0u;
   case VKR_RG_JSON_CONDITION_SDSM_ENABLED:
@@ -1939,6 +1981,11 @@ vkr_internal bool8_t vkr_rg_json_repeat_count(
     return false_v;
   }
 
+  if (vkr_string8_equals_cstr_i(&repeat->count_source,
+                                "local_shadow_view_count")) {
+    *out_count = frame->local_shadow_view_count;
+    return true_v;
+  }
   if (vkr_string8_equals_cstr_i(&repeat->count_source,
                                 "shadow_cascade_count")) {
     *out_count = frame->shadow_cascade_count;
@@ -2058,6 +2105,12 @@ vkr_internal bool8_t vkr_rg_json_resolve_extent(
     *out_height = extent->height;
     return true_v;
   case VKR_RG_JSON_EXTENT_SQUARE:
+    if (vkr_string8_equals_cstr_i(&extent->size_source,
+                                  "local_shadow_map_size")) {
+      *out_width = frame->local_shadow_map_size;
+      *out_height = frame->local_shadow_map_size;
+      return true_v;
+    }
     if (vkr_string8_equals_cstr_i(&extent->size_source, "shadow_map_size")) {
       *out_width = frame->shadow_map_size;
       *out_height = frame->shadow_map_size;
@@ -2086,6 +2139,11 @@ vkr_internal bool8_t vkr_rg_json_resolve_layers(
   if (desc->layers_source.length > 0) {
     if (!frame) {
       return false_v;
+    }
+    if (vkr_string8_equals_cstr_i(&desc->layers_source,
+                                  "local_shadow_map_layer_count")) {
+      *out_layers = Max(frame->local_shadow_map_layer_count, 1u);
+      return true_v;
     }
     if (vkr_string8_equals_cstr_i(&desc->layers_source,
                                   "shadow_map_layer_count")) {
@@ -2502,6 +2560,11 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
           case VKR_RG_JSON_DRAW_COUNT_CANDIDATES:
             count = frame->gpu_draw_candidate_capacity;
             break;
+          case VKR_RG_JSON_DRAW_COUNT_VIEWS:
+            count = 1u + frame->shadow_cascade_count +
+                    frame->local_shadow_view_count;
+            break;
+          case VKR_RG_JSON_DRAW_COUNT_VIEW_ROWS:
           case VKR_RG_JSON_DRAW_COUNT_VISIBLE:
             count = frame->gpu_draw_visible_capacity;
             break;
@@ -2519,6 +2582,10 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
             return false_v;
           }
           desc.size = (uint64_t)count * resource->buffer.bytes_per_element;
+          if (resource->buffer.draw_count_source ==
+              VKR_RG_JSON_DRAW_COUNT_VIEW_ROWS)
+            desc.size *= 1u + frame->shadow_cascade_count +
+                         frame->local_shadow_view_count;
         } else {
           desc.size = resource->buffer.size;
         }

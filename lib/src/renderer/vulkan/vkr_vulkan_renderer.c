@@ -1247,7 +1247,7 @@ bool8_t vkr_vulkan_renderer_poll_result(VkrVulkanRenderer *renderer,
       out_result->transmission_compact_overflow_count +=
           transmission_diagnostics->compact_overflow[layer];
   }
-  for (uint32_t cascade = 0u; cascade < VKR_SHADOW_CASCADE_COUNT_MAX;
+  for (uint32_t cascade = 0u; cascade < best->shadow_cascade_count;
        ++cascade) {
     out_result->shadow_gpu_visible_count[cascade] =
         opaque[cascade + 1u].visible_count;
@@ -1256,6 +1256,13 @@ bool8_t vkr_vulkan_renderer_poll_result(VkrVulkanRenderer *renderer,
     MemCopy(out_result->shadow_gpu_bucket_counts[cascade],
             opaque[cascade + 1u].bucket_counts,
             sizeof(out_result->shadow_gpu_bucket_counts[cascade]));
+  }
+  out_result->local_shadow_view_count = best->local_shadow_view_count;
+  for (uint32_t view = 0u; view < best->local_shadow_view_count; ++view) {
+    const VkrGpuDrawCompactionState *state =
+        &opaque[1u + best->shadow_cascade_count + view];
+    out_result->local_shadow_gpu_visible_count[view] = state->visible_count;
+    out_result->local_shadow_gpu_overflow_count[view] = state->overflow_count;
   }
   MemCopy(out_result->pass_timings, best->pass_timings,
           (uint64_t)best->pass_timing_count *

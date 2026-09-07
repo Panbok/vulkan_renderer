@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-09-07
 authority: adr
 ---
 
@@ -56,7 +56,7 @@ signatures from matching. Converging them can add up to one render per stale
 image/cascade for each adopted fit, spread across normal completion-safe image
 reuse. Once the images agree, static frames omit those passes again. No new GPU
 storage, copies or waits are required. More aggressive fitting/bias/filter choices alter quality and must be
-measured. Point/spot shadows and arbitrary light occlusion remain absent.
+measured. Point/spot shadows use ADR-019's independent bounded pool; arbitrary indirect-light occlusion remains absent.
 
 ## Alternatives considered
 

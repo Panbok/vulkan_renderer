@@ -1,6 +1,8 @@
+#include "math/vkr_frustum.h"
 #include "renderer/vulkan/vkr_vulkan_internal.h"
 typedef enum VkrVulkanGraphExecutorKind {
   VKR_VULKAN_GRAPH_EXECUTOR_SHADOW = 0,
+  VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW,
   VKR_VULKAN_GRAPH_EXECUTOR_PICKING,
   VKR_VULKAN_GRAPH_EXECUTOR_PICKING_DEPTH_SEED,
   VKR_VULKAN_GRAPH_EXECUTOR_PICKING_RESOLVE,
@@ -80,6 +82,7 @@ typedef struct VkrVulkanGraphExecutorSpec {
 
 vkr_global const VkrVulkanGraphExecutorSpec s_vk_graph_executors[] = {
     {"pass.shadow.cascade", VKR_RG_PASS_TYPE_GRAPHICS},
+    {"pass.local_shadow", VKR_RG_PASS_TYPE_GRAPHICS},
     {"pass.picking", VKR_RG_PASS_TYPE_GRAPHICS},
     {"pass.picking.depth_seed", VKR_RG_PASS_TYPE_TRANSFER},
     {"pass.picking.resolve", VKR_RG_PASS_TYPE_COMPUTE},
@@ -1161,7 +1164,17 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
   if (!packet)
     return false_v;
   switch (kind) {
+  case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW:
   case VKR_VULKAN_GRAPH_EXECUTOR_SHADOW: {
+    if (kind == VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW) {
+      const uint32_t layer = pass->desc.depth_attachment.desc.slice.base_layer;
+      if (!packet->input.local_shadow ||
+          layer >= packet->input.local_shadow->view_count)
+        return false_v;
+      prepared->depth_bias = (VkrShadowConfigOverride){0};
+      return vkr_vk_prepare_deferred_raster(renderer, &prepared->raster, pass,
+                                            true_v, false_v, true_v);
+    }
     if (!packet->input.shadow)
       return true_v;
     const uint32_t cascade = pass->desc.depth_attachment.desc.slice.base_layer;
@@ -1176,17 +1189,17 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
             : (VkrShadowConfigOverride){0};
     prepared->depth_bias = bias;
     return vkr_vk_prepare_deferred_raster(renderer, &prepared->raster, pass,
-                                          true_v, false_v);
+                                          true_v, false_v, false_v);
   }
   case VKR_VULKAN_GRAPH_EXECUTOR_PICKING: {
     if (!packet->input.picking || !packet->input.picking->pending)
       return true_v;
     const Mat4 view_projection =
         mat4_mul(packet->input.globals.projection, packet->input.globals.view);
-    return vkr_vk_prepare_packet_draws(renderer, &prepared->world,
-                                       VKR_VULKAN_PACKET_PIPELINE_PICKING,
-                                       slot->world_instances, view_projection,
-                                       target_width, target_height, 0u, 0u) &&
+    return vkr_vk_prepare_packet_draws(
+               renderer, &prepared->world, VKR_VULKAN_PACKET_PIPELINE_PICKING,
+               slot->world_instances, view_projection, target_width,
+               target_height, 0u, 0u, 0u) &&
            (!packet->input.world ||
             vkr_vk_prepare_text_draws(renderer, &prepared->text,
                                       VKR_VULKAN_PACKET_PIPELINE_PICKING_TEXT,
@@ -1197,10 +1210,10 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
   }
   case VKR_VULKAN_GRAPH_EXECUTOR_VBUFFER_OPAQUE:
     return vkr_vk_prepare_deferred_raster(renderer, &prepared->raster, pass,
-                                          false_v, false_v);
+                                          false_v, false_v, false_v);
   case VKR_VULKAN_GRAPH_EXECUTOR_VBUFFER_TRANSMISSION:
     return vkr_vk_prepare_deferred_raster(renderer, &prepared->raster, pass,
-                                          false_v, true_v);
+                                          false_v, true_v, false_v);
   case VKR_VULKAN_GRAPH_EXECUTOR_WORLD_BLEND: {
     if (!packet->input.world)
       return true_v;
@@ -1210,11 +1223,15 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
     if (renderer->prepared_frame.shadow_cascade_count > 0u &&
         !vkr_vk_graph_sampled_index(renderer, pass, 0u, &shadow_texture))
       return false_v;
-    return vkr_vk_prepare_packet_draws(renderer, &prepared->world,
-                                       VKR_VULKAN_PACKET_PIPELINE_WORLD_BLEND,
-                                       slot->world_instances, view_projection,
-                                       target_width, target_height,
-                                       shadow_texture, 0u) &&
+    uint32_t local_shadow_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+    if (renderer->prepared_frame.local_shadow_view_count > 0u &&
+        !vkr_vk_graph_sampled_index(renderer, pass, 1u, &local_shadow_texture))
+      return false_v;
+    return vkr_vk_prepare_packet_draws(
+               renderer, &prepared->world,
+               VKR_VULKAN_PACKET_PIPELINE_WORLD_BLEND, slot->world_instances,
+               view_projection, target_width, target_height, shadow_texture, 0u,
+               local_shadow_texture) &&
            vkr_vk_prepare_text_draws(
                renderer, &prepared->text, VKR_VULKAN_PACKET_PIPELINE_WORLD_TEXT,
                packet->input.world->text_draws,
@@ -1438,11 +1455,15 @@ uint64_t vkr_vk_graph_upload_bound(VkrVulkanRenderer *renderer,
     VkrVulkanGraphExecutorKind kind;
     if (!vkr_vk_graph_executor_kind(pass, &kind))
       return VKR_VULKAN_FRAME_UPLOAD_SIZE;
-    // Non-IBL executors allocate at most one fixed root plus cull view/plane
-    // arrays (1616 bytes at nine views), or fullscreen/frame/temporal roots.
-    // Reserve alignment and root headroom separately from variable draw data.
+    // Reserve fixed-root alignment/headroom separately from view arrays and
+    // variable draw data. Local shadows can add sixteen perspective views.
     bytes += 4096u;
     switch (kind) {
+    case VKR_VULKAN_GRAPH_EXECUTOR_GPU_DRAW_CLASSIFY:
+      bytes += (uint64_t)(1u + renderer->prepared_frame.shadow_cascade_count +
+                           renderer->prepared_frame.local_shadow_view_count) *
+               (sizeof(Mat4) + VKR_FRUSTUM_PLANE_COUNT * sizeof(Vec4));
+      break;
     case VKR_VULKAN_GRAPH_EXECUTOR_PICKING:
       if (!renderer->graph->packet->input.picking ||
           !renderer->graph->packet->input.picking->pending)
@@ -1481,6 +1502,7 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
 
   prepared->kind = kind;
   switch (kind) {
+  case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW:
   case VKR_VULKAN_GRAPH_EXECUTOR_SHADOW:
   case VKR_VULKAN_GRAPH_EXECUTOR_PICKING:
   case VKR_VULKAN_GRAPH_EXECUTOR_VBUFFER_OPAQUE:
@@ -1666,6 +1688,7 @@ vkr_vk_record_graph_graphics_pass(VkrVulkanRenderer *renderer,
   vkCmdSetScissor(command, 0u, 1u, &prepared->scissor);
   vkCmdSetCullMode(command, VK_CULL_MODE_NONE);
   switch (prepared->kind) {
+  case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW:
   case VKR_VULKAN_GRAPH_EXECUTOR_SHADOW:
     vkCmdSetDepthBias(command, prepared->depth_bias.depth_bias_constant,
                       prepared->depth_bias.depth_bias_clamp,
@@ -1724,6 +1747,7 @@ void vkr_vk_record_graph(VkrVulkanRenderer *renderer, VkCommandBuffer command) {
         prepared->dependencies.bufferMemoryBarrierCount)
       vkCmdPipelineBarrier2(command, &prepared->dependencies);
     switch (prepared->kind) {
+    case VKR_VULKAN_GRAPH_EXECUTOR_LOCAL_SHADOW:
     case VKR_VULKAN_GRAPH_EXECUTOR_SHADOW:
     case VKR_VULKAN_GRAPH_EXECUTOR_PICKING:
     case VKR_VULKAN_GRAPH_EXECUTOR_VBUFFER_OPAQUE:

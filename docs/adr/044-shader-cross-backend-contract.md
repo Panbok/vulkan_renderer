@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-06
+updated: 2026-09-07
 authority: adr
 ---
 
@@ -127,6 +127,38 @@ Its matched Release captures were byte-identical with SHA-256
 `82510845bfe55d00ca57c4948579a0ebe367e8dd210f8f42fa48b9a2b49a7c28`.
 This local Metal evidence does not close the bilateral UNALIGNED state.
 
+Local shadow views use a shared 112-byte record: matrix at byte 0, light
+position/near plane at 64, direction/far plane at 80, and perspective footprint
+and texel bias parameters at 96. Native frame roots append their local depth
+array reference and view pointer. Punctual row `p3.w` stores first-view index
+plus one; zero means unshadowed. CPU point-face orientation and shared face-ray
+reconstruction use the same canonical negative projection-Y convention.
+Local shadow parity remains **UNALIGNED** until matched native Vulkan and Metal
+captures and diagnostics pass. Production compilation does not close that gate.
+
+2026-09-07 local evidence on Apple M1 Pro / Metal 4 / Darwin 25.6.0:
+`./build_release.sh`, `./build_editor.sh Release`, and `./build_test.sh` pass.
+Metal and Vulkan production shaders compile; native roots are pinned at 480 and
+496 bytes respectively. CPU checks cover perspective depth, all six point-face
+orientations, complete budget groups, and nested graph-use repetition.
+Release `local_shadow_point_on/off` and `local_shadow_spot_on/off` smoke snapshots
+show receiver occlusion; the point caster interior remains byte-identical to its
+unshadowed control after setting normal offset to two texels. The full-pool
+fixture executes sixteen local views, four directional cascades, and one deferred
+lighting pass with seven selected lights. The directional `shadow_receiver_pcf9`
+case passes all four caster-count assertions. These are focused synthetic
+observations, with no accepted performance claim or transparent-receiver pixel
+comparison.
+
+API-only Metal validation of `local_shadow_point_on` passes (report SHA-256
+`1e54c348964dbca060f22736f50022cab7d719c8f48f56b17566daacdbecb237`).
+Combined API/GPU validation crashes in Apple MetalTools
+`resolvedSharedPacketData` while decoding a buffer diagnostic; the directional-only
+control reproduces that failure. The underlying diagnostic remains unreadable,
+so shader validation is incomplete. Native Vulkan execution and cross-backend
+pixel comparison remain unavailable on this host. Local reports, exact commands,
+and retained capture paths are recorded in `.scratch/implement-local-shadows.md`.
+
 ## Consequences
 
 Editor overlay color and picking share packed geometry and an unjittered MVP.
@@ -169,7 +201,7 @@ Native lowering lives in [`metal/`](../../lib/src/renderer/metal) and
 | Geometry/visibility/deferred/picking | `shared/gpu_draw.slangh` | `metal/msl/common/draw.metalh`, `metal/msl/world/gpu_draws.metal` | `vulkan/slang/common/`, `world/deferred.slang`, `picking/default.slang` |
 | Material/light math | `shared/normal_map_kernel.slangh`, `ggx_kernel.slangh`, `point_light.slangh` | `metal/msl/world/default.metal`, `lighting.metalh`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Transmission | `shared/transmission_kernel.slangh` | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang` |
-| Shadow receiver | `shared/shadow_kernel.slangh` | `metal/msl/shadow/sampling.metalh` | `vulkan/slang/world/default.slang` |
+| Shadow receiver | `shared/shadow_kernel.slangh`, `local_shadow.slangh` | `metal/msl/shadow/sampling.metalh` | `vulkan/slang/world/default.slang` |
 | IBL and SH | `shared/sh_l2_kernel.slangh`, `ggx_kernel.slangh` | `metal/msl/ibl/` | `vulkan/slang/ibl/` |
 | Exposure/bloom/GTAO | matching `shared/*_kernel.slangh` | `metal/msl/post/` | `vulkan/slang/post/` |
 | Temporal resolve | `shared/temporal_filter_kernel.slangh`; native visibility/identity helpers | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang` |

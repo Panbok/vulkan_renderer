@@ -1074,6 +1074,16 @@ void application_draw_frame(Application *application, float64_t delta) {
     vkr_shadow_system_discard_frame(&application->shadow_system);
   }
 
+  VkrLocalShadowPassPayload local_shadow_payload = {0};
+  if (!scene_stopped && world_payload.gpu_shadow_candidate_count > 0u &&
+      application->shadow_system.initialized) {
+    vkr_local_shadow_prepare(
+        application->lighting_system.point_lights,
+        application->lighting_system.point_light_count,
+        application->shadow_system.config.local_shadow_face_budget,
+        application->shadow_system.config.local_shadow_map_size,
+        &local_shadow_payload);
+  }
   VkrShadowPassPayload shadow_payload = {0};
   /* Raster depth bias, distinct from receiver bias. Lowered from the shadow
      config so both selected implementations apply the same configured values
@@ -1407,6 +1417,8 @@ void application_draw_frame(Application *application, float64_t delta) {
       .lighting = scene_stopped ? NULL : &frame_lighting,
       .world = scene_stopped ? NULL : &world_payload,
       .shadow = has_shadow ? &shadow_payload : NULL,
+      .local_shadow =
+          local_shadow_payload.view_count ? &local_shadow_payload : NULL,
       .skybox = !scene_stopped && !application->config->disable_skybox &&
                         skybox_payload.cubemap.id != 0 &&
                         skybox_payload.cubemap.generation != VKR_INVALID_ID

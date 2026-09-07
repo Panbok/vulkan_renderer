@@ -164,6 +164,7 @@ vkr_internal void vkr_metal_packet_record_graphics_pass(
     const VkrMetalPacketPreparedPass *pass) API_AVAILABLE(macos(26.0)) {
   switch (pass->kind) {
   case VKR_METAL_PACKET_GRAPH_EXECUTOR_SHADOW:
+  case VKR_METAL_PACKET_GRAPH_EXECUTOR_LOCAL_SHADOW:
   case VKR_METAL_PACKET_GRAPH_EXECUTOR_VBUFFER_OPAQUE:
   case VKR_METAL_PACKET_GRAPH_EXECUTOR_VBUFFER_TRANSMISSION:
     vkr_metal_packet_record_indirect_pass(renderer, encoder, pass);

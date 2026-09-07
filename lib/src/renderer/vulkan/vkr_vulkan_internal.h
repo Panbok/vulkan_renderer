@@ -266,7 +266,8 @@ enum {
 };
 
 enum {
-  VKR_VULKAN_DEFERRED_VIEW_COUNT_MAX = 1 + VKR_SHADOW_CASCADE_COUNT_MAX,
+  VKR_VULKAN_DEFERRED_VIEW_COUNT_MAX =
+      1 + VKR_SHADOW_CASCADE_COUNT_MAX + VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
   VKR_VULKAN_READBACK_COLOR_SIZE = 4,
   VKR_VULKAN_READBACK_DRAW_STATE_OFFSET = 16,
   VKR_VULKAN_READBACK_TRANSMISSION_STATE_OFFSET =
@@ -830,6 +831,9 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketFrameRoot {
   uint32_t ibl_probe_count;
   uint32_t ibl_probe_reserved;
   uint64_t temporal_draw_state;
+  uint64_t local_shadow_views;
+  uint32_t local_shadow_texture;
+  uint32_t local_shadow_reserved;
 } VkrVulkanPacketFrameRoot;
 
 /** The only record written per indexed packet draw. */
@@ -1057,7 +1061,11 @@ _Static_assert(offsetof(VkrVulkanPacketIblProbe, sh_slot) == 0u,
                "Packet IBL-probe SH-slot ABI offset drift");
 _Static_assert(offsetof(VkrVulkanPacketIblProbe, prefilter_texture) == 8u,
                "Packet IBL-probe prefilter ABI offset drift");
-_Static_assert(sizeof(VkrVulkanPacketFrameRoot) == 480u,
+_Static_assert(offsetof(VkrVulkanPacketFrameRoot, local_shadow_views) == 472u,
+               "Vulkan local shadow address offset drift");
+_Static_assert(offsetof(VkrVulkanPacketFrameRoot, local_shadow_texture) == 480u,
+               "Vulkan local shadow texture offset drift");
+_Static_assert(sizeof(VkrVulkanPacketFrameRoot) == 496u,
                "Packet frame-root ABI size drift");
 _Static_assert(offsetof(VkrVulkanPacketFrameRoot, sh_coefficients) == 88u,
                "Packet frame-root SH-buffer ABI offset drift");
@@ -1362,6 +1370,9 @@ typedef struct VkrVulkanFrameSlot {
   uint64_t point_light_data;
   uint64_t point_light_masks;
   uint64_t shadow_cascades;
+  uint64_t local_shadow_views;
+  uint32_t shadow_cascade_count;
+  uint32_t local_shadow_view_count;
   uint64_t ibl_probes;
   uint32_t ibl_probe_count;
   uint32_t prefilter_texture;
@@ -1876,7 +1887,8 @@ void vkr_vk_fill_packet_frame_root(
     VkrVulkanRenderer *renderer, VkrVulkanPacketFrameRoot *root,
     const VkrVulkanFrameSlot *slot, const VkrPacketFrameConstants *frame,
     uint64_t instances, Mat4 view_projection, uint32_t shadow_texture,
-    uint32_t transmission_texture, bool8_t lighting_pass);
+    uint32_t transmission_texture, uint32_t local_shadow_texture,
+    bool8_t lighting_pass);
 bool8_t vkr_vk_publish_sampled_view(VkrVulkanRenderer *renderer,
                                     VkImageView view,
                                     VkImageLayout image_layout,
@@ -1902,7 +1914,8 @@ bool8_t vkr_vk_prepare_deferred_cull(VkrVulkanRenderer *renderer,
 bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
                                        VkrVulkanPreparedRaster *prepared,
                                        const VkrRgPass *pass, bool8_t shadow,
-                                       bool8_t transmission);
+                                       bool8_t transmission,
+                                       bool8_t local_shadow);
 bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
                                         VkrVulkanPreparedCompute *prepared,
                                         const VkrRgPass *pass);
@@ -1994,7 +2007,7 @@ bool8_t vkr_vk_prepare_packet_draws(
     VkrVulkanRenderer *renderer, VkrVulkanPreparedWorldDraws *out,
     VkrVulkanPacketPipeline pipeline, uint64_t instances, Mat4 view_projection,
     uint32_t target_width, uint32_t target_height, uint32_t shadow_texture,
-    uint32_t transmission_texture);
+    uint32_t transmission_texture, uint32_t local_shadow_texture);
 
 bool8_t vkr_vk_prepare_packet_fullscreen(
     VkrVulkanRenderer *renderer, VkrVulkanPreparedFullscreen *out,

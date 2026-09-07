@@ -585,6 +585,16 @@ static bool8_t inspector_parse(VkrEditorScenePanels *p,
                "cone angles.");
       return false_v;
     }
+    out->point_light.casts_shadow = p->values.point_light.casts_shadow;
+    if (out->point_light.casts_shadow &&
+        (out->point_light.range <= 0.0f ||
+         (out->point_light.kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT &&
+          out->point_light.outer_cone_angle >= 1.57079632679f))) {
+      snprintf(p->error, sizeof(p->error),
+               "Shadows require positive range and a spot outer angle below 90 "
+               "degrees.");
+      return false_v;
+    }
     out->point_light.enabled = p->values.point_light.enabled;
     out->directional_light.enabled = p->values.directional_light.enabled;
     if ((p->original_values.fields & VKR_SCENE_EDIT_POINT_LIGHT) &&
@@ -797,6 +807,11 @@ void vkr_editor_inspector_build(VkrEditorScenePanels *p,
         p->changed |= vkr_ui_checkbox(ui, string8_lit("light.point.enabled"),
                                       string8_lit("Light enabled"),
                                       &p->values.point_light.enabled, &c);
+        y += 27;
+        c = widget_at(5, y, w - 10, 24);
+        p->changed |= vkr_ui_checkbox(ui, string8_lit("light.point.shadow"),
+                                      string8_lit("Cast shadows"),
+                                      &p->values.point_light.casts_shadow, &c);
         y += 27;
       }
       if (directional) {

@@ -148,6 +148,8 @@ struct VkrMetalPacketFrameRoot {
   uint ibl_probe_count;
   uint ibl_probe_reserved;
   constant VkrMetalPacketTemporalDrawState *temporal_draw_state;
+  depth2d_array<float, access::sample> local_shadow_map;
+  device VkrLocalShadowView *local_shadow_views;
 };
 
 struct VkrGpuGeometryRow {
@@ -306,11 +308,13 @@ static_assert(sizeof(VkrMetalPacketMaterial) == 176,
               "Metal material row ABI must remain 176 bytes");
 static_assert(sizeof(VkrMetalPacketTransmissionMaterial) == 32,
               "Metal transmission material row ABI must remain 32 bytes");
-static_assert(sizeof(VkrMetalPacketFrameRoot) == 464,
-              "Metal packet frame root ABI must remain 464 bytes");
+static_assert(sizeof(VkrMetalPacketFrameRoot) == 480,
+              "Metal packet frame root ABI must remain 480 bytes");
 static_assert(sizeof(VkrMetalPacketDrawRoot) == 48,
               "Metal packet draw root ABI must remain 48 bytes");
 static_assert(sizeof(VkrMetalPacketIblProbe) == 64,
               "Metal packet IBL probe ABI must remain 64 bytes");
+static_assert(sizeof(VkrLocalShadowView) == 112,
+              "Local shadow view Metal ABI must remain 112 bytes");
 static_assert(sizeof(VkrMetalPacketShadowCascade) == 96,
               "Metal packet shadow cascade ABI must remain 96 bytes");

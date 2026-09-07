@@ -42,7 +42,7 @@ enum {
   VKR_METAL_PACKET_TIMEOUT_MS = 5000,
   VKR_METAL_PACKET_MAX_COLOR_ATTACHMENTS = 8,
   VKR_METAL_PACKET_MAX_TEXTURE_MIPS = 15,
-  VKR_METAL_PACKET_MAX_TEXTURE_LAYERS = 8,
+  VKR_METAL_PACKET_MAX_TEXTURE_LAYERS = 16,
   VKR_METAL_PACKET_GRAPH_INSTANCE_MAX = 8,
   VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX =
       VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX,
@@ -312,6 +312,8 @@ typedef struct VkrMetalPacketFrameUpload {
   uint64_t point_light_masks_gpu;
   uint64_t shadow_cascades_gpu;
   uint64_t shadow_texture_id;
+  uint64_t local_shadow_texture_id;
+  uint64_t local_shadow_views_gpu;
   uint64_t transmission_texture_id;
   uint64_t ibl_probes_gpu;
   /** Submission-local SH publication. Nonzero only after projection recording

@@ -91,7 +91,7 @@ per-draw dispatch table, frontend pipeline registry or generic command RHI.
 not be copied or modified; its renderer must outlive it. Consumed or stale frame
 contexts are rejected. Acquisition identity is separate from GPU completion.
 
-Frame-input version 30 contains frame metadata, camera/lighting/settings and typed
+Frame-input version 31 contains frame metadata, camera/lighting/settings and typed
 world, shadow, skybox, UI, editor, picking and debug payloads. Supplied world-text
 and UI streams are authoritative. `vkr_frame_input_validate()` checks structural
 input. Private `VkrPreparedFrame` holds derived temporal, exposure, bloom and GTAO
@@ -278,7 +278,12 @@ production policy; a fifth layer is diagnostic. See
 
 Punctual lighting uses a stable 128-light table and 384-cell fragment-local
 bitmask grid with exact range/cone rejection. Up to 16 ready probes contribute
-fragment-space AABB weights. Only directional lighting samples CSM; light ranges,
+fragment-space AABB weights. Directional lighting samples CSM. Opt-in point/spot shadows use a separate
+16-face, 1024-squared depth pool per physical target image, with one face per
+spot and six per point. Stable light order allocates complete groups; excess
+lights remain unshadowed. Every selected local view redraws each frame, with
+nine-tap PCF and point taps remapped across faces. Scene `casts_shadow` and the
+editor's Cast shadows checkbox require a finite range. Light ranges,
 probe bounds and GTAO do not establish arbitrary wall/furniture occlusion.
 See [ADR-019](adr/019-bounded-forward-spatial-lighting.md).
 
@@ -474,7 +479,7 @@ These are limits of current code or retained acceptance, not scheduled promises:
   remain outside the completed rigid-motion temporal contract.
 - Visibility-buffer MSAA, terrain, a general effects system, asynchronous graph
   queues and fully graph-declared IBL baking are not production features.
-- Clearcoat, sheen, point/spot shadows, arbitrary local-light occlusion, meshlets,
+- Clearcoat, sheen, arbitrary indirect-light occlusion, meshlets,
   automatic mesh LOD and shader hot reload are absent.
 - Native source exists for both backends, but same-revision crossed transmission,
   visibility/packed geometry, punctual lighting, shadow-transition, tonemap,

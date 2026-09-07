@@ -102,6 +102,8 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
       .point_light_count = frame_constants.point_light_count,
       .shadow_texture_id = upload->shadow_texture_id,
       .shadow_cascades = upload->shadow_cascades_gpu,
+      .local_shadow_texture_id = upload->local_shadow_texture_id,
+      .local_shadow_views = upload->local_shadow_views_gpu,
       .view = frame_constants.view,
       .shadow_cascade_count = frame_constants.shadow_cascade_count,
       .shadow_pcf_sample_count =
@@ -752,7 +754,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
       transmission ? upload->transmission_gpu_draw_instances_gpu
                    : upload->gpu_draw_instances_gpu;
   const uint32_t view_count =
-      transmission ? 1u : 1u + renderer->prepared_frame.shadow_cascade_count;
+      transmission ? 1u
+                   : 1u + renderer->prepared_frame.shadow_cascade_count +
+                         renderer->prepared_frame.local_shadow_view_count;
   if (candidate_count == 0u)
     return true_v;
   uint64_t root_gpu = 0u;
@@ -838,14 +842,27 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
                      : renderer->active_command_slot->gpu_draw_icbs[0]))
     return false_v;
 
-  uint64_t draw_roots_gpu = 0u;
-  VkrMetalPacketDrawRoot *draw_roots = vkr_metal_packet_next_root(
-      upload, (uint64_t)view_count * sizeof(*draw_roots), &draw_roots_gpu);
-  if (!draw_roots)
+  const uint32_t draw_root_slots =
+      (view_count * sizeof(VkrMetalPacketDrawRoot) +
+       VKR_METAL_PACKET_DRAW_ROOT_STRIDE - 1u) /
+      VKR_METAL_PACKET_DRAW_ROOT_STRIDE;
+  if (draw_root_slots > upload->root_capacity - upload->root_cursor)
     return false_v;
+  // Draw kernels index a contiguous array, which may span several root slots.
+  const uint64_t draw_roots_offset =
+      (uint64_t)upload->root_cursor * VKR_METAL_PACKET_DRAW_ROOT_STRIDE;
+  const uint64_t draw_roots_gpu = upload->root_gpu + draw_roots_offset;
+  VkrMetalPacketDrawRoot *draw_roots =
+      (VkrMetalPacketDrawRoot *)(upload->root_cpu + draw_roots_offset);
+  upload->root_cursor += draw_root_slots;
   uint32_t frame_flags = 0u;
   for (uint32_t view = 0u; view < view_count; ++view) {
     const bool8_t camera_view = view == 0u;
+    const bool8_t local_view =
+        view > renderer->prepared_frame.shadow_cascade_count;
+    const uint32_t shadow_map_size =
+        local_view ? renderer->prepared_frame.local_shadow_map_size
+                   : renderer->prepared_frame.shadow_map_size;
     const Mat4 view_projection =
         camera_view ? vkr_metal_packet_clip_matrix(
                           renderer->convert_vulkan_clip_y,
@@ -853,16 +870,21 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
                                    packet->input.globals.view))
                     : vkr_metal_packet_clip_matrix(
                           renderer->convert_vulkan_clip_y,
-                          packet->input.shadow->cascades[view - 1u]
-                              .light_view_projection);
+                          local_view ? packet->input.local_shadow
+                                           ->views[view - 1u -
+                                                   renderer->prepared_frame
+                                                       .shadow_cascade_count]
+                                           .light_view_projection
+                                     : packet->input.shadow->cascades[view - 1u]
+                                           .light_view_projection);
     uint64_t frame_root_gpu = 0u;
     uint32_t view_frame_flags = 0u;
     if (!vkr_metal_packet_create_frame_root(
             renderer, packet, upload, instances_gpu,
             camera_view ? renderer->prepared_frame.viewport_width
-                        : renderer->prepared_frame.shadow_map_size,
+                        : shadow_map_size,
             camera_view ? renderer->prepared_frame.viewport_height
-                        : renderer->prepared_frame.shadow_map_size,
+                        : shadow_map_size,
             view_projection, camera_view, false_v, &frame_root_gpu,
             &view_frame_flags))
       return false_v;
@@ -2133,15 +2155,13 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draws(
 vkr_internal bool8_t vkr_metal_packet_prepare_gpu_shadow(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
-    uint32_t cascade, uint32_t target_width, uint32_t target_height,
-    VkrMetalPacketResult *result) API_AVAILABLE(macos(26.0)) {
+    uint32_t view, const VkrShadowConfigOverride *depth_bias,
+    uint32_t target_width, uint32_t target_height, VkrMetalPacketResult *result)
+    API_AVAILABLE(macos(26.0)) {
   VkrMetalPacketGraphBufferInstance *state =
       vkr_metal_packet_pass_buffer(renderer, pass, 2u);
-  if (!packet->input.world || !packet->input.shadow || !state ||
-      !renderer->gpu_shadow_pipeline ||
-      cascade >= renderer->prepared_frame.shadow_cascade_count)
+  if (!packet->input.world || !state || !renderer->gpu_shadow_pipeline)
     return false_v;
-  const uint32_t view = cascade + 1u;
   const uint32_t group = view / renderer->gpu_draw_icb_view_group_size;
   id<MTLIndirectCommandBuffer> icb =
       renderer->active_command_slot->gpu_draw_icbs[group];
@@ -2155,9 +2175,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_shadow(
       (uint64_t)view * sizeof(VkrGpuDrawCompactionState);
   prepared->indirect.viewport =
       (MTLViewport){0.0, 0.0, target_width, target_height, 0.0, 1.0};
-  prepared->indirect.depth_bias = packet->input.shadow->config_override
-                                      ? *packet->input.shadow->config_override
-                                      : (VkrShadowConfigOverride){0};
+  prepared->indirect.depth_bias =
+      depth_bias ? *depth_bias : (VkrShadowConfigOverride){0};
   prepared->active = true_v;
   (void)result;
   return true_v;
@@ -2190,9 +2209,19 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
       return true_v;
     if (!packet->input.world || renderer->gpu_draw_count == 0u)
       return true_v;
-    return vkr_metal_packet_prepare_gpu_shadow(renderer, pass, packet, prepared,
-                                               cascade, (uint32_t)target.width,
-                                               (uint32_t)target.height, result);
+    return vkr_metal_packet_prepare_gpu_shadow(
+        renderer, pass, packet, prepared, cascade + 1u,
+        packet->input.shadow->config_override, (uint32_t)target.width,
+        (uint32_t)target.height, result);
+  }
+  if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_LOCAL_SHADOW) {
+    const uint32_t face = pass->desc.repeat_index;
+    if (!packet->input.world || renderer->gpu_draw_count == 0u)
+      return true_v;
+    return vkr_metal_packet_prepare_gpu_shadow(
+        renderer, pass, packet, prepared,
+        1u + renderer->prepared_frame.shadow_cascade_count + face, NULL,
+        (uint32_t)target.width, (uint32_t)target.height, result);
   }
   if (kind == VKR_METAL_PACKET_GRAPH_EXECUTOR_VBUFFER_OPAQUE)
     return vkr_metal_packet_prepare_gpu_draws(

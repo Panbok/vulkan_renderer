@@ -1,5 +1,6 @@
-#include "../../../shared/point_light.slangh"
+#include "../../../shared/local_shadow.slangh"
 #include "../../../shared/normal_map_kernel.slangh"
+#include "../../../shared/point_light.slangh"
 
 struct VkrMetalPacketVertex
 {
@@ -119,6 +120,8 @@ struct VkrMetalPacketFrameRoot
     uint ibl_probe_count;
     uint ibl_probe_reserved;
     VkrMetalPacketTemporalDrawState* temporal_draw_state;
+    Texture2DArray<float> local_shadow_map;
+    StructuredBuffer<VkrLocalShadowView> local_shadow_views;
 };
 
 #include "../../../shared/gpu_draw.slangh"

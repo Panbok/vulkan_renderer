@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "id": "smoke.local_shadow.spot.on",
+  "suite": "smoke",
+  "description": "Spot-light local-shadow opt-in fixture with a centered caster inside the cone.",
+  "scene": "assets/scenes/fixtures/local_shadow_spot_on.scene.json",
+  "seed": 103,
+  "resolution": [
+    640,
+    480
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "frames": {
+    "warmup": 8,
+    "measure": 1
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "taa_enabled": false,
+    "exposure_mode": "manual",
+    "manual_exposure": 0.3,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "shadow_map_size": 1024,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      0,
+      4,
+      12
+    ],
+    "yaw": -90,
+    "pitch": -12,
+    "vertical_fov_degrees": 62,
+    "near_plane": 0.1,
+    "far_plane": 60
+  },
+  "captures": [
+    {
+      "at_frame": 0,
+      "channels": [
+        "final_color"
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "metric": "draw.world.calls_issued",
+      "stat": "min",
+      "min": 1
+    },
+    {
+      "metric": "lighting.point.selected",
+      "stat": "min",
+      "min": 1
+    }
+  ]
+}

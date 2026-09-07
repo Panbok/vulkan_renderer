@@ -223,6 +223,7 @@ vkr_vk_validate_packet_root_abi(VkrVulkanRenderer *renderer) {
     SpvReflectBlockVariable *materials = NULL;
     SpvReflectBlockVariable *instances = NULL;
     SpvReflectBlockVariable *point_light_data = NULL;
+    SpvReflectBlockVariable *local_shadow_views = NULL;
     valid &= vkr_vk_reflect_member_offset(
         root, "geometry_rows", offsetof(VkrVulkanPacketDrawRoot, geometry_rows),
         &geometry_rows);
@@ -286,10 +287,19 @@ vkr_vk_validate_packet_root_abi(VkrVulkanRenderer *renderer) {
     valid &= vkr_vk_reflect_member_offset(
         frame, "temporal_draw_state",
         offsetof(VkrVulkanPacketFrameRoot, temporal_draw_state), NULL);
+    valid &= vkr_vk_reflect_member_offset(
+        frame, "local_shadow_views",
+        offsetof(VkrVulkanPacketFrameRoot, local_shadow_views),
+        &local_shadow_views);
+    valid &= vkr_vk_reflect_member_offset(
+        frame, "local_shadow_texture",
+        offsetof(VkrVulkanPacketFrameRoot, local_shadow_texture), NULL);
+    valid &= vkr_vk_validate_reflected_gpu_abi(local_shadow_views,
+                                               VKR_GPU_ABI_LOCAL_SHADOW_VIEW);
     valid &=
         frame && vkr_vk_reflected_struct_size(frame) ==
-                     offsetof(VkrVulkanPacketFrameRoot, temporal_draw_state) +
-                         sizeof(uint64_t);
+                     offsetof(VkrVulkanPacketFrameRoot, local_shadow_reserved) +
+                         sizeof(uint32_t);
 
     const VkrGpuAbiRecord *vertex_abi =
         vkr_gpu_abi_record(VKR_GPU_ABI_PACKED_STATIC_VERTEX);

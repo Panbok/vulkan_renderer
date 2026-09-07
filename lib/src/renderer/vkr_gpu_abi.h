@@ -193,7 +193,22 @@ typedef struct VkrGpuVisibleDrawRow {
   uint32_t state_flags;
 } VkrGpuVisibleDrawRow;
 
-/** Shared packed punctual-light row. */
+#define VKR_LOCAL_SHADOW_FACE_COUNT_MAX 16u
+#define VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT 1024u
+
+/** Perspective shadow view. CPU stores canonical column-major matrices;
+ * native upload applies the same lowering as its directional shadow views. */
+typedef struct VkrLocalShadowView {
+  Mat4 light_view_projection;
+  Vec4 light_position_near;
+  Vec4 light_direction_far;
+  Vec4 projection_params; /* tan(half FOV), inverse size, bias, normal offset */
+} VkrLocalShadowView;
+_Static_assert(sizeof(VkrLocalShadowView) == 112u,
+               "Local shadow view ABI drift");
+
+/** Shared packed punctual-light row. p3.w is native first shadow view + 1;
+ * zero selects unshadowed lighting. */
 typedef struct VkrGpuPointLightRow {
   Vec4 p0;
   Vec4 p1;
@@ -248,6 +263,7 @@ typedef enum VkrGpuAbiRecordId {
   VKR_GPU_ABI_CANDIDATE_DRAW_ROW,
   VKR_GPU_ABI_VISIBLE_DRAW_ROW,
   VKR_GPU_ABI_POINT_LIGHT_ROW,
+  VKR_GPU_ABI_LOCAL_SHADOW_VIEW,
   VKR_GPU_ABI_RECORD_COUNT,
 } VkrGpuAbiRecordId;
 

@@ -956,6 +956,8 @@ kernel void vkr_metal_packet_deferred_lighting(
           attenuation *= cone_attenuation;
         }
       }
+      attenuation *= vkr_metal_packet_local_shadow_sample(
+          frame, uint(p3.w), kind, world_position, normal);
       VkrMetalPacketDirectResult direct = vkr_metal_packet_direct_deferred(
           normal, view, light_direction, p1.rgb * p2.x * attenuation,
           diffuse_albedo, roughness, f0, no_v, geometry_view);
@@ -1821,6 +1823,8 @@ static float3 vkr_metal_packet_transmission_lighting(
           attenuation *= cone_attenuation;
         }
       }
+      attenuation *= vkr_metal_packet_local_shadow_sample(
+          frame, uint(p3.w), kind, world_position, surface.normal);
       float3 radiance = p1.rgb * p2.x * attenuation;
       if (DiffuseEnabled) {
         VkrMetalPacketDirectResult direct = vkr_metal_packet_direct(

@@ -134,6 +134,8 @@ static float4 vkr_metal_packet_shade(
           attenuation *= cone_attenuation;
         }
       }
+      attenuation *= vkr_metal_packet_local_shadow_sample(
+          frame, uint(p3.w), kind, input.world_position, normal);
       VkrMetalPacketDirectResult direct = vkr_metal_packet_direct(
           normal, view, light_direction, p1.rgb * p2.x * attenuation, base.rgb,
           metallic, roughness, f0);

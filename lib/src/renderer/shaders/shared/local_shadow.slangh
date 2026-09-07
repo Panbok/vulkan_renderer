@@ -1,0 +1,47 @@
+#ifndef VKR_LOCAL_SHADOW_SHARED
+#define VKR_LOCAL_SHADOW_SHARED
+
+struct VkrLocalShadowView {
+#if defined(__METAL_VERSION__)
+    float4x4 light_view_projection;
+#else
+    column_major float4x4 light_view_projection;
+#endif
+    float4 light_position_near;
+    float4 light_direction_far;
+    float4 projection_params;
+};
+
+uint vkr_local_shadow_face(float3 direction) {
+    float3 a = abs(direction);
+    if (a.x >= a.y && a.x >= a.z) return direction.x >= 0.0f ? 0u : 1u;
+    if (a.y >= a.z) return direction.y >= 0.0f ? 2u : 3u;
+    return direction.z >= 0.0f ? 4u : 5u;
+}
+
+float3 vkr_local_shadow_forward(uint face) {
+    switch (face) {
+    case 0u: return float3(1, 0, 0);
+    case 1u: return float3(-1, 0, 0);
+    case 2u: return float3(0, 1, 0);
+    case 3u: return float3(0, -1, 0);
+    case 4u: return float3(0, 0, 1);
+    default: return float3(0, 0, -1);
+    }
+}
+
+float3 vkr_local_shadow_up(uint face) {
+    return (face == 2u || face == 3u) ? float3(0, 0, 1) : float3(0, 1, 0);
+}
+
+// UV follows canonical projection's negative Y scale. UV may lie outside the
+// face: reconstructing its ray allows the caller to sample the adjacent face.
+float3 vkr_local_shadow_direction(uint face, float2 uv) {
+    float3 f = vkr_local_shadow_forward(face);
+    float3 u = vkr_local_shadow_up(face);
+    float3 r = cross(f, u);
+    float2 p = uv * 2.0f - 1.0f;
+    return f + r * p.x - u * p.y;
+}
+
+#endif

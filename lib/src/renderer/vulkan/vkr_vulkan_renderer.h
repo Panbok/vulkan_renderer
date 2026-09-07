@@ -111,6 +111,9 @@ typedef struct VkrVulkanResult {
   uint32_t shadow_gpu_bucket_counts[VKR_SHADOW_CASCADE_COUNT_MAX]
                                    [VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
   uint32_t shadow_gpu_overflow_count[VKR_SHADOW_CASCADE_COUNT_MAX];
+  uint32_t local_shadow_view_count;
+  uint32_t local_shadow_gpu_visible_count[VKR_LOCAL_SHADOW_FACE_COUNT_MAX];
+  uint32_t local_shadow_gpu_overflow_count[VKR_LOCAL_SHADOW_FACE_COUNT_MAX];
   uint32_t image_index;
   uint8_t color[4];
   uint32_t identifier;
