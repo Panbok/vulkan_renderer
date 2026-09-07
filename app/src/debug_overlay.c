@@ -54,8 +54,6 @@ static void debug_overlay_build_help(VkrUiSystem *ui) {
   panel.rows = rows;
   panel.row_count = ArrayCount(rows);
   panel.style = debug_overlay_panel_style();
-  panel.style.min_size_pt = (Vec2){360.0f, 116.0f};
-  panel.style.max_size_pt = panel.style.min_size_pt;
   panel.clip_children = true_v;
   if (!vkr_ui_panel_begin(ui, string8_lit("debug.help"), &panel))
     return;
@@ -100,11 +98,8 @@ static void debug_overlay_build_camera(VkrUiSystem *ui, String8 camera_text,
   panel.rows = rows;
   panel.row_count = ArrayCount(rows);
   panel.style = debug_overlay_panel_style();
-  panel.style.min_size_pt =
-      (Vec2){Min(380.0f, target_width_pt - 16.0f),
-             194.0f + 12.0f * (Max(11.0f, 13.0f / ui->content_scale) - 11.0f)};
+  panel.style.max_size_pt.x = Max(1.0f, Min(380.0f, target_width_pt - 16.0f));
   panel.style.gap_pt = 6.0f;
-  panel.style.max_size_pt = panel.style.min_size_pt;
   panel.clip_children = true_v;
   if (!vkr_ui_panel_begin(ui, string8_lit("debug.camera.performance"), &panel))
     return;
@@ -119,6 +114,10 @@ static void debug_overlay_build_camera(VkrUiSystem *ui, String8 camera_text,
   body.placement.row = 2u;
   body.placement.justify = VKR_UI_ALIGN_STRETCH;
   body.text.layout.word_wrap = true_v;
+  body.text.layout.max_width =
+      Max(1.0f, panel.style.max_size_pt.x - panel.style.padding_pt.left -
+                    panel.style.padding_pt.right - panel.style.border_pt.left -
+                    panel.style.border_pt.right);
   body.style.text_color = (Vec4){0.54f, 0.88f, 0.72f, 1.0f};
   vkr_ui_label(ui, string8_lit("performance"), performance_text, &body);
   (void)vkr_ui_panel_end(ui);

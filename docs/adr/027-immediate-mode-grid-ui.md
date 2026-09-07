@@ -55,6 +55,11 @@ consumption. These counters can overlap on unified memory and are not
 additive. Unavailable queries display unavailable. App output is the native
 presentation extent; editor output is the Scene image extent.
 
+App debug panels use content-derived dimensions instead of fixed minima. Text
+line bounds, row gaps, padding and borders determine their size. The performance
+block receives its wrapping width before measurement, capped by the panel's
+380-point maximum and the available window width.
+
 Editor tabs use category-colored vector icons and an amber focused border. Real
 Ubuntu Mono Bold supplies headings; vector controls keep the existing UI vertex
 ABI. Icon strokes and fills use inner/outer convex polygon rings with a
